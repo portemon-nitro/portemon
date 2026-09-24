@@ -6,6 +6,7 @@ local GameSave = require("libs.hgss.src.save.GameSave")
 local BagSave = require("libs.hgss.src.save.BagSave")
 local PlayTime = require("libs.hgss.src.save.PlayTime")
 local PlayerData = require("libs.hgss.src.save.PlayerData")
+local FieldTravelState = require("libs.hgss.src.field.FieldTravelState")
 local MonsSave = require("libs.mons.src.MonsSave")
 local U32 = require("libs.codec.src.U32")
 
@@ -125,6 +126,10 @@ function NewGame.createCandidate(options)
     playerData = nil,
     mons = mons,
     bag = BagSave.empty(),
+    -- New games start badge-less at the mother's house respawn (the source
+    -- default lastSpawn); the candidate carries the travel value record so
+    -- save assembly persists it without inventing history.
+    fieldTravel = { lastHealSpawn = FieldTravelState.DEFAULT_LAST_HEAL_SPAWN },
   }
 end
 
@@ -144,6 +149,7 @@ function NewGame.finalize(candidate, confirmation, options)
       gender = confirmation.gender,
       trainerId = 0,
       money = candidate.profileDraft.money,
+      badges = 0,
     },
     options = candidate.options,
   }, options.playerDataContext)
@@ -165,6 +171,7 @@ function NewGame.finalize(candidate, confirmation, options)
       gender = draft.profile.gender,
       trainerId = trainerId,
       money = draft.profile.money,
+      badges = 0,
     },
     options = draft.options,
   }, options.playerDataContext)

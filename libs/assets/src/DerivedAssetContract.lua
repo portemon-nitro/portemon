@@ -192,7 +192,11 @@ DerivedAssetContract.fieldMapData = {
   -- normalizes the retail unbound-script marker (0xFFFF) to zero so runtime
   -- binding and interaction audits never interpret raw ROM data. v9
   -- publishes semantic object movement types instead of raw HGSS selectors.
-  fieldSchema = "g4-field-map-v9",
+  -- v10 publishes the semantic field-use policy (Fly/Teleport/escape
+  -- permissions, Flash/dark facts, cave environment, Union/Colosseum
+  -- exclusion, and the Ice Path/Alph source exceptions) plus proven
+  -- facing-actor obstacle kinds on object events.
+  fieldSchema = "g4-field-map-v10",
 }
 
 DerivedAssetContract.messages = {

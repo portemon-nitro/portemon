@@ -60,7 +60,7 @@ function T.contract_pins_the_current_asset_identities()
     },
     fieldMapData = {
       cacheFormat = "g4-field-map-cache-v1",
-      fieldSchema = "g4-field-map-v9",
+      fieldSchema = "g4-field-map-v10",
     },
     messages = {
       cacheFormat = "field-message-cache-v3",

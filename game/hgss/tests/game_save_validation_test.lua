@@ -41,7 +41,7 @@ end
 
 local function record(saveId, versionId, playerData)
   return {
-    schema = "g4-game-save-v3",
+    schema = "g4-game-save-v4",
     saveId = saveId,
     versionId = versionId,
     playTimeSeconds = 0,
@@ -53,6 +53,7 @@ local function record(saveId, versionId, playerData)
     terrainDependencyHash = "terrain-" .. versionId,
     facing = "south",
     playerData = playerData,
+    fieldTravel = { lastHealSpawn = "SPAWN_NEW_BARK" },
     world = { flags = {}, variables = {}, objects = {}, rng = { state = 1, calls = 0 } },
     scripts = {
       schema = "g4-script-save-v1",
@@ -103,7 +104,7 @@ local function fieldObjectBucket(actor)
 end
 
 local validPlayerData = {
-  profile = { name = "GOLD", gender = 0, trainerId = 1, money = 3000 },
+  profile = { name = "GOLD", gender = 0, trainerId = 1, money = 3000, badges = 0 },
   options = { textFrame = 0, textSpeed = "mid" },
 }
 
@@ -283,6 +284,96 @@ function T.complete_validation_rejects_records_without_a_valid_bag()
 
   local valid = assert(service:validate(record("save-00000014", "heartgold", validPlayerData)))
   Assert.equal(valid.bag.schema, "hgss-bag-v1", "a valid bag bucket survives version validation")
+end
+
+local function v3record(saveId, playerData, scripts)
+  local value = record(saveId, "heartgold", playerData)
+  value.schema = "g4-game-save-v3"
+  value.fieldTravel = nil
+  value.playerData = {
+    profile = { name = "GOLD", gender = 0, trainerId = 1, money = 3000 },
+    options = { textFrame = 0, textSpeed = "mid" },
+  }
+  value.scripts = scripts
+  return value
+end
+
+local function quiescentScripts()
+  return {
+    schema = "g4-script-save-v1",
+    registryFingerprint = "old-registry",
+    taskFingerprint = "old-tasks",
+    capturedAtSimulationTick = 41,
+    nextEnvironmentId = 3,
+    nextInstanceId = 5,
+    nextTaskId = 7,
+    environments = {},
+    instances = {},
+    tasks = {},
+  }
+end
+
+function T.quiescent_v3_saves_migrate_without_losing_history()
+  local service = GameSaveValidation.new({
+    contextLoader = function()
+      return context()
+    end,
+  })
+  local candidate = v3record("save-00000015", validPlayerData, quiescentScripts())
+  local valid = assert(service:validate(candidate))
+  Assert.equal(valid.schema, "g4-game-save-v4")
+  Assert.equal(valid.playerData.profile.badges, 0)
+  Assert.deepEqual(valid.fieldTravel, { lastHealSpawn = "SPAWN_NEW_BARK" })
+  Assert.equal(valid.scripts.registryFingerprint, "registry")
+  Assert.equal(valid.scripts.taskFingerprint, "tasks")
+  Assert.equal(valid.scripts.nextEnvironmentId, 3)
+  Assert.equal(valid.scripts.nextInstanceId, 5)
+  Assert.equal(valid.scripts.nextTaskId, 7)
+  Assert.equal(valid.playerData.profile.name, "GOLD")
+  -- The submitted bytes are untouched: still v3, badge-less, old prints.
+  Assert.equal(candidate.schema, "g4-game-save-v3")
+  Assert.isNil(candidate.playerData.profile.badges)
+  Assert.isNil(candidate.fieldTravel)
+  Assert.equal(candidate.scripts.registryFingerprint, "old-registry")
+end
+
+function T.active_v3_graphs_reject_without_data_loss()
+  local service = GameSaveValidation.new({
+    contextLoader = function()
+      return context()
+    end,
+  })
+  local scripts = quiescentScripts()
+  scripts.tasks = {
+    {
+      taskId = 1,
+      taskType = "field_move",
+      taskVersion = 1,
+      ownerInstanceId = 1,
+      environmentId = 1,
+      state = {},
+    },
+  }
+  local candidate = v3record("save-00000016", validPlayerData, scripts)
+  local invalid, err = service:validate(candidate)
+  Assert.isNil(invalid)
+  local rejection = assert(err)
+  Assert.equal(rejection.code, "GAME_SAVE_SCHEMA_UNSUPPORTED")
+  Assert.equal(candidate.schema, "g4-game-save-v3")
+  Assert.equal(#candidate.scripts.tasks, 1)
+end
+
+function T.malformed_v4_travel_is_rejected_never_repaired()
+  local service = GameSaveValidation.new({
+    contextLoader = function()
+      return context()
+    end,
+  })
+  local candidate = record("save-00000017", "heartgold", validPlayerData)
+  candidate.fieldTravel = { lastHealSpawn = "" }
+  local invalid, err = service:validate(candidate)
+  Assert.isNil(invalid)
+  Assert.isTrue(Errors.is(err))
 end
 
 return { tests = T }

@@ -1065,9 +1065,10 @@ function AcceptanceHarness.new(options)
           facing = "south",
         },
         playerData = {
-          profile = { name = "GOLD", gender = 0, trainerId = 1, money = 3000 },
+          profile = { name = "GOLD", gender = 0, trainerId = 1, money = 3000, badges = 0 },
           options = { textSpeed = "fastest", textFrame = 0 },
         },
+        fieldTravel = { lastHealSpawn = "SPAWN_NEW_BARK" },
         playTime = PlayTime.new(),
         worldState = FieldEventState.new(),
         mons = mons,

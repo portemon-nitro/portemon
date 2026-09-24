@@ -25,7 +25,7 @@ function T.constructor_uses_the_supplied_game_entry_record()
       facing = "south",
     },
     playerData = {
-      profile = { name = "GOLD", gender = 0, trainerId = 1, money = 3000 },
+      profile = { name = "GOLD", gender = 0, trainerId = 1, money = 3000, badges = 0 },
       options = { textSpeed = "mid", textFrame = 0 },
     },
     playTime = PlayTime.new(),
@@ -105,7 +105,7 @@ function T.default_save_validation_uses_repository_overrides()
       facing = "south",
     },
     playerData = {
-      profile = { name = "GOLD", gender = 0, trainerId = 1, money = 3000 },
+      profile = { name = "GOLD", gender = 0, trainerId = 1, money = 3000, badges = 0 },
       options = { textSpeed = "mid", textFrame = 0 },
     },
     playTime = PlayTime.new(),
@@ -136,9 +136,10 @@ local function captureRuntime(overrides)
     saveId = "save-00000001",
     versionId = "heartgold",
     playerData = {
-      profile = { name = "GOLD", gender = 0, trainerId = 1, money = 3000 },
+      profile = { name = "GOLD", gender = 0, trainerId = 1, money = 3000, badges = 0 },
       options = { textSpeed = "mid", textFrame = 0 },
     },
+    fieldTravel = require("libs.hgss.src.field.FieldTravelState").new({ lastHealSpawn = "SPAWN_NEW_BARK" }),
     session = {
       tick = 42,
       player = {
@@ -450,7 +451,7 @@ function T.constructor_applies_defaults_and_keeps_injected_identities()
         facing = "south",
       },
       playerData = {
-        profile = { name = "GOLD", gender = 0, trainerId = 1, money = 3000 },
+        profile = { name = "GOLD", gender = 0, trainerId = 1, money = 3000, badges = 0 },
         options = { textSpeed = "mid", textFrame = 0 },
       },
       playTime = PlayTime.new(),

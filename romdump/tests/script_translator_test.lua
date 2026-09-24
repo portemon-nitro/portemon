@@ -1167,16 +1167,16 @@ T["opcode 144 lowers to the friend sprite value"] = function()
   Assert.equal(#lowered.unsupported, 0)
 end
 
--- Opcode 294 (CheckBadge) has no persisted gym-badge subsystem; every badge
--- check in the fresh-game opening window is source-correctly false, written
--- as an explicit constant result.
-T["opcode 294 writes the explicit no-badge result"] = function()
+-- Opcode 294 (CheckBadge) lowers to the semantic badge check against the
+-- durable progression owner; the source badge index resolves to its
+-- semantic key and the result variable receives 1 or 0 at runtime.
+T["opcode 294 lowers to the semantic badge check"] = function()
   local bytes = ScriptFixture.member({
     scripts = {
       {
         offset = 0x20,
         instructions = {
-          { op = 294, args = { { value = 0, width = 2 }, { value = 0x8008, width = 2 } } },
+          { op = 294, args = { { value = 1, width = 2 }, { value = 0x8008, width = 2 } } },
           { op = 2, args = {} },
         },
       },
@@ -1185,10 +1185,38 @@ T["opcode 294 writes the explicit no-badge result"] = function()
   local ir = assert(ScriptBinaryDecoder.parseMember(bytes, 5, "synthetic", { msgBank = 543, catalog = CATALOG }))
   local lowered = SemanticLowering.lowerScript(ir.scripts[0], ir, { stdCatalog = SourceCatalog.catalog() })
   Assert.deepEqual(lowered.items[1], {
-    op = "set_var",
-    variable = { value = "var", id = "VAR_SPECIAL_x8008" },
-    value = 0,
+    op = "check_badge",
+    badge = "hive",
+    result = { value = "var", id = "VAR_SPECIAL_x8008" },
     provenance = { offsets = { 32 }, opcodes = { 294 } },
+  })
+  Assert.equal(#lowered.unsupported, 0)
+end
+
+T["opcodes 295 and 296 lower to award and count"] = function()
+  local bytes = ScriptFixture.member({
+    scripts = {
+      {
+        offset = 0x20,
+        instructions = {
+          { op = 295, args = { { value = 4, width = 2 } } },
+          { op = 296, args = { { value = 0x8008, width = 2 } } },
+          { op = 2, args = {} },
+        },
+      },
+    },
+  })
+  local ir = assert(ScriptBinaryDecoder.parseMember(bytes, 5, "synthetic", { msgBank = 543, catalog = CATALOG }))
+  local lowered = SemanticLowering.lowerScript(ir.scripts[0], ir, { stdCatalog = SourceCatalog.catalog() })
+  Assert.deepEqual(lowered.items[1], {
+    op = "award_badge",
+    badge = "storm",
+    provenance = { offsets = { 32 }, opcodes = { 295 } },
+  })
+  Assert.deepEqual(lowered.items[2], {
+    op = "count_badges",
+    result = { value = "var", id = "VAR_SPECIAL_x8008" },
+    provenance = { offsets = { 36 }, opcodes = { 296 } },
   })
   Assert.equal(#lowered.unsupported, 0)
 end

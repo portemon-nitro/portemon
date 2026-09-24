@@ -72,9 +72,10 @@ local function harness()
         -- directly east of the item ball at (541,47).
         location = { mapSymbol = MAP, fieldX = 30, fieldZ = 15, facing = "west" },
         playerData = {
-          profile = { name = "GOLD", gender = 0, trainerId = 1, money = 3000 },
+          profile = { name = "GOLD", gender = 0, trainerId = 1, money = 3000, badges = 0 },
           options = { textSpeed = "fastest", textFrame = 0 },
         },
+        fieldTravel = { lastHealSpawn = "SPAWN_NEW_BARK" },
         playTime = PlayTime.new(),
         worldState = FieldEventState.new(),
         mons = require("tests.support.MonBucket").emptyForVersion(versionId),

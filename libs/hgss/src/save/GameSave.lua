@@ -4,10 +4,11 @@
 
 local Errors = require("libs.errors.src.Errors")
 local GameSaveErrors = require("libs.hgss.src.save.GameSaveErrors")
+local FieldTravelState = require("libs.hgss.src.field.FieldTravelState")
 
 local GameSave = {}
 
-GameSave.SCHEMA = "g4-game-save-v3"
+GameSave.SCHEMA = "g4-game-save-v4"
 GameSave.MAX_PLAY_TIME_SECONDS = 999 * 60 * 60 + 59 * 60 + 59
 
 local FACING = { north = true, south = true, west = true, east = true }
@@ -17,6 +18,7 @@ local TOP_LEVEL_FIELDS = {
   auxiliaryUi = true,
   bag = true,
   facing = true,
+  fieldTravel = true,
   fieldX = true,
   fieldZ = true,
   mapId = true,
@@ -209,6 +211,7 @@ local function validate(record, opts)
   local canonicalScripts = validateBucket(record, "scripts", opts, "scriptsValidate")
   local canonicalMons = validateBucket(record, "mons", opts, "monsValidate")
   local canonicalBag = validateBucket(record, "bag", opts, "bagValidate")
+  local canonicalFieldTravel = validateBucket(record, "fieldTravel", opts, "fieldTravelValidate")
   local canonicalAuxiliaryUi = validateBucket(record, "auxiliaryUi", opts, "auxiliaryUiValidate")
   local canonicalAudio = validateBucket(record, "audio", opts, "audioValidate")
   local canonicalAvatar = validateAvatar(record)
@@ -221,10 +224,43 @@ local function validate(record, opts)
   canonical.scripts = canonicalScripts
   canonical.mons = canonicalMons
   canonical.bag = canonicalBag
+  canonical.fieldTravel = canonicalFieldTravel
   canonical.auxiliaryUi = canonicalAuxiliaryUi
   canonical.audio = canonicalAudio
   canonical.avatar = canonicalAvatar
   return canonical
+end
+
+-- Pure v3 -> v4 migration: copies every known field without mutating the
+-- input, initializes the badge mask to zero (old profiles had no badge
+-- owner, so no achievement is invented), and falls back to the documented
+-- mother-spawn respawn with no cave entrance. The result still passes
+-- through canonical v4 validation afterwards; this step never repairs
+-- malformed current data.
+---@param record table<string, unknown> a v3 save record
+---@return table<string, unknown> the migrated v4 record
+function GameSave.migrateV3(record)
+  assert(type(record) == "table", "GameSave.migrateV3 requires a record")
+  assert(type(record.playerData) == "table", "GameSave.migrateV3 requires a playerData bucket")
+  assert(type(record.playerData.profile) == "table", "GameSave.migrateV3 requires a player profile")
+  local migrated = {}
+  for key, value in pairs(record) do
+    migrated[key] = value
+  end
+  local profile = {}
+  for key, value in pairs(record.playerData.profile) do
+    profile[key] = value
+  end
+  profile.badges = 0
+  local playerData = {}
+  for key, value in pairs(record.playerData) do
+    playerData[key] = value
+  end
+  playerData.profile = profile
+  migrated.playerData = playerData
+  migrated.schema = GameSave.SCHEMA
+  migrated.fieldTravel = { lastHealSpawn = FieldTravelState.DEFAULT_LAST_HEAL_SPAWN }
+  return migrated
 end
 
 ---@param saveId string

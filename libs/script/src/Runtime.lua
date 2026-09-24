@@ -854,6 +854,32 @@ local function handleCheckKyogreGroudon(node, run)
   return Runtime.OUTCOME_CONTINUE
 end
 
+-- Durable badge progression. Each handler evaluates its badge operand
+-- through the run semantics, calls exactly one named operation on the
+-- required injected progression service with the semantic badge key, and
+-- writes the numeric source result to the declared result variable: 1 or
+-- 0 for the check, the exact owned count for the counter. A missing
+-- service raises; it never reads as zero badges.
+local function progressionFor(run)
+  return requireService(run, "progression")
+end
+
+local function handleCheckBadge(node, run)
+  local has = progressionFor(run):hasBadge(evalField(node, run, "badge"))
+  semanticsFor(run).writeRef(node.result, has and 1 or 0, run)
+  return Runtime.OUTCOME_CONTINUE
+end
+
+local function handleAwardBadge(node, run)
+  progressionFor(run):awardBadge(evalField(node, run, "badge"))
+  return Runtime.OUTCOME_CONTINUE
+end
+
+local function handleCountBadges(node, run)
+  semanticsFor(run).writeRef(node.result, progressionFor(run):badgeCount(), run)
+  return Runtime.OUTCOME_CONTINUE
+end
+
 local function handleHealParty(_, run)
   monsFor(run):healParty()
   return Runtime.OUTCOME_CONTINUE
@@ -1679,6 +1705,9 @@ HANDLERS.party_lead = handlePartyLead
 HANDLERS.party_lead_alive = handlePartyLeadAlive
 HANDLERS.party_legal_check = handlePartyLegalCheck
 HANDLERS.check_kyogre_groudon = handleCheckKyogreGroudon
+HANDLERS.check_badge = handleCheckBadge
+HANDLERS.award_badge = handleAwardBadge
+HANDLERS.count_badges = handleCountBadges
 HANDLERS.heal_party = handleHealParty
 HANDLERS.bag_add_item = handleBagAddItem
 HANDLERS.bag_take_item = handleBagTakeItem

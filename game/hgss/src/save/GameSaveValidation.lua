@@ -13,6 +13,7 @@ local FieldObjectSave = require("libs.hgss.src.save.FieldObjectSave")
 local AudioCache = require("libs.assets.src.audio.AudioCache")
 local GameSave = require("libs.hgss.src.save.GameSave")
 local GameSaveErrors = require("libs.hgss.src.save.GameSaveErrors")
+local FieldTravelState = require("libs.hgss.src.field.FieldTravelState")
 local Errors = require("libs.errors.src.Errors")
 local FieldScriptCompatibility = require("game.hgss.src.field.FieldScriptCompatibility")
 local HgssMonService = require("libs.hgss.src.mons.HgssMonService")
@@ -83,6 +84,36 @@ local function contextForCache(cacheFs, overrideFs, versionId)
   }
 end
 
+-- Only a validated empty old script bucket rebinds to the current
+-- fingerprints: no environments, instances, or tasks may be live. Counters
+-- and every other bucket field survive untouched.
+---@param bucket unknown
+---@return boolean
+local function isQuiescentScripts(bucket)
+  return type(bucket) == "table"
+    and type(bucket.environments) == "table"
+    and #bucket.environments == 0
+    and type(bucket.instances) == "table"
+    and #bucket.instances == 0
+    and type(bucket.tasks) == "table"
+    and #bucket.tasks == 0
+end
+
+---@param bucket table<string, unknown>
+---@param options table<string, unknown>
+---@return table<string, unknown>
+local function rebindScripts(bucket, options)
+  local rebound = {}
+  for key, value in pairs(bucket) do
+    rebound[key] = value
+  end
+  rebound.registryFingerprint =
+    assert(options.expectedRegistryFingerprint, "script compatibility must supply the current registry fingerprint")
+  rebound.taskFingerprint =
+    assert(options.expectedTaskFingerprint, "script compatibility must supply the current task fingerprint")
+  return rebound
+end
+
 ---@param options table<string, unknown>?
 ---@return GameSaveValidation
 function GameSaveValidation.new(options)
@@ -121,6 +152,24 @@ function GameSaveValidation:validate(record, context)
       return GameSave.validate(record)
     end
     local selected = context or self:_context(record.versionId)
+    -- Explicit v3 -> v4 migration before canonical validation. Quiescent
+    -- old script buckets rebind to the current fingerprints (counters and
+    -- world/RNG data preserved); an incompatible active graph is rejected
+    -- with the save bytes untouched, never cleared or rewritten.
+    local effective = record
+    if type(record) == "table" and record.schema == "g4-game-save-v3" then
+      local options = selected.scriptCompatibility:validationOptions()
+      if not isQuiescentScripts(record.scripts) then
+        return nil,
+          Errors.new(
+            GameSaveErrors.GAME_SAVE_SCHEMA_UNSUPPORTED,
+            "v3 save carries an active script graph that cannot migrate to v4",
+            { schema = record.schema }
+          )
+      end
+      effective = GameSave.migrateV3(record)
+      effective.scripts = rebindScripts(record.scripts, options)
+    end
     local function playerDataValidate(value)
       return PlayerData.validate(value, selected)
     end
@@ -172,7 +221,23 @@ function GameSaveValidation:validate(record, context)
       assert(itemCatalog ~= nil, "bag validation requires an item catalog")
       return BagSave.validate(value, itemCatalog)
     end
-    return GameSave.validate(record, {
+    -- The single application owner of travel validation: the runtime
+    -- travel state canonicalizes the record into a copied value record.
+    -- Malformed current data fails closed here and is never repaired as
+    -- legacy.
+    local function fieldTravelValidate(value)
+      local travelOk, state = pcall(FieldTravelState.new, value)
+      if not travelOk then
+        return nil,
+          Errors.new(
+            GameSaveErrors.GAME_SAVE_BUCKET_INVALID,
+            "game save fieldTravel bucket is invalid",
+            { bucket = "fieldTravel" }
+          )
+      end
+      return state:capture()
+    end
+    return GameSave.validate(effective, {
       playerDataValidate = playerDataValidate,
       scriptsValidate = scriptsValidate,
       worldValidate = worldValidate,
@@ -180,6 +245,7 @@ function GameSaveValidation:validate(record, context)
       audioValidate = audioValidate,
       monsValidate = monsValidate,
       bagValidate = bagValidate,
+      fieldTravelValidate = fieldTravelValidate,
     })
   end)
   if ok then

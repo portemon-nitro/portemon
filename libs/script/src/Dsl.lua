@@ -799,6 +799,15 @@ end
 function M.checkKyogreGroudon(spec)
   return op("check_kyogre_groudon", spec)
 end
+function M.checkBadge(spec)
+  return op("check_badge", spec)
+end
+function M.awardBadge(spec)
+  return op("award_badge", spec)
+end
+function M.countBadges(spec)
+  return op("count_badges", spec)
+end
 function M.healParty(spec)
   return op("heal_party", spec)
 end

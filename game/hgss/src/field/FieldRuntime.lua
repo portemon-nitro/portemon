@@ -17,6 +17,7 @@ local FieldDialogueController = require("libs.hgss.src.ui.FieldDialogueControlle
 local FieldFontLoader = require("libs.hgss.src.ui.FieldFontLoader")
 local FieldDialogueTheme = require("libs.hgss.src.ui.FieldDialogueTheme")
 local FieldEventState = require("libs.hgss.src.field.FieldEventState")
+local FieldTravelState = require("libs.hgss.src.field.FieldTravelState")
 local PlayerData = require("libs.hgss.src.save.PlayerData")
 local FieldCameraCache = require("libs.assets.src.field.FieldCameraCache")
 local FieldActorCache = require("libs.assets.src.field.FieldActorCache")
@@ -738,6 +739,8 @@ function FieldRuntime:_load()
     self.mapLoader:protectMap(self.runtimeMap.mapId, true)
 
     self.playerData = activeGame.playerData
+    self.fieldTravel =
+      FieldTravelState.new(assert(activeGame.fieldTravel, "field travel state is required to enter the field"))
     local fieldX, fieldZ = self.entryLocation.fieldX, self.entryLocation.fieldZ
     local surfaceId, facing = self.entryLocation.surfaceId, self.entryLocation.facing
     self.player = FieldPlayer.new({

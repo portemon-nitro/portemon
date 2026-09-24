@@ -38,9 +38,10 @@ local function withGame(topology, fn)
         versionId = versionId,
         location = { mapSymbol = map, fieldX = 10, fieldZ = 10, facing = "south" },
         playerData = {
-          profile = { name = "GOLD", gender = 0, trainerId = 1, money = 3000 },
+          profile = { name = "GOLD", gender = 0, trainerId = 1, money = 3000, badges = 0 },
           options = { textSpeed = "fastest", textFrame = 1 },
         },
+        fieldTravel = { lastHealSpawn = "SPAWN_NEW_BARK" },
         playTime = PlayTime.new(),
         worldState = FieldEventState.new(),
         mons = require("tests.support.MonBucket").emptyForVersion(versionId),

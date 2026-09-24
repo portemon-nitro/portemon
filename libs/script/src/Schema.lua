@@ -1011,6 +1011,24 @@ Schema.OPERATIONS = {
       result = { type = "value", required = true },
     },
   },
+  -- Durable badge progression: generic validation owns operand shapes
+  -- only; badge meanings stay in the injected progression service.
+  check_badge = {
+    fields = {
+      badge = { type = "scalar_or_value", required = true },
+      result = { type = "value", required = true },
+    },
+  },
+  award_badge = {
+    fields = {
+      badge = { type = "scalar_or_value", required = true },
+    },
+  },
+  count_badges = {
+    fields = {
+      result = { type = "value", required = true },
+    },
+  },
   heal_party = { fields = {} },
   -- Party-screen selection. The launch node blocks on the party_select
   -- task with the source selection context; the completed slot parks on
@@ -1750,6 +1768,21 @@ Schema.CONSTRUCTORS = {
       {
         signature = "S.checkKyogreGroudon(spec)",
         canonical = "op=check_kyogre_groudon",
+        notes = "spec={result}.",
+      },
+      {
+        signature = "S.checkBadge(spec)",
+        canonical = "op=check_badge",
+        notes = "spec={badge,result}; badge is a semantic key, result writes 1 or 0.",
+      },
+      {
+        signature = "S.awardBadge(spec)",
+        canonical = "op=award_badge",
+        notes = "spec={badge}; idempotent, no result.",
+      },
+      {
+        signature = "S.countBadges(spec)",
+        canonical = "op=count_badges",
         notes = "spec={result}.",
       },
       { signature = "S.healParty(spec)", canonical = "op=heal_party", notes = "Restores the party to full health." },

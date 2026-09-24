@@ -1955,6 +1955,20 @@ function T.continue_card_shows_cased_profile_rows_in_retail_blue()
   end
 end
 
+function T.continue_card_shows_the_durable_badge_count()
+  local entry = catalogEntry("save-00000001", "Goldie", 4980)
+  entry.playerData.profile.badges = (2 ^ 0) + (2 ^ 1) + (2 ^ 4)
+  local drawn = scaledDrawnMenu({ entry }, 640, 480)
+  Assert.equal(drawn.view.saves[1].badgeCount, 3)
+  local seen = false
+  for _, call in ipairs(drawn.calls) do
+    if call.text == "3" then
+      seen = true
+    end
+  end
+  Assert.isTrue(seen, "the Continue card must draw the durable badge count")
+end
+
 function T.unavailable_saves_show_error_summary_without_profile_rows()
   local drawn = scaledDrawnMenu({
     {

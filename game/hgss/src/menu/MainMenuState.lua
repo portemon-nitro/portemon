@@ -15,6 +15,7 @@ local LayoutGeometry = require("libs.ui.src.LayoutGeometry")
 local MainMenuController = require("game.hgss.src.menu.MainMenuController")
 local MainMenuInterface = require("game.hgss.src.menu.MainMenuInterface")
 local MainMenuLayout = require("game.hgss.src.menu.MainMenuLayout")
+local PlayerProgression = require("libs.hgss.src.save.PlayerProgression")
 
 ---@class MainMenuSaveStore
 ---@field listMetadata fun(self: MainMenuSaveStore): table[]
@@ -50,6 +51,18 @@ end
 
 local function globalActions()
   return { { id = NEW_GAME_ID, kind = "new_game" } }
+end
+
+-- The real badge count for the save card, read from the durable
+-- progression owner. Profiles without a valid mask (older saves) show
+-- zero rather than failing the menu.
+---@param profile table<string, unknown>|nil
+---@return integer
+local function badgeCount(profile)
+  if type(profile) ~= "table" or not PlayerProgression.isMask(profile.badges) then
+    return 0
+  end
+  return PlayerProgression.new(profile):badgeCount()
 end
 
 local function itemId(entry, ordinal)
@@ -115,6 +128,7 @@ local function validSaveItem(entry, ready, ordinal)
     saveId = saveId,
     playerName = playerName,
     playTimeLabel = MainMenuState.formatPlayTime(entry.playTimeSeconds),
+    badgeCount = badgeCount(type(profile) == "table" and profile or nil),
     canContinue = true,
     canDelete = true,
   }

@@ -52,9 +52,10 @@ local function record(mons)
     terrainDependencyHash = "terrain-heartgold",
     facing = "south",
     playerData = {
-      profile = { name = "GOLD", gender = 0, trainerId = 1, money = 3000 },
+      profile = { name = "GOLD", gender = 0, trainerId = 1, money = 3000, badges = 0 },
       options = { textFrame = 0, textSpeed = "mid" },
     },
+    fieldTravel = { lastHealSpawn = "SPAWN_NEW_BARK" },
     world = { flags = {}, variables = {}, objects = {}, rng = { state = 1, calls = 0 } },
     scripts = {
       schema = "g4-script-save-v1",

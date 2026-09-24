@@ -158,8 +158,16 @@ end
 function T.cards_are_clipped_to_the_save_viewport_and_scissor_is_restored(scope)
   local content = { x = 16, y = 80, width = 128, height = 16 }
   local current = view(content)
-  current.saves =
-    { { id = "save-1", saveId = "save-1", playerName = "PLAYER", canContinue = true, playTimeLabel = "1:00" } }
+  current.saves = {
+    {
+      id = "save-1",
+      saveId = "save-1",
+      playerName = "PLAYER",
+      canContinue = true,
+      playTimeLabel = "1:00",
+      badgeCount = 0,
+    },
+  }
   current.focus = { region = "saves", saveId = "save-1", lane = "body" }
   current.focusedId = "save-1"
   current.layout.global.actions["new-game"] = { x = 16, y = 32, width = 128, height = 40 }
@@ -229,8 +237,16 @@ end
 function T.focus_lanes_have_distinct_visual_regions(scope)
   local content = { x = 16, y = 80, width = 128, height = 40 }
   local current = view(content)
-  current.saves =
-    { { id = "save-1", saveId = "save-1", playerName = "PLAYER", canContinue = true, playTimeLabel = "1:00" } }
+  current.saves = {
+    {
+      id = "save-1",
+      saveId = "save-1",
+      playerName = "PLAYER",
+      canContinue = true,
+      playTimeLabel = "1:00",
+      badgeCount = 0,
+    },
+  }
   current.layout.saves.cards["save-1"] = {
     frame = { x = 16, y = 80, width = 128, height = 64 },
     body = { x = 16, y = 80, width = 72, height = 64 },
@@ -263,6 +279,7 @@ function T.save_selection_uses_large_integer_cards_with_fixed_new_game_and_cues(
       playerName = "PLAYER",
       playTimeLabel = "1:00",
       canContinue = true,
+      badgeCount = 0,
       canDelete = true,
     },
   }
@@ -288,6 +305,7 @@ function T.save_selection_uses_large_integer_cards_with_fixed_new_game_and_cues(
       playerName = "PLAYER",
       playTimeLabel = "1:00",
       canContinue = true,
+      badgeCount = 0,
       canDelete = true,
     }
   end
@@ -442,6 +460,7 @@ function T.menu_player_copy_tracks_the_menu_scale(scope)
       playerName = "PLAYER",
       playTimeLabel = "1:00",
       canContinue = true,
+      badgeCount = 0,
       canDelete = true,
     },
   }
@@ -533,6 +552,7 @@ function T.menu_text_uses_palette_path_at_identity_tint()
       playerName = "PLAYER",
       playTimeLabel = "1:00",
       canContinue = true,
+      badgeCount = 0,
       canDelete = true,
     },
     {
@@ -596,6 +616,7 @@ function T.neutral_cards_keep_a_dark_exterior_with_a_full_cyan_inner_border(scop
       playerName = "PLAYER",
       playTimeLabel = "1:00",
       canContinue = true,
+      badgeCount = 0,
       canDelete = false,
     },
   }
@@ -663,6 +684,7 @@ function T.inset_actions_use_the_face_color_for_the_inner_border(scope)
       playerName = "PLAYER",
       playTimeLabel = "1:00",
       canContinue = true,
+      badgeCount = 0,
       canDelete = true,
     },
   }
@@ -795,6 +817,7 @@ function T.launcher_copy_scales_with_the_menu_and_preserves_player_casing(scope)
       playTimeLabel = "1:00",
       canContinue = true,
       canDelete = true,
+      badgeCount = 0,
     },
     {
       id = "save-2",
@@ -803,6 +826,7 @@ function T.launcher_copy_scales_with_the_menu_and_preserves_player_casing(scope)
       playTimeLabel = "0:00",
       canContinue = true,
       canDelete = false,
+      badgeCount = 0,
     },
   }
   local draws, layout = renderAt(320, 240, 2, saves)
@@ -877,6 +901,7 @@ function T.headings_and_chrome_magnify_together_across_integer_scales(scope)
       playerName = "PLAYER",
       playTimeLabel = "1:00",
       canContinue = true,
+      badgeCount = 0,
       canDelete = true,
     },
   }

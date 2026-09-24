@@ -98,6 +98,32 @@ local function hasAudioPolicy(field)
   return type(field.music) == "table" and Validate.isArray(field.soundplates)
 end
 
+-- The field-use policy the current field-map schema always carries: one
+-- boolean per permission/exception key. Runtime eligibility reads this
+-- record; a record without it is malformed generated data, never an
+-- empty feature.
+---@param fieldUse unknown
+---@return boolean
+function FieldMapDataCache.hasFieldUsePolicy(fieldUse)
+  if type(fieldUse) ~= "table" then
+    return false
+  end
+  for _, key in ipairs({
+    "flyAllowed",
+    "teleportAllowed",
+    "escapeAllowed",
+    "flashUsable",
+    "alphChamber",
+    "icePathB2F",
+    "cave",
+    "unionOrColosseum",
+  }) do
+    if type(fieldUse[key]) ~= "boolean" then
+      return false
+    end
+  end
+  return true
+end
 -- The authoritative event-collection rule of the current field-map record:
 -- true only when every required collection is present as an array. Runtime
 -- consumers that read field records validate
@@ -176,6 +202,7 @@ function FieldMapDataCache.isReady(cacheFs, mapId, expectedMarker)
     not FieldMapDataCache.hasRequiredEvents(events)
     or not hasAudioPolicy(field)
     or not hasInitScripts(field)
+    or not FieldMapDataCache.hasFieldUsePolicy(field.fieldUse)
     or not FieldMapDataCache.isTransitionEnvironment(field.transitionEnvironment)
   then
     return false

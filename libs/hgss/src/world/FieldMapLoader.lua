@@ -198,8 +198,9 @@ local function checkWorldIdentity(record)
 end
 
 -- Shared generated field-record acquisition and validation for both
--- semantic and full paths: identity, event collections, init scripts, and
--- transition environment. Visual realization never revalidates these.
+-- semantic and full paths: identity, event collections, field-use policy,
+-- init scripts, and transition environment. Visual realization never
+-- revalidates these.
 ---@param cacheFs CacheFs
 ---@param record table<string, unknown>
 ---@return table<string, unknown>
@@ -217,6 +218,13 @@ local function loadSemanticFieldData(cacheFs, record)
     Errors.raise(
       FieldErrors.FIELD_MAP_DATA_CACHE_INVALID,
       "field cache event collections are missing or malformed; rebuild the derived cache",
+      { mapId = record.id }
+    )
+  end
+  if not FieldMapDataCache.hasFieldUsePolicy(fieldData.fieldUse) then
+    Errors.raise(
+      FieldErrors.FIELD_MAP_DATA_CACHE_INVALID,
+      "field cache field-use policy is missing or malformed; rebuild the derived cache",
       { mapId = record.id }
     )
   end
@@ -874,6 +882,7 @@ function FieldMapLoader:_destinationFieldData(mapId)
     or fieldData.schema ~= FieldMapDataCache.FIELD_SCHEMA
     or fieldData.mapId ~= mapId
     or not FieldMapDataCache.hasRequiredEvents(fieldData.events)
+    or not FieldMapDataCache.hasFieldUsePolicy(fieldData.fieldUse)
   then
     return nil, "destination field record is invalid; rebuild the derived cache"
   end
@@ -945,6 +954,7 @@ function FieldMapLoader:transitionEnvironment(idOrSymbol)
     fieldData.schema ~= FieldMapDataCache.FIELD_SCHEMA
     or fieldData.mapId ~= record.id
     or not FieldMapDataCache.hasRequiredEvents(fieldData.events)
+    or not FieldMapDataCache.hasFieldUsePolicy(fieldData.fieldUse)
     or not FieldMapDataCache.isTransitionEnvironment(fieldData.transitionEnvironment)
   then
     Errors.raise(

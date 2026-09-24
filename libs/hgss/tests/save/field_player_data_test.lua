@@ -43,6 +43,7 @@ local function record(overrides)
       gender = 0,
       trainerId = 0,
       money = 3000,
+      badges = 0,
     },
     options = {
       textFrame = 0,
@@ -50,7 +51,13 @@ local function record(overrides)
     },
   }
   for key, item in pairs(overrides or {}) do
-    value[key] = item
+    if type(item) == "table" and type(value[key]) == "table" then
+      for field, fieldValue in pairs(item) do
+        value[key][field] = fieldValue
+      end
+    else
+      value[key] = item
+    end
   end
   return value
 end
@@ -82,6 +89,7 @@ function T.unknown_keys_are_discarded_by_canonicalization()
       gender = 0,
       trainerId = 7,
       money = 3000,
+      badges = 3,
       transientThing = 123,
     },
     options = {
@@ -99,7 +107,11 @@ function T.unknown_keys_are_discarded_by_canonicalization()
   Assert.equal(validated.options.textFrame, 1)
   Assert.equal(validated.options.textSpeed, "fast")
   Assert.keySet(validated, "options,profile", "canonicalization must drop the extra top-level key")
-  Assert.keySet(validated.profile, "gender,money,name,trainerId", "canonicalization must drop profile.transientThing")
+  Assert.keySet(
+    validated.profile,
+    "badges,gender,money,name,trainerId",
+    "canonicalization must drop profile.transientThing"
+  )
   Assert.keySet(validated.options, "textFrame,textSpeed", "canonicalization must drop options.futureThing")
 end
 
@@ -242,6 +254,23 @@ function T.validation_requires_the_font_and_frame_context()
   end)
   Assert.throws(function()
     PlayerData.validate(record(), { frameIndexes = FRAME_INDEXES })
+  end)
+end
+
+function T.badge_masks_round_trip_and_reject_non_masks()
+  local validated = assert(PlayerData.validate(record({ profile = { badges = 0xFFFF } }), context()))
+  Assert.equal(validated.profile.badges, 0xFFFF)
+  for _, badges in ipairs({ -1, 0x10000, 1.5, "3" }) do
+    throwsCode("PLAYER_DATA_INVALID", function()
+      local _, err = PlayerData.validate(record({ profile = { badges = badges } }), context())
+      error(err)
+    end)
+  end
+  throwsCode("PLAYER_DATA_INVALID", function()
+    local without = record()
+    without.profile.badges = nil
+    local _, err = PlayerData.validate(without, context())
+    error(err)
   end)
 end
 

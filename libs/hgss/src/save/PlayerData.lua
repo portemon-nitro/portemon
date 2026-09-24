@@ -8,6 +8,7 @@
 
 local Errors = require("libs.errors.src.Errors")
 local FieldErrors = require("libs.hgss.src.field.FieldErrors")
+local PlayerProgression = require("libs.hgss.src.save.PlayerProgression")
 local Utf8Glyphs = require("libs.assets.src.Utf8Glyphs")
 
 local PlayerData = {}
@@ -87,6 +88,13 @@ local function validate(record, context)
       money = money,
     })
   end
+  -- Badge state stays in the canonical profile: validation delegates the
+  -- 16-bit mask discipline to the durable progression owner.
+  if not PlayerProgression.isMask(profile.badges) then
+    Errors.raise(FieldErrors.PLAYER_DATA_INVALID, "player badges must be a 16-bit mask", {
+      badges = profile.badges,
+    })
+  end
   local options = record.options
   if type(options) ~= "table" then
     Errors.raise(FieldErrors.PLAYER_DATA_INVALID, "player gameplay options must be a table", {})
@@ -111,7 +119,13 @@ local function validate(record, context)
     )
   end
   return {
-    profile = { name = profile.name, gender = profile.gender, trainerId = trainerId, money = money },
+    profile = {
+      name = profile.name,
+      gender = profile.gender,
+      trainerId = trainerId,
+      money = money,
+      badges = profile.badges,
+    },
     options = { textFrame = textFrame, textSpeed = options.textSpeed },
   }
 end

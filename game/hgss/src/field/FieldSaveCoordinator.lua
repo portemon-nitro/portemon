@@ -67,6 +67,7 @@ function FieldSaveCoordinator:capture(allowMenu)
     weatherId = assert(weatherState.effectiveWeatherId, "active runtime weather is required"),
     playTimeSeconds = runtime.playTime:seconds(),
     playerData = runtime.playerData,
+    fieldTravel = assert(runtime.fieldTravel, "field runtime has no travel state"):capture(),
     world = world,
     scripts = ScriptSave.capture(runtime.scripts.scheduler, session.tick, {
       registryFingerprint = runtime.scripts:registryFingerprint(),

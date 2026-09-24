@@ -6,6 +6,7 @@ local PlayerAvatar = require("romdump.src.reference.hgss.player_avatar")
 local MenuProtocol = require("libs.assets.src.MenuProtocol")
 local Errors = require("libs.errors.src.Errors")
 local HgssObjectMovement = require("romdump.src.digest.field.HgssObjectMovement")
+local FieldMoveSources = require("romdump.src.config.FieldMoveSources")
 
 -- Field-only operand normalization follows the pinned field direction table,
 -- message-symbol format, and scrcmd.h actor specials.
@@ -440,8 +441,31 @@ local function setSpecialSpawn(ins)
   }
 end
 
-local function setBadgeInactive(ins)
-  return { op = "set_var", variable = Operands.varRef(ins.operands[2]), value = 0 }
+local function badgeKey(ins, position)
+  local index = Operands.operandValue(ins.operands[position])
+  local key = FieldMoveSources.badgeKeyForIndex(index)
+  assert(key ~= nil, "badge command carries an unknown source badge index")
+  return key
+end
+
+local function checkBadge(ins)
+  -- ScrCmd_CheckBadge badge, result: the source comparison becomes the
+  -- semantic badge check writing 1 or 0 in the same tick.
+  return {
+    op = "check_badge",
+    badge = badgeKey(ins, 1),
+    result = Operands.varRef(ins.operands[2]),
+  }
+end
+
+local function awardBadge(ins)
+  -- ScrCmd_GiveBadge badge: idempotent durable award, no result.
+  return { op = "award_badge", badge = badgeKey(ins, 1) }
+end
+
+local function countBadges(ins)
+  -- ScrCmd_CountBadges result: the exact owned count.
+  return { op = "count_badges", result = Operands.varRef(ins.operands[1]) }
 end
 
 local function setFriendSprite(ins)
@@ -1396,7 +1420,9 @@ return {
   [609] = yieldFollowerCheck,
   [698] = followerIsEventTrigger,
   [729] = followerIsActive,
-  [294] = setBadgeInactive,
+  [294] = checkBadge,
+  [295] = awardBadge,
+  [296] = countBadges,
   [746] = hideAuxiliaryUi,
   [747] = showAuxiliaryUi,
   [748] = contextChoice,

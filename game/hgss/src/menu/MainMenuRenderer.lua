@@ -148,7 +148,7 @@ end
 -- generated-font measure. The vertical area between the heading and the
 -- card's bottom padding splits into three equal bands with each row
 -- vertically centered by the canonical font line advance. The badge count
--- is presentation-only.
+-- is the durable progression count supplied in the saved-game view.
 ---@param graphics love.graphics
 ---@param text table<string, function>
 ---@param body { x: number, y: number, width: number, height: number }
@@ -156,7 +156,8 @@ end
 ---@param lineHeight number
 ---@param playerName string
 ---@param playTimeLabel string
-local function drawProfileRows(graphics, text, body, regionTop, lineHeight, playerName, playTimeLabel)
+---@param badgeCount integer
+local function drawProfileRows(graphics, text, body, regionTop, lineHeight, playerName, playTimeLabel, badgeCount)
   local blockWidth = body.width * PROFILE_BLOCK_WIDTH_FRACTION
   local blockLeft = body.x + (body.width - blockWidth) / 2
   local blockRight = blockLeft + blockWidth
@@ -165,7 +166,7 @@ local function drawProfileRows(graphics, text, body, regionTop, lineHeight, play
   local rows = {
     { label = "PLAYER", value = playerName },
     { label = "TIME", value = playTimeLabel },
-    { label = "BADGES", value = "0" },
+    { label = "BADGES", value = tostring(badgeCount) },
   }
   for index, row in ipairs(rows) do
     local y = regionTop + (index - 1) * bandHeight + (bandHeight - lineHeight) / 2
@@ -280,8 +281,9 @@ function MainMenuRenderer:draw(view, plan)
             )
             if item.canContinue then
               -- Stored values keep their exact form; only headings and labels
-              -- are uppercased presentation copy. The badge count is the only
-              -- count current gameplay supports, rendered without a save field.
+              -- are uppercased presentation copy. The badge count is the
+              -- durable progression count from the saved-game view.
+              assert(type(item.badgeCount) == "number", "the saved-game view supplies the badge count")
               drawProfileRows(
                 graphics,
                 text,
@@ -289,7 +291,8 @@ function MainMenuRenderer:draw(view, plan)
                 headingY + lineHeight,
                 lineHeight,
                 item.playerName or "Save unavailable",
-                item.playTimeLabel or "0:00"
+                item.playTimeLabel or "0:00",
+                item.badgeCount
               )
             else
               drawPaletteText(

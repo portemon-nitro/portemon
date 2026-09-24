@@ -22,6 +22,7 @@ local function record(overrides)
     terrainDependencyHash = "terrain-heartgold",
     facing = "south",
     playerData = { profile = {}, options = {} },
+    fieldTravel = { lastHealSpawn = "SPAWN_NEW_BARK" },
     world = { flags = {}, variables = {}, objects = {}, rng = {} },
     scripts = {},
     auxiliaryUi = {},
@@ -139,6 +140,9 @@ function T.uses_injected_authoritative_bucket_validators()
     bagValidate = function(value)
       calls.bag = value
     end,
+    fieldTravelValidate = function(value)
+      calls.fieldTravel = value
+    end,
   }
   local valid = assert(GameSave.validate(record(), opts))
   Assert.deepEqual(valid.playerData, { canonical = true })
@@ -149,6 +153,7 @@ function T.uses_injected_authoritative_bucket_validators()
   Assert.notNil(calls.audio)
   Assert.notNil(calls.mons)
   Assert.notNil(calls.bag)
+  Assert.notNil(calls.fieldTravel)
 end
 
 function T.rejects_non_table_and_missing_required_buckets()
@@ -156,7 +161,7 @@ function T.rejects_non_table_and_missing_required_buckets()
     ---@diagnostic disable-next-line: param-type-mismatch -- test deliberately exercises an invalid call
     return GameSave.validate(nil)
   end)
-  for _, key in ipairs({ "playerData", "world", "auxiliaryUi", "audio", "mons" }) do
+  for _, key in ipairs({ "playerData", "world", "auxiliaryUi", "audio", "mons", "fieldTravel" }) do
     returnsCode("GAME_SAVE_BUCKET_INVALID", function()
       local value = record()
       value[key] = nil

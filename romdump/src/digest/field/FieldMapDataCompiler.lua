@@ -16,6 +16,7 @@ local Hashing = require("romdump.src.digest.Hashing")
 local fieldAudio = require("romdump.src.reference.hgss.field_audio")
 local ScriptHeader = require("romdump.src.digest.script.ScriptHeader")
 local HgssObjectMovement = require("romdump.src.digest.field.HgssObjectMovement")
+local FieldMoveSources = require("romdump.src.config.FieldMoveSources")
 
 local FieldMapDataCompiler = {}
 
@@ -57,6 +58,13 @@ local function semanticObjectEvent(event, map, index)
     end
   end
   object.movementType = movementType
+  -- The facing-actor obstacle kind, decorated only where a verified source
+  -- identity proves it; unproven actors carry no kind and fail obstacle
+  -- checks loudly instead of guessing.
+  local obstacleKind = FieldMoveSources.obstacleKindForSprite(event.spriteId)
+  if obstacleKind ~= nil then
+    object.obstacleKind = obstacleKind
+  end
   return object
 end
 
@@ -69,6 +77,43 @@ local function semanticObjectEvents(objectEvents, map)
     objects[index] = semanticObjectEvent(event, map, index)
   end
   return objects
+end
+
+-- Whether the source weather id marks a dark Flash-usable cave.
+---@param weatherId integer
+---@return boolean
+local function isFlashWeather(weatherId)
+  for _, id in ipairs(FieldMoveSources.FLASH_WEATHER_IDS) do
+    if weatherId == id then
+      return true
+    end
+  end
+  return false
+end
+
+-- The semantic field-use policy for one map, projected from frozen source
+-- header facts: Fly/Escape Rope permissions ride the header flags,
+-- Teleport follows the outdoor transition environment, Flash follows the
+-- dark-cave weather ids plus the explicit Alph chamber exception, Dig and
+-- Escape Rope need the cave environment with escape permission, and the
+-- Union/Colosseum exclusion plus the Ice Path B2F exception ride explicit
+-- symbol sets. Runtime checks read this record; they never branch on map
+-- ids or infer permission from map type.
+---@param map table<string, unknown>
+---@param environment string
+---@return table<string, unknown>
+local function fieldUsePolicy(map, environment)
+  local alphChamber = map.symbol == FieldMoveSources.ALPH_FLASH_SYMBOL
+  return {
+    flyAllowed = map.flyAllowed == true,
+    teleportAllowed = environment == "outdoors",
+    escapeAllowed = map.escapeRopeAllowed == true,
+    flashUsable = isFlashWeather(map.weather) or alphChamber,
+    alphChamber = alphChamber,
+    icePathB2F = map.symbol == FieldMoveSources.ICE_PATH_B2F_SYMBOL,
+    cave = environment == "cave",
+    unionOrColosseum = FieldMoveSources.UNION_COLOSSEUM_SYMBOLS[map.symbol] == true,
+  }
 end
 
 -- These catalog entries are source-header placeholders without field-data
@@ -360,12 +405,17 @@ local function compileMap(romFs, map, source, headerSource, sha1hex, hashLua)
     landDataMemberId = audioSource.landDataMemberId,
     landDataMemberSha1 = audioSource.landDataMemberSha1,
   }
+  local environment = transitionEnvironment(map)
   local field = {
     schema = FieldMapDataCache.FIELD_SCHEMA,
     mapId = map.id,
     mapSymbol = map.symbol,
     cameraType = map.cameraType,
-    transitionEnvironment = transitionEnvironment(map),
+    transitionEnvironment = environment,
+    -- The semantic field-use policy (badge-gated move permissions,
+    -- traversal allowances, and source exceptions) projected from the
+    -- frozen header facts above; see fieldUsePolicy.
+    fieldUse = fieldUsePolicy(map, environment),
     -- Map-header message/script associations (src/data/map_headers.h via the
     -- frozen catalog). Runtime code must never branch on map IDs to choose a
     -- bank; it reads these fields.

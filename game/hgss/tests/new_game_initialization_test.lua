@@ -61,7 +61,7 @@ local function finalizedCandidate()
   local eventState = FieldEventState.new()
   eventState:setFlag(flags.FLAG_UNK_960)
   local playerData = assert(PlayerData.validate({
-    profile = { name = "GOLD", gender = 0, trainerId = 1234, money = 3000 },
+    profile = { name = "GOLD", gender = 0, trainerId = 1234, money = 3000, badges = 0 },
     options = PlayerData.defaultOptions(),
   }, { charmap = { G = 1, O = 2, L = 3, D = 4 }, frameIndexes = { [0] = true } }))
   return {
@@ -263,6 +263,7 @@ function T.lottery_persists_through_world_capture_and_game_save()
     terrainDependencyHash = "hash",
     playTimeSeconds = 0,
     playerData = candidate.playerData,
+    fieldTravel = { lastHealSpawn = "SPAWN_NEW_BARK" },
     world = captured,
     scripts = { tasks = {} },
     auxiliaryUi = {},
