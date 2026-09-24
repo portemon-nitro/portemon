@@ -295,6 +295,13 @@ function ItemCatalogCompiler.compileCatalog(romFs, opts)
         )
       end
       local context = { archive = "item_data", memberId = memberId }
+      local isHm = nativeId >= ItemSources.FIRST_HM and nativeId <= ItemSources.LAST_HM
+      local heldFormEffect = "none"
+      if nativeId == ItemSources.GRISEOUS_ORB_ID then
+        heldFormEffect = "griseous_orb"
+      elseif nativeId >= ItemSources.FIRST_PLATE and nativeId <= ItemSources.LAST_PLATE then
+        heldFormEffect = "arceus_plate"
+      end
       local record = {
         nativeId = nativeId,
         name = must(requireText(names, nativeId, "item name", context)),
@@ -307,6 +314,9 @@ function ItemCatalogCompiler.compileCatalog(romFs, opts)
         isBall = ItemSources.ballItemIds[nativeId] == true,
         friendshipBoost = decoded.holdEffect == ItemSources.HOLD_EFFECT_FRIENDSHIP_UP,
         icon = key,
+        isHm = isHm,
+        canHold = pocketKey ~= "key_items" and pocketKey ~= "mail" and not isHm,
+        heldFormEffect = heldFormEffect,
       }
       if type(record.description) ~= "string" then
         error(Errors.new("ITEM_TEXT_MISSING", "item " .. nativeId .. " has no description", { nativeId = nativeId }), 0)

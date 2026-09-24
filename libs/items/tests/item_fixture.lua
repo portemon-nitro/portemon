@@ -39,7 +39,7 @@ local KNOWN = {
   POTION = { nativeId = 17, pocket = "medicine", name = "Potion" },
   SOOTHE_BELL = { nativeId = 218, pocket = "items", friendshipBoost = true },
   TM01 = { nativeId = 328, pocket = "tmhm", tmhmMoveNativeId = 264 },
-  HM01 = { nativeId = 420, pocket = "tmhm", tmhmMoveNativeId = 15 },
+  HM01 = { nativeId = 420, pocket = "tmhm", tmhmMoveNativeId = 15, isHm = true, canHold = false },
   CHERI_BERRY = {
     nativeId = 149,
     pocket = "berries",
@@ -72,16 +72,35 @@ local function placeholder(nativeId, key)
     isBall = false,
     friendshipBoost = false,
     icon = key,
+    isHm = false,
+    canHold = true,
+    heldFormEffect = "none",
   }
   if nativeId >= 328 and nativeId <= 427 then
     record.pocket = "tmhm"
     record.tmhmMoveNativeId = 1
+    if nativeId >= 420 then
+      record.isHm = true
+      record.canHold = false
+    end
   elseif nativeId >= 149 and nativeId <= 212 then
     record.pocket = "berries"
     record.berryNameSingular = key .. " singular"
     record.berryNamePlural = key .. " plural"
   else
     record.pocket = MANUAL_POCKETS[(nativeId % #MANUAL_POCKETS) + 1]
+    if record.pocket == "key_items" or record.pocket == "mail" then
+      record.canHold = false
+    end
+  end
+  if nativeId == 112 then
+    record.pocket = "items"
+    record.canHold = true
+    record.heldFormEffect = "griseous_orb"
+  elseif nativeId >= 298 and nativeId <= 313 then
+    record.pocket = "items"
+    record.canHold = true
+    record.heldFormEffect = "arceus_plate"
   end
   return record
 end
@@ -108,7 +127,13 @@ function ItemFixture.buildAssetRoot()
         isBall = known.isBall or false,
         friendshipBoost = known.friendshipBoost or false,
         icon = key,
+        isHm = known.isHm or false,
+        canHold = known.canHold,
+        heldFormEffect = known.heldFormEffect or "none",
       }
+      if record.canHold == nil then
+        record.canHold = known.pocket ~= "key_items" and known.pocket ~= "mail"
+      end
       if known.pocket == "tmhm" then
         record.tmhmMoveNativeId = known.tmhmMoveNativeId
       end
@@ -132,7 +157,7 @@ function ItemFixture.buildAssetRoot()
     key_items = { nativeId = 7, capacity = 50, maxQuantity = 999, ordering = "manual" },
   }
   return {
-    schema = "g4-item-catalog-v1",
+    schema = "g4-item-catalog-v2",
     version = { id = "heartgold", language = "en" },
     items = items,
     pockets = pockets,

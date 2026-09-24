@@ -790,11 +790,21 @@ ItemSources.pocketKeys = {
 -- Native identity ranges with dedicated source semantics
 -- (include/constants/items.h): machines, mail, and berries.
 ItemSources.FIRST_TM = 328
+ItemSources.LAST_TM = 419
+ItemSources.FIRST_HM = 420
 ItemSources.LAST_HM = 427
 ItemSources.FIRST_MAIL = 137
 ItemSources.LAST_MAIL = 148
 ItemSources.FIRST_BERRY = 149
 ItemSources.LAST_BERRY = 212
+
+-- Held-item action identities (include/constants/items.h): the griseous
+-- orb selects the Giratina origin form and the sixteen plates select
+-- Arceus type forms through BoxMon_UpdateGiratinaForm and
+-- GetArceusTypeByHeldItemEffect (src/pokemon.c).
+ItemSources.GRISEOUS_ORB_ID = 112
+ItemSources.FIRST_PLATE = 298
+ItemSources.LAST_PLATE = 313
 
 -- item_data bitfield word at ITEM_DATA_BITFIELD_OFFSET (the u16 packing
 -- naturalGiftType:5, prevent_toss:1, selectable:1, fieldPocket:4,

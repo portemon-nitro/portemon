@@ -13,7 +13,7 @@ local Validate = require("libs.assets.src.Validate")
 ---@class ItemAssetSchema
 local ItemAssetSchema = {}
 
-ItemAssetSchema.CATALOG_SCHEMA = "g4-item-catalog-v1"
+ItemAssetSchema.CATALOG_SCHEMA = "g4-item-catalog-v2"
 ItemAssetSchema.ICON_MANIFEST_SCHEMA = "g4-item-icons-v1"
 
 -- The eight source pockets in native order: native id, occupied-slot
@@ -51,6 +51,9 @@ local ITEM_FIELDS = {
   berryNameSingular = true,
   berryNamePlural = true,
   icon = true,
+  isHm = true,
+  canHold = true,
+  heldFormEffect = true,
 }
 
 local function fail(code, message, context)
@@ -107,6 +110,22 @@ local function assertItem(key, record, context)
   checkBoolean(record.isBall, context, "ITEM_CATALOG_INVALID", "item " .. key .. " isBall")
   checkBoolean(record.friendshipBoost, context, "ITEM_CATALOG_INVALID", "item " .. key .. " friendshipBoost")
   checkNonEmptyString(record.icon, context, "ITEM_CATALOG_INVALID", "item " .. key .. " icon")
+  -- Held-item action metadata: HMs never leave the bag, key items and mail
+  -- never attach to a mon, and only plates and the griseous orb carry a
+  -- form effect.
+  checkBoolean(record.isHm, context, "ITEM_CATALOG_INVALID", "item " .. key .. " isHm")
+  checkBoolean(record.canHold, context, "ITEM_CATALOG_INVALID", "item " .. key .. " canHold")
+  if
+    record.heldFormEffect ~= "none"
+    and record.heldFormEffect ~= "arceus_plate"
+    and record.heldFormEffect ~= "griseous_orb"
+  then
+    fail(
+      "ITEM_CATALOG_INVALID",
+      "item " .. key .. " heldFormEffect must be none, arceus_plate or griseous_orb",
+      context
+    )
+  end
   -- Optional machine/berry identities are pocket-gated: TM/HM items carry
   -- the taught move, berry items carry both berry-name forms, and every
   -- other item carries neither.

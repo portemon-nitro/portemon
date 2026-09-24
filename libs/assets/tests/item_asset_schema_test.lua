@@ -173,4 +173,24 @@ function T.catalog_icons_must_resolve_to_manifest_entries()
   end)
 end
 
+function T.catalogs_require_held_item_action_metadata()
+  local ItemAssetSchema = schema()
+  Assert.equal(ItemAssetSchema.CATALOG_SCHEMA, "g4-item-catalog-v2")
+  Assert.isTrue(ItemAssetSchema.isValidCatalog(validRoot()))
+  for _, key in ipairs({ "isHm", "canHold", "heldFormEffect" }) do
+    local root = validRoot()
+    root.items["ITEM_55"][key] = nil
+    Assert.isFalse(ItemAssetSchema.isValidCatalog(root), "missing held-item metadata must be rejected: " .. key)
+  end
+  local badEffect = validRoot()
+  badEffect.items["ITEM_55"].heldFormEffect = "miracle"
+  Assert.isFalse(ItemAssetSchema.isValidCatalog(badEffect))
+  local badHold = validRoot()
+  badHold.items["ITEM_55"].canHold = "yes"
+  Assert.isFalse(ItemAssetSchema.isValidCatalog(badHold))
+  local oldSchema = validRoot()
+  oldSchema.schema = "g4-item-catalog-v1"
+  Assert.isFalse(ItemAssetSchema.isValidCatalog(oldSchema), "the v1 schema no longer validates")
+end
+
 return { tests = T }

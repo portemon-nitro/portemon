@@ -244,6 +244,47 @@ function T.recompilation_is_deterministic(romFs, versionId)
   Assert.deepEqual(secondIcons.manifest, firstIcons.manifest, "icon manifests must be deterministic")
 end
 
+function T.held_item_action_metadata_matches_source(romFs, versionId)
+  local catalog = compileCatalog(romFs, versionId)
+  local function record(key)
+    return assert(catalog.items[key], key .. " must be a compiled item identity")
+  end
+  Assert.isTrue(record("TM01").canHold, "TMs may be held")
+  Assert.isFalse(record("TM01").isHm, "TMs are not hidden moves")
+  Assert.isTrue(record("HM01").isHm, "HM01 opens the hidden-move run")
+  Assert.isFalse(record("HM01").canHold, "HMs may not be held")
+  Assert.isFalse(record("HM08").canHold, "HM08 may not be held")
+  Assert.isFalse(record("BICYCLE").canHold, "key items may not be held")
+  Assert.isFalse(record("GRASS_MAIL").canHold, "mail may not be held")
+  Assert.equal(record("GRISEOUS_ORB").heldFormEffect, "griseous_orb")
+  for _, key in ipairs({
+    "FLAME_PLATE",
+    "SPLASH_PLATE",
+    "ZAP_PLATE",
+    "MEADOW_PLATE",
+    "ICICLE_PLATE",
+    "FIST_PLATE",
+    "TOXIC_PLATE",
+    "EARTH_PLATE",
+    "SKY_PLATE",
+    "MIND_PLATE",
+    "INSECT_PLATE",
+    "STONE_PLATE",
+    "SPOOKY_PLATE",
+    "DRACO_PLATE",
+    "DREAD_PLATE",
+    "IRON_PLATE",
+  }) do
+    Assert.equal(record(key).heldFormEffect, "arceus_plate", key .. " must carry the plate effect")
+    Assert.isTrue(record(key).canHold, key .. " may be held")
+  end
+  for _, key in ipairs({ "NONE", "POTION", "TM01", "HM01", "BICYCLE", "GRASS_MAIL", "CHERI_BERRY" }) do
+    if key ~= "GRISEOUS_ORB" then
+      Assert.equal(record(key).heldFormEffect, "none", key .. " must carry no form effect")
+    end
+  end
+end
+
 function T.mon_catalog_delegates_item_facts_to_the_shared_catalog(romFs, versionId)
   local MonCatalog = require("libs.mons.src.MonCatalog")
   local ItemCatalog = require("libs.items.src.ItemCatalog")

@@ -367,13 +367,75 @@ end
 ---@param mon table<string, unknown>
 ---@return integer
 function HgssMonService:_maxHp(mon)
-  local form = self._catalog:form(mon.species, mon.form)
-  local nature = Personality.nature(mon.personality)
-  local derived = Stats.calculate(form.baseStats, mon.ivs, mon.evs, self:_level(mon), nature)
-  if mon.species == "SHEDINJA" then
-    return 1
+  return self:derive(mon).maxHp
+end
+
+-- Read-only full derived-stat projection for item and summary
+-- calculations: level plus every computed stat through the existing
+-- level/form/nature owner. The record is validated first; nothing is
+-- stored and no revision moves.
+---@param mon table<string, unknown>
+---@return { level: integer, maxHp: integer, attack: integer, defense: integer, speed: integer, specialAttack: integer, specialDefense: integer }
+function HgssMonService:derive(mon)
+  local canonical = Mon.validate(mon, self._context)
+  local species = self._catalog:species(canonical.species)
+  local level = Experience.level(self._catalog:growthCurve(species.growthCurve), canonical.experience)
+  local form = self._catalog:form(canonical.species, canonical.form)
+  local nature = Personality.nature(canonical.personality)
+  local stats = Stats.calculate(form.baseStats, canonical.ivs, canonical.evs, level, nature)
+  local maxHp = stats.hp
+  if canonical.species == "SHEDINJA" then
+    maxHp = 1
   end
-  return derived.hp
+  return {
+    level = level,
+    maxHp = maxHp,
+    attack = stats.attack,
+    defense = stats.defense,
+    speed = stats.speed,
+    specialAttack = stats.specialAttack,
+    specialDefense = stats.specialDefense,
+  }
+end
+
+-- Stages validated mon replacements without touching the live party.
+-- Every candidate passes the record validation and legality boundary
+-- before the candidate aggregate is allocated. Returns nil and "stale"
+-- when the expected revision drifted; otherwise returns a one-use opaque
+-- preparation whose publish installs the candidate. A repeated publish is
+-- a programming error, never a second revision increment.
+---@class PartyPreparation
+---@field changed boolean
+---@field isCurrent fun(): boolean
+---@field publish fun()
+---@param expectedRevision integer
+---@param updates { slot: integer, mon: table<string, unknown> }[]
+---@return PartyPreparation|nil, string|nil
+function HgssMonService:preparePartyChanges(expectedRevision, updates)
+  assert(type(expectedRevision) == "number", "party preparation requires the expected revision")
+  assert(type(updates) == "table", "party preparation requires an update array")
+  if expectedRevision ~= self._party:revision() then
+    return nil, "stale"
+  end
+  local checked = {}
+  for _, update in ipairs(updates) do
+    assert(type(update) == "table", "party preparation updates must be records")
+    checked[#checked + 1] = { slot = update.slot, mon = self:_checked(update.mon) }
+  end
+  local candidate = self._party:withUpdates(checked)
+  local captured = self._party
+  local capturedRevision = self._party:revision()
+  local changed = candidate:revision() ~= capturedRevision
+  local consumed = false
+  local function isCurrent()
+    return self._party == captured and self._party:revision() == capturedRevision
+  end
+  local function publish()
+    assert(not consumed, "party preparation publishes exactly once")
+    consumed = true
+    self._party = candidate
+  end
+  return { changed = changed, isCurrent = isCurrent, publish = publish }
 end
 
 ---@param mon table<string, unknown>

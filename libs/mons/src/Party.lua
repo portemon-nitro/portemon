@@ -107,6 +107,42 @@ function Party:set(slot0, mon)
   self._revision = self._revision + 1
 end
 
+-- Stages a same-size replacement without mutating the party: each update
+-- names a unique existing zero-based slot and its replacement record. The
+-- candidate carries copies, so later caller edits never leak into it. An
+-- empty update set preserves the revision; any non-empty set advances it
+-- exactly once. Rejected stagings raise before allocating a candidate.
+---@param updates { slot: integer, mon: table<string, unknown> }[]
+---@return Party
+function Party:withUpdates(updates)
+  assert(type(updates) == "table", "party staging requires an update array")
+  local seen = {}
+  for _, update in ipairs(updates) do
+    assert(type(update) == "table", "party staging updates must be records")
+    local slot = update.slot
+    if type(slot) ~= "number" or slot % 1 ~= 0 or slot < 0 or slot >= #self._mons then
+      MonsErrors.raise(MonsErrors.SAVE_INVALID, "party staging slot is out of range", { slot = slot })
+    end
+    assert(type(slot) == "number", "staging slot validated above")
+    if seen[slot] then
+      MonsErrors.raise(MonsErrors.SAVE_INVALID, "party staging slot is duplicated", { slot = slot })
+    end
+    seen[slot] = true
+    if type(update.mon) ~= "table" then
+      MonsErrors.raise(MonsErrors.SAVE_INVALID, "party staging requires a mon record", { slot = slot })
+    end
+  end
+  local mons = copyValue(self._mons)
+  for _, update in ipairs(updates) do
+    mons[update.slot + 1] = copyValue(update.mon)
+  end
+  local revision = self._revision
+  if #updates > 0 then
+    revision = revision + 1
+  end
+  return build(mons, revision)
+end
+
 ---@param predicate fun(mon: table<string, unknown>): boolean
 ---@return integer?
 function Party:findFirst(predicate)

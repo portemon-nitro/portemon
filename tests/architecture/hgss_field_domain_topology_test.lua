@@ -80,6 +80,7 @@ local FIELD_COORDINATION = {
   "FollowingMonController",
   "FollowingMonTransitionController",
   "MapInitScriptController",
+  "PartyActions",
 }
 
 local PRESENTATION = { "BillboardTransform" }

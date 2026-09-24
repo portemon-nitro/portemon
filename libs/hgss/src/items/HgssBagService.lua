@@ -160,6 +160,60 @@ function HgssBagService:capture()
   return self._inventory:capture()
 end
 
+-- Stages validated inventory deltas without touching the live inventory.
+-- Deltas apply in order to a private candidate built from the current
+-- capture, preserving exact stack order and capacity semantics. Returns
+-- nil and "stale" when the expected revision drifted; otherwise returns
+-- a one-use opaque preparation whose publish swaps the candidate and
+-- bumps the revision exactly once when the batch changed anything. A
+-- repeated publish is a programming error. Callers enforce domain
+-- preconditions (capacity, ownership) before preparing; a candidate
+-- application failure after those checks is a programming error raised
+-- loudly, never a silent partial publication.
+---@class BagPreparation
+---@field changed boolean
+---@field isCurrent fun(): boolean
+---@field publish fun()
+---@param expectedRevision integer
+---@param deltas { op: string, item: string, quantity: integer }[]
+---@return BagPreparation|nil, string|nil
+function HgssBagService:prepareInventoryChanges(expectedRevision, deltas)
+  assert(type(expectedRevision) == "number", "bag preparation requires the expected revision")
+  assert(type(deltas) == "table", "bag preparation requires a delta array")
+  if expectedRevision ~= self._revision then
+    return nil, "stale"
+  end
+  local candidate = BagInventory.new(self._catalog, self._inventory:capture())
+  for _, delta in ipairs(deltas) do
+    assert(type(delta) == "table", "bag preparation deltas must be records")
+    local applied = false
+    if delta.op == "add" then
+      applied = candidate:add(delta.item, delta.quantity)
+    elseif delta.op == "take" then
+      applied = candidate:take(delta.item, delta.quantity)
+    else
+      error("bag preparation delta carries an unknown operation: " .. tostring(delta.op), 0)
+    end
+    assert(applied, "bag preparation delta must apply after caller preconditions")
+  end
+  local capturedRevision = self._revision
+  local live = self._inventory
+  local changed = #deltas > 0
+  local consumed = false
+  local function isCurrent()
+    return self._inventory == live and self._revision == capturedRevision
+  end
+  local function publish()
+    assert(not consumed, "bag preparation publishes exactly once")
+    consumed = true
+    if changed then
+      self._inventory = candidate
+      self._revision = self._revision + 1
+    end
+  end
+  return { changed = changed, isCurrent = isCurrent, publish = publish }
+end
+
 ---@param nativeId integer
 ---@return string
 function HgssBagService:_keyByNativeId(nativeId)
