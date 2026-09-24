@@ -36,6 +36,7 @@ local BagAssetSchema = require("libs.assets.src.BagAssetSchema")
 local BagCache = require("libs.assets.src.BagCache")
 local BagSources = require("romdump.src.config.BagSources")
 local BagPresentationCompiler = require("romdump.src.digest.ui.BagPresentationCompiler")
+local RgbaImage = require("romdump.src.digest.ui.RgbaImage")
 local FieldMessageBank = require("romdump.src.digest.ui.FieldMessageBank")
 local FieldMessageTokenizer = require("romdump.src.digest.ui.FieldMessageTokenizer")
 local FieldMessageText = require("libs.assets.src.field.FieldMessageText")
@@ -150,7 +151,7 @@ local function compileScreens(archive, dependencies, assets)
     local screen = decode("decodeScreen", readMember(archive, spec.member, spec.role, dependencies), spec.role)
     if spec.upper then
       local image = rasterizeScreen(upperChar, upperPalette.colors, screen, spec.role)
-      image = BagPresentationCompiler.cropImage(image, 256, 192, spec.role)
+      image = RgbaImage.crop(image, { x = 0, y = 0, width = 256, height = 192 }, spec.role)
       local path = BagCache.assetDir() .. "/" .. spec.role .. ".png"
       assets[path] = PngWriter.encode(image.width, image.height, image.pixels)
       references[spec.role] = { image = path, width = image.width, height = image.height }
@@ -710,8 +711,8 @@ local function compileFixedBackgrounds(lower, screenRoles, cancelFace, assets)
         local screen = assert(lower.screens[role], "audited Bag layer was not decoded: " .. sourceName)
         layers[#layers + 1] = rasterizeScreen(lower.charData, palette.colors, screen, role)
       end
-      local image = BagPresentationCompiler.composeImages(layers, "interactive background " .. state)
-      image = BagPresentationCompiler.cropImage(image, 256, 192, "interactive background " .. state)
+      local image = RgbaImage.compose(layers, "interactive background " .. state)
+      image = RgbaImage.crop(image, { x = 0, y = 0, width = 256, height = 192 }, "interactive background " .. state)
       if state == "action" then
         image = compositeCancelChrome(image, cancelFace)
       end
@@ -739,8 +740,8 @@ local function compileBrowseBackgrounds(lower, screenRoles, cancelFace, assets)
     for count = 0, 6 do
       local slots = browseScreenForCount(assert(lower.screens[slotsRole]), count)
       local slotLayer = rasterizeScreen(lower.charData, palette.colors, slots, slotsRole)
-      local image = BagPresentationCompiler.composeImages({ wash, slotLayer }, "interactive background browse")
-      image = BagPresentationCompiler.cropImage(image, 256, 192, "interactive background browse")
+      local image = RgbaImage.compose({ wash, slotLayer }, "interactive background browse")
+      image = RgbaImage.crop(image, { x = 0, y = 0, width = 256, height = 192 }, "interactive background browse")
       image = compositeCancelChrome(image, cancelFace)
       local path = BagCache.assetDir() .. "/background-browse-" .. pocketState.pocket .. "-count-" .. count .. ".png"
       assets[path] = PngWriter.encode(image.width, image.height, image.pixels)

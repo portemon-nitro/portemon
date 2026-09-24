@@ -20,6 +20,7 @@
 
 local FieldDrawState = require("libs.hgss.src.presentation.FieldDrawState")
 local LogicalSurface = require("libs.ui.src.LogicalSurface")
+local MenuTextTemplate = require("libs.hgss.src.ui.MenuTextTemplate")
 local BagSave = require("libs.hgss.src.save.BagSave")
 local YesNoPromptRenderer = require("libs.hgss.src.ui.YesNoPromptRenderer")
 
@@ -56,39 +57,24 @@ local function plainText(value)
 end
 
 -- Formats one generated prompt template over display facts the controller
--- already projected. Text segments contribute their generated literal, item
--- segments the resolved display name the caller selected, and quantity
--- segments the validated decimal amount. The closed three-kind vocabulary
--- keeps bag prompts free of a general control-code interpreter.
+-- already projected. The closed substitution rule lives in the shared text
+-- helper; the bag keeps its own quantity range and singular/plural choice
+-- here so other consumers are never bound by three-digit cell limits.
 ---@param template table<string, unknown>
 ---@param itemName string
 ---@param quantity integer?
 ---@return string
 local function formatBagTemplate(template, itemName, quantity)
-  assert(type(template) == "table", "the bag prompt needs its generated template")
-  local segments = assert(template.segments, "the bag prompt template carries its segments")
-  assert(type(segments) == "table" and #segments >= 1, "the bag prompt template carries its segments")
-  local parts = {}
-  for _, segment in ipairs(segments) do
-    assert(type(segment) == "table", "prompt segments are records")
-    if segment.kind == "text" then
-      assert(type(segment.value) == "string" and segment.value ~= "", "text segments carry a literal")
-      parts[#parts + 1] = segment.value
-    elseif segment.kind == "item" then
-      assert(type(itemName) == "string" and itemName ~= "", "item segments need the selected display name")
-      parts[#parts + 1] = itemName
-    elseif segment.kind == "quantity" then
-      assert(type(quantity) == "number", "quantity segments need the picked amount")
-      assert(
-        quantity == math.floor(quantity) and quantity >= 1 and quantity <= 999,
-        "the picked amount fits three digit cells"
-      )
-      parts[#parts + 1] = tostring(quantity)
-    else
-      error("unknown bag prompt segment: " .. tostring(segment.kind), 0)
-    end
+  assert(type(itemName) == "string" and itemName ~= "", "item segments need the selected display name")
+  local bindings = { item = itemName }
+  if quantity ~= nil then
+    assert(
+      type(quantity) == "number" and quantity == math.floor(quantity) and quantity >= 1 and quantity <= 999,
+      "the picked amount fits three digit cells"
+    )
+    bindings.quantity = quantity
   end
-  return table.concat(parts)
+  return MenuTextTemplate.format(template, bindings, "bag prompt")
 end
 
 -- Selects the one state-owned prompt string when the controller holds a

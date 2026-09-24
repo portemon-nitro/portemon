@@ -5,6 +5,7 @@
 
 local Assert = require("tests.support.Assert")
 local BagPresentationCompiler = require("romdump.src.digest.ui.BagPresentationCompiler")
+local RgbaImage = require("romdump.src.digest.ui.RgbaImage")
 local BagSources = require("romdump.src.config.BagSources")
 
 local T = {}
@@ -82,11 +83,10 @@ function T.out_of_bounds_rectangles_fail()
 end
 
 function T.composed_state_layers_are_deterministic_and_follow_source_order()
-  local module = BagPresentationCompiler
   local bottom = { width = 2, height = 1, pixels = string.char(10, 20, 30, 255, 10, 20, 30, 255) }
   local top = { width = 2, height = 1, pixels = string.char(40, 50, 60, 255, 0, 0, 0, 0) }
-  local first = module.composeImages({ bottom, top }, "browse")
-  local second = module.composeImages({ bottom, top }, "browse")
+  local first = RgbaImage.compose({ bottom, top }, "browse")
+  local second = RgbaImage.compose({ bottom, top }, "browse")
   Assert.equal(first.width, 2)
   Assert.equal(first.height, 1)
   Assert.equal(first.pixels, second.pixels, "composition must be deterministic")

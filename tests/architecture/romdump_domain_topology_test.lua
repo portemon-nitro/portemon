@@ -115,6 +115,7 @@ local DOMAINS = {
     "FieldUiCompiler",
     "G2dDecoder",
     "G2dRasterizer",
+    "RgbaImage",
   },
   newgame = {
     "IntroAssetCacheWriter",

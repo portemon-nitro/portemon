@@ -567,15 +567,14 @@ function T.browse_count_variants_start_from_independent_source_copies(romFs, ver
   end
   local wash = decoded("decodeScreen", BagSources.screens.listWash, "list wash")
   local slots = decoded("decodeScreen", BagSources.screens.listSlots, "list slots")
-  local BagPresentationCompiler = require("romdump.src.digest.ui.BagPresentationCompiler")
+  local RgbaImage = require("romdump.src.digest.ui.RgbaImage")
   local layers = {
     G2dRasterizer.renderScreen(charData, { colors = effective }, wash, { role = "conformance-list-wash" }),
     G2dRasterizer.renderScreen(charData, { colors = effective }, slots, { role = "conformance-list-slots" }),
   }
-  local pristine = BagPresentationCompiler.cropImage(
-    BagPresentationCompiler.composeImages(layers, "conformance browse"),
-    256,
-    192,
+  local pristine = RgbaImage.crop(
+    RgbaImage.compose(layers, "conformance browse"),
+    { x = 0, y = 0, width = 256, height = 192 },
     "conformance browse"
   )
   local function slotRegion(rgba)
