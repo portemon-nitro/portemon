@@ -64,6 +64,8 @@ local SHARED = {
   "MenuProtocol",
   "MonAssetSchema",
   "MonCache",
+  "PartyAssetSchema",
+  "PartyCache",
   "PngWriter",
   "ScriptCache",
   "ScriptIdentity",

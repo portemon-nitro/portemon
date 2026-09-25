@@ -1,0 +1,219 @@
+-- Contract scenarios for the generated party presentation class. Fixtures
+-- model the public manifest only; source archive/member identities belong to
+-- the producer dependency record and are intentionally absent.
+
+local Assert = require("tests.support.Assert")
+local PartyAssetSchema = require("libs.assets.src.PartyAssetSchema")
+local PartyCache = require("libs.assets.src.PartyCache")
+local DerivedAssetContract = require("libs.assets.src.DerivedAssetContract")
+
+local T = {}
+
+local function imageRef(path, width, height)
+  return { image = path, width = width or 32, height = height or 32 }
+end
+
+local function frameRef(path, width, height, durationTicks)
+  return { image = path, width = width or 32, height = height or 32, durationTicks = durationTicks or 8 }
+end
+
+local function rect(x, y, width, height)
+  return { x = x, y = y, width = width, height = height }
+end
+
+local function touch(top, bottom, left, right)
+  return { top = top, bottom = bottom, left = left, right = right }
+end
+
+local function panel(originX, originY)
+  return {
+    origin = { x = originX, y = originY },
+    size = { width = 128, height = 48 },
+    chrome = { normal = imageRef("assets/generated/party/panel.png", 128, 48) },
+    text = { name = rect(originX + 48, originY + 8, 72, 16), level = rect(originX + 0, originY + 32, 48, 16) },
+    hp = { bar = rect(originX + 64, originY + 24, 48, 8), number = rect(originX + 56, originY + 32, 64, 16) },
+    compat = rect(originX + 48, originY + 32, 80, 16),
+  }
+end
+
+local statusFrames = {}
+for state = 1, 7 do
+  statusFrames[state] = imageRef("assets/generated/party/status-" .. state .. ".png", 24, 8)
+end
+
+local function manifest()
+  local panels = {}
+  local origins = { { 0, 0 }, { 128, 8 }, { 0, 48 }, { 128, 56 }, { 0, 96 }, { 128, 104 } }
+  for slot, origin in ipairs(origins) do
+    panels[slot] = panel(origin[1], origin[2])
+  end
+  local digits = {}
+  for digit = 0, 9 do
+    digits[digit + 1] = imageRef("assets/generated/party/digit-" .. digit .. ".png", 8, 8)
+  end
+  local dpadRow = {}
+  for entry = 1, 8 do
+    dpadRow[entry] =
+      { left = 64, top = 25, width = 0, height = 0, up = 7, down = 2, leftNeighbor = 7, rightNeighbor = 1 }
+  end
+  return {
+    schema = "g4-party-presentation-v1",
+    panes = {
+      main = { width = 256, height = 192 },
+      sub = { width = 256, height = 192 },
+    },
+    panels = panels,
+    windows = {
+      message = rect(16, 168, 160, 16),
+      context = rect(152, 120, 96, 64),
+    },
+    visuals = {
+      cursor = {
+        sequences = {
+          { frames = { frameRef("assets/generated/party/cursor-0.png") }, loopFrom = 1, playback = "static" },
+        },
+      },
+      balls = {
+        sequences = {
+          { frames = { frameRef("assets/generated/party/ball-0.png") }, loopFrom = 1, playback = "static" },
+        },
+      },
+      buttons = {
+        sequences = {
+          { frames = { frameRef("assets/generated/party/button-0.png") }, loopFrom = 1, playback = "static" },
+        },
+      },
+      held = {
+        sequences = {
+          { frames = { frameRef("assets/generated/party/held-0.png", 8, 8) }, loopFrom = 1, playback = "static" },
+        },
+      },
+      status = { frames = statusFrames },
+      feedback = {
+        frames = {
+          frameRef("assets/generated/party/feedback-0.png", 16, 16, 3),
+          frameRef("assets/generated/party/feedback-1.png", 16, 16, 2),
+        },
+        loopFrom = 1,
+        playback = "once",
+        hideAtFrame = 3,
+      },
+      backdropMain = imageRef("assets/generated/party/backdrop-main.png", 256, 256),
+      backdropSub = imageRef("assets/generated/party/backdrop-sub.png", 256, 256),
+      detailSub = imageRef("assets/generated/party/detail-sub.png", 256, 256),
+      decoration = imageRef("assets/generated/party/decoration.png", 128, 16),
+      auxPanel = imageRef("assets/generated/party/panel-aux.png", 128, 48),
+    },
+    iconAnimations = {
+      periods = { 1, 8, 12, 24, 40, 36 },
+      replacementDurations = { 32, 2, 2 },
+      replacementShift = { 0, 1, -1 },
+    },
+    navigation = {
+      dpad = { default = dpadRow, alternate = dpadRow, union = dpadRow, contest = dpadRow },
+    },
+    hitboxes = {
+      touch = {
+        default = { touch(0, 48, 0, 128), touch(8, 56, 128, 0) },
+        alternate = { touch(0, 48, 0, 128), touch(0, 48, 128, 0) },
+        context = { touch(0, 48, 0, 128), touch(160, 176, 200, 0) },
+      },
+    },
+    text = {
+      labels = { cancel = "Cancel" },
+      templates = { switchPrompt = { segments = { { kind = "text", value = "Switch?" } } } },
+    },
+    numberGlyphs = {
+      advance = 8,
+      height = 8,
+      digits = digits,
+      slash = imageRef("assets/generated/party/slash.png", 8, 8),
+      level = imageRef("assets/generated/party/level.png", 16, 8),
+    },
+    shinyLeaves = {
+      anchors = {
+        { x = 91, y = 182 },
+        { x = 101, y = 182 },
+        { x = 111, y = 182 },
+        { x = 121, y = 182 },
+        { x = 131, y = 182 },
+      },
+      crownAnchor = { x = 111, y = 182 },
+      leafSequence = 6,
+      crownSequence = 7,
+      paletteBank = 1,
+      leaves = {
+        frames = { frameRef("assets/generated/party/leaf-0.png", 16, 16, 4) },
+        loopFrom = 1,
+        playback = "loop",
+      },
+      crown = {
+        frames = { frameRef("assets/generated/party/crown-0.png", 16, 16, 4) },
+        loopFrom = 1,
+        playback = "loop",
+      },
+    },
+  }
+end
+
+function T.valid_manifest_passes_schema()
+  Assert.isTrue(PartyAssetSchema.isValidManifest(manifest()), "the assembled family is valid")
+end
+
+function T.schema_rejects_malformed_references()
+  local bad = manifest()
+  bad.visuals.cursor.sequences[1].frames[1].image = "assets/generated/bag/other.png"
+  local err = Assert.throws(function()
+    PartyAssetSchema.assertManifest(bad)
+  end)
+  Assert.notNil(tostring(err):find("PARTY_MANIFEST_INVALID"), "rejections carry the protocol code")
+end
+
+function T.schema_rejects_non_integer_durations()
+  local bad = manifest()
+  bad.visuals.feedback.frames[1].durationTicks = 1.5
+  Assert.throws(function()
+    PartyAssetSchema.assertManifest(bad)
+  end)
+end
+
+function T.schema_rejects_a_missing_panel_state()
+  local bad = manifest()
+  bad.panels[6] = nil
+  Assert.throws(function()
+    PartyAssetSchema.assertManifest(bad)
+  end)
+end
+
+function T.schema_rejects_off_pane_hitboxes_but_permits_negative_crop_offsets()
+  local bad = manifest()
+  bad.hitboxes.touch.default[1] = touch(0, 48, 200, 128)
+  Assert.throws(function()
+    PartyAssetSchema.assertManifest(bad)
+  end)
+  local cropped = manifest()
+  cropped.visuals.held.sequences[1].frames[1].offset = { x = -4, y = -2 }
+  Assert.isTrue(PartyAssetSchema.isValidManifest(cropped), "negative sprite crop offsets stay valid")
+end
+
+function T.modded_valid_visuals_pass_without_a_fixed_frame_count()
+  local modded = manifest()
+  modded.visuals.balls.sequences[1].frames[2] = frameRef("assets/generated/party/ball-1.png", 40, 40, 12)
+  Assert.isTrue(PartyAssetSchema.isValidManifest(modded), "extra frames and sizes are modding freedom")
+end
+
+function T.schema_rejects_source_identities_in_the_runtime_manifest()
+  local bad = manifest()
+  bad.visuals.cursor.sequences[1].frames[1].memberId = 5
+  Assert.throws(function()
+    PartyAssetSchema.assertManifest(bad)
+  end)
+end
+
+function T.schema_identity_is_the_current_contract()
+  Assert.equal(PartyAssetSchema.SCHEMA, "g4-party-presentation-v1")
+  Assert.equal(PartyAssetSchema.SCHEMA, DerivedAssetContract.party.schema)
+  Assert.equal(PartyCache.FORMAT, DerivedAssetContract.party.cacheFormat)
+end
+
+return { tests = T }

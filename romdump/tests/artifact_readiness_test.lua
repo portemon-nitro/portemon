@@ -1391,6 +1391,18 @@ function T.persisted_structural_corruption_is_cold_through_worker_dispatch()
   )
 end
 
+-- The party job validates through the family readiness gate like every
+-- coarse presentation family: an unpublished family never validates. The
+-- positive path runs through the real worker in the milestone corpus;
+-- writer-level validation lives with the family unit tests.
+function T.unpublished_party_never_validates_through_worker_dispatch()
+  local partyCache = newCache()
+  Assert.isFalse(
+    ArtifactJobs.validate(partyCache, GENERATION, "party", "global", {}),
+    "the missing party job must not validate"
+  )
+end
+
 local module = {
   beforeAll = function()
     for _, path in ipairs({

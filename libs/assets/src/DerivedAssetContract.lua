@@ -333,6 +333,19 @@ DerivedAssetContract.bag = {
   schema = "g4-bag-assets-v11",
 }
 
+-- The party class carries the source-independent native party
+-- presentation: the canonical panes, six slotted panels pairing chrome
+-- variants with text/HP subrectangles, message/context windows,
+-- cursor/ball/held/status/feedback visuals with source timing, shared
+-- icon-animation expectations, dpad/touch navigation tables, lowered
+-- bank-300 text, source numeric glyphs, and Shiny Leaf/crown badge frames.
+-- Species icons stay in the mon class; the party manifest references no
+-- icon pixels.
+DerivedAssetContract.party = {
+  cacheFormat = "party-cache-v1",
+  schema = "g4-party-presentation-v1",
+}
+
 DerivedAssetContract.audio = {
   cacheFormat = "g4-audio-cache-v1",
   -- The index carries the per-class symbol maps sequenceBySymbol and

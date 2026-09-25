@@ -27,6 +27,7 @@ local FieldCellCache = require("libs.assets.src.field.FieldCellCache")
 local MonCache = require("libs.assets.src.MonCache")
 local ItemCache = require("libs.assets.src.ItemCache")
 local BagCache = require("libs.assets.src.BagCache")
+local PartyCache = require("libs.assets.src.PartyCache")
 local StarterChoiceAssetCache = require("libs.assets.src.StarterChoiceAssetCache")
 
 local T = {}
@@ -67,6 +68,7 @@ local function publishedMarkers()
     MonCache.markerPath(),
     ItemCache.markerPath(),
     BagCache.markerPath(),
+    PartyCache.markerPath(),
     ScriptCache.markerPath(),
     AudioCache.markerPath(),
     MapAssetCache.mapDir(7) .. "/complete",

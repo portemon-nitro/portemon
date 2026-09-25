@@ -230,6 +230,7 @@ local FIELD_RUNTIME_JOBS = {
   "mon-layout:global",
   "items:global",
   "bag:global",
+  "party:global",
   "starter-choice:global",
   "message-bank:" .. tostring(MenuProtocol.START_MENU_MESSAGE_BANK),
   "message-bank:" .. tostring(MenuProtocol.STANDARD_MESSAGE_BANK),
@@ -532,6 +533,16 @@ local function executeBag(artifact, context)
     return BagAssetCompiler.compile(romFs)
   end, "bag")
   return BagCacheWriter.stage(artifact, bundle)
+end
+
+local function executeParty(artifact, context)
+  local PartyAssetCompiler = require("romdump.src.digest.ui.PartyAssetCompiler")
+  local PartyCacheWriter = require("romdump.src.digest.ui.PartyCacheWriter")
+  local romFs = assert(context.romFs, "coarse jobs require a source reader")
+  local bundle = compileOrRaise(function()
+    return PartyAssetCompiler.compile(romFs)
+  end, "party")
+  return PartyCacheWriter.stage(artifact, bundle)
 end
 
 local function executeMonCatalog(artifact, context)
@@ -1234,6 +1245,13 @@ local function validateBag(check)
   return BagCache.isReady(check.cacheFs, check.marker)
 end
 
+---@param check ArtifactJobs.ReadinessCheck
+---@return boolean
+local function validateParty(check)
+  local PartyCache = require("libs.assets.src.PartyCache")
+  return PartyCache.isReady(check.cacheFs, check.marker)
+end
+
 ---@param artifact table<string, unknown>
 ---@param context table<string, unknown>
 ---@param job ArtifactJobs.Job
@@ -1624,7 +1642,7 @@ DESCRIPTORS = {
     execute = executeMonSummary,
     validate = validateMonSummary,
   },
-  -- Item and bag presentation: no prerequisite.
+  -- Item, bag and party presentation: no prerequisite.
   items = {
     size = "normal",
     execute = executeItems,
@@ -1634,6 +1652,11 @@ DESCRIPTORS = {
     size = "normal",
     execute = executeBag,
     validate = validateBag,
+  },
+  party = {
+    size = "normal",
+    execute = executeParty,
+    validate = validateParty,
   },
   -- Message banks and summary.
   ["message-bank"] = {
@@ -1889,6 +1912,7 @@ local COMPLETE_STATIC_GLOBALS = {
   "starter-choice",
   "items",
   "bag",
+  "party",
   "mon-catalog",
   "mon-layout",
   "audio-catalog",
