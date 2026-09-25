@@ -94,6 +94,30 @@ local function composeStarterBalls(runtime)
   })
 end
 
+-- The script party composition: the modal selection surface over the
+-- live party. The blocking selection task receives it through scheduler
+-- services; no script code requires the concrete host module after this
+-- composition step. A missing manifest fails the boot loudly with no
+-- half-built host.
+---@param runtime FieldRuntime
+---@param cacheFs table<string, unknown> CacheFs-shaped
+---@return table<string, unknown> the script-owned party selection host
+local function buildPartySelectionHost(runtime, cacheFs)
+  local PartySelectionHost = require("game.hgss.src.field.PartySelectionHost")
+  local PartyCache = require("libs.assets.src.PartyCache")
+  local partyOverrides = runtime.presentationOverrides ~= nil and runtime.presentationOverrides.party or nil
+  local function measureDisplay()
+    return runtime.presentationDisplay
+  end
+  return PartySelectionHost.new({
+    service = assert(runtime.monService, "the script party host requires the live mon service"),
+    manifest = PartyCache.loadManifest(cacheFs),
+    uiManifest = runtime.uiManifest,
+    measureDisplay = measureDisplay,
+    overrides = partyOverrides,
+  })
+end
+
 ---@class FieldRuntimeOptions
 ---@field fieldScaleConfig table<string, unknown>?
 ---@field viewportWidth integer?
@@ -161,6 +185,7 @@ end
 ---@field contextChoiceProvider ContextChoiceProvider?
 ---@field starterProvider table<string, unknown> the hand-editable default starter roster, injected into the starter task
 ---@field starterChoice StarterChoiceState? the modal starter-choice surface the blocking task opens and closes
+---@field partySelection table<string, unknown>? the modal script-party surface the blocking selection task opens and closes
 ---@field menuHost FieldMenuHost?
 ---@field actionKeys table<string, boolean>?
 ---@field cancelKeys table<string, boolean>?
@@ -1127,6 +1152,7 @@ function FieldRuntime:_load()
       mapOf = currentMap,
     })
     self.starterBalls = composeStarterBalls(self)
+    self.partySelection = buildPartySelectionHost(self, cacheFs)
     -- The one follower-transition owner: the transient visual the
     -- nonblocking transition command starts, advanced once per fixed tick
     -- after the follower reconciles. A missing or malformed generated
@@ -1145,6 +1171,7 @@ function FieldRuntime:_load()
       itemCatalog = self.itemCatalog,
       starterProvider = self.starterProvider,
       starterChoice = self.starterChoice,
+      partySelection = self.partySelection,
       followingMon = self.followingMon,
       followerTransition = self.followingMonTransition,
       starterBalls = self.starterBalls,
@@ -1240,6 +1267,7 @@ function FieldRuntime:_load()
       menuHost = self.menuHost,
       contextChoice = self.contextChoiceProvider,
       starterChoice = self.starterChoice,
+      partySelection = self.partySelection,
       signpost = self.signpost,
       applicationHost = self.applicationHost,
       -- The session's fixed-tick audio collaborator is the production
@@ -2034,6 +2062,7 @@ function FieldRuntime:_releaseAll()
   self.bagService, self.bagCursor = nil, nil
   self.itemCatalog = nil
   self.starterProvider, self.starterChoice = nil, nil
+  self.partySelection = nil
 end
 
 -- End the state's lifetime: persist the field session if one is live, then
@@ -2062,6 +2091,11 @@ function FieldRuntime:dispose()
   -- The starter choice is the script-owned transient modal: an open choice
   -- releases its controller and portrait resources, never the candidates
   -- the task owns.
+  -- The script party host is the script-owned transient modal: an open
+  -- selection releases its screen, never the live party it observed.
+  if self.partySelection then
+    self.partySelection:dispose()
+  end
   if self.starterChoice then
     self.starterChoice:dispose()
   end

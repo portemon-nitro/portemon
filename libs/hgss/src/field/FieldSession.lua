@@ -53,6 +53,7 @@ local MetatileBehavior = require("libs.hgss.src.world.MetatileBehavior")
 ---@field menuHost FieldMenuHost
 ---@field contextChoice ContextChoiceProvider
 ---@field starterChoice table<string, unknown>? the modal starter-choice surface; while active the tick's UI events route to the script scheduler
+---@field partySelection table<string, unknown>? the modal script-party surface; while active the tick's UI events route to the script scheduler
 ---@field signpost FieldSignpostController
 ---@field applicationHost FieldApplicationHost the one application modal owner (Start Menu and its destinations)
 ---@field fieldEntranceIndicator FieldEntranceIndicator
@@ -91,6 +92,7 @@ local MetatileBehavior = require("libs.hgss.src.world.MetatileBehavior")
 ---@field menuHost FieldMenuHost
 ---@field contextChoice ContextChoiceProvider
 ---@field starterChoice table<string, unknown>? the modal starter-choice surface; while active the tick's UI events route to the script scheduler
+---@field partySelection table<string, unknown>? the modal script-party surface; while active the tick's UI events route to the script scheduler
 ---@field signpost FieldSignpostController the fixed-tick signpost controller (save-gate interrogation only; the scheduler steps it)
 ---@field applicationHost FieldApplicationHost the one application modal owner (Start Menu and its destinations)
 ---@field fieldEntranceIndicator FieldEntranceIndicator
@@ -341,6 +343,7 @@ function FieldSession.new(options)
     menuHost = options.menuHost,
     contextChoice = options.contextChoice,
     starterChoice = options.starterChoice,
+    partySelection = options.partySelection,
     signpost = options.signpost,
     applicationHost = options.applicationHost,
     fieldEntranceIndicator = options.fieldEntranceIndicator,
@@ -665,10 +668,14 @@ local function runScriptPhase(self, inputSnapshot)
   local contextChoiceModal = self.contextChoice:isActive()
   -- The script-owned starter modal routes the same normalized UI events to
   -- the scheduler while it owns the choice; like the contextual choice it
-  -- suppresses the raw field edges for that tick.
+  -- suppresses the raw field edges for that tick. The script-owned party
+  -- modal rides the same lane: one shared snapshot reaches the scheduler
+  -- and the session never steps either controller.
   local starterChoice = self.starterChoice
   local starterChoiceModal = starterChoice ~= nil and starterChoice:isActive()
-  if menuModal or contextChoiceModal or starterChoiceModal then
+  local partySelection = self.partySelection
+  local partySelectionModal = partySelection ~= nil and partySelection:isActive()
+  if menuModal or contextChoiceModal or starterChoiceModal or partySelectionModal then
     local uiEvents = self.input:uiSnapshot(self.tick + 1)
     if menuModal then
       schedulerInput.menuEvents = self.menuHost:inputEvents(uiEvents)
@@ -691,6 +698,12 @@ local function runScriptPhase(self, inputSnapshot)
   if not starterChoiceModal and starterChoiceNowModal then
     self.input:beginUi(self.tick + 1)
   elseif starterChoiceModal and not starterChoiceNowModal then
+    self.input:clearUi()
+  end
+  local partySelectionNowModal = partySelection ~= nil and partySelection:isActive()
+  if not partySelectionModal and partySelectionNowModal then
+    self.input:beginUi(self.tick + 1)
+  elseif partySelectionModal and not partySelectionNowModal then
     self.input:clearUi()
   end
   return playerInputOwnedAtTickStart

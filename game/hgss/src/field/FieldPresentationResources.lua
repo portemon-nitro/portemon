@@ -355,6 +355,20 @@ function FieldPresentationResources:drawStartMenu(status, graphics)
   drawApplicationFrames(hostGraphics, self, presentation)
 end
 
+-- Draws the script-owned party selection through the ordinary party
+-- presenter: the same renderer and plan as the menu party. Draws only
+-- while the host reports an active selection with a presentation plan;
+-- an idle host or the plan-less empty shell draws nothing and fails
+-- nothing. Never steps the screen.
+---@param host table<string, unknown> the script-owned party selection host
+function FieldPresentationResources:drawScriptParty(host)
+  local status = host:status()
+  if status == nil or status.presentation == nil then
+    return
+  end
+  self:drawApplication(FieldApplicationIds.POKEMON, status)
+end
+
 function FieldPresentationResources:dispose()
   self.presenters = nil
   if self.dialogueRenderer then

@@ -96,7 +96,7 @@ PartyScreenController.__index = PartyScreenController
 
 ---@class PartyScreenController.Options
 ---@field context "browse"|"pick"|"item_target"|"give_target"
----@field initialFocus integer?
+---@field initialFocus integer|"cancel"?
 ---@field allowCancel boolean?
 ---@field model PartyScreenController.Model
 ---@field layout fun(): table<string, unknown>
@@ -179,11 +179,13 @@ function PartyScreenController.new(opts)
   end
   if opts.initialFocus ~= nil then
     assert(
-      type(opts.initialFocus) == "number"
+      (
+        type(opts.initialFocus) == "number"
         and opts.initialFocus % 1 == 0
         and opts.initialFocus >= 0
-        and opts.initialFocus < 6,
-      "the initial focus must be a party position in 0..5"
+        and opts.initialFocus < 6
+      ) or opts.initialFocus == "cancel",
+      "the initial focus must be a party position in 0..5 or cancel"
     )
   end
   local cancellable = opts.allowCancel
@@ -247,6 +249,9 @@ function PartyScreenController.new(opts)
   self:_resetSequences(view)
   ---@type integer|string?
   local start = opts.initialFocus
+  if start == "cancel" and not self:_selectable(view, start) then
+    start = nil
+  end
   if start == nil or not self:_selectable(view, start) then
     start = self:_nearestSelectable(view, start)
   end
@@ -1002,7 +1007,13 @@ function PartyScreenController:_activate(target)
     if target.kind == "slot" and isSlotNode(target.slot) then
       if self:_selectable(self._view, target.slot) then
         self._cursorNode = target.slot
-        self:_confirmBrowse()
+        -- Pointer taps share the keyboard confirm dispatch: a picking
+        -- context completes the semantic result instead of opening a menu.
+        if self._context == "pick" then
+          self:_confirmSlotTarget()
+        else
+          self:_confirmBrowse()
+        end
       end
     end
     return

@@ -18,6 +18,7 @@ local ScriptSave = require("libs.script.src.ScriptSave")
 ---@field followingMon table<string, unknown>? the live following-mon controller for follower script operations
 ---@field starterProvider table<string, unknown>? the default starter roster for the blocking starter task
 ---@field starterChoice table<string, unknown>? the modal starter-choice surface the blocking task opens and closes
+---@field partySelection table<string, unknown>? the modal script-party surface the blocking selection task opens and closes
 ---@field followerTransition table<string, unknown>? the transient follower-transition owner the nonblocking transition command starts
 ---@field starterBalls table<string, unknown>? the Elm starter-ball runtime-prop controller
 local FieldScriptComposition = {}
@@ -72,6 +73,7 @@ function FieldScriptComposition.compose(runtime, options)
     followingMon = options.followingMon,
     starterProvider = options.starterProvider,
     starterChoice = options.starterChoice,
+    partySelection = options.partySelection,
     followerTransition = options.followerTransition,
     starterBalls = options.starterBalls,
   })
