@@ -1260,4 +1260,152 @@ function T.physical_probe_occupancy_preserves_stable_source_identity()
   Assert.equal(queriedCandidate.sourceSurfaceId, 0)
 end
 
+-- Shore/water rig for traversal-mode tests: walkable shore rows z<4 on
+-- plate 0, surfable water rows z>=4 on plate 1 at a lower height. Water
+-- is collision-blocked so swimming must come from the behavior rule,
+-- never from ignoring collision.
+local function shoreWaterMap()
+  local map = runtimeMap(nil, {
+    {
+      id = 0,
+      minX = 0,
+      minZ = 0,
+      maxX = 32,
+      maxZ = 4,
+      normal = { x = 0, y = 1, z = 0 },
+      distance = 0,
+      slopeClass = "flat",
+    },
+    {
+      id = 1,
+      minX = 0,
+      minZ = 4,
+      maxX = 32,
+      maxZ = 32,
+      normal = { x = 0, y = 1, z = 0 },
+      distance = -0.5,
+      slopeClass = "flat",
+    },
+  })
+  map.collision.getLocal = function(_, _, z)
+    if z >= 4 then
+      return { blocked = true, behavior = 16 }
+    end
+    return { blocked = false, behavior = 0 }
+  end
+  map.collision.isBlockedLocal = function(_, _, z)
+    return z >= 4
+  end
+  return map
+end
+
+function T.traversal_mode_defaults_to_walking_and_rejects_garbage()
+  local p = player(shoreWaterMap(), 2, 2, 0)
+  p:setTraversalMode("surfing")
+  p:setTraversalMode("walking")
+  local err = Assert.throws(function()
+    p:setTraversalMode("cycling")
+  end)
+  Assert.notNil(tostring(err):find("traversal mode", 1, true), "the failure must name the traversal mode")
+end
+
+function T.walking_into_water_is_a_field_action_not_a_step()
+  local p = player(shoreWaterMap(), 2, 3, 0, "south")
+  Assert.isFalse(p:tryStep("south"))
+  Assert.equal(p.fieldX, 2)
+  Assert.equal(p.fieldZ, 3)
+  Assert.isNil(p:resolveStep("south"))
+end
+
+function T.surfing_steps_onto_connected_water_with_real_height()
+  local p = player(shoreWaterMap(), 2, 5, 1, "north")
+  p:setTraversalMode("surfing")
+  Assert.isTrue(p:tryStep("north"))
+  for _ = 1, FieldPlayer.WALK_STEP_TICKS do
+    p:updateFixed({})
+  end
+  Assert.equal(p.motion, "idle")
+  Assert.equal(p.fieldX, 2)
+  Assert.equal(p.fieldZ, 4)
+  Assert.equal(p.surfaceId, 1)
+  near(p.worldY, -0.5)
+end
+
+function T.surfing_toward_shore_initiates_disembark_without_committing()
+  local p = player(shoreWaterMap(), 2, 4, 1, "north")
+  p:setTraversalMode("surfing")
+  Assert.equal(p:stepDecision("north").kind, "disembark")
+  Assert.isFalse(p:tryStep("north"))
+  Assert.equal(p.fieldX, 2)
+  Assert.equal(p.fieldZ, 4)
+  Assert.isNil(p:resolveStep("north"))
+end
+
+function T.traverse_action_runs_planned_motion_at_walk_cadence()
+  local p = player(shoreWaterMap(), 2, 3, 0, "south")
+  p:setTraversalMode("surfing")
+  p:beginScriptedAction({ action = "traverse", direction = "south", speed = "normal", mode = "surfing" })
+  Assert.isTrue(p:isScriptedMoving())
+  for _ = 1, FieldPlayer.WALK_STEP_TICKS - 1 do
+    p:updateFixed({})
+    Assert.isTrue(p:isScriptedMoving())
+  end
+  p:updateFixed({})
+  Assert.isFalse(p:isScriptedMoving())
+  p:commitScriptedAction()
+  Assert.equal(p.fieldX, 2)
+  Assert.equal(p.fieldZ, 4)
+  Assert.equal(p.surfaceId, 1)
+  near(p.worldY, -0.5)
+end
+
+function T.traverse_action_honors_an_explicit_planned_surface()
+  local map = shoreWaterMap()
+  map.terrain = TerrainSurface.new({
+    plates = {
+      {
+        id = 0,
+        minX = 0,
+        minZ = 0,
+        maxX = 32,
+        maxZ = 32,
+        normal = { x = 0, y = 1, z = 0 },
+        distance = 0,
+        slopeClass = "flat",
+      },
+      {
+        id = 7,
+        minX = 2,
+        minZ = 4,
+        maxX = 3,
+        maxZ = 5,
+        normal = { x = 0, y = 1, z = 0 },
+        distance = 2,
+        slopeClass = "flat",
+      },
+    },
+  })
+  local p = player(map, 2, 3, 0, "south")
+  p:setTraversalMode("walking")
+  p:beginScriptedAction({ action = "traverse", direction = "south", speed = "normal", mode = "walking", surfaceId = 7 })
+  for _ = 1, FieldPlayer.WALK_STEP_TICKS do
+    p:updateFixed({})
+  end
+  p:commitScriptedAction()
+  Assert.equal(p.surfaceId, 7)
+  near(p.worldY, 2)
+end
+
+function T.traverse_cancellation_restores_the_committed_tile()
+  local p = player(shoreWaterMap(), 2, 3, 0, "south")
+  p:setTraversalMode("surfing")
+  p:beginScriptedAction({ action = "traverse", direction = "south", speed = "normal", mode = "surfing" })
+  p:updateFixed({})
+  p:cancelScriptedMovement()
+  Assert.equal(p.motion, "idle")
+  Assert.equal(p.fieldX, 2)
+  Assert.equal(p.fieldZ, 3)
+  Assert.equal(p.surfaceId, 0)
+end
+
 return { tests = T }

@@ -108,15 +108,21 @@ end
 
 -- A disposable production `FieldPlayer` standing at the given node, sharing
 -- the live player's map and occupancy predicate. Only used to ask
--- `resolveStep`; it is discarded immediately after.
-local function probeAt(map, occupancy, node)
-  return FieldPlayer.new({
+-- `resolveStep`; it is discarded immediately after. It classifies with the
+-- live avatar's durable mode so surfing routes over water exactly like the
+-- live player does.
+local function probeAt(map, occupancy, node, mode)
+  local probe = FieldPlayer.new({
     currentMap = map,
     fieldX = node.fieldX,
     fieldZ = node.fieldZ,
     surfaceId = node.surfaceId,
     occupancy = occupancy,
   })
+  if mode == "surfing" then
+    probe:setTraversalMode("surfing")
+  end
+  return probe
 end
 
 local function stateKey(fieldX, fieldZ, surfaceId)
@@ -229,6 +235,11 @@ function FieldMovement.route(game, target)
   local map = assert(player.currentMap, "acceptance movement map required")
   local eventState = assert(game.runtime.eventState, "acceptance movement requires live event state")
   local occupancy = player.occupancy
+  local avatar = game.runtime.playerAvatar
+  local mode = nil
+  if avatar ~= nil and avatar:status().durableState == "surfing" then
+    mode = "surfing"
+  end
 
   local start = { fieldX = player.fieldX, fieldZ = player.fieldZ, surfaceId = player.surfaceId, route = {} }
   local sequence = 1
@@ -249,7 +260,7 @@ function FieldMovement.route(game, target)
     if targetMatches(node, target) then
       return node.route
     end
-    local probe = probeAt(map, occupancy, node)
+    local probe = probeAt(map, occupancy, node, mode)
     for _, direction in ipairs(DIRECTIONS) do
       local destination = probe:resolveStep(direction)
       if destination then

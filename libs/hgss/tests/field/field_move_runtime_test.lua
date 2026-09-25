@@ -175,10 +175,28 @@ function T.plan_builds_a_serializable_cut_plan()
   Assert.isNil(plan.committedAt, "no function or pointer state crosses the plan")
 end
 
-function T.plan_returns_feature_unavailable_for_deferred_traversal()
+function T.plan_returns_feature_unavailable_for_deferred_moves()
   local runtime = open()
+  local digContext = context()
+  digContext.fieldUse.escapeAllowed = true
+  local outcome = runtime:plan({ move = "dig", slot = 0, partyRevision = 4, context = digContext })
+  Assert.equal(outcome.kind, "feature_unavailable", "return moves stay honestly deferred")
+  Assert.equal(outcome.reason, "return_moves_deferred")
+end
+
+function T.traversal_planning_delegates_geometry_to_the_world()
+  local seen = {}
+  local world = worldDouble({
+    planTraversal = function(_, request, ctx)
+      seen[#seen + 1] = { move = request.move, context = ctx }
+      return { kind = "not_here" }
+    end,
+  })
+  local runtime = open(world)
   local outcome = runtime:plan({ move = "surf", slot = 0, partyRevision = 4, context = context({ surfEdge = true }) })
-  Assert.equal(outcome.kind, "feature_unavailable", "water traversal is honestly deferred")
+  Assert.equal(outcome.kind, "not_here", "world refusals pass through")
+  Assert.equal(seen[1].move, "surf")
+  Assert.isFalse(runtime:isBusy(), "refused plans release the runtime")
 end
 
 function T.advance_commits_exactly_once_then_settles()

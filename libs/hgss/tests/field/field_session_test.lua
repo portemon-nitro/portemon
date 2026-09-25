@@ -132,8 +132,16 @@ local function defaultPlayer()
     surfaceId = 0,
     facing = "south",
     motion = "idle",
+    traversalMode = "walking",
     updateFixed = function()
       return false
+    end,
+    setTraversalMode = function(self, mode)
+      assert(mode == "walking" or mode == "surfing", "traversal mode must be walking or surfing")
+      self.traversalMode = mode
+    end,
+    stepDecision = function(_)
+      return { kind = "step" }
     end,
     collisionCandidates = function(self)
       return { { fieldX = self.fieldX, fieldZ = self.fieldZ, surfaceId = self.surfaceId } }
@@ -3866,6 +3874,9 @@ function T.supplied_avatar_state_advances_once_per_fixed_tick_in_every_branch()
     function fake:updateFixed()
       self.updates = self.updates + 1
     end
+    function fake:status()
+      return { durableState = "walking" }
+    end
     return fake
   end
   local function sessionWithAvatar(overrides)
@@ -4067,6 +4078,9 @@ local function pushSession(overrides)
       discardPending = function()
         discards = discards + 1
       end,
+      requestDisembark = function()
+        error("push arbitration never requests disembark", 2)
+      end,
     },
   })
   if overrides.foreground == true then
@@ -4134,6 +4148,184 @@ function T.push_port_requires_its_two_operations()
   local ok, err = pcall(FieldSession.new, baseOptions({ fieldMoves = {} }))
   Assert.isFalse(ok, "a partial push port must fail construction")
   Assert.notNil(tostring(err):find("tryStrengthPush"), "construction names the missing operation")
+end
+
+function T.disembark_port_requires_request_disembark()
+  local ok, err = pcall(
+    FieldSession.new,
+    baseOptions({
+      fieldMoves = {
+        tryStrengthPush = function()
+          return { kind = "busy" }
+        end,
+        discardPending = function() end,
+      },
+    })
+  )
+  Assert.isFalse(ok, "a port without disembark planning must fail construction")
+  Assert.notNil(tostring(err):find("requestDisembark"), "construction names the missing operation")
+end
+
+-- Disembark arbitration: a surfing step decision toward a walkable shore
+-- queues one planned disembark and claims the entry script instead of
+-- stepping; refusals fall through to normal movement.
+local function disembarkSession(overrides)
+  overrides = overrides or {}
+  local BuiltinScripts = require("libs.hgss.src.script.BuiltinScripts")
+  local claims = {}
+  local requests = 0
+  local discards = 0
+  local modes = {}
+  local player = defaultPlayer()
+  player.motion = "idle"
+  player.traversalMode = "surfing"
+  player.setTraversalMode = function(_, mode)
+    modes[#modes + 1] = mode
+    player.traversalMode = mode
+  end
+  player.stepDecision = function(_)
+    if overrides.decision == "step" then
+      return { kind = "step" }
+    end
+    return { kind = "disembark" }
+  end
+  local stepped = 0
+  local ostensiblyUpdateFixed = player.updateFixed
+  player.updateFixed = function(...)
+    stepped = stepped + 1
+    return ostensiblyUpdateFixed(...)
+  end
+  local avatar = {
+    durable = overrides.avatar or "surfing",
+    updateFixed = function() end,
+    status = function(self)
+      return { durableState = self.durable }
+    end,
+  }
+  local options = baseOptions({
+    player = player,
+    playerAvatar = avatar,
+    actors = {
+      step = function() end,
+      getAt = function()
+        return nil
+      end,
+    },
+    scriptClient = {
+      consume = function()
+        return "blocked"
+      end,
+      startApplicationScript = function(_, scriptId, tick)
+        claims[#claims + 1] = { scriptId = scriptId, tick = tick }
+        if overrides.claim == "blocked" then
+          return "blocked"
+        end
+        return "instance-1"
+      end,
+    },
+    fieldMoves = {
+      tryStrengthPush = function()
+        return { kind = "not_here", reason = "strength_not_enabled" }
+      end,
+      discardPending = function()
+        discards = discards + 1
+      end,
+      requestDisembark = function()
+        requests = requests + 1
+        if overrides.port == "declined" then
+          return { kind = "not_here" }
+        end
+        return { kind = "accepted" }
+      end,
+    },
+  })
+  local session = FieldSession.new(options)
+  return session,
+    {
+      claims = claims,
+      requests = function()
+        return requests
+      end,
+      discards = function()
+        return discards
+      end,
+      stepped = function()
+        return stepped
+      end,
+      modes = modes,
+      avatar = avatar,
+      entryId = BuiltinScripts.FIELD_MOVE_ENTRY_SCRIPT,
+    }
+end
+
+function T.surfing_shore_step_claims_the_disembark_task()
+  local session, spy = disembarkSession()
+  session:updateFixed({ pressedDirection = "south" })
+  Assert.equal(spy.requests(), 1, "one disembark request per step")
+  Assert.equal(#spy.claims, 1, "admission claims the entry script")
+  Assert.equal(spy.claims[1].scriptId, spy.entryId)
+  Assert.equal(spy.stepped(), 0, "the claimed attempt never also steps the player")
+  Assert.equal(spy.discards(), 0, "claimed queues are never discarded")
+  Assert.equal(session.tick, 1, "the claimed tick advances")
+end
+
+function T.declined_disembark_falls_through_to_normal_movement()
+  local session, spy = disembarkSession({ port = "declined" })
+  session:updateFixed({ pressedDirection = "south" })
+  Assert.equal(spy.requests(), 1, "the port is consulted")
+  Assert.equal(#spy.claims, 0, "declined disembarks claim nothing")
+  Assert.equal(spy.stepped(), 1, "declined disembarks bump normally")
+end
+
+function T.ordinary_water_steps_never_consult_the_disembark_port()
+  local session, spy = disembarkSession({ decision = "step" })
+  session:updateFixed({ pressedDirection = "south" })
+  Assert.equal(spy.requests(), 0, "ordinary steps never consult the port")
+  Assert.equal(#spy.claims, 0, "ordinary steps claim nothing")
+  Assert.equal(spy.stepped(), 1, "ordinary steps proceed")
+end
+
+function T.idle_ticks_sync_player_mode_from_the_avatar_durable()
+  local session, spy = disembarkSession({ decision = "step" })
+  session:updateFixed({})
+  Assert.isTrue(#spy.modes >= 1, "idle ticks sync the traversal mode")
+  Assert.equal(spy.modes[#spy.modes], "surfing", "a surfing avatar means surfing physics")
+  spy.avatar.durable = "walking"
+  session:updateFixed({})
+  Assert.equal(spy.modes[#spy.modes], "walking", "a walking avatar means walking physics")
+end
+
+function T.surf_spawn_entry_requires_surfable_water()
+  local session, _ = disembarkSession()
+  session.currentMap.coordinateOrigin = { x = 0, z = 0 }
+  session.currentMap.collision = {
+    containsLocal = function()
+      return true
+    end,
+    getLocal = function()
+      return { blocked = false, behavior = 16 }
+    end,
+  }
+  session.mapEntryController = {
+    begin = function() end,
+    scriptScheduler = {},
+    autoAcknowledgePresentation = false,
+    connectionArrivalPending = false,
+    prePresentationResume = false,
+  }
+  session:beginMapEntry()
+  session.currentMap.collision = {
+    getLocal = function()
+      return { blocked = false, behavior = 0 }
+    end,
+  }
+  local err = Assert.throws(function()
+    session:beginMapEntry()
+  end)
+  Assert.notNil(
+    tostring(err):find("PLAYER_AVATAR_INVALID", 1, true),
+    "a beached surfing avatar must fail entry validation"
+  )
 end
 
 return { tests = T }

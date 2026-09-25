@@ -156,6 +156,15 @@ local function playerFacade(overrides)
     isScriptedMoving = function(self)
       return self.moving == true
     end,
+    avatarTransitions = {},
+    avatarApplies = 0,
+    queueAvatarTransition = function(self, name)
+      self.avatarTransitions[#self.avatarTransitions + 1] = name
+    end,
+    applyAvatarTransitions = function(self)
+      self.avatarApplies = self.avatarApplies + 1
+      return nil
+    end,
   }
   for key, value in pairs(overrides or {}) do
     player[key] = value

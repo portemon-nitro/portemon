@@ -13,6 +13,7 @@ local Errors = require("libs.errors.src.Errors")
 local FieldActorManager = require("libs.hgss.src.actors.FieldActorManager")
 local FieldCoordinates = require("libs.hgss.src.field.FieldCoordinates")
 local FieldMoveContext = require("game.hgss.src.field.FieldMoveContext")
+local MetatileBehavior = require("libs.hgss.src.world.MetatileBehavior")
 local ScriptErrors = require("libs.script.src.errors")
 local SurfaceResolver = require("libs.hgss.src.world.SurfaceResolver")
 local FieldScriptSymbols = require("libs.assets.src.field.FieldScriptSymbols")
@@ -31,6 +32,29 @@ local MovementCalibration = require("libs.hgss.src.script.tasks.MovementCalibrat
 -- Boulder pushes walk at the slow cadence through the existing calibration,
 -- so actor and player motion share one tick count with scripted walks.
 local PUSH_TICKS = MovementCalibration.actionTicks({ action = "walk", speed = "slow" })
+
+-- Planned traversal steps ride the ordinary walk cadence through the
+-- existing scripted-motion owner; exact DS cinematic timing is not claimed.
+local TRAVERSE_TICKS = MovementCalibration.actionTicks({ action = "walk", speed = "normal" })
+
+-- Closed traversal plan kinds produced by planTraversal. Only surf entry
+-- and disembark change the avatar; falls and climbs hold their mode while
+-- the segments run.
+local SURF_ENTER = "surf_enter"
+local DISEMBARK = "disembark"
+local WATERFALL = "waterfall"
+local WHIRLPOOL = "whirlpool"
+local ROCK_CLIMB = "rock_climb"
+
+local TERMINAL_AVATAR = {
+  [SURF_ENTER] = "surfing",
+  [DISEMBARK] = "walking",
+}
+
+-- Safety bound on planned path length: traversal paths run straight lines
+-- that cannot revisit tiles, so this caps runaway searches, never honest
+-- geography.
+local MAX_TRAVERSAL_SEGMENTS = 64
 
 local DIRECTION_DELTAS = {
   north = { fieldX = 0, fieldZ = -1 },
@@ -87,6 +111,8 @@ function FieldMoveWorld.new(ports)
       "commitScriptedAction",
       "cancelScriptedMovement",
       "isScriptedMoving",
+      "queueAvatarTransition",
+      "applyAvatarTransitions",
     }),
     _profile = requirePort(ports, "profile", {}),
     _weather = requirePort(ports, "weather", { "change" }),
@@ -388,6 +414,468 @@ function FieldMoveWorld:applyFlash(plan)
   end
   self._events:setFlag(FLASH_FLAG_ID)
   self._weather:change(FLASH_LIT_WEATHER_ID)
+end
+
+-- Read one tile's permission cell through the resident collision owner.
+-- Nil means the tile leaves readable coverage: callers refuse those paths
+-- as unprepared connections instead of guessing geography.
+---@param runtimeMap table<string, unknown>
+---@param fieldX integer
+---@param fieldZ integer
+---@return table<string, unknown>?
+local function readTraversalTile(runtimeMap, fieldX, fieldZ)
+  local okLocal, localX, localZ = pcall(FieldCoordinates.fieldToLocal, runtimeMap, fieldX, fieldZ)
+  if not okLocal then
+    return nil
+  end
+  local collision = assert(runtimeMap.collision, "traversal planning requires collision")
+  if collision.containsLocal ~= nil and not collision:containsLocal(localX, localZ) then
+    return nil
+  end
+  if collision.getLocal == nil then
+    return nil
+  end
+  local okCell, cell = pcall(collision.getLocal, collision, localX, localZ)
+  if not okCell or type(cell) ~= "table" then
+    return nil
+  end
+  return cell
+end
+
+-- A terminal landing or shore step must be ordinary walkable ground: not
+-- blocked, carrying no dedicated action and no ledge.
+---@param cell table<string, unknown>
+---@return boolean
+local function isWalkableTerminal(cell)
+  if cell.blocked then
+    return false
+  end
+  if MetatileBehavior.fieldAction(cell.behavior) ~= nil then
+    return false
+  end
+  if MetatileBehavior.ledgeDirection(cell.behavior) ~= nil then
+    return false
+  end
+  return true
+end
+
+-- Resolve one path tile's surface: nearest-height continuity by default,
+-- the nearest plate above for climb landings, the highest plate at or
+-- below for falls terminals. Nil when no surface covers the tile; decoder
+-- ambiguity propagates loudly instead of guessing a height.
+---@param runtimeMap table<string, unknown>
+---@param fieldX integer
+---@param fieldZ integer
+---@param currentY number
+---@param intent string? "above", "below", or nil for continuity
+---@return table<string, unknown>?
+local function selectTraversalSurface(runtimeMap, fieldX, fieldZ, currentY, intent)
+  local terrain = assert(runtimeMap.terrain, "traversal planning requires terrain")
+  local localX, localZ = FieldCoordinates.fieldToLocal(runtimeMap, fieldX, fieldZ)
+  local centerX = localX + FieldCoordinates.TILE_CENTER_OFFSET
+  local centerZ = localZ + FieldCoordinates.TILE_CENTER_OFFSET
+  if intent == nil then
+    local ok, sample = pcall(function()
+      return SurfaceResolver.new(terrain):resolve({ localX = centerX, localZ = centerZ, currentY = currentY })
+    end)
+    if not ok then
+      return nil
+    end
+    return sample
+  end
+  local best, bestY = nil, nil
+  for _, plate in ipairs(terrain:candidatesAt(centerX, centerZ)) do
+    local okHeight, height = pcall(terrain.sampleHeight, terrain, plate.id, centerX, centerZ)
+    if okHeight and type(height) == "number" then
+      if intent == "above" and height > currentY + 1e-9 and (bestY == nil or height < bestY) then
+        best, bestY = plate, height
+      elseif intent == "below" and height <= currentY + 1e-9 and (bestY == nil or height > bestY) then
+        best, bestY = plate, height
+      end
+    end
+  end
+  if best == nil then
+    return nil
+  end
+  return terrain:sample(best.id, centerX, centerZ)
+end
+
+---@param runtimeMap table<string, unknown>
+---@param mapId integer
+---@param segment table<string, unknown>
+local function appendTraversalSegment(runtimeMap, mapId, segment)
+  local plate = assert(runtimeMap.terrain:plate(segment.surfaceId), "traversal segment surface is missing from terrain")
+  segment.map = mapId
+  segment.sourceCellKey = plate.cellKey
+  segment.sourceSurfaceId = plate.sourceSurfaceId
+  segment.durationTicks = TRAVERSE_TICKS
+end
+
+---@param mapId integer
+---@param fieldX integer
+---@param fieldZ integer
+---@param surfaceId integer?
+---@return boolean
+local function traversalTileOccupied(self, mapId, fieldX, fieldZ, surfaceId)
+  return self._actors:getCollisionAt(mapId, { fieldX = fieldX, fieldZ = fieldZ, surfaceId = surfaceId }) ~= nil
+end
+
+local function planSurfEntry(self, runtimeMap, mapId, position, facing, delta)
+  local tileX, tileZ = position.fieldX + delta.fieldX, position.fieldZ + delta.fieldZ
+  local cell = readTraversalTile(runtimeMap, tileX, tileZ)
+  if cell == nil then
+    return { kind = "not_here", reason = "connection_unprepared" }
+  end
+  if not MetatileBehavior.isSurfableWater(cell.behavior) then
+    return { kind = "not_here" }
+  end
+  local sample = selectTraversalSurface(runtimeMap, tileX, tileZ, position.worldY, nil)
+  if sample == nil then
+    return { kind = "not_here" }
+  end
+  if traversalTileOccupied(self, mapId, tileX, tileZ, sample.surfaceId) then
+    return { kind = "not_here", reason = "traversal_blocked" }
+  end
+  local segments = {}
+  local segment = {
+    fieldX = tileX,
+    fieldZ = tileZ,
+    worldY = sample.worldY,
+    surfaceId = sample.surfaceId,
+    behavior = cell.behavior,
+    direction = facing,
+    mode = "surfing",
+  }
+  appendTraversalSegment(runtimeMap, mapId, segment)
+  segments[1] = segment
+  return {
+    kind = SURF_ENTER,
+    segments = segments,
+    sourceIdentity = { move = "surf", mapId = mapId, startFieldX = position.fieldX, startFieldZ = position.fieldZ },
+  }
+end
+
+local function planDisembark(self, runtimeMap, mapId, position, facing, delta)
+  local tileX, tileZ = position.fieldX + delta.fieldX, position.fieldZ + delta.fieldZ
+  local cell = readTraversalTile(runtimeMap, tileX, tileZ)
+  if cell == nil then
+    return { kind = "not_here", reason = "connection_unprepared" }
+  end
+  if not isWalkableTerminal(cell) then
+    return { kind = "not_here" }
+  end
+  local sample = selectTraversalSurface(runtimeMap, tileX, tileZ, position.worldY, nil)
+  if sample == nil then
+    return { kind = "not_here" }
+  end
+  if traversalTileOccupied(self, mapId, tileX, tileZ, sample.surfaceId) then
+    return { kind = "not_here", reason = "traversal_blocked" }
+  end
+  local segments = {}
+  local segment = {
+    fieldX = tileX,
+    fieldZ = tileZ,
+    worldY = sample.worldY,
+    surfaceId = sample.surfaceId,
+    behavior = cell.behavior,
+    direction = facing,
+    mode = "surfing",
+  }
+  appendTraversalSegment(runtimeMap, mapId, segment)
+  segments[1] = segment
+  return {
+    kind = DISEMBARK,
+    segments = segments,
+    sourceIdentity = {
+      move = "disembark",
+      mapId = mapId,
+      startFieldX = position.fieldX,
+      startFieldZ = position.fieldZ,
+    },
+  }
+end
+
+local function planFalls(self, runtimeMap, mapId, position, facing, delta, move)
+  local want = move == "waterfall" and MetatileBehavior.BEHAVIOR.WATERFALL or MetatileBehavior.BEHAVIOR.WHIRLPOOL
+  local tileX, tileZ = position.fieldX + delta.fieldX, position.fieldZ + delta.fieldZ
+  local first = readTraversalTile(runtimeMap, tileX, tileZ)
+  if first == nil then
+    return { kind = "not_here", reason = "connection_unprepared" }
+  end
+  if first.behavior ~= want then
+    return { kind = "not_here" }
+  end
+  local segments = {}
+  local currentY = position.worldY
+  local x, z = tileX, tileZ
+  for _ = 1, MAX_TRAVERSAL_SEGMENTS do
+    local cell = readTraversalTile(runtimeMap, x, z)
+    if cell == nil then
+      return { kind = "not_here", reason = "connection_unprepared" }
+    end
+    if cell.behavior ~= want then
+      if not MetatileBehavior.isSurfableWater(cell.behavior) then
+        return { kind = "not_here" }
+      end
+      local landing = selectTraversalSurface(runtimeMap, x, z, currentY, "below")
+      if landing == nil then
+        return { kind = "not_here" }
+      end
+      if traversalTileOccupied(self, mapId, x, z, landing.surfaceId) then
+        return { kind = "not_here", reason = "traversal_blocked" }
+      end
+      local segment = {
+        fieldX = x,
+        fieldZ = z,
+        worldY = landing.worldY,
+        surfaceId = landing.surfaceId,
+        behavior = cell.behavior,
+        direction = facing,
+        mode = "surfing",
+      }
+      appendTraversalSegment(runtimeMap, mapId, segment)
+      segments[#segments + 1] = segment
+      return {
+        kind = move == "waterfall" and WATERFALL or WHIRLPOOL,
+        segments = segments,
+        sourceIdentity = { move = move, mapId = mapId, startFieldX = position.fieldX, startFieldZ = position.fieldZ },
+      }
+    end
+    local sample = selectTraversalSurface(runtimeMap, x, z, currentY, nil)
+    if sample == nil then
+      return { kind = "not_here" }
+    end
+    if traversalTileOccupied(self, mapId, x, z, sample.surfaceId) then
+      return { kind = "not_here", reason = "traversal_blocked" }
+    end
+    local segment = {
+      fieldX = x,
+      fieldZ = z,
+      worldY = sample.worldY,
+      surfaceId = sample.surfaceId,
+      behavior = cell.behavior,
+      direction = facing,
+      mode = "surfing",
+    }
+    appendTraversalSegment(runtimeMap, mapId, segment)
+    segments[#segments + 1] = segment
+    currentY = sample.worldY
+    x, z = x + delta.fieldX, z + delta.fieldZ
+  end
+  return { kind = "not_here", reason = "traversal_path_unbounded" }
+end
+
+local function climbAxisMatches(behavior, facing)
+  if behavior == MetatileBehavior.BEHAVIOR.ROCK_CLIMB_NORTH_SOUTH then
+    return facing == "north" or facing == "south"
+  end
+  if behavior == MetatileBehavior.BEHAVIOR.ROCK_CLIMB_EAST_WEST then
+    return facing == "east" or facing == "west"
+  end
+  return false
+end
+
+local function planClimb(self, runtimeMap, mapId, position, facing, delta)
+  local tileX, tileZ = position.fieldX + delta.fieldX, position.fieldZ + delta.fieldZ
+  local first = readTraversalTile(runtimeMap, tileX, tileZ)
+  if first == nil then
+    return { kind = "not_here", reason = "connection_unprepared" }
+  end
+  if not climbAxisMatches(first.behavior, facing) then
+    return { kind = "not_here" }
+  end
+  local segments = {}
+  local currentY = position.worldY
+  local x, z = tileX, tileZ
+  for _ = 1, MAX_TRAVERSAL_SEGMENTS do
+    local cell = readTraversalTile(runtimeMap, x, z)
+    if cell == nil then
+      return { kind = "not_here", reason = "connection_unprepared" }
+    end
+    if
+      cell.behavior ~= MetatileBehavior.BEHAVIOR.ROCK_CLIMB_NORTH_SOUTH
+      and cell.behavior ~= MetatileBehavior.BEHAVIOR.ROCK_CLIMB_EAST_WEST
+    then
+      if not isWalkableTerminal(cell) then
+        return { kind = "not_here" }
+      end
+      local landing = selectTraversalSurface(runtimeMap, x, z, currentY, "above")
+      if landing == nil then
+        return { kind = "not_here" }
+      end
+      if traversalTileOccupied(self, mapId, x, z, landing.surfaceId) then
+        return { kind = "not_here", reason = "traversal_blocked" }
+      end
+      local segment = {
+        fieldX = x,
+        fieldZ = z,
+        worldY = landing.worldY,
+        surfaceId = landing.surfaceId,
+        behavior = cell.behavior,
+        direction = facing,
+        mode = "walking",
+      }
+      appendTraversalSegment(runtimeMap, mapId, segment)
+      segments[#segments + 1] = segment
+      return {
+        kind = ROCK_CLIMB,
+        segments = segments,
+        sourceIdentity = {
+          move = "rock_climb",
+          mapId = mapId,
+          startFieldX = position.fieldX,
+          startFieldZ = position.fieldZ,
+        },
+      }
+    end
+    local sample = selectTraversalSurface(runtimeMap, x, z, currentY, nil)
+    if sample == nil then
+      return { kind = "not_here" }
+    end
+    if traversalTileOccupied(self, mapId, x, z, sample.surfaceId) then
+      return { kind = "not_here", reason = "traversal_blocked" }
+    end
+    local segment = {
+      fieldX = x,
+      fieldZ = z,
+      worldY = sample.worldY,
+      surfaceId = sample.surfaceId,
+      behavior = cell.behavior,
+      direction = facing,
+      mode = "walking",
+    }
+    appendTraversalSegment(runtimeMap, mapId, segment)
+    segments[#segments + 1] = segment
+    currentY = sample.worldY
+    x, z = x + delta.fieldX, z + delta.fieldZ
+  end
+  return { kind = "not_here", reason = "traversal_path_unbounded" }
+end
+
+-- Plan terrain-valid contiguous traversal for Surf entry, disembark,
+-- Waterfall, Whirlpool, and Rock Climb. Paths run straight lines from the
+-- live facing tile inside readable coverage and record every
+-- destination's source cell/surface identity. Anything else refuses with
+-- a Decision before any motion: wrong facing tile, occupied tiles,
+-- missing landings, unbounded paths, and connections the residency never
+-- prepared.
+---@param request table<string, unknown> { move }
+---@param context table<string, unknown>?
+---@return table<string, unknown> traversal plan or Decision
+function FieldMoveWorld:planTraversal(request, context)
+  assert(type(request) == "table", "traversal planning requires a request")
+  local move = assert(request.move, "traversal planning requires a move key")
+  local live = self._maps:current()
+  assert(type(live.id) == "number", "live map needs its identity")
+  if context ~= nil and context.mapId ~= nil and context.mapId ~= live.id then
+    return { kind = "stale" }
+  end
+  local runtimeMap = self._maps:runtimeMap()
+  local facing = self._player:facing()
+  local delta = assert(DIRECTION_DELTAS[facing], "traversal needs a cardinal facing")
+  local position = self._player:position()
+  assert(
+    type(position.fieldX) == "number" and type(position.fieldZ) == "number",
+    "traversal planning needs the player tile"
+  )
+  assert(type(position.worldY) == "number", "traversal planning needs the player height")
+  if move == "surf" then
+    return planSurfEntry(self, runtimeMap, live.id, position, facing, delta)
+  elseif move == "disembark" then
+    return planDisembark(self, runtimeMap, live.id, position, facing, delta)
+  elseif move == "waterfall" or move == "whirlpool" then
+    return planFalls(self, runtimeMap, live.id, position, facing, delta, move)
+  elseif move == "rock_climb" then
+    return planClimb(self, runtimeMap, live.id, position, facing, delta)
+  end
+  error("unknown traversal move " .. tostring(move), 0)
+end
+
+-- Revalidate the current segment before committing it: a map change
+-- reports stale, an unreadable tile reports an unprepared connection, a
+-- changed behavior or a fresh occupant reports not_here. Ordinary
+-- walkable landings additionally recheck permission blocking; dedicated
+-- action tiles stay behavior-gated like the original planning pass.
+---@param plan table<string, unknown>
+---@return table<string, unknown>? nil when valid, else a Decision
+function FieldMoveWorld:validateTraversalSegment(plan)
+  assert(type(plan) == "table", "segment validation requires a plan")
+  local live = self._maps:current()
+  if plan.mapId ~= nil and plan.mapId ~= live.id then
+    return { kind = "stale" }
+  end
+  local segment = plan.segments[plan.segmentIndex + 1]
+  if segment == nil then
+    return { kind = "not_here" }
+  end
+  local runtimeMap = self._maps:runtimeMap()
+  local cell = readTraversalTile(runtimeMap, segment.fieldX, segment.fieldZ)
+  if cell == nil then
+    return { kind = "not_here", reason = "connection_unprepared" }
+  end
+  if cell.behavior ~= segment.behavior then
+    return { kind = "not_here" }
+  end
+  if cell.blocked and MetatileBehavior.fieldAction(cell.behavior) == nil then
+    return { kind = "not_here" }
+  end
+  if traversalTileOccupied(self, live.id, segment.fieldX, segment.fieldZ, segment.surfaceId) then
+    return { kind = "not_here", reason = "traversal_blocked" }
+  end
+  return nil
+end
+
+-- Begin the current segment's scripted traverse motion through the
+-- existing motion owner. Marks the plan in-flight so the runtime can tell
+-- a settled segment from one never started.
+---@param plan table<string, unknown>
+function FieldMoveWorld:beginTraversalSegment(plan)
+  assert(type(plan) == "table", "segment begin requires a plan")
+  local segment = assert(plan.segments[plan.segmentIndex + 1], "traversal has no current segment")
+  self._player:beginScriptedAction({
+    action = "traverse",
+    direction = segment.direction,
+    speed = "normal",
+    mode = segment.mode,
+    surfaceId = segment.surfaceId,
+  })
+  plan.motionActive = true
+end
+
+-- True once the in-flight segment motion settled through the motion
+-- owner (the session tick advances and commits it; this only observes).
+---@param plan table<string, unknown>
+---@return boolean
+function FieldMoveWorld:traversalMotionDone(plan)
+  assert(type(plan) == "table", "segment progress requires a plan")
+  return not self._player:isScriptedMoving()
+end
+
+-- Commit one settled segment: settle the scripted motion (idempotent when
+-- the session tick already committed the tile) and advance past it. The
+-- session's normal boundary/audio/zone hooks already ran on that commit.
+---@param plan table<string, unknown>
+function FieldMoveWorld:commitTraversalSegment(plan)
+  assert(type(plan) == "table", "segment commit requires a plan")
+  self._player:commitScriptedAction()
+  plan.segmentIndex = plan.segmentIndex + 1
+  plan.motionActive = false
+end
+
+-- Apply the terminal avatar transition once the final segment committed.
+-- Only surf entry and disembark change the avatar; falls and climbs hold
+-- their mode while segments run. Returns the applied terminal mode.
+---@param plan table<string, unknown>
+---@return string?
+function FieldMoveWorld:commitTraversalMode(plan)
+  assert(type(plan) == "table", "avatar commit requires a plan")
+  local terminal = TERMINAL_AVATAR[plan.kind]
+  if terminal == nil then
+    return nil
+  end
+  self._player:queueAvatarTransition(terminal)
+  self._player:applyAvatarTransitions()
+  return terminal
 end
 
 return FieldMoveWorld

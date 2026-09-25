@@ -257,6 +257,15 @@ local function ports(manager, eventState, map, overrides)
       isScriptedMoving = function(self)
         return self.moving == true
       end,
+      avatarTransitions = {},
+      avatarApplies = 0,
+      queueAvatarTransition = function(self, name)
+        self.avatarTransitions[#self.avatarTransitions + 1] = name
+      end,
+      applyAvatarTransitions = function(self)
+        self.avatarApplies = self.avatarApplies + 1
+        return nil
+      end,
     },
     profile = { badges = 0xFFFF },
     weather = {
@@ -583,8 +592,9 @@ function T.cancellation_cleans_up_without_another_poll()
   manager:dispose()
 end
 
--- Explicit script-origin requests plan without re-gating: deferred
--- traversal completes refused, malformed slots fault loudly, and
+-- Explicit script-origin requests plan without re-gating: executable water
+-- traversal reaches the world and refuses honestly on geometry, still
+-- deferred moves complete refused, malformed slots fault loudly, and
 -- admission contention faults instead of queuing twice.
 function T.explicit_requests_use_the_shared_task_entry()
   local objects = fieldObjects()
@@ -599,12 +609,36 @@ function T.explicit_requests_use_the_shared_task_entry()
     ctx.semantics = RuntimeValues
     return ctx
   end
-  local deferred = FieldMoveTask.create({ source = "explicit", node = { move = "surf", slot = 2 } }, explicitCtx())
-  Assert.isNil(FieldMoveTask.validate(deferred), "refused state stays serializable")
-  local refused = FieldMoveTask.poll(deferred, explicitCtx())
+  local geometric = FieldMoveTask.create({ source = "explicit", node = { move = "surf", slot = 2 } }, explicitCtx())
+  Assert.isNil(FieldMoveTask.validate(geometric), "planned state stays serializable")
+  local refused = FieldMoveTask.poll(geometric, explicitCtx())
   Assert.isTrue(refused.complete)
   Assert.equal(refused.result.kind, "field_move_refused")
-  Assert.equal(refused.result.decision.kind, "feature_unavailable")
+  Assert.equal(refused.result.decision.kind, "not_here", "explicit surf refuses on geometry, never defers")
+  local deferredRuntime, _ = openRuntime(
+    manager,
+    eventState,
+    map,
+    nil,
+    (function()
+      local digAmbient = treeContext()
+      digAmbient.fieldUse.escapeAllowed = true
+      return digAmbient
+    end)()
+  )
+  local function digCtx()
+    local ctx = taskContext(deferredRuntime)
+    ctx.semantics = RuntimeValues
+    return ctx
+  end
+  local deferred = FieldMoveTask.create({ source = "explicit", node = { move = "dig", slot = 2 } }, digCtx())
+  Assert.isNil(FieldMoveTask.validate(deferred), "refused state stays serializable")
+  local digRefused = FieldMoveTask.poll(deferred, digCtx())
+  Assert.isTrue(digRefused.complete)
+  Assert.equal(digRefused.result.kind, "field_move_refused")
+  Assert.equal(digRefused.result.decision.kind, "feature_unavailable")
+  Assert.equal(digRefused.result.decision.reason, "return_moves_deferred")
+  Assert.isFalse(deferredRuntime:isBusy(), "refused explicit work holds nothing")
   local badSlot = Assert.throws(function()
     FieldMoveTask.create({ source = "explicit", node = { move = "surf", slot = 9 } }, explicitCtx())
   end)

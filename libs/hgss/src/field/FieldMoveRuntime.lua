@@ -20,6 +20,11 @@ local SMASH = "smash"
 local ENABLE_STRENGTH = "enable_strength"
 local PUSH_STRENGTH = "push_strength"
 local FLASH = "flash"
+local SURF_ENTER = "surf_enter"
+local DISEMBARK = "disembark"
+local WATERFALL = "waterfall"
+local WHIRLPOOL = "whirlpool"
+local ROCK_CLIMB = "rock_climb"
 
 local POLICY_MOVES = {
   cut = true,
@@ -41,16 +46,28 @@ local POLICY_MOVES = {
 }
 
 local EXPLICIT_DEFERRED = {
-  surf = "water_traversal_deferred",
-  waterfall = "water_traversal_deferred",
-  whirlpool = "water_traversal_deferred",
-  rock_climb = "climb_traversal_deferred",
   dig = "return_moves_deferred",
   teleport = "return_moves_deferred",
   fly = "fly_map_deferred",
   headbutt = "headbutt_encounters_deferred",
   sweet_scent = "sweet_scent_encounters_deferred",
   chatter = "chatter_recording_deferred",
+}
+
+local TRAVERSAL_MOVES = {
+  surf = true,
+  disembark = true,
+  waterfall = true,
+  whirlpool = true,
+  rock_climb = true,
+}
+
+local TRAVERSAL_PLANS = {
+  [SURF_ENTER] = true,
+  [DISEMBARK] = true,
+  [WATERFALL] = true,
+  [WHIRLPOOL] = true,
+  [ROCK_CLIMB] = true,
 }
 
 local function isRecord(value)
@@ -288,6 +305,33 @@ local function buildPlan(self, request)
       committed = false,
     }
   end
+  if TRAVERSAL_MOVES[move] then
+    -- Water and climb execution plans terrain-valid contiguous traversal
+    -- through the world adapter. Menu requests re-check eligibility above
+    -- when they carry a context; explicit script-origin requests plan from
+    -- live world state like the other executable moves.
+    local traversal = self._world:planTraversal({ move = move }, request.context)
+    assert(isRecord(traversal) and type(traversal.kind) == "string", "traversal planning must decide")
+    if not TRAVERSAL_PLANS[traversal.kind] then
+      return traversal
+    end
+    local plan = {
+      kind = traversal.kind,
+      move = move,
+      partyRevision = request.partyRevision,
+      mapId = assert(traversal.sourceIdentity.mapId, "traversal plans carry their map"),
+      segments = assert(traversal.segments, "traversal plans carry segments"),
+      sourceIdentity = traversal.sourceIdentity,
+      segmentIndex = 0,
+      motionActive = false,
+      phase = "traverse",
+      committed = false,
+    }
+    if move ~= "disembark" then
+      plan.slot = assertSlot(request.slot, move)
+    end
+    return plan
+  end
   local deferred = EXPLICIT_DEFERRED[move]
   if deferred then
     return { kind = "feature_unavailable", reason = deferred }
@@ -298,7 +342,7 @@ local function buildPlan(self, request)
   error("unknown field move " .. tostring(move), 0)
 end
 
-local PLAN_PHASES = { acknowledge = true, commit = true, begin = true, step = true }
+local PLAN_PHASES = { acknowledge = true, commit = true, begin = true, step = true, traverse = true }
 
 -- Plan and register the live plan: the built plan table identifies the
 -- active operation for settling, so a stale plan can advance safely
@@ -414,6 +458,33 @@ function FieldMoveRuntime:advance(plan)
     end
     return { kind = "running" }
   end
+  if TRAVERSAL_PLANS[kind] then
+    -- One committed segment per advance: begin only from idle after
+    -- revalidation, observe the motion the session tick advances, then
+    -- commit. The terminal avatar transition applies once the final
+    -- segment committed; cancellation restores the last committed tile
+    -- through the existing motion owner with no mode rollback.
+    if not plan.motionActive then
+      if plan.segmentIndex >= #plan.segments then
+        self._world:commitTraversalMode(plan)
+        plan.committed = true
+        settle(self, plan)
+        return { kind = "done" }
+      end
+      local refused = self._world:validateTraversalSegment(plan)
+      if refused ~= nil then
+        settle(self, plan)
+        return { kind = "failed", error = refused }
+      end
+      self._world:beginTraversalSegment(plan)
+      return { kind = "running" }
+    end
+    if self._world:traversalMotionDone(plan) then
+      self._world:commitTraversalSegment(plan)
+      return { kind = "running" }
+    end
+    return { kind = "running" }
+  end
   error("unknown field plan " .. tostring(kind), 0)
 end
 
@@ -436,6 +507,25 @@ end
 -- full-map reset by the composition; nothing else disarms.
 function FieldMoveRuntime:clearTransient()
   self._strengthArmed = false
+end
+
+-- Session disembark port: validate the shore landing and queue the
+-- single disembark operation. Expected refusals return Decisions for the
+-- session's normal fallthrough; program errors raise. Mirrors the
+-- Strength-push port: planning is synchronous, execution runs later
+-- through the claiming task.
+---@return table<string, unknown> { kind = "accepted" } or Decision
+function FieldMoveRuntime:requestDisembark()
+  if self:isBusy() then
+    return { kind = "busy" }
+  end
+  local request = { move = "disembark" }
+  local plan = self:plan(request)
+  if plan.kind ~= DISEMBARK then
+    return plan
+  end
+  self._pending = copyValue(request)
+  return { kind = "accepted" }
 end
 
 -- Session push port: validate an armed walked-into boulder step and queue

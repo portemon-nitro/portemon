@@ -12,6 +12,31 @@ local FieldCoordinates = require("libs.hgss.src.field.FieldCoordinates")
 local FieldGrid = require("libs.hgss.src.world.FieldGrid")
 local SurfaceResolver = require("libs.hgss.src.world.SurfaceResolver")
 local FieldTraversal = require("libs.hgss.src.world.FieldTraversal")
+local MetatileBehavior = require("libs.hgss.src.world.MetatileBehavior")
+
+-- Destination behavior byte for mode-gated permission: surfable water
+-- skips the walking collision block while swimming. Unknown or unreadable
+-- behavior never skips; the anchored resolution then fails safely.
+---@param self FieldPlayer
+---@param destinationX integer
+---@param destinationZ integer
+---@return integer?
+local function destinationBehavior(self, destinationX, destinationZ)
+  local ok, cell = pcall(function()
+    if not self.currentMap.collision.getLocal then
+      return nil
+    end
+    local localX, localZ = FieldCoordinates.fieldToLocal(self.currentMap, destinationX, destinationZ)
+    return self.currentMap.collision:getLocal(localX, localZ)
+  end)
+  if not ok or type(cell) ~= "table" then
+    return nil
+  end
+  if type(cell.behavior) ~= "number" then
+    return nil
+  end
+  return cell.behavior
+end
 
 ---@class FieldPlayer : FieldPlayerVisual.Source
 ---@field currentMap RuntimeFieldMap
@@ -51,6 +76,7 @@ local FieldTraversal = require("libs.hgss.src.world.FieldTraversal")
 ---@field private _lastTraversalKind string traversal kind of the last committed tile
 ---@field private _movementStartRevision integer resolved translation starts observed by followers
 ---@field private _movementTransaction FieldPlayer.MovementTransaction? latest resolved translation start
+---@field private _traversalMode "walking"|"surfing" ordinary-step traversal mode tracking the avatar durable state
 local FieldPlayer = {}
 FieldPlayer.__index = FieldPlayer
 
@@ -194,6 +220,7 @@ function FieldPlayer.new(options)
     committedSourceCellKey = plate and plate.cellKey or nil,
     committedSourceSurfaceId = plate and plate.sourceSurfaceId or nil,
     facing = options.facing or "south",
+    _traversalMode = "walking",
     motion = "idle",
     progressTicks = 0,
     durationTicks = FieldPlayer.WALK_STEP_TICKS,
@@ -233,10 +260,20 @@ end
 -- occupancy gate ordinary steps; `bypassBlocking` skips both for the door
 -- choreography's scripted steps (the player must walk into the door tile
 -- normal movement cannot enter). Terrain surface resolution always governs.
-function FieldPlayer:_resolveStep(direction, bypassBlocking)
+-- `planned`, when given, carries a validated traversal segment's mode and
+-- optional explicit surface: collision permission is then the plan's
+-- business (already preflighted and revalidated per segment), while
+-- terrain identity and occupancy still resolve here.
+---@param direction FieldDirection
+---@param bypassBlocking boolean?
+---@param planned { mode: string, surfaceId: integer? }?
+---@return table<string, unknown>?
+function FieldPlayer:_resolveStep(direction, bypassBlocking, planned)
   local delta = assert(DELTAS[direction], "unknown field direction " .. tostring(direction))
   local destinationX, destinationZ = self.fieldX + delta.x, self.fieldZ + delta.z
-  if not bypassBlocking and self:_crossesToPhysicalProbe(destinationX, destinationZ) then
+  local mode = (planned ~= nil and planned.mode) or self._traversalMode
+  assert(mode == "walking" or mode == "surfing", "traversal mode must be walking or surfing")
+  if not bypassBlocking and planned == nil and self:_crossesToPhysicalProbe(destinationX, destinationZ) then
     local currentSourceSurfaceId = self.committedSourceSurfaceId
     assert(currentSourceSurfaceId ~= nil, "player stable source id is missing")
     local probe = self.currentMap:probePhysicalCell(destinationX, destinationZ, {
@@ -274,25 +311,50 @@ function FieldPlayer:_resolveStep(direction, bypassBlocking)
   local ok, result = pcall(function()
     local destinationLocalX, destinationLocalZ =
       FieldCoordinates.fieldToLocal(self.currentMap, destinationX, destinationZ)
-    if not bypassBlocking and self.currentMap.collision:isBlockedLocal(destinationLocalX, destinationLocalZ) then
-      return nil
-    end
-    local sourceX, sourceZ =
-      self.localX + FieldCoordinates.TILE_CENTER_OFFSET, self.localZ + FieldCoordinates.TILE_CENTER_OFFSET
     local destinationCenterX, destinationCenterZ =
       destinationLocalX + FieldCoordinates.TILE_CENTER_OFFSET, destinationLocalZ + FieldCoordinates.TILE_CENTER_OFFSET
-    local sample = self.resolver:resolve({
-      localX = destinationCenterX,
-      localZ = destinationCenterZ,
-      currentSurfaceId = self.surfaceId,
-      currentY = self.worldY,
-      crossing = {
-        fromX = sourceX,
-        fromZ = sourceZ,
-        toX = destinationCenterX,
-        toZ = destinationCenterZ,
-      },
-    })
+    local sample
+    if planned ~= nil and planned.surfaceId ~= nil then
+      -- A planned segment names its validated surface outright (climb
+      -- landings above the current ground have no continuity to follow).
+      assert(self.currentMap.terrain:plate(planned.surfaceId), "planned traversal surface is missing")
+      sample = self.currentMap.terrain:sample(planned.surfaceId, destinationCenterX, destinationCenterZ)
+      assert(sample.surfaceId == planned.surfaceId, "planned traversal surface does not cover its tile")
+    else
+      local swimDestination = false
+      if mode == "surfing" and not bypassBlocking then
+        swimDestination = MetatileBehavior.isSurfableWater(destinationBehavior(self, destinationX, destinationZ))
+      end
+      if not bypassBlocking and not swimDestination then
+        if self.currentMap.collision:isBlockedLocal(destinationLocalX, destinationLocalZ) then
+          return nil
+        end
+      end
+      if mode == "surfing" then
+        -- Swimming resolves by height continuity without a shore-anchored
+        -- crossing: the plan or the behavior rule already chose the tile.
+        sample = self.resolver:resolve({
+          localX = destinationCenterX,
+          localZ = destinationCenterZ,
+          currentY = self.worldY,
+        })
+      else
+        local sourceX, sourceZ =
+          self.localX + FieldCoordinates.TILE_CENTER_OFFSET, self.localZ + FieldCoordinates.TILE_CENTER_OFFSET
+        sample = self.resolver:resolve({
+          localX = destinationCenterX,
+          localZ = destinationCenterZ,
+          currentSurfaceId = self.surfaceId,
+          currentY = self.worldY,
+          crossing = {
+            fromX = sourceX,
+            fromZ = sourceZ,
+            toX = destinationCenterX,
+            toZ = destinationCenterZ,
+          },
+        })
+      end
+    end
     local point = FieldCoordinates.fieldToWorld(self.currentMap, destinationX, destinationZ, sample.worldY)
     local plate = assert(self.currentMap.terrain:plate(sample.surfaceId), "resolved destination surface missing")
     -- Occupancy is checked against the resolved destination surface, so an
@@ -432,6 +494,17 @@ function FieldPlayer:_advanceTurn()
   return false
 end
 
+-- Switch the traversal mode ordinary steps classify with: walking treats
+-- surfable water as a field action, surfing steps connected water and
+-- initiates disembark onto walkable shores instead. The mode always tracks
+-- the avatar durable state via the session; task-driven motion carries its
+-- own mode per planned segment.
+---@param mode string
+function FieldPlayer:setTraversalMode(mode)
+  assert(mode == "walking" or mode == "surfing", "FieldPlayer traversal mode must be walking or surfing")
+  self._traversalMode = mode
+end
+
 -- Shared step classification: resolves the destination collision cell (via
 -- the physical probe or the map's own collision grid, matching whichever
 -- `_resolveStep` would consult) and runs it through `FieldTraversal.classify`.
@@ -469,7 +542,17 @@ function FieldPlayer:_stepDecision(direction)
     end
     error(destinationCell)
   end
-  return FieldTraversal.classify(destinationCell, direction)
+  return FieldTraversal.classify(destinationCell, direction, self._traversalMode)
+end
+
+-- Public read of the shared step decision for owners that arbitrate before
+-- stepping (session field-move admission): a value-only record, never a
+-- motion commitment.
+---@param direction FieldDirection
+---@return table<string, unknown>
+function FieldPlayer:stepDecision(direction)
+  assert(DELTAS[direction], "unknown field direction " .. tostring(direction))
+  return self:_stepDecision(direction)
 end
 
 -- Non-mutating production movement query: the same collision, terrain,
@@ -482,7 +565,7 @@ end
 function FieldPlayer:resolveStep(direction)
   assert(DELTAS[direction], "unknown field direction " .. tostring(direction))
   local decision = self:_stepDecision(direction)
-  if decision.kind == "field_action" or decision.kind == "blocked" then
+  if decision.kind == "field_action" or decision.kind == "blocked" or decision.kind == "disembark" then
     return nil
   elseif decision.kind == "ledge_jump" then
     return self:_resolveLedgeLanding(direction)
@@ -510,7 +593,7 @@ function FieldPlayer:tryStep(direction)
   self.facing = direction
 
   local decision = self:_stepDecision(direction)
-  if decision.kind == "field_action" or decision.kind == "blocked" then
+  if decision.kind == "field_action" or decision.kind == "blocked" or decision.kind == "disembark" then
     return false
   elseif decision.kind == "ledge_jump" then
     local destination = self:_resolveLedgeLanding(direction)
@@ -938,7 +1021,15 @@ function FieldPlayer:beginScriptedAction(action)
   assert(type(action) == "table" and type(action.action) == "string", "scripted action required")
   local MovementCalibration = require("libs.hgss.src.script.tasks.MovementCalibration")
   local durationTicks
-  if
+  if kind == "traverse" then
+    -- Planned field traversal reuses the ordinary walk cadence through the
+    -- current motion owner: the plan segments carry their own validated
+    -- mode and surface, so only the timing comes from calibration.
+    assert(type(action.direction) == "string", "direction required for traverse")
+    assert(type(action.speed) == "string", "speed required for traverse")
+    assert(action.mode == "walking" or action.mode == "surfing", "traverse mode must be walking or surfing")
+    durationTicks = MovementCalibration.actionTicks({ action = "walk", speed = action.speed })
+  elseif
     kind == "walk"
     or kind == "walk_in_place"
     or kind == "jump"
@@ -962,10 +1053,15 @@ function FieldPlayer:beginScriptedAction(action)
     surfaceId = self.surfaceId,
   }
   local toState
-  if kind == "walk" or kind == "jump" then
+  if kind == "walk" or kind == "jump" or kind == "traverse" then
     local direction = assert(action.direction, "direction required for " .. kind)
     local bypass = true
-    local dest = self:_resolveStep(direction, bypass)
+    local planned = nil
+    if kind == "traverse" then
+      bypass = false
+      planned = { mode = action.mode, surfaceId = action.surfaceId }
+    end
+    local dest = self:_resolveStep(direction, bypass, planned)
     if kind == "jump" and action.distance == "zero" then
       dest = {
         fieldX = self.fieldX,
@@ -1015,7 +1111,7 @@ function FieldPlayer:beginScriptedAction(action)
     self._gesturePose = nil
     self._gestureTick = nil
     self._gestureOffsetY = 0
-  elseif kind == "walk" or kind == "walk_in_place" or kind == "jump" then
+  elseif kind == "walk" or kind == "walk_in_place" or kind == "jump" or kind == "traverse" then
     self._gesturePose = nil
     self._gestureTick = nil
     self._gestureOffsetY = 0
@@ -1043,7 +1139,7 @@ function FieldPlayer:advanceScriptedAction(progressTicks, durationTicks)
   m.durationTicks = durationTicks
   local t = durationTicks > 0 and (progressTicks / durationTicks) or 1
   self.previousWorldX, self.previousWorldY, self.previousWorldZ = self.worldX, self.worldY, self.worldZ
-  if m.action == "walk" then
+  if m.action == "walk" or m.action == "traverse" then
     assert(self.from and self.to, "walking endpoints required")
     self.worldX = self.from.worldX + (self.to.worldX - self.from.worldX) * t
     self.worldZ = self.from.worldZ + (self.to.worldZ - self.from.worldZ) * t
@@ -1133,7 +1229,7 @@ function FieldPlayer:presentationStateInto(out)
   local locomotionActive
   if scripted ~= nil then
     local action = scripted.action
-    locomotionActive = action == "walk" or action == "walk_in_place" or action == "jump"
+    locomotionActive = action == "walk" or action == "walk_in_place" or action == "jump" or action == "traverse"
   else
     locomotionActive = self.motion == "walking" or self.motion == "turning" or self.motion == "jumping"
   end

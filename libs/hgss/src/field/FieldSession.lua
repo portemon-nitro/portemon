@@ -30,6 +30,10 @@ local ScriptInteractionClient = require("libs.hgss.src.script.ScriptInteractionC
 local BuiltinScripts = require("libs.hgss.src.script.BuiltinScripts")
 local FieldTransition = require("libs.hgss.src.transition.FieldTransition")
 local FieldMapEntryController = require("libs.hgss.src.field.FieldMapEntryController")
+local Errors = require("libs.errors.src.Errors")
+local FieldCoordinates = require("libs.hgss.src.field.FieldCoordinates")
+local FieldErrors = require("libs.hgss.src.field.FieldErrors")
+local MetatileBehavior = require("libs.hgss.src.world.MetatileBehavior")
 
 ---@class FieldSessionOptions
 ---@field versionId string
@@ -56,7 +60,7 @@ local FieldMapEntryController = require("libs.hgss.src.field.FieldMapEntryContro
 ---@field playerAvatar FieldPlayerAvatarState? surf-phase owner stepped once per fixed tick
 ---@field audio { updateField: fun(self: table<string, unknown>), play: fun(self: table<string, unknown>, idOrSymbol: string) }?
 ---@field navigationBoundary table<string, unknown>?
----@field fieldMoves FieldSession.FieldMoves? validated Strength-push port; absent sessions bump boulders
+---@field fieldMoves FieldSession.FieldMoves? validated push/disembark port; absent sessions bump boulders
 ---@field initController table<string, unknown>|nil
 ---@field enterMapActors fun()?
 ---@field autoAcknowledgePresentation boolean?
@@ -67,6 +71,7 @@ local FieldMapEntryController = require("libs.hgss.src.field.FieldMapEntryContro
 ---@class FieldSession.FieldMoves
 ---@field tryStrengthPush fun(self: FieldSession.FieldMoves, snapshot: table<string, unknown>): table<string, unknown>
 ---@field discardPending fun(self: FieldSession.FieldMoves)
+---@field requestDisembark fun(self: FieldSession.FieldMoves): table<string, unknown>
 
 ---@class FieldSession
 ---@field versionId string
@@ -95,7 +100,7 @@ local FieldMapEntryController = require("libs.hgss.src.field.FieldMapEntryContro
 ---@field initController table<string, unknown>|nil
 ---@field mapEntryStage FieldMapEntryStage? read-only view of mapEntryController state
 ---@field mapEntryController FieldMapEntryController
----@field private fieldMoves FieldSession.FieldMoves? validated Strength-push port; absent sessions bump boulders
+---@field private fieldMoves FieldSession.FieldMoves? validated push/disembark port; absent sessions bump boulders
 ---@field childResumePending boolean
 ---@field tick integer
 ---@field accumulator number
@@ -307,6 +312,10 @@ function FieldSession.new(options)
       type(options.fieldMoves.tryStrengthPush) == "function" and type(options.fieldMoves.discardPending) == "function",
       "field session push port requires tryStrengthPush and discardPending"
     )
+    assert(
+      type(options.fieldMoves.requestDisembark) == "function",
+      "field session disembark port requires requestDisembark"
+    )
   end
   if options.audio then
     assert(
@@ -363,7 +372,38 @@ function FieldSession.new(options)
 end
 
 function FieldSession:beginMapEntry()
+  self:validateSurfSpawn()
   self.mapEntryController:begin("full")
+end
+
+-- A surfing avatar must stand on surfable water: an old save, warp, or
+-- swap that beaches the avatar fails entry instead of floating it on
+-- land. Every other durable state enters unconditionally.
+function FieldSession:validateSurfSpawn()
+  local avatar = self.playerAvatar
+  if avatar == nil then
+    return
+  end
+  if avatar:status().durableState ~= "surfing" then
+    return
+  end
+  local player, map = self.player, self.currentMap
+  local ok, behavior = pcall(function()
+    local localX, localZ = FieldCoordinates.fieldToLocal(map, player.fieldX, player.fieldZ)
+    return map.collision:getLocal(localX, localZ).behavior
+  end)
+  if not ok then
+    Errors.raise(FieldErrors.PLAYER_AVATAR_INVALID, "surfing avatar entry requires a readable tile", {
+      fieldX = player.fieldX,
+      fieldZ = player.fieldZ,
+    })
+  end
+  if not MetatileBehavior.isSurfableWater(behavior) then
+    Errors.raise(FieldErrors.PLAYER_AVATAR_INVALID, "surfing avatar entry requires surfable water", {
+      fieldX = player.fieldX,
+      fieldZ = player.fieldZ,
+    })
+  end
 end
 
 function FieldSession:onChildApplicationResume()
@@ -965,6 +1005,15 @@ function FieldSession:updateFixed(inputSnapshot)
     movementInput.pressedDirection = carriedBoundaryDirection
   end
   local motionAtPlayerUpdateStart = self.player.motion
+  -- Avatar ownership of traversal mode: ordinary-step classification
+  -- always tracks the avatar durable state, so task-driven avatar commits
+  -- propagate to physics on the next idle tick without a second mode
+  -- owner. Cycling, rocket, and every other durable state mean walking
+  -- physics; only surfing surfs.
+  if self.playerAvatar ~= nil and self.player.motion == "idle" then
+    local durable = self.playerAvatar:status().durableState
+    self.player:setTraversalMode(durable == "surfing" and "surfing" or "walking")
+  end
   -- Strength-push arbitration: an idle player's step into an enabled
   -- strength boulder starts the single push task instead of stepping. The
   -- injected field-move port validates and queues; the session claims the
@@ -980,6 +1029,27 @@ function FieldSession:updateFixed(inputSnapshot)
         direction = pushDirection,
         mapId = self.currentMap.mapId,
       })
+      if type(attempt) == "table" and attempt.kind == "accepted" then
+        local started = self.scriptClient:startApplicationScript(BuiltinScripts.FIELD_MOVE_ENTRY_SCRIPT, self.tick + 1)
+        if started ~= ScriptInteractionClient.RESULTS.blocked then
+          self:_advanceTick()
+          return
+        end
+        self.fieldMoves:discardPending()
+      end
+    end
+  end
+  -- Disembark arbitration: a surfing player's step toward a walkable
+  -- shore starts the single planned disembark instead of stepping. The
+  -- injected field-move port validates and queues; the session claims
+  -- the foreground entry script synchronously, then consumes the attempt
+  -- without stepping the player. Refusals and ordinary water steps fall
+  -- through to normal movement below (which refuses them).
+  local disembarkDirection = inputSnapshot.pressedDirection or inputSnapshot.heldDirection
+  if self.fieldMoves ~= nil and not foregroundActive and self.player.motion == "idle" and disembarkDirection then
+    local decision = self.player:stepDecision(disembarkDirection)
+    if type(decision) == "table" and decision.kind == "disembark" then
+      local attempt = self.fieldMoves:requestDisembark()
       if type(attempt) == "table" and attempt.kind == "accepted" then
         local started = self.scriptClient:startApplicationScript(BuiltinScripts.FIELD_MOVE_ENTRY_SCRIPT, self.tick + 1)
         if started ~= ScriptInteractionClient.RESULTS.blocked then
