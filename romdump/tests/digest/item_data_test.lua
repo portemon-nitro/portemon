@@ -99,6 +99,105 @@ function T.pins_the_friendship_and_ball_source_facts()
   end
 end
 
+local function partyMember(partyUse, flags, params)
+  local bytes = { 100, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, partyUse and 1 or 0, 0 }
+  for index = 1, 7 do
+    bytes[#bytes + 1] = flags[index] or 0
+  end
+  for index = 1, 11 do
+    local value = params[index] or 0
+    if value < 0 then
+      value = value + 256
+    end
+    bytes[#bytes + 1] = value
+  end
+  bytes[#bytes + 1] = 0
+  bytes[#bytes + 1] = 0
+  return string.char(unpack(bytes))
+end
+
+function T.decodes_party_flags_and_signed_params()
+  -- Potion shape: hp_restore with a fixed amount of 20, no friendship.
+  local potion =
+    assert(compiler().decodeItemData(partyMember(true, { 0, 0, 0, 0, 0, 0x04, 0 }, { 0, 0, 0, 0, 0, 0, 20 }), {
+      archive = "item_data",
+      memberId = 17,
+    }))
+  Assert.isTrue(potion.partyUse)
+  Assert.isTrue(potion.party.hpRestore)
+  Assert.isFalse(potion.party.revive)
+  Assert.equal(potion.party.hpRestoreParam, 20)
+  Assert.isFalse(potion.party.friendshipLo)
+  -- Energy powder shape: fixed 50 plus signed friendship penalties.
+  local powder = assert(
+    compiler().decodeItemData(
+      partyMember(true, { 0, 0, 0, 0, 0, 0x04, 0x0E }, { 0, 0, 0, 0, 0, 0, 50, 0, -5, -5, -10 }),
+      { archive = "item_data", memberId = 34 }
+    )
+  )
+  Assert.isTrue(powder.party.hpRestore)
+  Assert.equal(powder.party.hpRestoreParam, 50)
+  Assert.isTrue(powder.party.friendshipLo)
+  Assert.isTrue(powder.party.friendshipMed)
+  Assert.isTrue(powder.party.friendshipHi)
+  Assert.equal(powder.party.friendshipLoParam, -5)
+  Assert.equal(powder.party.friendshipHiParam, -10)
+  -- Revive shape: revive plus half restoration.
+  local revive =
+    assert(compiler().decodeItemData(partyMember(true, { 0, 0x01, 0, 0, 0, 0x04, 0 }, { 0, 0, 0, 0, 0, 0, 254 }), {
+      archive = "item_data",
+      memberId = 28,
+    }))
+  Assert.isTrue(revive.party.revive)
+  Assert.isFalse(revive.party.reviveAll)
+  Assert.equal(revive.party.hpRestoreParam, 254)
+  -- Sacred Ash shape: revive_all plus full restoration.
+  local ash =
+    assert(compiler().decodeItemData(partyMember(true, { 0, 0x03, 0, 0, 0, 0x04, 0 }, { 0, 0, 0, 0, 0, 0, 255 }), {
+      archive = "item_data",
+      memberId = 44,
+    }))
+  Assert.isTrue(ash.party.reviveAll)
+  -- Vitamin shape: signed positive effort delta with friendship bands.
+  local vitamin = assert(
+    compiler().decodeItemData(
+      partyMember(true, { 0, 0, 0, 0, 0, 0x08, 0x0E }, { 10, 0, 0, 0, 0, 0, 0, 0, 5, 3, 2 }),
+      { archive = "item_data", memberId = 45 }
+    )
+  )
+  Assert.isTrue(vitamin.party.hpEvUp)
+  Assert.equal(vitamin.party.hpEvDelta, 10)
+  -- Berry shape: signed negative effort delta.
+  local berry = assert(
+    compiler().decodeItemData(
+      partyMember(true, { 0, 0, 0, 0, 0, 0x08, 0x0E }, { -10, 0, 0, 0, 0, 0, 0, 0, 10, 5, 2 }),
+      { archive = "item_data", memberId = 169 }
+    )
+  )
+  Assert.equal(berry.party.hpEvDelta, -10)
+  Assert.equal(berry.party.friendshipLoParam, 10)
+  -- Ether shape: single-target fixed power-point restore.
+  local ether =
+    assert(compiler().decodeItemData(partyMember(true, { 0, 0, 0, 0, 0, 0x01, 0 }, { 0, 0, 0, 0, 0, 0, 0, 10 }), {
+      archive = "item_data",
+      memberId = 38,
+    }))
+  Assert.isTrue(ether.party.ppRestore)
+  Assert.isFalse(ether.party.ppRestoreAll)
+  Assert.equal(ether.party.ppRestoreParam, 10)
+  -- PP Up shape: boost flag with friendship bands.
+  local ppUp = assert(
+    compiler().decodeItemData(
+      partyMember(true, { 0, 0, 0, 0, 0x40, 0, 0x0E }, { 0, 0, 0, 0, 0, 0, 0, 0, 5, 3, 2 }),
+      { archive = "item_data", memberId = 51 }
+    )
+  )
+  Assert.isTrue(ppUp.party.ppUp)
+  -- Members without the party-use byte decode no party facts.
+  local tm = assert(compiler().decodeItemData(memberWith(0, 0), { archive = "item_data", memberId = 328 }))
+  Assert.isFalse(tm.partyUse)
+end
+
 function T.pins_the_machine_berry_and_mail_ranges()
   Assert.equal(ItemSources.FIRST_TM, 328)
   Assert.equal(ItemSources.LAST_HM, 427)

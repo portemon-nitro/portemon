@@ -678,10 +678,43 @@ ItemSources.HOLD_EFFECT_FRIENDSHIP_UP = 53
 -- hold-effect parameter at 3, the packed bitfield u16 at 8
 -- (naturalGiftType:5, prevent_toss:1, selectable:1, fieldPocket:4,
 -- battlePocket:5 from the least-significant bit), field/battle use-function
--- bytes at 10/11. Only the catalog-consumed facts have named offsets below;
--- price, use behavior, and party parameters stay producer-side.
+-- bytes at 10/11, the party-use byte at 12, and the ItemPartyParam bytes at
+-- 14..33: seven flag bytes (bit order below) followed by signed hp/atk/def/
+-- speed/spatk/spdef effort deltas, the u8 hp/pp restore parameters, signed
+-- low/medium/high friendship parameters, and two padding bytes.
 ItemSources.ITEM_DATA_SIZE = 34
 ItemSources.ITEM_DATA_HOLD_EFFECT_OFFSET = 2
+ItemSources.ITEM_DATA_PARTY_USE_OFFSET = 12
+ItemSources.ITEM_DATA_PARTY_PARAM_OFFSET = 14
+
+-- ItemPartyParam restore sentinels (include/constants/items.h): the hp and
+-- pp restore parameters use these values for full/half/quarter restoration.
+ItemSources.HP_RESTORE_ALL = 255
+ItemSources.HP_RESTORE_HALF = 254
+ItemSources.HP_RESTORE_QTR = 253
+ItemSources.PP_RESTORE_ALL = 127
+
+-- Source item mood deltas applied alongside party use (src/pokemon_mood.c
+-- ItemIdGetMoodEffect, keyed by semantic item key). Items absent here carry
+-- no mood effect; MonAdjustMood clamps the result to -127..127.
+ItemSources.PARTY_MOOD_BY_KEY = {
+  ENERGYPOWDER = -20,
+  ENERGY_ROOT = -30,
+  HEAL_POWDER = -20,
+  REVIVAL_HERB = -40,
+  HP_UP = 8,
+  PROTEIN = 8,
+  IRON = 8,
+  CARBOS = 8,
+  CALCIUM = 8,
+  ZINC = 8,
+}
+
+-- Party-targeted form-change items have no party parameter flags; they are
+-- recognized by semantic key so the catalog marks them deferred explicitly.
+ItemSources.PARTY_FORM_CHANGE_KEYS = {
+  GRACIDEA = true,
+}
 
 -- Ball classification by source item identity: ITEM_* 1..16 plus the later
 -- ball additions 492..500, matching the BALL_* 1..25 vocabulary in

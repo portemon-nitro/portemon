@@ -115,8 +115,8 @@ function T.contract_pins_the_current_asset_identities()
       portraitManifestSchema = "g4-mon-portrait-manifest-v2",
     },
     items = {
-      cacheFormat = "item-cache-v2",
-      catalogSchema = "g4-item-catalog-v2",
+      cacheFormat = "item-cache-v3",
+      catalogSchema = "g4-item-catalog-v3",
       indexSchema = "g4-item-index-v1",
       iconManifestSchema = "g4-item-icons-v1",
     },

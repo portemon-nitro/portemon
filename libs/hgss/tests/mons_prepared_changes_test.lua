@@ -87,4 +87,35 @@ function T.derive_projects_full_stats_without_mutating()
   Assert.equal(service:partyRevision(), revision, "a read-only projection never mutates")
 end
 
+function T.health_adjustment_preserves_damage_across_maximum_changes()
+  local adjust = HgssMonService.adjustHpForMaxChange
+  Assert.equal(adjust(30, 32, 20), 22, "a raised maximum preserves damage")
+  Assert.equal(adjust(30, 32, 30), 32, "full health stays full")
+  Assert.equal(adjust(30, 28, 30), 28, "a shrunk maximum clamps")
+  Assert.equal(adjust(30, 28, 20), 18, "damage survives a shrink")
+  Assert.equal(adjust(30, 32, 0), 0, "the fainted stay fainted")
+  Assert.equal(newService():currentMapSection(), 7, "the service reports its configured section")
+end
+
+function T.ev_staging_finalizes_health_through_shared_derivation()
+  local service = newService()
+  local maxHp = service:derive(service:partyMon(0)).maxHp
+  local staged = service:partyMon(0)
+  staged.evs.hp = 96
+  staged.condition.currentHp = maxHp - 4
+  local finalized = service:refreshStagedHp(staged, maxHp)
+  local recalculated = service:derive(finalized)
+  Assert.isTrue(recalculated.maxHp >= maxHp, "added health effort cannot shrink the maximum")
+  Assert.equal(
+    finalized.condition.currentHp,
+    math.min(maxHp - 4 + (recalculated.maxHp - maxHp), recalculated.maxHp),
+    "damage survives the recalculation"
+  )
+  local fainted = service:partyMon(0)
+  fainted.evs.hp = 96
+  fainted.condition.currentHp = 0
+  local kept = service:refreshStagedHp(fainted, maxHp)
+  Assert.equal(kept.condition.currentHp, 0, "effort changes never revive the fainted")
+end
+
 return { tests = T }

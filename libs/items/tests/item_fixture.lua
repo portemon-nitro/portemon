@@ -36,7 +36,24 @@ local KNOWN = {
   POKE_BALL = { nativeId = 4, pocket = "balls", isBall = true },
   GREAT_BALL = { nativeId = 3, pocket = "balls", isBall = true },
   LUXURY_BALL = { nativeId = 11, pocket = "balls", isBall = true },
-  POTION = { nativeId = 17, pocket = "medicine", name = "Potion" },
+  POTION = {
+    nativeId = 17,
+    pocket = "medicine",
+    name = "Potion",
+    partyUse = {
+      kind = "medicine",
+      cures = {
+        sleep = false,
+        poison = false,
+        burn = false,
+        freeze = false,
+        paralysis = false,
+      },
+      restore = { kind = "fixed", amount = 20 },
+      revive = "none",
+      mood = 0,
+    },
+  },
   SOOTHE_BELL = { nativeId = 218, pocket = "items", friendshipBoost = true },
   TM01 = { nativeId = 328, pocket = "tmhm", tmhmMoveNativeId = 264 },
   HM01 = { nativeId = 420, pocket = "tmhm", tmhmMoveNativeId = 15, isHm = true, canHold = false },
@@ -45,12 +62,37 @@ local KNOWN = {
     pocket = "berries",
     berryNameSingular = "Cheri Berry",
     berryNamePlural = "Cheri Berries",
+    partyUse = {
+      kind = "medicine",
+      cures = {
+        sleep = false,
+        poison = false,
+        burn = false,
+        freeze = false,
+        paralysis = true,
+      },
+      revive = "none",
+      mood = 0,
+    },
   },
   SITRUS_BERRY = {
     nativeId = 158,
     pocket = "berries",
     berryNameSingular = "Sitrus Berry",
     berryNamePlural = "Sitrus Berries",
+    partyUse = {
+      kind = "medicine",
+      cures = {
+        sleep = false,
+        poison = false,
+        burn = false,
+        freeze = false,
+        paralysis = false,
+      },
+      restore = { kind = "quarter" },
+      revive = "none",
+      mood = 0,
+    },
   },
   BICYCLE = { nativeId = 450, pocket = "key_items", preventToss = true, selectable = true },
 }
@@ -75,10 +117,12 @@ local function placeholder(nativeId, key)
     isHm = false,
     canHold = true,
     heldFormEffect = "none",
+    partyUse = { kind = "none" },
   }
   if nativeId >= 328 and nativeId <= 427 then
     record.pocket = "tmhm"
     record.tmhmMoveNativeId = 1
+    record.partyUse = { kind = "machine" }
     if nativeId >= 420 then
       record.isHm = true
       record.canHold = false
@@ -130,12 +174,14 @@ function ItemFixture.buildAssetRoot()
         isHm = known.isHm or false,
         canHold = known.canHold,
         heldFormEffect = known.heldFormEffect or "none",
+        partyUse = known.partyUse or { kind = "none" },
       }
       if record.canHold == nil then
         record.canHold = known.pocket ~= "key_items" and known.pocket ~= "mail"
       end
       if known.pocket == "tmhm" then
         record.tmhmMoveNativeId = known.tmhmMoveNativeId
+        record.partyUse = { kind = "machine" }
       end
       if known.pocket == "berries" then
         record.berryNameSingular = known.berryNameSingular
@@ -157,7 +203,7 @@ function ItemFixture.buildAssetRoot()
     key_items = { nativeId = 7, capacity = 50, maxQuantity = 999, ordering = "manual" },
   }
   return {
-    schema = "g4-item-catalog-v2",
+    schema = "g4-item-catalog-v3",
     version = { id = "heartgold", language = "en" },
     items = items,
     pockets = pockets,

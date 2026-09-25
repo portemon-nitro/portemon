@@ -9,6 +9,11 @@ local ItemErrors = {}
 
 ItemErrors.RECORD_INVALID = "ITEM_RECORD_INVALID"
 
+-- Raised when a catalog record reaches domain policy without the generated
+-- party-use contract the schema requires. The code names the violated
+-- generated contract, matching the validator in ItemAssetSchema.
+ItemErrors.CATALOG_INVALID = "ITEM_CATALOG_INVALID"
+
 ---@param code string
 ---@param message string
 ---@param context table<string, Errors.Value>?

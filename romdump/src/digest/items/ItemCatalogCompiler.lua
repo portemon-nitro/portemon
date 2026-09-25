@@ -78,8 +78,14 @@ end
 
 -- Decode one 34-byte item_data member into the catalog-consumed facts: the
 -- hold-effect byte driving friendship behavior, the toss/selectability
--- flags, and the field pocket. Price, use behavior, and party parameters
--- stay producer-side with the rest of ItemData.
+-- flags, the field pocket, and the party-use facts. The party parameter
+-- bytes follow struct ItemPartyParam in include/item.h: flag bytes carry
+-- slp/psn/brn/frz/prz/cfs/inf/guard_spec, revive/revive_all/level_up/evolve
+-- plus four-bit battle stages, pp_up/pp_max/pp_restore/pp_restore_all plus
+-- hp_restore and the six effort flags, then the three friendship band
+-- flags; signed effort/friendship deltas and u8 restore parameters follow.
+-- Source sentinels stay producer-side; the catalog stores only normalized
+-- partyUse records built by normalizePartyUse below.
 ---@param member string
 ---@param context Errors.Context|nil
 ---@return table<string, unknown>|nil, Errors.Error|nil
@@ -94,12 +100,270 @@ function ItemCatalogCompiler.decodeItemData(member, context)
   local tossBit = 2 ^ ItemSources.ITEM_DATA_PREVENT_TOSS_BIT
   local selectBit = 2 ^ ItemSources.ITEM_DATA_SELECTABLE_BIT
   local pocketShift = 2 ^ ItemSources.ITEM_DATA_FIELD_POCKET_SHIFT
+  local paramBase = ItemSources.ITEM_DATA_PARTY_PARAM_OFFSET
+  local function flag(index)
+    return string.byte(member, paramBase + index + 1)
+  end
+  local function has(index, bit)
+    return math.floor(flag(index) / (2 ^ bit)) % 2 == 1
+  end
+  local function signed(index)
+    local byte = string.byte(member, paramBase + index + 1)
+    if byte >= 128 then
+      return byte - 256
+    end
+    return byte
+  end
+  local b1, b2, b3, b4 = flag(1), flag(2), flag(3), flag(4)
   return {
     holdEffect = string.byte(member, ItemSources.ITEM_DATA_HOLD_EFFECT_OFFSET + 1),
     preventToss = math.floor(word / tossBit) % 2 == 1,
     selectable = math.floor(word / selectBit) % 2 == 1,
     fieldPocket = math.floor(word / pocketShift) % (ItemSources.ITEM_DATA_FIELD_POCKET_MASK + 1),
+    partyUse = string.byte(member, ItemSources.ITEM_DATA_PARTY_USE_OFFSET + 1) == 1,
+    party = {
+      slpHeal = has(0, 0),
+      psnHeal = has(0, 1),
+      brnHeal = has(0, 2),
+      frzHeal = has(0, 3),
+      przHeal = has(0, 4),
+      cfsHeal = has(0, 5),
+      infHeal = has(0, 6),
+      guardSpec = has(0, 7),
+      revive = has(1, 0),
+      reviveAll = has(1, 1),
+      levelUp = has(1, 2),
+      evolve = has(1, 3),
+      atkStages = math.floor(b1 / 16) % 16,
+      defStages = b2 % 16,
+      spatkStages = math.floor(b2 / 16) % 16,
+      spdefStages = b3 % 16,
+      speedStages = math.floor(b3 / 16) % 16,
+      accuracyStages = b4 % 16,
+      critrateStages = math.floor(b4 / 16) % 4,
+      ppUp = has(4, 6),
+      ppMax = has(4, 7),
+      ppRestore = has(5, 0),
+      ppRestoreAll = has(5, 1),
+      hpRestore = has(5, 2),
+      hpEvUp = has(5, 3),
+      atkEvUp = has(5, 4),
+      defEvUp = has(5, 5),
+      speedEvUp = has(5, 6),
+      spatkEvUp = has(5, 7),
+      spdefEvUp = has(6, 0),
+      friendshipLo = has(6, 1),
+      friendshipMed = has(6, 2),
+      friendshipHi = has(6, 3),
+      hpEvDelta = signed(7),
+      atkEvDelta = signed(8),
+      defEvDelta = signed(9),
+      speedEvDelta = signed(10),
+      spatkEvDelta = signed(11),
+      spdefEvDelta = signed(12),
+      hpRestoreParam = string.byte(member, paramBase + 13 + 1),
+      ppRestoreParam = string.byte(member, paramBase + 14 + 1),
+      friendshipLoParam = signed(15),
+      friendshipMedParam = signed(16),
+      friendshipHiParam = signed(17),
+    },
   }
+end
+
+-- Normalize decoded party parameters into the closed semantic partyUse
+-- record the runtime consumes. Machine, mail, and key-recognized form
+-- items resolve without the party-use byte; every other item needs it.
+-- Deferred kinds name the explicitly unimplemented behavior. Party
+-- families resolve before battle-only riders: confusion/infatuation cure
+-- bits riding on full-heal items map to ordinary medicine, while items
+-- with no party family but battle-only flags defer explicitly. Flagged
+-- but effectless records stay medicinal and never apply. Mixed primary
+-- families fail the build instead of guessing a combination the source
+-- menu never offers.
+---@param nativeId integer
+---@param key string
+---@param pocketKey string
+---@param isMachine boolean
+---@param decoded table<string, unknown>
+---@return table<string, unknown>
+local function normalizePartyUse(nativeId, key, pocketKey, isMachine, decoded)
+  local context = { archive = "item_data", memberId = ItemSources.itemDataMember(nativeId) }
+  local function fail(code, message)
+    error(Errors.new(code, "item " .. key .. " " .. message, context), 0)
+  end
+  if isMachine then
+    return { kind = "machine" }
+  end
+  if pocketKey == "mail" then
+    return { kind = "deferred", reason = "mail" }
+  end
+  if ItemSources.PARTY_FORM_CHANGE_KEYS[key] then
+    return { kind = "deferred", reason = "form_change" }
+  end
+  local party = assert(decoded.party) --[[@as table<string, unknown>]]
+  assert(type(party) == "table", "party parameters decode to a record")
+  if not decoded.partyUse then
+    return { kind = "none" }
+  end
+  if party.levelUp == true then
+    return { kind = "deferred", reason = "level_up" }
+  end
+  if party.evolve == true then
+    return { kind = "deferred", reason = "evolution" }
+  end
+  local stages = (party.atkStages or 0)
+    + (party.defStages or 0)
+    + (party.spatkStages or 0)
+    + (party.spdefStages or 0)
+    + (party.speedStages or 0)
+    + (party.accuracyStages or 0)
+    + (party.critrateStages or 0)
+  local battleOnly = party.guardSpec == true or party.cfsHeal == true or party.infHeal == true or stages ~= 0
+  if party.reviveAll == true then
+    return { kind = "revive_all" }
+  end
+  local mood = ItemSources.PARTY_MOOD_BY_KEY[key] or 0
+  local friendship = nil
+  if party.friendshipLo == true or party.friendshipMed == true or party.friendshipHi == true then
+    friendship = {
+      lo = party.friendshipLoParam,
+      med = party.friendshipMedParam,
+      hi = party.friendshipHiParam,
+    }
+  end
+  -- Party-applicable families resolve first; confusion/infatuation cure
+  -- bits riding on full-heal items and any other battle-only riders stay
+  -- out of the mapped record. Battle-only deferral applies only when no
+  -- party family maps.
+  local hasMedicine = party.slpHeal == true
+    or party.psnHeal == true
+    or party.brnHeal == true
+    or party.frzHeal == true
+    or party.przHeal == true
+    or party.hpRestore == true
+    or party.revive == true
+  local hasPp = party.ppUp == true or party.ppMax == true or party.ppRestore == true or party.ppRestoreAll == true
+  local hasEv = party.hpEvUp == true
+    or party.atkEvUp == true
+    or party.defEvUp == true
+    or party.speedEvUp == true
+    or party.spatkEvUp == true
+    or party.spdefEvUp == true
+  local families = 0
+  if hasMedicine then
+    families = families + 1
+  end
+  if hasPp then
+    families = families + 1
+  end
+  if hasEv then
+    families = families + 1
+  end
+  if families > 1 then
+    fail("ITEM_PARTY_EFFECT_CONFLICT", "carries flags from several effect families")
+  end
+  if families == 0 then
+    if battleOnly then
+      return { kind = "deferred", reason = "battle_only" }
+    end
+    -- Flagged but effectless records stay medicinal and never apply.
+  end
+  if hasPp then
+    local record = { kind = "pp", target = "one", mood = mood }
+    if party.ppUp == true then
+      record.boost = 1
+    elseif party.ppMax == true then
+      record.boost = 3
+    elseif party.ppRestore == true or party.ppRestoreAll == true then
+      if party.ppRestoreAll == true then
+        record.target = "all"
+      end
+      local param = assert(party.ppRestoreParam) --[[@as integer]]
+      if param == ItemSources.PP_RESTORE_ALL then
+        record.restore = "full"
+      elseif param >= 1 and param < ItemSources.PP_RESTORE_ALL then
+        record.restore = param
+      else
+        fail("ITEM_PARTY_EFFECT_INVALID", "carries an invalid power-point restore amount")
+      end
+    else
+      fail("ITEM_PARTY_EFFECT_INVALID", "carries no power-point operation")
+    end
+    if friendship ~= nil then
+      record.friendship = friendship
+    end
+    return record
+  end
+  if hasEv then
+    local stats = { "hp", "attack", "defense", "speed", "specialAttack", "specialDefense" }
+    local flags = {
+      party.hpEvUp == true,
+      party.atkEvUp == true,
+      party.defEvUp == true,
+      party.speedEvUp == true,
+      party.spatkEvUp == true,
+      party.spdefEvUp == true,
+    }
+    local deltas = {
+      party.hpEvDelta,
+      party.atkEvDelta,
+      party.defEvDelta,
+      party.speedEvDelta,
+      party.spatkEvDelta,
+      party.spdefEvDelta,
+    }
+    local changes = {}
+    for index, stat in ipairs(stats) do
+      if flags[index] then
+        local delta = assert(deltas[index]) --[[@as integer]]
+        if delta == 0 or delta < -100 or delta > 100 then
+          fail("ITEM_PARTY_EFFECT_INVALID", "carries an out-of-range effort delta")
+        end
+        changes[#changes + 1] = { stat = stat, delta = delta }
+      end
+    end
+    if #changes == 0 then
+      fail("ITEM_PARTY_EFFECT_INVALID", "carries no effort operation")
+    end
+    local record = { kind = "ev", changes = changes, mood = mood }
+    if friendship ~= nil then
+      record.friendship = friendship
+    end
+    return record
+  end
+  local record = {
+    kind = "medicine",
+    cures = {
+      sleep = party.slpHeal == true,
+      poison = party.psnHeal == true,
+      burn = party.brnHeal == true,
+      freeze = party.frzHeal == true,
+      paralysis = party.przHeal == true,
+    },
+    revive = "none",
+    mood = mood,
+  }
+  if party.revive == true then
+    record.revive = "single"
+  end
+  if party.hpRestore == true then
+    local param = assert(party.hpRestoreParam) --[[@as integer]]
+    if param == ItemSources.HP_RESTORE_ALL then
+      record.restore = { kind = "full" }
+    elseif param == ItemSources.HP_RESTORE_HALF then
+      record.restore = { kind = "half" }
+    elseif param == ItemSources.HP_RESTORE_QTR then
+      record.restore = { kind = "quarter" }
+    elseif param >= 1 and param < ItemSources.HP_RESTORE_QTR then
+      record.restore = { kind = "fixed", amount = param }
+    else
+      fail("ITEM_PARTY_EFFECT_INVALID", "carries an invalid health restore amount")
+    end
+  end
+  if friendship ~= nil then
+    record.friendship = friendship
+  end
+  return record
 end
 
 ---@param romFs RomFs
@@ -317,6 +581,7 @@ function ItemCatalogCompiler.compileCatalog(romFs, opts)
         isHm = isHm,
         canHold = pocketKey ~= "key_items" and pocketKey ~= "mail" and not isHm,
         heldFormEffect = heldFormEffect,
+        partyUse = normalizePartyUse(nativeId, key, pocketKey, isMachine, decoded),
       }
       if type(record.description) ~= "string" then
         error(Errors.new("ITEM_TEXT_MISSING", "item " .. nativeId .. " has no description", { nativeId = nativeId }), 0)

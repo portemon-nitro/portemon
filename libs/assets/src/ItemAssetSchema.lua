@@ -13,7 +13,7 @@ local Validate = require("libs.assets.src.Validate")
 ---@class ItemAssetSchema
 local ItemAssetSchema = {}
 
-ItemAssetSchema.CATALOG_SCHEMA = "g4-item-catalog-v2"
+ItemAssetSchema.CATALOG_SCHEMA = "g4-item-catalog-v3"
 ItemAssetSchema.ICON_MANIFEST_SCHEMA = "g4-item-icons-v1"
 
 -- The eight source pockets in native order: native id, occupied-slot
@@ -54,6 +54,7 @@ local ITEM_FIELDS = {
   isHm = true,
   canHold = true,
   heldFormEffect = true,
+  partyUse = true,
 }
 
 local function fail(code, message, context)
@@ -80,6 +81,173 @@ local function checkBoolean(value, context, code, field)
   end
 end
 
+local EV_STATS = {
+  hp = true,
+  attack = true,
+  defense = true,
+  speed = true,
+  specialAttack = true,
+  specialDefense = true,
+}
+
+local DEFERRED_REASONS = {
+  level_up = true,
+  evolution = true,
+  battle_only = true,
+  mail = true,
+  form_change = true,
+}
+
+local function checkInteger(value, context, code, field, low, high)
+  if type(value) ~= "number" or value % 1 ~= 0 or value < low or value > high then
+    fail(code, field .. " must be an integer in " .. low .. ".." .. high, context)
+  end
+end
+
+local function assertFriendship(key, value, context)
+  if value == nil then
+    return
+  end
+  if type(value) ~= "table" then
+    fail("ITEM_CATALOG_INVALID", "item " .. key .. " partyUse friendship must be a record", context)
+  end
+  checkKeys(value, { lo = true, med = true, hi = true }, context, "ITEM_CATALOG_INVALID")
+  checkInteger(value.lo, context, "ITEM_CATALOG_INVALID", "item " .. key .. " friendship lo", -255, 255)
+  checkInteger(value.med, context, "ITEM_CATALOG_INVALID", "item " .. key .. " friendship med", -255, 255)
+  checkInteger(value.hi, context, "ITEM_CATALOG_INVALID", "item " .. key .. " friendship hi", -255, 255)
+end
+
+local function assertMood(key, value, context)
+  checkInteger(value, context, "ITEM_CATALOG_INVALID", "item " .. key .. " partyUse mood", -127, 127)
+end
+
+local function assertMedicine(key, value, context)
+  checkKeys(
+    value,
+    { kind = true, cures = true, restore = true, revive = true, friendship = true, mood = true },
+    context,
+    "ITEM_CATALOG_INVALID"
+  )
+  if type(value.cures) ~= "table" then
+    fail("ITEM_CATALOG_INVALID", "item " .. key .. " partyUse cures must be a record", context)
+  end
+  checkKeys(
+    value.cures,
+    { sleep = true, poison = true, burn = true, freeze = true, paralysis = true },
+    context,
+    "ITEM_CATALOG_INVALID"
+  )
+  for _, cure in ipairs({ "sleep", "poison", "burn", "freeze", "paralysis" }) do
+    checkBoolean(value.cures[cure], context, "ITEM_CATALOG_INVALID", "item " .. key .. " cure " .. cure)
+  end
+  if value.restore ~= nil then
+    if type(value.restore) ~= "table" then
+      fail("ITEM_CATALOG_INVALID", "item " .. key .. " partyUse restore must be a record", context)
+    end
+    checkKeys(value.restore, { kind = true, amount = true }, context, "ITEM_CATALOG_INVALID")
+    if
+      value.restore.kind ~= "fixed"
+      and value.restore.kind ~= "full"
+      and value.restore.kind ~= "half"
+      and value.restore.kind ~= "quarter"
+    then
+      fail("ITEM_CATALOG_INVALID", "item " .. key .. " restore kind must be fixed, full, half or quarter", context)
+    end
+    if value.restore.kind == "fixed" then
+      checkInteger(value.restore.amount, context, "ITEM_CATALOG_INVALID", "item " .. key .. " restore amount", 1, 999)
+    elseif value.restore.amount ~= nil then
+      fail("ITEM_CATALOG_INVALID", "item " .. key .. " non-fixed restore carries no amount", context)
+    end
+  end
+  if value.revive ~= "none" and value.revive ~= "single" then
+    fail("ITEM_CATALOG_INVALID", "item " .. key .. " revive must be none or single", context)
+  end
+  assertFriendship(key, value.friendship, context)
+  assertMood(key, value.mood, context)
+end
+
+local function assertPp(key, value, context)
+  checkKeys(
+    value,
+    { kind = true, target = true, restore = true, boost = true, friendship = true, mood = true },
+    context,
+    "ITEM_CATALOG_INVALID"
+  )
+  if value.target ~= "one" and value.target ~= "all" then
+    fail("ITEM_CATALOG_INVALID", "item " .. key .. " power-point target must be one or all", context)
+  end
+  if value.restore ~= nil and value.boost ~= nil then
+    fail("ITEM_CATALOG_INVALID", "item " .. key .. " carries both restore and boost", context)
+  end
+  if value.restore ~= nil then
+    if value.restore == "full" then
+      -- Full restoration names no amount.
+    else
+      checkInteger(value.restore, context, "ITEM_CATALOG_INVALID", "item " .. key .. " restore", 1, 126)
+    end
+  elseif value.boost ~= nil then
+    checkInteger(value.boost, context, "ITEM_CATALOG_INVALID", "item " .. key .. " boost", 1, 3)
+  else
+    fail("ITEM_CATALOG_INVALID", "item " .. key .. " carries no power-point operation", context)
+  end
+  assertFriendship(key, value.friendship, context)
+  assertMood(key, value.mood, context)
+end
+
+local function assertEv(key, value, context)
+  checkKeys(value, { kind = true, changes = true, friendship = true, mood = true }, context, "ITEM_CATALOG_INVALID")
+  if type(value.changes) ~= "table" or #value.changes == 0 then
+    fail("ITEM_CATALOG_INVALID", "item " .. key .. " partyUse changes must be a non-empty array", context)
+  end
+  for index, change in ipairs(value.changes) do
+    if type(change) ~= "table" then
+      fail("ITEM_CATALOG_INVALID", "item " .. key .. " change " .. index .. " must be a record", context)
+    end
+    checkKeys(change, { stat = true, delta = true }, context, "ITEM_CATALOG_INVALID")
+    if EV_STATS[change.stat] ~= true then
+      fail("ITEM_CATALOG_INVALID", "item " .. key .. " change " .. index .. " names an unknown stat", context)
+    end
+    checkInteger(
+      change.delta,
+      context,
+      "ITEM_CATALOG_INVALID",
+      "item " .. key .. " change " .. index .. " delta",
+      -100,
+      100
+    )
+    if change.delta == 0 then
+      fail("ITEM_CATALOG_INVALID", "item " .. key .. " change " .. index .. " delta must not be zero", context)
+    end
+  end
+  assertFriendship(key, value.friendship, context)
+  assertMood(key, value.mood, context)
+end
+
+local function assertPartyUse(key, value, context)
+  if type(value) ~= "table" then
+    fail("ITEM_CATALOG_INVALID", "item " .. key .. " partyUse must be a record", context)
+  end
+  if value.kind == "none" then
+    checkKeys(value, { kind = true }, context, "ITEM_CATALOG_INVALID")
+  elseif value.kind == "medicine" then
+    assertMedicine(key, value, context)
+  elseif value.kind == "pp" then
+    assertPp(key, value, context)
+  elseif value.kind == "ev" then
+    assertEv(key, value, context)
+  elseif value.kind == "revive_all" then
+    checkKeys(value, { kind = true }, context, "ITEM_CATALOG_INVALID")
+  elseif value.kind == "machine" then
+    checkKeys(value, { kind = true }, context, "ITEM_CATALOG_INVALID")
+  elseif value.kind == "deferred" then
+    checkKeys(value, { kind = true, reason = true }, context, "ITEM_CATALOG_INVALID")
+    if DEFERRED_REASONS[value.reason] ~= true then
+      fail("ITEM_CATALOG_INVALID", "item " .. key .. " deferral names an unknown reason", context)
+    end
+  else
+    fail("ITEM_CATALOG_INVALID", "item " .. key .. " partyUse kind must be a closed effect kind", context)
+  end
+end
 local function assertItem(key, record, context)
   if type(key) ~= "string" or key == "" then
     fail("ITEM_CATALOG_INVALID", "item keys must be non-empty strings", context)
@@ -126,6 +294,7 @@ local function assertItem(key, record, context)
       context
     )
   end
+  assertPartyUse(key, record.partyUse, context)
   -- Optional machine/berry identities are pocket-gated: TM/HM items carry
   -- the taught move, berry items carry both berry-name forms, and every
   -- other item carries neither.

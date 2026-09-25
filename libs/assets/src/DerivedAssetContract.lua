@@ -307,10 +307,12 @@ DerivedAssetContract.mons = {
 -- pockets, pocket names) plus the item-icon atlas with its manifest. The
 -- mon package and the Bag runtime resolve item identity through this class.
 -- v2 adds held-item action metadata (isHm, canHold, heldFormEffect), so a
--- stale v1 cache without those facts must fail readiness.
+-- stale v1 cache without those facts must fail readiness. v3 adds semantic
+-- party-use metadata (partyUse), so a stale v2 cache without those facts
+-- must fail readiness.
 DerivedAssetContract.items = {
-  cacheFormat = "item-cache-v2",
-  catalogSchema = "g4-item-catalog-v2",
+  cacheFormat = "item-cache-v3",
+  catalogSchema = "g4-item-catalog-v3",
   indexSchema = "g4-item-index-v1",
   iconManifestSchema = "g4-item-icons-v1",
 }

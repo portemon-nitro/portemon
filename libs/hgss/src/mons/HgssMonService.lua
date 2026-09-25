@@ -370,6 +370,63 @@ function HgssMonService:_maxHp(mon)
   return self:derive(mon).maxHp
 end
 
+---@return integer|nil
+function HgssMonService:currentMapSection()
+  return self:_currentMapSection()
+end
+
+-- Source maximum-HP adjustment for a recalculated mon
+-- (pret/pokeheartgold@0985e8718d src/pokemon.c CalcMonStats tail): a
+-- fainted mon keeps zero health; a living mon keeps its damage by gaining
+-- the maximum change, clamped down when the maximum shrinks.
+---@param oldMaxHp integer
+---@param newMaxHp integer
+---@param currentHp integer
+---@return integer
+function HgssMonService.adjustHpForMaxChange(oldMaxHp, newMaxHp, currentHp)
+  assert(
+    type(oldMaxHp) == "number" and oldMaxHp % 1 == 0 and oldMaxHp >= 1,
+    "health adjustment needs the previous maximum"
+  )
+  assert(
+    type(newMaxHp) == "number" and newMaxHp % 1 == 0 and newMaxHp >= 1,
+    "health adjustment needs the recalculated maximum"
+  )
+  assert(
+    type(currentHp) == "number" and currentHp % 1 == 0 and currentHp >= 0 and currentHp <= oldMaxHp,
+    "health adjustment needs the current health within the previous maximum"
+  )
+  if currentHp == 0 then
+    return 0
+  end
+  local adjusted = currentHp + newMaxHp - oldMaxHp
+  if adjusted > newMaxHp then
+    return newMaxHp
+  end
+  if adjusted < 0 then
+    return 0
+  end
+  return adjusted
+end
+
+-- Finalizes a copied mon whose effort values changed: rederives through
+-- the canonical calculations and adjusts current health to the new
+-- maximum without reviving the fainted. The staged copy carries the old
+-- health through a zero placeholder because record validation forbids
+-- health above the derived maximum before the adjustment runs.
+---@param staged table<string, unknown>
+---@param oldMaxHp integer
+---@return table<string, unknown>
+function HgssMonService:refreshStagedHp(staged, oldMaxHp)
+  assert(type(staged) == "table", "staged finalization needs a mon record")
+  local condition = assert(staged.condition) --[[@as table<string, unknown>]]
+  local currentHp = assert(condition.currentHp) --[[@as integer]]
+  condition.currentHp = 0
+  local updated = self:derive(staged)
+  condition.currentHp = HgssMonService.adjustHpForMaxChange(oldMaxHp, updated.maxHp, currentHp)
+  return staged
+end
+
 -- Read-only full derived-stat projection for item and summary
 -- calculations: level plus every computed stat through the existing
 -- level/form/nature owner. The record is validated first; nothing is

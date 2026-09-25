@@ -175,7 +175,7 @@ end
 
 function T.catalogs_require_held_item_action_metadata()
   local ItemAssetSchema = schema()
-  Assert.equal(ItemAssetSchema.CATALOG_SCHEMA, "g4-item-catalog-v2")
+  Assert.equal(ItemAssetSchema.CATALOG_SCHEMA, "g4-item-catalog-v3")
   Assert.isTrue(ItemAssetSchema.isValidCatalog(validRoot()))
   for _, key in ipairs({ "isHm", "canHold", "heldFormEffect" }) do
     local root = validRoot()
@@ -189,8 +189,54 @@ function T.catalogs_require_held_item_action_metadata()
   badHold.items["ITEM_55"].canHold = "yes"
   Assert.isFalse(ItemAssetSchema.isValidCatalog(badHold))
   local oldSchema = validRoot()
-  oldSchema.schema = "g4-item-catalog-v1"
-  Assert.isFalse(ItemAssetSchema.isValidCatalog(oldSchema), "the v1 schema no longer validates")
+  oldSchema.schema = "g4-item-catalog-v2"
+  Assert.isFalse(ItemAssetSchema.isValidCatalog(oldSchema), "the v2 schema no longer validates")
+end
+
+function T.catalogs_require_party_use_metadata()
+  local ItemAssetSchema = schema()
+  Assert.isTrue(ItemAssetSchema.isValidCatalog(validRoot()))
+  local missing = validRoot()
+  missing.items["ITEM_55"].partyUse = nil
+  Assert.isFalse(ItemAssetSchema.isValidCatalog(missing), "missing party-use metadata must be rejected")
+  local unknownKind = validRoot()
+  unknownKind.items["ITEM_55"].partyUse = { kind = "miracle" }
+  Assert.isFalse(ItemAssetSchema.isValidCatalog(unknownKind), "an unknown effect kind must be rejected")
+  local badAmount = validRoot()
+  badAmount.items.POTION.partyUse = {
+    kind = "medicine",
+    cures = {
+      sleep = false,
+      poison = false,
+      burn = false,
+      freeze = false,
+      paralysis = false,
+    },
+    restore = { kind = "fixed", amount = 0 },
+    revive = "none",
+    mood = 0,
+  }
+  Assert.isFalse(ItemAssetSchema.isValidCatalog(badAmount), "a zero restore amount must be rejected")
+  local badDelta = validRoot()
+  badDelta.items.POTION.partyUse = {
+    kind = "ev",
+    changes = { { stat = "hp", delta = 101 } },
+    mood = 0,
+  }
+  Assert.isFalse(ItemAssetSchema.isValidCatalog(badDelta), "an out-of-range effort delta must be rejected")
+  local zeroDelta = validRoot()
+  zeroDelta.items.POTION.partyUse = {
+    kind = "ev",
+    changes = { { stat = "hp", delta = 0 } },
+    mood = 0,
+  }
+  Assert.isFalse(ItemAssetSchema.isValidCatalog(zeroDelta), "a zero effort delta must be rejected")
+  local partial = validRoot()
+  partial.items.POTION.partyUse = { kind = "medicine" }
+  Assert.isFalse(ItemAssetSchema.isValidCatalog(partial), "a partial effect record must be rejected")
+  local badReason = validRoot()
+  badReason.items.POTION.partyUse = { kind = "deferred", reason = "later" }
+  Assert.isFalse(ItemAssetSchema.isValidCatalog(badReason), "an unknown deferral reason must be rejected")
 end
 
 return { tests = T }

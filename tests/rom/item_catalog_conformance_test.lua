@@ -285,6 +285,87 @@ function T.held_item_action_metadata_matches_source(romFs, versionId)
   end
 end
 
+function T.party_use_metadata_matches_source(romFs, versionId)
+  local catalog = compileCatalog(romFs, versionId)
+  local function record(key)
+    return assert(catalog.items[key], key .. " must be a compiled item identity")
+  end
+  local function use(key)
+    local partyUse = record(key).partyUse
+    assert(type(partyUse) == "table", key .. " must carry party-use metadata")
+    return partyUse
+  end
+  local potion = use("POTION")
+  Assert.equal(potion.kind, "medicine")
+  Assert.equal(potion.restore.kind, "fixed")
+  Assert.equal(potion.restore.amount, 20)
+  Assert.equal(potion.revive, "none")
+  local restore = use("FULL_RESTORE")
+  Assert.equal(restore.kind, "medicine")
+  Assert.equal(restore.restore.kind, "full")
+  Assert.isTrue(restore.cures.poison and restore.cures.paralysis, "full restore cures every status")
+  local revive = use("REVIVE")
+  Assert.equal(revive.kind, "medicine")
+  Assert.equal(revive.revive, "single")
+  Assert.equal(revive.restore.kind, "half")
+  local ash = use("SACRED_ASH")
+  Assert.equal(ash.kind, "revive_all")
+  local ether = use("ETHER")
+  Assert.equal(ether.kind, "pp")
+  Assert.equal(ether.target, "one")
+  Assert.equal(ether.restore, 10)
+  local maxEther = use("MAX_ETHER")
+  Assert.equal(maxEther.restore, "full")
+  local elixir = use("ELIXIR")
+  Assert.equal(elixir.target, "all")
+  Assert.equal(elixir.restore, 10)
+  local ppUp = use("PP_UP")
+  Assert.equal(ppUp.kind, "pp")
+  Assert.equal(ppUp.boost, 1)
+  local ppMax = use("PP_MAX")
+  Assert.equal(ppMax.boost, 3)
+  local hpUp = use("HP_UP")
+  Assert.equal(hpUp.kind, "ev")
+  Assert.equal(hpUp.changes[1].stat, "hp")
+  Assert.equal(hpUp.changes[1].delta, 10)
+  Assert.equal(hpUp.mood, 8)
+  local pomeg = use("POMEG_BERRY")
+  Assert.equal(pomeg.kind, "ev")
+  Assert.equal(pomeg.changes[1].delta, -10)
+  Assert.isTrue(pomeg.friendship.lo > 0, "reduction berries carry friendship")
+  local powder = use("ENERGYPOWDER")
+  Assert.equal(powder.kind, "medicine")
+  Assert.equal(powder.restore.amount, 50)
+  Assert.equal(powder.mood, -20)
+  Assert.isTrue(powder.friendship.lo < 0, "harsh medicine lowers friendship")
+  local sitrus = use("SITRUS_BERRY")
+  Assert.equal(sitrus.restore.kind, "quarter")
+  local leppa = use("LEPPA_BERRY")
+  Assert.equal(leppa.kind, "pp")
+  Assert.equal(leppa.restore, 10)
+  local cheri = use("CHERI_BERRY")
+  Assert.isTrue(cheri.cures.paralysis)
+  Assert.isFalse(cheri.cures.poison)
+  Assert.equal(use("FIGY_BERRY").kind, "medicine", "flagged-but-effectless berries stay medicinal")
+  Assert.equal(use("TM01").kind, "machine")
+  Assert.equal(use("HM01").kind, "machine")
+  Assert.equal(use("GRACIDEA").kind, "deferred")
+  Assert.equal(use("RARE_CANDY").kind, "deferred")
+  Assert.equal(use("FIRE_STONE").kind, "deferred")
+  Assert.equal(use("GRASS_MAIL").kind, "deferred")
+  Assert.equal(use("PEARL").kind, "medicine", "flagged-but-effectless records stay medicinal")
+  Assert.equal(use("X_ATTACK").kind, "deferred")
+  -- Every compiled identity carries a closed party-use kind.
+  local kinds = {}
+  for _, item in pairs(catalog.items) do
+    local kind = assert(item.partyUse, item.nativeId .. " must carry party-use metadata").kind
+    kinds[kind] = true
+  end
+  for _, kind in ipairs({ "none", "medicine", "pp", "ev", "revive_all", "machine", "deferred" }) do
+    Assert.isTrue(kinds[kind] == true, "the corpus exercises party-use kind " .. kind)
+  end
+end
+
 function T.mon_catalog_delegates_item_facts_to_the_shared_catalog(romFs, versionId)
   local MonCatalog = require("libs.mons.src.MonCatalog")
   local ItemCatalog = require("libs.items.src.ItemCatalog")
