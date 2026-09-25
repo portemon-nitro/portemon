@@ -1,5 +1,6 @@
 -- Concrete HGSS party action orchestration: give, take and exchange of
--- ordinary held items over the borrowed mon and bag services. Requests are
+-- ordinary held items plus machine move teaching over the borrowed mon
+-- and bag services. Requests are
 -- value-only records qualified by both owners' revisions; selection
 -- identity is revision plus slot, never nickname, species or PID. Every
 -- expected failure is decided before the publication window: both
@@ -8,6 +9,7 @@
 -- fallible work between them. Discarding a preparation has no effect.
 
 local HeldItemFormPolicy = require("libs.hgss.src.mons.HeldItemFormPolicy")
+local MachineTeaching = require("libs.hgss.src.mons.MachineTeaching")
 local PartyItemEffects = require("libs.hgss.src.mons.PartyItemEffects")
 
 ---@class PartyActions
@@ -31,6 +33,7 @@ PartyActions.__index = PartyActions
 ---@field confirmed boolean?
 ---@field moveSlot integer?
 ---@field targetSlot integer?
+---@field expectedOldMove string?
 
 ---@param opts { mons: HgssMonService, bag: HgssBagService }
 ---@return PartyActions
@@ -65,14 +68,21 @@ end
 function PartyActions:_resolve(request)
   assert(type(request) == "table", "party actions require a request record")
   assert(
-    request.kind == "give" or request.kind == "take" or request.kind == "use_item" or request.kind == "transfer_hp",
-    "party action kind must be give, take, use_item or transfer_hp"
+    request.kind == "give"
+      or request.kind == "take"
+      or request.kind == "use_item"
+      or request.kind == "transfer_hp"
+      or request.kind == "teach_move",
+    "party action kind must be give, take, use_item, transfer_hp or teach_move"
   )
   assert(type(request.slot) == "number" and request.slot % 1 == 0, "party action slot must be an integer")
   if request.partyRevision ~= self._mons:partyRevision() or request.bagRevision ~= self._bag:revision() then
     return { kind = "stale" }
   end
   local mon = self._mons:partyMon(request.slot)
+  if request.kind == "teach_move" then
+    return self:_resolveTeach(request, mon)
+  end
   if request.kind == "use_item" then
     return self:_resolveUseItem(request, mon)
   end
@@ -152,6 +162,50 @@ function PartyActions:_resolve(request)
     deltas = { { op = "take", item = request.item, quantity = 1 } },
     before = self:_displayFacts(mon),
     after = self:_displayFacts(staged),
+  }
+end
+
+-- Plans one machine teaching: the pure compatibility policy stages the
+-- taught entry with source friendship and mood on a copied mon, while
+-- publication consumes one TM or retains the HM with no bag revision.
+-- Refusals (known, incompatible, replacement, protected, stale) publish
+-- nothing and consume nothing.
+---@param request PartyActionRequest
+---@param mon table<string, unknown>
+---@return { kind: string, updates: { slot: integer, mon: table<string, unknown> }[]?, deltas: { op: string, item: string, quantity: integer }[]?, before: PartyActionDisplayFacts?, after: PartyActionDisplayFacts?, feedback: table<string, unknown>? }
+function PartyActions:_resolveTeach(request, mon)
+  assert(type(request.item) == "string", "a teach request names its machine")
+  if not self._bag:has(request.item, 1) then
+    return { kind = "stale" }
+  end
+  local catalogs = { items = self._bag:catalog(), mons = self._mons:catalog() }
+  local planned = MachineTeaching.plan({
+    mon = mon,
+    item = request.item,
+    replaceSlot = request.moveSlot,
+    expectedOldMove = request.expectedOldMove,
+  }, catalogs, { location = self._mons:currentMapSection() })
+  if planned.kind ~= "candidate" then
+    return {
+      kind = planned.kind --[[@as string]],
+    }
+  end
+  local staged = assert(planned.mon) --[[@as table<string, unknown>]]
+  local consumption = assert(planned.consumption) --[[@as integer]]
+  local deltas = {}
+  if consumption > 0 then
+    deltas = { { op = "take", item = request.item, quantity = 1 } }
+  end
+  local feedback = assert(planned.feedback) --[[@as table<string, unknown>]]
+  local bindings = assert(feedback.bindings) --[[@as table<string, unknown>]]
+  bindings.item = request.item
+  return {
+    kind = "ready",
+    updates = { { slot = request.slot, mon = staged } },
+    deltas = deltas,
+    before = self:_displayFacts(mon),
+    after = self:_displayFacts(staged),
+    feedback = feedback,
   }
 end
 

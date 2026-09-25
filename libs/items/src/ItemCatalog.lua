@@ -146,4 +146,21 @@ function ItemCatalog:isRegisterable(key)
   return definition.pocket == "key_items" and definition.selectable == true
 end
 
+-- The source move identities taught by HM records: the machine context
+-- refuses to overwrite them while the domain delete primitive keeps its
+-- general legality.
+---@return table<integer, boolean> source move native identities keyed by identity
+function ItemCatalog:hmMoveNativeIds()
+  local moves = {}
+  for _, record in pairs(assert(self._root.items, "the catalog carries its items")) do
+    assert(type(record) == "table", "catalog items arrive as records")
+    if record.pocket == "tmhm" and record.isHm == true then
+      local nativeId = assert(record.tmhmMoveNativeId, "machine records name their move")
+      assert(type(nativeId) == "number", "machine records name their move")
+      moves[nativeId] = true
+    end
+  end
+  return moves
+end
+
 return ItemCatalog
