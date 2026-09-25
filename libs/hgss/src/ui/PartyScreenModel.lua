@@ -1,11 +1,14 @@
 -- The party-screen view projection: one fresh immutable six-slot model per
 -- build. Occupied slots carry the nickname-or-species display name, the
 -- service-derived level and max HP, the personality-derived gender, live
--- current HP and its fraction, the source status key, and the catalog (or
--- egg) icon key. Empty slots carry position and occupancy only. Every
--- derived value comes from its domain owner (Mon, Personality, the
--- HgssMonService derivation seam, the mon catalog); this module copies no
--- stat, level, gender, or icon formula. Pure module: no love, no I/O.
+-- current HP and its fraction, the source status key, the catalog (or
+-- egg) icon key, egg state, the semantic held-item key, the capsule
+-- record (or nil), learned moves in move-slot order as semantic records,
+-- and the six-bit shiny-leaf mask. Empty slots carry position and
+-- occupancy only. Every derived value comes from its domain owner (Mon,
+-- Personality, the HgssMonService derivation seam, the mon catalog); this
+-- module copies no stat, level, gender, or icon formula. Pure module:
+-- no love, no I/O.
 
 local Mon = require("libs.mons.src.Mon")
 local MonCache = require("libs.assets.src.MonCache")
@@ -25,6 +28,22 @@ local function iconKeyFor(service, mon)
     return MonCache.iconSelector(mon.species, mon.form, true)
   end
   return service:catalog():iconSelection(mon)
+end
+
+---@param mon table<string, unknown>
+---@return { key: string, pp: integer, ppUps: integer }[]
+local function projectMoves(mon)
+  local moves = {}
+  local entries = assert(mon.moves, "party mons carry their move entries")
+  assert(type(entries) == "table", "party moves arrive as an array")
+  for index, entry in ipairs(entries) do
+    assert(type(entry) == "table", "move entry " .. index .. " is a record")
+    assert(type(entry.move) == "string", "move entry " .. index .. " names its semantic key")
+    assert(type(entry.pp) == "number", "move entry " .. index .. " carries power points")
+    assert(type(entry.ppUps) == "number", "move entry " .. index .. " carries power-point ups")
+    moves[index] = { key = entry.move, pp = entry.pp, ppUps = entry.ppUps }
+  end
+  return moves
 end
 
 ---@param service HgssMonService
@@ -52,6 +71,23 @@ local function projectSlot(service, slot0, isEligible)
   record.currentHp = mon.condition.currentHp
   record.maxHp = derived.maxHp
   record.hpFraction = mon.condition.currentHp / derived.maxHp
+  record.isEgg = mon.isEgg == true
+  local heldItem = mon.heldItem
+  assert(type(heldItem) == "string", "party mons carry their held-item key")
+  record.heldItem = heldItem
+  if mon.capsule ~= nil then
+    assert(type(mon.capsule) == "table", "party capsules arrive as records")
+    if mon.capsule.id ~= nil and mon.capsule.id ~= 0 then
+      record.capsule = { id = mon.capsule.id, seals = mon.capsule.seals }
+    end
+  end
+  record.moves = projectMoves(mon)
+  local shinyLeaves = mon.shinyLeaves or 0
+  assert(
+    type(shinyLeaves) == "number" and shinyLeaves % 1 == 0 and shinyLeaves >= 0 and shinyLeaves <= 63,
+    "party mons carry a six-bit leaf mask"
+  )
+  record.shinyLeaves = shinyLeaves
   return record
 end
 

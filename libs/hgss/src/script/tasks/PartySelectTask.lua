@@ -119,11 +119,11 @@ local function controllerFor(state, ctx)
     }
   end
   return PartyScreenController.new({
-    mode = "select",
-    initialSlot = state.selectedSlot,
+    context = "pick",
+    initialFocus = state.selectedSlot,
     allowCancel = state.allowCancel,
     model = model,
-    resolveLayout = resolveLayout,
+    layout = resolveLayout,
   })
 end
 

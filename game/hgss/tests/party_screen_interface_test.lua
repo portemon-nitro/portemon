@@ -74,8 +74,73 @@ local function view(cancellable)
   return { cancellable = cancellable ~= false, cursorNode = 0 }
 end
 
+local function sourceManifest()
+  local panels = {}
+  local origins = { { 0, 0 }, { 128, 8 }, { 0, 48 }, { 128, 56 }, { 0, 96 }, { 128, 104 } }
+  for slot, origin in ipairs(origins) do
+    panels[slot] = {
+      origin = { x = origin[1], y = origin[2] },
+      size = { width = 128, height = 48 },
+      chrome = {},
+      text = {},
+      hp = {},
+      compat = {},
+    }
+  end
+  local function dpadBox(up, down, leftNeighbor, rightNeighbor)
+    return {
+      left = 0,
+      top = 0,
+      width = 0,
+      height = 0,
+      up = up,
+      down = down,
+      leftNeighbor = leftNeighbor,
+      rightNeighbor = rightNeighbor,
+    }
+  end
+  local function touch(top, bottom, left, right)
+    return { top = top, bottom = bottom, left = left, right = right }
+  end
+  return {
+    panels = panels,
+    windows = {
+      message = { x = 16, y = 168, width = 160, height = 16 },
+      context = { x = 152, y = 120, width = 96, height = 64 },
+    },
+    navigation = {
+      dpad = {
+        default = {
+          dpadBox(7, 2, 7, 1),
+          dpadBox(7, 3, 0, 2),
+          dpadBox(0, 4, 1, 3),
+          dpadBox(1, 5, 2, 4),
+          dpadBox(2, 7, 3, 5),
+          dpadBox(3, 7, 4, 7),
+          dpadBox(0, 0, 0, 0),
+          dpadBox(5, 1, 5, 0),
+        },
+      },
+    },
+    hitboxes = {
+      touch = {
+        default = {
+          touch(0, 48, 0, 128),
+          touch(8, 56, 128, 0),
+          touch(48, 96, 0, 128),
+          touch(56, 104, 128, 0),
+          touch(96, 144, 0, 128),
+          touch(104, 152, 128, 0),
+          touch(152, 192, 200, 0),
+        },
+      },
+    },
+    iconAnimations = { periods = { 1, 8, 12, 24, 40, 36 } },
+  }
+end
+
 local function partyInterface(overrides)
-  return PartyScreenInterface.withOverrides(overrides)
+  return PartyScreenInterface.withOverrides(overrides, sourceManifest())
 end
 
 local function singlePane(plan, what)
@@ -97,11 +162,12 @@ end
 
 local function checkContent(plan, cancellable, what)
   local content = assert(plan.content, "the party plan carries its canonical content " .. what)
-  Assert.equal(#content.slotRects, 6, "the party content carries six cards " .. what)
-  Assert.equal(content.slotRects[1].x, 4, "the first card sits in the left column " .. what)
-  Assert.equal(content.slotRects[2].x, 130, "the second card sits in the right column " .. what)
-  Assert.equal(content.slotRects[1].width, 122, "cards keep their readable width " .. what)
-  Assert.equal(content.slotRects[1].height, 52, "cards keep their readable height " .. what)
+  Assert.equal(#content.slotRects, 6, "the party content carries six panels " .. what)
+  Assert.equal(content.slotRects[1].x, 0, "the first panel sits at the pane origin " .. what)
+  Assert.equal(content.slotRects[2].x, 128, "the second panel staggers into the right column " .. what)
+  Assert.equal(content.slotRects[2].y, 8, "the right column staggers down eight pixels " .. what)
+  Assert.equal(content.slotRects[1].width, 128, "panels keep their source width " .. what)
+  Assert.equal(content.slotRects[1].height, 48, "panels keep their source height " .. what)
   if cancellable then
     Assert.isTrue(content.cancelRect ~= nil, "the cancellable content carries cancel " .. what)
   else
@@ -118,32 +184,39 @@ function T.native_like_resolves_uncropped_fullscreen()
   checkContent(sealed, false, "sealed nativeLike")
 end
 
-function T.dual_display_takes_the_auxiliary_fullscreen()
+function T.dual_display_pairs_detail_world_with_interaction_auxiliary()
   local interfaces = partyInterface()
   local plan = interfaces.dualDisplay(contextFor(translatedPair(), "dualDisplay", interfaces), view(true))
-  local pane = singlePane(plan, "dualDisplay")
+  Assert.equal(#plan.panes, 2, "dual display pairs detail with interaction")
+  local detail = plan.panes[1]
+  Assert.equal(detail.id, "detail", "the upper pane carries detail")
+  Assert.isFalse(detail.interactive, "detail takes no pointer input")
+  local pane = plan.panes[2]
+  Assert.equal(pane.id, "content", "the lower pane carries interaction")
+  Assert.isTrue(pane.interactive, "the party pane takes pointer input")
+  Assert.equal(plan.inputKey, "party", "the pair keeps its stable input geometry")
   checkContent(plan, true, "dualDisplay")
   local frame = pane.placement.frame
   Assert.isTrue(
     frame.x >= 100 and frame.x + frame.width <= 356,
-    "the dual pane stays inside the translated auxiliary surface"
+    "the dual interaction pane stays inside the translated auxiliary surface"
   )
 end
 
-function T.wide_and_tall_center_a_static_framed_box()
+function T.wide_and_tall_pair_detail_with_a_static_framed_box()
   local interfaces = partyInterface()
   local wide = interfaces.wide(contextFor(singleDisplay(1280, 720), "wide", interfaces), view(true))
-  singlePane(wide, "wide")
+  Assert.equal(#wide.panes, 2, "wide keeps both native panes")
+  Assert.equal(wide.panes[1].id, "detail", "wide detail sits left")
+  Assert.equal(wide.panes[2].id, "content", "wide interaction sits right")
+  Assert.equal(wide.inputKey, "party", "the pair keeps its stable input geometry")
   checkContent(wide, true, "wide")
   local wideFrame = assert(wide.frames, "a wide host frames the party")[1]
-  Assert.notNil(wideFrame, "one outer frame decorates the wide pane")
-  Assert.deepEqual(
-    wideFrame.contentBox,
-    { x = 8, y = 7, width = 256, height = 192 },
-    "the wide content box sits inside the exterior insets"
-  )
+  Assert.notNil(wideFrame, "one outer frame decorates the wide pair")
   local tall = interfaces.tall(contextFor(singleDisplay(600, 1000), "tall", interfaces), view(true))
-  singlePane(tall, "tall")
+  Assert.equal(#tall.panes, 2, "tall keeps both native panes")
+  Assert.equal(tall.panes[1].id, "detail", "tall detail sits above")
+  Assert.equal(tall.panes[2].id, "content", "tall interaction sits below")
   Assert.equal(#tall.frames, 1, "a tall host frames the party in a static box")
 end
 
@@ -197,15 +270,17 @@ function T.render_invokes_the_borrowed_renderer_with_plan_and_icons()
   local resources = {
     graphics = graphics,
     partyScreenRenderer = {
-      draw = function(_, presentation, resolved, collaborators)
-        calls[#calls + 1] = { presentation = presentation, resolved = resolved, collaborators = collaborators }
+      drawPane = function(_, presentation, pane, content, collaborators)
+        calls[#calls + 1] =
+          { presentation = presentation, pane = pane, content = content, collaborators = collaborators }
       end,
     },
     icons = { sentinel = "icons" },
   }
   plan.render(resources, view(true), plan)
-  Assert.equal(#calls, 1, "the render callback draws once")
-  Assert.isTrue(calls[1].resolved == plan, "the render callback draws the published plan")
+  Assert.equal(#calls, 1, "the render callback draws its single pane once")
+  Assert.isTrue(calls[1].pane == plan.panes[1], "the render callback draws the published pane")
+  Assert.isTrue(calls[1].content == plan.content, "the render callback draws the canonical content")
   Assert.isTrue(calls[1].collaborators == resources.icons, "the render callback borrows the icon provider")
   Assert.equal(graphics:pushDepth(), 0, "the render scope restores the graphics stack")
 end
@@ -257,6 +332,22 @@ function T.unknown_override_cases_and_non_functions_fail()
   Assert.throws(function()
     partyInterface({ wide = "framed" })
   end, "non-function overrides fail at composition")
+end
+
+function T.info_affordance_appends_the_framed_detail_overlay()
+  local interfaces = partyInterface()
+  local plan = interfaces.nativeLike(
+    contextFor(singleDisplay(640, 480), "nativeLike", interfaces),
+    { cancellable = true, cursorNode = 0, infoOverlay = true }
+  )
+  Assert.equal(#plan.panes, 2, "the affordance appends the detail overlay")
+  Assert.equal(plan.panes[2].id, "overlay", "the overlay carries detail")
+  Assert.isFalse(plan.panes[2].interactive, "the overlay takes no pointer input")
+  local plain = interfaces.nativeLike(
+    contextFor(singleDisplay(640, 480), "nativeLike", interfaces),
+    { cancellable = true, cursorNode = 0 }
+  )
+  Assert.equal(#plain.panes, 1, "no affordance means no overlay")
 end
 
 function T.closed_snapshots_resolve_a_disposable_plan()

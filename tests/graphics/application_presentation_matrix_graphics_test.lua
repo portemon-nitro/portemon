@@ -297,13 +297,88 @@ function T.callback_failure_restores_scope_and_propagates(scope)
   assertPixelNear(data, 320, 240, 0.3, 0.3, 0.9, 1, "the next draw paints cleanly after failure")
 end
 
+-- Synthetic manifest mirror for matrix geometry: the pane/neighbor
+-- contract resolves without generated assets, which the dedicated party
+-- graphics smoke covers against the canonical cache.
+local function matrixPartyManifest()
+  local panels = {}
+  local origins = { { 0, 0 }, { 128, 8 }, { 0, 48 }, { 128, 56 }, { 0, 96 }, { 128, 104 } }
+  for slot, origin in ipairs(origins) do
+    local ox, oy = origin[1], origin[2]
+    panels[slot] = {
+      origin = { x = ox, y = oy },
+      size = { width = 128, height = 48 },
+      chrome = {},
+      text = {
+        name = { x = ox + 48, y = oy + 8, width = 72, height = 16 },
+        level = { x = ox + 0, y = oy + 32, width = 48, height = 16 },
+      },
+      hp = {
+        bar = { x = ox + 64, y = oy + 24, width = 48, height = 8 },
+        number = { x = ox + 56, y = oy + 32, width = 64, height = 16 },
+      },
+      compat = { x = ox + 48, y = oy + 32, width = 80, height = 16 },
+    }
+  end
+  local function dpadBox(up, down, leftNeighbor, rightNeighbor)
+    return {
+      left = 0,
+      top = 0,
+      width = 0,
+      height = 0,
+      up = up,
+      down = down,
+      leftNeighbor = leftNeighbor,
+      rightNeighbor = rightNeighbor,
+    }
+  end
+  local function touch(top, bottom, left, right)
+    return { top = top, bottom = bottom, left = left, right = right }
+  end
+  return {
+    panels = panels,
+    windows = {
+      message = { x = 16, y = 168, width = 160, height = 16 },
+      context = { x = 152, y = 120, width = 96, height = 64 },
+    },
+    navigation = {
+      dpad = {
+        default = {
+          dpadBox(7, 2, 7, 1),
+          dpadBox(7, 3, 0, 2),
+          dpadBox(0, 4, 1, 3),
+          dpadBox(1, 5, 2, 4),
+          dpadBox(2, 7, 3, 5),
+          dpadBox(3, 7, 4, 7),
+          dpadBox(0, 0, 0, 0),
+          dpadBox(5, 1, 5, 0),
+        },
+      },
+    },
+    hitboxes = {
+      touch = {
+        default = {
+          touch(0, 48, 0, 128),
+          touch(8, 56, 128, 0),
+          touch(48, 96, 0, 128),
+          touch(56, 104, 128, 0),
+          touch(96, 144, 0, 128),
+          touch(104, 152, 128, 0),
+          touch(152, 192, 200, 0),
+        },
+      },
+    },
+    iconAnimations = { periods = { 1, 8, 12, 24, 40, 36 } },
+  }
+end
+
 -- Every migrated interface resolves its real plans across the matrix:
 -- canonical single panes fullscreen or auxiliary, static frames on
 -- wide/tall, matched input keys, and no window on fullscreen cases.
 function T.all_interfaces_resolve_matched_geometry_across_matrix(scope)
   local _ = scope
   local startMenu = StartMenuInterface.withOverrides(nil)
-  local party = PartyScreenInterface.withOverrides(nil)
+  local party = PartyScreenInterface.withOverrides(nil, matrixPartyManifest())
   local card = TrainerCardInterface.withOverrides(nil)
   local partyView = { cancellable = true, cursorNode = 0 }
   local singleMeasured = singleDisplay(640, 480)
@@ -340,7 +415,10 @@ function T.all_interfaces_resolve_matched_geometry_across_matrix(scope)
   local dualMenu = startMenu.dualDisplay(contextFor(dualMeasured, "dualDisplay", startMenu), {})
   Assert.isTrue(#dualMenu.panes >= 1, "dual display resolves the start menu")
   local dualParty = party.dualDisplay(contextFor(dualMeasured, "dualDisplay", party), partyView)
-  local dualFrame = dualParty.panes[1].placement.frame
+  Assert.equal(#dualParty.panes, 2, "dual display pairs detail with interaction")
+  Assert.equal(dualParty.panes[1].id, "detail", "the upper pane carries detail")
+  Assert.equal(dualParty.panes[2].id, "content", "the lower pane carries interaction")
+  local dualFrame = dualParty.panes[2].placement.frame
   Assert.isTrue(
     dualFrame.x >= 100 and dualFrame.x + dualFrame.width <= 356,
     "the dual party must stay inside the auxiliary surface"
@@ -489,6 +567,55 @@ local function preparedProvider(cache, keys)
   return provider
 end
 
+-- Synthetic party asset cache: the matrix manifest paths resolve to
+-- stub art so geometry (not generated pixels) is under test; generated
+-- pixels are covered against the canonical cache in the dedicated party
+-- graphics smoke.
+local function partyAssetCache()
+  local cache = CacheFs.forVersion("heartgold", FakeCache.new())
+  local function stub(path, width, height, r, g, b, a)
+    local pixels = {}
+    for _ = 1, width * height do
+      pixels[#pixels + 1] = string.char(r, g, b, a or 255)
+    end
+    cache:write(path, PngWriter.encode(width, height, table.concat(pixels)))
+  end
+  stub("test/panel.png", 128, 48, 40, 40, 56)
+  stub("test/ball.png", 32, 32, 60, 60, 80)
+  stub("test/held.png", 8, 8, 200, 200, 80)
+  stub("test/cursor.png", 128, 48, 0, 0, 0, 0)
+  for digit = 0, 9 do
+    stub("test/digit-" .. digit .. ".png", 8, 8, 230, 230, 230)
+  end
+  stub("test/level.png", 16, 8, 230, 230, 230)
+  stub("test/slash.png", 8, 8, 230, 230, 230)
+  return cache
+end
+
+local function matrixPartyVisuals()
+  local function imageRef(path, width, height)
+    return { image = path, width = width or 32, height = height or 32 }
+  end
+  local function frameRef(path, width, height)
+    return { image = path, width = width or 32, height = height or 32, offset = { x = 0, y = 0 }, durationTicks = 1 }
+  end
+  local digits = {}
+  for digit = 0, 9 do
+    digits[digit + 1] = imageRef("test/digit-" .. digit .. ".png", 8, 8)
+  end
+  return {
+    balls = {
+      sequences = {
+        { frames = { frameRef("test/ball.png") } },
+        { frames = { frameRef("test/ball.png") } },
+      },
+    },
+    held = { sequences = { { frames = { frameRef("test/held.png", 8, 8) } } } },
+    cursor = { sequences = { { frames = { frameRef("test/cursor.png", 128, 48) } } } },
+    digits = digits,
+  }
+end
+
 -- Party readability through the real renderer and borrowed fixture text:
 -- occupied cards carry name ink and the HP bar at 1x, and the doubled
 -- density paints the same cards at exactly twice the frame.
@@ -496,7 +623,21 @@ function T.party_cards_stay_readable_across_densities(scope)
   local lg = love.graphics
   local text = scope:own(FieldTextRenderer.new({ cacheFs = FieldUiFixture.cacheWithFontAndFrames() }))
   local provider = preparedProvider(iconCache(), { "MON0/f0" })
-  local renderer = PartyScreenRenderer.new({ graphics = lg, text = text })
+  local cacheFs = partyAssetCache()
+  local manifest = matrixPartyManifest()
+  local visuals = matrixPartyVisuals()
+  manifest.visuals = visuals
+  manifest.numberGlyphs = {
+    advance = 8,
+    digits = visuals.digits,
+    level = { image = "test/level.png", width = 16, height = 8 },
+    slash = { image = "test/slash.png", width = 8, height = 8 },
+  }
+  local chrome = { normal = { image = "test/panel.png", width = 128, height = 48 } }
+  for _, panel in ipairs(manifest.panels) do
+    panel.chrome = chrome
+  end
+  local renderer = PartyScreenRenderer.new({ graphics = lg, cacheFs = cacheFs, manifest = manifest, text = text })
   local function slots()
     local list = {}
     for slot0 = 0, 1 do
@@ -531,7 +672,7 @@ function T.party_cards_stay_readable_across_densities(scope)
       cancellable = true,
     }
   end
-  local party = PartyScreenInterface.withOverrides(nil)
+  local party = PartyScreenInterface.withOverrides(nil, matrixPartyManifest())
   local view = { cancellable = true, cursorNode = 0 }
   for _, host in ipairs({ { width = 320, height = 240 }, { width = 640, height = 480 } }) do
     local label = host.width .. "x" .. host.height
@@ -555,25 +696,26 @@ function T.party_cards_stay_readable_across_densities(scope)
       end
       return count
     end
-    -- First card origin (4,4) logical: name ink sits right of the icon
-    -- and the HP bar paints at the card foot, at either density.
+    -- First panel origin (0,0) logical: name ink sits right of the
+    -- icon region and the HP bar paints at the panel foot, at either
+    -- density.
     local fx, fy = placement.frame.x, placement.frame.y
     local scale = placement.pixelScale
     Assert.isTrue(
       inkCount(
-        math.floor(fx + 40 * scale),
-        math.floor(fy + 6 * scale),
-        math.floor(fx + 110 * scale),
-        math.floor(fy + 22 * scale)
+        math.floor(fx + 48 * scale),
+        math.floor(fy + 8 * scale),
+        math.floor(fx + 120 * scale),
+        math.floor(fy + 24 * scale)
       ) > 0,
       label .. ": the occupied card must carry name ink"
     )
     Assert.isTrue(
       inkCount(
-        math.floor(fx + 6 * scale),
-        math.floor(fy + 54 * scale),
-        math.floor(fx + 120 * scale),
-        math.floor(fy + 56 * scale)
+        math.floor(fx + 64 * scale),
+        math.floor(fy + 24 * scale),
+        math.floor(fx + 112 * scale),
+        math.floor(fy + 32 * scale)
       ) > 0,
       label .. ": the occupied card must paint its HP bar"
     )

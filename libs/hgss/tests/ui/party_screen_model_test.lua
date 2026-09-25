@@ -138,4 +138,42 @@ function T.injected_eligibility_marks_slots_without_touching_values()
   Assert.equal(view.slots[1].displayName, "CHIKORITA", "eligibility never rewrites display values")
 end
 
+function T.facts_carry_egg_held_capsule_move_and_leaf_records()
+  local _, service = openService()
+  give(service, "CHIKORITA")
+  store(service, 0, function(mon)
+    mon.isEgg = true
+    mon.heldItem = "SITRUS_BERRY"
+    mon.capsule = { id = 3, seals = {} }
+    mon.moves = { { move = "CUT", pp = 30, ppUps = 0 }, { move = "TACKLE", pp = 35, ppUps = 1 } }
+    mon.shinyLeaves = 21
+  end)
+  local view = PartyScreenModel.build(service)
+  local lead = view.slots[1]
+  Assert.isTrue(lead.isEgg, "egg state projects for presentation policy")
+  Assert.equal(lead.heldItem, "SITRUS_BERRY", "the held semantic key projects, never a source id")
+  Assert.deepEqual(lead.capsule, { id = 3, seals = {} }, "the capsule record projects for its indicator")
+  Assert.deepEqual(
+    lead.moves,
+    { { key = "CUT", pp = 30, ppUps = 0 }, { key = "TACKLE", pp = 35, ppUps = 1 } },
+    "learned moves project in move-slot order with semantic keys"
+  )
+  Assert.equal(lead.shinyLeaves, 21, "the six-bit leaf mask projects for badge display")
+end
+
+function T.unset_facts_default_to_empty_values()
+  local _, service = openService()
+  give(service, "CHIKORITA")
+  local view = PartyScreenModel.build(service)
+  local lead = view.slots[1]
+  Assert.isFalse(lead.isEgg)
+  Assert.equal(lead.heldItem, "NONE")
+  Assert.isNil(lead.capsule, "mons without capsules carry no capsule record")
+  Assert.isTrue(#lead.moves >= 0, "moves project as an array")
+  for _, move in ipairs(lead.moves) do
+    Assert.isTrue(type(move.key) == "string", "projected moves carry semantic keys")
+  end
+  Assert.equal(lead.shinyLeaves, 0)
+end
+
 return { tests = T }

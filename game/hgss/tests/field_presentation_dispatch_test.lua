@@ -15,6 +15,7 @@ local TARGET_MODULE = "game.hgss.src.field.FieldPresentationResources"
 
 local CONSTRUCTOR_MODULES = {
   "libs.assets.src.BagCache",
+  "libs.assets.src.PartyCache",
   "libs.hgss.src.presentation.BagHeroRenderer",
   "libs.hgss.src.ui.BagRenderer",
   "libs.hgss.src.ui.FieldDialogueRenderer",
@@ -52,14 +53,6 @@ local function disposable(calls, name)
   }
 end
 
-local function drawOnly(label, sink)
-  return {
-    draw = function(_, ...)
-      sink[#sink + 1] = { label, ... }
-    end,
-  }
-end
-
 local function drawReleaser(label, sink, calls, name)
   return {
     draw = function(_, ...)
@@ -72,11 +65,16 @@ local function drawReleaser(label, sink, calls, name)
 end
 
 local function buildDoubles(sink, calls)
-  local party = drawOnly("party", sink)
+  local party = drawReleaser("party", sink, calls, "party")
   local card = drawReleaser("card", sink, calls, "card")
   local bag = drawReleaser("bag", sink, calls, "bag")
   return {
     ["libs.assets.src.BagCache"] = {
+      loadManifest = function(_)
+        return { compiled = true }
+      end,
+    },
+    ["libs.assets.src.PartyCache"] = {
       loadManifest = function(_)
         return { compiled = true }
       end,

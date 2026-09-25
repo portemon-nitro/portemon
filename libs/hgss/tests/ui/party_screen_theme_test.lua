@@ -50,4 +50,22 @@ function T.status_labels_reuse_the_source_icon_codes()
   Assert.equal(PartyScreenTheme.statusLabel("faint"), "FNT")
 end
 
+function T.fill_length_quantizes_the_48_pixel_bar_with_a_minimum_of_one()
+  Assert.equal(PartyScreenTheme.fillLength(35, 35), 48)
+  Assert.equal(PartyScreenTheme.fillLength(24, 48), 24)
+  Assert.equal(PartyScreenTheme.fillLength(1, 100), 1, "nonzero HP always shows one pixel")
+  Assert.equal(PartyScreenTheme.fillLength(0, 35), 0)
+end
+
+function T.icon_sequence_maps_zone_and_status_to_source_sequences()
+  Assert.equal(PartyScreenTheme.iconSequence("full", "ok"), 1)
+  Assert.equal(PartyScreenTheme.iconSequence("green", "ok"), 2)
+  Assert.equal(PartyScreenTheme.iconSequence("yellow", "ok"), 3)
+  Assert.equal(PartyScreenTheme.iconSequence("red", "ok"), 4)
+  Assert.equal(PartyScreenTheme.iconSequence("fainted", "ok"), 0)
+  Assert.equal(PartyScreenTheme.iconSequence("green", "poison"), 5, "persistent status overrides the zone")
+  Assert.equal(PartyScreenTheme.iconSequence("full", "sleep"), 5)
+  Assert.equal(PartyScreenTheme.iconSequence("fainted", "faint"), 0, "fainted outranks status")
+end
+
 return { tests = T }

@@ -96,6 +96,144 @@ local function iconCache()
   return cache
 end
 
+local function foundationManifest()
+  local panels = {}
+  local origins = { { 0, 0 }, { 128, 8 }, { 0, 48 }, { 128, 56 }, { 0, 96 }, { 128, 104 } }
+  for slot, origin in ipairs(origins) do
+    local ox, oy = origin[1], origin[2]
+    panels[slot] = {
+      origin = { x = ox, y = oy },
+      size = { width = 128, height = 48 },
+      chrome = { normal = { image = "test/panel.png", width = 128, height = 48 } },
+      text = {
+        name = { x = ox + 48, y = oy + 8, width = 72, height = 16 },
+        level = { x = ox + 0, y = oy + 32, width = 48, height = 16 },
+      },
+      hp = {
+        bar = { x = ox + 64, y = oy + 24, width = 48, height = 8 },
+        number = { x = ox + 56, y = oy + 32, width = 64, height = 16 },
+      },
+      compat = { x = ox + 48, y = oy + 32, width = 80, height = 16 },
+    }
+  end
+  local function dpadBox(up, down, leftNeighbor, rightNeighbor)
+    return {
+      left = 0,
+      top = 0,
+      width = 0,
+      height = 0,
+      up = up,
+      down = down,
+      leftNeighbor = leftNeighbor,
+      rightNeighbor = rightNeighbor,
+    }
+  end
+  local function touch(top, bottom, left, right)
+    return { top = top, bottom = bottom, left = left, right = right }
+  end
+  local digits = {}
+  for digit = 0, 9 do
+    digits[digit + 1] = { image = "test/digit-" .. digit .. ".png", width = 8, height = 8 }
+  end
+  return {
+    panels = panels,
+    windows = {
+      message = { x = 16, y = 168, width = 160, height = 16 },
+      context = { x = 152, y = 120, width = 96, height = 64 },
+    },
+    visuals = {
+      balls = {
+        sequences = {
+          {
+            frames = {
+              { image = "test/ball.png", width = 32, height = 32, offset = { x = 0, y = 0 }, durationTicks = 1 },
+            },
+          },
+          {
+            frames = {
+              { image = "test/ball.png", width = 32, height = 32, offset = { x = 0, y = 0 }, durationTicks = 1 },
+            },
+          },
+        },
+      },
+      held = {
+        sequences = {
+          {
+            frames = {
+              { image = "test/held.png", width = 8, height = 8, offset = { x = 0, y = 0 }, durationTicks = 1 },
+            },
+          },
+        },
+      },
+      cursor = {
+        sequences = {
+          {
+            frames = {
+              { image = "test/cursor.png", width = 128, height = 48, offset = { x = 0, y = 0 }, durationTicks = 1 },
+            },
+          },
+        },
+      },
+    },
+    iconAnimations = { periods = { 1, 8, 12, 24, 40, 36 } },
+    navigation = {
+      dpad = {
+        default = {
+          dpadBox(7, 2, 7, 1),
+          dpadBox(7, 3, 0, 2),
+          dpadBox(0, 4, 1, 3),
+          dpadBox(1, 5, 2, 4),
+          dpadBox(2, 7, 3, 5),
+          dpadBox(3, 7, 4, 7),
+          dpadBox(0, 0, 0, 0),
+          dpadBox(5, 1, 5, 0),
+        },
+      },
+    },
+    hitboxes = {
+      touch = {
+        default = {
+          touch(0, 48, 0, 128),
+          touch(8, 56, 128, 0),
+          touch(48, 96, 0, 128),
+          touch(56, 104, 128, 0),
+          touch(96, 144, 0, 128),
+          touch(104, 152, 128, 0),
+          touch(152, 192, 200, 0),
+        },
+      },
+    },
+    numberGlyphs = {
+      advance = 8,
+      digits = digits,
+      level = { image = "test/level.png", width = 16, height = 8 },
+      slash = { image = "test/slash.png", width = 8, height = 8 },
+    },
+    text = { labels = {}, templates = {} },
+  }
+end
+
+local function foundationCache()
+  local cache = CacheFs.forVersion("heartgold", FakeCache.new())
+  local function stub(path, width, height, r, g, b, a)
+    local pixels = {}
+    for _ = 1, width * height do
+      pixels[#pixels + 1] = string.char(r, g, b, a or 255)
+    end
+    cache:write(path, PngWriter.encode(width, height, table.concat(pixels)))
+  end
+  stub("test/panel.png", 128, 48, 40, 40, 56)
+  stub("test/ball.png", 32, 32, 60, 60, 80)
+  stub("test/held.png", 8, 8, 200, 200, 80)
+  stub("test/cursor.png", 128, 48, 0, 0, 0, 0)
+  for digit = 0, 9 do
+    stub("test/digit-" .. digit .. ".png", 8, 8, 230, 230, 230)
+  end
+  stub("test/level.png", 16, 8, 230, 230, 230)
+  stub("test/slash.png", 8, 8, 230, 230, 230)
+  return cache
+end
+
 ---@param slot0 integer
 ---@param overrides table<string, any>
 ---@return table<string, any>
@@ -112,6 +250,11 @@ local function occupiedSlot(slot0, overrides)
     currentHp = 20,
     maxHp = 20,
     hpFraction = 1,
+    isEgg = false,
+    heldItem = "NONE",
+    capsule = nil,
+    moves = {},
+    shinyLeaves = 0,
   }
   for key, value in pairs(overrides) do
     record[key] = value
@@ -122,11 +265,18 @@ end
 local function sixSlotView(cursorNode)
   return {
     open = true,
-    mode = "view",
-    action = "browsing",
+    context = "browse",
+    state = "browse",
+    mode = "browse",
+    action = "browse",
     cursorNode = cursorNode,
-    switchSource = nil,
-    actionSelection = nil,
+    menuIndex = nil,
+    menu = nil,
+    menuSlot = nil,
+    message = nil,
+    swap = nil,
+    anim = { tick = 0, sequences = { 1, 3, 2, 5, 4, 0 }, phases = { 0, 0, 0, 0, 0, 0 }, panelSlide = 0 },
+    infoOverlay = false,
     view = {
       revision = 7,
       slots = {
@@ -157,8 +307,10 @@ end
 
 function T.mixed_six_slot_party_paints_every_slot(scope)
   local text = scope:own(FieldTextRenderer.new({ cacheFs = FieldUiFixture.cacheWithFontAndFrames() }))
+  local manifest = foundationManifest()
+  local assetCache = foundationCache()
   for _, size in ipairs({ { width = 320, height = 240 }, { width = 640, height = 480 } }) do
-    local layout = PartyScreenLayout.resolve({ width = size.width, height = size.height, cancellable = true })
+    local layout = PartyScreenLayout.resolve({ manifest = manifest, cancellable = true })
     Assert.equal(#layout.slotRects, 6, "all six slots resolve")
     for left = 1, 6 do
       for right = left + 1, 6 do
@@ -170,7 +322,12 @@ function T.mixed_six_slot_party_paints_every_slot(scope)
       end
     end
     local provider = preparedProvider(iconCache(), { "MON0/f0" })
-    local renderer = PartyScreenRenderer.new({ graphics = love.graphics, text = text })
+    local renderer = PartyScreenRenderer.new({
+      graphics = love.graphics,
+      cacheFs = assetCache,
+      manifest = manifest,
+      text = text,
+    })
     local canvas = scope:own(love.graphics.newCanvas(size.width, size.height))
     love.graphics.setCanvas(canvas)
     love.graphics.clear(0, 0, 0, 0)
@@ -186,15 +343,16 @@ function T.mixed_six_slot_party_paints_every_slot(scope)
     -- cursor without failing.
     local lead = layout.slotRects[1]
     local r, g, b, a = image:getPixel(math.floor(lead.x + 2), math.floor(lead.y + 2))
-    Assert.near(r, 0.2, 0.06, "the lead slot surface paints")
-    Assert.near(g, 0.2, 0.06)
-    Assert.near(b, 0.28, 0.06)
+    Assert.near(r, 40 / 255, 0.06, "the lead slot surface paints")
+    Assert.near(g, 40 / 255, 0.06)
+    Assert.near(b, 56 / 255, 0.06)
     Assert.near(a, 1, 0.01)
-    local ir, ig = image:getPixel(math.floor(lead.x + 6 + 4), math.floor(lead.y + lead.height / 2))
+    -- The selected icon shifts (2,2) off its stored base; sample the
+    -- icon-only region clear of the later ball indicator overlay.
+    local ir, ig = image:getPixel(math.floor(lead.x + 30 + 2 + 24), math.floor(lead.y + 16 + 2 + 4))
     Assert.near(ir, 200 / 255, 0.06, "the icon quad draws inside the lead slot")
     Assert.near(ig, 40 / 255, 0.06)
-    local second = layout.slotRects[2]
-    local hr, hg = image:getPixel(math.floor(second.x + 6 + 32 + 8 + 4), math.floor(second.y + second.height - 10 + 3))
+    local hr, hg = image:getPixel(192 + 4, 32 + 4)
     Assert.isTrue(hr > 0.7 and hg < 0.5, "low HP paints the red zone")
     provider:release()
   end
@@ -202,12 +360,17 @@ function T.mixed_six_slot_party_paints_every_slot(scope)
   -- Selection mode dims the ineligible slot while keeping its icon under
   -- dimmed chrome: a separate layout case the view capture cannot show.
   local size = { width = 640, height = 480 }
-  local layout = PartyScreenLayout.resolve({ width = size.width, height = size.height, cancellable = true })
+  local layout = PartyScreenLayout.resolve({ manifest = manifest, cancellable = true })
   local status = sixSlotView(0)
-  status.mode = "select"
+  status.context = "pick"
   status.view.slots[2].eligible = false
   local provider = preparedProvider(iconCache(), { "MON0/f0" })
-  local renderer = PartyScreenRenderer.new({ graphics = love.graphics, text = text })
+  local renderer = PartyScreenRenderer.new({
+    graphics = love.graphics,
+    cacheFs = assetCache,
+    manifest = manifest,
+    text = text,
+  })
   local canvas = scope:own(love.graphics.newCanvas(size.width, size.height))
   love.graphics.setCanvas(canvas)
   love.graphics.clear(0, 0, 0, 0)

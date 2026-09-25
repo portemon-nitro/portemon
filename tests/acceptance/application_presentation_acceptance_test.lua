@@ -1466,6 +1466,46 @@ function T.tests.bag_nested_cancel_unwinds_while_outside_press_closes()
   end)
 end
 
+-- Ordinary Cancel returns the nested party toward browsing while the
+-- screen stays open; an outside press from the same nested state closes
+-- at once without swapping.
+function T.tests.party_nested_cancel_unwinds_while_outside_press_closes()
+  withFieldGame({}, function(game)
+    local state = hostCallbacks(game)
+    giveStarterPair(game)
+    local service = assert(game.runtime.monService, "field runtime owns the live mon service")
+    local revision = service:partyRevision()
+    local order = partyOrder(game)
+    switchDisplay(game, 1280, 720)
+    local opened = openParty(game, state)
+    Assert.equal(opened.state, "browse", "the party opens in top-level browsing")
+    confirm(game)
+    game:step()
+    local nested = assert(game.runtime.applicationHost:status().application, "the party must stay open after confirm")
+    Assert.equal(nested.state, "context", "confirming a mon opens the nested context menu")
+    pressCancel(game)
+    game:step()
+    local unwound =
+      assert(game.runtime.applicationHost:status().application, "ordinary cancel must keep the party open")
+    Assert.equal(unwound.state, "browse", "ordinary cancel returns toward browsing without closing")
+    confirm(game)
+    game:step()
+    local rentered =
+      assert(game.runtime.applicationHost:status().application, "the party must stay open after the second confirm")
+    Assert.equal(rentered.state, "context", "the second confirm reopens the nested context menu")
+    local plan = assert(rentered.presentation, "the nested party must publish its plan")
+    local outsideX, outsideY = outsidePoint(plan, 1280, 720)
+    downOnly(game, "integration:outside", outsideX, outsideY)
+    game:advanceUntil("an outside press closes the nested party", function()
+      return hostPhase(game) == FieldApplicationHost.PHASES.menu
+    end, 120)
+    Assert.equal(hostPhase(game), FieldApplicationHost.PHASES.menu, "dismissal returns to the menu")
+    upOnly(game, "integration:outside", outsideX, outsideY)
+    Assert.equal(service:partyRevision(), revision, "dismissal must not bump the revision")
+    Assert.deepEqual(partyOrder(game), order, "dismissal must not reorder the party")
+  end)
+end
+
 -- A true outside press dismisses the Trainer Card through the normal host
 -- lifecycle: the framed card closes without any nested cancel step.
 function T.tests.trainer_card_outside_press_dismisses_through_the_host()

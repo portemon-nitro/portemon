@@ -24,6 +24,7 @@ local StartMenuRenderer = require("libs.hgss.src.ui.StartMenuRenderer")
 local ApplicationPresentation = require("game.hgss.src.ui.ApplicationPresentation")
 local TrainerCardRenderer = require("libs.hgss.src.ui.TrainerCardRenderer")
 local PartyScreenRenderer = require("libs.hgss.src.ui.PartyScreenRenderer")
+local PartyCache = require("libs.assets.src.PartyCache")
 local MonIconAssetProvider = require("libs.hgss.src.presentation.MonIconAssetProvider")
 local ItemIconAssetProvider = require("libs.hgss.src.presentation.ItemIconAssetProvider")
 local FollowingMonTransitionRenderer = require("libs.hgss.src.presentation.FollowingMonTransitionRenderer")
@@ -229,7 +230,14 @@ function FieldPresentationResources.new(runtime)
       manifest = runtime.uiManifest,
       text = textRenderer,
     })
-    self.partyScreenRenderer = PartyScreenRenderer.new({ text = textRenderer })
+    self.partyScreenRenderer = PartyScreenRenderer.new({
+      cacheFs = runtime.cacheFs,
+      manifest = PartyCache.loadManifest(runtime.cacheFs),
+      uiManifest = runtime.uiManifest,
+      text = textRenderer,
+      window = self.windowRenderer,
+      frameIndex = self.applicationFrameIndex,
+    })
     self.imageQueue = AssetPreparationQueue.new(runtime.cacheFs)
     self.monIconProvider = MonIconAssetProvider.new(runtime.cacheFs, {
       preparationQueue = self.imageQueue,
@@ -404,7 +412,10 @@ function FieldPresentationResources:dispose()
     self.heroRenderer:release()
     self.heroRenderer = nil
   end
-  self.partyScreenRenderer = nil
+  if self.partyScreenRenderer then
+    self.partyScreenRenderer:release()
+    self.partyScreenRenderer = nil
+  end
   if self.followingMonTransitionRenderer then
     self.followingMonTransitionRenderer:dispose()
     self.followingMonTransitionRenderer = nil

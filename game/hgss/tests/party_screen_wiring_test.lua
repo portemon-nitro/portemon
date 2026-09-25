@@ -188,15 +188,24 @@ function T.tests.switch_through_the_screen_reorders_once_and_returns_to_field()
     local status = game.runtime.applicationHost:status()
     Assert.equal(status.applicationId, PARTY_APPLICATION)
 
-    -- Slot 0 is under the cursor: confirm opens the action choice,
-    -- confirm again starts the switch, right moves within the top row to
-    -- slot 1, confirm swaps.
+    -- Slot 0 is under the cursor: confirm opens the context menu on
+    -- switch (the only locally completable branch besides quit), confirm
+    -- arms the destination pick, right moves within the top row to slot
+    -- 1, confirm starts the swap animation.
     confirm(game)
     confirm(game)
     state:keypressed("d")
     game:step()
     state:keyreleased("d")
     confirm(game)
+    Assert.equal(service:partyRevision(), revision, "entering the swap animation publishes nothing yet")
+    -- The source swap animation commits exactly once at its final stage:
+    -- 35 fixed subtask invocations after the destination confirm.
+    for _ = 1, 34 do
+      game:step()
+    end
+    Assert.equal(service:partyRevision(), revision, "no publication before the final stage")
+    game:step()
     Assert.equal(service:partyRevision(), revision + 1, "the screen switch bumps the revision exactly once")
     Assert.deepEqual(
       partyOrder(game),

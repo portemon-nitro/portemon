@@ -1,12 +1,15 @@
 -- Complete presentation cache for real FieldState construction tests: the
 -- base field-UI font/frames plus the Trainer Card front, one minimal mon
 -- icon class, the minimal item icon manifest/atlas and bag manifest/images
--- the eager bag presentation resources require, and the minimal field-actor
+-- the eager bag presentation resources require, the minimal party manifest
+-- and images the eager party presentation resources require, and the
+-- minimal field-actor
 -- index/visual/atlas FieldState presentation loaders currently require.
 
 local LuaWriter = require("libs.codec.src.LuaWriter")
 local MeshWriter = require("libs.assets.src.model.MeshWriter")
 local PngWriter = require("libs.assets.src.PngWriter")
+local PartyCache = require("libs.assets.src.PartyCache")
 local BagCache = require("libs.assets.src.BagCache")
 local BagAssetSchema = require("libs.assets.src.BagAssetSchema")
 local ItemCache = require("libs.assets.src.ItemCache")
@@ -30,6 +33,146 @@ local function solidPng(width, height)
     pixels[#pixels + 1] = string.char(255, 255, 255, 255)
   end
   return PngWriter.encode(width, height, table.concat(pixels))
+end
+
+-- Minimal schema-valid party manifest: the same shapes the PartyCache test
+-- proves in libs/assets/tests/party_cache_test.lua, with
+-- fixture-local image paths. The eager party presentation resources
+-- resolve panels, first-frame sequences, digit/level/slash glyphs and
+-- prompt chrome from these records during FieldState construction.
+---@return table<string, unknown>
+local function partyManifest()
+  local function imageRef(path, width, height)
+    return { image = path, width = width, height = height }
+  end
+  local function frameRef(path, width, height, durationTicks)
+    return { image = path, width = width, height = height, durationTicks = durationTicks }
+  end
+  local function rect(x, y, width, height)
+    return { x = x, y = y, width = width, height = height }
+  end
+  local function touch(top, bottom, left, right)
+    return { top = top, bottom = bottom, left = left, right = right }
+  end
+  local panels = {}
+  local origins = { { 0, 0 }, { 128, 8 }, { 0, 48 }, { 128, 56 }, { 0, 96 }, { 128, 104 } }
+  for slot, origin in ipairs(origins) do
+    panels[slot] = {
+      origin = { x = origin[1], y = origin[2] },
+      size = { width = 128, height = 48 },
+      chrome = { normal = imageRef("assets/generated/party/fixture-panel.png", 128, 48) },
+      text = {
+        name = rect(origin[1] + 48, origin[2] + 8, 72, 16),
+        level = rect(origin[1] + 0, origin[2] + 32, 48, 16),
+      },
+      hp = {
+        bar = rect(origin[1] + 64, origin[2] + 24, 48, 8),
+        number = rect(origin[1] + 56, origin[2] + 32, 64, 16),
+      },
+      compat = rect(origin[1] + 48, origin[2] + 32, 80, 16),
+    }
+  end
+  local digits = {}
+  for digit = 0, 9 do
+    digits[digit + 1] = imageRef("assets/generated/party/fixture-digit-" .. digit .. ".png", 8, 8)
+  end
+  local anchors = {}
+  for leaf = 0, 4 do
+    anchors[leaf + 1] = { x = 91 + leaf * 10, y = 182 }
+  end
+  local dpadRow = {}
+  for entry = 1, 8 do
+    dpadRow[entry] =
+      { left = 64, top = 25, width = 0, height = 0, up = 7, down = 2, leftNeighbor = 7, rightNeighbor = 1 }
+  end
+  local function sequences(path, width, height)
+    return {
+      sequences = {
+        { frames = { frameRef(path, width, height, 8) }, loopFrom = 1, playback = "static" },
+      },
+    }
+  end
+  return {
+    schema = PartyCache.SCHEMA,
+    panes = {
+      main = { width = 256, height = 192 },
+      sub = { width = 256, height = 192 },
+    },
+    panels = panels,
+    windows = {
+      message = rect(16, 168, 160, 16),
+      context = rect(152, 120, 96, 64),
+    },
+    visuals = {
+      cursor = sequences("assets/generated/party/fixture-cursor-0.png", 32, 32),
+      balls = sequences("assets/generated/party/fixture-ball-0.png", 32, 32),
+      buttons = sequences("assets/generated/party/fixture-button-0.png", 32, 32),
+      held = sequences("assets/generated/party/fixture-held-0.png", 8, 8),
+      status = {
+        frames = {
+          imageRef("assets/generated/party/fixture-status-1.png", 24, 8),
+          imageRef("assets/generated/party/fixture-status-2.png", 24, 8),
+          imageRef("assets/generated/party/fixture-status-3.png", 24, 8),
+          imageRef("assets/generated/party/fixture-status-4.png", 24, 8),
+          imageRef("assets/generated/party/fixture-status-5.png", 24, 8),
+          imageRef("assets/generated/party/fixture-status-6.png", 24, 8),
+          imageRef("assets/generated/party/fixture-status-7.png", 24, 8),
+        },
+      },
+      feedback = {
+        frames = {
+          frameRef("assets/generated/party/fixture-feedback-0.png", 16, 16, 3),
+          frameRef("assets/generated/party/fixture-feedback-1.png", 16, 16, 2),
+        },
+        loopFrom = 1,
+        playback = "once",
+        hideAtFrame = 3,
+      },
+      backdropMain = imageRef("assets/generated/party/fixture-backdrop-main.png", 256, 256),
+      backdropSub = imageRef("assets/generated/party/fixture-backdrop-sub.png", 256, 256),
+      detailSub = imageRef("assets/generated/party/fixture-detail-sub.png", 256, 256),
+      decoration = imageRef("assets/generated/party/fixture-decoration.png", 128, 16),
+      auxPanel = imageRef("assets/generated/party/fixture-panel-aux.png", 128, 48),
+    },
+    iconAnimations = {
+      periods = { 1, 8, 12, 24, 40, 36 },
+      replacementDurations = { 32, 2, 2 },
+      replacementShift = { 0, 1, -1 },
+    },
+    navigation = { dpad = { default = dpadRow, alternate = dpadRow, union = dpadRow, contest = dpadRow } },
+    hitboxes = {
+      touch = {
+        default = { touch(0, 48, 0, 128) },
+        alternate = { touch(0, 48, 0, 128) },
+        context = { touch(0, 48, 0, 128) },
+      },
+    },
+    text = { labels = {}, templates = {} },
+    numberGlyphs = {
+      advance = 8,
+      height = 8,
+      digits = digits,
+      slash = imageRef("assets/generated/party/fixture-slash.png", 8, 8),
+      level = imageRef("assets/generated/party/fixture-level.png", 16, 8),
+    },
+    shinyLeaves = {
+      anchors = anchors,
+      crownAnchor = { x = 111, y = 182 },
+      leafSequence = 6,
+      crownSequence = 7,
+      paletteBank = 1,
+      leaves = {
+        frames = { frameRef("assets/generated/party/fixture-leaf-0.png", 16, 16, 4) },
+        loopFrom = 1,
+        playback = "loop",
+      },
+      crown = {
+        frames = { frameRef("assets/generated/party/fixture-crown-0.png", 16, 16, 4) },
+        loopFrom = 1,
+        playback = "loop",
+      },
+    },
+  }
 end
 
 ---@return CacheFs
@@ -131,6 +274,13 @@ function FieldStatePresentationFixture.cache()
   cache:write("assets/generated/bag/focus-actions.png", solidPng(32, 32))
   cache:write("assets/generated/bag/registration-slot-1.png", solidPng(40, 16))
   cache:write("assets/generated/bag/registration-slot-2.png", solidPng(40, 16))
+  -- Minimal party manifest and every image it references so the eager
+  -- party presentation resources resolve during FieldState construction.
+  local partyData = partyManifest()
+  cache:writeLua(PartyCache.manifestPath(), partyData)
+  for _, path in ipairs(PartyCache.referencedPaths(partyData)) do
+    cache:write(path, solidPng(32, 32))
+  end
   cache:write(
     FieldActorCache.indexPath(),
     LuaWriter.encode({ schema = FieldActorCache.INDEX_SCHEMA, spriteIds = { 0 } })

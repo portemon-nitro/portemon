@@ -1,11 +1,14 @@
--- The concrete party-screen application: the per-open wrapper binding the
--- existing view-mode controller to one presentation session. Each tick
+-- The concrete party-screen application: the per-open wrapper binding
+-- the native fixed-tick controller to one presentation session. Each tick
 -- resolves a complete plan against fresh display facts, maps one ordered
 -- batch, advances the controller once, then resolves again for the
 -- resulting snapshot without advancing semantic clocks. Geometry lives in
--- the session, never in the host. Construction is failure-safe: a failed
+-- the session, never in the host; a measurement change cancels held
+-- presses through both owners. Construction is failure-safe: a failed
 -- session or controller releases whatever the open acquired. Missing
 -- production capabilities fail at construction, never on first draw.
+-- Intents and completions forward to the controller; only the final close
+-- record translates for the host.
 
 local ApplicationPresentation = require("game.hgss.src.ui.ApplicationPresentation")
 local PartyScreenController = require("libs.hgss.src.ui.PartyScreenController")
@@ -15,6 +18,11 @@ local PartyScreenModel = require("libs.hgss.src.ui.PartyScreenModel")
 
 ---@class PartyScreenState
 ---@field _service HgssMonService the live mon service
+---@field _manifest table<string, unknown> the validated party presentation manifest
+---@field _policy table<string, unknown> the injected action policy
+---@field _promptShape table<string, unknown> the yes/no prompt shape for confirmations
+---@field _context string the named party context for this open
+---@field _item { key: string, bagRevision: integer }? the pending item for target contexts
 ---@field _measureDisplay fun(): DisplayMeasurement the live display facts
 ---@field _prepareIcons fun(iconKeys: string[]): boolean, string?
 ---@field _cancelIconPreparation fun()
@@ -24,12 +32,67 @@ local PartyScreenModel = require("libs.hgss.src.ui.PartyScreenModel")
 ---@field _preparationReleased boolean
 ---@field _controller PartyScreenController
 ---@field _session ApplicationPresentation the per-open presentation session
+---@field _signature string? the last resolved measurement signature
 ---@field _disposed boolean
 local PartyScreenState = {}
 PartyScreenState.__index = PartyScreenState
 
+-- The fallback browse policy when a screen injects no action policy: only locally completable branches stay reachable. Switch reorders through the delayed swap; Quit closes. Summary, held-item, mail, and field-move branches arrive with their owning flows, never as silent no-ops.
+---@param service HgssMonService
+---@param labels table<string, unknown>?
+---@return table<string, unknown> the browse action policy
+local function productionPolicy(service, labels)
+  local function text(key, fallback)
+    if type(labels) == "table" and type(labels[key]) == "string" then
+      return labels[key]
+    end
+    return fallback
+  end
+  local function menuFor(_, _)
+    local entries = {}
+    if service:partyCount() >= 2 then
+      entries[#entries + 1] = { kind = "switch", label = text("switch", "SWITCH") }
+    end
+    entries[#entries + 1] = { kind = "quit", label = text("quit", "QUIT") }
+    return entries
+  end
+  local function unreachable(submenuKind)
+    error("party composition offers no " .. tostring(submenuKind) .. " submenus", 2)
+  end
+  local function submenuFor(_, menuKind)
+    unreachable(menuKind)
+    return {}
+  end
+  local function evaluateTarget(_, _)
+    return { compatible = true }
+  end
+  return { menuFor = menuFor, submenuFor = submenuFor, evaluateTarget = evaluateTarget }
+end
+
+---@param manifest table<string, unknown>?
+---@return table<string, unknown>? display labels or nil without a manifest
+local function manifestLabels(manifest)
+  if type(manifest) ~= "table" then
+    return nil
+  end
+  local text = manifest.text
+  if type(text) ~= "table" then
+    return nil
+  end
+  local labels = text.labels
+  if type(labels) ~= "table" then
+    return nil
+  end
+  return labels
+end
+
 ---@class PartyScreenState.Options
 ---@field service HgssMonService the live mon service
+---@field manifest table<string, unknown> the validated party presentation manifest
+---@field actionPolicy table<string, unknown>? the action policy (defaults to the production browse policy)
+---@field uiManifest table<string, unknown>? the field-UI manifest carrying the yes/no prompt shape
+---@field context string? the named party context (defaults to browse)
+---@field item { key: string, bagRevision: integer }? the pending item for target contexts
 ---@field measureDisplay fun(): DisplayMeasurement the current display facts
 ---@field overrides table<string, unknown>? per-case function overrides for this application
 ---@field prepareIcons fun(iconKeys: string[]): boolean, string? required icon preparation collaborator
@@ -47,8 +110,29 @@ function PartyScreenState.new(opts)
     type(service.partyCount) == "function" and service:partyCount() > 0,
     "the party screen requires a non-empty party"
   )
+  local manifest = assert(opts.manifest, "the party screen requires the validated party manifest")
+  assert(type(manifest) == "table", "the party screen requires the validated party manifest")
+  -- The modal take confirmation binds the generated prompt shape; a
+  -- missing definition fails the open instead of falling back.
+  local promptShape
+  if opts.uiManifest ~= nil then
+    local promptSection = assert(opts.uiManifest.yesNoPrompt, "the field-UI manifest carries the prompt section")
+    assert(type(promptSection) == "table", "the field-UI manifest carries the prompt section")
+    local promptShapes = assert(promptSection.shapes, "the prompt section carries its shape map")
+    promptShape = assert(promptShapes.compact, "the field-UI manifest carries the compact prompt shape")
+  end
+  local context = opts.context or "browse"
+  assert(
+    context == "browse" or context == "pick" or context == "item_target" or context == "give_target",
+    "the party screen requires a named context"
+  )
   local self = setmetatable({
     _service = service,
+    _manifest = manifest,
+    _policy = opts.actionPolicy or productionPolicy(service, manifestLabels(manifest)),
+    _promptShape = promptShape,
+    _context = context,
+    _item = opts.item,
     _measureDisplay = opts.measureDisplay,
     _prepareIcons = opts.prepareIcons,
     _cancelIconPreparation = opts.cancelIconPreparation,
@@ -61,6 +145,9 @@ function PartyScreenState.new(opts)
   local function refreshModel()
     return PartyScreenModel.build(service)
   end
+  local function partyRevision()
+    return service:partyRevision()
+  end
   local function swapPartyMons(a, b)
     service:swapPartyMons(a, b)
   end
@@ -71,14 +158,20 @@ function PartyScreenState.new(opts)
   local controller
   local session
   local built, buildErr = pcall(function()
-    session = ApplicationPresentation.new(PartyScreenInterface.withOverrides(opts.overrides))
+    session = ApplicationPresentation.new(PartyScreenInterface.withOverrides(opts.overrides, manifest))
     controller = PartyScreenController.new({
-      mode = "view",
+      context = context,
       model = {
         refresh = refreshModel,
       },
-      swap = swapPartyMons,
-      resolveLayout = resolveLayout,
+      layout = resolveLayout,
+      swap = {
+        partyRevision = partyRevision,
+        swapPartyMons = swapPartyMons,
+      },
+      actionPolicy = self._policy,
+      promptShape = self._promptShape,
+      item = self._item,
     })
   end)
   if not built then
@@ -90,7 +183,7 @@ function PartyScreenState.new(opts)
     end
     error(buildErr, 0)
   end
-  self._controller = assert(controller, "the party screen requires its view controller")
+  self._controller = assert(controller, "the party screen requires its native controller")
   self._session = assert(session, "the party screen requires its presentation session")
   local resolveOk, resolveErr = pcall(function()
     self._session:resolve(self:_measured(), self:_view())
@@ -151,9 +244,10 @@ function PartyScreenState:resolveLayout()
   return assert(plan.content, "the party plan carries its canonical content")
 end
 
--- One fixed tick: resolve, map once, advance the controller once, then
--- resolve again for the resulting snapshot. pointer_cancel flows in batch
--- order; the controller absorbs it without changing selection.
+-- One fixed tick: resolve, cancel stale presses across measurement
+-- changes, map once, advance the controller once, then resolve again for
+-- the resulting snapshot. pointer_cancel flows in batch order; the
+-- controller absorbs it without changing selection.
 ---@param uiInput table[]
 function PartyScreenState:updateFixed(uiInput)
   assert(not self._disposed, "a disposed party wrapper steps nothing")
@@ -190,6 +284,13 @@ function PartyScreenState:updateFixed(uiInput)
   end
   local session = self._session
   local measurement = self:_measured()
+  local signature = measurement.signature
+  if signature ~= nil and signature ~= self._signature then
+    if self._signature ~= nil then
+      self:cancelPointerCapture()
+    end
+    self._signature = signature
+  end
   session:resolve(measurement, self:_view())
   local mapped = session:mapInput(assert(uiInput, "the party input must be an event list"), self:_view())
   self._controller:updateFixed(mapped)
@@ -198,7 +299,8 @@ end
 
 -- The presentation snapshot: the preparation wait while icons are not
 -- ready, the controller status plus presentation=plan and readiness once
--- they are. Read-only: status never advances preparation. Fresh tables
+-- they are, presentation=plan remaining the single host-facing layout
+-- authority. Read-only: status never advances preparation. Fresh tables
 -- per call.
 ---@return table<string, unknown>
 function PartyScreenState:status()
@@ -214,22 +316,38 @@ function PartyScreenState:status()
   if not status.open then
     return status
   end
+  status.manifest = self._manifest
   status.presentation = self._session:plan()
   status.preparationState = "ready"
   return status
 end
 
--- The host result contract: view mode only ever closes back to the menu.
--- Closing releases the preparation interest exactly once.
----@return { kind: "close" }?
+-- Forwards the one-shot intent to the flow that completes it.
+---@return table<string, unknown>?
+function PartyScreenState:takeIntent()
+  return self._controller:takeIntent()
+end
+
+-- Forwards the flow's outcome into the waiting controller.
+---@param outcome table<string, unknown>
+function PartyScreenState:completeAction(outcome)
+  self._controller:completeAction(outcome)
+end
+
+-- The host result contract: the final close record translates to the
+-- host close and releases the preparation interest exactly once;
+-- selection records pass through for target-context owners.
+---@return table<string, unknown>?
 function PartyScreenState:takeResult()
   local result = self._controller:takeResult()
   if result == nil then
     return nil
   end
-  assert(result.kind == "closed", "the party application only returns close")
-  self:_releasePreparation()
-  return { kind = "close" }
+  if result.kind == "closed" then
+    self:_releasePreparation()
+    return { kind = "close" }
+  end
+  return result
 end
 
 -- Cancels a held press through both owners: the session drops its capture

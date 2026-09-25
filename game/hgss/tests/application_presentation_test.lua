@@ -655,6 +655,71 @@ local function bagManifest()
   }
 end
 
+local function partyManifest()
+  local panels = {}
+  local origins = { { 0, 0 }, { 128, 8 }, { 0, 48 }, { 128, 56 }, { 0, 96 }, { 128, 104 } }
+  for slot, origin in ipairs(origins) do
+    panels[slot] = {
+      origin = { x = origin[1], y = origin[2] },
+      size = { width = 128, height = 48 },
+      chrome = {},
+      text = {},
+      hp = {},
+      compat = {},
+    }
+  end
+  local function dpadBox(up, down, leftNeighbor, rightNeighbor)
+    return {
+      left = 0,
+      top = 0,
+      width = 0,
+      height = 0,
+      up = up,
+      down = down,
+      leftNeighbor = leftNeighbor,
+      rightNeighbor = rightNeighbor,
+    }
+  end
+  local function touch(top, bottom, left, right)
+    return { top = top, bottom = bottom, left = left, right = right }
+  end
+  return {
+    panels = panels,
+    windows = {
+      message = { x = 16, y = 168, width = 160, height = 16 },
+      context = { x = 152, y = 120, width = 96, height = 64 },
+    },
+    navigation = {
+      dpad = {
+        default = {
+          dpadBox(7, 2, 7, 1),
+          dpadBox(7, 3, 0, 2),
+          dpadBox(0, 4, 1, 3),
+          dpadBox(1, 5, 2, 4),
+          dpadBox(2, 7, 3, 5),
+          dpadBox(3, 7, 4, 7),
+          dpadBox(0, 0, 0, 0),
+          dpadBox(5, 1, 5, 0),
+        },
+      },
+    },
+    hitboxes = {
+      touch = {
+        default = {
+          touch(0, 48, 0, 128),
+          touch(8, 56, 128, 0),
+          touch(48, 96, 0, 128),
+          touch(56, 104, 128, 0),
+          touch(96, 144, 0, 128),
+          touch(104, 152, 128, 0),
+          touch(152, 192, 200, 0),
+        },
+      },
+    },
+    iconAnimations = { periods = { 1, 8, 12, 24, 40, 36 } },
+  }
+end
+
 local function hostRectOwnsPoint(rect, x, y)
   return rect ~= nil and x >= rect.x and x < rect.x + rect.width and y >= rect.y and y < rect.y + rect.height
 end
@@ -695,7 +760,7 @@ function T.tests.framed_plans_publish_outer_frames_and_starter_ignores_outside_p
   local measured = leafMeasurement(1280, 720)
   local startMenu = StartMenuInterface.withOverrides(nil)
   local bag = BagInterface.withOverrides(nil, bagManifest())
-  local party = PartyScreenInterface.withOverrides(nil)
+  local party = PartyScreenInterface.withOverrides(nil, partyManifest())
   local card = TrainerCardInterface.withOverrides(nil)
   local starter = StarterChoiceInterface.withOverrides(nil)
   local starterView = { selection = 0, selectionState = "null", transition = "idle", done = false }

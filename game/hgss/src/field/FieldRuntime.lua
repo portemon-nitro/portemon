@@ -1491,8 +1491,11 @@ function FieldRuntime:_applicationDescriptors()
     end
     local binding =
       assert(self._partyIconPreparation, "the presented party screen requires its icon preparation binding")
+    local PartyCache = require("libs.assets.src.PartyCache")
     return PartyScreenState.new({
       service = self.monService,
+      manifest = PartyCache.loadManifest(self.cacheFs),
+      uiManifest = assert(self.uiManifest, "the party application requires the validated field-UI manifest"),
       measureDisplay = measureDisplay,
       overrides = partyOverrides,
       prepareIcons = binding.prepare,

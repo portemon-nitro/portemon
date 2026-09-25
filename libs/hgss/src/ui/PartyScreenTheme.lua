@@ -15,6 +15,26 @@ local PartyScreenTheme = {}
 
 PartyScreenTheme.HP_BAR_PIXELS = 48
 
+-- Shared fill-length computation for the 48-pixel HP bar: quantized
+-- floor pixels with a one-pixel minimum while HP remains. Color tests
+-- elsewhere use this quantized length, never a floating fraction.
+---@param currentHp integer
+---@param maxHp integer
+---@return integer
+function PartyScreenTheme.fillLength(currentHp, maxHp)
+  assert(
+    type(currentHp) == "number" and currentHp % 1 == 0 and currentHp >= 0,
+    "the fill length requires a non-negative integer current HP"
+  )
+  assert(type(maxHp) == "number" and maxHp % 1 == 0 and maxHp > 0, "the fill length requires a positive max HP")
+  assert(currentHp <= maxHp, "current HP cannot exceed max HP")
+  local pixels = math.floor((currentHp * PartyScreenTheme.HP_BAR_PIXELS) / maxHp)
+  if pixels == 0 and currentHp ~= 0 then
+    pixels = 1
+  end
+  return pixels
+end
+
 ---@param currentHp integer
 ---@param maxHp integer
 ---@return "full"|"green"|"yellow"|"red"|"fainted"
@@ -28,10 +48,7 @@ function PartyScreenTheme.hpZone(currentHp, maxHp)
   if currentHp == maxHp then
     return "full"
   end
-  local pixels = math.floor((currentHp * PartyScreenTheme.HP_BAR_PIXELS) / maxHp)
-  if pixels == 0 and currentHp ~= 0 then
-    pixels = 1
-  end
+  local pixels = PartyScreenTheme.fillLength(currentHp, maxHp)
   if pixels * 2 > PartyScreenTheme.HP_BAR_PIXELS then
     return "green"
   end
@@ -42,6 +59,46 @@ function PartyScreenTheme.hpZone(currentHp, maxHp)
     return "red"
   end
   return "fainted"
+end
+
+-- Source icon animation sequence for one slot: fainted selects 0 and
+-- any persistent status selects 5; healthy mons follow their HP zone
+-- (full 1, green 2, yellow 3, red 4). The controller preserves phase
+-- within a sequence and resets it only when the sequence changes.
+---@param zone "full"|"green"|"yellow"|"red"|"fainted"
+---@param statusKey "ok"|"sleep"|"poison"|"burn"|"freeze"|"paralysis"|"faint"
+---@return integer
+function PartyScreenTheme.iconSequence(zone, statusKey)
+  assert(
+    zone == "full" or zone == "green" or zone == "yellow" or zone == "red" or zone == "fainted",
+    "unknown HP zone " .. tostring(zone)
+  )
+  assert(
+    statusKey == "ok"
+      or statusKey == "sleep"
+      or statusKey == "poison"
+      or statusKey == "burn"
+      or statusKey == "freeze"
+      or statusKey == "paralysis"
+      or statusKey == "faint",
+    "unknown status key " .. tostring(statusKey)
+  )
+  if zone == "fainted" then
+    return 0
+  end
+  if statusKey ~= "ok" then
+    return 5
+  end
+  if zone == "full" then
+    return 1
+  end
+  if zone == "green" then
+    return 2
+  end
+  if zone == "yellow" then
+    return 3
+  end
+  return 4
 end
 
 local STATUS_SLEEP_MASK = 0x7
