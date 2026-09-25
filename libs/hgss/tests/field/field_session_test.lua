@@ -4009,4 +4009,131 @@ function T.a_tick_staying_in_menu_queues_no_child_resume()
   Assert.isFalse(session.childResumePending, "a tick that ran no child must not queue the field resume")
 end
 
+-- Strength-push arbitration: an idle step into an enabled boulder queues
+-- one push and claims the entry script instead of stepping; a blocked
+-- claim discards the queue and bumps normally.
+local function pushSession(overrides)
+  overrides = overrides or {}
+  local BuiltinScripts = require("libs.hgss.src.script.BuiltinScripts")
+  local claims = {}
+  local discards = 0
+  local attempts = {}
+  local player = defaultPlayer()
+  player.fieldX = 4
+  player.fieldZ = 5
+  player.surfaceId = 0
+  player.motion = "idle"
+  local stepped = 0
+  local ostensiblyUpdateFixed = player.updateFixed
+  player.updateFixed = function(...)
+    stepped = stepped + 1
+    return ostensiblyUpdateFixed(...)
+  end
+  local boulder = {
+    actorId = "map:61:object:2",
+    sourceEvent = { obstacleKind = "strength_boulder" },
+  }
+  local options = baseOptions({
+    player = player,
+    actors = {
+      step = function() end,
+      getAt = function(_, _, _)
+        if overrides.boulder == false then
+          return nil
+        end
+        return boulder
+      end,
+    },
+    scriptClient = {
+      consume = function()
+        return "blocked"
+      end,
+      startApplicationScript = function(_, scriptId, tick)
+        claims[#claims + 1] = { scriptId = scriptId, tick = tick }
+        if overrides.claim == "blocked" then
+          return "blocked"
+        end
+        return "instance-1"
+      end,
+    },
+    fieldMoves = {
+      tryStrengthPush = function(_, snapshot)
+        attempts[#attempts + 1] = snapshot
+        if overrides.port == "declined" then
+          return { kind = "not_here", reason = "strength_not_enabled" }
+        end
+        return { kind = "accepted" }
+      end,
+      discardPending = function()
+        discards = discards + 1
+      end,
+    },
+  })
+  if overrides.foreground == true then
+    options.scriptScheduler.foregroundEnvironmentId = function()
+      return "env-1"
+    end
+  end
+  local session = FieldSession.new(options)
+  return session,
+    {
+      claims = claims,
+      attempts = attempts,
+      discards = function()
+        return discards
+      end,
+      stepped = function()
+        return stepped
+      end,
+      entryId = BuiltinScripts.FIELD_MOVE_ENTRY_SCRIPT,
+    }
+end
+
+function T.armed_boulder_step_claims_the_push_task()
+  local session, spy = pushSession()
+  session:updateFixed({ pressedDirection = "south" })
+  Assert.equal(#spy.attempts, 1, "one push attempt per step")
+  Assert.equal(spy.attempts[1].boulderActorId, "map:61:object:2")
+  Assert.equal(spy.attempts[1].direction, "south")
+  Assert.equal(spy.attempts[1].mapId, 61)
+  Assert.equal(#spy.claims, 1, "admission claims the entry script")
+  Assert.equal(spy.claims[1].scriptId, spy.entryId)
+  Assert.equal(spy.claims[1].tick, 1)
+  Assert.equal(spy.stepped(), 0, "the claimed attempt never also steps the player")
+  Assert.equal(spy.discards(), 0, "claimed queues are never discarded")
+  Assert.equal(session.tick, 1, "the claimed tick advances")
+end
+
+function T.blocked_claim_discards_and_bumps()
+  local session, spy = pushSession({ claim = "blocked" })
+  session:updateFixed({ pressedDirection = "south" })
+  Assert.equal(#spy.claims, 1, "the claim is attempted")
+  Assert.equal(spy.discards(), 1, "a blocked claim discards only its queue")
+  Assert.equal(spy.stepped(), 1, "the attempt falls through to normal movement")
+end
+
+function T.disarmed_boulder_step_bumps_normally()
+  local session, spy = pushSession({ port = "declined" })
+  session:updateFixed({ pressedDirection = "south" })
+  Assert.equal(#spy.attempts, 1, "the port is consulted")
+  Assert.equal(#spy.claims, 0, "declined pushes claim nothing")
+  Assert.equal(spy.stepped(), 1, "declined pushes bump normally")
+end
+
+function T.push_hook_yields_to_foreground_and_empty_tiles()
+  local foregroundSession, foregroundSpy = pushSession({ foreground = true })
+  foregroundSession:updateFixed({ pressedDirection = "south" })
+  Assert.equal(#foregroundSpy.attempts, 0, "a foreground owner keeps the tick")
+  local emptySession, emptySpy = pushSession({ boulder = false })
+  emptySession:updateFixed({ pressedDirection = "south" })
+  Assert.equal(#emptySpy.attempts, 0, "empty tiles never consult the port")
+  Assert.equal(emptySpy.stepped(), 1, "ordinary steps proceed")
+end
+
+function T.push_port_requires_its_two_operations()
+  local ok, err = pcall(FieldSession.new, baseOptions({ fieldMoves = {} }))
+  Assert.isFalse(ok, "a partial push port must fail construction")
+  Assert.notNil(tostring(err):find("tryStrengthPush"), "construction names the missing operation")
+end
+
 return { tests = T }

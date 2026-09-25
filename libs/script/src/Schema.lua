@@ -1041,6 +1041,18 @@ Schema.OPERATIONS = {
       result = { type = "value", required = true },
     },
   },
+  -- Field-task request. The pending form claims the runtime-owned queue
+  -- for the menu-to-field builtin; the explicit form carries a source
+  -- move key plus the zero-based mon slot for source lowering. No
+  -- map/badge/HGSS constants here: only the source tag, exact keys, and
+  -- scalar/value operands are validated, with mixed forms rejected.
+  field_move = {
+    fields = {
+      source = { type = "string", required = true },
+      move = { type = "string" },
+      slot = { type = "scalar_or_value" },
+    },
+  },
   -- Follower operations. Every node routes to the one field following
   -- controller through the injected collaborator; boolean results write 1
   -- or 0, and the movement mode carries one semantic mode string.
@@ -1800,6 +1812,11 @@ Schema.CONSTRUCTORS = {
         signature = "S.partySelectResult(spec)",
         canonical = "op=party_select_result",
         notes = "spec={result}; copies the slot or 255 on cancel.",
+      },
+      {
+        signature = "S.fieldMove(spec)",
+        canonical = "op=field_move",
+        notes = "spec={source}; pending claims the runtime queue, explicit adds move and slot.",
       },
     },
   },

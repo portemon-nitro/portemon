@@ -128,7 +128,24 @@ FieldMoveSources.OBSTACLE_KINDS = {
 -- Sprite id -> obstacle kind, verified against ROM script correlations.
 -- Empty until the first cited entry: the compiler decorates only proven
 -- identities, and an undecorated actor fails obstacle checks loudly.
-local SPRITE_OBSTACLE_KINDS = {}
+--
+-- Cited entries (pret/pokeheartgold@9d8b7591 src/field_move.c,
+-- FieldMove_InitCheckData maps facing-object sprites to check flags:
+-- SPRITE_TREE (86) -> TREE, SPRITE_ROCK (84) -> ROCK, SPRITE_BREAKROCK
+-- (85) -> BREAKROCK; include/constants/sprites.h pins the numbers; the
+-- menu entries std_menu_cut/strength/rock_smash consume the same facing
+-- object):
+-- ROM correlation on the canonical SoulSilver dump (540 maps, 2667 object
+-- events): sprite 86 appears 48 times (all with per-object presence flags
+-- 16..22, e.g. MAP_ROUTE_2/MAP_ROUTE_9), sprite 84 appears 33 times, and
+-- sprite 85 appears 103 times (e.g. MAP_BURNED_TOWER_1F/MAP_ROUTE_3).
+-- The identities are live shipped data used through the same facing-object
+-- mechanism, never sprite-name heuristics.
+local SPRITE_OBSTACLE_KINDS = {
+  [86] = "cut_tree",
+  [84] = "strength_boulder",
+  [85] = "smash_rock",
+}
 
 ---@param spriteId integer
 ---@return string|nil

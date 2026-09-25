@@ -112,6 +112,7 @@ local AUTONOMOUS_STEP_TICKS = assert(MovementCalibration.SPEED_TICKS.normal)
 ---@field eventState FieldEventState?
 ---@field unsubscribe fun()?
 ---@field pendingFlags FieldActorFlagChange[]
+---@field removedOverrides table<string, boolean>
 ---@field currentMapId integer|nil
 ---@field _visualRevision integer
 ---@field _drawRecords FieldActorManager.DrawRecord[]
@@ -124,6 +125,7 @@ local AUTONOMOUS_STEP_TICKS = assert(MovementCalibration.SPEED_TICKS.normal)
 ---@field _instantiate fun(self: FieldActorManager, entry: FieldActorManager.Entry, event: FieldActorEvent, eventState: FieldEventState?): FieldActorManager.Actor
 ---@field _destroy fun(self: FieldActorManager, entry: FieldActorManager.Entry, actor: FieldActorManager.Actor)
 ---@field leaveMap fun(self: FieldActorManager, mapId: integer)
+---@field removePresence fun(self: FieldActorManager, actorId: string, recordRemoval: boolean)
 ---@field enterMap fun(self: FieldActorManager, runtimeMap: RuntimeFieldMap, eventState: FieldEventState, restoredObjects: table<string, unknown>?)
 ---@field dispose fun(self: FieldActorManager)
 ---@field visualRevision fun(self: FieldActorManager): integer
@@ -282,6 +284,11 @@ function FieldActorManager.new(opts)
     eventState = nil,
     unsubscribe = nil,
     pendingFlags = {},
+    -- Sparse source-scoped logical removals by "mapId:objectEventId":
+    -- flag-less obstacles destroyed through removePresence with recording.
+    -- Honored at map entry and restore; refreshed from each incoming
+    -- snapshot so an explicit reset flows through like any save content.
+    removedOverrides = {},
     currentMapId = nil,
     _visualRevision = 0,
     _drawRecords = {},
@@ -800,10 +807,52 @@ local function isSourceEventPresent(eventState, event)
   return not eventState:isFlagSet(event.eventFlag)
 end
 
+-- The recorded logical removals for one map entry: the incoming snapshot
+-- is authoritative, so an explicit reset flows through like any save
+-- content. Malformed pairs fail loudly; unknown identities are rejected
+-- at restore where the source events are indexed.
+---@param self FieldActorManager
+---@param mapId integer
+---@param snapshot table<string, unknown>?
+---@return table<string, boolean>
+local function removedSetForSnapshot(self, mapId, snapshot)
+  for key in pairs(self.removedOverrides) do
+    local keyMap = tonumber(key:match("^([^:]+):"))
+    if keyMap == mapId then
+      self.removedOverrides[key] = nil
+    end
+  end
+  local set = {}
+  local removed = snapshot and snapshot.removed or nil
+  if removed == nil then
+    return set
+  end
+  assert(type(removed) == "table", "removed overrides must be an array")
+  for _, entry in ipairs(removed) do
+    assert(type(entry) == "table", "removed override must be a record")
+    assert(
+      type(entry.mapId) == "number"
+        and entry.mapId % 1 == 0
+        and entry.mapId >= 0
+        and type(entry.objectEventId) == "number"
+        and entry.objectEventId % 1 == 0
+        and entry.objectEventId >= 0,
+      "removed override source identity is invalid"
+    )
+    if entry.mapId == mapId then
+      local key = mapId .. ":" .. entry.objectEventId
+      set[key] = true
+      self.removedOverrides[key] = true
+    end
+  end
+  return set
+end
+
 ---@param self FieldActorManager
 ---@param entry FieldActorManager.Entry
 ---@param eventState FieldEventState
-local function populateEntry(self, entry, eventState)
+---@param removed table<string, boolean> source identities skipped at construction
+local function populateEntry(self, entry, eventState, removed)
   local runtimeMap = entry.runtimeMap
   local ok, err = pcall(function()
     -- The map loader validates the four event collections against the
@@ -816,7 +865,11 @@ local function populateEntry(self, entry, eventState)
     assert(type(objects) == "table", "enterMap requires the compiled object collection")
     for _, event in ipairs(objects) do
       entry.store:indexEvent(event)
-      if isSourceEventPresent(eventState, event) then
+      local removedKey = entry.runtimeMap.mapId .. ":" .. event.objectEventId
+      if removed and removed[removedKey] then
+        -- A recorded logical removal wins over source construction until
+        -- the corresponding full-map reset clears it.
+      elseif isSourceEventPresent(eventState, event) then
         self:_instantiate(entry, event, eventState)
       end
     end
@@ -907,7 +960,7 @@ end
 ---@param snapshot table<string, unknown>?
 ---@return table<string, unknown>?
 local function restorableSnapshot(self, entry, eventState, snapshot)
-  if snapshot == nil or snapshot.actors == nil then
+  if snapshot == nil then
     return snapshot
   end
   local mapId = entry.runtimeMap.mapId
@@ -918,15 +971,38 @@ local function restorableSnapshot(self, entry, eventState, snapshot)
   for _, event in ipairs(objects) do
     byObjectEventId[event.objectEventId] = event
   end
+  -- A removal override naming no declared source event is malformed save
+  -- content, never a silent skip.
+  if snapshot.removed ~= nil then
+    assert(type(snapshot.removed) == "table", "removed overrides must be an array")
+    for _, removedOverride in ipairs(snapshot.removed) do
+      assert(type(removedOverride) == "table", "removed override must be a record")
+      if removedOverride.mapId == mapId and byObjectEventId[removedOverride.objectEventId] == nil then
+        Errors.raise(
+          ScriptErrors.SCRIPT_TASK_UNSERIALIZABLE,
+          "removed override names an unknown source event",
+          { mapId = mapId, objectEventId = removedOverride.objectEventId }
+        )
+      end
+    end
+  end
+  if snapshot.actors == nil then
+    return snapshot
+  end
   local kept = {}
   local dropped = false
+  local removed = removedSetForSnapshot(self, mapId, snapshot)
   for actorId, record in pairs(snapshot.actors) do
     local sourceEvent
     if record.mapId == mapId and record.objectEventId ~= nil then
       sourceEvent = byObjectEventId[record.objectEventId]
     end
     if sourceEvent ~= nil then
-      if not isSourceEventPresent(eventState, sourceEvent) then
+      local removedKey = mapId .. ":" .. record.objectEventId
+      if removed[removedKey] then
+        self.persistence:validateSourceIdentity(actorId, record, sourceEvent)
+        dropped = true
+      elseif not isSourceEventPresent(eventState, sourceEvent) then
         self.persistence:validateSourceIdentity(actorId, record, sourceEvent)
         dropped = true
       else
@@ -936,6 +1012,8 @@ local function restorableSnapshot(self, entry, eventState, snapshot)
       kept[actorId] = record
     end
   end
+  -- A removal override naming no declared source event is malformed save
+  -- content, never a silent skip.
   if not dropped then
     return snapshot
   end
@@ -1148,7 +1226,8 @@ function FieldActorManager:enterMap(runtimeMap, eventState, restoredObjects)
     return
   end
   local entry = newEntry(runtimeMap)
-  populateEntry(self, entry, eventState)
+  local removed = removedSetForSnapshot(self, mapId, restoredObjects)
+  populateEntry(self, entry, eventState, removed)
   local restored, restoreErr = pcall(self._restoreEntry, self, entry, eventState, restoredObjects)
   if not restored then
     destroyEntry(self, entry)
@@ -1209,6 +1288,27 @@ local function captureAutonomousAction(entry, actor)
   }
 end
 
+-- The persisted sparse removal overrides, sorted for deterministic saves.
+-- Absent when empty: no override means source presence policy.
+---@param self FieldActorManager
+---@return table[]?
+local function capturedRemovals(self)
+  local keys = {}
+  for key in pairs(self.removedOverrides) do
+    keys[#keys + 1] = key
+  end
+  if #keys == 0 then
+    return nil
+  end
+  table.sort(keys)
+  local removed = {}
+  for _, key in ipairs(keys) do
+    local mapId, objectEventId = key:match("^([^:]+):([^:]+)$")
+    removed[#removed + 1] = { mapId = assert(tonumber(mapId)), objectEventId = assert(tonumber(objectEventId)) }
+  end
+  return removed
+end
+
 ---@return table<string, unknown>
 function FieldActorManager:captureObjects()
   local function captureController(actorId)
@@ -1241,7 +1341,30 @@ function FieldActorManager:captureObjects()
     end
     return ordered
   end
-  return self.persistence:capture(self.maps, persistableActors, captureController, captureAction, captureRng)
+  local bucket = self.persistence:capture(self.maps, persistableActors, captureController, captureAction, captureRng)
+  local removed = capturedRemovals(self)
+  if removed ~= nil then
+    bucket.removed = removed
+  end
+  return bucket
+end
+
+-- Commit a logical obstacle removal through actor ownership: presence,
+-- collision, and presentation change together, never visibility alone.
+-- recordRemoval persists a sparse source-scoped override for flag-less
+-- obstacles (transient removals pass false and rebuild from source on
+-- re-entry). Missing actors raise without touching live state.
+---@param actorId string
+---@param recordRemoval boolean
+---@param self FieldActorManager
+function FieldActorManager:removePresence(actorId, recordRemoval)
+  local actor = requireActor(self, actorId)
+  local entry = assert(self.maps[actor.mapId], "removed actor map entry missing")
+  self:_destroy(entry, actor)
+  if recordRemoval then
+    local sourceEvent = assert(actor.sourceEvent, "removed actors require a source event")
+    self.removedOverrides[actor.mapId .. ":" .. assert(sourceEvent.objectEventId)] = true
+  end
 end
 
 ---@param mapId integer

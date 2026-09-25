@@ -95,6 +95,31 @@ function ScriptInteractionClient:setScriptBankId(scriptBankId)
   self._scriptBankId = scriptBankId
 end
 
+-- Start a runtime-owned application script (e.g. the field-move entry)
+-- through the existing compose/startInteraction mechanism with a
+-- foreground claim. Returns the scheduler instance id, or the shared
+-- blocked outcome without changing state when a foreground owner exists.
+-- A registered builtin that cannot compose is a composition fault raised
+-- loudly. Map-init lifecycle flags are never reused for this entry.
+---@param scriptId string
+---@param tick integer
+---@return string instanceId | blocked
+function ScriptInteractionClient:startApplicationScript(scriptId, tick)
+  assert(type(scriptId) == "string" and scriptId ~= "", "application script identity required")
+  assert(type(tick) == "number" and tick == tick and tick % 1 == 0 and tick >= 0, "tick required")
+  if self._scheduler:foregroundEnvironmentId() ~= nil then
+    return ScriptInteractionClient.RESULTS.blocked
+  end
+  local composed = self._compose(scriptId)
+  if composed == nil then
+    error("missing registered application script " .. scriptId)
+  end
+  local instanceId =
+    self._scheduler:startInteraction({ type = "application", scriptId = scriptId }, composed, tick, true)
+  assert(instanceId ~= nil, "application script scheduler start did not create an instance")
+  return instanceId
+end
+
 -- Resolve one intent into a trigger + composed descriptor, or nil when the
 -- map event is not bound or the bound script cannot be composed.
 ---@param intent table<string, unknown> InteractionIntent

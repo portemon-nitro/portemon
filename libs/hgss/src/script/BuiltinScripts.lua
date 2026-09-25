@@ -9,6 +9,12 @@ local Sha256 = require("libs.script.src.Sha256")
 
 local BuiltinScripts = {}
 
+-- The runtime-owned menu-to-field entry script id: claims the queued
+-- field request into serializable task state through the existing
+-- foreground scheduler. One script for every move and slot; no per-move
+-- scripts and no temporary global variables.
+BuiltinScripts.FIELD_MOVE_ENTRY_SCRIPT = "runtime.field_move_entry"
+
 ---@return table<string, table<string, unknown>>
 function BuiltinScripts.all()
   return {
@@ -16,6 +22,11 @@ function BuiltinScripts.all()
       api = 1,
       id = Bindings.CANONICAL_INERT_SCRIPT,
       steps = { S.stop() },
+    }),
+    [BuiltinScripts.FIELD_MOVE_ENTRY_SCRIPT] = S.script({
+      api = 1,
+      id = BuiltinScripts.FIELD_MOVE_ENTRY_SCRIPT,
+      steps = { S.fieldMove({ source = "pending" }) },
     }),
   }
 end

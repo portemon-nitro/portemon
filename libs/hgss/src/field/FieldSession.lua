@@ -27,6 +27,7 @@
 local TransitionTrigger = require("libs.hgss.src.transition.TransitionTrigger")
 local WarpSystem = require("libs.hgss.src.transition.WarpSystem")
 local ScriptInteractionClient = require("libs.hgss.src.script.ScriptInteractionClient")
+local BuiltinScripts = require("libs.hgss.src.script.BuiltinScripts")
 local FieldTransition = require("libs.hgss.src.transition.FieldTransition")
 local FieldMapEntryController = require("libs.hgss.src.field.FieldMapEntryController")
 
@@ -55,12 +56,17 @@ local FieldMapEntryController = require("libs.hgss.src.field.FieldMapEntryContro
 ---@field playerAvatar FieldPlayerAvatarState? surf-phase owner stepped once per fixed tick
 ---@field audio { updateField: fun(self: table<string, unknown>), play: fun(self: table<string, unknown>, idOrSymbol: string) }?
 ---@field navigationBoundary table<string, unknown>?
+---@field fieldMoves FieldSession.FieldMoves? validated Strength-push port; absent sessions bump boulders
 ---@field initController table<string, unknown>|nil
 ---@field enterMapActors fun()?
 ---@field autoAcknowledgePresentation boolean?
 
 ---@class FieldSession.Interactions
 ---@field resolve fun(self: FieldSession.Interactions, snapshot: InteractionResolverSnapshot): InteractionIntent?
+
+---@class FieldSession.FieldMoves
+---@field tryStrengthPush fun(self: FieldSession.FieldMoves, snapshot: table<string, unknown>): table<string, unknown>
+---@field discardPending fun(self: FieldSession.FieldMoves)
 
 ---@class FieldSession
 ---@field versionId string
@@ -89,6 +95,7 @@ local FieldMapEntryController = require("libs.hgss.src.field.FieldMapEntryContro
 ---@field initController table<string, unknown>|nil
 ---@field mapEntryStage FieldMapEntryStage? read-only view of mapEntryController state
 ---@field mapEntryController FieldMapEntryController
+---@field private fieldMoves FieldSession.FieldMoves? validated Strength-push port; absent sessions bump boulders
 ---@field childResumePending boolean
 ---@field tick integer
 ---@field accumulator number
@@ -125,6 +132,33 @@ local DIRECTION_DELTAS = {
   west = { x = -1, z = 0 },
   east = { x = 1, z = 0 },
 }
+
+-- Name the live strength boulder directly ahead of the player, if any.
+-- Ordinary NPCs, walls, and empty tiles yield nothing: only an enabled
+-- boulder claims the movement attempt, so collision, ledges, and
+-- coordinate arbitration below never see a substituted tile.
+---@param self FieldSession
+---@param direction string
+---@return string? boulder actor id
+local function facingBoulder(self, direction)
+  local offset = DIRECTION_DELTAS[direction]
+  if offset == nil or self.player.surfaceId == nil then
+    return nil
+  end
+  local actor = self.actors:getAt(self.currentMap.mapId, {
+    fieldX = self.player.fieldX + offset.x,
+    fieldZ = self.player.fieldZ + offset.z,
+    surfaceId = self.player.surfaceId,
+  })
+  if actor == nil then
+    return nil
+  end
+  local event = actor.sourceEvent
+  if event == nil or event.obstacleKind ~= "strength_boulder" then
+    return nil
+  end
+  return actor.actorId
+end
 
 ---@class FieldSession.TickScratch
 ---@field schedulerInput table<string, unknown>
@@ -268,6 +302,12 @@ function FieldSession.new(options)
     "field event resolver required"
   )
   assert(options.eventState and options.eventState.getVar, "field event state required")
+  if options.fieldMoves ~= nil then
+    assert(
+      type(options.fieldMoves.tryStrengthPush) == "function" and type(options.fieldMoves.discardPending) == "function",
+      "field session push port requires tryStrengthPush and discardPending"
+    )
+  end
   if options.audio then
     assert(
       type(options.audio.updateField) == "function" and type(options.audio.play) == "function",
@@ -307,6 +347,7 @@ function FieldSession.new(options)
     }),
     childResumePending = false,
     navigationBoundary = options.navigationBoundary,
+    fieldMoves = options.fieldMoves,
     tick = 0,
     accumulator = 0,
     _boundaryMovementDirection = nil,
@@ -924,6 +965,32 @@ function FieldSession:updateFixed(inputSnapshot)
     movementInput.pressedDirection = carriedBoundaryDirection
   end
   local motionAtPlayerUpdateStart = self.player.motion
+  -- Strength-push arbitration: an idle player's step into an enabled
+  -- strength boulder starts the single push task instead of stepping. The
+  -- injected field-move port validates and queues; the session claims the
+  -- foreground entry script synchronously, then consumes the attempt
+  -- without stepping the player. Disarmed, busy, refused, and ordinary
+  -- collision all fall through to normal movement below.
+  local pushDirection = inputSnapshot.pressedDirection or inputSnapshot.heldDirection
+  if self.fieldMoves ~= nil and not foregroundActive and self.player.motion == "idle" and pushDirection then
+    local boulderActorId = facingBoulder(self, pushDirection)
+    if boulderActorId ~= nil then
+      local attempt = self.fieldMoves:tryStrengthPush({
+        boulderActorId = boulderActorId,
+        direction = pushDirection,
+        mapId = self.currentMap.mapId,
+      })
+      if type(attempt) == "table" and attempt.kind == "accepted" then
+        local started = self.scriptClient:startApplicationScript(BuiltinScripts.FIELD_MOVE_ENTRY_SCRIPT, self.tick + 1)
+        if started ~= ScriptInteractionClient.RESULTS.blocked then
+          self:_advanceTick()
+          return
+        end
+        self.fieldMoves:discardPending()
+      end
+    end
+  end
+
   local stepCompleted = self.player:updateFixed(movementInput) == true
   if motionAtPlayerUpdateStart == "idle" and self.player.motion == "jumping" and self.audio then
     self.audio:play("SEQ_SE_DP_DANSA")

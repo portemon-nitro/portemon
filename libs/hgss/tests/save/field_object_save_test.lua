@@ -170,4 +170,28 @@ function T.malformed_manager_order_is_rejected()
   Assert.equal(assert(validActors["map:60:object:7"]).managerOrder, 0)
 end
 
+function T.sparse_removed_overrides_validate_and_clear_per_map()
+  local withRemoval = record({ removed = { { mapId = 60, objectEventId = 7 } } })
+  local valid, err = FieldObjectSave.validate(withRemoval)
+  Assert.notNil(valid, tostring(err))
+  Assert.deepEqual(assert(valid).removed, { { mapId = 60, objectEventId = 7 } })
+  local cleared = FieldObjectSave.clearRemovedForMap(assert(valid), 60)
+  Assert.isNil(cleared.removed, "reset clears the map's removal overrides")
+  Assert.notNil(cleared.actors["map:60:object:7"], "clearing touches no actor record")
+end
+
+function T.malformed_removed_overrides_are_rejected()
+  local cases = {
+    record({ removed = true }),
+    record({ removed = { { mapId = 60 } } }),
+    record({ removed = { { mapId = -1, objectEventId = 7 } } }),
+    record({ removed = { { mapId = 60, objectEventId = 7 }, { mapId = 60, objectEventId = 7 } } }),
+  }
+  for _, candidate in ipairs(cases) do
+    local valid, err = FieldObjectSave.validate(candidate)
+    Assert.isNil(valid)
+    Assert.isTrue(Errors.is(err))
+  end
+end
+
 return { tests = T }

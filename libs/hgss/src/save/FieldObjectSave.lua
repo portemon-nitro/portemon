@@ -11,7 +11,7 @@ FieldObjectSave.SCHEMA = "g4-field-objects-v1"
 
 local FACINGS = { north = true, south = true, west = true, east = true }
 local DIRECTIONS = FACINGS
-local ROOT_FIELDS = { schema = true, rng = true, actors = true }
+local ROOT_FIELDS = { schema = true, rng = true, actors = true, removed = true }
 local ACTOR_FIELDS = {
   actorId = true,
   mapId = true,
@@ -97,6 +97,45 @@ local function validatePoint(point, name)
     return fail(name .. " source surface id is invalid")
   end
   return copy(point)
+end
+
+local function validateRemovedEntry(entry)
+  if type(entry) ~= "table" then
+    return fail("removed override must be a record")
+  end
+  if entry.mapId == nil or entry.objectEventId == nil then
+    return fail("removed override requires its source map identity")
+  end
+  for key in pairs(entry) do
+    if key ~= "mapId" and key ~= "objectEventId" then
+      return fail("removed override contains an unknown field", { field = key })
+    end
+  end
+  if not integer(entry.mapId) or entry.mapId < 0 or not integer(entry.objectEventId) or entry.objectEventId < 0 then
+    return fail("removed override source identity is invalid")
+  end
+  return { mapId = entry.mapId, objectEventId = entry.objectEventId }
+end
+
+local function validateRemoved(removed)
+  if type(removed) ~= "table" then
+    return fail("removed overrides must be an array")
+  end
+  local entries = {}
+  local seen = {}
+  for index, entry in ipairs(removed) do
+    local validated, err = validateRemovedEntry(entry)
+    if not validated then
+      return nil, err
+    end
+    local key = validated.mapId .. ":" .. validated.objectEventId
+    if seen[key] then
+      return fail("removed override duplicates its source identity", { mapId = validated.mapId })
+    end
+    seen[key] = true
+    entries[index] = validated
+  end
+  return entries
 end
 
 local function validateIndex(value, count, name)
@@ -359,7 +398,46 @@ function FieldObjectSave.validate(record)
       end
     end
   end
-  return { schema = FieldObjectSave.SCHEMA, rng = rng, actors = actors }
+  local result = { schema = FieldObjectSave.SCHEMA, rng = rng, actors = actors }
+  if record.removed ~= nil then
+    local removed, removedErr = validateRemoved(record.removed)
+    if not removed then
+      return nil, removedErr
+    end
+    if #removed > 0 then
+      result.removed = removed
+    end
+  end
+  return result
+end
+
+-- Drop every removal override scoped to one map: the source full-map reset
+-- path. Other maps' overrides and all actor records pass through untouched.
+-- The cleared bucket validates afterwards, so reset maps rebuild from
+-- source object construction.
+---@param record table<string, unknown>
+---@param mapId integer
+---@return table<string, unknown>
+function FieldObjectSave.clearRemovedForMap(record, mapId)
+  assert(type(record) == "table", "clearing removals requires a record")
+  assert(integer(mapId) and mapId >= 0, "clearing removals requires a map identity")
+  local cleared = copy(record)
+  if type(cleared.removed) ~= "table" then
+    cleared.removed = nil
+    return cleared
+  end
+  local kept = {}
+  for _, entry in ipairs(cleared.removed) do
+    if entry.mapId ~= mapId then
+      kept[#kept + 1] = entry
+    end
+  end
+  if #kept > 0 then
+    cleared.removed = kept
+  else
+    cleared.removed = nil
+  end
+  return cleared
 end
 
 return FieldObjectSave

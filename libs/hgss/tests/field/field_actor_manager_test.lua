@@ -2715,4 +2715,72 @@ function T.reconciled_active_walk_survives_losing_and_regaining_coverage()
   mgr:dispose()
 end
 
+function T.remove_presence_destroys_presence_collision_and_presentation_together()
+  local objects = {
+    object({ objectEventId = 0, spriteId = 86, eventFlag = 100, x = 6, z = 3 }),
+    object({ objectEventId = 1, spriteId = 99, eventFlag = 0, x = 12, z = 10 }),
+  }
+  local mgr, eventState = manager(objects, {
+    assets = fakeAssets({ [86] = true, [99] = true, [34] = true, [29] = true, [0] = true }),
+  })
+  local treeId = "map:61:object:0"
+  Assert.notNil(mgr:getById(treeId), "setup tree must be live")
+  mgr:removePresence(treeId, false)
+  Assert.isNil(mgr:getById(treeId), "removal drops presence")
+  Assert.isNil(mgr:getCollisionAt(61, candidate(6, 3, 0)), "removal drops collision with presence")
+  Assert.isFalse(eventState:isFlagSet(100), "transient removal touches no flag")
+  Assert.notNil(mgr:getById("map:61:object:1"), "unrelated actors survive removal")
+  local captured = mgr:captureObjects()
+  Assert.isNil(captured.removed, "unrecorded removal persists nothing")
+  mgr:dispose()
+end
+
+function T.remove_presence_on_a_missing_actor_raises_without_side_effects()
+  local objects = { object({ objectEventId = 0, spriteId = 86, eventFlag = 100, x = 6, z = 3 }) }
+  local mgr = manager(objects, {
+    assets = fakeAssets({ [86] = true, [99] = true, [34] = true, [29] = true, [0] = true }),
+  })
+  local err = Assert.throws(function()
+    mgr:removePresence("map:61:object:9", false)
+  end)
+  Assert.isTrue(Errors.is(err), "expected a structured error")
+  Assert.notNil(mgr:getById("map:61:object:0"), "failed removal touches nothing live")
+  mgr:dispose()
+end
+
+function T.recorded_removal_survives_capture_and_reentry_until_reset()
+  local objects = {
+    object({ objectEventId = 0, spriteId = 86, eventFlag = 0, x = 6, z = 3 }),
+    object({ objectEventId = 1, spriteId = 99, eventFlag = 0, x = 12, z = 10 }),
+  }
+  local eventState = FieldEventState.new()
+  local mgr = manager(objects, {
+    eventState = eventState,
+    assets = fakeAssets({ [86] = true, [99] = true, [34] = true, [29] = true, [0] = true }),
+  })
+  mgr:removePresence("map:61:object:0", true)
+  local captured = mgr:captureObjects()
+  local validated, validationErr = FieldObjectSave.validate(captured)
+  Assert.notNil(validated, tostring(validationErr))
+  Assert.deepEqual(assert(validated).removed, { { mapId = 61, objectEventId = 0 } })
+  local map = runtimeMap(objects)
+  local fresh = FieldActorManager.new({
+    assets = fakeAssets({ [86] = true, [99] = true, [34] = true, [29] = true, [0] = true }),
+    policy = POLICY,
+  })
+  fresh:enterMap(map, eventState, assert(validated))
+  Assert.isNil(fresh:getById("map:61:object:0"), "re-entry honors the recorded removal")
+  Assert.notNil(fresh:getById("map:61:object:1"), "re-entry keeps unremoved actors")
+  local reset = FieldObjectSave.clearRemovedForMap(assert(validated), 61)
+  local rebuilt = FieldActorManager.new({
+    assets = fakeAssets({ [86] = true, [99] = true, [34] = true, [29] = true, [0] = true }),
+    policy = POLICY,
+  })
+  rebuilt:enterMap(map, eventState, reset)
+  Assert.notNil(rebuilt:getById("map:61:object:0"), "a reset map follows source construction")
+  mgr:dispose()
+  fresh:dispose()
+  rebuilt:dispose()
+end
+
 return { tests = T }

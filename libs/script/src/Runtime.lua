@@ -1765,6 +1765,16 @@ HANDLERS.wait_cry = handleWaitCry
 HANDLERS.wait_fanfare = handleWaitFanfare
 HANDLERS.wait_fade = handleWaitFade
 HANDLERS.warp = handleWarp
+-- Defined as a field statement without a chunk local: this translation unit
+-- is at Lua's local budget, and the handler needs no upvalue beyond the
+-- shared helpers.
+function HANDLERS.field_move(node, run)
+  requireForeground(run, "field_move")
+  if node.source == "pending" then
+    return blockOnTask(run, "field_move", { source = "pending" })
+  end
+  return blockOnTask(run, "field_move", { source = "explicit", node = node })
+end
 HANDLERS.unsupported = handleUnsupported
 HANDLERS.play_sound = handlePlaySound
 HANDLERS.stop_sound = handleStopSound

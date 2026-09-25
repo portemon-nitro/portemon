@@ -1451,4 +1451,61 @@ T["update avatar state lowers to a single same-tick apply operation"] = function
   Assert.equal(report.unsupportedCount, 0)
 end
 
+-- Opcodes 177/178/179/182 (RockClimb/Surf/Waterfall/Whirlpool) lower to
+-- explicit field-move nodes: the single variable operand carries the
+-- zero-based mon slot and the node blocks on the shared field task.
+-- Traversal execution lands later; the nodes compile honestly meanwhile.
+T["field-use commands lower to explicit field-move nodes"] = function()
+  local cases = {
+    { op = 177, move = "rock_climb" },
+    { op = 178, move = "surf" },
+    { op = 179, move = "waterfall" },
+    { op = 182, move = "whirlpool" },
+  }
+  for _, case in ipairs(cases) do
+    local bytes = ScriptFixture.member({
+      scripts = {
+        {
+          offset = 0x20,
+          instructions = {
+            { op = case.op, args = { { value = 0x8008, width = 2 } } },
+            { op = 2, args = {} },
+          },
+        },
+      },
+    })
+    local ir = assert(ScriptBinaryDecoder.parseMember(bytes, 5, "synthetic", { msgBank = 543, catalog = CATALOG }))
+    local lowered = SemanticLowering.lowerScript(ir.scripts[0], ir, { stdCatalog = SourceCatalog.catalog() })
+    Assert.deepEqual(lowered.items[1], {
+      op = "field_move",
+      source = "explicit",
+      move = case.move,
+      slot = { value = "var", id = "VAR_SPECIAL_x8008" },
+      provenance = { offsets = { 32 }, opcodes = { case.op } },
+    })
+    Assert.equal(#lowered.unsupported, 0)
+  end
+end
+
+-- Opcode 400 (StrengthFlagAction) has no slot operand and no place in the
+-- explicit shape, so it stays an explicit unsupported node rather than
+-- succeeding silently or becoming a stop.
+T["strength flag action stays explicitly unsupported"] = function()
+  local bytes = ScriptFixture.member({
+    scripts = {
+      {
+        offset = 0x20,
+        instructions = {
+          { op = 400, args = { { value = 1, width = 1 } } },
+          { op = 2, args = {} },
+        },
+      },
+    },
+  })
+  local ir = assert(ScriptBinaryDecoder.parseMember(bytes, 5, "synthetic", { msgBank = 543, catalog = CATALOG }))
+  local lowered = SemanticLowering.lowerScript(ir.scripts[0], ir, { stdCatalog = SourceCatalog.catalog() })
+  Assert.equal(#lowered.unsupported, 1)
+  Assert.equal(lowered.unsupported[1].command, 400)
+end
+
 return { tests = T }

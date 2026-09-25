@@ -1112,6 +1112,22 @@ local function defogAction(ins)
   return flagAction(ins, "FLAG_SYS_DEFOG")
 end
 
+-- Source field-use commands read the party slot through ScriptGetVar and
+-- act in the player's facing direction: lowering preserves the single
+-- variable operand, the zero-based mon slot, and blocking task behavior.
+-- Traversal execution lands later; the runtime answers honestly meanwhile.
+local function explicitFieldMove(move)
+  local function lower(ins)
+    return {
+      op = "field_move",
+      source = "explicit",
+      move = move,
+      slot = Operands.varRef(ins.operands[1]),
+    }
+  end
+  return lower
+end
+
 local function movePersonFacing(ins)
   -- ScrCmd_MovePersonFacing reads objectId, x, y, z, direction.
   local actor = actorRef(ins.operands[1])
@@ -1431,4 +1447,8 @@ return {
   [181] = flashEffect,
   [401] = flashAction,
   [402] = defogAction,
+  [177] = explicitFieldMove("rock_climb"),
+  [178] = explicitFieldMove("surf"),
+  [179] = explicitFieldMove("waterfall"),
+  [182] = explicitFieldMove("whirlpool"),
 }

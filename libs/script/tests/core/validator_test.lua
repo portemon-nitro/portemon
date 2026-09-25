@@ -92,6 +92,35 @@ function T.accepts_vertical_slice_scripts()
   valid(signScript())
 end
 
+function T.field_move_nodes_validate_both_sources()
+  valid(S.script({
+    api = 1,
+    id = "test.field.pending",
+    steps = { S.fieldMove({ source = "pending" }) },
+  }))
+  valid(S.script({
+    api = 1,
+    id = "test.field.explicit",
+    steps = { S.fieldMove({ source = "explicit", move = "surf", slot = S.var("VAR_0x8000") }) },
+  }))
+  invalidCode(
+    "SCRIPT_SCHEMA_INVALID",
+    S.script({
+      api = 1,
+      id = "test.field.bad-source",
+      steps = { { op = "field_move", source = 7 } },
+    })
+  )
+  invalidCode(
+    "SCRIPT_SCHEMA_INVALID",
+    S.script({
+      api = 1,
+      id = "test.field.bad-move",
+      steps = { { op = "field_move", source = "explicit", move = 7, slot = 0 } },
+    })
+  )
+end
+
 function T.direct_table_equivalents_validate_identically()
   local script = S.script({
     api = 1,

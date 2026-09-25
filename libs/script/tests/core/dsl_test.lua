@@ -956,6 +956,18 @@ local CASES = {
     end,
     { op = "warp", map = "MAP_NEW_BARK", warp = 0, fieldX = 684, fieldZ = 393, facing = "south" },
   },
+  field_move_pending = {
+    function()
+      return S.fieldMove({ source = "pending" })
+    end,
+    { op = "field_move", source = "pending" },
+  },
+  field_move_explicit = {
+    function()
+      return S.fieldMove({ source = "explicit", move = "surf", slot = S.var("VAR_0x8000") })
+    end,
+    { op = "field_move", source = "explicit", move = "surf", slot = { value = "var", id = "VAR_0x8000" } },
+  },
   set_spawn = {
     function()
       return S.setSpawn({ spawn = "SPAWN_NEW_BARK" })
@@ -1252,6 +1264,27 @@ end
 -- constructor on the API 1 surface.
 function T.resolve_common_message_bank_constructor_is_removed()
   Assert.isNil(S.resolveCommonMessageBank)
+end
+
+-- The field-task request is a closed union enforced at construction:
+-- pending carries no move data, explicit carries exactly a move key plus
+-- a slot, and anything else never builds.
+function T.field_move_constructor_rejects_mixed_forms()
+  Assert.throws(function()
+    S.fieldMove({ source = "pending", move = "surf", slot = 0 })
+  end)
+  Assert.throws(function()
+    S.fieldMove({ source = "explicit", move = "surf" })
+  end)
+  Assert.throws(function()
+    S.fieldMove({ source = "explicit", slot = 0 })
+  end)
+  Assert.throws(function()
+    S.fieldMove({ source = "queued" })
+  end)
+  Assert.throws(function()
+    S.fieldMove({})
+  end)
 end
 
 -- Constructors return ordinary tables with no metatables.

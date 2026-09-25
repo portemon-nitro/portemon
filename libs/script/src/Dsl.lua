@@ -818,6 +818,24 @@ function M.partySelectResult(spec)
   return op("party_select_result", spec)
 end
 
+-- Field-task request: the pending form claims the runtime-queued request
+-- for the menu-to-field builtin; the explicit form carries a source move
+-- key plus the zero-based mon slot for source lowering. No game-specific
+-- move enum lives here; HGSS meanings stay in the field policy/runtime.
+-- The closed union is enforced here: mixed forms never build.
+function M.fieldMove(spec)
+  assert(type(spec) == "table", "field move spec must be a table")
+  if spec.source == "pending" then
+    assert(spec.move == nil and spec.slot == nil, "pending field requests carry no move data")
+  elseif spec.source == "explicit" then
+    assert(type(spec.move) == "string" and spec.move ~= "", "explicit field requests need a move key")
+    assert(spec.slot ~= nil, "explicit field requests need a mon slot")
+  else
+    error("field requests are pending or explicit", 0)
+  end
+  return op("field_move", spec)
+end
+
 -- Bag and item constructors. Each takes the single canonical spec table
 -- named by the schema fields; item operands hold native item identities.
 function M.bagAddItem(spec)

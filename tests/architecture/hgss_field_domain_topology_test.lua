@@ -76,6 +76,7 @@ local FIELD_COORDINATION = {
   "FieldInput",
   "FieldMapEntryController",
   "FieldMovePolicy",
+  "FieldMoveRuntime",
   "FieldSession",
   "FieldTravelState",
   "FieldWindowStyles",

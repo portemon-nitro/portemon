@@ -64,6 +64,12 @@ function T.obstacle_kinds_form_a_closed_vocabulary()
   Assert.equal(FieldMoveSources.obstacleKindForSprite(1), nil)
 end
 
+function T.obstacle_sprites_resolve_their_verified_kinds()
+  Assert.equal(FieldMoveSources.obstacleKindForSprite(86), "cut_tree")
+  Assert.equal(FieldMoveSources.obstacleKindForSprite(84), "strength_boulder")
+  Assert.equal(FieldMoveSources.obstacleKindForSprite(85), "smash_rock")
+end
+
 function T.exception_maps_are_explicit_symbols()
   Assert.equal(FieldMoveSources.ICE_PATH_B2F_SYMBOL, "MAP_ICE_PATH_B2F")
   Assert.equal(FieldMoveSources.ALPH_FLASH_SYMBOL, "MAP_RUINS_OF_ALPH_UNDERGROUND_HALL")

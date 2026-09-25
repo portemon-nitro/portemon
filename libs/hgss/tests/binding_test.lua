@@ -683,4 +683,74 @@ T["foreground root locks movement without an explicit lock"] = function()
   Assert.isFalse(p.scheduler:explicitPlayerLocked(), "the field unlocks when the foreground root ends")
 end
 
+-- 19. The runtime-owned field entry starts through the application entry
+-- with a foreground claim; a held foreground blocks without state change,
+-- and an unregistered builtin is a composition fault.
+T["application script starts with a foreground claim"] = function()
+  local BuiltinScripts = require("libs.hgss.src.script.BuiltinScripts")
+  local p = platform()
+  -- The entry outlives its trigger tick in production through the real
+  -- field task; here a never-completing stub holds the claim so the
+  -- blocked path is observable without a field runtime.
+  p.scheduler = Scheduler.new({
+    semantics = require("libs.hgss.src.script.RuntimeValues"),
+    services = p.services,
+    taskRegistry = (function()
+      local tasks = TaskRegistry.new()
+      tasks:register("field_move", 1, {
+        type = "field_move",
+        version = 1,
+        create = function()
+          return {}
+        end,
+        poll = function(_, _)
+          return { complete = false, state = {} }
+        end,
+        cancel = function() end,
+        validate = function()
+          return nil
+        end,
+      })
+      return tasks
+    end)(),
+    resolveComposition = function(id)
+      return p.composition:effective(id)
+    end,
+  })
+  local entryId = BuiltinScripts.FIELD_MOVE_ENTRY_SCRIPT
+  local resource = assert(BuiltinScripts.all()[entryId], "entry script must be registered")
+  p.registry:installBase(resource.id, resource, "generated")
+  local composed = assert(p.composition:effective(resource.id), "entry script must compile")
+  Assert.equal(resource.steps[1].op, "field_move", "entry script claims through the pending node")
+  Assert.equal(resource.steps[1].source, "pending")
+  Assert.notNil(composed, "compiled entry is usable")
+  local client = ScriptInteractionClient.new({
+    bindings = Bindings.new(),
+    compose = function(id)
+      return p.composition:effective(id)
+    end,
+    scheduler = p.scheduler,
+  })
+  local started = client:startApplicationScript(entryId, 100)
+  Assert.isTrue(type(started) == "string" and started ~= "", "admission returns an instance id")
+  Assert.notNil(p.scheduler:foregroundEnvironmentId(), "the entry owns the foreground")
+  Assert.equal(
+    client:startApplicationScript(entryId, 101),
+    ScriptInteractionClient.RESULTS.blocked,
+    "a held foreground blocks without changing state"
+  )
+  local missing = Assert.throws(function()
+    local fresh = platform()
+    local lonely = ScriptInteractionClient.new({
+      bindings = Bindings.new(),
+      compose = function(_)
+        return nil
+      end,
+      scheduler = fresh.scheduler,
+    })
+    lonely:startApplicationScript(entryId, 100)
+  end)
+  Assert.notNil(tostring(missing):find(entryId), "the fault names the missing builtin")
+end
+
 return { tests = T }
