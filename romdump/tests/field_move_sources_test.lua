@@ -75,4 +75,37 @@ function T.exception_maps_are_explicit_symbols()
   Assert.equal(FieldMoveSources.ALPH_FLASH_SYMBOL, "MAP_RUINS_OF_ALPH_UNDERGROUND_HALL")
 end
 
+function T.spawn_destinations_cover_every_frozen_spawn_name()
+  local count = 0
+  for id, name in pairs(Spawns.byId) do
+    if name ~= "SPAWN_NONE" then
+      local destination = assert(
+        FieldMoveSources.spawnDestinationForKey(name),
+        "every frozen spawn resolves: " .. name .. " (id " .. tostring(id) .. ")"
+      )
+      Assert.equal(type(destination.map), "string", name .. " names a map")
+      count = count + 1
+    end
+  end
+  Assert.equal(count, 30, "all thirty source spawns resolve")
+end
+
+function T.spawn_destinations_pin_mother_and_updated_history()
+  local mother = FieldMoveSources.spawnDestinationForKey("SPAWN_NEW_BARK")
+  Assert.deepEqual(mother, { map = "MAP_NEW_BARK", fieldX = 695, fieldZ = 397 })
+  local goldenrod = FieldMoveSources.spawnDestinationForKey("SPAWN_GOLDENROD")
+  Assert.deepEqual(goldenrod, { map = "MAP_GOLDENROD", fieldX = 352, fieldZ = 369 })
+end
+
+function T.spawn_destinations_answer_fresh_records_and_refuse_garbage()
+  local first = assert(FieldMoveSources.spawnDestinationForKey("SPAWN_VIOLET"), "violet resolves")
+  first.map = "MAP_MUTATED"
+  local second = assert(FieldMoveSources.spawnDestinationForKey("SPAWN_VIOLET"), "violet resolves again")
+  Assert.equal(second.map, "MAP_VIOLET", "callers receive copies, never the live table")
+  Assert.isNil(FieldMoveSources.spawnDestinationForKey("SPAWN_NOWHERE"))
+  Assert.isNil(FieldMoveSources.spawnDestinationForKey(nil))
+  ---@diagnostic disable-next-line: param-type-mismatch -- the integer is the invalid input under test
+  Assert.isNil(FieldMoveSources.spawnDestinationForKey(7))
+end
+
 return { tests = T }

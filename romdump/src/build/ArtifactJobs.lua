@@ -231,6 +231,7 @@ local FIELD_RUNTIME_JOBS = {
   "items:global",
   "bag:global",
   "party:global",
+  "spawns:global",
   "starter-choice:global",
   "message-bank:" .. tostring(MenuProtocol.START_MENU_MESSAGE_BANK),
   "message-bank:" .. tostring(MenuProtocol.STANDARD_MESSAGE_BANK),
@@ -543,6 +544,16 @@ local function executeParty(artifact, context)
     return PartyAssetCompiler.compile(romFs)
   end, "party")
   return PartyCacheWriter.stage(artifact, bundle)
+end
+
+local function executeSpawnDestinations(artifact, context)
+  local FieldMapDataCompiler = require("romdump.src.digest.field.FieldMapDataCompiler")
+  local FieldMapDataCacheWriter = require("romdump.src.digest.field.FieldMapDataCacheWriter")
+  local romFs = assert(context.romFs, "coarse jobs require a source reader")
+  local bundle = compileOrRaise(function()
+    return FieldMapDataCompiler.compileSpawnDestinations(romFs)
+  end, "spawns")
+  return FieldMapDataCacheWriter.stageSpawnIndex(artifact, bundle)
 end
 
 local function executeMonCatalog(artifact, context)
@@ -1252,6 +1263,13 @@ local function validateParty(check)
   return PartyCache.isReady(check.cacheFs, check.marker)
 end
 
+---@param check ArtifactJobs.ReadinessCheck
+---@return boolean
+local function validateSpawnDestinations(check)
+  local FieldMapDataCache = require("libs.assets.src.field.FieldMapDataCache")
+  return FieldMapDataCache.isSpawnIndexReady(check.cacheFs, check.marker)
+end
+
 ---@param artifact table<string, unknown>
 ---@param context table<string, unknown>
 ---@param job ArtifactJobs.Job
@@ -1658,6 +1676,12 @@ DESCRIPTORS = {
     execute = executeParty,
     validate = validateParty,
   },
+  -- Teleport landing index: one family-level record, no prerequisite.
+  spawns = {
+    size = "normal",
+    execute = executeSpawnDestinations,
+    validate = validateSpawnDestinations,
+  },
   -- Message banks and summary.
   ["message-bank"] = {
     size = "heavy",
@@ -1913,6 +1937,7 @@ local COMPLETE_STATIC_GLOBALS = {
   "items",
   "bag",
   "party",
+  "spawns",
   "mon-catalog",
   "mon-layout",
   "audio-catalog",

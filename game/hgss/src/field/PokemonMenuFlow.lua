@@ -625,7 +625,12 @@ end
 -- silently inside Party, and refusals hold the screen without publishing.
 ---@param intent table<string, unknown>
 function PokemonMenuFlow:_routeFieldMove(intent)
-  local move = assert(intent.move, "field intents name their move")
+  -- Party menu entries spell moves like the stored mon record (FLY);
+  -- eligibility, admission, and the terminal handoff speak field-move
+  -- keys (fly). Fold once at intake so every downstream owner agrees.
+  local moveKey = assert(intent.move, "field intents name their move")
+  assert(type(moveKey) == "string", "field intents name their move key")
+  local move = string.lower(moveKey)
   local decision = self._fieldMoves.check({
     move = move,
     slot = assert(intent.slot, "field intents name their slot"),
@@ -633,8 +638,11 @@ function PokemonMenuFlow:_routeFieldMove(intent)
     partyRevision = self._mons:partyRevision(),
   })
   assert(type(decision) == "table" and type(decision.kind) == "string", "field checks answer decisions")
-  if decision.kind == "ok" and move == "fly" then
-    self:_completeParty({ kind = "no_op" })
+  if move == "fly" and decision.kind == "ok" then
+    -- Fly: hand the selected party slot to Town Map when that application is available.
+    local child = assert(self._child, "fly restores the live party child")
+    child:cancelPointerCapture()
+    child:completeAction({ kind = "no_op" })
     return
   end
   if decision.kind == "ok" then

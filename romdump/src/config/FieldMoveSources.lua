@@ -118,6 +118,77 @@ function FieldMoveSources.badgeKeyForIndex(index)
   end
   return FieldMoveSources.BADGE_KEYS[index + 1]
 end
+-- Teleport landing table: spawn key -> outdoor arrival map plus
+-- destination-global tiles, transcribed from asm/unk_0203BA5C.s
+-- sSpawnMaps (30 rows; macro columns flagIdx, isBlackoutSpawn,
+-- isFlyPoint, deathSpawnMapNo, deathSpawnX, deathSpawnY,
+-- flyPointMapNo, flyPointX, flyPointY, specialWarpMapNo, specialWarpX,
+-- specialWarpY). Entries below take the FLY-point columns
+-- (GetFlyWarpData reads entry offsets +6/+8/+10): Teleport arrives
+-- outdoors at the last-healed vicinity, like Fly, never inside the
+-- blackout-interior death columns. Coordinates are destination-global
+-- tiles: the fly values track real geography (Cherrygrove west of New
+-- Bark, Violet north, Azalea southwest, and so on down both regions).
+--
+-- Entries are keyed by location identity (the fly/death map columns),
+-- cross-checked name-by-name against the frozen spawn catalog
+-- (romdump/src/reference/hgss/spawns.lua) and include/constants/spawns.h
+-- (SPAWN_NEW_BARK = 1 .. SPAWN_ROCK_TUNNEL = 30): every row's fly map
+-- matches its spawn name except rows 5-8, where the file order reads
+-- CIANWOOD, GOLDENROD, OLIVINE, ECRUTEAK against catalog ids
+-- 5 = GOLDENROD, 6 = ECRUTEAK, 7 = OLIVINE, 8 = CIANWOOD. Location
+-- identity governs here: a Goldenrod heal resolves to Goldenrod even
+-- where row position disagrees, and the runtime never consumes numeric
+-- source identities. Two rows diverge between fly and special columns
+-- and keep the fly value: FRONTIER (special = MAP_ROUTE_40) and
+-- POKEATHLON (special = MAP_ROUTE_35). Source carries no arrival
+-- facing; the runtime stamps the standard arrival facing instead.
+FieldMoveSources.SPAWN_DESTINATIONS = {
+  SPAWN_NEW_BARK = { map = "MAP_NEW_BARK", fieldX = 695, fieldZ = 397 },
+  SPAWN_CHERRYGROVE = { map = "MAP_CHERRYGROVE", fieldX = 564, fieldZ = 392 },
+  SPAWN_VIOLET = { map = "MAP_VIOLET", fieldX = 497, fieldZ = 272 },
+  SPAWN_AZALEA = { map = "MAP_AZALEA", fieldX = 410, fieldZ = 461 },
+  SPAWN_GOLDENROD = { map = "MAP_GOLDENROD", fieldX = 352, fieldZ = 369 },
+  SPAWN_ECRUTEAK = { map = "MAP_ECRUTEAK", fieldX = 397, fieldZ = 184 },
+  SPAWN_OLIVINE = { map = "MAP_OLIVINE", fieldX = 272, fieldZ = 258 },
+  SPAWN_CIANWOOD = { map = "MAP_CIANWOOD", fieldX = 187, fieldZ = 370 },
+  SPAWN_MAHOGANY = { map = "MAP_MAHOGANY", fieldX = 534, fieldZ = 184 },
+  SPAWN_LAKE_OF_RAGE = { map = "MAP_LAKE_OF_RAGE", fieldX = 536, fieldZ = 90 },
+  SPAWN_BLACKTHORN = { map = "MAP_BLACKTHORN", fieldX = 674, fieldZ = 177 },
+  SPAWN_MT_SILVER = { map = "MAP_MOUNT_SILVER", fieldX = 820, fieldZ = 266 },
+  SPAWN_PALLET = { map = "MAP_PALLET", fieldX = 1033, fieldZ = 364 },
+  SPAWN_VIRIDIAN = { map = "MAP_VIRIDIAN", fieldX = 1032, fieldZ = 263 },
+  SPAWN_PEWTER = { map = "MAP_PEWTER", fieldX = 1048, fieldZ = 107 },
+  SPAWN_CERULEAN = { map = "MAP_CERULEAN", fieldX = 1309, fieldZ = 132 },
+  SPAWN_LAVENDER = { map = "MAP_LAVENDER", fieldX = 1418, fieldZ = 235 },
+  SPAWN_VERMILION = { map = "MAP_VERMILION", fieldX = 1297, fieldZ = 295 },
+  SPAWN_CELADON = { map = "MAP_CELADON", fieldX = 1231, fieldZ = 238 },
+  SPAWN_FUCHSIA = { map = "MAP_FUCHSIA", fieldX = 1209, fieldZ = 440 },
+  SPAWN_CINNABAR = { map = "MAP_CINNABAR_ISLAND", fieldX = 1039, fieldZ = 503 },
+  SPAWN_INDIGO = { map = "MAP_INDIGO_PLATEAU", fieldX = 912, fieldZ = 201 },
+  SPAWN_SAFFRON = { map = "MAP_SAFFRON", fieldX = 1294, fieldZ = 243 },
+  SPAWN_SAFARI = { map = "MAP_SAFARI_ZONE_GATE", fieldX = 82, fieldZ = 303 },
+  SPAWN_FRONTIER = { map = "MAP_BATTLE_FRONTIER_FRONTIER_ACCESS", fieldX = 8, fieldZ = 15 },
+  SPAWN_POKEATHLON = { map = "MAP_POKEATHLON_DOME", fieldX = 42, fieldZ = 23 },
+  SPAWN_VICTORY_ROAD = { map = "MAP_ROUTE_26", fieldX = 909, fieldZ = 297 },
+  SPAWN_UNION_CAVE = { map = "MAP_ROUTE_32", fieldX = 468, fieldZ = 419 },
+  SPAWN_MT_MOON = { map = "MAP_ROUTE_3", fieldX = 1167, fieldZ = 107 },
+  SPAWN_ROCK_TUNNEL = { map = "MAP_ROUTE_10", fieldX = 1426, fieldZ = 164 },
+}
+
+---@param spawnKey string|nil
+---@return table<string, unknown>|nil a fresh destination record, never a live table
+function FieldMoveSources.spawnDestinationForKey(spawnKey)
+  if type(spawnKey) ~= "string" then
+    return nil
+  end
+  local entry = FieldMoveSources.SPAWN_DESTINATIONS[spawnKey]
+  if type(entry) ~= "table" then
+    return nil
+  end
+  return { map = entry.map, fieldX = entry.fieldX, fieldZ = entry.fieldZ }
+end
+
 FieldMoveSources.OBSTACLE_KINDS = {
   "cut_tree",
   "smash_rock",

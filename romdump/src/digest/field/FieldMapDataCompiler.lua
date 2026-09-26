@@ -541,4 +541,35 @@ function FieldMapDataCompiler.compileAll(romFs, sha1hex, hashLua)
   error(result)
 end
 
+-- The teleport landing index: cited spawn-keyed outdoor arrivals
+-- projected from the producer source facts into the family-level
+-- generated record. Needs no ROM read: the entries are frozen source
+-- data, so the only failure is a malformed producer table. The marker
+-- binds the ROM identity and the content hash like every family bundle.
+function FieldMapDataCompiler.compileSpawnDestinations(romFs, hashLua)
+  assert(romFs and type(romFs.metadata) == "function", "spawn destinations need the ROM identity for their marker")
+  hashLua = hashLua or Hashing.hashLua
+  local spawns = {}
+  for key, entry in pairs(FieldMoveSources.SPAWN_DESTINATIONS) do
+    assert(type(key) == "string" and key ~= "", "spawn destinations key on spawn names")
+    assert(type(entry) == "table", "spawn destinations carry records")
+    assert(type(entry.map) == "string" and entry.map ~= "", "spawn destinations name a map")
+    assert(
+      type(entry.fieldX) == "number" and entry.fieldX % 1 == 0 and entry.fieldX >= 0,
+      "spawn destinations carry tiles"
+    )
+    assert(
+      type(entry.fieldZ) == "number" and entry.fieldZ % 1 == 0 and entry.fieldZ >= 0,
+      "spawn destinations carry tiles"
+    )
+    spawns[key] = { map = entry.map, fieldX = entry.fieldX, fieldZ = entry.fieldZ }
+  end
+  local index = { schema = FieldMapDataCache.SPAWN_INDEX_SCHEMA, spawns = spawns }
+  assert(FieldMapDataCache.hasSpawnDestinations(index.spawns), "compiled spawn destinations satisfy the family record")
+  local metadata = romFs:metadata()
+  assert(type(metadata) == "table" and type(metadata.sha1) == "string", "spawn marker needs the ROM sha")
+  local marker = FieldMapDataCache.spawnIndexMarker(metadata.sha1, hashLua(index.spawns))
+  return { index = index, marker = marker }
+end
+
 return FieldMapDataCompiler

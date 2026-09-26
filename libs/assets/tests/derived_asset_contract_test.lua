@@ -62,6 +62,7 @@ function T.contract_pins_the_current_asset_identities()
     fieldMapData = {
       cacheFormat = "g4-field-map-cache-v1",
       fieldSchema = "g4-field-map-v10",
+      spawnIndexSchema = "g4-field-spawn-index-v1",
     },
     messages = {
       cacheFormat = "field-message-cache-v3",
@@ -153,6 +154,7 @@ function T.cache_modules_consume_the_contract_constants()
   Assert.equal(FieldCameraCache.SCHEMA, DerivedAssetContract.fieldCamera.schema)
   Assert.equal(FieldMapDataCache.FORMAT, DerivedAssetContract.fieldMapData.cacheFormat)
   Assert.equal(FieldMapDataCache.FIELD_SCHEMA, DerivedAssetContract.fieldMapData.fieldSchema)
+  Assert.equal(FieldMapDataCache.SPAWN_INDEX_SCHEMA, DerivedAssetContract.fieldMapData.spawnIndexSchema)
   Assert.equal(FieldMessageCache.FORMAT, DerivedAssetContract.messages.cacheFormat)
   Assert.equal(FieldMessageCache.SCHEMA, DerivedAssetContract.messages.schema)
   Assert.equal(FieldMessageCache.INDEX_SCHEMA, DerivedAssetContract.messages.indexSchema)

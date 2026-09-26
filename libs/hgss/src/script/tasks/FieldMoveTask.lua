@@ -18,8 +18,8 @@ FieldMoveTask.version = 1
 
 -- The closed executable plan union shared with the runtime. Refused
 -- decisions complete as results; only these kinds execute. The traversal
--- tags mirror the runtime's closed plan union exactly; a tag missing here
--- can never execute through the scheduler task.
+-- tags mirror the runtime's closed plan union exactly, as do the return
+-- tags: a tag missing here can never execute through the scheduler task.
 local PLAN_KINDS = {
   cut = true,
   smash = true,
@@ -31,6 +31,8 @@ local PLAN_KINDS = {
   waterfall = true,
   whirlpool = true,
   rock_climb = true,
+  dig = true,
+  teleport = true,
 }
 
 local function fieldMoves(ctx)

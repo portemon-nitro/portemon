@@ -73,4 +73,43 @@ function FieldMapDataCacheWriter.write(cacheFs, bundle)
   return result
 end
 
+-- Persists the family-level teleport landing index through the same
+-- staged publication discipline: the index is written into a disposable
+-- staging root, readback-validated there, and only then is the completed
+-- stage published with the marker last.
+local function persistSpawnIndex(tx, bundle)
+  local stage = tx.stage
+  stage:writeLua(FieldMapDataCache.spawnIndexPath(), bundle.index)
+  local index, indexErr = stage:loadLua(FieldMapDataCache.spawnIndexPath())
+  if not index then
+    Errors.raise("FIELD_MAP_DATA_CACHE_STALE", "spawn index artifact failed readback: " .. Errors.format(indexErr), {})
+  end
+  if
+    index.schema ~= FieldMapDataCache.SPAWN_INDEX_SCHEMA or not FieldMapDataCache.hasSpawnDestinations(index.spawns)
+  then
+    Errors.raise("FIELD_MAP_DATA_CACHE_STALE", "spawn index readback has the wrong identity", {})
+  end
+  stage:write(FieldMapDataCache.spawnIndexMarkerPath(), bundle.marker)
+  return bundle.marker
+end
+
+function FieldMapDataCacheWriter.stageSpawnIndex(artifact, bundle)
+  assert(artifact and artifact.stageFs, "spawn index staging requires a PreparedArtifact")
+  assert(type(bundle) == "table" and bundle.index and bundle.marker, "invalid spawn index bundle")
+  artifact:addOwnedRoot(FieldMapDataCache.spawnDir())
+  return persistSpawnIndex({ stage = artifact:stageFs() }, bundle)
+end
+
+function FieldMapDataCacheWriter.writeSpawnIndex(cacheFs, bundle)
+  assert(cacheFs and type(bundle) == "table" and bundle.index and bundle.marker, "invalid spawn index bundle")
+  local tx = ArtifactPublisher.begin(cacheFs, "field-spawn-index", { FieldMapDataCache.spawnDir() })
+  local ok, result = pcall(persistSpawnIndex, tx, bundle)
+  if not ok then
+    tx:abort()
+    error(result, 0)
+  end
+  tx:publish()
+  return result
+end
+
 return FieldMapDataCacheWriter

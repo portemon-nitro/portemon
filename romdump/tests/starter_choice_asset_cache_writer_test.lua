@@ -81,6 +81,7 @@ local function publishedCache(versionId)
     AudioCache.markerPath(),
     MapAssetCache.mapDir(7) .. "/complete",
     FieldMapDataCache.markerPath(7),
+    FieldMapDataCache.spawnIndexMarkerPath(),
   }) do
     cacheFs:write(path, "complete")
   end

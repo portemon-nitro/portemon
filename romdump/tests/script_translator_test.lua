@@ -31,6 +31,7 @@ local CATALOG = {
   flags = { [0x6A] = "FLAG_GOT_STARTER" },
   vars = { [0x8008] = "VAR_SPECIAL_x8008" },
   maps = {},
+  spawns = { [5] = "SPAWN_GOLDENROD" },
 }
 
 local function loweredActorSteps(operands)
@@ -1485,6 +1486,31 @@ T["field-use commands lower to explicit field-move nodes"] = function()
     })
     Assert.equal(#lowered.unsupported, 0)
   end
+end
+
+-- Opcode 280 (SetSpawn) lowers its numeric spawn operand to the semantic
+-- spawn key the travel and maps owners consume: blackout/respawn history
+-- is an explicit named update, never a heal side effect.
+T["spawn updates lower to named set_spawn nodes"] = function()
+  local bytes = ScriptFixture.member({
+    scripts = {
+      {
+        offset = 0x20,
+        instructions = {
+          { op = 280, args = { { value = 5, width = 2 } } },
+          { op = 2, args = {} },
+        },
+      },
+    },
+  })
+  local ir = assert(ScriptBinaryDecoder.parseMember(bytes, 5, "synthetic", { msgBank = 543, catalog = CATALOG }))
+  local lowered = SemanticLowering.lowerScript(ir.scripts[0], ir, { stdCatalog = SourceCatalog.catalog() })
+  Assert.deepEqual(lowered.items[1], {
+    op = "set_spawn",
+    spawn = "SPAWN_GOLDENROD",
+    provenance = { offsets = { 32 }, opcodes = { 280 } },
+  })
+  Assert.equal(#lowered.unsupported, 0)
 end
 
 -- Opcode 400 (StrengthFlagAction) has no slot operand and no place in the

@@ -520,6 +520,7 @@ function T.common_session_drives_bootstrap_complete_and_background_storm(romFs, 
       "items:global",
       "bag:global",
       "party:global",
+      "spawns:global",
     }) do
       membership[#membership + 1] = name
     end
@@ -763,6 +764,7 @@ function T.common_session_drives_bootstrap_complete_and_background_storm(romFs, 
     expect("items", "global")
     expect("bag", "global")
     expect("party", "global")
+    expect("spawns", "global")
     Assert.equal(
       #missing,
       0,
@@ -798,6 +800,7 @@ function T.common_session_drives_bootstrap_complete_and_background_storm(romFs, 
     "items",
     "bag",
     "party",
+    "spawns",
     "mon-catalog",
   }) do
     completeKind(kind)
@@ -1458,6 +1461,7 @@ local function completeScopeWaves(session, pool, complete)
     "items",
     "bag",
     "party",
+    "spawns",
     "map-data",
     "message-bank",
     "audio-bank",

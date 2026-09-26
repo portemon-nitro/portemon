@@ -197,6 +197,10 @@ DerivedAssetContract.fieldMapData = {
   -- exclusion, and the Ice Path/Alph source exceptions) plus proven
   -- facing-actor obstacle kinds on object events.
   fieldSchema = "g4-field-map-v10",
+  -- The teleport landing index is a separate family-level record carrying
+  -- cited spawn-keyed outdoor arrival destinations (never source numeric
+  -- identities); the runtime return planner reads it, never producer data.
+  spawnIndexSchema = "g4-field-spawn-index-v1",
 }
 
 DerivedAssetContract.messages = {

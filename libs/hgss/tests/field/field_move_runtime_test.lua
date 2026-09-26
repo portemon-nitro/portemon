@@ -175,13 +175,75 @@ function T.plan_builds_a_serializable_cut_plan()
   Assert.isNil(plan.committedAt, "no function or pointer state crosses the plan")
 end
 
-function T.plan_returns_feature_unavailable_for_deferred_moves()
+function T.dig_without_travel_refuses_as_not_now()
   local runtime = open()
   local digContext = context()
   digContext.fieldUse.escapeAllowed = true
   local outcome = runtime:plan({ move = "dig", slot = 0, partyRevision = 4, context = digContext })
-  Assert.equal(outcome.kind, "feature_unavailable", "return moves stay honestly deferred")
-  Assert.equal(outcome.reason, "return_moves_deferred")
+  Assert.equal(outcome.kind, "not_now", "dig without a travel record refuses instead of guessing")
+end
+
+function T.teleport_resolves_through_the_real_world()
+  local FieldMoveWorld = require("game.hgss.src.field.FieldMoveWorld")
+  local function stub()
+    return function() end
+  end
+  local world = FieldMoveWorld.new({
+    actors = {
+      getActor = stub(),
+      actorsOf = stub(),
+      getPosition = stub(),
+      getCollisionAt = stub(),
+      beginScriptedAction = stub(),
+      advanceScriptedAction = stub(),
+      commitScriptedAction = stub(),
+      cancelScriptedMovement = stub(),
+      isScriptedMoving = stub(),
+      removePresence = stub(),
+      syncEventStateChanges = stub(),
+    },
+    events = { setFlag = stub(), isFlagSet = stub() },
+    maps = {
+      current = function()
+        return {}
+      end,
+      runtimeMap = function()
+        return {}
+      end,
+    },
+    player = {
+      position = stub(),
+      facing = stub(),
+      beginScriptedAction = stub(),
+      advanceScriptedAction = stub(),
+      commitScriptedAction = stub(),
+      cancelScriptedMovement = stub(),
+      isScriptedMoving = stub(),
+      queueAvatarTransition = stub(),
+      applyAvatarTransitions = stub(),
+    },
+    profile = { badges = 0 },
+    weather = { change = stub() },
+    reactions = { dispatch = stub() },
+    spawns = {
+      destinationFor = function(_, spawnKey)
+        assert(spawnKey == "SPAWN_NEW_BARK", "resolution requests the recorded spawn")
+        return { map = "MAP_NEW_BARK", fieldX = 695, fieldZ = 397 }
+      end,
+    },
+  })
+  local wired = open(world)
+  local digContext = context()
+  digContext.fieldUse.escapeAllowed = true
+  digContext.fieldUse.teleportAllowed = true
+  local planned = wired:plan({
+    move = "teleport",
+    slot = 0,
+    partyRevision = 4,
+    context = digContext,
+    travel = { lastHealSpawn = "SPAWN_NEW_BARK" },
+  })
+  Assert.equal(planned.kind, "teleport", "the real world plans teleport from cited destinations")
 end
 
 function T.traversal_planning_delegates_geometry_to_the_world()

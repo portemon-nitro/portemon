@@ -124,12 +124,64 @@ function FieldWorldSwapCoordinator:abort(resolution, prepared)
   physical.state = "released"
 end
 
+-- Escape-entrance publication owns the durable return point at the one
+-- moment the destination is certain: a successful outside entry into an
+-- escapable cave records the outside source tile (never the destination
+-- or a deeper doorway); leaving a cave clears the stale point so a later
+-- Dig cannot exit somewhere the player no longer came from. Inner-cave
+-- moves and ordinary travel leave the record alone. Failed builds never
+-- reach this owner, so the old record survives them unchanged.
+---@param self FieldWorldSwapCoordinator
+---@param runtime table<string, unknown> the live runtime surface (travel, map, player)
+---@param resolution table<string, unknown>
+function FieldWorldSwapCoordinator:publishEscapeEntrance(runtime, resolution)
+  local travel = runtime.fieldTravel
+  if travel == nil or type(travel.setEscapeEntrance) ~= "function" then
+    return
+  end
+  local sourceMap = runtime.runtimeMap
+  local destinationMap = resolution.destinationMap
+  if type(sourceMap) ~= "table" or type(destinationMap) ~= "table" then
+    return
+  end
+  local sourceFieldData = sourceMap.fieldData
+  local destinationFieldData = destinationMap.fieldData
+  if type(sourceFieldData) ~= "table" or type(destinationFieldData) ~= "table" then
+    return
+  end
+  local destinationUse = destinationFieldData.fieldUse
+  if type(destinationUse) ~= "table" then
+    return
+  end
+  local player = runtime.player
+  if
+    sourceFieldData.transitionEnvironment == "outdoors"
+    and destinationUse.cave == true
+    and destinationUse.escapeAllowed == true
+  then
+    assert(type(player) == "table", "entrance recording needs the source player")
+    assert(type(sourceMap.mapSymbol) == "string", "entrance recording needs the source map symbol")
+    travel:setEscapeEntrance({
+      map = sourceMap.mapSymbol,
+      fieldX = assert(player.fieldX, "entrance recording needs the source tile"),
+      fieldZ = assert(player.fieldZ, "entrance recording needs the source tile"),
+      facing = assert(player.facing, "entrance recording needs the source facing"),
+    })
+    return
+  end
+  local sourceUse = sourceFieldData.fieldUse
+  if type(sourceUse) == "table" and sourceUse.cave == true and destinationUse.cave ~= true then
+    travel:clearEscapeEntrance()
+  end
+end
+
 ---@param self FieldWorldSwapCoordinator
 ---@param resolution table<string, unknown>
 ---@param _ FieldDirection
 ---@param prepared table<string, unknown>
 function FieldWorldSwapCoordinator:commit(resolution, _, prepared)
   local runtime = self.runtime
+  self:publishEscapeEntrance(runtime, resolution)
   local runtimeMap = resolution.destinationMap
   local physical = (prepared and prepared.physical) or resolution.physical
   local residency = assert(prepared and prepared.residency, "prepared residency transaction required")

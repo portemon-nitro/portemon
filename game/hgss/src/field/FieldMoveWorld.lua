@@ -71,6 +71,8 @@ local DIRECTION_DELTAS = {
 ---@field private _profile table<string, unknown>
 ---@field private _weather table<string, unknown>
 ---@field private _reactions table<string, unknown>
+---@field private _warps table<string, unknown>? borrowed maps service for return warps
+---@field private _spawns table<string, unknown>? cited landing destinations for teleport returns
 local FieldMoveWorld = {}
 FieldMoveWorld.__index = FieldMoveWorld
 
@@ -117,9 +119,26 @@ function FieldMoveWorld.new(ports)
     _profile = requirePort(ports, "profile", {}),
     _weather = requirePort(ports, "weather", { "change" }),
     _reactions = requirePort(ports, "reactions", { "dispatch" }),
+    -- The return-warp service is optional at construction so existing
+    -- environmental/traversal owners keep their exact port set; return
+    -- execution asserts it before starting anything. The teleport
+    -- landing destinations ride the same optionality: Dig-only owners
+    -- never carry them, and teleport planning asserts the port before
+    -- resolving anything.
+    _warps = ports.warps,
+    _spawns = ports.spawns,
   }, FieldMoveWorld)
   assert(type(world._profile.badges) == "number", "field world profile must carry its badge mask")
   assert(type(world._maps:current()) == "table", "field world maps must describe the live map")
+  if world._warps ~= nil then
+    assert(type(world._warps.startWarp) == "function", "warps port must start warps")
+    assert(type(world._warps.warpDone) == "function", "warps port must observe warp completion")
+    assert(type(world._warps.pendingError) == "function", "warps port must report warp failures")
+    assert(type(world._warps.resolve) == "function", "warps port must resolve destination maps")
+  end
+  if world._spawns ~= nil then
+    assert(type(world._spawns.destinationFor) == "function", "spawns port must resolve cited landing destinations")
+  end
   return world
 end
 
@@ -414,6 +433,123 @@ function FieldMoveWorld:applyFlash(plan)
   end
   self._events:setFlag(FLASH_FLAG_ID)
   self._weather:change(FLASH_LIT_WEATHER_ID)
+end
+
+-- Resolve a validated return destination from durable travel facts. Dig
+-- exits through the recorded outside entrance; a missing entrance is
+-- not_now, never a guessed tile. Teleport resolves the recorded heal
+-- spawn through the injected cited landing destinations; an unknown
+-- spawn key fails loudly instead of warping somewhere convenient.
+-- Coordinates are destination-global; the warp start converts them
+-- against the loaded map origin. Source carries no arrival facing, so
+-- teleport arrivals stamp the standard facing used across the field.
+---@param move string "dig" or "teleport"
+---@param context table<string, unknown>
+---@param travel table<string, unknown> a FieldTravelState capture
+---@return table<string, unknown> destination record or Decision
+function FieldMoveWorld:planReturn(move, context, travel)
+  assert(move == "dig" or move == "teleport", "return planning covers dig and teleport")
+  assert(type(context) == "table", "return planning requires its context")
+  assert(type(travel) == "table", "return planning requires a travel record")
+  assert(
+    type(travel.lastHealSpawn) == "string" and travel.lastHealSpawn ~= "",
+    "return planning requires a recorded heal spawn"
+  )
+  if move == "teleport" then
+    local spawns = assert(self._spawns, "teleport planning requires the cited landing destinations")
+    local spawnKey = travel.lastHealSpawn
+    local destination = spawns:destinationFor(spawnKey)
+    if destination == nil then
+      Errors.raise(
+        ScriptErrors.SCRIPT_INVALID_REFERENCE,
+        "teleport spawn has no cited landing destination: " .. tostring(spawnKey),
+        { spawn = spawnKey }
+      )
+    end
+    assert(type(destination) == "table", "landing destinations are records")
+    assert(type(destination.map) == "string" and destination.map ~= "", "landing destinations name a map")
+    assert(
+      type(destination.fieldX) == "number" and type(destination.fieldZ) == "number",
+      "landing destinations carry tiles"
+    )
+    return {
+      map = destination.map,
+      warp = 0,
+      fieldX = destination.fieldX,
+      fieldZ = destination.fieldZ,
+      facing = "south",
+    }
+  end
+  local entrance = travel.escapeEntrance
+  if entrance == nil then
+    return { kind = "not_now" }
+  end
+  assert(type(entrance) == "table", "recorded entrances are records")
+  assert(type(entrance.map) == "string" and entrance.map ~= "", "recorded entrances name their outside map")
+  assert(
+    type(entrance.fieldX) == "number" and type(entrance.fieldZ) == "number",
+    "recorded entrances carry their outside tile"
+  )
+  assert(type(entrance.facing) == "string" and entrance.facing ~= "", "recorded entrances carry facing")
+  return {
+    map = entrance.map,
+    warp = 0,
+    fieldX = entrance.fieldX,
+    fieldZ = entrance.fieldZ,
+    facing = entrance.facing,
+  }
+end
+
+-- Start the return warp exactly once through the borrowed maps service.
+-- The destination resolves against the loaded map so global record
+-- coordinates convert to the destination-local tiles the warp owns; a
+-- repeat start is a programming error, never a second warp. Live service
+-- failures are the caller's to convert; program errors propagate.
+---@param plan table<string, unknown> a dig/teleport plan carrying destination
+function FieldMoveWorld:beginReturnWarp(plan)
+  assert(type(plan) == "table", "return warps start from a plan")
+  assert(plan.warpStarted ~= true, "return warps start exactly once")
+  local warps = assert(self._warps, "return warps need the maps service")
+  local destination = assert(plan.destination, "return plans carry their destination")
+  assert(type(destination.map) == "string" and destination.map ~= "", "return destinations name a map")
+  local resolved = warps:resolve(destination.map)
+  if resolved == nil then
+    Errors.raise(
+      ScriptErrors.SCRIPT_INVALID_REFERENCE,
+      "return destination map is unavailable: " .. tostring(destination.map),
+      { map = destination.map }
+    )
+  end
+  local origin = assert(resolved and resolved.coordinateOrigin, "return destinations need the map origin")
+  assert(type(origin.x) == "number" and type(origin.z) == "number", "map origins carry coordinates")
+  assert(type(destination.fieldX) == "number", "return destinations carry tiles")
+  assert(type(destination.fieldZ) == "number", "return destinations carry tiles")
+  warps:startWarp({
+    map = destination.map,
+    warp = destination.warp or 0,
+    fieldX = destination.fieldX - origin.x,
+    fieldZ = destination.fieldZ - origin.z,
+    facing = destination.facing,
+  })
+  plan.warpStarted = true
+end
+
+-- Observe a started return warp: true once the maps service settles it.
+---@param plan table<string, unknown>
+---@return boolean
+function FieldMoveWorld:returnWarpDone(plan)
+  assert(type(plan) == "table", "warp observation needs a plan")
+  local warps = assert(self._warps, "return warps need the maps service")
+  return warps:warpDone()
+end
+
+-- Surface the maps service failure for a settled return warp, if any.
+---@param plan table<string, unknown>
+---@return unknown|nil
+function FieldMoveWorld:returnWarpError(plan)
+  assert(type(plan) == "table", "warp errors read from a plan")
+  local warps = assert(self._warps, "return warps need the maps service")
+  return warps:pendingError()
 end
 
 -- Read one tile's permission cell through the resident collision owner.

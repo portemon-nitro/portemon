@@ -28,6 +28,9 @@ ArtifactState.KINDS = {
   ["field-emotes"] = true,
   ["field-ui"] = true,
   ["field-font"] = true,
+  -- Family-level teleport landing index: one cited spawn-keyed record
+  -- for the whole ROM, consumed eagerly by field return planning.
+  spawns = true,
   -- Game-start families: intro visuals, the standard-init initializer, the
   -- merged ordinary actor/follower bundle and starter-choice assets.
   intro = true,

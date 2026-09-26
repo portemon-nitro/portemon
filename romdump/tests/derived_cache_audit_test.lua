@@ -73,6 +73,7 @@ local function publishedMarkers()
     AudioCache.markerPath(),
     MapAssetCache.mapDir(7) .. "/complete",
     FieldMapDataCache.markerPath(7),
+    FieldMapDataCache.spawnIndexMarkerPath(),
   }) do
     cache:write(path, "complete")
   end
@@ -133,6 +134,32 @@ function T.a_stale_attestation_is_never_consulted()
     assetRevision = 11,
     scriptApi = 1,
     generationId = "stale-generation",
+  })
+  local available, reason = DerivedCacheAudit.isAvailable(cache, IDENTITY, minimalPlans())
+  Assert.isFalse(available)
+  assert(reason, "a refused proof names its cause")
+  Assert.isTrue(reason:find("has no current receipt", 1, true) ~= nil, tostring(reason))
+  Assert.isNil(reason:find("build.lua", 1, true), "the attestation is never evidence: " .. tostring(reason))
+end
+
+-- The teleport landing index gates usability like every dispatched job:
+-- without its marker the walk refuses instead of reading a partial cache.
+function T.a_missing_spawn_index_marker_requires_a_build()
+  local cache = publishedMarkers()
+  cache:remove(FieldMapDataCache.spawnIndexMarkerPath())
+  local available, reason = DerivedCacheAudit.isAvailable(cache, IDENTITY, minimalPlans())
+  Assert.isFalse(available)
+  assert(reason, "a refused proof names its cause")
+end
+
+function T.availability_ignores_producer_version_metadata()
+  -- Compiler-version provenance must never gate availability: implementation
+  -- freshness is owned by the producer fingerprint, which forces a full
+  -- rebuild whenever romdump/src changes.
+  local cache = publishedMarkers()
+  cache:writeLua(ScriptCache.provenancePath(), {
+    schema = ScriptCache.PROVENANCE_SCHEMA,
+    dependencies = { compilerVersion = "script-compiler-v0" },
   })
   local available, reason = DerivedCacheAudit.isAvailable(cache, IDENTITY, minimalPlans())
   Assert.isFalse(available)

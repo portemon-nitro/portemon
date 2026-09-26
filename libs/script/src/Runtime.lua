@@ -1464,6 +1464,11 @@ local function handleShakeCamera(node, run)
 end
 local function handleSetSpawn(node, run)
   requireService(run, "maps"):setSpawn(node.spawn)
+  -- The explicit respawn command owns durable history: the maps service
+  -- keeps its spawn string and the travel service records the named
+  -- history a later Teleport resolves. A missing travel service faults
+  -- loudly instead of silently keeping the old spawn.
+  requireService(run, "travel"):setLastHealSpawn(node.spawn)
   return Runtime.OUTCOME_CONTINUE
 end
 local function handleSetSpecialSpawn(node, run)

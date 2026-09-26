@@ -10,6 +10,8 @@
 local FieldMoveRuntime = {}
 FieldMoveRuntime.__index = FieldMoveRuntime
 
+local Errors = require("libs.errors.src.Errors")
+
 -- Bounded native field-use acknowledgement before a committed effect, in
 -- fixed ticks on the existing cadence. This is an intentional project
 -- presentation beat, not original cinematic parity.
@@ -20,6 +22,8 @@ local SMASH = "smash"
 local ENABLE_STRENGTH = "enable_strength"
 local PUSH_STRENGTH = "push_strength"
 local FLASH = "flash"
+local DIG = "dig"
+local TELEPORT = "teleport"
 local SURF_ENTER = "surf_enter"
 local DISEMBARK = "disembark"
 local WATERFALL = "waterfall"
@@ -46,8 +50,6 @@ local POLICY_MOVES = {
 }
 
 local EXPLICIT_DEFERRED = {
-  dig = "return_moves_deferred",
-  teleport = "return_moves_deferred",
   fly = "fly_map_deferred",
   headbutt = "headbutt_encounters_deferred",
   sweet_scent = "sweet_scent_encounters_deferred",
@@ -210,6 +212,38 @@ function FieldMoveRuntime:discardPending()
   self._pending = nil
 end
 
+-- Plan a Dig/Teleport return from durable travel facts: without a travel
+-- record there is no destination, so the request refuses as not now
+-- instead of guessing. Destination records and Decisions both flow back
+-- untouched; only records become executable plans.
+---@param request table<string, unknown>
+---@param move string
+---@return table<string, unknown> plan or Decision
+local function buildReturnPlan(self, request, move)
+  local travel = request.travel
+  if travel == nil then
+    return { kind = "not_now" }
+  end
+  local context = assert(request.context, move .. " planning requires its context")
+  local destination = self._world:planReturn(move, context, travel)
+  assert(isRecord(destination), "return resolution answers a record")
+  if type(destination.kind) == "string" then
+    return destination
+  end
+  return {
+    kind = move,
+    move = move,
+    slot = assertSlot(request.slot, move),
+    partyRevision = request.partyRevision,
+    mapId = assert(context.mapId, "return plans carry their source map"),
+    destination = destination,
+    phase = "acknowledge",
+    ticksLeft = FieldMoveRuntime.ACKNOWLEDGE_TICKS,
+    committed = false,
+    warpStarted = false,
+  }
+end
+
 local function planTarget(context, kind)
   local facing = assert(context.facingActor, kind .. " needs its facing actor")
   assert(type(facing.identity) == "string" and facing.identity ~= "", kind .. " needs a target identity")
@@ -223,18 +257,25 @@ end
 -- Build the closed executable plan union for a taken or explicit request.
 -- Menu requests re-check eligibility; explicit script-origin requests carry
 -- no context and execute without re-gating, matching the source commands
--- that read a slot and act. Deferred traversal/return/fly moves report
--- honestly instead of succeeding.
+-- that read a slot and act. Deferred traversal/fly moves report honestly
+-- instead of succeeding; Fly never plans because the menu flow completes
+-- it as a checked no-op before admission.
 ---@param request table<string, unknown>
 ---@return table<string, unknown> plan or Decision
 local function buildPlan(self, request)
   assert(isRecord(request), "field planning requires a request record")
   local move = assert(request.move, "field planning requires a move key")
+  if move == "fly" then
+    error("fly never plans a field task; the menu flow completes it as a checked no-op", 0)
+  end
   if POLICY_MOVES[move] and request.context ~= nil then
     local decision = self._policy.check(move, request.context)
     if decision.kind ~= "ok" then
       return decision
     end
+  end
+  if move == DIG or move == TELEPORT then
+    return buildReturnPlan(self, request, move)
   end
   if move == CUT or move == "rock_smash" then
     local context = assert(request.context, move .. " planning requires its context")
@@ -342,7 +383,7 @@ local function buildPlan(self, request)
   error("unknown field move " .. tostring(move), 0)
 end
 
-local PLAN_PHASES = { acknowledge = true, commit = true, begin = true, step = true, traverse = true }
+local PLAN_PHASES = { acknowledge = true, commit = true, begin = true, step = true, traverse = true, warp = true }
 
 -- Plan and register the live plan: the built plan table identifies the
 -- active operation for settling, so a stale plan can advance safely
@@ -452,6 +493,44 @@ function FieldMoveRuntime:advance(plan)
         return { kind = "failed", error = blocked }
       end
       self._world:commitPush(plan)
+      plan.committed = true
+      settle(self, plan)
+      return { kind = "done" }
+    end
+    return { kind = "running" }
+  end
+  if kind == DIG or kind == TELEPORT then
+    -- Acknowledge on the shared cadence, then start the warp exactly
+    -- once and observe it to completion. A failed start or a failed warp
+    -- faults the plan with the service error; the world and travel state
+    -- stay exactly as the failure left them, and settling releases the
+    -- runtime so nothing replays.
+    if plan.phase == "acknowledge" then
+      plan.ticksLeft = (plan.ticksLeft or 0) - 1
+      if plan.ticksLeft > 0 then
+        return { kind = "running" }
+      end
+      plan.phase = "warp"
+    end
+    if not plan.warpStarted then
+      local started, startErr = pcall(function()
+        self._world:beginReturnWarp(plan)
+      end)
+      if not started then
+        if Errors.is(startErr) then
+          settle(self, plan)
+          return { kind = "failed", error = startErr }
+        end
+        error(startErr, 0)
+      end
+      return { kind = "running" }
+    end
+    if self._world:returnWarpDone(plan) then
+      local warpError = self._world:returnWarpError(plan)
+      if warpError ~= nil then
+        settle(self, plan)
+        return { kind = "failed", error = warpError }
+      end
       plan.committed = true
       settle(self, plan)
       return { kind = "done" }

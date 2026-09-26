@@ -12,9 +12,13 @@ local FieldMapDataCache = {}
 local Validate = require("libs.assets.src.Validate")
 local Contract = require("libs.assets.src.DerivedAssetContract")
 local FieldObjectMovement = require("libs.assets.src.field.FieldObjectMovement")
+local Errors = require("libs.errors.src.Errors")
+
+local SPAWN_INDEX_INVALID = "FIELD_MAP_DATA_SPAWN_INDEX_INVALID"
 
 FieldMapDataCache.FORMAT = Contract.fieldMapData.cacheFormat
 FieldMapDataCache.FIELD_SCHEMA = Contract.fieldMapData.fieldSchema
+FieldMapDataCache.SPAWN_INDEX_SCHEMA = Contract.fieldMapData.spawnIndexSchema
 FieldMapDataCache.TRANSITION_ENVIRONMENTS = { cave = true, outdoors = true, building = true }
 
 -- The event collections the current field-map schema always carries.
@@ -174,6 +178,102 @@ end
 
 function FieldMapDataCache.markerPath(mapId)
   return FieldMapDataCache.mapDir(mapId) .. "/complete"
+end
+
+-- Family-level teleport landing index: one record for the whole ROM,
+-- published beside the per-map directories through the same staged
+-- publication discipline. Runtime return planning reads it; producer
+-- numeric source identities never reach it.
+function FieldMapDataCache.spawnDir()
+  return "data/generated/field/spawns"
+end
+
+function FieldMapDataCache.spawnIndexPath()
+  return FieldMapDataCache.spawnDir() .. "/spawns.lua"
+end
+
+function FieldMapDataCache.spawnIndexMarkerPath()
+  return FieldMapDataCache.spawnDir() .. "/complete"
+end
+
+function FieldMapDataCache.spawnIndexMarker(romSha1, dependencyHash)
+  assert(type(romSha1) == "string" and romSha1 ~= "", "spawn index marker needs the ROM identity")
+  assert(type(dependencyHash) == "string" and dependencyHash ~= "", "spawn index marker needs its content hash")
+  return string.format("%s:%s:%s", FieldMapDataCache.FORMAT, romSha1, dependencyHash)
+end
+
+-- The teleport landing index the current schema always carries: spawn
+-- keys to outdoor arrival maps plus destination-global tiles. Source
+-- carries no arrival facing; the planner stamps the standard arrival
+-- facing instead. An index without it is malformed generated data,
+-- never an empty feature.
+---@param spawns unknown
+---@return boolean
+function FieldMapDataCache.hasSpawnDestinations(spawns)
+  if type(spawns) ~= "table" then
+    return false
+  end
+  local count = 0
+  for key, destination in pairs(spawns) do
+    if type(key) ~= "string" or key == "" then
+      return false
+    end
+    if
+      type(destination) ~= "table"
+      or type(destination.map) ~= "string"
+      or destination.map == ""
+      or type(destination.fieldX) ~= "number"
+      or destination.fieldX % 1 ~= 0
+      or destination.fieldX < 0
+      or type(destination.fieldZ) ~= "number"
+      or destination.fieldZ % 1 ~= 0
+      or destination.fieldZ < 0
+    then
+      return false
+    end
+    count = count + 1
+  end
+  return count > 0
+end
+
+-- True only if the marker is exact and the index loads with the current
+-- schema and a valid destination table.
+function FieldMapDataCache.isSpawnIndexReady(cacheFs, expectedMarker)
+  if cacheFs:read(FieldMapDataCache.spawnIndexMarkerPath()) ~= expectedMarker then
+    return false
+  end
+  local index = cacheFs:loadLua(FieldMapDataCache.spawnIndexPath()) ---@type table?
+  if type(index) ~= "table" then
+    return false
+  end
+  return index.schema == FieldMapDataCache.SPAWN_INDEX_SCHEMA and FieldMapDataCache.hasSpawnDestinations(index.spawns)
+end
+
+-- Resolve one cited landing destination: a fresh record on success, nil
+-- for an unknown spawn key (the caller refuses loudly, never a guess).
+-- A missing or malformed index is corrupt generated data and raises.
+---@param cacheFs CacheFs
+---@param spawnKey string
+---@return table<string, unknown>? a fresh { map, fieldX, fieldZ } record
+function FieldMapDataCache.spawnDestination(cacheFs, spawnKey)
+  assert(type(spawnKey) == "string" and spawnKey ~= "", "spawn resolution needs a spawn key")
+  local index = cacheFs:loadLua(FieldMapDataCache.spawnIndexPath()) ---@type table?
+  if type(index) ~= "table" or index.schema ~= FieldMapDataCache.SPAWN_INDEX_SCHEMA then
+    Errors.raise(
+      SPAWN_INDEX_INVALID,
+      "teleport landing index is missing or malformed; rebuild the derived cache",
+      { spawn = spawnKey }
+    )
+  end
+  assert(type(index) == "table", "spawn index validated above")
+  local destinations = index.spawns
+  assert(type(destinations) == "table", "spawn index validated above")
+  local destination = destinations[spawnKey]
+  if destination == nil then
+    return nil
+  end
+  assert(type(destination) == "table", "spawn destinations are records")
+  return { map = destination.map, fieldX = destination.fieldX, fieldZ = destination.fieldZ }
 end
 
 function FieldMapDataCache.marker(romSha1, mapId, dependencyHash)

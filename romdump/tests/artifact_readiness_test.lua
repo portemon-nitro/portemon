@@ -1403,6 +1403,18 @@ function T.unpublished_party_never_validates_through_worker_dispatch()
   )
 end
 
+-- The spawn index validates through the family readiness gate like every
+-- coarse field family: an unpublished index never validates. The positive
+-- path runs through the real worker in the milestone corpus; writer-level
+-- validation lives with the family unit tests.
+function T.unpublished_spawns_never_validates_through_worker_dispatch()
+  local spawnCache = newCache()
+  Assert.isFalse(
+    ArtifactJobs.validate(spawnCache, GENERATION, "spawns", "global", {}),
+    "the missing spawn index must not validate"
+  )
+end
+
 local module = {
   beforeAll = function()
     for _, path in ipairs({
