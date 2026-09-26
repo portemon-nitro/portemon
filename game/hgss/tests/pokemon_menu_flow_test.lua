@@ -24,7 +24,7 @@ local ScreenTopology = require("libs.hgss.src.ui.ScreenTopology")
 
 local FLOW_MODULE = "game.hgss.src.field.PokemonMenuFlow"
 
-local T = { tests = {} }
+local T = { metadata = { capabilities = { "rom_dump", "derived_cache" } }, tests = {} }
 
 local POCKETS = { "items", "medicine", "balls", "tmhm", "berries", "mail", "battle_items", "key_items" }
 
@@ -310,20 +310,27 @@ local function driveToAction(rig, id)
   error("the action menu never selects " .. id, 0)
 end
 
-for _, versionId in ipairs(readyVersions()) do
-  local function injureLead(rig, amount)
-    local mon = rig.mons:partyMon(0)
-    local maxHp = rig.mons:derive(mon).maxHp
-    Assert.isTrue(maxHp > amount, "the injured fixture needs headroom")
-    mon.condition.currentHp = maxHp - amount
-    local revision = rig.mons:partyRevision()
-    local preparation, reason = rig.mons:preparePartyChanges(revision, { { slot = 0, mon = mon } })
-    Assert.isNil(reason, "injury staging must prepare cleanly")
-    assert(preparation).publish()
-    return maxHp
-  end
+local function injureLead(rig, amount)
+  local mon = rig.mons:partyMon(0)
+  local maxHp = rig.mons:derive(mon).maxHp
+  Assert.isTrue(maxHp > amount, "the injured fixture needs headroom")
+  mon.condition.currentHp = maxHp - amount
+  local revision = rig.mons:partyRevision()
+  local preparation, reason = rig.mons:preparePartyChanges(revision, { { slot = 0, mon = mon } })
+  Assert.isNil(reason, "injury staging must prepare cleanly")
+  assert(preparation).publish()
+  return maxHp
+end
 
-  function T.tests.bag_root_opens_on_the_borrowed_cursor()
+function T.tests.bag_root_opens_on_the_borrowed_cursor(context)
+  local versions = readyVersions()
+  if #versions == 0 then
+    if context ~= nil and type(context.hasCapability) == "function" then
+      context:skip("requires rom_dump and derived_cache")
+    end
+    error("menu flow needs a ready versioned cache", 0)
+  end
+  for _, versionId in ipairs(versions) do
     local rig = liveComposition(versionId, "bag")
     Assert.isTrue(rig.bag:add("POTION", 3), "the fixture must stock potions")
     rig.cursor:setPocket("medicine")
@@ -334,8 +341,17 @@ for _, versionId in ipairs(readyVersions()) do
     Assert.isNil(rig.flow:takeResult(), "opening reports no terminal result")
     rig.flow:dispose()
   end
+end
 
-  function T.tests.bag_use_heals_once_and_returns_to_bag()
+function T.tests.bag_use_heals_once_and_returns_to_bag(context)
+  local versions = readyVersions()
+  if #versions == 0 then
+    if context ~= nil and type(context.hasCapability) == "function" then
+      context:skip("requires rom_dump and derived_cache")
+    end
+    error("menu flow needs a ready versioned cache", 0)
+  end
+  for _, versionId in ipairs(versions) do
     local rig = liveComposition(versionId, "bag")
     local maxHp = injureLead(rig, 10)
     Assert.isTrue(rig.bag:add("POTION", 3), "the fixture must stock potions")
@@ -373,8 +389,17 @@ for _, versionId in ipairs(readyVersions()) do
     Assert.isNil(rig.flow:takeResult(), "the round trip reports no terminal result")
     rig.flow:dispose()
   end
+end
 
-  function T.tests.stale_revision_discards_the_operation_safely()
+function T.tests.stale_revision_discards_the_operation_safely(context)
+  local versions = readyVersions()
+  if #versions == 0 then
+    if context ~= nil and type(context.hasCapability) == "function" then
+      context:skip("requires rom_dump and derived_cache")
+    end
+    error("menu flow needs a ready versioned cache", 0)
+  end
+  for _, versionId in ipairs(versions) do
     local rig = liveComposition(versionId, "bag")
     injureLead(rig, 10)
     Assert.isTrue(rig.bag:add("POTION", 3), "the fixture must stock potions")
@@ -404,8 +429,17 @@ for _, versionId in ipairs(readyVersions()) do
     Assert.isNil(rig.flow:takeResult(), "staleness is not a terminal result")
     rig.flow:dispose()
   end
+end
 
-  function T.tests.failed_child_construction_is_non_destructive()
+function T.tests.failed_child_construction_is_non_destructive(context)
+  local versions = readyVersions()
+  if #versions == 0 then
+    if context ~= nil and type(context.hasCapability) == "function" then
+      context:skip("requires rom_dump and derived_cache")
+    end
+    error("menu flow needs a ready versioned cache", 0)
+  end
+  for _, versionId in ipairs(versions) do
     local rig = liveComposition(versionId, "bag")
     Assert.isTrue(rig.bag:add("POTION", 3), "the fixture must stock potions")
     rig.cursor:setPocket("medicine")
@@ -439,15 +473,33 @@ for _, versionId in ipairs(readyVersions()) do
     rig.flow:dispose()
     rig.flow:dispose()
   end
+end
 
-  function T.tests.terminal_field_action_emits_typed_output()
+function T.tests.terminal_field_action_emits_typed_output(context)
+  local versions = readyVersions()
+  if #versions == 0 then
+    if context ~= nil and type(context.hasCapability) == "function" then
+      context:skip("requires rom_dump and derived_cache")
+    end
+    error("menu flow needs a ready versioned cache", 0)
+  end
+  for _, versionId in ipairs(versions) do
     local rig = liveComposition(versionId, "party")
     local status = drive(rig, {})
     Assert.equal(status.page, "party_browse", "a party root opens the party browse page")
     rig.flow:dispose()
   end
+end
 
-  function T.tests.root_close_reports_close_and_releases_once()
+function T.tests.root_close_reports_close_and_releases_once(context)
+  local versions = readyVersions()
+  if #versions == 0 then
+    if context ~= nil and type(context.hasCapability) == "function" then
+      context:skip("requires rom_dump and derived_cache")
+    end
+    error("menu flow needs a ready versioned cache", 0)
+  end
+  for _, versionId in ipairs(versions) do
     local rig = liveComposition(versionId, "bag")
     local status = drive(rig, {})
     Assert.equal(status.page, "bag_browse", "a bag root opens the bag browse page")

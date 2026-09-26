@@ -23,7 +23,7 @@ local ScriptErrors = require("libs.script.src.errors")
 
 local HOST_MODULE = "game.hgss.src.field.PartySelectionHost"
 
-local T = {}
+local T = { metadata = { capabilities = { "rom_dump", "derived_cache" } }, tests = {} }
 
 local function requireHost()
   local ok, host = pcall(require, HOST_MODULE)
@@ -106,8 +106,15 @@ local function openHost(versionId, service, request)
   return host, handle
 end
 
-for _, versionId in ipairs(readyVersions()) do
-  local function padSelectsTheSecondSlot()
+function T.tests.pad_selects_a_slot_exactly_once(context)
+  local versions = readyVersions()
+  if #versions == 0 then
+    if context ~= nil and type(context.hasCapability) == "function" then
+      context:skip("requires rom_dump and derived_cache")
+    end
+    error("party selection needs a ready versioned cache", 0)
+  end
+  for _, versionId in ipairs(versions) do
     local service = openService()
     give(service, "CHIKORITA")
     give(service, "TOTODILE")
@@ -124,9 +131,17 @@ for _, versionId in ipairs(readyVersions()) do
     Assert.equal(type(result.slot), "number")
     Assert.isNil(host:result(handle), "the answer is one-shot")
   end
-  T["pad_selects_a_slot_exactly_once:" .. versionId] = padSelectsTheSecondSlot
+end
 
-  local function pointerSelectsASlot()
+function T.tests.pointer_selects_through_hit_geometry(context)
+  local versions = readyVersions()
+  if #versions == 0 then
+    if context ~= nil and type(context.hasCapability) == "function" then
+      context:skip("requires rom_dump and derived_cache")
+    end
+    error("party selection needs a ready versioned cache", 0)
+  end
+  for _, versionId in ipairs(versions) do
     local service = openService()
     give(service, "CHIKORITA")
     give(service, "TOTODILE")
@@ -151,9 +166,17 @@ for _, versionId in ipairs(readyVersions()) do
     Assert.equal(result.kind, "selected")
     Assert.equal(result.slot, 1, "the tap resolves through production hit geometry")
   end
-  T["pointer_selects_through_hit_geometry:" .. versionId] = pointerSelectsASlot
+end
 
-  local function cancelFocusPersists()
+function T.tests.cancel_focus_persists(context)
+  local versions = readyVersions()
+  if #versions == 0 then
+    if context ~= nil and type(context.hasCapability) == "function" then
+      context:skip("requires rom_dump and derived_cache")
+    end
+    error("party selection needs a ready versioned cache", 0)
+  end
+  for _, versionId in ipairs(versions) do
     local service = openService()
     give(service, "CHIKORITA")
     local host, handle = openHost(versionId, service)
@@ -172,9 +195,17 @@ for _, versionId in ipairs(readyVersions()) do
     Assert.notNil(result)
     Assert.equal(result.kind, "cancelled")
   end
-  T["cancel_focus_persists:" .. versionId] = cancelFocusPersists
+end
 
-  local function emptyPartyShowsCancelShell()
+function T.tests.empty_party_shows_the_cancel_shell(context)
+  local versions = readyVersions()
+  if #versions == 0 then
+    if context ~= nil and type(context.hasCapability) == "function" then
+      context:skip("requires rom_dump and derived_cache")
+    end
+    error("party selection needs a ready versioned cache", 0)
+  end
+  for _, versionId in ipairs(versions) do
     local service = openService()
     local host, handle = openHost(versionId, service, { focus = 0, allowCancel = true, policy = "occupied" })
     local status = host:status()
@@ -186,9 +217,17 @@ for _, versionId in ipairs(readyVersions()) do
     Assert.equal(result.kind, "cancelled")
     host:close(handle)
   end
-  T["empty_party_shows_the_cancel_shell:" .. versionId] = emptyPartyShowsCancelShell
+end
 
-  local function emptyPartyWithoutCancelIsInvalid()
+function T.tests.empty_party_without_cancel_is_invalid(context)
+  local versions = readyVersions()
+  if #versions == 0 then
+    if context ~= nil and type(context.hasCapability) == "function" then
+      context:skip("requires rom_dump and derived_cache")
+    end
+    error("party selection needs a ready versioned cache", 0)
+  end
+  for _, versionId in ipairs(versions) do
     local service = openService()
     local Host = requireHost()
     local cacheFs = CacheFs.forVersion(versionId)
@@ -207,9 +246,17 @@ for _, versionId in ipairs(readyVersions()) do
     Assert.equal((err --[[@as Errors.Error]]).code, ScriptErrors.SCRIPT_TASK_UNSERIALIZABLE)
     Assert.isNil(host:status(), "a refused open owns nothing")
   end
-  T["empty_party_without_cancel_is_invalid:" .. versionId] = emptyPartyWithoutCancelIsInvalid
+end
 
-  local function activityMirrorsTheOpenSelection()
+function T.tests.activity_mirrors_the_open_selection(context)
+  local versions = readyVersions()
+  if #versions == 0 then
+    if context ~= nil and type(context.hasCapability) == "function" then
+      context:skip("requires rom_dump and derived_cache")
+    end
+    error("party selection needs a ready versioned cache", 0)
+  end
+  for _, versionId in ipairs(versions) do
     local service = openService()
     give(service, "CHIKORITA")
     local host, handle = openHost(versionId, service)
@@ -217,9 +264,17 @@ for _, versionId in ipairs(readyVersions()) do
     host:close(handle)
     Assert.isFalse(host:isActive(), "close releases the lane")
   end
-  T["activity_mirrors_the_open_selection:" .. versionId] = activityMirrorsTheOpenSelection
+end
 
-  local function lifecycleFailuresAreLoud()
+function T.tests.lifecycle_failures_are_loud(context)
+  local versions = readyVersions()
+  if #versions == 0 then
+    if context ~= nil and type(context.hasCapability) == "function" then
+      context:skip("requires rom_dump and derived_cache")
+    end
+    error("party selection needs a ready versioned cache", 0)
+  end
+  for _, versionId in ipairs(versions) do
     local service = openService()
     give(service, "CHIKORITA")
     local host, handle = openHost(versionId, service)
@@ -238,9 +293,17 @@ for _, versionId in ipairs(readyVersions()) do
     end)
     Assert.isFalse(okStep, "stepping an idle handle fails loudly")
   end
-  T["lifecycle_failures_are_loud:" .. versionId] = lifecycleFailuresAreLoud
+end
 
-  local function resumeRebuildsFromValueFocus()
+function T.tests.resume_rebuilds_from_value_focus(context)
+  local versions = readyVersions()
+  if #versions == 0 then
+    if context ~= nil and type(context.hasCapability) == "function" then
+      context:skip("requires rom_dump and derived_cache")
+    end
+    error("party selection needs a ready versioned cache", 0)
+  end
+  for _, versionId in ipairs(versions) do
     local service = openService()
     give(service, "CHIKORITA")
     give(service, "TOTODILE")
@@ -251,7 +314,6 @@ for _, versionId in ipairs(readyVersions()) do
     Assert.equal(host2:focus(handle2), 0, "an out-of-range saved slot reconciles instead of sticking")
     host2:close(handle2)
   end
-  T["resume_rebuilds_from_value_focus:" .. versionId] = resumeRebuildsFromValueFocus
 end
 
-return { tests = T }
+return T

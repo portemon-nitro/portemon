@@ -20,7 +20,7 @@ local ScreenTopology = require("libs.hgss.src.ui.ScreenTopology")
 local HOST_MODULE = "game.hgss.src.field.PartySelectionHost"
 local TARGET_MODULE = "game.hgss.src.field.FieldPresentationResources"
 
-local T = {}
+local T = { metadata = { capabilities = { "rom_dump", "derived_cache" } }, tests = {} }
 
 local CONSTRUCTOR_MODULES = {
   "libs.assets.src.BagCache",
@@ -307,8 +307,15 @@ local function withResources(callback)
   end
 end
 
-for _, versionId in ipairs(readyVersions()) do
-  local function openHostDrawsOnceThroughThePartyPresenter()
+function T.tests.open_host_draws_once_through_the_party_presenter(context)
+  local versions = readyVersions()
+  if #versions == 0 then
+    if context ~= nil and type(context.hasCapability) == "function" then
+      context:skip("requires rom_dump and derived_cache")
+    end
+    error("party selection draw needs a ready versioned cache", 0)
+  end
+  for _, versionId in ipairs(versions) do
     local service = openService()
     give(service, "CHIKORITA")
     give(service, "TOTODILE")
@@ -332,9 +339,17 @@ for _, versionId in ipairs(readyVersions()) do
     end)
     host:close(handle)
   end
-  T["open_host_draws_once_through_the_party_presenter:" .. versionId] = openHostDrawsOnceThroughThePartyPresenter
+end
 
-  local function idleAndEmptyHostsDrawNothing()
+function T.tests.idle_and_empty_hosts_draw_nothing(context)
+  local versions = readyVersions()
+  if #versions == 0 then
+    if context ~= nil and type(context.hasCapability) == "function" then
+      context:skip("requires rom_dump and derived_cache")
+    end
+    error("party selection draw needs a ready versioned cache", 0)
+  end
+  for _, versionId in ipairs(versions) do
     local service = openService()
     local host = openHost(versionId, service)
     withResources(function(resources, sink)
@@ -348,7 +363,6 @@ for _, versionId in ipairs(readyVersions()) do
     end)
     host:close(handle)
   end
-  T["idle_and_empty_hosts_draw_nothing:" .. versionId] = idleAndEmptyHostsDrawNothing
 end
 
-return { tests = T }
+return T

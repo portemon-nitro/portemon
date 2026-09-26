@@ -30,7 +30,7 @@ local TaskRegistry = require("libs.script.src.TaskRegistry")
 
 local HOST_MODULE = "game.hgss.src.field.PartySelectionHost"
 
-local T = {}
+local T = { metadata = { capabilities = { "rom_dump", "derived_cache" } }, tests = {} }
 
 local function readyVersions()
   local versions = {}
@@ -166,8 +166,15 @@ local function driveToSlot(h, tick, slot)
   return tick
 end
 
-for _, versionId in ipairs(readyVersions()) do
-  local function selectSlotCompletesOnceAndResumes()
+function T.tests.select_slot_completes_once_and_resumes(context)
+  local versions = readyVersions()
+  if #versions == 0 then
+    if context ~= nil and type(context.hasCapability) == "function" then
+      context:skip("requires rom_dump and derived_cache")
+    end
+    error("script party selection needs a ready versioned cache", 0)
+  end
+  for _, versionId in ipairs(versions) do
     local service = openService()
     give(service, "CHIKORITA")
     give(service, "TOTODILE")
@@ -187,9 +194,17 @@ for _, versionId in ipairs(readyVersions()) do
     h.scheduler:step(tick + 1, { uiEvents = { { type = "confirm" } } })
     Assert.equal(h.services.world:getVar("VAR_PICK"), 2, "a settled selection never recompletes")
   end
-  T["select_slot_completes_once_and_resumes:" .. versionId] = selectSlotCompletesOnceAndResumes
+end
 
-  local function cancelFocusYieldsTheSourceValue()
+function T.tests.cancel_focus_yields_the_source_value(context)
+  local versions = readyVersions()
+  if #versions == 0 then
+    if context ~= nil and type(context.hasCapability) == "function" then
+      context:skip("requires rom_dump and derived_cache")
+    end
+    error("script party selection needs a ready versioned cache", 0)
+  end
+  for _, versionId in ipairs(versions) do
     local service = openService()
     give(service, "CHIKORITA")
     local h = harness(versionId, service)
@@ -209,9 +224,17 @@ for _, versionId in ipairs(readyVersions()) do
     Assert.equal(h.services.world:getVar("VAR_PICK"), 255, "confirming cancel parks the source value")
     Assert.equal(h.services.world:getVar("VAR_AFTER"), 1, "cancellation still resumes the script")
   end
-  T["cancel_focus_yields_the_source_value:" .. versionId] = cancelFocusYieldsTheSourceValue
+end
 
-  local function resumeRereadsTheLiveParty()
+function T.tests.resume_rereads_the_live_party(context)
+  local versions = readyVersions()
+  if #versions == 0 then
+    if context ~= nil and type(context.hasCapability) == "function" then
+      context:skip("requires rom_dump and derived_cache")
+    end
+    error("script party selection needs a ready versioned cache", 0)
+  end
+  for _, versionId in ipairs(versions) do
     local service = openService()
     give(service, "CHIKORITA")
     give(service, "TOTODILE")
@@ -240,9 +263,17 @@ for _, versionId in ipairs(readyVersions()) do
     Assert.equal(h2.services.world:getVar("VAR_PICK"), 1, "the resumed selection keeps its cursor")
     Assert.equal(h2.services.world:getVar("VAR_AFTER"), 1)
   end
-  T["resume_rereads_the_live_party:" .. versionId] = resumeRereadsTheLiveParty
+end
 
-  local function staleShapeIsRejected()
+function T.tests.stale_shape_is_rejected(context)
+  local versions = readyVersions()
+  if #versions == 0 then
+    if context ~= nil and type(context.hasCapability) == "function" then
+      context:skip("requires rom_dump and derived_cache")
+    end
+    error("script party selection needs a ready versioned cache", 0)
+  end
+  for _, versionId in ipairs(versions) do
     local service = openService()
     give(service, "CHIKORITA")
     local h = harness(versionId, service)
@@ -263,7 +294,6 @@ for _, versionId in ipairs(readyVersions()) do
     Assert.isFalse(ok, "an older task shape never resumes silently")
     Assert.isTrue(Errors.is(err), "rejection carries a typed error")
   end
-  T["stale_shape_is_rejected:" .. versionId] = staleShapeIsRejected
 end
 
-return { tests = T }
+return T

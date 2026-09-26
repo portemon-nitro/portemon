@@ -163,6 +163,51 @@ function T.numeric_readouts_use_source_cells(romFs, versionId)
   Assert.equal(sample.width, 8, "composed digits keep the 8-pixel advance")
 end
 
+function T.party_markers_bind_rom_identity_and_content(romFs, versionId)
+  local bundle = bundleFor(romFs, versionId)
+  local sha1 = assert(romFs:metadata().sha1, "the dump carries its identity")
+  Assert.isTrue(type(sha1) == "string" and #sha1 == 40, "the ROM identity is a sha1")
+  local format, middle, depHash = bundle.marker:match("^([^:]+):([^:]+):([^:]+)$")
+  Assert.notNil(middle, "the marker carries three colon-separated segments")
+  Assert.equal(format, PartyCache.FORMAT, "the marker names the family format")
+  Assert.equal(middle, sha1, "the marker binds the ROM identity")
+  Assert.isTrue(#depHash > 0, "the marker binds a content hash")
+  local backend = FakeCache.new()
+  local cache = CacheFs.forVersion(versionId, backend)
+  local PartyCacheWriter = require("romdump.src.digest.ui.PartyCacheWriter")
+  Assert.isTrue(PartyCacheWriter.write(cache, bundle), "the real bundle publishes")
+  Assert.isTrue(PartyCache.isReady(cache, bundle.marker), "the true marker reads as ready")
+  local forged = PartyCache.FORMAT .. ":" .. string.rep("0", 40) .. ":" .. depHash
+  Assert.isFalse(PartyCache.isReady(cache, forged), "a marker with a foreign ROM identity never reads as ready")
+end
+
+function T.icon_animation_timing_stays_integral_and_bounded(romFs, versionId)
+  local bundle = bundleFor(romFs, versionId)
+  local animations = bundle.manifest.iconAnimations
+  Assert.isTrue(type(animations.periods) == "table", "icon periods resolve")
+  Assert.isTrue(#animations.periods > 0, "at least one icon period is compiled")
+  for index, ticks in ipairs(animations.periods) do
+    Assert.isTrue(
+      type(ticks) == "number" and ticks % 1 == 0 and ticks > 0,
+      "icon period is a positive integral tick count at " .. tostring(index)
+    )
+  end
+  Assert.isTrue(type(animations.replacementDurations) == "table", "replacement durations resolve")
+  for index, ticks in ipairs(animations.replacementDurations) do
+    Assert.isTrue(
+      type(ticks) == "number" and ticks % 1 == 0 and ticks > 0,
+      "replacement duration is a positive integral tick count at " .. tostring(index)
+    )
+  end
+  Assert.isTrue(type(animations.replacementShift) == "table", "the replacement shift resolves")
+  for index, shift in ipairs(animations.replacementShift) do
+    Assert.isTrue(
+      type(shift) == "number" and shift % 1 == 0,
+      "the replacement shift stays integral at " .. tostring(index)
+    )
+  end
+end
+
 local suite = RomSuite.fromFacts(T)
 suite.metadata.capabilities = { "rom_dump" }
 return suite

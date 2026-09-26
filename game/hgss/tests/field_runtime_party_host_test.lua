@@ -12,7 +12,7 @@ local PartyCache = require("libs.assets.src.PartyCache")
 local PlayTime = require("libs.hgss.src.save.PlayTime")
 local RomImporter = require("romdump.src.source.RomImporter")
 
-local T = {}
+local T = { metadata = { capabilities = { "rom_dump", "derived_cache" } }, tests = {} }
 
 local function readyVersions()
   local versions = {}
@@ -53,8 +53,15 @@ local function validEntry(versionId, withBuckets)
   return entry
 end
 
-for _, versionId in ipairs(readyVersions()) do
-  local function bootBuildsAndTeardownReleasesTheHost()
+function T.tests.boot_builds_and_teardown_releases_the_host(context)
+  local versions = readyVersions()
+  if #versions == 0 then
+    if context ~= nil and type(context.hasCapability) == "function" then
+      context:skip("requires rom_dump and derived_cache")
+    end
+    error("party host boot needs a ready versioned cache", 0)
+  end
+  for _, versionId in ipairs(versions) do
     local runtime = FieldRuntime.new(validEntry(versionId), { presentation = false })
     local host = assert(runtime.partySelection, "boot constructs the script party host")
     Assert.isNil(host:status(), "a fresh boot owns no open selection")
@@ -62,9 +69,17 @@ for _, versionId in ipairs(readyVersions()) do
     Assert.isNil(runtime.partySelection, "teardown releases the host field")
     runtime:dispose()
   end
-  T["boot_builds_and_teardown_releases_the_host:" .. versionId] = bootBuildsAndTeardownReleasesTheHost
+end
 
-  local function manifestFailureFailsBootLoudly()
+function T.tests.manifest_failure_fails_boot_loudly(context)
+  local versions = readyVersions()
+  if #versions == 0 then
+    if context ~= nil and type(context.hasCapability) == "function" then
+      context:skip("requires rom_dump and derived_cache")
+    end
+    error("party host boot needs a ready versioned cache", 0)
+  end
+  for _, versionId in ipairs(versions) do
     local saved = package.loaded["libs.assets.src.PartyCache"]
     package.loaded["libs.assets.src.PartyCache"] = {
       loadManifest = function(_)
@@ -78,10 +93,9 @@ for _, versionId in ipairs(readyVersions()) do
     Assert.isFalse(ok, "a missing party manifest fails the boot loudly")
     Assert.notNil(tostring(err):find("sabotaged party manifest"), "the collaborator failure surfaces")
   end
-  T["manifest_failure_fails_boot_loudly:" .. versionId] = manifestFailureFailsBootLoudly
 end
 
-function T.fresh_runtime_disposal_tolerates_no_host()
+function T.tests.fresh_runtime_disposal_tolerates_no_host()
   local loaded = false
   local originalLoad = FieldRuntime._load
   FieldRuntime._load = function(_)
@@ -96,4 +110,4 @@ function T.fresh_runtime_disposal_tolerates_no_host()
   Assert.isNil(runtime.partySelection, "teardown tolerates the absent host")
 end
 
-return { tests = T }
+return T
