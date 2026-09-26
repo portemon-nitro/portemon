@@ -636,6 +636,10 @@ function T.info_backgrounds_come_from_source_artwork(romFs)
   local assets = assert(bundle.assets, "compilation returns referenced asset payloads")
   local backgrounds = assert(manifest.backgrounds, "manifest carries background roles")
   Assert.isNil(backgrounds.host, "the chooser publishes no invented host backdrop")
+  local machine = assert(backgrounds.machine, "manifest carries the source machine background")
+  Assert.equal(machine.width, 256, "the source machine background spans one logical screen")
+  Assert.equal(machine.height, 192, "the source machine background spans one logical screen")
+  assertBackdropEntry(machine, assets, "machine")
   local info = assert(backgrounds.info, "manifest carries the info artwork roles")
   Assert.equal(info.overlayAlpha, 5 / 16, "the overlay blend coefficient matches the source alpha pair")
   for _, role in ipairs({ "base", "overlay" }) do
@@ -653,6 +657,23 @@ function T.info_backgrounds_come_from_source_artwork(romFs)
   Assert.deepEqual(overlayLine, { 58, 58, 58, 255 }, "overlay artwork probe matches the source decode")
   local _, overlayHole = probePixel(assets, info.overlay.image, 128, 100)
   Assert.deepEqual(overlayHole, { 0, 0, 0, 0 }, "overlay transparency exposes the lower layer")
+  local machineSources = {}
+  for _, dependency in ipairs(assert(bundle.dependencies.dependencies, "source reads carry hashes")) do
+    if dependency.role == "background:machine:char" then
+      machineSources.char = dependency
+    elseif dependency.role == "background:machine:screen" then
+      machineSources.screen = dependency
+    elseif dependency.role == "background:machine:palette" then
+      machineSources.palette = dependency
+    end
+  end
+  Assert.keySet(machineSources, "char,palette,screen", "each machine background source read is fingerprinted")
+  Assert.equal(machineSources.char.memberId, 13, "the source machine character member is tracked")
+  Assert.equal(machineSources.screen.memberId, 14, "the source machine screen member is tracked")
+  Assert.equal(machineSources.palette.memberId, 12, "the source machine palette member is tracked")
+  for _, dependency in pairs(machineSources) do
+    Assert.isTrue(type(dependency.sha1) == "string" and #dependency.sha1 == 40, "source member bytes are hashed")
+  end
   assertNoSourceIdentities(manifest, "manifest")
   Assert.isTrue(cache().validateManifest(manifest), "the runtime cache contract accepts the manifest")
 end

@@ -191,6 +191,11 @@ local function semanticManifest()
       },
     },
     backgrounds = {
+      machine = {
+        image = "assets/generated/starter_choice/machine-background.png",
+        width = 256,
+        height = 192,
+      },
       info = {
         base = {
           image = "assets/generated/starter_choice/info-base.png",
@@ -534,6 +539,7 @@ function T.draw_borrows_the_configured_backend_without_changing_its_raster_polic
     return nil
   end
   presentation._imageEntries = {
+    [manifest.backgrounds.machine.image .. "|clamp|clamp"] = image(256, 192),
     [manifest.backgrounds.info.base.image .. "|clamp|clamp"] = image(256, 192),
     [manifest.backgrounds.info.overlay.image .. "|clamp|clamp"] = image(256, 192),
     [MonCache.portraitPagePath(0) .. "|clamp|clamp"] = image(80, 80),
@@ -1044,6 +1050,7 @@ function T.starter_frames_draw_through_the_borrowed_field_window_primitive()
     end
     local MonCache = require("libs.assets.src.MonCache")
     presentation._imageEntries = {
+      [manifest.backgrounds.machine.image .. "|clamp|clamp"] = image(256, 192),
       [manifest.backgrounds.info.base.image .. "|clamp|clamp"] = image(256, 192),
       [manifest.backgrounds.info.overlay.image .. "|clamp|clamp"] = image(256, 192),
       [MonCache.portraitPagePath(0) .. "|clamp|clamp"] = image(80, 80),

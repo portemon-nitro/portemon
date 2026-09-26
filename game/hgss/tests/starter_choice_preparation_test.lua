@@ -200,6 +200,11 @@ local function semanticManifest()
       },
     },
     backgrounds = {
+      machine = {
+        image = "assets/generated/starter_choice/machine-background.png",
+        width = 256,
+        height = 192,
+      },
       info = {
         base = {
           image = "assets/generated/starter_choice/info-base.png",
@@ -615,6 +620,13 @@ function T.reopening_prepares_the_new_presentation_again()
   )
   local firstRequests = #queue.requests
   Assert.isTrue(firstRequests > 0, "the first open requests its concrete resources")
+  local machineImageRequests = 0
+  for _, request in ipairs(queue.requests) do
+    if request.path == "assets/generated/starter_choice/machine-background.png" then
+      machineImageRequests = machineImageRequests + 1
+    end
+  end
+  Assert.equal(machineImageRequests, 1, "the machine background enters normal image preparation once")
   host:close()
   Assert.isTrue(#queue.cancels > 0, "closing cancels the outstanding requests")
   openTrio(host, service)

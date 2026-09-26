@@ -54,6 +54,7 @@ local FixedPoint = require("libs.math.src.FixedPoint")
 ---@field _instances table<string, ModelInstance> model instances by scene role
 ---@field _staticBatches table[] prepared tabletop batches
 ---@field _staticDraws table[] realized tabletop draw items, built once at readiness and reused by every draw
+---@field _machineBackgroundImage GpuAssetPool.Image? source MAIN BG2 artwork once realized
 ---@field _infoBaseImage GpuAssetPool.Image? info-surface base artwork once realized
 ---@field _infoOverlayImage GpuAssetPool.Image? info-surface overlay artwork once realized
 ---@field _portraitImages table<integer, GpuAssetPool.Image> mon portrait page images by zero-based page id once realized
@@ -118,17 +119,13 @@ local function clipPoint(matrix, x, y, z)
     matrix[4] * x + matrix[8] * y + matrix[12] * z + matrix[16]
 end
 
--- Source plane/sprite visibility over the live controller snapshot. The info
--- background layers follow the sub-engine BG1/BG2 enables (absent while the
--- zoom travels, waits, or returns), while the portrait sprite survives the
--- zoom path and hides only on the way back out.
+-- Source machine BG1/BG2 prompt layers are enabled only in settled inspect and
+-- confirm states.
 ---@param snapshot StarterChoiceController.Snapshot
 ---@return boolean
-local function infoArtworkVisible(snapshot)
-  if snapshot.selectionState == "null" then
-    return false
-  end
-  return snapshot.transition ~= "zoomIn" and snapshot.transition ~= "waitZoom" and snapshot.transition ~= "backOut"
+local function machinePromptVisible(snapshot)
+  return snapshot.transition == "idle"
+    and (snapshot.selectionState == "inspect" or snapshot.selectionState == "confirm")
 end
 
 ---@param snapshot StarterChoiceController.Snapshot
@@ -196,6 +193,7 @@ function StarterChoicePresentation.new(opts)
     _instances = {},
     _staticBatches = {},
     _staticDraws = {},
+    _machineBackgroundImage = nil,
     _infoBaseImage = nil,
     _infoOverlayImage = nil,
     _portraitImages = {},
@@ -861,6 +859,14 @@ local function collectResources(manifest, portraits)
     end
   end
   local backgrounds = assert(manifest.backgrounds, "starter manifest is missing its backgrounds")
+  local machineBackground = assert(backgrounds.machine, "starter manifest is missing its machine background")
+  addImage(
+    assert(machineBackground.image, "starter manifest is missing its machine background image"),
+    "clamp",
+    "clamp",
+    machineBackground.width,
+    machineBackground.height
+  )
   local infoArtwork = assert(backgrounds.info, "starter manifest is missing its info artwork")
   local infoBase = assert(infoArtwork.base, "starter manifest is missing its info base layer")
   addImage(
@@ -1199,6 +1205,11 @@ function StarterChoicePresentation:_finishPreparation()
   self:_buildStaticDraws()
   local graphics = love and love.graphics
   local backgrounds = assert(self._manifest.backgrounds, "starter manifest is missing its backgrounds")
+  local machineBackground = assert(backgrounds.machine, "starter manifest is missing its machine background")
+  self._machineBackgroundImage = assert(
+    self._imageEntries[assert(machineBackground.image, "starter manifest is missing its machine background image") .. "|clamp|clamp"],
+    "starter presentation owns no machine background image"
+  )
   local infoArtwork = assert(backgrounds.info, "starter manifest is missing its info artwork")
   self._infoBaseImage = assert(
     self._imageEntries[assert(infoArtwork.base, "starter manifest is missing its info base layer").image .. "|clamp|clamp"],
@@ -1884,19 +1895,20 @@ function StarterChoicePresentation:drawNative(snapshot, view, text, plan, window
   local _, promptText = infoMessageFor(self, sampledSnapshot)
   LogicalSurface.draw(graphics, machinePlacement, function()
     graphics.draw(target, 0, 0)
-    self:_drawMessageLines(
-      surfaces.machine.prompt,
-      promptText,
-      text,
-      transparentBackground(textColors.machineBackground),
-      windowRenderer
-    )
+    if machinePromptVisible(sampledSnapshot) then
+      graphics.draw(assert(self._machineBackgroundImage), 0, 0)
+      self:_drawMessageLines(
+        surfaces.machine.prompt,
+        promptText,
+        text,
+        transparentBackground(textColors.machineBackground),
+        windowRenderer
+      )
+    end
   end)
   LogicalSurface.draw(graphics, infoPlacement, function()
     self:_drawInfoBackdrop()
-    if infoArtworkVisible(sampledSnapshot) then
-      self:_drawInfoArtwork()
-    end
+    self:_drawInfoArtwork()
     if portraitVisible(sampledSnapshot) then
       self:_drawInfoPortrait(sampledSnapshot)
     end
@@ -2043,6 +2055,7 @@ function StarterChoicePresentation:_releaseGpu()
   self._instances = {}
   self._staticBatches = {}
   self._staticDraws = {}
+  self._machineBackgroundImage = nil
   self._infoBaseImage = nil
   self._infoOverlayImage = nil
   self._portraitImages = {}

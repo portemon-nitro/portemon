@@ -4,8 +4,8 @@
 -- with three joint clips plus one material clip; the chooser message bank
 -- supplies the semantic message roles; the scene constants normalize the
 -- source ball ring, turntable, camera, and timing facts into the shared
--- runtime model unit; the visible info-surface artwork compiles from the
--- retail sub BG1/BG2 tile resources; and the machine surface carries the
+-- runtime model unit; the visible info-surface artwork and machine BG2
+-- compile from retail tile resources; and the machine surface carries the
 -- retail 3D rear-plane clear color plus source window/portrait geometry. The
 -- chooser window text palette compiles to source-independent text colors.
 -- Candidate pictures are never
@@ -103,12 +103,12 @@ local TIMING = {
   machineFadeTicks = 16,
 }
 
--- Visible info-surface artwork: sub BG1 (base) and sub BG2 (overlay)
--- char/screen/palette members of the main chooser archive. The main BG2
--- members stay unpublished: the chooser leaves that Engine A plane disabled
--- and shows the 3D rear-plane clear color instead.
+-- Visible source backgrounds: sub BG1 (base) and sub BG2 (overlay) info
+-- artwork, plus main BG2 machine artwork. Members come from the pinned
+-- choose_starter_app.c loadBgGraphics source selection.
 local INFO_BG_BASE = { char = 10, screen = 11, palette = 9 }
 local INFO_BG_OVERLAY = { char = 16, screen = 17, palette = 15 }
+local MACHINE_BG = { char = 13, screen = 14, palette = 12 }
 
 -- Source info-layer blend: the overlay contributes 5/16 over the base, so an
 -- ordinary alpha-over composition leaves 11/16 for the destination.
@@ -208,8 +208,8 @@ local function maybeDecompress(bytes, role)
   return bytes
 end
 
--- Decode one info-surface background layer from its char/screen/palette
--- members and rasterize it through the shared decoded-G2D mechanics. The
+-- Decode one background layer from its char/screen/palette members and
+-- rasterize it through the shared decoded-G2D mechanics. The
 -- source loader copies the first sixteen NCLR colors into the layer's
 -- hardware palette slot and rewrites the tilemap to that slot in VRAM; the
 -- producer-local record pairs those sixteen colors with bank 0 instead, so
@@ -221,7 +221,7 @@ end
 ---@param role string
 ---@param dependencies table<string, unknown>[]
 ---@return { width: integer, height: integer, rgba: string }
-local function compileInfoBackground(archive, spec, role, dependencies)
+local function compileBackground(archive, spec, role, dependencies)
   local charBytes =
     maybeDecompress(readMember(archive, MAIN_ARCHIVE, spec.char, role .. ":char", dependencies), role .. ":char")
   local screenBytes =
@@ -638,10 +638,12 @@ local function _compile(romFs)
   local paletteBytes =
     readMember(main, MAIN_ARCHIVE, CHOOSER_WINDOW_PALETTE_MEMBER, "chooser-text-palette", dependencies)
   local textColors = compileChooserTextColors(paletteBytes)
-  local infoBase = compileInfoBackground(main, INFO_BG_BASE, "background:info-base", dependencies)
+  local infoBase = compileBackground(main, INFO_BG_BASE, "background:info-base", dependencies)
   local infoBasePath = StarterChoiceAssetCache.assetDir() .. "/info-base.png"
-  local infoOverlay = compileInfoBackground(main, INFO_BG_OVERLAY, "background:info-overlay", dependencies)
+  local infoOverlay = compileBackground(main, INFO_BG_OVERLAY, "background:info-overlay", dependencies)
   local infoOverlayPath = StarterChoiceAssetCache.assetDir() .. "/info-overlay.png"
+  local machineBackground = compileBackground(main, MACHINE_BG, "background:machine", dependencies)
+  local machineBackgroundPath = StarterChoiceAssetCache.assetDir() .. "/machine-background.png"
   local manifest = {
     schema = StarterChoiceAssetCache.SCHEMA,
     reference = { width = 256, height = 192 },
@@ -723,6 +725,11 @@ local function _compile(romFs)
       },
     },
     backgrounds = {
+      machine = {
+        image = machineBackgroundPath,
+        width = machineBackground.width,
+        height = machineBackground.height,
+      },
       info = {
         base = {
           image = infoBasePath,
@@ -768,6 +775,8 @@ local function _compile(romFs)
   end
   assets[infoBasePath] = PngWriter.encode(infoBase.width, infoBase.height, infoBase.rgba)
   assets[infoOverlayPath] = PngWriter.encode(infoOverlay.width, infoOverlay.height, infoOverlay.rgba)
+  assets[machineBackgroundPath] =
+    PngWriter.encode(machineBackground.width, machineBackground.height, machineBackground.rgba)
 
   local dependencyRecord = {
     cacheFormat = StarterChoiceAssetCache.FORMAT,
@@ -789,6 +798,7 @@ local function _compile(romFs)
       infoMessage = INFO_MESSAGE,
       infoPortrait = INFO_PORTRAIT,
       infoBackgrounds = { base = INFO_BG_BASE, overlay = INFO_BG_OVERLAY },
+      machineBackground = MACHINE_BG,
     },
     messageSelection = {
       bank = MESSAGE_BANK,

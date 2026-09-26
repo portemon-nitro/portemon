@@ -223,6 +223,11 @@ local function semanticManifest()
       },
     },
     backgrounds = {
+      machine = {
+        image = "assets/generated/starter_choice/machine-background.png",
+        width = 256,
+        height = 192,
+      },
       info = {
         base = {
           image = "assets/generated/starter_choice/info-base.png",

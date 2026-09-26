@@ -279,10 +279,8 @@ DerivedAssetContract.intro = {
 }
 
 DerivedAssetContract.starterChoice = {
-  -- v6: the manifest carries source-backed surfaces only; it has no host
-  -- backdrop field.
-  cacheFormat = "starter-choice-cache-v6",
-  schema = "g4-starter-choice-v6",
+  cacheFormat = "starter-choice-cache-v7",
+  schema = "g4-starter-choice-v7",
 }
 
 -- The mon class carries the complete species/form/move/ability/growth

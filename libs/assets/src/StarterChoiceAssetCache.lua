@@ -450,9 +450,13 @@ end
 ---@param backgrounds table<string, unknown>
 ---@return boolean, Errors.Error?
 local function checkBackgrounds(backgrounds)
-  local ok, err = closedRecord("manifest backgrounds", backgrounds, { info = true })
+  local ok, err = closedRecord("manifest backgrounds", backgrounds, { info = true, machine = true })
   if not ok then
     return false, err
+  end
+  local machineOk, machineErr = checkSurfaceImage("manifest backgrounds machine", backgrounds.machine, 256, 192)
+  if not machineOk then
+    return false, machineErr
   end
   local infoOk, infoErr = closedRecord("manifest backgrounds info", backgrounds.info, {
     base = true,
@@ -751,6 +755,7 @@ function M.referencedPaths(manifest)
     end
   end
   local backgrounds = manifest.backgrounds
+  paths[#paths + 1] = backgrounds.machine.image
   paths[#paths + 1] = backgrounds.info.base.image
   paths[#paths + 1] = backgrounds.info.overlay.image
   return paths
