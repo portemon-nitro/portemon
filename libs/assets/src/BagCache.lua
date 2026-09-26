@@ -43,11 +43,12 @@ function BagCache.marker(romSha1, depHash)
 end
 
 -- Every cache-relative path the manifest references: pane/sprite images
--- plus each hero model's geometry and textures.
+-- plus each hero model's geometry and textures. The manifest must already
+-- be accepted by its owning boundary (publication or readiness); traversal
+-- never re-audits the contract itself.
 ---@param manifest table<string, unknown>
 ---@return string[]
 function BagCache.referencedPaths(manifest)
-  BagAssetSchema.assertManifest(manifest)
   local paths = {}
   local function addVisual(visual)
     assert(type(visual) == "table", "bag manifest visual is malformed")
@@ -103,8 +104,11 @@ function BagCache.referencedPaths(manifest)
   return paths
 end
 
--- True only when the marker is exact, the manifest loads with the expected
--- schema, and every referenced artifact is present.
+-- True only when the marker is exact, the persisted manifest still satisfies
+-- the current consumer-safe contract, and every referenced artifact is
+-- present. Publication proved the staged bytes, not that the live files
+-- remain intact, so readiness revalidates the persisted structure before
+-- provenance and path closure checks.
 function BagCache.isReady(cacheFs, expectedMarker)
   local marker = cacheFs:read(BagCache.markerPath())
   if
@@ -139,13 +143,9 @@ function BagCache.isReady(cacheFs, expectedMarker)
   return true
 end
 
-function BagCache.validateManifest(manifest)
-  return BagAssetSchema.assertManifest(manifest)
-end
-
 function BagCache.loadManifest(cacheFs)
   local manifest = cacheFs:loadLua(BagCache.manifestPath())
-  BagAssetSchema.assertManifest(manifest)
+  assert(type(manifest) == "table" and manifest.schema == BagCache.SCHEMA, "bag manifest is unavailable")
   return manifest
 end
 

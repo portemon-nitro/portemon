@@ -28,7 +28,7 @@ local function candidate(versionId)
       mapSymbol = "MAP_NEW_BARK_PLAYER_HOUSE_2F",
       fieldX = 6,
       fieldZ = 6,
-      sourceFacing = 1,
+      facing = "south",
     },
   })
 end
@@ -233,8 +233,13 @@ local function bootCoveredField(scope)
   FieldRuntime.new = function(_, _)
     return setmetatable({
       cacheFs = cache,
+      derivedAssets = FieldStatePresentationFixture.iconHost().derivedAssets,
       uiManifest = FieldUiFixture.fieldStateManifest(),
       pokemonNaming = InactivePokemonNaming.new(),
+      bindPartyIconPreparation = function(_, _, _)
+        return 1
+      end,
+      unbindPartyIconPreparation = function(_, _) end,
       fieldEntranceIndicatorAsset = {
         model = { batches = {}, materials = {} },
         effects = {
@@ -498,5 +503,5 @@ T.covered_handoff_keeps_black_between_intro_and_field = function(scope)
 end
 
 local suite = GraphicsSmoke.suite(T)
-suite.metadata.capabilities = { "graphics", "rom_dump", "derived_cache" }
+suite.metadata.capabilities = { "graphics", "rom_dump" }
 return suite

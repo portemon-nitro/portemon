@@ -41,7 +41,12 @@ local function boot(withCover)
   FieldRuntime.new = function(_, _)
     return setmetatable({
       cacheFs = cache,
+      derivedAssets = FieldStatePresentationFixture.iconHost().derivedAssets,
       uiManifest = FieldUiFixture.fieldStateManifest(),
+      bindPartyIconPreparation = function(_, _, _)
+        return 1
+      end,
+      unbindPartyIconPreparation = function(_, _) end,
       fieldEntranceIndicatorAsset = {
         model = { batches = {}, materials = {} },
         effects = {

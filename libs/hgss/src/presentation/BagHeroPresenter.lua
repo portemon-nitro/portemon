@@ -5,9 +5,9 @@
 -- time. It also owns the pocket-aware camera framing transition: the
 -- gender framing table selects one distance/angle/model-height record per
 -- pocket, construction opens at the neutral baseline record and settles
--- the default pocket over seven fixed ticks, and each pocket switch
--- either starts that seven-tick interpolation immediately or queues one
--- pending target behind the in-flight transition. Mesh acquisition and
+-- the default pocket over the manifest-defined transition duration, and
+-- each pocket switch either starts that interpolation immediately or
+-- queues one pending target behind the in-flight transition. Mesh acquisition and
 -- rasterization stay with the draw stage; this module owns only which
 -- animation state is selected and its time base.
 -- Pure module: no love, no I/O.
@@ -120,7 +120,6 @@ function BagHeroPresenter.new(opts)
   local presentation = assert(hero.presentation, "the hero pane must carry its presentation facts")
   local framing = assert(presentation.framing, "the hero presentation must carry its pocket framing")
   local duration = assert(framing.transitionTicks, "the hero framing must carry its transition duration")
-  assert(duration == 7, "the hero framing transition keeps its seven-tick duration")
   local baseline = assert(framing.baseline, "the hero framing must carry its baseline records")
   local byGender = assert(framing.byGender, "the hero framing must carry its gender pocket records")
   local genderRecords =
@@ -177,8 +176,9 @@ end
 
 -- One source-frame step of the selected pocket animation plus one step of
 -- the framing interpolation. Progress advances before the snapshot is
--- published, so the seventh tick lands exactly on the target record; a
--- queued pocket then starts from the completed target on the next tick.
+-- published, so the final tick of the manifest-defined duration lands
+-- exactly on the target record; a queued pocket then starts from the
+-- completed target on the next tick.
 function BagHeroPresenter:updateFixed()
   self._frame = self._frame + 1
   if self._progress < self._duration then

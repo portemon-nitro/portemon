@@ -27,7 +27,12 @@ local function stubPresentationRuntime(cache)
   return setmetatable({
     pokemonNaming = InactivePokemonNaming.new(),
     cacheFs = cache or FieldStatePresentationFixture.cache(),
+    derivedAssets = FieldStatePresentationFixture.iconHost().derivedAssets,
     uiManifest = FieldUiFixture.fieldStateManifest(),
+    bindPartyIconPreparation = function(_, _, _)
+      return 1
+    end,
+    unbindPartyIconPreparation = function(_, _) end,
     fieldEntranceIndicatorAsset = {
       model = { batches = {}, materials = {} },
       effects = {
