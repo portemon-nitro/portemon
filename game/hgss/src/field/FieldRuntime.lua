@@ -62,7 +62,6 @@ local StartMenuPolicy = require("libs.hgss.src.ui.StartMenuPolicy")
 local StartMenuState = require("game.hgss.src.field.StartMenuState")
 local DisplayContext = require("game.hgss.src.ui.DisplayContext")
 local TrainerCardScreenState = require("game.hgss.src.field.TrainerCardScreenState")
-local PartyScreenState = require("game.hgss.src.field.PartyScreenState")
 local FieldAudio = require("game.hgss.src.audio.FieldAudio")
 local FieldEntranceIndicatorRuntime = require("game.hgss.src.field.FieldEntranceIndicatorRuntime")
 local FieldActorEmoteRuntime = require("game.hgss.src.field.FieldActorEmoteRuntime")
@@ -172,6 +171,8 @@ end
 ---@field monService HgssMonService the live party/creation/script mon service
 ---@field bagService HgssBagService the live bag/inventory service
 ---@field bagCursor BagCursor the runtime-only field bag cursor
+---@field pokemonMenu table<string, unknown>? the owned menu composition (nil before composition / after teardown)
+---@field menuLaneWarps table<string, unknown>? the long-lived menu-origin warp service (nil before composition / after teardown)
 ---@field followingMon FollowingMonController|nil the one derived follower controller (nil after teardown)
 ---@field followingMonTransition FollowingMonTransitionController|nil the one transient follower-transition owner (nil after teardown)
 ---@field followerTransitionDefinition table<string, unknown>? the compiled follower-transition definition behind the transient owner
@@ -1036,11 +1037,8 @@ function FieldRuntime:_load()
     local function menuFactory(rememberedActionId)
       return self:_composeStartMenu(rememberedActionId)
     end
-    local function fieldAction(actionId)
-      if actionId == "vanilla.save" then
-        return self:_saveCheckpoint()
-      end
-      error("unknown field action " .. tostring(actionId))
+    local function fieldAction(actionId, request)
+      return self:_admitFieldAction(actionId, request)
     end
     self.applications = FieldApplicationRegistry.new(applicationDescriptors)
     self.applicationHost = FieldApplicationHost.new({
@@ -1153,6 +1151,7 @@ function FieldRuntime:_load()
     })
     self.starterBalls = composeStarterBalls(self)
     self.partySelection = buildPartySelectionHost(self, cacheFs)
+    self:_composePokemonMenu(cacheFs)
     -- The one follower-transition owner: the transient visual the
     -- nonblocking transition command starts, advanced once per fixed tick
     -- after the follower reconciles. A missing or malformed generated
@@ -1172,6 +1171,8 @@ function FieldRuntime:_load()
       starterProvider = self.starterProvider,
       starterChoice = self.starterChoice,
       partySelection = self.partySelection,
+      travel = self.fieldTravel,
+      fieldMoves = self.pokemonMenu.fieldMoves,
       followingMon = self.followingMon,
       followerTransition = self.followingMonTransition,
       starterBalls = self.starterBalls,
@@ -1268,6 +1269,7 @@ function FieldRuntime:_load()
       contextChoice = self.contextChoiceProvider,
       starterChoice = self.starterChoice,
       partySelection = self.partySelection,
+      fieldMoves = self.pokemonMenu.fieldMoves,
       signpost = self.signpost,
       applicationHost = self.applicationHost,
       -- The session's fixed-tick audio collaborator is the production
@@ -1513,48 +1515,12 @@ function FieldRuntime:_applicationDescriptors()
     })
   end
   local function partyScreenFactory()
-    local partyOverrides = self.presentationOverrides ~= nil and self.presentationOverrides.party or nil
-    local function measureDisplay()
-      return self.presentationDisplay
-    end
-    local binding =
-      assert(self._partyIconPreparation, "the presented party screen requires its icon preparation binding")
-    local PartyCache = require("libs.assets.src.PartyCache")
-    return PartyScreenState.new({
-      service = self.monService,
-      manifest = PartyCache.loadManifest(self.cacheFs),
-      uiManifest = assert(self.uiManifest, "the party application requires the validated field-UI manifest"),
-      measureDisplay = measureDisplay,
-      overrides = partyOverrides,
-      prepareIcons = binding.prepare,
-      cancelIconPreparation = binding.cancel,
-    })
+    local composition = assert(self.pokemonMenu, "the pokemon application requires the menu composition")
+    return composition.makePartyFlow()
   end
   local function bagFactory()
-    local BagScreenState = require("game.hgss.src.field.BagScreenState")
-    local BagCache = require("libs.assets.src.BagCache")
-    local bagService = assert(self.bagService, "the bag application requires the live bag service")
-    local bagCursor = assert(self.bagCursor, "the bag application requires the runtime bag cursor")
-    assert(self.itemCatalog ~= nil, "the bag application requires the shared item catalog")
-    assert(self.monCatalog ~= nil, "the bag application requires the shared mon catalog")
-    local manifest = BagCache.loadManifest(self.cacheFs)
-    local avatar = assert(self.avatar, "the bag application requires the player avatar")
-    assert(avatar.gender == 0 or avatar.gender == 1, "the bag hero gender is unsupported")
-    local heroGender = avatar.gender == 0 and "male" or "female"
-    local bagOverrides = self.presentationOverrides ~= nil and self.presentationOverrides.bag or nil
-    local function measureDisplay()
-      return self.presentationDisplay
-    end
-    return BagScreenState.new({
-      service = bagService,
-      cursor = bagCursor,
-      manifest = manifest,
-      uiManifest = assert(self.uiManifest, "the bag application requires the validated field-UI manifest"),
-      monCatalog = self.monCatalog,
-      heroGender = heroGender,
-      measureDisplay = measureDisplay,
-      overrides = bagOverrides,
-    })
+    local composition = assert(self.pokemonMenu, "the bag application requires the menu composition")
+    return composition.makeBagFlow()
   end
   return {
     {
@@ -1733,6 +1699,227 @@ function FieldRuntime:_composeBag(activeGame, loadedGame)
   self.bagCursor = BagCursor.new()
 end
 
+-- Composes the one live Pokemon menu composition outside the boot
+-- closure (which sits close to LuaJIT's per-function upvalue limit).
+-- Joins the live mon/Bag services, manifests, display facts, and field
+-- ports into PartyActions, the single field-move runtime/world pair,
+-- and Bag/Party flow factories. Missing collaborators fail loudly
+-- instead of opening half-built menus.
+---@param cacheFs table<string, unknown> version cache reader for cited spawn landings
+function FieldRuntime:_composePokemonMenu(cacheFs)
+  local PokemonMenuComposition = require("game.hgss.src.field.PokemonMenuComposition")
+  local BagCache = require("libs.assets.src.BagCache")
+  local PartyCache = require("libs.assets.src.PartyCache")
+  local ScriptMapsService = require("libs.hgss.src.script.ScriptMapsService")
+  local avatar = assert(self.avatar, "the menu composition requires the player avatar")
+  assert(avatar.gender == 0 or avatar.gender == 1, "the bag hero gender is unsupported")
+  local heroGender = avatar.gender == 0 and "male" or "female"
+  local function measureDisplay()
+    return self.presentationDisplay
+  end
+  local lane = ScriptMapsService.new({
+    transition = assert(self.transition, "menu-origin returns require the live transition"),
+    loader = assert(self.mapLoader, "menu-origin returns require the map loader"),
+    sourceMap = assert(self.runtimeMap, "menu-origin returns require the active map"),
+  })
+  self.menuLaneWarps = lane
+  -- The warp port always serves the live map: the lane instance keeps
+  -- no stale source across map swaps because every call re-reads it
+  -- first. Ordinary fade lifecycle, never script-authored cover.
+  local runtime = self
+  local function startLaneWarp(_, target)
+    lane:setSourceMap(assert(runtime.runtimeMap, "menu-origin returns require the active map"))
+    return lane:startWarp(target)
+  end
+  local function laneWarpDone(_)
+    return lane:warpDone()
+  end
+  local function lanePendingError(_)
+    return lane:pendingError()
+  end
+  local function resolveLaneWarp(_, ref)
+    return lane:resolve(ref)
+  end
+  local warps = {
+    startWarp = startLaneWarp,
+    warpDone = laneWarpDone,
+    pendingError = lanePendingError,
+    resolve = resolveLaneWarp,
+  }
+  local function changeLiveWeather(_, weatherId)
+    runtime:_setLiveWeather(assert(runtime.runtimeMap, "flash needs the active map"), weatherId)
+  end
+  local function dispatchFlashReaction(_, kind)
+    assert(kind == "alph_flash", "unknown field reaction " .. tostring(kind))
+    -- Chamber illumination state for the compiled map content:
+    -- the flash flag is the only illumination owner available.
+    assert(runtime.eventState, "field reactions require the event state"):setFlag(
+      require("libs.assets.src.field.FieldScriptSymbols").flagsByName.FLAG_SYS_FLASH
+    )
+  end
+  local function readCurrentMap()
+    local map = assert(runtime.runtimeMap, "field context needs the active map")
+    return { symbol = map.mapSymbol, id = map.mapId, fieldUse = map.fieldData.fieldUse }
+  end
+  local function readRuntimeMap()
+    return assert(runtime.runtimeMap, "field context needs the active map")
+  end
+  local worldPorts = {
+    actors = assert(self.actors, "the menu composition requires the actor manager"),
+    events = assert(self.eventState, "the menu composition requires the event state"),
+    maps = {
+      current = readCurrentMap,
+      runtimeMap = readRuntimeMap,
+    },
+    player = self:_menuPlayerPort(),
+    profile = assert(self.playerData and self.playerData.profile, "the menu composition requires the player profile"),
+    weather = {
+      change = changeLiveWeather,
+    },
+    reactions = {
+      dispatch = dispatchFlashReaction,
+    },
+    warps = warps,
+  }
+  self.pokemonMenu = PokemonMenuComposition.create({
+    mons = assert(self.monService, "the menu composition requires the live mon service"),
+    bag = assert(self.bagService, "the menu composition requires the live bag service"),
+    bagCursor = assert(self.bagCursor, "the menu composition requires the runtime bag cursor"),
+    itemCatalog = assert(self.itemCatalog, "the menu composition requires the shared item catalog"),
+    monCatalog = assert(self.monCatalog, "the menu composition requires the shared mon catalog"),
+    bagManifest = BagCache.loadManifest(cacheFs),
+    partyManifest = PartyCache.loadManifest(cacheFs),
+    uiManifest = assert(self.uiManifest, "the menu composition requires the validated field-UI manifest"),
+    heroGender = heroGender,
+    measureDisplay = measureDisplay,
+    contextSources = self:_menuFieldSources(),
+    worldPorts = worldPorts,
+    fieldTravel = self.fieldTravel,
+    cacheFs = cacheFs,
+    overrides = self.presentationOverrides,
+  })
+end
+
+-- The field world player facade over the live player and avatar: tile
+-- reads from the player, avatar transitions from the avatar owner.
+-- Mirrors the return-move acceptance shape; missing owners fail the
+-- composition loudly instead of planning against dead ports.
+---@return table<string, unknown>
+function FieldRuntime:_menuPlayerPort()
+  local player = assert(self.player, "the menu composition requires the live player")
+  local avatar = assert(self.playerAvatar, "the menu composition requires the avatar transition owner")
+  local runtime = self
+  local function readPosition(_)
+    return { fieldX = player.fieldX, fieldZ = player.fieldZ, worldY = player.worldY }
+  end
+  local function readFacing(_)
+    return player.facing
+  end
+  local function beginPlayerAction(_, action)
+    return player:beginScriptedAction(action)
+  end
+  local function advancePlayerAction(_, progressTicks, durationTicks)
+    return player:advanceScriptedAction(progressTicks, durationTicks)
+  end
+  local function commitPlayerAction(_)
+    return player:commitScriptedAction()
+  end
+  local function cancelPlayerMovement(_)
+    return player:cancelScriptedMovement()
+  end
+  local function playerMoving(_)
+    return player:isScriptedMoving()
+  end
+  local function queuePlayerTransition(_, name)
+    return avatar:queueTransition(name)
+  end
+  local function applyPlayerTransitions(_)
+    return runtime:applyAvatarTransitions()
+  end
+  return {
+    position = readPosition,
+    facing = readFacing,
+    beginScriptedAction = beginPlayerAction,
+    advanceScriptedAction = advancePlayerAction,
+    commitScriptedAction = commitPlayerAction,
+    cancelScriptedMovement = cancelPlayerMovement,
+    isScriptedMoving = playerMoving,
+    queueAvatarTransition = queuePlayerTransition,
+    applyAvatarTransitions = applyPlayerTransitions,
+  }
+end
+
+-- Cardinal facing deltas for the facing-tile read below.
+local MENU_FACING_DELTAS = {
+  north = { fieldX = 0, fieldZ = -1 },
+  south = { fieldX = 0, fieldZ = 1 },
+  west = { fieldX = -1, fieldZ = 0 },
+  east = { fieldX = 1, fieldZ = 0 },
+}
+
+-- Live world reads for one eligibility check: badges, map identity and
+-- generated policy, avatar mode, follower state, and facing-tile facts
+-- resolved through the live collision and actor owners. States with no
+-- owner in this engine (human escorts, costumes, safari/park zones,
+-- recording input, weather fog for the out-of-scope Defog check) read
+-- as their absent value with the reason beside them.
+---@return fun(): table<string, unknown>
+function FieldRuntime:_menuFieldSources()
+  local runtime = self
+  local function readSources()
+    local profile = assert(runtime.playerData and runtime.playerData.profile, "field context needs the player profile")
+    local runtimeMap = assert(runtime.runtimeMap, "field context needs the active map")
+    local player = assert(runtime.player, "field context needs the live player")
+    local fieldData = assert(runtimeMap.fieldData, "field context needs the compiled map record")
+    local delta = assert(MENU_FACING_DELTAS[player.facing], "field context needs a cardinal facing")
+    local toX, toZ = player.fieldX + delta.fieldX, player.fieldZ + delta.fieldZ
+    local actors = assert(runtime.actors, "field context needs actors")
+    local facingActor = nil
+    for _, actor in ipairs(actors:actorsOf(runtimeMap.mapId)) do
+      local at = actors:getPosition(actor.actorId)
+      if at ~= nil and at.fieldX == toX and at.fieldZ == toZ then
+        local event = actor.sourceEvent
+        facingActor = {
+          identity = actor.actorId,
+          obstacleKind = event and event.obstacleKind or nil,
+          mapSymbol = runtimeMap.mapSymbol,
+          fieldX = toX,
+          fieldZ = toZ,
+        }
+        break
+      end
+    end
+    local localX, localZ = FieldCoordinates.fieldToLocal(runtimeMap, toX, toZ)
+    local cell = runtimeMap.collision:getLocal(localX, localZ)
+    local behavior = cell and cell.behavior or nil
+    local avatar = assert(runtime.playerAvatar, "field context needs the avatar transition owner")
+    local follower = runtime.followingMon
+    return {
+      badges = profile.badges,
+      mapSymbol = runtimeMap.mapSymbol,
+      mapId = runtimeMap.mapId,
+      fieldUse = fieldData.fieldUse,
+      weatherId = runtimeMap.effectiveWeatherId,
+      avatarMode = avatar:status().durableState,
+      humanFollower = false,
+      followingMon = follower ~= nil and follower:isVisible() == true,
+      rocketCostume = false,
+      safari = false,
+      palPark = false,
+      surfEdge = behavior ~= nil and MetatileBehavior.isSurfableWater(behavior),
+      facingWaterfall = behavior == MetatileBehavior.BEHAVIOR.WATERFALL,
+      facingWhirlpool = behavior == MetatileBehavior.BEHAVIOR.WHIRLPOOL,
+      climbTile = behavior == MetatileBehavior.BEHAVIOR.ROCK_CLIMB_NORTH_SOUTH
+        or behavior == MetatileBehavior.BEHAVIOR.ROCK_CLIMB_EAST_WEST,
+      headbuttTree = facingActor ~= nil and facingActor.obstacleKind == "headbutt_tree",
+      foggy = false,
+      chatterOpen = false,
+      facingActor = facingActor,
+    }
+  end
+  return readSources
+end
+
 -- Composes the one follower-transition owner outside the boot closure
 -- (which sits close to LuaJIT's per-function upvalue limit). The generated
 -- definition loads through the ready cache path; the controller validates it
@@ -1858,6 +2045,62 @@ end
 
 function FieldRuntime:_saveCheckpoint()
   return assert(self.saveCoordinator, "field runtime has no save coordinator"):save()
+end
+
+-- The synchronous child-to-field admission command behind the host's
+-- field_action results. Queues the converged request, then claims the
+-- scheduler foreground synchronously: a normal return guarantees the
+-- claim already exists. A refused queue or failed schedule discards
+-- only the still-unclaimed pending request and raises an attributed
+-- admission error into the host failure path; it never returns false
+-- or nil, which the host would mistake for a scheduled action. The
+-- launching UI batch stays with the disposed child and never reaches
+-- the task, which first polls on a later scheduler tick.
+---@param actionId string
+---@param request table<string, unknown>?
+---@return unknown the scheduler claim on success
+function FieldRuntime:_admitFieldAction(actionId, request)
+  if actionId == "vanilla.save" then
+    return self:_saveCheckpoint()
+  end
+  assert(actionId == "pokemon.field_move", "unknown field action " .. tostring(actionId))
+  local BuiltinScripts = require("libs.hgss.src.script.BuiltinScripts")
+  local ScriptInteractionClient = require("libs.hgss.src.script.ScriptInteractionClient")
+  local composition = assert(self.pokemonMenu, "field admission requires the menu composition")
+  local fieldMoves = assert(composition.fieldMoves, "field admission requires the field runtime")
+  local flowRequest = assert(request, "field admission requires its request")
+  assert(type(flowRequest.move) == "string", "field admission requires its move key")
+  -- Fresh world facts for the admission recheck: the flow checked
+  -- moments ago, but badges, maps, and facing may have changed since
+  -- boot ambient was captured, so rechecks run on current facts.
+  -- Travel rides along for return planning; other moves ignore it.
+  -- A refused recheck raises below instead of scheduling.
+  local FieldMoveContext = require("game.hgss.src.field.FieldMoveContext")
+  local sources = self:_menuFieldSources()()
+  local context = FieldMoveContext.capture(sources)
+  local travel = nil
+  if composition.fieldTravel ~= nil then
+    travel = composition.fieldTravel:capture()
+  end
+  local queued = fieldMoves:queue({
+    move = flowRequest.move,
+    slot = flowRequest.slot,
+    moveSlot = flowRequest.moveSlot,
+    partyRevision = flowRequest.partyRevision,
+    context = context,
+    travel = travel,
+  })
+  if type(queued) ~= "table" or queued.kind ~= "accepted" then
+    error("pokemon.field_move admission refused: " .. tostring(queued and queued.kind), 0)
+  end
+  local session = assert(self.session, "field admission requires the field session")
+  local client = assert(self.scripts and self.scripts.client, "field admission requires the script client")
+  local started = client:startApplicationScript(BuiltinScripts.FIELD_MOVE_ENTRY_SCRIPT, session.tick + 1)
+  if started == nil or started == ScriptInteractionClient.RESULTS.blocked then
+    fieldMoves:discardPending()
+    error("pokemon.field_move admission scheduling failed without a foreground claim", 0)
+  end
+  return started
 end
 
 -- Apply effective weather to a runtime map: resolve the catalog rules
@@ -2063,6 +2306,7 @@ function FieldRuntime:_releaseAll()
   self.itemCatalog = nil
   self.starterProvider, self.starterChoice = nil, nil
   self.partySelection = nil
+  self.pokemonMenu, self.menuLaneWarps = nil, nil
 end
 
 -- End the state's lifetime: persist the field session if one is live, then
@@ -2095,6 +2339,12 @@ function FieldRuntime:dispose()
   -- selection releases its screen, never the live party it observed.
   if self.partySelection then
     self.partySelection:dispose()
+  end
+  -- The menu composition owns the field-move runtime: cancel owned
+  -- pending/active work exactly once; borrowed services stay live for
+  -- the remaining teardown below.
+  if self.pokemonMenu then
+    self.pokemonMenu.dispose()
   end
   if self.starterChoice then
     self.starterChoice:dispose()

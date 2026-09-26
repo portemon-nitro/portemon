@@ -114,8 +114,12 @@ function ScriptInteractionClient:startApplicationScript(scriptId, tick)
   if composed == nil then
     error("missing registered application script " .. scriptId)
   end
+  -- Application scripts drive owned tasks; they take the foreground
+  -- claim but never player input, or scripted player motion could never
+  -- advance while the task runs. Menu and reopen edges stay barred by
+  -- the foreground claim itself.
   local instanceId =
-    self._scheduler:startInteraction({ type = "application", scriptId = scriptId }, composed, tick, true)
+    self._scheduler:startInteraction({ type = "application", scriptId = scriptId }, composed, tick, false)
   assert(instanceId ~= nil, "application script scheduler start did not create an instance")
   return instanceId
 end

@@ -38,6 +38,7 @@ BagScreenState.__index = BagScreenState
 ---@field monCatalog table<string, unknown> the borrowed compiled mon catalog
 ---@field heroGender "male"|"female" the profile-selected hero backdrop
 ---@field context "inventory"|"field"|"pick_held"? the selection context (defaults to inventory)
+---@field partyEmpty boolean? true when no party member exists to target (field contexts hide Use/Give)
 ---@field measureDisplay fun(): DisplayMeasurement the current display facts
 ---@field overrides table<string, unknown>? per-case function overrides for this application
 
@@ -115,7 +116,7 @@ function BagScreenState.new(opts)
   end
   local resolveActions = BagActionPolicy.forService(service)
   if context ~= "inventory" then
-    resolveActions = BagActionPolicy.forField(service)
+    resolveActions = BagActionPolicy.forField(service, opts.partyEmpty)
   end
   local function pickable(itemKey)
     return BagActionPolicy.isPickable(BagActionPolicy.fieldFacts(service, itemKey))

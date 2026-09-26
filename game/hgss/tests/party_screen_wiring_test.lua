@@ -189,10 +189,13 @@ function T.tests.switch_through_the_screen_reorders_once_and_returns_to_field()
     Assert.equal(status.applicationId, PARTY_APPLICATION)
 
     -- Slot 0 is under the cursor: confirm opens the context menu on
-    -- switch (the only locally completable branch besides quit), confirm
-    -- arms the destination pick, right moves within the top row to slot
-    -- 1, confirm starts the swap animation.
+    -- summary, down reaches switch, confirm arms the destination pick,
+    -- right moves within the top row to slot 1, confirm starts the swap
+    -- animation.
     confirm(game)
+    state:keypressed("s")
+    game:step()
+    state:keyreleased("s")
     confirm(game)
     state:keypressed("d")
     game:step()

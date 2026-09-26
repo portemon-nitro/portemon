@@ -209,6 +209,8 @@ end
 ---@field starterProvider table<string, unknown>|nil the default starter roster for the blocking starter task (absent -> SCRIPT_SERVICE_MISSING on use)
 ---@field starterChoice table<string, unknown>|nil the modal starter-choice surface the blocking task opens and closes (absent -> SCRIPT_SERVICE_MISSING on use)
 ---@field partySelection table<string, unknown>|nil the modal script-party surface the blocking selection task opens and closes (absent -> SCRIPT_SERVICE_MISSING on use)
+---@field travel table<string, unknown>|nil the durable travel owner for spawn updates (absent -> SCRIPT_SERVICE_MISSING on use)
+---@field fieldMoves table<string, unknown>|nil the field-move runtime for task execution (absent -> SCRIPT_SERVICE_MISSING on use)
 ---@field followingMon table<string, unknown>|nil the live following-mon controller for follower script operations (absent -> SCRIPT_SERVICE_MISSING on use)
 ---@field followerTransition table<string, unknown>|nil the transient follower-transition owner the nonblocking transition command starts (absent -> SCRIPT_SERVICE_MISSING on use)
 ---@field starterBalls table<string, unknown>|nil the Elm starter-ball runtime-prop controller (absent -> SCRIPT_SERVICE_MISSING on use)
@@ -388,6 +390,8 @@ function FieldScripts.new(opts)
       starterProvider = opts.starterProvider,
       starterChoice = opts.starterChoice,
       partySelection = opts.partySelection,
+      travel = opts.travel,
+      fieldMoves = opts.fieldMoves,
       followingMon = opts.followingMon,
       followerTransition = opts.followerTransition,
       starterBalls = opts.starterBalls,

@@ -20,6 +20,7 @@ local T = {}
 ---@field advance fun(self: FieldMoveRuntimePort, plan: table<string, unknown>): table<string, unknown>
 ---@field cancel fun(self: FieldMoveRuntimePort, plan: table<string, unknown>)
 ---@field clearTransient fun(self: FieldMoveRuntimePort)
+---@field dispose fun(self: FieldMoveRuntimePort)
 ---@field isBusy fun(self: FieldMoveRuntimePort): boolean
 ---@field tryStrengthPush fun(self: FieldMoveRuntimePort, snapshot: table<string, unknown>): table<string, unknown>
 
@@ -339,6 +340,39 @@ function T.unarmed_push_declines_without_queueing()
   local outcome = runtime:tryStrengthPush({ boulderActorId = "map:61:object:2", direction = "south", mapId = 61 })
   Assert.equal(outcome.kind, "not_here", "disarmed pushes decline")
   Assert.isFalse(runtime:isBusy(), "declined pushes queue nothing")
+end
+
+function T.dispose_drops_a_pending_request_without_touching_the_world()
+  local world = worldDouble()
+  local runtime = open(world)
+  Assert.equal(runtime:queue({ move = "cut", slot = 0, partyRevision = 4, context = context() }).kind, "accepted")
+  runtime:dispose()
+  Assert.isFalse(runtime:isBusy(), "disposal releases the pending request")
+  Assert.equal(world.cancels, 0, "an unclaimed queue needs no physical cleanup")
+  runtime:dispose()
+  Assert.isFalse(runtime:isBusy(), "repeated disposal stays released")
+end
+
+function T.dispose_cancels_an_active_plan_exactly_once()
+  local world = worldDouble()
+  local runtime = open(world)
+  Assert.equal(runtime:queue({ move = "cut", slot = 0, partyRevision = 4, context = context() }).kind, "accepted")
+  local taken = runtime:takePending()
+  local plan = runtime:plan(taken)
+  Assert.equal(plan.kind, "cut", "setup must plan")
+  Assert.isTrue(runtime:isBusy(), "the active plan holds the runtime")
+  runtime:dispose()
+  Assert.isFalse(runtime:isBusy(), "disposal releases the active plan")
+  Assert.equal(world.cancels, 1, "disposal cleans physical work exactly once")
+  runtime:dispose()
+  Assert.equal(world.cancels, 1, "repeated disposal never repolls work")
+  Assert.isFalse(runtime:isBusy(), "repeated disposal stays released")
+end
+
+function T.dispose_with_nothing_outstanding_is_a_no_op()
+  local runtime = open()
+  runtime:dispose()
+  Assert.isFalse(runtime:isBusy(), "an idle disposal holds nothing")
 end
 
 return { tests = T }

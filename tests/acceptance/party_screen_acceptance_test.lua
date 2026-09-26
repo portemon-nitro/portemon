@@ -282,7 +282,12 @@ local function partyView(game)
     "the party application must own the tick while browsing"
   )
   Assert.equal(status.applicationId, PARTY_APPLICATION, "the launched application must be the party screen")
-  return assert(status.application, "the party application must expose its browse status")
+  -- Production serves the party screen through the bounded menu flow:
+  -- the live leaf status rides one level down with identical content.
+  -- No page is pinned here: mid-flow states (target pick, summary)
+  -- keep the same leaf shape under different pages.
+  local flow = assert(status.application, "the party application must expose its flow status")
+  return assert(flow.child, "the party flow must expose its live leaf status")
 end
 
 local function pressKey(game, state, key)
@@ -410,6 +415,8 @@ function T.tests.party_grid_static_frame_and_reflow_journey_preserves_semantics(
     Assert.equal(partyView(game).cursorNode, 0, "left returns to the lead before the switch")
     confirm(game)
     Assert.equal(partyView(game).state, "context", "confirm opens the context menu")
+    -- The flow menu leads with summary: step down to switch first.
+    pressKey(game, state, "s")
     confirm(game)
     Assert.equal(partyView(game).state, "choose_swap", "confirming switch starts the destination pick")
     pressKey(game, state, "d")

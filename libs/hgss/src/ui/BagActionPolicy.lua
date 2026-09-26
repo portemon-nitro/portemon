@@ -118,6 +118,7 @@ end
 ---@field pocketOrdering string the catalog pocket ordering ("manual" or "native_id")
 ---@field pocketCount integer occupied slots in the selected pocket
 ---@field registeredCount integer currently occupied registration slots (0..2)
+---@field partyEmpty boolean? true when no party member exists to target (absent means targets assumed)
 
 -- Assembles field-context facts from semantic catalog metadata: the
 -- party-use kind, holdability, hidden-machine identity, and any deferred
@@ -186,13 +187,16 @@ end
 function BagActionPolicy.actionsForField(facts)
   assert(type(facts) == "table", "the field policy needs its semantic facts")
   local actions = {}
+  -- Target-requiring entries need a party member: with an empty party
+  -- the menu offers inventory actions only, never a dead Use or Give.
+  local targetsExist = facts.partyEmpty ~= true
   if facts.itemKey ~= nil then
     assert(type(facts.itemKey) == "string" and facts.itemKey ~= "", "a selected action needs its item key")
     assert(type(facts.useKind) == "string", "the field policy needs the party-use kind")
-    if facts.useKind ~= "none" then
+    if targetsExist and facts.useKind ~= "none" then
       actions[#actions + 1] = { id = "use", enabled = true, slot = 0 }
     end
-    if facts.canHold == true and facts.isHm ~= true and facts.pocket ~= "mail" then
+    if targetsExist and facts.canHold == true and facts.isHm ~= true and facts.pocket ~= "mail" then
       actions[#actions + 1] = { id = "give", enabled = true, slot = 2 }
     end
   end
@@ -228,9 +232,12 @@ end
 -- Binds the field projection to one live inventory service: Use and Give
 -- resolve from the same semantic catalog reads as the inventory binding.
 -- Composition owns this binding; the flow supplies the field context.
+-- partyEmpty names an empty target party (no member to use on or give
+-- to); nil keeps the historical behavior of offering both entries.
 ---@param service HgssBagService
+---@param partyEmpty boolean?
 ---@return fun(view: table<string, unknown>): { id: string, enabled: boolean, slot: integer }[]
-function BagActionPolicy.forField(service)
+function BagActionPolicy.forField(service, partyEmpty)
   assert(type(service) == "table", "the field policy binding needs the live bag service")
   assert(type(service.catalog) == "function", "the field policy binding needs the item catalog")
   local function resolveForView(view)
@@ -244,6 +251,7 @@ function BagActionPolicy.forField(service)
     local facts = BagActionPolicy.fieldFacts(service, itemKey)
     facts.pocketOrdering = service:catalog():pocket(view.pocket).ordering
     facts.pocketCount = type(view.slots) == "table" and #view.slots or 0
+    facts.partyEmpty = partyEmpty
     return BagActionPolicy.actionsForField(facts)
   end
   return resolveForView

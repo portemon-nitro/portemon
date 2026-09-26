@@ -548,16 +548,8 @@ function T.tests.elm_starter_to_continue_preserves_the_chosen_mon()
       end, 180)
       local shown = game.runtime.applicationHost:status()
       Assert.equal(shown.applicationId, PARTY_APPLICATION, "confirming the route launches the party screen")
-      -- Icon preparation is asynchronous: the launched screen waits
-      -- visibly before its view exists, so the journey waits for readiness
-      -- instead of assuming a synchronous first frame.
-      game:advanceUntil("party icons become ready", function()
-        local current = game.runtime.applicationHost:status()
-        return current.applicationId == PARTY_APPLICATION
-          and current.application ~= nil
-          and current.application.view ~= nil
-      end, 180)
-      local view = assert(game.runtime.applicationHost:status().application.view, "the party screen exposes its view")
+      local flow = assert(shown.application, "the party application must expose its flow status")
+      local view = assert(flow.child.view, "the party screen exposes its view")
       Assert.equal(view.slots[1].occupied, true, "the awarded mon occupies the lead slot")
       Assert.equal(view.slots[1].displayName, "CHIKORITA", "the party screen shows the awarded instance")
       Assert.equal(view.slots[1].level, 5, "the party screen shows the source creation level")

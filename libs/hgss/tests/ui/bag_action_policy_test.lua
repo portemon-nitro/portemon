@@ -195,6 +195,20 @@ function T.field_use_requires_party_effect_metadata()
   )
 end
 
+function T.field_empty_party_hides_target_requiring_entries_only()
+  local actions = BagActionPolicy.actionsForField(fieldFacts({ partyEmpty = true }))
+  Assert.isFalse(has(actions, "use"), "an empty party offers no Use without targets")
+  Assert.isFalse(has(actions, "give"), "an empty party offers no Give without targets")
+  Assert.isTrue(has(actions, "toss"), "inventory actions survive an empty party")
+  Assert.isTrue(has(actions, "move"), "inventory actions survive an empty party")
+  local offered = BagActionPolicy.actionsForField(fieldFacts({ partyEmpty = false }))
+  Assert.isTrue(has(offered, "use"), "an owned party keeps Use")
+  Assert.isTrue(has(offered, "give"), "an owned party keeps Give")
+  local defaulted = BagActionPolicy.actionsForField(fieldFacts())
+  Assert.isTrue(has(defaulted, "use"), "an absent party flag keeps the historical entries")
+  Assert.isTrue(has(defaulted, "give"), "an absent party flag keeps the historical entries")
+end
+
 function T.field_give_needs_holdable_non_hm_non_mail()
   Assert.isFalse(
     has(BagActionPolicy.actionsForField(fieldFacts({ canHold = false })), "give"),

@@ -175,7 +175,10 @@ local function bagView(game)
     "the bag application must own the tick while browsing"
   )
   Assert.equal(status.applicationId, BAG_APPLICATION, "the launched application must be the bag")
-  local view = assert(status.application, "the bag application must expose its browse status")
+  -- Production serves the bag through the bounded menu flow: the live
+  -- leaf status rides one level down with identical content.
+  local flow = assert(status.application, "the bag application must expose its flow status")
+  local view = assert(flow.child, "the bag flow must expose its live leaf status")
   assert(type(view) == "table", "the bag browse status must be a record")
   return view
 end

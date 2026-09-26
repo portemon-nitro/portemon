@@ -10,6 +10,27 @@
 local FieldMoveRuntime = {}
 FieldMoveRuntime.__index = FieldMoveRuntime
 
+---@class FieldMoveRuntime
+---@field private _policy table<string, unknown>
+---@field private _ambient table<string, unknown>
+---@field private _world table<string, unknown>
+---@field private _pending table<string, unknown>?
+---@field private _activeRequest table<string, unknown>?
+---@field private _activePlan table<string, unknown>?
+---@field private _strengthArmed boolean
+---@field new fun(opts: { policy: table<string, unknown>, context: table<string, unknown>, world: table<string, unknown> }): FieldMoveRuntime
+---@field isBusy fun(self: FieldMoveRuntime): boolean
+---@field queue fun(self: FieldMoveRuntime, request: table<string, unknown>): table<string, unknown>
+---@field takePending fun(self: FieldMoveRuntime): table<string, unknown>
+---@field discardPending fun(self: FieldMoveRuntime)
+---@field plan fun(self: FieldMoveRuntime, request: table<string, unknown>): table<string, unknown>
+---@field advance fun(self: FieldMoveRuntime, plan: table<string, unknown>): table<string, unknown>
+---@field cancel fun(self: FieldMoveRuntime, plan: table<string, unknown>)
+---@field clearTransient fun(self: FieldMoveRuntime)
+---@field dispose fun(self: FieldMoveRuntime)
+---@field requestDisembark fun(self: FieldMoveRuntime): table<string, unknown>
+---@field tryStrengthPush fun(self: FieldMoveRuntime, snapshot: table<string, unknown>): table<string, unknown>
+
 local Errors = require("libs.errors.src.Errors")
 
 -- Bounded native field-use acknowledgement before a committed effect, in
@@ -95,14 +116,6 @@ local function assertSlot(slot, move)
   return slot
 end
 
----@class FieldMoveRuntime
----@field private _policy table<string, unknown>
----@field private _ambient table<string, unknown>
----@field private _world table<string, unknown>
----@field private _pending table<string, unknown>?
----@field private _activeRequest table<string, unknown>?
----@field private _activePlan table<string, unknown>?
----@field private _strengthArmed boolean
 local function checkShape(self)
   assert(
     isRecord(self._policy) and type(self._policy.check) == "function",
@@ -586,6 +599,21 @@ end
 -- full-map reset by the composition; nothing else disarms.
 function FieldMoveRuntime:clearTransient()
   self._strengthArmed = false
+end
+
+-- Final idempotent backstop for the owning composition: drop a
+-- still-unclaimed queued request and cancel the active plan's physical
+-- work exactly once through cancel, which settles the marker. Borrowed
+-- services are never touched. Safe to call with nothing outstanding and
+-- safe to repeat: settled markers make every path a no-op.
+function FieldMoveRuntime:dispose()
+  self._pending = nil
+  local plan = self._activePlan
+  self._activePlan = nil
+  self._activeRequest = nil
+  if plan ~= nil then
+    self:cancel(plan)
+  end
 end
 
 -- Session disembark port: validate the shore landing and queue the

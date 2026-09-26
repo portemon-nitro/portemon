@@ -227,6 +227,7 @@ function PokemonMenuFlow:_openPage(page, continuation)
       heroGender = assets.heroGender,
       measureDisplay = measureDisplay,
       context = "field",
+      partyEmpty = self._mons:partyCount() == 0,
     })
   end
   if page == "bag_pick_held" then
@@ -241,6 +242,7 @@ function PokemonMenuFlow:_openPage(page, continuation)
       heroGender = assets.heroGender,
       measureDisplay = measureDisplay,
       context = "pick_held",
+      partyEmpty = self._mons:partyCount() == 0,
     })
   end
   if page == "party_browse" then

@@ -241,7 +241,10 @@ local function openBag(game, state)
   end, 120)
   local status = game.runtime.applicationHost:status()
   Assert.equal(status.applicationId, BAG_APPLICATION, "the launched application must be the bag")
-  return assert(status.application, "the bag application must expose its browse status")
+  -- Production serves destinations through the bounded menu flow: the
+  -- live leaf status rides one level down with identical content.
+  local flow = assert(status.application, "the bag application must expose its flow status")
+  return assert(flow.child, "the bag flow must expose its live leaf status")
 end
 
 local function closeApplication(game)
@@ -249,6 +252,35 @@ local function closeApplication(game)
   game:advanceUntil("the application closes", function()
     return hostPhase(game) ~= FieldApplicationHost.PHASES.application
   end, 120)
+end
+
+local function giveStarterPair(game)
+  game:setWorldState({ flag = FLAG_GOT_STARTER })
+  local service = assert(game.runtime.monService, "field runtime owns the live mon service")
+  Assert.isTrue(service:giveMon({ species = "CHIKORITA", level = 5 }), "setup gift must enter the party")
+  Assert.isTrue(service:giveMon({ species = "CYNDAQUIL", level = 5 }), "setup gift must enter the party")
+end
+
+local function partyOrder(game)
+  local service = assert(game.runtime.monService, "field runtime owns the live mon service")
+  local order = {}
+  for slot = 0, service:partyCount() - 1 do
+    order[#order + 1] = service:partyMon(slot).species
+  end
+  return order
+end
+
+local function openParty(game, state)
+  openStartMenu(game)
+  navigateTo(game, state, POKEMON_ACTION)
+  confirm(game)
+  game:advanceUntil("party application opens over the retained menu", function()
+    return hostPhase(game) == FieldApplicationHost.PHASES.application
+  end, 120)
+  local status = game.runtime.applicationHost:status()
+  Assert.equal(status.applicationId, PARTY_APPLICATION, "the launched application must be the party screen")
+  local flow = assert(status.application, "the party application must expose its flow status")
+  return assert(flow.child, "the party flow must expose its live leaf status")
 end
 
 local function grantTrainerCard(game)
@@ -350,7 +382,8 @@ function T.tests.bag_preserves_browse_state_across_topology_change()
     switchDisplay(game, 600, 1000)
     local status = game.runtime.applicationHost:status()
     Assert.equal(status.applicationId, BAG_APPLICATION, "the bag must stay open across the switch")
-    local view = assert(status.application, "the bag must expose its status after the switch")
+    local bagFlow = assert(status.application, "the bag must expose its flow status after the switch")
+    local view = assert(bagFlow.child, "the bag flow must expose its leaf status after the switch")
     local pocketAfter = view.pocket ~= nil and view.pocket or view.currentPocket
     Assert.equal(pocketAfter, pocketBefore, "the pocket must survive the topology change")
     Assert.deepEqual(view.selected, selectedBefore, "the cursor must survive the topology change")
@@ -376,8 +409,9 @@ function T.tests.bag_preserves_browse_state_across_topology_change()
     -- A press on the non-interactive hero pane must not select anything.
     local heroX, heroY = LayoutGeometry.logicalToHost(heroPlacement, 128, 96)
     pointerPress(game, "integration:hero", heroX, heroY)
-    local afterHero =
+    local afterHeroFlow =
       assert(game.runtime.applicationHost:status().application, "the bag must stay open after a hero press")
+    local afterHero = assert(afterHeroFlow.child, "the bag flow must expose its live leaf status")
     Assert.deepEqual(afterHero.selected, selectedBefore, "hero input must never change the selection")
 
     closeApplication(game)
@@ -399,10 +433,9 @@ function T.tests.bag_blur_cancels_stale_press_and_fresh_input_recovers()
     switchDisplay(game, 640, 480)
     openBag(game, state)
     local function bagView()
-      return assert(
-        game.runtime.applicationHost:status().application,
-        "the bag must stay open through the focus journey"
-      )
+      local flow =
+        assert(game.runtime.applicationHost:status().application, "the bag must stay open through the focus journey")
+      return assert(flow.child, "the bag flow must expose its live leaf status")
     end
     local function selectedItem(view)
       local selected = view.selected
@@ -489,6 +522,45 @@ function T.tests.bag_blur_cancels_stale_press_and_fresh_input_recovers()
     end, 120)
     closeStartMenu(game)
     Assert.equal(hostPhase(game), FieldApplicationHost.PHASES.closed, "the journey ends back on the field")
+  end)
+end
+
+-- The Party keeps its order and revision across a switch; an inert close
+-- after navigation issues no swap.
+function T.tests.party_inert_close_across_config_switch_issues_no_swap()
+  withFieldGame({}, function(game)
+    local state = hostCallbacks(game)
+    giveStarterPair(game)
+    local service = assert(game.runtime.monService, "field runtime owns the live mon service")
+    local revision = service:partyRevision()
+    local order = partyOrder(game)
+    switchDisplay(game, 1280, 720)
+    local opened = openParty(game, state)
+    local plan = assert(opened.presentation, "the open party must publish its presentation plan")
+    Assert.equal(
+      #assert(plan.frames, "a wide host must frame the party"),
+      1,
+      "a wide host frames the party in a static box"
+    )
+
+    switchDisplay(game, 640, 480)
+    local status = game.runtime.applicationHost:status()
+    Assert.equal(status.applicationId, PARTY_APPLICATION, "the party must stay open across the switch")
+    local partyFlow = assert(status.application, "the party must expose its flow status after the switch")
+    local view = assert(partyFlow.child, "the party flow must expose its leaf status after the switch")
+    local nativePlan = assert(view.presentation, "the party must publish a plan after the switch")
+    local nativeFrames = assert(nativePlan.frames, "the underfilled native party carries its static frame")
+    Assert.equal(#nativeFrames, 1, "an underfilled native pane gets one outer frame")
+    Assert.equal(#nativePlan.panes, 1, "native-like party shows its single compact pane")
+
+    -- Keyboard navigation stays inside the visible grid, then an inert
+    -- close leaves the service untouched.
+    state:keypressed("s")
+    game:step()
+    state:keyreleased("s")
+    closeApplication(game)
+    Assert.equal(service:partyRevision(), revision, "navigation plus inert close must not bump the revision")
+    Assert.deepEqual(partyOrder(game), order, "navigation plus inert close must not reorder the party")
   end)
 end
 
@@ -1393,7 +1465,8 @@ function T.tests.bag_nested_cancel_unwinds_while_outside_press_closes()
     local bag = assert(game.runtime.bagService, "field runtime owns the live bag service")
     local targetPocket = bag:pocketOf("POTION")
     local function bagApp()
-      return assert(game.runtime.applicationHost:status().application, "the bag must stay open")
+      local flow = assert(game.runtime.applicationHost:status().application, "the bag must stay open")
+      return assert(flow.child, "the bag flow must expose its live leaf status")
     end
     for _ = 1, 160 do
       local view = bagApp()
@@ -1439,11 +1512,14 @@ function T.tests.bag_nested_cancel_unwinds_while_outside_press_closes()
       game:step()
     end
     confirmItem()
-    local nested = assert(game.runtime.applicationHost:status().application, "the bag must stay open after confirm")
+    local nestedFlow = assert(game.runtime.applicationHost:status().application, "the bag must stay open after confirm")
+    local nested = assert(nestedFlow.child, "the bag flow must expose its live leaf status")
     Assert.equal(nested.state, "action_menu", "confirming an item opens the nested action menu")
     pressCancel(game)
     game:step()
-    local unwound = assert(game.runtime.applicationHost:status().application, "ordinary cancel must keep the bag open")
+    local unwoundFlow =
+      assert(game.runtime.applicationHost:status().application, "ordinary cancel must keep the bag open")
+    local unwound = assert(unwoundFlow.child, "the bag flow must expose its live leaf status")
     Assert.equal(unwound.state, "browsing", "ordinary cancel unwinds one level without closing")
     Assert.equal(
       hostPhase(game),
@@ -1451,8 +1527,9 @@ function T.tests.bag_nested_cancel_unwinds_while_outside_press_closes()
       "ordinary cancel stays inside the application"
     )
     confirmItem()
-    local rentered =
+    local renteredFlow =
       assert(game.runtime.applicationHost:status().application, "the bag must stay open after the second confirm")
+    local rentered = assert(renteredFlow.child, "the bag flow must expose its live leaf status")
     Assert.equal(rentered.state, "action_menu", "the second confirm reopens the nested action menu")
     local plan = assert(rentered.presentation, "the nested bag must publish its plan")
     local outsideX, outsideY = outsidePoint(plan, 1280, 720)
@@ -1481,17 +1558,21 @@ function T.tests.party_nested_cancel_unwinds_while_outside_press_closes()
     Assert.equal(opened.state, "browse", "the party opens in top-level browsing")
     confirm(game)
     game:step()
-    local nested = assert(game.runtime.applicationHost:status().application, "the party must stay open after confirm")
+    local nestedFlow =
+      assert(game.runtime.applicationHost:status().application, "the party must stay open after confirm")
+    local nested = assert(nestedFlow.child, "the party flow must expose its live leaf status")
     Assert.equal(nested.state, "context", "confirming a mon opens the nested context menu")
     pressCancel(game)
     game:step()
-    local unwound =
+    local unwoundFlow =
       assert(game.runtime.applicationHost:status().application, "ordinary cancel must keep the party open")
+    local unwound = assert(unwoundFlow.child, "the party flow must expose its live leaf status")
     Assert.equal(unwound.state, "browse", "ordinary cancel returns toward browsing without closing")
     confirm(game)
     game:step()
-    local rentered =
+    local renteredFlow =
       assert(game.runtime.applicationHost:status().application, "the party must stay open after the second confirm")
+    local rentered = assert(renteredFlow.child, "the party flow must expose its live leaf status")
     Assert.equal(rentered.state, "context", "the second confirm reopens the nested context menu")
     local plan = assert(rentered.presentation, "the nested party must publish its plan")
     local outsideX, outsideY = outsidePoint(plan, 1280, 720)

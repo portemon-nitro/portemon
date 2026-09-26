@@ -335,6 +335,13 @@ function FieldPresentationResources:drawApplication(applicationId, presentation,
     )
   end
   local draw = assert(presenter, "the application presenter is unavailable")
+  -- Menu destinations publish through the bounded menu flow: the drawable
+  -- leaf status rides one level down. Script-host and direct-controller
+  -- statuses carry their own plan and pass through untouched; a plan-less
+  -- flow status reaches the presenter, which fails loudly by contract.
+  if type(presentation) == "table" and presentation.presentation == nil then
+    presentation = presentation.child
+  end
   draw(presentation, runtime)
 end
 

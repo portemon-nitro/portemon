@@ -29,14 +29,14 @@
 ---@field registry FieldApplicationRegistry the immutable per-runtime child-application catalogue
 ---@field menuFactory fun(rememberedActionId: string?): table<string, unknown>? the Start Menu composition step (nil = menu currently unavailable)
 ---@field input FieldInput the field input whose modal lifetime the host acquires/releases
----@field fieldAction fun(actionId: string) immediate field-action dispatcher
+---@field fieldAction fun(actionId: string, request?: table<string, unknown>) typed child-to-field handoff (nil request for legacy one-argument actions)
 ---@field effect fun(sequence: string)? source UI sound effect boundary
 
 ---@class FieldApplicationHost
 ---@field _registry FieldApplicationRegistry
 ---@field _menuFactory fun(rememberedActionId: string?): table<string, unknown>?
 ---@field _input FieldInput
----@field _fieldAction fun(actionId: string)
+---@field _fieldAction fun(actionId: string, request?: table<string, unknown>)
 ---@field _phase string
 ---@field _menuController table<string, unknown>? the Start Menu controller, retained under an open child
 ---@field _applicationController table<string, unknown>? the foreground destination controller while open
@@ -351,6 +351,25 @@ function FieldApplicationHost:_stepApplication(uiInput)
   controller:updateFixed(uiInput)
   local result = controller:takeResult()
   if result == nil then
+    return
+  end
+  if result.kind == "field_action" then
+    -- Typed child-to-field handoff: admit synchronously so the
+    -- scheduler's foreground claim exists before either controller is
+    -- disposed or the modal lifetime releases. A refused admission or
+    -- program error enters the terminal failure state with the original
+    -- error; nothing returns to the menu as if nothing happened.
+    assert(type(result.actionId) == "string", "a field action needs an action id")
+    local ok, failure = pcall(self._fieldAction, result.actionId, result.request)
+    if not ok then
+      self:_fail(failure)
+      return
+    end
+    self:_disposeApplicationController()
+    self:_disposeMenuController()
+    self:_releaseUi()
+    self._applicationId = nil
+    self._phase = FieldApplicationHost.PHASES.closed
     return
   end
   assert(result.kind == "close", "a destination controller only returns close")

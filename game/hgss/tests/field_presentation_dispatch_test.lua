@@ -324,6 +324,52 @@ function T.pokemon_routes_only_to_the_party_presenter()
   end
 end
 
+function T.script_party_draw_reuses_the_pokemon_presenter_without_stepping()
+  local sink, calls = {}, {}
+  local savedLove = rawget(_G, "love")
+  rawset(_G, "love", { graphics = require("tests.support.FakeGraphics").new({}) })
+  local ok, err = pcall(function()
+    withProductionComposition(sink, calls, compositionRuntime(), function(resources)
+      local plan = {
+        panes = {},
+        content = {},
+        inputKey = "party",
+        render = function(borrowed, view, drawing)
+          assert(borrowed.partyScreenRenderer, "the party render borrows its renderer"):draw(
+            view,
+            drawing,
+            borrowed.icons
+          )
+        end,
+        mapInput = function()
+          return nil
+        end,
+        frames = {},
+      }
+      local active = {
+        status = function()
+          return { presentation = plan }
+        end,
+      }
+      resources:drawScriptParty(active)
+      Assert.equal(#sink, 1, "an active script selection draws exactly once")
+      Assert.equal(sink[1][1], "party", "script selection reuses the menu party renderer")
+      local idle = {
+        status = function()
+          return nil
+        end,
+      }
+      resources:drawScriptParty(idle)
+      Assert.equal(#sink, 1, "an idle host draws nothing and fails nothing")
+      resources:dispose()
+    end)
+  end)
+  rawset(_G, "love", savedLove)
+  if not ok then
+    error(err, 0)
+  end
+end
+
 function T.trainer_card_routes_only_to_the_card_presenter()
   local PixelScale = require("libs.ui.src.PixelScale")
   local sink, calls = {}, {}
