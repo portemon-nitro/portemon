@@ -343,16 +343,58 @@ function T.failed_layout_handoff_preserves_the_previous_layout()
   Assert.isTrue(ready, "the previous handoff remains ready")
 end
 
-function T.page_readiness_trusts_the_staged_marker_and_file_presence()
+function T.page_readiness_requires_the_marker_and_a_complete_image()
   local cache = CacheFs.forVersion("heartgold", FakeCache.new())
   local marker = MonCache.marker("synthetic-rom", "synthetic-deps")
   cache:write(MonCache.pageMarkerPath("icons", 0), marker)
   cache:write(MonCache.pageImagePath("icons", 0), "staged-bytes-without-envelope")
-  Assert.isTrue(MonCache.isPageReady(cache, "icons", 0, marker), "a staged page reads ready by marker and presence")
+  Assert.isFalse(MonCache.isPageReady(cache, "icons", 0, marker), "bytes without an image envelope read cold")
   Assert.isFalse(MonCache.isPageReady(cache, "icons", 0, "other-marker"), "a marker mismatch is not ready")
   local missing = CacheFs.forVersion("heartgold", FakeCache.new())
   missing:write(MonCache.pageMarkerPath("icons", 0), marker)
   Assert.isFalse(MonCache.isPageReady(missing, "icons", 0, marker), "a missing page file is not ready")
+end
+
+function T.published_truncation_with_intact_marker_reads_cold()
+  local cache = CacheFs.forVersion("heartgold", FakeCache.new())
+  local marker = MonCacheWriter.pageMarker("abc", "icons", 0, icons())
+  MonCacheWriter.writePage(cache, pageBundle("icons", 0, 256, 128, marker))
+  local valid = cache:read(MonCache.pageImagePath("icons", 0))
+  Assert.notNil(valid, "the published page bytes are available")
+  assert(valid ~= nil, "the published page bytes are available")
+  Assert.isTrue(MonCache.isPageReady(cache, "icons", 0, marker), "the published page reads ready")
+  local variants = {
+    empty = "",
+    signature_only = valid:sub(1, 8),
+    mid_body = valid:sub(1, math.floor(#valid / 2)),
+    missing_terminal = valid:sub(1, #valid - 12),
+  }
+  for name, damaged in pairs(variants) do
+    cache:write(MonCache.pageImagePath("icons", 0), damaged)
+    Assert.equal(cache:read(MonCache.pageMarkerPath("icons", 0)), marker, "damage leaves the marker intact: " .. name)
+    Assert.isFalse(MonCache.isPageReady(cache, "icons", 0, marker), "a damaged page reads cold: " .. name)
+  end
+  cache:write(MonCache.pageImagePath("icons", 0), valid)
+  Assert.isTrue(MonCache.isPageReady(cache, "icons", 0, marker), "restored bytes read ready again")
+end
+
+function T.published_damage_repairs_through_the_page_writer()
+  local cache = CacheFs.forVersion("heartgold", FakeCache.new())
+  local marker = MonCacheWriter.pageMarker("abc", "portraits", 0, portraits())
+  local bundle = pageBundle("portraits", 0, 640, 320, marker)
+  MonCacheWriter.writePage(cache, bundle)
+  local valid = cache:read(MonCache.pageImagePath("portraits", 0))
+  Assert.notNil(valid, "the published portrait bytes are available")
+  assert(valid ~= nil, "the published portrait bytes are available")
+  cache:write(MonCache.pageImagePath("portraits", 0), valid:sub(1, math.floor(#valid / 2)))
+  Assert.isFalse(MonCache.isPageReady(cache, "portraits", 0, marker), "a damaged portrait reads cold before repair")
+  MonCacheWriter.writePage(cache, bundle)
+  Assert.equal(
+    cache:read(MonCache.pageImagePath("portraits", 0)),
+    valid,
+    "the writer restores the published portrait bytes"
+  )
+  Assert.isTrue(MonCache.isPageReady(cache, "portraits", 0, marker), "the repaired portrait reads ready")
 end
 
 return { tests = T }
