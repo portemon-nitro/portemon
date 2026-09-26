@@ -768,6 +768,145 @@ function T.unknown_events_are_programming_errors()
   end)
 end
 
+-- Field-context selection intents: Use/Give publish one value-only
+-- intent with the item identity and service revision, then stop the
+-- batch; pick_held selects directly with no nested menu. The inventory
+-- context never emits.
+
+local function fieldController(bag, cursor, context)
+  local layoutManifest = manifest()
+  local function resolveLayout()
+    return BagLayout.resolve({ manifest = layoutManifest, heroVisible = true })
+  end
+  local monCatalog = {
+    moveByNativeId = function(_, nativeId)
+      assert(type(nativeId) == "number", "move lookup names its native identity")
+      return { moveType = "NORMAL", category = "physical", basePp = 35, power = 50, accuracy = 95 }
+    end,
+  }
+  return BagController.new({
+    model = {
+      refresh = function()
+        return BagModel.build(bag, cursor, monCatalog)
+      end,
+    },
+    cursor = cursor,
+    context = context,
+    resolveLayout = resolveLayout,
+    promptShape = promptShape(),
+    tossPrompt = tossPrompt(),
+    commands = {
+      toss = function(itemKey, quantity)
+        return bag:take(itemKey, quantity)
+      end,
+      move = function(pocketKey, fromIndex, toIndex)
+        return bag:move(pocketKey, fromIndex, toIndex)
+      end,
+      register = function(itemKey)
+        return bag:tryRegister(itemKey)
+      end,
+      unregister = function(itemKey)
+        return bag:unregister(itemKey)
+      end,
+    },
+    resolveActions = BagActionPolicy.forField(bag),
+    isPickable = function(itemKey)
+      return BagActionPolicy.isPickable(BagActionPolicy.fieldFacts(bag, itemKey))
+    end,
+  })
+end
+
+local function openFieldMenu(control)
+  control:updateFixed({ { type = "confirm" } })
+  local status = control:status()
+  Assert.equal(status.state, "action_menu", "confirming an item opens the action menu")
+  return status
+end
+
+local function chooseActionSlot(control, slot)
+  for _ = 1, 8 do
+    local status = control:status()
+    if status.actionNode == slot then
+      control:updateFixed({ { type = "confirm" } })
+      return control:status()
+    end
+    local node = assert(status.actionNode, "the menu exposes its node")
+    control:updateFixed({ navigate(node < slot and "down" or "up") })
+    if control:status().actionNode == node then
+      control:updateFixed({ navigate("left") })
+    end
+  end
+  error("the action menu never selects slot " .. tostring(slot), 0)
+end
+
+function T.field_use_emits_a_value_intent_and_stops_the_batch()
+  local bag = service()
+  Assert.isTrue(bag:add("POTION", 3))
+  local cursor = BagCursor.new()
+  cursor:setPocket("medicine")
+  local control = fieldController(bag, cursor, "field")
+  control:updateFixed({})
+  openFieldMenu(control)
+  local revision = bag:revision()
+  control:updateFixed({ { type = "confirm" }, { type = "cancel" } })
+  local intent = assert(control:takeIntent(), "choosing Use must emit an intent")
+  Assert.equal(intent.kind, "use", "the intent names its action")
+  Assert.equal(intent.item, "POTION", "the intent snapshots the item identity")
+  Assert.equal(intent.bagRevision, revision, "the intent snapshots the service revision")
+  Assert.isNil(control:takeIntent(), "the intent drains exactly once")
+  Assert.isNil(control:takeResult(), "an intent is not a terminal close")
+  Assert.equal(bag:quantity("POTION"), 3, "emitting an intent mutates nothing")
+end
+
+function T.field_give_emits_a_value_intent()
+  local bag = service()
+  Assert.isTrue(bag:add("POTION", 3))
+  local cursor = BagCursor.new()
+  cursor:setPocket("medicine")
+  local control = fieldController(bag, cursor, "field")
+  control:updateFixed({})
+  openFieldMenu(control)
+  chooseActionSlot(control, 2)
+  local intent = assert(control:takeIntent(), "choosing Give must emit an intent")
+  Assert.equal(intent.kind, "give", "the intent names its action")
+  Assert.equal(intent.item, "POTION", "the intent snapshots the item identity")
+  Assert.isNil(control:takeIntent(), "the intent drains exactly once")
+end
+
+function T.pick_held_selects_directly_with_no_nested_menu()
+  local bag = service()
+  Assert.isTrue(bag:add("POTION", 3))
+  local cursor = BagCursor.new()
+  cursor:setPocket("medicine")
+  local control = fieldController(bag, cursor, "pick_held")
+  control:updateFixed({})
+  control:updateFixed({ { type = "confirm" } })
+  local intent = assert(control:takeIntent(), "confirming a pickable item must emit")
+  Assert.equal(intent.kind, "pick", "the picker emits selections")
+  Assert.equal(intent.item, "POTION", "the pick snapshots the item identity")
+  Assert.isNil(control:takeResult(), "a pick is not a terminal close")
+end
+
+function T.pick_held_ignores_ineligible_items()
+  local bag = service()
+  Assert.isTrue(bag:add("HM01", 1))
+  local cursor = BagCursor.new()
+  cursor:setPocket("tmhm")
+  local control = fieldController(bag, cursor, "pick_held")
+  control:updateFixed({})
+  control:updateFixed({ { type = "confirm" } })
+  Assert.isNil(control:takeIntent(), "a hidden machine emits no pick")
+  Assert.isNil(control:takeResult(), "ignoring a pick closes nothing")
+  Assert.equal(bag:quantity("HM01"), 1, "ignoring a pick mutates nothing")
+end
+
+function T.inventory_context_emits_no_intents()
+  local control = controller(stockTwoPockets(service()), BagCursor.new())
+  control:updateFixed({})
+  control:updateFixed({ { type = "confirm" } })
+  Assert.isNil(control:takeIntent(), "the inventory context never emits")
+end
+
 local function stockItemsPocket(bag, quantity)
   local natives = { 6, 12, 18, 24, 30, 36, 42, 48 }
   assert(quantity >= 1 and quantity <= #natives, "the padded-grid probe needs one to eight items")

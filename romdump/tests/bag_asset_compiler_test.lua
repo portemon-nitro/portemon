@@ -224,8 +224,10 @@ local function syntheticMessageBanks()
   for _ = 1, 102 do
     bank10[#bank10 + 1] = { EOS_UNIT }
   end
+  bank10[1] = messageUnits({ "USE" })
   bank10[2] = messageUnits({ "TOSS" })
   bank10[3] = messageUnits({ "REGISTER" })
+  bank10[4] = messageUnits({ "GIVE" })
   bank10[6] = messageUnits({ "YES" })
   bank10[9] = messageUnits({ "CANCEL" })
   bank10[19] = messageUnits({ "DESELECT" })
@@ -631,6 +633,8 @@ function T.producer_declares_the_audited_message_selection()
     unregister = { bank = 10, index = 18 },
     cancel = { bank = 10, index = 8 },
     confirm = { bank = 10, index = 5 },
+    use = { bank = 10, index = 0 },
+    give = { bank = 10, index = 3 },
   })
   Assert.deepEqual(messages.templates, {
     movePrompt = { bank = 10, index = 46 },
@@ -764,7 +768,7 @@ local function syntheticBundle(marker)
     tabs[#tabs + 1] = { x = i * 32, y = 0, width = 32, height = 32 }
   end
   local manifest = {
-    schema = "g4-bag-assets-v11",
+    schema = "g4-bag-assets-v12",
     logicalSize = { width = 256, height = 192 },
     hero = {
       background = {
@@ -981,6 +985,8 @@ local function syntheticBundle(marker)
           unregister = "DESELECT",
           cancel = "CANCEL",
           confirm = "YES",
+          use = "USE",
+          give = "GIVE",
         },
         movePrompt = {
           segments = { { kind = "text", value = "Move " }, { kind = "item" }, { kind = "text", value = "." } },
@@ -1146,7 +1152,7 @@ function T.writer_publishes_the_class_and_reports_ready()
   Assert.isTrue(BagCacheWriter.write(cacheFs, bundle))
   Assert.isTrue(BagCacheWriter.isReady(cacheFs, bundle.marker))
   local loaded = BagCache.loadManifest(cacheFs)
-  Assert.equal(loaded.schema, "g4-bag-assets-v11")
+  Assert.equal(loaded.schema, "g4-bag-assets-v12")
   Assert.equal(loaded.hero.presentation.lights.count, 4)
   Assert.deepEqual(loaded.hero.presentation.lights.color, { r = 31, g = 31, b = 31 })
   Assert.equal(#loaded.hero.presentation.lights.vectors, 4)

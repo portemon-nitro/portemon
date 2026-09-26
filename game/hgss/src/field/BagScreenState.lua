@@ -18,6 +18,7 @@ local BagModel = require("libs.hgss.src.ui.BagModel")
 ---@class BagScreenState
 ---@field _service HgssBagService
 ---@field _cursor BagCursor
+---@field _context "inventory"|"field"|"pick_held" the selection context for intent emission
 ---@field _manifest table<string, unknown>
 ---@field _heroGender "male"|"female"
 ---@field _measureDisplay fun(): DisplayMeasurement the live display facts
@@ -36,6 +37,7 @@ BagScreenState.__index = BagScreenState
 ---@field uiManifest table<string, unknown> the validated field-UI manifest carrying the prompt section
 ---@field monCatalog table<string, unknown> the borrowed compiled mon catalog
 ---@field heroGender "male"|"female" the profile-selected hero backdrop
+---@field context "inventory"|"field"|"pick_held"? the selection context (defaults to inventory)
 ---@field measureDisplay fun(): DisplayMeasurement the current display facts
 ---@field overrides table<string, unknown>? per-case function overrides for this application
 
@@ -71,10 +73,16 @@ function BagScreenState.new(opts)
   )
   local heroGender = assert(opts.heroGender, "the bag screen requires the hero gender")
   assert(heroGender == "male" or heroGender == "female", "the hero gender selects its backdrop")
+  local context = opts.context or "inventory"
+  assert(
+    context == "inventory" or context == "field" or context == "pick_held",
+    "the bag screen needs a named inventory, field, or pick_held context"
+  )
   assert(type(opts.measureDisplay) == "function", "the bag screen requires the display facts")
   local self = setmetatable({
     _service = service,
     _cursor = cursor,
+    _context = context,
     _manifest = manifest,
     _heroGender = heroGender,
     _measureDisplay = opts.measureDisplay,
@@ -105,6 +113,17 @@ function BagScreenState.new(opts)
   local function unregisterItem(itemKey)
     return service:unregister(itemKey)
   end
+  local resolveActions = BagActionPolicy.forService(service)
+  if context ~= "inventory" then
+    resolveActions = BagActionPolicy.forField(service)
+  end
+  local function pickable(itemKey)
+    return BagActionPolicy.isPickable(BagActionPolicy.fieldFacts(service, itemKey))
+  end
+  local isPickable = nil
+  if context == "pick_held" then
+    isPickable = pickable
+  end
   local controller
   local session
   local built, buildErr = pcall(function()
@@ -112,16 +131,18 @@ function BagScreenState.new(opts)
     controller = BagController.new({
       model = { refresh = refreshModel },
       cursor = cursor,
+      context = context,
       resolveLayout = resolveLayout,
       promptShape = promptShape,
       tossPrompt = tossPrompt,
+      isPickable = isPickable,
       commands = {
         toss = tossItem,
         move = moveItem,
         register = registerItem,
         unregister = unregisterItem,
       },
-      resolveActions = BagActionPolicy.forService(service),
+      resolveActions = resolveActions,
     })
   end)
   if not built then
@@ -201,6 +222,12 @@ function BagScreenState:status()
   status.hero = self._hero:status()
   status.presentation = self._session:plan()
   return status
+end
+
+-- Forwards the one-shot selection intent to the flow that routes it.
+---@return table<string, unknown>?
+function BagScreenState:takeIntent()
+  return self._controller:takeIntent()
 end
 
 -- The host result contract: the bag only ever closes back to the menu.

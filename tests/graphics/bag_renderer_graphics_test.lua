@@ -55,7 +55,7 @@ end
 local function manifestFor(versionId)
   local cacheFs = CacheFs.forVersion(versionId)
   local manifest = BagCache.loadManifest(cacheFs)
-  Assert.equal(manifest.schema, "g4-bag-assets-v11", versionId .. " renders the current bag manifest")
+  Assert.equal(manifest.schema, "g4-bag-assets-v12", versionId .. " renders the current bag manifest")
   return cacheFs, manifest
 end
 

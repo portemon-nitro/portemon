@@ -355,8 +355,8 @@ BagSources.unboundAnimations = { 21 }
 -- templates. Bank 10 is msg_0010.gmm; indexes are zero-based message ids
 -- within the bank. The
 -- runtime manifest carries only the lowered labels/templates, never these
--- selectors. Pinned facts: msg_0010 carries TRASH (1), REGISTER (2),
--- CONFIRM (5), CANCEL (8), DESELECT (18), the move prompt (46), the toss
+-- selectors. Pinned facts: msg_0010 carries USE (0), TRASH (1), REGISTER (2),
+-- GIVE (3), CONFIRM (5), CANCEL (8), DESELECT (18), the move prompt (46), the toss
 -- quantity prompt (53), the post-choice result text (54), the MOVE label
 -- (75), and the toss confirmation prompt (55).
 BagSources.messages = {
@@ -367,6 +367,8 @@ BagSources.messages = {
     unregister = { bank = 10, index = 18 },
     cancel = { bank = 10, index = 8 },
     confirm = { bank = 10, index = 5 },
+    use = { bank = 10, index = 0 },
+    give = { bank = 10, index = 3 },
   },
   templates = {
     movePrompt = { bank = 10, index = 46 },

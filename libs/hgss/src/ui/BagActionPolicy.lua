@@ -105,4 +105,148 @@ function BagActionPolicy.forService(service)
   return resolveForView
 end
 
+---@class BagActionFieldFacts
+---@field itemKey string? the selected semantic item, nil when nothing is selected
+---@field useKind string the catalog party-use kind ("none" when effect-free)
+---@field canHold boolean whether the catalog marks the item holdable
+---@field isHm boolean whether the catalog marks the item a hidden machine
+---@field pocket string? the catalog pocket of the selected item
+---@field featureReason string? the stable deferral reason for deferred effects
+---@field preventToss boolean the source item toss metadata
+---@field registerable boolean whether the catalog marks the item field-registerable
+---@field registered boolean whether the item currently holds a registration slot
+---@field pocketOrdering string the catalog pocket ordering ("manual" or "native_id")
+---@field pocketCount integer occupied slots in the selected pocket
+---@field registeredCount integer currently occupied registration slots (0..2)
+
+-- Assembles field-context facts from semantic catalog metadata: the
+-- party-use kind, holdability, hidden-machine identity, and any deferred
+-- feature reason. No runtime service beyond the static catalog is
+-- consulted; capability inference from other owners stays out.
+---@param service HgssBagService
+---@param itemKey string?
+---@return BagActionFieldFacts
+function BagActionPolicy.fieldFacts(service, itemKey)
+  assert(type(service) == "table", "field facts need the live bag service")
+  assert(type(service.catalog) == "function", "field facts need the item catalog")
+  assert(type(service.registeredItems) == "function", "field facts need registration reads")
+  local catalog = service:catalog()
+  local registeredList = service:registeredItems()
+  local registeredSet = {}
+  for _, key in ipairs(registeredList) do
+    registeredSet[key] = true
+  end
+  -- Pocket occupancy rides the refreshed view, which the field binding
+  -- fills in after assembly; the item facts below are view-independent.
+  local facts = {
+    itemKey = nil,
+    useKind = "none",
+    canHold = false,
+    isHm = false,
+    pocket = nil,
+    featureReason = nil,
+    preventToss = false,
+    registerable = false,
+    registered = false,
+    pocketOrdering = "manual",
+    pocketCount = 0,
+    registeredCount = #registeredList,
+  }
+  if itemKey == nil then
+    return facts
+  end
+  assert(type(itemKey) == "string" and itemKey ~= "", "field facts need a selected item key")
+  local definition = catalog:item(itemKey)
+  local partyUse = definition.partyUse
+  local useKind = "none"
+  if type(partyUse) == "table" and type(partyUse.kind) == "string" then
+    useKind = partyUse.kind
+  end
+  facts.itemKey = itemKey
+  facts.useKind = useKind
+  facts.canHold = definition.canHold == true
+  facts.isHm = definition.isHm == true
+  facts.pocket = definition.pocket
+  if useKind == "deferred" and type(partyUse) == "table" then
+    facts.featureReason = partyUse.reason
+  end
+  facts.preventToss = definition.preventToss == true
+  facts.registerable = catalog:isRegisterable(itemKey)
+  facts.registered = registeredSet[itemKey] == true
+  return facts
+end
+
+-- Field-context menu: the source Use slot zero and Give slot two over the
+-- unchanged inventory slots (register/unregister-or-toss at one, move at
+-- three, implicit cancel at four). Use appears for any cataloged party
+-- effect including deferred ones, which report later without consuming;
+-- Give needs a holdable non-machine non-mail item.
+---@param facts BagActionFieldFacts
+---@return { id: string, enabled: boolean, slot: integer }[]
+function BagActionPolicy.actionsForField(facts)
+  assert(type(facts) == "table", "the field policy needs its semantic facts")
+  local actions = {}
+  if facts.itemKey ~= nil then
+    assert(type(facts.itemKey) == "string" and facts.itemKey ~= "", "a selected action needs its item key")
+    assert(type(facts.useKind) == "string", "the field policy needs the party-use kind")
+    if facts.useKind ~= "none" then
+      actions[#actions + 1] = { id = "use", enabled = true, slot = 0 }
+    end
+    if facts.canHold == true and facts.isHm ~= true and facts.pocket ~= "mail" then
+      actions[#actions + 1] = { id = "give", enabled = true, slot = 2 }
+    end
+  end
+  local inventory = {
+    itemKey = facts.itemKey,
+    preventToss = facts.preventToss == true,
+    registerable = facts.registerable == true,
+    registered = facts.registered == true,
+    pocketOrdering = facts.pocketOrdering,
+    pocketCount = facts.pocketCount,
+    registeredCount = facts.registeredCount,
+  }
+  for _, action in ipairs(BagActionPolicy.actionsFor(inventory)) do
+    actions[#actions + 1] = action
+  end
+  return actions
+end
+
+-- Held-item picker eligibility from semantic metadata: hidden machines,
+-- key items, and mail never enter a mon's hold slot, while ordinary
+-- teachable disks stay giveable. The picker selects directly, so this is
+-- a predicate rather than a menu.
+---@param facts BagActionFieldFacts
+---@return boolean
+function BagActionPolicy.isPickable(facts)
+  assert(type(facts) == "table", "picker eligibility needs its semantic facts")
+  if facts.itemKey == nil then
+    return false
+  end
+  return facts.canHold == true and facts.isHm ~= true and facts.pocket ~= "mail"
+end
+
+-- Binds the field projection to one live inventory service: Use and Give
+-- resolve from the same semantic catalog reads as the inventory binding.
+-- Composition owns this binding; the flow supplies the field context.
+---@param service HgssBagService
+---@return fun(view: table<string, unknown>): { id: string, enabled: boolean, slot: integer }[]
+function BagActionPolicy.forField(service)
+  assert(type(service) == "table", "the field policy binding needs the live bag service")
+  assert(type(service.catalog) == "function", "the field policy binding needs the item catalog")
+  local function resolveForView(view)
+    assert(type(view) == "table", "the field policy binding needs the refreshed browse view")
+    assert(type(view.pocket) == "string", "the browse view names its pocket")
+    local selected = view.selected
+    local itemKey = nil
+    if selected ~= nil then
+      itemKey = assert(selected.item, "selected slots carry their item key")
+    end
+    local facts = BagActionPolicy.fieldFacts(service, itemKey)
+    facts.pocketOrdering = service:catalog():pocket(view.pocket).ordering
+    facts.pocketCount = type(view.slots) == "table" and #view.slots or 0
+    return BagActionPolicy.actionsForField(facts)
+  end
+  return resolveForView
+end
+
 return BagActionPolicy

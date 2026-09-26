@@ -362,6 +362,8 @@ function BagPresentationFixture.manifest()
           unregister = "DESELECT",
           cancel = "CANCEL",
           confirm = "YES",
+          use = "USE",
+          give = "GIVE",
         },
         movePrompt = {
           segments = { { kind = "text", value = "Move " }, { kind = "item" }, { kind = "text", value = "?" } },

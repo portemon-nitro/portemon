@@ -895,7 +895,7 @@ local function compileText(messageArchive, dependencies)
     return banks[bankId]
   end
   local labels = {}
-  for _, action in ipairs({ "toss", "move", "register", "unregister", "cancel", "confirm" }) do
+  for _, action in ipairs({ "toss", "move", "register", "unregister", "cancel", "confirm", "use", "give" }) do
     local selector = BagSources.messages.actionLabels[action]
     labels[action] = lowerLabel(bankOf(selector.bank), selector.bank, selector.index, "label:" .. action)
   end

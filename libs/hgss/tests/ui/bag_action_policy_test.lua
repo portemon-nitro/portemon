@@ -139,4 +139,87 @@ function T.menus_stay_inside_the_inventory_local_set()
   end
 end
 
+-- Field-context facts ride semantic catalog metadata, never runtime
+-- service discovery: the item key plus its party-use kind, holdability,
+-- HM identity, and any deferred feature reason.
+local function fieldFacts(overrides)
+  local record = {
+    itemKey = "POTION",
+    useKind = "medicine",
+    canHold = true,
+    isHm = false,
+    pocket = "medicine",
+    featureReason = nil,
+    preventToss = false,
+    registerable = false,
+    registered = false,
+    pocketOrdering = "manual",
+    pocketCount = 2,
+    registeredCount = 0,
+  }
+  for key, value in pairs(overrides or {}) do
+    record[key] = value
+  end
+  return record
+end
+
+function T.field_use_and_give_ride_the_source_slots()
+  local actions = BagActionPolicy.actionsForField(fieldFacts())
+  local at = {}
+  for _, action in ipairs(actions) do
+    at[action.id] = action.slot
+  end
+  Assert.equal(at.use, 0, "Use rides the source slot zero")
+  Assert.equal(at.give, 2, "Give rides the source slot two")
+end
+
+function T.field_inventory_slots_survive_beside_use_and_give()
+  local actions = BagActionPolicy.actionsForField(fieldFacts())
+  Assert.isTrue(has(actions, "toss"), "the toss slot survives in field context")
+  Assert.isTrue(has(actions, "move"), "the move slot survives in field context")
+  Assert.isFalse(has(actions, "cancel"), "fixed cancel is not a dynamic policy action")
+end
+
+function T.field_use_requires_party_effect_metadata()
+  Assert.isFalse(
+    has(BagActionPolicy.actionsForField(fieldFacts({ useKind = "none" })), "use"),
+    "an effect-free item offers no Use"
+  )
+  Assert.isTrue(
+    has(BagActionPolicy.actionsForField(fieldFacts({ useKind = "deferred" })), "use"),
+    "a deferred item still offers Use and reports later"
+  )
+  Assert.isTrue(
+    has(BagActionPolicy.actionsForField(fieldFacts({ useKind = "machine" })), "use"),
+    "a machine offers Use into compatibility"
+  )
+end
+
+function T.field_give_needs_holdable_non_hm_non_mail()
+  Assert.isFalse(
+    has(BagActionPolicy.actionsForField(fieldFacts({ canHold = false })), "give"),
+    "an unholdable item offers no Give"
+  )
+  Assert.isFalse(
+    has(BagActionPolicy.actionsForField(fieldFacts({ isHm = true })), "give"),
+    "a hidden machine offers no Give"
+  )
+  Assert.isFalse(has(BagActionPolicy.actionsForField(fieldFacts({ pocket = "mail" })), "give"), "mail offers no Give")
+  Assert.isTrue(
+    has(BagActionPolicy.actionsForField(fieldFacts({ useKind = "machine", isHm = false })), "give"),
+    "an ordinary teachable disk stays giveable"
+  )
+end
+
+function T.pick_held_marks_eligibility_without_nested_actions()
+  Assert.isTrue(BagActionPolicy.isPickable(fieldFacts()), "an ordinary holdable item is pickable")
+  Assert.isFalse(BagActionPolicy.isPickable(fieldFacts({ isHm = true })), "a hidden machine is not pickable")
+  Assert.isFalse(BagActionPolicy.isPickable(fieldFacts({ canHold = false })), "key items are not pickable")
+  Assert.isFalse(BagActionPolicy.isPickable(fieldFacts({ pocket = "mail" })), "mail is not pickable")
+  Assert.isTrue(
+    BagActionPolicy.isPickable(fieldFacts({ useKind = "machine", isHm = false })),
+    "an ordinary teachable disk stays pickable"
+  )
+end
+
 return { tests = T }

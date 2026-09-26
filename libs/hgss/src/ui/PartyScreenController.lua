@@ -744,6 +744,14 @@ end
 function PartyScreenController:_emitEntryIntent(entry, slot, revision)
   local item = self._pendingItem
   if entry.kind == "give" or entry.kind == "take" then
+    if entry.kind == "give" and item == nil then
+      -- Picker-bound give: the owning flow opens the held-item picker
+      -- for the captured slot, and the picked identity arrives with the
+      -- later pick intent. Screens with a pending item keep their
+      -- richer identity below.
+      self:_emitIntent({ kind = entry.kind, slot = slot, partyRevision = revision })
+      return
+    end
     if entry.kind == "give" then
       assert(item ~= nil, "giving names its pending item")
     end

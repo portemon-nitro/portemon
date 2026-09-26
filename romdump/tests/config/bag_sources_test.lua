@@ -213,6 +213,8 @@ function T.message_selection_names_the_audited_banks_and_indexes()
     unregister = { bank = 10, index = 18 },
     cancel = { bank = 10, index = 8 },
     confirm = { bank = 10, index = 5 },
+    use = { bank = 10, index = 0 },
+    give = { bank = 10, index = 3 },
   })
   Assert.deepEqual(BagSources.messages.templates, {
     movePrompt = { bank = 10, index = 46 },

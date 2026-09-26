@@ -178,6 +178,8 @@ local function semanticText()
       unregister = "DESELECT",
       cancel = "CANCEL",
       confirm = "YES",
+      use = "USE",
+      give = "GIVE",
     },
     movePrompt = {
       segments = {
@@ -424,7 +426,7 @@ end
 
 local function validFocusManifest()
   local manifest = validManifest()
-  manifest.schema = "g4-bag-assets-v11"
+  manifest.schema = "g4-bag-assets-v12"
   manifest.interactive.overlays.tossPrompt = { x = 200, y = 48, shape = "compact", initialSelection = "yes" }
   manifest.interactive.text.tossResult = {
     segments = {
@@ -521,7 +523,7 @@ function T.previous_manifest_fails_schema_and_cache_contract()
   Assert.isFalse(BagAssetSchema.isValidManifest(manifest), "the previous highlight-shaped fixture is stale")
   Assert.isNil(manifest.interactive.widgets, "the stale manifest carries no dead widget namespace")
   Assert.equal(BagCache.manifestPath(), "data/generated/bag/manifest.lua")
-  Assert.equal(DerivedAssetContract.bag.schema, "g4-bag-assets-v11")
+  Assert.equal(DerivedAssetContract.bag.schema, "g4-bag-assets-v12")
 end
 
 function T.schema_rejects_wrong_logical_size()
@@ -606,9 +608,9 @@ local function assertInvalid(manifest, why)
 end
 
 function T.schema_identity_is_the_current_contract()
-  Assert.equal(BagAssetSchema.SCHEMA, "g4-bag-assets-v11")
-  Assert.equal(DerivedAssetContract.bag.schema, "g4-bag-assets-v11")
-  Assert.equal(BagCache.SCHEMA, "g4-bag-assets-v11")
+  Assert.equal(BagAssetSchema.SCHEMA, "g4-bag-assets-v12")
+  Assert.equal(DerivedAssetContract.bag.schema, "g4-bag-assets-v12")
+  Assert.equal(BagCache.SCHEMA, "g4-bag-assets-v12")
   Assert.equal(BagCache.FORMAT, "bag-cache-v2")
 end
 
@@ -669,7 +671,7 @@ function T.manifest_without_registration_markers_is_rejected()
 end
 
 function T.every_action_label_is_required_and_non_empty()
-  for _, action in ipairs({ "toss", "move", "register", "unregister", "cancel", "confirm" }) do
+  for _, action in ipairs({ "toss", "move", "register", "unregister", "cancel", "confirm", "use", "give" }) do
     local missing = validFocusManifest()
     missing.interactive.text.actions[action] = nil
     assertInvalid(missing, "a missing " .. action .. " label must fail")
@@ -681,7 +683,7 @@ end
 
 function T.unknown_action_and_template_fields_are_rejected()
   local extraAction = validFocusManifest()
-  extraAction.interactive.text.actions.use = "USE"
+  extraAction.interactive.text.actions.inspect = "INSPECT"
   assertInvalid(extraAction, "an action outside the runtime vocabulary must fail")
   local extraTemplate = validFocusManifest()
   extraTemplate.interactive.text.inspectPrompt = { segments = { { kind = "text", value = "?" } } }
@@ -942,13 +944,13 @@ function T.control_overlay_rejects_incomplete_or_timeline_shapes()
 end
 
 function T.stale_previous_manifest_fails_once_the_focus_contract_is_current()
-  Assert.equal(BagAssetSchema.SCHEMA, "g4-bag-assets-v11", "the schema carries the move summary contract")
+  Assert.equal(BagAssetSchema.SCHEMA, "g4-bag-assets-v12", "the schema carries the move summary contract")
   Assert.equal(
     DerivedAssetContract.bag.schema,
-    "g4-bag-assets-v11",
+    "g4-bag-assets-v12",
     "the central contract carries the move summary schema"
   )
-  Assert.equal(BagCache.SCHEMA, "g4-bag-assets-v11", "the loader requires the move summary schema")
+  Assert.equal(BagCache.SCHEMA, "g4-bag-assets-v12", "the loader requires the move summary schema")
   Assert.equal(BagCache.FORMAT, "bag-cache-v2", "the cache framing is unchanged")
   Assert.isFalse(
     BagAssetSchema.isValidManifest(validManifest()),
@@ -1265,9 +1267,9 @@ local function validStripManifest()
 end
 
 function T.pocket_strips_and_edge_colors_validate_as_the_current_contract()
-  Assert.equal(BagAssetSchema.SCHEMA, "g4-bag-assets-v11")
-  Assert.equal(DerivedAssetContract.bag.schema, "g4-bag-assets-v11")
-  Assert.equal(BagCache.SCHEMA, "g4-bag-assets-v11")
+  Assert.equal(BagAssetSchema.SCHEMA, "g4-bag-assets-v12")
+  Assert.equal(DerivedAssetContract.bag.schema, "g4-bag-assets-v12")
+  Assert.equal(BagCache.SCHEMA, "g4-bag-assets-v12")
   Assert.equal(BagCache.FORMAT, "bag-cache-v2")
   local manifest = validStripManifest()
   Assert.isTrue(BagAssetSchema.isValidManifest(manifest), "the pocket-strip manifest must pass the schema")
@@ -1390,7 +1392,7 @@ end
 -- scenario keeps the versioned focus fixture above.
 local function validTossManifest()
   local manifest = validFocusManifest()
-  manifest.schema = "g4-bag-assets-v11"
+  manifest.schema = "g4-bag-assets-v12"
   manifest.interactive.overlays.tossPrompt = { x = 200, y = 48, shape = "compact", initialSelection = "yes" }
   manifest.interactive.text.tossResult = {
     segments = {

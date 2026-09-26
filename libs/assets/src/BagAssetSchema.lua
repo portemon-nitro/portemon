@@ -24,7 +24,7 @@ local ModelAsset = require("libs.assets.src.model.ModelAsset")
 ---@class BagAssetSchema
 local BagAssetSchema = {}
 
-BagAssetSchema.SCHEMA = "g4-bag-assets-v11"
+BagAssetSchema.SCHEMA = "g4-bag-assets-v12"
 BagAssetSchema.PANE_WIDTH = 256
 BagAssetSchema.PANE_HEIGHT = 192
 BagAssetSchema.TAB_COUNT = 8
@@ -151,7 +151,16 @@ end
 -- segment arrays over the closed text/item/quantity vocabulary. Adjacent
 -- text segments must have been coalesced by the producer; only the toss
 -- confirmation template may carry a quantity placeholder.
-local TEXT_ACTIONS = { toss = true, move = true, register = true, unregister = true, cancel = true, confirm = true }
+local TEXT_ACTIONS = {
+  toss = true,
+  move = true,
+  register = true,
+  unregister = true,
+  cancel = true,
+  confirm = true,
+  use = true,
+  give = true,
+}
 
 local function checkSegment(segment, context, what, allowedKinds)
   if type(segment) ~= "table" then

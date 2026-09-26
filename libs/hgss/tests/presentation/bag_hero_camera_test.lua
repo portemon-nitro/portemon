@@ -46,7 +46,7 @@ end
 
 local function manifest(overrides)
   local record = {
-    schema = "g4-bag-assets-v11",
+    schema = "g4-bag-assets-v12",
     logicalSize = { width = 256, height = 192 },
     hero = {
       background = {

@@ -43,6 +43,9 @@ local YesNoPromptController = require("libs.hgss.src.ui.YesNoPromptController")
 ---@field _lastSlot integer the most recent grid-cell focus, for tab/cancel return
 ---@field _overlay boolean
 ---@field _state "browsing"|"action_menu"|"toss_quantity"|"toss_confirm"|"toss_ack"|"move_select"
+---@field _context "inventory"|"field"|"pick_held" the selection context for intent emission
+---@field _isPickable (fun(itemKey: string): boolean)? the held-item eligibility probe for picker contexts
+---@field _intent table<string, unknown>? the one-shot selection intent for the owning flow
 ---@field _prompt YesNoPromptController the owned modal prompt for toss confirmation
 ---@field _tossPrompt { x: integer, y: integer, shape: string, initialSelection: string } the generated semantic prompt placement
 ---@field _actions table<string, unknown>[]
@@ -71,6 +74,8 @@ BagController.__index = BagController
 ---@field tossPrompt { x: integer, y: integer, shape: string, initialSelection: string } the generated semantic prompt placement
 ---@field commands BagControllerCommands semantic mutations bound to the live inventory service
 ---@field resolveActions fun(view: table<string, unknown>): table<string, unknown>[] the injected inventory-local menu projection over the refreshed view
+---@field context "inventory"|"field"|"pick_held"? the selection context (defaults to inventory)
+---@field isPickable (fun(itemKey: string): boolean)? the held-item eligibility probe, required for pick_held
 
 ---@param value unknown
 ---@param what string
@@ -167,6 +172,15 @@ function BagController.new(opts)
   assert(type(opts.commands.register) == "function", "the bag controller needs its register command")
   assert(type(opts.commands.unregister) == "function", "the bag controller needs its unregister command")
   assert(type(opts.resolveActions) == "function", "the bag controller needs its action policy")
+  local context = opts.context or "inventory"
+  assert(
+    context == "inventory" or context == "field" or context == "pick_held",
+    "the bag controller needs a named inventory, field, or pick_held context"
+  )
+  local isPickable = opts.isPickable
+  if context == "pick_held" then
+    assert(type(isPickable) == "function", "the held-item picker needs its eligibility probe")
+  end
   assert(type(opts.promptShape) == "table", "the bag controller needs its modal prompt shape")
   assert(type(opts.tossPrompt) == "table", "the bag controller needs its toss prompt template")
   -- The modal prompt is bound once and owned for the controller lifetime:
@@ -182,6 +196,9 @@ function BagController.new(opts)
     _resolveLayout = opts.resolveLayout,
     _commands = opts.commands,
     _resolveActions = opts.resolveActions,
+    _context = context,
+    _isPickable = isPickable,
+    _intent = nil,
     _focusNode = slotNode(0),
     _lastSlot = 0,
     _overlay = false,
@@ -543,6 +560,28 @@ function BagController:_openActionMenu()
   self._state = "action_menu"
 end
 
+-- Emits one value-only selection intent for the owning flow: the item
+-- identity and service revision snapshot at emission, pointer capture
+-- clears on the ownership change, and the caller stops the batch so the
+-- replacement child never sees the launching input.
+---@param kind string
+---@param itemKey string
+function BagController:_emitIntent(kind, itemKey)
+  assert(self._intent == nil, "a bag intent is already pending")
+  assert(type(itemKey) == "string" and itemKey ~= "", "a bag intent snapshots its item key")
+  self._intent = { kind = kind, item = itemKey, bagRevision = self._observedRevision }
+  self:cancelPointerCapture()
+end
+
+-- The one-shot intent contract: nil until a selection emits, then exactly
+-- one value-only record for the flow to route.
+---@return table<string, unknown>?
+function BagController:takeIntent()
+  local intent = self._intent
+  self._intent = nil
+  return intent
+end
+
 ---@param node integer physical action node
 function BagController:_chooseActionNode(node)
   assert(node >= 0 and node <= 4 and node % 1 == 0, "action focus is a physical node")
@@ -570,6 +609,12 @@ function BagController:_chooseActionNode(node)
     return
   end
   local id = action.id
+  if id == "use" or id == "give" then
+    local itemKey = assert(self._actionItemKey, "field actions snapshot their item")
+    self:_toBrowsing()
+    self:_emitIntent(id, itemKey)
+    return
+  end
   if id == "toss" then
     self:_enterQuantity()
   elseif id == "move" then
@@ -864,6 +909,21 @@ end
 function BagController:_confirm()
   if self._overlay then
     self._overlay = false
+    return
+  end
+  if self._context == "pick_held" and self._state == "browsing" and parseSlot(self._focusNode) ~= nil then
+    -- Picker item activation selects directly with no nested menu;
+    -- tabs and cancel keep their ordinary browsing behavior.
+    local absolute = self:_focusedOccupiedAbsolute()
+    if absolute == nil then
+      return
+    end
+    local selected = assert(self._view.selected, "an occupied focus carries its record")
+    local itemKey = assert(selected.item, "selected slots carry their item key")
+    local probe = assert(self._isPickable, "the picker carries its eligibility probe")
+    if probe(itemKey) then
+      self:_emitIntent("pick", itemKey)
+    end
     return
   end
   if self._state == "action_menu" then
@@ -1289,6 +1349,9 @@ function BagController:updateFixed(uiInput)
   end
   for _, event in ipairs(uiInput) do
     if self._closed then
+      break
+    end
+    if self._intent ~= nil then
       break
     end
     validateBagEvent(event)

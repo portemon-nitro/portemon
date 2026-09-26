@@ -316,9 +316,11 @@ end
 function T.compiled_text_lowers_labels_and_templates_in_order(romFs, versionId)
   local manifest = bundleFor(romFs, versionId).manifest
   local actions = manifest.interactive.text.actions
-  for _, action in ipairs({ "toss", "move", "register", "unregister", "cancel", "confirm" }) do
+  for _, action in ipairs({ "toss", "move", "register", "unregister", "cancel", "confirm", "use", "give" }) do
     Assert.isTrue(type(actions[action]) == "string" and actions[action] ~= "", action .. " label is generated text")
   end
+  Assert.equal(actions.use, "USE", "the Use label carries the source bank-10 text")
+  Assert.equal(actions.give, "GIVE", "the Give label carries the source bank-10 text")
   Assert.deepEqual(segmentKinds(manifest.interactive.text.movePrompt), { "text", "item", "text" })
   Assert.deepEqual(segmentKinds(manifest.interactive.text.tossQuantity), { "text", "item", "text" })
   Assert.deepEqual(segmentKinds(manifest.interactive.text.tossConfirm), { "text", "quantity", "text", "item", "text" })
@@ -669,7 +671,7 @@ end
 function T.pocket_strips_replay_the_retained_palette_state(romFs, versionId)
   local bundle = bundleFor(romFs, versionId)
   local manifest = bundle.manifest
-  Assert.equal(manifest.schema, "g4-bag-assets-v11", "the rebuilt bag cache must publish the current contract")
+  Assert.equal(manifest.schema, "g4-bag-assets-v12", "the rebuilt bag cache must publish the current contract")
   local strips =
     assert(manifest.interactive.pocketTabs.strips, "the rebuilt manifest must publish one strip per active pocket")
   local keys = {}

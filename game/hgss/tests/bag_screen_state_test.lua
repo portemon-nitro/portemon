@@ -1196,4 +1196,51 @@ function T.ordered_pointer_cancellation_reaches_the_controller_without_activatio
   state:dispose()
 end
 
+-- Named field contexts compose the same hardened wrapper with a wider
+-- action policy and forward value-only intents; the inventory default is
+-- untouched. The borrowed cursor selects the stocked fixture directly.
+function T.field_context_forwards_use_intents_with_item_identity()
+  local options = composition()
+  options.context = "field"
+  options.cursor:setPocket("medicine")
+  local bag = options.service
+  Assert.isTrue(bag:add("POTION", 3))
+  local state = BagScreenState.new(options)
+  state:updateFixed({})
+  state:updateFixed({ { type = "confirm" } })
+  local status = state:status()
+  Assert.equal(status.state, "action_menu", "confirming an item opens the action menu")
+  local useSlot = nil
+  for _, action in ipairs(assert(status.actions, "the menu lists actions")) do
+    if action.id == "use" then
+      useSlot = action.slot
+    end
+  end
+  Assert.equal(useSlot, 0, "Use rides the source slot zero")
+  state:updateFixed({ { type = "confirm" } })
+  local intent = assert(state:takeIntent(), "choosing Use must forward an intent")
+  Assert.equal(intent.kind, "use", "the intent names its action")
+  Assert.equal(intent.item, "POTION", "the intent snapshots the item identity")
+  Assert.equal(intent.bagRevision, bag:revision(), "the intent snapshots the service revision")
+  Assert.isNil(state:takeIntent(), "the intent drains exactly once")
+  Assert.isNil(state:takeResult(), "an intent is not a terminal close")
+  state:dispose()
+end
+
+function T.pick_held_context_selects_directly_and_reports_no_close()
+  local options = composition()
+  options.context = "pick_held"
+  options.cursor:setPocket("medicine")
+  local bag = options.service
+  Assert.isTrue(bag:add("POTION", 3))
+  local state = BagScreenState.new(options)
+  state:updateFixed({})
+  state:updateFixed({ { type = "confirm" } })
+  local intent = assert(state:takeIntent(), "confirming a pickable item must forward a pick")
+  Assert.equal(intent.kind, "pick", "the picker forwards selections")
+  Assert.equal(intent.item, "POTION", "the pick snapshots the item identity")
+  Assert.isNil(state:takeResult(), "a pick is not a terminal close")
+  state:dispose()
+end
+
 return { tests = T }
