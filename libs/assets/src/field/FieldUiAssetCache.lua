@@ -1375,22 +1375,24 @@ function FieldUiAssetCache.validateManifest(manifest)
 end
 
 -- Every generated file the manifest indexes must exist for the class to be
--- ready. The marker must also match exactly and the manifest must load
--- with the current schema. The staged publication boundary already proved
--- the full contract, so readiness never repeats that audit here.
+-- ready. The marker must also match exactly and the persisted manifest must
+-- still satisfy the current consumer-safe contract: publication proved the
+-- staged bytes, not that the live files remain intact, so readiness
+-- revalidates the persisted structure before checking file closure.
 function FieldUiAssetCache.isReady(cacheFs, expectedMarker)
   if cacheFs:read(FieldUiAssetCache.markerPath()) ~= expectedMarker then
     return false
   end
   local manifest = cacheFs:loadLua(FieldUiAssetCache.manifestPath())
-  if type(manifest) ~= "table" or manifest.schema ~= FieldUiAssetCache.SCHEMA then
+  if type(manifest) ~= "table" then
     return false
   end
-  if type(manifest.assets) ~= "table" then
+  local valid = FieldUiAssetCache.validateManifest(manifest)
+  if not valid then
     return false
   end
   for _, entry in pairs(manifest.assets) do
-    if type(entry) ~= "table" or type(entry.image) ~= "string" or not cacheFs:exists(entry.image, "file") then
+    if not cacheFs:exists(entry.image, "file") then
       return false
     end
   end

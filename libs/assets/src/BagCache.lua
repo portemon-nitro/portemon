@@ -104,10 +104,11 @@ function BagCache.referencedPaths(manifest)
   return paths
 end
 
--- True only when the marker is exact, the manifest loads with the expected
--- schema, and every referenced artifact is present. The staged publication
--- boundary already proved the full contract, so readiness traverses the
--- published envelope once without re-auditing it.
+-- True only when the marker is exact, the persisted manifest still satisfies
+-- the current consumer-safe contract, and every referenced artifact is
+-- present. Publication proved the staged bytes, not that the live files
+-- remain intact, so readiness revalidates the persisted structure before
+-- provenance and path closure checks.
 function BagCache.isReady(cacheFs, expectedMarker)
   local marker = cacheFs:read(BagCache.markerPath())
   if
@@ -119,7 +120,7 @@ function BagCache.isReady(cacheFs, expectedMarker)
     return false
   end
   local manifest = cacheFs:loadLua(BagCache.manifestPath())
-  if type(manifest) ~= "table" or manifest.schema ~= BagCache.SCHEMA then
+  if not BagAssetSchema.isValidManifest(manifest) then
     return false
   end
   local provenance = cacheFs:loadLua(BagCache.provenancePath())

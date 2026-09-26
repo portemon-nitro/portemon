@@ -161,9 +161,11 @@ function MonCache.isCatalogReady(cacheFs, expectedMarker)
   return cacheFs:exists(MonCache.catalogPath(), "file")
 end
 
--- True only when the layout stage marker is exact and both selector
--- manifests are present. Manifest presence alone never reads as page
--- readiness.
+-- True only when the layout stage marker is exact and both persisted
+-- selector manifests still satisfy their current consumer-safe contracts.
+-- Publication proved the staged bytes, not that the live files remain
+-- intact, so readiness revalidates both manifests. Manifest presence alone
+-- never reads as page readiness.
 ---@param cacheFs CacheFs
 ---@param expectedMarker string
 ---@return boolean
@@ -171,10 +173,15 @@ function MonCache.isLayoutReady(cacheFs, expectedMarker)
   if cacheFs:read(MonCache.layoutMarkerPath()) ~= expectedMarker then
     return false
   end
-  if not cacheFs:exists(MonCache.iconManifestPath(), "file") then
+  local icons = cacheFs:loadLua(MonCache.iconManifestPath())
+  if not MonAssetSchema.isValidIconManifest(icons) then
     return false
   end
-  return cacheFs:exists(MonCache.portraitManifestPath(), "file")
+  local portraits = cacheFs:loadLua(MonCache.portraitManifestPath())
+  if not MonAssetSchema.isValidPortraitManifest(portraits) then
+    return false
+  end
+  return true
 end
 
 -- Minimum structural envelope for a standalone page PNG (W3C PNG file

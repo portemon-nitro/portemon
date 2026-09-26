@@ -931,6 +931,21 @@ function T.readiness_reports_ready_without_repeating_the_deep_contract_audit()
   Assert.isFalse(FieldUiAssetCache.isReady(cache2, marker), "a wrong schema is not ready")
 end
 
+function T.persisted_manifest_with_rejected_cursor_timing_is_not_ready()
+  local marker = FieldUiAssetCache.marker("rom-sha", "dep-hash")
+  local cache = publishedCache()
+  Assert.isTrue(FieldUiAssetCache.isReady(cache, marker), "the published class reads ready before damage")
+  local manifest = assert(cache:loadLua(FieldUiAssetCache.manifestPath()), "the persisted manifest reads back")
+  Assert.isTrue(FieldUiAssetCache.validateManifest(manifest), "the persisted manifest validates before damage")
+  manifest.dialogueFrames.continueCursor.framePrinterTicks = 0
+  Assert.isFalse(FieldUiAssetCache.validateManifest(manifest), "the corrupted cursor timing is rejected")
+  cache:writeLua(FieldUiAssetCache.manifestPath(), manifest)
+  Assert.isFalse(
+    FieldUiAssetCache.isReady(cache, marker),
+    "a persisted manifest with rejected cursor timing is not ready"
+  )
+end
+
 function T.continuation_cursor_cycle_accepts_any_four_phase_sequence()
   local alternate = validManifest()
   alternate.dialogueFrames.continueCursor.cycle = { 0, 1, 0, 1 }

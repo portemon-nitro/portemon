@@ -1237,6 +1237,28 @@ function T.cache_readiness_requires_every_browse_variant()
   Assert.isFalse(BagCache.isReady(cacheFs, marker), "a missing browse count variant is not ready")
 end
 
+function T.persisted_manifest_with_rejected_framing_cadence_is_not_ready()
+  local manifest = validDynamicManifest()
+  local marker = BagCache.marker("deadbeef", "feedface")
+  local cacheFs = CacheFs.forVersion("heartgold", FakeCache.new())
+  cacheFs:writeLua(BagCache.manifestPath(), manifest)
+  local ok, paths = pcall(BagCache.referencedPaths, manifest)
+  Assert.isTrue(ok, "the cache must resolve the seven-variant manifest")
+  assert(paths ~= nil, "a resolvable manifest must list its paths")
+  for _, path in ipairs(paths) do
+    cacheFs:write(path, "payload")
+  end
+  cacheFs:writeLua(BagCache.provenancePath(), { cacheFormat = BagCache.FORMAT, schema = BagCache.SCHEMA })
+  cacheFs:write(BagCache.markerPath(), marker)
+  Assert.isTrue(BagCache.isReady(cacheFs, marker), "the complete seven-variant class is ready before damage")
+  local persisted = assert(cacheFs:loadLua(BagCache.manifestPath()), "the persisted manifest reads back")
+  Assert.isTrue(BagAssetSchema.isValidManifest(persisted), "the persisted manifest validates before damage")
+  persisted.hero.presentation.framing.transitionTicks = 0
+  Assert.isFalse(BagAssetSchema.isValidManifest(persisted), "the corrupted framing cadence is rejected")
+  cacheFs:writeLua(BagCache.manifestPath(), persisted)
+  Assert.isFalse(BagCache.isReady(cacheFs, marker), "a persisted manifest with a rejected framing cadence is not ready")
+end
+
 -- The strip contract is the current focus-manifest shape above.
 local function validStripManifest()
   return validFocusManifest()

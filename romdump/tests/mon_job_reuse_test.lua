@@ -574,4 +574,61 @@ function T.summary_dispatch_reads_published_results_without_recompiling()
   Assert.isTrue(MonCache.isReady(cache, outcome.result.marker), "the staged summary reads ready")
 end
 
+function T.persisted_layout_manifest_corruption_blocks_worker_reuse()
+  local ArtifactJobs = require("romdump.src.build.ArtifactJobs")
+  local MonAssetSchema = require("libs.assets.src.MonAssetSchema")
+  local romFs = syntheticRomFs()
+  local cache = newCache()
+  local catalog = assert(MonCatalogCompiler.compileCatalog(romFs, { versionId = "heartgold" }))
+  local planned = assert(MonPresentationCompiler.plan(romFs, catalog))
+  local _, layoutMarker = publishCatalogAndLayout(cache, catalog, planned)
+  local plans = { iconPageIds = planned.icons.pageIds, portraitPageIds = planned.portraits.pageIds }
+  local handoffReady, _ = MonCacheWriter.isLayoutSourceReady(cache, GENERATION, layoutMarker)
+  Assert.isTrue(handoffReady, "the private layout handoff reads ready before damage")
+  Assert.isTrue(MonCache.isLayoutReady(cache, layoutMarker), "the published layout reads ready before damage")
+  Assert.isTrue(
+    ArtifactJobs.validate(cache, GENERATION, "mon-layout", "global", plans),
+    "the intact layout job validates before damage"
+  )
+
+  local validIcons = assert(cache:loadLua(MonCache.iconManifestPath()), "the persisted icon manifest reads back")
+  Assert.isTrue(MonAssetSchema.isValidIconManifest(validIcons), "the icon manifest validates before damage")
+  local iconSelector = assert(validIcons.representative[1], "the icon manifest names a representative entry")
+  local corruptedIcons = assert(cache:loadLua(MonCache.iconManifestPath()), "the icon manifest reloads")
+  corruptedIcons.entries[iconSelector].frames = nil
+  Assert.isFalse(MonAssetSchema.isValidIconManifest(corruptedIcons), "the corrupted icon manifest is rejected")
+  cache:writeLua(MonCache.iconManifestPath(), corruptedIcons)
+  Assert.isFalse(MonCache.isLayoutReady(cache, layoutMarker), "the icon-corrupted layout is not ready")
+  Assert.isFalse(
+    ArtifactJobs.validate(cache, GENERATION, "mon-layout", "global", plans),
+    "the icon-corrupted layout job must not validate"
+  )
+
+  cache:writeLua(MonCache.iconManifestPath(), validIcons)
+  local recoveredHandoff, _ = MonCacheWriter.isLayoutSourceReady(cache, GENERATION, layoutMarker)
+  Assert.isTrue(recoveredHandoff, "the private handoff survives the icon restore")
+  Assert.isTrue(MonCache.isLayoutReady(cache, layoutMarker), "the restored layout reads ready again")
+  Assert.isTrue(
+    ArtifactJobs.validate(cache, GENERATION, "mon-layout", "global", plans),
+    "the restored layout job validates again"
+  )
+
+  local validPortraits =
+    assert(cache:loadLua(MonCache.portraitManifestPath()), "the persisted portrait manifest reads back")
+  Assert.isTrue(MonAssetSchema.isValidPortraitManifest(validPortraits), "the portrait manifest validates before damage")
+  local portraitSelector = assert(validPortraits.representative[1], "the portrait manifest names a representative")
+  local corruptedPortraits = assert(cache:loadLua(MonCache.portraitManifestPath()), "the portrait manifest reloads")
+  corruptedPortraits.entries[portraitSelector].frames = nil
+  Assert.isFalse(
+    MonAssetSchema.isValidPortraitManifest(corruptedPortraits),
+    "the corrupted portrait manifest is rejected"
+  )
+  cache:writeLua(MonCache.portraitManifestPath(), corruptedPortraits)
+  Assert.isFalse(MonCache.isLayoutReady(cache, layoutMarker), "the portrait-corrupted layout is not ready")
+  Assert.isFalse(
+    ArtifactJobs.validate(cache, GENERATION, "mon-layout", "global", plans),
+    "the portrait-corrupted layout job must not validate"
+  )
+end
+
 return { tests = T }

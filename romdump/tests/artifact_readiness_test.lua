@@ -1352,6 +1352,45 @@ function T.damaged_mon_page_fails_controlled_audit_until_the_leaf_is_restored()
   )
 end
 
+function T.persisted_structural_corruption_is_cold_through_worker_dispatch()
+  local FieldUiAssetCache = require("libs.assets.src.field.FieldUiAssetCache")
+  local BagCache = require("libs.assets.src.BagCache")
+  local uiCache = newCache()
+  publishUiFamily(uiCache)
+  Assert.isTrue(
+    ArtifactJobs.validate(uiCache, GENERATION, "field-ui", "global", {}),
+    "the intact field-ui job validates before damage"
+  )
+  local uiManifest = assert(uiCache:loadLua(FieldUiAssetCache.manifestPath()), "the persisted ui manifest reads back")
+  uiManifest.dialogueFrames.continueCursor.framePrinterTicks = 0
+  Assert.isFalse(FieldUiAssetCache.validateManifest(uiManifest), "the corrupted ui manifest is rejected")
+  uiCache:writeLua(FieldUiAssetCache.manifestPath(), uiManifest)
+  local uiMarker = uiCache:read(FieldUiAssetCache.markerPath())
+  Assert.isFalse(FieldUiAssetCache.isReady(uiCache, uiMarker), "the corrupted field-ui class is not ready")
+  Assert.isFalse(
+    ArtifactJobs.validate(uiCache, GENERATION, "field-ui", "global", {}),
+    "the corrupted field-ui job must not validate"
+  )
+
+  local bagCache = newCache()
+  publishBagFamily(bagCache)
+  Assert.isTrue(
+    ArtifactJobs.validate(bagCache, GENERATION, "bag", "global", {}),
+    "the intact bag job validates before damage"
+  )
+  local bagManifest = assert(bagCache:loadLua(BagCache.manifestPath()), "the persisted bag manifest reads back")
+  bagManifest.hero.presentation.framing.transitionTicks = 0
+  local BagAssetSchema = require("libs.assets.src.BagAssetSchema")
+  Assert.isFalse(BagAssetSchema.isValidManifest(bagManifest), "the corrupted bag manifest is rejected")
+  bagCache:writeLua(BagCache.manifestPath(), bagManifest)
+  local bagMarker = bagCache:read(BagCache.markerPath())
+  Assert.isFalse(BagCache.isReady(bagCache, bagMarker), "the corrupted bag class is not ready")
+  Assert.isFalse(
+    ArtifactJobs.validate(bagCache, GENERATION, "bag", "global", {}),
+    "the corrupted bag job must not validate"
+  )
+end
+
 local module = {
   beforeAll = function()
     for _, path in ipairs({
