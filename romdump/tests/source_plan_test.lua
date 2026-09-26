@@ -252,56 +252,6 @@ local function openSession(generation, pool, epoch)
   })
 end
 
--- The scheduler trusts inventory membership that is internally coherent:
--- bank and record lists only need to ascend without duplicates so concrete
--- job enumeration stays deterministic. Re-proving the exact producer rule
--- inside validation would reject a coherent inventory for disagreeing with
--- the compiler that produced it.
-function T.scheduler_accepts_internally_coherent_membership_without_reproving_its_producer()
-  local FieldMessageCompiler = require("romdump.src.digest.ui.FieldMessageCompiler")
-  local generation = "coherent-membership-generation"
-  local function warmPlan()
-    return {
-      schema = SourcePlan.SCHEMA,
-      versionId = "heartgold",
-      romSha1 = string.rep("a", 40),
-      generationId = generation,
-      producerId = PRODUCER_ID,
-      world = {
-        maps = { { id = 7 }, { id = 9 } },
-        analysis = { excluded = { { id = 3, reason = "placeholder header" } } },
-      },
-      fieldCellIndexBundle = { index = { matrices = {} }, indexMarker = "synthetic-index-marker" },
-      scriptPlan = { members = { { memberId = 1 } }, generationKey = "synthetic-generation" },
-      audioPlan = { index = { version = "heartgold" }, bankPlans = {} },
-      audioIdentity = { romSha1 = string.rep("a", 40), sdatSha1 = string.rep("e", 40), sdatFileId = 11 },
-      messageBankIds = FieldMessageCompiler.requiredBankIds(),
-      mapDataIds = FieldMapDataCompiler.supportedMapIds(),
-      mapCellKeys = { [7] = {}, [9] = {} },
-    }
-  end
-  local function trimmed(ids)
-    local out = {}
-    for index = 1, #ids - 1 do
-      out[#out + 1] = ids[index]
-    end
-    return out
-  end
-  Assert.isTrue(SourcePlan.validate(warmPlan(), identity(generation)), "the producer inventory validates")
-  local alteredBanks = warmPlan()
-  alteredBanks.messageBankIds = trimmed(FieldMessageCompiler.requiredBankIds())
-  Assert.isTrue(
-    SourcePlan.validate(alteredBanks, identity(generation)),
-    "the scheduler accepts coherent bank membership without re-proving its producer"
-  )
-  local alteredRecords = warmPlan()
-  alteredRecords.mapDataIds = trimmed(FieldMapDataCompiler.supportedMapIds())
-  Assert.isTrue(
-    SourcePlan.validate(alteredRecords, identity(generation)),
-    "the scheduler accepts coherent record membership without re-proving its producer"
-  )
-end
-
 local function firstOrdinaryMapId()
   local eligible = nil
   for map in MapCatalog.all() do
@@ -1108,6 +1058,69 @@ function T.staged_inventory_reads_back_and_rejects_tampering()
   local missing, missingReason = SourcePlan.read(CacheFs.forVersion("heartgold", FakeCache.new()), identity(generation))
   Assert.isNil(missing, "an empty cache publishes no inventory")
   Assert.notNil(missingReason, "an empty cache names its pending state")
+end
+
+-- A persisted inventory that drops one required message bank stays sorted
+-- and unique but is no longer exhaustive: the reader must refuse it so
+-- the scheduler never certifies a truncated bank universe.
+function T.persisted_inventory_missing_a_required_bank_is_rejected()
+  local FieldMessageCompiler = require("romdump.src.digest.ui.FieldMessageCompiler")
+  local cacheFs = CacheFs.forVersion("heartgold", FakeCache.new())
+  local generation = "truncated-bank-generation"
+  local plan = stageSynthetic(cacheFs, generation)
+  local required = FieldMessageCompiler.requiredBankIds()
+  Assert.isTrue(#required > 1, "the producer bank list carries more than one member")
+  local trimmed = {}
+  for index = 1, #required - 1 do
+    trimmed[#trimmed + 1] = required[index]
+  end
+  plan.messageBankIds = trimmed
+  cacheFs:writeLua(SourcePlan.PATH, plan)
+  local reread, reason = SourcePlan.read(cacheFs, identity(generation))
+  Assert.isNil(reread, "a persisted inventory missing a required bank is not adopted")
+  Assert.notNil(reason, "the rejection names its cause")
+  Assert.isTrue(
+    tostring(reason):find("message bank", 1, true) ~= nil,
+    "the rejection identifies bank disagreement: " .. tostring(reason)
+  )
+end
+
+-- A persisted inventory that drops one supported field record stays
+-- sorted and unique but is no longer exhaustive: the reader must refuse
+-- it so exhaustive scheduling never silently omits that record.
+function T.persisted_inventory_missing_a_supported_record_is_rejected()
+  local cacheFs = CacheFs.forVersion("heartgold", FakeCache.new())
+  local generation = "truncated-record-generation"
+  local plan = stageSynthetic(cacheFs, generation)
+  local supported = FieldMapDataCompiler.supportedMapIds()
+  Assert.isTrue(#supported > 1, "the producer record list carries more than one member")
+  local trimmed = {}
+  for index = 1, #supported - 1 do
+    trimmed[#trimmed + 1] = supported[index]
+  end
+  plan.mapDataIds = trimmed
+  cacheFs:writeLua(SourcePlan.PATH, plan)
+  local reread, reason = SourcePlan.read(cacheFs, identity(generation))
+  Assert.isNil(reread, "a persisted inventory missing a supported record is not adopted")
+  Assert.notNil(reason, "the rejection names its cause")
+  Assert.isTrue(
+    tostring(reason):find("field record", 1, true) ~= nil,
+    "the rejection identifies record disagreement: " .. tostring(reason)
+  )
+end
+
+-- The exact current producer membership keeps reading back: the stronger
+-- boundary accepts the authoritative bank and record lists with no source
+-- compilation or dump access.
+function T.exact_producer_membership_reads_back_successfully()
+  local FieldMessageCompiler = require("romdump.src.digest.ui.FieldMessageCompiler")
+  local cacheFs = CacheFs.forVersion("heartgold", FakeCache.new())
+  local generation = "exact-membership-generation"
+  local plan = stageSynthetic(cacheFs, generation)
+  local reread = assert(SourcePlan.read(cacheFs, identity(generation)), "the exact producer inventory reads back")
+  Assert.deepEqual(reread.messageBankIds, FieldMessageCompiler.requiredBankIds(), "bank membership round-trips exactly")
+  Assert.deepEqual(reread.mapDataIds, FieldMapDataCompiler.supportedMapIds(), "record membership round-trips exactly")
+  Assert.deepEqual(reread.messageBankIds, plan.messageBankIds, "the round trip preserves the staged banks")
 end
 
 function T.field_record_membership_uses_the_source_rule()
