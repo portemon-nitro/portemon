@@ -286,6 +286,39 @@ function T.queued_transitions_interpolate_shortest_arc_without_interruption()
   end, "construction with an unknown gender fails")
 end
 
+-- A manifest-supplied positive duration paces the framing interpolation:
+-- construction opens at the baseline and the opening transition lands
+-- exactly on its target tick, with pocket switches paced the same way.
+function T.manifest_duration_drives_framing_settlement()
+  local fixture = framingManifest()
+  fixture.hero.presentation.framing.transitionTicks = 3
+  local male = assert(fixture.hero.presentation.framing.byGender.male, "the fixture carries the male pocket framing")
+  local baseline = assert(fixture.hero.presentation.framing.baseline.male, "the fixture carries the male baseline")
+  local presenter = BagHeroPresenter.new({ manifest = fixture, gender = "male" })
+  assertFraming(framingOf(presenter, "construction"), baseline, "construction opens at the neutral baseline")
+  presenter:updateFixed()
+  presenter:updateFixed()
+  local ongoing = framingOf(presenter, "the in-flight transition")
+  Assert.near(ongoing.distance, 100 + 100 * 2 / 3, 1e-9, "the opening transition has not settled before its final tick")
+  presenter:updateFixed()
+  assertFraming(
+    framingOf(presenter, "the settled pocket"),
+    assert(male.items, "the fixture carries the male items framing"),
+    "three ticks settle the requested pocket"
+  )
+  presenter:selectPocket("balls")
+  presenter:updateFixed()
+  presenter:updateFixed()
+  local switched = framingOf(presenter, "the switched transition")
+  Assert.near(switched.distance, 200 + 100 * 2 / 3, 1e-9, "a pocket switch has not settled before its final tick")
+  presenter:updateFixed()
+  assertFraming(
+    framingOf(presenter, "the switched pocket"),
+    assert(male.balls, "the fixture carries the male balls framing"),
+    "a pocket switch settles on the same manifest duration"
+  )
+end
+
 -- Each status carries a fresh framing record: mutating a published
 -- snapshot never moves the presenter-owned interpolation.
 function T.published_framing_is_a_fresh_record_per_call()
