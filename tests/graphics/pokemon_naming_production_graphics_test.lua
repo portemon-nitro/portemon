@@ -203,7 +203,7 @@ local function activeActors(runtime)
   return actors
 end
 
-local function reachNaming(state)
+local function reachNaming(state, observeContextChoice)
   local runtime = assert(state.runtime)
   local firstModal
   advanceUntil(state, "lab map entry", function()
@@ -234,6 +234,11 @@ local function reachNaming(state)
     end
     local contextChoice = runtime.contextChoiceProvider
     if contextChoice and contextChoice:isActive() then
+      if observeContextChoice then
+        observeContextChoice(contextChoice:status())
+        observeContextChoice = nil
+        Assert.isTrue(contextChoice:isActive(), "the real Elm choice waits for a fresh confirmation")
+      end
       runtime:pressAction()
       step(state)
       runtime:releaseAction()
@@ -367,6 +372,19 @@ local function regionChanged(first, second, placement, logical)
   return false
 end
 
+local function assertPixelsChangedInsideFrame(image, comparison, frame)
+  for y = math.max(0, frame.y), math.min(image:getHeight(), frame.y + frame.height) - 1 do
+    for x = math.max(0, frame.x), math.min(image:getWidth(), frame.x + frame.width) - 1 do
+      local red, green, blue, alpha = image:getPixel(x, y)
+      local otherRed, otherGreen, otherBlue, otherAlpha = comparison:getPixel(x, y)
+      if red ~= otherRed or green ~= otherGreen or blue ~= otherBlue or alpha ~= otherAlpha then
+        return
+      end
+    end
+  end
+  Assert.fail("the real Elm choice must change canvas pixels inside its production frame")
+end
+
 local function verifyVersion(scope, versionId)
   local audioOutput = FakeAudioOutput.new()
   local state = assert(FieldState.new(newGame(versionId), {
@@ -377,8 +395,45 @@ local function verifyVersion(scope, versionId)
       state:dispose()
     end,
   })
-  reachNaming(state)
   local runtime = assert(state.runtime)
+  local yesNoRenderer = assert(state.presentationResources.yesNoRenderer)
+  local originalLayout = yesNoRenderer.layout
+  local contextChoiceLayout
+  local contextChoiceStatus
+  yesNoRenderer.layout = function(self, status, ...)
+    contextChoiceStatus = status
+    contextChoiceLayout = originalLayout(self, status, ...)
+    return contextChoiceLayout
+  end
+  local width, height = love.graphics.getDimensions()
+  local contextCanvas = scope:own(love.graphics.newCanvas(width, height))
+  local contextChoiceObservations = 0
+  reachNaming(state, function(providerStatus)
+    contextChoiceObservations = contextChoiceObservations + 1
+    Assert.equal(providerStatus.state, "active", "the real Elm script owns an active contextual choice")
+    Assert.equal(providerStatus.selected, 0, "the real Elm prompt initially selects Yes")
+
+    local originalDraw = yesNoRenderer.draw
+    yesNoRenderer.draw = function() end
+    local withoutChoice = renderPixels(scope, state, contextCanvas)
+    yesNoRenderer.draw = originalDraw
+    local withChoice = renderPixels(scope, state, contextCanvas)
+
+    Assert.notNil(contextChoiceLayout, "the active Elm choice reaches FieldYesNoRenderer")
+    local layout = assert(contextChoiceLayout)
+    Assert.equal(contextChoiceStatus.active, true, "the renderer receives an active choice")
+    local options = runtime.scripts.dialogueHost:yesNoOptions()
+    Assert.equal(contextChoiceStatus.yesText, options.yesText, "the Elm choice uses localized Yes text")
+    Assert.equal(contextChoiceStatus.noText, options.noText, "the Elm choice uses localized No text")
+    Assert.equal(contextChoiceStatus.frameIndex, options.frameIndex, "the Elm choice uses the player frame")
+    assertPixelsChangedInsideFrame(withChoice, withoutChoice, assert(layout.placement).frame)
+  end)
+  yesNoRenderer.layout = originalLayout
+  Assert.equal(contextChoiceObservations, 1, "the real Elm starter question is observed before confirmation")
+  Assert.isFalse(
+    runtime.contextChoiceProvider:isActive(),
+    "only after the rendered choice is confirmed does the real script continue"
+  )
 
   local status = assert(state.runtime.pokemonNaming:status(), "the retail script owns an active naming session")
   Assert.equal(status.snapshot.subject.kind, "pokemon", "the task publishes the selected mon as naming subject")

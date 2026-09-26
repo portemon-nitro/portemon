@@ -138,6 +138,11 @@ local function boot(withCover)
           end,
         },
       },
+      contextChoiceProvider = {
+        status = function()
+          return nil
+        end,
+      },
       signpost = {
         isModal = function()
           return false

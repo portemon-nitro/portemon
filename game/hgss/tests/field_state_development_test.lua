@@ -74,6 +74,11 @@ local function drawableState(development)
           end,
         },
       },
+      contextChoiceProvider = {
+        status = function()
+          return nil
+        end,
+      },
       signpost = {
         isModal = function()
           return false

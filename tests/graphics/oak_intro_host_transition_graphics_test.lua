@@ -240,6 +240,11 @@ local function bootCoveredField(scope)
         return 1
       end,
       unbindPartyIconPreparation = function(_, _) end,
+      contextChoiceProvider = {
+        status = function()
+          return nil
+        end,
+      },
       fieldEntranceIndicatorAsset = {
         model = { batches = {}, materials = {} },
         effects = {

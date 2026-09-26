@@ -66,6 +66,11 @@ local function drawState(topologyProvider, pollTopology)
         end,
       },
     },
+    contextChoiceProvider = {
+      status = function()
+        return nil
+      end,
+    },
     signpost = {
       isModal = function()
         return false
@@ -290,6 +295,11 @@ local function fieldStateWithCapturedUi(worldViewport, cameraZoom, viewportWidth
             return yesNoStatus
           end,
         },
+      },
+      contextChoiceProvider = {
+        status = function()
+          return nil
+        end,
       },
       screenTopology = ScreenTopology.oneDisplay({
         id = "main",

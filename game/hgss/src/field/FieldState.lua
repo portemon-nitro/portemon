@@ -448,7 +448,20 @@ function FieldState:_drawFieldAttachedUi(resources, hostStatus, alpha)
     return
   end
   local dialogueModal = self.runtime.dialogue:isModal()
-  local yesNo = self.runtime.scripts.dialogueHost:yesNoPresentation()
+  local dialogueHost = self.runtime.scripts.dialogueHost
+  local yesNo = dialogueHost:yesNoPresentation()
+  local contextChoice = assert(self.runtime.contextChoiceProvider):status()
+  assert(not (yesNo and contextChoice), "field cannot present opcode-63 and contextual two-choice prompts at once")
+  if yesNo == nil and contextChoice ~= nil then
+    local options = dialogueHost:yesNoOptions()
+    yesNo = {
+      active = true,
+      selectedIndex = contextChoice.selected,
+      yesText = options.yesText,
+      noText = options.noText,
+      frameIndex = options.frameIndex,
+    }
+  end
   local signpostModal = self.runtime.signpost:isModal()
   local fieldScale
   if dialogueModal or yesNo or signpostModal then

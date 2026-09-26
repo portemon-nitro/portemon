@@ -132,6 +132,11 @@ local function drawableState(options)
         end,
       },
     },
+    contextChoiceProvider = {
+      status = function()
+        return nil
+      end,
+    },
     signpost = {
       isModal = function()
         return options.signpostModal == true

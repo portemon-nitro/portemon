@@ -53,7 +53,7 @@ local function topology(width, height, safeRect)
   })
 end
 
-local function openScriptDialogueAndChoice(state)
+local function openScriptDialogue(state)
   local host = assert(state.runtime.scripts.dialogueHost)
   host:startPrint("msg.hgss.0542.00034", {}, {})
   for _ = 1, 600 do
@@ -64,6 +64,11 @@ local function openScriptDialogueAndChoice(state)
   end
   Assert.isTrue(host:printProgress().done, "the script-owned message printer must finish")
   Assert.isTrue(state.runtime.dialogue:isModal(), "the script-owned dialogue must remain open")
+  return host
+end
+
+local function openScriptDialogueAndChoice(state)
+  local host = openScriptDialogue(state)
   host:askYesNo()
   Assert.notNil(host:yesNoPresentation(), "the script-owned choice must be active")
 end
@@ -137,6 +142,133 @@ local function assertChangedPixelsInsideFrame(image, comparison, frame)
     end
   end
   Assert.fail("the scheduler-owned Yes/No frame must change pixels inside its production frame bounds")
+end
+
+local function assertContextChoiceComposition(scope, width, height, safeRect, dualDisplay)
+  local originalGetDimensions = love.graphics.getDimensions
+  rawset(love.graphics, "getDimensions", function()
+    return width, height
+  end)
+  local state
+  local resolvedLayout
+  local resolvedStatus
+  local resolvedInputs
+  local ok, err = xpcall(function()
+    local topologyProvider
+    if dualDisplay then
+      topologyProvider = function()
+        return ScreenTopology.dualDisplay({
+          id = "upper",
+          rect = { x = 0, y = 0, width = 256, height = 192 },
+          role = "world",
+          touch = false,
+        }, {
+          id = "lower",
+          rect = { x = 256, y = 0, width = 256, height = 192 },
+          role = "auxiliary",
+          touch = true,
+        })
+      end
+    else
+      topologyProvider = function()
+        return topology(width, height, safeRect)
+      end
+    end
+    state = FieldState.new(freshGame(readyVersion()), {
+      topologyProvider = topologyProvider,
+      derivedAssets = FieldStatePresentationFixture.iconHost().derivedAssets,
+    })
+    scope:own({
+      release = function()
+        state:dispose()
+      end,
+    })
+
+    local renderer = assert(state.presentationResources).yesNoRenderer
+    local originalLayout = renderer.layout
+    renderer.layout = function(self, status, screenTopology, dialogueBox, adaptedHost)
+      resolvedStatus = status
+      resolvedInputs = { screenTopology = screenTopology, dialogueBox = dialogueBox, adaptedHost = adaptedHost }
+      resolvedLayout = originalLayout(self, status, screenTopology, dialogueBox, adaptedHost)
+      return resolvedLayout
+    end
+
+    local runtime = assert(state.runtime)
+    for _ = 1, 120 do
+      if runtime.session.mapEntryStage == nil then
+        break
+      end
+      state:draw()
+      state:update(1 / 60)
+    end
+    Assert.isNil(runtime.session.mapEntryStage, "production field entry settles before contextual choice")
+
+    local dialogueHost = openScriptDialogue(state)
+    local dialogueOnly = render(scope, state, width, height)
+    local provider = assert(runtime.contextChoiceProvider)
+    provider:open()
+    Assert.isNil(dialogueHost:yesNoPresentation(), "context choice stays separate from opcode-63 Yes/No")
+    Assert.deepEqual(provider:status(), { state = "active", selected = 0 })
+    local contextChoice = render(scope, state, width, height)
+
+    Assert.notNil(resolvedLayout, "active context choice reaches the shared field Yes/No renderer")
+    Assert.equal(resolvedStatus.active, true, "the normalized context choice is active")
+    Assert.equal(resolvedStatus.selectedIndex, 0, "the renderer observes the provider's initial selection")
+    local options = dialogueHost:yesNoOptions()
+    Assert.equal(resolvedStatus.yesText, options.yesText, "context choice reuses localized Yes text")
+    Assert.equal(resolvedStatus.noText, options.noText, "context choice reuses localized No text")
+    Assert.equal(resolvedStatus.frameIndex, options.frameIndex, "context choice reuses the player frame")
+    local placement = assert(resolvedLayout.placement)
+    assertChangedPixelsInsideFrame(contextChoice, dialogueOnly, placement.frame)
+
+    if dualDisplay then
+      Assert.equal(resolvedLayout.presentation, "source", "dual-display choice uses auxiliary source coordinates")
+      Assert.equal(assert(resolvedLayout.surface).role, "auxiliary", "choice is placed on the auxiliary display")
+      Assert.isTrue(placement.frame.x >= 256, "source choice stays on the auxiliary surface")
+    else
+      Assert.equal(resolvedLayout.presentation, "adapted", "one-display choice uses adapted field coordinates")
+      Assert.notNil(resolvedInputs.dialogueBox, "one-display contextual choice attaches to the open dialogue")
+      Assert.equal(
+        placement.frame.x + placement.frame.width,
+        resolvedInputs.dialogueBox.x + resolvedInputs.dialogueBox.width,
+        "context choice aligns its right edge with the dialogue"
+      )
+      Assert.equal(
+        placement.frame.y + placement.frame.height + 2 * placement.scale,
+        resolvedInputs.dialogueBox.y,
+        "context choice keeps the existing dialogue gap"
+      )
+    end
+
+    provider:select(1)
+    local selectedNo = render(scope, state, width, height)
+    Assert.equal(provider:status().selected, 1, "semantic navigation updates the provider selection")
+    Assert.equal(resolvedStatus.selectedIndex, 1, "the next layout observes the selected No row")
+    assertChangedPixelsInsideFrame(selectedNo, contextChoice, assert(resolvedLayout.placement).frame)
+    provider:close()
+
+    dialogueHost:askYesNo()
+    provider:open()
+    local compositionValid, compositionError = pcall(function()
+      render(scope, state, width, height)
+    end)
+    Assert.isFalse(compositionValid, "simultaneous field two-choice prompts are rejected")
+    Assert.isTrue(
+      tostring(compositionError):find(
+        "field cannot present opcode-63 and contextual two-choice prompts at once",
+        1,
+        true
+      ) ~= nil,
+      "the invalid modal composition is identified"
+    )
+    provider:close()
+    dialogueHost:closeYesNo()
+    dialogueHost:close(true)
+  end, debug.traceback)
+  rawset(love.graphics, "getDimensions", originalGetDimensions)
+  if not ok then
+    error(err, 0)
+  end
 end
 
 function T.message_bearing_scheduler_script_renders_yes_no_in_default_field_topology(scope)
@@ -388,6 +520,16 @@ end
 
 function T.tall_standalone_choice_stays_complete_inside_the_attached_viewport(scope)
   assertMenuComposition(scope, 390, 844, { x = 12, y = 24, width = 366, height = 796 })
+end
+
+function T.context_choice_attaches_on_wide_four_three_and_tall_hosts(scope)
+  assertContextChoiceComposition(scope, 1280, 720)
+  assertContextChoiceComposition(scope, 640, 480)
+  assertContextChoiceComposition(scope, 390, 844, { x = 12, y = 24, width = 366, height = 796 })
+end
+
+function T.context_choice_uses_auxiliary_source_layout_on_dual_display(scope)
+  assertContextChoiceComposition(scope, 512, 192, nil, true)
 end
 
 local suite = GraphicsSmoke.suite(T)
