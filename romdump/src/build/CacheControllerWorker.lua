@@ -34,6 +34,11 @@ local CacheControllerWorker = {}
 -- inspects frame timing.
 local LIVE_TICK_SECONDS = 0.005
 
+-- Per-flush semantic observation work: one terminal-request sweep
+-- re-observes at most this many pending application requests, so a large
+-- retained set cannot turn a controller step into an unbounded scan.
+local REQUEST_OBSERVATIONS_PER_STEP = 16
+
 -- Fallback sleep when no LOVE timer is present. Named (not inline
 -- anonymous) per repository source policy; run's fallback semantics
 -- are unchanged.
@@ -97,6 +102,8 @@ function Worker.new(control, reply)
     frozenProducerRoot = nil,
     frozenProducerId = nil,
     requests = {},
+    pendingRequestIds = {},
+    pendingRequestCursor = 1,
     deferredSelect = nil,
     pendingQuiesce = nil,
     exiting = false,
@@ -134,21 +141,120 @@ function Worker:_emitBarrierResult(epoch, barrierId, kind)
   self.reply:push({ op = "barrier-result", epoch = epoch, barrierId = barrierId, kind = kind })
 end
 
--- Re-observe only the still-pending application-originated request records
--- after session progress and emit exactly one terminal event per settled
--- request. Emitted records leave the table, so a terminal fact can never
--- be pushed twice and memory stays bounded by the selection lifecycle.
+-- Dense pending-request worklist: the request map stays the identity
+-- owner while this sequence plus cursor retains fair traversal order
+-- across flushes. Each record carries its sequence slot so removal is a
+-- single swap with the last entry.
+---@param worker table<string, unknown> controller state owning the request map and pending sequence
+---@param requestId integer application request identity to track
+local function trackPendingRequest(worker, requestId)
+  local record = worker.requests[requestId]
+  assert(record ~= nil, "controller tracks only retained requests")
+  if record.pendingIndex ~= nil then
+    return
+  end
+  local pendingIds = worker.pendingRequestIds
+  pendingIds[#pendingIds + 1] = requestId
+  record.pendingIndex = #pendingIds
+end
+
+---@param worker table<string, unknown> controller state owning the request map and pending sequence
+---@param requestId integer application request identity to drop
+local function dropPendingRequest(worker, requestId)
+  local record = worker.requests[requestId]
+  if record == nil then
+    return
+  end
+  local pendingIds = worker.pendingRequestIds
+  local index = record.pendingIndex
+  worker.requests[requestId] = nil
+  record.pendingIndex = nil
+  if index == nil then
+    return
+  end
+  assert(pendingIds[index] == requestId, "pending slot matches its record")
+  local lastId = pendingIds[#pendingIds]
+  pendingIds[index] = lastId
+  pendingIds[#pendingIds] = nil
+  if lastId ~= requestId then
+    local moved = worker.requests[lastId]
+    assert(moved ~= nil, "pending sequence references only retained requests")
+    moved.pendingIndex = index
+  end
+  if worker.pendingRequestCursor > #pendingIds then
+    worker.pendingRequestCursor = 1
+  end
+end
+
+-- Re-observe still-pending application-originated requests after session
+-- progress and emit exactly one terminal event per settled request. Each
+-- flush visits at most REQUEST_OBSERVATIONS_PER_STEP pending records in
+-- round-robin order from the retained cursor, so controller work stays
+-- bounded while every survivor is eventually revisited. A terminal
+-- removal keeps the cursor on its slot so the swapped replacement is
+-- examined next; a per-flush observed set skips a replacement that was
+-- already observed earlier in the same flush after a wrap, so no record
+-- is re-observed twice in one flush. Emitted records leave both the map
+-- and the sequence, so a terminal fact can never be pushed twice and
+-- memory stays bounded by the selection lifecycle.
 function Worker:_flushTerminalRequests()
   if self.session == nil or self.liveEpoch == nil then
     return
   end
+  local pendingIds = self.pendingRequestIds
+  local startCount = #pendingIds
+  if startCount == 0 then
+    return
+  end
   local epoch = self.liveEpoch
-  for requestId, record in pairs(self.requests) do
-    local observation = self:_observe(record.params)
-    if observation.state == "ready" or observation.state == "failed" then
-      self.requests[requestId] = nil
-      self:_emitRequestResult(epoch, requestId, observation)
+  local budget = startCount
+  if budget > REQUEST_OBSERVATIONS_PER_STEP then
+    budget = REQUEST_OBSERVATIONS_PER_STEP
+  end
+  local cursor = self.pendingRequestCursor
+  if type(cursor) ~= "number" or cursor < 1 or cursor > #pendingIds then
+    cursor = 1
+  end
+  local visited = 0
+  ---@type table<integer, boolean> request identities already observed by this flush
+  local observed = {}
+  local skipped = 0
+  while visited < budget and #pendingIds > 0 do
+    if cursor > #pendingIds then
+      cursor = 1
     end
+    local requestId = pendingIds[cursor]
+    if observed[requestId] then
+      cursor = cursor + 1
+      skipped = skipped + 1
+      if skipped > #pendingIds then
+        break
+      end
+    else
+      observed[requestId] = true
+      skipped = 0
+      local record = self.requests[requestId]
+      assert(record ~= nil, "pending sequence references only retained requests")
+      assert(record.pendingIndex == cursor, "pending slot matches its record")
+      local observation = self:_observe(record.params)
+      visited = visited + 1
+      if observation.state == "ready" or observation.state == "failed" then
+        self.pendingRequestCursor = cursor
+        dropPendingRequest(self, requestId)
+        cursor = self.pendingRequestCursor
+        self:_emitRequestResult(epoch, requestId, observation)
+      else
+        cursor = cursor + 1
+        if cursor > #pendingIds then
+          cursor = 1
+        end
+      end
+    end
+  end
+  if #pendingIds == 0 then
+    self.pendingRequestCursor = 1
+  else
+    self.pendingRequestCursor = cursor
   end
 end
 
@@ -366,6 +472,8 @@ function Worker:_applySelect(command)
   self.lastRetiredEpoch = nil
   self.lifecycle = "active"
   self.requests = {}
+  self.pendingRequestIds = {}
+  self.pendingRequestCursor = 1
   self:_answerSelect({ epoch = epoch, ok = true, generationId = identity.generationId })
 end
 
@@ -432,11 +540,16 @@ function Worker:_applyRequest(command)
     })
     return
   end
+  if self.requests[command.requestId] ~= nil then
+    dropPendingRequest(self, command.requestId)
+  end
   self.requests[command.requestId] = { params = params }
   local observation = self:_observe(params)
   if observation.state == "ready" or observation.state == "failed" then
     self.requests[command.requestId] = nil
     self:_emitRequestResult(command.epoch, command.requestId, observation)
+  else
+    trackPendingRequest(self, command.requestId)
   end
 end
 
@@ -452,7 +565,7 @@ function Worker:_applyPromote(command)
   record.params.urgency = "required"
   local observation = self:_observe(record.params)
   if observation.state == "ready" or observation.state == "failed" then
-    self.requests[command.requestId] = nil
+    dropPendingRequest(self, command.requestId)
     self:_emitRequestResult(command.epoch, command.requestId, observation)
   end
 end
@@ -499,6 +612,8 @@ function Worker:_applyRetire(command)
   self.lastRetiredEpoch = command.epoch
   self.liveEpoch = nil
   self.requests = {}
+  self.pendingRequestIds = {}
+  self.pendingRequestCursor = 1
   self.lifecycle = "retiring"
   self:_emitBarrierResult(command.epoch, command.barrierId, "retire")
 end

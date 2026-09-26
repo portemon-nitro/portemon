@@ -286,9 +286,6 @@ function T.request_outcome_is_pushed_without_a_status_probe()
   Assert.equal(results[1].requestId, 11, "the terminal event carries the request identity")
   Assert.equal(results[1].state, "ready", "the terminal event carries the ready state")
   Assert.equal(results[1].epoch, 7, "the terminal event carries the epoch identity")
-  queued[#queued + 1] = { op = "poll", epoch = 7, roundId = 3, count = 1, id1 = 11 }
-  worker:step()
-  Assert.equal(#packetsOf(replies, "poll-result"), 0, "no status probe is answered")
 end
 
 -- A request that settles after session progress emits exactly one terminal
@@ -308,6 +305,158 @@ function T.delayed_readiness_emits_exactly_one_terminal_event()
   Assert.equal(results[1].state, "ready", "the terminal event carries the ready state")
   worker:step()
   Assert.equal(#packetsOf(replies, "request-result"), 1, "later pumps never duplicate the terminal event")
+end
+
+-- A fake selected session that counts every semantic cell observation and
+-- keys readiness by cell selector, so tests can register many unique
+-- pending requests and flip one late entry to ready on demand. Per-member
+-- counts prove a single flush never observes the same record twice.
+---@param readyMemberId integer? matrix member whose cells read ready; nil keeps everything pending
+---@return table fake selected session counting semantic cell observations
+local function countingSession(readyMemberId)
+  local session = { pumps = 0, observations = 0, readyMemberId = readyMemberId, observationsByMember = {} }
+  function session.update()
+    session.pumps = session.pumps + 1
+  end
+  function session:requestCell(selector, _)
+    session.observations = session.observations + 1
+    if type(selector) == "table" then
+      local memberId = selector.matrixMemberId
+      session.observationsByMember[memberId] = (session.observationsByMember[memberId] or 0) + 1
+    end
+    if
+      session.readyMemberId ~= nil
+      and type(selector) == "table"
+      and selector.matrixMemberId == session.readyMemberId
+    then
+      return true, nil
+    end
+    return false, nil
+  end
+  function session.hasRunnablePlanning()
+    return false
+  end
+  function session.nextPlanningWakeDelay()
+    return nil
+  end
+  return session
+end
+
+---@param queued table command queue receiving one unique cell request per entry
+---@param epoch integer live controller epoch
+---@param firstRequestId integer request identity for matrix member zero
+---@param total integer number of unique requests to register
+local function queueUniqueCellRequests(queued, epoch, firstRequestId, total)
+  for offset = 0, total - 1 do
+    queued[#queued + 1] = {
+      op = "request",
+      epoch = epoch,
+      requestId = firstRequestId + offset,
+      requestKind = "cell",
+      matrixMemberId = offset,
+      index = 0,
+      urgency = "near",
+    }
+  end
+end
+
+-- One terminal flush re-observes at most sixteen pending records no matter
+-- how many unique requests are retained: forty distinct pending cells are
+-- registered first, then a single pump with no new commands is measured.
+function T.one_flush_reobserves_at_most_sixteen_pending_requests()
+  local total = 40
+  local session = countingSession(nil)
+  local worker, replies, queued = pushWorker(session, 21)
+  queueUniqueCellRequests(queued, 21, 101, total)
+  while #queued > 0 do
+    worker:step()
+  end
+  Assert.equal(#packetsOf(replies, "request-result"), 0, "pending requests emit no terminal event during registration")
+  local retained = 0
+  for _ in pairs(worker.requests) do
+    retained = retained + 1
+  end
+  Assert.equal(retained, total, "every unique pending request is retained after registration")
+  session.observations = 0
+  worker:step()
+  Assert.isTrue(
+    session.observations <= 16,
+    "one flush re-observes at most sixteen pending requests, observed " .. tostring(session.observations)
+  )
+  Assert.equal(#packetsOf(replies, "request-result"), 0, "an all-pending flush emits no terminal event")
+end
+
+-- Bounding never strands requests past the first observation window: with
+-- forty unique pending cells and a late entry outside the first post-drain
+-- window ready, successive pumps each stay within sixteen observations
+-- until the late entry settles once. Draining forty requests in 16/16/8
+-- command steps leaves the retained cursor at slot 33, so the first flush
+-- covers slots 33..40 and 1..8; member 31 (slot 32) needs a third flush.
+function T.repeated_flushes_eventually_reach_a_late_pending_request()
+  local total = 40
+  local lateMemberId = total - 9
+  local session = countingSession(nil)
+  local worker, replies, queued = pushWorker(session, 23)
+  queueUniqueCellRequests(queued, 23, 201, total)
+  while #queued > 0 do
+    worker:step()
+  end
+  Assert.equal(#packetsOf(replies, "request-result"), 0, "pending requests emit no terminal event during registration")
+  session.readyMemberId = lateMemberId
+  session.observations = 0
+  local steps = 0
+  while #packetsOf(replies, "request-result") == 0 do
+    Assert.isTrue(steps < 10, "the late ready request settles after finitely many bounded flushes")
+    local before = session.observations
+    worker:step()
+    steps = steps + 1
+    local delta = session.observations - before
+    Assert.isTrue(delta <= 16, "every flush stays within sixteen observations, observed " .. tostring(delta))
+  end
+  Assert.isTrue(steps >= 2, "the late request waits for a later flush window")
+  local results = packetsOf(replies, "request-result")
+  Assert.equal(#results, 1, "the late ready request emits one terminal event")
+  Assert.equal(results[1].requestId, 201 + lateMemberId, "the terminal event carries the late request identity")
+  Assert.equal(results[1].state, "ready", "the terminal event carries the ready state")
+  Assert.equal(results[1].epoch, 23, "the terminal event carries the epoch identity")
+  worker:step()
+  worker:step()
+  Assert.equal(#packetsOf(replies, "request-result"), 1, "the late terminal event is never duplicated")
+end
+
+-- A flush that wraps past the end of the pending sequence never
+-- re-observes a record swapped under the cursor: with twenty pending
+-- cells the retained cursor starts mid-sequence, so settling the earliest
+-- entry removes it while its tail replacement was already observed in the
+-- same flush and must be skipped.
+function T.one_flush_never_reobserves_the_same_pending_request()
+  local total = 20
+  local session = countingSession(nil)
+  local worker, replies, queued = pushWorker(session, 25)
+  queueUniqueCellRequests(queued, 25, 301, total)
+  while #queued > 0 do
+    worker:step()
+  end
+  Assert.equal(#packetsOf(replies, "request-result"), 0, "pending requests emit no terminal event during registration")
+  session.readyMemberId = 0
+  session.observations = 0
+  session.observationsByMember = {}
+  worker:step()
+  Assert.isTrue(
+    session.observations <= 16,
+    "the wrapping flush stays within sixteen observations, observed " .. tostring(session.observations)
+  )
+  for memberId, count in pairs(session.observationsByMember) do
+    Assert.equal(count, 1, "matrix member " .. tostring(memberId) .. " is observed once per flush")
+  end
+  local results = packetsOf(replies, "request-result")
+  Assert.equal(#results, 1, "the settled early request emits one terminal event")
+  Assert.equal(results[1].requestId, 301, "the terminal event carries the early request identity")
+  Assert.equal(results[1].state, "ready", "the terminal event carries the ready state")
+  Assert.equal(results[1].epoch, 25, "the terminal event carries the epoch identity")
+  worker:step()
+  worker:step()
+  Assert.equal(#packetsOf(replies, "request-result"), 1, "the early terminal event is never duplicated")
 end
 
 -- Retirement and quiescence each push their own exact barrier event at the

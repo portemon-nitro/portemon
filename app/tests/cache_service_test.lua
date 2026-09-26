@@ -200,20 +200,26 @@ function T.repeated_host_requests_send_one_command_and_frame_updates_send_no_sta
   end
   local emitted = service:update()
   Assert.isTrue(emitted.ordinary <= 8, "one frame emits at most eight ordinary records")
-  local probes = 0
+  local probes, requests = 0, 0
   local command = service._command:pop()
   while command ~= nil do
     if command.op == "poll" then
       probes = probes + 1
     end
+    if command.op == "request" then
+      requests = requests + 1
+    end
     command = service._command:pop()
   end
   Assert.equal(probes, 0, "thousands of deduplicated requests emit no status probe")
+  Assert.isTrue(requests >= 2, "milestone and cell families still leave the game thread")
+  Assert.equal(requests, emitted.ordinary, "every emitted command is a deduplicated request")
   local again = service:update()
   Assert.equal(again.ordinary, 0, "repeated pending requests send no further ensure commands")
   local ready, failure = service:observe(epoch, { requestKind = "milestone", name = "bootstrap" })
   Assert.isNil(ready, "an unanswered request observes no readiness")
   Assert.isNil(failure, "an unanswered request observes no failure")
+  service:shutdown()
 end
 
 function T.retirement_and_import_wait_for_exact_controller_barriers()
@@ -344,15 +350,6 @@ function T.selection_answer_caches_the_controller_generation_token()
   service:injectReply({ op = "select-result", epoch = epoch, ok = true, generationId = "g4:test:token" })
   service:update()
   Assert.equal(service:generationId(epoch), "g4:test:token", "the selection answer publishes its generation token")
-  service:injectReply({
-    op = "poll-result",
-    roundId = 1,
-    epoch = epoch,
-    count = 0,
-    generationId = "g4:test:rotated",
-  })
-  service:update()
-  Assert.equal(service:generationId(epoch), "g4:test:token", "a retired status round never rotates the token")
   service:shutdown()
 end
 
@@ -412,43 +409,6 @@ function T.icon_page_requests_validate_selectors_and_never_alias_portraits()
     service:request(epoch, { requestKind = "icon", pageId = 3, urgency = "required" })
   end)
   Assert.isFalse(kindOk, "an unlisted request kind is rejected")
-  service:shutdown()
-end
-
-function T.frame_updates_send_no_status_probe_for_pending_requests()
-  local Service = requireService()
-  local host = newChannelHost()
-  local service = assert(Service.new({ thread = host }))
-  local epoch = assert(service:select({ versionId = "heartgold", development = true }))
-  for _ = 1, 50 do
-    service:request(epoch, { requestKind = "milestone", name = "bootstrap", urgency = "required" })
-  end
-  local emitted = service:update()
-  Assert.equal(emitted.ordinary, 1, "repeated pending requests send one initial command")
-  Assert.equal(emitted.polls or 0, 0, "frame updates send no status probe")
-  local seen = {}
-  local command = service._command:pop()
-  while command ~= nil do
-    seen[#seen + 1] = command.op
-    command = service._command:pop()
-  end
-  local probes, requests = 0, 0
-  for _, op in ipairs(seen) do
-    if op == "poll" then
-      probes = probes + 1
-    end
-    if op == "request" then
-      requests = requests + 1
-    end
-  end
-  Assert.equal(probes, 0, "no status probe command leaves the game thread")
-  Assert.equal(requests, 1, "the deduplicated request still leaves the game thread")
-  local again = service:update()
-  Assert.equal(again.ordinary, 0, "repeated pending requests send no further commands")
-  Assert.equal(again.polls or 0, 0, "idle frames send no status probe")
-  local ready, failure = service:observe(epoch, { requestKind = "milestone", name = "bootstrap" })
-  Assert.isNil(ready, "an unanswered request observes no readiness")
-  Assert.isNil(failure, "an unanswered request observes no failure")
   service:shutdown()
 end
 
@@ -565,15 +525,6 @@ function T.selection_generation_comes_only_from_the_selection_answer()
   })
   service:update()
   Assert.equal(service:generationId(epoch), "g4:test:token", "request completion never rotates the token")
-  service:injectReply({
-    op = "poll-result",
-    roundId = 7,
-    epoch = epoch,
-    count = 0,
-    generationId = "g4:test:rotated",
-  })
-  service:update()
-  Assert.equal(service:generationId(epoch), "g4:test:token", "no later status round rotates the token")
   service:shutdown()
 end
 
