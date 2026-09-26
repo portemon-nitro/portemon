@@ -86,19 +86,6 @@ function ArtifactJobs.sizeClass(kind)
   return descriptorFor(kind).size
 end
 
---- Read-only inventory of the closed job taxonomy: every kind with a
---- descriptor, in sorted order, as a fresh table. The descriptors
---- themselves stay private and immutable.
----@return string[]
-function ArtifactJobs.descriptorKinds()
-  local kinds = {}
-  for kind in pairs(DESCRIPTORS) do
-    kinds[#kinds + 1] = kind
-  end
-  table.sort(kinds)
-  return kinds
-end
-
 ---@param kind string
 ---@param key string
 ---@return string
@@ -1717,6 +1704,16 @@ DESCRIPTORS = {
     validate = validateSourcePlan,
   },
 }
+
+-- The closed behavior table and the accepted vocabulary describe the same
+-- set from opposite sides: a kind added or removed on only one side is a
+-- programming error, caught here once instead of through a public list.
+for kind in pairs(ArtifactState.KINDS) do
+  assert(DESCRIPTORS[kind] ~= nil, "artifact kind has no descriptor: " .. tostring(kind))
+end
+for kind in pairs(DESCRIPTORS) do
+  assert(ArtifactState.KINDS[kind] == true, "descriptor names an unknown artifact kind: " .. tostring(kind))
+end
 ---@param cacheFs table<string, unknown>
 ---@param generationId string
 ---@param kind string
@@ -1766,6 +1763,55 @@ function ArtifactJobs.validate(cacheFs, generationId, kind, key, plans, identity
   return true, validatedPlan
 end
 
+-- One private projection from a validated source inventory to the
+-- scheduler-facing plans view: nested bundles stay borrowed read-only
+-- while the three scheduler id lists are freshly derived in sorted
+-- order. Both published-plan reconstruction and worker readiness share
+-- it so the two paths cannot diverge.
+---@param plan table<string, unknown> validated source inventory record
+---@return ArtifactJobs.Plans
+local function plansFromSourcePlan(plan)
+  local audioPlan = assert(plan.audioPlan, "source plans carry the audio membership")
+  ---@cast audioPlan table<string, unknown>
+  local audioBankPlans = assert(audioPlan.bankPlans, "source plans carry the audio bank closures")
+  ---@cast audioBankPlans table[]
+  local audioBankIds = {}
+  for _, bankPlan in ipairs(audioBankPlans) do
+    audioBankIds[#audioBankIds + 1] = assert(bankPlan.bankId, "source plans carry the audio bank identity")
+  end
+  table.sort(audioBankIds)
+  local scriptPlan = assert(plan.scriptPlan, "source plans carry the script membership")
+  ---@cast scriptPlan table<string, unknown>
+  local scriptMembers = assert(scriptPlan.members, "source plans carry the script membership")
+  ---@cast scriptMembers table[]
+  local scriptMemberIds = {}
+  for _, member in ipairs(scriptMembers) do
+    scriptMemberIds[#scriptMemberIds + 1] = assert(member.memberId, "source plans carry the script member identity")
+  end
+  table.sort(scriptMemberIds)
+  local world = assert(plan.world, "source plans carry the world membership")
+  ---@cast world table<string, unknown>
+  local worldMaps = assert(world.maps, "source plans carry the world membership")
+  ---@cast worldMaps table[]
+  local mapIds = {}
+  for _, record in ipairs(worldMaps) do
+    mapIds[#mapIds + 1] = assert(record.id, "source plans carry the world map identity")
+  end
+  table.sort(mapIds)
+  return {
+    indexBundle = plan.fieldCellIndexBundle,
+    scriptPlan = plan.scriptPlan,
+    audioPlan = plan.audioPlan,
+    messageBankIds = plan.messageBankIds,
+    audioBankIds = audioBankIds,
+    scriptMemberIds = scriptMemberIds,
+    mapDataIds = plan.mapDataIds,
+    mapIds = mapIds,
+    mapCellKeys = plan.mapCellKeys,
+    world = plan.world,
+  }
+end
+
 ---@param cacheFs CacheFs
 ---@param identity { versionId: string, generationId: string, producerId: string }
 ---@return ArtifactJobs.Plans|nil
@@ -1805,49 +1851,12 @@ function ArtifactJobs.publishedPlans(cacheFs, identity)
   if type(icons) ~= "table" or type(portraits) ~= "table" then
     return nil, "mon manifests are not published"
   end
-  local audioBankIds = {}
   ---@cast plan table<string, unknown>
-  local audioPlan = assert(plan.audioPlan, "published plans need the audio membership")
-  ---@cast audioPlan table<string, unknown>
-  local audioBankPlans = audioPlan.bankPlans
-  ---@cast audioBankPlans table[]
-  for _, bankPlan in ipairs(audioBankPlans) do
-    audioBankIds[#audioBankIds + 1] = assert(bankPlan.bankId, "published plans need the audio bank identity")
-  end
-  table.sort(audioBankIds)
-  local scriptMemberIds = {}
-  local scriptPlan = assert(plan.scriptPlan, "published plans need the script membership")
-  ---@cast scriptPlan table<string, unknown>
-  local scriptMembers = scriptPlan.members
-  ---@cast scriptMembers table[]
-  for _, member in ipairs(scriptMembers) do
-    scriptMemberIds[#scriptMemberIds + 1] = assert(member.memberId, "published plans need the script member identity")
-  end
-  table.sort(scriptMemberIds)
-  local mapIds = {}
-  local world = assert(plan.world, "published plans need the world membership")
-  ---@cast world table<string, unknown>
-  local worldMaps = world.maps
-  ---@cast worldMaps table[]
-  for _, record in ipairs(worldMaps) do
-    mapIds[#mapIds + 1] = assert(record.id, "published plans need the world map identity")
-  end
-  table.sort(mapIds)
-  return {
-    indexBundle = plan.fieldCellIndexBundle,
-    scriptPlan = plan.scriptPlan,
-    audioPlan = plan.audioPlan,
-    messageBankIds = plan.messageBankIds,
-    audioBankIds = audioBankIds,
-    scriptMemberIds = scriptMemberIds,
-    iconPageIds = assert(index.iconPageIds, "published plans need the icon pages"),
-    portraitPageIds = assert(index.portraitPageIds, "published plans need the portrait pages"),
-    mapDataIds = plan.mapDataIds,
-    mapIds = mapIds,
-    mapCellKeys = plan.mapCellKeys,
-    world = plan.world,
-    presentation = { icons = icons, portraits = portraits },
-  }
+  local plans = plansFromSourcePlan(plan)
+  plans.iconPageIds = assert(index.iconPageIds, "published plans need the icon pages")
+  plans.portraitPageIds = assert(index.portraitPageIds, "published plans need the portrait pages")
+  plans.presentation = { icons = icons, portraits = portraits }
+  return plans
 end
 
 -- Canonical complete-inventory order behind both the materialized list
@@ -1932,39 +1941,6 @@ function ArtifactJobs.sourcePlanForContext(context, identity)
   return plan
 end
 
----@param audioPlan table<string, unknown>
----@return integer[]
-local function sourceAudioBankIds(audioPlan)
-  local ids = {}
-  for _, bankPlan in ipairs(assert(audioPlan.bankPlans, "worker validation needs the audio bank closures")) do
-    ids[#ids + 1] = assert(bankPlan.bankId, "worker validation needs the audio bank identity")
-  end
-  table.sort(ids)
-  return ids
-end
-
----@param scriptPlan table<string, unknown>
----@return integer[]
-local function sourceScriptMemberIds(scriptPlan)
-  local ids = {}
-  for _, member in ipairs(assert(scriptPlan.members, "worker validation needs the script membership")) do
-    ids[#ids + 1] = assert(member.memberId, "worker validation needs the script member identity")
-  end
-  table.sort(ids)
-  return ids
-end
-
----@param world table<string, unknown>
----@return integer[]
-local function sourceMapIds(world)
-  local ids = {}
-  for _, record in ipairs(assert(world.maps, "worker validation needs the world membership")) do
-    ids[#ids + 1] = assert(record.id, "worker validation needs the world map identity")
-  end
-  table.sort(ids)
-  return ids
-end
-
 -- Worker-facing readiness wrapper around the one authoritative family
 -- validator. It assembles the minimal plan envelope for the job:
 -- source-static selections always, the worker generation memo for
@@ -2009,17 +1985,7 @@ function ArtifactJobs.validateCurrent(job, context)
       return false
     end
     ---@cast source table<string, unknown>
-    plans.indexBundle = source.fieldCellIndexBundle
-    plans.scriptPlan = source.scriptPlan
-    plans.audioPlan = source.audioPlan
-    plans.messageBankIds = source.messageBankIds
-    plans.mapDataIds = source.mapDataIds
-    plans.mapCellKeys = source.mapCellKeys
-    plans.world = source.world
-    plans.audioBankIds = sourceAudioBankIds(assert(source.audioPlan, "worker validation needs the audio membership"))
-    plans.scriptMemberIds =
-      sourceScriptMemberIds(assert(source.scriptPlan, "worker validation needs the script membership"))
-    plans.mapIds = sourceMapIds(assert(source.world, "worker validation needs the world membership"))
+    plans = plansFromSourcePlan(source)
   elseif job.kind == "mon-summary" then
     local MonCacheWriter = require("romdump.src.digest.mons.MonCacheWriter")
     local ok, index = pcall(cacheFs.loadLua, cacheFs, MonCacheWriter.sourcePlanIndexPath())

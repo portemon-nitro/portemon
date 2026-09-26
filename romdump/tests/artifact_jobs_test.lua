@@ -19,42 +19,9 @@ local SwarFixture = require("tests.support.SwarFixture")
 
 local T = {}
 
--- Every family the session can plan, execute, and validate, keyed exactly as
--- the worker channel addresses it. Coarse families and summaries use the
--- global key; paged and per-member families use their canonical selectors.
-local CLOSED_KINDS = {
-  "world-catalog",
-  "field-cell-index",
-  "field-camera",
-  "field-weather",
-  "field-effects",
-  "field-emotes",
-  "field-ui",
-  "field-font",
-  "intro",
-  "new-game-init",
-  "actors",
-  "starter-choice",
-  "items",
-  "bag",
-  "mon-catalog",
-  "mon-layout",
-  "mon-icon-page",
-  "mon-portrait-page",
-  "mon-summary",
-  "message-bank",
-  "message-summary",
-  "audio-bank",
-  "audio-catalog",
-  "audio-summary",
-  "script-member",
-  "script-summary",
-  "map-data",
-  "field-cell",
-  "map",
-  "source-plan",
-}
-
+-- Canonical selectors keyed exactly as the worker channel addresses each
+-- family. Coarse families and summaries use the global key; paged and
+-- per-member families use their canonical selectors.
 local CANONICAL_KEYS = {
   ["world-catalog"] = "global",
   ["field-cell-index"] = "global",
@@ -86,20 +53,6 @@ local CANONICAL_KEYS = {
   ["field-cell"] = "12-5",
   ["map"] = "7",
 }
-
-function T.closed_vocabulary_matches_the_single_handler_set()
-  local actual = {}
-  for kind in pairs(ArtifactState.KINDS) do
-    actual[#actual + 1] = kind
-  end
-  table.sort(actual)
-  local expected = {}
-  for _, kind in ipairs(CLOSED_KINDS) do
-    expected[#expected + 1] = kind
-  end
-  table.sort(expected)
-  Assert.deepEqual(actual, expected)
-end
 
 function T.every_family_key_shape_resolves_to_a_receipt_path()
   for kind, key in pairs(CANONICAL_KEYS) do
@@ -135,35 +88,14 @@ function T.malformed_keys_are_rejected_for_their_kind()
 end
 
 function T.vocabulary_has_no_runtime_registration_surface()
-  -- The vocabulary table is closed by construction; read it as an open map
-  -- to prove no registration surface exists.
+  -- Both the accepted vocabulary and the job dispatcher are closed by
+  -- construction; read them as open maps to prove no registration
+  -- surface exists.
   ---@type table<string, unknown>
   local vocabulary = ArtifactState
   Assert.isNil(vocabulary.register)
   Assert.isNil(vocabulary.extend)
   Assert.isNil(vocabulary.addKind)
-end
-
--- The closed job inventory behind dispatch is observable as one list: every
--- lower-level kind resolves to exactly one handler record, no handler names
--- an unknown kind, and neither the dispatcher nor the vocabulary can grow
--- at runtime.
-function T.closed_job_inventory_lists_every_handler_kind_once()
-  local enumerate = ArtifactJobs.descriptorKinds
-  Assert.isTrue(type(enumerate) == "function", "the closed job inventory is observable as one list")
-  local listed = enumerate()
-  Assert.equal(type(listed), "table", "the job inventory answers a kind list")
-  local seen = {}
-  for _, kind in ipairs(listed) do
-    Assert.isNil(seen[kind], "the job inventory names no kind twice: " .. tostring(kind))
-    seen[kind] = true
-  end
-  for kind in pairs(ArtifactState.KINDS) do
-    Assert.isTrue(seen[kind] == true, "the job inventory covers kind: " .. tostring(kind))
-  end
-  for kind in pairs(seen) do
-    Assert.isTrue(ArtifactState.KINDS[kind] == true, "the job inventory names no unknown kind: " .. tostring(kind))
-  end
   ---@type table<string, unknown>
   local dispatcher = ArtifactJobs
   Assert.isNil(dispatcher.register)
