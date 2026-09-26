@@ -271,6 +271,9 @@ function NamingScreenController:_insert(text)
     return false
   end
   self._text = self._text .. text
+  if incoming > 0 then
+    self._entrySlotTick = 0
+  end
   return true
 end
 
@@ -292,6 +295,7 @@ function NamingScreenController:deleteGlyph()
   end
   glyphs[#glyphs] = nil
   self._text = table.concat(glyphs)
+  self._entrySlotTick = 0
   return true
 end
 

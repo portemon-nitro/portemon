@@ -137,9 +137,11 @@ function FieldState:update(dt)
   local pokemonNaming = self.runtime.pokemonNaming
   if pokemonNaming:isActive() then
     local namingStatus = assert(pokemonNaming:status(), "an active Pokemon naming task publishes its status")
-    assert(self.presentationResources, "field presentation resources are unavailable"):preparePokemonNamingSubject(
-      namingStatus.snapshot.subject
-    )
+    local ready = assert(self.presentationResources, "field presentation resources are unavailable")
+      :preparePokemonNamingSubject(namingStatus.snapshot.subject)
+    self._namingPresentationReady = ready == true
+  else
+    self._namingPresentationReady = false
   end
   self:_advanceStarterPreparation()
   self:_syncStarterPresentationInput()
@@ -622,7 +624,7 @@ function FieldState:draw()
     starter == nil or not starter:isActive() or pokemonNaming == nil or not pokemonNaming:isActive(),
     "script-owned field modals are mutually exclusive"
   )
-  if pokemonNaming ~= nil and pokemonNaming:isActive() then
+  if pokemonNaming ~= nil and pokemonNaming:isActive() and self._namingPresentationReady then
     pokemonNaming:drawPresentation(resources:pokemonNamingRenderer())
   end
   if self.development and self._developmentOverlayVisible then

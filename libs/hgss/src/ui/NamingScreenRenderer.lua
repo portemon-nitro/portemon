@@ -82,7 +82,13 @@ local function acquireOrder(naming)
       end
     end
   end
-  animationAssets({ naming.entrySlots.selected, naming.playerSubjects.male, naming.playerSubjects.female })
+  animationAssets({
+    naming.entrySlots.selected,
+    naming.playerSubjects.male,
+    naming.playerSubjects.female,
+    naming.pokemonGenderMarkers.male,
+    naming.pokemonGenderMarkers.female,
+  })
   animationAssets({ naming.cursor.keyboard })
   local homeRecords = {}
   for _, key in ipairs(HOME_KEYS) do
@@ -210,6 +216,13 @@ function NamingScreenRenderer.new(options)
   assert(type(naming.entrySlots) == "table", "naming renderer requires the naming entry slots")
   assert(type(naming.playerSubjects) == "table", "naming renderer requires the naming player subjects")
   assert(type(naming.pokemonSubject) == "table", "naming renderer requires the Pokemon subject animation")
+  assert(type(naming.pokemonGenderMarkers) == "table", "naming renderer requires the Pokemon gender markers")
+  assert(
+    type(naming.pokemonGenderMarkers.anchor) == "table"
+      and naming.pokemonGenderMarkers.anchor.x == 210
+      and naming.pokemonGenderMarkers.anchor.y == 27,
+    "naming renderer requires the source Pokemon gender marker anchor"
+  )
   for _, key in ipairs(CONTROL_KEYS) do
     requireSprite(naming.controls, key, key .. " control")
   end
@@ -218,6 +231,8 @@ function NamingScreenRenderer.new(options)
     naming.entrySlots.selected,
     naming.playerSubjects.male,
     naming.playerSubjects.female,
+    naming.pokemonGenderMarkers.male,
+    naming.pokemonGenderMarkers.female,
     naming.cursor.keyboard,
   }
   for _, key in ipairs(HOME_KEYS) do
@@ -266,16 +281,26 @@ function NamingScreenRenderer.new(options)
     "naming renderer requires a Pokemon subject loop start inside its frames"
   )
   for _, frame in ipairs(pokemonSubject.frames) do
-    assert(
-      type(frame.iconFrame) == "number"
-        and frame.iconFrame % 1 == 0
-        and frame.iconFrame >= 1
-        and type(frame.duration) == "number"
-        and frame.duration % 1 == 0
-        and frame.duration > 0
-        and type(frame.offset) == "table",
-      "naming renderer requires validated Pokemon subject frame semantics"
-    )
+    assert(type(frame.duration) == "number" and frame.duration % 1 == 0 and frame.duration > 0)
+    assert(type(frame.parts) == "table", "naming renderer requires Pokemon subject parts")
+    local partCount = 0
+    for _ in pairs(frame.parts) do
+      partCount = partCount + 1
+    end
+    assert(partCount == 2 and #frame.parts == 2, "naming renderer requires both validated Pokemon subject parts")
+    for _, part in ipairs(frame.parts) do
+      assert(
+        type(part.iconFrame) == "number"
+          and part.iconFrame % 1 == 0
+          and part.iconFrame >= 1
+          and type(part.offset) == "table"
+          and type(part.offset.x) == "number"
+          and part.offset.x % 1 == 0
+          and type(part.offset.y) == "number"
+          and part.offset.y % 1 == 0,
+        "naming renderer requires validated Pokemon subject part semantics"
+      )
+    end
   end
   local paths = { base = imagePath(options.manifest, naming.base, "base") }
   for _, key in ipairs(PAGE_KEYS) do
@@ -464,13 +489,29 @@ function NamingScreenRenderer:draw(view, layout)
   else
     local record = naming.pokemonSubject
     local frame = record.frames[resolveFrameIndex(record, presentation.subjectTick)]
-    g.push()
-    self.drawSubject(g, view.subject, {
-      x = record.anchor.x + frame.offset.x,
-      y = record.anchor.y + frame.offset.y,
-      frameIndex = frame.iconFrame,
-    })
-    g.pop()
+    for _, part in ipairs(frame.parts) do
+      g.push()
+      self.drawSubject(g, view.subject, {
+        x = record.anchor.x + part.offset.x,
+        y = record.anchor.y + part.offset.y,
+        frameIndex = part.iconFrame,
+      })
+      g.pop()
+    end
+    local gender = view.subject.gender
+    if gender == "male" or gender == "female" then
+      local marker = naming.pokemonGenderMarkers[gender]
+      local markerFrame = marker.frames[resolveFrameIndex(marker, presentation.subjectTick)]
+      self:_drawAnimatedFrame(
+        marker,
+        markerFrame,
+        naming.pokemonGenderMarkers.anchor.x,
+        naming.pokemonGenderMarkers.anchor.y,
+        nil
+      )
+    else
+      assert(gender == "genderless", "Pokemon naming subject has an unsupported gender")
+    end
   end
   -- The focus cursor composites last so it stays above the control it
   -- highlights.

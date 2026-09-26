@@ -149,6 +149,8 @@ function T.construction_acquires_the_base_pages_and_every_semantic_visual()
   end
   animationImages(naming.playerSubjects.male)
   animationImages(naming.playerSubjects.female)
+  animationImages(naming.pokemonGenderMarkers.male)
+  animationImages(naming.pokemonGenderMarkers.female)
   animationImages(naming.cursor.keyboard)
   for _, record in pairs(naming.cursor.home) do
     animationImages(record)

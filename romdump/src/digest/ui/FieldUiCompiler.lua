@@ -1659,30 +1659,37 @@ local function compileNamingScreen(romFs, sha1hex, deps, assets, manifestAssets)
       })
     end
     assert(cell ~= nil, "the naming Pokémon cell is present")
-    local minX, minY = math.huge, math.huge
+    local parts = {}
     for _, obj in ipairs(cell.objs) do
-      if obj.tile ~= pokemonIconTile or obj.width ~= 32 or obj.height ~= 32 then
+      if obj.tile ~= pokemonIconTile or obj.width ~= 32 or obj.height ~= 32 or obj.flipH or obj.flipV then
         Errors.raise(
           FieldUiCompiler.ERROR.SOURCE_INVALID,
-          "the naming Pokémon cell does not use the loaded icon frame",
+          "the naming Pokémon cell does not use the untransformed loaded icon frame",
           {
             anim = cfg.objAnims.pokemonSubject,
             cell = frame.cell,
           }
         )
       end
-      minX, minY = math.min(minX, obj.x), math.min(minY, obj.y)
+      parts[#parts + 1] = {
+        iconFrame = 1,
+        offset = { x = obj.x + frame.translateX, y = obj.y + frame.translateY },
+      }
     end
-    if frame.element ~= "none" and frame.element ~= "translate" then
+    if
+      (frame.element ~= "none" and frame.element ~= "translate")
+      or frame.scaleX ~= 1
+      or frame.scaleY ~= 1
+      or frame.rotation ~= 0
+    then
       Errors.raise(FieldUiCompiler.ERROR.SOURCE_INVALID, "the naming Pokémon animation transform is unsupported", {
         anim = cfg.objAnims.pokemonSubject,
         element = frame.element,
       })
     end
     pokemonSubjectFrames[index] = {
-      iconFrame = 1,
-      offset = { x = minX + frame.translateX, y = minY + frame.translateY },
       duration = frame.duration,
+      parts = parts,
     }
   end
   local pokemonSubject = {
@@ -1690,6 +1697,21 @@ local function compileNamingScreen(romFs, sha1hex, deps, assets, manifestAssets)
     loopStartFrameIdx = pokemonAnimation.loopStartFrameIdx,
     anchor = { x = cfg.objAnchors.subject.x, y = cfg.objAnchors.subject.y },
     frames = pokemonSubjectFrames,
+  }
+  local pokemonGenderMarkers = {
+    anchor = { x = cfg.pokemonGenderMarkerAnchor.x, y = cfg.pokemonGenderMarkerAnchor.y },
+    male = publishAnimation(
+      "pokemon-gender-male",
+      FieldUiAssetCache.ASSET.NAMING_SCREEN_POKEMON_GENDER_MALE,
+      nil,
+      cfg.objAnims.pokemonGenderMale
+    ),
+    female = publishAnimation(
+      "pokemon-gender-female",
+      FieldUiAssetCache.ASSET.NAMING_SCREEN_POKEMON_GENDER_FEMALE,
+      nil,
+      cfg.objAnims.pokemonGenderFemale
+    ),
   }
 
   -- Keyboard text cells in final canonical coordinates: page placement
@@ -1746,6 +1768,7 @@ local function compileNamingScreen(romFs, sha1hex, deps, assets, manifestAssets)
       female = subjectFemale,
     },
     pokemonSubject = pokemonSubject,
+    pokemonGenderMarkers = pokemonGenderMarkers,
   }
 end
 

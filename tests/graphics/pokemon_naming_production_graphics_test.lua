@@ -385,10 +385,41 @@ local function verifyVersion(scope, versionId)
   Assert.notNil(status.snapshot.subject.iconKey, "the naming subject resolves through the real mon icon contract")
 
   local imageAcquisitions, quadAcquisitions, cacheReads = 0, 0, 0
+  local namingDrawImages, namingDrawQuads, namingDrawReads = 0, 0, 0
   local graphics = love.graphics
   local originalNewImage, originalNewQuad = graphics.newImage, graphics.newQuad
   local cacheFs = assert(state.presentationResources.cacheFs, "field presentation owns the cache filesystem")
   local originalRead = cacheFs.read
+  local namingRenderer = state.presentationResources:pokemonNamingRenderer()
+  local originalNamingDraw = namingRenderer.draw
+  local namingManifest = namingRenderer.naming
+  local markerRecords = assert(namingManifest.pokemonGenderMarkers)
+  local markerImages = {}
+  for _, gender in ipairs({ "male", "female" }) do
+    local marker = assert(markerRecords[gender])
+    local frame = assert(marker.frames[1])
+    markerImages[assert(namingRenderer.images["atlas:" .. frame.asset])] = gender
+  end
+  local observedSubjectParts = {}
+  local observedMarker = nil
+  local failures = {}
+  local originalDrawSubject = assert(namingRenderer.drawSubject)
+  namingRenderer.drawSubject = function(hostGraphics, subject, placement)
+    observedSubjectParts[#observedSubjectParts + 1] = {
+      x = placement.x,
+      y = placement.y,
+      frameIndex = placement.frameIndex,
+    }
+    return originalDrawSubject(hostGraphics, subject, placement)
+  end
+  local originalGraphicsDraw = graphics.draw
+  graphics.draw = function(image, quad, x, y, ...)
+    local gender = markerImages[image]
+    if gender ~= nil then
+      observedMarker = { x = x, y = y, gender = gender }
+    end
+    originalGraphicsDraw(image, quad, x, y, ...)
+  end
   local subjectChanged, slotChanged = false, false
   graphics.newImage = function(...)
     imageAcquisitions = imageAcquisitions + 1
@@ -404,6 +435,13 @@ local function verifyVersion(scope, versionId)
   end
   local width, height = graphics.getDimensions()
   local canvas = scope:own(graphics.newCanvas(width, height))
+  namingRenderer.draw = function(self, ...)
+    local imagesBefore, quadsBefore, readsBefore = imageAcquisitions, quadAcquisitions, cacheReads
+    originalNamingDraw(self, ...)
+    namingDrawImages = namingDrawImages + imageAcquisitions - imagesBefore
+    namingDrawQuads = namingDrawQuads + quadAcquisitions - quadsBefore
+    namingDrawReads = namingDrawReads + cacheReads - readsBefore
+  end
   local ok, err = xpcall(function()
     local subjectBefore = renderPixels(scope, state, canvas)
     local selectedBefore = renderPixels(scope, state, canvas)
@@ -413,6 +451,44 @@ local function verifyVersion(scope, versionId)
       step(state)
     end
     local after = renderPixels(scope, state, canvas)
+    if #observedSubjectParts ~= 2 then
+      failures[#failures + 1] = "production draw composed " .. #observedSubjectParts .. " of 2 source Pokemon parts"
+    end
+    for _, part in ipairs(observedSubjectParts) do
+      Assert.equal(part.frameIndex, 1, "source Pokemon parts share the prepared mon icon frame")
+      local sourcePlacement = false
+      for _, frame in ipairs(namingManifest.pokemonSubject.frames) do
+        for _, sourcePart in ipairs(frame.parts or {}) do
+          if sourcePart.offset ~= nil then
+            if
+              part.x == namingManifest.pokemonSubject.anchor.x + sourcePart.offset.x
+              and part.y == namingManifest.pokemonSubject.anchor.y + sourcePart.offset.y
+            then
+              sourcePlacement = true
+            end
+          end
+        end
+      end
+      if not sourcePlacement then
+        failures[#failures + 1] = "production Pokemon part does not match a compiled source placement"
+      end
+    end
+    if status.snapshot.subject.gender == "genderless" then
+      if observedMarker ~= nil then
+        failures[#failures + 1] = "genderless Pokemon drew a gender marker"
+      end
+    else
+      if observedMarker == nil then
+        failures[#failures + 1] = "production naming draw omitted the subject gender marker"
+      elseif markerRecords ~= nil then
+        if observedMarker.gender ~= status.snapshot.subject.gender then
+          failures[#failures + 1] = "production naming draw selected the wrong gender marker"
+        end
+        if observedMarker.x ~= markerRecords.anchor.x or observedMarker.y ~= markerRecords.anchor.y then
+          failures[#failures + 1] = "production gender marker missed the source name anchor"
+        end
+      end
+    end
     -- The modal surface is opaque over the sampled subject/slot regions, so
     -- compare its source-logical bounds through the production pane transform.
     local placement = assert(status.presentation.panes[1].placement)
@@ -420,11 +496,13 @@ local function verifyVersion(scope, versionId)
     slotChanged = regionChanged(selectedBefore, after, placement, { x = 80, y = 39, width = 16, height = 16 })
   end, debug.traceback)
   graphics.newImage, graphics.newQuad = originalNewImage, originalNewQuad
+  graphics.draw = originalGraphicsDraw
   cacheFs.read = originalRead
+  namingRenderer.draw = originalNamingDraw
+  namingRenderer.drawSubject = originalDrawSubject
   if not ok then
     error(err, 0)
   end
-  local failures = {}
   if not subjectChanged then
     failures[#failures + 1] = "subject pixels do not advance at source bounds"
   end

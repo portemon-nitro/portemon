@@ -106,6 +106,8 @@ FieldUiAssetCache.ASSET = {
   NAMING_SCREEN_SLOT_SELECTED = "hgss.naming_screen.slot_selected",
   NAMING_SCREEN_SUBJECT_MALE = "hgss.naming_screen.subject_male",
   NAMING_SCREEN_SUBJECT_FEMALE = "hgss.naming_screen.subject_female",
+  NAMING_SCREEN_POKEMON_GENDER_MALE = "hgss.naming_screen.pokemon_gender_male",
+  NAMING_SCREEN_POKEMON_GENDER_FEMALE = "hgss.naming_screen.pokemon_gender_female",
   YES_NO_PROMPT_YES_NORMAL = "hgss.yes_no_prompt.yes_normal",
   YES_NO_PROMPT_YES_SELECTED = "hgss.yes_no_prompt.yes_selected",
   YES_NO_PROMPT_NO_NORMAL = "hgss.yes_no_prompt.no_normal",
@@ -1316,35 +1318,83 @@ function FieldUiAssetCache.validateManifest(manifest)
       return false, Errors.new(MANIFEST_INVALID, "namingScreen.pokemonSubject loop start is outside its frames", {})
     end
     for index, frame in ipairs(pokemonSubject.frames) do
-      if
-        type(frame) ~= "table"
-        or type(frame.iconFrame) ~= "number"
-        or frame.iconFrame % 1 ~= 0
-        or frame.iconFrame ~= 1
-      then
+      if type(frame) ~= "table" then
         return false,
-          Errors.new(
-            MANIFEST_INVALID,
-            "namingScreen.pokemonSubject frame " .. index .. " has an invalid icon frame",
-            {}
-          )
-      end
-      if
-        type(frame.offset) ~= "table"
-        or type(frame.offset.x) ~= "number"
-        or frame.offset.x % 1 ~= 0
-        or type(frame.offset.y) ~= "number"
-        or frame.offset.y % 1 ~= 0
-      then
-        return false,
-          Errors.new(MANIFEST_INVALID, "namingScreen.pokemonSubject frame " .. index .. " has an invalid offset", {})
+          Errors.new(MANIFEST_INVALID, "namingScreen.pokemonSubject frame " .. index .. " must be a table", {})
       end
       if type(frame.duration) ~= "number" or frame.duration % 1 ~= 0 or frame.duration < 1 then
         return false,
           Errors.new(MANIFEST_INVALID, "namingScreen.pokemonSubject frame " .. index .. " has an invalid duration", {})
       end
-      if frame.asset ~= nil or frame.rect ~= nil or frame.pulseRect ~= nil then
-        return false, Errors.new(MANIFEST_INVALID, "namingScreen.pokemonSubject frames carry no generated pixels", {})
+      if type(frame.parts) ~= "table" then
+        return false,
+          Errors.new(MANIFEST_INVALID, "namingScreen.pokemonSubject frame " .. index .. " must carry icon parts", {})
+      end
+      local partCount = 0
+      for _ in pairs(frame.parts) do
+        partCount = partCount + 1
+      end
+      if partCount ~= 2 or #frame.parts ~= 2 then
+        return false,
+          Errors.new(
+            MANIFEST_INVALID,
+            "namingScreen.pokemonSubject frame " .. index .. " must carry two dense parts",
+            {}
+          )
+      end
+      for partIndex, part in ipairs(frame.parts) do
+        if
+          type(part) ~= "table"
+          or type(part.iconFrame) ~= "number"
+          or part.iconFrame % 1 ~= 0
+          or part.iconFrame ~= 1
+          or type(part.offset) ~= "table"
+          or type(part.offset.x) ~= "number"
+          or part.offset.x % 1 ~= 0
+          or type(part.offset.y) ~= "number"
+          or part.offset.y % 1 ~= 0
+        then
+          return false,
+            Errors.new(
+              MANIFEST_INVALID,
+              "namingScreen.pokemonSubject frame " .. index .. " part " .. partIndex .. " is invalid",
+              {}
+            )
+        end
+        if
+          part.asset ~= nil
+          or part.image ~= nil
+          or part.rect ~= nil
+          or part.pulseRect ~= nil
+          or part.width ~= nil
+          or part.height ~= nil
+        then
+          return false,
+            Errors.new(
+              MANIFEST_INVALID,
+              "namingScreen.pokemonSubject frame " .. index .. " part " .. partIndex .. " carries generated pixels",
+              {}
+            )
+        end
+      end
+      if frame.offset ~= nil or frame.iconFrame ~= nil or frame.asset ~= nil or frame.rect ~= nil then
+        return false,
+          Errors.new(MANIFEST_INVALID, "namingScreen.pokemonSubject frames carry no flattened icon record", {})
+      end
+    end
+    local genderMarkers = s.pokemonGenderMarkers
+    if type(genderMarkers) ~= "table" then
+      return false, Errors.new(MANIFEST_INVALID, "namingScreen.pokemonGenderMarkers must be a table", {})
+    end
+    local markerAnchor = genderMarkers.anchor
+    if type(markerAnchor) ~= "table" or markerAnchor.x ~= 210 or markerAnchor.y ~= 27 then
+      return false, Errors.new(MANIFEST_INVALID, "namingScreen.pokemonGenderMarkers must anchor at (210,27)", {})
+    end
+    for _, gender in ipairs({ "male", "female" }) do
+      local markerOk, markerErr =
+        animationRecord(genderMarkers[gender], "namingScreen.pokemonGenderMarkers." .. gender, false)
+      if not markerOk then
+        return false, markerErr
       end
     end
     return true

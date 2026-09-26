@@ -221,6 +221,28 @@ function T.compiled_naming_semantics_follow_the_source_contract(romFs, _)
   Assert.isTrue(maleBytes ~= femaleBytes, "the male and female subjects render distinct art")
 end
 
+function T.compiled_pokemon_subject_preserves_both_source_parts_and_gender_animations(romFs, _)
+  local bundle, naming = compiledNaming(romFs)
+  local subject = assert(naming.pokemonSubject, "the Pokemon subject animation is required")
+  Assert.isTrue(#subject.frames > 1, "sequence 50 retains its animated source frames")
+  for _, frame in ipairs(subject.frames) do
+    Assert.equal(#frame.parts, 2, "each Pokemon animation frame preserves both OAM parts")
+    for _, part in ipairs(frame.parts) do
+      Assert.equal(part.iconFrame, 1, "both source parts use the shared Pokemon icon frame")
+      Assert.isTrue(type(part.offset) == "table", "each part has a normalized placement")
+      Assert.isTrue(type(part.offset.x) == "number" and type(part.offset.y) == "number")
+    end
+  end
+
+  local markers = assert(naming.pokemonGenderMarkers, "Pokemon gender marker animations are required")
+  Assert.deepEqual(markers.anchor, { x = 210, y = 27 }, "the marker uses the source name-length anchor")
+  for _, gender in ipairs({ "male", "female" }) do
+    local marker = assert(markers[gender], "the " .. gender .. " marker animation is required")
+    Assert.isTrue(#marker.frames > 0, "the " .. gender .. " marker has generated frames")
+  end
+  Assert.isTrue(FieldUiAssetCache.validateManifest(bundle.manifest))
+end
+
 -- The generated selected-slot record follows the real NANR animation rather
 -- than flattening its first frame. This test intentionally compares
 -- normalized playback facts to decoded source facts, not source member IDs.
@@ -257,8 +279,8 @@ function T.selected_entry_slot_preserves_source_animation(romFs, _)
 end
 
 -- Sequence 50 names dynamically uploaded Pokémon graphics. Its generated
--- record therefore carries source anchor and per-frame icon selection data,
--- while the field-UI asset table remains free of Pokémon pixel assets.
+-- record therefore carries each source OAM placement and one-based icon
+-- frame selection, while the field-UI asset table remains free of Pokémon pixels.
 function T.pokemon_subject_is_source_positioned_and_frame_addressable(romFs, _)
   local source = sourceAnimation(romFs, 50)
   local config = namingSelection()
@@ -278,15 +300,14 @@ function T.pokemon_subject_is_source_positioned_and_frame_addressable(romFs, _)
   for index, sourceFrame in ipairs(source.frames) do
     local frame = assert(subject.frames[index], "Pokémon subject frame " .. index .. " is required")
     Assert.equal(frame.duration, sourceFrame.duration, "Pokémon subject frame " .. index .. " duration")
-    Assert.equal(frame.iconFrame, 1, "the naming app loads one 32x32 icon frame")
     local cell = assert(cells.cells[sourceFrame.cell + 1], "the Pokémon source cell exists")
     Assert.equal(#cell.objs, 2, "the Pokémon source cell keeps its two OAM objects")
+    Assert.equal(#frame.parts, #cell.objs, "every source OAM object becomes one normalized part")
     local iconObject = assert(cell.objs[1], "the icon OAM object is first")
     local underlayObject = assert(cell.objs[2], "the icon underlay OAM object is second")
     Assert.equal(iconObject.palette, 6, "the first naming OAM object uses the loaded mon icon palette")
     Assert.equal(underlayObject.palette, 5, "the second naming OAM object is the source underlay")
-    local minX, minY = math.huge, math.huge
-    for _, obj in ipairs(cell.objs) do
+    for objectIndex, obj in ipairs(cell.objs) do
       Assert.equal(obj.tile, 0x57E0 / 32, "the Pokémon cell references the loaded icon tile base")
       Assert.equal(obj.width, 32, "the Pokémon source object is 32 pixels wide")
       Assert.equal(obj.height, 32, "the Pokémon source object is 32 pixels tall")
@@ -294,22 +315,38 @@ function T.pokemon_subject_is_source_positioned_and_frame_addressable(romFs, _)
       Assert.equal(obj.y, iconObject.y, "the two Pokémon source objects share their y placement")
       Assert.equal(obj.flipH, false, "the Pokémon icon is not horizontally flipped")
       Assert.equal(obj.flipV, false, "the Pokémon icon is not vertically flipped")
-      minX, minY = math.min(minX, obj.x), math.min(minY, obj.y)
+      local part = frame.parts[objectIndex]
+      Assert.equal(part.iconFrame, 1, "the naming app loads one shared 32x32 icon frame")
+      Assert.deepEqual(
+        part.offset,
+        { x = obj.x + sourceFrame.translateX, y = obj.y + sourceFrame.translateY },
+        "Pokémon subject frame " .. index .. " part " .. objectIndex .. " preserves its source placement"
+      )
     end
-    Assert.deepEqual(
-      frame.offset,
-      { x = minX + sourceFrame.translateX, y = minY + sourceFrame.translateY },
-      "Pokémon subject frame " .. index .. " preserves its source transform offset"
-    )
   end
   for _, frame in ipairs(subject.frames) do
-    Assert.isNil(frame.asset, "dynamic Pokémon pixels do not belong to the field-UI frame")
+    for _, part in ipairs(frame.parts) do
+      Assert.isNil(part.asset, "dynamic Pokémon pixels do not belong to the field-UI frame")
+    end
   end
   for assetId in pairs(bundle.manifest.assets) do
     Assert.isFalse(
-      tostring(assetId):find("pokemon", 1, true) ~= nil or tostring(assetId):find("mon_icon", 1, true) ~= nil,
+      tostring(assetId):find("mon_icon", 1, true) ~= nil or tostring(assetId):find("pokemon_icon", 1, true) ~= nil,
       "the naming contract does not duplicate species icon pixels"
     )
+  end
+  local markers = assert(naming.pokemonGenderMarkers, "the Pokémon gender marker records are required")
+  Assert.deepEqual(markers.anchor, { x = 210, y = 27 })
+  for _, gender in ipairs({ "male", "female" }) do
+    local animationId = assert(config.objAnims["pokemonGender" .. gender:sub(1, 1):upper() .. gender:sub(2)])
+    local sourceMarker = sourceAnimation(romFs, animationId)
+    local marker = assert(markers[gender])
+    Assert.equal(marker.playMode, sourceMarker.playMode, gender .. " marker playback mode")
+    Assert.equal(marker.loopStartFrameIdx, sourceMarker.loopStartFrameIdx, gender .. " marker loop start")
+    Assert.equal(#marker.frames, #sourceMarker.frames, gender .. " marker source frame count")
+    for index, sourceFrame in ipairs(sourceMarker.frames) do
+      Assert.equal(marker.frames[index].duration, sourceFrame.duration, gender .. " marker frame duration")
+    end
   end
 end
 

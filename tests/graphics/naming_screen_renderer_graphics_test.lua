@@ -299,11 +299,13 @@ function T.source_object_layers_and_player_subject_render_from_the_manifest()
   Assert.equal(#subjects, 0, "the player subject comes from the manifest, not the host callback")
 
   -- The host seam stays for non-player subjects.
-  local pokemon = { kind = "pokemon", species = 25, form = 0 }
+  local pokemon = { kind = "pokemon", species = 25, form = 0, gender = "male" }
   renderer:draw(snapshot({ subject = pokemon }), layout)
-  Assert.equal(#subjects, 1, "a pokemon subject still draws through the host callback")
+  Assert.equal(#subjects, 2, "both Pokemon source parts draw through the host callback")
   Assert.deepEqual(subjects[1].subject, pokemon)
   Assert.deepEqual(subjects[1].placement, { x = 24, y = 8, frameIndex = 1 })
+  Assert.deepEqual(subjects[2].subject, pokemon)
+  Assert.deepEqual(subjects[2].placement, { x = 40, y = 8, frameIndex = 1 })
   renderer:dispose()
 end
 

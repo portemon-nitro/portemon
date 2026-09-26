@@ -972,6 +972,16 @@ function FieldUiFixture.namingSemanticsManifest()
       width = 256,
       height = 112,
     },
+    ["hgss.naming_screen.pokemon_gender_male"] = {
+      image = "assets/generated/field/ui/pokemon-gender-male.png",
+      width = 16,
+      height = 8,
+    },
+    ["hgss.naming_screen.pokemon_gender_female"] = {
+      image = "assets/generated/field/ui/pokemon-gender-female.png",
+      width = 16,
+      height = 8,
+    },
   }
   local function sprite(id, width, height, anchor, offset)
     local path = "assets/generated/field/ui/" .. id .. ".png"
@@ -1089,9 +1099,26 @@ function FieldUiFixture.namingSemanticsManifest()
         loopStartFrameIdx = 0,
         anchor = { x = 24, y = 8 },
         frames = {
-          { iconFrame = 1, offset = { x = 0, y = 0 }, duration = 20 },
-          { iconFrame = 1, offset = { x = 0, y = -6 }, duration = 3 },
+          {
+            duration = 20,
+            parts = {
+              { iconFrame = 1, offset = { x = 0, y = 0 } },
+              { iconFrame = 1, offset = { x = 16, y = 0 } },
+            },
+          },
+          {
+            duration = 3,
+            parts = {
+              { iconFrame = 1, offset = { x = 0, y = -6 } },
+              { iconFrame = 1, offset = { x = 16, y = -6 } },
+            },
+          },
         },
+      },
+      pokemonGenderMarkers = {
+        anchor = { x = 210, y = 27 },
+        male = animated("pokemon-gender-male", 8, 8, nil, { x = 0, y = 0 }),
+        female = animated("pokemon-gender-female", 8, 8, nil, { x = 0, y = 0 }),
       },
     },
   }

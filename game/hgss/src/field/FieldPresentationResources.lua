@@ -342,19 +342,29 @@ end
 ---@param subject table<string, unknown>
 function FieldPresentationResources:preparePokemonNamingSubject(subject)
   local iconKey = assert(subject.iconKey, "Pokemon naming subject requires its icon key")
-  if self.namingIconQuads[iconKey] ~= nil then
-    return
-  end
   local icons = assert(self.monIconProvider, "field presentation owns the mon icon provider")
+  local ready, failure = icons:prepareKeys({ iconKey })
+  if not ready then
+    return false, failure
+  end
+  if self.namingIconQuads[iconKey] ~= nil then
+    return true
+  end
   local dimensions = icons:dimensions(iconKey)
   assert(dimensions.width == 32 and dimensions.height == 32, "Pokemon naming icon frames use the 32x32 source surface")
   local naming = assert(self.uiManifest and self.uiManifest.namingScreen, "field UI naming manifest is unavailable")
   local frames = assert(naming.pokemonSubject and naming.pokemonSubject.frames, "Pokemon naming frames are unavailable")
   local prepared = {}
   for _, frame in ipairs(frames) do
-    prepared[frame.iconFrame] = icons:quadFor(iconKey, frame.iconFrame)
+    for _, part in ipairs(frame.parts) do
+      if prepared[part.iconFrame] == nil then
+        prepared[part.iconFrame] =
+          assert(icons:quadFor(iconKey, part.iconFrame), "Pokemon naming icon quad was not prepared")
+      end
+    end
   end
   self.namingIconQuads[iconKey] = prepared
+  return true
 end
 
 ---@return NamingScreenRenderer the renderer prepared during field resource construction

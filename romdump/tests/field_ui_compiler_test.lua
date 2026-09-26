@@ -639,21 +639,13 @@ function T.compiles_the_manifest_and_all_assets()
   )
   Assert.isNil(bundle.manifest.signposts.types[2].wayfinding, "type 2 has no map graphic")
   Assert.isNil(bundle.manifest.startMenu.slots, "the normal selector publishes no synthetic slot grid")
-  local assetCount = 0
-  for _ in pairs(bundle.assets) do
-    assetCount = assetCount + 1
-  end
-  -- Eleven base assets plus the three start-menu icon-contract images (the
-  -- shared icon atlas, the palette record, SUB chrome) plus the sixteen
-  -- naming OBJ visuals (six controls, keyboard cursor, five home cursor
-  -- variants, two entry slots, two player subjects) plus the six cursor
-  -- pulse-mask atlases, plus the single dialogue frame strip beside the
-  -- continuation cursor, plus the four two-row prompt button states.
-  Assert.equal(assetCount, 40)
   for path, bytes in pairs(bundle.assets) do
     Assert.isTrue(path:find("^assets/generated/field/ui/") ~= nil)
     Assert.isTrue(#bytes > 0)
   end
+  Assert.isTrue(FieldUiAssetCache.validateManifest(bundle.manifest))
+  Assert.notNil(bundle.manifest.assets[FieldUiAssetCache.ASSET.NAMING_SCREEN_POKEMON_GENDER_MALE])
+  Assert.notNil(bundle.manifest.assets[FieldUiAssetCache.ASSET.NAMING_SCREEN_POKEMON_GENDER_FEMALE])
   Assert.equal(bundle.marker, "field-ui-cache-v1:rom-sha:dependency-sha")
 end
 

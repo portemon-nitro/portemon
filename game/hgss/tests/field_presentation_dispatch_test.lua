@@ -211,9 +211,15 @@ local function buildDoubles(sink, calls)
           calls.iconImage = (calls.iconImage or 0) + 1
           return "borrowed-icon-image"
         end
+        function provider:prepareKeys(_)
+          calls.iconPageReady = true
+          return true
+        end
         function provider:quadFor(iconKey, frameIndex)
+          assert(calls.iconPageReady, "naming cannot request an icon quad before its page is ready")
+          calls.iconQuadCount = (calls.iconQuadCount or 0) + 1
           calls.iconQuad = { iconKey = iconKey, frameIndex = frameIndex }
-          return "borrowed-icon-quad"
+          return { key = iconKey, frameIndex = frameIndex }
         end
         return provider
       end,
@@ -242,7 +248,16 @@ end
 local function compositionRuntime()
   local runtime = {
     cacheFs = {},
-    uiManifest = { namingScreen = { pokemonSubject = { frames = { { iconFrame = 1 }, { iconFrame = 1 } } } } },
+    uiManifest = {
+      namingScreen = {
+        pokemonSubject = {
+          frames = {
+            { parts = { { iconFrame = 1 }, { iconFrame = 1 } } },
+            { parts = { { iconFrame = 1 }, { iconFrame = 1 } } },
+          },
+        },
+      },
+    },
     playerData = { options = { textFrame = 0 } },
     windowStyles = {},
     fieldEntranceIndicatorAsset = {
@@ -371,12 +386,18 @@ function T.pokemon_naming_renderer_borrows_the_shared_mon_icons_and_owns_its_ima
         drawCalls[#drawCalls + 1] = { image, quad, x, y, rotation, scaleX, scaleY }
       end,
     }, { iconKey = "species:1:form:0" }, { x = 24, y = 8, frameIndex = 1 })
+    calls.namingDrawSubject({
+      draw = function(image, quad, x, y, rotation, scaleX, scaleY)
+        drawCalls[#drawCalls + 1] = { image, quad, x, y, rotation, scaleX, scaleY }
+      end,
+    }, { iconKey = "species:1:form:0" }, { x = 40, y = 8, frameIndex = 1 })
+    Assert.equal(calls.iconImage, 2, "each source part draws the shared provider image")
     Assert.equal(calls.iconDimensions, "species:1:form:0", "the naming subject resolves through shared mon icons")
-    Assert.equal(calls.iconImage, 1, "the naming subject draws the shared provider image")
     Assert.deepEqual(calls.iconQuad, { iconKey = "species:1:form:0", frameIndex = 1 })
-    Assert.equal(#drawCalls, 1, "the naming subject draws one borrowed icon")
+    Assert.equal(calls.iconQuadCount, 1, "repeated sequence parts share one prepared icon quad")
+    Assert.equal(#drawCalls, 2, "the naming subject draws both source parts")
     Assert.equal(drawCalls[1][1], "borrowed-icon-image", "the icon image comes from the shared provider")
-    Assert.equal(drawCalls[1][2], "borrowed-icon-quad", "the icon quad comes from the shared provider")
+    Assert.equal(drawCalls[1][2], drawCalls[2][2], "both parts reuse the prepared provider quad")
     Assert.isNil(calls.icons, "using the naming renderer never releases the borrowed icon provider")
 
     resources:dispose()

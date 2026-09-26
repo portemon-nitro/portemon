@@ -107,7 +107,7 @@ function T.tests.player_subjects_render_from_the_manifest_while_pokemon_delegate
   local graphics, calls = graphicsFake()
   local manifest = namingManifest()
   local seen = {}
-  local loader = imageLoader()
+  local loader, loaded = imageLoader()
   local renderer = NamingScreenRenderer.new({
     graphics = graphics,
     text = textFake(),
@@ -117,6 +117,17 @@ function T.tests.player_subjects_render_from_the_manifest_while_pokemon_delegate
     manifest = manifest,
     imageLoader = loader,
   })
+  for _, gender in ipairs({ "male", "female" }) do
+    local marker = manifest.namingScreen.pokemonGenderMarkers[gender]
+    local markerPath = manifest.assets[marker.frames[1].asset].image
+    local acquisitions = 0
+    for _, path in ipairs(loaded.loads) do
+      if path == markerPath then
+        acquisitions = acquisitions + 1
+      end
+    end
+    Assert.equal(acquisitions, 1, gender .. " marker atlas is acquired once despite its repeated frames")
+  end
   local layout = canonicalLayout()
   local playerSubject = { kind = "player", gender = 1 }
   renderer:draw(snapshot(playerSubject), layout)
@@ -135,16 +146,43 @@ function T.tests.player_subjects_render_from_the_manifest_while_pokemon_delegate
     x = female.anchor.x + femaleFrame.offset.x,
     y = female.anchor.y + femaleFrame.offset.y,
   })
-  local pokemonSubject = { kind = "pokemon", species = 25, form = 0 }
+  local pokemonSubject = { kind = "pokemon", species = 25, form = 0, gender = "male" }
   renderer:draw(snapshot(pokemonSubject), layout)
-  Assert.equal(#seen, 1, "a Pokemon subject still draws through the host callback")
+  Assert.equal(#seen, 2, "both Pokemon source parts draw through the host callback")
   Assert.deepEqual(seen[1].subject, pokemonSubject)
   Assert.deepEqual(seen[1].placement, { x = 24, y = 8, frameIndex = 1 })
+  Assert.deepEqual(seen[2].placement, { x = 40, y = 8, frameIndex = 1 })
   renderer:draw(
     snapshot(pokemonSubject, { subjectTick = 20, cursorTick = 0, entrySlotTick = 0, glowAngle = 180 }),
     layout
   )
-  Assert.deepEqual(seen[2].placement, { x = 24, y = 2, frameIndex = 1 }, "the generated source offset follows its tick")
+  Assert.deepEqual(
+    seen[3].placement,
+    { x = 24, y = 2, frameIndex = 1 },
+    "the first generated source placement follows its tick"
+  )
+  Assert.deepEqual(seen[4].placement, { x = 40, y = 2, frameIndex = 1 }, "the second source placement follows its tick")
+
+  local markers = manifest.namingScreen.pokemonGenderMarkers
+  local function drawsFor(record)
+    local path = manifest.assets[record.frames[1].asset].image
+    local count = 0
+    for _, draw in ipairs(calls.draws) do
+      if draw.image.path == path then
+        count = count + 1
+      end
+    end
+    return count
+  end
+  Assert.equal(drawsFor(markers.male), 2, "male subject frames draw the generated male marker")
+  Assert.equal(drawsFor(markers.female), 0, "male subjects do not draw the female marker")
+  local femaleSubject = { kind = "pokemon", species = 25, form = 0, gender = "female" }
+  renderer:draw(snapshot(femaleSubject), layout)
+  Assert.equal(drawsFor(markers.female), 1, "female subjects draw the generated female marker")
+  local genderlessSubject = { kind = "pokemon", species = 25, form = 0, gender = "genderless" }
+  renderer:draw(snapshot(genderlessSubject), layout)
+  Assert.equal(drawsFor(markers.male), 2, "genderless subjects do not draw a gender marker")
+  Assert.equal(drawsFor(markers.female), 1, "genderless subjects do not draw a gender marker")
   Assert.equal(calls.push, calls.pop)
   Assert.equal(calls.scaled, 0)
   renderer:dispose()

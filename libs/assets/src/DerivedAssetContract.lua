@@ -101,6 +101,8 @@
 -- fieldUi schema 17: selected name slots preserve their NANR animation and
 -- Pokémon naming carries the source anchor and mon-icon frame selection.
 -- Species pixels remain owned by the shared mon-icon atlas.
+-- fieldUi schema 18: Pokémon naming preserves every validated source OAM
+-- placement and carries generated gender marker animations.
 --
 -- fieldUi schema 16: dialogueFrames also publishes the fixed standard
 -- Yes/No frame strip and palette independently of selectable user frames.
@@ -267,7 +269,7 @@ DerivedAssetContract.fieldEmotes = {
 
 DerivedAssetContract.fieldUi = {
   cacheFormat = "field-ui-cache-v1",
-  schema = "g4-field-ui-v17",
+  schema = "g4-field-ui-v18",
 }
 
 DerivedAssetContract.intro = {
