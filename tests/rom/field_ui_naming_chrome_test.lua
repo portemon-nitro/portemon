@@ -221,17 +221,16 @@ function T.compiled_naming_semantics_follow_the_source_contract(romFs, _)
   Assert.isTrue(maleBytes ~= femaleBytes, "the male and female subjects render distinct art")
 end
 
-function T.compiled_pokemon_subject_preserves_both_source_parts_and_gender_animations(romFs, _)
+function T.compiled_pokemon_subject_has_one_visible_part_and_gender_animations(romFs, _)
   local bundle, naming = compiledNaming(romFs)
   local subject = assert(naming.pokemonSubject, "the Pokemon subject animation is required")
   Assert.isTrue(#subject.frames > 1, "sequence 50 retains its animated source frames")
   for _, frame in ipairs(subject.frames) do
-    Assert.equal(#frame.parts, 2, "each Pokemon animation frame preserves both OAM parts")
-    for _, part in ipairs(frame.parts) do
-      Assert.equal(part.iconFrame, 1, "both source parts use the shared Pokemon icon frame")
-      Assert.isTrue(type(part.offset) == "table", "each part has a normalized placement")
-      Assert.isTrue(type(part.offset.x) == "number" and type(part.offset.y) == "number")
-    end
+    Assert.equal(#frame.parts, 1, "each Pokemon animation frame publishes one visible semantic part")
+    Assert.equal(frame.parts[1].iconFrame, 1, "the visible part selects the shared Pokemon icon frame")
+    Assert.isTrue(type(frame.parts[1].offset) == "table", "the visible part has a normalized placement")
+    Assert.isTrue(type(frame.parts[1].offset.x) == "number" and type(frame.parts[1].offset.y) == "number")
+    Assert.isNil(frame.parts[1].asset, "dynamic Pokemon pixels remain outside field-UI assets")
   end
 
   local markers = assert(naming.pokemonGenderMarkers, "Pokemon gender marker animations are required")
@@ -278,10 +277,10 @@ function T.selected_entry_slot_preserves_source_animation(romFs, _)
   end
 end
 
--- Sequence 50 names dynamically uploaded Pokémon graphics. Its generated
--- record therefore carries each source OAM placement and one-based icon
--- frame selection, while the field-UI asset table remains free of Pokémon pixels.
-function T.pokemon_subject_is_source_positioned_and_frame_addressable(romFs, _)
+-- Sequence 50 names dynamically uploaded Pokémon graphics. The source's two
+-- fully overlapped OAM records use different palette roles, but only the
+-- front record is a visible semantic runtime placement.
+function T.pokemon_subject_projects_the_validated_visible_source_object(romFs, _)
   local source = sourceAnimation(romFs, 50)
   local config = namingSelection()
   local archive = assert(romFs:openNarc(config.alias), "the naming archive opens")
@@ -302,12 +301,23 @@ function T.pokemon_subject_is_source_positioned_and_frame_addressable(romFs, _)
     Assert.equal(frame.duration, sourceFrame.duration, "Pokémon subject frame " .. index .. " duration")
     local cell = assert(cells.cells[sourceFrame.cell + 1], "the Pokémon source cell exists")
     Assert.equal(#cell.objs, 2, "the Pokémon source cell keeps its two OAM objects")
-    Assert.equal(#frame.parts, #cell.objs, "every source OAM object becomes one normalized part")
+    Assert.equal(#frame.parts, 1, "the source OAM pair becomes one visible semantic part")
     local iconObject = assert(cell.objs[1], "the icon OAM object is first")
     local underlayObject = assert(cell.objs[2], "the icon underlay OAM object is second")
     Assert.equal(iconObject.palette, 6, "the first naming OAM object uses the loaded mon icon palette")
     Assert.equal(underlayObject.palette, 5, "the second naming OAM object is the source underlay")
-    for objectIndex, obj in ipairs(cell.objs) do
+    Assert.equal(iconObject.affine, false, "the visible icon is non-affine")
+    Assert.equal(underlayObject.affine, false, "the source underlay is non-affine")
+    Assert.equal(iconObject.disabled, false, "the visible icon is enabled")
+    Assert.equal(underlayObject.disabled, false, "the source underlay is enabled")
+    Assert.equal(iconObject.objMode, "normal", "the visible icon uses normal OBJ mode")
+    Assert.equal(underlayObject.objMode, "normal", "the source underlay uses normal OBJ mode")
+    Assert.equal(iconObject.mosaic, false, "the visible icon does not use mosaic")
+    Assert.equal(underlayObject.mosaic, false, "the source underlay does not use mosaic")
+    Assert.equal(iconObject.colorMode, "16-color", "the visible icon uses 16-color OBJ mode")
+    Assert.equal(underlayObject.colorMode, "16-color", "the source underlay uses 16-color OBJ mode")
+    Assert.equal(iconObject.priority, underlayObject.priority, "the fully overlapping objects share priority")
+    for _, obj in ipairs(cell.objs) do
       Assert.equal(obj.tile, 0x57E0 / 32, "the Pokémon cell references the loaded icon tile base")
       Assert.equal(obj.width, 32, "the Pokémon source object is 32 pixels wide")
       Assert.equal(obj.height, 32, "the Pokémon source object is 32 pixels tall")
@@ -315,14 +325,11 @@ function T.pokemon_subject_is_source_positioned_and_frame_addressable(romFs, _)
       Assert.equal(obj.y, iconObject.y, "the two Pokémon source objects share their y placement")
       Assert.equal(obj.flipH, false, "the Pokémon icon is not horizontally flipped")
       Assert.equal(obj.flipV, false, "the Pokémon icon is not vertically flipped")
-      local part = frame.parts[objectIndex]
-      Assert.equal(part.iconFrame, 1, "the naming app loads one shared 32x32 icon frame")
-      Assert.deepEqual(
-        part.offset,
-        { x = obj.x + sourceFrame.translateX, y = obj.y + sourceFrame.translateY },
-        "Pokémon subject frame " .. index .. " part " .. objectIndex .. " preserves its source placement"
-      )
     end
+    Assert.deepEqual(frame.parts[1], {
+      iconFrame = 1,
+      offset = { x = iconObject.x + sourceFrame.translateX, y = iconObject.y + sourceFrame.translateY },
+    }, "Pokémon subject frame " .. index .. " projects the visible icon placement")
   end
   for _, frame in ipairs(subject.frames) do
     for _, part in ipairs(frame.parts) do

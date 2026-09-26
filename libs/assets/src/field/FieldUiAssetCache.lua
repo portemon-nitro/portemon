@@ -1001,6 +1001,14 @@ function FieldUiAssetCache.validateManifest(manifest)
       return type(value) == "number" and value % 1 == 0 and value >= 0
     end
 
+    local function signedInt(value)
+      return type(value) == "number" and value % 1 == 0 and value ~= math.huge and value ~= -math.huge
+    end
+
+    local function signedPoint(point)
+      return type(point) == "table" and signedInt(point.x) and signedInt(point.y)
+    end
+
     local function canonicalPoint(point, what)
       if type(point) ~= "table" or not nonNegativeInt(point.x) or not nonNegativeInt(point.y) then
         return false, Errors.new(MANIFEST_INVALID, what .. " must be a canonical integer point", { what = what })
@@ -1293,8 +1301,9 @@ function FieldUiAssetCache.validateManifest(manifest)
     if type(pokemonSubject) ~= "table" then
       return false, Errors.new(MANIFEST_INVALID, "namingScreen.pokemonSubject must be a table", {})
     end
-    if type(pokemonSubject.anchor) ~= "table" or pokemonSubject.anchor.x ~= 24 or pokemonSubject.anchor.y ~= 8 then
-      return false, Errors.new(MANIFEST_INVALID, "namingScreen.pokemonSubject must anchor at (24,8)", {})
+    if not signedPoint(pokemonSubject.anchor) then
+      return false,
+        Errors.new(MANIFEST_INVALID, "namingScreen.pokemonSubject anchor must be a signed integer point", {})
     end
     if validPlayModes[pokemonSubject.playMode] ~= true then
       return false, Errors.new(MANIFEST_INVALID, "namingScreen.pokemonSubject carries an unsupported play mode", {})
@@ -1306,8 +1315,9 @@ function FieldUiAssetCache.validateManifest(manifest)
     for _ in pairs(pokemonSubject.frames) do
       pokemonFrameCount = pokemonFrameCount + 1
     end
-    if pokemonFrameCount ~= 2 or pokemonFrameCount ~= #pokemonSubject.frames then
-      return false, Errors.new(MANIFEST_INVALID, "namingScreen.pokemonSubject must carry two dense icon frames", {})
+    if pokemonFrameCount == 0 or pokemonFrameCount ~= #pokemonSubject.frames then
+      return false,
+        Errors.new(MANIFEST_INVALID, "namingScreen.pokemonSubject frames must be a dense nonempty sequence", {})
     end
     if
       type(pokemonSubject.loopStartFrameIdx) ~= "number"
@@ -1334,25 +1344,22 @@ function FieldUiAssetCache.validateManifest(manifest)
       for _ in pairs(frame.parts) do
         partCount = partCount + 1
       end
-      if partCount ~= 2 or #frame.parts ~= 2 then
+      if partCount == 0 or partCount ~= #frame.parts then
         return false,
           Errors.new(
             MANIFEST_INVALID,
-            "namingScreen.pokemonSubject frame " .. index .. " must carry two dense parts",
+            "namingScreen.pokemonSubject frame " .. index .. " must carry a dense nonempty part sequence",
             {}
           )
       end
       for partIndex, part in ipairs(frame.parts) do
         if
           type(part) ~= "table"
-          or type(part.iconFrame) ~= "number"
-          or part.iconFrame % 1 ~= 0
-          or part.iconFrame ~= 1
+          or not signedInt(part.iconFrame)
+          or part.iconFrame <= 0
           or type(part.offset) ~= "table"
-          or type(part.offset.x) ~= "number"
-          or part.offset.x % 1 ~= 0
-          or type(part.offset.y) ~= "number"
-          or part.offset.y % 1 ~= 0
+          or not signedInt(part.offset.x)
+          or not signedInt(part.offset.y)
         then
           return false,
             Errors.new(
@@ -1387,8 +1394,9 @@ function FieldUiAssetCache.validateManifest(manifest)
       return false, Errors.new(MANIFEST_INVALID, "namingScreen.pokemonGenderMarkers must be a table", {})
     end
     local markerAnchor = genderMarkers.anchor
-    if type(markerAnchor) ~= "table" or markerAnchor.x ~= 210 or markerAnchor.y ~= 27 then
-      return false, Errors.new(MANIFEST_INVALID, "namingScreen.pokemonGenderMarkers must anchor at (210,27)", {})
+    if not signedPoint(markerAnchor) then
+      return false,
+        Errors.new(MANIFEST_INVALID, "namingScreen.pokemonGenderMarkers anchor must be a signed integer point", {})
     end
     for _, gender in ipairs({ "male", "female" }) do
       local markerOk, markerErr =

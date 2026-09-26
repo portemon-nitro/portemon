@@ -1653,29 +1653,18 @@ local function compileNamingScreen(romFs, sha1hex, deps, assets, manifestAssets)
     end
     local cell = objCell.cells[frame.cell + 1]
     if cell == nil or #cell.objs ~= 2 then
-      Errors.raise(FieldUiCompiler.ERROR.SOURCE_INVALID, "the naming Pokémon cell is malformed", {
-        anim = cfg.objAnims.pokemonSubject,
-        cell = frame.cell,
-      })
+      Errors.raise(
+        FieldUiCompiler.ERROR.SOURCE_INVALID,
+        "the naming Pokémon cell does not carry its two source objects",
+        {
+          anim = cfg.objAnims.pokemonSubject,
+          sequence = cfg.objAnims.pokemonSubject,
+          cell = frame.cell,
+          objectCount = cell and #cell.objs or 0,
+        }
+      )
     end
     assert(cell ~= nil, "the naming Pokémon cell is present")
-    local parts = {}
-    for _, obj in ipairs(cell.objs) do
-      if obj.tile ~= pokemonIconTile or obj.width ~= 32 or obj.height ~= 32 or obj.flipH or obj.flipV then
-        Errors.raise(
-          FieldUiCompiler.ERROR.SOURCE_INVALID,
-          "the naming Pokémon cell does not use the untransformed loaded icon frame",
-          {
-            anim = cfg.objAnims.pokemonSubject,
-            cell = frame.cell,
-          }
-        )
-      end
-      parts[#parts + 1] = {
-        iconFrame = 1,
-        offset = { x = obj.x + frame.translateX, y = obj.y + frame.translateY },
-      }
-    end
     if
       (frame.element ~= "none" and frame.element ~= "translate")
       or frame.scaleX ~= 1
@@ -1687,9 +1676,55 @@ local function compileNamingScreen(romFs, sha1hex, deps, assets, manifestAssets)
         element = frame.element,
       })
     end
+    local front = assert(cell.objs[1])
+    local underlay = assert(cell.objs[2])
+    local function validSourceObject(obj)
+      return obj.tile == pokemonIconTile
+        and obj.width == 32
+        and obj.height == 32
+        and not obj.affine
+        and not obj.disabled
+        and obj.objMode == "normal"
+        and not obj.mosaic
+        and obj.colorMode == "16-color"
+    end
+    local invalidObject = nil
+    if not validSourceObject(front) or front.palette ~= 6 or front.flipH or front.flipV then
+      invalidObject = 0
+    elseif not validSourceObject(underlay) or underlay.palette ~= 5 then
+      invalidObject = 1
+    elseif
+      front.x ~= underlay.x
+      or front.y ~= underlay.y
+      or front.tile ~= underlay.tile
+      or front.flipH ~= underlay.flipH
+      or front.flipV ~= underlay.flipV
+      or front.width ~= underlay.width
+      or front.height ~= underlay.height
+      or front.priority ~= underlay.priority
+    then
+      invalidObject = 1
+    end
+    if invalidObject ~= nil then
+      Errors.raise(
+        FieldUiCompiler.ERROR.SOURCE_INVALID,
+        "the naming Pokémon cell does not match the visible icon and palette underlay composition",
+        {
+          anim = cfg.objAnims.pokemonSubject,
+          sequence = cfg.objAnims.pokemonSubject,
+          cell = frame.cell,
+          object = invalidObject,
+        }
+      )
+    end
     pokemonSubjectFrames[index] = {
       duration = frame.duration,
-      parts = parts,
+      parts = {
+        {
+          iconFrame = 1,
+          offset = { x = front.x + frame.translateX, y = front.y + frame.translateY },
+        },
+      },
     }
   end
   local pokemonSubject = {

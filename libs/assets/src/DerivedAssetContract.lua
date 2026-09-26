@@ -104,6 +104,10 @@
 -- fieldUi schema 18: Pokémon naming preserves every validated source OAM
 -- placement and carries generated gender marker animations.
 --
+-- fieldUi schema 19: Pokémon naming publishes visible semantic dynamic-icon
+-- parts and consumer-safe animation geometry; icon pixels remain in the
+-- shared mon-icon atlas.
+--
 -- fieldUi schema 16: dialogueFrames also publishes the fixed standard
 -- Yes/No frame strip and palette independently of selectable user frames.
 --
@@ -269,7 +273,7 @@ DerivedAssetContract.fieldEmotes = {
 
 DerivedAssetContract.fieldUi = {
   cacheFormat = "field-ui-cache-v1",
-  schema = "g4-field-ui-v18",
+  schema = "g4-field-ui-v19",
 }
 
 DerivedAssetContract.intro = {

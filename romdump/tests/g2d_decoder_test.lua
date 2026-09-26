@@ -120,9 +120,18 @@ local function cellBlock(objs)
   local metatile = u16(#objs) .. u16(0) .. u32(0)
   local attr = {}
   for _, o in ipairs(objs) do
-    attr[#attr + 1] = u16((o.y % 256) + (o.shape or 0) * 16384)
+    local objMode = ({ normal = 0, translucent = 1, window = 2, bitmap = 3 })[o.objMode or "normal"]
+    local attr0 = (o.y % 256)
+      + (o.affine and 0x100 or 0)
+      + (o.disabled and 0x200 or 0)
+      + objMode * 0x400
+      + (o.mosaic and 0x1000 or 0)
+      + (o.colorMode == "256-color" and 0x2000 or 0)
+      + (o.shape or 0) * 16384
+    local attr2 = o.tile + (o.priority or 0) * 1024 + o.pal * 4096
+    attr[#attr + 1] = u16(attr0)
       .. u16((o.x % 512) + (o.flipH and 4096 or 0) + (o.flipV and 8192 or 0) + (o.size or 0) * 16384)
-      .. u16(o.tile + o.pal * 4096)
+      .. u16(attr2)
   end
   return block(
     "CEBK",
@@ -163,6 +172,12 @@ function T.cell_chunk_reports_objs_per_cell()
     size = 0,
     width = 8,
     height = 8,
+    affine = false,
+    disabled = false,
+    objMode = "normal",
+    mosaic = false,
+    colorMode = "16-color",
+    priority = 0,
   })
   Assert.deepEqual(cell.cells[1].objs[2], {
     x = -4,
@@ -175,7 +190,58 @@ function T.cell_chunk_reports_objs_per_cell()
     size = 0,
     width = 8,
     height = 8,
+    affine = false,
+    disabled = false,
+    objMode = "normal",
+    mosaic = false,
+    colorMode = "16-color",
+    priority = 0,
   })
+end
+
+function T.cell_chunk_decodes_normalized_oam_semantics()
+  local cell = assert(G2dDecoder.decodeCell(container("RECN", {
+    cellBlock({
+      { x = 0, y = 0, tile = 0, pal = 0, objMode = "normal", priority = 0 },
+      {
+        x = 0,
+        y = 0,
+        tile = 1,
+        pal = 1,
+        affine = true,
+        disabled = true,
+        objMode = "translucent",
+        mosaic = true,
+        colorMode = "256-color",
+        priority = 3,
+      },
+      { x = 0, y = 0, tile = 2, pal = 2, objMode = "window", priority = 1 },
+      { x = 0, y = 0, tile = 3, pal = 3, objMode = "bitmap", priority = 2 },
+      { x = 0, y = 0, tile = 4, pal = 4, disabled = true },
+    }),
+  })))
+  local objs = cell.cells[1].objs
+  Assert.deepEqual({
+    objs[1].affine,
+    objs[1].disabled,
+    objs[1].objMode,
+    objs[1].mosaic,
+    objs[1].colorMode,
+    objs[1].priority,
+  }, { false, false, "normal", false, "16-color", 0 })
+  Assert.deepEqual({
+    objs[2].affine,
+    objs[2].disabled,
+    objs[2].objMode,
+    objs[2].mosaic,
+    objs[2].colorMode,
+    objs[2].priority,
+  }, { true, false, "translucent", true, "256-color", 3 })
+  Assert.deepEqual({ objs[3].objMode, objs[3].priority }, { "window", 1 })
+  Assert.deepEqual({ objs[4].objMode, objs[4].priority }, { "bitmap", 2 })
+  Assert.isTrue(objs[5].disabled, "ATTR0 bit 9 disables only non-affine objects")
+  Assert.equal(objs[2].tile, 1, "legacy decoded fields remain available")
+  Assert.equal(objs[2].palette, 1, "legacy palette interpretation remains available")
 end
 
 -- A wide OBJ (shape 1, size 1) decodes to 32x8 pixels: the decoder must

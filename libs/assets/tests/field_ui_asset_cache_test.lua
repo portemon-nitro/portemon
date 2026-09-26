@@ -770,6 +770,120 @@ function T.naming_stage_contract_still_validates()
   Assert.isTrue(FieldUiAssetCache.validateManifest(validManifest()))
 end
 
+function T.pokemon_subject_accepts_consumer_safe_semantic_variants()
+  local manifest = validManifest()
+  local naming = manifest.namingScreen
+  naming.pokemonSubject.anchor = { x = -37, y = 104 }
+  naming.pokemonSubject.frames = {
+    { duration = 1, parts = { { iconFrame = 2, offset = { x = -12, y = 4 } } } },
+    {
+      duration = 9,
+      parts = {
+        { iconFrame = 4, offset = { x = 0, y = 0 } },
+        { iconFrame = 2, offset = { x = 12, y = -8 } },
+      },
+    },
+    { duration = 3, parts = { { iconFrame = 3, offset = { x = 22, y = -1 } } } },
+  }
+  naming.pokemonGenderMarkers.anchor = { x = -3, y = 61 }
+  Assert.isTrue(
+    FieldUiAssetCache.validateManifest(manifest),
+    "consumer-safe semantic placement, frame, part, and icon-frame variants validate"
+  )
+end
+
+function T.pokemon_subject_rejects_runtime_invalid_metadata()
+  local cases = {
+    {
+      "empty frames",
+      function(subject)
+        subject.frames = {}
+      end,
+    },
+    {
+      "sparse frames",
+      function(subject)
+        subject.frames = { [1] = subject.frames[1], [3] = subject.frames[2] }
+      end,
+    },
+    {
+      "empty parts",
+      function(subject)
+        subject.frames[1].parts = {}
+      end,
+    },
+    {
+      "sparse parts",
+      function(subject)
+        subject.frames[1].parts = { [1] = subject.frames[1].parts[1], [3] = subject.frames[1].parts[2] }
+      end,
+    },
+    {
+      "invalid loop start",
+      function(subject)
+        subject.loopStartFrameIdx = #subject.frames
+      end,
+    },
+    {
+      "zero icon frame",
+      function(subject)
+        subject.frames[1].parts[1].iconFrame = 0
+      end,
+    },
+    {
+      "fractional icon frame",
+      function(subject)
+        subject.frames[1].parts[1].iconFrame = 1.5
+      end,
+    },
+    {
+      "fractional offset",
+      function(subject)
+        subject.frames[1].parts[1].offset.x = 1.5
+      end,
+    },
+    {
+      "non-finite offset",
+      function(subject)
+        subject.frames[1].parts[1].offset.y = math.huge
+      end,
+    },
+    {
+      "fractional anchor",
+      function(subject)
+        subject.anchor.x = 2.5
+      end,
+    },
+    {
+      "forbidden asset record",
+      function(subject)
+        subject.frames[1].parts[1].asset = "pokemon-icon"
+      end,
+    },
+    {
+      "forbidden pixel rectangle",
+      function(subject)
+        subject.frames[1].parts[1].rect = { x = 0, y = 0 }
+      end,
+    },
+  }
+  for _, case in ipairs(cases) do
+    local manifest = validManifest()
+    case[2](manifest.namingScreen.pokemonSubject)
+    local ok, err = FieldUiAssetCache.validateManifest(manifest)
+    Assert.isFalse(ok, "invalid Pokemon subject metadata is rejected: " .. case[1])
+    Assert.equal(assert(err).code, "FIELD_UI_MANIFEST_INVALID")
+  end
+end
+
+function T.stale_v18_field_ui_manifest_is_rejected()
+  local manifest = validManifest()
+  manifest.schema = "g4-field-ui-v18"
+  local ok, err = FieldUiAssetCache.validateManifest(manifest)
+  Assert.isFalse(ok, "a v18 manifest is stale under the current field-UI contract")
+  Assert.equal(assert(err).code, "FIELD_UI_MANIFEST_INVALID")
+end
+
 -- The start menu label palette is a required generated record: the retail
 -- label roles with a compositing-transparent background so glyph
 -- background pixels reveal already-rendered chrome.
