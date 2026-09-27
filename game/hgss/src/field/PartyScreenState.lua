@@ -227,6 +227,7 @@ end
 function PartyScreenState:_layout()
   local measurement = self:_measured()
   return PartyScreenLayout.resolve({
+    manifest = self._manifest,
     width = measurement.width,
     height = measurement.height,
     cancellable = self._controller:cancellable(),

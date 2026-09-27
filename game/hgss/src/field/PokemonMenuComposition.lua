@@ -34,6 +34,8 @@ local PokemonMenuComposition = {}
 ---@field uiManifest table<string, unknown> validated field-UI manifest (borrowed)
 ---@field heroGender string "male" or "female"
 ---@field measureDisplay fun(): table<string, unknown> current display facts
+---@field prepareIcons fun(iconKeys: string[]): boolean, string? presented icon preparation (borrowed binding)
+---@field cancelIconPreparation fun() presented preparation release (borrowed binding)
 ---@field contextSources fun(): table<string, unknown> live world reads per check
 ---@field worldPorts table<string, unknown> field world ports (borrowed owners)
 ---@field fieldTravel table<string, unknown>? durable travel owner (borrowed)
@@ -78,6 +80,10 @@ function PokemonMenuComposition.create(deps)
   assert(deps.heroGender == "male" or deps.heroGender == "female", "the menu composition needs the hero gender")
   local measureDisplay = assert(deps.measureDisplay, "the menu composition needs the display facts")
   assert(type(measureDisplay) == "function", "the menu composition needs the display facts")
+  local prepareIcons = assert(deps.prepareIcons, "the menu composition needs its icon preparation")
+  assert(type(prepareIcons) == "function", "the menu composition needs its icon preparation")
+  local cancelIconPreparation = assert(deps.cancelIconPreparation, "the menu composition needs its preparation release")
+  assert(type(cancelIconPreparation) == "function", "the menu composition needs its preparation release")
   local contextSources = assert(deps.contextSources, "the menu composition needs live world reads")
   assert(type(contextSources) == "function", "the menu composition needs live world reads")
   local worldPorts = assert(deps.worldPorts, "the menu composition needs the field world ports")
@@ -121,6 +127,8 @@ function PokemonMenuComposition.create(deps)
       assets = assets,
       measureDisplay = measureDisplay,
       overrides = overrides,
+      prepareIcons = prepareIcons,
+      cancelIconPreparation = cancelIconPreparation,
     })
   end
 

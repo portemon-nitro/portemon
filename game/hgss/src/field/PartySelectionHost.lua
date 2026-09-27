@@ -15,6 +15,8 @@ local ScriptErrors = require("libs.script.src.errors")
 ---@field private _service table<string, unknown> the live mon service
 ---@field private _manifest table<string, unknown> the validated party manifest
 ---@field private _measureDisplay fun(): table<string, unknown> the current display facts
+---@field private _prepareIcons fun(iconKeys: string[]): boolean, string? presented icon preparation (borrowed binding)
+---@field private _cancelIconPreparation fun() presented preparation release (borrowed binding)
 ---@field private _uiManifest table<string, unknown>? the field-UI manifest
 ---@field private _overrides table<string, unknown>? per-case screen overrides
 ---@field private _nextId integer the next open handle identity
@@ -31,10 +33,17 @@ function PartySelectionHost.new(opts)
   assert(type(manifest) == "table", "the script party host requires the validated party manifest")
   local measureDisplay = assert(opts.measureDisplay, "the script party host requires the display facts")
   assert(type(measureDisplay) == "function", "the script party host requires the display facts")
+  local prepareIcons = assert(opts.prepareIcons, "the script party host requires its icon preparation")
+  assert(type(prepareIcons) == "function", "the script party host requires its icon preparation")
+  local cancelIconPreparation =
+    assert(opts.cancelIconPreparation, "the script party host requires its preparation release")
+  assert(type(cancelIconPreparation) == "function", "the script party host requires its preparation release")
   return setmetatable({
     _service = service,
     _manifest = manifest,
     _measureDisplay = measureDisplay,
+    _prepareIcons = prepareIcons,
+    _cancelIconPreparation = cancelIconPreparation,
     _uiManifest = opts.uiManifest,
     _overrides = opts.overrides,
     _nextId = 0,
@@ -90,6 +99,8 @@ function PartySelectionHost:open(request)
     initialFocus = focus,
     measureDisplay = self._measureDisplay,
     overrides = self._overrides,
+    prepareIcons = self._prepareIcons,
+    cancelIconPreparation = self._cancelIconPreparation,
   })
   self._nextId = self._nextId + 1
   local handle = { id = self._nextId }

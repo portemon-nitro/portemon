@@ -320,8 +320,8 @@ end
 function PartyScreenRenderer:_drawIcon(record, panel, dx, selected, phase, icons, disabled)
   local graphics = self._graphics
   local origin = assert(panel.origin, "party panels carry origins")
-  local iconImage = icons:image()
   local iconKey = assert(record.iconKey, "occupied slots carry an icon key")
+  local iconImage = icons:image(iconKey)
   local quad = icons:quadFor(iconKey)
   local dims = icons:dimensions(record.iconKey)
   assert(
@@ -394,148 +394,6 @@ local function truncateToWidth(text, value, maxWidth)
 end
 
 ---@param record table<string, unknown>
----@return boolean
-local function isDisabled(presentation, record)
-  return presentation.mode == "select" and record.occupied and not record.eligible
-end
-
--- Draws one occupied icon at its card region, constraining oversized
--- source art to the region through the shared logical clip without
--- changing the pane presentation scale.
----@param record table<string, unknown>
----@param region ScreenTopology.Rectangle the icon region in logical coordinates
----@param icons table<string, unknown>
----@param disabled boolean
-function PartyScreenRenderer:_drawCompactIcon(record, region, icons, disabled)
-  local graphics = self._graphics
-  local iconKey = assert(record.iconKey, "occupied slots carry an icon key")
-  local iconImage = icons:image(iconKey)
-  local quad = icons:quadFor(iconKey)
-  local dims = icons:dimensions(record.iconKey)
-  assert(
-    type(dims) == "table" and type(dims.width) == "number" and type(dims.height) == "number",
-    "the icon provider reports image dimensions"
-  )
-  setColor(graphics, { 1, 1, 1, disabled and 0.45 or 1 })
-  if dims.width > ICON_REGION or dims.height > ICON_REGION then
-    LogicalSurface.clip(graphics, region, function()
-      graphics.draw(iconImage, quad, region.x, region.y)
-    end)
-  else
-    graphics.draw(iconImage, quad, region.x, region.y)
-  end
-end
-
----@param record table<string, unknown>
----@return string displayName
----@return integer level
----@return string gender
----@return string status
----@return integer currentHp
----@return integer maxHp
-local function slotFacts(record)
-  local displayName = assert(record.displayName, "occupied slots carry a display name")
-  local level = assert(record.level, "occupied slots carry a level")
-  local gender = assert(record.gender, "occupied slots carry a gender")
-  local status = assert(record.status, "occupied slots carry a status")
-  local currentHp = assert(record.currentHp, "occupied slots carry current HP")
-  local maxHp = assert(record.maxHp, "occupied slots carry max HP")
-  assert(type(displayName) == "string", "the display name renders as text")
-  return displayName, level, gender, status, currentHp, maxHp
-end
-
----@param currentHp integer
----@param maxHp integer
----@return number fraction
-local function hpFraction(currentHp, maxHp)
-  local fraction = 0
-  if maxHp > 0 then
-    fraction = currentHp / maxHp
-  end
-  return fraction
-end
-
--- Paints the HP bar trough and its zone-colored fill over one bar rect.
----@param bar ScreenTopology.Rectangle
----@param currentHp integer
----@param maxHp integer
-function PartyScreenRenderer:_drawCompactHpBar(bar, currentHp, maxHp)
-  local graphics = self._graphics
-  local fraction = hpFraction(currentHp, maxHp)
-  setColor(graphics, COLORS.hpEmpty)
-  graphics.rectangle("fill", bar.x, bar.y, bar.width, bar.height)
-  if fraction > 0 then
-    local zoneColor = assert(HP_ZONE_COLORS[PartyScreenTheme.hpZone(currentHp, maxHp)], "unknown HP zone")
-    setColor(graphics, COLORS[zoneColor])
-    graphics.rectangle("fill", bar.x, bar.y, bar.width * fraction, bar.height)
-  end
-end
-
--- Draws generated-font text in the slot color, dimmed for ineligible picks.
----@param value string
----@param x number
----@param y number
----@param disabled boolean
-function PartyScreenRenderer:_drawCompactText(value, x, y, disabled)
-  local graphics = self._graphics
-  setColor(graphics, disabled and COLORS.textDim or COLORS.text)
-  local text = self._text
-  text.drawText(text, value, x, y)
-end
-
--- One compact card: a source-sized icon, three generated-font text lines
--- with the HP bar, and no paint outside the card rectangle.
----@param record table<string, unknown>
----@param rect ScreenTopology.Rectangle
----@param icons table<string, unknown>
----@param disabled boolean
-function PartyScreenRenderer:_drawCompactSlot(record, rect, icons, disabled)
-  local graphics = self._graphics
-  if not record.occupied then
-    setColor(graphics, COLORS.slotEmpty)
-    graphics.rectangle("fill", rect.x, rect.y, rect.width, rect.height)
-    return
-  end
-  setColor(graphics, COLORS.slot)
-  if record.slot == 0 then
-    setColor(graphics, COLORS.slotLead)
-  end
-  graphics.rectangle("fill", rect.x, rect.y, rect.width, rect.height)
-  self:_drawCompactIcon(
-    record,
-    { x = rect.x + 2, y = rect.y + 2, width = ICON_REGION, height = ICON_REGION },
-    icons,
-    disabled
-  )
-  local displayName, level, gender, status, currentHp, maxHp = slotFacts(record)
-  local secondLine = rect.y + 2 + LINE_ADVANCE
-  local thirdLine = rect.y + 2 + LINE_ADVANCE * 2
-  self:_drawCompactText(truncateToWidth(self._text, displayName, 86), rect.x + 36, rect.y + 2, disabled)
-  self:_drawCompactText("Lv " .. level, rect.x + 36, secondLine, disabled)
-  local genderText = GENDER_TEXT[gender]
-  assert(genderText ~= nil, "unknown party gender " .. tostring(record.gender))
-  if genderText ~= "" then
-    local text = self._text
-    self:_drawCompactText(genderText, rect.x + 120 - text.textWidth(text, genderText), secondLine, disabled)
-  end
-  self:_drawCompactText(string.format("HP %d/%d", currentHp, maxHp), rect.x + 36, thirdLine, disabled)
-  local label = PartyScreenTheme.statusLabel(status)
-  if label ~= nil then
-    self:_drawCompactText(label, rect.x + 2, thirdLine, disabled)
-  end
-  self:_drawCompactHpBar({ x = rect.x + 2, y = rect.y + 50, width = 118, height = 2 }, currentHp, maxHp)
-end
-
----@param rect ScreenTopology.Rectangle
----@param label string
----@param selected boolean
-function PartyScreenRenderer:_drawActionRow(rect, label, selected)
-  local graphics = self._graphics
-  setColor(graphics, selected and COLORS.overlaySelected or COLORS.overlayBox)
-  graphics.rectangle("fill", rect.x, rect.y, rect.width, rect.height)
-  self:_drawCompactText(label, rect.x + 8, rect.y + 4, false)
-end
-
 ---@param panel table<string, unknown>
 ---@param dx number horizontal swap/slide offset applied to every panel coordinate
 ---@param selected boolean
@@ -655,8 +513,8 @@ end
 ---@param icons table<string, unknown>
 function PartyScreenRenderer:_drawDetailFacts(facts, originX, originY, icons)
   local graphics = self._graphics
-  local iconImage = icons:image()
   local iconKey = assert(facts.iconKey, "detail facts carry an icon key")
+  local iconImage = icons:image(iconKey)
   local quad = icons:quadFor(iconKey)
   setColor(graphics, WHITE)
   graphics.draw(iconImage, quad, originX + DETAIL_ICON.x, originY + DETAIL_ICON.y - DETAIL_DY)

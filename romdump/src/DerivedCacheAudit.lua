@@ -13,6 +13,15 @@ local StorageErrors = require("libs.storage.src.errors")
 
 local DerivedCacheAudit = {}
 
+-- A receipt file that no longer parses is damaged data, not a storage
+-- failure: the job is unavailable and eligible for repair. Genuine
+-- backend read failures keep propagating instead of reading as absence.
+local function isUnusableReceipt(failure)
+  local message = tostring(failure)
+  return message:find(StorageErrors.CACHE_LUA_PARSE_FAILED, 1, true) ~= nil
+    or message:find(StorageErrors.CACHE_LUA_EVAL_FAILED, 1, true) ~= nil
+end
+
 ---@param cacheFs CacheFs
 ---@param identity { versionId: string, generationId: string, producerId: string } current strict generation record
 ---@param plans ArtifactJobs.Plans complete published inventory for that exact identity

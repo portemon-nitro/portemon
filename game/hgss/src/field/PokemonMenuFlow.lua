@@ -23,6 +23,8 @@ local TERMINAL_FIELD_ACTION = "pokemon.field_move"
 ---@field private _fieldMoves table<string, unknown>
 ---@field private _assets table<string, unknown>
 ---@field private _measureDisplay fun(): table<string, unknown>
+---@field private _prepareIcons fun(iconKeys: string[]): boolean, string? presented icon preparation (borrowed binding)
+---@field private _cancelIconPreparation fun() presented preparation release (borrowed binding)
 ---@field private _overrides table<string, unknown>?
 ---@field private _page string
 ---@field private _child table<string, unknown>?
@@ -188,6 +190,10 @@ function PokemonMenuFlow.new(opts)
   local mons, bag, cursor, actions, fieldMoves = checkServices(opts)
   local assets = checkAssets(assert(opts.assets, "the menu flow needs its borrowed asset bundle"))
   assert(type(opts.measureDisplay) == "function", "the menu flow needs the display facts")
+  local prepareIcons = assert(opts.prepareIcons, "the menu flow needs its icon preparation")
+  assert(type(prepareIcons) == "function", "the menu flow needs its icon preparation")
+  local cancelIconPreparation = assert(opts.cancelIconPreparation, "the menu flow needs its preparation release")
+  assert(type(cancelIconPreparation) == "function", "the menu flow needs its preparation release")
   local self = setmetatable({
     _root = opts.root,
     _mons = mons,
@@ -197,6 +203,8 @@ function PokemonMenuFlow.new(opts)
     _fieldMoves = fieldMoves,
     _assets = assets,
     _measureDisplay = opts.measureDisplay,
+    _prepareIcons = prepareIcons,
+    _cancelIconPreparation = cancelIconPreparation,
     _overrides = opts.overrides,
     _page = opts.root == "bag" and "bag_browse" or "party_browse",
     _child = nil,
@@ -257,6 +265,8 @@ function PokemonMenuFlow:_openPage(page, continuation)
       uiManifest = assets.uiManifest,
       initialFocus = focusSlot,
       measureDisplay = measureDisplay,
+      prepareIcons = self._prepareIcons,
+      cancelIconPreparation = self._cancelIconPreparation,
     })
   end
   if page == "party_item_target" or page == "party_give_target" then
@@ -273,6 +283,8 @@ function PokemonMenuFlow:_openPage(page, continuation)
         bagRevision = assert(cont.bagRevision, "target pages carry the bag revision"),
       },
       measureDisplay = measureDisplay,
+      prepareIcons = self._prepareIcons,
+      cancelIconPreparation = self._cancelIconPreparation,
     })
   end
   if page == "summary" then

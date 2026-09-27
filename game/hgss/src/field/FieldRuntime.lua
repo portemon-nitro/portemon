@@ -108,12 +108,27 @@ local function buildPartySelectionHost(runtime, cacheFs)
   local function measureDisplay()
     return runtime.presentationDisplay
   end
+  -- The icon preparation binding belongs to the presentation lifetime
+  -- and may postdate this host: resolve it per open, when a screen is
+  -- actually constructed, mirroring the application factories.
+  local function prepareIcons(iconKeys)
+    local binding =
+      assert(runtime._partyIconPreparation, "script party selection requires its icon preparation binding")
+    return binding.prepare(iconKeys)
+  end
+  local function cancelIconPreparation()
+    local binding =
+      assert(runtime._partyIconPreparation, "script party selection requires its icon preparation binding")
+    binding.cancel()
+  end
   return PartySelectionHost.new({
     service = assert(runtime.monService, "the script party host requires the live mon service"),
     manifest = PartyCache.loadManifest(cacheFs),
     uiManifest = runtime.uiManifest,
     measureDisplay = measureDisplay,
     overrides = partyOverrides,
+    prepareIcons = prepareIcons,
+    cancelIconPreparation = cancelIconPreparation,
   })
 end
 
@@ -1781,6 +1796,19 @@ function FieldRuntime:_composePokemonMenu(cacheFs)
     },
     warps = warps,
   }
+  -- The icon preparation binding belongs to the presentation lifetime
+  -- and may postdate this composition: the closures resolve it per
+  -- flow construction, when a screen is actually opened.
+  ---@param iconKeys string[]
+  ---@return boolean, string?
+  local function prepareMenuIcons(iconKeys)
+    local binding = assert(self._partyIconPreparation, "the menu composition requires its icon preparation binding")
+    return binding.prepare(iconKeys)
+  end
+  local function cancelMenuIconPreparation()
+    local binding = assert(self._partyIconPreparation, "the menu composition requires its icon preparation binding")
+    binding.cancel()
+  end
   self.pokemonMenu = PokemonMenuComposition.create({
     mons = assert(self.monService, "the menu composition requires the live mon service"),
     bag = assert(self.bagService, "the menu composition requires the live bag service"),
@@ -1797,6 +1825,8 @@ function FieldRuntime:_composePokemonMenu(cacheFs)
     fieldTravel = self.fieldTravel,
     cacheFs = cacheFs,
     overrides = self.presentationOverrides,
+    prepareIcons = prepareMenuIcons,
+    cancelIconPreparation = cancelMenuIconPreparation,
   })
 end
 

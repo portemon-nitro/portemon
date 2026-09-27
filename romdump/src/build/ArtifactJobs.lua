@@ -550,9 +550,9 @@ local function executeSpawnDestinations(artifact, context)
   local FieldMapDataCompiler = require("romdump.src.digest.field.FieldMapDataCompiler")
   local FieldMapDataCacheWriter = require("romdump.src.digest.field.FieldMapDataCacheWriter")
   local romFs = assert(context.romFs, "coarse jobs require a source reader")
-  local bundle = compileOrRaise(function()
-    return FieldMapDataCompiler.compileSpawnDestinations(romFs)
-  end, "spawns")
+  -- The spawn projection never fails softly: malformed producer data
+  -- raises with its cause, so no nil-guarding wrapper applies here.
+  local bundle = FieldMapDataCompiler.compileSpawnDestinations(romFs)
   return FieldMapDataCacheWriter.stageSpawnIndex(artifact, bundle)
 end
 

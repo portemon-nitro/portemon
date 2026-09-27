@@ -399,7 +399,7 @@ local function drawEgg(self, layout, facts, assets)
     "icon providers expose image and quadFor"
   )
   local iconKey = assert(facts.iconKey, "eggs carry their icon key")
-  graphics.draw(icons:image(), icons:quadFor(iconKey), body.x + 4, body.y + 4)
+  graphics.draw(icons:image(iconKey), icons:quadFor(iconKey), body.x + 4, body.y + 4)
   local textX = body.x + 48
   local egg = assert(facts.egg, "eggs carry their met facts")
   local lines = {
