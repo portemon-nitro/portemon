@@ -35,6 +35,12 @@ BagAssetSchema.STATE_COUNT = 8
 -- this order.
 BagAssetSchema.POCKETS = { "items", "medicine", "balls", "tmhm", "berries", "mail", "battle_items", "key_items" }
 
+-- Pocket-key allowlist shared by every pocket-indexed manifest record.
+local POCKET_SET = {}
+for _, pocket in ipairs(BagAssetSchema.POCKETS) do
+  POCKET_SET[pocket] = true
+end
+
 -- Producer-only identities that must never reach the runtime manifest.
 local SOURCE_KEYS = {
   narcId = true,
@@ -61,15 +67,44 @@ local function checkKeys(record, allowed, context, what)
   end
 end
 
-local function checkRect(value, context, what)
+-- One record guard for every manifest record: the value must be a table
+-- carrying exactly the allowed keys. Adds no default empty tables.
+local function checkRecord(value, allowed, context, what, noun)
   if type(value) ~= "table" then
-    fail(what .. " must be a record", context)
+    fail(what .. " must be " .. (noun or "a record"), context)
   end
-  checkKeys(value, { x = true, y = true, width = true, height = true }, context, what)
+  checkKeys(value, allowed, context, what)
+end
+
+-- One integer-range check shared by non-negative points/rectangles,
+-- positive dimensions/cadences, and bounded channel fields. Signed offsets
+-- and finite non-integral camera/model values keep their own domains.
+local function checkInteger(value, context, what, minimum, maximum, expectation)
+  if
+    type(value) ~= "number"
+    or value % 1 ~= 0
+    or (minimum ~= nil and value < minimum)
+    or (maximum ~= nil and value > maximum)
+  then
+    fail(what .. " must be " .. expectation, context)
+  end
+end
+
+-- One fixed-shape collection check for the manifest's exact-cardinality
+-- arrays. The message keeps each site's distinct contract wording.
+local function checkFixedArray(value, expected, context, message)
+  if not Validate.isArray(value) or #value ~= expected then
+    fail(message, context)
+  end
+end
+
+local RECT_KEYS = { x = true, y = true, width = true, height = true }
+local POINT_KEYS = { x = true, y = true }
+
+local function checkRect(value, context, what)
+  checkRecord(value, RECT_KEYS, context, what)
   for _, axis in ipairs({ "x", "y", "width", "height" }) do
-    if type(value[axis]) ~= "number" or value[axis] % 1 ~= 0 or value[axis] < 0 then
-      fail(what .. "." .. axis .. " must be a non-negative integer", context)
-    end
+    checkInteger(value[axis], context, what .. "." .. axis, 0, nil, "a non-negative integer")
   end
   if value.width == 0 or value.height == 0 then
     fail(what .. " must have positive dimensions", context)
@@ -80,40 +115,37 @@ local function checkRect(value, context, what)
 end
 
 local function checkPoint(value, context, what)
-  if type(value) ~= "table" then
-    fail(what .. " must be a record", context)
-  end
-  checkKeys(value, { x = true, y = true }, context, what)
+  checkRecord(value, POINT_KEYS, context, what)
   for _, axis in ipairs({ "x", "y" }) do
-    if type(value[axis]) ~= "number" or value[axis] % 1 ~= 0 or value[axis] < 0 then
-      fail(what .. "." .. axis .. " must be a non-negative integer", context)
-    end
+    checkInteger(value[axis], context, what .. "." .. axis, 0, nil, "a non-negative integer")
   end
   if value.x > BagAssetSchema.PANE_WIDTH or value.y > BagAssetSchema.PANE_HEIGHT then
     fail(what .. " escapes the canonical pane", context)
   end
 end
 
-local function checkImage(value, context, what)
-  if type(value) ~= "table" then
-    fail(what .. " must be a record", context)
-  end
-  checkKeys(value, { image = true, width = true, height = true }, context, what)
+local IMAGE_KEYS = { image = true, width = true, height = true }
+local VISUAL_KEYS = { image = true, width = true, height = true, offset = true }
+
+-- Payload fields shared by exact image records and static visuals, checked
+-- by borrowing the input table. The key domains stay distinct: only the
+-- visual allowlist carries the optional offset.
+local function checkImageFields(value, context, what)
   if type(value.image) ~= "string" or value.image == "" then
     fail(what .. ".image must be a non-empty path", context)
   end
   for _, axis in ipairs({ "width", "height" }) do
-    if type(value[axis]) ~= "number" or value[axis] % 1 ~= 0 or value[axis] <= 0 then
-      fail(what .. "." .. axis .. " must be a positive integer", context)
-    end
+    checkInteger(value[axis], context, what .. "." .. axis, 1, nil, "a positive integer")
   end
 end
 
+local function checkImage(value, context, what)
+  checkRecord(value, IMAGE_KEYS, context, what)
+  checkImageFields(value, context, what)
+end
+
 local function checkOffset(value, context, what)
-  if type(value) ~= "table" then
-    fail(what .. " must be a record", context)
-  end
-  checkKeys(value, { x = true, y = true }, context, what)
+  checkRecord(value, POINT_KEYS, context, what)
   for _, axis in ipairs({ "x", "y" }) do
     if type(value[axis]) ~= "number" or value[axis] % 1 ~= 0 then
       fail(what .. "." .. axis .. " must be an integer", context)
@@ -125,11 +157,8 @@ end
 -- an optional blit offset. NANR selection happens producer-side; no frame
 -- timeline, duration, or source identity reaches the manifest.
 local function checkVisual(value, context, what)
-  if type(value) ~= "table" then
-    fail(what .. " must be a semantic visual", context)
-  end
-  checkKeys(value, { image = true, width = true, height = true, offset = true }, context, what)
-  checkImage({ image = value.image, width = value.width, height = value.height }, context, what)
+  checkRecord(value, VISUAL_KEYS, context, what, "a semantic visual")
+  checkImageFields(value, context, what)
   if value.offset ~= nil then
     checkOffset(value.offset, context, what .. ".offset")
   end
@@ -179,16 +208,21 @@ local function checkSegment(segment, context, what, allowedKinds)
   end
 end
 
+local TEMPLATE_KEYS = { segments = true }
+
 local function checkTemplate(template, context, what, allowedKinds)
-  if type(template) ~= "table" then
-    fail(what .. " must be a record", context)
-  end
-  checkKeys(template, { segments = true }, context, what)
+  checkRecord(template, TEMPLATE_KEYS, context, what)
   if not Validate.isArray(template.segments) or #template.segments == 0 then
     fail(what .. ".segments must be a non-empty contiguous array", context)
   end
+  local sawItem, sawQuantity = false, false
   for index, segment in ipairs(template.segments) do
     checkSegment(segment, context, what .. ".segments[" .. index .. "]", allowedKinds)
+    if segment.kind == "item" then
+      sawItem = true
+    elseif segment.kind == "quantity" then
+      sawQuantity = true
+    end
     if
       index > 1
       and segment.kind == "text"
@@ -198,6 +232,7 @@ local function checkTemplate(template, context, what, allowedKinds)
       fail(what .. " carries adjacent text segments that must be coalesced", context)
     end
   end
+  return sawItem, sawQuantity
 end
 
 -- The post-choice acknowledgement names the removed copies, so its template
@@ -207,37 +242,22 @@ end
 ---@param context table<string, unknown>
 local function checkTossResult(template, context)
   local quantityKinds = { text = true, item = true, quantity = true }
-  checkTemplate(template, context, "interactive.text.tossResult", quantityKinds)
-  local segments = assert(template, "the result template carries its segments").segments
-  assert(type(segments) == "table", "the result template carries its segments")
-  local sawItem, sawQuantity = false, false
-  for _, segment in ipairs(segments) do
-    if type(segment) == "table" and segment.kind == "item" then
-      sawItem = true
-    elseif type(segment) == "table" and segment.kind == "quantity" then
-      sawQuantity = true
-    end
-  end
+  local sawItem, sawQuantity = checkTemplate(template, context, "interactive.text.tossResult", quantityKinds)
   if not sawItem or not sawQuantity then
     fail("interactive.text.tossResult must name the removed item and quantity", context)
   end
 end
 
 local function checkText(text, context)
-  if type(text) ~= "table" then
-    fail("interactive.text must be a record", context)
-  end
-  checkKeys(
-    text,
-    { actions = true, movePrompt = true, tossQuantity = true, tossConfirm = true, tossResult = true },
-    context,
-    "interactive.text"
-  )
+  checkRecord(text, {
+    actions = true,
+    movePrompt = true,
+    tossQuantity = true,
+    tossConfirm = true,
+    tossResult = true,
+  }, context, "interactive.text")
   local actions = text.actions
-  if type(actions) ~= "table" then
-    fail("interactive.text.actions must be a record", context)
-  end
-  checkKeys(actions, TEXT_ACTIONS, context, "interactive.text.actions")
+  checkRecord(actions, TEXT_ACTIONS, context, "interactive.text.actions")
   for action in pairs(TEXT_ACTIONS) do
     if type(actions[action]) ~= "string" or actions[action] == "" then
       fail("interactive.text.actions." .. action .. " must be a non-empty label", context)
@@ -258,10 +278,12 @@ local REGISTRATION_WIDTH = 40
 local REGISTRATION_HEIGHT = 16
 
 local function checkRegistration(registration, slots, context)
-  if type(registration) ~= "table" then
-    fail("interactive.itemSlots.registration must be a record", context)
-  end
-  checkKeys(registration, { slot1 = true, slot2 = true, offset = true }, context, "interactive.itemSlots.registration")
+  checkRecord(
+    registration,
+    { slot1 = true, slot2 = true, offset = true },
+    context,
+    "interactive.itemSlots.registration"
+  )
   for _, slot in ipairs({ "slot1", "slot2" }) do
     checkImage(registration[slot], context, "interactive.itemSlots.registration." .. slot)
     if registration[slot].width ~= REGISTRATION_WIDTH or registration[slot].height ~= REGISTRATION_HEIGHT then
@@ -336,20 +358,17 @@ local function checkModel(descriptor, context, what)
 end
 
 local function checkAnimations(animations, model, context)
-  if type(animations) ~= "table" then
-    fail("animations must be a record", context)
-  end
-  checkKeys(animations, { states = true, material = true }, context, "animations")
-  if not Validate.isArray(animations.states) or #animations.states ~= BagAssetSchema.STATE_COUNT then
-    fail("animations.states must carry exactly eight pocket states", context)
-  end
+  checkRecord(animations, { states = true, material = true }, context, "animations")
+  checkFixedArray(
+    animations.states,
+    BagAssetSchema.STATE_COUNT,
+    context,
+    "animations.states must carry exactly eight pocket states"
+  )
   local seen = {}
   for index, state in ipairs(animations.states) do
     local what = "animations.states[" .. index .. "]"
-    if type(state) ~= "table" then
-      fail(what .. " must be a record", context)
-    end
-    checkKeys(state, { pocket = true, pose = true, pattern = true }, context, what)
+    checkRecord(state, { pocket = true, pose = true, pattern = true }, context, what)
     if type(state.pocket) ~= "string" or state.pocket == "" then
       fail(what .. ".pocket must be a non-empty key", context)
     end
@@ -375,10 +394,7 @@ local function checkAnimations(animations, model, context)
     end
   end
   local material = animations.material
-  if type(material) ~= "table" then
-    fail("animations.material must be a record", context)
-  end
-  checkKeys(material, { male = true, female = true }, context, "animations.material")
+  checkRecord(material, { male = true, female = true }, context, "animations.material")
   for _, gender in ipairs({ "male", "female" }) do
     if type(material[gender]) ~= "string" or material[gender] == "" then
       fail("animations.material." .. gender .. " must be a non-empty clip id", context)
@@ -388,10 +404,7 @@ local function checkAnimations(animations, model, context)
 end
 
 local function checkCamera(camera, context)
-  if type(camera) ~= "table" then
-    fail("presentation.camera must be a record", context)
-  end
-  checkKeys(camera, {
+  checkRecord(camera, {
     target = true,
     distance = true,
     angleXDegrees = true,
@@ -402,10 +415,7 @@ local function checkCamera(camera, context)
     clipFar = true,
   }, context, "presentation.camera")
   local target = camera.target
-  if type(target) ~= "table" then
-    fail("presentation.camera.target must be a record", context)
-  end
-  checkKeys(target, { x = true, y = true, z = true }, context, "presentation.camera.target")
+  checkRecord(target, { x = true, y = true, z = true }, context, "presentation.camera.target")
   checkFinite(target.x, context, "presentation.camera.target.x")
   checkFinite(target.y, context, "presentation.camera.target.y")
   checkFinite(target.z, context, "presentation.camera.target.z")
@@ -415,12 +425,15 @@ local function checkCamera(camera, context)
   end
   checkFinite(camera.angleXDegrees, context, "presentation.camera.angleXDegrees")
   checkFinite(camera.angleYDegrees, context, "presentation.camera.angleYDegrees")
-  if type(camera.perspectiveType) ~= "number" or camera.perspectiveType % 1 ~= 0 or camera.perspectiveType < 0 then
-    fail("presentation.camera.perspectiveType must be a non-negative integer", context)
-  end
-  if type(camera.perspectiveAngle) ~= "number" or camera.perspectiveAngle % 1 ~= 0 or camera.perspectiveAngle < 0 then
-    fail("presentation.camera.perspectiveAngle must be a non-negative integer", context)
-  end
+  checkInteger(camera.perspectiveType, context, "presentation.camera.perspectiveType", 0, nil, "a non-negative integer")
+  checkInteger(
+    camera.perspectiveAngle,
+    context,
+    "presentation.camera.perspectiveAngle",
+    0,
+    nil,
+    "a non-negative integer"
+  )
   checkFinite(camera.clipNear, context, "presentation.camera.clipNear")
   checkFinite(camera.clipFar, context, "presentation.camera.clipFar")
   if camera.clipNear <= 0 or camera.clipFar <= camera.clipNear then
@@ -429,10 +442,7 @@ local function checkCamera(camera, context)
 end
 
 local function checkTransform(transform, context)
-  if type(transform) ~= "table" then
-    fail("presentation.transform must be a record", context)
-  end
-  checkKeys(transform, { translation = true, rotation = true, scale = true }, context, "presentation.transform")
+  checkRecord(transform, { translation = true, rotation = true, scale = true }, context, "presentation.transform")
   for _, block in ipairs({ "translation", "scale" }) do
     if type(transform[block]) ~= "table" then
       fail("presentation.transform." .. block .. " must be a record", context)
@@ -442,29 +452,21 @@ local function checkTransform(transform, context)
     checkFinite(transform.translation[axis], context, "presentation.transform.translation." .. axis)
     checkFinite(transform.scale[axis], context, "presentation.transform.scale." .. axis)
   end
-  if not Validate.isArray(transform.rotation) or #transform.rotation ~= 9 then
-    fail("presentation.transform.rotation must carry nine matrix entries", context)
-  end
+  checkFixedArray(transform.rotation, 9, context, "presentation.transform.rotation must carry nine matrix entries")
   for _, entry in ipairs(transform.rotation) do
     checkFinite(entry, context, "presentation.transform.rotation entry")
   end
 end
 
 local function checkLightVector(vector, context, what)
-  if type(vector) ~= "table" then
-    fail(what .. " must be a record", context)
-  end
-  checkKeys(vector, { x = true, y = true, z = true }, context, what)
+  checkRecord(vector, { x = true, y = true, z = true }, context, what)
   checkFinite(vector.x, context, what .. ".x")
   checkFinite(vector.y, context, what .. ".y")
   checkFinite(vector.z, context, what .. ".z")
 end
 
 local function checkLights(lights, context)
-  if type(lights) ~= "table" then
-    fail("hero.presentation.lights must be a record", context)
-  end
-  checkKeys(lights, { count = true, color = true, vectors = true }, context, "hero.presentation.lights")
+  checkRecord(lights, { count = true, color = true, vectors = true }, context, "hero.presentation.lights")
   if lights.count ~= 4 then
     fail("hero.presentation.lights.count must be exactly four", context)
   end
@@ -472,50 +474,28 @@ local function checkLights(lights, context)
     fail("hero.presentation.lights.color must be a record", context)
   end
   for _, channel in ipairs({ "r", "g", "b" }) do
-    if
-      type(lights.color[channel]) ~= "number"
-      or lights.color[channel] % 1 ~= 0
-      or lights.color[channel] < 0
-      or lights.color[channel] > 31
-    then
-      fail("hero.presentation.lights.color." .. channel .. " must be 0..31", context)
-    end
+    checkInteger(lights.color[channel], context, "hero.presentation.lights.color." .. channel, 0, 31, "0..31")
   end
-  if not Validate.isArray(lights.vectors) or #lights.vectors ~= 4 then
-    fail("hero.presentation.lights.vectors must carry exactly four light vectors", context)
-  end
+  checkFixedArray(lights.vectors, 4, context, "hero.presentation.lights.vectors must carry exactly four light vectors")
   for index, vector in ipairs(lights.vectors) do
     checkLightVector(vector, context, "hero.presentation.lights.vectors[" .. index .. "]")
   end
 end
 
 local function checkMaterialRegister(register, context, what)
-  if type(register) ~= "table" then
-    fail(what .. " must be a record", context)
-  end
-  checkKeys(register, { r = true, g = true, b = true }, context, what)
+  checkRecord(register, { r = true, g = true, b = true }, context, what)
   for _, channel in ipairs({ "r", "g", "b" }) do
-    if
-      type(register[channel]) ~= "number"
-      or register[channel] % 1 ~= 0
-      or register[channel] < 0
-      or register[channel] > 31
-    then
-      fail(what .. "." .. channel .. " must be 0..31", context)
-    end
+    checkInteger(register[channel], context, what .. "." .. channel, 0, 31, "0..31")
   end
 end
 
 local function checkMaterials(materials, context)
-  if type(materials) ~= "table" then
-    fail("hero.presentation.materials must be a record", context)
-  end
-  checkKeys(
-    materials,
-    { diffuse = true, ambient = true, specular = true, emission = true },
-    context,
-    "hero.presentation.materials"
-  )
+  checkRecord(materials, {
+    diffuse = true,
+    ambient = true,
+    specular = true,
+    emission = true,
+  }, context, "hero.presentation.materials")
   for _, register in ipairs({ "diffuse", "ambient", "specular", "emission" }) do
     checkMaterialRegister(materials[register], context, "hero.presentation.materials." .. register)
   end
@@ -525,19 +505,14 @@ end
 -- records feeding the shared DS edge-marking renderer. Trailing black
 -- entries are valid source data, not missing data.
 local function checkEdgeColors(edgeColors, context)
-  if not Validate.isArray(edgeColors) or #edgeColors ~= 8 then
-    fail("hero.presentation.edgeColors must carry exactly eight edge-color records", context)
-  end
+  checkFixedArray(edgeColors, 8, context, "hero.presentation.edgeColors must carry exactly eight edge-color records")
   for index, record in ipairs(edgeColors) do
     checkMaterialRegister(record, context, "hero.presentation.edgeColors[" .. index .. "]")
   end
 end
 
 local function checkFramingRecord(record, context, what)
-  if type(record) ~= "table" then
-    fail(what .. " must be a record", context)
-  end
-  checkKeys(record, { angleXDegrees = true, angleYDegrees = true, distance = true, modelY = true }, context, what)
+  checkRecord(record, { angleXDegrees = true, angleYDegrees = true, distance = true, modelY = true }, context, what)
   checkFinite(record.angleXDegrees, context, what .. ".angleXDegrees")
   checkFinite(record.angleYDegrees, context, what .. ".angleYDegrees")
   checkFinite(record.distance, context, what .. ".distance")
@@ -549,34 +524,28 @@ end
 -- pocket per gender. Transition progress stays runtime-owned; only these
 -- immutable facts reach the manifest.
 local function checkFraming(framing, context)
-  if type(framing) ~= "table" then
-    fail("hero.presentation.framing must be a record", context)
-  end
-  checkKeys(framing, { transitionTicks = true, baseline = true, byGender = true }, context, "hero.presentation.framing")
-  if type(framing.transitionTicks) ~= "number" or framing.transitionTicks % 1 ~= 0 or framing.transitionTicks < 1 then
-    fail("hero.presentation.framing.transitionTicks must be a positive integer", context)
-  end
+  checkRecord(
+    framing,
+    { transitionTicks = true, baseline = true, byGender = true },
+    context,
+    "hero.presentation.framing"
+  )
+  checkInteger(
+    framing.transitionTicks,
+    context,
+    "hero.presentation.framing.transitionTicks",
+    1,
+    nil,
+    "a positive integer"
+  )
   local baseline = framing.baseline
-  if type(baseline) ~= "table" then
-    fail("hero.presentation.framing.baseline must be a record", context)
-  end
-  checkKeys(baseline, { male = true, female = true }, context, "hero.presentation.framing.baseline")
+  checkRecord(baseline, { male = true, female = true }, context, "hero.presentation.framing.baseline")
   local byGender = framing.byGender
-  if type(byGender) ~= "table" then
-    fail("hero.presentation.framing.byGender must be a record", context)
-  end
-  checkKeys(byGender, { male = true, female = true }, context, "hero.presentation.framing.byGender")
-  local allowed = {}
-  for _, pocket in ipairs(BagAssetSchema.POCKETS) do
-    allowed[pocket] = true
-  end
+  checkRecord(byGender, { male = true, female = true }, context, "hero.presentation.framing.byGender")
   for _, gender in ipairs({ "male", "female" }) do
     checkFramingRecord(baseline[gender], context, "hero.presentation.framing.baseline." .. gender)
     local pockets = byGender[gender]
-    if type(pockets) ~= "table" then
-      fail("hero.presentation.framing.byGender." .. gender .. " must be a pocket record", context)
-    end
-    checkKeys(pockets, allowed, context, "hero.presentation.framing.byGender." .. gender)
+    checkRecord(pockets, POCKET_SET, context, "hero.presentation.framing.byGender." .. gender, "a pocket record")
     for _, pocket in ipairs(BagAssetSchema.POCKETS) do
       checkFramingRecord(pockets[pocket], context, "hero.presentation.framing.byGender." .. gender .. "." .. pocket)
     end
@@ -584,27 +553,20 @@ local function checkFraming(framing, context)
 end
 
 local function checkHero(hero, context)
-  if type(hero) ~= "table" then
-    fail("hero must be a record", context)
-  end
-  checkKeys(
-    hero,
-    { background = true, description = true, moveSummary = true, model = true, animations = true, presentation = true },
-    context,
-    "hero"
-  )
+  checkRecord(hero, {
+    background = true,
+    description = true,
+    moveSummary = true,
+    model = true,
+    animations = true,
+    presentation = true,
+  }, context, "hero")
   local background = hero.background
-  if type(background) ~= "table" then
-    fail("hero.background must be a record", context)
-  end
-  checkKeys(background, { male = true, female = true }, context, "hero.background")
+  checkRecord(background, { male = true, female = true }, context, "hero.background")
   checkImage(background.male, context, "hero.background.male")
   checkImage(background.female, context, "hero.background.female")
   local description = hero.description
-  if type(description) ~= "table" then
-    fail("hero.description must be a record", context)
-  end
-  checkKeys(description, { frame = true, textRect = true }, context, "hero.description")
+  checkRecord(description, { frame = true, textRect = true }, context, "hero.description")
   if type(description.frame) ~= "table" then
     fail("hero.description.frame must be a record", context)
   end
@@ -615,10 +577,7 @@ local function checkHero(hero, context)
   checkRect(description.frame.rect, context, "hero.description.frame.rect")
   checkRect(description.textRect, context, "hero.description.textRect")
   local summary = hero.moveSummary
-  if type(summary) ~= "table" then
-    fail("hero.moveSummary must be a record", context)
-  end
-  checkKeys(summary, {
+  checkRecord(summary, {
     background = true,
     labels = true,
     text = true,
@@ -629,25 +588,21 @@ local function checkHero(hero, context)
   }, context, "hero.moveSummary")
   checkImage(summary.background, context, "hero.moveSummary.background")
   local labels = summary.labels
-  if type(labels) ~= "table" then
-    fail("hero.moveSummary.labels must be a record", context)
-  end
-  checkKeys(
-    labels,
-    { type = true, pp = true, category = true, power = true, accuracy = true, unavailable = true },
-    context,
-    "hero.moveSummary.labels"
-  )
+  checkRecord(labels, {
+    type = true,
+    pp = true,
+    category = true,
+    power = true,
+    accuracy = true,
+    unavailable = true,
+  }, context, "hero.moveSummary.labels")
   for _, key in ipairs({ "type", "pp", "category", "power", "accuracy", "unavailable" }) do
     if type(labels[key]) ~= "string" or labels[key] == "" then
       fail("hero.moveSummary.labels." .. key .. " must be text", context)
     end
   end
   local text = summary.text
-  if type(text) ~= "table" then
-    fail("hero.moveSummary.text must be a record", context)
-  end
-  checkKeys(text, {
+  checkRecord(text, {
     type = true,
     pp = true,
     category = true,
@@ -697,23 +652,19 @@ local function checkHero(hero, context)
   }, "hero.moveSummary.typeIcons")
   checkIconMap(summary.categoryIcons, { "physical", "special", "status" }, "hero.moveSummary.categoryIcons")
   local model = hero.model
-  if type(model) ~= "table" then
-    fail("hero.model must be a record", context)
-  end
-  checkKeys(model, { male = true, female = true }, context, "hero.model")
+  checkRecord(model, { male = true, female = true }, context, "hero.model")
   checkModel(model.male, context, "hero.model.male")
   checkModel(model.female, context, "hero.model.female")
   checkAnimations(hero.animations, model, context)
   local presentation = hero.presentation
-  if type(presentation) ~= "table" then
-    fail("hero.presentation must be a record", context)
-  end
-  checkKeys(
-    presentation,
-    { camera = true, transform = true, lights = true, materials = true, framing = true, edgeColors = true },
-    context,
-    "hero.presentation"
-  )
+  checkRecord(presentation, {
+    camera = true,
+    transform = true,
+    lights = true,
+    materials = true,
+    framing = true,
+    edgeColors = true,
+  }, context, "hero.presentation")
   checkCamera(presentation.camera, context)
   checkTransform(presentation.transform, context)
   checkLights(presentation.lights, context)
@@ -723,14 +674,9 @@ local function checkHero(hero, context)
 end
 
 local function checkLocalPoint(value, bounds, context, what)
-  if type(value) ~= "table" then
-    fail(what .. " must be a record", context)
-  end
-  checkKeys(value, { x = true, y = true }, context, what)
+  checkRecord(value, POINT_KEYS, context, what)
   for _, axis in ipairs({ "x", "y" }) do
-    if type(value[axis]) ~= "number" or value[axis] % 1 ~= 0 or value[axis] < 0 then
-      fail(what .. "." .. axis .. " must be a non-negative integer", context)
-    end
+    checkInteger(value[axis], context, what .. "." .. axis, 0, nil, "a non-negative integer")
   end
   local limit = { x = bounds.width, y = bounds.height }
   for _, axis in ipairs({ "x", "y" }) do
@@ -756,35 +702,24 @@ end
 -- carry target arrays of exact cardinality; Cancel carries one target
 -- point. No animation timeline or source identity reaches the manifest.
 local function checkFocusTargets(targets, expected, context, what)
-  if not Validate.isArray(targets) or #targets ~= expected then
-    fail(what .. " must carry exactly " .. expected .. " target points", context)
-  end
+  checkFixedArray(targets, expected, context, what .. " must carry exactly " .. expected .. " target points")
   for index, target in ipairs(targets) do
     checkPoint(target, context, what .. "[" .. index .. "]")
   end
 end
 
 local function checkFocusClass(class, expected, context, what)
-  if type(class) ~= "table" then
-    fail(what .. " must be a record", context)
-  end
-  checkKeys(class, { visual = true, targets = true }, context, what)
+  checkRecord(class, { visual = true, targets = true }, context, what)
   checkVisual(class.visual, context, what .. ".visual")
   checkFocusTargets(class.targets, expected, context, what .. ".targets")
 end
 
 local function checkFocus(focus, context)
-  if type(focus) ~= "table" then
-    fail("interactive.focus must be a record", context)
-  end
-  checkKeys(focus, { tabs = true, items = true, cancel = true, actions = true }, context, "interactive.focus")
+  checkRecord(focus, { tabs = true, items = true, cancel = true, actions = true }, context, "interactive.focus")
   checkFocusClass(focus.tabs, BagAssetSchema.TAB_COUNT, context, "interactive.focus.tabs")
   checkFocusClass(focus.items, BagAssetSchema.SLOT_COUNT, context, "interactive.focus.items")
   local cancel = focus.cancel
-  if type(cancel) ~= "table" then
-    fail("interactive.focus.cancel must be a record", context)
-  end
-  checkKeys(cancel, { visual = true, target = true }, context, "interactive.focus.cancel")
+  checkRecord(cancel, { visual = true, target = true }, context, "interactive.focus.cancel")
   checkVisual(cancel.visual, context, "interactive.focus.cancel.visual")
   checkPoint(cancel.target, context, "interactive.focus.cancel.target")
   checkFocusClass(focus.actions, 4, context, "interactive.focus.actions")
@@ -793,23 +728,17 @@ end
 -- The modal confirmation placement is plain layout data: the compact
 -- prompt at a non-negative integral position with a supported initial
 -- selection opens the destructive confirmation.
----@param prompt table<string, unknown>?
+---@param prompt table<string, unknown>
 ---@param context table<string, unknown>
 local function checkTossPrompt(prompt, context)
-  if type(prompt) ~= "table" then
-    fail("interactive.overlays.tossPrompt must be a record", context)
-  end
-  checkKeys(
+  checkRecord(
     prompt,
     { x = true, y = true, shape = true, initialSelection = true },
     context,
     "interactive.overlays.tossPrompt"
   )
-  assert(type(prompt) == "table", "the toss prompt placement is a record")
   for _, axis in ipairs({ "x", "y" }) do
-    if type(prompt[axis]) ~= "number" or prompt[axis] % 1 ~= 0 or prompt[axis] < 0 then
-      fail("interactive.overlays.tossPrompt." .. axis .. " must be a non-negative integer", context)
-    end
+    checkInteger(prompt[axis], context, "interactive.overlays.tossPrompt." .. axis, 0, nil, "a non-negative integer")
   end
   if prompt.shape ~= "compact" then
     fail("interactive.overlays.tossPrompt must use the compact prompt shape", context)
@@ -819,95 +748,59 @@ local function checkTossPrompt(prompt, context)
   end
 end
 
-local function checkInteractive(interactive, context)
-  if type(interactive) ~= "table" then
-    fail("interactive must be a record", context)
-  end
-  checkKeys(interactive, {
-    backgrounds = true,
-    pocketTabs = true,
-    itemSlots = true,
-    focus = true,
-    pageIndicator = true,
-    cancel = true,
-    text = true,
-    overlays = true,
-  }, context, "interactive")
-  local backgrounds = interactive.backgrounds
-  if type(backgrounds) ~= "table" then
-    fail("interactive.backgrounds must be a record", context)
-  end
-  checkKeys(
-    backgrounds,
-    { browse = true, action = true, quantity = true, confirmation = true },
-    context,
-    "interactive.backgrounds"
-  )
+-- Lower-pane backgrounds: one static visual per pocket for the
+-- action/quantity/confirmation states plus seven browse count variants per
+-- pocket, each using the canonical pane size.
+local function checkPaneBackgrounds(backgrounds, context)
+  checkRecord(backgrounds, {
+    browse = true,
+    action = true,
+    quantity = true,
+    confirmation = true,
+  }, context, "interactive.backgrounds")
   for _, state in ipairs({ "action", "quantity", "confirmation" }) do
     local pockets = backgrounds[state]
-    if type(pockets) ~= "table" then
-      fail("interactive.backgrounds." .. state .. " must be a pocket record", context)
-    end
-    local allowed = {}
-    for _, pocket in ipairs(BagAssetSchema.POCKETS) do
-      allowed[pocket] = true
-    end
-    checkKeys(pockets, allowed, context, "interactive.backgrounds." .. state)
+    local what = "interactive.backgrounds." .. state
+    checkRecord(pockets, POCKET_SET, context, what, "a pocket record")
     for _, pocket in ipairs(BagAssetSchema.POCKETS) do
       local visual = pockets[pocket]
-      local what = "interactive.backgrounds." .. state .. "." .. pocket
-      checkVisual(visual, context, what)
+      local visualWhat = what .. "." .. pocket
+      checkVisual(visual, context, visualWhat)
       if visual.width ~= BagAssetSchema.PANE_WIDTH or visual.height ~= BagAssetSchema.PANE_HEIGHT then
-        fail(what .. " must use the canonical pane size", context)
+        fail(visualWhat .. " must use the canonical pane size", context)
       end
     end
   end
-  do
-    local browse = backgrounds.browse
-    if type(browse) ~= "table" then
-      fail("interactive.backgrounds.browse must be a pocket record", context)
-    end
-    local allowed = {}
-    for _, pocket in ipairs(BagAssetSchema.POCKETS) do
-      allowed[pocket] = true
-    end
-    checkKeys(browse, allowed, context, "interactive.backgrounds.browse")
-    for _, pocket in ipairs(BagAssetSchema.POCKETS) do
-      local what = "interactive.backgrounds.browse." .. pocket
-      local variants = browse[pocket]
-      if not Validate.isArray(variants) or #variants ~= 7 then
-        fail(what .. " must carry exactly seven count visuals", context)
-      end
-      for index, visual in ipairs(variants) do
-        checkVisual(visual, context, what .. "[" .. index .. "]")
-        if visual.width ~= BagAssetSchema.PANE_WIDTH or visual.height ~= BagAssetSchema.PANE_HEIGHT then
-          fail(what .. "[" .. index .. "] must use the canonical pane size", context)
-        end
+  local browse = backgrounds.browse
+  checkRecord(browse, POCKET_SET, context, "interactive.backgrounds.browse", "a pocket record")
+  for _, pocket in ipairs(BagAssetSchema.POCKETS) do
+    local what = "interactive.backgrounds.browse." .. pocket
+    local variants = browse[pocket]
+    checkFixedArray(variants, 7, context, what .. " must carry exactly seven count visuals")
+    for index, visual in ipairs(variants) do
+      checkVisual(visual, context, what .. "[" .. index .. "]")
+      if visual.width ~= BagAssetSchema.PANE_WIDTH or visual.height ~= BagAssetSchema.PANE_HEIGHT then
+        fail(what .. "[" .. index .. "] must use the canonical pane size", context)
       end
     end
   end
-  local pocketTabs = interactive.pocketTabs
-  if type(pocketTabs) ~= "table" then
-    fail("interactive.pocketTabs must be a record", context)
-  end
-  checkKeys(pocketTabs, { rects = true, strips = true }, context, "interactive.pocketTabs")
-  if not Validate.isArray(pocketTabs.rects) or #pocketTabs.rects ~= BagAssetSchema.TAB_COUNT then
-    fail("interactive.pocketTabs.rects must carry exactly eight tab rectangles", context)
-  end
+end
+
+local function checkPocketTabs(pocketTabs, context)
+  checkRecord(pocketTabs, { rects = true, strips = true }, context, "interactive.pocketTabs")
+  checkFixedArray(
+    pocketTabs.rects,
+    BagAssetSchema.TAB_COUNT,
+    context,
+    "interactive.pocketTabs.rects must carry exactly eight tab rectangles"
+  )
   for index, tab in ipairs(pocketTabs.rects) do
     checkRect(tab, context, "interactive.pocketTabs.rects[" .. index .. "]")
   end
   -- One final 256x32 strip visual per active pocket, carrying the persistent
   -- selected-pocket treatment independently of transient focus. Exactly the
   -- eight canonical pocket keys, no extras.
-  if type(pocketTabs.strips) ~= "table" then
-    fail("interactive.pocketTabs.strips must be a pocket record", context)
-  end
-  local allowed = {}
-  for _, pocket in ipairs(BagAssetSchema.POCKETS) do
-    allowed[pocket] = true
-  end
-  checkKeys(pocketTabs.strips, allowed, context, "interactive.pocketTabs.strips")
+  checkRecord(pocketTabs.strips, POCKET_SET, context, "interactive.pocketTabs.strips", "a pocket record")
   for _, pocket in ipairs(BagAssetSchema.POCKETS) do
     local visual = pocketTabs.strips[pocket]
     local what = "interactive.pocketTabs.strips." .. pocket
@@ -916,20 +809,19 @@ local function checkInteractive(interactive, context)
       fail(what .. " must be exactly 256x32", context)
     end
   end
-  local itemSlots = interactive.itemSlots
-  if type(itemSlots) ~= "table" then
-    fail("interactive.itemSlots must be a record", context)
-  end
-  checkKeys(itemSlots, { slots = true, registration = true }, context, "interactive.itemSlots")
-  if not Validate.isArray(itemSlots.slots) or #itemSlots.slots ~= BagAssetSchema.SLOT_COUNT then
-    fail("interactive.itemSlots.slots must carry exactly six item slots", context)
-  end
+end
+
+local function checkItemSlotList(itemSlots, context)
+  checkRecord(itemSlots, { slots = true, registration = true }, context, "interactive.itemSlots")
+  checkFixedArray(
+    itemSlots.slots,
+    BagAssetSchema.SLOT_COUNT,
+    context,
+    "interactive.itemSlots.slots must carry exactly six item slots"
+  )
   for index, slot in ipairs(itemSlots.slots) do
     local what = "interactive.itemSlots.slots[" .. index .. "]"
-    if type(slot) ~= "table" then
-      fail(what .. " must be a record", context)
-    end
-    checkKeys(
+    checkRecord(
       slot,
       { rect = true, textRect = true, iconCenter = true, nameAt = true, quantityAt = true },
       context,
@@ -942,19 +834,137 @@ local function checkInteractive(interactive, context)
     checkLocalPoint(slot.nameAt, slot.textRect, context, what .. ".nameAt")
     checkLocalPoint(slot.quantityAt, slot.textRect, context, what .. ".quantityAt")
   end
+end
+
+-- Quantity stepper order fixed by the source layout: +100/+10/+1 then
+-- -100/-10/-1.
+local EXPECTED_QUANTITY_CONTROLS = {
+  { delta = 100, role = "increment" },
+  { delta = 10, role = "increment" },
+  { delta = 1, role = "increment" },
+  { delta = -100, role = "decrement" },
+  { delta = -10, role = "decrement" },
+  { delta = -1, role = "decrement" },
+}
+
+local function checkActionMenu(actionMenu, context)
+  checkRecord(actionMenu, { face = true, slots = true }, context, "interactive.overlays.actionMenu")
+  checkVisual(actionMenu.face, context, "interactive.overlays.actionMenu.face")
+  checkFixedArray(
+    actionMenu.slots,
+    4,
+    context,
+    "interactive.overlays.actionMenu.slots must carry exactly four action slots"
+  )
+  for index, slot in ipairs(actionMenu.slots) do
+    local what = "interactive.overlays.actionMenu.slots[" .. index .. "]"
+    checkRecord(slot, { center = true, textRect = true, hitRect = true }, context, what)
+    checkPoint(slot.center, context, what .. ".center")
+    checkRect(slot.textRect, context, what .. ".textRect")
+    checkRect(slot.hitRect, context, what .. ".hitRect")
+  end
+end
+
+local function checkQuantityOverlay(quantity, context)
+  checkRecord(quantity, {
+    digits = true,
+    controls = true,
+    visuals = true,
+    pressTicks = true,
+    confirm = true,
+    cancelHitRect = true,
+  }, context, "interactive.overlays.quantity")
+  checkFixedArray(
+    quantity.digits,
+    3,
+    context,
+    "interactive.overlays.quantity.digits must carry exactly three digit rectangles"
+  )
+  for index, digit in ipairs(quantity.digits) do
+    checkRect(digit, context, "interactive.overlays.quantity.digits[" .. index .. "]")
+  end
+  checkFixedArray(
+    quantity.controls,
+    #EXPECTED_QUANTITY_CONTROLS,
+    context,
+    "interactive.overlays.quantity.controls must carry exactly six controls"
+  )
+  for index, control in ipairs(quantity.controls) do
+    local expected = EXPECTED_QUANTITY_CONTROLS[index]
+    local what = "interactive.overlays.quantity.controls[" .. index .. "]"
+    checkRecord(control, { delta = true, role = true, center = true, hitRect = true }, context, what)
+    if control.delta ~= expected.delta or control.role ~= expected.role then
+      fail(what .. " has the wrong source order", context)
+    end
+    checkPoint(control.center, context, what .. ".center")
+    checkRect(control.hitRect, context, what .. ".hitRect")
+  end
+  checkRecord(
+    quantity.visuals,
+    { increment = true, decrement = true },
+    context,
+    "interactive.overlays.quantity.visuals"
+  )
+  for _, role in ipairs({ "increment", "decrement" }) do
+    local visual = quantity.visuals[role]
+    local what = "interactive.overlays.quantity.visuals." .. role
+    checkRecord(visual, { normal = true, pressed = true }, context, what)
+    checkVisual(visual.normal, context, what .. ".normal")
+    checkVisual(visual.pressed, context, what .. ".pressed")
+  end
+  checkInteger(quantity.pressTicks, context, "interactive.overlays.quantity.pressTicks", 1, nil, "a positive integer")
+  local confirm = quantity.confirm
+  checkRecord(
+    confirm,
+    { visual = true, center = true, hitRect = true },
+    context,
+    "interactive.overlays.quantity.confirm"
+  )
+  checkVisual(confirm.visual, context, "interactive.overlays.quantity.confirm.visual")
+  checkPoint(confirm.center, context, "interactive.overlays.quantity.confirm.center")
+  checkRect(confirm.hitRect, context, "interactive.overlays.quantity.confirm.hitRect")
+  checkRect(quantity.cancelHitRect, context, "interactive.overlays.quantity.cancelHitRect")
+end
+
+local function checkOverlays(overlays, context)
+  checkRecord(overlays, {
+    actionMenu = true,
+    quantity = true,
+    descriptionFallback = true,
+    tossPrompt = true,
+  }, context, "interactive.overlays")
+  checkTossPrompt(overlays.tossPrompt, context)
+  checkActionMenu(overlays.actionMenu, context)
+  checkQuantityOverlay(overlays.quantity, context)
+  local fallback = overlays.descriptionFallback
+  checkRecord(fallback, { frame = true, textRect = true }, context, "interactive.overlays.descriptionFallback")
+  checkRect(fallback.frame, context, "interactive.overlays.descriptionFallback.frame")
+  checkRect(fallback.textRect, context, "interactive.overlays.descriptionFallback.textRect")
+end
+
+local function checkInteractive(interactive, context)
+  checkRecord(interactive, {
+    backgrounds = true,
+    pocketTabs = true,
+    itemSlots = true,
+    focus = true,
+    pageIndicator = true,
+    cancel = true,
+    text = true,
+    overlays = true,
+  }, context, "interactive")
+  checkPaneBackgrounds(interactive.backgrounds, context)
+  local pocketTabs = interactive.pocketTabs
+  checkPocketTabs(pocketTabs, context)
+  local itemSlots = interactive.itemSlots
+  checkItemSlotList(itemSlots, context)
   checkFocus(interactive.focus, context)
   local pageIndicator = interactive.pageIndicator
-  if type(pageIndicator) ~= "table" then
-    fail("interactive.pageIndicator must be a record", context)
-  end
-  checkKeys(pageIndicator, { rect = true, textAt = true }, context, "interactive.pageIndicator")
+  checkRecord(pageIndicator, { rect = true, textAt = true }, context, "interactive.pageIndicator")
   checkRect(pageIndicator.rect, context, "interactive.pageIndicator.rect")
   checkPoint(pageIndicator.textAt, context, "interactive.pageIndicator.textAt")
   local cancel = interactive.cancel
-  if type(cancel) ~= "table" then
-    fail("interactive.cancel must be a record", context)
-  end
-  checkKeys(cancel, { rect = true, textRect = true, labelRect = true }, context, "interactive.cancel")
+  checkRecord(cancel, { rect = true, textRect = true, labelRect = true }, context, "interactive.cancel")
   checkRect(cancel.rect, context, "interactive.cancel.rect")
   checkRect(cancel.textRect, context, "interactive.cancel.textRect")
   checkContained(cancel.textRect, cancel.rect, context, "interactive.cancel.textRect")
@@ -965,109 +975,7 @@ local function checkInteractive(interactive, context)
   end
   checkText(interactive.text, context)
   checkRegistration(itemSlots.registration, itemSlots.slots, context)
-  local overlays = interactive.overlays
-  if type(overlays) ~= "table" then
-    fail("interactive.overlays must be a record", context)
-  end
-  checkKeys(
-    overlays,
-    { actionMenu = true, quantity = true, descriptionFallback = true, tossPrompt = true },
-    context,
-    "interactive.overlays"
-  )
-  checkTossPrompt(overlays.tossPrompt, context)
-  local actionMenu = overlays.actionMenu
-  if type(actionMenu) ~= "table" then
-    fail("interactive.overlays.actionMenu must be a record", context)
-  end
-  checkKeys(actionMenu, { face = true, slots = true }, context, "interactive.overlays.actionMenu")
-  checkVisual(actionMenu.face, context, "interactive.overlays.actionMenu.face")
-  if not Validate.isArray(actionMenu.slots) or #actionMenu.slots ~= 4 then
-    fail("interactive.overlays.actionMenu.slots must carry exactly four action slots", context)
-  end
-  for index, slot in ipairs(actionMenu.slots) do
-    local what = "interactive.overlays.actionMenu.slots[" .. index .. "]"
-    if type(slot) ~= "table" then
-      fail(what .. " must be a record", context)
-    end
-    checkKeys(slot, { center = true, textRect = true, hitRect = true }, context, what)
-    checkPoint(slot.center, context, what .. ".center")
-    checkRect(slot.textRect, context, what .. ".textRect")
-    checkRect(slot.hitRect, context, what .. ".hitRect")
-  end
-  local quantity = overlays.quantity
-  if type(quantity) ~= "table" then
-    fail("interactive.overlays.quantity must be a record", context)
-  end
-  checkKeys(
-    quantity,
-    { digits = true, controls = true, visuals = true, pressTicks = true, confirm = true, cancelHitRect = true },
-    context,
-    "interactive.overlays.quantity"
-  )
-  if not Validate.isArray(quantity.digits) or #quantity.digits ~= 3 then
-    fail("interactive.overlays.quantity.digits must carry exactly three digit rectangles", context)
-  end
-  for index, digit in ipairs(quantity.digits) do
-    checkRect(digit, context, "interactive.overlays.quantity.digits[" .. index .. "]")
-  end
-  local expectedControls = {
-    { delta = 100, role = "increment" },
-    { delta = 10, role = "increment" },
-    { delta = 1, role = "increment" },
-    { delta = -100, role = "decrement" },
-    { delta = -10, role = "decrement" },
-    { delta = -1, role = "decrement" },
-  }
-  if not Validate.isArray(quantity.controls) or #quantity.controls ~= #expectedControls then
-    fail("interactive.overlays.quantity.controls must carry exactly six controls", context)
-  end
-  for index, control in ipairs(quantity.controls) do
-    local expected = expectedControls[index]
-    local what = "interactive.overlays.quantity.controls[" .. index .. "]"
-    if type(control) ~= "table" then
-      fail(what .. " must be a record", context)
-    end
-    checkKeys(control, { delta = true, role = true, center = true, hitRect = true }, context, what)
-    if control.delta ~= expected.delta or control.role ~= expected.role then
-      fail(what .. " has the wrong source order", context)
-    end
-    checkPoint(control.center, context, what .. ".center")
-    checkRect(control.hitRect, context, what .. ".hitRect")
-  end
-  if type(quantity.visuals) ~= "table" then
-    fail("interactive.overlays.quantity.visuals must be a record", context)
-  end
-  checkKeys(quantity.visuals, { increment = true, decrement = true }, context, "interactive.overlays.quantity.visuals")
-  for _, role in ipairs({ "increment", "decrement" }) do
-    local visual = quantity.visuals[role]
-    local what = "interactive.overlays.quantity.visuals." .. role
-    if type(visual) ~= "table" then
-      fail(what .. " must be a record", context)
-    end
-    checkKeys(visual, { normal = true, pressed = true }, context, what)
-    checkVisual(visual.normal, context, what .. ".normal")
-    checkVisual(visual.pressed, context, what .. ".pressed")
-  end
-  if type(quantity.pressTicks) ~= "number" or quantity.pressTicks % 1 ~= 0 or quantity.pressTicks < 1 then
-    fail("interactive.overlays.quantity.pressTicks must be a positive integer", context)
-  end
-  local confirm = quantity.confirm
-  if type(confirm) ~= "table" then
-    fail("interactive.overlays.quantity.confirm must be a record", context)
-  end
-  checkKeys(confirm, { visual = true, center = true, hitRect = true }, context, "interactive.overlays.quantity.confirm")
-  checkVisual(confirm.visual, context, "interactive.overlays.quantity.confirm.visual")
-  checkPoint(confirm.center, context, "interactive.overlays.quantity.confirm.center")
-  checkRect(confirm.hitRect, context, "interactive.overlays.quantity.confirm.hitRect")
-  checkRect(quantity.cancelHitRect, context, "interactive.overlays.quantity.cancelHitRect")
-  local fallback = overlays.descriptionFallback
-  if type(fallback) ~= "table" then
-    fail("interactive.overlays.descriptionFallback must be a record", context)
-  end
-  checkKeys(fallback, { frame = true, textRect = true }, context, "interactive.overlays.descriptionFallback")
-  checkRect(fallback.frame, context, "interactive.overlays.descriptionFallback.frame")
-  checkRect(fallback.textRect, context, "interactive.overlays.descriptionFallback.textRect")
+  checkOverlays(interactive.overlays, context)
 end
 
 -- Full manifest validation: shapes, canonical pane bounds, exact tab/slot/
@@ -1075,18 +983,12 @@ end
 -- and freedom from source identities. Raises BAG_MANIFEST_INVALID.
 function BagAssetSchema.assertManifest(manifest)
   local context = {}
-  if type(manifest) ~= "table" then
-    fail("manifest must be a record", context)
-  end
-  checkKeys(manifest, { schema = true, logicalSize = true, hero = true, interactive = true }, context, "manifest")
+  checkRecord(manifest, { schema = true, logicalSize = true, hero = true, interactive = true }, context, "manifest")
   if manifest.schema ~= BagAssetSchema.SCHEMA then
     fail("manifest schema must be " .. BagAssetSchema.SCHEMA, context)
   end
   local logicalSize = manifest.logicalSize
-  if type(logicalSize) ~= "table" then
-    fail("manifest logicalSize must be a record", context)
-  end
-  checkKeys(logicalSize, { width = true, height = true }, context, "manifest logicalSize")
+  checkRecord(logicalSize, { width = true, height = true }, context, "manifest logicalSize")
   if logicalSize.width ~= BagAssetSchema.PANE_WIDTH or logicalSize.height ~= BagAssetSchema.PANE_HEIGHT then
     fail("manifest logicalSize must be 256x192", context)
   end

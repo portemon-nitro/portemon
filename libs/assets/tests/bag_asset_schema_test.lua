@@ -3,6 +3,7 @@
 -- the producer dependency record and are intentionally absent.
 
 local Assert = require("tests.support.Assert")
+local Errors = require("libs.errors.src.Errors")
 local CacheFs = require("libs.storage.src.CacheFs")
 local FakeCache = require("tests.support.FakeCache")
 local DerivedAssetContract = require("libs.assets.src.DerivedAssetContract")
@@ -1461,6 +1462,124 @@ function T.generic_contract_accepts_safe_presentation_variants()
   local alternate = validTossManifest()
   alternate.interactive.overlays.tossPrompt = { x = 200, y = 48, shape = "compact", initialSelection = "no" }
   Assert.isTrue(BagAssetSchema.isValidManifest(alternate), "either supported preselection stays consumable")
+end
+
+local function assertBagInvalid(manifest, why)
+  local err = Assert.throws(function()
+    BagAssetSchema.assertManifest(manifest)
+  end, why)
+  Assert.isTrue(Errors.is(err) and err.code == "BAG_MANIFEST_INVALID", why .. " must raise BAG_MANIFEST_INVALID")
+end
+
+local function deepCopyManifest(value)
+  if type(value) ~= "table" then
+    return value
+  end
+  local out = {}
+  for key, item in pairs(value) do
+    out[deepCopyManifest(key)] = deepCopyManifest(item)
+  end
+  return out
+end
+
+function T.visual_offset_is_allowed_but_image_records_reject_extra_keys()
+  local withOffset = validFocusManifest()
+  withOffset.interactive.focus.tabs.visual.offset = { x = 1, y = 2 }
+  Assert.isTrue(BagAssetSchema.isValidManifest(withOffset), "a visual carrying its allowed blit offset must pass")
+  local offsetOnImage = validFocusManifest()
+  offsetOnImage.interactive.itemSlots.registration.slot1.offset = { x = 0, y = 0 }
+  assertBagInvalid(offsetOnImage, "an offset on an exact image record must fail")
+  local alternateOnImage = validFocusManifest()
+  alternateOnImage.interactive.itemSlots.registration.slot1.alternateImage =
+    "assets/generated/bag/registration-slot-1-alt.png"
+  assertBagInvalid(alternateOnImage, "an alternate image on an exact image record must fail")
+  local sourceOnImage = validFocusManifest()
+  sourceOnImage.interactive.itemSlots.registration.slot2 = {
+    image = "assets/generated/bag/registration-slot-2.png",
+    width = 40,
+    height = 16,
+    memberId = 37,
+  }
+  assertBagInvalid(sourceOnImage, "a source identity on an exact image record must fail")
+  local manifest = validFocusManifest()
+  local marker = BagCache.marker("deadbeef", "feedface")
+  local cacheFs = CacheFs.forVersion("heartgold", FakeCache.new())
+  cacheFs:writeLua(BagCache.manifestPath(), manifest)
+  local ok, paths = pcall(BagCache.referencedPaths, manifest)
+  Assert.isTrue(ok, "the cache must resolve the valid manifest")
+  assert(paths ~= nil, "a resolvable manifest must list its paths")
+  for _, path in ipairs(paths) do
+    cacheFs:write(path, "payload")
+  end
+  cacheFs:writeLua(BagCache.provenancePath(), { cacheFormat = BagCache.FORMAT, schema = BagCache.SCHEMA })
+  cacheFs:write(BagCache.markerPath(), marker)
+  Assert.isTrue(BagCache.isReady(cacheFs, marker), "the complete class is ready before damage")
+  local rejected = deepCopyManifest(manifest)
+  rejected.interactive.itemSlots.registration.slot1.offset = { x = 0, y = 0 }
+  Assert.isFalse(BagAssetSchema.isValidManifest(rejected), "the damaged copy must fail validation")
+  cacheFs:writeLua(BagCache.manifestPath(), rejected)
+  Assert.isFalse(BagCache.isReady(cacheFs, marker), "a persisted manifest with a rejected image record is not ready")
+end
+
+function T.toss_templates_and_indexed_controls_keep_their_semantics()
+  local manifest = validFocusManifest()
+  Assert.isTrue(BagAssetSchema.isValidManifest(manifest), "the result and confirmation templates must pass")
+  local missingQuantity = validFocusManifest()
+  missingQuantity.interactive.text.tossResult = {
+    segments = {
+      { kind = "text", value = "Threw away " },
+      { kind = "item" },
+      { kind = "text", value = "." },
+    },
+  }
+  assertInvalid(missingQuantity, "a result template without the quantity placeholder must fail")
+  local missingItem = validFocusManifest()
+  missingItem.interactive.text.tossResult = {
+    segments = {
+      { kind = "text", value = "Threw away " },
+      { kind = "quantity" },
+      { kind = "text", value = "." },
+    },
+  }
+  assertInvalid(missingItem, "a result template without the item placeholder must fail")
+  local adjacentText = validFocusManifest()
+  adjacentText.interactive.text.tossConfirm = {
+    segments = {
+      { kind = "text", value = "Toss " },
+      { kind = "text", value = "now " },
+      { kind = "quantity" },
+      { kind = "text", value = " " },
+      { kind = "item" },
+      { kind = "text", value = "?" },
+    },
+  }
+  assertInvalid(adjacentText, "adjacent text segments must fail until the producer coalesces them")
+  local scrambled = validFocusManifest()
+  scrambled.interactive.overlays.quantity.controls[1].delta = 1
+  scrambled.interactive.overlays.quantity.controls[3].delta = 100
+  assertInvalid(scrambled, "quantity controls outside their source order must fail")
+  local shortBrowse = validFocusManifest()
+  shortBrowse.interactive.backgrounds.browse.balls[7] = nil
+  assertInvalid(shortBrowse, "a pocket with six browse variants must fail")
+  local slowPress = validFocusManifest()
+  slowPress.interactive.overlays.quantity.pressTicks = 5
+  Assert.isTrue(BagAssetSchema.isValidManifest(slowPress), "a positive press duration stays consumable")
+  local slowFraming = validFocusManifest()
+  slowFraming.hero.presentation.framing.transitionTicks = 9
+  Assert.isTrue(BagAssetSchema.isValidManifest(slowFraming), "a positive framing cadence stays consumable")
+end
+
+function T.validation_leaves_the_manifest_untouched_across_repeated_calls()
+  local manifest = validFocusManifest()
+  local snapshot = deepCopyManifest(manifest)
+  Assert.isTrue(BagAssetSchema.isValidManifest(manifest), "the first validation must pass")
+  Assert.isTrue(BagAssetSchema.isValidManifest(manifest), "the repeated validation must pass")
+  Assert.deepEqual(manifest, snapshot, "validation must not normalize or mutate any record")
+  local independent = deepCopyManifest(manifest)
+  independent.logicalSize = { width = 512, height = 192 }
+  Assert.isFalse(BagAssetSchema.isValidManifest(independent), "the mutated copy must fail")
+  Assert.isTrue(BagAssetSchema.isValidManifest(manifest), "the original must stay valid after the copy mutates")
+  Assert.deepEqual(manifest, snapshot, "the original must keep its shape after the copy mutates")
 end
 
 function T.path_enumeration_lists_referenced_files_without_reauditing_the_contract()
