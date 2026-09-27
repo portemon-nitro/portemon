@@ -146,7 +146,7 @@ end
 
 function T.dig_completes_through_the_shared_task()
   local warps = warpsDouble()
-  local runtime = FieldMoveRuntime.new({ policy = FieldMovePolicy, context = contextWith(), world = worldWith(warps) }) --[[@as ReturnTaskRuntimePort]]
+  local runtime = FieldMoveRuntime.new({ policy = FieldMovePolicy, world = worldWith(warps) }) --[[@as ReturnTaskRuntimePort]]
   queueDig(runtime)
   local state = FieldMoveTask.create({ source = "pending" }, taskContext(runtime))
   Assert.isNil(state.refused, "dig must plan an executable task")
@@ -160,7 +160,7 @@ end
 
 function T.failed_warp_reports_failure_through_the_shared_task()
   local warps = warpsDouble()
-  local runtime = FieldMoveRuntime.new({ policy = FieldMovePolicy, context = contextWith(), world = worldWith(warps) }) --[[@as ReturnTaskRuntimePort]]
+  local runtime = FieldMoveRuntime.new({ policy = FieldMovePolicy, world = worldWith(warps) }) --[[@as ReturnTaskRuntimePort]]
   queueDig(runtime)
   local state = FieldMoveTask.create({ source = "pending" }, taskContext(runtime))
   warps.done = true
@@ -172,7 +172,7 @@ end
 
 function T.cancelled_return_never_polls_again()
   local warps = warpsDouble()
-  local runtime = FieldMoveRuntime.new({ policy = FieldMovePolicy, context = contextWith(), world = worldWith(warps) }) --[[@as ReturnTaskRuntimePort]]
+  local runtime = FieldMoveRuntime.new({ policy = FieldMovePolicy, world = worldWith(warps) }) --[[@as ReturnTaskRuntimePort]]
   queueDig(runtime)
   local state = FieldMoveTask.create({ source = "pending" }, taskContext(runtime))
   local ctx = taskContext(runtime)
@@ -189,7 +189,6 @@ function T.teleport_plans_through_cited_destinations()
   local warps = warpsDouble()
   local runtime = FieldMoveRuntime.new({
     policy = FieldMovePolicy,
-    context = contextWith(),
     world = worldWith(warps, spawnsDouble()),
   }) --[[@as ReturnTaskRuntimePort]]
   local queued = runtime:queue({

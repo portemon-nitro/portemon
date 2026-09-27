@@ -247,7 +247,6 @@ function T.tests.surf_swims_and_disembarks_with_real_physics()
     Assert.isTrue(context.surfEdge, "facing tile must be surfable water")
     local runtime = FieldMoveRuntime.new({
       policy = FieldMovePolicy,
-      context = context,
       world = liveWorld(game),
     }) --[[@as TraversalRuntimePort]]
     runSurfPlan(game, runtime, context)
@@ -303,7 +302,6 @@ function T.tests.settled_water_save_restores_usable_surf()
     local context = surfContext(game)
     local runtime = FieldMoveRuntime.new({
       policy = FieldMovePolicy,
-      context = context,
       world = liveWorld(game),
     }) --[[@as TraversalRuntimePort]]
     runSurfPlan(game, runtime, context)
@@ -329,7 +327,6 @@ function T.tests.settled_water_save_restores_usable_surf()
     -- runtime and world bound to the fresh owners, like production does.
     local fresh = FieldMoveRuntime.new({
       policy = FieldMovePolicy,
-      context = surfContext(game),
       world = liveWorld(game),
     }) --[[@as TraversalRuntimePort]]
     game:moveTo({ fieldX = water.fieldX, fieldZ = water.fieldZ })
@@ -579,7 +576,7 @@ local function waterfallRig()
   local avatar = rigAvatar("surfing")
   local applied = { count = 0 }
   local world, _ = rigWorld(player, avatar, map, applied)
-  local runtime = FieldMoveRuntime.new({ policy = FieldMovePolicy, context = rigContext(), world = world }) --[[@as TraversalRuntimePort]]
+  local runtime = FieldMoveRuntime.new({ policy = FieldMovePolicy, world = world }) --[[@as TraversalRuntimePort]]
   return {
     map = map,
     player = player,
@@ -637,8 +634,7 @@ function T.tests.rock_climb_honors_orientation_and_landing()
   local avatar = rigAvatar("walking")
   local applied = { count = 0 }
   local world, _ = rigWorld(player, avatar, map, applied)
-  local context = rigContext({ avatarMode = "walking" })
-  local runtime = FieldMoveRuntime.new({ policy = FieldMovePolicy, context = context, world = world }) --[[@as TraversalRuntimePort]]
+  local runtime = FieldMoveRuntime.new({ policy = FieldMovePolicy, world = world }) --[[@as TraversalRuntimePort]]
   local queued =
     runtime:queue({ move = "rock_climb", slot = 0, context = rigContext({ avatarMode = "walking", climbTile = true }) })
   Assert.equal(queued.kind, "accepted", "climb admission must accept a faced wall while walking")

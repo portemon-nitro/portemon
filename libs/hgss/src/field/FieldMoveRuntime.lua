@@ -12,13 +12,12 @@ FieldMoveRuntime.__index = FieldMoveRuntime
 
 ---@class FieldMoveRuntime
 ---@field private _policy table<string, unknown>
----@field private _ambient table<string, unknown>
 ---@field private _world table<string, unknown>
 ---@field private _pending table<string, unknown>?
 ---@field private _activeRequest table<string, unknown>?
 ---@field private _activePlan table<string, unknown>?
 ---@field private _strengthArmed boolean
----@field new fun(opts: { policy: table<string, unknown>, context: table<string, unknown>, world: table<string, unknown> }): FieldMoveRuntime
+---@field new fun(opts: { policy: table<string, unknown>, world: table<string, unknown> }): FieldMoveRuntime
 ---@field isBusy fun(self: FieldMoveRuntime): boolean
 ---@field queue fun(self: FieldMoveRuntime, request: table<string, unknown>): table<string, unknown>
 ---@field takePending fun(self: FieldMoveRuntime): table<string, unknown>
@@ -121,17 +120,15 @@ local function checkShape(self)
     isRecord(self._policy) and type(self._policy.check) == "function",
     "field runtime requires the eligibility policy"
   )
-  assert(isRecord(self._ambient), "field runtime requires an ambient context record")
   assert(isRecord(self._world), "field runtime requires the world adapter")
 end
 
----@param opts { policy: table<string, unknown>, context: table<string, unknown>, world: table<string, unknown> }
+---@param opts { policy: table<string, unknown>, world: table<string, unknown> }
 ---@return FieldMoveRuntime
 function FieldMoveRuntime.new(opts)
   assert(isRecord(opts), "field runtime requires options")
   local runtime = setmetatable({
     _policy = assert(opts.policy, "field runtime requires the eligibility policy"),
-    _ambient = copyValue(assert(opts.context, "field runtime requires an ambient context record")),
     _world = assert(opts.world, "field runtime requires the world adapter"),
     _pending = nil,
     _activeRequest = nil,
@@ -147,14 +144,6 @@ function FieldMoveRuntime:isBusy()
   return self._pending ~= nil or self._activeRequest ~= nil
 end
 
-local function requestContext(self, request)
-  if request.context ~= nil then
-    assert(isRecord(request.context), "field request context must be a record")
-    return request.context
-  end
-  return self._ambient
-end
-
 local function facingMatches(world, context)
   local facing = context.facingActor
   if facing == nil then
@@ -167,9 +156,12 @@ local function facingMatches(world, context)
   return live.actorId == facing.identity and live.obstacleKind == facing.obstacleKind
 end
 
--- Admit one menu-origin request: a second pending/active operation is
--- rejected without mutation, eligibility is decided through the policy
--- before the application closes, and a moved facing actor fails stale.
+-- Admit one field-move request: a second pending/active operation is
+-- rejected without mutation. Menu-origin requests carrying a context decide
+-- eligibility through the policy before the application closes, and a moved
+-- facing actor fails stale. Explicit script-origin requests carry no
+-- context and admit on ownership/shape alone; they plan from live world
+-- state instead of cached eligibility facts.
 ---@param request table<string, unknown> { move, slot?, partyRevision?, context? }
 ---@return table<string, unknown> { kind = "accepted" } or a nonaccepted Decision
 function FieldMoveRuntime:queue(request)
@@ -188,23 +180,19 @@ function FieldMoveRuntime:queue(request)
       "field request revision must be an integer"
     )
   end
-  if move ~= PUSH_STRENGTH and POLICY_MOVES[move] then
-    local context = requestContext(self, request)
+  if move ~= PUSH_STRENGTH and POLICY_MOVES[move] and request.context ~= nil then
+    local context = request.context
     local decision = self._policy.check(move, context)
     assert(isRecord(decision) and type(decision.kind) == "string", "policy must return a decision record")
     if decision.kind ~= "ok" then
       return decision
     end
-    -- Request-scoped facing data revalidates against the live obstacle;
-    -- ambient fallback contexts never fail admission on stale facing.
-    if request.context ~= nil and not facingMatches(self._world, context) then
+    -- Request-scoped facing data revalidates against the live obstacle.
+    if not facingMatches(self._world, context) then
       return { kind = "stale" }
     end
   end
   self._pending = copyValue(request)
-  if request.context ~= nil then
-    self._ambient = copyValue(request.context)
-  end
   return { kind = "accepted" }
 end
 

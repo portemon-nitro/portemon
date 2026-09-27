@@ -7,6 +7,7 @@ local FieldMovePolicy = require("libs.hgss.src.field.FieldMovePolicy")
 local FieldMoveRuntime = require("libs.hgss.src.field.FieldMoveRuntime")
 local FieldMoveWorld = require("game.hgss.src.field.FieldMoveWorld")
 local FieldMoveTask = require("libs.hgss.src.script.tasks.FieldMoveTask")
+local RuntimeValues = require("libs.hgss.src.script.RuntimeValues")
 local FieldPlayer = require("libs.hgss.src.actors.FieldPlayer")
 local FieldPlayerAvatarState = require("libs.hgss.src.actors.FieldPlayerAvatarState")
 local FieldEventState = require("libs.hgss.src.field.FieldEventState")
@@ -107,7 +108,7 @@ local function rigAvatar(mode)
   })
 end
 
-local function setup(map, player, avatar, context)
+local function setup(map, player, avatar)
   local events = FieldEventState.new()
   local world = FieldMoveWorld.new({
     actors = {
@@ -185,7 +186,7 @@ local function setup(map, player, avatar, context)
       end,
     },
   })
-  local runtime = FieldMoveRuntime.new({ policy = FieldMovePolicy, context = context, world = world }) --[[@as TraversalTaskRuntimePort]]
+  local runtime = FieldMoveRuntime.new({ policy = FieldMovePolicy, world = world }) --[[@as TraversalTaskRuntimePort]]
   return { world = world, runtime = runtime, player = player, avatar = avatar, map = map }
 end
 
@@ -221,7 +222,7 @@ local function shoreRig()
     foggy = false,
     chatterOpen = false,
   }
-  local rig = setup(map, player, avatar, context)
+  local rig = setup(map, player, avatar)
   rig.context = context
   rig.behaviorAt = behaviorAt
   return rig
@@ -267,6 +268,78 @@ function T.explicit_surf_without_context_plans_from_live_state()
   local taken = rig.runtime:takePending()
   local plan = rig.runtime:plan(taken)
   Assert.equal(plan.kind, "surf_enter")
+end
+
+-- A policy double that faults loudly on consultation, paired with a
+-- runtime constructed with only policy and world: reaching a live plan
+-- or a live refusal proves the explicit path plans from world state
+-- without consulting eligibility.
+local function refusingPolicy(policyCalls)
+  return {
+    check = function(_, _)
+      policyCalls.count = policyCalls.count + 1
+      error("explicit script-origin requests never consult eligibility", 0)
+    end,
+  }
+end
+
+local function explicitTaskContext(runtime, tick)
+  return {
+    services = { fieldMoves = runtime },
+    instance = { scriptId = "test-explicit-traversal", instanceId = "inst-explicit", locals = {} },
+    tick = tick or 100,
+    taskId = "task-explicit",
+    semantics = RuntimeValues,
+  }
+end
+
+-- Script-origin surf from a live shore enters the water through the world
+-- even though the request carries no eligibility facts.
+function T.explicit_surf_task_enters_from_live_water_without_policy()
+  local rig = shoreRig()
+  local policyCalls = { count = 0 }
+  local runtime = FieldMoveRuntime.new({ policy = refusingPolicy(policyCalls), world = rig.world }) --[[@as TraversalTaskRuntimePort]]
+  local state =
+    FieldMoveTask.create({ source = "explicit", node = { move = "surf", slot = 0 } }, explicitTaskContext(runtime))
+  Assert.isNil(FieldMoveTask.validate(state), "planned state stays serializable")
+  Assert.notNil(state.plan, "live water plans instead of refusing")
+  Assert.equal(state.plan.kind, "surf_enter", "the plan comes from live geometry")
+  local guard = 0
+  local result = nil
+  while result == nil do
+    guard = guard + 1
+    Assert.isTrue(guard < 600, "the surf entry must settle")
+    local outcome = FieldMoveTask.poll(state, explicitTaskContext(runtime, 100 + guard))
+    if outcome.complete then
+      result = outcome.result
+    else
+      rig.player:updateFixed({})
+    end
+  end
+  Assert.equal(result.kind, "field_move_done", "the live plan executes to done")
+  Assert.equal(result.move, "surf_enter", "the executed plan is the live water entry")
+  Assert.equal(policyCalls.count, 0, "no eligibility check ran for the explicit request")
+  Assert.equal(rig.player.fieldX, 2)
+  Assert.equal(rig.player.fieldZ, 4)
+  Assert.isFalse(runtime:isBusy(), "the settled task releases the runtime")
+end
+
+-- The same live shore has no falls: an explicit waterfall refuses from
+-- the world's missing geometry while the faulting policy double proves
+-- no eligibility verdict could have allowed it instead.
+function T.explicit_waterfall_without_live_falls_refuses_without_policy()
+  local rig = shoreRig()
+  local policyCalls = { count = 0 }
+  local runtime = FieldMoveRuntime.new({ policy = refusingPolicy(policyCalls), world = rig.world }) --[[@as TraversalTaskRuntimePort]]
+  local ctx = explicitTaskContext(runtime)
+  local state = FieldMoveTask.create({ source = "explicit", node = { move = "waterfall", slot = 1 } }, ctx)
+  Assert.isNil(FieldMoveTask.validate(state), "refused state stays serializable")
+  local outcome = FieldMoveTask.poll(state, ctx)
+  Assert.isTrue(outcome.complete, "a geometry refusal settles at once")
+  Assert.equal(outcome.result.kind, "field_move_refused")
+  Assert.equal(outcome.result.decision.kind, "not_here", "refusal names the live geometry, never a cached verdict")
+  Assert.equal(policyCalls.count, 0, "no eligibility check ran for the explicit request")
+  Assert.isFalse(runtime:isBusy(), "refused explicit work holds nothing")
 end
 
 function T.disembark_round_trip_returns_to_walking()

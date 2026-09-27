@@ -288,9 +288,9 @@ local function ports(manager, eventState, map, overrides)
   return base
 end
 
-local function openRuntime(manager, eventState, map, worldPorts, ambient)
+local function openRuntime(manager, eventState, map, worldPorts)
   local world = FieldMoveWorld.new(worldPorts or ports(manager, eventState, map))
-  local runtime = FieldMoveRuntime.new({ policy = FieldMovePolicy, context = ambient or treeContext(), world = world }) --[[@as FieldMoveRuntimePort]]
+  local runtime = FieldMoveRuntime.new({ policy = FieldMovePolicy, world = world }) --[[@as FieldMoveRuntimePort]]
   return runtime, world
 end
 
@@ -592,18 +592,27 @@ function T.cancellation_cleans_up_without_another_poll()
   manager:dispose()
 end
 
--- Explicit script-origin requests plan without re-gating: executable water
--- traversal reaches the world and refuses honestly on geometry, still
--- deferred moves complete refused, malformed slots fault loudly, and
--- admission contention faults instead of queuing twice.
+-- Explicit script-origin requests plan without re-gating: the runtime is
+-- built with a policy double that faults loudly on consultation, so
+-- reaching a live plan or a live refusal proves admission never gates on
+-- eligibility. Executable water traversal reaches the world and refuses
+-- honestly on geometry, still deferred moves complete refused, malformed
+-- slots fault loudly, and admission contention faults instead of queuing
+-- twice.
 function T.explicit_requests_use_the_shared_task_entry()
   local objects = fieldObjects()
   local map = runtimeMap(objects, 61)
   local eventState = FieldEventState.new()
   local manager = openManager(map, eventState)
-  local water = treeContext()
-  water.surfEdge = true
-  local runtime = openRuntime(manager, eventState, map, nil, water)
+  local policyCalls = { count = 0 }
+  local policy = {
+    check = function(_, _)
+      policyCalls.count = policyCalls.count + 1
+      error("explicit script-origin requests never consult eligibility", 0)
+    end,
+  }
+  local world = FieldMoveWorld.new(ports(manager, eventState, map))
+  local runtime = FieldMoveRuntime.new({ policy = policy, world = world }) --[[@as FieldMoveRuntimePort]]
   local function explicitCtx()
     local ctx = taskContext(runtime)
     ctx.semantics = RuntimeValues
@@ -615,34 +624,19 @@ function T.explicit_requests_use_the_shared_task_entry()
   Assert.isTrue(refused.complete)
   Assert.equal(refused.result.kind, "field_move_refused")
   Assert.equal(refused.result.decision.kind, "not_here", "explicit surf refuses on geometry, never defers")
-  local deferredRuntime, _ = openRuntime(
-    manager,
-    eventState,
-    map,
-    nil,
-    (function()
-      local digAmbient = treeContext()
-      digAmbient.fieldUse.escapeAllowed = true
-      return digAmbient
-    end)()
-  )
-  local function digCtx()
-    local ctx = taskContext(deferredRuntime)
-    ctx.semantics = RuntimeValues
-    return ctx
-  end
-  local deferred = FieldMoveTask.create({ source = "explicit", node = { move = "dig", slot = 2 } }, digCtx())
+  local deferred = FieldMoveTask.create({ source = "explicit", node = { move = "dig", slot = 2 } }, explicitCtx())
   Assert.isNil(FieldMoveTask.validate(deferred), "refused state stays serializable")
-  local digRefused = FieldMoveTask.poll(deferred, digCtx())
+  local digRefused = FieldMoveTask.poll(deferred, explicitCtx())
   Assert.isTrue(digRefused.complete)
   Assert.equal(digRefused.result.kind, "field_move_refused")
   Assert.equal(digRefused.result.decision.kind, "not_now", "explicit dig without travel refuses, never guesses")
-  Assert.isFalse(deferredRuntime:isBusy(), "refused explicit work holds nothing")
+  Assert.isFalse(runtime:isBusy(), "refused explicit work holds nothing")
   local badSlot = Assert.throws(function()
     FieldMoveTask.create({ source = "explicit", node = { move = "surf", slot = 9 } }, explicitCtx())
   end)
   Assert.notNil(badSlot, "a non-party slot faults loudly")
   Assert.isFalse(runtime:isBusy(), "refused explicit work holds nothing")
+  Assert.equal(policyCalls.count, 0, "no eligibility check ran for the explicit requests")
   manager:dispose()
 end
 

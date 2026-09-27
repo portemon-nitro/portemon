@@ -101,7 +101,6 @@ function PokemonMenuComposition.create(deps)
   local world = FieldMoveWorld.new(ports)
   local fieldMoves = FieldMoveRuntime.new({
     policy = FieldMovePolicy,
-    context = FieldMoveContext.capture(contextSources()),
     world = world,
   })
 

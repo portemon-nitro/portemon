@@ -112,7 +112,7 @@ local function worldDouble(overrides)
 end
 
 local function open(world)
-  return FieldMoveRuntime.new({ policy = FieldMovePolicy, context = context(), world = world or worldDouble() }) --[[@as FieldMoveRuntimePort]]
+  return FieldMoveRuntime.new({ policy = FieldMovePolicy, world = world or worldDouble() }) --[[@as FieldMoveRuntimePort]]
 end
 
 function T.queue_accepts_an_eligible_cut_request()
@@ -160,7 +160,7 @@ end
 
 function T.stale_facing_actor_fails_at_queue_time()
   local world = worldDouble()
-  local resync = FieldMoveRuntime.new({ policy = FieldMovePolicy, context = context(), world = world }) --[[@as FieldMoveRuntimePort]]
+  local resync = open(world)
   world.facingTarget = { actorId = "map:61:object:9", obstacleKind = "cut_tree", mapId = 61 }
   local outcome = resync:queue({ move = "cut", slot = 0, partyRevision = 4, context = context() })
   Assert.equal(outcome.kind, "stale", "a moved actor fails before the application closes")
@@ -373,6 +373,24 @@ function T.dispose_with_nothing_outstanding_is_a_no_op()
   local runtime = open()
   runtime:dispose()
   Assert.isFalse(runtime:isBusy(), "an idle disposal holds nothing")
+end
+
+-- A request without a context carries no eligibility facts, so admission
+-- must not consult the policy at all: the double faults loudly if asked.
+function T.surf_without_a_request_context_admits_without_eligibility_policy()
+  local seen = {}
+  local policy = {
+    check = function(_, _)
+      seen[#seen + 1] = true
+      error("context-free requests never consult eligibility", 0)
+    end,
+  }
+  local runtime = FieldMoveRuntime.new({ policy = policy, world = worldDouble() }) --[[@as FieldMoveRuntimePort]]
+  local outcome = runtime:queue({ move = "surf", slot = 0 })
+  Assert.equal(outcome.kind, "accepted", "script-origin admission skips gating, got " .. tostring(outcome.kind))
+  Assert.isTrue(runtime:isBusy(), "an accepted queue holds the runtime")
+  Assert.equal(#seen, 0, "admission consulted no policy")
+  runtime:discardPending()
 end
 
 return { tests = T }

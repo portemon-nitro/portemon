@@ -195,8 +195,8 @@ end
 ---@class ReturnRuntimePort
 ---@field queue fun(self: ReturnRuntimePort, request: table<string, unknown>): table<string, unknown>
 
-local function liveRuntime(context, world)
-  local runtime = FieldMoveRuntime.new({ policy = FieldMovePolicy, context = context, world = world })
+local function liveRuntime(world)
+  local runtime = FieldMoveRuntime.new({ policy = FieldMovePolicy, world = world })
   return runtime --[[@as ReturnRuntimePort]]
 end
 
@@ -327,7 +327,7 @@ function T.tests.dig_exits_to_the_recorded_outside_entrance()
     freezeAutonomousActors(game)
     local reloaded = liveTravel(game):capture().escapeEntrance
     Assert.deepEqual(reloaded, entrance, "save/reload must preserve the recorded entrance")
-    local mover = liveRuntime(returnContext(game), liveWorld(game))
+    local mover = liveRuntime(liveWorld(game))
     local result = runReturnPlan(game, mover, "dig", geodude, liveTravel(game))
     Assert.equal(result.kind, "field_move_done", "dig must run to done")
     local settled = game:snapshot()
@@ -360,7 +360,7 @@ function T.tests.teleport_uses_explicit_heal_spawn_history()
     })
     Assert.equal(healing.kind, "no_effect", "a healthy mon needs no healing")
     Assert.deepEqual(travel:capture(), before, "medicine use must not rewrite respawn history")
-    local mover = liveRuntime(returnContext(game), liveWorld(game))
+    local mover = liveRuntime(liveWorld(game))
     local result = runReturnPlan(game, mover, "teleport", geodude, travel)
     Assert.equal(result.kind, "field_move_done", "teleport to the mother spawn must run to done")
     local settled = game:snapshot()
@@ -390,7 +390,7 @@ function T.tests.failed_return_warp_fabricates_nothing()
       loader = faultingLoader,
       sourceMap = runtime.runtimeMap,
     })
-    local mover = liveRuntime(returnContext(game), liveWorld(game, faultingService))
+    local mover = liveRuntime(liveWorld(game, faultingService))
     local travel = liveTravel(game)
     local entrance = assert(travel:capture().escapeEntrance, "cave entry must record the entrance")
     local before = game:snapshot()
@@ -495,7 +495,7 @@ function T.tests.fly_is_the_only_checked_silent_noop()
     teachMove(game, pidgey, "HM02")
     local runtime = game.runtime
     local context = returnContext(game)
-    local probe = liveRuntime(context, liveWorld(game))
+    local probe = liveRuntime(liveWorld(game))
     local refused = probe:queue({ move = "fly", slot = pidgey, context = context })
     Assert.equal(refused.kind, "need_badge", "fly without the storm badge must fail the real check")
     awardBadge(game, "storm")

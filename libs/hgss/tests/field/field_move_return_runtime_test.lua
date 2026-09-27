@@ -90,7 +90,7 @@ local function flyContextWith()
 end
 
 local function runtimeWith(world)
-  local runtime = FieldMoveRuntime.new({ policy = FieldMovePolicy, context = contextWith(), world = world })
+  local runtime = FieldMoveRuntime.new({ policy = FieldMovePolicy, world = world })
   return runtime --[[@as ReturnRuntimePort]]
 end
 
