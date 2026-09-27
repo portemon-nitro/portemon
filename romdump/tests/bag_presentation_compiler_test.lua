@@ -272,4 +272,95 @@ function T.geometry_rejects_wrong_quantity_control_order()
   Assert.notNil(tostring(err):find("BAG_GEOMETRY_INVALID"), "the failure must carry the protocol code")
 end
 
+-- Compiled geometry is a fresh snapshot: compiling twice yields equal
+-- structures, and mutating one result leaves the source config and the
+-- other result untouched.
+function T.geometry_results_are_independent_copies()
+  local first = BagPresentationCompiler.compileGeometry(BagSources)
+  local second = BagPresentationCompiler.compileGeometry(BagSources)
+  Assert.deepEqual(first, second, "repeated compilation must be deterministic")
+  first.slots[1].rect.x = -1
+  first.slots[1].iconCenter.x = -1
+  first.tabs[1].x = -1
+  first.focus.tabs[1].x = -1
+  Assert.equal(BagSources.geometry.slots[1].rect.x, 0, "mutating output must not touch the source rect")
+  Assert.equal(BagSources.geometry.tabs[1].x, 0, "mutating output must not touch the source tab")
+  Assert.equal(BagSources.itemIconCenters[1].x, 22, "mutating output must not touch the source icon record")
+  Assert.equal(BagSources.focusTargets.tabs[1].x, 16, "mutating output must not touch the source focus record")
+  Assert.equal(second.slots[1].rect.x, 0, "mutating one result must not touch the other result")
+  Assert.equal(second.slots[1].iconCenter.x, 22, "icon centers must stay independent across results")
+  Assert.equal(second.tabs[1].x, 0, "tabs must stay independent across results")
+  Assert.equal(second.focus.tabs[1].x, 16, "focus targets must stay independent across results")
+end
+
+-- Each distinct malformed shape fails with the geometry code: a text
+-- window escaping its slot, a zero-extent rectangle and a fractional
+-- coordinate are separate rejections, not one catch-all.
+function T.geometry_rejects_escaping_text_zero_extent_and_fractional_coordinates()
+  local escaping =
+    { itemIconCenters = BagSources.itemIconCenters, focusTargets = BagSources.focusTargets, geometry = {} }
+  for key, value in pairs(BagSources.geometry) do
+    escaping.geometry[key] = value
+  end
+  escaping.geometry.slots = {}
+  for index, slot in ipairs(BagSources.geometry.slots) do
+    escaping.geometry.slots[index] = slot
+  end
+  escaping.geometry.slots[1] = {
+    rect = BagSources.geometry.slots[1].rect,
+    textRect = { x = 32, y = 40, width = 120, height = 32 },
+    nameAt = { x = 0, y = 0 },
+    quantityAt = { x = 48, y = 16 },
+  }
+  local okEscape, errEscape = pcall(BagPresentationCompiler.compileGeometry, escaping)
+  Assert.isFalse(okEscape, "a text window escaping its slot must fail")
+  Assert.notNil(tostring(errEscape):find("BAG_GEOMETRY_INVALID"), "the failure must carry the protocol code")
+  local flat = { itemIconCenters = BagSources.itemIconCenters, focusTargets = BagSources.focusTargets, geometry = {} }
+  for key, value in pairs(BagSources.geometry) do
+    flat.geometry[key] = value
+  end
+  flat.geometry.tabs = {}
+  for index, tab in ipairs(BagSources.geometry.tabs) do
+    flat.geometry.tabs[index] = tab
+  end
+  flat.geometry.tabs[1] = { x = 0, y = 0, width = 0, height = 32 }
+  local okFlat, errFlat = pcall(BagPresentationCompiler.compileGeometry, flat)
+  Assert.isFalse(okFlat, "a zero-extent rectangle must fail")
+  Assert.notNil(tostring(errFlat):find("BAG_GEOMETRY_INVALID"), "the failure must carry the protocol code")
+  local fract = { itemIconCenters = BagSources.itemIconCenters, focusTargets = BagSources.focusTargets, geometry = {} }
+  for key, value in pairs(BagSources.geometry) do
+    fract.geometry[key] = value
+  end
+  fract.geometry.tabs = {}
+  for index, tab in ipairs(BagSources.geometry.tabs) do
+    fract.geometry.tabs[index] = tab
+  end
+  fract.geometry.tabs[1] = { x = 0.5, y = 0, width = 32, height = 32 }
+  local okFract, errFract = pcall(BagPresentationCompiler.compileGeometry, fract)
+  Assert.isFalse(okFract, "a fractional coordinate must fail")
+  Assert.notNil(tostring(errFract):find("BAG_GEOMETRY_INVALID"), "the failure must carry the protocol code")
+end
+
+-- Points keep their inclusive pane-edge allowance: a focus target on the
+-- exact pane corner remains accepted.
+function T.geometry_accepts_a_point_on_the_pane_edge()
+  local items = {}
+  for index, target in ipairs(BagSources.focusTargets.items) do
+    items[index] = target
+  end
+  items[1] = { x = 256, y = 192 }
+  local edited = {
+    itemIconCenters = BagSources.itemIconCenters,
+    focusTargets = {
+      tabs = BagSources.focusTargets.tabs,
+      items = items,
+      cancel = BagSources.focusTargets.cancel,
+      actions = BagSources.focusTargets.actions,
+    },
+    geometry = BagSources.geometry,
+  }
+  local geometry = BagPresentationCompiler.compileGeometry(edited)
+  Assert.deepEqual(geometry.focus.items[1], { x = 256, y = 192 }, "the inclusive pane edge must stay accepted")
+end
+
 return { tests = T }

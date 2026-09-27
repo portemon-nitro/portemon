@@ -18,17 +18,18 @@ BagPresentationCompiler.ERROR = {
 BagPresentationCompiler.PANE_WIDTH = 256
 BagPresentationCompiler.PANE_HEIGHT = 192
 
+
+local function isIntegral(value)
+  return type(value) == "number" and value % 1 == 0
+end
+
 local function checkRect(value, what)
   if
     type(value) ~= "table"
-    or type(value.x) ~= "number"
-    or type(value.y) ~= "number"
-    or type(value.width) ~= "number"
-    or type(value.height) ~= "number"
-    or value.x % 1 ~= 0
-    or value.y % 1 ~= 0
-    or value.width % 1 ~= 0
-    or value.height % 1 ~= 0
+    or not isIntegral(value.x)
+    or not isIntegral(value.y)
+    or not isIntegral(value.width)
+    or not isIntegral(value.height)
     or value.x < 0
     or value.y < 0
     or value.width <= 0
@@ -44,10 +45,8 @@ end
 local function checkPoint(value, what)
   if
     type(value) ~= "table"
-    or type(value.x) ~= "number"
-    or type(value.y) ~= "number"
-    or value.x % 1 ~= 0
-    or value.y % 1 ~= 0
+    or not isIntegral(value.x)
+    or not isIntegral(value.y)
     or value.x < 0
     or value.y < 0
     or value.x > BagPresentationCompiler.PANE_WIDTH
@@ -58,6 +57,51 @@ local function checkPoint(value, what)
   return { x = value.x, y = value.y }
 end
 
+-- Fixed-count source collections carry the audited control cardinalities
+-- (eight tabs, six slots, ...). Every repeated table-plus-count guard goes
+-- through this single check so the counts stay at this producer boundary.
+---@param value unknown
+---@param expected integer
+---@param what string
+---@return unknown[]
+local function checkCollection(value, expected, what)
+  if type(value) ~= "table" or #value ~= expected then
+    Errors.raise(BagPresentationCompiler.ERROR.GEOMETRY_INVALID, what, {})
+  end
+  assert(type(value) == "table")
+  return value
+end
+
+-- Ordered copy for collections whose transformation really is identical
+-- (rectangle or point copies). Record assembly with different semantic
+-- fields stays explicit at the caller.
+---@param collection unknown[]
+---@param mapOne fun(item: unknown, index: integer): unknown
+---@return unknown[]
+local function mapList(collection, mapOne)
+  local out = {}
+  for index, item in ipairs(collection) do
+    out[index] = mapOne(item, index)
+  end
+  return out
+end
+
+-- The candidate and parent records are validated with checkRect before this
+-- runs; the four-edge comparison itself lives here only.
+---@param inner { x: number, y: number, width: number, height: number }
+---@param outer { x: number, y: number, width: number, height: number }
+---@param what string
+local function checkContained(inner, outer, what)
+  if
+    inner.x < outer.x
+    or inner.y < outer.y
+    or inner.x + inner.width > outer.x + outer.width
+    or inner.y + inner.height > outer.y + outer.height
+  then
+    Errors.raise(BagPresentationCompiler.ERROR.GEOMETRY_INVALID, what, {})
+  end
+end
+
 -- Translate the source tab/slot/cursor/readout/overlay tables into the
 -- manifest-ready geometry record.
 ---@param config table<string, unknown>
@@ -65,47 +109,21 @@ end
 function BagPresentationCompiler.compileGeometry(config)
   assert(type(config) == "table" and type(config.geometry) == "table", "compileGeometry requires a source config")
   local geometry = config.geometry
-  if type(geometry.tabs) ~= "table" or #geometry.tabs ~= 8 then
-    Errors.raise(
-      BagPresentationCompiler.ERROR.GEOMETRY_INVALID,
-      "bag geometry must carry exactly eight pocket tabs",
-      {}
-    )
-  end
-  if type(geometry.slots) ~= "table" or #geometry.slots ~= 6 then
-    Errors.raise(BagPresentationCompiler.ERROR.GEOMETRY_INVALID, "bag geometry must carry exactly six item slots", {})
-  end
-  local tabs = {}
-  for index, tab in ipairs(geometry.tabs) do
-    tabs[index] = checkRect(tab, "pocket tab " .. index)
-  end
-  local placements = config.itemIconCenters
-  if type(placements) ~= "table" or #placements ~= 6 then
-    Errors.raise(
-      BagPresentationCompiler.ERROR.GEOMETRY_INVALID,
-      "bag source config must carry exactly six item-icon placements",
-      {}
-    )
-  end
+  local tabSource = checkCollection(geometry.tabs, 8, "bag geometry must carry exactly eight pocket tabs")
+  local slotSource = checkCollection(geometry.slots, 6, "bag geometry must carry exactly six item slots")
+  local tabs = mapList(tabSource, function(tab, index)
+    return checkRect(tab, "pocket tab " .. index)
+  end)
+  local placements =
+    checkCollection(config.itemIconCenters, 6, "bag source config must carry exactly six item-icon placements")
   local slots = {}
-  for index, slot in ipairs(geometry.slots) do
+  for index, slot in ipairs(slotSource) do
     if type(slot) ~= "table" then
       Errors.raise(BagPresentationCompiler.ERROR.GEOMETRY_INVALID, "item slot " .. index .. " is malformed", {})
     end
     local full = checkRect(slot.rect, "item slot " .. index)
     local window = checkRect(slot.textRect, "item slot " .. index .. " text window")
-    if
-      window.x < full.x
-      or window.y < full.y
-      or window.x + window.width > full.x + full.width
-      or window.y + window.height > full.y + full.height
-    then
-      Errors.raise(
-        BagPresentationCompiler.ERROR.GEOMETRY_INVALID,
-        "item slot " .. index .. " text window escapes its touch rect",
-        {}
-      )
-    end
+    checkContained(window, full, "item slot " .. index .. " text window escapes its touch rect")
     slots[index] = {
       rect = full,
       textRect = window,
@@ -130,15 +148,9 @@ function BagPresentationCompiler.compileGeometry(config)
   if type(countReadout) ~= "table" then
     Errors.raise(BagPresentationCompiler.ERROR.GEOMETRY_INVALID, "bag geometry carries no count readout", {})
   end
-  if type(geometry.actionSlots) ~= "table" or #geometry.actionSlots ~= 4 then
-    Errors.raise(
-      BagPresentationCompiler.ERROR.GEOMETRY_INVALID,
-      "bag geometry must carry exactly four action slots",
-      {}
-    )
-  end
+  local actionSource = checkCollection(geometry.actionSlots, 4, "bag geometry must carry exactly four action slots")
   local actionSlots = {}
-  for index, slot in ipairs(geometry.actionSlots) do
+  for index, slot in ipairs(actionSource) do
     if type(slot) ~= "table" then
       Errors.raise(BagPresentationCompiler.ERROR.GEOMETRY_INVALID, "action slot " .. index .. " is malformed", {})
     end
@@ -148,24 +160,13 @@ function BagPresentationCompiler.compileGeometry(config)
       hitRect = checkRect(slot.hitRect, "action slot " .. index .. " hit rect"),
     }
   end
-  if type(geometry.quantityDigits) ~= "table" or #geometry.quantityDigits ~= 3 then
-    Errors.raise(
-      BagPresentationCompiler.ERROR.GEOMETRY_INVALID,
-      "bag geometry must carry exactly three quantity digits",
-      {}
-    )
-  end
-  local quantityDigits = {}
-  for index, digit in ipairs(geometry.quantityDigits) do
-    quantityDigits[index] = checkRect(digit, "quantity digit " .. index)
-  end
-  if type(geometry.quantityControls) ~= "table" or #geometry.quantityControls ~= 6 then
-    Errors.raise(
-      BagPresentationCompiler.ERROR.GEOMETRY_INVALID,
-      "bag geometry must carry exactly six quantity controls",
-      {}
-    )
-  end
+  local digitSource =
+    checkCollection(geometry.quantityDigits, 3, "bag geometry must carry exactly three quantity digits")
+  local quantityDigits = mapList(digitSource, function(digit, index)
+    return checkRect(digit, "quantity digit " .. index)
+  end)
+  local controlSource =
+    checkCollection(geometry.quantityControls, 6, "bag geometry must carry exactly six quantity controls")
   local quantityControls = {}
   local expectedControls = {
     { delta = 100, role = "increment" },
@@ -175,7 +176,7 @@ function BagPresentationCompiler.compileGeometry(config)
     { delta = -10, role = "decrement" },
     { delta = -1, role = "decrement" },
   }
-  for index, control in ipairs(geometry.quantityControls) do
+  for index, control in ipairs(controlSource) do
     local expected = expectedControls[index]
     if type(control) ~= "table" or control.delta ~= expected.delta or control.role ~= expected.role then
       Errors.raise(
@@ -205,51 +206,28 @@ function BagPresentationCompiler.compileGeometry(config)
   end
   local cancelRect = checkRect(cancelSource.rect, "cancel")
   local cancelText = checkRect(cancelSource.textRect, "cancel text window")
-  if
-    cancelText.x < cancelRect.x
-    or cancelText.y < cancelRect.y
-    or cancelText.x + cancelText.width > cancelRect.x + cancelRect.width
-    or cancelText.y + cancelText.height > cancelRect.y + cancelRect.height
-  then
-    Errors.raise(BagPresentationCompiler.ERROR.GEOMETRY_INVALID, "cancel text window escapes its button rect", {})
-  end
+  checkContained(cancelText, cancelRect, "cancel text window escapes its button rect")
   if type(cancelSource.labelRect) ~= "table" then
     Errors.raise(BagPresentationCompiler.ERROR.GEOMETRY_INVALID, "bag geometry carries no cancel label area", {})
   end
   local cancelLabel = checkRect(cancelSource.labelRect, "cancel label area")
-  if
-    cancelLabel.x < cancelRect.x
-    or cancelLabel.y < cancelRect.y
-    or cancelLabel.x + cancelLabel.width > cancelRect.x + cancelRect.width
-    or cancelLabel.y + cancelLabel.height > cancelRect.y + cancelRect.height
-  then
-    Errors.raise(BagPresentationCompiler.ERROR.GEOMETRY_INVALID, "cancel label area escapes its button rect", {})
-  end
+  checkContained(cancelLabel, cancelRect, "cancel label area escapes its button rect")
   local focusSource = config.focusTargets
   if type(focusSource) ~= "table" then
     Errors.raise(BagPresentationCompiler.ERROR.GEOMETRY_INVALID, "bag source config carries no focus targets", {})
   end
-  if type(focusSource.tabs) ~= "table" or #focusSource.tabs ~= 8 then
-    Errors.raise(BagPresentationCompiler.ERROR.GEOMETRY_INVALID, "focus targets must carry exactly eight tabs", {})
-  end
-  if type(focusSource.items) ~= "table" or #focusSource.items ~= 6 then
-    Errors.raise(BagPresentationCompiler.ERROR.GEOMETRY_INVALID, "focus targets must carry exactly six items", {})
-  end
-  if type(focusSource.actions) ~= "table" or #focusSource.actions ~= 4 then
-    Errors.raise(BagPresentationCompiler.ERROR.GEOMETRY_INVALID, "focus targets must carry exactly four actions", {})
-  end
-  local focusTabs = {}
-  for index, target in ipairs(focusSource.tabs) do
-    focusTabs[index] = checkPoint(target, "tab focus target " .. index)
-  end
-  local focusItems = {}
-  for index, target in ipairs(focusSource.items) do
-    focusItems[index] = checkPoint(target, "item focus target " .. index)
-  end
-  local focusActions = {}
-  for index, target in ipairs(focusSource.actions) do
-    focusActions[index] = checkPoint(target, "action focus target " .. index)
-  end
+  local focusTabSource = checkCollection(focusSource.tabs, 8, "focus targets must carry exactly eight tabs")
+  local focusItemSource = checkCollection(focusSource.items, 6, "focus targets must carry exactly six items")
+  local focusActionSource = checkCollection(focusSource.actions, 4, "focus targets must carry exactly four actions")
+  local focusTabs = mapList(focusTabSource, function(target, index)
+    return checkPoint(target, "tab focus target " .. index)
+  end)
+  local focusItems = mapList(focusItemSource, function(target, index)
+    return checkPoint(target, "item focus target " .. index)
+  end)
+  local focusActions = mapList(focusActionSource, function(target, index)
+    return checkPoint(target, "action focus target " .. index)
+  end)
   local focus = {
     tabs = focusTabs,
     items = focusItems,
