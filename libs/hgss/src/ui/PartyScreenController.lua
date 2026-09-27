@@ -1,6 +1,6 @@
 -- The native party-screen controller: one fixed-tick state machine over an
 -- injected immutable view. Named contexts (browse, pick, item_target,
--- give_target) replace the legacy view/select modes. Browse opens
+-- give_target, give_confirm) replace the legacy view/select modes. Browse opens
 -- source-ordered context menus (summary, switch, item-or-mail, quit, then
 -- field moves in move-slot order; eggs get summary, switch, quit) with a
 -- separate item/mail submenu mapping; switch reorders through the
@@ -18,7 +18,7 @@ local PartyScreenTheme = require("libs.hgss.src.ui.PartyScreenTheme")
 local YesNoPromptController = require("libs.hgss.src.ui.YesNoPromptController")
 
 ---@class PartyScreenController
----@field _context "browse"|"pick"|"item_target"|"give_target"
+---@field _context "browse"|"pick"|"item_target"|"give_target"|"give_confirm"
 ---@field _model PartyScreenController.Model
 ---@field _layout fun(): table<string, unknown>
 ---@field _swap PartyScreenController.SwapPort?
@@ -78,6 +78,7 @@ PartyScreenController.__index = PartyScreenController
 ---@field move string?
 ---@field moveSlot integer?
 ---@field confirm boolean?
+---@field confirmed boolean?
 
 ---@class PartyScreenController.Capture
 ---@field kind "slot"|"menu"|"cancel"|"info"|"prompt"
@@ -95,7 +96,7 @@ PartyScreenController.__index = PartyScreenController
 ---@field slot integer?
 
 ---@class PartyScreenController.Options
----@field context "browse"|"pick"|"item_target"|"give_target"
+---@field context "browse"|"pick"|"item_target"|"give_target"|"give_confirm"
 ---@field initialFocus integer|"cancel"?
 ---@field allowCancel boolean?
 ---@field model PartyScreenController.Model
@@ -156,8 +157,12 @@ end
 function PartyScreenController.new(opts)
   assert(type(opts) == "table", "the party controller requires options")
   assert(
-    opts.context == "browse" or opts.context == "pick" or opts.context == "item_target" or opts.context == "give_target",
-    "the party controller requires a named browse, pick, item_target, or give_target context"
+    opts.context == "browse"
+      or opts.context == "pick"
+      or opts.context == "item_target"
+      or opts.context == "give_target"
+      or opts.context == "give_confirm",
+    "the party controller requires a named browse, pick, item_target, give_target, or give_confirm context"
   )
   assert(
     type(opts.model) == "table" and type(opts.model.refresh) == "function",
@@ -244,6 +249,20 @@ function PartyScreenController.new(opts)
     assert(opts.item ~= nil, "target contexts require the pending item identity")
     self._state = "choosing_item_target"
     self._targetOrigin = "context"
+  elseif opts.context == "give_confirm" then
+    -- The replacement question records its target now but opens its
+    -- prompt on the first fixed update: presentation layout is not
+    -- resolved during controller construction, and the opening batch
+    -- must never activate the new prompt.
+    assert(opts.item ~= nil, "the replacement question names its pending item")
+    assert(
+      type(opts.initialFocus) == "number"
+        and opts.initialFocus % 1 == 0
+        and opts.initialFocus >= 0
+        and opts.initialFocus < 6,
+      "the replacement question targets a party slot"
+    )
+    self._state = "give_confirm"
   end
   local view = self:_refresh()
   self:_resetSequences(view)
@@ -259,6 +278,10 @@ function PartyScreenController.new(opts)
     error("the party screen has no selectable slot", 2)
   end
   self._cursorNode = start
+  if opts.context == "give_confirm" then
+    assert(self:_selectable(view, opts.initialFocus), "the replacement question targets an occupied slot")
+    self._cursorNode = opts.initialFocus
+  end
   return self
 end
 
@@ -760,6 +783,11 @@ function PartyScreenController:_emitEntryIntent(entry, slot, revision)
       intent.bagRevision = item.bagRevision
       intent.item = item.key
     end
+    -- Only the affirmative replacement entry carries this flag: every
+    -- other menu entry omits it, so ordinary intents never claim it.
+    if entry.confirmed == true then
+      intent.confirmed = true
+    end
     self:_emitIntent(intent)
     return
   end
@@ -908,9 +936,23 @@ function PartyScreenController:_confirmSwapDestination()
   end
 end
 
+-- Opens the replacement question on its captured target: the synthetic
+-- entry authorizes the exchange, and the slot rides the controller so
+-- the affirmative intent resolves without an open menu.
+function PartyScreenController:_openGiveConfirm()
+  local node = self._cursorNode
+  assert(isSlotNode(node), "the replacement question answers for a party slot")
+  ---@cast node integer
+  local item = assert(self._pendingItem, "the replacement question names its pending item")
+  self._menuSlot = node
+  self:_openConfirm({ kind = "give", label = item.key, confirmed = true }, "browse")
+end
+
 -- Consumes one published prompt result after the tick-owned prompt step:
 -- YES publishes the armed entry intent, NO returns to the arming menu.
--- Either way the prompt closes exactly once.
+-- The replacement question has no arming menu: NO declines the exchange
+-- with a single cancellation result instead. Either way the prompt
+-- closes exactly once.
 function PartyScreenController:_resolvePrompt()
   local prompt = assert(self._prompt, "prompt resolution needs its owned prompt")
   local result = prompt:takeResult()
@@ -933,15 +975,27 @@ function PartyScreenController:_resolvePrompt()
     return
   end
   assert(result == "no", "prompts resolve yes or no")
+  if self._context == "give_confirm" then
+    self._result = { kind = "cancelled" }
+    self:_setState("closing")
+    return
+  end
   self:_setState(returnState)
 end
 
 -- Declines the owned confirm without publishing: the prompt closes
--- exactly once and control returns to the arming menu. Declining mutates
--- nothing, so it never waits for the confirmation interval.
+-- exactly once and control returns to the arming menu. The replacement
+-- question declines with a single cancellation result instead.
+-- Declining mutates nothing, so it never waits for the confirmation
+-- interval.
 function PartyScreenController:_declinePrompt()
   local returnState = self._promptReturn
   self:_closePrompt()
+  if self._context == "give_confirm" then
+    self._result = { kind = "cancelled" }
+    self:_setState("closing")
+    return
+  end
   self:_setState(returnState)
 end
 
@@ -1185,6 +1239,13 @@ function PartyScreenController:updateFixed(uiInput)
     self:_stepPrompt(uiInput)
     return
   end
+  if self._state == "give_confirm" then
+    -- First fixed update with a resolved layout: open the replacement
+    -- question and ignore this batch, so the transition that opened the
+    -- page can never answer its own prompt.
+    self:_openGiveConfirm()
+    return
+  end
   if view.revision ~= previousRevision and self._swapOp == nil then
     -- Reconcile a cursor the party change may have invalidated without
     -- inventing a mon: keep a still-selectable cursor, else the nearest one.
@@ -1288,9 +1349,9 @@ end
 -- advances them.
 ---@class PartyScreenController.Status
 ---@field open boolean
----@field context "browse"|"pick"|"item_target"|"give_target"?
+---@field context "browse"|"pick"|"item_target"|"give_target"|"give_confirm"?
 ---@field state string?
----@field mode "browse"|"pick"|"item_target"|"give_target"?
+---@field mode "browse"|"pick"|"item_target"|"give_target"|"give_confirm"?
 ---@field action string?
 ---@field cursorNode integer|"cancel"?
 ---@field menuIndex integer?

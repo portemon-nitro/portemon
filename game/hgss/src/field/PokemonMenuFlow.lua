@@ -287,6 +287,24 @@ function PokemonMenuFlow:_openPage(page, continuation)
       cancelIconPreparation = self._cancelIconPreparation,
     })
   end
+  if page == "party_give_confirm" then
+    local cont = assert(continuation, "the replacement question opens for a captured exchange")
+    return PartyScreenState.new({
+      service = self._mons,
+      manifest = assets.partyManifest,
+      actionPolicy = flowPartyPolicy(assets.partyManifest),
+      uiManifest = assets.uiManifest,
+      context = "give_confirm",
+      item = {
+        key = assert(cont.itemKey, "the replacement question carries the item key"),
+        bagRevision = assert(cont.bagRevision, "the replacement question carries the bag revision"),
+      },
+      initialFocus = assert(cont.slot, "the replacement question opens on the target slot"),
+      measureDisplay = measureDisplay,
+      prepareIcons = self._prepareIcons,
+      cancelIconPreparation = self._cancelIconPreparation,
+    })
+  end
   if page == "summary" then
     local cont = assert(continuation, "the summary opens for a captured slot")
     return SummaryScreenState.new({
@@ -325,9 +343,10 @@ function PokemonMenuFlow:_pickerCursor()
   return picker
 end
 
--- Writes picker navigation back onto the borrowed cursor. Only a
--- completed pick (any commit outcome) qualifies; cancellation and failed
--- construction leave the borrowed cursor untouched.
+-- Writes picker navigation back onto the borrowed cursor. Only a retired
+-- picker qualifies, and only after its replacement stages: retryable
+-- refusals keep their owner, and cancellation and failed construction
+-- leave the borrowed cursor untouched.
 ---@param picker table<string, unknown>
 function PokemonMenuFlow:_adoptPickerCursor(picker)
   local pocket = picker:currentPocket()
@@ -416,29 +435,50 @@ function PokemonMenuFlow:_routeBagIntent(intent)
   })
 end
 
--- Routes a picker pick: the cursor adopts on any commit outcome, the
--- exchange publishes with the pick-confirmation behind it, and success
--- returns to the captured party slot while refusals hold the picker.
+-- Routes a picker pick: the exchange previews without confirmation
+-- first, so the action owner decides whether the pick needs the
+-- replacement question. Retryable refusals hold the picker open with its
+-- owner intact; a handled selection retires the picker only after its
+-- replacement stages, and success returns to the captured party slot.
 ---@param intent table<string, unknown>
 function PokemonMenuFlow:_routePick(intent)
   local continuation = assert(self._continuation, "picks resolve a captured mon")
   assert(continuation.operation == "give_from_party", "picks resolve party give operations")
-  local picker = assert(self._picker, "the picker holds its temporary cursor")
-  self:_adoptPickerCursor(picker)
-  self._picker = nil
-  local outcome = self._partyActions:commit({
+  local request = {
     kind = "give",
     slot = assert(continuation.slot, "give operations capture their slot"),
     partyRevision = assert(continuation.partyRevision, "give operations capture the party revision"),
     bagRevision = assert(intent.bagRevision, "picks snapshot the bag revision"),
     item = assert(intent.item, "picks snapshot their item"),
-    confirmed = true,
-  })
+  }
+  local decision = self._partyActions:preview(request)
+  if decision.kind == "needs_confirmation" then
+    self:_replace("party_give_confirm", {
+      root = self._root,
+      returnPage = "party_browse",
+      operation = "give_from_party",
+      slot = assert(continuation.slot, "give operations capture their slot"),
+      itemKey = assert(intent.item, "picks snapshot their item"),
+      partyRevision = assert(continuation.partyRevision, "give operations capture the party revision"),
+      bagRevision = assert(intent.bagRevision, "picks snapshot the bag revision"),
+    })
+    local picker = assert(self._picker, "the picker holds its temporary cursor")
+    self:_adoptPickerCursor(picker)
+    self._picker = nil
+    return
+  end
+  if decision.kind ~= "ready" then
+    return
+  end
+  local outcome = self._partyActions:commit(request)
   if outcome.kind ~= "changed" then
     return
   end
   local slot = assert(continuation.slot, "give operations capture their slot")
   self:_replace("party_browse", { focusSlot = slot })
+  local picker = assert(self._picker, "the picker holds its temporary cursor")
+  self:_adoptPickerCursor(picker)
+  self._picker = nil
   self._continuation = nil
 end
 
@@ -455,14 +495,33 @@ function PokemonMenuFlow:_routeTargetIntent(intent)
   end
   local itemKey = assert(continuation.itemKey, "bag operations capture their item")
   if operation == "give" then
-    local outcome = self._partyActions:commit({
+    -- Initial selections never claim confirmation: the preview decides
+    -- whether the exchange needs the replacement question.
+    local request = {
       kind = "give",
       slot = assert(intent.slot, "target selections name their slot"),
       partyRevision = assert(intent.partyRevision, "target selections carry the party revision"),
       bagRevision = assert(intent.bagRevision, "target selections carry the bag revision"),
       item = itemKey,
-      confirmed = true,
-    })
+    }
+    local decision = self._partyActions:preview(request)
+    if decision.kind == "needs_confirmation" then
+      self:_replace("party_give_confirm", {
+        root = self._root,
+        returnPage = assert(continuation.returnPage, "continuations name their return page"),
+        operation = operation,
+        slot = assert(intent.slot, "target selections name their slot"),
+        itemKey = itemKey,
+        partyRevision = assert(intent.partyRevision, "target selections carry the party revision"),
+        bagRevision = assert(intent.bagRevision, "target selections carry the bag revision"),
+      })
+      return
+    end
+    if decision.kind ~= "ready" then
+      self:_completeParty({ kind = decision.kind })
+      return
+    end
+    local outcome = self._partyActions:commit(request)
     if outcome.kind == "changed" then
       self:_replace(assert(continuation.returnPage, "continuations name their return page"), nil)
     else
@@ -475,6 +534,41 @@ function PokemonMenuFlow:_routeTargetIntent(intent)
     return
   end
   self:_routeUse(intent, continuation, itemKey)
+end
+
+-- Commits one affirmed replacement with its already-authorized
+-- confirmation, then retires the question to its recorded root. A
+-- refused Yes publishes nothing partially and unwinds the same way;
+-- confirmed exchanges never retry with refreshed revisions.
+---@param intent table<string, unknown>
+function PokemonMenuFlow:_routeConfirmIntent(intent)
+  local continuation = assert(self._continuation, "confirmed exchanges resolve a captured replacement")
+  assert(intent.confirmed == true, "replacements commit only after the affirmative answer")
+  self._partyActions:commit({
+    kind = "give",
+    slot = assert(intent.slot, "confirmed exchanges name their slot"),
+    partyRevision = assert(intent.partyRevision, "confirmed exchanges carry the party revision"),
+    bagRevision = assert(intent.bagRevision, "confirmed exchanges carry the bag revision"),
+    item = assert(intent.item, "confirmed exchanges name their item"),
+    confirmed = true,
+  })
+  -- Changed or refused, the question retires to its recorded root.
+  self:_returnGiveConfirm(continuation)
+end
+
+-- Retires one replacement question to its recorded root: bag-origin
+-- exchanges return to the bag, party-origin exchanges refocus the
+-- exchanged mon. The continuation carries navigation focus only.
+---@param continuation table<string, unknown>
+function PokemonMenuFlow:_returnGiveConfirm(continuation)
+  local returnPage = assert(continuation.returnPage, "replacements record their return page")
+  assert(returnPage == "bag_browse" or returnPage == "party_browse", "replacements return to a root browse page")
+  if returnPage == "party_browse" then
+    self:_replace(returnPage, { focusSlot = assert(continuation.slot, "replacements record their slot") })
+  else
+    self:_replace(returnPage, nil)
+  end
+  self._continuation = nil
 end
 
 -- Routes a medicine/effect use: preview first, commit ready outcomes with
@@ -727,6 +821,10 @@ function PokemonMenuFlow:_routeIntent(intent)
     self:_routeTargetIntent(intent)
     return
   end
+  if self._page == "party_give_confirm" and intent.kind == "give" then
+    self:_routeConfirmIntent(intent)
+    return
+  end
   if self._page == "party_browse" then
     self:_routeBrowseIntent(intent)
     return
@@ -753,6 +851,12 @@ function PokemonMenuFlow:_routeResult(result)
   if self._page == "party_browse" and self._root == "party" then
     assert(result.kind == "close", "the root party reports close")
     self:_terminate({ kind = "close" })
+    return
+  end
+  if self._page == "party_give_confirm" then
+    assert(result.kind == "cancelled", "the replacement question declines its exchange")
+    local continuation = assert(self._continuation, "declined replacements unwind a captured exchange")
+    self:_returnGiveConfirm(continuation)
     return
   end
   assert(result.kind == "close" or result.kind == "cancelled", "nested children close or decline their selection")

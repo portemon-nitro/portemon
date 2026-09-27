@@ -124,7 +124,11 @@ function PartyScreenState.new(opts)
   end
   local context = opts.context or "browse"
   assert(
-    context == "browse" or context == "pick" or context == "item_target" or context == "give_target",
+    context == "browse"
+      or context == "pick"
+      or context == "item_target"
+      or context == "give_target"
+      or context == "give_confirm",
     "the party screen requires a named context"
   )
   local self = setmetatable({

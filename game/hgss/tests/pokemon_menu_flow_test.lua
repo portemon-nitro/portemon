@@ -187,6 +187,22 @@ local function stubMeasurement()
   }
 end
 
+local function recordingIcons()
+  local calls = { prepared = {}, cancels = 0 }
+  local function prepare(iconKeys)
+    local snapshot = {}
+    for index, key in ipairs(iconKeys) do
+      snapshot[index] = key
+    end
+    calls.prepared[#calls.prepared + 1] = snapshot
+    return true, nil
+  end
+  local function cancel()
+    calls.cancels = calls.cancels + 1
+  end
+  return { prepare = prepare, cancel = cancel, calls = calls }
+end
+
 local function openFlow(Flow, opts)
   return Flow.new({
     root = opts.root or "bag",
@@ -212,6 +228,8 @@ local function openFlow(Flow, opts)
       heroGender = "male",
     },
     measureDisplay = stubMeasurement,
+    prepareIcons = assert(opts.prepareIcons, "the flow test supplies icon preparation"),
+    cancelIconPreparation = assert(opts.cancelIconPreparation, "the flow test supplies preparation release"),
   })
 end
 
@@ -224,6 +242,7 @@ local function liveComposition(versionId, root)
   local cursor = BagCursor.new()
   local actions = PartyActions.new({ mons = mons, bag = bag })
   local cacheFs = CacheFs.forVersion(versionId)
+  local icons = recordingIcons()
   local flow = openFlow(Flow, {
     root = root,
     mons = mons,
@@ -231,8 +250,10 @@ local function liveComposition(versionId, root)
     bagCursor = cursor,
     partyActions = actions,
     partyManifest = PartyCache.loadManifest(cacheFs),
+    prepareIcons = icons.prepare,
+    cancelIconPreparation = icons.cancel,
   })
-  return { flow = flow, mons = mons, bag = bag, cursor = cursor, actions = actions, Flow = Flow }
+  return { flow = flow, mons = mons, bag = bag, cursor = cursor, actions = actions, Flow = Flow, icons = icons }
 end
 
 local BAG_GRID = {
@@ -308,6 +329,69 @@ local function driveToAction(rig, id)
     drive(rig, { { type = "navigate", direction = direction } })
   end
   error("the action menu never selects " .. id, 0)
+end
+
+local function partyChild(status)
+  return assert(status.child, "the party page carries its child status")
+end
+
+local function drivePartyMenu(rig, kind)
+  for _ = 1, 40 do
+    local status = liveStatus(rig)
+    local child = partyChild(status)
+    local menu = assert(child.menu, "the party menu must be open")
+    local index = nil
+    for position, entry in ipairs(menu) do
+      if entry.kind == kind then
+        index = position
+      end
+    end
+    Assert.notNil(index, "the party menu must offer " .. kind)
+    if (child.menuIndex or 0) == index then
+      return drive(rig, { { type = "confirm" } })
+    end
+    local direction = (child.menuIndex or 0) < index and "down" or "up"
+    drive(rig, { { type = "navigate", direction = direction } })
+  end
+  error("the party menu never selects " .. kind, 0)
+end
+
+-- Stocks the bag and hands one item to an empty holder through the real
+-- action owner, so the journey starts from an occupied holder.
+local function occupyHolder(rig, slot, itemKey)
+  Assert.isTrue(rig.bag:add(itemKey, 1), "the setup stock must enter the bag")
+  local outcome = rig.actions:commit({
+    kind = "give",
+    slot = slot,
+    partyRevision = rig.mons:partyRevision(),
+    bagRevision = rig.bag:revision(),
+    item = itemKey,
+  })
+  Assert.equal(outcome.kind, "changed", "the setup give must publish onto the empty holder")
+end
+
+-- The page transition never opens the replacement question itself: one
+-- empty tick lets the fresh confirmation child open its prompt before
+-- the answer drives it. A settling tick after the answer lets the fresh
+-- root child finish its icon preparation before callers read it.
+local function answerYes(rig)
+  drive(rig, {})
+  local status = drive(rig, { { type = "navigate", direction = "down" } })
+  Assert.equal(status.page, "party_give_confirm", "toggling the answer stays on the confirmation")
+  status = drive(rig, { { type = "confirm" } })
+  driveUntil(rig, "the answered confirmation", 30, function(current)
+    return current.page ~= "party_give_confirm"
+  end)
+  return drive(rig, {})
+end
+
+local function answerNo(rig)
+  drive(rig, {})
+  drive(rig, { { type = "cancel" } })
+  driveUntil(rig, "the declined confirmation", 30, function(current)
+    return current.page ~= "party_give_confirm"
+  end)
+  return drive(rig, {})
 end
 
 local function injureLead(rig, amount)
@@ -511,6 +595,288 @@ function T.tests.root_close_reports_close_and_releases_once(context)
     Assert.equal(result.kind, "close", "a root cancel closes back to the menu")
     Assert.isNil(rig.flow:takeResult(), "the terminal result drains exactly once")
     rig.flow:dispose()
+    rig.flow:dispose()
+  end
+end
+
+function T.tests.icon_preparation_drives_the_party_child_lifetime(context)
+  local versions = readyVersions()
+  if #versions == 0 then
+    if context ~= nil and type(context.hasCapability) == "function" then
+      context:skip("requires rom_dump and derived_cache")
+    end
+    error("menu flow needs a ready versioned cache", 0)
+  end
+  for _, versionId in ipairs(versions) do
+    local rig = liveComposition(versionId, "party")
+    Assert.equal(rig.icons.calls.cancels, 0, "opening demands nothing yet")
+    local status = drive(rig, {})
+    Assert.equal(status.page, "party_browse", "a party root opens the party browse page")
+    Assert.isTrue(#rig.icons.calls.prepared >= 1, "opening the party child demands its icon keys")
+    local keys = rig.icons.calls.prepared[#rig.icons.calls.prepared]
+    Assert.equal(#keys, 2, "one icon key is demanded per occupied slot")
+    Assert.equal(rig.icons.calls.cancels, 0, "an open child holds its preparation interest")
+    rig.flow:dispose()
+    Assert.equal(rig.icons.calls.cancels, 1, "disposal releases the preparation exactly once")
+    rig.flow:dispose()
+    Assert.equal(rig.icons.calls.cancels, 1, "the release stays exactly-once")
+  end
+end
+
+function T.tests.bag_give_to_an_occupied_holder_asks_before_any_change(context)
+  local versions = readyVersions()
+  if #versions == 0 then
+    if context ~= nil and type(context.hasCapability) == "function" then
+      context:skip("requires rom_dump and derived_cache")
+    end
+    error("menu flow needs a ready versioned cache", 0)
+  end
+  for _, versionId in ipairs(versions) do
+    local rig = liveComposition(versionId, "bag")
+    occupyHolder(rig, 0, "CHERI_BERRY")
+    Assert.isTrue(rig.bag:add("SITRUS_BERRY", 2), "the fixture must stock the replacement")
+    rig.cursor:setPocket("berries")
+    rig.cursor:setPosition("berries", 0)
+    local partyRevision = rig.mons:partyRevision()
+    local bagRevision = rig.bag:revision()
+
+    local status = drive(rig, {})
+    Assert.equal(
+      status.child.selected and status.child.selected.item,
+      "SITRUS_BERRY",
+      "the borrowed position selects the replacement"
+    )
+    status = drive(rig, { { type = "confirm" } })
+    Assert.equal(status.child.state, "action_menu", "confirming opens the action menu")
+    status = driveToAction(rig, "give")
+    Assert.equal(status.page, "party_give_target", "choosing Give opens the party target page")
+    status = drive(rig, { { type = "confirm" } })
+    Assert.equal(status.page, "party_give_confirm", "targeting an occupied holder asks instead of publishing")
+    status = drive(rig, {})
+    Assert.equal(
+      status.child.prompt and status.child.prompt.selected,
+      "no",
+      "the replacement question defaults to its safe answer"
+    )
+    Assert.equal(rig.mons:partyMon(0).heldItem, "CHERI_BERRY", "asking publishes nothing yet")
+    Assert.equal(rig.mons:partyRevision(), partyRevision, "asking publishes no party revision")
+    Assert.equal(rig.bag:revision(), bagRevision, "asking publishes no bag revision")
+
+    status = answerNo(rig)
+    Assert.equal(status.page, "bag_browse", "declining returns to the originating bag")
+    Assert.equal(rig.mons:partyMon(0).heldItem, "CHERI_BERRY", "declining keeps the held item")
+    Assert.equal(rig.bag:quantity("SITRUS_BERRY"), 2, "declining consumes nothing")
+    Assert.equal(rig.bag:quantity("CHERI_BERRY"), 0, "declining returns nothing")
+    Assert.equal(rig.mons:partyRevision(), partyRevision, "declining publishes no party revision")
+    Assert.equal(rig.bag:revision(), bagRevision, "declining publishes no bag revision")
+    Assert.isNil(rig.flow:takeResult(), "declining reports no terminal result")
+
+    status = drive(rig, { { type = "confirm" } })
+    status = driveToAction(rig, "give")
+    Assert.equal(status.page, "party_give_target", "the declined Give can be chosen again")
+    status = drive(rig, { { type = "confirm" } })
+    Assert.equal(status.page, "party_give_confirm", "the retry asks again")
+    status = answerYes(rig)
+    Assert.equal(status.page, "bag_browse", "accepting returns to the originating bag")
+    Assert.equal(rig.mons:partyMon(0).heldItem, "SITRUS_BERRY", "accepting exchanges the held item")
+    Assert.equal(rig.bag:quantity("SITRUS_BERRY"), 1, "accepting consumes exactly one replacement")
+    Assert.equal(rig.bag:quantity("CHERI_BERRY"), 1, "accepting returns the displaced item once")
+    Assert.isTrue(rig.mons:partyRevision() == partyRevision + 1, "accepting publishes exactly one party revision")
+    Assert.isTrue(rig.bag:revision() == bagRevision + 1, "accepting publishes exactly one bag revision")
+    Assert.isNil(rig.flow:takeResult(), "accepting reports no terminal result")
+    rig.flow:dispose()
+  end
+end
+
+function T.tests.party_give_decline_then_retry_confirms_once(context)
+  local versions = readyVersions()
+  if #versions == 0 then
+    if context ~= nil and type(context.hasCapability) == "function" then
+      context:skip("requires rom_dump and derived_cache")
+    end
+    error("menu flow needs a ready versioned cache", 0)
+  end
+  for _, versionId in ipairs(versions) do
+    local rig = liveComposition(versionId, "party")
+    occupyHolder(rig, 0, "CHERI_BERRY")
+    Assert.isTrue(rig.bag:add("SITRUS_BERRY", 2), "the fixture must stock the replacement")
+    rig.cursor:setPocket("berries")
+    rig.cursor:setPosition("berries", 0)
+    local partyRevision = rig.mons:partyRevision()
+    local bagRevision = rig.bag:revision()
+
+    local status = drive(rig, {})
+    Assert.equal(status.page, "party_browse", "a party root opens the party browse page")
+    status = drive(rig, { { type = "confirm" } })
+    status = drivePartyMenu(rig, "item")
+    status = drivePartyMenu(rig, "give")
+    Assert.equal(status.page, "bag_pick_held", "party Give opens the held-item picker")
+    Assert.equal(
+      partyChild(status).selected and partyChild(status).selected.item,
+      "SITRUS_BERRY",
+      "the picker opens on the stocked replacement"
+    )
+    status = drive(rig, { { type = "confirm" } })
+    Assert.equal(status.page, "party_give_confirm", "picking for an occupied holder asks instead of publishing")
+    Assert.equal(rig.mons:partyMon(0).heldItem, "CHERI_BERRY", "asking publishes nothing yet")
+
+    status = answerNo(rig)
+    Assert.equal(status.page, "party_browse", "declining returns to the originating party")
+    Assert.equal(partyChild(status).cursorNode, 0, "declining resumes on the original mon")
+    Assert.equal(rig.mons:partyMon(0).heldItem, "CHERI_BERRY", "declining keeps the held item")
+    Assert.equal(rig.mons:partyRevision(), partyRevision, "declining publishes no party revision")
+    Assert.equal(rig.bag:revision(), bagRevision, "declining publishes no bag revision")
+    Assert.isNil(rig.flow:takeResult(), "declining reports no terminal result")
+
+    status = drive(rig, { { type = "confirm" } })
+    status = drivePartyMenu(rig, "item")
+    status = drivePartyMenu(rig, "give")
+    Assert.equal(status.page, "bag_pick_held", "the declined Give can be chosen again")
+    status = drive(rig, { { type = "confirm" } })
+    Assert.equal(status.page, "party_give_confirm", "the retry asks again")
+    status = answerYes(rig)
+    Assert.equal(status.page, "party_browse", "accepting returns to the originating party")
+    Assert.equal(partyChild(status).cursorNode, 0, "accepting resumes on the exchanged mon")
+    Assert.equal(rig.mons:partyMon(0).heldItem, "SITRUS_BERRY", "accepting exchanges the held item")
+    Assert.equal(rig.bag:quantity("SITRUS_BERRY"), 1, "accepting consumes exactly one replacement")
+    Assert.equal(rig.bag:quantity("CHERI_BERRY"), 1, "accepting returns the displaced item once")
+    Assert.isTrue(rig.mons:partyRevision() == partyRevision + 1, "accepting publishes exactly one party revision")
+    Assert.isTrue(rig.bag:revision() == bagRevision + 1, "accepting publishes exactly one bag revision")
+    Assert.isNil(rig.flow:takeResult(), "accepting reports no terminal result")
+    rig.flow:dispose()
+  end
+end
+
+function T.tests.same_item_pick_keeps_the_picker_usable(context)
+  local versions = readyVersions()
+  if #versions == 0 then
+    if context ~= nil and type(context.hasCapability) == "function" then
+      context:skip("requires rom_dump and derived_cache")
+    end
+    error("menu flow needs a ready versioned cache", 0)
+  end
+  for _, versionId in ipairs(versions) do
+    local rig = liveComposition(versionId, "party")
+    occupyHolder(rig, 0, "SITRUS_BERRY")
+    Assert.isTrue(rig.bag:add("SITRUS_BERRY", 1), "the fixture must stock the same item")
+    Assert.isTrue(rig.bag:add("CHERI_BERRY", 1), "the fixture must stock a different item")
+    rig.cursor:setPocket("berries")
+    rig.cursor:setPosition("berries", 0)
+    local partyRevision = rig.mons:partyRevision()
+    local bagRevision = rig.bag:revision()
+
+    local status = drive(rig, {})
+    status = drive(rig, { { type = "confirm" } })
+    status = drivePartyMenu(rig, "item")
+    status = drivePartyMenu(rig, "give")
+    Assert.equal(status.page, "bag_pick_held", "party Give opens the held-item picker")
+    status = drive(rig, { { type = "navigate", direction = "right" } })
+    Assert.equal(
+      partyChild(status).selected and partyChild(status).selected.item,
+      "SITRUS_BERRY",
+      "the picker focuses the already-held item"
+    )
+    status = drive(rig, { { type = "confirm" } })
+    Assert.equal(status.page, "bag_pick_held", "a no-op pick holds the picker open")
+    Assert.equal(rig.mons:partyMon(0).heldItem, "SITRUS_BERRY", "a no-op pick mutates nothing")
+    Assert.equal(rig.bag:quantity("SITRUS_BERRY"), 1, "a no-op pick consumes nothing")
+    Assert.equal(rig.mons:partyRevision(), partyRevision, "a no-op pick publishes no party revision")
+    Assert.equal(rig.bag:revision(), bagRevision, "a no-op pick publishes no bag revision")
+    Assert.isNil(rig.flow:takeResult(), "a no-op pick reports no terminal result")
+    status = drive(rig, { { type = "navigate", direction = "left" } })
+    Assert.equal(
+      partyChild(status).selected and partyChild(status).selected.item,
+      "CHERI_BERRY",
+      "the held picker still takes input after the no-op"
+    )
+    status = drive(rig, { { type = "confirm" } })
+    Assert.equal(status.page, "party_give_confirm", "the retryable picker still asks for a real replacement")
+    status = answerNo(rig)
+    Assert.equal(status.page, "party_browse", "declining returns to the originating party")
+    Assert.equal(rig.mons:partyMon(0).heldItem, "SITRUS_BERRY", "the declined retry mutates nothing")
+    Assert.equal(rig.bag:quantity("SITRUS_BERRY"), 1, "the declined retry consumes nothing")
+    Assert.equal(rig.bag:quantity("CHERI_BERRY"), 1, "the declined retry returns nothing")
+    Assert.equal(rig.mons:partyRevision(), partyRevision, "the declined retry publishes no party revision")
+    Assert.equal(rig.bag:revision(), bagRevision, "the declined retry publishes no bag revision")
+    Assert.isNil(rig.flow:takeResult(), "declining reports no terminal result")
+    rig.flow:dispose()
+  end
+end
+
+function T.tests.raced_give_unwinds_without_a_partial_change(context)
+  local versions = readyVersions()
+  if #versions == 0 then
+    if context ~= nil and type(context.hasCapability) == "function" then
+      context:skip("requires rom_dump and derived_cache")
+    end
+    error("menu flow needs a ready versioned cache", 0)
+  end
+  for _, versionId in ipairs(versions) do
+    local rig = liveComposition(versionId, "bag")
+    occupyHolder(rig, 0, "CHERI_BERRY")
+    Assert.isTrue(rig.bag:add("SITRUS_BERRY", 2), "the fixture must stock the replacement")
+    Assert.isTrue(rig.bag:add("CHERI_BERRY", 1), "the return stack starts with room")
+    rig.cursor:setPocket("berries")
+    rig.cursor:setPosition("berries", 0)
+    local partyRevision = rig.mons:partyRevision()
+
+    -- The held item's own stack sorts first, so the focus starts on it:
+    -- step right onto the stocked replacement before choosing Give.
+    local status = drive(rig, {})
+    status = drive(rig, { { type = "navigate", direction = "right" } })
+    status = drive(rig, { { type = "confirm" } })
+    status = driveToAction(rig, "give")
+    Assert.equal(status.page, "party_give_target", "choosing Give opens the party target page")
+    status = drive(rig, { { type = "confirm" } })
+    Assert.equal(status.page, "party_give_confirm", "targeting an occupied holder asks first")
+    Assert.isTrue(rig.bag:add("CHERI_BERRY", 998), "the race fills the return stack")
+    local bagRevision = rig.bag:revision()
+    status = answerYes(rig)
+    Assert.equal(status.page, "bag_browse", "a raced Yes still returns to the originating bag")
+    Assert.equal(rig.mons:partyMon(0).heldItem, "CHERI_BERRY", "a raced Yes moves no held item")
+    Assert.equal(rig.bag:quantity("SITRUS_BERRY"), 2, "a raced Yes consumes no replacement")
+    Assert.equal(rig.bag:quantity("CHERI_BERRY"), 999, "a raced Yes returns nothing extra")
+    Assert.equal(rig.mons:partyRevision(), partyRevision, "a raced Yes publishes no party revision")
+    Assert.equal(rig.bag:revision(), bagRevision, "a raced Yes publishes no bag revision of its own")
+    Assert.isNil(rig.flow:takeResult(), "a raced Yes reports no terminal result")
+    status = drive(rig, {})
+    Assert.equal(status.page, "bag_browse", "input stays valid after the refused race")
+
+    status = drive(rig, { { type = "confirm" } })
+    status = driveToAction(rig, "give")
+    status = drive(rig, { { type = "confirm" } })
+    Assert.equal(status.page, "party_give_target", "a full return pocket never reaches the confirmation")
+    Assert.equal(rig.mons:partyMon(0).heldItem, "CHERI_BERRY", "the refused preview mutates nothing")
+    Assert.equal(rig.bag:quantity("SITRUS_BERRY"), 2, "the refused preview consumes nothing")
+    Assert.equal(rig.mons:partyRevision(), partyRevision, "the refused preview publishes no party revision")
+    status = drive(rig, { { type = "cancel" } })
+    status = driveUntil(rig, "the originating bag", 30, function(current)
+      return current.page == "bag_browse"
+    end)
+    Assert.isNil(rig.flow:takeResult(), "backing out reports no terminal result")
+
+    Assert.isTrue(rig.bag:take("CHERI_BERRY", 998), "the retry frees the return stack")
+    status = drive(rig, {})
+    status = drive(rig, { { type = "navigate", direction = "right" } })
+    status = drive(rig, { { type = "confirm" } })
+    status = driveToAction(rig, "give")
+    status = drive(rig, { { type = "confirm" } })
+    Assert.equal(status.page, "party_give_confirm", "the freed pocket asks again")
+    Assert.isTrue(rig.bag:add("POTION", 1), "the second race moves the bag revision")
+    bagRevision = rig.bag:revision()
+    status = answerYes(rig)
+    Assert.equal(status.page, "bag_browse", "a stale Yes still returns to the originating bag")
+    Assert.equal(rig.mons:partyMon(0).heldItem, "CHERI_BERRY", "a stale Yes moves no held item")
+    Assert.equal(rig.bag:quantity("SITRUS_BERRY"), 2, "a stale Yes consumes no replacement")
+    Assert.equal(rig.mons:partyRevision(), partyRevision, "a stale Yes publishes no party revision")
+    Assert.equal(rig.bag:revision(), bagRevision, "a stale Yes publishes no bag revision of its own")
+    Assert.isNil(rig.flow:takeResult(), "a stale Yes reports no terminal result")
+    rig.flow:updateFixed({ { type = "cancel" } })
+    status = rig.flow:status()
+    Assert.isFalse(status.open, "cancelling the root still releases the child")
+    local result = rig.flow:takeResult()
+    Assert.notNil(result, "cancelling the root still reports")
+    Assert.equal(result.kind, "close", "a root cancel still closes back to the menu")
     rig.flow:dispose()
   end
 end
