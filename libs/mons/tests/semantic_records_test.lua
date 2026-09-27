@@ -274,4 +274,259 @@ function T.unrepresentable_records_fail_with_structured_errors()
   end)
 end
 
+function T.numeric_boundaries_and_domain_relationships_hold_at_the_validation_boundary()
+  local catalog = CatalogFixture.makeCatalog()
+  local context = CatalogFixture.domainContext(catalog)
+  local Mon = require("libs.mons.src.Mon")
+
+  local factory = CatalogFixture.makeFactory(0x12345678, catalog)
+  local valid = factory:createNormal(CatalogFixture.normalRequest())
+  local maxHp = valid.condition.currentHp
+
+  local function altered(mutator)
+    local next = copy(valid)
+    mutator(next)
+    return next
+  end
+
+  local function accepted(mutator)
+    local input = altered(mutator)
+    local validated = Mon.validate(input, context)
+    Assert.deepEqual(validated, input)
+  end
+
+  local function rejected(mutator)
+    throwsCode("MON_RECORD_INVALID", function()
+      Mon.validate(altered(mutator), context)
+    end)
+  end
+
+  -- The factory record itself is canonical under the same validator.
+  Assert.deepEqual(Mon.validate(valid, context), valid)
+
+  -- Individual values span the full 0..31 range at each edge.
+  accepted(function(mon)
+    mon.ivs = { hp = 0, attack = 0, defense = 0, speed = 0, specialAttack = 0, specialDefense = 0 }
+    mon.condition.currentHp = 0
+  end)
+  accepted(function(mon)
+    mon.ivs = { hp = 31, attack = 31, defense = 31, speed = 31, specialAttack = 31, specialDefense = 31 }
+  end)
+  rejected(function(mon)
+    mon.ivs.hp = 32
+  end)
+  rejected(function(mon)
+    mon.ivs.attack = -1
+  end)
+
+  -- Power-point ups stay inside 0..3 while the point cap follows the
+  -- move definition rather than the ups on the entry.
+  accepted(function(mon)
+    mon.moves[1].ppUps = 3
+  end)
+  rejected(function(mon)
+    mon.moves[1].ppUps = 4
+  end)
+  accepted(function(mon)
+    mon.moves[1].pp = 56
+  end)
+  rejected(function(mon)
+    mon.moves[1].pp = 57
+  end)
+
+  -- Duplicate moves are rejected; distinct entries validate.
+  rejected(function(mon)
+    mon.moves[2] = { move = "TACKLE", pp = 35, ppUps = 0 }
+  end)
+  accepted(function(mon)
+    mon.moves[2] = { move = "LEER", pp = 30, ppUps = 0 }
+  end)
+
+  -- Ability membership follows the selected form.
+  rejected(function(mon)
+    mon.ability = "TORRENT"
+  end)
+
+  -- Effort totals accept exactly 510 and reject 511.
+  accepted(function(mon)
+    mon.evs = { hp = 255, attack = 255, defense = 0, speed = 0, specialAttack = 0, specialDefense = 0 }
+  end)
+  rejected(function(mon)
+    mon.evs = { hp = 255, attack = 255, defense = 1, speed = 0, specialAttack = 0, specialDefense = 0 }
+  end)
+
+  -- Current health spans 0..derived maximum and no further.
+  accepted(function(mon)
+    mon.condition.currentHp = 0
+  end)
+  accepted(function(mon)
+    mon.condition.currentHp = maxHp
+  end)
+  rejected(function(mon)
+    mon.condition.currentHp = maxHp + 1
+  end)
+
+  -- Met level keeps its 1..100 range at this layer.
+  accepted(function(mon)
+    mon.met.level = 1
+  end)
+  accepted(function(mon)
+    mon.met.level = 100
+  end)
+  rejected(function(mon)
+    mon.met.level = 0
+  end)
+  rejected(function(mon)
+    mon.met.level = 101
+  end)
+
+  -- Trainer gender is exactly 0 or 1.
+  accepted(function(mon)
+    mon.origin.trainerGender = 1
+  end)
+  rejected(function(mon)
+    mon.origin.trainerGender = 2
+  end)
+
+  -- Mood spans the signed byte range.
+  accepted(function(mon)
+    mon.mood = -128
+  end)
+  accepted(function(mon)
+    mon.mood = 127
+  end)
+  rejected(function(mon)
+    mon.mood = -129
+  end)
+  rejected(function(mon)
+    mon.mood = 128
+  end)
+
+  -- The second ribbon generation keeps its exactly representable range.
+  accepted(function(mon)
+    mon.ribbons.ds2 = 9007199254740991
+  end)
+  rejected(function(mon)
+    mon.ribbons.ds2 = 9007199254740992
+  end)
+  rejected(function(mon)
+    mon.ribbons.ds2 = -1
+  end)
+
+  -- Date fields keep their accepted calendar shape without gaining a
+  -- Gregorian check: February 30 remains accepted.
+  accepted(function(mon)
+    mon.met.date = { year = 2000, month = 1, day = 1 }
+  end)
+  accepted(function(mon)
+    mon.met.date = { year = 2255, month = 12, day = 31 }
+  end)
+  accepted(function(mon)
+    mon.met.date = { year = 2009, month = 2, day = 30 }
+  end)
+  rejected(function(mon)
+    mon.met.date = { year = 1999, month = 9, day = 13 }
+  end)
+  rejected(function(mon)
+    mon.met.date = { year = 2256, month = 9, day = 13 }
+  end)
+  rejected(function(mon)
+    mon.met.date = { year = 2009, month = 0, day = 13 }
+  end)
+  rejected(function(mon)
+    mon.met.date = { year = 2009, month = 13, day = 13 }
+  end)
+  rejected(function(mon)
+    mon.met.date = { year = 2009, month = 9, day = 0 }
+  end)
+  rejected(function(mon)
+    mon.met.date = { year = 2009, month = 9, day = 32 }
+  end)
+
+  -- The egg date stays optional and the empty mail record stays valid.
+  accepted(function(mon)
+    mon.egg = { location = 0 }
+  end)
+  accepted(function(mon)
+    mon.egg = { location = 0, date = { year = 2009, month = 9, day = 13 } }
+  end)
+  rejected(function(mon)
+    mon.egg = { location = 0, date = { year = 1999, month = 9, day = 13 } }
+  end)
+  accepted(function(mon)
+    mon.mail = {}
+  end)
+  rejected(function(mon)
+    mon.mail = { letter = 1 }
+  end)
+
+  -- Optional nicknames keep their glyph capacity: ten glyphs fit.
+  accepted(function(mon)
+    mon.nickname = "ABCDEFGHIJ"
+  end)
+  rejected(function(mon)
+    mon.nickname = "ABCDEFGHIJK"
+  end)
+
+  -- Shiny leaves keep their six-bit range.
+  accepted(function(mon)
+    mon.shinyLeaves = 63
+  end)
+  rejected(function(mon)
+    mon.shinyLeaves = 64
+  end)
+
+  -- Single-byte scalars keep their 0..255 range.
+  accepted(function(mon)
+    mon.markings = 255
+  end)
+  rejected(function(mon)
+    mon.markings = 256
+  end)
+  accepted(function(mon)
+    mon.contest.cool = 255
+  end)
+  rejected(function(mon)
+    mon.contest.cool = 256
+  end)
+
+  -- Held items accept any known item while the origin ball must be a ball.
+  accepted(function(mon)
+    mon.heldItem = "SITRUS_BERRY"
+  end)
+  accepted(function(mon)
+    mon.origin.ball = "GREAT_BALL"
+  end)
+  throwsCode("ITEM_RECORD_INVALID", function()
+    Mon.validate(
+      altered(function(mon)
+        mon.heldItem = "BOGUS"
+      end),
+      context
+    )
+  end)
+  throwsCode("MON_RECORD_INVALID", function()
+    Mon.validate(
+      altered(function(mon)
+        mon.origin.ball = "SITRUS_BERRY"
+      end),
+      context
+    )
+  end)
+
+  -- Capsule identity keeps its byte range and seals stay bounded.
+  accepted(function(mon)
+    mon.capsule = { id = 255, seals = {} }
+  end)
+  rejected(function(mon)
+    mon.capsule = { id = 256, seals = {} }
+  end)
+  accepted(function(mon)
+    mon.capsule = { id = 0, seals = { { x = 1, y = 2, graphic = 3 } } }
+  end)
+  rejected(function(mon)
+    mon.capsule = { id = 0, seals = { { x = 256, y = 0, graphic = 0 } } }
+  end)
+end
+
 return { tests = T }

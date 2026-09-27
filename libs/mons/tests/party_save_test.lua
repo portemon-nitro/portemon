@@ -211,4 +211,60 @@ function T.save_bucket_round_trips_under_catalog_fingerprint()
   Assert.equal(err.context.slot, 1)
 end
 
+function T.validated_copies_stay_independent_across_party_and_save_capture()
+  local catalog = CatalogFixture.makeCatalog()
+  local context = CatalogFixture.domainContext(catalog)
+  local Mon = require("libs.mons.src.Mon")
+  local Party = require("libs.mons.src.Party")
+  local MonsSave = require("libs.mons.src.MonsSave")
+  local Lcrng = require("libs.mons.src.gen4.Lcrng")
+
+  local factory = CatalogFixture.makeFactory(0x12345678, catalog)
+  local source = factory:createNormal(CatalogFixture.normalRequest())
+  local pristine = copy(source)
+
+  local first = Mon.validate(source, context)
+  local second = Mon.validate(source, context)
+  Assert.deepEqual(first, second)
+  Assert.deepEqual(first, pristine)
+  Assert.isTrue(first ~= second)
+  Assert.isTrue(first.evs ~= second.evs)
+  Assert.isTrue(first.moves ~= second.moves)
+  Assert.isTrue(first.origin ~= second.origin)
+
+  -- Mutating nested fields in one copy leaves the source and the other
+  -- copy untouched.
+  first.nickname = "LEAF"
+  first.evs.hp = 252
+  first.contest.cool = 200
+  first.moves[1].ppUps = 3
+  first.condition.currentHp = 0
+  first.origin.trainerName = "BLUE"
+  first.met.location = 9
+  Assert.deepEqual(source, pristine)
+  Assert.deepEqual(second, pristine)
+
+  -- The untouched copy remains canonical under the same validator and
+  -- flows through party capture unchanged.
+  Assert.deepEqual(Mon.validate(second, context), second)
+  local party = Party.new()
+  Assert.equal(party:add(second), true)
+  first.condition.currentHp = 1
+  first.markings = 7
+  local snapshot = party:capture()
+  Assert.deepEqual(snapshot.mons, { second })
+  Assert.isTrue(Party.validate(snapshot, context))
+  Assert.deepEqual(party:get(0), second)
+
+  -- Save capture of the party snapshot round-trips the untouched copy.
+  local rng = Lcrng.new(0x60000000)
+  local rngCapture = rng:capture()
+  local fingerprint = catalog:fingerprint()
+  local bucket = MonsSave.capture(snapshot, rngCapture, fingerprint)
+  local restored = MonsSave.restore(bucket, context)
+  Assert.equal(restored.party:count(), 1)
+  Assert.deepEqual(restored.party:get(0), second)
+  Assert.deepEqual(Mon.validate(restored.party:get(0), context), second)
+end
+
 return { tests = T }

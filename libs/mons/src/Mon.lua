@@ -80,30 +80,41 @@ local function checkKeys(record, allowed, what)
 end
 
 ---@param value unknown
----@param bound integer
+---@param allowed table<string, boolean>
 ---@param what string
-local function checkIntRange(value, bound, what)
-  if type(value) ~= "number" or value % 1 ~= 0 or value < 0 or value > bound then
-    MonsErrors.raise(MonsErrors.RECORD_INVALID, what .. " must be an integer in 0.." .. bound, {})
+local function checkRecord(value, allowed, what)
+  if type(value) ~= "table" then
+    MonsErrors.raise(MonsErrors.RECORD_INVALID, what .. " must be a record", {})
+  end
+  checkKeys(value, allowed, what)
+end
+
+---@param value unknown
+---@param lo integer
+---@param hi integer
+---@param what string
+local function checkIntRange(value, lo, hi, what)
+  if type(value) ~= "number" or value % 1 ~= 0 or value < lo or value > hi then
+    MonsErrors.raise(MonsErrors.RECORD_INVALID, what .. " must be an integer in " .. lo .. ".." .. hi, {})
   end
 end
 
 ---@param value unknown
 ---@param what string
 local function checkU8(value, what)
-  checkIntRange(value, 255, what)
+  checkIntRange(value, 0, 255, what)
 end
 
 ---@param value unknown
 ---@param what string
 local function checkU16(value, what)
-  checkIntRange(value, 65535, what)
+  checkIntRange(value, 0, 65535, what)
 end
 
 ---@param value unknown
 ---@param what string
 local function checkU32(value, what)
-  checkIntRange(value, 4294967295, what)
+  checkIntRange(value, 0, 4294967295, what)
 end
 
 ---@param text unknown
@@ -131,19 +142,10 @@ end
 ---@param date unknown
 ---@param what string
 local function checkDate(date, what)
-  if type(date) ~= "table" then
-    MonsErrors.raise(MonsErrors.RECORD_INVALID, what .. " must be a record", {})
-  end
-  checkKeys(date, DATE_FIELDS, what)
-  if type(date.year) ~= "number" or date.year % 1 ~= 0 or date.year < 2000 or date.year > 2255 then
-    MonsErrors.raise(MonsErrors.RECORD_INVALID, what .. ".year must be an integer in 2000..2255", {})
-  end
-  if type(date.month) ~= "number" or date.month % 1 ~= 0 or date.month < 1 or date.month > 12 then
-    MonsErrors.raise(MonsErrors.RECORD_INVALID, what .. ".month must be an integer in 1..12", {})
-  end
-  if type(date.day) ~= "number" or date.day % 1 ~= 0 or date.day < 1 or date.day > 31 then
-    MonsErrors.raise(MonsErrors.RECORD_INVALID, what .. ".day must be an integer in 1..31", {})
-  end
+  checkRecord(date, DATE_FIELDS, what)
+  checkIntRange(date.year, 2000, 2255, what .. ".year")
+  checkIntRange(date.month, 1, 12, what .. ".month")
+  checkIntRange(date.day, 1, 31, what .. ".day")
 end
 
 ---@param value unknown
@@ -167,6 +169,55 @@ local function maxPp(definition)
   return definition.basePp + 3 * math.floor(definition.basePp / 5)
 end
 
+---@param moves unknown
+---@param catalog MonCatalog
+local function checkMoves(moves, catalog)
+  if not Validate.isArray(moves) or #moves > 4 then
+    MonsErrors.raise(MonsErrors.RECORD_INVALID, "moves must be an array of at most four entries", {})
+  end
+  local seen = {}
+  for index, entry in ipairs(moves) do
+    checkRecord(entry, MOVE_FIELDS, "move entry " .. index)
+    local definition = catalog:move(entry.move)
+    if seen[entry.move] then
+      MonsErrors.raise(MonsErrors.RECORD_INVALID, "duplicate move " .. entry.move, { move = entry.move })
+    end
+    seen[entry.move] = true
+    checkIntRange(entry.pp, 0, maxPp(definition), "move entry " .. index .. " power points")
+    checkIntRange(entry.ppUps, 0, 3, "move entry " .. index .. " power-point ups")
+  end
+end
+
+---@param origin unknown
+---@param context table<string, unknown>
+---@param catalog MonCatalog
+local function checkOrigin(origin, context, catalog)
+  checkRecord(origin, ORIGIN_FIELDS, "origin record")
+  checkU32(origin.trainerId, "trainer id")
+  checkText(origin.trainerName, context.charmap, Mon.OT_NAME_CAPACITY, "trainer name")
+  checkIntRange(origin.trainerGender, 0, 1, "trainer gender")
+  if context.games == nil or context.games[origin.game] == nil then
+    MonsErrors.raise(MonsErrors.RECORD_INVALID, "unknown game " .. tostring(origin.game), {})
+  end
+  if type(origin.ball) ~= "string" then
+    MonsErrors.raise(MonsErrors.RECORD_INVALID, "unknown ball " .. tostring(origin.ball), {})
+  end
+  if not catalog:item(origin.ball).isBall then
+    MonsErrors.raise(MonsErrors.RECORD_INVALID, "unknown ball " .. tostring(origin.ball), {})
+  end
+  if context.languages == nil or context.languages[origin.language] == nil then
+    MonsErrors.raise(MonsErrors.RECORD_INVALID, "unknown language " .. tostring(origin.language), {})
+  end
+end
+
+---@param condition unknown
+---@param maxHp integer
+local function checkCondition(condition, maxHp)
+  checkRecord(condition, CONDITION_FIELDS, "condition record")
+  checkU32(condition.status, "status condition")
+  checkIntRange(condition.currentHp, 0, maxHp, "current health")
+end
+
 ---@param record table<string, unknown>
 ---@param context table<string, unknown>
 ---@return table<string, unknown>
@@ -174,10 +225,7 @@ function Mon.validate(record, context)
   assert(type(context) == "table", "mon validation requires a context")
   assert(context.catalog ~= nil, "mon validation requires a catalog")
   assert(type(context.charmap) == "table", "mon validation requires a charmap")
-  if type(record) ~= "table" then
-    MonsErrors.raise(MonsErrors.RECORD_INVALID, "mon must be a record", {})
-  end
-  checkKeys(record, TOP_FIELDS, "mon")
+  checkRecord(record, TOP_FIELDS, "mon")
   local catalog = context.catalog
 
   if record.schema ~= Mon.SCHEMA then
@@ -215,10 +263,7 @@ function Mon.validate(record, context)
   catalog:item(record.heldItem)
   checkU8(record.markings, "markings")
 
-  if type(record.evs) ~= "table" then
-    MonsErrors.raise(MonsErrors.RECORD_INVALID, "effort values must be a record", {})
-  end
-  checkKeys(
+  checkRecord(
     record.evs,
     { hp = true, attack = true, defense = true, speed = true, specialAttack = true, specialDefense = true },
     "effort values"
@@ -232,10 +277,7 @@ function Mon.validate(record, context)
     MonsErrors.raise(MonsErrors.RECORD_INVALID, "effort value total exceeds 510", {})
   end
 
-  if type(record.contest) ~= "table" then
-    MonsErrors.raise(MonsErrors.RECORD_INVALID, "contest values must be a record", {})
-  end
-  checkKeys(
+  checkRecord(
     record.contest,
     { cool = true, beauty = true, cute = true, smart = true, tough = true, sheen = true },
     "contest values"
@@ -244,40 +286,15 @@ function Mon.validate(record, context)
     checkU8(record.contest[key], "contest value " .. key)
   end
 
-  if not Validate.isArray(record.moves) or #record.moves > 4 then
-    MonsErrors.raise(MonsErrors.RECORD_INVALID, "moves must be an array of at most four entries", {})
-  end
-  local seen = {}
-  for index, entry in ipairs(record.moves) do
-    if type(entry) ~= "table" then
-      MonsErrors.raise(MonsErrors.RECORD_INVALID, "move entry " .. index .. " must be a record", {})
-    end
-    checkKeys(entry, MOVE_FIELDS, "move entry " .. index)
-    local definition = catalog:move(entry.move)
-    if seen[entry.move] then
-      MonsErrors.raise(MonsErrors.RECORD_INVALID, "duplicate move " .. entry.move, { move = entry.move })
-    end
-    seen[entry.move] = true
-    if type(entry.pp) ~= "number" or entry.pp % 1 ~= 0 or entry.pp < 0 or entry.pp > maxPp(definition) then
-      MonsErrors.raise(MonsErrors.RECORD_INVALID, "move entry " .. index .. " carries invalid power points", {})
-    end
-    if type(entry.ppUps) ~= "number" or entry.ppUps % 1 ~= 0 or entry.ppUps < 0 or entry.ppUps > 3 then
-      MonsErrors.raise(MonsErrors.RECORD_INVALID, "move entry " .. index .. " carries invalid power-point ups", {})
-    end
-  end
+  checkMoves(record.moves, catalog)
 
-  if type(record.ivs) ~= "table" then
-    MonsErrors.raise(MonsErrors.RECORD_INVALID, "individual values must be a record", {})
-  end
-  checkKeys(
+  checkRecord(
     record.ivs,
     { hp = true, attack = true, defense = true, speed = true, specialAttack = true, specialDefense = true },
     "individual values"
   )
   for _, key in ipairs(STAT_KEYS) do
-    if type(record.ivs[key]) ~= "number" or record.ivs[key] % 1 ~= 0 or record.ivs[key] < 0 or record.ivs[key] > 31 then
-      MonsErrors.raise(MonsErrors.RECORD_INVALID, "individual value " .. key .. " must be 0..31", {})
-    end
+    checkIntRange(record.ivs[key], 0, 31, "individual value " .. key)
   end
 
   if type(record.isEgg) ~= "boolean" then
@@ -287,124 +304,54 @@ function Mon.validate(record, context)
     checkText(record.nickname, context.charmap, Mon.NICKNAME_CAPACITY, "nickname")
   end
 
-  if type(record.ribbons) ~= "table" then
-    MonsErrors.raise(MonsErrors.RECORD_INVALID, "ribbons must be a record", {})
-  end
-  checkKeys(record.ribbons, RIBBON_FIELDS, "ribbons")
+  checkRecord(record.ribbons, RIBBON_FIELDS, "ribbons")
   checkU32(record.ribbons.ds1, "ribbon field ds1")
   checkU32(record.ribbons.gba, "ribbon field gba")
-  if
-    type(record.ribbons.ds2) ~= "number"
-    or record.ribbons.ds2 % 1 ~= 0
-    or record.ribbons.ds2 < 0
-    or record.ribbons.ds2 > 9007199254740991
-  then
-    MonsErrors.raise(MonsErrors.RECORD_INVALID, "ribbon field ds2 must be an exactly representable u64", {})
-  end
+  checkIntRange(record.ribbons.ds2, 0, 9007199254740991, "ribbon field ds2")
 
   if type(record.fatefulEncounter) ~= "boolean" then
     MonsErrors.raise(MonsErrors.RECORD_INVALID, "fateful-encounter flag must be a boolean", {})
   end
-  checkIntRange(record.shinyLeaves, 63, "shiny leaves")
+  checkIntRange(record.shinyLeaves, 0, 63, "shiny leaves")
 
-  if type(record.egg) ~= "table" then
-    MonsErrors.raise(MonsErrors.RECORD_INVALID, "egg record must be a record", {})
-  end
-  checkKeys(record.egg, EGG_FIELDS, "egg record")
+  checkRecord(record.egg, EGG_FIELDS, "egg record")
   checkU16(record.egg.location, "egg location")
   if record.egg.date ~= nil then
     checkDate(record.egg.date, "egg date")
   end
 
-  if type(record.met) ~= "table" then
-    MonsErrors.raise(MonsErrors.RECORD_INVALID, "met record must be a record", {})
-  end
-  checkKeys(record.met, MET_FIELDS, "met record")
+  checkRecord(record.met, MET_FIELDS, "met record")
   checkU16(record.met.location, "met location")
   checkDate(record.met.date, "met date")
-  if
-    type(record.met.level) ~= "number"
-    or record.met.level % 1 ~= 0
-    or record.met.level < 1
-    or record.met.level > 100
-  then
-    MonsErrors.raise(MonsErrors.RECORD_INVALID, "met level must be an integer in 1..100", {})
-  end
+  checkIntRange(record.met.level, 1, 100, "met level")
   checkU8(record.met.terrain, "met terrain")
 
-  if type(record.origin) ~= "table" then
-    MonsErrors.raise(MonsErrors.RECORD_INVALID, "origin record must be a record", {})
-  end
-  checkKeys(record.origin, ORIGIN_FIELDS, "origin record")
-  checkU32(record.origin.trainerId, "trainer id")
-  checkText(record.origin.trainerName, context.charmap, Mon.OT_NAME_CAPACITY, "trainer name")
-  if
-    type(record.origin.trainerGender) ~= "number"
-    or record.origin.trainerGender % 1 ~= 0
-    or (record.origin.trainerGender ~= 0 and record.origin.trainerGender ~= 1)
-  then
-    MonsErrors.raise(MonsErrors.RECORD_INVALID, "trainer gender must be 0 or 1", {})
-  end
-  if context.games == nil or context.games[record.origin.game] == nil then
-    MonsErrors.raise(MonsErrors.RECORD_INVALID, "unknown game " .. tostring(record.origin.game), {})
-  end
-  if type(record.origin.ball) ~= "string" then
-    MonsErrors.raise(MonsErrors.RECORD_INVALID, "unknown ball " .. tostring(record.origin.ball), {})
-  end
-  if not catalog:item(record.origin.ball).isBall then
-    MonsErrors.raise(MonsErrors.RECORD_INVALID, "unknown ball " .. tostring(record.origin.ball), {})
-  end
-  if context.languages == nil or context.languages[record.origin.language] == nil then
-    MonsErrors.raise(MonsErrors.RECORD_INVALID, "unknown language " .. tostring(record.origin.language), {})
-  end
+  checkOrigin(record.origin, context, catalog)
 
   checkU8(record.pokerus, "pokerus")
-  if type(record.mood) ~= "number" or record.mood % 1 ~= 0 or record.mood < -128 or record.mood > 127 then
-    MonsErrors.raise(MonsErrors.RECORD_INVALID, "mood must be an integer in -128..127", {})
-  end
+  checkIntRange(record.mood, -128, 127, "mood")
 
-  if type(record.condition) ~= "table" then
-    MonsErrors.raise(MonsErrors.RECORD_INVALID, "condition record must be a record", {})
-  end
-  checkKeys(record.condition, CONDITION_FIELDS, "condition record")
-  checkU32(record.condition.status, "status condition")
   local nature = Personality.nature(record.personality)
   local derived = Stats.calculate(form.baseStats, record.ivs, record.evs, level, nature)
   local maxHp = derived.hp
   if record.species == "SHEDINJA" then
     maxHp = 1
   end
-  if
-    type(record.condition.currentHp) ~= "number"
-    or record.condition.currentHp % 1 ~= 0
-    or record.condition.currentHp < 0
-    or record.condition.currentHp > maxHp
-  then
-    MonsErrors.raise(MonsErrors.RECORD_INVALID, "current health exceeds the derived maximum", {})
-  end
+  checkCondition(record.condition, maxHp)
 
-  if type(record.capsule) ~= "table" then
-    MonsErrors.raise(MonsErrors.RECORD_INVALID, "capsule record must be a record", {})
-  end
-  checkKeys(record.capsule, CAPSULE_FIELDS, "capsule record")
+  checkRecord(record.capsule, CAPSULE_FIELDS, "capsule record")
   checkU8(record.capsule.id, "capsule id")
   if not Validate.isArray(record.capsule.seals) or #record.capsule.seals > 8 then
     MonsErrors.raise(MonsErrors.RECORD_INVALID, "capsule seals must be an array of at most eight entries", {})
   end
   for index, seal in ipairs(record.capsule.seals) do
-    if type(seal) ~= "table" then
-      MonsErrors.raise(MonsErrors.RECORD_INVALID, "capsule seal " .. index .. " must be a record", {})
-    end
-    checkKeys(seal, SEAL_FIELDS, "capsule seal " .. index)
+    checkRecord(seal, SEAL_FIELDS, "capsule seal " .. index)
     checkU8(seal.x, "capsule seal x")
     checkU8(seal.y, "capsule seal y")
     checkU8(seal.graphic, "capsule seal graphic")
   end
 
-  if type(record.mail) ~= "table" then
-    MonsErrors.raise(MonsErrors.RECORD_INVALID, "mail record must be a record", {})
-  end
-  checkKeys(record.mail, {}, "mail record")
+  checkRecord(record.mail, {}, "mail record")
 
   return copyValue(record)
 end
