@@ -1181,4 +1181,282 @@ T["validate rejects a bucket missing a required record array"] = function()
   end, "a bucket without tasks")
 end
 
+-- Deep copy of plain save-bucket data for input-unchanged snapshots and
+-- independent corruptions. Buckets hold only nested tables and scalars.
+---@param value unknown
+---@return unknown
+local function deepCopyBucket(value)
+  if type(value) ~= "table" then
+    return value
+  end
+  local out = {}
+  for key, entry in pairs(value) do
+    out[deepCopyBucket(key)] = deepCopyBucket(entry)
+  end
+  return out
+end
+
+-- A failed restore must install no partial objects and advance no id
+-- counter.
+---@param scheduler Scheduler
+---@param context string
+local function assertSchedulerEmpty(scheduler, context)
+  Assert.equal(#scheduler:environments(), 0, context .. " installs no environment")
+  Assert.isNil(scheduler:foregroundEnvironmentId(), context .. " installs no foreground")
+  Assert.equal(#scheduler:liveInstances(), 0, context .. " installs no instance")
+  Assert.equal(#scheduler:tasks(), 0, context .. " installs no task")
+  local counters = scheduler:counters()
+  Assert.equal(counters.nextEnvironmentId, 0, context .. " advances no environment counter")
+  Assert.equal(counters.nextInstanceId, 0, context .. " advances no instance counter")
+  Assert.equal(counters.nextTaskId, 0, context .. " advances no task counter")
+end
+
+-- A valid captured save covers the supported optional states at once: a
+-- suspended caller below a blocked callee, absent optional environment
+-- collections, and a completed-but-unconsumed task. Each invalid graph
+-- (duplicate ids, dangling references, a second foreground environment) is
+-- rejected with the existing load-error category, and validation never
+-- mutates its input.
+T["valid save with suspended caller and minimal optional fields passes validation without mutating input"] = function()
+  local h = harness()
+  local resource = script("test.suspended_valid", {
+    S.waitTicks({ ticks = 2 }),
+    S.call({ target = "sub" }),
+    S.setVar({ variable = "VAR_AFTER", value = 1 }),
+    S.stop(),
+    S.label({ name = "sub" }),
+    S.waitTicks({ ticks = 10 }),
+    S.setVar({ variable = "VAR_SUB", value = 1 }),
+    S.return_({}),
+  })
+  startForeground(h, resource, 100)
+  h.scheduler:step(100, nil)
+  h.scheduler:step(101, nil)
+  h.scheduler:step(102, nil)
+  h.scheduler:step(103, nil)
+  local bucket = ScriptSave.capture(h.scheduler, 103, { registryFingerprint = h.registry:fingerprint() })
+  local suspended = false
+  for _, record in ipairs(bucket.instances) do
+    if #record.frames > 1 then
+      suspended = true
+    end
+  end
+  Assert.isTrue(suspended, "capture must hold a suspended caller below the blocked callee")
+  for _, record in ipairs(bucket.environments) do
+    record.callerSignals = nil
+    record.locks = nil
+    record.movementTasksByGeneration = nil
+    record.createdAtInTicks = nil
+  end
+  Assert.isNil(ScriptSave.validate(bucket, {}), "absent optional collections must stay valid")
+
+  local handoff = harness()
+  startForeground(
+    handoff,
+    script("test.handoff_valid", {
+      S.waitTicks({ ticks = 1 }),
+      S.setVar({ variable = "VAR_A", value = 1 }),
+      S.stop(),
+    }),
+    100
+  )
+  handoff.scheduler:step(100, nil)
+  handoff.scheduler:step(101, nil)
+  local completedBucket =
+    ScriptSave.capture(handoff.scheduler, 101, { registryFingerprint = handoff.registry:fingerprint() })
+  local completed = false
+  for _, record in ipairs(completedBucket.tasks) do
+    if record.status == "completed" then
+      completed = true
+    end
+  end
+  Assert.isTrue(completed, "capture must hold the completed-but-unconsumed task")
+  Assert.isNil(ScriptSave.validate(completedBucket, {}), "a completed-but-unconsumed task must stay valid")
+
+  local snapshot = deepCopyBucket(bucket)
+  Assert.isNil(ScriptSave.validate(bucket, {}))
+  Assert.deepEqual(bucket, snapshot, "validation must leave its input unchanged")
+
+  local duplicate = deepCopyBucket(bucket)
+  duplicate.environments[#duplicate.environments + 1] = {
+    environmentId = duplicate.environments[1].environmentId,
+    mode = "background",
+  }
+  expectValidationError(ScriptSave.validate(duplicate, {}), "a duplicate environment id")
+  local dangling = deepCopyBucket(bucket)
+  dangling.instances[1].environmentId = "e-missing"
+  expectValidationError(ScriptSave.validate(dangling, {}), "an instance referencing a missing environment")
+  local secondForeground = deepCopyBucket(bucket)
+  secondForeground.environments[#secondForeground.environments + 1] = {
+    environmentId = "e-extra",
+    mode = "foreground",
+    createdAtInTicks = 0,
+  }
+  expectValidationError(ScriptSave.validate(secondForeground, {}), "a second foreground environment")
+end
+
+-- Task/composition resolvers keep their order and failure identity: task
+-- resolution runs before composition resolution with the recorded
+-- arguments, a resolver-returned error object is returned unchanged, a
+-- resolver or implementation throw escapes unchanged, and a structurally
+-- invalid bucket never reaches a resolver.
+T["task and composition resolvers keep order and failure identity"] = function()
+  local h = harness()
+  startForeground(
+    h,
+    script("test.resolver_order", {
+      S.waitTicks({ ticks = 5 }),
+      S.stop(),
+    }),
+    100
+  )
+  h.scheduler:step(100, nil)
+  local bucket = ScriptSave.capture(h.scheduler, 100, { registryFingerprint = h.registry:fingerprint() })
+
+  local calls = {}
+  Assert.isNil(ScriptSave.validate(bucket, {
+    resolveTask = function(taskType, version)
+      calls[#calls + 1] = { kind = "task", taskType, version }
+      return h.taskRegistry:resolve(taskType, version)
+    end,
+    resolveComposition = function(scriptId)
+      calls[#calls + 1] = { kind = "composition", scriptId }
+      return h.composition:effective(scriptId)
+    end,
+  }))
+  Assert.equal(#calls, 2, "one task and one composition resolution")
+  Assert.equal(calls[1].kind, "task", "task resolution runs first")
+  Assert.equal(calls[1][1], bucket.tasks[1].taskType)
+  Assert.equal(calls[1][2], bucket.tasks[1].taskVersion)
+  Assert.equal(calls[2].kind, "composition", "composition resolution runs after tasks")
+  Assert.equal(calls[2][1], bucket.instances[1].frames[1].chainScriptId)
+
+  local unavailable = Errors.new("SCRIPT_TASK_VERSION_UNSUPPORTED", "custom unavailable", {})
+  local returned = ScriptSave.validate(bucket, {
+    resolveTask = function()
+      return nil, unavailable
+    end,
+  })
+  Assert.isTrue(returned == unavailable, "a resolver-returned error object must be returned unchanged")
+
+  local stateFailure = Errors.new("SCRIPT_TASK_UNSERIALIZABLE", "custom state rejected", {})
+  local stateReturned = ScriptSave.validate(bucket, {
+    resolveTask = function()
+      return {
+        validate = function()
+          return stateFailure
+        end,
+      }
+    end,
+  })
+  Assert.isTrue(stateReturned == stateFailure, "an implementation state error must be returned unchanged")
+
+  local taskSentinel = {}
+  local taskOk, taskThrown = pcall(ScriptSave.validate, bucket, {
+    resolveTask = function()
+      error(taskSentinel)
+    end,
+  })
+  Assert.isFalse(taskOk)
+  Assert.isTrue(taskThrown == taskSentinel, "a task resolver throw must escape unchanged")
+  local compositionSentinel = {}
+  local compositionOk, compositionThrown = pcall(ScriptSave.validate, bucket, {
+    resolveTask = function(taskType, version)
+      return h.taskRegistry:resolve(taskType, version)
+    end,
+    resolveComposition = function()
+      error(compositionSentinel)
+    end,
+  })
+  Assert.isFalse(compositionOk)
+  Assert.isTrue(compositionThrown == compositionSentinel, "a composition resolver throw must escape unchanged")
+
+  local structural = deepCopyBucket(bucket)
+  structural.instances[1].environmentId = "e-missing"
+  local taskCalls = 0
+  local compositionCalls = 0
+  local structuralErr = ScriptSave.validate(structural, {
+    resolveTask = function(taskType, version)
+      taskCalls = taskCalls + 1
+      return h.taskRegistry:resolve(taskType, version)
+    end,
+    resolveComposition = function(scriptId)
+      compositionCalls = compositionCalls + 1
+      return h.composition:effective(scriptId)
+    end,
+  })
+  expectValidationError(structuralErr, "a structurally invalid bucket")
+  Assert.equal(taskCalls, 0, "structural failure must prevent task resolution")
+  Assert.equal(compositionCalls, 0, "structural failure must prevent composition resolution")
+end
+
+-- Restore stays atomic when a later task or composition check fails, and a
+-- valid restore at another tick preserves live task ownership with no
+-- early or duplicate poll of the completed task.
+T["failed late validation restores nothing, valid restore preserves task ownership and timing"] = function()
+  local h = harness()
+  startForeground(
+    h,
+    script("test.atomic_late", {
+      S.waitTicks({ ticks = 1 }),
+      S.setVar({ variable = "VAR_A", value = 1 }),
+      S.stop(),
+    }),
+    100
+  )
+  h.scheduler:step(100, nil)
+  h.scheduler:step(101, nil)
+  local bucket = ScriptSave.capture(h.scheduler, 101, { registryFingerprint = h.registry:fingerprint() })
+  local ownerInstanceId = bucket.tasks[1].ownerInstanceId
+
+  local badTask = deepCopyBucket(bucket)
+  badTask.tasks[1].state.remainingTicks = -1
+  local taskScheduler = freshScheduler(h)
+  local taskOk, taskErr = pcall(ScriptSave.restore, badTask, taskScheduler, 101, {})
+  Assert.isFalse(taskOk)
+  Assert.isTrue(Errors.is(taskErr))
+  ---@cast taskErr Errors.Error
+  Assert.equal(taskErr.code, "SCRIPT_TASK_UNSERIALIZABLE")
+  assertSchedulerEmpty(taskScheduler, "a failed task check")
+
+  local badComposition = deepCopyBucket(bucket)
+  badComposition.instances[1].frames[1].graphRevision = "stale-graph"
+  local compositionScheduler = freshScheduler(h)
+  local compositionOk, compositionErr = pcall(ScriptSave.restore, badComposition, compositionScheduler, 101, {})
+  Assert.isFalse(compositionOk)
+  Assert.isTrue(Errors.is(compositionErr))
+  ---@cast compositionErr Errors.Error
+  Assert.equal(compositionErr.code, "SCRIPT_SAVE_REVISION_MISMATCH")
+  assertSchedulerEmpty(compositionScheduler, "a failed composition check")
+
+  local recorder = Diagnostics.newTraceRecorder()
+  local resumed = Scheduler.new({
+    semantics = require("libs.hgss.src.script.RuntimeValues"),
+    services = h.services,
+    taskRegistry = h.taskRegistry,
+    trace = function(record)
+      recorder:record(record)
+    end,
+    resolveComposition = function(id)
+      return h.composition:effective(id)
+    end,
+  })
+  local restoreOk, restoreErr = pcall(ScriptSave.restore, bucket, resumed, 0, {})
+  Assert.isTrue(restoreOk, "a valid bucket must restore at another tick: " .. tostring(restoreErr))
+  Assert.equal(#resumed:tasks(), 1, "the live task must survive the restore")
+  Assert.equal(resumed:tasks()[1].ownerInstanceId, ownerInstanceId, "the restored task keeps its owner")
+  local ownerLive = false
+  for _, instance in ipairs(resumed:liveInstances()) do
+    if instance.instanceId == ownerInstanceId then
+      ownerLive = true
+    end
+  end
+  Assert.isTrue(ownerLive, "the owning instance must survive the restore")
+  resumed:step(1, nil)
+  Assert.equal(h.services.world:getVar("VAR_A"), 1, "the restored continuation runs at the rebased tick")
+  for _, record in ipairs(recorder:records()) do
+    Assert.isTrue(record.kind ~= "task_polled", "the completed task must never be polled again")
+  end
+end
+
 return { tests = T }
