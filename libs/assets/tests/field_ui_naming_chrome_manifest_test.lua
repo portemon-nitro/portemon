@@ -195,7 +195,7 @@ function T.malformed_animation_records_are_rejected()
     m.namingScreen.cursor.keyboard.frames[1].pulseRect = nil
   end, "a cursor frame without its mask rect must fail")
   reject(function(m)
-    m.namingScreen.pokemonSubject.frames[1].iconFrame = 0
+    m.namingScreen.pokemonSubject.frames[1].parts[1].iconFrame = 0
   end, "a Pokémon frame outside the one-based icon atlas must fail")
   reject(function(m)
     m.namingScreen.pokemonSubject.frames[1].asset = "hgss.naming_screen.base"
@@ -206,16 +206,16 @@ function T.pokemon_subject_parts_and_gender_markers_are_strict()
   Assert.isTrue(FieldUiAssetCache.validateManifest(withNaming(FieldUiFixture.manifest())))
   reject(function(m)
     m.namingScreen.pokemonSubject.frames[1].parts = {}
-  end, "a source frame without its two icon parts must fail")
+  end, "a frame without semantic icon parts must fail")
   reject(function(m)
-    m.namingScreen.pokemonSubject.frames[1].parts = { m.namingScreen.pokemonSubject.frames[1].parts[1] }
-  end, "a source frame with one icon part must fail")
-  reject(function(m)
-    m.namingScreen.pokemonSubject.frames[1].parts[3] = {
-      iconFrame = 1,
-      offset = { x = 0, y = 0 },
+    m.namingScreen.pokemonSubject.frames[1].parts = {
+      [1] = m.namingScreen.pokemonSubject.frames[1].parts[1],
+      [3] = m.namingScreen.pokemonSubject.frames[1].parts[1],
     }
-  end, "a source frame with three icon parts must fail")
+  end, "a sparse semantic part list must fail")
+  reject(function(m)
+    m.namingScreen.pokemonSubject.frames[1].parts[1].iconFrame = 2
+  end, "an unsupported icon selector must fail")
   reject(function(m)
     m.namingScreen.pokemonSubject.frames[1].parts[1].offset = nil
   end, "an icon part without its normalized offset must fail")
@@ -226,8 +226,8 @@ function T.pokemon_subject_parts_and_gender_markers_are_strict()
     m.namingScreen.pokemonGenderMarkers.female.frames[1].asset = "hgss.naming_screen.missing"
   end, "a marker frame must reference an indexed animation atlas")
   reject(function(m)
-    m.namingScreen.pokemonGenderMarkers.anchor.x = 209
-  end, "the gender marker must keep the source name anchor")
+    m.namingScreen.pokemonGenderMarkers.anchor.x = 209.5
+  end, "the gender marker anchor must remain an integer point")
   reject(function(m)
     m.schema = "g4-field-ui-v17"
   end, "a stale v17 manifest must fail")

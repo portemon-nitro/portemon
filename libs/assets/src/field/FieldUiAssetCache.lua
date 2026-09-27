@@ -1355,8 +1355,7 @@ function FieldUiAssetCache.validateManifest(manifest)
       for partIndex, part in ipairs(frame.parts) do
         if
           type(part) ~= "table"
-          or not signedInt(part.iconFrame)
-          or part.iconFrame <= 0
+          or part.iconFrame ~= 1
           or type(part.offset) ~= "table"
           or not signedInt(part.offset.x)
           or not signedInt(part.offset.y)

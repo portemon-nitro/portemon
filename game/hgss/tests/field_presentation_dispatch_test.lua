@@ -252,8 +252,8 @@ local function compositionRuntime()
       namingScreen = {
         pokemonSubject = {
           frames = {
-            { parts = { { iconFrame = 1 }, { iconFrame = 1 } } },
-            { parts = { { iconFrame = 1 }, { iconFrame = 1 } } },
+            { parts = { { iconFrame = 1 } } },
+            { parts = { { iconFrame = 1 } } },
           },
         },
       },
@@ -386,18 +386,12 @@ function T.pokemon_naming_renderer_borrows_the_shared_mon_icons_and_owns_its_ima
         drawCalls[#drawCalls + 1] = { image, quad, x, y, rotation, scaleX, scaleY }
       end,
     }, { iconKey = "species:1:form:0" }, { x = 24, y = 8, frameIndex = 1 })
-    calls.namingDrawSubject({
-      draw = function(image, quad, x, y, rotation, scaleX, scaleY)
-        drawCalls[#drawCalls + 1] = { image, quad, x, y, rotation, scaleX, scaleY }
-      end,
-    }, { iconKey = "species:1:form:0" }, { x = 40, y = 8, frameIndex = 1 })
-    Assert.equal(calls.iconImage, 2, "each source part draws the shared provider image")
+    Assert.equal(calls.iconImage, 1, "the semantic part draws the shared provider image")
     Assert.equal(calls.iconDimensions, "species:1:form:0", "the naming subject resolves through shared mon icons")
     Assert.deepEqual(calls.iconQuad, { iconKey = "species:1:form:0", frameIndex = 1 })
     Assert.equal(calls.iconQuadCount, 1, "repeated sequence parts share one prepared icon quad")
-    Assert.equal(#drawCalls, 2, "the naming subject draws both source parts")
+    Assert.equal(#drawCalls, 1, "the naming subject draws one semantic placement")
     Assert.equal(drawCalls[1][1], "borrowed-icon-image", "the icon image comes from the shared provider")
-    Assert.equal(drawCalls[1][2], drawCalls[2][2], "both parts reuse the prepared provider quad")
     Assert.isNil(calls.icons, "using the naming renderer never releases the borrowed icon provider")
 
     resources:dispose()

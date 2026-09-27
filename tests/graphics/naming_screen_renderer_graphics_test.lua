@@ -194,6 +194,11 @@ function T.source_object_layers_and_player_subject_render_from_the_manifest()
   local textCalls = {}
   local loaded = {}
   local manifest = FieldUiFixture.namingSemanticsManifest()
+  local naming = manifest.namingScreen
+  naming.pokemonSubject.frames[1].parts[2] = {
+    iconFrame = 1,
+    offset = { x = 11, y = 7 },
+  }
   local subjects = {}
   local renderer = NamingScreenRenderer.new({
     graphics = graphics,
@@ -204,7 +209,6 @@ function T.source_object_layers_and_player_subject_render_from_the_manifest()
     manifest = manifest,
     imageLoader = imageLoaderFake(loaded),
   })
-  local naming = manifest.namingScreen
   local seen = {}
   for _, path in ipairs(loaded) do
     seen[path] = true
@@ -301,11 +305,11 @@ function T.source_object_layers_and_player_subject_render_from_the_manifest()
   -- The host seam stays for non-player subjects.
   local pokemon = { kind = "pokemon", species = 25, form = 0, gender = "male" }
   renderer:draw(snapshot({ subject = pokemon }), layout)
-  Assert.equal(#subjects, 2, "both Pokemon source parts draw through the host callback")
+  Assert.equal(#subjects, 2, "both semantic Pokemon placements draw through the host callback")
   Assert.deepEqual(subjects[1].subject, pokemon)
   Assert.deepEqual(subjects[1].placement, { x = 24, y = 8, frameIndex = 1 })
   Assert.deepEqual(subjects[2].subject, pokemon)
-  Assert.deepEqual(subjects[2].placement, { x = 40, y = 8, frameIndex = 1 })
+  Assert.deepEqual(subjects[2].placement, { x = 35, y = 15, frameIndex = 1 })
   renderer:dispose()
 end
 

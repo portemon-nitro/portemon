@@ -1103,14 +1103,12 @@ function FieldUiFixture.namingSemanticsManifest()
             duration = 20,
             parts = {
               { iconFrame = 1, offset = { x = 0, y = 0 } },
-              { iconFrame = 1, offset = { x = 16, y = 0 } },
             },
           },
           {
             duration = 3,
             parts = {
               { iconFrame = 1, offset = { x = 0, y = -6 } },
-              { iconFrame = 1, offset = { x = 16, y = -6 } },
             },
           },
         },

@@ -775,15 +775,15 @@ function T.pokemon_subject_accepts_consumer_safe_semantic_variants()
   local naming = manifest.namingScreen
   naming.pokemonSubject.anchor = { x = -37, y = 104 }
   naming.pokemonSubject.frames = {
-    { duration = 1, parts = { { iconFrame = 2, offset = { x = -12, y = 4 } } } },
+    { duration = 1, parts = { { iconFrame = 1, offset = { x = -12, y = 4 } } } },
     {
       duration = 9,
       parts = {
-        { iconFrame = 4, offset = { x = 0, y = 0 } },
-        { iconFrame = 2, offset = { x = 12, y = -8 } },
+        { iconFrame = 1, offset = { x = 0, y = 0 } },
+        { iconFrame = 1, offset = { x = 12, y = -8 } },
       },
     },
-    { duration = 3, parts = { { iconFrame = 3, offset = { x = 22, y = -1 } } } },
+    { duration = 3, parts = { { iconFrame = 1, offset = { x = 22, y = -1 } } } },
   }
   naming.pokemonGenderMarkers.anchor = { x = -3, y = 61 }
   Assert.isTrue(
@@ -815,7 +815,7 @@ function T.pokemon_subject_rejects_runtime_invalid_metadata()
     {
       "sparse parts",
       function(subject)
-        subject.frames[1].parts = { [1] = subject.frames[1].parts[1], [3] = subject.frames[1].parts[2] }
+        subject.frames[1].parts = { [1] = subject.frames[1].parts[1], [3] = subject.frames[1].parts[1] }
       end,
     },
     {
@@ -828,6 +828,12 @@ function T.pokemon_subject_rejects_runtime_invalid_metadata()
       "zero icon frame",
       function(subject)
         subject.frames[1].parts[1].iconFrame = 0
+      end,
+    },
+    {
+      "unsupported icon frame",
+      function(subject)
+        subject.frames[1].parts[1].iconFrame = 2
       end,
     },
     {
