@@ -138,10 +138,27 @@ local function checkKeys(record, allowed, context, code)
   end
 end
 
-local function checkU8(value, context, code, field)
-  if type(value) ~= "number" or value % 1 ~= 0 or value < 0 or value > 255 then
-    fail(code, field .. " must be a u8", context)
+local function checkRecord(record, allowed, context, code, field)
+  if type(record) ~= "table" then
+    fail(code, field .. " must be a record", context)
   end
+  if allowed ~= nil then
+    checkKeys(record, allowed, context, code)
+  end
+end
+
+local function checkInt(value, lower, upper, context, code, field)
+  if type(value) ~= "number" or value % 1 ~= 0 or value < lower or (upper ~= nil and value > upper) then
+    if upper == nil then
+      fail(code, field .. " must be an integer at least " .. tostring(lower), context)
+    else
+      fail(code, field .. " must be an integer in " .. tostring(lower) .. ".." .. tostring(upper), context)
+    end
+  end
+end
+
+local function checkU8(value, context, code, field)
+  checkInt(value, 0, 255, context, code, field)
 end
 
 local function checkNonEmptyString(value, context, code, field)
@@ -150,43 +167,29 @@ local function checkNonEmptyString(value, context, code, field)
   end
 end
 
-local function checkStats(stats, context, code)
-  if type(stats) ~= "table" then
-    fail(code, "stats must be a record", context)
-  end
-  checkKeys(stats, STAT_SET, context, code)
+local function checkEvValue(value, context, code, field)
+  checkInt(value, 0, 3, context, code, field)
+end
+
+local function checkStatRecord(values, field, context, code, checkValue)
+  checkRecord(values, STAT_SET, context, code, field)
   for _, key in ipairs(STAT_KEYS) do
-    checkU8(stats[key], context, code, "stats." .. key)
+    checkValue(values[key], context, code, field .. "." .. key)
   end
+end
+
+local function checkStats(stats, context, code)
+  checkStatRecord(stats, "stats", context, code, checkU8)
 end
 
 local function checkEvYield(evYield, context, code)
-  if type(evYield) ~= "table" then
-    fail(code, "evYield must be a record", context)
-  end
-  checkKeys(evYield, STAT_SET, context, code)
-  for _, key in ipairs(STAT_KEYS) do
-    local value = evYield[key]
-    if type(value) ~= "number" or value % 1 ~= 0 or value < 0 or value > 3 then
-      fail(code, "evYield." .. key .. " must be 0..3", context)
-    end
-  end
+  checkStatRecord(evYield, "evYield", context, code, checkEvValue)
 end
 
 local function checkItemIdentity(identity, context, code, field)
-  if type(identity) ~= "table" then
-    fail(code, field .. " must be a record", context)
-  end
-  checkKeys(identity, { item = true, nativeId = true }, context, code)
+  checkRecord(identity, { item = true, nativeId = true }, context, code, field)
   checkNonEmptyString(identity.item, context, code, field .. ".item")
-  if
-    type(identity.nativeId) ~= "number"
-    or identity.nativeId % 1 ~= 0
-    or identity.nativeId < 0
-    or identity.nativeId > 536
-  then
-    fail(code, field .. ".nativeId must be 0..536", context)
-  end
+  checkInt(identity.nativeId, 0, 536, context, code, field .. ".nativeId")
 end
 
 local function checkStringArray(values, context, code, field, minCount, maxCount)
@@ -204,35 +207,22 @@ local function checkStringArray(values, context, code, field, minCount, maxCount
 end
 
 local function checkEvolutionShape(entry, context, code)
-  if type(entry) ~= "table" then
-    fail(code, "evolution must be a record", context)
-  end
+  checkRecord(entry, nil, context, code, "evolution")
   local method = entry.method
   if type(method) ~= "string" or EVO_METHODS[method] == nil then
     fail(code, "evolution method is unknown: " .. tostring(method), context)
   end
   checkNonEmptyString(entry.target, context, code, "evolution target")
-  if type(entry.form) ~= "number" or entry.form % 1 ~= 0 or entry.form < 0 then
-    fail(code, "evolution form must be a non-negative integer", context)
-  end
+  checkInt(entry.form, 0, nil, context, code, "evolution form")
   if LEVEL_METHODS[method] then
     checkKeys(entry, { method = true, level = true, target = true, form = true }, context, code)
-    if type(entry.level) ~= "number" or entry.level % 1 ~= 0 or entry.level < 1 or entry.level > 100 then
-      fail(code, "evolution level must be 1..100", context)
-    end
+    checkInt(entry.level, 1, 100, context, code, "evolution level")
   elseif ITEM_METHODS[method] then
     checkKeys(entry, { method = true, item = true, target = true, form = true }, context, code)
     checkNonEmptyString(entry.item, context, code, "evolution item")
   elseif method == "beauty" then
     checkKeys(entry, { method = true, threshold = true, target = true, form = true }, context, code)
-    if
-      type(entry.threshold) ~= "number"
-      or entry.threshold % 1 ~= 0
-      or entry.threshold < 1
-      or entry.threshold > 255
-    then
-      fail(code, "evolution threshold must be 1..255", context)
-    end
+    checkInt(entry.threshold, 1, 255, context, code, "evolution threshold")
   elseif method == "has_move" then
     checkKeys(entry, { method = true, move = true, target = true, form = true }, context, code)
     checkNonEmptyString(entry.move, context, code, "evolution move")
@@ -246,44 +236,18 @@ local function checkEvolutionShape(entry, context, code)
   end
 end
 
+local function checkFollowerTriple(visual, context, code, field)
+  checkInt(visual.visualId, 1, nil, context, code, field .. ".visualId")
+  checkU8(visual.size, context, code, field .. ".size")
+  checkInt(visual.objectParam, 0, 65535, context, code, field .. ".objectParam")
+end
+
 local function checkFollowerShape(follower, context, code)
-  if type(follower) ~= "table" then
-    fail(code, "follower must be a record", context)
-  end
-  checkKeys(follower, { visualId = true, size = true, objectParam = true, female = true }, context, code)
-  if type(follower.visualId) ~= "number" or follower.visualId % 1 ~= 0 or follower.visualId <= 0 then
-    fail(code, "follower visualId must be a positive integer", context)
-  end
-  checkU8(follower.size, context, code, "follower.size")
-  if
-    type(follower.objectParam) ~= "number"
-    or follower.objectParam % 1 ~= 0
-    or follower.objectParam < 0
-    or follower.objectParam > 65535
-  then
-    fail(code, "follower objectParam must be a u16", context)
-  end
+  checkRecord(follower, { visualId = true, size = true, objectParam = true, female = true }, context, code, "follower")
+  checkFollowerTriple(follower, context, code, "follower")
   if follower.female ~= nil then
-    if type(follower.female) ~= "table" then
-      fail(code, "follower.female must be a record", context)
-    end
-    checkKeys(follower.female, { visualId = true, size = true, objectParam = true }, context, code)
-    if
-      type(follower.female.visualId) ~= "number"
-      or follower.female.visualId % 1 ~= 0
-      or follower.female.visualId <= 0
-    then
-      fail(code, "follower.female visualId must be a positive integer", context)
-    end
-    checkU8(follower.female.size, context, code, "follower.female.size")
-    if
-      type(follower.female.objectParam) ~= "number"
-      or follower.female.objectParam % 1 ~= 0
-      or follower.female.objectParam < 0
-      or follower.female.objectParam > 65535
-    then
-      fail(code, "follower.female objectParam must be a u16", context)
-    end
+    checkRecord(follower.female, { visualId = true, size = true, objectParam = true }, context, code, "follower.female")
+    checkFollowerTriple(follower.female, context, code, "follower.female")
   end
 end
 
@@ -292,10 +256,7 @@ end
 -- and writer cross-reference step, which owns the full key universes.
 function MonAssetSchema.assertForm(form, context)
   context = context or {}
-  if type(form) ~= "table" then
-    fail("MON_FORM_INVALID", "form must be a record", context)
-  end
-  checkKeys(form, FORM_FIELDS, context, "MON_FORM_INVALID")
+  checkRecord(form, FORM_FIELDS, context, "MON_FORM_INVALID", "form")
   checkStats(form.baseStats, context, "MON_FORM_INVALID")
   if not Validate.isArray(form.types) or (#form.types ~= 1 and #form.types ~= 2) then
     fail("MON_FORM_INVALID", "types must carry one or two entries", context)
@@ -326,13 +287,8 @@ function MonAssetSchema.assertForm(form, context)
     fail("MON_FORM_INVALID", "levelUpMoves must be an array", context)
   end
   for _, entry in ipairs(form.levelUpMoves) do
-    if type(entry) ~= "table" then
-      fail("MON_FORM_INVALID", "learnset entry must be a record", context)
-    end
-    checkKeys(entry, { level = true, move = true }, context, "MON_FORM_INVALID")
-    if type(entry.level) ~= "number" or entry.level % 1 ~= 0 or entry.level < 1 or entry.level > 100 then
-      fail("MON_FORM_INVALID", "learnset level must be 1..100", context)
-    end
+    checkRecord(entry, { level = true, move = true }, context, "MON_FORM_INVALID", "learnset entry")
+    checkInt(entry.level, 1, 100, context, "MON_FORM_INVALID", "learnset level")
     checkNonEmptyString(entry.move, context, "MON_FORM_INVALID", "learnset move")
   end
   if not Validate.isArray(form.evolutions) then
@@ -371,18 +327,8 @@ local SPECIES_FIELDS = {
 }
 
 local function assertSpecies(key, species, context)
-  if type(species) ~= "table" then
-    fail("MON_CATALOG_INVALID", "species " .. key .. " must be a record", context)
-  end
-  checkKeys(species, SPECIES_FIELDS, context, "MON_CATALOG_INVALID")
-  if
-    type(species.nativeId) ~= "number"
-    or species.nativeId % 1 ~= 0
-    or species.nativeId < 0
-    or species.nativeId > 495
-  then
-    fail("MON_CATALOG_INVALID", "species " .. key .. " nativeId must be 0..495", context)
-  end
+  checkRecord(species, SPECIES_FIELDS, context, "MON_CATALOG_INVALID", "species " .. key)
+  checkInt(species.nativeId, 0, 495, context, "MON_CATALOG_INVALID", "species " .. key .. " nativeId")
   checkNonEmptyString(species.name, context, "MON_CATALOG_INVALID", "species " .. key .. " name")
   if GROWTH_KEYS[species.growthCurve] == nil then
     fail("MON_CATALOG_INVALID", "species " .. key .. " has an unknown growth curve", context)
@@ -396,15 +342,16 @@ local function assertSpecies(key, species, context)
     fail("MON_CATALOG_INVALID", "species " .. key .. " must carry two egg groups", context)
   end
   checkEvYield(species.evYield, context, "MON_CATALOG_INVALID")
-  if type(species.heldItems) ~= "table" then
-    fail("MON_CATALOG_INVALID", "species " .. key .. " heldItems must be a record", context)
-  end
-  checkKeys(species.heldItems, { common = true, rare = true }, context, "MON_CATALOG_INVALID")
+  checkRecord(
+    species.heldItems,
+    { common = true, rare = true },
+    context,
+    "MON_CATALOG_INVALID",
+    "species " .. key .. " heldItems"
+  )
   checkItemIdentity(species.heldItems.common, context, "MON_CATALOG_INVALID", "species " .. key .. " heldItems.common")
   checkItemIdentity(species.heldItems.rare, context, "MON_CATALOG_INVALID", "species " .. key .. " heldItems.rare")
-  if type(species.color) ~= "number" or species.color % 1 ~= 0 or species.color < 0 or species.color > 127 then
-    fail("MON_CATALOG_INVALID", "species " .. key .. " color must be 0..127", context)
-  end
+  checkInt(species.color, 0, 127, context, "MON_CATALOG_INVALID", "species " .. key .. " color")
   if type(species.flip) ~= "boolean" then
     fail("MON_CATALOG_INVALID", "species " .. key .. " flip must be a boolean", context)
   end
@@ -412,9 +359,7 @@ local function assertSpecies(key, species, context)
     fail("MON_CATALOG_INVALID", "species " .. key .. " must carry its base form", context)
   end
   for formId, form in pairs(species.forms) do
-    if type(formId) ~= "number" or formId % 1 ~= 0 or formId < 0 then
-      fail("MON_CATALOG_INVALID", "species " .. key .. " has an invalid form id", context)
-    end
+    checkInt(formId, 0, nil, context, "MON_CATALOG_INVALID", "species " .. key .. " form id")
     MonAssetSchema.assertForm(form, { species = key, form = formId })
   end
 end
@@ -438,20 +383,13 @@ local MOVE_FIELDS = {
 }
 
 local function assertMove(key, move, context)
-  if type(move) ~= "table" then
-    fail("MON_CATALOG_INVALID", "move " .. key .. " must be a record", context)
-  end
-  checkKeys(move, MOVE_FIELDS, context, "MON_CATALOG_INVALID")
-  if type(move.nativeId) ~= "number" or move.nativeId % 1 ~= 0 or move.nativeId < 0 or move.nativeId > 467 then
-    fail("MON_CATALOG_INVALID", "move " .. key .. " nativeId must be 0..467", context)
-  end
+  checkRecord(move, MOVE_FIELDS, context, "MON_CATALOG_INVALID", "move " .. key)
+  checkInt(move.nativeId, 0, 467, context, "MON_CATALOG_INVALID", "move " .. key .. " nativeId")
   checkNonEmptyString(move.name, context, "MON_CATALOG_INVALID", "move " .. key .. " name")
   if type(move.description) ~= "string" then
     fail("MON_CATALOG_INVALID", "move " .. key .. " description must be a string", context)
   end
-  if type(move.effect) ~= "number" or move.effect % 1 ~= 0 or move.effect < 0 or move.effect > 65535 then
-    fail("MON_CATALOG_INVALID", "move " .. key .. " effect must be a u16", context)
-  end
+  checkInt(move.effect, 0, 65535, context, "MON_CATALOG_INVALID", "move " .. key .. " effect")
   if CATEGORY_KEYS[move.category] == nil then
     fail("MON_CATALOG_INVALID", "move " .. key .. " has an unknown category", context)
   end
@@ -459,35 +397,18 @@ local function assertMove(key, move, context)
   if TYPE_KEYS[move.moveType] == nil then
     fail("MON_CATALOG_INVALID", "move " .. key .. " has an unknown type", context)
   end
-  if type(move.accuracy) ~= "number" or move.accuracy % 1 ~= 0 or move.accuracy < 0 or move.accuracy > 100 then
-    fail("MON_CATALOG_INVALID", "move " .. key .. " accuracy must be 0..100", context)
-  end
-  if type(move.basePp) ~= "number" or move.basePp % 1 ~= 0 or move.basePp < 0 or move.basePp > 40 then
-    fail("MON_CATALOG_INVALID", "move " .. key .. " basePp must be 0..40", context)
-  end
-  if
-    type(move.effectChance) ~= "number"
-    or move.effectChance % 1 ~= 0
-    or move.effectChance < 0
-    or move.effectChance > 100
-  then
-    fail("MON_CATALOG_INVALID", "move " .. key .. " effectChance must be 0..100", context)
-  end
-  if type(move.range) ~= "number" or move.range % 1 ~= 0 or move.range < 0 or move.range > 65535 then
-    fail("MON_CATALOG_INVALID", "move " .. key .. " range must be a u16", context)
-  end
-  if type(move.priority) ~= "number" or move.priority % 1 ~= 0 or move.priority < -128 or move.priority > 127 then
-    fail("MON_CATALOG_INVALID", "move " .. key .. " priority must be an i8", context)
-  end
+  checkInt(move.accuracy, 0, 100, context, "MON_CATALOG_INVALID", "move " .. key .. " accuracy")
+  checkInt(move.basePp, 0, 40, context, "MON_CATALOG_INVALID", "move " .. key .. " basePp")
+  checkInt(move.effectChance, 0, 100, context, "MON_CATALOG_INVALID", "move " .. key .. " effectChance")
+  checkInt(move.range, 0, 65535, context, "MON_CATALOG_INVALID", "move " .. key .. " range")
+  checkInt(move.priority, -128, 127, context, "MON_CATALOG_INVALID", "move " .. key .. " priority")
   checkU8(move.flags, context, "MON_CATALOG_INVALID", "move " .. key .. " flags")
   checkU8(move.unknownC, context, "MON_CATALOG_INVALID", "move " .. key .. " unknownC")
   checkU8(move.contestType, context, "MON_CATALOG_INVALID", "move " .. key .. " contestType")
 end
 
 local function collectKeys(section, context, code, what)
-  if type(section) ~= "table" then
-    fail(code, what .. " must be a record", context)
-  end
+  checkRecord(section, nil, context, code, what)
   local keys = {}
   for key, record in pairs(section) do
     if type(key) ~= "string" or key == "" then
@@ -516,6 +437,72 @@ local function collectNativeIds(section, field, context, code, what)
   return ids
 end
 
+local function assertAbility(key, ability, context)
+  checkRecord(
+    ability,
+    { nativeId = true, name = true, description = true },
+    context,
+    "MON_CATALOG_INVALID",
+    "ability " .. key
+  )
+  checkInt(ability.nativeId, 0, 123, context, "MON_CATALOG_INVALID", "ability " .. key .. " nativeId")
+  checkNonEmptyString(ability.name, context, "MON_CATALOG_INVALID", "ability " .. key .. " name")
+  if type(ability.description) ~= "string" then
+    fail("MON_CATALOG_INVALID", "ability " .. key .. " description must be a string", context)
+  end
+end
+
+local function assertGrowthCurve(key, curve, context)
+  if not Validate.isArray(curve) or #curve ~= 100 then
+    fail("MON_CATALOG_INVALID", "growth curve " .. key .. " must carry levels 1..100", context)
+  end
+  if curve[1] ~= 0 then
+    fail("MON_CATALOG_INVALID", "growth curve " .. key .. " level 1 must be zero", context)
+  end
+  for level = 1, 100 do
+    local value = curve[level]
+    checkInt(value, 0, 4294967295, context, "MON_CATALOG_INVALID", "growth curve " .. key .. " level " .. level)
+    if level > 1 and value < curve[level - 1] then
+      fail("MON_CATALOG_INVALID", "growth curve " .. key .. " must be non-decreasing", context)
+    end
+  end
+end
+
+local function checkSpeciesReferences(key, species, speciesKeys, moveKeys, abilityKeys, context)
+  for _, form in pairs(species.forms) do
+    for _, abilityKey in ipairs(form.abilities) do
+      if abilityKeys[abilityKey] == nil then
+        fail("MON_CATALOG_INVALID", "species " .. key .. " references unknown ability " .. abilityKey, context)
+      end
+    end
+    for _, moveKey in ipairs(form.tmhm) do
+      if moveKeys[moveKey] == nil then
+        fail("MON_CATALOG_INVALID", "species " .. key .. " references unknown tmhm move " .. moveKey, context)
+      end
+    end
+    for _, entry in ipairs(form.levelUpMoves) do
+      if moveKeys[entry.move] == nil then
+        fail("MON_CATALOG_INVALID", "species " .. key .. " references unknown learnset move " .. entry.move, context)
+      end
+    end
+    for _, entry in ipairs(form.evolutions) do
+      if speciesKeys[entry.target] == nil then
+        fail("MON_CATALOG_INVALID", "species " .. key .. " evolves into unknown species " .. entry.target, context)
+      end
+      if entry.move ~= nil and moveKeys[entry.move] == nil then
+        fail("MON_CATALOG_INVALID", "species " .. key .. " references unknown evolution move " .. entry.move, context)
+      end
+      if entry.species ~= nil and speciesKeys[entry.species] == nil then
+        fail(
+          "MON_CATALOG_INVALID",
+          "species " .. key .. " references unknown evolution species " .. entry.species,
+          context
+        )
+      end
+    end
+  end
+end
+
 -- The generated item collection left this catalog: item identity and
 -- Bag-relevant metadata live in the generated item class now, so extending
 -- them never invalidates persisted mon buckets. Species held-item
@@ -528,24 +515,18 @@ end
 -- item class and never duplicated here.
 function MonAssetSchema.assertCatalog(catalog)
   local context = {}
-  if type(catalog) ~= "table" then
-    fail("MON_CATALOG_INVALID", "catalog must be a record", context)
-  end
-  checkKeys(catalog, {
+  checkRecord(catalog, {
     schema = true,
     version = true,
     species = true,
     moves = true,
     abilities = true,
     growthCurves = true,
-  }, context, "MON_CATALOG_INVALID")
+  }, context, "MON_CATALOG_INVALID", "catalog")
   if catalog.schema ~= "g4-mon-catalog-v3" then
     fail("MON_CATALOG_INVALID", "catalog schema must be g4-mon-catalog-v3", context)
   end
-  if type(catalog.version) ~= "table" then
-    fail("MON_CATALOG_INVALID", "catalog version must be a record", context)
-  end
-  checkKeys(catalog.version, { id = true, language = true }, context, "MON_CATALOG_INVALID")
+  checkRecord(catalog.version, { id = true, language = true }, context, "MON_CATALOG_INVALID", "catalog version")
   checkNonEmptyString(catalog.version.id, context, "MON_CATALOG_INVALID", "catalog version id")
   checkNonEmptyString(catalog.version.language, context, "MON_CATALOG_INVALID", "catalog version language")
   local speciesKeys = collectKeys(catalog.species, context, "MON_CATALOG_INVALID", "species")
@@ -556,88 +537,23 @@ function MonAssetSchema.assertCatalog(catalog)
   collectNativeIds(catalog.abilities, "nativeId", context, "MON_CATALOG_INVALID", "abilities")
   for key, species in pairs(catalog.species) do
     assertSpecies(key, species, context)
-    for _, form in pairs(species.forms) do
-      for _, abilityKey in ipairs(form.abilities) do
-        if abilityKeys[abilityKey] == nil then
-          fail("MON_CATALOG_INVALID", "species " .. key .. " references unknown ability " .. abilityKey, context)
-        end
-      end
-      for _, moveKey in ipairs(form.tmhm) do
-        if moveKeys[moveKey] == nil then
-          fail("MON_CATALOG_INVALID", "species " .. key .. " references unknown tmhm move " .. moveKey, context)
-        end
-      end
-      for _, entry in ipairs(form.levelUpMoves) do
-        if moveKeys[entry.move] == nil then
-          fail("MON_CATALOG_INVALID", "species " .. key .. " references unknown learnset move " .. entry.move, context)
-        end
-      end
-      for _, entry in ipairs(form.evolutions) do
-        if speciesKeys[entry.target] == nil then
-          fail("MON_CATALOG_INVALID", "species " .. key .. " evolves into unknown species " .. entry.target, context)
-        end
-        if entry.move ~= nil and moveKeys[entry.move] == nil then
-          fail("MON_CATALOG_INVALID", "species " .. key .. " references unknown evolution move " .. entry.move, context)
-        end
-        if entry.species ~= nil and speciesKeys[entry.species] == nil then
-          fail(
-            "MON_CATALOG_INVALID",
-            "species " .. key .. " references unknown evolution species " .. entry.species,
-            context
-          )
-        end
-      end
-    end
+    checkSpeciesReferences(key, species, speciesKeys, moveKeys, abilityKeys, context)
   end
   for key, move in pairs(catalog.moves) do
     assertMove(key, move, context)
   end
-  if type(catalog.abilities) ~= "table" then
-    fail("MON_CATALOG_INVALID", "abilities must be a record", context)
-  end
+  checkRecord(catalog.abilities, nil, context, "MON_CATALOG_INVALID", "abilities")
   for key, ability in pairs(catalog.abilities) do
-    if type(ability) ~= "table" then
-      fail("MON_CATALOG_INVALID", "ability " .. key .. " must be a record", context)
-    end
-    checkKeys(ability, { nativeId = true, name = true, description = true }, context, "MON_CATALOG_INVALID")
-    if
-      type(ability.nativeId) ~= "number"
-      or ability.nativeId % 1 ~= 0
-      or ability.nativeId < 0
-      or ability.nativeId > 123
-    then
-      fail("MON_CATALOG_INVALID", "ability " .. key .. " nativeId must be 0..123", context)
-    end
-    checkNonEmptyString(ability.name, context, "MON_CATALOG_INVALID", "ability " .. key .. " name")
-    if type(ability.description) ~= "string" then
-      fail("MON_CATALOG_INVALID", "ability " .. key .. " description must be a string", context)
-    end
+    assertAbility(key, ability, context)
   end
-  if type(catalog.growthCurves) ~= "table" then
-    fail("MON_CATALOG_INVALID", "growthCurves must be a record", context)
-  end
+  checkRecord(catalog.growthCurves, nil, context, "MON_CATALOG_INVALID", "growthCurves")
   for key in pairs(catalog.growthCurves) do
     if GROWTH_KEYS[key] == nil then
       fail("MON_CATALOG_INVALID", "unknown growth curve " .. tostring(key), context)
     end
   end
   for key in pairs(GROWTH_KEYS) do
-    local curve = catalog.growthCurves[key]
-    if not Validate.isArray(curve) or #curve ~= 100 then
-      fail("MON_CATALOG_INVALID", "growth curve " .. key .. " must carry levels 1..100", context)
-    end
-    if curve[1] ~= 0 then
-      fail("MON_CATALOG_INVALID", "growth curve " .. key .. " level 1 must be zero", context)
-    end
-    for level = 1, 100 do
-      local value = curve[level]
-      if type(value) ~= "number" or value % 1 ~= 0 or value < 0 or value > 4294967295 then
-        fail("MON_CATALOG_INVALID", "growth curve " .. key .. " level " .. level .. " must be a u32", context)
-      end
-      if level > 1 and value < curve[level - 1] then
-        fail("MON_CATALOG_INVALID", "growth curve " .. key .. " must be non-decreasing", context)
-      end
-    end
+    assertGrowthCurve(key, catalog.growthCurves[key], context)
   end
   return true
 end
@@ -658,10 +574,7 @@ end
 -- the pixels: page images stay page-owned.
 function MonAssetSchema.assertIndex(index)
   local context = {}
-  if type(index) ~= "table" then
-    fail("MON_INDEX_INVALID", "index must be a record", context)
-  end
-  checkKeys(index, {
+  checkRecord(index, {
     schema = true,
     version = true,
     catalogHash = true,
@@ -670,14 +583,11 @@ function MonAssetSchema.assertIndex(index)
     portraitManifest = true,
     iconPages = true,
     portraitPages = true,
-  }, context, "MON_INDEX_INVALID")
+  }, context, "MON_INDEX_INVALID", "index")
   if index.schema ~= "g4-mon-index-v2" then
     fail("MON_INDEX_INVALID", "index schema must be g4-mon-index-v2", context)
   end
-  if type(index.version) ~= "table" then
-    fail("MON_INDEX_INVALID", "index version must be a record", context)
-  end
-  checkKeys(index.version, { id = true, language = true }, context, "MON_INDEX_INVALID")
+  checkRecord(index.version, { id = true, language = true }, context, "MON_INDEX_INVALID", "index version")
   checkNonEmptyString(index.version.id, context, "MON_INDEX_INVALID", "index version id")
   checkNonEmptyString(index.version.language, context, "MON_INDEX_INVALID", "index version language")
   checkHash(index.catalogHash, context, "MON_INDEX_INVALID", "catalogHash")
@@ -703,16 +613,19 @@ function MonAssetSchema.isValidIndex(index)
 end
 
 local function checkManifestRect(rect, context, code, field)
-  if type(rect) ~= "table" then
-    fail(code, field .. " must be a record", context)
-  end
+  checkRecord(rect, nil, context, code, field)
   for _, axis in ipairs({ "x", "y", "width", "height" }) do
-    if type(rect[axis]) ~= "number" or rect[axis] % 1 ~= 0 or rect[axis] < 0 then
-      fail(code, field .. "." .. axis .. " must be a non-negative integer", context)
-    end
+    checkInt(rect[axis], 0, nil, context, code, field .. "." .. axis)
   end
   if rect.width == 0 or rect.height == 0 then
     fail(code, field .. " must have positive dimensions", context)
+  end
+end
+
+local function checkRectInPage(rect, page, context, code, field)
+  checkManifestRect(rect, context, code, field)
+  if rect.x + rect.width > page.width or rect.y + rect.height > page.height then
+    fail(code, field .. " escapes its page bounds", context)
   end
 end
 
@@ -723,26 +636,23 @@ end
 ---@param manifest table<string, unknown>
 ---@param context table<string, unknown>
 local function checkManifestPages(manifest, context)
-  if type(manifest.pages) ~= "table" then
-    fail("MON_MANIFEST_INVALID", "manifest pages must be a record", context)
-  end
+  checkRecord(manifest.pages, nil, context, "MON_MANIFEST_INVALID", "manifest pages")
   local pageCount = 0
   for pageId, page in pairs(manifest.pages) do
-    if type(pageId) ~= "number" or pageId % 1 ~= 0 or pageId < 0 then
-      fail("MON_MANIFEST_INVALID", "manifest page ids must be non-negative integers", context)
-    end
-    if type(page) ~= "table" then
-      fail("MON_MANIFEST_INVALID", "manifest page " .. pageId .. " must be a record", context)
-    end
-    checkKeys(page, { pageId = true, image = true, width = true, height = true }, context, "MON_MANIFEST_INVALID")
+    checkInt(pageId, 0, nil, context, "MON_MANIFEST_INVALID", "manifest page ids")
+    checkRecord(
+      page,
+      { pageId = true, image = true, width = true, height = true },
+      context,
+      "MON_MANIFEST_INVALID",
+      "manifest page " .. pageId
+    )
     if page.pageId ~= pageId then
       fail("MON_MANIFEST_INVALID", "manifest page " .. pageId .. " must carry its own id", context)
     end
     checkNonEmptyString(page.image, context, "MON_MANIFEST_INVALID", "manifest page " .. pageId .. " image")
     for _, axis in ipairs({ "width", "height" }) do
-      if type(page[axis]) ~= "number" or page[axis] % 1 ~= 0 or page[axis] <= 0 then
-        fail("MON_MANIFEST_INVALID", "manifest page " .. pageId .. " " .. axis .. " must be positive", context)
-      end
+      checkInt(page[axis], 1, nil, context, "MON_MANIFEST_INVALID", "manifest page " .. pageId .. " " .. axis)
     end
     pageCount = pageCount + 1
   end
@@ -769,71 +679,55 @@ end
 ---@param manifest table<string, unknown>
 ---@param context table<string, unknown>
 local function checkManifestEntries(manifest, context)
-  if type(manifest.entries) ~= "table" then
-    fail("MON_MANIFEST_INVALID", "manifest entries must be a record", context)
-  end
+  checkRecord(manifest.entries, nil, context, "MON_MANIFEST_INVALID", "manifest entries")
   local entryCount = 0
   for selector, entry in pairs(manifest.entries) do
     entryCount = entryCount + 1
     if type(selector) ~= "string" or selector == "" then
       fail("MON_MANIFEST_INVALID", "manifest selectors must be non-empty strings", context)
     end
-    if type(entry) ~= "table" then
-      fail("MON_MANIFEST_INVALID", "manifest entry " .. selector .. " must be a record", context)
-    end
-    checkKeys(
+    checkRecord(
       entry,
       { x = true, y = true, width = true, height = true, frames = true, pageId = true },
       context,
-      "MON_MANIFEST_INVALID"
+      "MON_MANIFEST_INVALID",
+      "manifest entry " .. selector
     )
-    checkManifestRect(entry, context, "MON_MANIFEST_INVALID", "manifest entry " .. selector)
-    if type(entry.pageId) ~= "number" or entry.pageId % 1 ~= 0 or entry.pageId < 0 then
-      fail("MON_MANIFEST_INVALID", "manifest entry " .. selector .. " must carry a page id", context)
-    end
+    checkInt(entry.pageId, 0, nil, context, "MON_MANIFEST_INVALID", "manifest entry " .. selector .. " page id")
     local page = manifest.pages[entry.pageId]
     if page == nil then
       fail("MON_MANIFEST_INVALID", "manifest entry " .. selector .. " names undeclared page " .. entry.pageId, context)
     end
     assert(page ~= nil, "the manifest carries the entry page")
-    if entry.x + entry.width > page.width or entry.y + entry.height > page.height then
-      fail("MON_MANIFEST_INVALID", "manifest entry " .. selector .. " escapes its page bounds", context)
-    end
+    checkRectInPage(entry, page, context, "MON_MANIFEST_INVALID", "manifest entry " .. selector)
     if not Validate.isArray(entry.frames) or #entry.frames == 0 then
       fail("MON_MANIFEST_INVALID", "manifest entry " .. selector .. " must carry frames", context)
     end
     for frameIndex, frame in ipairs(entry.frames) do
-      if type(frame) ~= "table" then
-        fail(
-          "MON_MANIFEST_INVALID",
-          "manifest entry " .. selector .. " frame " .. frameIndex .. " must be a record",
-          context
-        )
-      end
-      checkKeys(
+      checkRecord(
         frame,
         { x = true, y = true, width = true, height = true, duration = true },
-        context,
-        "MON_MANIFEST_INVALID"
-      )
-      checkManifestRect(
-        frame,
         context,
         "MON_MANIFEST_INVALID",
         "manifest entry " .. selector .. " frame " .. frameIndex
       )
       if frame.duration ~= nil then
-        if type(frame.duration) ~= "number" or frame.duration % 1 ~= 0 or frame.duration <= 0 then
-          fail("MON_MANIFEST_INVALID", "manifest entry " .. selector .. " frame duration must be positive", context)
-        end
-      end
-      if frame.x + frame.width > page.width or frame.y + frame.height > page.height then
-        fail(
+        checkInt(
+          frame.duration,
+          1,
+          nil,
+          context,
           "MON_MANIFEST_INVALID",
-          "manifest entry " .. selector .. " frame " .. frameIndex .. " escapes its page bounds",
-          context
+          "manifest entry " .. selector .. " frame duration"
         )
       end
+      checkRectInPage(
+        frame,
+        page,
+        context,
+        "MON_MANIFEST_INVALID",
+        "manifest entry " .. selector .. " frame " .. frameIndex
+      )
     end
     local first = entry.frames[1]
     if entry.x ~= first.x or entry.y ~= first.y or entry.width ~= first.width or entry.height ~= first.height then
@@ -867,22 +761,18 @@ end
 -- appear here: pages are source-independent.
 function MonAssetSchema.assertManifest(manifest, expectedSchema)
   local context = {}
-  if type(manifest) ~= "table" then
-    fail("MON_MANIFEST_INVALID", "manifest must be a record", context)
-  end
-  checkKeys(
-    manifest,
-    { schema = true, version = true, pages = true, pageIds = true, entries = true, representative = true },
-    context,
-    "MON_MANIFEST_INVALID"
-  )
+  checkRecord(manifest, {
+    schema = true,
+    version = true,
+    pages = true,
+    pageIds = true,
+    entries = true,
+    representative = true,
+  }, context, "MON_MANIFEST_INVALID", "manifest")
   if manifest.schema ~= expectedSchema then
     fail("MON_MANIFEST_INVALID", "manifest schema must be " .. expectedSchema, context)
   end
-  if type(manifest.version) ~= "table" then
-    fail("MON_MANIFEST_INVALID", "manifest version must be a record", context)
-  end
-  checkKeys(manifest.version, { id = true, language = true }, context, "MON_MANIFEST_INVALID")
+  checkRecord(manifest.version, { id = true, language = true }, context, "MON_MANIFEST_INVALID", "manifest version")
   checkNonEmptyString(manifest.version.id, context, "MON_MANIFEST_INVALID", "manifest version id")
   checkNonEmptyString(manifest.version.language, context, "MON_MANIFEST_INVALID", "manifest version language")
   checkManifestPages(manifest, context)
