@@ -356,6 +356,46 @@ function T.conditional_prefix_contains_the_complete_normalized_command()
   })
 end
 
+-- A conditional reserved no-op keeps its wrapped no-effect form: the
+-- underlying nop normalizes first, then wraps once with the compare-result
+-- guard, and the following commands keep their positions.
+function T.conditional_nop_keeps_the_wrapped_no_effect_form()
+  local bytes = SseqFixture.build({
+    { op = "prefix", kind = "if", command = { op = "nop_op", command = 0x82 } },
+    { op = "note", key = 60, velocity = 96, duration = 24 },
+    { op = "fin" },
+  })
+  local program = lowerOrFail(bytes)
+  Assert.equal(#program.instructions, 3)
+  Assert.deepEqual(program.instructions[1], {
+    op = "if",
+    condition = "compare_result",
+    instruction = { op = "nop" },
+  })
+  Assert.equal(program.instructions[2].op, "note")
+  Assert.equal(program.instructions[3].op, "end")
+end
+
+-- A conditional print_var diagnostic is consumed without emitting an
+-- instruction: it never enters the closed IR wrapped or unwrapped, and the
+-- following commands shift up by one index.
+function T.conditional_dropped_diagnostic_emits_no_instruction()
+  local bytes = SseqFixture.build({
+    { op = "wait", duration = 1 },
+    { op = "prefix", kind = "if", command = { op = "u8", command = 0xD6, amount = 1 } },
+    { op = "note", key = 60, velocity = 96, duration = 24 },
+    { op = "fin" },
+  })
+  local program = lowerOrFail(bytes)
+  Assert.equal(#program.instructions, 3)
+  Assert.equal(program.instructions[1].op, "wait")
+  Assert.equal(program.instructions[2].op, "note")
+  Assert.equal(program.instructions[3].op, "end")
+  for _, instruction in ipairs(program.instructions) do
+    Assert.isFalse(instruction.op == "print_var", "the diagnostic never enters the closed IR")
+  end
+end
+
 function T.conditional_terminators_keep_false_fallthrough()
   local conditionalOps = {
     { op = "jump", target = { cmd = 4 } },

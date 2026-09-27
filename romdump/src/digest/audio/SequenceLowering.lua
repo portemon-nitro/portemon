@@ -100,6 +100,74 @@ local NO_OP_RANGES = {
   { 0xFE, 0xFE },
 }
 
+-- Comparison opcode -> condition literal. This closed table is the only
+-- opcode-keyed mapping besides SEMANTIC_OPS, not an extensible registry.
+local COMPARE_CONDITIONS = {
+  [0xB8] = "eq",
+  [0xB9] = "ge",
+  [0xBA] = "gt",
+  [0xBB] = "le",
+  [0xBC] = "lt",
+  [0xBD] = "ne",
+}
+
+-- Semantic ops in 0xC0..0xEF whose single scalar operand is the decoded
+-- value verbatim in the amount field (the true-u16 tempo and mod_delay
+-- included). Note durations, the program field, variable operations, loop
+-- count, and the signed s8/s16 classes keep their explicit handling below.
+local PLAIN_AMOUNT_OPS = {
+  pan = true,
+  volume = true,
+  master_volume = true,
+  pitch_bend_range = true,
+  priority = true,
+  note_wait = true,
+  tie = true,
+  portamento_key = true,
+  mod_depth = true,
+  mod_speed = true,
+  mod_type = true,
+  mod_range = true,
+  portamento = true,
+  portamento_time = true,
+  attack = true,
+  decay = true,
+  sustain = true,
+  release = true,
+  expression = true,
+  mute = true,
+  mod_delay = true,
+  tempo = true,
+}
+
+-- Resolves one branch operand (sequence-data-relative in the decoded SSEQ)
+-- to its instruction index. A target that is not an instruction boundary is
+-- a build failure with source provenance; the message keeps the existing
+-- distinction between open-track and branch targets.
+local function resolveTarget(command, indexOf, identity, dataOffset, message)
+  local absoluteTarget = dataOffset + command.target
+  local target = indexOf[absoluteTarget]
+  if target == nil then
+    Errors.raise("AUDIO_SEQUENCE_BAD_TARGET", message, {
+      sequenceId = identity.sequenceId,
+      sequenceSymbol = identity.symbol,
+      sourceOffset = command.offset,
+      target = absoluteTarget,
+      encodedTarget = command.target,
+    })
+  end
+  return target
+end
+
+-- Wraps one fully built ordinary instruction in the compare-result guard
+-- when the source command carries the conditional prefix.
+local function wrapConditional(instruction, conditional)
+  if conditional then
+    return { op = "if", condition = "compare_result", instruction = instruction }
+  end
+  return instruction
+end
+
 local function isReservedNoOp(opcode)
   for _, range in ipairs(NO_OP_RANGES) do
     if opcode >= range[1] and opcode <= range[2] then
@@ -200,10 +268,9 @@ end
 -- header): a reachable open_track whose destination the mask does not
 -- allocate is a build failure with provenance.
 local function toInstruction(command, indexOf, identity, trackMask, dataOffset, targetExecutable)
+  -- The conditional flag is read once and the input command is never
+  -- mutated; the ordinary instruction is built first and wrapped once below.
   local conditional = command.conditional
-  if conditional then
-    command = setmetatable({ conditional = false }, { __index = command })
-  end
   local opcode = command.opcode
   if isDroppedDiagnostic(opcode) then
     return nil
@@ -239,50 +306,28 @@ local function toInstruction(command, indexOf, identity, trackMask, dataOffset, 
     instruction.program = normalizeValue(command.value)
   elseif op == "open_track" then
     if not targetExecutable then
-      if conditional then
-        return { op = "if", condition = "compare_result", instruction = { op = "nop" } }
+      instruction.op = "nop"
+    else
+      if trackMask == nil or not trackAllocated(trackMask, command.track) then
+        Errors.raise(
+          "AUDIO_SEQUENCE_TRACK_NOT_ALLOCATED",
+          "open_track destination is not allocated by the FE track mask",
+          {
+            sequenceId = identity.sequenceId,
+            sequenceSymbol = identity.symbol,
+            sourceOffset = command.offset,
+            track = command.track,
+          }
+        )
       end
-      return { op = "nop" }
+      instruction.target =
+        resolveTarget(command, indexOf, identity, dataOffset, "open-track target is not an instruction boundary")
+      instruction.track = command.track
     end
-    if trackMask == nil or not trackAllocated(trackMask, command.track) then
-      Errors.raise(
-        "AUDIO_SEQUENCE_TRACK_NOT_ALLOCATED",
-        "open_track destination is not allocated by the FE track mask",
-        {
-          sequenceId = identity.sequenceId,
-          sequenceSymbol = identity.symbol,
-          sourceOffset = command.offset,
-          track = command.track,
-        }
-      )
-    end
-    local absoluteTarget = dataOffset + command.target
-    local target = indexOf[absoluteTarget]
-    if target == nil then
-      Errors.raise("AUDIO_SEQUENCE_BAD_TARGET", "open-track target is not an instruction boundary", {
-        sequenceId = identity.sequenceId,
-        sequenceSymbol = identity.symbol,
-        sourceOffset = command.offset,
-        target = absoluteTarget,
-        encodedTarget = command.target,
-      })
-    end
-    instruction.target = target
-    instruction.track = command.track
   elseif op == "jump" or op == "call" then
     if targetExecutable then
-      local absoluteTarget = dataOffset + command.target
-      local target = indexOf[absoluteTarget]
-      if target == nil then
-        Errors.raise("AUDIO_SEQUENCE_BAD_TARGET", "branch target is not an instruction boundary", {
-          sequenceId = identity.sequenceId,
-          sequenceSymbol = identity.symbol,
-          sourceOffset = command.offset,
-          target = absoluteTarget,
-          encodedTarget = command.target,
-        })
-      end
-      instruction.target = target
+      instruction.target =
+        resolveTarget(command, indexOf, identity, dataOffset, "branch target is not an instruction boundary")
     elseif op == "call" then
       -- A saturated CALL is a source no-op. Its target is intentionally not
       -- decoded, so preserve the runtime fallthrough without emitting an
@@ -293,14 +338,7 @@ local function toInstruction(command, indexOf, identity, trackMask, dataOffset, 
     instruction.var = command.var
     instruction.amount = toS16(normalizeValue(command.value))
     if op == "compare" then
-      instruction.condition = ({
-        [0xB8] = "eq",
-        [0xB9] = "ge",
-        [0xBA] = "gt",
-        [0xBB] = "le",
-        [0xBC] = "lt",
-        [0xBD] = "ne",
-      })[opcode]
+      instruction.condition = COMPARE_CONDITIONS[opcode]
     end
   elseif op ~= "nop" and opcode >= 0xC0 and opcode <= 0xEF then
     if op == "loop_begin" then
@@ -311,14 +349,11 @@ local function toInstruction(command, indexOf, identity, trackMask, dataOffset, 
       instruction.amount = toS8(normalizeValue(command.value))
     elseif op == "sweep" then
       instruction.amount = toS16(normalizeValue(command.value))
-    else
+    elseif PLAIN_AMOUNT_OPS[op] then
       instruction.amount = normalizeValue(command.value)
     end
   end
-  if conditional then
-    return { op = "if", condition = "compare_result", instruction = instruction }
-  end
-  return instruction
+  return wrapConditional(instruction, conditional)
 end
 
 local function _lower(bytes, identity, context)
