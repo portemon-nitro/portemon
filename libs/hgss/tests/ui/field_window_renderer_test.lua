@@ -95,7 +95,8 @@ local function syntheticImageData(width, height)
       return height
     end,
     getPixel = function(_, x, y)
-      return table.unpack(pixels[y][x])
+      local pixel = pixels[y][x]
+      return pixel[1], pixel[2], pixel[3], pixel[4]
     end,
     setPixel = function(_, x, y, r, g, b, a)
       pixels[y][x] = { r, g, b, a }
