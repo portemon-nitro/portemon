@@ -8,6 +8,7 @@ local FieldMovement = require("tests.acceptance.support.FieldMovement")
 local FieldScriptSymbols = require("libs.assets.src.field.FieldScriptSymbols")
 local FieldState = require("game.hgss.src.field.FieldState")
 local FakeAudioOutput = require("tests.acceptance.support.FakeAudioOutput")
+local FieldStatePresentationFixture = require("tests.support.FieldStatePresentationFixture")
 local GameVersion = require("romdump.src.source.GameVersion")
 local GraphicsSmoke = require("tests.support.GraphicsSmoke")
 local MonBucket = require("tests.support.MonBucket")
@@ -389,6 +390,7 @@ local function verifyVersion(scope, versionId)
   local audioOutput = FakeAudioOutput.new()
   local state = assert(FieldState.new(newGame(versionId), {
     audioOutput = { audio = audioOutput.audio, sound = audioOutput.sound },
+    derivedAssets = FieldStatePresentationFixture.iconHost().derivedAssets,
   }))
   scope:own({
     release = function()
@@ -438,6 +440,20 @@ local function verifyVersion(scope, versionId)
   local status = assert(state.runtime.pokemonNaming:status(), "the retail script owns an active naming session")
   Assert.equal(status.snapshot.subject.kind, "pokemon", "the task publishes the selected mon as naming subject")
   Assert.notNil(status.snapshot.subject.iconKey, "the naming subject resolves through the real mon icon contract")
+  Assert.equal(
+    status.snapshot.presentation.subjectTick,
+    0,
+    "opening the real naming task preserves presentation tick 0"
+  )
+  advanceUntil(state, "naming subject icon preparation", function()
+    return state._namingPresentationReady
+  end, 120)
+  local preparedStatus = assert(runtime.pokemonNaming:status(), "the naming task remains active after preparation")
+  Assert.equal(
+    preparedStatus.snapshot.presentation.subjectTick,
+    0,
+    "presentation stays at tick 0 until its first frame can be drawn"
+  )
 
   local imageAcquisitions, quadAcquisitions, cacheReads = 0, 0, 0
   local namingDrawImages, namingDrawQuads, namingDrawReads = 0, 0, 0
@@ -456,6 +472,7 @@ local function verifyVersion(scope, versionId)
     markerImages[assert(namingRenderer.images["atlas:" .. frame.asset])] = gender
   end
   local observedSubjectParts = {}
+  ---@type { x: number, y: number, gender: string }?
   local observedMarker = nil
   local failures = {}
   local originalDrawSubject = assert(namingRenderer.drawSubject)
@@ -471,6 +488,8 @@ local function verifyVersion(scope, versionId)
   graphics.draw = function(image, quad, x, y, ...)
     local gender = markerImages[image]
     if gender ~= nil then
+      assert(type(x) == "number", "gender marker draws use numeric x coordinates")
+      assert(type(y) == "number", "gender marker draws use numeric y coordinates")
       observedMarker = { x = x, y = y, gender = gender }
     end
     originalGraphicsDraw(image, quad, x, y, ...)
@@ -488,7 +507,6 @@ local function verifyVersion(scope, versionId)
     cacheReads = cacheReads + 1
     return originalRead(self, ...)
   end
-  local width, height = graphics.getDimensions()
   local canvas = scope:own(graphics.newCanvas(width, height))
   namingRenderer.draw = function(self, ...)
     local imagesBefore, quadsBefore, readsBefore = imageAcquisitions, quadAcquisitions, cacheReads
@@ -497,58 +515,59 @@ local function verifyVersion(scope, versionId)
     namingDrawQuads = namingDrawQuads + quadAcquisitions - quadsBefore
     namingDrawReads = namingDrawReads + cacheReads - readsBefore
   end
+  local function renderNamingFrame(expectedTick, expectedFrameIdx)
+    local current = assert(runtime.pokemonNaming:status(), "the retail naming task remains active")
+    local presentation = current.snapshot.presentation
+    Assert.equal(presentation.subjectTick, expectedTick, "field updates advance naming presentation at 60 Hz")
+    Assert.equal(presentation.cursorTick, expectedTick, "cursor presentation shares the 60 Hz clock")
+    Assert.equal(presentation.entrySlotTick, expectedTick, "slot presentation shares the 60 Hz clock")
+
+    observedSubjectParts = {}
+    observedMarker = nil
+    local image = renderPixels(scope, state, canvas)
+    local subject = namingManifest.pokemonSubject
+    local frame = assert(subject.frames[expectedFrameIdx], "the expected semantic subject frame exists")
+    Assert.equal(#frame.parts, 1, "the v19 subject frame contains one visible semantic icon part")
+    Assert.equal(#observedSubjectParts, #frame.parts, "production draws each visible semantic subject part once")
+    for index, part in ipairs(observedSubjectParts) do
+      local sourcePart = frame.parts[index]
+      Assert.equal(part.frameIndex, sourcePart.iconFrame, "production uses the semantic mon icon frame selector")
+      Assert.equal(part.x, subject.anchor.x + sourcePart.offset.x, "production uses the semantic horizontal placement")
+      Assert.equal(part.y, subject.anchor.y + sourcePart.offset.y, "production uses the semantic vertical placement")
+    end
+
+    if status.snapshot.subject.gender == "genderless" then
+      Assert.isNil(observedMarker, "genderless Pokemon do not draw a gender marker")
+    else
+      local marker = assert(observedMarker, "gendered Pokemon draw a gender marker")
+      Assert.equal(marker.gender, status.snapshot.subject.gender)
+      Assert.equal(marker.x, markerRecords.anchor.x)
+      Assert.equal(marker.y, markerRecords.anchor.y)
+    end
+    return image
+  end
+
   local ok, err = xpcall(function()
-    local subjectBefore = renderPixels(scope, state, canvas)
-    local selectedBefore = renderPixels(scope, state, canvas)
-    -- Sequence 50 holds frame 1 for 20 ticks, then frame 2 for 3;
-    -- tick 21 is distinct, while tick 24 has already looped to frame 1.
-    for _ = 1, 21 do
+    local subjectBefore = renderNamingFrame(0, 1)
+    local selectedBefore = subjectBefore
+    for _ = 1, 10 do
       step(state)
     end
-    local after = renderPixels(scope, state, canvas)
-    if #observedSubjectParts ~= 2 then
-      failures[#failures + 1] = "production draw composed " .. #observedSubjectParts .. " of 2 source Pokemon parts"
-    end
-    for _, part in ipairs(observedSubjectParts) do
-      Assert.equal(part.frameIndex, 1, "source Pokemon parts share the prepared mon icon frame")
-      local sourcePlacement = false
-      for _, frame in ipairs(namingManifest.pokemonSubject.frames) do
-        for _, sourcePart in ipairs(frame.parts or {}) do
-          if sourcePart.offset ~= nil then
-            if
-              part.x == namingManifest.pokemonSubject.anchor.x + sourcePart.offset.x
-              and part.y == namingManifest.pokemonSubject.anchor.y + sourcePart.offset.y
-            then
-              sourcePlacement = true
-            end
-          end
-        end
-      end
-      if not sourcePlacement then
-        failures[#failures + 1] = "production Pokemon part does not match a compiled source placement"
-      end
-    end
-    if status.snapshot.subject.gender == "genderless" then
-      if observedMarker ~= nil then
-        failures[#failures + 1] = "genderless Pokemon drew a gender marker"
-      end
-    else
-      if observedMarker == nil then
-        failures[#failures + 1] = "production naming draw omitted the subject gender marker"
-      elseif markerRecords ~= nil then
-        if observedMarker.gender ~= status.snapshot.subject.gender then
-          failures[#failures + 1] = "production naming draw selected the wrong gender marker"
-        end
-        if observedMarker.x ~= markerRecords.anchor.x or observedMarker.y ~= markerRecords.anchor.y then
-          failures[#failures + 1] = "production gender marker missed the source name anchor"
-        end
-      end
-    end
+    local secondFrame = renderNamingFrame(20, 2)
+    step(state)
+    local slotFrame = renderNamingFrame(22, 2)
+    step(state)
+    local loopedFrame = renderNamingFrame(24, 1)
+
     -- The modal surface is opaque over the sampled subject/slot regions, so
     -- compare its source-logical bounds through the production pane transform.
     local placement = assert(status.presentation.panes[1].placement)
-    subjectChanged = regionChanged(subjectBefore, after, placement, { x = 24, y = 8, width = 32, height = 32 })
-    slotChanged = regionChanged(selectedBefore, after, placement, { x = 80, y = 39, width = 16, height = 16 })
+    subjectChanged = regionChanged(subjectBefore, secondFrame, placement, { x = 24, y = 8, width = 32, height = 32 })
+    slotChanged = regionChanged(selectedBefore, slotFrame, placement, { x = 80, y = 39, width = 16, height = 16 })
+    Assert.isFalse(
+      regionChanged(subjectBefore, loopedFrame, placement, { x = 24, y = 8, width = 32, height = 32 }),
+      "sequence 50 returns to its first source frame after the loop"
+    )
   end, debug.traceback)
   graphics.newImage, graphics.newQuad = originalNewImage, originalNewQuad
   graphics.draw = originalGraphicsDraw
@@ -573,7 +592,8 @@ local function verifyVersion(scope, versionId)
   if quadAcquisitions ~= 0 then
     failures[#failures + 1] = "draw created " .. quadAcquisitions .. " quads"
   end
-  Assert.equal(table.concat(failures, "; "), "", "production naming graphics contract")
+  local failureText = table.concat(failures, "; ")
+  Assert.equal(failureText, "", "production naming graphics contract: " .. failureText)
 
   -- Confirm a changed nickname through the production naming input mapper,
   -- then wait for the source script to commit it through the live mon service.

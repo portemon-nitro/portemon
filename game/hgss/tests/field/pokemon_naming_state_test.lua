@@ -112,6 +112,43 @@ function T.tests.display_reflow_republishes_and_close_releases_active_session()
   Assert.isNil(state:status())
 end
 
+function T.tests.naming_presentation_advances_twice_per_active_field_update()
+  local state = openState()
+  local initial = assert(state:status()).snapshot.presentation
+  Assert.equal(initial.subjectTick, 0)
+  Assert.equal(initial.cursorTick, 0)
+  Assert.equal(initial.entrySlotTick, 0)
+
+  local textBeforePreparation = assert(state:status()).text
+  state:setPresentationReady(false)
+  state:handleInput({ { type = "navigate", direction = "right" } })
+  Assert.equal(assert(state:status()).text, textBeforePreparation, "unprepared naming ignores input")
+  state:updateFixed()
+  local awaitingPresentation = assert(state:status()).snapshot.presentation
+  Assert.equal(awaitingPresentation.subjectTick, 0)
+  Assert.equal(awaitingPresentation.cursorTick, 0)
+  Assert.equal(awaitingPresentation.entrySlotTick, 0)
+
+  state:setPresentationReady(true)
+  state:updateFixed()
+  local afterOne = assert(state:status()).snapshot.presentation
+  Assert.equal(afterOne.subjectTick, 2)
+  Assert.equal(afterOne.cursorTick, 2)
+  Assert.equal(afterOne.entrySlotTick, 2)
+
+  for _ = 1, 29 do
+    state:updateFixed()
+  end
+  local afterThirty = assert(state:status()).snapshot.presentation
+  Assert.equal(afterThirty.subjectTick, 60)
+  Assert.equal(afterThirty.cursorTick, 60)
+  Assert.equal(afterThirty.entrySlotTick, 60)
+
+  state:close()
+  state:updateFixed()
+  Assert.isNil(state:status(), "inactive naming state does not retain a presentation clock")
+end
+
 function T.tests.failed_open_does_not_publish_a_partial_active_state()
   local state = PokemonNamingState.new({
     charmap = CatalogFixture.CHARMAP,

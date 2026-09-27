@@ -91,6 +91,7 @@ end
 function PokemonNicknameTask.poll(state, ctx)
   local host = service(ctx, "pokemonNaming")
   assert(type(host.isActive) == "function" and type(host.open) == "function", "Pokemon naming host is incomplete")
+  local openedThisPoll = false
   if not host:isActive() then
     host:open({
       currentText = assert(state.currentText --[[@as string]]),
@@ -99,13 +100,16 @@ function PokemonNicknameTask.poll(state, ctx)
     })
     state.opened = true
     state.closed = false
+    openedThisPoll = true
   end
   local events = (ctx.input or {}).uiEvents or {}
   assert(type(events) == "table", "Pokemon naming UI events must be a table")
   if #events > 0 then
     host:handleInput(events)
   end
-  host:updateFixed()
+  if not openedThisPoll then
+    host:updateFixed()
+  end
   local status = host:status()
   assert(type(status) == "table", "active Pokemon naming host publishes status")
   assert(type(status.text) == "string" and type(status.done) == "boolean", "Pokemon naming status is valid")

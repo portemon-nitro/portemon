@@ -197,6 +197,26 @@ local function requireSprite(section, key, what)
   return entry
 end
 
+local function requireAnchor(anchor, what)
+  assert(type(anchor) == "table", "naming renderer requires the " .. what .. " anchor")
+  assert(
+    type(anchor.x) == "number" and anchor.x % 1 == 0 and type(anchor.y) == "number" and anchor.y % 1 == 0,
+    "naming renderer requires integer " .. what .. " anchor coordinates"
+  )
+end
+
+local function requireDenseArray(entries, what)
+  assert(type(entries) == "table", "naming renderer requires " .. what)
+  local count = 0
+  local highestIndex = 0
+  for index in pairs(entries) do
+    assert(type(index) == "number" and index % 1 == 0 and index >= 1, "naming renderer requires dense " .. what)
+    count = count + 1
+    highestIndex = math.max(highestIndex, index)
+  end
+  assert(count > 0 and highestIndex == count, "naming renderer requires nonempty dense " .. what)
+end
+
 ---@param options { graphics: table<string, function>, text: table<string, function>, drawSubject: fun(graphics: table<string, function>, subject: table<string, unknown>, placement: { x: number, y: number, frameIndex: integer }), manifest: table<string, unknown>, imageLoader: fun(path: string): unknown }
 ---@return NamingScreenRenderer
 function NamingScreenRenderer.new(options)
@@ -217,12 +237,7 @@ function NamingScreenRenderer.new(options)
   assert(type(naming.playerSubjects) == "table", "naming renderer requires the naming player subjects")
   assert(type(naming.pokemonSubject) == "table", "naming renderer requires the Pokemon subject animation")
   assert(type(naming.pokemonGenderMarkers) == "table", "naming renderer requires the Pokemon gender markers")
-  assert(
-    type(naming.pokemonGenderMarkers.anchor) == "table"
-      and naming.pokemonGenderMarkers.anchor.x == 210
-      and naming.pokemonGenderMarkers.anchor.y == 27,
-    "naming renderer requires the source Pokemon gender marker anchor"
-  )
+  requireAnchor(naming.pokemonGenderMarkers.anchor, "Pokemon gender marker")
   for _, key in ipairs(CONTROL_KEYS) do
     requireSprite(naming.controls, key, key .. " control")
   end
@@ -259,13 +274,8 @@ function NamingScreenRenderer.new(options)
     )
   end
   local pokemonSubject = naming.pokemonSubject
-  assert(
-    type(pokemonSubject.frames) == "table"
-      and type(pokemonSubject.anchor) == "table"
-      and pokemonSubject.anchor.x == 24
-      and pokemonSubject.anchor.y == 8,
-    "naming renderer requires source-positioned Pokemon subject frames"
-  )
+  requireDenseArray(pokemonSubject.frames, "Pokemon subject frames")
+  requireAnchor(pokemonSubject.anchor, "Pokemon subject")
   assert(
     pokemonSubject.playMode == "forward"
       or pokemonSubject.playMode == "forward_loop"
@@ -282,12 +292,7 @@ function NamingScreenRenderer.new(options)
   )
   for _, frame in ipairs(pokemonSubject.frames) do
     assert(type(frame.duration) == "number" and frame.duration % 1 == 0 and frame.duration > 0)
-    assert(type(frame.parts) == "table", "naming renderer requires Pokemon subject parts")
-    local partCount = 0
-    for _ in pairs(frame.parts) do
-      partCount = partCount + 1
-    end
-    assert(partCount == 2 and #frame.parts == 2, "naming renderer requires both validated Pokemon subject parts")
+    requireDenseArray(frame.parts, "Pokemon subject parts")
     for _, part in ipairs(frame.parts) do
       assert(
         type(part.iconFrame) == "number"

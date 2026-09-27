@@ -135,6 +135,28 @@ function T.restored_task_reopens_with_current_text_and_original_comparison()
   Assert.isNil(host.opened[#host.opened].initialText)
 end
 
+function T.opening_poll_preserves_tick_zero_for_fresh_and_restored_tasks()
+  local task = requireTask()
+  local ctx, host = fixture(false, "LEAF")
+  local state = task.create({ slot = 0 }, ctx)
+
+  task.poll(state, ctx)
+  Assert.equal(#host.opened, 1, "the first poll opens the naming host")
+  Assert.equal(host.updates, 0, "opening leaves the presentation at tick zero")
+
+  task.poll(state, ctx)
+  Assert.equal(host.updates, 1, "the next active poll advances the host once")
+
+  host.active = false
+  task.poll(state, ctx)
+  Assert.equal(#host.opened, 2, "an inactive restored host reopens")
+  Assert.equal(host.opened[2].currentText, "LEAF", "reopening restores the current edit buffer")
+  Assert.equal(host.updates, 1, "the restored opening poll also preserves tick zero")
+
+  task.poll(state, ctx)
+  Assert.equal(host.updates, 2, "the poll after restored opening advances once")
+end
+
 function T.cancellation_closes_an_open_host_once()
   local task = requireTask()
   local ctx, host = fixture(false)

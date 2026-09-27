@@ -21,7 +21,9 @@ local NamingScreenController = require("libs.hgss.src.ui.NamingScreenController"
 ---@field private _overrides table<string, unknown>?
 ---@field private _controller NamingScreenController?
 ---@field private _session ApplicationPresentation?
+---@field private _presentationReady boolean
 ---@field isActive fun(self: PokemonNamingState): boolean
+---@field setPresentationReady fun(self: PokemonNamingState, ready: boolean)
 ---@field drawPresentation fun(self: PokemonNamingState, namingRenderer: table<string, function>)
 ---@field dispose fun(self: PokemonNamingState)
 local PokemonNamingState = {}
@@ -39,6 +41,7 @@ function PokemonNamingState.new(options)
     _overrides = options.overrides,
     _controller = nil,
     _session = nil,
+    _presentationReady = true,
   }, PokemonNamingState)
 end
 
@@ -74,6 +77,7 @@ function PokemonNamingState:open(spec)
   local session = ApplicationPresentation.new(NamingInterface.withOverrides(self._overrides))
   self._controller = controller
   self._session = session
+  self._presentationReady = true
   local ok, err = pcall(function()
     self:_resolve()
   end)
@@ -87,8 +91,11 @@ end
 
 function PokemonNamingState:handleInput(events)
   local controller = assert(self._controller, "Pokemon naming is inactive")
-  local session = assert(self._session, "active Pokemon naming owns a presentation session")
   assert(type(events) == "table", "Pokemon naming requires UI events")
+  if not self._presentationReady then
+    return
+  end
+  local session = assert(self._session, "active Pokemon naming owns a presentation session")
   self:_resolve()
   for _, event in ipairs(session:mapInput(events, view(self))) do
     if event.type == "navigate" then
@@ -112,11 +119,18 @@ end
 
 function PokemonNamingState:updateFixed()
   local controller = self._controller
-  if controller == nil then
+  if controller == nil or not self._presentationReady then
     return
   end
-  controller:updateFixed(1)
+  controller:updateFixed(2)
   self:_resolve()
+end
+
+---@param ready boolean whether FieldPresentationResources can draw this subject
+function PokemonNamingState:setPresentationReady(ready)
+  assert(self:isActive(), "Pokemon naming is inactive")
+  assert(type(ready) == "boolean", "Pokemon naming readiness must be boolean")
+  self._presentationReady = ready
 end
 
 ---@return PokemonNamingState.Status|nil
@@ -154,6 +168,7 @@ function PokemonNamingState:close()
   self._session:dispose()
   self._session = nil
   self._controller = nil
+  self._presentationReady = false
 end
 
 function PokemonNamingState:dispose()
@@ -162,6 +177,7 @@ function PokemonNamingState:dispose()
   end
   self._session = nil
   self._controller = nil
+  self._presentationReady = false
 end
 
 return PokemonNamingState
