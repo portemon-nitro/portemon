@@ -1114,4 +1114,86 @@ function T.continuation_cursor_cycle_accepts_any_four_phase_sequence()
   Assert.isFalse(FieldUiAssetCache.validateManifest(wild), "a phase outside 0..2 must fail")
 end
 
+-- Each independently varied safe value stays consumable: a positive cursor
+-- cadence, a legal four-phase cycle, in-range signpost palette slots, and a
+-- supported cursor placement all validate against the current contract.
+function T.safe_timing_phase_palette_and_placement_variants_validate()
+  local cadence = validManifest()
+  cadence.dialogueFrames.continueCursor.framePrinterTicks = 12
+  Assert.isTrue(FieldUiAssetCache.validateManifest(cadence), "a positive cursor cadence validates")
+  local phases = validManifest()
+  phases.dialogueFrames.continueCursor.cycle = { 0, 1, 0, 1 }
+  Assert.isTrue(FieldUiAssetCache.validateManifest(phases), "a legal four-phase cycle validates")
+  local slots = validManifest()
+  slots.signposts.textColors = { foreground = 3, shadow = 11, background = 14 }
+  Assert.isTrue(FieldUiAssetCache.validateManifest(slots), "in-range signpost palette slots validate")
+  local placement = validManifest()
+  placement.dialogueFrames.continueCursor.placement = { x = 232, y = 160, width = 16, height = 16 }
+  Assert.isTrue(FieldUiAssetCache.validateManifest(placement), "a supported cursor placement validates")
+end
+
+-- Malformed live metadata stays cold: every independently corrupted persisted
+-- manifest is rejected by validation and reads not-ready, while restoring
+-- the valid manifest returns readiness.
+function T.persisted_malformed_manifests_are_not_ready_until_restored()
+  local marker = FieldUiAssetCache.marker("rom-sha", "dep-hash")
+  local corruptions = {
+    ["missing required section"] = function(m)
+      m.dialogueFrames = nil
+    end,
+    ["atlas escape"] = function(m)
+      m.startMenu.background = { x = 0, y = 0, width = 257, height = 192 }
+    end,
+    ["corrupt palette slot"] = function(m)
+      m.signposts.types[0].palette[0] = { r = 256, g = 0, b = 0 }
+    end,
+    ["zero cursor timing"] = function(m)
+      m.dialogueFrames.continueCursor.framePrinterTicks = 0
+    end,
+  }
+  for name, mutate in pairs(corruptions) do
+    local manifest = validManifest()
+    mutate(manifest)
+    local ok, err = FieldUiAssetCache.validateManifest(manifest)
+    Assert.isFalse(ok, "the corrupted manifest is rejected (" .. name .. ")")
+    Assert.equal(assert(err).code, "FIELD_UI_MANIFEST_INVALID", "the owned error is reported (" .. name .. ")")
+    local cache = publishedCache(manifest)
+    Assert.isFalse(
+      FieldUiAssetCache.isReady(cache, marker),
+      "the corrupted persisted manifest is not ready (" .. name .. ")"
+    )
+    cache:writeLua(FieldUiAssetCache.manifestPath(), validManifest())
+    Assert.isTrue(
+      FieldUiAssetCache.isReady(cache, marker),
+      "restoring the valid manifest returns readiness (" .. name .. ")"
+    )
+  end
+end
+
+-- An unrelated failure during validation is not reported as invalid data:
+-- the sentinel raised by test-local input access escapes unchanged, with no
+-- success result and no invalid-manifest substitution.
+function T.unrelated_access_failure_escapes_without_invalid_manifest_substitution()
+  local sentinel = {}
+  local manifest = setmetatable({}, {
+    __index = function()
+      error(sentinel, 0)
+    end,
+  })
+  local ok, err = pcall(FieldUiAssetCache.validateManifest, manifest)
+  Assert.isFalse(ok, "an unrelated access failure is not a success")
+  Assert.isTrue(err == sentinel, "the unrelated failure escapes unchanged")
+end
+
+-- A player subject without its source anchor is malformed data, not a
+-- traversal accident: validation reports the owned invalid-manifest error
+-- instead of raising a raw indexing failure.
+function T.player_subject_without_anchor_is_rejected_as_invalid_manifest()
+  local manifest = validManifest()
+  manifest.namingScreen.playerSubjects.female.anchor = nil
+  local ok, err = FieldUiAssetCache.validateManifest(manifest)
+  Assert.isFalse(ok, "a subject without its source anchor must fail")
+  Assert.equal(assert(err).code, "FIELD_UI_MANIFEST_INVALID", "the owned error names the malformed anchor")
+end
+
 return { tests = T }
