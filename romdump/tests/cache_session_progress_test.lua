@@ -2069,4 +2069,114 @@ function T.both_milestone_rosters_enroll_their_scopes()
   end)
 end
 
+-- Readiness and progress keep their distinct answers without doing new
+-- work: an unenrolled scope reports pending readiness and denominatorless
+-- progress, an enrolled-but-cold roster counts zero of its full denominator,
+-- one proven member advances the count without certifying the scope, and
+-- failures of different classes keep roster-order precedence in both views.
+function T.readiness_and_progress_keep_distinct_answers_without_new_work()
+  local env = newEnv("readiness-progress-generation", 4)
+  local session = openSession(env)
+  local ready, failure = session:requestJob("source-plan", "global", "required")
+  Assert.isFalse(ready, "the inventory starts pending")
+  Assert.isNil(failure, "the inventory reports no failure")
+  pump(session, 10)
+  stageSynthetic(env)
+  env.pool:complete("source-plan:global")
+  pump(session, 10)
+  Assert.isTrue(session.sourceLoaded, "the staged inventory adopts membership")
+  withFixtureFacts(env, function()
+    -- The planning closure resolves entirely inside the adopted synthetic
+    -- inventory, so its roster/count view and its enrollment/readiness
+    -- facts can be told apart without inventing membership.
+    local requested, requestFailure = session:requestMilestone("field-planning", "required")
+    Assert.isFalse(requested, "the scope stays pending until the pump runs")
+    Assert.isNil(requestFailure, "registration reports no failure")
+    local early = session:milestoneStatus("field-planning")
+    Assert.equal(early.state, "pending", "progress stays pending before the roster builds")
+    Assert.equal(early.ready, 0, "progress counts no ready members before the roster builds")
+    Assert.isNil(early.total, "progress reports no denominator before the roster builds")
+    Assert.isFalse(session:status().settled, "the unenrolled scope never settles")
+    Assert.isTrue(drainLocal(session), "local planning enrolls the roster")
+    local members = assert(session.roster["field-planning"], "the planning roster is retained")
+    Assert.equal(#members, #ArtifactJobs.fieldPlanningJobs(), "the retained roster covers the static membership")
+    Assert.isTrue(#members > 1, "the planning roster names more than one member")
+    local enrolled = session:milestoneStatus("field-planning")
+    Assert.equal(enrolled.state, "pending", "the enrolled-but-cold scope reports pending progress")
+    Assert.equal(enrolled.ready, 1, "only the adopted inventory member counts as ready")
+    Assert.equal(enrolled.total, #members, "the built roster carries its denominator")
+    local createdBefore = #env.pool.created
+    for _ = 1, 3 do
+      local polled, pollFailure = session:requestMilestone("field-planning", "required")
+      Assert.isFalse(polled, "repeated polls stay pending")
+      Assert.isNil(pollFailure, "repeated polls report no failure")
+      session:status()
+      session:milestoneStatus("field-planning")
+    end
+    Assert.equal(#env.pool.created, createdBefore, "observations admit no new work")
+    -- One proven member advances the count without certifying the scope:
+    -- the world catalog has no prerequisites, so its proof settles alone.
+    writeReceipt(env, "world-catalog", "global")
+    env.pool:complete("world-catalog:global")
+    pump(session, 10)
+    local partial = session:milestoneStatus("field-planning")
+    Assert.equal(partial.state, "pending", "one proven member leaves progress pending")
+    Assert.equal(partial.ready, 2, "progress counts the proven member")
+    Assert.equal(partial.total, #members, "the denominator survives partial progress")
+    local stillPending, stillFailure = session:requestMilestone("field-planning", "required")
+    Assert.isFalse(stillPending, "one proven member never certifies the scope")
+    Assert.isNil(stillFailure, "partial progress reports no failure")
+  end)
+  -- Two failure classes in roster order on the runtime scope: the adopted
+  -- synthetic inventory carries no 750 closure, so enrollment excludes
+  -- that member while a directly failed lead keeps its own class. Both
+  -- views keep roster-order precedence while each entry keeps its class.
+  -- A fresh session keeps terminal settlement readable: the planning scope
+  -- above stays pending on purpose.
+  local runtimeEnv = newEnv("readiness-progress-runtime", 4)
+  local runtimeSession = openSession(runtimeEnv)
+  local inventoryReady, inventoryFailure = runtimeSession:requestJob("source-plan", "global", "required")
+  Assert.isFalse(inventoryReady, "the runtime inventory starts pending")
+  Assert.isNil(inventoryFailure, "the runtime inventory reports no failure")
+  pump(runtimeSession, 10)
+  stageSynthetic(runtimeEnv)
+  runtimeEnv.pool:complete("source-plan:global")
+  pump(runtimeSession, 10)
+  Assert.isTrue(runtimeSession.sourceLoaded, "the staged runtime inventory adopts membership")
+  withFixtureFacts(runtimeEnv, function()
+    local runtimeRequested, runtimeFailure = runtimeSession:requestMilestone("field-runtime", "required")
+    Assert.isFalse(runtimeRequested, "the runtime scope stays pending until the pump runs")
+    Assert.isNil(runtimeFailure, "registration reports no failure")
+    Assert.isTrue(drainLocal(runtimeSession), "local planning enrolls the runtime roster")
+    local runtimeMembers = assert(runtimeSession.roster["field-runtime"], "the runtime roster is retained")
+    local firstKey = runtimeMembers[1].kind .. ":" .. runtimeMembers[1].key
+    local closureEntry = assert(runtimeSession.byKey["audio-bank:750"], "the unknown closure stays retained")
+    Assert.equal(closureEntry.failureClass, "source-exclusion", "the unknown closure keeps its class")
+    Assert.isTrue(
+      tostring(closureEntry.failure):find("no such closure", 1, true) ~= nil,
+      "the unknown closure carries its cause: " .. tostring(closureEntry.failure)
+    )
+    runtimeEnv.pool:fail(firstKey, "synthetic lead failure")
+    pump(runtimeSession, 10)
+    local failedReady, failedFailure = runtimeSession:requestMilestone("field-runtime", "required")
+    Assert.isFalse(failedReady, "a failed scope never answers ready")
+    Assert.isTrue(
+      tostring(failedFailure):find("synthetic lead failure", 1, true) ~= nil,
+      "readiness carries the roster-first cause: " .. tostring(failedFailure)
+    )
+    local failedProgress = runtimeSession:milestoneStatus("field-runtime")
+    Assert.equal(failedProgress.state, "failed", "progress reports the failure")
+    Assert.isTrue(
+      tostring(failedProgress.failure):find("synthetic lead failure", 1, true) ~= nil,
+      "progress carries the roster-first cause: " .. tostring(failedProgress.failure)
+    )
+    local leadEntry = assert(runtimeSession.byKey[firstKey], "the failed lead stays retained")
+    Assert.equal(leadEntry.failureClass, "job", "the direct leaf failure keeps its class")
+    local failedStatus = runtimeSession:status()
+    Assert.isTrue(failedStatus.settled, "the terminally failed scope settles")
+    Assert.isFalse(failedStatus.complete, "a failure never attests completion")
+    Assert.isTrue(failedStatus.failed >= 2, "both failure classes stay visible")
+  end)
+end
+
 return { tests = T }

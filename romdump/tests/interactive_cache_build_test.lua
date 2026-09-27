@@ -5322,4 +5322,159 @@ function T.static_membership_survives_source_and_page_adoption()
   Assert.deepEqual(sourceFirst.portraitPages, layoutFirst.portraitPages, "both orders reach the same closure")
 end
 
+-- Scope settlement stays parity across scope states: bootstrap reads
+-- observable without an explicit request, a requested scope stays pending
+-- through enrollment, cold intro membership without adopted inventory never
+-- answers ready, a failed member settles its scope with its cause while a
+-- pending sibling stays pending, an unrelated background failure never
+-- settles pending required work, a metadata failure settles without
+-- attesting completion, bare complete intent attests nothing, and
+-- retirement masks milestone work again.
+function T.status_settles_each_scope_from_its_own_retained_evidence()
+  local backend = FakeCache.new()
+  local pool = retryCapablePool()
+  local session, _ = isolatedSession("scope-parity-idle", pool, backend)
+  local idle = session:status()
+  Assert.equal(idle.bootstrap, "pending", "bootstrap is observable without an explicit request")
+  Assert.isTrue(idle.settled, "an idle session with no intent settles vacuously")
+  Assert.isFalse(idle.complete, "idleness never attests completion")
+  local idleMilestone = session:milestoneStatus("bootstrap")
+  Assert.equal(idleMilestone.state, "pending", "an unbuilt roster reports pending, never success")
+  Assert.equal(idleMilestone.ready, 0, "an unbuilt roster counts no ready members")
+  Assert.isNil(idleMilestone.total, "an unbuilt roster reports no denominator")
+  local ready, requestFailure = session:requestMilestone("bootstrap", "required")
+  Assert.isFalse(ready, "the requested scope stays pending until the pump runs")
+  Assert.isNil(requestFailure, "registration reports no failure")
+  local requested = session:status()
+  Assert.equal(requested.bootstrap, "pending", "the requested scope stays pending through enrollment")
+  Assert.isFalse(requested.settled, "a pending requested scope never settles")
+  local requestedMilestone = session:milestoneStatus("bootstrap")
+  Assert.equal(requestedMilestone.state, "pending", "progress stays pending through enrollment")
+  Assert.isNil(requestedMilestone.total, "progress reports no denominator before the roster builds")
+  pool.states["field-font:global"] = "ready"
+  for _ = 1, 20 do
+    session:update()
+  end
+  local warm, warmFailure = session:requestMilestone("bootstrap", "required")
+  Assert.isTrue(warm, "the satisfied scope answers ready")
+  Assert.isNil(warmFailure, "the satisfied scope reports no failure")
+  local warmStatus = session:status()
+  Assert.equal(warmStatus.bootstrap, "ready", "the satisfied scope reads ready")
+  Assert.isTrue(warmStatus.settled, "the satisfied scope settles")
+  Assert.isFalse(warmStatus.complete, "known membership is not complete attestation")
+  local warmMilestone = session:milestoneStatus("bootstrap")
+  Assert.deepEqual(
+    { state = warmMilestone.state, ready = warmMilestone.ready, total = warmMilestone.total },
+    { state = "ready", ready = 1, total = 1 },
+    "the settled bootstrap closure reports its exact membership"
+  )
+  -- Unknown intro membership: cold intro without adopted source inventory.
+  local introBackend = FakeCache.new()
+  local introPool = retryCapablePool()
+  local introSession, _ = isolatedSession("scope-parity-intro", introPool, introBackend)
+  local introReady, introFailure = introSession:requestMilestone("new-game-intro", "required")
+  Assert.isFalse(introReady, "the intro stays pending until its inventory arrives")
+  Assert.isNil(introFailure, "registration reports no failure")
+  for _ = 1, 10 do
+    introSession:update()
+  end
+  local coldReady, coldFailure = introSession:requestMilestone("new-game-intro", "required")
+  Assert.isFalse(coldReady, "unknown intro membership never answers ready")
+  Assert.isNil(coldFailure, "a wait for inventory is pending, never a failure")
+  local coldMilestone = introSession:milestoneStatus("new-game-intro")
+  Assert.equal(coldMilestone.state, "pending", "the unknown intro closure reports pending")
+  Assert.isNil(coldMilestone.total, "the unknown intro closure reports no denominator")
+  Assert.isFalse(introSession:status().settled, "the unknown intro scope never settles")
+  -- Member failure plus pending sibling: the failure settles the scope
+  -- with its cause while the sibling stays pending.
+  local runtimeBackend = FakeCache.new()
+  local runtimePool = retryCapablePool()
+  local runtimeSession, _ = isolatedSession("scope-parity-runtime", runtimePool, runtimeBackend)
+  local runtimeReady, runtimeFailure = runtimeSession:requestMilestone("field-runtime", "required")
+  Assert.isFalse(runtimeReady, "the runtime scope stays pending until the pump runs")
+  Assert.isNil(runtimeFailure, "registration reports no failure")
+  for _ = 1, 10 do
+    runtimeSession:update()
+  end
+  local roster = assert(runtimeSession.roster["field-runtime"], "the runtime roster is retained")
+  Assert.isTrue(#roster > 1, "the runtime roster names more than one member")
+  local firstKey = roster[1].kind .. ":" .. roster[1].key
+  local siblingKey = roster[2].kind .. ":" .. roster[2].key
+  runtimePool.states[firstKey] = { state = "failed", details = { error = "synthetic first failure" } }
+  for _ = 1, 10 do
+    runtimeSession:update()
+  end
+  local failedReady, failedFailure = runtimeSession:requestMilestone("field-runtime", "required")
+  Assert.isFalse(failedReady, "a failed member never answers ready")
+  Assert.isTrue(
+    tostring(failedFailure):find("synthetic first failure", 1, true) ~= nil,
+    "the scope carries the member cause: " .. tostring(failedFailure)
+  )
+  local failedMilestone = runtimeSession:milestoneStatus("field-runtime")
+  Assert.equal(failedMilestone.state, "failed", "progress reports the member failure")
+  Assert.isTrue(
+    tostring(failedMilestone.failure):find("synthetic first failure", 1, true) ~= nil,
+    "progress carries the member cause: " .. tostring(failedMilestone.failure)
+  )
+  local sibling = runtimeSession.byKey[siblingKey]
+  Assert.notNil(sibling, "the pending sibling stays retained")
+  Assert.isNil(sibling.failure, "the pending sibling carries no failure")
+  Assert.isFalse(sibling.ready, "the pending sibling never borrows the failure as readiness")
+  local failedStatus = runtimeSession:status()
+  Assert.equal(failedStatus.failed, 1, "exactly the failed member counts as failed")
+  Assert.isTrue(failedStatus.settled, "the terminally failed scope settles")
+  -- An unrelated failed background job never settles pending required work.
+  local scopeBackend = FakeCache.new()
+  local scopePool = retryCapablePool()
+  local scopeSession, _ = isolatedSession("scope-parity-background", scopePool, scopeBackend)
+  scopeSession.messageBankIds = { 31511 }
+  local scopeReady, scopeFailure = scopeSession:requestMilestone("bootstrap", "required")
+  Assert.isFalse(scopeReady, "the required scope stays pending until the pump runs")
+  Assert.isNil(scopeFailure, "registration reports no failure")
+  local coldBackground, coldBackgroundFailure = scopeSession:requestJob("message-bank", "31511", "near")
+  Assert.isFalse(coldBackground, "the cold background bank answers pending")
+  Assert.isNil(coldBackgroundFailure, "registration reports no failure")
+  scopePool.states["message-bank:31511"] = { state = "failed", details = { error = "synthetic background failure" } }
+  for _ = 1, 10 do
+    scopeSession:update()
+  end
+  local stillPending, stillFailure = scopeSession:requestMilestone("bootstrap", "required")
+  Assert.isFalse(stillPending, "the required scope stays pending past an unrelated failure")
+  Assert.isNil(stillFailure, "the required scope reports no failure of its own")
+  local scopeStatus = scopeSession:status()
+  Assert.isFalse(scopeStatus.settled, "an unrelated failure never settles pending required work")
+  Assert.equal(scopeStatus.failed, 1, "exactly the background job counts as failed")
+  Assert.equal(scopeStatus.bootstrap, "pending", "the required scope stays pending")
+  -- A metadata failure settles without attesting completion.
+  introPool.states["source-plan:global"] = { state = "failed", details = { error = "synthetic inventory failure" } }
+  for _ = 1, 10 do
+    introSession:update()
+  end
+  local metaStatus = introSession:status()
+  Assert.isTrue(metaStatus.settled, "a metadata failure settles")
+  Assert.isFalse(metaStatus.complete, "a failure never attests completion")
+  Assert.isTrue(metaStatus.failed >= 1, "the metadata failure stays visible")
+  Assert.isTrue(
+    table.concat(metaStatus.failures, " |"):find("synthetic inventory failure", 1, true) ~= nil,
+    "the metadata cause stays visible"
+  )
+  -- Bare complete intent without exhaustion attests nothing.
+  local completeBackend = FakeCache.new()
+  local completePool = retryCapablePool()
+  local completeSession, _ = isolatedSession("scope-parity-complete", completePool, completeBackend)
+  local completeReady, completeFailure = completeSession:requestComplete("required")
+  Assert.isFalse(completeReady, "an unexhausted complete build stays pending")
+  Assert.isNil(completeFailure, "registration reports no failure")
+  for _ = 1, 5 do
+    completeSession:update()
+  end
+  Assert.isFalse(completeSession:status().complete, "an unexhausted build never attests completion")
+  Assert.isFalse(completeSession:status().settled, "an unexhausted build never settles")
+  -- Retirement masks milestone work again.
+  session:retire()
+  local retired = session:status()
+  Assert.equal(retired.bootstrap, "pending", "retirement stops observing milestone work")
+  Assert.isTrue(retired.settled, "retirement settles the session")
+end
+
 return { metadata = { capabilities = {} }, tests = T }

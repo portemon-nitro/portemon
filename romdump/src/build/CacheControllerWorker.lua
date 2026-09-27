@@ -330,9 +330,13 @@ function Worker:_invoke(params)
 end
 
 ---@param params table<string, unknown>
----@return table<string, unknown> observation with state/completed/total/errorCode/errorMessage
+---@return table<string, unknown> observation with terminal state/errorCode/errorMessage only
 function Worker:_observe(params)
-  local observation = { state = "pending", completed = 0, total = 0, errorCode = "", errorMessage = "" }
+  -- Terminal observation only: request packets carry state and failure
+  -- facts, never progress counts, so readiness answers decide alone.
+  -- Progress stays on the session milestoneStatus boundary for its own
+  -- consumers; this observation performs no progress query.
+  local observation = { state = "pending", errorCode = "", errorMessage = "" }
   if self.session == nil then
     observation.state = "failed"
     observation.errorCode = "no-selection"
@@ -356,19 +360,6 @@ function Worker:_observe(params)
   end
   if ready then
     observation.state = "ready"
-    observation.completed = 1
-    observation.total = 1
-  end
-  if params.requestKind == "milestone" then
-    local statusOk, snapshot = pcall(function()
-      return self.session:milestoneStatus(params.name)
-    end)
-    if statusOk and type(snapshot) == "table" then
-      observation.completed = tonumber(snapshot.ready) or observation.completed
-      if snapshot.total ~= nil then
-        observation.total = tonumber(snapshot.total) or observation.total
-      end
-    end
   end
   return observation
 end

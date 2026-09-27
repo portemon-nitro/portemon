@@ -126,6 +126,11 @@ local MILESTONE_FILES = {
   ["field-runtime"] = "data/generated/field-runtime.lua",
 }
 
+-- Fixed status observation order. Bootstrap stays observable without an
+-- explicit milestone request; every other name is observed only while
+-- requested. This is a closed traversal list, not an extension registry.
+local STATUS_MILESTONES = { "bootstrap", "new-game-intro", "field-planning", "field-runtime" }
+
 -- One update advances at most this many dependency/validation nodes, Urgent
 -- demand first; the remainder waits for the next update. A single metadata
 -- read is indivisible and never preempted by the slice below.
@@ -3060,77 +3065,53 @@ function InteractiveCacheBuild:_completeExpansionReady()
   return self.completeUrgency ~= nil and not self.completeExhausted and self.sourceLoaded and self.pagesKnown
 end
 
+---@param name string bootstrap, new-game-intro, field-planning, or field-runtime
+---@param requested boolean an explicit milestone intent observes this scope
+---@return string state ready, failed, or pending from retained readiness facts
+---@return boolean failed the scope settles its requested work with a failure
+function InteractiveCacheBuild:_statusMilestone(name, requested)
+  -- One shared readiness interpretation: the retained roster answer
+  -- decides, and only a requested scope contributes its failure to the
+  -- requested-scope aggregate. Bootstrap stays observable without an
+  -- explicit intent, so its unrequested failure never settles work.
+  local ready, failure = self:_retainedMilestoneAnswer(name)
+  if ready then
+    return "ready", false
+  end
+  if failure ~= nil then
+    return "failed", requested
+  end
+  return "pending", false
+end
+
 ---@return table<string, unknown>
 function InteractiveCacheBuild:status()
   -- Read-only retained observation: no cache IO, no validation, no pool
   -- polling. Queued and running follow the last pump-observed pool states;
   -- settled and planningPending carry the exact readiness contract.
-  local bootstrapState, newGameIntroState = "pending", "pending"
-  local planningState, runtimeState = "pending", "pending"
-  local bootstrapFailed, newGameIntroFailed = false, false
-  local planningFailed, runtimeFailed = false, false
+  -- Milestone states below come from the one shared readiness helper;
+  -- retirement masks every scope back to pending. The progress projection
+  -- in milestoneStatus keeps its own separate denominator semantics.
+  local states = {
+    bootstrap = "pending",
+    ["new-game-intro"] = "pending",
+    ["field-planning"] = "pending",
+    ["field-runtime"] = "pending",
+  }
+  local milestoneFailed = false
   if not self.retired then
-    local bootstrapMembers = self.roster["bootstrap"]
-    if bootstrapMembers ~= nil then
-      local bootstrapReady, bootstrapFailure = self:_milestoneAnswer("bootstrap", bootstrapMembers)
-      if bootstrapReady then
-        bootstrapState = "ready"
-      elseif bootstrapFailure ~= nil then
-        bootstrapState = "failed"
-        bootstrapFailed = self.milestones["bootstrap"] ~= nil
-      end
-    end
-    for _, name in ipairs({ "field-planning", "field-runtime" }) do
-      if self.milestones[name] ~= nil then
-        if self.rosterFailure[name] ~= nil then
-          if name == "field-planning" then
-            planningState = "failed"
-            planningFailed = true
-          else
-            runtimeState = "failed"
-            runtimeFailed = true
-          end
-        else
-          local members = self.roster[name]
-          if members ~= nil then
-            local ready, failure = self:_milestoneAnswer(name, members)
-            if ready then
-              if name == "field-planning" then
-                planningState = "ready"
-              else
-                runtimeState = "ready"
-              end
-            elseif failure ~= nil then
-              if name == "field-planning" then
-                planningState = "failed"
-                planningFailed = true
-              else
-                runtimeState = "failed"
-                runtimeFailed = true
-              end
-            end
-          end
-        end
-      end
-    end
-    if self.milestones["new-game-intro"] ~= nil then
-      if self.rosterFailure["new-game-intro"] ~= nil then
-        newGameIntroState = "failed"
-        newGameIntroFailed = true
-      else
-        local introMembers = self.roster["new-game-intro"]
-        if introMembers ~= nil then
-          local introReady, introFailure = self:_milestoneAnswer("new-game-intro", introMembers)
-          if introReady then
-            newGameIntroState = "ready"
-          elseif introFailure ~= nil then
-            newGameIntroState = "failed"
-            newGameIntroFailed = true
-          end
+    for _, name in ipairs(STATUS_MILESTONES) do
+      local requested = self.milestones[name] ~= nil
+      if name == "bootstrap" or requested then
+        local state, failed = self:_statusMilestone(name, requested)
+        states[name] = state
+        if failed then
+          milestoneFailed = true
         end
       end
     end
   end
+  local bootstrapState = states["bootstrap"]
   -- Settlement is scope-relative: every retained milestone intent and
   -- every directly requested entry must be terminal, and successful
   -- settlement additionally needs the authorized enumeration exhausted.
@@ -3159,17 +3140,10 @@ function InteractiveCacheBuild:status()
   end
   local milestonesTerminal = true
   if not self.retired then
-    if self.milestones["bootstrap"] ~= nil and bootstrapState == "pending" then
-      milestonesTerminal = false
-    end
-    if self.milestones["new-game-intro"] ~= nil and newGameIntroState == "pending" then
-      milestonesTerminal = false
-    end
-    if self.milestones["field-planning"] ~= nil and planningState == "pending" then
-      milestonesTerminal = false
-    end
-    if self.milestones["field-runtime"] ~= nil and runtimeState == "pending" then
-      milestonesTerminal = false
+    for _, name in ipairs(STATUS_MILESTONES) do
+      if self.milestones[name] ~= nil and states[name] == "pending" then
+        milestonesTerminal = false
+      end
     end
   end
   -- Settlement is scope-relative and truthful: successful settlement
@@ -3181,7 +3155,6 @@ function InteractiveCacheBuild:status()
   -- unrelated failed job never settles around still-pending work.
   -- Success never settles around running work.
   local completeDone = self.completeUrgency == nil or self.completeExhausted
-  local milestoneFailed = bootstrapFailed or newGameIntroFailed or planningFailed or runtimeFailed
   local metadataFailed = false
   if #failures > 0 then
     local sourceOwner = self.byKey["source-plan:global"]
