@@ -1534,4 +1534,249 @@ T["strength flag action stays explicitly unsupported"] = function()
   Assert.equal(lowered.unsupported[1].command, 400)
 end
 
+-- a label on the branch keeps both instructions separate and enterable: the
+-- compare survives on its own and the branch lowers to its primitive
+-- compared form behind a label step.
+T["compare branch fold keeps one provenance until a label blocks it"] = function()
+  local function lower(labelOn)
+    local instructions = {
+      { opcode = 17, operands = { { raw = 1 }, { raw = 2 } }, offset = 0x20 },
+      { opcode = 28, operands = { { raw = 1 }, { raw = "_END" } }, offset = 0x26 },
+      { opcode = 2, operands = {}, offset = 0x2D, label = "_END" },
+    }
+    if labelOn == "head" then
+      instructions[1].label = "_HEAD"
+    elseif labelOn == "branch" then
+      instructions[2].label = "_MID"
+    end
+    local script = { label = "_ENTRY", instructions = instructions }
+    local memberIr = { member = 5, scripts = { [0] = script }, movements = {} }
+    local lowered = SemanticLowering.lowerScript(script, memberIr, { stdCatalog = SourceCatalog.catalog() })
+    return script, memberIr, lowered
+  end
+  local function checkAccounted(script, lowered)
+    local seen = {}
+    for _, item in ipairs(lowered.items) do
+      if item.provenance ~= nil then
+        for _, offset in ipairs(item.provenance.offsets) do
+          seen[offset] = true
+        end
+      end
+    end
+    for _, omission in ipairs(lowered.omissions) do
+      seen[omission.offset] = true
+    end
+    for _, ins in ipairs(script.instructions) do
+      Assert.isTrue(seen[ins.offset], "offset " .. ins.offset .. " disappears unaccounted")
+    end
+  end
+  local function checkVerifies(script, memberIr, lowered)
+    local steps = Structurer.structure(lowered, 0)
+    local report = Verifier.verifyScript(steps, script, memberIr, lowered.omissions)
+    Assert.isTrue(report.ok, report.problems[1] and report.problems[1].message or "fold must verify")
+    Assert.isTrue(report.complete)
+  end
+  local foldedCondition = { condition = "compare", operator = "eq", left = 1, right = 2 }
+  -- No interior label: one conditional node carries both source offsets.
+  do
+    local script, memberIr, lowered = lower("none")
+    Assert.deepEqual(lowered.items, {
+      {
+        op = "if_cond",
+        condition = foldedCondition,
+        target = "_END",
+        provenance = { offsets = { 0x20, 0x26 }, opcodes = { 17, 28 } },
+      },
+      { op = "label", name = "_END", offset = 0x2D },
+      { op = "stop", provenance = { offsets = { 0x2D }, opcodes = { 2 } } },
+    })
+    Assert.equal(#lowered.unsupported, 0)
+    Assert.equal(#lowered.omissions, 0)
+    checkAccounted(script, lowered)
+    checkVerifies(script, memberIr, lowered)
+  end
+  -- A label on the fold head still folds, with the entry label first.
+  do
+    local script, memberIr, lowered = lower("head")
+    Assert.deepEqual(lowered.items, {
+      { op = "label", name = "_HEAD", offset = 0x20 },
+      {
+        op = "if_cond",
+        condition = foldedCondition,
+        target = "_END",
+        provenance = { offsets = { 0x20, 0x26 }, opcodes = { 17, 28 } },
+      },
+      { op = "label", name = "_END", offset = 0x2D },
+      { op = "stop", provenance = { offsets = { 0x2D }, opcodes = { 2 } } },
+    })
+    Assert.equal(#lowered.unsupported, 0)
+    Assert.equal(#lowered.omissions, 0)
+    checkAccounted(script, lowered)
+    checkVerifies(script, memberIr, lowered)
+  end
+  -- A label on the branch blocks the fold: both sides keep their own
+  -- provenance and the labeled branch stays enterable.
+  do
+    local script, memberIr, lowered = lower("branch")
+    Assert.deepEqual(lowered.items, {
+      {
+        op = "compare",
+        left = 1,
+        right = 2,
+        provenance = { offsets = { 0x20 }, opcodes = { 17 } },
+      },
+      { op = "label", name = "_MID", offset = 0x26 },
+      {
+        op = "goto_compared",
+        operator = "eq",
+        target = "_END",
+        provenance = { offsets = { 0x26 }, opcodes = { 28 } },
+      },
+      { op = "label", name = "_END", offset = 0x2D },
+      { op = "stop", provenance = { offsets = { 0x2D }, opcodes = { 2 } } },
+    })
+    Assert.equal(#lowered.unsupported, 0)
+    Assert.equal(#lowered.omissions, 0)
+    checkAccounted(script, lowered)
+    checkVerifies(script, memberIr, lowered)
+  end
+end
+
+-- The message/wait/close triplet folds into one say node with the three
+-- source offsets, while a label on the wait or the close keeps the print
+-- message (with its native print wait), the button wait and the close as
+-- separate provenance-carrying steps.
+T["message wait close folds into one say until a label blocks it"] = function()
+  local function lower(labelOn)
+    local instructions = {
+      { opcode = 45, operands = { { raw = 97 } }, offset = 0x20 },
+      { opcode = 50, operands = {}, offset = 0x23 },
+      { opcode = 53, operands = {}, offset = 0x25 },
+      { opcode = 2, operands = {}, offset = 0x27 },
+    }
+    if labelOn == "head" then
+      instructions[1].label = "_HEAD"
+    elseif labelOn == "wait" then
+      instructions[2].label = "_MID"
+    elseif labelOn == "close" then
+      instructions[3].label = "_MID2"
+    end
+    local script = { label = "_ENTRY", instructions = instructions }
+    local memberIr = { member = 5, scripts = { [0] = script }, movements = {} }
+    local lowered = SemanticLowering.lowerScript(script, memberIr, { stdCatalog = SourceCatalog.catalog() })
+    return script, memberIr, lowered
+  end
+  local function checkVerifies(script, memberIr, lowered)
+    local steps = Structurer.structure(lowered, 0)
+    local report = Verifier.verifyScript(steps, script, memberIr, lowered.omissions)
+    Assert.isTrue(report.ok, report.problems[1] and report.problems[1].message or "say fold must verify")
+    Assert.isTrue(report.complete)
+  end
+  local foldedSay = {
+    op = "say",
+    message = 97,
+    provenance = { offsets = { 0x20, 0x23, 0x25 }, opcodes = { 45, 50, 53 } },
+  }
+  local stop = { op = "stop", provenance = { offsets = { 0x27 }, opcodes = { 2 } } }
+  do
+    local script, memberIr, lowered = lower("none")
+    Assert.deepEqual(lowered.items, { foldedSay, stop })
+    checkVerifies(script, memberIr, lowered)
+  end
+  do
+    local script, memberIr, lowered = lower("head")
+    Assert.deepEqual(lowered.items, {
+      { op = "label", name = "_HEAD", offset = 0x20 },
+      foldedSay,
+      stop,
+    })
+    checkVerifies(script, memberIr, lowered)
+  end
+  do
+    local _, _, lowered = lower("wait")
+    local ops = {}
+    for _, item in ipairs(lowered.items) do
+      ops[#ops + 1] = item.op
+    end
+    Assert.deepEqual(ops, { "message", "label", "wait_input", "close_message", "stop" })
+    Assert.equal(lowered.items[1].waitForPrint, true)
+    Assert.deepEqual(lowered.items[1].provenance, { offsets = { 0x20 }, opcodes = { 45 } })
+    Assert.equal(lowered.items[2].name, "_MID")
+    Assert.deepEqual(lowered.items[3].provenance, { offsets = { 0x23 }, opcodes = { 50 } })
+    Assert.deepEqual(lowered.items[4].provenance, { offsets = { 0x25 }, opcodes = { 53 } })
+  end
+  do
+    local _, _, lowered = lower("close")
+    local ops = {}
+    for _, item in ipairs(lowered.items) do
+      ops[#ops + 1] = item.op
+    end
+    Assert.deepEqual(ops, { "message", "wait_input", "label", "close_message", "stop" })
+    Assert.equal(lowered.items[1].waitForPrint, true)
+    Assert.equal(lowered.items[3].name, "_MID2")
+    Assert.deepEqual(lowered.items[4].provenance, { offsets = { 0x25 }, opcodes = { 53 } })
+  end
+  for _, labelOn in ipairs({ "wait", "close" }) do
+    local script, memberIr, blocked = lower(labelOn)
+    Assert.equal(#blocked.unsupported, 0)
+    Assert.equal(#blocked.omissions, 0)
+    checkVerifies(script, memberIr, blocked)
+  end
+end
+
+-- Unsupported opcodes keep their attributed diagnostic node and erased
+-- Nop/Dummy instructions keep omission records when they sit beside a
+-- fold: every source offset stays accounted and the script verifies as
+-- explicitly partial.
+T["unsupported and omitted instructions stay accounted beside folds"] = function()
+  local instructions = {
+    { opcode = 17, operands = { { raw = 1 }, { raw = 2 } }, offset = 0x20 },
+    { opcode = 28, operands = { { raw = 1 }, { raw = "_END" } }, offset = 0x26 },
+    { opcode = 0, operands = {}, offset = 0x2D },
+    { opcode = 1, operands = {}, offset = 0x2E },
+    { opcode = 36, operands = { { raw = 1 }, { raw = 2 } }, offset = 0x2F },
+    { opcode = 2, operands = {}, offset = 0x33, label = "_END" },
+  }
+  local script = { label = "_ENTRY", instructions = instructions }
+  local memberIr = { member = 5, scripts = { [0] = script }, movements = {} }
+  local lowered = SemanticLowering.lowerScript(script, memberIr, { stdCatalog = SourceCatalog.catalog() })
+  local ops = {}
+  for _, item in ipairs(lowered.items) do
+    ops[#ops + 1] = item.op
+  end
+  Assert.deepEqual(ops, { "if_cond", "unsupported", "label", "stop" })
+  Assert.deepEqual(lowered.omissions, {
+    { offset = 0x2D, opcode = 0 },
+    { offset = 0x2E, opcode = 1 },
+  })
+  Assert.equal(#lowered.unsupported, 1)
+  Assert.equal(lowered.unsupported[1].command, 36)
+  Assert.equal(lowered.unsupported[1].originalName, "ScrCmd_SetTrainerFlag")
+  Assert.isTrue(lowered.unsupported[1] == lowered.items[2], "the diagnostic node is the emitted item")
+  Assert.deepEqual(
+    lowered.items[2].provenance,
+    { offsets = { 0x2F }, opcodes = { 36 } },
+    "the unsupported node keeps its source provenance"
+  )
+  local seen = {}
+  for _, item in ipairs(lowered.items) do
+    if item.provenance ~= nil then
+      for _, offset in ipairs(item.provenance.offsets) do
+        seen[offset] = true
+      end
+    end
+  end
+  for _, omission in ipairs(lowered.omissions) do
+    seen[omission.offset] = true
+  end
+  for _, ins in ipairs(instructions) do
+    Assert.isTrue(seen[ins.offset], "offset " .. ins.offset .. " disappears unaccounted")
+  end
+  local steps = Structurer.structure(lowered, 0)
+  local report = Verifier.verifyScript(steps, script, memberIr, lowered.omissions)
+  Assert.isTrue(report.ok, report.problems[1] and report.problems[1].message or "partial script must verify")
+  Assert.isFalse(report.complete)
+  Assert.equal(report.unsupportedCount, 1)
+end
+
 return { tests = T }

@@ -159,6 +159,47 @@ local function toMessageStep(step)
   }
 end
 
+-- One cross-script call payload naming the target script by its public id.
+-- The entry label rides along only for interior targets; a script-body
+-- target carries no label.
+---@param scriptId string
+---@param label string|nil
+---@return table<string, unknown>
+local function crossScriptCall(scriptId, label)
+  local step = { op = "call", target = scriptId }
+  if label ~= nil then
+    step.label = label
+  end
+  return step
+end
+
+-- One cross-script jump payload naming the target script by its public id.
+---@param scriptId string
+---@param label string|nil
+---@return table<string, unknown>
+local function crossScriptJump(scriptId, label)
+  local jump = { op = "goto_script", script = scriptId }
+  if label ~= nil then
+    jump.label = label
+  end
+  return jump
+end
+
+-- One conditional wrapper around a cross-script branch payload.
+---@param condition table<string, unknown>
+---@param branch table<string, unknown>
+---@param provenance table<string, unknown>|nil
+---@return table<string, unknown>
+local function wrapConditional(condition, branch, provenance)
+  return {
+    op = "if",
+    condition = condition,
+    yes = { branch },
+    no = {},
+    provenance = provenance,
+  }
+end
+
 -- Lower one script's instruction list into semantic items. `memberIr` holds
 -- the movement blocks. Folding never erases an unmodeled yield boundary.
 -- `opts.stdCatalog` (SourceCatalog) resolves CallStd targets; without it
@@ -231,38 +272,18 @@ function SemanticLowering.lowerScript(script, memberIr, opts)
           local label = memberLabels[target] ~= nil and target or nil
           local provenance = item.provenance
           if item.op == "goto" then
-            local step = { op = "goto_script", script = scriptId, provenance = provenance }
-            if label ~= nil then
-              step.label = label
-            end
+            local step = crossScriptJump(scriptId, label)
+            step.provenance = provenance
             list[i] = step
           elseif item.op == "call" then
-            local step = { op = "call", target = scriptId, provenance = provenance }
-            if label ~= nil then
-              step.label = label
-            end
+            local step = crossScriptCall(scriptId, label)
+            step.provenance = provenance
             list[i] = step
           elseif item.op == "call_if" then
-            list[i] = {
-              op = "if",
-              condition = item.condition,
-              yes = { { op = "call", target = scriptId, label = label } },
-              no = {},
-              provenance = provenance,
-            }
+            list[i] = wrapConditional(item.condition, crossScriptCall(scriptId, label), provenance)
           elseif item.op == "goto_if" or item.op == "if_cond" then
             -- A conditional cross-script jump.
-            local jump = { op = "goto_script", script = scriptId }
-            if label ~= nil then
-              jump.label = label
-            end
-            list[i] = {
-              op = "if",
-              condition = item.condition,
-              yes = { jump },
-              no = {},
-              provenance = provenance,
-            }
+            list[i] = wrapConditional(item.condition, crossScriptJump(scriptId, label), provenance)
           else
             -- The compare-state fallback forms preserve the source compare
             -- state; a cross-script target rides the same runtime state via
@@ -307,12 +328,98 @@ function SemanticLowering.lowerScript(script, memberIr, opts)
     end
   end
 
-  while index <= #instructions do
-    local ins = instructions[index]
-    local nextIns = instructions[index + 1]
-    local handler = HANDLERS[ins.opcode]
-    local foldedAhead = false
+  -- An unconsumed fold participant becomes its primitive step.
+  local function lowerUnfolded(ins)
+    local primitive
+    if ins.opcode == 53 then
+      primitive = { op = "close_message", erase = true }
+    elseif ins.opcode == 28 or ins.opcode == 29 then
+      local operator = CONDITION_OPERATORS[Operands.operandValue(ins.operands[1])] or "eq"
+      primitive = {
+        op = ins.opcode == 29 and "call_compared" or "goto_compared",
+        operator = operator,
+        target = Operands.operandValue(ins.operands[2]),
+      }
+    end
+    if primitive ~= nil then
+      local prim = withProvenance(primitive, { ins.offset }, { ins.opcode })
+      return { prim }, { ins }, nil
+    end
+    local fallbackStep = {
+      op = "unsupported",
+      command = ins.opcode,
+      originalName = CommandCatalog.name(ins.opcode),
+      arguments = {},
+      sourceOffset = ins.offset,
+      reason = "unconsumed compare-state op without a DSL carrier",
+    }
+    local fallback = withProvenance(fallbackStep, { ins.offset }, { ins.opcode })
+    return { fallback }, { ins }, { unsupported = fallback }
+  end
 
+  -- Lower one instruction through the existing handler. Returns the items
+  -- to append (provenance already attached), the instructions whose label
+  -- steps precede them, and the omission/unsupported disposition.
+  local function lowerSingle(ins)
+    local handler = HANDLERS[ins.opcode]
+    if handler == nil then
+      local step = unsupportedStep(ins, "opcode has no semantic lowering")
+      step = withProvenance(step, { ins.offset }, { ins.opcode })
+      return { step }, { ins }, { unsupported = step }
+    end
+    local step = handler(ins, memberIr, { offsets = { ins.offset }, opcodes = { ins.opcode } }, ctx)
+    if step == nil then
+      -- An explicitly erased implementation-detail instruction (Nop and
+      -- Dummy, rows 0-1): record the omission for the
+      -- verifier's no-disappearing-command check.
+      return {}, {}, { omission = { offset = ins.offset, opcode = ins.opcode } }
+    end
+    if step == "unfolded" then
+      return lowerUnfolded(ins)
+    end
+    if type(step) == "table" and type(step.steps) == "table" then
+      -- One instruction lowering to several canonical operations (e.g.
+      -- MovePersonFacing: position then facing); all steps share the
+      -- instruction's provenance.
+      local grouped = {}
+      for _, subStep in ipairs(step.steps) do
+        if subStep.op == "yield_tick" then
+          grouped[#grouped + 1] = subStep
+        else
+          grouped[#grouped + 1] = withProvenance(subStep, { ins.offset }, { ins.opcode })
+        end
+      end
+      return grouped, { ins }, nil
+    end
+    if step.op == "release_all" then
+      -- The source command unconditionally yields one frame after
+      -- unpausing. The synthesized yield has
+      -- no source instruction of its own, so it carries no provenance
+      -- (its node id is structural, avoiding a duplicate with the
+      -- release node's src: id).
+      local release = withProvenance(step, { ins.offset }, { ins.opcode })
+      return { release, { op = "yield_tick" } }, { ins }, nil
+    end
+    if step.op == "npc_msg" or step.op == "npc_msg_var" then
+      step = toMessageStep(step)
+    end
+    step = withProvenance(step, { ins.offset }, { ins.opcode })
+    if step.op == "unsupported" then
+      return { step }, { ins }, { unsupported = step }
+    end
+    return { step }, { ins }, nil
+  end
+
+  -- Lower the fold or instruction at position `at`. Fold selection keeps
+  -- its order (compare/flag plus GoToIf/CallIf first, then the message
+  -- triplet) and its labeled-entry rule; a fold consumes two or three
+  -- instructions only under the current opcode and no-interior-label
+  -- conditions. Returns the items to append, the consumed count, the
+  -- label sources, and the omission/unsupported disposition.
+  local function lowerAt(at)
+    local ins = instructions[at]
+    local nextIns = instructions[at + 1]
+    local handler = HANDLERS[ins.opcode]
     -- Compare/flag + GoToIf/CallIf fold (both remain same-tick). The fold
     -- never spans a labeled instruction: a branch target landing on the
     -- second instruction must enter at the branch (with the caller's
@@ -326,126 +433,52 @@ function SemanticLowering.lowerScript(script, memberIr, opts)
     then
       local folded = foldConditional(ins, nextIns)
       if folded ~= nil then
-        pushLabel(ins)
-        pushLabel(nextIns)
-        items[#items + 1] = folded
-        index = index + 1
-        foldedAhead = true
+        return { folded }, 2, { ins, nextIns }, nil
       end
     end
-
     -- NPCMsg/GenderMsgBox + WaitButton + CloseMsg -> say. Same labeled-entry
     -- rule: an entry point on the wait or close instruction keeps the three
     -- instructions separate.
     if
-      not foldedAhead
-      and handler ~= nil
+      handler ~= nil
       and nextIns ~= nil
-      and instructions[index + 2] ~= nil
+      and instructions[at + 2] ~= nil
       and (ins.opcode == 45 or ins.opcode == 132 or ins.opcode == 47)
       and nextIns.label == nil
-      and instructions[index + 2].label == nil
+      and instructions[at + 2].label == nil
     then
-      local step = handler(ins, memberIr, {}, ctx)
-      if type(step) == "table" and (step.op == "npc_msg" or step.op == "npc_msg_var") then
-        step = withProvenance(step, { ins.offset }, { ins.opcode })
-        local say = foldSay(step, nextIns, instructions[index + 2])
+      local probe = handler(ins, memberIr, {}, ctx)
+      if type(probe) == "table" and (probe.op == "npc_msg" or probe.op == "npc_msg_var") then
+        probe = withProvenance(probe, { ins.offset }, { ins.opcode })
+        local say = foldSay(probe, nextIns, instructions[at + 2])
         if say ~= nil then
-          pushLabel(ins)
-          pushLabel(nextIns)
-          pushLabel(instructions[index + 2])
-          items[#items + 1] = say
-          index = index + 2
-          foldedAhead = true
+          return { say }, 3, { ins, nextIns, instructions[at + 2] }, nil
         end
       end
     end
+    local appended, labelSources, diagnosis = lowerSingle(ins)
+    return appended, 1, labelSources, diagnosis
+  end
 
-    if foldedAhead then
-      -- consumed by a fold
-    elseif handler == nil then
-      local step = unsupportedStep(ins, "opcode has no semantic lowering")
-      step = withProvenance(step, { ins.offset }, { ins.opcode })
-      pushLabel(ins)
-      items[#items + 1] = step
-      unsupported[#unsupported + 1] = step
-    else
-      local step = handler(ins, memberIr, { offsets = { ins.offset }, opcodes = { ins.opcode } }, ctx)
-      if step == nil then
-        -- An explicitly erased implementation-detail instruction (Nop and
-        -- Dummy, rows 0-1): record the omission for the
-        -- verifier's no-disappearing-command check.
-        omissions[#omissions + 1] = { offset = ins.offset, opcode = ins.opcode }
-      elseif step == "unfolded" then
-        -- An unconsumed fold participant becomes its primitive step.
-        local primitive
-        if ins.opcode == 53 then
-          primitive = { op = "close_message", erase = true }
-        elseif ins.opcode == 28 or ins.opcode == 29 then
-          local operator = CONDITION_OPERATORS[Operands.operandValue(ins.operands[1])] or "eq"
-          primitive = {
-            op = ins.opcode == 29 and "call_compared" or "goto_compared",
-            operator = operator,
-            target = Operands.operandValue(ins.operands[2]),
-          }
-        end
-        if primitive ~= nil then
-          primitive = withProvenance(primitive, { ins.offset }, { ins.opcode })
-          pushLabel(ins)
-          items[#items + 1] = primitive
-        else
-          local fallbackStep = {
-            op = "unsupported",
-            command = ins.opcode,
-            originalName = CommandCatalog.name(ins.opcode),
-            arguments = {},
-            sourceOffset = ins.offset,
-            reason = "unconsumed compare-state op without a DSL carrier",
-          }
-          fallbackStep = withProvenance(fallbackStep, { ins.offset }, { ins.opcode })
-          pushLabel(ins)
-          items[#items + 1] = fallbackStep
-          unsupported[#unsupported + 1] = fallbackStep
-        end
-      elseif step ~= nil then
-        local handled = false
-        if type(step) == "table" and type(step.steps) == "table" then
-          -- One instruction lowering to several canonical operations (e.g.
-          -- MovePersonFacing: position then facing); all steps share the
-          -- instruction's provenance.
-          pushLabel(ins)
-          for _, subStep in ipairs(step.steps) do
-            if subStep.op == "yield_tick" then
-              items[#items + 1] = subStep
-            else
-              items[#items + 1] = withProvenance(subStep, { ins.offset }, { ins.opcode })
-            end
-          end
-          handled = true
-        elseif step.op == "release_all" then
-          -- The source command unconditionally yields one frame after
-          -- unpausing. The synthesized yield has
-          -- no source instruction of its own, so it carries no provenance
-          -- (its node id is structural, avoiding a duplicate with the
-          -- release node's src: id).
-          pushLabel(ins)
-          items[#items + 1] = withProvenance(step, { ins.offset }, { ins.opcode })
-          items[#items + 1] = { op = "yield_tick" }
-          handled = true
-        elseif step.op == "npc_msg" or step.op == "npc_msg_var" then
-          step = toMessageStep(step)
-        end
-        if not handled then
-          step = withProvenance(step, { ins.offset }, { ins.opcode })
-          pushLabel(ins)
-          items[#items + 1] = step
-          if step.op == "unsupported" then
-            unsupported[#unsupported + 1] = step
-          end
-        end
+  -- One index -> ordered fold/handler decision -> local emission with exact
+  -- provenance/diagnostic rules -> index advanced by consumed count.
+  while index <= #instructions do
+    local appended, consumed, labelSources, diagnosis = lowerAt(index)
+    for _, source in ipairs(labelSources) do
+      pushLabel(source)
+    end
+    for _, item in ipairs(appended) do
+      items[#items + 1] = item
+    end
+    if diagnosis ~= nil then
+      if diagnosis.omission ~= nil then
+        omissions[#omissions + 1] = diagnosis.omission
+      end
+      if diagnosis.unsupported ~= nil then
+        unsupported[#unsupported + 1] = diagnosis.unsupported
       end
     end
-    index = index + 1
+    index = index + consumed
   end
   resolveControlTargets(items)
   return { items = items, unsupported = unsupported, omissions = omissions }
