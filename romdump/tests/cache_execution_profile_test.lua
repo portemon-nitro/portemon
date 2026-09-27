@@ -790,6 +790,14 @@ function T.failure_keeps_completed_outcomes_and_marks_unrun_work_cancelled()
     + assert(profileCount(footer, "excluded"), "the footer carries its partition")
   Assert.equal(planned, reconciled, "the footer partition reconciles")
   Assert.equal(profileCount(footer, "failed"), 2)
+  Assert.isTrue(
+    footer:find('"auditPassed":false', 1, true) ~= nil,
+    "a failed scope records no audit proof, got: " .. tostring(footer)
+  )
+  Assert.isTrue(
+    footer:find('"attestationPublished":false', 1, true) ~= nil,
+    "a failed scope records no attestation, got: " .. tostring(footer)
+  )
 end
 
 -- A failing final audit cannot leave a successful complete footer: no new
@@ -820,6 +828,10 @@ function T.failed_final_audit_writes_no_successful_complete_footer()
   Assert.isTrue(
     footer:find('"auditPassed":false', 1, true) ~= nil,
     "the footer records the failed audit proof, got: " .. tostring(footer)
+  )
+  Assert.isTrue(
+    footer:find('"attestationPublished":false', 1, true) ~= nil,
+    "a failed audit publishes no attestation, got: " .. tostring(footer)
   )
 end
 
@@ -1040,9 +1052,271 @@ function T.attestation_publish_failure_leaves_completeness_false()
   assert(footer ~= nil, "the failed run still closes with a footer")
   Assert.isTrue(footer:find('"complete":false', 1, true) ~= nil, "no attestation means no completeness")
   Assert.isTrue(
+    footer:find('"auditPassed":true', 1, true) ~= nil,
+    "the audit proof stays recorded when only publication fails, got: " .. tostring(footer)
+  )
+  Assert.isTrue(
     footer:find('"attestationPublished":false', 1, true) ~= nil,
     "the footer records the missing attestation, got: " .. tostring(footer)
   )
+end
+
+-- Targeted finalization reports one exact footer combination per outcome:
+-- an already-current cache, a non-attested targeted success, an audit
+-- failure, an attestation failure, and a newly attested success each carry
+-- their own proof flags while the report keeps its readiness meaning.
+function T.targeted_finalization_reports_exact_footer_combinations()
+  env = newEnv()
+  env.stateStored = { schema = 2, generationId = "test-generation" }
+  env.stateMatches = true
+  env.auditAvailable = true
+  local currentPath = newOutputPath("matrix-current", ".jsonl")
+  local current, currentErr =
+    CacheBuilder.prepareVersion("heartgold", scopedOptions({ requirements = { "complete" }, profile = currentPath }))
+  Assert.isNil(currentErr)
+  assert(current ~= nil, "the already-current scope must return a report")
+  Assert.isTrue(current.complete, "the already-current scope stays complete")
+  Assert.equal(env.publishes, 0, "the already-current scope publishes no new attestation")
+  local _, currentFooter, _ = splitProfile(readProfile(currentPath))
+  assert(currentFooter ~= nil, "the current run still closes with a footer")
+  Assert.isTrue(currentFooter:find('"auditPassed":true', 1, true) ~= nil, "got: " .. tostring(currentFooter))
+  Assert.isTrue(currentFooter:find('"attestationPublished":false', 1, true) ~= nil, "got: " .. tostring(currentFooter))
+  Assert.isTrue(currentFooter:find('"complete":true', 1, true) ~= nil, "got: " .. tostring(currentFooter))
+
+  env = newEnv()
+  local targetedPath = newOutputPath("matrix-targeted", ".jsonl")
+  local targeted, targetedErr =
+    CacheBuilder.prepareVersion("heartgold", scopedOptions({ requirements = { "map:7" }, profile = targetedPath }))
+  Assert.isNil(targetedErr)
+  assert(targeted ~= nil, "a targeted success must return a report")
+  Assert.isTrue(targeted.requestedReady, "a targeted success must be ready")
+  Assert.isFalse(targeted.complete, "a targeted scope never claims completeness")
+  local _, targetedFooter, _ = splitProfile(readProfile(targetedPath))
+  assert(targetedFooter ~= nil, "the targeted run still closes with a footer")
+  Assert.isTrue(targetedFooter:find('"auditPassed":false', 1, true) ~= nil, "got: " .. tostring(targetedFooter))
+  Assert.isTrue(
+    targetedFooter:find('"attestationPublished":false', 1, true) ~= nil,
+    "got: " .. tostring(targetedFooter)
+  )
+  Assert.isTrue(targetedFooter:find('"complete":false', 1, true) ~= nil, "got: " .. tostring(targetedFooter))
+
+  env = newEnv()
+  local auditPath = newOutputPath("matrix-audit", ".jsonl")
+  local auditReport, auditErr =
+    CacheBuilder.prepareVersion("heartgold", scopedOptions({ requirements = { "complete" }, profile = auditPath }))
+  Assert.isNil(auditReport, "an unaudited scope must not return a success report")
+  Assert.notNil(auditErr)
+  local _, auditFooter, _ = splitProfile(readProfile(auditPath))
+  assert(auditFooter ~= nil, "the unaudited run still closes with a footer")
+  Assert.isTrue(auditFooter:find('"auditPassed":false', 1, true) ~= nil, "got: " .. tostring(auditFooter))
+  Assert.isTrue(auditFooter:find('"attestationPublished":false', 1, true) ~= nil, "got: " .. tostring(auditFooter))
+  Assert.isTrue(auditFooter:find('"complete":false', 1, true) ~= nil, "got: " .. tostring(auditFooter))
+
+  env = newEnv()
+  env.auditAvailable = true
+  env.publishFails = true
+  local attestPath = newOutputPath("matrix-attestation", ".jsonl")
+  local attestReport, attestErr =
+    CacheBuilder.prepareVersion("heartgold", scopedOptions({ requirements = { "complete" }, profile = attestPath }))
+  Assert.isNil(attestReport, "a scope without attestation must not return success")
+  Assert.notNil(attestErr)
+  local _, attestFooter, _ = splitProfile(readProfile(attestPath))
+  assert(attestFooter ~= nil, "the unattested run still closes with a footer")
+  Assert.isTrue(attestFooter:find('"auditPassed":true', 1, true) ~= nil, "got: " .. tostring(attestFooter))
+  Assert.isTrue(attestFooter:find('"attestationPublished":false', 1, true) ~= nil, "got: " .. tostring(attestFooter))
+  Assert.isTrue(attestFooter:find('"complete":false', 1, true) ~= nil, "got: " .. tostring(attestFooter))
+
+  env = newEnv()
+  env.auditAvailable = true
+  local successPath = newOutputPath("matrix-success", ".jsonl")
+  local success, successErr =
+    CacheBuilder.prepareVersion("heartgold", scopedOptions({ requirements = { "complete" }, profile = successPath }))
+  Assert.isNil(successErr)
+  assert(success ~= nil, "an attested scope must return a report")
+  Assert.isTrue(success.requestedReady, "an attested scope must be ready")
+  Assert.isTrue(success.complete, "an attested scope attests completeness")
+  Assert.equal(env.publishes, 1, "an attested scope publishes its new proof")
+  local _, successFooter, _ = splitProfile(readProfile(successPath))
+  assert(successFooter ~= nil, "the attested run still closes with a footer")
+  Assert.isTrue(successFooter:find('"auditPassed":true', 1, true) ~= nil, "got: " .. tostring(successFooter))
+  Assert.isTrue(successFooter:find('"attestationPublished":true', 1, true) ~= nil, "got: " .. tostring(successFooter))
+  Assert.isTrue(successFooter:find('"complete":true', 1, true) ~= nil, "got: " .. tostring(successFooter))
+end
+
+-- A failing evidence write outranks a failing close: the command reports
+-- the write failure, the owned handle still closes exactly once, and no
+-- success is claimed.
+function T.evidence_write_failure_outranks_close_failure()
+  env = newEnv()
+  local profilePath = newOutputPath("write-beats-close", ".jsonl")
+  local closes = 0
+  local realOpen = io.open
+  io.open = function(path, mode)
+    if path == profilePath then
+      return {
+        write = function()
+          return nil, "injected write failure"
+        end,
+        close = function()
+          closes = closes + 1
+          error("injected close failure", 0)
+        end,
+      }
+    end
+    return realOpen(path, mode)
+  end
+  local ok, report, err = pcall(
+    CacheBuilder.prepareVersion,
+    "heartgold",
+    scopedOptions({ requirements = { "map:7" }, profile = profilePath })
+  )
+  io.open = realOpen
+  os.remove(profilePath)
+  Assert.isTrue(ok, "an evidence failure is a handled command failure, not a crash")
+  Assert.isNil(report, "a command that cannot record its evidence must not claim success")
+  assert(err ~= nil, "the command reports its evidence failure")
+  Assert.isTrue(Errors.is(err), "evidence failures are structured")
+  Assert.isTrue(
+    Errors.format(err):find("cannot be written", 1, true) ~= nil,
+    "the write failure outranks the close failure, got: " .. Errors.format(err)
+  )
+  Assert.equal(closes, 1, "the owned handle closes exactly once")
+end
+
+-- A failing close outranks the underlying operational failure: the command
+-- reports the close failure instead of the build failure, and the owned
+-- handle closes exactly once.
+function T.close_failure_outranks_operational_failure()
+  env = newEnv()
+  env.failKeys["map:7"] = "WORKER_FAILED: injected failure"
+  local profilePath = newOutputPath("close-beats-operational", ".jsonl")
+  local closes = 0
+  local realOpen = io.open
+  io.open = function(path, mode)
+    if path == profilePath then
+      return {
+        write = function()
+          return true
+        end,
+        close = function()
+          closes = closes + 1
+          error("injected close failure", 0)
+        end,
+      }
+    end
+    return realOpen(path, mode)
+  end
+  local ok, report, err = pcall(
+    CacheBuilder.prepareVersion,
+    "heartgold",
+    scopedOptions({ requirements = { "map:7" }, profile = profilePath })
+  )
+  io.open = realOpen
+  os.remove(profilePath)
+  Assert.isTrue(ok, "a close failure is a handled command failure, not a crash")
+  Assert.isNil(report, "a command that cannot close its evidence must not claim success")
+  assert(err ~= nil, "the command reports its close failure")
+  Assert.isTrue(Errors.is(err), "close failures are structured")
+  Assert.isTrue(
+    Errors.format(err):find("cannot be closed", 1, true) ~= nil,
+    "the close failure outranks the operational failure, got: " .. Errors.format(err)
+  )
+  Assert.equal(closes, 1, "the owned handle closes exactly once")
+end
+
+-- A ready targeted scope writes exactly one invocation receipt after its
+-- evidence closes: the receipt proves the satisfied closure and matches
+-- the returned report.
+function T.successful_targeted_scope_writes_one_receipt_after_evidence_closes()
+  env = newEnv()
+  local identity = {
+    versionId = "heartgold",
+    generationId = "test-generation",
+    producerId = "d" .. string.rep("1", 64),
+    romSha1 = string.rep("c", 40),
+  }
+  local profilePath = newOutputPath("receipt-evidence", ".jsonl")
+  local recordPath = newOutputPath("receipt-proof", ".lua")
+  os.remove(recordPath)
+  local closes = 0
+  local realOpen = io.open
+  io.open = function(path, mode)
+    if path == profilePath then
+      local handle = realOpen(path, mode)
+      assert(handle ~= nil, "the evidence sink must open")
+      return {
+        write = function(_, data)
+          return handle:write(data)
+        end,
+        close = function()
+          closes = closes + 1
+          return handle:close()
+        end,
+      }
+    end
+    return realOpen(path, mode)
+  end
+  local ok, report, err = pcall(
+    CacheBuilder.prepareVersion,
+    "heartgold",
+    scopedOptions({
+      identity = identity,
+      requirements = { "map:7" },
+      profile = profilePath,
+      preparationRecord = recordPath,
+      saveDirectory = "/private/test-root",
+    })
+  )
+  io.open = realOpen
+  Assert.isTrue(ok, "a ready scope must finalize evidence instead of escaping: " .. tostring(report))
+  Assert.isNil(err)
+  assert(report ~= nil, "a ready scope must return a report")
+  Assert.isTrue(report.requestedReady, "a ready scope must be ready")
+  Assert.equal(closes, 1, "the owned evidence handle closes exactly once")
+  local header, footer, _ = splitProfile(readProfile(profilePath))
+  assert(header ~= nil, "the evidence opens with a header before the receipt is written")
+  assert(footer ~= nil, "the evidence closes with a footer before the receipt is written")
+  local reader = assert(io.open(recordPath, "r"), "a ready scope writes its receipt after finalization")
+  local source = reader:read("*a")
+  reader:close()
+  os.remove(recordPath)
+  local record = assert(load(source, "@receipt", "t", {}))()
+  Assert.equal(record.requestedReady, true)
+  Assert.equal(record.complete, report.complete)
+  Assert.equal(record.versionId, "heartgold")
+  Assert.equal(record.generationId, "test-generation")
+end
+
+-- A failed targeted scope leaves no invocation receipt: only a satisfied
+-- closure proves readiness.
+function T.failed_targeted_scope_leaves_no_receipt()
+  env = newEnv()
+  env.failKeys["map:7"] = "WORKER_FAILED: injected failure"
+  local identity = {
+    versionId = "heartgold",
+    generationId = "test-generation",
+    producerId = "d" .. string.rep("1", 64),
+    romSha1 = string.rep("c", 40),
+  }
+  local recordPath = newOutputPath("failed-receipt", ".lua")
+  os.remove(recordPath)
+  local report, err = CacheBuilder.prepareVersion(
+    "heartgold",
+    scopedOptions({
+      identity = identity,
+      requirements = { "map:7" },
+      preparationRecord = recordPath,
+      saveDirectory = "/private/test-root",
+    })
+  )
+  Assert.isNil(report, "a failed scope returns no report")
+  assert(err ~= nil, "a failed scope reports its cause")
+  local handle = io.open(recordPath, "r")
+  Assert.isNil(handle, "a failed scope leaves no receipt behind")
+  if handle ~= nil then
+    handle:close()
+  end
+  os.remove(recordPath)
 end
 
 -- Error text never changes another job's disposition: a failed map:40 whose
@@ -1207,6 +1481,7 @@ function T.later_version_failure_publishes_no_new_attestation()
   Assert.isNil(report, "a batch with a failed version must not succeed")
   assert(err ~= nil, "the batch reports its failure")
   Assert.equal(env.publishes, 0, "no new attestation is published when a later version fails")
+  Assert.equal(env.publishAttempts, 0, "the collection gate runs before any new attestation")
   local lines = readProfile(profilePath)
   local headers, footers = splitProfileAll(lines)
   Assert.equal(#headers, 2, "both started versions retain evidence")
@@ -1251,6 +1526,7 @@ function T.partial_publication_failure_reports_actual_effects()
   )
   Assert.isTrue(not ok or report == nil, "a batch with a failed publication must not succeed")
   Assert.equal(env.publishes, 1, "only the actual publication is recorded")
+  Assert.equal(env.publishAttempts, 2, "a failed publication stops every later publication attempt")
   Assert.equal(#env.publishedVersions, 1, "only the actual publication is recorded")
   Assert.equal(env.publishedVersions[1], "heartgold", "the first publication is preserved")
   for _, path in ipairs(env.removals) do
@@ -1466,6 +1742,7 @@ function T.later_version_recorded_failure_keeps_all_started_evidence()
     "the batch log preserves the original failure value"
   )
   Assert.equal(env.publishes, 0, "no new attestation is published when a later version fails")
+  Assert.equal(env.publishAttempts, 0, "the collection gate runs before any new attestation")
   local lines = readProfile(profilePath)
   local headers, footers = splitProfileAll(lines)
   Assert.equal(#headers, 2, "both started versions retain evidence")
@@ -1603,6 +1880,18 @@ function T.large_warm_scope_and_current_shortcut_keep_complete_evidence()
   assert(shortcutFooter ~= nil, "the current shortcut still closes with a footer")
   Assert.equal(#shortcutRows, 0, "the zero-job shortcut carries no job rows")
   Assert.equal(profileCount(shortcutFooter, "planned"), 0)
+  Assert.isTrue(
+    shortcutFooter:find('"auditPassed":true', 1, true) ~= nil,
+    "the current shortcut keeps its audit proof, got: " .. tostring(shortcutFooter)
+  )
+  Assert.isTrue(
+    shortcutFooter:find('"attestationPublished":false', 1, true) ~= nil,
+    "the current shortcut publishes no new attestation, got: " .. tostring(shortcutFooter)
+  )
+  Assert.isTrue(
+    shortcutFooter:find('"complete":true', 1, true) ~= nil,
+    "the current shortcut stays complete, got: " .. tostring(shortcutFooter)
+  )
   local nosink, nosinkErr = CacheBuilder.prepareVersion("heartgold", scopedOptions({ requirements = { "complete" } }))
   Assert.isNil(nosinkErr)
   assert(nosink ~= nil, "the same shortcut without a profile must return a report")
