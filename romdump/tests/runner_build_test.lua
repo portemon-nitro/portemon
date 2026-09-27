@@ -597,6 +597,172 @@ function T.check_dump_audits_every_ready_version_once()
   Assert.deepEqual(exitCodes, { 1, 0 }, "any failing report must fail the exit code")
 end
 
+-- Through the production seam (main.lua runs Runner.load(Cli.parse(argv))),
+-- a valid preparation command reaches preparation with the parsed scalar
+-- and array values.
+function T.parsed_prepare_command_reaches_preparation_with_its_values()
+  local realIsReady, realQuit = RomImporter.isReady, love.event.quit
+  local realOpts, realImporter = Runner.opts, Runner.importer
+  local saved = {
+    RomFs = package.loaded["romdump.src.source.RomFs"],
+    ProducerFingerprint = package.loaded["romdump.src.ProducerFingerprint"],
+    CacheBuilder = package.loaded["romdump.src.CacheBuilder"],
+  }
+  local exitCode
+  local received
+  RomImporter.isReady = function()
+    return true
+  end
+  package.loaded["romdump.src.source.RomFs"] = {
+    open = function(version)
+      Assert.equal(version, "heartgold")
+      return {
+        metadata = function()
+          return { sha1 = string.rep("b", 40) }
+        end,
+        close = function() end,
+      }
+    end,
+  }
+  package.loaded["romdump.src.ProducerFingerprint"] = {
+    checkoutBackend = function()
+      return {}
+    end,
+    appBackend = function()
+      return {}
+    end,
+    compute = function()
+      return "d" .. string.rep("1", 64)
+    end,
+  }
+  package.loaded["romdump.src.CacheBuilder"] = {
+    prepareVersion = function(version, options)
+      received = { version = version, options = options }
+      return {
+        complete = false,
+        requestedReady = true,
+        exclusions = {},
+        failures = {},
+        counts = { planned = 2, successful = 2, failed = 0, cancelled = 0, excluded = 0 },
+      }
+    end,
+  }
+  love.event.quit = function(code)
+    exitCode = code
+  end
+
+  local ok, err = xpcall(function()
+    Runner.load(Cli.parse({
+      "--prepare-cache",
+      "--version",
+      "heartgold",
+      "--require",
+      "map:7",
+      "--require",
+      "bootstrap",
+      "--rebuild",
+      "map:7",
+      "--dev",
+    }))
+  end, debug.traceback)
+  RomImporter.isReady, love.event.quit = realIsReady, realQuit
+  Runner.opts, Runner.importer = realOpts, realImporter
+  package.loaded["romdump.src.source.RomFs"] = saved.RomFs
+  package.loaded["romdump.src.ProducerFingerprint"] = saved.ProducerFingerprint
+  package.loaded["romdump.src.CacheBuilder"] = saved.CacheBuilder
+  if not ok then
+    error(err, 0)
+  end
+
+  Assert.equal(exitCode, 0)
+  Assert.equal(received.version, "heartgold")
+  Assert.deepEqual(received.options.requirements, { "map:7", "bootstrap" })
+  Assert.deepEqual(received.options.rebuild, { "map:7" })
+  Assert.isTrue(received.options.dev, "the parsed development flag must reach preparation")
+end
+
+-- Through the production seam, a valid discovery command reaches discovery
+-- with the parsed overlay, ROM source, and output values.
+function T.parsed_discover_command_reaches_discovery_with_its_values()
+  local realQuit = love.event.quit
+  local realOpts, realImporter = Runner.opts, Runner.importer
+  local saved = package.loaded["romdump.src.appdiscovery.AppDiscovery"]
+  local exitCode
+  local received
+  package.loaded["romdump.src.appdiscovery.AppDiscovery"] = {
+    runPath = function(args)
+      received = args
+      return {
+        outputPath = "/tmp/out.zip",
+        summary = {
+          overlayId = 15,
+          versionId = "heartgold",
+          entrypointCandidateCount = 1,
+          functionCount = 2,
+          applicationGapCount = 0,
+          resourceFileCount = 1,
+          narcCount = 1,
+          narcMemberCount = 2,
+          resourceGapCount = 0,
+        },
+      }
+    end,
+  }
+  love.event.quit = function(code)
+    exitCode = code
+  end
+
+  local ok, err = xpcall(function()
+    Runner.load(Cli.parse({ "--discover-app", "15", "--rom-source", "/tmp/hg.nds", "--output", "/tmp/out.zip" }))
+  end, debug.traceback)
+  love.event.quit = realQuit
+  Runner.opts, Runner.importer = realOpts, realImporter
+  package.loaded["romdump.src.appdiscovery.AppDiscovery"] = saved
+  if not ok then
+    error(err, 0)
+  end
+
+  Assert.equal(exitCode, 0)
+  Assert.equal(received.overlayId, 15)
+  Assert.equal(received.romPath, "/tmp/hg.nds")
+  Assert.equal(received.outputPath, "/tmp/out.zip")
+end
+
+-- Through the production seam, an invalid preparation combination never
+-- dispatches: parsing raises before any preparation work starts.
+function T.invalid_parsed_prepare_combination_dispatches_no_preparation()
+  local realOpts, realImporter = Runner.opts, Runner.importer
+  local saved = package.loaded["romdump.src.CacheBuilder"]
+  local built = false
+  package.loaded["romdump.src.CacheBuilder"] = {
+    prepareVersion = function()
+      built = true
+    end,
+  }
+
+  local ok, err = pcall(function()
+    Runner.load(Cli.parse({
+      "--prepare-cache",
+      "--version",
+      "heartgold",
+      "--require",
+      "map:7",
+      "--rebuild",
+      "map:9",
+      "--dev",
+    }))
+  end)
+  Runner.opts, Runner.importer = realOpts, realImporter
+  package.loaded["romdump.src.CacheBuilder"] = saved
+
+  Assert.isFalse(ok, "a rebuild outside the requested scope must not parse")
+  Assert.isFalse(built, "an invalid parse must never dispatch preparation")
+  Assert.isTrue(
+    string.find(tostring(err), "--rebuild 'map:9' is not in --require", 1, true) ~= nil,
+    "the rejection must name the offending rebuild, got: " .. tostring(err)
+  )
+end
+
 return {
   beforeAll = captureOutput,
   afterAll = restoreOutput,

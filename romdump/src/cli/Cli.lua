@@ -39,6 +39,21 @@ local COMMAND_FLAGS = {
   ["--prepare-cache"] = "prepare-cache",
 }
 
+-- Ordinary options share one interpreter in the token loop below: each row
+-- names only its destination field and its handling category. Exceptional
+-- command/path flags keep their explicit branches; this table never gains
+-- commands, paths, or applicability rules.
+local ORDINARY_OPTIONS = {
+  ["--dev"] = { field = "dev", kind = "boolean" },
+  ["--allow-compile-exclusions"] = { field = "allowCompileExclusions", kind = "boolean" },
+  ["--version"] = { field = "version", kind = "singleton" },
+  ["--profile"] = { field = "profile", kind = "singleton" },
+  ["--preparation-record"] = { field = "preparationRecord", kind = "singleton" },
+  ["--output"] = { field = "outputPath", kind = "singleton" },
+  ["--require"] = { field = "requirements", kind = "repeated" },
+  ["--rebuild"] = { field = "rebuild", kind = "repeated" },
+}
+
 -- Closed preparation scopes: the fixed milestones plus the exhaustive scope.
 -- Anything else must be a canonical kind:key pair owned by ArtifactState.
 local SCOPES = {
@@ -169,34 +184,29 @@ function Cli.parse(argv)
       i = i + 1
     elseif token == "--prepare-cache" then
       setCommand(token)
-    elseif token == "--version" then
-      if opts.version then
-        error("duplicate --version: " .. opts.version .. "\n" .. Cli.USAGE)
+    elseif ORDINARY_OPTIONS[token] then
+      local spec = ORDINARY_OPTIONS[token]
+      if spec.kind == "boolean" then
+        opts[spec.field] = true
+      else
+        local value = takeValue(argv, i, token)
+        if spec.kind == "singleton" then
+          if opts[spec.field] ~= nil then
+            if token == "--output" then
+              error("duplicate --output value: " .. opts[spec.field] .. "\n" .. Cli.USAGE)
+            else
+              error("duplicate " .. token .. ": " .. opts[spec.field] .. "\n" .. Cli.USAGE)
+            end
+          end
+          opts[spec.field] = value
+          if spec.field == "outputPath" then
+            sawOutputFlag = true
+          end
+        else
+          opts[spec.field][#opts[spec.field] + 1] = value
+        end
+        i = i + 1
       end
-      opts.version = takeValue(argv, i, token)
-      i = i + 1
-    elseif token == "--require" then
-      opts.requirements[#opts.requirements + 1] = takeValue(argv, i, token)
-      i = i + 1
-    elseif token == "--rebuild" then
-      opts.rebuild[#opts.rebuild + 1] = takeValue(argv, i, token)
-      i = i + 1
-    elseif token == "--profile" then
-      if opts.profile then
-        error("duplicate --profile: " .. opts.profile .. "\n" .. Cli.USAGE)
-      end
-      opts.profile = takeValue(argv, i, token)
-      i = i + 1
-    elseif token == "--preparation-record" then
-      if opts.preparationRecord then
-        error("duplicate --preparation-record: " .. opts.preparationRecord .. "\n" .. Cli.USAGE)
-      end
-      opts.preparationRecord = takeValue(argv, i, token)
-      i = i + 1
-    elseif token == "--allow-compile-exclusions" then
-      opts.allowCompileExclusions = true
-    elseif token == "--dev" then
-      opts.dev = true
     elseif token == "--discover-app" then
       setCommand(token)
       opts.overlayId = parseOverlayId(argv, i, token)
@@ -204,13 +214,6 @@ function Cli.parse(argv)
     elseif token == "--rom-source" then
       setPath(takePath(argv, i, token))
       sawRomSourceFlag = true
-      i = i + 1
-    elseif token == "--output" then
-      if opts.outputPath then
-        error("duplicate --output value: " .. opts.outputPath .. "\n" .. Cli.USAGE)
-      end
-      opts.outputPath = takeValue(argv, i, token)
-      sawOutputFlag = true
       i = i + 1
     elseif token == "--resource-detail" then
       local raw = takeValue(argv, i, token)

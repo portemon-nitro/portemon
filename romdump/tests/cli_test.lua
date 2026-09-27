@@ -496,4 +496,220 @@ function T.preparation_record_is_rejected_outside_preparation()
   end)
 end
 
+--------------------------------------------------------------------------
+-- Grammar and exceptional path combinations: forcedump ordering, duplicate
+-- ROM paths, and absent required values keep their exact options and failure
+-- attribution.
+--------------------------------------------------------------------------
+
+function T.forcedump_with_build_cache_parses_in_either_flag_order()
+  local leading = Cli.parse({ "--build-cache", "--forcedump", "/tmp/hg.nds" })
+  Assert.equal(leading.command, "build-cache")
+  Assert.isTrue(leading.forceDump)
+  Assert.equal(leading.romPath, "/tmp/hg.nds")
+
+  local trailing = Cli.parse({ "--forcedump", "/tmp/hg.nds", "--build-cache" })
+  Assert.equal(trailing.command, "build-cache")
+  Assert.isTrue(trailing.forceDump)
+  Assert.equal(trailing.romPath, "/tmp/hg.nds")
+end
+
+function T.duplicate_rom_paths_are_rejected_with_path_attribution()
+  for _, argv in ipairs({
+    { "--import-rom", "/tmp/hg.nds", "--forcedump", "/tmp/ss.nds" },
+    { "--build-cache", "/tmp/hg.nds", "--forcedump", "/tmp/ss.nds" },
+  }) do
+    local err = Assert.throws(function()
+      Cli.parse(argv)
+    end)
+    Assert.isTrue(
+      string.find(err, "duplicate ROM path", 1, true) ~= nil,
+      "duplicate paths must name the ROM path, got: " .. tostring(err)
+    )
+  end
+end
+
+function T.forcedump_followed_by_a_flag_has_no_rom_path()
+  local err = Assert.throws(function()
+    Cli.parse({ "--build-cache", "--forcedump", "--dev" })
+  end)
+  Assert.isTrue(
+    string.find(err, "--forcedump requires a ROM path", 1, true) ~= nil,
+    "a flag after --forcedump is not a path, got: " .. tostring(err)
+  )
+end
+
+--------------------------------------------------------------------------
+-- Repeat policies and prepare applicability: repeated booleans accumulate,
+-- repeated rebuilds keep order, singleton duplicates fail, and version and
+-- rebuild membership keep their current legality.
+--------------------------------------------------------------------------
+
+function T.repeated_boolean_flags_stay_enabled()
+  Assert.isTrue(Cli.parse({ "--build-cache", "--dev", "--dev" }).dev)
+  Assert.isTrue(
+    Cli.parse({ "--build-cache", "--allow-compile-exclusions", "--allow-compile-exclusions" }).allowCompileExclusions
+  )
+end
+
+function T.repeated_rebuild_requests_accumulate_in_order()
+  local o = Cli.parse({
+    "--prepare-cache",
+    "--version",
+    "heartgold",
+    "--require",
+    "map:7",
+    "--require",
+    "map:8",
+    "--rebuild",
+    "map:7",
+    "--rebuild",
+    "map:8",
+    "--dev",
+  })
+  Assert.deepEqual(o.rebuild, { "map:7", "map:8" })
+  Assert.deepEqual(o.requirements, { "map:7", "map:8" })
+end
+
+function T.duplicate_singleton_values_are_rejected()
+  local versionErr = Assert.throws(function()
+    Cli.parse({
+      "--prepare-cache",
+      "--version",
+      "heartgold",
+      "--require",
+      "bootstrap",
+      "--version",
+      "soulsilver",
+    })
+  end)
+  Assert.isTrue(
+    string.find(versionErr, "duplicate --version", 1, true) ~= nil,
+    "a repeated --version must name the flag, got: " .. tostring(versionErr)
+  )
+
+  local profileErr = Assert.throws(function()
+    Cli.parse({
+      "--prepare-cache",
+      "--version",
+      "heartgold",
+      "--require",
+      "bootstrap",
+      "--profile",
+      "/tmp/a.jsonl",
+      "--profile",
+      "/tmp/b.jsonl",
+    })
+  end)
+  Assert.isTrue(
+    string.find(profileErr, "duplicate --profile", 1, true) ~= nil,
+    "a repeated --profile must name the flag, got: " .. tostring(profileErr)
+  )
+end
+
+function T.unsupported_versions_are_rejected()
+  local err = Assert.throws(function()
+    Cli.parse({ "--prepare-cache", "--version", "kanto", "--require", "bootstrap" })
+  end)
+  Assert.isTrue(
+    string.find(err, "unsupported version 'kanto'", 1, true) ~= nil,
+    "an unknown version must be named, got: " .. tostring(err)
+  )
+end
+
+function T.rebuild_requires_membership_and_development_mode()
+  local exhaustive = Cli.parse({
+    "--prepare-cache",
+    "--version",
+    "heartgold",
+    "--require",
+    "complete",
+    "--rebuild",
+    "map:7",
+    "--dev",
+  })
+  Assert.deepEqual(exhaustive.rebuild, { "map:7" })
+
+  local devErr = Assert.throws(function()
+    Cli.parse({
+      "--prepare-cache",
+      "--version",
+      "heartgold",
+      "--require",
+      "map:7",
+      "--rebuild",
+      "map:7",
+    })
+  end)
+  Assert.isTrue(
+    string.find(devErr, "--rebuild requires --dev", 1, true) ~= nil,
+    "a rebuild without --dev must say so, got: " .. tostring(devErr)
+  )
+
+  local scopeErr = Assert.throws(function()
+    Cli.parse({
+      "--prepare-cache",
+      "--version",
+      "heartgold",
+      "--require",
+      "map:7",
+      "--rebuild",
+      "map:9",
+      "--dev",
+    })
+  end)
+  Assert.isTrue(
+    string.find(scopeErr, "--rebuild 'map:9' is not in --require", 1, true) ~= nil,
+    "a rebuild outside the requested scope must be named, got: " .. tostring(scopeErr)
+  )
+end
+
+function T.resource_detail_alias_forms_share_one_duplicate_identity()
+  local err = Assert.throws(function()
+    Cli.parse({
+      "--discover-app",
+      "15",
+      "--rom-source",
+      "/tmp/hg.nds",
+      "--resource-detail",
+      "144:49",
+      "--resource-detail",
+      "0144:0049",
+    })
+  end)
+  Assert.isTrue(
+    string.find(err, "duplicate --resource-detail", 1, true) ~= nil,
+    "zero-padded aliases must share one duplicate identity, got: " .. tostring(err)
+  )
+end
+
+function T.empty_string_is_still_a_present_value()
+  local o = Cli.parse({
+    "--prepare-cache",
+    "--version",
+    "heartgold",
+    "--require",
+    "bootstrap",
+    "--profile",
+    "",
+  })
+  Assert.equal(o.profile, "")
+
+  local err = Assert.throws(function()
+    Cli.parse({
+      "--prepare-cache",
+      "--version",
+      "heartgold",
+      "--require",
+      "bootstrap",
+      "--profile",
+      "--dev",
+    })
+  end)
+  Assert.isTrue(
+    string.find(err, "--profile requires a value", 1, true) ~= nil,
+    "a flag after --profile is not a value, got: " .. tostring(err)
+  )
+end
+
 return { tests = T }
