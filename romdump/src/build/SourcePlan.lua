@@ -1,7 +1,7 @@
 -- Worker-compiled, controller-consumed inventory of one generation's source
--- membership: which maps, cells, scripts, audio closures, message banks and
--- field records the dump carries, with explicit exclusion reasons and the
--- canonical cell keys behind every loadable map. Data only: no functions,
+-- membership: which maps, cells, scripts and audio closures the dump
+-- carries, with explicit exclusion reasons and the canonical cell keys
+-- behind every loadable map. Data only: no functions,
 -- ROM bytes, open archives, userdata, decoded pixels or repeated full map
 -- matrices cross the worker boundary. The generation session and the batch
 -- audit read the same staged record instead of probing ROM on the
@@ -13,7 +13,7 @@ local Errors = require("libs.errors.src.Errors")
 local SourcePlan = {}
 
 SourcePlan.PATH = "data/generated/producer/source-plan.lua"
-SourcePlan.SCHEMA = "g4-source-plan-v2"
+SourcePlan.SCHEMA = "g4-source-plan-v3"
 
 ---@param generationId string
 ---@return string
@@ -26,19 +26,22 @@ local function isInteger(value)
   return type(value) == "number" and value % 1 == 0
 end
 
-local function isAscendingUniqueIds(values)
-  if type(values) ~= "table" then
-    return false
-  end
+---@param members table[]
+---@param identityField string
+---@param memberRole string singular member noun for diagnostics
+---@param orderRole string plural member noun for diagnostics
+---@return true|nil
+---@return string|nil
+local function checkAscendingMembers(members, identityField, memberRole, orderRole)
   local previous = nil
-  for _, value in ipairs(values) do
-    if not isInteger(value) or value < 0 then
-      return false
+  for _, member in ipairs(members) do
+    if type(member) ~= "table" or not isInteger(member[identityField]) or member[identityField] < 0 then
+      return nil, "source inventory carries an unidentified " .. memberRole
     end
-    if previous ~= nil and value <= previous then
-      return false
+    if previous ~= nil and member[identityField] <= previous then
+      return nil, "source inventory " .. orderRole .. " are not ascending and unique"
     end
-    previous = value
+    previous = member[identityField]
   end
   return true
 end
@@ -143,8 +146,6 @@ function SourcePlan.validate(plan, identity)
     scriptPlan = true,
     audioPlan = true,
     audioIdentity = true,
-    messageBankIds = true,
-    mapDataIds = true,
     mapCellKeys = true,
   }
   for field in pairs(plan) do
@@ -251,15 +252,9 @@ function SourcePlan.validate(plan, identity)
     return nil, "source inventory carries no script generation"
   end
   do
-    local previous = nil
-    for _, member in ipairs(scriptMembers) do
-      if type(member) ~= "table" or not isInteger(member.memberId) or member.memberId < 0 then
-        return nil, "source inventory carries an unidentified script member"
-      end
-      if previous ~= nil and member.memberId <= previous then
-        return nil, "source inventory script members are not ascending and unique"
-      end
-      previous = member.memberId
+    local membersOk, membersReason = checkAscendingMembers(scriptMembers, "memberId", "script member", "script members")
+    if not membersOk then
+      return nil, membersReason
     end
   end
   local audioPlan = plan.audioPlan --[[@as table<string, unknown>]]
@@ -271,15 +266,9 @@ function SourcePlan.validate(plan, identity)
     return nil, "source inventory carries no audio membership"
   end
   do
-    local previous = nil
-    for _, bankPlan in ipairs(audioBankPlans) do
-      if type(bankPlan) ~= "table" or not isInteger(bankPlan.bankId) or bankPlan.bankId < 0 then
-        return nil, "source inventory carries an unidentified audio bank"
-      end
-      if previous ~= nil and bankPlan.bankId <= previous then
-        return nil, "source inventory audio banks are not ascending and unique"
-      end
-      previous = bankPlan.bankId
+    local banksOk, banksReason = checkAscendingMembers(audioBankPlans, "bankId", "audio bank", "audio banks")
+    if not banksOk then
+      return nil, banksReason
     end
   end
   local audioIdentity = plan.audioIdentity --[[@as table<string, unknown>]]
@@ -314,24 +303,6 @@ function SourcePlan.validate(plan, identity)
   end
   if audioIdentity.romSha1 ~= plan.romSha1 then
     return nil, "source inventory sound archive identity disagrees with the ROM identity"
-  end
-  if not isAscendingUniqueIds(plan.messageBankIds) then
-    return nil, "source inventory message banks are not ascending and unique"
-  end
-  local FieldMessageCompiler = require("romdump.src.digest.ui.FieldMessageCompiler")
-  if
-    not equalIdLists(plan.messageBankIds --[[@as integer[] ]], FieldMessageCompiler.requiredBankIds())
-  then
-    return nil, "source inventory message banks disagree with the required banks"
-  end
-  if not isAscendingUniqueIds(plan.mapDataIds) then
-    return nil, "source inventory field records are not ascending and unique"
-  end
-  local FieldMapDataCompiler = require("romdump.src.digest.field.FieldMapDataCompiler")
-  if
-    not equalIdLists(plan.mapDataIds --[[@as integer[] ]], FieldMapDataCompiler.supportedMapIds())
-  then
-    return nil, "source inventory field records disagree with the supported records"
   end
   local mapCellKeys = plan.mapCellKeys --[[@as table<integer, string[]> ]]
   if type(mapCellKeys) ~= "table" then
@@ -394,10 +365,6 @@ function SourcePlan.compile(romFs, identity)
   if audioSource == nil then
     error(audioSourceErr, 0)
   end
-  local FieldMessageCompiler = require("romdump.src.digest.ui.FieldMessageCompiler")
-  local messageBankIds = FieldMessageCompiler.requiredBankIds()
-  local FieldMapDataCompiler = require("romdump.src.digest.field.FieldMapDataCompiler")
-  local mapDataIds = FieldMapDataCompiler.supportedMapIds()
   local MapCompilePlan = require("romdump.src.digest.map.MapCompilePlan")
   local mapCellKeys = {}
   ---@cast world table<string, unknown>
@@ -445,8 +412,6 @@ function SourcePlan.compile(romFs, identity)
     scriptPlan = scriptPlan,
     audioPlan = audioSource.plan,
     audioIdentity = audioSource.identity,
-    messageBankIds = messageBankIds,
-    mapDataIds = mapDataIds,
     mapCellKeys = mapCellKeys,
   }
   local valid, reason = SourcePlan.validate(plan, identity)

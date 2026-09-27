@@ -1043,8 +1043,6 @@ end
 -- receipt alone or a schema-only record is cold.
 function T.staged_source_inventory_with_current_marker_is_usable()
   local SourcePlan = require("romdump.src.build.SourcePlan")
-  local FieldMessageCompiler = require("romdump.src.digest.ui.FieldMessageCompiler")
-  local FieldMapDataCompiler = require("romdump.src.digest.field.FieldMapDataCompiler")
   local producerId = "d" .. string.rep("1", 64)
   local identity = { versionId = "heartgold", generationId = GENERATION, producerId = producerId }
   local cache = newCache()
@@ -1069,8 +1067,6 @@ function T.staged_source_inventory_with_current_marker_is_usable()
     scriptPlan = { members = {}, generationKey = "synthetic-generation" },
     audioPlan = { index = { version = "heartgold" }, bankPlans = {} },
     audioIdentity = { romSha1 = string.rep("a", 40), sdatSha1 = string.rep("e", 40), sdatFileId = 11 },
-    messageBankIds = FieldMessageCompiler.requiredBankIds(),
-    mapDataIds = FieldMapDataCompiler.supportedMapIds(),
     mapCellKeys = {},
   })
   Assert.isTrue(

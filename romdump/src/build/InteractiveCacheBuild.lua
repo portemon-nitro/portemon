@@ -2745,20 +2745,21 @@ function InteractiveCacheBuild:_adoptSource(plan)
     mapIds[#mapIds + 1] = record.id
   end
   table.sort(mapIds)
-  self.messageBankIds = plan.messageBankIds
+  -- Source-static membership stays constructor-owned: the persisted
+  -- record no longer carries it, so adoption keeps the authoritative
+  -- lists instead of replacing them from raw data.
   self.audioBankIds = audioBankIds
   self.scriptMemberIds = scriptMemberIds
-  self.mapDataIds = plan.mapDataIds
   self.mapIds = mapIds
   self.mapCellKeys = plan.mapCellKeys
   self.adopted = {
     indexBundle = plan.fieldCellIndexBundle,
     scriptPlan = plan.scriptPlan,
     audioPlan = plan.audioPlan,
-    messageBankIds = plan.messageBankIds,
+    messageBankIds = self.messageBankIds,
     audioBankIds = audioBankIds,
     scriptMemberIds = scriptMemberIds,
-    mapDataIds = plan.mapDataIds,
+    mapDataIds = self.mapDataIds,
     mapIds = mapIds,
     mapCellKeys = plan.mapCellKeys,
     world = plan.world,

@@ -1813,8 +1813,10 @@ end
 -- One private projection from a validated source inventory to the
 -- scheduler-facing plans view: nested bundles stay borrowed read-only
 -- while the three scheduler id lists are freshly derived in sorted
--- order. Both published-plan reconstruction and worker readiness share
--- it so the two paths cannot diverge.
+-- order. The two source-static memberships come from their catalog
+-- owners, never from the persisted record. Both published-plan
+-- reconstruction and worker readiness share it so the two paths cannot
+-- diverge.
 ---@param plan table<string, unknown> validated source inventory record
 ---@return ArtifactJobs.Plans
 local function plansFromSourcePlan(plan)
@@ -1845,14 +1847,16 @@ local function plansFromSourcePlan(plan)
     mapIds[#mapIds + 1] = assert(record.id, "source plans carry the world map identity")
   end
   table.sort(mapIds)
+  local FieldMessageCompiler = require("romdump.src.digest.ui.FieldMessageCompiler")
+  local FieldMapDataCompiler = require("romdump.src.digest.field.FieldMapDataCompiler")
   return {
     indexBundle = plan.fieldCellIndexBundle,
     scriptPlan = plan.scriptPlan,
     audioPlan = plan.audioPlan,
-    messageBankIds = plan.messageBankIds,
+    messageBankIds = FieldMessageCompiler.requiredBankIds(),
     audioBankIds = audioBankIds,
     scriptMemberIds = scriptMemberIds,
-    mapDataIds = plan.mapDataIds,
+    mapDataIds = FieldMapDataCompiler.supportedMapIds(),
     mapIds = mapIds,
     mapCellKeys = plan.mapCellKeys,
     world = plan.world,

@@ -212,7 +212,6 @@ end
 -- Membership mirrors the requested members so adopted closure does not
 -- exclude them.
 local function publishWarmSource(cacheFs, generation, firstMember, lastMember)
-  local FieldMessageCompiler = require("romdump.src.digest.ui.FieldMessageCompiler")
   local members = {}
   for memberId = firstMember or 1, lastMember or 0 do
     members[#members + 1] = { memberId = memberId }
@@ -231,8 +230,6 @@ local function publishWarmSource(cacheFs, generation, firstMember, lastMember)
     scriptPlan = { members = members, generationKey = "synthetic-generation" },
     audioPlan = { index = { version = "heartgold" }, bankPlans = {} },
     audioIdentity = { romSha1 = string.rep("a", 40), sdatSha1 = string.rep("e", 40), sdatFileId = 11 },
-    messageBankIds = FieldMessageCompiler.requiredBankIds(),
-    mapDataIds = FieldMapDataCompiler.supportedMapIds(),
     mapCellKeys = { [7] = {}, [9] = {} },
   })
   cacheFs:writeLua(ArtifactState.path("source-plan", "global"), {
@@ -997,7 +994,7 @@ function T.inventory_compiles_membership_without_pixel_or_geometry_work()
   for _ in pairs(plan) do
     fields = fields + 1
   end
-  Assert.equal(fields, 13, "the persisted shape carries exactly its thirteen fields")
+  Assert.equal(fields, 11, "the persisted shape carries exactly its eleven fields")
   Assert.equal(plan.schema, SourcePlan.SCHEMA, "the inventory carries its schema")
   Assert.equal(plan.generationId, "assembly-generation", "the inventory carries its generation")
   Assert.equal(plan.romSha1, SYNTHETIC_SHA1, "the inventory carries its source identity")
@@ -1047,7 +1044,8 @@ function T.staged_inventory_reads_back_and_rejects_tampering()
   local plan = stageSynthetic(cacheFs, generation)
   local reread = assert(SourcePlan.read(cacheFs, identity(generation)), "the staged inventory reads back")
   Assert.deepEqual(reread.mapCellKeys[7], plan.mapCellKeys[7], "the round trip preserves map membership")
-  Assert.deepEqual(reread.messageBankIds, plan.messageBankIds, "the round trip preserves bank membership")
+  Assert.isNil(reread.messageBankIds, "the slim record stores no bank list")
+  Assert.isNil(reread.mapDataIds, "the slim record stores no record list")
   cacheFs:writeLua(SourcePlan.PATH, { bogus = true })
   local tampered, reason = SourcePlan.read(cacheFs, identity(generation))
   Assert.isNil(tampered, "a tampered inventory is not read as current")
@@ -1060,67 +1058,62 @@ function T.staged_inventory_reads_back_and_rejects_tampering()
   Assert.notNil(missingReason, "an empty cache names its pending state")
 end
 
--- A persisted inventory that drops one required message bank stays sorted
--- and unique but is no longer exhaustive: the reader must refuse it so
--- the scheduler never certifies a truncated bank universe.
-function T.persisted_inventory_missing_a_required_bank_is_rejected()
+-- The persisted inventory no longer carries producer-known membership:
+-- a record smuggling a message-bank list stays cold so the scheduler
+-- never certifies a shadow universe from persisted data.
+function T.persisted_inventory_smuggling_a_bank_list_is_rejected()
   local FieldMessageCompiler = require("romdump.src.digest.ui.FieldMessageCompiler")
   local cacheFs = CacheFs.forVersion("heartgold", FakeCache.new())
-  local generation = "truncated-bank-generation"
+  local generation = "smuggled-bank-generation"
   local plan = stageSynthetic(cacheFs, generation)
-  local required = FieldMessageCompiler.requiredBankIds()
-  Assert.isTrue(#required > 1, "the producer bank list carries more than one member")
-  local trimmed = {}
-  for index = 1, #required - 1 do
-    trimmed[#trimmed + 1] = required[index]
-  end
-  plan.messageBankIds = trimmed
+  plan.messageBankIds = FieldMessageCompiler.requiredBankIds()
   cacheFs:writeLua(SourcePlan.PATH, plan)
   local reread, reason = SourcePlan.read(cacheFs, identity(generation))
-  Assert.isNil(reread, "a persisted inventory missing a required bank is not adopted")
+  Assert.isNil(reread, "a persisted inventory smuggling a bank list is not adopted")
   Assert.notNil(reason, "the rejection names its cause")
   Assert.isTrue(
-    tostring(reason):find("message bank", 1, true) ~= nil,
-    "the rejection identifies bank disagreement: " .. tostring(reason)
+    tostring(reason):find("messageBankIds", 1, true) ~= nil,
+    "the rejection names the smuggled field: " .. tostring(reason)
   )
 end
 
--- A persisted inventory that drops one supported field record stays
--- sorted and unique but is no longer exhaustive: the reader must refuse
--- it so exhaustive scheduling never silently omits that record.
-function T.persisted_inventory_missing_a_supported_record_is_rejected()
+-- The persisted inventory no longer carries producer-known membership:
+-- a record smuggling a field-record list stays cold so exhaustive
+-- scheduling never trusts persisted data over the source rule.
+function T.persisted_inventory_smuggling_a_supported_record_is_rejected()
   local cacheFs = CacheFs.forVersion("heartgold", FakeCache.new())
-  local generation = "truncated-record-generation"
+  local generation = "smuggled-record-generation"
   local plan = stageSynthetic(cacheFs, generation)
-  local supported = FieldMapDataCompiler.supportedMapIds()
-  Assert.isTrue(#supported > 1, "the producer record list carries more than one member")
-  local trimmed = {}
-  for index = 1, #supported - 1 do
-    trimmed[#trimmed + 1] = supported[index]
-  end
-  plan.mapDataIds = trimmed
+  plan.mapDataIds = FieldMapDataCompiler.supportedMapIds()
   cacheFs:writeLua(SourcePlan.PATH, plan)
   local reread, reason = SourcePlan.read(cacheFs, identity(generation))
-  Assert.isNil(reread, "a persisted inventory missing a supported record is not adopted")
+  Assert.isNil(reread, "a persisted inventory smuggling a record list is not adopted")
   Assert.notNil(reason, "the rejection names its cause")
   Assert.isTrue(
-    tostring(reason):find("field record", 1, true) ~= nil,
-    "the rejection identifies record disagreement: " .. tostring(reason)
+    tostring(reason):find("mapDataIds", 1, true) ~= nil,
+    "the rejection names the smuggled field: " .. tostring(reason)
   )
 end
 
--- The exact current producer membership keeps reading back: the stronger
--- boundary accepts the authoritative bank and record lists with no source
--- compilation or dump access.
-function T.exact_producer_membership_reads_back_successfully()
+-- The slim staged record reads back with no producer-known membership:
+-- the scheduler still receives the authoritative bank and record lists
+-- from their catalog owners, with no source compilation or dump access.
+function T.slim_inventory_reads_back_without_producer_known_membership()
   local FieldMessageCompiler = require("romdump.src.digest.ui.FieldMessageCompiler")
   local cacheFs = CacheFs.forVersion("heartgold", FakeCache.new())
-  local generation = "exact-membership-generation"
-  local plan = stageSynthetic(cacheFs, generation)
-  local reread = assert(SourcePlan.read(cacheFs, identity(generation)), "the exact producer inventory reads back")
-  Assert.deepEqual(reread.messageBankIds, FieldMessageCompiler.requiredBankIds(), "bank membership round-trips exactly")
-  Assert.deepEqual(reread.mapDataIds, FieldMapDataCompiler.supportedMapIds(), "record membership round-trips exactly")
-  Assert.deepEqual(reread.messageBankIds, plan.messageBankIds, "the round trip preserves the staged banks")
+  local generation = "slim-membership-generation"
+  stageSynthetic(cacheFs, generation)
+  local reread = assert(SourcePlan.read(cacheFs, identity(generation)), "the slim inventory reads back")
+  Assert.isNil(reread.messageBankIds, "the slim inventory stores no bank list")
+  Assert.isNil(reread.mapDataIds, "the slim inventory stores no record list")
+  Assert.isTrue(
+    #FieldMessageCompiler.requiredBankIds() > 0,
+    "the authoritative bank list stays available outside the record"
+  )
+  Assert.isTrue(
+    #FieldMapDataCompiler.supportedMapIds() > 0,
+    "the authoritative record list stays available outside the record"
+  )
 end
 
 function T.field_record_membership_uses_the_source_rule()
@@ -1317,7 +1310,6 @@ local function deepCopyPlan(value)
 end
 
 local function inventoryPlan(generation, scriptIds)
-  local FieldMessageCompiler = require("romdump.src.digest.ui.FieldMessageCompiler")
   local members = {}
   for _, memberId in ipairs(scriptIds) do
     members[#members + 1] = { memberId = memberId }
@@ -1336,8 +1328,6 @@ local function inventoryPlan(generation, scriptIds)
     scriptPlan = { members = members, generationKey = "synthetic-generation" },
     audioPlan = { index = { version = "heartgold" }, bankPlans = {} },
     audioIdentity = { romSha1 = string.rep("a", 40), sdatSha1 = string.rep("e", 40), sdatFileId = 11 },
-    messageBankIds = FieldMessageCompiler.requiredBankIds(),
-    mapDataIds = FieldMapDataCompiler.supportedMapIds(),
     mapCellKeys = { [7] = {}, [9] = {} },
   }
 end
@@ -3129,6 +3119,78 @@ function T.inventory_lists_map_cells_without_full_content_planning()
   Assert.equal(calls.leaves, 0, "source inventory plans no leaf cells")
   Assert.deepEqual(plan.mapCellKeys[7], { "11-0", "11-1" }, "map cell keys stay sorted and unique")
   Assert.deepEqual(plan.mapCellKeys[9], {}, "a map without cells keeps its membership")
+end
+
+-- The persisted inventory carries no producer-known membership: the slim
+-- record without message-bank and field-record lists reads back, projects
+-- to scheduler plans carrying the authoritative lists, and stale or
+-- smuggled records stay cold instead of certifying a truncated universe.
+function T.persisted_inventory_carries_no_producer_known_membership()
+  local FieldMessageCompiler = require("romdump.src.digest.ui.FieldMessageCompiler")
+  local MonCache = require("libs.assets.src.MonCache")
+  local MonCacheWriter = require("romdump.src.digest.mons.MonCacheWriter")
+  local generation = "slim-record-generation"
+  local compiled = compileSynthetic(generation)
+  local slim = deepCopyPlan(compiled)
+  slim.schema = "g4-source-plan-v3"
+  slim.messageBankIds = nil
+  slim.mapDataIds = nil
+  local cacheFs = CacheFs.forVersion("heartgold", FakeCache.new())
+  cacheFs:writeLua(SourcePlan.PATH, slim)
+  local reread, reason = SourcePlan.read(cacheFs, identity(generation))
+  Assert.notNil(reread, "the slim inventory reads back: " .. tostring(reason))
+  local slimRecord = assert(reread, "the slim inventory reads back")
+  Assert.equal(slimRecord.schema, SourcePlan.SCHEMA, "the slim inventory carries the current schema")
+  Assert.isNil(slimRecord.messageBankIds, "the slim inventory stores no bank list")
+  Assert.isNil(slimRecord.mapDataIds, "the slim inventory stores no record list")
+  MonCacheWriter.writeCatalog(cacheFs, minimalCatalog(), "slim-catalog-marker")
+  writeMonReceipt(cacheFs, generation, "mon-catalog", "global", "slim-catalog-marker")
+  MonCacheWriter.writeLayout(
+    cacheFs,
+    layoutManifest(MonCache.ICON_MANIFEST_SCHEMA, MonCache.iconPagePath(0), 256, 128, 32),
+    layoutManifest(MonCache.PORTRAIT_MANIFEST_SCHEMA, MonCache.portraitPagePath(0), 640, 320, 80),
+    "slim-layout-marker",
+    { iconPages = { [0] = iconPagePlan(0) }, portraitPages = { [0] = portraitPagePlan(0) } },
+    generation
+  )
+  writeMonReceipt(cacheFs, generation, "mon-layout", "global", "slim-layout-marker")
+  local projected, plansReason = ArtifactJobs.publishedPlans(cacheFs, identity(generation))
+  Assert.notNil(projected, "the slim inventory projects to scheduler plans: " .. tostring(plansReason))
+  local schedulerPlans = assert(projected, "the slim inventory projects to scheduler plans")
+  Assert.deepEqual(
+    schedulerPlans.messageBankIds,
+    FieldMessageCompiler.requiredBankIds(),
+    "scheduler banks stay authoritative"
+  )
+  Assert.deepEqual(
+    schedulerPlans.mapDataIds,
+    FieldMapDataCompiler.supportedMapIds(),
+    "scheduler records stay authoritative"
+  )
+  cacheFs:writeLua(SourcePlan.PATH, compiled)
+  local staleCheck, staleCheckReason = SourcePlan.read(cacheFs, identity(generation))
+  Assert.notNil(staleCheck, "the current compiled record reads back")
+  Assert.isNil(staleCheckReason, "the current compiled record names no rejection")
+  local outdated = deepCopyPlan(slim)
+  outdated.schema = "g4-source-plan-v2"
+  outdated.messageBankIds = FieldMessageCompiler.requiredBankIds()
+  outdated.mapDataIds = FieldMapDataCompiler.supportedMapIds()
+  cacheFs:writeLua(SourcePlan.PATH, outdated)
+  local stale, staleReason = SourcePlan.read(cacheFs, identity(generation))
+  Assert.isNil(stale, "the previous record shape stays cold")
+  Assert.notNil(staleReason, "the stale record names its rejection")
+  local smuggledBanks = deepCopyPlan(slim)
+  smuggledBanks.messageBankIds = FieldMessageCompiler.requiredBankIds()
+  cacheFs:writeLua(SourcePlan.PATH, smuggledBanks)
+  local smuggled, smuggledReason = SourcePlan.read(cacheFs, identity(generation))
+  Assert.isNil(smuggled, "a slim record smuggling a bank list stays cold")
+  Assert.notNil(smuggledReason, "the smuggled record names its rejection")
+  local smuggledRecords = deepCopyPlan(slim)
+  smuggledRecords.mapDataIds = FieldMapDataCompiler.supportedMapIds()
+  cacheFs:writeLua(SourcePlan.PATH, smuggledRecords)
+  local smuggledMap, smuggledMapReason = SourcePlan.read(cacheFs, identity(generation))
+  Assert.isNil(smuggledMap, "a slim record smuggling a record list stays cold")
+  Assert.notNil(smuggledMapReason, "the smuggled record names its rejection")
 end
 
 return { tests = T }

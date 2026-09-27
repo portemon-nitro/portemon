@@ -854,8 +854,6 @@ function T.deferred_prerequisite_failure_reaches_the_waiting_demand()
     local pool = retryCapablePool()
     local session, cacheFs = isolatedSession("deferred-layout-generation", pool, backend)
     local generation = "deferred-layout-generation"
-    local FieldMessageCompiler = require("romdump.src.digest.ui.FieldMessageCompiler")
-    local FieldMapDataCompiler = require("romdump.src.digest.field.FieldMapDataCompiler")
     cacheFs:writeLua(SourcePlan.PATH, {
       schema = SourcePlan.SCHEMA,
       versionId = "heartgold",
@@ -867,8 +865,6 @@ function T.deferred_prerequisite_failure_reaches_the_waiting_demand()
       scriptPlan = { members = {}, generationKey = "synthetic-generation" },
       audioPlan = { index = { version = "heartgold" }, bankPlans = {} },
       audioIdentity = { romSha1 = string.rep("a", 40), sdatSha1 = string.rep("e", 40), sdatFileId = 11 },
-      messageBankIds = FieldMessageCompiler.requiredBankIds(),
-      mapDataIds = FieldMapDataCompiler.supportedMapIds(),
       mapCellKeys = { [7] = {}, [9] = {} },
     })
     cacheFs:writeLua(ArtifactState.path("source-plan", "global"), {
@@ -2431,8 +2427,6 @@ end
 -- through status and outcomes while the pump alone advances new transitions.
 local function smallInventoryPlan(generation, scriptIds)
   local SourcePlan = require("romdump.src.build.SourcePlan")
-  local FieldMessageCompiler = require("romdump.src.digest.ui.FieldMessageCompiler")
-  local FieldMapDataCompiler = require("romdump.src.digest.field.FieldMapDataCompiler")
   local members = {}
   for _, memberId in ipairs(scriptIds) do
     members[#members + 1] = { memberId = memberId }
@@ -2451,8 +2445,6 @@ local function smallInventoryPlan(generation, scriptIds)
     scriptPlan = { members = members, generationKey = "synthetic-generation" },
     audioPlan = { index = { version = "heartgold" }, bankPlans = {} },
     audioIdentity = { romSha1 = string.rep("a", 40), sdatSha1 = string.rep("e", 40), sdatFileId = 11 },
-    messageBankIds = FieldMessageCompiler.requiredBankIds(),
-    mapDataIds = FieldMapDataCompiler.supportedMapIds(),
     mapCellKeys = { [7] = {}, [9] = {} },
   }
 end
@@ -5098,6 +5090,236 @@ function T.retired_session_discards_its_script_dependency_memo()
     session2.byKey["audio-bank:" .. tostring(SCRIPT_ONLY_BANK)] ~= nil,
     "a reselected session re-enrolls its script-only bank from published metadata"
   )
+end
+
+-- Compact mon layout fixtures through the real writer: the catalog plus
+-- one icon and one portrait page, so the session can adopt final page
+-- membership once the source inventory is known.
+local function sessionLayoutManifest(schema, imagePath, width, height, cell)
+  return {
+    schema = schema,
+    version = { id = "heartgold", language = "english" },
+    pages = {
+      [0] = { pageId = 0, image = imagePath, width = width, height = height },
+    },
+    pageIds = { 0 },
+    entries = {
+      ["K/f0"] = {
+        x = 0,
+        y = 0,
+        width = cell,
+        height = cell,
+        frames = { { x = 0, y = 0, width = cell, height = cell, duration = 6 } },
+        pageId = 0,
+      },
+    },
+    representative = { "K/f0" },
+  }
+end
+
+local function sessionIconPagePlan(pageId)
+  return {
+    pageId = pageId,
+    width = 256,
+    height = 128,
+    cell = 32,
+    combos = { { naix = 0, palette = 0, key = "icons-" .. tostring(pageId), selectors = { "K/f0" } } },
+    representative = { { selector = "K/f0", x = 0, y = 0, width = 32, height = 32 } },
+  }
+end
+
+local function sessionPortraitPagePlan(pageId)
+  return {
+    pageId = pageId,
+    width = 640,
+    height = 320,
+    cell = 80,
+    combos = {
+      {
+        narc = "synthetic",
+        charMemberId = 0,
+        palMemberId = 0,
+        key = "portraits-" .. tostring(pageId),
+        selectors = { "K/f0" },
+      },
+    },
+    representative = { { selector = "K/f0", x = 0, y = 0, width = 80, height = 80 } },
+  }
+end
+
+local function sessionMinimalCatalog()
+  local function zeroCurve()
+    local curve = {}
+    for level = 1, 100 do
+      curve[level] = 0
+    end
+    return curve
+  end
+  return {
+    schema = "g4-mon-catalog-v3",
+    version = { id = "heartgold", language = "english" },
+    species = {},
+    moves = {},
+    abilities = {},
+    growthCurves = {
+      medium_fast = zeroCurve(),
+      erratic = zeroCurve(),
+      fluctuating = zeroCurve(),
+      medium_slow = zeroCurve(),
+      fast = zeroCurve(),
+      slow = zeroCurve(),
+      unused_6 = zeroCurve(),
+      unused_7 = zeroCurve(),
+    },
+  }
+end
+
+local function writeSessionReceipt(cacheFs, generation, kind, key, marker)
+  cacheFs:writeLua(ArtifactState.path(kind, key), {
+    schema = ArtifactState.RECEIPT_SCHEMA,
+    generationId = generation,
+    kind = kind,
+    key = key,
+    marker = marker,
+  })
+end
+
+-- The slim persisted source record: full source-dependent membership with
+-- no producer-known static lists. The session already owns those lists
+-- from construction and must keep them across adoption.
+local function slimSessionRecord(generation)
+  return {
+    schema = "g4-source-plan-v3",
+    versionId = "heartgold",
+    romSha1 = string.rep("a", 40),
+    generationId = generation,
+    producerId = PRODUCER_ID,
+    world = {
+      maps = { { id = 7 }, { id = 9 } },
+      analysis = { excluded = { { id = 3, reason = "placeholder header" } } },
+    },
+    fieldCellIndexBundle = { index = { matrices = {} }, indexMarker = "synthetic-index-marker" },
+    scriptPlan = { members = { { memberId = 4 }, { memberId = 6 } }, generationKey = "synthetic-generation" },
+    audioPlan = { index = { version = "heartgold" }, bankPlans = {} },
+    audioIdentity = { romSha1 = string.rep("a", 40), sdatSha1 = string.rep("e", 40), sdatFileId = 11 },
+    mapCellKeys = { [7] = {}, [9] = {} },
+  }
+end
+
+local function stageSlimSessionRecord(cacheFs, generation)
+  local SourcePlan = require("romdump.src.build.SourcePlan")
+  cacheFs:writeLua(SourcePlan.PATH, slimSessionRecord(generation))
+  writeSessionReceipt(cacheFs, generation, "source-plan", "global", SourcePlan.marker(generation))
+end
+
+local function stageSessionLayout(cacheFs, generation)
+  local MonCacheWriter = require("romdump.src.digest.mons.MonCacheWriter")
+  MonCacheWriter.writeCatalog(cacheFs, sessionMinimalCatalog(), "slim-session-catalog-marker")
+  writeSessionReceipt(cacheFs, generation, "mon-catalog", "global", "slim-session-catalog-marker")
+  MonCacheWriter.writeLayout(
+    cacheFs,
+    sessionLayoutManifest(MonCache.ICON_MANIFEST_SCHEMA, MonCache.iconPagePath(0), 256, 128, 32),
+    sessionLayoutManifest(MonCache.PORTRAIT_MANIFEST_SCHEMA, MonCache.portraitPagePath(0), 640, 320, 80),
+    "slim-session-layout-marker",
+    { iconPages = { [0] = sessionIconPagePlan(0) }, portraitPages = { [0] = sessionPortraitPagePlan(0) } },
+    generation
+  )
+  writeSessionReceipt(cacheFs, generation, "mon-layout", "global", "slim-session-layout-marker")
+end
+
+-- Static scheduler membership survives adoption ordering: the constructor
+-- already knows every required bank and supported record, source-only
+-- adoption keeps those lists while resolving dynamic membership, final
+-- page plans add the layout pages without narrowing anything, and a
+-- source record arriving after staged layout reaches the same closure.
+function T.static_membership_survives_source_and_page_adoption()
+  local FieldMessageCompiler = require("romdump.src.digest.ui.FieldMessageCompiler")
+  local FieldMapDataCompiler = require("romdump.src.digest.field.FieldMapDataCompiler")
+  local requiredBanks = FieldMessageCompiler.requiredBankIds()
+  local supportedRecords = FieldMapDataCompiler.supportedMapIds()
+  Assert.isTrue(#requiredBanks > 0, "the producer bank list is not empty")
+  Assert.isTrue(#supportedRecords > 1, "the producer record list carries more than one member")
+  local outside = nil
+  for _, mapId in ipairs(supportedRecords) do
+    if mapId ~= 7 and mapId ~= 9 then
+      outside = mapId
+      break
+    end
+  end
+  outside = assert(outside, "some supported record lives outside the small world")
+  local function runOrder(layoutFirst)
+    local generation = layoutFirst and "late-source-generation" or "source-first-generation"
+    local backend = FakeCache.new()
+    local pool = selectableRecordingPool()
+    local session, cacheFs = isolatedSession(generation, pool, backend)
+    Assert.deepEqual(session.messageBankIds, requiredBanks, "the constructor already knows every required bank")
+    Assert.deepEqual(session.mapDataIds, supportedRecords, "the constructor already knows every supported record")
+    local bankReady, bankFailure = session:requestJob("message-bank", tostring(requiredBanks[1]), "required")
+    Assert.isFalse(bankReady, "a cold bank stays pending")
+    Assert.isNil(bankFailure, "a cold bank reports no failure")
+    local recordReady, recordFailure = session:requestJob("map-data", tostring(outside), "required")
+    Assert.isFalse(recordReady, "a cold non-world record stays pending")
+    Assert.isNil(recordFailure, "a cold non-world record reports no failure")
+    local memberReady, memberFailure = session:requestJob("script-member", "4", "required")
+    Assert.isFalse(memberReady, "an inventoried member stays pending while cold")
+    Assert.isNil(memberFailure, "an inventoried member is accepted even before adoption")
+    local unknownReady, unknownFailure = session:requestJob("script-member", "99999", "required")
+    Assert.isFalse(unknownReady, "an unknown member stays pending while membership is unknown")
+    Assert.isNil(unknownFailure, "an unknown member reports no failure while membership is unknown")
+    local pageReady, pageFailure = session:requestJob("mon-portrait-page", "0", "required")
+    Assert.isFalse(pageReady, "a page without layout membership stays pending")
+    Assert.isNil(pageFailure, "a page without layout membership reports no failure")
+    if layoutFirst then
+      stageSessionLayout(cacheFs, generation)
+    else
+      stageSlimSessionRecord(cacheFs, generation)
+    end
+    for _ = 1, 3 do
+      session:update()
+    end
+    Assert.isFalse(session.sourceLoaded, "partial membership adopts nothing")
+    Assert.isFalse(session.pagesKnown, "partial membership adopts no pages")
+    if layoutFirst then
+      stageSlimSessionRecord(cacheFs, generation)
+    else
+      stageSessionLayout(cacheFs, generation)
+    end
+    pool.states["source-plan:global"] = "ready"
+    pool.states["mon-catalog:global"] = "ready"
+    pool.states["mon-layout:global"] = "ready"
+    for _ = 1, 15 do
+      session:update()
+    end
+    Assert.isTrue(session.sourceLoaded, "the staged slim inventory is adopted")
+    Assert.deepEqual(session.messageBankIds, requiredBanks, "source adoption keeps the authoritative banks")
+    Assert.deepEqual(session.mapDataIds, supportedRecords, "source adoption keeps the authoritative records")
+    Assert.deepEqual(session.audioBankIds, {}, "source adoption reports the known-empty audio closure")
+    Assert.deepEqual(session.scriptMemberIds, { 4, 6 }, "source adoption reports the inventoried members")
+    Assert.deepEqual(session.mapIds, { 7, 9 }, "source adoption reports the narrow visual world")
+    local knownCold, knownColdFailure = session:requestJob("script-member", "4", "required")
+    Assert.isFalse(knownCold, "an inventoried member stays pending while cold")
+    Assert.isNil(knownColdFailure, "an inventoried member reports no failure once known")
+    local rejected, rejectedFailure = session:requestJob("script-member", "99999", "required")
+    Assert.isFalse(rejected, "an unknown member never answers ready")
+    Assert.notNil(rejectedFailure, "an unknown member is rejected once membership is known")
+    Assert.isTrue(session.pagesKnown, "the staged layout adopts its page membership")
+    Assert.deepEqual(session.portraitPageIds, { 0 }, "page adoption carries its portrait page")
+    Assert.deepEqual(session.iconPageIds, { 0 }, "page adoption carries its icon page")
+    Assert.deepEqual(session.messageBankIds, requiredBanks, "page adoption keeps the authoritative banks")
+    Assert.deepEqual(session.mapDataIds, supportedRecords, "page adoption keeps the authoritative records")
+    local adoptedPage, adoptedPageFailure = session:requestJob("mon-portrait-page", "0", "required")
+    Assert.isFalse(adoptedPage, "the portrait exits pending while its page payload is cold")
+    Assert.isNil(adoptedPageFailure, "the adopted portrait reports no failure")
+    local portraitPages = {}
+    for _, pageId in ipairs(session.portraitPageIds) do
+      portraitPages[#portraitPages + 1] = pageId
+    end
+    return { pagesKnown = session.pagesKnown, portraitPages = portraitPages }
+  end
+  local sourceFirst = runOrder(false)
+  local layoutFirst = runOrder(true)
+  Assert.isTrue(sourceFirst.pagesKnown and layoutFirst.pagesKnown, "both orders adopt")
+  Assert.deepEqual(sourceFirst.portraitPages, layoutFirst.portraitPages, "both orders reach the same closure")
 end
 
 return { metadata = { capabilities = {} }, tests = T }
