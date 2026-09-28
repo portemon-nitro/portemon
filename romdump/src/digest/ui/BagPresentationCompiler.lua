@@ -18,7 +18,6 @@ BagPresentationCompiler.ERROR = {
 BagPresentationCompiler.PANE_WIDTH = 256
 BagPresentationCompiler.PANE_HEIGHT = 192
 
-
 local function isIntegral(value)
   return type(value) == "number" and value % 1 == 0
 end

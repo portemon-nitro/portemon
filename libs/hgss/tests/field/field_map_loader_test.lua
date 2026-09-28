@@ -965,7 +965,7 @@ function T.logical_load_publishes_semantic_fields_without_visual_assets()
   Assert.equal(map.mapSection, "TEST_SECTION")
   Assert.equal(map.mapSectionNativeId, 7)
   Assert.equal(map.followMode, "ALLOW")
-  Assert.equal(map.fieldData.schema, "g4-field-map-v9")
+  Assert.equal(map.fieldData.schema, "g4-field-map-v10")
   Assert.equal(map.cameraType, map.fieldData.cameraType)
   Assert.deepEqual(map.coordinateOrigin, { x = 96, z = 64 })
   Assert.isNil(map.scene)
@@ -1344,14 +1344,29 @@ function T.request_warp_plans_indexed_and_direct_destinations_as_required()
   local cache, world = outdoorPlanningFixture()
   local fieldPath = "data/generated/field/maps/0000/field.lua"
   local fieldData = {
-    schema = "g4-field-map-v9",
+    schema = "g4-field-map-v10",
     mapId = 0,
+    mapSymbol = "MAP_0",
+    transitionEnvironment = "outdoors",
+    fieldUse = {
+      flyAllowed = true,
+      teleportAllowed = true,
+      escapeAllowed = false,
+      flashUsable = false,
+      alphChamber = false,
+      icePathB2F = false,
+      cave = false,
+      unionOrColosseum = false,
+    },
     events = {
       background = {},
       objects = {},
       warps = { { index = 0, x = 695, z = 397, destinationMapId = 0, destinationWarpId = 0, y = 0 } },
       coordinates = {},
     },
+    music = { day = "SEQ_X", night = "SEQ_X", flagOverrides = {}, traversalOverrides = {} },
+    soundplates = {},
+    initScripts = {},
   }
   local realLoadLua = cache.loadLua
   cache.loadLua = function(_, path)
@@ -1607,6 +1622,16 @@ function T.request_location_enrolls_warp_destination_logical_closures()
         mapSymbol = "MAP_0",
         transitionEnvironment = "building",
         initScripts = {},
+        fieldUse = {
+          flyAllowed = true,
+          teleportAllowed = true,
+          escapeAllowed = false,
+          flashUsable = false,
+          alphChamber = false,
+          icePathB2F = false,
+          cave = false,
+          unionOrColosseum = false,
+        },
         events = {
           background = {},
           objects = {},

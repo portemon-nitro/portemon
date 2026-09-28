@@ -485,6 +485,16 @@ local function publishMapDataRecord(cache, mapId, marker)
     soundplates = {},
     initScripts = {},
     transitionEnvironment = "outdoors",
+    fieldUse = {
+      flyAllowed = true,
+      teleportAllowed = true,
+      escapeAllowed = false,
+      flashUsable = false,
+      alphChamber = false,
+      icePathB2F = false,
+      cave = false,
+      unionOrColosseum = false,
+    },
   })
   cache:writeLua(FieldMapData.dependenciesPath(mapId), { generated = true })
   cache:write(FieldMapData.markerPath(mapId), marker)
