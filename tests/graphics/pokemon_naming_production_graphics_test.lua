@@ -38,9 +38,10 @@ local function newGame(versionId)
     versionId = versionId,
     location = { mapSymbol = LAB, fieldX = 4, fieldZ = 13, facing = "north" },
     playerData = {
-      profile = { name = "GOLD", gender = 0, trainerId = 1, money = 3000 },
+      profile = { name = "GOLD", gender = 0, trainerId = 1, money = 3000, badges = 0 },
       options = { textSpeed = "fastest", textFrame = 0 },
     },
+    fieldTravel = { lastHealSpawn = "SPAWN_NEW_BARK" },
     playTime = PlayTime.new(),
     worldState = FieldEventState.new(),
     mons = MonBucket.emptyForVersion(versionId),

@@ -54,9 +54,10 @@ local function seedRecord(saveId, versionId)
     terrainDependencyHash = "terrain-" .. versionId,
     facing = "south",
     playerData = {
-      profile = { name = "GOLD", gender = 0, trainerId = 0, money = 3000 },
+      profile = { name = "GOLD", gender = 0, trainerId = 0, money = 3000, badges = 0 },
       options = { textFrame = 0, textSpeed = "mid" },
     },
+    fieldTravel = { lastHealSpawn = "SPAWN_NEW_BARK" },
     world = { flags = {}, variables = {}, objects = {}, rng = { state = 1, calls = 0 } },
     scripts = {},
     auxiliaryUi = { requested = "shown", state = "shown" },
@@ -506,9 +507,10 @@ local function labHarness()
         versionId = versionId,
         location = location,
         playerData = {
-          profile = { name = "GOLD", gender = 0, trainerId = 1, money = 3000 },
+          profile = { name = "GOLD", gender = 0, trainerId = 1, money = 3000, badges = 0 },
           options = { textSpeed = "fastest", textFrame = 0 },
         },
+        fieldTravel = { lastHealSpawn = "SPAWN_NEW_BARK" },
         playTime = PlayTime.new(),
         worldState = FieldEventState.new(),
         mons = require("tests.support.MonBucket").emptyForVersion(versionId),
