@@ -7,7 +7,7 @@
 -- src/scrcmd_strbuf.c (item/pocket/berry text banks). Pure data and pure
 -- functions; no I/O. Never imported by runtime: libs/assets, libs/items, and
 -- game packages must not require this module (see
--- tests/architecture/mon_source_boundary_test.lua).
+-- tests/architecture/module_boundaries_test.lua).
 
 local ItemSources = {}
 

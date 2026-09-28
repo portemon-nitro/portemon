@@ -12,7 +12,7 @@
 -- OverworldModelLookupHasFemaleForm, FollowMon_GetSpriteID,
 -- FollowMon_GetSizeParamBySpecies). Pure data and pure functions; no I/O.
 -- Never imported by runtime: libs/assets and game packages must not require
--- this module (see tests/architecture/mon_source_boundary_test.lua).
+-- this module (see tests/architecture/module_boundaries_test.lua).
 
 local MonSources = {}
 
