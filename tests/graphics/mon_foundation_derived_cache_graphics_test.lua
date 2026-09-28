@@ -261,7 +261,8 @@ function T.party_application_frame_cycle_leaves_no_stale_modal(scope)
         -- the party reports its own pages ready.
         waitFor("party icons", function()
           local application = hostStatus().application
-          return application ~= nil and application.preparationState == "ready"
+          local child = application ~= nil and application.child or nil
+          return child ~= nil and child.preparationState == "ready"
         end, 300)
         local width, height = love.graphics.getDimensions()
         local canvas = scope:own(love.graphics.newCanvas(width, height))

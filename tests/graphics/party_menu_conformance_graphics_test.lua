@@ -10,20 +10,17 @@
 
 local Assert = require("tests.support.Assert")
 local CacheFs = require("libs.storage.src.CacheFs")
-local FakeCache = require("tests.support.FakeCache")
 local FieldUiFixture = require("tests.support.FieldUiFixture")
 local FieldTextRenderer = require("libs.hgss.src.ui.FieldTextRenderer")
 local GameVersion = require("romdump.src.source.GameVersion")
 local GraphicsSmoke = require("tests.support.GraphicsSmoke")
 local LayoutGeometry = require("libs.ui.src.LayoutGeometry")
 local LogicalSurface = require("libs.ui.src.LogicalSurface")
-local MonCache = require("libs.assets.src.MonCache")
-local MonIconAssetProvider = require("libs.hgss.src.presentation.MonIconAssetProvider")
+local PreparedMonIcons = require("tests.support.PreparedMonIcons")
 local PartyCache = require("libs.assets.src.PartyCache")
 local PartyScreenLayout = require("libs.hgss.src.ui.PartyScreenLayout")
 local PartyScreenRenderer = require("libs.hgss.src.ui.PartyScreenRenderer")
 local PixelScale = require("libs.ui.src.PixelScale")
-local PngWriter = require("libs.assets.src.PngWriter")
 local RomImporter = require("romdump.src.source.RomImporter")
 
 local T = {}
@@ -47,30 +44,6 @@ local function manifestFor(versionId)
   local manifest = PartyCache.loadManifest(cacheFs)
   Assert.equal(manifest.schema, "g4-party-presentation-v1", versionId .. " renders the current party manifest")
   return cacheFs, manifest
-end
-
-local function iconCache()
-  local cache = CacheFs.forVersion("heartgold", FakeCache.new())
-  cache:writeLua(MonCache.iconManifestPath(), {
-    schema = MonCache.ICON_MANIFEST_SCHEMA,
-    image = MonCache.iconImagePath(),
-    entries = {
-      ["MON0/f0"] = {
-        x = 0,
-        y = 0,
-        width = 32,
-        height = 32,
-        frames = { { x = 0, y = 0, width = 32, height = 32, duration = 1 } },
-      },
-    },
-    representative = { "MON0/f0" },
-  })
-  local pixels = {}
-  for _ = 1, 64 * 64 do
-    pixels[#pixels + 1] = string.char(200, 40, 40, 255)
-  end
-  cache:write(MonCache.iconImagePath(), PngWriter.encode(64, 64, table.concat(pixels)))
-  return cache
 end
 
 ---@param slot0 integer
@@ -173,7 +146,7 @@ end
 local function renderPane(scope, cacheFs, manifest, status, width, height)
   local text = scope:own(FieldTextRenderer.new({ cacheFs = FieldUiFixture.cacheWithFontAndFrames() }))
   local layout = PartyScreenLayout.resolve({ manifest = manifest, cancellable = true })
-  local provider = scope:own(MonIconAssetProvider.new(iconCache()))
+  local provider = scope:own(PreparedMonIcons.preparedProvider(PreparedMonIcons.iconCache(), { "MON0/f0" }))
   local renderer =
     PartyScreenRenderer.new({ graphics = love.graphics, cacheFs = cacheFs, manifest = manifest, text = text })
   local canvas = scope:own(love.graphics.newCanvas(width or 256, height or 192))
@@ -374,7 +347,7 @@ function T.panes_magnify_uniformly_with_consistent_hit_geometry(scope)
       "the doubled canvas fits its single pane"
     )
     local text = scope:own(FieldTextRenderer.new({ cacheFs = FieldUiFixture.cacheWithFontAndFrames() }))
-    local provider = scope:own(MonIconAssetProvider.new(iconCache()))
+    local provider = scope:own(PreparedMonIcons.preparedProvider(PreparedMonIcons.iconCache(), { "MON0/f0" }))
     local renderer =
       PartyScreenRenderer.new({ graphics = love.graphics, cacheFs = cacheFs, manifest = manifest, text = text })
     LogicalSurface.draw(love.graphics, placement, function()

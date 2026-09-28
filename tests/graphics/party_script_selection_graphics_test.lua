@@ -14,7 +14,7 @@ local GraphicsSmoke = require("tests.support.GraphicsSmoke")
 local HgssMonService = require("libs.hgss.src.mons.HgssMonService")
 local Lcrng = require("libs.mons.src.gen4.Lcrng")
 local MonCache = require("libs.assets.src.MonCache")
-local MonIconAssetProvider = require("libs.hgss.src.presentation.MonIconAssetProvider")
+local PreparedMonIcons = require("tests.support.PreparedMonIcons")
 local MonsSave = require("libs.mons.src.MonsSave")
 local Party = require("libs.mons.src.Party")
 local PartyCache = require("libs.assets.src.PartyCache")
@@ -23,7 +23,6 @@ local PartyScreenRenderer = require("libs.hgss.src.ui.PartyScreenRenderer")
 local PngWriter = require("libs.assets.src.PngWriter")
 local RomImporter = require("romdump.src.source.RomImporter")
 local ScreenTopology = require("libs.hgss.src.ui.ScreenTopology")
-local FakeCache = require("tests.support.FakeCache")
 local FieldTextRenderer = require("libs.hgss.src.ui.FieldTextRenderer")
 
 local HOST_MODULE = "game.hgss.src.field.PartySelectionHost"
@@ -42,30 +41,6 @@ local function readyVersions()
     end
   end
   return versions
-end
-
-local function iconCache()
-  local cache = CacheFs.forVersion("heartgold", FakeCache.new())
-  cache:writeLua(MonCache.iconManifestPath(), {
-    schema = MonCache.ICON_MANIFEST_SCHEMA,
-    image = MonCache.iconImagePath(),
-    entries = {
-      ["MON0/f0"] = {
-        x = 0,
-        y = 0,
-        width = 32,
-        height = 32,
-        frames = { { x = 0, y = 0, width = 32, height = 32, duration = 1 } },
-      },
-    },
-    representative = { "MON0/f0" },
-  })
-  local pixels = {}
-  for _ = 1, 64 * 64 do
-    pixels[#pixels + 1] = string.char(200, 40, 40, 255)
-  end
-  cache:write(MonCache.iconImagePath(), PngWriter.encode(64, 64, table.concat(pixels)))
-  return cache
 end
 
 local function openService()
@@ -127,14 +102,20 @@ function T.open_selection_paints_native_chrome(scope)
         }
       end,
       uiManifest = FieldUiFixture.manifest(),
+      prepareIcons = function(_)
+        return true
+      end,
+      cancelIconPreparation = function() end,
     })
     local handle = host:open({ focus = 0, allowCancel = true, policy = "occupied" })
+    host:step(handle, {})
     host:step(handle, { { type = "navigate", direction = "down" } })
     local status = assert(host:status(), "an open selection carries its status")
     Assert.notNil(status.presentation, "the open selection carries a visible plan")
     local text = scope:own(FieldTextRenderer.new({ cacheFs = FieldUiFixture.cacheWithFontAndFrames() }))
-    local realProvider = scope:own(MonIconAssetProvider.new(iconCache()))
-    local fixtureImage = realProvider:image()
+    local realProvider =
+      scope:own(PreparedMonIcons.preparedProvider(PreparedMonIcons.iconCache(), { "MON0/f0" }))
+    local fixtureImage = realProvider:image("MON0/f0")
     local fixtureQuad, fixtureW, fixtureH = nil, 32, 32
     do
       local quad = realProvider:quadFor("MON0/f0")

@@ -121,11 +121,23 @@ local function composition(scope, versionId)
   local text = FieldTextRenderer.new({ cacheFs = cacheFs })
   local renderer = SummaryRenderer.new({ text = text })
   local portraitManifest = assert(cacheFs:loadLua(MonCache.portraitManifestPath()), "the portrait manifest loads")
-  local portraits = atlasProvider(
-    love.graphics,
-    realizedImage(scope, cacheFs, MonCache.portraitImagePath()),
-    assert(portraitManifest.entries, "the portrait manifest carries entries")
-  )
+  local portraitEntries = assert(portraitManifest.entries, "the portrait manifest carries entries")
+  -- The exercised mon's portrait page resolves from the manifest
+  -- instead of pinning a page number: roster layout stays the
+  -- producer's business while the renderer keeps its one-image
+  -- provider contract for the drawn variants.
+  local portraitPageId = nil
+  for selector, entry in pairs(portraitEntries) do
+    if tostring(selector):find("CHIKORITA", 1, true) then
+      portraitPageId = entry.pageId
+      break
+    end
+  end
+  assert(portraitPageId ~= nil, "the portrait manifest carries the exercised mon")
+  local portraitPage =
+    assert(portraitManifest.pages[portraitPageId], "the portrait manifest carries the exercised page")
+  local portraits =
+    atlasProvider(love.graphics, realizedImage(scope, cacheFs, portraitPage.image), portraitEntries)
   local catalog = realCatalog(cacheFs)
   local service = openService(catalog, 0xC10C4000)
   gift(service, "CHIKORITA", 12)
