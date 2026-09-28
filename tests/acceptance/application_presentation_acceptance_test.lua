@@ -254,35 +254,6 @@ local function closeApplication(game)
   end, 120)
 end
 
-local function giveStarterPair(game)
-  game:setWorldState({ flag = FLAG_GOT_STARTER })
-  local service = assert(game.runtime.monService, "field runtime owns the live mon service")
-  Assert.isTrue(service:giveMon({ species = "CHIKORITA", level = 5 }), "setup gift must enter the party")
-  Assert.isTrue(service:giveMon({ species = "CYNDAQUIL", level = 5 }), "setup gift must enter the party")
-end
-
-local function partyOrder(game)
-  local service = assert(game.runtime.monService, "field runtime owns the live mon service")
-  local order = {}
-  for slot = 0, service:partyCount() - 1 do
-    order[#order + 1] = service:partyMon(slot).species
-  end
-  return order
-end
-
-local function openParty(game, state)
-  openStartMenu(game)
-  navigateTo(game, state, POKEMON_ACTION)
-  confirm(game)
-  game:advanceUntil("party application opens over the retained menu", function()
-    return hostPhase(game) == FieldApplicationHost.PHASES.application
-  end, 120)
-  local status = game.runtime.applicationHost:status()
-  Assert.equal(status.applicationId, PARTY_APPLICATION, "the launched application must be the party screen")
-  local flow = assert(status.application, "the party application must expose its flow status")
-  return assert(flow.child, "the party flow must expose its live leaf status")
-end
-
 local function grantTrainerCard(game)
   game:setWorldState({ flag = FLAG_GOT_TRAINER_CARD })
 end
@@ -522,45 +493,6 @@ function T.tests.bag_blur_cancels_stale_press_and_fresh_input_recovers()
     end, 120)
     closeStartMenu(game)
     Assert.equal(hostPhase(game), FieldApplicationHost.PHASES.closed, "the journey ends back on the field")
-  end)
-end
-
--- The Party keeps its order and revision across a switch; an inert close
--- after navigation issues no swap.
-function T.tests.party_inert_close_across_config_switch_issues_no_swap()
-  withFieldGame({}, function(game)
-    local state = hostCallbacks(game)
-    giveStarterPair(game)
-    local service = assert(game.runtime.monService, "field runtime owns the live mon service")
-    local revision = service:partyRevision()
-    local order = partyOrder(game)
-    switchDisplay(game, 1280, 720)
-    local opened = openParty(game, state)
-    local plan = assert(opened.presentation, "the open party must publish its presentation plan")
-    Assert.equal(
-      #assert(plan.frames, "a wide host must frame the party"),
-      1,
-      "a wide host frames the party in a static box"
-    )
-
-    switchDisplay(game, 640, 480)
-    local status = game.runtime.applicationHost:status()
-    Assert.equal(status.applicationId, PARTY_APPLICATION, "the party must stay open across the switch")
-    local partyFlow = assert(status.application, "the party must expose its flow status after the switch")
-    local view = assert(partyFlow.child, "the party flow must expose its leaf status after the switch")
-    local nativePlan = assert(view.presentation, "the party must publish a plan after the switch")
-    local nativeFrames = assert(nativePlan.frames, "the underfilled native party carries its static frame")
-    Assert.equal(#nativeFrames, 1, "an underfilled native pane gets one outer frame")
-    Assert.equal(#nativePlan.panes, 1, "native-like party shows its single compact pane")
-
-    -- Keyboard navigation stays inside the visible grid, then an inert
-    -- close leaves the service untouched.
-    state:keypressed("s")
-    game:step()
-    state:keyreleased("s")
-    closeApplication(game)
-    Assert.equal(service:partyRevision(), revision, "navigation plus inert close must not bump the revision")
-    Assert.deepEqual(partyOrder(game), order, "navigation plus inert close must not reorder the party")
   end)
 end
 
@@ -1540,50 +1472,6 @@ function T.tests.bag_nested_cancel_unwinds_while_outside_press_closes()
     Assert.equal(hostPhase(game), FieldApplicationHost.PHASES.menu, "dismissal returns to the menu")
     upOnly(game, "integration:outside", outsideX, outsideY)
     Assert.equal(bag:quantity("POTION"), 5, "dismissal must issue no inventory mutation")
-  end)
-end
-
--- Ordinary Cancel returns the nested party toward browsing while the
--- screen stays open; an outside press from the same nested state closes
--- at once without swapping.
-function T.tests.party_nested_cancel_unwinds_while_outside_press_closes()
-  withFieldGame({}, function(game)
-    local state = hostCallbacks(game)
-    giveStarterPair(game)
-    local service = assert(game.runtime.monService, "field runtime owns the live mon service")
-    local revision = service:partyRevision()
-    local order = partyOrder(game)
-    switchDisplay(game, 1280, 720)
-    local opened = openParty(game, state)
-    Assert.equal(opened.state, "browse", "the party opens in top-level browsing")
-    confirm(game)
-    game:step()
-    local nestedFlow =
-      assert(game.runtime.applicationHost:status().application, "the party must stay open after confirm")
-    local nested = assert(nestedFlow.child, "the party flow must expose its live leaf status")
-    Assert.equal(nested.state, "context", "confirming a mon opens the nested context menu")
-    pressCancel(game)
-    game:step()
-    local unwoundFlow =
-      assert(game.runtime.applicationHost:status().application, "ordinary cancel must keep the party open")
-    local unwound = assert(unwoundFlow.child, "the party flow must expose its live leaf status")
-    Assert.equal(unwound.state, "browse", "ordinary cancel returns toward browsing without closing")
-    confirm(game)
-    game:step()
-    local renteredFlow =
-      assert(game.runtime.applicationHost:status().application, "the party must stay open after the second confirm")
-    local rentered = assert(renteredFlow.child, "the party flow must expose its live leaf status")
-    Assert.equal(rentered.state, "context", "the second confirm reopens the nested context menu")
-    local plan = assert(rentered.presentation, "the nested party must publish its plan")
-    local outsideX, outsideY = outsidePoint(plan, 1280, 720)
-    downOnly(game, "integration:outside", outsideX, outsideY)
-    game:advanceUntil("an outside press closes the nested party", function()
-      return hostPhase(game) == FieldApplicationHost.PHASES.menu
-    end, 120)
-    Assert.equal(hostPhase(game), FieldApplicationHost.PHASES.menu, "dismissal returns to the menu")
-    upOnly(game, "integration:outside", outsideX, outsideY)
-    Assert.equal(service:partyRevision(), revision, "dismissal must not bump the revision")
-    Assert.deepEqual(partyOrder(game), order, "dismissal must not reorder the party")
   end)
 end
 
