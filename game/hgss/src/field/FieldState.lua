@@ -134,6 +134,26 @@ end
 function FieldState:update(dt)
   self:_refreshDisplay()
   self.runtime:update(dt)
+  local pokemonNaming = self.runtime.pokemonNaming
+  if self.runtime.errorText ~= nil then
+    self._namingPresentationReady = false
+  elseif pokemonNaming:isActive() then
+    local namingStatus = assert(pokemonNaming:status(), "an active Pokemon naming task publishes its status")
+    local ready, failure =
+      assert(self.presentationResources, "field presentation resources are unavailable"):preparePokemonNamingSubject(
+        namingStatus.snapshot.subject
+      )
+    if failure ~= nil then
+      pokemonNaming:setPresentationReady(false)
+      self._namingPresentationReady = false
+      self.runtime.errorText = "Pokemon naming presentation failed: " .. tostring(failure)
+    else
+      pokemonNaming:setPresentationReady(ready == true)
+      self._namingPresentationReady = ready == true
+    end
+  else
+    self._namingPresentationReady = false
+  end
   self:_advanceStarterPreparation()
   self:_syncStarterPresentationInput()
   self:_advanceEntryCover(dt)
@@ -439,9 +459,23 @@ function FieldState:_drawFieldAttachedUi(resources, hostStatus, alpha)
     return
   end
   local dialogueModal = self.runtime.dialogue:isModal()
+  local dialogueHost = self.runtime.scripts.dialogueHost
+  local yesNo = dialogueHost:yesNoPresentation()
+  local contextChoice = assert(self.runtime.contextChoiceProvider):status()
+  assert(not (yesNo and contextChoice), "field cannot present opcode-63 and contextual two-choice prompts at once")
+  if yesNo == nil and contextChoice ~= nil then
+    local options = dialogueHost:yesNoOptions()
+    yesNo = {
+      active = true,
+      selectedIndex = contextChoice.selected,
+      yesText = options.yesText,
+      noText = options.noText,
+      frameIndex = options.frameIndex,
+    }
+  end
   local signpostModal = self.runtime.signpost:isModal()
   local fieldScale
-  if dialogueModal or signpostModal then
+  if dialogueModal or yesNo or signpostModal then
     fieldScale = self.runtime.fieldPixelScale:resolvedScale()
   end
   local bounds = self.runtime.viewport.worldViewport
@@ -456,6 +490,8 @@ function FieldState:_drawFieldAttachedUi(resources, hostStatus, alpha)
       height = assert(self.runtime.viewport.height),
     }
   end
+  local dialogueBox
+  local yesNoPreferredScale = fieldScale
   if dialogueModal then
     local manifestPlacement = assert(self.runtime.uiManifest).dialogueFrames.continueCursor.placement
     local dialogueScale = PixelScale.fitPreferred(bounds, 256, 48, assert(fieldScale))
@@ -465,11 +501,17 @@ function FieldState:_drawFieldAttachedUi(resources, hostStatus, alpha)
       cursorPlacement = manifestPlacement,
     })
     resources.dialogueRenderer:draw(self.runtime.dialogue, presentation)
-    local yesNo = self.runtime.scripts.dialogueHost:yesNoPresentation()
-    if yesNo then
-      local yesNoLayout = resources.yesNoRenderer:layout(yesNo, self.runtime.screenTopology, presentation.outerRect)
-      resources.yesNoRenderer:draw(yesNo, yesNoLayout)
-    end
+    dialogueBox = presentation.outerRect
+    yesNoPreferredScale = dialogueScale
+  end
+  if yesNo then
+    local yesNoLayout = resources.yesNoRenderer:layout(
+      yesNo,
+      self.runtime.screenTopology,
+      dialogueBox,
+      { bounds = bounds, preferredScale = assert(yesNoPreferredScale) }
+    )
+    resources.yesNoRenderer:draw(yesNo, yesNoLayout)
   end
   if signpostModal then
     local signpostScale = PixelScale.fitPreferred(bounds, 256, 192, assert(fieldScale))
@@ -596,9 +638,18 @@ function FieldState:draw()
     if ready then
       starter:drawPresentation(
         assert(resources.textRenderer, "field text renderer is unavailable"),
-        assert(resources.windowRenderer, "field presentation owns no window renderer")
+        assert(resources.windowRenderer, "field presentation owns no window renderer"),
+        alpha
       )
     end
+  end
+  local pokemonNaming = self.runtime.pokemonNaming
+  assert(
+    starter == nil or not starter:isActive() or pokemonNaming == nil or not pokemonNaming:isActive(),
+    "script-owned field modals are mutually exclusive"
+  )
+  if pokemonNaming ~= nil and pokemonNaming:isActive() and self._namingPresentationReady then
+    pokemonNaming:drawPresentation(resources:pokemonNamingRenderer())
   end
   if self.development and self._developmentOverlayVisible then
     self._fpsFrames = self._fpsFrames + 1
@@ -859,6 +910,10 @@ function FieldState:focus(focused)
       and type(starter.cancelPointerCapture) == "function"
     then
       starter:cancelPointerCapture()
+    end
+    local pokemonNaming = assert(self.runtime.pokemonNaming, "field runtime Pokemon Naming Screen is unavailable")
+    if pokemonNaming:isActive() then
+      pokemonNaming:cancelPointerCapture()
     end
   end
 end

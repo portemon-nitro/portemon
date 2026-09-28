@@ -42,7 +42,11 @@ local function boot(withCover)
     return setmetatable({
       cacheFs = cache,
       derivedAssets = FieldStatePresentationFixture.iconHost().derivedAssets,
-      uiManifest = FieldUiFixture.addStartMenuIconContract(FieldUiFixture.manifest()),
+      uiManifest = FieldUiFixture.fieldStateManifest(),
+      bindPartyIconPreparation = function(_, _, _)
+        return 1
+      end,
+      unbindPartyIconPreparation = function(_, _) end,
       fieldEntranceIndicatorAsset = {
         model = { batches = {}, materials = {} },
         effects = {
@@ -127,6 +131,18 @@ local function boot(withCover)
           return false
         end,
       },
+      scripts = {
+        dialogueHost = {
+          yesNoPresentation = function()
+            return nil
+          end,
+        },
+      },
+      contextChoiceProvider = {
+        status = function()
+          return nil
+        end,
+      },
       signpost = {
         isModal = function()
           return false
@@ -136,6 +152,12 @@ local function boot(withCover)
         status = function()
           return { phase = "closed", fadeAlpha = 0 }
         end,
+      },
+      pokemonNaming = {
+        isActive = function()
+          return false
+        end,
+        cancelPointerCapture = function() end,
       },
       input = input,
       actionKeys = {},

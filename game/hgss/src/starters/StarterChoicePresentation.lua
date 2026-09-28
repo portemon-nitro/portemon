@@ -2,7 +2,7 @@
 -- validated starter-application manifest through the shared model stack
 -- (ModelDefinition/ModelInstance over a GpuAssetPool, drawn through
 -- FieldRenderer under the manifest's outside/inside camera poses), the
--- chooser-owned backdrop, the three candidate portraits borrowed from the
+-- cleared info surface, the three candidate portraits borrowed from the
 -- mon portrait atlas, and the shared HGSS window primitive for the framed
 -- message surfaces. Two logical 256x192 surfaces share one host drawable:
 -- the machine surface carries the 3D machine/balls plus the bottom prompt,
@@ -54,7 +54,7 @@ local FixedPoint = require("libs.math.src.FixedPoint")
 ---@field _instances table<string, ModelInstance> model instances by scene role
 ---@field _staticBatches table[] prepared tabletop batches
 ---@field _staticDraws table[] realized tabletop draw items, built once at readiness and reused by every draw
----@field _backdropImage GpuAssetPool.Image? chooser backdrop image once realized
+---@field _machineBackgroundImage GpuAssetPool.Image? source MAIN BG2 artwork once realized
 ---@field _infoBaseImage GpuAssetPool.Image? info-surface base artwork once realized
 ---@field _infoOverlayImage GpuAssetPool.Image? info-surface overlay artwork once realized
 ---@field _portraitImages table<integer, GpuAssetPool.Image> mon portrait page images by zero-based page id once realized
@@ -74,6 +74,7 @@ local FixedPoint = require("libs.math.src.FixedPoint")
 ---@field _rockSelection integer? selection the rock frame belongs to, nil while rock is inactive
 ---@field _infoFade integer info-surface white fade ticks in the active lock exit
 ---@field _machineFade integer machine-surface white fade ticks after the info fade
+---@field _renderSamples table[]? immutable pre/mid/post source-boundary render samples
 ---@field _openFrame integer selected ball-open frames advanced in the active lock exit
 ---@field _effectFrame integer ball-effect frames advanced in the active lock exit
 ---@field _rockPlayingFor integer? selection the realized rock clip plays for, nil when unrealized/inactive
@@ -118,17 +119,13 @@ local function clipPoint(matrix, x, y, z)
     matrix[4] * x + matrix[8] * y + matrix[12] * z + matrix[16]
 end
 
--- Source plane/sprite visibility over the live controller snapshot. The info
--- background layers follow the sub-engine BG1/BG2 enables (absent while the
--- zoom travels, waits, or returns), while the portrait sprite survives the
--- zoom path and hides only on the way back out.
+-- Source machine BG1/BG2 prompt layers are enabled only in settled inspect and
+-- confirm states.
 ---@param snapshot StarterChoiceController.Snapshot
 ---@return boolean
-local function infoArtworkVisible(snapshot)
-  if snapshot.selectionState == "null" then
-    return false
-  end
-  return snapshot.transition ~= "zoomIn" and snapshot.transition ~= "waitZoom" and snapshot.transition ~= "backOut"
+local function machinePromptVisible(snapshot)
+  return snapshot.transition == "idle"
+    and (snapshot.selectionState == "inspect" or snapshot.selectionState == "confirm")
 end
 
 ---@param snapshot StarterChoiceController.Snapshot
@@ -196,7 +193,7 @@ function StarterChoicePresentation.new(opts)
     _instances = {},
     _staticBatches = {},
     _staticDraws = {},
-    _backdropImage = nil,
+    _machineBackgroundImage = nil,
     _infoBaseImage = nil,
     _infoOverlayImage = nil,
     _portraitImages = {},
@@ -216,6 +213,7 @@ function StarterChoicePresentation.new(opts)
     _rockSelection = nil,
     _infoFade = 0,
     _machineFade = 0,
+    _renderSamples = nil,
     _openFrame = 0,
     _effectFrame = 0,
     _rockPlayingFor = nil,
@@ -241,10 +239,117 @@ function StarterChoicePresentation:reset()
   self._rockSelection = nil
   self._infoFade = 0
   self._machineFade = 0
+  self._renderSamples = nil
   self._openFrame = 0
   self._effectFrame = 0
   self._rockPlayingFor = nil
   self._exitPlaying = false
+end
+
+-- Copies only the controller identity and visual clocks needed by drawing.
+-- Samples deliberately own no controller result table or presentation state.
+---@param snapshot StarterChoiceController.Snapshot
+---@return table<string, unknown>
+local function renderSample(self, snapshot)
+  return {
+    snapshot = {
+      selection = snapshot.selection,
+      selectionState = snapshot.selectionState,
+      transition = snapshot.transition,
+      direction = snapshot.direction,
+      done = snapshot.done,
+    },
+    rotationAccum = self._rotationAccum,
+    rotateSign = self._rotateSign,
+    cameraStep = self._cameraStep,
+    arcStep = self._arcStep,
+    lockCameraStep = self._lockCameraStep,
+    infoFade = self._infoFade,
+    machineFade = self._machineFade,
+  }
+end
+
+-- Starts a field tick's render history after detecting transition entry so
+-- its pre-step sample has the same clocks the first source update observes.
+---@param snapshot StarterChoiceController.Snapshot
+function StarterChoicePresentation:beginRenderTick(snapshot)
+  assert(type(snapshot) == "table", "starter render sampling requires the controller snapshot")
+  self:_detectEntry(snapshot)
+  self._renderSamples = { renderSample(self, snapshot) }
+end
+
+-- Publishes a source boundary after the controller consumes that source
+-- step's completion observation.
+---@param snapshot StarterChoiceController.Snapshot
+function StarterChoicePresentation:captureRenderSample(snapshot)
+  assert(type(snapshot) == "table", "starter render sampling requires the controller snapshot")
+  local samples = self._renderSamples
+  assert(samples ~= nil and #samples < 3, "starter render tick captures exactly three source samples")
+  samples[#samples + 1] = renderSample(self, snapshot)
+end
+
+---@param snapshot StarterChoiceController.Snapshot
+function StarterChoicePresentation:finishRenderTick(snapshot)
+  local samples = assert(self._renderSamples, "starter render tick must be started")
+  while #samples < 3 do
+    self:captureRenderSample(snapshot)
+  end
+  assert(#samples == 3, "starter render tick captures exactly three source samples")
+end
+
+---@param left table<string, unknown>
+---@param right table<string, unknown>
+---@return boolean
+local function compatibleRenderSamples(left, right)
+  local a = assert(left.snapshot)
+  local b = assert(right.snapshot)
+  return a.selection == b.selection
+    and a.selectionState == b.selectionState
+    and a.transition == b.transition
+    and a.direction == b.direction
+    and a.done == b.done
+    and left.rotateSign == right.rotateSign
+end
+
+---@param left table<string, unknown>
+---@param right table<string, unknown>
+---@param alpha number
+---@return table<string, unknown>
+local function interpolateRenderSamples(left, right, alpha)
+  if not compatibleRenderSamples(left, right) then
+    return alpha < 1 and left or right
+  end
+  local sample = { snapshot = left.snapshot, rotateSign = left.rotateSign }
+  for _, clock in ipairs({ "rotationAccum", "cameraStep", "arcStep", "lockCameraStep", "infoFade", "machineFade" }) do
+    sample[clock] = left[clock] + (right[clock] - left[clock]) * alpha
+  end
+  return sample
+end
+
+-- Selects one source half-frame from the immutable pre/mid/post history.
+-- Input can change the settled snapshot before another fixed tick; in that
+-- case draw uses a live-clock fallback for the new semantic state.
+---@param snapshot StarterChoiceController.Snapshot
+---@param alpha number
+---@return table<string, unknown> sampled snapshot and clocks
+function StarterChoicePresentation:_sampleForDraw(snapshot, alpha)
+  assert(isFiniteNumber(alpha), "starter render alpha must be finite")
+  alpha = math.max(0, math.min(1, alpha))
+  local samples = self._renderSamples
+  if samples == nil or #samples ~= 3 then
+    return renderSample(self, snapshot)
+  end
+  local current = renderSample(self, snapshot)
+  if not compatibleRenderSamples(samples[3], current) then
+    return current
+  end
+  local left, right, localAlpha
+  if alpha <= 0.5 then
+    left, right, localAlpha = samples[1], samples[2], alpha * 2
+  else
+    left, right, localAlpha = samples[2], samples[3], (alpha - 0.5) * 2
+  end
+  return interpolateRenderSamples(left, right, localAlpha)
 end
 
 -- Interpolated camera pose for the current semantic clocks: the zoom path
@@ -252,20 +357,23 @@ end
 -- steps, reversal returns over the same steps, confirmation holds inside,
 -- and the locking exit dollies back out over its own camera-out steps.
 ---@param snapshot StarterChoiceController.Snapshot
+---@param sample table<string, unknown>?
 ---@return number 0..1
-function StarterChoicePresentation:_cameraAlpha(snapshot)
+function StarterChoicePresentation:_cameraAlpha(snapshot, sample)
   local cameraTicks = self._manifest.scene.timing.cameraTicks
+  local cameraStep = sample and sample.cameraStep or self._cameraStep
+  local lockCameraStep = sample and sample.lockCameraStep or self._lockCameraStep
   if snapshot.transition == "zoomIn" then
-    return math.min(1, self._cameraStep / cameraTicks)
+    return math.min(1, cameraStep / cameraTicks)
   end
   if snapshot.transition == "waitZoom" then
     return 1
   end
   if snapshot.transition == "backOut" then
-    return 1 - math.min(1, self._cameraStep / cameraTicks)
+    return 1 - math.min(1, cameraStep / cameraTicks)
   end
   if snapshot.transition == "lockExit" or snapshot.transition == "done" then
-    return 1 - math.min(1, self._lockCameraStep / cameraTicks)
+    return 1 - math.min(1, lockCameraStep / cameraTicks)
   end
   if snapshot.selectionState == "confirm" then
     return 1
@@ -277,17 +385,19 @@ end
 -- ball-arc steps with the camera, held inside through confirmation and the
 -- lock exit, and back out with reversal.
 ---@param snapshot StarterChoiceController.Snapshot
+---@param sample table<string, unknown>?
 ---@return number 0..1
-function StarterChoicePresentation:_arcAlpha(snapshot)
+function StarterChoicePresentation:_arcAlpha(snapshot, sample)
   local ballArcTicks = self._manifest.scene.timing.ballArcTicks
+  local arcStep = sample and sample.arcStep or self._arcStep
   if snapshot.transition == "zoomIn" then
-    return math.min(1, self._arcStep / ballArcTicks)
+    return math.min(1, arcStep / ballArcTicks)
   end
   if snapshot.transition == "waitZoom" then
     return 1
   end
   if snapshot.transition == "backOut" then
-    return 1 - math.min(1, self._arcStep / ballArcTicks)
+    return 1 - math.min(1, arcStep / ballArcTicks)
   end
   if snapshot.selectionState == "confirm" then
     return 1
@@ -321,8 +431,23 @@ end
 -- the posed vertical field of view over the DS aspect. Pure in the snapshot
 -- and memoized by it, so hit-region scans share one build per snapshot.
 ---@param snapshot StarterChoiceController.Snapshot
+---@param sample table<string, unknown>?
 ---@return number[] view, number[] projection
-function StarterChoicePresentation:cameraMatrices(snapshot)
+function StarterChoicePresentation:cameraMatrices(snapshot, sample)
+  if sample ~= nil then
+    local camera = self._manifest.scene.camera
+    local pose = interpolatePose(camera.out, camera.inside, self:_cameraAlpha(snapshot, sample))
+    local pitch = math.rad(pose.angleX)
+    local target = pose.target
+    local eye = {
+      target.x,
+      target.y + math.sin(-pitch) * pose.distance,
+      target.z + math.cos(pitch) * pose.distance,
+    }
+    local reference = self._manifest.reference
+    return Matrix4.lookAt(eye, { target.x, target.y, target.z }, { 0, 1, 0 }),
+      Matrix4.perspective(math.rad(pose.perspective), reference.width / reference.height, camera.near, camera.far)
+  end
   local key = snapshot.transition
     .. "|"
     .. snapshot.selectionState
@@ -734,13 +859,13 @@ local function collectResources(manifest, portraits)
     end
   end
   local backgrounds = assert(manifest.backgrounds, "starter manifest is missing its backgrounds")
-  local hostBackdrop = assert(backgrounds.host, "starter manifest is missing its host backdrop")
+  local machineBackground = assert(backgrounds.machine, "starter manifest is missing its machine background")
   addImage(
-    assert(hostBackdrop.image, "starter manifest is missing its backdrop image"),
+    assert(machineBackground.image, "starter manifest is missing its machine background image"),
     "clamp",
     "clamp",
-    hostBackdrop.width,
-    hostBackdrop.height
+    machineBackground.width,
+    machineBackground.height
   )
   local infoArtwork = assert(backgrounds.info, "starter manifest is missing its info artwork")
   local infoBase = assert(infoArtwork.base, "starter manifest is missing its info base layer")
@@ -1080,9 +1205,10 @@ function StarterChoicePresentation:_finishPreparation()
   self:_buildStaticDraws()
   local graphics = love and love.graphics
   local backgrounds = assert(self._manifest.backgrounds, "starter manifest is missing its backgrounds")
-  self._backdropImage = assert(
-    self._imageEntries[assert(backgrounds.host.image, "starter manifest is missing its backdrop image") .. "|clamp|clamp"],
-    "starter presentation owns no backdrop"
+  local machineBackground = assert(backgrounds.machine, "starter manifest is missing its machine background")
+  self._machineBackgroundImage = assert(
+    self._imageEntries[assert(machineBackground.image, "starter manifest is missing its machine background image") .. "|clamp|clamp"],
+    "starter presentation owns no machine background image"
   )
   local infoArtwork = assert(backgrounds.info, "starter manifest is missing its info artwork")
   self._infoBaseImage = assert(
@@ -1280,7 +1406,7 @@ function StarterChoicePresentation:_detectEntry(snapshot)
   end
   if snapshot.transition == "rotate" then
     self._rotationAccum = 0
-    self._rotateSign = snapshot.direction == "left" and 1 or -1
+    self._rotateSign = snapshot.direction == "left" and -1 or 1
   elseif snapshot.transition == "zoomIn" then
     self._cameraStep = 0
     self._arcStep = 0
@@ -1369,10 +1495,12 @@ end
 -- visual travel between assignments. Pure in the semantic clocks, shared by
 -- drawing and hit testing; it never advances a clock.
 ---@param snapshot StarterChoiceController.Snapshot
+---@param sample table<string, unknown>?
 ---@return number radians
-function StarterChoicePresentation:yawForSnapshot(snapshot)
+function StarterChoicePresentation:yawForSnapshot(snapshot, sample)
   if snapshot.transition == "rotate" then
-    return self._rotateSign * math.rad(self._rotationAccum)
+    return (sample and sample.rotateSign or self._rotateSign)
+      * math.rad(sample and sample.rotationAccum or self._rotationAccum)
   end
   return 0
 end
@@ -1444,20 +1572,21 @@ function StarterChoicePresentation:_buildStaticDraws()
 end
 
 ---@param snapshot StarterChoiceController.Snapshot
+---@param sample table<string, unknown>?
 ---@return number[] items in source role order
-function StarterChoicePresentation:_drawItems(snapshot)
+function StarterChoicePresentation:_drawItems(snapshot, sample)
   local items = {}
   for _, item in ipairs(self._staticDraws) do
     items[#items + 1] = item
   end
   local layout = self._manifest.scene.ballLayout
-  local arc = math.rad(layout.inspectArcDegrees * self:_arcAlpha(snapshot))
+  local arc = math.rad(layout.inspectArcDegrees * self:_arcAlpha(snapshot, sample))
   local selected = snapshot.selection + 1
   -- The balls ride the rotating platform: the platform yaw carries every
   -- slot origin, each ball keeps its slot Y orientation, and the inspected
   -- ball adds its own X-axis arc about the inspect pivot on top. Touch
   -- centers keep the interaction offset and never participate here.
-  local platform = Matrix4.rotateY(self:yawForSnapshot(snapshot))
+  local platform = Matrix4.rotateY(self:yawForSnapshot(snapshot, sample))
   local origins = self:modelOrigins(snapshot)
   local touches = self:touchOrigins(snapshot)
   local pivots = {}
@@ -1570,6 +1699,14 @@ function StarterChoicePresentation:_drawInfoArtwork()
   graphics.setColor(red, green, blue, alpha)
 end
 
+-- The native info pane is cleared between source phases where both retail
+-- info background layers are disabled.
+function StarterChoicePresentation:_drawInfoBackdrop()
+  local graphics = assert(love and love.graphics, "starter presentation requires the graphics namespace")
+  graphics.setColor(0, 0, 0, 1)
+  graphics.rectangle("fill", 0, 0, 256, 192)
+end
+
 -- Draws the sequential source white fade over the caller's full canonical
 -- surface from its fade clock. Either overlay is absent while its clock
 -- has not started. A read-only cover: it never advances a clock.
@@ -1625,10 +1762,11 @@ end
 -- compensates for presentation cropping. The caller composites the
 -- raster once through the resolved machine placement.
 ---@param snapshot StarterChoiceController.Snapshot controller snapshot
-function StarterChoicePresentation:_renderMachineTarget(snapshot)
+---@param sample table<string, unknown>?
+function StarterChoicePresentation:_renderMachineTarget(snapshot, sample)
   local graphics = assert(love and love.graphics, "starter presentation requires the graphics namespace")
   local target = self:_ensureMachineTarget()
-  local viewMatrix, projection = self:cameraMatrices(snapshot)
+  local viewMatrix, projection = self:cameraMatrices(snapshot, sample)
   ---@return number[]
   local function cameraView()
     return viewMatrix
@@ -1657,7 +1795,7 @@ function StarterChoicePresentation:_renderMachineTarget(snapshot)
     assert(self._renderer, "starter presentation has no renderer"):draw(
       self._sceneRuntime,
       camera,
-      { self:_drawItems(snapshot) },
+      { self:_drawItems(snapshot, sample) },
       nil,
       {
         worldViewport = { x = 0, y = 0, width = 256, height = 192 },
@@ -1734,7 +1872,8 @@ end
 ---@param text table<string, unknown> text provider ({ drawLineWithColorVariants })
 ---@param plan ApplicationPlan the resolved native plan
 ---@param windowRenderer table<string, unknown> field-borrowed window primitive for framed surfaces
-function StarterChoicePresentation:drawNative(snapshot, view, text, plan, windowRenderer)
+---@param renderAlpha number field render interpolation alpha
+function StarterChoicePresentation:drawNative(snapshot, view, text, plan, windowRenderer, renderAlpha)
   local _ = view
   assert(type(snapshot) == "table", "starter presentation draw requires the controller snapshot")
   assert(
@@ -1742,41 +1881,46 @@ function StarterChoicePresentation:drawNative(snapshot, view, text, plan, window
     "starter presentation requires the token-color-variant text provider"
   )
   assert(self._ready, "starter presentation is not prepared")
+  local sampled = self:_sampleForDraw(snapshot, renderAlpha)
+  local sampledSnapshot = sampled.snapshot --[[@as StarterChoiceController.Snapshot]]
   local machinePlacement = nativePane(plan, "machine")
   local infoPlacement = nativePane(plan, "info")
   self:_syncRealized(snapshot)
   local graphics = assert(love and love.graphics, "starter presentation requires the graphics namespace")
   graphics.setColor(1, 1, 1, 1)
-  self:_renderMachineTarget(snapshot)
+  self:_renderMachineTarget(sampledSnapshot, sampled)
   local target = assert(self._machineTarget, "starter presentation owns no machine raster target")
   local textColors = assert(self._manifest.textColors, "starter presentation requires the generated chooser colors")
   local surfaces = self._manifest.surfaces
-  local infoText, promptText = infoMessageFor(self, snapshot)
+  local _, promptText = infoMessageFor(self, sampledSnapshot)
   LogicalSurface.draw(graphics, machinePlacement, function()
     graphics.draw(target, 0, 0)
-    self:_drawMessageLines(
-      surfaces.machine.prompt,
-      promptText,
-      text,
-      transparentBackground(textColors.machineBackground),
-      windowRenderer
-    )
+    if machinePromptVisible(sampledSnapshot) then
+      graphics.draw(assert(self._machineBackgroundImage), 0, 0)
+      self:_drawMessageLines(
+        surfaces.machine.prompt,
+        promptText,
+        text,
+        transparentBackground(textColors.machineBackground),
+        windowRenderer
+      )
+    end
   end)
   LogicalSurface.draw(graphics, infoPlacement, function()
-    if infoArtworkVisible(snapshot) then
-      self:_drawInfoArtwork()
+    self:_drawInfoBackdrop()
+    self:_drawInfoArtwork()
+    if portraitVisible(sampledSnapshot) then
+      self:_drawInfoPortrait(sampledSnapshot)
     end
-    if portraitVisible(snapshot) then
-      self:_drawInfoPortrait(snapshot)
-    end
-    self:_drawMessageLines(surfaces.info.message, infoText, text, textColors.infoBackground, windowRenderer)
+    local sampledInfoText, _ = infoMessageFor(self, sampledSnapshot)
+    self:_drawMessageLines(surfaces.info.message, sampledInfoText, text, textColors.infoBackground, windowRenderer)
   end)
   local timing = self._manifest.scene.timing
   LogicalSurface.draw(graphics, infoPlacement, function()
-    self:_drawFade(self._infoFade / timing.infoFadeTicks)
+    self:_drawFade(sampled.infoFade / timing.infoFadeTicks)
   end)
   LogicalSurface.draw(graphics, machinePlacement, function()
-    self:_drawFade(self._machineFade / timing.machineFadeTicks)
+    self:_drawFade(sampled.machineFade / timing.machineFadeTicks)
   end)
   self:_drawOuterFrames(graphics, plan, windowRenderer)
   graphics.setColor(1, 1, 1, 1)
@@ -1911,7 +2055,7 @@ function StarterChoicePresentation:_releaseGpu()
   self._instances = {}
   self._staticBatches = {}
   self._staticDraws = {}
-  self._backdropImage = nil
+  self._machineBackgroundImage = nil
   self._infoBaseImage = nil
   self._infoOverlayImage = nil
   self._portraitImages = {}
@@ -1950,6 +2094,7 @@ function StarterChoicePresentation:dispose()
     return
   end
   self._disposed = true
+  self._renderSamples = nil
   self:_releaseGpu()
 end
 

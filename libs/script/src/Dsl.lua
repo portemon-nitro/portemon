@@ -817,6 +817,9 @@ end
 function M.partySelectResult(spec)
   return op("party_select_result", spec)
 end
+function M.pokemonNicknameInput(spec)
+  return op("pokemon_nickname_input", spec)
+end
 
 -- Field-task request: the pending form claims the runtime-queued request
 -- for the menu-to-field builtin; the explicit form carries a source move

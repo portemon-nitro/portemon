@@ -31,6 +31,7 @@ local CONSTRUCTOR_MODULES = {
   "libs.hgss.src.ui.StartMenuRenderer",
   "libs.hgss.src.ui.TrainerCardRenderer",
   "libs.hgss.src.ui.PartyScreenRenderer",
+  "libs.hgss.src.ui.NamingScreenRenderer",
   "libs.hgss.src.presentation.MonIconAssetProvider",
   "libs.hgss.src.presentation.AssetPreparationQueue",
   "libs.hgss.src.presentation.ItemIconAssetProvider",
@@ -107,6 +108,10 @@ local function buildDoubles(sink, calls)
           end
           return palette
         end
+        function instance:drawStandardWindow(_, _) end
+        function instance:standardFramePalette()
+          return self:framePalette(0)
+        end
         function instance:drawApplicationFrame(box, frameIndex)
           sink[#sink + 1] = { "frame", box, frameIndex }
         end
@@ -133,6 +138,7 @@ local function buildDoubles(sink, calls)
         function text:drawText(content, x, y)
           sink[#sink + 1] = { "text", content, x, y }
         end
+        function text:drawTextWithPalette(_, _, _, _) end
         function text:windowBackgroundColor()
           return 0, 0, 0, 1
         end
@@ -179,9 +185,45 @@ local function buildDoubles(sink, calls)
         return party
       end,
     },
+    ["libs.hgss.src.ui.NamingScreenRenderer"] = {
+      new = function(options)
+        calls.namingConstructed = (calls.namingConstructed or 0) + 1
+        calls.namingDrawSubject = options.drawSubject
+        return {
+          dispose = function(_)
+            calls.namingDisposed = (calls.namingDisposed or 0) + 1
+            calls.iconProviderReleasedDuringNamingDispose = calls.icons
+            calls.namingImageReleased = (calls.namingImageReleased or 0) + 1
+          end,
+        }
+      end,
+    },
     ["libs.hgss.src.presentation.MonIconAssetProvider"] = {
       new = function(_)
-        return releasable(calls, "icons")
+        local provider = releasable(calls, "icons")
+        function provider:dimensions(iconKey)
+          calls.iconDimensions = iconKey
+          return { width = 32, height = 32 }
+        end
+        function provider:image()
+          calls.iconImage = (calls.iconImage or 0) + 1
+          return "borrowed-icon-image"
+        end
+        function provider:prepareKeys(_)
+          calls.iconPrepareCalls = (calls.iconPrepareCalls or 0) + 1
+          local ready = calls.iconPageReady ~= false
+          if ready then
+            return true, nil
+          end
+          return false, calls.iconPageFailure
+        end
+        function provider:quadFor(iconKey, frameIndex)
+          assert(calls.iconPageReady, "naming cannot request an icon quad before its page is ready")
+          calls.iconQuadCount = (calls.iconQuadCount or 0) + 1
+          calls.iconQuad = { iconKey = iconKey, frameIndex = frameIndex }
+          return { key = iconKey, frameIndex = frameIndex }
+        end
+        return provider
       end,
     },
     ["libs.hgss.src.presentation.ItemIconAssetProvider"] = {
@@ -208,7 +250,16 @@ end
 local function compositionRuntime()
   local runtime = {
     cacheFs = {},
-    uiManifest = {},
+    uiManifest = {
+      namingScreen = {
+        pokemonSubject = {
+          frames = {
+            { parts = { { iconFrame = 1 } } },
+            { parts = { { iconFrame = 1 } } },
+          },
+        },
+      },
+    },
     playerData = { options = { textFrame = 0 } },
     windowStyles = {},
     fieldEntranceIndicatorAsset = {
@@ -368,6 +419,78 @@ function T.script_party_draw_reuses_the_pokemon_presenter_without_stepping()
   if not ok then
     error(err, 0)
   end
+end
+
+function T.pokemon_naming_renderer_is_prepared_lazily_and_borrows_shared_mon_icons()
+  local sink, calls = {}, {}
+  local savedLove = rawget(_G, "love")
+  rawset(_G, "love", { graphics = require("tests.support.FakeGraphics").new({}) })
+  local ok, err = pcall(function()
+    withProductionComposition(sink, calls, compositionRuntime(), function(resources)
+      Assert.isNil(calls.namingConstructed, "ordinary field construction does not acquire naming chrome")
+      Assert.isNil(calls.iconImage, "ordinary field construction does not acquire naming images")
+      Assert.isNil(calls.iconQuadCount, "ordinary field construction does not acquire naming quads")
+
+      calls.iconPageReady = false
+      local ready, failure = resources:preparePokemonNamingSubject({ iconKey = "species:1:form:0" })
+      Assert.isFalse(ready, "pending mon icon pages keep naming preparation pending")
+      Assert.isNil(failure, "pending mon icon pages have no failure")
+      Assert.isNil(calls.namingConstructed, "pending preparation creates no naming renderer")
+      Assert.isNil(calls.iconQuadCount, "pending preparation creates no icon quads")
+
+      calls.iconPageFailure = "page failed"
+      ready, failure = resources:preparePokemonNamingSubject({ iconKey = "species:1:form:0" })
+      Assert.isFalse(ready, "failed mon icon pages do not prepare naming")
+      Assert.equal(failure, "page failed", "provider failure is returned unchanged")
+      Assert.isNil(calls.namingConstructed, "failed preparation creates no naming renderer")
+      Assert.isNil(calls.iconQuadCount, "failed preparation creates no icon quads")
+
+      calls.iconPageReady = true
+      ready, failure = resources:preparePokemonNamingSubject({ iconKey = "species:1:form:0" })
+      Assert.isTrue(ready, "a ready icon page prepares naming")
+      Assert.isNil(failure, "ready preparation has no failure")
+      Assert.equal(calls.namingConstructed, 1, "first ready preparation creates naming renderer once")
+      Assert.equal(calls.iconDimensions, "species:1:form:0", "the naming subject resolves through shared mon icons")
+      resources:pokemonNamingRenderer()
+      Assert.equal(calls.namingConstructed, 1, "the renderer accessor is a pure read")
+      resources:preparePokemonNamingSubject({ iconKey = "species:1:form:0" })
+      resources:preparePokemonNamingSubject({ iconKey = "species:2:form:0" })
+      Assert.equal(calls.namingConstructed, 1, "repeated and new icon demands reuse the renderer")
+      Assert.equal(calls.iconQuadCount, 2, "each icon key prepares its borrowed semantic quad")
+      local drawCalls = {}
+      calls.namingDrawSubject({
+        draw = function(image, quad, x, y, rotation, scaleX, scaleY)
+          drawCalls[#drawCalls + 1] = { image, quad, x, y, rotation, scaleX, scaleY }
+        end,
+      }, { iconKey = "species:1:form:0" }, { x = 24, y = 8, frameIndex = 1 })
+      Assert.equal(calls.iconImage, 1, "the semantic part draws the shared provider image")
+      Assert.equal(#drawCalls, 1, "the naming subject draws one semantic placement")
+      Assert.equal(drawCalls[1][1], "borrowed-icon-image", "the icon image comes from the shared provider")
+      Assert.isNil(calls.icons, "using the naming renderer never releases the borrowed icon provider")
+
+      resources:dispose()
+      Assert.equal(calls.namingDisposed, 1, "field resources dispose their naming renderer once")
+      Assert.equal(calls.namingImageReleased, 1, "naming disposal releases its owned image")
+      Assert.isNil(
+        calls.iconProviderReleasedDuringNamingDispose,
+        "naming renderer disposal leaves its borrowed icon provider to the field owner"
+      )
+      Assert.equal(calls.icons, 1, "field resources release the borrowed icon provider once")
+    end)
+  end)
+  rawset(_G, "love", savedLove)
+  if not ok then
+    error(err, 0)
+  end
+end
+
+function T.unprepared_naming_renderer_is_not_disposed()
+  local sink, calls = {}, {}
+  withProductionComposition(sink, calls, compositionRuntime(), function(resources)
+    Assert.isNil(calls.namingConstructed, "naming chrome remains uncreated without demand")
+    resources:dispose()
+    Assert.isNil(calls.namingDisposed, "disposal skips a renderer that was never created")
+  end)
 end
 
 function T.trainer_card_routes_only_to_the_card_presenter()

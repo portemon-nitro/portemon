@@ -89,11 +89,13 @@ end
 
 -- 4bpp char data: `tiles` tiles, tile t all value ((t + base) % 15) + 1, so
 -- members with different bases decode to visibly distinct tile runs.
-local function charData(tiles, base)
-  local payload = u16(8) .. u16(0x20) .. u32(3) .. u16(0) .. u16(0) .. u32(0) .. u32(tiles * 32) .. u32(0x18)
+local function charData(tiles, base, depth)
+  depth = depth or 3
+  local tileBytes = depth == 3 and 32 or 64
+  local payload = u16(8) .. u16(0x20) .. u32(depth) .. u16(0) .. u16(0) .. u32(0) .. u32(tiles * tileBytes) .. u32(0x18)
   local body = {}
   for t = 0, tiles - 1 do
-    body[#body + 1] = string.rep(string.char((((t + (base or 0)) % 15) + 1) * 0x11), 32)
+    body[#body + 1] = string.rep(string.char((((t + (base or 0)) % 15) + 1) * 0x11), tileBytes)
   end
   return container("RGCN", { block("CHAR", payload .. table.concat(body)) })
 end
@@ -346,24 +348,36 @@ local function cellBank(cellObjs)
   })
 end
 
--- A multi-animation bank: animation a drives one frame selecting cell
--- animCells[a]. Mirrors the single-animation helper's header layout.
+-- A multi-animation bank: each entry is either a cell index or a list of
+-- frames. Mirrors the source animation table while keeping simple fixtures
+-- compact.
 local function animBank(animCells)
   local count = #animCells
+  local totalFrames = 0
+  for _, frames in ipairs(animCells) do
+    totalFrames = totalFrames + (type(frames) == "table" and #frames or 1)
+  end
   local anims, frames, data = {}, {}, {}
-  for a, cell in ipairs(animCells) do
-    anims[#anims + 1] = u32(1) .. u16(0) .. u16(1) .. u32(1) .. u32((a - 1) * 8)
-    frames[#frames + 1] = u32((a - 1) * 2) .. u16(3) .. u16(0)
-    data[#data + 1] = u16(cell)
+  local frameCursor = 0
+  local dataCursor = 0
+  for _, sourceFrames in ipairs(animCells) do
+    local animationFrames = type(sourceFrames) == "table" and sourceFrames or { { cell = sourceFrames, duration = 3 } }
+    anims[#anims + 1] = u32(#animationFrames) .. u16(0) .. u16(1) .. u32(1) .. u32(frameCursor * 8)
+    for _, frame in ipairs(animationFrames) do
+      frames[#frames + 1] = u32(dataCursor * 2) .. u16(frame.duration) .. u16(0)
+      data[#data + 1] = u16(frame.cell)
+      frameCursor = frameCursor + 1
+      dataCursor = dataCursor + 1
+    end
   end
   local animsOffset = 0x18
   local framesOffset = animsOffset + 16 * count
-  local dataOffset = framesOffset + 8 * count
+  local dataOffset = framesOffset + 8 * totalFrames
   return container("RNAN", {
     block(
       "ABNK",
       u16(count)
-        .. u16(count)
+        .. u16(totalFrames)
         .. u32(animsOffset)
         .. u32(framesOffset)
         .. u32(dataOffset)
@@ -401,10 +415,21 @@ local function namingObjMembers(members)
   members[11] = charData(16, 3)
   local cells = {}
   local animCells = {}
-  for index = 0, 49 do
+  for index = 0, 53 do
     cells[index + 1] = { { x = 0, y = 0, tile = index % 16, pal = index % 9 } }
-    animCells[index + 1] = index
+    if index < 51 then
+      animCells[index + 1] = index
+    end
   end
+  cells[53] = {
+    { x = 0, y = 0, tile = 703, pal = 6, shape = 0, size = 2 },
+    { x = 0, y = 0, tile = 703, pal = 5, shape = 0, size = 2 },
+  }
+  cells[54] = {
+    { x = 0, y = -6, tile = 703, pal = 6, shape = 0, size = 2 },
+    { x = 0, y = -6, tile = 703, pal = 5, shape = 0, size = 2 },
+  }
+  animCells[51] = { { cell = 52, duration = 20 }, { cell = 53, duration = 3 } }
   members[13] = cellBank(cells)
   members[15] = animBank(animCells)
   return members
@@ -500,9 +525,11 @@ local function fixture(opts)
       for i = 1, 47 do
         members[i] = string.rep("\0", 4)
       end
+      members[1] = lz10Wrap(opts.standardFrame or charData(9, 6))
       for i = 1, 20 do
         members[2 + i] = lz10Wrap(charData(18))
       end
+      members[26] = lz10Wrap(paletteOr16(opts.standardPalette))
       for i = 1, 20 do
         members[26 + i] = lz10Wrap(paletteOr16(opts.framePalette))
       end
@@ -612,21 +639,13 @@ function T.compiles_the_manifest_and_all_assets()
   )
   Assert.isNil(bundle.manifest.signposts.types[2].wayfinding, "type 2 has no map graphic")
   Assert.isNil(bundle.manifest.startMenu.slots, "the normal selector publishes no synthetic slot grid")
-  local assetCount = 0
-  for _ in pairs(bundle.assets) do
-    assetCount = assetCount + 1
-  end
-  -- Eleven base assets plus the three start-menu icon-contract images (the
-  -- shared icon atlas, the palette record, SUB chrome) plus the sixteen
-  -- naming OBJ visuals (six controls, keyboard cursor, five home cursor
-  -- variants, two entry slots, two player subjects) plus the six cursor
-  -- pulse-mask atlases, plus the single dialogue frame strip beside the
-  -- continuation cursor, plus the four two-row prompt button states.
-  Assert.equal(assetCount, 40)
   for path, bytes in pairs(bundle.assets) do
     Assert.isTrue(path:find("^assets/generated/field/ui/") ~= nil)
     Assert.isTrue(#bytes > 0)
   end
+  Assert.isTrue(FieldUiAssetCache.validateManifest(bundle.manifest))
+  Assert.notNil(bundle.manifest.assets[FieldUiAssetCache.ASSET.NAMING_SCREEN_POKEMON_GENDER_MALE])
+  Assert.notNil(bundle.manifest.assets[FieldUiAssetCache.ASSET.NAMING_SCREEN_POKEMON_GENDER_FEMALE])
   Assert.equal(bundle.marker, "field-ui-cache-v1:rom-sha:dependency-sha")
 end
 
@@ -1338,6 +1357,65 @@ function T.dialogue_frame_tile_counts_must_be_exactly_eighteen()
   end
 end
 
+function T.standard_yes_no_frame_is_published_after_user_rows()
+  local standardPalette = { 0, 0x001F, 0x03E0, 0x7C00 }
+  for i = 5, 16 do
+    standardPalette[i] = i * 0x39B
+  end
+  local romFs, sha1, hashLua = fixture({ standardPalette = standardPalette })
+  local bundle = assert(compileWithTestConfig(romFs, sha1, hashLua))
+  local frames = bundle.manifest.dialogueFrames
+  local standard = assert(frames.standardFrame)
+  Assert.equal(frames.count, 20, "the fixed frame does not change selectable user-frame count")
+  Assert.equal(frames.frameTiles[0].y, 0, "user frame 0 keeps its row")
+  Assert.equal(standard.frameTiles.x, 0)
+  Assert.equal(standard.frameTiles.y, frames.count * 8, "the fixed frame follows all user rows")
+  Assert.equal(standard.frameTiles.width, 72)
+  Assert.equal(standard.frameTiles.height, 8)
+  Assert.isNil(standard.member, "source member identity is not published")
+
+  local path = bundle.manifest.assets[FieldUiAssetCache.ASSET.DIALOGUE_FRAME_TILES].image
+  local width, height, rgba = PngReader.rgba(bundle.assets[path])
+  Assert.equal(width, 144)
+  Assert.equal(height, (frames.count + 1) * 8)
+  local userPixel = { PngReader.pixel(rgba, width, 0, frames.frameTiles[0].y) }
+  local standardPixel = { PngReader.pixel(rgba, width, 0, standard.frameTiles.y) }
+  Assert.isTrue(
+    userPixel[1] ~= standardPixel[1] or userPixel[2] ~= standardPixel[2],
+    "the fixed row has distinct pixels"
+  )
+  Assert.equal(standard.palette[0].r, 0, "palette slot 0 is included")
+  Assert.equal(standard.palette[1].r, 255, "palette bytes decode independently from user frame 0")
+  Assert.equal(standard.palette[1].g, 0)
+end
+
+function T.standard_yes_no_frame_source_defects_are_rejected()
+  local cases = {
+    { opts = { standardFrame = charData(8, 6) }, tiles = 8 },
+    { opts = { standardFrame = charData(10, 6) }, tiles = 10 },
+  }
+  for _, case in ipairs(cases) do
+    local romFs, sha1, hashLua = fixture(case.opts)
+    local bundle, err = compileWithTestConfig(romFs, sha1, hashLua)
+    Assert.isNil(bundle, "a non-18-tile standard frame must fail")
+    local typed = assert(err)
+    Assert.equal(typed.code, FieldUiCompiler.ERROR.SOURCE_INVALID)
+    Assert.equal(typed.context.member, 0)
+    Assert.equal(typed.context.tiles, case.tiles)
+  end
+
+  local romFs8bpp, sha18bpp, hashLua8bpp = fixture({ standardFrame = charData(9, 6, 4) })
+  local bundle8bpp, err8bpp = compileWithTestConfig(romFs8bpp, sha18bpp, hashLua8bpp)
+  Assert.isNil(bundle8bpp, "the standard source frame must use 4bpp tiles")
+  Assert.equal(assert(err8bpp).code, FieldUiCompiler.ERROR.SOURCE_INVALID)
+  Assert.equal(assert(err8bpp).context.member, 0)
+
+  local romFs, sha1, hashLua = fixture({ standardPalette = { 0x7FFF } })
+  local bundle, err = compileWithTestConfig(romFs, sha1, hashLua)
+  Assert.isNil(bundle, "a short standard palette must fail")
+  Assert.equal(assert(err).code, FieldUiCompiler.ERROR.SOURCE_INVALID)
+end
+
 function T.signpost_frame_tile_counts_must_be_exactly_eighteen()
   for _, tiles in ipairs({ 17, 19 }) do
     local bundle, err = compileWithTileCounts({ signpostTiles = tiles })
@@ -1747,7 +1825,7 @@ end
 -- animation keeps one frame, so frame order, durations, mode, and loop
 -- start are observable in the generated subject record.
 local function multiFrameNamingAnim()
-  local animCount = 50
+  local animCount = 51
   local specs = {}
   for index = 0, animCount - 1 do
     specs[index + 1] = { playMode = 1, loopStart = 0, frames = { { cell = index, duration = 3 } } }
@@ -1759,6 +1837,14 @@ local function multiFrameNamingAnim()
       { cell = 10, duration = 2 },
       { cell = 11, duration = 1 },
       { cell = 12, duration = 4 },
+    },
+  }
+  specs[51] = {
+    playMode = 1,
+    loopStart = 0,
+    frames = {
+      { cell = 52, duration = 20 },
+      { cell = 53, duration = 3 },
     },
   }
   local totalFrames = 0

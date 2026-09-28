@@ -224,30 +224,15 @@ local function subjectLayout(view, scene, sceneContent, gap, dialogue, subjectId
   return selectedSubject, oakRegion, selectorRegion, nameChoiceRegion, selectorActive
 end
 
-local function integerConfirmationEntries(region, preferredScale, alignRight, bounds)
+local function integerConfirmationEntries(region, preferredScale)
   local stackWidth = TextButton.REFERENCE_WIDTH
   local stackHeight = TextButton.REFERENCE_HEIGHT * 2 + 8
   local scale = PixelScale.fitPreferred(region, stackWidth, stackHeight, preferredScale)
   local width, height = stackWidth * scale, TextButton.REFERENCE_HEIGHT * scale
-  -- Snap the stack origin to the logical pixel grid: fractional button
-  -- edges rasterize the 1px shared rings onto pixel centers, where the
-  -- later face fill wins the tie and erases the ring pixel. Name
-  -- confirmation instead hugs the far edge of its choice region so the
-  -- buttons stay maximally separated from Oak on wide hosts. The far edge
-  -- mates exactly because choice-region right edges are fractional: a
-  -- snapped origin would sit up to half a pixel past the region and break
-  -- region containment and far-edge alignment.
-  local x
-  if alignRight then
-    x = region.x + region.width - width
-  else
-    x = PixelScale.snapLogical(region.x + (region.width - width) / 2)
-  end
+  -- Snap the centered stack to the logical pixel grid so fractional button
+  -- edges do not erase the shared ring pixels during rasterization.
+  local x = PixelScale.snapLogical(region.x + (region.width - width) / 2)
   local y = PixelScale.snapLogical(region.y + (region.height - (height * 2 + 8 * scale)) / 2)
-  if bounds ~= nil then
-    x = math.max(bounds.x, math.min(x, bounds.x + bounds.width - width))
-    y = math.max(bounds.y, math.min(y, bounds.y + bounds.height - height * 2 - 8 * scale))
-  end
   return {
     [0] = {
       key = "yes",
@@ -346,8 +331,7 @@ local function profileLayout(
     end
   end
   if view.phase == "name_confirm" and view.confirmationChoice and view.confirmationChoice.kind == "name" then
-    result.confirmationButtons =
-      integerConfirmationEntries(assert(nameChoiceRegion), assert(preferredScale), true, result.safeFrame)
+    result.confirmationButtons = integerConfirmationEntries(assert(nameChoiceRegion), assert(preferredScale))
   end
   -- The reusable Naming Screen child is placed by the parent-owned naming
   -- session, never by scene composition: OakIntroState publishes the
@@ -393,7 +377,13 @@ function OakIntroLayout.compute(width, height, view, glyphs, manifest, preferred
   -- else it would widen the shared column past the pinned 1120.
   if usesNameStage(view) then
     local oakPortraitWidth = widget(manifest, "oak").width
-    local minNameContentWidth = gap + math.max(oakPortraitWidth / 0.46, TextButton.REFERENCE_WIDTH / 0.54)
+    local confirmationButton = TextButton.resolve({
+      rect = rect(0, 0, TextButton.REFERENCE_WIDTH, TextButton.REFERENCE_HEIGHT),
+      scale = 1,
+      cornerRadius = 6,
+    })
+    local confirmationWidth = TextButton.visualBounds(confirmationButton, true).width
+    local minNameContentWidth = gap + math.max(oakPortraitWidth / 0.46, (confirmationWidth + gap) / 0.54)
     contentWidthCap = math.max(contentWidthCap, math.ceil(minNameContentWidth))
   end
   local dialogue = OakSceneLayout.dialogue(safeFrame, mode.reservesDialogue, preferredScale)

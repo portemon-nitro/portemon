@@ -15,6 +15,7 @@ local FieldEventState = require("libs.hgss.src.field.FieldEventState")
 local FieldViewport = require("libs.hgss.src.presentation.FieldViewport")
 local ScreenTopology = require("libs.hgss.src.ui.ScreenTopology")
 local TerrainSurface = require("libs.hgss.src.world.TerrainSurface")
+local InactivePokemonNaming = require("tests.support.InactivePokemonNaming")
 
 local T = {}
 
@@ -108,6 +109,7 @@ local function presentationState(assets, actorIds)
     end
   end
   local runtime = {
+    pokemonNaming = InactivePokemonNaming.new(),
     update = function() end,
     dispose = function() end,
     actors = actors,
@@ -275,9 +277,9 @@ local function drawOrderState(starterActive)
       isActive = function()
         return true
       end,
-      drawPresentation = function(_, text, windowRenderer)
+      drawPresentation = function(_, text, windowRenderer, renderAlpha)
         events[#events + 1] = "starter"
-        starterDraws[#starterDraws + 1] = { text = text, windowRenderer = windowRenderer }
+        starterDraws[#starterDraws + 1] = { text = text, windowRenderer = windowRenderer, renderAlpha = renderAlpha }
       end,
     }
   end
@@ -304,6 +306,16 @@ local function drawOrderState(starterActive)
       dialogue = {
         isModal = function()
           return false
+        end,
+      },
+      scripts = { dialogueHost = {
+        yesNoPresentation = function()
+          return nil
+        end,
+      } },
+      contextChoiceProvider = {
+        status = function()
+          return nil
         end,
       },
       signpost = {
@@ -446,6 +458,16 @@ function T.draw_passes_the_scene_runtime_and_queries_the_menu_host()
           return false
         end,
       },
+      scripts = { dialogueHost = {
+        yesNoPresentation = function()
+          return nil
+        end,
+      } },
+      contextChoiceProvider = {
+        status = function()
+          return nil
+        end,
+      },
       signpost = {
         isModal = function()
           return false
@@ -500,6 +522,7 @@ function T.active_starter_presentation_is_drawn_after_the_script_fade()
   state:draw()
   Assert.deepEqual(events, { "script_fade", "starter" }, "the chooser owns the top application layer")
   Assert.equal(#starterDraws, 1, "the active chooser draws once")
+  Assert.equal(starterDraws[1].renderAlpha, 0.5, "the active chooser receives the field's existing render alpha")
   Assert.isTrue(
     starterDraws[1].windowRenderer == state.presentationResources.windowRenderer,
     "the chooser draws through the field-owned window renderer"
@@ -559,6 +582,16 @@ function T.draw_sends_static_actor_models_to_world_and_billboards_to_presentatio
       dialogue = {
         isModal = function()
           return false
+        end,
+      },
+      scripts = { dialogueHost = {
+        yesNoPresentation = function()
+          return nil
+        end,
+      } },
+      contextChoiceProvider = {
+        status = function()
+          return nil
         end,
       },
       signpost = {
@@ -658,6 +691,16 @@ function T.draw_without_a_menu_host_is_a_programming_error()
       dialogue = {
         isModal = function()
           return false
+        end,
+      },
+      scripts = { dialogueHost = {
+        yesNoPresentation = function()
+          return nil
+        end,
+      } },
+      contextChoiceProvider = {
+        status = function()
+          return nil
         end,
       },
       signpost = {
@@ -932,6 +975,16 @@ function T.destination_world_is_not_drawn_before_entry_presentation_is_ready()
           return false
         end,
       },
+      scripts = { dialogueHost = {
+        yesNoPresentation = function()
+          return nil
+        end,
+      } },
+      contextChoiceProvider = {
+        status = function()
+          return nil
+        end,
+      },
       signpost = {
         isModal = function()
           return false
@@ -1038,6 +1091,16 @@ function T.destination_frames_draw_and_acknowledge_only_after_successful_present
       dialogue = {
         isModal = function()
           return false
+        end,
+      },
+      scripts = { dialogueHost = {
+        yesNoPresentation = function()
+          return nil
+        end,
+      } },
+      contextChoiceProvider = {
+        status = function()
+          return nil
         end,
       },
       scriptScheduler = {
@@ -1151,6 +1214,16 @@ function T.destination_frames_draw_and_acknowledge_only_after_successful_present
       dialogue = {
         isModal = function()
           return false
+        end,
+      },
+      scripts = { dialogueHost = {
+        yesNoPresentation = function()
+          return nil
+        end,
+      } },
+      contextChoiceProvider = {
+        status = function()
+          return nil
         end,
       },
       signpost = {

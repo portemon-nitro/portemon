@@ -160,6 +160,13 @@ function T.stale_static_subject_and_cursor_records_are_rejected()
     m.namingScreen.cursor.keyboard =
       { asset = "hgss.naming_screen.cursor_keyboard", anchor = { x = 26, y = 91 }, offset = { x = 0, y = 0 } }
   end, "a static cursor record without animation frames must fail")
+  reject(function(m)
+    m.namingScreen.entrySlots.selected =
+      { asset = "hgss.naming_screen.slot_selected", anchor = { x = 80, y = 39 }, offset = { x = 0, y = 0 } }
+  end, "a static selected slot without animation frames must fail")
+  reject(function(m)
+    m.namingScreen.pokemonSubject = nil
+  end, "a missing Pokémon naming subject contract must fail")
 end
 
 function T.malformed_animation_records_are_rejected()
@@ -187,6 +194,43 @@ function T.malformed_animation_records_are_rejected()
   reject(function(m)
     m.namingScreen.cursor.keyboard.frames[1].pulseRect = nil
   end, "a cursor frame without its mask rect must fail")
+  reject(function(m)
+    m.namingScreen.pokemonSubject.frames[1].parts[1].iconFrame = 0
+  end, "a Pokémon frame outside the one-based icon atlas must fail")
+  reject(function(m)
+    m.namingScreen.pokemonSubject.frames[1].asset = "hgss.naming_screen.base"
+  end, "a Pokémon frame must not reference duplicated generated pixels")
+end
+
+function T.pokemon_subject_parts_and_gender_markers_are_strict()
+  Assert.isTrue(FieldUiAssetCache.validateManifest(withNaming(FieldUiFixture.manifest())))
+  reject(function(m)
+    m.namingScreen.pokemonSubject.frames[1].parts = {}
+  end, "a frame without semantic icon parts must fail")
+  reject(function(m)
+    m.namingScreen.pokemonSubject.frames[1].parts = {
+      [1] = m.namingScreen.pokemonSubject.frames[1].parts[1],
+      [3] = m.namingScreen.pokemonSubject.frames[1].parts[1],
+    }
+  end, "a sparse semantic part list must fail")
+  reject(function(m)
+    m.namingScreen.pokemonSubject.frames[1].parts[1].iconFrame = 2
+  end, "an unsupported icon selector must fail")
+  reject(function(m)
+    m.namingScreen.pokemonSubject.frames[1].parts[1].offset = nil
+  end, "an icon part without its normalized offset must fail")
+  reject(function(m)
+    m.namingScreen.pokemonSubject.frames[1].parts[1].asset = "hgss.naming_screen.base"
+  end, "an icon part cannot carry generated pixels")
+  reject(function(m)
+    m.namingScreen.pokemonGenderMarkers.female.frames[1].asset = "hgss.naming_screen.missing"
+  end, "a marker frame must reference an indexed animation atlas")
+  reject(function(m)
+    m.namingScreen.pokemonGenderMarkers.anchor.x = 209.5
+  end, "the gender marker anchor must remain an integer point")
+  reject(function(m)
+    m.schema = "g4-field-ui-v17"
+  end, "a stale v17 manifest must fail")
 end
 
 return { tests = T }

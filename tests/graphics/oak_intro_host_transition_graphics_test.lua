@@ -171,6 +171,7 @@ local ScreenTopology = require("libs.hgss.src.ui.ScreenTopology")
 local FieldStatePresentationFixture = require("tests.support.FieldStatePresentationFixture")
 local FieldUiFixture = require("tests.support.FieldUiFixture")
 local FieldTerrainEffectController = require("libs.hgss.src.world.FieldTerrainEffectController")
+local InactivePokemonNaming = require("tests.support.InactivePokemonNaming")
 
 -- Drives a production-composed Oak state through profile selection into
 -- the shrink animation using semantic input only.
@@ -233,7 +234,17 @@ local function bootCoveredField(scope)
     return setmetatable({
       cacheFs = cache,
       derivedAssets = FieldStatePresentationFixture.iconHost().derivedAssets,
-      uiManifest = FieldUiFixture.addStartMenuIconContract(FieldUiFixture.manifest()),
+      uiManifest = FieldUiFixture.fieldStateManifest(),
+      pokemonNaming = InactivePokemonNaming.new(),
+      bindPartyIconPreparation = function(_, _, _)
+        return 1
+      end,
+      unbindPartyIconPreparation = function(_, _) end,
+      contextChoiceProvider = {
+        status = function()
+          return nil
+        end,
+      },
       fieldEntranceIndicatorAsset = {
         model = { batches = {}, materials = {} },
         effects = {
@@ -331,6 +342,13 @@ local function bootCoveredField(scope)
         isModal = function()
           return false
         end,
+      },
+      scripts = {
+        dialogueHost = {
+          yesNoPresentation = function()
+            return nil
+          end,
+        },
       },
       signpost = {
         isModal = function()

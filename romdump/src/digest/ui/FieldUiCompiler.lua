@@ -797,7 +797,7 @@ local function compileDialogueFrames(romFs, sha1hex, deps, assets, manifestAsset
   -- contract (18 tiles per frame in the real dump); a frame carrying any
   -- other count is malformed source the renderer could never place.
   local atlasWidth = FieldUiAssetCache.GEOMETRY.FRAME_TILES * 8
-  local atlasHeight = cfg.frameCount * 8
+  local atlasHeight = (cfg.frameCount + 1) * 8
   local rgba = newRgba(atlasWidth, atlasHeight)
   local frameTiles = {}
   local palettes = {}
@@ -867,6 +867,57 @@ local function compileDialogueFrames(romFs, sha1hex, deps, assets, manifestAsset
       sha1 = sha1hex(framePalBytes),
     }
   end
+  local standardCharBytes = decodeMember(archive, cfg.standardFrameMember, "standard Yes/No frame char")
+  local standardPaletteBytes = decodeMember(archive, cfg.standardPaletteMember, "standard Yes/No frame palette")
+  local standardChar, standardCharErr = G2dDecoder.decodeChar(standardCharBytes, {
+    label = "standard Yes/No frame char",
+  })
+  local standardPalette, standardPaletteErr = G2dDecoder.decodePalette(standardPaletteBytes, {
+    label = "standard Yes/No frame palette",
+  })
+  standardChar = must(standardChar, standardCharErr)
+  standardPalette = must(standardPalette, standardPaletteErr)
+  if standardChar.depth ~= 3 then
+    Errors.raise(
+      FieldUiCompiler.ERROR.SOURCE_INVALID,
+      "standard Yes/No frame must use 4bpp tiles",
+      { member = cfg.standardFrameMember, depth = standardChar.depth }
+    )
+  end
+  local standardTileCount = math.floor(#standardChar.tiles / (standardChar.depth == 3 and 32 or 64))
+  if standardTileCount ~= 9 then
+    Errors.raise(
+      FieldUiCompiler.ERROR.SOURCE_INVALID,
+      "standard Yes/No frame must carry exactly 9 tiles",
+      { member = cfg.standardFrameMember, tiles = standardTileCount }
+    )
+  end
+  if #standardPalette.colors < 16 then
+    Errors.raise(
+      FieldUiCompiler.ERROR.SOURCE_INVALID,
+      "standard Yes/No frame palette must contain 16 colors",
+      { member = cfg.standardPaletteMember, colors = #standardPalette.colors }
+    )
+  end
+  local standardY = cfg.frameCount * 8
+  for tile = 0, standardTileCount - 1 do
+    blitTile(rgba, atlasWidth, tile * 8, standardY, standardChar, tile, 0, standardPalette.colors, false, false, {
+      asset = "standard Yes/No frame",
+      member = cfg.standardFrameMember,
+    })
+  end
+  local standardFramePalette = {}
+  for slot = 0, 15 do
+    standardFramePalette[slot] = standardPalette.colors[slot + 1]
+  end
+  deps[#deps + 1] = {
+    name = manifestConfig.dialogueFrames.alias .. ":member:" .. cfg.standardFrameMember,
+    sha1 = sha1hex(standardCharBytes),
+  }
+  deps[#deps + 1] = {
+    name = manifestConfig.dialogueFrames.alias .. ":palette:" .. cfg.standardPaletteMember,
+    sha1 = sha1hex(standardPaletteBytes),
+  }
   assets[tilesPath] = PngWriter.encode(atlasWidth, atlasHeight, concatChars(rgba))
   manifestAssets[FieldUiAssetCache.ASSET.DIALOGUE_FRAME_TILES] =
     { image = tilesPath, width = atlasWidth, height = atlasHeight }
@@ -883,6 +934,10 @@ local function compileDialogueFrames(romFs, sha1hex, deps, assets, manifestAsset
     count = cfg.frameCount,
     frameTiles = frameTiles,
     palettes = palettes,
+    standardFrame = {
+      frameTiles = { x = 0, y = standardY, width = 72, height = 8 },
+      palette = standardFramePalette,
+    },
     continueCursor = {
       asset = FieldUiAssetCache.ASSET.DIALOGUE_CONTINUE_CURSOR,
       cycle = { 0, 1, 2, 1 },
@@ -1558,11 +1613,11 @@ local function compileNamingScreen(romFs, sha1hex, deps, assets, manifestAssets)
 
   local slotNormal =
     publish("slot-normal", FieldUiAssetCache.ASSET.NAMING_SCREEN_SLOT_NORMAL, cfg.objAnims.slotNormal, cfg.entryOrigin)
-  local slotSelected = publish(
+  local slotSelected = publishAnimation(
     "slot-selected",
     FieldUiAssetCache.ASSET.NAMING_SCREEN_SLOT_SELECTED,
-    cfg.objAnims.slotSelected,
-    cfg.entryOrigin
+    nil,
+    cfg.objAnims.slotSelected
   )
   local subjectMale =
     publishAnimation("subject-male", FieldUiAssetCache.ASSET.NAMING_SCREEN_SUBJECT_MALE, nil, cfg.objAnims.subjectMale)
@@ -1574,6 +1629,125 @@ local function compileNamingScreen(romFs, sha1hex, deps, assets, manifestAssets)
     cfg.objAnims.subjectFemale
   )
   subjectFemale.anchor = { x = cfg.objAnchors.subject.x, y = cfg.objAnchors.subject.y }
+
+  -- pret/pokeheartgold@9d8b7591f09b65804da2fb2dfd56f320633e0d36,
+  -- src/naming_screen.c::NamingScreen_LoadMonIcon uploads 0x200 bytes at
+  -- OBJ address 0x57E0: one 32x32 icon at tile 703. Sequence 50's NCER
+  -- cells both reference that tile; they animate the icon's placement, not
+  -- its image frame.
+  local pokemonIconTile = 0x57E0 / 32
+  local pokemonAnimation = objAnim.anims[cfg.objAnims.pokemonSubject + 1]
+  if pokemonAnimation == nil or #pokemonAnimation.frames == 0 then
+    Errors.raise(FieldUiCompiler.ERROR.SOURCE_INVALID, "the naming Pokémon animation is missing frames", {
+      anim = cfg.objAnims.pokemonSubject,
+    })
+  end
+  assert(pokemonAnimation ~= nil, "the naming Pokémon animation is present")
+  local pokemonSubjectFrames = {}
+  for index, frame in ipairs(pokemonAnimation.frames) do
+    if cfg.pokemonSubjectCells[index] ~= frame.cell then
+      Errors.raise(FieldUiCompiler.ERROR.SOURCE_INVALID, "the naming Pokémon animation selects an unsupported cell", {
+        anim = cfg.objAnims.pokemonSubject,
+        cell = frame.cell,
+      })
+    end
+    local cell = objCell.cells[frame.cell + 1]
+    if cell == nil or #cell.objs ~= 2 then
+      Errors.raise(
+        FieldUiCompiler.ERROR.SOURCE_INVALID,
+        "the naming Pokémon cell does not carry its two source objects",
+        {
+          anim = cfg.objAnims.pokemonSubject,
+          sequence = cfg.objAnims.pokemonSubject,
+          cell = frame.cell,
+          objectCount = cell and #cell.objs or 0,
+        }
+      )
+    end
+    assert(cell ~= nil, "the naming Pokémon cell is present")
+    if
+      (frame.element ~= "none" and frame.element ~= "translate")
+      or frame.scaleX ~= 1
+      or frame.scaleY ~= 1
+      or frame.rotation ~= 0
+    then
+      Errors.raise(FieldUiCompiler.ERROR.SOURCE_INVALID, "the naming Pokémon animation transform is unsupported", {
+        anim = cfg.objAnims.pokemonSubject,
+        element = frame.element,
+      })
+    end
+    local front = assert(cell.objs[1])
+    local underlay = assert(cell.objs[2])
+    local function validSourceObject(obj)
+      return obj.tile == pokemonIconTile
+        and obj.width == 32
+        and obj.height == 32
+        and not obj.affine
+        and not obj.disabled
+        and obj.objMode == "normal"
+        and not obj.mosaic
+        and obj.colorMode == "16-color"
+    end
+    local invalidObject = nil
+    if not validSourceObject(front) or front.palette ~= 6 or front.flipH or front.flipV then
+      invalidObject = 0
+    elseif not validSourceObject(underlay) or underlay.palette ~= 5 then
+      invalidObject = 1
+    elseif
+      front.x ~= underlay.x
+      or front.y ~= underlay.y
+      or front.tile ~= underlay.tile
+      or front.flipH ~= underlay.flipH
+      or front.flipV ~= underlay.flipV
+      or front.width ~= underlay.width
+      or front.height ~= underlay.height
+      or front.priority ~= underlay.priority
+    then
+      invalidObject = 1
+    end
+    if invalidObject ~= nil then
+      Errors.raise(
+        FieldUiCompiler.ERROR.SOURCE_INVALID,
+        "the naming Pokémon cell does not match the visible icon and palette underlay composition",
+        {
+          anim = cfg.objAnims.pokemonSubject,
+          sequence = cfg.objAnims.pokemonSubject,
+          cell = frame.cell,
+          object = invalidObject,
+        }
+      )
+    end
+    pokemonSubjectFrames[index] = {
+      duration = frame.duration,
+      parts = {
+        {
+          iconFrame = 1,
+          offset = { x = front.x + frame.translateX, y = front.y + frame.translateY },
+        },
+      },
+    }
+  end
+  local pokemonSubject = {
+    playMode = pokemonAnimation.playMode,
+    loopStartFrameIdx = pokemonAnimation.loopStartFrameIdx,
+    anchor = { x = cfg.objAnchors.subject.x, y = cfg.objAnchors.subject.y },
+    frames = pokemonSubjectFrames,
+  }
+  local pokemonGenderMarkers = {
+    anchor = { x = cfg.pokemonGenderMarkerAnchor.x, y = cfg.pokemonGenderMarkerAnchor.y },
+    male = publishAnimation(
+      "pokemon-gender-male",
+      FieldUiAssetCache.ASSET.NAMING_SCREEN_POKEMON_GENDER_MALE,
+      nil,
+      cfg.objAnims.pokemonGenderMale
+    ),
+    female = publishAnimation(
+      "pokemon-gender-female",
+      FieldUiAssetCache.ASSET.NAMING_SCREEN_POKEMON_GENDER_FEMALE,
+      nil,
+      cfg.objAnims.pokemonGenderFemale
+    ),
+  }
 
   -- Keyboard text cells in final canonical coordinates: page placement
   -- plus the keyboard window origin plus the glyph inset below each row top.
@@ -1628,6 +1802,8 @@ local function compileNamingScreen(romFs, sha1hex, deps, assets, manifestAssets)
       male = subjectMale,
       female = subjectFemale,
     },
+    pokemonSubject = pokemonSubject,
+    pokemonGenderMarkers = pokemonGenderMarkers,
   }
 end
 

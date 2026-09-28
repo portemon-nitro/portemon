@@ -1,7 +1,6 @@
--- DerivedAssetContract is the single consumer-visible identity of the derived
--- assets crossing the romdump boundary. These tests pin its shape and exact
--- values, and assert every consuming cache module exposes the same constants,
--- so a format/schema change cannot be made in one place and missed in another.
+-- DerivedAssetContract is the single consumer-visible identity of derived
+-- assets crossing the romdump boundary. Verify cache modules consume its
+-- constants so producers and consumers cannot drift apart.
 
 local Assert = require("tests.support.Assert")
 local DerivedAssetContract = require("libs.assets.src.DerivedAssetContract")
@@ -97,7 +96,7 @@ function T.contract_pins_the_current_asset_identities()
     },
     fieldUi = {
       cacheFormat = "field-ui-cache-v1",
-      schema = "g4-field-ui-v15",
+      schema = "g4-field-ui-v19",
     },
     intro = {
       cacheFormat = "intro-cache-v14",
@@ -105,8 +104,8 @@ function T.contract_pins_the_current_asset_identities()
       provenanceSchema = "g4-intro-provenance-v1",
     },
     starterChoice = {
-      cacheFormat = "starter-choice-cache-v5",
-      schema = "g4-starter-choice-v5",
+      cacheFormat = "starter-choice-cache-v7",
+      schema = "g4-starter-choice-v7",
     },
     mons = {
       cacheFormat = "mon-cache-v1",

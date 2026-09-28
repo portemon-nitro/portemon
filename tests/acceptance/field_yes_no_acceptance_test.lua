@@ -145,4 +145,63 @@ function T.tests.cancelling_active_field_yes_no_releases_only_the_choice()
   end)
 end
 
+function T.tests.message_bearing_field_yes_no_prints_before_opening_choice()
+  withGame(singleDisplay(640, 480), function(game)
+    game:waitForFieldEntry()
+    local dialogueHost = game.runtime.scripts.dialogueHost
+    Assert.isFalse(dialogueHost:isOpen(), "the standalone question starts without ordinary dialogue")
+    game:startScript("acceptance.field_yes_no_message")
+
+    game:advanceUntil("message-bearing Yes/No reaches its dialogue or choice boundary", function()
+      return dialogueHost:isOpen() or dialogueHost:yesNoPresentation() ~= nil
+    end, 480)
+    Assert.isTrue(dialogueHost:isOpen(), "message-bearing Yes/No opens ordinary dialogue before its choice")
+    Assert.isNil(dialogueHost:yesNoPresentation(), "the choice waits for the ordinary message printer")
+    Assert.isTrue(game:snapshot().dialogue.modal, "the standalone message is presented as ordinary dialogue")
+
+    game:advanceUntil("message-bearing Yes/No printer completes", function()
+      return dialogueHost:printProgress().done
+    end, 480)
+    Assert.isNil(dialogueHost:yesNoPresentation(), "the choice does not open in the printer completion tick")
+    game:advanceUntil("message-bearing Yes/No choice opens after printing", function()
+      return dialogueHost:yesNoPresentation() ~= nil
+    end, 4)
+    Assert.isTrue(dialogueHost:printProgress().done, "the choice opens only after printing completes")
+
+    pressAction(game)
+    game:advanceUntil("message-bearing Yes/No answer completes", function()
+      return game.runtime.scripts.worldState:getVar(VAR_FIRST_RESULT) == 0
+    end, 120)
+    Assert.isTrue(dialogueHost:isOpen(), "answering leaves the ordinary message open for its script owner")
+    Assert.isTrue(game:snapshot().dialogue.modal, "ordinary dialogue remains visible after the choice")
+  end)
+end
+
+function T.tests.cancelling_message_bearing_field_yes_no_releases_owned_dialogue()
+  withGame(singleDisplay(640, 480), function(game)
+    game:waitForFieldEntry()
+    local dialogueHost = game.runtime.scripts.dialogueHost
+    local scheduler = game.runtime.scripts.scheduler
+
+    local function cancelMessageBearingChoice(label, predicate)
+      game:startScript("acceptance.field_yes_no_message")
+      game:advanceUntil(label, predicate, 480)
+      local environmentId =
+        assert(scheduler:foregroundEnvironmentId(), "the message-bearing choice script owns the foreground")
+      scheduler:cancelEnvironment(environmentId, "acceptance owned dialogue cleanup")
+
+      Assert.isNil(dialogueHost:yesNoPresentation(), "cancelling removes the choice surface")
+      Assert.isFalse(dialogueHost:isOpen(), "cancelling closes the task-owned ordinary dialogue")
+      Assert.isFalse(game:snapshot().dialogue.modal, "the task-owned dialogue is no longer modal")
+    end
+
+    cancelMessageBearingChoice("message-bearing Yes/No starts printing", function()
+      return dialogueHost:isOpen() and dialogueHost:yesNoPresentation() == nil
+    end)
+    cancelMessageBearingChoice("message-bearing Yes/No opens its choice", function()
+      return dialogueHost:yesNoPresentation() ~= nil
+    end)
+  end)
+end
+
 return T

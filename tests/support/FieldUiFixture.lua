@@ -1,4 +1,4 @@
--- Synthetic field-UI fixtures for the dialogue frame, window style, signpost,
+-- Synthetic field-UI fixtures for the standard Yes/No frame, dialogue frame, window style, signpost,
 -- and Start Menu surface work: a generated-shape `ui.lua` manifest carrying
 -- one dialogue frame strip (18 tiles of 8x8 stacked per frame, like the
 -- compiled class), the signpost frame strip and wayfinding atlas (one
@@ -26,6 +26,7 @@ FieldUiFixture.STRIP_PATH = "assets/generated/field/ui/dialogue-frame-tiles.png"
 FieldUiFixture.CONTINUE_CURSOR_PATH = "assets/generated/field/ui/dialogue-continue-cursor.png"
 FieldUiFixture.TILES_PER_FRAME = 18
 FieldUiFixture.FRAME_COUNT = 2
+FieldUiFixture.STANDARD_FRAME_Y = FieldUiFixture.FRAME_COUNT * 8
 
 FieldUiFixture.SIGNPOST_TILES_PATH = "assets/generated/field/ui/signpost-tiles.png"
 FieldUiFixture.WAYFINDING_PATH = "assets/generated/field/ui/wayfinding-tiles.png"
@@ -84,13 +85,18 @@ end
 -- image where the 8x8 cell at (tile * 8, row) carries that tile's bytes,
 -- so image-space addressing matches the frame-strip quads.
 ---@param palette fun(i: integer): integer, integer, integer
+---@param tileCount integer? number of authored tiles before transparent padding
 ---@return string rgba the frame row pixels, 144x8 row-major
-local function frameRowBytes(palette)
+local function frameRowBytes(palette, tileCount)
   local rows = {}
+  tileCount = tileCount or FieldUiFixture.TILES_PER_FRAME
   for _ = 0, 7 do
-    for tile = 0, FieldUiFixture.TILES_PER_FRAME - 1 do
+    for tile = 0, tileCount - 1 do
       local r, g, b = palette(tile)
       rows[#rows + 1] = string.rep(string.char(r, g, b, 255), 8)
+    end
+    for _ = tileCount, FieldUiFixture.TILES_PER_FRAME - 1 do
+      rows[#rows + 1] = string.rep(string.char(0, 0, 0, 0), 8)
     end
   end
   return table.concat(rows)
@@ -104,7 +110,19 @@ function FieldUiFixture.stripBytes()
   for frame = 0, FieldUiFixture.FRAME_COUNT - 1 do
     rgba[#rgba + 1] = frameRowBytes(frame == 0 and paletteA or paletteB)
   end
-  return PngWriter.encode(144, FieldUiFixture.FRAME_COUNT * 8, table.concat(rgba))
+  rgba[#rgba + 1] = frameRowBytes(function(tile)
+    return 20 + tile * 3, 220 - tile * 2, 80 + tile * 5
+  end, 9)
+  return PngWriter.encode(144, (FieldUiFixture.FRAME_COUNT + 1) * 8, table.concat(rgba))
+end
+
+---@return table<integer, {r: integer, g: integer, b: integer}>
+function FieldUiFixture.standardFramePalette()
+  local palette = {}
+  for slot = 0, 15 do
+    palette[slot] = { r = 200 - slot * 7, g = 30 + slot * 9, b = 60 + slot * 11 }
+  end
+  return palette
 end
 
 -- The raw RGBA rows of one frame row (144x8) in renderer image space, so
@@ -565,7 +583,7 @@ function FieldUiFixture.manifest()
       [FieldUiAssetCache.ASSET.DIALOGUE_FRAME_TILES] = {
         image = FieldUiFixture.STRIP_PATH,
         width = 144,
-        height = FieldUiFixture.FRAME_COUNT * 8,
+        height = (FieldUiFixture.FRAME_COUNT + 1) * 8,
       },
       [FieldUiAssetCache.ASSET.DIALOGUE_CONTINUE_CURSOR] = {
         image = FieldUiFixture.CONTINUE_CURSOR_PATH,
@@ -638,6 +656,10 @@ function FieldUiFixture.manifest()
         end
         return palettes
       end)(),
+      standardFrame = {
+        frameTiles = { x = 0, y = FieldUiFixture.STANDARD_FRAME_Y, width = 72, height = 8 },
+        palette = FieldUiFixture.standardFramePalette(),
+      },
       continueCursor = {
         asset = FieldUiAssetCache.ASSET.DIALOGUE_CONTINUE_CURSOR,
         cycle = { 0, 1, 2, 1 },
@@ -688,6 +710,7 @@ function FieldUiFixture.cacheWithFontAndFrames()
   cache:write(FieldUiFixture.PROMPT_YES_SELECTED_PATH, FieldUiFixture.promptButtonBytes("yes_selected"))
   cache:write(FieldUiFixture.PROMPT_NO_NORMAL_PATH, FieldUiFixture.promptButtonBytes("no_normal"))
   cache:write(FieldUiFixture.PROMPT_NO_SELECTED_PATH, FieldUiFixture.promptButtonBytes("no_selected"))
+  FieldUiFixture.writeNamingSemanticsImages(cache)
   return cache
 end
 
@@ -949,6 +972,16 @@ function FieldUiFixture.namingSemanticsManifest()
       width = 256,
       height = 112,
     },
+    ["hgss.naming_screen.pokemon_gender_male"] = {
+      image = "assets/generated/field/ui/pokemon-gender-male.png",
+      width = 16,
+      height = 8,
+    },
+    ["hgss.naming_screen.pokemon_gender_female"] = {
+      image = "assets/generated/field/ui/pokemon-gender-female.png",
+      width = 16,
+      height = 8,
+    },
   }
   local function sprite(id, width, height, anchor, offset)
     local path = "assets/generated/field/ui/" .. id .. ".png"
@@ -1055,11 +1088,35 @@ function FieldUiFixture.namingSemanticsManifest()
         origin = { x = 80, y = 39 },
         stepX = 12,
         normal = sprite("slot-normal", 12, 16, { x = 80, y = 39 }, { x = 0, y = 0 }),
-        selected = sprite("slot-selected", 12, 16, { x = 80, y = 39 }, { x = 0, y = 0 }),
+        selected = animated("slot-selected", 12, 16, nil, { x = 0, y = 0 }),
       },
       playerSubjects = {
         male = animated("subject-male", 48, 56, { x = 24, y = 8 }, { x = 0, y = 0 }),
         female = animated("subject-female", 48, 56, { x = 24, y = 8 }, { x = 2, y = 0 }),
+      },
+      pokemonSubject = {
+        playMode = "forward_loop",
+        loopStartFrameIdx = 0,
+        anchor = { x = 24, y = 8 },
+        frames = {
+          {
+            duration = 20,
+            parts = {
+              { iconFrame = 1, offset = { x = 0, y = 0 } },
+            },
+          },
+          {
+            duration = 3,
+            parts = {
+              { iconFrame = 1, offset = { x = 0, y = -6 } },
+            },
+          },
+        },
+      },
+      pokemonGenderMarkers = {
+        anchor = { x = 210, y = 27 },
+        male = animated("pokemon-gender-male", 8, 8, nil, { x = 0, y = 0 }),
+        female = animated("pokemon-gender-female", 8, 8, nil, { x = 0, y = 0 }),
       },
     },
   }
@@ -1079,6 +1136,25 @@ function FieldUiFixture.addNamingSemantics(manifest)
   end
   manifest.namingScreen = semantics.namingScreen
   return manifest
+end
+
+---@return table manifest for FieldState composition tests
+function FieldUiFixture.fieldStateManifest()
+  return FieldUiFixture.addNamingSemantics(FieldUiFixture.addStartMenuIconContract(FieldUiFixture.manifest()))
+end
+
+---@param cache CacheFs
+function FieldUiFixture.writeNamingSemanticsImages(cache)
+  for _, asset in pairs(FieldUiFixture.namingSemanticsManifest().assets) do
+    cache:write(
+      asset.image,
+      PngWriter.encode(
+        asset.width,
+        asset.height,
+        string.rep(string.char(255, 255, 255, 255), asset.width * asset.height)
+      )
+    )
+  end
 end
 
 return FieldUiFixture

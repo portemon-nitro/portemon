@@ -21,6 +21,7 @@ local ScriptSave = require("libs.script.src.ScriptSave")
 ---@field partySelection table<string, unknown>? the modal script-party surface the blocking selection task opens and closes
 ---@field travel table<string, unknown>? the durable travel owner for spawn updates
 ---@field fieldMoves table<string, unknown>? the field-move runtime for task execution
+---@field pokemonNaming table<string, unknown> the script-owned Pokemon Naming Screen host
 ---@field followerTransition table<string, unknown>? the transient follower-transition owner the nonblocking transition command starts
 ---@field starterBalls table<string, unknown>? the Elm starter-ball runtime-prop controller
 local FieldScriptComposition = {}
@@ -78,6 +79,7 @@ function FieldScriptComposition.compose(runtime, options)
     partySelection = options.partySelection,
     travel = options.travel,
     fieldMoves = options.fieldMoves,
+    pokemonNaming = options.pokemonNaming,
     followerTransition = options.followerTransition,
     starterBalls = options.starterBalls,
   })

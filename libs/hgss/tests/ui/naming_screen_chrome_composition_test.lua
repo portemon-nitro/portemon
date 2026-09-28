@@ -93,7 +93,7 @@ local function snapshot(page, cursor)
     maxLength = 7,
     grid = grid,
     subject = { kind = "player", gender = 0 },
-    presentation = { subjectTick = 0, cursorTick = 0, glowAngle = 180 },
+    presentation = { subjectTick = 0, cursorTick = 0, entrySlotTick = 0, glowAngle = 180 },
   }
 end
 
@@ -149,12 +149,14 @@ function T.construction_acquires_the_base_pages_and_every_semantic_visual()
   end
   animationImages(naming.playerSubjects.male)
   animationImages(naming.playerSubjects.female)
+  animationImages(naming.pokemonGenderMarkers.male)
+  animationImages(naming.pokemonGenderMarkers.female)
   animationImages(naming.cursor.keyboard)
   for _, record in pairs(naming.cursor.home) do
     animationImages(record)
   end
   expected[#expected + 1] = naming.entrySlots.normal.image
-  expected[#expected + 1] = naming.entrySlots.selected.image
+  animationImages(naming.entrySlots.selected)
   Assert.equal(#loads.loads, #expected, "construction loads the chrome plus every semantic visual")
   local seen = {}
   for _, path in ipairs(loads.loads) do

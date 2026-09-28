@@ -63,7 +63,7 @@ local function snapshot(options)
     maxLength = options.maxLength or 7,
     grid = grid,
     subject = options.subject or { kind = "player", gender = 0 },
-    presentation = { subjectTick = 0, cursorTick = 0, glowAngle = 180 },
+    presentation = options.presentation or { subjectTick = 0, cursorTick = 0, entrySlotTick = 0, glowAngle = 180 },
   }
 end
 
@@ -194,17 +194,21 @@ function T.source_object_layers_and_player_subject_render_from_the_manifest()
   local textCalls = {}
   local loaded = {}
   local manifest = FieldUiFixture.namingSemanticsManifest()
+  local naming = manifest.namingScreen
+  naming.pokemonSubject.frames[1].parts[2] = {
+    iconFrame = 1,
+    offset = { x = 11, y = 7 },
+  }
   local subjects = {}
   local renderer = NamingScreenRenderer.new({
     graphics = graphics,
     text = textFake(textCalls),
-    drawSubject = function(_, subject, rect)
-      subjects[#subjects + 1] = { subject = subject, rect = rect }
+    drawSubject = function(_, subject, placement)
+      subjects[#subjects + 1] = { subject = subject, placement = placement }
     end,
     manifest = manifest,
     imageLoader = imageLoaderFake(loaded),
   })
-  local naming = manifest.namingScreen
   local seen = {}
   for _, path in ipairs(loaded) do
     seen[path] = true
@@ -217,7 +221,6 @@ function T.source_object_layers_and_player_subject_render_from_the_manifest()
     ok = naming.controls.ok,
     backing = naming.controls.backing,
     slotNormal = naming.entrySlots.normal,
-    slotSelected = naming.entrySlots.selected,
   }) do
     Assert.isTrue(seen[record.image], "construction acquires the " .. id .. " visual")
   end
@@ -238,6 +241,7 @@ function T.source_object_layers_and_player_subject_render_from_the_manifest()
   for id, record in pairs({
     keyboardCursor = naming.cursor.keyboard,
     homeUpper = naming.cursor.home.upper,
+    selectedSlot = naming.entrySlots.selected,
     male = naming.playerSubjects.male,
     female = naming.playerSubjects.female,
   }) do
@@ -276,12 +280,15 @@ function T.source_object_layers_and_player_subject_render_from_the_manifest()
       "entry slot " .. index
     )
   end
-  -- Two glyphs are entered, so the third slot carries the selected visual.
+  -- Two glyphs are entered, so the third slot carries the first generated
+  -- selected-slot frame at its source origin.
+  local selected = naming.entrySlots.selected
+  local selectedFrame = selected.frames[1]
   assertDrawnOnce(
     graphics.draws,
-    naming.entrySlots.selected.image,
-    naming.entrySlots.origin.x + 2 * naming.entrySlots.stepX,
-    naming.entrySlots.origin.y,
+    manifest.assets[selectedFrame.asset].image,
+    naming.entrySlots.origin.x + 2 * naming.entrySlots.stepX + selectedFrame.offset.x,
+    naming.entrySlots.origin.y + selectedFrame.offset.y,
     "the current entry slot"
   )
   local male = naming.playerSubjects.male
@@ -296,10 +303,13 @@ function T.source_object_layers_and_player_subject_render_from_the_manifest()
   Assert.equal(#subjects, 0, "the player subject comes from the manifest, not the host callback")
 
   -- The host seam stays for non-player subjects.
-  local pokemon = { kind = "pokemon", species = 25, form = 0 }
+  local pokemon = { kind = "pokemon", species = 25, form = 0, gender = "male" }
   renderer:draw(snapshot({ subject = pokemon }), layout)
-  Assert.equal(#subjects, 1, "a pokemon subject still draws through the host callback")
+  Assert.equal(#subjects, 2, "both semantic Pokemon placements draw through the host callback")
   Assert.deepEqual(subjects[1].subject, pokemon)
+  Assert.deepEqual(subjects[1].placement, { x = 24, y = 8, frameIndex = 1 })
+  Assert.deepEqual(subjects[2].subject, pokemon)
+  Assert.deepEqual(subjects[2].placement, { x = 35, y = 15, frameIndex = 1 })
   renderer:dispose()
 end
 
@@ -326,6 +336,35 @@ function T.home_control_focus_uses_the_matching_cursor_variant()
     variant.anchor.y + variantFrame.offset.y,
     "the Back home-cursor variant"
   )
+end
+
+function T.active_entry_slot_uses_its_generated_animation_clock()
+  local graphics = FakeGraphics.new()
+  local manifest = FieldUiFixture.namingSemanticsManifest()
+  local renderer = NamingScreenRenderer.new({
+    graphics = graphics,
+    text = textFake({}),
+    drawSubject = function() end,
+    manifest = manifest,
+    imageLoader = imageLoaderFake({}),
+  })
+  local layout = NamingScreenLayout.compute({ x = 0, y = 0, width = 256, height = 192 })
+  local selected = manifest.namingScreen.entrySlots.selected
+  local assetPath = manifest.assets[selected.frames[1].asset].image
+  renderer:draw(snapshot({}), layout)
+  local first = drawAt(graphics.draws, assetPath)
+  renderer:draw(
+    snapshot({ presentation = { subjectTick = 0, cursorTick = 0, entrySlotTick = 1, glowAngle = 180 } }),
+    layout
+  )
+  local second = drawAt(graphics.draws, assetPath)
+  renderer:dispose()
+
+  Assert.equal(#first, 1, "the selected slot draws its initial generated frame")
+  Assert.equal(#second, 2, "each render includes the selected slot")
+  Assert.equal(first[1].x, selected.anchor and selected.anchor.x or manifest.namingScreen.entrySlots.origin.x)
+  Assert.equal(second[2].x, first[1].x + selected.frames[2].offset.x)
+  Assert.equal(second[2].y, first[1].y + selected.frames[2].offset.y)
 end
 
 function T.home_controls_composite_above_their_support_backing_with_focus_on_top()

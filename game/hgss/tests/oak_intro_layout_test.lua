@@ -1,6 +1,7 @@
 local Assert = require("tests.support.Assert")
 local OakIntroLayout = require("game.hgss.src.newgame.OakIntroLayout")
 local PixelScale = require("libs.ui.src.PixelScale")
+local TextButton = require("libs.ui.src.TextButton")
 
 local T = { tests = {} }
 
@@ -1161,11 +1162,11 @@ function T.tests.gender_cards_keep_clearance_above_dialogue_on_widescreen_hosts(
   end
 end
 
-function T.tests.name_confirmation_choices_align_to_choice_region_far_edge()
+function T.tests.name_confirmation_choices_keep_layout_gap_inside_safe_frame()
   local data = manifest()
-  for _, size in ipairs({ { 1710, 895 }, { 2560, 1440 } }) do
+  for _, size in ipairs({ { 640, 480 }, { 800, 600 }, { 390, 844 } }) do
     local label = size[1] .. "x" .. size[2]
-    local layout, _ = computeForHost(size[1], size[2], {
+    local layout, surface = computeForHost(size[1], size[2], {
       phase = "name_confirm",
       visual = "oak",
       primaryWidget = "oak",
@@ -1190,15 +1191,54 @@ function T.tests.name_confirmation_choices_align_to_choice_region_far_edge()
     Assert.equal(yes.rect.width, no.rect.width)
     Assert.equal(yes.rect.height, no.rect.height)
     Assert.near((no.rect.y - (yes.rect.y + yes.rect.height)) / yes.scale, 8, 1e-6)
-    Assert.equal(
-      yes.rect.x + yes.rect.width,
-      choiceRegion.x + choiceRegion.width,
-      "name choices must align to the far edge of the choice region at " .. label
+    local preferredScale = surface.placement.scale
+    local physicalMinimum = math.min(size[1], size[2])
+    local expectedGap =
+      logicalHostMetric(math.min(8, math.max(0, math.floor(physicalMinimum * 0.02 + 0.5))), preferredScale)
+    for _, entry in ipairs({ yes, no }) do
+      local visual = TextButton.visualBounds(entry.button, true)
+      Assert.isTrue(inside(visual, layout.safeFrame), "selected name chrome must stay in the safe frame at " .. label)
+      Assert.isTrue(
+        visual.x + visual.width <= layout.safeFrame.x + layout.safeFrame.width - expectedGap + 1e-9,
+        "selected name chrome must preserve the right safe gap at " .. label
+      )
+    end
+    local stackRight = yes.rect.x + yes.rect.width
+    Assert.isTrue(
+      stackRight <= layout.safeFrame.x + layout.safeFrame.width - expectedGap + 1e-9,
+      "name choices must leave the computed layout gap at the right safe edge at " .. label
+    )
+    Assert.isTrue(
+      stackRight <= choiceRegion.x + choiceRegion.width + 1e-9,
+      "name choices must stay inside the choice region at " .. label
     )
     Assert.isTrue(disjoint(yes.rect, subject), "YES must stay clear of Oak at " .. label)
     Assert.isTrue(disjoint(no.rect, subject), "NO must stay clear of Oak at " .. label)
     Assert.isTrue(disjoint(yes.rect, oakRegion), "YES must stay clear of the Oak region at " .. label)
     Assert.isTrue(disjoint(no.rect, oakRegion), "NO must stay clear of the Oak region at " .. label)
+  end
+end
+
+function T.tests.name_confirmation_stack_is_centered_in_the_choice_region_on_four_by_three_hosts()
+  local layout, _ = computeForHost(1024, 768, {
+    phase = "name_confirm",
+    visual = "oak",
+    primaryWidget = "oak",
+    genderFocus = 0,
+    confirmationChoice = { kind = "name", selected = 0 },
+    genderCompositionProgress = 1,
+    nameCompositionProgress = 1,
+    oakBgScrollX = 0,
+  }, {}, manifest())
+  local choiceRegion = assert(layout.selectorRegion)
+  local yes = assert(layout.confirmationButtons[0])
+  local no = assert(layout.confirmationButtons[1])
+  local stackCenter = yes.rect.x + yes.rect.width / 2
+  local regionCenter = choiceRegion.x + choiceRegion.width / 2
+
+  Assert.near(stackCenter, regionCenter, 1, "name choices must center within their region")
+  for _, entry in ipairs({ yes, no }) do
+    Assert.isTrue(inside(TextButton.visualBounds(entry.button, true), layout.safeFrame))
   end
 end
 

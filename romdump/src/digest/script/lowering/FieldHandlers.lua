@@ -699,6 +699,25 @@ local function chooseStarter(_)
   return { op = "choose_starter" }
 end
 
+local function nicknameInput(ins)
+  local slot = Operands.operandValue(ins.operands[1])
+  if slot == 255 then
+    return {
+      op = "unsupported",
+      command = ins.opcode,
+      originalName = "ScrCmd_NicknameInput",
+      arguments = { slot, Operands.operandValue(ins.operands[2]) },
+      sourceOffset = ins.offset,
+      reason = "Bug Contest caught-Pokemon nickname target has no runtime storage owner",
+    }
+  end
+  return {
+    op = "pokemon_nickname_input",
+    slot = Operands.varRef(ins.operands[1]),
+    result = Operands.varRef(ins.operands[2]),
+  }
+end
+
 -- ScrCmd_SetStarterChoice carries one value-or-variable operand. It stores
 -- the operand into the player-starter script variable and continues in the
 -- same tick (pinned pokeheartgold scrcmd_c.c ScrCmd_SetStarterChoice). The
@@ -1362,6 +1381,7 @@ return {
   [130] = getItemPocket,
   [669] = getItemQuantity,
   [167] = chooseStarter,
+  [173] = nicknameInput,
   [131] = setStarterChoice,
   [139] = setMonMove,
   [140] = monHasMove,

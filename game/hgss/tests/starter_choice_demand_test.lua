@@ -9,6 +9,7 @@ local CacheFs = require("libs.storage.src.CacheFs")
 local FakeCache = require("tests.support.FakeCache")
 local FieldUiFixture = require("tests.support.FieldUiFixture")
 local CatalogFixture = require("libs.mons.tests.catalog_fixture")
+local InactivePokemonNaming = require("tests.support.InactivePokemonNaming")
 
 local T = {}
 
@@ -198,9 +199,9 @@ local function semanticManifest()
       },
     },
     backgrounds = {
-      host = {
-        image = "assets/generated/starter_choice/backdrop.png",
-        width = 512,
+      machine = {
+        image = "assets/generated/starter_choice/machine-background.png",
+        width = 256,
         height = 192,
       },
       info = {
@@ -569,6 +570,7 @@ local function fieldComposition(starter, queue, backend)
   end
   local draws = { field = 0, starter = 0 }
   local runtime = {
+    pokemonNaming = InactivePokemonNaming.new(),
     starterChoice = starter,
     assetPreparation = queue,
     actionKeys = { z = true },

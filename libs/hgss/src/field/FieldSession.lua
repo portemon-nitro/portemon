@@ -54,6 +54,7 @@ local MetatileBehavior = require("libs.hgss.src.world.MetatileBehavior")
 ---@field contextChoice ContextChoiceProvider
 ---@field starterChoice table<string, unknown>? the modal starter-choice surface; while active the tick's UI events route to the script scheduler
 ---@field partySelection table<string, unknown>? the modal script-party surface; while active the tick's UI events route to the script scheduler
+---@field pokemonNaming table<string, unknown>? the script-owned Pokemon Naming Screen surface
 ---@field signpost FieldSignpostController
 ---@field applicationHost FieldApplicationHost the one application modal owner (Start Menu and its destinations)
 ---@field fieldEntranceIndicator FieldEntranceIndicator
@@ -93,6 +94,7 @@ local MetatileBehavior = require("libs.hgss.src.world.MetatileBehavior")
 ---@field contextChoice ContextChoiceProvider
 ---@field starterChoice table<string, unknown>? the modal starter-choice surface; while active the tick's UI events route to the script scheduler
 ---@field partySelection table<string, unknown>? the modal script-party surface; while active the tick's UI events route to the script scheduler
+---@field pokemonNaming table<string, unknown>? the script-owned Pokemon Naming Screen surface
 ---@field signpost FieldSignpostController the fixed-tick signpost controller (save-gate interrogation only; the scheduler steps it)
 ---@field applicationHost FieldApplicationHost the one application modal owner (Start Menu and its destinations)
 ---@field fieldEntranceIndicator FieldEntranceIndicator
@@ -344,6 +346,7 @@ function FieldSession.new(options)
     contextChoice = options.contextChoice,
     starterChoice = options.starterChoice,
     partySelection = options.partySelection,
+    pokemonNaming = options.pokemonNaming,
     signpost = options.signpost,
     applicationHost = options.applicationHost,
     fieldEntranceIndicator = options.fieldEntranceIndicator,
@@ -675,7 +678,11 @@ local function runScriptPhase(self, inputSnapshot)
   local starterChoiceModal = starterChoice ~= nil and starterChoice:isActive()
   local partySelection = self.partySelection
   local partySelectionModal = partySelection ~= nil and partySelection:isActive()
-  if menuModal or contextChoiceModal or starterChoiceModal or partySelectionModal then
+  local pokemonNaming = self.pokemonNaming
+  local pokemonNamingModal = pokemonNaming ~= nil and pokemonNaming:isActive()
+  assert(not (starterChoiceModal and pokemonNamingModal), "script-owned field modals are mutually exclusive")
+  local scriptModal = starterChoiceModal or pokemonNamingModal
+  if menuModal or contextChoiceModal or scriptModal or partySelectionModal then
     local uiEvents = self.input:uiSnapshot(self.tick + 1)
     if menuModal then
       schedulerInput.menuEvents = self.menuHost:inputEvents(uiEvents)
@@ -695,9 +702,12 @@ local function runScriptPhase(self, inputSnapshot)
     self.input:clearUi()
   end
   local starterChoiceNowModal = starterChoice ~= nil and starterChoice:isActive()
-  if not starterChoiceModal and starterChoiceNowModal then
+  local pokemonNamingNowModal = pokemonNaming ~= nil and pokemonNaming:isActive()
+  assert(not (starterChoiceNowModal and pokemonNamingNowModal), "script-owned field modals are mutually exclusive")
+  local scriptModalNow = starterChoiceNowModal or pokemonNamingNowModal
+  if not scriptModal and scriptModalNow then
     self.input:beginUi(self.tick + 1)
-  elseif starterChoiceModal and not starterChoiceNowModal then
+  elseif scriptModal and not scriptModalNow then
     self.input:clearUi()
   end
   local partySelectionNowModal = partySelection ~= nil and partySelection:isActive()
@@ -818,6 +828,7 @@ function FieldSession:updateFixed(inputSnapshot)
     return
   end
 
+  self.actors:beginFixedStep()
   local playerInputOwnedAtTickStart = runScriptPhase(self, inputSnapshot)
   if advancePostSchedulerBoundary(self) == TICK_CONSUMED then
     return

@@ -47,7 +47,7 @@ local function validManifest()
       ["hgss.dialogue_frame.tiles"] = {
         image = "assets/generated/field/ui/dialogue-frame-tiles.png",
         width = 144,
-        height = 160,
+        height = 168,
       },
       ["hgss.signpost.tiles"] = { image = "assets/generated/field/ui/signpost-tiles.png", width = 288, height = 16 },
       ["hgss.signpost.wayfinding"] = {
@@ -127,6 +127,10 @@ local function validManifest()
       count = 20,
       frameTiles = frameTiles,
       palettes = dialogueFramePalettes,
+      standardFrame = {
+        frameTiles = { x = 0, y = 160, width = 72, height = 8 },
+        palette = validPalette(),
+      },
       continueCursor = {
         asset = "hgss.dialogue_continue_cursor",
         cycle = { 0, 1, 2, 1 },
@@ -305,6 +309,38 @@ function T.contract_constants_flow_from_the_contract_owner()
   Assert.equal(FieldUiAssetCache.FORMAT, DerivedAssetContract.fieldUi.cacheFormat)
   Assert.equal(FieldUiAssetCache.SCHEMA, DerivedAssetContract.fieldUi.schema)
   Assert.equal(FieldUiAssetCache.marker("abc", "def"), "field-ui-cache-v1:abc:def")
+end
+
+function T.standard_yes_no_frame_record_is_required_and_strict()
+  Assert.isTrue(FieldUiAssetCache.validateManifest(validManifest()))
+  local function rejectStandard(mutate)
+    local manifest = validManifest()
+    mutate(manifest)
+    local ok, err = FieldUiAssetCache.validateManifest(manifest)
+    Assert.isFalse(ok)
+    Assert.equal(assert(err).code, "FIELD_UI_MANIFEST_INVALID")
+  end
+  rejectStandard(function(m)
+    m.schema = "g4-field-ui-v14"
+  end)
+  rejectStandard(function(m)
+    m.dialogueFrames.standardFrame = nil
+  end)
+  rejectStandard(function(m)
+    m.dialogueFrames.standardFrame.frameTiles.width = 64
+  end)
+  rejectStandard(function(m)
+    m.dialogueFrames.standardFrame.member = 0
+  end)
+  rejectStandard(function(m)
+    m.dialogueFrames.standardFrame.palette[15] = nil
+  end)
+  rejectStandard(function(m)
+    m.dialogueFrames.standardFrame.palette[16] = { r = 0, g = 0, b = 0 }
+  end)
+  rejectStandard(function(m)
+    m.dialogueFrames.standardFrame.palette[0].r = 256
+  end)
 end
 
 function T.ready_requires_marker_manifest_and_every_indexed_file()
@@ -732,6 +768,126 @@ end
 -- finalized naming stage: the full naming semantics keep validating.
 function T.naming_stage_contract_still_validates()
   Assert.isTrue(FieldUiAssetCache.validateManifest(validManifest()))
+end
+
+function T.pokemon_subject_accepts_consumer_safe_semantic_variants()
+  local manifest = validManifest()
+  local naming = manifest.namingScreen
+  naming.pokemonSubject.anchor = { x = -37, y = 104 }
+  naming.pokemonSubject.frames = {
+    { duration = 1, parts = { { iconFrame = 1, offset = { x = -12, y = 4 } } } },
+    {
+      duration = 9,
+      parts = {
+        { iconFrame = 1, offset = { x = 0, y = 0 } },
+        { iconFrame = 1, offset = { x = 12, y = -8 } },
+      },
+    },
+    { duration = 3, parts = { { iconFrame = 1, offset = { x = 22, y = -1 } } } },
+  }
+  naming.pokemonGenderMarkers.anchor = { x = -3, y = 61 }
+  Assert.isTrue(
+    FieldUiAssetCache.validateManifest(manifest),
+    "consumer-safe semantic placement, frame, part, and icon-frame variants validate"
+  )
+end
+
+function T.pokemon_subject_rejects_runtime_invalid_metadata()
+  local cases = {
+    {
+      "empty frames",
+      function(subject)
+        subject.frames = {}
+      end,
+    },
+    {
+      "sparse frames",
+      function(subject)
+        subject.frames = { [1] = subject.frames[1], [3] = subject.frames[2] }
+      end,
+    },
+    {
+      "empty parts",
+      function(subject)
+        subject.frames[1].parts = {}
+      end,
+    },
+    {
+      "sparse parts",
+      function(subject)
+        subject.frames[1].parts = { [1] = subject.frames[1].parts[1], [3] = subject.frames[1].parts[1] }
+      end,
+    },
+    {
+      "invalid loop start",
+      function(subject)
+        subject.loopStartFrameIdx = #subject.frames
+      end,
+    },
+    {
+      "zero icon frame",
+      function(subject)
+        subject.frames[1].parts[1].iconFrame = 0
+      end,
+    },
+    {
+      "unsupported icon frame",
+      function(subject)
+        subject.frames[1].parts[1].iconFrame = 2
+      end,
+    },
+    {
+      "fractional icon frame",
+      function(subject)
+        subject.frames[1].parts[1].iconFrame = 1.5
+      end,
+    },
+    {
+      "fractional offset",
+      function(subject)
+        subject.frames[1].parts[1].offset.x = 1.5
+      end,
+    },
+    {
+      "non-finite offset",
+      function(subject)
+        subject.frames[1].parts[1].offset.y = math.huge
+      end,
+    },
+    {
+      "fractional anchor",
+      function(subject)
+        subject.anchor.x = 2.5
+      end,
+    },
+    {
+      "forbidden asset record",
+      function(subject)
+        subject.frames[1].parts[1].asset = "pokemon-icon"
+      end,
+    },
+    {
+      "forbidden pixel rectangle",
+      function(subject)
+        subject.frames[1].parts[1].rect = { x = 0, y = 0 }
+      end,
+    },
+  }
+  for _, case in ipairs(cases) do
+    local manifest = validManifest()
+    case[2](manifest.namingScreen.pokemonSubject)
+    local ok, err = FieldUiAssetCache.validateManifest(manifest)
+    Assert.isFalse(ok, "invalid Pokemon subject metadata is rejected: " .. case[1])
+    Assert.equal(assert(err).code, "FIELD_UI_MANIFEST_INVALID")
+  end
+end
+
+function T.stale_v18_field_ui_manifest_is_rejected()
+  local manifest = validManifest()
+  manifest.schema = "g4-field-ui-v18"
+  local ok, err = FieldUiAssetCache.validateManifest(manifest)
+  Assert.isFalse(ok, "a v18 manifest is stale under the current field-UI contract")
+  Assert.equal(assert(err).code, "FIELD_UI_MANIFEST_INVALID")
 end
 
 -- The start menu label palette is a required generated record: the retail

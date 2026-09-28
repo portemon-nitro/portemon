@@ -11,6 +11,7 @@ local FieldPlayer = require("libs.hgss.src.actors.FieldPlayer")
 local FieldRegion = require("libs.hgss.src.world.FieldRegion")
 local TerrainSurface = require("libs.hgss.src.world.TerrainSurface")
 local FieldActorFixture = require("tests.support.FieldActorFixture")
+local MovementCalibration = require("libs.hgss.src.script.tasks.MovementCalibration")
 
 local T = {}
 
@@ -871,6 +872,60 @@ function T.a_recreated_actor_observes_clean_state_after_slot_release()
   Assert.equal(position.fieldX, 2, "a reacquired slot must not leak the previous field position")
   Assert.equal(position.fieldZ, 3, "a reacquired slot must not leak the previous field position")
   Assert.notNil(getAt(mgr, 61, 2, 3, 0), "the recreated actor must reclaim its source occupancy")
+  mgr:dispose()
+end
+
+function T.begin_fixed_step_captures_every_owned_map_actor_without_advancing_them()
+  local mgr = manager({
+    object({ eventFlag = 401 }),
+    object({ index = 1, objectEventId = 1, x = 8, z = 8, eventFlag = 402 }),
+  })
+
+  local function advance(actorId)
+    local actor = assert(mgr:getById(actorId))
+    local start = actor:getWorldPosition()
+    actor:beginAction({
+      action = "walk",
+      direction = "east",
+      distance = "near",
+      speed = "normal",
+      start = {
+        fieldX = actor:getFieldPosition().fieldX,
+        fieldZ = actor:getFieldPosition().fieldZ,
+        worldX = start.x,
+        worldY = start.y,
+        worldZ = start.z,
+        surfaceId = 0,
+        resident = true,
+      },
+      dest = {
+        fieldX = actor:getFieldPosition().fieldX + 1,
+        fieldZ = actor:getFieldPosition().fieldZ,
+        worldX = start.x + 1,
+        worldY = start.y,
+        worldZ = start.z,
+        surfaceId = 0,
+        resident = true,
+      },
+      durationTicks = 8,
+    }, "script")
+    actor:advanceAction(2, 8)
+    return actor
+  end
+
+  local first = advance("map:61:object:0")
+  local second = advance("map:61:object:1")
+  local firstPoseTick, secondPoseTick = first:getPoseTick(), second:getPoseTick()
+  mgr:beginFixedStep()
+
+  for _, actor in ipairs({ first, second }) do
+    local previous, current = actor:renderPosition(0), actor:renderPosition(1)
+    Assert.equal(previous.x, current.x, "the aggregate baseline pass captures each map's current actor X")
+    Assert.equal(previous.y, current.y, "the aggregate baseline pass captures each map's current actor Y")
+    Assert.equal(previous.z, current.z, "the aggregate baseline pass captures each map's current actor Z")
+  end
+  Assert.equal(first:getPoseTick(), firstPoseTick, "baseline capture does not advance the first actor's pose")
+  Assert.equal(second:getPoseTick(), secondPoseTick, "baseline capture does not advance the second actor's pose")
   mgr:dispose()
 end
 
@@ -1778,6 +1833,171 @@ function T.scripted_reposition_autonomous_reservation_and_destroy_keep_stable_ce
   mgr:dispose()
 end
 
+function T.autonomous_step_accepts_a_nonresident_physical_probe_and_reprojects()
+  local objects = {
+    object({ movementType = "wander_around", x = 31, z = 3, xRange = -1, yRange = -1 }),
+  }
+  local map = runtimeMap(objects)
+  map.terrain = TerrainSurface.new({
+    plates = {
+      {
+        id = 0,
+        minX = 0,
+        minZ = 0,
+        maxX = 32,
+        maxZ = 32,
+        normal = { x = 0, y = 1, z = 0 },
+        distance = 0,
+        slopeClass = "flat",
+        cellKey = "0:0",
+        sourceSurfaceId = 12,
+      },
+    },
+  })
+  map.fieldRegion = {
+    sourceSurface = function(_, cellKey, sourceSurfaceId)
+      if cellKey == "0:0" and sourceSurfaceId == 12 then
+        return 0
+      elseif cellKey == "1:0" and sourceSurfaceId == 13 then
+        return 0
+      end
+      return nil
+    end,
+  }
+  map.coverage = {
+    containsGlobal = function(_, fieldX)
+      return fieldX < 32
+    end,
+  }
+  map.probePhysicalCell = function(_, fieldX, fieldZ, from)
+    Assert.equal(fieldX, 32)
+    Assert.equal(fieldZ, 3)
+    Assert.equal(from.currentCellKey, "0:0")
+    Assert.equal(from.currentSourceSurfaceId, 12)
+    return {
+      cellKey = "1:0",
+      sourceSurfaceId = 13,
+      worldY = 0,
+      surfaceId = nil,
+      collision = { blocked = false },
+    }
+  end
+
+  local mgr = manager(objects, { map = map })
+  local actorId = "map:61:object:0"
+  local actor = assert(mgr:getById(actorId))
+  forceAutonomy(mgr, "east")
+  mgr:step(1)
+
+  local motion = assert(actor:scriptedMotionState(), "a stable nonresident probe must begin an action")
+  Assert.equal(motion.destFieldX, 32)
+  Assert.equal(motion.destFieldZ, 3)
+  Assert.isFalse(motion.destResident)
+  Assert.isNil(motion.destSurfaceId)
+  Assert.equal(motion.destCellKey, "1:0")
+  Assert.equal(motion.destSourceSurfaceId, 13)
+
+  mgr:step(2)
+  mgr:step(3)
+  Assert.equal(assert(actor:scriptedMotionState()).progressTicks, 2)
+
+  map.coordinateOrigin = { x = 32, z = 0 }
+  map.terrain = TerrainSurface.new({
+    plates = {
+      {
+        id = 0,
+        minX = 0,
+        minZ = 0,
+        maxX = 32,
+        maxZ = 32,
+        normal = { x = 0, y = 1, z = 0 },
+        distance = 0,
+        slopeClass = "flat",
+        cellKey = "1:0",
+        sourceSurfaceId = 13,
+      },
+    },
+  })
+  map.coverage = {
+    containsGlobal = function(_, fieldX)
+      return fieldX >= 32
+    end,
+  }
+  mgr:reconcilePhysicalWorld()
+
+  local rebased = assert(actor:scriptedMotionState())
+  Assert.equal(rebased.progressTicks, 2, "reprojection must preserve in-flight progress")
+  Assert.isTrue(rebased.destResident)
+  Assert.equal(rebased.destSurfaceId, 0)
+  for tick = 4, 9 do
+    mgr:step(tick)
+  end
+  Assert.isTrue(mgr:isPausable(actorId))
+  Assert.equal(actor:getFieldPosition().fieldX, 32)
+  Assert.equal(actor.cellKey, "1:0")
+  Assert.equal(actor:getSourceSurfaceId(), 13)
+  Assert.isTrue(actor:isResident())
+  mgr:dispose()
+end
+
+function T.scripted_walk_uses_nonresident_probe_without_autonomous_collision_policy()
+  local objects = { object({ x = 31, z = 3 }) }
+  local map = runtimeMap(objects)
+  map.terrain = TerrainSurface.new({
+    plates = {
+      {
+        id = 0,
+        minX = 0,
+        minZ = 0,
+        maxX = 32,
+        maxZ = 32,
+        normal = { x = 0, y = 1, z = 0 },
+        distance = 0,
+        slopeClass = "flat",
+        cellKey = "0:0",
+        sourceSurfaceId = 12,
+      },
+    },
+  })
+  map.fieldRegion = {
+    sourceSurface = function(_, cellKey, sourceSurfaceId)
+      if cellKey == "0:0" and sourceSurfaceId == 12 then
+        return 0
+      end
+      return nil
+    end,
+  }
+  map.coverage = {
+    containsGlobal = function(_, fieldX)
+      return fieldX < 32
+    end,
+  }
+  map.probePhysicalCell = function(_, fieldX, fieldZ)
+    Assert.equal(fieldX, 32)
+    Assert.equal(fieldZ, 3)
+    return {
+      cellKey = "1:0",
+      sourceSurfaceId = 13,
+      worldY = 0,
+      surfaceId = nil,
+      collision = { blocked = true },
+    }
+  end
+
+  local mgr = manager(objects, { map = map })
+  local actorId = "map:61:object:0"
+  local actor = assert(mgr:getById(actorId))
+  mgr:beginScriptedAction(actorId, { action = "walk", direction = "east", speed = "normal" })
+
+  local motion = assert(actor:scriptedMotionState(), "scripted source movement keeps its own collision policy")
+  Assert.equal(motion.destFieldX, 32)
+  Assert.equal(motion.destFieldZ, 3)
+  Assert.isNil(motion.destSurfaceId)
+  Assert.equal(motion.destCellKey, "1:0")
+  Assert.equal(motion.destSourceSurfaceId, 13)
+  mgr:dispose()
+end
+
 function T.autonomous_wander_settles_before_its_wait()
   local mgr = manager(
     { object({ movementType = "wander_around", xRange = -1, yRange = -1 }) },
@@ -1836,7 +2056,7 @@ function T.autonomous_pattern_continues_without_an_idle_boundary()
   mgr:dispose()
 end
 
-function T.autonomous_pattern_settles_when_continuation_is_blocked()
+function T.autonomous_pattern_holds_a_blocked_continuation()
   local mgr = manager({
     object({
       objectEventId = 0,
@@ -1863,13 +2083,268 @@ function T.autonomous_pattern_settles_when_continuation_is_blocked()
   mgr:step(10)
   Assert.equal(actor:getFieldPosition().fieldX, 2, "a blocked successor leaves the actor on its committed tile")
   Assert.equal(actor:getFieldPosition().fieldZ, 2, "a blocked successor leaves the actor on its committed tile")
-  Assert.isTrue(mgr:isPausable(actorId))
+  Assert.equal(actor:currentAction(), "walk_in_place")
+  Assert.isFalse(mgr:isPausable(actorId))
   Assert.notNil(
     mgr:getAt(61, candidate(3, 2, actor:getSurfaceId())),
     "the blocking actor remains the committed occupant"
   )
-  Assert.equal(actor.pose, "idle", "a failed continuous successor settles the actor")
-  Assert.equal(actor:getPoseTick(), 0, "settling clears the static idle phase")
+  mgr:dispose()
+end
+
+function T.autonomous_pattern_holds_a_blocked_direction_for_a_normal_step()
+  local mgr = manager({
+    object({
+      objectEventId = 0,
+      movementType = "walk_east_south_west_north",
+      facingDirection = "east",
+      xRange = 2,
+      yRange = 2,
+      x = 2,
+      z = 2,
+    }),
+    object({ objectEventId = 1, x = 3, z = 2 }),
+    object({ objectEventId = 2, x = 2, z = 3 }),
+    object({ objectEventId = 3, x = 1, z = 2 }),
+    object({ objectEventId = 4, x = 2, z = 1 }),
+  })
+  local actorId = "map:61:object:0"
+  local actor = assert(mgr:getById(actorId))
+  local initial = actor:getFieldPosition()
+  local initialWorld = actor:getWorldPosition()
+
+  mgr:step(1)
+
+  Assert.equal(actor.facing, "east", "the blocked pattern direction remains the selected facing")
+  Assert.equal(actor:currentAction(), "walk_in_place", "a blocked pattern direction owns locomotion")
+  Assert.isFalse(mgr:isPausable(actorId), "the in-place action owns the actor for its movement interval")
+  Assert.equal(mgr.autonomy:state(actorId).sequenceIndex, 2, "starting the held step advances the pattern once")
+  Assert.equal(actor:getFieldPosition().fieldX, initial.fieldX)
+  Assert.equal(actor:getFieldPosition().fieldZ, initial.fieldZ)
+  Assert.near(actor:getWorldPosition().x, initialWorld.x, 1e-9)
+  Assert.near(actor:getWorldPosition().y, initialWorld.y, 1e-9)
+  Assert.near(actor:getWorldPosition().z, initialWorld.z, 1e-9)
+  Assert.equal(mgr:getAt(61, candidate(initial.fieldX, initial.fieldZ, actor:getSurfaceId())), actor)
+
+  for tick = 2, MovementCalibration.SPEED_TICKS.normal do
+    mgr:step(tick)
+    Assert.equal(actor:currentAction(), "walk_in_place", "the held direction lasts the normal movement interval")
+    Assert.equal(actor.facing, "east", "the actor does not churn through fallback directions")
+    Assert.equal(actor:getFieldPosition().fieldX, initial.fieldX)
+    Assert.equal(actor:getFieldPosition().fieldZ, initial.fieldZ)
+  end
+
+  mgr:step(MovementCalibration.SPEED_TICKS.normal + 1)
+  Assert.isNil(actor:currentAction(), "the held walk settles after one normal movement interval")
+  Assert.isTrue(mgr:isPausable(actorId))
+  Assert.equal(actor:getFieldPosition().fieldX, initial.fieldX)
+  Assert.equal(actor:getFieldPosition().fieldZ, initial.fieldZ)
+  Assert.equal(mgr:getAt(61, candidate(initial.fieldX, initial.fieldZ, actor:getSurfaceId())), actor)
+  mgr:dispose()
+end
+
+function T.autonomous_pattern_probes_when_current_surface_has_no_source_id()
+  local objects = {
+    object({
+      objectEventId = 0,
+      movementType = "walk_east_south_west_north",
+      facingDirection = "east",
+      xRange = 2,
+      yRange = 2,
+      x = 2,
+      z = 2,
+    }),
+  }
+  local map = runtimeMap(objects)
+  local probeCalled = false
+  map.probePhysicalCell = function(_, fieldX, fieldZ, context)
+    probeCalled = true
+    Assert.equal(fieldX, 3)
+    Assert.equal(fieldZ, 2)
+    Assert.equal(context.currentCellKey, "0:0")
+    Assert.isNil(context.currentSourceSurfaceId)
+    return nil
+  end
+  local mgr = manager(objects, { map = map })
+  local actorId = "map:61:object:0"
+  local actor = assert(mgr:getById(actorId))
+  Assert.isNil(actor:getSourceSurfaceId())
+
+  mgr:step(1)
+
+  Assert.isTrue(probeCalled, "autonomous movement preserves the physical probe for legacy local surfaces")
+  Assert.equal(actor:currentAction(), "walk_in_place")
+  mgr:dispose()
+end
+
+function T.autonomous_pattern_treats_collision_only_probe_as_blocked()
+  local objects = {
+    object({
+      objectEventId = 0,
+      movementType = "walk_east_south_west_north",
+      facingDirection = "east",
+      xRange = 2,
+      yRange = 2,
+      x = 2,
+      z = 2,
+    }),
+  }
+  local map = runtimeMap(objects)
+  map.probePhysicalCell = function()
+    return { collision = { blocked = true } }
+  end
+  local mgr = manager(objects, { map = map })
+  local actorId = "map:61:object:0"
+  local actor = assert(mgr:getById(actorId))
+
+  mgr:step(1)
+
+  Assert.equal(actor:currentAction(), "walk_in_place", "a collision-only probe result is a blocked direction")
+  mgr:dispose()
+end
+
+function T.autonomous_pattern_rejects_malformed_unblocked_probe()
+  local objects = {
+    object({
+      objectEventId = 0,
+      movementType = "walk_east_south_west_north",
+      facingDirection = "east",
+      xRange = 2,
+      yRange = 2,
+      x = 2,
+      z = 2,
+    }),
+  }
+  local map = runtimeMap(objects)
+  map.probePhysicalCell = function()
+    return { collision = { blocked = false } }
+  end
+  local mgr = manager(objects, { map = map })
+
+  local err = Assert.throws(function()
+    mgr:step(1)
+  end)
+
+  Assert.isTrue(
+    tostring(err):match("physical probe stable surface identity is missing$") ~= nil,
+    "malformed unblocked probe data remains a loud invariant failure"
+  )
+  mgr:dispose()
+end
+
+function T.blocked_pattern_hold_round_trips_and_reprojects_without_a_reservation()
+  local objects = {
+    object({
+      objectEventId = 0,
+      movementType = "walk_east_south_west_north",
+      facingDirection = "east",
+      xRange = 2,
+      yRange = 2,
+      x = 2,
+      z = 2,
+    }),
+    object({ objectEventId = 1, x = 3, z = 2 }),
+    object({ objectEventId = 2, x = 2, z = 3 }),
+    object({ objectEventId = 3, x = 1, z = 2 }),
+    object({ objectEventId = 4, x = 2, z = 1 }),
+  }
+  local map = runtimeMap(objects)
+  map.terrain:plate(0).cellKey = "0:0"
+  map.terrain:plate(0).sourceSurfaceId = 0
+  map.fieldRegion = {
+    sourceSurface = function(_, cellKey, sourceSurfaceId)
+      if cellKey == "0:0" and sourceSurfaceId == 0 then
+        return 0
+      end
+      return nil
+    end,
+  }
+  map.coverage = {
+    containsGlobal = function()
+      return true
+    end,
+  }
+  local mgr = manager(objects, { map = map })
+  local actorId = "map:61:object:0"
+  local actor = assert(mgr:getById(actorId))
+  mgr:step(1)
+  mgr:step(2)
+
+  local captured = mgr:captureObjects()
+  local record = assert(captured.actors[actorId])
+  Assert.equal(captured.schema, "g4-field-objects-v1")
+  Assert.equal(record.action.kind, "walk", "the runtime action uses the existing save spelling")
+  Assert.equal(record.action.start.fieldX, record.action.destination.fieldX)
+  Assert.equal(record.action.start.fieldZ, record.action.destination.fieldZ)
+  Assert.equal(record.action.progressTicks, 1)
+  local validated, validationErr = FieldObjectSave.validate(captured)
+  Assert.notNil(validated, tostring(validationErr))
+  mgr:dispose()
+
+  map.coverage = {
+    containsGlobal = function()
+      return true
+    end,
+  }
+  mgr = manager(objects, { map = map, restoredObjects = assert(validated) })
+  actor = assert(mgr:getById(actorId))
+  Assert.equal(actor:currentAction(), "walk_in_place")
+  Assert.equal(assert(actor:scriptedMotionState()).progressTicks, 1)
+  mgr:step(3)
+  Assert.equal(assert(actor:scriptedMotionState()).progressTicks, 2, "restore resumes at the saved action progress")
+
+  map.coverage = {
+    containsGlobal = function()
+      return false
+    end,
+  }
+  mgr:reconcilePhysicalWorld()
+  Assert.equal(actor:currentAction(), "walk_in_place", "losing coverage preserves the in-place action")
+  Assert.equal(assert(actor:scriptedMotionState()).progressTicks, 2)
+  Assert.isFalse(actor:isResident())
+  Assert.isNil(mgr:getAt(61, candidate(2, 2, actor:getSurfaceId())))
+
+  map.coverage = {
+    containsGlobal = function()
+      return true
+    end,
+  }
+  mgr:reconcilePhysicalWorld()
+  Assert.equal(actor:currentAction(), "walk_in_place", "regaining coverage preserves the in-place action")
+  Assert.equal(assert(actor:scriptedMotionState()).progressTicks, 2)
+  Assert.isTrue(actor:isResident())
+  Assert.equal(mgr:getAt(61, candidate(2, 2, actor:getSurfaceId())), actor)
+
+  mgr:beginScriptedAction(actorId, { action = "delay", speed = "normal" })
+  Assert.equal(actor:currentAction(), "delay", "scripted ownership cancels the reservationless autonomous hold")
+  Assert.isTrue(mgr:isPausable(actorId))
+  mgr:dispose()
+end
+
+function T.destroying_actor_during_blocked_pattern_hold_needs_no_reservation()
+  local eventState = FieldEventState.new()
+  local mgr = manager({
+    object({
+      objectEventId = 0,
+      eventFlag = 401,
+      movementType = "walk_east_south_west_north",
+      facingDirection = "east",
+      xRange = 2,
+      yRange = 2,
+      x = 2,
+      z = 2,
+    }),
+    object({ objectEventId = 1, x = 3, z = 2 }),
+    object({ objectEventId = 2, x = 2, z = 3 }),
+    object({ objectEventId = 3, x = 1, z = 2 }),
+    object({ objectEventId = 4, x = 2, z = 1 }),
+  }, { eventState = eventState })
+  local actorId = "map:61:object:0"
+  mgr:step(1)
+  Assert.equal(assert(mgr:getById(actorId)):currentAction(), "walk_in_place")
+  eventState:setFlag(401)
+  mgr:step(2)
+  Assert.isNil(mgr:getById(actorId), "destroying the actor cancels the reservationless hold")
   mgr:dispose()
 end
 

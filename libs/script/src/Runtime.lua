@@ -656,6 +656,17 @@ local function handleChooseStarter(node, run)
   return blockOnTask(run, "choose_starter", { node = node })
 end
 
+-- The main chunk is at LuaJIT's 200-local limit; new handlers live in a
+-- block so their name never becomes another file-scoped local.
+do
+  local function handlePokemonNicknameInput(node, run)
+    requireForeground(run, "pokemon_nickname_input")
+    monsFor(run)
+    return blockOnTask(run, "pokemon_nickname_input", { slot = evalField(node, run, "slot") }, node.result)
+  end
+  HANDLERS.pokemon_nickname_input = handlePokemonNicknameInput
+end
+
 local function handleReturnLoanMon(node, run)
   monsFor(run):returnLoanMon(evalField(node, run, "slot"))
   if node.result ~= nil then
@@ -1000,6 +1011,9 @@ local function handleFollowerFacePlayer(_, run)
 end
 
 local function handleFollowerSetPaused(node, run)
+  if not followingMonFor(run):isSourceActive() then
+    return Runtime.OUTCOME_CONTINUE
+  end
   assert(node.paused ~= nil, "follower pause requires its source operand")
   local paused = semanticsFor(run).evaluateValue(node.paused, run)
   followingMonFor(run):setMovementPaused(paused ~= 0 and paused ~= false)

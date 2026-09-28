@@ -106,6 +106,8 @@ FieldUiAssetCache.ASSET = {
   NAMING_SCREEN_SLOT_SELECTED = "hgss.naming_screen.slot_selected",
   NAMING_SCREEN_SUBJECT_MALE = "hgss.naming_screen.subject_male",
   NAMING_SCREEN_SUBJECT_FEMALE = "hgss.naming_screen.subject_female",
+  NAMING_SCREEN_POKEMON_GENDER_MALE = "hgss.naming_screen.pokemon_gender_male",
+  NAMING_SCREEN_POKEMON_GENDER_FEMALE = "hgss.naming_screen.pokemon_gender_female",
   YES_NO_PROMPT_YES_NORMAL = "hgss.yes_no_prompt.yes_normal",
   YES_NO_PROMPT_YES_SELECTED = "hgss.yes_no_prompt.yes_selected",
   YES_NO_PROMPT_NO_NORMAL = "hgss.yes_no_prompt.no_normal",
@@ -263,46 +265,66 @@ function FieldUiAssetCache.validateManifest(manifest)
         return false, err
       end
     end
-    if type(s.palettes) ~= "table" then
-      return false, Errors.new(MANIFEST_INVALID, "dialogueFrames.palettes must be a table", {})
-    end
-    for frame = 0, s.count - 1 do
-      local palette = s.palettes[frame]
+    local function validatePalette(palette, label)
       if type(palette) ~= "table" then
-        return false,
-          Errors.new(MANIFEST_INVALID, "dialogue frame " .. frame .. " palette must be a table", { frame = frame })
+        return false, Errors.new(MANIFEST_INVALID, label .. " must be a table", {})
       end
       for slot = 0, 15 do
         local color = palette[slot]
         if type(color) ~= "table" then
-          return false,
-            Errors.new(
-              MANIFEST_INVALID,
-              "dialogue frame " .. frame .. " palette slot " .. slot .. " is missing",
-              { frame = frame, slot = slot }
-            )
+          return false, Errors.new(MANIFEST_INVALID, label .. " slot " .. slot .. " is missing", { slot = slot })
         end
         for _, component in ipairs({ "r", "g", "b" }) do
           local value = color[component]
           if type(value) ~= "number" or value % 1 ~= 0 or value < 0 or value > 255 then
             return false,
-              Errors.new(
-                MANIFEST_INVALID,
-                "dialogue frame " .. frame .. " palette slot " .. slot .. " must have byte RGB",
-                { frame = frame, slot = slot, component = component }
-              )
+              Errors.new(MANIFEST_INVALID, label .. " slot " .. slot .. " must have byte RGB", {
+                slot = slot,
+                component = component,
+              })
           end
         end
       end
       for slot in pairs(palette) do
         if type(slot) ~= "number" or slot % 1 ~= 0 or slot < 0 or slot > 15 then
-          return false,
-            Errors.new(MANIFEST_INVALID, "dialogue frame " .. frame .. " palette has an invalid slot", {
-              frame = frame,
-              slot = slot,
-            })
+          return false, Errors.new(MANIFEST_INVALID, label .. " has an invalid slot", { slot = slot })
         end
       end
+      return true
+    end
+    if type(s.palettes) ~= "table" then
+      return false, Errors.new(MANIFEST_INVALID, "dialogueFrames.palettes must be a table", {})
+    end
+    for frame = 0, s.count - 1 do
+      local palette = s.palettes[frame]
+      local ok, err = validatePalette(palette, "dialogue frame " .. frame .. " palette")
+      if not ok then
+        return false, err
+      end
+    end
+    local standard = s.standardFrame
+    if type(standard) ~= "table" then
+      return false, Errors.new(MANIFEST_INVALID, "dialogueFrames.standardFrame must be a table", {})
+    end
+    local standardKeyCount = 0
+    for key in pairs(standard) do
+      standardKeyCount = standardKeyCount + 1
+      if key ~= "frameTiles" and key ~= "palette" then
+        return false, Errors.new(MANIFEST_INVALID, "dialogueFrames.standardFrame has an unknown field", { field = key })
+      end
+    end
+    if standardKeyCount ~= 2 then
+      return false,
+        Errors.new(MANIFEST_INVALID, "dialogueFrames.standardFrame requires exactly frameTiles and palette", {})
+    end
+    local standardRectOk, standardRectErr =
+      stripInAtlas(standard.frameTiles, FieldUiAssetCache.ASSET.DIALOGUE_FRAME_TILES, "standard Yes/No frame tiles", 72)
+    if not standardRectOk then
+      return false, standardRectErr
+    end
+    local standardPaletteOk, standardPaletteErr = validatePalette(standard.palette, "standard Yes/No frame palette")
+    if not standardPaletteOk then
+      return false, standardPaletteErr
     end
     -- The single dialogue strip is the only frame authority: the same
     -- row rectangles index the one atlas for ordinary windows and
@@ -979,6 +1001,14 @@ function FieldUiAssetCache.validateManifest(manifest)
       return type(value) == "number" and value % 1 == 0 and value >= 0
     end
 
+    local function signedInt(value)
+      return type(value) == "number" and value % 1 == 0 and value ~= math.huge and value ~= -math.huge
+    end
+
+    local function signedPoint(point)
+      return type(point) == "table" and signedInt(point.x) and signedInt(point.y)
+    end
+
     local function canonicalPoint(point, what)
       if type(point) ~= "table" or not nonNegativeInt(point.x) or not nonNegativeInt(point.y) then
         return false, Errors.new(MANIFEST_INVALID, what .. " must be a canonical integer point", { what = what })
@@ -1235,11 +1265,14 @@ function FieldUiAssetCache.validateManifest(manifest)
     then
       return false, Errors.new(MANIFEST_INVALID, "namingScreen.entrySlots must start at (80,39) stepping 12px", {})
     end
-    for _, key in ipairs({ "normal", "selected" }) do
-      local slotOk, slotErr = spriteRecord(s.entrySlots[key], "namingScreen.entrySlots." .. key)
-      if not slotOk then
-        return false, slotErr
-      end
+    local normalSlotOk, normalSlotErr = spriteRecord(s.entrySlots.normal, "namingScreen.entrySlots.normal")
+    if not normalSlotOk then
+      return false, normalSlotErr
+    end
+    local selectedSlotOk, selectedSlotErr =
+      animationRecord(s.entrySlots.selected, "namingScreen.entrySlots.selected", false)
+    if not selectedSlotOk then
+      return false, selectedSlotErr
     end
 
     if type(s.playerSubjects) ~= "table" then
@@ -1261,6 +1294,114 @@ function FieldUiAssetCache.validateManifest(manifest)
       local subjectAnchor = s.playerSubjects[id].anchor
       if subjectAnchor.x ~= 24 or subjectAnchor.y ~= 8 then
         return false, Errors.new(MANIFEST_INVALID, "namingScreen.playerSubjects." .. id .. " must anchor at (24,8)", {})
+      end
+    end
+
+    local pokemonSubject = s.pokemonSubject
+    if type(pokemonSubject) ~= "table" then
+      return false, Errors.new(MANIFEST_INVALID, "namingScreen.pokemonSubject must be a table", {})
+    end
+    if not signedPoint(pokemonSubject.anchor) then
+      return false,
+        Errors.new(MANIFEST_INVALID, "namingScreen.pokemonSubject anchor must be a signed integer point", {})
+    end
+    if validPlayModes[pokemonSubject.playMode] ~= true then
+      return false, Errors.new(MANIFEST_INVALID, "namingScreen.pokemonSubject carries an unsupported play mode", {})
+    end
+    if type(pokemonSubject.frames) ~= "table" then
+      return false, Errors.new(MANIFEST_INVALID, "namingScreen.pokemonSubject must carry animation frames", {})
+    end
+    local pokemonFrameCount = 0
+    for _ in pairs(pokemonSubject.frames) do
+      pokemonFrameCount = pokemonFrameCount + 1
+    end
+    if pokemonFrameCount == 0 or pokemonFrameCount ~= #pokemonSubject.frames then
+      return false,
+        Errors.new(MANIFEST_INVALID, "namingScreen.pokemonSubject frames must be a dense nonempty sequence", {})
+    end
+    if
+      type(pokemonSubject.loopStartFrameIdx) ~= "number"
+      or pokemonSubject.loopStartFrameIdx % 1 ~= 0
+      or pokemonSubject.loopStartFrameIdx < 0
+      or pokemonSubject.loopStartFrameIdx >= pokemonFrameCount
+    then
+      return false, Errors.new(MANIFEST_INVALID, "namingScreen.pokemonSubject loop start is outside its frames", {})
+    end
+    for index, frame in ipairs(pokemonSubject.frames) do
+      if type(frame) ~= "table" then
+        return false,
+          Errors.new(MANIFEST_INVALID, "namingScreen.pokemonSubject frame " .. index .. " must be a table", {})
+      end
+      if type(frame.duration) ~= "number" or frame.duration % 1 ~= 0 or frame.duration < 1 then
+        return false,
+          Errors.new(MANIFEST_INVALID, "namingScreen.pokemonSubject frame " .. index .. " has an invalid duration", {})
+      end
+      if type(frame.parts) ~= "table" then
+        return false,
+          Errors.new(MANIFEST_INVALID, "namingScreen.pokemonSubject frame " .. index .. " must carry icon parts", {})
+      end
+      local partCount = 0
+      for _ in pairs(frame.parts) do
+        partCount = partCount + 1
+      end
+      if partCount == 0 or partCount ~= #frame.parts then
+        return false,
+          Errors.new(
+            MANIFEST_INVALID,
+            "namingScreen.pokemonSubject frame " .. index .. " must carry a dense nonempty part sequence",
+            {}
+          )
+      end
+      for partIndex, part in ipairs(frame.parts) do
+        if
+          type(part) ~= "table"
+          or part.iconFrame ~= 1
+          or type(part.offset) ~= "table"
+          or not signedInt(part.offset.x)
+          or not signedInt(part.offset.y)
+        then
+          return false,
+            Errors.new(
+              MANIFEST_INVALID,
+              "namingScreen.pokemonSubject frame " .. index .. " part " .. partIndex .. " is invalid",
+              {}
+            )
+        end
+        if
+          part.asset ~= nil
+          or part.image ~= nil
+          or part.rect ~= nil
+          or part.pulseRect ~= nil
+          or part.width ~= nil
+          or part.height ~= nil
+        then
+          return false,
+            Errors.new(
+              MANIFEST_INVALID,
+              "namingScreen.pokemonSubject frame " .. index .. " part " .. partIndex .. " carries generated pixels",
+              {}
+            )
+        end
+      end
+      if frame.offset ~= nil or frame.iconFrame ~= nil or frame.asset ~= nil or frame.rect ~= nil then
+        return false,
+          Errors.new(MANIFEST_INVALID, "namingScreen.pokemonSubject frames carry no flattened icon record", {})
+      end
+    end
+    local genderMarkers = s.pokemonGenderMarkers
+    if type(genderMarkers) ~= "table" then
+      return false, Errors.new(MANIFEST_INVALID, "namingScreen.pokemonGenderMarkers must be a table", {})
+    end
+    local markerAnchor = genderMarkers.anchor
+    if not signedPoint(markerAnchor) then
+      return false,
+        Errors.new(MANIFEST_INVALID, "namingScreen.pokemonGenderMarkers anchor must be a signed integer point", {})
+    end
+    for _, gender in ipairs({ "male", "female" }) do
+      local markerOk, markerErr =
+        animationRecord(genderMarkers[gender], "namingScreen.pokemonGenderMarkers." .. gender, false)
+      if not markerOk then
+        return false, markerErr
       end
     end
     return true

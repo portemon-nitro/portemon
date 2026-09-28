@@ -9,8 +9,16 @@ local FieldUiFixture = require("tests.support.FieldUiFixture")
 
 local T = { tests = {} }
 
-local function namingManifest()
-  return FieldUiFixture.namingSemanticsManifest()
+local function namingManifest(nonVanillaAnchors)
+  local manifest = FieldUiFixture.namingSemanticsManifest()
+  local naming = manifest.namingScreen
+  naming.pokemonSubject.frames[1].parts = { { iconFrame = 1, offset = { x = -3, y = 4 } } }
+  naming.pokemonSubject.frames[2].parts = { { iconFrame = 1, offset = { x = 6, y = -7 } } }
+  if nonVanillaAnchors then
+    naming.pokemonSubject.anchor = { x = -12, y = 5 }
+    naming.pokemonGenderMarkers.anchor = { x = 301, y = -9 }
+  end
+  return manifest
 end
 
 local function imageLoader()
@@ -83,7 +91,7 @@ local function canonicalLayout()
   }
 end
 
-local function snapshot(subject)
+local function snapshot(subject, presentation)
   local grid = {}
   for row = 1, 6 do
     grid[row] = {}
@@ -99,24 +107,35 @@ local function snapshot(subject)
     maxLength = 7,
     grid = grid,
     subject = subject,
-    presentation = { subjectTick = 0, cursorTick = 0, glowAngle = 180 },
+    presentation = presentation or { subjectTick = 0, cursorTick = 0, entrySlotTick = 0, glowAngle = 180 },
   }
 end
 
 function T.tests.player_subjects_render_from_the_manifest_while_pokemon_delegates()
   local graphics, calls = graphicsFake()
-  local manifest = namingManifest()
+  local manifest = namingManifest(true)
   local seen = {}
-  local loader = imageLoader()
+  local loader, loaded = imageLoader()
   local renderer = NamingScreenRenderer.new({
     graphics = graphics,
     text = textFake(),
-    drawSubject = function(hostGraphics, subject, rect)
-      seen[#seen + 1] = { graphics = hostGraphics, subject = subject, rect = rect }
+    drawSubject = function(hostGraphics, subject, placement)
+      seen[#seen + 1] = { graphics = hostGraphics, subject = subject, placement = placement }
     end,
     manifest = manifest,
     imageLoader = loader,
   })
+  for _, gender in ipairs({ "male", "female" }) do
+    local marker = manifest.namingScreen.pokemonGenderMarkers[gender]
+    local markerPath = manifest.assets[marker.frames[1].asset].image
+    local acquisitions = 0
+    for _, path in ipairs(loaded.loads) do
+      if path == markerPath then
+        acquisitions = acquisitions + 1
+      end
+    end
+    Assert.equal(acquisitions, 1, gender .. " marker atlas is acquired once despite its repeated frames")
+  end
   local layout = canonicalLayout()
   local playerSubject = { kind = "player", gender = 1 }
   renderer:draw(snapshot(playerSubject), layout)
@@ -135,14 +154,72 @@ function T.tests.player_subjects_render_from_the_manifest_while_pokemon_delegate
     x = female.anchor.x + femaleFrame.offset.x,
     y = female.anchor.y + femaleFrame.offset.y,
   })
-  local pokemonSubject = { kind = "pokemon", species = 25, form = 0 }
+  local pokemonSubject = { kind = "pokemon", species = 25, form = 0, gender = "male" }
   renderer:draw(snapshot(pokemonSubject), layout)
-  Assert.equal(#seen, 1, "a Pokemon subject still draws through the host callback")
+  Assert.equal(#seen, 1, "the visible semantic Pokemon part draws through the host callback")
   Assert.deepEqual(seen[1].subject, pokemonSubject)
-  Assert.deepEqual(seen[1].rect, layout.subject)
-  Assert.isNil(seen[1].subject.gender, "a Pokemon subject carries no gender for the renderer to read")
+  Assert.deepEqual(seen[1].placement, { x = -15, y = 9, frameIndex = 1 })
+  renderer:draw(
+    snapshot(pokemonSubject, { subjectTick = 20, cursorTick = 0, entrySlotTick = 0, glowAngle = 180 }),
+    layout
+  )
+  Assert.equal(#seen, 2, "the animated Pokemon subject continues to draw one semantic part")
+  Assert.deepEqual(seen[2].placement, { x = -6, y = -2, frameIndex = 1 }, "semantic placement follows its tick")
+
+  local markers = manifest.namingScreen.pokemonGenderMarkers
+  local function assertMarkerUsesAnchor(draws, record)
+    for _, draw in ipairs(draws) do
+      local matchesFrame = false
+      for _, frame in ipairs(record.frames) do
+        if
+          draw.x == math.floor(markers.anchor.x + frame.offset.x + 0.5)
+          and draw.y == math.floor(markers.anchor.y + frame.offset.y + 0.5)
+        then
+          matchesFrame = true
+          break
+        end
+      end
+      Assert.isTrue(matchesFrame, "the marker uses its semantic anchor and generated frame offset")
+    end
+  end
+  local function drawsFor(record)
+    local path = manifest.assets[record.frames[1].asset].image
+    local draws = {}
+    for _, draw in ipairs(calls.draws) do
+      if draw.image.path == path then
+        draws[#draws + 1] = { x = draw.x, y = draw.y }
+      end
+    end
+    return draws
+  end
+  local maleMarkerDraws = drawsFor(markers.male)
+  Assert.equal(#maleMarkerDraws, 2, "male subject frames draw the generated male marker")
+  assertMarkerUsesAnchor(maleMarkerDraws, markers.male)
+  Assert.equal(#drawsFor(markers.female), 0, "male subjects do not draw the female marker")
+  local femaleSubject = { kind = "pokemon", species = 25, form = 0, gender = "female" }
+  renderer:draw(snapshot(femaleSubject), layout)
+  local femaleMarkerDraws = drawsFor(markers.female)
+  Assert.equal(#femaleMarkerDraws, 1, "female subjects draw the generated female marker")
+  assertMarkerUsesAnchor(femaleMarkerDraws, markers.female)
+  local genderlessSubject = { kind = "pokemon", species = 25, form = 0, gender = "genderless" }
+  renderer:draw(snapshot(genderlessSubject), layout)
+  Assert.equal(#drawsFor(markers.male), 2, "genderless subjects do not draw a gender marker")
+  Assert.equal(#drawsFor(markers.female), 1, "genderless subjects do not draw a gender marker")
   Assert.equal(calls.push, calls.pop)
   Assert.equal(calls.scaled, 0)
+  renderer:dispose()
+end
+
+function T.tests.pokemon_subject_animation_accepts_one_semantic_part_per_frame()
+  local graphics = graphicsFake()
+  local loader = imageLoader()
+  local renderer = NamingScreenRenderer.new({
+    graphics = graphics,
+    text = textFake(),
+    drawSubject = function() end,
+    manifest = namingManifest(),
+    imageLoader = loader,
+  })
   renderer:dispose()
 end
 

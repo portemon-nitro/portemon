@@ -9,6 +9,7 @@ local CacheFs = require("libs.storage.src.CacheFs")
 local FakeCache = require("tests.support.FakeCache")
 local FieldUiFixture = require("tests.support.FieldUiFixture")
 local CatalogFixture = require("libs.mons.tests.catalog_fixture")
+local InactivePokemonNaming = require("tests.support.InactivePokemonNaming")
 
 local T = {}
 
@@ -199,9 +200,9 @@ local function semanticManifest()
       },
     },
     backgrounds = {
-      host = {
-        image = "assets/generated/starter_choice/backdrop.png",
-        width = 512,
+      machine = {
+        image = "assets/generated/starter_choice/machine-background.png",
+        width = 256,
         height = 192,
       },
       info = {
@@ -468,6 +469,7 @@ local function fieldComposition(starter, queue, backend)
   end
   local zoomCalls = { zoomIn = 0, zoomOut = 0, reset = 0, applied = 0 }
   local runtime = {
+    pokemonNaming = InactivePokemonNaming.new(),
     starterChoice = starter,
     assetPreparation = queue,
     actionKeys = { z = true },
@@ -512,6 +514,7 @@ local function fieldCompositionWithRealInput(starter, queue, backend, input)
   local FieldState = requireModule(FIELD_STATE_MODULE, "the field state owns presentation composition")
   local zoomCalls = { zoomIn = 0, zoomOut = 0, reset = 0, applied = 0 }
   local runtime = {
+    pokemonNaming = InactivePokemonNaming.new(),
     starterChoice = starter,
     assetPreparation = queue,
     actionKeys = { z = true },
@@ -617,6 +620,13 @@ function T.reopening_prepares_the_new_presentation_again()
   )
   local firstRequests = #queue.requests
   Assert.isTrue(firstRequests > 0, "the first open requests its concrete resources")
+  local machineImageRequests = 0
+  for _, request in ipairs(queue.requests) do
+    if request.path == "assets/generated/starter_choice/machine-background.png" then
+      machineImageRequests = machineImageRequests + 1
+    end
+  end
+  Assert.equal(machineImageRequests, 1, "the machine background enters normal image preparation once")
   host:close()
   Assert.isTrue(#queue.cancels > 0, "closing cancels the outstanding requests")
   openTrio(host, service)

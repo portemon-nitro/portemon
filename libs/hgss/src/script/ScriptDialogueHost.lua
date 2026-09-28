@@ -320,16 +320,19 @@ function ScriptDialogueHost:isOpen()
   return self._controller:isModal()
 end
 
-function ScriptDialogueHost:askYesNo(message, bindings)
-  assert(message == nil or type(message) == "string" or type(message) == "table", "yes/no message is invalid")
-  assert(bindings == nil or type(bindings) == "table", "yes/no bindings are invalid")
+---@return { yesText: string, noText: string, frameIndex: integer? }
+function ScriptDialogueHost:yesNoOptions()
   local yes = self:resolveMessage({ message = "external", bank = 191, id = 42 }, {}, {})
   local no = self:resolveMessage({ message = "external", bank = 191, id = 43 }, {}, {})
-  self._yesNoController:open({
+  return {
     yesText = yes.text,
     noText = no.text,
     frameIndex = self._frameIndex,
-  })
+  }
+end
+
+function ScriptDialogueHost:askYesNo()
+  self._yesNoController:open(self:yesNoOptions())
 end
 
 function ScriptDialogueHost:handleYesNoInput(input)

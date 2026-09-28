@@ -196,6 +196,8 @@ return {
   },
   dialogueFrames = {
     alias = "dialogue_frames",
+    standardFrameMember = 0,
+    standardPaletteMember = 25,
     firstFrameMember = 2,
     frameCount = 20,
     firstPaletteMember = 26,
@@ -250,7 +252,14 @@ return {
       slotSelected = 44,
       subjectMale = 48,
       subjectFemale = 49,
+      pokemonSubject = 50,
+      pokemonGenderMale = 45,
+      pokemonGenderFemale = 46,
     },
+    -- Sequence 50's two source cells both use the one icon frame loaded by
+    -- NamingScreen_LoadMonIcon; only their OAM placement changes.
+    pokemonSubjectCells = { 52, 53 },
+    pokemonGenderMarkerAnchor = { x = 210, y = 27 },
     -- Resting page placement: the active keyboard BG rests scrolled to
     -- X=-11, so the 256-wide page overlay draws displaced +11 screen pixels
     -- over the canonical surface.

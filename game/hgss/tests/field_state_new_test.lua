@@ -14,6 +14,7 @@ local FieldTerrainEffectController = require("libs.hgss.src.world.FieldTerrainEf
 local FieldRuntime = require("game.hgss.src.field.FieldRuntime")
 local FieldState = require("game.hgss.src.field.FieldState")
 local GameSaveValidation = require("game.hgss.src.save.GameSaveValidation")
+local InactivePokemonNaming = require("tests.support.InactivePokemonNaming")
 
 local T = {}
 
@@ -24,9 +25,14 @@ local function stubPresentationRuntime(cache)
   cache = cache or FieldStatePresentationFixture.cache()
   local effects = FieldStatePresentationFixture.terrainEffects(cache)
   return setmetatable({
+    pokemonNaming = InactivePokemonNaming.new(),
     cacheFs = cache or FieldStatePresentationFixture.cache(),
     derivedAssets = FieldStatePresentationFixture.iconHost().derivedAssets,
-    uiManifest = FieldUiFixture.addStartMenuIconContract(FieldUiFixture.manifest()),
+    uiManifest = FieldUiFixture.fieldStateManifest(),
+    bindPartyIconPreparation = function(_, _, _)
+      return 1
+    end,
+    unbindPartyIconPreparation = function(_, _) end,
     fieldEntranceIndicatorAsset = {
       model = { batches = {}, materials = {} },
       effects = {
@@ -173,6 +179,7 @@ function T.update_forwards_to_the_runtime()
   local updates = 0
   local state = setmetatable({
     runtime = {
+      pokemonNaming = InactivePokemonNaming.new(),
       update = function()
         updates = updates + 1
       end,

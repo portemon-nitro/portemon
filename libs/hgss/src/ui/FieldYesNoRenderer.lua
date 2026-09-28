@@ -1,19 +1,50 @@
--- Renders the compact field Yes/No choice over the active dialogue.
+-- Renders the field Yes/No list in source coordinates under one host placement.
+
+local FieldDrawState = require("libs.hgss.src.presentation.FieldDrawState")
+local FieldDialogueTheme = require("libs.hgss.src.ui.FieldDialogueTheme")
+local LogicalSurface = require("libs.ui.src.LogicalSurface")
+
+---@alias FieldYesNoRenderer.Color { r: integer, g: integer, b: integer }
+---@alias FieldYesNoRenderer.Palette { [integer]: FieldYesNoRenderer.Color }
+---@alias FieldYesNoRenderer.TextPalette { foreground: FieldYesNoRenderer.Color, shadow: FieldYesNoRenderer.Color, background: FieldYesNoRenderer.Color }
+
+---@class FieldYesNoRenderer.TextRenderer
+---@field drawTextWithPalette fun(self: FieldYesNoRenderer.TextRenderer, text: string, x: number, y: number, palette: FieldYesNoRenderer.TextPalette)
+---@class FieldYesNoRenderer.WindowRenderer
+---@field drawWindow fun(self: FieldYesNoRenderer.WindowRenderer, box: table<string, number>, frameIndex: integer, background: number[])
+---@field framePalette fun(self: FieldYesNoRenderer.WindowRenderer, frameIndex: integer): FieldYesNoRenderer.Palette
+---@field drawStandardWindow fun(self: FieldYesNoRenderer.WindowRenderer, box: table<string, number>, background: number[])
+---@field standardFramePalette fun(self: FieldYesNoRenderer.WindowRenderer): FieldYesNoRenderer.Palette
 
 ---@class FieldYesNoRenderer
 ---@field _graphics love.graphics
----@field _text table<string, unknown>
----@field _window { drawWindow: fun(self: unknown, box: table<string, number>, frameIndex: integer?, background: number[]), framePalette: fun(self: unknown, frameIndex: integer): { [integer]: { r: integer, g: integer, b: integer } } }
+---@field _text FieldYesNoRenderer.TextRenderer
+---@field _window FieldYesNoRenderer.WindowRenderer
 local FieldYesNoRenderer = {}
 FieldYesNoRenderer.__index = FieldYesNoRenderer
 
 local CONTENT = { x = 25 * 8, y = 13 * 8, width = 6 * 8, height = 4 * 8 }
+local REFERENCE = { width = 256, height = 192 }
 
 local function fits(rect, bounds)
   return rect.x >= bounds.x
     and rect.y >= bounds.y
     and rect.x + rect.width <= bounds.x + bounds.width
     and rect.y + rect.height <= bounds.y + bounds.height
+end
+
+local function adaptedFrameBounds()
+  local minX, minY = 0, 0
+  local maxX, maxY = CONTENT.width, CONTENT.height
+  for _, tile in
+    ipairs(FieldDialogueTheme.frameTilePlacements({ x = 0, y = 0, width = CONTENT.width, height = CONTENT.height }))
+  do
+    minX = math.min(minX, tile.x)
+    minY = math.min(minY, tile.y)
+    maxX = math.max(maxX, tile.x + FieldDialogueTheme.frameTileSize * (tile.spanX or 1))
+    maxY = math.max(maxY, tile.y + FieldDialogueTheme.frameTileSize * (tile.spanY or 1))
+  end
+  return { x = minX, y = minY, width = maxX - minX, height = maxY - minY }
 end
 
 local function surfaceFor(topology)
@@ -26,88 +57,140 @@ local function surfaceFor(topology)
   return assert(topology.surfaces[1], "yes/no layout requires a display surface")
 end
 
+---@param palette FieldYesNoRenderer.Palette
+---@return number[]
+local function windowFill(palette)
+  local color = assert(palette[15], "Yes/No window palette has no background color")
+  return { color.r / 255, color.g / 255, color.b / 255, 1 }
+end
+
+---@param palette FieldYesNoRenderer.Palette
+---@return FieldYesNoRenderer.TextPalette
+local function textPalette(palette)
+  return {
+    foreground = assert(palette[1], "Yes/No window palette has no foreground color"),
+    shadow = assert(palette[2], "Yes/No window palette has no shadow color"),
+    background = assert(palette[15], "Yes/No window palette has no background color"),
+  }
+end
+
 ---@param opts { text: table<string, unknown>, window: table<string, unknown>, graphics?: love.graphics }
 ---@return FieldYesNoRenderer
 function FieldYesNoRenderer.new(opts)
   assert(type(opts) == "table", "yes/no renderer options are required")
   local graphics = opts.graphics or assert(love.graphics)
   assert(graphics and graphics.setColor, "yes/no renderer requires love.graphics")
-  assert(opts.text and type(opts.text.drawText) == "function", "yes/no renderer requires the field text renderer")
+  local text = opts.text
+  assert(text and type(text.drawTextWithPalette) == "function", "yes/no renderer requires the field text renderer")
+  ---@cast text FieldYesNoRenderer.TextRenderer
+  local window = opts.window
   assert(
-    opts.window and type(opts.window.drawWindow) == "function" and type(opts.window.framePalette) == "function",
+    window
+      and type(window.drawWindow) == "function"
+      and type(window.framePalette) == "function"
+      and type(window.drawStandardWindow) == "function"
+      and type(window.standardFramePalette) == "function",
     "yes/no renderer requires the field window renderer"
   )
-  return setmetatable({ _graphics = graphics, _text = opts.text, _window = opts.window }, FieldYesNoRenderer)
+  ---@cast window FieldYesNoRenderer.WindowRenderer
+  return setmetatable({ _graphics = graphics, _text = text, _window = window }, FieldYesNoRenderer)
 end
 
 ---@param status { active: boolean, selectedIndex: integer, yesText: string, noText: string, frameIndex: integer? }
 ---@param topology ScreenTopology
 ---@param dialogueBox table<string, number>?
+---@param adaptedHost { bounds: { x: number, y: number, width: number, height: number }, preferredScale: integer }?
 ---@return table<string, unknown>
-function FieldYesNoRenderer:layout(status, topology, dialogueBox)
+function FieldYesNoRenderer:layout(status, topology, dialogueBox, adaptedHost)
   assert(type(status) == "table" and status.active == true, "yes/no layout requires an active choice")
   assert(status.selectedIndex == 0 or status.selectedIndex == 1, "yes/no selection is outside the two choices")
   assert(type(status.yesText) == "string" and type(status.noText) == "string", "yes/no labels are required")
   local surface = surfaceFor(topology)
   local safe = assert(surface.safeRect or surface.rect)
-  local content
-  local scale
-  if surface.role == "auxiliary" and surface.rect.width >= 256 and surface.rect.height >= 192 then
-    scale = math.min(safe.width / 256, safe.height / 192)
-    local originX = safe.x + (safe.width - 256 * scale) / 2
-    local originY = safe.y + (safe.height - 192 * scale) / 2
-    content = {
-      x = originX + CONTENT.x * scale,
-      y = originY + CONTENT.y * scale,
-      width = CONTENT.width * scale,
-      height = CONTENT.height * scale,
-    }
+  if
+    surface.role == "auxiliary"
+    and surface.rect.width >= REFERENCE.width
+    and surface.rect.height >= REFERENCE.height
+  then
+    local scale = math.min(safe.width / REFERENCE.width, safe.height / REFERENCE.height)
+    assert(scale > 0, "yes/no source presentation requires a positive scale")
+    local originX = safe.x + (safe.width - REFERENCE.width * scale) / 2
+    local originY = safe.y + (safe.height - REFERENCE.height * scale) / 2
     return {
       surface = surface,
-      content = content,
-      scale = scale,
-      selectedIndex = status.selectedIndex,
-      yesText = status.yesText,
-      noText = status.noText,
-      frameIndex = status.frameIndex,
+      presentation = "source",
+      content = CONTENT,
+      placement = {
+        frame = { x = originX, y = originY, width = REFERENCE.width * scale, height = REFERENCE.height * scale },
+        origin = { x = originX, y = originY },
+        scale = scale,
+        clipRect = safe,
+      },
     }
+  end
+
+  local host = assert(adaptedHost, "adapted yes/no layout requires field UI bounds")
+  local bounds = assert(host.bounds, "adapted yes/no layout requires field UI bounds")
+  assert(
+    type(bounds.x) == "number"
+      and type(bounds.y) == "number"
+      and type(bounds.width) == "number"
+      and type(bounds.height) == "number"
+      and bounds.width > 0
+      and bounds.height > 0,
+    "adapted yes/no layout requires positive field UI bounds"
+  )
+  local preferredScale = host.preferredScale
+  assert(
+    type(preferredScale) == "number" and preferredScale > 0 and preferredScale == math.floor(preferredScale),
+    "adapted yes/no layout requires a positive integer preferred scale"
+  )
+  local outer = adaptedFrameBounds()
+  local hostFit = math.min(bounds.width / outer.width, bounds.height / outer.height)
+  local scale
+  if hostFit >= 1 then
+    scale = math.min(preferredScale, math.floor(hostFit))
   else
-    scale = math.min(1, safe.width / CONTENT.width, safe.height / CONTENT.height)
-    local width = CONTENT.width * scale
-    local height = CONTENT.height * scale
-    local x = safe.x + safe.width - width
-    content = nil
-    if dialogueBox then
-      local candidates = {
-        { x = x, y = dialogueBox.y + dialogueBox.height, width = width, height = height },
-        { x = x, y = dialogueBox.y - height, width = width, height = height },
-      }
-      for _, candidate in ipairs(candidates) do
-        if fits(candidate, safe) then
-          content = candidate
-          break
-        end
-      end
-    end
-    content = content
-      or {
-        x = x,
-        y = safe.y + safe.height - height,
+    scale = hostFit
+  end
+  assert(scale > 0, "yes/no adapted presentation requires a positive scale")
+  local width = outer.width * scale
+  local height = outer.height * scale
+  local hostFrame =
+    { x = bounds.x + bounds.width - width, y = bounds.y + bounds.height - height, width = width, height = height }
+  if dialogueBox then
+    local dialogueRight = dialogueBox.x + dialogueBox.width
+    local fitAbove = math.min((dialogueRight - bounds.x) / outer.width, (dialogueBox.y - bounds.y) / (outer.height + 2))
+    if fitAbove > 0 then
+      local fitScale = fitAbove >= 1 and math.floor(fitAbove) or fitAbove
+      scale = math.min(scale, fitScale)
+      width = outer.width * scale
+      height = outer.height * scale
+      hostFrame = {
+        x = dialogueRight - width,
+        y = dialogueBox.y - 2 * scale - height,
         width = width,
         height = height,
       }
+      hostFrame.x = math.max(bounds.x, math.min(hostFrame.x, bounds.x + bounds.width - width))
+      hostFrame.y = math.max(bounds.y, math.min(hostFrame.y, bounds.y + bounds.height - height))
+    end
   end
-  assert(content.x >= safe.x and content.y >= safe.y, "yes/no choice leaves the safe area")
-  assert(content.x + content.width <= safe.x + safe.width, "yes/no choice exceeds the safe width")
-  assert(content.y + content.height <= safe.y + safe.height, "yes/no choice exceeds the safe height")
+  assert(fits(hostFrame, bounds), "yes/no choice frame leaves field UI bounds")
+  local hostContentOrigin = {
+    x = hostFrame.x - outer.x * scale,
+    y = hostFrame.y - outer.y * scale,
+  }
   return {
     surface = surface,
-    content = content,
-    scale = scale,
-    selectedIndex = status.selectedIndex,
-    yesText = status.yesText,
-    noText = status.noText,
-    frameIndex = status.frameIndex,
+    presentation = "adapted",
+    content = { x = 0, y = 0, width = CONTENT.width, height = CONTENT.height },
+    placement = {
+      frame = hostFrame,
+      origin = hostContentOrigin,
+      scale = scale,
+      clipRect = bounds,
+    },
   }
 end
 
@@ -115,23 +198,27 @@ end
 ---@param layout table<string, unknown>
 function FieldYesNoRenderer:draw(status, layout)
   assert(type(status) == "table" and type(layout) == "table", "yes/no draw requires status and layout")
+  assert(status.selectedIndex == 0 or status.selectedIndex == 1, "yes/no selection is outside the two choices")
   local box = assert(layout.content)
-  self._window:drawWindow(box, status.frameIndex, self._text:windowBackgroundColor())
-  local labels = { assert(status.yesText), assert(status.noText) }
-  local scale = assert(layout.scale or 1)
-  for index, label in ipairs(labels) do
-    self._graphics.setColor(1, 1, 1, 1)
-    if index - 1 == status.selectedIndex then
-      local frameIndex = assert(status.frameIndex, "focus indicator choice has no dialogue frame index")
-      self._text:drawFocusIndicator(
-        status.selectedIndex,
-        box.x,
-        box.y + (index - 1) * 16 * scale,
-        self._window:framePalette(frameIndex)
-      )
-    end
-    self._text:drawText(label, box.x + 16 * scale, box.y + 4 * scale + (index - 1) * 16 * scale)
-  end
+  local presentation = assert(layout.presentation)
+  assert(presentation == "source" or presentation == "adapted", "yes/no layout has an unknown presentation")
+  FieldDrawState.protectedDraw(self._graphics, function()
+    LogicalSurface.draw(self._graphics, assert(layout.placement), function()
+      local palette
+      if presentation == "source" then
+        palette = self._window:standardFramePalette()
+        self._window:drawStandardWindow(box, windowFill(palette))
+      else
+        local frameIndex = assert(status.frameIndex, "adapted yes/no choice has no dialogue frame index")
+        palette = self._window:framePalette(frameIndex)
+        self._window:drawWindow(box, frameIndex, windowFill(palette))
+      end
+      local colors = textPalette(palette)
+      self._text:drawTextWithPalette("‣", box.x, box.y + status.selectedIndex * 16, colors)
+      self._text:drawTextWithPalette(assert(status.yesText), box.x + 8, box.y, colors)
+      self._text:drawTextWithPalette(assert(status.noText), box.x + 8, box.y + 16, colors)
+    end)
+  end)
 end
 
 function FieldYesNoRenderer:release() end

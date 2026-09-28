@@ -1041,6 +1041,12 @@ Schema.OPERATIONS = {
       result = { type = "value", required = true },
     },
   },
+  pokemon_nickname_input = {
+    fields = {
+      slot = { type = "scalar_or_value", required = true },
+      result = { type = "value", required = true },
+    },
+  },
   -- Field-task request. The pending form claims the runtime-owned queue
   -- for the menu-to-field builtin; the explicit form carries a source
   -- move key plus the zero-based mon slot for source lowering. No
@@ -1817,6 +1823,11 @@ Schema.CONSTRUCTORS = {
         signature = "S.fieldMove(spec)",
         canonical = "op=field_move",
         notes = "spec={source}; pending claims the runtime queue, explicit adds move and slot.",
+      },
+      {
+        signature = "S.pokemonNicknameInput(spec)",
+        canonical = "op=pokemon_nickname_input",
+        notes = "spec={slot,result}; blocks on the field Pokemon Naming Screen.",
       },
     },
   },

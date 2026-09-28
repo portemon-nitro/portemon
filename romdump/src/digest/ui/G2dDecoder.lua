@@ -141,10 +141,20 @@ local CONTAINER_MAGICS = {
 -- (bits 14-15) then attr1 size (bits 14-15). Square objects are 8/16/32/64;
 -- wide and tall objects cover the intermediate sizes. The decoder exposes
 -- shape/size so consumers can reject geometries they do not support.
+---@alias G2dDecoder.ObjMode "normal"|"translucent"|"window"|"bitmap"
+---@alias G2dDecoder.ColorMode "16-color"|"256-color"
 local OBJ_DIMENSIONS = {
   { { 8, 8 }, { 16, 16 }, { 32, 32 }, { 64, 64 } },
   { { 16, 8 }, { 32, 8 }, { 32, 16 }, { 64, 32 } },
   { { 8, 16 }, { 8, 32 }, { 16, 32 }, { 32, 64 } },
+}
+
+-- ATTR0 OBJ mode values from GBATEK's OAM attribute documentation.
+local OBJ_MODE = {
+  [0] = "normal",
+  [1] = "translucent",
+  [2] = "window",
+  [3] = "bitmap",
 }
 
 -- Nitro animation play mode (NNSG2dAnimationPlayMode) normalized to
@@ -331,7 +341,7 @@ end
 
 ---@param data string
 ---@param opts? { label?: string }
----@return { cells: { objs: { x: integer, y: integer, tile: integer, flipH: boolean, flipV: boolean, palette: integer, shape: integer, size: integer, width: integer, height: integer }[] }[] }?
+---@return { cells: { objs: { x: integer, y: integer, tile: integer, flipH: boolean, flipV: boolean, palette: integer, shape: integer, size: integer, width: integer, height: integer, affine: boolean, disabled: boolean, objMode: G2dDecoder.ObjMode, mosaic: boolean, colorMode: G2dDecoder.ColorMode, priority: integer }[] }[] }?
 ---@return Errors.Error?
 function G2dDecoder.decodeCell(data, opts)
   assert(type(data) == "string", "G2dDecoder.decodeCell requires a string")
@@ -401,6 +411,8 @@ function G2dDecoder.decodeCell(data, opts)
         end
         local size = math.floor(attr1 / 16384)
         local dims = OBJ_DIMENSIONS[shape + 1][size + 1]
+        local affine = math.floor(attr0 / 0x100) % 2 == 1
+        local attr0Bit9 = math.floor(attr0 / 0x200) % 2 == 1
         objs[o + 1] = {
           x = x,
           y = y,
@@ -412,6 +424,12 @@ function G2dDecoder.decodeCell(data, opts)
           size = size,
           width = dims[1],
           height = dims[2],
+          affine = affine,
+          disabled = not affine and attr0Bit9,
+          objMode = OBJ_MODE[math.floor(attr0 / 0x400) % 4],
+          mosaic = math.floor(attr0 / 0x1000) % 2 == 1,
+          colorMode = math.floor(attr0 / 0x2000) % 2 == 1 and "256-color" or "16-color",
+          priority = math.floor(attr2 / 0x400) % 4,
         }
       end
       cells[c + 1] = { objs = objs }

@@ -211,6 +211,7 @@ end
 ---@field partySelection table<string, unknown>|nil the modal script-party surface the blocking selection task opens and closes (absent -> SCRIPT_SERVICE_MISSING on use)
 ---@field travel table<string, unknown>|nil the durable travel owner for spawn updates (absent -> SCRIPT_SERVICE_MISSING on use)
 ---@field fieldMoves table<string, unknown>|nil the field-move runtime for task execution (absent -> SCRIPT_SERVICE_MISSING on use)
+---@field pokemonNaming table<string, unknown>|nil the script-owned Pokemon Naming Screen host
 ---@field followingMon table<string, unknown>|nil the live following-mon controller for follower script operations (absent -> SCRIPT_SERVICE_MISSING on use)
 ---@field followerTransition table<string, unknown>|nil the transient follower-transition owner the nonblocking transition command starts (absent -> SCRIPT_SERVICE_MISSING on use)
 ---@field starterBalls table<string, unknown>|nil the Elm starter-ball runtime-prop controller (absent -> SCRIPT_SERVICE_MISSING on use)
@@ -392,6 +393,7 @@ function FieldScripts.new(opts)
       partySelection = opts.partySelection,
       travel = opts.travel,
       fieldMoves = opts.fieldMoves,
+      pokemonNaming = opts.pokemonNaming,
       followingMon = opts.followingMon,
       followerTransition = opts.followerTransition,
       starterBalls = opts.starterBalls,

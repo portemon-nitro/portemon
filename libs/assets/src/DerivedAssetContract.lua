@@ -98,6 +98,18 @@
 -- visuals per row, every visual resolved through the shared asset index by
 -- semantic id), so a stale pre-change cache without that section must fail
 -- readiness.
+-- fieldUi schema 17: selected name slots preserve their NANR animation and
+-- Pokémon naming carries the source anchor and mon-icon frame selection.
+-- Species pixels remain owned by the shared mon-icon atlas.
+-- fieldUi schema 18: Pokémon naming preserves every validated source OAM
+-- placement and carries generated gender marker animations.
+--
+-- fieldUi schema 19: Pokémon naming publishes visible semantic dynamic-icon
+-- parts and consumer-safe animation geometry; icon pixels remain in the
+-- shared mon-icon atlas.
+--
+-- fieldUi schema 16: dialogueFrames also publishes the fixed standard
+-- Yes/No frame strip and palette independently of selectable user frames.
 --
 -- fieldUi schema 3: signpost wayfinding becomes a per-(type,map) rect table
 -- (signposts.types[N].wayfinding[map]) and the manifest drops the
@@ -269,7 +281,7 @@ DerivedAssetContract.fieldEmotes = {
 
 DerivedAssetContract.fieldUi = {
   cacheFormat = "field-ui-cache-v1",
-  schema = "g4-field-ui-v15",
+  schema = "g4-field-ui-v19",
 }
 
 DerivedAssetContract.intro = {
@@ -279,11 +291,8 @@ DerivedAssetContract.intro = {
 }
 
 DerivedAssetContract.starterChoice = {
-  -- v5: the manifest carries the required chooser text-color record (seven
-  -- byte-RGB foreground/shadow variants plus info/machine backgrounds)
-  -- compiled from the chooser window palette.
-  cacheFormat = "starter-choice-cache-v5",
-  schema = "g4-starter-choice-v5",
+  cacheFormat = "starter-choice-cache-v7",
+  schema = "g4-starter-choice-v7",
 }
 
 -- The mon class carries the complete species/form/move/ability/growth

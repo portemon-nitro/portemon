@@ -166,6 +166,38 @@ local function host(opts)
     provider
 end
 
+function T.yes_no_choice_leaves_ordinary_dialogue_open()
+  local hostObject = host()
+  local node = { message = "msg.hgss.0542.00000" }
+  hostObject:openMessage(node)
+  hostObject:startPrint(node.message, { [0] = { text = "player_name" } }, {})
+  hostObject.resolveMessage = function(_, request)
+    return { text = request.id == 42 and "Yes" or "No" }
+  end
+
+  Assert.isTrue(hostObject:isOpen())
+  hostObject:askYesNo()
+  Assert.isTrue(hostObject:isOpen(), "opening the choice keeps ordinary dialogue open")
+  hostObject:closeYesNo()
+  Assert.isTrue(hostObject:isOpen(), "closing the choice leaves ordinary dialogue script-owned")
+end
+
+function T.yes_no_options_match_the_choice_opened_by_the_script_host()
+  local hostObject = host({ frameIndex = 4 })
+  hostObject.resolveMessage = function(_, request)
+    return { text = request.id == 42 and "Ja" or "Nein" }
+  end
+
+  local options = hostObject:yesNoOptions()
+  Assert.deepEqual(options, { yesText = "Ja", noText = "Nein", frameIndex = 4 })
+
+  hostObject:askYesNo()
+  local presentation = assert(hostObject:yesNoPresentation())
+  Assert.equal(presentation.yesText, options.yesText)
+  Assert.equal(presentation.noText, options.noText)
+  Assert.equal(presentation.frameIndex, options.frameIndex)
+end
+
 -- An integer text value backed by a variable renders the variable's numeric
 -- value, not its identifier.
 function T.integer_text_value_renders_the_variable_value()

@@ -202,6 +202,7 @@ end
 ---@field starterProvider table<string, unknown> the hand-editable default starter roster, injected into the starter task
 ---@field starterChoice StarterChoiceState? the modal starter-choice surface the blocking task opens and closes
 ---@field partySelection table<string, unknown>? the modal script-party surface the blocking selection task opens and closes
+---@field pokemonNaming PokemonNamingState the script-owned Pokemon Naming Screen host
 ---@field menuHost FieldMenuHost?
 ---@field actionKeys table<string, boolean>?
 ---@field cancelKeys table<string, boolean>?
@@ -1039,6 +1040,12 @@ function FieldRuntime:_load()
       measureDisplay = starterMeasureDisplay,
       overrides = starterOverrides,
     })
+    local namingOverrides = self.presentationOverrides ~= nil and self.presentationOverrides.naming_screen or nil
+    self.pokemonNaming = require("game.hgss.src.field.PokemonNamingState").new({
+      charmap = fontDef.charmap,
+      measureDisplay = starterMeasureDisplay,
+      overrides = namingOverrides,
+    })
     self.actionKeys = HgssInputBindings.actionKeys()
     self.cancelKeys = HgssInputBindings.cancelKeys()
     self.menuKeys = HgssInputBindings.menuKeys()
@@ -1188,6 +1195,7 @@ function FieldRuntime:_load()
       partySelection = self.partySelection,
       travel = self.fieldTravel,
       fieldMoves = self.pokemonMenu.fieldMoves,
+      pokemonNaming = self.pokemonNaming,
       followingMon = self.followingMon,
       followerTransition = self.followingMonTransition,
       starterBalls = self.starterBalls,
@@ -1285,6 +1293,7 @@ function FieldRuntime:_load()
       starterChoice = self.starterChoice,
       partySelection = self.partySelection,
       fieldMoves = self.pokemonMenu.fieldMoves,
+      pokemonNaming = self.pokemonNaming,
       signpost = self.signpost,
       applicationHost = self.applicationHost,
       -- The session's fixed-tick audio collaborator is the production
@@ -2334,7 +2343,7 @@ function FieldRuntime:_releaseAll()
   self.monCatalog, self.monLanguage, self.monService = nil, nil, nil
   self.bagService, self.bagCursor = nil, nil
   self.itemCatalog = nil
-  self.starterProvider, self.starterChoice = nil, nil
+  self.starterProvider, self.starterChoice, self.pokemonNaming = nil, nil, nil
   self.partySelection = nil
   self.pokemonMenu, self.menuLaneWarps = nil, nil
 end
@@ -2378,6 +2387,9 @@ function FieldRuntime:dispose()
   end
   if self.starterChoice then
     self.starterChoice:dispose()
+  end
+  if self.pokemonNaming then
+    self.pokemonNaming:dispose()
   end
   self:_releaseAll()
 end

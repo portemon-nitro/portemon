@@ -119,7 +119,7 @@ local function applicationHostFake(overrides)
 end
 
 local function idleActors()
-  return { step = function() end }
+  return { beginFixedStep = function() end, step = function() end }
 end
 
 local function defaultPlayer()
@@ -258,6 +258,7 @@ local function baseOptions(overrides)
     rawset(options, key, value)
   end
   local scheduler = options.scriptScheduler
+  options.actors.beginFixedStep = options.actors.beginFixedStep or function() end
   scheduler.autonomousActorsLocked = scheduler.autonomousActorsLocked or function()
     return false
   end
@@ -422,6 +423,31 @@ function T.real_field_session_actor_step_passes_the_stable_id_to_the_scheduler()
   end)
   Assert.isTrue(ok, "a real actor step must not fail the scheduler lock query: " .. tostring(err))
   Assert.deepEqual(lockQueries, { "map:61:object:0" }, "the scheduler must receive the manager actor's stable ID")
+  manager:dispose()
+end
+
+function T.field_session_captures_actor_baselines_before_scheduler_mutation()
+  local session, manager = realActorStepSession()
+  local actorId = "map:61:object:0"
+  local actor = assert(manager:getById(actorId))
+  local start = actor:renderPosition(1)
+  manager:beginScriptedAction(actorId, { action = "walk", direction = "east", speed = "normal" })
+
+  local scheduler = session.scriptScheduler
+  local schedulerStep = scheduler.step
+  scheduler.step = function(self, tick, input)
+    manager:advanceScriptedAction(actorId, 1, 8)
+    return schedulerStep(self, tick, input)
+  end
+  session:updateFixed({})
+
+  local current = actor:renderPosition(1)
+  local previous = actor:renderPosition(0)
+  local midpoint = actor:renderPosition(0.5)
+  Assert.isTrue(current.x ~= start.x, "scheduler movement changes the actor's world position")
+  Assert.equal(previous.x, start.x, "FieldSession captures the actor baseline before scheduler motion")
+  Assert.equal(midpoint.x, (start.x + current.x) / 2, "the composed field tick exposes a scripted midpoint")
+  Assert.equal(midpoint.z, (start.z + current.z) / 2, "the composed field tick keeps the other axis stable")
   manager:dispose()
 end
 
@@ -2114,24 +2140,45 @@ function T.held_direction_walks_only_after_turn_completion_reenters_idle_arbitra
     surfaceId = 0,
     facing = "east",
   })
-  local session = FieldSession.new(baseOptions({ currentMap = map, player = player }))
+  local visual = FieldPlayerVisual.new({ player = player, spriteId = 0 })
+  local session = FieldSession.new(baseOptions({ currentMap = map, player = player, playerVisual = visual }))
+  local startX, startY, startZ = player.worldX, player.worldY, player.worldZ
 
   session:updateFixed({ heldDirection = "north", pressedDirection = "north" })
   Assert.equal(player.motion, "turning")
   Assert.equal(player.fieldZ, 13)
+  Assert.equal(player.facing, "north")
+  Assert.equal(visual.pose, "idle")
+  Assert.equal(visual.poseTick, 0)
 
   session:updateFixed({ heldDirection = "north" })
   Assert.equal(player.motion, "turning")
+  Assert.equal(visual.pose, "idle")
+  Assert.equal(visual.poseTick, 0)
   session:updateFixed({ heldDirection = "north" })
   Assert.equal(player.motion, "turning")
+  Assert.equal(visual.pose, "idle")
+  Assert.equal(visual.poseTick, 0)
   session:updateFixed({ heldDirection = "north" })
   Assert.equal(player.motion, "idle")
   Assert.equal(player.fieldZ, 13)
+  Assert.equal(player.worldX, startX)
+  Assert.equal(player.worldY, startY)
+  Assert.equal(player.worldZ, startZ)
+  Assert.equal(visual.pose, "idle")
+  Assert.equal(visual.poseTick, 0)
 
   session:updateFixed({ heldDirection = "north" })
   Assert.equal(player.motion, "walking")
   Assert.equal(player.fieldZ, 13)
   Assert.equal(player.facing, "north")
+  Assert.equal(visual.pose, "walk", "the pose begins when translation starts")
+  Assert.equal(visual.poseTick, 1)
+
+  session:updateFixed({ heldDirection = "north" })
+  Assert.equal(player.motion, "walking")
+  Assert.equal(visual.pose, "walk")
+  Assert.equal(visual.poseTick, 2)
 end
 
 -- A locked door transition reports whether the choreography moved the player
@@ -2952,6 +2999,61 @@ function T.a_successful_open_consumes_the_tick_without_stepping_the_world()
   Assert.equal(world.actors, 0)
   Assert.equal(world.camera, 0)
   Assert.equal(session.tick, 1)
+end
+
+function T.pokemon_naming_owns_normalized_ui_input_and_balances_capture_lifetime()
+  local active = false
+  local captured, cleared = 0, 0
+  ---@type table<string, unknown>|nil
+  local forwarded = nil
+  local input = idleInput()
+  function input:uiSnapshot()
+    return { { type = "confirm" } }
+  end
+  function input:beginUi()
+    captured = captured + 1
+  end
+  function input:clearUi()
+    cleared = cleared + 1
+  end
+  local naming = {
+    isActive = function()
+      return active
+    end,
+  }
+  local scheduler = baseOptions({}).scriptScheduler
+  scheduler.step = function(_, tick, inputSnapshot)
+    if tick == 1 then
+      active = true
+    elseif tick == 2 then
+      forwarded = inputSnapshot
+      active = false
+    end
+  end
+  local session = FieldSession.new(baseOptions({ input = input, pokemonNaming = naming, scriptScheduler = scheduler }))
+  session:updateFixed({ actionPressed = "a", cancelPressed = "b", pressedDirection = "north" })
+  Assert.equal(captured, 1, "opening the naming modal begins UI capture once")
+  session:updateFixed({ actionPressed = "a", cancelPressed = "b", pressedDirection = "north" })
+  local routed = assert(forwarded, "the active modal receives its scheduler snapshot")
+  Assert.deepEqual(routed.uiEvents, { { type = "confirm" } }, "the active modal receives normalized events")
+  Assert.isNil(routed.pressedAction)
+  Assert.isNil(routed.pressedCancel)
+  Assert.isNil(routed.pressedDirection)
+  Assert.equal(cleared, 1, "closing the naming modal clears UI capture once")
+end
+
+function T.script_owned_field_modals_cannot_be_active_together()
+  local active = {
+    isActive = function()
+      return true
+    end,
+  }
+  local session = FieldSession.new(baseOptions({ starterChoice = active, pokemonNaming = active }))
+  local ok, err = pcall(function()
+    session:updateFixed({})
+  end)
+  Assert.isFalse(ok)
+  Assert.isTrue(tostring(err):find("mutually exclusive", 1, true) ~= nil)
 end
 
 -- The ordinary field-audio event is the completed step: only a committing

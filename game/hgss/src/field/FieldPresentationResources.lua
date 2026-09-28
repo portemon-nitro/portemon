@@ -28,6 +28,7 @@ local PartyCache = require("libs.assets.src.PartyCache")
 local MonIconAssetProvider = require("libs.hgss.src.presentation.MonIconAssetProvider")
 local ItemIconAssetProvider = require("libs.hgss.src.presentation.ItemIconAssetProvider")
 local FollowingMonTransitionRenderer = require("libs.hgss.src.presentation.FollowingMonTransitionRenderer")
+local NamingScreenRenderer = require("libs.hgss.src.ui.NamingScreenRenderer")
 
 ---@alias PartyIconPrepare fun(iconKeys: string[]): boolean, string?
 ---@alias PartyIconCancel fun()
@@ -48,6 +49,8 @@ local FollowingMonTransitionRenderer = require("libs.hgss.src.presentation.Follo
 ---@field followingMonTransition FollowingMonTransitionController?
 
 ---@class FieldPresentationResources
+---@field cacheFs CacheFs generated asset filesystem
+---@field uiManifest table<string, unknown> validated field UI manifest
 ---@field renderer FieldRenderer?
 ---@field windowRenderer FieldWindowRenderer? the one shared frame-strip atlas owner lent to dialogue rendering
 ---@field applicationFrameIndex integer? the snapshotted player-owned frame choice for application borders
@@ -59,6 +62,8 @@ local FollowingMonTransitionRenderer = require("libs.hgss.src.presentation.Follo
 ---@field trainerCardRenderer TrainerCardRenderer?
 ---@field partyScreenRenderer PartyScreenRenderer?
 ---@field monIconProvider MonIconAssetProvider? the one shared party-icon atlas for the state lifetime
+---@field namingRenderer NamingScreenRenderer? lazily owned script naming renderer
+---@field namingIconQuads table<string, table<integer, unknown>> prepared mon icon frames borrowed from the provider
 ---@field imageQueue AssetPreparationQueue? the one owned worker decoding party icon pages
 ---@field _presentationRuntime FieldPresentationResourcesRuntime? borrowed runtime owning the party preparation binding
 ---@field _partyIconBinding integer? installed preparation binding identity
@@ -184,7 +189,7 @@ end
 ---@param runtime FieldPresentationResourcesRuntime
 ---@return FieldPresentationResources
 function FieldPresentationResources.new(runtime)
-  local self = setmetatable({}, FieldPresentationResources)
+  local self = setmetatable({ cacheFs = runtime.cacheFs, uiManifest = runtime.uiManifest }, FieldPresentationResources)
   local ok, err = pcall(function()
     self.renderer = FieldRenderer.new({
       clearColor = { 0, 0, 0, 1 },
@@ -243,6 +248,7 @@ function FieldPresentationResources.new(runtime)
       preparationQueue = self.imageQueue,
       derivedAssets = assert(runtime.derivedAssets, "presented party icons require the semantic cache host"),
     })
+    self.namingIconQuads = {}
     local provider = assert(self.monIconProvider, "party icon provider is unavailable")
     local function preparePartyIcons(iconKeys)
       return provider:prepareKeys(iconKeys)
@@ -315,6 +321,80 @@ function FieldPresentationResources.new(runtime)
     error(err, 0)
   end
   return self
+end
+
+-- Creates naming chrome only after the shared icon provider reports readiness.
+---@param owner FieldPresentationResources
+---@return NamingScreenRenderer
+local function ensurePokemonNamingRenderer(owner)
+  if owner.namingRenderer ~= nil then
+    return owner.namingRenderer
+  end
+  local graphics = assert(love and love.graphics, "Pokemon naming renderer requires graphics")
+  local function imageLoader(path)
+    local bytes = assert(owner.cacheFs:read(path), "missing generated naming image " .. path)
+    return graphics.newImage(love.filesystem.newFileData(bytes, path))
+  end
+  local function drawSubject(hostGraphics, subject, placement)
+    local iconKey = assert(subject.iconKey, "Pokemon naming subject requires its icon key")
+    local iconFrames =
+      assert(owner.namingIconQuads[iconKey], "Pokemon naming icon frames were not prepared before draw")
+    local quad = assert(iconFrames[placement.frameIndex], "Pokemon naming icon frame was not prepared before draw")
+    hostGraphics.draw(
+      assert(owner.monIconProvider, "field presentation owns the mon icon provider"):image(iconKey),
+      quad,
+      placement.x,
+      placement.y
+    )
+  end
+  local renderer = NamingScreenRenderer.new({
+    graphics = graphics,
+    text = assert(owner.textRenderer, "field text renderer is unavailable"),
+    drawSubject = drawSubject,
+    manifest = assert(owner.uiManifest, "field UI manifest is unavailable"),
+    imageLoader = imageLoader,
+  })
+  owner.namingRenderer = renderer
+  return renderer
+end
+
+---@param subject table<string, unknown>
+---@return boolean ready
+---@return string? failure
+function FieldPresentationResources:preparePokemonNamingSubject(subject)
+  local iconKey = assert(subject.iconKey, "Pokemon naming subject requires its icon key")
+  local icons = assert(self.monIconProvider, "field presentation owns the mon icon provider")
+  local ready, failure = icons:prepareKeys({ iconKey })
+  if not ready then
+    return false, failure
+  end
+  if self.namingIconQuads[iconKey] == nil then
+    local dimensions = icons:dimensions(iconKey)
+    assert(
+      dimensions.width == 32 and dimensions.height == 32,
+      "Pokemon naming icon frames use the 32x32 source surface"
+    )
+    local naming = assert(self.uiManifest and self.uiManifest.namingScreen, "field UI naming manifest is unavailable")
+    local frames =
+      assert(naming.pokemonSubject and naming.pokemonSubject.frames, "Pokemon naming frames are unavailable")
+    local prepared = {}
+    for _, frame in ipairs(frames) do
+      for _, part in ipairs(frame.parts) do
+        if prepared[part.iconFrame] == nil then
+          prepared[part.iconFrame] =
+            assert(icons:quadFor(iconKey, part.iconFrame), "Pokemon naming icon quad was not prepared")
+        end
+      end
+    end
+    self.namingIconQuads[iconKey] = prepared
+  end
+  ensurePokemonNamingRenderer(self)
+  return true, nil
+end
+
+---@return NamingScreenRenderer the renderer prepared by a successful naming preparation
+function FieldPresentationResources:pokemonNamingRenderer()
+  return assert(self.namingRenderer, "field presentation owns no Pokemon naming renderer")
 end
 
 -- Draws the current application through its registered presenter. The map is
@@ -402,6 +482,11 @@ function FieldPresentationResources:dispose()
     self.trainerCardRenderer:release()
     self.trainerCardRenderer = nil
   end
+  if self.namingRenderer then
+    self.namingRenderer:dispose()
+    self.namingRenderer = nil
+  end
+  self.namingIconQuads = {}
   if self.monIconProvider then
     self.monIconProvider:release()
     self.monIconProvider = nil

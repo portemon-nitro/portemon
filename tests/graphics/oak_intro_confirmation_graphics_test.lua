@@ -14,9 +14,17 @@ local RomImporter = require("romdump.src.source.RomImporter")
 
 local T = {}
 
-local function layoutFor(view, manifest)
-  view.pixelSurface = PixelScale.cover({ x = 0, y = 0, width = 800, height = 600 }, 1)
-  return OakIntroLayout.compute(800, 600, view, {}, manifest, 1)
+local function layoutFor(view, manifest, width, height)
+  local logicalWidth, logicalHeight = width or 800, height or 600
+  view.pixelSurface = PixelScale.cover({ x = 0, y = 0, width = logicalWidth, height = logicalHeight }, 1)
+  return OakIntroLayout.compute(logicalWidth, logicalHeight, view, {}, manifest, 1)
+end
+
+local function productionSurface(width, height)
+  local bounds = { x = 0, y = 0, width = width, height = height }
+  local preferredScale = math.max(1, math.floor(height / 192 + 0.5))
+  local outputScale = PixelScale.fitPreferred(bounds, 256, 192, preferredScale)
+  return PixelScale.cover(bounds, outputScale)
 end
 
 local function readyManifests()
@@ -95,10 +103,31 @@ local function confirmationView(kind, selected)
   }
 end
 
-local function render(scope, renderer, view, manifest)
-  view.layout = layoutFor(view, manifest)
-  local canvas = scope:own(love.graphics.newCanvas(800, 600))
+local function render(scope, renderer, view, manifest, width, height)
+  local canvasWidth, canvasHeight = width or 800, height or 600
+  view.layout = layoutFor(view, manifest, canvasWidth, canvasHeight)
+  local canvas = scope:own(love.graphics.newCanvas(canvasWidth, canvasHeight))
   love.graphics.setCanvas(canvas)
+  love.graphics.clear(0, 0, 0, 0)
+  renderer:draw(view)
+  love.graphics.setCanvas()
+  return scope:own(canvas:newImageData())
+end
+
+local function renderProductionRoot(scope, renderer, view, manifest, width, height)
+  local surface = productionSurface(width, height)
+  view.pixelSurface = surface
+  view.layout = OakIntroLayout.compute(
+    surface.logicalViewport.width,
+    surface.logicalViewport.height,
+    view,
+    {},
+    manifest,
+    math.floor(assert(surface.placement.pixelScale))
+  )
+  local canvas = scope:own(love.graphics.newCanvas(width, height))
+  love.graphics.setCanvas(canvas)
+  love.graphics.clear(0, 0, 0, 0)
   renderer:draw(view)
   love.graphics.setCanvas()
   return scope:own(canvas:newImageData())
@@ -195,6 +224,121 @@ function T.name_confirmation_uses_common_side_by_side_backings(scope)
     Assert.notNil(yes.button)
     Assert.notNil(no.button)
     Assert.notNil(image)
+  end
+end
+
+function T.tall_name_confirmation_chrome_keeps_a_visible_right_margin(scope)
+  local width, height = 390, 844
+  for _, entry in ipairs(readyManifests()) do
+    local renderer = rendererFor(scope, entry)
+    local view = confirmationView("name", 0)
+    local image = render(scope, renderer, view, entry.manifest, width, height)
+    local layout = assert(view.layout)
+    local withoutChoices = confirmationView("name", 0)
+    withoutChoices.confirmationChoice = nil
+    withoutChoices.choiceLabels = nil
+    local background = render(scope, renderer, withoutChoices, entry.manifest, width, height)
+    local rightmostChromePixel
+    for y = 0, height - 1 do
+      for x = 0, width - 1 do
+        if not equalPixel(image, background, x, y) then
+          rightmostChromePixel = math.max(rightmostChromePixel or x, x)
+        end
+      end
+    end
+    Assert.notNil(rightmostChromePixel, entry.versionId .. " name buttons must change rendered pixels")
+    Assert.isTrue(
+      rightmostChromePixel < layout.safeFrame.x + layout.safeFrame.width,
+      entry.versionId .. " button chrome must leave a visible strip before the right safe edge"
+    )
+  end
+end
+
+function T.name_confirmation_keeps_a_final_pixel_margin_at_production_host_scales(scope)
+  local hosts = {
+    { width = 640, height = 480 },
+    { width = 1024, height = 768 },
+    { width = 390, height = 844 },
+  }
+  for _, entry in ipairs(readyManifests()) do
+    local renderer = rendererFor(scope, entry)
+    for _, host in ipairs(hosts) do
+      local backgroundView = confirmationView("name", 0)
+      backgroundView.confirmationChoice = nil
+      backgroundView.choiceLabels = nil
+      local background = renderProductionRoot(scope, renderer, backgroundView, entry.manifest, host.width, host.height)
+      local surface = assert(backgroundView.pixelSurface)
+      local layout = assert(backgroundView.layout)
+      local scale = assert(surface.placement.pixelScale)
+      local permittedRightEdge = surface.placement.origin.x + (layout.safeFrame.x + layout.safeFrame.width) * scale
+      for _, selected in ipairs({ 0, 1 }) do
+        local view = confirmationView("name", selected)
+        local image = renderProductionRoot(scope, renderer, view, entry.manifest, host.width, host.height)
+        local rightmostChangedPixel
+        for y = 0, host.height - 1 do
+          for x = 0, host.width - 1 do
+            if not equalPixel(image, background, x, y) then
+              rightmostChangedPixel = math.max(rightmostChangedPixel or x, x)
+            end
+          end
+        end
+        local label = string.format("%s %dx%d focus %d", entry.versionId, host.width, host.height, selected)
+        Assert.notNil(rightmostChangedPixel, label .. " name buttons must change final pixels")
+        Assert.isTrue(
+          rightmostChangedPixel < permittedRightEdge - 1,
+          label .. " confirmation pixels must leave a full host pixel before the permitted right edge"
+        )
+      end
+    end
+  end
+end
+
+function T.vertical_name_confirmation_is_centered_with_complete_safe_chrome(scope)
+  local width, height = 390, 844
+  for _, entry in ipairs(readyManifests()) do
+    local renderer = rendererFor(scope, entry)
+    local backgroundView = confirmationView("name", 0)
+    backgroundView.confirmationChoice = nil
+    backgroundView.choiceLabels = nil
+    local background = renderProductionRoot(scope, renderer, backgroundView, entry.manifest, width, height)
+    local surface = assert(backgroundView.pixelSurface)
+    local layout = assert(backgroundView.layout)
+    local pixelScale = assert(surface.placement.pixelScale)
+    local safeFrame = assert(layout.safeFrame)
+    local safeLeft = surface.placement.origin.x + safeFrame.x * pixelScale
+    local safeTop = surface.placement.origin.y + safeFrame.y * pixelScale
+    local safeRight = surface.placement.origin.x + (safeFrame.x + safeFrame.width) * pixelScale
+    local safeBottom = surface.placement.origin.y + (safeFrame.y + safeFrame.height) * pixelScale
+    local choiceRegion = assert(layout.selectorRegion)
+
+    for _, selected in ipairs({ 0, 1 }) do
+      local view = confirmationView("name", selected)
+      local image = renderProductionRoot(scope, renderer, view, entry.manifest, width, height)
+      local yes = assert(view.layout.confirmationButtons[0])
+      local no = assert(view.layout.confirmationButtons[1])
+      local stackCenter = yes.rect.x + yes.rect.width / 2
+      local regionCenter = choiceRegion.x + choiceRegion.width / 2
+      local minX, minY, maxX, maxY
+      for y = 0, height - 1 do
+        for x = 0, width - 1 do
+          if not equalPixel(image, background, x, y) then
+            minX = math.min(minX or x, x)
+            minY = math.min(minY or y, y)
+            maxX = math.max(maxX or x, x)
+            maxY = math.max(maxY or y, y)
+          end
+        end
+      end
+      local label = string.format("%s vertical host focus %d", entry.versionId, selected)
+      Assert.near(stackCenter, regionCenter, 1, label .. " choices must remain centered")
+      Assert.notNil(minX, label .. " choices must produce rendered pixels")
+      Assert.isTrue(minX > safeLeft, label .. " rendered chrome must clear the left safe edge")
+      Assert.isTrue(minY > safeTop, label .. " rendered chrome must clear the top safe edge")
+      Assert.isTrue(maxX < safeRight - 1, label .. " rendered chrome must clear the right safe edge")
+      Assert.isTrue(maxY < safeBottom - 1, label .. " rendered chrome must clear the bottom safe edge")
+      Assert.notNil(yes.button, label .. " YES focus chrome must resolve")
+      Assert.notNil(no.button, label .. " NO focus chrome must resolve")
+    end
   end
 end
 

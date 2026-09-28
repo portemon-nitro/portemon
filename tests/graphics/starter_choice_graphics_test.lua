@@ -99,6 +99,7 @@ local function loadManifest(cacheModule, cacheFs)
   local manifest =
     assert(cacheFs:loadLua(cacheModule.manifestPath()), "the starter application cache carries its normalized manifest")
   Assert.isTrue(cacheModule.validateManifest(manifest), "the starter manifest validates read-only")
+  return manifest
 end
 
 -- The draw-time frame borrower: a real field window renderer built from
@@ -236,13 +237,21 @@ local function stepHostUntil(host, predicate, bound)
   return false
 end
 
-local function drawFrame(scope, host, window, width, height)
+local function drawFrame(scope, host, window, width, height, renderAlpha, clearColor, messageMarker)
   local canvas = love.graphics.newCanvas(width, height)
   love.graphics.setCanvas(canvas)
-  love.graphics.clear(0, 0, 0, 1)
+  local color = clearColor or { 0, 0, 0, 1 }
+  love.graphics.clear(color[1], color[2], color[3], color[4])
   host:drawPresentation({
     drawLine = function() end,
-    drawLineWithColorVariants = function() end,
+    drawLineWithColorVariants = function(_, _, x, y, _, background)
+      if messageMarker ~= nil and background ~= nil and background.a == 0 then
+        love.graphics.setColor(1, 0, 1, 1)
+        love.graphics.rectangle("fill", x, y, 4, 4)
+        messageMarker.x = math.floor(x + 1)
+        messageMarker.y = math.floor(y + 1)
+      end
+    end,
     drawText = function() end,
     -- The stub draws no glyphs, so measured advances are zero; the
     -- production contract still requires the metrics entrypoint.
@@ -255,7 +264,7 @@ local function drawFrame(scope, host, window, width, height)
     windowBackgroundColor = function()
       return { 0, 0, 0, 1 }
     end,
-  }, window)
+  }, window, renderAlpha)
   love.graphics.setCanvas()
   local image = scope:own(canvas:newImageData())
   canvas:release()
@@ -289,6 +298,325 @@ local function frameDistance(first, second, width, height)
   return changed
 end
 
+local function infoSamplePoint(host)
+  local plan = assert(host._session:plan(), "the chooser has a resolved native plan")
+  for _, pane in ipairs(plan.panes) do
+    if pane.id == "info" then
+      local placement = assert(pane.placement)
+      return math.floor(placement.origin.x + 2 * placement.scale), math.floor(placement.origin.y + 2 * placement.scale)
+    end
+  end
+  error("the native chooser plan carries its info pane", 0)
+end
+
+local function machineSampleCandidates(host, manifest, cacheFs)
+  local plan = assert(host._session:plan(), "the chooser has a resolved native plan")
+  local placement
+  for _, pane in ipairs(plan.panes) do
+    if pane.id == "machine" then
+      placement = assert(pane.placement)
+      break
+    end
+  end
+  placement = assert(placement, "the native chooser plan carries its machine pane")
+  local machine = assert(manifest.backgrounds.machine, "the starter manifest carries machine artwork")
+  Assert.equal(machine.width, 256, "machine artwork keeps native logical width")
+  Assert.equal(machine.height, 192, "machine artwork keeps native logical height")
+  local bytes = assert(cacheFs:read(machine.image), "machine artwork is present in the ready generated cache")
+  local source = love.image.newImageData(love.filesystem.newFileData(bytes, "machine-background.png"))
+  local candidates = {}
+  for y = 0, machine.height - 1, 3 do
+    for _, x in ipairs({ 2, 6, 250, 254 }) do
+      local red, green, blue, alpha = source:getPixel(x, y)
+      if alpha > 0.98 then
+        local hostX = math.floor(placement.origin.x + (x + 0.5) * placement.scale)
+        local hostY = math.floor(placement.origin.y + (y + 0.5) * placement.scale)
+        candidates[#candidates + 1] = {
+          x = hostX,
+          y = hostY,
+          red = red,
+          green = green,
+          blue = blue,
+        }
+      end
+    end
+  end
+  source:release()
+  Assert.isTrue(#candidates > 0, "generated machine art has opaque edge samples away from prompt text")
+  return candidates, placement
+end
+
+local function machineSampleMatches(image, candidate)
+  local red, green, blue = image:getPixel(candidate.x, candidate.y)
+  return math.abs(red - candidate.red) + math.abs(green - candidate.green) + math.abs(blue - candidate.blue) < 0.08
+end
+
+local function assertInfoPaneCoversField(image, host, versionId)
+  local x, y = infoSamplePoint(host)
+  local red, green, blue = image:getPixel(x, y)
+  Assert.isTrue(
+    math.abs(red - 0.9) + math.abs(green) + math.abs(blue - 0.8) > 0.2,
+    versionId .. " chooser-owned pixels cover the paused field in the info pane"
+  )
+end
+
+local function assertInfoSampleShowsArtwork(image, host, versionId)
+  local x, y = infoSamplePoint(host)
+  local actual = { image:getPixel(x, y) }
+  Assert.isTrue(
+    math.max(actual[1], actual[2], actual[3]) > 0.1,
+    versionId .. " info artwork remains present through chooser transitions"
+  )
+end
+
+function T.source_rate_rotation_renders_intermediate_frames_without_advancing_semantics(scope, context)
+  local versions = readyVersions()
+  if #versions == 0 then
+    context:skip("smooth Starter Choice rendering needs a ready user-owned ROM with a derived cache")
+  end
+  local cacheModule = requireModule(CACHE_MODULE, "the starter cache owns the normalized scene")
+
+  for _, versionId in ipairs(versions) do
+    local cacheFs = CacheFs.forVersion(versionId)
+    loadManifest(cacheModule, cacheFs)
+    local host = openProductionChoice(versionId, cacheFs, nil, function()
+      return nativeWideBox()
+    end)
+    local backend = prepareHost(host, cacheFs)
+    local window = openWindowBorrower(cacheFs, versionId)
+    host:move("right")
+    host:update()
+    local before = host._controller:snapshot()
+    local rotation = host._presentation._rotationAccum
+    local alphaSamples = {}
+    for _, alpha in ipairs({ 0, 0.25, 0.5, 0.75, 1 }) do
+      local sample = host._presentation:_sampleForDraw(before, alpha)
+      alphaSamples[#alphaSamples + 1] = host._presentation:yawForSnapshot(sample.snapshot, sample)
+    end
+
+    Assert.equal(
+      host._controller:snapshot().selection,
+      before.selection,
+      versionId .. " rendering does not settle the selection"
+    )
+    Assert.equal(
+      host._controller:snapshot().transition,
+      before.transition,
+      versionId .. " rendering does not advance the transition"
+    )
+    Assert.equal(
+      host._presentation._rotationAccum,
+      rotation,
+      versionId .. " repeated draws do not advance source rotation"
+    )
+    for index = 2, #alphaSamples do
+      Assert.isTrue(
+        math.abs(alphaSamples[index] - alphaSamples[index - 1]) > 0,
+        versionId .. " adjacent render-alpha samples show the intervening source-frame progression"
+      )
+    end
+    local rotationFrame = drawFrame(scope, host, window, 536, 240, 0.5)
+    Assert.isTrue(
+      brightPixels(rotationFrame, 536, 240) > 0,
+      versionId .. " sampled rotation reaches the rendered chooser"
+    )
+
+    local ticks = 0
+    while host._controller:snapshot().transition == "rotate" and ticks < 16 do
+      host:update()
+      ticks = ticks + 1
+    end
+    Assert.equal(
+      host._controller:snapshot().transition,
+      "idle",
+      versionId .. " rotation keeps its source completion boundary"
+    )
+    host:confirm()
+    host:confirm()
+    Assert.equal(host._controller:snapshot().transition, "zoomIn", versionId .. " inspection starts the zoom path")
+    host:update()
+    local cameraStep = host._presentation._cameraStep
+    local arcStep = host._presentation._arcStep
+    local zoomSamples = {}
+    for _, alpha in ipairs({ 0, 0.25, 0.5, 0.75, 1 }) do
+      local zoomSnapshot = host._controller:snapshot()
+      local sample = host._presentation:_sampleForDraw(zoomSnapshot, alpha)
+      zoomSamples[#zoomSamples + 1] = {
+        camera = host._presentation:_cameraAlpha(sample.snapshot, sample),
+        arc = host._presentation:_arcAlpha(sample.snapshot, sample),
+      }
+    end
+    Assert.equal(
+      host._presentation._cameraStep,
+      cameraStep,
+      versionId .. " zoom draws do not advance the source camera"
+    )
+    Assert.equal(host._presentation._arcStep, arcStep, versionId .. " zoom draws do not advance the source ball arc")
+    for index = 2, #zoomSamples do
+      Assert.isTrue(
+        math.abs(zoomSamples[index].camera - zoomSamples[index - 1].camera) > 0
+          and math.abs(zoomSamples[index].arc - zoomSamples[index - 1].arc) > 0,
+        versionId .. " adjacent render-alpha samples show camera and ball-arc progression"
+      )
+    end
+    local zoomFrame = drawFrame(scope, host, window, 536, 240, 0.5)
+    Assert.isTrue(brightPixels(zoomFrame, 536, 240) > 0, versionId .. " sampled zoom reaches the rendered chooser")
+    host:dispose()
+    window:release()
+    backend:release()
+  end
+end
+
+function T.native_info_artwork_remains_visible_through_zoom_and_back_out(scope, context)
+  local versions = readyVersions()
+  if #versions == 0 then
+    context:skip("native info-pane backing needs a ready user-owned ROM with a derived cache")
+  end
+  local cacheModule = requireModule(CACHE_MODULE, "the starter cache owns the normalized scene")
+
+  for _, versionId in ipairs(versions) do
+    local cacheFs = CacheFs.forVersion(versionId)
+    loadManifest(cacheModule, cacheFs)
+    local host = openProductionChoice(versionId, cacheFs, nil, function()
+      return nativeWideBox()
+    end)
+    local backend = prepareHost(host, cacheFs)
+    local window = openWindowBorrower(cacheFs, versionId)
+    local fieldColor = { 0.9, 0, 0.8, 1 }
+    host:confirm()
+    local inspected = drawFrame(scope, host, window, 536, 240, nil, fieldColor)
+    assertInfoPaneCoversField(inspected, host, versionId)
+    assertInfoSampleShowsArtwork(inspected, host, versionId)
+    host:confirm()
+    Assert.equal(host._controller:snapshot().transition, "zoomIn", versionId .. " confirmation starts zoom immediately")
+    local zooming = drawFrame(scope, host, window, 536, 240, nil, fieldColor)
+    assertInfoPaneCoversField(zooming, host, versionId)
+    assertInfoSampleShowsArtwork(zooming, host, versionId)
+    for _ = 1, 4 do
+      host:update()
+    end
+    Assert.equal(
+      host._controller:snapshot().transition,
+      "waitZoom",
+      versionId .. " camera and arc enter their source wait"
+    )
+    local waiting = drawFrame(scope, host, window, 536, 240, nil, fieldColor)
+    assertInfoPaneCoversField(waiting, host, versionId)
+    assertInfoSampleShowsArtwork(waiting, host, versionId)
+    Assert.isTrue(
+      stepHostUntil(host, function()
+        local snapshot = host._controller:snapshot()
+        return snapshot.transition == "idle" and snapshot.selectionState == "confirm"
+      end, 1024),
+      versionId .. " zoom settles at the existing confirmation boundary"
+    )
+    local confirmed = drawFrame(scope, host, window, 536, 240, nil, fieldColor)
+    assertInfoSampleShowsArtwork(confirmed, host, versionId)
+    host:cancel()
+    Assert.equal(host._controller:snapshot().transition, "backOut", versionId .. " cancel begins the source back-out")
+    local backingOut = drawFrame(scope, host, window, 536, 240, nil, fieldColor)
+    assertInfoPaneCoversField(backingOut, host, versionId)
+    assertInfoSampleShowsArtwork(backingOut, host, versionId)
+
+    host:dispose()
+    window:release()
+    backend:release()
+  end
+end
+
+function T.native_machine_art_tracks_source_prompt_layer_visibility(scope, context)
+  local versions = readyVersions()
+  if #versions == 0 then
+    context:skip("native machine artwork needs a ready user-owned ROM with a derived cache")
+  end
+  local cacheModule = requireModule(CACHE_MODULE, "the starter cache owns the normalized scene")
+
+  for _, versionId in ipairs(versions) do
+    local cacheFs = CacheFs.forVersion(versionId)
+    local manifest = loadManifest(cacheModule, cacheFs)
+    local host = openProductionChoice(versionId, cacheFs, nil, function()
+      return nativeWideBox()
+    end)
+    local backend = prepareHost(host, cacheFs)
+    local window = openWindowBorrower(cacheFs, versionId)
+    local initial = drawFrame(scope, host, window, 536, 240)
+    local candidates, machinePlacement = machineSampleCandidates(host, manifest, cacheFs)
+
+    host:confirm()
+    Assert.equal(
+      host._controller:snapshot().selectionState,
+      "inspect",
+      versionId .. " first activation inspects a ball"
+    )
+    local messageMarker = {}
+    local inspecting = drawFrame(scope, host, window, 536, 240, nil, nil, messageMarker)
+    Assert.notNil(messageMarker.x, versionId .. " inspection draws the bottom prompt after its background")
+    local promptX, promptY = LayoutGeometry.logicalToHost(machinePlacement, messageMarker.x, messageMarker.y)
+    local markerRed, markerGreen, markerBlue = inspecting:getPixel(math.floor(promptX), math.floor(promptY))
+    Assert.isTrue(
+      markerRed > 0.9 and markerGreen < 0.1 and markerBlue > 0.9,
+      versionId
+        .. " prompt text remains visible over the machine background: "
+        .. markerRed
+        .. ","
+        .. markerGreen
+        .. ","
+        .. markerBlue
+    )
+    local sourceSample = nil
+    for _, candidate in ipairs(candidates) do
+      if machineSampleMatches(inspecting, candidate) and not machineSampleMatches(initial, candidate) then
+        sourceSample = candidate
+        break
+      end
+    end
+    Assert.notNil(
+      sourceSample,
+      versionId .. " inspected machine art matches an opaque source sample over the 3D target"
+    )
+
+    host:confirm()
+    Assert.equal(host._controller:snapshot().transition, "zoomIn", versionId .. " second activation starts zoom")
+    local zooming = drawFrame(scope, host, window, 536, 240)
+    Assert.isFalse(
+      machineSampleMatches(zooming, sourceSample),
+      versionId .. " machine prompt layers hide during zoom-in"
+    )
+    for _ = 1, 4 do
+      host:update()
+    end
+    Assert.equal(host._controller:snapshot().transition, "waitZoom", versionId .. " zoom reaches its source wait")
+    local waiting = drawFrame(scope, host, window, 536, 240)
+    Assert.isFalse(
+      machineSampleMatches(waiting, sourceSample),
+      versionId .. " machine prompt layers stay hidden while waiting"
+    )
+    Assert.isTrue(
+      stepHostUntil(host, function()
+        local snapshot = host._controller:snapshot()
+        return snapshot.transition == "idle" and snapshot.selectionState == "confirm"
+      end, 1024),
+      versionId .. " confirmation reaches its semantic boundary"
+    )
+    local confirmed = drawFrame(scope, host, window, 536, 240)
+    Assert.isTrue(
+      machineSampleMatches(confirmed, sourceSample),
+      versionId .. " settled confirmation restores machine artwork"
+    )
+    host:cancel()
+    Assert.equal(host._controller:snapshot().transition, "backOut", versionId .. " cancel starts back-out")
+    local backingOut = drawFrame(scope, host, window, 536, 240)
+    Assert.isFalse(
+      machineSampleMatches(backingOut, sourceSample),
+      versionId .. " machine prompt layers hide during back-out"
+    )
+
+    host:dispose()
+    window:release()
+    backend:release()
+  end
+end
+
 local function assertBallHit(ball, versionId)
   Assert.notNil(ball, versionId .. " hit testing finds a rendered ball")
   Assert.isTrue(ball >= 1 and ball <= 3, versionId .. " hit testing returns a valid ball region")
@@ -306,7 +634,8 @@ function T.retail_scene_realizes_generated_assets_and_changes_across_choice_flow
     local marker = cacheFs:read(cacheModule.markerPath())
     Assert.notNil(marker, versionId .. " publishes the starter application marker")
     Assert.isTrue(cacheModule.isReady(cacheFs, marker), versionId .. " starter cache is ready")
-    loadManifest(cacheModule, cacheFs)
+    local manifest = loadManifest(cacheModule, cacheFs)
+    Assert.isNil(manifest.backgrounds.host, versionId .. " the generated chooser contains no synthetic host backdrop")
 
     local host = openProductionChoice(versionId, cacheFs, nil, function()
       return nativeWideBox()
@@ -317,6 +646,7 @@ function T.retail_scene_realizes_generated_assets_and_changes_across_choice_flow
     local window = openWindowBorrower(cacheFs, versionId)
     local initial = drawFrame(scope, host, window, 536, 240)
     Assert.isTrue(brightPixels(initial, 536, 240) > 20, versionId .. " initial chooser state leaves visible pixels")
+    assertInfoSampleShowsArtwork(initial, host, versionId)
 
     local seen = {}
     for y = 0, REFERENCE_HEIGHT - 1, 8 do
@@ -679,6 +1009,25 @@ function T.actual_topology_replaces_fabricated_screens_with_usable_compact(scope
     local after = snapshotOf(compact, versionId)
     Assert.equal(after.selection, before.selection, versionId .. " repeated draws never reselect")
     Assert.equal(after.selectionState, before.selectionState, versionId .. " repeated draws never transition")
+    local manifest = loadManifest(cacheModule, cacheFs)
+    local machine = assert(manifest.backgrounds.machine, versionId .. " generated machine artwork is present")
+    local machineBytes = assert(cacheFs:read(machine.image), versionId .. " machine image bytes are available")
+    local machineSource = love.image.newImageData(love.filesystem.newFileData(machineBytes, "machine-background.png"))
+    local checkedSamples = 0
+    local red, green, blue, alpha = machineSource:getPixel(16, 150)
+    Assert.isTrue(alpha > 0.98, "the generated banner supplies an opaque sample above the prompt area")
+    Assert.isTrue(math.max(red, green, blue) > 0.1, "the generated banner sample is visibly colored")
+    local hostX, hostY = LayoutGeometry.logicalToHost(compactPlacement, 16.5, 150.5)
+    local actual = { second:getPixel(math.floor(hostX), math.floor(hostY)) }
+    Assert.isTrue(
+      math.abs(actual[1] - red) + math.abs(actual[2] - green) + math.abs(actual[3] - blue) >= 0.08,
+      versionId .. " compact rendering does not draw the native machine background"
+    )
+    if alpha > 0.98 then
+      checkedSamples = checkedSamples + 1
+    end
+    machineSource:release()
+    Assert.isTrue(checkedSamples > 0, versionId .. " machine art supplies samples outside compact UI regions")
     local regions = {
       { x = 8, y = 8, width = 240, height = 48 },
       { x = 8, y = 60, width = 240, height = 80 },
@@ -689,8 +1038,8 @@ function T.actual_topology_replaces_fabricated_screens_with_usable_compact(scope
       for ly = region.y, region.y + region.height - 1, 2 do
         for lx = region.x, region.x + region.width - 1, 2 do
           local hx, hy = LayoutGeometry.logicalToHost(compactPlacement, lx, ly)
-          local red, green, blue, alpha = second:getPixel(math.floor(hx), math.floor(hy))
-          if alpha > 0.5 and math.max(red, green, blue) > 0.05 then
+          local pixelRed, pixelGreen, pixelBlue, pixelAlpha = second:getPixel(math.floor(hx), math.floor(hy))
+          if pixelAlpha > 0.5 and math.max(pixelRed, pixelGreen, pixelBlue) > 0.05 then
             bright = bright + 1
           end
         end
