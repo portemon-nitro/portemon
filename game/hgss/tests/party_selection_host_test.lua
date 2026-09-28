@@ -101,6 +101,10 @@ local function openHost(versionId, service, request)
       return stubMeasurement(256, 192)
     end,
     uiManifest = FieldUiFixture.manifest(),
+    prepareIcons = function(_)
+      return true
+    end,
+    cancelIconPreparation = function() end,
   })
   local handle = host:open(request or { focus = 0, allowCancel = true, policy = "occupied" })
   return host, handle
@@ -121,6 +125,7 @@ function T.tests.pad_selects_a_slot_exactly_once(context)
     give(service, "EEVEE")
     local host, handle = openHost(versionId, service)
     Assert.isTrue(host:status().open, "opening shows the native party")
+    host:step(handle, {})
     Assert.notNil(host:status().presentation, "the open selection carries a visible plan")
     local status = host:step(handle, { { type = "navigate", direction = "down" } })
     Assert.equal(host:focus(handle), status.cursorNode, "host focus tracks the live cursor")
@@ -146,6 +151,7 @@ function T.tests.pointer_selects_through_hit_geometry(context)
     give(service, "CHIKORITA")
     give(service, "TOTODILE")
     local host, handle = openHost(versionId, service)
+    host:step(handle, {})
     local status = assert(host:status(), "an open selection carries its status")
     local plan = assert(status.presentation, "an open selection carries its plan")
     local pane = assert(plan.panes and plan.panes[1], "the native pane is placed")
@@ -237,6 +243,10 @@ function T.tests.empty_party_without_cancel_is_invalid(context)
       measureDisplay = function()
         return stubMeasurement(256, 192)
       end,
+      prepareIcons = function(_)
+        return true
+      end,
+      cancelIconPreparation = function() end,
     })
     local ok, err = pcall(function()
       host:open({ focus = 0, allowCancel = false, policy = "occupied" })
@@ -308,9 +318,11 @@ function T.tests.resume_rebuilds_from_value_focus(context)
     give(service, "CHIKORITA")
     give(service, "TOTODILE")
     local host, handle = openHost(versionId, service, { focus = "cancel", allowCancel = true, policy = "occupied" })
+    host:step(handle, {})
     Assert.equal(host:focus(handle), "cancel", "a saved cancel focus rebuilds onto cancel")
     host:close(handle)
     local host2, handle2 = openHost(versionId, service, { focus = 5, allowCancel = true, policy = "occupied" })
+    host2:step(handle2, {})
     Assert.equal(host2:focus(handle2), 0, "an out-of-range saved slot reconciles instead of sticking")
     host2:close(handle2)
   end

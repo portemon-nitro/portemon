@@ -41,6 +41,7 @@ local CONSTRUCTOR_MODULES = {
   "libs.hgss.src.ui.TrainerCardRenderer",
   "libs.hgss.src.ui.PartyScreenRenderer",
   "libs.hgss.src.presentation.MonIconAssetProvider",
+  "libs.hgss.src.presentation.AssetPreparationQueue",
   "libs.hgss.src.presentation.ItemIconAssetProvider",
   "libs.hgss.src.presentation.FollowingMonTransitionRenderer",
 }
@@ -106,6 +107,7 @@ local function buildDoubles(sink, calls)
       new = function(_)
         local instance = releasable(calls, "text")
         function instance:drawText(_, _, _) end
+        function instance:drawTextWithPalette(_, _, _, _) end
         function instance:textWidth(_)
           return 0
         end
@@ -152,6 +154,10 @@ local function buildDoubles(sink, calls)
           return palette
         end
         function instance:drawApplicationFrame(_, _) end
+        function instance:drawStandardWindow(_, _, _) end
+        function instance:standardFramePalette()
+          return {}
+        end
         function instance:release() end
         return instance
       end,
@@ -176,6 +182,11 @@ local function buildDoubles(sink, calls)
         return releasable(calls, "icons")
       end,
     },
+    ["libs.hgss.src.presentation.AssetPreparationQueue"] = {
+      new = function(_)
+        return releasable(calls, "queue")
+      end,
+    },
     ["libs.hgss.src.presentation.ItemIconAssetProvider"] = {
       new = function(_)
         return releasable(calls, "itemIcons")
@@ -190,7 +201,7 @@ local function buildDoubles(sink, calls)
 end
 
 local function compositionRuntime()
-  return {
+  local runtime = {
     cacheFs = {},
     uiManifest = {},
     playerData = { options = { textFrame = 0 } },
@@ -210,6 +221,23 @@ local function compositionRuntime()
       setModelFactory = function(_, _) end,
     },
   }
+  runtime.iconDemands = {}
+  runtime.derivedAssets = {
+    requestIconPage = function(pageId, urgency)
+      runtime.iconDemands[#runtime.iconDemands + 1] = { pageId = pageId, urgency = urgency }
+      return true
+    end,
+  }
+  runtime.bindCalls = {}
+  runtime.unbindCalls = {}
+  runtime.bindPartyIconPreparation = function(_, prepare, cancel)
+    runtime.bindCalls[#runtime.bindCalls + 1] = { prepare = prepare, cancel = cancel }
+    return #runtime.bindCalls
+  end
+  runtime.unbindPartyIconPreparation = function(_, binding)
+    runtime.unbindCalls[#runtime.unbindCalls + 1] = binding
+  end
+  return runtime
 end
 
 local function readyVersions()
@@ -277,6 +305,10 @@ local function openHost(versionId, service)
       }
     end,
     uiManifest = FieldUiFixture.manifest(),
+    prepareIcons = function(_)
+      return true
+    end,
+    cancelIconPreparation = function() end,
   })
 end
 

@@ -229,6 +229,10 @@ local function dependencies(overrides)
     uiManifest = FieldUiFixture.manifest(),
     heroGender = "male",
     measureDisplay = stubMeasurement,
+    prepareIcons = function(_)
+      return true
+    end,
+    cancelIconPreparation = function() end,
     contextSources = function()
       return sources()
     end,
@@ -267,6 +271,8 @@ function T.tests.missing_required_collaborators_fail_before_any_window_opens()
     "uiManifest",
     "heroGender",
     "measureDisplay",
+    "prepareIcons",
+    "cancelIconPreparation",
     "contextSources",
     "worldPorts",
   }

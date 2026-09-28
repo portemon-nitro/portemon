@@ -225,6 +225,10 @@ local function compositionDeps(overrides)
     uiManifest = FieldUiFixture.manifest(),
     heroGender = "male",
     measureDisplay = stubMeasurement,
+    prepareIcons = function(_)
+      return true
+    end,
+    cancelIconPreparation = function() end,
     contextSources = function()
       return sources()
     end,

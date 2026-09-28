@@ -609,14 +609,14 @@ function T.party_wait_renders_without_icon_getters()
     local frame = { x = 0, y = 0, width = 640, height = 480 }
     resources:drawApplication(
       FieldApplicationIds.POKEMON,
-      { preparationState = "pending", layout = { frame = frame } },
+      { child = { preparationState = "pending", layout = { frame = frame } } },
       drawRuntime()
     )
     Assert.equal(#sink, 1, "the wait renders exactly one message")
     Assert.equal(sink[1][1], "text", "pending party icons render as text, never icon getters")
     resources:drawApplication(
       FieldApplicationIds.POKEMON,
-      { preparationState = "failed", preparationError = "boom", layout = { frame = frame } },
+      { child = { preparationState = "failed", preparationError = "boom", layout = { frame = frame } } },
       drawRuntime()
     )
     Assert.equal(#sink, 2, "the failure renders exactly one message")

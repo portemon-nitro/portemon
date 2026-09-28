@@ -99,6 +99,10 @@ local function openHost(versionId, service)
     manifest = PartyCache.loadManifest(cacheFs),
     measureDisplay = stubMeasurement,
     uiManifest = FieldUiFixture.manifest(),
+    prepareIcons = function(_)
+      return true
+    end,
+    cancelIconPreparation = function() end,
   })
 end
 

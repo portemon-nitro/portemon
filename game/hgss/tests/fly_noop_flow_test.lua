@@ -147,6 +147,10 @@ local function openFlow(Flow, opts)
       heroGender = "male",
     },
     measureDisplay = stubMeasurement,
+    prepareIcons = function(_)
+      return true
+    end,
+    cancelIconPreparation = function() end,
   })
 end
 
@@ -157,6 +161,14 @@ local function childView(flow)
 end
 
 local function focusSlot(flow, slot)
+  -- A fresh screen reports no cursor while icon preparation pends:
+  -- wait for the visible cursor before navigating.
+  for _ = 1, 30 do
+    if childView(flow).cursorNode ~= nil then
+      break
+    end
+    flow:updateFixed({})
+  end
   for _ = 1, 12 do
     if childView(flow).cursorNode == slot then
       return
