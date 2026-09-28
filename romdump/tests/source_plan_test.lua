@@ -1059,61 +1059,28 @@ function T.staged_inventory_reads_back_and_rejects_tampering()
 end
 
 -- The persisted inventory no longer carries producer-known membership:
--- a record smuggling a message-bank list stays cold so the scheduler
--- never certifies a shadow universe from persisted data.
-function T.persisted_inventory_smuggling_a_bank_list_is_rejected()
+-- a record smuggling either removed static-membership field stays cold so
+-- the scheduler never certifies a shadow universe from persisted data.
+function T.persisted_inventory_smuggling_a_removed_membership_field_is_rejected()
   local FieldMessageCompiler = require("romdump.src.digest.ui.FieldMessageCompiler")
-  local cacheFs = CacheFs.forVersion("heartgold", FakeCache.new())
-  local generation = "smuggled-bank-generation"
-  local plan = stageSynthetic(cacheFs, generation)
-  plan.messageBankIds = FieldMessageCompiler.requiredBankIds()
-  cacheFs:writeLua(SourcePlan.PATH, plan)
-  local reread, reason = SourcePlan.read(cacheFs, identity(generation))
-  Assert.isNil(reread, "a persisted inventory smuggling a bank list is not adopted")
-  Assert.notNil(reason, "the rejection names its cause")
-  Assert.isTrue(
-    tostring(reason):find("messageBankIds", 1, true) ~= nil,
-    "the rejection names the smuggled field: " .. tostring(reason)
-  )
-end
-
--- The persisted inventory no longer carries producer-known membership:
--- a record smuggling a field-record list stays cold so exhaustive
--- scheduling never trusts persisted data over the source rule.
-function T.persisted_inventory_smuggling_a_supported_record_is_rejected()
-  local cacheFs = CacheFs.forVersion("heartgold", FakeCache.new())
-  local generation = "smuggled-record-generation"
-  local plan = stageSynthetic(cacheFs, generation)
-  plan.mapDataIds = FieldMapDataCompiler.supportedMapIds()
-  cacheFs:writeLua(SourcePlan.PATH, plan)
-  local reread, reason = SourcePlan.read(cacheFs, identity(generation))
-  Assert.isNil(reread, "a persisted inventory smuggling a record list is not adopted")
-  Assert.notNil(reason, "the rejection names its cause")
-  Assert.isTrue(
-    tostring(reason):find("mapDataIds", 1, true) ~= nil,
-    "the rejection names the smuggled field: " .. tostring(reason)
-  )
-end
-
--- The slim staged record reads back with no producer-known membership:
--- the scheduler still receives the authoritative bank and record lists
--- from their catalog owners, with no source compilation or dump access.
-function T.slim_inventory_reads_back_without_producer_known_membership()
-  local FieldMessageCompiler = require("romdump.src.digest.ui.FieldMessageCompiler")
-  local cacheFs = CacheFs.forVersion("heartgold", FakeCache.new())
-  local generation = "slim-membership-generation"
-  stageSynthetic(cacheFs, generation)
-  local reread = assert(SourcePlan.read(cacheFs, identity(generation)), "the slim inventory reads back")
-  Assert.isNil(reread.messageBankIds, "the slim inventory stores no bank list")
-  Assert.isNil(reread.mapDataIds, "the slim inventory stores no record list")
-  Assert.isTrue(
-    #FieldMessageCompiler.requiredBankIds() > 0,
-    "the authoritative bank list stays available outside the record"
-  )
-  Assert.isTrue(
-    #FieldMapDataCompiler.supportedMapIds() > 0,
-    "the authoritative record list stays available outside the record"
-  )
+  local cases = {
+    { field = "messageBankIds", value = FieldMessageCompiler.requiredBankIds() },
+    { field = "mapDataIds", value = FieldMapDataCompiler.supportedMapIds() },
+  }
+  for _, case in ipairs(cases) do
+    local cacheFs = CacheFs.forVersion("heartgold", FakeCache.new())
+    local generation = "smuggled-" .. case.field .. "-generation"
+    local plan = stageSynthetic(cacheFs, generation)
+    plan[case.field] = case.value
+    cacheFs:writeLua(SourcePlan.PATH, plan)
+    local reread, reason = SourcePlan.read(cacheFs, identity(generation))
+    Assert.isNil(reread, "a persisted inventory smuggling " .. case.field .. " is not adopted")
+    Assert.notNil(reason, "the rejection names its cause")
+    Assert.isTrue(
+      tostring(reason):find(case.field, 1, true) ~= nil,
+      "the rejection names the smuggled field: " .. tostring(reason)
+    )
+  end
 end
 
 function T.field_record_membership_uses_the_source_rule()
