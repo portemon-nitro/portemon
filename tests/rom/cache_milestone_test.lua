@@ -1671,6 +1671,7 @@ local suite = require("tests.rom.support.RomSuite").fromFacts(T)
 -- installed below, so receipts, milestones, and publications never touch
 -- the shared prepared fixture while parallel readers run.
 suite.metadata.capabilities = { "rom_dump" }
+suite.metadata.fullCorpus = true
 suite.metadata.derivedAssets = {}
 suite.metadata.tags = { "producer", "cache", "census" }
 

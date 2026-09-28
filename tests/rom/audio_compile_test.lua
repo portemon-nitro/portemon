@@ -491,7 +491,7 @@ function T.only_the_intro_player_declares_multiple_sequence_slots()
 end
 
 return {
-  metadata = { capabilities = { "rom_dump" } },
+  metadata = { capabilities = { "rom_dump" }, fullCorpus = true },
   beforeAll = T.beforeAll,
   afterAll = T.afterAll,
   tests = {
