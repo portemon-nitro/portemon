@@ -761,17 +761,34 @@ T.gender_focus_leaves_portrait_draw_color_untinted = function()
   renderer:draw(gender)
 
   local maleColor, femaleColor
+  local portraitDraws = {}
   for _, draw in ipairs(graphics.draws) do
     if draw.image and draw.image.path == "gender_male.png" then
       maleColor = draw.color
+      portraitDraws[0] = draw
     elseif draw.image and draw.image.path == "gender_female.png" then
       femaleColor = draw.color
+      portraitDraws[1] = draw
     end
   end
   Assert.notNil(maleColor, "male portrait must be drawn")
   Assert.notNil(femaleColor, "female portrait must be drawn")
   Assert.deepEqual(maleColor, { 1, 1, 1, 1 }, "focused portrait must not be recolored")
   Assert.deepEqual(femaleColor, { 1, 1, 1, 1 }, "unfocused portrait must not be recolored")
+  for genderKey = 0, 1 do
+    local entry = assert(gender.layout.genderButtons[genderKey])
+    local shot = assert(portraitDraws[genderKey], "portrait draw must be recorded")
+    local card, portrait = entry.rect, entry.portraitRect
+    Assert.isTrue(shot.x >= card.x and shot.y >= card.y, "portrait must start inside its card")
+    Assert.isTrue(
+      shot.x + portrait.width * (shot.sx or 1) <= card.x + card.width,
+      "portrait must end horizontally inside its card"
+    )
+    Assert.isTrue(
+      shot.y + portrait.height * (shot.sy or 1) <= card.y + card.height,
+      "portrait must end vertically inside its card"
+    )
+  end
   renderer:dispose()
 end
 
@@ -968,6 +985,26 @@ function T.logical_surface_uses_the_resolution_matrix_and_reuses_stable_canvases
     renderer:draw(stableFrame)
     Assert.equal(#graphics.canvases, expectedCanvasCount, width .. "x" .. height .. " stable Canvas allocation count")
   end
+  -- The Marill reveal stays composed above the dialogue band: at a
+  -- representative host size the renderer still emits the reveal draw and
+  -- its bottom edge ends above the dialogue top.
+  local marillFrame = view()
+  marillFrame.phase = "oak_live_alongside"
+  marillFrame.revealWidget = "marill"
+  marillFrame.revealFrameIndex = 1
+  marillFrame.layout.reveal = { x = 40, y = 8, width = 80, height = 64, scale = 1 }
+  local dialogueBand = { x = 0, y = 88, width = 160, height = 32 }
+  renderer:draw(marillFrame)
+  local marillDraw
+  for _, draw in ipairs(graphics.draws) do
+    if type(draw.image) == "table" and draw.image.path == "marill.png" then
+      marillDraw = draw
+    end
+  end
+  Assert.notNil(marillDraw, "marill reveal must be drawn")
+  Assert.equal(marillDraw.x, 40)
+  Assert.equal(marillDraw.y, 8)
+  Assert.isTrue(marillDraw.y + 64 * marillDraw.sy <= dialogueBand.y, "marill reveal must end above the dialogue band")
   renderer:dispose()
 end
 
