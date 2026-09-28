@@ -1038,8 +1038,8 @@ function T.actual_topology_replaces_fabricated_screens_with_usable_compact(scope
       for ly = region.y, region.y + region.height - 1, 2 do
         for lx = region.x, region.x + region.width - 1, 2 do
           local hx, hy = LayoutGeometry.logicalToHost(compactPlacement, lx, ly)
-          local red, green, blue, alpha = second:getPixel(math.floor(hx), math.floor(hy))
-          if alpha > 0.5 and math.max(red, green, blue) > 0.05 then
+          local pixelRed, pixelGreen, pixelBlue, pixelAlpha = second:getPixel(math.floor(hx), math.floor(hy))
+          if pixelAlpha > 0.5 and math.max(pixelRed, pixelGreen, pixelBlue) > 0.05 then
             bright = bright + 1
           end
         end

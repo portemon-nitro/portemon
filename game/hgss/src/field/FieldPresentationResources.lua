@@ -61,7 +61,7 @@ local NamingScreenRenderer = require("libs.hgss.src.ui.NamingScreenRenderer")
 ---@field trainerCardRenderer TrainerCardRenderer?
 ---@field partyScreenRenderer PartyScreenRenderer?
 ---@field monIconProvider MonIconAssetProvider? the one shared party-icon atlas for the state lifetime
----@field namingRenderer NamingScreenRenderer? eagerly owned script naming renderer
+---@field namingRenderer NamingScreenRenderer? lazily owned script naming renderer
 ---@field namingIconQuads table<string, table<integer, unknown>> prepared mon icon frames borrowed from the provider
 ---@field imageQueue AssetPreparationQueue? the one owned worker decoding party icon pages
 ---@field _presentationRuntime FieldPresentationResourcesRuntime? borrowed runtime owning the party preparation binding
@@ -241,30 +241,6 @@ function FieldPresentationResources.new(runtime)
       derivedAssets = assert(runtime.derivedAssets, "presented party icons require the semantic cache host"),
     })
     self.namingIconQuads = {}
-    local graphics = assert(love and love.graphics, "Pokemon naming renderer requires graphics")
-    local function imageLoader(path)
-      local bytes = assert(runtime.cacheFs:read(path), "missing generated naming image " .. path)
-      return graphics.newImage(love.filesystem.newFileData(bytes, path))
-    end
-    local function drawSubject(hostGraphics, subject, placement)
-      local iconKey = assert(subject.iconKey, "Pokemon naming subject requires its icon key")
-      local iconFrames =
-        assert(self.namingIconQuads[iconKey], "Pokemon naming icon frames were not prepared before draw")
-      local quad = assert(iconFrames[placement.frameIndex], "Pokemon naming icon frame was not prepared before draw")
-      hostGraphics.draw(
-        assert(self.monIconProvider, "field presentation owns the mon icon provider"):image(iconKey),
-        quad,
-        placement.x,
-        placement.y
-      )
-    end
-    self.namingRenderer = NamingScreenRenderer.new({
-      graphics = graphics,
-      text = textRenderer,
-      drawSubject = drawSubject,
-      manifest = assert(self.uiManifest, "field UI manifest is unavailable"),
-      imageLoader = imageLoader,
-    })
     local provider = assert(self.monIconProvider, "party icon provider is unavailable")
     local function preparePartyIcons(iconKeys)
       return provider:prepareKeys(iconKeys)
@@ -339,7 +315,44 @@ function FieldPresentationResources.new(runtime)
   return self
 end
 
+-- Creates naming chrome only after the shared icon provider reports readiness.
+---@param owner FieldPresentationResources
+---@return NamingScreenRenderer
+local function ensurePokemonNamingRenderer(owner)
+  if owner.namingRenderer ~= nil then
+    return owner.namingRenderer
+  end
+  local graphics = assert(love and love.graphics, "Pokemon naming renderer requires graphics")
+  local function imageLoader(path)
+    local bytes = assert(owner.cacheFs:read(path), "missing generated naming image " .. path)
+    return graphics.newImage(love.filesystem.newFileData(bytes, path))
+  end
+  local function drawSubject(hostGraphics, subject, placement)
+    local iconKey = assert(subject.iconKey, "Pokemon naming subject requires its icon key")
+    local iconFrames =
+      assert(owner.namingIconQuads[iconKey], "Pokemon naming icon frames were not prepared before draw")
+    local quad = assert(iconFrames[placement.frameIndex], "Pokemon naming icon frame was not prepared before draw")
+    hostGraphics.draw(
+      assert(owner.monIconProvider, "field presentation owns the mon icon provider"):image(iconKey),
+      quad,
+      placement.x,
+      placement.y
+    )
+  end
+  local renderer = NamingScreenRenderer.new({
+    graphics = graphics,
+    text = assert(owner.textRenderer, "field text renderer is unavailable"),
+    drawSubject = drawSubject,
+    manifest = assert(owner.uiManifest, "field UI manifest is unavailable"),
+    imageLoader = imageLoader,
+  })
+  owner.namingRenderer = renderer
+  return renderer
+end
+
 ---@param subject table<string, unknown>
+---@return boolean ready
+---@return string? failure
 function FieldPresentationResources:preparePokemonNamingSubject(subject)
   local iconKey = assert(subject.iconKey, "Pokemon naming subject requires its icon key")
   local icons = assert(self.monIconProvider, "field presentation owns the mon icon provider")
@@ -347,27 +360,31 @@ function FieldPresentationResources:preparePokemonNamingSubject(subject)
   if not ready then
     return false, failure
   end
-  if self.namingIconQuads[iconKey] ~= nil then
-    return true
-  end
-  local dimensions = icons:dimensions(iconKey)
-  assert(dimensions.width == 32 and dimensions.height == 32, "Pokemon naming icon frames use the 32x32 source surface")
-  local naming = assert(self.uiManifest and self.uiManifest.namingScreen, "field UI naming manifest is unavailable")
-  local frames = assert(naming.pokemonSubject and naming.pokemonSubject.frames, "Pokemon naming frames are unavailable")
-  local prepared = {}
-  for _, frame in ipairs(frames) do
-    for _, part in ipairs(frame.parts) do
-      if prepared[part.iconFrame] == nil then
-        prepared[part.iconFrame] =
-          assert(icons:quadFor(iconKey, part.iconFrame), "Pokemon naming icon quad was not prepared")
+  if self.namingIconQuads[iconKey] == nil then
+    local dimensions = icons:dimensions(iconKey)
+    assert(
+      dimensions.width == 32 and dimensions.height == 32,
+      "Pokemon naming icon frames use the 32x32 source surface"
+    )
+    local naming = assert(self.uiManifest and self.uiManifest.namingScreen, "field UI naming manifest is unavailable")
+    local frames =
+      assert(naming.pokemonSubject and naming.pokemonSubject.frames, "Pokemon naming frames are unavailable")
+    local prepared = {}
+    for _, frame in ipairs(frames) do
+      for _, part in ipairs(frame.parts) do
+        if prepared[part.iconFrame] == nil then
+          prepared[part.iconFrame] =
+            assert(icons:quadFor(iconKey, part.iconFrame), "Pokemon naming icon quad was not prepared")
+        end
       end
     end
+    self.namingIconQuads[iconKey] = prepared
   end
-  self.namingIconQuads[iconKey] = prepared
-  return true
+  ensurePokemonNamingRenderer(self)
+  return true, nil
 end
 
----@return NamingScreenRenderer the renderer prepared during field resource construction
+---@return NamingScreenRenderer the renderer prepared by a successful naming preparation
 function FieldPresentationResources:pokemonNamingRenderer()
   return assert(self.namingRenderer, "field presentation owns no Pokemon naming renderer")
 end

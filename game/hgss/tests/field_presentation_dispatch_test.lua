@@ -212,8 +212,12 @@ local function buildDoubles(sink, calls)
           return "borrowed-icon-image"
         end
         function provider:prepareKeys(_)
-          calls.iconPageReady = true
-          return true
+          calls.iconPrepareCalls = (calls.iconPrepareCalls or 0) + 1
+          local ready = calls.iconPageReady ~= false
+          if ready then
+            return true, nil
+          end
+          return false, calls.iconPageFailure
         end
         function provider:quadFor(iconKey, frameIndex)
           assert(calls.iconPageReady, "naming cannot request an icon quad before its page is ready")
@@ -373,35 +377,75 @@ function T.pokemon_routes_only_to_the_party_presenter()
   end
 end
 
-function T.pokemon_naming_renderer_borrows_the_shared_mon_icons_and_owns_its_images()
+function T.pokemon_naming_renderer_is_prepared_lazily_and_borrows_shared_mon_icons()
+  local sink, calls = {}, {}
+  local savedLove = rawget(_G, "love")
+  rawset(_G, "love", { graphics = require("tests.support.FakeGraphics").new({}) })
+  local ok, err = pcall(function()
+    withProductionComposition(sink, calls, compositionRuntime(), function(resources)
+      Assert.isNil(calls.namingConstructed, "ordinary field construction does not acquire naming chrome")
+      Assert.isNil(calls.iconImage, "ordinary field construction does not acquire naming images")
+      Assert.isNil(calls.iconQuadCount, "ordinary field construction does not acquire naming quads")
+
+      calls.iconPageReady = false
+      local ready, failure = resources:preparePokemonNamingSubject({ iconKey = "species:1:form:0" })
+      Assert.isFalse(ready, "pending mon icon pages keep naming preparation pending")
+      Assert.isNil(failure, "pending mon icon pages have no failure")
+      Assert.isNil(calls.namingConstructed, "pending preparation creates no naming renderer")
+      Assert.isNil(calls.iconQuadCount, "pending preparation creates no icon quads")
+
+      calls.iconPageFailure = "page failed"
+      ready, failure = resources:preparePokemonNamingSubject({ iconKey = "species:1:form:0" })
+      Assert.isFalse(ready, "failed mon icon pages do not prepare naming")
+      Assert.equal(failure, "page failed", "provider failure is returned unchanged")
+      Assert.isNil(calls.namingConstructed, "failed preparation creates no naming renderer")
+      Assert.isNil(calls.iconQuadCount, "failed preparation creates no icon quads")
+
+      calls.iconPageReady = true
+      ready, failure = resources:preparePokemonNamingSubject({ iconKey = "species:1:form:0" })
+      Assert.isTrue(ready, "a ready icon page prepares naming")
+      Assert.isNil(failure, "ready preparation has no failure")
+      Assert.equal(calls.namingConstructed, 1, "first ready preparation creates naming renderer once")
+      Assert.equal(calls.iconDimensions, "species:1:form:0", "the naming subject resolves through shared mon icons")
+      resources:pokemonNamingRenderer()
+      Assert.equal(calls.namingConstructed, 1, "the renderer accessor is a pure read")
+      resources:preparePokemonNamingSubject({ iconKey = "species:1:form:0" })
+      resources:preparePokemonNamingSubject({ iconKey = "species:2:form:0" })
+      Assert.equal(calls.namingConstructed, 1, "repeated and new icon demands reuse the renderer")
+      Assert.equal(calls.iconQuadCount, 2, "each icon key prepares its borrowed semantic quad")
+      local drawCalls = {}
+      calls.namingDrawSubject({
+        draw = function(image, quad, x, y, rotation, scaleX, scaleY)
+          drawCalls[#drawCalls + 1] = { image, quad, x, y, rotation, scaleX, scaleY }
+        end,
+      }, { iconKey = "species:1:form:0" }, { x = 24, y = 8, frameIndex = 1 })
+      Assert.equal(calls.iconImage, 1, "the semantic part draws the shared provider image")
+      Assert.equal(#drawCalls, 1, "the naming subject draws one semantic placement")
+      Assert.equal(drawCalls[1][1], "borrowed-icon-image", "the icon image comes from the shared provider")
+      Assert.isNil(calls.icons, "using the naming renderer never releases the borrowed icon provider")
+
+      resources:dispose()
+      Assert.equal(calls.namingDisposed, 1, "field resources dispose their naming renderer once")
+      Assert.equal(calls.namingImageReleased, 1, "naming disposal releases its owned image")
+      Assert.isNil(
+        calls.iconProviderReleasedDuringNamingDispose,
+        "naming renderer disposal leaves its borrowed icon provider to the field owner"
+      )
+      Assert.equal(calls.icons, 1, "field resources release the borrowed icon provider once")
+    end)
+  end)
+  rawset(_G, "love", savedLove)
+  if not ok then
+    error(err, 0)
+  end
+end
+
+function T.unprepared_naming_renderer_is_not_disposed()
   local sink, calls = {}, {}
   withProductionComposition(sink, calls, compositionRuntime(), function(resources)
-    Assert.equal(calls.namingConstructed, 1, "field resources prepare the naming renderer during construction")
-    resources:pokemonNamingRenderer()
-    Assert.equal(calls.namingConstructed, 1, "the renderer accessor is a pure read")
-    resources:preparePokemonNamingSubject({ iconKey = "species:1:form:0" })
-    local drawCalls = {}
-    calls.namingDrawSubject({
-      draw = function(image, quad, x, y, rotation, scaleX, scaleY)
-        drawCalls[#drawCalls + 1] = { image, quad, x, y, rotation, scaleX, scaleY }
-      end,
-    }, { iconKey = "species:1:form:0" }, { x = 24, y = 8, frameIndex = 1 })
-    Assert.equal(calls.iconImage, 1, "the semantic part draws the shared provider image")
-    Assert.equal(calls.iconDimensions, "species:1:form:0", "the naming subject resolves through shared mon icons")
-    Assert.deepEqual(calls.iconQuad, { iconKey = "species:1:form:0", frameIndex = 1 })
-    Assert.equal(calls.iconQuadCount, 1, "repeated sequence parts share one prepared icon quad")
-    Assert.equal(#drawCalls, 1, "the naming subject draws one semantic placement")
-    Assert.equal(drawCalls[1][1], "borrowed-icon-image", "the icon image comes from the shared provider")
-    Assert.isNil(calls.icons, "using the naming renderer never releases the borrowed icon provider")
-
+    Assert.isNil(calls.namingConstructed, "naming chrome remains uncreated without demand")
     resources:dispose()
-    Assert.equal(calls.namingDisposed, 1, "field resources dispose their naming renderer once")
-    Assert.equal(calls.namingImageReleased, 1, "naming disposal releases its owned image")
-    Assert.isNil(
-      calls.iconProviderReleasedDuringNamingDispose,
-      "naming renderer disposal leaves its borrowed icon provider to the field owner"
-    )
-    Assert.equal(calls.icons, 1, "field resources release the borrowed icon provider once")
+    Assert.isNil(calls.namingDisposed, "disposal skips a renderer that was never created")
   end)
 end
 

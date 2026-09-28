@@ -527,6 +527,7 @@ function T.tests.handoff_timer_includes_pre_runtime_readiness_delay()
     audio = audio,
     saveStore = saveStore,
     trace = { calls = {} },
+    sweepCalls = { beforeMenu = false, total = 0 },
     fieldConstructions = 0,
   }
   local original = captureOriginals()
@@ -535,9 +536,24 @@ function T.tests.handoff_timer_includes_pre_runtime_readiness_delay()
   end)
   local ok, err = xpcall(function()
     installCommonStubs(context, original)
+    rawset(DerivedAssetProvisioner, "new", function(...)
+      local provisioner = original.provisionerNew(...)
+      local realWarmup = provisioner.startBackgroundWarmup
+      provisioner.startBackgroundWarmup = function(self)
+        context.sweepCalls.total = context.sweepCalls.total + 1
+        if not menuInstalled() then
+          context.sweepCalls.beforeMenu = true
+        end
+        return realWarmup(self)
+      end
+      return provisioner
+    end)
     App.state = nil
-    App._bootMainMenu({ AcceptanceHarness.defaultVersion() })
-    waitForMenu()
+    -- Reproduce the completed first-play prerequisite independently of
+    -- another suite's persisted attestation. The manual clock injection
+    -- remains the only pre-runtime delay measured by this regression.
+    driveImportToMenu(context, AcceptanceHarness.defaultVersion())
+    context.trace.calls = {}
     press("a")
     driveOak(handoff, false)
     Assert.equal(handoff.count, 1, "the handoff observation must fire exactly once per entry")

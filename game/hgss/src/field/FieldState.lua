@@ -135,14 +135,22 @@ function FieldState:update(dt)
   self:_refreshDisplay()
   self.runtime:update(dt)
   local pokemonNaming = self.runtime.pokemonNaming
-  if pokemonNaming:isActive() then
+  if self.runtime.errorText ~= nil then
+    self._namingPresentationReady = false
+  elseif pokemonNaming:isActive() then
     local namingStatus = assert(pokemonNaming:status(), "an active Pokemon naming task publishes its status")
-    local ready =
+    local ready, failure =
       assert(self.presentationResources, "field presentation resources are unavailable"):preparePokemonNamingSubject(
         namingStatus.snapshot.subject
       )
-    pokemonNaming:setPresentationReady(ready == true)
-    self._namingPresentationReady = ready == true
+    if failure ~= nil then
+      pokemonNaming:setPresentationReady(false)
+      self._namingPresentationReady = false
+      self.runtime.errorText = "Pokemon naming presentation failed: " .. tostring(failure)
+    else
+      pokemonNaming:setPresentationReady(ready == true)
+      self._namingPresentationReady = ready == true
+    end
   else
     self._namingPresentationReady = false
   end

@@ -4,6 +4,7 @@ local Assert = require("tests.support.Assert")
 local FieldEventState = require("libs.hgss.src.field.FieldEventState")
 local FieldRuntime = require("game.hgss.src.field.FieldRuntime")
 local FieldState = require("game.hgss.src.field.FieldState")
+local FieldStatePresentationFixture = require("tests.support.FieldStatePresentationFixture")
 local GameVersion = require("romdump.src.source.GameVersion")
 local GraphicsSmoke = require("tests.support.GraphicsSmoke")
 local PixelScale = require("libs.ui.src.PixelScale")
@@ -95,7 +96,9 @@ local function fieldStateWithAcceptanceScripts()
     return originalNew(game, runtimeOptions)
   end
   local ok, stateOrError = xpcall(function()
-    return FieldState.new(freshGame(readyVersion()))
+    return FieldState.new(freshGame(readyVersion()), {
+      derivedAssets = FieldStatePresentationFixture.iconHost().derivedAssets,
+    })
   end, debug.traceback)
   FieldRuntime.new = originalNew
   if not ok then
@@ -290,7 +293,8 @@ function T.message_bearing_scheduler_script_renders_yes_no_in_default_field_topo
     return resolvedYesNoLayout
   end
   local dialogueOuterRect
-  local dialogueRenderer = assert(state.presentationResources).dialogueRenderer
+  local dialogueRenderer =
+    assert(assert(state.presentationResources).dialogueRenderer, "field presentation owns the dialogue renderer")
   local originalDrawDialogue = dialogueRenderer.draw
   dialogueRenderer.draw = function(self, dialogue, presentation)
     dialogueOuterRect = presentation.outerRect
@@ -372,6 +376,7 @@ local function assertMenuComposition(scope, width, height, safeRect)
       topologyProvider = function()
         return topology(width, height, safeRect)
       end,
+      derivedAssets = FieldStatePresentationFixture.iconHost().derivedAssets,
     })
     scope:own({
       release = function()
