@@ -46,6 +46,11 @@ local function withGame(fn, map)
   romFs:close()
   local game = harness:boot({ versionId = versionId, map = map or "MAP_NEW_BARK", save = "fresh" })
   game:waitForFieldEntry()
+  -- Headless composition binds the explicit no-image preparation fake:
+  -- the party reports ready without realizing GPU icons it never draws.
+  game.runtime:bindPartyIconPreparation(function(_)
+    return true
+  end, function() end)
   OpeningLifecycle.seedNewBarkWestExitScene(game)
   OpeningLifecycle.settleNewBarkFriendScene(game)
   local runtime = game.runtime
@@ -173,6 +178,14 @@ end
 
 local function focusSlot(flow, slot, direction)
   -- Party slots run left to right; down from a slot reaches cancel.
+  -- A fresh screen reports no cursor while icon preparation pends:
+  -- wait for the visible cursor before navigating.
+  for _ = 1, 30 do
+    if childView(flow).cursorNode ~= nil then
+      break
+    end
+    flow:updateFixed({})
+  end
   for _ = 1, 12 do
     local child = childView(flow)
     if child.cursorNode == slot then
@@ -268,7 +281,15 @@ function T.tests.flow_behaviors_persist_through_production_composition(context)
     end, "summary")
     Assert.equal(flow:status().page, "summary", "summary opens for the focused member")
     flow:updateFixed({ { type = "cancel" } })
-    Assert.equal(childView(flow).cursorNode, aron, "summary returns to the displayed member")
+    local returned = nil
+    for _ = 1, 30 do
+      returned = childView(flow).cursorNode
+      if returned ~= nil then
+        break
+      end
+      flow:updateFixed({})
+    end
+    Assert.equal(returned, aron, "summary returns to the displayed member")
     -- Switch persists through the live service after its animation.
     local mons = assert(runtime.monService, "live mon service required")
     local before = mons:partyRevision()

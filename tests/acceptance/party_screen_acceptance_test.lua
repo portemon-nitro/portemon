@@ -10,6 +10,8 @@ local AcceptanceHarness = require("tests.acceptance.support.AcceptanceHarness")
 local FieldApplicationHost = require("libs.hgss.src.field.FieldApplicationHost")
 local FieldScriptSymbols = require("libs.assets.src.field.FieldScriptSymbols")
 local FieldState = require("game.hgss.src.field.FieldState")
+local LayoutGeometry = require("libs.ui.src.LayoutGeometry")
+local ScreenTopology = require("libs.hgss.src.ui.ScreenTopology")
 
 local T = {
   metadata = {
@@ -265,6 +267,11 @@ local function withWideGame(fn)
   })
   local ok, err = xpcall(function()
     game:waitForFieldEntry()
+    -- Headless composition binds the explicit no-image preparation fake:
+    -- the party reports ready without realizing GPU icons it never draws.
+    game.runtime:bindPartyIconPreparation(function(_)
+      return true
+    end, function() end)
     fn(game)
     Assert.equal(game:renderAttempts(), 0, "party acceptance must stop before GPU rendering")
   end, debug.traceback)
@@ -346,6 +353,12 @@ function T.tests.party_grid_static_frame_and_reflow_journey_preserves_semantics(
     end, 120)
 
     local view = partyView(game)
+    -- The fresh screen publishes its plan once icon preparation
+    -- resolves on the first ticks; the open alone carries no plan yet.
+    game:advanceUntil("the open party publishes its presentation plan", function()
+      return partyView(game).presentation ~= nil
+    end, 120)
+    view = partyView(game)
     local plan = assert(view.presentation, "the open party must publish its presentation plan")
     Assert.equal(#plan.panes, 2, "the wide party pairs detail with interaction")
     Assert.isTrue(type(plan.inputKey) == "string", "the party plan names its input geometry")

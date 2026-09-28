@@ -299,6 +299,7 @@ local function settlePlayer(game)
     local hostClear = session.applicationHost == nil or not session.applicationHost:isActive()
     local avatar = runtime.playerAvatar
     local avatarClear = avatar == nil or avatar:isStableForSave()
+    local entryClear = session.mapEntryController == nil or not session.mapEntryController:isActive()
     if
       runtime.player.motion == "idle"
       and transitionIdle
@@ -306,6 +307,7 @@ local function settlePlayer(game)
       and signpostClear
       and hostClear
       and avatarClear
+      and entryClear
     then
       return true
     end

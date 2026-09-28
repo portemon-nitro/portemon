@@ -548,6 +548,14 @@ function T.tests.elm_starter_to_continue_preserves_the_chosen_mon()
       end, 180)
       local shown = game.runtime.applicationHost:status()
       Assert.equal(shown.applicationId, PARTY_APPLICATION, "confirming the route launches the party screen")
+      -- The fresh screen exposes its view once icon preparation
+      -- resolves on the first ticks; the open alone carries no view yet.
+      game:advanceUntil("the party screen exposes its view", function()
+        local current = game.runtime.applicationHost:status()
+        local currentFlow = current.application
+        return currentFlow ~= nil and currentFlow.child ~= nil and currentFlow.child.view ~= nil
+      end, 180)
+      shown = game.runtime.applicationHost:status()
       local flow = assert(shown.application, "the party application must expose its flow status")
       local view = assert(flow.child.view, "the party screen exposes its view")
       Assert.equal(view.slots[1].occupied, true, "the awarded mon occupies the lead slot")

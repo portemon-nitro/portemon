@@ -46,6 +46,11 @@ local function withGame(fn)
   })
   local ok, err = xpcall(function()
     game:waitForFieldEntry()
+    -- Headless composition binds the explicit no-image preparation fake:
+    -- the party reports ready without realizing GPU icons it never draws.
+    game.runtime:bindPartyIconPreparation(function(_)
+      return true
+    end, function() end)
     fn(game)
     Assert.equal(game:renderAttempts(), 0, "menu journeys must stop before GPU rendering")
   end, debug.traceback)
@@ -243,6 +248,15 @@ local function gotoPocket(flow, pocket)
 end
 
 local function choosePartySlot(flow, slot, direction)
+  -- A fresh screen reports no cursor while icon preparation pends:
+  -- wait for the visible cursor before navigating, or the first
+  -- navigation overshoots a cursor that already sits on target.
+  for _ = 1, 30 do
+    if flowChild(flowStatus(flow)).cursorNode ~= nil then
+      break
+    end
+    drive(flow, {})
+  end
   for _ = 1, 12 do
     local status = flowStatus(flow)
     local child = flowChild(status)
@@ -399,13 +413,26 @@ function T.tests.production_swap_summary_save_reload_persists(context)
     end)
     Assert.isTrue(status.open, "summary opens for the focused member")
     drive(party, { { type = "cancel" } })
-    Assert.equal(flowChild(party:status()).cursorNode, 0, "summary returns to the displayed member")
+    local returned = nil
+    for _ = 1, 30 do
+      returned = flowChild(party:status()).cursorNode
+      if returned ~= nil then
+        break
+      end
+      drive(party, {})
+    end
+    Assert.equal(returned, 0, "summary returns to the displayed member")
     party:dispose()
     -- Save, reload, and prove the journey state persists.
     local record = assert(game.runtime:captureGameSave(), "a settled field captures")
     Assert.equal(record.schema, "g4-game-save-v4", "capture writes the current save schema")
     game:restart()
     game:waitForFieldEntry()
+    -- The restart boots a fresh runtime: rebind the headless
+    -- preparation fake the previous runtime carried.
+    game.runtime:bindPartyIconPreparation(function(_)
+      return true
+    end, function() end)
     local fresh = game.runtime
     Assert.equal(fresh.monService:partyMon(0).species, "TOTODILE", "reload preserves the switched order")
     Assert.equal(fresh.monService:partyMon(1).species, "CHIKORITA", "reload preserves the full order")

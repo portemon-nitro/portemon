@@ -27,7 +27,7 @@ local PartyCache = require("libs.assets.src.PartyCache")
 local FLOW_MODULE = "game.hgss.src.field.PokemonMenuFlow"
 
 local T = {
-  metadata = { capabilities = {}, tags = { "party", "bag", "flow", "failure" } },
+  metadata = { capabilities = { "rom_dump", "derived_cache" }, tags = { "party", "bag", "flow", "failure" } },
   tests = {},
 }
 
@@ -55,6 +55,11 @@ local function withGame(fn)
   })
   local ok, err = xpcall(function()
     game:waitForFieldEntry()
+    -- Headless composition binds the explicit no-image preparation fake:
+    -- the party reports ready without realizing GPU icons it never draws.
+    game.runtime:bindPartyIconPreparation(function(_)
+      return true
+    end, function() end)
     fn(game)
     Assert.equal(game:renderAttempts(), 0, "menu failure acceptance must stop before GPU rendering")
   end, debug.traceback)
@@ -105,6 +110,10 @@ local function openFlow(game, root)
     measureDisplay = function()
       return runtime.presentationDisplay
     end,
+    prepareIcons = function(_)
+      return true
+    end,
+    cancelIconPreparation = function() end,
   })
 end
 
@@ -213,6 +222,15 @@ end
 local PARTY_DIRECTIONS = { "right", "down", "left", "up" }
 
 local function choosePartySlot(flow, slot)
+  -- A fresh screen reports no cursor while icon preparation pends:
+  -- wait for the visible cursor before navigating, or the first
+  -- navigation overshoots a cursor that already sits on target.
+  for _ = 1, 30 do
+    if bagChild(flowStatus(flow)).cursorNode ~= nil then
+      break
+    end
+    drive(flow, {})
+  end
   local probe = 1
   for _ = 1, 40 do
     local status = flowStatus(flow)
