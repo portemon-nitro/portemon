@@ -590,50 +590,6 @@ function T.wide_pending_family_leaves_room_for_ready_leaves()
   Assert.isTrue(ok, tostring(err))
 end
 
--- Demand submits without session parking: every requested leaf reaches
--- the pool up front, controlled completions settle in order, and finite
--- work covers its union exactly once.
-function T.released_work_settles_without_session_gating()
-  local env = newEnv("frontier-wait-generation", 1)
-  local session = openSession(env)
-  local leaves = { "mon-catalog", "items", "bag", "field-camera" }
-  withFixtureFacts(env, function()
-    for _, kind in ipairs(leaves) do
-      local ready, failure = session:requestJob(kind, "global", "sweep")
-      Assert.isFalse(ready, "background work starts pending: " .. kind)
-      Assert.isNil(failure, "background work must not fail: " .. kind)
-    end
-    pump(session, 20)
-    for _, kind in ipairs(leaves) do
-      Assert.isTrue(env.pool.calls[kind .. ":global"] ~= nil, "every leaf submits without parking: " .. kind)
-    end
-    for _, kind in ipairs(leaves) do
-      writeReceipt(env, kind, "global")
-    end
-    env.pool:complete("mon-catalog:global")
-    pump(session, 20)
-    local first, _ = session:requestJob("mon-catalog", "global", "sweep")
-    Assert.isTrue(first, "a completed leaf answers ready")
-    env.pool:complete("items:global")
-    pump(session, 20)
-    local second, _ = session:requestJob("items", "global", "sweep")
-    Assert.isTrue(second, "the next completion settles its leaf")
-    env.pool:complete("bag:global")
-    env.pool:complete("field-camera:global")
-    pump(session, 20)
-    for _, kind in ipairs(leaves) do
-      local done, _ = session:requestJob(kind, "global", "sweep")
-      Assert.isTrue(done, "every leaf settles: " .. kind)
-    end
-    for _, kind in ipairs(leaves) do
-      Assert.equal(env.pool.calls[kind .. ":global"], 1, "every leaf submits exactly once: " .. kind)
-    end
-  end)
-end
-
--- Desired urgency never resubmits running work: promoting a running
--- background job forwards the stronger urgency to the pool record while
--- the single submission stands.
 function T.running_promotion_forwards_urgency_without_resubmission()
   local env = newEnv("running-promotion-generation", 1)
   local session = openSession(env)
@@ -665,213 +621,6 @@ function T.running_promotion_forwards_urgency_without_resubmission()
   end)
 end
 
--- Queued promotion carries the stronger urgency without duplicating the
--- job: the pool record strengthens in place and every leaf still submits
--- exactly once.
-function T.queued_promotion_carries_stronger_urgency_without_duplicates()
-  local env = newEnv("queued-promotion-generation", 1)
-  local session = openSession(env)
-  withFixtureFacts(env, function()
-    for _, kind in ipairs({ "mon-catalog", "items", "bag" }) do
-      session:requestJob(kind, "global", "sweep")
-    end
-    pump(session, 20)
-    for _, kind in ipairs({ "mon-catalog", "items", "bag" }) do
-      writeReceipt(env, kind, "global")
-    end
-    for _, kind in ipairs({ "mon-catalog", "items", "bag" }) do
-      Assert.isTrue(env.pool.calls[kind .. ":global"] ~= nil, "every leaf submits without parking: " .. kind)
-    end
-    local ready, failure = session:requestJob("items", "global", "required")
-    Assert.isFalse(ready, "a queued job stays pending after promotion")
-    Assert.isNil(failure, "promotion reports no failure")
-    pump(session, 20)
-    Assert.equal(env.pool.records["items:global"].priority, 0, "the queued record carries the stronger urgency")
-    Assert.equal(env.pool:createdCount(1, "items:global"), 1, "promotion creates no duplicate job")
-    env.pool:complete("mon-catalog:global")
-    env.pool:complete("items:global")
-    env.pool:complete("bag:global")
-    pump(session, 20)
-    for _, kind in ipairs({ "mon-catalog", "items", "bag" }) do
-      local done, _ = session:requestJob(kind, "global", "sweep")
-      Assert.isTrue(done, "every leaf settles: " .. kind)
-    end
-  end)
-end
-
--- Promotion never strands peers: every leaf submits once, promotions
--- strengthen in place, controlled completions settle the union, and no
--- waiter is misreported as a cycle.
-function T.promoted_peers_settle_the_union_without_stranding()
-  local env = newEnv("promotion-gap-generation", 1)
-  local session = openSession(env)
-  local leaves = { "mon-catalog", "items", "bag", "field-camera", "field-effects" }
-  withFixtureFacts(env, function()
-    for _, kind in ipairs(leaves) do
-      local ready, failure = session:requestJob(kind, "global", "sweep")
-      Assert.isFalse(ready, "background work starts pending: " .. kind)
-      Assert.isNil(failure, "background work must not fail: " .. kind)
-    end
-    pump(session, 20)
-    for _, kind in ipairs(leaves) do
-      Assert.isTrue(env.pool.calls[kind .. ":global"] ~= nil, "every leaf submits without parking: " .. kind)
-    end
-    -- Promote a pair before any completion: urgency strengthens in place
-    -- while submissions stay singular.
-    local bagReady, bagFailure = session:requestJob("bag", "global", "required")
-    Assert.isFalse(bagReady, "the first promoted job stays pending")
-    Assert.isNil(bagFailure, "promotion reports no failure")
-    local cameraReady, cameraFailure = session:requestJob("field-camera", "global", "required")
-    Assert.isFalse(cameraReady, "the second promoted job stays pending")
-    Assert.isNil(cameraFailure, "promotion reports no failure")
-    -- Finish only actually accepted work: receipts land alongside
-    -- submission, never ahead of it.
-    for _ = 1, 500 do
-      for _, jobKey in ipairs(env.pool.order) do
-        local record = env.pool.records[jobKey]
-        if record ~= nil and (record.state == "queued" or record.state == "running") then
-          local kind, key = jobKey:match("^([^:]+):(.+)$")
-          assert(kind ~= nil and key ~= nil, "pool job keys stay canonical")
-          if ArtifactState.read(env.cacheFs, env.generation, kind, key) == nil then
-            writeReceipt(env, kind, key)
-          end
-          env.pool:complete(jobKey)
-        end
-      end
-      session:update()
-    end
-    local seen = {}
-    for _, outcome in ipairs(session:outcomes()) do
-      seen[outcome.jobKey] = outcome
-    end
-    for _, kind in ipairs(leaves) do
-      local outcome = assert(seen[kind .. ":global"], "every leaf carries its outcome: " .. kind)
-      Assert.equal(outcome.state, "successful", "every leaf succeeds: " .. kind)
-    end
-    local status = session:status()
-    Assert.equal(#status.failures, 0, "no failure is reported")
-    for _, outcome in ipairs(session:outcomes()) do
-      Assert.isTrue(
-        outcome.error == nil or tostring(outcome.error):find("dependency cycle", 1, true) == nil,
-        "no waiter is misreported as a cycle: " .. outcome.jobKey
-      )
-    end
-    for _, kind in ipairs(leaves) do
-      Assert.equal(env.pool:createdCount(1, kind .. ":global"), 1, "every leaf compiles exactly once: " .. kind)
-    end
-    Assert.equal(env.pool.calls["mon-catalog:global"], 1, "unpromoted leaves request once")
-    Assert.equal(env.pool.calls["field-effects:global"], 1, "unpromoted leaves request once")
-    Assert.equal(env.pool.calls["bag:global"], 2, "promotion re-requests once through the pool")
-    Assert.equal(env.pool.calls["field-camera:global"], 2, "promotion re-requests once through the pool")
-  end)
-end
-
--- Held physical work stays locally idle: submissions stand, drained
--- children are never revalidated, and nothing resubmits while completions
--- are withheld.
-function T.held_work_stays_idle_without_completion()
-  local env = newEnv("held-frontier-generation", 1)
-  local session = openSession(env)
-  withFixtureFacts(env, function()
-    for _, kind in ipairs({ "mon-catalog", "items", "bag" }) do
-      local ready, failure = session:requestJob(kind, "global", "sweep")
-      Assert.isFalse(ready, "held work starts pending: " .. kind)
-      Assert.isNil(failure, "held work must not fail: " .. kind)
-    end
-    pump(session, 20)
-    for _, kind in ipairs({ "mon-catalog", "items", "bag" }) do
-      Assert.isTrue(env.pool.calls[kind .. ":global"] ~= nil, "every leaf submits without parking: " .. kind)
-    end
-    Assert.isTrue(drainLocal(session, 500), "held work with no local progress goes idle")
-    local idle = session:status()
-    Assert.isFalse(idle.planningPending, "held work leaves no runnable local work")
-    Assert.isFalse(idle.settled, "held work never settles")
-    local validations = 0
-    local realValidate = ArtifactJobs.validate
-    ArtifactJobs.validate = function(...)
-      validations = validations + 1
-      return realValidate(...)
-    end
-    local callsBefore = acceptedCount(env.pool)
-    local ok, err = pcall(function()
-      for _ = 1, 50 do
-        session:update()
-      end
-    end)
-    ArtifactJobs.validate = realValidate
-    Assert.isTrue(ok, tostring(err))
-    local status = session:status()
-    Assert.isFalse(status.planningPending, "repeated held updates stay idle")
-    Assert.isFalse(status.settled, "repeated held updates never settle held work")
-    Assert.equal(validations, 0, "held polling performs no validation")
-    Assert.equal(acceptedCount(env.pool), callsBefore, "held polling submits no duplicate work")
-    for jobKey, calls in pairs(env.pool.calls) do
-      Assert.equal(calls, 1, "no held child is resubmitted: " .. jobKey)
-    end
-  end)
-end
-
--- A settled session keeps idle updates cheap: with no capacity waiter
--- pending, repeated updates and status polls issue no capacity
--- diagnostics, perform no validation or readiness IO, and change no state.
-function T.settled_session_keeps_idle_updates_cheap()
-  local env = newEnv("settled-idle-generation", 1)
-  local session = openSession(env)
-  withFixtureFacts(env, function()
-    for _, kind in ipairs({ "field-camera", "field-effects" }) do
-      local ready, failure = session:requestJob(kind, "global", "required")
-      Assert.isFalse(ready, "required work starts pending: " .. kind)
-      Assert.isNil(failure, "required work must not fail: " .. kind)
-    end
-    pump(session, 10)
-    Assert.isTrue(env.pool.calls["field-camera:global"] ~= nil, "the first leaf submits")
-    Assert.isTrue(env.pool.calls["field-effects:global"] ~= nil, "the second leaf submits")
-    writeReceipt(env, "field-camera", "global")
-    writeReceipt(env, "field-effects", "global")
-    env.pool:complete("field-camera:global")
-    env.pool:complete("field-effects:global")
-    pump(session, 10)
-    local ready, failure = session:requestJob("field-camera", "global", "required")
-    Assert.isTrue(ready, "the first leaf validates ready: " .. tostring(failure))
-    local settled = session:status()
-    Assert.isTrue(settled.settled, "completed required work settles")
-    Assert.isFalse(settled.planningPending, "settlement leaves no runnable work")
-    local diagnostics = 0
-    local realDiagnostics = env.pool.diagnostics
-    env.pool.diagnostics = function(self)
-      diagnostics = diagnostics + 1
-      return realDiagnostics(self)
-    end
-    local validations = 0
-    local realValidate = ArtifactJobs.validate
-    ArtifactJobs.validate = function(...)
-      validations = validations + 1
-      return realValidate(...)
-    end
-    local callsBefore = acceptedCount(env.pool)
-    local outcomesBefore = #session:outcomes()
-    local ok, err = pcall(function()
-      for _ = 1, 100 do
-        session:update()
-        session:status()
-      end
-    end)
-    env.pool.diagnostics = realDiagnostics
-    ArtifactJobs.validate = realValidate
-    Assert.isTrue(ok, tostring(err))
-    Assert.equal(diagnostics, 0, "idle updates issue no capacity diagnostics")
-    Assert.equal(validations, 0, "idle updates perform no validation")
-    Assert.equal(acceptedCount(env.pool), callsBefore, "idle updates submit nothing")
-    Assert.equal(#session:outcomes(), outcomesBefore, "idle updates change no outcomes")
-    local again = session:status()
-    Assert.isTrue(again.settled, "the session stays settled")
-    Assert.isFalse(again.planningPending, "the session stays idle")
-  end)
-end
-
--- Mon page membership through the real layout writers: catalog and layout
--- files are staged exactly as the digesters write them, so page adoption
--- reads authentic published plans.
 local function zeroCurve()
   local curve = {}
   for level = 1, 100 do
@@ -879,7 +628,6 @@ local function zeroCurve()
   end
   return curve
 end
-
 local function minimalCatalog()
   return {
     schema = "g4-mon-catalog-v3",
@@ -899,7 +647,6 @@ local function minimalCatalog()
     },
   }
 end
-
 local function layoutManifest(schema, imagePath, width, height, cell)
   return {
     schema = schema,
@@ -921,7 +668,6 @@ local function layoutManifest(schema, imagePath, width, height, cell)
     representative = { "K/f0" },
   }
 end
-
 local function iconPagePlan(pageId)
   return {
     pageId = pageId,
@@ -932,7 +678,6 @@ local function iconPagePlan(pageId)
     representative = { { selector = "K/f0", x = 0, y = 0, width = 32, height = 32 } },
   }
 end
-
 local function portraitPagePlan(pageId)
   return {
     pageId = pageId,
@@ -951,7 +696,6 @@ local function portraitPagePlan(pageId)
     representative = { { selector = "K/f0", x = 0, y = 0, width = 80, height = 80 } },
   }
 end
-
 local function stageLayout(env, catalogMarker, layoutMarker)
   local MonCache = require("libs.assets.src.MonCache")
   local MonCacheWriter = require("romdump.src.digest.mons.MonCacheWriter")
@@ -979,9 +723,6 @@ local function stageLayout(env, catalogMarker, layoutMarker)
     marker = layoutMarker,
   })
 end
-
--- Completes every currently queued pool job, staging fixture facts first
--- so validation observes published output. Returns the completed count.
 local function completeQueued(env)
   local completed = 0
   local queued = {}
@@ -999,10 +740,6 @@ local function completeQueued(env)
   end
   return completed
 end
-
--- Drives a sweep session to successful settlement: discovery, page
--- adoption, exhaustive enrollment and controlled completion of the whole
--- synthetic corpus.
 local function finishCorpus(env, session, cap)
   for _ = 1, cap or 5000 do
     local status = session:status()
@@ -1014,15 +751,6 @@ local function finishCorpus(env, session, cap)
   end
   return session:status().settled
 end
-
-local function canonicalKeySet(jobs)
-  local set = {}
-  for _, job in ipairs(jobs) do
-    set[job.kind .. ":" .. job.key] = true
-  end
-  return set
-end
-
 local function outcomeKeySet(session)
   local set = {}
   for _, outcome in ipairs(session:outcomes()) do
@@ -1030,10 +758,6 @@ local function outcomeKeySet(session)
   end
   return set
 end
-
--- The real command consumes accurate session progress: local work drains,
--- a physical wait occurs while the bank is held, completion resumes and
--- the scope succeeds with exact outcomes.
 function T.command_takes_physical_wait_for_delayed_completion()
   local env = newEnv("command-wait-generation", 2)
   local savedPool = package.loaded["romdump.src.build.CompilerPool"]
@@ -1083,58 +807,6 @@ function T.command_takes_physical_wait_for_delayed_completion()
   Assert.isTrue(ok, tostring(err))
 end
 
--- Epoch ownership follows production: a new selection inherits no live
--- lookup, validated receipts answer without recompilation, and missing
--- work is requested exactly once per epoch.
-function T.epoch_lookup_resets_while_receipts_stay_reusable()
-  local env = newEnv("epoch-reuse-generation", 2)
-  local session = openSession(env)
-  session:requestJob("message-bank", "219", "required")
-  pump(session, 5)
-  publishBank(env, 219, "epoch-marker")
-  env.pool:complete("message-bank:219")
-  pump(session, 10)
-  local ready, failure = session:requestJob("message-bank", "219", "required")
-  Assert.isTrue(ready, "the compiled bank validates ready: " .. tostring(failure))
-  session:requestJob("message-bank", "3", "required")
-  pump(session, 5)
-  session:retire()
-  Assert.isTrue(env.pool.retired, "retirement reaches the pool")
-  env.epoch = 2
-  Assert.equal(env.pool:status("message-bank:3"), "cancelled", "retired queued work does not leak as current")
-  Assert.equal(env.pool:status("message-bank:219"), "ready", "published output persists past retirement")
-  local resumed = openSession(env)
-  Assert.equal(env.pool:status("message-bank:219"), "unknown", "the new epoch starts with no live lookup")
-  Assert.isTrue(#env.pool.history > 0, "history keeps the epoch-labeled trace")
-  for _, entry in ipairs(env.pool.history) do
-    Assert.isTrue(entry.epoch ~= 2, "no historical trace poses as current work")
-  end
-  local reready, refailure = resumed:requestJob("message-bank", "219", "required")
-  Assert.isFalse(reready, "reuse still starts pending")
-  Assert.isNil(refailure, "reuse reports no failure")
-  pump(resumed, 10)
-  -- No controller reuse phase remains: the published receipt is worker
-  -- proof input, so the resumed request admits to the pool for the
-  -- worker reuse decision instead of answering from the receipt.
-  Assert.equal(env.pool:createdCount(2, "message-bank:219"), 1, "reuse resubmits for worker proof")
-  env.pool:complete("message-bank:219")
-  pump(resumed, 10)
-  reready, refailure = resumed:requestJob("message-bank", "219", "required")
-  Assert.isTrue(reready, "worker-proved output succeeds without recompilation")
-  Assert.isNil(refailure, "reuse reports no failure")
-  local missing, missingFailure = resumed:requestJob("message-bank", "3", "required")
-  Assert.isFalse(missing, "missing work stays pending")
-  Assert.isNil(missingFailure, "missing work reports no failure")
-  pump(resumed, 10)
-  Assert.equal(env.pool:createdCount(2, "message-bank:3"), 1, "one accepted request per identity per epoch")
-  resumed:requestJob("message-bank", "3", "required")
-  pump(resumed, 10)
-  Assert.equal(env.pool:createdCount(2, "message-bank:3"), 1, "a second request deduplicates within its epoch")
-end
-
--- Retirement drops logical work without erasing physical ownership: queued
--- interest cancels, a running slot stays charged, late old output cannot
--- publish as new, and identical keys restart as new-epoch interest.
 function T.retirement_drops_logical_work_without_erasing_physical_ownership()
   local env = newEnv("retirement-generation", 2)
   local session = openSession(env)
@@ -1195,40 +867,6 @@ function T.metadata_failure_reaches_scopes_without_success_wait()
   Assert.isFalse(status.complete, "failure never reports successful completion")
 end
 
--- An independent leaf stays independent: camera-only preparation touches
--- no source inventory, while a map still demands its actual dependency.
-function T.independent_leaf_needs_no_inventory()
-  local env = newEnv("leaf-isolation-generation", 2)
-  local session = openSession(env)
-  local reads = 0
-  local realRead = SourcePlan.read
-  SourcePlan.read = function()
-    reads = reads + 1
-    error("camera preparation must not read the source inventory", 0)
-  end
-  local ok, err = pcall(function()
-    withFixtureFacts(env, function()
-      writeReceipt(env, "field-camera", "global")
-      local ready, failure = session:requestJob("field-camera", "global", "required")
-      Assert.isFalse(ready, "the camera starts pending")
-      Assert.isNil(failure, "the camera reports no failure")
-      pump(session, 10)
-      ready, failure = session:requestJob("field-camera", "global", "required")
-      Assert.isTrue(reads == 0, "no source read backs camera preparation")
-    end)
-  end)
-  SourcePlan.read = realRead
-  Assert.isTrue(ok, tostring(err))
-  Assert.equal(reads, 0, "camera preparation performs no inventory reads")
-  local mapReady, mapFailure = session:requestJob("map", "7", "required")
-  Assert.isFalse(mapReady, "map demand stays pending")
-  Assert.isNil(mapFailure, "map demand reports no failure")
-  pump(session, 5)
-  Assert.isTrue(env.pool.calls["source-plan:global"] ~= nil, "a map still demands its actual source dependency")
-end
-
--- Fairness is not an accident of registration or completion order: every
--- deterministic order covers the same union once with a bounded peak.
 function T.finite_work_stays_fair_under_varied_completion_orders()
   local leaves = { "bag", "field-camera", "field-effects", "field-emotes", "field-ui", "field-font" }
   local function reversed(list)
@@ -1278,83 +916,6 @@ function T.finite_work_stays_fair_under_varied_completion_orders()
   Assert.equal(runs, 4, "the matrix covers both orders twice")
 end
 
--- Logical enumeration is complete without forging physical execution
--- claims: the outcome inventory matches the canonical membership while
--- the accepted pool union stays bounded, and finite controlled releases
--- eventually cover the corpus.
-function T.logical_enumeration_completes_without_forging_dispatch()
-  local env = newEnv("dispatch-census-generation", 4)
-  local session = openSession(env)
-  session:requestComplete("required")
-  withFixtureFacts(env, function()
-    pump(session, 10)
-    Assert.isTrue(env.pool.calls["source-plan:global"] ~= nil, "complete intent discovers its inventory work")
-    stageSynthetic(env)
-    env.pool:complete("source-plan:global")
-    pump(session, 10)
-    local spins = 0
-    while env.pool.calls["mon-catalog:global"] == nil and spins < 200 do
-      pump(session, 5)
-      spins = spins + 1
-    end
-    Assert.isTrue(env.pool.calls["mon-catalog:global"] ~= nil, "catalog work submits")
-    stageLayout(env, "catalog-marker", "layout-marker")
-    env.pool:complete("mon-catalog:global")
-    pump(session, 30)
-    -- No controller reuse phase remains: the staged layout is worker
-    -- proof input, so the layout admits to the pool and succeeds once
-    -- the pool completion stands in for that worker decision.
-    local layoutReady, layoutFailure = session:requestJob("mon-layout", "global", "required")
-    Assert.isFalse(layoutReady, "the layout starts pending for worker proof")
-    Assert.isNil(layoutFailure, "the layout reports no failure")
-    pump(session, 10)
-    Assert.isTrue(env.pool.calls["mon-layout:global"] ~= nil, "the layout submits")
-    env.pool:complete("mon-layout:global")
-    pump(session, 10)
-    layoutReady, layoutFailure = session:requestJob("mon-layout", "global", "required")
-    Assert.isTrue(layoutReady, "worker-proved layout succeeds: " .. tostring(layoutFailure))
-    Assert.isTrue(session.pagesKnown, "page membership adopts from authentic published plans")
-    local canonical = canonicalKeySet(
-      ArtifactJobs.completeJobs(
-        assert(ArtifactJobs.publishedPlans(env.cacheFs, env.identity), "the adopted inventory enumerates canonically")
-      )
-    )
-    local enumerated = false
-    spins = 0
-    while not enumerated and spins < 20 do
-      pump(session, 10)
-      spins = spins + 1
-      local observed = outcomeKeySet(session)
-      enumerated = true
-      for key in pairs(canonical) do
-        if observed[key] == nil then
-          enumerated = false
-          break
-        end
-      end
-    end
-    Assert.isTrue(enumerated, "logical enumeration covers the canonical inventory")
-    local readyCount, pendingCount = 0, 0
-    for _, outcome in ipairs(session:outcomes()) do
-      if outcome.state == "successful" then
-        readyCount = readyCount + 1
-      elseif outcome.state == "pending" then
-        pendingCount = pendingCount + 1
-      end
-    end
-    Assert.isTrue(pendingCount > 0, "enrollment alone compiles nothing")
-    for jobKey, calls in pairs(env.pool.calls) do
-      Assert.equal(calls, 1, "enumeration submits each identity once: " .. jobKey)
-    end
-    Assert.isTrue(finishCorpus(env, session, 8000), "finite controlled releases cover the corpus")
-    local final = session:status()
-    Assert.isTrue(final.settled, "the covered corpus settles")
-    Assert.isFalse(final.complete, "an unenrolled milestone never attests completeness")
-  end)
-end
-
--- Exhaustive intent owns its discovery: no later milestone request is
--- needed to start inventory work, finish enumeration, or settle.
 function T.exhaustive_intent_progresses_without_later_rescue()
   local env = newEnv("exhaustive-intent-generation", 4)
   local session = openSession(env)
@@ -1393,42 +954,6 @@ function T.exhaustive_intent_progresses_without_later_rescue()
   end)
 end
 
--- A failed exhaustive discovery settles unsuccessfully: the terminal cause
--- is visible, unrelated published work is untouched, and success is never
--- forged.
-function T.failed_discovery_settles_unsuccessfully()
-  local env = newEnv("failed-discovery-generation", 2)
-  local session = openSession(env)
-  session:requestMilestone("new-game-intro", "required")
-  pump(session, 5)
-  env.pool:fail("source-plan:global", "WORKER_FAILED: synthetic source failure")
-  withFixtureFacts(env, function()
-    local spins = 0
-    while spins < 200 do
-      completeQueued(env)
-      pump(session, 5)
-      spins = spins + 1
-      local status = session:status()
-      if status.settled then
-        break
-      end
-    end
-    local final = session:status()
-    Assert.isTrue(final.settled, "a failed discovery settles instead of spinning")
-    Assert.isFalse(final.complete, "a failed discovery never reports success")
-    Assert.isTrue(#final.failures >= 1, "the terminal cause stays visible")
-    local ready, failure = session:requestMilestone("new-game-intro", "required")
-    Assert.isFalse(ready, "the failed scope stays failed")
-    Assert.isTrue(
-      tostring(failure):find("source-plan:global", 1, true) ~= nil,
-      "the scope names its failed owner: " .. tostring(failure)
-    )
-  end)
-end
-
--- Command safeguards stay independent of session facts: pending scopes get
--- no proof, a recorded fatal keeps its failure evidence, and an unrelated
--- programming fault still propagates.
 function T.command_proof_and_recorded_fatal_behavior()
   local realForVersion = CacheFs.forVersion
   local savedPool = package.loaded["romdump.src.build.CompilerPool"]
@@ -1599,177 +1124,6 @@ function T.indirect_promotion_succeeds_on_worker_proof()
   Assert.isNil(failure, "the wide summary reports no failure")
 end
 
--- A ready pool reply is worker proof: the promoted child succeeds at
--- once with no controller family validation. A usable payload succeeds
--- while a worker-rejected one fails through the pool failure path.
-function T.immediate_ready_reply_succeeds_without_controller_validation()
-  local env = newEnv("immediate-ready-generation", 2)
-  local session = openSession(env)
-  local FieldMessageCompiler = require("romdump.src.digest.ui.FieldMessageCompiler")
-  local bankIds = FieldMessageCompiler.requiredBankIds()
-  Assert.isTrue(#bankIds >= 2, "the real inventory names several message banks")
-  local goodBank, badBank = tostring(bankIds[1]), tostring(bankIds[2])
-  local goodKey, badKey = "message-bank:" .. goodBank, "message-bank:" .. badBank
-  local ready, failure = session:requestJob("source-plan", "global", "required")
-  Assert.isFalse(ready, "the inventory starts pending")
-  Assert.isNil(failure, "the inventory reports no failure")
-  pump(session, 10)
-  stageSynthetic(env)
-  env.pool:complete("source-plan:global")
-  pump(session, 10)
-  Assert.isTrue(session.sourceLoaded, "the staged inventory adopts membership")
-  -- A ready reply carries worker proof, so the controller schedules no
-  -- family validation of its own: usable output succeeds on completion
-  -- while worker-rejected output fails through the pool failure path.
-  local realRequest = env.pool.request
-  env.pool.request = function(self, job)
-    realRequest(self, job)
-    return self:status(job.jobKey)
-  end
-  local ok, err = pcall(function()
-    withFixtureFacts(env, function()
-      local validations = 0
-      local realValidate = ArtifactJobs.validate
-      ArtifactJobs.validate = function(cacheFs, generationId, kind, key, plans, identity)
-        if kind == "message-bank" and (key == goodBank or key == badBank) then
-          validations = validations + 1
-        end
-        return realValidate(cacheFs, generationId, kind, key, plans, identity)
-      end
-      local okPump, errPump = pcall(function()
-        ready, failure = session:requestJob("message-bank", goodBank, "required")
-        Assert.isFalse(ready, "the usable leaf starts pending")
-        Assert.isNil(failure, "the usable leaf reports no failure")
-        ready, failure = session:requestJob("message-bank", badBank, "required")
-        Assert.isFalse(ready, "the malformed leaf starts pending")
-        Assert.isNil(failure, "the malformed leaf reports no failure")
-        pump(session, 10)
-        Assert.isTrue(env.pool.calls[goodKey] ~= nil, "the usable leaf submits")
-        Assert.isTrue(env.pool.calls[badKey] ~= nil, "the malformed leaf submits")
-        -- The pool completion below stands in for the worker reuse
-        -- decision on the published payload; the rejection stands in
-        -- for the worker refusing the malformed one.
-        publishBank(env, tonumber(goodBank), "immediate-marker")
-        env.pool:complete(goodKey)
-        env.pool:fail(badKey, "WORKER_FAILED: synthetic malformed payload")
-        for _ = 1, 50 do
-          session:update()
-        end
-        ready, failure = session:requestJob("message-bank", goodBank, "required")
-        Assert.isTrue(ready, "worker-proved output succeeds: " .. tostring(failure))
-        local badReady, badFailure = session:requestJob("message-bank", badBank, "required")
-        Assert.isFalse(badReady, "worker-rejected output never succeeds")
-        Assert.isTrue(badFailure ~= nil, "the rejected payload carries its worker failure")
-      end)
-      ArtifactJobs.validate = realValidate
-      Assert.isTrue(okPump, tostring(errPump))
-      Assert.equal(validations, 0, "ready replies earn no controller validation")
-    end)
-  end)
-  env.pool.request = realRequest
-  Assert.isTrue(ok, tostring(err))
-end
-
--- A promoted retry stays a retry: strengthening a failed leaf before its
--- first retry turn admits exactly one pool retry at the current urgency,
--- never an ordinary request against the failed record.
-function T.promoted_retry_admits_as_retry_not_fresh_request()
-  local function failCamera(env)
-    local session = openSession(env)
-    local ready, failure = session:requestJob("field-camera", "global", "sweep")
-    Assert.isFalse(ready, "the camera starts pending")
-    Assert.isNil(failure, "the camera reports no failure")
-    pump(session, 10)
-    Assert.isTrue(env.pool.calls["field-camera:global"] ~= nil, "the camera submits")
-    env.pool:fail("field-camera:global", "WORKER_FAILED: synthetic camera failure")
-    pump(session, 10)
-    ready, failure = session:requestJob("field-camera", "global", "sweep")
-    Assert.isFalse(ready, "the failed camera stays failed")
-    Assert.isTrue(failure ~= nil, "the failed camera carries its cause")
-    return session
-  end
-  local function driveRetry(session, env)
-    for _ = 1, 200 do
-      session:update()
-      local state = env.pool:status("field-camera:global")
-      if state == "queued" or state == "running" then
-        writeReceipt(env, "field-camera", "global")
-        env.pool:complete("field-camera:global")
-      end
-      local ready = session:requestJob("field-camera", "global", "required")
-      if ready then
-        return
-      end
-    end
-    error("the promoted retry never validated ready", 0)
-  end
-  -- Direct stronger request before the first retry turn.
-  do
-    local env = newEnv("promoted-retry-direct-generation", 2)
-    local session = failCamera(env)
-    local realRetry = env.pool.retry
-    local retryCalls = {}
-    env.pool.retry = function(self, jobKey, priority)
-      retryCalls[jobKey] = (retryCalls[jobKey] or 0) + 1
-      return realRetry(self, jobKey, priority)
-    end
-    local ok, err = pcall(function()
-      withFixtureFacts(env, function()
-        local repaired, repairFailure = session:retry("field-camera", "global", "sweep")
-        Assert.isFalse(repaired, "the retry starts pending")
-        Assert.isNil(repairFailure, "the retry reports no failure")
-        local ready, failure = session:requestJob("field-camera", "global", "required")
-        Assert.isFalse(ready, "the strengthened retry stays pending")
-        Assert.isNil(failure, "strengthening reports no failure")
-        driveRetry(session, env)
-      end)
-    end)
-    env.pool.retry = realRetry
-    Assert.isTrue(ok, "a directly promoted retry stays a retry: " .. tostring(err))
-    Assert.equal(retryCalls["field-camera:global"], 1, "exactly one admitted retry")
-    Assert.equal(env.pool.calls["field-camera:global"], 1, "no ordinary request hits the failed record")
-  end
-  -- Indirect milestone promotion before the first retry turn.
-  do
-    local env = newEnv("promoted-retry-milestone-generation", 2)
-    local session = failCamera(env)
-    -- The camera owns no source dependency, so the inventory is
-    -- requested explicitly before it is staged and completed.
-    local inventoryReady, inventoryFailure = session:requestJob("source-plan", "global", "sweep")
-    Assert.isFalse(inventoryReady, "the inventory starts pending")
-    Assert.isNil(inventoryFailure, "the inventory reports no failure")
-    pump(session, 10)
-    stageSynthetic(env)
-    env.pool:complete("source-plan:global")
-    pump(session, 10)
-    Assert.isTrue(session.sourceLoaded, "the staged inventory adopts membership")
-    local realRetry = env.pool.retry
-    local retryCalls = {}
-    env.pool.retry = function(self, jobKey, priority)
-      retryCalls[jobKey] = (retryCalls[jobKey] or 0) + 1
-      return realRetry(self, jobKey, priority)
-    end
-    local ok, err = pcall(function()
-      withFixtureFacts(env, function()
-        local repaired, repairFailure = session:retry("field-camera", "global", "sweep")
-        Assert.isFalse(repaired, "the retry starts pending")
-        Assert.isNil(repairFailure, "the retry reports no failure")
-        local ready, failure = session:requestMilestone("bootstrap", "required")
-        Assert.isFalse(ready, "the milestone stays pending")
-        Assert.isNil(failure, "the milestone reports no failure")
-        driveRetry(session, env)
-      end)
-    end)
-    env.pool.retry = realRetry
-    Assert.isTrue(ok, "an indirectly promoted retry stays a retry: " .. tostring(err))
-    Assert.equal(retryCalls["field-camera:global"], 1, "exactly one admitted retry")
-    Assert.equal(env.pool.calls["field-camera:global"], 1, "no ordinary request hits the failed record")
-  end
-end
-
--- Pool faults keep outer ownership: a recorded fault and an unmatched
--- programming error at the retry/promotion boundary propagate unchanged
--- instead of becoming fresh requests or leaf failures.
 function T.pool_retry_faults_propagate_without_replanning()
   -- A faulting retry surfaces with its identity instead of replanning.
   local env = newEnv("retry-fault-generation", 2)
@@ -1799,33 +1153,6 @@ function T.pool_retry_faults_propagate_without_replanning()
   )
 end
 
-function T.pool_promotion_faults_propagate_without_leaf_failure()
-  -- A faulting queued promotion propagates instead of failing the leaf.
-  local env = newEnv("promotion-fault-generation", 2)
-  local session = openSession(env)
-  session:requestJob("field-camera", "global", "sweep")
-  pump(session, 10)
-  Assert.isTrue(env.pool.calls["field-camera:global"] ~= nil, "the camera submits")
-  Assert.equal(env.pool:status("field-camera:global"), "queued", "the record waits queued")
-  local realRequest = env.pool.request
-  env.pool.request = function(self, job)
-    if job.jobKey == "field-camera:global" then
-      error("unexpected boom: synthetic selection fault", 0)
-    end
-    return realRequest(self, job)
-  end
-  local ok, err = pcall(session.requestJob, session, "field-camera", "global", "required")
-  env.pool.request = realRequest
-  Assert.isFalse(ok, "an unmatched promotion fault propagates instead of failing the leaf")
-  Assert.isTrue(
-    tostring(err):find("unexpected boom", 1, true) ~= nil,
-    "the fault keeps its identity: " .. tostring(err)
-  )
-end
-
--- Standalone mon scopes follow only authoritative artifact edges: the
--- catalog needs no source inventory and the layout needs only its
--- catalog, with no source-plan, page or world work admitted.
 function T.standalone_mon_scopes_need_no_source_inventory()
   local env = newEnv("mon-isolation-generation", 2)
   local session = openSession(env)
@@ -1916,91 +1243,6 @@ function T.page_demand_still_opens_its_source_dependency()
   Assert.isTrue(ok, tostring(err))
 end
 
--- A warm duplicate prefix stays runnable through the real command: a long
--- already-enrolled ready prefix with one missing late leaf prepares
--- through CacheBuilder instead of truncating preparation while inline
--- enumeration still has unfinished work. Local pending stays true
--- through duplicate spans and the tail is repaired before proof.
-function T.warm_duplicate_prefix_reaches_its_cold_tail_through_the_command()
-  local env = newEnv("warm-prefix-generation", 4)
-  stageSynthetic(env)
-  stageLayout(env, "warm-catalog-marker", "warm-layout-marker")
-  local FieldActorCache = require("libs.assets.src.field.FieldActorCache")
-  env.cacheFs:writeLua(FieldActorCache.indexPath(), { spriteIds = {} })
-  local adopted = assert(ArtifactJobs.publishedPlans(env.cacheFs, env.identity), "staged layout publishes its plans")
-  local canonical = ArtifactJobs.completeJobs(adopted)
-  Assert.isTrue(#canonical > 16, "the synthetic corpus spans several enumeration chunks")
-  local missing = canonical[#canonical]
-  local missingKey = missing.kind .. ":" .. missing.key
-  local ok, err = pcall(function()
-    withFixtureFacts(env, function()
-      for _, job in ipairs(canonical) do
-        local key = job.kind .. ":" .. job.key
-        -- The inventory owner keeps its staged receipt: source-plan
-        -- readiness carries the adoption plan, so a marker-only stub in
-        -- its place would certify readiness without membership.
-        if key ~= missingKey and key ~= "source-plan:global" then
-          writeReceipt(env, job.kind, job.key)
-        end
-      end
-      local savedPool = package.loaded["romdump.src.build.CompilerPool"]
-      local savedBuilder = package.loaded["romdump.src.CacheBuilder"]
-      local realForVersion = CacheFs.forVersion
-      local okCommand, errCommand = pcall(function()
-        package.loaded["romdump.src.build.CompilerPool"] = {
-          new = function()
-            return env.pool
-          end,
-        }
-        CacheFs.forVersion = function()
-          return realForVersion("heartgold", env.backend)
-        end
-        package.loaded["romdump.src.CacheBuilder"] = nil
-        local CacheBuilder = require("romdump.src.CacheBuilder")
-        -- Controlled compilation only for missing leaves: staged facts
-        -- validate without occupying a worker.
-        env.pool.onWait = function(pool)
-          for _, jobKey in ipairs(pool.order) do
-            local record = pool.records[jobKey]
-            if record ~= nil and (record.state == "queued" or record.state == "running") then
-              local kind, key = jobKey:match("^([^:]+):(.+)$")
-              if ArtifactState.read(env.cacheFs, env.generation, kind, key) == nil then
-                writeReceipt(env, kind, key)
-              end
-              pool:complete(jobKey)
-            end
-          end
-        end
-        local report, reportErr = CacheBuilder.prepareVersion("heartgold", {
-          identity = env.identity,
-          requirements = { "complete" },
-          log = function() end,
-        })
-        Assert.isNil(
-          reportErr,
-          "a warm prefix with a cold tail prepares without a progress error: " .. tostring(reportErr)
-        )
-        assert(report ~= nil, "the command returns its report")
-        local seen = {}
-        for _, outcome in ipairs(report.outcomes) do
-          seen[outcome.jobKey] = outcome
-        end
-        local tail = assert(seen[missingKey], "the repaired tail carries its outcome")
-        Assert.equal(tail.state, "successful", "the missing tail is repaired before proof")
-      end)
-      package.loaded["romdump.src.build.CompilerPool"] = savedPool
-      package.loaded["romdump.src.CacheBuilder"] = savedBuilder
-      CacheFs.forVersion = realForVersion
-      env.pool.onWait = nil
-      Assert.isTrue(okCommand, tostring(errCommand))
-    end)
-  end)
-  Assert.isTrue(ok, tostring(err))
-end
-
--- Both requested roster scopes enroll: bootstrap and field-runtime keep
--- their distinct controls through the budget, cover their union once
--- and never duplicate an admission.
 function T.both_milestone_rosters_enroll_their_scopes()
   local env = newEnv("dual-roster-generation", 4)
   local session = openSession(env)
