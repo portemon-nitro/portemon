@@ -55,9 +55,26 @@ local function heroGender(game)
   return avatar.gender == 0 and "male" or "female"
 end
 
+local function recordingIcons()
+  local calls = { prepared = {}, cancels = 0 }
+  local function prepare(iconKeys)
+    local snapshot = {}
+    for index, key in ipairs(iconKeys) do
+      snapshot[index] = key
+    end
+    calls.prepared[#calls.prepared + 1] = snapshot
+    return true, nil
+  end
+  local function cancel()
+    calls.cancels = calls.cancels + 1
+  end
+  return { prepare = prepare, cancel = cancel, calls = calls }
+end
+
 local function openFlow(game, root)
   local Flow = requireFlow()
   local runtime = game.runtime
+  local icons = recordingIcons()
   local mons = assert(runtime.monService, "field runtime owns the live mon service")
   local bag = assert(runtime.bagService, "field runtime owns the live bag service")
   local actions = PartyActions.new({ mons = mons, bag = bag })
@@ -84,6 +101,8 @@ local function openFlow(game, root)
     measureDisplay = function()
       return runtime.presentationDisplay
     end,
+    prepareIcons = icons.prepare,
+    cancelIconPreparation = icons.cancel,
   })
 end
 
@@ -335,6 +354,10 @@ function T.tests.party_give_round_trip_preserves_target_identity()
     Assert.equal(status.page, "bag_pick_held", "reopening Give must return to the picker")
     status = gotoPocket(flow, "medicine")
     status = drive(flow, { { type = "confirm" } })
+    Assert.equal(status.page, "party_give_confirm", "picking for an occupied holder must ask before publishing")
+    status = drive(flow, {})
+    status = drive(flow, { { type = "navigate", direction = "down" } })
+    status = drive(flow, { { type = "confirm" } })
     status = driveUntil(flow, "the party browse page", 30, function(current)
       return current.page == "party_browse"
     end)
@@ -365,6 +388,7 @@ function T.tests.summary_return_follows_displayed_mon()
     status = driveUntil(flow, "the party browse page", 30, function(current)
       return current.page == "party_browse"
     end)
+    status = drive(flow, {})
     child = bagChild(status)
     Assert.equal(child.cursorNode, 1, "the party must resume on the displayed mon with live data")
     Assert.isNil(flow:takeResult(), "returning to the root reports no terminal result")

@@ -426,8 +426,17 @@ local function stubMeasurement()
   }
 end
 
+local function recordingIcons()
+  local function prepare(_)
+    return true, nil
+  end
+  local function cancel() end
+  return { prepare = prepare, cancel = cancel }
+end
+
 local function openPartyFlow(game, checkDouble)
   local runtime = game.runtime
+  local icons = recordingIcons()
   local mons = assert(runtime.monService, "live mon service required")
   local bag = assert(runtime.bagService, "live bag service required")
   local profile = assert(runtime.playerData and runtime.playerData.profile, "live profile required")
@@ -452,6 +461,8 @@ local function openPartyFlow(game, checkDouble)
       heroGender = (profile.gender == 0) and "male" or "female",
     },
     measureDisplay = stubMeasurement,
+    prepareIcons = icons.prepare,
+    cancelIconPreparation = icons.cancel,
   })
 end
 
@@ -519,6 +530,7 @@ function T.tests.fly_is_the_only_checked_silent_noop()
     local status = flow:status()
     Assert.isTrue(status.open, "the party flow opens")
     Assert.equal(status.page, "party_browse", "a party root opens the party page")
+    flow:updateFixed({})
     focusSlot(flow, pidgey)
     activateMenuMove(flow, "FLY")
     status = flow:status()
