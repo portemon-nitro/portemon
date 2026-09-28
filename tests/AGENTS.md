@@ -57,18 +57,17 @@ ownership from the plausible bug.
 
 ## Runner and discovery
 
-- `scripts/test.sh` is the test entry point. A plain run executes the fast set
-  used for routine development. `scripts/test.sh --slow` additionally runs
-  suites marked slow whose required capabilities are available. Use `--filter`
-  and `--layer` for focused local evidence; use the full available suite at
-  integrated/branch gates.
-- Target one slow area locally with `scripts/test.sh --slow --filter <substring>`.
-  Target a topic with `scripts/test.sh --tag <tag>`, or
-  `scripts/test.sh --slow --tag <tag>` when the topic includes slow suites.
-  Filtering or tagging alone never pulls slow suites in; `--slow` must be
-  present for them to run.
-- The exhaustive ROM check on a machine with a ready user-owned dump and
-  derived cache is `PORTEMON_REQUIRE_ROM_TESTS=1 scripts/test.sh --slow`.
+- `scripts/test.sh` is the only test entry point. A plain run executes the
+  regular suites used for routine development. `scripts/test.sh
+  --full-corpus-census` executes only the exhaustive full-corpus census
+  suites. Use `--filter` and `--layer` for focused local evidence; use the
+  full available suite at integrated/branch gates. Target a topic with
+  `scripts/test.sh --tag <tag>`.
+- The corpus flag is NOT for regular work verification: the shell demands an
+  explicit manual yes, warns that the census uses significant resources
+  (over 14 GiB of RAM has been observed), and builds the complete derived
+  closure from a user-owned dump. Never gate a change, a commit, or a
+  deliverable on it, and never run it in CI.
 - Seed the private ROM test cache once with
   `scripts/test.sh --rom-source <path-to-nds-or-zip>`; later plain runs reuse
   that last successful private selection and never prepare the product cache.

@@ -349,6 +349,6 @@ T["the pinned member compiles the grounded fanfare pair"] = function(romFs)
 end
 
 local suite = require("tests.rom.support.RomSuite").fromFacts(T)
-suite.metadata.slow = true
+suite.metadata.fullCorpus = true
 suite.metadata.tags = { "script", "corpus" }
 return suite

@@ -1,13 +1,8 @@
 #!/usr/bin/env bash
-# Fast developer-loop static checks: formatting (stylua), repository-owned
-# static/policy/invariant checks, and a reduced-workspace LuaLS check (tests
-# excluded) that runs in the background while the other checks execute, so
-# lint.sh's wall time is roughly the slower of the two rather than their sum.
-# The reduced check is generated from the committed .luarc.json plus
-# additional ignoreDir entries; it is deliberately incomplete (tests are
-# unchecked, and only Hint-or-higher findings on the reduced workspace are
-# caught). scripts/ci/full-lint.sh remains the canonical whole-repository LuaLS
-# gate and is what CI binds on.
+# Developer-loop static checks: formatting (stylua), repository-owned
+# static/policy/invariant checks, and a codehealth-scoped LuaLS check that
+# runs in the background while the other checks execute, so lint.sh's wall
+# time is roughly the slower of the two rather than their sum.
 set -euo pipefail
 cd "$(dirname "$0")/.."
 
@@ -17,7 +12,7 @@ case "$#:${1:-}" in
   *) echo "usage: scripts/lint.sh [--check]" >&2; exit 2 ;;
 esac
 
-for tool in stylua lua-language-server; do
+for tool in stylua lua-language-server git; do
   command -v "$tool" >/dev/null || {
     echo "lint: $tool not found in PATH (see README 'Requirements')" >&2
     exit 1
@@ -25,8 +20,8 @@ for tool in stylua lua-language-server; do
 done
 
 LUALS_LOG_DIR="$(mktemp -d)"
-LINT_LUARC="$(mktemp)"
 LUALS_OUTPUT="$(mktemp)"
+STYLUA_FILES="$(mktemp)"
 luals_pid=""
 cleanup() {
   local status=$?
@@ -34,33 +29,34 @@ cleanup() {
     kill "$luals_pid" 2>/dev/null || true
     wait "$luals_pid" 2>/dev/null || true
   fi
-  rm -rf -- "$LUALS_LOG_DIR" "$LINT_LUARC" "$LUALS_OUTPUT"
+  rm -rf -- "$LUALS_LOG_DIR" "$LUALS_OUTPUT" "$STYLUA_FILES"
   exit "$status"
 }
 trap cleanup EXIT
 
-python3 - "$LINT_LUARC" <<'PYEOF'
-import json
-import sys
-
-with open(".luarc.json", encoding="utf-8") as f:
-    config = json.load(f)
-config.setdefault("workspace", {}).setdefault("ignoreDir", []).extend(["tests", "**/tests"])
-with open(sys.argv[1], "w", encoding="utf-8") as f:
-    json.dump(config, f)
-PYEOF
-
-echo "==> lua-language-server --check (tests excluded, running in background)"
-lua-language-server --check . --configpath="$LINT_LUARC" --num_threads="2" --checklevel=Hint --logpath="$LUALS_LOG_DIR" \
+# The linted set comes from the shared scope helper both lint and
+# codehealth analysis read (scripts/lib/scope.sh), newline separated:
+# tracked candidates plus new not-yet-tracked production files.
+scripts/lib/scope.sh --mode lint --repository-root . >"$STYLUA_FILES"
+# The LuaLS workspace check covers the same scope through the committed
+# .luarc.json ignoreDir.
+# data/ as a whole stays checked: production code requires data reference
+# modules, so ignoring the directory would trade resolution for scope,
+# while the report names only data/generated and data/scripts/overrides as
+# excluded. Declarative sources are ignorable by directory because both
+# prefixes are whole directories.
+echo "==> lua-language-server --check (running in background)"
+lua-language-server --check . --num_threads="2" --checklevel=Hint --logpath="$LUALS_LOG_DIR" \
   >"$LUALS_OUTPUT" 2>&1 &
 luals_pid=$!
 
+mapfile -t LUA_FILES <"$STYLUA_FILES"
 if [ "${#STYLUA_ARGS[@]}" -eq 0 ]; then
   echo "==> stylua"
 else
   echo "==> stylua --check"
 fi
-stylua "${STYLUA_ARGS[@]}" .
+stylua "${STYLUA_ARGS[@]}" "${LUA_FILES[@]}"
 
 scripts/lib/check-repository.sh
 scripts/lib/check-invariants.sh
@@ -84,12 +80,12 @@ if grep -RInE --include='*.lua' --include='*.md' --include='*.sh' --include='*.t
   exit 1
 fi
 
-echo "==> waiting for reduced-workspace lua-language-server --check"
+echo "==> waiting for lua-language-server --check"
 luals_status=0
 wait "$luals_pid" || luals_status=$?
 luals_pid=""
 if [ "$luals_status" -ne 0 ]; then
   cat "$LUALS_OUTPUT" >&2
-  echo "lint: reduced-workspace LuaLS check failed (tests excluded; run scripts/ci/full-lint.sh for the complete check)" >&2
+  echo "lint: LuaLS check failed" >&2
   exit 1
 fi

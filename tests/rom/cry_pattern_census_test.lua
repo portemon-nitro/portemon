@@ -100,6 +100,6 @@ function T.opcode_76_static_patterns_match_the_hgss_corpus_and_have_fixtures(rom
 end
 
 local suite = RomSuite.fromFacts(T)
-suite.metadata.slow = true
+suite.metadata.fullCorpus = true
 suite.metadata.tags = { "cry", "census" }
 return suite

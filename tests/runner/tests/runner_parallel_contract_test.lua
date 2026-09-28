@@ -43,7 +43,7 @@ local function result(module, test, status, layer, duration)
 end
 
 ---@param results table[]
----@param overrides { duration: number|nil, byLayer: table<string, table>|nil, capabilities: table<string, boolean>|nil, selectedCapabilities: table<string, boolean>|nil, excludedSlow: integer|nil, suiteTimings: table[]|nil, versions: string[]|nil }|nil
+---@param overrides { duration: number|nil, byLayer: table<string, table>|nil, capabilities: table<string, boolean>|nil, selectedCapabilities: table<string, boolean>|nil, excludedCorpus: integer|nil, suiteTimings: table[]|nil, versions: string[]|nil }|nil
 ---@return RunnerRun
 local function runData(results, overrides)
   ---@type RunnerRun
@@ -56,7 +56,7 @@ local function runData(results, overrides)
     byLayer = {},
     capabilities = {},
     selectedCapabilities = {},
-    excludedSlow = 0,
+    excludedCorpus = 0,
     suiteTimings = {},
   }
   for _, entry in ipairs(results) do
@@ -83,8 +83,8 @@ local function runData(results, overrides)
     if overrides.selectedCapabilities ~= nil then
       run.selectedCapabilities = overrides.selectedCapabilities
     end
-    if overrides.excludedSlow ~= nil then
-      run.excludedSlow = overrides.excludedSlow
+    if overrides.excludedCorpus ~= nil then
+      run.excludedCorpus = overrides.excludedCorpus
     end
     if overrides.suiteTimings ~= nil then
       run.suiteTimings = overrides.suiteTimings
@@ -159,14 +159,14 @@ end
 
 function T.automatic_policy_bounds_full_runs_and_keeps_focused_runs_serial()
   local Parallel = parallel()
-  ---@param fields { list: boolean|nil, layer: string|nil, filter: string|nil, tag: string|nil, serial: boolean|nil, slow: boolean|nil }|nil
+  ---@param fields { list: boolean|nil, layer: string|nil, filter: string|nil, tag: string|nil, serial: boolean|nil, fullCorpus: boolean|nil }|nil
   ---@return TestPlan
   local function plan(fields)
     fields = fields or {}
     return {
       planMode = false,
       list = fields.list == true,
-      slow = fields.slow == true,
+      fullCorpus = fields.fullCorpus == true,
       layer = fields.layer,
       filter = fields.filter,
       tag = fields.tag,
@@ -181,7 +181,7 @@ function T.automatic_policy_bounds_full_runs_and_keeps_focused_runs_serial()
   Assert.equal(Parallel.effectiveJobs(plan(), 20, 2), 2)
   Assert.equal(Parallel.effectiveJobs(plan(), 20, 1), 1)
   Assert.equal(Parallel.effectiveJobs(plan(), 0, 16), 1)
-  Assert.equal(Parallel.effectiveJobs(plan({ slow = true }), 20, 16), 4, "slow alone stays an automatic full run")
+  Assert.equal(Parallel.effectiveJobs(plan({ fullCorpus = true }), 20, 16), 4, "corpus alone stays an automatic full run")
   Assert.equal(Parallel.effectiveJobs(plan({ filter = "runner" }), 20, 16), 1)
   Assert.equal(Parallel.effectiveJobs(plan({ tag = "door" }), 20, 16), 1)
   Assert.equal(Parallel.effectiveJobs(plan({ layer = "unit" }), 20, 16), 1)
@@ -190,7 +190,7 @@ function T.automatic_policy_bounds_full_runs_and_keeps_focused_runs_serial()
   Assert.equal(Parallel.effectiveJobs(plan({ layer = "rom" }), 20, 16), 1)
   Assert.equal(Parallel.effectiveJobs(plan({ list = true }), 20, 16), 1)
   Assert.equal(Parallel.effectiveJobs(plan({ serial = true }), 20, 16), 1)
-  Assert.equal(Parallel.effectiveJobs(plan({ serial = true, slow = true }), 20, 16), 1)
+  Assert.equal(Parallel.effectiveJobs(plan({ serial = true, fullCorpus = true }), 20, 16), 1)
   Assert.equal(Parallel.effectiveJobs(plan({ serial = true, layer = "unit" }), 20, 16), 1)
 end
 
@@ -314,7 +314,7 @@ function T.fragment_merge_preserves_counts_capabilities_order_and_critical_path(
     duration = 2.5,
     capabilities = { graphics = true },
     selectedCapabilities = { graphics = true },
-    excludedSlow = 3,
+    excludedCorpus = 3,
     byLayer = { unit = { passed = 1, failed = 1, skipped = 0, duration = 0.5 } },
     suiteTimings = { { module = "fake.unit.alpha_test", total = 0.5 } },
     versions = { "soulsilver" },
@@ -326,7 +326,7 @@ function T.fragment_merge_preserves_counts_capabilities_order_and_critical_path(
     duration = 4.75,
     capabilities = { rom_dump = true },
     selectedCapabilities = { rom_dump = true },
-    excludedSlow = 5,
+    excludedCorpus = 5,
     byLayer = {
       unit = { passed = 1, failed = 0, skipped = 0, duration = 0.1 },
       rom = { passed = 0, failed = 0, skipped = 1, duration = 0 },
@@ -342,7 +342,7 @@ function T.fragment_merge_preserves_counts_capabilities_order_and_critical_path(
   Assert.equal(merged.passed, 2)
   Assert.equal(merged.failed, 1)
   Assert.equal(merged.skipped, 1)
-  Assert.equal(merged.excludedSlow, 8)
+  Assert.equal(merged.excludedCorpus, 8)
   Assert.equal(merged.duration, 4.75)
   Assert.equal(merged.workerCriticalPath, 4.75, "worker critical path is the max worker duration")
   Assert.isTrue(merged.selectedCapabilities.graphics, "selected capabilities remain unioned")

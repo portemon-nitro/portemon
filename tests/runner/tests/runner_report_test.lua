@@ -1,6 +1,7 @@
 -- Contract tests for run reporting: the report must say what actually ran.
 -- Skips are visible with their reason (a skipped suite must never read as a
--- silent success), counts are broken down per layer, and slow tests are named.
+-- silent success), counts are broken down per layer, and the slowest tests
+-- and suites are named.
 
 local Assert = require("tests.support.Assert")
 local Report = require("tests.runner.Report")
@@ -26,7 +27,7 @@ local function run(results, overrides)
     byLayer = {},
     capabilities = {},
     selectedCapabilities = {},
-    excludedSlow = 0,
+    excludedCorpus = 0,
   }
   for key, value in pairs(overrides or {}) do
     out[key] = value

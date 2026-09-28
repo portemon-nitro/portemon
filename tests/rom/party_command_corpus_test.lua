@@ -104,6 +104,6 @@ T["supported mon-family commands never lower to silent fallbacks"] = function(ro
 end
 
 local suite = RomSuite.fromFacts(T)
-suite.metadata.slow = true
+suite.metadata.fullCorpus = true
 suite.metadata.tags = { "party", "script", "corpus" }
 return suite

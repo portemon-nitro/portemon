@@ -1,5 +1,10 @@
 #!/usr/bin/env python3
-"""Derive the executable-Lua scope used by code-health analysis."""
+"""Derive the structural file scope for code-health analysis.
+
+Executable-Lua enumeration (candidates and lint scopes) lives in
+scripts/lib/scope.sh, the single implementation both the lint gate and
+code-health analysis invoke; this module keeps the scope metadata and the
+analyzer-backed structural intersection."""
 
 from __future__ import annotations
 
@@ -47,16 +52,6 @@ def _resolve_repository_root(value: Path | str) -> Path:
     return root
 
 
-def _load_source_scope() -> object:
-    module_path = Path(__file__).with_name("source_scope.py")
-    module_spec = importlib.util.spec_from_file_location("source_scope", module_path)
-    if module_spec is None or module_spec.loader is None:
-        raise ValueError(f"cannot load source scope from {module_path}")
-    module = importlib.util.module_from_spec(module_spec)
-    module_spec.loader.exec_module(module)
-    return module
-
-
 def _normalize_manifest_path(raw: object) -> str:
     if not isinstance(raw, str) or not raw:
         raise ValueError(f"invalid manifest path {raw!r}")
@@ -72,40 +67,6 @@ def _normalize_manifest_path(raw: object) -> str:
     if not normalized.endswith(".lua"):
         raise ValueError(f"invalid manifest path {raw!r}")
     return normalized
-
-
-def _has_declarative_marker(repository_root: Path, relative: str) -> bool:
-    try:
-        text = (repository_root / relative).read_text(encoding="utf-8")
-    except OSError as error:
-        raise ValueError(f"cannot read candidate source {relative}: {error}") from error
-    lines = text.splitlines()
-    return any(
-        line.strip() == DECLARATIVE_MARKER for line in lines[:MARKER_SCAN_LINES]
-    )
-
-
-def candidate_paths(repository_root: Path | str) -> list[str]:
-    root = _resolve_repository_root(Path(repository_root))
-    source_scope = _load_source_scope()
-    paths_for_scope = getattr(source_scope, "paths_for_scope")
-    production = paths_for_scope(root, "production")
-    candidates: list[str] = []
-    seen: set[str] = set()
-    for raw in production:
-        normalized = _normalize_manifest_path(raw)
-        if normalized in seen:
-            raise ValueError(f"duplicate candidate path {raw!r}")
-        seen.add(normalized)
-        if normalized.startswith(DECLARATIVE_PREFIXES):
-            continue
-        if _has_declarative_marker(root, normalized):
-            continue
-        candidates.append(normalized)
-    candidates.sort()
-    if not candidates:
-        raise ValueError("code-health candidate scope is empty")
-    return candidates
 
 
 def _read_manifest_file(path: Path) -> list[str]:
@@ -171,19 +132,14 @@ def final_paths(
 def main(argv: list[str] | None = None) -> int:
     parser = argparse.ArgumentParser(description=__doc__)
     subparsers = parser.add_subparsers(dest="command", required=True)
-    candidate_parser = subparsers.add_parser("candidates")
-    candidate_parser.add_argument("--repository-root", type=Path, required=True)
     structural_parser = subparsers.add_parser("structural")
     structural_parser.add_argument("--repository-root", type=Path, required=True)
     structural_parser.add_argument("--candidates", type=Path, required=True)
     structural_parser.add_argument("--lizard-csv", type=Path, required=True)
     args = parser.parse_args(argv)
     try:
-        if args.command == "candidates":
-            paths = candidate_paths(args.repository_root)
-        else:
-            candidates = _read_manifest_file(args.candidates)
-            paths = final_paths(args.repository_root, candidates, args.lizard_csv)
+        candidates = _read_manifest_file(args.candidates)
+        paths = final_paths(args.repository_root, candidates, args.lizard_csv)
     except ValueError as error:
         print(f"codehealth scope: {error}", file=sys.stderr)
         return 1

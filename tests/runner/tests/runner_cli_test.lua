@@ -47,14 +47,25 @@ function T.test_tooling_uses_run_scoped_temporary_directories()
   local testScript = handle:read("*a")
   handle:close()
 
-  handle = assert(io.open("scripts/ci/full-lint.sh", "rb"))
-  local typecheckScript = handle:read("*a")
-  handle:close()
-
   contains(testScript, 'receipt_dir="$(mktemp -d -- "$test_root/preparation.XXXXXXXX")"', "test script")
   contains(testScript, 'fresh_root="$(mktemp -d)"', "test script")
   contains(testScript, 'run_dir="$(mktemp -d "${TMPDIR:-/tmp}/portemon-tests.XXXXXXXX")"', "test script")
-  contains(typecheckScript, 'LUALS_LOG_DIR="$(mktemp -d)"', "typecheck script")
+end
+
+-- The exhaustive corpus guard lives in the shell entrypoint: test.sh
+-- notices the exact --full-corpus-census token, states the command is not
+-- for regular work verification, warns about significant resource use,
+-- demands an explicit yes, and only then reaches the runner. No other
+-- option is inspected there; selection parsing stays in the runner.
+function T.corpus_flag_requires_manual_confirmation_in_the_entrypoint()
+  local handle = assert(io.open("scripts/test.sh", "rb"))
+  local script = handle:read("*a")
+  handle:close()
+
+  contains(script, "--full-corpus-census", "corpus guard")
+  contains(script, "NOT FOR REGULAR WORK VERIFICATION", "corpus guard")
+  contains(script, "significant resources", "corpus guard")
+  contains(script, "[y/N]", "corpus guard")
 end
 
 -- The shell must not re-implement option scanning: `scripts/test.sh` decides
@@ -217,7 +228,7 @@ local function runOf(layers, extra)
     byLayer = {},
     capabilities = {},
     selectedCapabilities = {},
-    excludedSlow = 0,
+    excludedCorpus = 0,
   }
   for layer, counts in pairs(layers) do
     local entry = { passed = counts.passed or 0, failed = counts.failed or 0, skipped = counts.skipped or 0 }
@@ -283,9 +294,9 @@ function T.documented_options_parse()
   Assert.equal(sourced.romSource, "/roms/hg.nds")
   Assert.isTrue(hasCapability(sourced, "rom_source"), "--rom-source requires the rom_source capability")
 
-  Assert.isTrue(parse({ "--slow" }).slow, "--slow marks the full tier")
-  Assert.isFalse(parse({}).slow, "the default run is the fast tier")
   Assert.equal(parse({ "--tag", "door" }).tag, "door", "--tag selects the tag")
+  Assert.isTrue(parse({ "--full-corpus-census" }).fullCorpus, "--full-corpus-census selects the corpus tier")
+  Assert.isFalse(parse({}).fullCorpus, "the default run is the regular tier")
   Assert.isNil(parse({}).tag, "no tag selection by default")
   Assert.isFalse(parse({}).serial, "concurrency defaults to automatic parallelism")
   Assert.isTrue(parse({ "--serial" }).serial, "--serial forces one-process execution")
@@ -320,6 +331,7 @@ function T.invalid_arguments_are_rejected_with_exit_two()
   contains(rejects({ "--rom-source", "/no/such/rom.nds" }, missing), "/no/such/rom.nds", "unreadable source")
   contains(rejects({ "--layers", "unit" }), "--layers", "unknown option")
   contains(rejects({ "--jobs", "4" }), "--jobs", "removed worker-count option follows the generic unknown-option path")
+  contains(rejects({ "--slow" }), "--slow", "removed slow-tier option follows the generic unknown-option path")
   contains(rejects({ "unit" }), "unit", "stray positional argument")
 end
 
@@ -579,51 +591,70 @@ function T.report_names_the_ready_versions_exercised()
   contains(text, "soulsilver", "report names the ready versions exercised")
 end
 
--- `--slow` is inclusionary: it makes slow suites eligible while keeping fast
--- suites, and listings mark the slow suites they include.
-function T.slow_flag_includes_both_tiers_and_listing_marks_slow_suites()
-  local plan = parse({ "--slow" })
-  Assert.isTrue(plan.slow, "--slow is recorded in the plan")
+-- `--full-corpus-census` runs only the full-corpus suites while keeping
+-- nothing regular, and listings mark the corpus suites they include.
+function T.full_corpus_flag_runs_only_corpus_suites_and_listing_marks_them()
+  local plan = parse({ "--full-corpus-census" })
+  Assert.isTrue(plan.fullCorpus, "--full-corpus-census is recorded in the plan")
 
   local corpus = FakeCorpus.new({
     ["fake/unit/fast_test.lua"] = { tests = { ["fast case"] = function() end } },
-    ["fake/unit/slow_test.lua"] = {
-      metadata = { slow = true },
-      tests = { ["slow case"] = function() end },
+    ["fake/unit/census_test.lua"] = {
+      metadata = { fullCorpus = true },
+      tests = { ["census case"] = function() end },
     },
   })
   local roots = { corpus:root("fake/unit", "unit") }
 
-  local run = TestRunner.run({ roots = roots, fs = corpus.fs, load = corpus.load, slow = plan.slow })
+  local run = TestRunner.run({ roots = roots, fs = corpus.fs, load = corpus.load, fullCorpus = plan.fullCorpus })
 
-  Assert.equal(run.passed, 2, "--slow keeps the fast suite and adds the slow one")
-  Assert.equal(run.failed, 0, "including a slow suite is not a failure")
+  Assert.equal(run.passed, 1, "--full-corpus-census runs only the corpus suite")
+  Assert.equal(run.failed, 0, "excluding the regular suite is not a failure")
+  Assert.equal(run.excludedCorpus, 0, "no corpus test is hidden under the corpus flag")
 
-  local listing = TestRunner.list({ roots = roots, fs = corpus.fs, load = corpus.load, slow = true })
+  local listing = TestRunner.list({ roots = roots, fs = corpus.fs, load = corpus.load, fullCorpus = true })
 
-  Assert.equal(#listing, 2, "--list --slow exposes both tiers")
-  local slowEntry = nil
-  for _, suite in ipairs(listing) do
-    if suite.module == "fake.unit.slow_test" then
-      slowEntry = suite
-    end
-  end
-  Assert.isTrue(slowEntry ~= nil and slowEntry.slow == true, "the slow suite is listed and flagged slow")
-  contains(table.concat(Report.listingLines(listing), "\n"), "slow", "listing output marks the slow suite")
+  Assert.equal(#listing, 1, "--list --full-corpus-census exposes only the corpus suite")
+  Assert.isTrue(listing[1].fullCorpus == true, "the corpus suite is listed and flagged")
+  contains(
+    table.concat(Report.listingLines(listing), "\n"),
+    "full-corpus",
+    "listing output marks the corpus suite"
+  )
+
+  local regular = TestRunner.list({ roots = roots, fs = corpus.fs, load = corpus.load })
+
+  Assert.equal(#regular, 1, "the default listing exposes only the regular suite")
+  Assert.isNil(
+    table.concat(Report.listingLines(regular), "\n"):find("full-corpus", 1, true),
+    "regular listing output marks no tier"
+  )
 end
 
--- A focus that only matches hidden slow tests fails loudly with the
--- remediation instead of claiming nothing matched.
-function T.slow_only_focus_explains_the_slow_gate()
+-- A focus that matches nothing fails with the empty-selection message.
+function T.unmatched_focus_reports_an_empty_selection()
   local plan = parse({ "--filter", "census" })
-  local run = runOf({}, { excludedSlow = 3 })
+  local run = runOf({})
 
   local outcome = Cli.outcome(plan, READY_DUMP, run)
 
-  Assert.isTrue(outcome.exitCode ~= 0, "a selection hidden by the slow gate must not read as green")
-  Assert.notNil(outcome.failure, "a slow-only focus needs an actionable message")
-  contains(outcome.failure, "slow", "the failure names the slow tier")
-  contains(outcome.failure, "--slow", "the failure instructs adding --slow")
+  Assert.isTrue(outcome.exitCode ~= 0, "a selection matching nothing must not read as green")
+  Assert.notNil(outcome.failure, "an empty focus needs an actionable message")
+  contains(outcome.failure, "matched nothing", "the failure states the filter matched nothing")
+end
+
+-- A focus that only matches hidden full-corpus tests fails loudly with
+-- the remediation instead of claiming nothing matched.
+function T.corpus_only_focus_explains_the_corpus_gate()
+  local plan = parse({ "--filter", "census" })
+  local run = runOf({}, { excludedCorpus = 3 })
+
+  local outcome = Cli.outcome(plan, READY_DUMP, run)
+
+  Assert.isTrue(outcome.exitCode ~= 0, "a selection hidden by the corpus gate must not read as green")
+  Assert.notNil(outcome.failure, "a corpus-only focus needs an actionable message")
+  contains(outcome.failure, "full-corpus", "the failure names the corpus tier")
+  contains(outcome.failure, "--full-corpus-census", "the failure instructs adding --full-corpus-census")
   Assert.isNil(
     tostring(outcome.failure):find("matched nothing", 1, true),
     "the failure must not claim the filter matched nothing, got: " .. tostring(outcome.failure)
@@ -690,20 +721,20 @@ function T.raw_rom_focus_does_not_require_the_derived_cache()
 end
 
 -- Listing never prepares the derived cache, even when the listing includes
--- slow cache consumers under the full tier.
-function T.listing_never_prepares_the_cache_even_for_slow_cache_consumers()
+-- corpus cache consumers under the corpus flag.
+function T.listing_never_prepares_the_cache_even_for_corpus_consumers()
   local corpus = FakeCorpus.new({
     ["fake/rom/cache_test.lua"] = {
-      metadata = { capabilities = { "rom_dump", "derived_cache" }, slow = true },
+      metadata = { capabilities = { "rom_dump", "derived_cache" }, fullCorpus = true },
       tests = { ["cache case"] = function() end },
     },
   })
   local roots = { corpus:root("fake/rom", "rom") }
 
-  local plan = parse({ "--list", "--slow" })
-  local listing = TestRunner.list({ roots = roots, fs = corpus.fs, load = corpus.load, slow = plan.slow })
+  local plan = parse({ "--list", "--full-corpus-census" })
+  local listing = TestRunner.list({ roots = roots, fs = corpus.fs, load = corpus.load, fullCorpus = plan.fullCorpus })
 
-  Assert.equal(#listing, 1, "--list --slow exposes the slow cache consumer")
+  Assert.equal(#listing, 1, "--list --full-corpus-census exposes the corpus cache consumer")
   Assert.equal(
     prepareOf(Cli.renderPlan(plan, selectedCapabilities(listing), 1, TestRunner.selectedRequirements(listing))),
     "none",
@@ -776,17 +807,17 @@ function T.focused_tag_run_without_graphics_selection_stays_green_under_strict_g
   Assert.isNil(outcome.failure)
 end
 
--- A tag focus that only matches hidden slow tests reports the slow gate,
--- not a missing graphics execution, under strict graphics.
-function T.slow_only_tag_focus_reports_the_slow_gate_not_missing_graphics()
+-- A tag focus that matches only hidden corpus tests reports the corpus
+-- gate, not a missing graphics execution, under strict graphics.
+function T.corpus_only_tag_focus_reports_the_corpus_gate_not_missing_graphics()
   local plan = parse({ "--tag", "census" }, { env = { PORTEMON_REQUIRE_GRAPHICS_TESTS = "1" } })
-  local run = runOf({}, { excludedSlow = 3 })
+  local run = runOf({}, { excludedCorpus = 3 })
 
   local outcome = Cli.outcome(plan, { graphics = true }, run)
 
-  Assert.isTrue(outcome.exitCode ~= 0, "a selection hidden by the slow gate must not read as green")
-  Assert.notNil(outcome.failure, "a slow-only focus needs an actionable message")
-  contains(outcome.failure, "--slow", "the failure instructs adding --slow")
+  Assert.isTrue(outcome.exitCode ~= 0, "a selection hidden by the corpus gate must not read as green")
+  Assert.notNil(outcome.failure, "a corpus-only focus needs an actionable message")
+  contains(outcome.failure, "--full-corpus-census", "the failure instructs adding --full-corpus-census")
   Assert.isNil(
     tostring(outcome.failure):find("no graphics test was executed", 1, true),
     "the failure must not claim no graphics test executed, got: " .. tostring(outcome.failure)
@@ -880,24 +911,25 @@ function T.raw_message_focus_skips_cache_preparation_while_cache_backed_message_
   )
 end
 
--- The slow follower producer corpus needs only the raw dump: its selection
+-- The follower producer corpus needs only the raw dump: its selection
 -- carries rom_dump without derived_cache and skips cache preparation.
-function T.slow_follower_producer_focus_needs_no_derived_cache()
+-- It is a full-corpus suite, so the selection needs the corpus flag.
+function T.follower_producer_focus_needs_no_derived_cache()
   local corpus = FakeCorpus.new({
     ["fake/rom/following_mon_visual_corpus_test.lua"] = require("tests.rom.following_mon_visual_corpus_test"),
   })
   local roots = { corpus:root("fake/rom", "rom") }
 
-  local plan = parse({ "--slow", "--filter", "following_mon_visual_corpus_test" })
+  local plan = parse({ "--full-corpus-census", "--filter", "following_mon_visual_corpus_test" })
   local listing = TestRunner.list({
     roots = roots,
     fs = corpus.fs,
     load = corpus.load,
-    slow = plan.slow,
+    fullCorpus = plan.fullCorpus,
     filter = plan.filter,
   })
 
-  Assert.equal(#listing, 1, "the slow producer filter selects exactly its suite")
+  Assert.equal(#listing, 1, "the producer filter selects exactly its suite")
   local caps = selectedCapabilities(listing)
   Assert.isTrue(caps.rom_dump == true, "the selection keeps rom_dump")
   Assert.isFalse(caps.derived_cache == true, "a raw producer selection omits derived_cache")
@@ -943,15 +975,15 @@ end
 
 -- Suites declare the exact derived closures they need, so the runner can
 -- union only what the actual selection covers: a narrowed focus carries its
--- own requirements while a hidden slow suite contributes nothing.
+-- own requirements while a hidden corpus suite contributes nothing.
 function T.selected_suites_carry_their_declared_derived_requirements()
   local corpus = FakeCorpus.new({
     ["fake/rom/map_test.lua"] = {
       metadata = { capabilities = { "rom_dump" }, derivedAssets = { "map:7" } },
       tests = { ["map case"] = function() end },
     },
-    ["fake/rom/slow_audit_test.lua"] = {
-      metadata = { capabilities = { "rom_dump" }, derivedAssets = { "complete" }, slow = true },
+    ["fake/rom/census_audit_test.lua"] = {
+      metadata = { capabilities = { "rom_dump" }, derivedAssets = { "complete" }, fullCorpus = true },
       tests = { ["audit case"] = function() end },
     },
   })
@@ -964,20 +996,20 @@ function T.selected_suites_carry_their_declared_derived_requirements()
 
   local unfiltered = TestRunner.list({ roots = roots, fs = corpus.fs, load = corpus.load })
 
-  Assert.equal(#unfiltered, 1, "the fast tier hides the slow audit suite")
-  Assert.deepEqual(unfiltered[1].derivedAssets, { "map:7" }, "a hidden slow suite contributes no requirement")
+  Assert.equal(#unfiltered, 1, "the regular tier hides the corpus audit suite")
+  Assert.deepEqual(unfiltered[1].derivedAssets, { "map:7" }, "a hidden corpus suite contributes no requirement")
 
-  local full = TestRunner.list({ roots = roots, fs = corpus.fs, load = corpus.load, slow = true })
+  local full = TestRunner.list({ roots = roots, fs = corpus.fs, load = corpus.load, fullCorpus = true })
 
-  Assert.equal(#full, 2, "--slow exposes both suites")
+  Assert.equal(#full, 1, "--full-corpus-census exposes only the corpus suite")
   local union = {}
   for _, suite in ipairs(full) do
     for _, requirement in ipairs(suite.derivedAssets) do
       union[requirement] = true
     end
   end
-  Assert.isTrue(union["map:7"] == true, "the full union keeps the map closure")
-  Assert.isTrue(union["complete"] == true, "the full union keeps the complete request")
+  Assert.isNil(union["map:7"], "the corpus union keeps no regular closure")
+  Assert.isTrue(union["complete"] == true, "the corpus union keeps the complete request")
 end
 
 -- A selection that still uses the historical cache capability name requires

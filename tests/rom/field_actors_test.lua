@@ -294,8 +294,9 @@ end
 
 -- The map-actor bob control for the idle phase: Marill rests everywhere
 -- except the two shared shift windows. The follower flagged-species
--- schedules that require the all-follower producer live in the slow
--- follower-visual corpus sibling.
+-- schedules that require the all-follower producer live in the
+-- full-corpus follower-visual corpus sibling
+-- (scripts/test.sh --full-corpus-census).
 function T.marill_idle_bob_phase_uses_the_generic_shift_windows(romFs)
   local bundle = assert(FieldActorCompiler.compile(romFs))
 

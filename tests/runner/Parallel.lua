@@ -36,7 +36,7 @@ local function validateRun(run)
   assert(type(run) == "table", "fragment run must be a table")
   assert(type(run.results) == "table", "fragment run.results must be a table")
   finiteNumber(run.duration, "fragment run.duration")
-  for _, field in ipairs({ "passed", "failed", "skipped", "excludedSlow" }) do
+  for _, field in ipairs({ "passed", "failed", "skipped", "excludedCorpus" }) do
     nonNegativeInteger(run[field], "fragment run." .. field)
   end
 
@@ -290,7 +290,7 @@ function Parallel.merge(fragments)
     byLayer = {},
     capabilities = {},
     selectedCapabilities = {},
-    excludedSlow = 0,
+    excludedCorpus = 0,
     suiteTimings = {},
   }
   local orderedFragments = {}
@@ -313,7 +313,7 @@ function Parallel.merge(fragments)
     merged.passed = merged.passed + run.passed
     merged.failed = merged.failed + run.failed
     merged.skipped = merged.skipped + run.skipped
-    merged.excludedSlow = merged.excludedSlow + run.excludedSlow
+    merged.excludedCorpus = merged.excludedCorpus + run.excludedCorpus
     merged.duration = math.max(merged.duration, run.duration)
     merged.workerCriticalPath = merged.duration
     union(merged.selectedCapabilities, run.selectedCapabilities)

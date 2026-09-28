@@ -123,7 +123,7 @@ function T.member_completion_order_preserves_the_published_corpus(romFs, version
 end
 
 local suite = RomSuite.fromFacts(T)
-suite.metadata.slow = true
+suite.metadata.fullCorpus = true
 suite.metadata.capabilities = { "rom_dump" }
 suite.metadata.tags = { "script", "corpus", "generation" }
 return suite

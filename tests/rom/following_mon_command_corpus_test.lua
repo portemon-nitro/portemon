@@ -3,8 +3,9 @@
 -- reachability proof that no reached follower-family command escapes the
 -- machine-checked disposition catalog. Both claims depend on walking the
 -- complete decoded field-script corpus. The static disposition checks and
--- the explicit Elm starter and Route 24 retail checks stay in the default
--- tier; these corpus walks run only when the slow tier is selected.
+-- the explicit Elm starter and Route 24 retail checks stay in the regular
+-- test suite; these corpus walks run only with
+-- scripts/test.sh --full-corpus-census.
 
 local Assert = require("tests.support.Assert")
 local CommandCatalog = require("romdump.src.digest.script.CommandCatalog")
@@ -120,6 +121,6 @@ T["follower family has complete dispositions"] = function(romFs)
 end
 
 local suite = require("tests.rom.support.RomSuite").fromFacts(T)
-suite.metadata.slow = true
+suite.metadata.fullCorpus = true
 suite.metadata.tags = { "following-mon", "script", "corpus" }
 return suite

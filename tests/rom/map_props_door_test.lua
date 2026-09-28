@@ -211,6 +211,7 @@ function T.interior_entrances_and_non_door_warps_resolve_nil(romFs)
   )
 end
 
--- The whole-map warp-door audit lives in the slow census sibling; the
--- targeted New Bark and Elm Lab checks above stay in the default tier.
+-- The whole-map warp-door audit lives in the full-corpus census sibling
+-- (scripts/test.sh --full-corpus-census); the targeted New Bark and Elm
+-- Lab checks above stay in the regular test suite.
 return require("tests.rom.support.RomSuite").fromFacts(T)

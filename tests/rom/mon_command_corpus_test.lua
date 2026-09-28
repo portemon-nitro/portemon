@@ -2,8 +2,8 @@
 -- here depends on walking the complete decoded field-script corpus (which
 -- opcodes the retail scripts reach, how lowered nodes dispatch, and which
 -- reached family nodes stay unsupported). The static catalog and inventory
--- relationships stay in the default tier; these corpus walks run only when
--- the slow tier is selected.
+-- relationships stay in the regular test suite; these corpus walks run only
+-- with scripts/test.sh --full-corpus-census.
 
 local Assert = require("tests.support.Assert")
 local CommandCatalog = require("romdump.src.digest.script.CommandCatalog")
@@ -188,6 +188,6 @@ function T.lowered_scripts_dispatch_no_source_opcode_number(romFs)
 end
 
 local suite = require("tests.rom.support.RomSuite").fromFacts(T)
-suite.metadata.slow = true
+suite.metadata.fullCorpus = true
 suite.metadata.tags = { "mon", "script", "corpus" }
 return suite

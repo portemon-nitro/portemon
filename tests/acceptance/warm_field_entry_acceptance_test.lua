@@ -26,7 +26,7 @@ local T = {
     capabilities = { "rom_dump" },
     derivedAssets = { "bootstrap" },
     tags = { "product", "opening", "warm-entry" },
-    slow = true,
+    fullCorpus = true,
   },
   tests = {},
 }

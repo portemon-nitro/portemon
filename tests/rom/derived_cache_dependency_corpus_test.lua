@@ -71,7 +71,7 @@ function T.complete_derived_dependency_graph_is_closed_and_acyclic(romFs, versio
 end
 
 local suite = require("tests.rom.support.RomSuite").fromFacts(T)
-suite.metadata.slow = true
+suite.metadata.fullCorpus = true
 suite.metadata.capabilities = { "rom_dump", "complete_derived_cache" }
 suite.metadata.derivedAssets = { "complete" }
 suite.metadata.tags = { "cache", "corpus", "dependencies" }

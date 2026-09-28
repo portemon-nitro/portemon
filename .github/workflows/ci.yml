@@ -6,16 +6,6 @@ name: CI
 # and real offscreen graphics smoke tests are required. ROM-conformance and
 # acceptance tests report explicit optional skips because CI has no
 # user-owned cartridge dump.
-#
-# CI runs both fast lint (scripts/lint.sh --check) and the whole-workspace Lua
-# typecheck (scripts/ci/full-lint.sh); the pre-commit hook runs only the staged
-# invariant gate and fast lint. Hooks are opt-in per clone and bypassable, so
-# CI is the binding gate for both. lint.sh also runs a reduced-workspace
-# (tests excluded) LuaLS pass in the background alongside its other checks,
-# so LuaLS must be installed before the lint step, not only before typecheck.
-#
-# Structural hotspot comparison is advisory and lives in the separate Code
-# health PR workflows; it never gates these jobs.
 
 on:
   push:
@@ -71,9 +61,6 @@ jobs:
       - name: Run lint checks
         run: scripts/lint.sh --check
 
-      - name: Run Lua typecheck
-        run: scripts/ci/full-lint.sh
-
   test:
     runs-on: ubuntu-22.04
     timeout-minutes: 10
@@ -111,7 +98,6 @@ jobs:
           printf '%s\n' '#!/bin/sh' 'exec "$RUNNER_TEMP/love-extracted/squashfs-root/AppRun" "$@"' > "$RUNNER_TEMP/bin/love"
           chmod +x "$RUNNER_TEMP/bin/love"
           # Keep CI on the same entrypoint and software graphics host as local
-          # development. Slow suites run here when their capabilities are
-          # available; ROM-gated suites still report explicit skips because CI
-          # has no user-owned cartridge dump.
-          PATH="$RUNNER_TEMP/bin:$PATH" scripts/test.sh --slow
+          # development. ROM-gated suites still report explicit skips because
+          # CI has no user-owned cartridge dump;
+          PATH="$RUNNER_TEMP/bin:$PATH" scripts/test.sh

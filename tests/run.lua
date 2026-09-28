@@ -22,8 +22,8 @@ local ENV = setmetatable({}, {
   end,
 })
 
--- `options` accepts `layer`, `filter`, `tag`, `slow`, and `capabilities`;
--- `main` parses them out of the argv.
+-- `options` accepts `layer`, `filter`, `tag`, `fullCorpus`, and
+-- `capabilities`; `main` parses them out of the argv.
 ---@param options table|nil
 ---@return table
 local function runnerOptions(options)
@@ -34,7 +34,7 @@ local function runnerOptions(options)
     layer = options.layer,
     filter = options.filter,
     tag = options.tag,
-    slow = options.slow,
+    fullCorpus = options.fullCorpus,
     onResult = options.onResult,
     shard = options.shard,
   }
@@ -203,7 +203,7 @@ local function selectedRequirements(plan, shard)
     layer = plan.layer,
     filter = plan.filter,
     tag = plan.tag,
-    slow = plan.slow,
+    fullCorpus = plan.fullCorpus,
     shard = shard,
   })
   if not ok then
@@ -420,7 +420,7 @@ local function main(argv)
         layer = plan.layer,
         filter = plan.filter,
         tag = plan.tag,
-        slow = plan.slow,
+        fullCorpus = plan.fullCorpus,
         shard = { index = context.index, count = context.count },
       }))
       Parallel.writeFragment(context.runDir, context.index, context.count, result)
@@ -482,7 +482,7 @@ local function main(argv)
     layer = plan.layer,
     filter = plan.filter,
     tag = plan.tag,
-    slow = plan.slow,
+    fullCorpus = plan.fullCorpus,
     onResult = function(entry)
       progress:record(entry)
     end,

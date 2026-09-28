@@ -6,8 +6,8 @@
 -- must assemble and resolve without ambiguity or coverage failure; the
 -- audit names the version, map, and tile of the first failure instead of
 -- swallowing it. Maps without a warp-bearing DOOR tile are skipped. The
--- targeted New Bark and Elm Lab door checks stay in the default tier; this
--- exhaustive audit runs only when the slow tier is selected.
+-- targeted New Bark and Elm Lab door checks stay in the regular test suite;
+-- this exhaustive audit runs only with scripts/test.sh --full-corpus-census.
 
 local Assert = require("tests.support.Assert")
 local DoorTiles = require("libs.hgss.src.transition.DoorTiles")
@@ -148,7 +148,7 @@ function T.resolved_maps_warp_bearing_doors_resolve(romFs, versionId, context)
 end
 
 local suite = require("tests.rom.support.RomSuite").fromFacts(T)
-suite.metadata.slow = true
+suite.metadata.fullCorpus = true
 suite.metadata.tags = { "door", "census" }
 suite.metadata.capabilities = { "rom_dump", "derived_cache" }
 suite.metadata.derivedAssets = { "complete" }

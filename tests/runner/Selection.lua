@@ -53,13 +53,16 @@ local function hasTag(suite, tag)
   return false
 end
 
--- The selected test names of one suite, in the suite's (sorted) order, plus
--- the count hidden solely by the slow gate. Selectors compose conjunctively:
--- a tag mismatch rejects the suite before filtering, then the literal filter
--- picks names, then slow eligibility hides the matches unless enabled.
+-- The selected test names of one suite, in the suite's (sorted) order,
+-- plus the count hidden solely because they belong to the full corpus.
+-- Selectors compose conjunctively: a tag mismatch rejects the suite before
+-- filtering, then the literal filter picks names. The default run executes
+-- only the regular suites; `--full-corpus-census` executes only the full
+-- corpus suites, so the exhaustive corpus never runs as routine
+-- verification and routine suites never dilute a corpus run.
 ---@param suite RunnerSuite
----@param options { filter: string|nil, tag: string|nil, slow: boolean|nil }|nil
----@return string[] selected, integer excludedSlow
+---@param options { filter: string|nil, tag: string|nil, fullCorpus: boolean|nil }|nil
+---@return string[] selected, integer excludedCorpus
 function Selection.tests(suite, options)
   options = options or {}
   assert(type(options) == "table", "Selection.tests needs an options table")
@@ -72,8 +75,11 @@ function Selection.tests(suite, options)
       matched[#matched + 1] = name
     end
   end
-  if suite.slow == true and options.slow ~= true then
+  if suite.fullCorpus == true and options.fullCorpus ~= true then
     return {}, #matched
+  end
+  if suite.fullCorpus ~= true and options.fullCorpus == true then
+    return {}, 0
   end
   return matched, 0
 end

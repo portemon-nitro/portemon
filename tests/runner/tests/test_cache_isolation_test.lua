@@ -1121,7 +1121,7 @@ function T.first_seed_imports_once_and_prepares_only_the_selected_scope()
     },
     {
       label = "complete",
-      args = "--slow --filter derived_cache_corpus_test",
+      args = "--filter derived_cache_corpus_test",
       requires = { "complete" },
     },
   }

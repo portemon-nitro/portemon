@@ -12,7 +12,7 @@ local STAGE_ROOT = "staging/" .. VERSION .. "/" .. ARTIFACT
 
 local T = {
   metadata = {
-    slow = true,
+    fullCorpus = true,
     tags = { "storage", "publication" },
   },
   tests = {},

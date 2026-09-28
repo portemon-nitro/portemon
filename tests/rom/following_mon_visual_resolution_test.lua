@@ -3,7 +3,8 @@
 -- resolve to visuals present in the compiled field-actor bundle, so the
 -- controller installs real follower presentation rather than a placeholder.
 -- Reads only the prebuilt cache indexes, never the all-follower producer;
--- the producer-backed starter-pose checks live in the slow sibling.
+-- the producer-backed starter-pose checks live in the full-corpus sibling
+-- (scripts/test.sh --full-corpus-census).
 
 local Assert = require("tests.support.Assert")
 local CacheFs = require("libs.storage.src.CacheFs")

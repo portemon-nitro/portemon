@@ -1,5 +1,5 @@
 -- Public entry point of the capability-aware test runner: recursive discovery
--- over approved roots, layer/filter/tag/slow selection, and explicit pass/fail/skip
+-- over approved roots, layer/filter/tag/full-corpus selection, and explicit pass/fail/skip
 -- results. There is no module registry — a suite is discovered because it
 -- exists, so removing a line can never hide a test.
 --
@@ -12,7 +12,7 @@
 --   filter       string|nil                   literal substring over
 --                                             "module :: test"
 --   tag          string|nil                   exact suite tag membership
---   slow         boolean|nil                  include slow suites, default false
+--   fullCorpus   boolean|nil                  run only the full corpus suites, default false
 --   onResult       fun(result: table)|nil      called after each result
 
 local Discovery = require("tests.runner.Discovery")
@@ -35,7 +35,7 @@ local function resolve(options)
     layer = options.layer,
     filter = options.filter,
     tag = options.tag,
-    slow = options.slow,
+    fullCorpus = options.fullCorpus,
     onResult = options.onResult,
     shard = options.shard,
   }
@@ -66,7 +66,7 @@ end
 -- returned item carries either a normalized `suite` or the `failure` result of
 -- a module that could not be loaded or normalized.
 ---@return { suite: RunnerSuite|nil, failure: table|nil }[]
----@param config { fs: table, roots: string[]|nil, load: function, capabilities: table<string, boolean>, layer: string|nil, filter: string|nil, tag: string|nil, slow: boolean|nil, onResult: function|nil, shard: table|nil }
+---@param config { fs: table, roots: string[]|nil, load: function, capabilities: table<string, boolean>, layer: string|nil, filter: string|nil, tag: string|nil, fullCorpus: boolean|nil, onResult: function|nil, shard: table|nil }
 local function collect(config)
   local items = {}
   for _, entry in ipairs(Discovery.suites(config.fs, config.roots)) do
@@ -93,7 +93,7 @@ end
 -- way a run reports it as one failed result — one broken suite must not replace
 -- the whole listing with a traceback.
 ---@param options table
----@return { module: string, layer: string, capabilities: string[], derivedAssets: string[], tags: string[], slow: boolean, tests: string[], error: string|nil }[]
+---@return { module: string, layer: string, capabilities: string[], derivedAssets: string[], tags: string[], fullCorpus: boolean, tests: string[], error: string|nil }[]
 function TestRunner.list(options)
   local config = resolve(options)
   local listing = {}
@@ -105,7 +105,7 @@ function TestRunner.list(options)
         capabilities = {},
         derivedAssets = {},
         tags = {},
-        slow = false,
+        fullCorpus = false,
         tests = {},
         error = item.failure.message,
       }
@@ -119,7 +119,7 @@ function TestRunner.list(options)
           capabilities = suite.capabilities,
           derivedAssets = suite.derivedAssets,
           tags = suite.tags,
-          slow = suite.slow,
+          fullCorpus = suite.fullCorpus,
           tests = tests,
         }
       end
@@ -130,7 +130,7 @@ end
 
 -- The deduplicated union of derived-cache requirements declared by listed
 -- suites with at least one selected test, in stable sorted order. Load-error
--- rows carry no tests, so they contribute nothing; slow-gated suites never
+-- rows carry no tests, so they contribute nothing; corpus-gated suites never
 -- reach the listing, so hidden suites contribute nothing.
 ---@param listing table[]
 ---@return string[] union
@@ -182,7 +182,7 @@ end
 ---@field byLayer table<string, { passed: integer, failed: integer, skipped: integer, duration: number }>
 ---@field capabilities table<string, boolean>
 ---@field selectedCapabilities table<string, boolean> union of declared capabilities of suites with selected tests
----@field excludedSlow integer tests hidden solely by slow eligibility after the other selectors matched
+---@field excludedCorpus integer tests hidden solely because they belong to the full corpus
 ---@field versions string[]|nil ready game versions the run exercised, when known
 ---@field suiteTimings table[]|nil per-suite hook-inclusive timing rows
 ---@field workerCriticalPath number|nil the longest worker's duration in a merged parallel result; nil for a serial run
@@ -203,7 +203,7 @@ function TestRunner.run(options)
     byLayer = {},
     capabilities = config.capabilities,
     selectedCapabilities = {},
-    excludedSlow = 0,
+    excludedCorpus = 0,
     suiteTimings = {},
   }
   local function record(entry)
@@ -219,7 +219,7 @@ function TestRunner.run(options)
     else
       local suite = assert(item.suite, "collected item carries neither a suite nor a failure")
       local selected, hidden = Selection.tests(suite, config)
-      run.excludedSlow = run.excludedSlow + hidden
+      run.excludedCorpus = run.excludedCorpus + hidden
       if #selected > 0 then
         for _, name in ipairs(suite.capabilities) do
           run.selectedCapabilities[name] = true

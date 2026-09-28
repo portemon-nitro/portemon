@@ -3,7 +3,7 @@
 -- rotation sweep, the gym-door NSBTA texture animation, the pc_mb NSBTP
 -- variant selection, and the psentry_rode NSBMA alpha fade. One member per
 -- currently supported format, never a sweep: the whole-archive census lives
--- in the slow sibling.
+-- in the full-corpus sibling (scripts/test.sh --full-corpus-census).
 
 local Assert = require("tests.support.Assert")
 local BinaryReader = require("libs.codec.src.BinaryReader")

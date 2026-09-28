@@ -155,7 +155,7 @@ end
 -- Report lines for `--list`: one line per discovered suite with the metadata a
 -- reader needs to pick a layer or filter, plus the load error of any suite that
 -- could not be read.
----@param listing { module: string, layer: string, capabilities: string[], tags: string[], slow: boolean|nil, tests: string[], error: string|nil }[]
+---@param listing { module: string, layer: string, capabilities: string[], tags: string[], fullCorpus: boolean|nil, tests: string[], error: string|nil }[]
 ---@return string[]
 function Report.listingLines(listing)
   local lines = {}
@@ -169,8 +169,8 @@ function Report.listingLines(listing)
     if #suite.tags > 0 then
       parts[#parts + 1] = "tags " .. table.concat(suite.tags, ",")
     end
-    if suite.slow == true then
-      parts[#parts + 1] = "slow"
+    if suite.fullCorpus == true then
+      parts[#parts + 1] = "full-corpus"
     end
     lines[#lines + 1] = string.format("%-56s %s", suite.module, table.concat(parts, "  "))
     if suite.error ~= nil then

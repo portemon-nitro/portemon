@@ -7,6 +7,11 @@
 #   scripts/test.sh --serial
 #   scripts/test.sh --rom-source <path-to.nds-or-zip>
 #   scripts/test.sh --rom-source <path-to.nds-or-zip> --fresh
+#   scripts/test.sh --full-corpus-census [--rom-source <path-to-nds-or-zip>]
+#
+# The default run executes the regular suites only. --full-corpus-census
+# executes only the exhaustive full-corpus census suites after an explicit
+# manual confirmation; it is never part of routine verification.
 #
 # Arguments are parsed by tests/runner/Cli.lua; this script only decides where
 # the save root lives and whether to prepare the derived cache first. That
@@ -45,6 +50,55 @@ trap cleanup EXIT
 unset PORTEMON_TEST_ACCEPTANCE_NAMESPACE
 unset PORTEMON_TEST_PREPARATION
 unset PORTEMON_DERIVED_CACHE_READY
+
+# The exhaustive corpus flag is never part of routine verification: it runs
+# only the full-corpus census suites, which walk the complete decoded ROM
+# corpus and have been observed using over 14 GiB of RAM. Require an
+# explicit manual confirmation before the runner plan or any cache
+# preparation starts. This exact-token check is the only shell-side option
+# inspection; all other selection parsing stays in the runner
+# (tests/runner/Cli.lua), which owns `--full-corpus-census` itself.
+corpus_requested=false
+for arg in "$@"; do
+  if [ "$arg" = "--full-corpus-census" ]; then
+    corpus_requested=true
+  fi
+done
+if [ "$corpus_requested" = true ]; then
+  cat >&2 <<'BANNER'
+================================================================================
+  FULL-CORPUS CENSUS — NOT FOR REGULAR WORK VERIFICATION
+--------------------------------------------------------------------------------
+  This runs ONLY the exhaustive full-corpus census suites. It is not the
+  way to verify everyday work: a plain scripts/test.sh plus
+  scripts/lint.sh is the regular gate.
+  It uses significant resources: over 14 GiB of RAM has been observed,
+  and it prepares the complete derived cache from a user-owned ROM dump.
+  Do not run this in CI, in the background of other work, or on a machine
+  that cannot spare the memory.
+================================================================================
+BANNER
+  printf 'This command uses significant resources (>14 GiB RAM observed). Continue? [y/N] ' >&2
+  reply=""
+  if [ -t 0 ]; then
+    read -r reply || reply=""
+  elif [ -c /dev/tty ] && read -r reply </dev/tty 2>/dev/null; then
+    :
+  else
+    # No controlling terminal (a pipe, a redirect, CI output capture): the
+    # answer still has to arrive explicitly on stdin. An empty stream, EOF,
+    # or anything but an explicit yes aborts, so the corpus can never run
+    # by accident or as an unattended step.
+    read -r reply || reply=""
+  fi
+  case "$reply" in
+    [yY] | [yY][eE][sS]) ;;
+    *)
+      echo "test: full-corpus census aborted; the regular gate remains scripts/test.sh plus scripts/lint.sh" >&2
+      exit 1
+      ;;
+  esac
+fi
 
 # Terminate every still-tracked child before waiting any of them, so one
 # long-running child cannot delay signal delivery to the others; then wait

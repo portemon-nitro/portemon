@@ -394,43 +394,75 @@ function T.missing_capability_suite_has_zero_hook_timing()
   end)
 end
 
--- The default run is the fast tier: a suite marked slow is discovered but
--- excluded without running its hooks, hidden tests are counted so a focused
--- selection can explain itself, and listing shows only the fast suite.
-function T.default_run_excludes_slow_suites_without_running_their_hooks()
-  local slowHookRan = false
+-- The default run executes the regular suites only: a full-corpus suite is
+-- discovered but excluded without running its hooks, hidden tests are
+-- counted so a focused selection can explain itself, and listing shows
+-- only the regular suites.
+function T.default_run_excludes_full_corpus_suites_without_running_their_hooks()
+  local corpusHookRan = false
   local corpus = FakeCorpus.new({
     ["fake/unit/fast_test.lua"] = { tests = { ["fast case"] = function() end } },
-    ["fake/unit/slow_test.lua"] = {
-      metadata = { slow = true },
+    ["fake/unit/census_test.lua"] = {
+      metadata = { fullCorpus = true },
       beforeAll = function()
-        slowHookRan = true
+        corpusHookRan = true
       end,
-      tests = { ["slow case"] = function() end },
+      tests = { ["census case"] = function() end },
     },
   })
   local options = { roots = { corpus:root("fake/unit", "unit") }, fs = corpus.fs, load = corpus.load }
 
   local run = TestRunner.run(options)
 
-  Assert.equal(run.passed, 1, "only the fast test executes by default")
-  Assert.equal(run.failed, 0, "excluding a slow suite is not a failure")
-  Assert.isFalse(slowHookRan, "an excluded slow suite must not run its hooks")
-  Assert.equal(run.excludedSlow, 1, "the hidden slow test is counted")
+  Assert.equal(run.passed, 1, "only the regular test executes by default")
+  Assert.equal(run.failed, 0, "excluding a full-corpus suite is not a failure")
+  Assert.isFalse(corpusHookRan, "an excluded full-corpus suite must not run its hooks")
+  Assert.equal(run.excludedCorpus, 1, "the hidden full-corpus test is counted")
 
   local listing = TestRunner.list(options)
 
-  Assert.equal(#listing, 1, "default listing shows only the fast suite")
+  Assert.equal(#listing, 1, "default listing shows only the regular suite")
   Assert.equal(listing[1].module, "fake.unit.fast_test")
 end
 
--- A suite rejected by its tags never reaches the slow gate, so a tag miss
--- counts nothing as hidden.
-function T.tag_mismatch_does_not_count_as_hidden_slow()
+-- The full-corpus flag inverts the gate: it executes only the full-corpus
+-- suites and hides the regular ones without failing.
+function T.full_corpus_flag_runs_only_the_full_corpus_suites()
+  local regularHookRan = false
   local corpus = FakeCorpus.new({
-    ["fake/unit/slow_test.lua"] = {
-      metadata = { slow = true, tags = { "door" } },
-      tests = { ["slow case"] = function() end },
+    ["fake/unit/fast_test.lua"] = {
+      beforeAll = function()
+        regularHookRan = true
+      end,
+      tests = { ["fast case"] = function() end },
+    },
+    ["fake/unit/census_test.lua"] = {
+      metadata = { fullCorpus = true },
+      tests = { ["census case"] = function() end },
+    },
+  })
+  local options =
+    { roots = { corpus:root("fake/unit", "unit") }, fs = corpus.fs, load = corpus.load, fullCorpus = true }
+
+  local run = TestRunner.run(options)
+
+  Assert.equal(run.passed, 1, "only the full-corpus test executes under the flag")
+  Assert.equal(run.failed, 0, "excluding the regular suites is not a failure")
+  Assert.isFalse(regularHookRan, "an excluded regular suite must not run its hooks")
+
+  local listing = TestRunner.list(options)
+
+  Assert.equal(#listing, 1, "corpus listing shows only the full-corpus suite")
+  Assert.equal(listing[1].module, "fake.unit.census_test")
+end
+
+-- A suite rejected by its tags never reaches the corpus gate, so a tag
+-- miss counts nothing as hidden.
+function T.tag_mismatch_does_not_count_as_hidden_corpus()
+  local corpus = FakeCorpus.new({
+    ["fake/unit/census_test.lua"] = {
+      metadata = { fullCorpus = true, tags = { "door" } },
+      tests = { ["census case"] = function() end },
     },
   })
   local options = { roots = { corpus:root("fake/unit", "unit") }, fs = corpus.fs, load = corpus.load, tag = "camera" }
@@ -439,7 +471,7 @@ function T.tag_mismatch_does_not_count_as_hidden_slow()
 
   Assert.equal(run.passed, 0)
   Assert.equal(run.failed, 0)
-  Assert.equal(run.excludedSlow, 0, "a suite rejected by tag is not hidden by the slow gate")
+  Assert.equal(run.excludedCorpus, 0, "a suite rejected by tag is not hidden by the corpus gate")
   Assert.equal(#TestRunner.list(options), 0, "a tag miss lists nothing")
 end
 
@@ -496,9 +528,9 @@ function T.selected_capabilities_follow_the_selection_without_duplicates()
   Assert.deepEqual(none.selectedCapabilities, {}, "an empty selection selects no capabilities")
 end
 
--- A module that cannot load stays one visible failure and is never mistaken
--- for a suite hidden by the slow gate.
-function T.load_failures_stay_visible_and_are_not_hidden_slow()
+-- A module that cannot load stays one visible failure and is never
+-- mistaken for a suite hidden by the corpus gate.
+function T.load_failures_stay_visible_and_are_not_hidden_corpus()
   local corpus = FakeCorpus.new({
     ["fake/unit/broken_test.lua"] = FakeCorpus.LOAD_ERROR,
   })
@@ -507,7 +539,7 @@ function T.load_failures_stay_visible_and_are_not_hidden_slow()
   local run = TestRunner.run(options)
 
   Assert.equal(run.failed, 1)
-  Assert.equal(run.excludedSlow, 0, "a load failure is not a hidden slow test")
+  Assert.equal(run.excludedCorpus, 0, "a load failure is not a hidden corpus test")
 
   local listing = TestRunner.list(options)
 

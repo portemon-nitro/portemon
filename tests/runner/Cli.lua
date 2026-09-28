@@ -30,7 +30,7 @@ local STRICT_COMMAND = STRICT_ENV .. "=1 scripts/test.sh"
 
 Cli.USAGE = table.concat({
   "usage: scripts/test.sh [--plan] [--list] [--layer <" .. table.concat(Cli.LAYERS, "|") .. ">]",
-  "                      [--filter <substring>] [--tag <tag>] [--slow] [--serial]",
+  "                      [--filter <substring>] [--tag <tag>] [--serial] [--full-corpus-census]",
   "                      [--rom-source <path-to-nds-or-zip>] [--fresh]",
 }, "\n")
 
@@ -67,7 +67,7 @@ end
 ---@field layer string|nil
 ---@field filter string|nil
 ---@field tag string|nil
----@field slow boolean
+---@field fullCorpus boolean
 ---@field serial boolean
 ---@field romSource string|nil
 ---@field fresh boolean
@@ -90,7 +90,7 @@ function Cli.parse(argv, context)
   local plan = {
     planMode = false,
     list = false,
-    slow = false,
+    fullCorpus = false,
     serial = false,
     fresh = false,
     strict = env[STRICT_ENV] == "1",
@@ -133,8 +133,8 @@ function Cli.parse(argv, context)
       end
       plan.tag = tag
       index = index + 2
-    elseif option == "--slow" then
-      plan.slow = true
+    elseif option == "--full-corpus-census" then
+      plan.fullCorpus = true
       index = index + 1
     elseif option == "--serial" then
       plan.serial = true
@@ -413,14 +413,15 @@ function Cli.outcome(plan, capabilities, run)
     return { exitCode = 1, warning = warning }
   end
 
-  -- A focus that only matches excluded slow tests names the gate instead of
-  -- claiming nothing matched: the tests exist and run under `--slow`.
-  if #run.results == 0 and (run.excludedSlow or 0) > 0 then
+  -- A focus that only matches hidden full-corpus tests names the gate
+  -- instead of claiming nothing matched: the tests exist and run under
+  -- `--full-corpus-census`, which itself runs only the full corpus tests.
+  if plan.fullCorpus ~= true and #run.results == 0 and (run.excludedCorpus or 0) > 0 then
     return {
       exitCode = 1,
       failure = "no test was executed: "
         .. selectionLabel(plan)
-        .. " matched only slow tests; run again with --slow to include them",
+        .. " matched only full-corpus census tests; run again with --full-corpus-census to include them",
       warning = warning,
     }
   end

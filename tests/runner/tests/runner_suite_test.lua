@@ -105,20 +105,22 @@ function T.non_function_test_entry_is_rejected()
   Assert.isTrue(tostring(err):find("not callable", 1, true) ~= nil, "names the offending test: " .. tostring(err))
 end
 
--- The slow tier is one boolean: omitted and false are fast, true is slow.
-function T.slow_defaults_to_fast_and_accepts_true()
-  Assert.isFalse(normalize({ tests = {} }).slow, "omitted slow is fast")
-  Assert.isFalse(normalize({ metadata = { slow = false }, tests = {} }).slow, "explicit false is fast")
-  Assert.isTrue(normalize({ metadata = { slow = true }, tests = {} }).slow, "true is slow")
+-- The full-corpus tier is one boolean: omitted and false are regular,
+-- true is full-corpus.
+function T.full_corpus_defaults_to_regular_and_accepts_true()
+  Assert.isFalse(normalize({ tests = {} }).fullCorpus, "omitted fullCorpus is regular")
+  Assert.isFalse(normalize({ metadata = { fullCorpus = false }, tests = {} }).fullCorpus, "explicit false is regular")
+  Assert.isTrue(normalize({ metadata = { fullCorpus = true }, tests = {} }).fullCorpus, "true is full-corpus")
 end
 
--- Any non-boolean slow value is a normalization failure, never a truthy slow.
-function T.non_boolean_slow_is_rejected()
-  for _, slow in ipairs({ 1, "true", {}, function() end }) do
+-- Any non-boolean fullCorpus value is a normalization failure, never a
+-- truthy full-corpus marker.
+function T.non_boolean_full_corpus_is_rejected()
+  for _, fullCorpus in ipairs({ 1, "true", {}, function() end }) do
     local err = Assert.throws(function()
-      normalize({ metadata = { slow = slow }, tests = {} })
+      normalize({ metadata = { fullCorpus = fullCorpus }, tests = {} })
     end)
-    Assert.isTrue(tostring(err):find("slow", 1, true) ~= nil, "names slow: " .. tostring(err))
+    Assert.isTrue(tostring(err):find("fullCorpus", 1, true) ~= nil, "names fullCorpus: " .. tostring(err))
   end
 end
 

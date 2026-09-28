@@ -3,8 +3,9 @@
 -- disposition, and the core active-follower operations the delivered
 -- controller owns are supported rather than deferred. Static catalog
 -- assertions and the explicit Elm starter and Route 24 retail checks stay
--- in the default tier; the corpus reachability walks and the global
--- one-shot invariant live in the slow sibling.
+-- in the regular test suite; the corpus reachability walks and the global
+-- one-shot invariant live in the full-corpus sibling
+-- (scripts/test.sh --full-corpus-census).
 
 local Assert = require("tests.support.Assert")
 local CommandCatalog = require("romdump.src.digest.script.CommandCatalog")
@@ -140,8 +141,8 @@ end
 
 -- Static disposition completeness: every follower-family command is
 -- decided. The reachability proof that no reached follower command
--- escapes the catalog walks the whole corpus and lives in the slow
--- sibling.
+-- escapes the catalog walks the whole corpus and lives in the full-corpus
+-- sibling (scripts/test.sh --full-corpus-census).
 T["follower family has complete dispositions"] = function()
   local gaps = {}
   for _, opcode in ipairs(REQUIRED_SUPPORTED) do

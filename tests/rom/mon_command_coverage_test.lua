@@ -369,13 +369,14 @@ function T.deferred_entries_carry_one_category_and_stay_explicit()
   Assert.equal(#problems, 0, "every deferred entry names one allowed category: " .. table.concat(problems, ", "))
   -- The reachability proof that every reached unsupported family node is an
   -- explicitly deferred command walks the whole corpus and lives in the
-  -- slow sibling.
+  -- full-corpus sibling (scripts/test.sh --full-corpus-census).
 end
 
 function T.default_lab_scripts_contain_no_undispositioned_command(romFs)
   -- Elm Lab containment over the explicitly named lab member only: the
   -- dispatcher, the entry welcome, and the starter choice. The
-  -- whole-corpus reachability and lowering audits live in the slow sibling.
+  -- whole-corpus reachability and lowering audits live in the full-corpus
+  -- sibling (scripts/test.sh --full-corpus-census).
   local archive, memberIrs = FieldScripts.decodeMembers(romFs, { LAB_MEMBER })
   assert(archive:memberCount() > LAB_MEMBER, "the script archive must still carry the lab member")
   local found = {}

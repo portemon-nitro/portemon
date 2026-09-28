@@ -2,8 +2,8 @@
 -- follower visual compiler enumerates every reachable species, form, and
 -- gender variant before compiling, so any test that calls it pays the whole
 -- follower-corpus cost even when it inspects only one species. The bounded
--- cache-backed representative resolution checks stay in the default tier;
--- everything here runs only when the slow tier is selected.
+-- cache-backed representative resolution checks stay in the regular test
+-- suite; everything here runs only with scripts/test.sh --full-corpus-census.
 
 local Assert = require("tests.support.Assert")
 local FieldActorCache = require("libs.assets.src.field.FieldActorCache")
@@ -267,7 +267,7 @@ function T.follower_visual_dependencies_track_the_follower_parameter_source(romF
 end
 
 local suite = require("tests.rom.support.RomSuite").fromFacts(T)
-suite.metadata.slow = true
+suite.metadata.fullCorpus = true
 suite.metadata.tags = { "mon", "following-mon", "visual", "corpus" }
 suite.metadata.capabilities = { "rom_dump" }
 return suite

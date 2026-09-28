@@ -11,7 +11,7 @@
 
 local Suite = {}
 
-local METADATA_KEYS = { capabilities = true, tags = true, slow = true, derivedAssets = true }
+local METADATA_KEYS = { capabilities = true, tags = true, fullCorpus = true, derivedAssets = true }
 local MODULE_KEYS = { metadata = true, beforeAll = true, afterAll = true, tests = true }
 
 local function sortedKeys(t)
@@ -55,7 +55,7 @@ end
 ---@field capabilities string[]
 ---@field derivedAssets string[] closed derived-cache requirements this suite consumes
 ---@field tags string[]
----@field slow boolean
+---@field fullCorpus boolean
 ---@field tests string[] sorted test names
 ---@field fns table<string, fun(context: table)>
 ---@field beforeAll fun(context: table)|nil
@@ -95,8 +95,8 @@ function Suite.normalize(mod, moduleName, defaultLayer)
   local layer = defaultLayer
   assert(type(layer) == "string", moduleName .. ": discovery root needs a string layer")
 
-  if metadata.slow ~= nil then
-    assert(type(metadata.slow) == "boolean", moduleName .. ": metadata.slow must be a boolean")
+  if metadata.fullCorpus ~= nil then
+    assert(type(metadata.fullCorpus) == "boolean", moduleName .. ": metadata.fullCorpus must be a boolean")
   end
 
   return {
@@ -105,7 +105,7 @@ function Suite.normalize(mod, moduleName, defaultLayer)
     capabilities = stringArray(metadata.capabilities, "capabilities", moduleName),
     derivedAssets = stringArray(metadata.derivedAssets, "derivedAssets", moduleName),
     tags = stringArray(metadata.tags, "tags", moduleName),
-    slow = metadata.slow == true,
+    fullCorpus = metadata.fullCorpus == true,
     tests = names,
     fns = fns,
     beforeAll = mod.beforeAll,

@@ -4,9 +4,10 @@
 Code health measures maintainability of executable production Lua. Declarative
 data subtrees and header-marked data modules are excluded before analysis, and
 only candidate files with at least one analyzer function row reach structural
-census, clone detection, and import-graph work. Both the full site build and
-the lightweight structural snapshot resolve scope through the same helper, and
-the full build can analyze a detached target worktree with current tooling.
+census, clone detection, and import-graph work. The full site build, the
+lightweight structural snapshot, and the lint gate resolve scope through the
+same helper, and the full build can analyze a detached target worktree with
+current tooling.
 """
 
 from __future__ import annotations
@@ -23,6 +24,22 @@ from pathlib import Path
 
 
 MODULE_PATH = Path(__file__).with_name("codehealth_scope.py")
+SCOPE_SH = Path(__file__).parent.parent / "lib" / "scope.sh"
+
+
+def run_scope(mode: str, repository: Path) -> list[str]:
+    """Run the single scope implementation and return its sorted manifest."""
+    if not SCOPE_SH.is_file():
+        raise AssertionError("scope enumeration must live in scripts/lib/scope.sh")
+    result = subprocess.run(
+        ["bash", str(SCOPE_SH), "--mode", mode, "--repository-root", str(repository)],
+        check=False,
+        capture_output=True,
+        text=True,
+    )
+    if result.returncode != 0:
+        raise AssertionError(f"scope --mode {mode} failed: {result.stderr}")
+    return result.stdout.splitlines()
 SNAPSHOT_PATH = Path(__file__).with_name("structure_snapshot.sh")
 
 
@@ -100,7 +117,6 @@ class CandidateScopeTest(unittest.TestCase):
     """Declarative production data stays out of the pre-analyzer candidate set."""
 
     def test_config_and_reference_subtrees_are_absent_from_candidates(self) -> None:
-        scope = load_scope_module()
         repository = _init_repository(
             {
                 "romdump/src/engine.lua": _function_body(),
@@ -111,13 +127,12 @@ class CandidateScopeTest(unittest.TestCase):
         self.addCleanup(
             lambda: subprocess.run(["rm", "-rf", str(repository)], check=False)
         )
-        candidates = scope.candidate_paths(repository)
+        candidates = run_scope("candidates", repository)
         self.assertIn("romdump/src/engine.lua", candidates)
         self.assertNotIn("romdump/src/config/Table.lua", candidates)
         self.assertNotIn("romdump/src/reference/Map.lua", candidates)
 
     def test_header_marker_excludes_data_module_with_helpers(self) -> None:
-        scope = load_scope_module()
         repository = _init_repository(
             {
                 "romdump/src/tables.lua": (
@@ -129,12 +144,11 @@ class CandidateScopeTest(unittest.TestCase):
         self.addCleanup(
             lambda: subprocess.run(["rm", "-rf", str(repository)], check=False)
         )
-        candidates = scope.candidate_paths(repository)
+        candidates = run_scope("candidates", repository)
         self.assertIn("romdump/src/engine.lua", candidates)
         self.assertNotIn("romdump/src/tables.lua", candidates)
 
     def test_marker_beyond_header_window_does_not_exclude(self) -> None:
-        scope = load_scope_module()
         content = (
             "-- line one\n-- line two\n-- line three\n-- line four\n"
             "-- line five\n-- codehealth: declarative\n" + _function_body()
@@ -143,11 +157,10 @@ class CandidateScopeTest(unittest.TestCase):
         self.addCleanup(
             lambda: subprocess.run(["rm", "-rf", str(repository)], check=False)
         )
-        candidates = scope.candidate_paths(repository)
+        candidates = run_scope("candidates", repository)
         self.assertIn("romdump/src/tables.lua", candidates)
 
     def test_candidates_are_sorted_and_unique(self) -> None:
-        scope = load_scope_module()
         repository = _init_repository(
             {
                 "romdump/src/zeta.lua": _function_body(),
@@ -157,18 +170,79 @@ class CandidateScopeTest(unittest.TestCase):
         self.addCleanup(
             lambda: subprocess.run(["rm", "-rf", str(repository)], check=False)
         )
-        candidates = scope.candidate_paths(repository)
+        candidates = run_scope("candidates", repository)
         self.assertEqual(candidates, sorted(candidates))
         self.assertEqual(len(candidates), len(set(candidates)))
 
     def test_repository_subdirectory_is_rejected_as_analysis_root(self) -> None:
-        scope = load_scope_module()
         repository = _init_repository({"game/src/alpha.lua": _function_body()})
         self.addCleanup(
             lambda: subprocess.run(["rm", "-rf", str(repository)], check=False)
         )
-        with self.assertRaisesRegex(ValueError, "top level"):
-            scope.candidate_paths(repository / "game")
+        result = subprocess.run(
+            ["bash", str(SCOPE_SH), "--mode", "candidates", "--repository-root", str(repository / "game")],
+            check=False,
+            capture_output=True,
+            text=True,
+        )
+        self.assertNotEqual(result.returncode, 0)
+        self.assertIn("top level", result.stderr)
+
+    def test_unclassified_tracked_path_is_a_hard_error(self) -> None:
+        repository = _init_repository({"mystery/scratch.lua": _function_body()})
+        self.addCleanup(
+            lambda: subprocess.run(["rm", "-rf", str(repository)], check=False)
+        )
+        result = subprocess.run(
+            ["bash", str(SCOPE_SH), "--mode", "candidates", "--repository-root", str(repository)],
+            check=False,
+            capture_output=True,
+            text=True,
+        )
+        self.assertNotEqual(result.returncode, 0)
+        self.assertIn("unclassified", result.stderr)
+
+
+class LintScopeTest(unittest.TestCase):
+    """The lint gate formats tracked candidates plus new production files."""
+
+    def test_untracked_production_file_joins_the_scope(self) -> None:
+        repository = _init_repository({"game/src/engine.lua": _function_body()})
+        self.addCleanup(
+            lambda: subprocess.run(["rm", "-rf", str(repository)], check=False)
+        )
+        untracked = repository / "libs" / "new" / "untracked.lua"
+        untracked.parent.mkdir(parents=True, exist_ok=True)
+        untracked.write_text(_function_body(), encoding="utf-8")
+        paths = run_scope("lint", repository)
+        self.assertIn("game/src/engine.lua", paths)
+        self.assertIn("libs/new/untracked.lua", paths)
+        self.assertEqual(paths, sorted(paths))
+        self.assertEqual(len(paths), len(set(paths)))
+
+    def test_untracked_test_tooling_and_unknown_files_stay_out(self) -> None:
+        repository = _init_repository({"game/src/engine.lua": _function_body()})
+        self.addCleanup(
+            lambda: subprocess.run(["rm", "-rf", str(repository)], check=False)
+        )
+        for relative in ("tests/scratch_test.lua", "scripts/scratch.lua", "mystery/scratch.lua"):
+            path = repository / relative
+            path.parent.mkdir(parents=True, exist_ok=True)
+            path.write_text(_function_body(), encoding="utf-8")
+        self.assertEqual(run_scope("lint", repository), ["game/src/engine.lua"])
+
+    def test_untracked_declarative_sources_stay_out(self) -> None:
+        repository = _init_repository({"game/src/engine.lua": _function_body()})
+        self.addCleanup(
+            lambda: subprocess.run(["rm", "-rf", str(repository)], check=False)
+        )
+        prefixed = repository / "romdump" / "src" / "config" / "New.lua"
+        prefixed.parent.mkdir(parents=True, exist_ok=True)
+        prefixed.write_text(_function_body(), encoding="utf-8")
+        marked = repository / "libs" / "marked.lua"
+        marked.parent.mkdir(parents=True, exist_ok=True)
+        marked.write_text("-- codehealth: declarative\n" + _function_body(), encoding="utf-8")
+        self.assertEqual(run_scope("lint", repository), ["game/src/engine.lua"])
 
 
 class FinalStructuralScopeTest(unittest.TestCase):
@@ -198,7 +272,7 @@ class FinalStructuralScopeTest(unittest.TestCase):
                     }
                 ],
             )
-            candidates = scope.candidate_paths(repository)
+            candidates = run_scope("candidates", repository)
             self.assertIn("game/src/data.lua", candidates)
             final = scope.final_paths(repository, candidates, csv_path)
             self.assertEqual(final, ["game/src/alpha.lua"])
@@ -233,7 +307,7 @@ class FinalStructuralScopeTest(unittest.TestCase):
                     },
                 ],
             )
-            candidates = scope.candidate_paths(repository)
+            candidates = run_scope("candidates", repository)
             final = scope.final_paths(repository, candidates, csv_path)
             self.assertEqual(final, ["game/src/alpha.lua", "game/src/beta.lua"])
 
@@ -256,7 +330,7 @@ class FinalStructuralScopeTest(unittest.TestCase):
                     }
                 ],
             )
-            candidates = scope.candidate_paths(repository)
+            candidates = run_scope("candidates", repository)
             with self.assertRaises(ValueError):
                 scope.final_paths(repository, candidates, csv_path)
 
@@ -280,21 +354,27 @@ class FinalStructuralScopeTest(unittest.TestCase):
                         }
                     ],
                 )
-                candidates = scope.candidate_paths(repository)
+                candidates = run_scope("candidates", repository)
                 with self.subTest(foreign=foreign):
                     with self.assertRaises(ValueError):
                         scope.final_paths(repository, candidates, csv_path)
 
     def test_empty_candidate_or_final_scope_fails(self) -> None:
-        scope = load_scope_module()
         repository = _init_repository(
             {"romdump/src/config/Table.lua": _function_body()}
         )
         self.addCleanup(
             lambda: subprocess.run(["rm", "-rf", str(repository)], check=False)
         )
-        with self.assertRaises(ValueError):
-            scope.candidate_paths(repository)
+        result = subprocess.run(
+            ["bash", str(SCOPE_SH), "--mode", "candidates", "--repository-root", str(repository)],
+            check=False,
+            capture_output=True,
+            text=True,
+        )
+        self.assertNotEqual(result.returncode, 0)
+        self.assertIn("empty", result.stderr)
+        scope = load_scope_module()
         repository_two = _init_repository({"game/src/alpha.lua": _function_body()})
         self.addCleanup(
             lambda: subprocess.run(["rm", "-rf", str(repository_two)], check=False)
@@ -302,7 +382,7 @@ class FinalStructuralScopeTest(unittest.TestCase):
         with tempfile.TemporaryDirectory() as directory:
             csv_path = Path(directory) / "functions.csv"
             _write_lizard_csv(csv_path, [])
-            candidates = scope.candidate_paths(repository_two)
+            candidates = run_scope("candidates", repository_two)
             with self.assertRaises(ValueError):
                 scope.final_paths(repository_two, candidates, csv_path)
 
@@ -336,14 +416,11 @@ class ScopeMetadataContractTest(unittest.TestCase):
 
 
 class ScopeCommandContractTest(unittest.TestCase):
-    """Both analysis entry points resolve scope through one shared helper."""
+    """Every scope entry point resolves through the single shell helper."""
 
     def test_candidate_command_emits_sorted_manifest(self) -> None:
-        if not MODULE_PATH.is_file():
-            self.fail(
-                "executable code-health scope must derive candidate and final "
-                "structural manifests before these contract tests can pass"
-            )
+        if not SCOPE_SH.is_file():
+            self.fail("scope enumeration must live in scripts/lib/scope.sh")
         repository = _init_repository(
             {
                 "romdump/src/engine.lua": _function_body(),
@@ -355,8 +432,9 @@ class ScopeCommandContractTest(unittest.TestCase):
         )
         result = subprocess.run(
             [
-                sys.executable,
-                str(MODULE_PATH),
+                "bash",
+                str(SCOPE_SH),
+                "--mode",
                 "candidates",
                 "--repository-root",
                 str(repository),
@@ -370,6 +448,37 @@ class ScopeCommandContractTest(unittest.TestCase):
         self.assertEqual(paths, sorted(paths))
         self.assertIn("romdump/src/engine.lua", paths)
         self.assertNotIn("romdump/src/config/Table.lua", paths)
+
+    def test_lint_command_emits_the_lint_scope(self) -> None:
+        repository = _init_repository({"romdump/src/engine.lua": _function_body()})
+        self.addCleanup(
+            lambda: subprocess.run(["rm", "-rf", str(repository)], check=False)
+        )
+        untracked = repository / "libs" / "new" / "untracked.lua"
+        untracked.parent.mkdir(parents=True, exist_ok=True)
+        untracked.write_text(_function_body(), encoding="utf-8")
+        ignored = repository / "tests" / "scratch_test.lua"
+        ignored.parent.mkdir(parents=True, exist_ok=True)
+        ignored.write_text(_function_body(), encoding="utf-8")
+        result = subprocess.run(
+            [
+                "bash",
+                str(SCOPE_SH),
+                "--mode",
+                "lint",
+                "--repository-root",
+                str(repository),
+            ],
+            check=False,
+            capture_output=True,
+            text=True,
+        )
+        self.assertEqual(result.returncode, 0, result.stderr)
+        paths = result.stdout.splitlines()
+        self.assertEqual(paths, sorted(paths))
+        self.assertIn("romdump/src/engine.lua", paths)
+        self.assertIn("libs/new/untracked.lua", paths)
+        self.assertNotIn("tests/scratch_test.lua", paths)
 
     def test_structural_command_derives_function_bearing_manifest(self) -> None:
         if not MODULE_PATH.is_file():
@@ -391,7 +500,7 @@ class ScopeCommandContractTest(unittest.TestCase):
             work = Path(directory)
             candidates_file = work / "candidates.txt"
             csv_path = work / "functions.csv"
-            candidates = scope.candidate_paths(repository)
+            candidates = run_scope("candidates", repository)
             candidates_file.write_text("\n".join(candidates) + "\n", encoding="utf-8")
             _write_lizard_csv(
                 csv_path,
@@ -434,7 +543,7 @@ class ScopeCommandContractTest(unittest.TestCase):
         self.addCleanup(
             lambda: subprocess.run(["rm", "-rf", str(repository)], check=False)
         )
-        candidates = scope.candidate_paths(repository)
+        candidates = run_scope("candidates", repository)
         self.assertIn("game/src/logic.lua", candidates)
         self.assertIn("game/src/data.lua", candidates)
         with tempfile.TemporaryDirectory() as directory:

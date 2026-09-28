@@ -93,7 +93,7 @@ mkdir -p \
 
 cp -- "$TOOL_ROOT/site/styles.css" "$SITE_ROOT/"
 
-python3 "$TOOL_ROOT/scripts/ci/codehealth_scope.py" candidates --repository-root "$TARGET_ROOT" > "$CANDIDATE_MANIFEST"
+"$TOOL_ROOT/scripts/lib/scope.sh" --mode candidates --repository-root "$TARGET_ROOT" > "$CANDIDATE_MANIFEST"
 
 if [ ! -s "$CANDIDATE_MANIFEST" ]; then
   echo "codehealth: candidate Lua manifest is empty" >&2

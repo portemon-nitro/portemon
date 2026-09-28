@@ -2,8 +2,8 @@
 -- member must decode through NitroAnimation and satisfy the archive facts
 -- (member count, per-format curve/key invariants, format census). This sweep
 -- is the exhaustive counterpart to the targeted per-member decoder checks,
--- which stay in the default tier; the sweep itself runs only when the slow
--- tier is selected.
+-- which stay in the regular test suite; the sweep itself runs only with
+-- scripts/test.sh --full-corpus-census.
 
 local Assert = require("tests.support.Assert")
 local BinaryReader = require("libs.codec.src.BinaryReader")
@@ -111,6 +111,6 @@ function T.all_animation_members_decode(romFs)
 end
 
 local suite = require("tests.rom.support.RomSuite").fromFacts(T)
-suite.metadata.slow = true
+suite.metadata.fullCorpus = true
 suite.metadata.tags = { "animation", "census" }
 return suite

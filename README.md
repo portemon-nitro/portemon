@@ -31,13 +31,15 @@ scripts/lint.sh --check  # check without modifying files
 ```
 
 `buildcache.sh` accepts a compatible `.nds` or `.zip` source when a raw dump is
-not already available. `test.sh` runs every available test layer; the optional
-`--rom-source` performs an isolated source-backed run. `lint.sh` runs its
-formatting/policy checks alongside a reduced-workspace LuaLS pass (tests
-excluded) in the background, so its wall time tracks the slower of the two
-rather than their sum; that pass is a fast local signal, not full coverage.
-Pre-commit runs the non-mutating lint check only; CI runs both lint and the
-full workspace typecheck.
+not already available. `test.sh` runs the regular test suites across every available test layer;
+the optional `--rom-source` performs an isolated source-backed run.
+`scripts/test.sh --full-corpus-census` runs only the exhaustive corpus
+census after a manual confirmation and is never part of routine
+verification. `lint.sh` runs its
+formatting/policy checks alongside a codehealth-scoped LuaLS pass in the
+background, so its wall time tracks the slower of the two rather than their
+sum. Pre-commit runs the non-mutating lint check only; CI runs lint as its
+static gate.
 
 See [the architecture principles](docs/architecture.md) for ownership,
 dependency direction, and data-lifecycle guidance.

@@ -37,7 +37,7 @@ CANDIDATE_MANIFEST="$WORK_DIR/candidate-lua-files.txt"
 FINAL_MANIFEST="$WORK_DIR/structural-lua-files.txt"
 LIZARD_CSV="$WORK_DIR/lizard-functions.csv"
 
-python3 "$TOOL_ROOT/scripts/ci/codehealth_scope.py" candidates --repository-root "$TARGET_ROOT" > "$CANDIDATE_MANIFEST"
+"$TOOL_ROOT/scripts/lib/scope.sh" --mode candidates --repository-root "$TARGET_ROOT" > "$CANDIDATE_MANIFEST"
 
 if [ ! -s "$CANDIDATE_MANIFEST" ]; then
   echo "structure snapshot: candidate Lua manifest is empty" >&2

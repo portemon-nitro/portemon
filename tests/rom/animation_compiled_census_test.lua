@@ -16,7 +16,7 @@ local RomImporter = require("romdump.src.source.RomImporter")
 
 local T = {
   metadata = {
-    slow = true,
+    fullCorpus = true,
     capabilities = { "rom_dump", "derived_cache" },
     derivedAssets = { "complete" },
     tags = { "census", "animation" },
