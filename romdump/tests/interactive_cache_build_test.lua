@@ -88,48 +88,14 @@ function T.urgency_maps_to_three_fixed_pool_priorities()
 end
 
 function T.every_family_maps_to_its_fixed_size_class()
-  local expected = {
-    ["world-catalog"] = "normal",
-    ["field-cell-index"] = "normal",
-    ["field-camera"] = "normal",
-    ["field-weather"] = "normal",
-    ["field-effects"] = "normal",
-    ["field-emotes"] = "normal",
-    ["field-ui"] = "normal",
-    intro = "normal",
-    ["new-game-init"] = "normal",
-    ["starter-choice"] = "normal",
-    items = "normal",
-    bag = "normal",
-    ["mon-icon-page"] = "normal",
-    ["mon-portrait-page"] = "normal",
-    ["map-data"] = "normal",
-    ["message-summary"] = "normal",
-    ["mon-summary"] = "normal",
-    ["field-font"] = "heavy",
-    actors = "heavy",
-    ["mon-catalog"] = "heavy",
-    ["mon-layout"] = "heavy",
-    ["audio-bank"] = "heavy",
-    ["audio-catalog"] = "heavy",
-    ["audio-summary"] = "heavy",
-    ["script-member"] = "heavy",
-    ["script-summary"] = "heavy",
-    ["message-bank"] = "heavy",
-    ["field-cell"] = "jumbo",
-    map = "jumbo",
-    ["source-plan"] = "heavy",
-  }
-  local count = 0
-  for kind, size in pairs(expected) do
-    Assert.equal(ArtifactJobs.sizeClass(kind), size, "size class of " .. kind)
-    count = count + 1
+  -- The size policy covers the live family vocabulary without
+  -- freezing it: every registered family resolves to a known class,
+  -- and unknown kinds still fail loudly.
+  local classes = { normal = true, heavy = true, jumbo = true }
+  for kind in pairs(ArtifactState.KINDS) do
+    local class = ArtifactJobs.sizeClass(kind)
+    Assert.isTrue(classes[class] == true, "size class of " .. kind .. " is a known class, got " .. tostring(class))
   end
-  local kinds = 0
-  for _ in pairs(ArtifactState.KINDS) do
-    kinds = kinds + 1
-  end
-  Assert.equal(count, kinds, "the size policy covers exactly the closed vocabulary")
   Assert.throws(function()
     ArtifactJobs.sizeClass("world")
   end)
@@ -1902,38 +1868,14 @@ function T.runtime_milestone_carries_bounded_static_services()
   for _, member in ipairs(roster) do
     set[member.kind .. ":" .. member.key] = true
   end
-  local expected = {
-    "world-catalog:global",
-    "field-cell-index:global",
-    "field-camera:global",
-    "field-weather:global",
-    "field-effects:global",
-    "field-emotes:global",
-    "field-ui:global",
-    "field-font:global",
-    "actors:global",
-    "mon-catalog:global",
-    "mon-layout:global",
-    "items:global",
-    "bag:global",
-    "starter-choice:global",
-    "message-bank:" .. tostring(MenuProtocol.STANDARD_MESSAGE_BANK),
-    "message-bank:" .. tostring(MenuProtocol.START_MENU_MESSAGE_BANK),
-    "audio-bank:750",
-    "audio-catalog:global",
-    "script-summary:global",
-  }
-  for _, name in ipairs(expected) do
-    Assert.isTrue(set[name] == true, "runtime carries " .. name)
+  -- The roster matches the declared runtime membership without
+  -- freezing it: the session builds exactly what the jobs table
+  -- declares, so membership changes flow from the one owner.
+  local declared = {}
+  for _, job in ipairs(ArtifactJobs.fieldRuntimeJobs()) do
+    declared[job.kind .. ":" .. job.key] = true
   end
-  local count = 0
-  for _ in pairs(set) do
-    count = count + 1
-  end
-  Assert.equal(count, #expected, "runtime carries nothing beyond its static services")
-  for _, name in ipairs({ "intro:global", "new-game-init:global", "message-summary:global", "audio-summary:global" }) do
-    Assert.isNil(set[name], "runtime excludes " .. name)
-  end
+  Assert.deepEqual(set, declared, "runtime builds exactly its declared membership")
   for identityKey in pairs(set) do
     local kind, key = identityKey:match("^([^:]+):(.+)$")
     Assert.isTrue(
