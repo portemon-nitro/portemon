@@ -1087,13 +1087,16 @@ function FieldState:dispose()
     self.actorPresentation:dispose()
     self.actorPresentation = nil
   end
-  if self.presentationResources then
-    self.presentationResources:dispose()
-    self.presentationResources = nil
-  end
+  -- Borrowers release before their owner: open flows and screens
+  -- release their icon-preparation interest while the presentation
+  -- binding is still installed; the presentation unbinds last.
   if self.runtime then
     self.runtime:dispose()
     self.runtime = nil
+  end
+  if self.presentationResources then
+    self.presentationResources:dispose()
+    self.presentationResources = nil
   end
 end
 
