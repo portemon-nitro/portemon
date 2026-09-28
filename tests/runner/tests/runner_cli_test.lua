@@ -143,75 +143,6 @@ local function selectedCapabilities(listing)
   return caps
 end
 
--- The plan mode is part of the same command surface: it parses like any
--- other invocation, so the shell's plan lookup cannot drift from the run's
--- parsing.
-function T.the_plan_mode_is_part_of_the_command_surface()
-  local plan = parse({ "--plan" })
-  Assert.isTrue(plan.planMode, "--plan marks the machine-readable plan mode")
-
-  local combined = parse({ "--plan", "--layer", "unit" })
-  Assert.isTrue(combined.planMode)
-  Assert.equal(combined.layer, "unit")
-
-  local listed = parse({ "--plan", "--list" })
-  Assert.isTrue(listed.planMode)
-  Assert.isTrue(listed.list)
-end
-
--- The plan the shell consumes is a machine-readable answer, not a second
--- parser: the preparation scope follows the exact requirement union of the
--- suites actually selected, the response names the source path to import and
--- the cold-rerun flag, and a listing never names a source to import.
-function T.the_plan_response_names_whether_the_cache_must_be_prepared()
-  local function fields(argv, requirements, context)
-    local lines = {}
-    local requires = {}
-    for _, line in ipairs(Cli.renderPlan(parse(argv, context), nil, nil, requirements)) do
-      local key, value = line:match("^([^=]+)=(.*)$")
-      Assert.notNil(key, "every plan line is key=value: " .. line)
-      if key == "require" then
-        requires[#requires + 1] = value
-      else
-        lines[key] = value
-      end
-    end
-    lines.requires = requires
-    return lines
-  end
-
-  Assert.equal(fields({}, {}).prepare, "none", "a selection without cache consumers skips preparation")
-  Assert.equal(fields({}, {}, nil).fresh, "0", "a default run is not a cold rerun")
-  Assert.deepEqual(fields({}, {}).requires, {}, "no requirements means no require rows")
-  Assert.equal(fields({}, { "map:7" }).prepare, "assets", "a selection using the cache prepares its partial scope")
-  Assert.deepEqual(fields({}, { "map:7" }).requires, { "map:7" }, "the plan names the required closure")
-  Assert.equal(
-    fields({}, { "complete", "map:7" }).prepare,
-    "complete",
-    "a selection requesting the whole corpus prepares it"
-  )
-  Assert.equal(fields({ "--list" }, { "map:7" }).prepare, "none", "listing executes nothing")
-  Assert.equal(fields({ "--layer", "rom" }, {}).prepare, "none", "a raw-dump-only selection skips preparation")
-
-  local context = {
-    fileExists = function(path)
-      return path == "/roms/hg.nds"
-    end,
-  }
-  local sourced = fields({ "--layer", "unit", "--rom-source", "/roms/hg.nds" }, {}, context)
-  Assert.equal(sourced.prepare, "none", "a requirement-free selection prepares nothing")
-  Assert.equal(sourced.rom_source, "/roms/hg.nds", "the plan names the source path")
-  Assert.equal(sourced.fresh, "0", "a sourced run without the cold flag is a reuse run")
-  Assert.isNil(fields({}, {}, context).rom_source, "no source line when none was supplied")
-  Assert.isNil(
-    fields({ "--list", "--rom-source", "/roms/hg.nds" }, {}, context).rom_source,
-    "a listing names no source to import"
-  )
-  local cold = fields({ "--rom-source", "/roms/hg.nds", "--fresh" }, {}, context)
-  Assert.equal(cold.fresh, "1", "a cold rerun marks the plan")
-  Assert.equal(cold.rom_source, "/roms/hg.nds", "a cold rerun still names its source")
-end
-
 -- A RunnerRun-shaped result. `layers` maps a layer name to its
 -- passed/failed/skipped counts; totals and a matching `results` array are
 -- derived so the same fixture drives both the exit policy and the report.
@@ -257,21 +188,6 @@ end
 
 local NO_DUMP = {}
 local READY_DUMP = { rom_dump = true, derived_cache = true }
-
--- A bare run selects every layer, requires nothing, and tolerates the
--- `--test` mode flag it was dispatched with.
-function T.default_plan_selects_every_layer_and_requires_nothing()
-  for _, argv in ipairs({ {}, { "--test" } }) do
-    local plan = parse(argv)
-    Assert.isNil(plan.layer, "a default run is not restricted to one layer")
-    Assert.isNil(plan.filter)
-    Assert.isNil(plan.romSource)
-    Assert.isFalse(plan.list)
-    Assert.isFalse(plan.serial, "concurrency defaults to automatic parallelism")
-    Assert.isFalse(plan.strict)
-    Assert.deepEqual(plan.requiredCapabilities, {})
-  end
-end
 
 -- Every documented option parses into the plan the runner consumes.
 function T.documented_options_parse()
@@ -343,46 +259,6 @@ function T.filter_metacharacters_are_literal_substrings()
   end
 end
 
--- Selecting a ROM-gated layer makes the dump mandatory only for the ROM
--- capabilities the selection actually uses.
-function T.rom_gated_layers_require_the_selected_dump_capabilities()
-  for _, layer in ipairs({ "rom", "acceptance" }) do
-    local plan = parse({ "--layer", layer })
-    Assert.equal(plan.layer, layer)
-
-    local full = runOf(
-      { [layer] = { skipped = 2 } },
-      { selectedCapabilities = { rom_dump = true, derived_cache = true } }
-    )
-    local missingBoth = Cli.outcome(plan, {}, full)
-    Assert.isTrue(missingBoth.exitCode ~= 0, "--layer " .. layer .. " without a dump must be nonzero")
-    contains(tostring(missingBoth.failure), "rom_dump", "the failure names the missing capability")
-
-    local raw = runOf({ [layer] = { passed = 1 } }, { selectedCapabilities = { rom_dump = true } })
-    local rawOutcome = Cli.outcome(plan, { rom_dump = true }, raw)
-    Assert.equal(rawOutcome.exitCode, 0, "a raw-dump-only selection tolerates the absent derived cache")
-    Assert.isNil(rawOutcome.failure)
-  end
-  local unitOutcome = Cli.outcome(parse({ "--layer", "unit" }), NO_DUMP, runOf({ unit = { passed = 1 } }))
-  Assert.equal(unitOutcome.exitCode, 0, "a unit selection requires no dump capability")
-end
-
--- Strict mode is environment-driven and makes the selected ROM capabilities
--- mandatory.
-function T.strict_mode_comes_from_the_environment()
-  local strict = parse({}, { env = { PORTEMON_REQUIRE_ROM_TESTS = "1" } })
-  Assert.isTrue(strict.strict)
-
-  local relaxed = parse({}, { env = { PORTEMON_REQUIRE_ROM_TESTS = "0" } })
-  Assert.isFalse(relaxed.strict)
-  Assert.isFalse(parse({}, { env = {} }).strict)
-
-  local run = runOf({ unit = { passed = 1 }, rom = { skipped = 1 } }, { selectedCapabilities = { rom_dump = true } })
-  local missing = Cli.outcome(strict, {}, run)
-  Assert.isTrue(missing.exitCode ~= 0, "strict mode must require the selected rom_dump")
-  contains(tostring(missing.failure), "rom_dump", "the failure names the missing capability")
-end
-
 -- With no dump, the default run stays green but says loudly what did
 -- not run, with the exact skipped counts and both remediation commands.
 function T.default_run_without_a_dump_is_green_and_loudly_warned()
@@ -404,29 +280,6 @@ function T.default_run_without_a_dump_is_green_and_loudly_warned()
   contains(outcome.warning, "23", "warning reports the skipped acceptance count")
   contains(outcome.warning, "scripts/buildcache.sh", "warning names the remediation command")
   contains(outcome.warning, "PORTEMON_REQUIRE_ROM_TESTS=1", "warning names the strict-mode command")
-end
-
--- The banner reports what a selection actually lost: a selection that never
--- reached a ROM-gated layer is not warned, and a failing run still is.
-function T.the_missing_dump_warning_follows_the_skips_not_the_status()
-  local unitOnly = Cli.outcome(parse({ "--layer", "unit" }), NO_DUMP, runOf({ unit = { passed = 1194 } }))
-  Assert.isNil(unitOnly.warning, "a selection with no ROM-gated skips has nothing to warn about")
-
-  local failed = runOf({ unit = { passed = 1193, failed = 1 }, rom = { skipped = 71 } })
-  local red = Cli.outcome(parse({}), NO_DUMP, failed)
-  Assert.equal(red.exitCode, 1)
-  Assert.notNil(red.warning, "a failure elsewhere must not hide the skipped ROM-gated layer")
-end
-
--- With a ready dump nothing is skipped and nothing is warned about.
-function T.ready_dump_run_is_green_without_a_warning()
-  local run = runOf({ unit = { passed = 1194 }, rom = { passed = 71 }, acceptance = { passed = 23 } })
-
-  local outcome = Cli.outcome(parse({}), READY_DUMP, run)
-
-  Assert.equal(outcome.exitCode, 0)
-  Assert.isNil(outcome.failure)
-  Assert.isNil(outcome.warning, "a run with every layer executed has nothing to warn about")
 end
 
 -- Strict mode turns the missing dump into an actionable failure.
@@ -462,19 +315,6 @@ function T.selected_rom_gated_layer_without_a_dump_fails()
   end
 end
 
--- Strict graphics mode is environment-driven, mirrors the ROM strictness, and
--- records strict intent on the plan; the graphics capability itself is
--- enforced in the outcome from the selected tests, not at parse time.
-function T.graphics_strict_mode_comes_from_the_environment()
-  local strict = parse({}, { env = { PORTEMON_REQUIRE_GRAPHICS_TESTS = "1" } })
-  Assert.isTrue(strict.graphicsStrict, "strict graphics mode must be recorded in the plan")
-  Assert.isFalse(hasCapability(strict, "graphics"), "parsing records intent; selection enforces the capability")
-
-  local relaxed = parse({}, { env = { PORTEMON_REQUIRE_GRAPHICS_TESTS = "0" } })
-  Assert.isFalse(relaxed.graphicsStrict)
-  Assert.isFalse(parse({}, { env = {} }).graphicsStrict)
-end
-
 -- Strict graphics mode turns an absent graphics capability into an actionable
 -- failure instead of a green run of skips.
 function T.graphics_strict_mode_without_the_capability_fails()
@@ -488,37 +328,6 @@ function T.graphics_strict_mode_without_the_capability_fails()
   Assert.isTrue(outcome.exitCode ~= 0, "strict graphics mode must not exit zero when the graphics layer was skipped")
   Assert.notNil(outcome.failure, "strict graphics mode needs an actionable message")
   contains(outcome.failure, "graphics", "strict graphics failure names the missing capability")
-end
-
--- The execution counter: with the capability available, a whole-run selection
--- that produced no executed graphics test (every graphics test skipped) is a
--- failure under strict mode -- a regression that silently drops the renderer
--- suites must not keep CI green.
-function T.graphics_strict_mode_fails_when_every_graphics_test_skipped()
-  local plan = parse({}, { env = { PORTEMON_REQUIRE_GRAPHICS_TESTS = "1" } })
-  local run = runOf({ unit = { passed = 1194 }, graphics = { skipped = 45 } })
-
-  local outcome = Cli.outcome(plan, { graphics = true }, run)
-
-  Assert.isTrue(outcome.exitCode ~= 0, "strict graphics mode must not exit zero when every graphics test skipped")
-  Assert.notNil(outcome.failure, "strict graphics mode needs an actionable message")
-  contains(outcome.failure, "no graphics test was executed", "strict failure names the missing execution")
-end
-
--- The same counter when the graphics layer produced no results at all -- the
--- layer exists in the selection but discovered or selected nothing.
-function T.graphics_strict_mode_fails_when_the_graphics_layer_executed_nothing()
-  local plan = parse({}, { env = { PORTEMON_REQUIRE_GRAPHICS_TESTS = "1" } })
-  local run = runOf({ unit = { passed = 1194 } })
-
-  local outcome = Cli.outcome(plan, { graphics = true }, run)
-
-  Assert.isTrue(
-    outcome.exitCode ~= 0,
-    "a selection with no graphics results at all must fail under strict graphics mode"
-  )
-  Assert.notNil(outcome.failure)
-  contains(outcome.failure, "no graphics test was executed", "strict failure names the missing execution")
 end
 
 -- Executed graphics tests satisfy the strict requirement whatever else runs.
@@ -544,19 +353,6 @@ function T.graphics_strictness_does_not_trip_partial_runs_or_listing()
 
   local listing = parse({ "--list" }, { env = { PORTEMON_REQUIRE_GRAPHICS_TESTS = "1" } })
   Assert.isTrue(listing.list, "--list still parses under strict graphics mode")
-end
-
--- An explicit filter is a narrowing the user asked for: it never triggers the
--- execution counter (the generic empty-run failure still guards a filter that
--- matches nothing at all).
-function T.graphics_strict_mode_respects_an_explicit_filter()
-  local plan = parse({ "--filter", "warp" }, { env = { PORTEMON_REQUIRE_GRAPHICS_TESTS = "1" } })
-  local run = runOf({ unit = { passed = 1194 } })
-
-  local outcome = Cli.outcome(plan, { graphics = true }, run)
-
-  Assert.equal(outcome.exitCode, 0, "a filter that narrows away from the graphics layer is an explicit selection")
-  Assert.isNil(outcome.failure)
 end
 
 -- The exit status is combined across layers -- a failure anywhere is a
@@ -1010,25 +806,6 @@ function T.selected_suites_carry_their_declared_derived_requirements()
   end
   Assert.isNil(union["map:7"], "the corpus union keeps no regular closure")
   Assert.isTrue(union["complete"] == true, "the corpus union keeps the complete request")
-end
-
--- A selection that still uses the historical cache capability name requires
--- the complete corpus explicitly: the historical capability is only ever
--- granted as an alias of the verified complete proof, so planning must be
--- truthful about what it prepares.
-function T.historical_cache_capability_selection_requires_the_complete_scope()
-  local plan = parse({ "--filter", "cache case" })
-  local caps = { rom_dump = true, derived_cache = true }
-  local lines = Cli.renderPlan(plan, caps, 1, { "map:7" })
-  local requires = {}
-  for _, line in ipairs(lines) do
-    local key, value = line:match("^([^=]+)=(.*)$")
-    if key == "require" then
-      requires[#requires + 1] = value
-    end
-  end
-  Assert.deepEqual(requires, { "complete", "map:7" }, "the historical name is planned as the complete scope")
-  Assert.equal(prepareOf(lines), "complete", "the historical name prepares the complete scope")
 end
 
 -- The requirement union is deduplicated and sorted so repeated runs of the

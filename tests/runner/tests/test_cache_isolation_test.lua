@@ -601,7 +601,7 @@ function T.a_legacy_cache_backed_focus_prepares_the_complete_scope_it_claims()
     )
 
     local narrowStatus, narrowOutput =
-      runPlanChild(root, "narrow-plan", "--plan --filter the_plan_mode_is_part_of_the_command_surface")
+      runPlanChild(root, "narrow-plan", "--plan --filter test_entrypoint_delegates_selection_to_the_runner")
     Assert.equal(narrowStatus, "0", "the requirement-free plan child must exit zero, got: " .. narrowOutput)
     local narrowPrepare, _, narrowRequires = parsePlanFields(narrowOutput)
     Assert.equal(narrowPrepare, "none", "a requirement-free focus prepares nothing")
@@ -1111,7 +1111,7 @@ function T.first_seed_imports_once_and_prepares_only_the_selected_scope()
   local cases = {
     {
       label = "requirement-free",
-      args = "--filter the_plan_mode_is_part_of_the_command_surface",
+      args = "--filter test_entrypoint_delegates_selection_to_the_runner",
       requires = {},
     },
     {
@@ -1228,7 +1228,7 @@ local function runEntryChild(root, name, args, exports)
   return exitStatus(statusFile), readFile(logFile) or ""
 end
 
-local UNIT_FOCUS = "--filter the_plan_mode_is_part_of_the_command_surface"
+local UNIT_FOCUS = "--filter test_entrypoint_delegates_selection_to_the_runner"
 
 -- Strict revision helpers for the builder-issued receipt: the exact field
 -- shape the entrypoint authorizes, with per-test overrides.
