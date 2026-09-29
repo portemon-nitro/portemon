@@ -31,6 +31,16 @@ local function modulePrefix(path)
   return path:gsub("/", ".")
 end
 
+-- Suites discovered beneath the runner's own test subtree verify the runner
+-- itself. They are gated by this discovery identity before any module is
+-- required, so a regular run never loads them and the runner-only run never
+-- loads a product module.
+local SELF_TEST_ROOT = "tests/runner/tests"
+
+local function isSelfTestPath(childPath)
+  return childPath:sub(1, #SELF_TEST_ROOT + 1) == SELF_TEST_ROOT .. "/"
+end
+
 local function layerForTestsDirectory(path)
   local parent = path:match("^(.-)/tests$")
   if parent == nil then
@@ -55,7 +65,12 @@ local function walk(fs, path, prefix, layer, out)
     if info ~= nil and info.type == "directory" then
       walk(fs, childPath, prefix .. "." .. entry, layer, out)
     elseif isSuiteFile(entry) then
-      out[#out + 1] = { module = prefix .. "." .. entry:sub(1, -5), layer = layer, path = childPath }
+      out[#out + 1] = {
+        module = prefix .. "." .. entry:sub(1, -5),
+        layer = layer,
+        path = childPath,
+        selfTest = isSelfTestPath(childPath),
+      }
     end
   end
 end
@@ -95,7 +110,7 @@ end
 -- Every suite beneath the project tree, sorted by module name.
 ---@param fs table love.filesystem-shaped reader
 ---@param roots table[]|nil focused roots for runner unit tests
----@return { module: string, layer: string, path: string }[]
+---@return { module: string, layer: string, path: string, selfTest: boolean }[]
 function Discovery.suites(fs, roots)
   local found = {}
   if roots == nil then

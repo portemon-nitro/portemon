@@ -58,10 +58,14 @@ ownership from the plausible bug.
 ## Runner and discovery
 
 - `scripts/test.sh` is the only test entry point. A plain run executes the
-  regular suites used for routine development. `scripts/test.sh
+  regular suites used for routine development; the runner's own suites are
+  excluded from it. `scripts/test.sh --self-test` executes only the
+  runner's own suites and prepares no product fixture. `scripts/test.sh
   --full-corpus-census` executes only the exhaustive full-corpus census
-  suites. Use `--filter` and `--layer` for focused local evidence; use the
-  full available suite at integrated/branch gates. Target a topic with
+  suites. The runner-only and corpus modes are exclusive: they combine with
+  neither each other nor an explicit source. Use `--filter` and `--layer`
+  for focused local evidence; use the full available suite at
+  integrated/branch gates. Target a topic with
   `scripts/test.sh --tag <tag>`.
 - The corpus flag is NOT for regular work verification: the shell demands an
   explicit manual yes, warns that the census uses significant resources
@@ -96,6 +100,6 @@ ownership from the plausible bug.
 - CI does not provide the user's ROM. A green CI run does not prove a ROM/acceptance contract
   whose required capability was unavailable.
 - A full test command uses up to four process workers automatically; focused layer, filter, and
-  tag commands stay serial. Use `--serial` for serial diagnostics
+  tag commands stay serial, as does the runner-only run. Use `--serial` for serial diagnostics
   and equivalence checks. Graphics, acceptance, and ROM remain single-lane, and suite hooks are
   process-local; workers must not concurrently mutate shared cache state.

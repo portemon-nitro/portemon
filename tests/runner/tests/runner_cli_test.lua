@@ -736,6 +736,84 @@ function T.follower_producer_focus_needs_no_derived_cache()
   )
 end
 
+-- The runner-only flag is an exclusive mode: it parses into the plan, stays
+-- off by default, composes with listing and narrowing selectors, conflicts
+-- with the corpus census and explicit sources, and prepares no product
+-- fixture on its own.
+function T.runner_only_flag_parses_as_an_exclusive_mode()
+  Assert.isFalse(parse({}).selfTest, "the default run stays regular")
+  Assert.isTrue(parse({ "--self-test" }).selfTest, "--self-test selects the runner-only mode")
+  Assert.isTrue(parse({ "--self-test", "--list" }).selfTest, "listing composes with the runner-only mode")
+  Assert.equal(
+    parse({ "--self-test", "--filter", "runner_cli" }).filter,
+    "runner_cli",
+    "a filter narrows the chosen mode instead of opting into another one"
+  )
+  Assert.equal(
+    prepareOf(Cli.renderPlan(parse({ "--self-test" }), {}, 1, {})),
+    "none",
+    "a runner-only selection prepares no product fixture"
+  )
+
+  contains(rejects({ "--self-test", "--full-corpus-census" }), "--full-corpus-census", "corpus conflict")
+  local existing = {
+    fileExists = function()
+      return true
+    end,
+  }
+  contains(
+    rejects({ "--self-test", "--rom-source", "/roms/hg.nds" }, existing),
+    "--rom-source",
+    "source conflict"
+  )
+  contains(
+    rejects({ "--self-test", "--rom-source", "/roms/hg.nds", "--fresh" }, existing),
+    "--fresh",
+    "cold-rerun conflict"
+  )
+end
+
+-- A runner-only selection excluded the product graphics suites on purpose:
+-- strict graphics mode must not fail it for executing no graphics test.
+function T.runner_only_selection_is_exempt_from_the_whole_run_graphics_counter()
+  local plan = parse({ "--self-test" }, { env = { PORTEMON_REQUIRE_GRAPHICS_TESTS = "1" } })
+  local run = runOf({ unit = { passed = 3 } }, { selectedCapabilities = {} })
+
+  local outcome = Cli.outcome(plan, NO_DUMP, run)
+
+  Assert.equal(outcome.exitCode, 0, "an executed runner-only selection stays green under strict graphics")
+  Assert.isNil(outcome.failure)
+end
+
+-- The actual entrypoint lists exactly the runner's own subtree in this mode:
+-- every listed module lives beneath it, and the listing exits zero without
+-- preparing a product fixture.
+function T.self_test_list_mode_lists_only_the_runner_subtree()
+  local handle = assert(io.popen("scripts/test.sh --self-test --list 2>&1; echo \"__exit=$?\""))
+  local output = handle:read("*a")
+  handle:close()
+
+  local exit = output:match("__exit=(%d+)%s*$")
+  Assert.equal(exit, "0", "self-test listing must exit zero, got:\n" .. tostring(output))
+
+  local suites = 0
+  -- Lua patterns have no alternation: capture the layer token plainly and
+  -- accept only known layers, so header lines such as `Running tests...`
+  -- never count as suites.
+  local knownLayers = { unit = true, component = true, graphics = true, rom = true, acceptance = true }
+  for line in tostring(output):gmatch("[^\n]+") do
+    local module, layer = line:match("^(%S+)%s+(%a+)%s")
+    if module ~= nil and knownLayers[layer] then
+      suites = suites + 1
+      Assert.isTrue(
+        module:find("tests.runner.tests.", 1, true) == 1,
+        "self-test listing exposes only the runner subtree, got: " .. module
+      )
+    end
+  end
+  Assert.isTrue(suites > 0, "self-test listing must expose at least one suite")
+end
+
 -- An explicit cold rerun is only meaningful against a named source: asking
 -- for it without one is a usage error that names the missing source option.
 function T.fresh_mode_requires_an_explicit_source()

@@ -121,7 +121,9 @@ function Parallel.effectiveJobs(plan, selectedSuiteCount, processorCount)
   nonNegativeInteger(selectedSuiteCount, "selected suite count")
   positiveInteger(processorCount, "processor count")
   local suiteBound = math.max(1, selectedSuiteCount)
-  if plan.list or plan.serial or isFocused(plan) then
+  -- The runner-only run is a focused run: it always serializes to one
+  -- worker instead of following the automatic full-run policy.
+  if plan.list or plan.serial or plan.selfTest or isFocused(plan) then
     return 1
   end
   return math.min(DEFAULT_FULL_RUN_JOBS, processorCount, suiteBound)

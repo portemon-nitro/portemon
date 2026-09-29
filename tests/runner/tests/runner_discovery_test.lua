@@ -126,6 +126,62 @@ function T.excluded_layer_modules_are_not_loaded()
   Assert.equal(run.skipped, 0)
 end
 
+-- The runner's own suites are gated by discovery identity before any module
+-- is required: a regular run never requires a module beneath the runner's
+-- own test subtree (even one that would raise on load), and the runner-only
+-- run never requires a product module while still reporting the selected
+-- module's own load failure.
+function T.mode_selection_excludes_unselected_modules_before_loading()
+  local corpus = FakeCorpus.new({
+    ["tests/runner/tests/fake_self_probe_test.lua"] = FakeCorpus.LOAD_ERROR,
+    ["tests/unit/fake_product_probe_test.lua"] = { tests = { ["passes"] = function() end } },
+  })
+
+  local entries = {}
+  for _, entry in ipairs(Discovery.suites(corpus.fs)) do
+    entries[entry.module] = entry
+  end
+  Assert.isTrue(
+    entries["tests.runner.tests.fake_self_probe_test"].selfTest,
+    "a suite beneath the runner test subtree carries the runner-only identity"
+  )
+  Assert.isFalse(
+    entries["tests.unit.fake_product_probe_test"].selfTest or false,
+    "a product suite carries no runner-only identity"
+  )
+
+  local function runWithMode(selfTest)
+    local loads = {}
+    local run = TestRunner.run({
+      fs = corpus.fs,
+      load = function(moduleName)
+        loads[#loads + 1] = moduleName
+        return corpus.load(moduleName)
+      end,
+      selfTest = selfTest,
+    })
+    return run, loads
+  end
+
+  local regular, regularLoads = runWithMode(false)
+  Assert.deepEqual(
+    regularLoads,
+    { "tests.unit.fake_product_probe_test" },
+    "regular selection must not require the runner-only module"
+  )
+  Assert.equal(regular.passed, 1)
+  Assert.equal(regular.failed, 0)
+
+  local focused, focusedLoads = runWithMode(true)
+  Assert.deepEqual(
+    focusedLoads,
+    { "tests.runner.tests.fake_self_probe_test" },
+    "runner-only selection must not require the product module"
+  )
+  Assert.equal(focused.passed, 0)
+  Assert.equal(focused.failed, 1, "the selected throwing module still reports its load failure")
+end
+
 -- order is deterministic and independent of filesystem order.
 function T.discovery_order_is_sorted_not_filesystem_order()
   local corpus = FakeCorpus.new({

@@ -30,7 +30,9 @@ function T.project_tree_discovery_finds_the_main_test_trees()
     "libs.codec.tests.binary_reader_test",
     "game.hgss.tests.field_state_draw_test",
     "libs.nds.tests.narc_test",
-    "tests.runner.tests.runner_discovery_test",
+    -- The runner's own suites are excluded from the regular listing, so a
+    -- regularly discovered tree stands in for them here.
+    "tests.architecture.module_boundaries_test",
   }
   for _, moduleName in ipairs(expected) do
     Assert.notNil(find(moduleName), "project tree discovery missed " .. moduleName)

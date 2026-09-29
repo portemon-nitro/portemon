@@ -194,6 +194,23 @@ function T.automatic_policy_bounds_full_runs_and_keeps_focused_runs_serial()
   Assert.equal(Parallel.effectiveJobs(plan({ serial = true, layer = "unit" }), 20, 16), 1)
 end
 
+-- The runner-only mode is a focused run: it always serializes to one worker
+-- instead of following the automatic full-run policy.
+function T.runner_only_mode_runs_serial()
+  local Parallel = parallel()
+  local plan = {
+    planMode = false,
+    list = false,
+    fullCorpus = false,
+    selfTest = true,
+    serial = false,
+    strict = false,
+    graphicsStrict = false,
+    requiredCapabilities = {},
+  }
+  Assert.equal(Parallel.effectiveJobs(plan, 20, 16), 1, "the runner-only mode runs on one worker")
+end
+
 function T.worker_lane_mapping_matches_the_supported_four_lane_topology()
   local Parallel = parallel()
   local function shard(index, count)

@@ -31,7 +31,7 @@ local STRICT_COMMAND = STRICT_ENV .. "=1 scripts/test.sh"
 Cli.USAGE = table.concat({
   "usage: scripts/test.sh [--plan] [--list] [--layer <" .. table.concat(Cli.LAYERS, "|") .. ">]",
   "                      [--filter <substring>] [--tag <tag>] [--serial] [--full-corpus-census]",
-  "                      [--rom-source <path-to-nds-or-zip>] [--fresh]",
+  "                      [--self-test] [--rom-source <path-to-nds-or-zip>] [--fresh]",
 }, "\n")
 
 local function isLayer(value)
@@ -68,6 +68,7 @@ end
 ---@field filter string|nil
 ---@field tag string|nil
 ---@field fullCorpus boolean
+---@field selfTest boolean
 ---@field serial boolean
 ---@field romSource string|nil
 ---@field fresh boolean
@@ -91,6 +92,7 @@ function Cli.parse(argv, context)
     planMode = false,
     list = false,
     fullCorpus = false,
+    selfTest = false,
     serial = false,
     fresh = false,
     strict = env[STRICT_ENV] == "1",
@@ -136,6 +138,9 @@ function Cli.parse(argv, context)
     elseif option == "--full-corpus-census" then
       plan.fullCorpus = true
       index = index + 1
+    elseif option == "--self-test" then
+      plan.selfTest = true
+      index = index + 1
     elseif option == "--serial" then
       plan.serial = true
       index = index + 1
@@ -173,6 +178,22 @@ function Cli.parse(argv, context)
   -- An explicit cold rerun is only meaningful against a named source.
   if plan.fresh and plan.romSource == nil then
     return nil, "--fresh requires --rom-source <path-to-nds-or-zip>"
+  end
+
+  -- The runner-only run verifies the runner itself: it prepares no product
+  -- fixture and never shares a selection with the corpus census or an
+  -- explicit source, so combining them is a usage error before any import
+  -- or preparation starts.
+  if plan.selfTest then
+    if plan.fullCorpus then
+      return nil, "--self-test cannot be combined with --full-corpus-census"
+    end
+    if plan.fresh then
+      return nil, "--self-test cannot be combined with --fresh"
+    end
+    if plan.romSource ~= nil then
+      return nil, "--self-test cannot be combined with --rom-source"
+    end
   end
 
   return plan
@@ -291,9 +312,13 @@ end
 local RULE = string.rep("=", 80)
 
 -- A human-readable name for the selection a run was asked to execute, used by
--- the empty-run and empty-graphics-run failures.
+-- the empty-run and empty-graphics-run failures. A runner-only selection names
+-- its mode so an empty match never looks like a quietly skipped regular run.
 local function selectionLabel(plan)
   local parts = {}
+  if plan.selfTest then
+    parts[#parts + 1] = "runner-only selection"
+  end
   if plan.layer ~= nil then
     parts[#parts + 1] = "layer '" .. plan.layer .. "'"
   end
@@ -390,8 +415,10 @@ function Cli.outcome(plan, capabilities, run)
   -- fail. A filter or tag focus is an explicit narrowing and disables the
   -- counter; the generic empty-run failure below still guards a focus that
   -- matched nothing at all. Partial-layer selections never reach the counter.
+  -- A runner-only selection excluded the product graphics suites on purpose,
+  -- so the counter does not apply to it.
   local focused = plan.filter ~= nil or plan.tag ~= nil
-  if plan.graphicsStrict and (plan.layer == nil or plan.layer == "graphics") and not focused then
+  if plan.graphicsStrict and plan.selfTest ~= true and (plan.layer == nil or plan.layer == "graphics") and not focused then
     local graphics = run.byLayer.graphics
     if graphics == nil or graphics.passed + graphics.failed == 0 then
       return {

@@ -5,13 +5,18 @@
 #   scripts/test.sh --layer unit|component|graphics|rom|acceptance
 #   scripts/test.sh --filter <substring>
 #   scripts/test.sh --serial
+#   scripts/test.sh --self-test
 #   scripts/test.sh --rom-source <path-to.nds-or-zip>
 #   scripts/test.sh --rom-source <path-to.nds-or-zip> --fresh
 #   scripts/test.sh --full-corpus-census [--rom-source <path-to-nds-or-zip>]
 #
-# The default run executes the regular suites only. --full-corpus-census
+# The default run executes the regular suites only; the runner's own suites
+# are excluded from it. scripts/test.sh --self-test executes only the
+# runner's own suites and prepares no product fixture. --full-corpus-census
 # executes only the exhaustive full-corpus census suites after an explicit
-# manual confirmation; it is never part of routine verification.
+# manual confirmation; it is never part of routine verification. --self-test
+# and --full-corpus-census are exclusive and combine with neither each other
+# nor an explicit source.
 #
 # Arguments are parsed by tests/runner/Cli.lua; this script only decides where
 # the save root lives and whether to prepare the derived cache first. That

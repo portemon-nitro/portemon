@@ -601,7 +601,7 @@ function T.a_legacy_cache_backed_focus_prepares_the_complete_scope_it_claims()
     )
 
     local narrowStatus, narrowOutput =
-      runPlanChild(root, "narrow-plan", "--plan --filter test_entrypoint_delegates_selection_to_the_runner")
+      runPlanChild(root, "narrow-plan", "--plan --filter app_is_the_interactive_root")
     Assert.equal(narrowStatus, "0", "the requirement-free plan child must exit zero, got: " .. narrowOutput)
     local narrowPrepare, _, narrowRequires = parsePlanFields(narrowOutput)
     Assert.equal(narrowPrepare, "none", "a requirement-free focus prepares nothing")
@@ -1111,7 +1111,7 @@ function T.first_seed_imports_once_and_prepares_only_the_selected_scope()
   local cases = {
     {
       label = "requirement-free",
-      args = "--filter test_entrypoint_delegates_selection_to_the_runner",
+      args = "--filter app_is_the_interactive_root",
       requires = {},
     },
     {
@@ -1228,7 +1228,10 @@ local function runEntryChild(root, name, args, exports)
   return exitStatus(statusFile), readFile(logFile) or ""
 end
 
-local UNIT_FOCUS = "--filter test_entrypoint_delegates_selection_to_the_runner"
+-- A fast capability-free unit test in the regular selection. The runner's own
+-- suites are excluded from regular runs, so the focus must name a product
+-- suite rather than a runner self-test.
+local UNIT_FOCUS = "--filter app_is_the_interactive_root"
 
 -- Strict revision helpers for the builder-issued receipt: the exact field
 -- shape the entrypoint authorizes, with per-test overrides.
