@@ -29,7 +29,6 @@ local ModelInstance = require("libs.hgss.src.presentation.ModelInstance")
 local NativeDisplay = require("libs.ui.src.NativeDisplay")
 local Rgb555 = require("libs.codec.src.Rgb555")
 local SceneDescriptor = require("libs.hgss.src.presentation.SceneDescriptor")
-local StarterCompactLayout = require("game.hgss.src.starters.StarterCompactLayout")
 local FixedPoint = require("libs.math.src.FixedPoint")
 
 ---@class StarterChoicePresentation
@@ -102,6 +101,14 @@ local EMISSIVE_WHITE = Rgb555.encode(31, 31, 31)
 -- one-frame-at-a-time upload; two keeps the worker fed while bounding
 -- retained work.
 local PREPARATION_WINDOW = 2
+-- Source message-printer policy for the chooser's typed copy: the window
+-- opens on the reset tick, then one glyph per following source tick, with
+-- no button acceleration. The field dialogue controller owns the same
+-- interGlyphDelay/glyphBudget concepts; the chooser keeps its own local
+-- copy because its messages are prepared glyph lines rather than laid out
+-- dialogue pages, and input gates on completion instead of fast-forward.
+local SOURCE_PRINTER = { interGlyphDelay = 1, glyphBudget = 1 }
+
 ---@param value unknown
 ---@return boolean
 local function isFiniteNumber(value)
@@ -221,6 +228,10 @@ function StarterChoicePresentation.new(opts)
     _effectFrame = 0,
     _rockPlayingFor = nil,
     _exitPlaying = false,
+    _printerMessage = nil,
+    _printerTyped = false,
+    _printerRevealed = 0,
+    _printerDelay = 0,
   }, StarterChoicePresentation)
   return self
 end
@@ -247,6 +258,10 @@ function StarterChoicePresentation:reset()
   self._effectFrame = 0
   self._rockPlayingFor = nil
   self._exitPlaying = false
+  self._printerMessage = nil
+  self._printerTyped = false
+  self._printerRevealed = 0
+  self._printerDelay = 0
 end
 
 -- Copies only the controller identity and visual clocks needed by drawing.
@@ -1520,6 +1535,7 @@ function StarterChoicePresentation:update(snapshot)
   assert(type(snapshot) == "table", "starter presentation update requires the controller snapshot")
   self:_detectEntry(snapshot)
   self:_advance(snapshot)
+  self:_advancePrinter(snapshot)
   if self._ready then
     for _, role in ipairs({ "turntable", "ballEffect", "ball1", "ball2", "ball3" }) do
       local instance = self._instances[role]
@@ -1644,6 +1660,31 @@ function StarterChoicePresentation:_drawItems(snapshot, sample)
   return items
 end
 
+-- Visible glyph prefix of prepared lines: the first `revealed` glyph
+-- tokens in line order, with non-glyph control tokens carried through.
+-- Later lines stay empty until earlier lines complete, so drawn lines
+-- keep their source origins.
+---@param lines table<integer, table<integer, table<string, unknown>>> prepared glyph lines
+---@param revealed integer glyphs visible so far
+---@return table<integer, table<integer, table<string, unknown>>>
+local function visibleLinePrefix(lines, revealed)
+  local out = {}
+  local remaining = revealed
+  for _, line in ipairs(lines) do
+    local kept = {}
+    for _, token in ipairs(line) do
+      if type(token) == "table" and token.kind ~= "glyph" then
+        kept[#kept + 1] = token
+      elseif remaining > 0 then
+        kept[#kept + 1] = token
+        remaining = remaining - 1
+      end
+    end
+    out[#out + 1] = kept
+  end
+  return out
+end
+
 -- Draws one source message at canonical coordinates under the caller's
 -- logical scope. A framed region fills the window with the generated
 -- chooser info background and the player-owned frame around the source
@@ -1666,7 +1707,12 @@ function StarterChoicePresentation:_drawMessageLines(region, message, text, back
     windowRenderer:drawWindow(region.box, self._frameIndex, { info.r / 255, info.g / 255, info.b / 255, 1 })
   end
   local textColors = assert(self._manifest.textColors, "starter presentation requires the generated chooser colors")
-  for index, line in ipairs(assert(message.lines, "starter message carries its prepared lines")) do
+  local lines = assert(message.lines, "starter message carries its prepared lines")
+  local drawLines = lines
+  if message == self._printerMessage and self._printerTyped then
+    drawLines = visibleLinePrefix(lines, self._printerRevealed)
+  end
+  for index, line in ipairs(drawLines) do
     text:drawLineWithColorVariants(
       line,
       region.textOrigin.x,
@@ -1741,6 +1787,81 @@ local function infoMessageFor(self, snapshot)
     return messages.inspect[snapshot.selection + 1], messages.bottom.normal
   end
   return messages.topInitial, messages.bottom.normal
+end
+
+-- Total glyphs in a prepared message, counting only glyph tokens the same
+-- way the field dialogue printer does.
+---@param message table<string, unknown> prepared message record ({ lines })
+---@return integer
+local function messageGlyphTotal(message)
+  local total = 0
+  for _, line in ipairs(assert(message.lines, "starter message carries its prepared lines")) do
+    for _, token in ipairs(line) do
+      if type(token) ~= "table" or token.kind == "glyph" then
+        total = total + 1
+      end
+    end
+  end
+  return total
+end
+
+-- Whether the snapshot's info copy types out: the opening and confirmation
+-- messages reveal at source speed 1 while inspected detail stays instant.
+---@param snapshot StarterChoiceController.Snapshot
+---@return boolean
+local function messageIsTyped(snapshot)
+  return snapshot.selectionState ~= "inspect"
+end
+
+-- Advances the source printer one deterministic tick for the snapshot that
+-- opened the tick. The printer resets only when the semantic message
+-- identity changes; drawing reads the revealed prefix without advancing it.
+---@param snapshot StarterChoiceController.Snapshot
+function StarterChoicePresentation:_advancePrinter(snapshot)
+  local info = infoMessageFor(self, snapshot)
+  local typed = messageIsTyped(snapshot)
+  if info ~= self._printerMessage or typed ~= self._printerTyped then
+    self._printerMessage = info
+    self._printerTyped = typed
+    self._printerRevealed = 0
+    self._printerDelay = SOURCE_PRINTER.interGlyphDelay
+  end
+  if not typed then
+    self._printerRevealed = messageGlyphTotal(assert(info, "starter printer tracks its info copy"))
+    return
+  end
+  if self._printerDelay > 0 then
+    self._printerDelay = self._printerDelay - 1
+    return
+  end
+  self._printerRevealed = math.min(
+    messageGlyphTotal(assert(info, "starter printer tracks its info copy")),
+    self._printerRevealed + SOURCE_PRINTER.glyphBudget
+  )
+  self._printerDelay = SOURCE_PRINTER.interGlyphDelay
+end
+
+-- Whether chooser input is eligible: the source printer has completed the
+-- snapshot's info copy. Instant messages are always eligible; a typed
+-- message the printer has not observed yet is not.
+---@param snapshot StarterChoiceController.Snapshot?
+---@return boolean
+function StarterChoicePresentation:inputReady(snapshot)
+  local message, typed
+  if snapshot ~= nil then
+    assert(type(snapshot) == "table", "starter printer readiness reads the controller snapshot")
+    message = infoMessageFor(self, snapshot)
+    typed = messageIsTyped(snapshot)
+  else
+    message, typed = self._printerMessage, self._printerTyped
+  end
+  if message == nil or not typed then
+    return true
+  end
+  if message ~= self._printerMessage then
+    return false
+  end
+  return self._printerRevealed >= messageGlyphTotal(message)
 end
 
 -- The owned source-sized machine raster, realized once on first draw and
@@ -1867,6 +1988,18 @@ local function nativePane(plan, id)
   error("the starter native plan carries its " .. id .. " pane", 0)
 end
 
+---@param plan ApplicationPlan the resolved native plan
+---@param id string the pane identity to locate
+---@return table<string, unknown>? placement of the named pane, or nil when the plan is single-pane
+local function findPane(plan, id)
+  for _, pane in ipairs(plan.panes) do
+    if pane.id == id then
+      return assert(pane.placement, "the starter " .. id .. " pane carries its placement")
+    end
+  end
+  return nil
+end
+
 -- Renders one native application frame through the resolved plan: the 3D
 -- machine raster composited once into the machine pane with the bottom
 -- prompt beneath it, and the semantic message plus the inspected
@@ -1889,7 +2022,7 @@ function StarterChoicePresentation:drawNative(snapshot, view, text, plan, window
   local sampled = self:_sampleForDraw(snapshot, renderAlpha)
   local sampledSnapshot = sampled.snapshot --[[@as StarterChoiceController.Snapshot]]
   local machinePlacement = nativePane(plan, "machine")
-  local infoPlacement = nativePane(plan, "info")
+  local infoPlacement = findPane(plan, "info")
   self:_syncRealized(snapshot)
   local graphics = assert(love and love.graphics, "starter presentation requires the graphics namespace")
   graphics.setColor(1, 1, 1, 1)
@@ -1897,6 +2030,16 @@ function StarterChoicePresentation:drawNative(snapshot, view, text, plan, window
   local target = assert(self._machineTarget, "starter presentation owns no machine raster target")
   local textColors = assert(self._manifest.textColors, "starter presentation requires the generated chooser colors")
   local surfaces = self._manifest.surfaces
+  local timing = self._manifest.scene.timing
+  if infoPlacement == nil then
+    self:_drawAdaptedPane(sampledSnapshot, text, windowRenderer, machinePlacement, target, textColors, surfaces)
+    LogicalSurface.draw(graphics, machinePlacement, function()
+      self:_drawFade(sampled.machineFade / timing.machineFadeTicks)
+    end)
+    self:_drawOuterFrames(graphics, plan, windowRenderer)
+    graphics.setColor(1, 1, 1, 1)
+    return
+  end
   local _, promptText = infoMessageFor(self, sampledSnapshot)
   LogicalSurface.draw(graphics, machinePlacement, function()
     graphics.draw(target, 0, 0)
@@ -1920,7 +2063,6 @@ function StarterChoicePresentation:drawNative(snapshot, view, text, plan, window
     local sampledInfoText, _ = infoMessageFor(self, sampledSnapshot)
     self:_drawMessageLines(surfaces.info.message, sampledInfoText, text, textColors.infoBackground, windowRenderer)
   end)
-  local timing = self._manifest.scene.timing
   LogicalSurface.draw(graphics, infoPlacement, function()
     self:_drawFade(sampled.infoFade / timing.infoFadeTicks)
   end)
@@ -1931,105 +2073,41 @@ function StarterChoicePresentation:drawNative(snapshot, view, text, plan, window
   graphics.setColor(1, 1, 1, 1)
 end
 
-local COMPACT_MESSAGE = StarterCompactLayout.MESSAGE
-local COMPACT_PORTRAITS = StarterCompactLayout.PORTRAITS
-local COMPACT_PRIMARY = StarterCompactLayout.PRIMARY
-local COMPACT_BACK = StarterCompactLayout.BACK
-local COMPACT_DISABLED_FILL = { 0.25, 0.25, 0.25, 1 }
-
+-- Renders the machine-derived adapted chooser into one 256x192 pane: the
+-- 3D machine raster with its lower artwork, the currently relevant info
+-- copy in the machine's lower message area instead of the normal prompt,
+-- and the selected starter portrait centered above that area. The reveal
+-- prefix applies to the adapted info copy exactly as on the info surface.
 ---@param snapshot StarterChoiceController.Snapshot controller snapshot
----@return string the primary action copy for the current choice state
-local function primaryCopy(snapshot)
-  if snapshot.selectionState == "confirm" then
-    return "CONFIRM"
-  end
-  if snapshot.selectionState == "inspect" then
-    return "CHOOSE"
-  end
-  return "INSPECT"
-end
-
--- Draws one compact action box with its copy centred through the
--- generated font metrics. A disabled box keeps the same copy over a
--- dimmed fill so it stays visibly inert.
----@param box table<string, unknown> action rectangle
----@param copy string action copy
----@param text table<string, unknown> text provider ({ drawText, textWidth })
----@param enabled boolean
----@param windowRenderer table<string, unknown> field-borrowed window primitive for the action box
-function StarterChoicePresentation:_drawCompactAction(box, copy, text, enabled, windowRenderer)
-  local width = assert(text.textWidth, "starter compact actions require the generated font metrics")(text, copy)
-  assert(
-    windowRenderer ~= nil and type(windowRenderer.drawWindow) == "function",
-    "starter action drawing borrows the field window renderer"
-  )
-  if enabled then
-    local textColors = assert(self._manifest.textColors, "starter presentation requires the generated chooser colors")
-    local info = textColors.infoBackground
-    windowRenderer:drawWindow(box, self._frameIndex, { info.r / 255, info.g / 255, info.b / 255, 1 })
-  else
-    windowRenderer:drawWindow(box, self._frameIndex, COMPACT_DISABLED_FILL)
-  end
-  assert(text.drawText, "starter compact actions require text drawing")(
-    text,
-    copy,
-    box.x + (box.width - width) / 2,
-    box.y + 4
-  )
-end
-
--- Renders the complete compact chooser through the resolved plan: the
--- selected semantic info message, the three already-prepared candidate
--- portraits in source order with an inward focus frame on the selected
--- one, and the primary/Back actions. The existing info/machine fade
--- clocks continue and their final white exit cover is reflected over
--- the compact pane; no completion observation is manufactured because
--- no 3D machine is visible. Repeated draws never advance clocks.
----@param snapshot StarterChoiceController.Snapshot controller snapshot
----@param view { candidates: table<string, unknown>[], names: string[] }
----@param text table<string, unknown> text provider
----@param plan ApplicationPlan the resolved compact plan
+---@param text table<string, unknown> text provider ({ drawLineWithColorVariants })
 ---@param windowRenderer table<string, unknown> field-borrowed window primitive for framed surfaces
-function StarterChoicePresentation:drawCompact(snapshot, view, text, plan, windowRenderer)
-  local _ = view
-  assert(type(snapshot) == "table", "starter presentation draw requires the controller snapshot")
-  assert(self._ready, "starter presentation is not prepared")
-  self:_syncRealized(snapshot)
+---@param machinePlacement table<string, unknown> resolved machine pane placement
+---@param target table<string, unknown> owned 256x192 machine raster
+---@param textColors table<string, unknown> generated chooser colors
+---@param surfaces table<string, unknown> source message/portrait surfaces
+function StarterChoicePresentation:_drawAdaptedPane(
+  snapshot,
+  text,
+  windowRenderer,
+  machinePlacement,
+  target,
+  textColors,
+  surfaces
+)
   local graphics = assert(love and love.graphics, "starter presentation requires the graphics namespace")
-  local pane = assert(plan.panes[1], "the starter compact plan carries its single pane")
-  local placement = assert(pane.placement, "the starter compact pane carries its placement")
-  local textColors = assert(self._manifest.textColors, "starter presentation requires the generated chooser colors")
-  local infoText, _ = infoMessageFor(self, snapshot)
-  local selected = snapshot.selection
-  local timing = self._manifest.scene.timing
-  local machineAlpha = self._machineFade / timing.machineFadeTicks
-  LogicalSurface.draw(graphics, placement, function()
+  LogicalSurface.draw(graphics, machinePlacement, function()
+    graphics.draw(target, 0, 0)
+    graphics.draw(assert(self._machineBackgroundImage), 0, 0)
+    local adaptedInfo, _ = infoMessageFor(self, snapshot)
     self:_drawMessageLines(
-      { box = COMPACT_MESSAGE, textOrigin = { x = COMPACT_MESSAGE.x, y = COMPACT_MESSAGE.y }, framed = true },
-      infoText,
+      surfaces.machine.prompt,
+      adaptedInfo,
       text,
-      textColors.infoBackground,
+      transparentBackground(textColors.machineBackground),
       windowRenderer
     )
-    graphics.setColor(1, 1, 1, 1)
-    for index, origin in ipairs(COMPACT_PORTRAITS) do
-      local framed =
-        assert(self._portraitQuads[index], "starter presentation owns no portrait for candidate slot " .. index)
-      graphics.draw(framed.image, framed.quad, origin.x, origin.y)
-    end
-    local focus = assert(COMPACT_PORTRAITS[selected + 1], "starter compact focus names a candidate portrait")
-    graphics.setColor(1, 1, 1, 1)
-    graphics.rectangle("fill", focus.x, focus.y, focus.width, 1)
-    graphics.rectangle("fill", focus.x, focus.y + focus.height - 1, focus.width, 1)
-    graphics.rectangle("fill", focus.x, focus.y, 1, focus.height)
-    graphics.rectangle("fill", focus.x + focus.width - 1, focus.y, 1, focus.height)
-    local backEnabled = snapshot.selectionState == "confirm" and snapshot.transition == "idle"
-    self:_drawCompactAction(COMPACT_PRIMARY, primaryCopy(snapshot), text, true, windowRenderer)
-    self:_drawCompactAction(COMPACT_BACK, "BACK", text, backEnabled, windowRenderer)
-    self:_drawFade(machineAlpha)
+    self:_drawInfoPortrait(snapshot)
   end)
-  self:_drawOuterFrames(graphics, plan, windowRenderer)
-  graphics.setColor(1, 1, 1, 1)
 end
 
 function StarterChoicePresentation:_releaseGpu()
@@ -2093,6 +2171,10 @@ function StarterChoicePresentation:dispose()
   end
   self._disposed = true
   self._renderSamples = nil
+  self._printerMessage = nil
+  self._printerTyped = false
+  self._printerRevealed = 0
+  self._printerDelay = 0
   self:_releaseGpu()
 end
 

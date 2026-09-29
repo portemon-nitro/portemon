@@ -2,8 +2,8 @@
 -- through its own function returning a complete render/input pair. Wide
 -- pairs info left of the machine, tall stacks info above the machine, a
 -- genuine world/auxiliary pair keeps info on world and the machine on
--- auxiliary, and nativeLike resolves one complete compact portrait/action/
--- message interface. No central mode switch can replace one case without
+-- auxiliary, and nativeLike resolves one complete machine-derived
+-- chooser in a single pane. No central mode switch can replace one case without
 -- replacing its matched rendering and input together.
 
 local Assert = require("tests.support.Assert")
@@ -116,7 +116,7 @@ local function nativeLikeMeasurement()
       touch = false,
     }),
     1,
-    "starter-compact-actual"
+    "starter-native-like-actual"
   )
 end
 
@@ -195,20 +195,20 @@ function T.tests.dual_maps_info_to_world_and_the_machine_to_auxiliary()
   Assert.equal(inAux, 1, "exactly one dual pane lives on the auxiliary surface")
 end
 
-function T.tests.native_like_resolves_one_complete_compact_pane_without_cropping()
+function T.tests.native_like_resolves_one_complete_machine_pane_without_cropping()
   local interface = starterChoiceInterface()
   local plan = interface.nativeLike(contextFor(nativeLikeMeasurement(), "nativeLike", interface), nullView())
-  Assert.equal(#plan.panes, 1, "the compact case is one complete interface, not a machine-only view")
-  local placement = assert(plan.panes[1].placement, "the compact pane carries its complete placement")
-  Assert.equal(placement.logicalWidth, 256, "the compact pane keeps native logical width")
-  Assert.equal(placement.logicalHeight, 192, "the compact pane keeps native logical height")
-  local crop = assert(placement.crop, "the compact placement reports its crop budget")
-  Assert.equal(crop.left, 0, "the compact interface never crops its left edge")
-  Assert.equal(crop.right, 0, "the compact interface never crops its right edge")
-  Assert.equal(crop.top, 0, "the compact interface never crops its top edge")
-  Assert.equal(crop.bottom, 0, "the compact interface never crops its bottom edge")
-  Assert.isTrue(type(plan.render) == "function", "the compact plan carries its render callback")
-  Assert.isTrue(type(plan.mapInput) == "function", "the compact plan carries its matching input mapper")
+  Assert.equal(#plan.panes, 1, "the nativeLike case is one complete machine pane")
+  local placement = assert(plan.panes[1].placement, "the nativeLike pane carries its complete placement")
+  Assert.equal(placement.logicalWidth, 256, "the nativeLike pane keeps native logical width")
+  Assert.equal(placement.logicalHeight, 192, "the nativeLike pane keeps native logical height")
+  local crop = assert(placement.crop, "the nativeLike placement reports its crop budget")
+  Assert.equal(crop.left, 0, "the nativeLike interface never crops its left edge")
+  Assert.equal(crop.right, 0, "the nativeLike interface never crops its right edge")
+  Assert.equal(crop.top, 0, "the nativeLike interface never crops its top edge")
+  Assert.equal(crop.bottom, 0, "the nativeLike interface never crops its bottom edge")
+  Assert.isTrue(type(plan.render) == "function", "the nativeLike plan carries its render callback")
+  Assert.isTrue(type(plan.mapInput) == "function", "the nativeLike plan carries its matching input mapper")
 end
 
 function T.tests.a_wide_only_override_replaces_rendering_and_input_together()
@@ -320,9 +320,9 @@ function T.tests.dpi2_dual_pairs_keep_physical_roles()
   end
 end
 
--- A host below 1x still resolves one complete compact interface through
+-- A host below 1x still resolves one complete machine pane through
 -- the fractional fallback so controls remain reachable.
-function T.tests.tiny_hosts_fall_back_to_a_complete_compact_interface()
+function T.tests.tiny_hosts_fall_back_to_a_complete_machine_pane()
   local interface = starterChoiceInterface()
   local measurement = measurementFor(
     200,
@@ -343,10 +343,10 @@ function T.tests.tiny_hosts_fall_back_to_a_complete_compact_interface()
   Assert.equal(placement.logicalHeight, 192, "the fallback keeps the full logical height")
 end
 
--- Input clipping: native taps outside the machine keep the tap(nil)
--- reversal contract while compact presses outside every actionable
--- region map to nothing.
-function T.tests.clipped_input_cannot_reach_offscreen_controls()
+-- Input clipping: taps outside the machine keep the tap(nil) reversal
+-- contract on both the wide and the native-like machine panes, and moves
+-- carry no starter semantics on either.
+function T.tests.clipped_input_follows_machine_mapping()
   local interface = starterChoiceInterface()
   local native = interface.wide(contextFor(wideMeasurement(), "wide", interface), nullView())
   local matte = native.mapInput({ type = "pointer_down", pointerId = "touch:1", outside = true }, nullView(), native)
@@ -355,15 +355,86 @@ function T.tests.clipped_input_cannot_reach_offscreen_controls()
     native.mapInput({ type = "pointer_move", pointerId = "touch:1", x = 0, y = 0 }, nullView(), native),
     "machine moves carry no starter semantics"
   )
-  local compact = interface.nativeLike(contextFor(nativeLikeMeasurement(), "nativeLike", interface), nullView())
-  Assert.isNil(
-    compact.mapInput({ type = "pointer_down", pointerId = "touch:1", x = 250, y = 186 }, nullView(), compact),
-    "compact presses outside every region map to nothing"
+  local like = interface.nativeLike(contextFor(nativeLikeMeasurement(), "nativeLike", interface), nullView())
+  Assert.deepEqual(
+    like.mapInput({ type = "pointer_down", pointerId = "touch:1", outside = true }, nullView(), like),
+    { type = "tap", index = nil },
+    "native-like matte taps keep the tap(nil) contract"
   )
   Assert.isNil(
-    compact.mapInput({ type = "pointer_down", pointerId = "touch:1", outside = true }, nullView(), compact),
-    "compact outside downs map to nothing"
+    like.mapInput({ type = "pointer_move", pointerId = "touch:1", x = 250, y = 186 }, nullView(), like),
+    "native-like moves carry no starter semantics"
   )
+end
+
+-- The rewritten chooser is machine-derived: one 256x192 pane whose
+-- pointer input follows the machine ball mapping with no custom action
+-- targets, and whose render reaches the machine entrypoint instead of
+-- the compact portrait/action painter. The old primary box no longer
+-- confirms, the old Back box never cancels, and wide/tall/dual roles are
+-- unchanged.
+function T.tests.native_like_uses_machine_ball_mapping_with_no_action_buttons()
+  local interface = starterChoiceInterface()
+  local context = contextFor(nativeLikeMeasurement(), "nativeLike", interface)
+  local function viewWith(ball)
+    return {
+      selection = 0,
+      selectionState = "inspect",
+      transition = "idle",
+      done = false,
+      presentation = {
+        ballAt = function()
+          return ball
+        end,
+      },
+    }
+  end
+  local view = viewWith(nil)
+  local plan = interface.nativeLike(context, view)
+  Assert.equal(#plan.panes, 1, "the rewritten chooser stays one complete pane")
+  local placement = assert(plan.panes[1].placement, "the rewritten pane carries its placement")
+  Assert.equal(placement.logicalWidth, 256, "the rewritten pane keeps native logical width")
+  Assert.equal(placement.logicalHeight, 192, "the rewritten pane keeps native logical height")
+  Assert.isTrue(
+    plan.inputKey ~= "starter-compact",
+    "the rewritten chooser no longer names the compact action geometry"
+  )
+  local primary = plan.mapInput({ type = "pointer_down", pointerId = "touch:1", x = 64, y = 176 }, view, plan)
+  Assert.deepEqual(
+    primary,
+    { type = "tap", index = nil },
+    "the old primary box no longer confirms; machine mapping answers"
+  )
+  local confirmView = viewWith(nil)
+  confirmView.selectionState = "confirm"
+  local back =
+    plan.mapInput({ type = "pointer_down", pointerId = "touch:1", x = 192, y = 176 }, confirmView, plan)
+  Assert.deepEqual(
+    back,
+    { type = "tap", index = nil },
+    "the old Back box never cancels; cancel stays a controller semantic"
+  )
+  local hitView = viewWith(2)
+  local hitPlan = interface.nativeLike(context, hitView)
+  local hit =
+    hitPlan.mapInput({ type = "pointer_down", pointerId = "touch:1", x = 128, y = 100 }, hitView, hitPlan)
+  Assert.deepEqual(hit, { type = "tap", index = 1 }, "machine ball hits become candidate taps")
+  local native, compact = 0, 0
+  local resources = {
+    presentation = {
+      drawNative = function()
+        native = native + 1
+      end,
+      drawCompact = function()
+        compact = compact + 1
+      end,
+    },
+    text = {},
+    windowRenderer = {},
+  }
+  plan.render(resources, view, plan)
+  Assert.equal(native, 1, "the rewritten render reaches the machine entrypoint")
+  Assert.equal(compact, 0, "the rewritten render never paints the compact action grid")
 end
 
 -- Both render callbacks draw framed surfaces through the field-owned
@@ -406,12 +477,15 @@ function T.tests.render_callbacks_borrow_the_field_window_renderer()
   local borrowed = {}
   resources.windowRenderer = borrowed
   native.render(resources, view, native)
-  compact.render(resources, view, compact)
   Assert.equal(#nativeCalls, 1, "the native render reaches its presentation entrypoint")
   Assert.isTrue(nativeCalls[1] == borrowed, "the native render lends the field renderer untouched")
   Assert.equal(nativeAlpha, resources.renderAlpha, "the native render forwards the field interpolation alpha")
-  Assert.equal(#compactCalls, 1, "the compact render reaches its presentation entrypoint")
-  Assert.isTrue(compactCalls[1] == borrowed, "the compact render lends the field renderer untouched")
+  resources.renderAlpha = nil
+  compact.render(resources, view, compact)
+  Assert.equal(#nativeCalls, 2, "the native-like render reaches the machine entrypoint")
+  Assert.isTrue(nativeCalls[2] == borrowed, "the native-like render lends the field renderer untouched")
+  Assert.equal(nativeAlpha, 1, "the native-like render defaults the interpolation sample to full")
+  Assert.equal(#compactCalls, 0, "no render paints the removed action grid")
 end
 
 return T

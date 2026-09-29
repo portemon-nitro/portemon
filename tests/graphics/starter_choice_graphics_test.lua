@@ -167,7 +167,7 @@ local function dualBox()
   )
 end
 
-local function compactBox()
+local function nativeLikeBox()
   return graphicsBox(
     640,
     480,
@@ -178,7 +178,7 @@ local function compactBox()
       touch = false,
     }),
     1,
-    "starter-graphics-compact"
+    "starter-graphics-native-like"
   )
 end
 
@@ -897,9 +897,9 @@ end
 -- manufacturing side-by-side surfaces. Wide pairs info left of the
 -- machine, tall stacks info above the machine, a genuine pair keeps info
 -- on world with the machine on auxiliary, and nativeLike resolves one
--- usable compact portrait/action/message interface. A full inspect/confirm
+-- usable machine-derived chooser. A full inspect/confirm
 -- flow on wide still publishes the confirmed candidate identity.
-function T.actual_topology_replaces_fabricated_screens_with_usable_compact(scope, context)
+function T.actual_topology_replaces_fabricated_screens_with_usable_machine_pane(scope, context)
   local versions = readyVersions()
   if #versions == 0 then
     context:skip("the starter topology needs a ready user-owned ROM with a derived cache")
@@ -994,59 +994,106 @@ function T.actual_topology_replaces_fabricated_screens_with_usable_compact(scope
     Assert.equal(dualAux, 1, versionId .. " dual keeps the machine on the auxiliary surface")
     dual:dispose()
 
-    cell.box = compactBox()
-    local compact = openProductionChoice(versionId, cacheFs, nil, measure)
-    local compactPlan = planOf(compact, versionId, "compact")
-    Assert.equal(#compactPlan.panes, 1, versionId .. " compact is one complete interface")
-    local compactPlacement = assert(compactPlan.panes[1].placement, versionId .. " compact pane carries its placement")
-    Assert.equal(compactPlacement.logicalWidth, 256, versionId .. " compact keeps native logical width")
-    Assert.equal(compactPlacement.logicalHeight, 192, versionId .. " compact keeps native logical height")
-    local backend = prepareHost(compact, cacheFs)
+    cell.box = nativeLikeBox()
+    local adapted = openProductionChoice(versionId, cacheFs, nil, measure)
+    local adaptedPlan = planOf(adapted, versionId, "nativeLike")
+    Assert.equal(#adaptedPlan.panes, 1, versionId .. " nativeLike is one complete interface")
+    local adaptedPlacement = assert(adaptedPlan.panes[1].placement, versionId .. " nativeLike pane carries its placement")
+    Assert.equal(adaptedPlacement.logicalWidth, 256, versionId .. " nativeLike keeps native logical width")
+    Assert.equal(adaptedPlacement.logicalHeight, 192, versionId .. " nativeLike keeps native logical height")
+    local backend = prepareHost(adapted, cacheFs)
     local window = openWindowBorrower(cacheFs, versionId)
-    local before = snapshotOf(compact, versionId)
-    drawFrame(scope, compact, window, 640, 480)
-    local second = drawFrame(scope, compact, window, 640, 480)
-    local after = snapshotOf(compact, versionId)
+    local before = snapshotOf(adapted, versionId)
+    drawFrame(scope, adapted, window, 640, 480)
+    local second = drawFrame(scope, adapted, window, 640, 480)
+    local after = snapshotOf(adapted, versionId)
     Assert.equal(after.selection, before.selection, versionId .. " repeated draws never reselect")
     Assert.equal(after.selectionState, before.selectionState, versionId .. " repeated draws never transition")
     local manifest = loadManifest(cacheModule, cacheFs)
     local machine = assert(manifest.backgrounds.machine, versionId .. " generated machine artwork is present")
     local machineBytes = assert(cacheFs:read(machine.image), versionId .. " machine image bytes are available")
     local machineSource = love.image.newImageData(love.filesystem.newFileData(machineBytes, "machine-background.png"))
-    local checkedSamples = 0
     local red, green, blue, alpha = machineSource:getPixel(16, 150)
     Assert.isTrue(alpha > 0.98, "the generated banner supplies an opaque sample above the prompt area")
     Assert.isTrue(math.max(red, green, blue) > 0.1, "the generated banner sample is visibly colored")
-    local hostX, hostY = LayoutGeometry.logicalToHost(compactPlacement, 16.5, 150.5)
+    local hostX, hostY = LayoutGeometry.logicalToHost(adaptedPlacement, 16.5, 150.5)
     local actual = { second:getPixel(math.floor(hostX), math.floor(hostY)) }
     Assert.isTrue(
-      math.abs(actual[1] - red) + math.abs(actual[2] - green) + math.abs(actual[3] - blue) >= 0.08,
-      versionId .. " compact rendering does not draw the native machine background"
+      math.abs(actual[1] - red) + math.abs(actual[2] - green) + math.abs(actual[3] - blue) < 0.08,
+      versionId .. " the machine-derived pane draws the native machine background"
     )
-    if alpha > 0.98 then
-      checkedSamples = checkedSamples + 1
-    end
     machineSource:release()
-    Assert.isTrue(checkedSamples > 0, versionId .. " machine art supplies samples outside compact UI regions")
-    local regions = {
-      { x = 8, y = 8, width = 240, height = 48 },
-      { x = 8, y = 60, width = 240, height = 80 },
-      { x = 8, y = 164, width = 240, height = 24 },
-    }
-    for _, region in ipairs(regions) do
-      local bright = 0
-      for ly = region.y, region.y + region.height - 1, 2 do
-        for lx = region.x, region.x + region.width - 1, 2 do
-          local hx, hy = LayoutGeometry.logicalToHost(compactPlacement, lx, ly)
-          local pixelRed, pixelGreen, pixelBlue, pixelAlpha = second:getPixel(math.floor(hx), math.floor(hy))
-          if pixelAlpha > 0.5 and math.max(pixelRed, pixelGreen, pixelBlue) > 0.05 then
-            bright = bright + 1
-          end
+    local portrait = { x = 88, y = 56, width = 80, height = 80 }
+    local bright = 0
+    for ly = portrait.y, portrait.y + portrait.height - 1, 2 do
+      for lx = portrait.x, portrait.x + portrait.width - 1, 2 do
+        local hx, hy = LayoutGeometry.logicalToHost(adaptedPlacement, lx, ly)
+        local pixelRed, pixelGreen, pixelBlue, pixelAlpha = second:getPixel(math.floor(hx), math.floor(hy))
+        if pixelAlpha > 0.5 and math.max(pixelRed, pixelGreen, pixelBlue) > 0.05 then
+          bright = bright + 1
         end
       end
-      Assert.isTrue(bright > 20, versionId .. " compact paints its message, portrait, and action regions")
     end
-    compact:dispose()
+    Assert.isTrue(bright > 20, versionId .. " the machine-derived pane keeps the selected portrait visible")
+    adapted:dispose()
+    window:release()
+    backend:release()
+  end
+end
+
+-- The rewritten chooser is machine-derived: its single pane draws the
+-- native machine background behind the current info copy and the
+-- selected portrait, instead of the invented portrait/action grid.
+function T.native_like_inspect_shows_the_machine_derived_chooser(scope, context)
+  local versions = readyVersions()
+  if #versions == 0 then
+    context:skip("the rewritten starter chooser needs a ready user-owned ROM with a derived cache")
+  end
+  local cacheModule = requireModule(CACHE_MODULE, "the starter cache owns the normalized scene")
+  for _, versionId in ipairs(versions) do
+    local cacheFs = CacheFs.forVersion(versionId)
+    Assert.isTrue(
+      cacheModule.isReady(cacheFs, cacheFs:read(cacheModule.markerPath())),
+      versionId .. " starter cache is ready"
+    )
+    local cell = { box = nativeLikeBox() }
+    local host = openProductionChoice(versionId, cacheFs, nil, function()
+      return cell.box
+    end)
+    local plan = planOf(host, versionId, "nativeLike")
+    Assert.equal(#plan.panes, 1, versionId .. " the rewritten chooser stays one complete interface")
+    local placement = assert(plan.panes[1].placement, versionId .. " rewritten pane carries its placement")
+    Assert.equal(placement.logicalWidth, 256, versionId .. " rewritten pane keeps native logical width")
+    Assert.equal(placement.logicalHeight, 192, versionId .. " rewritten pane keeps native logical height")
+    local backend = prepareHost(host, cacheFs)
+    local window = openWindowBorrower(cacheFs, versionId)
+    local image = drawFrame(scope, host, window, 640, 480)
+    local manifest = loadManifest(cacheModule, cacheFs)
+    local machine = assert(manifest.backgrounds.machine, versionId .. " generated machine artwork is present")
+    local machineBytes = assert(cacheFs:read(machine.image), versionId .. " machine image bytes are available")
+    local machineSource = love.image.newImageData(love.filesystem.newFileData(machineBytes, "machine-background.png"))
+    local red, green, blue, alpha = machineSource:getPixel(16, 150)
+    Assert.isTrue(alpha > 0.98, "the generated banner supplies an opaque sample above the prompt area")
+    Assert.isTrue(math.max(red, green, blue) > 0.1, "the generated banner sample is visibly colored")
+    local hostX, hostY = LayoutGeometry.logicalToHost(placement, 16.5, 150.5)
+    local actual = { image:getPixel(math.floor(hostX), math.floor(hostY)) }
+    Assert.isTrue(
+      math.abs(actual[1] - red) + math.abs(actual[2] - green) + math.abs(actual[3] - blue) < 0.08,
+      versionId .. " the rewritten chooser draws the native machine background"
+    )
+    machineSource:release()
+    local bright = 0
+    for ly = 56, 135, 2 do
+      for lx = 88, 167, 2 do
+        local hx, hy = LayoutGeometry.logicalToHost(placement, lx, ly)
+        local pixelRed, pixelGreen, pixelBlue, pixelAlpha = image:getPixel(math.floor(hx), math.floor(hy))
+        if pixelAlpha > 0.5 and math.max(pixelRed, pixelGreen, pixelBlue) > 0.05 then
+          bright = bright + 1
+        end
+      end
+    end
+    Assert.isTrue(bright > 20, versionId .. " the rewritten chooser keeps the selected portrait visible")
+    host:dispose()
     window:release()
     backend:release()
   end

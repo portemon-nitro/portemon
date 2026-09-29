@@ -3,8 +3,8 @@
 -- and the machine interaction to auxiliary irrespective of either
 -- region's touch flag; wide pairs info left of the machine and tall
 -- stacks info above it, sharing one integer scale with no synthetic gap;
--- nativeLike resolves one complete compact portrait/action/message
--- interface. A pair that cannot fit 1x falls back to the effective
+-- nativeLike resolves one complete machine-derived chooser in a single
+-- 256x192 pane. A pair that cannot fit 1x falls back to the effective
 -- nativeLike case. Underfilled panes carry fitted chrome: one complete
 -- outer frame around the pair envelope, or one per underfilled pane.
 -- Resolvers require the complete context the owning session supplies.
@@ -16,21 +16,14 @@
 
 local ApplicationLayout = require("game.hgss.src.ui.ApplicationLayout")
 local NativeDisplay = require("libs.ui.src.NativeDisplay")
-local StarterCompactLayout = require("game.hgss.src.starters.StarterCompactLayout")
 
 ---@class StarterChoiceInterface
 local StarterChoiceInterface = {}
 
 local INFO_NATIVE = { id = "info", width = NativeDisplay.WIDTH, height = NativeDisplay.HEIGHT }
 local MACHINE_NATIVE = { id = "machine", width = NativeDisplay.WIDTH, height = NativeDisplay.HEIGHT }
-local COMPACT_NATIVE = { id = "compact", width = NativeDisplay.WIDTH, height = NativeDisplay.HEIGHT }
 local INPUT_KEY = "starter"
-local COMPACT_INPUT_KEY = "starter-compact"
 local ZERO_CROP = { left = 0, right = 0, top = 0, bottom = 0 }
-
-local COMPACT_PORTRAITS = StarterCompactLayout.PORTRAITS
-local COMPACT_PRIMARY = StarterCompactLayout.PRIMARY
-local COMPACT_BACK = StarterCompactLayout.BACK
 
 ---@param resources table<string, unknown> borrowed application collaborators
 ---@param view table<string, unknown> the wrapper semantic snapshot
@@ -53,22 +46,30 @@ local function renderNative(resources, view, plan)
   )
 end
 
+-- NativeLike render: the machine entrypoint through the single-pane plan.
+-- The field interpolation alpha defaults to full when the caller carries
+-- none; the borrowed window renderer is always required first.
 ---@param resources table<string, unknown> borrowed application collaborators
 ---@param view table<string, unknown> the wrapper semantic snapshot
 ---@param plan ApplicationPlan
-local function renderCompact(resources, view, plan)
+local function renderNativeLike(resources, view, plan)
   local presentation = assert(resources.presentation, "the starter render borrows its presentation")
   local text = assert(resources.text, "the starter render borrows its text provider")
   local windowRenderer = assert(resources.windowRenderer, "the starter render borrows the field window renderer")
   assert(type(view.selectionState) == "string", "the starter render reads the controller snapshot")
   local snapshot = view
-  presentation --[[@as { drawCompact: fun(self: table<string, unknown>, snapshot: table<string, unknown>, view: table<string, unknown>, text: table<string, unknown>, plan: table<string, unknown>, windowRenderer: table<string, unknown>) }]].drawCompact(
+  local renderAlpha = resources.renderAlpha
+  if renderAlpha == nil then
+    renderAlpha = 1
+  end
+  presentation --[[@as { drawNative: fun(self: table<string, unknown>, snapshot: table<string, unknown>, view: table<string, unknown>, text: table<string, unknown>, plan: table<string, unknown>, windowRenderer: table<string, unknown>, renderAlpha: number) }]].drawNative(
     presentation,
     snapshot,
     view,
     text,
     plan,
-    windowRenderer
+    windowRenderer,
+    renderAlpha
   )
 end
 
@@ -149,48 +150,6 @@ local function mapNativeInput(event, view, _)
   return { type = "tap", index = ball - 1 }
 end
 
--- Compact mapper: portrait presses tap their candidate, primary
--- confirms, and Back cancels only from an idle confirmation. Presses
--- outside every actionable region map to nothing so they can never
--- confirm a choice. Only the press edge dispatches.
----@param event table<string, unknown> session-inverted logical input
----@param view table<string, unknown> the controller snapshot for Back gating
----@return table<string, unknown>? the app event, or nil when the compact interface ignores it
-local function mapCompactInput(event, view, _)
-  if event.type ~= "pointer_down" or event.outside == true then
-    return nil
-  end
-  local x, y = event.x, event.y
-  if type(x) ~= "number" or type(y) ~= "number" then
-    return nil
-  end
-  for index, portrait in ipairs(COMPACT_PORTRAITS) do
-    if x >= portrait.x and x < portrait.x + portrait.width and y >= portrait.y and y < portrait.y + portrait.height then
-      return { type = "tap", index = index - 1 }
-    end
-  end
-  if
-    x >= COMPACT_PRIMARY.x
-    and x < COMPACT_PRIMARY.x + COMPACT_PRIMARY.width
-    and y >= COMPACT_PRIMARY.y
-    and y < COMPACT_PRIMARY.y + COMPACT_PRIMARY.height
-  then
-    return { type = "confirm" }
-  end
-  if
-    x >= COMPACT_BACK.x
-    and x < COMPACT_BACK.x + COMPACT_BACK.width
-    and y >= COMPACT_BACK.y
-    and y < COMPACT_BACK.y + COMPACT_BACK.height
-  then
-    if type(view) == "table" and view.selectionState == "confirm" and view.transition == "idle" then
-      return { type = "cancel" }
-    end
-    return nil
-  end
-  return nil
-end
-
 -- DualDisplay: info on the world surface, machine interaction on
 -- auxiliary irrespective of touch flags. The machine never crops; the
 -- info pane may use the default four-edge budget only to cover its own
@@ -216,22 +175,23 @@ function StarterChoiceInterface.dualDisplay(context, view)
   }, geometry.frames or {}, renderNative, mapNativeInput, INPUT_KEY)
 end
 
--- NativeLike: one complete compact portrait/action/message interface,
--- fullscreen with no crop. A covered target stays unframed; an
--- underfilled one refits as a complete decorated box with zero crop.
+-- NativeLike: one complete machine-derived chooser, fullscreen with no
+-- crop, using the native machine ball mapping for pointer input. A
+-- covered target stays unframed; an underfilled one refits as a complete
+-- decorated box with zero crop.
 ---@param context ApplicationLayout.Context
 ---@param view table<string, unknown>
 ---@return ApplicationPlan
 function StarterChoiceInterface.nativeLike(context, view)
   local _ = view
-  local geometry = ApplicationLayout.coverOrFrame(context, COMPACT_NATIVE, { maxOverdraw = ZERO_CROP })
-  local pane = geometry.placements[COMPACT_NATIVE.id]
+  local geometry = ApplicationLayout.coverOrFrame(context, MACHINE_NATIVE, { maxOverdraw = ZERO_CROP })
+  local pane = geometry.placements[MACHINE_NATIVE.id]
   if pane == nil then
     return inactivePlan()
   end
   return starterPlan({
-    { id = COMPACT_NATIVE.id, placement = pane, interactive = true },
-  }, geometry.frames or {}, renderCompact, mapCompactInput, COMPACT_INPUT_KEY)
+    { id = MACHINE_NATIVE.id, placement = pane, interactive = true },
+  }, geometry.frames or {}, renderNativeLike, mapNativeInput, INPUT_KEY)
 end
 
 -- Wide: info left, machine right, one shared integer scale with no gap and

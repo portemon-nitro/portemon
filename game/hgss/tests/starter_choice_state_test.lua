@@ -827,6 +827,16 @@ function T.remeasured_display_reprojects_hit_testing_without_reselecting()
   end)()
   host:handleInput({})
   Assert.equal(statusSelection(hostStatus(host)), 0, "remeasuring preserves the cursor without reselecting")
+  local presentation = assert(host._presentation, "the open choice owns its scene presentation")
+  local revealed = false
+  for _ = 1, 5000 do
+    host:update()
+    if presentation:inputReady(host._controller:snapshot()) then
+      revealed = true
+      break
+    end
+  end
+  Assert.isTrue(revealed, "the opening copy completes before remeasured taps apply")
   local machinePane = nil
   for _, pane in ipairs(assert(hostStatus(host).presentation, "remeasuring republishes the plan").panes) do
     if pane.id == "machine" then
@@ -964,7 +974,7 @@ local function wideMeasurement()
   }
 end
 
-local function compactMeasurement()
+local function nativeLikeMeasurement()
   return {
     width = 640,
     height = 480,
@@ -975,7 +985,7 @@ local function compactMeasurement()
       touch = false,
     }),
     pixelRatio = 1,
-    signature = "starter-state-compact",
+    signature = "starter-state-native-like",
   }
 end
 
@@ -990,16 +1000,16 @@ local function selectionStateOf(host)
 end
 
 -- Completion is independent of which interface is visible. Two
--- identically seeded choosers run in lockstep; one switches to the compact
--- interface mid-zoom. Clocks advance exactly once per tick on both, the
--- same observation settles both into confirmation, and the compact run
+-- identically seeded choosers run in lockstep; one switches to the native-like
+-- machine pane mid-zoom. Clocks advance exactly once per tick on both, the
+-- same observation settles both into confirmation, and the native-like run
 -- publishes exactly the pre-created candidate once.
-function T.compact_display_preserves_clocks_observations_and_single_publication()
+function T.native_like_display_preserves_clocks_observations_and_single_publication()
   local StarterChoiceState = requireState()
   local task = assert(require(TASK_MODULE))
   local catalog = CatalogFixture.makeCatalog()
   local wide = wideMeasurement()
-  local compact = compactMeasurement()
+  local like = nativeLikeMeasurement()
   local cellA = { box = wide }
   local cellB = { box = wide }
   local serviceA = openService(catalog, SEED)
@@ -1040,7 +1050,7 @@ function T.compact_display_preserves_clocks_observations_and_single_publication(
   settle(hostB)
   Assert.deepEqual(tripleOf(hostB), tripleOf(hostA), "inspection matches across displays")
 
-  cellB.box = compact
+  cellB.box = like
   hostA:confirm()
   hostB:confirm()
   for _ = 1, 512 do
@@ -1051,18 +1061,18 @@ function T.compact_display_preserves_clocks_observations_and_single_publication(
       break
     end
   end
-  Assert.equal(selectionStateOf(hostB), "confirm", "the compact run reaches confirmation on the same observation")
+  Assert.equal(selectionStateOf(hostB), "confirm", "the native-like run reaches confirmation on the same observation")
   local planB = hostB:status().presentation
-  Assert.isTrue(type(planB) == "table", "the compact choice publishes its presentation plan")
-  Assert.equal(#planB.panes, 1, "the compact interface is one complete pane")
+  Assert.isTrue(type(planB) == "table", "the native-like choice publishes its presentation plan")
+  Assert.equal(#planB.panes, 1, "the native-like interface is one complete pane")
 
   hostA:confirm()
   hostB:confirm()
   settle(hostA)
   settle(hostB)
   local doneB = hostStatus(hostB)
-  Assert.isTrue(doneB.done, "the compact lock completes")
-  Assert.equal(doneB.index, 1, "the compact lock reports the second candidate")
+  Assert.isTrue(doneB.done, "the native-like lock completes")
+  Assert.equal(doneB.index, 1, "the native-like lock reports the second candidate")
 
   local expected = stateB.candidates[2]
   Assert.notNil(expected, "the task pre-creates the second candidate")
@@ -1080,15 +1090,16 @@ function T.compact_display_preserves_clocks_observations_and_single_publication(
   Assert.equal(serviceB:partyCount(), 1, "re-polling never inserts twice")
 end
 
--- The compact interface routes logical portrait,
--- primary, and Back regions to the unchanged controller. Presses outside
--- confirmation leave Back inert, and commands during an active transition
--- never alter the selection.
-function T.compact_logical_input_dispatches_portrait_primary_and_guarded_back()
+-- The machine-derived interface routes ball taps through the native
+-- projection and confirm/cancel/navigate through controller semantics:
+-- taps select, semantic confirm advances, cancel outside confirmation is
+-- inert, cancel in confirmation backs out once its copy completes, and
+-- commands during an active transition never alter the selection.
+function T.native_like_machine_input_dispatches_taps_and_guarded_semantics()
   local StarterChoiceState = requireState()
   local catalog = CatalogFixture.makeCatalog()
   local service = openService(catalog, SEED)
-  local cell = { box = compactMeasurement() }
+  local cell = { box = nativeLikeMeasurement() }
   local host = StarterChoiceState.new({
     catalog = catalog,
     cacheFs = readyCacheFs(),
@@ -1102,33 +1113,58 @@ function T.compact_logical_input_dispatches_portrait_primary_and_guarded_back()
   local third = service:buildStarter("EEVEE")
   host:open(0, { first, second, third })
   Assert.isTrue(type(host.handleInput) == "function", "the migrated host interprets its own input through handleInput")
-  local plan = assert(host:status().presentation, "the compact choice publishes its presentation plan")
-  local placement = assert(plan.panes[1].placement, "the compact plan carries its single placement")
+  local presentation = assert(host._presentation, "the open choice owns its scene presentation")
+  local revealed = false
+  for _ = 1, 5000 do
+    host:update()
+    if presentation:inputReady(host._controller:snapshot()) then
+      revealed = true
+      break
+    end
+  end
+  Assert.isTrue(revealed, "the opening copy completes before machine input applies")
+  local plan = assert(host:status().presentation, "the machine choice publishes its presentation plan")
+  local placement = assert(plan.panes[1].placement, "the machine plan carries its single placement")
   local function press(lx, ly)
     local hx, hy = LayoutGeometry.logicalToHost(placement, lx, ly)
-    Assert.notNil(hx, "the compact target stays inside the visible clip")
+    Assert.notNil(hx, "the machine target stays inside the visible clip")
+    Assert.notNil(hy, "the machine target stays inside the visible clip")
     host:handleInput({
       { type = "pointer_down", pointerId = "touch:1", x = hx, y = hy },
       { type = "pointer_up", pointerId = "touch:1", x = hx, y = hy },
     })
   end
-  press(128, 100)
+  local centers = ballCenters(host)
+  local tapped = assert(centers[2], "the second ball projects a hit region")
+  press(tapped.x, tapped.y)
   settle(host)
-  Assert.equal(statusSelection(hostStatus(host)), 1, "a portrait press taps its candidate")
-  press(64, 176)
+  Assert.equal(statusSelection(hostStatus(host)), 1, "a ball press taps its candidate")
+  host:handleInput({ { type = "confirm" } })
   settle(host)
-  Assert.equal(selectionStateOf(host), "inspect", "primary activates inspection from null")
-  press(192, 176)
-  Assert.deepEqual(tripleOf(host), { 1, "inspect", "idle" }, "Back outside confirmation changes nothing")
-  press(64, 176)
-  Assert.equal(tripleOf(host)[3], "zoomIn", "primary starts the zoom path from inspection")
-  press(48, 100)
-  Assert.deepEqual(tripleOf(host), { 1, "inspect", "zoomIn" }, "transition-conflicting commands do not alter selection")
+  Assert.equal(selectionStateOf(host), "inspect", "semantic confirm activates inspection from null")
+  host:handleInput({ { type = "cancel" } })
+  Assert.deepEqual(tripleOf(host), { 1, "inspect", "idle" }, "cancel outside confirmation changes nothing")
+  host:handleInput({ { type = "navigate", direction = "right" } })
+  Assert.equal(tripleOf(host)[3], "rotate", "navigation steps the turntable from inspection")
+  host:handleInput({ { type = "navigate", direction = "right" } })
+  Assert.deepEqual(tripleOf(host), { 1, "inspect", "rotate" }, "transition-conflicting commands do not alter selection")
+  settle(host)
+  Assert.equal(statusSelection(hostStatus(host)), 2, "the settled step selects the next ball")
+  host:handleInput({ { type = "confirm" } })
   settle(host)
   Assert.equal(selectionStateOf(host), "confirm", "the zoom path settles into confirmation")
-  press(192, 176)
+  local confirmed = false
+  for _ = 1, 5000 do
+    host:update()
+    if presentation:inputReady(host._controller:snapshot()) then
+      confirmed = true
+      break
+    end
+  end
+  Assert.isTrue(confirmed, "the confirmation copy completes before cancel applies")
+  host:handleInput({ { type = "cancel" } })
   settle(host)
-  Assert.equal(selectionStateOf(host), "inspect", "Back in confirmation returns to inspection")
+  Assert.equal(selectionStateOf(host), "inspect", "cancel in confirmation returns to inspection")
   host:close()
   host:dispose()
 end
@@ -1310,6 +1346,59 @@ function T.drawing_borrows_the_field_window_renderer_through_render_resources()
   if not ok then
     error(err, 0)
   end
+end
+
+-- Chooser input waits for the source printer: a confirm or navigation
+-- arriving while the opening copy still reveals changes nothing, and the
+-- same input applies once the reveal completes on the fixed tick.
+function T.early_chooser_input_waits_for_the_source_printer()
+  local StarterChoiceState = requireState()
+  local catalog = CatalogFixture.makeCatalog()
+  local service = openService(catalog, SEED)
+  local cell = { box = defaultBox() }
+  local host = StarterChoiceState.new({
+    catalog = catalog,
+    cacheFs = readyCacheFs(),
+    frameIndex = 3,
+    measureDisplay = function()
+      return cell.box
+    end,
+  })
+  local trio = { service:buildStarter("CHIKORITA"), service:buildStarter("TOTODILE"), service:buildStarter("EEVEE") }
+  host:open(0, trio)
+  settle(host)
+  Assert.deepEqual(tripleOf(host), { 0, "null", "idle" }, "the chooser opens settled on the opening copy")
+  host:handleInput({ { type = "confirm" } })
+  Assert.deepEqual(
+    tripleOf(host),
+    { 0, "null", "idle" },
+    "a confirm arriving while the opening copy still reveals changes nothing"
+  )
+  host:handleInput({ { type = "navigate", direction = "right" } })
+  Assert.deepEqual(
+    tripleOf(host),
+    { 0, "null", "idle" },
+    "navigation arriving while the opening copy still reveals changes nothing"
+  )
+  local presentation = assert(host._presentation, "the open chooser owns its scene presentation")
+  Assert.equal(
+    type(presentation.inputReady),
+    "function",
+    "the presentation exposes its source-printer readiness before the chooser accepts input"
+  )
+  local ready = false
+  for _ = 1, 5000 do
+    host:update()
+    if presentation:inputReady(host._controller:snapshot()) then
+      ready = true
+      break
+    end
+  end
+  Assert.isTrue(ready, "the opening reveal completes on the fixed tick")
+  host:handleInput({ { type = "confirm" } })
+  Assert.equal(selectionStateOf(host), "inspect", "a confirm after the reveal enters inspection")
+  host:close()
+  host:dispose()
 end
 
 return { tests = T }

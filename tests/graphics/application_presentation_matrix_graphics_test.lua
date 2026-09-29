@@ -723,54 +723,54 @@ function T.party_cards_stay_readable_across_densities(scope)
   provider:release()
 end
 
--- The compact starter regions land on whole host pixels through the
--- resolved placement: portraits and actions each paint inside their
--- locked logical rectangles and nowhere else.
-function T.starter_compact_regions_match_locked_geometry(scope)
+-- The machine-derived starter pane lands on whole host pixels through
+-- the resolved placement: the machine surface and the selected portrait
+-- each paint inside their source rectangles and nowhere else.
+function T.starter_machine_regions_match_locked_geometry(scope)
   local lg = love.graphics
   local starter = StarterChoiceInterface.defaults()
   local view = { selection = 0, selectionState = "inspect", transition = "idle", done = false }
   local plan = starter.nativeLike(contextFor(singleDisplay(640, 480), "nativeLike", starter), view)
-  Assert.equal(#plan.panes, 1, "compact choice shows its single selector")
-  Assert.equal(plan.inputKey, "starter-compact", "the compact plan names its input geometry")
-  local placement = assert(plan.panes[1], "the compact plan carries its pane").placement
+  Assert.equal(#plan.panes, 1, "machine choice shows its single pane")
+  Assert.equal(plan.inputKey, "starter", "the machine plan names its input geometry")
+  local placement = assert(plan.panes[1], "the machine plan carries its pane").placement
   local canvas = renderToCanvas(scope, 640, 480, function()
     LogicalSurface.draw(lg, placement, function()
       lg.setColor(0.9, 0.2, 0.2, 1)
-      lg.rectangle("fill", 8, 60, 80, 80)
+      lg.rectangle("fill", 0, 0, 256, 192)
       lg.setColor(0.2, 0.9, 0.2, 1)
-      lg.rectangle("fill", 8, 164, 112, 24)
+      lg.rectangle("fill", 88, 56, 80, 80)
     end)
   end)
   local data = scope:own(canvas:newImageData())
   local function hostOf(lx, ly)
     return LayoutGeometry.logicalToHost(placement, lx, ly)
   end
-  local px, py = hostOf(8 + 40, 60 + 40)
+  local mx, my = hostOf(16, 150)
+  assertPixelNear(
+    data,
+    math.floor(mx),
+    math.floor(my),
+    0.9,
+    0.2,
+    0.2,
+    1,
+    "the machine surface paints through the machine placement"
+  )
+  local px, py = hostOf(88 + 40, 56 + 40)
   assertPixelNear(
     data,
     math.floor(px),
     math.floor(py),
-    0.9,
-    0.2,
-    0.2,
-    1,
-    "the portrait region paints through the compact placement"
-  )
-  local ax, ay = hostOf(8 + 56, 164 + 12)
-  assertPixelNear(
-    data,
-    math.floor(ax),
-    math.floor(ay),
     0.2,
     0.9,
     0.2,
     1,
-    "the primary action region paints through the compact placement"
+    "the portrait region paints through the machine placement"
   )
-  -- Between the regions the canvas stays clear.
+  -- Between the regions the canvas keeps the machine surface.
   local gx, gy = hostOf(120, 150)
-  assertPixelNear(data, math.floor(gx), math.floor(gy), 0, 0, 0, 0, "between regions stays clear")
+  assertPixelNear(data, math.floor(gx), math.floor(gy), 0.9, 0.2, 0.2, 1, "between regions keeps the surface")
 end
 
 -- Hosted naming magnifies exactly once: the same canonical child through

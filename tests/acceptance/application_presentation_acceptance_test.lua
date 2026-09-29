@@ -548,9 +548,9 @@ end
 
 -- Elm's Lab starter choice through the genuine scripted route: drive the
 -- welcome scene, Elm's dispatcher, and the ball-table trigger, then switch
--- to a native-like host while the blocking choice is open. The compact
--- selector must take over without touching candidates or clocks, and the
--- choice must publish exactly once.
+-- to a native-like host while the blocking choice is open. The
+-- machine-derived pane must take over without touching candidates or
+-- clocks, and the choice must publish exactly once.
 local LAB_MAP = "MAP_NEW_BARK_ELMS_LAB_1F"
 local LAB_TRIO = { CHIKORITA = true, CYNDAQUIL = true, TOTODILE = true }
 
@@ -686,7 +686,7 @@ local function standNextTo(game, actorId)
   game:face(directionToward(player.fieldX, player.fieldZ, target.fieldX, target.fieldZ))
 end
 
-function T.tests.starter_choice_switches_to_compact_and_publishes_once()
+function T.tests.starter_choice_switches_to_machine_derived_and_publishes_once()
   withLabGame(function(game)
     game:waitForFieldEntry()
     Assert.equal(labPartyCount(game), 0, "a fresh save starts Elm's Lab with an empty party")
@@ -777,13 +777,13 @@ function T.tests.starter_choice_switches_to_compact_and_publishes_once()
     Assert.isTrue(triggered, "the ball table must start the generated starter script")
 
     -- Wait for the blocking choice surface, then switch hosts mid-choice:
-    -- the compact selector must take over the same open choice.
+    -- the machine-derived pane must take over the same open choice.
     game:advanceUntil("the starter choice opens", function()
       local surface = game.runtime.starterChoice
       return surface ~= nil and surface:isActive()
     end, 600)
     switchDisplay(game, 640, 480)
-    game:advanceUntil("the compact plan publishes", function()
+    game:advanceUntil("the machine-derived plan publishes", function()
       local surface = game.runtime.starterChoice
       if surface == nil or not surface:isActive() then
         return false
@@ -793,11 +793,11 @@ function T.tests.starter_choice_switches_to_compact_and_publishes_once()
     end, 120)
     local choice = game.runtime.starterChoice
     local plan = assert(choice:status().presentation, "the open choice must publish its plan")
-    Assert.equal(#plan.panes, 1, "native-like choice shows its single compact selector")
-    Assert.equal(plan.inputKey, "starter-compact", "the compact plan names its input geometry")
-    local placement = assert(plan.panes[1].placement, "the compact pane carries its placement")
-    Assert.equal(placement.logicalWidth, 256, "the compact pane stays canonically wide")
-    Assert.equal(placement.logicalHeight, 192, "the compact pane stays canonically tall")
+    Assert.equal(#plan.panes, 1, "native-like choice shows its single machine pane")
+    Assert.equal(plan.inputKey, "starter", "the machine plan names its input geometry")
+    local placement = assert(plan.panes[1].placement, "the machine pane carries its placement")
+    Assert.equal(placement.logicalWidth, 256, "the machine pane stays canonically wide")
+    Assert.equal(placement.logicalHeight, 192, "the machine pane stays canonically tall")
 
     local chosen = pumpScript(game, 1200, function()
       return labPartyCount(game) == 1

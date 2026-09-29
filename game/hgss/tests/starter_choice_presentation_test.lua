@@ -1138,4 +1138,87 @@ function T.starter_frames_draw_through_the_borrowed_field_window_primitive()
   end
 end
 
+-- The source message printer reveals the opening and confirmation copy
+-- over fixed ticks while inspected detail stays instant: the first draw
+-- after entering the opening message shows a partial prefix that grows
+-- monotonically to the complete copy without any draw advancing it, and
+-- the inspected message draws complete immediately.
+function T.opening_and_confirmation_copy_reveals_over_ticks_while_inspect_stays_instant()
+  local presentation, manifest = openPresentation()
+  local drawnGlyphs = 0
+  local provider = {
+    drawLineWithColorVariants = function(_, line)
+      drawnGlyphs = drawnGlyphs + #line
+    end,
+  }
+  local window = {
+    drawWindow = function() end,
+  }
+  local function drawInfo(message)
+    drawnGlyphs = 0
+    presentation:_drawMessageLines(
+      manifest.surfaces.info.message,
+      message,
+      provider,
+      manifest.textColors.infoBackground,
+      window
+    )
+    return drawnGlyphs
+  end
+  local function totalGlyphs(message)
+    local total = 0
+    for _, line in ipairs(assert(message.lines, "the fixture message carries its lines")) do
+      total = total + #line
+    end
+    return total
+  end
+  local openingTotal = totalGlyphs(manifest.messages.topInitial)
+  local opening = snapshot({ selectionState = "null", transition = "idle" })
+  presentation:update(opening)
+  local first = drawInfo(manifest.messages.topInitial)
+  Assert.isTrue(
+    first < openingTotal,
+    "the opening copy starts as a partial reveal, not the complete lines"
+  )
+  local previous, complete = first, first
+  for _ = 1, 5000 do
+    presentation:update(opening)
+    complete = drawInfo(manifest.messages.topInitial)
+    Assert.isTrue(complete >= previous, "the opening reveal never loses visible copy")
+    previous = complete
+    if complete == openingTotal then
+      break
+    end
+  end
+  Assert.equal(complete, openingTotal, "the opening reveal completes on the fixed tick")
+  Assert.equal(
+    drawInfo(manifest.messages.topInitial),
+    complete,
+    "drawing reads the reveal without advancing it"
+  )
+  local inspecting = snapshot({ selection = 0, selectionState = "inspect", transition = "idle" })
+  presentation:update(inspecting)
+  Assert.equal(
+    drawInfo(manifest.messages.inspect[1]),
+    totalGlyphs(manifest.messages.inspect[1]),
+    "inspected detail stays instant"
+  )
+  local confirming = snapshot({ selection = 0, selectionState = "confirm", transition = "idle" })
+  presentation:update(confirming)
+  local confirmTotal = totalGlyphs(manifest.messages.confirm[1])
+  Assert.isTrue(
+    drawInfo(manifest.messages.confirm[1]) < confirmTotal,
+    "the confirmation copy starts as a partial reveal"
+  )
+  local confirmComplete = 0
+  for _ = 1, 5000 do
+    presentation:update(confirming)
+    confirmComplete = drawInfo(manifest.messages.confirm[1])
+    if confirmComplete == confirmTotal then
+      break
+    end
+  end
+  Assert.equal(confirmComplete, confirmTotal, "the confirmation reveal completes on the fixed tick")
+end
+
 return { tests = T }

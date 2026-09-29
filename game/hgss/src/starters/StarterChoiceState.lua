@@ -364,22 +364,36 @@ function StarterChoiceState:handleInput(events)
   local session = assert(self._session, "an open choice owns its presentation session")
   session:resolve(self:_measured(), self:_sessionView())
   local mapped = session:mapInput(events, self:_sessionView())
+  -- The source printer gates chooser input: semantic events the source
+  -- would not accept while the info copy still reveals are dropped without
+  -- replay. Readiness is consulted lazily so batches without chooser
+  -- events never touch presentation clocks; transition clocks keep
+  -- advancing through update regardless.
+  local printerReady = nil
   for _, event in ipairs(mapped) do
     local eventType = event.type
-    if eventType == "tap" then
-      controller:tap(event.index)
-    elseif eventType == "confirm" then
-      controller:confirm()
-    elseif eventType == "cancel" then
-      controller:cancel()
-    elseif eventType == "navigate" then
-      if event.direction == "left" or event.direction == "right" then
-        controller:move(event.direction)
-      end
-    elseif eventType == "pointer_cancel" then
+    if eventType == "pointer_cancel" then
       -- A cancelled gesture invalidates the press without touching choice semantics.
     else
-      assert(false, "unknown starter choice app event " .. tostring(eventType))
+      if printerReady == nil then
+        printerReady =
+          assert(self._presentation, "an open choice owns its presentation"):inputReady(controller:snapshot())
+      end
+      if printerReady then
+        if eventType == "tap" then
+          controller:tap(event.index)
+        elseif eventType == "confirm" then
+          controller:confirm()
+        elseif eventType == "cancel" then
+          controller:cancel()
+        elseif eventType == "navigate" then
+          if event.direction == "left" or event.direction == "right" then
+            controller:move(event.direction)
+          end
+        else
+          assert(false, "unknown starter choice app event " .. tostring(eventType))
+        end
+      end
     end
   end
   session:resolve(self:_measured(), self:_sessionView())
