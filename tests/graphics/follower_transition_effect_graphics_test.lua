@@ -101,7 +101,7 @@ local T = GraphicsSmoke.suite({
     Assert.isTrue(versions > 0, "a ready imported game version is required")
   end,
 })
-T.metadata.capabilities = { "graphics", "rom_dump", "derived_assets" }
+T.metadata.capabilities = { "graphics", "rom_dump" }
 T.metadata.derivedAssets = { "field-effects:global", "field-camera:global" }
 T.metadata.tags = { "field", "transition", "materials" }
 return T

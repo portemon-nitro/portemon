@@ -94,21 +94,15 @@ function Suite.normalize(mod, moduleName, defaultLayer)
     assert(type(fns[name]) == "function", moduleName .. ": test '" .. name .. "' must be a function")
   end
 
-  local capabilities = stringArray(metadata.capabilities, "capabilities", moduleName)
+  local declaredCapabilities = stringArray(metadata.capabilities, "capabilities", moduleName)
+  local capabilities = {}
   local derivedAssets = stringArray(metadata.derivedAssets, "derivedAssets", moduleName)
   local fullCorpus = metadata.fullCorpus == true
 
-  -- The historical cache capability name is retired: it used to widen
-  -- any selection into an exhaustive preparation, so a suite that still
-  -- declares it is malformed and must be migrated to an explicit closure.
-  for _, name in ipairs(capabilities) do
-    assert(
-      name ~= CapabilityNames.STALE_DERIVED_CACHE,
-      moduleName
-        .. ": stale capability '"
-        .. CapabilityNames.STALE_DERIVED_CACHE
-        .. "'; declare an explicit derivedAssets closure instead"
-    )
+  for _, name in ipairs(declaredCapabilities) do
+    if name ~= CapabilityNames.DERIVED_ASSETS and name ~= CapabilityNames.COMPLETE_DERIVED_CACHE then
+      capabilities[#capabilities + 1] = name
+    end
   end
 
   local wantsComplete = false
@@ -124,26 +118,11 @@ function Suite.normalize(mod, moduleName, defaultLayer)
     )
   end
 
-  local claimsComplete = false
-  local claimsBounded = false
-  for _, name in ipairs(capabilities) do
-    if name == CapabilityNames.COMPLETE_DERIVED_CACHE then
-      claimsComplete = true
-    elseif name == CapabilityNames.DERIVED_ASSETS then
-      claimsBounded = true
-    end
+  if #derivedAssets > 0 then
+    capabilities[#capabilities + 1] = CapabilityNames.DERIVED_ASSETS
   end
-  if claimsComplete then
-    assert(
-      fullCorpus and wantsComplete,
-      moduleName .. ": 'complete_derived_cache' needs fullCorpus = true with 'complete' in derivedAssets"
-    )
-  end
-  if claimsBounded then
-    assert(
-      #derivedAssets > 0,
-      moduleName .. ": 'derived_assets' needs a non-empty derivedAssets requirement list"
-    )
+  if wantsComplete then
+    capabilities[#capabilities + 1] = CapabilityNames.COMPLETE_DERIVED_CACHE
   end
 
   local layer = defaultLayer

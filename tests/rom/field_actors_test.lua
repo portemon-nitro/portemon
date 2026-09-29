@@ -670,6 +670,6 @@ function T.nonzero_object_event_y_reaches_runtime_surface_projection(romFs, vers
 end
 
 local suite = require("tests.rom.support.RomSuite").fromFacts(T)
-suite.metadata.capabilities = { "rom_dump", "derived_assets" }
+suite.metadata.capabilities = { "rom_dump" }
 suite.metadata.derivedAssets = { "actors:global" }
 return suite

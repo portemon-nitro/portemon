@@ -534,7 +534,7 @@ function T.release_frees_the_owned_images(scope)
 end
 
 local suite = GraphicsSmoke.suite(T, {
-  capabilities = { "graphics", "rom_dump", "derived_assets" },
+  capabilities = { "graphics", "rom_dump" },
   tags = { "field", "menu", "real-cache" },
 })
 suite.metadata.derivedAssets = { "field-ui:global" }

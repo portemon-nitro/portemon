@@ -2195,6 +2195,6 @@ function T.offered_action_slot_carries_its_action_face(scope, context)
 end
 
 local suite = GraphicsSmoke.suite(T)
-suite.metadata.capabilities = { "graphics", "rom_dump", "derived_assets" }
+suite.metadata.capabilities = { "graphics", "rom_dump" }
 suite.metadata.derivedAssets = { "bag:global", "items:global", "field-font:global", "field-ui:global" }
 return suite

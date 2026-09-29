@@ -476,12 +476,12 @@ function T.tag_mismatch_does_not_count_as_hidden_corpus()
 end
 
 -- The selected capability union follows the selection: unselected suites
--- contribute nothing, and one selected suite contributes every declared
--- capability exactly once no matter how many of its tests matched.
+-- contribute nothing, and a selected suite contributes each available
+-- host or derived capability once no matter how many tests matched.
 function T.selected_capabilities_follow_the_selection_without_duplicates()
   local corpus = FakeCorpus.new({
     ["fake/unit/alpha_test.lua"] = {
-      metadata = { capabilities = { "rom_dump", "derived_assets" }, derivedAssets = { "map:7" } },
+      metadata = { capabilities = { "rom_dump" }, derivedAssets = { "map:7" } },
       tests = { ["a"] = function() end, ["b"] = function() end },
     },
     ["fake/unit/beta_test.lua"] = {

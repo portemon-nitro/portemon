@@ -544,6 +544,6 @@ function T.context_choice_uses_auxiliary_source_layout_on_dual_display(scope)
 end
 
 local suite = GraphicsSmoke.suite(T)
-suite.metadata.capabilities = { "graphics", "rom_dump", "derived_assets" }
+suite.metadata.capabilities = { "graphics", "rom_dump" }
 suite.metadata.derivedAssets = { "field-runtime", "map:60" }
 return suite

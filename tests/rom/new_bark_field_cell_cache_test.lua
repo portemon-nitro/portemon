@@ -188,6 +188,6 @@ function T.committed_coverage_includes_everywhere_neighbors(romFs, versionId)
 end
 
 local suite = require("tests.rom.support.RomSuite").fromFacts(T)
-suite.metadata.capabilities = { "rom_dump", "derived_assets" }
+suite.metadata.capabilities = { "rom_dump" }
 suite.metadata.derivedAssets = { "map:60" }
 return suite

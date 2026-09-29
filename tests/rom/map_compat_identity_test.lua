@@ -122,6 +122,6 @@ function T.section_identity_is_never_the_header_id(romFs, versionId)
 end
 
 local suite = RomSuite.fromFacts(T)
-suite.metadata.capabilities = { "rom_dump", "derived_assets" }
+suite.metadata.capabilities = { "rom_dump" }
 suite.metadata.derivedAssets = { "world-catalog:global" }
 return suite

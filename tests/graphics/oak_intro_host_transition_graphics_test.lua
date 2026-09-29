@@ -522,6 +522,6 @@ T.covered_handoff_keeps_black_between_intro_and_field = function(scope)
 end
 
 local suite = GraphicsSmoke.suite(T)
-suite.metadata.capabilities = { "graphics", "rom_dump", "derived_assets" }
+suite.metadata.capabilities = { "graphics", "rom_dump" }
 suite.metadata.derivedAssets = { "field-runtime", "new-game-intro", "map:60", "map:64" }
 return suite

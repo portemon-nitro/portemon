@@ -48,7 +48,7 @@ end
 local suite = require("tests.rom.support.RomSuite").fromFacts(T)
 -- Read-only corpus check: the suite consumes the proven complete
 -- preparation instead of publishing one.
-suite.metadata.capabilities = { "rom_dump", "complete_derived_cache" }
+suite.metadata.capabilities = { "rom_dump" }
 suite.metadata.derivedAssets = { "complete" }
 suite.metadata.fullCorpus = true
 return suite

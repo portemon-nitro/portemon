@@ -958,13 +958,6 @@ function T.command_proof_and_recorded_fatal_behavior()
   local realForVersion = CacheFs.forVersion
   local savedPool = package.loaded["romdump.src.build.CompilerPool"]
   local savedBuilder = package.loaded["romdump.src.CacheBuilder"]
-  local function acquireScratch()
-    local handle = assert(io.popen("mktemp -d", "r"))
-    local path = (handle:read("*l") or ""):gsub("^%s+", ""):gsub("%s+$", "")
-    handle:close()
-    assert(path ~= "", "scratch acquisition requires mktemp")
-    return path
-  end
   local function withCommand(env, fn)
     package.loaded["romdump.src.build.CompilerPool"] = {
       new = function()
@@ -986,12 +979,9 @@ function T.command_proof_and_recorded_fatal_behavior()
     end
     return first, second
   end
-  -- A scope held in the pool proves nothing: the wait fires, the failure
-  -- is structured, and no invocation proof is issued.
+  -- A scope held in the pool fails after the wait reports its worker error.
   do
-    local env = newEnv("proof-pending-generation", 2)
-    local scratch = acquireScratch()
-    local recordPath = scratch .. "/preparation.lua"
+    local env = newEnv("pending-generation", 2)
     withCommand(env, function(CacheBuilder)
       env.pool.onWait = function(pool)
         if pool.waitCalls >= 3 and pool:status("message-bank:219") == "queued" then
@@ -1001,7 +991,6 @@ function T.command_proof_and_recorded_fatal_behavior()
       local report, err = CacheBuilder.prepareVersion("heartgold", {
         identity = env.identity,
         requirements = { "message-bank:219" },
-        preparationRecord = recordPath,
         log = function() end,
       })
       Assert.isNil(report, "a pending scope issues no success report")
@@ -1009,13 +998,11 @@ function T.command_proof_and_recorded_fatal_behavior()
       local Errors = require("libs.errors.src.Errors")
       Assert.isTrue(Errors.is(err), "command failures stay structured")
       Assert.isTrue(env.pool.waitCalls >= 1, "the held scope waits physically")
-      Assert.isNil(io.open(recordPath, "r"), "no proof is issued for a failed scope")
     end)
-    os.execute("rm -rf -- '" .. scratch:gsub("'", "'\\''") .. "'")
   end
   -- A recorded fatal keeps its exact failure evidence.
   do
-    local env = newEnv("proof-fatal-generation", 2)
+    local env = newEnv("fatal-generation", 2)
     local fatal = "synthetic pool fatal"
     env.pool.diagnostics = function(self)
       return { workerCount = self.workerCount, counts = {}, error = fatal }
@@ -1043,7 +1030,7 @@ function T.command_proof_and_recorded_fatal_behavior()
   end
   -- An unrelated programming fault is not a handled drain failure.
   do
-    local env = newEnv("proof-raw-generation", 2)
+    local env = newEnv("raw-generation", 2)
     local realUpdate = env.pool.update
     env.pool.update = function()
       error("unexpected boom", 0)

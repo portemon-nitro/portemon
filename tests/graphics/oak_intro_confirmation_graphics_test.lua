@@ -408,6 +408,6 @@ function T.unselected_text_button_face_has_light_separator_dark(scope)
 end
 
 local suite = GraphicsSmoke.suite(T)
-suite.metadata.capabilities = { "graphics", "rom_dump", "derived_assets" }
+suite.metadata.capabilities = { "graphics", "rom_dump" }
 suite.metadata.derivedAssets = { "new-game-intro" }
 return suite

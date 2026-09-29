@@ -482,7 +482,7 @@ local function requireScopedPreparation()
 end
 
 -- Invocation-owned output paths: one atomically acquired directory per
--- suite invocation holds every profile, receipt, and staging sibling this
+-- suite invocation holds every profile and staging sibling this
 -- run writes. A process-local counter is unique only inside that exclusive
 -- root, never across processes, and no shared deterministic directory
 -- is used.
@@ -779,116 +779,6 @@ function T.malformed_requests_fail_before_any_cache_mutation()
   Assert.equal(env.publishes, 0, "no malformed request may publish attestation")
 end
 
--- A successful targeted scope issues the invocation receipt from the actual
--- report: the exact revision shape names the real save directory, version,
--- source hash, current generation, and the sorted satisfied closure.
-function T.successful_scope_issues_an_invocation_receipt_from_its_report()
-  env = newEnv()
-  requireScopedPreparation()
-  local recordPath = newOutputPath("scope-receipt", ".lua")
-  os.remove(recordPath)
-  local report, err = CacheBuilder.prepareVersion(
-    "heartgold",
-    scopedOptions({
-      requirements = { "map:7", "bootstrap" },
-      preparationRecord = recordPath,
-      saveDirectory = "/private/test-root",
-    })
-  )
-  Assert.isNil(err)
-  assert(report, "a successful preparation returns its report")
-  local handle = assert(io.open(recordPath, "r"), "a successful scope must issue its receipt")
-  local source = handle:read("*a")
-  handle:close()
-  os.remove(recordPath)
-  local chunk = assert(load(source, "@receipt", "t", {}))
-  local record = chunk()
-  Assert.equal(record.schema, "g4-test-preparation-v2")
-  Assert.equal(record.saveDirectory, "/private/test-root")
-  Assert.equal(record.versionId, "heartgold")
-  Assert.equal(record.romSha1, env.identity.romSha1)
-  Assert.equal(record.generationId, env.identity.generationId)
-  Assert.deepEqual(record.requested, { "bootstrap", "map:7" })
-  Assert.isTrue(report.requestedReady)
-  Assert.equal(record.requestedReady, true)
-  Assert.equal(record.complete, false)
-end
-
--- The warm shortcut still issues proof: reuse is decided by the strong
--- check, and the receipt records the complete corpus it verified.
-function T.warm_reuse_issues_an_invocation_receipt_without_recompiling()
-  env = newEnv()
-  env.stateMatches = true
-  env.auditAvailable = true
-  requireScopedPreparation()
-  local recordPath = newOutputPath("warm-receipt", ".lua")
-  os.remove(recordPath)
-  local report, err = CacheBuilder.prepareVersion(
-    "heartgold",
-    scopedOptions({
-      requirements = { "complete" },
-      preparationRecord = recordPath,
-      saveDirectory = "/private/test-root",
-    })
-  )
-  Assert.isNil(err)
-  assert(report, "a warm preparation returns its report")
-  Assert.equal(#env.sessions, 0, "the fast path must not open a generation session")
-  local handle = assert(io.open(recordPath, "r"), "warm reuse must still issue its receipt")
-  handle:close()
-  os.remove(recordPath)
-end
-
--- A receipt that cannot be written fails the command: no readiness is
--- forged and the failure is structured.
-function T.unwritable_receipt_fails_the_command_without_forging_readiness()
-  env = newEnv()
-  requireScopedPreparation()
-  local report, err = CacheBuilder.prepareVersion(
-    "heartgold",
-    scopedOptions({
-      requirements = { "map:7" },
-      preparationRecord = "/nonexistent-dir-xyz/preparation.lua",
-      saveDirectory = "/private/test-root",
-    })
-  )
-  Assert.isNil(report)
-  Assert.notNil(err)
-  local Errors = require("libs.errors.src.Errors")
-  Assert.isTrue(Errors.is(err), "receipt failures are structured")
-end
-
--- A failed scope issues no receipt: only a satisfied closure proves
--- readiness.
-function T.failed_scope_issues_no_receipt()
-  env = newEnv()
-  env.failKeys["map:5"] = "MAP_SCHEMA_INVALID: injected compile rejection"
-  requireScopedPreparation()
-  local recordPath = newOutputPath("failed-scope-receipt", ".lua")
-  os.remove(recordPath)
-  local report, err = CacheBuilder.prepareVersion(
-    "heartgold",
-    scopedOptions({
-      requirements = { "map:5" },
-      preparationRecord = recordPath,
-      saveDirectory = "/private/test-root",
-    })
-  )
-  Assert.isNil(report)
-  Assert.notNil(err)
-  local handle = io.open(recordPath, "r")
-  Assert.isNil(handle, "a failed scope must leave no successful receipt behind")
-  if handle ~= nil then
-    handle:close()
-  end
-  os.remove(recordPath)
-end
-
--- Deferred planning is local progress, not physical waiting: the drain
--- repumps a session with runnable planning work while its pool is idle,
--- never waits on nonexistent work, terminates an ordinary producer
--- failure with its actual cause, and retires the session so no further
--- work is accepted.
 function T.drain_distinguishes_local_planning_from_physical_waiting()
   env = newEnv()
   env.localRounds = 3
@@ -937,55 +827,19 @@ function T.camera_only_scope_requests_no_inventory_work()
 end
 
 -- The command never proves a scope the session still calls pending: a
--- scope with one page that never becomes ready fails and leaves no
--- successful receipt behind.
-function T.unready_scope_withholds_its_proof()
-  env = newEnv()
-  env.milestones["bootstrap"] = { "field-camera:global", "map-data:7", "mon-icon-page:9" }
-  env.pendingKeys["mon-icon-page:9"] = true
-  requireScopedPreparation()
-  local recordPath = newOutputPath("unready-core", ".lua")
-  os.remove(recordPath)
-  local ok = pcall(function()
-    return CacheBuilder.prepareVersion(
-      "heartgold",
-      scopedOptions({
-        requirements = { "bootstrap" },
-        preparationRecord = recordPath,
-        saveDirectory = "/private/test-root",
-      })
-    )
-  end)
-  Assert.isFalse(ok, "a scope with a pending page never succeeds")
-  local handle = io.open(recordPath, "r")
-  Assert.isNil(handle, "an unready scope leaves no successful receipt behind")
-  if handle ~= nil then
-    handle:close()
-  end
-  os.remove(recordPath)
-  Assert.equal(env.publishes, 0, "an unready scope publishes no attestation")
-end
-
--- Balanced counts never override a pending scope: a session that reports a
--- settled successful census while its originally requested scope is
--- still pending fails with a structured error naming the scope and issues
--- no successful receipt.
+-- scope with one page that never becomes ready fails.
 function T.settled_counts_never_override_a_pending_scope()
   env = newEnv()
   env.milestones["bootstrap"] = { "field-camera:global", "map-data:7" }
   env.stuckMilestones["bootstrap"] = true
   requireScopedPreparation()
-  local recordPath = newOutputPath("pending-scope", ".lua")
-  os.remove(recordPath)
   local report, err = CacheBuilder.prepareVersion(
     "heartgold",
     scopedOptions({
       requirements = { "bootstrap" },
-      preparationRecord = recordPath,
-      saveDirectory = "/private/test-root",
     })
   )
-  Assert.isNil(report, "a pending scope issues no success report")
+  Assert.isNil(report, "a pending scope issues no report")
   Assert.notNil(err, "a pending scope fails instead of proving readiness")
   local Errors = require("libs.errors.src.Errors")
   Assert.isTrue(Errors.is(err), "the scope failure is structured")
@@ -993,64 +847,19 @@ function T.settled_counts_never_override_a_pending_scope()
     tostring(err):find("bootstrap", 1, true) ~= nil,
     "the failure names its pending scope: " .. tostring(err)
   )
-  local handle = io.open(recordPath, "r")
-  Assert.isNil(handle, "a pending scope leaves no successful receipt behind")
-  if handle ~= nil then
-    handle:close()
-  end
-  os.remove(recordPath)
   Assert.equal(env.publishes, 0, "a pending scope publishes no attestation")
 end
 
--- A satisfied scope proves its selection without claiming a
--- complete cache: the successful record follows the satisfied closure
--- and still reports complete=false with no full attestation.
-function T.ready_scope_issues_its_proof_without_complete_attestation()
-  env = newEnv()
-  requireScopedPreparation()
-  local recordPath = newOutputPath("ready-scope", ".lua")
-  os.remove(recordPath)
-  local report, err = CacheBuilder.prepareVersion(
-    "heartgold",
-    scopedOptions({
-      requirements = { "bootstrap" },
-      preparationRecord = recordPath,
-      saveDirectory = "/private/test-root",
-    })
-  )
-  Assert.isNil(err)
-  assert(report, "a satisfied scope returns its report")
-  Assert.isTrue(report.requestedReady, "the satisfied closure proves readiness")
-  Assert.isFalse(report.complete, "a targeted scope never reports a complete cache")
-  local handle = assert(io.open(recordPath, "r"), "a satisfied scope issues its receipt")
-  local source = handle:read("*a")
-  handle:close()
-  os.remove(recordPath)
-  local chunk = assert(load(source, "@receipt", "t", {}))
-  local record = chunk()
-  Assert.equal(record.requestedReady, true)
-  Assert.equal(record.complete, false)
-  Assert.equal(env.publishes, 0, "a targeted scope publishes no full attestation")
-end
-
--- A warm complete corpus never proves an explicitly requested identity it
--- does not contain: complete plus an absent map falls through to the
--- normal session, reports the source exclusion, and issues no success
--- proof or new attestation.
-function T.warm_complete_with_absent_extra_map_refuses_without_proof()
+function T.warm_complete_with_absent_extra_map_refuses()
   env = newEnv()
   env.stateMatches = true
   env.auditAvailable = true
   env.excludedKeys["map:999999"] = true
   requireScopedPreparation()
-  local recordPath = newOutputPath("absent-extra-proof", ".lua")
-  os.remove(recordPath)
   local report, err = CacheBuilder.prepareVersion(
     "heartgold",
     scopedOptions({
       requirements = { "complete", "map:999999" },
-      preparationRecord = recordPath,
-      saveDirectory = "/private/test-root",
     })
   )
   Assert.isNil(err)
@@ -1061,12 +870,6 @@ function T.warm_complete_with_absent_extra_map_refuses_without_proof()
   Assert.isTrue(report.exclusions[1]:find("map:999999", 1, true) ~= nil, "the exclusion names its canonical key")
   Assert.equal(#env.sessions, 1, "the uncovered key falls through to the normal session")
   Assert.equal(env.publishes, 0, "a refused request publishes no attestation")
-  local handle = io.open(recordPath, "r")
-  Assert.isNil(handle, "a refused request leaves no success proof behind")
-  if handle ~= nil then
-    handle:close()
-  end
-  os.remove(recordPath)
 end
 
 -- A refused uncovered mixed request preserves the audited attestation: the
@@ -1103,141 +906,6 @@ end
 -- Cache history never changes satisfiability: the same absent mixed
 -- request refuses identically whether or not a matching attestation
 -- happens to remain on disk.
-function T.absent_extra_map_refuses_identically_warm_and_ordinary()
-  env = newEnv()
-  env.stateMatches = true
-  env.auditAvailable = true
-  env.excludedKeys["map:999999"] = true
-  requireScopedPreparation()
-  local warmRecordPath = newOutputPath("parity-warm-proof", ".lua")
-  os.remove(warmRecordPath)
-  local warmReport, warmErr = CacheBuilder.prepareVersion(
-    "heartgold",
-    scopedOptions({
-      requirements = { "complete", "map:999999" },
-      preparationRecord = warmRecordPath,
-      saveDirectory = "/private/test-root",
-    })
-  )
-  Assert.isNil(warmErr)
-  assert(warmReport, "the warm request returns its refusal report")
-  Assert.isFalse(warmReport.requestedReady, "the warm request is never ready")
-  Assert.isFalse(warmReport.complete, "the warm request never reports a complete cache")
-  Assert.isTrue(
-    warmReport.exclusions[1]:find("map:999999", 1, true) ~= nil,
-    "the warm exclusion names its canonical key"
-  )
-
-  env = newEnv()
-  env.stateMatches = false
-  env.auditAvailable = true
-  env.excludedKeys["map:999999"] = true
-  requireScopedPreparation()
-  local coldRecordPath = newOutputPath("parity-cold-proof", ".lua")
-  os.remove(coldRecordPath)
-  local coldReport, coldErr = CacheBuilder.prepareVersion(
-    "heartgold",
-    scopedOptions({
-      requirements = { "complete", "map:999999" },
-      preparationRecord = coldRecordPath,
-      saveDirectory = "/private/test-root",
-    })
-  )
-  Assert.isNil(coldErr)
-  assert(coldReport, "the ordinary request returns its refusal report")
-  Assert.equal(coldReport.requestedReady, warmReport.requestedReady, "warm and ordinary refusals agree on readiness")
-  Assert.equal(coldReport.complete, warmReport.complete, "warm and ordinary refusals agree on completeness")
-  Assert.deepEqual(coldReport.exclusions, warmReport.exclusions, "warm and ordinary refusals name the same key")
-  local warmHandle = io.open(warmRecordPath, "r")
-  Assert.isNil(warmHandle, "the warm refusal leaves no success proof behind")
-  if warmHandle ~= nil then
-    warmHandle:close()
-  end
-  os.remove(warmRecordPath)
-  local coldHandle = io.open(coldRecordPath, "r")
-  Assert.isNil(coldHandle, "the ordinary refusal leaves no success proof behind")
-  if coldHandle ~= nil then
-    coldHandle:close()
-  end
-  os.remove(coldRecordPath)
-end
-
--- A covered mixed request keeps the zero-pool shortcut: map 7 plus
--- complete reuses the audited corpus in any order or duplication, and the
--- proof retains the original deduplicated requested set.
-function T.covered_mixed_request_reuses_the_audited_corpus_without_new_work()
-  local variants = {
-    { "map:7", "complete" },
-    { "complete", "map:7" },
-    { "complete", "map:7", "map:7" },
-  }
-  for _, requirements in ipairs(variants) do
-    env = newEnv()
-    env.stateMatches = true
-    env.auditAvailable = true
-    requireScopedPreparation()
-    local recordPath = newOutputPath("covered-mixed-proof", ".lua")
-    os.remove(recordPath)
-    local report, err = CacheBuilder.prepareVersion(
-      "heartgold",
-      scopedOptions({
-        requirements = requirements,
-        preparationRecord = recordPath,
-        saveDirectory = "/private/test-root",
-      })
-    )
-    Assert.isNil(err)
-    assert(report, "a covered mixed request returns its report")
-    Assert.isTrue(report.requestedReady, "a covered mixed request stays ready")
-    Assert.isTrue(report.complete, "a covered mixed request stays complete")
-    Assert.equal(#env.pools, 0, "covered reuse creates no compiler pool")
-    Assert.equal(#env.sessions, 0, "covered reuse opens no generation session")
-    Assert.equal(env.invalidations, 0, "covered reuse invalidates nothing")
-    local handle = assert(io.open(recordPath, "r"), "covered reuse still issues its proof")
-    local source = handle:read("*a")
-    handle:close()
-    os.remove(recordPath)
-    local chunk = assert(load(source, "@receipt", "t", {}))
-    local record = chunk()
-    Assert.deepEqual(record.requested, { "complete", "map:7" })
-  end
-end
-
--- A scope-only complete request needs no explicit-membership walk: the
--- audited corpus reuses immediately with no new pool or session.
-function T.scope_only_complete_reuses_the_audited_corpus_without_new_work()
-  env = newEnv()
-  env.stateMatches = true
-  env.auditAvailable = true
-  requireScopedPreparation()
-  local recordPath = newOutputPath("scope-only-proof", ".lua")
-  os.remove(recordPath)
-  local report, err = CacheBuilder.prepareVersion(
-    "heartgold",
-    scopedOptions({
-      requirements = { "complete" },
-      preparationRecord = recordPath,
-      saveDirectory = "/private/test-root",
-    })
-  )
-  Assert.isNil(err)
-  assert(report, "a scope-only complete request returns its report")
-  Assert.isTrue(report.requestedReady, "the audited scope stays ready")
-  Assert.isTrue(report.complete, "the audited scope stays complete")
-  Assert.equal(#env.pools, 0, "scope-only reuse creates no compiler pool")
-  Assert.equal(#env.sessions, 0, "scope-only reuse opens no generation session")
-  local handle = assert(io.open(recordPath, "r"), "scope-only reuse still issues its proof")
-  local source = handle:read("*a")
-  handle:close()
-  os.remove(recordPath)
-  local chunk = assert(load(source, "@receipt", "t", {}))
-  local record = chunk()
-  Assert.deepEqual(record.requested, { "complete" })
-end
-
--- Profiling observes without changing the result: the warm absent-extra
--- run excludes its exact key, reports no readiness or completeness,
--- issues no success proof, and still closes its evidence log normally.
 function T.profiled_absent_extra_map_excludes_without_success_evidence()
   env = newEnv()
   env.stateMatches = true
@@ -1245,15 +913,11 @@ function T.profiled_absent_extra_map_excludes_without_success_evidence()
   env.excludedKeys["map:999999"] = true
   requireScopedPreparation()
   local profilePath = newOutputPath("absent-extra-profile", ".jsonl")
-  local recordPath = newOutputPath("absent-extra-profile-proof", ".lua")
-  os.remove(recordPath)
   local report, err = CacheBuilder.prepareVersion(
     "heartgold",
     scopedOptions({
       requirements = { "complete", "map:999999" },
       profile = profilePath,
-      preparationRecord = recordPath,
-      saveDirectory = "/private/test-root",
     })
   )
   Assert.isNil(err)
@@ -1268,12 +932,6 @@ function T.profiled_absent_extra_map_excludes_without_success_evidence()
   Assert.isTrue(body:find("map:999999", 1, true) ~= nil, "the evidence names the excluded identity")
   Assert.isTrue(body:find('"requestedReady":false', 1, true) ~= nil, "the footer records the refusal")
   Assert.isTrue(body:find('"complete":false', 1, true) ~= nil, "the footer never claims completeness")
-  local proof = io.open(recordPath, "r")
-  Assert.isNil(proof, "a profiled refusal leaves no success proof behind")
-  if proof ~= nil then
-    proof:close()
-  end
-  os.remove(recordPath)
   Assert.equal(env.publishes, 0, "a profiled refusal publishes no attestation")
 end
 
@@ -1416,8 +1074,8 @@ function T.field_milestone_scopes_parse_to_their_session_names()
 end
 
 -- A field milestone prepares through its session roster without invoking
--- the exhaustive scope: the requested closure is ready, the report and any
--- receipt stay nonexhaustive, and no full attestation is published.
+-- the exhaustive scope: the requested closure is ready, the report stays
+-- nonexhaustive, and no full attestation is published.
 function T.field_runtime_scope_prepares_without_complete_attestation()
   env = newEnv()
   requireScopedPreparation()

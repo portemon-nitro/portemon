@@ -307,6 +307,6 @@ function T.footer_name_paints_and_magnifies_uniformly(scope)
   end
 end
 
-local suite = GraphicsSmoke.suite(T, { capabilities = { "graphics", "rom_dump", "derived_assets" } })
+local suite = GraphicsSmoke.suite(T, { capabilities = { "graphics", "rom_dump" } })
 suite.metadata.derivedAssets = { "party:global" }
 return suite

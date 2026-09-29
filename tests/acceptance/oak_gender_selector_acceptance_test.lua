@@ -12,7 +12,7 @@ local LayoutGeometry = require("libs.ui.src.LayoutGeometry")
 
 local T = {
   metadata = {
-    capabilities = { "graphics", "rom_dump", "derived_assets" },
+    capabilities = { "graphics", "rom_dump" },
     derivedAssets = { "new-game-intro", "map:64" },
     tags = { "oak", "new-game", "selector" },
   },

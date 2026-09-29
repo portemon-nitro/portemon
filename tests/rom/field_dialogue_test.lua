@@ -252,6 +252,6 @@ function T.target_lines_stay_inside_the_reference_text_width(_, version)
 end
 
 local suite = require("tests.rom.support.RomSuite").fromFacts(T)
-suite.metadata.capabilities = { "rom_dump", "derived_assets" }
+suite.metadata.capabilities = { "rom_dump" }
 suite.metadata.derivedAssets = { "message-bank:542", "message-bank:543", "field-font:global" }
 return suite

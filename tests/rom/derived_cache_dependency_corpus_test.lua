@@ -72,7 +72,7 @@ end
 
 local suite = require("tests.rom.support.RomSuite").fromFacts(T)
 suite.metadata.fullCorpus = true
-suite.metadata.capabilities = { "rom_dump", "complete_derived_cache" }
+suite.metadata.capabilities = { "rom_dump" }
 suite.metadata.derivedAssets = { "complete" }
 suite.metadata.tags = { "cache", "corpus", "dependencies" }
 return suite

@@ -218,6 +218,6 @@ local suite = GraphicsSmoke.suite({
   representative_selections_address_rendered_pixels = representative_selections_address_rendered_pixels,
   starter_portraits_follow_source_row_layout = starter_portraits_follow_source_row_layout,
 })
-suite.metadata.capabilities = { "graphics", "rom_dump", "derived_assets" }
+suite.metadata.capabilities = { "graphics", "rom_dump" }
 suite.metadata.derivedAssets = { "mon-catalog:global", "mon-summary:global" }
 return suite

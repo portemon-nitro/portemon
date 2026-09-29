@@ -96,9 +96,9 @@ ownership from the plausible bug.
   `derived_assets` needs a non-empty `derivedAssets` closure (the `bootstrap`,
   `new-game-intro`, `field-planning`, and `field-runtime` milestone scopes, the
   `complete` scope, or canonical `kind:key` pairs); `complete_derived_cache`
-  needs `complete` in that closure plus the explicit corpus tier. The historical
-  `derived_cache` name is retired: declaring it fails the listing instead of
-  widening the preparation.
+  needs `complete` in that closure plus the explicit corpus tier. The runner
+  derives both capabilities from `derivedAssets`; a declared `derived_cache`
+  name has no special meaning and does not request preparation.
 - Unit tests use synthetic data. ROM-dependent facts live in ROM/acceptance/source-E2E layers
   and use user-owned dumps without committing commercial data.
 - Fast ROM coverage uses small hand-picked representative cases local to the

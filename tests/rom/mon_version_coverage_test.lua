@@ -100,6 +100,6 @@ function T.ready_versions_build_valid_starter_capable_catalogs(romFs, versionId)
 end
 
 local suite = RomSuite.fromFacts(T)
-suite.metadata.capabilities = { "rom_dump", "derived_assets" }
+suite.metadata.capabilities = { "rom_dump" }
 suite.metadata.derivedAssets = { "mon-catalog:global", "items:global", "field-font:global" }
 return suite

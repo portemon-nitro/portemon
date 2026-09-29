@@ -9,7 +9,7 @@ local ScreenTopology = require("libs.hgss.src.ui.ScreenTopology")
 
 local T = {
   metadata = {
-    capabilities = { "rom_dump", "derived_assets" },
+    capabilities = { "rom_dump" },
     derivedAssets = { "field-runtime", "map:7" },
     tags = { "field", "menu", "start-menu", "topology", "integer-scale" },
   },

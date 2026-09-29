@@ -27,7 +27,7 @@ local PartyCache = require("libs.assets.src.PartyCache")
 local FLOW_MODULE = "game.hgss.src.field.PokemonMenuFlow"
 
 local T = {
-  metadata = { capabilities = { "rom_dump", "derived_assets" }, derivedAssets = { "field-runtime", "map:7" }, tags = { "party", "bag", "flow", "failure" } },
+  metadata = { capabilities = { "rom_dump" }, derivedAssets = { "field-runtime", "map:7" }, tags = { "party", "bag", "flow", "failure" } },
   tests = {},
 }
 

@@ -16,7 +16,7 @@ local RuntimeValues = require("libs.hgss.src.script.RuntimeValues")
 
 local T = {
   metadata = {
-    capabilities = { "rom_dump", "derived_assets" },
+    capabilities = { "rom_dump" },
     derivedAssets = { "field-runtime", "map:28" },
     tags = { "field", "following-mon", "route-24" },
   },

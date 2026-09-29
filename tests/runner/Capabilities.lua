@@ -3,21 +3,16 @@
 --   graphics                a preflight really built and released a Shader, Canvas, Mesh,
 --                           and Image against the host's graphics namespace
 --   rom_dump                at least one GameVersion is ready through RomImporter.isReady
---   derived_assets          an invocation preparation receipt proves the requested
---                           closure ready for the selected source and generation
---   complete_derived_cache  the receipt additionally proves an exhaustive current
---                           audit of the whole corpus
+--   derived_assets          the shell prepared a non-empty requirement closure
+--   complete_derived_cache  the shell prepared the complete corpus
 --
 -- A host with no graphics module simply lacks the capability, and the graphics
 -- suites skip explicitly. A host that has the module but cannot produce a
 -- resource is an infrastructure failure and raises: silently downgrading it to
 -- "skip everything" is how graphics coverage disappears unnoticed.
 --
--- Readiness of the derived cache is never re-derived from markers or from a
--- bare environment flag: preparation is the shell entrypoint's step
--- (`scripts/test.sh` runs the common scoped builder before the ROM-gated
--- layers) and only a verified invocation receipt establishes the scoped
--- capabilities.
+-- The shell prepares requirements before spawning test children and hands
+-- that invocation-owned list to capability detection.
 
 local CapabilityNames = require("tests.runner.CapabilityNames")
 local GameVersion = require("romdump.src.source.GameVersion")
@@ -25,11 +20,7 @@ local RomImporter = require("romdump.src.source.RomImporter")
 
 local Capabilities = {}
 
--- Historical environment name that once carried the shell's readiness claim.
--- It is retained so the shell and older tooling agree on the name to clear;
--- detection never consults it. Only a verified invocation receipt grants
--- scoped cache capabilities.
-Capabilities.DERIVED_CACHE_ENV = "PORTEMON_DERIVED_CACHE_READY"
+local PREPARED_REQUIREMENTS_ENV = "PORTEMON_TEST_PREPARED_REQUIREMENTS"
 
 -- The smallest shader that still goes through the real GLSL compiler.
 local PREFLIGHT_SHADER = [[
@@ -70,67 +61,14 @@ local function preflight(graphics, image)
   end
 end
 
----@class CapabilitySource
----@field versionId string selected game version
----@field romSha1 string selected NDS content hash
----@field generationId string|nil selected generation token when known
-
----@class CapabilityPreparation
----@field versionId string prepared game version
----@field romSha1 string prepared NDS content hash
----@field generationId string|nil prepared generation token when known
----@field requested string[] prepared closed requirements
----@field requestedReady boolean whether the requested closure is ready
----@field complete boolean whether an exhaustive current audit proved the corpus
-
 ---@class CapabilityOptions
 ---@field isReady (fun(versionId: string): boolean)|nil
 ---@field versions string[]|nil
 ---@field graphics table|false|nil love.graphics-shaped namespace; false means absent
 ---@field image table|false|nil love.image-shaped namespace; false means absent
----@field source CapabilitySource|nil selected source this run must prove
----@field preparation CapabilityPreparation|nil invocation preparation receipt the shell verified
+---@field env table<string, string>|nil process environment
 
--- Whether an invocation preparation receipt proves the requested closure
--- for exactly the selected source: the closure must be ready, name at least
--- one requirement, and match the selection on version, content hash, and a
--- strict nonempty generation token on both sides. Two absent generations
--- never satisfy each other through an empty comparison. A failed
--- preparation or a receipt for another generation proves nothing and must
--- never downgrade into an optional skip.
----@param source CapabilitySource|nil
----@param preparation CapabilityPreparation|nil
----@return boolean
-local function verifiesClosure(source, preparation)
-  if type(source) ~= "table" or type(preparation) ~= "table" then
-    return false
-  end
-  if preparation.requestedReady ~= true then
-    return false
-  end
-  if type(preparation.requested) ~= "table" or #preparation.requested == 0 then
-    return false
-  end
-  if preparation.versionId ~= source.versionId then
-    return false
-  end
-  if preparation.romSha1 ~= source.romSha1 then
-    return false
-  end
-  if type(source.generationId) ~= "string" or source.generationId == "" then
-    return false
-  end
-  if type(preparation.generationId) ~= "string" or preparation.generationId == "" then
-    return false
-  end
-  if preparation.generationId ~= source.generationId then
-    return false
-  end
-  return true
-end
-
--- Detection never reads the ambient environment; `isReady`/`versions` are
--- injected by this module's own tests.
+-- `isReady`, `versions`, and the environment are injectable for unit tests.
 ---@param options CapabilityOptions|nil
 ---@return table<string, boolean> capabilities, string[] readyVersions
 function Capabilities.detect(options)
@@ -162,10 +100,21 @@ function Capabilities.detect(options)
   if #ready > 0 then
     capabilities[CapabilityNames.ROM_DUMP] = true
   end
-  if verifiesClosure(options.source, options.preparation) then
+  local env = options.env
+  local prepared = env and env[PREPARED_REQUIREMENTS_ENV] or os.getenv(PREPARED_REQUIREMENTS_ENV)
+  local complete = false
+  local hasPreparedRequirements = false
+  if type(prepared) == "string" then
+    for requirement in prepared:gmatch("%S+") do
+      hasPreparedRequirements = true
+      if requirement == "complete" then
+        complete = true
+      end
+    end
+  end
+  if hasPreparedRequirements and #ready > 0 then
     capabilities[CapabilityNames.DERIVED_ASSETS] = true
-    local preparation = assert(options.preparation, "a verified closure carries its receipt")
-    if preparation.complete == true then
+    if complete then
       capabilities[CapabilityNames.COMPLETE_DERIVED_CACHE] = true
     end
   end

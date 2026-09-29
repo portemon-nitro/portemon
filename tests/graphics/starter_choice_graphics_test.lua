@@ -1188,7 +1188,7 @@ function T.translated_dpi2_machine_placement_agrees_with_source_projection(_, co
 end
 
 local suite = GraphicsSmoke.suite(T)
-suite.metadata.capabilities = { "graphics", "rom_dump", "derived_assets" }
+suite.metadata.capabilities = { "graphics", "rom_dump" }
 suite.metadata.derivedAssets = { "starter-choice:global", "field-ui:global", "mon-catalog:global", "items:global", "mon-summary:global" }
 
 return suite

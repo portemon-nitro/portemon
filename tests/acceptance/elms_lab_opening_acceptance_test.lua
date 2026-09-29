@@ -15,7 +15,7 @@ local ScriptIdentity = require("libs.assets.src.ScriptIdentity")
 
 local T = {
   metadata = {
-    capabilities = { "rom_dump", "derived_assets" },
+    capabilities = { "rom_dump" },
     derivedAssets = { "field-runtime", "map:61" },
     tags = { "field", "opening", "elm" },
   },

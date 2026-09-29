@@ -7,7 +7,7 @@ local FieldCellCache = require("libs.assets.src.field.FieldCellCache")
 
 local T = {
   metadata = {
-    capabilities = { "rom_dump", "derived_assets" },
+    capabilities = { "rom_dump" },
     derivedAssets = { "field-runtime", "map:60" },
     tags = { "field", "field-cell", "map", "canonical-cache" },
   },

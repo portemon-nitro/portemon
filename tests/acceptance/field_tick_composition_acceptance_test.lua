@@ -13,7 +13,7 @@ local Composition = require("libs.script.src.Composition")
 
 local T = {
   metadata = {
-    capabilities = { "rom_dump", "derived_assets" },
+    capabilities = { "rom_dump" },
     derivedAssets = { "field-runtime", "map:60", "map:61" },
     tags = { "field", "fixed-tick", "composition" },
   },

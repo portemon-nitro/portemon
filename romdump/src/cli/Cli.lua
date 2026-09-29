@@ -20,7 +20,7 @@ Cli.EXIT_USAGE = 2
 
 Cli.USAGE = "usage: love romdump/ [--import-rom <path>] [--forcedump <path>] [--build-cache [path]]"
   .. " [--check-dump] [--check-derived-cache] [--probe-rom <path>]"
-  .. " [--prepare-cache --version <version> --require <request> [--require <request> ...] [--dev] [--profile <path>] [--preparation-record <path>] [--rebuild <job> ...]]"
+  .. " [--prepare-cache --version <version> --require <request> [--require <request> ...] [--dev] [--profile <path>] [--rebuild <job> ...]]"
   .. " [--allow-compile-exclusions] [--dev]"
   .. " [--discover-app <overlay-id> --rom-source <path> [--output <path>]"
   .. " [--resource-detail <fileId>:<memberId>]...]"
@@ -48,7 +48,6 @@ local ORDINARY_OPTIONS = {
   ["--allow-compile-exclusions"] = { field = "allowCompileExclusions", kind = "boolean" },
   ["--version"] = { field = "version", kind = "singleton" },
   ["--profile"] = { field = "profile", kind = "singleton" },
-  ["--preparation-record"] = { field = "preparationRecord", kind = "singleton" },
   ["--output"] = { field = "outputPath", kind = "singleton" },
   ["--require"] = { field = "requirements", kind = "repeated" },
   ["--rebuild"] = { field = "rebuild", kind = "repeated" },
@@ -124,7 +123,7 @@ end
 
 -- argv: the array LÖVE passes to love.load.
 ---@param argv string[]|nil
----@return { command: string|nil, romPath: string|nil, forceDump: boolean, allowCompileExclusions: boolean, dev: boolean, overlayId: integer|nil, outputPath: string|nil, resourceDetails: { fileId: integer, memberId: integer }[], version: string|nil, requirements: string[], rebuild: string[], profile: string|nil, preparationRecord: string|nil }
+---@return { command: string|nil, romPath: string|nil, forceDump: boolean, allowCompileExclusions: boolean, dev: boolean, overlayId: integer|nil, outputPath: string|nil, resourceDetails: { fileId: integer, memberId: integer }[], version: string|nil, requirements: string[], rebuild: string[], profile: string|nil }
 function Cli.parse(argv)
   argv = argv or {}
 
@@ -141,7 +140,6 @@ function Cli.parse(argv)
     requirements = {},
     rebuild = {},
     profile = nil,
-    preparationRecord = nil,
   }
   local commandFlag = nil
   local sawRomSourceFlag = false
@@ -310,9 +308,6 @@ function Cli.parse(argv)
     end
     if #opts.rebuild > 0 then
       error("--rebuild only applies to --prepare-cache\n" .. Cli.USAGE)
-    end
-    if opts.preparationRecord ~= nil then
-      error("--preparation-record only applies to --prepare-cache\n" .. Cli.USAGE)
     end
     if opts.profile ~= nil and opts.command ~= "build-cache" then
       error("--profile only applies to --build-cache or --prepare-cache\n" .. Cli.USAGE)

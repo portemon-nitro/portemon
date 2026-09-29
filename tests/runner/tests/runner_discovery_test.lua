@@ -235,15 +235,14 @@ function T.listing_does_not_execute_test_bodies()
   Assert.isFalse(executed, "listing executed a test body")
 end
 
--- explicit metadata is surfaced; a module's layer comes from the root it
--- was discovered under, and a module with no metadata declares no
--- capabilities.
+-- Host metadata and closure-derived capabilities are surfaced; a module's
+-- layer comes from the root it was discovered under.
 function T.listing_reports_layer_capabilities_and_tags()
   local corpus = FakeCorpus.new({
     ["fake/unit/alpha_test.lua"] = { tests = { ["a"] = function() end } },
     ["fake/acc/lab_test.lua"] = {
       metadata = {
-        capabilities = { "rom_dump", "derived_assets" },
+        capabilities = { "rom_dump" },
         derivedAssets = { "map:7" },
         tags = { "field" },
       },

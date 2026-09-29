@@ -50,7 +50,7 @@ T["starter and gendered follower visuals resolve to compiled actor visuals"] = f
 end
 
 local suite = RomSuite.fromFacts(T)
-suite.metadata.capabilities = { "rom_dump", "derived_assets" }
+suite.metadata.capabilities = { "rom_dump" }
 suite.metadata.derivedAssets = { "actors:global", "mon-catalog:global", "items:global" }
 suite.metadata.tags = { "mon", "following-mon", "visual" }
 return suite

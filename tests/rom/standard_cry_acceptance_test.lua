@@ -11,7 +11,7 @@ local RomImporter = require("romdump.src.source.RomImporter")
 
 local T = {
   metadata = {
-    capabilities = { "rom_dump", "derived_assets" },
+    capabilities = { "rom_dump" },
     derivedAssets = { "audio-catalog:global", "audio-bank:1", "audio-bank:183" },
     tags = { "audio", "cry", "rom" },
   },

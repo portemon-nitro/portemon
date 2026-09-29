@@ -132,7 +132,7 @@ end
 -- location left to the repository's own environment file so product-root
 -- isolation is proved against the real default.
 local SANITIZE_ENV =
-  "unset PORTEMON_TEST_RUN_DIR PORTEMON_TEST_WORKERS PORTEMON_TEST_WORKER PORTEMON_TEST_AGGREGATE PORTEMON_TEST_ACCEPTANCE_NAMESPACE PORTEMON_TEST_PREPARATION PORTEMON_DERIVED_CACHE_READY PORTEMON_REQUIRE_ROM_TESTS;"
+  "unset PORTEMON_TEST_RUN_DIR PORTEMON_TEST_WORKERS PORTEMON_TEST_WORKER PORTEMON_TEST_AGGREGATE PORTEMON_TEST_ACCEPTANCE_NAMESPACE PORTEMON_TEST_PREPARED_REQUIREMENTS PORTEMON_DERIVED_CACHE_READY PORTEMON_REQUIRE_ROM_TESTS;"
 
 -- Generated fake `love`: plan mode is delegated to the real binary so the
 -- runner's actual selection rules apply; ROM preparation records its data
@@ -170,20 +170,11 @@ if [ "$target" = "romdump/" ]; then
   if [ "${2:-}" = "--build-cache" ]; then
     printf 'import complete: %s\n' "${FAKE_PROBE_VERSION:-heartgold}"
   fi
-  # A successful scoped preparation issues its invocation receipt the way
-  # the common builder does; a failed one leaves no successful receipt.
   # Only scoped preparation honors the failure switch: probing and raw
   # import always succeed, so a failing scope proves selection preservation
   # with a reusable raw import behind it.
   command_status=0
   if [ "${2:-}" = "--prepare-cache" ]; then command_status="${FAKE_PREPARATION_STATUS:-0}"; fi
-  if [ "$command_status" = "0" ]; then
-    previous=""
-    for arg in "$@"; do
-      if [ "$previous" = "--preparation-record" ]; then : > "$arg"; fi
-      previous="$arg"
-    done
-  fi
   if [ "${FAKE_SLOW_PREPARATION:-0}" != "0" ]; then sleep "$FAKE_SLOW_PREPARATION"; fi
   printf 'end=%s\n' "$(date +%s.%N)" >> "$invocation"
   exit "$command_status"
@@ -222,6 +213,7 @@ if [ "$target" = "app/" ]; then
   {
     printf 'tag=%s\n' "$run_tag"
     printf 'xdg=%s\n' "${XDG_DATA_HOME:-}"
+    printf 'prepared_requirements=%s\n' "${PORTEMON_TEST_PREPARED_REQUIREMENTS:-}"
     printf 'argv=%s\n' "$*"
   } > "$record_dir/serial.txt"
   exit 0
@@ -935,9 +927,9 @@ function T.repeat_runs_reprepare_through_the_common_builder_under_the_developmen
         (invocation.argv or ""):find("--dev", 1, true) ~= nil,
         "builder preparation tests the working-tree development identity, got: " .. tostring(invocation.argv)
       )
-      Assert.isTrue(
-        (invocation.argv or ""):find("--preparation-record", 1, true) ~= nil,
-        "builder preparation issues the invocation receipt, got: " .. tostring(invocation.argv)
+      Assert.isNil(
+        (invocation.argv or ""):find("--preparation-record", 1, true),
+        "scoped preparation has no receipt argument, got: " .. tostring(invocation.argv)
       )
     end
   end)
@@ -995,45 +987,8 @@ function T.a_working_tree_producer_edit_moves_only_the_development_generation()
   Assert.equal(releaseGeneration(), releaseGeneration(), "the release counter stays fixed across working-tree edits")
 end
 
--- Only the common builder can produce ready evidence: once the persistent
--- scope text survives a seeding run, a builder failure on the next run must
--- still fail the invocation, start no test child, and leave no successful
--- receipt behind.
-function T.a_failed_builder_preparation_stops_the_run_without_fabricating_a_receipt()
-  withTempDirectory(function(root)
-    local fakeLoveDir = installFakeLove(root)
-    local source = root .. "/fixture.nds"
-    writeFile(source, "fixture rom bytes for builder failure")
-    local args = "--rom-source " .. shellQuote(source) .. " --filter field_dialogue_test"
-
-    local seed = root .. "/seed"
-    local _, _, seedStatus = runTestCommand(root, fakeLoveDir, args, { recordDir = seed, runTag = "seed" })
-    Assert.equal(exitStatus(seedStatus), "0", "the seeding run must succeed")
-
-    local failed = root .. "/failed"
-    local _, failedLog, failedStatus =
-      runTestCommand(root, fakeLoveDir, args, { recordDir = failed, runTag = "failed", FAKE_PREPARATION_STATUS = "1" })
-    Assert.isTrue(
-      exitStatus(failedStatus) ~= "0",
-      "a failed builder preparation must fail the run even when scope text survives: " .. tostring(readFile(failedLog))
-    )
-    Assert.isFalse(fileExists(failed .. "/serial.txt"), "no test child starts after a failed preparation")
-
-    local shaHandle = popen("sha1sum -- " .. shellQuote(source))
-    local sha = trim((shaHandle:read("*l") or ""):match("^%S+") or "")
-    shaHandle:close()
-    Assert.equal(#sha, 40, "the fixture source has a content identity")
-    Assert.isFalse(
-      fileExists(root .. "/cache/portemon/rom-tests/" .. sha .. "/data-home/preparation.lua"),
-      "a failed preparation leaves no successful receipt behind"
-    )
-  end)
-end
-
--- A failed scoped preparation for another valid raw input authorizes
--- nothing: the run exits nonzero with no test child, the previous
--- successful selection stays published, the valid raw import remains
--- reusable, and a retry reuses it while minting a fresh proof.
+-- A failed scoped preparation leaves the previous selection published and
+-- starts no test child.
 function T.a_failed_scoped_preparation_keeps_the_previous_selection()
   withTempDirectory(function(root)
     local fakeLoveDir = installFakeLove(root)
@@ -1043,15 +998,11 @@ function T.a_failed_scoped_preparation_keeps_the_previous_selection()
     writeFile(second, "second valid raw input bytes")
     local testRoot = root .. "/cache/portemon/rom-tests"
     local selectionFile = testRoot .. "/selected-rom"
-    local firstArgs = "--rom-source " .. shellQuote(first) .. " --filter field_dialogue_test"
     local secondArgs = "--rom-source " .. shellQuote(second) .. " --filter field_dialogue_test"
-
-    local seed = root .. "/seed"
-    local _, _, seedStatus = runTestCommand(root, fakeLoveDir, firstArgs, { recordDir = seed, runTag = "seed" })
-    Assert.equal(exitStatus(seedStatus), "0", "the seeding run must succeed")
     local firstSha = shaOf(first)
     local published = "version=heartgold\nrom_sha1=" .. firstSha .. "\n"
-    Assert.equal(readFile(selectionFile), published, "the seed publishes the first selection")
+    mkdir(testRoot)
+    writeFile(selectionFile, published)
 
     local failed = root .. "/failed"
     local _, failedLog, failedStatus = runTestCommand(
@@ -1071,53 +1022,13 @@ function T.a_failed_scoped_preparation_keeps_the_previous_selection()
       "a failed scope must not replace the previous successful selection"
     )
 
-    local secondSha = shaOf(second)
-    Assert.isTrue(
-      fileExists(testRoot .. "/" .. secondSha .. "/rom-ready"),
-      "the successfully imported new raw data remains reusable"
-    )
-
-    local retry = root .. "/retry"
-    local _, retryLog, retryStatus =
-      runTestCommand(root, fakeLoveDir, secondArgs, { recordDir = retry, runTag = "retry" })
-    Assert.equal(exitStatus(retryStatus), "0", "the retry must succeed: " .. tostring(readFile(retryLog)))
-    Assert.isTrue(fileExists(retry .. "/serial.txt"), "the retry runs its test child")
-    Assert.equal(
-      readFile(selectionFile),
-      "version=heartgold\nrom_sha1=" .. secondSha .. "\n",
-      "the retry publishes the second selection once its scope succeeds"
-    )
-
-    local scoped = {}
-    for _, invocation in ipairs(preparationInvocations(failed)) do
-      scoped[#scoped + 1] = invocation
-    end
-    for _, invocation in ipairs(preparationInvocations(retry)) do
-      scoped[#scoped + 1] = invocation
-    end
-    local imports = 0
-    for _, invocation in ipairs(scoped) do
-      local argv = invocation.argv or ""
-      if argv:find("--import-rom", 1, true) ~= nil or argv:find("--build-cache", 1, true) ~= nil then
-        imports = imports + 1
-      end
-    end
-    Assert.equal(imports, 1, "the retry reuses the raw import and mints only a fresh proof")
   end)
 end
 
--- An ordinary first seed into an empty private root imports raw data only
--- and prepares exactly the selected closure: one import-only invocation,
--- never an exhaustive build; a requirement-free selection prepares nothing,
--- while derived selections prepare only their exact requirement union
--- through an invocation-owned receipt under the private root.
+-- A first seed prepares exactly the selected closure, never an exhaustive
+-- build, and passes that same requirement union to its test child.
 function T.first_seed_imports_once_and_prepares_only_the_selected_scope()
   local cases = {
-    {
-      label = "requirement-free",
-      args = "--filter app_is_the_interactive_root",
-      requires = {},
-    },
     {
       label = "narrow-derived",
       args = "--filter field_dialogue_test",
@@ -1147,7 +1058,7 @@ function T.first_seed_imports_once_and_prepares_only_the_selected_scope()
       Assert.equal(
         countImports(invocations, "--import-rom"),
         1,
-        "the " .. case.label .. " first seed must import raw data exactly once"
+        "the " .. case.label .. " first seed must import raw data exactly once: " .. tostring(readFile(logFile))
       )
       Assert.equal(
         countImports(invocations, "--build-cache"),
@@ -1158,21 +1069,16 @@ function T.first_seed_imports_once_and_prepares_only_the_selected_scope()
       local testRoot = root .. "/cache/portemon/rom-tests"
       local dataHome = testRoot .. "/" .. shaOf(source) .. "/data-home"
       local prepared = invocationsWith(invocations, "--prepare-cache")
-      if #case.requires == 0 then
-        Assert.equal(#prepared, 0, "a requirement-free first seed prepares nothing")
-        for _, invocation in ipairs(invocations) do
-          Assert.isNil(
-            (invocation.argv or ""):find("--preparation-record", 1, true),
-            "a requirement-free first seed exports no preparation proof"
-          )
-        end
-      else
-        Assert.equal(#prepared, 1, "the " .. case.label .. " first seed must prepare its exact scope once")
-        local argv = prepared[1].argv or ""
-        assertRequireUnion(argv, case.requires, "the " .. case.label .. " preparation requests only its exact union")
-        contains(argv, "--dev", "scoped preparation tests the working-tree development identity")
-        contains(argv, "--preparation-record " .. testRoot, "the invocation receipt stays under the private root")
-      end
+      Assert.equal(#prepared, 1, "the " .. case.label .. " first seed must prepare its exact scope once")
+      local argv = prepared[1].argv or ""
+      assertRequireUnion(argv, case.requires, "the " .. case.label .. " preparation requests only its exact union")
+      contains(argv, "--dev", "scoped preparation tests the working-tree development identity")
+      Assert.isNil(argv:find("--preparation-record", 1, true), "the builder receives no receipt option")
+      Assert.equal(
+        readFile(recordDir .. "/serial.txt"):match("prepared_requirements=([^\n]*)"),
+        table.concat(case.requires, " "),
+        "the child receives the exact prepared requirement union"
+      )
       for _, invocation in ipairs(invocationsWith(invocations, "--import-rom")) do
         Assert.equal(invocation.xdg, dataHome, "the raw import runs inside the canonical private root")
       end
@@ -1221,31 +1127,6 @@ function T.a_corpus_only_focus_prepares_nothing_in_a_regular_first_seed()
   end)
 end
 
--- Direct entrypoint children (bypassing the shell wrapper) for pre-setup
--- authorization: the child shares this process's save directory, so a crafted
--- record either authorizes on its own source merits or fails before setup.
-local function writePreparationRecord(path, dataHome, versionId, romSha1)
-  writeFile(
-    path,
-    table.concat({
-      "return {",
-      '  schema = "g4-test-preparation-v1",',
-      "  data_home = " .. string.format("%q", dataHome) .. ",",
-      "  source = { version_id = "
-        .. string.format("%q", versionId)
-        .. ", rom_sha1 = "
-        .. string.format("%q", romSha1)
-        .. " },",
-      "  preparation = { version_id = " .. string.format("%q", versionId) .. ", rom_sha1 = " .. string.format(
-        "%q",
-        romSha1
-      ) .. ', requested = { "map:7", }, requested_ready = true, complete = false },',
-      "}",
-      "",
-    }, "\n")
-  )
-end
-
 local function runEntryChild(root, name, args, exports)
   local logFile = root .. "/" .. name .. ".log"
   local statusFile = root .. "/" .. name .. ".status"
@@ -1266,175 +1147,25 @@ end
 -- suite rather than a runner self-test.
 local UNIT_FOCUS = "--filter app_is_the_interactive_root"
 
--- Strict revision helpers for the builder-issued receipt: the exact field
--- shape the entrypoint authorizes, with per-test overrides.
-local function writeStrictPreparationRecord(path, overrides)
-  local fields = {
-    schema = "g4-test-preparation-v2",
-    saveDirectory = love.filesystem.getSaveDirectory(),
-    versionId = "heartgold",
-    romSha1 = string.rep("a", 40),
-    generationId = "g4:heartgold:" .. string.rep("a", 40) .. ":d" .. string.rep("1", 64) .. ":a1:s1",
-    requested = { "bootstrap" },
-    requestedReady = true,
-    complete = false,
-  }
-  for key, value in pairs(overrides or {}) do
-    fields[key] = value
-  end
-  local parts = { "return {" }
-  parts[#parts + 1] = '  schema = "' .. fields.schema .. '",'
-  parts[#parts + 1] = '  saveDirectory = "' .. fields.saveDirectory .. '",'
-  parts[#parts + 1] = '  versionId = "' .. fields.versionId .. '",'
-  parts[#parts + 1] = '  romSha1 = "' .. fields.romSha1 .. '",'
-  parts[#parts + 1] = '  generationId = "' .. fields.generationId .. '",'
-  local requested = {}
-  for _, requirement in ipairs(fields.requested) do
-    requested[#requested + 1] = string.format("%q", requirement)
-  end
-  parts[#parts + 1] = "  requested = { " .. table.concat(requested, ", ") .. " },"
-  parts[#parts + 1] = "  requestedReady = " .. tostring(fields.requestedReady) .. ","
-  parts[#parts + 1] = "  complete = " .. tostring(fields.complete) .. ","
-  parts[#parts + 1] = "}"
-  writeFile(path, table.concat(parts, "\n") .. "\n")
-end
-
--- A receipt for a narrower closure never authorizes a wider selection:
--- the corridor focus requires its committed maps, so a bootstrap-only
--- receipt fails before any setup without needing a dump to prove the
--- mismatch.
-function T.a_preparation_record_for_a_narrower_closure_fails_before_any_setup()
+-- A prepared handoff cannot run against a save directory outside the current
+-- private data home.
+function T.prepared_requirements_fail_when_the_save_directory_is_outside_xdg_data_home()
   withTempDirectory(function(root)
-    local receipt = root .. "/narrow-preparation.lua"
-    writeStrictPreparationRecord(receipt, { requested = { "bootstrap" } })
-
-    local status, output = runEntryChild(root, "serial-narrow", "--filter field_navigation_corridor_acceptance_test", {
-      "export PORTEMON_TEST_PREPARATION=" .. shellQuote(receipt) .. ";",
+    local status, output = runEntryChild(root, "serial-outside-root", UNIT_FOCUS, {
+      "export PORTEMON_TEST_PREPARED_REQUIREMENTS=map:7;",
+      "export XDG_DATA_HOME=relative-xdg-home;",
     })
-    Assert.isTrue(status ~= "0", "a narrower receipt must fail before setup, got: " .. output)
-    Assert.isNil(
-      output:find("1 passed", 1, true),
-      "no test may execute against a narrower preparation, got: " .. output
-    )
-    -- The diagnostic names the first uncovered requirement in sorted selected
-    -- order (audio-bank:700 here), so only the truthful coverage shape is
-    -- pinned, not one fixture root that later migration may reorder.
-    contains(output, "does not cover the selected requirement '", "the failure names the uncovered requirement")
+    Assert.isTrue(status ~= "0", "prepared requirements outside the private root must fail, got: " .. output)
+    Assert.isNil(output:find("1 passed", 1, true), "no test setup runs outside the private root, got: " .. output)
   end)
 end
 
--- A strict receipt without a generation proves nothing: the empty token is
--- rejected during record validation, before any setup.
-function T.a_strict_preparation_record_without_a_generation_fails_before_any_setup()
-  withTempDirectory(function(root)
-    local receipt = root .. "/generationless-preparation.lua"
-    writeStrictPreparationRecord(receipt, { generationId = "" })
-
-    local status, output = runEntryChild(root, "serial-generationless", UNIT_FOCUS, {
-      "export PORTEMON_TEST_PREPARATION=" .. shellQuote(receipt) .. ";",
-    })
-    Assert.isTrue(status ~= "0", "a generationless receipt must fail before setup, got: " .. output)
-    Assert.isNil(
-      output:find("1 passed", 1, true),
-      "no test may execute against a generationless preparation, got: " .. output
-    )
-  end)
-end
-
--- A well-formed record for another source must fail before mutable setup,
--- never downgrade into skips against product data.
-function T.a_preparation_record_for_another_source_fails_before_any_setup()
-  withTempDirectory(function(root)
-    local saveDirectory = love.filesystem.getSaveDirectory()
-    Assert.isTrue(saveDirectory ~= nil and saveDirectory ~= "", "the child shares this process's save directory")
-    local receipt = root .. "/foreign-preparation.lua"
-    writePreparationRecord(receipt, saveDirectory, "heartgold", string.rep("f", 40))
-
-    local status, output = runEntryChild(root, "serial-foreign", UNIT_FOCUS, {
-      "export PORTEMON_TEST_PREPARATION=" .. shellQuote(receipt) .. ";",
-    })
-    Assert.isTrue(status ~= "0", "a record for another source must fail before setup, got: " .. output)
-    Assert.isNil(output:find("1 passed", 1, true), "no test may execute against a foreign preparation, got: " .. output)
-  end)
-end
-
--- The parallel worker entry path applies the same authorization: a foreign
--- record fails the worker before it runs or reports anything.
-function T.a_parallel_worker_rejects_a_preparation_record_for_another_source()
-  withTempDirectory(function(root)
-    local saveDirectory = love.filesystem.getSaveDirectory()
-    Assert.isTrue(saveDirectory ~= nil and saveDirectory ~= "", "the child shares this process's save directory")
-    local receipt = root .. "/foreign-preparation.lua"
-    writePreparationRecord(receipt, saveDirectory, "heartgold", string.rep("f", 40))
-    local runDir = root .. "/run-dir"
-    mkdir(runDir)
-
-    local status, output = runEntryChild(root, "worker-foreign", UNIT_FOCUS, {
-      "export PORTEMON_TEST_PREPARATION=" .. shellQuote(receipt) .. ";",
-      "export PORTEMON_TEST_RUN_DIR=" .. shellQuote(runDir) .. ";",
-      "export PORTEMON_TEST_WORKERS=1;",
-      "export PORTEMON_TEST_WORKER=1;",
-    })
-    Assert.isTrue(status ~= "0", "a worker must reject a record for another source, got: " .. output)
-  end)
-end
-
--- A record for another data home already fails before setup today; this pins
--- the behavior while source authorization is repaired beside it.
-function T.a_preparation_record_for_another_data_home_fails_before_any_setup()
-  withTempDirectory(function(root)
-    local receipt = root .. "/elsewhere-preparation.lua"
-    writePreparationRecord(receipt, root .. "/elsewhere", "heartgold", string.rep("e", 40))
-
-    local status, output = runEntryChild(root, "serial-elsewhere", UNIT_FOCUS, {
-      "export PORTEMON_TEST_PREPARATION=" .. shellQuote(receipt) .. ";",
-    })
-    Assert.isTrue(status ~= "0", "a record for another data home must fail before setup, got: " .. output)
-  end)
-end
-
--- A unit-only focus without any preparation record keeps running: absent ROM
--- evidence is only fatal when a selected scope was promised one.
-function T.a_unit_focus_without_any_preparation_record_stays_green()
+-- A unit-only focus without a prepared-requirements handoff stays green.
+function T.a_unit_focus_without_preparation_stays_green()
   withTempDirectory(function(root)
     local status, output = runEntryChild(root, "serial-plain", UNIT_FOCUS, {})
     Assert.equal(status, "0", "a unit focus without preparation must stay green, got: " .. output)
   end)
-end
-
--- The exhaustive corpus check consumes a proven complete preparation instead
--- of publishing one: it declares the complete capability with the complete
--- closure and never prepares anything itself.
-function T.the_exhaustive_corpus_suite_consumes_only_a_proven_complete_preparation()
-  local suite = require("tests.rom.derived_cache_corpus_test")
-  local metadata = assert(suite.metadata, "the corpus suite declares its contract")
-  local found = false
-  for _, name in ipairs(metadata.capabilities or {}) do
-    if name == "complete_derived_cache" then
-      found = true
-    end
-  end
-  Assert.isTrue(found, "the read-only corpus check requires the proven complete corpus")
-  Assert.deepEqual(
-    metadata.derivedAssets,
-    { "complete" },
-    "the corpus check authorizes from the complete closure instead of preparing it"
-  )
-end
-
--- Producer census suites keep their raw-dump contract: they claim no prepared
--- closure, so selection never prepares the shared cache on their behalf.
-function T.producer_census_suites_keep_a_raw_dump_contract_without_claiming_a_prepared_closure()
-  local suite = require("tests.rom.cache_milestone_test")
-  local metadata = assert(suite.metadata, "the census suite declares its contract")
-  for _, name in ipairs(metadata.capabilities or {}) do
-    Assert.isTrue(
-      name ~= "derived_cache" and name ~= "derived_assets" and name ~= "complete_derived_cache",
-      "a self-driven census must not claim a prepared closure, got: " .. name
-    )
-  end
-  local derivedAssets = metadata.derivedAssets or {}
-  Assert.deepEqual(derivedAssets, {}, "a self-driven census prepares no shared closure")
 end
 
 -- The isolation mechanism the writer fixtures rely on: two cache handles for

@@ -37,7 +37,7 @@ local TerrainSurface = require("libs.hgss.src.world.TerrainSurface")
 ---@field isBusy fun(self: TraversalRuntimePort): boolean
 
 local T = {
-  metadata = { capabilities = { "rom_dump", "derived_assets" },
+  metadata = { capabilities = { "rom_dump" },
     derivedAssets = { "field-runtime", "audio-bank:702", "audio-bank:709", "map-data:31", "map-data:33", "map-data:47", "map-data:48", "map-data:60", "map:33", "map:60" }, tags = { "field", "traversal", "surf" } },
   tests = {},
 }

@@ -35,7 +35,7 @@ local StartMenuInterface = require("game.hgss.src.field.StartMenuInterface")
 
 local T = {
   metadata = {
-    capabilities = { "rom_dump", "derived_assets" },
+    capabilities = { "rom_dump" },
     derivedAssets = { "field-runtime", "new-game-intro", "map:7", "map:61", "map:64" },
     tags = { "product", "presentation", "integration", "topology" },
   },

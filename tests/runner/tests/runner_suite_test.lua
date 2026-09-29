@@ -124,4 +124,30 @@ function T.non_boolean_full_corpus_is_rejected()
   end
 end
 
+function T.derived_assets_alone_selects_cache_capabilities()
+  local bounded = normalize({
+    metadata = { capabilities = { "rom_dump" }, derivedAssets = { "map:7" } },
+    tests = { ["uses a map"] = function() end },
+  })
+  Assert.deepEqual(bounded.capabilities, { "rom_dump", "derived_assets" })
+
+  local complete = normalize({
+    metadata = {
+      capabilities = { "rom_dump" },
+      derivedAssets = { "complete" },
+      fullCorpus = true,
+    },
+    tests = { ["audits the corpus"] = function() end },
+  })
+  Assert.deepEqual(complete.capabilities, { "rom_dump", "derived_assets", "complete_derived_cache" })
+
+  local err = Assert.throws(function()
+    normalize({
+      metadata = { capabilities = { "rom_dump" }, derivedAssets = { "complete" } },
+      tests = { ["misclassified corpus"] = function() end },
+    })
+  end)
+  Assert.isTrue(tostring(err):find("fullCorpus", 1, true) ~= nil, "complete still requires the corpus tier")
+end
+
 return { tests = T }

@@ -30,10 +30,9 @@
 # selected private cache, and --fresh performs a real cold import into an
 # owned temporary root that is removed after its children exit. The product
 # cache and personal saves are never touched by test preparation.
-# Readiness always comes from the common scoped builder (`love romdump/
-# --prepare-cache --dev`), which alone issues the invocation receipt the test
-# children validate; reused scope text from an earlier invocation never
-# authorizes the current run.
+# Readiness comes from the common scoped builder (`love romdump/
+# --prepare-cache --dev`). The shell hands its successful requirement union to
+# test children for this invocation only.
 # PORTEMON_REQUIRE_ROM_TESTS=1 makes a missing dump fatal.
 # Exit status: 0 green, 1 failures or a missing required capability, 2 usage.
 set -euo pipefail
@@ -48,12 +47,10 @@ cleanup() {
 }
 trap cleanup EXIT
 
-# No inherited worker token, stale preparation record, or stale readiness
-# claim may leak into planning, cache preparation, or serial execution; only
-# a worker subshell below exports one, and the invocation receipt below is
-# exported only for preparation this invocation established.
+# No inherited worker token, stale preparation list, or stale readiness claim
+# may leak into planning, cache preparation, or serial execution.
 unset PORTEMON_TEST_ACCEPTANCE_NAMESPACE
-unset PORTEMON_TEST_PREPARATION
+unset PORTEMON_TEST_PREPARED_REQUIREMENTS
 unset PORTEMON_DERIVED_CACHE_READY
 
 # The exhaustive corpus flag is never part of routine verification: it runs
@@ -209,11 +206,10 @@ probe_source() {
 }
 
 # Run the cache builder's scoped preparation for the exact requirement union
-# under the working-tree development identity and require the builder-issued
-# invocation receipt. Any failure exits without touching the last valid
-# selection, and no test child starts without the newly written receipt.
+# under the working-tree development identity. Any failure exits without
+# touching the last valid selection or starting a test child.
 run_scoped_prepare() {
-  local version="$1" receipt="$2"
+  local version="$1"
   local prepare_args=()
   local requirement=""
   for requirement in "${requires[@]}"; do
@@ -221,7 +217,7 @@ run_scoped_prepare() {
   done
   local prepare_out=""
   local prepare_status=0
-  prepare_out="$(love romdump/ --prepare-cache --dev --version "$version" "${prepare_args[@]}" --preparation-record "$receipt")" || prepare_status=$?
+  prepare_out="$(love romdump/ --prepare-cache --dev --version "$version" "${prepare_args[@]}")" || prepare_status=$?
   printf '%s\n' "$prepare_out"
   if [ "$prepare_status" -ne 0 ]; then
     echo "test: scoped cache preparation failed (exit $prepare_status)" >&2
@@ -233,20 +229,6 @@ run_scoped_prepare() {
       exit 1
       ;;
   esac
-  if [ ! -f "$receipt" ]; then
-    echo "test: scoped cache preparation issued no receipt" >&2
-    exit 1
-  fi
-}
-
-# An invocation-owned receipt directory for the builder-issued proof beneath
-# the private test root. The receipt file inside is created only by a
-# successful preparation below; the directory is removed with the other owned
-# evidence after every child has been reaped. Sets $receipt_dir in the
-# caller (a command substitution would lose the cleanup registration).
-new_receipt_dir() {
-  receipt_dir="$(mktemp -d -- "$test_root/preparation.XXXXXXXX")"
-  temp_dirs+=("$receipt_dir")
 }
 
 # The runner's plan answer: the preparation scope the actual selection
@@ -333,10 +315,8 @@ if [ "$fresh" = 1 ]; then
   love romdump/ --import-rom "$rom_source"
   if [ "$prepare" != "none" ]; then
     probe_source "$rom_source"
-    run_scoped_prepare "$probe_version" "$fresh_root/preparation.lua"
-    export PORTEMON_TEST_PREPARATION="$fresh_root/preparation.lua"
-  else
-    rm -f -- "$fresh_root/preparation.lua"
+    run_scoped_prepare "$probe_version"
+    export PORTEMON_TEST_PREPARED_REQUIREMENTS="${requires[*]}"
   fi
 elif [ -n "$rom_source" ]; then
   # An explicit source: resolve its canonical identity through the source
@@ -362,14 +342,13 @@ elif [ -n "$rom_source" ]; then
     fi
     printf 'version=%s\nrom_sha1=%s\n' "$version" "$sha" >"$rom_dir/rom-ready"
   fi
-  # Stale scope text and predecessor receipts inside the owned root never
-  # authorize reuse; only the builder-issued receipt below does.
-  rm -f -- "$rom_dir/prepared" "$data_home/preparation.lua"
+  # Remove stale scope text; only this invocation's successful preparation
+  # authorizes its test children.
+  rm -f -- "$rom_dir/prepared"
   if [ "$prepare" != "none" ]; then
     echo "== prepare ${requires[*]} for $version in $data_home =="
-    new_receipt_dir
-    run_scoped_prepare "$version" "$receipt_dir/preparation.lua"
-    export PORTEMON_TEST_PREPARATION="$receipt_dir/preparation.lua"
+    run_scoped_prepare "$version"
+    export PORTEMON_TEST_PREPARED_REQUIREMENTS="${requires[*]}"
   fi
   # Publish the successful selection only after this invocation's required
   # import and scoped preparation succeeded; a failed scope leaves the
@@ -390,12 +369,11 @@ elif [ "$prepare" != "none" ]; then
     export XDG_DATA_HOME="$data_home"
     unset PORTEMON_SAVE_DIR
     version="$select_version"
-    rm -f -- "$rom_dir/prepared" "$data_home/preparation.lua"
+    rm -f -- "$rom_dir/prepared"
     echo "== private ROM test cache: $version $select_sha in $data_home =="
     echo "== prepare ${requires[*]} for $version in $data_home =="
-    new_receipt_dir
-    run_scoped_prepare "$version" "$receipt_dir/preparation.lua"
-    export PORTEMON_TEST_PREPARATION="$receipt_dir/preparation.lua"
+    run_scoped_prepare "$version"
+    export PORTEMON_TEST_PREPARED_REQUIREMENTS="${requires[*]}"
   fi
 fi
 

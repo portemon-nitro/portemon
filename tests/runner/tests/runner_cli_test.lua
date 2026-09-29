@@ -37,7 +37,6 @@ function T.test_entrypoint_runs_the_incremental_builder_for_real_dependency_fres
 
   contains(script, "love romdump/ --import-rom", "test entrypoint")
   contains(script, "love romdump/ --prepare-cache", "test entrypoint")
-  contains(script, "--preparation-record", "test entrypoint")
   contains(script, "--dev", "test entrypoint")
   Assert.isNil(script:find("--check-derived-cache", 1, true))
 end
@@ -47,7 +46,6 @@ function T.test_tooling_uses_run_scoped_temporary_directories()
   local testScript = handle:read("*a")
   handle:close()
 
-  contains(testScript, 'receipt_dir="$(mktemp -d -- "$test_root/preparation.XXXXXXXX")"', "test script")
   contains(testScript, 'fresh_root="$(mktemp -d)"', "test script")
   contains(testScript, 'run_dir="$(mktemp -d "${TMPDIR:-/tmp}/portemon-tests.XXXXXXXX")"', "test script")
 end
@@ -463,7 +461,7 @@ function T.narrow_unit_filter_plan_skips_cache_preparation()
   local corpus = FakeCorpus.new({
     ["fake/unit/alpha_test.lua"] = { tests = { ["unit case"] = function() end } },
     ["fake/rom/cache_test.lua"] = {
-      metadata = { capabilities = { "rom_dump", "derived_assets" }, derivedAssets = { "map:7" } },
+      metadata = { capabilities = { "rom_dump" }, derivedAssets = { "map:7" } },
       tests = { ["cache case"] = function() end },
     },
   })
@@ -522,7 +520,7 @@ function T.listing_never_prepares_the_cache_even_for_corpus_consumers()
   local corpus = FakeCorpus.new({
     ["fake/rom/cache_test.lua"] = {
       metadata = {
-        capabilities = { "rom_dump", "complete_derived_cache" },
+        capabilities = { "rom_dump" },
         derivedAssets = { "complete" },
         fullCorpus = true,
       },
@@ -542,9 +540,9 @@ function T.listing_never_prepares_the_cache_even_for_corpus_consumers()
   )
 end
 
--- Suites that read the prebuilt generated cache declare it, so
--- selection-aware planning prepares the cache for them but not for a
--- raw-dump-only control.
+-- Suites that read the prebuilt generated cache declare their requirement
+-- closure, so selection-aware planning prepares it but leaves a raw-dump-only
+-- control unprepared.
 function T.generated_cache_consumers_declare_scoped_requirements()
   local targets = {
     "field_message_cache_test",
@@ -906,39 +904,12 @@ function T.selected_requirements_are_deduplicated_and_sorted()
   Assert.equal(prepareOf(lines), "assets", "a partial union prepares its partial scope")
 end
 
--- The historical cache capability name is not a requirement source: a suite
--- that still declares it instead of an explicit closure is malformed, so the
--- listing names the suite and the stale capability and plans no complete
--- preparation from it.
-function T.stale_cache_capability_is_a_listing_error_not_a_complete_request()
-  local corpus = FakeCorpus.new({
-    ["fake/rom/stale_test.lua"] = {
-      metadata = { capabilities = { "rom_dump", "derived_cache" } },
-      tests = { ["stale case"] = function() end },
-    },
-  })
-  local roots = { corpus:root("fake/rom", "rom") }
-  local listing = TestRunner.list({ roots = roots, fs = corpus.fs, load = corpus.load, filter = "stale case" })
-
-  Assert.equal(#listing, 1, "the stale filter selects exactly its suite")
-  Assert.notNil(listing[1].error, "a stale capability declaration must fail the listing")
-  contains(listing[1].error, "stale_test", "the failure names the suite")
-  contains(listing[1].error, "derived_cache", "the failure names the stale capability")
-  Assert.deepEqual(TestRunner.selectedRequirements(listing), {}, "a malformed suite contributes no requirement")
-  local plan = parse({ "--filter", "stale case" })
-  Assert.equal(
-    prepareOf(Cli.renderPlan(plan, selectedCapabilities(listing), 1, TestRunner.selectedRequirements(listing))),
-    "none",
-    "a malformed selection prepares nothing"
-  )
-end
-
 -- A scoped suite prepares exactly its declared closure: the plan carries
 -- only the listed roots at the partial scope, never a complete request.
 function T.scoped_suite_prepares_only_its_declared_closure()
   local corpus = FakeCorpus.new({
     ["fake/rom/map_test.lua"] = {
-      metadata = { capabilities = { "rom_dump", "derived_assets" }, derivedAssets = { "map:7" } },
+      metadata = { capabilities = { "rom_dump" }, derivedAssets = { "map:7" } },
       tests = { ["map case"] = function() end },
     },
   })
@@ -964,28 +935,18 @@ end
 -- listing names the offending suite instead of planning a complete
 -- preparation for a regular selection.
 function T.complete_claims_without_the_corpus_tier_are_listing_errors()
-  local variants = {
-    complete_capability_without_tier = {
-      metadata = { capabilities = { "rom_dump", "complete_derived_cache" }, derivedAssets = { "complete" } },
+  local corpus = FakeCorpus.new({
+    ["fake/rom/requirement_test.lua"] = {
+      metadata = { capabilities = { "rom_dump" }, derivedAssets = { "complete" } },
+      tests = { ["mislabeled case"] = function() end },
     },
-    complete_requirement_without_tier = {
-      metadata = { capabilities = { "rom_dump", "derived_assets" }, derivedAssets = { "complete" } },
-    },
-  }
-  for label, config in pairs(variants) do
-    local corpus = FakeCorpus.new({
-      ["fake/rom/" .. label .. "_test.lua"] = {
-        metadata = config.metadata,
-        tests = { ["mislabeled case"] = function() end },
-      },
-    })
-    local roots = { corpus:root("fake/rom", "rom") }
-    local listing = TestRunner.list({ roots = roots, fs = corpus.fs, load = corpus.load, filter = "mislabeled case" })
-    Assert.equal(#listing, 1, label .. " selects exactly its suite")
-    Assert.notNil(listing[1].error, label .. " must fail the listing without the corpus tier")
-    contains(listing[1].error, label .. "_test", "the failure names the suite")
-    Assert.deepEqual(TestRunner.selectedRequirements(listing), {}, label .. " contributes no requirement")
-  end
+  })
+  local roots = { corpus:root("fake/rom", "rom") }
+  local listing = TestRunner.list({ roots = roots, fs = corpus.fs, load = corpus.load, filter = "mislabeled case" })
+  Assert.equal(#listing, 1, "the filter selects exactly its suite")
+  Assert.notNil(listing[1].error, "complete without the corpus tier must fail listing")
+  contains(listing[1].error, "requirement_test", "the failure names the suite")
+  Assert.deepEqual(TestRunner.selectedRequirements(listing), {}, "a malformed suite contributes no requirement")
 end
 
 -- The genuine corpus audit keeps its exhaustive request, but only under the
@@ -995,7 +956,7 @@ function T.corpus_selection_keeps_the_declared_complete_request()
   local corpus = FakeCorpus.new({
     ["fake/rom/audit_test.lua"] = {
       metadata = {
-        capabilities = { "rom_dump", "complete_derived_cache" },
+        capabilities = { "rom_dump" },
         derivedAssets = { "complete" },
         fullCorpus = true,
       },
