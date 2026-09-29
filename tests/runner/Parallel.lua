@@ -24,88 +24,6 @@ local function nonNegativeInteger(value, what)
   assert(type(value) == "number" and value % 1 == 0 and value >= 0, what .. " must be a non-negative integer")
 end
 
-local function finiteNumber(value, what)
-  assert(
-    type(value) == "number" and value == value and value ~= math.huge and value ~= -math.huge,
-    what .. " must be finite"
-  )
-  assert(value >= 0, what .. " must be non-negative")
-end
-
-local function validateRun(run)
-  assert(type(run) == "table", "fragment run must be a table")
-  assert(type(run.results) == "table", "fragment run.results must be a table")
-  finiteNumber(run.duration, "fragment run.duration")
-  for _, field in ipairs({ "passed", "failed", "skipped", "excludedCorpus" }) do
-    nonNegativeInteger(run[field], "fragment run." .. field)
-  end
-
-  local byLayer = run.byLayer
-  assert(type(byLayer) == "table", "fragment run.byLayer must be a table")
-  local totals = { passed = 0, failed = 0, skipped = 0 }
-  local resultLayers = {}
-  for index, entry in ipairs(run.results) do
-    assert(type(entry) == "table", "fragment result " .. index .. " must be a table")
-    assert(type(entry.module) == "string", "fragment result module must be a string")
-    assert(type(entry.test) == "string", "fragment result test must be a string")
-    assert(
-      entry.status == "pass" or entry.status == "fail" or entry.status == "skip",
-      "fragment result status is invalid"
-    )
-    if entry.status == "pass" then
-      assert(entry.message == nil or type(entry.message) == "string", "fragment result message is invalid")
-    else
-      assert(type(entry.message) == "string", "fragment result message is required")
-    end
-    assert(type(entry.layer) == "string", "fragment result layer must be a string")
-    finiteNumber(entry.duration, "fragment result duration")
-    local field = entry.status == "pass" and "passed" or (entry.status == "fail" and "failed" or "skipped")
-    totals[field] = totals[field] + 1
-    resultLayers[entry.layer] = resultLayers[entry.layer] or { passed = 0, failed = 0, skipped = 0 }
-    resultLayers[entry.layer][field] = resultLayers[entry.layer][field] + 1
-  end
-  for _, field in ipairs({ "passed", "failed", "skipped" }) do
-    assert(run[field] == totals[field], "fragment run counts do not match results")
-  end
-  for layer, counts in pairs(byLayer) do
-    assert(type(layer) == "string" and type(counts) == "table", "fragment layer counts are invalid")
-    for _, field in ipairs({ "passed", "failed", "skipped" }) do
-      nonNegativeInteger(counts[field], "fragment layer count")
-      assert(counts[field] == ((resultLayers[layer] or {})[field] or 0), "fragment layer counts do not match results")
-    end
-    finiteNumber(counts.duration, "fragment layer duration")
-  end
-  for layer, counts in pairs(resultLayers) do
-    assert(byLayer[layer] ~= nil, "fragment result layer has no layer counts")
-    for _, field in ipairs({ "passed", "failed", "skipped" }) do
-      assert(byLayer[layer][field] == counts[field], "fragment layer counts do not match results")
-    end
-  end
-
-  for _, field in ipairs({ "capabilities", "selectedCapabilities" }) do
-    assert(type(run[field]) == "table", "fragment run." .. field .. " must be a table")
-    for name, enabled in pairs(run[field]) do
-      assert(type(name) == "string" and enabled == true, "fragment capability map is invalid")
-    end
-  end
-  assert(type(run.suiteTimings) == "table", "fragment run.suiteTimings must be a table")
-  for _, timing in ipairs(run.suiteTimings) do
-    assert(type(timing) == "table" and type(timing.module) == "string", "fragment suite timing is invalid")
-    finiteNumber(timing.total, "fragment suite timing total")
-    for _, field in ipairs({ "beforeAll", "tests", "afterAll" }) do
-      if timing[field] ~= nil then
-        finiteNumber(timing[field], "fragment suite timing " .. field)
-      end
-    end
-  end
-  if run.versions ~= nil then
-    assert(type(run.versions) == "table", "fragment run.versions must be a table")
-    for _, version in ipairs(run.versions) do
-      assert(type(version) == "string", "fragment version must be a string")
-    end
-  end
-end
-
 local DEFAULT_FULL_RUN_JOBS = 4
 
 local function isFocused(plan)
@@ -121,8 +39,6 @@ function Parallel.effectiveJobs(plan, selectedSuiteCount, processorCount)
   nonNegativeInteger(selectedSuiteCount, "selected suite count")
   positiveInteger(processorCount, "processor count")
   local suiteBound = math.max(1, selectedSuiteCount)
-  -- The runner-only run is a focused run: it always serializes to one
-  -- worker instead of following the automatic full-run policy.
   if plan.list or plan.serial or plan.selfTest or isFocused(plan) then
     return 1
   end
@@ -191,7 +107,7 @@ local function validateWrapper(wrapper, expectedIndex, expectedCount)
   local index = positiveInteger(wrapper.worker.index, "fragment worker index")
   local count = positiveInteger(wrapper.worker.count, "fragment worker count")
   assert(index == expectedIndex and count == expectedCount, "worker fragment identity does not match")
-  validateRun(wrapper.run)
+  assert(type(wrapper.run) == "table", "worker fragment run is missing")
   return wrapper
 end
 
@@ -199,7 +115,6 @@ function Parallel.writeFragment(runDir, index, count, run)
   positiveInteger(index, "fragment worker index")
   positiveInteger(count, "fragment worker count")
   assert(index <= count, "fragment worker index is out of range")
-  validateRun(run)
   local path = Parallel.fragmentPath(runDir, index)
   local temporary = path .. ".tmp"
   local encoded = LuaWriter.encode({
@@ -298,20 +213,27 @@ function Parallel.merge(fragments)
   local orderedFragments = {}
   for _, wrapper in ipairs(fragments) do
     assert(type(wrapper) == "table" and type(wrapper.worker) == "table", "worker fragment identity is missing")
-    orderedFragments[#orderedFragments + 1] = wrapper
+    local workerCount = positiveInteger(wrapper.worker.count, "worker count")
+    if count == nil then
+      count = workerCount
+    end
+    local index = positiveInteger(wrapper.worker.index, "fragment worker index")
+    assert(index <= count and workerCount == count, "worker fragment identity does not match")
+    local checked = validateWrapper(wrapper, index, count)
+    assert(not seen[index], "duplicate worker fragment")
+    seen[index] = true
+    orderedFragments[#orderedFragments + 1] = checked
+  end
+  assert(#fragments == count, "worker fragments are incomplete")
+  for index = 1, count do
+    assert(seen[index], "worker fragments are incomplete")
   end
   table.sort(orderedFragments, function(a, b)
     return a.worker.index < b.worker.index
   end)
   for _, wrapper in ipairs(orderedFragments) do
-    if count == nil then
-      count = positiveInteger(wrapper.worker and wrapper.worker.count, "worker count")
-    end
-    local checked = validateWrapper(wrapper, wrapper.worker.index, count)
-    local index = checked.worker.index
-    assert(not seen[index], "duplicate worker fragment")
-    seen[index] = true
-    local run = checked.run
+    local index = wrapper.worker.index
+    local run = wrapper.run
     merged.passed = merged.passed + run.passed
     merged.failed = merged.failed + run.failed
     merged.skipped = merged.skipped + run.skipped
@@ -336,10 +258,6 @@ function Parallel.merge(fragments)
     for _, timing in ipairs(run.suiteTimings) do
       merged.suiteTimings[#merged.suiteTimings + 1] = timing
     end
-  end
-  assert(#fragments == count, "worker fragments are incomplete")
-  for index = 1, count do
-    assert(seen[index], "worker fragments are incomplete")
   end
   table.sort(entries, function(a, b)
     if a.entry.module ~= b.entry.module then

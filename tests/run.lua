@@ -20,20 +20,20 @@ local ENV = setmetatable({}, {
   end,
 })
 
--- `options` accepts `layer`, `filter`, `tag`, `fullCorpus`, `selfTest`, and
--- `capabilities`; `main` parses them out of the argv.
+-- `options` accepts roots, selection fields, and capabilities; `main` parses
+-- the command mode and chooses roots before discovery.
 ---@param options table|nil
 ---@return table
 local function runnerOptions(options)
   options = options or {}
   return {
     fs = RepoFiles.new(love.filesystem.getSourceBaseDirectory()),
+    roots = options.roots,
     capabilities = options.capabilities,
     layer = options.layer,
     filter = options.filter,
     tag = options.tag,
     fullCorpus = options.fullCorpus,
-    selfTest = options.selfTest,
     onResult = options.onResult,
     shard = options.shard,
   }
@@ -44,6 +44,13 @@ end
 ---@return table[] listing
 local function list(options)
   return TestRunner.list(runnerOptions(options))
+end
+
+local function rootsFor(plan)
+  if plan.selfTest then
+    return { { path = "tests/runner/tests", layer = "unit" } }
+  end
+  return nil
 end
 
 -- The de-duplicated union of capability declarations from listed suites that
@@ -110,7 +117,8 @@ local function main(argv)
       io.stderr:write("test: parallel infrastructure failure: plan mode cannot use a worker context\n")
       return 1
     end
-    local listing = list(plan)
+    local roots = rootsFor(plan)
+    local listing = list({ roots = roots, layer = plan.layer, filter = plan.filter, tag = plan.tag, fullCorpus = plan.fullCorpus })
     local processorCount = 1
     if love.system ~= nil and love.system.getProcessorCount ~= nil then
       processorCount = math.max(1, love.system.getProcessorCount())
@@ -154,7 +162,7 @@ local function main(argv)
         filter = plan.filter,
         tag = plan.tag,
         fullCorpus = plan.fullCorpus,
-        selfTest = plan.selfTest,
+        roots = rootsFor(plan),
         shard = { index = context.index, count = context.count },
       }))
       Parallel.writeFragment(context.runDir, context.index, context.count, result)
@@ -193,7 +201,13 @@ local function main(argv)
   local capabilities, versions = detect()
 
   if plan.list then
-    print(table.concat(Report.listingLines(list(plan)), "\n"))
+    print(table.concat(Report.listingLines(list({
+      roots = rootsFor(plan),
+      layer = plan.layer,
+      filter = plan.filter,
+      tag = plan.tag,
+      fullCorpus = plan.fullCorpus,
+    })), "\n"))
     return 0
   end
 
@@ -211,7 +225,7 @@ local function main(argv)
     filter = plan.filter,
     tag = plan.tag,
     fullCorpus = plan.fullCorpus,
-    selfTest = plan.selfTest,
+    roots = rootsFor(plan),
     onResult = function(entry)
       progress:record(entry)
     end,

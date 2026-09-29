@@ -31,15 +31,9 @@ local function modulePrefix(path)
   return path:gsub("/", ".")
 end
 
--- Suites discovered beneath the runner's own test subtree verify the runner
--- itself. They are gated by this discovery identity before any module is
--- required, so a regular run never loads them and the runner-only run never
--- loads a product module.
+-- The normal project walk omits the runner's private test subtree. The entry
+-- point may pass that subtree as an explicit root for `--self-test`.
 local SELF_TEST_ROOT = "tests/runner/tests"
-
-local function isSelfTestPath(childPath)
-  return childPath:sub(1, #SELF_TEST_ROOT + 1) == SELF_TEST_ROOT .. "/"
-end
 
 local function layerForTestsDirectory(path)
   local parent = path:match("^(.-)/tests$")
@@ -56,20 +50,21 @@ local function layerForTestsDirectory(path)
   return "unit"
 end
 
-local function walk(fs, path, prefix, layer, out)
+local function walk(fs, path, prefix, layer, out, excludeSelfTests)
   local entries = fs.getDirectoryItems(path)
   table.sort(entries)
   for _, entry in ipairs(entries) do
     local childPath = path .. "/" .. entry
     local info = fs.getInfo(childPath)
     if info ~= nil and info.type == "directory" then
-      walk(fs, childPath, prefix .. "." .. entry, layer, out)
+      if not (excludeSelfTests and childPath == SELF_TEST_ROOT) then
+        walk(fs, childPath, prefix .. "." .. entry, layer, out, excludeSelfTests)
+      end
     elseif isSuiteFile(entry) then
       out[#out + 1] = {
         module = prefix .. "." .. entry:sub(1, -5),
         layer = layer,
         path = childPath,
-        selfTest = isSelfTestPath(childPath),
       }
     end
   end
@@ -94,11 +89,11 @@ local function walkProject(fs, path, out)
           for _, child in ipairs(fs.getDirectoryItems(childPath)) do
             local childInfo = fs.getInfo(childPath .. "/" .. child)
             if childInfo ~= nil and childInfo.type == "directory" then
-              walk(fs, childPath .. "/" .. child, prefix .. "." .. child, TEST_LAYERS[child] and child or "unit", out)
+              walk(fs, childPath .. "/" .. child, prefix .. "." .. child, TEST_LAYERS[child] and child or "unit", out, true)
             end
           end
         else
-          walk(fs, childPath, prefix, layer, out)
+          walk(fs, childPath, prefix, layer, out, true)
         end
       else
         walkProject(fs, childPath, out)
@@ -110,7 +105,7 @@ end
 -- Every suite beneath the project tree, sorted by module name.
 ---@param fs table love.filesystem-shaped reader
 ---@param roots table[]|nil focused roots for runner unit tests
----@return { module: string, layer: string, path: string, selfTest: boolean }[]
+---@return { module: string, layer: string, path: string }[]
 function Discovery.suites(fs, roots)
   local found = {}
   if roots == nil then
@@ -119,7 +114,7 @@ function Discovery.suites(fs, roots)
     for _, root in ipairs(roots) do
       assert(type(root.path) == "string", "root needs a path")
       assert(type(root.layer) == "string", "root needs a default layer: " .. root.path)
-      walk(fs, root.path, modulePrefix(root.path), root.layer, found)
+      walk(fs, root.path, modulePrefix(root.path), root.layer, found, false)
     end
   end
 

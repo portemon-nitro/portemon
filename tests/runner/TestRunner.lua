@@ -13,7 +13,6 @@
 --                                             "module :: test"
 --   tag          string|nil                   exact suite tag membership
 --   fullCorpus   boolean|nil                  run only the full corpus suites, default false
---   selfTest     boolean|nil                  run only the runner's own suites, default false
 --   onResult       fun(result: table)|nil      called after each result
 
 local Discovery = require("tests.runner.Discovery")
@@ -37,7 +36,6 @@ local function resolve(options)
     filter = options.filter,
     tag = options.tag,
     fullCorpus = options.fullCorpus,
-    selfTest = options.selfTest,
     onResult = options.onResult,
     shard = options.shard,
   }
@@ -54,34 +52,17 @@ local function loadFailure(entry, message)
   }
 end
 
--- Whether a discovered entry may be loaded under the selection. The discovery
--- root is the single source of a suite's layer, so the decision is exact: a
--- module loads exactly when its root layer is selected, with no
--- approximation branch, and an unselected root's module is never required.
--- The runner-only mode applies before that: a regular run never requires a
--- suite beneath the runner's own test subtree (even one that would raise on
--- load), and the runner-only run never requires any other suite.
-local function mayLoad(entry, layer, selfTest)
-  if entry.selfTest == true and selfTest ~= true then
-    return false
-  end
-  if entry.selfTest ~= true and selfTest == true then
-    return false
-  end
-  return layer == nil or entry.layer == layer
-end
-
 -- Discovers and normalizes every suite of the selected layer, in module order.
 -- Modules under a root the selection excludes are never loaded; the rest are
 -- loaded (test names come from the module itself) but never executed. Each
 -- returned item carries either a normalized `suite` or the `failure` result of
 -- a module that could not be loaded or normalized.
 ---@return { suite: RunnerSuite|nil, failure: table|nil }[]
----@param config { fs: table, roots: string[]|nil, load: function, capabilities: table<string, boolean>, layer: string|nil, filter: string|nil, tag: string|nil, fullCorpus: boolean|nil, selfTest: boolean|nil, onResult: function|nil, shard: table|nil }
+---@param config { fs: table, roots: string[]|nil, load: function, capabilities: table<string, boolean>, layer: string|nil, filter: string|nil, tag: string|nil, fullCorpus: boolean|nil, onResult: function|nil, shard: table|nil }
 local function collect(config)
   local items = {}
   for _, entry in ipairs(Discovery.suites(config.fs, config.roots)) do
-    if mayLoad(entry, config.layer, config.selfTest) and (config.shard == nil or Parallel.owns(entry, config.shard)) then
+    if (config.layer == nil or entry.layer == config.layer) and (config.shard == nil or Parallel.owns(entry, config.shard)) then
       local ok, loaded = pcall(config.load, entry.module)
       if not ok then
         items[#items + 1] = { failure = loadFailure(entry, "module load failed: " .. tostring(loaded)) }

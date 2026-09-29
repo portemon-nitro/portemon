@@ -126,44 +126,32 @@ function T.excluded_layer_modules_are_not_loaded()
   Assert.equal(run.skipped, 0)
 end
 
--- The runner's own suites are gated by discovery identity before any module
--- is required: a regular run never requires a module beneath the runner's
--- own test subtree (even one that would raise on load), and the runner-only
--- run never requires a product module while still reporting the selected
--- module's own load failure.
-function T.mode_selection_excludes_unselected_modules_before_loading()
+-- Explicit mode roots exclude unselected modules before loading: a regular
+-- root cannot see the runner subtree, and the runner-only root cannot see a
+-- product module. A selected module still reports its own load failure.
+function T.explicit_roots_exclude_unselected_modules_before_loading()
   local corpus = FakeCorpus.new({
     ["tests/runner/tests/fake_self_probe_test.lua"] = FakeCorpus.LOAD_ERROR,
     ["tests/unit/fake_product_probe_test.lua"] = { tests = { ["passes"] = function() end } },
   })
 
-  local entries = {}
-  for _, entry in ipairs(Discovery.suites(corpus.fs)) do
-    entries[entry.module] = entry
-  end
-  Assert.isTrue(
-    entries["tests.runner.tests.fake_self_probe_test"].selfTest,
-    "a suite beneath the runner test subtree carries the runner-only identity"
-  )
-  Assert.isFalse(
-    entries["tests.unit.fake_product_probe_test"].selfTest or false,
-    "a product suite carries no runner-only identity"
-  )
-
-  local function runWithMode(selfTest)
+  local function runWithRoots(rootPath)
     local loads = {}
-    local run = TestRunner.run({
+    local options = {
       fs = corpus.fs,
       load = function(moduleName)
         loads[#loads + 1] = moduleName
         return corpus.load(moduleName)
       end,
-      selfTest = selfTest,
-    })
+    }
+    if rootPath ~= nil then
+      options.roots = { corpus:root(rootPath, "unit") }
+    end
+    local run = TestRunner.run(options)
     return run, loads
   end
 
-  local regular, regularLoads = runWithMode(false)
+  local regular, regularLoads = runWithRoots(nil)
   Assert.deepEqual(
     regularLoads,
     { "tests.unit.fake_product_probe_test" },
@@ -172,7 +160,7 @@ function T.mode_selection_excludes_unselected_modules_before_loading()
   Assert.equal(regular.passed, 1)
   Assert.equal(regular.failed, 0)
 
-  local focused, focusedLoads = runWithMode(true)
+  local focused, focusedLoads = runWithRoots("tests/runner/tests")
   Assert.deepEqual(
     focusedLoads,
     { "tests.runner.tests.fake_self_probe_test" },

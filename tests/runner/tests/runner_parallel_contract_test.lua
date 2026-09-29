@@ -394,6 +394,17 @@ function T.fragment_merge_sorts_modules_by_identity_across_workers()
   })
   Assert.equal(merged.results[1].module, "fake.unit.alpha_test")
   Assert.equal(merged.results[2].module, "fake.unit.zulu_test")
+  Assert.throws(function()
+    Parallel.merge({ { schema = Parallel.FRAGMENT_SCHEMA, worker = { index = 1, count = 2 }, run = runData({}) } })
+  end, "missing worker output must fail the aggregate")
+  Assert.throws(function()
+    local fragment = {
+      schema = Parallel.FRAGMENT_SCHEMA,
+      worker = { index = 1, count = 2 },
+      run = runData({}),
+    }
+    Parallel.merge({ fragment, fragment })
+  end, "duplicate worker output must fail the aggregate")
 end
 
 return { tests = T }

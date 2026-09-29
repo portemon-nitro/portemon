@@ -976,25 +976,6 @@ function T.corpus_selection_keeps_the_declared_complete_request()
   Assert.equal(prepareOf(lines), "complete", "the corpus selection prepares the complete scope")
 end
 
--- Runner self-test modules verify the runner itself: even one that declares
--- a product requirement contributes nothing to a regular selection, while
--- the runner-only selection still exposes it.
-function T.runner_self_test_suites_contribute_no_regular_requirements()
-  local corpus = FakeCorpus.new({
-    ["tests/runner/tests/fake_probe_test.lua"] = {
-      metadata = { capabilities = { "rom_dump" }, derivedAssets = { "complete" } },
-      tests = { ["probe case"] = function() end },
-    },
-  })
-  local roots = { corpus:root("tests/runner/tests", "unit") }
-  local regular = TestRunner.list({ roots = roots, fs = corpus.fs, load = corpus.load })
-  Assert.equal(#regular, 0, "the regular selection excludes the runner self-test")
-  Assert.deepEqual(TestRunner.selectedRequirements(regular), {}, "an excluded self-test contributes no requirement")
-
-  local own = TestRunner.list({ roots = roots, fs = corpus.fs, load = corpus.load, selfTest = true })
-  Assert.equal(#own, 1, "the runner-only selection exposes its own suite")
-end
-
 -- A malformed requirement never reaches preparation: the plan call fails
 -- before any import.
 function T.malformed_requirements_are_usage_failures_before_import()
