@@ -10,6 +10,7 @@ local FieldEventState = require("libs.hgss.src.field.FieldEventState")
 local FieldScriptSymbols = require("libs.assets.src.field.FieldScriptSymbols")
 local FieldDialogueController = require("libs.hgss.src.ui.FieldDialogueController")
 local LayoutGeometry = require("libs.ui.src.LayoutGeometry")
+local FieldUiFixture = require("tests.support.FieldUiFixture")
 
 local T = {}
 local DIALOGUE_CURSOR_PLACEMENT = { x = 240, y = 168, width = 16, height = 16 }
@@ -233,6 +234,7 @@ local function stateHarness(overrides)
   local state = OakIntroState.new({
     controller = controller --[[@as OakIntroController]],
     manifest = INTRO_MANIFEST,
+    uiManifest = FieldUiFixture.namingSemanticsManifest(),
     textRenderer = {},
     choiceText = choiceText,
     renderer = renderer,
@@ -810,6 +812,7 @@ local function stateAtFreshFullArtHold(frameDuration, frameCount)
   local state = OakIntroState.new({
     controller = controller,
     manifest = SHRINK_MANIFEST,
+    uiManifest = FieldUiFixture.namingSemanticsManifest(),
     textRenderer = {},
     choiceText = { release = function() end },
     renderer = renderer,
@@ -1341,6 +1344,7 @@ function T.completed_name_question_stays_visible_through_real_close_sequence()
   local state = OakIntroState.new({
     controller = semantic --[[@as OakIntroController]],
     manifest = INTRO_MANIFEST,
+    uiManifest = FieldUiFixture.namingSemanticsManifest(),
     textRenderer = {},
     choiceText = { release = function() end },
     renderer = {
@@ -1506,6 +1510,7 @@ function T.gender_question_stays_visible_through_selection_and_confirmation()
   local state = OakIntroState.new({
     controller = semantic --[[@as OakIntroController]],
     manifest = INTRO_MANIFEST,
+    uiManifest = FieldUiFixture.namingSemanticsManifest(),
     textRenderer = {},
     choiceText = { release = function() end },
     renderer = {
@@ -1661,6 +1666,7 @@ function T.repeated_gender_question_stays_visible_through_selection()
   local state = OakIntroState.new({
     controller = semantic --[[@as OakIntroController]],
     manifest = INTRO_MANIFEST,
+    uiManifest = FieldUiFixture.namingSemanticsManifest(),
     textRenderer = {},
     choiceText = { release = function() end },
     renderer = {

@@ -3,6 +3,7 @@
 local Assert = require("tests.support.Assert")
 local LayoutGeometry = require("libs.ui.src.LayoutGeometry")
 local PokemonNamingState = require("game.hgss.src.field.PokemonNamingState")
+local FieldUiFixture = require("tests.support.FieldUiFixture")
 local FieldState = require("game.hgss.src.field.FieldState")
 local ScreenTopology = require("libs.hgss.src.ui.ScreenTopology")
 local CatalogFixture = require("libs.mons.tests.catalog_fixture")
@@ -31,6 +32,7 @@ local function openState()
     measureDisplay = function()
       return measurement(size.width, size.height)
     end,
+    naming = FieldUiFixture.namingSemanticsManifest().namingScreen,
   })
   state:open({
     currentText = "A",
@@ -155,6 +157,7 @@ function T.tests.failed_open_does_not_publish_a_partial_active_state()
     measureDisplay = function()
       return measurement(800, 600)
     end,
+    naming = FieldUiFixture.namingSemanticsManifest().namingScreen,
     overrides = { unknown = function() end },
   })
   local ok = pcall(function()

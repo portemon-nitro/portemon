@@ -107,7 +107,7 @@ function T.keyboard_and_name_text_follow_the_generated_window_geometry()
     manifest = manifest,
     imageLoader = imageLoaderFake({}),
   })
-  local layout = NamingScreenLayout.compute({ x = 0, y = 0, width = 256, height = 192 })
+  local layout = NamingScreenLayout.compute({ x = 0, y = 0, width = 256, height = 192 }, manifest.namingScreen)
   -- Grid rows 2..6 are the glyph rows; the manifest carries the five source
   -- text rows for them, so grid row r draws from text row r - 1.
   renderer:draw(
@@ -171,7 +171,7 @@ function T.page_control_and_keyboard_text_use_independent_source_placements()
     manifest = manifest,
     imageLoader = imageLoaderFake({}),
   })
-  local layout = NamingScreenLayout.compute({ x = 0, y = 0, width = 256, height = 192 })
+  local layout = NamingScreenLayout.compute({ x = 0, y = 0, width = 256, height = 192 }, manifest.namingScreen)
   renderer:draw(snapshot({ page = "upper", glyphs = { { row = 2, column = 1, value = "A" } } }), layout)
   renderer:dispose()
   assertDrawnOnce(graphics.draws, manifest.assets[naming.pages.upper.asset].image, 11, 80, "the upper page")
@@ -250,7 +250,7 @@ function T.source_object_layers_and_player_subject_render_from_the_manifest()
     end
   end
 
-  local layout = NamingScreenLayout.compute({ x = 0, y = 0, width = 256, height = 192 })
+  local layout = NamingScreenLayout.compute({ x = 0, y = 0, width = 256, height = 192 }, manifest.namingScreen)
   renderer:draw(snapshot({ page = "upper", cursor = { row = 3, column = 5 }, text = "AB", maxLength = 3 }), layout)
 
   for id, record in pairs(naming.controls) do
@@ -323,7 +323,7 @@ function T.home_control_focus_uses_the_matching_cursor_variant()
     manifest = manifest,
     imageLoader = imageLoaderFake({}),
   })
-  local layout = NamingScreenLayout.compute({ x = 0, y = 0, width = 256, height = 192 })
+  local layout = NamingScreenLayout.compute({ x = 0, y = 0, width = 256, height = 192 }, manifest.namingScreen)
   renderer:draw(snapshot({ cursor = { row = 1, column = 10, controlId = "back" } }), layout)
   renderer:dispose()
 
@@ -348,7 +348,7 @@ function T.active_entry_slot_uses_its_generated_animation_clock()
     manifest = manifest,
     imageLoader = imageLoaderFake({}),
   })
-  local layout = NamingScreenLayout.compute({ x = 0, y = 0, width = 256, height = 192 })
+  local layout = NamingScreenLayout.compute({ x = 0, y = 0, width = 256, height = 192 }, manifest.namingScreen)
   local selected = manifest.namingScreen.entrySlots.selected
   local assetPath = manifest.assets[selected.frames[1].asset].image
   renderer:draw(snapshot({}), layout)
@@ -378,7 +378,7 @@ function T.home_controls_composite_above_their_support_backing_with_focus_on_top
     manifest = manifest,
     imageLoader = imageLoaderFake({}),
   })
-  local layout = NamingScreenLayout.compute({ x = 0, y = 0, width = 256, height = 192 })
+  local layout = NamingScreenLayout.compute({ x = 0, y = 0, width = 256, height = 192 }, manifest.namingScreen)
   renderer:draw(snapshot({ cursor = { row = 1, column = 10, controlId = "back" } }), layout)
   renderer:dispose()
 
@@ -403,14 +403,15 @@ function T.canonical_and_integer_host_scales_share_one_logical_surface()
   local function render(viewport)
     local graphics = FakeGraphics.new()
     local textCalls = {}
+    local manifest = FieldUiFixture.namingSemanticsManifest()
     local renderer = NamingScreenRenderer.new({
       graphics = graphics,
       text = textFake(textCalls),
       drawSubject = function() end,
-      manifest = FieldUiFixture.namingSemanticsManifest(),
+      manifest = manifest,
       imageLoader = imageLoaderFake({}),
     })
-    local layout = NamingScreenLayout.compute(viewport)
+    local layout = NamingScreenLayout.compute(viewport, manifest.namingScreen)
     renderer:draw(snapshot({ page = "lower", cursor = { row = 4, column = 7 }, text = "ABC", maxLength = 5 }), layout)
     renderer:dispose()
     return graphics.draws, textCalls

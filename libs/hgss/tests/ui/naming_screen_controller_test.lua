@@ -3,6 +3,7 @@
 local Assert = require("tests.support.Assert")
 local NamingScreenController = require("libs.hgss.src.ui.NamingScreenController")
 local NamingScreenLayout = require("libs.hgss.src.ui.NamingScreenLayout")
+local FieldUiFixture = require("tests.support.FieldUiFixture")
 
 local T = { tests = {} }
 local CHARMAP = {}
@@ -287,7 +288,10 @@ function T.tests.fixed_update_accepts_an_explicit_presentation_tick_count()
 end
 
 function T.tests.layout_keeps_controls_inside_canonical_surface_at_integer_scale()
-  local layout = NamingScreenLayout.compute({ x = 0, y = 0, width = 768, height = 576 })
+  local layout = NamingScreenLayout.compute(
+    { x = 0, y = 0, width = 768, height = 576 },
+    FieldUiFixture.namingSemanticsManifest().namingScreen
+  )
   Assert.deepEqual(layout.surface, { x = 256, y = 192, width = 256, height = 192 })
   Assert.isNil(layout.placement, "the naming child must not own a placement")
   for id, region in pairs(layout.controls) do

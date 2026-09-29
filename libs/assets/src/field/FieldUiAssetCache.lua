@@ -952,9 +952,13 @@ local function checkNamingScreen(s, atlases)
   if type(text) ~= "table" then
     reject("namingScreen.text must be a table", {})
   end
-  if type(text.name) ~= "table" or text.name.x ~= 80 or text.name.y ~= 24 or text.name.advanceX ~= 12 then
-    reject("namingScreen.text.name must be the (80,24)+12px entry origin", {})
+  -- The entered-name origin is consumed as integer text geometry with a
+  -- positive advance; its exact source position stays producer-owned.
+  if type(text.name) ~= "table" then
+    reject("namingScreen.text.name must be a table", {})
   end
+  checkCanonicalPoint(text.name, "namingScreen.text.name must start at a canonical integer point")
+  checkInteger(text.name.advanceX, 1, nil, "namingScreen.text.name advance must stay positive", {})
   if type(text.keyboard) ~= "table" or type(text.keyboard.cells) ~= "table" then
     reject("namingScreen.text.keyboard.cells must be a table", {})
   end
@@ -995,14 +999,9 @@ local function checkNamingScreen(s, atlases)
   if type(s.controls) ~= "table" then
     reject("namingScreen.controls must be a table", {})
   end
-  local controlAnchors = {
-    upper = { x = 26, y = 68 },
-    lower = { x = 58, y = 68 },
-    symbols = { x = 90, y = 68 },
-    back = { x = 158, y = 68 },
-    ok = { x = 198, y = 68 },
-    backing = { x = 22, y = 56 },
-  }
+  -- The six OAM-composed control visuals keep their exact sprite
+  -- contract (indexed asset, matching dimensions, canonical anchor, frame
+  -- offset); their absolute source positions stay producer-owned.
   local controlCount = 0
   for _ in pairs(s.controls) do
     controlCount = controlCount + 1
@@ -1010,12 +1009,8 @@ local function checkNamingScreen(s, atlases)
   if controlCount ~= 6 then
     reject("namingScreen.controls must carry six source visuals", {})
   end
-  for id, anchor in pairs(controlAnchors) do
+  for _, id in ipairs({ "upper", "lower", "symbols", "back", "ok", "backing" }) do
     checkNamingSprite(s.controls[id], atlases, "namingScreen.controls." .. id)
-    local recordAnchor = s.controls[id].anchor
-    if recordAnchor.x ~= anchor.x or recordAnchor.y ~= anchor.y then
-      reject("namingScreen.controls." .. id .. " must keep its source anchor", {})
-    end
   end
 
   if type(s.cursor) ~= "table" then
@@ -1023,15 +1018,11 @@ local function checkNamingScreen(s, atlases)
   end
   local keyboardCursor = s.cursor.keyboard
   checkAnimationRecord(keyboardCursor, atlases, "namingScreen.cursor.keyboard", true)
-  if
-    type(keyboardCursor.origin) ~= "table"
-    or keyboardCursor.origin.x ~= 26
-    or keyboardCursor.origin.y ~= 91
-    or keyboardCursor.stepX ~= 16
-    or keyboardCursor.stepY ~= 19
-  then
-    reject("namingScreen.cursor.keyboard must step 16px by 19px from (26,91)", {})
-  end
+  -- The stepping cursor keeps an integral origin with positive steps; its
+  -- exact source origin stays producer-owned.
+  checkCanonicalPoint(keyboardCursor.origin, "namingScreen.cursor.keyboard must step from a canonical integer origin")
+  checkInteger(keyboardCursor.stepX, 1, nil, "namingScreen.cursor.keyboard column step must stay positive", {})
+  checkInteger(keyboardCursor.stepY, 1, nil, "namingScreen.cursor.keyboard row step must stay positive", {})
   if type(s.cursor.home) ~= "table" then
     reject("namingScreen.cursor.home must be a table", {})
   end
@@ -1050,14 +1041,10 @@ local function checkNamingScreen(s, atlases)
   if type(s.entrySlots) ~= "table" then
     reject("namingScreen.entrySlots must be a table", {})
   end
-  if
-    type(s.entrySlots.origin) ~= "table"
-    or s.entrySlots.origin.x ~= 80
-    or s.entrySlots.origin.y ~= 39
-    or s.entrySlots.stepX ~= 12
-  then
-    reject("namingScreen.entrySlots must start at (80,39) stepping 12px", {})
-  end
+  -- Entry slots keep an integral origin with a positive step; the exact
+  -- source position stays producer-owned.
+  checkCanonicalPoint(s.entrySlots.origin, "namingScreen.entrySlots must start at a canonical integer origin")
+  checkInteger(s.entrySlots.stepX, 1, nil, "namingScreen.entrySlots step must stay positive", {})
   checkNamingSprite(s.entrySlots.normal, atlases, "namingScreen.entrySlots.normal")
   checkAnimationRecord(s.entrySlots.selected, atlases, "namingScreen.entrySlots.selected", false)
 
@@ -1073,10 +1060,10 @@ local function checkNamingScreen(s, atlases)
   end
   for _, id in ipairs({ "male", "female" }) do
     checkAnimationRecord(s.playerSubjects[id], atlases, "namingScreen.playerSubjects." .. id, false)
-    local subjectAnchor = s.playerSubjects[id].anchor
-    if type(subjectAnchor) ~= "table" or subjectAnchor.x ~= 24 or subjectAnchor.y ~= 8 then
-      reject("namingScreen.playerSubjects." .. id .. " must anchor at (24,8)", {})
-    end
+    checkCanonicalPoint(
+      s.playerSubjects[id].anchor,
+      "namingScreen.playerSubjects." .. id .. " must anchor at a canonical integer point"
+    )
   end
 
   local pokemonSubject = s.pokemonSubject

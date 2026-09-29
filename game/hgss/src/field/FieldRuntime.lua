@@ -1044,6 +1044,7 @@ function FieldRuntime:_load()
     self.pokemonNaming = require("game.hgss.src.field.PokemonNamingState").new({
       charmap = fontDef.charmap,
       measureDisplay = starterMeasureDisplay,
+      naming = assert(uiManifest.namingScreen, "Pokemon naming requires the namingScreen manifest section"),
       overrides = namingOverrides,
     })
     self.actionKeys = HgssInputBindings.actionKeys()

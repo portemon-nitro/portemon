@@ -141,14 +141,14 @@ function T.sprite_visuals_without_offset_anchor_or_image_reference_are_rejected(
     m.namingScreen.entrySlots.selected = nil
   end, "a missing selected slot visual must fail")
   reject(function(m)
-    m.namingScreen.playerSubjects.female.anchor = { x = 0, y = 0 }
-  end, "a player subject away from its source anchor must fail")
+    m.namingScreen.playerSubjects.female.anchor = { x = 24.5, y = 8 }
+  end, "a player subject without an integral anchor must fail")
   reject(function(m)
     m.namingScreen.text.keyboard.cells[1][1].width = 17
   end, "a keyboard text cell wider than the 16px source column must fail")
   reject(function(m)
-    m.namingScreen.text.name.advanceX = 8
-  end, "an entered-name advance other than 12px must fail")
+    m.namingScreen.text.name.advanceX = 0
+  end, "an entered-name advance must stay positive")
 end
 
 function T.stale_static_subject_and_cursor_records_are_rejected()
