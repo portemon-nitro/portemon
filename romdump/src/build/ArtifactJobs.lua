@@ -1810,59 +1810,6 @@ function ArtifactJobs.validate(cacheFs, generationId, kind, key, plans, identity
   return true, validatedPlan
 end
 
--- One private projection from a validated source inventory to the
--- scheduler-facing plans view: nested bundles stay borrowed read-only
--- while the three scheduler id lists are freshly derived in sorted
--- order. The two source-static memberships come from their catalog
--- owners, never from the persisted record. Both published-plan
--- reconstruction and worker readiness share it so the two paths cannot
--- diverge.
----@param plan table<string, unknown> validated source inventory record
----@return ArtifactJobs.Plans
-local function plansFromSourcePlan(plan)
-  local audioPlan = assert(plan.audioPlan, "source plans carry the audio membership")
-  ---@cast audioPlan table<string, unknown>
-  local audioBankPlans = assert(audioPlan.bankPlans, "source plans carry the audio bank closures")
-  ---@cast audioBankPlans table[]
-  local audioBankIds = {}
-  for _, bankPlan in ipairs(audioBankPlans) do
-    audioBankIds[#audioBankIds + 1] = assert(bankPlan.bankId, "source plans carry the audio bank identity")
-  end
-  table.sort(audioBankIds)
-  local scriptPlan = assert(plan.scriptPlan, "source plans carry the script membership")
-  ---@cast scriptPlan table<string, unknown>
-  local scriptMembers = assert(scriptPlan.members, "source plans carry the script membership")
-  ---@cast scriptMembers table[]
-  local scriptMemberIds = {}
-  for _, member in ipairs(scriptMembers) do
-    scriptMemberIds[#scriptMemberIds + 1] = assert(member.memberId, "source plans carry the script member identity")
-  end
-  table.sort(scriptMemberIds)
-  local world = assert(plan.world, "source plans carry the world membership")
-  ---@cast world table<string, unknown>
-  local worldMaps = assert(world.maps, "source plans carry the world membership")
-  ---@cast worldMaps table[]
-  local mapIds = {}
-  for _, record in ipairs(worldMaps) do
-    mapIds[#mapIds + 1] = assert(record.id, "source plans carry the world map identity")
-  end
-  table.sort(mapIds)
-  local FieldMessageCompiler = require("romdump.src.digest.ui.FieldMessageCompiler")
-  local FieldMapDataCompiler = require("romdump.src.digest.field.FieldMapDataCompiler")
-  return {
-    indexBundle = plan.fieldCellIndexBundle,
-    scriptPlan = plan.scriptPlan,
-    audioPlan = plan.audioPlan,
-    messageBankIds = FieldMessageCompiler.requiredBankIds(),
-    audioBankIds = audioBankIds,
-    scriptMemberIds = scriptMemberIds,
-    mapDataIds = FieldMapDataCompiler.supportedMapIds(),
-    mapIds = mapIds,
-    mapCellKeys = plan.mapCellKeys,
-    world = plan.world,
-  }
-end
-
 ---@param cacheFs CacheFs
 ---@param identity { versionId: string, generationId: string, producerId: string }
 ---@return ArtifactJobs.Plans|nil
@@ -1903,7 +1850,7 @@ function ArtifactJobs.publishedPlans(cacheFs, identity)
     return nil, "mon manifests are not published"
   end
   ---@cast plan table<string, unknown>
-  local plans = plansFromSourcePlan(plan)
+  local plans = SourcePlan.project(plan)
   plans.iconPageIds = assert(index.iconPageIds, "published plans need the icon pages")
   plans.portraitPageIds = assert(index.portraitPageIds, "published plans need the portrait pages")
   plans.presentation = { icons = icons, portraits = portraits }
@@ -1952,11 +1899,14 @@ local COMPLETE_STATIC_GLOBALS = {
 -- record for the worker's current version/generation/producer identity
 -- and re-reads through the validating reader whenever that identity
 -- changes. The record is borrowed immutable; it carries no ROM handle
--- and never reaches runtime packages.
+-- and never reaches runtime packages. The successful read also caches
+-- the one base projection under the same identity, returned third so
+-- readiness can reuse it without re-deriving the membership.
 ---@param context table<string, unknown>
 ---@param identity { versionId: string, generationId: string, producerId: string }
 ---@return table<string, unknown>|nil
 ---@return string|nil
+---@return table<string, unknown>|nil
 function ArtifactJobs.sourcePlanForContext(context, identity)
   assert(type(context) == "table", "worker source plans require a context table")
   assert(type(identity) == "table", "worker source plans require the generation identity")
@@ -1976,22 +1926,25 @@ function ArtifactJobs.sourcePlanForContext(context, identity)
     and memo.generationId == identity.generationId
     and memo.producerId == identity.producerId
     and type(memo.plan) == "table"
+    and type(memo.basePlans) == "table"
   then
-    return memo.plan
+    return memo.plan, nil, memo.basePlans
   end
   local SourcePlan = require("romdump.src.build.SourcePlan")
   local cacheFs = assert(context.cacheFs, "worker source plans require a cache filesystem")
   local plan, reason = SourcePlan.read(cacheFs, identity)
   if plan == nil then
-    return nil, reason
+    return nil, reason, nil
   end
+  local basePlans = SourcePlan.project(plan)
   context.sourcePlanMemo = {
     versionId = identity.versionId,
     generationId = identity.generationId,
     producerId = identity.producerId,
     plan = plan,
+    basePlans = basePlans,
   }
-  return plan
+  return plan, nil, basePlans
 end
 
 -- Worker-facing readiness wrapper around the one authoritative family
@@ -2029,16 +1982,15 @@ function ArtifactJobs.validateCurrent(job, context)
     if type(producerId) ~= "string" or producerId == "" then
       return false
     end
-    local source, _ = ArtifactJobs.sourcePlanForContext(context, {
+    local _, _, basePlans = ArtifactJobs.sourcePlanForContext(context, {
       versionId = versionId,
       generationId = job.generationId,
       producerId = producerId,
     })
-    if source == nil then
+    if basePlans == nil then
       return false
     end
-    ---@cast source table<string, unknown>
-    plans = plansFromSourcePlan(source)
+    plans = basePlans
   elseif job.kind == "mon-summary" then
     local MonCacheWriter = require("romdump.src.digest.mons.MonCacheWriter")
     local ok, index = pcall(cacheFs.loadLua, cacheFs, MonCacheWriter.sourcePlanIndexPath())

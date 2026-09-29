@@ -71,8 +71,8 @@ local FieldMessageCompiler = require("romdump.src.digest.ui.FieldMessageCompiler
 ---@field messageBankIds integer[]
 ---@field audioBankIds integer[]
 ---@field scriptMemberIds integer[]
----@field iconPageIds integer[]
----@field portraitPageIds integer[]
+---@field iconPageIds integer[]|nil absent until mon page membership is adopted
+---@field portraitPageIds integer[]|nil absent until mon page membership is adopted
 ---@field mapDataIds integer[]
 ---@field mapIds integer[]
 ---@field mapCellKeys table<integer, string[]>
@@ -2732,42 +2732,31 @@ function InteractiveCacheBuild:_adoptValidated(plan)
   end
 end
 
----@param plan table<string, unknown>
+---@param plan table<string, unknown> validated source inventory record
 function InteractiveCacheBuild:_adoptSource(plan)
   ---@cast plan table<string, unknown>
-  local audioBankIds = {}
-  for _, bankPlan in ipairs(plan.audioPlan.bankPlans) do
-    audioBankIds[#audioBankIds + 1] = bankPlan.bankId
-  end
-  table.sort(audioBankIds)
-  local scriptMemberIds = {}
-  for _, member in ipairs(plan.scriptPlan.members) do
-    scriptMemberIds[#scriptMemberIds + 1] = member.memberId
-  end
-  table.sort(scriptMemberIds)
-  local mapIds = {}
-  for _, record in ipairs(plan.world.maps) do
-    mapIds[#mapIds + 1] = record.id
-  end
-  table.sort(mapIds)
+  local SourcePlan = require("romdump.src.build.SourcePlan")
+  local base = SourcePlan.project(plan)
   -- Source-static membership stays constructor-owned: the persisted
   -- record no longer carries it, so adoption keeps the authoritative
-  -- lists instead of replacing them from raw data.
-  self.audioBankIds = audioBankIds
-  self.scriptMemberIds = scriptMemberIds
-  self.mapIds = mapIds
-  self.mapCellKeys = plan.mapCellKeys
+  -- lists instead of replacing them from raw data. Page membership is
+  -- owned by the layout leg alone: a newly arrived source view neither
+  -- supplies it nor resets already adopted pages.
+  self.audioBankIds = base.audioBankIds
+  self.scriptMemberIds = base.scriptMemberIds
+  self.mapIds = base.mapIds
+  self.mapCellKeys = base.mapCellKeys
   self.adopted = {
-    indexBundle = plan.fieldCellIndexBundle,
-    scriptPlan = plan.scriptPlan,
-    audioPlan = plan.audioPlan,
+    indexBundle = base.indexBundle,
+    scriptPlan = base.scriptPlan,
+    audioPlan = base.audioPlan,
     messageBankIds = self.messageBankIds,
-    audioBankIds = audioBankIds,
-    scriptMemberIds = scriptMemberIds,
+    audioBankIds = base.audioBankIds,
+    scriptMemberIds = base.scriptMemberIds,
     mapDataIds = self.mapDataIds,
-    mapIds = mapIds,
-    mapCellKeys = plan.mapCellKeys,
-    world = plan.world,
+    mapIds = base.mapIds,
+    mapCellKeys = base.mapCellKeys,
+    world = base.world,
   }
   self.sourceLoaded = true
   self.depMemo = {}
@@ -2835,11 +2824,19 @@ function InteractiveCacheBuild:_adoptPublished(plans)
     end
     return out
   end
+  -- Page membership distinguishes known-empty from still-unknown: an
+  -- absent list stays absent instead of collapsing into an empty one.
+  local function copyPresentList(values)
+    if values == nil then
+      return nil
+    end
+    return copyList(values)
+  end
   self.messageBankIds = copyList(plans.messageBankIds)
   self.audioBankIds = copyList(plans.audioBankIds)
   self.scriptMemberIds = copyList(plans.scriptMemberIds)
-  self.iconPageIds = copyList(plans.iconPageIds)
-  self.portraitPageIds = copyList(plans.portraitPageIds)
+  self.iconPageIds = copyPresentList(plans.iconPageIds)
+  self.portraitPageIds = copyPresentList(plans.portraitPageIds)
   self.mapDataIds = copyList(plans.mapDataIds)
   self.mapIds = copyList(plans.mapIds)
   self.mapCellKeys = plans.mapCellKeys

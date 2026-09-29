@@ -421,6 +421,59 @@ function SourcePlan.compile(romFs, identity)
   return plan
 end
 
+-- One projection from a validated source inventory to the scheduler-facing
+-- base view: nested bundles stay borrowed read-only while the three
+-- source-derived identity lists are freshly derived in sorted order. The
+-- two source-static memberships come from their catalog owners, never
+-- from the persisted record. Page membership stays unknown until layout
+-- adoption supplies it, so the base view carries no page fields.
+---@param plan table<string, unknown> validated source inventory record
+---@return table<string, unknown>
+function SourcePlan.project(plan)
+  assert(type(plan) == "table", "source projection requires its validated inventory")
+  local audioPlan = assert(plan.audioPlan, "source plans carry the audio membership")
+  ---@cast audioPlan table<string, unknown>
+  local audioBankPlans = assert(audioPlan.bankPlans, "source plans carry the audio bank closures")
+  ---@cast audioBankPlans table[]
+  local audioBankIds = {}
+  for _, bankPlan in ipairs(audioBankPlans) do
+    audioBankIds[#audioBankIds + 1] = assert(bankPlan.bankId, "source plans carry the audio bank identity")
+  end
+  table.sort(audioBankIds)
+  local scriptPlan = assert(plan.scriptPlan, "source plans carry the script membership")
+  ---@cast scriptPlan table<string, unknown>
+  local scriptMembers = assert(scriptPlan.members, "source plans carry the script membership")
+  ---@cast scriptMembers table[]
+  local scriptMemberIds = {}
+  for _, member in ipairs(scriptMembers) do
+    scriptMemberIds[#scriptMemberIds + 1] = assert(member.memberId, "source plans carry the script member identity")
+  end
+  table.sort(scriptMemberIds)
+  local world = assert(plan.world, "source plans carry the world membership")
+  ---@cast world table<string, unknown>
+  local worldMaps = assert(world.maps, "source plans carry the world membership")
+  ---@cast worldMaps table[]
+  local mapIds = {}
+  for _, record in ipairs(worldMaps) do
+    mapIds[#mapIds + 1] = assert(record.id, "source plans carry the world map identity")
+  end
+  table.sort(mapIds)
+  local FieldMessageCompiler = require("romdump.src.digest.ui.FieldMessageCompiler")
+  local FieldMapDataCompiler = require("romdump.src.digest.field.FieldMapDataCompiler")
+  return {
+    indexBundle = plan.fieldCellIndexBundle,
+    scriptPlan = plan.scriptPlan,
+    audioPlan = plan.audioPlan,
+    messageBankIds = FieldMessageCompiler.requiredBankIds(),
+    audioBankIds = audioBankIds,
+    scriptMemberIds = scriptMemberIds,
+    mapDataIds = FieldMapDataCompiler.supportedMapIds(),
+    mapIds = mapIds,
+    mapCellKeys = plan.mapCellKeys,
+    world = plan.world,
+  }
+end
+
 ---@param cacheFs CacheFs
 ---@param identity { versionId: string, generationId: string, producerId: string }
 ---@return table<string, unknown>|nil

@@ -2028,4 +2028,95 @@ function T.persisted_inventory_carries_no_producer_known_membership()
   Assert.notNil(smuggledMapReason, "the smuggled record names its rejection")
 end
 
+-- One owner projects the scheduler-facing membership: the synthetic
+-- world carries only maps 7 and 9, yet the projection spans the full
+-- static record/bank membership, keeps visual maps narrow, borrows the
+-- nested bundles, and leaves page membership unknown until layout
+-- adoption. The published-plan consumer path agrees on every
+-- source-derived field.
+function T.validated_inventory_projects_scheduler_membership_from_one_owner()
+  local FieldMessageCompiler = require("romdump.src.digest.ui.FieldMessageCompiler")
+  local MonCache = require("libs.assets.src.MonCache")
+  local MonCacheWriter = require("romdump.src.digest.mons.MonCacheWriter")
+  local generation = "projection-owner-generation"
+  local plan = compileSynthetic(generation)
+  Assert.isTrue(SourcePlan.validate(plan, identity(generation)), "the fixture inventory validates")
+  local projected = SourcePlan.project(plan)
+  Assert.deepEqual(
+    projected.messageBankIds,
+    FieldMessageCompiler.requiredBankIds(),
+    "projected banks stay authoritative"
+  )
+  Assert.deepEqual(
+    projected.mapDataIds,
+    FieldMapDataCompiler.supportedMapIds(),
+    "projected records span the static membership"
+  )
+  Assert.deepEqual(projected.mapIds, { 7, 9 }, "projected maps stay as narrow as the visual world")
+  Assert.deepEqual(projected.audioBankIds, { 2, 5 }, "projected audio banks follow the source inventory")
+  Assert.deepEqual(projected.scriptMemberIds, { 4, 6 }, "projected script members follow the source inventory")
+  local supported = FieldMapDataCompiler.supportedMapIds()
+  local outsideWorld = nil
+  for _, mapId in ipairs(supported) do
+    if mapId ~= 7 and mapId ~= 9 then
+      outsideWorld = mapId
+      break
+    end
+  end
+  Assert.notNil(outsideWorld, "the static membership extends beyond the fixture world")
+  Assert.isTrue(
+    contains(projected.mapDataIds, outsideWorld),
+    "a supported record outside the visual world stays projected"
+  )
+  Assert.isTrue(projected.indexBundle == plan.fieldCellIndexBundle, "the index bundle is borrowed read-only")
+  Assert.isTrue(projected.scriptPlan == plan.scriptPlan, "the script plan is borrowed read-only")
+  Assert.isTrue(projected.audioPlan == plan.audioPlan, "the audio plan is borrowed read-only")
+  Assert.isTrue(projected.world == plan.world, "the world is borrowed read-only")
+  Assert.isTrue(projected.mapCellKeys == plan.mapCellKeys, "the cell keys are borrowed read-only")
+  Assert.isNil(projected.iconPageIds, "page membership stays unknown until layout adoption")
+  Assert.isNil(projected.portraitPageIds, "page membership stays unknown until layout adoption")
+  Assert.isNil(projected.presentation, "page membership stays unknown until layout adoption")
+  local again = SourcePlan.project(plan)
+  Assert.deepEqual(again, projected, "the projection is deterministic")
+  Assert.isTrue(again ~= projected, "each projection owns its top-level view")
+  Assert.isTrue(again.audioBankIds ~= projected.audioBankIds, "derived identity arrays are fresh per call")
+  local cacheFs = CacheFs.forVersion("heartgold", FakeCache.new())
+  stageSynthetic(cacheFs, generation)
+  MonCacheWriter.writeCatalog(cacheFs, minimalCatalog(), "projection-catalog-marker")
+  writeMonReceipt(cacheFs, generation, "mon-catalog", "global", "projection-catalog-marker")
+  MonCacheWriter.writeLayout(
+    cacheFs,
+    layoutManifest(MonCache.ICON_MANIFEST_SCHEMA, MonCache.iconPagePath(0), 256, 128, 32),
+    layoutManifest(MonCache.PORTRAIT_MANIFEST_SCHEMA, MonCache.portraitPagePath(0), 640, 320, 80),
+    "projection-layout-marker",
+    { iconPages = { [0] = iconPagePlan(0) }, portraitPages = { [0] = portraitPagePlan(0) } },
+    generation
+  )
+  writeMonReceipt(cacheFs, generation, "mon-layout", "global", "projection-layout-marker")
+  local reread = assert(SourcePlan.read(cacheFs, identity(generation)), "the staged inventory reads back")
+  local published, publishedReason = ArtifactJobs.publishedPlans(cacheFs, identity(generation))
+  Assert.notNil(published, "the consumer path publishes plans: " .. tostring(publishedReason))
+  local consumerPlans = assert(published, "the consumer path publishes plans")
+  local base = SourcePlan.project(reread)
+  Assert.deepEqual(consumerPlans.messageBankIds, base.messageBankIds, "the consumer path shares the projected banks")
+  Assert.deepEqual(
+    consumerPlans.audioBankIds,
+    base.audioBankIds,
+    "the consumer path shares the projected audio banks"
+  )
+  Assert.deepEqual(
+    consumerPlans.scriptMemberIds,
+    base.scriptMemberIds,
+    "the consumer path shares the projected script members"
+  )
+  Assert.deepEqual(consumerPlans.mapDataIds, base.mapDataIds, "the consumer path shares the projected records")
+  Assert.deepEqual(consumerPlans.mapIds, base.mapIds, "the consumer path shares the projected maps")
+  Assert.deepEqual(consumerPlans.iconPageIds, { 0 }, "layout adoption augments the base view with icon pages")
+  Assert.deepEqual(
+    consumerPlans.portraitPageIds,
+    { 0 },
+    "layout adoption augments the base view with portrait pages"
+  )
+end
+
 return { tests = T }

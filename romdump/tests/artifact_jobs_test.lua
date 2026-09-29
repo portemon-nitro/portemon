@@ -373,6 +373,52 @@ function T.worker_source_plan_memo_reads_once_per_generation()
   end
 end
 
+-- The worker memo shares one base projection per generation: repeated
+-- lookups return the same projected view, a failed read carries no
+-- projection but repairs under the same identity, and an identity
+-- change reads and projects its own record.
+function T.worker_source_plan_context_shares_one_base_projection()
+  local SourcePlan = require("romdump.src.build.SourcePlan")
+  local producerId = "d" .. string.rep("3", 64)
+  local generation = "projection-memo-generation"
+  local cacheFs = warmSourceCache(generation, producerId)
+  local context = { cacheFs = cacheFs, versionId = "heartgold" }
+  local identifier = { versionId = "heartgold", generationId = generation, producerId = producerId }
+  local first, firstReason, firstBase = ArtifactJobs.sourcePlanForContext(context, identifier)
+  Assert.notNil(first, "the warmed inventory resolves")
+  Assert.isNil(firstReason, "the warmed resolution names no rejection")
+  Assert.notNil(firstBase, "the warmed resolution carries its base projection")
+  Assert.deepEqual(firstBase.audioBankIds, {}, "the projection carries the warmed audio membership")
+  Assert.deepEqual(firstBase.scriptMemberIds, { 1 }, "the projection carries the warmed script membership")
+  Assert.deepEqual(firstBase.mapIds, { 7 }, "the projection carries the warmed visual maps")
+  Assert.isNil(firstBase.iconPageIds, "page membership stays unknown until adoption")
+  Assert.isNil(firstBase.portraitPageIds, "page membership stays unknown until adoption")
+  Assert.isNil(firstBase.presentation, "page membership stays unknown until adoption")
+  local second, _, secondBase = ArtifactJobs.sourcePlanForContext(context, identifier)
+  Assert.isTrue(second == first, "the memo shares its record")
+  Assert.isTrue(secondBase == firstBase, "the memo shares its projection without rereading")
+  local fresh = { cacheFs = CacheFs.forVersion("heartgold", FakeCache.new()), versionId = "heartgold" }
+  fresh.cacheFs:writeLua(SourcePlan.PATH, { bogus = true })
+  local broken, brokenReason, brokenBase = ArtifactJobs.sourcePlanForContext(fresh, identifier)
+  Assert.isNil(broken, "a corrupted inventory stays cold")
+  Assert.notNil(brokenReason, "the corrupted read names its cause")
+  Assert.isNil(brokenBase, "a failed read carries no projection")
+  fresh.cacheFs = cacheFs
+  local repaired, _, repairedBase = ArtifactJobs.sourcePlanForContext(fresh, identifier)
+  Assert.notNil(repaired, "the repaired inventory resolves under the same identity")
+  Assert.notNil(repairedBase, "the repaired read carries its base projection")
+  Assert.deepEqual(repairedBase.mapIds, { 7 }, "the repair projects the current record")
+  local rotatedCache = warmSourceCache("projection-memo-next", producerId)
+  fresh.cacheFs = rotatedCache
+  local rotatedIdentifier =
+    { versionId = "heartgold", generationId = "projection-memo-next", producerId = producerId }
+  local rotated, _, rotatedBase = ArtifactJobs.sourcePlanForContext(fresh, rotatedIdentifier)
+  Assert.notNil(rotated, "a replaced generation reads its own record")
+  Assert.isTrue(rotated ~= repaired, "an identity change never borrows the previous record")
+  Assert.notNil(rotatedBase, "an identity change projects its own view")
+  Assert.isTrue(rotatedBase ~= repairedBase, "an identity change never borrows the previous projection")
+end
+
 -- A missing Oak audio reference fails loudly naming the semantic
 -- reference instead of silently omitting its bank.
 function T.new_game_intro_names_its_missing_audio_reference()
