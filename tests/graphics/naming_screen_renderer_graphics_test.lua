@@ -271,7 +271,10 @@ function T.source_object_layers_and_player_subject_render_from_the_manifest()
     cursor.origin.y + (3 - 2) * cursor.stepY + cursorFrame.offset.y,
     "the keyboard cursor"
   )
-  for index = 0, 2 do
+  -- Two glyphs are entered, so slots 0 and 1 keep static chrome while
+  -- the third slot carries only the first generated selected-slot frame
+  -- at its source origin.
+  for index = 0, 1 do
     assertDrawnOnce(
       graphics.draws,
       naming.entrySlots.normal.image,
@@ -280,8 +283,11 @@ function T.source_object_layers_and_player_subject_render_from_the_manifest()
       "entry slot " .. index
     )
   end
-  -- Two glyphs are entered, so the third slot carries the first generated
-  -- selected-slot frame at its source origin.
+  Assert.equal(
+    #drawAt(graphics.draws, naming.entrySlots.normal.image),
+    2,
+    "the active empty slot draws no static chrome"
+  )
   local selected = naming.entrySlots.selected
   local selectedFrame = selected.frames[1]
   assertDrawnOnce(
@@ -336,6 +342,69 @@ function T.home_control_focus_uses_the_matching_cursor_variant()
     variant.anchor.y + variantFrame.offset.y,
     "the Back home-cursor variant"
   )
+end
+
+function T.active_slot_replaces_static_chrome_with_selected_animation()
+  local manifest = FieldUiFixture.namingSemanticsManifest()
+  local naming = manifest.namingScreen
+  local normalPath = naming.entrySlots.normal.image
+  local selected = naming.entrySlots.selected
+  local selectedPath = manifest.assets[selected.frames[1].asset].image
+  local function render(view)
+    local graphics = FakeGraphics.new()
+    local renderer = NamingScreenRenderer.new({
+      graphics = graphics,
+      text = textFake({}),
+      drawSubject = function() end,
+      manifest = manifest,
+      imageLoader = imageLoaderFake({}),
+    })
+    local layout = NamingScreenLayout.compute({ x = 0, y = 0, width = 256, height = 192 })
+    renderer:draw(view, layout)
+    renderer:dispose()
+    return graphics.draws
+  end
+  local function normalDrawsAt(draws, x)
+    local found = {}
+    for _, draw in ipairs(draws) do
+      if type(draw.image) == "table" and draw.image.path == normalPath and draw.x == x then
+        found[#found + 1] = draw
+      end
+    end
+    return found
+  end
+  local function selectedDraws(draws)
+    local found = {}
+    for _, draw in ipairs(draws) do
+      if type(draw.image) == "table" and draw.image.path == selectedPath then
+        found[#found + 1] = draw
+      end
+    end
+    return found
+  end
+  -- Empty name: slot 0 carries only the selected animation.
+  local empty = render(snapshot({ text = "", maxLength = 7 }))
+  Assert.equal(#normalDrawsAt(empty, naming.entrySlots.origin.x), 0, "the active empty slot draws no static chrome")
+  Assert.equal(#selectedDraws(empty), 1, "the active empty slot draws its selected animation once")
+  Assert.equal(
+    #drawAt(empty, normalPath),
+    6,
+    "every non-active slot keeps its static chrome"
+  )
+  -- Partially filled name: the next empty slot carries only the selected animation.
+  local partial = render(snapshot({ text = "AB", maxLength = 7 }))
+  local activeX = naming.entrySlots.origin.x + 2 * naming.entrySlots.stepX
+  Assert.equal(#normalDrawsAt(partial, activeX), 0, "the next empty slot draws no static chrome")
+  Assert.equal(#selectedDraws(partial), 1, "the next empty slot draws its selected animation once")
+  Assert.equal(
+    #drawAt(partial, normalPath),
+    6,
+    "every filled and later slot keeps its static chrome"
+  )
+  -- Full name: every slot is static and no selected slot remains.
+  local full = render(snapshot({ text = "ABCDEFG", maxLength = 7 }))
+  Assert.equal(#drawAt(full, normalPath), 7, "a full name keeps every static slot")
+  Assert.equal(#selectedDraws(full), 0, "a full name draws no selected empty slot")
 end
 
 function T.active_entry_slot_uses_its_generated_animation_clock()

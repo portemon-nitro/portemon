@@ -459,11 +459,18 @@ function NamingScreenRenderer:draw(view, layout)
       and type(presentation.glowAngle) == "number",
     "naming draw requires snapshot presentation clocks"
   )
-  for index = 0, (view.maxLength or entered) - 1 do
-    local record = slots.normal
-    drawVisual("slot:normal", slots.origin.x + index * slots.stepX + record.offset.x, slots.origin.y + record.offset.y)
+  local maxLength = view.maxLength or entered
+  for index = 0, maxLength - 1 do
+    if index ~= entered or entered >= maxLength then
+      local record = slots.normal
+      drawVisual(
+        "slot:normal",
+        slots.origin.x + index * slots.stepX + record.offset.x,
+        slots.origin.y + record.offset.y
+      )
+    end
   end
-  if entered < (view.maxLength or entered) then
+  if entered < maxLength then
     local record = slots.selected
     local frame = record.frames[resolveFrameIndex(record, presentation.entrySlotTick)]
     self:_drawAnimatedFrame(record, frame, slots.origin.x + entered * slots.stepX, slots.origin.y, nil)
