@@ -982,6 +982,36 @@ function T.narc8_move_summary_sources_decode_and_resolve_every_semantic_key(romF
   Assert.equal(categoryCount, 3, "every move category resolves one visual")
 end
 
+-- The action face compiles from its audited selector into a nonempty
+-- anchored visual: animation 22 with palette 8 must rasterize to an image
+-- that carries opaque source content and fits the canonical pane. This
+-- evidence gate runs before any producer correction is considered; selector
+-- changes stay unauthorized while it passes.
+function T.action_face_compiles_nonempty_from_its_audited_selector(romFs, versionId)
+  local selector = BagSources.spriteStates.actionFace
+  Assert.equal(selector.animation, 22, "the action face keeps its audited source animation")
+  Assert.equal(selector.palette, 8, "the action face keeps its audited source palette")
+  local bundle = bundleFor(romFs, versionId)
+  local actionMenu =
+    assert(bundle.manifest.interactive.overlays.actionMenu, "the compiled bundle publishes its action menu")
+  local face = assert(actionMenu.face, "the compiled bundle publishes its action face")
+  local width, height, rgba =
+    PngReader.rgba(assert(bundle.assets[face.image], "the action face bytes must compile"))
+  Assert.equal(width, face.width, "the action face image keeps its compiled width")
+  Assert.equal(height, face.height, "the action face image keeps its compiled height")
+  Assert.isTrue(width > 0 and height > 0, "the action face has a nonempty extent")
+  Assert.isTrue(width <= 256 and height <= 192, "the action face fits inside the canonical pane")
+  local opaque = 0
+  for y = 0, height - 1 do
+    for x = 0, width - 1 do
+      if string.byte(rgba, (y * width + x) * 4 + 4) ~= 0 then
+        opaque = opaque + 1
+      end
+    end
+  end
+  Assert.isTrue(opaque > 0, "the action face carries opaque source content")
+end
+
 local suite = RomSuite.fromFacts(T)
 suite.metadata.capabilities = { "rom_dump" }
 return suite

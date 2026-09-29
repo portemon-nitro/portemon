@@ -573,6 +573,31 @@ local function pocketIndex(presentation, pocketKey)
   error("the pocket has no generated tab", 0)
 end
 
+-- Which browse dynamic layers stay visible in each presentation state.
+-- Browsing keeps the full list chrome; the description overlay keeps the
+-- browse base it covers; move selection keeps the item cells that identify
+-- the target while hiding page, cancel, and browse focus chrome; every
+-- other modal state draws only its own layers over its state background.
+local INTERACTIVE_LAYERS = {
+  browsing = { cells = true, browseFocus = true, moveFocus = false, page = true, cancelLabel = true },
+  description_overlay = { cells = true, browseFocus = true, moveFocus = false, page = true, cancelLabel = true },
+  move_select = { cells = true, browseFocus = false, moveFocus = true, page = false, cancelLabel = false },
+  action_menu = { cells = false, browseFocus = false, moveFocus = false, page = false, cancelLabel = false },
+  toss_quantity = { cells = false, browseFocus = false, moveFocus = false, page = false, cancelLabel = false },
+  toss_confirm = { cells = false, browseFocus = false, moveFocus = false, page = false, cancelLabel = false },
+  toss_ack = { cells = false, browseFocus = false, moveFocus = false, page = false, cancelLabel = false },
+}
+
+-- Resolves the visible dynamic layers for a presentation state. An unknown
+-- state is a composition error, never an empty or borrowed screen.
+---@param state string
+---@return { cells: boolean, browseFocus: boolean, moveFocus: boolean, page: boolean, cancelLabel: boolean }
+local function interactiveLayers(state)
+  local layers = INTERACTIVE_LAYERS[state]
+  assert(layers ~= nil, "the bag renderer draws a known lower-pane state")
+  return layers
+end
+
 -- Draws the generated item focus visual at a one-based visible cell.
 ---@param cell integer
 function BagRenderer:_drawItemFocusCell(cell)
@@ -592,20 +617,8 @@ end
 -- focused.
 ---@param presentation table<string, unknown>
 function BagRenderer:_drawCellFocus(presentation)
-  local state = assert(presentation.state, "the bag presentation names its state")
-  if state ~= "action_menu" and state ~= "move_select" then
-    if presentation.focus == "items" then
-      local visibleIndex = presentation.focusedVisibleIndex
-      if type(visibleIndex) == "number" then
-        local cell = visibleIndex + 1
-        if cell >= 1 and cell <= 6 then
-          self:_drawItemFocusCell(cell)
-        end
-      end
-    end
-    return
-  end
-  if state == "move_select" then
+  local layers = interactiveLayers(assert(presentation.state, "the bag presentation names its state"))
+  if layers.moveFocus then
     local moveTarget = assert(presentation.moveTarget, "move selection carries its target")
     local start = assert(presentation.visibleStart, "the presentation carries its window start")
     assert(type(moveTarget) == "number" and type(start) == "number", "move target indexes are numbers")
@@ -614,6 +627,19 @@ function BagRenderer:_drawCellFocus(presentation)
       return
     end
     self:_drawItemFocusCell(cell)
+    return
+  end
+  if not layers.browseFocus then
+    return
+  end
+  if presentation.focus == "items" then
+    local visibleIndex = presentation.focusedVisibleIndex
+    if type(visibleIndex) == "number" then
+      local cell = visibleIndex + 1
+      if cell >= 1 and cell <= 6 then
+        self:_drawItemFocusCell(cell)
+      end
+    end
   end
 end
 
@@ -623,8 +649,8 @@ end
 -- the tab strip is semantically focused.
 ---@param presentation table<string, unknown>
 function BagRenderer:_drawTabFocus(presentation)
-  local state = assert(presentation.state, "the bag presentation names its state")
-  if state == "action_menu" or state == "move_select" then
+  local layers = interactiveLayers(assert(presentation.state, "the bag presentation names its state"))
+  if not layers.browseFocus then
     return
   end
   if presentation.focus ~= "tabs" then
@@ -645,8 +671,8 @@ end
 -- beneath the text labels drawn later.
 ---@param presentation table<string, unknown>
 function BagRenderer:_drawChromeFocus(presentation)
-  local state = assert(presentation.state, "the bag presentation names its state")
-  if state == "action_menu" or state == "move_select" then
+  local layers = interactiveLayers(assert(presentation.state, "the bag presentation names its state"))
+  if not layers.browseFocus then
     return
   end
   if presentation.focus ~= "cancel" then
@@ -685,30 +711,23 @@ function BagRenderer:_drawActionFocus(presentation)
   drawVisual(self._graphics, assert(self._visuals["focus:actions"]), target.x, target.y)
 end
 
+-- Draws the six-cell item grid: icons at their generated centers, names
+-- and quantities at their text-window anchors, and registration badges
+-- above the icons they overlap. Only states whose visibility policy owns
+-- the list call this; other states leave the cells off their backgrounds.
 ---@param presentation table<string, unknown>
 ---@param icons table<string, unknown>
----@param content table<string, unknown> the canonical logical content selecting compact fallbacks
+---@param iconImage love.Image
 ---@param palettes { item: table<string, unknown>, count: table<string, unknown>, description: table<string, unknown> }
-function BagRenderer:_drawInteractive(presentation, icons, content, palettes)
+function BagRenderer:_drawItemCells(presentation, icons, iconImage, palettes)
   local graphics = self._graphics
-  local manifest = self._manifest
-  local interactive = manifest.interactive
-  local state = assert(presentation.state, "the bag presentation names its state")
-  local pocket = assert(presentation.pocket, "the bag presentation names its pocket")
-  self:_drawStateBackground(state, pocket, presentation)
-  drawVisual(graphics, assert(self._visuals["strip:" .. pocket]), 0, 0)
-  self:_drawTabFocus(presentation)
-  -- The movable item cursor draws beneath the cell content it frames, so
-  -- icons, names, quantities, and registration markers stay visible above it.
-  self:_drawCellFocus(presentation)
-  local slots = interactive.itemSlots.slots
+  local slots = self._manifest.interactive.itemSlots.slots
   local visibleSlots = assert(presentation.visibleSlots, "the bag presentation lists its visible cells")
   assert(type(visibleSlots) == "table" and #visibleSlots == 6, "the presentation carries six visible cells")
   local registrationOffset = assert(
-    interactive.itemSlots.registration and interactive.itemSlots.registration.offset,
+    self._manifest.interactive.itemSlots.registration and self._manifest.interactive.itemSlots.registration.offset,
     "the registration markers carry their generated offset"
   )
-  local iconImage = icons:image()
   for index = 1, 6 do
     local cell = visibleSlots[index]
     local slot = assert(slots[index], "the presentation carries six generated cells")
@@ -754,30 +773,69 @@ function BagRenderer:_drawInteractive(presentation, icons, content, palettes)
       )
     end
   end
+end
+
+---@param presentation table<string, unknown>
+---@param icons table<string, unknown>
+---@param content table<string, unknown> the canonical logical content selecting compact fallbacks
+---@param palettes { item: table<string, unknown>, count: table<string, unknown>, description: table<string, unknown> }
+function BagRenderer:_drawInteractive(presentation, icons, content, palettes)
+  local graphics = self._graphics
+  local manifest = self._manifest
+  local interactive = manifest.interactive
+  local state = assert(presentation.state, "the bag presentation names its state")
+  local pocket = assert(presentation.pocket, "the bag presentation names its pocket")
+  -- The state background always paints first; the policy lookup is
+  -- exhaustive, so an unknown state fails before borrowing other layers.
+  local layers = interactiveLayers(state)
+  self:_drawStateBackground(state, pocket, presentation)
+  drawVisual(graphics, assert(self._visuals["strip:" .. pocket]), 0, 0)
+  self:_drawTabFocus(presentation)
+  -- The movable item cursor draws beneath the cell content it frames, so
+  -- icons, names, quantities, and registration markers stay visible above it.
+  self:_drawCellFocus(presentation)
+  local iconImage = icons:image()
+  -- Only states that own the list paint cells, icons, names, quantities,
+  -- and registration markers; other states cover the list with their own
+  -- background and layers instead.
+  if layers.cells then
+    self:_drawItemCells(presentation, icons, iconImage, palettes)
+  end
   -- Cancel focus sits above the grid art it frames; its target never
   -- overlaps item content.
   self:_drawChromeFocus(presentation)
   local page = assert(presentation.page, "the bag presentation derives its page")
-  setColor(graphics, WHITE)
-  self:_drawCenteredWithPalette(page.current .. "/" .. page.count, interactive.pageIndicator.rect, palettes.count)
+  if layers.page then
+    setColor(graphics, WHITE)
+    self:_drawCenteredWithPalette(page.current .. "/" .. page.count, interactive.pageIndicator.rect, palettes.count)
+  end
   local cancelLabel = assert(interactive.text.actions.cancel, "the bag manifest carries its cancel label")
-  -- Cancel chrome lives in the selected background pixels; only the label
-  -- prints, placed by the label window rather than the control rect.
-  local cancelGeometry = assert(interactive.cancel, "the bag manifest must carry its cancel geometry")
-  local labelRect = assert(cancelGeometry.labelRect, "the bag manifest carries its cancel label area")
-  self:_drawCancelLabel(cancelLabel, labelRect, palettes.description)
-  if presentation.state == "description_overlay" and content.heroVisible == false then
-    self:_drawDescriptionOverlay(presentation, icons, iconImage)
-  elseif presentation.state == "action_menu" then
+  if layers.cancelLabel then
+    -- Cancel chrome lives in the selected background pixels; only the label
+    -- prints, placed by the label window rather than the control rect.
+    local cancelGeometry = assert(interactive.cancel, "the bag manifest must carry its cancel geometry")
+    local labelRect = assert(cancelGeometry.labelRect, "the bag manifest carries its cancel label area")
+    self:_drawCancelLabel(cancelLabel, labelRect, palettes.description)
+  end
+  if state == "description_overlay" then
+    if content.heroVisible == false then
+      self:_drawDescriptionOverlay(presentation, icons, iconImage)
+    end
+  elseif state == "action_menu" then
     self:_drawActionFaces(presentation)
     self:_drawActionFocus(presentation)
     self:_drawActionLabels(presentation)
-  elseif presentation.state == "toss_quantity" then
+  elseif state == "toss_quantity" then
     self:_drawQuantityState(presentation)
-  elseif presentation.state == "toss_confirm" then
+  elseif state == "toss_confirm" then
     self:_drawTossPrompt(presentation)
-  elseif presentation.state == "move_select" then
+  elseif state == "toss_ack" then
+    -- The acknowledgement carries no interactive widgets: the result text
+    -- rides the hero and constrained contextual layers below.
+  elseif state == "move_select" then
     self:_drawMoveHighlight(presentation)
+  elseif state ~= "browsing" then
+    error("the bag renderer draws a known lower-pane state", 0)
   end
   self:_drawConstrainedContextual(presentation, content, palettes.description)
 end

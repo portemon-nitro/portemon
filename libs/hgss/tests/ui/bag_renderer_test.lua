@@ -2736,4 +2736,169 @@ function T.toss_ack_keeps_the_singular_name_for_one_copy()
   draw:release()
 end
 
+-- Move selection keeps the item cells that identify the target while
+-- hiding the surrounding list chrome: names print, the page and cancel
+-- labels stay off, tab and cancel focus never paint, browse item focus
+-- never follows the browse cursor, and the move target carries the focus
+-- with its confirm affordance.
+function T.move_select_keeps_cells_but_hides_browse_chrome()
+  local graphics = FakeGraphics({ imageSizes = IMAGE_SIZES })
+  local content = text()
+  local manifested = manifest()
+  local draw = BagRenderer.new({
+    cacheFs = seedCache(),
+    manifest = manifested,
+    promptManifest = promptManifest(),
+    text = content,
+    graphics = graphics,
+    heroRenderer = heroSpy(nil),
+  })
+  local calls = { quadFor = 0, dimensions = 0, keys = {} }
+  local record = status({
+    state = "move_select",
+    focus = "items",
+    focusedVisibleIndex = 1,
+    visibleStart = 0,
+    moveTarget = 0,
+  })
+  record.visibleSlots[1].registrationSlot = 1
+  draw:draw(record, plan(true), { icons = icons(calls) })
+  Assert.isTrue(printedText(content, "POTION"), "move selection keeps the item cells that identify the target")
+  Assert.isTrue(calls.quadFor >= 1, "move selection still resolves item icons")
+  Assert.isTrue(
+    wasDrawn(graphics, draw._images.registrationSlot1),
+    "move selection keeps the registration marker with its cell"
+  )
+  Assert.isFalse(printedText(content, "1/1"), "move selection hides the browse page indicator")
+  Assert.isFalse(printedText(content, "BACK OUT"), "move selection hides the generic cancel label")
+  local itemFocus = manifested.interactive.focus.items
+  local browseX, browseY = focusOrigin(itemFocus, itemFocus.targets[2])
+  Assert.isFalse(staticDrawnAt(graphics, browseX, browseY), "move selection never follows the browse cursor")
+  local targetX, targetY = focusOrigin(itemFocus, itemFocus.targets[1])
+  Assert.isTrue(staticDrawnAt(graphics, targetX, targetY), "the move target carries the item focus visual")
+  local actionSlots = manifested.interactive.overlays.actionMenu.slots
+  Assert.isTrue(textInRect(content, "YES", actionSlots[3].textRect), "move selection keeps its confirm affordance")
+  Assert.equal(graphics.pushDepth(), 0, "the transform stack stays balanced")
+  draw:release()
+
+  local tabbed = FakeGraphics({ imageSizes = IMAGE_SIZES })
+  local tabDraw = BagRenderer.new({
+    cacheFs = seedCache(),
+    manifest = manifested,
+    promptManifest = promptManifest(),
+    text = text(),
+    graphics = tabbed,
+    heroRenderer = heroSpy(nil),
+  })
+  tabDraw:draw(
+    status({ state = "move_select", focus = "tabs", tabFocusPocket = "medicine", visibleStart = 0, moveTarget = 0 }),
+    plan(true),
+    { icons = icons() }
+  )
+  local tabFocus = manifested.interactive.focus.tabs
+  local tabX, tabY = focusOrigin(tabFocus, tabFocus.targets[2])
+  Assert.isFalse(staticDrawnAt(tabbed, tabX, tabY), "move selection hides the tab focus cursor")
+  tabDraw:release()
+
+  local cancelled = FakeGraphics({ imageSizes = IMAGE_SIZES })
+  local cancelDraw = BagRenderer.new({
+    cacheFs = seedCache(),
+    manifest = manifested,
+    promptManifest = promptManifest(),
+    text = text(),
+    graphics = cancelled,
+    heroRenderer = heroSpy(nil),
+  })
+  cancelDraw:draw(
+    status({ state = "move_select", focus = "cancel", visibleStart = 0, moveTarget = 0 }),
+    plan(true),
+    { icons = icons() }
+  )
+  local chrome = manifested.interactive.focus.cancel
+  local chromeX, chromeY = focusOrigin(chrome, chrome.target)
+  Assert.isFalse(staticDrawnAt(cancelled, chromeX, chromeY), "move selection hides the cancel focus cursor")
+  cancelDraw:release()
+end
+
+-- The description overlay keeps the browse base it covers: cells, page,
+-- cancel, and browse focus all paint in two-pane mode while the overlay
+-- panel itself waits for the compact single-pane layout.
+function T.description_overlay_keeps_the_browse_base_layers()
+  local graphics = FakeGraphics({ imageSizes = IMAGE_SIZES })
+  local content = text()
+  local manifested = manifest()
+  local draw = BagRenderer.new({
+    cacheFs = seedCache(),
+    manifest = manifested,
+    promptManifest = promptManifest(),
+    text = content,
+    graphics = graphics,
+    heroRenderer = heroSpy(nil),
+  })
+  draw:draw(status({ state = "description_overlay" }), plan(true), { icons = icons() })
+  Assert.isTrue(printedText(content, "POTION"), "the overlay keeps the browse cells it covers")
+  Assert.isTrue(printedText(content, "1/1"), "the overlay keeps the browse page indicator")
+  Assert.isTrue(printedText(content, "BACK OUT"), "the overlay keeps the generic cancel label")
+  local itemFocus = manifested.interactive.focus.items
+  local focusX, focusY = focusOrigin(itemFocus, itemFocus.targets[1])
+  Assert.isTrue(staticDrawnAt(graphics, focusX, focusY), "the overlay keeps the browse item focus")
+  Assert.equal(fillCount(graphics), 0, "the two-pane overlay adds no fallback panel of its own")
+  Assert.equal(graphics.pushDepth(), 0, "the transform stack stays balanced")
+  draw:release()
+end
+
+-- The acknowledgement owns no interactive widgets: no cells, icons, page,
+-- cancel label, or prompt rows reach the lower pane while the generated
+-- confirmation background and result text still present the outcome.
+function T.toss_ack_hides_interactive_widgets_but_keeps_its_result()
+  local graphics = FakeGraphics({ imageSizes = IMAGE_SIZES })
+  local content = text()
+  local calls = { quadFor = 0, dimensions = 0, keys = {} }
+  local draw = BagRenderer.new({
+    cacheFs = seedCache(),
+    manifest = manifest(),
+    promptManifest = promptManifest(),
+    text = content,
+    graphics = graphics,
+    heroRenderer = heroSpy(nil),
+  })
+  local record = status({ state = "toss_ack", quantity = 2, quantityMax = 5 })
+  record.selected = ackSelected("POTION", "POTIONS", 2)
+  draw:draw(record, plan(true), { icons = icons(calls) })
+  Assert.equal(calls.quadFor, 0, "the acknowledgement resolves no item icons")
+  Assert.isFalse(printedText(content, "POTION"), "the acknowledgement draws no item cells")
+  Assert.isFalse(printedText(content, "1/1"), "the acknowledgement draws no page indicator")
+  Assert.isFalse(printedText(content, "BACK OUT"), "the acknowledgement draws no cancel label")
+  Assert.isTrue(
+    wasDrawn(graphics, draw._images["background:confirmation:balls"]),
+    "the acknowledgement keeps its confirmation background"
+  )
+  local joined = joinedText(content)
+  Assert.isTrue(
+    joined:find("Threw away 2 POTIONS.", 1, true) ~= nil,
+    "the acknowledgement still presents its generated result text"
+  )
+  Assert.equal(graphics.pushDepth(), 0, "the transform stack stays balanced")
+  draw:release()
+end
+
+-- An unknown lower-pane state is a composition error, never an empty or
+-- borrowed screen.
+function T.unknown_interactive_state_is_a_composition_error()
+  local graphics = FakeGraphics({ imageSizes = IMAGE_SIZES })
+  local draw = BagRenderer.new({
+    cacheFs = seedCache(),
+    manifest = manifest(),
+    promptManifest = promptManifest(),
+    text = text(),
+    graphics = graphics,
+    heroRenderer = heroSpy(nil),
+  })
+  Assert.throws(function()
+    draw:draw(status({ state = "nebula" }), plan(true), { icons = icons() })
+  end, "an unknown lower-pane state fails instead of borrowing another screen")
+  Assert.equal(graphics.pushDepth(), 0, "a failed pane draw restores every transform scope")
+  draw:release()
+end
+
 return { tests = T }

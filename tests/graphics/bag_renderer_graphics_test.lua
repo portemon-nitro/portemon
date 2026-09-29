@@ -2035,6 +2035,165 @@ function T.compact_description_uses_the_source_frame_with_three_lines_and_focus_
   end
 end
 
+-- Modal states never repaint browse-only dynamics: two renders that differ
+-- only in item cells, page indicator, registration marker, and browse focus
+-- are pixel-identical over the whole interaction pane once a modal state
+-- owns the surface, while the browsing state visibly carries those layers.
+function T.modal_states_exclude_browse_only_dynamics(scope, context)
+  local versions = readyVersions()
+  if #versions == 0 then
+    context:skip("the bag smoke needs a ready user-owned ROM with a derived cache")
+  end
+  for _, versionId in ipairs(versions) do
+    local cacheFs, manifest = manifestFor(versionId)
+    local layout = twoPaneLayout(manifest)
+    local firstIcon, secondIcon = iconKeys(cacheFs, versionId)
+    local owned = owners(cacheFs, manifest, scope, versionId)
+    local pocket, otherPocket = twoPockets(manifest, versionId)
+    local heroStatus = heroStatusAt(manifest, pocket, 6)
+    local interactiveFrame = interactiveFrameOf(layout, versionId)
+    local function variant(overrides, browse)
+      local record = presentation(firstIcon, secondIcon, heroStatus, overrides)
+      record.visibleSlots[1].name = browse.name
+      record.visibleSlots[1].quantity = browse.quantity
+      record.visibleSlots[1].icon = browse.icon
+      record.visibleSlots[1].registrationSlot = browse.registrationSlot
+      record.visibleSlots[2].icon = browse.otherIcon
+      record.page = { current = browse.page, count = 2 }
+      record.focusedVisibleIndex = browse.focusedVisibleIndex
+      record.focusedAbsoluteIndex = browse.focusedVisibleIndex
+      record.tabFocusPocket = browse.tabPocket
+      return render(scope, owned, record, layout)
+    end
+    local browseA = {
+      name = "Smoke A",
+      quantity = 5,
+      icon = firstIcon,
+      otherIcon = secondIcon,
+      registrationSlot = nil,
+      page = 1,
+      focusedVisibleIndex = 0,
+      tabPocket = pocket,
+    }
+    local browseB = {
+      name = "Smoke C",
+      quantity = 2,
+      icon = secondIcon,
+      otherIcon = firstIcon,
+      registrationSlot = 1,
+      page = 2,
+      focusedVisibleIndex = 1,
+      tabPocket = otherPocket,
+    }
+    local browsingA = variant(nil, browseA)
+    local browsingB = variant(nil, browseB)
+    Assert.isTrue(
+      regionDistance(browsingA, browsingB, interactiveFrame, 1) > 100,
+      versionId .. " the browsing state visibly carries item, page, marker, and focus layers"
+    )
+    local modalOverrides = {
+      {
+        name = "action menu",
+        overrides = { state = "action_menu", actions = { { id = "toss", slot = 1 } }, actionNode = 1 },
+      },
+      {
+        name = "quantity picker",
+        overrides = { state = "toss_quantity", quantity = 2, quantityMax = 5, quantityPressedControl = 3 },
+      },
+      {
+        name = "toss confirmation",
+        overrides = {
+          state = "toss_confirm",
+          quantity = 2,
+          yesNoPrompt = {
+            active = true,
+            selected = "yes",
+            selectionHighlighted = true,
+            buttons = {
+              yes = { x = 200, y = 48, width = 48, height = 32 },
+              no = { x = 200, y = 80, width = 48, height = 32 },
+            },
+          },
+        },
+      },
+      { name = "toss acknowledgement", overrides = { state = "toss_ack", quantity = 2 } },
+    }
+    for _, modal in ipairs(modalOverrides) do
+      local first = variant(modal.overrides, browseA)
+      local second = variant(modal.overrides, browseB)
+      Assert.equal(
+        regionDistance(first, second, interactiveFrame, 1),
+        0,
+        versionId .. " the " .. modal.name .. " carries no item, page, marker, or browse-focus pixels"
+      )
+    end
+  end
+end
+
+-- An offered action slot carries its generated action face in the final
+-- action-menu composition: the decoded face image contributes pixels at the
+-- generated slot center while focus and label drawing are held fixed.
+function T.offered_action_slot_carries_its_action_face(scope, context)
+  local versions = readyVersions()
+  if #versions == 0 then
+    context:skip("the bag smoke needs a ready user-owned ROM with a derived cache")
+  end
+  for _, versionId in ipairs(versions) do
+    local cacheFs, manifest = manifestFor(versionId)
+    local layout = twoPaneLayout(manifest)
+    local firstIcon, secondIcon = iconKeys(cacheFs, versionId)
+    local owned = owners(cacheFs, manifest, scope, versionId)
+    local pocket = twoPockets(manifest, versionId)
+    local heroStatus = heroStatusAt(manifest, pocket, 6)
+    local interactiveFrame = interactiveFrameOf(layout, versionId)
+    local menu = render(
+      scope,
+      owned,
+      presentation(firstIcon, secondIcon, heroStatus, {
+        state = "action_menu",
+        actions = { { id = "toss", slot = 1 } },
+        actionNode = 1,
+      }),
+      layout
+    )
+    local actionMenu =
+      assert(manifest.interactive.overlays.actionMenu, versionId .. " carries its generated action menu")
+    local faceDecl = assert(actionMenu.face, versionId .. " carries its generated action face")
+    local face = decodeImage(scope, cacheFs, faceDecl.image, versionId .. " action face")
+    local slots = assert(actionMenu.slots, versionId .. " carries its generated action slots")
+    Assert.equal(#slots, 4, versionId .. " carries four generated action slots")
+    local slot = assert(slots[2], versionId .. " carries the offered action slot")
+    local center = assert(slot.center, versionId .. " action slots carry centers")
+    local offset = faceDecl.offset or { x = 0, y = 0 }
+    local faceWidth, faceHeight = face:getWidth(), face:getHeight()
+    local textRect = assert(slot.textRect, versionId .. " action slots carry label rectangles")
+    local matched = 0
+    for y = 0, faceHeight - 1 do
+      for x = 0, faceWidth - 1 do
+        local fr, fg, fb, fa = face:getPixel(x, y)
+        if fa > 0.5 then
+          local canonicalX = center.x + (offset.x or 0) + x
+          local canonicalY = center.y + (offset.y or 0) + y
+          local inLabel = canonicalX >= textRect.x - 1
+            and canonicalX < textRect.x + textRect.width + 1
+            and canonicalY >= textRect.y - 1
+            and canonicalY < textRect.y + textRect.height + 1
+          if not inLabel then
+            local cr, cg, cb, ca =
+              menu:getPixel(interactiveFrame.x + canonicalX, interactiveFrame.y + canonicalY)
+            if quantize(cr) == quantize(fr) and quantize(cg) == quantize(fg) and quantize(cb) == quantize(fb) and quantize(
+              ca
+            ) == quantize(fa) then
+              matched = matched + 1
+            end
+          end
+        end
+      end
+    end
+    Assert.isTrue(matched > 50, versionId .. " the offered action slot carries action-face pixels")
+  end
+end
+
 local suite = GraphicsSmoke.suite(T)
 suite.metadata.capabilities = { "graphics", "rom_dump", "derived_assets" }
 suite.metadata.derivedAssets = { "bag:global", "items:global", "field-font:global", "field-ui:global" }
