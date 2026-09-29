@@ -125,26 +125,32 @@ end
 ---@param owner FieldPresentationResources
 ---@return table<string, FieldPresentationApplicationPresenter>
 local function buildPresenters(owner)
-  local function drawPokemon(presentation, _)
+  -- The party wait screen is reachable from either menu-flow host: the
+  -- bag opens party targets for Use/Give, so a pending party child must
+  -- render its wait text through the bag application too. Drawing never
+  -- invokes icon getters, so no draw ever acquires resources.
+  ---@param presentation table<string, unknown>?
+  ---@return boolean handled
+  local function drawPartyWait(presentation)
     local state = presentation and presentation.preparationState
-    if state == "pending" or state == "failed" then
-      -- The party view is still preparing its icon pages: render the wait
-      -- or the failure through the text renderer without invoking icon
-      -- getters, so no draw ever acquires resources.
-      local layout = assert(presentation and presentation.layout, "the party application presents its layout")
-      local frame = assert(layout.frame, "the party layout carries its frame")
-      local text = assert(owner.textRenderer, "party text renderer is unavailable")
-      if state == "pending" then
-        text:drawText("Preparing party icons...", frame.x + 8, frame.y + 8)
-      else
-        text:drawText("Party icons unavailable: " .. tostring(presentation.preparationError), frame.x + 8, frame.y + 8)
-      end
-      return
+    if state ~= "pending" and state ~= "failed" then
+      return false
     end
-    local status = assert(presentation, "the party application presents its status")
-    local plan = assert(status.presentation, "the party application presents its plan")
-    local hostGraphics = love and love.graphics
-    assert(type(hostGraphics) == "table", "party drawing requires its host graphics namespace")
+    local status = assert(presentation, "the party application presents its layout")
+    local layout = assert(status.layout, "the party application presents its layout")
+    local frame = assert(layout.frame, "the party layout carries its frame")
+    local text = assert(owner.textRenderer, "party text renderer is unavailable")
+    if state == "pending" then
+      text:drawText("Preparing party icons...", frame.x + 8, frame.y + 8)
+    else
+      text:drawText("Party icons unavailable: " .. tostring(status.preparationError), frame.x + 8, frame.y + 8)
+    end
+    return true
+  end
+  ---@param hostGraphics table<string, unknown>
+  ---@param status table<string, unknown>
+  ---@param plan table<string, unknown>
+  local function drawPartyPlan(hostGraphics, status, plan)
     ApplicationPresentation.draw(hostGraphics, {
       graphics = hostGraphics,
       partyScreenRenderer = assert(owner.partyScreenRenderer, "party screen renderer is unavailable"),
@@ -152,6 +158,48 @@ local function buildPresenters(owner)
       text = assert(owner.textRenderer, "party text renderer is unavailable"),
     }, status, plan)
     drawApplicationFrames(hostGraphics, owner, plan)
+  end
+  ---@param hostGraphics table<string, unknown>
+  ---@param status table<string, unknown>
+  ---@param plan table<string, unknown>
+  local function drawBagPlan(hostGraphics, status, plan)
+    ApplicationPresentation.draw(hostGraphics, {
+      graphics = hostGraphics,
+      bagRenderer = assert(owner.bagRenderer, "bag renderer is unavailable"),
+      heroRenderer = assert(owner.heroRenderer, "bag hero renderer is unavailable"),
+      icons = assert(owner.itemIconProvider, "bag icon provider is unavailable"),
+      text = assert(owner.textRenderer, "bag text renderer is unavailable"),
+    }, status, plan)
+    drawApplicationFrames(hostGraphics, owner, plan)
+  end
+  -- Both menu applications run the shared Bag/Party flow, whose single
+  -- live child follows the active page: the bag hosts party targets for
+  -- Use/Give, and the party hosts the bag picker for Give. Dispatch on
+  -- the resolved child plan, never the application id, so a cross-page
+  -- child draws through its own renderer with its own icon provider. A
+  -- plan outside the owned bag/party set is a composition error, never a
+  -- fallback to another application surface.
+  ---@param presentation table<string, unknown>?
+  ---@param applicationId string
+  local function drawMenuFlow(presentation, applicationId)
+    if drawPartyWait(presentation) then
+      return
+    end
+    local status = assert(presentation, "the " .. applicationId .. " application presents its status")
+    local plan = assert(status.presentation, "the " .. applicationId .. " application presents its plan")
+    local hostGraphics = love and love.graphics
+    assert(type(hostGraphics) == "table", applicationId .. " drawing requires its host graphics namespace")
+    local inputKey = assert(plan.inputKey, "the " .. applicationId .. " application presents its plan input key")
+    if inputKey == "bag" or inputKey == "bag-inactive" then
+      drawBagPlan(hostGraphics, status, plan)
+    elseif inputKey == "party" or inputKey == "party-inactive" then
+      drawPartyPlan(hostGraphics, status, plan)
+    else
+      error("the " .. applicationId .. " application cannot present plan " .. tostring(inputKey), 0)
+    end
+  end
+  local function drawPokemon(presentation, _)
+    drawMenuFlow(presentation, FieldApplicationIds.POKEMON)
   end
   local function drawTrainerCard(presentation, _)
     local status = assert(presentation, "the card application presents its status")
@@ -166,18 +214,7 @@ local function buildPresenters(owner)
     drawApplicationFrames(hostGraphics, owner, plan)
   end
   local function drawBag(presentation, _)
-    local status = assert(presentation, "the bag application presents its status")
-    local plan = assert(status.presentation, "the bag application presents its plan")
-    local hostGraphics = love and love.graphics
-    assert(type(hostGraphics) == "table", "bag drawing requires its host graphics namespace")
-    ApplicationPresentation.draw(hostGraphics, {
-      graphics = hostGraphics,
-      bagRenderer = assert(owner.bagRenderer, "bag renderer is unavailable"),
-      heroRenderer = assert(owner.heroRenderer, "bag hero renderer is unavailable"),
-      icons = assert(owner.itemIconProvider, "bag icon provider is unavailable"),
-      text = assert(owner.textRenderer, "bag text renderer is unavailable"),
-    }, status, plan)
-    drawApplicationFrames(hostGraphics, owner, plan)
+    drawMenuFlow(presentation, FieldApplicationIds.BAG)
   end
   return {
     [FieldApplicationIds.POKEMON] = drawPokemon,

@@ -363,15 +363,64 @@ function T.message_draws_its_window_text()
   Assert.isTrue(hasString(texts, "NO ENTRY"), "messages print through the generated font")
 end
 
+-- Production resolves detail panes to LayoutGeometry placements (frame,
+-- origin, scale, logical dimensions), never bare rects: the pane draws
+-- inside its LogicalSurface scope, so the background and the upper-screen
+-- anchors sit at the pane-local logical origin.
+function T.detail_pane_draws_in_pane_local_logical_coordinates()
+  local graphics = fakeGraphics()
+  local texts = {}
+  local renderer = newRenderer(graphics, stubText(texts))
+  local resolved = layout()
+  local placement = {
+    frame = { x = 64, y = 48, width = 512, height = 384 },
+    origin = { x = 64, y = 48 },
+    scale = 2,
+    logicalWidth = 256,
+    logicalHeight = 192,
+  }
+  local plan = {
+    panes = {
+      { id = "content", placement = placement, interactive = true },
+      { id = "detail", placement = placement, interactive = false },
+    },
+    frames = {},
+    content = resolved,
+    inputKey = "party",
+  }
+  local status = presentation({ cursorNode = 1 })
+  status.view.slots[1] = occupiedSlot(0)
+  status.view.slots[2] = occupiedSlot(1, { status = "burn", currentHp = 3, maxHp = 20 })
+  renderer:draw(status, plan, icons())
+  local background = nil
+  for _, rectangle in ipairs(graphics.rectangles) do
+    if rectangle.w == 256 and rectangle.h == 192 then
+      background = rectangle
+    end
+  end
+  Assert.notNil(background, "the detail pane paints its logical background")
+  Assert.equal(background.x, 0, "the detail background starts at the pane-local origin")
+  Assert.equal(background.y, 0, "the detail background starts at the pane-local origin")
+  Assert.isTrue(hasString(texts, "MON1"), "the detail pane names the cursor mon")
+  Assert.isTrue(hasString(texts, "BRN"), "the detail pane shows its status")
+end
+
 function T.detail_pane_draws_selected_facts_at_upper_anchors()
   local graphics = fakeGraphics()
   local texts = {}
   local renderer = newRenderer(graphics, stubText(texts))
   local resolved = layout()
+  local placement = {
+    frame = { x = 0, y = 0, width = 256, height = 192 },
+    origin = { x = 0, y = 0 },
+    scale = 1,
+    logicalWidth = 256,
+    logicalHeight = 192,
+  }
   local plan = {
     panes = {
-      { id = "content", placement = { x = 0, y = 0, width = 256, height = 192 }, interactive = true },
-      { id = "detail", placement = { x = 0, y = 0, width = 256, height = 192 }, interactive = false },
+      { id = "content", placement = placement, interactive = true },
+      { id = "detail", placement = placement, interactive = false },
     },
     frames = {},
     content = resolved,

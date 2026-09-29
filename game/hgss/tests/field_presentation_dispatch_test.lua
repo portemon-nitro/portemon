@@ -629,6 +629,127 @@ function T.party_wait_renders_without_icon_getters()
   end)
 end
 
+function T.bag_flow_party_target_wait_renders_without_icon_getters()
+  local sink, calls = {}, {}
+  withProductionComposition(sink, calls, compositionRuntime(), function(resources)
+    local frame = { x = 0, y = 0, width = 640, height = 480 }
+    resources:drawApplication(
+      FieldApplicationIds.BAG,
+      {
+        open = true,
+        root = "bag",
+        page = "party_give_target",
+        child = { preparationState = "pending", layout = { frame = frame } },
+      },
+      drawRuntime()
+    )
+    Assert.equal(#sink, 1, "the bag-hosted party wait renders exactly one message")
+    Assert.equal(sink[1][1], "text", "pending party icons render as text, never icon getters")
+    resources:drawApplication(
+      FieldApplicationIds.BAG,
+      {
+        open = true,
+        root = "bag",
+        page = "party_give_target",
+        child = { preparationState = "failed", preparationError = "boom", layout = { frame = frame } },
+      },
+      drawRuntime()
+    )
+    Assert.equal(#sink, 2, "the bag-hosted party failure renders exactly one message")
+    Assert.equal(sink[1][1], "text", "failed party icons render as text, never icon getters")
+    Assert.isTrue(
+      tostring(sink[2][2]):find("boom", 1, true) ~= nil,
+      "the failure message carries the preparation cause"
+    )
+    resources:dispose()
+  end)
+end
+
+function T.bag_flow_party_target_routes_to_the_party_presenter()
+  local sink, calls = {}, {}
+  local savedLove = rawget(_G, "love")
+  rawset(_G, "love", { graphics = require("tests.support.FakeGraphics").new({}) })
+  local ok, err = pcall(function()
+    withProductionComposition(sink, calls, compositionRuntime(), function(resources)
+      local child = {
+        preparationState = "ready",
+        presentation = {
+          panes = {},
+          content = {},
+          inputKey = "party",
+          render = function(borrowed, view, plan)
+            assert(borrowed.partyScreenRenderer, "the party render borrows its renderer"):draw(
+              view,
+              plan,
+              borrowed.icons
+            )
+          end,
+          mapInput = function()
+            return nil
+          end,
+          frames = {},
+        },
+      }
+      local presentation = { open = true, root = "bag", page = "party_give_target", child = child }
+      resources:drawApplication(FieldApplicationIds.BAG, presentation, drawRuntime())
+      Assert.equal(#sink, 1, "exactly one presenter draws")
+      Assert.equal(sink[1][1], "party", "the bag-hosted party target draws through the party renderer")
+      Assert.equal(sink[1][2], child, "the presenter receives the resolved party child status")
+      Assert.equal(sink[1][3], child.presentation, "the presenter draws through the party plan")
+      Assert.equal(sink[1][4], resources.monIconProvider, "the party target borrows the shared mon icon provider")
+      Assert.isNil(calls.icons, "drawing never releases the borrowed icon provider")
+      resources:dispose()
+    end)
+  end)
+  rawset(_G, "love", savedLove)
+  if not ok then
+    error(err, 0)
+  end
+end
+
+function T.pokemon_flow_bag_picker_routes_to_the_bag_presenter()
+  local sink, calls = {}, {}
+  local savedLove = rawget(_G, "love")
+  rawset(_G, "love", { graphics = require("tests.support.FakeGraphics").new({}) })
+  local ok, err = pcall(function()
+    withProductionComposition(sink, calls, compositionRuntime(), function(resources)
+      local child = {
+        presentation = {
+          panes = {},
+          content = {},
+          inputKey = "bag",
+          render = function(borrowed, view, plan)
+            assert(borrowed.bagRenderer, "the bag render borrows its renderer"):draw(view, plan, {
+              icons = borrowed.icons,
+            })
+          end,
+          mapInput = function()
+            return nil
+          end,
+          frames = {},
+        },
+      }
+      local presentation = { open = true, root = "party", page = "bag_pick_held", child = child }
+      resources:drawApplication(FieldApplicationIds.POKEMON, presentation, drawRuntime())
+      Assert.equal(#sink, 1, "exactly one presenter draws")
+      Assert.equal(sink[1][1], "bag", "the party-hosted bag picker draws through the bag renderer")
+      Assert.equal(sink[1][2], child, "the presenter receives the resolved bag child status")
+      Assert.equal(sink[1][3], child.presentation, "the presenter draws through the bag plan")
+      Assert.equal(
+        sink[1][4].icons,
+        resources.itemIconProvider,
+        "the bag picker borrows the shared item icon provider"
+      )
+      Assert.isNil(calls.itemIcons, "drawing never releases the borrowed item icon provider")
+      resources:dispose()
+    end)
+  end)
+  rawset(_G, "love", savedLove)
+  if not ok then
+    error(err, 0)
+  end
+end
+
 function T.unknown_application_ids_fault_without_drawing()
   local sink, calls = {}, {}
   withProductionComposition(sink, calls, compositionRuntime(), function(resources)

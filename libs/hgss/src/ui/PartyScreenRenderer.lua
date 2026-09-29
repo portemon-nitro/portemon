@@ -548,7 +548,7 @@ function PartyScreenRenderer:_drawDetailFacts(facts, originX, originY, icons)
 end
 
 ---@param presentation table<string, unknown>
----@param placement table<string, unknown>
+---@param placement LayoutGeometry.Placement the resolved detail-pane placement
 ---@param icons table<string, unknown>
 function PartyScreenRenderer:_drawDetailPane(presentation, placement, icons)
   local graphics = self._graphics
@@ -559,10 +559,16 @@ function PartyScreenRenderer:_drawDetailPane(presentation, placement, icons)
   if type(cursor) == "number" then
     facts = view.slots[cursor + 1]
   end
+  -- The caller scopes drawing to the pane's logical surface, so the
+  -- background and the source upper-screen anchors sit at the
+  -- pane-local logical origin sized by the placement's logical
+  -- dimensions, never at host frame coordinates.
+  local width = assert(placement.logicalWidth, "detail panes carry logical dimensions")
+  local height = assert(placement.logicalHeight, "detail panes carry logical dimensions")
   setColor(graphics, { 0.08, 0.08, 0.12, 1 })
-  graphics.rectangle("fill", placement.x, placement.y, placement.width, placement.height)
+  graphics.rectangle("fill", 0, 0, width, height)
   if type(facts) == "table" and facts.occupied then
-    self:_drawDetailFacts(facts, placement.x, placement.y, icons)
+    self:_drawDetailFacts(facts, 0, 0, icons)
   end
 end
 
