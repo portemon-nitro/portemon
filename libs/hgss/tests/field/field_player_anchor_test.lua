@@ -310,4 +310,47 @@ function T.movement_transactions_carry_semantic_speed_with_matching_duration()
   Assert.equal(runTx.revision, 1, "the run transaction is revisioned")
 end
 
+function T.scripted_far_jump_applies_the_shared_vertical_profile()
+  local player = playerAt(5, 5, "south")
+  player:beginScriptedAction({ action = "jump", direction = "south", distance = "far", speed = "fast" })
+  local fromY = player.worldY
+  local toY = assert(player.to, "scripted jump destination required").worldY
+  for progress = 1, 16 do
+    player:advanceScriptedAction(progress, 16)
+    local linear = fromY + (toY - fromY) * (progress / 16)
+    local expected = linear
+      + MovementCalibration.jumpOffsetAt({ action = "jump", distance = "far", speed = "fast" }, progress, 16)
+    Assert.equal(player.worldY, expected, "scripted far jump follows calibration at update " .. progress)
+  end
+  player:commitScriptedAction()
+end
+
+function T.scripted_jump_delegates_vertical_lift_to_the_calibration_owner()
+  local player = playerAt(5, 5, "south")
+  player:beginScriptedAction({ action = "jump", direction = "south", distance = "far", speed = "fast" })
+  local fromY = player.worldY
+  local toY = assert(player.to, "scripted jump destination required").worldY
+  local original = MovementCalibration.jumpOffsetAt
+  local seen = {}
+  MovementCalibration.jumpOffsetAt = function(action, progress, duration)
+    seen[#seen + 1] = { distance = action.distance, progress = progress, duration = duration }
+    return 3.5
+  end
+  local ok, err = pcall(function()
+    player:advanceScriptedAction(6, 16)
+  end)
+  MovementCalibration.jumpOffsetAt = original
+  Assert.isTrue(ok, "the stubbed calibration call must succeed")
+  if not ok then
+    error(err, 0)
+  end
+  Assert.equal(#seen, 1, "scripted jump consults calibration exactly once per update")
+  Assert.equal(seen[1].distance, "far", "scripted jump forwards its distance")
+  Assert.equal(seen[1].progress, 6, "scripted jump forwards its progress")
+  Assert.equal(seen[1].duration, 16, "scripted jump forwards its duration")
+  local linear = fromY + (toY - fromY) * (6 / 16)
+  Assert.equal(player.worldY, linear + 3.5, "scripted jump applies the calibration result")
+  player:cancelScriptedMovement()
+end
+
 return { tests = T }

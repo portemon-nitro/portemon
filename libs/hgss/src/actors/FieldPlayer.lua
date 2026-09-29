@@ -1156,9 +1156,8 @@ function FieldPlayer:advanceScriptedAction(progressTicks, durationTicks)
     self.worldZ = self.from.worldZ + (self.to.worldZ - self.from.worldZ) * t
     local baseY = self.from.worldY + (self.to.worldY - self.from.worldY) * t
     local MovementCalibration = require("libs.hgss.src.script.tasks.MovementCalibration")
-    local h = MovementCalibration.JUMP_HEIGHTS[m.distance] or 0
-    local arc = 4 * h * t * (1 - t)
-    self.worldY = baseY + arc
+    local offset = MovementCalibration.jumpOffsetAt(m, progressTicks, durationTicks)
+    self.worldY = baseY + offset
   elseif m.action == "walk_in_place" or m.action == "delay" or m.action == "emote" or m.action == "gesture" then
     self.worldX = self.from.worldX
     self.worldY = self.from.worldY

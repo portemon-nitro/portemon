@@ -89,10 +89,36 @@ local GESTURE_PROFILE = {
 }
 
 -- Vertical arc heights for jump presentation (world units / tiles).
+-- Only distances that keep a smooth parabola remain here; far jumps use
+-- the discrete retail table below.
 MovementCalibration.JUMP_HEIGHTS = {
   zero = 0.5,
   near = 0.9,
-  far = 1.2,
+}
+
+-- Source: pret/pokeheartgold@9d8b7591f09b65804da2fb2dfd56f320633e0d36,
+-- asm/unk_02062108.s command 56-59 setup (16-update far jump) and the
+-- discrete table at _020FDA84 (raw fixed-point vertical values 0x4000,
+-- 0x6000, 0x8000, 0xA000, 0xB000, 0xC000, 0xC000, 0xC000, 0xB000, 0xA000,
+-- 0x9000, 0x8000, 0x6000, 0x4000, 0, 0), normalized by the 16-world-unit
+-- field tile to tile offsets peaking at 12/16 = 0.75.
+local FAR_JUMP_OFFSETS = {
+  0.25,
+  0.375,
+  0.5,
+  0.625,
+  0.6875,
+  0.75,
+  0.75,
+  0.75,
+  0.6875,
+  0.625,
+  0.5625,
+  0.5,
+  0.375,
+  0.25,
+  0,
+  0,
 }
 
 local FARTHER_JUMP_OFFSETS = {
@@ -282,6 +308,17 @@ function MovementCalibration.jumpOffsetAt(action, progressTicks, durationTicks)
     )
     assert(durationTicks == #FARTHER_JUMP_OFFSETS, "farther jump duration mismatches calibrated ticks")
     return FARTHER_JUMP_OFFSETS[progressTicks]
+  end
+  if action.distance == "far" then
+    if progressTicks == 0 then
+      return 0
+    end
+    assert(durationTicks == #FAR_JUMP_OFFSETS, "far jump duration mismatches calibrated ticks")
+    assert(
+      progressTicks >= 1 and progressTicks <= #FAR_JUMP_OFFSETS,
+      "far jump progress must be 1.." .. tostring(#FAR_JUMP_OFFSETS)
+    )
+    return FAR_JUMP_OFFSETS[progressTicks]
   end
   local h = MovementCalibration.JUMP_HEIGHTS[action.distance] or 0
   local t = progressTicks / durationTicks

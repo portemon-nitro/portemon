@@ -168,4 +168,47 @@ function T.tests.gesture_duration_rejects_an_unknown_gesture_name()
   Assert.isTrue(tostring(err):find("unknown gesture", 1, true) ~= nil, "failure identifies the unknown gesture")
 end
 
+function T.tests.far_jump_uses_the_retail_vertical_profile()
+  local action = { action = "jump", direction = "south", distance = "far", speed = "fast" }
+  local expected = {
+    0.25,
+    0.375,
+    0.5,
+    0.625,
+    0.6875,
+    0.75,
+    0.75,
+    0.75,
+    0.6875,
+    0.625,
+    0.5625,
+    0.5,
+    0.375,
+    0.25,
+    0,
+    0,
+  }
+  Assert.equal(MovementCalibration.actionTicks(action), 16, "far jump keeps its sixteen-update lifetime")
+  local peak = 0
+  for progress = 1, 16 do
+    local offset = MovementCalibration.jumpOffsetAt(action, progress, 16)
+    Assert.equal(offset, expected[progress], "far jump offset matches retail at update " .. progress)
+    peak = math.max(peak, offset)
+  end
+  Assert.equal(peak, 0.75, "far jump peaks at three quarters of a tile")
+  Assert.equal(expected[6], 0.75, "far jump holds its plateau entering update 6")
+  Assert.equal(expected[8], 0.75, "far jump holds its plateau through update 8")
+  Assert.equal(expected[15], 0, "far jump settles before its final update")
+  Assert.equal(expected[16], 0, "far jump ends grounded")
+  Assert.equal(
+    MovementCalibration.jumpOffsetAt(action, 0, 16),
+    0,
+    "far jump reports no lift before its first update"
+  )
+  local badOk = pcall(function()
+    MovementCalibration.jumpOffsetAt(action, 1, 8)
+  end)
+  Assert.isFalse(badOk, "far jump rejects a duration outside its calibrated sixteen updates")
+end
+
 return T

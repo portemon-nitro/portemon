@@ -14,8 +14,8 @@ local FieldScriptSymbols = require("libs.assets.src.field.FieldScriptSymbols")
 
 local T = {
   metadata = {
-    capabilities = { "rom_dump", "derived_cache" },
-    derivedAssets = { "map:60" },
+    capabilities = { "rom_dump" },
+    derivedAssets = { "field-runtime", "map:60" },
     tags = { "field", "interaction" },
   },
   tests = {},
@@ -121,9 +121,16 @@ function T.tests.rival_talk_pushes_the_player_south_through_scripted_movement()
     -- budget runs out. Quiet ticks only advance the scheduler; a confirm
     -- edge only fires while the dialogue modal owns the field.
     local pushed = nil
+    local lowestY = game:snapshot().player.worldY
+    local peakY = lowestY
     for _ = 1, 1500 do
       local snapshot = game:snapshot()
+      lowestY = math.min(lowestY, snapshot.player.worldY)
+      peakY = math.max(peakY, snapshot.player.worldY)
       if snapshot.player.fieldZ > startZ then
+        pushed = pushed or snapshot
+      end
+      if snapshot.player.fieldZ >= startZ + 3 then
         pushed = snapshot
         break
       end
@@ -155,6 +162,12 @@ function T.tests.rival_talk_pushes_the_player_south_through_scripted_movement()
         .. " movement tasks under the rival instance="
         .. tostring(#movements)
         .. ")"
+    )
+    local shovePeak = peakY - lowestY
+    Assert.isTrue(shovePeak > 0.5, "the rival shove visibly lifts the player")
+    Assert.isTrue(
+      math.abs(shovePeak - 0.75) < 1e-9,
+      "the rival shove peaks at the retail far-jump height, got " .. tostring(shovePeak)
     )
     Assert.equal(game:renderAttempts(), 0, "the rival flow must stop before GPU rendering")
   end, debug.traceback)
