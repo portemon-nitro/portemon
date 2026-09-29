@@ -1221,4 +1221,133 @@ function T.opening_and_confirmation_copy_reveals_over_ticks_while_inspect_stays_
   Assert.equal(confirmComplete, confirmTotal, "the confirmation reveal completes on the fixed tick")
 end
 
+-- The single-pane chooser draws the machine-derived pane: no portrait
+-- before a ball is selected or while backing out, and the selected
+-- portrait near the top once inspection exposes it. Native info geometry
+-- stays on its source origin.
+local function adaptedPortraitDraws(presentation, snap)
+  local FakeGraphics = require("tests.support.FakeGraphics").new
+  local lg = FakeGraphics({})
+  local previousLove = rawget(_G, "love")
+  local filesystem = previousLove and previousLove.filesystem or nil
+  rawset(_G, "love", { graphics = lg, filesystem = filesystem })
+  local portraitImage = { marker = "portrait-image" }
+  local machineImage = { marker = "machine-background" }
+  local target = { marker = "machine-target" }
+  presentation._machineBackgroundImage = machineImage
+  presentation._portraitQuads = {
+    { image = portraitImage, quad = { marker = "q0" } },
+    { image = portraitImage, quad = { marker = "q1" } },
+    { image = portraitImage, quad = { marker = "q2" } },
+  }
+  local text = {
+    drawLineWithColorVariants = function() end,
+  }
+  local window = {
+    drawWindow = function() end,
+  }
+  local placement = { frame = { x = 0, y = 0, width = 640, height = 480 }, scale = 1 }
+  local ok, err = pcall(function()
+    presentation:_drawAdaptedPane(
+      snap,
+      text,
+      window,
+      placement,
+      target,
+      presentation._manifest.textColors,
+      presentation._manifest.surfaces
+    )
+  end)
+  rawset(_G, "love", previousLove)
+  if not ok then
+    error(err, 0)
+  end
+  local found = {}
+  for _, draw in ipairs(lg.draws) do
+    if draw.image == portraitImage then
+      found[#found + 1] = draw
+    end
+  end
+  return found
+end
+
+function T.adapted_pane_hides_portrait_before_selection_and_on_back_out()
+  local presentation = openPresentation()
+  local hidden = adaptedPortraitDraws(presentation, snapshot({ selection = 0, selectionState = "null", transition = "idle" }))
+  Assert.equal(#hidden, 0, "the single-pane opening frame shows no pokemon image")
+  local backingOut =
+    adaptedPortraitDraws(presentation, snapshot({ selection = 1, selectionState = "inspect", transition = "backOut" }))
+  Assert.equal(#backingOut, 0, "backing out hides the single-pane portrait")
+end
+
+function T.adapted_pane_shows_selected_portrait_at_top()
+  local presentation = openPresentation()
+  local snap = snapshot({ selection = 1, selectionState = "inspect", transition = "idle" })
+  local found = adaptedPortraitDraws(presentation, snap)
+  Assert.equal(#found, 1, "inspection exposes exactly the selected portrait")
+  Assert.equal(found[1].x, 88, "the single-pane portrait sits at the adapted top origin")
+  Assert.equal(found[1].y, 16, "the single-pane portrait sits at the adapted top origin")
+  Assert.equal(found[1].quad.marker, "q1", "the single-pane portrait uses the selected candidate quad")
+  local again = adaptedPortraitDraws(presentation, snap)
+  Assert.equal(#again, 1, "repeated single-pane draws keep one portrait")
+  Assert.equal(again[1].x, 88, "repeated draws do not move the portrait")
+  Assert.equal(again[1].y, 16, "repeated draws do not move the portrait")
+end
+
+function T.native_portrait_keeps_source_origin()
+  local presentation, manifest = openPresentation()
+  Assert.deepEqual(
+    manifest.surfaces.info.portrait,
+    { x = 88, y = 56, width = 80, height = 80 },
+    "the generated info portrait keeps its source origin"
+  )
+  local FakeGraphics = require("tests.support.FakeGraphics").new
+  local lg = FakeGraphics({})
+  local previousLove = rawget(_G, "love")
+  local filesystem = previousLove and previousLove.filesystem or nil
+  rawset(_G, "love", { graphics = lg, filesystem = filesystem })
+  local portraitImage = { marker = "native-portrait" }
+  presentation._portraitQuads = {
+    { image = portraitImage, quad = { marker = "n0" } },
+    { image = portraitImage, quad = { marker = "n1" } },
+    { image = portraitImage, quad = { marker = "n2" } },
+  }
+  local ok, err = pcall(function()
+    presentation:_drawInfoPortrait(snapshot({ selection = 0, selectionState = "inspect", transition = "idle" }), manifest.surfaces.info.portrait)
+  end)
+  if not ok then
+    -- The single-argument portrait helper predates the adapted origin split.
+    rawset(_G, "love", previousLove)
+    local lg2 = FakeGraphics({})
+    rawset(_G, "love", { graphics = lg2, filesystem = filesystem })
+    local ok2, err2 = pcall(function()
+      presentation:_drawInfoPortrait(snapshot({ selection = 0, selectionState = "inspect", transition = "idle" }))
+    end)
+    rawset(_G, "love", previousLove)
+    if not ok2 then
+      error(err2, 0)
+    end
+    local found2 = {}
+    for _, draw in ipairs(lg2.draws) do
+      if draw.image == portraitImage then
+        found2[#found2 + 1] = draw
+      end
+    end
+    Assert.equal(#found2, 1, "the native portrait draws once")
+    Assert.equal(found2[1].x, 88, "the native portrait keeps its source origin")
+    Assert.equal(found2[1].y, 56, "the native portrait keeps its source origin")
+    return
+  end
+  rawset(_G, "love", previousLove)
+  local found = {}
+  for _, draw in ipairs(lg.draws) do
+    if draw.image == portraitImage then
+      found[#found + 1] = draw
+    end
+  end
+  Assert.equal(#found, 1, "the native portrait draws once")
+  Assert.equal(found[1].x, 88, "the native portrait keeps its source origin")
+  Assert.equal(found[1].y, 56, "the native portrait keeps its source origin")
+end
+
 return { tests = T }

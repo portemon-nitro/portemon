@@ -144,6 +144,11 @@ local function portraitVisible(snapshot)
   return snapshot.selectionState ~= "null" and snapshot.transition ~= "backOut"
 end
 
+-- Single-pane portrait origin on the 256x192 logical pane. The generated
+-- info-surface portrait keeps the source two-screen placement; the compact
+-- pane centers the same 80x80 quad near the top instead.
+local ADAPTED_PORTRAIT = { x = 88, y = 16, width = 80, height = 80 }
+
 ---@class StarterChoicePresentation.Options
 ---@field manifest table<string, unknown> validated starter-application manifest
 ---@field cacheFs CacheFs generated-asset filesystem
@@ -1937,18 +1942,20 @@ function StarterChoicePresentation:_renderMachineTarget(snapshot, sample)
   end
 end
 
--- Draws the inspected portrait companion at its canonical info-surface
--- position under the caller's logical scope.
+-- Draws the inspected portrait companion at the caller's origin under the
+-- caller's logical scope.
 ---@param snapshot StarterChoiceController.Snapshot controller snapshot
-function StarterChoicePresentation:_drawInfoPortrait(snapshot)
+---@param rect table<string, integer> draw origin and documented portrait size
+function StarterChoicePresentation:_drawInfoPortrait(snapshot, rect)
   local framed = assert(
     self._portraitQuads[snapshot.selection + 1],
     "starter presentation owns no portrait for the inspected candidate"
   )
-  local portrait = self._manifest.surfaces.info.portrait
+  assert(type(rect) == "table", "starter portrait drawing requires its origin")
+  assert(type(rect.x) == "number" and type(rect.y) == "number", "starter portrait drawing requires its origin")
   local graphics = assert(love and love.graphics, "starter presentation requires the graphics namespace")
   graphics.setColor(1, 1, 1, 1)
-  graphics.draw(framed.image, framed.quad, portrait.x, portrait.y)
+  graphics.draw(framed.image, framed.quad, rect.x, rect.y)
 end
 
 -- Draws every published outer application frame through the already-owned
@@ -2058,7 +2065,7 @@ function StarterChoicePresentation:drawNative(snapshot, view, text, plan, window
     self:_drawInfoBackdrop()
     self:_drawInfoArtwork()
     if portraitVisible(sampledSnapshot) then
-      self:_drawInfoPortrait(sampledSnapshot)
+      self:_drawInfoPortrait(sampledSnapshot, surfaces.info.portrait)
     end
     local sampledInfoText, _ = infoMessageFor(self, sampledSnapshot)
     self:_drawMessageLines(surfaces.info.message, sampledInfoText, text, textColors.infoBackground, windowRenderer)
@@ -2106,7 +2113,9 @@ function StarterChoicePresentation:_drawAdaptedPane(
       transparentBackground(textColors.machineBackground),
       windowRenderer
     )
-    self:_drawInfoPortrait(snapshot)
+    if portraitVisible(snapshot) then
+      self:_drawInfoPortrait(snapshot, ADAPTED_PORTRAIT)
+    end
   end)
 end
 
