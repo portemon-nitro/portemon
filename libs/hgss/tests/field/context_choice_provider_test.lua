@@ -93,4 +93,86 @@ T["context choice task cancellation tolerates an unmaterialized restored provide
   Assert.equal(provider:status(), nil)
 end
 
+local function audioCtx(provider, plays)
+  local audio = {}
+  function audio:play(sequence)
+    plays[#plays + 1] = sequence
+  end
+  return { services = { contextChoice = provider, audio = audio }, input = {} }
+end
+
+T["context choice task plays the advance sound on selection changes and answers"] = function()
+  local provider = ContextChoiceProvider.new()
+  local plays = {}
+  local ctx = audioCtx(provider, plays)
+  local state = ContextChoiceTask.create({}, ctx)
+  ContextChoiceTask.poll(state, ctx)
+  Assert.deepEqual(plays, {})
+
+  ctx.input = { uiEvents = { { type = "navigate", direction = "down" } } }
+  ContextChoiceTask.poll(state, ctx)
+  Assert.deepEqual(plays, { "SEQ_SE_DP_SELECT" })
+
+  ctx.input = { uiEvents = { { type = "navigate", direction = "up" } } }
+  ContextChoiceTask.poll(state, ctx)
+  Assert.deepEqual(plays, { "SEQ_SE_DP_SELECT", "SEQ_SE_DP_SELECT" })
+
+  ctx.input = { uiEvents = { { type = "confirm" } } }
+  local completed = ContextChoiceTask.poll(state, ctx)
+  Assert.isTrue(completed.complete)
+  Assert.deepEqual(plays, { "SEQ_SE_DP_SELECT", "SEQ_SE_DP_SELECT", "SEQ_SE_DP_SELECT" })
+end
+
+T["context choice task stays silent on selection no-ops"] = function()
+  local provider = ContextChoiceProvider.new()
+  local plays = {}
+  local ctx = audioCtx(provider, plays)
+  local state = ContextChoiceTask.create({}, ctx)
+  ContextChoiceTask.poll(state, ctx)
+
+  ctx.input = { uiEvents = { { type = "navigate", direction = "up" } } }
+  ContextChoiceTask.poll(state, ctx)
+  ctx.input = { uiEvents = { { type = "navigate", direction = "left" } } }
+  ContextChoiceTask.poll(state, ctx)
+  Assert.deepEqual(plays, {})
+
+  ctx.input = { uiEvents = { { type = "navigate", direction = "down" } } }
+  ContextChoiceTask.poll(state, ctx)
+  ctx.input = { uiEvents = { { type = "navigate", direction = "down" } } }
+  ContextChoiceTask.poll(state, ctx)
+  ctx.input = { uiEvents = { { type = "navigate", direction = "right" } } }
+  ContextChoiceTask.poll(state, ctx)
+  Assert.deepEqual(plays, { "SEQ_SE_DP_SELECT" })
+end
+
+T["context choice task plays the advance sound on cancel"] = function()
+  local provider = ContextChoiceProvider.new()
+  local plays = {}
+  local ctx = audioCtx(provider, plays)
+  local state = ContextChoiceTask.create({}, ctx)
+  ContextChoiceTask.poll(state, ctx)
+
+  ctx.input = { uiEvents = { { type = "cancel" } } }
+  local completed = ContextChoiceTask.poll(state, ctx)
+  Assert.isTrue(completed.complete)
+  Assert.equal(completed.result, 1)
+  Assert.deepEqual(plays, { "SEQ_SE_DP_SELECT" })
+end
+
+T["context choice task without audio stays silent"] = function()
+  local provider = ContextChoiceProvider.new()
+  local ctx = { services = { contextChoice = provider }, input = {} }
+  local state = ContextChoiceTask.create({}, ctx)
+  ContextChoiceTask.poll(state, ctx)
+
+  ctx.input = { uiEvents = { { type = "navigate", direction = "down" } } }
+  ContextChoiceTask.poll(state, ctx)
+  Assert.equal(provider:status().selected, 1)
+
+  ctx.input = { uiEvents = { { type = "confirm" } } }
+  local completed = ContextChoiceTask.poll(state, ctx)
+  Assert.isTrue(completed.complete)
+  Assert.equal(completed.result, 1)
+end
+
 return { tests = T }

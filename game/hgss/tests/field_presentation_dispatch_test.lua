@@ -135,6 +135,13 @@ local function buildDoubles(sink, calls)
     ["libs.hgss.src.ui.FieldTextRenderer"] = {
       new = function(_)
         local text = releasable(calls, "text")
+        text.fontDef = {
+          palette = {
+            [2] = { r = 1, g = 2, b = 3 },
+            [3] = { r = 4, g = 5, b = 6 },
+            [16] = { r = 7, g = 8, b = 9 },
+          },
+        }
         function text:drawText(content, x, y)
           sink[#sink + 1] = { "text", content, x, y }
         end

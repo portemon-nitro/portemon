@@ -297,7 +297,7 @@ function FieldScripts.new(opts)
   local actors = ScriptActorWorld.new(opts.actors --[[@as ScriptActorManager]], player)
   local dialogueHost = ScriptDialogueHost.new({
     controller = opts.dialogue,
-    yesNoController = FieldYesNoController.new(),
+    yesNoController = FieldYesNoController.new({ audio = opts.audio }),
     yesNoHost = opts.yesNoHost,
     provider = opts.messageProvider,
     layout = opts.layout,

@@ -1,5 +1,8 @@
 -- Waits for the distinct HGSS GetMenuChoice provider. It owns opening and
 -- closing the provider exactly once and returns its vanilla two-choice value.
+-- Selection changes and answers play the dialogue-advance blip through the
+-- composed script audio service; boundary no-ops stay silent and a missing
+-- service keeps the choice silent.
 
 local Errors = require("libs.errors.src.Errors")
 local ScriptErrors = require("libs.script.src.errors")
@@ -42,18 +45,31 @@ function ContextChoiceTask.poll(state, ctx)
   end
   local events = (ctx.input or {}).uiEvents or {}
   assert(type(events) == "table", "context_choice UI events must be a table")
+  local services = ctx.services or {}
+  local audio = services.audio
+  assert(audio == nil or type(audio.play) == "function", "context_choice audio service must provide play")
+  local function playAdvance()
+    if audio ~= nil then
+      audio:play("SEQ_SE_DP_SELECT")
+    end
+  end
   for _, event in ipairs(events) do
     assert(type(event) == "table" and type(event.type) == "string", "context_choice UI event is invalid")
     if event.type == "navigate" then
       local selected = SELECTION_BY_DIRECTION[event.direction]
       if selected ~= nil then
+        if selected ~= state.selected then
+          playAdvance()
+        end
         state.selected = choice:select(selected)
       end
     elseif event.type == "cancel" then
+      playAdvance()
       choice:close()
       state.active = false
       return { complete = true, state = state, result = 1 }
     elseif event.type == "confirm" then
+      playAdvance()
       local result = choice:confirm()
       choice:close()
       state.active = false
