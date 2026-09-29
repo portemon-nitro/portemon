@@ -4,11 +4,14 @@
 -- transfers exactly once on readiness. A disposed or stale state never
 -- fires its completion callback.
 
+local ImportState = require("app.src.launcher.ImportState")
+
 ---@class CachePreparationOptions
 ---@field kind "bootstrap"|"quiescence"|"first-play"
 ---@field epoch integer selected source epoch guarded against stale completion
 ---@field provisioner? table<string, function> bootstrap/first-play: the borrowed selected session host
 ---@field preparation? table<string, function> first-play only: the opaque HGSS demand object
+---@field importContinuation? table<string, unknown> first-play fresh-import only: immutable captured import display facts
 ---@field service table<string, function>? quiescence only: the process cache service, required
 ---@field barrier integer? quiescence only: the exact source-close barrier token
 ---@field isCurrent fun(epoch: integer): boolean owner liveness: the epoch is still selected
@@ -20,6 +23,7 @@
 ---@field epoch integer
 ---@field provisioner table<string, function>?
 ---@field preparation table<string, function>?
+---@field importContinuation table<string, unknown>?
 ---@field service table<string, function>?
 ---@field barrier integer?
 ---@field isCurrent fun(epoch: integer): boolean
@@ -47,6 +51,10 @@ function CachePreparationState.new(options)
   assert(type(options.isCurrent) == "function", "cache preparation requires its liveness check")
   assert(type(options.onReady) == "function", "cache preparation requires its transfer")
   assert(type(options.onCancel) == "function", "cache preparation requires its cancellation")
+  assert(
+    options.importContinuation == nil or options.kind == "first-play",
+    "the import continuation only applies to first-play preparation"
+  )
   if options.kind == "bootstrap" then
     assert(type(options.provisioner) == "table", "bootstrap preparation requires the selected session host")
   elseif options.kind == "first-play" then
@@ -69,6 +77,7 @@ function CachePreparationState.new(options)
     epoch = options.epoch,
     provisioner = options.provisioner,
     preparation = options.preparation,
+    importContinuation = options.importContinuation,
     service = options.service,
     barrier = options.barrier,
     isCurrent = options.isCurrent,
@@ -170,8 +179,22 @@ function CachePreparationState:update(_)
   end
 end
 
+function CachePreparationState:_drawImportContinuation()
+  local host = assert(self.provisioner, "first-play preparation requires the selected session host")
+  local preparationStatus = nil
+  local statusOk, status = pcall(host.status)
+  if statusOk and type(status) == "table" then
+    preparationStatus = status
+  end
+  ImportState.renderContinuation(self.importContinuation, preparationStatus, self.error)
+end
+
 function CachePreparationState:draw()
   local lg = love.graphics
+  if self.importContinuation ~= nil then
+    self:_drawImportContinuation()
+    return
+  end
   if self.error ~= nil then
     lg.setColor(1, 0.5, 0.5)
     lg.print("Cache preparation failed:", 24, 24)

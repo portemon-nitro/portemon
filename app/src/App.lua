@@ -113,7 +113,7 @@ end
 -- wait: no new session writes shared version roots before the controller
 -- acknowledges that every source reader closed successfully.
 ---@param versionId string newly selected game version
----@param options { freshImport: boolean? }? private selection mode
+---@param options { freshImport: boolean?, importContinuation: table<string, unknown>? }? private selection mode
 ---@return boolean
 function App._waitForQuiescence(versionId, options)
   local pending = App.pendingQuiesce
@@ -216,7 +216,7 @@ end
 -- first-play preparation a fresh import uses; only a current
 -- generation-scoped attestation keeps the fast bootstrap/menu path.
 ---@param versionId string newly selected game version
----@param options { freshImport: boolean? }? private selection mode, default ordinary
+---@param options { freshImport: boolean?, importContinuation: table<string, unknown>? }? private selection mode, default ordinary
 function App._selectVersion(versionId, options)
   if App._waitForQuiescence(versionId, options) then
     return
@@ -268,7 +268,8 @@ function App._selectVersion(versionId, options)
     derivedAssets = host,
     completion = gateway,
   })
-  App.setState(CachePreparationState.new({
+  ---@type CachePreparationOptions
+  local waitOptions = {
     kind = "first-play",
     epoch = epoch,
     preparation = preparation,
@@ -283,7 +284,13 @@ function App._selectVersion(versionId, options)
     onCancel = function()
       App._showVersionSelector()
     end,
-  }))
+  }
+  -- Only a fresh import carries the captured import display facts: the
+  -- ordinary stale-cache wait keeps the generic preparation surface.
+  if freshImport and options ~= nil and options.importContinuation ~= nil then
+    waitOptions.importContinuation = options.importContinuation
+  end
+  App.setState(CachePreparationState.new(waitOptions))
 end
 
 function App.load(opts)
@@ -321,8 +328,33 @@ function App._startImport()
 end
 
 function App._onImported(versionId)
+  -- Capture the final importer display facts before releasing the
+  -- importer: the fresh-import first-play wait renders them as an import
+  -- continuation while readiness still owns the transfer. Only immutable
+  -- scalar display fields cross the handoff; no live importer is kept.
+  local importer = App.importer
+  local continuation = nil
+  if importer ~= nil then
+    local statusOk, status = pcall(importer.status, importer)
+    if statusOk and type(status) == "table" then
+      local snapshot = {}
+      for _, field in ipairs({
+        "state",
+        "versionId",
+        "displayName",
+        "sourceName",
+        "progress",
+        "stage",
+        "stageLabel",
+        "detail",
+      }) do
+        snapshot[field] = status[field]
+      end
+      continuation = { status = snapshot, saveDir = App.saveDir }
+    end
+  end
   App.importer = nil
-  App._selectVersion(versionId, { freshImport = true })
+  App._selectVersion(versionId, { freshImport = true, importContinuation = continuation })
 end
 
 function App._bootMainMenu(versions)

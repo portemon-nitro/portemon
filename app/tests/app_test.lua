@@ -955,4 +955,90 @@ function T.fresh_import_preparation_requests_no_corpus_work_or_early_sweep()
   end)
 end
 
+-- A fresh import keeps the import visual surface through mandatory
+-- first-play preparation: the handoff captures the final importer display
+-- facts, the wait renders the import continuation with that identity, and
+-- the menu still installs only on readiness. An ordinary stale-cache
+-- first-play wait carries no continuation and keeps the generic surface.
+function T.fresh_import_first_play_stays_on_the_import_surface_until_the_menu()
+  withAppHarness({ dev = false }, function(id)
+    return id == "heartgold"
+  end, function(result)
+    result.firstPlayCurrent = false
+    result.firstPlayStored = false
+    local script = { ready = false }
+    local original = installFirstPlayFactory(script)
+    local ok, err = pcall(function()
+      -- Ordinary stale-cache first-play first: no importer identity exists,
+      -- so the wait must keep the generic preparation surface.
+      App._selectVersion("heartgold")
+      Assert.equal(
+        getmetatable(App.state).__index,
+        CachePreparationState,
+        "the stale-cache wait still uses the preparation state"
+      )
+      Assert.equal(App.state.kind, "first-play", "the stale-cache wait still gates on the first-play closure")
+      Assert.isTrue(
+        App.state.importContinuation == nil,
+        "an ordinary stale-cache wait carries no import display facts"
+      )
+      -- Fresh import: the completed importer identity crosses the handoff
+      -- as display data while the importer itself is released.
+      App.saveDir = "test-save-root"
+      App.importer = {
+        status = function()
+          return { state = "complete", sourceName = "dropped.nds", displayName = "HeartGold" }
+        end,
+      }
+      App._onImported("heartgold")
+      Assert.isTrue(App.importer == nil, "the completed importer is released at the handoff")
+      Assert.equal(
+        getmetatable(App.state).__index,
+        CachePreparationState,
+        "readiness still waits through the preparation state"
+      )
+      Assert.equal(App.state.kind, "first-play", "the handoff still waits on the first-play closure")
+      local continuation = assert(
+        App.state.importContinuation,
+        "the fresh-import wait carries the captured import display facts"
+      )
+      Assert.equal(continuation.saveDir, "test-save-root", "the continuation keeps the save root")
+      local capturedSource = continuation.sourceName
+      if capturedSource == nil and continuation.status ~= nil then
+        capturedSource = continuation.status.sourceName
+      end
+      Assert.equal(capturedSource, "dropped.nds", "the continuation keeps the imported file identity")
+      Assert.equal(
+        type(ImportState.renderContinuation),
+        "function",
+        "the import surface owns a stateless continuation renderer"
+      )
+      local rendered = {}
+      local originalContinuation = ImportState.renderContinuation
+      ImportState.renderContinuation = function(facts, preparationStatus, failure)
+        rendered[#rendered + 1] = { facts = facts, preparationStatus = preparationStatus, failure = failure }
+      end
+      local drawOk, drawErr = pcall(function()
+        App.state:draw()
+      end)
+      ImportState.renderContinuation = originalContinuation
+      if not drawOk then
+        error(drawErr, 0)
+      end
+      Assert.equal(#rendered, 1, "the fresh-import wait draws the import continuation")
+      -- Readiness still gates the menu: pending work launches nothing, and
+      -- the ready closure installs the menu exactly once.
+      App.update(0.016)
+      Assert.equal(#result.launches, 0, "the menu waits while first-play preparation is pending")
+      script.ready = true
+      App.update(0.016)
+      assert(result.launches[1], "preparation readiness still installs the menu")
+    end)
+    HgssGame.newFirstPlayCachePreparation = original
+    if not ok then
+      error(err, 0)
+    end
+  end)
+end
+
 return { tests = T }

@@ -30,6 +30,69 @@ function ImportState:draw()
   ImportState.render(self.importer:status(), self.saveDir)
 end
 
+-- Stateless continuation renderer for a fresh import whose raw extraction
+-- finished but whose mandatory first-play preparation is still pending.
+-- `facts` is the immutable handoff record captured at import completion
+-- (`{ status = <importer status snapshot>, saveDir = <save root> });
+-- `preparationStatus` is the live provisioner count snapshot or nil;
+-- `failure` is the latched preparation error or nil. It keeps the import
+-- shell (title, file/target identity, save root) while the stage text
+-- reports first-play preparation instead of extraction progress.
+---@param facts { status: table<string, unknown>, saveDir: string? }
+---@param preparationStatus table<string, unknown>?
+---@param failure unknown?
+function ImportState.renderContinuation(facts, preparationStatus, failure)
+  local lg = love.graphics
+  local importStatus = facts.status
+  local x, y = 24, 24
+  lg.setColor(1, 1, 1)
+  lg.print("portemon — HeartGold / SoulSilver ROM import", x, y)
+  lg.setColor(0.7, 0.7, 0.75)
+  lg.print("Drop a .nds file onto this window to import it.", x, y + 28)
+  if facts.saveDir ~= nil then
+    lg.print("Private cache is written under:", x, y + 52)
+    lg.print(tostring(facts.saveDir), x, y + 72)
+  end
+
+  y = y + 116
+  lg.setColor(0.85, 0.9, 0.95)
+  if importStatus.sourceName ~= nil then
+    lg.print("File:   " .. tostring(importStatus.sourceName), x, y)
+  end
+  if importStatus.displayName ~= nil then
+    lg.print("Target: " .. tostring(importStatus.displayName), x, y + 20)
+  end
+
+  if failure ~= nil then
+    lg.setColor(1, 0.5, 0.5)
+    lg.print("First-play preparation failed:", x, y + 48)
+    lg.printf(tostring(failure), x, y + 72, lg.getWidth() - 48)
+    lg.setColor(0.7, 0.7, 0.75)
+    lg.print("Press escape to return.", x, y + 120)
+    return
+  end
+
+  lg.setColor(0.6, 0.9, 0.6)
+  lg.print("Import complete.", x, y + 48)
+  lg.setColor(1, 1, 1)
+  lg.print("Preparing imported ROM for first play...", x, y + 76)
+  if type(preparationStatus) == "table" then
+    lg.setColor(0.7, 0.7, 0.75)
+    lg.print(
+      string.format(
+        "ready %d  queued %d  running %d",
+        preparationStatus.ready or 0,
+        preparationStatus.queued or 0,
+        preparationStatus.running or 0
+      ),
+      x,
+      y + 100
+    )
+  end
+  lg.setColor(0.7, 0.7, 0.75)
+  lg.print("Press escape to cancel.", x, y + 124)
+end
+
 -- Stateless renderer driven by an importer status snapshot. `saveDir` may be nil.
 function ImportState.render(status, saveDir)
   local lg = love.graphics

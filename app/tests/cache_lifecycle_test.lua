@@ -1818,4 +1818,35 @@ function T.first_play_disposal_releases_the_preparation_once()
   Assert.isNil(script.fired, "a disposed state never transfers even when preparation is ready")
 end
 
+-- Captured import display facts only belong on the fresh-import
+-- first-play wait: other preparation kinds reject them at construction.
+function T.import_continuation_is_rejected_outside_first_play()
+  local continuation = { status = { sourceName = "dropped.nds" }, saveDir = "test-save-root" }
+  local bootstrapOk = pcall(CachePreparationState.new, {
+    kind = "bootstrap",
+    epoch = 7,
+    provisioner = {},
+    isCurrent = function()
+      return true
+    end,
+    onReady = function() end,
+    onCancel = function() end,
+    importContinuation = continuation,
+  })
+  Assert.isTrue(bootstrapOk == false, "bootstrap preparation rejects the import continuation")
+  local quiescenceOk = pcall(CachePreparationState.new, {
+    kind = "quiescence",
+    epoch = 7,
+    service = {},
+    barrier = 3,
+    isCurrent = function()
+      return true
+    end,
+    onReady = function() end,
+    onCancel = function() end,
+    importContinuation = continuation,
+  })
+  Assert.isTrue(quiescenceOk == false, "quiescence preparation rejects the import continuation")
+end
+
 return { tests = T }
