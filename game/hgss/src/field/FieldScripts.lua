@@ -13,6 +13,7 @@ local ScriptMenuHost = require("libs.hgss.src.script.ScriptMenuHost")
 local ScriptSignpostHost = require("libs.hgss.src.script.ScriptSignpostHost")
 local ScriptInteractionClient = require("libs.hgss.src.script.ScriptInteractionClient")
 local ScriptMapsService = require("libs.hgss.src.script.ScriptMapsService")
+local PlayerProgression = require("libs.hgss.src.save.PlayerProgression")
 local WorldState = require("libs.hgss.src.script.WorldState")
 local Scheduler = require("libs.script.src.Scheduler")
 local HgssScript = require("libs.hgss.src.script.Composition")
@@ -350,6 +351,15 @@ function FieldScripts.new(opts)
     mapSource = opts.sourceMap,
   }, FieldScripts)
 
+  -- The live badge progression borrows the supplied profile: badge reads
+  -- observe the persisted mask and awards mutate it in place. Without a
+  -- profile no facade is synthesized, so badge operations keep their
+  -- missing-service fault instead of reading zero badges.
+  local progression = nil
+  if opts.profile ~= nil then
+    progression = PlayerProgression.new(opts.profile)
+  end
+
   -- The live task registry: the scheduler routes through it.
   local liveTaskRegistry = compatibility.taskRegistry
 
@@ -381,6 +391,7 @@ function FieldScripts.new(opts)
       screen = opts.screen,
       events = opts.events,
       auxiliaryUi = opts.auxiliaryUi,
+      progression = progression,
       contextChoice = opts.contextChoice,
       menu = opts.menu,
       scriptMenu = menuHost,
