@@ -3,6 +3,7 @@
 
 local Assert = require("tests.support.Assert")
 local FieldRenderer = require("libs.hgss.src.presentation.FieldRenderer")
+local GxRenderer = require("libs.nds.src.love.GxRenderer")
 local Matrix4 = require("libs.math.src.Matrix4")
 
 local T = {}
@@ -320,6 +321,73 @@ function T.owning_wrapper_releases_its_constructed_backend_exactly_once()
   Assert.equal(shader.releaseCount, 1, "the owning wrapper releases the shader it constructed exactly once")
   Assert.equal(edgeShader.releaseCount, 1, "the owning wrapper releases the edge shader it constructed")
   Assert.equal(worldShader.releaseCount, 1, "the owning wrapper releases the world shader it constructed")
+end
+
+-- The HGSS field wrapper owns the backend translucency policy: an owned
+-- backend with no explicit mode must select the exact DS compositor, while an
+-- explicit approximate choice and the reusable backend default stay
+-- approximate. The backend already publishes its resolved mode, so no new
+-- product seam is needed to observe it.
+local function headlessBackendOptions(extra)
+  local options = {
+    graphics = {
+      newShader = function(source)
+        return {
+          source = source,
+          release = function() end,
+        }
+      end,
+    },
+    readSource = function()
+      return "source"
+    end,
+  }
+  if extra ~= nil then
+    for key, value in pairs(extra) do
+      options[key] = value
+    end
+  end
+  return options
+end
+
+function T.owned_field_backend_defaults_to_exact_translucency_without_changing_the_global_default()
+  local defaulted = FieldRenderer.new(headlessBackendOptions())
+  Assert.equal(
+    defaulted.gxRenderer.translucencyMode,
+    GxRenderer.TRANSLUCENCY_EXACT,
+    "an owned HGSS field backend with no explicit mode selects exact DS translucency"
+  )
+  defaulted:release()
+
+  local explicit = FieldRenderer.new(headlessBackendOptions({
+    translucencyMode = GxRenderer.TRANSLUCENCY_APPROXIMATE,
+  }))
+  Assert.equal(
+    explicit.gxRenderer.translucencyMode,
+    GxRenderer.TRANSLUCENCY_APPROXIMATE,
+    "an explicit approximate mode still wins over the HGSS field default"
+  )
+  explicit:release()
+
+  local direct = GxRenderer.new(headlessBackendOptions())
+  Assert.equal(
+    direct.translucencyMode,
+    GxRenderer.TRANSLUCENCY_APPROXIMATE,
+    "the reusable backend default stays approximate outside the HGSS field wrapper"
+  )
+  direct:release()
+end
+
+-- Constructing the owned backend must not write the default back into the
+-- caller-owned options table.
+function T.owned_field_backend_construction_leaves_caller_options_unmutated()
+  local callerOpts = headlessBackendOptions()
+  local owner = FieldRenderer.new(callerOpts)
+  Assert.isNil(
+    callerOpts.translucencyMode,
+    "the HGSS field default must not leak into the caller-owned options table"
+  )
+  owner:release()
 end
 
 function T.rejects_a_missing_or_non_positive_camera_far_plane()

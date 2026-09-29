@@ -7,6 +7,7 @@
 
 local Assert = require("tests.support.Assert")
 local GraphicsSmoke = require("tests.support.GraphicsSmoke")
+local FieldRenderer = require("libs.hgss.src.presentation.FieldRenderer")
 local GxRenderer = require("libs.nds.src.love.GxRenderer")
 local MapSceneLoader = require("libs.hgss.src.presentation.MapSceneLoader")
 local MapAssetCache = require("libs.assets.src.MapAssetCache")
@@ -3760,7 +3761,12 @@ end
 -- returns the center color/state readback. All RGB6 values are ODD so the
 -- MODULATE 5->6 expansion (0 -> 0, n -> 2n+1) reproduces them exactly in the
 -- framebuffer (an even value like 16 would land on 17).
-local function twoTranslucentOverOpaque(scope, renderer, ids, firstRgb6, secondRgb6)
+-- Builds the shared same-ID / different-ID fixture parts without drawing:
+-- an opaque mid-gray background quad (id 20) plus two overlapping
+-- fullscreen translucent quads. Factored out so both the direct-backend
+-- reference scenarios and the production field-path scenario below consume
+-- identical geometry.
+local function translucentPairParts(scope, ids, firstRgb6, secondRgb6)
   local opaqueMesh = scope:own(syntheticMesh({
     { -1, -1, 0, 0, 0, 0, 0, 1, 1, 1, 1, 1, 0 },
     { 3, -1, 0, 1, 0, 0, 0, 1, 1, 1, 1, 1, 0 },
@@ -3779,7 +3785,29 @@ local function twoTranslucentOverOpaque(scope, renderer, ids, firstRgb6, secondR
   local second = translucentQuad(scope, ALPHA5_BYTE[8], secondRgb6[1], secondRgb6[2], secondRgb6[3])
   second.polygonId = ids[2]
 
-  return centerReadback(scope, renderer, fixedCamera(), emptyRuntime(), { { opaque, first, second } })
+  return { { opaque, first, second } }
+end
+
+local function twoTranslucentOverOpaque(scope, renderer, ids, firstRgb6, secondRgb6)
+  local parts = translucentPairParts(scope, ids, firstRgb6, secondRgb6)
+  return centerReadback(scope, renderer, fixedCamera(), emptyRuntime(), parts)
+end
+
+-- Draws one parts list through the production HGSS field path: an owned
+-- FieldRenderer with no explicit translucency mode, exactly as the field
+-- composes it. Returns the same center color/state readback shape as
+-- centerReadback so field-path results compare directly against the exact
+-- compositor references.
+local function fieldPathReadback(_, fieldRenderer, camera, parts)
+  local viewport = FieldViewport.new(640, 480, { mode = "strict" })
+  fieldRenderer:draw(emptyRuntime(), camera, parts, nil, viewport, 0)
+  local backend = fieldRenderer.gxRenderer
+  local colorImg = backend.sceneColor:newImageData()
+  local stateImg = backend.renderState:newImageData()
+  local color = scenePixel(backend, colorImg, 320, 240)
+  local sx, sy = statePixel(backend, 320, 240)
+  local state = statePixelAt(backend, stateImg, sx, sy)
+  return { color = color, state = state }
 end
 
 -- The same-ID rejection scenario: two overlapping translucent draws with the
@@ -3824,6 +3852,55 @@ function T.same_translucent_id_rejects_the_second_blend(scope)
 
   -- State A: the accepted source polygon ID, encoded (id + 1)/64.
   Assert.near(read.state[4], 8 / 64, 1 / 255, "state A must encode the accepted first polygon id 7 as (7+1)/64")
+end
+
+-- The production field-path regression: the same overlapping same-ID draws
+-- rendered once through an owned FieldRenderer (no explicit mode) must
+-- reproduce the exact DS rejection above instead of the approximate
+-- accumulated result. While the field wrapper inherits the approximate
+-- backend default this renders doubled alpha with a green tint.
+function T.field_path_same_translucent_id_rejects_the_second_blend(scope)
+  local fieldRenderer = scope:own(FieldRenderer.new({}))
+  local camera = fixedCamera()
+  camera.zoom = 1
+  local first6, second6 = { 51, 17, 17 }, { 17, 51, 17 }
+  local parts = translucentPairParts(scope, { 7, 7 }, first6, second6)
+  local read = fieldPathReadback(scope, fieldRenderer, camera, parts)
+
+  local expected6 = {
+    dsBlend6(first6[1], 31, 8),
+    dsBlend6(first6[2], 31, 8),
+    dsBlend6(first6[3], 31, 8),
+  }
+  local scale = sceneScale(read.color)
+  Assert.near(
+    read.color[1],
+    expected6[1] / 63 * scale,
+    0.5 * scale / 63,
+    "field path same-ID: red must be the background blended once (first fragment only)"
+  )
+  Assert.near(
+    read.color[2],
+    expected6[2] / 63 * scale,
+    0.5 * scale / 63,
+    "field path same-ID: green must be the background blended once"
+  )
+  Assert.near(
+    read.color[3],
+    expected6[3] / 63 * scale,
+    0.5 * scale / 63,
+    "field path same-ID: blue must be the background blended once"
+  )
+  Assert.isTrue(
+    math.abs(read.color[2] - read.color[3]) <= 0.5 * scale / 63,
+    "field path: the second (green-tinted) fragment must not blend"
+  )
+  Assert.near(
+    read.state[4],
+    8 / 64,
+    1 / 255,
+    "field path state A must encode the accepted first polygon id 7 as (7+1)/64"
+  )
 end
 
 -- The different-ID scenario: the self-rejection is keyed to ID equality, not

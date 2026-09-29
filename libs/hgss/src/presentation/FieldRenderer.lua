@@ -31,7 +31,14 @@ function FieldRenderer.new(opts)
   local gxRenderer = opts.gxRenderer
   local ownsRenderer = gxRenderer == nil
   if gxRenderer == nil then
-    gxRenderer = GxRenderer.new(opts)
+    local backendOpts = {}
+    for key, value in pairs(opts) do
+      backendOpts[key] = value
+    end
+    if backendOpts.translucencyMode == nil then
+      backendOpts.translucencyMode = GxRenderer.TRANSLUCENCY_EXACT
+    end
+    gxRenderer = GxRenderer.new(backendOpts)
   end
   return setmetatable({
     gxRenderer = gxRenderer,
