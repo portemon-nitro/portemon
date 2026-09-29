@@ -118,7 +118,20 @@ local function compileNeighbors(manifest, cancellable)
     local cancelBox = assert(default[8], "the default dpad carries the cancel box")
     assert(type(cancelBox) == "table", "the cancel dpad box is a record")
     local back = mapBoxIndex(cancelBox.up)
-    neighbors.cancel = { up = back == nil and 5 or back }
+    local links = { up = back == nil and 5 or back }
+    local down = mapBoxIndex(cancelBox.down)
+    local left = mapBoxIndex(cancelBox.leftNeighbor)
+    local right = mapBoxIndex(cancelBox.rightNeighbor)
+    if down ~= nil then
+      links.down = down
+    end
+    if left ~= nil then
+      links.left = left
+    end
+    if right ~= nil then
+      links.right = right
+    end
+    neighbors.cancel = links
   end
   return neighbors
 end

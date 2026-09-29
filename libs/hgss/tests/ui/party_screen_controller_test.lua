@@ -6,6 +6,7 @@
 
 local Assert = require("tests.support.Assert")
 local PartyScreenController = require("libs.hgss.src.ui.PartyScreenController")
+local PartyScreenLayout = require("libs.hgss.src.ui.PartyScreenLayout")
 
 local T = {}
 
@@ -55,6 +56,65 @@ local function fakeLayout(hitTarget)
   }
 end
 
+local function nativePartyLayout()
+  local panels = {}
+  for slot0 = 0, 5 do
+    panels[slot0 + 1] = {
+      origin = { x = (slot0 % 2) * 128, y = math.floor(slot0 / 2) * 48 },
+      size = { width = 128, height = 48 },
+    }
+  end
+  local function box(up, down, leftNeighbor, rightNeighbor)
+    return {
+      up = up,
+      down = down,
+      leftNeighbor = leftNeighbor,
+      rightNeighbor = rightNeighbor,
+      left = 0,
+      top = 0,
+      width = 0,
+      height = 0,
+    }
+  end
+  local function touch(top, bottom, left, right)
+    return { top = top, bottom = bottom, left = left, right = right }
+  end
+  return PartyScreenLayout.resolve({
+    manifest = {
+      panels = panels,
+      windows = { context = { x = 152, y = 120, width = 96, height = 64 } },
+      navigation = {
+        dpad = {
+          default = {
+            box(7, 2, 7, 1),
+            box(7, 3, 0, 2),
+            box(0, 4, 1, 3),
+            box(1, 5, 2, 4),
+            box(2, 7, 3, 5),
+            box(3, 7, 4, 7),
+            box(0, 0, 0, 0),
+            box(5, 1, 5, 0),
+          },
+        },
+      },
+      hitboxes = {
+        touch = {
+          default = {
+            touch(0, 48, 0, 128),
+            touch(8, 56, 128, 0),
+            touch(48, 96, 0, 128),
+            touch(56, 104, 128, 0),
+            touch(96, 144, 0, 128),
+            touch(104, 152, 128, 0),
+            touch(152, 192, 200, 0),
+          },
+        },
+      },
+    },
+    cancellable = true,
+  })
+end
+
 local function silentPolicy()
   return {
     menuFor = function(_, _)
@@ -92,7 +152,7 @@ local function newController(opts)
       end,
     },
     layout = function()
-      return fakeLayout(opts.hitTarget)
+      return opts.layout or fakeLayout(opts.hitTarget)
     end,
     swap = {
       partyRevision = function()
@@ -137,6 +197,26 @@ function T.browse_navigation_skips_empty_slots()
   Assert.equal(status(controller).cursorNode, "cancel", "navigation falls past empty slots to cancel")
   controller:updateFixed({ { type = "confirm" } })
   Assert.equal(controller:takeResult().kind, "closed")
+end
+
+function T.browse_cancel_exits_in_every_direction_with_a_sparse_party()
+  local cases = {
+    { direction = "up", expected = 0 },
+    { direction = "down", expected = 1 },
+    { direction = "left", expected = 1 },
+    { direction = "right", expected = 0 },
+  }
+  for _, case in ipairs(cases) do
+    local controller = newController({ slots = slots(2), layout = nativePartyLayout() })
+    controller:updateFixed({ { type = "navigate", direction = "down" } })
+    Assert.equal(status(controller).cursorNode, "cancel", "the sparse party reaches Cancel")
+    controller:updateFixed({ { type = "navigate", direction = case.direction } })
+    Assert.equal(
+      status(controller).cursorNode,
+      case.expected,
+      case.direction .. " from Cancel reaches an occupied slot"
+    )
+  end
 end
 
 function T.browse_revision_change_reconciles_the_cursor()

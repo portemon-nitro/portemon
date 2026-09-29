@@ -467,10 +467,15 @@ function T.tests.party_grid_static_frame_and_reflow_journey_preserves_semantics(
     )
     Assert.equal(reflowed.presentation.inputKey, inputKey, "a reflow keeps the input geometry")
 
-    -- Down onto cancel and confirm closes back through the menu to the
-    -- unchanged field session with the reorder intact.
+    -- Down onto Cancel, right exits through its native edge, and down
+    -- returns to Cancel before confirm closes through the menu.
+    local revisionBeforeClose = service:partyRevision()
     pressKey(game, state, "s")
     Assert.equal(partyView(game).cursorNode, "cancel", "down reaches cancel before closing")
+    pressKey(game, state, "d")
+    Assert.equal(partyView(game).cursorNode, 0, "right exits cancel to the lead slot")
+    pressKey(game, state, "s")
+    Assert.equal(partyView(game).cursorNode, "cancel", "down returns to cancel after navigation resumes")
     confirm(game)
     game:advanceUntil("party screen closes without choosing", function()
       local phase = hostPhase(game)
@@ -478,6 +483,7 @@ function T.tests.party_grid_static_frame_and_reflow_journey_preserves_semantics(
     end, 120)
     closeStartMenu(game)
     Assert.equal(hostPhase(game), FieldApplicationHost.PHASES.closed, "the journey ends back on the field")
+    Assert.equal(service:partyRevision(), revisionBeforeClose, "closing from cancel does not mutate the party")
     Assert.deepEqual(partyOrder(game), { "CYNDAQUIL", "CHIKORITA" }, "closing preserves the switched order")
   end)
 end

@@ -91,7 +91,7 @@ function T.manifest_dpad_compiles_neighbors_with_the_cancel_mapping()
   Assert.equal(layout.neighbors[0].down, 2)
   Assert.equal(layout.neighbors[4].down, "cancel", "the bottom row drops to cancel")
   Assert.equal(layout.neighbors[5].down, "cancel")
-  Assert.equal(layout.neighbors.cancel.up, 5)
+  Assert.deepEqual(layout.neighbors.cancel, { up = 5, down = 1, left = 5, right = 0 })
   Assert.equal(layout.neighbors[0].left, "cancel", "source left links resolve, never wrap")
 end
 
