@@ -645,28 +645,20 @@ function T.completeAction_with_text_shows_the_message()
   Assert.isTrue(resumed.menu ~= nil and #resumed.menu == 4, "acknowledging keeps a usable originating menu")
 end
 
-function T.completed_action_with_vanished_origin_slot_returns_to_browse()
+function T.completed_action_after_party_revision_change_returns_to_browse()
   local controller, _, control = nativeController()
   controller:updateFixed({ { type = "confirm" } })
   controller:updateFixed({ { type = "confirm" } })
   Assert.equal(nativeStatus(controller).state, "waiting_action")
   controller:takeIntent()
-  control.setSpecs({ [1] = { occupied = false }, [2] = {} })
+  control.setSpecs({ [1] = { heldItem = "POTION" }, [2] = {} })
   controller:updateFixed({})
   controller:completeAction({ kind = "no_op" })
   local restored = nativeStatus(controller)
-  Assert.equal(
-    restored.state,
-    "browse",
-    "a vanished origin menu falls back to browse, never an empty menu state"
-  )
-  Assert.isNil(restored.menu, "no menu survives without its originating slot")
-  controller:updateFixed({ { type = "confirm" } })
-  Assert.equal(
-    nativeStatus(controller).state,
-    "context",
-    "later input opens the surviving mon menu"
-  )
+  Assert.equal(restored.state, "browse", "a changed party revision discards the originating menu")
+  Assert.isNil(restored.menu, "no menu survives a stale action return")
+  Assert.isTrue(restored.view.slots[1].occupied, "the origin slot remains occupied")
+  Assert.equal(restored.cursorNode, 0, "the cursor reconciles to a selectable slot")
 end
 
 function T.take_entry_routes_through_the_yesno_confirm()
