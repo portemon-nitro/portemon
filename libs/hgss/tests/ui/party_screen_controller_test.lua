@@ -456,6 +456,10 @@ local function nativeController(opts)
     setRevision = function(nextRevision)
       revision = nextRevision
     end,
+    setSpecs = function(nextSpecs)
+      specs = nextSpecs
+      revision = revision + 1
+    end,
   }
 end
 
@@ -618,6 +622,7 @@ function T.completeAction_with_noop_returns_to_origin_silently()
   controller:completeAction({ kind = "no_op" })
   local restored = nativeStatus(controller)
   Assert.equal(restored.state, "context", "the no-op returns to the originating menu state")
+  Assert.isNil(restored.prompt, "the armed prompt is released before the intent is emitted")
   Assert.equal(restored.menuIndex, 1, "the no-op restores the menu position")
   Assert.equal(#restored.menu, 4, "the no-op rebuilds the originating menu")
   Assert.isNil(controller:takeResult())
@@ -634,6 +639,34 @@ function T.completeAction_with_text_shows_the_message()
   local shown = nativeStatus(controller)
   Assert.equal(shown.state, "message", "a text outcome shows the message")
   Assert.equal(shown.message, "Hello", "the message carries the outcome text")
+  controller:updateFixed({ { type = "confirm" } })
+  local resumed = nativeStatus(controller)
+  Assert.equal(resumed.state, "context", "acknowledging returns to the originating menu state")
+  Assert.isTrue(resumed.menu ~= nil and #resumed.menu == 4, "acknowledging keeps a usable originating menu")
+end
+
+function T.completed_action_with_vanished_origin_slot_returns_to_browse()
+  local controller, _, control = nativeController()
+  controller:updateFixed({ { type = "confirm" } })
+  controller:updateFixed({ { type = "confirm" } })
+  Assert.equal(nativeStatus(controller).state, "waiting_action")
+  controller:takeIntent()
+  control.setSpecs({ [1] = { occupied = false }, [2] = {} })
+  controller:updateFixed({})
+  controller:completeAction({ kind = "no_op" })
+  local restored = nativeStatus(controller)
+  Assert.equal(
+    restored.state,
+    "browse",
+    "a vanished origin menu falls back to browse, never an empty menu state"
+  )
+  Assert.isNil(restored.menu, "no menu survives without its originating slot")
+  controller:updateFixed({ { type = "confirm" } })
+  Assert.equal(
+    nativeStatus(controller).state,
+    "context",
+    "later input opens the surviving mon menu"
+  )
 end
 
 function T.take_entry_routes_through_the_yesno_confirm()
