@@ -1,9 +1,7 @@
 -- Renders the field Yes/No list in source coordinates under one host placement.
 
 local FieldDrawState = require("libs.hgss.src.presentation.FieldDrawState")
-local FieldDialogueTheme = require("libs.hgss.src.ui.FieldDialogueTheme")
 local LogicalSurface = require("libs.ui.src.LogicalSurface")
-local NativeDisplay = require("libs.ui.src.NativeDisplay")
 
 ---@alias FieldYesNoRenderer.Color { r: integer, g: integer, b: integer }
 ---@alias FieldYesNoRenderer.Palette { [integer]: FieldYesNoRenderer.Color }
@@ -23,40 +21,6 @@ local NativeDisplay = require("libs.ui.src.NativeDisplay")
 ---@field _window FieldYesNoRenderer.WindowRenderer
 local FieldYesNoRenderer = {}
 FieldYesNoRenderer.__index = FieldYesNoRenderer
-
-local CONTENT = { x = 25 * 8, y = 13 * 8, width = 6 * 8, height = 4 * 8 }
-local REFERENCE = { width = NativeDisplay.WIDTH, height = NativeDisplay.HEIGHT }
-
-local function fits(rect, bounds)
-  return rect.x >= bounds.x
-    and rect.y >= bounds.y
-    and rect.x + rect.width <= bounds.x + bounds.width
-    and rect.y + rect.height <= bounds.y + bounds.height
-end
-
-local function adaptedFrameBounds()
-  local minX, minY = 0, 0
-  local maxX, maxY = CONTENT.width, CONTENT.height
-  for _, tile in
-    ipairs(FieldDialogueTheme.frameTilePlacements({ x = 0, y = 0, width = CONTENT.width, height = CONTENT.height }))
-  do
-    minX = math.min(minX, tile.x)
-    minY = math.min(minY, tile.y)
-    maxX = math.max(maxX, tile.x + FieldDialogueTheme.frameTileSize * (tile.spanX or 1))
-    maxY = math.max(maxY, tile.y + FieldDialogueTheme.frameTileSize * (tile.spanY or 1))
-  end
-  return { x = minX, y = minY, width = maxX - minX, height = maxY - minY }
-end
-
-local function surfaceFor(topology)
-  assert(type(topology) == "table" and type(topology.surfaces) == "table", "yes/no layout requires a screen topology")
-  for _, surface in ipairs(topology.surfaces) do
-    if surface.role == "auxiliary" then
-      return surface
-    end
-  end
-  return assert(topology.surfaces[1], "yes/no layout requires a display surface")
-end
 
 ---@param palette FieldYesNoRenderer.Palette
 ---@return number[]
@@ -97,104 +61,9 @@ function FieldYesNoRenderer.new(opts)
   return setmetatable({ _graphics = graphics, _text = text, _window = window }, FieldYesNoRenderer)
 end
 
----@param status { active: boolean, selectedIndex: integer, yesText: string, noText: string, frameIndex: integer? }
----@param topology ScreenTopology
----@param dialogueBox table<string, number>?
----@param adaptedHost { bounds: { x: number, y: number, width: number, height: number }, preferredScale: integer }?
----@return table<string, unknown>
-function FieldYesNoRenderer:layout(status, topology, dialogueBox, adaptedHost)
-  assert(type(status) == "table" and status.active == true, "yes/no layout requires an active choice")
-  assert(status.selectedIndex == 0 or status.selectedIndex == 1, "yes/no selection is outside the two choices")
-  assert(type(status.yesText) == "string" and type(status.noText) == "string", "yes/no labels are required")
-  local surface = surfaceFor(topology)
-  local safe = assert(surface.safeRect or surface.rect)
-  if
-    surface.role == "auxiliary"
-    and surface.rect.width >= REFERENCE.width
-    and surface.rect.height >= REFERENCE.height
-  then
-    local scale = math.min(safe.width / REFERENCE.width, safe.height / REFERENCE.height)
-    assert(scale > 0, "yes/no source presentation requires a positive scale")
-    local originX = safe.x + (safe.width - REFERENCE.width * scale) / 2
-    local originY = safe.y + (safe.height - REFERENCE.height * scale) / 2
-    return {
-      surface = surface,
-      presentation = "source",
-      content = CONTENT,
-      placement = {
-        frame = { x = originX, y = originY, width = REFERENCE.width * scale, height = REFERENCE.height * scale },
-        origin = { x = originX, y = originY },
-        scale = scale,
-        clipRect = safe,
-      },
-    }
-  end
-
-  local host = assert(adaptedHost, "adapted yes/no layout requires field UI bounds")
-  local bounds = assert(host.bounds, "adapted yes/no layout requires field UI bounds")
-  assert(
-    type(bounds.x) == "number"
-      and type(bounds.y) == "number"
-      and type(bounds.width) == "number"
-      and type(bounds.height) == "number"
-      and bounds.width > 0
-      and bounds.height > 0,
-    "adapted yes/no layout requires positive field UI bounds"
-  )
-  local preferredScale = host.preferredScale
-  assert(
-    type(preferredScale) == "number" and preferredScale > 0 and preferredScale == math.floor(preferredScale),
-    "adapted yes/no layout requires a positive integer preferred scale"
-  )
-  local outer = adaptedFrameBounds()
-  local hostFit = math.min(bounds.width / outer.width, bounds.height / outer.height)
-  local scale
-  if hostFit >= 1 then
-    scale = math.min(preferredScale, math.floor(hostFit))
-  else
-    scale = hostFit
-  end
-  assert(scale > 0, "yes/no adapted presentation requires a positive scale")
-  local width = outer.width * scale
-  local height = outer.height * scale
-  local hostFrame =
-    { x = bounds.x + bounds.width - width, y = bounds.y + bounds.height - height, width = width, height = height }
-  if dialogueBox then
-    local dialogueRight = dialogueBox.x + dialogueBox.width
-    local fitAbove = math.min((dialogueRight - bounds.x) / outer.width, (dialogueBox.y - bounds.y) / (outer.height + 2))
-    if fitAbove > 0 then
-      local fitScale = fitAbove >= 1 and math.floor(fitAbove) or fitAbove
-      scale = math.min(scale, fitScale)
-      width = outer.width * scale
-      height = outer.height * scale
-      hostFrame = {
-        x = dialogueRight - width,
-        y = dialogueBox.y - 2 * scale - height,
-        width = width,
-        height = height,
-      }
-      hostFrame.x = math.max(bounds.x, math.min(hostFrame.x, bounds.x + bounds.width - width))
-      hostFrame.y = math.max(bounds.y, math.min(hostFrame.y, bounds.y + bounds.height - height))
-    end
-  end
-  assert(fits(hostFrame, bounds), "yes/no choice frame leaves field UI bounds")
-  local hostContentOrigin = {
-    x = hostFrame.x - outer.x * scale,
-    y = hostFrame.y - outer.y * scale,
-  }
-  return {
-    surface = surface,
-    presentation = "adapted",
-    content = { x = 0, y = 0, width = CONTENT.width, height = CONTENT.height },
-    placement = {
-      frame = hostFrame,
-      origin = hostContentOrigin,
-      scale = scale,
-      clipRect = bounds,
-    },
-  }
-end
-
+-- Layout arrives from the live choice host, which owns the single geometry
+-- shared by fixed-tick hit testing and this draw. This renderer never
+-- resolves layout itself.
 ---@param status { selectedIndex: integer, yesText: string, noText: string, frameIndex: integer? }
 ---@param layout table<string, unknown>
 function FieldYesNoRenderer:draw(status, layout)

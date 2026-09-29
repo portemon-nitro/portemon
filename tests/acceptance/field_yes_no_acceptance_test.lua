@@ -6,6 +6,7 @@ local AcceptanceHarness = require("tests.acceptance.support.AcceptanceHarness")
 local AcceptanceScripts = require("tests.acceptance.support.AcceptanceScripts")
 local FieldEventState = require("libs.hgss.src.field.FieldEventState")
 local FieldScriptSymbols = require("libs.assets.src.field.FieldScriptSymbols")
+local LayoutGeometry = require("libs.ui.src.LayoutGeometry")
 local PlayTime = require("libs.hgss.src.save.PlayTime")
 local ScreenTopology = require("libs.hgss.src.ui.ScreenTopology")
 
@@ -88,6 +89,25 @@ local function pressCancel(game)
   return snapshot
 end
 
+-- Resolves the host pixel center of a Yes/No row through the live
+-- presentation host: the same resolved geometry the field draws and the
+-- fixed-tick pointer mapping consumes. The row rectangles are the two 16px
+-- rows of the drawn content box.
+local function yesNoRowCenter(game, row)
+  local runtime = game.runtime
+  local host = assert(runtime.yesNoHost, "the field owns a live Yes/No host while choosing")
+  local presentation = host:presentation()
+  Assert.isTrue(presentation ~= nil, "a Yes/No choice must be open to resolve its rows")
+  local layout = assert(presentation).layout
+  local content = assert(layout.content, "Yes/No layout must publish its content box")
+  local hostX, hostY = LayoutGeometry.logicalToHost(
+    assert(layout.placement, "Yes/No layout must publish its placement"),
+    content.x + content.width / 2,
+    content.y + row * 16 + 8
+  )
+  return hostX, hostY
+end
+
 -- A field script reaches the production Yes/No owner and writes source-shaped
 -- values through the scheduler. The selected frame and ordinary dialogue
 -- remain live until the script's explicit close_message operation.
@@ -122,6 +142,94 @@ function T.tests.field_script_yes_no_is_interactive_and_preserves_dialogue()
 
   withGame(singleDisplay(640, 480), exercise)
   withGame(singleDisplay(360, 640), exercise)
+end
+
+-- Pointer gestures answer a field Yes/No through the fixed-tick modal lane.
+-- A same-row press/release writes the source result while drags and outside
+-- releases answer nothing, leave ordinary dialogue open, and never move
+-- the player with the consumed edge.
+function T.tests.pointer_gestures_answer_field_yes_no_without_moving_the_world()
+  withGame(singleDisplay(640, 480), function(game)
+    game:waitForFieldEntry()
+    game:startScript("acceptance.field_yes_no")
+    game:advanceUntil("field Yes/No choice opens for pointer input", function()
+      return game.runtime.scripts.dialogueHost:yesNoPresentation() ~= nil
+    end, 480)
+
+    local before = game:snapshot().player
+
+    local noX, noY = yesNoRowCenter(game, 1)
+    game.runtime.input:pointerDown("acceptance:yes-no-no", noX, noY)
+    game:step()
+    game.runtime.input:pointerUp("acceptance:yes-no-no", noX, noY)
+    game:advanceUntil("pointer No writes its source result", function()
+      return game.runtime.scripts.worldState:getVar(VAR_FIRST_RESULT) == 1
+    end, 120)
+    Assert.equal(game.runtime.scripts.worldState:getVar(VAR_FIRST_RESULT), 1, "pointer No writes source value 1")
+    Assert.isTrue(game:snapshot().dialogue.modal, "answering by pointer keeps ordinary dialogue open")
+    local afterNo = game:snapshot().player
+    Assert.equal(afterNo.fieldX, before.fieldX, "a pointer choice must not step the player")
+    Assert.equal(afterNo.fieldZ, before.fieldZ, "a pointer choice must not step the player")
+
+    game:advanceUntil("second field Yes/No choice opens for pointer input", function()
+      return game.runtime.scripts.dialogueHost:yesNoPresentation() ~= nil
+    end, 120)
+    local yesX, yesY = yesNoRowCenter(game, 0)
+    game.runtime.input:pointerDown("acceptance:yes-no-yes", yesX, yesY)
+    game:step()
+    game.runtime.input:pointerUp("acceptance:yes-no-yes", yesX, yesY)
+    game:advanceUntil("pointer Yes writes its source result", function()
+      return game.runtime.scripts.worldState:getVar(VAR_SECOND_RESULT) == 0
+    end, 120)
+    Assert.isTrue(game:snapshot().dialogue.modal, "answering Yes by pointer keeps ordinary dialogue open")
+    local afterYes = game:snapshot().player
+    Assert.equal(afterYes.fieldX, before.fieldX, "a pointer choice must not step the player")
+    Assert.equal(afterYes.fieldZ, before.fieldZ, "a pointer choice must not step the player")
+
+    game:advanceUntil("third field Yes/No choice opens for negative gestures", function()
+      return game.runtime.scripts.dialogueHost:yesNoPresentation() ~= nil
+    end, 120)
+    local thirdBefore = game.runtime.scripts.worldState:getVar(VAR_THIRD_RESULT)
+    local dragX, dragY = yesNoRowCenter(game, 0)
+    game.runtime.input:pointerDown("acceptance:yes-no-drag", dragX, dragY)
+    game:step()
+    game.runtime.input:pointerMove("acceptance:yes-no-drag", dragX + 160, dragY + 160)
+    game:step()
+    game.runtime.input:pointerUp("acceptance:yes-no-drag", dragX + 160, dragY + 160)
+    game:step()
+    game:step()
+    Assert.isTrue(
+      game.runtime.scripts.dialogueHost:yesNoPresentation() ~= nil,
+      "a dragged gesture must not answer the choice"
+    )
+    Assert.equal(
+      game.runtime.scripts.worldState:getVar(VAR_THIRD_RESULT),
+      thirdBefore,
+      "a dragged gesture writes no source result"
+    )
+
+    game.runtime.input:pointerDown("acceptance:yes-no-outside", 4, 4)
+    game:step()
+    game.runtime.input:pointerUp("acceptance:yes-no-outside", 8, 8)
+    game:step()
+    game:step()
+    Assert.isTrue(
+      game.runtime.scripts.dialogueHost:yesNoPresentation() ~= nil,
+      "an outside gesture must not answer the choice"
+    )
+    Assert.equal(
+      game.runtime.scripts.worldState:getVar(VAR_THIRD_RESULT),
+      thirdBefore,
+      "an outside gesture writes no source result"
+    )
+    Assert.isTrue(game:snapshot().dialogue.modal, "negative gestures keep ordinary dialogue open")
+
+    pressAction(game)
+    game:advanceUntil("keyboard answer still completes the dragged choice", function()
+      return game.runtime.scripts.worldState:getVar(VAR_THIRD_RESULT) == 0
+    end, 120)
+    Assert.isTrue(game:snapshot().dialogue.modal, "answering leaves the ordinary message open for its script owner")
+  end)
 end
 
 function T.tests.cancelling_active_field_yes_no_releases_only_the_choice()

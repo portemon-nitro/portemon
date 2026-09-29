@@ -27,21 +27,34 @@ function FieldYesNoController:open(request)
   self.frameIndex = request.frameIndex
 end
 
----@param input { pressedDirection: string?, pressedAction: boolean?, pressedCancel: boolean? }
-function FieldYesNoController:handleInput(input)
+-- Semantic choice events translated by the live presentation host from the
+-- fixed-tick input lane. Raw directional/action/cancel edges never reach
+-- this controller directly.
+---@param event { type: string, row: integer?, direction: string? }
+function FieldYesNoController:handleEvent(event)
   if not self.active then
     return
   end
-  input = input or {}
-  if input.pressedDirection == "up" or input.pressedDirection == "north" then
-    self.selectedIndex = math.max(0, self.selectedIndex - 1)
-  elseif input.pressedDirection == "down" or input.pressedDirection == "south" then
-    self.selectedIndex = math.min(1, self.selectedIndex + 1)
-  end
-  if input.pressedCancel then
-    self.result = { accepted = false }
-  elseif input.pressedAction then
+  assert(type(event) == "table" and type(event.type) == "string", "choice event is invalid")
+  if event.type == "focus" then
+    assert(event.row == 0 or event.row == 1, "choice focus is outside the two choices")
+    self.selectedIndex = event.row
+  elseif event.type == "navigate" then
+    if event.direction == "up" then
+      self.selectedIndex = math.max(0, self.selectedIndex - 1)
+    elseif event.direction == "down" then
+      self.selectedIndex = math.min(1, self.selectedIndex + 1)
+    elseif event.direction == "left" or event.direction == "right" then
+      -- Horizontal edges never move the two-row selection.
+    else
+      assert(false, "choice navigate direction is invalid")
+    end
+  elseif event.type == "confirm" then
     self.result = { accepted = self.selectedIndex == 0 }
+  elseif event.type == "cancel" then
+    self.result = { accepted = false }
+  else
+    assert(false, "unknown choice event " .. event.type)
   end
 end
 

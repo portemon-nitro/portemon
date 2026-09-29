@@ -11,6 +11,19 @@ local InactivePokemonNaming = require("tests.support.InactivePokemonNaming")
 
 local T = {}
 
+-- No choice is ever presented on these draw paths: the shared host stays
+-- idle and fails loudly if a choice layout is ever requested.
+local function idleChoiceHost()
+  return {
+    presentation = function()
+      return nil
+    end,
+    layoutFor = function()
+      error("no choice is active in this fixture", 0)
+    end,
+  }
+end
+
 -- A bare FieldState (no boot) shaped like a live presentation state: the
 -- canonical runtime fields the draw path touches, a stubbed renderer, and the
 -- development flag under test. The player visual record is invisible, so the
@@ -94,6 +107,7 @@ local function drawableState(development)
           return nil
         end,
       },
+      yesNoHost = idleChoiceHost(),
       resizePresentation = function() end,
     },
     topologyProvider = function()

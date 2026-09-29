@@ -19,6 +19,26 @@ local InactivePokemonNaming = require("tests.support.InactivePokemonNaming")
 
 local T = {}
 
+-- No choice is ever presented on these draw paths: the shared host stays
+-- idle and fails loudly if a choice layout is ever requested. It also
+-- satisfies the session's host shape while staying non-modal.
+local function idleChoiceHost()
+  return {
+    presentation = function()
+      return nil
+    end,
+    layoutFor = function()
+      error("no choice is active in this fixture", 0)
+    end,
+    isModal = function()
+      return false
+    end,
+    inputEvents = function()
+      return {}
+    end,
+  }
+end
+
 local function actorRecord(actorId, spriteId)
   return {
     actorId = actorId,
@@ -333,6 +353,7 @@ local function drawOrderState(starterActive)
           return nil
         end,
       },
+      yesNoHost = idleChoiceHost(),
       starterChoice = starter,
       resizePresentation = function() end,
     },
@@ -484,6 +505,7 @@ function T.draw_passes_the_scene_runtime_and_queries_the_menu_host()
           return nil
         end,
       },
+      yesNoHost = idleChoiceHost(),
       resizePresentation = function() end,
     },
     _pollPresentationTopology = true,
@@ -609,6 +631,7 @@ function T.draw_sends_static_actor_models_to_world_and_billboards_to_presentatio
           return nil
         end,
       },
+      yesNoHost = idleChoiceHost(),
       resizePresentation = function() end,
     },
     _pollPresentationTopology = true,
@@ -1000,6 +1023,7 @@ function T.destination_world_is_not_drawn_before_entry_presentation_is_ready()
           return nil
         end,
       },
+      yesNoHost = idleChoiceHost(),
       resizePresentation = function() end,
     },
     _pollPresentationTopology = false,
@@ -1134,6 +1158,7 @@ function T.destination_frames_draw_and_acknowledge_only_after_successful_present
         end,
         advance = function() end,
       },
+      yesNoHost = idleChoiceHost(),
       contextChoice = {
         isActive = function()
           return false
@@ -1241,6 +1266,7 @@ function T.destination_frames_draw_and_acknowledge_only_after_successful_present
           return nil
         end,
       },
+      yesNoHost = idleChoiceHost(),
       resizePresentation = function() end,
     }
     local state = setmetatable({

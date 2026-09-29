@@ -4,6 +4,8 @@
 
 local CacheFs = require("libs.storage.src.CacheFs")
 local DialogueLayout = require("libs.hgss.src.ui.DialogueLayout")
+local DialoguePresentationLayout = require("libs.hgss.src.ui.DialoguePresentationLayout")
+local PixelScale = require("libs.ui.src.PixelScale")
 local FieldActorDefinitionProvider = require("libs.hgss.src.actors.FieldActorDefinitionProvider")
 local AuxiliaryFieldUi = require("libs.hgss.src.ui.AuxiliaryFieldUi")
 local ContextChoiceProvider = require("libs.hgss.src.interaction.ContextChoiceProvider")
@@ -23,6 +25,7 @@ local FieldCameraCache = require("libs.assets.src.field.FieldCameraCache")
 local FieldActorCache = require("libs.assets.src.field.FieldActorCache")
 local FieldInput = require("libs.hgss.src.field.FieldInput")
 local FieldMenuHost = require("libs.hgss.src.ui.FieldMenuHost")
+local FieldYesNoHost = require("libs.hgss.src.ui.FieldYesNoHost")
 local FieldInteractionResolver = require("libs.hgss.src.interaction.FieldInteractionResolver")
 local FieldEventResolver = require("libs.hgss.src.interaction.FieldEventResolver")
 local FieldMapDataCache = require("libs.assets.src.field.FieldMapDataCache")
@@ -204,6 +207,7 @@ end
 ---@field partySelection table<string, unknown>? the modal script-party surface the blocking selection task opens and closes
 ---@field pokemonNaming PokemonNamingState the script-owned Pokemon Naming Screen host
 ---@field menuHost FieldMenuHost?
+---@field yesNoHost FieldYesNoHost? the live choice presentation host shared by the session, the script dialogue host, and field draw
 ---@field actionKeys table<string, boolean>?
 ---@field cancelKeys table<string, boolean>?
 ---@field menuKeys table<string, boolean>?
@@ -985,6 +989,21 @@ function FieldRuntime:_load()
       screenTopology = self.screenTopology,
       measureText = FieldDialogueTheme.measureText(fontDef),
     })
+    -- The live choice host shares the menu host's measurement and topology
+    -- so draw and pointer mapping resolve one geometry. Its dialogue anchor
+    -- reads the live runtime below; resolution only runs while a choice or
+    -- a contextual prompt is presented.
+    local function yesNoPresentationContext()
+      return self:yesNoPresentationContext()
+    end
+    self.yesNoHost = FieldYesNoHost.new({
+      width = self.viewportWidth,
+      height = self.viewportHeight,
+      input = self.input,
+      screenTopology = self.screenTopology,
+      measureText = FieldDialogueTheme.measureText(fontDef),
+      presentation = yesNoPresentationContext,
+    })
     local function layoutMessage(formatted)
       return DialogueLayout.layout(
         formatted.tokens,
@@ -1290,6 +1309,7 @@ function FieldRuntime:_load()
       scriptClient = self.scripts.client,
       initController = self.scripts.initController,
       menuHost = self.menuHost,
+      yesNoHost = self.yesNoHost,
       contextChoice = self.contextChoiceProvider,
       starterChoice = self.starterChoice,
       partySelection = self.partySelection,
@@ -2242,6 +2262,44 @@ function FieldRuntime:applyFieldPixelScaleChange()
   self:_updateCameraProjection()
 end
 
+-- Presentation facts for the live choice host: the same bounds, dialogue
+-- anchor, and preferred scale the field draw uses for its attached UI.
+---@return { topology: ScreenTopology, bounds: { x: number, y: number, width: number, height: number }, dialogueBox: { x: number, y: number, width: number, height: number }?, preferredScale: integer }
+function FieldRuntime:yesNoPresentationContext()
+  local viewport = assert(self.viewport, "choice presentation requires the field viewport")
+  local bounds = viewport.worldViewport
+  if type(bounds) ~= "table" or type(bounds.width) ~= "number" or type(bounds.height) ~= "number" then
+    bounds = viewport.referenceFrame
+  end
+  if type(bounds) ~= "table" or type(bounds.width) ~= "number" or type(bounds.height) ~= "number" then
+    bounds = {
+      x = 0,
+      y = 0,
+      width = assert(self.viewportWidth, "choice presentation requires viewport dimensions"),
+      height = assert(self.viewportHeight, "choice presentation requires viewport dimensions"),
+    }
+  end
+  local fieldScale = assert(self.fieldPixelScale, "choice presentation requires the field scale"):resolvedScale()
+  local dialogueBox
+  local preferredScale = fieldScale
+  if assert(self.dialogue, "choice presentation requires the dialogue controller"):isModal() then
+    local manifestPlacement = assert(self.uiManifest).dialogueFrames.continueCursor.placement
+    local dialogueScale = PixelScale.fitPreferred(bounds, 256, 48, assert(fieldScale))
+    dialogueBox = DialoguePresentationLayout.compute(bounds, {
+      scale = dialogueScale,
+      allowClipping = true,
+      cursorPlacement = manifestPlacement,
+    }).outerRect
+    preferredScale = dialogueScale
+  end
+  return {
+    topology = assert(self.screenTopology, "choice presentation requires the screen topology"),
+    bounds = bounds,
+    dialogueBox = dialogueBox,
+    preferredScale = preferredScale,
+  }
+end
+
 -- Presentation geometry sync owned by the runtime: the viewport and menu
 -- host geometry, the new screen topology, the complete measured display,
 -- and the camera projection update together. FieldState calls this exactly
@@ -2254,6 +2312,8 @@ function FieldRuntime:resizePresentation(width, height, screenTopology)
   self.viewport:resize(width, height)
   self.menuHost:resize(width, height)
   self.menuHost:setScreenTopology(screenTopology)
+  self.yesNoHost:resize(width, height)
+  self.yesNoHost:setScreenTopology(screenTopology)
   self:_updateCameraProjection()
   self._displayTopology = screenTopology
   self.presentationDisplay = self.displayContext:measure(width, height)
@@ -2337,6 +2397,7 @@ function FieldRuntime:_releaseAll()
   self.fieldEntranceIndicator, self.fieldEntranceIndicatorAsset = nil, nil
   self.fieldEmoteModels = nil
   self.viewport, self.input, self.menuHost = nil, nil, nil
+  self.yesNoHost = nil
   self.auxiliaryFieldUi, self.contextChoiceProvider, self.interactionResolver = nil, nil, nil
   self.eventState, self.avatar, self.actorConfig, self.playerData = nil, nil, nil, nil
   self.playerAvatar = nil

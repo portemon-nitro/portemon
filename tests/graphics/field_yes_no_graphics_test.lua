@@ -5,6 +5,7 @@ local GraphicsSmoke = require("tests.support.GraphicsSmoke")
 local FieldDialogueFixture = require("tests.support.FieldDialogueFixture")
 local FieldDialogueTheme = require("libs.hgss.src.ui.FieldDialogueTheme")
 local FieldTextRenderer = require("libs.hgss.src.ui.FieldTextRenderer")
+local FieldYesNoHost = require("libs.hgss.src.ui.FieldYesNoHost")
 local ScreenTopology = require("libs.hgss.src.ui.ScreenTopology")
 
 local T = {}
@@ -33,6 +34,38 @@ end
 
 local function status(selectedIndex, frameIndex)
   return { active = true, selectedIndex = selectedIndex, yesText = "YES", noText = "NO", frameIndex = frameIndex }
+end
+
+-- Layout resolves through the live choice host, the single geometry owner
+-- shared by pointer mapping and draw. The deterministic per-character
+-- measurement keeps these graphics assertions hermetic; production font
+-- measurement is covered by the host unit tests and the acceptance flow.
+local function hostLayout(choice, topology, dialogueBox, adaptedHost)
+  local bounds = { x = 0, y = 0, width = 640, height = 480 }
+  if adaptedHost ~= nil and adaptedHost.bounds ~= nil then
+    bounds = adaptedHost.bounds
+  end
+  local host = FieldYesNoHost.new({
+    width = 640,
+    height = 480,
+    input = {
+      beginUi = function() end,
+      clearUi = function() end,
+    },
+    screenTopology = topology,
+    measureText = function(text)
+      return #text * 8
+    end,
+    presentation = function()
+      return {
+        topology = topology,
+        bounds = bounds,
+        dialogueBox = dialogueBox,
+        preferredScale = (adaptedHost ~= nil and adaptedHost.preferredScale) or 1,
+      }
+    end,
+  })
+  return host:layoutFor(choice)
 end
 
 local function testRenderer()
@@ -103,7 +136,7 @@ end
 
 function T.dual_display_choice_keeps_canonical_content_under_a_two_x_placement()
   local renderer = testRenderer()
-  local layout = renderer:layout(status(0, 1), dualTopology(512, 384), nil)
+  local layout = hostLayout(status(0, 1), dualTopology(512, 384), nil)
   Assert.equal(layout.presentation, "source")
   Assert.deepEqual(layout.content, { x = 200, y = 104, width = 48, height = 32 })
   Assert.deepEqual(layout.placement.frame, { x = 520, y = 40, width = 512, height = 384 })
@@ -123,7 +156,7 @@ function T.single_display_choice_stays_inside_portrait_safe_area()
     touch = false,
   })
   local bounds = { x = 12, y = 24, width = 336, height = 592 }
-  local layout = renderer:layout(
+  local layout = hostLayout(
     status(1, 1),
     topology,
     { x = 12, y = 300, width = 336, height = 160 },
@@ -131,7 +164,7 @@ function T.single_display_choice_stays_inside_portrait_safe_area()
   )
   local hostContent = layout.placement.origin
   Assert.equal(layout.presentation, "adapted")
-  Assert.deepEqual(layout.content, { x = 0, y = 0, width = 48, height = 32 })
+  Assert.deepEqual(layout.content, { x = 0, y = 0, width = 40, height = 32 })
   Assert.equal(layout.placement.scale, 1)
   Assert.equal(
     layout.placement.frame.x + layout.placement.frame.width,
@@ -164,30 +197,30 @@ function T.single_display_choice_attaches_above_the_dialogue_right_edge()
   local bounds = { x = 12, y = 24, width = 616, height = 432 }
   local adaptedHost = { bounds = bounds, preferredScale = 1 }
   local dialogue = { x = 100, y = 100, width = 200, height = 80 }
-  local below = renderer:layout(choice, topology, dialogue, adaptedHost)
+  local below = hostLayout(choice, topology, dialogue, adaptedHost)
   Assert.deepEqual(
     below.placement.frame,
-    { x = 212, y = 50, width = 88, height = 48 },
+    { x = 220, y = 50, width = 80, height = 48 },
     "choice frame sits two logical pixels above and right-aligned with dialogue"
   )
-  Assert.deepEqual(below.placement.origin, { x = 228, y = 58 }, "content sits inside the fitted frame")
+  Assert.deepEqual(below.placement.origin, { x = 236, y = 58 }, "content sits inside the fitted frame")
 
   dialogue = { x = 100, y = 410, width = 200, height = 40 }
-  local above = renderer:layout(choice, topology, dialogue, adaptedHost)
+  local above = hostLayout(choice, topology, dialogue, adaptedHost)
   Assert.deepEqual(
     above.placement.frame,
-    { x = 212, y = 360, width = 88, height = 48 },
+    { x = 220, y = 360, width = 80, height = 48 },
     "choice frame keeps the two-pixel gap and shared right edge when above fits"
   )
-  Assert.deepEqual(above.placement.origin, { x = 228, y = 368 }, "content retains its frame inset")
+  Assert.deepEqual(above.placement.origin, { x = 236, y = 368 }, "content retains its frame inset")
 
-  local fallback = renderer:layout(choice, topology, bounds, adaptedHost)
+  local fallback = hostLayout(choice, topology, bounds, adaptedHost)
   Assert.deepEqual(
     fallback.placement.frame,
-    { x = 540, y = 408, width = 88, height = 48 },
+    { x = 548, y = 408, width = 80, height = 48 },
     "frame that cannot fit above is clamped into the host bounds"
   )
-  Assert.deepEqual(fallback.placement.origin, { x = 556, y = 416 }, "fallback content remains inside the frame")
+  Assert.deepEqual(fallback.placement.origin, { x = 564, y = 416 }, "fallback content remains inside the frame")
   renderer:release()
 end
 
@@ -201,9 +234,9 @@ function T.adapted_choice_uses_the_field_bounds_and_preferred_integer_scale()
     touch = false,
   })
   local bounds = { x = 10, y = 20, width = 500, height = 300 }
-  local layout = renderer:layout(status(0, 1), topology, nil, { bounds = bounds, preferredScale = 3 })
+  local layout = hostLayout(status(0, 1), topology, nil, { bounds = bounds, preferredScale = 3 })
   Assert.equal(layout.placement.scale, 3)
-  Assert.deepEqual(layout.placement.frame, { x = 246, y = 176, width = 264, height = 144 })
+  Assert.deepEqual(layout.placement.frame, { x = 270, y = 176, width = 240, height = 144 })
   Assert.deepEqual(layout.placement.clipRect, bounds)
   renderer:release()
 end
@@ -213,7 +246,7 @@ function T.list_cursor_and_labels_use_source_glyph_rows_and_palette_roles()
   local topology = dualTopology()
   for selectedIndex = 0, 1 do
     local choice = status(selectedIndex)
-    renderer:draw(choice, renderer:layout(choice, topology, nil))
+    renderer:draw(choice, hostLayout(choice, topology, nil))
   end
   Assert.equal(#windowCalls, 2)
   Assert.equal(windowCalls[1].kind, "standard")
@@ -251,7 +284,7 @@ end
 function T.source_and_adapted_presentations_select_their_own_frame_contracts()
   local renderer, _, calls = testRenderer()
   local source = status(0, nil)
-  renderer:draw(source, renderer:layout(source, dualTopology(), nil))
+  renderer:draw(source, hostLayout(source, dualTopology(), nil))
   local adapted = status(1, 1)
   local topology = ScreenTopology.oneDisplay({
     id = "main",
@@ -261,7 +294,7 @@ function T.source_and_adapted_presentations_select_their_own_frame_contracts()
   })
   renderer:draw(
     adapted,
-    renderer:layout(adapted, topology, nil, {
+    hostLayout(adapted, topology, nil, {
       bounds = { x = 0, y = 0, width = 640, height = 480 },
       preferredScale = 1,
     })
@@ -315,7 +348,7 @@ function T.complete_menu_uses_one_two_x_transform_and_restores_graphics_state()
     end,
   }
   local renderer = rendererModule.new({ text = text, window = window, graphics = graphics })
-  local layout = renderer:layout(statusValue, dualTopology(512, 384), nil)
+  local layout = hostLayout(statusValue, dualTopology(512, 384), nil)
   renderer:draw(statusValue, layout)
   Assert.equal(#calls, 4)
   Assert.deepEqual(calls[1].point, { 920, 248 })
@@ -352,15 +385,15 @@ function T.constrained_single_display_scale_keeps_the_complete_menu_inside_its_h
   })
   local choice = status(1, 1)
   local bounds = { x = 10, y = 12, width = 24, height = 16 }
-  local layout = renderer:layout(choice, topology, nil, { bounds = bounds, preferredScale = 1 })
-  Assert.equal(layout.placement.scale, 24 / 88)
-  Assert.deepEqual(layout.content, { x = 0, y = 0, width = 48, height = 32 })
+  local layout = hostLayout(choice, topology, nil, { bounds = bounds, preferredScale = 1 })
+  Assert.equal(layout.placement.scale, 24 / 80)
+  Assert.deepEqual(layout.content, { x = 0, y = 0, width = 40, height = 32 })
   Assert.deepEqual(
     layout.placement.frame,
     { x = 10, y = 12 + 16 - 48 * layout.placement.scale, width = 24, height = 48 * layout.placement.scale }
   )
   renderer:draw(choice, layout)
-  Assert.deepEqual(windows[1].box, { x = 0, y = 0, width = 48, height = 32 })
+  Assert.deepEqual(windows[1].box, { x = 0, y = 0, width = 40, height = 32 })
   Assert.deepEqual(texts[2].transformed, {
     texts[1].transformed[1] + 8 * layout.placement.scale,
     texts[1].transformed[2] - 16 * layout.placement.scale,
@@ -404,7 +437,7 @@ function T.adapted_user_frame_fits_inside_constrained_and_portrait_safe_areas()
   for _, case in ipairs(cases) do
     local renderer, _, windows, texts = testRenderer()
     local choice = status(1, 1)
-    local layout = renderer:layout(choice, case.topology, case.dialogue, {
+    local layout = hostLayout(choice, case.topology, case.dialogue, {
       bounds = case.bounds,
       preferredScale = case.preferredScale,
     })
@@ -413,7 +446,7 @@ function T.adapted_user_frame_fits_inside_constrained_and_portrait_safe_areas()
     local bounds = case.bounds
     local frame = windows[1]
     Assert.equal(frame.kind, "user")
-    Assert.equal(#frame.tiles, #FieldDialogueTheme.frameTilePlacements({ x = 0, y = 0, width = 48, height = 32 }))
+    Assert.equal(#frame.tiles, #FieldDialogueTheme.frameTilePlacements({ x = 0, y = 0, width = 40, height = 32 }))
     for _, tile in ipairs(frame.tiles) do
       Assert.isTrue(tile.x >= bounds.x, "frame tile starts inside the host's left edge")
       Assert.isTrue(tile.y >= bounds.y, "frame tile starts inside the host's top edge")
@@ -426,6 +459,49 @@ function T.adapted_user_frame_fits_inside_constrained_and_portrait_safe_areas()
     }, "label placement remains tied to the canonical menu body")
     renderer:release()
   end
+end
+
+function T.adapted_choice_width_follows_measured_labels()
+  local renderer = testRenderer()
+  local topology = ScreenTopology.oneDisplay({
+    id = "main",
+    rect = { x = 0, y = 0, width = 640, height = 480 },
+    role = "world",
+    touch = false,
+  })
+  local bounds = { x = 0, y = 0, width = 640, height = 480 }
+  local dialogue = { x = 100, y = 100, width = 200, height = 80 }
+  local adaptedHost = { bounds = bounds, preferredScale = 1 }
+
+  local native = hostLayout(status(0, 1), dualTopology(), nil)
+  Assert.deepEqual(native.content, { x = 200, y = 104, width = 48, height = 32 }, "native geometry stays source-exact")
+
+  local short = hostLayout(status(0, 1), topology, dialogue, adaptedHost)
+  Assert.equal(short.presentation, "adapted")
+  Assert.isTrue(short.content.width < 48, "short adapted labels must shed unused source padding")
+  Assert.equal(short.content.width % 8, 0, "adapted width stays on the 8px tile grid")
+  Assert.equal(short.content.height, 32, "adapted height keeps the source two-row body")
+  Assert.equal(
+    short.placement.frame.x + short.placement.frame.width,
+    dialogue.x + dialogue.width,
+    "the compact prompt keeps the shared right edge"
+  )
+  Assert.equal(
+    short.placement.frame.y + short.placement.frame.height + 2 * short.placement.scale,
+    dialogue.y,
+    "the compact prompt keeps the two-pixel dialogue gap"
+  )
+
+  local wideStatus = { active = true, selectedIndex = 0, yesText = "YES, PLEASE", noText = "NO, THANK YOU", frameIndex = 1 }
+  local wide = hostLayout(wideStatus, topology, dialogue, adaptedHost)
+  Assert.isTrue(
+    wide.content.width >= short.content.width,
+    "wider labels must not shrink the adapted body"
+  )
+  Assert.equal(wide.content.width % 8, 0, "grown adapted width stays on the 8px tile grid")
+  Assert.isTrue(wide.content.width <= 48, "adapted body never exceeds the native source width for padding")
+  Assert.equal(wide.content.height, 32, "grown adapted height keeps the source two-row body")
+  renderer:release()
 end
 
 function T.graphics_state_is_restored_when_nested_menu_drawing_fails()
@@ -470,7 +546,7 @@ function T.graphics_state_is_restored_when_nested_menu_drawing_fails()
     text = { drawText = function() end, drawTextWithPalette = function() end },
   })
   local choice = status(0)
-  local layout = renderer:layout(choice, dualTopology(), nil)
+  local layout = hostLayout(choice, dualTopology(), nil)
   local ok, err = pcall(renderer.draw, renderer, choice, layout)
   Assert.isFalse(ok)
   Assert.isTrue(tostring(err):find("injected window failure", 1, true) ~= nil)

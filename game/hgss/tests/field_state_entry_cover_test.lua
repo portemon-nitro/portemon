@@ -17,6 +17,19 @@ local FieldUiFixture = require("tests.support.FieldUiFixture")
 
 local T = {}
 
+-- No choice is ever presented on these draw paths: the shared host stays
+-- idle and fails loudly if a choice layout is ever requested.
+local function idleChoiceHost()
+  return {
+    presentation = function()
+      return nil
+    end,
+    layoutFor = function()
+      error("no choice is active in this fixture", 0)
+    end,
+  }
+end
+
 local JOYSTICK = {
   getID = function()
     return 7
@@ -81,6 +94,7 @@ local function boot(withCover)
           return nil
         end,
       },
+      yesNoHost = idleChoiceHost(),
       actors = {
         visualRevision = function()
           return 0

@@ -462,10 +462,14 @@ function FieldState:_drawFieldAttachedUi(resources, hostStatus, alpha)
   end
   local dialogueModal = self.runtime.dialogue:isModal()
   local dialogueHost = self.runtime.scripts.dialogueHost
-  local yesNo = dialogueHost:yesNoPresentation()
+  local yesNoHost = assert(self.runtime.yesNoHost, "field presentation needs its choice host")
+  local liveYesNo = yesNoHost:presentation()
   local contextChoice = assert(self.runtime.contextChoiceProvider):status()
-  assert(not (yesNo and contextChoice), "field cannot present opcode-63 and contextual two-choice prompts at once")
-  if yesNo == nil and contextChoice ~= nil then
+  assert(not (liveYesNo and contextChoice), "field cannot present opcode-63 and contextual two-choice prompts at once")
+  local yesNo, yesNoLayout = nil, nil
+  if liveYesNo ~= nil then
+    yesNo, yesNoLayout = liveYesNo.status, liveYesNo.layout
+  elseif contextChoice ~= nil then
     local options = dialogueHost:yesNoOptions()
     yesNo = {
       active = true,
@@ -474,6 +478,7 @@ function FieldState:_drawFieldAttachedUi(resources, hostStatus, alpha)
       noText = options.noText,
       frameIndex = options.frameIndex,
     }
+    yesNoLayout = yesNoHost:layoutFor(yesNo)
   end
   local signpostModal = self.runtime.signpost:isModal()
   local fieldScale
@@ -492,8 +497,6 @@ function FieldState:_drawFieldAttachedUi(resources, hostStatus, alpha)
       height = assert(self.runtime.viewport.height),
     }
   end
-  local dialogueBox
-  local yesNoPreferredScale = fieldScale
   if dialogueModal then
     local manifestPlacement = assert(self.runtime.uiManifest).dialogueFrames.continueCursor.placement
     local dialogueScale = PixelScale.fitPreferred(bounds, NativeDisplay.WIDTH, 48, assert(fieldScale))
@@ -503,17 +506,9 @@ function FieldState:_drawFieldAttachedUi(resources, hostStatus, alpha)
       cursorPlacement = manifestPlacement,
     })
     resources.dialogueRenderer:draw(self.runtime.dialogue, presentation)
-    dialogueBox = presentation.outerRect
-    yesNoPreferredScale = dialogueScale
   end
   if yesNo then
-    local yesNoLayout = resources.yesNoRenderer:layout(
-      yesNo,
-      self.runtime.screenTopology,
-      dialogueBox,
-      { bounds = bounds, preferredScale = assert(yesNoPreferredScale) }
-    )
-    resources.yesNoRenderer:draw(yesNo, yesNoLayout)
+    resources.yesNoRenderer:draw(yesNo, assert(yesNoLayout, "active choice requires its host layout"))
   end
   if signpostModal then
     local signpostScale = PixelScale.fitPreferred(bounds, NativeDisplay.WIDTH, NativeDisplay.HEIGHT, assert(fieldScale))

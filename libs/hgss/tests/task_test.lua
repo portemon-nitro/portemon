@@ -319,11 +319,12 @@ T["askYesNo source result"] = function()
   h.scheduler:step(104, {})
   h.scheduler:step(105, {})
   -- Ask phase: 105 create (opening delay), 106 waiting, 107 selection edge,
-  -- 108 completion -> resume_pending, 109 promote writes the result.
+  -- 108 completion -> resume_pending, 109 promote writes the result. The
+  -- selection travels the fixed-tick semantic lane, not raw edges.
   h.scheduler:step(106, { pressedAction = true })
   Assert.isTrue(h.host:isOpen())
-  h.scheduler:step(107, { pressedAction = true })
-  h.scheduler:step(108, { pressedAction = true })
+  h.scheduler:step(107, { uiEvents = { { type = "confirm" } } })
+  h.scheduler:step(108, { uiEvents = { { type = "confirm" } } })
   h.scheduler:step(109, {})
   -- Numeric comparison proves the scheduler wrote the source value zero.
   Assert.equal(h.services.world:getVar("VAR_AFTER"), 1)
@@ -434,19 +435,22 @@ local function directYesNoResult(inputs)
 end
 
 T["askYesNo returns source value 0 for Yes"] = function()
-  local result = directYesNoResult({ { pressedAction = true } })
+  local result = directYesNoResult({ { uiEvents = { { type = "confirm" } } } })
   Assert.isTrue(result.complete)
   Assert.equal(result.result, 0)
 end
 
 T["askYesNo returns source value 1 for No"] = function()
-  local result = directYesNoResult({ { pressedDirection = "down" }, { pressedAction = true } })
+  local result = directYesNoResult({
+    { uiEvents = { { type = "navigate", direction = "down" } } },
+    { uiEvents = { { type = "confirm" } } },
+  })
   Assert.isTrue(result.complete)
   Assert.equal(result.result, 1)
 end
 
 T["askYesNo returns source value 1 for B"] = function()
-  local result = directYesNoResult({ { pressedCancel = true } })
+  local result = directYesNoResult({ { uiEvents = { { type = "cancel" } } } })
   Assert.isTrue(result.complete)
   Assert.equal(result.result, 1)
 end

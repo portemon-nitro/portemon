@@ -13,6 +13,19 @@ local FIELD_BACKDROP_BLACK = { 0, 0, 0 }
 
 local T = {}
 
+-- No choice is ever presented on these draw paths: the shared host stays
+-- idle and fails loudly if a choice layout is ever requested.
+local function idleChoiceHost()
+  return {
+    presentation = function()
+      return nil
+    end,
+    layoutFor = function()
+      error("no choice is active in this fixture", 0)
+    end,
+  }
+end
+
 local function drawableState(environment, worldViewport, windowWidth, windowHeight)
   local topology = ScreenTopology.oneDisplay({
     id = "main",
@@ -89,6 +102,7 @@ local function drawableState(environment, worldViewport, windowWidth, windowHeig
         return nil
       end,
     },
+    yesNoHost = idleChoiceHost(),
     contextChoiceProvider = {
       status = function()
         return nil

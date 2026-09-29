@@ -69,6 +69,7 @@ function FieldScriptComposition.compose(runtime, options)
     auxiliaryUi = runtime.auxiliaryFieldUi,
     contextChoice = runtime.contextChoiceProvider,
     menu = runtime.menuHost,
+    yesNoHost = runtime.yesNoHost,
     startMenuReopen = { request = requestStartMenuReopen },
     mons = options.mons,
     items = options.items,

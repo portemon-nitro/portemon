@@ -199,6 +199,7 @@ end
 ---@field auxiliaryUi AuxiliaryFieldUi logical auxiliary field UI state
 ---@field contextChoice ContextChoiceProvider contextual two-choice provider
 ---@field menu FieldMenuHost modal field menu host
+---@field yesNoHost FieldYesNoHost? live choice presentation host shared with the session and field draw
 ---@field startMenuReopen table<string, unknown>|nil optional { request: fun() } service for the opcode-61 Start Menu reopen (absent -> SCRIPT_SERVICE_MISSING on use)
 ---@field effects table<string, unknown>|nil semantic field-effect controller (absent -> SCRIPT_SERVICE_MISSING on reveal)
 ---@field playerAvatar table<string, unknown>|nil avatar transition owner wired into the player facade (required together with avatarApplier)
@@ -297,6 +298,7 @@ function FieldScripts.new(opts)
   local dialogueHost = ScriptDialogueHost.new({
     controller = opts.dialogue,
     yesNoController = FieldYesNoController.new(),
+    yesNoHost = opts.yesNoHost,
     provider = opts.messageProvider,
     layout = opts.layout,
     fontDef = opts.fontDef,

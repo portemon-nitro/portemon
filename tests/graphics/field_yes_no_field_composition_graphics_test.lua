@@ -71,7 +71,7 @@ end
 
 local function openScriptDialogueAndChoice(state)
   local host = openScriptDialogue(state)
-  host:askYesNo()
+  host:askYesNo(assert(assert(state.runtime).session).tick)
   Assert.notNil(host:yesNoPresentation(), "the script-owned choice must be active")
 end
 
@@ -189,12 +189,11 @@ local function assertContextChoiceComposition(scope, width, height, safeRect, du
     })
 
     local renderer = assert(state.presentationResources).yesNoRenderer
-    local originalLayout = renderer.layout
-    renderer.layout = function(self, status, screenTopology, dialogueBox, adaptedHost)
+    local originalDraw = renderer.draw
+    renderer.draw = function(self, status, layout)
       resolvedStatus = status
-      resolvedInputs = { screenTopology = screenTopology, dialogueBox = dialogueBox, adaptedHost = adaptedHost }
-      resolvedLayout = originalLayout(self, status, screenTopology, dialogueBox, adaptedHost)
-      return resolvedLayout
+      resolvedLayout = layout
+      return originalDraw(self, status, layout)
     end
 
     local runtime = assert(state.runtime)
@@ -214,6 +213,7 @@ local function assertContextChoiceComposition(scope, width, height, safeRect, du
     Assert.isNil(dialogueHost:yesNoPresentation(), "context choice stays separate from opcode-63 Yes/No")
     Assert.deepEqual(provider:status(), { state = "active", selected = 0 })
     local contextChoice = render(scope, state, width, height)
+    resolvedInputs = runtime:yesNoPresentationContext()
 
     Assert.notNil(resolvedLayout, "active context choice reaches the shared field Yes/No renderer")
     Assert.equal(resolvedStatus.active, true, "the normalized context choice is active")
@@ -251,7 +251,7 @@ local function assertContextChoiceComposition(scope, width, height, safeRect, du
     assertChangedPixelsInsideFrame(selectedNo, contextChoice, assert(resolvedLayout.placement).frame)
     provider:close()
 
-    dialogueHost:askYesNo()
+    dialogueHost:askYesNo(runtime.session.tick)
     provider:open()
     local compositionValid, compositionError = pcall(function()
       render(scope, state, width, height)
@@ -288,10 +288,10 @@ function T.message_bearing_scheduler_script_renders_yes_no_in_default_field_topo
   Assert.equal(#runtime.screenTopology.surfaces, 1, "the default production topology is one display")
   local resolvedYesNoLayout
   local yesNoRenderer = assert(state.presentationResources).yesNoRenderer
-  local originalLayout = yesNoRenderer.layout
-  yesNoRenderer.layout = function(self, ...)
-    resolvedYesNoLayout = originalLayout(self, ...)
-    return resolvedYesNoLayout
+  local originalDraw = yesNoRenderer.draw
+  yesNoRenderer.draw = function(self, status, layout)
+    resolvedYesNoLayout = layout
+    return originalDraw(self, status, layout)
   end
   local dialogueOuterRect
   local dialogueRenderer =
@@ -386,11 +386,10 @@ local function assertMenuComposition(scope, width, height, safeRect)
     })
 
     local yesNoRenderer = assert(state.presentationResources and state.presentationResources.yesNoRenderer)
-    local layout = yesNoRenderer.layout
-    yesNoRenderer.layout = function(self, status, screenTopology, dialogueBox, adaptedHost)
-      resolvedYesNoInputs = { dialogueBox = dialogueBox, adaptedHost = adaptedHost }
-      resolvedYesNoLayout = layout(self, status, screenTopology, dialogueBox, adaptedHost)
-      return resolvedYesNoLayout
+    local drawChoice = yesNoRenderer.draw
+    yesNoRenderer.draw = function(self, status, layout)
+      resolvedYesNoLayout = layout
+      return drawChoice(self, status, layout)
     end
     local dialogueRenderer = assert(state.presentationResources.dialogueRenderer)
     local drawDialogue = dialogueRenderer.draw
@@ -410,12 +409,13 @@ local function assertMenuComposition(scope, width, height, safeRect)
     Assert.isNil(runtime.session.mapEntryStage, "the production field entry must settle before drawing")
 
     local dialogueHost = assert(runtime.scripts.dialogueHost)
-    dialogueHost:askYesNo()
+    dialogueHost:askYesNo(runtime.session.tick)
     Assert.isFalse(runtime.dialogue:isModal(), "standalone choice must not require ordinary dialogue")
     Assert.notNil(dialogueHost:yesNoPresentation(), "the script-owned standalone choice must be active")
 
     local standaloneChoice = render(scope, state, width, height)
     Assert.notNil(resolvedYesNoLayout, "active standalone choice must reach the field Yes/No renderer")
+    resolvedYesNoInputs = runtime:yesNoPresentationContext()
     dialogueHost:closeYesNo()
     local standaloneField = render(scope, state, width, height)
     local standalonePixels = pixelEnvelope(standaloneChoice, standaloneField)
@@ -425,7 +425,7 @@ local function assertMenuComposition(scope, width, height, safeRect)
     local standaloneInputs = assert(resolvedYesNoInputs)
     Assert.isNil(standaloneInputs.dialogueBox, "standalone choice layout has no dialogue anchor")
     Assert.equal(
-      standaloneInputs.adaptedHost.preferredScale,
+      standaloneInputs.preferredScale,
       runtime.fieldPixelScale:resolvedScale(),
       "standalone choice layout uses the resolved field scale"
     )
@@ -454,6 +454,7 @@ local function assertMenuComposition(scope, width, height, safeRect)
     openScriptDialogueAndChoice(state)
 
     local withChoice = render(scope, state, width, height)
+    local attachedInputs = runtime:yesNoPresentationContext()
     runtime.scripts.dialogueHost:closeYesNo()
     local dialogueOnly = render(scope, state, width, height)
     local menuPixels = pixelEnvelope(withChoice, dialogueOnly)
@@ -462,7 +463,7 @@ local function assertMenuComposition(scope, width, height, safeRect)
     local dialoguePixels = pixelEnvelope(dialogueOnly, fieldOnly)
 
     local frame = assert(assert(resolvedYesNoLayout).placement).frame
-    local dialogueBox = assert(assert(resolvedYesNoInputs).dialogueBox)
+    local dialogueBox = assert(attachedInputs.dialogueBox)
     local dialogueOuterRect = assert(assert(resolvedDialoguePresentation).outerRect)
     Assert.equal(dialogueBox.x, dialogueOuterRect.x, "dialogue-attached choice keeps the dialogue horizontal anchor")
     Assert.equal(dialogueBox.y, dialogueOuterRect.y, "dialogue-attached choice keeps the dialogue vertical anchor")
@@ -483,7 +484,7 @@ local function assertMenuComposition(scope, width, height, safeRect)
     local resolvedScale = runtime.fieldPixelScale:resolvedScale()
     local dialogueScale = PixelScale.fitPreferred(bounds, 256, 48, resolvedScale)
     Assert.equal(
-      assert(resolvedYesNoInputs).adaptedHost.preferredScale,
+      attachedInputs.preferredScale,
       dialogueScale,
       "dialogue-attached choice keeps the dialogue scale"
     )
@@ -496,8 +497,12 @@ local function assertMenuComposition(scope, width, height, safeRect)
       menuPixels.y + menuPixels.height <= bounds.y + bounds.height,
       "menu pixels stay inside field UI bounds"
     )
+    -- The complete menu spans the label-driven body plus the source frame
+    -- overhang (two 8px tiles left, three right), at the resolved scale, with
+    -- the same slack the fixed-width assertion allowed for transparent texels.
+    local menuOuterWidth = assert(assert(resolvedYesNoLayout.content).width) + 40
     Assert.isTrue(
-      menuPixels.width >= 84 * expectedScale - 1,
+      menuPixels.width >= menuOuterWidth * expectedScale - (4 * expectedScale + 1),
       string.format(
         "the complete menu follows the field's resolved presentation scale (pixels=%d, expectedScale=%d, dialogueScale=%d, resolvedScale=%s)",
         menuPixels.width,

@@ -68,16 +68,24 @@ function FakeDialogueHost:askYesNo()
   self:_record("askYesNo")
 end
 
-function FakeDialogueHost:handleYesNoInput(input)
-  if input.pressedDirection == "down" then
-    self.yesNoSelected = math.min(1, self.yesNoSelected + 1)
-  elseif input.pressedDirection == "up" then
-    self.yesNoSelected = math.max(0, self.yesNoSelected - 1)
-  end
-  if input.pressedCancel then
-    self.yesNoResult = { accepted = false }
-  elseif input.pressedAction then
-    self.yesNoResult = { accepted = self.yesNoSelected == 0 }
+function FakeDialogueHost:handleYesNoEvents(events)
+  assert(type(events) == "table", "choice events are required")
+  for _, event in ipairs(events) do
+    if event.type == "focus" then
+      self.yesNoSelected = event.row
+    elseif event.type == "navigate" then
+      if event.direction == "down" then
+        self.yesNoSelected = math.min(1, self.yesNoSelected + 1)
+      elseif event.direction == "up" then
+        self.yesNoSelected = math.max(0, self.yesNoSelected - 1)
+      end
+    elseif event.type == "confirm" then
+      self.yesNoResult = { accepted = self.yesNoSelected == 0 }
+    elseif event.type == "cancel" then
+      self.yesNoResult = { accepted = false }
+    else
+      error("unknown choice event " .. tostring(event.type))
+    end
   end
 end
 

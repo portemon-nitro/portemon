@@ -400,13 +400,15 @@ local function verifyVersion(scope, versionId)
   })
   local runtime = assert(state.runtime)
   local yesNoRenderer = assert(state.presentationResources.yesNoRenderer)
-  local originalLayout = yesNoRenderer.layout
+  -- The renderer is draw-only: the live host owns the layout, so the draw
+  -- arguments carry both the active status and its host-resolved layout.
+  local originalDraw = yesNoRenderer.draw
   local contextChoiceLayout
   local contextChoiceStatus
-  yesNoRenderer.layout = function(self, status, ...)
+  yesNoRenderer.draw = function(self, status, layout, ...)
     contextChoiceStatus = status
-    contextChoiceLayout = originalLayout(self, status, ...)
-    return contextChoiceLayout
+    contextChoiceLayout = layout
+    return originalDraw(self, status, layout, ...)
   end
   local width, height = love.graphics.getDimensions()
   local contextCanvas = scope:own(love.graphics.newCanvas(width, height))
@@ -416,10 +418,10 @@ local function verifyVersion(scope, versionId)
     Assert.equal(providerStatus.state, "active", "the real Elm script owns an active contextual choice")
     Assert.equal(providerStatus.selected, 0, "the real Elm prompt initially selects Yes")
 
-    local originalDraw = yesNoRenderer.draw
+    local wrappedDraw = yesNoRenderer.draw
     yesNoRenderer.draw = function() end
     local withoutChoice = renderPixels(scope, state, contextCanvas)
-    yesNoRenderer.draw = originalDraw
+    yesNoRenderer.draw = wrappedDraw
     local withChoice = renderPixels(scope, state, contextCanvas)
 
     Assert.notNil(contextChoiceLayout, "the active Elm choice reaches FieldYesNoRenderer")
@@ -431,7 +433,7 @@ local function verifyVersion(scope, versionId)
     Assert.equal(contextChoiceStatus.frameIndex, options.frameIndex, "the Elm choice uses the player frame")
     assertPixelsChangedInsideFrame(withChoice, withoutChoice, assert(layout.placement).frame)
   end)
-  yesNoRenderer.layout = originalLayout
+  yesNoRenderer.draw = originalDraw
   Assert.equal(contextChoiceObservations, 1, "the real Elm starter question is observed before confirmation")
   Assert.isFalse(
     runtime.contextChoiceProvider:isActive(),

@@ -52,6 +52,7 @@ local MetatileBehavior = require("libs.hgss.src.world.MetatileBehavior")
 ---@field scriptClient ScriptInteractionClient
 ---@field menuHost FieldMenuHost
 ---@field contextChoice ContextChoiceProvider
+---@field yesNoHost FieldYesNoHost? the live choice presentation host; while modal the tick's UI events route to the script scheduler
 ---@field starterChoice table<string, unknown>? the modal starter-choice surface; while active the tick's UI events route to the script scheduler
 ---@field partySelection table<string, unknown>? the modal script-party surface; while active the tick's UI events route to the script scheduler
 ---@field pokemonNaming table<string, unknown>? the script-owned Pokemon Naming Screen surface
@@ -92,6 +93,7 @@ local MetatileBehavior = require("libs.hgss.src.world.MetatileBehavior")
 ---@field scriptClient ScriptInteractionClient
 ---@field menuHost FieldMenuHost
 ---@field contextChoice ContextChoiceProvider
+---@field yesNoHost FieldYesNoHost? the live choice presentation host; while modal the tick's UI events route to the script scheduler
 ---@field starterChoice table<string, unknown>? the modal starter-choice surface; while active the tick's UI events route to the script scheduler
 ---@field partySelection table<string, unknown>? the modal script-party surface; while active the tick's UI events route to the script scheduler
 ---@field pokemonNaming table<string, unknown>? the script-owned Pokemon Naming Screen surface
@@ -292,6 +294,12 @@ function FieldSession.new(options)
   assert(options.scriptClient and options.scriptClient.consume, "field session script client required")
   assert(options.menuHost and options.menuHost.isModal and options.menuHost.advance, "field session menu host required")
   assert(options.contextChoice and options.contextChoice.isActive, "field session context choice required")
+  if options.yesNoHost ~= nil then
+    assert(
+      type(options.yesNoHost.isModal) == "function" and type(options.yesNoHost.inputEvents) == "function",
+      "field session choice host is invalid"
+    )
+  end
   assert(options.signpost and options.signpost.isModal, "field session signpost controller required")
   assert(
     options.applicationHost
@@ -344,6 +352,7 @@ function FieldSession.new(options)
     scriptClient = options.scriptClient,
     menuHost = options.menuHost,
     contextChoice = options.contextChoice,
+    yesNoHost = options.yesNoHost,
     starterChoice = options.starterChoice,
     partySelection = options.partySelection,
     pokemonNaming = options.pokemonNaming,
@@ -669,6 +678,12 @@ local function runScriptPhase(self, inputSnapshot)
   schedulerInput.uiEvents = nil
   local menuModal = self.menuHost:isModal()
   local contextChoiceModal = self.contextChoice:isActive()
+  local yesNoHost = self.yesNoHost
+  local yesNoModal = yesNoHost ~= nil and yesNoHost:isModal()
+  assert(
+    not (yesNoModal and contextChoiceModal),
+    "field cannot present opcode-63 and contextual two-choice prompts at once"
+  )
   -- The script-owned starter modal routes the same normalized UI events to
   -- the scheduler while it owns the choice; like the contextual choice it
   -- suppresses the raw field edges for that tick. The script-owned party
@@ -682,10 +697,12 @@ local function runScriptPhase(self, inputSnapshot)
   local pokemonNamingModal = pokemonNaming ~= nil and pokemonNaming:isActive()
   assert(not (starterChoiceModal and pokemonNamingModal), "script-owned field modals are mutually exclusive")
   local scriptModal = starterChoiceModal or pokemonNamingModal
-  if menuModal or contextChoiceModal or scriptModal or partySelectionModal then
+  if menuModal or contextChoiceModal or scriptModal or partySelectionModal or yesNoModal then
     local uiEvents = self.input:uiSnapshot(self.tick + 1)
     if menuModal then
       schedulerInput.menuEvents = self.menuHost:inputEvents(uiEvents)
+    elseif yesNoModal then
+      schedulerInput.uiEvents = assert(self.yesNoHost, "active choice requires its host"):inputEvents(uiEvents)
     else
       schedulerInput.uiEvents = uiEvents
     end

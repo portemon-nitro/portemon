@@ -19,6 +19,19 @@ local ScreenTopology = require("libs.hgss.src.ui.ScreenTopology")
 
 local T = {}
 
+-- No choice is ever presented on these draw paths: the shared host stays
+-- idle and fails loudly if a choice layout is ever requested.
+local function idleChoiceHost()
+  return {
+    presentation = function()
+      return nil
+    end,
+    layoutFor = function()
+      error("no choice is active in this fixture", 0)
+    end,
+  }
+end
+
 -- One 640x480 world display: the placement record this topology resolves is
 -- { frame = {0,0,640,480}, scale = 2.5 }, mirroring the component window.
 local function worldTopology()
@@ -152,6 +165,7 @@ local function drawableState(options)
         return nil
       end,
     },
+    yesNoHost = idleChoiceHost(),
     resizePresentation = function() end,
   }
   local state = setmetatable({

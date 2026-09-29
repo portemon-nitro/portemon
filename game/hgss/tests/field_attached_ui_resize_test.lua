@@ -2,15 +2,30 @@
 -- height proportion.
 
 local Assert = require("tests.support.Assert")
+local DialoguePresentationLayout = require("libs.hgss.src.ui.DialoguePresentationLayout")
 local FieldViewport = require("libs.hgss.src.presentation.FieldViewport")
 local FieldPixelScale = require("libs.hgss.src.presentation.FieldPixelScale")
 local FieldPresentation = require("data.manifests.field_presentation")
 local FieldState = require("game.hgss.src.field.FieldState")
+local FieldYesNoHost = require("libs.hgss.src.ui.FieldYesNoHost")
 local ScreenTopology = require("libs.hgss.src.ui.ScreenTopology")
 local FieldUiFixture = require("tests.support.FieldUiFixture")
 local PixelScale = require("libs.ui.src.PixelScale")
 
 local T = {}
+
+-- No choice is ever presented on these resize draw paths: the shared host
+-- stays idle and fails loudly if a choice layout is ever requested.
+local function idleChoiceHost()
+  return {
+    presentation = function()
+      return nil
+    end,
+    layoutFor = function()
+      error("no choice is active in this fixture", 0)
+    end,
+  }
+end
 
 ---@class ResizeTestRuntime
 ---@field resizeCalls integer?
@@ -81,6 +96,7 @@ local function drawState(topologyProvider, pollTopology)
         return nil
       end,
     },
+    yesNoHost = idleChoiceHost(),
     resizePresentation = function(self, width, height, topology)
       self.resizeCalls = (self.resizeCalls or 0) + 1
       self.lastResize = { width, height, topology }
@@ -261,6 +277,13 @@ local function fieldStateWithCapturedUi(worldViewport, cameraZoom, viewportWidth
     width = worldViewport.width,
     height = worldViewport.height,
   }
+  local uiManifest = FieldUiFixture.manifest()
+  local topology = ScreenTopology.oneDisplay({
+    id = "main",
+    rect = { x = 0, y = 0, width = viewportWidth, height = viewportHeight },
+    touch = false,
+    role = "world",
+  })
   local fakeRuntimeMap = {
     mapId = 1,
     mapSymbol = "MAP_FAKE",
@@ -270,7 +293,7 @@ local function fieldStateWithCapturedUi(worldViewport, cameraZoom, viewportWidth
     runtime = {
       viewport = viewport,
       fieldPixelScale = scale,
-      uiManifest = FieldUiFixture.manifest(),
+      uiManifest = uiManifest,
       camera = { zoom = cameraZoom },
       runtimeMap = fakeRuntimeMap,
       player = { fieldX = 0, fieldZ = 0, worldY = 0, surfaceId = 0, facing = "south", motion = "idle" },
@@ -301,12 +324,7 @@ local function fieldStateWithCapturedUi(worldViewport, cameraZoom, viewportWidth
           return nil
         end,
       },
-      screenTopology = ScreenTopology.oneDisplay({
-        id = "main",
-        rect = { x = 0, y = 0, width = viewportWidth, height = viewportHeight },
-        touch = false,
-        role = "world",
-      }),
+      screenTopology = topology,
       signpost = {
         isModal = function()
           return true
@@ -366,7 +384,48 @@ local function fieldStateWithCapturedUi(worldViewport, cameraZoom, viewportWidth
     return {}
   end
   local dialogueCalls = {}
-  local yesNoLayouts = {}
+  local yesNoDraws = {}
+  local choiceContext = nil
+  -- The fixture shares a live choice host exactly as production does: the
+  -- host pulls the dialogue-derived metrics through its presentation
+  -- callback, mirroring the runtime choice context, and FieldState draws
+  -- the resulting host presentation.
+  local yesNoHost = FieldYesNoHost.new({
+    width = viewportWidth,
+    height = viewportHeight,
+    input = {
+      beginUi = function() end,
+      clearUi = function() end,
+    },
+    screenTopology = topology,
+    measureText = function(text)
+      return #text * 8
+    end,
+    presentation = function()
+      local dialogueScale = PixelScale.fitPreferred(viewport.worldViewport, 256, 48, fieldScale)
+      local dialogueBox = DialoguePresentationLayout.compute(viewport.worldViewport, {
+        scale = dialogueScale,
+        allowClipping = true,
+        cursorPlacement = uiManifest.dialogueFrames.continueCursor.placement,
+      }).outerRect
+      choiceContext = {
+        topology = topology,
+        bounds = viewport.worldViewport,
+        dialogueBox = dialogueBox,
+        preferredScale = dialogueScale,
+      }
+      return choiceContext
+    end,
+  })
+  if yesNoStatus ~= nil then
+    yesNoHost:openChoice({
+      yesText = yesNoStatus.yesText,
+      noText = yesNoStatus.noText,
+      frameIndex = yesNoStatus.frameIndex,
+      selectedIndex = yesNoStatus.selectedIndex or 0,
+    }, 0)
+  end
+  state.runtime.yesNoHost = yesNoHost
   state.presentationResources.dialogueRenderer = {
     draw = function(_, a, b, c, d)
       dialogueCalls[#dialogueCalls + 1] = { controller = a, second = b, third = c, fourth = d }
@@ -375,16 +434,9 @@ local function fieldStateWithCapturedUi(worldViewport, cameraZoom, viewportWidth
   local signpostScales = {}
   local presentationResources = state.presentationResources --[[@as any]]
   presentationResources.yesNoRenderer = {
-    layout = function(_, status, topology, dialogueBox, adaptedHost)
-      yesNoLayouts[#yesNoLayouts + 1] = {
-        status = status,
-        topology = topology,
-        dialogueBox = dialogueBox,
-        adaptedHost = adaptedHost,
-      }
-      return { content = { x = 0, y = 0, width = 1, height = 1 } }
+    draw = function(_, status, layout)
+      yesNoDraws[#yesNoDraws + 1] = { status = status, layout = layout }
     end,
-    draw = function() end,
   }
   presentationResources.signpostRenderer = {
     draw = function(_, _, _, alphaOrScale, maybeScale)
@@ -410,7 +462,7 @@ local function fieldStateWithCapturedUi(worldViewport, cameraZoom, viewportWidth
   FieldDrawState.protectedDraw = savedProtected
   love.graphics.getDimensions = oldGetDimensions
   Assert.isTrue(ok, "FieldState draw should not throw: " .. tostring(err))
-  return fieldScale, dialogueCalls, signpostScales, yesNoLayouts
+  return fieldScale, dialogueCalls, signpostScales, yesNoDraws, choiceContext
 end
 
 local function assertOuterRectInsideBounds(outerRect, bounds)
@@ -481,11 +533,17 @@ end
 function T.yes_no_receives_the_dialogue_bounds_and_fitted_scale()
   local bounds = { x = 40, y = 30, width = 640, height = 480 }
   local yesNoStatus = { active = true, selectedIndex = 0, yesText = "YES", noText = "NO" }
-  local fieldScale, dialogueCalls, _, yesNoLayouts = fieldStateWithCapturedUi(bounds, 0.25, 720, 540, yesNoStatus)
+  local fieldScale, dialogueCalls, _, yesNoDraws, choiceContext =
+    fieldStateWithCapturedUi(bounds, 0.25, 720, 540, yesNoStatus)
   local dialogueScale = PixelScale.fitPreferred(bounds, 256, 48, fieldScale)
-  Assert.equal(#yesNoLayouts, 1)
-  Assert.deepEqual(yesNoLayouts[1].adaptedHost, { bounds = bounds, preferredScale = dialogueScale })
-  Assert.deepEqual(yesNoLayouts[1].dialogueBox, dialogueCalls[1].second.outerRect)
+  Assert.equal(#yesNoDraws, 1, "active field choice is drawn once")
+  local drawn = assert(yesNoDraws[1])
+  Assert.equal(drawn.status.selectedIndex, 0, "the drawn choice keeps the opened selection")
+  Assert.notNil(drawn.layout, "the drawn choice carries its host layout")
+  local context = assert(choiceContext, "the live host resolves its presentation while drawing")
+  Assert.deepEqual(context.bounds, bounds, "the host observes the real field bounds")
+  Assert.equal(context.preferredScale, dialogueScale, "the host observes the fitted dialogue scale")
+  Assert.deepEqual(context.dialogueBox, dialogueCalls[1].second.outerRect)
 end
 
 function T.roomy_dialogue_keeps_the_field_scale_bottom_centered()
@@ -555,21 +613,22 @@ function T.undersized_dialogue_on_both_axes_keeps_one_x_and_real_bounds()
 end
 
 function T.field_yes_no_layout_receives_the_resolved_dialogue_outer_rect()
-  local _, dialogueCalls, _, yesNoLayouts = fieldStateWithCapturedUi(
+  local _, dialogueCalls, _, yesNoDraws, choiceContext = fieldStateWithCapturedUi(
     { x = 20, y = 30, width = 500, height = 300 },
     1,
     640,
     480,
     { active = true, selectedIndex = 0, yesText = "YES", noText = "NO", frameIndex = 1 }
   )
-  Assert.equal(#yesNoLayouts, 1, "active field choice is laid out once")
+  Assert.equal(#yesNoDraws, 1, "active field choice is drawn once")
+  local context = assert(choiceContext, "the live host resolves its presentation while drawing")
   Assert.deepEqual(
-    yesNoLayouts[1].dialogueBox,
+    context.dialogueBox,
     dialogueCalls[1].second.outerRect,
     "single-display choice placement receives the exact rendered dialogue rectangle"
   )
   Assert.isFalse(
-    yesNoLayouts[1].dialogueBox == dialogueCalls[1].second.bounds,
+    context.dialogueBox == dialogueCalls[1].second.bounds,
     "the choice does not receive generic field bounds"
   )
 end

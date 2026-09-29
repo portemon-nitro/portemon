@@ -22,6 +22,7 @@ local FieldMessageProvider = require("libs.hgss.src.interaction.FieldMessageProv
 ---@field private _items ItemCatalog|nil the shared item catalog for item/pocket/TM/berry text
 ---@field private _frameIndex integer|nil player-selected user-frame index, captured at open
 ---@field private _yesNoController table<string, unknown> semantic field choice owner
+---@field private _yesNoHost table<string, unknown>|nil live choice presentation host
 ---@field private _pendingNode table<string, unknown>|nil
 local ScriptDialogueHost = {}
 ScriptDialogueHost.__index = ScriptDialogueHost
@@ -280,7 +281,7 @@ local function resolveTextValue(descriptor, player, fontDef, world, provider, mo
   )
 end
 
----@param opts table<string, unknown> { controller, yesNoController, provider, layout, fontDef, player, world, mons?, items?, frameIndex? }
+---@param opts table<string, unknown> { controller, yesNoController, yesNoHost?, provider, layout, fontDef, player, world, mons?, items?, frameIndex? }
 ---@return ScriptDialogueHost
 function ScriptDialogueHost.new(opts)
   assert(
@@ -297,6 +298,15 @@ function ScriptDialogueHost.new(opts)
     "script dialogue host requires the generated font definition"
   )
   assert(opts.player and type(opts.player.name) == "function", "script dialogue host requires the player facade")
+  local yesNoHost = opts.yesNoHost
+  if yesNoHost ~= nil then
+    assert(
+      type(yesNoHost.openChoice) == "function"
+        and type(yesNoHost.syncSelection) == "function"
+        and type(yesNoHost.close) == "function",
+      "script dialogue host choice host is invalid"
+    )
+  end
   local frameIndex = opts.frameIndex
   assert(
     frameIndex == nil or (type(frameIndex) == "number" and frameIndex >= 0 and frameIndex % 1 == 0),
@@ -313,6 +323,7 @@ function ScriptDialogueHost.new(opts)
     _items = opts.items,
     _frameIndex = frameIndex,
     _yesNoController = opts.yesNoController,
+    _yesNoHost = yesNoHost,
   }, ScriptDialogueHost)
 end
 
@@ -331,12 +342,32 @@ function ScriptDialogueHost:yesNoOptions()
   }
 end
 
-function ScriptDialogueHost:askYesNo()
-  self._yesNoController:open(self:yesNoOptions())
+---@param tick integer? the scheduler tick, required when a live choice host is composed
+function ScriptDialogueHost:askYesNo(tick)
+  local options = self:yesNoOptions()
+  self._yesNoController:open(options)
+  if self._yesNoHost ~= nil then
+    self._yesNoHost:openChoice({
+      yesText = options.yesText,
+      noText = options.noText,
+      frameIndex = options.frameIndex,
+      selectedIndex = 0,
+    }, tick)
+  end
 end
 
-function ScriptDialogueHost:handleYesNoInput(input)
-  self._yesNoController:handleInput(input or {})
+-- Applies translated choice events to the semantic controller, then syncs
+-- the live host selection so draw and pointer mapping observe the same
+-- row the controller owns.
+---@param events table[]
+function ScriptDialogueHost:handleYesNoEvents(events)
+  assert(type(events) == "table", "choice events are required")
+  for _, event in ipairs(events) do
+    self._yesNoController:handleEvent(event)
+  end
+  if self._yesNoHost ~= nil then
+    self._yesNoHost:syncSelection(self._yesNoController:status().selectedIndex)
+  end
 end
 
 function ScriptDialogueHost:yesNoPresentation()
@@ -350,6 +381,9 @@ end
 
 function ScriptDialogueHost:closeYesNo()
   self._yesNoController:close()
+  if self._yesNoHost ~= nil then
+    self._yesNoHost:close()
+  end
 end
 
 -- Resolve a message reference to a controller-ready formatted message.

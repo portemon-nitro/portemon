@@ -59,7 +59,7 @@ function AskYesNoTask.poll(state, ctx)
   if state.phase == "opening" then
     state.phaseReadyInTicks = state.phaseReadyInTicks - 1
     if state.phaseReadyInTicks <= 0 then
-      host:askYesNo()
+      host:askYesNo(ctx.tick)
       state.phase = "waiting_selection"
       state.phaseReadyInTicks = 1
     end
@@ -72,11 +72,9 @@ function AskYesNoTask.poll(state, ctx)
     return { complete = false, state = state }
   end
   local input = ctx.input or {}
-  host:handleYesNoInput({
-    pressedDirection = input.pressedDirection,
-    pressedAction = input.pressedAction,
-    pressedCancel = input.pressedCancel,
-  })
+  local events = input.uiEvents or {}
+  assert(type(events) == "table", "ask_yes_no UI events must be a table")
+  host:handleYesNoEvents(events)
   local result = host:takeYesNoResult()
   if result == nil then
     state.phaseReadyInTicks = 1

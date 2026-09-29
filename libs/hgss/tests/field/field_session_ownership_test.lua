@@ -159,6 +159,7 @@ local function makeSession(opts)
       end,
     }) --[[@as ScriptInteractionClient]],
     menuHost = menuHost,
+    yesNoHost = opts.yesNoHost,
     contextChoice = opts.contextChoice or {
       isActive = function()
         return false
@@ -430,6 +431,102 @@ function T.same_tick_traversal_candidate_outranks_passive_directional_sign()
 
   Assert.equal(#starts, 1, "the valid facing-trigger warp must start")
   Assert.equal(#consumed, 0, "the passive sign must not be consumed on the same physical step as a valid traversal")
+end
+
+-- An active choice routes the tick's normalized UI events through its live
+-- host while the raw field edges for that tick are suppressed, so pointer
+-- and keyboard answers share one deterministic lane and never leak into
+-- world movement.
+function T.active_choice_routes_ui_events_through_its_host_and_suppresses_raw_edges()
+  local routed = {}
+  local yesNoHost = {
+    modal = true,
+    isModal = function(self)
+      return self.modal
+    end,
+    inputEvents = function(_, uiEvents)
+      routed = uiEvents
+      return { { type = "confirm" } }
+    end,
+  }
+  local uiEvents = { { type = "pointer_down", pointerId = "touch", x = 3, y = 4 } }
+  local input = {
+    snapshot = function()
+      return {}
+    end,
+    uiSnapshot = function()
+      return uiEvents
+    end,
+    clearEdges = function() end,
+  }
+  local received
+  local scheduler = {
+    step = function(_, _, schedulerInput)
+      received = schedulerInput
+    end,
+    playerInputLocked = function()
+      return false
+    end,
+    playerInputOwned = function()
+      return true
+    end,
+    foregroundEnvironmentId = function()
+      return "env-choice"
+    end,
+    autonomousActorsLocked = function()
+      return false
+    end,
+    autonomousActorLocked = function()
+      return false
+    end,
+  }
+  local playerMoves = 0
+  local player = basePlayer({
+    updateFixed = function(_)
+      playerMoves = playerMoves + 1
+      return false
+    end,
+  })
+  local session = makeSession({
+    player = player,
+    scheduler = scheduler,
+    input = input,
+    yesNoHost = yesNoHost,
+  })
+
+  session:updateFixed({ heldDirection = "south", pressedDirection = "south", actionPressed = true })
+
+  Assert.equal(#routed, 1, "the host translates the tick's normalized UI events")
+  Assert.deepEqual(received.uiEvents, { { type = "confirm" } }, "the scheduler consumes the translated choice events")
+  Assert.isNil(received.menuEvents, "choice events never enter the menu lane")
+  Assert.isNil(received.pressedDirection, "raw direction edges are suppressed while choosing")
+  Assert.isNil(received.pressedAction, "raw action edges are suppressed while choosing")
+  Assert.equal(playerMoves, 0, "the suppressed tick never steps the player")
+end
+
+function T.simultaneous_choice_and_context_prompts_are_rejected()
+  local yesNoHost = {
+    isModal = function()
+      return true
+    end,
+    inputEvents = function(_, uiEvents)
+      return uiEvents
+    end,
+  }
+  local session = makeSession({
+    yesNoHost = yesNoHost,
+    contextChoice = {
+      isActive = function()
+        return true
+      end,
+    },
+  })
+  local ok, err = pcall(session.updateFixed, session, {})
+  Assert.isFalse(ok, "presenting both two-choice prompts is a composition error")
+  Assert.isTrue(
+    tostring(err):find("field cannot present opcode-63 and contextual two-choice prompts at once", 1, true) ~= nil,
+    "the invalid modal composition is identified"
+  )
 end
 
 return { tests = T, metadata = {} }
