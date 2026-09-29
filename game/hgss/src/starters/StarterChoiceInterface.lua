@@ -16,6 +16,7 @@
 
 local ApplicationLayout = require("game.hgss.src.ui.ApplicationLayout")
 local NativeDisplay = require("libs.ui.src.NativeDisplay")
+local StarterCompactLayout = require("game.hgss.src.starters.StarterCompactLayout")
 
 ---@class StarterChoiceInterface
 local StarterChoiceInterface = {}
@@ -27,16 +28,9 @@ local INPUT_KEY = "starter"
 local COMPACT_INPUT_KEY = "starter-compact"
 local ZERO_CROP = { left = 0, right = 0, top = 0, bottom = 0 }
 
--- Locked compact portrait/action geometry in native logical pixels:
--- three source-order portraits and the primary/Back actions. The message
--- region lives with the compact painter reusing the same constants.
-local COMPACT_PORTRAITS = {
-  { x = 8, y = 60, width = 80, height = 80 },
-  { x = 88, y = 60, width = 80, height = 80 },
-  { x = 168, y = 60, width = 80, height = 80 },
-}
-local COMPACT_PRIMARY = { x = 8, y = 164, width = 112, height = 24 }
-local COMPACT_BACK = { x = 136, y = 164, width = 112, height = 24 }
+local COMPACT_PORTRAITS = StarterCompactLayout.PORTRAITS
+local COMPACT_PRIMARY = StarterCompactLayout.PRIMARY
+local COMPACT_BACK = StarterCompactLayout.BACK
 
 ---@param resources table<string, unknown> borrowed application collaborators
 ---@param view table<string, unknown> the wrapper semantic snapshot

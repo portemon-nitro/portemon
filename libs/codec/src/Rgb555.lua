@@ -8,6 +8,24 @@ local function expand5(value)
   return math.floor((value * 255 + 15) / 31)
 end
 
+local function assertChannel(value, name)
+  assert(
+    type(value) == "number" and value % 1 == 0 and value >= 0 and value <= 31,
+    name .. " must be a 5-bit channel (0..31)"
+  )
+end
+
+---@param r5 integer 0..31
+---@param g5 integer 0..31
+---@param b5 integer 0..31
+---@return integer word
+function Rgb555.encode(r5, g5, b5)
+  assertChannel(r5, "red")
+  assertChannel(g5, "green")
+  assertChannel(b5, "blue")
+  return r5 + g5 * 32 + b5 * 1024
+end
+
 ---@param word integer
 ---@return { r: integer, g: integer, b: integer }
 function Rgb555.decode(word)

@@ -1,3 +1,5 @@
+local DevScreenLayout = require("game.hgss.src.ui.DevScreenLayout")
+
 -- Pending field-entry ownership for Continue and the New Game handoff.
 -- It tracks three independent readiness interests instead of one global
 -- gate: entry planning, the static field runtime, and the entry target
@@ -266,19 +268,20 @@ end
 
 function FieldPreparationState:draw()
   local lg = love.graphics
+  local margin, line = DevScreenLayout.MARGIN, DevScreenLayout.LINE_HEIGHT
   lg.setColor(1, 1, 1)
   if self.phase == "failed" then
     lg.setColor(1, 0.5, 0.5)
-    lg.print("Field entry failed:", 24, 24)
-    lg.printf(tostring(self.error), 24, 48, lg.getWidth() - 48)
+    lg.print("Field entry failed:", margin, margin)
+    lg.printf(tostring(self.error), margin, margin + line, lg.getWidth() - 2 * margin)
     lg.setColor(0.7, 0.7, 0.75)
-    lg.print("Press escape to return.", 24, 96)
+    lg.print("Press escape to return.", margin, margin + 3 * line)
     return
   end
-  lg.print("Preparing field entry...", 24, 24)
+  lg.print("Preparing field entry...", margin, margin)
   lg.setColor(0.7, 0.7, 0.75)
-  lg.print("Phase: " .. self.phase, 24, 48)
-  lg.print("Press escape to cancel.", 24, 72)
+  lg.print("Phase: " .. self.phase, margin, margin + line)
+  lg.print("Press escape to cancel.", margin, margin + 2 * line)
 end
 
 ---@param key string

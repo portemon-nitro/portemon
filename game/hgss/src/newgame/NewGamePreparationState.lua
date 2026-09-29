@@ -1,3 +1,5 @@
+local DevScreenLayout = require("game.hgss.src.ui.DevScreenLayout")
+
 -- Pending New Game ownership between the Main Menu intent and Oak
 -- composition. It requests the semantic New Game intro milestone as
 -- required, then transfers to the already-registered ready callback exactly
@@ -94,16 +96,17 @@ end
 
 function NewGamePreparationState:draw()
   local lg = love.graphics
+  local margin, line = DevScreenLayout.MARGIN, DevScreenLayout.LINE_HEIGHT
   lg.setColor(1, 1, 1)
   if self.phase == "failed" then
     lg.setColor(1, 0.5, 0.5)
-    lg.print("New Game preparation failed:", 24, 24)
-    lg.printf(tostring(self.error), 24, 48, lg.getWidth() - 48)
+    lg.print("New Game preparation failed:", margin, margin)
+    lg.printf(tostring(self.error), margin, margin + line, lg.getWidth() - 2 * margin)
     lg.setColor(0.7, 0.7, 0.75)
-    lg.print("Press escape to return.", 24, 96)
+    lg.print("Press escape to return.", margin, margin + 3 * line)
     return
   end
-  lg.print("Preparing New Game...", 24, 24)
+  lg.print("Preparing New Game...", margin, margin)
   local fraction = 0
   local snapshot = self.progress
   if type(snapshot) == "table" and type(snapshot.total) == "number" and snapshot.total > 0 then
@@ -116,14 +119,14 @@ function NewGamePreparationState:draw()
     end
     fraction = ready / snapshot.total
   end
-  local barX, barY, barWidth, barHeight = 24, 48, 360, 14
+  local barX, barY, barWidth, barHeight = margin, margin + line, 360, 14
   lg.setColor(0.2, 0.22, 0.28)
   lg.rectangle("fill", barX, barY, barWidth, barHeight)
   lg.setColor(0.35, 0.75, 0.55)
   lg.rectangle("fill", barX, barY, barWidth * fraction, barHeight)
   lg.setColor(0.7, 0.7, 0.75)
   lg.print(string.format("%d%%", math.floor(fraction * 100 + 0.5)), barX + barWidth + 12, barY - 2)
-  lg.print("Press escape to cancel.", 24, 72)
+  lg.print("Press escape to cancel.", margin, margin + 2 * line)
 end
 
 ---@param key string

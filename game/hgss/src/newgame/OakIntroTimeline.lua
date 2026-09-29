@@ -54,6 +54,7 @@ local FINAL_FULL_ART_HOLD = 30
 local FINAL_FADE_FRAMES = 1
 local OAK_BG_SCROLL_END_X = -52
 local REVEAL_ANIMATION_UNITS_PER_SOURCE_FRAME = 2
+local MAX_BRIGHTNESS = 16
 
 local function requireMessage(messages, key)
   local message = messages[key]
@@ -107,7 +108,7 @@ function OakIntroTimeline.new(options)
     _visualFrameTimer = nil,
     _sceneBrightness = 0,
     _revealBrightness = 0,
-    _revealOpacity = 16,
+    _revealOpacity = MAX_BRIGHTNESS,
     _finalFadeAlpha = 0,
     _handoffFade = nil,
     _revealFrameIndex = nil,
@@ -240,7 +241,7 @@ end
 
 function OakIntroTimeline:_startAppearance()
   self:_startReveal("marill_appear")
-  self._revealBrightness = 16
+  self._revealBrightness = MAX_BRIGHTNESS
   self._phase = "marill_appear"
 end
 
@@ -374,7 +375,7 @@ function OakIntroTimeline:press(action, profile)
     self:_event("ball_opened", "ball_open")
   elseif self._phase == "oak_live_alongside" then
     self._phase = "marill_hide"
-    self._revealOpacity = 16
+    self._revealOpacity = MAX_BRIGHTNESS
     self:_setVisual("oak")
     self:_event("marill_hidden", "marill")
   elseif self._phase == "oak_tell_about_yourself" then
@@ -402,7 +403,7 @@ local function stepPresentation(self)
   elseif self._phase == "shrink_handoff_cover" then
     local fade = assert(self._handoffFade, "post-shrink cover fade is missing")
     local coefficient = fade:updateSourceFrame()
-    self._finalFadeAlpha = coefficient / 16
+    self._finalFadeAlpha = coefficient / MAX_BRIGHTNESS
     if fade:status().completed then
       self._phase = "handoff_black"
     end
@@ -418,7 +419,7 @@ local function stepPresentation(self)
   elseif self._phase == "marill_appear" then
     if self:_advanceReveal() then
       self._phase = "marill_brightness_fade"
-      self._revealBrightness = 16
+      self._revealBrightness = MAX_BRIGHTNESS
     end
   elseif self._phase == "marill_brightness_fade" then
     self._revealBrightness = math.max(0, self._revealBrightness - 1)
@@ -479,7 +480,7 @@ local function stepOpeningScene(self)
     if self._timer == 0 then
       self:_event("ball_flash", "opening")
       self._audio:play("SEQ_SE_DP_BOWA2")
-      self._sceneBrightness = 16
+      self._sceneBrightness = MAX_BRIGHTNESS
       self._phase = "scene_flash"
     end
   else
@@ -615,9 +616,9 @@ function OakIntroTimeline:snapshot()
     message = self._message,
     visual = self._visual,
     visualFrameIndex = self._visualFrameIndex,
-    sceneBrightness = self._sceneBrightness / 16,
-    revealBrightness = self._revealBrightness / 16,
-    revealOpacity = self._revealOpacity / 16,
+    sceneBrightness = self._sceneBrightness / MAX_BRIGHTNESS,
+    revealBrightness = self._revealBrightness / MAX_BRIGHTNESS,
+    revealOpacity = self._revealOpacity / MAX_BRIGHTNESS,
     messageKey = self._messageKey,
     revealWidget = self._revealWidget,
     revealFrameIndex = self._revealFrameIndex,

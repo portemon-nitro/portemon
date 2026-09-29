@@ -27,7 +27,9 @@ local Matrix4 = require("libs.math.src.Matrix4")
 local ModelDefinition = require("libs.hgss.src.presentation.ModelDefinition")
 local ModelInstance = require("libs.hgss.src.presentation.ModelInstance")
 local NativeDisplay = require("libs.ui.src.NativeDisplay")
+local Rgb555 = require("libs.codec.src.Rgb555")
 local SceneDescriptor = require("libs.hgss.src.presentation.SceneDescriptor")
+local StarterCompactLayout = require("game.hgss.src.starters.StarterCompactLayout")
 local FixedPoint = require("libs.math.src.FixedPoint")
 
 ---@class StarterChoicePresentation
@@ -92,7 +94,7 @@ local CONFIRM_RADIUS_SCALE = 1.5
 -- White emissive register paint: the modal scene carries no field light
 -- profile, so every material emits its texture (or its base color) flat
 -- instead of resolving field lighting it was never given.
-local EMISSIVE_WHITE = 31 + 32 * 31 + 1024 * 31
+local EMISSIVE_WHITE = Rgb555.encode(31, 31, 31)
 
 -- Submitted-but-unconsumed preparation tokens the chooser holds at once.
 -- The worker answers faster than the main thread uploads, so an unbounded
@@ -1929,17 +1931,10 @@ function StarterChoicePresentation:drawNative(snapshot, view, text, plan, window
   graphics.setColor(1, 1, 1, 1)
 end
 
--- Locked compact portrait/action/message geometry in native logical
--- pixels: the selected semantic message, three source-order portraits,
--- and the primary/Back actions.
-local COMPACT_MESSAGE = { x = 8, y = 8, width = 240, height = 48 }
-local COMPACT_PORTRAITS = {
-  { x = 8, y = 60, width = 80, height = 80 },
-  { x = 88, y = 60, width = 80, height = 80 },
-  { x = 168, y = 60, width = 80, height = 80 },
-}
-local COMPACT_PRIMARY = { x = 8, y = 164, width = 112, height = 24 }
-local COMPACT_BACK = { x = 136, y = 164, width = 112, height = 24 }
+local COMPACT_MESSAGE = StarterCompactLayout.MESSAGE
+local COMPACT_PORTRAITS = StarterCompactLayout.PORTRAITS
+local COMPACT_PRIMARY = StarterCompactLayout.PRIMARY
+local COMPACT_BACK = StarterCompactLayout.BACK
 local COMPACT_DISABLED_FILL = { 0.25, 0.25, 0.25, 1 }
 
 ---@param snapshot StarterChoiceController.Snapshot controller snapshot

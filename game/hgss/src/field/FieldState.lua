@@ -4,6 +4,7 @@ local FieldRuntime = require("game.hgss.src.field.FieldRuntime")
 local DisplayContext = require("game.hgss.src.ui.DisplayContext")
 local FieldActorPresentation = require("game.hgss.src.field.FieldActorPresentation")
 local FieldPresentationResources = require("game.hgss.src.field.FieldPresentationResources")
+local DevScreenLayout = require("game.hgss.src.ui.DevScreenLayout")
 local DialoguePresentationLayout = require("libs.hgss.src.ui.DialoguePresentationLayout")
 local NativeDisplay = require("libs.ui.src.NativeDisplay")
 local PixelScale = require("libs.ui.src.PixelScale")
@@ -524,9 +525,10 @@ function FieldState:draw()
   local lg = love.graphics
   local resources = assert(self.presentationResources, "field presentation resources are unavailable")
   if self.runtime.errorText then
+    local margin, line = DevScreenLayout.MARGIN, DevScreenLayout.LINE_HEIGHT
     lg.setColor(1, 0.5, 0.5)
-    lg.print("Field runtime failed:", 24, 24)
-    lg.printf(self.runtime.errorText, 24, 48, lg.getWidth() - 48)
+    lg.print("Field runtime failed:", margin, margin)
+    lg.printf(self.runtime.errorText, margin, margin + line, lg.getWidth() - 2 * margin)
     return
   end
   local width, height = lg.getDimensions()

@@ -66,7 +66,7 @@ function T.tests.decodes_mixed_amber_not_inverted()
   local r5 = 0x1F
   local g5 = 0x14
   local b5 = 0x00
-  local word = r5 + (g5 * 32) + (b5 * 1024)
+  local word = Rgb555.encode(r5, g5, b5)
 
   local result = Rgb555.decode(word)
   Assert.equal(result.r, 255, "amber red channel must be 255")
@@ -80,7 +80,7 @@ function T.tests.decodes_mixed_channels_correctly()
   local r5 = 0x10
   local g5 = 0x12
   local b5 = 0x14
-  local word = r5 + (g5 * 32) + (b5 * 1024)
+  local word = Rgb555.encode(r5, g5, b5)
 
   local result = Rgb555.decode(word)
   local expectedR = expand5(r5)
@@ -90,6 +90,24 @@ function T.tests.decodes_mixed_channels_correctly()
   Assert.equal(result.r, expectedR, "red channel incorrect")
   Assert.equal(result.g, expectedG, "green channel incorrect")
   Assert.equal(result.b, expectedB, "blue channel incorrect")
+end
+
+function T.tests.encode_round_trips_through_decode()
+  local word = Rgb555.encode(0x1F, 0x00, 0x00)
+  Assert.equal(word, 0x001F)
+  local result = Rgb555.decode(word)
+  Assert.equal(result.r, 255)
+  Assert.equal(result.g, 0)
+  Assert.equal(result.b, 0)
+end
+
+function T.tests.encode_rejects_an_out_of_range_channel()
+  Assert.throws(function()
+    Rgb555.encode(32, 0, 0)
+  end)
+  Assert.throws(function()
+    Rgb555.encode(0, -1, 0)
+  end)
 end
 
 return T
