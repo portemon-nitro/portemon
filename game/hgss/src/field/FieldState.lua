@@ -5,6 +5,7 @@ local DisplayContext = require("game.hgss.src.ui.DisplayContext")
 local FieldActorPresentation = require("game.hgss.src.field.FieldActorPresentation")
 local FieldPresentationResources = require("game.hgss.src.field.FieldPresentationResources")
 local DialoguePresentationLayout = require("libs.hgss.src.ui.DialoguePresentationLayout")
+local NativeDisplay = require("libs.ui.src.NativeDisplay")
 local PixelScale = require("libs.ui.src.PixelScale")
 local StandardFade = require("libs.hgss.src.presentation.StandardFade")
 
@@ -494,7 +495,7 @@ function FieldState:_drawFieldAttachedUi(resources, hostStatus, alpha)
   local yesNoPreferredScale = fieldScale
   if dialogueModal then
     local manifestPlacement = assert(self.runtime.uiManifest).dialogueFrames.continueCursor.placement
-    local dialogueScale = PixelScale.fitPreferred(bounds, 256, 48, assert(fieldScale))
+    local dialogueScale = PixelScale.fitPreferred(bounds, NativeDisplay.WIDTH, 48, assert(fieldScale))
     local presentation = DialoguePresentationLayout.compute(bounds, {
       scale = dialogueScale,
       allowClipping = true,
@@ -514,7 +515,7 @@ function FieldState:_drawFieldAttachedUi(resources, hostStatus, alpha)
     resources.yesNoRenderer:draw(yesNo, yesNoLayout)
   end
   if signpostModal then
-    local signpostScale = PixelScale.fitPreferred(bounds, 256, 192, assert(fieldScale))
+    local signpostScale = PixelScale.fitPreferred(bounds, NativeDisplay.WIDTH, NativeDisplay.HEIGHT, assert(fieldScale))
     resources.signpostRenderer:draw(self.runtime.signpost, self.runtime.viewport, alpha, signpostScale)
   end
 end

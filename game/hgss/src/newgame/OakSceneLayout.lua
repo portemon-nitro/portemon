@@ -1,5 +1,6 @@
 -- Pure common scene, dialogue, and Oak placement geometry for Oak intro.
 
+local NativeDisplay = require("libs.ui.src.NativeDisplay")
 local PixelScale = require("libs.ui.src.PixelScale")
 
 local OakSceneLayout = {}
@@ -90,8 +91,8 @@ function OakSceneLayout.dialogue(safeFrame, reservesDialogue, preferredScale)
     width = safeFrame.width,
     height = safeFrame.height * 0.28,
   }
-  local scale = PixelScale.fitPreferred(bounds, 256, 48, math.min(assert(preferredScale), 5))
-  local outerWidth, outerHeight = 256 * scale, 48 * scale
+  local scale = PixelScale.fitPreferred(bounds, NativeDisplay.WIDTH, 48, math.min(assert(preferredScale), 5))
+  local outerWidth, outerHeight = NativeDisplay.WIDTH * scale, 48 * scale
   return {
     outerRect = rect(
       PixelScale.snapLogical(safeFrame.x + (safeFrame.width - outerWidth) / 2),

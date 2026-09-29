@@ -17,6 +17,8 @@ local Mon = require("libs.mons.src.Mon")
 local MonsErrors = require("libs.mons.src.errors")
 local NativeLegality = require("libs.mons.src.gen4.NativeLegality")
 local Personality = require("libs.mons.src.gen4.Personality")
+local Stats = require("libs.mons.src.gen4.Stats")
+local U32 = require("libs.codec.src.U32")
 
 ---@class BoxCodec
 local BoxCodec = {}
@@ -85,7 +87,7 @@ end
 local function checksumWords(words)
   local total = 0
   for _, word in ipairs(words) do
-    total = (total + word) % 65536
+    total = (total + word) % U32.HALF_BASE
   end
   return total
 end
@@ -507,7 +509,7 @@ function BoxCodec.decode(bytes, context)
     local genderCode = math.floor(flagByte / 2) % 4
     local form = math.floor(flagByte / 8)
     local leaves = readerB:u8(25)
-    if leaves > 63 then
+    if leaves > Mon.SHINY_LEAVES_MAX then
       MonsErrors.raise(MonsErrors.CODEC_INVALID, "boxed shiny leaves exceed their field", {})
     end
 
@@ -549,7 +551,7 @@ function BoxCodec.decode(bytes, context)
     end
     local metLevel = levelByte % 128
     local trainerGender = math.floor(levelByte / 128)
-    if metLevel < 1 or metLevel > 100 then
+    if metLevel < 1 or metLevel > Stats.MAX_LEVEL then
       MonsErrors.raise(MonsErrors.CODEC_INVALID, "boxed met level is out of range", {})
     end
     local moodByte = readerD:u8(31)

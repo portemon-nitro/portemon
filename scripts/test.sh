@@ -298,8 +298,15 @@ fi
 
 # Private developer test roots live under the cache home, never under the
 # product save root; isolation is applied after the shared dev setup above
-# so no inherited override can restore the product root for a child.
-test_root="${XDG_CACHE_HOME:-$HOME/.cache}/portemon/rom-tests"
+# so no inherited override can restore the product root for a child. When
+# PORTEMON_SAVE_DIR is set, it is honored the same way the app honors it
+# (scripts/lib/dev.sh maps it onto XDG_DATA_HOME): the private test root is
+# rooted under it instead of the OS-default cache home.
+if [ -n "${PORTEMON_SAVE_DIR:-}" ]; then
+  test_root="$PORTEMON_SAVE_DIR/rom-tests"
+else
+  test_root="${XDG_CACHE_HOME:-$HOME/.cache}/portemon/rom-tests"
+fi
 selection_file="$test_root/selected-rom"
 
 # Exclusive per-ROM mutation lock. Only Linux developer tooling provides it;

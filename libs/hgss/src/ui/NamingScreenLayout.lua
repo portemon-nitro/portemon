@@ -3,9 +3,10 @@
 -- (`NamingScreen_UpdateCursorSpritePosition`, `sTouchHitboxDef`).
 
 local LayoutGeometry = require("libs.ui.src.LayoutGeometry")
+local NativeDisplay = require("libs.ui.src.NativeDisplay")
 
 local NamingScreenLayout = {}
-local WIDTH, HEIGHT = 256, 192
+local WIDTH, HEIGHT = NativeDisplay.WIDTH, NativeDisplay.HEIGHT
 local ROWS, COLUMNS = 6, 13
 
 ---@class NamingScreenLayoutResult

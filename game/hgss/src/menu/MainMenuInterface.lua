@@ -9,6 +9,7 @@
 -- token. Resolvers require the complete context the owning session supplies.
 
 local MainMenuLayout = require("game.hgss.src.menu.MainMenuLayout")
+local NativeDisplay = require("libs.ui.src.NativeDisplay")
 local PixelScale = require("libs.ui.src.PixelScale")
 
 ---@class MainMenuInterface
@@ -19,8 +20,8 @@ local INPUT_KEY = "main-menu"
 local DENSITY_WIDTH = 320
 local DENSITY_HEIGHT = 240
 local MAX_DENSITY_SCALE = 3
-local FALLBACK_WIDTH = 256
-local FALLBACK_HEIGHT = 192
+local FALLBACK_WIDTH = NativeDisplay.WIDTH
+local FALLBACK_HEIGHT = NativeDisplay.HEIGHT
 
 local function clampScale(value)
   return math.max(1, math.min(MAX_DENSITY_SCALE, value))

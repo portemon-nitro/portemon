@@ -12,11 +12,12 @@
 -- Resolvers require the complete context the owning session supplies.
 
 local ApplicationLayout = require("game.hgss.src.ui.ApplicationLayout")
+local NativeDisplay = require("libs.ui.src.NativeDisplay")
 
 ---@class TrainerCardInterface
 local TrainerCardInterface = {}
 
-local NATIVE = { id = "content", width = 256, height = 192 }
+local NATIVE = { id = "content", width = NativeDisplay.WIDTH, height = NativeDisplay.HEIGHT }
 local INPUT_KEY = "trainer-card"
 local FULL_CROP = { left = 4, right = 4, top = 4, bottom = 4 }
 local PROTECTED = { x = 8, y = 8, width = 240, height = 176 }

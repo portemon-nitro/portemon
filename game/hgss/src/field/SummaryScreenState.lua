@@ -13,6 +13,7 @@
 
 local ApplicationLayout = require("game.hgss.src.ui.ApplicationLayout")
 local ApplicationPresentation = require("game.hgss.src.ui.ApplicationPresentation")
+local NativeDisplay = require("libs.ui.src.NativeDisplay")
 local SummaryController = require("libs.hgss.src.ui.SummaryController")
 local SummaryModel = require("libs.hgss.src.ui.SummaryModel")
 local SummaryRenderer = require("libs.hgss.src.ui.SummaryRenderer")
@@ -27,7 +28,7 @@ local SummaryRenderer = require("libs.hgss.src.ui.SummaryRenderer")
 local SummaryScreenState = {}
 SummaryScreenState.__index = SummaryScreenState
 
-local NATIVE = { id = "content", width = 256, height = 192 }
+local NATIVE = { id = "content", width = NativeDisplay.WIDTH, height = NativeDisplay.HEIGHT }
 local INPUT_KEY = "summary"
 local ZERO_CROP = { left = 0, right = 0, top = 0, bottom = 0 }
 

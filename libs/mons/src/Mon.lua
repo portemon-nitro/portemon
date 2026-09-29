@@ -10,6 +10,7 @@ local Utf8Glyphs = require("libs.assets.src.Utf8Glyphs")
 local Validate = require("libs.assets.src.Validate")
 local Experience = require("libs.mons.src.gen4.Experience")
 local MonsErrors = require("libs.mons.src.errors")
+local Moves = require("libs.mons.src.gen4.Moves")
 local Personality = require("libs.mons.src.gen4.Personality")
 local Stats = require("libs.mons.src.gen4.Stats")
 
@@ -19,6 +20,7 @@ local Mon = {}
 Mon.SCHEMA = "g4-mon-v1"
 Mon.NICKNAME_CAPACITY = 11
 Mon.OT_NAME_CAPACITY = 8
+Mon.SHINY_LEAVES_MAX = 63
 
 local TOP_FIELDS = {
   schema = true,
@@ -49,7 +51,6 @@ local TOP_FIELDS = {
   mail = true,
 }
 
-local STAT_KEYS = { "hp", "attack", "defense", "speed", "specialAttack", "specialDefense" }
 local CONTEST_KEYS = { "cool", "beauty", "cute", "smart", "tough", "sheen" }
 local MOVE_FIELDS = { move = true, pp = true, ppUps = true }
 local RIBBON_FIELDS = { ds1 = true, gba = true, ds2 = true }
@@ -162,18 +163,22 @@ local function copyValue(value)
 end
 
 -- Maximum power points for a move: base value plus one fifth per power-point
--- up, at most three ups.
+-- up, at most Moves.MAX_PP_UPS ups.
 ---@param definition table<string, unknown>
 ---@return integer
 local function maxPp(definition)
-  return definition.basePp + 3 * math.floor(definition.basePp / 5)
+  return definition.basePp + Moves.MAX_PP_UPS * math.floor(definition.basePp / 5)
 end
 
 ---@param moves unknown
 ---@param catalog MonCatalog
 local function checkMoves(moves, catalog)
-  if not Validate.isArray(moves) or #moves > 4 then
-    MonsErrors.raise(MonsErrors.RECORD_INVALID, "moves must be an array of at most four entries", {})
+  if not Validate.isArray(moves) or #moves > Moves.MAX_SLOTS then
+    MonsErrors.raise(
+      MonsErrors.RECORD_INVALID,
+      "moves must be an array of at most " .. Moves.MAX_SLOTS .. " entries",
+      {}
+    )
   end
   local seen = {}
   for index, entry in ipairs(moves) do
@@ -184,7 +189,7 @@ local function checkMoves(moves, catalog)
     end
     seen[entry.move] = true
     checkIntRange(entry.pp, 0, maxPp(definition), "move entry " .. index .. " power points")
-    checkIntRange(entry.ppUps, 0, 3, "move entry " .. index .. " power-point ups")
+    checkIntRange(entry.ppUps, 0, Moves.MAX_PP_UPS, "move entry " .. index .. " power-point ups")
   end
 end
 
@@ -237,8 +242,8 @@ function Mon.validate(record, context)
   checkU32(record.personality, "personality")
   checkU32(record.experience, "experience")
   local curve = catalog:growthCurve(species.growthCurve)
-  if record.experience > curve[100] then
-    MonsErrors.raise(MonsErrors.RECORD_INVALID, "experience exceeds the level-100 entry", {})
+  if record.experience > curve[Stats.MAX_LEVEL] then
+    MonsErrors.raise(MonsErrors.RECORD_INVALID, "experience exceeds the level-" .. Stats.MAX_LEVEL .. " entry", {})
   end
   local level = Experience.level(curve, record.experience)
 
@@ -269,12 +274,12 @@ function Mon.validate(record, context)
     "effort values"
   )
   local evTotal = 0
-  for _, key in ipairs(STAT_KEYS) do
+  for _, key in ipairs(Stats.STAT_KEYS) do
     checkU8(record.evs[key], "effort value " .. key)
     evTotal = evTotal + record.evs[key]
   end
-  if evTotal > 510 then
-    MonsErrors.raise(MonsErrors.RECORD_INVALID, "effort value total exceeds 510", {})
+  if evTotal > Stats.EV_TOTAL_CAP then
+    MonsErrors.raise(MonsErrors.RECORD_INVALID, "effort value total exceeds " .. Stats.EV_TOTAL_CAP, {})
   end
 
   checkRecord(
@@ -293,7 +298,7 @@ function Mon.validate(record, context)
     { hp = true, attack = true, defense = true, speed = true, specialAttack = true, specialDefense = true },
     "individual values"
   )
-  for _, key in ipairs(STAT_KEYS) do
+  for _, key in ipairs(Stats.STAT_KEYS) do
     checkIntRange(record.ivs[key], 0, 31, "individual value " .. key)
   end
 
@@ -312,7 +317,7 @@ function Mon.validate(record, context)
   if type(record.fatefulEncounter) ~= "boolean" then
     MonsErrors.raise(MonsErrors.RECORD_INVALID, "fateful-encounter flag must be a boolean", {})
   end
-  checkIntRange(record.shinyLeaves, 0, 63, "shiny leaves")
+  checkIntRange(record.shinyLeaves, 0, Mon.SHINY_LEAVES_MAX, "shiny leaves")
 
   checkRecord(record.egg, EGG_FIELDS, "egg record")
   checkU16(record.egg.location, "egg location")
@@ -323,7 +328,7 @@ function Mon.validate(record, context)
   checkRecord(record.met, MET_FIELDS, "met record")
   checkU16(record.met.location, "met location")
   checkDate(record.met.date, "met date")
-  checkIntRange(record.met.level, 1, 100, "met level")
+  checkIntRange(record.met.level, 1, Stats.MAX_LEVEL, "met level")
   checkU8(record.met.terrain, "met terrain")
 
   checkOrigin(record.origin, context, catalog)

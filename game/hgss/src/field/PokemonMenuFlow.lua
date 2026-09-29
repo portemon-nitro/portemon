@@ -14,6 +14,18 @@ local SummaryScreenState = require("game.hgss.src.field.SummaryScreenState")
 
 local TERMINAL_FIELD_ACTION = "pokemon.field_move"
 
+-- The complete set of pages the flow's single live child can occupy.
+local PAGE = {
+  BAG_BROWSE = "bag_browse",
+  BAG_PICK_HELD = "bag_pick_held",
+  PARTY_BROWSE = "party_browse",
+  PARTY_ITEM_TARGET = "party_item_target",
+  PARTY_GIVE_TARGET = "party_give_target",
+  PARTY_GIVE_CONFIRM = "party_give_confirm",
+  SUMMARY = "summary",
+  MOVE_PICK = "move_pick",
+}
+
 ---@class PokemonMenuFlow
 ---@field private _root string
 ---@field private _mons table<string, unknown>
@@ -105,13 +117,13 @@ local function flowPartyPolicy(manifest)
     assert(type(facts) == "table", "party menus read slot facts")
     if facts.isEgg == true then
       return {
-        { kind = "summary", label = text("summary", "SUMMARY") },
+        { kind = PAGE.SUMMARY, label = text(PAGE.SUMMARY, "SUMMARY") },
         { kind = "switch", label = text("switch", "SWITCH") },
         { kind = "quit", label = text("quit", "QUIT") },
       }
     end
     local entries = {
-      { kind = "summary", label = text("summary", "SUMMARY") },
+      { kind = PAGE.SUMMARY, label = text(PAGE.SUMMARY, "SUMMARY") },
       { kind = "switch", label = text("switch", "SWITCH") },
     }
     if facts.mail == true then
@@ -206,7 +218,7 @@ function PokemonMenuFlow.new(opts)
     _prepareIcons = prepareIcons,
     _cancelIconPreparation = cancelIconPreparation,
     _overrides = opts.overrides,
-    _page = opts.root == "bag" and "bag_browse" or "party_browse",
+    _page = opts.root == "bag" and PAGE.BAG_BROWSE or PAGE.PARTY_BROWSE,
     _child = nil,
     _continuation = nil,
     _result = nil,
@@ -225,7 +237,7 @@ end
 function PokemonMenuFlow:_openPage(page, continuation)
   local assets = self._assets
   local measureDisplay = self._measureDisplay
-  if page == "bag_browse" then
+  if page == PAGE.BAG_BROWSE then
     return BagScreenState.new({
       service = self._bag,
       cursor = self._bagCursor,
@@ -238,7 +250,7 @@ function PokemonMenuFlow:_openPage(page, continuation)
       partyEmpty = self._mons:partyCount() == 0,
     })
   end
-  if page == "bag_pick_held" then
+  if page == PAGE.BAG_PICK_HELD then
     local cont = assert(continuation, "the held picker opens for a captured mon")
     assert(cont.slot ~= nil, "the held picker opens for a captured slot")
     return BagScreenState.new({
@@ -253,7 +265,7 @@ function PokemonMenuFlow:_openPage(page, continuation)
       partyEmpty = self._mons:partyCount() == 0,
     })
   end
-  if page == "party_browse" then
+  if page == PAGE.PARTY_BROWSE then
     local focusSlot = nil
     if type(continuation) == "table" then
       focusSlot = continuation.focusSlot
@@ -269,9 +281,9 @@ function PokemonMenuFlow:_openPage(page, continuation)
       cancelIconPreparation = self._cancelIconPreparation,
     })
   end
-  if page == "party_item_target" or page == "party_give_target" then
+  if page == PAGE.PARTY_ITEM_TARGET or page == PAGE.PARTY_GIVE_TARGET then
     local cont = assert(continuation, "target pages open for a captured item")
-    local context = page == "party_item_target" and "item_target" or "give_target"
+    local context = page == PAGE.PARTY_ITEM_TARGET and "item_target" or "give_target"
     return PartyScreenState.new({
       service = self._mons,
       manifest = assets.partyManifest,
@@ -287,7 +299,7 @@ function PokemonMenuFlow:_openPage(page, continuation)
       cancelIconPreparation = self._cancelIconPreparation,
     })
   end
-  if page == "party_give_confirm" then
+  if page == PAGE.PARTY_GIVE_CONFIRM then
     local cont = assert(continuation, "the replacement question opens for a captured exchange")
     return PartyScreenState.new({
       service = self._mons,
@@ -305,24 +317,24 @@ function PokemonMenuFlow:_openPage(page, continuation)
       cancelIconPreparation = self._cancelIconPreparation,
     })
   end
-  if page == "summary" then
+  if page == PAGE.SUMMARY then
     local cont = assert(continuation, "the summary opens for a captured slot")
     return SummaryScreenState.new({
       mons = self._mons,
       manifest = assets.partyManifest,
       initialSlot = assert(cont.slot, "the summary opens on a party slot"),
       measureDisplay = measureDisplay,
-      mode = "summary",
+      mode = PAGE.SUMMARY,
     })
   end
-  if page == "move_pick" then
+  if page == PAGE.MOVE_PICK then
     local cont = assert(continuation, "the move picker opens for a pending operation")
     return SummaryScreenState.new({
       mons = self._mons,
       manifest = assets.partyManifest,
       initialSlot = assert(cont.slot, "the picker opens on the pending slot"),
       measureDisplay = measureDisplay,
-      mode = "move_pick",
+      mode = PAGE.MOVE_PICK,
       request = assert(cont.pickerRequest, "the picker carries its closed request"),
     })
   end
@@ -390,7 +402,7 @@ end
 ---@param continuation table<string, unknown>
 function PokemonMenuFlow:_rewind(continuation)
   local returnPage = continuation.returnPage
-  assert(returnPage == "bag_browse" or returnPage == "party_browse", "continuations return to a root browse page")
+  assert(returnPage == PAGE.BAG_BROWSE or returnPage == PAGE.PARTY_BROWSE, "continuations return to a root browse page")
   self._picker = nil
   self:_replace(returnPage, nil)
 end
@@ -400,7 +412,7 @@ end
 ---@param outcome table<string, unknown>
 function PokemonMenuFlow:_completeParty(outcome)
   local child = assert(self._child, "completion answers the live child")
-  assert(self._page ~= "bag_browse" and self._page ~= "bag_pick_held", "party outcomes answer party children")
+  assert(self._page ~= PAGE.BAG_BROWSE and self._page ~= PAGE.BAG_PICK_HELD, "party outcomes answer party children")
   child:completeAction(outcome)
 end
 
@@ -424,10 +436,10 @@ function PokemonMenuFlow:_routeBagIntent(intent)
   assert(intent.kind == "use" or intent.kind == "give", "bag intents use or give")
   local itemKey = assert(intent.item, "bag intents snapshot their item")
   local operation = intent.kind == "use" and "use" or "give"
-  local page = intent.kind == "use" and "party_item_target" or "party_give_target"
+  local page = intent.kind == "use" and PAGE.PARTY_ITEM_TARGET or PAGE.PARTY_GIVE_TARGET
   self:_replace(page, {
     root = self._root,
-    returnPage = "bag_browse",
+    returnPage = PAGE.BAG_BROWSE,
     operation = operation,
     itemKey = itemKey,
     bagRevision = assert(intent.bagRevision, "bag intents snapshot the bag revision"),
@@ -453,9 +465,9 @@ function PokemonMenuFlow:_routePick(intent)
   }
   local decision = self._partyActions:preview(request)
   if decision.kind == "needs_confirmation" then
-    self:_replace("party_give_confirm", {
+    self:_replace(PAGE.PARTY_GIVE_CONFIRM, {
       root = self._root,
-      returnPage = "party_browse",
+      returnPage = PAGE.PARTY_BROWSE,
       operation = "give_from_party",
       slot = assert(continuation.slot, "give operations capture their slot"),
       itemKey = assert(intent.item, "picks snapshot their item"),
@@ -475,7 +487,7 @@ function PokemonMenuFlow:_routePick(intent)
     return
   end
   local slot = assert(continuation.slot, "give operations capture their slot")
-  self:_replace("party_browse", { focusSlot = slot })
+  self:_replace(PAGE.PARTY_BROWSE, { focusSlot = slot })
   local picker = assert(self._picker, "the picker holds its temporary cursor")
   self:_adoptPickerCursor(picker)
   self._picker = nil
@@ -506,7 +518,7 @@ function PokemonMenuFlow:_routeTargetIntent(intent)
     }
     local decision = self._partyActions:preview(request)
     if decision.kind == "needs_confirmation" then
-      self:_replace("party_give_confirm", {
+      self:_replace(PAGE.PARTY_GIVE_CONFIRM, {
         root = self._root,
         returnPage = assert(continuation.returnPage, "continuations name their return page"),
         operation = operation,
@@ -562,8 +574,8 @@ end
 ---@param continuation table<string, unknown>
 function PokemonMenuFlow:_returnGiveConfirm(continuation)
   local returnPage = assert(continuation.returnPage, "replacements record their return page")
-  assert(returnPage == "bag_browse" or returnPage == "party_browse", "replacements return to a root browse page")
-  if returnPage == "party_browse" then
+  assert(returnPage == PAGE.BAG_BROWSE or returnPage == PAGE.PARTY_BROWSE, "replacements return to a root browse page")
+  if returnPage == PAGE.PARTY_BROWSE then
     self:_replace(returnPage, { focusSlot = assert(continuation.slot, "replacements record their slot") })
   else
     self:_replace(returnPage, nil)
@@ -602,7 +614,7 @@ function PokemonMenuFlow:_routeUse(intent, continuation, itemKey)
     continuation.operation = "use_move"
     continuation.slot = slot
     continuation.pickerRequest = { context = context }
-    self:_replace("move_pick", continuation)
+    self:_replace(PAGE.MOVE_PICK, continuation)
     return
   end
   if decision.kind ~= "ready" then
@@ -640,7 +652,7 @@ function PokemonMenuFlow:_routeTeach(intent, continuation, itemKey)
       context = "replace_machine",
       protected = protectedRows(self._mons, self._assets.monCatalog, self._assets.itemCatalog, slot),
     }
-    self:_replace("move_pick", continuation)
+    self:_replace(PAGE.MOVE_PICK, continuation)
     return
   end
   if decision.kind ~= "ready" then
@@ -685,12 +697,12 @@ end
 -- place, and field entries check before leaving the application.
 ---@param intent table<string, unknown>
 function PokemonMenuFlow:_routeBrowseIntent(intent)
-  if intent.kind == "summary" then
+  if intent.kind == PAGE.SUMMARY then
     local slot = assert(intent.slot, "summary intents name their slot")
-    self:_replace("summary", {
+    self:_replace(PAGE.SUMMARY, {
       root = self._root,
-      returnPage = "party_browse",
-      operation = "summary",
+      returnPage = PAGE.PARTY_BROWSE,
+      operation = PAGE.SUMMARY,
       slot = slot,
       partyRevision = self._mons:partyRevision(),
       bagRevision = self._bag:revision(),
@@ -701,9 +713,9 @@ function PokemonMenuFlow:_routeBrowseIntent(intent)
     assert(intent.item == nil, "browse give names no item yet")
     local slot = assert(intent.slot, "give intents name their slot")
     self._picker = self:_pickerCursor()
-    self:_replace("bag_pick_held", {
+    self:_replace(PAGE.BAG_PICK_HELD, {
       root = self._root,
-      returnPage = "party_browse",
+      returnPage = PAGE.PARTY_BROWSE,
       operation = "give_from_party",
       slot = slot,
       partyRevision = assert(intent.partyRevision, "give intents carry the party revision"),
@@ -780,7 +792,7 @@ end
 function PokemonMenuFlow:_routeSummaryResult(result)
   if result.kind == "return" then
     local slot = assert(result.slot, "summary returns name their member")
-    self:_replace("party_browse", { focusSlot = slot })
+    self:_replace(PAGE.PARTY_BROWSE, { focusSlot = slot })
     self._continuation = nil
     return
   end
@@ -791,12 +803,12 @@ function PokemonMenuFlow:_routeSummaryResult(result)
   assert(result.kind == "cancelled", "summaries return, pick, or cancel")
   local continuation = assert(self._continuation, "cancellation returns to a pending operation")
   local operation = assert(continuation.operation, "continuations name their operation")
-  if operation == "summary" then
-    self:_replace("party_browse", { focusSlot = assert(continuation.slot, "summary opens on a slot") })
+  if operation == PAGE.SUMMARY then
+    self:_replace(PAGE.PARTY_BROWSE, { focusSlot = assert(continuation.slot, "summary opens on a slot") })
     self._continuation = nil
     return
   end
-  self:_replace("party_item_target", continuation)
+  self:_replace(PAGE.PARTY_ITEM_TARGET, continuation)
 end
 
 -- Routes one drained child intent by its kind and the active page. Bag
@@ -805,27 +817,27 @@ end
 ---@param intent table<string, unknown>
 function PokemonMenuFlow:_routeIntent(intent)
   assert(type(intent) == "table" and type(intent.kind) == "string", "intents carry their kind")
-  if self._page == "bag_browse" and (intent.kind == "use" or intent.kind == "give") then
+  if self._page == PAGE.BAG_BROWSE and (intent.kind == "use" or intent.kind == "give") then
     self:_routeBagIntent(intent)
     return
   end
-  if self._page == "bag_pick_held" and intent.kind == "pick" then
+  if self._page == PAGE.BAG_PICK_HELD and intent.kind == "pick" then
     self:_routePick(intent)
     return
   end
-  if (self._page == "party_item_target" or self._page == "party_give_target") and intent.kind == "use_item" then
+  if (self._page == PAGE.PARTY_ITEM_TARGET or self._page == PAGE.PARTY_GIVE_TARGET) and intent.kind == "use_item" then
     self:_routeTargetIntent(intent)
     return
   end
-  if (self._page == "party_item_target" or self._page == "party_give_target") and intent.kind == "give" then
+  if (self._page == PAGE.PARTY_ITEM_TARGET or self._page == PAGE.PARTY_GIVE_TARGET) and intent.kind == "give" then
     self:_routeTargetIntent(intent)
     return
   end
-  if self._page == "party_give_confirm" and intent.kind == "give" then
+  if self._page == PAGE.PARTY_GIVE_CONFIRM and intent.kind == "give" then
     self:_routeConfirmIntent(intent)
     return
   end
-  if self._page == "party_browse" then
+  if self._page == PAGE.PARTY_BROWSE then
     self:_routeBrowseIntent(intent)
     return
   end
@@ -839,21 +851,21 @@ end
 ---@param result table<string, unknown>
 function PokemonMenuFlow:_routeResult(result)
   assert(type(result) == "table" and type(result.kind) == "string", "results carry their kind")
-  if self._page == "summary" or self._page == "move_pick" then
+  if self._page == PAGE.SUMMARY or self._page == PAGE.MOVE_PICK then
     self:_routeSummaryResult(result)
     return
   end
-  if self._page == "bag_browse" and self._root == "bag" then
+  if self._page == PAGE.BAG_BROWSE and self._root == "bag" then
     assert(result.kind == "close", "the root bag reports close")
     self:_terminate({ kind = "close" })
     return
   end
-  if self._page == "party_browse" and self._root == "party" then
+  if self._page == PAGE.PARTY_BROWSE and self._root == "party" then
     assert(result.kind == "close", "the root party reports close")
     self:_terminate({ kind = "close" })
     return
   end
-  if self._page == "party_give_confirm" then
+  if self._page == PAGE.PARTY_GIVE_CONFIRM then
     assert(result.kind == "cancelled", "the replacement question declines its exchange")
     local continuation = assert(self._continuation, "declined replacements unwind a captured exchange")
     self:_returnGiveConfirm(continuation)
@@ -882,7 +894,7 @@ end
 ---@return table<string, unknown>?
 function PokemonMenuFlow:_takeIntent()
   local child = assert(self._child, "intents drain from a live child")
-  if self._page == "summary" or self._page == "move_pick" then
+  if self._page == PAGE.SUMMARY or self._page == PAGE.MOVE_PICK then
     return nil
   end
   return child:takeIntent()

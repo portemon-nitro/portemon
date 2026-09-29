@@ -15,6 +15,7 @@ local GpuAssetPool = require("libs.hgss.src.presentation.GpuAssetPool")
 local Matrix4 = require("libs.math.src.Matrix4")
 local ModelDefinition = require("libs.hgss.src.presentation.ModelDefinition")
 local ModelInstance = require("libs.hgss.src.presentation.ModelInstance")
+local NativeDisplay = require("libs.ui.src.NativeDisplay")
 local SceneDescriptor = require("libs.hgss.src.presentation.SceneDescriptor")
 local BagCache = require("libs.assets.src.BagCache")
 
@@ -317,7 +318,8 @@ local function ensureModelCanvas(self)
   assert(type(graphics.newCanvas) == "function", "the bag hero renderer requires canvas creation")
   local canvas
   local ok, err = pcall(function()
-    canvas = graphics.newCanvas(256, 192, { format = "rgba8", readable = true, dpiscale = 1 })
+    canvas =
+      graphics.newCanvas(NativeDisplay.WIDTH, NativeDisplay.HEIGHT, { format = "rgba8", readable = true, dpiscale = 1 })
     canvas:setFilter("nearest", "nearest")
   end)
   if not ok then
@@ -449,8 +451,8 @@ local function drawCanonicalModel(self, realized, placement)
       { realized.instance:drawItems(realized.renderMeshes) },
       nil,
       {
-        worldViewport = { x = 0, y = 0, width = 256, height = 192 },
-        referenceFrame = { x = 0, y = 0, width = 256, height = 192 },
+        worldViewport = { x = 0, y = 0, width = NativeDisplay.WIDTH, height = NativeDisplay.HEIGHT },
+        referenceFrame = { x = 0, y = 0, width = NativeDisplay.WIDTH, height = NativeDisplay.HEIGHT },
       },
       1
     )

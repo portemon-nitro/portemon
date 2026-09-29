@@ -26,6 +26,7 @@ local GpuAssetPool = require("libs.hgss.src.presentation.GpuAssetPool")
 local Matrix4 = require("libs.math.src.Matrix4")
 local ModelDefinition = require("libs.hgss.src.presentation.ModelDefinition")
 local ModelInstance = require("libs.hgss.src.presentation.ModelInstance")
+local NativeDisplay = require("libs.ui.src.NativeDisplay")
 local SceneDescriptor = require("libs.hgss.src.presentation.SceneDescriptor")
 local FixedPoint = require("libs.math.src.FixedPoint")
 
@@ -1704,7 +1705,7 @@ end
 function StarterChoicePresentation:_drawInfoBackdrop()
   local graphics = assert(love and love.graphics, "starter presentation requires the graphics namespace")
   graphics.setColor(0, 0, 0, 1)
-  graphics.rectangle("fill", 0, 0, 256, 192)
+  graphics.rectangle("fill", 0, 0, NativeDisplay.WIDTH, NativeDisplay.HEIGHT)
 end
 
 -- Draws the sequential source white fade over the caller's full canonical
@@ -1720,7 +1721,7 @@ function StarterChoicePresentation:_drawFade(alpha)
   end
   local graphics = assert(love and love.graphics, "starter presentation requires the graphics namespace")
   graphics.setColor(1, 1, 1, alpha)
-  graphics.rectangle("fill", 0, 0, 256, 192)
+  graphics.rectangle("fill", 0, 0, NativeDisplay.WIDTH, NativeDisplay.HEIGHT)
 end
 
 -- The selected semantic info message and bottom prompt for one
@@ -1748,8 +1749,10 @@ function StarterChoicePresentation:_ensureMachineTarget()
   local target = self._machineTarget
   if target == nil then
     local graphics = assert(love and love.graphics, "starter presentation requires the graphics namespace")
-    target =
-      assert(graphics.newCanvas(256, 192, { dpiscale = 1 }), "starter presentation owns no machine raster target")
+    target = assert(
+      graphics.newCanvas(NativeDisplay.WIDTH, NativeDisplay.HEIGHT, { dpiscale = 1 }),
+      "starter presentation owns no machine raster target"
+    )
     target:setFilter("nearest", "nearest")
     self._machineTarget = target
   end
@@ -1798,8 +1801,8 @@ function StarterChoicePresentation:_renderMachineTarget(snapshot, sample)
       { self:_drawItems(snapshot, sample) },
       nil,
       {
-        worldViewport = { x = 0, y = 0, width = 256, height = 192 },
-        referenceFrame = { x = 0, y = 0, width = 256, height = 192 },
+        worldViewport = { x = 0, y = 0, width = NativeDisplay.WIDTH, height = NativeDisplay.HEIGHT },
+        referenceFrame = { x = 0, y = 0, width = NativeDisplay.WIDTH, height = NativeDisplay.HEIGHT },
       },
       1
     )

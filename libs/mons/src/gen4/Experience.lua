@@ -3,6 +3,8 @@
 -- stored experience, clamped to level 100. Experience above the level-100
 -- entry has no valid level and is rejected by record validation.
 
+local Stats = require("libs.mons.src.gen4.Stats")
+
 ---@class Experience
 local Experience = {}
 
@@ -12,8 +14,8 @@ local Experience = {}
 function Experience.expFor(curve, level)
   assert(type(curve) == "table", "growth curve must be a table")
   assert(
-    type(level) == "number" and level % 1 == 0 and level >= 1 and level <= 100,
-    "level must be an integer in 1..100"
+    type(level) == "number" and level % 1 == 0 and level >= 1 and level <= Stats.MAX_LEVEL,
+    "level must be an integer in 1.." .. Stats.MAX_LEVEL
   )
   return curve[level]
 end
@@ -28,7 +30,7 @@ function Experience.level(curve, experience)
     "experience must be a non-negative integer"
   )
   local found = 1
-  for level = 1, 100 do
+  for level = 1, Stats.MAX_LEVEL do
     local entry = curve[level]
     assert(
       type(entry) == "number" and entry % 1 == 0 and entry >= 0,

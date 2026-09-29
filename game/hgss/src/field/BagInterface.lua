@@ -13,12 +13,13 @@
 
 local ApplicationLayout = require("game.hgss.src.ui.ApplicationLayout")
 local BagLayout = require("libs.hgss.src.ui.BagLayout")
+local NativeDisplay = require("libs.ui.src.NativeDisplay")
 
 ---@class BagInterface
 local BagInterface = {}
 
-local HERO_NATIVE = { id = "hero", width = 256, height = 192 }
-local INTERACTION_NATIVE = { id = "interaction", width = 256, height = 192 }
+local HERO_NATIVE = { id = "hero", width = NativeDisplay.WIDTH, height = NativeDisplay.HEIGHT }
+local INTERACTION_NATIVE = { id = "interaction", width = NativeDisplay.WIDTH, height = NativeDisplay.HEIGHT }
 local INPUT_KEY = "bag"
 local ZERO_CROP = { left = 0, right = 0, top = 0, bottom = 0 }
 

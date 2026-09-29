@@ -9,6 +9,8 @@
 -- layer is the discovery root's alone: suites inherit it and a metadata
 -- layer is rejected rather than second-guessing the root.
 
+local CapabilityNames = require("tests.runner.CapabilityNames")
+
 local Suite = {}
 
 local METADATA_KEYS = { capabilities = true, tags = true, fullCorpus = true, derivedAssets = true }
@@ -101,8 +103,11 @@ function Suite.normalize(mod, moduleName, defaultLayer)
   -- declares it is malformed and must be migrated to an explicit closure.
   for _, name in ipairs(capabilities) do
     assert(
-      name ~= "derived_cache",
-      moduleName .. ": stale capability 'derived_cache'; declare an explicit derivedAssets closure instead"
+      name ~= CapabilityNames.STALE_DERIVED_CACHE,
+      moduleName
+        .. ": stale capability '"
+        .. CapabilityNames.STALE_DERIVED_CACHE
+        .. "'; declare an explicit derivedAssets closure instead"
     )
   end
 
@@ -122,9 +127,9 @@ function Suite.normalize(mod, moduleName, defaultLayer)
   local claimsComplete = false
   local claimsBounded = false
   for _, name in ipairs(capabilities) do
-    if name == "complete_derived_cache" then
+    if name == CapabilityNames.COMPLETE_DERIVED_CACHE then
       claimsComplete = true
-    elseif name == "derived_assets" then
+    elseif name == CapabilityNames.DERIVED_ASSETS then
       claimsBounded = true
     end
   end

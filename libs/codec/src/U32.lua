@@ -9,8 +9,7 @@ local U32 = {}
 
 U32.MOD = 4294967296
 U32.MAX = 4294967295
-
-local HALF_BASE = 65536
+U32.HALF_BASE = 65536
 
 ---@param value integer
 ---@param name string
@@ -36,13 +35,13 @@ end
 function U32.mul(a, b)
   requireU32(a, "factor")
   requireU32(b, "factor")
-  local aLo = a % HALF_BASE
-  local aHi = math.floor(a / HALF_BASE)
-  local bLo = b % HALF_BASE
-  local bHi = math.floor(b / HALF_BASE)
+  local aLo = a % U32.HALF_BASE
+  local aHi = math.floor(a / U32.HALF_BASE)
+  local bLo = b % U32.HALF_BASE
+  local bHi = math.floor(b / U32.HALF_BASE)
   local lo = aLo * bLo
   local mid = aLo * bHi + aHi * bLo
-  return (lo + (mid % HALF_BASE) * HALF_BASE) % U32.MOD
+  return (lo + (mid % U32.HALF_BASE) * U32.HALF_BASE) % U32.MOD
 end
 
 return U32

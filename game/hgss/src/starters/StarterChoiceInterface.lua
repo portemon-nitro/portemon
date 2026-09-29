@@ -15,13 +15,14 @@
 -- token.
 
 local ApplicationLayout = require("game.hgss.src.ui.ApplicationLayout")
+local NativeDisplay = require("libs.ui.src.NativeDisplay")
 
 ---@class StarterChoiceInterface
 local StarterChoiceInterface = {}
 
-local INFO_NATIVE = { id = "info", width = 256, height = 192 }
-local MACHINE_NATIVE = { id = "machine", width = 256, height = 192 }
-local COMPACT_NATIVE = { id = "compact", width = 256, height = 192 }
+local INFO_NATIVE = { id = "info", width = NativeDisplay.WIDTH, height = NativeDisplay.HEIGHT }
+local MACHINE_NATIVE = { id = "machine", width = NativeDisplay.WIDTH, height = NativeDisplay.HEIGHT }
+local COMPACT_NATIVE = { id = "compact", width = NativeDisplay.WIDTH, height = NativeDisplay.HEIGHT }
 local INPUT_KEY = "starter"
 local COMPACT_INPUT_KEY = "starter-compact"
 local ZERO_CROP = { left = 0, right = 0, top = 0, bottom = 0 }

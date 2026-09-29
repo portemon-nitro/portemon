@@ -19,6 +19,7 @@
 -- layers) and only a verified invocation receipt establishes the scoped
 -- capabilities.
 
+local CapabilityNames = require("tests.runner.CapabilityNames")
 local GameVersion = require("romdump.src.source.GameVersion")
 local RomImporter = require("romdump.src.source.RomImporter")
 
@@ -156,16 +157,16 @@ function Capabilities.detect(options)
   local capabilities = {}
   if graphics then
     preflight(graphics, image or nil)
-    capabilities.graphics = true
+    capabilities[CapabilityNames.GRAPHICS] = true
   end
   if #ready > 0 then
-    capabilities.rom_dump = true
+    capabilities[CapabilityNames.ROM_DUMP] = true
   end
   if verifiesClosure(options.source, options.preparation) then
-    capabilities.derived_assets = true
+    capabilities[CapabilityNames.DERIVED_ASSETS] = true
     local preparation = assert(options.preparation, "a verified closure carries its receipt")
     if preparation.complete == true then
-      capabilities.complete_derived_cache = true
+      capabilities[CapabilityNames.COMPLETE_DERIVED_CACHE] = true
     end
   end
   return capabilities, ready

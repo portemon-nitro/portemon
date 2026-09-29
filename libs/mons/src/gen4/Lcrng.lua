@@ -72,7 +72,7 @@ end
 function Lcrng:nextU16()
   self._state = U32.add(U32.mul(self._state, Lcrng.MULTIPLIER), Lcrng.INCREMENT)
   self._calls = self._calls + 1
-  return math.floor(self._state / 65536)
+  return math.floor(self._state / U32.HALF_BASE)
 end
 
 -- Creation order: the first draw occupies the low 16 bits, the second the
@@ -81,7 +81,7 @@ end
 function Lcrng:nextU32FromTwoDraws()
   local low = self:nextU16()
   local high = self:nextU16()
-  return low + high * 65536
+  return low + high * U32.HALF_BASE
 end
 
 ---@return { state: integer, calls: integer }

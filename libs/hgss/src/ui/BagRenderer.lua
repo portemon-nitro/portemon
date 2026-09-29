@@ -20,6 +20,7 @@
 
 local FieldDrawState = require("libs.hgss.src.presentation.FieldDrawState")
 local LogicalSurface = require("libs.ui.src.LogicalSurface")
+local NativeDisplay = require("libs.ui.src.NativeDisplay")
 local MenuTextTemplate = require("libs.hgss.src.ui.MenuTextTemplate")
 local BagSave = require("libs.hgss.src.save.BagSave")
 local YesNoPromptRenderer = require("libs.hgss.src.ui.YesNoPromptRenderer")
@@ -280,8 +281,8 @@ function BagRenderer.new(opts)
     acquire("heroFemale", hero.background.female)
     acquire("descriptionFrame", {
       image = hero.description.frame.image,
-      width = 256,
-      height = 192,
+      width = NativeDisplay.WIDTH,
+      height = NativeDisplay.HEIGHT,
     })
     local moveSummary = hero.moveSummary
     if moveSummary ~= nil then

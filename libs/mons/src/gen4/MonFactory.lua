@@ -82,10 +82,15 @@ function MonFactory:createNormal(request)
   assert(type(request) == "table", "normal creation requires a request record")
   local species = self._catalog:species(request.species)
   local form = self._catalog:form(request.species, request.form)
-  if type(request.level) ~= "number" or request.level % 1 ~= 0 or request.level < 1 or request.level > 100 then
+  if
+    type(request.level) ~= "number"
+    or request.level % 1 ~= 0
+    or request.level < 1
+    or request.level > Stats.MAX_LEVEL
+  then
     MonsErrors.raise(
       MonsErrors.RECORD_INVALID,
-      "normal creation level must be an integer in 1..100",
+      "normal creation level must be an integer in 1.." .. Stats.MAX_LEVEL,
       { policy = "normal", species = request.species }
     )
   end
@@ -131,7 +136,7 @@ function MonFactory:createNormal(request)
   end
 
   local record = {
-    schema = "g4-mon-v1",
+    schema = Mon.SCHEMA,
     species = request.species,
     form = request.form,
     personality = personality,

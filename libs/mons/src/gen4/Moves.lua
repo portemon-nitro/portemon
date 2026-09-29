@@ -6,8 +6,13 @@
 -- moves drops the oldest. Current power points start at the move's base
 -- value with no power-point ups.
 
+local Stats = require("libs.mons.src.gen4.Stats")
+
 ---@class Moves
 local Moves = {}
+
+Moves.MAX_SLOTS = 4
+Moves.MAX_PP_UPS = 3
 
 ---@param learnset { level: integer, move: string }[]
 ---@param level integer
@@ -16,8 +21,8 @@ local Moves = {}
 function Moves.initial(learnset, level, catalog)
   assert(type(learnset) == "table", "learnset must be a table")
   assert(
-    type(level) == "number" and level % 1 == 0 and level >= 1 and level <= 100,
-    "level must be an integer in 1..100"
+    type(level) == "number" and level % 1 == 0 and level >= 1 and level <= Stats.MAX_LEVEL,
+    "level must be an integer in 1.." .. Stats.MAX_LEVEL
   )
   assert(catalog ~= nil, "moves need a catalog for base power points")
   local moves = {}
@@ -30,7 +35,7 @@ function Moves.initial(learnset, level, catalog)
       known[entry.move] = true
       local definition = catalog:move(entry.move)
       moves[#moves + 1] = { move = entry.move, pp = definition.basePp, ppUps = 0 }
-      if #moves > 4 then
+      if #moves > Moves.MAX_SLOTS then
         local dropped = table.remove(moves, 1)
         known[dropped.move] = nil
       end

@@ -7,13 +7,14 @@
 -- records and returns fresh geometry records only.
 
 local LayoutGeometry = require("libs.ui.src.LayoutGeometry")
+local NativeDisplay = require("libs.ui.src.NativeDisplay")
 local PixelScale = require("libs.ui.src.PixelScale")
 
 ---@class ApplicationLayout
 local ApplicationLayout = {}
 
-local NATIVE_WIDTH = 256
-local NATIVE_HEIGHT = 192
+local NATIVE_WIDTH = NativeDisplay.WIDTH
+local NATIVE_HEIGHT = NativeDisplay.HEIGHT
 local ENTER_TOLERANCE = 12
 local RETAIN_TOLERANCE = 14
 

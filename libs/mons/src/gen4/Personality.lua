@@ -6,17 +6,23 @@
 -- the source threshold below 8. The ability slot follows personality parity
 -- for two-ability definitions; single-ability definitions always use slot 1.
 
+local Stats = require("libs.mons.src.gen4.Stats")
+local U32 = require("libs.codec.src.U32")
+
 ---@class Personality
 local Personality = {}
+
+local NATURE_COUNT = Stats.MAX_NATURE + 1
+local SHINY_XOR_THRESHOLD = 8
 
 ---@param personality integer
 ---@return integer
 function Personality.nature(personality)
   assert(
-    type(personality) == "number" and personality % 1 == 0 and personality >= 0 and personality <= 0xFFFFFFFF,
+    type(personality) == "number" and personality % 1 == 0 and personality >= 0 and personality <= U32.MAX,
     "personality must be an unsigned 32-bit integer"
   )
-  return personality % 25
+  return personality % NATURE_COUNT
 end
 
 ---@param ratio integer
@@ -25,7 +31,7 @@ end
 function Personality.gender(ratio, personality)
   assert(type(ratio) == "number" and ratio % 1 == 0 and ratio >= 0 and ratio <= 255, "gender ratio must be a u8")
   assert(
-    type(personality) == "number" and personality % 1 == 0 and personality >= 0 and personality <= 0xFFFFFFFF,
+    type(personality) == "number" and personality % 1 == 0 and personality >= 0 and personality <= U32.MAX,
     "personality must be an unsigned 32-bit integer"
   )
   if ratio == 255 then
@@ -64,18 +70,18 @@ end
 ---@return boolean
 function Personality.shiny(trainerId, personality)
   assert(
-    type(trainerId) == "number" and trainerId % 1 == 0 and trainerId >= 0 and trainerId <= 0xFFFFFFFF,
+    type(trainerId) == "number" and trainerId % 1 == 0 and trainerId >= 0 and trainerId <= U32.MAX,
     "trainer id must be an unsigned 32-bit integer"
   )
   assert(
-    type(personality) == "number" and personality % 1 == 0 and personality >= 0 and personality <= 0xFFFFFFFF,
+    type(personality) == "number" and personality % 1 == 0 and personality >= 0 and personality <= U32.MAX,
     "personality must be an unsigned 32-bit integer"
   )
-  local a = math.floor(trainerId / 65536) % 65536
-  local b = trainerId % 65536
-  local c = math.floor(personality / 65536) % 65536
-  local d = personality % 65536
-  return xor16(xor16(a, b), xor16(c, d)) < 8
+  local a = math.floor(trainerId / U32.HALF_BASE) % U32.HALF_BASE
+  local b = trainerId % U32.HALF_BASE
+  local c = math.floor(personality / U32.HALF_BASE) % U32.HALF_BASE
+  local d = personality % U32.HALF_BASE
+  return xor16(xor16(a, b), xor16(c, d)) < SHINY_XOR_THRESHOLD
 end
 
 ---@param abilityCount integer
@@ -84,7 +90,7 @@ end
 function Personality.abilitySlot(abilityCount, personality)
   assert(abilityCount == 1 or abilityCount == 2, "ability count must be 1 or 2")
   assert(
-    type(personality) == "number" and personality % 1 == 0 and personality >= 0 and personality <= 0xFFFFFFFF,
+    type(personality) == "number" and personality % 1 == 0 and personality >= 0 and personality <= U32.MAX,
     "personality must be an unsigned 32-bit integer"
   )
   if abilityCount == 1 then

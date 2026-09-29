@@ -11,12 +11,13 @@
 local ApplicationLayout = require("game.hgss.src.ui.ApplicationLayout")
 local LogicalSurface = require("libs.ui.src.LogicalSurface")
 local NamingScreenLayout = require("libs.hgss.src.ui.NamingScreenLayout")
+local NativeDisplay = require("libs.ui.src.NativeDisplay")
 
 ---@class NamingInterface
 local NamingInterface = {}
 
-local NATIVE = { id = "content", width = 256, height = 192 }
-local CANONICAL_VIEWPORT = { x = 0, y = 0, width = 256, height = 192 }
+local NATIVE = { id = "content", width = NativeDisplay.WIDTH, height = NativeDisplay.HEIGHT }
+local CANONICAL_VIEWPORT = { x = 0, y = 0, width = NativeDisplay.WIDTH, height = NativeDisplay.HEIGHT }
 local INPUT_KEY = "naming"
 local ZERO_CROP = { left = 0, right = 0, top = 0, bottom = 0 }
 

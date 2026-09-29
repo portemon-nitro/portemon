@@ -10,6 +10,7 @@
 
 local Experience = require("libs.mons.src.gen4.Experience")
 local MonsErrors = require("libs.mons.src.errors")
+local Moves = require("libs.mons.src.gen4.Moves")
 local Personality = require("libs.mons.src.gen4.Personality")
 local Stats = require("libs.mons.src.gen4.Stats")
 local Utf8Glyphs = require("libs.assets.src.Utf8Glyphs")
@@ -92,8 +93,8 @@ function NativeLegality.project(mon, context)
   end
 
   local curve = catalog:growthCurve(species.growthCurve)
-  if mon.experience > curve[100] then
-    MonsErrors.raise(MonsErrors.RECORD_INVALID, "experience exceeds the level-100 entry", {})
+  if mon.experience > curve[Stats.MAX_LEVEL] then
+    MonsErrors.raise(MonsErrors.RECORD_INVALID, "experience exceeds the level-" .. Stats.MAX_LEVEL .. " entry", {})
   end
   local level = Experience.level(curve, mon.experience)
   if mon.met.level ~= level then
@@ -112,8 +113,8 @@ function NativeLegality.project(mon, context)
       MonsErrors.raise(MonsErrors.LEGALITY_INVALID, "duplicate move " .. entry.move, { move = entry.move })
     end
     seen[entry.move] = true
-    local ceiling = definition.basePp + 3 * math.floor(definition.basePp / 5)
-    if entry.pp < 0 or entry.pp > ceiling or entry.ppUps < 0 or entry.ppUps > 3 then
+    local ceiling = definition.basePp + Moves.MAX_PP_UPS * math.floor(definition.basePp / 5)
+    if entry.pp < 0 or entry.pp > ceiling or entry.ppUps < 0 or entry.ppUps > Moves.MAX_PP_UPS then
       MonsErrors.raise(
         MonsErrors.LEGALITY_INVALID,
         "move entry " .. index .. " exceeds its source power-point range",
@@ -124,11 +125,11 @@ function NativeLegality.project(mon, context)
   end
 
   local evTotal = 0
-  for _, key in ipairs({ "hp", "attack", "defense", "speed", "specialAttack", "specialDefense" }) do
+  for _, key in ipairs(Stats.STAT_KEYS) do
     evTotal = evTotal + mon.evs[key]
   end
-  if evTotal > 510 then
-    MonsErrors.raise(MonsErrors.LEGALITY_INVALID, "effort value total exceeds 510", {})
+  if evTotal > Stats.EV_TOTAL_CAP then
+    MonsErrors.raise(MonsErrors.LEGALITY_INVALID, "effort value total exceeds " .. Stats.EV_TOTAL_CAP, {})
   end
 
   local nature = Personality.nature(mon.personality)

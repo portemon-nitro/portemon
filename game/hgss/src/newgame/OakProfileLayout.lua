@@ -1,6 +1,7 @@
 -- Pure profile selector, confirmation, and name-editor geometry for Oak intro.
 
 local ImageButton = require("libs.ui.src.ImageButton")
+local NativeDisplay = require("libs.ui.src.NativeDisplay")
 local TextButton = require("libs.ui.src.TextButton")
 
 ---@class OakGenderCardEntry
@@ -96,7 +97,7 @@ end
 
 function OakProfileLayout.nameConfirmationEntries(nameStage, choiceRegion)
   local stackSourceHeight = TextButton.REFERENCE_HEIGHT * 2 + 8
-  local stageScale = math.min(nameStage.width / 256, nameStage.height / 192)
+  local stageScale = math.min(nameStage.width / NativeDisplay.WIDTH, nameStage.height / NativeDisplay.HEIGHT)
   local scale =
     math.min(stageScale, choiceRegion.width / TextButton.REFERENCE_WIDTH, choiceRegion.height / stackSourceHeight)
   assert(

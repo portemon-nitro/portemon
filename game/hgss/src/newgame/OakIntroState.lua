@@ -10,6 +10,7 @@ local OakIntroLayout = require("game.hgss.src.newgame.OakIntroLayout")
 local OakIntroRenderer = require("game.hgss.src.newgame.OakIntroRenderer")
 local PixelScale = require("libs.ui.src.PixelScale")
 local LayoutGeometry = require("libs.ui.src.LayoutGeometry")
+local NativeDisplay = require("libs.ui.src.NativeDisplay")
 local DialoguePresentationLayout = require("libs.hgss.src.ui.DialoguePresentationLayout")
 
 ---@class OakIntroStateController: OakIntroController
@@ -179,8 +180,8 @@ local SOURCE_FRAME_EPSILON = 1e-14
 
 local function resolvePixelSurface(width, height)
   local bounds = { x = 0, y = 0, width = width, height = height }
-  local preferredScale = math.max(1, math.floor(height / 192 + 0.5))
-  local outputScale = PixelScale.fitPreferred(bounds, 256, 192, preferredScale)
+  local preferredScale = math.max(1, math.floor(height / NativeDisplay.HEIGHT + 0.5))
+  local outputScale = PixelScale.fitPreferred(bounds, NativeDisplay.WIDTH, NativeDisplay.HEIGHT, preferredScale)
   return PixelScale.cover(bounds, outputScale)
 end
 

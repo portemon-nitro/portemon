@@ -9,6 +9,8 @@
 -- *optional* capability warns and stays green; a run that executed nothing at
 -- all never does.
 
+local CapabilityNames = require("tests.runner.CapabilityNames")
+
 local Cli = {}
 
 Cli.EXIT_USAGE = 2
@@ -20,7 +22,11 @@ Cli.LAYERS = { "unit", "component", "graphics", "rom", "acceptance" }
 -- preparation follows the selected suites' declared capabilities.
 local ROM_GATED = { rom = true, acceptance = true }
 
-local ROM_CAPABILITIES = { "rom_dump", "derived_assets", "complete_derived_cache" }
+local ROM_CAPABILITIES = {
+  CapabilityNames.ROM_DUMP,
+  CapabilityNames.DERIVED_ASSETS,
+  CapabilityNames.COMPLETE_DERIVED_CACHE,
+}
 
 local STRICT_ENV = "PORTEMON_REQUIRE_ROM_TESTS"
 local GRAPHICS_STRICT_ENV = "PORTEMON_REQUIRE_GRAPHICS_TESTS"
@@ -386,10 +392,10 @@ function Cli.outcome(plan, capabilities, run)
   if
     plan.graphicsStrict
     and (plan.layer == nil or plan.layer == "graphics")
-    and (run.selectedCapabilities or {}).graphics == true
-    and capabilities.graphics ~= true
+    and (run.selectedCapabilities or {})[CapabilityNames.GRAPHICS] == true
+    and capabilities[CapabilityNames.GRAPHICS] ~= true
   then
-    missing[#missing + 1] = "graphics"
+    missing[#missing + 1] = CapabilityNames.GRAPHICS
   end
   if #missing > 0 then
     return {
@@ -424,7 +430,7 @@ function Cli.outcome(plan, capabilities, run)
   -- selection that never reached those layers has nothing to warn about, and a
   -- skip under a ready dump has some other cause than the one named here.
   local warning = nil
-  if capabilities.rom_dump ~= true and skippedIn(run, "rom") + skippedIn(run, "acceptance") > 0 then
+  if capabilities[CapabilityNames.ROM_DUMP] ~= true and skippedIn(run, "rom") + skippedIn(run, "acceptance") > 0 then
     warning = warningBanner(run)
   end
 

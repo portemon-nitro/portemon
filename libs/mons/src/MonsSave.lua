@@ -12,6 +12,7 @@ local Lcrng = require("libs.mons.src.gen4.Lcrng")
 local Mon = require("libs.mons.src.Mon")
 local MonsErrors = require("libs.mons.src.errors")
 local Party = require("libs.mons.src.Party")
+local U32 = require("libs.codec.src.U32")
 
 ---@alias MonsSave.Bucket { schema: string, catalogFingerprint: string, rng: { state: integer, calls: integer }, party: table<string, unknown> }
 ---@alias MonsSave.Context { catalog: MonCatalog, charmap: table<string, unknown>, games: table<string, unknown>, languages: table<string, unknown>, items: table<string, unknown>, balls: table<string, unknown> }
@@ -64,7 +65,7 @@ end
 function MonsSave.empty(fingerprint, seedU32)
   assert(type(fingerprint) == "string" and fingerprint ~= "", "mons empty requires a catalog fingerprint")
   assert(
-    type(seedU32) == "number" and seedU32 % 1 == 0 and seedU32 >= 0 and seedU32 <= 0xFFFFFFFF,
+    type(seedU32) == "number" and seedU32 % 1 == 0 and seedU32 >= 0 and seedU32 <= U32.MAX,
     "mons empty requires an unsigned 32-bit seed"
   )
   local seed = seedU32

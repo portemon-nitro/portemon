@@ -9,8 +9,10 @@
 local Stats = {}
 
 Stats.STAT_KEYS = { "hp", "attack", "defense", "speed", "specialAttack", "specialDefense" }
+Stats.MAX_LEVEL = 100
+Stats.EV_TOTAL_CAP = 510
 
--- Indexed by nature 0..24.
+-- Indexed by nature 0..Stats.MAX_NATURE.
 local NATURE_MODIFIERS = {
   { 0, 0, 0, 0, 0 }, -- Hardy
   { 1, -1, 0, 0, 0 }, -- Lonely
@@ -39,6 +41,8 @@ local NATURE_MODIFIERS = {
   { 0, 0, 0, 0, 0 }, -- Quirky
 }
 
+Stats.MAX_NATURE = #NATURE_MODIFIERS - 1
+
 local BATTLE_KEYS = { "attack", "defense", "speed", "specialAttack", "specialDefense" }
 
 ---@param baseStats table<string, integer>
@@ -52,12 +56,12 @@ function Stats.calculate(baseStats, ivs, evs, level, nature)
   assert(type(ivs) == "table", "individual values must be a table")
   assert(type(evs) == "table", "effort values must be a table")
   assert(
-    type(level) == "number" and level % 1 == 0 and level >= 1 and level <= 100,
-    "level must be an integer in 1..100"
+    type(level) == "number" and level % 1 == 0 and level >= 1 and level <= Stats.MAX_LEVEL,
+    "level must be an integer in 1.." .. Stats.MAX_LEVEL
   )
   assert(
-    type(nature) == "number" and nature % 1 == 0 and nature >= 0 and nature <= 24,
-    "nature must be an integer in 0..24"
+    type(nature) == "number" and nature % 1 == 0 and nature >= 0 and nature <= Stats.MAX_NATURE,
+    "nature must be an integer in 0.." .. Stats.MAX_NATURE
   )
   local modifiers = NATURE_MODIFIERS[nature + 1]
   local out = {}

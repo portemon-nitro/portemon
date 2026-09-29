@@ -3,6 +3,7 @@
 local FieldDrawState = require("libs.hgss.src.presentation.FieldDrawState")
 local FieldDialogueTheme = require("libs.hgss.src.ui.FieldDialogueTheme")
 local LogicalSurface = require("libs.ui.src.LogicalSurface")
+local NativeDisplay = require("libs.ui.src.NativeDisplay")
 
 ---@alias FieldYesNoRenderer.Color { r: integer, g: integer, b: integer }
 ---@alias FieldYesNoRenderer.Palette { [integer]: FieldYesNoRenderer.Color }
@@ -24,7 +25,7 @@ local FieldYesNoRenderer = {}
 FieldYesNoRenderer.__index = FieldYesNoRenderer
 
 local CONTENT = { x = 25 * 8, y = 13 * 8, width = 6 * 8, height = 4 * 8 }
-local REFERENCE = { width = 256, height = 192 }
+local REFERENCE = { width = NativeDisplay.WIDTH, height = NativeDisplay.HEIGHT }
 
 local function fits(rect, bounds)
   return rect.x >= bounds.x

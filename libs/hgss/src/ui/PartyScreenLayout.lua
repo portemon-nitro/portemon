@@ -8,6 +8,7 @@
 -- Pure module: no love, no I/O.
 
 local LayoutGeometry = require("libs.ui.src.LayoutGeometry")
+local NativeDisplay = require("libs.ui.src.NativeDisplay")
 
 ---@class PartyScreenLayout
 local PartyScreenLayout = {}
@@ -38,8 +39,8 @@ end
 -- The native pane and footer placement. Cards end at y=152; the footer
 -- band carries the selected name at x=4 (172 wide) and the info
 -- affordance at x=184, clear of the cancel touch region at x=200.
-local NATIVE_WIDTH = 256
-local NATIVE_HEIGHT = 192
+local NATIVE_WIDTH = NativeDisplay.WIDTH
+local NATIVE_HEIGHT = NativeDisplay.HEIGHT
 local NAME_RECT = { x = 4, y = 172, width = 172, height = 16 }
 local INFO_RECT = { x = 184, y = 172, width = 8, height = 16 }
 local MENU_ROW_HEIGHT = 8

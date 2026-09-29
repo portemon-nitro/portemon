@@ -10,11 +10,12 @@
 -- supplies.
 
 local ApplicationLayout = require("game.hgss.src.ui.ApplicationLayout")
+local NativeDisplay = require("libs.ui.src.NativeDisplay")
 
 ---@class StartMenuInterface
 local StartMenuInterface = {}
 
-local NATIVE = { id = "content", width = 256, height = 192 }
+local NATIVE = { id = "content", width = NativeDisplay.WIDTH, height = NativeDisplay.HEIGHT }
 local INPUT_KEY = "start-menu"
 local ZERO_CROP = { left = 0, right = 0, top = 0, bottom = 0 }
 
