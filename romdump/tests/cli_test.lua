@@ -109,8 +109,8 @@ function T.dead_import_only_flag_is_rejected()
   end)
 end
 
-function T.removed_inspection_flags_are_rejected_as_unknown_options()
-  for _, flag in ipairs({ "--" .. "inspect", "--" .. "inspect-sbc", "--" .. "inspect-actors" }) do
+function T.removed_flags_are_rejected_as_unknown_options()
+  for _, flag in ipairs({ "--" .. "inspect", "--" .. "inspect-sbc", "--" .. "inspect-actors", "--" .. "profile" }) do
     local err = Assert.throws(function()
       Cli.parse({ flag })
     end)
@@ -396,7 +396,7 @@ function T.prepare_cache_requires_a_version_and_at_least_one_requirement()
   end)
 end
 
-function T.prepare_cache_accepts_repeated_requirements_and_observation_flags()
+function T.prepare_cache_accepts_repeated_requirements_and_development_flag()
   local o = Cli.parse({
     "--prepare-cache",
     "--version",
@@ -406,13 +406,10 @@ function T.prepare_cache_accepts_repeated_requirements_and_observation_flags()
     "--require",
     "map:7",
     "--dev",
-    "--profile",
-    "/tmp/cache-profile.jsonl",
   })
   Assert.equal(o.command, "prepare-cache")
   Assert.deepEqual(o.requirements, { "bootstrap", "map:7" })
   Assert.isTrue(o.dev)
-  Assert.equal(o.profile, "/tmp/cache-profile.jsonl")
   local rebuild = Cli.parse({
     "--prepare-cache",
     "--version",
@@ -543,24 +540,6 @@ function T.duplicate_singleton_values_are_rejected()
     string.find(versionErr, "duplicate --version", 1, true) ~= nil,
     "a repeated --version must name the flag, got: " .. tostring(versionErr)
   )
-
-  local profileErr = Assert.throws(function()
-    Cli.parse({
-      "--prepare-cache",
-      "--version",
-      "heartgold",
-      "--require",
-      "bootstrap",
-      "--profile",
-      "/tmp/a.jsonl",
-      "--profile",
-      "/tmp/b.jsonl",
-    })
-  end)
-  Assert.isTrue(
-    string.find(profileErr, "duplicate --profile", 1, true) ~= nil,
-    "a repeated --profile must name the flag, got: " .. tostring(profileErr)
-  )
 end
 
 function T.unsupported_versions_are_rejected()
@@ -636,35 +615,6 @@ function T.resource_detail_alias_forms_share_one_duplicate_identity()
   Assert.isTrue(
     string.find(err, "duplicate --resource-detail", 1, true) ~= nil,
     "zero-padded aliases must share one duplicate identity, got: " .. tostring(err)
-  )
-end
-
-function T.empty_string_is_still_a_present_value()
-  local o = Cli.parse({
-    "--prepare-cache",
-    "--version",
-    "heartgold",
-    "--require",
-    "bootstrap",
-    "--profile",
-    "",
-  })
-  Assert.equal(o.profile, "")
-
-  local err = Assert.throws(function()
-    Cli.parse({
-      "--prepare-cache",
-      "--version",
-      "heartgold",
-      "--require",
-      "bootstrap",
-      "--profile",
-      "--dev",
-    })
-  end)
-  Assert.isTrue(
-    string.find(err, "--profile requires a value", 1, true) ~= nil,
-    "a flag after --profile is not a value, got: " .. tostring(err)
   )
 end
 

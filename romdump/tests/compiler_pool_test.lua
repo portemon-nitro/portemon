@@ -141,31 +141,6 @@ local function newThreadHost(processorCount)
   }
 end
 
--- Fixture-owned evidence paths: os.tmpname() cannot generate names under this
--- runner, while direct writes succeed, so profiles use deterministic unique
--- names under a fixture-owned root that each test removes after use.
-local profileCounter = 0
-local function tempProfilePath(name)
-  profileCounter = profileCounter + 1
-  local root = os.getenv("TMPDIR") or "/tmp"
-  os.execute('mkdir -p "' .. root .. '/compiler-pool-evidence"')
-  return root .. "/compiler-pool-evidence/" .. name .. "-" .. tostring(profileCounter) .. ".jsonl"
-end
-
----@param path string
----@return string[] lines
-local function readEvidenceLines(path)
-  local handle = assert(io.open(path, "r"))
-  local body = handle:read("*a")
-  handle:close()
-  os.remove(path)
-  local lines = {}
-  for line in (body or ""):gmatch("[^\n]+") do
-    lines[#lines + 1] = line
-  end
-  return lines
-end
-
 function T.failed_preparation_preserves_the_previous_map()
   local prepared = requirePreparedArtifact()
   local backend = FakeCache.new()
@@ -787,11 +762,10 @@ function T.dispatched_stages_skip_names_left_by_an_earlier_process()
 end
 
 -- A worker thread that stops behind a real command keeps truthful evidence:
--- the pool records the unexpected stop, the command finalizes every known
--- row with an unsuccessful footer instead of escaping, and the worker joins
--- exactly once. Real command, session, dependencies, and pool; only the
--- thread transport is controlled.
-function T.stopped_worker_thread_finalizes_command_evidence()
+-- The command preserves a worker failure recorded by the pool and joins the
+-- worker exactly once. Real command, session, dependencies, and pool; only
+-- the thread transport is controlled.
+function T.stopped_worker_returns_recorded_failure_and_joins_worker()
   local CacheBuilder = require("romdump.src.CacheBuilder")
   local backend = FakeCache.new()
   local realForVersion = CacheFs.forVersion
@@ -800,7 +774,6 @@ function T.stopped_worker_thread_finalizes_command_evidence()
   end
   local host = newThreadHost(2)
   host.control.stopOnDispatch = true
-  local profilePath = tempProfilePath("stopped-worker")
   local ok, outcome = pcall(function()
     return withLove(host.love, function()
       local report, err = CacheBuilder.prepareVersion("heartgold", {
@@ -810,7 +783,6 @@ function T.stopped_worker_thread_finalizes_command_evidence()
           producerId = "d" .. string.rep("1", 64),
         },
         requirements = { "field-camera:global", "field-weather:global" },
-        profile = profilePath,
         log = function() end,
       })
       -- Box both returns: the transport helper keeps only the first value.
@@ -820,42 +792,9 @@ function T.stopped_worker_thread_finalizes_command_evidence()
   local report = ok and outcome.report or nil
   local err = ok and outcome.failure or outcome
   CacheFs.forVersion = realForVersion
-  Assert.isTrue(ok, "a recorded pool failure must finalize evidence instead of escaping: " .. tostring(report))
+  Assert.isTrue(ok, "a recorded pool failure is handled instead of escaping: " .. tostring(report))
   Assert.isNil(report, "an interrupted command returns no success report")
   Assert.equal(err, "compiler worker stopped unexpectedly", "the command preserves the recorded fatal value")
-  local lines = readEvidenceLines(profilePath)
-  local header, footer
-  local rows = {}
-  for _, line in ipairs(lines) do
-    if line:find('"type":"header"', 1, true) ~= nil then
-      header = line
-    elseif line:find('"type":"footer"', 1, true) ~= nil then
-      footer = line
-    elseif line:find('"type":"job"', 1, true) ~= nil then
-      rows[#rows + 1] = line
-    end
-  end
-  assert(header ~= nil, "the interrupted run still opens its evidence")
-  assert(footer ~= nil, "the interrupted run still closes with a footer")
-  Assert.equal(#rows, 2, "every known key keeps exactly one row")
-  local failed, cancelled = nil, nil
-  for _, row in ipairs(rows) do
-    if row:find('"state":"failed"', 1, true) ~= nil then
-      failed = row
-    elseif row:find('"state":"cancelled"', 1, true) ~= nil then
-      cancelled = row
-    end
-  end
-  assert(failed ~= nil, "the dispatched job keeps its failed row")
-  Assert.isTrue(
-    failed:find("stopped unexpectedly", 1, true) ~= nil,
-    "the failed row keeps the recorded value, got: " .. tostring(failed)
-  )
-  assert(cancelled ~= nil, "work that never ran keeps an explicit cancelled row")
-  Assert.isTrue(
-    footer:find('"complete":false', 1, true) ~= nil,
-    "the interrupted run never claims completeness, got: " .. tostring(footer)
-  )
   Assert.equal(#host.dispatched, 1, "only the first job reaches a worker before the stop")
   Assert.equal(#host.threads, 1, "one physical worker serves the command")
   Assert.equal(host.threads[1].waits, 1, "the stopped worker joins exactly once")

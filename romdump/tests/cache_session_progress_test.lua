@@ -792,13 +792,6 @@ function T.command_takes_physical_wait_for_delayed_completion()
     Assert.isTrue(env.pool.waitCalls >= 1, "completion arrives through a physical wait")
     Assert.equal(report.counts.successful, 1, "exactly the requested job succeeds")
     Assert.equal(report.counts.failed, 0, "nothing fails")
-    local seen = {}
-    for _, outcome in ipairs(report.outcomes) do
-      seen[outcome.jobKey] = outcome
-    end
-    local bank = assert(seen["message-bank:219"], "the exact outcome carries its identity")
-    Assert.equal(bank.state, "successful", "the bank outcome is successful")
-    Assert.isFalse(bank.reused, "a compiled job is not reuse")
   end)
   package.loaded["romdump.src.build.CompilerPool"] = savedPool
   package.loaded["romdump.src.CacheBuilder"] = savedBuilder

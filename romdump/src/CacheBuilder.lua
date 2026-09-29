@@ -33,8 +33,6 @@ local SCOPES = {
   complete = true,
 }
 
-local PROFILE_SCHEMA = "g4-cache-execution-v2"
-
 local epochCounter = 0
 
 ---@class CacheBuilder.Requirement
@@ -81,249 +79,6 @@ local function parseRequirements(requirements)
     end
   end
   return ordered, parsed, nil
-end
-
-local JSON_ESCAPES = {
-  ['"'] = '\\"',
-  ["\\"] = "\\\\",
-  ["\n"] = "\\n",
-  ["\r"] = "\\r",
-  ["\t"] = "\\t",
-  ["\b"] = "\\b",
-  ["\f"] = "\\f",
-}
-
----@param value string
----@return string
-local function jsonString(value)
-  return '"'
-    .. value:gsub('[%z\1-\31\\"]', function(char)
-      if JSON_ESCAPES[char] then
-        return JSON_ESCAPES[char]
-      end
-      return string.format("\\u%04x", char:byte())
-    end)
-    .. '"'
-end
-
--- Explicit JSON null for profile rows: Lua tables cannot hold nil, so
--- missing measurements use this marker to encode as null instead of being
--- omitted. Report outcomes (Lua tables) keep plain nil.
-local function jsonNullToString()
-  return "null"
-end
-
-local JSON_NULL = setmetatable({}, {
-  __tostring = jsonNullToString,
-})
-
----@param value unknown
----@return string
-local function jsonValue(value)
-  if value == nil or value == JSON_NULL then
-    return "null"
-  end
-  local kind = type(value)
-  if kind == "string" then
-    return jsonString(value)
-  end
-  if kind == "boolean" then
-    return value and "true" or "false"
-  end
-  if kind == "number" then
-    assert(value == value and value ~= math.huge and value ~= -math.huge, "profile timings must be finite")
-    return tostring(value)
-  end
-  if kind == "table" then
-    local array = true
-    local count = 0
-    for key in pairs(value) do
-      count = count + 1
-      if type(key) ~= "number" or key ~= count then
-        array = false
-        break
-      end
-    end
-    if array then
-      local parts = {}
-      for index, entry in ipairs(value) do
-        parts[index] = jsonValue(entry)
-      end
-      return "[" .. table.concat(parts, ",") .. "]"
-    end
-    local keys = {}
-    for key in pairs(value) do
-      keys[#keys + 1] = key
-    end
-    table.sort(keys)
-    local parts = {}
-    for index, key in ipairs(keys) do
-      parts[index] = jsonString(tostring(key)) .. ":" .. jsonValue(value[key])
-    end
-    return "{" .. table.concat(parts, ",") .. "}"
-  end
-  error("profile values must be scalars, arrays, or records", 0)
-end
-
----@return integer|nil pid
----@return string|nil reason
-local function processPid()
-  local handle = io.open("/proc/self/stat", "r")
-  if handle == nil then
-    return nil, "process identity is unavailable outside Linux procfs"
-  end
-  local body = handle:read("*a")
-  handle:close()
-  local pid = body ~= nil and body:match("^(%d+)") or nil
-  if pid == nil then
-    return nil, "process stat has no leading pid"
-  end
-  local value = tonumber(pid)
-  assert(type(value) == "number" and value % 1 == 0, "process stat pid must be an integer")
-  return math.floor(value)
-end
-
----@return integer|nil count
----@return string|nil reason
-local function logicalCpus()
-  local host = rawget(_G, "love")
-  if host and host.system and type(host.system.getProcessorCount) == "function" then
-    local ok, count = pcall(host.system.getProcessorCount)
-    if ok and type(count) == "number" and count >= 1 then
-      return math.floor(count)
-    end
-  end
-  local handle = io.open("/proc/cpuinfo", "r")
-  if handle == nil then
-    return nil, "processor count is unavailable on this host"
-  end
-  local body = handle:read("*a")
-  handle:close()
-  local count = 0
-  for _ in (body or ""):gmatch("^processor%s*:") do
-    count = count + 1
-  end
-  if count == 0 then
-    return nil, "processor count is unavailable on this host"
-  end
-  return count
-end
-
----@return string|nil version
----@return string|nil reason
-local function loveVersion()
-  local host = rawget(_G, "love")
-  if host == nil or type(host.getVersion) ~= "function" then
-    return nil, "the command is not running under LOVE"
-  end
-  local ok, major, minor, revision = pcall(host.getVersion)
-  if not ok or type(major) ~= "number" or type(minor) ~= "number" then
-    return nil, "the LOVE version is unreadable"
-  end
-  if type(revision) == "number" then
-    return string.format("%d.%d.%d", major, minor, revision)
-  end
-  return string.format("%d.%d", major, minor)
-end
-
----@param identity table<string, unknown>
----@param command string
----@param requirements string[]
----@param epoch integer
----@return table<string, unknown>
-local function profileHeader(identity, command, requirements, epoch)
-  local pid, pidReason = processPid()
-  local cpus, cpuReason = logicalCpus()
-  local love, loveReason = loveVersion()
-  local jitVersion = rawget(_G, "jit") and _G.jit.version or nil
-  return {
-    type = "header",
-    schema = PROFILE_SCHEMA,
-    versionId = identity.versionId,
-    generationId = identity.generationId,
-    romSha1 = identity.romSha1,
-    romSha1Reason = identity.romSha1 == nil and "the generation identity carries no ROM hash" or nil,
-    producerId = identity.producerId,
-    mode = identity.mode,
-    modeReason = identity.mode == nil and "the generation identity carries no execution mode" or nil,
-    repositoryCommit = nil,
-    repositoryCommitReason = "the checkout revision is recorded externally alongside producer identity",
-    processPid = pid,
-    processPidReason = pid == nil and pidReason or nil,
-    logicalCpus = cpus,
-    logicalCpusReason = cpus == nil and cpuReason or nil,
-    loveVersion = love,
-    loveVersionReason = love == nil and loveReason or nil,
-    luaVersion = jitVersion or _VERSION,
-    timingMode = "wall",
-    command = command,
-    requirements = requirements,
-    epoch = epoch,
-  }
-end
-
--- Fixed projection of pool-measured timing fields onto their unavailable
--- reasons. Publication time is never separated from worker reports, so it
--- stays null by contract rather than by measurement.
----@type { name: string, reason: string }[]
-local MEASURED_TIMING_FIELDS = {
-  { name = "compileSeconds", reason = "timing is unavailable for this job" },
-  { name = "stageSeconds", reason = "timing is unavailable for this job" },
-  { name = "workSeconds", reason = "timing is unavailable for this job" },
-  { name = "stagedBytes", reason = "timing is unavailable for this job" },
-}
-
--- Resolve per-job observation timings from the pool's exact outcome snapshot
--- taken at finalization time. Missing measurements stay null with reasons,
--- never zero. The bounded diagnostic ring is diagnostics-only and never
--- consulted here.
----@param pool table<string, unknown>|nil
----@param jobKey string
----@return table<string, unknown>
-local function observeTimings(pool, jobKey)
-  local outcome = nil ---@type table<string, unknown>|nil
-  if type(pool) == "table" and type(pool.jobOutcome) == "function" then
-    local ok, snapshot = pcall(pool.jobOutcome, pool, jobKey)
-    if ok and type(snapshot) == "table" then
-      outcome = snapshot
-    end
-  end
-  local observed = {} ---@type table<string, unknown>
-  for _, field in ipairs(MEASURED_TIMING_FIELDS) do
-    local value = outcome ~= nil and outcome[field.name] or nil
-    observed[field.name] = value
-    observed[field.name .. "Reason"] = value == nil and field.reason or nil
-  end
-  observed.publicationSeconds = nil
-  observed.publicationSecondsReason = "publication time is not separated from worker reports"
-  local timingReason = outcome ~= nil and outcome.timingReason or nil
-  observed.timingReason = timingReason
-  observed.timingReasonReason = timingReason == nil and "per-job timing detail is not published by the pool" or nil
-  local workerId = outcome ~= nil and outcome.workerId or nil
-  observed.workerId = workerId
-  observed.workerIdReason = workerId == nil and "the job did not execute through the compiler pool" or nil
-  return observed
-end
-
----@param handle table<string, function>|nil
----@param record table<string, unknown>
----@return Errors.Error|string|nil err
-local function writeProfileLine(handle, record)
-  if handle == nil then
-    return nil
-  end
-  local ok, encoded = pcall(jsonValue, record)
-  if not ok then
-    return Errors.new("PROFILE_ENCODE_FAILED", "execution evidence cannot be encoded", {})
-  end
-  local callOk, result, writeErr = pcall(handle.write, handle, encoded .. "\n")
-  if not callOk then
-    return Errors.new("PROFILE_WRITE_FAILED", "execution evidence cannot be written: " .. tostring(result), {})
-  end
-  if result == nil then
-    return Errors.new("PROFILE_WRITE_FAILED", "execution evidence cannot be written: " .. tostring(writeErr), {})
-  end
-  return nil
 end
 
 ---@param versionId string
@@ -500,11 +255,10 @@ end
 ---@field dev boolean|nil development mode selector for explicit rebuilds
 ---@field log fun(line: string)|nil progress sink
 ---@field developmentRepositoryRoot string|nil worker source root for compiler threads
----@field profile string|nil opt-in execution evidence path
 
--- Exact command finalization helpers. Session outcomes are the only identity
--- and disposition authority; pool facts attach timing and exact physical
--- failures by equality on the canonical key. Error text is display-only.
+-- Session outcomes are the only identity and disposition authority; pool facts
+-- attach exact physical failures by equality on the canonical key. Error text
+-- is display-only.
 ---@param item table<string, unknown>
 ---@param allowCompileExclusions boolean|nil
 ---@return boolean
@@ -529,31 +283,15 @@ local function exactPoolFailure(pool, jobKey)
   return nil
 end
 
----@class CacheBuilder.Disposition
----@field kind string
----@field key string
----@field jobKey string
----@field state string successful|failed|cancelled|excluded
----@field reused boolean
----@field error string|nil
----@field causeJobKey string|nil
----@field sourceExclusion boolean|nil true when the exclusion is a source exclusion
-
 ---@param outcomeList table<string, unknown>
----@param pool table<string, unknown>|nil live pool for exact timing/physical facts
+---@param pool table<string, unknown>|nil live pool for exact physical failures
 ---@param allowCompileExclusions boolean|nil
----@return CacheBuilder.Disposition[] sorted
 ---@return table<string, integer> counts
 ---@return string[] failures
 ---@return string[] exclusions
----@return string[] sourceExclusions
----@return table<string, table<string, unknown>> timings
 local function classifyExactOutcomes(outcomeList, pool, allowCompileExclusions)
   assert(type(outcomeList) == "table", "the generation session owns an exact outcome inventory")
-  local dispositions = {}
-  -- The snapshot guarantees one canonical row per jobKey, so rows are
-  -- consumed by their own identity without reparsing the key or
-  -- reconciling duplicates: kind/key come from the row itself.
+  local outcomes = {}
   for _, item in ipairs(outcomeList) do
     assert(type(item) == "table", "outcome rows are canonical records")
     assert(type(item.jobKey) == "string" and item.jobKey ~= "", "outcome rows carry their canonical key")
@@ -564,89 +302,58 @@ local function classifyExactOutcomes(outcomeList, pool, allowCompileExclusions)
       item.state == "pending" or item.state == "successful" or item.state == "failed",
       "outcome rows carry a known state"
     )
-    local kind, key = item.kind, item.key
-    local entry = {
-      kind = kind,
-      key = key,
-      jobKey = item.jobKey,
-      reused = item.reused == true,
-      causeJobKey = item.causeJobKey,
-    }
+    local state, message
     if item.state == "successful" then
       assert(item.error == nil, "successful rows carry no error")
-      entry.state = "successful"
-      entry.error = nil
+      state = "successful"
     elseif item.state == "failed" then
-      assert(type(item.error) == "string", "failed dispositions carry an error string")
+      assert(type(item.error) == "string", "failed outcomes carry an error string")
       assert(type(item.failureClass) == "string", "failed rows carry their exact failure class")
       assert(item.causeJobKey == nil or type(item.causeJobKey) == "string", "causes are exact canonical keys")
-      if item.failureClass == "source-exclusion" then
-        entry.state = "excluded"
-        entry.error = item.error
-        entry.sourceExclusion = true
-      elseif isToleratedMapExclusion(item, allowCompileExclusions) then
-        entry.state = "excluded"
-        entry.error = item.error
+      if item.failureClass == "source-exclusion" or isToleratedMapExclusion(item, allowCompileExclusions) then
+        state = "excluded"
+        message = item.error
       else
-        entry.state = "failed"
-        entry.error = item.error
+        state = "failed"
+        message = item.error
       end
     else
       assert(item.error == nil, "pending rows carry no error")
-      local poolError = exactPoolFailure(pool, item.jobKey)
-      if poolError ~= nil then
-        entry.state = "failed"
-        entry.error = poolError
-      else
-        entry.state = "cancelled"
-        entry.error = nil
-      end
+      message = exactPoolFailure(pool, item.jobKey)
+      state = message == nil and "cancelled" or "failed"
     end
-    dispositions[#dispositions + 1] = entry
+    outcomes[#outcomes + 1] = { jobKey = item.jobKey, state = state, error = message }
   end
-  table.sort(dispositions, function(left, right)
+  table.sort(outcomes, function(left, right)
     return left.jobKey < right.jobKey
   end)
   local counts = { planned = 0, successful = 0, failed = 0, cancelled = 0, excluded = 0 }
-  local failures, exclusions, sourceExclusions = {}, {}, {}
-  local timings = {}
-  for _, entry in ipairs(dispositions) do
+  local failures, exclusions = {}, {}
+  for _, outcome in ipairs(outcomes) do
     counts.planned = counts.planned + 1
-    if entry.state == "successful" then
+    if outcome.state == "successful" then
       counts.successful = counts.successful + 1
-    elseif entry.state == "failed" then
+    elseif outcome.state == "failed" then
       counts.failed = counts.failed + 1
-      assert(type(entry.error) == "string", "failed rows carry their error")
-      failures[#failures + 1] = entry.error
-    elseif entry.state == "cancelled" then
+      failures[#failures + 1] = assert(outcome.error, "failed outcomes carry their error")
+    elseif outcome.state == "cancelled" then
       counts.cancelled = counts.cancelled + 1
-    elseif entry.state == "excluded" then
+    else
+      assert(outcome.state == "excluded", "outcomes carry a classified state")
       counts.excluded = counts.excluded + 1
-      assert(type(entry.error) == "string", "excluded rows carry their error")
-      exclusions[#exclusions + 1] = entry.error
-      if entry.sourceExclusion then
-        sourceExclusions[#sourceExclusions + 1] = entry.error
-      end
+      exclusions[#exclusions + 1] = assert(outcome.error, "excluded outcomes carry their error")
     end
-    timings[entry.jobKey] = observeTimings(pool or {}, entry.jobKey)
   end
-  return dispositions, counts, failures, exclusions, sourceExclusions, timings
+  return counts, failures, exclusions
 end
 
 ---@class CacheBuilder.VersionRecord
 ---@field versionId string
 ---@field identity table<string, unknown>
----@field ordered string[]
----@field exhaustive boolean
----@field epoch integer
----@field enumerationComplete boolean
 ---@field requestedReady boolean
----@field dispositions CacheBuilder.Disposition[]
 ---@field counts table<string, integer>
 ---@field failures string[]
 ---@field exclusions string[]
----@field sourceExclusions string[]
----@field timings table<string, table<string, unknown>>
 ---@field auditPassed boolean
 ---@field auditReason string|nil
 ---@field needsAttestation boolean
@@ -701,7 +408,6 @@ end
 ---@param developmentRepositoryRoot string|nil
 ---@param cacheFs table<string, unknown>
 ---@param identity table<string, unknown>
----@param ordered string[]
 ---@param parsed CacheBuilder.Requirement[]
 ---@param exhaustive boolean
 ---@param rebuildJobs { kind: string, key: string, jobKey: string }[]
@@ -713,7 +419,6 @@ local function collectVersionFacts(
   developmentRepositoryRoot,
   cacheFs,
   identity,
-  ordered,
   parsed,
   exhaustive,
   rebuildJobs,
@@ -745,17 +450,10 @@ local function collectVersionFacts(
           return {
             versionId = versionId,
             identity = identity,
-            ordered = ordered,
-            exhaustive = exhaustive,
-            epoch = 0,
-            enumerationComplete = true,
             requestedReady = true,
-            dispositions = {},
             counts = { planned = 0, successful = 0, failed = 0, cancelled = 0, excluded = 0 },
             failures = {},
             exclusions = {},
-            sourceExclusions = {},
-            timings = {},
             auditPassed = true,
             auditReason = nil,
             needsAttestation = false,
@@ -780,7 +478,6 @@ local function collectVersionFacts(
   local epoch = epochCounter
   local pool = nil ---@type table<string, unknown>|nil
   local session = nil ---@type table<string, unknown>|nil
-  local status = nil
   -- Snapshot refs mirror the registered parsed refs; an exhaustive build
   -- additionally proves the mon summary its complete scope implies.
   local snapshotRefs = {}
@@ -844,23 +541,15 @@ local function collectVersionFacts(
           outcomeList = list
         end
       end
-      local dispositions, counts, failures, exclusions, sourceExclusions, timings =
-        classifyExactOutcomes(outcomeList, pool, allowCompileExclusions)
+      local counts, failures, exclusions = classifyExactOutcomes(outcomeList, pool, allowCompileExclusions)
       teardown()
       return {
         versionId = versionId,
         identity = identity,
-        ordered = ordered,
-        exhaustive = exhaustive,
-        epoch = epoch,
-        enumerationComplete = false,
         requestedReady = false,
-        dispositions = dispositions,
         counts = counts,
         failures = failures,
         exclusions = exclusions,
-        sourceExclusions = sourceExclusions,
-        timings = timings,
         auditPassed = false,
         auditReason = nil,
         needsAttestation = false,
@@ -872,7 +561,7 @@ local function collectVersionFacts(
     teardown()
     error(drainErr, 0)
   end
-  status = assert(drainResult, "a settled session reports its status")
+  assert(drainResult ~= nil, "a settled session reports its status")
   assert(session ~= nil and pool ~= nil, "a settled scope owns its pool and session")
   -- The command proves only its originally requested scope: the snapshot
   -- observes the retained answers and raw outcomes before teardown, and a
@@ -887,11 +576,9 @@ local function collectVersionFacts(
     type(snapshot) == "table" and type(snapshot.answers) == "table" and type(snapshot.outcomes) == "table",
     "the generation session owns its completion facts"
   )
-  local dispositions, counts, failures, exclusions, sourceExclusions, timings =
-    classifyExactOutcomes(snapshot.outcomes, pool, allowCompileExclusions)
+  local counts, failures, exclusions = classifyExactOutcomes(snapshot.outcomes, pool, allowCompileExclusions)
   teardown()
   local scopeError = verifyOriginalRequirements(snapshot.answers, versionId)
-  local enumerationComplete = status.enumerationComplete == true
   local requestedReady = counts.failed == 0 and counts.cancelled == 0 and counts.excluded == 0
   if scopeError ~= nil then
     requestedReady = false
@@ -915,17 +602,10 @@ local function collectVersionFacts(
   return {
     versionId = versionId,
     identity = identity,
-    ordered = ordered,
-    exhaustive = exhaustive,
-    epoch = epoch,
-    enumerationComplete = enumerationComplete,
     requestedReady = requestedReady,
-    dispositions = dispositions,
     counts = counts,
     failures = failures,
     exclusions = exclusions,
-    sourceExclusions = sourceExclusions,
-    timings = timings,
     auditPassed = auditPassed,
     auditReason = auditReason,
     needsAttestation = needsAttestation,
@@ -936,42 +616,14 @@ local function collectVersionFacts(
 end
 
 ---@param record CacheBuilder.VersionRecord
----@param auditPassed boolean
----@param attestationPublished boolean
 ---@param complete boolean
 ---@return table<string, unknown> report
-local function makeRecordReport(record, auditPassed, attestationPublished, complete)
-  local outcomes = {}
-  for _, entry in ipairs(record.dispositions) do
-    local timings = record.timings[entry.jobKey] or observeTimings({}, entry.jobKey)
-    outcomes[#outcomes + 1] = {
-      kind = entry.kind,
-      key = entry.key,
-      jobKey = entry.jobKey,
-      state = entry.state,
-      reused = entry.reused,
-      workerId = timings.workerId,
-      error = entry.error,
-      causeJobKey = entry.causeJobKey,
-      timing = {
-        compileSeconds = timings.compileSeconds,
-        stageSeconds = timings.stageSeconds,
-        workSeconds = timings.workSeconds,
-        stagedBytes = timings.stagedBytes,
-        timingReason = timings.timingReason,
-      },
-    }
-  end
+local function makeRecordReport(record, complete)
   return {
-    enumerationComplete = record.enumerationComplete,
     requestedReady = record.requestedReady,
     complete = complete,
-    auditPassed = auditPassed,
-    attestationPublished = attestationPublished,
     exclusions = record.exclusions,
-    sourceExclusions = record.sourceExclusions,
     failures = record.failures,
-    outcomes = outcomes,
     counts = {
       planned = record.counts.planned,
       successful = record.counts.successful,
@@ -982,106 +634,6 @@ local function makeRecordReport(record, auditPassed, attestationPublished, compl
   }
 end
 
----@param record CacheBuilder.VersionRecord
----@param auditPassed boolean
----@param attestationPublished boolean
----@param complete boolean
----@return table<string, unknown> footer
-local function makeRecordFooter(record, auditPassed, attestationPublished, complete)
-  return {
-    type = "footer",
-    schema = PROFILE_SCHEMA,
-    versionId = record.versionId,
-    generationId = record.identity.generationId,
-    enumerationComplete = record.enumerationComplete,
-    requestedReady = record.requestedReady,
-    complete = complete,
-    auditPassed = auditPassed,
-    attestationPublished = attestationPublished,
-    planned = record.counts.planned,
-    successful = record.counts.successful,
-    failed = record.counts.failed,
-    cancelled = record.counts.cancelled,
-    excluded = record.counts.excluded,
-  }
-end
-
----@param handle table<string, function>|nil
----@param record CacheBuilder.VersionRecord
----@param footer table<string, unknown>
----@return Errors.Error|string|nil err
-local function emitVersionEvidence(handle, record, footer)
-  if handle == nil then
-    return nil
-  end
-  local headerErr = writeProfileLine(handle, profileHeader(record.identity, "prepare", record.ordered, record.epoch))
-  if headerErr ~= nil then
-    return headerErr
-  end
-  local function null(value)
-    if value == nil then
-      return JSON_NULL
-    end
-    return value
-  end
-  for _, entry in ipairs(record.dispositions) do
-    local timings = record.timings[entry.jobKey] or observeTimings({}, entry.jobKey)
-    local row = {
-      type = "job",
-      schema = PROFILE_SCHEMA,
-      versionId = record.versionId,
-      generationId = record.identity.generationId,
-      epoch = record.epoch,
-      kind = entry.kind,
-      key = entry.key,
-      jobKey = entry.jobKey,
-      state = entry.state,
-      outcome = entry.state,
-      reused = entry.reused,
-      workerId = null(timings.workerId),
-      workerIdReason = null(timings.workerIdReason),
-      error = null(entry.error),
-      cause = null(entry.error),
-      causeJobKey = null(entry.causeJobKey),
-      compileSeconds = null(timings.compileSeconds),
-      compileSecondsReason = null(timings.compileSecondsReason),
-      stageSeconds = null(timings.stageSeconds),
-      stageSecondsReason = null(timings.stageSecondsReason),
-      publicationSeconds = null(timings.publicationSeconds),
-      publicationSecondsReason = null(timings.publicationSecondsReason),
-      workSeconds = null(timings.workSeconds),
-      workSecondsReason = null(timings.workSecondsReason),
-      stagedBytes = null(timings.stagedBytes),
-      stagedBytesReason = null(timings.stagedBytesReason),
-      timingReason = null(timings.timingReason),
-      timingReasonReason = null(timings.timingReasonReason),
-    }
-    local rowErr = writeProfileLine(handle, row)
-    if rowErr ~= nil then
-      return rowErr
-    end
-  end
-  return writeProfileLine(handle, footer)
-end
-
----@param handle table<string, function>|nil
----@return Errors.Error|string|nil err
-local function closeChecked(handle)
-  if handle == nil then
-    return nil
-  end
-  local ok, result, closeErr = pcall(handle.close, handle)
-  if not ok then
-    return Errors.new("PROFILE_WRITE_FAILED", "execution evidence cannot be closed: " .. tostring(result), {})
-  end
-  if result == nil then
-    return Errors.new("PROFILE_WRITE_FAILED", "execution evidence cannot be closed: " .. tostring(closeErr), {})
-  end
-  return nil
-end
-
----@param record CacheBuilder.VersionRecord
----@param log fun(line: string)
 local function logRecordOutcomes(record, log)
   for _, message in ipairs(record.exclusions) do
     log(string.format("build-cache: %s excluded %s", record.versionId, message))
@@ -1091,55 +643,15 @@ local function logRecordOutcomes(record, log)
   end
 end
 
----@class CacheBuilder.VersionOutcome
----@field auditPassed boolean the generation audit proof for this version
----@field attestationPublished boolean a new attestation was actually published
----@field complete boolean the requested closure is fully attested
----@field error Errors.Error|string|nil operational failure when the footer carries no success
-
--- One per-record outcome interpretation for the targeted path. Facts come
--- from the collected record and the actual publication result, never from
--- optimistic planned work. Footer combinations stay exact: current cache
--- (true,false,true); primary/count/audit failure (false,false,false);
--- attestation publication failure (true,false,false); newly attested
--- success (true,true,true); non-attested targeted result (false,false,false).
--- One shared completion meaning for both command flows: an already-current
--- version stays complete without new publication; otherwise completeness
--- needs the authorized attestation actually published. The flows differ only
--- in return/error formatting and when publication is authorized, never in
--- what complete/partial/current means.
----@param record CacheBuilder.VersionRecord
----@param attestationPublished boolean actual publication result for this version
----@return boolean auditPassed
----@return boolean attestationPublished
----@return boolean complete
-local function interpretRecordCompletion(record, attestationPublished)
-  if record.isCurrent then
-    return record.auditPassed, false, true
-  end
-  if record.needsAttestation and attestationPublished then
-    return record.auditPassed, true, true
-  end
-  return record.auditPassed, false, false
-end
-
--- One per-record outcome interpretation for the targeted path. Facts come
--- from the collected record and the actual publication result, never from
--- optimistic planned work. Footer combinations stay exact: current cache
--- (true,false,true); primary/count/audit failure (false,false,false);
--- attestation publication failure (true,false,false); newly attested
--- success (true,true,true); non-attested targeted result (false,false,false).
 local function interpretTargetedOutcome(record, attestationPublished, publishError)
   if record.isCurrent then
-    return { auditPassed = true, attestationPublished = false, complete = true, error = nil }
+    return { complete = true }
   end
   if record.primaryError ~= nil then
-    return { auditPassed = false, attestationPublished = false, complete = false, error = record.primaryError }
+    return { complete = false, error = record.primaryError }
   end
   if record.counts.failed > 0 or record.counts.cancelled > 0 then
     return {
-      auditPassed = false,
-      attestationPublished = false,
       complete = false,
       error = Errors.new(
         "CACHE_PREPARATION_FAILED",
@@ -1151,8 +663,6 @@ local function interpretTargetedOutcome(record, attestationPublished, publishErr
   if record.needsAttestation then
     if not record.auditPassed then
       return {
-        auditPassed = false,
-        attestationPublished = false,
         complete = false,
         error = Errors.new(
           "CACHE_PREPARATION_FAILED",
@@ -1162,7 +672,7 @@ local function interpretTargetedOutcome(record, attestationPublished, publishErr
       }
     end
     if attestationPublished then
-      return { auditPassed = true, attestationPublished = true, complete = true, error = nil }
+      return { complete = true }
     end
     local failure = publishError
     if not Errors.is(failure) then
@@ -1172,62 +682,9 @@ local function interpretTargetedOutcome(record, attestationPublished, publishErr
         { versionId = record.versionId }
       )
     end
-    return { auditPassed = true, attestationPublished = false, complete = false, error = failure }
+    return { complete = false, error = failure }
   end
-  local auditPassed, published, complete = interpretRecordCompletion(record, attestationPublished)
-  return { auditPassed = auditPassed, attestationPublished = published, complete = complete, error = nil }
-end
-
--- One per-record outcome interpretation for the batch path. The collection
--- gate runs before any new attestation, so an unpublished version never
--- claims completeness; an already-current version keeps its complete proof
--- without a new publication.
----@param record CacheBuilder.VersionRecord
----@param attestationPublished boolean actual publication result for this version
----@return CacheBuilder.VersionOutcome
-local function interpretBatchOutcome(record, attestationPublished)
-  local auditPassed, published, complete = interpretRecordCompletion(record, attestationPublished)
-  return { auditPassed = auditPassed, attestationPublished = published, complete = complete, error = nil }
-end
-
--- One targeted evidence/cleanup finalization: build the footer once from the
--- interpreted outcome, emit evidence once, and close the owned handle once.
--- The first evidence-write failure outranks close failure, which outranks
--- the underlying operational failure checked by the caller afterwards.
----@param handle table<string, function>|nil owned profile sink
----@param record CacheBuilder.VersionRecord
----@param outcome CacheBuilder.VersionOutcome
----@return Errors.Error|string|nil emitErr
----@return Errors.Error|string|nil closeErr
-local function finalizeTargetedEvidence(handle, record, outcome)
-  local footer = makeRecordFooter(record, outcome.auditPassed, outcome.attestationPublished, outcome.complete)
-  local emitErr = emitVersionEvidence(handle, record, footer)
-  local closeErr = closeChecked(handle)
-  return emitErr, closeErr
-end
-
--- One batch evidence finalization over the shared profile sink: build each
--- footer once from the interpreted outcome. After the first profile-write
--- error no further profile writes are issued; the single cleanup attempt
--- stays with the caller.
----@param handle table<string, function>|nil shared profile sink
----@param records CacheBuilder.VersionRecord[]
----@param published table<string, boolean>|nil actual publication results by version; nil publishes nothing new
----@return Errors.Error|string|nil emitErr
-local function emitBatchEvidence(handle, records, published)
-  local emitErr = nil
-  for _, record in ipairs(records) do
-    local attested = false
-    if published ~= nil then
-      attested = published[record.versionId] == true
-    end
-    local outcome = interpretBatchOutcome(record, attested)
-    local footer = makeRecordFooter(record, outcome.auditPassed, outcome.attestationPublished, outcome.complete)
-    if emitErr == nil then
-      emitErr = emitVersionEvidence(handle, record, footer)
-    end
-  end
-  return emitErr
+  return { complete = false }
 end
 
 ---@param versionId string
@@ -1261,19 +718,6 @@ function CacheBuilder.prepareVersion(versionId, options)
     end
   end
   local cacheFs = CacheFs.forVersion(versionId)
-  local profileHandle = nil
-  if options.profile ~= nil then
-    local handle, openErr = io.open(options.profile, "w")
-    if handle == nil then
-      return nil,
-        Errors.new(
-          "PROFILE_OPEN_FAILED",
-          "execution evidence cannot be opened: " .. tostring(openErr),
-          { path = options.profile }
-        )
-    end
-    profileHandle = handle
-  end
   local collectOk, record = pcall(
     collectVersionFacts,
     versionId,
@@ -1281,18 +725,13 @@ function CacheBuilder.prepareVersion(versionId, options)
     options.developmentRepositoryRoot,
     cacheFs,
     identity,
-    ordered,
     parsed,
     exhaustive,
     rebuildJobs,
     log
   )
   if not collectOk then
-    local progErr = record
-    if profileHandle ~= nil then
-      pcall(profileHandle.close, profileHandle)
-    end
-    error(progErr, 0)
+    error(record, 0)
   end
   assert(record ~= nil, "scoped collection returns its scalar record")
   if not record.isCurrent then
@@ -1309,21 +748,13 @@ function CacheBuilder.prepareVersion(versionId, options)
     end
   end
   local outcome = interpretTargetedOutcome(record, attestationPublished, publishError)
-  local emitErr, closeErr = finalizeTargetedEvidence(profileHandle, record, outcome)
-  profileHandle = nil
-  if emitErr ~= nil then
-    return nil, emitErr
-  end
-  if closeErr ~= nil then
-    return nil, closeErr
-  end
   if outcome.error ~= nil then
     return nil, outcome.error
   end
-  local report = makeRecordReport(record, outcome.auditPassed, outcome.attestationPublished, outcome.complete)
+  local report = makeRecordReport(record, outcome.complete)
   if record.isCurrent then
     log(string.format("build-cache: %s current", versionId))
-  elseif outcome.attestationPublished then
+  elseif attestationPublished then
     log(string.format("build-cache: %s complete (%d jobs)", versionId, record.counts.successful))
   elseif exhaustive then
     log(
@@ -1378,7 +809,7 @@ local function versionIdentity(versionId, dev, producerFingerprint)
 end
 
 ---@param versionIds string[]
----@param options { allowCompileExclusions?: boolean, dev?: boolean, log?: fun(line: string), developmentRepositoryRoot?: string, profile?: string }|nil
+---@param options { allowCompileExclusions?: boolean, dev?: boolean, log?: fun(line: string), developmentRepositoryRoot?: string }|nil
 ---@return table<string, unknown>|nil report, string|nil err
 function CacheBuilder.buildVersions(versionIds, options)
   options = options or {}
@@ -1393,23 +824,6 @@ function CacheBuilder.buildVersions(versionIds, options)
       assert(options.developmentRepositoryRoot, "development builds require the repository root the process runs from")
     producerFingerprint = ProducerFingerprint.compute(ProducerFingerprint.checkoutBackend(repositoryRoot))
   end
-  local profileHandle = nil
-  if options.profile ~= nil then
-    local handle, openErr = io.open(options.profile, "w")
-    if handle == nil then
-      log("build-cache: execution evidence cannot be opened: " .. tostring(openErr))
-      return nil, "cache preparation failed"
-    end
-    profileHandle = handle
-  end
-  local function closeShared()
-    if profileHandle == nil then
-      return nil
-    end
-    local handle = profileHandle
-    profileHandle = nil
-    return closeChecked(handle)
-  end
   ---@type CacheBuilder.VersionRecord[]
   local records = {}
   local allOk = true
@@ -1423,7 +837,6 @@ function CacheBuilder.buildVersions(versionIds, options)
         assert(Errors.is(identityErr), "source-data stage failure must be a structured error")
         return nil, identityErr
       end
-      local ordered = { "complete" }
       local parsed = {
         { scope = "complete" },
       }
@@ -1433,7 +846,6 @@ function CacheBuilder.buildVersions(versionIds, options)
         options.developmentRepositoryRoot,
         cacheFs,
         identity,
-        ordered,
         parsed,
         true,
         {},
@@ -1446,10 +858,6 @@ function CacheBuilder.buildVersions(versionIds, options)
         allOk = false
         log("build-cache: " .. version .. " failed: " .. Errors.format(result))
       else
-        local closeErr = closeShared()
-        if closeErr ~= nil then
-          log("build-cache: execution evidence cannot be closed: " .. tostring(closeErr))
-        end
         error(result, 0)
       end
     elseif result == nil then
@@ -1484,28 +892,17 @@ function CacheBuilder.buildVersions(versionIds, options)
   for _, record in ipairs(records) do
     exclusionCount = exclusionCount + record.counts.excluded
   end
-  -- One common evidence tail after the collection/publication decision:
-  -- collection failure publishes nothing new, a later publication failure
-  -- keeps the earlier effects truthfully recorded, and only a clean pass
-  -- attests. The actual per-version publication map is preserved in every
-  -- emitted footer; earlier successful effects stay reported.
-  local publishedArg = nil ---@type table<string, boolean>|nil
+  -- Collection gates pass before publication begins. A publication failure
+  -- preserves earlier effects and stops later publication attempts.
   local tailFailed = not allOk
   if allOk then
-    ---@type table<string, boolean> publishedOk
-    local publishedOk = {}
     local publishFailed = false
     for _, record in ipairs(records) do
       if record.needsAttestation and not record.isCurrent then
-        if publishFailed then
-          publishedOk[record.versionId] = false
-        else
+        if not publishFailed then
           local ok, err = pcall(DerivedCacheState.publish, assert(record.cacheFs), record.identity)
-          if ok then
-            publishedOk[record.versionId] = true
-          else
+          if not ok then
             publishFailed = true
-            publishedOk[record.versionId] = false
             log("build-cache: " .. record.versionId .. " failed: " .. Errors.format(err))
           end
         end
@@ -1514,18 +911,6 @@ function CacheBuilder.buildVersions(versionIds, options)
     if publishFailed then
       tailFailed = true
     end
-    publishedArg = publishedOk
-  end
-  local emitErr = emitBatchEvidence(profileHandle, records, publishedArg)
-  local closeErr = closeShared()
-  if emitErr ~= nil then
-    log("build-cache: execution evidence cannot be written: " .. tostring(emitErr))
-  end
-  if closeErr ~= nil then
-    log("build-cache: execution evidence cannot be closed: " .. tostring(closeErr))
-  end
-  if emitErr ~= nil or closeErr ~= nil then
-    return nil, "cache preparation failed"
   end
   if tailFailed then
     if not allOk and exclusionCount > 0 and not options.allowCompileExclusions then

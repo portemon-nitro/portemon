@@ -61,6 +61,8 @@ local function newEnv()
     planCalls = {},
     invalidatedVersions = {},
     publishes = {},
+    publishAttempts = 0,
+    publishFailCalls = {},
     updateRaise = nil,
     logLines = {},
   }
@@ -406,6 +408,10 @@ local function makeFakes()
       env.invalidatedVersions[#env.invalidatedVersions + 1] = cacheFs.versionId
     end,
     publish = function(_, identity)
+      env.publishAttempts = env.publishAttempts + 1
+      if env.publishFailCalls[env.publishAttempts] then
+        error("injected attestation publication failure", 0)
+      end
       env.publishes[#env.publishes + 1] = identity
     end,
   }
@@ -531,7 +537,7 @@ end
 -- The complete scope drives one common session per version with the sweep
 -- enabled, requests field core plus the mon summary, and publishes the
 -- schema-2 attestation only after every version succeeds.
-function T.complete_scope_delegates_to_one_common_session_per_version()
+function T.batch_reports_success_and_preserves_partial_publication_failure()
   env = newEnv()
   env.auditAvailable = true
   local report, err = CacheBuilder.buildVersions(
@@ -557,6 +563,19 @@ function T.complete_scope_delegates_to_one_common_session_per_version()
   Assert.equal(env.auditCalls[#env.auditCalls], identity.generationId, "strict success proves the generation")
   Assert.equal(env.shutdowns, 1, "the command shuts its pool down")
   Assert.equal(env.retires, 1, "the command retires its session")
+
+  env = newEnv()
+  env.auditAvailable = true
+  env.publishFailCalls[2] = true
+  local failedReport, failedErr = CacheBuilder.buildVersions(
+    { "heartgold", "soulsilver", "heartgold" },
+    { dev = true, developmentRepositoryRoot = "/checkout", log = testLog() }
+  )
+  Assert.isNil(failedReport, "a failed later attestation publication fails the command")
+  Assert.equal(failedErr, "cache preparation failed")
+  Assert.equal(env.publishAttempts, 2, "publication stops after the failure")
+  Assert.equal(#env.publishes, 1, "the earlier publication remains recorded")
+  Assert.equal(env.publishes[1].versionId, "heartgold", "the first publication remains truthful")
 end
 
 -- A matching attestation with a valid audit is a fast path: no session, no

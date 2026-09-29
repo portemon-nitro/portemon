@@ -270,24 +270,6 @@ function T.prepare_failure_exits_nonzero()
   end)
 end
 
--- The execution owner rejects an unwritable observation path before any
--- cache mutation, using the real modules without touching the host.
-function T.profile_to_an_unwritable_path_fails_before_mutation()
-  local saved = package.loaded["romdump.src.CacheBuilder"]
-  package.loaded["romdump.src.CacheBuilder"] = nil
-  local CacheBuilder = require("romdump.src.CacheBuilder")
-  local report, err = CacheBuilder.prepareVersion("heartgold", {
-    identity = { versionId = "heartgold", generationId = "test-generation", producerId = "d" .. string.rep("1", 64) },
-    requirements = { "map:7" },
-    profile = "/nonexistent-dir-xyz/profile.jsonl",
-    log = function() end,
-  })
-  package.loaded["romdump.src.CacheBuilder"] = saved
-  Assert.isNil(report)
-  Assert.notNil(err)
-  Assert.isTrue(Errors.is(err), "observation failures are structured")
-end
-
 -- Explicit rebuilds require development mode, enforced before any session.
 function T.rebuild_without_development_mode_fails()
   local saved = package.loaded["romdump.src.CacheBuilder"]

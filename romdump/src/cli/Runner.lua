@@ -237,17 +237,13 @@ end
 -- already matches the current build is left in place, so an unchanged cache
 -- rebuilds only what is stale. The option wins over any CLI state; callers
 -- pass the parsed flag through explicitly.
----@param options { versionIds: string[]?, allowCompileExclusions: boolean?, dev: boolean?, developmentRepositoryRoot?: string, profile: string?, noQuit: boolean? }|nil
+---@param options { versionIds: string[]?, allowCompileExclusions: boolean?, dev: boolean?, developmentRepositoryRoot?: string, noQuit: boolean? }|nil
 ---@return table<string, unknown>|nil, string|nil
 function Runner._runBuild(options)
   options = options or {}
   local dev = options.dev
   if dev == nil then
     dev = Runner.opts ~= nil and Runner.opts.dev == true
-  end
-  local profile = options.profile
-  if profile == nil then
-    profile = Runner.opts ~= nil and Runner.opts.profile or nil
   end
   -- The batch builder resolves development sources against this checkout
   -- root; default to the repository root this process runs from. All love
@@ -261,7 +257,6 @@ function Runner._runBuild(options)
     allowCompileExclusions = options.allowCompileExclusions,
     dev = dev,
     developmentRepositoryRoot = developmentRepositoryRoot,
-    profile = profile,
   })
   if report then
     if not options.noQuit then
@@ -352,7 +347,6 @@ function Runner._runPrepareCache()
     identity = identity,
     requirements = requirements,
     rebuild = rebuild,
-    profile = opts.profile,
     allowCompileExclusions = opts.allowCompileExclusions,
     dev = opts.dev == true,
   })

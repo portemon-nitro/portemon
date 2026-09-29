@@ -482,7 +482,7 @@ local function requireScopedPreparation()
 end
 
 -- Invocation-owned output paths: one atomically acquired directory per
--- suite invocation holds every profile and staging sibling this
+-- suite invocation holds every output and staging sibling this
 -- run writes. A process-local counter is unique only inside that exclusive
 -- root, never across processes, and no shared deterministic directory
 -- is used.
@@ -692,34 +692,6 @@ function T.missing_planning_metadata_bypasses_the_warm_shortcut()
   Assert.equal(env.publishes, 0, "no inventory means no attestation")
 end
 
--- Opt-in profiling records every failed job with its cause and closes with a
--- partial census: observation never changes job identity or scope.
-function T.profile_log_captures_failed_jobs_with_a_partial_census()
-  env = newEnv()
-  env.failKeys["map:5"] = "MAP_SCHEMA_INVALID: injected compile rejection"
-  requireScopedPreparation()
-  local profilePath = newOutputPath("partial-census", ".jsonl")
-  local report, err = CacheBuilder.prepareVersion(
-    "heartgold",
-    scopedOptions({
-      requirements = { "map:5", "map:7" },
-      allowCompileExclusions = true,
-      profile = profilePath,
-    })
-  )
-  Assert.isNil(err)
-  Assert.isFalse(report.complete, "the profiled run stays partial")
-  local handle = assert(io.open(profilePath, "r"))
-  local body = handle:read("*a")
-  handle:close()
-  os.remove(profilePath)
-  Assert.isTrue(body:find("g4-cache-execution-v2", 1, true) ~= nil, "the log carries its execution schema")
-  Assert.isTrue(body:find("map:5", 1, true) ~= nil, "the failed job remains in the log")
-  Assert.isTrue(body:find("failed", 1, true) ~= nil, "the failed outcome remains in the log")
-  Assert.isTrue(body:find("complete", 1, true) ~= nil, "the footer records completion scope")
-  Assert.isNil(body:find("payload", 1, true), "profile output must not retain asset payloads")
-end
-
 -- An explicit development rebuild reruns only the selected ready job: its
 -- dependencies are reused, the stale completion proof is invalidated first,
 -- and staged publication invariants still hold.
@@ -817,6 +789,8 @@ function T.camera_only_scope_requests_no_inventory_work()
   assert(report, "a camera-only preparation returns its report")
   Assert.isTrue(report.requestedReady, "the independent leaf succeeds")
   Assert.isFalse(report.complete, "a targeted scope never reports a complete cache")
+  Assert.deepEqual(report.counts, { planned = 1, successful = 1, failed = 0, cancelled = 0, excluded = 0 })
+  Assert.isNil(report.outcomes, "the command report does not expose diagnostic job rows")
   local requested = {}
   for _, jobKey in ipairs(env.sessions[1].requested) do
     requested[jobKey] = true
@@ -901,38 +875,6 @@ function T.refused_uncovered_request_preserves_attestation_for_later_reuse()
   Assert.equal(env.invalidations, 0, "later reuse invalidates nothing")
   Assert.equal(#env.pools, pools, "later reuse creates no additional pool")
   Assert.equal(#env.sessions, sessions, "later reuse opens no additional session")
-end
-
--- Cache history never changes satisfiability: the same absent mixed
--- request refuses identically whether or not a matching attestation
--- happens to remain on disk.
-function T.profiled_absent_extra_map_excludes_without_success_evidence()
-  env = newEnv()
-  env.stateMatches = true
-  env.auditAvailable = true
-  env.excludedKeys["map:999999"] = true
-  requireScopedPreparation()
-  local profilePath = newOutputPath("absent-extra-profile", ".jsonl")
-  local report, err = CacheBuilder.prepareVersion(
-    "heartgold",
-    scopedOptions({
-      requirements = { "complete", "map:999999" },
-      profile = profilePath,
-    })
-  )
-  Assert.isNil(err)
-  assert(report, "a profiled refusal returns its report")
-  Assert.isFalse(report.requestedReady, "profiling never makes an absent identity ready")
-  Assert.isFalse(report.complete, "a profiled refusal never reports a complete cache")
-  Assert.isTrue(report.exclusions[1]:find("map:999999", 1, true) ~= nil, "the exclusion names its canonical key")
-  local handle = assert(io.open(profilePath, "r"), "a refusal still closes its evidence log")
-  local body = handle:read("*a")
-  handle:close()
-  os.remove(profilePath)
-  Assert.isTrue(body:find("map:999999", 1, true) ~= nil, "the evidence names the excluded identity")
-  Assert.isTrue(body:find('"requestedReady":false', 1, true) ~= nil, "the footer records the refusal")
-  Assert.isTrue(body:find('"complete":false', 1, true) ~= nil, "the footer never claims completeness")
-  Assert.equal(env.publishes, 0, "a profiled refusal publishes no attestation")
 end
 
 -- Freshness always outranks coverage: missing inventory, a failed audit,
