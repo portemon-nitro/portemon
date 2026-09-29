@@ -87,73 +87,55 @@ local function inactivePlan()
   }
 end
 
--- Fullscreen naming for the dualDisplay and nativeLike cases: one
--- canonical child pane over the owned target region, never decorated.
--- Auxiliary on a genuine pair, the single surface otherwise. The geometry
--- comes from the naming section bound at defaults construction.
----@param naming table<string, unknown> the validated namingScreen manifest section
----@return fun(context: ApplicationLayout.Context, view: table<string, unknown>): ApplicationPlan
----@return fun(context: ApplicationLayout.Context, view: table<string, unknown>): ApplicationPlan
-local function bindResolvers(naming)
-  assert(type(naming) == "table", "naming defaults require the namingScreen manifest section")
-  ---@param context ApplicationLayout.Context
-  ---@param view table<string, unknown>
-  ---@return ApplicationPlan
-  local function fullscreen(context, view)
-    local geometry = ApplicationLayout.fullscreen(context, NATIVE, { maxOverdraw = ZERO_CROP })
-    local placement = geometry.placements[NATIVE.id]
-    if placement == nil then
-      return inactivePlan()
-    end
-    local _ = view
-    return {
-      panes = { { id = NATIVE.id, placement = placement, interactive = true } },
-      frames = {},
-      content = { layout = NamingScreenLayout.compute(CANONICAL_VIEWPORT, naming) },
-      inputKey = INPUT_KEY,
-      render = renderNaming,
-      mapInput = mapNamingInput,
-    }
+-- Fullscreen naming owns the target region on paired and native-like hosts.
+---@param context ApplicationLayout.Context
+---@param view table<string, unknown>
+---@return ApplicationPlan
+local function fullscreen(context, view)
+  local geometry = ApplicationLayout.fullscreen(context, NATIVE, { maxOverdraw = ZERO_CROP })
+  local placement = geometry.placements[NATIVE.id]
+  if placement == nil then
+    return inactivePlan()
   end
-  -- Static centered naming for the wide and tall cases: the canonical child
-  -- at integer scale with no outer decoration. A pane that cannot fit 1x
-  -- falls back to the effective nativeLike case with the same context and
-  -- view; the configuration keeps describing the actual measured display.
-  ---@param context ApplicationLayout.Context
-  ---@param view table<string, unknown>
-  ---@return ApplicationPlan
-  local function centered(context, view)
-    local geometry = ApplicationLayout.centered(context, NATIVE, {})
-    if geometry == nil then
-      return context.nativeLikeInterface(context, view)
-    end
-    local placement = geometry.placements[NATIVE.id]
-    if placement == nil then
-      return inactivePlan()
-    end
-    local _ = view
-    return {
-      panes = { { id = NATIVE.id, placement = placement, interactive = true } },
-      frames = {},
-      content = { layout = NamingScreenLayout.compute(CANONICAL_VIEWPORT, naming) },
-      inputKey = INPUT_KEY,
-      render = renderNaming,
-      mapInput = mapNamingInput,
-    }
-  end
-  return fullscreen, centered
+  local _ = view
+  return {
+    panes = { { id = NATIVE.id, placement = placement, interactive = true } },
+    frames = {},
+    content = { layout = NamingScreenLayout.compute(CANONICAL_VIEWPORT) },
+    inputKey = INPUT_KEY,
+    render = renderNaming,
+    mapInput = mapNamingInput,
+  }
 end
 
--- The bound default resolver set: dual and native-like own their
--- fullscreen region, wide and tall center the canonical child with no
--- decoration. The four functions close over the bound naming section and
--- stay stable for the session built from them. A per-case override
--- replaces entries centrally at session composition; the gameplay
--- controller instance never changes.
----@param naming table<string, unknown> the validated namingScreen manifest section
+-- Wide and tall hosts center the canonical child without decoration.
+---@param context ApplicationLayout.Context
+---@param view table<string, unknown>
+---@return ApplicationPlan
+local function centered(context, view)
+  local geometry = ApplicationLayout.centered(context, NATIVE, {})
+  if geometry == nil then
+    return context.nativeLikeInterface(context, view)
+  end
+  local placement = geometry.placements[NATIVE.id]
+  if placement == nil then
+    return inactivePlan()
+  end
+  local _ = view
+  return {
+    panes = { { id = NATIVE.id, placement = placement, interactive = true } },
+    frames = {},
+    content = { layout = NamingScreenLayout.compute(CANONICAL_VIEWPORT) },
+    inputKey = INPUT_KEY,
+    render = renderNaming,
+    mapInput = mapNamingInput,
+  }
+end
+
+-- The default resolver set shares these stable functions; overrides replace
+-- entries centrally at session composition.
 ---@return table<string, fun(context: ApplicationLayout.Context, view: table<string, unknown>): ApplicationPlan>
-function NamingInterface.defaults(naming)
-  local fullscreen, centered = bindResolvers(naming)
+function NamingInterface.defaults()
   return {
     dualDisplay = fullscreen,
     nativeLike = fullscreen,

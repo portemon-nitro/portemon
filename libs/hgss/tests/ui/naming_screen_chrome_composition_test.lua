@@ -5,7 +5,6 @@
 -- pages are programmer errors, never a silent fallback.
 
 local Assert = require("tests.support.Assert")
-local FieldUiAssetCache = require("libs.assets.src.field.FieldUiAssetCache")
 local NamingScreenLayout = require("libs.hgss.src.ui.NamingScreenLayout")
 local NamingScreenRenderer = require("libs.hgss.src.ui.NamingScreenRenderer")
 local FieldUiFixture = require("tests.support.FieldUiFixture")
@@ -99,7 +98,7 @@ local function snapshot(page, cursor)
 end
 
 local function layout()
-  return NamingScreenLayout.compute({ x = 0, y = 0, width = 256, height = 192 }, manifest().namingScreen)
+  return NamingScreenLayout.compute({ x = 0, y = 0, width = 256, height = 192 })
 end
 
 function T.construction_requires_the_naming_chrome_contract()
@@ -239,76 +238,6 @@ function T.draw_composes_base_page_controls_slots_text_cursor_and_manifest_subje
   Assert.isNil(entered["AB"], "the entered name is placed per glyph, never as one string")
   Assert.isTrue(entered["A"] and entered["B"], "each entered glyph renders")
   Assert.isTrue(#textCalls.texts > 2, "keyboard glyphs still render")
-  renderer:dispose()
-end
-
-local CANONICAL_VIEWPORT = { x = 0, y = 0, width = 256, height = 192 }
-
-local function fullManifest()
-  return FieldUiFixture.fieldStateManifest()
-end
-
--- One coherent keyboard variant: the upper control and its home cursor move
--- right together while the keyboard stepping origin and every text-cell
--- position shift by the same column step. Source image content is untouched;
--- only manifest coordinates move.
-local function relocatedVariant()
-  local manifest = fullManifest()
-  local naming = manifest.namingScreen
-  naming.controls.upper.anchor = { x = 66, y = 68 }
-  naming.cursor.home.upper.anchor = { x = 65, y = 68 }
-  naming.cursor.keyboard.origin = { x = 42, y = 91 }
-  for row = 1, 5 do
-    for column = 1, 13 do
-      naming.text.keyboard.cells[row][column].x = naming.text.keyboard.cells[row][column].x + 16
-    end
-  end
-  return manifest
-end
-
-function T.relocated_control_anchor_moves_hit_geometry_with_the_manifest()
-  local vanilla = NamingScreenLayout.compute(CANONICAL_VIEWPORT, fullManifest().namingScreen)
-  Assert.deepEqual(vanilla.controls.upper, { x = 25, y = 60, width = 32, height = 23 })
-  Assert.deepEqual(vanilla.cells[2][1], { x = 28, y = 88, width = 17, height = 20 })
-  Assert.deepEqual(vanilla.cursorCenters[2][1], { x = 26, y = 91 })
-
-  local moved = NamingScreenLayout.compute(CANONICAL_VIEWPORT, relocatedVariant().namingScreen)
-  Assert.deepEqual(moved.controls.upper, { x = 65, y = 60, width = 32, height = 23 })
-  Assert.deepEqual(moved.cells[2][1], { x = 44, y = 88, width = 17, height = 20 })
-  Assert.deepEqual(moved.cursorCenters[2][1], { x = 42, y = 91 })
-  Assert.isFalse(
-    NamingScreenLayout.contains(moved.controls.upper, 30, 70),
-    "the old control point must not activate the relocated target"
-  )
-  Assert.isTrue(NamingScreenLayout.contains(moved.controls.upper, 70, 70))
-end
-
-function T.relocated_naming_chrome_stays_valid_and_draws_from_the_manifest()
-  Assert.isTrue(FieldUiAssetCache.validateManifest(fullManifest()))
-  local variant = relocatedVariant()
-  Assert.isTrue(FieldUiAssetCache.validateManifest(variant), "a coherently relocated naming section must stay usable")
-
-  local graphics, calls = graphicsFake()
-  local loader, _ = imageLoaderFake()
-  local renderer = NamingScreenRenderer.new({
-    graphics = graphics,
-    text = textFake(),
-    drawSubject = function() end,
-    manifest = variant,
-    imageLoader = loader,
-  })
-  renderer:draw(snapshot("upper", { row = 2, column = 1 }), layout())
-  local upperDraw = nil
-  for _, draw in ipairs(calls.draws) do
-    if draw.image.path == variant.namingScreen.controls.upper.image then
-      upperDraw = draw
-    end
-  end
-  Assert.deepEqual(
-    { x = assert(upperDraw).x, y = upperDraw.y },
-    { x = 67, y = 70 },
-    "the control visual follows its manifest anchor plus offset"
-  )
   renderer:dispose()
 end
 

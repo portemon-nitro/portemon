@@ -140,7 +140,6 @@ local DialoguePresentationLayout = require("libs.hgss.src.ui.DialoguePresentatio
 ---@field _displayContext DisplayContext
 ---@field _entryPrewarm table<string, function>? speculative field-entry coordinator, polled per update
 ---@field _namingOverrides table<string, unknown>?
----@field _namingScreen table<string, unknown>? the borrowed namingScreen manifest section
 ---@field _namingSession ApplicationPresentation? the per-entry naming session beside the profile controller
 ---@field _blackHandoffPresented boolean
 ---@field _frozenStatus table<string, unknown>?
@@ -309,11 +308,6 @@ function OakIntroState.new(options)
       dialoguePresentation = nil,
       dialogueMessageKey = nil,
       dialogueCursorPlacement = options.dialogueCursorPlacement,
-      -- The validated naming section bound into the naming session; the
-      -- host borrows it read-only and never reloads the manifest.
-      _namingScreen = options.uiManifest ~= nil
-          and assert(options.uiManifest.namingScreen, "Oak naming requires the namingScreen manifest section")
-        or nil,
       _blackHandoffPresented = false,
       _frozenStatus = nil,
       _frozenAdapter = nil,
@@ -487,8 +481,7 @@ function OakIntroState:_ensureNamingSession()
   if self._namingSession ~= nil then
     return self._namingSession
   end
-  local naming = assert(self._namingScreen, "Oak naming requires the namingScreen manifest section")
-  local session = ApplicationPresentation.new(NamingInterface.defaults(naming), self._namingOverrides)
+  local session = ApplicationPresentation.new(NamingInterface.defaults(), self._namingOverrides)
   self._namingSession = session
   return session
 end

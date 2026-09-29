@@ -49,8 +49,7 @@ end
 
 function T.tests.keyboard_hit_rectangles_use_source_integer_geometry()
   local layout = NamingScreenLayout.compute(
-    { x = 0, y = 0, width = 256, height = 192 },
-    FieldUiFixture.namingSemanticsManifest().namingScreen
+    { x = 0, y = 0, width = 256, height = 192 }
   )
   Assert.deepEqual(layout.surface, { x = 0, y = 0, width = 256, height = 192 })
   -- First and last glyph cells from the source touch table.
@@ -71,14 +70,25 @@ end
 
 function T.tests.pointer_presses_map_to_source_semantic_cells()
   local layout = NamingScreenLayout.compute(
-    { x = 0, y = 0, width = 256, height = 192 },
-    FieldUiFixture.namingSemanticsManifest().namingScreen
+    { x = 0, y = 0, width = 256, height = 192 }
   )
   controlAt(layout, "upper", 30, 70)
   controlAt(layout, "back", 170, 70)
   controlAt(layout, "ok", 210, 70)
   cellAt(layout, 2, 1, 36, 98)
   cellAt(layout, 6, 13, 228, 174)
+end
+
+function T.tests.interaction_geometry_ignores_manifest_anchors()
+  local naming = FieldUiFixture.namingSemanticsManifest().namingScreen
+  naming.controls.upper.anchor = { x = 66, y = 68 }
+  naming.cursor.keyboard.origin = { x = 42, y = 91 }
+
+  -- Extra asset data is ignored even when its coordinates are relocated.
+  local layout = NamingScreenLayout.compute({ x = 0, y = 0, width = 256, height = 192 }, naming)
+  Assert.deepEqual(layout.controls.upper, { x = 25, y = 60, width = 32, height = 23 })
+  Assert.deepEqual(layout.cells[2][1], { x = 28, y = 88, width = 17, height = 20 })
+  Assert.deepEqual(layout.cursorCenters[2][1], { x = 26, y = 91 })
 end
 
 function T.tests.dpad_wraps_skips_and_suppresses_repeated_home_controls()

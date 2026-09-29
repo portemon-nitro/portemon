@@ -25,23 +25,15 @@ local function rect(x, y, width, height)
   return { x = x, y = y, width = width, height = height }
 end
 
-local HOME_WIDTHS = {
-  upper = 32,
-  lower = 32,
-  symbols = 32,
-  back = 33,
-  ok = 33,
+local HOME_CONTROLS = {
+  upper = { x = 25, y = 60, width = 32, height = 23 },
+  lower = { x = 57, y = 60, width = 32, height = 23 },
+  symbols = { x = 89, y = 60, width = 32, height = 23 },
+  back = { x = 157, y = 60, width = 33, height = 23 },
+  ok = { x = 197, y = 60, width = 33, height = 23 },
 }
--- Fixed touch templates around the manifest anchors: the hit rectangle
--- starts one pixel left and eight pixels above the drawn control anchor,
--- and the glyph hit rectangle starts two pixels right and three pixels
--- above the keyboard stepping origin, overlapping its neighbor by one
--- pixel on each stepping axis. Only the absolute anchors, origins, and
--- steps come from the manifest; these offsets reproduce the source layout.
-local CONTROL_DX, CONTROL_DY, CONTROL_HEIGHT = -1, -8, 23
-local CELL_DX, CELL_DY = 2, -3
 
-local HOME_IDS = { "upper", "lower", "symbols", "back", "ok" }
+local HOME_CENTERS = { upper = 25, lower = 57, symbols = 89, back = 158, ok = 198 }
 
 local CONTROL_COLUMNS = {
   upper = { 1, 2 },
@@ -63,41 +55,14 @@ local function controlIdAt(column)
 end
 
 ---@param viewport LayoutGeometry.Rect
----@param naming table<string, unknown> the validated namingScreen manifest section
 ---@return NamingScreenLayoutResult
-function NamingScreenLayout.compute(viewport, naming)
+function NamingScreenLayout.compute(viewport)
   assert(type(viewport) == "table", "naming layout viewport is required")
   assert(
     type(viewport.width) == "number" and type(viewport.height) == "number",
     "naming layout viewport dimensions are required"
   )
   assert(viewport.width >= WIDTH and viewport.height >= HEIGHT, "naming surface cannot fit in the host viewport")
-  assert(type(naming) == "table", "naming layout requires the namingScreen manifest section")
-  local controls = assert(naming.controls, "naming layout requires the manifest controls")
-  local cursor = assert(naming.cursor, "naming layout requires the manifest cursor")
-  local home = assert(cursor.home, "naming layout requires the manifest home cursors")
-  local keyboardCursor = assert(cursor.keyboard, "naming layout requires the manifest keyboard cursor")
-  local origin = assert(keyboardCursor.origin, "naming layout requires the keyboard stepping origin")
-  local stepX = assert(keyboardCursor.stepX, "naming layout requires the keyboard column step")
-  local stepY = assert(keyboardCursor.stepY, "naming layout requires the keyboard row step")
-  assert(type(origin.x) == "number" and type(origin.y) == "number", "naming layout requires a numeric keyboard origin")
-  assert(type(stepX) == "number" and type(stepY) == "number", "naming layout requires numeric keyboard steps")
-  local homeControls = {}
-  local homeCenters = {}
-  for _, id in ipairs(HOME_IDS) do
-    local anchor = assert(controls[id], "naming layout requires the " .. id .. " control").anchor
-    assert(
-      type(anchor) == "table" and type(anchor.x) == "number" and type(anchor.y) == "number",
-      "naming layout requires a numeric " .. id .. " control anchor"
-    )
-    homeControls[id] = rect(anchor.x + CONTROL_DX, anchor.y + CONTROL_DY, HOME_WIDTHS[id], CONTROL_HEIGHT)
-    local center = assert(home[id], "naming layout requires the " .. id .. " home cursor").anchor
-    assert(
-      type(center) == "table" and type(center.x) == "number" and type(center.y) == "number",
-      "naming layout requires a numeric " .. id .. " home cursor anchor"
-    )
-    homeCenters[id] = { x = center.x, y = center.y }
-  end
   local surface = rect(
     math.floor(viewport.x + (viewport.width - WIDTH) / 2),
     math.floor(viewport.y + (viewport.height - HEIGHT) / 2),
@@ -119,18 +84,17 @@ function NamingScreenLayout.compute(viewport, naming)
           cursorCenters[row][column] = { x = 121, y = 68 }
         else
           cells[row][column] =
-            rect(homeControls[id].x, homeControls[id].y, homeControls[id].width, homeControls[id].height)
-          cursorCenters[row][column] = { x = homeCenters[id].x, y = homeCenters[id].y }
+            rect(HOME_CONTROLS[id].x, HOME_CONTROLS[id].y, HOME_CONTROLS[id].width, HOME_CONTROLS[id].height)
+          cursorCenters[row][column] = { x = HOME_CENTERS[id], y = 68 }
         end
       else
-        cells[row][column] =
-          rect(origin.x + CELL_DX + (column - 1) * stepX, origin.y + CELL_DY + (row - 2) * stepY, stepX + 1, stepY + 1)
-        cursorCenters[row][column] = { x = origin.x + (column - 1) * stepX, y = origin.y + (row - 2) * stepY }
+        cells[row][column] = rect(28 + (column - 1) * 16, 88 + (row - 2) * 19, 17, 20)
+        cursorCenters[row][column] = { x = 26 + (column - 1) * 16, y = 91 + (row - 2) * 19 }
       end
     end
   end
   local hitControls = {}
-  for id, region in pairs(homeControls) do
+  for id, region in pairs(HOME_CONTROLS) do
     hitControls[id] = rect(region.x, region.y, region.width, region.height)
   end
   return {
@@ -139,10 +103,6 @@ function NamingScreenLayout.compute(viewport, naming)
     cells = cells,
     cursorCenters = cursorCenters,
     controls = hitControls,
-    -- The entered-name and subject display regions are fixed areas of the
-    -- static base artwork, so they stay constant while anchors move: the
-    -- manifest carries no region record for them, and no consumer reads
-    -- these values for hit testing or drawing.
     nameSlots = rect(32, 22, 192, 24),
     subject = rect(8, 8, 48, 42),
   }

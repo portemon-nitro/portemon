@@ -95,7 +95,7 @@ function T.tests.keyboard_focus_draws_the_stepped_cursor_visual_without_outlines
     manifest = manifest,
     imageLoader = imageLoader(),
   })
-  local layout = NamingScreenLayout.compute({ x = 0, y = 0, width = 256, height = 192 }, manifest.namingScreen)
+  local layout = NamingScreenLayout.compute({ x = 0, y = 0, width = 256, height = 192 })
   renderer:draw(snapshot({ row = 3, column = 5 }), layout)
   renderer:dispose()
 
@@ -122,7 +122,7 @@ function T.tests.home_row_focus_draws_the_matching_cursor_variant()
     manifest = manifest,
     imageLoader = imageLoader(),
   })
-  local layout = NamingScreenLayout.compute({ x = 0, y = 0, width = 256, height = 192 }, manifest.namingScreen)
+  local layout = NamingScreenLayout.compute({ x = 0, y = 0, width = 256, height = 192 })
   renderer:draw(snapshot({ row = 1, column = 9 }), layout)
   renderer:dispose()
 
@@ -275,7 +275,7 @@ function T.tests.player_subject_advances_through_generated_frames_by_presentatio
     manifest = manifest,
     imageLoader = imageLoader(),
   })
-  local layout = NamingScreenLayout.compute({ x = 0, y = 0, width = 256, height = 192 }, manifest.namingScreen)
+  local layout = NamingScreenLayout.compute({ x = 0, y = 0, width = 256, height = 192 })
   local function subjectPathsAt(tick)
     calls.draws = {}
     renderer:draw(
@@ -315,7 +315,7 @@ function T.tests.reverse_subject_animation_traverses_generated_frames_backwards(
     manifest = manifest,
     imageLoader = imageLoader(),
   })
-  local layout = NamingScreenLayout.compute({ x = 0, y = 0, width = 256, height = 192 }, manifest.namingScreen)
+  local layout = NamingScreenLayout.compute({ x = 0, y = 0, width = 256, height = 192 })
   local function subjectPathsAt(tick)
     calls.draws = {}
     renderer:draw(
@@ -347,7 +347,7 @@ function T.tests.focus_cursor_tints_only_its_pulse_mask_and_follows_the_glow_ang
     manifest = manifest,
     imageLoader = imageLoader(),
   })
-  local layout = NamingScreenLayout.compute({ x = 0, y = 0, width = 256, height = 192 }, manifest.namingScreen)
+  local layout = NamingScreenLayout.compute({ x = 0, y = 0, width = 256, height = 192 })
   local function drawCursorAt(tick, angle)
     calls.draws = {}
     calls.colors = {}
@@ -466,7 +466,7 @@ function T.tests.support_backing_draws_before_home_controls_and_focus_draws_last
     manifest = manifest,
     imageLoader = imageLoader(),
   })
-  local layout = NamingScreenLayout.compute({ x = 0, y = 0, width = 256, height = 192 }, manifest.namingScreen)
+  local layout = NamingScreenLayout.compute({ x = 0, y = 0, width = 256, height = 192 })
   renderer:draw(snapshot({ row = 1, column = 9 }), layout)
   renderer:dispose()
 
@@ -520,7 +520,7 @@ function T.tests.acquired_naming_images_use_nearest_sampling()
     Assert.equal(image.filters[1].min, "nearest", "acquired image " .. image.path .. " uses nearest minification")
     Assert.equal(image.filters[1].mag, "nearest", "acquired image " .. image.path .. " uses nearest magnification")
   end
-  local layout = NamingScreenLayout.compute({ x = 0, y = 0, width = 256, height = 192 }, manifest.namingScreen)
+  local layout = NamingScreenLayout.compute({ x = 0, y = 0, width = 256, height = 192 })
   renderer:draw(snapshot({ row = 3, column = 5 }), layout)
   Assert.isTrue(#calls.draws > 0, "the player and cursor snapshot draws")
   for _, draw in ipairs(calls.draws) do

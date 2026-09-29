@@ -37,6 +37,12 @@ function T.complete_naming_chrome_validates()
   Assert.isTrue(ok, "a complete naming section must validate: " .. tostring(err and err.message))
 end
 
+function T.relocated_naming_control_is_rejected()
+  reject(function(m)
+    m.namingScreen.controls.upper.anchor.x = 27
+  end, "a naming control cannot move away from its canonical source position")
+end
+
 function T.manifest_without_naming_chrome_is_rejected()
   local manifest = FieldUiFixture.manifest()
   manifest.reference = { width = 256, height = 192 }

@@ -778,7 +778,7 @@ end
 -- content, and no parent scale multiplies the output.
 function T.hosted_naming_magnifies_once_across_densities(scope)
   local lg = love.graphics
-  local naming = NamingInterface.defaults(FieldUiFixture.namingSemanticsManifest().namingScreen)
+  local naming = NamingInterface.defaults()
   local one = naming.nativeLike(contextFor(singleDisplay(320, 240), "nativeLike", naming), {})
   local two = naming.nativeLike(contextFor(singleDisplay(640, 480), "nativeLike", naming), {})
   local onePlacement = assert(one.panes[1], "the 1x naming plan carries its pane").placement
@@ -1146,7 +1146,7 @@ end
 -- startup main menu resolve frame-free plans at any density.
 function T.undecorated_surfaces_publish_no_outer_frame(scope)
   local _ = scope
-  local naming = NamingInterface.defaults(FieldUiFixture.namingSemanticsManifest().namingScreen)
+  local naming = NamingInterface.defaults()
   local menu = MainMenuInterface.defaults()
   local menuView = {
     globalActions = { { id = "new-game", kind = "new_game" } },

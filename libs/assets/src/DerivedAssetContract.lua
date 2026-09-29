@@ -107,6 +107,8 @@
 -- fieldUi schema 19: Pokémon naming publishes visible semantic dynamic-icon
 -- parts and consumer-safe animation geometry; icon pixels remain in the
 -- shared mon-icon atlas.
+-- fieldUi schema 20: Naming Screen interaction geometry uses fixed canonical
+-- source positions; visual records remain replaceable at those positions.
 --
 -- fieldUi schema 16: dialogueFrames also publishes the fixed standard
 -- Yes/No frame strip and palette independently of selectable user frames.
@@ -281,7 +283,7 @@ DerivedAssetContract.fieldEmotes = {
 
 DerivedAssetContract.fieldUi = {
   cacheFormat = "field-ui-cache-v1",
-  schema = "g4-field-ui-v19",
+  schema = "g4-field-ui-v20",
 }
 
 DerivedAssetContract.intro = {

@@ -68,8 +68,7 @@ local function assertIntegerRect(rect, label)
 end
 
 function T.tests.naming_layout_is_canonical_logical_geometry_without_a_child_scale()
-  local naming = FieldUiFixture.namingSemanticsManifest().namingScreen
-  local layout = NamingScreenLayout.compute({ x = 0, y = 0, width = 512, height = 384 }, naming)
+  local layout = NamingScreenLayout.compute({ x = 0, y = 0, width = 512, height = 384 })
   Assert.deepEqual(layout.surface, { x = 128, y = 96, width = 256, height = 192 })
   Assert.isNil(layout.placement, "the naming child must not own a placement")
   Assert.isNil(layout.scale, "the naming child must not own a scale")
@@ -86,8 +85,7 @@ function T.tests.naming_layout_is_canonical_logical_geometry_without_a_child_sca
   end
   Assert.throws(function()
     NamingScreenLayout.compute(
-      { x = 0, y = 0, width = 200, height = 150 },
-      FieldUiFixture.namingSemanticsManifest().namingScreen
+      { x = 0, y = 0, width = 200, height = 150 }
     )
   end, "a viewport smaller than the canonical surface is a host programming error")
 end
@@ -161,8 +159,7 @@ function T.tests.oak_name_edit_hosts_canonical_naming_beside_the_parent_plan()
     local layout = OakIntroLayout.compute(width, height, nameEditView(), {}, layoutManifest(), 1)
     Assert.isNil(layout.namingScreen, "scene composition no longer places the naming child")
     local canonical = NamingScreenLayout.compute(
-      { x = 0, y = 0, width = 256, height = 192 },
-      FieldUiFixture.namingSemanticsManifest().namingScreen
+      { x = 0, y = 0, width = 256, height = 192 }
     )
     Assert.deepEqual({
       x = canonical.surface.x,

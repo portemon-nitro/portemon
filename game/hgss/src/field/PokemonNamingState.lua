@@ -7,7 +7,6 @@ local NamingScreenController = require("libs.hgss.src.ui.NamingScreenController"
 ---@class PokemonNamingState.Options
 ---@field charmap table<string, integer>
 ---@field measureDisplay fun(): table<string, unknown>
----@field naming table<string, unknown> the borrowed namingScreen manifest section
 ---@field overrides table<string, unknown>?
 
 ---@class PokemonNamingState.Status
@@ -19,7 +18,6 @@ local NamingScreenController = require("libs.hgss.src.ui.NamingScreenController"
 ---@class PokemonNamingState
 ---@field private _charmap table<string, integer>
 ---@field private _measureDisplay fun(): table<string, unknown>
----@field private _naming table<string, unknown>
 ---@field private _overrides table<string, unknown>?
 ---@field private _controller NamingScreenController?
 ---@field private _session ApplicationPresentation?
@@ -40,7 +38,6 @@ function PokemonNamingState.new(options)
   return setmetatable({
     _charmap = options.charmap,
     _measureDisplay = options.measureDisplay,
-    _naming = assert(options.naming, "Pokemon naming requires the namingScreen manifest section"),
     _overrides = options.overrides,
     _controller = nil,
     _session = nil,
@@ -77,7 +74,7 @@ function PokemonNamingState:open(spec)
     charmap = self._charmap,
     subject = subject,
   })
-  local session = ApplicationPresentation.new(NamingInterface.defaults(self._naming), self._overrides)
+  local session = ApplicationPresentation.new(NamingInterface.defaults(), self._overrides)
   self._controller = controller
   self._session = session
   self._presentationReady = true
