@@ -553,63 +553,59 @@ end
 ---@return table<string, table<string, unknown>> timings
 local function classifyExactOutcomes(outcomeList, pool, allowCompileExclusions)
   assert(type(outcomeList) == "table", "the generation session owns an exact outcome inventory")
-  local seen = {}
   local dispositions = {}
+  -- The snapshot guarantees one canonical row per jobKey, so rows are
+  -- consumed by their own identity without reparsing the key or
+  -- reconciling duplicates: kind/key come from the row itself.
   for _, item in ipairs(outcomeList) do
     assert(type(item) == "table", "outcome rows are canonical records")
     assert(type(item.jobKey) == "string" and item.jobKey ~= "", "outcome rows carry their canonical key")
-    local kind, key = item.jobKey:match("^([^:]+):(.+)$")
-    assert(kind ~= nil and key ~= nil, "outcome rows carry a canonical kind:key identity")
-    assert(ArtifactState.KINDS[kind], "outcome rows carry a known job kind")
-    assert(item.kind == kind and item.key == key, "outcome identity must match its canonical key")
+    assert(type(item.kind) == "string" and type(item.key) == "string", "outcome rows carry their canonical identity")
+    assert(ArtifactState.KINDS[item.kind], "outcome rows carry a known job kind")
+    assert(item.jobKey == item.kind .. ":" .. item.key, "outcome identity must match its canonical key")
     assert(
       item.state == "pending" or item.state == "successful" or item.state == "failed",
       "outcome rows carry a known state"
     )
-    if seen[item.jobKey] ~= nil then
-      local prev = seen[item.jobKey]
-      assert(prev.state == item.state and prev.error == item.error, "duplicate outcome identity must agree")
-    else
-      seen[item.jobKey] = item
-      local entry = {
-        kind = kind,
-        key = key,
-        jobKey = item.jobKey,
-        reused = item.reused == true,
-        causeJobKey = item.causeJobKey,
-      }
-      if item.state == "successful" then
-        assert(item.error == nil, "successful rows carry no error")
-        entry.state = "successful"
-        entry.error = nil
-      elseif item.state == "failed" then
-        assert(type(item.error) == "string", "failed dispositions carry an error string")
-        assert(type(item.failureClass) == "string", "failed rows carry their exact failure class")
-        assert(item.causeJobKey == nil or type(item.causeJobKey) == "string", "causes are exact canonical keys")
-        if item.failureClass == "source-exclusion" then
-          entry.state = "excluded"
-          entry.error = item.error
-          entry.sourceExclusion = true
-        elseif isToleratedMapExclusion(item, allowCompileExclusions) then
-          entry.state = "excluded"
-          entry.error = item.error
-        else
-          entry.state = "failed"
-          entry.error = item.error
-        end
+    local kind, key = item.kind, item.key
+    local entry = {
+      kind = kind,
+      key = key,
+      jobKey = item.jobKey,
+      reused = item.reused == true,
+      causeJobKey = item.causeJobKey,
+    }
+    if item.state == "successful" then
+      assert(item.error == nil, "successful rows carry no error")
+      entry.state = "successful"
+      entry.error = nil
+    elseif item.state == "failed" then
+      assert(type(item.error) == "string", "failed dispositions carry an error string")
+      assert(type(item.failureClass) == "string", "failed rows carry their exact failure class")
+      assert(item.causeJobKey == nil or type(item.causeJobKey) == "string", "causes are exact canonical keys")
+      if item.failureClass == "source-exclusion" then
+        entry.state = "excluded"
+        entry.error = item.error
+        entry.sourceExclusion = true
+      elseif isToleratedMapExclusion(item, allowCompileExclusions) then
+        entry.state = "excluded"
+        entry.error = item.error
       else
-        assert(item.error == nil, "pending rows carry no error")
-        local poolError = exactPoolFailure(pool, item.jobKey)
-        if poolError ~= nil then
-          entry.state = "failed"
-          entry.error = poolError
-        else
-          entry.state = "cancelled"
-          entry.error = nil
-        end
+        entry.state = "failed"
+        entry.error = item.error
       end
-      dispositions[#dispositions + 1] = entry
+    else
+      assert(item.error == nil, "pending rows carry no error")
+      local poolError = exactPoolFailure(pool, item.jobKey)
+      if poolError ~= nil then
+        entry.state = "failed"
+        entry.error = poolError
+      else
+        entry.state = "cancelled"
+        entry.error = nil
+      end
     end
+    dispositions[#dispositions + 1] = entry
   end
   table.sort(dispositions, function(left, right)
     return left.jobKey < right.jobKey
@@ -661,57 +657,28 @@ end
 ---@field cacheFs table<string, unknown>|nil pending publication access
 ---@field primaryError Errors.Error|string|nil handled drain failure preserved for the caller
 
----@param session table<string, unknown> settled generation session under verification
----@param parsed CacheBuilder.Requirement[] originally parsed requirements
+---@param answers table<string, unknown>[] snapshot root answers in requested order
 ---@param versionId string
 ---@return Errors.Error|nil scopeError a pending requirement names itself when settlement claims otherwise
-local function verifyOriginalRequirements(session, parsed, versionId)
-  -- Final requested-scope proof: confirm every originally parsed scope or
-  -- canonical job through the session's retained public answers at the
-  -- same urgency. This verifies retained intent without driving new work;
-  -- a count-balanced census never overrides a pending requirement.
-  local pendingScope = nil
-  local function confirm(label, call)
-    if pendingScope ~= nil then
-      return
-    end
-    local ok, ready, failure = pcall(call)
-    if not ok then
-      error(ready, 0)
-    end
-    if ready ~= true and failure == nil then
-      pendingScope = label
-    end
-  end
-  for _, entry in ipairs(parsed) do
-    if entry.scope ~= nil and entry.scope ~= "complete" then
-      local scope = assert(entry.scope, "parsed requirements are scopes or canonical jobs")
-      confirm(scope, function()
-        return session:requestMilestone(scope, "required")
-      end)
-    elseif entry.scope == "complete" then
-      confirm("complete", function()
-        return session:requestComplete("required")
-      end)
-      confirm("mon-summary:global", function()
-        return session:requestJob("mon-summary", "global", "required")
-      end)
-    else
-      local kind = assert(entry.kind, "parsed requirements are scopes or canonical jobs")
-      local key = assert(entry.key, "parsed requirements are scopes or canonical jobs")
-      confirm(kind .. ":" .. key, function()
-        return session:requestJob(kind, key, "required")
-      end)
+local function verifyOriginalRequirements(answers, versionId)
+  -- Final requested-scope proof from the read-only snapshot: every
+  -- originally requested root must answer ready. This observes retained
+  -- intent without driving new work; a count-balanced census never
+  -- overrides a pending requirement, and failed answers are never ready.
+  -- Failed roots surface through the disposition counts downstream, so
+  -- only a still-pending root fails proof here, exactly as before.
+  assert(type(answers) == "table", "original-root proof consumes snapshot answers")
+  for _, answer in ipairs(answers) do
+    assert(type(answer) == "table" and type(answer.label) == "string", "snapshot answers name their root")
+    if answer.state == "pending" then
+      return Errors.new(
+        "CACHE_PREPARATION_FAILED",
+        "cache preparation settled while " .. answer.label .. " was still pending; no invocation proof is issued",
+        { versionId = versionId, scope = answer.label }
+      )
     end
   end
-  if pendingScope == nil then
-    return nil
-  end
-  return Errors.new(
-    "CACHE_PREPARATION_FAILED",
-    "cache preparation settled while " .. pendingScope .. " was still pending; no invocation proof is issued",
-    { versionId = versionId, scope = pendingScope }
-  )
+  return nil
 end
 
 -- A drain failure is a handled command interruption when it is an already
@@ -817,6 +784,25 @@ local function collectVersionFacts(
   local pool = nil ---@type table<string, unknown>|nil
   local session = nil ---@type table<string, unknown>|nil
   local status = nil
+  -- Snapshot refs mirror the registered parsed refs; an exhaustive build
+  -- additionally proves the mon summary its complete scope implies.
+  local snapshotRefs = {}
+  for _, entry in ipairs(parsed) do
+    snapshotRefs[#snapshotRefs + 1] = entry
+  end
+  if exhaustive then
+    snapshotRefs[#snapshotRefs + 1] = { kind = "mon-summary", key = "global" }
+  end
+  -- One owned teardown for this acquisition lifecycle: every path
+  -- captures its facts first, then closes session and pool exactly once.
+  local function teardown()
+    if session ~= nil then
+      pcall(session.retire, session)
+    end
+    if pool ~= nil then
+      pcall(pool.shutdown, pool)
+    end
+  end
   local drainOk, drainResult = pcall(function()
     pool = CompilerPool.new({ mode = "batch", developmentRepositoryRoot = developmentRepositoryRoot })
     session = InteractiveCacheBuild.new({
@@ -845,8 +831,17 @@ local function collectVersionFacts(
   if not drainOk then
     local drainErr = drainResult
     if recognizedDrainFailure(pool, drainErr) then
+      -- The interrupted session still owns its retained facts: capture
+      -- the read-only snapshot before teardown so pending outcomes stay
+      -- pending raw facts for the single policy pass below.
       local outcomeList = {}
-      if session ~= nil and type(session.outcomes) == "function" then
+      if session ~= nil and type(session.completionSnapshot) == "function" then
+        local okSnap, snapshot = pcall(session.completionSnapshot, session, snapshotRefs)
+        if okSnap and type(snapshot) == "table" and type(snapshot.outcomes) == "table" then
+          outcomeList = snapshot.outcomes
+        end
+      end
+      if #outcomeList == 0 and session ~= nil and type(session.outcomes) == "function" then
         local okOut, list = pcall(session.outcomes, session)
         if okOut and type(list) == "table" then
           outcomeList = list
@@ -854,12 +849,7 @@ local function collectVersionFacts(
       end
       local dispositions, counts, failures, exclusions, sourceExclusions, timings =
         classifyExactOutcomes(outcomeList, pool, allowCompileExclusions)
-      if session ~= nil then
-        pcall(session.retire, session)
-      end
-      if pool ~= nil then
-        pcall(pool.shutdown, pool)
-      end
+      teardown()
       return {
         versionId = versionId,
         identity = identity,
@@ -882,25 +872,28 @@ local function collectVersionFacts(
         primaryError = drainErr,
       }
     end
-    if session ~= nil then
-      pcall(session.retire, session)
-    end
-    if pool ~= nil then
-      pcall(pool.shutdown, pool)
-    end
+    teardown()
     error(drainErr, 0)
   end
   status = assert(drainResult, "a settled session reports its status")
   assert(session ~= nil and pool ~= nil, "a settled scope owns its pool and session")
-  -- The command proves only its originally requested scope: a pending
-  -- requirement behind a settled census fails proof without inventing a job.
-  local scopeError = verifyOriginalRequirements(session, parsed, versionId)
-  local okOut, outcomeList = pcall(session.outcomes, session)
-  assert(okOut and type(outcomeList) == "table", "the generation session owns an exact outcome inventory")
+  -- The command proves only its originally requested scope: the snapshot
+  -- observes the retained answers and raw outcomes before teardown, and a
+  -- pending requirement behind a settled census fails proof without
+  -- inventing a job. Unknown capture faults clean up, then rethrow.
+  local okSnap, snapshot = pcall(session.completionSnapshot, session, snapshotRefs)
+  if not okSnap then
+    teardown()
+    error(snapshot, 0)
+  end
+  assert(
+    type(snapshot) == "table" and type(snapshot.answers) == "table" and type(snapshot.outcomes) == "table",
+    "the generation session owns its completion facts"
+  )
   local dispositions, counts, failures, exclusions, sourceExclusions, timings =
-    classifyExactOutcomes(outcomeList, pool, allowCompileExclusions)
-  pcall(session.retire, session)
-  pcall(pool.shutdown, pool)
+    classifyExactOutcomes(snapshot.outcomes, pool, allowCompileExclusions)
+  teardown()
+  local scopeError = verifyOriginalRequirements(snapshot.answers, versionId)
   local enumerationComplete = status.enumerationComplete == true
   local requestedReady = counts.failed == 0 and counts.cancelled == 0 and counts.excluded == 0
   if scopeError ~= nil then
@@ -1268,10 +1261,32 @@ end
 -- (true,false,true); primary/count/audit failure (false,false,false);
 -- attestation publication failure (true,false,false); newly attested
 -- success (true,true,true); non-attested targeted result (false,false,false).
+-- One shared completion meaning for both command flows: an already-current
+-- version stays complete without new publication; otherwise completeness
+-- needs the authorized attestation actually published. The flows differ only
+-- in return/error formatting and when publication is authorized, never in
+-- what complete/partial/current means.
 ---@param record CacheBuilder.VersionRecord
----@param attestationPublished boolean actual publication result
----@param publishError Errors.Error|string|nil actual publication failure
----@return CacheBuilder.VersionOutcome
+---@param attestationPublished boolean actual publication result for this version
+---@return boolean auditPassed
+---@return boolean attestationPublished
+---@return boolean complete
+local function interpretRecordCompletion(record, attestationPublished)
+  if record.isCurrent then
+    return record.auditPassed, false, true
+  end
+  if record.needsAttestation and attestationPublished then
+    return record.auditPassed, true, true
+  end
+  return record.auditPassed, false, false
+end
+
+-- One per-record outcome interpretation for the targeted path. Facts come
+-- from the collected record and the actual publication result, never from
+-- optimistic planned work. Footer combinations stay exact: current cache
+-- (true,false,true); primary/count/audit failure (false,false,false);
+-- attestation publication failure (true,false,false); newly attested
+-- success (true,true,true); non-attested targeted result (false,false,false).
 local function interpretTargetedOutcome(record, attestationPublished, publishError)
   if record.isCurrent then
     return { auditPassed = true, attestationPublished = false, complete = true, error = nil }
@@ -1317,7 +1332,8 @@ local function interpretTargetedOutcome(record, attestationPublished, publishErr
     end
     return { auditPassed = true, attestationPublished = false, complete = false, error = failure }
   end
-  return { auditPassed = false, attestationPublished = false, complete = false, error = nil }
+  local auditPassed, published, complete = interpretRecordCompletion(record, attestationPublished)
+  return { auditPassed = auditPassed, attestationPublished = published, complete = complete, error = nil }
 end
 
 -- One per-record outcome interpretation for the batch path. The collection
@@ -1328,18 +1344,8 @@ end
 ---@param attestationPublished boolean actual publication result for this version
 ---@return CacheBuilder.VersionOutcome
 local function interpretBatchOutcome(record, attestationPublished)
-  if record.isCurrent then
-    return { auditPassed = record.auditPassed, attestationPublished = false, complete = true, error = nil }
-  end
-  if record.needsAttestation then
-    return {
-      auditPassed = record.auditPassed,
-      attestationPublished = attestationPublished,
-      complete = attestationPublished,
-      error = nil,
-    }
-  end
-  return { auditPassed = record.auditPassed, attestationPublished = false, complete = false, error = nil }
+  local auditPassed, published, complete = interpretRecordCompletion(record, attestationPublished)
+  return { auditPassed = auditPassed, attestationPublished = published, complete = complete, error = nil }
 end
 
 -- One targeted evidence/cleanup finalization: build the footer once from the
@@ -1649,66 +1655,53 @@ function CacheBuilder.buildVersions(versionIds, options)
   for _, record in ipairs(records) do
     exclusionCount = exclusionCount + record.counts.excluded
   end
-  if not allOk then
-    local emitErr = emitBatchEvidence(profileHandle, records, nil)
-    local closeErr = closeShared()
-    if emitErr ~= nil then
-      log("build-cache: execution evidence cannot be written: " .. tostring(emitErr))
-    end
-    if closeErr ~= nil then
-      log("build-cache: execution evidence cannot be closed: " .. tostring(closeErr))
-    end
-    if emitErr ~= nil or closeErr ~= nil then
-      return nil, "cache preparation failed"
-    end
-    if exclusionCount > 0 and not options.allowCompileExclusions then
-      log("build-cache: compile exclusions remain; rerun with --allow-compile-exclusions to accept them")
-    end
-    return nil, "cache preparation failed"
-  end
-  ---@type table<string, unknown>[] pending
-  local pending = {}
-  for _, record in ipairs(records) do
-    if record.needsAttestation and not record.isCurrent then
-      pending[#pending + 1] = record
-    end
-  end
-  ---@type table<string, boolean> publishedOk
-  local publishedOk = {}
-  local publishFailed = false
-  for _, record in ipairs(pending) do
-    if publishFailed then
-      publishedOk[record.versionId] = false
-    else
-      local ok, err = pcall(DerivedCacheState.publish, assert(record.cacheFs), record.identity)
-      if ok then
-        publishedOk[record.versionId] = true
-      else
-        publishFailed = true
-        publishedOk[record.versionId] = false
-        log("build-cache: " .. record.versionId .. " failed: " .. Errors.format(err))
+  -- One common evidence tail after the collection/publication decision:
+  -- collection failure publishes nothing new, a later publication failure
+  -- keeps the earlier effects truthfully recorded, and only a clean pass
+  -- attests. The actual per-version publication map is preserved in every
+  -- emitted footer; earlier successful effects stay reported.
+  local publishedArg = nil ---@type table<string, boolean>|nil
+  local tailFailed = not allOk
+  if allOk then
+    ---@type table<string, boolean> publishedOk
+    local publishedOk = {}
+    local publishFailed = false
+    for _, record in ipairs(records) do
+      if record.needsAttestation and not record.isCurrent then
+        if publishFailed then
+          publishedOk[record.versionId] = false
+        else
+          local ok, err = pcall(DerivedCacheState.publish, assert(record.cacheFs), record.identity)
+          if ok then
+            publishedOk[record.versionId] = true
+          else
+            publishFailed = true
+            publishedOk[record.versionId] = false
+            log("build-cache: " .. record.versionId .. " failed: " .. Errors.format(err))
+          end
+        end
       end
     end
-  end
-  if publishFailed then
-    local emitErr = emitBatchEvidence(profileHandle, records, publishedOk)
-    local closeErr = closeShared()
-    if emitErr ~= nil then
-      log("build-cache: execution evidence cannot be written: " .. tostring(emitErr))
+    if publishFailed then
+      tailFailed = true
     end
-    if closeErr ~= nil then
-      log("build-cache: execution evidence cannot be closed: " .. tostring(closeErr))
-    end
-    return nil, "cache preparation failed"
+    publishedArg = publishedOk
   end
-  local emitErr = emitBatchEvidence(profileHandle, records, publishedOk)
+  local emitErr = emitBatchEvidence(profileHandle, records, publishedArg)
   local closeErr = closeShared()
   if emitErr ~= nil then
     log("build-cache: execution evidence cannot be written: " .. tostring(emitErr))
-    return nil, "cache preparation failed"
   end
   if closeErr ~= nil then
     log("build-cache: execution evidence cannot be closed: " .. tostring(closeErr))
+  end
+  if emitErr ~= nil or closeErr ~= nil then
+    return nil, "cache preparation failed"
+  end
+  if tailFailed then
+    if not allOk and exclusionCount > 0 and not options.allowCompileExclusions then
+      log("build-cache: compile exclusions remain; rerun with --allow-compile-exclusions to accept them")
+    end
     return nil, "cache preparation failed"
   end
   local complete = exclusionCount == 0

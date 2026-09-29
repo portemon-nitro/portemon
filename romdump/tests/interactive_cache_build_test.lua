@@ -2466,4 +2466,64 @@ function T.status_settles_each_scope_from_its_own_retained_evidence()
   Assert.isTrue(retired.settled, "retirement settles the session")
 end
 
+-- Final command observation cannot admit work: the completion snapshot
+-- answers already-parsed requirement refs from retained state only. An
+-- unregistered scope or job stays pending without registration, and the
+-- captured rows survive retirement for the single command-policy pass.
+function T.completion_snapshot_observes_without_admitting_work()
+  local backend = FakeCache.new()
+  local pool = retryCapablePool()
+  local session, _ = isolatedSession("snapshot-observation-generation", pool, backend)
+  session:requestMilestone("bootstrap", "required")
+  pool.states["field-font:global"] = "ready"
+  for _ = 1, 4 do
+    session:update()
+  end
+  local ready, failure = session:requestMilestone("bootstrap", "required")
+  Assert.isTrue(ready, "bootstrap is ready before the snapshot")
+  Assert.isNil(failure, "bootstrap reports no failure before the snapshot")
+  local refs = {
+    { scope = "bootstrap" },
+    { scope = "field-runtime" },
+    { kind = "audio-bank", key = "183" },
+  }
+  local function admission()
+    local keys = {}
+    for jobKey in pairs(session.byKey) do
+      keys[#keys + 1] = jobKey
+    end
+    table.sort(keys)
+    local milestones = {}
+    for name in pairs(session.milestones) do
+      milestones[#milestones + 1] = name
+    end
+    table.sort(milestones)
+    return {
+      interest = table.concat(keys, ","),
+      milestones = table.concat(milestones, ","),
+      submitted = #pool.submitted,
+      enrollCursor = session.enrollCursor ~= nil,
+    }
+  end
+  local before = admission()
+  local snapshot = session:completionSnapshot(refs)
+  local after = admission()
+  Assert.deepEqual(after, before, "observing the snapshot admits no work")
+  Assert.isNil(session.byKey["audio-bank:183"], "an unregistered job stays unregistered")
+  Assert.isNil(session.milestones["field-runtime"], "an unrequested scope stays unrequested")
+  Assert.equal(#snapshot.answers, 3, "the snapshot answers every ref in input order")
+  Assert.equal(snapshot.answers[1].label, "bootstrap", "a scope answer names its scope")
+  Assert.equal(snapshot.answers[1].state, "ready", "the requested ready root stays ready")
+  Assert.equal(snapshot.answers[2].label, "field-runtime", "an unrequested scope is still named")
+  Assert.equal(snapshot.answers[2].state, "pending", "an unrequested scope stays pending")
+  Assert.equal(snapshot.answers[3].label, "audio-bank:183", "a job answer names its canonical identity")
+  Assert.equal(snapshot.answers[3].state, "pending", "an unregistered job stays pending")
+  Assert.isTrue(#snapshot.outcomes > 0, "the snapshot carries the raw outcome rows")
+  Assert.equal(snapshot.generationId, "snapshot-observation-generation", "the snapshot carries its identity")
+  Assert.equal(snapshot.epoch, 1, "the snapshot carries its epoch")
+  session:retire()
+  Assert.equal(snapshot.answers[1].state, "ready", "captured answers survive retirement")
+  Assert.isTrue(#snapshot.outcomes > 0, "captured outcomes survive retirement")
+end
+
 return { metadata = { capabilities = {} }, tests = T }

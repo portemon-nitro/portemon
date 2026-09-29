@@ -336,6 +336,85 @@ local function makeSession(pool, identity)
     end)
     return list
   end
+  -- Read-only finalization observation mirroring the production snapshot:
+  -- retained answers for parsed refs without registering unrequested
+  -- scopes or jobs. Rows are fresh values that survive retire().
+  function session:_snapshotScope(name)
+    if name == "complete" then
+      if self.completeRequested == nil then
+        return { label = name, state = "pending", failure = nil }
+      end
+      for _, jobKey in ipairs(self.requested) do
+        if self:_failFor(jobKey) == nil and not env.excludedKeys[jobKey] then
+          local pending = env.pendingKeys ~= nil and env.pendingKeys[jobKey]
+          if pending or not self.completed[jobKey] then
+            return { label = name, state = "pending", failure = nil }
+          end
+        end
+      end
+      return { label = name, state = "ready", failure = nil }
+    end
+    local members = env.milestones[name]
+    if members == nil then
+      return { label = name, state = "pending", failure = nil }
+    end
+    local failures = {}
+    local ready = true
+    for _, jobKey in ipairs(members) do
+      if not self.requestedSet[jobKey] then
+        ready = false
+      else
+        local ok, failure = self:_answer(jobKey)
+        if failure ~= nil then
+          failures[#failures + 1] = failure
+        end
+        if not ok then
+          ready = false
+        end
+      end
+    end
+    if #failures > 0 then
+      return { label = name, state = "failed", failure = failures[1] }
+    end
+    if not ready then
+      return { label = name, state = "pending", failure = nil }
+    end
+    return { label = name, state = "ready", failure = nil }
+  end
+  function session:completionSnapshot(refs)
+    assert(not self.retired, "completion facts are captured before session retirement")
+    assert(type(refs) == "table", "completion facts observe parsed requirement refs")
+    local answers = {}
+    for _, ref in ipairs(refs) do
+      if ref.scope ~= nil then
+        answers[#answers + 1] = self:_snapshotScope(ref.scope)
+      else
+        local jobKey = ref.kind .. ":" .. ref.key
+        if not self.requestedSet[jobKey] then
+          answers[#answers + 1] = { label = jobKey, state = "pending", failure = nil }
+        else
+          local ready, failure = self:_answer(jobKey)
+          if ready then
+            answers[#answers + 1] = { label = jobKey, state = "ready", failure = nil }
+          elseif failure ~= nil then
+            answers[#answers + 1] = { label = jobKey, state = "failed", failure = failure }
+          else
+            answers[#answers + 1] = { label = jobKey, state = "pending", failure = nil }
+          end
+        end
+      end
+    end
+    return {
+      generationId = env.identity.generationId,
+      epoch = 1,
+      retired = false,
+      settled = self:status().settled,
+      enumerationComplete = true,
+      completeExhausted = false,
+      answers = answers,
+      outcomes = self:outcomes(),
+    }
+  end
   function session:retire()
     self.retired = true
     env.retires = env.retires + 1

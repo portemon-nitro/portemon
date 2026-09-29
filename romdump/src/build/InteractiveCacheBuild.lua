@@ -2979,6 +2979,76 @@ function InteractiveCacheBuild:outcomes()
   return list
 end
 
+---@param label string scope name or canonical kind:key identity
+---@param ready boolean retained readiness
+---@param failure string|nil retained failure
+---@return table<string, unknown> fresh value-only root answer
+local function snapshotAnswerRow(label, ready, failure)
+  if ready then
+    return { label = label, state = "ready", failure = nil }
+  end
+  if failure ~= nil then
+    return { label = label, state = "failed", failure = failure }
+  end
+  return { label = label, state = "pending", failure = nil }
+end
+
+---@param ref table<string, unknown> already-parsed immutable requirement ref with scope or kind/key
+---@return table<string, unknown> fresh value-only root answer in the same vocabulary as the request tails
+function InteractiveCacheBuild:_snapshotAnswer(ref)
+  assert(type(ref) == "table", "completion refs are parsed requirement records")
+  if ref.scope ~= nil then
+    assert(type(ref.scope) == "string", "completion scope refs name their scope")
+    if ref.scope == "complete" then
+      local ready, failure = self:_completeAnswer()
+      return snapshotAnswerRow(ref.scope, ready, failure)
+    end
+    local ready, failure = self:_retainedMilestoneAnswer(ref.scope)
+    return snapshotAnswerRow(ref.scope, ready, failure)
+  end
+  local kind = assert(ref.kind, "completion job refs carry their kind")
+  local key = assert(ref.key, "completion job refs carry their key")
+  local label = kind .. ":" .. key
+  -- Pure lookup: an unregistered requirement stays pending and must not
+  -- be registered by observing it.
+  local entry = self.byKey[ArtifactJobs.jobKey(kind, key)]
+  if entry == nil then
+    return snapshotAnswerRow(label, false, nil)
+  end
+  local ready, failure = self:_answer(entry)
+  return snapshotAnswerRow(label, ready, failure)
+end
+
+---@param requirements table<string, unknown>[] already-parsed immutable requirement refs from the builder
+---@return table<string, unknown> fresh read-only completion facts for the one command-policy pass
+function InteractiveCacheBuild:completionSnapshot(requirements)
+  -- Read-only command-finalization boundary over retained facts: answers
+  -- every ref from the same observation tails the public request methods
+  -- use after registration, plus the sorted unique raw outcome rows.
+  -- No request, enqueue, promotion, cache/source read, validator
+  -- invocation, pool polling, update, audit or publication happens here.
+  -- Capture before retire clears the state: every returned row is a fresh
+  -- value that stays valid after retirement and never aliases mutable
+  -- session interest. A snapshot may describe an interrupted session;
+  -- pending outcomes stay pending raw facts for the builder to classify.
+  assert(not self.retired, "completion facts are captured before session retirement")
+  assert(type(requirements) == "table", "completion facts observe parsed requirement refs")
+  local answers = {}
+  for _, ref in ipairs(requirements) do
+    answers[#answers + 1] = self:_snapshotAnswer(ref)
+  end
+  return {
+    generationId = self.generationId,
+    epoch = self.epoch,
+    retired = self.retired,
+    settled = self:status().settled,
+    enumerationComplete = self.sourceLoaded and self.pagesKnown,
+    completeExhausted = self.completeExhausted,
+    answers = answers,
+    outcomes = self:outcomes(),
+  }
+end
+
 ---@return boolean retained runnable local planning remains; no cache IO, pool polling, or scans
 function InteractiveCacheBuild:hasRunnablePlanning()
   return self.planningPending

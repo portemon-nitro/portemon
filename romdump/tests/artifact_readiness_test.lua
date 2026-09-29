@@ -1513,6 +1513,36 @@ local module = {
           end)
           return list
         end
+        -- Read-only finalization observation: this stub completes every
+        -- registered job, so requested refs answer ready without
+        -- registering anything new; an unrequested complete scope stays
+        -- pending.
+        function session:completionSnapshot(refs)
+          assert(not self.retired, "completion facts are captured before session retirement")
+          assert(type(refs) == "table", "completion facts observe parsed requirement refs")
+          local answers = {}
+          for _, ref in ipairs(refs) do
+            if ref.scope ~= nil then
+              if ref.scope == "complete" and self.completeRequested == nil then
+                answers[#answers + 1] = { label = ref.scope, state = "pending", failure = nil }
+              else
+                answers[#answers + 1] = { label = ref.scope, state = "ready", failure = nil }
+              end
+            else
+              answers[#answers + 1] = { label = ref.kind .. ":" .. ref.key, state = "ready", failure = nil }
+            end
+          end
+          return {
+            generationId = "readiness-generation",
+            epoch = 1,
+            retired = false,
+            settled = true,
+            enumerationComplete = true,
+            completeExhausted = self.completeRequested ~= nil,
+            answers = answers,
+            outcomes = session:outcomes(),
+          }
+        end
         return session
       end,
     }
