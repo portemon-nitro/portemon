@@ -9,9 +9,7 @@
 -- existing semantic events and discards pointer content, while a true
 -- outside press maps to the terminal dismiss edge. A per-case override
 -- replaces the whole render/input pair, never a mode token.
--- Resolvers require the measured context
--- production sessions supply; helper-derived surface selections fill the
--- remaining fields.
+-- Resolvers require the complete context the owning session supplies.
 
 local ApplicationLayout = require("game.hgss.src.ui.ApplicationLayout")
 
@@ -81,21 +79,6 @@ end
 -- Completes a measured production context with helper-derived surface
 -- selections. The effective nativeLike entry (including an override) backs
 -- the below-1x framed fallback.
----@param context ApplicationLayout.Context
----@return ApplicationLayout.Context the production context with helper-derived selections
-local function completeContext(context)
-  assert(type(context) == "table", "a resolver needs its context")
-  local measurement = assert(context.measurement, "a resolver needs its display measurement")
-  local selection = ApplicationLayout.selectSurfaces(measurement)
-  return {
-    measurement = measurement,
-    configuration = context.configuration,
-    primary = context.primary or selection.primary,
-    secondary = context.secondary or selection.secondary,
-    nativeLikeInterface = context.nativeLikeInterface or TrainerCardInterface.fullscreen,
-  }
-end
-
 ---@return { width: number, height: number } the canonical card content descriptor
 local function cardContent()
   return { width = NATIVE.width, height = NATIVE.height }
@@ -111,9 +94,8 @@ end
 ---@return ApplicationPlan
 function TrainerCardInterface.fullscreen(context, view)
   local _ = view
-  local complete = completeContext(context)
   local geometry =
-    ApplicationLayout.coverOrFrame(complete, NATIVE, { maxOverdraw = FULL_CROP, protectedRect = PROTECTED })
+    ApplicationLayout.coverOrFrame(context, NATIVE, { maxOverdraw = FULL_CROP, protectedRect = PROTECTED })
   local placement = geometry.placements[NATIVE.id]
   if placement == nil then
     return inactivePlan()
@@ -136,10 +118,9 @@ end
 ---@param view table<string, unknown>
 ---@return ApplicationPlan
 function TrainerCardInterface.framed(context, view)
-  local complete = completeContext(context)
-  local geometry = ApplicationLayout.framed(complete, NATIVE, {})
+  local geometry = ApplicationLayout.framed(context, NATIVE, {})
   if geometry == nil then
-    return complete.nativeLikeInterface(complete, view)
+    return context.nativeLikeInterface(context, view)
   end
   local placement = geometry.placements[NATIVE.id]
   if placement == nil then
@@ -155,8 +136,6 @@ function TrainerCardInterface.framed(context, view)
   }
 end
 
-local CASE_KEYS = { "dualDisplay", "nativeLike", "wide", "tall" }
-
 -- The four resolver functions behind one case per display configuration:
 -- dual and native-like own their fullscreen region, wide and tall center
 -- the canonical pane in a static frame.
@@ -165,34 +144,17 @@ TrainerCardInterface.nativeLike = TrainerCardInterface.fullscreen
 TrainerCardInterface.wide = TrainerCardInterface.framed
 TrainerCardInterface.tall = TrainerCardInterface.framed
 
--- Merges an optional per-case override into the complete default set:
--- only the four function fields merge, unknown keys and non-functions
--- fail at composition. The gameplay controller instance never changes.
----@param overrides table<string, unknown>?
+-- The bound default resolver set: the same four stable functions above.
+-- A per-case override replaces entries centrally at session composition;
+-- the gameplay controller instance never changes.
 ---@return table<string, fun(context: ApplicationLayout.Context, view: table<string, unknown>): ApplicationPlan>
-function TrainerCardInterface.withOverrides(overrides)
-  local set = {
+function TrainerCardInterface.defaults()
+  return {
     dualDisplay = TrainerCardInterface.fullscreen,
     nativeLike = TrainerCardInterface.fullscreen,
     wide = TrainerCardInterface.framed,
     tall = TrainerCardInterface.framed,
   }
-  if overrides ~= nil then
-    assert(type(overrides) == "table", "the card overrides must be a record")
-    for key, fn in pairs(overrides) do
-      local known = false
-      for _, case in ipairs(CASE_KEYS) do
-        if key == case then
-          known = true
-          break
-        end
-      end
-      assert(known, "unknown card override case " .. tostring(key))
-      assert(type(fn) == "function", "the card override for " .. tostring(key) .. " must be a function")
-      set[key] = fn
-    end
-  end
-  return set
 end
 
 return TrainerCardInterface

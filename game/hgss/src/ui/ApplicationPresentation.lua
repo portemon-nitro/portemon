@@ -97,24 +97,41 @@ local function assertValidPlan(plan)
   assert(untyped.coverage == nil, "the renamed fade coverage leaves no legacy coverage field")
 end
 
----@param interfaces table<string, unknown>
+---@param key string
+---@param what string
+local function assertKnownCase(key, what)
+  for _, case in ipairs(CASE_KEYS) do
+    if key == case then
+      return
+    end
+  end
+  assert(false, "unknown " .. what .. " case " .. tostring(key))
+end
+
+-- Composes the one effective resolver set behind a session: the bound
+-- screen defaults are copied, then an optional per-case override replaces
+-- whole render/input pairs. Neither input table is mutated, and a bad key
+-- or non-function fails before the session publishes anything.
+---@param defaults table<string, fun(context: ApplicationLayout.Context, view: table<string, unknown>): ApplicationPlan> the bound screen resolvers
+---@param overrides table<string, fun(context: ApplicationLayout.Context, view: table<string, unknown>): ApplicationPlan>? optional per-case replacements
 ---@return ApplicationPresentation
-function ApplicationPresentation.new(interfaces)
-  assert(type(interfaces) == "table", "the session requires its interface set")
+function ApplicationPresentation.new(defaults, overrides)
+  assert(type(defaults) == "table", "the session requires its interface set")
   local copied = {}
   for _, key in ipairs(CASE_KEYS) do
-    assert(type(interfaces[key]) == "function", "the interface set needs its " .. key .. " resolver")
-    copied[key] = interfaces[key]
+    assert(type(defaults[key]) == "function", "the interface set needs its " .. key .. " resolver")
+    copied[key] = defaults[key]
   end
-  for key in pairs(interfaces) do
-    local known = false
-    for _, case in ipairs(CASE_KEYS) do
-      if key == case then
-        known = true
-        break
-      end
+  for key in pairs(defaults) do
+    assertKnownCase(key, "interface")
+  end
+  if overrides ~= nil then
+    assert(type(overrides) == "table", "the interface overrides must be a record")
+    for key, fn in pairs(overrides) do
+      assertKnownCase(key, "interface override")
+      assert(type(fn) == "function", "the interface override for " .. tostring(key) .. " must be a function")
+      copied[key] = fn
     end
-    assert(known, "unknown interface case " .. tostring(key))
   end
   return setmetatable({
     _interfaces = copied,

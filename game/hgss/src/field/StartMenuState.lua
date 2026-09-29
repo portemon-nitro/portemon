@@ -38,7 +38,7 @@ function StartMenuState.new(opts)
     effect = opts.effect,
   })
   local built, sessionOrError = pcall(function()
-    return ApplicationPresentation.new(StartMenuInterface.withOverrides(opts.overrides))
+    return ApplicationPresentation.new(StartMenuInterface.defaults(), opts.overrides)
   end)
   if not built then
     controller:dispose()

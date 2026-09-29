@@ -8,9 +8,8 @@
 -- cover of its own physical display. A pair that cannot fit 1x falls back
 -- to the nativeLike case. Underfilled panes carry fitted chrome: one
 -- complete outer frame around the pair envelope, or one per underfilled
--- physical pane. Resolvers require the
--- measured context production sessions supply; helper-derived surface
--- selections fill the remaining fields.
+-- physical pane. Resolvers require the complete context the owning
+-- session supplies.
 
 local ApplicationLayout = require("game.hgss.src.ui.ApplicationLayout")
 local BagLayout = require("libs.hgss.src.ui.BagLayout")
@@ -81,30 +80,15 @@ local function bagPlan(manifest, heroVisible, panes, frames)
   }
 end
 
+-- Binds the validated manifest and returns the default resolver set: the
+-- manifest rides the resolver closures; the effective nativeLike entry
+-- backs the pair fallback below.
 ---@param manifest table<string, unknown> the validated bag presentation manifest
 ---@return table<string, fun(context: ApplicationLayout.Context, view: table<string, unknown>): ApplicationPlan>
-local function withManifest(manifest)
+function BagInterface.defaults(manifest)
   assert(type(manifest) == "table", "the bag interface requires its validated manifest")
 
   local set = {}
-
-  -- Completes a measured production context with helper-derived surface
-  -- selections. The manifest rides this closure; the effective nativeLike
-  -- entry (including an override) backs the pair fallback below.
-  ---@param context ApplicationLayout.Context
-  ---@return ApplicationLayout.Context the production context with helper-derived selections
-  local function completeContext(context)
-    assert(type(context) == "table", "a resolver needs its context")
-    local measurement = assert(context.measurement, "a resolver needs its display measurement")
-    local selection = ApplicationLayout.selectSurfaces(measurement)
-    return {
-      measurement = measurement,
-      configuration = context.configuration,
-      primary = context.primary or selection.primary,
-      secondary = context.secondary or selection.secondary,
-      nativeLikeInterface = context.nativeLikeInterface or set.nativeLike,
-    }
-  end
 
   -- DualDisplay: hero on the world surface, interaction on auxiliary. The
   -- hero may use the default four-edge crop budget only to cover its own
@@ -115,8 +99,7 @@ local function withManifest(manifest)
   ---@return ApplicationPlan
   local function dualDisplay(context, view)
     local _ = view
-    local complete = completeContext(context)
-    local geometry = ApplicationLayout.nativeDual(complete, HERO_NATIVE, INTERACTION_NATIVE, {
+    local geometry = ApplicationLayout.nativeDual(context, HERO_NATIVE, INTERACTION_NATIVE, {
       lower = { maxOverdraw = ZERO_CROP },
     })
     local hero = geometry.placements[HERO_NATIVE.id]
@@ -139,8 +122,7 @@ local function withManifest(manifest)
   ---@return ApplicationPlan
   local function nativeLike(context, view)
     local _ = view
-    local complete = completeContext(context)
-    local geometry = ApplicationLayout.coverOrFrame(complete, INTERACTION_NATIVE, { maxOverdraw = ZERO_CROP })
+    local geometry = ApplicationLayout.coverOrFrame(context, INTERACTION_NATIVE, { maxOverdraw = ZERO_CROP })
     local interaction = geometry.placements[INTERACTION_NATIVE.id]
     if interaction == nil then
       return inactivePlan()
@@ -159,10 +141,9 @@ local function withManifest(manifest)
   ---@param view table<string, unknown>
   ---@return ApplicationPlan
   local function wide(context, view)
-    local complete = completeContext(context)
-    local geometry = ApplicationLayout.sideBySide(complete, HERO_NATIVE, INTERACTION_NATIVE)
+    local geometry = ApplicationLayout.sideBySide(context, HERO_NATIVE, INTERACTION_NATIVE)
     if geometry == nil then
-      return complete.nativeLikeInterface(complete, view)
+      return context.nativeLikeInterface(context, view)
     end
     local hero = geometry.placements[HERO_NATIVE.id]
     local interaction = geometry.placements[INTERACTION_NATIVE.id]
@@ -182,10 +163,9 @@ local function withManifest(manifest)
   ---@param view table<string, unknown>
   ---@return ApplicationPlan
   local function tall(context, view)
-    local complete = completeContext(context)
-    local geometry = ApplicationLayout.stacked(complete, HERO_NATIVE, INTERACTION_NATIVE)
+    local geometry = ApplicationLayout.stacked(context, HERO_NATIVE, INTERACTION_NATIVE)
     if geometry == nil then
-      return complete.nativeLikeInterface(complete, view)
+      return context.nativeLikeInterface(context, view)
     end
     local hero = geometry.placements[HERO_NATIVE.id]
     local interaction = geometry.placements[INTERACTION_NATIVE.id]
@@ -201,35 +181,6 @@ local function withManifest(manifest)
   set.dualDisplay = dualDisplay
   set.wide = wide
   set.tall = tall
-  return set
-end
-
-local CASE_KEYS = { "dualDisplay", "nativeLike", "wide", "tall" }
-
--- Merges an optional per-case override into the complete default set bound
--- to the validated manifest: only the four function fields merge, unknown
--- keys and non-functions fail at composition. The gameplay controller
--- instance never changes.
----@param overrides table<string, unknown>?
----@param manifest table<string, unknown> the validated bag presentation manifest
----@return table<string, fun(context: ApplicationLayout.Context, view: table<string, unknown>): ApplicationPlan>
-function BagInterface.withOverrides(overrides, manifest)
-  local set = withManifest(manifest)
-  if overrides ~= nil then
-    assert(type(overrides) == "table", "the bag overrides must be a record")
-    for key, fn in pairs(overrides) do
-      local known = false
-      for _, case in ipairs(CASE_KEYS) do
-        if key == case then
-          known = true
-          break
-        end
-      end
-      assert(known, "unknown bag override case " .. tostring(key))
-      assert(type(fn) == "function", "the bag override for " .. tostring(key) .. " must be a function")
-      set[key] = fn
-    end
-  end
   return set
 end
 

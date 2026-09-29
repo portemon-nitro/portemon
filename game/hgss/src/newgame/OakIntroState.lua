@@ -101,7 +101,7 @@ local DialoguePresentationLayout = require("libs.hgss.src.ui.DialoguePresentatio
 ---@field textRenderer table<string, unknown>
 ---@field choiceText table<string, unknown>
 ---@field displayContext table<string, unknown>?
----@field namingOverrides table<string, table<string, unknown>>?
+---@field namingOverrides table<string, unknown>?
 ---@field dialogueController table<string, unknown>?
 ---@field dialogueRenderer table<string, unknown>?
 ---@field dialogueText table<string, unknown>?
@@ -136,7 +136,7 @@ local DialoguePresentationLayout = require("libs.hgss.src.ui.DialoguePresentatio
 ---@field dialogueCursorPlacement { x: number, y: number, width: number, height: number }?
 ---@field disposed boolean
 ---@field _displayContext DisplayContext
----@field _namingOverrides table<string, table<string, unknown>>?
+---@field _namingOverrides table<string, unknown>?
 ---@field _namingSession ApplicationPresentation? the per-entry naming session beside the profile controller
 ---@field _blackHandoffPresented boolean
 ---@field _frozenStatus table<string, unknown>?
@@ -457,7 +457,7 @@ function OakIntroState:_ensureNamingSession()
   if self._namingSession ~= nil then
     return self._namingSession
   end
-  local session = ApplicationPresentation.new(NamingInterface.withOverrides(self._namingOverrides))
+  local session = ApplicationPresentation.new(NamingInterface.defaults(), self._namingOverrides)
   self._namingSession = session
   return session
 end

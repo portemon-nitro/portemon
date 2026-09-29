@@ -9,6 +9,7 @@
 local Assert = require("tests.support.Assert")
 local AcceptanceHarness = require("tests.acceptance.support.AcceptanceHarness")
 local ApplicationLayout = require("game.hgss.src.ui.ApplicationLayout")
+local ApplicationPresentation = require("game.hgss.src.ui.ApplicationPresentation")
 local BagCache = require("libs.assets.src.BagCache")
 local CacheFs = require("libs.storage.src.CacheFs")
 local FakeAudioOutput = require("tests.acceptance.support.FakeAudioOutput")
@@ -1279,7 +1280,7 @@ end
 -- publishes a partial interface.
 function T.tests.unknown_override_case_key_fails_without_publication()
   local ok, err = pcall(function()
-    return StartMenuInterface.withOverrides({
+    return ApplicationPresentation.new(StartMenuInterface.defaults(), {
       wide = StartMenuInterface.framed,
       bogus = StartMenuInterface.framed,
     })

@@ -216,7 +216,7 @@ function StarterChoiceState:open(cursor, candidates)
   })
   presentation:reset()
   self._presentation = presentation
-  local session = ApplicationPresentation.new(StarterChoiceInterface.withOverrides(self._overrides))
+  local session = ApplicationPresentation.new(StarterChoiceInterface.defaults(), self._overrides)
   self._session = session
   local resolveOk, resolveErr = pcall(function()
     session:resolve(self:_measured(), self:_sessionView())

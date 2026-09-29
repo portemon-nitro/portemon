@@ -46,7 +46,7 @@ function TrainerCardScreenState.new(opts)
       playTimeSeconds = opts.playTimeSeconds,
       effect = opts.effect,
     })
-    session = ApplicationPresentation.new(TrainerCardInterface.withOverrides(opts.overrides))
+    session = ApplicationPresentation.new(TrainerCardInterface.defaults(), opts.overrides)
   end)
   if not built then
     if session ~= nil then

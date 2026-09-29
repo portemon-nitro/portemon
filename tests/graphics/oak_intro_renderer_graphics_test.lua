@@ -820,7 +820,7 @@ end
 -- path under test is the production one. The child stays canonical; the
 -- fake records raw draw coordinates, so canvas-local assertions hold.
 local function attachNamingPlan(edit)
-  local interfaces = NamingInterface.withOverrides(nil)
+  local interfaces = NamingInterface.defaults()
   local measured = {
     width = 160,
     height = 120,

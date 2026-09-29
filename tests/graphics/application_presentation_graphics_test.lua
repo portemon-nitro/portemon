@@ -40,7 +40,7 @@ local function sessionFor(interfaces)
 end
 
 local function startMenuSession()
-  return sessionFor(StartMenuInterface.withOverrides(nil))
+  return sessionFor(StartMenuInterface.defaults())
 end
 
 local function paintBlock(color)

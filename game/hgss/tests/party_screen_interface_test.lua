@@ -139,8 +139,13 @@ local function sourceManifest()
   }
 end
 
-local function partyInterface(overrides)
-  return PartyScreenInterface.withOverrides(overrides, sourceManifest())
+local function partyInterface()
+  return PartyScreenInterface.defaults(sourceManifest())
+end
+
+local function partySession(overrides)
+  local sessionModule = require("game.hgss.src.ui.ApplicationPresentation")
+  return sessionModule.new(PartyScreenInterface.defaults(sourceManifest()), overrides)
 end
 
 local function singlePane(plan, what)
@@ -314,23 +319,23 @@ function T.case_override_replaces_one_complete_interface()
   local function customWide(_, _)
     return replacement
   end
-  local interfaces = partyInterface({ wide = customWide })
-  local plan = interfaces.wide(contextFor(singleDisplay(1280, 720), "wide", interfaces), view(true))
+  local session = partySession({ wide = customWide })
+  local plan = session:resolve(singleDisplay(1280, 720), view(true))
   Assert.isTrue(plan == replacement, "the override supplies the whole interface")
-  local native = interfaces.nativeLike(contextFor(singleDisplay(640, 480), "nativeLike", interfaces), view(true))
+  local native = session:resolve(singleDisplay(640, 480), view(true))
   Assert.equal(native.inputKey, "party", "other cases keep their default interface")
 end
 
 function T.unknown_override_cases_and_non_functions_fail()
   Assert.throws(function()
-    partyInterface({
+    partySession({
       overlay = function(_, _)
         return nil
       end,
     })
   end, "unknown override cases fail at composition")
   Assert.throws(function()
-    partyInterface({ wide = "framed" })
+    partySession({ wide = "framed" })
   end, "non-function overrides fail at composition")
 end
 

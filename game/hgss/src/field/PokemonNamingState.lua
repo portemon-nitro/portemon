@@ -74,7 +74,7 @@ function PokemonNamingState:open(spec)
     charmap = self._charmap,
     subject = subject,
   })
-  local session = ApplicationPresentation.new(NamingInterface.withOverrides(self._overrides))
+  local session = ApplicationPresentation.new(NamingInterface.defaults(), self._overrides)
   self._controller = controller
   self._session = session
   self._presentationReady = true

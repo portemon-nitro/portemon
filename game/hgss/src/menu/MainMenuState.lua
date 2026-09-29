@@ -190,7 +190,7 @@ function MainMenuState.new(options)
   local overrides = options.overrides --[[@as table<string, unknown>|nil]]
   local session
   local built, buildErr = pcall(function()
-    session = ApplicationPresentation.new(MainMenuInterface.withOverrides(overrides))
+    session = ApplicationPresentation.new(MainMenuInterface.defaults(), overrides)
   end)
   if not built then
     error(buildErr, 0)

@@ -5,7 +5,8 @@
 -- from the full canonical logical region, never the visible clip; the child
 -- itself carries no placement or scale. Input maps canonical pointer hits
 -- to the existing controller entrypoints; activation stays on downs,
--- cancellation stays mute.
+-- cancellation stays mute. Resolvers require the complete context the
+-- owning session supplies.
 
 local ApplicationLayout = require("game.hgss.src.ui.ApplicationLayout")
 local LogicalSurface = require("libs.ui.src.LogicalSurface")
@@ -85,21 +86,6 @@ local function inactivePlan()
   }
 end
 
----@param context ApplicationLayout.Context
----@return ApplicationLayout.Context the production context with helper-derived selections
-local function completeContext(context)
-  assert(type(context) == "table", "a resolver needs its context")
-  local measurement = assert(context.measurement, "a resolver needs its display measurement")
-  local selection = ApplicationLayout.selectSurfaces(measurement)
-  return {
-    measurement = measurement,
-    configuration = context.configuration,
-    primary = context.primary or selection.primary,
-    secondary = context.secondary or selection.secondary,
-    nativeLikeInterface = context.nativeLikeInterface or NamingInterface.fullscreen,
-  }
-end
-
 -- Fullscreen naming for the dualDisplay and nativeLike cases: one
 -- canonical child pane over the owned target region, never decorated.
 -- Auxiliary on a genuine pair, the single surface otherwise.
@@ -107,8 +93,7 @@ end
 ---@param view table<string, unknown>
 ---@return ApplicationPlan
 function NamingInterface.fullscreen(context, view)
-  local complete = completeContext(context)
-  local geometry = ApplicationLayout.fullscreen(complete, NATIVE, { maxOverdraw = ZERO_CROP })
+  local geometry = ApplicationLayout.fullscreen(context, NATIVE, { maxOverdraw = ZERO_CROP })
   local placement = geometry.placements[NATIVE.id]
   if placement == nil then
     return inactivePlan()
@@ -132,10 +117,9 @@ end
 ---@param view table<string, unknown>
 ---@return ApplicationPlan
 function NamingInterface.centered(context, view)
-  local complete = completeContext(context)
-  local geometry = ApplicationLayout.centered(complete, NATIVE, {})
+  local geometry = ApplicationLayout.centered(context, NATIVE, {})
   if geometry == nil then
-    return complete.nativeLikeInterface(complete, view)
+    return context.nativeLikeInterface(context, view)
   end
   local placement = geometry.placements[NATIVE.id]
   if placement == nil then
@@ -152,8 +136,6 @@ function NamingInterface.centered(context, view)
   }
 end
 
-local CASE_KEYS = { "dualDisplay", "nativeLike", "wide", "tall" }
-
 -- The four resolver functions behind one case per display configuration:
 -- dual and native-like own their fullscreen region, wide and tall center
 -- the canonical child with no decoration.
@@ -162,34 +144,17 @@ NamingInterface.nativeLike = NamingInterface.fullscreen
 NamingInterface.wide = NamingInterface.centered
 NamingInterface.tall = NamingInterface.centered
 
--- Merges an optional per-case override into the complete default set:
--- only the four function fields merge, unknown keys and non-functions
--- fail at composition. The gameplay controller instance never changes.
----@param overrides table<string, unknown>?
+-- The bound default resolver set: the same four stable functions above.
+-- A per-case override replaces entries centrally at session composition;
+-- the gameplay controller instance never changes.
 ---@return table<string, fun(context: ApplicationLayout.Context, view: table<string, unknown>): ApplicationPlan>
-function NamingInterface.withOverrides(overrides)
-  local set = {
+function NamingInterface.defaults()
+  return {
     dualDisplay = NamingInterface.fullscreen,
     nativeLike = NamingInterface.fullscreen,
     wide = NamingInterface.centered,
     tall = NamingInterface.centered,
   }
-  if overrides ~= nil then
-    assert(type(overrides) == "table", "the naming overrides must be a record")
-    for key, fn in pairs(overrides) do
-      local known = false
-      for _, case in ipairs(CASE_KEYS) do
-        if key == case then
-          known = true
-          break
-        end
-      end
-      assert(known, "unknown naming override case " .. tostring(key))
-      assert(type(fn) == "function", "the naming override for " .. tostring(key) .. " must be a function")
-      set[key] = fn
-    end
-  end
-  return set
 end
 
 return NamingInterface

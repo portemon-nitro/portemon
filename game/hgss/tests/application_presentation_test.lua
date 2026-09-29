@@ -142,6 +142,71 @@ function T.tests.plan_callbacks_keep_stable_identities_across_resolves()
   Assert.deepEqual(session:mapInput({}, view), {}, "no cancellation without a geometry change")
 end
 
+-- A case that cannot fit its pair falls back through the composed context:
+-- the session supplies the effective entry, so an override only affects its
+-- own session and repeated resolves keep stable callbacks.
+function T.tests.an_overridden_entry_backs_pair_fallback_without_leaking_across_sessions()
+  local sessionModule = sharedSession()
+  local render = function(_, _, _) end
+  local map = function(event, _, _)
+    return event
+  end
+  local function contentPlan(tag)
+    return {
+      panes = {
+        {
+          id = "content",
+          placement = {
+            frame = { x = 0, y = 0, width = 256, height = 192 },
+            origin = { x = 0, y = 0 },
+            scale = 1,
+            logicalWidth = 256,
+            logicalHeight = 192,
+            clipRect = { x = 0, y = 0, width = 256, height = 192 },
+          },
+          interactive = true,
+        },
+      },
+      frames = {},
+      content = { tag = tag },
+      inputKey = "paired-stub",
+      render = render,
+      mapInput = map,
+    }
+  end
+  local calls = { default = 0, override = 0 }
+  local function defaultNativeLike(_, _)
+    calls.default = calls.default + 1
+    return contentPlan("default")
+  end
+  local function overrideNativeLike(_, _)
+    calls.override = calls.override + 1
+    return contentPlan("override")
+  end
+  -- The pair case cannot fit this host, so it delegates to the effective
+  -- entry exactly like the production pair fallbacks do.
+  local function pair(context, view)
+    return context.nativeLikeInterface(context, view)
+  end
+  local function interfaceSet(nativeLike)
+    return { dualDisplay = defaultNativeLike, nativeLike = nativeLike, wide = pair, tall = defaultNativeLike }
+  end
+  local customized = sessionModule.new(interfaceSet(overrideNativeLike))
+  local plain = sessionModule.new(interfaceSet(defaultNativeLike))
+  local view = {}
+  local customPlan = customized:resolve(stubMeasurement(1280, 720), view)
+  local plainPlan = plain:resolve(stubMeasurement(1280, 720), view)
+  Assert.equal(customPlan.content.tag, "override", "the pair fallback reaches the effective override")
+  Assert.equal(plainPlan.content.tag, "default", "the sibling session keeps its default entry")
+  local again = customized:resolve(stubMeasurement(1280, 720), view)
+  Assert.equal(again.content.tag, "override", "an equivalent re-resolution keeps the effective entry")
+  Assert.isTrue(again.render == customPlan.render, "render stays a stable reference")
+  Assert.isTrue(again.mapInput == customPlan.mapInput, "input mapping stays a stable reference")
+  Assert.deepEqual(customized:mapInput({}, view), {}, "no cancellation without a geometry change")
+  Assert.isTrue(calls.override >= 2, "the override backs each fallback resolution")
+  Assert.isTrue(calls.default >= 1, "the default session never borrows the override")
+end
+
 function T.tests.failed_measurement_validation_keeps_the_previous_plan()
   local session = stubSession()
   local view = {}
@@ -158,7 +223,7 @@ function T.tests.unpresentable_space_publishes_an_inactive_plan()
   local ScreenTopology = require("libs.hgss.src.ui.ScreenTopology")
   local StartMenuInterface = require("game.hgss.src.field.StartMenuInterface")
   local sessionModule = sharedSession()
-  local session = sessionModule.new(StartMenuInterface.withOverrides(nil))
+  local session = sessionModule.new(StartMenuInterface.defaults())
   local measurement = {
     width = 100,
     height = 100,
@@ -584,7 +649,7 @@ end
 local function wideMenuSession()
   local sessionModule = sharedSession()
   local StartMenuInterface = require("game.hgss.src.field.StartMenuInterface")
-  local session = sessionModule.new(StartMenuInterface.withOverrides(nil))
+  local session = sessionModule.new(StartMenuInterface.defaults())
   local plan = session:resolve(stubMeasurement(1280, 720), {})
   Assert.isTrue(#plan.frames >= 1, "the wide menu must publish its outer frame")
   return session, plan
@@ -758,11 +823,11 @@ function T.tests.framed_plans_publish_outer_frames_and_starter_ignores_outside_p
   local TrainerCardInterface = require("game.hgss.src.field.TrainerCardInterface")
   local StarterChoiceInterface = require("game.hgss.src.starters.StarterChoiceInterface")
   local measured = leafMeasurement(1280, 720)
-  local startMenu = StartMenuInterface.withOverrides(nil)
-  local bag = BagInterface.withOverrides(nil, bagManifest())
-  local party = PartyScreenInterface.withOverrides(nil, partyManifest())
-  local card = TrainerCardInterface.withOverrides(nil)
-  local starter = StarterChoiceInterface.withOverrides(nil)
+  local startMenu = StartMenuInterface.defaults()
+  local bag = BagInterface.defaults(bagManifest())
+  local party = PartyScreenInterface.defaults(partyManifest())
+  local card = TrainerCardInterface.defaults()
+  local starter = StarterChoiceInterface.defaults()
   local starterView = { selection = 0, selectionState = "null", transition = "idle", done = false }
   local cases = {
     { name = "start menu", plan = startMenu.wide(leafContext(measured, "wide", startMenu), {}) },

@@ -7,8 +7,8 @@
 -- interface. A pair that cannot fit 1x falls back to the effective
 -- nativeLike case. Underfilled panes carry fitted chrome: one complete
 -- outer frame around the pair envelope, or one per underfilled pane.
--- Resolvers require the measured context production sessions supply;
--- helper-derived surface selections fill the remaining fields. The native
+-- Resolvers require the complete context the owning session supplies.
+-- The native
 -- mapper reads the state-owned scene presentation from the session view
 -- for source-space hit mapping; resolution alone never touches it. A
 -- per-case override replaces the whole render/input pair, never a mode
@@ -115,24 +115,6 @@ local function starterPlan(panes, frames, render, mapInput, inputKey)
   }
 end
 
--- Completes a measured production context with helper-derived surface
--- selections. The effective nativeLike entry (including an override)
--- backs the pair fallback below.
----@param context ApplicationLayout.Context
----@return ApplicationLayout.Context the production context with helper-derived selections
-local function completeContext(context)
-  assert(type(context) == "table", "a resolver needs its context")
-  local measurement = assert(context.measurement, "a resolver needs its display measurement")
-  local selection = ApplicationLayout.selectSurfaces(measurement)
-  return {
-    measurement = measurement,
-    configuration = context.configuration,
-    primary = context.primary or selection.primary,
-    secondary = context.secondary or selection.secondary,
-    nativeLikeInterface = context.nativeLikeInterface or StarterChoiceInterface.nativeLike,
-  }
-end
-
 -- The state-owned scene presentation plus the controller snapshot behind
 -- one mapping view. Resolution never needs them; only native hit mapping
 -- does.
@@ -225,8 +207,7 @@ end
 ---@return ApplicationPlan
 function StarterChoiceInterface.dualDisplay(context, view)
   local _ = view
-  local complete = completeContext(context)
-  local geometry = ApplicationLayout.nativeDual(complete, INFO_NATIVE, MACHINE_NATIVE, {
+  local geometry = ApplicationLayout.nativeDual(context, INFO_NATIVE, MACHINE_NATIVE, {
     lower = { maxOverdraw = ZERO_CROP },
   })
   local info = geometry.placements[INFO_NATIVE.id]
@@ -248,8 +229,7 @@ end
 ---@return ApplicationPlan
 function StarterChoiceInterface.nativeLike(context, view)
   local _ = view
-  local complete = completeContext(context)
-  local geometry = ApplicationLayout.coverOrFrame(complete, COMPACT_NATIVE, { maxOverdraw = ZERO_CROP })
+  local geometry = ApplicationLayout.coverOrFrame(context, COMPACT_NATIVE, { maxOverdraw = ZERO_CROP })
   local pane = geometry.placements[COMPACT_NATIVE.id]
   if pane == nil then
     return inactivePlan()
@@ -267,10 +247,9 @@ end
 ---@param view table<string, unknown>
 ---@return ApplicationPlan
 function StarterChoiceInterface.wide(context, view)
-  local complete = completeContext(context)
-  local geometry = ApplicationLayout.sideBySide(complete, INFO_NATIVE, MACHINE_NATIVE)
+  local geometry = ApplicationLayout.sideBySide(context, INFO_NATIVE, MACHINE_NATIVE)
   if geometry == nil then
-    return complete.nativeLikeInterface(complete, view)
+    return context.nativeLikeInterface(context, view)
   end
   local info = geometry.placements[INFO_NATIVE.id]
   local machine = geometry.placements[MACHINE_NATIVE.id]
@@ -290,10 +269,9 @@ end
 ---@param view table<string, unknown>
 ---@return ApplicationPlan
 function StarterChoiceInterface.tall(context, view)
-  local complete = completeContext(context)
-  local geometry = ApplicationLayout.stacked(complete, INFO_NATIVE, MACHINE_NATIVE)
+  local geometry = ApplicationLayout.stacked(context, INFO_NATIVE, MACHINE_NATIVE)
   if geometry == nil then
-    return complete.nativeLikeInterface(complete, view)
+    return context.nativeLikeInterface(context, view)
   end
   local info = geometry.placements[INFO_NATIVE.id]
   local machine = geometry.placements[MACHINE_NATIVE.id]
@@ -306,36 +284,17 @@ function StarterChoiceInterface.tall(context, view)
   }, geometry.frames or {}, renderNative, mapNativeInput, INPUT_KEY)
 end
 
-local CASE_KEYS = { "dualDisplay", "nativeLike", "wide", "tall" }
-
--- Merges an optional per-case override into the complete default set:
--- only the four function fields merge, unknown keys and non-functions
--- fail at composition. The gameplay controller instance never changes.
----@param overrides table<string, unknown>?
+-- The bound default resolver set: the same four stable functions above.
+-- A per-case override replaces entries centrally at session composition;
+-- the gameplay controller instance never changes.
 ---@return table<string, fun(context: ApplicationLayout.Context, view: table<string, unknown>): ApplicationPlan>
-function StarterChoiceInterface.withOverrides(overrides)
-  local set = {
+function StarterChoiceInterface.defaults()
+  return {
     dualDisplay = StarterChoiceInterface.dualDisplay,
     nativeLike = StarterChoiceInterface.nativeLike,
     wide = StarterChoiceInterface.wide,
     tall = StarterChoiceInterface.tall,
   }
-  if overrides ~= nil then
-    assert(type(overrides) == "table", "the starter overrides must be a record")
-    for key, fn in pairs(overrides) do
-      local known = false
-      for _, case in ipairs(CASE_KEYS) do
-        if key == case then
-          known = true
-          break
-        end
-      end
-      assert(known, "unknown starter override case " .. tostring(key))
-      assert(type(fn) == "function", "the starter override for " .. tostring(key) .. " must be a function")
-      set[key] = fn
-    end
-  end
-  return set
 end
 
 return StarterChoiceInterface

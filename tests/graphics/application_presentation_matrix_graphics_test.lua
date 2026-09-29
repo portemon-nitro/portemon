@@ -377,9 +377,9 @@ end
 -- wide/tall, matched input keys, and no window on fullscreen cases.
 function T.all_interfaces_resolve_matched_geometry_across_matrix(scope)
   local _ = scope
-  local startMenu = StartMenuInterface.withOverrides(nil)
-  local party = PartyScreenInterface.withOverrides(nil, matrixPartyManifest())
-  local card = TrainerCardInterface.withOverrides(nil)
+  local startMenu = StartMenuInterface.defaults()
+  local party = PartyScreenInterface.defaults(matrixPartyManifest())
+  local card = TrainerCardInterface.defaults()
   local partyView = { cancellable = true, cursorNode = 0 }
   local singleMeasured = singleDisplay(640, 480)
   local menuPlan = startMenu.nativeLike(contextFor(singleMeasured, "nativeLike", startMenu), {})
@@ -451,7 +451,7 @@ function T.bag_pairs_share_scale_with_no_gap(scope)
       },
     },
   }
-  local bag = BagInterface.withOverrides(nil, manifest)
+  local bag = BagInterface.defaults(manifest)
   local wide = bag.wide(contextFor(singleDisplay(1280, 720), "wide", bag), {})
   Assert.equal(#wide.panes, 2, "wide pairs hero with interaction")
   Assert.equal(
@@ -672,7 +672,7 @@ function T.party_cards_stay_readable_across_densities(scope)
       cancellable = true,
     }
   end
-  local party = PartyScreenInterface.withOverrides(nil, matrixPartyManifest())
+  local party = PartyScreenInterface.defaults(matrixPartyManifest())
   local view = { cancellable = true, cursorNode = 0 }
   for _, host in ipairs({ { width = 320, height = 240 }, { width = 640, height = 480 } }) do
     local label = host.width .. "x" .. host.height
@@ -728,7 +728,7 @@ end
 -- locked logical rectangles and nowhere else.
 function T.starter_compact_regions_match_locked_geometry(scope)
   local lg = love.graphics
-  local starter = StarterChoiceInterface.withOverrides(nil)
+  local starter = StarterChoiceInterface.defaults()
   local view = { selection = 0, selectionState = "inspect", transition = "idle", done = false }
   local plan = starter.nativeLike(contextFor(singleDisplay(640, 480), "nativeLike", starter), view)
   Assert.equal(#plan.panes, 1, "compact choice shows its single selector")
@@ -778,7 +778,7 @@ end
 -- content, and no parent scale multiplies the output.
 function T.hosted_naming_magnifies_once_across_densities(scope)
   local lg = love.graphics
-  local naming = NamingInterface.withOverrides(nil)
+  local naming = NamingInterface.defaults()
   local one = naming.nativeLike(contextFor(singleDisplay(320, 240), "nativeLike", naming), {})
   local two = naming.nativeLike(contextFor(singleDisplay(640, 480), "nativeLike", naming), {})
   local onePlacement = assert(one.panes[1], "the 1x naming plan carries its pane").placement
@@ -819,7 +819,7 @@ end
 -- complete surface keeps the guarded text rect fully visible.
 function T.trainer_crop_protects_text_bounds(scope)
   local _ = scope
-  local card = TrainerCardInterface.withOverrides(nil)
+  local card = TrainerCardInterface.defaults()
   local plan = card.nativeLike(contextFor(singleDisplay(750, 560), "nativeLike", card), {})
   local placement = assert(plan.panes[1], "the card plan carries its pane").placement
   Assert.equal(placement.pixelScale, 2, "750x560 must use the decorated 2x")
@@ -847,7 +847,7 @@ end
 -- 1280x720 share one root transform each.
 function T.main_menu_viewport_grows_with_density(scope)
   local _ = scope
-  local menu = MainMenuInterface.withOverrides(nil)
+  local menu = MainMenuInterface.defaults()
   local view = {
     globalActions = { { id = "new-game", kind = "new_game" } },
     saves = { cards = {} },
@@ -871,7 +871,7 @@ end
 -- state and paints content through each migrated case.
 function T.plan_draw_restores_state_for_every_case(scope)
   local lg = love.graphics
-  local startMenu = StartMenuInterface.withOverrides(nil)
+  local startMenu = StartMenuInterface.defaults()
   local cases = {
     { name = "nativeLike", measured = singleDisplay(640, 480) },
     { name = "wide", measured = singleDisplay(1280, 720) },
@@ -1017,8 +1017,8 @@ function T.framed_applications_render_only_their_selected_borders(scope)
   local FieldPresentationResources = require("game.hgss.src.field.FieldPresentationResources")
   local FieldWindowRenderer = require("libs.hgss.src.ui.FieldWindowRenderer")
   local StarterChoicePresentation = require("game.hgss.src.starters.StarterChoicePresentation")
-  local startMenu = StartMenuInterface.withOverrides(nil)
-  local starter = StarterChoiceInterface.withOverrides(nil)
+  local startMenu = StartMenuInterface.defaults()
+  local starter = StarterChoiceInterface.defaults()
   local starterView = { selection = 0, selectionState = "null", transition = "idle", done = false }
   local wideMeasured = singleDisplay(1280, 720)
   local menuPlan = startMenu.wide(contextFor(wideMeasured, "wide", startMenu), {})
@@ -1146,8 +1146,8 @@ end
 -- startup main menu resolve frame-free plans at any density.
 function T.undecorated_surfaces_publish_no_outer_frame(scope)
   local _ = scope
-  local naming = NamingInterface.withOverrides(nil)
-  local menu = MainMenuInterface.withOverrides(nil)
+  local naming = NamingInterface.defaults()
+  local menu = MainMenuInterface.defaults()
   local menuView = {
     globalActions = { { id = "new-game", kind = "new_game" } },
     saves = { cards = {} },

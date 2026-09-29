@@ -163,7 +163,7 @@ function PartyScreenState.new(opts)
   local controller
   local session
   local built, buildErr = pcall(function()
-    session = ApplicationPresentation.new(PartyScreenInterface.withOverrides(opts.overrides, manifest))
+    session = ApplicationPresentation.new(PartyScreenInterface.defaults(manifest), opts.overrides)
     controller = PartyScreenController.new({
       context = context,
       initialFocus = opts.initialFocus,

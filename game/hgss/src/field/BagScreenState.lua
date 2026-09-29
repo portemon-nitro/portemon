@@ -128,7 +128,7 @@ function BagScreenState.new(opts)
   local controller
   local session
   local built, buildErr = pcall(function()
-    session = ApplicationPresentation.new(BagInterface.withOverrides(opts.overrides, manifest))
+    session = ApplicationPresentation.new(BagInterface.defaults(manifest), opts.overrides)
     controller = BagController.new({
       model = { refresh = refreshModel },
       cursor = cursor,

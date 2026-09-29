@@ -6,10 +6,8 @@
 -- fallback keeps controls reachable on tiny hosts. Dual auxiliaries
 -- receive only the neutral background, never a duplicate save menu. A
 -- per-case override replaces the whole render/input pair, never a mode
--- token. Resolvers require the measured context production sessions
--- supply; helper-derived surface selections fill the remaining fields.
+-- token. Resolvers require the complete context the owning session supplies.
 
-local ApplicationLayout = require("game.hgss.src.ui.ApplicationLayout")
 local MainMenuLayout = require("game.hgss.src.menu.MainMenuLayout")
 local PixelScale = require("libs.ui.src.PixelScale")
 
@@ -79,24 +77,6 @@ local function inactivePlan()
   }
 end
 
--- Completes a measured production context with helper-derived surface
--- selections. The session always supplies the measurement; direct unit
--- callers must supply a complete context as well.
----@param context ApplicationLayout.Context
----@return ApplicationLayout.Context the production context with helper-derived selections
-local function completeContext(context)
-  assert(type(context) == "table", "a resolver needs its context")
-  local measurement = assert(context.measurement, "a resolver needs its display measurement")
-  local selection = ApplicationLayout.selectSurfaces(measurement)
-  return {
-    measurement = measurement,
-    configuration = context.configuration,
-    primary = context.primary or selection.primary,
-    secondary = context.secondary or selection.secondary,
-    nativeLikeInterface = context.nativeLikeInterface or MainMenuInterface.resolve,
-  }
-end
-
 ---@param rect table<string, number>
 ---@return table<string, number>
 local function copyRect(rect)
@@ -111,13 +91,12 @@ end
 ---@return ApplicationPlan
 function MainMenuInterface.resolve(context, view)
   assert(type(view) == "table", "menu resolution needs the current semantic snapshot")
-  local complete = completeContext(context)
-  local primary = assert(complete.primary, "menu resolution needs its primary surface")
+  local primary = assert(context.primary, "menu resolution needs its primary surface")
   local usable = primary.usableBounds
   if usable == nil then
     return inactivePlan()
   end
-  local measurement = complete.measurement
+  local measurement = context.measurement
   local ratio = measurement.pixelRatio or 1
   assert(type(ratio) == "number" and ratio > 0, "menu resolution needs a positive pixel ratio")
   local physicalWidth = usable.width * ratio
@@ -171,7 +150,7 @@ function MainMenuInterface.resolve(context, view)
   -- The startup surface owns no paused field beneath it, so the menu keeps
   -- painting its own host background regions leaf-locally through content.
   local hostBackgrounds = { copyRect(usable) }
-  local secondary = complete.secondary
+  local secondary = context.secondary
   if secondary ~= nil and secondary.usableBounds ~= nil then
     hostBackgrounds[#hostBackgrounds + 1] = copyRect(secondary.usableBounds)
   end
@@ -185,8 +164,6 @@ function MainMenuInterface.resolve(context, view)
   }
 end
 
-local CASE_KEYS = { "dualDisplay", "nativeLike", "wide", "tall" }
-
 -- One responsive function behind every display case: the startup menu is
 -- fullscreen on the primary surface, never a field window.
 MainMenuInterface.dualDisplay = MainMenuInterface.resolve
@@ -194,34 +171,17 @@ MainMenuInterface.nativeLike = MainMenuInterface.resolve
 MainMenuInterface.wide = MainMenuInterface.resolve
 MainMenuInterface.tall = MainMenuInterface.resolve
 
--- Merges an optional per-case override into the complete default set:
--- only the four function fields merge, unknown keys and non-functions
--- fail at composition. The gameplay controller instance never changes.
----@param overrides table<string, unknown>?
+-- The bound default resolver set: the same stable function behind every
+-- case. A per-case override replaces entries centrally at session
+-- composition; the gameplay controller instance never changes.
 ---@return table<string, fun(context: ApplicationLayout.Context, view: table<string, unknown>): ApplicationPlan>
-function MainMenuInterface.withOverrides(overrides)
-  local set = {
+function MainMenuInterface.defaults()
+  return {
     dualDisplay = MainMenuInterface.resolve,
     nativeLike = MainMenuInterface.resolve,
     wide = MainMenuInterface.resolve,
     tall = MainMenuInterface.resolve,
   }
-  if overrides ~= nil then
-    assert(type(overrides) == "table", "the menu overrides must be a record")
-    for key, fn in pairs(overrides) do
-      local known = false
-      for _, case in ipairs(CASE_KEYS) do
-        if key == case then
-          known = true
-          break
-        end
-      end
-      assert(known, "unknown menu override case " .. tostring(key))
-      assert(type(fn) == "function", "the menu override for " .. tostring(key) .. " must be a function")
-      set[key] = fn
-    end
-  end
-  return set
 end
 
 return MainMenuInterface

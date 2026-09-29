@@ -9,8 +9,7 @@
 -- manifest-backed native pane; input passes visible logical points to
 -- the existing controller and drops matte taps. A per-case override
 -- replaces the whole render/input pair, never a mode token. Resolvers
--- require the measured context production sessions supply; helper-derived
--- surface selections fill the remaining fields.
+-- require the complete context the owning session supplies.
 
 local ApplicationLayout = require("game.hgss.src.ui.ApplicationLayout")
 local PartyScreenLayout = require("libs.hgss.src.ui.PartyScreenLayout")
@@ -67,32 +66,13 @@ local function inactivePlan()
   }
 end
 
+-- Binds the validated manifest and returns the default resolver set: the
+-- manifest rides the resolver closures; the effective nativeLike entry
+-- backs the below-1x framed fallback.
 ---@param manifest table<string, unknown> the validated party presentation manifest
 ---@return table<string, fun(context: ApplicationLayout.Context, view: table<string, unknown>): ApplicationPlan>
-local function withManifest(manifest)
+function PartyScreenInterface.defaults(manifest)
   assert(type(manifest) == "table", "the party interface requires its validated manifest")
-
-  -- Forward declaration: the below-1x framed fallback inside
-  -- completeContext resolves through the nativeLike entry defined below.
-  local nativeLike
-
-  -- Completes a measured production context with helper-derived surface
-  -- selections. The effective nativeLike entry (including an override) backs
-  -- the below-1x framed fallback.
-  ---@param context ApplicationLayout.Context
-  ---@return ApplicationLayout.Context the production context with helper-derived selections
-  local function completeContext(context)
-    assert(type(context) == "table", "a resolver needs its context")
-    local measurement = assert(context.measurement, "a resolver needs its display measurement")
-    local selection = ApplicationLayout.selectSurfaces(measurement)
-    return {
-      measurement = measurement,
-      configuration = context.configuration,
-      primary = context.primary or selection.primary,
-      secondary = context.secondary or selection.secondary,
-      nativeLikeInterface = context.nativeLikeInterface or nativeLike,
-    }
-  end
 
   ---@param view table<string, unknown> the wrapper semantic snapshot
   ---@return table<string, unknown> the canonical native content for the controller's cancel permission
@@ -132,8 +112,7 @@ local function withManifest(manifest)
   ---@param view table<string, unknown>
   ---@return ApplicationPlan
   local function nativeLikeImpl(context, view)
-    local complete = completeContext(context)
-    local geometry = ApplicationLayout.coverOrFrame(complete, CONTENT_NATIVE, { maxOverdraw = ZERO_CROP })
+    local geometry = ApplicationLayout.coverOrFrame(context, CONTENT_NATIVE, { maxOverdraw = ZERO_CROP })
     local placement = geometry.placements[CONTENT_NATIVE.id]
     if placement == nil then
       return inactivePlan()
@@ -144,8 +123,6 @@ local function withManifest(manifest)
     end
     return partyPlan(panes, geometry.frames or {}, partyContent(view))
   end
-  nativeLike = nativeLikeImpl
-
   -- Static framed party for the wide and tall cases: detail beside the
   -- canonical pane at one shared integer scale. A pair that cannot fit 1x
   -- falls back to the effective nativeLike case with the same context and
@@ -155,15 +132,14 @@ local function withManifest(manifest)
   ---@param horizontal boolean
   ---@return ApplicationPlan
   local function paired(context, view, horizontal)
-    local complete = completeContext(context)
     local geometry
     if horizontal then
-      geometry = ApplicationLayout.sideBySide(complete, DETAIL_NATIVE, CONTENT_NATIVE)
+      geometry = ApplicationLayout.sideBySide(context, DETAIL_NATIVE, CONTENT_NATIVE)
     else
-      geometry = ApplicationLayout.stacked(complete, DETAIL_NATIVE, CONTENT_NATIVE)
+      geometry = ApplicationLayout.stacked(context, DETAIL_NATIVE, CONTENT_NATIVE)
     end
     if geometry == nil then
-      return complete.nativeLikeInterface(complete, view)
+      return context.nativeLikeInterface(context, view)
     end
     local detail = geometry.placements[DETAIL_NATIVE.id]
     local interaction = geometry.placements[CONTENT_NATIVE.id]
@@ -182,8 +158,7 @@ local function withManifest(manifest)
   ---@param view table<string, unknown>
   ---@return ApplicationPlan
   local function dualDisplay(context, view)
-    local complete = completeContext(context)
-    local geometry = ApplicationLayout.nativeDual(complete, DETAIL_NATIVE, CONTENT_NATIVE, {
+    local geometry = ApplicationLayout.nativeDual(context, DETAIL_NATIVE, CONTENT_NATIVE, {
       lower = { maxOverdraw = ZERO_CROP },
     })
     local detail = geometry.placements[DETAIL_NATIVE.id]
@@ -212,40 +187,10 @@ local function withManifest(manifest)
 
   return {
     dualDisplay = dualDisplay,
-    nativeLike = nativeLike,
+    nativeLike = nativeLikeImpl,
     wide = wideCase,
     tall = tallCase,
   }
-end
-
-local CASE_KEYS = { "dualDisplay", "nativeLike", "wide", "tall" }
-
--- Binds the validated manifest and merges an optional per-case override
--- into the complete default set: only the four function fields merge,
--- unknown keys and non-functions fail at composition. The gameplay
--- controller instance never changes.
----@param overrides table<string, unknown>?
----@param manifest table<string, unknown> the validated party presentation manifest
----@return table<string, fun(context: ApplicationLayout.Context, view: table<string, unknown>): ApplicationPlan>
-function PartyScreenInterface.withOverrides(overrides, manifest)
-  assert(type(manifest) == "table", "the party interface requires its validated manifest")
-  local set = withManifest(manifest)
-  if overrides ~= nil then
-    assert(type(overrides) == "table", "the party overrides must be a record")
-    for key, fn in pairs(overrides) do
-      local known = false
-      for _, case in ipairs(CASE_KEYS) do
-        if key == case then
-          known = true
-          break
-        end
-      end
-      assert(known, "unknown party override case " .. tostring(key))
-      assert(type(fn) == "function", "the party override for " .. tostring(key) .. " must be a function")
-      set[key] = fn
-    end
-  end
-  return set
 end
 
 return PartyScreenInterface
