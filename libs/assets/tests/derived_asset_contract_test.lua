@@ -126,7 +126,7 @@ function T.contract_pins_the_current_asset_identities()
     },
     party = {
       cacheFormat = "party-cache-v1",
-      schema = "g4-party-presentation-v1",
+      schema = "g4-party-presentation-v2",
     },
     audio = {
       cacheFormat = "g4-audio-cache-v1",

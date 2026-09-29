@@ -88,6 +88,10 @@ function PartyCache.referencedPaths(manifest)
   addVisual(visuals.detailSub)
   addVisual(visuals.decoration)
   addVisual(visuals.auxPanel)
+  local hpBars = visuals.hpBars --[[@as table<string, unknown>]]
+  addVisual(hpBars.green)
+  addVisual(hpBars.yellow)
+  addVisual(hpBars.red)
   local glyphs = typed.numberGlyphs --[[@as table<string, unknown>]]
   local digits = glyphs.digits --[[@as table[] ]]
   for _, digit in ipairs(digits) do

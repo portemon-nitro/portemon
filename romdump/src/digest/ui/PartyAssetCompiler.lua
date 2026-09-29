@@ -4,7 +4,7 @@
 -- text, source numeric glyphs, and Shiny Leaf/crown badge frames. Source
 -- member selection and geometry live in romdump/src/config/PartySources.lua;
 -- this module owns the decode, rasterization, and the normalized bundle. 2D
--- mechanics reuse G2dDecoder/G2dRasterizer/PngWriter/RgbaImage; species icon
+-- mechanics reuse G2dDecoder/G2dRasterizer/PngWriter; species icon
 -- graphics resolve through the existing mon class and are never read here.
 -- The runtime consumes only the manifest and the generated files, never
 -- this module. Pure module: no love dependency.
@@ -17,7 +17,6 @@ local PngWriter = require("libs.assets.src.PngWriter")
 local Lz10 = require("romdump.src.digest.Lz10")
 local G2dDecoder = require("romdump.src.digest.ui.G2dDecoder")
 local G2dRasterizer = require("romdump.src.digest.ui.G2dRasterizer")
-local RgbaImage = require("romdump.src.digest.ui.RgbaImage")
 local PartyAssetSchema = require("libs.assets.src.PartyAssetSchema")
 local PartyCache = require("libs.assets.src.PartyCache")
 local PartySources = require("romdump.src.config.PartySources")
@@ -75,7 +74,7 @@ local function decode(kind, bytes, role)
 end
 
 -- Pure geometry lowering over the producer inventory: slot panels with
--- chrome template names and audited text/HP/compat subrectangles, the
+-- source-derived anchors and audited text/HP/compat subrectangles, the
 -- navigation tables, the touch hitboxes, and the icon/badge expectations.
 -- Pixel realization happens in _compile; this stays ROM-free.
 ---@param sources table<string, unknown>
@@ -85,6 +84,7 @@ function PartyAssetCompiler.compileGeometry(sources)
   local geometry = sources.geometry --[[@as table<string, unknown>]]
   local panelWindows = sources.panelWindows --[[@as table<string, unknown>]]
   assert(type(geometry) == "table" and type(panelWindows) == "table", "party geometry requires panels and windows")
+  local controls = geometry.controls --[[@as table<string, unknown>]]
   local placements = geometry.panels --[[@as table[] ]]
   assert(#placements == 6, "party geometry carries six slot placements")
   local function shift(rect, origin)
@@ -97,13 +97,21 @@ function PartyAssetCompiler.compileGeometry(sources)
     }
   end
   local panels = {}
+  local cursorSelectors = geometry.cursorSequenceSelectors --[[@as integer[] ]]
   for slot, placement in ipairs(placements) do
     local record = placement --[[@as table<string, unknown>]]
     local origin = record.origin --[[@as table<string, integer>]]
+    local selector = cursorSelectors[slot]
+    assert(selector ~= nil, "every slot has a source cursor sequence")
     panels[slot] = {
       origin = { x = origin.x, y = origin.y },
       size = { width = 128, height = 48 },
-      template = record.template,
+      iconAnchor = geometry.monAnchors[slot],
+      ballAnchor = geometry.ballAnchors[slot],
+      heldAnchor = geometry.heldAnchors[slot],
+      capsuleAnchor = geometry.capsuleAnchors[slot],
+      statusRect = geometry.statusRects[slot],
+      cursorSequence = selector + 1,
       text = {
         name = shift(panelWindows.name, origin),
         level = shift(panelWindows.level, origin),
@@ -117,6 +125,7 @@ function PartyAssetCompiler.compileGeometry(sources)
   end
   return {
     panels = panels,
+    controls = { cancel = { anchor = controls.cancelAnchor } },
     navigation = geometry.navigation,
     hitboxes = geometry.hitboxes,
     iconAnimations = {
@@ -277,42 +286,131 @@ local function compileScreens(archive, dependencies, assets)
   local backdropSub = realize(14, subChar, subPalette.colors, "backdrop-sub")
   local detailSub = realize(25, detailChar, subPalette.colors, "detail-sub")
   local panelScreen = decode("decodeScreen", readMember(archive, 22, "panel-screen", dependencies), "panel-screen")
-  local panelImage = rasterizeScreen(mainChar, mainPalette.colors, panelScreen, "panel-screen")
   return {
     backdropMain = backdropMain,
     backdropSub = backdropSub,
     detailSub = detailSub,
-    panelImage = panelImage,
+    panelChar = mainChar,
+    panelScreen = panelScreen,
     mainPalette = mainPalette.colors,
   }
 end
 
-local function compilePanels(panelImage, geometry, assets)
+local function paletteSlice(colors, startColor, count, role)
+  if startColor < 0 or count <= 0 or startColor + count > #colors then
+    sourceError(role .. " palette range is unavailable", {
+      startColor = startColor,
+      count = count,
+      available = #colors,
+    })
+  end
+  local slice = {}
+  for index = 1, count do
+    slice[index] = colors[startColor + index]
+  end
+  return slice
+end
+
+local function templateScreen(screen, tileRow, role)
+  local columns = screen.width / 8
+  local rows = screen.height / 8
+  local tilesWide = PartySources.panelTemplates.tilesWide
+  local tilesHigh = PartySources.panelTemplates.tilesHigh
+  if
+    screen.width % 8 ~= 0
+    or screen.height % 8 ~= 0
+    or columns < tilesWide
+    or tileRow < 0
+    or tileRow + tilesHigh > rows
+    or #screen.entries ~= columns * rows
+  then
+    sourceError(role .. " panel template geometry is malformed", { width = screen.width, height = screen.height })
+  end
+  local entries = {}
+  for row = 0, tilesHigh - 1 do
+    for column = 0, tilesWide - 1 do
+      local source = screen.entries[(tileRow + row) * columns + column + 1]
+      entries[#entries + 1] = {
+        tile = source.tile,
+        flipH = source.flipH,
+        flipV = source.flipV,
+        palette = 0,
+      }
+    end
+  end
+  return { width = tilesWide * 8, height = tilesHigh * 8, entries = entries }
+end
+
+local function compileHpBars(mainPalette, assets)
+  local config = PartySources.panelPalette
+  local bars = {}
+  for name, selection in pairs(config.hpBars) do
+    local colors = paletteSlice(mainPalette, config.firstColor + selection.bank * 16, 16, "HP " .. name)
+    local edge, body = colors[selection.edge + 1], colors[selection.body + 1]
+    if edge == nil or body == nil then
+      sourceError("HP strip palette entries are unavailable", { color = name })
+    end
+    assert(edge ~= nil and body ~= nil, "missing HP palette entries fail above")
+    local edgePixel = string.char(edge.r, edge.g, edge.b, 255)
+    local bodyPixel = string.char(body.r, body.g, body.b, 255)
+    local pixels = string.rep(edgePixel, 48)
+      .. string.rep(bodyPixel, 48)
+      .. string.rep(bodyPixel, 48)
+      .. string.rep(edgePixel, 48)
+    local path = PartyCache.assetDir() .. "/hp-" .. name .. ".png"
+    assets[path] = PngWriter.encode(48, 4, pixels)
+    bars[name] = { image = path, width = 48, height = 4 }
+  end
+  return bars
+end
+
+local function compilePanels(panelChar, panelScreen, mainPalette, geometry, assets)
   local templates = {}
+  local paletteConfig = PartySources.panelPalette
   for _, row in ipairs(PartySources.panelTemplates.rows) do
-    local cropped = RgbaImage.crop(panelImage, {
-      x = 0,
-      y = row.tileRow * 8,
-      width = PartySources.panelTemplates.tilesWide * 8,
-      height = PartySources.panelTemplates.tilesHigh * 8,
-    }, "panel-" .. row.use)
-    local path = PartyCache.assetDir() .. "/panel-" .. row.use .. ".png"
-    assets[path] = PngWriter.encode(cropped.width, cropped.height, cropped.pixels)
-    templates[row.use] = { image = path, width = cropped.width, height = cropped.height }
+    if row.use == "aux" then
+      local emptyColors = paletteSlice(mainPalette, paletteConfig.emptyBank * 16, 16, "empty panel")
+      local screen = templateScreen(panelScreen, row.tileRow, "empty")
+      local image = rasterizeScreen(panelChar, emptyColors, screen, "panel-empty")
+      local path = PartyCache.assetDir() .. "/panel-aux.png"
+      assets[path] = PngWriter.encode(image.width, image.height, image.pixels)
+      templates.aux = { image = path, width = image.width, height = image.height }
+    else
+      local variants = {}
+      local screen = templateScreen(panelScreen, row.tileRow, "panel-" .. row.use)
+      for state, relativeBank in pairs(paletteConfig.stateBanks) do
+        local colors = paletteSlice(
+          mainPalette,
+          paletteConfig.firstColor + relativeBank * 16,
+          16,
+          "panel " .. row.use .. " " .. state
+        )
+        local image = rasterizeScreen(panelChar, colors, screen, "panel-" .. row.use .. "-" .. state)
+        local path = PartyCache.assetDir() .. "/panel-" .. row.use .. "-" .. state .. ".png"
+        assets[path] = PngWriter.encode(image.width, image.height, image.pixels)
+        variants[state] = { image = path, width = image.width, height = image.height }
+      end
+      templates[row.use] = variants
+    end
   end
   local panels = {}
   for slot, panel in ipairs(geometry.panels) do
     local record = panel --[[@as table<string, unknown>]]
-    local chrome = templates[
-      record.template --[[@as string]]
-    ]
+    local templateRole = PartySources.geometry.panels[slot].template
+    local chrome = templates[templateRole]
     if chrome == nil then
-      sourceError("panel template is missing", { slot = slot, template = record.template })
+      sourceError("panel template is missing", { slot = slot, template = templateRole })
     end
     panels[slot] = {
       origin = record.origin,
       size = { width = 128, height = 48 },
-      chrome = { normal = chrome },
+      iconAnchor = record.iconAnchor,
+      ballAnchor = record.ballAnchor,
+      heldAnchor = record.heldAnchor,
+      capsuleAnchor = record.capsuleAnchor,
+      statusRect = record.statusRect,
+      cursorSequence = record.cursorSequence,
+      chrome = chrome,
       text = record.text,
       hp = record.hp,
       compat = record.compat,
@@ -633,7 +731,8 @@ local function _compile(romFs)
   local assets = {}
   local geometry = PartyAssetCompiler.compileGeometry(PartySources)
   local screens = compileScreens(archive, dependencies, assets)
-  local panels, auxPanel = compilePanels(screens.panelImage, geometry, assets)
+  local panels, auxPanel = compilePanels(screens.panelChar, screens.panelScreen, screens.mainPalette, geometry, assets)
+  local hpBars = compileHpBars(screens.mainPalette, assets)
   local ballGroup = { char = 2, palette = 8, cell = 1, anim = 0, sequences = { 0, 1 } }
   local cursorGroup = { char = 7, palette = 8, cell = 6, anim = 5, sequences = { 0, 1, 2, 3 } }
   local buttonGroup = { char = 11, palette = 8, cell = 10, anim = 9, sequences = { 0, 1, 2, 3 } }
@@ -740,6 +839,7 @@ local function _compile(romFs)
       sub = { width = PartyAssetSchema.PANE_WIDTH, height = PartyAssetSchema.PANE_HEIGHT },
     },
     panels = panels,
+    controls = geometry.controls,
     windows = PartySources.windows,
     visuals = {
       cursor = cursor,
@@ -748,6 +848,7 @@ local function _compile(romFs)
       held = held,
       status = { frames = statusFrames },
       feedback = { frames = feedbackFrames, loopFrom = 1, playback = "once", hideAtFrame = 3 },
+      hpBars = hpBars,
       backdropMain = screens.backdropMain,
       backdropSub = screens.backdropSub,
       detailSub = screens.detailSub,

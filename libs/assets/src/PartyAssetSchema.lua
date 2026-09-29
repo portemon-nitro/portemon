@@ -16,7 +16,7 @@ local Errors = require("libs.errors.src.Errors")
 ---@class PartyAssetSchema
 local PartyAssetSchema = {}
 
-PartyAssetSchema.SCHEMA = "g4-party-presentation-v1"
+PartyAssetSchema.SCHEMA = "g4-party-presentation-v2"
 PartyAssetSchema.PANE_WIDTH = 256
 PartyAssetSchema.PANE_HEIGHT = 192
 PartyAssetSchema.SLOT_COUNT = 6
@@ -76,6 +76,18 @@ local function checkPoint(value, context, what)
   checkKeys(value, { x = true, y = true }, context, what)
   checkInt(value.x, context, what .. ".x")
   checkInt(value.y, context, what .. ".y")
+end
+
+local function checkPanePoint(value, context, what)
+  checkPoint(value, context, what)
+  if
+    value.x < 0
+    or value.x >= PartyAssetSchema.PANE_WIDTH
+    or value.y < 0
+    or value.y >= PartyAssetSchema.PANE_HEIGHT
+  then
+    fail(what .. " escapes the canonical pane", context)
+  end
 end
 
 local function checkRect(value, context, what)
@@ -171,12 +183,34 @@ local function checkSequenceGroup(value, context, what)
   end
 end
 
-local function checkPanel(value, context, what)
+local function checkPanel(value, context, what, cursorSequenceCount)
   if type(value) ~= "table" then
     fail(what .. " must be a record", context)
   end
-  checkKeys(value, { origin = true, size = true, chrome = true, text = true, hp = true, compat = true }, context, what)
-  checkPoint(value.origin, context, what .. ".origin")
+  checkKeys(value, {
+    origin = true,
+    size = true,
+    iconAnchor = true,
+    ballAnchor = true,
+    heldAnchor = true,
+    capsuleAnchor = true,
+    statusRect = true,
+    cursorSequence = true,
+    chrome = true,
+    text = true,
+    hp = true,
+    compat = true,
+  }, context, what)
+  checkPanePoint(value.origin, context, what .. ".origin")
+  checkPanePoint(value.iconAnchor, context, what .. ".iconAnchor")
+  checkPanePoint(value.ballAnchor, context, what .. ".ballAnchor")
+  checkPanePoint(value.heldAnchor, context, what .. ".heldAnchor")
+  checkPanePoint(value.capsuleAnchor, context, what .. ".capsuleAnchor")
+  checkRect(value.statusRect, context, what .. ".statusRect")
+  checkInt(value.cursorSequence, context, what .. ".cursorSequence")
+  if value.cursorSequence < 1 or value.cursorSequence > cursorSequenceCount then
+    fail(what .. ".cursorSequence must address a cursor sequence", context)
+  end
   if type(value.size) ~= "table" then
     fail(what .. ".size must be a record", context)
   end
@@ -187,13 +221,16 @@ local function checkPanel(value, context, what)
   if type(value.chrome) ~= "table" then
     fail(what .. ".chrome must be a record", context)
   end
-  local variants = 0
-  for name, visual in pairs(value.chrome) do
-    checkVisual(visual, context, what .. ".chrome." .. tostring(name))
-    variants = variants + 1
-  end
-  if variants == 0 then
-    fail(what .. ".chrome carries no variant", context)
+  local chrome = value.chrome --[[@as table<string, unknown>]]
+  local chromeNames = { "normal", "selected", "fainted", "selectedFainted" }
+  local chromeKeys = { normal = true, selected = true, fainted = true, selectedFainted = true }
+  checkKeys(chrome, chromeKeys, context, what .. ".chrome")
+  for _, name in ipairs(chromeNames) do
+    local visual = chrome[name]
+    checkVisual(visual, context, what .. ".chrome." .. name)
+    if visual.width ~= 128 or visual.height ~= 48 then
+      fail(what .. ".chrome." .. name .. " must be 128x48", context)
+    end
   end
   if type(value.text) ~= "table" then
     fail(what .. ".text must be a record", context)
@@ -283,6 +320,7 @@ function PartyAssetSchema.assertManifest(manifest)
     schema = true,
     panes = true,
     panels = true,
+    controls = true,
     windows = true,
     visuals = true,
     iconAnimations = true,
@@ -312,9 +350,17 @@ function PartyAssetSchema.assertManifest(manifest)
   if type(root.panels) ~= "table" or #root.panels ~= PartyAssetSchema.SLOT_COUNT then
     fail("manifest.panels must carry six slots", {})
   end
-  for slot = 1, PartyAssetSchema.SLOT_COUNT do
-    checkPanel((root.panels --[[@as table[] ]])[slot], {}, "manifest.panels[" .. slot .. "]")
+  if type(root.controls) ~= "table" then
+    fail("manifest.controls must be a record", {})
   end
+  local controls = root.controls --[[@as table<string, unknown>]]
+  checkKeys(controls, { cancel = true }, {}, "manifest.controls")
+  if type(controls.cancel) ~= "table" then
+    fail("manifest.controls.cancel must be a record", {})
+  end
+  local cancel = controls.cancel --[[@as table<string, unknown>]]
+  checkKeys(cancel, { anchor = true }, {}, "manifest.controls.cancel")
+  checkPanePoint(cancel.anchor, {}, "manifest.controls.cancel.anchor")
   if type(root.windows) ~= "table" then
     fail("manifest.windows must be a record", {})
   end
@@ -337,8 +383,13 @@ function PartyAssetSchema.assertManifest(manifest)
     detailSub = true,
     decoration = true,
     auxPanel = true,
+    hpBars = true,
   }, {}, "manifest.visuals")
   checkSequenceGroup(visuals.cursor, {}, "manifest.visuals.cursor")
+  local cursorSequenceCount = #(visuals.cursor --[[@as table<string, unknown>]]).sequences --[[@as table[] ]]
+  for slot = 1, PartyAssetSchema.SLOT_COUNT do
+    checkPanel((root.panels --[[@as table[] ]])[slot], {}, "manifest.panels[" .. slot .. "]", cursorSequenceCount)
+  end
   checkSequenceGroup(visuals.balls, {}, "manifest.visuals.balls")
   checkSequenceGroup(visuals.buttons, {}, "manifest.visuals.buttons")
   checkSequenceGroup(visuals.held, {}, "manifest.visuals.held")
@@ -361,6 +412,18 @@ function PartyAssetSchema.assertManifest(manifest)
   checkVisual(visuals.detailSub, {}, "manifest.visuals.detailSub")
   checkVisual(visuals.decoration, {}, "manifest.visuals.decoration")
   checkVisual(visuals.auxPanel, {}, "manifest.visuals.auxPanel")
+  if type(visuals.hpBars) ~= "table" then
+    fail("manifest.visuals.hpBars must be a record", {})
+  end
+  local hpBars = visuals.hpBars --[[@as table<string, unknown>]]
+  checkKeys(hpBars, { green = true, yellow = true, red = true }, {}, "manifest.visuals.hpBars")
+  for _, color in ipairs({ "green", "yellow", "red" }) do
+    local visual = hpBars[color]
+    checkVisual(visual, {}, "manifest.visuals.hpBars." .. color)
+    if visual.width ~= 48 or visual.height ~= 4 then
+      fail("manifest.visuals.hpBars." .. color .. " must be 48x4", {})
+    end
+  end
   if type(root.iconAnimations) ~= "table" then
     fail("manifest.iconAnimations must be a record", {})
   end

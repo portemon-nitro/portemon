@@ -33,7 +33,18 @@ local function manifest()
     panels[slot] = {
       origin = { x = origin[1], y = origin[2] },
       size = { width = 128, height = 48 },
-      chrome = { normal = imageRef("assets/generated/party/panel.png", 128, 48) },
+      iconAnchor = { x = origin[1] + 30, y = origin[2] + 16 },
+      ballAnchor = { x = origin[1] + 16, y = origin[2] + 14 },
+      heldAnchor = { x = origin[1] + 47, y = origin[2] + 25 },
+      capsuleAnchor = { x = origin[1] + 12, y = origin[2] + 25 },
+      statusRect = rect(origin[1] + 24, origin[2] + 40, 24, 8),
+      cursorSequence = 1,
+      chrome = {
+        normal = imageRef("assets/generated/party/panel-normal.png", 128, 48),
+        selected = imageRef("assets/generated/party/panel-selected.png", 128, 48),
+        fainted = imageRef("assets/generated/party/panel-fainted.png", 128, 48),
+        selectedFainted = imageRef("assets/generated/party/panel-selected-fainted.png", 128, 48),
+      },
       text = {
         name = rect(origin[1] + 48, origin[2] + 8, 72, 16),
         level = rect(origin[1] + 0, origin[2] + 32, 48, 16),
@@ -59,7 +70,7 @@ local function manifest()
       { left = 64, top = 25, width = 0, height = 0, up = 7, down = 2, leftNeighbor = 7, rightNeighbor = 1 }
   end
   return {
-    schema = "g4-party-presentation-v1",
+    schema = "g4-party-presentation-v2",
     panes = {
       main = { width = 256, height = 192 },
       sub = { width = 256, height = 192 },
@@ -131,7 +142,13 @@ local function manifest()
       detailSub = { image = "assets/generated/party/detail-sub.png", width = 256, height = 256 },
       decoration = { image = "assets/generated/party/decoration.png", width = 128, height = 16 },
       auxPanel = { image = "assets/generated/party/panel-aux.png", width = 128, height = 48 },
+      hpBars = {
+        green = imageRef("assets/generated/party/hp-green.png", 48, 4),
+        yellow = imageRef("assets/generated/party/hp-yellow.png", 48, 4),
+        red = imageRef("assets/generated/party/hp-red.png", 48, 4),
+      },
     },
+    controls = { cancel = { anchor = { x = 232, y = 184 } } },
     iconAnimations = {
       periods = { 1, 8, 12, 24, 40, 36 },
       replacementDurations = { 32, 2, 2 },
@@ -179,7 +196,7 @@ local function writeReady(cache, marker)
   for _, path in ipairs(PartyCache.referencedPaths(data)) do
     cache:write(path, "pixels")
   end
-  cache:writeLua(PartyCache.provenancePath(), { cacheFormat = PartyCache.FORMAT, schema = "g4-party-presentation-v1" })
+  cache:writeLua(PartyCache.provenancePath(), { cacheFormat = PartyCache.FORMAT, schema = "g4-party-presentation-v2" })
   cache:write(PartyCache.markerPath(), marker)
 end
 
@@ -187,7 +204,7 @@ function T.missing_image_is_not_ready()
   local cache = CacheFs.forVersion("heartgold", FakeCache.new())
   local marker = PartyCache.marker("abc", "dep")
   cache:writeLua(PartyCache.manifestPath(), manifest())
-  cache:writeLua(PartyCache.provenancePath(), { cacheFormat = PartyCache.FORMAT, schema = "g4-party-presentation-v1" })
+  cache:writeLua(PartyCache.provenancePath(), { cacheFormat = PartyCache.FORMAT, schema = "g4-party-presentation-v2" })
   cache:write(PartyCache.markerPath(), marker)
   Assert.isFalse(PartyCache.isReady(cache, marker), "referenced images must all exist")
 end
@@ -205,7 +222,7 @@ function T.missing_marker_is_not_ready()
   for _, path in ipairs(PartyCache.referencedPaths(data)) do
     cache:write(path, "pixels")
   end
-  cache:writeLua(PartyCache.provenancePath(), { cacheFormat = PartyCache.FORMAT, schema = "g4-party-presentation-v1" })
+  cache:writeLua(PartyCache.provenancePath(), { cacheFormat = PartyCache.FORMAT, schema = "g4-party-presentation-v2" })
   Assert.isFalse(PartyCache.isReady(cache, PartyCache.marker("abc", "dep")), "no marker means not ready")
 end
 
@@ -215,7 +232,7 @@ function T.current_valid_family_is_ready()
   writeReady(cache, marker)
   Assert.isTrue(PartyCache.isReady(cache, marker), "the complete family reads as ready")
   local loaded = PartyCache.loadManifest(cache)
-  Assert.equal(loaded.schema, "g4-party-presentation-v1")
+  Assert.equal(loaded.schema, "g4-party-presentation-v2")
 end
 
 return { tests = T }

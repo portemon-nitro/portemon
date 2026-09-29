@@ -69,6 +69,20 @@ PartySources.panelTemplates = {
   },
 }
 
+-- The main palette's Party panel data begins at NCLR byte offset 0x60. The
+-- ordinary browse loader selects four of its 16-color states at two-bank
+-- strides; empty panels use absolute bank 1.
+PartySources.panelPalette = {
+  firstColor = 0x60 / 2,
+  stateBanks = { normal = 0, fainted = 2, selected = 4, selectedFainted = 6 },
+  emptyBank = 1,
+  hpBars = {
+    green = { bank = 0, edge = 10, body = 9 },
+    yellow = { bank = 1, edge = 10, body = 9 },
+    red = { bank = 2, edge = 10, body = 9 },
+  },
+}
+
 -- Resource-set relationships transcribed from resdat_00000085.json: each
 -- entry names the NARC 21 graphics member plus the palette/cell/animation
 -- indices into the header lists. Icons use sets 4-9 (one per party slot)
@@ -299,6 +313,26 @@ PartySources.geometry = {
     { x = 16, y = 110 },
     { x = 144, y = 118 },
   },
+  heldAnchors = {
+    { x = 47, y = 25 },
+    { x = 175, y = 33 },
+    { x = 47, y = 73 },
+    { x = 175, y = 81 },
+    { x = 47, y = 121 },
+    { x = 175, y = 129 },
+  },
+  capsuleAnchors = {
+    { x = 12, y = 25 },
+    { x = 140, y = 33 },
+    { x = 12, y = 73 },
+    { x = 140, y = 81 },
+    { x = 12, y = 121 },
+    { x = 140, y = 129 },
+  },
+  -- Values select source cursor sequences; the compiler lowers them to the
+  -- one-based index used by the generated manifest.
+  cursorSequenceSelectors = { 1, 0, 0, 0, 0, 0 },
+  controls = { cancelAnchor = { x = 232, y = 184 } },
   statusRects = {
     { x = 24, y = 40, width = 24, height = 8 },
     { x = 152, y = 48, width = 24, height = 8 },

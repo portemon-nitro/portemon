@@ -5,6 +5,7 @@
 
 local Assert = require("tests.support.Assert")
 local PartySources = require("romdump.src.config.PartySources")
+local PartyAssetCompiler = require("romdump.src.digest.ui.PartyAssetCompiler")
 
 local T = {}
 
@@ -55,6 +56,21 @@ function T.geometry_carries_six_slot_placements()
   Assert.deepEqual(PartySources.geometry.monAnchors[1], { x = 30, y = 16 })
   Assert.deepEqual(PartySources.geometry.ballAnchors[1], { x = 16, y = 14 })
   Assert.deepEqual(PartySources.geometry.panelSize, { width = 128, height = 48 })
+end
+
+function T.compiled_geometry_publishes_source_independent_runtime_anchors()
+  local compiled = PartyAssetCompiler.compileGeometry(PartySources)
+  Assert.equal(#compiled.panels, 6)
+  for slot, panel in ipairs(compiled.panels) do
+    Assert.deepEqual(panel.iconAnchor, PartySources.geometry.monAnchors[slot], "icon anchor " .. slot)
+    Assert.deepEqual(panel.ballAnchor, PartySources.geometry.ballAnchors[slot], "ball anchor " .. slot)
+    Assert.deepEqual(panel.statusRect, PartySources.geometry.statusRects[slot], "status rectangle " .. slot)
+    Assert.isTrue(type(panel.heldAnchor) == "table", "held-item anchor " .. slot .. " is published")
+    Assert.isTrue(type(panel.capsuleAnchor) == "table", "capsule anchor " .. slot .. " is published")
+    Assert.isTrue(type(panel.cursorSequence) == "number", "cursor selector " .. slot .. " is published")
+  end
+  Assert.deepEqual(compiled.controls.cancel.anchor, { x = 232, y = 184 })
+  Assert.isNil(compiled.controls.cancel.memberId, "runtime control geometry omits source identities")
 end
 
 function T.status_rects_match_the_sprite_template_centers()

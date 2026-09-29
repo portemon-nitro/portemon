@@ -29,7 +29,18 @@ local function panel(originX, originY)
   return {
     origin = { x = originX, y = originY },
     size = { width = 128, height = 48 },
-    chrome = { normal = imageRef("assets/generated/party/panel.png", 128, 48) },
+    iconAnchor = { x = originX + 30, y = originY + 16 },
+    ballAnchor = { x = originX + 16, y = originY + 14 },
+    heldAnchor = { x = originX + 47, y = originY + 25 },
+    capsuleAnchor = { x = originX + 12, y = originY + 25 },
+    statusRect = rect(originX + 24, originY + 40, 24, 8),
+    cursorSequence = 1,
+    chrome = {
+      normal = imageRef("assets/generated/party/panel-normal.png", 128, 48),
+      selected = imageRef("assets/generated/party/panel-selected.png", 128, 48),
+      fainted = imageRef("assets/generated/party/panel-fainted.png", 128, 48),
+      selectedFainted = imageRef("assets/generated/party/panel-selected-fainted.png", 128, 48),
+    },
     text = { name = rect(originX + 48, originY + 8, 72, 16), level = rect(originX + 0, originY + 32, 48, 16) },
     hp = { bar = rect(originX + 64, originY + 24, 48, 8), number = rect(originX + 56, originY + 32, 64, 16) },
     compat = rect(originX + 48, originY + 32, 80, 16),
@@ -57,7 +68,7 @@ local function manifest()
       { left = 64, top = 25, width = 0, height = 0, up = 7, down = 2, leftNeighbor = 7, rightNeighbor = 1 }
   end
   return {
-    schema = "g4-party-presentation-v1",
+    schema = "g4-party-presentation-v2",
     panes = {
       main = { width = 256, height = 192 },
       sub = { width = 256, height = 192 },
@@ -103,7 +114,13 @@ local function manifest()
       detailSub = imageRef("assets/generated/party/detail-sub.png", 256, 256),
       decoration = imageRef("assets/generated/party/decoration.png", 128, 16),
       auxPanel = imageRef("assets/generated/party/panel-aux.png", 128, 48),
+      hpBars = {
+        green = imageRef("assets/generated/party/hp-green.png", 48, 4),
+        yellow = imageRef("assets/generated/party/hp-yellow.png", 48, 4),
+        red = imageRef("assets/generated/party/hp-red.png", 48, 4),
+      },
     },
+    controls = { cancel = { anchor = { x = 232, y = 184 } } },
     iconAnimations = {
       periods = { 1, 8, 12, 24, 40, 36 },
       replacementDurations = { 32, 2, 2 },
@@ -185,6 +202,45 @@ function T.schema_rejects_a_missing_panel_state()
   end)
 end
 
+function T.schema_rejects_each_missing_panel_chrome_state()
+  for _, state in ipairs({ "normal", "selected", "fainted", "selectedFainted" }) do
+    local bad = manifest()
+    bad.panels[1].chrome[state] = nil
+    Assert.isFalse(PartyAssetSchema.isValidManifest(bad), state .. " panel chrome is required")
+  end
+end
+
+function T.schema_rejects_missing_v2_presentation_facts()
+  local missingGeometry = manifest()
+  missingGeometry.panels[1].iconAnchor = nil
+  Assert.isFalse(PartyAssetSchema.isValidManifest(missingGeometry), "panel sprite geometry is required")
+
+  local missingControl = manifest()
+  missingControl.controls.cancel.anchor = nil
+  Assert.isFalse(PartyAssetSchema.isValidManifest(missingControl), "the Cancel anchor is required")
+
+  local missingHp = manifest()
+  missingHp.visuals.hpBars = nil
+  Assert.isFalse(PartyAssetSchema.isValidManifest(missingHp), "source HP strips are required")
+end
+
+function T.schema_rejects_a_v1_manifest()
+  local stale = manifest()
+  stale.schema = "g4-party-presentation-v1"
+  stale.controls = nil
+  stale.visuals.hpBars = nil
+  for _, panelRecord in ipairs(stale.panels) do
+    panelRecord.iconAnchor = nil
+    panelRecord.ballAnchor = nil
+    panelRecord.heldAnchor = nil
+    panelRecord.capsuleAnchor = nil
+    panelRecord.statusRect = nil
+    panelRecord.cursorSequence = nil
+    panelRecord.chrome = { normal = imageRef("assets/generated/party/panel-normal.png", 128, 48) }
+  end
+  Assert.isFalse(PartyAssetSchema.isValidManifest(stale), "v1 presentation data is stale")
+end
+
 function T.schema_rejects_off_pane_hitboxes_but_permits_negative_crop_offsets()
   local bad = manifest()
   bad.hitboxes.touch.default[1] = touch(0, 48, 200, 128)
@@ -211,7 +267,7 @@ function T.schema_rejects_source_identities_in_the_runtime_manifest()
 end
 
 function T.schema_identity_is_the_current_contract()
-  Assert.equal(PartyAssetSchema.SCHEMA, "g4-party-presentation-v1")
+  Assert.equal(PartyAssetSchema.SCHEMA, "g4-party-presentation-v2")
   Assert.equal(PartyAssetSchema.SCHEMA, DerivedAssetContract.party.schema)
   Assert.equal(PartyCache.FORMAT, DerivedAssetContract.party.cacheFormat)
 end

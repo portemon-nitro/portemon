@@ -44,6 +44,11 @@ local function assetBytes(value)
   return ffi.string(value:getFFIPointer(), value:getSize())
 end
 
+local function pixel(rgba, width, x, y)
+  local offset = (y * width + x) * 4 + 1
+  return rgba:sub(offset, offset + 3)
+end
+
 local SOURCE_KEYS = { "narcId", "memberId", "fileId", "animIndex", "oam" }
 
 local function assertNoSourceKeys(record, where)
@@ -68,13 +73,67 @@ function T.every_selected_member_is_attributable_and_frames_resolve(romFs, versi
     end
   end
   local manifest = bundle.manifest
-  Assert.equal(manifest.schema, "g4-party-presentation-v1")
+  Assert.equal(manifest.schema, "g4-party-presentation-v2")
   local referenced = PartyCache.referencedPaths(manifest)
   Assert.isTrue(#referenced > 0, "the manifest references realized images")
   for _, path in ipairs(referenced) do
     Assert.isTrue(#assetBytes(assert(bundle.assets[path], path .. " resolves")) > 0, path .. " has pixels")
   end
   assertNoSourceKeys(manifest, "manifest")
+end
+
+function T.panel_palette_states_are_compiled_as_source_images(romFs, versionId)
+  local bundle = bundleFor(romFs, versionId)
+  for slot, panel in ipairs(bundle.manifest.panels) do
+    local chrome = panel.chrome
+    for _, state in ipairs({ "normal", "selected", "fainted", "selectedFainted" }) do
+      local visual = assert(chrome[state], "panel " .. slot .. " publishes " .. state .. " chrome")
+      local width, height = PngReader.rgba(assetBytes(assert(bundle.assets[visual.image], "panel chrome pixels resolve")))
+      Assert.equal(width, 128)
+      Assert.equal(height, 48)
+    end
+    local _, _, normal = PngReader.rgba(assetBytes(bundle.assets[chrome.normal.image]))
+    local _, _, selected = PngReader.rgba(assetBytes(bundle.assets[chrome.selected.image]))
+    local _, _, fainted = PngReader.rgba(assetBytes(bundle.assets[chrome.fainted.image]))
+    local _, _, selectedFainted = PngReader.rgba(assetBytes(bundle.assets[chrome.selectedFainted.image]))
+    Assert.isFalse(normal == selected, "selected panel state is independently compiled")
+    Assert.isFalse(normal == fainted, "fainted panel state is independently compiled")
+    Assert.isFalse(selected == selectedFainted, "selected-fainted panel state is independently compiled")
+  end
+end
+
+function T.hp_strips_preserve_source_row_shape_and_cache_references(romFs, versionId)
+  local bundle = bundleFor(romFs, versionId)
+  local bars = assert(bundle.manifest.visuals.hpBars, "compiled Party visuals publish HP strips")
+  local colors = {}
+  for _, color in ipairs({ "green", "yellow", "red" }) do
+    local visual = assert(bars[color], color .. " strip exists")
+    local width, height, rgba = PngReader.rgba(assetBytes(assert(bundle.assets[visual.image], color .. " strip pixels resolve")))
+    Assert.equal(width, 48)
+    Assert.equal(height, 4)
+    Assert.equal(pixel(rgba, width, 0, 0), pixel(rgba, width, 0, 3), "edge rows use the source edge color")
+    Assert.equal(pixel(rgba, width, 0, 1), pixel(rgba, width, 0, 2), "body rows use the source body color")
+    Assert.isFalse(
+      pixel(rgba, width, 0, 0) == pixel(rgba, width, 0, 1),
+      "edge and body rows remain distinct"
+    )
+    colors[color] = pixel(rgba, width, 0, 1)
+    for x = 1, width - 1 do
+      for y = 0, height - 1 do
+        Assert.equal(pixel(rgba, width, x, y), pixel(rgba, width, 0, y), "source strip row is horizontally uniform")
+      end
+    end
+  end
+  Assert.isFalse(colors.green == colors.yellow, "green and yellow use their source palette selections")
+  Assert.isFalse(colors.green == colors.red, "green and red use their source palette selections")
+  Assert.isFalse(colors.yellow == colors.red, "yellow and red use their source palette selections")
+  local referenced = {}
+  for _, path in ipairs(PartyCache.referencedPaths(bundle.manifest)) do
+    referenced[path] = true
+  end
+  for _, color in ipairs({ "green", "yellow", "red" }) do
+    Assert.isTrue(referenced[bars[color].image], color .. " strip participates in cache readiness")
+  end
 end
 
 function T.recompilation_is_deterministic(romFs, versionId)

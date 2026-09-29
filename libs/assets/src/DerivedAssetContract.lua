@@ -360,7 +360,7 @@ DerivedAssetContract.bag = {
 -- icon pixels.
 DerivedAssetContract.party = {
   cacheFormat = "party-cache-v1",
-  schema = "g4-party-presentation-v1",
+  schema = "g4-party-presentation-v2",
 }
 
 DerivedAssetContract.audio = {

@@ -22,7 +22,18 @@ local function manifest()
     panels[slot] = {
       origin = { x = origin[1], y = origin[2] },
       size = { width = 128, height = 48 },
-      chrome = { normal = { image = "assets/generated/party/panel.png", width = 128, height = 48 } },
+      iconAnchor = { x = origin[1] + 30, y = origin[2] + 16 },
+      ballAnchor = { x = origin[1] + 16, y = origin[2] + 14 },
+      heldAnchor = { x = origin[1] + 47, y = origin[2] + 25 },
+      capsuleAnchor = { x = origin[1] + 12, y = origin[2] + 25 },
+      statusRect = { x = origin[1] + 24, y = origin[2] + 40, width = 24, height = 8 },
+      cursorSequence = 1,
+      chrome = {
+        normal = { image = "assets/generated/party/panel-normal.png", width = 128, height = 48 },
+        selected = { image = "assets/generated/party/panel-selected.png", width = 128, height = 48 },
+        fainted = { image = "assets/generated/party/panel-fainted.png", width = 128, height = 48 },
+        selectedFainted = { image = "assets/generated/party/panel-selected-fainted.png", width = 128, height = 48 },
+      },
       text = {
         name = { x = origin[1] + 48, y = origin[2] + 8, width = 72, height = 16 },
         level = { x = origin[1] + 0, y = origin[2] + 32, width = 48, height = 16 },
@@ -48,7 +59,7 @@ local function manifest()
       { left = 64, top = 25, width = 0, height = 0, up = 7, down = 2, leftNeighbor = 7, rightNeighbor = 1 }
   end
   return {
-    schema = "g4-party-presentation-v1",
+    schema = "g4-party-presentation-v2",
     panes = {
       main = { width = 256, height = 192 },
       sub = { width = 256, height = 192 },
@@ -120,7 +131,13 @@ local function manifest()
       detailSub = { image = "assets/generated/party/detail-sub.png", width = 256, height = 256 },
       decoration = { image = "assets/generated/party/decoration.png", width = 128, height = 16 },
       auxPanel = { image = "assets/generated/party/panel-aux.png", width = 128, height = 48 },
+      hpBars = {
+        green = { image = "assets/generated/party/hp-green.png", width = 48, height = 4 },
+        yellow = { image = "assets/generated/party/hp-yellow.png", width = 48, height = 4 },
+        red = { image = "assets/generated/party/hp-red.png", width = 48, height = 4 },
+      },
     },
+    controls = { cancel = { anchor = { x = 232, y = 184 } } },
     iconAnimations = {
       periods = { 1, 8, 12, 24, 40, 36 },
       replacementDurations = { 32, 2, 2 },
@@ -172,7 +189,7 @@ local function bundle(marker)
   return {
     marker = marker,
     manifest = data,
-    dependencies = { cacheFormat = PartyCache.FORMAT, schema = "g4-party-presentation-v1" },
+    dependencies = { cacheFormat = PartyCache.FORMAT, schema = "g4-party-presentation-v2" },
     assets = assets,
   }
 end
@@ -184,14 +201,14 @@ function T.writes_the_class_and_reports_ready()
   Assert.isTrue(PartyCacheWriter.write(cache, bundle(marker)), "publication reports success")
   Assert.isTrue(PartyCache.isReady(cache, marker), "ready after write")
   local loaded = PartyCache.loadManifest(cache)
-  Assert.equal(loaded.schema, "g4-party-presentation-v1", "the published manifest loads back")
+  Assert.equal(loaded.schema, "g4-party-presentation-v2", "the published manifest loads back")
 end
 
 function T.rejects_a_malformed_class_without_publishing()
   local PartyCache, PartyCacheWriter = contracts()
   local cache = CacheFs.forVersion("heartgold", FakeCache.new())
   local bad = bundle(PartyCache.marker("abc", "dep"))
-  bad.manifest = { schema = "g4-party-presentation-v1" }
+  bad.manifest = { schema = "g4-party-presentation-v2" }
   local err = Assert.throws(function()
     PartyCacheWriter.write(cache, bad)
   end)
