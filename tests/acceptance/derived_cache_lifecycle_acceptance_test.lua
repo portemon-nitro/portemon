@@ -333,11 +333,12 @@ function T.tests.new_game_holds_the_finalized_handoff_until_readiness_and_geomet
   local versionId = AcceptanceHarness.defaultVersion()
   local store = isolatedStore()
   local fieldCalls = {}
-  local requested = { milestones = {}, maps = {}, pages = 0 }
+  local requested = { milestones = {}, milestoneDemands = {}, maps = {}, pages = 0 }
   local planningReady, runtimeReady, geometryReady, introReady = false, false, false, false
   local host = {
-    requestMilestone = function(name, _)
+    requestMilestone = function(name, urgency)
       requested.milestones[#requested.milestones + 1] = name
+      requested.milestoneDemands[#requested.milestoneDemands + 1] = { name = name, urgency = urgency }
       if name == "new-game-intro" and introReady then
         return true
       end
@@ -430,9 +431,18 @@ function T.tests.new_game_holds_the_finalized_handoff_until_readiness_and_geomet
           Assert.equal(assert(finalized.playerData and finalized.playerData.profile).name, "GOLD")
           Assert.equal(#fieldCalls, 0, "the handoff requests entry readiness before constructing field")
           Assert.equal(loaderBuilds(), 0, "the finalized handoff builds no planning loader before planning")
-          for _, name in ipairs(requested.milestones) do
-            Assert.isTrue(name ~= "field-planning", "entry planning is demanded only by the finalized handoff")
+          local requiredPlanning, nearPlanning = false, false
+          for _, demand in ipairs(requested.milestoneDemands) do
+            if demand.name == "field-planning" then
+              if demand.urgency == "required" then
+                requiredPlanning = true
+              elseif demand.urgency == "near" then
+                nearPlanning = true
+              end
+            end
           end
+          Assert.isFalse(requiredPlanning, "the finalized handoff alone promotes planning to required")
+          Assert.isTrue(nearPlanning, "near field-planning stays enrolled while the Oak intro runs")
           planningReady = true
           waited = 0
           while loaderBuilds() == 0 and waited < 60 do

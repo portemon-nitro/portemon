@@ -17,6 +17,7 @@ local FakeAudioOutput = require("tests.acceptance.support.FakeAudioOutput")
 local GameSaveStore = require("libs.hgss.src.save.GameSaveStore")
 local SaveFs = require("libs.storage.src.SaveFs")
 local OakIntroComposition = require("game.hgss.src.newgame.OakIntroComposition")
+local FieldMapLoader = require("libs.hgss.src.world.FieldMapLoader")
 local AcceptanceHarness = require("tests.acceptance.support.AcceptanceHarness")
 local ProducerFingerprint = require("romdump.src.ProducerFingerprint")
 local DerivedAssetProvisioner = require("app.src.DerivedAssetProvisioner")
@@ -111,7 +112,7 @@ local function recordingHost(realHost, trace)
     if type(value) == "function" then
       recorded[key] = function(...)
         local arguments = { ... }
-        trace.calls[#trace.calls + 1] = { op = key, arguments = arguments }
+        trace.calls[#trace.calls + 1] = { op = key, arguments = arguments, ts = testClock.now() }
         return value(...)
       end
     else
@@ -119,6 +120,30 @@ local function recordingHost(realHost, trace)
     end
   end
   return recorded
+end
+
+-- Demand-timing boundary used by the later-New-Game ordering tests: every
+-- provisioner demand and every loader location demand carries the test
+-- clock timestamp taken at the call, so assertions can split the trace at
+-- the Oak -> FieldPreparationState ownership-transfer timestamp.
+local function callsBefore(calls, handoffTime)
+  local earlier = {}
+  for _, call in ipairs(calls) do
+    if call.ts ~= nil and call.ts < handoffTime then
+      earlier[#earlier + 1] = call
+    end
+  end
+  return earlier
+end
+
+local function nearBedroomEnrollments(locationCalls, handoffTime)
+  local matching = {}
+  for _, entry in ipairs(callsBefore(locationCalls, handoffTime)) do
+    if entry.urgency == "near" and entry.symbol == HOUSE_2F then
+      matching[#matching + 1] = entry
+    end
+  end
+  return matching
 end
 
 local handoffPhases = {
@@ -336,8 +361,38 @@ local function installCommonStubs(context, original)
     return original.oakCompose(input)
   end)
   rawset(DerivedAssetProvisioner, "gameHost", function(self)
-    return recordingHost(original.gameHost(self), context.trace)
+    local host = recordingHost(original.gameHost(self), context.trace)
+    -- Delayed-planning simulation for the fallback ordering test: while
+    -- the gate is armed, field-planning demand is logged as expressed but
+    -- answered pending without forwarding interest, modelling planning
+    -- metadata that only becomes ready at the Oak handoff. Nothing outside
+    -- the gate consults planning before the handoff, so arming it never
+    -- stalls Oak or the intro on its own.
+    local realRequestMilestone = host.requestMilestone
+    if type(realRequestMilestone) == "function" then
+      host.requestMilestone = function(name, urgency)
+        if name == "field-planning" and context.gatePlanning and not context.planningReleased then
+          return false
+        end
+        return realRequestMilestone(name, urgency)
+      end
+    end
+    return host
   end)
+  -- Location-demand tracing for the ordering tests: every metadata-loader
+  -- location enrollment is logged with its urgency and timestamp, then
+  -- served by production. Pre-handoff "near" entries prove speculative
+  -- enrollment; post-handoff "required" entries prove the authoritative
+  -- transfer gate still promotes the same closure.
+  FieldMapLoader.requestLocation = function(loader, idOrSymbol, fieldX, fieldZ, urgency)
+    context.locationCalls = context.locationCalls or {}
+    context.locationCalls[#context.locationCalls + 1] = {
+      symbol = idOrSymbol,
+      urgency = urgency,
+      ts = testClock.now(),
+    }
+    return original.locationRequest(loader, idOrSymbol, fieldX, fieldZ, urgency)
+  end
   FieldState.new = function(game, fieldOptions)
     context.fieldConstructions = context.fieldConstructions + 1
     local input = {}
@@ -368,6 +423,7 @@ local function captureOriginals()
     appBackend = ProducerFingerprint.appBackend,
     gameHost = DerivedAssetProvisioner.gameHost,
     provisionerNew = DerivedAssetProvisioner.new,
+    locationRequest = FieldMapLoader.requestLocation,
   }
 end
 
@@ -376,6 +432,7 @@ local function restoreOriginals(original)
   rawset(OakIntroComposition, "compose", original.oakCompose)
   rawset(DerivedAssetProvisioner, "gameHost", original.gameHost)
   rawset(DerivedAssetProvisioner, "new", original.provisionerNew)
+  FieldMapLoader.requestLocation = original.locationRequest
   App.setState(nil)
   App.opts = original.opts
   App.state = original.state
@@ -576,6 +633,146 @@ function T.tests.handoff_timer_includes_pre_runtime_readiness_delay()
       "the post-runtime timer must exclude the injected pre-runtime delay, measured "
         .. string.format("%.2f", oldDuration)
     )
+  end, debug.traceback)
+  handoff.restore()
+  restoreOriginals(original)
+  if not ok then
+    error(err, 0)
+  end
+end
+
+-- Later New Game ordering: after the fresh first-play closure, the Oak
+-- intro enrolls field planning, field runtime, and the exact opening
+-- bedroom closure at near urgency before handing off to field
+-- preparation, which then promotes the same work to required and
+-- transfers. Boots the real application, timestamps every demand
+-- against the handoff ownership transfer, and keeps the existing warm
+-- timing and bounded-sweep contract on the measured pass.
+function T.tests.later_new_game_enrolls_opening_closure_during_oak_before_handoff()
+  local namespace = "acceptance/warm-field-entry-prewarm"
+  local audio = FakeAudioOutput.new()
+  local saveStore = GameSaveStore.new(SaveFs.global(isolatedBackend(namespace)))
+  clearCheckpoints(saveStore)
+  local context = {
+    audio = audio,
+    saveStore = saveStore,
+    trace = { calls = {} },
+    sweepCalls = { beforeMenu = false, total = 0 },
+    fieldConstructions = 0,
+    locationCalls = {},
+  }
+  local original = captureOriginals()
+  local handoff = watchHandoff(nil)
+  local ok, err = xpcall(function()
+    installCommonStubs(context, original)
+    local versionId = AcceptanceHarness.defaultVersion()
+    driveImportToMenu(context, versionId)
+    context.trace.calls = {}
+    context.locationCalls = {}
+    waitForMenu()
+    press("a")
+    driveOak(handoff, true)
+    Assert.equal(handoff.count, 1, "the handoff observation must fire exactly once per entry")
+    local handoffTime = assert(handoff.ts, "the handoff timestamp must be captured at the ownership transfer")
+    local early = callsBefore(context.trace.calls, handoffTime)
+    Assert.isTrue(
+      #callsFor(early, "requestMilestone", "field-planning", "near") >= 1,
+      "Oak must enroll field planning at near urgency before handing off to field preparation"
+    )
+    Assert.isTrue(
+      #callsFor(early, "requestMilestone", "field-runtime", "near") >= 1,
+      "Oak must keep field runtime enrolled at near urgency before handing off to field preparation"
+    )
+    Assert.isTrue(
+      #nearBedroomEnrollments(context.locationCalls, handoffTime) >= 1,
+      "Oak must enroll the exact opening bedroom closure at near urgency before handing off"
+    )
+    local endTime = settleBedroom()
+    local entrySeconds = endTime - handoffTime
+    Assert.isTrue(
+      entrySeconds < WARM_ENTRY_BUDGET_SECONDS,
+      "warm Oak handoff to usable bedroom frame must complete in under 2.0 seconds, measured "
+        .. string.format("%.2f", entrySeconds)
+    )
+    for _, call in ipairs(context.trace.calls) do
+      if call.op == "requestMilestone" then
+        Assert.isTrue(
+          call.arguments[1] ~= "complete",
+          "the measured pass must never request whole-corpus work"
+        )
+      end
+    end
+    local distinctMaps = distinctRequiredMapIds(context.trace.calls)
+    Assert.isTrue(
+      distinctMaps <= WARM_ENTRY_DISTINCT_MAP_BOUND,
+      "the measured pass must not enumerate whole map families, saw "
+        .. tostring(distinctMaps)
+        .. " distinct required map closures"
+    )
+  end, debug.traceback)
+  handoff.restore()
+  restoreOriginals(original)
+  if not ok then
+    error(err, 0)
+  end
+end
+
+-- Fallback ordering guard: when planning metadata stays pending for the
+-- whole Oak intro, Oak still completes without waiting on speculative
+-- work and the handoff transfers through the required preparation
+-- demands. The planning gate answers field-planning demand pending until
+-- the handoff latch releases it, modelling metadata that only becomes
+-- ready at the transfer.
+function T.tests.pending_planning_during_oak_still_transfers_through_required_preparation()
+  local namespace = "acceptance/warm-field-entry-prewarm-delayed"
+  local audio = FakeAudioOutput.new()
+  local saveStore = GameSaveStore.new(SaveFs.global(isolatedBackend(namespace)))
+  clearCheckpoints(saveStore)
+  local context = {
+    audio = audio,
+    saveStore = saveStore,
+    trace = { calls = {} },
+    sweepCalls = { beforeMenu = false, total = 0 },
+    fieldConstructions = 0,
+    locationCalls = {},
+  }
+  local original = captureOriginals()
+  local handoff = watchHandoff(function()
+    context.planningReleased = true
+  end)
+  local ok, err = xpcall(function()
+    installCommonStubs(context, original)
+    local versionId = AcceptanceHarness.defaultVersion()
+    driveImportToMenu(context, versionId)
+    context.trace.calls = {}
+    context.locationCalls = {}
+    context.gatePlanning = true
+    context.planningReleased = false
+    waitForMenu()
+    press("a")
+    driveOak(handoff, true)
+    Assert.equal(handoff.count, 1, "Oak must complete without waiting on speculative field work")
+    local handoffTime = assert(handoff.ts, "the handoff timestamp must be captured at the ownership transfer")
+    Assert.equal(
+      #nearBedroomEnrollments(context.locationCalls, handoffTime),
+      0,
+      "pending planning must leave no speculative bedroom enrollment before the handoff"
+    )
+    local endTime = settleBedroom()
+    local entrySeconds = endTime - handoffTime
+    Assert.isTrue(
+      entrySeconds < WARM_ENTRY_BUDGET_SECONDS,
+      "the delayed-planning pass must still reach the usable bedroom frame in under 2.0 seconds, measured "
+        .. string.format("%.2f", entrySeconds)
+    )
+    for _, call in ipairs(context.trace.calls) do
+      if call.op == "requestMilestone" then
+        Assert.isTrue(
+          call.arguments[1] ~= "complete",
+          "the delayed pass must never request whole-corpus work"
+        )
+      end
+    end
   end, debug.traceback)
   handoff.restore()
   restoreOriginals(original)

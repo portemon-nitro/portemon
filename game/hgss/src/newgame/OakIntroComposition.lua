@@ -92,6 +92,15 @@ function OakIntroComposition.compose(options)
   assert(type(options) == "table", "Oak intro composition requires options")
   assert(type(options.candidate) == "table", "Oak intro composition requires a candidate")
   assert(type(options.versionId) == "string", "Oak intro composition requires a version")
+  local entryPrewarm = options.entryPrewarm
+  if entryPrewarm ~= nil then
+    assert(
+      type(entryPrewarm) == "table"
+        and type(entryPrewarm.poll) == "function"
+        and type(entryPrewarm.dispose) == "function",
+      "Oak entry prewarm must provide poll and dispose"
+    )
+  end
 
   local cacheFs = CacheFs.forVersion(options.versionId)
   local introManifest =
@@ -174,6 +183,7 @@ function OakIntroComposition.compose(options)
     })
     return OakIntroState.new({
       controller = controller --[[@as unknown]],
+      entryPrewarm = entryPrewarm,
       manifest = introManifest,
       uiManifest = uiManifest,
       textRenderer = textRenderer,

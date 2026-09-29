@@ -946,9 +946,13 @@ function T.oak_boot_prefetches_field_runtime_without_waiting_for_it()
     settle(game)
     Assert.equal(#context.oakCalls, 1, "Oak is composed while field runtime is still pending")
     local preOoakRuntime = {}
+    local preOoakPlanning = {}
     for _, request in ipairs(requests) do
       if request.name == "field-runtime" then
         preOoakRuntime[#preOoakRuntime + 1] = request
+      end
+      if request.name == "field-planning" then
+        preOoakPlanning[#preOoakPlanning + 1] = request
       end
       if request.name == "field-core" then
         error("the Oak path must never demand a removed milestone", 0)
@@ -956,11 +960,50 @@ function T.oak_boot_prefetches_field_runtime_without_waiting_for_it()
     end
     Assert.equal(#preOoakRuntime, 1, "Oak boot prefetches the field runtime exactly once")
     Assert.equal(preOoakRuntime[1].urgency, "near", "the Oak prewarm stays speculative")
+    Assert.equal(#preOoakPlanning, 1, "Oak boot enrolls field planning speculative")
+    Assert.equal(preOoakPlanning[1].urgency, "near", "the planning prewarm stays speculative")
+    local composed = assert(context.oakCalls[1], "Oak composition must be observed")
+    Assert.isTrue(type(composed.entryPrewarm) == "table", "Oak receives the entry coordinator")
+    Assert.isTrue(type(composed.entryPrewarm.poll) == "function", "the coordinator polls")
+    Assert.isTrue(type(composed.entryPrewarm.dispose) == "function", "the coordinator disposes")
     for _, request in ipairs(requests) do
       if request.name == "field-runtime" and request.urgency == "required" then
         error("the intro gate must not demand field runtime as required", 0)
       end
     end
+    game:setState(nil)
+  end)
+end
+
+-- Oak boots even when speculative field demands fail: the coordinator retains
+-- the failure for diagnosis and composition proceeds, so a broken cache
+-- surfaces at the authoritative handoff instead of aborting the intro.
+function T.oak_boot_survives_speculative_demand_failure()
+  withCompositionSpies(function(modules, context)
+    context.stores[1] = fakeStore({})
+    context.candidate = {
+      saveId = "save-00000003",
+      versionId = READY_VERSION,
+      playerData = nil,
+      location = { mapSymbol = "MAP_NEW_BARK_PLAYER_HOUSE_2F", fieldX = 6, fieldZ = 6 },
+    }
+    context.oakState = disposableState("oak")
+    local host = readyHost()
+    host.requestMilestone = function(name, _)
+      if name == "new-game-intro" then
+        return true
+      end
+      error("injected speculative demand failure", 0)
+    end
+    local game = modules.hgssGame.new({
+      versionId = READY_VERSION,
+      onExit = function() end,
+      derivedAssets = host,
+      fieldMapLoader = planningLoader(),
+    })
+    game.state:keypressed("return")
+    settle(game)
+    Assert.equal(#context.oakCalls, 1, "Oak composes even when speculative demands fail")
     game:setState(nil)
   end)
 end
@@ -1025,14 +1068,16 @@ function T.oak_completion_promotes_the_runtime_prewarm_to_required()
     Assert.equal(nearRuntime, 1, "the Oak prewarm fired exactly once")
     Assert.isTrue(requiredPlanning >= 1, "the handoff demands planning as required")
     Assert.isTrue(requiredRuntime >= 1, "the handoff promotes runtime to required")
+    local nearPlanning = 0
     for _, request in ipairs(requests) do
-      if request.name == "field-planning" then
-        Assert.equal(request.urgency, "required", "planning interest stays required while pending")
+      if request.name == "field-planning" and request.urgency == "near" then
+        nearPlanning = nearPlanning + 1
       end
       if request.name == "field-runtime" and request.urgency ~= "near" then
         Assert.equal(request.urgency, "required", "runtime interest stays required once demanded")
       end
     end
+    Assert.equal(nearPlanning, 1, "Oak boot enrolls field planning speculative before the handoff")
     Assert.equal(#context.fieldCalls, 0, "pending closures never construct the field")
     settle(game)
     Assert.equal(#context.applyCalls, 1, "waiting never reapplies initialization")

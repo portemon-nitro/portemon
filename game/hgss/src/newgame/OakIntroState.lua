@@ -110,6 +110,7 @@ local DialoguePresentationLayout = require("libs.hgss.src.ui.DialoguePresentatio
 ---@field dialogueFormatter table<string, unknown>?
 ---@field dialogueMessageKey string?
 ---@field dialogueCursorPlacement { x: number, y: number, width: number, height: number }?
+---@field entryPrewarm NewGameEntryPrewarm? speculative field-entry coordinator, polled per update
 
 ---@class OakIntroState
 ---@field new fun(options: OakIntroStateOptions): OakIntroState
@@ -137,6 +138,7 @@ local DialoguePresentationLayout = require("libs.hgss.src.ui.DialoguePresentatio
 ---@field dialogueCursorPlacement { x: number, y: number, width: number, height: number }?
 ---@field disposed boolean
 ---@field _displayContext DisplayContext
+---@field _entryPrewarm table<string, function>? speculative field-entry coordinator, polled per update
 ---@field _namingOverrides table<string, unknown>?
 ---@field _namingScreen table<string, unknown>? the borrowed namingScreen manifest section
 ---@field _namingSession ApplicationPresentation? the per-entry naming session beside the profile controller
@@ -144,6 +146,7 @@ local DialoguePresentationLayout = require("libs.hgss.src.ui.DialoguePresentatio
 ---@field _frozenStatus table<string, unknown>?
 ---@field _frozenAdapter table<string, unknown>?
 ---@field _setTextInput fun(self: OakIntroState, enabled: boolean)
+---@field _pollEntry fun(self: OakIntroState)
 ---@field _acknowledgePresentedHandoff fun(self: OakIntroState)
 ---@field _clearFrozen fun(self: OakIntroState)
 ---@field _stepDialogue fun(self: OakIntroState, snapshot: table<string, unknown>?): table<string, unknown>?
@@ -248,6 +251,15 @@ function OakIntroState.new(options)
     assert(options.dialogueFormatter, "Oak state requires its message formatter")
     assert(type(options.dialogueFormatter.format) == "function", "Oak message formatter is invalid")
   end
+  local entryPrewarm = options.entryPrewarm
+  if entryPrewarm ~= nil then
+    assert(
+      type(entryPrewarm) == "table"
+        and type(entryPrewarm.poll) == "function"
+        and type(entryPrewarm.dispose) == "function",
+      "Oak entry prewarm must provide poll and dispose"
+    )
+  end
   local width, height = options.width, options.height
   if width == nil or height == nil then
     width, height = love.graphics.getDimensions()
@@ -305,6 +317,7 @@ function OakIntroState.new(options)
       _blackHandoffPresented = false,
       _frozenStatus = nil,
       _frozenAdapter = nil,
+      _entryPrewarm = entryPrewarm,
     }, OakIntroState)
     self:_setTextInput(false)
     self.controller:start()
@@ -422,6 +435,14 @@ function OakIntroState:_sync()
   return view
 end
 
+---@private polls the speculative entry coordinator without gating controller progress
+function OakIntroState:_pollEntry()
+  local prewarm = self._entryPrewarm
+  if prewarm ~= nil then
+    prewarm:poll()
+  end
+end
+
 function OakIntroState:update(dt)
   assert(type(dt) == "number" and dt >= 0, "Oak update dt must be non-negative")
   self:_acknowledgePresentedHandoff()
@@ -436,6 +457,7 @@ function OakIntroState:update(dt)
       break
     end
   end
+  self:_pollEntry()
   if self.audioSink and self.audioSink.update then
     self.audioSink:update()
   end
@@ -451,6 +473,7 @@ function OakIntroState:tick(frames)
     end
     self.controller:tick(1)
   end
+  self:_pollEntry()
   self:_sync()
 end
 
@@ -749,6 +772,11 @@ function OakIntroState:dispose()
     return
   end
   self.disposed = true
+  local entryPrewarm = self._entryPrewarm
+  self._entryPrewarm = nil
+  if entryPrewarm ~= nil then
+    entryPrewarm:dispose()
+  end
   self:_disposeNamingSession()
   self:_clearFrozen()
   self:_setTextInput(false)

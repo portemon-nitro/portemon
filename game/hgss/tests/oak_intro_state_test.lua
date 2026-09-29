@@ -209,7 +209,7 @@ local function fakeController()
   return controller --[[@as OakIntroStateTest.Controller]]
 end
 
-local function stateHarness(overrides)
+local function stateHarness(overrides, entryPrewarm)
   local controller = fakeController()
   local input = { calls = {} }
   ---@cast input OakIntroStateTest.Input
@@ -252,6 +252,7 @@ local function stateHarness(overrides)
     height = 480,
     namingOverrides = overrides,
     dialogueCursorPlacement = DIALOGUE_CURSOR_PLACEMENT,
+    entryPrewarm = entryPrewarm,
   })
   return state, controller, input, renderer, choiceText
 end
@@ -1714,6 +1715,68 @@ function T.repeated_gender_question_stays_visible_through_selection()
   Assert.equal(held.status.waiting, false, "the held question never carries the continuation cursor")
   Assert.isNil(held.status.cursorPhase)
   Assert.equal(held.status.visibleLines[1][1].text, "HELLO")
+end
+
+local function fakeEntryPrewarm()
+  local prewarm = { polls = 0, disposals = 0 }
+  function prewarm:poll()
+    self.polls = self.polls + 1
+    return true
+  end
+  function prewarm:dispose()
+    self.disposals = self.disposals + 1
+  end
+  return prewarm
+end
+
+function T.injected_entry_coordinator_is_polled_once_per_update_without_gating_progress()
+  local prewarm = fakeEntryPrewarm()
+  local state, controller = stateHarness(nil, prewarm)
+  local controllerTicks = 0
+  local baseTick = controller.tick
+  function controller:tick(frames)
+    controllerTicks = controllerTicks + 1
+    return baseTick(self, frames)
+  end
+  state:update(1 / 60)
+  Assert.equal(prewarm.polls, 1, "one update polls the entry coordinator exactly once")
+  state:update(1 / 60)
+  Assert.equal(prewarm.polls, 2, "every update re-polls while the intro runs")
+  Assert.isTrue(controllerTicks >= 1, "controller progress never waits on the coordinator")
+  state:dispose()
+end
+
+function T.injected_entry_coordinator_is_polled_by_manual_ticks()
+  local prewarm = fakeEntryPrewarm()
+  local state = stateHarness(nil, prewarm)
+  state:tick(2)
+  Assert.equal(prewarm.polls, 1, "one manual tick batch polls the entry coordinator once")
+  state:dispose()
+end
+
+function T.injected_entry_coordinator_is_disposed_with_the_state_exactly_once()
+  local prewarm = fakeEntryPrewarm()
+  local state = stateHarness(nil, prewarm)
+  state:update(1 / 60)
+  state:dispose()
+  Assert.equal(prewarm.disposals, 1, "state replacement releases the entry coordinator")
+  state:dispose()
+  Assert.equal(prewarm.disposals, 1, "repeated disposal releases the coordinator exactly once")
+end
+
+function T.oak_state_without_an_entry_coordinator_updates_and_disposes_cleanly()
+  local state, controller = stateHarness()
+  local controllerTicks = 0
+  local baseTick = controller.tick
+  function controller:tick(frames)
+    controllerTicks = controllerTicks + 1
+    return baseTick(self, frames)
+  end
+  state:update(1 / 60)
+  state:update(1 / 60)
+  Assert.isTrue(controllerTicks >= 1, "updates need no coordinator")
+  state:tick(1)
+  state:dispose()
 end
 
 return { tests = T }

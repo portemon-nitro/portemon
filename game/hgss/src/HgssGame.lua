@@ -9,6 +9,7 @@ local NewGame = require("game.hgss.src.newgame.NewGame")
 local NewGameInitialization = require("game.hgss.src.newgame.NewGameInitialization")
 local FirstPlayCachePreparation = require("game.hgss.src.newgame.FirstPlayCachePreparation")
 local NewGamePreparationState = require("game.hgss.src.newgame.NewGamePreparationState")
+local NewGameEntryPrewarm = require("game.hgss.src.newgame.NewGameEntryPrewarm")
 local FieldState = require("game.hgss.src.field.FieldState")
 local FieldPreparationState = require("game.hgss.src.field.FieldPreparationState")
 local MainMenuState = require("game.hgss.src.menu.MainMenuState")
@@ -115,6 +116,7 @@ local function installRoutes(options, game, saveStore, saveValidation, versionId
   local displayContext = DisplayContext.new({ topologyProvider = options.topologyProvider })
   local presentationOverrides = copyPresentationOverrides(options.presentationOverrides)
   local derivedAssets = assert(options.derivedAssets, "HgssGame requires the derived-asset host")
+  local oakPrewarm -- forward: the Oak lifetime owns the speculative entry coordinator
   local bootMenu -- forward: menu construction closes over the result router below
   local function backToMenu()
     game:setState(bootMenu())
@@ -162,22 +164,49 @@ local function installRoutes(options, game, saveStore, saveValidation, versionId
     assert(type(result) == "table" and result.playerData ~= nil, "Oak intro completed without a finalized game")
     -- Initialization applies exactly once to the finalized candidate before
     -- the handoff plans its field entry; waiting updates never apply it again.
-    enterPreparation({ kind = "newgame", candidate = NewGameInitialization.apply(result) })
+    local finalized = NewGameInitialization.apply(result)
+    -- The finalized candidate wins over the speculative opening: enroll its
+    -- exact target before the handoff when it diverges. A missing loader or
+    -- malformed record simply defers to the authoritative required demand.
+    local prewarm = oakPrewarm
+    oakPrewarm = nil
+    if prewarm ~= nil then
+      prewarm:ensureFinalTarget(finalized.location)
+    end
+    enterPreparation({ kind = "newgame", candidate = finalized })
   end
 
   local function bootOakIntro()
     local candidate = newGameCandidate(saveStore, versionId)
-    -- Speculative warmth for the later field handoff: the runtime closure
-    -- builds while the intro plays. Readiness is ignored here; the handoff
-    -- promotes the same work to required interest when it runs.
-    derivedAssets.requestMilestone("field-runtime", "near")
-    game:setState(OakIntroComposition.compose({
+    -- Speculative warmth for the later field handoff: planning and runtime
+    -- enroll at near while the intro plays, and the exact opening closure
+    -- follows once planning metadata is ready. Readiness is ignored here;
+    -- the handoff promotes the same work to required interest when it runs.
+    -- The Oak state owns the coordinator from composition on; a failed
+    -- composition releases it here so no half-built demand escapes.
+    local prewarm = NewGameEntryPrewarm.new({
+      versionId = versionId,
+      derivedAssets = derivedAssets,
+      openingLocation = candidate.location,
+    })
+    oakPrewarm = prewarm
+    prewarm:poll()
+    local ok, stateOrError = pcall(OakIntroComposition.compose, {
       candidate = candidate,
       versionId = versionId,
       onComplete = onOakComplete,
       displayContext = displayContext,
       namingOverrides = presentationOverrides ~= nil and presentationOverrides.naming or nil,
-    }))
+      entryPrewarm = prewarm,
+    })
+    if not ok then
+      if oakPrewarm == prewarm then
+        oakPrewarm = nil
+      end
+      prewarm:dispose()
+      error(stateOrError, 0)
+    end
+    game:setState(stateOrError)
   end
 
   local function onMenuResult(result)
