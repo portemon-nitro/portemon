@@ -92,6 +92,9 @@ local function drawableState(development)
           return nil
         end,
       },
+      contextChoicePresentation = function()
+        return nil
+      end,
       signpost = {
         isModal = function()
           return false

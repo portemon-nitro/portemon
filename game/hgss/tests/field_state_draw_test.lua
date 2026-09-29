@@ -36,6 +36,10 @@ local function idleChoiceHost()
     inputEvents = function()
       return {}
     end,
+    inputEventsFor = function()
+      return {}
+    end,
+    clearBorrowedChoice = function() end,
   }
 end
 
@@ -338,6 +342,9 @@ local function drawOrderState(starterActive)
           return nil
         end,
       },
+      contextChoicePresentation = function()
+        return nil
+      end,
       signpost = {
         isModal = function()
           return false
@@ -489,6 +496,9 @@ function T.draw_passes_the_scene_runtime_and_queries_the_menu_host()
           return nil
         end,
       },
+      contextChoicePresentation = function()
+        return nil
+      end,
       signpost = {
         isModal = function()
           return false
@@ -616,6 +626,9 @@ function T.draw_sends_static_actor_models_to_world_and_billboards_to_presentatio
           return nil
         end,
       },
+      contextChoicePresentation = function()
+        return nil
+      end,
       signpost = {
         isModal = function()
           return false
@@ -726,6 +739,9 @@ function T.draw_without_a_menu_host_is_a_programming_error()
           return nil
         end,
       },
+      contextChoicePresentation = function()
+        return nil
+      end,
       signpost = {
         isModal = function()
           return false
@@ -1008,6 +1024,9 @@ function T.destination_world_is_not_drawn_before_entry_presentation_is_ready()
           return nil
         end,
       },
+      contextChoicePresentation = function()
+        return nil
+      end,
       signpost = {
         isModal = function()
           return false
@@ -1127,6 +1146,9 @@ function T.destination_frames_draw_and_acknowledge_only_after_successful_present
           return nil
         end,
       },
+      contextChoicePresentation = function()
+        return nil
+      end,
       scriptScheduler = {
         step = function() end,
         playerInputLocked = function()
@@ -1251,6 +1273,9 @@ function T.destination_frames_draw_and_acknowledge_only_after_successful_present
           return nil
         end,
       },
+      contextChoicePresentation = function()
+        return nil
+      end,
       signpost = {
         isModal = function()
           return false

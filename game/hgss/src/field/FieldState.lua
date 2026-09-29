@@ -463,23 +463,17 @@ function FieldState:_drawFieldAttachedUi(resources, hostStatus, alpha)
     return
   end
   local dialogueModal = self.runtime.dialogue:isModal()
-  local dialogueHost = self.runtime.scripts.dialogueHost
   local yesNoHost = assert(self.runtime.yesNoHost, "field presentation needs its choice host")
   local liveYesNo = yesNoHost:presentation()
-  local contextChoice = assert(self.runtime.contextChoiceProvider):status()
+  -- The contextual record comes from the shared runtime method so draw
+  -- and fixed-tick pointer translation consume one status and geometry.
+  local contextChoice = self.runtime:contextChoicePresentation()
   assert(not (liveYesNo and contextChoice), "field cannot present opcode-63 and contextual two-choice prompts at once")
   local yesNo, yesNoLayout = nil, nil
   if liveYesNo ~= nil then
     yesNo, yesNoLayout = liveYesNo.status, liveYesNo.layout
   elseif contextChoice ~= nil then
-    local options = dialogueHost:yesNoOptions()
-    yesNo = {
-      active = true,
-      selectedIndex = contextChoice.selected,
-      yesText = options.yesText,
-      noText = options.noText,
-      frameIndex = options.frameIndex,
-    }
+    yesNo = contextChoice
     yesNoLayout = yesNoHost:layoutFor(yesNo)
   end
   local signpostModal = self.runtime.signpost:isModal()

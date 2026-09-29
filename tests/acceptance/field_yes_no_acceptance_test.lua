@@ -232,6 +232,161 @@ function T.tests.pointer_gestures_answer_field_yes_no_without_moving_the_world()
   end)
 end
 
+-- Resolves the contextual row center through the shared runtime presentation
+-- record: the same status draw consumes, mapped through the same host
+-- geometry the fixed-tick pointer translation consumes.
+local function contextRowCenter(game, row)
+  local runtime = game.runtime
+  local status = assert(
+    runtime:contextChoicePresentation(),
+    "a contextual choice must be open to resolve its rows"
+  )
+  local host = assert(runtime.yesNoHost, "the field owns the shared choice host")
+  local layout = host:layoutFor(status)
+  local content = assert(layout.content, "contextual layout must publish its content box")
+  local hostX, hostY = LayoutGeometry.logicalToHost(
+    assert(layout.placement, "contextual layout must publish its placement"),
+    content.x + content.width / 2,
+    content.y + row * 16 + 8
+  )
+  return hostX, hostY
+end
+
+local function waitForContextChoice(game, label)
+  game:advanceUntil(label, function()
+    return game.runtime.contextChoiceProvider:isActive()
+  end, 480)
+end
+
+-- Pointer taps answer a contextual two-choice prompt through the shared
+-- Yes/No geometry: a same-row press/release writes the source result, closes
+-- the choice, and never steps the player with the consumed edge.
+function T.tests.pointer_taps_answer_contextual_choice_without_moving_the_world()
+  local function exercise(game)
+    game:waitForFieldEntry()
+    game:startScript("acceptance.field_context_choice")
+    waitForContextChoice(game, "contextual choice opens for pointer input")
+
+    local before = game:snapshot().player
+    local noX, noY = contextRowCenter(game, 1)
+    game.runtime.input:pointerDown("acceptance:context-no", noX, noY)
+    game:step()
+    game.runtime.input:pointerUp("acceptance:context-no", noX, noY)
+    game:advanceUntil("pointer No answers the contextual choice", function()
+      return game.runtime.scripts.worldState:getVar(VAR_FIRST_RESULT) == 1
+    end, 120)
+    Assert.isFalse(
+      game.runtime.contextChoiceProvider:isActive(),
+      "answering closes the contextual choice"
+    )
+    local afterNo = game:snapshot().player
+    Assert.equal(afterNo.fieldX, before.fieldX, "a contextual tap must not step the player")
+    Assert.equal(afterNo.fieldZ, before.fieldZ, "a contextual tap must not step the player")
+
+    waitForContextChoice(game, "second contextual choice opens for pointer input")
+    local yesX, yesY = contextRowCenter(game, 0)
+    game.runtime.input:pointerDown("acceptance:context-yes", yesX, yesY)
+    game:step()
+    game.runtime.input:pointerUp("acceptance:context-yes", yesX, yesY)
+    game:advanceUntil("pointer Yes answers the contextual choice", function()
+      return game.runtime.scripts.worldState:getVar(VAR_SECOND_RESULT) == 0
+    end, 120)
+    local afterYes = game:snapshot().player
+    Assert.equal(afterYes.fieldX, before.fieldX, "a contextual tap must not step the player")
+    Assert.equal(afterYes.fieldZ, before.fieldZ, "a contextual tap must not step the player")
+  end
+
+  withGame(singleDisplay(640, 480), exercise)
+  withGame(singleDisplay(360, 640), exercise)
+end
+
+-- Invalid contextual gestures confirm nothing and leak nothing to the world:
+-- cross-row and outside releases, drags, and a resize between press and
+-- release all leave the choice open, and a later valid tap still answers.
+function T.tests.invalid_contextual_gestures_answer_nothing_without_leaking()
+  withGame(singleDisplay(640, 480), function(game)
+    game:waitForFieldEntry()
+    game:startScript("acceptance.field_context_choice")
+    waitForContextChoice(game, "contextual choice opens for negative gestures")
+
+    local before = game:snapshot().player
+    local thirdBefore = game.runtime.scripts.worldState:getVar(VAR_FIRST_RESULT)
+    local yesX, yesY = contextRowCenter(game, 0)
+    local noX, noY = contextRowCenter(game, 1)
+
+    game.runtime.input:pointerDown("acceptance:context-cross", yesX, yesY)
+    game:step()
+    game.runtime.input:pointerUp("acceptance:context-cross", noX, noY)
+    game:step()
+    game:step()
+    Assert.isTrue(
+      game.runtime.contextChoiceProvider:isActive(),
+      "a cross-row release must not answer the choice"
+    )
+    Assert.equal(
+      game.runtime.scripts.worldState:getVar(VAR_FIRST_RESULT),
+      thirdBefore,
+      "a cross-row release writes no source result"
+    )
+
+    game.runtime.input:pointerDown("acceptance:context-drag", yesX, yesY)
+    game:step()
+    game.runtime.input:pointerMove("acceptance:context-drag", yesX + 160, yesY + 160)
+    game:step()
+    game.runtime.input:pointerUp("acceptance:context-drag", yesX + 160, yesY + 160)
+    game:step()
+    game:step()
+    Assert.isTrue(
+      game.runtime.contextChoiceProvider:isActive(),
+      "a dragged gesture must not answer the choice"
+    )
+    Assert.equal(
+      game.runtime.scripts.worldState:getVar(VAR_FIRST_RESULT),
+      thirdBefore,
+      "a dragged gesture writes no source result"
+    )
+
+    game.runtime.input:pointerDown("acceptance:context-outside", 4, 4)
+    game:step()
+    game.runtime.input:pointerUp("acceptance:context-outside", 8, 8)
+    game:step()
+    game:step()
+    Assert.isTrue(
+      game.runtime.contextChoiceProvider:isActive(),
+      "an outside gesture must not answer the choice"
+    )
+
+    game.runtime.input:pointerDown("acceptance:context-resize", yesX, yesY)
+    game:step()
+    game.runtime.yesNoHost:resize(640, 480)
+    game:step()
+    game.runtime.input:pointerUp("acceptance:context-resize", yesX, yesY)
+    game:step()
+    game:step()
+    Assert.isTrue(
+      game.runtime.contextChoiceProvider:isActive(),
+      "a resize between press and release invalidates the gesture"
+    )
+    Assert.equal(
+      game.runtime.scripts.worldState:getVar(VAR_FIRST_RESULT),
+      thirdBefore,
+      "an invalidated gesture writes no source result"
+    )
+
+    local still = game:snapshot().player
+    Assert.equal(still.fieldX, before.fieldX, "negative gestures must not step the player")
+    Assert.equal(still.fieldZ, before.fieldZ, "negative gestures must not step the player")
+
+    local tapX, tapY = contextRowCenter(game, 0)
+    game.runtime.input:pointerDown("acceptance:context-valid", tapX, tapY)
+    game:step()
+    game.runtime.input:pointerUp("acceptance:context-valid", tapX, tapY)
+    game:advanceUntil("a later valid tap answers the choice", function()
+      return game.runtime.scripts.worldState:getVar(VAR_FIRST_RESULT) == 0
+    end, 120)
+  end)
+end
+
 function T.tests.cancelling_active_field_yes_no_releases_only_the_choice()
   withGame(singleDisplay(640, 480), function(game)
     game:waitForFieldEntry()

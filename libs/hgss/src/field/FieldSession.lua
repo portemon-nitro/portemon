@@ -53,6 +53,7 @@ local MetatileBehavior = require("libs.hgss.src.world.MetatileBehavior")
 ---@field menuHost FieldMenuHost
 ---@field contextChoice ContextChoiceProvider
 ---@field yesNoHost FieldYesNoHost? the live choice presentation host; while modal the tick's UI events route to the script scheduler
+---@field contextChoicePresentation (fun(): { active: boolean, selectedIndex: integer, yesText: string, noText: string, frameIndex: integer? }|nil)? contextual presentation record shared by draw and pointer translation; required with a choice host
 ---@field starterChoice table<string, unknown>? the modal starter-choice surface; while active the tick's UI events route to the script scheduler
 ---@field partySelection table<string, unknown>? the modal script-party surface; while active the tick's UI events route to the script scheduler
 ---@field pokemonNaming table<string, unknown>? the script-owned Pokemon Naming Screen surface
@@ -94,6 +95,7 @@ local MetatileBehavior = require("libs.hgss.src.world.MetatileBehavior")
 ---@field menuHost FieldMenuHost
 ---@field contextChoice ContextChoiceProvider
 ---@field yesNoHost FieldYesNoHost? the live choice presentation host; while modal the tick's UI events route to the script scheduler
+---@field contextChoicePresentation (fun(): { active: boolean, selectedIndex: integer, yesText: string, noText: string, frameIndex: integer? }|nil)? contextual presentation record shared by draw and pointer translation; required with a choice host
 ---@field starterChoice table<string, unknown>? the modal starter-choice surface; while active the tick's UI events route to the script scheduler
 ---@field partySelection table<string, unknown>? the modal script-party surface; while active the tick's UI events route to the script scheduler
 ---@field pokemonNaming table<string, unknown>? the script-owned Pokemon Naming Screen surface
@@ -296,8 +298,15 @@ function FieldSession.new(options)
   assert(options.contextChoice and options.contextChoice.isActive, "field session context choice required")
   if options.yesNoHost ~= nil then
     assert(
-      type(options.yesNoHost.isModal) == "function" and type(options.yesNoHost.inputEvents) == "function",
+      type(options.yesNoHost.isModal) == "function"
+        and type(options.yesNoHost.inputEvents) == "function"
+        and type(options.yesNoHost.inputEventsFor) == "function"
+        and type(options.yesNoHost.clearBorrowedChoice) == "function",
       "field session choice host is invalid"
+    )
+    assert(
+      type(options.contextChoicePresentation) == "function",
+      "field session contextChoicePresentation callback required"
     )
   end
   assert(options.signpost and options.signpost.isModal, "field session signpost controller required")
@@ -353,6 +362,7 @@ function FieldSession.new(options)
     menuHost = options.menuHost,
     contextChoice = options.contextChoice,
     yesNoHost = options.yesNoHost,
+    contextChoicePresentation = options.contextChoicePresentation,
     starterChoice = options.starterChoice,
     partySelection = options.partySelection,
     pokemonNaming = options.pokemonNaming,
@@ -697,12 +707,32 @@ local function runScriptPhase(self, inputSnapshot)
   local pokemonNamingModal = pokemonNaming ~= nil and pokemonNaming:isActive()
   assert(not (starterChoiceModal and pokemonNamingModal), "script-owned field modals are mutually exclusive")
   local scriptModal = starterChoiceModal or pokemonNamingModal
+  -- A borrowed gesture is valid only while its choice stays open: every
+  -- tick without an active contextual choice drops stale capture so a
+  -- release from an old choice cannot answer a later one. This runs even
+  -- on fully idle ticks, covering the close tick's successor.
+  if not contextChoiceModal and yesNoHost ~= nil then
+    yesNoHost:clearBorrowedChoice()
+  end
   if menuModal or contextChoiceModal or scriptModal or partySelectionModal or yesNoModal then
     local uiEvents = self.input:uiSnapshot(self.tick + 1)
     if menuModal then
       schedulerInput.menuEvents = self.menuHost:inputEvents(uiEvents)
     elseif yesNoModal then
       schedulerInput.uiEvents = assert(self.yesNoHost, "active choice requires its host"):inputEvents(uiEvents)
+    elseif contextChoiceModal then
+      local present =
+        assert(self.contextChoicePresentation, "field session contextChoicePresentation callback required")
+      -- A nil record means the choice is open but unpresentable (no screen
+      -- topology): draw shows nothing and the tick keeps the pre-existing
+      -- raw lane so keyboard/controller answers still work.
+      local status = present()
+      if status == nil then
+        schedulerInput.uiEvents = uiEvents
+      else
+        schedulerInput.uiEvents =
+          assert(self.yesNoHost, "active contextual choice requires its host"):inputEventsFor(status, uiEvents)
+      end
     else
       schedulerInput.uiEvents = uiEvents
     end

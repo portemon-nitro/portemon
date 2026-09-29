@@ -244,4 +244,145 @@ function T.unknown_events_and_double_open_fail_loudly()
   Assert.isFalse(openOk, "opening an active choice is a composition error")
 end
 
+local function borrowedStatus()
+  return { active = true, selectedIndex = 0, yesText = "YES", noText = "NO" }
+end
+
+local function borrowedRowCenter(host, row)
+  local layout = host:layoutFor(borrowedStatus())
+  local content = assert(layout.content, "borrowed layout must publish its content box")
+  local placement = assert(layout.placement, "borrowed layout must publish its placement")
+  local origin = assert(placement.origin, "borrowed placement must publish its content origin")
+  return origin.x + (content.x + content.width / 2) * placement.scale,
+    origin.y + (content.y + row * 16 + 8) * placement.scale
+end
+
+function T.borrowed_choice_translates_pointer_without_a_live_lifetime()
+  local idle = FieldYesNoHost.new({
+    width = 640,
+    height = 480,
+    input = fakeInput() --[[@as FieldInput]],
+    screenTopology = singleTopology(),
+    measureText = productionMeasure(),
+    presentation = fixedContext(),
+  })
+  local x, y = borrowedRowCenter(idle, 0)
+  Assert.deepEqual(
+    idle:inputEventsFor(borrowedStatus(), { { type = "pointer_down", pointerId = "touch", x = x, y = y } }),
+    { { type = "focus", row = 0 } }
+  )
+  Assert.deepEqual(
+    idle:inputEventsFor(borrowedStatus(), { { type = "pointer_up", pointerId = "touch", x = x, y = y } }),
+    { { type = "focus", row = 0 }, { type = "confirm" } },
+    "a same-row borrowed release focuses then confirms"
+  )
+  Assert.isFalse(idle:isModal(), "borrowed translation never starts a live modal lifetime")
+end
+
+function T.borrowed_gestures_share_live_rejection_rules()
+  local idle = FieldYesNoHost.new({
+    width = 640,
+    height = 480,
+    input = fakeInput() --[[@as FieldInput]],
+    screenTopology = singleTopology(),
+    measureText = productionMeasure(),
+    presentation = fixedContext(),
+  })
+  local x, y = borrowedRowCenter(idle, 0)
+  idle:inputEventsFor(borrowedStatus(), { { type = "pointer_down", pointerId = "touch", x = x, y = y } })
+  local otherX, otherY = borrowedRowCenter(idle, 1)
+  Assert.deepEqual(
+    idle:inputEventsFor(borrowedStatus(), { { type = "pointer_up", pointerId = "touch", x = otherX, y = otherY } }),
+    {},
+    "a cross-row borrowed release confirms nothing"
+  )
+  idle:inputEventsFor(borrowedStatus(), { { type = "pointer_down", pointerId = "drag", x = x, y = y } })
+  Assert.deepEqual(
+    idle:inputEventsFor(
+      borrowedStatus(),
+      { { type = "pointer_up", pointerId = "drag", x = x + 160, y = y + 160, dragged = true } }
+    ),
+    {},
+    "a dragged borrowed release confirms nothing"
+  )
+  Assert.deepEqual(
+    idle:inputEventsFor(borrowedStatus(), {
+      { type = "pointer_down", pointerId = "outside", x = 4, y = 4 },
+      { type = "pointer_up", pointerId = "outside", x = 8, y = 8 },
+    }),
+    {},
+    "an outside borrowed gesture confirms nothing"
+  )
+end
+
+function T.borrowed_capture_is_independent_of_live_capture()
+  local host = openHost()
+  local liveX, liveY = rowCenter(host, 0)
+  host:inputEvents({ { type = "pointer_down", pointerId = "live", x = liveX, y = liveY } })
+  local x, y = borrowedRowCenter(host, 1)
+  Assert.deepEqual(
+    host:inputEventsFor(borrowedStatus(), { { type = "pointer_down", pointerId = "live", x = x, y = y } }),
+    { { type = "focus", row = 1 } },
+    "a borrowed press completes even while the live gesture is held"
+  )
+  Assert.deepEqual(
+    host:inputEventsFor(borrowedStatus(), { { type = "pointer_up", pointerId = "live", x = x, y = y } }),
+    { { type = "focus", row = 1 }, { type = "confirm" } }
+  )
+  Assert.deepEqual(
+    host:inputEvents({ { type = "pointer_up", pointerId = "live", x = liveX, y = liveY } }),
+    { { type = "focus", row = 0 }, { type = "confirm" } },
+    "the held live gesture still completes on its own row"
+  )
+end
+
+function T.borrowed_capture_resets_on_demand_resize_and_topology()
+  local idle = FieldYesNoHost.new({
+    width = 640,
+    height = 480,
+    input = fakeInput() --[[@as FieldInput]],
+    screenTopology = singleTopology(),
+    measureText = productionMeasure(),
+    presentation = fixedContext(),
+  })
+  local x, y = borrowedRowCenter(idle, 0)
+  idle:inputEventsFor(borrowedStatus(), { { type = "pointer_down", pointerId = "touch", x = x, y = y } })
+  idle:clearBorrowedChoice()
+  Assert.deepEqual(
+    idle:inputEventsFor(borrowedStatus(), { { type = "pointer_up", pointerId = "touch", x = x, y = y } }),
+    {},
+    "clearing borrowed capture drops the stale release"
+  )
+  idle:inputEventsFor(borrowedStatus(), { { type = "pointer_down", pointerId = "held", x = x, y = y } })
+  idle:resize(640, 480)
+  Assert.deepEqual(
+    idle:inputEventsFor(borrowedStatus(), { { type = "pointer_up", pointerId = "held", x = x, y = y } }),
+    {},
+    "a resize invalidates the held borrowed gesture"
+  )
+  idle:inputEventsFor(borrowedStatus(), { { type = "pointer_down", pointerId = "topo", x = x, y = y } })
+  idle:setScreenTopology(singleTopology())
+  Assert.deepEqual(
+    idle:inputEventsFor(borrowedStatus(), { { type = "pointer_up", pointerId = "topo", x = x, y = y } }),
+    {},
+    "a topology change invalidates the held borrowed gesture"
+  )
+end
+
+function T.borrowed_status_shape_fails_loudly()
+  local idle = FieldYesNoHost.new({
+    width = 640,
+    height = 480,
+    input = fakeInput() --[[@as FieldInput]],
+    screenTopology = singleTopology(),
+    measureText = productionMeasure(),
+    presentation = fixedContext(),
+  })
+  local ok, _ = pcall(idle.inputEventsFor, idle, { active = false, selectedIndex = 0, yesText = "YES", noText = "NO" }, {})
+  Assert.isFalse(ok, "an inactive borrowed status is a composition error")
+  local badOk, _ =
+    pcall(idle.inputEventsFor, idle, { active = true, selectedIndex = 2, yesText = "YES", noText = "NO" }, {})
+  Assert.isFalse(badOk, "a borrowed selection outside the two rows is invalid")
+end
+
 return { tests = T }

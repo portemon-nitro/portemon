@@ -86,6 +86,9 @@ local function drawState(topologyProvider, pollTopology)
         return nil
       end,
     },
+    contextChoicePresentation = function()
+      return nil
+    end,
     signpost = {
       isModal = function()
         return false
@@ -324,6 +327,9 @@ local function fieldStateWithCapturedUi(worldViewport, cameraZoom, viewportWidth
           return nil
         end,
       },
+      contextChoicePresentation = function()
+        return nil
+      end,
       screenTopology = topology,
       signpost = {
         isModal = function()

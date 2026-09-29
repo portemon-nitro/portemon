@@ -108,6 +108,9 @@ local function drawableState(environment, worldViewport, windowWidth, windowHeig
         return nil
       end,
     },
+    contextChoicePresentation = function()
+      return nil
+    end,
     resizePresentation = function() end,
   }
   local state = setmetatable({

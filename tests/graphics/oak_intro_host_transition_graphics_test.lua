@@ -258,6 +258,9 @@ local function bootCoveredField(scope)
           return nil
         end,
       },
+      contextChoicePresentation = function()
+        return nil
+      end,
       fieldEntranceIndicatorAsset = {
         model = { batches = {}, materials = {} },
         effects = {

@@ -30,6 +30,7 @@ local NativeDisplay = require("libs.ui.src.NativeDisplay")
 ---@field private _viewportWidth number
 ---@field private _viewportHeight number
 ---@field private _active FieldYesNoHost.Active?
+---@field private _borrowed { pointerId: string?, pressRow: integer? }
 local FieldYesNoHost = {}
 FieldYesNoHost.__index = FieldYesNoHost
 
@@ -138,6 +139,7 @@ function FieldYesNoHost.new(opts)
     _viewportWidth = opts.width,
     _viewportHeight = opts.height,
     _active = nil,
+    _borrowed = { pointerId = nil, pressRow = nil },
   }, FieldYesNoHost)
 end
 
@@ -154,6 +156,8 @@ function FieldYesNoHost:resize(width, height)
     self._active.pointerId = nil
     self._active.pressRow = nil
   end
+  self._borrowed.pointerId = nil
+  self._borrowed.pressRow = nil
 end
 
 ---@param screenTopology table<string, unknown>
@@ -166,6 +170,8 @@ function FieldYesNoHost:setScreenTopology(screenTopology)
     self._active.pointerId = nil
     self._active.pressRow = nil
   end
+  self._borrowed.pointerId = nil
+  self._borrowed.pressRow = nil
 end
 
 -- Replaces reconstructable presentation metrics. The active geometry is
@@ -178,6 +184,8 @@ function FieldYesNoHost:setPresentationMetrics(measureText)
     self._active.pointerId = nil
     self._active.pressRow = nil
   end
+  self._borrowed.pointerId = nil
+  self._borrowed.pressRow = nil
 end
 
 ---@param yesText string
@@ -395,42 +403,40 @@ function FieldYesNoHost:layoutFor(status)
   return self:_resolve(status.yesText, status.noText, self:_context())
 end
 
+-- Shared physical-to-semantic pointer translation for one two-row choice
+-- layout. Live and borrowed callers supply their own capture record so the
+-- two lifetimes can never observe or mutate each other's held gesture.
+---@param capture { pointerId: string?, pressRow: integer? }
+---@param layout table<string, unknown>
 ---@param events table[]
----@return table[] semantic choice events
-function FieldYesNoHost:inputEvents(events)
-  assert(type(events) == "table", "choice UI events are required")
-  local active = self._active
-  if active == nil then
-    return {}
-  end
-  local layout = self:_resolve(active.yesText, active.noText, self:_context())
-  local translated = {}
+---@param translated table[]
+local function translatePointerEvents(capture, layout, events, translated)
   for _, event in ipairs(events) do
     assert(type(event) == "table" and type(event.type) == "string", "choice UI event is invalid")
     if event.type == "pointer_down" then
-      if active.pointerId ~= nil then
+      if capture.pointerId ~= nil then
         goto continue
       end
-      active.pointerId = event.pointerId or "default"
+      capture.pointerId = event.pointerId or "default"
       local row = rowAt(layout, event.x, event.y)
-      active.pressRow = row
+      capture.pressRow = row
       if row ~= nil then
         translated[#translated + 1] = { type = "focus", row = row }
       end
     elseif event.type == "pointer_move" then
       local pointerId = event.pointerId or "default"
-      if active.pointerId ~= pointerId then
+      if capture.pointerId ~= pointerId then
         goto continue
       end
       -- Hover never moves selection; only the press row can confirm.
     elseif event.type == "pointer_up" then
       local pointerId = event.pointerId or "default"
-      if active.pointerId ~= pointerId then
+      if capture.pointerId ~= pointerId then
         goto continue
       end
-      local pressRow = active.pressRow
-      active.pointerId = nil
-      active.pressRow = nil
+      local pressRow = capture.pressRow
+      capture.pointerId = nil
+      capture.pressRow = nil
       if event.dragged then
         goto continue
       end
@@ -449,7 +455,45 @@ function FieldYesNoHost:inputEvents(events)
     end
     ::continue::
   end
+end
+
+---@param events table[]
+---@return table[] semantic choice events
+function FieldYesNoHost:inputEvents(events)
+  assert(type(events) == "table", "choice UI events are required")
+  local active = self._active
+  if active == nil then
+    return {}
+  end
+  local layout = self:_resolve(active.yesText, active.noText, self:_context())
+  local translated = {}
+  translatePointerEvents(active, layout, events, translated)
   return translated
+end
+
+-- Translates pointer input for a choice the live host does not own (such as
+-- a contextual two-choice prompt). Geometry and capture rules match the
+-- live path exactly; the borrowed capture is independent of `_active` and
+-- is valid only while the supplied choice remains active.
+---@param status { active: boolean, selectedIndex: integer, yesText: string, noText: string }
+---@param events table[]
+---@return table[] semantic choice events
+function FieldYesNoHost:inputEventsFor(status, events)
+  assert(type(events) == "table", "choice UI events are required")
+  assert(type(status) == "table" and status.active == true, "borrowed choice translation requires an active choice")
+  assert(status.selectedIndex == 0 or status.selectedIndex == 1, "choice selection is outside the two choices")
+  assert(type(status.yesText) == "string" and type(status.noText) == "string", "choice labels are required")
+  local layout = self:_resolve(status.yesText, status.noText, self:_context())
+  local translated = {}
+  translatePointerEvents(self._borrowed, layout, events, translated)
+  return translated
+end
+
+-- Drops a borrowed gesture, for example when its choice closes between
+-- press and release so the stale release cannot answer a later choice.
+function FieldYesNoHost:clearBorrowedChoice()
+  self._borrowed.pointerId = nil
+  self._borrowed.pressRow = nil
 end
 
 return FieldYesNoHost

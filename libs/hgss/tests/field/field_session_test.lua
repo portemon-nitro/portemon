@@ -4430,4 +4430,204 @@ function T.surf_spawn_entry_requires_surfable_water()
   )
 end
 
+-- A contextual two-choice prompt routes the fixed-tick pointer snapshot
+-- through the shared Yes/No host instead of leaking raw pointer events to
+-- the script task, while world edges stay cleared for that tick.
+function T.contextual_choice_routes_pointer_through_the_shared_choice_host()
+  local presentation = { active = true, selectedIndex = 0, yesText = "YES", noText = "NO" }
+  local raw = { { type = "pointer_down", pointerId = "touch", x = 10, y = 10 } }
+  local translated = { { type = "focus", row = 0 }, { type = "confirm" } }
+  local seenStatus, seenEvents, cleared = nil, nil, 0
+  local host = {
+    isModal = function()
+      return false
+    end,
+    inputEvents = function()
+      error("the live host lifetime must not translate borrowed choices", 2)
+    end,
+    inputEventsFor = function(_, status, events)
+      seenStatus, seenEvents = status, events
+      return translated
+    end,
+    clearBorrowedChoice = function()
+      cleared = cleared + 1
+    end,
+  }
+  local received
+  local scheduler = {
+    step = function(_, _, snapshot)
+      received = snapshot
+    end,
+    playerInputLocked = function()
+      return true
+    end,
+    playerInputOwned = function()
+      return true
+    end,
+    foregroundEnvironmentId = function()
+      return "foreground"
+    end,
+  }
+  local session = FieldSession.new(baseOptions({
+    input = {
+      snapshot = function()
+        return {}
+      end,
+      uiSnapshot = function()
+        return raw
+      end,
+      clearEdges = function() end,
+    },
+    scriptScheduler = scheduler,
+    contextChoice = {
+      isActive = function()
+        return true
+      end,
+    },
+    yesNoHost = host,
+    contextChoicePresentation = function()
+      return presentation
+    end,
+  }))
+  session:updateFixed({ pressedAction = true, pressedCancel = true })
+  Assert.equal(seenStatus, presentation, "the session translates the shared presentation record")
+  Assert.equal(seenEvents, raw, "the host receives the raw fixed-tick snapshot")
+  Assert.equal(received.uiEvents, translated, "the scheduler receives host-translated semantics")
+  Assert.isNil(received.pressedAction, "world action stays cleared under a contextual choice")
+  Assert.isNil(received.pressedCancel, "world cancel stays cleared under a contextual choice")
+  Assert.equal(cleared, 0, "an active choice keeps its borrowed capture")
+end
+
+-- When no contextual choice owns the modal lane, the session drops any
+-- borrowed gesture so a stale release cannot answer a later choice.
+function T.inactive_contextual_choice_clears_borrowed_capture()
+  local cleared = 0
+  local host = {
+    isModal = function()
+      return false
+    end,
+    inputEvents = function()
+      error("the live host must stay idle without a live choice", 2)
+    end,
+    inputEventsFor = function()
+      error("an inactive choice must never translate pointer input", 2)
+    end,
+    clearBorrowedChoice = function()
+      cleared = cleared + 1
+    end,
+  }
+  local received
+  local scheduler = {
+    step = function(_, _, snapshot)
+      received = snapshot
+    end,
+    playerInputLocked = function()
+      return false
+    end,
+    playerInputOwned = function()
+      return false
+    end,
+    foregroundEnvironmentId = function()
+      return nil
+    end,
+  }
+  local session = FieldSession.new(baseOptions({
+    scriptScheduler = scheduler,
+    contextChoice = {
+      isActive = function()
+        return false
+      end,
+    },
+    yesNoHost = host,
+    contextChoicePresentation = function()
+      return nil
+    end,
+  }))
+  session:updateFixed({})
+  Assert.equal(cleared, 1, "an inactive tick clears borrowed pointer capture")
+  Assert.isNil(received.uiEvents, "no translated choice events reach the scheduler while idle")
+end
+
+-- An open but unpresentable choice (no screen topology) keeps the
+-- pre-existing raw lane: draw shows nothing and keyboard answers flow
+-- through untouched, exactly as before shared routing existed.
+function T.unpresentable_contextual_choice_keeps_the_raw_lane()
+  local raw = { { type = "navigate", direction = "down" } }
+  local host = {
+    isModal = function()
+      return false
+    end,
+    inputEvents = function(_, events)
+      return events
+    end,
+    inputEventsFor = function()
+      error("an unpresentable choice must never translate pointer input", 2)
+    end,
+    clearBorrowedChoice = function() end,
+  }
+  local received
+  local scheduler = {
+    step = function(_, _, snapshot)
+      received = snapshot
+    end,
+    playerInputLocked = function()
+      return true
+    end,
+    playerInputOwned = function()
+      return true
+    end,
+    foregroundEnvironmentId = function()
+      return "foreground"
+    end,
+  }
+  local session = FieldSession.new(baseOptions({
+    input = {
+      snapshot = function()
+        return {}
+      end,
+      uiSnapshot = function()
+        return raw
+      end,
+      clearEdges = function() end,
+    },
+    scriptScheduler = scheduler,
+    contextChoice = {
+      isActive = function()
+        return true
+      end,
+    },
+    yesNoHost = host,
+    contextChoicePresentation = function()
+      return nil
+    end,
+  }))
+  session:updateFixed({})
+  Assert.equal(received.uiEvents, raw, "the scheduler receives the raw snapshot while unpresentable")
+end
+
+function T.choice_host_without_a_presentation_callback_is_rejected()
+  local err = Assert.throws(function()
+    FieldSession.new(baseOptions({
+      contextChoice = {
+        isActive = function()
+          return false
+        end,
+      },
+      yesNoHost = {
+        isModal = function()
+          return false
+        end,
+        inputEvents = function(_, events)
+          return events
+        end,
+        inputEventsFor = function(_, _, events)
+          return events
+        end,
+        clearBorrowedChoice = function() end,
+      },
+    }))
+  end)
+  Assert.notNil(tostring(err):find("contextChoicePresentation", 1, true), "the missing callback is named")
+end
+
 return { tests = T }

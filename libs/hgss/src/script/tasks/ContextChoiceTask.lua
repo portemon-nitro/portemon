@@ -55,7 +55,10 @@ function ContextChoiceTask.poll(state, ctx)
   end
   for _, event in ipairs(events) do
     assert(type(event) == "table" and type(event.type) == "string", "context_choice UI event is invalid")
-    if event.type == "navigate" then
+    if event.type == "focus" then
+      assert(event.row == 0 or event.row == 1, "context choice focus row is invalid")
+      state.selected = choice:select(event.row)
+    elseif event.type == "navigate" then
       local selected = SELECTION_BY_DIRECTION[event.direction]
       if selected ~= nil then
         if selected ~= state.selected then

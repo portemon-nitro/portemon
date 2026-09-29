@@ -160,6 +160,9 @@ local function makeSession(opts)
     }) --[[@as ScriptInteractionClient]],
     menuHost = menuHost,
     yesNoHost = opts.yesNoHost,
+    contextChoicePresentation = opts.contextChoicePresentation or function()
+      return nil
+    end,
     contextChoice = opts.contextChoice or {
       isActive = function()
         return false
@@ -448,6 +451,10 @@ function T.active_choice_routes_ui_events_through_its_host_and_suppresses_raw_ed
       routed = uiEvents
       return { { type = "confirm" } }
     end,
+    inputEventsFor = function(_, _, uiEvents)
+      return uiEvents
+    end,
+    clearBorrowedChoice = function() end,
   }
   local uiEvents = { { type = "pointer_down", pointerId = "touch", x = 3, y = 4 } }
   local input = {
@@ -512,6 +519,10 @@ function T.simultaneous_choice_and_context_prompts_are_rejected()
     inputEvents = function(_, uiEvents)
       return uiEvents
     end,
+    inputEventsFor = function(_, _, uiEvents)
+      return uiEvents
+    end,
+    clearBorrowedChoice = function() end,
   }
   local session = makeSession({
     yesNoHost = yesNoHost,

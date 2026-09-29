@@ -1325,6 +1325,9 @@ function FieldRuntime:_load(loadOptions)
     })
     self.residency:initialize()
 
+    local function sessionContextChoicePresentation()
+      return self:contextChoicePresentation()
+    end
     self.session = FieldSession.new({
       versionId = self.versionId,
       currentMap = self.runtimeMap,
@@ -1341,6 +1344,7 @@ function FieldRuntime:_load(loadOptions)
       menuHost = self.menuHost,
       yesNoHost = self.yesNoHost,
       contextChoice = self.contextChoiceProvider,
+      contextChoicePresentation = sessionContextChoicePresentation,
       starterChoice = self.starterChoice,
       partySelection = self.partySelection,
       fieldMoves = self.pokemonMenu.fieldMoves,
@@ -2290,6 +2294,42 @@ end
 -- Re-apply the user's field-scale change to the camera projection.
 function FieldRuntime:applyFieldPixelScaleChange()
   self:_updateCameraProjection()
+end
+
+-- The contextual two-choice presentation record shared by field draw and
+-- fixed-tick pointer translation. Nil while no contextual prompt is open;
+-- otherwise the provider selection plus the generated Yes/No labels. Draw
+-- and input consume this one record so labels and geometry cannot drift.
+---Returns nil while no contextual prompt is open or while presentation
+---geometry is unavailable (no screen topology): pointer translation and
+---draw share this one record, so an unpresentable choice disables both
+---and the tick falls back to the pre-existing raw lane.
+---@return { active: boolean, selectedIndex: integer, yesText: string, noText: string, frameIndex: integer? }|nil
+function FieldRuntime:contextChoicePresentation()
+  local provider = self.contextChoiceProvider
+  if provider == nil then
+    return nil
+  end
+  if self.screenTopology == nil then
+    return nil
+  end
+  local status = provider:status()
+  if status == nil then
+    return nil
+  end
+  assert(status.selected == 0 or status.selected == 1, "contextual choice selection is outside the two choices")
+  local dialogueHost = assert(
+    self.scripts and self.scripts.dialogueHost,
+    "contextual choice presentation requires the script dialogue host"
+  )
+  local options = dialogueHost:yesNoOptions()
+  return {
+    active = true,
+    selectedIndex = status.selected,
+    yesText = options.yesText,
+    noText = options.noText,
+    frameIndex = options.frameIndex,
+  }
 end
 
 -- Presentation facts for the live choice host: the same bounds, dialogue

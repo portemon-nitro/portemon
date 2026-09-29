@@ -150,6 +150,9 @@ local function drawableState(options)
         return nil
       end,
     },
+    contextChoicePresentation = function()
+      return nil
+    end,
     signpost = {
       isModal = function()
         return options.signpostModal == true

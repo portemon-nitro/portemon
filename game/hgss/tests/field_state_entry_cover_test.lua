@@ -157,6 +157,9 @@ local function boot(withCover)
           return nil
         end,
       },
+      contextChoicePresentation = function()
+        return nil
+      end,
       signpost = {
         isModal = function()
           return false
