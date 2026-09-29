@@ -491,21 +491,22 @@ function FieldMapLoader:loadLogical(idOrSymbol)
   return logicalMap
 end
 
-function FieldMapLoader:load(idOrSymbol, _)
-  assert(not self.released, "field map loader is released")
-  local record = worldRecord(self.world, idOrSymbol)
-  local existing = self.entries[record.id]
-  if existing then
-    self:_touch(existing)
-    return existing.runtimeMap
-  end
-  local fieldData = self:_acquireSemantic(record)
-  if self.derivedAssets then
-    self.derivedAssets.ensureField(record.id)
+-- Synchronous preparation for one load transaction: structural world
+-- validation, the semantic derived-asset readiness edge, and every
+-- synchronously available runtime-map piece (scene record, terrain,
+-- collision, door/prop resolver). Raises before anything is published;
+-- the staged task owns scene realization and single cache publication.
+---@param loader FieldMapLoader
+---@param record table<string, unknown>
+---@return table<string, unknown>
+local function prepareLoad(loader, record)
+  local fieldData = loader:_acquireSemantic(record)
+  if loader.derivedAssets then
+    loader.derivedAssets.ensureField(record.id)
   end
 
   local mapDir = MapAssetCache.mapDir(record.id)
-  local scene = loadRequired(self.cacheFs, mapDir .. "/scene.lua", FieldErrors.FIELD_MAP_VISUAL_CACHE_MISSING)
+  local scene = loadRequired(loader.cacheFs, mapDir .. "/scene.lua", FieldErrors.FIELD_MAP_VISUAL_CACHE_MISSING)
   local terrainArtifact
   if scene.schema ~= MapAssetCache.SCENE_SCHEMA or scene.mapId ~= record.id then
     Errors.raise(
@@ -530,12 +531,12 @@ function FieldMapLoader:load(idOrSymbol, _)
   end
 
   local physicalCells = scene.type == "outdoor"
-  if physicalCells and not self.fieldCellIndex then
-    self.fieldCellIndex = loadFieldCellIndex(self.cacheFs)
+  if physicalCells and not loader.fieldCellIndex then
+    loader.fieldCellIndex = loadFieldCellIndex(loader.cacheFs)
   end
   if not physicalCells then
     terrainArtifact =
-      loadRequired(self.cacheFs, MapAssetCache.terrainPath(record.id), FieldErrors.FIELD_MAP_TERRAIN_CACHE_MISSING)
+      loadRequired(loader.cacheFs, MapAssetCache.terrainPath(record.id), FieldErrors.FIELD_MAP_TERRAIN_CACHE_MISSING)
     if terrainArtifact.schema ~= MapAssetCache.TERRAIN_SCHEMA then
       Errors.raise(
         FieldErrors.FIELD_MAP_TERRAIN_CACHE_INVALID,
@@ -573,46 +574,83 @@ function FieldMapLoader:load(idOrSymbol, _)
         { mapId = record.id }
       )
     end
-    centralCollision = loadCollision(self.cacheFs, scene.collision, FieldErrors.FIELD_MAP_COLLISION_CACHE_MISSING, {
+    centralCollision = loadCollision(loader.cacheFs, scene.collision, FieldErrors.FIELD_MAP_COLLISION_CACHE_MISSING, {
       mapId = record.id,
       worldOriginX = scene.matrix.worldOriginX,
       worldOriginZ = scene.matrix.worldOriginZ,
     })
-    mapProps = buildMapProps(self.cacheFs, scene, fieldData, centralCollision)
+    mapProps = buildMapProps(loader.cacheFs, scene, fieldData, centralCollision)
   end
+  return {
+    record = record,
+    fieldData = fieldData,
+    scene = scene,
+    physicalCells = physicalCells,
+    terrainArtifact = terrainArtifact,
+    centralCollision = centralCollision,
+    mapProps = mapProps,
+  }
+end
 
+-- Starts scene realization for a prepared load context. A staged scene
+-- builder yields a resumable task; a synchronous-only scene loader runs
+-- here through its own transaction, exactly as before; without a scene
+-- loader there is no visual runtime. Nothing is published in any case.
+-- Returns the scene task (or nil) and the scene runtime (or nil).
+---@param loader FieldMapLoader
+---@param ctx table<string, unknown>
+---@return FieldMapLoader.SceneBuildTask? sceneTask
+---@return FieldMapLoader.SceneRuntime? sceneRuntime
+local function startScene(loader, ctx)
   -- The visual scene runtime is optional: only a presentation composition
   -- supplies a scene loader. For indoor maps it attaches its live
   -- ModelInstances into the SAME mapProps rather than building a second door
   -- census; an outdoor map's presentation instead loads the environment
   -- shell and defers physical geometry to the coverage window.
-  local sceneRuntime
-  if self.sceneLoader then
-    sceneRuntime = physicalCells and self.sceneLoader.loadEnvironment(scene)
-      or self.sceneLoader.load(self.cacheFs, scene, {
-        mapProps = mapProps,
-        assetPreparation = self.assetPreparation,
-      })
+  local scene = ctx.scene
+  if ctx.physicalCells then
+    if loader.sceneLoader then
+      return nil, loader.sceneLoader.loadEnvironment(scene)
+    end
+    return nil, nil
   end
-  -- One transaction covers every step after the scene runtime is acquired:
-  -- neighbor-ring load, terrain construction, neighbor decoding, region
-  -- assembly, and aggregate construction. Any failure releases the neighbor
-  -- runtime (if created) and the scene runtime exactly once before the error
-  -- propagates; a failure inside the scene loader itself is that loader's own
-  -- transaction.
+  if loader.sceneLoader == nil then
+    return nil, nil
+  end
+  local options = { mapProps = ctx.mapProps, assetPreparation = loader.assetPreparation }
+  if loader.sceneLoader.begin ~= nil then
+    return loader.sceneLoader.begin(loader.cacheFs, scene, options), nil
+  end
+  return nil, loader.sceneLoader.load(loader.cacheFs, scene, options)
+end
+
+-- Completes one load transaction: neighbor-ring load, terrain
+-- construction, neighbor decoding, region assembly, aggregate
+-- construction, and single cache publication. Any failure releases the
+-- neighbor runtime (if created) and the scene runtime exactly once before
+-- the error propagates; a failure inside the scene loader itself is that
+-- loader's own transaction.
+---@param loader FieldMapLoader
+---@param ctx table<string, unknown>
+---@param sceneRuntime table<string, unknown>?
+---@return table<string, unknown> runtimeMap
+local function assembleComplete(loader, ctx, sceneRuntime)
+  local record = ctx.record
+  local scene = ctx.scene
+  local physicalCells = ctx.physicalCells
   local neighborRuntime
   local runtimeMap
   local ok, loadErr = pcall(function()
-    if not physicalCells and self.neighborLoader and #scene.neighbors > 0 then
-      neighborRuntime = self.neighborLoader.load(self.cacheFs, scene.neighbors, {
+    if not physicalCells and loader.neighborLoader and #scene.neighbors > 0 then
+      neighborRuntime = loader.neighborLoader.load(loader.cacheFs, scene.neighbors, {
         textureSrt = scene.terrainAnimations.textureSrt,
       })
     end
 
     local region
     if not physicalCells then
-      local centralTerrain = TerrainSurface.new(assert(terrainArtifact))
-      region = loadNeighborRegion(self.cacheFs, scene, centralCollision, centralTerrain)
+      local centralTerrain = TerrainSurface.new(assert(ctx.terrainArtifact))
+      region = loadNeighborRegion(loader.cacheFs, scene, ctx.centralCollision, centralTerrain)
     end
     runtimeMap = {
       mapId = record.id,
@@ -621,9 +659,9 @@ function FieldMapLoader:load(idOrSymbol, _)
       mapSectionNativeId = record.mapSectionNativeId,
       followMode = record.followMode,
       sceneRuntime = sceneRuntime,
-      mapProps = mapProps,
+      mapProps = ctx.mapProps,
       scene = scene,
-      fieldData = fieldData,
+      fieldData = ctx.fieldData,
       collision = region and region.collision or nil,
       terrain = region and region.terrain or nil,
       terrainDependencyHash = region and terrainDependencyHash(region) or nil,
@@ -669,8 +707,8 @@ function FieldMapLoader:load(idOrSymbol, _)
     end
 
     local entry = { runtimeMap = runtimeMap }
-    self.entries[record.id] = entry
-    self:_touch(entry)
+    loader.entries[record.id] = entry
+    loader:_touch(entry)
   end)
   if not ok then
     if neighborRuntime then
@@ -682,8 +720,219 @@ function FieldMapLoader:load(idOrSymbol, _)
     error(loadErr)
   end
 
-  self:_evict(record.id)
+  loader:_evict(record.id)
   return runtimeMap
+end
+
+---@class FieldMapLoader.SceneRuntime
+---@field release fun(self: FieldMapLoader.SceneRuntime)
+
+---@class FieldMapLoader.SceneBuildTask
+---@field advance fun(self: FieldMapLoader.SceneBuildTask, workUnits: integer): integer
+---@field isReady fun(self: FieldMapLoader.SceneBuildTask): boolean
+---@field takeResult fun(self: FieldMapLoader.SceneBuildTask): table<string, unknown>
+---@field finish fun(self: FieldMapLoader.SceneBuildTask): table<string, unknown>
+---@field release fun(self: FieldMapLoader.SceneBuildTask)
+
+---@class FieldMapLoader.StagedTask
+---@field _loader FieldMapLoader?
+---@field _ctx table<string, unknown>?
+---@field _sceneTask FieldMapLoader.SceneBuildTask?
+---@field _sceneRuntime FieldMapLoader.SceneRuntime?
+---@field _ready boolean
+---@field _result table<string, unknown>?
+---@field _failed unknown?
+---@field _released boolean
+---@field _transferred boolean
+---@field advance fun(self: FieldMapLoader.StagedTask, workUnits: integer): integer
+---@field isReady fun(self: FieldMapLoader.StagedTask): boolean
+---@field takeResult fun(self: FieldMapLoader.StagedTask): table<string, unknown>
+---@field finish fun(self: FieldMapLoader.StagedTask): table<string, unknown>
+---@field release fun(self: FieldMapLoader.StagedTask)
+local StagedLoadTask = {}
+StagedLoadTask.__index = StagedLoadTask
+
+-- Fails a staged task: releases the outstanding scene build or the
+-- untaken scene runtime exactly once, records the cause, and propagates
+-- it. Later advance/finish/takeResult calls stay loud with the same cause.
+---@param task FieldMapLoader.StagedTask
+---@param err unknown
+local function failStaged(task, err)
+  if task._sceneTask ~= nil then
+    local sceneTask = assert(task._sceneTask)
+    task._sceneTask = nil
+    pcall(function()
+      sceneTask:release()
+    end)
+  end
+  if task._sceneRuntime ~= nil then
+    local sceneRuntime = assert(task._sceneRuntime)
+    task._sceneRuntime = nil
+    pcall(function()
+      sceneRuntime:release()
+    end)
+  end
+  task._failed = err
+  error(err, 0)
+end
+
+---@param workUnits integer main-thread work budget for this advance
+---@return integer consumed (always zero; scene work is accounted by its owner)
+function StagedLoadTask:advance(workUnits)
+  if self._failed ~= nil then
+    error(self._failed, 0)
+  end
+  assert(not self._released, "staged load task is released")
+  if self._ready then
+    return 0
+  end
+  assert(
+    type(workUnits) == "number" and workUnits >= 0 and workUnits % 1 == 0,
+    "staged advance requires non-negative integer work units"
+  )
+  if self._sceneTask ~= nil then
+    local okAdvance, advanceErr = pcall(self._sceneTask.advance, self._sceneTask, workUnits)
+    if not okAdvance then
+      failStaged(self, advanceErr)
+    end
+    if not self._sceneTask:isReady() then
+      return 0
+    end
+    local okResult, runtimeOrErr = pcall(self._sceneTask.takeResult, self._sceneTask)
+    self._sceneTask = nil
+    if not okResult then
+      failStaged(self, runtimeOrErr)
+    end
+    self._sceneRuntime = runtimeOrErr
+  end
+  -- The scene runtime moves into assembly here so a failure releases it
+  -- exactly once through the single assembly transaction.
+  local sceneRuntime = self._sceneRuntime
+  self._sceneRuntime = nil
+  local okAssemble, mapOrErr = pcall(assembleComplete, self._loader, self._ctx, sceneRuntime)
+  if not okAssemble then
+    self._failed = mapOrErr
+    error(mapOrErr, 0)
+  end
+  self._result = mapOrErr
+  self._ready = true
+  return 0
+end
+
+---@return boolean
+function StagedLoadTask:isReady()
+  return self._ready == true
+end
+
+---@return table<string, unknown> the published resident runtime map
+function StagedLoadTask:takeResult()
+  if self._failed ~= nil then
+    error(self._failed, 0)
+  end
+  assert(self._ready, "staged load result is not ready")
+  self._transferred = true
+  return assert(self._result)
+end
+
+-- Finishes the staged transaction synchronously: a pending scene build is
+-- finished through its own synchronous path (the same block-wait a direct
+-- scene load performs), then assembly publishes exactly once.
+---@return table<string, unknown> the published resident runtime map
+function StagedLoadTask:finish()
+  if self._failed ~= nil then
+    error(self._failed, 0)
+  end
+  if not self._ready then
+    if self._sceneTask ~= nil then
+      local sceneTask = assert(self._sceneTask)
+      local okFinish, runtimeOrErr = pcall(sceneTask.finish, sceneTask)
+      self._sceneTask = nil
+      if not okFinish then
+        failStaged(self, runtimeOrErr)
+      end
+      self._sceneRuntime = runtimeOrErr
+    end
+    self:advance(0)
+  end
+  return self:takeResult()
+end
+
+-- Releases a staged task before completion: the outstanding scene build
+-- or untaken scene runtime is released and no entry is published. After
+-- completion the resident entry belongs to the loader, so release (and a
+-- repeated release) is a no-op.
+function StagedLoadTask:release()
+  if self._transferred or self._released then
+    return
+  end
+  self._released = true
+  if not self._ready then
+    if self._sceneTask ~= nil then
+      local sceneTask = assert(self._sceneTask)
+      self._sceneTask = nil
+      pcall(function()
+        sceneTask:release()
+      end)
+    end
+    if self._sceneRuntime ~= nil then
+      local sceneRuntime = assert(self._sceneRuntime)
+      self._sceneRuntime = nil
+      pcall(function()
+        sceneRuntime:release()
+      end)
+    end
+  end
+  self._result = nil
+end
+
+-- Begins one staged load transaction for the map. The returned task
+-- advances staged scene work toward the single cache publication; it
+-- publishes nothing until every runtime-map piece is valid. A resident
+-- entry yields an immediately ready task returning that identity.
+---@param idOrSymbol string|integer
+---@return FieldMapLoader.StagedTask
+function FieldMapLoader:beginLoad(idOrSymbol)
+  assert(not self.released, "field map loader is released")
+  local record = worldRecord(self.world, idOrSymbol)
+  local existing = self.entries[record.id]
+  if existing then
+    self:_touch(existing)
+    local resident = existing.runtimeMap
+    local task = { _transferred = false }
+    function task:advance(_)
+      return 0
+    end
+    function task:isReady()
+      return true
+    end
+    function task:takeResult()
+      self._transferred = true
+      return resident
+    end
+    function task:finish()
+      return task:takeResult()
+    end
+    function task:release() end
+    return task
+  end
+  local ctx = prepareLoad(self, record)
+  local sceneTask, sceneRuntime = startScene(self, ctx)
+  return setmetatable({
+    _loader = self,
+    _ctx = ctx,
+    _sceneTask = sceneTask,
+    _sceneRuntime = sceneRuntime,
+    _ready = false,
+    _result = nil,
+    _failed = nil,
+    _released = false,
+    _transferred = false,
+  }, StagedLoadTask)
+end
+
+function FieldMapLoader:load(idOrSymbol, _)
+  assert(not self.released, "field map loader is released")
+  return self:beginLoad(idOrSymbol):finish()
 end
 
 -- Converts map-local coordinates into the global field domain normal

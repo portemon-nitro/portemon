@@ -26,6 +26,13 @@ local function loadApplicationModules()
   Assert.isTrue(okNewGame, "the HGSS application must compose New Game: " .. tostring(newGameOrError))
   local okOak, oakOrError = pcall(require, "game.hgss.src.newgame.OakIntroComposition")
   Assert.isTrue(okOak, "the HGSS application must compose Oak: " .. tostring(oakOrError))
+  local okPrepared, preparedOrError = pcall(require, "game.hgss.src.field.PreparedFieldEntry")
+  Assert.isTrue(okPrepared, "the HGSS application must own the prepared field entry: " .. tostring(preparedOrError))
+  local okPreparation, preparationOrError = pcall(require, "game.hgss.src.field.FieldPreparationState")
+  Assert.isTrue(
+    okPreparation,
+    "the HGSS application must own field preparation: " .. tostring(preparationOrError)
+  )
   return {
     hgssGame = hgssGameOrError,
     game = gameOrError,
@@ -36,6 +43,8 @@ local function loadApplicationModules()
     store = storeOrError,
     newGame = newGameOrError,
     oak = oakOrError,
+    prepared = preparedOrError,
+    preparation = preparationOrError,
   }
 end
 
@@ -146,6 +155,8 @@ local function withCompositionSpies(fn)
   modules.fieldText = textOrError
   modules.menuRenderer = rendererOrError
   local original = {
+    preparedNew = modules.prepared.new,
+    preparationNew = modules.preparation.new,
     fieldNew = modules.fieldState.new,
     apply = modules.initialization.apply,
     initialLocation = modules.initialization.initialLocation,
@@ -156,6 +167,35 @@ local function withCompositionSpies(fn)
     textNew = modules.fieldText.new,
     menuRendererNew = modules.menuRenderer.new,
   }
+  -- Incidental Oak boots (routing, menu, continue paths) use a ready fake
+  -- entry; handoff tests configure their own recording factory instead.
+  local function defaultPreparedEntry(options)
+    local entry = { polls = 0, disposals = 0, takes = 0, location = options.location }
+    function entry:poll()
+      self.polls = self.polls + 1
+      return true
+    end
+    function entry:dispose()
+      self.disposals = self.disposals + 1
+    end
+    function entry:isReady()
+      return true
+    end
+    function entry:take()
+      self.takes = self.takes + 1
+      local transfer = { versionId = options.versionId, location = options.location, claims = 0, disposals = 0 }
+      function transfer:claim(_)
+        self.claims = self.claims + 1
+        return { mapLoader = {}, assetPreparation = {} }
+      end
+      function transfer:dispose()
+        self.disposals = self.disposals + 1
+      end
+      entry.transfer = transfer
+      return transfer
+    end
+    return entry
+  end
   local context
   context = {
     fieldCalls = {},
@@ -169,6 +209,8 @@ local function withCompositionSpies(fn)
     texts = {},
     menuRenderers = {},
     rendererFailure = nil,
+    preparedEntry = nil,
+    preparationCalls = {},
     stores = {},
     validationFactory = function(_)
       return {
@@ -188,8 +230,18 @@ local function withCompositionSpies(fn)
     end,
   }
 
+  modules.prepared.new = function(options)
+    return (context.preparedEntry or defaultPreparedEntry)(options)
+  end
+  modules.preparation.new = function(options)
+    context.preparationCalls[#context.preparationCalls + 1] = options
+    return original.preparationNew(options)
+  end
   modules.fieldState.new = function(game, options)
     context.fieldCalls[#context.fieldCalls + 1] = { game = game, options = options }
+    if context.fieldFailure ~= nil then
+      error(context.fieldFailure, 0)
+    end
     return disposableState("field")
   end
   rawset(modules.initialization, "apply", function(game)
@@ -271,6 +323,8 @@ local function withCompositionSpies(fn)
     fn(modules, context)
   end)
 
+  modules.prepared.new = original.preparedNew
+  modules.preparation.new = original.preparationNew
   modules.fieldState.new = original.fieldNew
   rawset(modules.initialization, "apply", original.apply)
   rawset(modules.initialization, "initialLocation", original.initialLocation)
@@ -327,6 +381,9 @@ function T.hgss_entry_owns_menu_continue_new_game_oak_and_quit_routing()
       Assert.equal(options.candidate, candidate)
       Assert.equal(options.versionId, READY_VERSION)
       Assert.isTrue(type(options.onComplete) == "function")
+      Assert.isTrue(type(options.preparedEntry) == "table", "Oak receives the staged bedroom entry")
+      Assert.isTrue(type(options.preparedEntry.poll) == "function", "the staged entry polls")
+      Assert.isTrue(type(options.preparedEntry.dispose) == "function", "the staged entry disposes")
       return context.oakState
     end
 
@@ -371,18 +428,24 @@ function T.hgss_entry_owns_menu_continue_new_game_oak_and_quit_routing()
     settle(newGame)
     Assert.equal(#context.candidateCalls, 1)
     Assert.equal(#context.oakCalls, 1)
+    local preparationsBeforeHandoff = #context.preparationCalls
     context.oakCalls[1].onComplete(finalized)
     Assert.equal(#context.applyCalls, 1)
     Assert.equal(context.applyCalls[1], finalized)
-    Assert.equal(
-      #context.fieldCalls,
-      1,
-      "the handoff requests planning, runtime, and geometry before constructing field"
-    )
-    settle(newGame)
-    Assert.equal(#context.fieldCalls, 2)
+    Assert.equal(#context.fieldCalls, 2, "the handoff constructs the field directly from the staged entry")
     Assert.equal(context.fieldCalls[2].game, finalized)
     Assert.isTrue(context.fieldCalls[2].options.development)
+    Assert.isTrue(
+      context.fieldCalls[2].options.preparedEntry ~= nil,
+      "the direct handoff carries the staged transfer"
+    )
+    Assert.equal(
+      #context.preparationCalls,
+      preparationsBeforeHandoff,
+      "the New Game handoff never installs a preparation state"
+    )
+    settle(newGame)
+    Assert.equal(#context.fieldCalls, 2, "waiting constructs no second field")
     Assert.equal(context.oakState.disposed, 1)
     newGame:setState(nil)
 
@@ -613,54 +676,94 @@ end
 -- Cold New Game must survive the Oak handoff without world metadata: the
 -- finalized candidate waits on entry planning with zero world reads, then
 -- builds the production loader exactly once after readiness.
-function T.cold_new_game_handoff_defers_world_read_until_field_planning_is_ready()
+function T.oak_completion_with_a_diverging_location_fails_without_field()
   withCompositionSpies(function(modules, context)
-    withProductionLoaderObservation(cannedWorld(), function(observation)
-      context.stores[1] = fakeStore({})
-      local finalized = {
-        saveId = "save-00000003",
-        versionId = READY_VERSION,
-        playerData = {},
-        location = { mapSymbol = "MAP_NEW_BARK_PLAYER_HOUSE_2F", fieldX = 6, fieldZ = 6 },
-      }
-      context.candidate = {
-        saveId = "save-00000003",
-        versionId = READY_VERSION,
-        playerData = nil,
-        location = { mapSymbol = "MAP_NEW_BARK_PLAYER_HOUSE_2F", fieldX = 6, fieldZ = 6 },
-      }
-      context.oakState = disposableState("oak")
-      local planningReady = false
-      local host = readyHost()
-      host.requestMilestone = function(name, _)
-        if name == "field-planning" then
-          return planningReady
-        end
+    context.stores[1] = fakeStore({})
+    context.candidate = {
+      saveId = "save-00000003",
+      versionId = READY_VERSION,
+      playerData = nil,
+      location = { mapSymbol = "MAP_NEW_BARK_PLAYER_HOUSE_2F", fieldX = 6, fieldZ = 6 },
+    }
+    context.oakState = disposableState("oak")
+    local game = modules.hgssGame.new({
+      versionId = READY_VERSION,
+      onExit = function() end,
+      derivedAssets = readyHost(),
+      fieldMapLoader = planningLoader(),
+    })
+    game.state:keypressed("return")
+    settle(game)
+    local diverged = {
+      saveId = "save-00000003",
+      versionId = READY_VERSION,
+      playerData = {},
+      location = { mapSymbol = "MAP_NEW_BARK_TOWN", fieldX = 1, fieldZ = 1 },
+    }
+    local ok, err = pcall(context.oakCalls[1].onComplete, diverged)
+    Assert.isFalse(ok, "a diverging finalized location fails the handoff")
+    Assert.isTrue(string.find(tostring(err), "diverges", 1, true) ~= nil, "the failure names the divergence")
+    Assert.equal(#context.fieldCalls, 0, "a diverging handoff constructs no field")
+    Assert.equal(#context.preparationCalls, 0, "a diverging handoff falls back to no preparation state")
+    game:setState(nil)
+  end)
+end
+
+function T.failed_field_construction_releases_the_unclaimed_transfer()
+  withCompositionSpies(function(modules, context)
+    context.stores[1] = fakeStore({})
+    context.candidate = {
+      saveId = "save-00000003",
+      versionId = READY_VERSION,
+      playerData = nil,
+      location = { mapSymbol = "MAP_NEW_BARK_PLAYER_HOUSE_2F", fieldX = 6, fieldZ = 6 },
+    }
+    context.oakState = disposableState("oak")
+    local entries = {}
+    context.preparedEntry = function(options)
+      local entry = { location = options.location }
+      function entry:poll()
         return true
       end
-      local game = modules.hgssGame.new({
-        versionId = READY_VERSION,
-        onExit = function() end,
-        derivedAssets = host,
-      })
-      game.state:keypressed("return")
-      settle(game)
-      Assert.equal(#context.oakCalls, 1, "the intro closure composes Oak while core stays pending")
-      context.oakCalls[1].onComplete(finalized)
-      Assert.equal(observation.worldReads, 0, "the Oak handoff reads no world metadata")
-      Assert.equal(observation.loaderBuilds, 0, "the Oak handoff builds no planning loader")
-      settle(game)
-      Assert.equal(observation.worldReads, 0, "pending planning never reads world metadata after the handoff")
-      Assert.equal(#context.fieldCalls, 0, "field never constructs before planning readiness")
-      planningReady = true
-      settle(game)
-      Assert.equal(observation.worldReads, 1, "readiness reads the world manifest exactly once")
-      Assert.equal(observation.loaderBuilds, 1, "readiness builds the planning loader exactly once")
-      settle(game)
-      Assert.equal(#context.fieldCalls, 1, "field constructs once planning, runtime, and geometry are ready")
-      Assert.equal(context.fieldCalls[1].game, finalized)
-      game:setState(nil)
-    end)
+      function entry:dispose() end
+      function entry:take()
+        local transfer = { disposals = 0 }
+        function transfer:claim(_)
+          return { mapLoader = {}, assetPreparation = {} }
+        end
+        function transfer:dispose()
+          self.disposals = self.disposals + 1
+        end
+        entry.transfer = transfer
+        return transfer
+      end
+      entries[#entries + 1] = entry
+      return entry
+    end
+    context.fieldFailure = "injected field construction failure"
+    local game = modules.hgssGame.new({
+      versionId = READY_VERSION,
+      onExit = function() end,
+      derivedAssets = readyHost(),
+      fieldMapLoader = planningLoader(),
+    })
+    game.state:keypressed("return")
+    settle(game)
+    local finalized = {
+      saveId = "save-00000003",
+      versionId = READY_VERSION,
+      playerData = {},
+      location = { mapSymbol = "MAP_NEW_BARK_PLAYER_HOUSE_2F", fieldX = 6, fieldZ = 6 },
+    }
+    local ok, err = pcall(context.oakCalls[1].onComplete, finalized)
+    Assert.isFalse(ok, "field construction failure propagates")
+    Assert.isTrue(
+      string.find(tostring(err), "injected field construction failure", 1, true) ~= nil,
+      "the original failure surfaces"
+    )
+    Assert.equal(entries[1].transfer.disposals, 1, "the unclaimed transfer releases exactly once")
+    Assert.equal(#context.preparationCalls, 0, "a failed handoff installs no preparation state")
+    game:setState(nil)
   end)
 end
 
@@ -916,61 +1019,44 @@ end
 -- without waiting for it: Oak is composed while the runtime is still
 -- pending, the intro gate never demands the runtime as required, and the
 -- prewarm happens exactly once.
-function T.oak_boot_prefetches_field_runtime_without_waiting_for_it()
+function T.oak_boot_stages_the_bedroom_entry_without_waiting_for_it()
   withCompositionSpies(function(modules, context)
     context.stores[1] = fakeStore({})
-    local candidate = {
+    context.candidate = {
       saveId = "save-00000003",
       versionId = READY_VERSION,
       playerData = nil,
       location = { mapSymbol = "MAP_NEW_BARK_PLAYER_HOUSE_2F", fieldX = 6, fieldZ = 6 },
     }
-    context.candidate = candidate
     context.oakState = disposableState("oak")
-    local requests = {}
-    local host = readyHost()
-    host.requestMilestone = function(name, urgency)
-      requests[#requests + 1] = { name = name, urgency = urgency }
-      if name == "new-game-intro" then
-        return true
+    local entries = {}
+    context.preparedEntry = function(options)
+      local entry = { polls = 0, disposals = 0, location = options.location }
+      function entry:poll()
+        self.polls = self.polls + 1
+        return false
       end
-      return false
+      function entry:dispose()
+        self.disposals = self.disposals + 1
+      end
+      entries[#entries + 1] = entry
+      return entry
     end
     local game = modules.hgssGame.new({
       versionId = READY_VERSION,
       onExit = function() end,
-      derivedAssets = host,
+      derivedAssets = readyHost(),
       fieldMapLoader = planningLoader(),
     })
     game.state:keypressed("return")
     settle(game)
-    Assert.equal(#context.oakCalls, 1, "Oak is composed while field runtime is still pending")
-    local preOoakRuntime = {}
-    local preOoakPlanning = {}
-    for _, request in ipairs(requests) do
-      if request.name == "field-runtime" then
-        preOoakRuntime[#preOoakRuntime + 1] = request
-      end
-      if request.name == "field-planning" then
-        preOoakPlanning[#preOoakPlanning + 1] = request
-      end
-      if request.name == "field-core" then
-        error("the Oak path must never demand a removed milestone", 0)
-      end
-    end
-    Assert.equal(#preOoakRuntime, 1, "Oak boot prefetches the field runtime exactly once")
-    Assert.equal(preOoakRuntime[1].urgency, "near", "the Oak prewarm stays speculative")
-    Assert.equal(#preOoakPlanning, 1, "Oak boot enrolls field planning speculative")
-    Assert.equal(preOoakPlanning[1].urgency, "near", "the planning prewarm stays speculative")
+    Assert.equal(#context.oakCalls, 1, "Oak is composed while bedroom staging is still pending")
+    Assert.equal(#entries, 1, "Oak boot stages the bedroom entry exactly once")
     local composed = assert(context.oakCalls[1], "Oak composition must be observed")
-    Assert.isTrue(type(composed.entryPrewarm) == "table", "Oak receives the entry coordinator")
-    Assert.isTrue(type(composed.entryPrewarm.poll) == "function", "the coordinator polls")
-    Assert.isTrue(type(composed.entryPrewarm.dispose) == "function", "the coordinator disposes")
-    for _, request in ipairs(requests) do
-      if request.name == "field-runtime" and request.urgency == "required" then
-        error("the intro gate must not demand field runtime as required", 0)
-      end
-    end
+    Assert.isTrue(composed.preparedEntry == entries[1], "Oak receives the staged bedroom entry")
+    Assert.isTrue(entries[1].polls >= 1, "boot polls the entry without blocking on it")
+    Assert.equal(#context.preparationCalls, 0, "booting Oak installs no preparation state")
+    Assert.equal(#context.fieldCalls, 0, "pending staging never constructs the field")
     game:setState(nil)
   end)
 end
@@ -978,7 +1064,7 @@ end
 -- Oak boots even when speculative field demands fail: the coordinator retains
 -- the failure for diagnosis and composition proceeds, so a broken cache
 -- surfaces at the authoritative handoff instead of aborting the intro.
-function T.oak_boot_survives_speculative_demand_failure()
+function T.oak_boot_survives_preparation_demand_failure()
   withCompositionSpies(function(modules, context)
     context.stores[1] = fakeStore({})
     context.candidate = {
@@ -993,7 +1079,7 @@ function T.oak_boot_survives_speculative_demand_failure()
       if name == "new-game-intro" then
         return true
       end
-      error("injected speculative demand failure", 0)
+      error("injected preparation demand failure", 0)
     end
     local game = modules.hgssGame.new({
       versionId = READY_VERSION,
@@ -1003,7 +1089,8 @@ function T.oak_boot_survives_speculative_demand_failure()
     })
     game.state:keypressed("return")
     settle(game)
-    Assert.equal(#context.oakCalls, 1, "Oak composes even when speculative demands fail")
+    Assert.equal(#context.oakCalls, 1, "Oak composes even when preparation demands fail")
+    Assert.equal(#context.preparationCalls, 0, "a demand failure installs no preparation state")
     game:setState(nil)
   end)
 end
@@ -1012,7 +1099,7 @@ end
 -- the handoff preparation: planning and runtime are demanded as required
 -- exactly once each, initialization still applies exactly once while the
 -- handoff waits, and no second candidate is created by later updates.
-function T.oak_completion_promotes_the_runtime_prewarm_to_required()
+function T.oak_completion_enters_the_prepared_field_directly()
   withCompositionSpies(function(modules, context)
     context.stores[1] = fakeStore({})
     local candidate = {
@@ -1029,56 +1116,50 @@ function T.oak_completion_promotes_the_runtime_prewarm_to_required()
     }
     context.candidate = candidate
     context.oakState = disposableState("oak")
-    local requests = {}
-    local host = readyHost()
-    host.requestMilestone = function(name, urgency)
-      requests[#requests + 1] = { name = name, urgency = urgency }
-      if name == "new-game-intro" then
+    local entries = {}
+    context.preparedEntry = function(options)
+      local entry = { takes = 0, disposals = 0, location = options.location }
+      function entry:poll()
         return true
       end
-      return false
+      function entry:dispose()
+        self.disposals = self.disposals + 1
+      end
+      function entry:take()
+        self.takes = self.takes + 1
+        local transfer = { claims = 0, disposals = 0, location = self.location }
+        function transfer:claim(_)
+          self.claims = self.claims + 1
+          return { mapLoader = {}, assetPreparation = {} }
+        end
+        function transfer:dispose()
+          self.disposals = self.disposals + 1
+        end
+        entry.transfer = transfer
+        return transfer
+      end
+      entries[#entries + 1] = entry
+      return entry
     end
     local game = modules.hgssGame.new({
       versionId = READY_VERSION,
       onExit = function() end,
-      derivedAssets = host,
+      derivedAssets = readyHost(),
       fieldMapLoader = planningLoader(),
     })
     game.state:keypressed("return")
     settle(game)
     Assert.equal(#context.oakCalls, 1, "Oak is composed before the handoff")
-    local oakCallCount = #context.oakCalls
-    context.oakCalls[oakCallCount].onComplete(finalized)
-    settle(game)
+    context.oakCalls[1].onComplete(finalized)
     Assert.equal(#context.applyCalls, 1, "initialization applies exactly once")
-    local requiredPlanning = 0
-    local requiredRuntime = 0
-    local nearRuntime = 0
-    for _, request in ipairs(requests) do
-      if request.name == "field-planning" and request.urgency == "required" then
-        requiredPlanning = requiredPlanning + 1
-      end
-      if request.name == "field-runtime" and request.urgency == "required" then
-        requiredRuntime = requiredRuntime + 1
-      end
-      if request.name == "field-runtime" and request.urgency == "near" then
-        nearRuntime = nearRuntime + 1
-      end
-    end
-    Assert.equal(nearRuntime, 1, "the Oak prewarm fired exactly once")
-    Assert.isTrue(requiredPlanning >= 1, "the handoff demands planning as required")
-    Assert.isTrue(requiredRuntime >= 1, "the handoff promotes runtime to required")
-    local nearPlanning = 0
-    for _, request in ipairs(requests) do
-      if request.name == "field-planning" and request.urgency == "near" then
-        nearPlanning = nearPlanning + 1
-      end
-      if request.name == "field-runtime" and request.urgency ~= "near" then
-        Assert.equal(request.urgency, "required", "runtime interest stays required once demanded")
-      end
-    end
-    Assert.equal(nearPlanning, 1, "Oak boot enrolls field planning speculative before the handoff")
-    Assert.equal(#context.fieldCalls, 0, "pending closures never construct the field")
+    Assert.equal(entries[1].takes, 1, "the handoff takes the staged entry exactly once")
+    Assert.equal(#context.fieldCalls, 1, "the handoff constructs the field directly")
+    Assert.equal(context.fieldCalls[1].game, finalized, "the field receives the finalized candidate")
+    Assert.isTrue(
+      context.fieldCalls[1].options.preparedEntry == entries[1].transfer,
+      "the field receives the staged transfer"
+    )
+    Assert.equal(#context.preparationCalls, 0, "the New Game handoff never installs a preparation state")
     settle(game)
     Assert.equal(#context.applyCalls, 1, "waiting never reapplies initialization")
     Assert.equal(#context.candidateCalls, 1, "waiting never reserves a second candidate")

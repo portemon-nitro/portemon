@@ -144,6 +144,17 @@ function T.only_documented_runtime_options_reach_the_runtime()
   state:dispose()
 end
 
+function T.prepared_entry_crosses_into_the_runtime_options()
+  local options = fieldStateOptions()
+  local transfer = { versionId = "heartgold" }
+  options.preparedEntry = transfer
+  local _, captured, _ = bootWithCapturedRuntimeOptions(options)
+  Assert.isTrue(
+    captured.options.preparedEntry == transfer,
+    "the staged New Game transfer crosses into the runtime for adoption"
+  )
+end
+
 function T.state_constructs_the_field_ui_renderers()
   local state = bootWithCapturedRuntimeOptions(fieldStateOptions())
   Assert.notNil(state.presentationResources.signpostRenderer, "the state constructs the signpost renderer")

@@ -209,7 +209,7 @@ local function fakeController()
   return controller --[[@as OakIntroStateTest.Controller]]
 end
 
-local function stateHarness(overrides, entryPrewarm)
+local function stateHarness(overrides, preparedEntry)
   local controller = fakeController()
   local input = { calls = {} }
   ---@cast input OakIntroStateTest.Input
@@ -252,7 +252,7 @@ local function stateHarness(overrides, entryPrewarm)
     height = 480,
     namingOverrides = overrides,
     dialogueCursorPlacement = DIALOGUE_CURSOR_PLACEMENT,
-    entryPrewarm = entryPrewarm,
+    preparedEntry = preparedEntry,
   })
   return state, controller, input, renderer, choiceText
 end
@@ -1717,21 +1717,30 @@ function T.repeated_gender_question_stays_visible_through_selection()
   Assert.equal(held.status.visibleLines[1][1].text, "HELLO")
 end
 
-local function fakeEntryPrewarm()
-  local prewarm = { polls = 0, disposals = 0 }
-  function prewarm:poll()
+local function fakePreparedEntry(script)
+  local entry = { polls = 0, disposals = 0, urgencies = {}, script = script or {} }
+  function entry:poll(urgency)
     self.polls = self.polls + 1
+    self.urgencies[#self.urgencies + 1] = urgency
+    if self.script.failure ~= nil then
+      return false, self.script.failure
+    end
+    if self.script.pending == true then
+      return false
+    end
     return true
   end
-  function prewarm:dispose()
+  function entry:dispose()
     self.disposals = self.disposals + 1
   end
-  return prewarm
+  return entry
 end
 
-function T.injected_entry_coordinator_is_polled_once_per_update_without_gating_progress()
-  local prewarm = fakeEntryPrewarm()
-  local state, controller = stateHarness(nil, prewarm)
+
+
+function T.injected_prepared_entry_is_polled_once_per_update_without_gating_progress()
+  local entry = fakePreparedEntry()
+  local state, controller = stateHarness(nil, entry)
   local controllerTicks = 0
   local baseTick = controller.tick
   function controller:tick(frames)
@@ -1739,32 +1748,32 @@ function T.injected_entry_coordinator_is_polled_once_per_update_without_gating_p
     return baseTick(self, frames)
   end
   state:update(1 / 60)
-  Assert.equal(prewarm.polls, 1, "one update polls the entry coordinator exactly once")
+  Assert.equal(entry.polls, 1, "one update polls the entry coordinator exactly once")
   state:update(1 / 60)
-  Assert.equal(prewarm.polls, 2, "every update re-polls while the intro runs")
+  Assert.equal(entry.polls, 2, "every update re-polls while the intro runs")
   Assert.isTrue(controllerTicks >= 1, "controller progress never waits on the coordinator")
   state:dispose()
 end
 
-function T.injected_entry_coordinator_is_polled_by_manual_ticks()
-  local prewarm = fakeEntryPrewarm()
-  local state = stateHarness(nil, prewarm)
+function T.injected_prepared_entry_is_polled_by_manual_ticks()
+  local entry = fakePreparedEntry()
+  local state = stateHarness(nil, entry)
   state:tick(2)
-  Assert.equal(prewarm.polls, 1, "one manual tick batch polls the entry coordinator once")
+  Assert.equal(entry.polls, 1, "one manual tick batch polls the entry coordinator once")
   state:dispose()
 end
 
-function T.injected_entry_coordinator_is_disposed_with_the_state_exactly_once()
-  local prewarm = fakeEntryPrewarm()
-  local state = stateHarness(nil, prewarm)
+function T.injected_prepared_entry_is_disposed_with_the_state_exactly_once()
+  local entry = fakePreparedEntry()
+  local state = stateHarness(nil, entry)
   state:update(1 / 60)
   state:dispose()
-  Assert.equal(prewarm.disposals, 1, "state replacement releases the entry coordinator")
+  Assert.equal(entry.disposals, 1, "state replacement releases the entry coordinator")
   state:dispose()
-  Assert.equal(prewarm.disposals, 1, "repeated disposal releases the coordinator exactly once")
+  Assert.equal(entry.disposals, 1, "repeated disposal releases the coordinator exactly once")
 end
 
-function T.oak_state_without_an_entry_coordinator_updates_and_disposes_cleanly()
+function T.oak_state_without_a_prepared_entry_updates_and_disposes_cleanly()
   local state, controller = stateHarness()
   local controllerTicks = 0
   local baseTick = controller.tick
@@ -1776,6 +1785,61 @@ function T.oak_state_without_an_entry_coordinator_updates_and_disposes_cleanly()
   state:update(1 / 60)
   Assert.isTrue(controllerTicks >= 1, "updates need no coordinator")
   state:tick(1)
+  state:dispose()
+end
+
+-- The final black handoff stays presented while preparation is pending:
+-- the same tick must not acknowledge it, and the controller timeline
+-- keeps advancing underneath.
+function T.black_handoff_waits_for_preparation_readiness()
+  local entry = fakePreparedEntry({ pending = true })
+  local state, controller = stateHarness(nil, entry)
+  local acknowledgements = 0
+  function controller:confirmHandoffPresented()
+    acknowledgements = acknowledgements + 1
+    return true
+  end
+  state._blackHandoffPresented = true
+  state:tick(1)
+  Assert.equal(acknowledgements, 0, "a pending entry holds the black handoff")
+  Assert.isTrue(state._blackHandoffPresented, "the black frame stays presented while pending")
+  state:tick(1)
+  Assert.equal(acknowledgements, 0, "repeated ticks keep holding the handoff")
+  Assert.isTrue(state._blackHandoffPresented, "the black frame never unlocks early")
+  entry.script.pending = false
+  state:tick(1)
+  Assert.equal(acknowledgements, 1, "readiness acknowledges the handoff exactly once")
+  Assert.isFalse(state._blackHandoffPresented, "the handoff clears once acknowledged")
+  state:tick(1)
+  Assert.equal(acknowledgements, 1, "a cleared handoff never re-acknowledges")
+  state:dispose()
+end
+
+-- The handoff poll demands at required urgency while ordinary intro polls
+-- stay nonblocking.
+function T.black_handoff_polls_preparation_at_required_urgency()
+  local entry = fakePreparedEntry({ pending = true })
+  local state, _ = stateHarness(nil, entry)
+  state:tick(1)
+  Assert.equal(entry.urgencies[#entry.urgencies], nil, "ordinary polls carry no urgency")
+  state._blackHandoffPresented = true
+  state:tick(1)
+  Assert.equal(entry.urgencies[#entry.urgencies], "required", "the handoff gate polls at required")
+  state:dispose()
+end
+
+-- A terminal preparation failure raises at the black handoff instead of
+-- revealing a preparation screen or holding the black frame forever.
+function T.black_handoff_failure_raises_instead_of_waiting()
+  local entry = fakePreparedEntry({ failure = "bedroom bank missing" })
+  local state, _ = stateHarness(nil, entry)
+  state._blackHandoffPresented = true
+  local ok, err = pcall(state.tick, state, 1)
+  Assert.isFalse(ok, "a failed entry fails the handoff loudly")
+  Assert.isTrue(
+    string.find(tostring(err), "bedroom bank missing", 1, true) ~= nil,
+    "the preparation cause surfaces"
+  )
   state:dispose()
 end
 

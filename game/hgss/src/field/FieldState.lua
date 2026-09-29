@@ -25,6 +25,7 @@ local GAMEPAD_DIRECTIONS = { dpup = "north", dpdown = "south", dpleft = "west", 
 ---@field saveValidation GameSaveValidation? shared version-aware GameSave validator
 ---@field audioOutput table<string, unknown>? audio-output host namespace for deterministic runtime audio
 ---@field derivedAssets table<string, function>? semantic derived-asset host
+---@field preparedEntry table<string, unknown>? one-shot staged New Game entry; the runtime claims its loader and queue
 
 ---@class FieldState
 ---@field runtime FieldRuntime?
@@ -79,6 +80,7 @@ function FieldState.new(game, options)
   local runtimeOptions = {
     fieldScaleConfig = options.fieldScaleConfig,
     presentation = true,
+    preparedEntry = options.preparedEntry,
     saveStore = options.saveStore,
     saveValidation = options.saveValidation,
     audioOutput = options.audioOutput,

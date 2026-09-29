@@ -45,7 +45,43 @@ local function controllerFor(candidate)
   return controller
 end
 
+local function readyPreparedEntry(location)
+  local entry = { polls = 0, disposals = 0, takes = 0, location = location }
+  function entry:poll()
+    self.polls = self.polls + 1
+    return true
+  end
+  function entry:dispose()
+    self.disposals = self.disposals + 1
+  end
+  function entry:isReady()
+    return true
+  end
+  function entry:take()
+    self.takes = self.takes + 1
+    local transfer = { claims = 0, disposals = 0, location = self.location }
+    function transfer:claim(_)
+      self.claims = self.claims + 1
+      return { mapLoader = {}, assetPreparation = {} }
+    end
+    function transfer:dispose()
+      self.disposals = self.disposals + 1
+    end
+    entry.transfer = transfer
+    return transfer
+  end
+  return entry
+end
+
 local function withSpies(fn)
+  local PreparedFieldEntry = require("game.hgss.src.field.PreparedFieldEntry")
+  local originalPreparedNew = PreparedFieldEntry.new
+  local preparedEntries = {}
+  rawset(PreparedFieldEntry, "new", function(options)
+    local entry = readyPreparedEntry(options.location)
+    preparedEntries[#preparedEntries + 1] = entry
+    return entry
+  end)
   local NewGameInitialization = require("game.hgss.src.newgame.NewGameInitialization")
   local FieldTextRenderer = require("libs.hgss.src.ui.FieldTextRenderer")
   local MainMenuRenderer = require("game.hgss.src.menu.MainMenuRenderer")
@@ -151,6 +187,7 @@ local function withSpies(fn)
   local ok, err = pcall(function()
     fn(applyCalls, fieldStateCalls, context)
   end)
+  rawset(PreparedFieldEntry, "new", originalPreparedNew)
   rawset(NewGameInitialization, "apply", originalApply)
   rawset(NewGameInitialization, "initialLocation", originalInitialLocation)
   FieldState.new = originalFieldStateNew
@@ -472,7 +509,7 @@ local function handoffShrinkFrames(duration, count)
   return { frames = frames }
 end
 
-local function buildHandoffOak(timeline, candidate)
+local function buildHandoffOak(timeline, candidate, preparedEntry)
   local controller = OakIntroController.new({
     candidate = candidate,
     clock = handoffClock(),
@@ -501,6 +538,7 @@ local function buildHandoffOak(timeline, candidate)
   }
   local state = OakIntroState.new({
     controller = controller,
+    preparedEntry = preparedEntry,
     manifest = HANDOFF_MANIFEST,
     textRenderer = {},
     choiceText = choiceText,
@@ -597,7 +635,13 @@ function T.presented_oak_black_draw_precedes_field_construction()
   })
   withSpies(function(applyCalls, fieldStateCalls, context)
     local timeline = {}
-    local oakState, oakController = buildHandoffOak(timeline, partialCandidate)
+    local preparedEntry = readyPreparedEntry({
+      mapSymbol = "MAP_NEW_BARK_PLAYER_HOUSE_2F",
+      fieldX = 6,
+      fieldZ = 6,
+      facing = "south",
+    })
+    local oakState, oakController = buildHandoffOak(timeline, partialCandidate, preparedEntry)
     context.candidate = partialCandidate
     context.oakState = oakState
     context.store = {

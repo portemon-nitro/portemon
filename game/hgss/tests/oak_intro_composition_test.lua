@@ -53,20 +53,20 @@ function T.tests.message_ids_have_one_semantic_mapping()
   Assert.equal(messages["profile.final"].text, "final")
 end
 
-function T.tests.entry_prewarm_collaborator_is_validated_before_cache_reads()
+function T.tests.prepared_entry_collaborator_is_validated_before_cache_reads()
   local ok, err = pcall(OakIntroComposition.compose, {
     candidate = {},
     versionId = "heartgold",
-    entryPrewarm = { poll = function() end },
+    preparedEntry = { poll = function() end },
   })
-  Assert.isFalse(ok, "a prewarm without dispose fails composition")
+  Assert.isFalse(ok, "a prepared entry without dispose fails composition")
   Assert.isTrue(string.find(tostring(err), "poll and dispose", 1, true) ~= nil)
   local okState, errState = pcall(OakIntroComposition.compose, {
     candidate = {},
     versionId = "heartgold",
-    entryPrewarm = "not-a-collaborator",
+    preparedEntry = "not-a-collaborator",
   })
-  Assert.isFalse(okState, "a non-table prewarm fails composition")
+  Assert.isFalse(okState, "a non-table prepared entry fails composition")
   Assert.isTrue(string.find(tostring(errState), "poll and dispose", 1, true) ~= nil)
 end
 

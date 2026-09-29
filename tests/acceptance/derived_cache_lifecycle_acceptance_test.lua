@@ -1,8 +1,10 @@
 -- Cold-cache application lifecycle through production composition.
 -- Continue waits for entry readiness before strict load and for location
 -- geometry before field entry; New Game waits in preparation until the
--- intro closure is ready, then enters Oak and holds the finalized handoff
--- until planning, runtime, and initial geometry are ready; warps hold their cover while the destination compiles and commit once;
+-- intro closure is ready, then enters Oak, stages the real bedroom while
+-- the intro runs, holds the final black handoff until that staged entry
+-- is ready, and installs field directly with no post-Oak preparation
+-- state; warps hold their cover while the destination compiles and commit once;
 -- the starter chooser demand-loads its actual portrait pages and drops
 -- closed interest. Real ROM-derived caches stay in the path; only host
 -- boundaries (audio output, clocks, save-root location) are faked, and
@@ -19,6 +21,7 @@ local BagSave = require("libs.hgss.src.save.BagSave")
 local HgssGame = require("game.hgss.src.HgssGame")
 local FieldMapLoader = require("libs.hgss.src.world.FieldMapLoader")
 local FieldState = require("game.hgss.src.field.FieldState")
+local FieldPreparationState = require("game.hgss.src.field.FieldPreparationState")
 local FieldEventState = require("libs.hgss.src.field.FieldEventState")
 local NewGameInitialization = require("game.hgss.src.newgame.NewGameInitialization")
 local OakIntroComposition = require("game.hgss.src.newgame.OakIntroComposition")
@@ -288,10 +291,12 @@ local OAK_INTERACTIVE = {
   final_dialogue = true,
 }
 
-local function completeOak(game, oakState)
+local function completeOak(game, oakState, onBlack)
   -- The real handoff finalizes only after its full-black frame is
   -- presented: draw calls stay stubbed at the host boundary (no GPU work)
-  -- while the production renderer observes the presented frame.
+  -- while the production renderer observes the presented frame. The
+  -- optional onBlack hook runs on every black-frame tick so a caller can
+  -- stage derived readiness mid-handoff and prove the gate holds first.
   local originalDraw = love.graphics.draw
   rawset(love.graphics, "draw", function()
     return nil
@@ -316,6 +321,9 @@ local function completeOak(game, oakState)
       else
         if view.phase == "handoff_black" then
           game:draw()
+          if onBlack ~= nil then
+            onBlack()
+          end
         end
         game:update(1 / 60)
       end
@@ -369,6 +377,16 @@ function T.tests.new_game_holds_the_finalized_handoff_until_readiness_and_geomet
       end
       return false
     end,
+    -- The staged bedroom load asserts the semantic readiness edge
+    -- through the same ensure seam production cache services provide
+    -- (InteractiveCacheBuild/DerivedAssetProvisioner); it follows the
+    -- logical closure, never the full visual demand.
+    ensureLogicalField = function(_, _)
+      if geometryReady then
+        return true
+      end
+      return false
+    end,
     ensureField = function(_)
       return true
     end,
@@ -408,6 +426,15 @@ function T.tests.new_game_holds_the_finalized_handoff_until_readiness_and_geomet
         return { dispose = function() end }
       end, function()
         local stopCounting, loaderBuilds = countLoaderBuilds()
+        local originalPreparationNew = FieldPreparationState.new
+        local preparationBuilds = 0
+        rawset(FieldPreparationState, "new", function(...)
+          preparationBuilds = preparationBuilds + 1
+          return originalPreparationNew(...)
+        end)
+        local function preparationCalls()
+          return preparationBuilds
+        end
         local game = HgssGame.new({ versionId = versionId, onExit = function() end, derivedAssets = host })
         local ok, err = pcall(function()
           Assert.equal(requested.milestones[1], "new-game-intro", "installing the menu prefetches the intro closure")
@@ -425,41 +452,38 @@ function T.tests.new_game_holds_the_finalized_handoff_until_readiness_and_geomet
           end
           oakState = assert(oakState, "New Game composes Oak once the intro closure is ready")
           Assert.equal(requested.pages, 0, "Oak starts without awaiting unrelated portrait pages")
-          Assert.isTrue(completeOak(game, oakState), "the real Oak intro finalizes its candidate")
+          -- The prepared entry stages the real bedroom while the intro
+          -- runs, so the derived closure is enrolled during Oak rather
+          -- than after finalization. The old metadata-prewarm schedule
+          -- (post-handoff planning loader, near field-planning demand)
+          -- no longer exists. Readiness flips only once the handoff
+          -- itself is black: the gate must hold the finalized handoff
+          -- while the staged entry is pending, then release it.
+          local blackTicks = 0
+          local heldObserved = false
+          local function onBlack()
+            blackTicks = blackTicks + 1
+            if blackTicks == 10 then
+              Assert.equal(game.state, oakState, "the black handoff holds while the staged entry is pending")
+              Assert.equal(#fieldCalls, 0, "no field constructs before the staged bedroom is resident")
+              Assert.equal(loaderBuilds(), 1, "the entry owns its loader while the staged load is pending")
+              heldObserved = true
+              planningReady = true
+              runtimeReady = true
+              geometryReady = true
+            end
+          end
+          Assert.isTrue(
+            completeOak(game, oakState, onBlack),
+            "the real Oak intro finalizes its candidate"
+          )
+          Assert.isTrue(heldObserved, "the handoff reached black and proved the hold before release")
           Assert.equal(#applyCalls, 1, "finalization applies exactly once to the Oak candidate")
           local finalized = applyCalls[1]
           Assert.equal(assert(finalized.playerData and finalized.playerData.profile).name, "GOLD")
-          Assert.equal(#fieldCalls, 0, "the handoff requests entry readiness before constructing field")
-          Assert.equal(loaderBuilds(), 0, "the finalized handoff builds no planning loader before planning")
-          local requiredPlanning, nearPlanning = false, false
-          for _, demand in ipairs(requested.milestoneDemands) do
-            if demand.name == "field-planning" then
-              if demand.urgency == "required" then
-                requiredPlanning = true
-              elseif demand.urgency == "near" then
-                nearPlanning = true
-              end
-            end
-          end
-          Assert.isFalse(requiredPlanning, "the finalized handoff alone promotes planning to required")
-          Assert.isTrue(nearPlanning, "near field-planning stays enrolled while the Oak intro runs")
-          planningReady = true
-          waited = 0
-          while loaderBuilds() == 0 and waited < 60 do
-            game:update(1 / 60)
-            waited = waited + 1
-          end
-          Assert.equal(loaderBuilds(), 1, "planning readiness builds the planning loader exactly once")
-          Assert.equal(#fieldCalls, 0, "the handoff demands its target while the runtime is still pending")
-          runtimeReady = true
-          pumpGame(game, 5)
-          Assert.equal(#fieldCalls, 0, "the handoff still waits while initial location geometry is pending")
-          waited = 0
-          while #requested.maps == 0 and waited < 60 do
-            game:update(1 / 60)
-            waited = waited + 1
-          end
-          Assert.equal(#fieldCalls, 0, "the handoff still waits for initial location geometry")
+          Assert.equal(#fieldCalls, 1, "Oak hands directly to field with no post-Oak preparation state")
+          Assert.equal(preparationCalls(), 0, "the handoff never installs a preparation state")
+          Assert.equal(loaderBuilds(), 1, "the bedroom loader is built once during Oak and adopted, never rebuilt")
           local requiredMaps, nearMaps = {}, {}
           for _, demand in ipairs(requested.maps) do
             if demand.urgency == "required" then
@@ -478,18 +502,14 @@ function T.tests.new_game_holds_the_finalized_handoff_until_readiness_and_geomet
           Assert.equal(requiredCount, 1, "only the initial location geometry is a required gate")
           Assert.isTrue(nearCount <= 8, "neighbor visuals stay a bounded halo, never a corpus walk")
           Assert.equal(requested.pages, 0, "unrelated portrait pages remain sweep while entering field")
-          geometryReady = true
-          waited = 0
-          while #fieldCalls == 0 and waited < 60 do
-            game:update(1 / 60)
-            waited = waited + 1
-          end
-          Assert.equal(#fieldCalls, 1, "field entry commits once readiness and geometry are ready")
+          pumpGame(game, 5)
+          Assert.equal(#fieldCalls, 1, "settling never constructs field again")
           Assert.equal(#applyCalls, 1, "waiting never applies initialization again")
-          Assert.equal(loaderBuilds(), 1, "settling never rebuilds the production planning loader")
+          Assert.equal(loaderBuilds(), 1, "settling never rebuilds the production map loader")
         end)
         game:dispose()
         stopCounting()
+        rawset(FieldPreparationState, "new", originalPreparationNew)
         if not ok then
           error(err, 0)
         end

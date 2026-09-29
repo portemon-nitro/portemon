@@ -145,6 +145,7 @@ end
 ---@field presentationOverrides table<string, table<string, unknown>>? product-root per-case function overrides by application
 ---@field overrideFs table<string, unknown>? read-shaped repository filesystem override
 ---@field presentation boolean?
+---@field preparedEntry table<string, unknown>? one-shot staged New Game transfer; the runtime claims its loader and queue
 ---@field scriptHosts table<string, unknown>? deterministic host boundaries for script effects
 ---@field dayNight (fun(): string)? deterministic day/night source for the field-music policy
 ---@field audioOutput table<string, unknown>? { audio: table<string, unknown>, sound: table<string, unknown> } audio-output host namespaces for the LÖVE sink (defaults to love.audio + love.sound)
@@ -560,6 +561,41 @@ local function headlessMapProps(runtimeMap, cacheFs)
   })
 end
 
+-- Acquires the runtime map loader and its preparation worker. A prepared
+-- New Game entry moves its already-staged loader and queue in before the
+-- initial map acquisition, so the first load hits the resident bedroom
+-- instead of rebuilding it. Without one, presentation mode owns one
+-- asset-preparation worker for the runtime lifetime (a headless runtime
+-- leaves it nil and starts no thread); it is built before the map loader
+-- so scene loading can route mesh/image CPU work through it. Kept outside
+-- the boot transaction so the boot closure stays under the upvalue limit.
+---@param runtime FieldRuntime
+---@param cacheFs table<string, unknown>
+---@param world table<string, unknown>
+---@param loadOptions FieldRuntimeOptions?
+---@return FieldMapLoader mapLoader
+---@return table<string, unknown>? assetPreparation
+local function acquireMapLoader(runtime, cacheFs, world, loadOptions)
+  local preparedTransfer = loadOptions ~= nil and loadOptions.preparedEntry or nil
+  if preparedTransfer ~= nil then
+    local opening = assert(runtime.game.location, "a prepared field entry requires a finalized new-game location")
+    local claimed = preparedTransfer:claim({ versionId = runtime.versionId, mapSymbol = opening.mapSymbol })
+    return assert(claimed.mapLoader, "a prepared field entry carries its loader"),
+      assert(claimed.assetPreparation, "a prepared field entry carries its queue")
+  end
+  local queue
+  if runtime.presentation then
+    queue = AssetPreparationQueue.new(cacheFs)
+  end
+  local loader = FieldMapLoader.new(cacheFs, world, {
+    sceneLoader = runtime.presentation and MapSceneLoader or nil,
+    neighborLoader = runtime.presentation and NeighborRing or nil,
+    assetPreparation = queue,
+    derivedAssets = runtime.derivedAssets,
+  })
+  return loader, queue
+end
+
 function FieldRuntime.new(game, options)
   assert(type(game) == "table", "field runtime requires a finalized or loaded game")
   assert(type(game.versionId) == "string" and game.versionId ~= "", "field runtime game version is required")
@@ -607,11 +643,11 @@ function FieldRuntime.new(game, options)
   self.saveCoordinator = FieldSaveCoordinator.new(self)
   self.worldSwapCoordinator = FieldWorldSwapCoordinator.new(self)
   self.weatherClock = self.weatherClock or defaultWeatherClock(self.localClock)
-  self:_load()
+  self:_load(options)
   return self
 end
 
-function FieldRuntime:_load()
+function FieldRuntime:_load(loadOptions)
   local ok, err = pcall(function()
     local cacheFs = CacheFs.forVersion(self.versionId)
     self.cacheFs = cacheFs
@@ -690,19 +726,14 @@ function FieldRuntime:_load()
       modelFactory = require("libs.hgss.src.presentation.FieldTerrainEffectModelFactory").new(),
     })
 
-    -- Presentation mode owns one asset-preparation worker for the
-    -- runtime lifetime; a headless runtime leaves it nil and starts no
-    -- thread. It is constructed before the map loader so scene loading
-    -- can route mesh/image CPU work through it.
-    if self.presentation then
-      self.assetPreparation = AssetPreparationQueue.new(cacheFs)
-    end
-    self.mapLoader = FieldMapLoader.new(cacheFs, world, {
-      sceneLoader = self.presentation and MapSceneLoader or nil,
-      neighborLoader = self.presentation and NeighborRing or nil,
-      assetPreparation = self.assetPreparation,
-      derivedAssets = self.derivedAssets,
-    })
+    -- A prepared New Game entry moves its already-staged loader and queue
+    -- in before the initial map acquisition, so the first load hits the
+    -- resident bedroom instead of rebuilding it. Without one, presentation
+    -- mode owns one asset-preparation worker for the runtime lifetime (a
+    -- headless runtime leaves it nil and starts no thread); it is
+    -- constructed before the map loader so scene loading can route
+    -- mesh/image CPU work through it.
+    self.mapLoader, self.assetPreparation = acquireMapLoader(self, cacheFs, world, loadOptions)
     local function mapMatrixMemberId(logicalMap)
       local mapIndex = assert(self.mapLoader.world.byId[logicalMap.mapId], "outdoor map catalog record is required")
       local mapRecord = assert(self.mapLoader.world.maps[mapIndex], "outdoor map catalog record is missing")

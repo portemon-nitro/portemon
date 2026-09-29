@@ -110,7 +110,7 @@ local DialoguePresentationLayout = require("libs.hgss.src.ui.DialoguePresentatio
 ---@field dialogueFormatter table<string, unknown>?
 ---@field dialogueMessageKey string?
 ---@field dialogueCursorPlacement { x: number, y: number, width: number, height: number }?
----@field entryPrewarm NewGameEntryPrewarm? speculative field-entry coordinator, polled per update
+---@field preparedEntry table<string, function>? prepared New Game field entry, polled per update; gates the final black handoff
 
 ---@class OakIntroState
 ---@field new fun(options: OakIntroStateOptions): OakIntroState
@@ -138,7 +138,7 @@ local DialoguePresentationLayout = require("libs.hgss.src.ui.DialoguePresentatio
 ---@field dialogueCursorPlacement { x: number, y: number, width: number, height: number }?
 ---@field disposed boolean
 ---@field _displayContext DisplayContext
----@field _entryPrewarm table<string, function>? speculative field-entry coordinator, polled per update
+---@field _preparedEntry table<string, function>? prepared New Game field entry, polled per update
 ---@field _namingOverrides table<string, unknown>?
 ---@field _namingSession ApplicationPresentation? the per-entry naming session beside the profile controller
 ---@field _blackHandoffPresented boolean
@@ -250,13 +250,13 @@ function OakIntroState.new(options)
     assert(options.dialogueFormatter, "Oak state requires its message formatter")
     assert(type(options.dialogueFormatter.format) == "function", "Oak message formatter is invalid")
   end
-  local entryPrewarm = options.entryPrewarm
-  if entryPrewarm ~= nil then
+  local preparedEntry = options.preparedEntry
+  if preparedEntry ~= nil then
     assert(
-      type(entryPrewarm) == "table"
-        and type(entryPrewarm.poll) == "function"
-        and type(entryPrewarm.dispose) == "function",
-      "Oak entry prewarm must provide poll and dispose"
+      type(preparedEntry) == "table"
+        and type(preparedEntry.poll) == "function"
+        and type(preparedEntry.dispose) == "function",
+      "Oak prepared entry must provide poll and dispose"
     )
   end
   local width, height = options.width, options.height
@@ -311,7 +311,7 @@ function OakIntroState.new(options)
       _blackHandoffPresented = false,
       _frozenStatus = nil,
       _frozenAdapter = nil,
-      _entryPrewarm = entryPrewarm,
+      _preparedEntry = preparedEntry,
     }, OakIntroState)
     self:_setTextInput(false)
     self.controller:start()
@@ -351,6 +351,20 @@ end
 function OakIntroState:_acknowledgePresentedHandoff()
   if not self._blackHandoffPresented then
     return
+  end
+  -- The final black frame stays presented until the staged bedroom is
+  -- resident: preparation keeps advancing through normal polls, and only a
+  -- ready entry acknowledges the handoff. A terminal preparation failure
+  -- raises here instead of revealing a preparation screen.
+  local entry = self._preparedEntry
+  if entry ~= nil then
+    local ready, failure = entry:poll("required")
+    if failure ~= nil then
+      error(failure, 0)
+    end
+    if not ready then
+      return
+    end
   end
   self._blackHandoffPresented = false
   self.controller:confirmHandoffPresented()
@@ -429,12 +443,16 @@ function OakIntroState:_sync()
   return view
 end
 
----@private polls the speculative entry coordinator without gating controller progress
+---@private advances the prepared entry without gating controller progress
 function OakIntroState:_pollEntry()
-  local prewarm = self._entryPrewarm
-  if prewarm ~= nil then
-    prewarm:poll()
+  local entry = self._preparedEntry
+  if entry == nil then
+    return
   end
+  if self._blackHandoffPresented then
+    return
+  end
+  entry:poll()
 end
 
 function OakIntroState:update(dt)
@@ -765,10 +783,10 @@ function OakIntroState:dispose()
     return
   end
   self.disposed = true
-  local entryPrewarm = self._entryPrewarm
-  self._entryPrewarm = nil
-  if entryPrewarm ~= nil then
-    entryPrewarm:dispose()
+  local preparedEntry = self._preparedEntry
+  self._preparedEntry = nil
+  if preparedEntry ~= nil then
+    preparedEntry:dispose()
   end
   self:_disposeNamingSession()
   self:_clearFrozen()

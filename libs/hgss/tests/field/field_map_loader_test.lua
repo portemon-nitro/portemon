@@ -1766,4 +1766,144 @@ function T.near_location_demand_enrolls_everything_as_near()
   loader:release()
 end
 
+-- A controllable staged scene build: advances only when driven, becomes
+-- ready after the configured number of observed work units, and records
+-- acquisition versus release so staged ownership is observable.
+local function stagedSceneLoader(autoReadyAfter)
+  local builds = {}
+  local loader = {}
+  function loader.begin(_, scene, _)
+    local build = { scene = scene, observed = 0, released = false, taken = false, ready = false }
+    builds[#builds + 1] = build
+    local task = {}
+    function task:advance(workUnits)
+      build.observed = build.observed + (workUnits or 0)
+      if build.observed >= autoReadyAfter then
+        build.ready = true
+      end
+      return 0
+    end
+    function task:isReady()
+      return build.ready
+    end
+    function task:takeResult()
+      assert(build.ready, "staged scene result is not ready")
+      build.taken = true
+      return {
+        scene = scene,
+        release = function()
+          build.released = true
+        end,
+      }
+    end
+    function task:finish()
+      build.ready = true
+      return task:takeResult()
+    end
+    function task:release()
+      build.released = true
+    end
+    build.task = task
+    return task
+  end
+  return loader, builds
+end
+
+function T.staged_load_completes_and_matches_synchronous_identity()
+  local cache, world = fixture(1)
+  local sceneLoader, builds = stagedSceneLoader(2)
+  local loader = FieldMapLoader.new(cache, world, { sceneLoader = sceneLoader })
+  local task = loader:beginLoad(0)
+  Assert.isFalse(task:isReady(), "a staged load is pending until its scene completes")
+  Assert.isNil(loader:get(0), "no entry is published before completion")
+  Assert.equal(loader:residentCount(), 0, "no entry is resident before completion")
+  task:advance(1)
+  Assert.isFalse(task:isReady(), "one unit is not enough for a two-unit scene")
+  Assert.isNil(loader:get(0), "no entry is published while the scene is pending")
+  task:advance(1)
+  Assert.isTrue(task:isReady(), "the second unit completes the staged scene")
+  local staged = task:takeResult()
+  Assert.equal(staged.mapId, 0, "the staged result carries the requested map")
+  Assert.isTrue(builds[1].taken, "the staged result comes from the scene build")
+  local synchronous = loader:load(0)
+  Assert.isTrue(synchronous == staged, "synchronous load returns the staged identity without rebuilding")
+  Assert.equal(#builds, 1, "the synchronous hit builds no second scene")
+  loader:release()
+end
+
+function T.staged_load_publishes_nothing_before_completion()
+  local cache, world = fixture(1)
+  local sceneLoader, _ = stagedSceneLoader(100)
+  local loader = FieldMapLoader.new(cache, world, { sceneLoader = sceneLoader })
+  local task = loader:beginLoad(0)
+  task:advance(0)
+  Assert.isFalse(task:isReady(), "a zero-unit advance makes no progress")
+  Assert.isNil(loader:get(0), "no entry is published before completion")
+  task:release()
+  Assert.isNil(loader:get(0), "a cancelled staged load publishes no entry")
+  Assert.equal(loader:residentCount(), 0, "a cancelled staged load leaves no resident")
+  loader:release()
+end
+
+function T.staged_load_cancel_before_completion_releases_the_scene_build()
+  local cache, world = fixture(1)
+  local sceneLoader, builds = stagedSceneLoader(100)
+  local loader = FieldMapLoader.new(cache, world, { sceneLoader = sceneLoader })
+  local task = loader:beginLoad(0)
+  task:advance(1)
+  Assert.isFalse(task:isReady(), "the scene is still pending")
+  task:release()
+  Assert.isTrue(builds[1].released, "cancelling releases the partial scene build")
+  Assert.isNil(loader:get(0), "cancelling publishes no entry")
+  loader:release()
+end
+
+function T.staged_load_failure_releases_partial_scene_and_stays_loud()
+  local cache, world = fixture(1)
+  local sceneLoader, builds = stagedSceneLoader(100)
+  local loader = FieldMapLoader.new(cache, world, { sceneLoader = sceneLoader })
+  builds.failAdvance = true
+  local task = loader:beginLoad(0)
+  local buildTask = builds[1].task
+  function buildTask:advance(_)
+    error("injected scene build failure", 0)
+  end
+  local ok, err = pcall(task.advance, task, 1)
+  Assert.isFalse(ok, "a failed scene build fails the staged advance")
+  Assert.isTrue(builds[1].released, "the failed scene build is released")
+  Assert.isNil(loader:get(0), "a failed staged load publishes no entry")
+  local okFinish = pcall(task.finish, task)
+  Assert.isFalse(okFinish, "finish after failure stays loud instead of completing")
+  Assert.equal(tostring(err), "injected scene build failure", "the original failure surfaces")
+  loader:release()
+end
+
+function T.synchronous_load_delegates_to_the_staged_transaction()
+  local cache, world = fixture(1)
+  local sceneLoader, builds = stagedSceneLoader(0)
+  local loader = FieldMapLoader.new(cache, world, { sceneLoader = sceneLoader })
+  local map = loader:load("MAP_0")
+  Assert.equal(map.mapId, 0, "synchronous load still resolves by symbol")
+  Assert.equal(#builds, 1, "synchronous load builds the scene exactly once")
+  Assert.isTrue(builds[1].taken, "synchronous load takes the staged scene result")
+  local again = loader:load(0)
+  Assert.isTrue(again == map, "a repeated load returns the resident without rebuilding")
+  Assert.equal(#builds, 1, "the repeated load builds no second scene")
+  loader:release()
+end
+
+function T.begin_load_on_a_resident_entry_returns_it_ready()
+  local cache, world = fixture(1)
+  local sceneLoader, builds = stagedSceneLoader(0)
+  local loader = FieldMapLoader.new(cache, world, { sceneLoader = sceneLoader })
+  local map = loader:load(0)
+  local task = loader:beginLoad(0)
+  Assert.isTrue(task:isReady(), "a resident entry is immediately ready")
+  Assert.isTrue(task:takeResult() == map, "the ready task returns the resident identity")
+  task:release()
+  Assert.isTrue(loader:get(0) == map, "releasing the ready task keeps the resident entry")
+  Assert.equal(#builds, 1, "no second scene is built for the resident entry")
+  loader:release()
+end
+
 return { tests = T }
