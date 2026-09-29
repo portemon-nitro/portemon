@@ -198,6 +198,132 @@ function T.decodes_party_flags_and_signed_params()
   Assert.isFalse(tm.partyUse)
 end
 
+-- Synthetic public-path coverage for party-use normalization: the decoder
+-- fixtures above pin raw bits, while the cases below drive the closed
+-- normalized record through compileCatalog with a stub dump. Only the two
+-- crafted members carry party flags; every other identity decodes to an
+-- inert member with its source-required pocket so the build stays valid.
+local function catalogBytes(word, partyUse, flags, params)
+  local bytes = { 100, 0, 0, 0, 0, 0, 0, 0, word % 256, math.floor(word / 256) % 256, 0, 0, partyUse and 1 or 0, 0 }
+  for index = 1, 7 do
+    bytes[#bytes + 1] = (flags and flags[index]) or 0
+  end
+  for index = 1, 11 do
+    local value = (params and params[index]) or 0
+    if value < 0 then
+      value = value + 256
+    end
+    bytes[#bytes + 1] = value
+  end
+  bytes[#bytes + 1] = 0
+  bytes[#bytes + 1] = 0
+  return string.char(unpack(bytes))
+end
+
+local function stubCatalogRom(overrides)
+  local inert = catalogBytes(0, false, nil, nil)
+  local members = {}
+  for memberId = 0, 513 do
+    members[memberId + 1] = inert
+  end
+  -- The source ranges below only accept their own pocket; every other
+  -- identity is valid as a plain "items" member.
+  for nativeId = ItemSources.FIRST_MAIL, ItemSources.LAST_MAIL do
+    members[ItemSources.itemDataMember(nativeId) + 1] = catalogBytes(5 * 128, false, nil, nil)
+  end
+  for nativeId = ItemSources.FIRST_BERRY, ItemSources.LAST_BERRY do
+    members[ItemSources.itemDataMember(nativeId) + 1] = catalogBytes(4 * 128, false, nil, nil)
+  end
+  for nativeId = ItemSources.FIRST_TM, ItemSources.LAST_HM do
+    members[ItemSources.itemDataMember(nativeId) + 1] = catalogBytes(3 * 128, false, nil, nil)
+  end
+  for nativeId, member in pairs(overrides) do
+    members[ItemSources.itemDataMember(nativeId) + 1] = member
+  end
+  local FieldMessageBank = require("romdump.src.digest.ui.FieldMessageBank")
+  local charmap = require("romdump.src.reference.hgss.charmap")
+  local codeForGlyph = {}
+  for code, display in pairs(charmap.glyphs) do
+    codeForGlyph[display] = code
+  end
+  local function textBank(count)
+    local bank = {}
+    for _ = 1, count do
+      bank[#bank + 1] = { assert(codeForGlyph["A"], "fixture glyph A is missing"), 0xFFFF }
+    end
+    return FieldMessageBank.encodeForTests(bank, 7)
+  end
+  local filler = FieldMessageBank.encodeForTests({ { 0xFFFF } }, 7)
+  local banks = {}
+  for bankId = 0, 251 do
+    banks[bankId + 1] = filler
+  end
+  banks[ItemSources.messageBanks.description + 1] = textBank(ItemSources.messageCounts.description)
+  banks[ItemSources.messageBanks.name + 1] = textBank(ItemSources.messageCounts.name)
+  banks[ItemSources.messageBanks.nameIndefinite + 1] = textBank(ItemSources.messageCounts.nameIndefinite)
+  banks[ItemSources.messageBanks.namePlural + 1] = textBank(ItemSources.messageCounts.namePlural)
+  banks[ItemSources.messageBanks.pocket + 1] = textBank(ItemSources.messageCounts.pocket)
+  banks[ItemSources.messageBanks.berry + 1] = textBank(ItemSources.messageCounts.berry)
+  local function u16(v)
+    return string.char(v % 256, math.floor(v / 256) % 256)
+  end
+  local function u32(v)
+    return string.char(v % 256, math.floor(v / 256) % 256, math.floor(v / 65536) % 256, math.floor(v / 16777216) % 256)
+  end
+  local function packNarc(blobs)
+    local btaf = u16(#blobs) .. u16(0)
+    local running = 0
+    for _, bytes in ipairs(blobs) do
+      btaf = btaf .. u32(running) .. u32(running + #bytes)
+      running = running + #bytes
+    end
+    local function block(magic, payload)
+      return magic .. u32(8 + #payload) .. payload
+    end
+    return "NARC"
+      .. string.char(0xFF, 0xFE)
+      .. u16(0x0100)
+      .. u32(0x10 + 8 + #btaf + 8 + running)
+      .. u16(0x10)
+      .. u16(2)
+      .. block("BTAF", btaf)
+      .. block("GMIF", table.concat(blobs))
+  end
+  local Narc = require("libs.nds.src.nitro.Narc")
+  local itemBytes = packNarc(members)
+  local messageBytes = packNarc(banks)
+  return {
+    openNarc = function(_, alias)
+      assert(alias == "item_data" or alias == "messages", "unexpected archive " .. tostring(alias))
+      if alias == "messages" then
+        return assert(Narc.open(messageBytes, alias))
+      end
+      return assert(Narc.open(itemBytes, alias))
+    end,
+    version = function()
+      return "heartgold"
+    end,
+  }
+end
+
+function T.mixed_party_families_fail_the_catalog_build()
+  -- Potion shape carrying both a healing flag and a power-point flag.
+  local mixed = catalogBytes(0, true, { 0, 0, 0, 0, 0, 0x05, 0 }, { 0, 0, 0, 0, 0, 0, 20, 10, 0, 0, 0 })
+  local catalog, err = compiler().compileCatalog(stubCatalogRom({ [17] = mixed }), { versionId = "heartgold" })
+  Assert.isNil(catalog)
+  assert(err, "mixed effect families must fail the build")
+  Assert.equal(err.code, "ITEM_PARTY_EFFECT_CONFLICT")
+end
+
+function T.shared_pp_operation_prefers_the_strongest_boost()
+  -- Ether shape carrying ppUp, ppMax, and ppRestore together.
+  local etherBytes = catalogBytes(0, true, { 0, 0, 0, 0, 0xC0, 0x01, 0 }, { 0, 0, 0, 0, 0, 0, 0, 10, 0, 0, 0 })
+  local catalog = assert(compiler().compileCatalog(stubCatalogRom({ [38] = etherBytes }), { versionId = "heartgold" }))
+  local ether = assert(catalog.items.ETHER, "ETHER must compile")
+  Assert.equal(ether.partyUse.kind, "pp")
+  Assert.equal(ether.partyUse.boost, 1)
+end
+
 function T.pins_the_machine_berry_and_mail_ranges()
   Assert.equal(ItemSources.FIRST_TM, 328)
   Assert.equal(ItemSources.LAST_HM, 427)

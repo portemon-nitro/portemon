@@ -170,6 +170,124 @@ function ItemCatalogCompiler.decodeItemData(member, context)
   }
 end
 
+-- Fixed effort-stat mapping shared by family presence and payload
+-- construction. Order matches the generated changes array; decoded
+-- flag/delta names follow decodeItemData above.
+---@type {stat:string, flag:string, delta:string}[]
+local EV_FIELDS = {
+  { stat = "hp", flag = "hpEvUp", delta = "hpEvDelta" },
+  { stat = "attack", flag = "atkEvUp", delta = "atkEvDelta" },
+  { stat = "defense", flag = "defEvUp", delta = "defEvDelta" },
+  { stat = "speed", flag = "speedEvUp", delta = "speedEvDelta" },
+  { stat = "specialAttack", flag = "spatkEvUp", delta = "spatkEvDelta" },
+  { stat = "specialDefense", flag = "spdefEvUp", delta = "spdefEvDelta" },
+}
+
+-- Status-cure mapping shared by family presence and the medicine payload.
+-- Every key is always present in the built cures record.
+---@type {flag:string, cure:string}[]
+local CURE_FIELDS = {
+  { flag = "slpHeal", cure = "sleep" },
+  { flag = "psnHeal", cure = "poison" },
+  { flag = "brnHeal", cure = "burn" },
+  { flag = "frzHeal", cure = "freeze" },
+  { flag = "przHeal", cure = "paralysis" },
+}
+
+-- Battle-stage fields below always decode to numbers; their sum only
+-- detects battle-only riders and never opens a party family.
+local BATTLE_STAGE_FIELDS = {
+  "atkStages",
+  "defStages",
+  "spatkStages",
+  "spdefStages",
+  "speedStages",
+  "accuracyStages",
+  "critrateStages",
+}
+
+-- Power-point payload with the current operation precedence: boost before
+-- max before restore. Friendship attaches once at the ordinary return
+-- below, never here.
+---@param party table<string, unknown>
+---@param mood integer
+---@param fail fun(code:string, message:string)
+---@return table<string, unknown>
+local function ppRecord(party, mood, fail)
+  local record = { kind = "pp", target = "one", mood = mood }
+  if party.ppUp == true then
+    record.boost = 1
+  elseif party.ppMax == true then
+    record.boost = 3
+  else
+    if party.ppRestoreAll == true then
+      record.target = "all"
+    end
+    local param = assert(party.ppRestoreParam) --[[@as integer]]
+    if param == ItemSources.PP_RESTORE_ALL then
+      record.restore = "full"
+    elseif param >= 1 and param < ItemSources.PP_RESTORE_ALL then
+      record.restore = param
+    else
+      fail("ITEM_PARTY_EFFECT_INVALID", "carries an invalid power-point restore amount")
+    end
+  end
+  return record
+end
+
+-- Effort payload in the fixed stat order above. Friendship attaches once
+-- at the ordinary return below, never here.
+---@param party table<string, unknown>
+---@param mood integer
+---@param fail fun(code:string, message:string)
+---@return table<string, unknown>
+local function evRecord(party, mood, fail)
+  local changes = {}
+  for _, field in ipairs(EV_FIELDS) do
+    if party[field.flag] == true then
+      local delta = assert(party[field.delta]) --[[@as integer]]
+      if delta == 0 or delta < -100 or delta > 100 then
+        fail("ITEM_PARTY_EFFECT_INVALID", "carries an out-of-range effort delta")
+      end
+      changes[#changes + 1] = { stat = field.stat, delta = delta }
+    end
+  end
+  return { kind = "ev", changes = changes, mood = mood }
+end
+
+-- Medicine payload covering ordinary cures, revival, restoration, and the
+-- flagged-but-effectless shape. Friendship attaches once at the ordinary
+-- return below, never here.
+---@param party table<string, unknown>
+---@param mood integer
+---@param fail fun(code:string, message:string)
+---@return table<string, unknown>
+local function medicineRecord(party, mood, fail)
+  local cures = {}
+  for _, field in ipairs(CURE_FIELDS) do
+    cures[field.cure] = party[field.flag] == true
+  end
+  local record = { kind = "medicine", cures = cures, revive = "none", mood = mood }
+  if party.revive == true then
+    record.revive = "single"
+  end
+  if party.hpRestore == true then
+    local param = assert(party.hpRestoreParam) --[[@as integer]]
+    if param == ItemSources.HP_RESTORE_ALL then
+      record.restore = { kind = "full" }
+    elseif param == ItemSources.HP_RESTORE_HALF then
+      record.restore = { kind = "half" }
+    elseif param == ItemSources.HP_RESTORE_QTR then
+      record.restore = { kind = "quarter" }
+    elseif param >= 1 and param < ItemSources.HP_RESTORE_QTR then
+      record.restore = { kind = "fixed", amount = param }
+    else
+      fail("ITEM_PARTY_EFFECT_INVALID", "carries an invalid health restore amount")
+    end
+  end
+  return record
+end
+
 -- Normalize decoded party parameters into the closed semantic partyUse
 -- record the runtime consumes. Machine, mail, and key-recognized form
 -- items resolve without the party-use byte; every other item needs it.
@@ -201,7 +319,6 @@ local function normalizePartyUse(nativeId, key, pocketKey, isMachine, decoded)
     return { kind = "deferred", reason = "form_change" }
   end
   local party = assert(decoded.party) --[[@as table<string, unknown>]]
-  assert(type(party) == "table", "party parameters decode to a record")
   if not decoded.partyUse then
     return { kind = "none" }
   end
@@ -211,13 +328,10 @@ local function normalizePartyUse(nativeId, key, pocketKey, isMachine, decoded)
   if party.evolve == true then
     return { kind = "deferred", reason = "evolution" }
   end
-  local stages = (party.atkStages or 0)
-    + (party.defStages or 0)
-    + (party.spatkStages or 0)
-    + (party.spdefStages or 0)
-    + (party.speedStages or 0)
-    + (party.accuracyStages or 0)
-    + (party.critrateStages or 0)
+  local stages = 0
+  for _, name in ipairs(BATTLE_STAGE_FIELDS) do
+    stages = stages + party[name] --[[@as integer]]
+  end
   local battleOnly = party.guardSpec == true or party.cfsHeal == true or party.infHeal == true or stages ~= 0
   if party.reviveAll == true then
     return { kind = "revive_all" }
@@ -234,21 +348,24 @@ local function normalizePartyUse(nativeId, key, pocketKey, isMachine, decoded)
   -- Party-applicable families resolve first; confusion/infatuation cure
   -- bits riding on full-heal items and any other battle-only riders stay
   -- out of the mapped record. Battle-only deferral applies only when no
-  -- party family maps.
-  local hasMedicine = party.slpHeal == true
-    or party.psnHeal == true
-    or party.brnHeal == true
-    or party.frzHeal == true
-    or party.przHeal == true
-    or party.hpRestore == true
-    or party.revive == true
+  -- party family maps. Presence shares the field mappings above with
+  -- payload construction, so each family is counted exactly once.
+  local hasCure = false
+  for _, field in ipairs(CURE_FIELDS) do
+    if party[field.flag] == true then
+      hasCure = true
+      break
+    end
+  end
+  local hasMedicine = hasCure or party.hpRestore == true or party.revive == true
   local hasPp = party.ppUp == true or party.ppMax == true or party.ppRestore == true or party.ppRestoreAll == true
-  local hasEv = party.hpEvUp == true
-    or party.atkEvUp == true
-    or party.defEvUp == true
-    or party.speedEvUp == true
-    or party.spatkEvUp == true
-    or party.spdefEvUp == true
+  local hasEv = false
+  for _, field in ipairs(EV_FIELDS) do
+    if party[field.flag] == true then
+      hasEv = true
+      break
+    end
+  end
   local families = 0
   if hasMedicine then
     families = families + 1
@@ -268,97 +385,16 @@ local function normalizePartyUse(nativeId, key, pocketKey, isMachine, decoded)
     end
     -- Flagged but effectless records stay medicinal and never apply.
   end
+  -- Exactly one ordinary family below; the conflict check above keeps
+  -- mixed records out. Friendship attaches once after the selected
+  -- payload is built, never inside each family branch.
+  local record
   if hasPp then
-    local record = { kind = "pp", target = "one", mood = mood }
-    if party.ppUp == true then
-      record.boost = 1
-    elseif party.ppMax == true then
-      record.boost = 3
-    elseif party.ppRestore == true or party.ppRestoreAll == true then
-      if party.ppRestoreAll == true then
-        record.target = "all"
-      end
-      local param = assert(party.ppRestoreParam) --[[@as integer]]
-      if param == ItemSources.PP_RESTORE_ALL then
-        record.restore = "full"
-      elseif param >= 1 and param < ItemSources.PP_RESTORE_ALL then
-        record.restore = param
-      else
-        fail("ITEM_PARTY_EFFECT_INVALID", "carries an invalid power-point restore amount")
-      end
-    else
-      fail("ITEM_PARTY_EFFECT_INVALID", "carries no power-point operation")
-    end
-    if friendship ~= nil then
-      record.friendship = friendship
-    end
-    return record
-  end
-  if hasEv then
-    local stats = { "hp", "attack", "defense", "speed", "specialAttack", "specialDefense" }
-    local flags = {
-      party.hpEvUp == true,
-      party.atkEvUp == true,
-      party.defEvUp == true,
-      party.speedEvUp == true,
-      party.spatkEvUp == true,
-      party.spdefEvUp == true,
-    }
-    local deltas = {
-      party.hpEvDelta,
-      party.atkEvDelta,
-      party.defEvDelta,
-      party.speedEvDelta,
-      party.spatkEvDelta,
-      party.spdefEvDelta,
-    }
-    local changes = {}
-    for index, stat in ipairs(stats) do
-      if flags[index] then
-        local delta = assert(deltas[index]) --[[@as integer]]
-        if delta == 0 or delta < -100 or delta > 100 then
-          fail("ITEM_PARTY_EFFECT_INVALID", "carries an out-of-range effort delta")
-        end
-        changes[#changes + 1] = { stat = stat, delta = delta }
-      end
-    end
-    if #changes == 0 then
-      fail("ITEM_PARTY_EFFECT_INVALID", "carries no effort operation")
-    end
-    local record = { kind = "ev", changes = changes, mood = mood }
-    if friendship ~= nil then
-      record.friendship = friendship
-    end
-    return record
-  end
-  local record = {
-    kind = "medicine",
-    cures = {
-      sleep = party.slpHeal == true,
-      poison = party.psnHeal == true,
-      burn = party.brnHeal == true,
-      freeze = party.frzHeal == true,
-      paralysis = party.przHeal == true,
-    },
-    revive = "none",
-    mood = mood,
-  }
-  if party.revive == true then
-    record.revive = "single"
-  end
-  if party.hpRestore == true then
-    local param = assert(party.hpRestoreParam) --[[@as integer]]
-    if param == ItemSources.HP_RESTORE_ALL then
-      record.restore = { kind = "full" }
-    elseif param == ItemSources.HP_RESTORE_HALF then
-      record.restore = { kind = "half" }
-    elseif param == ItemSources.HP_RESTORE_QTR then
-      record.restore = { kind = "quarter" }
-    elseif param >= 1 and param < ItemSources.HP_RESTORE_QTR then
-      record.restore = { kind = "fixed", amount = param }
-    else
-      fail("ITEM_PARTY_EFFECT_INVALID", "carries an invalid health restore amount")
-    end
+    record = ppRecord(party, mood, fail)
+  elseif hasEv then
+    record = evRecord(party, mood, fail)
+  else
+    record = medicineRecord(party, mood, fail)
   end
   if friendship ~= nil then
     record.friendship = friendship
