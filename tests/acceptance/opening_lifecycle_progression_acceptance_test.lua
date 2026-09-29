@@ -14,7 +14,7 @@ local SurfaceResolver = require("libs.hgss.src.world.SurfaceResolver")
 local T = {
   metadata = {
     capabilities = { "rom_dump" },
-    derivedAssets = { "field-runtime", "map:60", "map:63", "map:384" },
+    derivedAssets = { "field-runtime", "map-data:60", "map-data:63", "map-data:384", "map:60", "map:63", "map:384" },
     tags = { "field", "lifecycle", "opening" },
   },
   tests = {},
