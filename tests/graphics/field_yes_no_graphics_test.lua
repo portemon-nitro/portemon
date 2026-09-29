@@ -116,6 +116,16 @@ local function testRenderer()
     end,
   }
   local text = {
+    fontDef = {
+      palette = {
+        [2] = { r = 1, g = 2, b = 3 },
+        [3] = { r = 4, g = 5, b = 6 },
+        [16] = { r = 7, g = 8, b = 9 },
+      },
+    },
+    windowBackgroundColor = function()
+      return { 0, 0, 0, 1 }
+    end,
     drawText = function() end,
     drawTextWithPalette = function(_, value, x, y, palette)
       textCalls[#textCalls + 1] = {
@@ -342,6 +352,16 @@ function T.complete_menu_uses_one_two_x_transform_and_restores_graphics_state()
     end,
   }
   local text = {
+    fontDef = {
+      palette = {
+        [2] = { r = 1, g = 2, b = 3 },
+        [3] = { r = 4, g = 5, b = 6 },
+        [16] = { r = 7, g = 8, b = 9 },
+      },
+    },
+    windowBackgroundColor = function()
+      return { 0, 0, 0, 1 }
+    end,
     drawText = function() end,
     drawTextWithPalette = function(_, value, x, y)
       calls[#calls + 1] = { kind = value, point = { graphics.transformPoint(x, y) } }
@@ -543,7 +563,20 @@ function T.graphics_state_is_restored_when_nested_menu_drawing_fails()
         return palette
       end,
     },
-    text = { drawText = function() end, drawTextWithPalette = function() end },
+    text = {
+      fontDef = {
+        palette = {
+          [2] = { r = 1, g = 2, b = 3 },
+          [3] = { r = 4, g = 5, b = 6 },
+          [16] = { r = 7, g = 8, b = 9 },
+        },
+      },
+      windowBackgroundColor = function()
+        return { 0, 0, 0, 1 }
+      end,
+      drawText = function() end,
+      drawTextWithPalette = function() end,
+    },
   })
   local choice = status(0)
   local layout = hostLayout(choice, dualTopology(), nil)
