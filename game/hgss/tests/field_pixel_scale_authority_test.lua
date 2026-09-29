@@ -8,7 +8,8 @@ local FieldViewport = require("libs.hgss.src.presentation.FieldViewport")
 
 local T = {
   metadata = {
-    capabilities = { "rom_dump", "derived_cache" },
+    capabilities = { "rom_dump", "derived_assets" },
+    derivedAssets = { "field-runtime", "map:7" },
     tags = { "field", "presentation", "composition" },
   },
   tests = {},

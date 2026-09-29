@@ -50,9 +50,9 @@ function T.menu_bindings_are_built_from_the_field_presentation_manifest(context)
   if
     context ~= nil
     and type(context.hasCapability) == "function"
-    and (not context:hasCapability("rom_dump") or not context:hasCapability("derived_cache"))
+    and (not context:hasCapability("rom_dump") or not context:hasCapability("derived_assets"))
   then
-    context:skip("requires rom_dump and derived_cache")
+    context:skip("requires rom_dump and prepared assets")
   end
   local FieldPresentation = require("data.manifests.field_presentation")
   local AcceptanceHarness = require("tests.acceptance.support.AcceptanceHarness")
@@ -618,4 +618,10 @@ function T.required_coordinators_are_reused_and_never_rebuilt_after_construction
   end, "a missing world-swap coordinator must fail instead of rebuilding a replacement")
 end
 
-return { tests = T }
+return {
+  tests = T,
+  metadata = {
+    capabilities = { "rom_dump", "derived_assets" },
+    derivedAssets = { "field-runtime", "map:7", "map:64" },
+  },
+}

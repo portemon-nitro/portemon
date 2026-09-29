@@ -2036,5 +2036,6 @@ function T.compact_description_uses_the_source_frame_with_three_lines_and_focus_
 end
 
 local suite = GraphicsSmoke.suite(T)
-suite.metadata.capabilities = { "graphics", "rom_dump", "derived_cache" }
+suite.metadata.capabilities = { "graphics", "rom_dump", "derived_assets" }
+suite.metadata.derivedAssets = { "bag:global", "items:global", "field-font:global", "field-ui:global" }
 return suite

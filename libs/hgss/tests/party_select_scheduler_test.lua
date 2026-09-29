@@ -30,7 +30,7 @@ local TaskRegistry = require("libs.script.src.TaskRegistry")
 
 local HOST_MODULE = "game.hgss.src.field.PartySelectionHost"
 
-local T = { metadata = { capabilities = { "rom_dump", "derived_cache" } }, tests = {} }
+local T = { metadata = { capabilities = { "rom_dump", "derived_assets" }, derivedAssets = { "party:global" } }, tests = {} }
 
 local function readyVersions()
   local versions = {}
@@ -174,7 +174,7 @@ function T.tests.select_slot_completes_once_and_resumes(context)
   local versions = readyVersions()
   if #versions == 0 then
     if context ~= nil and type(context.hasCapability) == "function" then
-      context:skip("requires rom_dump and derived_cache")
+      context:skip("requires rom_dump and prepared assets")
     end
     error("script party selection needs a ready versioned cache", 0)
   end
@@ -204,7 +204,7 @@ function T.tests.cancel_focus_yields_the_source_value(context)
   local versions = readyVersions()
   if #versions == 0 then
     if context ~= nil and type(context.hasCapability) == "function" then
-      context:skip("requires rom_dump and derived_cache")
+      context:skip("requires rom_dump and prepared assets")
     end
     error("script party selection needs a ready versioned cache", 0)
   end
@@ -234,7 +234,7 @@ function T.tests.resume_rereads_the_live_party(context)
   local versions = readyVersions()
   if #versions == 0 then
     if context ~= nil and type(context.hasCapability) == "function" then
-      context:skip("requires rom_dump and derived_cache")
+      context:skip("requires rom_dump and prepared assets")
     end
     error("script party selection needs a ready versioned cache", 0)
   end
@@ -273,7 +273,7 @@ function T.tests.stale_shape_is_rejected(context)
   local versions = readyVersions()
   if #versions == 0 then
     if context ~= nil and type(context.hasCapability) == "function" then
-      context:skip("requires rom_dump and derived_cache")
+      context:skip("requires rom_dump and prepared assets")
     end
     error("script party selection needs a ready versioned cache", 0)
   end

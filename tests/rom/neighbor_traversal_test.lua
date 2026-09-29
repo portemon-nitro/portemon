@@ -111,6 +111,6 @@ function T.new_bark_crosses_into_route_29_and_rejects_route_27_water(romFs, vers
 end
 
 local suite = require("tests.rom.support.RomSuite").fromFacts(T)
-suite.metadata.capabilities = { "rom_dump", "derived_cache" }
+suite.metadata.capabilities = { "rom_dump", "derived_assets" }
 suite.metadata.derivedAssets = { "world-catalog:global" }
 return suite

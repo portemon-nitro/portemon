@@ -1,7 +1,7 @@
 -- Capability detection for a test run. A ready raw dump is only
--- `rom_dump`; the derived cache is a separate capability the shell entrypoint
--- establishes by running the incremental builder before the suite, so an
--- unprepared dump can never claim `derived_cache`. The graphics namespaces are
+-- `rom_dump`; prepared derived closures are separate capabilities the shell
+-- entrypoint establishes by running the incremental builder before the
+-- suite, so an unprepared dump can never claim them. The graphics namespaces are
 -- declared absent here so these stay pure ROM-capability cases; the graphics
 -- preflight has its own suite.
 
@@ -105,10 +105,10 @@ function T.a_ready_dump_with_only_an_inherited_flag_is_not_a_derived_cache()
   Assert.deepEqual(versions, { "heartgold", "soulsilver" }, "versions follow the declared order")
 end
 
--- The historical cache name survives only as an alias of a verified
--- complete receipt: a partial receipt proves the partial closure without
--- the historical name, and the complete receipt grants both.
-function T.a_verified_complete_preparation_grants_the_historical_cache_alias()
+-- The historical cache name is retired: a partial receipt proves the partial
+-- closure without it, and a complete receipt proves the complete corpus
+-- without it. Detection grants no legacy alias.
+function T.a_verified_complete_preparation_grants_no_historical_alias()
   local partial, _ = detectWithReceipt({ heartgold = true }, {}, preparation())
 
   Assert.isTrue(partial.derived_assets, "a verified receipt proves the requested closure")
@@ -118,7 +118,7 @@ function T.a_verified_complete_preparation_grants_the_historical_cache_alias()
 
   Assert.isTrue(complete.derived_assets, "a complete corpus contains every partial closure")
   Assert.isTrue(complete.complete_derived_cache, "an exhaustive receipt proves the complete corpus")
-  Assert.isTrue(complete.derived_cache, "the historical name follows the verified complete corpus")
+  Assert.isNil(complete.derived_cache, "no receipt grants the retired historical name")
 end
 
 -- The old single environment flag is not invocation proof: without a

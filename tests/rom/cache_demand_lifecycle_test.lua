@@ -105,7 +105,7 @@ local suite = require("tests.rom.support.RomSuite").fromFacts(T)
 -- Reads the runner-prepared complete scope (which publishes the complete
 -- script corpus with canonical sidecars) read-only; the oracle loads bodies
 -- through the same cache without writing.
-suite.metadata.capabilities = { "rom_dump", "derived_cache" }
-suite.metadata.derivedAssets = {}
+suite.metadata.capabilities = { "rom_dump", "derived_assets" }
+suite.metadata.derivedAssets = { "script-summary:global" }
 suite.metadata.tags = { "script", "save", "compatibility" }
 return suite

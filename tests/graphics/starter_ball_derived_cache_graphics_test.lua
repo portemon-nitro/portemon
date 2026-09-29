@@ -196,6 +196,6 @@ function T.starter_balls_render_on_the_machine_in_the_real_lab_frame(scope)
 end
 
 local suite = GraphicsSmoke.suite(T)
-suite.metadata.capabilities = { "graphics", "rom_dump", "derived_cache" }
-suite.metadata.derivedAssets = { "map:61" }
+suite.metadata.capabilities = { "graphics", "rom_dump", "derived_assets" }
+suite.metadata.derivedAssets = { "map:61", "field-camera:global" }
 return suite

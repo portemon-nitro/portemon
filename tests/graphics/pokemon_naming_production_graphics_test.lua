@@ -631,7 +631,9 @@ function T.retail_nickname_modal_draws_from_prepared_field_resources(scope)
   end
 end
 
-return GraphicsSmoke.suite(T, {
-  capabilities = { "graphics", "rom_dump", "derived_cache" },
+local suite = GraphicsSmoke.suite(T, {
+  capabilities = { "graphics", "rom_dump", "derived_assets" },
   tags = { "field", "naming", "starter" },
 })
+suite.metadata.derivedAssets = { "field-runtime", "map:61" }
+return suite

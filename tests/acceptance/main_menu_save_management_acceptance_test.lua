@@ -16,7 +16,8 @@ local SaveFs = require("libs.storage.src.SaveFs")
 
 local T = {
   metadata = {
-    capabilities = { "rom_dump", "derived_cache" },
+    capabilities = { "rom_dump", "derived_assets" },
+    derivedAssets = { "field-runtime", "map:7" },
     tags = { "product", "menu", "save-management" },
   },
   tests = {},

@@ -37,7 +37,7 @@ local function readyManifests()
       result[#result + 1] = { cache = cache, manifest = manifest, versionId = versionId }
     end
   end
-  Assert.isTrue(#result > 0, "derived-cache capability promised a ready game version")
+  Assert.isTrue(#result > 0, "the prepared-assets capability promised a ready game version")
   return result
 end
 
@@ -408,6 +408,6 @@ function T.unselected_text_button_face_has_light_separator_dark(scope)
 end
 
 local suite = GraphicsSmoke.suite(T)
-suite.metadata.capabilities = { "graphics", "derived_cache" }
-suite.metadata.derivedAssets = { "bootstrap" }
+suite.metadata.capabilities = { "graphics", "rom_dump", "derived_assets" }
+suite.metadata.derivedAssets = { "new-game-intro" }
 return suite

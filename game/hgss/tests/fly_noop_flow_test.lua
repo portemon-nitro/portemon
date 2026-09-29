@@ -26,7 +26,8 @@ local ScreenTopology = require("libs.hgss.src.ui.ScreenTopology")
 local PokemonMenuFlow = require("game.hgss.src.field.PokemonMenuFlow")
 
 local T = {
-  metadata = { capabilities = { "rom_dump", "derived_cache" } },
+  metadata = { capabilities = { "rom_dump", "derived_assets" },
+  derivedAssets = { "party:global" }, },
   tests = {},
 }
 
@@ -233,7 +234,7 @@ function T.tests.checked_fly_restores_party_without_mutation(context)
   local versions = readyVersions()
   if #versions == 0 then
     if context ~= nil and type(context.hasCapability) == "function" then
-      context:skip("requires rom_dump and derived_cache")
+      context:skip("requires rom_dump and prepared assets")
     end
     error("checked fly needs a ready versioned cache", 0)
   end

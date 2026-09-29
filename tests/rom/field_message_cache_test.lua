@@ -141,6 +141,6 @@ function T.compiled_cache_artifacts_are_ready_and_stable(romFs, version)
 end
 
 local suite = require("tests.rom.support.RomSuite").fromFacts(T)
-suite.metadata.capabilities = { "rom_dump", "derived_cache" }
-suite.metadata.derivedAssets = {}
+suite.metadata.capabilities = { "rom_dump", "derived_assets" }
+suite.metadata.derivedAssets = { "message-summary:global", "field-font:global" }
 return suite

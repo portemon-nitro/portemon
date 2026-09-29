@@ -26,7 +26,9 @@ local ScreenTopology = require("libs.hgss.src.ui.ScreenTopology")
 local COMPOSITION_MODULE = "game.hgss.src.field.PokemonMenuComposition"
 
 local T = {
-  metadata = { tags = { "menu", "composition" } },
+  metadata = { capabilities = { "rom_dump", "derived_assets" },
+    derivedAssets = { "bag:global", "party:global" },
+    tags = { "menu", "composition" } },
   tests = {},
 }
 
@@ -342,7 +344,7 @@ function T.tests.flow_factories_open_through_the_borrowed_manifests(context)
   local versions = readyVersions()
   if #versions == 0 then
     if context ~= nil and type(context.hasCapability) == "function" then
-      context:skip("requires rom_dump and derived_cache")
+      context:skip("requires rom_dump and prepared assets")
     end
     error("flow roots need a ready versioned cache", 0)
   end

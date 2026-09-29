@@ -187,7 +187,7 @@ local function runOf(layers, extra)
 end
 
 local NO_DUMP = {}
-local READY_DUMP = { rom_dump = true, derived_cache = true }
+local READY_DUMP = { rom_dump = true, derived_assets = true }
 
 -- Every documented option parses into the plan the runner consumes.
 function T.documented_options_parse()
@@ -287,7 +287,7 @@ function T.strict_mode_without_a_dump_fails()
   local plan = parse({}, { env = { PORTEMON_REQUIRE_ROM_TESTS = "1" } })
   local run = runOf(
     { unit = { passed = 1194 }, rom = { skipped = 71 }, acceptance = { skipped = 23 } },
-    { selectedCapabilities = { rom_dump = true, derived_cache = true } }
+    { selectedCapabilities = { rom_dump = true, derived_assets = true } }
   )
 
   local outcome = Cli.outcome(plan, NO_DUMP, run)
@@ -305,7 +305,7 @@ function T.selected_rom_gated_layer_without_a_dump_fails()
     local plan = parse({ "--layer", layer })
     local run = runOf(
       { [layer] = { skipped = 23 } },
-      { selectedCapabilities = { rom_dump = true, derived_cache = true } }
+      { selectedCapabilities = { rom_dump = true, derived_assets = true } }
     )
     local outcome = Cli.outcome(plan, NO_DUMP, run)
 
@@ -459,11 +459,11 @@ end
 
 -- Cache preparation follows the suites actually selected: a narrowed
 -- unit-only focus prepares nothing even with no explicit layer.
-function T.narrow_unit_filter_plan_skips_derived_cache_preparation()
+function T.narrow_unit_filter_plan_skips_cache_preparation()
   local corpus = FakeCorpus.new({
     ["fake/unit/alpha_test.lua"] = { tests = { ["unit case"] = function() end } },
     ["fake/rom/cache_test.lua"] = {
-      metadata = { capabilities = { "rom_dump", "derived_cache" } },
+      metadata = { capabilities = { "rom_dump", "derived_assets" }, derivedAssets = { "map:7" } },
       tests = { ["cache case"] = function() end },
     },
   })
@@ -483,9 +483,9 @@ function T.narrow_unit_filter_plan_skips_derived_cache_preparation()
 end
 
 -- Explicit ROM strictness follows the selected capabilities: a raw-dump-only
--- focus prepares nothing and tolerates the absent derived cache, while a
+-- focus prepares nothing and tolerates the absent prepared cache, while a
 -- missing rom_dump still fails.
-function T.raw_rom_focus_does_not_require_the_derived_cache()
+function T.raw_rom_focus_does_not_require_prepared_assets()
   local corpus = FakeCorpus.new({
     ["fake/rom/raw_test.lua"] = {
       metadata = { capabilities = { "rom_dump" } },
@@ -500,7 +500,7 @@ function T.raw_rom_focus_does_not_require_the_derived_cache()
   local caps = selectedCapabilities(listing)
 
   Assert.isTrue(caps.rom_dump == true, "the selection keeps rom_dump")
-  Assert.isFalse(caps.derived_cache == true, "the selection omits derived_cache")
+  Assert.isFalse(caps.derived_assets == true, "the selection omits derived_assets")
   Assert.equal(prepareOf(Cli.renderPlan(plan, caps, 1, {})), "none", "a raw-dump-only selection skips preparation")
 
   local run = runOf({ rom = { passed = 1 } }, { selectedCapabilities = { rom_dump = true } })
@@ -521,7 +521,11 @@ end
 function T.listing_never_prepares_the_cache_even_for_corpus_consumers()
   local corpus = FakeCorpus.new({
     ["fake/rom/cache_test.lua"] = {
-      metadata = { capabilities = { "rom_dump", "derived_cache" }, fullCorpus = true },
+      metadata = {
+        capabilities = { "rom_dump", "complete_derived_cache" },
+        derivedAssets = { "complete" },
+        fullCorpus = true,
+      },
       tests = { ["cache case"] = function() end },
     },
   })
@@ -541,7 +545,7 @@ end
 -- Suites that read the prebuilt generated cache declare it, so
 -- selection-aware planning prepares the cache for them but not for a
 -- raw-dump-only control.
-function T.generated_cache_consumers_declare_the_derived_cache()
+function T.generated_cache_consumers_declare_scoped_requirements()
   local targets = {
     "field_message_cache_test",
     "field_dialogue_test",
@@ -565,7 +569,7 @@ function T.generated_cache_consumers_declare_the_derived_cache()
     local listing = TestRunner.list({ roots = roots, fs = corpus.fs, load = corpus.load, filter = name })
     Assert.equal(#listing, 1, "filter " .. name .. " selects exactly its suite")
     local caps = selectedCapabilities(listing)
-    if caps.derived_cache ~= true then
+    if caps.derived_assets ~= true then
       missing[#missing + 1] = name
     end
     local plan = parse({ "--filter", name })
@@ -574,14 +578,14 @@ function T.generated_cache_consumers_declare_the_derived_cache()
       unprepared[#unprepared + 1] = name
     end
   end
-  Assert.equal(#missing, 0, "suites missing derived_cache: " .. table.concat(missing, ", "))
+  Assert.equal(#missing, 0, "suites missing derived_assets: " .. table.concat(missing, ", "))
   Assert.equal(#unprepared, 0, "suites whose selection skips preparation: " .. table.concat(unprepared, ", "))
 
   local control = TestRunner.list({ roots = roots, fs = corpus.fs, load = corpus.load, filter = "field_messages_test" })
 
   Assert.equal(#control, 1, "the control filter selects exactly its suite")
   local controlCaps = selectedCapabilities(control)
-  Assert.isFalse(controlCaps.derived_cache == true, "a raw-dump-only control omits derived_cache")
+  Assert.isFalse(controlCaps.derived_assets == true, "a raw-dump-only control omits derived_assets")
   local controlPlan = parse({ "--filter", "field_messages_test" })
   Assert.equal(
     prepareOf(Cli.renderPlan(controlPlan, controlCaps, 1, TestRunner.selectedRequirements(control))),
@@ -650,8 +654,8 @@ function T.unfiltered_strict_run_with_no_executed_graphics_test_still_fails()
 end
 
 -- Raw field-message/font facts need no prepared cache, while the
--- cache-backed message sibling and the dialogue suite prepare the complete
--- corpus their historical capability name is granted from.
+-- cache-backed message sibling and the dialogue suite prepare exactly
+-- their declared bounded closures.
 function T.raw_message_focus_skips_cache_preparation_while_cache_backed_message_facts_prepare_it()
   local files = {
     ["fake/rom/field_messages_test.lua"] = require("tests.rom.field_messages_test"),
@@ -683,8 +687,8 @@ function T.raw_message_focus_skips_cache_preparation_while_cache_backed_message_
         TestRunner.selectedRequirements(dialogueListing)
       )
     ),
-    "complete",
-    "a cache-backed dialogue focus prepares the complete corpus it claims"
+    "assets",
+    "a cache-backed dialogue focus prepares its declared bounded closure"
   )
 
   files["fake/rom/field_message_cache_test.lua"] = require("tests.rom.field_message_cache_test")
@@ -702,8 +706,8 @@ function T.raw_message_focus_skips_cache_preparation_while_cache_backed_message_
     prepareOf(
       Cli.renderPlan(cachePlan, selectedCapabilities(cacheListing), 1, TestRunner.selectedRequirements(cacheListing))
     ),
-    "complete",
-    "a cache-backed message focus prepares the complete corpus it claims"
+    "assets",
+    "a cache-backed message focus prepares its declared family closure"
   )
 end
 
@@ -900,6 +904,134 @@ function T.selected_requirements_are_deduplicated_and_sorted()
   end
   Assert.deepEqual(requires, { "bootstrap", "map:7" }, "the union is deduplicated and sorted")
   Assert.equal(prepareOf(lines), "assets", "a partial union prepares its partial scope")
+end
+
+-- The historical cache capability name is not a requirement source: a suite
+-- that still declares it instead of an explicit closure is malformed, so the
+-- listing names the suite and the stale capability and plans no complete
+-- preparation from it.
+function T.stale_cache_capability_is_a_listing_error_not_a_complete_request()
+  local corpus = FakeCorpus.new({
+    ["fake/rom/stale_test.lua"] = {
+      metadata = { capabilities = { "rom_dump", "derived_cache" } },
+      tests = { ["stale case"] = function() end },
+    },
+  })
+  local roots = { corpus:root("fake/rom", "rom") }
+  local listing = TestRunner.list({ roots = roots, fs = corpus.fs, load = corpus.load, filter = "stale case" })
+
+  Assert.equal(#listing, 1, "the stale filter selects exactly its suite")
+  Assert.notNil(listing[1].error, "a stale capability declaration must fail the listing")
+  contains(listing[1].error, "stale_test", "the failure names the suite")
+  contains(listing[1].error, "derived_cache", "the failure names the stale capability")
+  Assert.deepEqual(TestRunner.selectedRequirements(listing), {}, "a malformed suite contributes no requirement")
+  local plan = parse({ "--filter", "stale case" })
+  Assert.equal(
+    prepareOf(Cli.renderPlan(plan, selectedCapabilities(listing), 1, TestRunner.selectedRequirements(listing))),
+    "none",
+    "a malformed selection prepares nothing"
+  )
+end
+
+-- A scoped suite prepares exactly its declared closure: the plan carries
+-- only the listed roots at the partial scope, never a complete request.
+function T.scoped_suite_prepares_only_its_declared_closure()
+  local corpus = FakeCorpus.new({
+    ["fake/rom/map_test.lua"] = {
+      metadata = { capabilities = { "rom_dump", "derived_assets" }, derivedAssets = { "map:7" } },
+      tests = { ["map case"] = function() end },
+    },
+  })
+  local roots = { corpus:root("fake/rom", "rom") }
+  local listing = TestRunner.list({ roots = roots, fs = corpus.fs, load = corpus.load, filter = "map case" })
+
+  Assert.equal(#listing, 1, "the map filter selects exactly its suite")
+  Assert.isNil(listing[1].error, "a declared closure must list cleanly")
+  local plan = parse({ "--filter", "map case" })
+  local lines = Cli.renderPlan(plan, selectedCapabilities(listing), 1, TestRunner.selectedRequirements(listing))
+  local requires = {}
+  for _, line in ipairs(lines) do
+    local key, value = line:match("^([^=]+)=(.*)$")
+    if key == "require" then
+      requires[#requires + 1] = value
+    end
+  end
+  Assert.deepEqual(requires, { "map:7" }, "the plan carries only the declared closure")
+  Assert.equal(prepareOf(lines), "assets", "a scoped selection prepares its partial scope")
+end
+
+-- A complete claim without the explicit corpus tier is malformed: the
+-- listing names the offending suite instead of planning a complete
+-- preparation for a regular selection.
+function T.complete_claims_without_the_corpus_tier_are_listing_errors()
+  local variants = {
+    complete_capability_without_tier = {
+      metadata = { capabilities = { "rom_dump", "complete_derived_cache" }, derivedAssets = { "complete" } },
+    },
+    complete_requirement_without_tier = {
+      metadata = { capabilities = { "rom_dump", "derived_assets" }, derivedAssets = { "complete" } },
+    },
+  }
+  for label, config in pairs(variants) do
+    local corpus = FakeCorpus.new({
+      ["fake/rom/" .. label .. "_test.lua"] = {
+        metadata = config.metadata,
+        tests = { ["mislabeled case"] = function() end },
+      },
+    })
+    local roots = { corpus:root("fake/rom", "rom") }
+    local listing = TestRunner.list({ roots = roots, fs = corpus.fs, load = corpus.load, filter = "mislabeled case" })
+    Assert.equal(#listing, 1, label .. " selects exactly its suite")
+    Assert.notNil(listing[1].error, label .. " must fail the listing without the corpus tier")
+    contains(listing[1].error, label .. "_test", "the failure names the suite")
+    Assert.deepEqual(TestRunner.selectedRequirements(listing), {}, label .. " contributes no requirement")
+  end
+end
+
+-- The genuine corpus audit keeps its exhaustive request, but only under the
+-- explicit corpus tier: the regular selection hides it and plans nothing
+-- complete, while the corpus selection carries the declared request.
+function T.corpus_selection_keeps_the_declared_complete_request()
+  local corpus = FakeCorpus.new({
+    ["fake/rom/audit_test.lua"] = {
+      metadata = {
+        capabilities = { "rom_dump", "complete_derived_cache" },
+        derivedAssets = { "complete" },
+        fullCorpus = true,
+      },
+      tests = { ["audit case"] = function() end },
+    },
+  })
+  local roots = { corpus:root("fake/rom", "rom") }
+  local regular = TestRunner.list({ roots = roots, fs = corpus.fs, load = corpus.load })
+  Assert.equal(#regular, 0, "the regular selection hides the corpus audit")
+  Assert.deepEqual(TestRunner.selectedRequirements(regular), {}, "a hidden audit contributes no requirement")
+
+  local plan = parse({ "--full-corpus-census" })
+  local listed = TestRunner.list({ roots = roots, fs = corpus.fs, load = corpus.load, fullCorpus = plan.fullCorpus })
+  Assert.equal(#listed, 1, "the corpus selection exposes the audit")
+  Assert.isNil(listed[1].error, "a tiered complete claim must list cleanly")
+  local lines = Cli.renderPlan(plan, selectedCapabilities(listed), 1, TestRunner.selectedRequirements(listed))
+  Assert.equal(prepareOf(lines), "complete", "the corpus selection prepares the complete scope")
+end
+
+-- Runner self-test modules verify the runner itself: even one that declares
+-- a product requirement contributes nothing to a regular selection, while
+-- the runner-only selection still exposes it.
+function T.runner_self_test_suites_contribute_no_regular_requirements()
+  local corpus = FakeCorpus.new({
+    ["tests/runner/tests/fake_probe_test.lua"] = {
+      metadata = { capabilities = { "rom_dump" }, derivedAssets = { "complete" } },
+      tests = { ["probe case"] = function() end },
+    },
+  })
+  local roots = { corpus:root("tests/runner/tests", "unit") }
+  local regular = TestRunner.list({ roots = roots, fs = corpus.fs, load = corpus.load })
+  Assert.equal(#regular, 0, "the regular selection excludes the runner self-test")
+  Assert.deepEqual(TestRunner.selectedRequirements(regular), {}, "an excluded self-test contributes no requirement")
+
+  local own = TestRunner.list({ roots = roots, fs = corpus.fs, load = corpus.load, selfTest = true })
+  Assert.equal(#own, 1, "the runner-only selection exposes its own suite")
 end
 
 -- A malformed requirement never reaches preparation: the plan call fails

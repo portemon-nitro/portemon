@@ -91,6 +91,6 @@ function T.abilities_and_presentation_selectors_resolve(romFs, versionId)
 end
 
 local suite = RomSuite.fromFacts(T)
-suite.metadata.capabilities = { "rom_dump", "derived_cache" }
-suite.metadata.derivedAssets = { "bootstrap" }
+suite.metadata.capabilities = { "rom_dump", "derived_assets" }
+suite.metadata.derivedAssets = { "mon-catalog:global", "mon-summary:global" }
 return suite

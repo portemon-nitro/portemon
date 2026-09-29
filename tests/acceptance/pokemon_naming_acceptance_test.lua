@@ -12,7 +12,8 @@ local PlayTime = require("libs.hgss.src.save.PlayTime")
 
 local T = {
   metadata = {
-    capabilities = { "rom_dump", "derived_cache" },
+    capabilities = { "rom_dump", "derived_assets" },
+    derivedAssets = { "field-runtime", "map:60" },
     tags = { "field", "pokemon", "naming", "acceptance" },
   },
   tests = {},

@@ -27,20 +27,20 @@ local PartyCache = require("libs.assets.src.PartyCache")
 local FLOW_MODULE = "game.hgss.src.field.PokemonMenuFlow"
 
 local T = {
-  metadata = { capabilities = { "rom_dump", "derived_cache" }, tags = { "party", "bag", "flow", "failure" } },
+  metadata = { capabilities = { "rom_dump", "derived_assets" }, derivedAssets = { "field-runtime", "map:7" }, tags = { "party", "bag", "flow", "failure" } },
   tests = {},
 }
 
 local function requireVersions(context)
   if context ~= nil and type(context.hasCapability) == "function" then
     if not context:hasCapability("rom_dump") then
-      context:skip("requires rom_dump and derived_cache")
+      context:skip("requires rom_dump and prepared assets")
     end
   end
   local versions = { AcceptanceHarness.defaultVersion() }
   if #versions == 0 then
     if context ~= nil and type(context.hasCapability) == "function" then
-      context:skip("requires rom_dump and derived_cache")
+      context:skip("requires rom_dump and prepared assets")
     end
     error("menu failure journeys need a ready ROM cache", 0)
   end

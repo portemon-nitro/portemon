@@ -577,6 +577,6 @@ function T.follower_moves_while_the_player_step_is_in_flight()
 end
 
 local suite = GraphicsSmoke.suite(T)
-suite.metadata.capabilities = { "graphics", "rom_dump", "derived_cache" }
-suite.metadata.derivedAssets = { "map:63" }
+suite.metadata.capabilities = { "graphics", "rom_dump", "derived_assets" }
+suite.metadata.derivedAssets = { "field-runtime", "map:63" }
 return suite

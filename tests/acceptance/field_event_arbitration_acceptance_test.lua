@@ -13,8 +13,8 @@ local SignpostTrace = require("tests.acceptance.support.SignpostTrace")
 
 local T = {
   metadata = {
-    capabilities = { "rom_dump", "derived_cache" },
-    derivedAssets = { "map:60", "map:62" },
+    capabilities = { "rom_dump", "derived_assets" },
+    derivedAssets = { "field-runtime", "map:60", "map:62" },
     tags = { "field", "events", "warps", "interaction" },
   },
   tests = {},

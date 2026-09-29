@@ -92,6 +92,55 @@ function Suite.normalize(mod, moduleName, defaultLayer)
     assert(type(fns[name]) == "function", moduleName .. ": test '" .. name .. "' must be a function")
   end
 
+  local capabilities = stringArray(metadata.capabilities, "capabilities", moduleName)
+  local derivedAssets = stringArray(metadata.derivedAssets, "derivedAssets", moduleName)
+  local fullCorpus = metadata.fullCorpus == true
+
+  -- The historical cache capability name is retired: it used to widen
+  -- any selection into an exhaustive preparation, so a suite that still
+  -- declares it is malformed and must be migrated to an explicit closure.
+  for _, name in ipairs(capabilities) do
+    assert(
+      name ~= "derived_cache",
+      moduleName .. ": stale capability 'derived_cache'; declare an explicit derivedAssets closure instead"
+    )
+  end
+
+  local wantsComplete = false
+  for _, requirement in ipairs(derivedAssets) do
+    if requirement == "complete" then
+      wantsComplete = true
+    end
+  end
+  if wantsComplete then
+    assert(
+      fullCorpus,
+      moduleName .. ": a 'complete' requirement needs the explicit corpus tier (fullCorpus = true)"
+    )
+  end
+
+  local claimsComplete = false
+  local claimsBounded = false
+  for _, name in ipairs(capabilities) do
+    if name == "complete_derived_cache" then
+      claimsComplete = true
+    elseif name == "derived_assets" then
+      claimsBounded = true
+    end
+  end
+  if claimsComplete then
+    assert(
+      fullCorpus and wantsComplete,
+      moduleName .. ": 'complete_derived_cache' needs fullCorpus = true with 'complete' in derivedAssets"
+    )
+  end
+  if claimsBounded then
+    assert(
+      #derivedAssets > 0,
+      moduleName .. ": 'derived_assets' needs a non-empty derivedAssets requirement list"
+    )
+  end
+
   local layer = defaultLayer
   assert(type(layer) == "string", moduleName .. ": discovery root needs a string layer")
 
@@ -102,8 +151,8 @@ function Suite.normalize(mod, moduleName, defaultLayer)
   return {
     module = moduleName,
     layer = layer,
-    capabilities = stringArray(metadata.capabilities, "capabilities", moduleName),
-    derivedAssets = stringArray(metadata.derivedAssets, "derivedAssets", moduleName),
+    capabilities = capabilities,
+    derivedAssets = derivedAssets,
     tags = stringArray(metadata.tags, "tags", moduleName),
     fullCorpus = metadata.fullCorpus == true,
     tests = names,

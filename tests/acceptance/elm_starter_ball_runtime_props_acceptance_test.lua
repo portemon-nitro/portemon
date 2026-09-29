@@ -20,8 +20,8 @@ local StarterLab = require("romdump.src.reference.hgss.starter_lab")
 
 local T = {
   metadata = {
-    capabilities = { "rom_dump", "derived_cache" },
-    derivedAssets = { "map:61" },
+    capabilities = { "rom_dump", "derived_assets" },
+    derivedAssets = { "field-runtime", "map:61" },
     tags = { "field", "elm", "starter", "runtime-props" },
   },
   tests = {},

@@ -1,11 +1,8 @@
--- Detects the capabilities a test run has available. Five are owned here:
+-- Detects the capabilities a test run has available. Four are owned here:
 --
 --   graphics                a preflight really built and released a Shader, Canvas, Mesh,
 --                           and Image against the host's graphics namespace
 --   rom_dump                at least one GameVersion is ready through RomImporter.isReady
---   derived_cache           the historical cache name, granted only as an alias of a
---                           verified complete_derived_cache below, never by a bare
---                           environment flag
 --   derived_assets          an invocation preparation receipt proves the requested
 --                           closure ready for the selected source and generation
 --   complete_derived_cache  the receipt additionally proves an exhaustive current
@@ -169,7 +166,6 @@ function Capabilities.detect(options)
     local preparation = assert(options.preparation, "a verified closure carries its receipt")
     if preparation.complete == true then
       capabilities.complete_derived_cache = true
-      capabilities.derived_cache = true
     end
   end
   return capabilities, ready

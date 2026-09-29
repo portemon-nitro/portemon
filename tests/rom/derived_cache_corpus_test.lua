@@ -50,4 +50,5 @@ local suite = require("tests.rom.support.RomSuite").fromFacts(T)
 -- preparation instead of publishing one.
 suite.metadata.capabilities = { "rom_dump", "complete_derived_cache" }
 suite.metadata.derivedAssets = { "complete" }
+suite.metadata.fullCorpus = true
 return suite

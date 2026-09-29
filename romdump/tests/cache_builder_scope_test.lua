@@ -1316,6 +1316,37 @@ function T.injected_failure_still_restores_io_and_releases_ownership()
   os.remove(probePath)
 end
 
+-- The common preparation scope admits the existing production milestones
+-- beside bootstrap: each name parses to its own scope instead of failing
+-- as an unknown requirement.
+function T.field_milestone_scopes_parse_to_their_session_names()
+  for _, name in ipairs({ "new-game-intro", "field-planning", "field-runtime" }) do
+    local entry, err = CacheBuilder.parseRequirement(name)
+    Assert.isNil(err, "milestone " .. name .. " must parse")
+    assert(entry, "milestone " .. name .. " must produce an entry")
+    Assert.equal(entry.scope, name, "milestone " .. name .. " keeps its own scope")
+  end
+  local bootstrap, bootstrapErr = CacheBuilder.parseRequirement("bootstrap")
+  Assert.isNil(bootstrapErr, "bootstrap keeps parsing")
+  assert(bootstrap, "bootstrap must produce an entry")
+  Assert.equal(bootstrap.scope, "bootstrap")
+end
+
+-- A field milestone prepares through its session roster without invoking
+-- the exhaustive scope: the requested closure is ready, the report and any
+-- receipt stay nonexhaustive, and no full attestation is published.
+function T.field_runtime_scope_prepares_without_complete_attestation()
+  env = newEnv()
+  requireScopedPreparation()
+  local report, err = CacheBuilder.prepareVersion("heartgold", scopedOptions({ requirements = { "field-runtime" } }))
+  Assert.isNil(err)
+  Assert.isTrue(report.requestedReady, "the requested milestone closure must be ready")
+  Assert.isFalse(report.complete, "a milestone scope must never report a complete cache")
+  Assert.equal(#env.sessions, 1, "one common session serves the milestone scope")
+  Assert.isNil(env.sessions[1].completeRequested, "a milestone client must not request an unrelated complete build")
+  Assert.equal(env.publishes, 0, "a milestone scope must never publish full attestation")
+end
+
 -- Output labels are confined to a safe alphabet so generated names can never
 -- escape the owned root through path fragments.
 function T.output_path_rejects_unsafe_labels()

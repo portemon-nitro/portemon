@@ -571,11 +571,11 @@ local function parsePlanFields(output)
 end
 
 -- The machine-readable plan scopes preparation to the actual selection: a
--- cache-backed focus using the historical cache capability prepares the
--- complete scope it is granted from, while a narrow requirement-free focus
--- reports no scope and no requirements. Both children run sanitized, so the
--- scenario holds under parallel workers as well as serially.
-function T.a_legacy_cache_backed_focus_prepares_the_complete_scope_it_claims()
+-- cache-backed focus prepares exactly its declared closure, while a narrow
+-- requirement-free focus reports no scope and no requirements. Both children
+-- run sanitized, so the scenario holds under parallel workers as well as
+-- serially.
+function T.a_cache_backed_focus_prepares_only_its_declared_closure()
   withTempDirectory(function(root)
     local parentWorker = os.getenv("PORTEMON_TEST_WORKER")
 
@@ -585,16 +585,20 @@ function T.a_legacy_cache_backed_focus_prepares_the_complete_scope_it_claims()
     -- A nested plan call that dies under parallel load prints no prepare line;
     -- surface its captured output so the failure names the nested cause.
     local planEvidence = "nested plan output: [" .. cacheOutput:gsub("\n", " | ") .. "]"
-    Assert.equal(prepare, "complete", "a historical-cache focus prepares the complete scope; " .. planEvidence)
-    Assert.isTrue(#requires >= 1, "a cache-backed focus must name its requirements")
-    local hasComplete = false
+    Assert.equal(prepare, "assets", "a cache-backed focus prepares its declared scope; " .. planEvidence)
+    local expected = { "field-font:global", "message-bank:542", "message-bank:543" }
+    table.sort(requires)
+    Assert.deepEqual(
+      requires,
+      expected,
+      "a cache-backed focus names exactly its declared closure; " .. planEvidence
+    )
     for _, requirement in ipairs(requires) do
-      Assert.isTrue(requirement ~= nil and requirement ~= "", "every requirement names a closed request")
-      if requirement == "complete" then
-        hasComplete = true
-      end
+      Assert.isTrue(
+        requirement ~= nil and requirement ~= "" and requirement ~= "complete",
+        "a bounded focus never requires the complete corpus"
+      )
     end
-    Assert.isTrue(hasComplete, "a historical-cache focus explicitly requires the complete corpus")
     Assert.isTrue(
       tostring(jobs):match("^[1-9][0-9]*$") ~= nil,
       "the plan still answers a positive worker count, got: " .. tostring(jobs)
@@ -1117,12 +1121,7 @@ function T.first_seed_imports_once_and_prepares_only_the_selected_scope()
     {
       label = "narrow-derived",
       args = "--filter field_dialogue_test",
-      requires = { "complete" },
-    },
-    {
-      label = "complete",
-      args = "--filter derived_cache_corpus_test",
-      requires = { "complete" },
+      requires = { "field-font:global", "message-bank:542", "message-bank:543" },
     },
   }
   for _, case in ipairs(cases) do
@@ -1186,6 +1185,40 @@ function T.first_seed_imports_once_and_prepares_only_the_selected_scope()
       )
     end)
   end
+end
+
+-- A corpus-only focus stays out of the regular first seed: without the
+-- explicit corpus mode the census is excluded, so the seed imports the
+-- source yet prepares no scope instead of widening to complete.
+function T.a_corpus_only_focus_prepares_nothing_in_a_regular_first_seed()
+  withTempDirectory(function(root)
+    local fakeLoveDir = installFakeLove(root)
+    local source = root .. "/fixture.nds"
+    writeFile(source, "fixture rom bytes for the corpus first seed")
+    local recordDir = root .. "/records"
+
+    local _, logFile, _ = runTestCommand(
+      root,
+      fakeLoveDir,
+      "--rom-source " .. shellQuote(source) .. " --filter derived_cache_corpus_test",
+      { recordDir = recordDir, runTag = "first" }
+    )
+    local log = tostring(readFile(logFile))
+    Assert.isNil(
+      log:find("require=complete", 1, true),
+      "a corpus-only focus never requests the complete scope: " .. log
+    )
+    Assert.equal(
+      #invocationsWith(preparationInvocations(recordDir), "--prepare-cache"),
+      0,
+      "a corpus-only focus prepares no scope in regular mode"
+    )
+    Assert.equal(
+      countImports(preparationInvocations(recordDir), "--build-cache"),
+      0,
+      "a corpus-only focus never hides an exhaustive build"
+    )
+  end)
 end
 
 -- Direct entrypoint children (bypassing the shell wrapper) for pre-setup
@@ -1283,7 +1316,10 @@ function T.a_preparation_record_for_a_narrower_closure_fails_before_any_setup()
       output:find("1 passed", 1, true),
       "no test may execute against a narrower preparation, got: " .. output
     )
-    contains(output, "map:33", "the failure names the uncovered requirement")
+    -- The diagnostic names the first uncovered requirement in sorted selected
+    -- order (audio-bank:700 here), so only the truthful coverage shape is
+    -- pinned, not one fixture root that later migration may reorder.
+    contains(output, "does not cover the selected requirement '", "the failure names the uncovered requirement")
   end)
 end
 

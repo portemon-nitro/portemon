@@ -86,7 +86,7 @@ function T.independent_map_jobs_overlap_on_bounded_batch_workers(romFs, versionI
 end
 
 local suite = RomSuite.fromFacts(T)
-suite.metadata.capabilities = { "rom_dump", "derived_cache" }
+suite.metadata.capabilities = { "rom_dump", "derived_assets" }
 suite.metadata.derivedAssets = { "map:60", "map:61" }
 suite.metadata.tags = { "producer", "cache", "parallel" }
 return suite

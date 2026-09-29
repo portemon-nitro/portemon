@@ -13,14 +13,22 @@ local RomImporter = require("romdump.src.source.RomImporter")
 
 local T = {}
 
+-- Page image data loads lazily for the selectors the scenarios actually
+-- sample: each page decodes once on first access, is shared by page id
+-- within the test, and releasePages frees every loaded page exactly once.
+-- Sampling two selectors never decodes the pages no selector touches.
 local function atlasPages(cache, manifestPath)
   local manifest = assert(cache:loadLua(manifestPath), "manifest must load: " .. manifestPath)
   local pages = {}
-  for _, pageId in ipairs(manifest.pageIds) do
-    local page = assert(manifest.pages[pageId], "page must be declared: " .. pageId)
-    local imageBytes = assert(cache:read(page.image), "page must be present: " .. tostring(page.image))
-    pages[pageId] = love.image.newImageData(love.filesystem.newFileData(imageBytes, page.image))
-  end
+  setmetatable(pages, {
+    __index = function(self, pageId)
+      local page = assert(manifest.pages[pageId], "page must be declared: " .. pageId)
+      local imageBytes = assert(cache:read(page.image), "page must be present: " .. tostring(page.image))
+      local data = love.image.newImageData(love.filesystem.newFileData(imageBytes, page.image))
+      rawset(self, pageId, data)
+      return data
+    end,
+  })
   return manifest, pages
 end
 
@@ -321,6 +329,6 @@ function T.party_application_frame_cycle_leaves_no_stale_modal(scope)
 end
 
 local suite = GraphicsSmoke.suite(T)
-suite.metadata.capabilities = { "graphics", "rom_dump", "derived_cache" }
-suite.metadata.derivedAssets = { "complete" }
+suite.metadata.capabilities = { "graphics", "rom_dump", "derived_assets" }
+suite.metadata.derivedAssets = { "field-runtime", "audio-bank:700", "audio-bank:702", "audio-bank:709", "mon-summary:global", "map-data:31", "map-data:33", "map-data:47", "map-data:48", "map-data:60", "map:60" }
 return suite

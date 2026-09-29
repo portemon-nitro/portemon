@@ -481,7 +481,7 @@ end
 function T.selected_capabilities_follow_the_selection_without_duplicates()
   local corpus = FakeCorpus.new({
     ["fake/unit/alpha_test.lua"] = {
-      metadata = { capabilities = { "rom_dump", "derived_cache" } },
+      metadata = { capabilities = { "rom_dump", "derived_assets" }, derivedAssets = { "map:7" } },
       tests = { ["a"] = function() end, ["b"] = function() end },
     },
     ["fake/unit/beta_test.lua"] = {
@@ -490,10 +490,10 @@ function T.selected_capabilities_follow_the_selection_without_duplicates()
     },
   })
   local roots = { corpus:root("fake/unit", "unit") }
-  local available = { rom_dump = true, derived_cache = true }
+  local available = { rom_dump = true, derived_assets = true }
 
   local full = TestRunner.run({ roots = roots, fs = corpus.fs, load = corpus.load, capabilities = available })
-  Assert.deepEqual(full.selectedCapabilities, { rom_dump = true, derived_cache = true })
+  Assert.deepEqual(full.selectedCapabilities, { rom_dump = true, derived_assets = true })
 
   local narrowed = TestRunner.run({
     roots = roots,
@@ -505,7 +505,7 @@ function T.selected_capabilities_follow_the_selection_without_duplicates()
   Assert.equal(narrowed.passed, 1)
   Assert.deepEqual(
     narrowed.selectedCapabilities,
-    { rom_dump = true, derived_cache = true },
+    { rom_dump = true, derived_assets = true },
     "one selected suite contributes every declared capability once"
   )
 

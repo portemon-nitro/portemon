@@ -53,7 +53,14 @@ local function sortedCells(matrix)
   return cells
 end
 
+-- A cell whose record file was never prepared for this closure contributes
+-- no tiles: traversal already treats absent cells as non-traversable, and the
+-- New Bark/Route 29 asserts below still fail loudly when the prepared
+-- closure cannot reach them. Any other load failure still raises.
 local function loadGrid(cacheFs, cell)
+  if not cacheFs:exists(cell.file, "file") then
+    return nil
+  end
   local record = assert(cacheFs:loadLua(cell.file))
   local bytes = assert(cacheFs:read(record.collision.file))
   return assert(CollisionGridAsset.decode(bytes)), record
@@ -66,11 +73,13 @@ local function buildWorld(cacheFs, index)
     matrices[matrix.matrixMemberId] = matrix
     for _, cell in ipairs(sortedCells(matrix)) do
       local grid, record = loadGrid(cacheFs, cell)
-      cells[cell.matrixMemberId .. ":" .. cell.x .. ":" .. cell.z] = {
-        descriptor = cell,
-        record = record,
-        grid = grid,
-      }
+      if grid ~= nil then
+        cells[cell.matrixMemberId .. ":" .. cell.x .. ":" .. cell.z] = {
+          descriptor = cell,
+          record = record,
+          grid = grid,
+        }
+      end
     end
   end
   return cells, matrices

@@ -72,6 +72,6 @@ function T.burrower_and_large_followers_carry_usable_size_facts(_, versionId)
 end
 
 local suite = RomSuite.fromFacts(T)
-suite.metadata.capabilities = { "rom_dump", "derived_cache" }
-suite.metadata.derivedAssets = { "bootstrap" }
+suite.metadata.capabilities = { "rom_dump", "derived_assets" }
+suite.metadata.derivedAssets = { "world-catalog:global", "mon-catalog:global", "items:global" }
 return suite

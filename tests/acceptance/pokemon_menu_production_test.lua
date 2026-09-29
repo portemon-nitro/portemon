@@ -18,7 +18,8 @@ local PlayerProgression = require("libs.hgss.src.save.PlayerProgression")
 local RomFs = require("romdump.src.source.RomFs")
 
 local T = {
-  metadata = { capabilities = { "rom_dump", "derived_cache" }, tags = { "menu", "production" } },
+  metadata = { capabilities = { "rom_dump", "derived_assets" },
+    derivedAssets = { "field-runtime", "audio-bank:700", "audio-bank:702", "audio-bank:709", "audio-bank:758", "map-data:31", "map-data:33", "map-data:47", "map-data:48", "map-data:60", "map:33", "map:60" }, tags = { "menu", "production" } },
   tests = {},
 }
 
@@ -30,7 +31,7 @@ local function requireVersions(context)
   local versions = { AcceptanceHarness.defaultVersion() }
   if #versions == 0 then
     if context ~= nil and type(context.hasCapability) == "function" then
-      context:skip("requires rom_dump and derived_cache")
+      context:skip("requires rom_dump and prepared assets")
     end
     error("production journeys need a ready ROM cache", 0)
   end

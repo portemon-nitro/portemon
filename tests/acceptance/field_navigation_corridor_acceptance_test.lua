@@ -11,8 +11,8 @@ local OpeningLifecycle = require("tests.acceptance.support.OpeningLifecycle")
 
 local T = {
   metadata = {
-    capabilities = { "rom_dump", "derived_cache" },
-    derivedAssets = { "map:33", "map:60" },
+    capabilities = { "rom_dump", "derived_assets" },
+    derivedAssets = { "field-runtime", "audio-bank:700", "audio-bank:702", "audio-bank:709", "map-data:31", "map-data:33", "map-data:34", "map-data:47", "map-data:48", "map-data:60", "map-data:61", "map-data:67", "map:33", "map:34", "map:60", "map:61", "map:67" },
     tags = { "field", "corridor", "navigation" },
   },
   tests = {},

@@ -242,7 +242,11 @@ function T.listing_reports_layer_capabilities_and_tags()
   local corpus = FakeCorpus.new({
     ["fake/unit/alpha_test.lua"] = { tests = { ["a"] = function() end } },
     ["fake/acc/lab_test.lua"] = {
-      metadata = { capabilities = { "rom_dump", "derived_cache" }, tags = { "field" } },
+      metadata = {
+        capabilities = { "rom_dump", "derived_assets" },
+        derivedAssets = { "map:7" },
+        tags = { "field" },
+      },
       beforeAll = function() end,
       afterAll = function() end,
       tests = { ["lab exit round trip"] = function() end },
@@ -260,7 +264,7 @@ function T.listing_reports_layer_capabilities_and_tags()
   Assert.deepEqual(unit.capabilities, {})
   local acceptance = find(listing, "fake.acc.lab_test")
   Assert.equal(acceptance.layer, "acceptance")
-  Assert.deepEqual(acceptance.capabilities, { "rom_dump", "derived_cache" })
+  Assert.deepEqual(acceptance.capabilities, { "rom_dump", "derived_assets" })
   Assert.deepEqual(acceptance.tags, { "field" })
   -- metadata/beforeAll/afterAll keys are not tests
   Assert.deepEqual(acceptance.tests, { "lab exit round trip" })

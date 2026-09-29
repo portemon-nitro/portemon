@@ -23,7 +23,7 @@ local ScriptErrors = require("libs.script.src.errors")
 
 local HOST_MODULE = "game.hgss.src.field.PartySelectionHost"
 
-local T = { metadata = { capabilities = { "rom_dump", "derived_cache" } }, tests = {} }
+local T = { metadata = { capabilities = { "rom_dump", "derived_assets" }, derivedAssets = { "party:global" } }, tests = {} }
 
 local function requireHost()
   local ok, host = pcall(require, HOST_MODULE)
@@ -114,7 +114,7 @@ function T.tests.pad_selects_a_slot_exactly_once(context)
   local versions = readyVersions()
   if #versions == 0 then
     if context ~= nil and type(context.hasCapability) == "function" then
-      context:skip("requires rom_dump and derived_cache")
+      context:skip("requires rom_dump and prepared assets")
     end
     error("party selection needs a ready versioned cache", 0)
   end
@@ -142,7 +142,7 @@ function T.tests.pointer_selects_through_hit_geometry(context)
   local versions = readyVersions()
   if #versions == 0 then
     if context ~= nil and type(context.hasCapability) == "function" then
-      context:skip("requires rom_dump and derived_cache")
+      context:skip("requires rom_dump and prepared assets")
     end
     error("party selection needs a ready versioned cache", 0)
   end
@@ -178,7 +178,7 @@ function T.tests.cancel_focus_persists(context)
   local versions = readyVersions()
   if #versions == 0 then
     if context ~= nil and type(context.hasCapability) == "function" then
-      context:skip("requires rom_dump and derived_cache")
+      context:skip("requires rom_dump and prepared assets")
     end
     error("party selection needs a ready versioned cache", 0)
   end
@@ -207,7 +207,7 @@ function T.tests.empty_party_shows_the_cancel_shell(context)
   local versions = readyVersions()
   if #versions == 0 then
     if context ~= nil and type(context.hasCapability) == "function" then
-      context:skip("requires rom_dump and derived_cache")
+      context:skip("requires rom_dump and prepared assets")
     end
     error("party selection needs a ready versioned cache", 0)
   end
@@ -229,7 +229,7 @@ function T.tests.empty_party_without_cancel_is_invalid(context)
   local versions = readyVersions()
   if #versions == 0 then
     if context ~= nil and type(context.hasCapability) == "function" then
-      context:skip("requires rom_dump and derived_cache")
+      context:skip("requires rom_dump and prepared assets")
     end
     error("party selection needs a ready versioned cache", 0)
   end
@@ -262,7 +262,7 @@ function T.tests.activity_mirrors_the_open_selection(context)
   local versions = readyVersions()
   if #versions == 0 then
     if context ~= nil and type(context.hasCapability) == "function" then
-      context:skip("requires rom_dump and derived_cache")
+      context:skip("requires rom_dump and prepared assets")
     end
     error("party selection needs a ready versioned cache", 0)
   end
@@ -280,7 +280,7 @@ function T.tests.lifecycle_failures_are_loud(context)
   local versions = readyVersions()
   if #versions == 0 then
     if context ~= nil and type(context.hasCapability) == "function" then
-      context:skip("requires rom_dump and derived_cache")
+      context:skip("requires rom_dump and prepared assets")
     end
     error("party selection needs a ready versioned cache", 0)
   end
@@ -309,7 +309,7 @@ function T.tests.resume_rebuilds_from_value_focus(context)
   local versions = readyVersions()
   if #versions == 0 then
     if context ~= nil and type(context.hasCapability) == "function" then
-      context:skip("requires rom_dump and derived_cache")
+      context:skip("requires rom_dump and prepared assets")
     end
     error("party selection needs a ready versioned cache", 0)
   end

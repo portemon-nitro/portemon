@@ -133,6 +133,6 @@ local suite = GraphicsSmoke.suite({
     Assert.isTrue(versions > 0, "a ready imported game version is required")
   end,
 })
-suite.metadata.capabilities = { "graphics", "rom_dump", "derived_cache" }
+suite.metadata.capabilities = { "graphics", "rom_dump", "derived_assets" }
 suite.metadata.derivedAssets = { "map:60" }
 return suite

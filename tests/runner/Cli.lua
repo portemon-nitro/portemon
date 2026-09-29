@@ -20,7 +20,7 @@ Cli.LAYERS = { "unit", "component", "graphics", "rom", "acceptance" }
 -- preparation follows the selected suites' declared capabilities.
 local ROM_GATED = { rom = true, acceptance = true }
 
-local ROM_CAPABILITIES = { "rom_dump", "derived_cache", "derived_assets", "complete_derived_cache" }
+local ROM_CAPABILITIES = { "rom_dump", "derived_assets", "complete_derived_cache" }
 
 local STRICT_ENV = "PORTEMON_REQUIRE_ROM_TESTS"
 local GRAPHICS_STRICT_ENV = "PORTEMON_REQUIRE_GRAPHICS_TESTS"
@@ -264,14 +264,6 @@ function Cli.renderPlan(plan, capabilities, effectiveJobs, selectedRequirements)
       seen[requirement] = true
       requirements[#requirements + 1] = requirement
     end
-  end
-  -- Suites still declare the historical cache capability name, which is only
-  -- ever granted as an alias of the verified complete proof: such a
-  -- selection explicitly requires the complete corpus so the planned scope
-  -- stays truthful.
-  if capabilities ~= nil and capabilities.derived_cache == true and not seen.complete then
-    seen.complete = true
-    requirements[#requirements + 1] = "complete"
   end
   table.sort(requirements)
   -- A listing executes nothing, so it prepares nothing even when the listed

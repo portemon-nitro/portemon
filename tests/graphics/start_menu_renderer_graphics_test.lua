@@ -533,7 +533,9 @@ function T.release_frees_the_owned_images(scope)
   Assert.isNil(next(renderer._imageByAsset))
 end
 
-return GraphicsSmoke.suite(T, {
-  capabilities = { "graphics", "rom_dump", "derived_cache" },
+local suite = GraphicsSmoke.suite(T, {
+  capabilities = { "graphics", "rom_dump", "derived_assets" },
   tags = { "field", "menu", "real-cache" },
 })
+suite.metadata.derivedAssets = { "field-ui:global" }
+return suite

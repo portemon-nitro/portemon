@@ -27,7 +27,8 @@ local PartyCache = require("libs.assets.src.PartyCache")
 local FieldUiFixture = require("tests.support.FieldUiFixture")
 
 local T = {
-  metadata = { capabilities = { "rom_dump", "derived_cache" }, tags = { "field", "return" } },
+  metadata = { capabilities = { "rom_dump", "derived_assets" },
+    derivedAssets = { "field-runtime", "audio-bank:702", "audio-bank:709", "audio-bank:728", "map-data:31", "map-data:33", "map-data:34", "map-data:35", "map-data:47", "map-data:48", "map-data:60", "map-data:67", "map-data:134", "map-data:176", "map:33", "map:48", "map:60", "map:134", "map:176" }, tags = { "field", "return" } },
   tests = {},
 }
 

@@ -12,7 +12,7 @@ local PartyCache = require("libs.assets.src.PartyCache")
 local PlayTime = require("libs.hgss.src.save.PlayTime")
 local RomImporter = require("romdump.src.source.RomImporter")
 
-local T = { metadata = { capabilities = { "rom_dump", "derived_cache" } }, tests = {} }
+local T = { metadata = { capabilities = { "rom_dump", "derived_assets" }, derivedAssets = { "field-runtime", "map:64" } }, tests = {} }
 
 local function readyVersions()
   local versions = {}
@@ -57,7 +57,7 @@ function T.tests.boot_builds_and_teardown_releases_the_host(context)
   local versions = readyVersions()
   if #versions == 0 then
     if context ~= nil and type(context.hasCapability) == "function" then
-      context:skip("requires rom_dump and derived_cache")
+      context:skip("requires rom_dump and prepared assets")
     end
     error("party host boot needs a ready versioned cache", 0)
   end
@@ -75,7 +75,7 @@ function T.tests.manifest_failure_fails_boot_loudly(context)
   local versions = readyVersions()
   if #versions == 0 then
     if context ~= nil and type(context.hasCapability) == "function" then
-      context:skip("requires rom_dump and derived_cache")
+      context:skip("requires rom_dump and prepared assets")
     end
     error("party host boot needs a ready versioned cache", 0)
   end

@@ -25,7 +25,7 @@ local Errors = require("libs.errors.src.Errors")
 local T = {
   metadata = {
     fullCorpus = true,
-    capabilities = { "rom_dump", "derived_cache" },
+    capabilities = { "rom_dump", "complete_derived_cache" },
     derivedAssets = { "complete" },
     tags = { "door", "census" },
   },
@@ -72,7 +72,7 @@ end
 -- One pass over the whole map catalog of every ready version whose derived
 -- cache is present; every postcondition is asserted against the same census
 -- result. A version without a ready dump or cache is recorded and excluded
--- (the declared derived_cache capability makes a cold cache a loud skip at
+-- (the declared complete_derived_cache capability makes a cold cache a loud skip at
 -- the runner, never a silent pass here).
 function T.tests.real_door_tiles_stay_within_the_corpus_backed_bound(context)
   local runnable = {}

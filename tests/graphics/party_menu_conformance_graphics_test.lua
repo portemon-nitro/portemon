@@ -369,5 +369,6 @@ function T.panes_magnify_uniformly_with_consistent_hit_geometry(scope)
 end
 
 local suite = GraphicsSmoke.suite(T)
-suite.metadata.capabilities = { "graphics", "rom_dump", "derived_cache" }
+suite.metadata.capabilities = { "graphics", "rom_dump", "derived_assets" }
+suite.metadata.derivedAssets = { "party:global" }
 return suite

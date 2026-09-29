@@ -24,7 +24,7 @@ local ScreenTopology = require("libs.hgss.src.ui.ScreenTopology")
 
 local FLOW_MODULE = "game.hgss.src.field.PokemonMenuFlow"
 
-local T = { metadata = { capabilities = { "rom_dump", "derived_cache" } }, tests = {} }
+local T = { metadata = { capabilities = { "rom_dump", "derived_assets" }, derivedAssets = { "party:global" } }, tests = {} }
 
 local POCKETS = { "items", "medicine", "balls", "tmhm", "berries", "mail", "battle_items", "key_items" }
 
@@ -410,7 +410,7 @@ function T.tests.bag_root_opens_on_the_borrowed_cursor(context)
   local versions = readyVersions()
   if #versions == 0 then
     if context ~= nil and type(context.hasCapability) == "function" then
-      context:skip("requires rom_dump and derived_cache")
+      context:skip("requires rom_dump and prepared assets")
     end
     error("menu flow needs a ready versioned cache", 0)
   end
@@ -431,7 +431,7 @@ function T.tests.bag_use_heals_once_and_returns_to_bag(context)
   local versions = readyVersions()
   if #versions == 0 then
     if context ~= nil and type(context.hasCapability) == "function" then
-      context:skip("requires rom_dump and derived_cache")
+      context:skip("requires rom_dump and prepared assets")
     end
     error("menu flow needs a ready versioned cache", 0)
   end
@@ -479,7 +479,7 @@ function T.tests.stale_revision_discards_the_operation_safely(context)
   local versions = readyVersions()
   if #versions == 0 then
     if context ~= nil and type(context.hasCapability) == "function" then
-      context:skip("requires rom_dump and derived_cache")
+      context:skip("requires rom_dump and prepared assets")
     end
     error("menu flow needs a ready versioned cache", 0)
   end
@@ -519,7 +519,7 @@ function T.tests.failed_child_construction_is_non_destructive(context)
   local versions = readyVersions()
   if #versions == 0 then
     if context ~= nil and type(context.hasCapability) == "function" then
-      context:skip("requires rom_dump and derived_cache")
+      context:skip("requires rom_dump and prepared assets")
     end
     error("menu flow needs a ready versioned cache", 0)
   end
@@ -563,7 +563,7 @@ function T.tests.terminal_field_action_emits_typed_output(context)
   local versions = readyVersions()
   if #versions == 0 then
     if context ~= nil and type(context.hasCapability) == "function" then
-      context:skip("requires rom_dump and derived_cache")
+      context:skip("requires rom_dump and prepared assets")
     end
     error("menu flow needs a ready versioned cache", 0)
   end
@@ -579,7 +579,7 @@ function T.tests.root_close_reports_close_and_releases_once(context)
   local versions = readyVersions()
   if #versions == 0 then
     if context ~= nil and type(context.hasCapability) == "function" then
-      context:skip("requires rom_dump and derived_cache")
+      context:skip("requires rom_dump and prepared assets")
     end
     error("menu flow needs a ready versioned cache", 0)
   end
@@ -603,7 +603,7 @@ function T.tests.icon_preparation_drives_the_party_child_lifetime(context)
   local versions = readyVersions()
   if #versions == 0 then
     if context ~= nil and type(context.hasCapability) == "function" then
-      context:skip("requires rom_dump and derived_cache")
+      context:skip("requires rom_dump and prepared assets")
     end
     error("menu flow needs a ready versioned cache", 0)
   end
@@ -627,7 +627,7 @@ function T.tests.bag_give_to_an_occupied_holder_asks_before_any_change(context)
   local versions = readyVersions()
   if #versions == 0 then
     if context ~= nil and type(context.hasCapability) == "function" then
-      context:skip("requires rom_dump and derived_cache")
+      context:skip("requires rom_dump and prepared assets")
     end
     error("menu flow needs a ready versioned cache", 0)
   end
@@ -692,7 +692,7 @@ function T.tests.party_give_decline_then_retry_confirms_once(context)
   local versions = readyVersions()
   if #versions == 0 then
     if context ~= nil and type(context.hasCapability) == "function" then
-      context:skip("requires rom_dump and derived_cache")
+      context:skip("requires rom_dump and prepared assets")
     end
     error("menu flow needs a ready versioned cache", 0)
   end
@@ -751,7 +751,7 @@ function T.tests.same_item_pick_keeps_the_picker_usable(context)
   local versions = readyVersions()
   if #versions == 0 then
     if context ~= nil and type(context.hasCapability) == "function" then
-      context:skip("requires rom_dump and derived_cache")
+      context:skip("requires rom_dump and prepared assets")
     end
     error("menu flow needs a ready versioned cache", 0)
   end
@@ -807,7 +807,7 @@ function T.tests.raced_give_unwinds_without_a_partial_change(context)
   local versions = readyVersions()
   if #versions == 0 then
     if context ~= nil and type(context.hasCapability) == "function" then
-      context:skip("requires rom_dump and derived_cache")
+      context:skip("requires rom_dump and prepared assets")
     end
     error("menu flow needs a ready versioned cache", 0)
   end

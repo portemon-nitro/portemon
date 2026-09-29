@@ -58,6 +58,9 @@ local ORDINARY_OPTIONS = {
 -- Anything else must be a canonical kind:key pair owned by ArtifactState.
 local SCOPES = {
   bootstrap = true,
+  ["new-game-intro"] = true,
+  ["field-planning"] = true,
+  ["field-runtime"] = true,
   complete = true,
 }
 
