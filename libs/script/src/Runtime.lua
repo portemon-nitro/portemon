@@ -1188,7 +1188,16 @@ local function handleGetObjectCoords(node, run)
 end
 
 local function handleGetPlayerFacing(node, run)
-  semanticsFor(run).writeRef(node.result, run.services.player:facing(), run)
+  local semantics = semanticsFor(run)
+  if type(semantics.encodePlayerFacing) ~= "function" then
+    Errors.raise(
+      ScriptErrors.SCRIPT_SERVICE_MISSING,
+      "script semantics cannot encode the player facing",
+      { scriptId = run.instance.scriptId }
+    )
+  end
+  local code = semantics.encodePlayerFacing(run.services.player:facing(), run)
+  semantics.writeRef(node.result, code, run)
   return Runtime.OUTCOME_CONTINUE
 end
 

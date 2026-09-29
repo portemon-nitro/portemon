@@ -1036,7 +1036,7 @@ T["actor operations"] = function()
   startForeground(
     h,
     script("test.actors", {
-      locals = { px = "integer", pz = "integer", ex = "integer", ez = "integer", pf = "string" },
+      locals = { px = "integer", pz = "integer", ex = "integer", ez = "integer", pf = "integer" },
       steps = {
         S.facePlayer({ actor = "self" }),
         S.setObjectFacing({ actor = "obj_T20R0101_doctor", direction = "east" }),
@@ -1063,7 +1063,7 @@ T["actor operations"] = function()
   Assert.equal(instance.locals.pz, 10)
   Assert.equal(instance.locals.ex, 9)
   Assert.equal(instance.locals.ez, 8)
-  Assert.equal(instance.locals.pf, "south")
+  Assert.equal(instance.locals.pf, 1, "the default south facing writes source code 1")
 end
 
 -- 32. Missing actors are attributed errors.
@@ -1764,6 +1764,55 @@ T["friend sprite value resolves the opposite-gender sprite"] = function()
   )
   hFemale.scheduler:step(100, nil)
   Assert.equal(hFemale.services.world:getVar("VAR_OBJ_0"), 0, "a female player's friend uses the hero sprite")
+end
+
+-- GetPlayerFacing must hand scripts the source direction code
+-- (north 0, south 1, west 2, east 3) instead of the internal facing
+-- string, so numeric branch comparisons in generated scripts take the
+-- intended path. Anything outside the four cardinal facings is a
+-- composition fault, not a silent zero.
+T["player facing writes source direction codes"] = function()
+  local codes = { north = 0, south = 1, west = 2, east = 3 }
+  for facing, code in pairs(codes) do
+    local h = harness({ player = { facing = facing } })
+    startForeground(
+      h,
+      script("test.playerfacing." .. facing, {
+        locals = { pf = "integer" },
+        steps = {
+          S.getPlayerFacing({ result = S.local_("pf") }),
+          S.waitTicks({ ticks = 1 }),
+          S.stop(),
+        },
+      }),
+      100
+    )
+    h.scheduler:step(100, nil)
+    local instance = assert(h.scheduler:instances()[1])
+    Assert.equal(
+      instance.locals.pf,
+      code,
+      "facing " .. facing .. " must write source code " .. tostring(code)
+    )
+  end
+
+  local hBad = harness({ player = { facing = "diagonal" } })
+  local badId = startForeground(
+    hBad,
+    script("test.playerfacing.invalid", {
+      locals = { pf = "integer" },
+      steps = {
+        S.getPlayerFacing({ result = S.local_("pf") }),
+        S.stop(),
+      },
+    }),
+    100
+  )
+  hBad.scheduler:step(100, nil)
+  Assert.notNil(
+    hBad.services.events:eventFor("script.error", badId),
+    "an unknown facing must fault instead of writing a direction code"
+  )
 end
 
 return { tests = T }

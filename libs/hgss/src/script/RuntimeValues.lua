@@ -21,6 +21,28 @@ function RuntimeValues.semanticStyleId(appearance)
   return SEMANTIC_STYLES[appearance]
 end
 
+-- Source direction codes for the player's facing. The field keeps the
+-- facing as a semantic string; generated scripts compare against these
+-- numeric codes, so the conversion happens once at the script boundary.
+local PLAYER_FACING_CODES = { north = 0, south = 1, west = 2, east = 3 }
+
+-- Encode a semantic player facing to its source direction code. An unknown
+-- facing is a composition error, never a silent default.
+---@param facing unknown
+---@param run table<string, unknown>
+---@return integer
+function RuntimeValues.encodePlayerFacing(facing, run)
+  local code = type(facing) == "string" and PLAYER_FACING_CODES[facing] or nil
+  if code == nil then
+    Errors.raise(
+      ScriptErrors.SCRIPT_INVALID_REFERENCE,
+      "unknown player facing " .. tostring(facing),
+      { scriptId = run.instance.scriptId, facing = facing }
+    )
+  end
+  return assert(code, "player facing code resolved")
+end
+
 -- Write a value reference: locals and vars are writable; args are read-only
 -- call data (writing one is an invalid reference). Shared by node handlers
 -- and the scheduler's task-result write.
