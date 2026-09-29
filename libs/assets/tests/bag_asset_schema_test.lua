@@ -423,7 +423,7 @@ end
 
 local function validFocusManifest()
   local manifest = validManifest()
-  manifest.schema = "g4-bag-assets-v12"
+  manifest.schema = "g4-bag-assets-v13"
   manifest.interactive.overlays.tossPrompt = { x = 200, y = 48, shape = "compact", initialSelection = "yes" }
   manifest.interactive.text.tossResult = {
     segments = {
@@ -434,6 +434,22 @@ local function validFocusManifest()
       { kind = "text", value = "." },
     },
   }
+  manifest.interactive.text.selectedItem = {
+    segments = {
+      { kind = "text", value = "The " },
+      { kind = "item" },
+      { kind = "text", value = " is selected." },
+    },
+  }
+  manifest.interactive.selectionEntry = {
+    frames = {
+      { image = "assets/generated/bag/selection-entry-0.png", width = 96, height = 40, durationTicks = 2 },
+      { image = "assets/generated/bag/selection-entry-1.png", width = 96, height = 40, durationTicks = 3 },
+    },
+    playback = "once",
+    totalTicks = 5,
+  }
+  manifest.interactive.overlays.actionMenu.selectedItemCenter = { x = 86, y = 76 }
   local icon = function(key)
     return { image = "assets/generated/bag/move-" .. key .. ".png", width = 64, height = 16 }
   end
@@ -535,7 +551,7 @@ end
 -- scenario keeps the versioned focus fixture above.
 local function validTossManifest()
   local manifest = validFocusManifest()
-  manifest.schema = "g4-bag-assets-v12"
+  manifest.schema = "g4-bag-assets-v13"
   manifest.interactive.overlays.tossPrompt = { x = 200, y = 48, shape = "compact", initialSelection = "yes" }
   manifest.interactive.text.tossResult = {
     segments = {
@@ -790,9 +806,9 @@ end
 -- The strip contract is the current focus-manifest shape above.
 
 function T.pocket_strips_and_edge_colors_validate_as_the_current_contract()
-  Assert.equal(BagAssetSchema.SCHEMA, "g4-bag-assets-v12")
-  Assert.equal(DerivedAssetContract.bag.schema, "g4-bag-assets-v12")
-  Assert.equal(BagCache.SCHEMA, "g4-bag-assets-v12")
+  Assert.equal(BagAssetSchema.SCHEMA, "g4-bag-assets-v13")
+  Assert.equal(DerivedAssetContract.bag.schema, "g4-bag-assets-v13")
+  Assert.equal(BagCache.SCHEMA, "g4-bag-assets-v13")
   Assert.equal(BagCache.FORMAT, "bag-cache-v2")
   local manifest = validStripManifest()
   Assert.isTrue(BagAssetSchema.isValidManifest(manifest), "the pocket-strip manifest must pass the schema")
@@ -832,6 +848,29 @@ function T.toss_prompt_placement_and_result_text_are_required()
   local missingResult = validTossManifest()
   missingResult.interactive.text.tossResult = nil
   assertInvalid(missingResult, "a manifest without the post-choice result text must fail")
+end
+
+function T.selection_entry_and_selected_item_presentation_are_required()
+  local manifest = validFocusManifest()
+  Assert.isTrue(BagAssetSchema.isValidManifest(manifest), "the selection entry and selected-item text must pass")
+  local missingEntry = validFocusManifest()
+  missingEntry.interactive.selectionEntry = nil
+  assertInvalid(missingEntry, "a manifest without the selection entry must fail")
+  local missingText = validFocusManifest()
+  missingText.interactive.text.selectedItem = nil
+  assertInvalid(missingText, "a manifest without the selected-item text must fail")
+  local missingCenter = validFocusManifest()
+  missingCenter.interactive.overlays.actionMenu.selectedItemCenter = nil
+  assertInvalid(missingCenter, "a manifest without the selected-item center must fail")
+  local badTotal = validFocusManifest()
+  badTotal.interactive.selectionEntry.totalTicks = 4
+  assertInvalid(badTotal, "a manifest with a wrong selection total must fail")
+  local looping = validFocusManifest()
+  looping.interactive.selectionEntry.playback = "loop"
+  assertInvalid(looping, "a manifest with a looping selection entry must fail")
+  local zeroDuration = validFocusManifest()
+  zeroDuration.interactive.selectionEntry.frames[1].durationTicks = 0
+  assertInvalid(zeroDuration, "a manifest with a non-positive frame duration must fail")
 end
 
 function T.generic_contract_accepts_safe_presentation_variants()

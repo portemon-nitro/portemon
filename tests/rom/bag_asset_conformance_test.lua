@@ -339,6 +339,57 @@ function T.compiled_toss_prompt_and_result_follow_the_audited_selection(romFs, v
   })
 end
 
+-- The browse-confirm selection animation is the retail cursor blink:
+-- hidden phases carry no source objects, visible phases reuse the
+-- focused item cursor. The compiled sequence keeps every source frame
+-- with its duration, publishes once playback with the exact duration
+-- sum, and realizes hidden phases as transparent visuals so the
+-- controller clock stays uniform. The stable action screen keeps the
+-- audited center and the generated selected-item copy.
+function T.selection_entry_compiles_the_retail_blink_as_a_one_shot_sequence(romFs, versionId)
+  Assert.deepEqual(BagSources.spriteStates.itemSelect, { animation = 41, palette = 9 })
+  Assert.deepEqual(BagSources.messages.templates.selectedItem, { bank = 10, index = 43 })
+  Assert.deepEqual(BagSources.geometry.actionSelectedItemCenter, { x = 86, y = 76 })
+  local bundle = bundleFor(romFs, versionId)
+  local manifest = bundle.manifest
+  local entry = assert(
+    manifest.interactive.selectionEntry,
+    "the compiled bundle publishes its selection-entry sequence"
+  )
+  Assert.equal(entry.playback, "once", "the selection entry plays exactly once")
+  Assert.equal(#entry.frames, 4, "animation 41 carries four blink frames")
+  local total = 0
+  for index, frame in ipairs(entry.frames) do
+    Assert.equal(
+      frame.durationTicks,
+      3,
+      "selection frame " .. index .. " keeps its source duration"
+    )
+    total = total + frame.durationTicks
+    local width, height, rgba =
+      PngReader.rgba(assert(bundle.assets[frame.image], "selection frame " .. index .. " must compile"))
+    Assert.equal(width, frame.width, "selection frame " .. index .. " keeps its compiled width")
+    Assert.equal(height, frame.height, "selection frame " .. index .. " keeps its compiled height")
+    local opaque = 0
+    for y = 0, height - 1 do
+      for x = 0, width - 1 do
+        if string.byte(rgba, (y * width + x) * 4 + 4) ~= 0 then
+          opaque = opaque + 1
+        end
+      end
+    end
+    if index % 2 == 1 then
+      Assert.equal(opaque, 0, "hidden blink frame " .. index .. " realizes no visible pixels")
+    else
+      Assert.isTrue(opaque > 0, "visible blink frame " .. index .. " carries cursor content")
+    end
+  end
+  Assert.equal(entry.totalTicks, total, "the selection total equals its frame duration sum")
+  Assert.equal(total, 12, "the retail blink spans twelve ticks")
+  Assert.deepEqual(segmentKinds(manifest.interactive.text.selectedItem), { "text", "item", "text" })
+  Assert.deepEqual(manifest.interactive.overlays.actionMenu.selectedItemCenter, { x = 86, y = 76 })
+end
+
 function T.registration_markers_are_distinct_40x16_assets(romFs, versionId)
   local bundle = bundleFor(romFs, versionId)
   local registration = bundle.manifest.interactive.itemSlots.registration
@@ -671,7 +722,7 @@ end
 function T.pocket_strips_replay_the_retained_palette_state(romFs, versionId)
   local bundle = bundleFor(romFs, versionId)
   local manifest = bundle.manifest
-  Assert.equal(manifest.schema, "g4-bag-assets-v12", "the rebuilt bag cache must publish the current contract")
+  Assert.equal(manifest.schema, "g4-bag-assets-v13", "the rebuilt bag cache must publish the current contract")
   local strips =
     assert(manifest.interactive.pocketTabs.strips, "the rebuilt manifest must publish one strip per active pocket")
   local keys = {}

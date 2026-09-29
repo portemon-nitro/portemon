@@ -24,7 +24,7 @@ local ModelAsset = require("libs.assets.src.model.ModelAsset")
 ---@class BagAssetSchema
 local BagAssetSchema = {}
 
-BagAssetSchema.SCHEMA = "g4-bag-assets-v12"
+BagAssetSchema.SCHEMA = "g4-bag-assets-v13"
 BagAssetSchema.PANE_WIDTH = 256
 BagAssetSchema.PANE_HEIGHT = 192
 BagAssetSchema.TAB_COUNT = 8
@@ -155,7 +155,9 @@ end
 
 -- Every runtime 2D visual is one static realized image with dimensions and
 -- an optional blit offset. NANR selection happens producer-side; no frame
--- timeline, duration, or source identity reaches the manifest.
+-- timeline, duration, or source identity reaches the manifest, except for
+-- the Bag-local selection-entry sequence whose frames carry their source
+-- durations under a dedicated validator below.
 local function checkVisual(value, context, what)
   checkRecord(value, VISUAL_KEYS, context, what, "a semantic visual")
   checkImageFields(value, context, what)
@@ -255,6 +257,7 @@ local function checkText(text, context)
     tossQuantity = true,
     tossConfirm = true,
     tossResult = true,
+    selectedItem = true,
   }, context, "interactive.text")
   local actions = text.actions
   checkRecord(actions, TEXT_ACTIONS, context, "interactive.text.actions")
@@ -269,6 +272,7 @@ local function checkText(text, context)
   checkTemplate(text.tossQuantity, context, "interactive.text.tossQuantity", itemKinds)
   checkTemplate(text.tossConfirm, context, "interactive.text.tossConfirm", quantityKinds)
   checkTossResult(text.tossResult, context)
+  checkTemplate(text.selectedItem, context, "interactive.text.selectedItem", itemKinds)
 end
 
 -- Registration-slot markers: two distinct 40x16 images with the slot-local
@@ -848,7 +852,12 @@ local EXPECTED_QUANTITY_CONTROLS = {
 }
 
 local function checkActionMenu(actionMenu, context)
-  checkRecord(actionMenu, { face = true, slots = true }, context, "interactive.overlays.actionMenu")
+  checkRecord(
+    actionMenu,
+    { face = true, slots = true, selectedItemCenter = true },
+    context,
+    "interactive.overlays.actionMenu"
+  )
   checkVisual(actionMenu.face, context, "interactive.overlays.actionMenu.face")
   checkFixedArray(
     actionMenu.slots,
@@ -862,6 +871,45 @@ local function checkActionMenu(actionMenu, context)
     checkPoint(slot.center, context, what .. ".center")
     checkRect(slot.textRect, context, what .. ".textRect")
     checkRect(slot.hitRect, context, what .. ".hitRect")
+  end
+  checkPoint(actionMenu.selectedItemCenter, context, "interactive.overlays.actionMenu.selectedItemCenter")
+end
+
+-- The browse-confirm selection entry: the Bag-local one-shot frame
+-- sequence bridging browse confirmation and the stable action menu. Frame
+-- count follows the source animation; each frame is one realized visual
+-- with its positive source duration, playback stays once, and the total
+-- is the exact duration sum the controller clock consumes.
+local function checkSelectionEntry(entry, context)
+  checkRecord(entry, { frames = true, playback = true, totalTicks = true }, context, "interactive.selectionEntry")
+  if not Validate.isArray(entry.frames) or #entry.frames == 0 then
+    fail("interactive.selectionEntry.frames must be a non-empty contiguous array", context)
+  end
+  if entry.playback ~= "once" then
+    fail("interactive.selectionEntry.playback must be once", context)
+  end
+  local totalTicks = 0
+  for index, frame in ipairs(entry.frames) do
+    local what = "interactive.selectionEntry.frames[" .. index .. "]"
+    if type(frame) ~= "table" then
+      fail(what .. " must be a semantic visual", context)
+    end
+    checkRecord(
+      frame,
+      { image = true, width = true, height = true, offset = true, durationTicks = true },
+      context,
+      what
+    )
+    checkImageFields(frame, context, what)
+    if frame.offset ~= nil then
+      checkOffset(frame.offset, context, what .. ".offset")
+    end
+    checkInteger(frame.durationTicks, context, what .. ".durationTicks", 1, nil, "a positive integer")
+    totalTicks = totalTicks + frame.durationTicks
+  end
+  checkInteger(entry.totalTicks, context, "interactive.selectionEntry.totalTicks", 1, nil, "a positive integer")
+  if entry.totalTicks ~= totalTicks then
+    fail("interactive.selectionEntry.totalTicks must equal its frame duration sum", context)
   end
 end
 
@@ -951,6 +999,7 @@ local function checkInteractive(interactive, context)
     pageIndicator = true,
     cancel = true,
     text = true,
+    selectionEntry = true,
     overlays = true,
   }, context, "interactive")
   checkPaneBackgrounds(interactive.backgrounds, context)
@@ -974,6 +1023,7 @@ local function checkInteractive(interactive, context)
     fail("interactive.cancel.labelRect must be horizontally centered on the cancel control", context)
   end
   checkText(interactive.text, context)
+  checkSelectionEntry(interactive.selectionEntry, context)
   checkRegistration(itemSlots.registration, itemSlots.slots, context)
   checkOverlays(interactive.overlays, context)
 end

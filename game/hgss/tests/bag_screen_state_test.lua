@@ -76,6 +76,23 @@ local function manifest()
         textRect = { x = 192, y = 168, width = 56, height = 16 },
         labelRect = { x = 200, y = 168, width = 48, height = 16 },
       },
+      selectionEntry = {
+        frames = {
+          { image = "test/bag/selection-entry-0.png", width = 16, height = 16, durationTicks = 1 },
+          { image = "test/bag/selection-entry-1.png", width = 16, height = 16, durationTicks = 2 },
+        },
+        playback = "once",
+        totalTicks = 3,
+      },
+      text = {
+        selectedItem = {
+          segments = {
+            { kind = "text", value = "The " },
+            { kind = "item" },
+            { kind = "text", value = " is selected." },
+          },
+        },
+      },
       overlays = {
         descriptionFallback = {
           frame = { x = 0, y = 144, width = 256, height = 48 },
@@ -213,8 +230,12 @@ function T.action_menu_registers_through_the_live_service()
   state:updateFixed({})
   local revision = bag:revision()
   state:updateFixed({ { type = "confirm" } })
+  Assert.equal(state:status().state, "item_select", "confirming an item enters the selection entry")
+  for _ = 1, 3 do
+    state:updateFixed({})
+  end
   local status = state:status()
-  Assert.equal(status.state, "action_menu", "confirming an item opens the action menu")
+  Assert.equal(status.state, "action_menu", "the selection entry completes into the action menu")
   state:updateFixed({ { type = "confirm" } })
   status = state:status()
   Assert.equal(status.state, "browsing", "committing the single offered action returns to browsing")
@@ -230,7 +251,11 @@ function T.toss_flow_mutates_once_through_the_live_service()
   state:updateFixed({})
   local revision = bag:revision()
   state:updateFixed({ { type = "confirm" } })
-  Assert.equal(state:status().state, "action_menu", "confirming an item opens the action menu")
+  Assert.equal(state:status().state, "item_select", "confirming an item enters the selection entry")
+  for _ = 1, 3 do
+    state:updateFixed({})
+  end
+  Assert.equal(state:status().state, "action_menu", "the selection entry completes into the action menu")
   state:updateFixed({ { type = "confirm" } })
   Assert.equal(state:status().state, "toss_quantity", "confirming toss enters the quantity picker")
   state:updateFixed({ { type = "navigate", direction = "up" } })
@@ -280,8 +305,16 @@ function T.pointer_only_register_flows_through_the_live_service()
   tapLogical(76, 56)
   Assert.equal(
     state:status().state,
+    "item_select",
+    "activating the selected cell enters the selection entry by pointer alone"
+  )
+  for _ = 1, 3 do
+    state:updateFixed({})
+  end
+  Assert.equal(
+    state:status().state,
     "action_menu",
-    "activating the selected cell opens the action menu by pointer alone"
+    "the selection entry completes into the action menu by pointer alone"
   )
   Assert.equal(bag:revision(), revision, "opening the menu never mutates the inventory")
   tapLogical(144, 144)
@@ -318,8 +351,16 @@ function T.fresh_equivalent_measurement_keeps_item_capture_across_ticks()
   tapLogical(76, 56)
   Assert.equal(
     state:status().state,
+    "item_select",
+    "a press held across equivalent fallback topologies enters the selection entry"
+  )
+  for _ = 1, 3 do
+    state:updateFixed({})
+  end
+  Assert.equal(
+    state:status().state,
     "action_menu",
-    "a press held across equivalent fallback topologies still activates its target"
+    "the selection entry completes into the action menu"
   )
   Assert.equal(state:status().revision, revision, "opening the menu never mutates the inventory")
   state:dispose()
@@ -538,6 +579,7 @@ local function composedManifest()
     width = 96,
     height = 24,
   }
+  manifested.interactive.overlays.actionMenu.selectedItemCenter = { x = 86, y = 76 }
   manifested.interactive.overlays.quantity = {
     controls = {
       {
@@ -679,6 +721,13 @@ local function composedManifest()
         { kind = "text", value = "?" },
       },
     },
+    selectedItem = {
+      segments = {
+        { kind = "text", value = "The " },
+        { kind = "item" },
+        { kind = "text", value = " is selected." },
+      },
+    },
   }
   local textRects = {
     { 32, 40, 88, 32 },
@@ -722,6 +771,8 @@ local function seedComposedCache()
   put("test/bag/focus-items.png")
   put("test/bag/focus-cancel.png")
   put("test/bag/focus-actions.png")
+  put("test/bag/selection-entry-0.png")
+  put("test/bag/selection-entry-1.png")
   put("test/bag/action-face.png")
   put("test/bag/quantity-increment.png")
   put("test/bag/quantity-increment-pressed.png")
@@ -841,11 +892,17 @@ function T.production_bag_draws_pocket_specific_presentation()
     "the composed draw focuses the live selected cell"
   )
   Assert.equal(#graphics.rectangles, 0, "the composed draw emits no primitive focus")
-  -- Confirming the selected item opens the live action menu; the redraw
-  -- carries the generated action focus at the controller-selected target.
+  -- Confirming the selected item enters the selection entry on the browse
+  -- composition; once the generated total elapses the redraw carries the
+  -- generated action focus at the controller-selected target.
   state:updateFixed({ { type = "confirm" } })
+  local entry = state:status()
+  Assert.equal(entry.state, "item_select", "confirming the composed selection enters the selection entry")
+  for _ = 1, 3 do
+    state:updateFixed({})
+  end
   local menu = state:status()
-  Assert.equal(menu.state, "action_menu", "confirming the composed selection opens the action menu")
+  Assert.equal(menu.state, "action_menu", "the selection entry completes into the action menu")
   for key in pairs(graphics.draws) do
     graphics.draws[key] = nil
   end
@@ -1209,7 +1266,12 @@ function T.field_context_forwards_use_intents_with_item_identity()
   state:updateFixed({})
   state:updateFixed({ { type = "confirm" } })
   local status = state:status()
-  Assert.equal(status.state, "action_menu", "confirming an item opens the action menu")
+  Assert.equal(status.state, "item_select", "confirming an item enters the selection entry")
+  for _ = 1, 3 do
+    state:updateFixed({})
+  end
+  status = state:status()
+  Assert.equal(status.state, "action_menu", "the selection entry completes into the action menu")
   local useSlot = nil
   for _, action in ipairs(assert(status.actions, "the menu lists actions")) do
     if action.id == "use" then

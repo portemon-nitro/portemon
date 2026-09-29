@@ -272,6 +272,8 @@ function FieldStatePresentationFixture.cache()
   cache:write("assets/generated/bag/focus-items.png", solidPng(32, 32))
   cache:write("assets/generated/bag/focus-cancel.png", solidPng(32, 32))
   cache:write("assets/generated/bag/focus-actions.png", solidPng(32, 32))
+  cache:write("assets/generated/bag/selection-entry-0.png", solidPng(32, 32))
+  cache:write("assets/generated/bag/selection-entry-1.png", solidPng(32, 32))
   cache:write("assets/generated/bag/registration-slot-1.png", solidPng(40, 16))
   cache:write("assets/generated/bag/registration-slot-2.png", solidPng(40, 16))
   -- Minimal party manifest and every image it references so the eager

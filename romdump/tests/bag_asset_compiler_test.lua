@@ -116,7 +116,13 @@ local function animData(count)
   local frameCounts = {}
   local totalFrames = 0
   for a = 0, count - 1 do
-    frameCounts[a] = (a == 26 or a == 28) and 2 or 1
+    if a == 26 or a == 28 then
+      frameCounts[a] = 2
+    elseif a == 41 then
+      frameCounts[a] = 3
+    else
+      frameCounts[a] = 1
+    end
     totalFrames = totalFrames + frameCounts[a]
   end
   local framesOffset = animsOffset + count * 16
@@ -136,6 +142,62 @@ local function animData(count)
     for frame = 1, frameCount do
       frames[#frames + 1] = u32(propertyIndex * 2) .. u16(frame == 1 and frameCount == 2 and 2 or 4) .. u16(0)
       props[#props + 1] = u16(0)
+      propertyIndex = propertyIndex + 1
+    end
+    frameIndex = frameIndex + frameCount
+  end
+  return container(
+    "RNAN",
+    { block("ABNK", header .. table.concat(seqs) .. table.concat(frames) .. table.concat(props)) }
+  )
+end
+
+-- Selection-entry variant: 42 sequences where sequence 41 is a two-frame
+-- blink whose first frame references an empty cell, mirroring the retail
+-- cursor-hide phases. All other sequences stay single-frame on cell 0 so
+-- the surrounding sprite stages keep their synthetic coverage.
+local function animWithEmptySelectionCell()
+  local count = 42
+  local animsOffset = 0x18
+  local frameCounts = {}
+  local totalFrames = 0
+  for a = 0, count - 1 do
+    if a == 26 or a == 28 then
+      frameCounts[a] = 2
+    elseif a == 41 then
+      frameCounts[a] = 2
+    else
+      frameCounts[a] = 1
+    end
+    totalFrames = totalFrames + frameCounts[a]
+  end
+  local framesOffset = animsOffset + count * 16
+  local dataOffset = framesOffset + totalFrames * 8
+  local header = u16(count)
+    .. u16(totalFrames)
+    .. u32(animsOffset)
+    .. u32(framesOffset)
+    .. u32(dataOffset)
+    .. string.rep("\0", 8)
+  local seqs, frames, props = {}, {}, {}
+  local frameIndex = 0
+  local propertyIndex = 0
+  for a = 0, count - 1 do
+    local frameCount = frameCounts[a]
+    seqs[#seqs + 1] = u16(frameCount) .. u16(0) .. u32(0x00010000) .. u32(1) .. u32(frameIndex * 8)
+    for frame = 1, frameCount do
+      local cell = 0
+      local duration = 4
+      if a == 41 and frame == 1 then
+        cell = 1
+        duration = 3
+      elseif a == 41 then
+        duration = 5
+      elseif frame == 1 and frameCount == 2 then
+        duration = 2
+      end
+      frames[#frames + 1] = u32(propertyIndex * 2) .. u16(duration) .. u16(0)
+      props[#props + 1] = u16(cell)
       propertyIndex = propertyIndex + 1
     end
     frameIndex = frameIndex + frameCount
@@ -232,6 +294,7 @@ local function syntheticMessageBanks()
   bank10[9] = messageUnits({ "CANCEL" })
   bank10[19] = messageUnits({ "DESELECT" })
   bank10[47] = messageUnits({ "Move ", ITEM_SUBSTITUTION, "." })
+  bank10[44] = messageUnits({ "The ", ITEM_SUBSTITUTION, " is selected." })
   bank10[54] = messageUnits({ "Toss ", ITEM_SUBSTITUTION, "?" })
   bank10[55] = messageUnits({ "Threw away ", QUANTITY_SUBSTITUTION, " ", ITEM_SUBSTITUTION, "." })
   bank10[56] = messageUnits({ "Toss ", QUANTITY_SUBSTITUTION, " ", ITEM_SUBSTITUTION, "?" })
@@ -278,7 +341,7 @@ local function fixture(opts)
   members[BagSources.sprites.tabs.char + 1] = charData(200)
   members[BagSources.sprites.tabs.cell + 1] = cellData(tabCells)
   members[BagSources.sprites.tabs.palette + 1] = palette256()
-  members[BagSources.sprites.tabs.anim + 1] = animData(32)
+  members[BagSources.sprites.tabs.anim + 1] = animData(42)
   members[BagSources.palettes.tabState + 1] = palette256()
   local cursorCells = {}
   for _ = 1, 4 do
@@ -414,6 +477,37 @@ function T.animated_source_sequence_is_rejected_as_a_static_only_violation()
   Assert.notNil(
     tostring(typed.message):find("static"),
     "the failure must name the static-only contract rather than a later stage"
+  )
+end
+
+-- The retail selection animation blinks the cursor through cells that
+-- carry no objects. Those hidden phases must compile to transparent
+-- visuals with their source durations instead of failing sprite
+-- realization, so compilation still reaches the hero stage on synthetic
+-- bytes (whose hero models are unavailable by design).
+function T.selection_entry_blink_frames_with_empty_cells_compile_as_transparent_visuals()
+  local BagSources = require("romdump.src.config.BagSources")
+  local romFs = fixture({
+    tamper = function(members)
+      members[BagSources.sprites.tabs.anim + 1] = animWithEmptySelectionCell()
+      members[BagSources.sprites.tabs.cell + 1] = cellData({
+        { { x = -16, y = -16, tile = 0, size = 2 } },
+        {},
+      })
+      return members
+    end,
+  })
+  local bundle, err = BagAssetCompiler.compile(romFs)
+  Assert.isNil(bundle, "synthetic bytes cannot supply hero models")
+  local typed = assert(err, "compilation must report its stage")
+  Assert.equal(
+    typed.code,
+    BagAssetCompiler.ERROR.SOURCE_INVALID,
+    "empty blink cells must clear sprite realization and fail only at the hero stage"
+  )
+  Assert.isNil(
+    tostring(typed.message):find("no objects"),
+    "the failure must not come from empty-cell rasterization"
   )
 end
 
@@ -641,6 +735,7 @@ function T.producer_declares_the_audited_message_selection()
     tossQuantity = { bank = 10, index = 53 },
     tossConfirm = { bank = 10, index = 55 },
     tossResult = { bank = 10, index = 54 },
+    selectedItem = { bank = 10, index = 43 },
   })
 end
 
@@ -768,7 +863,7 @@ local function syntheticBundle(marker)
     tabs[#tabs + 1] = { x = i * 32, y = 0, width = 32, height = 32 }
   end
   local manifest = {
-    schema = "g4-bag-assets-v12",
+    schema = "g4-bag-assets-v13",
     logicalSize = { width = 256, height = 192 },
     hero = {
       background = {
@@ -1012,10 +1107,26 @@ local function syntheticBundle(marker)
             { kind = "text", value = "." },
           },
         },
+        selectedItem = {
+          segments = {
+            { kind = "text", value = "The " },
+            { kind = "item" },
+            { kind = "text", value = " is selected." },
+          },
+        },
+      },
+      selectionEntry = {
+        frames = {
+          { image = "assets/generated/bag/selection-entry-0.png", width = 16, height = 16, durationTicks = 1 },
+          { image = "assets/generated/bag/selection-entry-1.png", width = 16, height = 16, durationTicks = 2 },
+        },
+        playback = "once",
+        totalTicks = 3,
       },
       overlays = {
         actionMenu = {
           face = visualRef("assets/generated/bag/action-face-frame-1.png"),
+          selectedItemCenter = { x = 86, y = 76 },
           slots = {
             {
               center = { x = 48, y = 144 },
@@ -1152,7 +1263,7 @@ function T.writer_publishes_the_class_and_reports_ready()
   Assert.isTrue(BagCacheWriter.write(cacheFs, bundle))
   Assert.isTrue(BagCacheWriter.isReady(cacheFs, bundle.marker))
   local loaded = BagCache.loadManifest(cacheFs)
-  Assert.equal(loaded.schema, "g4-bag-assets-v12")
+  Assert.equal(loaded.schema, "g4-bag-assets-v13")
   Assert.equal(loaded.hero.presentation.lights.count, 4)
   Assert.deepEqual(loaded.hero.presentation.lights.color, { r = 31, g = 31, b = 31 })
   Assert.equal(#loaded.hero.presentation.lights.vectors, 4)

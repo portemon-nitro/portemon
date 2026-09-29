@@ -55,7 +55,7 @@ end
 local function manifestFor(versionId)
   local cacheFs = CacheFs.forVersion(versionId)
   local manifest = BagCache.loadManifest(cacheFs)
-  Assert.equal(manifest.schema, "g4-bag-assets-v12", versionId .. " renders the current bag manifest")
+  Assert.equal(manifest.schema, "g4-bag-assets-v13", versionId .. " renders the current bag manifest")
   return cacheFs, manifest
 end
 
@@ -2118,7 +2118,12 @@ function T.modal_states_exclude_browse_only_dynamics(scope, context)
       },
       { name = "toss acknowledgement", overrides = { state = "toss_ack", quantity = 2 } },
     }
+    -- The stable action menu keeps the selected item's icon visible by
+    -- contract, so the browse-only comparison holds the selected item
+    -- constant while page, markers, focus, and row content vary.
+    local selectedItem = makeSlot("SMOKE_ITEM_A", "Smoke A", firstIcon, 5, nil)
     for _, modal in ipairs(modalOverrides) do
+      modal.overrides.selected = selectedItem
       local first = variant(modal.overrides, browseA)
       local second = variant(modal.overrides, browseB)
       Assert.equal(

@@ -169,6 +169,16 @@ function T.lower_palette_names_the_pocket_dependent_member_and_remap()
     "destination banks copy the audited pocket-relative source banks"
   )
   Assert.deepEqual(BagSources.spriteStates.focus.tabs, { animation = 8, palette = 9 })
+  Assert.deepEqual(
+    BagSources.spriteStates.itemSelect,
+    { animation = 41, palette = 9 },
+    "the selection entry keeps its audited source animation"
+  )
+  Assert.deepEqual(
+    BagSources.geometry.actionSelectedItemCenter,
+    { x = 86, y = 76 },
+    "the action screen keeps its audited selected-item center"
+  )
 end
 
 function T.presentation_facts_are_finite_source_independent_values()
@@ -221,6 +231,7 @@ function T.message_selection_names_the_audited_banks_and_indexes()
     tossQuantity = { bank = 10, index = 53 },
     tossConfirm = { bank = 10, index = 55 },
     tossResult = { bank = 10, index = 54 },
+    selectedItem = { bank = 10, index = 43 },
   })
 end
 

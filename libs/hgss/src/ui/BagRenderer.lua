@@ -89,7 +89,11 @@ local function promptText(presentation, manifest)
   local state = presentation.state
   local interactive = assert(manifest.interactive, "the bag manifest must carry its interactive pane")
   local generated = assert(interactive.text, "the bag manifest must carry its semantic text")
-  if state == "move_select" then
+  if state == "action_menu" then
+    local selected = assert(presentation.selected, "the action prompt needs its selected item")
+    local name = assert(selected.name, "the action prompt needs its selected display name")
+    return formatBagTemplate(assert(generated.selectedItem, "the bag manifest carries its selected-item text"), name)
+  elseif state == "move_select" then
     local selected = assert(presentation.selected, "the move prompt needs its selected item")
     local name = assert(selected.name, "the move prompt needs its selected display name")
     return formatBagTemplate(assert(generated.movePrompt, "the bag manifest carries its move prompt"), name)
@@ -326,6 +330,12 @@ function BagRenderer.new(opts)
     acquire("focus:items", assert(focus.items.visual, "the bag manifest carries its item focus"))
     acquire("focus:cancel", assert(focus.cancel.visual, "the bag manifest carries its cancel focus"))
     acquire("focus:actions", assert(focus.actions.visual, "the bag manifest carries its action focus"))
+    local selectionEntry = assert(interactive.selectionEntry, "the bag manifest carries its selection-entry sequence")
+    local entryFrames = assert(selectionEntry.frames, "the selection entry carries its realized frames")
+    assert(type(entryFrames) == "table" and #entryFrames >= 1, "the selection entry carries its frames")
+    for index, frame in ipairs(entryFrames) do
+      acquire("selectionEntry:" .. index, frame)
+    end
     local actionMenu = assert(interactive.overlays.actionMenu, "the bag manifest carries its action menu")
     acquire("actionFace", assert(actionMenu.face, "the bag manifest carries its action face"))
     local quantity = assert(interactive.overlays.quantity, "the bag manifest carries its quantity overlay")
@@ -538,6 +548,7 @@ function BagRenderer:_drawStateBackground(state, pocket, presentation)
   local backgroundByState = {
     browsing = "browse",
     description_overlay = "browse",
+    item_select = "browse",
     move_select = "browse",
     action_menu = "action",
     toss_quantity = "quantity",
@@ -581,6 +592,7 @@ end
 local INTERACTIVE_LAYERS = {
   browsing = { cells = true, browseFocus = true, moveFocus = false, page = true, cancelLabel = true },
   description_overlay = { cells = true, browseFocus = true, moveFocus = false, page = true, cancelLabel = true },
+  item_select = { cells = true, browseFocus = false, moveFocus = false, page = true, cancelLabel = true },
   move_select = { cells = true, browseFocus = false, moveFocus = true, page = false, cancelLabel = false },
   action_menu = { cells = false, browseFocus = false, moveFocus = false, page = false, cancelLabel = false },
   toss_quantity = { cells = false, browseFocus = false, moveFocus = false, page = false, cancelLabel = false },
@@ -598,6 +610,27 @@ local function interactiveLayers(state)
   return layers
 end
 
+-- Resolves the one-based selection-entry frame for an elapsed clock:
+-- the first frame whose cumulative source duration exceeds the elapsed
+-- ticks. Elapsed ticks at or past the generated total clamp to the final
+-- frame; drawing never advances time.
+---@param entry table<string, unknown> the generated one-shot sequence
+---@param elapsed integer controller ticks elapsed in the entry
+---@return integer
+local function selectionFrameIndex(entry, elapsed)
+  assert(type(elapsed) == "number" and elapsed % 1 == 0 and elapsed >= 0, "the entry clock is a tick count")
+  local frames = assert(entry.frames, "the selection entry carries its realized frames")
+  assert(type(frames) == "table" and #frames >= 1, "the selection entry carries its frames")
+  local cursor = 0
+  for index, frame in ipairs(frames) do
+    cursor = cursor + assert(frame.durationTicks, "selection frames carry their source duration")
+    if elapsed < cursor then
+      return index
+    end
+  end
+  return #frames
+end
+
 -- Draws the generated item focus visual at a one-based visible cell.
 ---@param cell integer
 function BagRenderer:_drawItemFocusCell(cell)
@@ -607,6 +640,34 @@ function BagRenderer:_drawItemFocusCell(cell)
   assert(type(targets) == "table" and #targets == 6, "the item focus targets its six visible cells")
   local target = assert(targets[cell], "the visible cell resolves a focus target")
   drawVisual(self._graphics, assert(self._visuals["focus:items"]), target.x, target.y)
+end
+
+-- Draws the source selection-entry animation over the focused item's
+-- generated target while the browse composition stays up: the frame is a
+-- pure function of the controller clock and the generated durations.
+---@param presentation table<string, unknown>
+function BagRenderer:_drawSelectionEntry(presentation)
+  local entry =
+    assert(self._manifest.interactive.selectionEntry, "the bag manifest carries its selection-entry sequence")
+  local elapsed = assert(presentation.itemSelectElapsed, "the selection entry presentation carries its elapsed ticks")
+  local index = selectionFrameIndex(entry, elapsed)
+  local focus = assert(self._manifest.interactive.focus, "the bag manifest must carry its focus visuals")
+  local itemFocus = assert(focus.items, "the bag manifest carries its item focus")
+  local targets = assert(itemFocus.targets, "the item focus carries its targets")
+  assert(type(targets) == "table" and #targets == 6, "the item focus targets its six visible cells")
+  local visibleIndex =
+    assert(presentation.focusedVisibleIndex, "the selection entry presentation carries its focused cell")
+  assert(
+    type(visibleIndex) == "number" and visibleIndex >= 0 and visibleIndex <= 5,
+    "the focused cell indexes the visible grid"
+  )
+  local target = assert(targets[visibleIndex + 1], "the focused cell resolves a selection target")
+  drawVisual(
+    self._graphics,
+    assert(self._visuals["selectionEntry:" .. index], "the bag presentation names its selection frame"),
+    target.x,
+    target.y
+  )
 end
 
 -- Draws the item focus visual beneath the cell content it frames, so icons,
@@ -825,6 +886,9 @@ function BagRenderer:_drawInteractive(presentation, icons, content, palettes)
     self:_drawActionFaces(presentation)
     self:_drawActionFocus(presentation)
     self:_drawActionLabels(presentation)
+    self:_drawSelectedItemIcon(presentation, icons, iconImage)
+  elseif state == "item_select" then
+    self:_drawSelectionEntry(presentation)
   elseif state == "toss_quantity" then
     self:_drawQuantityState(presentation)
   elseif state == "toss_confirm" then
@@ -888,6 +952,25 @@ function BagRenderer:_drawActionLabels(presentation)
     local width = self._text:textWidth(content)
     self._text:drawTextWithPalette(content, rect.x + (rect.width - width) / 2, rect.y, palette)
   end
+end
+
+-- Draws the selected item's icon at the generated action-screen center:
+-- the stable action state keeps the chosen item visible without
+-- restoring the six browse rows. The icon resolves through the same
+-- provider/quads as the browse cells, never a duplicated asset.
+---@param presentation table<string, unknown>
+---@param icons table<string, unknown>
+---@param iconImage love.Image
+function BagRenderer:_drawSelectedItemIcon(presentation, icons, iconImage)
+  local graphics = self._graphics
+  local menu = assert(self._manifest.interactive.overlays.actionMenu, "the action menu needs its generated slots")
+  local center = assert(menu.selectedItemCenter, "the action menu carries its selected-item center")
+  local selected = assert(presentation.selected, "the action menu carries its selected item")
+  local iconKey = assert(selected.icon, "the selected item carries its icon key")
+  local quad = icons:quadFor(iconKey)
+  local dims = icons:dimensions(iconKey)
+  setColor(graphics, WHITE)
+  graphics.draw(iconImage, quad, center.x - dims.width / 2, center.y - dims.height / 2)
 end
 
 -- Responsive pointer affordances reuse the generated action-button

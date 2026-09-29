@@ -164,6 +164,7 @@ local function controller(bag, cursor, layoutManifest)
     resolveLayout = resolveLayout,
     promptShape = promptShape(),
     tossPrompt = tossPrompt(),
+    itemSelectTicks = 3,
     commands = commands(bag),
     resolveActions = BagActionPolicy.forService(bag),
   })
@@ -200,9 +201,22 @@ local function selectedKey(status)
   return selected.item
 end
 
--- Confirming the selected item must open the action menu.
+-- Confirming the selected item must open the action menu through the
+-- timed selection entry: the transient state runs its generated total,
+-- then the stable menu opens with its dynamic actions.
 local function openActionMenu(control)
   control:updateFixed({ confirmEvent() })
+  for _ = 1, 64 do
+    if control:status().state == "action_menu" then
+      break
+    end
+    Assert.equal(
+      control:status().state,
+      "item_select",
+      "confirming an item must enter the selection entry first"
+    )
+    control:updateFixed({})
+  end
   local view = control:status()
   Assert.equal(view.state, "action_menu", "confirming an item must open the action menu")
   Assert.isTrue(type(view.actions) == "table" and #view.actions >= 1, "the action menu must offer a dynamic action")
@@ -479,6 +493,7 @@ function T.failing_service_call_never_fakes_success()
     resolveLayout = resolveLayout,
     promptShape = promptShape(),
     tossPrompt = tossPrompt(),
+    itemSelectTicks = 3,
     commands = {
       toss = function(_, _)
         return false
@@ -686,6 +701,17 @@ end
 
 local function openMenuByPointer(control, layout, visibleIndex)
   tapCell(control, layout, visibleIndex)
+  for _ = 1, 64 do
+    if control:status().state == "action_menu" then
+      break
+    end
+    Assert.equal(
+      control:status().state,
+      "item_select",
+      "activating the selected cell enters the selection entry by pointer alone"
+    )
+    control:updateFixed({})
+  end
   local view = control:status()
   Assert.equal(view.state, "action_menu", "activating the selected cell opens the action menu by pointer alone")
   Assert.isTrue(type(view.actions) == "table" and #view.actions >= 1, "the action menu must offer a dynamic action")

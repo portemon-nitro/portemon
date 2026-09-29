@@ -366,6 +366,7 @@ function T.open_bag_stays_controllable_across_window_blur()
           rect = { x = 192, y = 168, width = 64, height = 24 },
           textRect = { x = 192, y = 168, width = 56, height = 16 },
         },
+        selectionEntry = { totalTicks = 3 },
         overlays = {
           descriptionFallback = {
             frame = { x = 0, y = 144, width = 256, height = 48 },

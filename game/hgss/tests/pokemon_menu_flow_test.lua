@@ -141,6 +141,7 @@ local function bagManifest()
         textRect = { x = 192, y = 168, width = 56, height = 16 },
         labelRect = { x = 200, y = 168, width = 48, height = 16 },
       },
+      selectionEntry = { totalTicks = 3 },
       overlays = {
         descriptionFallback = {
           frame = { x = 0, y = 144, width = 256, height = 48 },
@@ -286,7 +287,17 @@ local function driveUntil(rig, label, maxSteps, predicate)
   error("the flow never reaches " .. label, 0)
 end
 
+-- Confirming a browsed item parks in the source selection entry before the
+-- stable action menu opens: settle the generated transition clock before
+-- callers read the action state or its actions.
+local function driveToActionMenu(rig)
+  return driveUntil(rig, "the stable action menu", 30, function(current)
+    return current.child ~= nil and current.child.state == "action_menu"
+  end)
+end
+
 local function driveToAction(rig, id)
+  driveToActionMenu(rig)
   for _ = 1, 8 do
     local status = liveStatus(rig)
     local child = assert(status.child, "the action menu stays open")
@@ -450,6 +461,7 @@ function T.tests.bag_use_heals_once_and_returns_to_bag(context)
       "the borrowed position selects the potion"
     )
     status = drive(rig, { { type = "confirm" } })
+    status = driveToActionMenu(rig)
     Assert.equal(status.child.state, "action_menu", "confirming opens the action menu")
     local useSlot = nil
     for _, action in ipairs(assert(status.child.actions, "the menu lists actions")) do
@@ -490,6 +502,7 @@ function T.tests.stale_revision_discards_the_operation_safely(context)
     rig.cursor:setPocket("medicine")
     local status = drive(rig, {})
     status = drive(rig, { { type = "confirm" } })
+    status = driveToActionMenu(rig)
     local useSlot = nil
     for _, action in ipairs(assert(status.child.actions, "the menu lists actions")) do
       if action.id == "use" then
@@ -647,6 +660,7 @@ function T.tests.bag_give_to_an_occupied_holder_asks_before_any_change(context)
       "the borrowed position selects the replacement"
     )
     status = drive(rig, { { type = "confirm" } })
+    status = driveToActionMenu(rig)
     Assert.equal(status.child.state, "action_menu", "confirming opens the action menu")
     status = driveToAction(rig, "give")
     Assert.equal(status.page, "party_give_target", "choosing Give opens the party target page")

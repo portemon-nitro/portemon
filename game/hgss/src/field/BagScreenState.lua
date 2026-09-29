@@ -67,6 +67,13 @@ function BagScreenState.new(opts)
   assert(type(overlays) == "table", "the bag manifest carries its interactive pane")
   local bagOverlays = assert(overlays.overlays, "the bag manifest carries its overlay geometry")
   local tossPrompt = assert(bagOverlays.tossPrompt, "the bag manifest carries its toss prompt placement")
+  local selectionEntry = assert(overlays.selectionEntry, "the bag manifest carries its selection-entry sequence")
+  local itemSelectTicks = assert(selectionEntry.totalTicks, "the selection-entry sequence carries its generated total")
+  assert(
+    type(itemSelectTicks) == "number" and itemSelectTicks % 1 == 0 and itemSelectTicks >= 1,
+    "the selection-entry total drives the controller clock"
+  )
+  ---@cast itemSelectTicks integer
   local monCatalog = assert(opts.monCatalog, "the bag screen requires the mon catalog")
   assert(
     type(monCatalog) == "table" and type(monCatalog.moveByNativeId) == "function",
@@ -136,6 +143,7 @@ function BagScreenState.new(opts)
       resolveLayout = resolveLayout,
       promptShape = promptShape,
       tossPrompt = tossPrompt,
+      itemSelectTicks = itemSelectTicks,
       isPickable = isPickable,
       commands = {
         toss = tossItem,

@@ -289,6 +289,7 @@ BagSources.spriteStates = {
   },
   cancelFace = { animation = 16, palette = 8 },
   cursor = { animations = { 0, 1, 2, 3 } },
+  itemSelect = { animation = 41, palette = 9 },
 }
 
 -- BG surfaces are listed in retail bottom-to-top order. The producer applies
@@ -375,6 +376,7 @@ BagSources.messages = {
     tossQuantity = { bank = 10, index = 53 },
     tossConfirm = { bank = 10, index = 55 },
     tossResult = { bank = 10, index = 54 },
+    selectedItem = { bank = 10, index = 43 },
   },
 }
 
@@ -520,6 +522,7 @@ BagSources.geometry = {
     hitRect = rect(96, 168, 78, 24),
   },
   quantityCancelHitRect = rect(178, 168, 78, 24),
+  actionSelectedItemCenter = { x = 86, y = 76 },
 }
 
 -- Movable focus targets in canonical pane pixels: the position records the

@@ -174,6 +174,76 @@ local function compileScreens(archive, dependencies, assets)
   }
 end
 
+local PLAYBACKS = { forward = "once", forward_loop = "loop", reverse = "once", reverse_loop = "loop" }
+
+-- Realizes every frame of the browse-confirm selection animation as a
+-- Bag-local one-shot sequence with source durations. The retail sequence
+-- blinks the cursor: frames whose source cell carries no objects show
+-- nothing for their ticks, realized here as a fully transparent visual
+-- so the controller clock and renderer frame indexing stay uniform.
+-- Only the realized frame visuals, once playback, and summed total reach
+-- the manifest; the source animation identity never leaves the producer
+-- boundary.
+local function compileSelectionEntry(spriteData, selector, assets)
+  local charData, paletteData, cellData, animation = unpack(spriteData)
+  local sequence = animation.anims[selector.animation + 1]
+  if sequence == nil then
+    sourceError("selection entry selects a missing animation sequence", { animation = selector.animation })
+  end
+  assert(sequence ~= nil, "missing selection sequences fail above")
+  if #sequence.frames == 0 then
+    sourceError("selection entry carries no frames", { animation = selector.animation })
+  end
+  local playback = PLAYBACKS[sequence.playMode]
+  if playback == nil then
+    sourceError("selection entry carries an unsupported play mode", {
+      animation = selector.animation,
+      playMode = sequence.playMode,
+    })
+  end
+  if playback ~= "once" then
+    sourceError("selection entry must be a one-shot animation", {
+      animation = selector.animation,
+      playMode = sequence.playMode,
+    })
+  end
+  local frames = {}
+  local totalTicks = 0
+  for frameIndex, frame in ipairs(sequence.frames) do
+    if type(frame.duration) ~= "number" or frame.duration <= 0 or frame.duration % 1 ~= 0 then
+      sourceError("selection entry carries non-integral frame timing", {
+        animation = selector.animation,
+        frame = frameIndex - 1,
+      })
+    end
+    local path = BagCache.assetDir() .. "/selection-entry-" .. (frameIndex - 1) .. ".png"
+    local cell = type(frame.cell) == "number" and cellData.cells[frame.cell + 1] or nil
+    local visual
+    if cell ~= nil and type(cell.objs) == "table" and #cell.objs == 0 then
+      assets[path] = PngWriter.encode(1, 1, string.char(0, 0, 0, 0))
+      visual = { image = path, width = 1, height = 1, durationTicks = frame.duration }
+    else
+      local rendered = G2dRasterizer.renderAnimationFrame(
+        charData,
+        paletteData,
+        cellData,
+        sequence,
+        frameIndex,
+        { role = "selection-entry", animation = selector.animation, frame = frameIndex - 1 },
+        selector.palette
+      )
+      assets[path] = PngWriter.encode(rendered.width, rendered.height, rendered.pixels)
+      visual = { image = path, width = rendered.width, height = rendered.height, durationTicks = frame.duration }
+      if rendered.offset.x ~= 0 or rendered.offset.y ~= 0 then
+        visual.offset = rendered.offset
+      end
+    end
+    frames[frameIndex] = visual
+    totalTicks = totalTicks + frame.duration
+  end
+  return { frames = frames, playback = "once", totalTicks = totalTicks }
+end
+
 local function compileSpriteData(archive, group, role, dependencies)
   local charData = decode("decodeChar", readMember(archive, group.char, role .. "-char", dependencies), role .. "-char")
   local paletteData =
@@ -504,6 +574,7 @@ local function compileSprites(archive, dependencies, assets)
   end
   return {
     strips = strips,
+    selectionEntry = compileSelectionEntry(tabsData, BagSources.spriteStates.itemSelect, assets),
     focus = {
       tabs = compileVisual(tabsData, focusStates.tabs, "focus-tabs", assets),
       items = compileVisual(tabsData, focusStates.items, "focus-items", assets),
@@ -900,7 +971,7 @@ local function compileText(messageArchive, dependencies)
     labels[action] = lowerLabel(bankOf(selector.bank), selector.bank, selector.index, "label:" .. action)
   end
   local templates = {}
-  for _, name in ipairs({ "movePrompt", "tossQuantity", "tossConfirm", "tossResult" }) do
+  for _, name in ipairs({ "movePrompt", "tossQuantity", "tossConfirm", "tossResult", "selectedItem" }) do
     local selector = BagSources.messages.templates[name]
     templates[name] = lowerTemplate(bankOf(selector.bank), selector.bank, selector.index, "template:" .. name)
   end
@@ -910,6 +981,7 @@ local function compileText(messageArchive, dependencies)
     tossQuantity = templates.tossQuantity,
     tossConfirm = templates.tossConfirm,
     tossResult = templates.tossResult,
+    selectedItem = templates.selectedItem,
   }
 end
 
@@ -1479,8 +1551,16 @@ local function _compile(romFs)
       pageIndicator = geometry.pageIndicator,
       cancel = geometry.cancel,
       text = text,
+      selectionEntry = sprites.selectionEntry,
       overlays = {
-        actionMenu = { face = sprites.actionFace, slots = geometry.actionSlots },
+        actionMenu = {
+          face = sprites.actionFace,
+          slots = geometry.actionSlots,
+          selectedItemCenter = {
+            x = BagSources.geometry.actionSelectedItemCenter.x,
+            y = BagSources.geometry.actionSelectedItemCenter.y,
+          },
+        },
         quantity = {
           digits = geometry.quantityDigits,
           controls = geometry.quantityControls,

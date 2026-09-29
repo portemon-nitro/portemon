@@ -192,6 +192,22 @@ local function manifest()
             { kind = "text", value = "." },
           },
         },
+        selectedItem = {
+          segments = {
+            { kind = "text", value = "The " },
+            { kind = "item" },
+            { kind = "text", value = " is selected." },
+          },
+        },
+      },
+      selectionEntry = {
+        frames = {
+          { image = "bag/selection-entry-0.png", width = 96, height = 40, durationTicks = 2 },
+          { image = "bag/selection-entry-1.png", width = 96, height = 40, durationTicks = 1 },
+          { image = "bag/selection-entry-2.png", width = 96, height = 40, durationTicks = 2 },
+        },
+        playback = "once",
+        totalTicks = 5,
       },
       overlays = {
         tossPrompt = { x = 200, y = 48, shape = "compact", initialSelection = "yes" },
@@ -201,6 +217,7 @@ local function manifest()
         },
         actionMenu = {
           face = { image = "bag/action-face.png", width = 96, height = 24 },
+          selectedItemCenter = { x = 86, y = 76 },
           slots = {
             {
               center = { x = 48, y = 144 },
@@ -316,6 +333,9 @@ local function seedCache()
   paths[#paths + 1] = "bag/focus-cancel.png"
   paths[#paths + 1] = "bag/focus-actions.png"
   paths[#paths + 1] = "bag/action-face.png"
+  for index = 0, 2 do
+    paths[#paths + 1] = "bag/selection-entry-" .. index .. ".png"
+  end
   for _, path in ipairs({
     "bag/quantity-increment.png",
     "bag/quantity-increment-pressed.png",
@@ -1103,6 +1123,94 @@ function T.action_menu_draws_generated_labels_and_never_raw_ids()
   end
 end
 
+function T.selection_entry_suppresses_static_focus_and_animates_generated_frames()
+  local manifested = manifest()
+  local entry = manifested.interactive.selectionEntry
+  local target = manifested.interactive.focus.items.targets[1]
+  local graphics = FakeGraphics({ imageSizes = IMAGE_SIZES })
+  local content = text()
+  local draw = BagRenderer.new({
+    cacheFs = seedCache(),
+    manifest = manifested,
+    promptManifest = promptManifest(),
+    text = content,
+    graphics = graphics,
+    heroRenderer = heroSpy(nil),
+  })
+  local function entryImageAt(elapsed, x, y)
+    local mark = #graphics.draws
+    draw:draw(
+      status({ state = "item_select", itemSelectElapsed = elapsed, itemSelectTotal = entry.totalTicks }),
+      plan(true),
+      { icons = icons() }
+    )
+    for index = mark + 1, #graphics.draws do
+      local entryDraw = graphics.draws[index]
+      if entryDraw.quad == nil and entryDraw.x == x and entryDraw.y == y then
+        return entryDraw.image
+      end
+    end
+    return nil
+  end
+  -- Generated frame visuals carry no fixture offset, so every frame draws
+  -- at the focused target itself; the static browse focus below draws at
+  -- the same target plus its own visual offset.
+  local first = assert(entryImageAt(0, target.x, target.y), "the entry draws its opening frame at the focused target")
+  local second = assert(entryImageAt(2, target.x, target.y), "the entry advances its frame with the controller clock")
+  Assert.isTrue(first ~= second, "the clock selects distinct generated frames")
+  local final = assert(entryImageAt(4, target.x, target.y), "the entry reaches its final frame")
+  Assert.isTrue(second ~= final, "later ticks keep advancing the sequence")
+  Assert.isTrue(entryImageAt(5, target.x, target.y) == final, "the completion boundary clamps to the final frame")
+  Assert.isFalse(printedText(content, "TRASH"), "the entry exposes no stable action while browsing composition stays")
+  Assert.equal(graphics.pushDepth(), 0, "the transform stack stays balanced")
+  local mark = #graphics.draws
+  draw:draw(status(), plan(true), { icons = icons() })
+  local itemFocus = manifested.interactive.focus.items
+  local focusX, focusY = focusOrigin(itemFocus, target)
+  local browseFocus = nil
+  for index = mark + 1, #graphics.draws do
+    local focusDraw = graphics.draws[index]
+    if focusDraw.quad == nil and focusDraw.x == focusX and focusDraw.y == focusY then
+      browseFocus = focusDraw.image
+    end
+  end
+  Assert.isTrue(browseFocus ~= nil, "browsing draws its static focus at the target")
+  Assert.isTrue(first ~= browseFocus, "the entry suppresses the static browse focus for the animation")
+  draw:release()
+end
+
+function T.action_menu_shows_selected_item_message_and_icon_at_generated_center()
+  for _, mode in ipairs({ "horizontal", "vertical", "interactive_only" }) do
+    local graphics = FakeGraphics({ imageSizes = IMAGE_SIZES })
+    local content = text()
+    local draw = BagRenderer.new({
+      cacheFs = seedCache(),
+      manifest = manifest(),
+      promptManifest = promptManifest(),
+      text = content,
+      graphics = graphics,
+      heroRenderer = heroSpy(nil),
+    })
+    draw:draw(actionStatus(), plan(mode ~= "interactive_only"), { icons = icons() })
+    local joined = joinedText(content)
+    Assert.isTrue(
+      joined:find("The POTION is selected.", 1, true) ~= nil,
+      "the action menu formats the selected-item message in " .. mode
+    )
+    local iconDraw = nil
+    for _, entry in ipairs(graphics.draws) do
+      if type(entry.quad) == "table" and entry.quad.key == "POTION" then
+        iconDraw = entry
+      end
+    end
+    local icon = assert(iconDraw, "the action menu draws the selected icon in " .. mode)
+    Assert.equal(icon.x, 86 - 16, "the selected icon centers at the generated action position in " .. mode)
+    Assert.equal(icon.y, 76 - 16, "the selected icon keeps the generated vertical action position in " .. mode)
+    Assert.equal(graphics.pushDepth(), 0, "the transform stack stays balanced in " .. mode)
+    draw:release()
+  end
+end
+
 function T.action_menu_acquires_faces_and_uses_physical_focus_nodes()
   local reads = {}
   local graphics = FakeGraphics({ imageSizes = IMAGE_SIZES })
@@ -1495,7 +1603,7 @@ end
 function T.release_frees_images_exactly_once()
   local graphics = FakeGraphics({ imageSizes = IMAGE_SIZES })
   local draw = renderer(graphics)
-  Assert.equal(#graphics.images, 107, "the renderer acquires bag and prompt button images")
+  Assert.equal(#graphics.images, 110, "the renderer acquires bag and prompt button images")
   draw:release()
   for _, image in ipairs(graphics.images) do
     Assert.equal(image.releaseCount, 1, "every image releases exactly once")
@@ -1616,7 +1724,7 @@ function T.acquisition_failure_releases_every_image_acquired_before_it()
   local bound = renderer(probe)
   local total = #probe.images
   bound:release()
-  Assert.equal(total, 107, "setup binds every generated state, tab, focus, control, and prompt image")
+  Assert.equal(total, 110, "setup binds every generated state, tab, focus, control, and prompt image")
   for _, failCall in ipairs({ 1, total }) do
     local graphics = FakeGraphics({ imageSizes = IMAGE_SIZES, failOnImageCall = failCall })
     Assert.throws(function()

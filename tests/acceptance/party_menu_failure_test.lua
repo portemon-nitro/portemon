@@ -171,8 +171,14 @@ local BAG_NEIGHBORS = {
   [4] = { up = 4, down = 4, left = 3, right = 2 },
 }
 
+-- Confirming a browsed item parks in the source selection entry before
+-- the stable action menu opens: settle the generated transition clock
+-- before callers read the action state or its actions.
 local function chooseBagAction(flow, id)
   local status = drive(flow, { { type = "confirm" } })
+  status = driveUntil(flow, "the stable action menu", 30, function(current)
+    return current.child ~= nil and current.child.state == "action_menu"
+  end)
   local child = bagChild(status)
   Assert.equal(child.state, "action_menu", "confirming an item must open the action menu")
   local target = nil

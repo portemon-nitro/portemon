@@ -93,6 +93,9 @@ function BagCache.referencedPaths(manifest)
   addVisual(interactive.focus.items.visual)
   addVisual(interactive.focus.cancel.visual)
   addVisual(interactive.focus.actions.visual)
+  for _, frame in ipairs(assert(interactive.selectionEntry, "bag manifest carries its selection entry").frames) do
+    addVisual(frame)
+  end
   addVisual(interactive.overlays.actionMenu.face)
   addVisual(interactive.overlays.quantity.visuals.increment.normal)
   addVisual(interactive.overlays.quantity.visuals.increment.pressed)

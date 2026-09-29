@@ -332,9 +332,17 @@ local function openActionMenu(game, state)
     tapDirection(game, state, "w")
   end
   confirm(game)
-  game:step()
-  game:step()
-  local view = bagView(game)
+  -- The confirm parks in the source selection entry first: settle the
+  -- generated transition clock before reading the stable action menu.
+  local view = nil
+  for _ = 1, 30 do
+    game:step()
+    view = bagView(game)
+    if view.state == "action_menu" then
+      break
+    end
+  end
+  view = bagView(game)
   Assert.equal(view.state, "action_menu", "confirming an item must open the action menu")
   local actions = assert(view.actions, "the action menu must list its actions")
   Assert.isTrue(#actions >= 1, "the action menu must offer its dynamic inventory actions")

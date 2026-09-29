@@ -463,6 +463,14 @@ end
 -- acknowledge with the first later input to commit and land back in browsing.
 local function tossSelectedWithSingleCopyStep(game, state)
   confirm(game)
+  -- The confirm parks in the source selection entry first: settle the
+  -- generated transition clock before reading the stable action menu.
+  for _ = 1, 30 do
+    game:step()
+    if bagView(game).state == "action_menu" then
+      break
+    end
+  end
   Assert.equal(bagView(game).state, "action_menu", "confirming the composed selection opens the action menu")
   confirm(game)
   Assert.equal(bagView(game).state, "toss_quantity", "confirming toss enters the quantity picker")

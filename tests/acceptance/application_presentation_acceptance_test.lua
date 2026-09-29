@@ -485,7 +485,14 @@ function T.tests.bag_blur_cancels_stale_press_and_fresh_input_recovers()
     game.runtime.input:pointerDown("focus:fresh", cellX, cellY)
     game:step()
     game.runtime.input:pointerUp("focus:fresh", cellX, cellY)
-    game:step()
+    -- The tap parks in the source selection entry first: settle the
+    -- generated transition clock before reading the stable menu.
+    for _ = 1, 30 do
+      game:step()
+      if bagView().state == "action_menu" then
+        break
+      end
+    end
     Assert.equal(bagView().state, "action_menu", "a fresh press after refocus must activate through the live session")
     pressCancel(game)
     Assert.equal(bagView().state, "browsing", "cancelling the menu returns to browsing")
@@ -1443,7 +1450,14 @@ function T.tests.bag_nested_cancel_unwinds_while_outside_press_closes()
     Assert.equal(entered.focus, "items", "setup must hand interaction to the item grid")
     local function confirmItem()
       confirm(game)
-      game:step()
+      -- The confirm parks in the source selection entry first: settle
+      -- the generated transition clock before reading the stable menu.
+      for _ = 1, 30 do
+        game:step()
+        if bagApp().state == "action_menu" then
+          break
+        end
+      end
     end
     confirmItem()
     local nestedFlow = assert(game.runtime.applicationHost:status().application, "the bag must stay open after confirm")

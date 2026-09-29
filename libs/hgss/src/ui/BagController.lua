@@ -42,7 +42,7 @@ local YesNoPromptController = require("libs.hgss.src.ui.YesNoPromptController")
 ---@field _focusNode string the private semantic browse focus node
 ---@field _lastSlot integer the most recent grid-cell focus, for tab/cancel return
 ---@field _overlay boolean
----@field _state "browsing"|"action_menu"|"toss_quantity"|"toss_confirm"|"toss_ack"|"move_select"
+---@field _state "browsing"|"item_select"|"action_menu"|"toss_quantity"|"toss_confirm"|"toss_ack"|"move_select"
 ---@field _context "inventory"|"field"|"pick_held" the selection context for intent emission
 ---@field _isPickable (fun(itemKey: string): boolean)? the held-item eligibility probe for picker contexts
 ---@field _intent table<string, unknown>? the one-shot selection intent for the owning flow
@@ -52,6 +52,8 @@ local YesNoPromptController = require("libs.hgss.src.ui.YesNoPromptController")
 ---@field _actionNode integer
 ---@field _actionItemKey string?
 ---@field _actionPocket string?
+---@field _itemSelectTicks integer the generated selection-entry total driving the transition clock
+---@field _itemSelectElapsed integer ticks elapsed in the selection entry
 ---@field _quantity integer
 ---@field _quantityMax integer
 ---@field _moveFromKey string?
@@ -74,6 +76,7 @@ BagController.__index = BagController
 ---@field tossPrompt { x: integer, y: integer, shape: string, initialSelection: string } the generated semantic prompt placement
 ---@field commands BagControllerCommands semantic mutations bound to the live inventory service
 ---@field resolveActions fun(view: table<string, unknown>): table<string, unknown>[] the injected inventory-local menu projection over the refreshed view
+---@field itemSelectTicks integer the generated selection-entry total; the controller owns the clock but never the frame visuals
 ---@field context "inventory"|"field"|"pick_held"? the selection context (defaults to inventory)
 ---@field isPickable (fun(itemKey: string): boolean)? the held-item eligibility probe, required for pick_held
 
@@ -183,6 +186,10 @@ function BagController.new(opts)
   end
   assert(type(opts.promptShape) == "table", "the bag controller needs its modal prompt shape")
   assert(type(opts.tossPrompt) == "table", "the bag controller needs its toss prompt template")
+  assert(
+    type(opts.itemSelectTicks) == "number" and opts.itemSelectTicks % 1 == 0 and opts.itemSelectTicks >= 1,
+    "the bag controller needs its positive selection-entry total"
+  )
   -- The modal prompt is bound once and owned for the controller lifetime:
   -- opening the supplied template here proves a malformed placement fails
   -- construction instead of falling back to action slots, and disposing
@@ -207,6 +214,8 @@ function BagController.new(opts)
     _actionNode = 4,
     _actionItemKey = nil,
     _actionPocket = nil,
+    _itemSelectTicks = opts.itemSelectTicks,
+    _itemSelectElapsed = 0,
     _quantity = 1,
     _quantityMax = 1,
     _moveFromKey = nil,
@@ -500,6 +509,7 @@ function BagController:_toBrowsing()
   self._actionNode = 4
   self._actionItemKey = nil
   self._actionPocket = nil
+  self._itemSelectElapsed = 0
   self._quantity = 1
   self._quantityMax = 1
   self._quantityPressedControl = nil
@@ -536,7 +546,9 @@ end
 -- Confirming an item resolves the inventory-local menu for the refreshed
 -- view and snapshots the semantic selection the nested states verify
 -- against. Only an occupied focused cell may enter; an empty focus is a
--- no-op, never an error.
+-- no-op, never an error. Entry parks in the source selection transition
+-- with its clock at zero; the stable action menu opens only once the
+-- generated total elapses.
 function BagController:_openActionMenu()
   local absolute = self:_focusedOccupiedAbsolute()
   if absolute == nil then
@@ -557,7 +569,8 @@ function BagController:_openActionMenu()
   self._actionItemKey = selected.item
   self._actionPocket = self:_pocket()
   self._overlay = false
-  self._state = "action_menu"
+  self._itemSelectElapsed = 0
+  self._state = "item_select"
 end
 
 -- Emits one value-only selection intent for the owning flow: the item
@@ -879,6 +892,16 @@ function BagController:_syncNested()
       return false
     end
     self._actions = self:_currentActions()
+    return true
+  end
+  if self._state == "item_select" then
+    -- The finite entry keeps its snapshotted actions intact until the
+    -- clock completes; a selection the outside world removed aborts the
+    -- pending menu instead of animating one item into another's actions.
+    if not self:_selectionMatchesAction() then
+      self:_toBrowsing()
+      return false
+    end
     return true
   end
   if self._state == "move_select" then
@@ -1254,6 +1277,33 @@ function BagController:_handleNavigate(event)
   end
 end
 
+-- Owns one fixed tick inside the source selection entry: the transition
+-- clock advances exactly once, mapped navigation/confirm/cancel/action
+-- input stays inert so the pending menu cannot be steered mid-animation,
+-- and the precomputed snapshot opens as the stable action menu exactly
+-- once the generated total elapses. Terminal dismissal still closes, and
+-- pointer-cancel bookkeeping still clears a held capture.
+---@param uiInput table[]
+function BagController:_stepItemSelect(uiInput)
+  self._itemSelectElapsed = self._itemSelectElapsed + 1
+  for _, event in ipairs(uiInput) do
+    validateBagEvent(event)
+    if event.type == "dismiss" then
+      self._result = { kind = "closed" }
+      self._closed = true
+      return
+    elseif event.type == "pointer_cancel" then
+      self:cancelPointerCapture()
+    end
+  end
+  if self._closed then
+    return
+  end
+  if self._itemSelectElapsed >= self._itemSelectTicks then
+    self._state = "action_menu"
+  end
+end
+
 -- Owns one fixed tick that begins with the modal prompt active: terminal
 -- dismissal closes the bag without touching the prompt, otherwise the
 -- tick advances the prompt exactly once and resolves its published result
@@ -1337,6 +1387,10 @@ function BagController:updateFixed(uiInput)
   self:_normalizeFocus()
   self:_reconcileBrowseSelection()
   if not self:_syncNested() then
+    return
+  end
+  if self._state == "item_select" then
+    self:_stepItemSelect(uiInput)
     return
   end
   if self._state == "toss_confirm" then
@@ -1447,6 +1501,9 @@ function BagController:status()
   if self._state == "action_menu" and not self._overlay then
     record.actions = self._actions
     record.actionNode = self._actionNode
+  elseif self._state == "item_select" and not self._overlay then
+    record.itemSelectElapsed = self._itemSelectElapsed
+    record.itemSelectTotal = self._itemSelectTicks
   elseif
     (self._state == "toss_quantity" or self._state == "toss_confirm" or self._state == "toss_ack")
     and not self._overlay
