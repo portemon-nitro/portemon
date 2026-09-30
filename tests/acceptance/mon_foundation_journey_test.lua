@@ -711,16 +711,35 @@ end
 -- Content identity at the product boundary: a stored bucket written against
 -- foreign generated content fails continue before any field state
 -- publishes, and the valid record still boots afterwards.
-function T.tests.continue_rejects_a_foreign_catalog_fingerprint_before_publication()
+function T.tests.continue_rejects_unresolvable_mons_references_before_publication()
   local versionId = AcceptanceHarness.defaultVersion()
   local valid = harness():boot({ versionId = versionId, map = "MAP_BURNED_TOWER_1F", save = "fresh" })
   valid:waitForFieldEntry()
+  Assert.isTrue(
+    valid.runtime.monService:giveMon({ species = "CHIKORITA", level = 5, heldItem = "NONE", form = 0 }),
+    "the probe needs a party mon"
+  )
   local record = assert(valid.runtime:captureGameSave(), "continue requires a stable captured game")
   local namespace = valid.saveNamespace
   valid:close()
   Assert.isNil(love.filesystem.getInfo(namespace), "the valid boot cleans its namespace")
 
+  -- The stored fingerprint alone never decides: a foreign fingerprint
+  -- with resolvable references still continues.
   record.mons.catalogFingerprint = "00000000"
+  local relocated = AcceptanceHarness.new({
+    gameFactory = function()
+      return record
+    end,
+  })
+  local moved = relocated:boot({ versionId = versionId, map = "MAP_BURNED_TOWER_1F", save = "fresh" })
+  moved:waitForFieldEntry()
+  Assert.equal(moved.runtime.monService:partyCount(), 1, "the relocated party survives the foreign fingerprint")
+  moved:close()
+
+  -- A mon the current catalog cannot resolve blocks continue before any
+  -- field state or service is published.
+  record.mons.party.mons[1].species = "BOGUS"
   local tampered = AcceptanceHarness.new({
     gameFactory = function()
       return record
@@ -729,10 +748,10 @@ function T.tests.continue_rejects_a_foreign_catalog_fingerprint_before_publicati
   local ok, err = pcall(function()
     tampered:boot({ versionId = versionId, map = "MAP_BURNED_TOWER_1F", save = "fresh" })
   end)
-  Assert.isFalse(ok, "a foreign fingerprint must fail continue")
+  Assert.isFalse(ok, "an unresolvable mons reference must fail continue")
   Assert.isTrue(
-    tostring(err):find("MONS_SAVE_FINGERPRINT_MISMATCH", 1, true) ~= nil,
-    "the failure names the fingerprint mismatch: " .. tostring(err):sub(1, 160)
+    tostring(err):find("GAME_SAVE_BUCKET_INVALID", 1, true) ~= nil,
+    "the failure names the mons bucket: " .. tostring(err):sub(1, 160)
   )
 
   local again = harness():boot({ versionId = versionId, map = "MAP_BURNED_TOWER_1F", save = "fresh" })

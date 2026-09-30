@@ -54,7 +54,7 @@ function T.boxed_bytes_match_reference_vectors_and_decode_exactly()
   local first = firstMaker:createNormal(CatalogFixture.normalRequest({ level = 5 }))
   Assert.equal(CatalogFixture.toHex(BoxCodec.encode(first, context)), FIRST_HEX)
   local firstProjection = {
-    schema = "g4-mon-v1",
+    schema = "g4-mon-v2",
     species = "CHIKORITA",
     form = 0,
     personality = 3629912035,
@@ -93,7 +93,7 @@ function T.boxed_bytes_match_reference_vectors_and_decode_exactly()
   local second = Mon.validate(secondRaw, context)
   Assert.equal(CatalogFixture.toHex(BoxCodec.encode(second, context)), SECOND_HEX)
   local secondProjection = {
-    schema = "g4-mon-v1",
+    schema = "g4-mon-v2",
     species = "CHIKORITA",
     form = 0,
     personality = 1539319570,
@@ -134,7 +134,7 @@ function T.boxed_bytes_match_reference_vectors_and_decode_exactly()
   local third = Mon.validate(thirdRaw, context)
   Assert.equal(CatalogFixture.toHex(BoxCodec.encode(third, context)), THIRD_HEX)
   local thirdProjection = {
-    schema = "g4-mon-v1",
+    schema = "g4-mon-v2",
     species = "TOTODILE",
     form = 0,
     personality = 2423540368,
@@ -178,7 +178,7 @@ function T.boxed_bytes_match_reference_vectors_and_decode_exactly()
   local fourth = Mon.validate(fourthRaw, context)
   Assert.equal(CatalogFixture.toHex(BoxCodec.encode(fourth, context)), FOURTH_HEX)
   local fourthProjection = {
-    schema = "g4-mon-v1",
+    schema = "g4-mon-v2",
     species = "EEVEE",
     form = 0,
     personality = 332947903,

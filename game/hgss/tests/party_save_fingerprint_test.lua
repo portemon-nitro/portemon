@@ -1,6 +1,8 @@
--- Catalog compatibility: continuing a save written against different
--- generated content fails with a structured error before any field state
--- or service is published, leaving the last valid record untouched.
+-- Catalog compatibility: continuing a save whose mons reference content
+-- the current catalog cannot resolve fails with a structured error before
+-- any field state or service is published, leaving the last valid record
+-- untouched. The stored catalog fingerprint alone never decides: only
+-- selected-reference resolution does.
 
 local Assert = require("tests.support.Assert")
 local CatalogFixture = require("libs.mons.tests.catalog_fixture")
@@ -77,9 +79,16 @@ local function record(mons)
   return value
 end
 
-function T.stale_catalog_fingerprint_blocks_continue_without_publication()
+function T.unresolvable_mons_reference_blocks_continue_without_publication()
   local catalog = CatalogFixture.makeCatalog()
-  local stale = MonsSave.capture(Party.new():capture(), Lcrng.new(0x99999999):capture(), "stale-catalog-fingerprint")
+  local factory = CatalogFixture.makeFactory(0x12345678, catalog)
+  -- A mon written against content the current catalog cannot resolve:
+  -- the species key survives capture but fails reference resolution.
+  local stranger = factory:createNormal(CatalogFixture.normalRequest())
+  stranger.species = "BAYLEEF"
+  local snapshot =
+    { max = 6, mons = { factory:createNormal(CatalogFixture.normalRequest({ species = "TOTODILE", level = 5 })), stranger } }
+  local stale = MonsSave.capture(snapshot, Lcrng.new(0x99999999):capture(), "stale-catalog-fingerprint")
   local candidate = record(stale)
   local snapshot = {
     schema = candidate.schema,

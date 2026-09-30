@@ -12,9 +12,9 @@ local Mon = require("libs.mons.src.Mon")
 local MonFactory = require("libs.mons.src.gen4.MonFactory")
 local MonsErrors = require("libs.mons.src.errors")
 local MonsSave = require("libs.mons.src.MonsSave")
+local MonStats = require("libs.mons.src.gen4.MonStats")
 local NativeLegality = require("libs.mons.src.gen4.NativeLegality")
 local Personality = require("libs.mons.src.gen4.Personality")
-local Stats = require("libs.mons.src.gen4.Stats")
 local Errors = require("libs.errors.src.Errors")
 
 ---@class HgssMonService
@@ -375,38 +375,16 @@ function HgssMonService:currentMapSection()
   return self:_currentMapSection()
 end
 
--- Source maximum-HP adjustment for a recalculated mon
--- (pret/pokeheartgold@0985e8718d src/pokemon.c CalcMonStats tail): a
--- fainted mon keeps zero health; a living mon keeps its damage by gaining
--- the maximum change, clamped down when the maximum shrinks.
+-- Source maximum-HP adjustment for a recalculated mon: a fainted mon
+-- keeps zero health while a living mon keeps its damage across the new
+-- maximum. The single canonical owner lives in MonStats; this seam stays
+-- so existing callers keep their spelling.
 ---@param oldMaxHp integer
 ---@param newMaxHp integer
 ---@param currentHp integer
 ---@return integer
 function HgssMonService.adjustHpForMaxChange(oldMaxHp, newMaxHp, currentHp)
-  assert(
-    type(oldMaxHp) == "number" and oldMaxHp % 1 == 0 and oldMaxHp >= 1,
-    "health adjustment needs the previous maximum"
-  )
-  assert(
-    type(newMaxHp) == "number" and newMaxHp % 1 == 0 and newMaxHp >= 1,
-    "health adjustment needs the recalculated maximum"
-  )
-  assert(
-    type(currentHp) == "number" and currentHp % 1 == 0 and currentHp >= 0 and currentHp <= oldMaxHp,
-    "health adjustment needs the current health within the previous maximum"
-  )
-  if currentHp == 0 then
-    return 0
-  end
-  local adjusted = currentHp + newMaxHp - oldMaxHp
-  if adjusted > newMaxHp then
-    return newMaxHp
-  end
-  if adjusted < 0 then
-    return 0
-  end
-  return adjusted
+  return MonStats.adjustHpForMaxChange(oldMaxHp, newMaxHp, currentHp)
 end
 
 -- Finalizes a copied mon whose effort values changed: rederives through
@@ -428,36 +406,21 @@ function HgssMonService:refreshStagedHp(staged, oldMaxHp)
 end
 
 -- Read-only full derived-stat projection for item and summary
--- calculations: level plus every computed stat through the existing
--- level/form/nature owner. The record is validated first; nothing is
+-- calculations: level plus every computed stat through the shared
+-- battle-stat projection. The record is validated first; nothing is
 -- stored and no revision moves.
 ---@param mon table<string, unknown>
 ---@return { level: integer, maxHp: integer, attack: integer, defense: integer, speed: integer, specialAttack: integer, specialDefense: integer }
 function HgssMonService:derive(mon)
   local canonical = Mon.validate(mon, self._context)
-  local species = self._catalog:species(canonical.species)
-  local level = Experience.level(self._catalog:growthCurve(species.growthCurve), canonical.experience)
-  local form = self._catalog:form(canonical.species, canonical.form)
-  local nature = Personality.nature(canonical.personality)
-  local stats = Stats.calculate(form.baseStats, canonical.ivs, canonical.evs, level, nature)
-  local maxHp = stats.hp
-  if canonical.species == "SHEDINJA" then
-    maxHp = 1
-  end
-  return {
-    level = level,
-    maxHp = maxHp,
-    attack = stats.attack,
-    defense = stats.defense,
-    speed = stats.speed,
-    specialAttack = stats.specialAttack,
-    specialDefense = stats.specialDefense,
-  }
+  return MonStats.derive(canonical, self._catalog)
 end
 
 -- Stages validated mon replacements without touching the live party.
--- Every candidate passes the record validation and legality boundary
--- before the candidate aggregate is allocated. Returns nil and "stale"
+-- Every candidate passes record validation before the candidate aggregate
+-- is allocated; native representability is enforced only at the explicit
+-- native boundary, so domain-valid custom mons publish like native ones.
+-- Returns nil and "stale"
 -- when the expected revision drifted; otherwise returns a one-use opaque
 -- preparation whose publish installs the candidate. A repeated publish is
 -- a programming error, never a second revision increment.
@@ -504,9 +467,7 @@ end
 ---@param mon table<string, unknown>
 ---@return table<string, unknown>
 function HgssMonService:_checked(mon)
-  local canonical = Mon.validate(mon, self._context)
-  NativeLegality.project(canonical, self._context)
-  return canonical
+  return Mon.validate(mon, self._context)
 end
 
 -- Adds a validated legal mon; false when the party is full, without
@@ -947,10 +908,20 @@ end
 function HgssMonService:monTypes(slot0)
   local mon = self:_liveMon(slot0)
   local form = self._catalog:form(mon.species, mon.form)
-  local type1 = NATIVE_TYPE_IDS[form.types[1]]
-  local type2 = NATIVE_TYPE_IDS[form.types[2] or form.types[1]]
-  assert(type1 ~= nil and type2 ~= nil, "catalog form carries known native type keys")
-  return type1, type2
+  local function nativeType(key)
+    local id = NATIVE_TYPE_IDS[key]
+    if id == nil then
+      MonsErrors.raise(
+        MonsErrors.LEGALITY_INVALID,
+        "form type " .. tostring(key) .. " has no native identity",
+        { identity = key, field = "type" }
+      )
+    end
+    return id --[[@as integer]]
+  end
+  local first = form.types[1]
+  local second = form.types[2] or form.types[1]
+  return nativeType(first), nativeType(second)
 end
 
 ---@param slot0 integer
@@ -1035,12 +1006,12 @@ function HgssMonService:partySlotWithFatefulEncounter(species)
   end)
 end
 
--- Restores every party mon to full health and clears persistent status
--- through the aggregate, one owned mutation per mon.
+-- Restores every party mon to full health and clears persistent
+-- conditions through the aggregate, one owned mutation per mon.
 function HgssMonService:healParty()
   for index = 0, self._party:count() - 1 do
     local mon = self._party:get(index)
-    mon.condition = { status = 0, currentHp = self:_maxHp(mon) }
+    mon.condition = { currentHp = self:_maxHp(mon), effects = {} }
     self:_store(index, mon)
   end
 end

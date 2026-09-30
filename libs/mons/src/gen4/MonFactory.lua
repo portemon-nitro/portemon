@@ -175,7 +175,7 @@ function MonFactory:createNormal(request)
     },
     pokerus = 0,
     mood = 0,
-    condition = { status = 0, currentHp = maxHp },
+    condition = { currentHp = maxHp, effects = {} },
     capsule = { id = 0, seals = {} },
     mail = {},
   }

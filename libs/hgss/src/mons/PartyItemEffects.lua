@@ -4,13 +4,13 @@
 -- through the owning services. Eligibility mirrors the source party-target
 -- checks (pret/pokeheartgold@0985e8718d src/use_item_on_mon.c
 -- CanUseItemOnPokemon, src/party_menu.c TransferHP): status cures need
--- their bits, revival needs zero HP, restoration needs injury but not
+-- their semantic condition records, revival needs zero HP, restoration needs injury but not
 -- fainting, power-point operations need a chosen occupied move, effort
 -- changes follow TryModEV order, and friendship-only reduction berries stay
 -- usable. Source mutation order (src/use_item_on_mon.c UseItemOnPokemon)
 -- applies status, health, power points, effort, then friendship/mood; a
 -- primary miss with an attempted effect consumes nothing and applies no
--- friendship. Timeout/toxic counter bits clear with poison; full-health
+-- friendship. The toxic record clears with poison; full-health
 -- single-point mons restore one point; power-point ups preserve spent
 -- points; effort vitamins cap at 100 per stat and 510 total; Shedinja
 -- ignores health-effort effects. Friendship adds the Luxury Ball and
@@ -22,16 +22,17 @@ local ItemErrors = require("libs.items.src.errors")
 ---@class PartyItemEffects
 local PartyItemEffects = {}
 
--- Persistent condition bits (include/constants/pokemon.h MON_STATUS_*):
--- sleep occupies the low three bits, poison and toxic share the cure, and
--- the toxic turn counter rides in bits 8..11.
-local STATUS_SLEEP_BITS = 0x7
-local STATUS_POISON = 0x8
-local STATUS_BURN = 0x10
-local STATUS_FREEZE = 0x20
-local STATUS_PARALYSIS = 0x40
-local STATUS_TOXIC = 0x80
-local STATUS_TOXIC_COUNTER = 0xF00
+-- Persistent condition keys cured by field medicine, in source icon
+-- order. Poison cures clear both the poisoned and toxic records, matching
+-- the source shared cure.
+local CURE_ORDER = { "sleep", "poison", "burn", "freeze", "paralysis" }
+local CURE_KEYS = {
+  sleep = { "sleep" },
+  poison = { "poison", "toxic" },
+  burn = { "burn" },
+  freeze = { "freeze" },
+  paralysis = { "paralysis" },
+}
 
 local EV_ORDER = { "hp", "attack", "defense", "speed", "specialAttack", "specialDefense" }
 local MAX_EV_SINGLE = 100
@@ -50,32 +51,33 @@ local function copyValue(value)
   return out
 end
 
----@param bits integer
----@param bit integer
+---@param effects table<integer, table<string, unknown>>
+---@param key string
 ---@return boolean
-local function hasBit(bits, bit)
-  return math.floor(bits / bit) % 2 == 1
+local function hasEffect(effects, key)
+  for _, effect in ipairs(effects) do
+    if type(effect) == "table" and effect.key == key then
+      return true
+    end
+  end
+  return false
 end
 
----@param bits integer
----@param mask integer
----@return integer
-local function clearBits(bits, mask)
-  local out = 0
-  local place = 1
-  local remaining = bits
-  local remainingMask = mask
-  while remaining > 0 or remainingMask > 0 do
-    local bit = remaining % 2
-    local masked = remainingMask % 2
-    if bit == 1 and masked == 0 then
-      out = out + place
-    end
-    remaining = math.floor(remaining / 2)
-    remainingMask = math.floor(remainingMask / 2)
-    place = place * 2
+---@param effects table<integer, table<string, unknown>>
+---@param keys string[]
+---@return table<integer, table<string, unknown>>
+local function withoutEffects(effects, keys)
+  local removed = {}
+  for _, key in ipairs(keys) do
+    removed[key] = true
   end
-  return out
+  local kept = {}
+  for _, effect in ipairs(effects) do
+    if type(effect) ~= "table" or removed[effect.key] == nil then
+      kept[#kept + 1] = effect
+    end
+  end
+  return kept
 end
 
 ---@param maxHp integer
@@ -205,15 +207,15 @@ end
 
 ---@param staged table<string, unknown>
 ---@param hpBefore integer
----@param statusBefore integer
----@return table<string, integer>
-local function slotFacts(staged, hpBefore, statusBefore)
+---@param effectsBefore table<integer, table<string, unknown>>
+---@return table<string, integer|table<integer, table<string, unknown>>>
+local function slotFacts(staged, hpBefore, effectsBefore)
   local condition = assert(staged.condition) --[[@as table<string, unknown>]]
   return {
     hpBefore = hpBefore,
     hpAfter = assert(condition.currentHp) --[[@as integer]],
-    statusBefore = statusBefore,
-    statusAfter = assert(condition.status) --[[@as integer]],
+    effectsBefore = effectsBefore,
+    effectsAfter = copyValue(assert(condition.effects)) --[[@as table<integer, table<string, unknown>>]],
   }
 end
 
@@ -289,33 +291,24 @@ end
 local function planMedicine(staged, partyUse, maxHp)
   local condition = assert(staged.condition) --[[@as table<string, unknown>]]
   local hp = assert(condition.currentHp) --[[@as integer]]
-  local status = assert(condition.status) --[[@as integer]]
+  local effects = assert(condition.effects) --[[@as table<integer, table<string, unknown>>]]
   local cures = assert(partyUse.cures) --[[@as table<string, boolean>]]
   local changed = false
-  if cures.sleep == true and status % 8 ~= 0 then
-    condition.status = clearBits(status, STATUS_SLEEP_BITS)
-    status = condition.status --[[@as integer]]
-    changed = true
-  end
-  if cures.poison == true and (hasBit(status, STATUS_POISON) or hasBit(status, STATUS_TOXIC)) then
-    condition.status = clearBits(status, STATUS_POISON + STATUS_TOXIC + STATUS_TOXIC_COUNTER)
-    status = condition.status --[[@as integer]]
-    changed = true
-  end
-  if cures.burn == true and hasBit(status, STATUS_BURN) then
-    condition.status = clearBits(status, STATUS_BURN)
-    status = condition.status --[[@as integer]]
-    changed = true
-  end
-  if cures.freeze == true and hasBit(status, STATUS_FREEZE) then
-    condition.status = clearBits(status, STATUS_FREEZE)
-    status = condition.status --[[@as integer]]
-    changed = true
-  end
-  if cures.paralysis == true and hasBit(status, STATUS_PARALYSIS) then
-    condition.status = clearBits(status, STATUS_PARALYSIS)
-    status = condition.status --[[@as integer]]
-    changed = true
+  for _, cure in ipairs(CURE_ORDER) do
+    local keys = CURE_KEYS[cure]
+    if cures[cure] == true then
+      local matched = false
+      for _, key in ipairs(keys) do
+        if hasEffect(effects, key) then
+          matched = true
+        end
+      end
+      if matched then
+        effects = withoutEffects(effects, keys)
+        condition.effects = effects
+        changed = true
+      end
+    end
   end
   local revive = partyUse.revive or "none"
   local restore = partyUse.restore
@@ -501,7 +494,7 @@ function PartyItemEffects.plan(mon, itemDefinition, moveSlot, context, derived)
   local condition = staged.condition
   assert(type(condition) == "table", "mon facts carry a condition record")
   local hpBefore = assert(condition.currentHp) --[[@as integer]]
-  local statusBefore = assert(condition.status) --[[@as integer]]
+  local effectsBefore = copyValue(assert(condition.effects)) --[[@as table<integer, table<string, unknown>>]]
   local catalog = assert(context.catalog) --[[@as table<string, unknown>]]
   assert(type(catalog) == "table", "effect planning needs a catalog in context")
   local location = context.location
@@ -515,7 +508,7 @@ function PartyItemEffects.plan(mon, itemDefinition, moveSlot, context, derived)
       kind = "ready",
       updates = staged,
       feedback = {
-        slots = { slotFacts(staged, hpBefore, statusBefore) },
+        slots = { slotFacts(staged, hpBefore, effectsBefore) },
         textKey = "revived",
         bindings = {},
       },
@@ -542,7 +535,7 @@ function PartyItemEffects.plan(mon, itemDefinition, moveSlot, context, derived)
       kind = "ready",
       updates = staged,
       feedback = {
-        slots = { slotFacts(staged, hpBefore, statusBefore) },
+        slots = { slotFacts(staged, hpBefore, effectsBefore) },
         textKey = textKey,
         bindings = bindings,
       },
@@ -567,7 +560,7 @@ function PartyItemEffects.plan(mon, itemDefinition, moveSlot, context, derived)
       kind = "ready",
       updates = staged,
       feedback = {
-        slots = { slotFacts(staged, hpBefore, statusBefore) },
+        slots = { slotFacts(staged, hpBefore, effectsBefore) },
         textKey = textKey,
         bindings = bindings,
       },
@@ -580,7 +573,7 @@ function PartyItemEffects.plan(mon, itemDefinition, moveSlot, context, derived)
       kind = "ready",
       updates = staged,
       feedback = {
-        slots = { slotFacts(staged, hpBefore, statusBefore) },
+        slots = { slotFacts(staged, hpBefore, effectsBefore) },
         textKey = "ev_changed",
         bindings = {},
       },
@@ -593,7 +586,7 @@ function PartyItemEffects.plan(mon, itemDefinition, moveSlot, context, derived)
       kind = "ready",
       updates = staged,
       feedback = {
-        slots = { slotFacts(staged, hpBefore, statusBefore) },
+        slots = { slotFacts(staged, hpBefore, effectsBefore) },
         textKey = "friendship_changed",
         bindings = {},
       },
@@ -656,14 +649,14 @@ function PartyItemEffects.planTransfer(donor, recipient, donorDerived, recipient
         {
           hpBefore = donorHp,
           hpAfter = donorHp - amount,
-          statusBefore = donorCondition.status,
-          statusAfter = donorCondition.status,
+          effectsBefore = copyValue(donorCondition.effects),
+          effectsAfter = copyValue(donorCondition.effects),
         },
         {
           hpBefore = recipientHp,
           hpAfter = recipientHp + received,
-          statusBefore = recipientCondition.status,
-          statusAfter = recipientCondition.status,
+          effectsBefore = copyValue(recipientCondition.effects),
+          effectsAfter = copyValue(recipientCondition.effects),
         },
       },
       textKey = "hp_transfer",

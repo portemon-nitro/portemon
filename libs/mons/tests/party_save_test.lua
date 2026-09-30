@@ -1,6 +1,6 @@
 -- Ordered parties and the persisted bucket: six dense zero-based slots
 -- with explicit full handling, revision tracking, alive-lead selection,
--- canonical snapshots, and fingerprint-gated save round trips.
+-- canonical snapshots, and reference-based save round trips.
 
 local Assert = require("tests.support.Assert")
 local Errors = require("libs.errors.src.Errors")
@@ -151,7 +151,7 @@ function T.save_bucket_round_trips_under_catalog_fingerprint()
   Assert.deepEqual(rngCapture, { state = 0x05856380, calls = 8 })
 
   local bucket = MonsSave.capture(party:capture(), rngCapture, fingerprint)
-  Assert.equal(bucket.schema, "g4-mons-save-v1")
+  Assert.equal(bucket.schema, "g4-mons-save-v2")
   Assert.equal(bucket.catalogFingerprint, fingerprint)
   Assert.deepEqual(bucket.rng, rngCapture)
   Assert.deepEqual(bucket.party, party:capture())
@@ -169,7 +169,9 @@ function T.save_bucket_round_trips_under_catalog_fingerprint()
   -- The restored generator continues the exact sequence.
   Assert.equal(restored.rng:nextU16(), args.rng:nextU16())
 
-  -- A bucket written against different generated content is rejected.
+  -- A bucket written against different generated content restores when
+  -- every referenced entry still resolves: unrelated additions never
+  -- reject, and every independent value survives the catalog edit.
   local otherRoot = CatalogFixture.buildAssetRoot()
   otherRoot.species.BAYLEEF = copy(otherRoot.species.CHIKORITA)
   otherRoot.species.BAYLEEF.nativeId = 153
@@ -178,9 +180,11 @@ function T.save_bucket_round_trips_under_catalog_fingerprint()
   local otherCatalog = OtherCatalog.new(otherRoot, CatalogFixture.makeItemCatalog())
   Assert.isTrue(otherCatalog:fingerprint() ~= fingerprint)
   local otherContext = CatalogFixture.domainContext(otherCatalog)
-  throwsCode("MONS_SAVE_FINGERPRINT_MISMATCH", function()
-    MonsSave.restore(bucket, otherContext)
-  end)
+  local relocated = MonsSave.restore(bucket, otherContext)
+  Assert.equal(relocated.party:count(), 2, "unrelated catalog additions keep the party")
+  Assert.deepEqual(relocated.party:get(1), second, "unrelated catalog additions keep every value")
+  Assert.deepEqual(relocated.rng:capture(), rngCapture, "unrelated catalog additions keep the generator")
+  Assert.isTrue(MonsSave.validate(bucket, otherContext), "reference resolution replaces the fingerprint gate")
 
   -- Malformed buckets fail with a structured save error.
   local missing = copy(bucket)

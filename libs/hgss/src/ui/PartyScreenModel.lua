@@ -67,7 +67,7 @@ local function projectSlot(service, slot0, isEligible)
   record.displayName = Mon.displayName(mon, catalog)
   record.level = derived.level
   record.gender = Personality.gender(species.genderRatio, mon.personality)
-  record.status = PartyScreenTheme.statusKey(mon.condition.status, mon.condition.currentHp)
+  record.status = PartyScreenTheme.statusKey(mon.condition)
   record.currentHp = mon.condition.currentHp
   record.maxHp = derived.maxHp
   record.hpFraction = mon.condition.currentHp / derived.maxHp

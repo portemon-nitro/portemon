@@ -178,7 +178,7 @@ function T.form_changes_preserve_every_leaf_mask_and_clamp_hp()
     injured.condition.currentHp = 1
     local hurt = HeldItemFormPolicy.apply(injured, flame, mons)
     Assert.equal(hurt.condition.currentHp, 1, "an injured mon keeps its HP: mask " .. mask)
-    Assert.equal(hurt.condition.status, injured.condition.status)
+    Assert.deepEqual(hurt.condition.effects, injured.condition.effects)
     local back = HeldItemFormPolicy.apply(updated, plain, mons)
     Assert.isTrue(back.condition.currentHp <= mons:derive(back).maxHp, "HP never exceeds the restored maximum")
   end
