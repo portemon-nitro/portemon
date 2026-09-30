@@ -30,6 +30,7 @@ local PartyScreenModel = require("libs.hgss.src.ui.PartyScreenModel")
 ---@field _preparationError string?
 ---@field _preparedKeys string?
 ---@field _preparationReleased boolean
+---@field _detailOverlay boolean the wrapper-owned host toggle for the one-display detail overlay; never persisted, never native state
 ---@field _controller PartyScreenController
 ---@field _session ApplicationPresentation the per-open presentation session
 ---@field _signature string? the last resolved measurement signature
@@ -145,6 +146,7 @@ function PartyScreenState.new(opts)
     _preparationError = nil,
     _preparedKeys = nil,
     _preparationReleased = false,
+    _detailOverlay = false,
     _disposed = false,
   }, PartyScreenState)
   local function refreshModel()
@@ -238,9 +240,15 @@ function PartyScreenState:_layout()
   })
 end
 
----@return table<string, unknown> the controller snapshot for resolvers and renderers
+---@return table<string, unknown> the controller snapshot plus the wrapper-owned host overlay flag for resolvers and renderers
 function PartyScreenState:_view()
-  return self._controller:status()
+  ---@type table<string, unknown>
+  local view = {}
+  for key, value in pairs(self._controller:status()) do
+    view[key] = value
+  end
+  view.detailOverlay = self._detailOverlay == true
+  return view
 end
 
 -- The canonical logical content the controller hits against: the current
@@ -249,6 +257,33 @@ end
 function PartyScreenState:resolveLayout()
   local plan = self._session:plan()
   return assert(plan.content, "the party plan carries its canonical content")
+end
+
+-- The published plan is the native-like one-display shape exactly when
+-- it carries only the interaction pane, optionally followed by the
+-- noninteractive host overlay: content-only, or content plus overlay.
+-- Any detail pane marks a paired composition, and any other pane
+-- identity marks a custom override; neither is a toggle target.
+---@param plan table<string, unknown>
+---@return boolean
+local function isNativeLikePlan(plan)
+  local panes = plan.panes
+  if type(panes) ~= "table" then
+    return false
+  end
+  if #panes == 1 then
+    local only = panes[1]
+    return only.id == "content" and only.interactive == true
+  end
+  if #panes == 2 then
+    local first = panes[1]
+    local second = panes[2]
+    return first.id == "content"
+      and first.interactive == true
+      and second.id == "overlay"
+      and second.interactive == false
+  end
+  return false
 end
 
 -- One fixed tick: resolve, cancel stale presses across measurement
@@ -299,7 +334,29 @@ function PartyScreenState:updateFixed(uiInput)
     self._signature = signature
   end
   session:resolve(measurement, self:_view())
-  local mapped = session:mapInput(assert(uiInput, "the party input must be an event list"), self:_view())
+  local raw = assert(uiInput, "the party input must be an event list")
+  local remaining = raw
+  if isNativeLikePlan(session:plan()) then
+    -- The host toggle consumes its own events in order: each menu press
+    -- flips host visibility only and never reaches the native controller,
+    -- while every other event keeps its order in the forwarded batch.
+    local kept = {}
+    local toggled = false
+    for _, event in ipairs(raw) do
+      assert(type(event) == "table" and type(event.type) == "string", "party events need a type")
+      if event.type == "menu" then
+        self._detailOverlay = not self._detailOverlay
+        toggled = true
+      else
+        kept[#kept + 1] = event
+      end
+    end
+    if toggled then
+      remaining = kept
+      session:resolve(measurement, self:_view())
+    end
+  end
+  local mapped = session:mapInput(remaining, self:_view())
   self._controller:updateFixed(mapped)
   session:resolve(measurement, self:_view())
 end

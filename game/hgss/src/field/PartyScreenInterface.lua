@@ -2,8 +2,9 @@
 -- and input callbacks. DualDisplay pairs detail on the world surface with
 -- interaction on auxiliary; wide pairs detail left of interaction and
 -- tall stacks detail above interaction, sharing one integer scale with no
--- synthetic gap; nativeLike shows the single interaction pane with a
--- source-framed detail overlay behind an explicit info affordance. Pairs
+-- synthetic gap; nativeLike shows the single interaction pane, and a
+-- wrapper-owned host toggle appends the source-framed detail overlay
+-- without touching native content. Pairs
 -- that cannot fit 1x fall back to the effective nativeLike entry without
 -- changing the measured configuration. The content is the canonical
 -- manifest-backed native pane; input passes visible logical points to
@@ -106,9 +107,9 @@ function PartyScreenInterface.defaults(manifest)
   -- Fullscreen party for the single-surface nativeLike case: one canonical
   -- interactive pane over the owned target region, never cropped. A target
   -- the pane genuinely covers stays unframed; an underfilled target refits
-  -- as a complete decorated box with zero crop. Below an integral fit, an
-  -- explicit info affordance in the content toggles the source-framed
-  -- detail overlay.
+  -- as a complete decorated box with zero crop. The wrapper-owned host
+  -- toggle appends the source-framed detail overlay at the same placement;
+  -- native content carries no host target.
   ---@param context ApplicationLayout.Context
   ---@param view table<string, unknown>
   ---@return ApplicationPlan
@@ -119,7 +120,7 @@ function PartyScreenInterface.defaults(manifest)
       return inactivePlan()
     end
     local panes = { { id = CONTENT_NATIVE.id, placement = placement, interactive = true } }
-    if view.infoOverlay == true then
+    if view.detailOverlay == true then
       panes[#panes + 1] = { id = "overlay", placement = placement, interactive = false }
     end
     return partyPlan(panes, geometry.frames or {}, partyContent(view))

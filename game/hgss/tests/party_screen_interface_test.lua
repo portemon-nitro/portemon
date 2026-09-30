@@ -340,20 +340,73 @@ function T.unknown_override_cases_and_non_functions_fail()
   end, "non-function overrides fail at composition")
 end
 
-function T.info_affordance_appends_the_framed_detail_overlay()
+function T.host_detail_overlay_appends_the_framed_overlay()
   local interfaces = partyInterface()
-  local plan = interfaces.nativeLike(
-    contextFor(singleDisplay(640, 480), "nativeLike", interfaces),
-    { cancellable = true, cursorNode = 0, infoOverlay = true }
-  )
-  Assert.equal(#plan.panes, 2, "the affordance appends the detail overlay")
-  Assert.equal(plan.panes[2].id, "overlay", "the overlay carries detail")
-  Assert.isFalse(plan.panes[2].interactive, "the overlay takes no pointer input")
   local plain = interfaces.nativeLike(
     contextFor(singleDisplay(640, 480), "nativeLike", interfaces),
     { cancellable = true, cursorNode = 0 }
   )
-  Assert.equal(#plain.panes, 1, "no affordance means no overlay")
+  Assert.equal(#plain.panes, 1, "no host overlay flag means no overlay")
+  local plan = interfaces.nativeLike(
+    contextFor(singleDisplay(640, 480), "nativeLike", interfaces),
+    { cancellable = true, cursorNode = 0, detailOverlay = true }
+  )
+  Assert.equal(#plan.panes, 2, "the host flag appends the detail overlay")
+  Assert.equal(plan.panes[1].id, "content", "the interaction pane keeps its identity")
+  Assert.isTrue(plan.panes[1].interactive, "the interaction pane keeps pointer input")
+  Assert.equal(plan.panes[2].id, "overlay", "the overlay carries detail")
+  Assert.isFalse(plan.panes[2].interactive, "the overlay takes no pointer input")
+  Assert.deepEqual(
+    plan.panes[2].placement.frame,
+    plain.panes[1].placement.frame,
+    "the overlay shares the content placement"
+  )
+  Assert.equal(
+    plan.panes[2].placement.pixelScale,
+    plain.panes[1].placement.pixelScale,
+    "the overlay keeps the content magnification"
+  )
+  Assert.deepEqual(
+    plan.content.slotRects,
+    plain.content.slotRects,
+    "the overlay changes no native panel geometry"
+  )
+  Assert.deepEqual(
+    plan.content.cancelRect,
+    plain.content.cancelRect,
+    "the overlay changes no native cancel target"
+  )
+  local off = interfaces.nativeLike(
+    contextFor(singleDisplay(640, 480), "nativeLike", interfaces),
+    { cancellable = true, cursorNode = 0, detailOverlay = false }
+  )
+  Assert.equal(#off.panes, 1, "an explicit off flag keeps the single content pane")
+end
+
+function T.overlay_plans_map_pointer_input_through_content_unchanged()
+  local plainView = { cancellable = true, cursorNode = 0 }
+  local plainSession = partySession()
+  plainSession:resolve(singleDisplay(640, 480), plainView)
+  local plainPlan = plainSession:plan()
+  local frame = assert(
+    plainPlan.panes[1].placement.frame,
+    "the content pane carries its host frame"
+  )
+  local events = {
+    { type = "pointer_down", pointerId = "touch:overlay-compare", x = frame.x + 64, y = frame.y + 24 },
+    { type = "pointer_up", pointerId = "touch:overlay-compare", x = frame.x + 64, y = frame.y + 24 },
+  }
+  local plainMapped = plainSession:mapInput(events, plainView)
+  local overlayView = { cancellable = true, cursorNode = 0, detailOverlay = true }
+  local overlaySession = partySession()
+  overlaySession:resolve(singleDisplay(640, 480), overlayView)
+  Assert.equal(#overlaySession:plan().panes, 2, "the overlay plan under test is actually shown")
+  local overlayMapped = overlaySession:mapInput(events, overlayView)
+  Assert.deepEqual(
+    overlayMapped,
+    plainMapped,
+    "the visible overlay changes no pointer mapping"
+  )
 end
 
 function T.closed_snapshots_resolve_a_disposable_plan()
