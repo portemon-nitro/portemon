@@ -2,9 +2,11 @@
 -- rectangles are the six staggered source panels; directional neighbors
 -- compile from the default dpad boxes (indices 0..5 address slots, 7
 -- addresses cancel, 6 is unreachable); hit targets derive from the
--- default touch rects with right 0 encoding the 256 pane edge; context
--- menu rows index 2..8 entries inside the context window. The shared
--- default column order stays available to nonvisual script selection.
+-- default touch rects with right 0 encoding the 256 pane edge. Context
+-- menus resolve to one generated source-shaped record per entry through
+-- the menu class (top-level 2..8, subcontext 2..5) and count; prompt
+-- placement rides the generated yes/no anchor. The shared default column
+-- order stays available to nonvisual script selection.
 -- Pure module: no love, no I/O.
 
 local LayoutGeometry = require("libs.ui.src.LayoutGeometry")
@@ -19,14 +21,13 @@ local PartyScreenLayout = {}
 ---@field cancelRect ScreenTopology.Rectangle?
 ---@field neighbors table<integer|string, table<string, integer|string>>
 ---@field hitTest fun(x: number, y: number): PartyScreenLayout.Hit?
----@field contextWindow ScreenTopology.Rectangle
----@field menuRows fun(count: integer): ScreenTopology.Rectangle[]
----@field nameRect ScreenTopology.Rectangle
----@field infoRect ScreenTopology.Rectangle
+---@field menuLayout fun(kind: "topLevel"|"subcontext", count: integer): table[]
+---@field menuHit fun(kind: "topLevel"|"subcontext", count: integer, x: number, y: number): { index: integer }?
+---@field promptAnchor { x: integer, y: integer }
 ---@field compact boolean always true: native geometry never reflows
 
 ---@class PartyScreenLayout.Hit
----@field kind "slot"|"action"|"cancel"|"info"
+---@field kind "slot"|"action"|"cancel"
 ---@field slot integer?
 ---@field action string?
 
@@ -36,16 +37,10 @@ local function copyRect(rect)
   return { x = rect.x, y = rect.y, width = rect.width, height = rect.height }
 end
 
--- The native pane and footer placement. Cards end at y=152; the footer
--- band carries the selected name at x=4 (172 wide) and the info
--- affordance at x=184, clear of the cancel touch region at x=200.
+-- The native pane extent. Context geometry arrives entirely through the
+-- generated menu records; no synthetic footer targets exist.
 local NATIVE_WIDTH = NativeDisplay.WIDTH
 local NATIVE_HEIGHT = NativeDisplay.HEIGHT
-local NAME_RECT = { x = 4, y = 172, width = 172, height = 16 }
-local INFO_RECT = { x = 184, y = 172, width = 8, height = 16 }
-local MENU_ROW_HEIGHT = 8
-local MENU_MIN_COUNT = 2
-local MENU_MAX_COUNT = 8
 local PANE_EDGE = 256
 
 ---@param manifest table<string, unknown>
@@ -168,42 +163,32 @@ local function manifestTouch(manifest)
 end
 
 ---@param manifest table<string, unknown>
----@return ScreenTopology.Rectangle the context menu window
-local function manifestContextWindow(manifest)
-  local windows = assert(manifest.windows, "the party manifest carries windows")
-  assert(type(windows) == "table", "the party manifest carries windows")
-  local context = assert(windows.context, "the party manifest carries the context window")
-  assert(type(context) == "table", "the party manifest carries the context window")
-  return {
-    x = assert(context.x, "the context window carries x"),
-    y = assert(context.y, "the context window carries y"),
-    width = assert(context.width, "the context window carries width"),
-    height = assert(context.height, "the context window carries height"),
-  }
+---@param kind "topLevel"|"subcontext"
+---@param count integer
+---@return table[] one generated record per menu entry
+local function manifestMenuEntries(manifest, kind, count)
+  assert(kind == "topLevel" or kind == "subcontext", "party menus stay in the top-level/subcontext set")
+  assert(type(count) == "number" and count % 1 == 0, "party menu lookups count their entries, got " .. tostring(count))
+  local contextMenu = assert(manifest.contextMenu, "the party manifest carries context menus")
+  assert(type(contextMenu) == "table", "the party manifest carries context menus")
+  local section = assert(contextMenu[kind], "the party manifest carries the " .. kind .. " menu section")
+  assert(type(section) == "table", "the party manifest carries the " .. kind .. " menu section")
+  local entries = section[count]
+  assert(type(entries) == "table", "unsupported " .. kind .. " menu count " .. tostring(count))
+  return entries
 end
 
----@param window ScreenTopology.Rectangle the context menu window
----@param count integer entries in 2..8
----@return ScreenTopology.Rectangle[]
-local function menuRows(window, count)
-  assert(
-    type(count) == "number" and count % 1 == 0 and count >= MENU_MIN_COUNT and count <= MENU_MAX_COUNT,
-    "context menus carry 2..8 entries, got " .. tostring(count)
-  )
-  local rows = {}
-  for index = 1, count do
-    rows[index] = {
-      x = window.x,
-      y = window.y + (index - 1) * MENU_ROW_HEIGHT,
-      width = window.width,
-      height = MENU_ROW_HEIGHT,
-    }
-    assert(
-      rows[index].y + rows[index].height <= window.y + window.height,
-      "context menu row " .. index .. " stays inside its window"
-    )
-  end
-  return rows
+---@param manifest table<string, unknown>
+---@return { x: integer, y: integer } the generated yes/no prompt anchor
+local function manifestPromptAnchor(manifest)
+  local windows = assert(manifest.windows, "the party manifest carries windows")
+  assert(type(windows) == "table", "the party manifest carries windows")
+  local prompt = assert(windows.prompt, "the party manifest carries the prompt anchor")
+  assert(type(prompt) == "table", "the party manifest carries the prompt anchor")
+  return {
+    x = assert(prompt.x, "the prompt anchor carries x"),
+    y = assert(prompt.y, "the prompt anchor carries y"),
+  }
 end
 
 ---@class PartyScreenLayout.Spec
@@ -230,8 +215,6 @@ function PartyScreenLayout.resolve(spec)
   if cancellable then
     cancelRect = touchRect(assert(touch[7], "the default touch variant carries cancel"))
   end
-  local window = manifestContextWindow(manifest)
-
   ---@param x number
   ---@param y number
   ---@return PartyScreenLayout.Hit?
@@ -245,16 +228,31 @@ function PartyScreenLayout.resolve(spec)
     if cancelRect ~= nil and LayoutGeometry.containsPoint(cancelRect, x, y) then
       return { kind = "cancel" }
     end
-    if LayoutGeometry.containsPoint(INFO_RECT, x, y) then
-      return { kind = "info" }
-    end
     return nil
   end
 
+  ---@param kind "topLevel"|"subcontext"
   ---@param count integer
-  ---@return ScreenTopology.Rectangle[]
-  local function windowMenuRows(count)
-    return menuRows(window, count)
+  ---@return table[] one generated record per menu entry
+  local function menuLayout(kind, count)
+    return manifestMenuEntries(manifest, kind, count)
+  end
+
+  ---@param kind "topLevel"|"subcontext"
+  ---@param count integer
+  ---@param x number
+  ---@param y number
+  ---@return { index: integer }?
+  local function menuHit(kind, count, x, y)
+    assert(type(x) == "number" and type(y) == "number", "menu hit testing needs coordinates")
+    local entries = manifestMenuEntries(manifest, kind, count)
+    for index, entry in ipairs(entries) do
+      local target = assert(entry.touch, "menu entries carry touch targets")
+      if LayoutGeometry.containsPoint(touchRect(target), x, y) then
+        return { index = index }
+      end
+    end
+    return nil
   end
 
   return {
@@ -263,10 +261,9 @@ function PartyScreenLayout.resolve(spec)
     cancelRect = cancelRect ~= nil and copyRect(cancelRect) or nil,
     neighbors = neighbors,
     hitTest = hitTest,
-    contextWindow = window,
-    menuRows = windowMenuRows,
-    nameRect = copyRect(NAME_RECT),
-    infoRect = copyRect(INFO_RECT),
+    menuLayout = menuLayout,
+    menuHit = menuHit,
+    promptAnchor = manifestPromptAnchor(manifest),
     compact = true,
   }
 end

@@ -292,7 +292,13 @@ local function choosePartyMenu(flow, kind)
     end
     Assert.notNil(index, "the party menu must offer " .. kind)
     if child.menuIndex == index then
-      return drive(flow, { { type = "confirm" } })
+      -- Menu activation rides the visual press cadence before its single
+      -- dispatch: settle the gate so callers read the dispatched state.
+      drive(flow, { { type = "confirm" } })
+      return driveUntil(flow, "the gated menu dispatch", 10, function(current)
+        local dispatched = flowChild(current)
+        return dispatched.menuPress == nil and (dispatched.menu ~= menu or dispatched.state ~= "context")
+      end)
     end
     local direction = child.menuIndex < index and "down" or "up"
     status = drive(flow, { { type = "navigate", direction = direction } })

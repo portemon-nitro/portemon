@@ -431,6 +431,12 @@ function T.tests.party_grid_static_frame_and_reflow_journey_preserves_semantics(
     -- The flow menu leads with summary: step down to switch first.
     pressKey(game, state, "s")
     confirm(game)
+    -- Menu activation rides the visual press cadence before its single
+    -- dispatch: two pressed ticks, two selected ticks, then dispatch.
+    game:step()
+    game:step()
+    game:step()
+    game:step()
     Assert.equal(partyView(game).state, "choose_swap", "confirming switch starts the destination pick")
     pressKey(game, state, "d")
     Assert.equal(partyView(game).cursorNode, 1, "right selects the switch destination")

@@ -229,4 +229,99 @@ function T.unset_facts_default_to_empty_values()
   Assert.equal(lead.shinyLeaves, 0)
 end
 
+-- The party view publishes a presentation-only gender symbol: eggs and
+-- genderless mons never carry one, unnicknamed Nidoran suppress theirs
+-- while nicknamed Nidoran and ordinary mons use the derived gender.
+-- Nidoran species ride a wrapped catalog/service pair because the shared
+-- catalog fixture carries no Nidoran entries; the mon records themselves
+-- keep the semantic Nidoran species keys the view rule matches on.
+local function nidoranView(speciesKey, speciesName, genderRatio, nickname)
+  local _, service = openService()
+  give(service, "CHIKORITA")
+  local baseCatalog = service:catalog()
+  local catalog = {
+    species = function(_, key)
+      if key == speciesKey then
+        return { name = speciesName, genderRatio = genderRatio }
+      end
+      return baseCatalog:species(key)
+    end,
+    iconSelection = function(_, mon)
+      if mon.species == speciesKey then
+        return speciesKey .. "/f0"
+      end
+      return baseCatalog:iconSelection(mon)
+    end,
+    item = function(_, key)
+      return baseCatalog:item(key)
+    end,
+  }
+  local inner = service:partyMon(0)
+  local derived = service:partyMonDerived(0)
+  local viewService = {
+    partyCount = function()
+      return 1
+    end,
+    partyRevision = function()
+      return service:partyRevision()
+    end,
+    partyMon = function()
+      local mon = {}
+      for key, value in pairs(inner) do
+        mon[key] = value
+      end
+      mon.species = speciesKey
+      mon.nickname = nickname
+      mon.isEgg = false
+      return mon
+    end,
+    partyMonDerived = function()
+      return derived
+    end,
+    catalog = function()
+      return catalog
+    end,
+  }
+  return PartyScreenModel.build(viewService).slots[1]
+end
+
+function T.eggs_and_genderless_mons_carry_no_gender_symbol()
+  local _, service = openService()
+  give(service, "CHIKORITA")
+  store(service, 0, function(mon)
+    mon.isEgg = true
+  end)
+  give(service, "SHEDINJA")
+  local view = PartyScreenModel.build(service)
+  Assert.isNil(view.slots[1].genderSymbol, "eggs print no gender symbol")
+  Assert.isNil(view.slots[2].genderSymbol, "genderless mons print no gender symbol")
+end
+
+function T.unnicknamed_nidoran_suppress_their_gender_symbol()
+  local female = nidoranView("NIDORAN_F", "NIDORAN F", 254, nil)
+  Assert.isNil(female.genderSymbol, "the unnicknamed Nidoran female prints no symbol")
+  Assert.equal(female.displayName, "NIDORAN F", "suppression keeps the species display name")
+  local male = nidoranView("NIDORAN_M", "NIDORAN M", 0, nil)
+  Assert.isNil(male.genderSymbol, "the unnicknamed Nidoran male prints no symbol")
+  Assert.equal(male.displayName, "NIDORAN M", "suppression keeps the species display name")
+end
+
+function T.nicknamed_nidoran_restore_the_ordinary_gender_symbol()
+  local female = nidoranView("NIDORAN_F", "NIDORAN F", 254, "QUEEN")
+  Assert.equal(female.genderSymbol, "female", "a nickname restores the derived female symbol")
+  local male = nidoranView("NIDORAN_M", "NIDORAN M", 0, "KING")
+  Assert.equal(male.genderSymbol, "male", "a nickname restores the derived male symbol")
+end
+
+function T.ordinary_mons_project_their_derived_gender_symbol()
+  local _, service = openService()
+  give(service, "CHIKORITA")
+  local lead = PartyScreenModel.build(service).slots[1]
+  Assert.isTrue(
+    lead.genderSymbol == "male" or lead.genderSymbol == "female",
+    "ordinary mons print their derived symbol, got " .. tostring(lead.genderSymbol)
+  )
+  Assert.equal(lead.genderSymbol, lead.gender, "the symbol follows the derived gender")
+end
+
 return { tests = T }

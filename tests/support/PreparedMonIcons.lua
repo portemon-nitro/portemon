@@ -30,7 +30,10 @@ function PreparedMonIcons.iconCache()
         y = 0,
         width = 32,
         height = 32,
-        frames = { { x = 0, y = 0, width = 32, height = 32, duration = 1 } },
+        frames = {
+          { x = 0, y = 0, width = 32, height = 32, duration = 1 },
+          { x = 32, y = 0, width = 32, height = 32, duration = 1 },
+        },
         pageId = 0,
       },
     },

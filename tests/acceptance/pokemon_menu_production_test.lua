@@ -201,15 +201,42 @@ end
 -- row is read live so confirmation lands on the intended entry.
 local function activateMenuRow(flow, match, what)
   flow:updateFixed({ { type = "confirm" } })
-  for _ = 1, 30 do
+  -- Source menus place later entries laterally: a down-only walk cycles
+  -- the first column forever, so explored rows rotate an escape direction
+  -- whenever focus revisits a row.
+  local seen = {}
+  local escapes = { "right", "left", "up" }
+  local escapeNext = 1
+  for _ = 1, 40 do
     local child = childView(flow)
     local menu = assert(child.menu, "slot confirm must open the action menu")
-    local current = menu[child.menuIndex]
+    local index = assert(child.menuIndex, "the open menu carries focus")
+    local current = menu[index]
     if current ~= nil and match(current) then
       flow:updateFixed({ { type = "confirm" } })
-      return
+      -- Menu activation rides the visual press cadence before its single
+      -- dispatch: settle the gate so callers read the dispatched state.
+      -- A terminal handoff closes the flow instead of settling a child.
+      for _ = 1, 10 do
+        local status = flow:status()
+        if not status.open then
+          return
+        end
+        local settled = assert(status.child, "the party flow holds a live child")
+        if settled.menuPress == nil then
+          return
+        end
+        flow:updateFixed({})
+      end
+      error("the gated menu entry never dispatched " .. what, 0)
     end
-    flow:updateFixed({ { type = "navigate", direction = "down" } })
+    local direction = "down"
+    if seen[index] then
+      direction = escapes[escapeNext]
+      escapeNext = escapeNext % #escapes + 1
+    end
+    seen[index] = true
+    flow:updateFixed({ { type = "navigate", direction = direction } })
   end
   error("the action menu never offered " .. what, 0)
 end

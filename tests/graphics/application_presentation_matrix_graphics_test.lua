@@ -22,6 +22,7 @@ local MainMenuInterface = require("game.hgss.src.menu.MainMenuInterface")
 local MonCache = require("libs.assets.src.MonCache")
 local MonIconAssetProvider = require("libs.hgss.src.presentation.MonIconAssetProvider")
 local NamingInterface = require("game.hgss.src.newgame.NamingInterface")
+local PartyPresentationFixture = require("tests.support.PartyPresentationFixture")
 local PartyScreenInterface = require("game.hgss.src.field.PartyScreenInterface")
 local PartyScreenRenderer = require("libs.hgss.src.ui.PartyScreenRenderer")
 local PixelScale = require("libs.ui.src.PixelScale")
@@ -348,19 +349,27 @@ local function matrixPartyManifest()
   end
   return {
     panels = panels,
-    controls = { cancel = { anchor = { x = 232, y = 176 } } },
+    controls = {
+      cancel = {
+        anchor = { x = 232, y = 176 },
+        label = PartyPresentationFixture.manifest().controls.cancel.label,
+        textRect = { x = 200, y = 168, width = 48, height = 16 },
+        align = "center",
+      },
+    },
     detail = {
       iconAnchor = { x = 30, y = 200 },
       statusAnchor = { x = 50, y = 220 },
       nicknameTextOrigin = { x = 56, y = 192 },
       heldItemTextOrigin = { x = 138, y = 212 },
     },
-    text = {
-      templates = { chooseMon = { segments = { { kind = "text", value = "Choose a Pokémon." } } } },
-    },
+    text = PartyPresentationFixture.manifest().text,
     windows = {
       message = { x = 16, y = 168, width = 160, height = 16 },
       context = { x = 152, y = 120, width = 96, height = 64 },
+      browse = { x = 16, y = 168, width = 160, height = 16 },
+      action = { x = 8, y = 136, width = 176, height = 48 },
+      prompt = { x = 200, y = 80 },
     },
     navigation = {
       dpad = {
@@ -389,7 +398,25 @@ local function matrixPartyManifest()
         },
       },
     },
-    iconAnimations = { periods = { 1, 8, 12, 24, 40, 36 } },
+    iconAnimations = PartyPresentationFixture.manifest().iconAnimations,
+    contextMenu = {
+      topLevel = PartyPresentationFixture.manifest().contextMenu.topLevel,
+      subcontext = PartyPresentationFixture.manifest().contextMenu.subcontext,
+      textPalette = PartyPresentationFixture.manifest().contextMenu.textPalette,
+      fillPalette = PartyPresentationFixture.manifest().contextMenu.fillPalette,
+      frames = {
+        standard = {
+          raised = { image = "test/menu-standard-raised.png", width = 128, height = 32 },
+          selected = { image = "test/menu-standard-selected.png", width = 128, height = 32 },
+          pressed = { image = "test/menu-standard-pressed.png", width = 128, height = 32 },
+        },
+        cancel = {
+          raised = { image = "test/menu-cancel-raised.png", width = 56, height = 40 },
+          selected = { image = "test/menu-cancel-selected.png", width = 56, height = 40 },
+          pressed = { image = "test/menu-cancel-pressed.png", width = 56, height = 40 },
+        },
+      },
+    },
   }
 end
 
@@ -623,6 +650,12 @@ local function partyAssetCache()
   end
   stub("test/level.png", 16, 8, 230, 230, 230)
   stub("test/slash.png", 8, 8, 230, 230, 230)
+  stub("test/menu-standard-raised.png", 128, 32, 120, 110, 100)
+  stub("test/menu-standard-selected.png", 128, 32, 90, 80, 70)
+  stub("test/menu-standard-pressed.png", 128, 32, 60, 60, 60)
+  stub("test/menu-cancel-raised.png", 56, 40, 120, 110, 100)
+  stub("test/menu-cancel-selected.png", 56, 40, 90, 80, 70)
+  stub("test/menu-cancel-pressed.png", 56, 40, 60, 60, 60)
   return cache
 end
 
@@ -697,9 +730,11 @@ function T.party_cards_stay_readable_across_densities(scope)
   manifest.visuals = visuals
   manifest.numberGlyphs = {
     advance = 8,
+    height = 8,
     digits = digits,
     level = { image = "test/level.png", width = 16, height = 8 },
     slash = { image = "test/slash.png", width = 8, height = 8 },
+    placement = PartyPresentationFixture.manifest().numberGlyphs.placement,
   }
   local renderer = PartyScreenRenderer.new({ graphics = lg, cacheFs = cacheFs, manifest = manifest, text = text })
   local function slots()
@@ -725,16 +760,23 @@ function T.party_cards_stay_readable_across_densities(scope)
     return list
   end
   local function presentation()
-    return {
+    local status = {
       open = true,
       mode = "view",
       action = "browsing",
+      state = "browse",
       cursorNode = 0,
       switchSource = nil,
       actionSelection = nil,
+      anim = { tick = 0, sequences = {}, sequenceTicks = {}, panelSlide = 0 },
       view = { revision = 1, slots = slots() },
       cancellable = true,
     }
+    for index = 1, 6 do
+      status.anim.sequences[index] = 1
+      status.anim.sequenceTicks[index] = 0
+    end
+    return status
   end
   local party = PartyScreenInterface.defaults(matrixPartyManifest())
   local view = { cancellable = true, cursorNode = 0 }

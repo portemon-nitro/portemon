@@ -6,6 +6,7 @@
 -- once preparation is ready.
 
 local Assert = require("tests.support.Assert")
+local PartyPresentationFixture = require("tests.support.PartyPresentationFixture")
 local PartyScreenState = require("game.hgss.src.field.PartyScreenState")
 local ScreenTopology = require("libs.hgss.src.ui.ScreenTopology")
 
@@ -93,6 +94,7 @@ local function sourceManifest()
     windows = {
       message = { x = 16, y = 168, width = 160, height = 16 },
       context = { x = 152, y = 120, width = 96, height = 64 },
+      prompt = { x = 200, y = 80 },
     },
     navigation = {
       dpad = {
@@ -120,6 +122,10 @@ local function sourceManifest()
           touch(152, 192, 200, 0),
         },
       },
+    },
+    contextMenu = {
+      topLevel = PartyPresentationFixture.manifest().contextMenu.topLevel,
+      subcontext = PartyPresentationFixture.manifest().contextMenu.subcontext,
     },
   }
 end

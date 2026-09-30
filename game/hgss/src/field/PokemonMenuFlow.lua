@@ -99,11 +99,36 @@ local function partyLabels(manifest)
   return labels
 end
 
+-- The source party-menu move set: only these learned-move identities
+-- enter the Pokemon menu, in move-slot order. Milk Drink and Softboiled
+-- ride the existing HP-transfer owner; the other fourteen ride the
+-- field-move path. Private to this flow: field-check and runtime lists
+-- intentionally cover a different set (Defog, Escape Rope) and omit the
+-- HP-transfer moves, so they never serve as menu membership here.
+local PARTY_FIELD_MOVES = {
+  CUT = "field_move",
+  FLY = "field_move",
+  SURF = "field_move",
+  STRENGTH = "field_move",
+  ROCK_SMASH = "field_move",
+  WATERFALL = "field_move",
+  ROCK_CLIMB = "field_move",
+  WHIRLPOOL = "field_move",
+  FLASH = "field_move",
+  TELEPORT = "field_move",
+  DIG = "field_move",
+  SWEET_SCENT = "field_move",
+  CHATTER = "field_move",
+  HEADBUTT = "field_move",
+  MILK_DRINK = "transfer_hp",
+  SOFTBOILED = "transfer_hp",
+}
+
 -- The flow-owned party action policy: source menu order (summary, switch,
--- item-or-mail, quit, then known moves in move-slot order; eggs keep
--- summary, switch, quit), take drives through confirmation, incompatible
--- egg targets explain instead of committing. Private to this leaf; the
--- standalone production and script policies keep their own owners.
+-- item-or-mail, quit, then admitted source field moves in move-slot order;
+-- eggs keep summary, switch, quit), take drives through confirmation,
+-- incompatible egg targets explain instead of committing. Private to this
+-- leaf; the standalone production and script policies keep their own owners.
 ---@param manifest table<string, unknown>?
 ---@return table<string, unknown>
 local function flowPartyPolicy(manifest)
@@ -136,7 +161,10 @@ local function flowPartyPolicy(manifest)
     entries[#entries + 1] = { kind = "quit", label = text("quit", "QUIT") }
     for moveSlot, move in ipairs(facts.moves or {}) do
       assert(type(move) == "table", "move rows arrive as records")
-      entries[#entries + 1] = { kind = "field_move", label = move.key, move = move.key, moveSlot = moveSlot - 1 }
+      local admission = PARTY_FIELD_MOVES[assert(move.key, "move rows carry semantic keys")]
+      if admission ~= nil then
+        entries[#entries + 1] = { kind = admission, label = move.key, move = move.key, moveSlot = moveSlot - 1 }
+      end
     end
     return entries
   end
@@ -738,6 +766,18 @@ function PokemonMenuFlow:_routeBrowseIntent(intent)
       kind = "take",
       slot = assert(intent.slot, "take intents name their slot"),
       partyRevision = assert(intent.partyRevision, "take intents carry the party revision"),
+      bagRevision = self._bag:revision(),
+    })
+    self:_completeParty({ kind = outcome.kind })
+    return
+  end
+  if intent.kind == "transfer_hp" then
+    local outcome = self._partyActions:commit({
+      kind = "transfer_hp",
+      slot = assert(intent.slot, "transfer intents name their donor slot"),
+      targetSlot = assert(intent.targetSlot, "transfer intents name their target slot"),
+      moveSlot = intent.moveSlot,
+      partyRevision = assert(intent.partyRevision, "transfer intents carry the party revision"),
       bagRevision = self._bag:revision(),
     })
     self:_completeParty({ kind = outcome.kind })

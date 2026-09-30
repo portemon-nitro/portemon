@@ -5,6 +5,7 @@
 -- are one-shot semantic records with no source sentinels.
 
 local Assert = require("tests.support.Assert")
+local PartyPresentationFixture = require("tests.support.PartyPresentationFixture")
 local PartyScreenController = require("libs.hgss.src.ui.PartyScreenController")
 local PartyScreenLayout = require("libs.hgss.src.ui.PartyScreenLayout")
 
@@ -40,19 +41,15 @@ local NEIGHBORS = {
 }
 
 local function fakeLayout(hitTarget)
+  local generated = PartyScreenLayout.resolve({ manifest = PartyPresentationFixture.manifest(), cancellable = true })
   return {
     neighbors = NEIGHBORS,
     hitTest = function(_, _)
       return hitTarget
     end,
-    contextWindow = { x = 152, y = 120, width = 96, height = 64 },
-    menuRows = function(count)
-      local rows = {}
-      for index = 1, count do
-        rows[index] = { x = 152, y = 120 + (index - 1) * 8, width = 96, height = 8 }
-      end
-      return rows
-    end,
+    menuLayout = generated.menuLayout,
+    menuHit = generated.menuHit,
+    promptAnchor = generated.promptAnchor,
   }
 end
 
@@ -82,7 +79,10 @@ local function nativePartyLayout()
   return PartyScreenLayout.resolve({
     manifest = {
       panels = panels,
-      windows = { context = { x = 152, y = 120, width = 96, height = 64 } },
+      windows = {
+        context = { x = 152, y = 120, width = 96, height = 64 },
+        prompt = { x = 200, y = 80 },
+      },
       navigation = {
         dpad = {
           default = {
@@ -364,8 +364,6 @@ end
 -- controller, which knows only view/select modes, immediate swaps, and
 -- two hardcoded actions.
 
-local CONTEXT_WINDOW = { x = 152, y = 120, width = 96, height = 64 }
-
 local function nativeSlotFacts(slot0, overrides)
   local facts = {
     slot = slot0,
@@ -417,20 +415,15 @@ local function nativeNeighbors()
 end
 
 local function nativeLayout(hitTarget, menuCount)
+  local generated = PartyScreenLayout.resolve({ manifest = PartyPresentationFixture.manifest(), cancellable = true })
   return {
     neighbors = nativeNeighbors(),
     hitTest = function(_, _)
       return hitTarget
     end,
-    contextWindow = CONTEXT_WINDOW,
-    menuRows = function(count)
-      local rows = {}
-      for index = 1, count do
-        rows[index] =
-          { x = CONTEXT_WINDOW.x, y = CONTEXT_WINDOW.y + (index - 1) * 8, width = CONTEXT_WINDOW.width, height = 8 }
-      end
-      return rows
-    end,
+    menuLayout = generated.menuLayout,
+    menuHit = generated.menuHit,
+    promptAnchor = generated.promptAnchor,
     _menuCount = menuCount,
   }
 end
@@ -515,7 +508,7 @@ local function nativeController(opts)
       end,
     },
     layout = function()
-      return nativeLayout(opts.hitTarget)
+      return opts.layout or nativeLayout(opts.hitTarget)
     end,
     swap = {
       partyRevision = function()
@@ -545,6 +538,14 @@ end
 
 local function nativeStatus(controller)
   return controller:status()
+end
+
+-- Advances one armed menu press through its visual cadence to the single
+-- semantic dispatch: two pressed ticks, two selected ticks, then dispatch.
+local function pressThrough(controller)
+  for _ = 1, 4 do
+    controller:updateFixed({})
+  end
 end
 
 function T.browse_confirm_on_occupied_slot_opens_the_context_menu()
@@ -610,6 +611,7 @@ function T.quit_entry_closes_the_screen()
     controller:updateFixed({ { type = "navigate", direction = "down" } })
   end
   controller:updateFixed({ { type = "confirm" } })
+  pressThrough(controller)
   Assert.deepEqual(controller:takeResult(), { kind = "closed" })
 end
 
@@ -618,6 +620,7 @@ function T.switch_entry_enters_swap_destination_pick()
   controller:updateFixed({ { type = "confirm" } })
   controller:updateFixed({ { type = "navigate", direction = "down" } })
   controller:updateFixed({ { type = "confirm" } })
+  pressThrough(controller)
   Assert.equal(nativeStatus(controller).state, "choose_swap", "confirming switch arms the destination pick")
   Assert.isNil(controller:takeResult())
   Assert.isNil(controller:takeIntent())
@@ -628,6 +631,8 @@ function T.swap_drives_35_stages_and_commits_once_at_the_end()
   controller:updateFixed({ { type = "confirm" } })
   controller:updateFixed({ { type = "navigate", direction = "down" } })
   controller:updateFixed({ { type = "confirm" } })
+  pressThrough(controller)
+  Assert.equal(nativeStatus(controller).state, "choose_swap", "the gated switch entry arms the destination pick")
   controller:updateFixed({ { type = "navigate", direction = "down" } })
   controller:updateFixed({ { type = "confirm" } })
   Assert.equal(nativeStatus(controller).state, "swapping")
@@ -651,6 +656,7 @@ function T.swap_midpoint_exchanges_temporary_draw_records_only()
   controller:updateFixed({ { type = "confirm" } })
   controller:updateFixed({ { type = "navigate", direction = "down" } })
   controller:updateFixed({ { type = "confirm" } })
+  pressThrough(controller)
   controller:updateFixed({ { type = "navigate", direction = "down" } })
   controller:updateFixed({ { type = "confirm" } })
   for _ = 1, 18 do
@@ -667,6 +673,7 @@ function T.swap_revision_change_aborts_without_mutation()
   controller:updateFixed({ { type = "confirm" } })
   controller:updateFixed({ { type = "navigate", direction = "down" } })
   controller:updateFixed({ { type = "confirm" } })
+  pressThrough(controller)
   controller:updateFixed({ { type = "navigate", direction = "down" } })
   controller:updateFixed({ { type = "confirm" } })
   for _ = 1, 10 do
@@ -684,6 +691,7 @@ function T.summary_confirm_emits_a_value_only_intent_once()
   local controller = nativeController()
   controller:updateFixed({ { type = "confirm" } })
   controller:updateFixed({ { type = "confirm" } })
+  pressThrough(controller)
   Assert.equal(nativeStatus(controller).state, "waiting_action")
   local intent = controller:takeIntent()
   Assert.deepEqual(intent, { kind = "summary", slot = 0, partyRevision = 11 })
@@ -697,6 +705,7 @@ function T.completeAction_with_noop_returns_to_origin_silently()
   local controller = nativeController()
   controller:updateFixed({ { type = "confirm" } })
   controller:updateFixed({ { type = "confirm" } })
+  pressThrough(controller)
   Assert.equal(nativeStatus(controller).state, "waiting_action")
   controller:takeIntent()
   controller:completeAction({ kind = "no_op" })
@@ -713,6 +722,7 @@ function T.completeAction_with_text_shows_the_message()
   local controller = nativeController()
   controller:updateFixed({ { type = "confirm" } })
   controller:updateFixed({ { type = "confirm" } })
+  pressThrough(controller)
   Assert.equal(nativeStatus(controller).state, "waiting_action")
   controller:takeIntent()
   controller:completeAction({ kind = "ok", text = "Hello" })
@@ -729,6 +739,7 @@ function T.completed_action_after_party_revision_change_returns_to_browse()
   local controller, _, control = nativeController()
   controller:updateFixed({ { type = "confirm" } })
   controller:updateFixed({ { type = "confirm" } })
+  pressThrough(controller)
   Assert.equal(nativeStatus(controller).state, "waiting_action")
   controller:takeIntent()
   control.setSpecs({ [1] = { heldItem = "POTION" }, [2] = {} })
@@ -747,8 +758,10 @@ function T.take_entry_routes_through_the_yesno_confirm()
   controller:updateFixed({ { type = "navigate", direction = "down" } })
   controller:updateFixed({ { type = "navigate", direction = "down" } })
   controller:updateFixed({ { type = "confirm" } })
+  pressThrough(controller)
   Assert.equal(nativeStatus(controller).state, "item_context", "item opens its submenu")
   controller:updateFixed({ { type = "confirm" } })
+  pressThrough(controller)
   Assert.equal(nativeStatus(controller).state, "confirm", "take arms the yes/no confirm")
   Assert.isNil(controller:takeIntent(), "arming the confirm emits nothing yet")
   controller:updateFixed({ { type = "navigate", direction = "down" } })
@@ -834,8 +847,10 @@ function T.unknown_event_raises_inside_prompt_states()
   controller:updateFixed({ { type = "navigate", direction = "down" } })
   controller:updateFixed({ { type = "navigate", direction = "down" } })
   controller:updateFixed({ { type = "confirm" } })
+  pressThrough(controller)
   Assert.equal(nativeStatus(controller).state, "item_context")
   controller:updateFixed({ { type = "confirm" } })
+  pressThrough(controller)
   Assert.equal(nativeStatus(controller).state, "confirm")
   local err = Assert.throws(function()
     controller:updateFixed({ { type = "frobnicate" } })
@@ -870,10 +885,13 @@ function T.icon_sequence_tracks_hp_zone_with_phase_reset_on_change()
   local anim = nativeStatus(controller).anim
   Assert.equal(anim.sequences[1], 1, "full health selects sequence 1")
   Assert.equal(anim.sequences[2], 0, "fainted selects sequence 0")
-  local first = anim.phases[1]
+  local first = anim.sequenceTicks[1]
   controller:updateFixed({})
   controller:updateFixed({})
-  Assert.isTrue(nativeStatus(controller).anim.phases[1] ~= first, "the phase advances while healthy")
+  Assert.isTrue(
+    nativeStatus(controller).anim.sequenceTicks[1] ~= first,
+    "the sequence-local tick advances while healthy"
+  )
 end
 
 function T.mail_menu_routes_read_directly_and_take_through_confirm()
@@ -887,6 +905,7 @@ function T.mail_menu_routes_read_directly_and_take_through_confirm()
   controller:updateFixed({ { type = "navigate", direction = "down" } })
   controller:updateFixed({ { type = "navigate", direction = "down" } })
   controller:updateFixed({ { type = "confirm" } })
+  pressThrough(controller)
   Assert.equal(nativeStatus(controller).state, "mail_context")
   local sub = {}
   for _, entry in ipairs(nativeStatus(controller).menu) do
@@ -894,6 +913,7 @@ function T.mail_menu_routes_read_directly_and_take_through_confirm()
   end
   Assert.deepEqual(sub, { "read_mail", "take_mail", "quit" })
   controller:updateFixed({ { type = "confirm" } })
+  pressThrough(controller)
   Assert.deepEqual(controller:takeIntent(), { kind = "read_mail", slot = 0, partyRevision = 11 })
 end
 
@@ -1011,6 +1031,268 @@ function T.give_confirm_requires_a_numeric_target_slot()
       item = { key = "SITRUS_BERRY", bagRevision = 7 },
     })
   end, "the replacement question targets a party slot")
+end
+
+-- Source-faithful native behavior: exact icon sequence clocks, generated
+-- menu topology and press cadence, native prompt placement, and cancel
+-- safety across large menus. The status facts asserted below
+-- (sequence-local ticks, the armed menu press) are the proposed
+-- presentation contract the renderer will consume: the exact helper and
+-- status field names are an internal detail, while the asserted
+-- relationships (tick reset on sequence
+-- change, still sequence while swapping, pressed/selected cadence with
+-- exactly one dispatch, neighbor-exact navigation) are not.
+local function v3Layout()
+  return PartyScreenLayout.resolve({ manifest = PartyPresentationFixture.manifest(), cancellable = true })
+end
+
+local function generatedTopLevel(count)
+  return PartyPresentationFixture.manifest().contextMenu.topLevel[count]
+end
+
+local function sequenceTicks(controller)
+  local anim = nativeStatus(controller).anim ---@type any
+  return assert(anim.sequenceTicks, "the status publishes sequence-local ticks")
+end
+
+function T.swapping_slots_present_the_still_sequence()
+  local controller = nativeController({ layout = v3Layout() })
+  controller:updateFixed({ { type = "confirm" } })
+  controller:updateFixed({ { type = "navigate", direction = "down" } })
+  controller:updateFixed({ { type = "confirm" } })
+  pressThrough(controller)
+  Assert.equal(nativeStatus(controller).state, "choose_swap", "the gated switch entry arms the destination pick")
+  controller:updateFixed({ { type = "navigate", direction = "right" } })
+  controller:updateFixed({ { type = "confirm" } })
+  Assert.equal(nativeStatus(controller).state, "swapping")
+  local sequences = nativeStatus(controller).anim.sequences
+  Assert.equal(sequences[1], 0, "the swap source presents the still sequence")
+  Assert.equal(sequences[2], 0, "the swap destination presents the still sequence")
+end
+
+function T.sequence_local_ticks_advance_and_reset_with_the_sequence()
+  local controller, _, control = nativeController({ layout = v3Layout() })
+  controller:updateFixed({})
+  Assert.equal(sequenceTicks(controller)[1], 0, "ticks start at the sequence base")
+  controller:updateFixed({})
+  controller:updateFixed({})
+  controller:updateFixed({})
+  Assert.equal(sequenceTicks(controller)[1], 3, "steady health advances its local tick")
+  control.setSpecs({ [1] = { currentHp = 0, maxHp = 20 } })
+  controller:updateFixed({})
+  Assert.equal(nativeStatus(controller).anim.sequences[1], 0, "fainting selects the still sequence")
+  Assert.equal(sequenceTicks(controller)[1], 0, "a sequence change resets its local tick exactly once")
+  controller:updateFixed({})
+  Assert.equal(sequenceTicks(controller)[1], 1, "the new sequence advances from its reset base")
+end
+
+function T.menu_navigation_follows_the_generated_top_level_neighbors()
+  local expected = generatedTopLevel(4)
+  local controller = nativeController({ layout = v3Layout() })
+  controller:updateFixed({ { type = "confirm" } })
+  Assert.equal(#nativeStatus(controller).menu, 4, "setup opens the four-entry menu")
+  controller:updateFixed({ { type = "navigate", direction = "up" } })
+  Assert.equal(
+    nativeStatus(controller).menuIndex,
+    expected[1].up,
+    "up from the first entry wraps through the generated neighbor"
+  )
+  controller:updateFixed({ { type = "navigate", direction = "down" } })
+  Assert.equal(nativeStatus(controller).menuIndex, 1, "down returns through the generated neighbor")
+  controller:updateFixed({ { type = "navigate", direction = "left" } })
+  Assert.equal(
+    nativeStatus(controller).menuIndex,
+    expected[1].left,
+    "left follows the generated lateral relation"
+  )
+  controller:updateFixed({ { type = "navigate", direction = "right" } })
+  Assert.equal(
+    nativeStatus(controller).menuIndex,
+    expected[expected[1].left].right,
+    "right follows the generated lateral relation"
+  )
+end
+
+function T.subcontext_navigation_wraps_and_ignores_lateral_input()
+  local controller = nativeController({ layout = v3Layout() })
+  controller:updateFixed({ { type = "confirm" } })
+  controller:updateFixed({ { type = "navigate", direction = "down" } })
+  controller:updateFixed({ { type = "navigate", direction = "down" } })
+  controller:updateFixed({ { type = "confirm" } })
+  pressThrough(controller)
+  Assert.equal(nativeStatus(controller).state, "item_context", "setup opens the two-entry item submenu")
+  controller:updateFixed({ { type = "navigate", direction = "up" } })
+  Assert.equal(nativeStatus(controller).menuIndex, 2, "up from the first subcontext entry wraps")
+  controller:updateFixed({ { type = "navigate", direction = "left" } })
+  Assert.equal(nativeStatus(controller).menuIndex, 2, "left leaves subcontext focus alone")
+  controller:updateFixed({ { type = "navigate", direction = "right" } })
+  Assert.equal(nativeStatus(controller).menuIndex, 2, "right leaves subcontext focus alone")
+  Assert.isNil(controller:takeIntent(), "lateral input dispatches nothing")
+end
+
+function T.menu_activation_waits_for_the_press_cadence_before_dispatch()
+  local controller = nativeController({ layout = v3Layout() })
+  controller:updateFixed({ { type = "confirm" } })
+  controller:updateFixed({ { type = "confirm" } })
+  Assert.isNil(controller:takeIntent(), "activation arms the press instead of dispatching")
+  local armed = nativeStatus(controller).menuPress ---@type any
+  Assert.notNil(armed, "the status publishes the armed press")
+  Assert.equal(armed.index, 1, "the press captures the focused entry")
+  Assert.equal(armed.phase, "pressed", "the first half shows the pressed presentation")
+  controller:updateFixed({})
+  controller:updateFixed({})
+  local held = nativeStatus(controller).menuPress ---@type any
+  Assert.notNil(held, "the press stays armed through its first half")
+  Assert.equal(held.phase, "selected", "the second half shows the selected presentation")
+  Assert.isNil(controller:takeIntent(), "the cadence dispatches nothing early")
+  controller:updateFixed({})
+  controller:updateFixed({})
+  Assert.isNil(nativeStatus(controller).menuPress, "completion clears the armed press")
+  local intent = controller:takeIntent()
+  Assert.deepEqual(intent, { kind = "summary", slot = 0, partyRevision = 11 })
+  Assert.isNil(controller:takeIntent(), "the gated entry dispatches exactly once")
+end
+
+function T.extra_activation_while_armed_dispatches_nothing_more()
+  local controller = nativeController({ layout = v3Layout() })
+  controller:updateFixed({ { type = "confirm" } })
+  controller:updateFixed({ { type = "confirm" } })
+  controller:updateFixed({ { type = "confirm" } })
+  controller:updateFixed({ { type = "navigate", direction = "down" } })
+  controller:updateFixed({ { type = "cancel" } })
+  for _ = 1, 6 do
+    controller:updateFixed({})
+  end
+  local first = controller:takeIntent()
+  Assert.notNil(first, "the armed entry still dispatches once")
+  Assert.isNil(controller:takeIntent(), "extra input while armed adds no second dispatch")
+end
+
+function T.pointer_activation_shares_the_press_gate()
+  local controller = nativeController({ layout = v3Layout() })
+  controller:updateFixed({ { type = "confirm" } })
+  local touch = generatedTopLevel(4)[1].touch
+  local right = touch.right == 0 and 256 or touch.right
+  local tapX, tapY = touch.left + math.floor((right - touch.left) / 2), touch.top + 1
+  controller:updateFixed({ { type = "pointer_down", pointerId = "p", x = tapX, y = tapY } })
+  controller:updateFixed({ { type = "pointer_up", pointerId = "p", x = tapX, y = tapY } })
+  Assert.isNil(controller:takeIntent(), "a pointer tap arms the press instead of dispatching")
+  local armed = nativeStatus(controller).menuPress ---@type any
+  Assert.notNil(armed, "the status publishes the pointer-armed press")
+  Assert.equal(armed.index, 1, "the tap captures its row entry")
+  for _ = 1, 4 do
+    controller:updateFixed({})
+  end
+  Assert.deepEqual(controller:takeIntent(), { kind = "summary", slot = 0, partyRevision = 11 })
+end
+
+function T.confirmation_opens_at_the_native_prompt_anchor()
+  local controller = nativeController({
+    layout = v3Layout(),
+    specs = { [1] = { heldItem = "SITRUS_BERRY" } },
+  })
+  controller:updateFixed({ { type = "confirm" } })
+  controller:updateFixed({ { type = "navigate", direction = "down" } })
+  controller:updateFixed({ { type = "navigate", direction = "down" } })
+  controller:updateFixed({ { type = "confirm" } })
+  pressThrough(controller)
+  Assert.equal(nativeStatus(controller).state, "item_context", "the gated item entry opens its submenu")
+  controller:updateFixed({ { type = "confirm" } })
+  pressThrough(controller)
+  Assert.equal(nativeStatus(controller).state, "confirm")
+  local prompt = assert(nativeStatus(controller).prompt, "the confirm state carries its prompt")
+  Assert.deepEqual(
+    { prompt.buttons.yes.x, prompt.buttons.yes.y },
+    { 200, 80 },
+    "the confirmation opens at the native yes/no anchor"
+  )
+end
+
+function T.opening_a_menu_without_a_generated_layout_fails_before_arming()
+  local entries = {}
+  for index = 1, 9 do
+    entries[index] = { kind = "field_move", label = "F" .. index, move = "F" .. index, moveSlot = index - 1 }
+  end
+  local policy = nativePolicy()
+  policy.menuFor = function()
+    return entries
+  end
+  local controller = nativeController({ layout = v3Layout(), actionPolicy = policy })
+  local err = Assert.throws(function()
+    controller:updateFixed({ { type = "confirm" } })
+  end, "nine entries exceed the generated top-level range")
+  Assert.isTrue(tostring(err):find("9", 1, true) ~= nil, "the failure names its count")
+  Assert.isNil(controller:takeIntent(), "a failed menu opening dispatches nothing")
+end
+
+function T.cancel_from_an_eight_entry_menu_returns_to_browse_cleanly()
+  local controller = nativeController({
+    layout = v3Layout(),
+    specs = {
+      [1] = { moves = { { key = "CUT" }, { key = "FLY" }, { key = "SURF" }, { key = "STRENGTH" } } },
+    },
+  })
+  controller:updateFixed({ { type = "confirm" } })
+  Assert.equal(#nativeStatus(controller).menu, 8, "setup opens the eight-entry menu")
+  for _ = 1, 7 do
+    controller:updateFixed({ { type = "navigate", direction = "down" } })
+  end
+  Assert.equal(nativeStatus(controller).menuIndex, 8, "the cancel-position entry stays reachable")
+  controller:updateFixed({ { type = "cancel" } })
+  Assert.equal(nativeStatus(controller).state, "browse")
+  Assert.isNil(controller:takeResult())
+  Assert.isNil(controller:takeIntent())
+  Assert.isNil(nativeStatus(controller).menu, "cancelling releases the menu")
+end
+
+function T.browse_cancel_focus_leaves_no_menu_state()
+  local controller = nativeController({ layout = v3Layout() })
+  controller:updateFixed({ { type = "navigate", direction = "down" } })
+  Assert.equal(nativeStatus(controller).cursorNode, "cancel", "setup focuses Cancel")
+  controller:updateFixed({ { type = "cancel" } })
+  Assert.deepEqual(controller:takeResult(), { kind = "closed" })
+  Assert.isNil(nativeStatus(controller).menu, "focusing Cancel never builds menu state")
+end
+
+function T.pointer_down_latches_its_row_across_keyboard_focus_changes()
+  local controller = nativeController({ layout = v3Layout() })
+  controller:updateFixed({ { type = "confirm" } })
+  Assert.equal(#nativeStatus(controller).menu, 4, "setup opens the four-entry menu")
+  local first = generatedTopLevel(4)[1].touch
+  local tapX = first.left + 1
+  local tapY = first.top + 1
+  controller:updateFixed({ { type = "pointer_down", pointerId = "p", x = tapX, y = tapY } })
+  controller:updateFixed({ { type = "navigate", direction = "down" } })
+  controller:updateFixed({ { type = "navigate", direction = "down" } })
+  Assert.equal(nativeStatus(controller).menuIndex, 3, "keyboard motion moves focus away from the held row")
+  controller:updateFixed({ { type = "pointer_up", pointerId = "p", x = tapX, y = tapY } })
+  local armed = nativeStatus(controller).menuPress ---@type any
+  Assert.notNil(armed, "the matching release arms the press")
+  Assert.equal(armed.index, 1, "the armed entry is the latched down-target, not the moved focus")
+  pressThrough(controller)
+  local intent = controller:takeIntent()
+  Assert.notNil(intent, "the latched entry dispatches once")
+end
+
+function T.menu_restore_after_complete_action_carries_no_armed_press()
+  local layout = v3Layout()
+  local controller = nativeController({ layout = layout })
+  controller:updateFixed({ { type = "confirm" } })
+  controller:updateFixed({ { type = "confirm" } })
+  pressThrough(controller)
+  Assert.equal(nativeStatus(controller).state, "waiting_action")
+  controller:takeIntent()
+  controller:completeAction({ kind = "no_op" })
+  local restored = nativeStatus(controller)
+  Assert.equal(restored.state, "context", "the no-op restores the originating menu")
+  Assert.isNil(restored.menuPress, "restoring never retains an armed press")
+  Assert.notNil(restored.menu, "the originating menu rebuilds")
+  local entries = layout.menuLayout("topLevel", #restored.menu)
+  Assert.equal(#entries, #restored.menu, "the restored menu resolves its generated layout")
+  Assert.isTrue(
+    restored.menuIndex >= 1 and restored.menuIndex <= #restored.menu,
+    "the restored focus stays inside the generated count"
+  )
 end
 
 return { tests = T }

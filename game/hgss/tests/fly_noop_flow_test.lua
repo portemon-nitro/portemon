@@ -181,15 +181,40 @@ end
 
 local function activateMenuMove(flow, move)
   flow:updateFixed({ { type = "confirm" } })
-  for _ = 1, 30 do
+  -- Source menus place later entries laterally: a down-only walk cycles
+  -- the first column forever, so explored rows rotate an escape direction
+  -- whenever focus revisits a row. Activation rides the visual press
+  -- cadence before its single dispatch.
+  local seen = {}
+  local escapes = { "right", "left", "up" }
+  local escapeNext = 1
+  for _ = 1, 40 do
     local child = childView(flow)
     local menu = assert(child.menu, "slot confirm must open the action menu")
-    local current = menu[child.menuIndex]
+    local index = assert(child.menuIndex, "the open menu carries focus")
+    local current = menu[index]
     if current ~= nil and current.move == move then
       flow:updateFixed({ { type = "confirm" } })
-      return
+      for _ = 1, 10 do
+        local status = flow:status()
+        if not status.open then
+          return
+        end
+        local settled = assert(status.child, "the party flow holds a live child")
+        if settled.menuPress == nil then
+          return
+        end
+        flow:updateFixed({})
+      end
+      error("the gated menu move never dispatched " .. move, 0)
     end
-    flow:updateFixed({ { type = "navigate", direction = "down" } })
+    local direction = "down"
+    if seen[index] then
+      direction = escapes[escapeNext]
+      escapeNext = escapeNext % #escapes + 1
+    end
+    seen[index] = true
+    flow:updateFixed({ { type = "navigate", direction = direction } })
   end
   error("the action menu never offered " .. move, 0)
 end

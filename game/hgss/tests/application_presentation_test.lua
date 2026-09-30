@@ -753,6 +753,7 @@ local function partyManifest()
     windows = {
       message = { x = 16, y = 168, width = 160, height = 16 },
       context = { x = 152, y = 120, width = 96, height = 64 },
+      prompt = { x = 200, y = 80 },
     },
     navigation = {
       dpad = {

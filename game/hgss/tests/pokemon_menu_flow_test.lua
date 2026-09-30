@@ -414,7 +414,14 @@ local function drivePartyMenu(rig, kind)
     end
     Assert.notNil(index, "the party menu must offer " .. kind)
     if (child.menuIndex or 0) == index then
-      return drive(rig, { { type = "confirm" } })
+      -- Menu activation rides the visual press cadence before its single
+      -- dispatch: settle the gate so callers read the dispatched submenu
+      -- or intent state instead of the armed menu.
+      drive(rig, { { type = "confirm" } })
+      return driveUntil(rig, "the gated menu dispatch", 10, function(current)
+        local dispatched = partyChild(current)
+        return dispatched.menuPress == nil and (dispatched.menu ~= menu or dispatched.state ~= "context")
+      end)
     end
     local direction = (child.menuIndex or 0) < index and "down" or "up"
     drive(rig, { { type = "navigate", direction = direction } })

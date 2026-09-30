@@ -12,6 +12,7 @@ local FieldUiFixture = require("tests.support.FieldUiFixture")
 local GraphicsSmoke = require("tests.support.GraphicsSmoke")
 local MonCache = require("libs.assets.src.MonCache")
 local MonIconAssetProvider = require("libs.hgss.src.presentation.MonIconAssetProvider")
+local PartyPresentationFixture = require("tests.support.PartyPresentationFixture")
 local PartyScreenLayout = require("libs.hgss.src.ui.PartyScreenLayout")
 local PartyScreenRenderer = require("libs.hgss.src.ui.PartyScreenRenderer")
 local PngWriter = require("libs.assets.src.PngWriter")
@@ -151,6 +152,9 @@ local function foundationManifest()
     windows = {
       message = { x = 16, y = 168, width = 160, height = 16 },
       context = { x = 152, y = 120, width = 96, height = 64 },
+      browse = { x = 16, y = 168, width = 160, height = 16 },
+      action = { x = 8, y = 136, width = 176, height = 48 },
+      prompt = { x = 200, y = 80 },
     },
     visuals = {
       balls = {
@@ -229,8 +233,33 @@ local function foundationManifest()
         red = { image = "test/hp-red.png", width = 48, height = 4 },
       },
     },
-    controls = { cancel = { anchor = { x = 232, y = 176 } } },
-    iconAnimations = { periods = { 1, 8, 12, 24, 40, 36 } },
+    controls = {
+      cancel = {
+        anchor = { x = 232, y = 176 },
+        label = PartyPresentationFixture.manifest().controls.cancel.label,
+        textRect = { x = 200, y = 168, width = 48, height = 16 },
+        align = "center",
+      },
+    },
+    iconAnimations = PartyPresentationFixture.manifest().iconAnimations,
+    contextMenu = {
+      topLevel = PartyPresentationFixture.manifest().contextMenu.topLevel,
+      subcontext = PartyPresentationFixture.manifest().contextMenu.subcontext,
+      textPalette = PartyPresentationFixture.manifest().contextMenu.textPalette,
+      fillPalette = PartyPresentationFixture.manifest().contextMenu.fillPalette,
+      frames = {
+        standard = {
+          raised = { image = "test/menu-standard-raised.png", width = 128, height = 32 },
+          selected = { image = "test/menu-standard-selected.png", width = 128, height = 32 },
+          pressed = { image = "test/menu-standard-pressed.png", width = 128, height = 32 },
+        },
+        cancel = {
+          raised = { image = "test/menu-cancel-raised.png", width = 56, height = 40 },
+          selected = { image = "test/menu-cancel-selected.png", width = 56, height = 40 },
+          pressed = { image = "test/menu-cancel-pressed.png", width = 56, height = 40 },
+        },
+      },
+    },
     navigation = {
       dpad = {
         default = {
@@ -260,14 +289,13 @@ local function foundationManifest()
     },
     numberGlyphs = {
       advance = 8,
+      height = 8,
       digits = digits,
       level = { image = "test/level.png", width = 16, height = 8 },
       slash = { image = "test/slash.png", width = 8, height = 8 },
+      placement = PartyPresentationFixture.manifest().numberGlyphs.placement,
     },
-    text = {
-      labels = {},
-      templates = { chooseMon = { segments = { { kind = "text", value = "Choose a Pokémon." } } } },
-    },
+    text = PartyPresentationFixture.manifest().text,
   }
 end
 
@@ -300,6 +328,12 @@ local function foundationCache()
   end
   stub("test/level.png", 16, 8, 230, 230, 230)
   stub("test/slash.png", 8, 8, 230, 230, 230)
+  stub("test/menu-standard-raised.png", 128, 32, 120, 110, 100)
+  stub("test/menu-standard-selected.png", 128, 32, 90, 80, 70)
+  stub("test/menu-standard-pressed.png", 128, 32, 60, 60, 60)
+  stub("test/menu-cancel-raised.png", 56, 40, 120, 110, 100)
+  stub("test/menu-cancel-selected.png", 56, 40, 90, 80, 70)
+  stub("test/menu-cancel-pressed.png", 56, 40, 60, 60, 60)
   return cache
 end
 
@@ -344,7 +378,7 @@ local function sixSlotView(cursorNode)
     menuSlot = nil,
     message = nil,
     swap = nil,
-    anim = { tick = 0, sequences = { 1, 3, 2, 5, 4, 0 }, phases = { 0, 0, 0, 0, 0, 0 }, panelSlide = 0 },
+    anim = { tick = 0, sequences = { 1, 3, 2, 5, 4, 0 }, sequenceTicks = { 0, 0, 0, 0, 0, 0 }, panelSlide = 0 },
     infoOverlay = false,
     view = {
       revision = 7,
@@ -416,9 +450,9 @@ function T.mixed_six_slot_party_paints_every_slot(scope)
     Assert.near(g, 40 / 255, 0.06)
     Assert.near(b, 56 / 255, 0.06)
     Assert.near(a, 1, 0.01)
-    -- The selected icon shifts (2,2) off its stored base; sample the
-    -- icon-only region clear of the later ball indicator overlay.
-    local ir, ig = image:getPixel(math.floor(lead.x + 30 + 2 + 24), math.floor(lead.y + 16 + 2 + 4))
+    -- The icon centers on its anchor: sample the icon-only region clear
+    -- of the ball rect to its right and the name text further right.
+    local ir, ig = image:getPixel(math.floor(lead.x + 15), math.floor(lead.y + 8))
     Assert.near(ir, 200 / 255, 0.06, "the icon quad draws inside the lead slot")
     Assert.near(ig, 40 / 255, 0.06)
     local hr, hg = image:getPixel(192 + 4, 32 + 4)
@@ -426,8 +460,8 @@ function T.mixed_six_slot_party_paints_every_slot(scope)
     provider:release()
   end
 
-  -- Selection mode dims the ineligible slot while keeping its icon under
-  -- dimmed chrome: a separate layout case the view capture cannot show.
+  -- Selection keeps every slot on source chrome: ineligible pick targets
+  -- carry no synthetic dimming, and the icon still draws under no overlay.
   local size = { width = 640, height = 480 }
   local layout = PartyScreenLayout.resolve({ manifest = manifest, cancellable = true })
   local status = sixSlotView(0)
@@ -446,7 +480,7 @@ function T.mixed_six_slot_party_paints_every_slot(scope)
   renderer:draw(status, layout, provider)
   love.graphics.setCanvas()
   local image = scope:own(canvas:newImageData())
-  Assert.isTrue(opaqueCount(image, size.width, size.height) > 0, "selection paints with dimmed chrome")
+  Assert.isTrue(opaqueCount(image, size.width, size.height) > 0, "selection paints every slot on source chrome")
   provider:release()
 end
 

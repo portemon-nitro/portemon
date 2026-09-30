@@ -1,6 +1,8 @@
 -- The party-screen view projection: one fresh immutable six-slot model per
 -- build. Occupied slots carry the nickname-or-species display name, the
--- service-derived level and max HP, the personality-derived gender, live
+-- service-derived level and max HP, the personality-derived gender, the
+-- presentation-only gender symbol (absent for eggs, genderless mons, and
+-- unnicknamed Nidoran), live
 -- current HP and its fraction, the source status key, the catalog (or
 -- egg) icon key, egg state, the semantic held-item key, the capsule
 -- record (or nil), learned moves in move-slot order as semantic records,
@@ -67,6 +69,12 @@ local function projectSlot(service, slot0, isEligible)
   record.displayName = Mon.displayName(mon, catalog)
   record.level = derived.level
   record.gender = Personality.gender(species.genderRatio, mon.personality)
+  if mon.isEgg ~= true and record.gender ~= "genderless" then
+    local unnamedNidoran = mon.nickname == nil and (mon.species == "NIDORAN_F" or mon.species == "NIDORAN_M")
+    if not unnamedNidoran then
+      record.genderSymbol = record.gender
+    end
+  end
   record.status = PartyScreenTheme.statusKey(mon.condition.status, mon.condition.currentHp)
   record.currentHp = mon.condition.currentHp
   record.maxHp = derived.maxHp

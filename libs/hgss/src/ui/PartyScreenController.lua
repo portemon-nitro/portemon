@@ -53,7 +53,7 @@ local YesNoPromptController = require("libs.hgss.src.ui.YesNoPromptController")
 ---@field _tick integer
 ---@field _donorSlot integer?
 ---@field _donorMoveSlot integer?
----@field _infoOverlay boolean?
+---@field _menuPress { index: integer, timer: integer }? the armed source press gate: two pressed ticks, two selected ticks, then exactly one semantic dispatch
 ---@field _swapSource integer?
 ---@field _seq integer[]
 ---@field _seqBase integer[]
@@ -82,7 +82,7 @@ PartyScreenController.__index = PartyScreenController
 ---@field confirmed boolean?
 
 ---@class PartyScreenController.Capture
----@field kind "slot"|"menu"|"cancel"|"info"|"prompt"
+---@field kind "slot"|"menu"|"cancel"|"prompt"
 ---@field slot integer?
 ---@field index integer?
 ---@field choice string?
@@ -242,7 +242,7 @@ function PartyScreenController.new(opts)
     _tick = 0,
     _donorSlot = nil,
     _donorMoveSlot = nil,
-    _infoOverlay = false,
+    _menuPress = nil,
     _swapSource = nil,
     _seq = {},
     _seqBase = {},
@@ -269,7 +269,6 @@ function PartyScreenController.new(opts)
     self._state = "give_confirm"
   end
   local view = self:_refresh()
-  self:_resetSequences(view)
   ---@type integer|string?
   local start = opts.initialFocus
   if start == "cancel" and not self:_selectable(view, start) then
@@ -299,25 +298,9 @@ function PartyScreenController:_refresh()
   return view
 end
 
--- Tracks icon animation sequences per slot: the phase restarts only when
--- the sequence changes, so steady health holds its rhythm.
----@param view PartyScreenController.View
-function PartyScreenController:_resetSequences(view)
-  for slot0 = 0, 5 do
-    local record = view.slots[slot0 + 1]
-    local sequence = 1
-    if type(record) == "table" and record.occupied then
-      local zone = PartyScreenTheme.hpZone(
-        assert(record.currentHp, "occupied slots carry current HP"),
-        assert(record.maxHp, "occupied slots carry max HP")
-      )
-      sequence = PartyScreenTheme.iconSequence(zone, assert(record.status, "occupied slots carry a status"))
-    end
-    self._seq[slot0 + 1] = sequence
-    self._seqBase[slot0 + 1] = self._tick
-  end
-end
-
+-- Tracks icon animation sequences per slot: the sequence clock starts on
+-- first observation and restarts only when the sequence changes, so
+-- steady health holds its rhythm while a new sequence starts at zero.
 ---@param view PartyScreenController.View
 function PartyScreenController:_trackSequences(view)
   for slot0 = 0, 5 do
@@ -394,8 +377,9 @@ function PartyScreenController:cancellable()
   return self._cancellable
 end
 
--- State changes dispose prompts and invalidate any held pointer press,
--- even when the public state name stays the same.
+-- State changes dispose prompts, disarm the menu press gate, and
+-- invalidate any held pointer press, even when the public state name
+-- stays the same.
 ---@param state string
 function PartyScreenController:_transition(state)
   if self._state == "confirm" and state ~= "confirm" then
@@ -410,6 +394,7 @@ function PartyScreenController:_transition(state)
   self._pressId = nil
   self._pressCapture = nil
   self._pressEpoch = nil
+  self._menuPress = nil
 end
 
 -- Walks one direction through the compiled FocusGraph, skipping
@@ -451,19 +436,75 @@ function PartyScreenController:_move(direction)
   end
 end
 
--- Moves within the open menu list, clamped at its ends. Menu entries stay
--- focusable so their labels remain visible; activation policy lives with
--- the entry kind.
+-- Moves within the open menu through the generated source neighbor map
+-- for the active menu class and count. Absent links (subcontext lateral
+-- input) hold focus; activation policy lives with the entry kind.
 ---@param direction string
----@param count integer
-function PartyScreenController:_moveMenu(direction, count)
-  assert(direction == "up" or direction == "down", "menus move vertically")
+function PartyScreenController:_moveMenu(direction)
+  assert(
+    direction == "up" or direction == "down" or direction == "left" or direction == "right",
+    "unknown menu direction"
+  )
   local index = assert(self._menuIndex, "menu motion needs an open menu")
-  if direction == "up" and index > 1 then
-    self._menuIndex = index - 1
-  elseif direction == "down" and index < count then
-    self._menuIndex = index + 1
+  local entries = self:_menuLayoutFor()
+  local entry = assert(entries[index], "menu motion focuses a real entry")
+  local next = entry[direction]
+  if next ~= nil then
+    assert(next % 1 == 0 and next >= 1 and next <= #entries, "menu neighbors address real entries")
+    self._menuIndex = next
   end
+end
+
+-- Names the generated menu section for the open menu state.
+---@return "topLevel"|"subcontext"
+function PartyScreenController:_menuKind()
+  if self._state == "item_context" or self._state == "mail_context" then
+    return "subcontext"
+  end
+  assert(self._state == "context", "menu geometry needs an open menu state")
+  return "topLevel"
+end
+
+-- Resolves the generated source records for the open menu, failing loudly
+-- when the entry count leaves the audited source range.
+---@return table[]
+function PartyScreenController:_menuLayoutFor()
+  local menu = assert(self._menu, "menu geometry needs an open menu")
+  local layout = assert(self._layout(), "the party layout is required for menu geometry")
+  local lookup = assert(layout.menuLayout, "the party layout carries generated menu records")
+  return lookup(self:_menuKind(), #menu)
+end
+
+-- Arms the source press gate over the focused menu entry: the semantic
+-- entry, index, and state freeze now while pointer capture invalidates
+-- through the normal epoch rules. Dispatch waits for the visual cadence
+-- (two pressed ticks, two selected ticks) owned by the fixed update.
+function PartyScreenController:_beginMenuPress()
+  assert(self._menuPress == nil, "menu presses arm exactly once")
+  local menu = assert(self._menu, "menu activation needs an open menu")
+  local index = assert(self._menuIndex, "menu activation needs a focused entry")
+  assert(menu[index] ~= nil, "menu activation focuses a real entry")
+  self:_menuLayoutFor()
+  self._menuPress = { index = index, timer = 0 }
+  self._pressId = nil
+  self._pressCapture = nil
+  self._pressEpoch = nil
+  self._epoch = self._epoch + 1
+end
+
+-- Advances the armed press one fixed tick; the step past the selected
+-- half dispatches the captured entry exactly once through the existing
+-- semantic path.
+function PartyScreenController:_advanceMenuPress()
+  local armed = assert(self._menuPress, "press ticks require an armed press")
+  armed.timer = armed.timer + 1
+  if armed.timer < 4 then
+    return
+  end
+  local index = armed.index
+  self._menuPress = nil
+  self._menuIndex = index
+  self:_confirmMenuEntry()
 end
 
 ---@param slotFacts table<string, unknown>
@@ -488,11 +529,16 @@ function PartyScreenController:_submenuFor(menuKind, slotFacts)
 end
 
 -- Opens the context menu over one occupied slot, remembering the origin
--- for the special return order.
+-- for the special return order. Counts outside the generated source
+-- range fail before anything arms.
 ---@param slot integer
 function PartyScreenController:_openMenu(slot)
   local record = assert(self._view.slots[slot + 1], "context menus open over visible slots")
-  self._menu = self:_menuFor(record)
+  local menu = self:_menuFor(record)
+  local layout = assert(self._layout(), "the party layout is required for menu geometry")
+  local lookup = assert(layout.menuLayout, "the party layout carries generated menu records")
+  lookup("topLevel", #menu)
+  self._menu = menu
   self._menuIndex = 1
   self._menuSlot = slot
   self._originSlot = slot
@@ -504,7 +550,11 @@ end
 function PartyScreenController:_openSubmenu(menuKind)
   local slot = assert(self._menuSlot, "submenus open from a context menu slot")
   local record = assert(self._view.slots[slot + 1], "submenus open over visible slots")
-  self._menu = self:_submenuFor(menuKind, record)
+  local menu = self:_submenuFor(menuKind, record)
+  local layout = assert(self._layout(), "the party layout is required for menu geometry")
+  local lookup = assert(layout.menuLayout, "the party layout carries generated menu records")
+  lookup("subcontext", #menu)
+  self._menu = menu
   self._menuIndex = 1
   if menuKind == "mail" then
     self:_transition("mail_context")
@@ -531,7 +581,7 @@ function PartyScreenController:_emitIntent(intent)
 end
 
 -- Arms the owned yes/no confirm over one menu entry. The prompt opens at
--- the context window with a safe negative default; keyboard and pointer
+-- the generated native anchor with a safe negative default; keyboard and pointer
 -- rows share the prompt controller, which latches a choice and publishes
 -- it after its confirmation interval. The tick-owned resolution step
 -- below consumes the published result.
@@ -541,8 +591,13 @@ function PartyScreenController:_openConfirm(entry, returnState)
   local shape = assert(self._promptShape, "confirmation requires the injected prompt shape")
   local prompt = YesNoPromptController.new(shape)
   local layout = assert(self._layout(), "the party layout is required for prompt placement")
-  local window = assert(layout.contextWindow, "the party layout carries the context window")
-  prompt:open({ x = window.x, y = window.y, shape = "compact", initialSelection = "no" })
+  local anchor = assert(layout.promptAnchor, "the party layout carries the native prompt anchor")
+  prompt:open({
+    x = assert(anchor.x, "the prompt anchor carries x"),
+    y = assert(anchor.y, "the prompt anchor carries y"),
+    shape = "compact",
+    initialSelection = "no",
+  })
   self._prompt = prompt
   self._promptEntry = entry
   self._promptReturn = returnState
@@ -864,7 +919,7 @@ function PartyScreenController:_confirm()
     return
   end
   if self._state == "context" or self._state == "item_context" or self._state == "mail_context" then
-    self:_confirmMenuEntry()
+    self:_beginMenuPress()
     return
   end
   if self._state == "choose_swap" then
@@ -1083,8 +1138,8 @@ local function sameTarget(a, b)
 end
 
 -- Activates one hit-test target through the shared confirm path. Only
--- the active state's targets consult: slots in picking states, menu rows
--- in menu states, prompt rows in confirm, cancel and info in browse.
+-- the active state's targets consult: slots in picking states, menu entries
+-- in menu states, prompt rows in confirm, cancel in browse.
 ---@param target table<string, unknown>?
 function PartyScreenController:_activate(target)
   if target == nil then
@@ -1093,11 +1148,6 @@ function PartyScreenController:_activate(target)
   if self._state == "browse" then
     if target.kind == "cancel" then
       self:_cancel()
-      return
-    end
-    if target.kind == "info" then
-      self._infoOverlay = not self._infoOverlay
-      self._epoch = self._epoch + 1
       return
     end
     if target.kind == "slot" and isSlotNode(target.slot) then
@@ -1119,7 +1169,7 @@ function PartyScreenController:_activate(target)
       local menu = assert(self._menu, "menu activation needs its open menu")
       if target.index >= 1 and target.index <= #menu then
         self._menuIndex = target.index
-        self:_confirmMenuEntry()
+        self:_beginMenuPress()
       end
     end
     return
@@ -1145,6 +1195,25 @@ function PartyScreenController:_activate(target)
   end
 end
 
+-- Resolves the generated touch target under a pointer for the open menu.
+---@param controller PartyScreenController
+---@param layout table<string, unknown>
+---@param x unknown
+---@param y unknown
+---@return table<string, unknown>?
+local function hitMenu(controller, layout, x, y)
+  local menu = assert(controller._menu, "menu presses need the open menu")
+  local menuHit = assert(layout.menuHit, "the party layout carries generated menu hit targets")
+  if type(x) ~= "number" or type(y) ~= "number" then
+    return nil
+  end
+  local hit = menuHit(controller:_menuKind(), #menu, x, y)
+  if hit == nil then
+    return nil
+  end
+  return { kind = "menu", index = assert(hit.index, "menu hits resolve an entry") }
+end
+
 ---@param layout table<string, unknown>
 ---@param x number
 ---@param y number
@@ -1156,7 +1225,7 @@ end
 
 ---@param event table<string, unknown>
 function PartyScreenController:_pointerDown(event)
-  if self._pressId ~= nil then
+  if self._pressId ~= nil or self._menuPress ~= nil then
     return
   end
   assert(type(event.pointerId) == "string", "pointer down needs a pointer id")
@@ -1164,23 +1233,8 @@ function PartyScreenController:_pointerDown(event)
   self._pressEpoch = self._epoch
   local layout = assert(self._layout(), "the party layout is required for pointer input")
   if self._state == "context" or self._state == "item_context" or self._state == "mail_context" then
-    local rows = assert(layout.menuRows, "the party layout carries menu rows")
-    local menu = assert(self._menu, "menu presses need the open menu")
-    local hit = rows(#menu)
-    for index, rect in ipairs(hit) do
-      if
-        type(event.x) == "number"
-        and type(event.y) == "number"
-        and event.x >= rect.x
-        and event.x < rect.x + rect.width
-        and event.y >= rect.y
-        and event.y < rect.y + rect.height
-      then
-        self._pressCapture = { kind = "menu", index = index }
-        return
-      end
-    end
-    self._pressCapture = nil
+    local hit = hitMenu(self, layout, event.x, event.y)
+    self._pressCapture = hit
     return
   end
   local hit = hitSlots(layout, event.x, event.y)
@@ -1207,7 +1261,7 @@ end
 
 ---@param event table<string, unknown>
 function PartyScreenController:_pointerUp(event)
-  if event.pointerId ~= self._pressId then
+  if event.pointerId ~= self._pressId or self._menuPress ~= nil then
     return
   end
   local down = self._pressCapture
@@ -1224,23 +1278,7 @@ function PartyScreenController:_pointerUp(event)
   local layout = assert(self._layout(), "the party layout is required for pointer input")
   local up
   if self._state == "context" or self._state == "item_context" or self._state == "mail_context" then
-    local rows = assert(layout.menuRows, "the party layout carries menu rows")
-    local menu = assert(self._menu, "menu presses need the open menu")
-    local hit = rows(#menu)
-    up = nil
-    if type(event.x) == "number" and type(event.y) == "number" then
-      for index, rect in ipairs(hit) do
-        if
-          event.x >= rect.x
-          and event.x < rect.x + rect.width
-          and event.y >= rect.y
-          and event.y < rect.y + rect.height
-        then
-          up = { kind = "menu", index = index }
-          break
-        end
-      end
-    end
+    up = hitMenu(self, layout, event.x, event.y)
   else
     up = hitSlots(layout, event.x, event.y)
   end
@@ -1250,8 +1288,8 @@ function PartyScreenController:_pointerUp(event)
 end
 
 -- One fixed tick over the tick's UI events. Clocks advance first: icon
--- phases, the panel slide, and an armed swap all step once per tick while
--- open. At most one state consumes an event batch: the batch ends when a
+-- sequence ticks, the panel slide, the armed menu press, and an armed swap
+-- all step once per tick while open. At most one state consumes an event batch: the batch ends when a
 -- transition fires, an intent emits, a message acknowledges, or a
 -- terminal result records. A completed controller ignores further input.
 ---@param uiInput table[]
@@ -1265,6 +1303,13 @@ function PartyScreenController:updateFixed(uiInput)
   local view = self:_refresh()
   self:_trackSequences(view)
   self:_advanceSlide()
+  if self._menuPress ~= nil then
+    local transitionsBefore = self._transitionCount
+    self:_advanceMenuPress()
+    if self._transitionCount ~= transitionsBefore then
+      return
+    end
+  end
   if self._state == "swapping" then
     self:_advanceSwap()
     return
@@ -1283,6 +1328,32 @@ function PartyScreenController:updateFixed(uiInput)
   if view.revision ~= previousRevision and self._swapOp == nil then
     -- Reconcile a cursor the party change may have invalidated without
     -- inventing a mon: keep a still-selectable cursor, else the nearest one.
+    -- An armed press never survives a party change: the captured entry is
+    -- stale, so the gate disarms and the menu rebuilds (or closes when its
+    -- slot no longer qualifies).
+    if self._menuPress ~= nil then
+      self._menuPress = nil
+      local slot = self._menuSlot
+      local record = slot ~= nil and view.slots[slot + 1] or nil
+      if record ~= nil and record.occupied then
+        if self._state == "context" then
+          self._menu = self:_menuFor(record)
+        elseif self._state == "item_context" or self._state == "mail_context" then
+          self._menu = self:_submenuFor(self._state == "mail_context" and "mail" or "item", record)
+        end
+        if self._menu ~= nil then
+          self:_menuLayoutFor()
+          self._menuIndex = math.min(self._menuIndex or 1, #self._menu)
+        end
+      end
+      if self._menu == nil then
+        self._menu = nil
+        self._menuIndex = nil
+        self._menuSlot = nil
+        self._originSlot = nil
+        self:_transition("browse")
+      end
+    end
     if not self:_selectable(view, self._cursorNode) then
       local reconciled = self:_nearestSelectable(view, self._cursorNode)
       if reconciled ~= nil then
@@ -1296,7 +1367,27 @@ function PartyScreenController:updateFixed(uiInput)
     end
     assert(type(event) == "table" and type(event.type) == "string", "party events need a type")
     local transitionsBefore = self._transitionCount
-    if event.type == "navigate" then
+    if self._menuPress ~= nil then
+      -- The armed press owns the tick: further navigation, activation,
+      -- cancellation, and pointer presses wait for its single dispatch.
+      -- Pointer cancellation still clears a held capture without
+      -- duplicating or hurrying the armed entry.
+      if event.type == "pointer_cancel" then
+        self:cancelPointerCapture()
+      elseif event.type == "menu" or event.type == "pointer_scroll" then
+        -- A child application's own input policy applies.
+      elseif
+        event.type ~= "navigate"
+        and event.type ~= "confirm"
+        and event.type ~= "cancel"
+        and event.type ~= "dismiss"
+        and event.type ~= "pointer_down"
+        and event.type ~= "pointer_move"
+        and event.type ~= "pointer_up"
+      then
+        error("unknown party event type " .. tostring(event.type), 2)
+      end
+    elseif event.type == "navigate" then
       self:_navigate(event)
     elseif event.type == "confirm" then
       self:_confirm()
@@ -1327,13 +1418,13 @@ function PartyScreenController:updateFixed(uiInput)
   end
 end
 
--- Routes directional input: menu lists move vertically clamped, slot
--- states walk the compiled graph.
+-- Routes directional input: menu lists follow their generated source
+-- neighbors, slot states walk the compiled graph.
 ---@param event table<string, unknown>
 function PartyScreenController:_navigate(event)
   if self._state == "context" or self._state == "item_context" or self._state == "mail_context" then
-    local menu = assert(self._menu, "menu motion needs the open menu")
-    self:_moveMenu(assert(event.direction, "navigation needs a direction"), #menu)
+    assert(self._menu ~= nil, "menu motion needs the open menu")
+    self:_moveMenu(assert(event.direction, "navigation needs a direction"))
     return
   end
   if
@@ -1389,11 +1480,11 @@ end
 ---@field menuIndex integer?
 ---@field menu PartyScreenController.MenuEntry[]?
 ---@field menuSlot integer?
+---@field menuPress { index: integer, phase: "pressed"|"selected" }? the armed press gate presentation
 ---@field message string?
 ---@field prompt table<string, unknown>?
 ---@field swap table<string, unknown>?
----@field anim table<string, unknown>?
----@field infoOverlay boolean?
+---@field anim table<string, unknown>? tick, per-slot icon sequences and sequence-local ticks, panel slide
 ---@field view PartyScreenController.View?
 ---@field cancellable boolean?
 ---@field layout PartyScreenLayoutResolved? resolved layout injected by the application state for hit testing and rendering
@@ -1427,15 +1518,22 @@ function PartyScreenController:status()
       exchanged = exchanged,
     }
   end
-  local periods = self:_iconPeriods()
   local sequences = {}
-  local phases = {}
+  local sequenceTicks = {}
   for slot0 = 0, 5 do
     local sequence = self._seq[slot0 + 1] or 1
+    if swapStatus ~= nil and (slot0 == swapStatus.source or slot0 == swapStatus.destination) then
+      sequence = 0
+    end
     sequences[slot0 + 1] = sequence
-    local period = periods[sequence + 1] or 1
-    assert(type(period) == "number" and period >= 1, "icon sequences carry positive periods")
-    phases[slot0 + 1] = (self._tick - (self._seqBase[slot0 + 1] or self._tick)) % period
+    sequenceTicks[slot0 + 1] = self._tick - (self._seqBase[slot0 + 1] or self._tick)
+  end
+  local menuPress
+  if self._menuPress ~= nil then
+    menuPress = {
+      index = self._menuPress.index,
+      phase = self._menuPress.timer < 2 and "pressed" or "selected",
+    }
   end
   return {
     open = true,
@@ -1447,35 +1545,19 @@ function PartyScreenController:status()
     menuIndex = self._menuIndex,
     menu = self._menu,
     menuSlot = self._menuSlot,
+    menuPress = menuPress,
     message = self._message,
     prompt = self._prompt and self._prompt:status() or nil,
     swap = swapStatus,
     anim = {
       tick = self._tick,
       sequences = sequences,
-      phases = phases,
+      sequenceTicks = sequenceTicks,
       panelSlide = self._panelSlide,
     },
-    infoOverlay = self._infoOverlay == true,
     view = self._view,
     cancellable = self._cancellable,
   }
-end
-
----@return integer[]
-function PartyScreenController:_iconPeriods()
-  -- The layout resolves through the live session plan, which does not
-  -- exist before the state's first resolution: animation starts at phase
-  -- zero until then. Later layout failures stay loud at their input
-  -- boundary; only the missing first plan falls back here.
-  local ok, layout = pcall(self._layout)
-  if ok and type(layout) == "table" then
-    local periods = layout.iconPeriods
-    if type(periods) == "table" and #periods == 6 then
-      return periods
-    end
-  end
-  return { 1, 8, 12, 24, 40, 36 }
 end
 
 -- The one-shot intent contract: nil until an entry emits, then exactly
@@ -1538,6 +1620,10 @@ function PartyScreenController:_restoreOrigin(origin)
         menu = self:_submenuFor(origin.state == "mail_context" and "mail" or "item", record)
       end
       if #menu > 0 then
+        local kind = origin.state == "context" and "topLevel" or "subcontext"
+        local layout = assert(self._layout(), "the party layout is required for menu geometry")
+        local lookup = assert(layout.menuLayout, "the party layout carries generated menu records")
+        lookup(kind, #menu)
         self._menu = menu
         self._menuSlot = slot
         self._originSlot = slot

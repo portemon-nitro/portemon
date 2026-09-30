@@ -42,7 +42,7 @@ end
 local function manifestFor(versionId)
   local cacheFs = CacheFs.forVersion(versionId)
   local manifest = PartyCache.loadManifest(cacheFs)
-  Assert.equal(manifest.schema, "g4-party-presentation-v2", versionId .. " renders the current party manifest")
+  Assert.equal(manifest.schema, "g4-party-presentation-v3", versionId .. " renders the current party manifest")
   return cacheFs, manifest
 end
 
@@ -91,7 +91,7 @@ local function presentation(overrides)
     menuSlot = nil,
     message = nil,
     swap = nil,
-    anim = { tick = 0, sequences = {}, phases = {}, panelSlide = 0 },
+    anim = { tick = 0, sequences = {}, sequenceTicks = {}, panelSlide = 0 },
     infoOverlay = false,
     view = { revision = 1, slots = {} },
     cancellable = true,
@@ -103,7 +103,7 @@ local function presentation(overrides)
   end
   for index = 1, 6 do
     status.anim.sequences[index] = 1
-    status.anim.phases[index] = 0
+    status.anim.sequenceTicks[index] = 0
   end
   for key, value in pairs(overrides or {}) do
     status[key] = value
@@ -238,26 +238,27 @@ function T.status_uses_its_generated_sprite_frame(scope)
   end
 end
 
--- Context menus render one row per entry: the layout deals one
--- inside-window band per entry for every count, and the eight-row
--- render paints different window pixels than the two-row render.
+-- Context menus resolve one generated button record per entry: every
+-- supported count carries per-entry frame/text rectangles inside the
+-- native pane, and the eight-entry render paints different button pixels
+-- than the two-entry render.
 function T.context_menus_render_one_row_per_entry(scope)
   for _, versionId in ipairs(readyVersions()) do
     local cacheFs, manifest = manifestFor(versionId)
     local layout = PartyScreenLayout.resolve({ manifest = manifest, cancellable = true })
-    local rows = assert(layout.menuRows, versionId .. " carries menu row geometry")
     for _, count in ipairs({ 2, 3, 5, 8 }) do
-      local bands = rows(count)
-      Assert.equal(#bands, count, versionId .. " lays out one band per entry for " .. tostring(count))
-      local window = manifest.windows.context
-      for index, band in ipairs(bands) do
-        Assert.isTrue(
-          band.x >= window.x
-            and band.y >= window.y
-            and band.x + band.width <= window.x + window.width
-            and band.y + band.height <= window.y + window.height,
-          versionId .. " keeps row " .. tostring(index) .. " inside its window"
-        )
+      local entries = layout.menuLayout("topLevel", count)
+      Assert.equal(#entries, count, versionId .. " lays out one record per entry for " .. tostring(count))
+      for index, entry in ipairs(entries) do
+        for _, rect in ipairs({ entry.frameRect, entry.textRect }) do
+          Assert.isTrue(
+            rect.x >= 0
+              and rect.y >= 0
+              and rect.x + rect.width <= 256
+              and rect.y + rect.height <= 192,
+            versionId .. " keeps entry " .. tostring(index) .. " geometry inside the native pane"
+          )
+        end
       end
     end
     local twoEntries = {
@@ -281,18 +282,30 @@ function T.context_menus_render_one_row_per_entry(scope)
     end
     local twoImage = renderWindow(twoEntries)
     local eightImage = renderWindow(eightEntries)
-    local window = manifest.windows.context
+    -- Button placement differs by count, so the renders differ across
+    -- the union of both layouts' frame rectangles.
+    local frames = {}
+    for _, entries in ipairs({
+      manifest.contextMenu.topLevel[2],
+      manifest.contextMenu.topLevel[8],
+    }) do
+      for _, entry in ipairs(entries) do
+        frames[#frames + 1] = entry.frameRect
+      end
+    end
     local delta = 0
-    for y = window.y, window.y + window.height - 1 do
-      for x = window.x, window.x + window.width - 1 do
-        local r1, g1, b1 = twoImage:getPixel(x, y)
-        local r2, g2, b2 = eightImage:getPixel(x, y)
-        if quantize(r1) ~= quantize(r2) or quantize(g1) ~= quantize(g2) or quantize(b1) ~= quantize(b2) then
-          delta = delta + 1
+    for _, rect in ipairs(frames) do
+      for y = rect.y, rect.y + rect.height - 1 do
+        for x = rect.x, rect.x + rect.width - 1 do
+          local r1, g1, b1 = twoImage:getPixel(x, y)
+          local r2, g2, b2 = eightImage:getPixel(x, y)
+          if quantize(r1) ~= quantize(r2) or quantize(g1) ~= quantize(g2) or quantize(b1) ~= quantize(b2) then
+            delta = delta + 1
+          end
         end
       end
     end
-    Assert.isTrue(delta > 20, versionId .. " paints different window content for eight entries than two")
+    Assert.isTrue(delta > 20, versionId .. " paints different button content for eight entries than two")
   end
 end
 
@@ -380,6 +393,104 @@ function T.panes_magnify_uniformly_with_consistent_hit_geometry(scope)
     local hx, hy = LayoutGeometry.logicalToHost(placement, rect.x + 8, rect.y + 8)
     Assert.notNil(hx, versionId .. " inverts the lead slot center to host coordinates")
     Assert.notNil(hy, versionId .. " inverts the lead slot center to host coordinates")
+  end
+end
+
+-- Source-shaped menus through the real v3 bundle: the eight-entry menu
+-- draws one generated button frame per entry with the focused entry
+-- selected, and the press gate shows the pressed frame before the
+-- selected one. Frame rectangles and shapes come from the manifest at
+-- runtime, so no source geometry is baked into the suite.
+local function menuPresentation(entries, menuIndex, overrides)
+  local status = presentation({
+    state = "context",
+    menu = entries,
+    menuIndex = menuIndex,
+    menuSlot = 0,
+  })
+  for key, value in pairs(overrides or {}) do
+    status[key] = value
+  end
+  return status
+end
+
+local function eightEntries()
+  return {
+    { kind = "summary", label = "SUMMARY" },
+    { kind = "switch", label = "SWITCH" },
+    { kind = "item", label = "ITEM" },
+    { kind = "f1", label = "F1" },
+    { kind = "f2", label = "F2" },
+    { kind = "f3", label = "F3" },
+    { kind = "f4", label = "F4" },
+    { kind = "quit", label = "QUIT" },
+  }
+end
+
+local function frameVisual(manifest, shape, state)
+  local frames = assert(manifest.contextMenu.frames, "the manifest carries menu frames")
+  local group = assert(frames[shape], "the manifest carries the " .. shape .. " frame")
+  return assert(group[state], "the manifest carries the " .. state .. " frame")
+end
+
+function T.large_menus_draw_one_generated_button_per_entry(scope)
+  for _, versionId in ipairs(readyVersions()) do
+    local cacheFs, manifest = manifestFor(versionId)
+    local entries = eightEntries()
+    local status = menuPresentation(entries, 3)
+    local image, _ = renderPane(scope, cacheFs, manifest, status)
+    local generated = assert(manifest.contextMenu.topLevel[8], versionId .. " carries the eight-entry layout")
+    Assert.equal(#generated, 8, versionId .. " lays out eight generated entries")
+    local matched = 0
+    for index, entry in ipairs(generated) do
+      local rect = assert(entry.frameRect, versionId .. " carries entry frame rectangles")
+      local want = index == 3 and "selected" or "raised"
+      local visual = frameVisual(manifest, entry.frameShape, want)
+      local source = sourceImage(scope, cacheFs, visual)
+      local matches, opaque = matchingOpaquePixels(image, source, rect.x, rect.y, rect.width, rect.height)
+      Assert.isTrue(opaque > 100, versionId .. " compiles visible frame pixels for entry " .. index)
+      if matches == opaque then
+        matched = matched + 1
+      end
+    end
+    Assert.equal(matched, 8, versionId .. " draws every entry through its generated button frame")
+  end
+end
+
+function T.press_gate_shows_pressed_before_selected(scope)
+  for _, versionId in ipairs(readyVersions()) do
+    local cacheFs, manifest = manifestFor(versionId)
+    local generated = assert(manifest.contextMenu.topLevel[3], versionId .. " carries the three-entry layout")
+    local first = assert(generated[1], versionId .. " carries its first entry")
+    local rect = assert(first.frameRect, versionId .. " carries entry frame rectangles")
+    local entries = {
+      { kind = "summary", label = "SUMMARY" },
+      { kind = "switch", label = "SWITCH" },
+      { kind = "quit", label = "QUIT" },
+    }
+    local pressing = menuPresentation(entries, 1, { menuPress = { index = 1, phase = "pressed" } })
+    local pressingImage, _ = renderPane(scope, cacheFs, manifest, pressing)
+    local pressedVisual = frameVisual(manifest, first.frameShape, "pressed")
+    local pressedSource = sourceImage(scope, cacheFs, pressedVisual)
+    local pressedMatches, pressedOpaque =
+      matchingOpaquePixels(pressingImage, pressedSource, rect.x, rect.y, rect.width, rect.height)
+    Assert.isTrue(pressedOpaque > 100, versionId .. " compiles visible pressed-frame pixels")
+    Assert.equal(
+      pressedMatches,
+      pressedOpaque,
+      versionId .. " shows the pressed frame through the first press half"
+    )
+    local holding = menuPresentation(entries, 1, { menuPress = { index = 1, phase = "selected" } })
+    local holdingImage, _ = renderPane(scope, cacheFs, manifest, holding)
+    local selectedVisual = frameVisual(manifest, first.frameShape, "selected")
+    local selectedSource = sourceImage(scope, cacheFs, selectedVisual)
+    local selectedMatches, selectedOpaque =
+      matchingOpaquePixels(holdingImage, selectedSource, rect.x, rect.y, rect.width, rect.height)
+    Assert.equal(
+      selectedMatches,
+      selectedOpaque,
+      versionId .. " shows the selected frame through the second press half"
+    )
   end
 end
 

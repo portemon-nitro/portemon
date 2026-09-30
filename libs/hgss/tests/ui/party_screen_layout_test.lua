@@ -3,6 +3,7 @@
 -- neighbors, touch hit targets, and count-indexed menu rows.
 
 local Assert = require("tests.support.Assert")
+local PartyPresentationFixture = require("tests.support.PartyPresentationFixture")
 local PartyScreenLayout = require("libs.hgss.src.ui.PartyScreenLayout")
 
 local T = {}
@@ -40,6 +41,7 @@ local function sourceManifest()
     windows = {
       message = { x = 16, y = 168, width = 160, height = 16 },
       context = { x = 152, y = 120, width = 96, height = 64 },
+      prompt = { x = 200, y = 80 },
     },
     navigation = {
       dpad = {
@@ -105,26 +107,6 @@ function T.manifest_touch_rects_drive_hit_testing()
   Assert.equal(slot.slot, 4)
 end
 
-function T.menu_rows_index_count_entries_inside_the_context_window()
-  local layout = PartyScreenLayout.resolve({ manifest = sourceManifest(), cancellable = true })
-  for count = 2, 8 do
-    local rows = layout.menuRows(count)
-    Assert.equal(#rows, count, "count " .. count .. " resolves one row per entry")
-    for index, row in ipairs(rows) do
-      Assert.equal(row.x, 152)
-      Assert.equal(row.width, 96)
-      Assert.equal(row.height, 8)
-      Assert.equal(row.y, 120 + (index - 1) * 8, "row " .. index .. " stacks from the window top")
-      Assert.isTrue(row.y + row.height <= 184, "rows stay inside the 64-pixel window")
-    end
-  end
-  Assert.throws(function()
-    layout.menuRows(9)
-  end, "nine rows exceed the source count range")
-  Assert.throws(function()
-    layout.menuRows(1)
-  end, "one row is below the source count range")
-end
 
 function T.sealed_layout_carries_no_cancel_targets()
   local layout = PartyScreenLayout.resolve({ manifest = sourceManifest(), cancellable = false })
@@ -132,6 +114,94 @@ function T.sealed_layout_carries_no_cancel_targets()
   Assert.isNil(layout.hitTest(210, 160), "the forbidden cancel region stays noninteractive")
   Assert.isNil(layout.neighbors[5].down, "no cancel node resolves when forbidden")
   Assert.isNil(layout.neighbors.cancel, "no cancel node resolves when forbidden")
+end
+
+-- Generated context-menu geometry: the layout selects one source-shaped
+-- record per menu class and entry count, exposes its frame/text/touch
+-- rectangles and neighbor links, and rejects counts outside the audited
+-- top-level 2..8 / subcontext 2..5 ranges at lookup time. The lookup and
+-- hit helper names below are an internal detail: the tests pin their
+-- meaning (per-count records, wrap/lateral topology, count failures)
+-- rather than any particular spelling the implementation must keep.
+local function v3Manifest()
+  return PartyPresentationFixture.manifest()
+end
+
+function T.generated_top_level_layouts_carry_one_record_per_entry()
+  local manifest = v3Manifest()
+  local layout = PartyScreenLayout.resolve({ manifest = manifest, cancellable = true }) ---@type any
+  for count = 2, 8 do
+    local entries = layout.menuLayout("topLevel", count)
+    Assert.equal(#entries, count, "count " .. count .. " resolves one record per entry")
+    for index, entry in ipairs(entries) do
+      Assert.notNil(entry.textRect, "entry " .. index .. " carries its text rectangle")
+      Assert.notNil(entry.frameRect, "entry " .. index .. " carries its frame rectangle")
+      Assert.notNil(entry.touch, "entry " .. index .. " carries its touch target")
+    end
+  end
+  local eight = layout.menuLayout("topLevel", 8)
+  local xs = {}
+  for _, entry in ipairs(eight) do
+    xs[entry.frameRect.x] = true
+  end
+  local columns = 0
+  for _ in pairs(xs) do
+    columns = columns + 1
+  end
+  Assert.isTrue(columns > 1, "eight entries use lateral placement, never one vertical stack")
+end
+
+function T.generated_subcontext_layouts_wrap_without_lateral_links()
+  local layout = PartyScreenLayout.resolve({ manifest = v3Manifest(), cancellable = true }) ---@type any
+  for count = 2, 5 do
+    local entries = layout.menuLayout("subcontext", count)
+    Assert.equal(#entries, count, "count " .. count .. " resolves one record per entry")
+    for index, entry in ipairs(entries) do
+      Assert.isNil(entry.left, "subcontext entry " .. index .. " keeps no lateral link")
+      Assert.isNil(entry.right, "subcontext entry " .. index .. " keeps no lateral link")
+      Assert.notNil(entry.up, "subcontext entry " .. index .. " keeps its wrap link")
+      Assert.notNil(entry.down, "subcontext entry " .. index .. " keeps its wrap link")
+    end
+  end
+end
+
+function T.unsupported_menu_counts_fail_at_lookup()
+  local layout = PartyScreenLayout.resolve({ manifest = v3Manifest(), cancellable = true }) ---@type any
+  for _, count in ipairs({ 1, 9 }) do
+    local err = Assert.throws(function()
+      layout.menuLayout("topLevel", count)
+    end, "count " .. count .. " fails at lookup")
+    Assert.isTrue(
+      tostring(err):find(tostring(count), 1, true) ~= nil,
+      "the lookup failure names its count, got " .. tostring(err)
+    )
+  end
+  local err = Assert.throws(function()
+    layout.menuLayout("subcontext", 6)
+  end, "the six-entry subcontext fails at lookup")
+  Assert.isTrue(tostring(err):find("6", 1, true) ~= nil, "the lookup failure names its count")
+end
+
+function T.menu_hit_testing_uses_the_generated_touch_targets()
+  local manifest = v3Manifest()
+  local layout = PartyScreenLayout.resolve({ manifest = manifest, cancellable = true }) ---@type any
+  local entries = layout.menuLayout("topLevel", 4)
+  for index, entry in ipairs(entries) do
+    local touch = entry.touch
+    local right = touch.right == 0 and 256 or touch.right
+    local hit = layout.menuHit("topLevel", 4, touch.left + 1, touch.top + 1)
+    Assert.notNil(hit, "entry " .. index .. " stays hittable inside its touch target")
+    Assert.equal(hit.index, index, "the touch target resolves its own entry")
+    Assert.isTrue(right > touch.left, "entry " .. index .. " keeps a positive touch width")
+  end
+  Assert.isNil(layout.menuHit("topLevel", 4, 0, 191), "empty pane space hits no menu entry")
+end
+
+function T.former_info_coordinates_are_not_party_targets()
+  local layout = PartyScreenLayout.resolve({ manifest = v3Manifest(), cancellable = true })
+  Assert.isNil(layout.hitTest(188, 180), "the retired info affordance is not a party target")
+  Assert.isNil(layout.hitTest(184, 172), "the retired info corner is not a party target")
+  Assert.deepEqual(layout.hitTest(210, 160), { kind = "cancel" }, "the cancel region still resolves")
 end
 
 function T.missing_manifest_fails_without_partial_geometry()

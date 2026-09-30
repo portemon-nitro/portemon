@@ -35,7 +35,7 @@ end
 local function manifestFor(versionId)
   local cacheFs = CacheFs.forVersion(versionId)
   local manifest = PartyCache.loadManifest(cacheFs)
-  Assert.equal(manifest.schema, "g4-party-presentation-v2", versionId .. " renders the current party manifest")
+  Assert.equal(manifest.schema, "g4-party-presentation-v3", versionId .. " renders the current party manifest")
   return cacheFs, manifest
 end
 
@@ -162,7 +162,7 @@ local function presentation(overrides)
     menuSlot = nil,
     message = nil,
     swap = nil,
-    anim = { tick = 0, sequences = {}, phases = {}, panelSlide = 0 },
+    anim = { tick = 0, sequences = {}, sequenceTicks = {}, panelSlide = 0 },
     infoOverlay = false,
     view = { revision = 1, slots = {} },
     cancellable = true,
@@ -174,7 +174,7 @@ local function presentation(overrides)
   end
   for index = 1, 6 do
     status.anim.sequences[index] = 1
-    status.anim.phases[index] = 0
+    status.anim.sequenceTicks[index] = 0
   end
   for key, value in pairs(overrides or {}) do
     status[key] = value
@@ -394,19 +394,29 @@ function T.cancel_focus_uses_the_generated_button_without_a_slot_cursor(scope)
     local frame = assert(buttonSequence.frames[1], versionId .. " carries the focused Cancel frame")
     local button = visualPixels(scope, cacheFs, frame)
     local anchor = manifest.controls.cancel.anchor
-    local matches, opaque = matchingOpaquePixels(
-      image,
-      button,
-      0,
-      0,
-      anchor.x + (frame.offset and frame.offset.x or 0),
-      anchor.y + (frame.offset and frame.offset.y or 0),
-      math.min(frame.width, 256 - anchor.x - (frame.offset and frame.offset.x or 0)),
-      math.min(frame.height, 192 - anchor.y - (frame.offset and frame.offset.y or 0))
-    )
+    local drawX = anchor.x + (frame.offset and frame.offset.x or 0)
+    local drawY = anchor.y + (frame.offset and frame.offset.y or 0)
+    local drawW = math.min(frame.width, 256 - drawX)
+    local drawH = math.min(frame.height, 192 - drawY)
+    -- The generated Cancel label owns its text band over the button, so
+    -- the frame-pixel proof covers the rows above and below that band;
+    -- the label itself is proved through the unit suite.
+    local labelRect = assert(manifest.controls.cancel.textRect, versionId .. " carries the Cancel text rectangle")
+    local topH = math.max(labelRect.y - drawY, 0)
+    local bottomY = math.max(labelRect.y + labelRect.height - drawY, 0)
+    local totalMatches, totalOpaque = 0, 0
+    if topH > 0 then
+      local matches, opaque = matchingOpaquePixels(image, button, 0, 0, drawX, drawY, drawW, topH)
+      totalMatches, totalOpaque = totalMatches + matches, totalOpaque + opaque
+    end
+    if bottomY < drawH then
+      local matches, opaque =
+        matchingOpaquePixels(image, button, 0, bottomY, drawX, drawY + bottomY, drawW, drawH - bottomY)
+      totalMatches, totalOpaque = totalMatches + matches, totalOpaque + opaque
+    end
     Assert.isTrue(
-      opaque > 4 and matches == opaque,
-      versionId .. " paints every visible opaque Cancel pixel at its generated anchor"
+      totalOpaque > 4 and totalMatches == totalOpaque,
+      versionId .. " paints every visible opaque Cancel pixel at its generated anchor outside the label band"
     )
     local rect = assert(layout.cancelRect, versionId .. " exposes the Cancel hit target")
     local cursor = visualPixels(scope, cacheFs, manifest.visuals.cursor.sequences[1].frames[1])
@@ -509,7 +519,7 @@ function T.browse_message_does_not_follow_selection_and_info_stays_available(sco
     local cacheFs, manifest = manifestFor(versionId)
     local selected = presentation({ cursorNode = 0 })
     selected.view.slots[5] = slot(4, { displayName = "FOUR" })
-    local selectedImage, layout = renderPane(scope, cacheFs, manifest, selected)
+    local selectedImage, _ = renderPane(scope, cacheFs, manifest, selected)
     local cancel = presentation({ cursorNode = "cancel" })
     cancel.view.slots[5] = slot(4, { displayName = "FOUR" })
     local cancelImage, _ = renderPane(scope, cacheFs, manifest, cancel)
@@ -518,13 +528,15 @@ function T.browse_message_does_not_follow_selection_and_info_stays_available(sco
       0,
       versionId .. " keeps the browse message stable while selection changes"
     )
-    local info = presentation({ cursorNode = "cancel", infoOverlay = true })
-    info.view.slots[5] = slot(4, { displayName = "FOUR" })
-    local infoImage, _ = renderPane(scope, cacheFs, manifest, info)
-    local infoRect = layout.infoRect
-    Assert.isTrue(
-      differingPixels(cancelImage, infoImage, infoRect.x, infoRect.y, infoRect.width, infoRect.height) > 0,
-      versionId .. " keeps the one-display info affordance outside the message band"
+    -- Native content carries no host affordance: the overlay flag changes
+    -- no pixel inside the pane.
+    local flagged = presentation({ cursorNode = "cancel", infoOverlay = true })
+    flagged.view.slots[5] = slot(4, { displayName = "FOUR" })
+    local flaggedImage, _ = renderPane(scope, cacheFs, manifest, flagged)
+    Assert.equal(
+      differingPixels(cancelImage, flaggedImage, 0, 0, 256, 192),
+      0,
+      versionId .. " renders identical native pixels with or without the host overlay flag"
     )
   end
 end
@@ -745,6 +757,158 @@ function T.browse_message_paints_and_magnifies_uniformly(scope)
     local dCornerR, dCornerG, dCornerB = quantize(dr), quantize(dg), quantize(db)
     local dMessage, _ = scanRegion(doubledImage, dCornerR, dCornerG, dCornerB, 32, 336, 320, 32)
     Assert.isTrue(dMessage > 40, versionId .. " paints the browse message at the doubled scale")
+  end
+end
+
+-- Source-faithful native behavior through the real v3 bundle: timeline
+-- icon frames with selected bob, gender marks in source roles, fixed HP
+-- fields, the generated Cancel label, action-window context copy, and no
+-- host overlay pixels. Menu-open presentations still composite the slots
+-- beneath, so slot-level behavior is proved without the retired v2
+-- message window; the browse-window scenario below names that missing
+-- consumption directly.
+local function contextPresentation(overrides)
+  local menu = {
+    { kind = "summary", label = "SUMMARY" },
+    { kind = "switch", label = "SWITCH" },
+    { kind = "quit", label = "QUIT" },
+  }
+  local base = {
+    state = "context",
+    menu = menu,
+    menuIndex = 1,
+    menuSlot = 0,
+  }
+  for key, value in pairs(overrides or {}) do
+    base[key] = value
+  end
+  return presentation(base)
+end
+
+local function iconTopRow(image, x0, y0, width, height)
+  for y = y0, y0 + height - 1 do
+    local red = 0
+    for x = x0, x0 + width - 1 do
+      local ir, ig, ib = image:getPixel(x, y)
+      if ir > 0.7 and ig < 0.3 and ib < 0.3 then
+        red = red + 1
+      end
+    end
+    if red > 4 then
+      return y
+    end
+  end
+  return nil
+end
+
+function T.selected_icons_follow_timeline_frames_with_source_bob(scope)
+  for _, versionId in ipairs(readyVersions()) do
+    local cacheFs, manifest = manifestFor(versionId)
+    local timeline = assert(manifest.iconAnimations.sequences[2], versionId .. " carries the healthy timeline")
+    local total = 0
+    for _, keyframe in ipairs(timeline) do
+      total = total + keyframe.durationTicks
+    end
+    Assert.isTrue(total > 1, versionId .. " spans more than one tick")
+    local firstDuration = timeline[1].durationTicks
+    local function renderAt(tick)
+      -- Controller sequences are 0-based (0 still, 1 full): sequence 1
+      -- resolves the healthy timeline above.
+      local status = contextPresentation({
+        cursorNode = 0,
+        anim = {
+          tick = tick,
+          sequences = { 1, 1, 1, 1, 1, 1 },
+          sequenceTicks = { tick, 0, 0, 0, 0, 0 },
+          panelSlide = 0,
+        },
+      })
+      local image, _ = renderPane(scope, cacheFs, manifest, status)
+      return image
+    end
+    local early = renderAt(0)
+    local late = renderAt(firstDuration)
+    local panel = manifest.panels[1]
+    local earlyTop = iconTopRow(early, panel.origin.x, panel.origin.y, 128, 48)
+    local lateTop = iconTopRow(late, panel.origin.x, panel.origin.y, 128, 48)
+    Assert.notNil(earlyTop, versionId .. " draws the selected icon")
+    Assert.notNil(lateTop, versionId .. " draws the selected icon after its frame changes")
+    Assert.isTrue(earlyTop ~= lateTop, versionId .. " moves the icon when the timeline frame changes")
+  end
+end
+
+function T.names_and_gender_use_source_roles_without_truncation(scope)
+  for _, versionId in ipairs(readyVersions()) do
+    local cacheFs, manifest = manifestFor(versionId)
+    local male = contextPresentation({ cursorNode = 5 })
+    male.view.slots[1] = slot(0, { displayName = "LEADMON", gender = "male", genderSymbol = "male" })
+    local maleImage, _ = renderPane(scope, cacheFs, manifest, male)
+    local female = contextPresentation({ cursorNode = 5 })
+    female.view.slots[1] = slot(0, { displayName = "LEADMON", gender = "female", genderSymbol = "female" })
+    local femaleImage, _ = renderPane(scope, cacheFs, manifest, female)
+    local name = assert(manifest.panels[1].text.name, versionId .. " carries the name subrect")
+    local markWidth = math.min(name.width + 16, 256 - name.x)
+    local delta = differingPixels(maleImage, femaleImage, name.x, name.y, markWidth, name.height)
+    Assert.isTrue(delta > 2, versionId .. " paints distinct gender marks beside identical names")
+  end
+end
+
+function T.hp_fields_hold_slash_and_max_steady_across_current_values(scope)
+  for _, versionId in ipairs(readyVersions()) do
+    local cacheFs, manifest = manifestFor(versionId)
+    local number = assert(manifest.panels[1].hp.number, versionId .. " carries the HP number subrect")
+    local function renderCurrent(current)
+      local status = contextPresentation({ cursorNode = 5 })
+      status.view.slots[1] =
+        slot(0, { currentHp = current, maxHp = 180, hpFraction = current / 180 })
+      local image, _ = renderPane(scope, cacheFs, manifest, status)
+      return image
+    end
+    local narrow = renderCurrent(5)
+    local wide = renderCurrent(150)
+    local steady = differingPixels(
+      narrow,
+      wide,
+      number.x + 24,
+      number.y,
+      number.width - 24,
+      number.height
+    )
+    Assert.equal(steady, 0, versionId .. " keeps the slash and max fields fixed while current varies")
+  end
+end
+
+function T.context_message_names_its_slot_in_the_action_window(scope)
+  for _, versionId in ipairs(readyVersions()) do
+    local cacheFs, manifest = manifestFor(versionId)
+    local window = assert(manifest.windows.action, versionId .. " carries the action window")
+    local function renderNamed(name)
+      local status = contextPresentation({ cursorNode = 5 })
+      status.view.slots[1] = slot(0, { displayName = name })
+      local image, _ = renderPane(scope, cacheFs, manifest, status)
+      return image
+    end
+    -- Same-length names keep panel numerals identical, so any action-
+    -- window difference is the context message naming its slot.
+    local first = renderNamed("LEADMONA")
+    local second = renderNamed("LEADMONB")
+    local delta = differingPixels(first, second, window.x, window.y, window.width, window.height)
+    Assert.isTrue(delta > 4, versionId .. " paints the context message naming its slot")
+  end
+end
+
+function T.native_content_ignores_the_host_overlay_flag(scope)
+  for _, versionId in ipairs(readyVersions()) do
+    local cacheFs, manifest = manifestFor(versionId)
+    local plain = contextPresentation({ cursorNode = 5 })
+    local plainImage, _ = renderPane(scope, cacheFs, manifest, plain)
+    local flagged = contextPresentation({ cursorNode = 5, infoOverlay = true })
+    local flaggedImage, _ = renderPane(scope, cacheFs, manifest, flagged)
+    Assert.equal(
+      differingPixels(plainImage, flaggedImage, 0, 0, 256, 192),
+      0,
+      versionId .. " renders identical native pixels with or without the host overlay flag"
+    )
   end
 end
 
