@@ -82,16 +82,20 @@ local function manifest()
       balls = {
         sequences = {
           { frames = { frameRef("assets/generated/party/ball-0.png") }, loopFrom = 1, playback = "static" },
+          { frames = { frameRef("assets/generated/party/ball-1.png") }, loopFrom = 1, playback = "static" },
         },
       },
       buttons = {
         sequences = {
           { frames = { frameRef("assets/generated/party/button-0.png") }, loopFrom = 1, playback = "static" },
+          { frames = { frameRef("assets/generated/party/button-1.png") }, loopFrom = 1, playback = "static" },
         },
       },
       held = {
         sequences = {
           { frames = { frameRef("assets/generated/party/held-0.png", 8, 8) }, loopFrom = 1, playback = "static" },
+          { frames = { frameRef("assets/generated/party/held-1.png", 8, 8) }, loopFrom = 1, playback = "static" },
+          { frames = { frameRef("assets/generated/party/held-2.png", 8, 8) }, loopFrom = 1, playback = "static" },
         },
       },
       status = {
@@ -183,6 +187,51 @@ end
 
 function T.valid_manifest_passes_schema()
   Assert.isTrue(PartyAssetSchema.isValidManifest(manifest()), "the assembled family is valid")
+end
+
+function T.runtime_required_sequence_prefixes_are_mandatory()
+  local cases = {
+    { name = "balls", count = 1 },
+    { name = "buttons", count = 1 },
+    { name = "held", count = 1 },
+    { name = "held", count = 2 },
+  }
+  local accepted = {}
+  for _, case in ipairs(cases) do
+    local bad = manifest()
+    local sequences = bad.visuals[case.name].sequences
+    while #sequences > case.count do
+      table.remove(sequences)
+    end
+    local ok, err = pcall(function()
+      PartyAssetSchema.assertManifest(bad)
+    end)
+    if ok then
+      accepted[#accepted + 1] = case.name .. "=" .. case.count
+    else
+      Assert.notNil(tostring(err):find("PARTY_MANIFEST_INVALID"), case.name .. " rejection uses the manifest error family")
+    end
+  end
+  Assert.isTrue(#accepted == 0, "incomplete runtime prefixes passed: " .. table.concat(accepted, ", "))
+  Assert.isTrue(PartyAssetSchema.isValidManifest(manifest()), "the complete runtime prefixes are valid")
+end
+
+function T.producer_tail_sequences_remain_validated()
+  local currentProducer = manifest()
+  currentProducer.visuals.buttons.sequences[3] = {
+    frames = { frameRef("assets/generated/party/button-2.png") },
+    loopFrom = 1,
+    playback = "static",
+  }
+  currentProducer.visuals.buttons.sequences[4] = {
+    frames = { frameRef("assets/generated/party/button-3.png") },
+    loopFrom = 1,
+    playback = "static",
+  }
+  Assert.isTrue(PartyAssetSchema.isValidManifest(currentProducer), "the producer's four-button output is valid")
+
+  currentProducer.visuals.buttons.sequences[4].frames[1].image = "assets/generated/bag/other.png"
+  Assert.isFalse(PartyAssetSchema.isValidManifest(currentProducer), "producer-tail sequences still receive structural validation")
 end
 
 function T.schema_rejects_malformed_references()

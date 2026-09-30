@@ -96,12 +96,17 @@ local function partyManifest()
     dpadRow[entry] =
       { left = 64, top = 25, width = 0, height = 0, up = 7, down = 2, leftNeighbor = 7, rightNeighbor = 1 }
   end
-  local function sequences(path, width, height)
-    return {
-      sequences = {
-        { frames = { frameRef(path, width, height, 8) }, loopFrom = 1, playback = "static" },
-      },
-    }
+  local function sequences(path, width, height, count)
+    local result = {}
+    for sequenceIndex = 1, count or 1 do
+      local sequencePath = sequenceIndex == 1 and path or path .. "-" .. sequenceIndex .. ".png"
+      result[sequenceIndex] = {
+        frames = { frameRef(sequencePath, width, height, 8) },
+        loopFrom = 1,
+        playback = "static",
+      }
+    end
+    return { sequences = result }
   end
   return {
     schema = PartyCache.SCHEMA,
@@ -116,9 +121,9 @@ local function partyManifest()
     },
     visuals = {
       cursor = sequences("assets/generated/party/fixture-cursor-0.png", 32, 32),
-      balls = sequences("assets/generated/party/fixture-ball-0.png", 32, 32),
-      buttons = sequences("assets/generated/party/fixture-button-0.png", 32, 32),
-      held = sequences("assets/generated/party/fixture-held-0.png", 8, 8),
+      balls = sequences("assets/generated/party/fixture-ball-0.png", 32, 32, 2),
+      buttons = sequences("assets/generated/party/fixture-button-0.png", 32, 32, 2),
+      held = sequences("assets/generated/party/fixture-held-0.png", 8, 8, 3),
       status = {
         paralysis = imageRef("assets/generated/party/fixture-status-paralysis.png", 24, 8),
         freeze = imageRef("assets/generated/party/fixture-status-freeze.png", 24, 8),

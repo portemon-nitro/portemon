@@ -177,13 +177,13 @@ local function checkAnimated(value, context, what, allowHide)
   end
 end
 
-local function checkSequenceGroup(value, context, what)
+local function checkSequenceGroup(value, context, what, minimumSequences)
   if type(value) ~= "table" then
     fail(what .. " must be a record", context)
   end
   checkKeys(value, { sequences = true }, context, what)
-  if type(value.sequences) ~= "table" or #value.sequences == 0 then
-    fail(what .. " carries no sequences", context)
+  if type(value.sequences) ~= "table" or #value.sequences < minimumSequences then
+    fail(what .. " must contain at least " .. minimumSequences .. " sequences", context)
   end
   for index, sequence in ipairs(value.sequences) do
     checkAnimated(sequence, context, what .. ".sequences[" .. index .. "]")
@@ -407,14 +407,14 @@ function PartyAssetSchema.assertManifest(manifest)
     auxPanel = true,
     hpBars = true,
   }, {}, "manifest.visuals")
-  checkSequenceGroup(visuals.cursor, {}, "manifest.visuals.cursor")
+  checkSequenceGroup(visuals.cursor, {}, "manifest.visuals.cursor", 1)
   local cursorSequenceCount = #(visuals.cursor --[[@as table<string, unknown>]]).sequences --[[@as table[] ]]
   for slot = 1, PartyAssetSchema.SLOT_COUNT do
     checkPanel((root.panels --[[@as table[] ]])[slot], {}, "manifest.panels[" .. slot .. "]", cursorSequenceCount)
   end
-  checkSequenceGroup(visuals.balls, {}, "manifest.visuals.balls")
-  checkSequenceGroup(visuals.buttons, {}, "manifest.visuals.buttons")
-  checkSequenceGroup(visuals.held, {}, "manifest.visuals.held")
+  checkSequenceGroup(visuals.balls, {}, "manifest.visuals.balls", 2)
+  checkSequenceGroup(visuals.buttons, {}, "manifest.visuals.buttons", 2)
+  checkSequenceGroup(visuals.held, {}, "manifest.visuals.held", 3)
   if type(visuals.status) ~= "table" then
     fail("manifest.visuals.status must be a record", {})
   end

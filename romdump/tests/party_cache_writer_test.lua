@@ -86,6 +86,11 @@ local function manifest()
             loopFrom = 1,
             playback = "static",
           },
+          {
+            frames = { { image = "assets/generated/party/ball-1.png", width = 32, height = 32, durationTicks = 8 } },
+            loopFrom = 1,
+            playback = "static",
+          },
         },
       },
       buttons = {
@@ -95,12 +100,27 @@ local function manifest()
             loopFrom = 1,
             playback = "static",
           },
+          {
+            frames = { { image = "assets/generated/party/button-1.png", width = 32, height = 32, durationTicks = 8 } },
+            loopFrom = 1,
+            playback = "static",
+          },
         },
       },
       held = {
         sequences = {
           {
             frames = { { image = "assets/generated/party/held-0.png", width = 8, height = 8, durationTicks = 8 } },
+            loopFrom = 1,
+            playback = "static",
+          },
+          {
+            frames = { { image = "assets/generated/party/held-1.png", width = 8, height = 8, durationTicks = 8 } },
+            loopFrom = 1,
+            playback = "static",
+          },
+          {
+            frames = { { image = "assets/generated/party/held-2.png", width = 8, height = 8, durationTicks = 8 } },
             loopFrom = 1,
             playback = "static",
           },
