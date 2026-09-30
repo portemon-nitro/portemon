@@ -118,7 +118,12 @@ T["fingerprint reads use no generated bodies and publish no snapshot"] = functio
   local options = compatibility:validationOptions()
 
   Assert.equal(secondFingerprint, firstFingerprint)
-  Assert.equal(options.expectedRegistryFingerprint, firstFingerprint)
+  Assert.isTrue(type(options.resolveTask) == "function", "task resolution stays available")
+  Assert.isTrue(type(options.resolveComposition) == "function", "composition resolution stays available")
+  Assert.isNil(
+    options.expectedRegistryFingerprint,
+    "validation carries no global registry gate: provenance stays recorded, never compared"
+  )
   Assert.equal(scriptReads(), 0, "fingerprint acquisition must not decode generated bodies")
   Assert.equal(writes(), 0, "fingerprint acquisition must not publish snapshots")
 end
@@ -149,20 +154,26 @@ T["a hashless index fails fast as a stale cache"] = function()
   Assert.equal(scriptReads(), 0, "a stale cache must not trigger corpus decoding")
 end
 
--- Validation options carry the once-acquired fingerprint plus the live task
--- identity and resolvers, stable across repeated calls.
-T["validation options carry the stable fingerprint and task identity"] = function()
+-- Validation options carry the live resolvers, stable across repeated
+-- calls. Recorded fingerprints stay provenance: no global gate compares
+-- them, so unrelated registry growth keeps paused saves loading while
+-- active graphs still resolve exactly or fail closed.
+T["validation options carry stable resolvers and no global gate"] = function()
   local cache = hashIndexedCache()
   local fs = overrideFs()
   local compatibility = FieldScriptCompatibility.new({ cacheFs = cache, overrideFs = fs })
   ---@cast compatibility FieldScriptCompatibilityTestSurface
   local firstOptions = compatibility:validationOptions()
   local secondOptions = compatibility:validationOptions()
-  Assert.equal(firstOptions.expectedRegistryFingerprint, compatibility:registryFingerprint())
-  Assert.equal(secondOptions.expectedRegistryFingerprint, firstOptions.expectedRegistryFingerprint)
-  Assert.equal(secondOptions.expectedTaskFingerprint, firstOptions.expectedTaskFingerprint)
+  Assert.isNil(firstOptions.expectedRegistryFingerprint, "validation carries no global registry gate")
+  Assert.isNil(firstOptions.expectedTaskFingerprint, "validation carries no global task gate")
   Assert.isTrue(type(firstOptions.resolveTask) == "function", "task resolution stays available")
   Assert.isTrue(type(firstOptions.resolveComposition) == "function", "composition resolution stays available")
+  Assert.isTrue(type(secondOptions.resolveTask) == "function", "repeated calls keep task resolution")
+  Assert.isTrue(
+    type(secondOptions.resolveComposition) == "function",
+    "repeated calls keep composition resolution"
+  )
 end
 
 return { tests = T }

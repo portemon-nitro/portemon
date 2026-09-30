@@ -108,21 +108,29 @@ local validPlayerData = {
   options = { textFrame = 0, textSpeed = "mid" },
 }
 
-function T.full_record_validation_is_shared_and_version_context_is_cached()
+function T.full_record_validation_consults_the_current_application_composition()
   local loads = 0
+  local cell = { current = context() }
   local service = GameSaveValidation.new({
     contextLoader = function(versionId)
       loads = loads + 1
       Assert.equal(versionId, "heartgold")
-      return context()
+      return cell.current
     end,
   })
+  -- A supplied loader owns the composition: every validation consults it
+  -- directly instead of reusing a stale version-keyed entry, so the
+  -- application (which memoizes one immutable context) governs load.
   local first = assert(service:validate(record("save-00000001", "heartgold", validPlayerData)))
   local second = assert(service:validate(record("save-00000002", "heartgold", validPlayerData)))
   Assert.equal(first.saveId, "save-00000001")
   Assert.equal(second.saveId, "save-00000002")
-  Assert.equal(loads, 1)
-  local invalid, err = service:validate(record("save-00000003", "heartgold", { options = {} }))
+  Assert.equal(loads, 2, "each validation consults the current application composition")
+  cell.current = context()
+  local third = assert(service:validate(record("save-00000003", "heartgold", validPlayerData)))
+  Assert.equal(third.saveId, "save-00000003")
+  Assert.equal(loads, 3, "a swapped composition takes effect on the next validation")
+  local invalid, err = service:validate(record("save-00000004", "heartgold", { options = {} }))
   Assert.isNil(invalid)
   Assert.isTrue(Errors.is(err))
 end
@@ -143,12 +151,13 @@ function T.version_context_failure_does_not_borrow_another_version()
   Assert.equal(unavailableError.code, "SAVE_VERSION_CONTEXT_UNAVAILABLE")
 end
 
-function T.complete_validation_rejects_stale_task_identity()
+function T.complete_validation_rejects_unknown_active_tasks_without_global_gates()
+  -- Provenance alone never gates: a quiescent bucket carrying stale
+  -- fingerprints validates, while an active task no resolver supplies
+  -- still fails closed with the owning bucket named.
   local selected = context()
   selected.scriptCompatibility.validationOptions = function()
     return {
-      expectedRegistryFingerprint = "registry",
-      expectedTaskFingerprint = "current-tasks",
       resolveTask = function()
         return nil
       end,
@@ -162,11 +171,31 @@ function T.complete_validation_rejects_stale_task_identity()
       return selected
     end,
   })
-  local invalid, err = service:validate(record("save-00000004", "heartgold", validPlayerData))
-  Assert.isNil(invalid)
+  local quiet = assert(
+    service:validate(record("save-00000018", "heartgold", validPlayerData)),
+    "a quiescent bucket survives unrelated provenance drift"
+  )
+  Assert.equal(quiet.saveId, "save-00000018")
+  local candidate = record("save-00000019", "heartgold", validPlayerData)
+  -- An active task graph that resolves to nothing still fails closed:
+  -- the waiting task names an owner no live instance supplies, so
+  -- structural cross-reference checks reject it before any resolver runs.
+  candidate.scripts.tasks = {
+    {
+      taskId = "task-1",
+      taskType = "wait_ticks",
+      taskVersion = 1,
+      ownerInstanceId = "instance-1",
+      environmentId = "environment-1",
+      state = {},
+    },
+  }
+  local invalid, err = service:validate(candidate)
+  Assert.isNil(invalid, "an active task no resolver supplies must not load")
   Assert.isTrue(Errors.is(err))
   local validationError = assert(err)
   Assert.equal(validationError.code, "GAME_SAVE_BUCKET_INVALID")
+  Assert.equal(validationError.context.bucket, "scripts")
 end
 
 function T.complete_validation_composes_field_object_validation()
@@ -324,8 +353,11 @@ function T.quiescent_v3_saves_migrate_without_losing_history()
   Assert.equal(valid.schema, "g4-game-save-v4")
   Assert.equal(valid.playerData.profile.badges, 0)
   Assert.deepEqual(valid.fieldTravel, { lastHealSpawn = "SPAWN_NEW_BARK" })
-  Assert.equal(valid.scripts.registryFingerprint, "registry")
-  Assert.equal(valid.scripts.taskFingerprint, "tasks")
+  -- Provenance passes through untouched: recorded fingerprints are never
+  -- compared, so the migrated bucket keeps its historical prints while
+  -- counters and player history survive.
+  Assert.equal(valid.scripts.registryFingerprint, "old-registry")
+  Assert.equal(valid.scripts.taskFingerprint, "old-tasks")
   Assert.equal(valid.scripts.nextEnvironmentId, 3)
   Assert.equal(valid.scripts.nextInstanceId, 5)
   Assert.equal(valid.scripts.nextTaskId, 7)

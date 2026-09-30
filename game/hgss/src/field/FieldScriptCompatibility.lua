@@ -66,6 +66,10 @@ end
 
 ---@return table<string, unknown>
 function FieldScriptCompatibility:validationOptions()
+  -- Reference-local resolvers only: the recorded script/task fingerprints
+  -- in a save stay provenance, so unrelated registry growth keeps paused
+  -- saves loading while active graphs, entries, and tasks still resolve
+  -- exactly or fail closed.
   local function resolveTask(taskType, version)
     return self.taskRegistry:resolve(taskType, version)
   end
@@ -73,8 +77,6 @@ function FieldScriptCompatibility:validationOptions()
     return self.composition:effective(scriptId)
   end
   return {
-    expectedRegistryFingerprint = self:registryFingerprint(),
-    expectedTaskFingerprint = self.taskRegistry:fingerprint(),
     resolveTask = resolveTask,
     resolveComposition = resolveComposition,
   }

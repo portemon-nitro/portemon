@@ -486,8 +486,10 @@ T["missing graph revision"] = function()
   Assert.equal(err.code, "SCRIPT_SAVE_REVISION_MISMATCH")
 end
 
--- 10. A removed mod changes the registry fingerprint, which rejects the load.
-T["mod removed changes fingerprint"] = function()
+-- 10. A drifted provenance alone never rejects the load: recorded
+-- fingerprints are provenance, so a paused script restores under unrelated
+-- registry growth while incompatible active content still fails closed.
+T["drifted provenance keeps paused scripts restoring"] = function()
   local h = harness()
   startForeground(
     h,
@@ -499,24 +501,25 @@ T["mod removed changes fingerprint"] = function()
   )
   h.scheduler:step(100, nil)
   local bucket = ScriptSave.capture(h.scheduler, 100, { registryFingerprint = h.registry:fingerprint() })
+  local resumed = Scheduler.new({
+    semantics = require("libs.hgss.src.script.RuntimeValues"),
+    services = h.services,
+    taskRegistry = h.taskRegistry,
+    resolveComposition = function(id)
+      return h.composition:effective(id)
+    end,
+  })
   local ok, err = pcall(
     ScriptSave.restore,
     bucket,
-    Scheduler.new({
-      semantics = require("libs.hgss.src.script.RuntimeValues"),
-      services = h.services,
-      taskRegistry = h.taskRegistry,
-      resolveComposition = function(id)
-        return h.composition:effective(id)
-      end,
-    }),
+    resumed,
     100,
     { expectedRegistryFingerprint = "different-registry" }
   )
-  Assert.isFalse(ok)
-  Assert.isTrue(Errors.is(err))
-  ---@cast err Errors.Error
-  Assert.equal(err.code, "SCRIPT_REGISTRY_FINGERPRINT_MISMATCH")
+  Assert.isTrue(ok, "unrelated provenance drift must not reject the restore")
+  Assert.isNil(err)
+  Assert.equal(#resumed:liveInstances(), 1, "the resumed scheduler must carry the paused instance")
+  Assert.equal(#resumed:tasks(), 1, "the resumed scheduler must carry the waiting task")
 end
 
 -- 10b. The task-registry fingerprint is order-independent: registering the

@@ -9,6 +9,11 @@ local FieldTravelState = require("libs.hgss.src.field.FieldTravelState")
 local GameSave = {}
 
 GameSave.SCHEMA = "g4-game-save-v4"
+-- The one historical envelope listing still recognizes: v3 records predate
+-- the travel bucket and the badge mask but otherwise share the v4 shape.
+-- Listing a v3 envelope implies nothing loadable; semantic validation
+-- migrates or rejects it separately.
+GameSave.HISTORICAL_SCHEMA_V3 = "g4-game-save-v3"
 GameSave.MAX_PLAY_TIME_SECONDS = 999 * 60 * 60 + 59 * 60 + 59
 
 local FACING = { north = true, south = true, west = true, east = true }
@@ -106,16 +111,21 @@ local function validateBucket(record, key, opts, validatorKey)
       Errors.raise(
         GameSaveErrors.GAME_SAVE_BUCKET_INVALID,
         "game save " .. key .. " bucket is invalid: " .. result.message,
-        { bucket = key, cause = result.code }
+        { bucket = key, cause = result.code, causeContext = result.context }
       )
     end
     error(result)
   end
   if Errors.is(result) or result == false or (result == nil and validationErr ~= nil) then
-    local cause = Errors.is(validationErr) and validationErr.code or nil
-    Errors.raise(GameSaveErrors.GAME_SAVE_BUCKET_INVALID, "game save " .. key .. " bucket is invalid", {
+    local causeErr = Errors.is(result) and result or (Errors.is(validationErr) and validationErr or nil)
+    local message = "game save " .. key .. " bucket is invalid"
+    if causeErr ~= nil then
+      message = message .. ": " .. causeErr.message
+    end
+    Errors.raise(GameSaveErrors.GAME_SAVE_BUCKET_INVALID, message, {
       bucket = key,
-      cause = cause,
+      cause = causeErr and causeErr.code or nil,
+      causeContext = causeErr and causeErr.context or nil,
     })
   end
   return result or record[key]
@@ -279,7 +289,9 @@ end
 -- Read-only display envelope for menu listing: save schema/id/version, the
 -- display profile name and the integral bounded play time. It performs no
 -- generated-cache lookup and implies no semantic validity; a listed record
--- is not thereby loadable. Never throws a validation failure: malformed
+-- is not thereby loadable. The current schema and the one supported
+-- historical envelope (v3) list; anything else stays unsupported.
+-- Never throws a validation failure: malformed
 -- input returns a structured error instead.
 ---@param record unknown
 ---@return table<string, unknown>|nil, Errors.Error?
@@ -289,7 +301,7 @@ function GameSave.metadata(record)
       Errors.raise(GameSaveErrors.GAME_SAVE_INVALID, "game save must be a table", {})
     end
     assert(type(record) == "table")
-    if record.schema ~= GameSave.SCHEMA then
+    if record.schema ~= GameSave.SCHEMA and record.schema ~= GameSave.HISTORICAL_SCHEMA_V3 then
       Errors.raise(
         GameSaveErrors.GAME_SAVE_SCHEMA_UNSUPPORTED,
         "unsupported game save schema",

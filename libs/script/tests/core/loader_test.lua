@@ -453,7 +453,9 @@ T["published index hashes identify the registry regardless of index order"] = fu
 end
 
 -- 10c. A save captured under the decoded registry validates unchanged under
--- the published hashes, and content drift still mismatches.
+-- the published hashes, and provenance drift alone never rejects a
+-- quiescent bucket: recorded fingerprints are provenance, while active
+-- graphs still resolve exactly or fail closed.
 T["a save captured under decoded content validates under published hashes"] = function()
   local oracle = decodedOracleFingerprint()
   local cache = hashedCache()
@@ -475,12 +477,10 @@ T["a save captured under decoded content validates under published hashes"] = fu
     tasks = {},
   }
   Assert.isNil(ScriptSave.validate(bucket, { expectedRegistryFingerprint = seeded }))
-  local mismatch = assert(
+  Assert.isNil(
     ScriptSave.validate(bucket, { expectedRegistryFingerprint = seeded .. "00" }),
-    "drifted content must mismatch the saved fingerprint"
+    "drifted provenance must not reject a quiescent bucket"
   )
-  Assert.isTrue(Errors.is(mismatch))
-  Assert.equal(mismatch.code, "SCRIPT_REGISTRY_FINGERPRINT_MISMATCH")
 end
 
 -- 9c. An explicitly empty resources array is schema-legal and installs

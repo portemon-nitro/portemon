@@ -2,10 +2,10 @@
 -- bucket of the g4-field-save-v4 schema. Capture happens only at a fixed-tick
 -- phase boundary (no context in `running` status); absolute scheduling ticks
 -- become relative delays rebased at restore, so no tick is duplicated or
--- skipped. The bucket carries the registry fingerprint, the task-registry
--- fingerprint, and the id counters; restore rejects a fingerprint mismatch
--- (SCRIPT_REGISTRY_FINGERPRINT_MISMATCH) and the scheduler reattaches every
--- frame's graph through current compositions, rejecting unknown revisions
+-- skipped. The bucket records the registry fingerprint, the task-registry
+-- fingerprint, and the id counters as provenance: unrelated registry growth
+-- never rejects a save, while the scheduler reattaches every frame's graph
+-- through current compositions, rejecting unknown revisions
 -- (SCRIPT_SAVE_REVISION_MISMATCH). Validation is the complete load
 -- boundary: the whole bucket and every cross-record reference are checked
 -- before any live scheduler state is constructed, and restore stages every
@@ -397,7 +397,11 @@ end
 
 -- Validate the whole scripts bucket: the envelope, the id counters, every
 -- environment/instance/task record, and the cross-record references. Returns
--- nil when valid, else an Errors object. Structural record failures raise
+-- nil when valid, else an Errors object. The recorded registry and task
+-- fingerprints are provenance only and never gate: unrelated registry
+-- growth keeps paused saves loading, while the resolvers below still
+-- reject unknown active graphs, task types, versions, and state.
+-- Structural record failures raise
 -- inside the protected boundary and are converted back to the error result;
 -- the task/composition resolvers below run outside that boundary with their
 -- order, arguments, and error identity preserved. Task-record shape
@@ -428,20 +432,10 @@ function ScriptSave.validate(bucket, opts)
       )
     end
   end
-  if opts.expectedRegistryFingerprint ~= nil and bucket.registryFingerprint ~= opts.expectedRegistryFingerprint then
-    return Errors.new(
-      ScriptErrors.SCRIPT_REGISTRY_FINGERPRINT_MISMATCH,
-      "scripts bucket registry fingerprint does not match the loaded registry",
-      { expected = opts.expectedRegistryFingerprint, actual = bucket.registryFingerprint }
-    )
-  end
-  if opts.expectedTaskFingerprint ~= nil and bucket.taskFingerprint ~= opts.expectedTaskFingerprint then
-    return Errors.new(
-      ScriptErrors.SCRIPT_REGISTRY_FINGERPRINT_MISMATCH,
-      "scripts bucket task fingerprint does not match the loaded task registry",
-      { expected = opts.expectedTaskFingerprint, actual = bucket.taskFingerprint }
-    )
-  end
+  -- Provenance is recorded, never compared: a caller-supplied expected
+  -- fingerprint is accepted and ignored, so unrelated registry growth
+  -- keeps paused saves loading while active references still resolve
+  -- through the checks below.
   local structuralErr = adaptStructural(function()
     validateBucket(bucket)
   end)
@@ -508,8 +502,10 @@ end
 -- cross-references), then task types and versions must resolve and each task
 -- implementation must accept the serialized state; the scheduler stages
 -- every restored object and installs it only after the whole bucket has
--- restored. Raises on fingerprint mismatch, unknown task types or versions,
--- invalid task state, or unknown graph revisions.
+-- restored. Raises on unknown task types or versions, invalid task state,
+-- or unknown graph revisions. Recorded fingerprints are
+-- provenance only: unrelated registry growth restores, while incompatible
+-- active content still fails with no partial scheduler state.
 ---@param bucket table<string, unknown>
 ---@param scheduler Scheduler
 ---@param restoreTick integer
@@ -523,8 +519,6 @@ function ScriptSave.restore(bucket, scheduler, restoreTick, opts)
     return scheduler:resolveComposition(scriptId)
   end
   local envelopeErr = ScriptSave.validate(bucket, {
-    expectedRegistryFingerprint = opts.expectedRegistryFingerprint,
-    expectedTaskFingerprint = scheduler:taskRegistryFingerprint(),
     resolveTask = resolveTask,
     resolveComposition = resolveComposition,
   })

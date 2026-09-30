@@ -2,13 +2,17 @@
 -- the current catalog cannot resolve fails with a structured error before
 -- any field state or service is published, leaving the last valid record
 -- untouched. The stored catalog fingerprint alone never decides: only
--- selected-reference resolution does.
+-- selected-reference resolution does. One content composition governs both
+-- load and play: two compositions sharing a version never share a cached
+-- validation context, so a custom move loads under the composition that
+-- supplies it and fails naming its bucket under the one that does not.
 
 local Assert = require("tests.support.Assert")
 local CatalogFixture = require("libs.mons.tests.catalog_fixture")
 local Errors = require("libs.errors.src.Errors")
 local GameSaveValidation = require("game.hgss.src.save.GameSaveValidation")
 local ItemFixture = require("libs.items.tests.item_fixture")
+local MonCatalog = require("libs.mons.src.MonCatalog")
 local BagSave = require("libs.hgss.src.save.BagSave")
 local Lcrng = require("libs.mons.src.gen4.Lcrng")
 local MonsSave = require("libs.mons.src.MonsSave")
@@ -119,6 +123,142 @@ function T.unresolvable_mons_reference_blocks_continue_without_publication()
     ),
     "the current catalog still validates fresh buckets"
   )
+end
+
+local function copy(value)
+  if type(value) ~= "table" then
+    return value
+  end
+  local out = {}
+  for key, item in pairs(value) do
+    out[key] = copy(item)
+  end
+  return out
+end
+
+-- Two compositions sharing one version: the first supplies a custom saved
+-- move, the second does not. Both resolve every native reference.
+local function compositionCatalogs()
+  local rootWithMove = CatalogFixture.buildAssetRoot()
+  local custom = copy(rootWithMove.moves.TACKLE)
+  custom.name = "Ember Bite"
+  custom.nativeId = nil
+  rootWithMove.moves["ember:EMBER_BITE"] = custom
+  local items = ItemFixture.makeCatalog()
+  return MonCatalog.fromResolved(rootWithMove, items),
+    MonCatalog.fromResolved(CatalogFixture.buildAssetRoot(), items)
+end
+
+local function compositionContext(monCatalog)
+  return {
+    charmap = CatalogFixture.CHARMAP,
+    frameIndexes = { [0] = true },
+    audioSequenceIds = { [7] = true },
+    monCatalog = monCatalog,
+    itemCatalog = ItemFixture.makeCatalog(),
+    scriptCompatibility = {
+      validationOptions = function()
+        return {
+          expectedRegistryFingerprint = "registry",
+          expectedTaskFingerprint = "tasks",
+          resolveTask = function()
+            return nil
+          end,
+          resolveComposition = function()
+            return nil
+          end,
+        }
+      end,
+    },
+  }
+end
+
+local function customMoveRecord(saveId, withMove)
+  local factory = CatalogFixture.makeFactory(0x12345678, withMove)
+  local mon = factory:createNormal(CatalogFixture.normalRequest())
+  mon.moves = { { move = "ember:EMBER_BITE", pp = 35, ppUps = 0 } }
+  return {
+    schema = "g4-game-save-v4",
+    saveId = saveId,
+    versionId = "heartgold",
+    playTimeSeconds = 0,
+    mapId = 60,
+    fieldX = 684,
+    fieldZ = 393,
+    worldY = 0,
+    surfaceId = 0,
+    terrainDependencyHash = "terrain-heartgold",
+    facing = "south",
+    playerData = {
+      profile = { name = "GOLD", gender = 0, trainerId = 1, money = 3000, badges = 0 },
+      options = { textFrame = 0, textSpeed = "mid" },
+    },
+    fieldTravel = { lastHealSpawn = "SPAWN_NEW_BARK" },
+    world = { flags = {}, variables = {}, objects = {}, rng = { state = 1, calls = 0 } },
+    scripts = {
+      schema = "g4-script-save-v1",
+      registryFingerprint = "registry",
+      taskFingerprint = "tasks",
+      capturedAtSimulationTick = 0,
+      nextEnvironmentId = 0,
+      nextInstanceId = 0,
+      nextTaskId = 0,
+      environments = {},
+      instances = {},
+      tasks = {},
+    },
+    auxiliaryUi = { requested = "shown", state = "shown" },
+    audio = {},
+    mons = MonsSave.capture(
+      { max = 6, mons = { mon } },
+      Lcrng.new(0x99999999):capture(),
+      withMove:fingerprint()
+    ),
+    bag = BagSave.empty(),
+  }
+end
+
+function T.custom_move_loads_only_while_its_composition_is_current()
+  local withMove, withoutMove = compositionCatalogs()
+  local cell = { current = compositionContext(withoutMove) }
+  local service = GameSaveValidation.new({
+    contextLoader = function()
+      return cell.current
+    end,
+  })
+  local candidate = customMoveRecord("save-00000002", withMove)
+  local invalid, err = service:validate(candidate)
+  Assert.isNil(invalid, "a composition without the saved move must not approve the save")
+  Assert.isTrue(Errors.is(err))
+  Assert.equal(err.code, "GAME_SAVE_BUCKET_INVALID")
+  Assert.equal(err.context.bucket, "mons")
+  -- The composition changes while the version does not: the same
+  -- validation owner must follow the current composition, not its
+  -- version-keyed cache entry.
+  cell.current = compositionContext(withMove)
+  local valid = service:validate(candidate)
+  Assert.notNil(valid, "the current composition must load the save it resolves")
+  Assert.equal(valid.mons.party.mons[1].moves[1].move, "ember:EMBER_BITE")
+end
+
+function T.removed_move_fails_closed_once_its_composition_is_current()
+  local withMove, withoutMove = compositionCatalogs()
+  local cell = { current = compositionContext(withMove) }
+  local service = GameSaveValidation.new({
+    contextLoader = function()
+      return cell.current
+    end,
+  })
+  local candidate = customMoveRecord("save-00000003", withMove)
+  local valid = assert(service:validate(candidate))
+  Assert.equal(valid.saveId, "save-00000003")
+  Assert.equal(valid.mons.party.mons[1].moves[1].move, "ember:EMBER_BITE")
+  cell.current = compositionContext(withoutMove)
+  local invalid, err = service:validate(candidate)
+  Assert.isNil(invalid, "a composition without the saved move must not approve the save")
+  Assert.isTrue(Errors.is(err))
+  Assert.equal(err.code, "GAME_SAVE_BUCKET_INVALID")
+  Assert.equal(err.context.bucket, "mons")
 end
 
 return { tests = T }

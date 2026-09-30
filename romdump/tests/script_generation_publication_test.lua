@@ -2,18 +2,17 @@
 -- preparation, never through a live cache handle, and the generation summary
 -- activates the complete selection only after every declared member is
 -- current. Registry fingerprints stay derived from published script content,
--- so an unrelated producer rotation preserves saves while a real semantic
--- edit does not.
+-- so an unrelated producer rotation preserves saves; recorded fingerprints
+-- are provenance, so a quiescent save also survives a real semantic edit
+-- while incompatible active content keeps failing through its resolvers.
 
 local Assert = require("tests.support.Assert")
 local CacheFs = require("libs.storage.src.CacheFs")
-local Errors = require("libs.errors.src.Errors")
 local FakeCache = require("tests.support.FakeCache")
 local PreparedArtifact = require("romdump.src.build.PreparedArtifact")
 local Registry = require("libs.script.src.Registry")
 local ScriptCache = require("libs.assets.src.ScriptCache")
 local ScriptCacheWriter = require("romdump.src.digest.script.ScriptCacheWriter")
-local ScriptErrors = require("libs.script.src.errors")
 local ScriptSave = require("libs.script.src.ScriptSave")
 
 local T = {}
@@ -396,10 +395,11 @@ function T.identical_content_under_two_producer_identities_keeps_the_saved_finge
   )
 end
 
--- A genuine semantic edit changes the content fingerprint, so a save
--- recorded under the old registry stays rejected with the existing
--- incompatibility error and no cache-version fallback accepts it.
-function T.changed_script_content_stays_incompatible_with_the_saved_fingerprint()
+-- A genuine semantic edit changes the content fingerprint, but a quiescent
+-- save recorded under the old registry still loads: recorded fingerprints
+-- are provenance, never a gate. Incompatible active content keeps failing
+-- through its resolvers; no cache-version fallback accepts it.
+function T.changed_script_content_keeps_quiescent_saves_loading()
   local cache = CacheFs.forVersion("heartgold", FakeCache.new())
   publishCompleteGeneration(cache, GENERATION_A, MARKER_A, nil, "baseline", OUTER_GENERATION_A)
   local baselineFingerprint = registryFromPublished(cache, GENERATION_A):fingerprint()
@@ -425,10 +425,10 @@ function T.changed_script_content_stays_incompatible_with_the_saved_fingerprint(
   Assert.isTrue(editedFingerprint ~= baselineFingerprint, "a semantic edit must change the content fingerprint")
 
   local saved = saveBucket(baselineFingerprint)
-  local err = ScriptSave.validate(saved, { expectedRegistryFingerprint = editedFingerprint })
-  Assert.isTrue(Errors.is(err), "the stale save must be rejected under the edited registry")
-  err = err --[[@as { code: string }]]
-  Assert.equal(err.code, ScriptErrors.SCRIPT_REGISTRY_FINGERPRINT_MISMATCH)
+  Assert.isNil(
+    ScriptSave.validate(saved, { expectedRegistryFingerprint = editedFingerprint }),
+    "a quiescent save survives unrelated provenance drift"
+  )
 end
 
 -- A summary publication interrupted after ownership begins recovers through

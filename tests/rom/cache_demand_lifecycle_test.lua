@@ -89,16 +89,18 @@ function T.published_hashes_reproduce_the_body_loaded_fingerprint_without_body_r
   Assert.isTrue(#fingerprint > 0, "the reproduced fingerprint is non-empty")
 end
 
-function T.save_envelope_with_the_published_fingerprint_validates_strictly(_, versionId)
+function T.save_envelope_with_the_published_fingerprint_validates_without_a_provenance_gate(_, versionId)
   local cacheFs = CacheFs.forVersion(versionId)
   local fs = overrideFs()
   local compatibility = FieldScriptCompatibility.new({ cacheFs = cacheFs, overrideFs = fs })
   local options = compatibility:validationOptions()
-  local bucket = saveBucket(compatibility:registryFingerprint(), options.expectedTaskFingerprint)
+  local bucket = saveBucket(compatibility:registryFingerprint(), compatibility.taskRegistry:fingerprint())
   Assert.isNil(ScriptSave.validate(bucket, options), "a save carrying the published fingerprint validates")
-  local tampered = saveBucket(compatibility:registryFingerprint() .. "0", options.expectedTaskFingerprint)
-  local err = assert(ScriptSave.validate(tampered, options), "a tampered registry fingerprint is rejected")
-  Assert.equal(err.code, "SCRIPT_REGISTRY_FINGERPRINT_MISMATCH", "rejection names the fingerprint mismatch")
+  -- Recorded fingerprints are provenance, never a gate: tampering the
+  -- saved print keeps the quiescent envelope loading, while incompatible
+  -- active content still fails through the resolvers.
+  local tampered = saveBucket(compatibility:registryFingerprint() .. "0", compatibility.taskRegistry:fingerprint())
+  Assert.isNil(ScriptSave.validate(tampered, options), "a tampered provenance still loads its quiescent save")
 end
 
 local suite = require("tests.rom.support.RomSuite").fromFacts(T)

@@ -301,8 +301,25 @@ function HgssGame.new(options)
 
   local game = Game.new({ onExit = options.onExit })
 
+  local repoFs = RepoFs.new(love.filesystem.getSourceBaseDirectory())
+  -- One immutable validation composition for the game lifetime: Continue
+  -- (through the save store below) and field entry (through field state)
+  -- validate against these memoized version contexts, so load and play
+  -- always agree on the current composition instead of consulting
+  -- version-only entries that could approve or reject the wrong content.
+  -- Loading stays lazy: contexts build on first validation, never here.
+  local validationContexts = {}
+  local function loadValidationContext(requestedVersionId)
+    local context = validationContexts[requestedVersionId]
+    if context == nil then
+      context = GameSaveValidation.defaultContext(repoFs, requestedVersionId)
+      validationContexts[requestedVersionId] = context
+    end
+    return context
+  end
   local saveValidation = GameSaveValidation.new({
-    overrideFs = RepoFs.new(love.filesystem.getSourceBaseDirectory()),
+    overrideFs = repoFs,
+    contextLoader = loadValidationContext,
   })
   local function validateSaveRecord(record)
     return saveValidation:validate(record)

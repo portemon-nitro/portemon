@@ -22,8 +22,10 @@ local MonCatalog = require("libs.mons.src.MonCatalog")
 local ItemCache = require("libs.assets.src.ItemCache")
 local ItemCatalog = require("libs.items.src.ItemCatalog")
 local BagSave = require("libs.hgss.src.save.BagSave")
+local Mon = require("libs.mons.src.Mon")
 local MonsErrors = require("libs.mons.src.errors")
 local MonsSave = require("libs.mons.src.MonsSave")
+local MonStateMigration = require("libs.mons.src.MonStateMigration")
 
 ---@class GameSaveValidation
 ---@field contexts table<string, table<string, unknown>>
@@ -84,9 +86,9 @@ local function contextForCache(cacheFs, overrideFs, versionId)
   }
 end
 
--- Only a validated empty old script bucket rebinds to the current
--- fingerprints: no environments, instances, or tasks may be live. Counters
--- and every other bucket field survive untouched.
+-- Only a validated quiescent old script bucket migrates: no environments,
+-- instances, or tasks may be live. Counters and every other bucket field
+-- survive untouched, and recorded fingerprints pass through as provenance.
 ---@param bucket unknown
 ---@return boolean
 local function isQuiescentScripts(bucket)
@@ -99,19 +101,16 @@ local function isQuiescentScripts(bucket)
     and #bucket.tasks == 0
 end
 
----@param bucket table<string, unknown>
----@param options table<string, unknown>
+-- Application-composition entry point: builds the default immutable
+-- validation context for one version from the readiness caches. The game
+-- application owns one memoized context per version through this builder
+-- so Continue and field runtime validate against the same composition;
+-- the validator reuses it internally when no loader is supplied.
+---@param overrideFs table<string, unknown>
+---@param versionId string
 ---@return table<string, unknown>
-local function rebindScripts(bucket, options)
-  local rebound = {}
-  for key, value in pairs(bucket) do
-    rebound[key] = value
-  end
-  rebound.registryFingerprint =
-    assert(options.expectedRegistryFingerprint, "script compatibility must supply the current registry fingerprint")
-  rebound.taskFingerprint =
-    assert(options.expectedTaskFingerprint, "script compatibility must supply the current task fingerprint")
-  return rebound
+function GameSaveValidation.defaultContext(overrideFs, versionId)
+  return contextForCache(CacheFs.forVersion(versionId), overrideFs, versionId)
 end
 
 ---@param options table<string, unknown>?
@@ -126,16 +125,23 @@ function GameSaveValidation.new(options)
 end
 
 function GameSaveValidation:_context(versionId)
+  -- A supplied loader owns the composition: every validation consults the
+  -- current application context, so a swapped composition can never
+  -- approve or reject through a stale version-keyed entry. Loader failures
+  -- cache nothing and leave later loads untouched. Without a loader the
+  -- default readiness context builds once per version on this instance.
+  if self.contextLoader ~= nil then
+    local context = self.contextLoader(versionId)
+    assert(type(context) == "table", "GameSave validation context must be a table")
+    assert(type(context.audioSequenceIds) == "table", "GameSave validation audio sequence ids are required")
+    assert(type(context.scriptCompatibility) == "table", "GameSave script compatibility context is required")
+    return context
+  end
   local context = self.contexts[versionId]
   if context then
     return context
   end
-  context = self.contextLoader and self.contextLoader(versionId)
-    or contextForCache(
-      CacheFs.forVersion(versionId),
-      assert(self.overrideFs, "override filesystem is required"),
-      versionId
-    )
+  context = GameSaveValidation.defaultContext(assert(self.overrideFs, "override filesystem is required"), versionId)
   assert(type(context) == "table", "GameSave validation context must be a table")
   assert(type(context.audioSequenceIds) == "table", "GameSave validation audio sequence ids are required")
   assert(type(context.scriptCompatibility) == "table", "GameSave script compatibility context is required")
@@ -153,12 +159,13 @@ function GameSaveValidation:validate(record, context)
     end
     local selected = context or self:_context(record.versionId)
     -- Explicit v3 -> v4 migration before canonical validation. Quiescent
-    -- old script buckets rebind to the current fingerprints (counters and
-    -- world/RNG data preserved); an incompatible active graph is rejected
-    -- with the save bytes untouched, never cleared or rewritten.
+    -- old script buckets pass through with their recorded provenance
+    -- (counters and world/RNG data preserved); an incompatible active
+    -- graph is rejected with the save bytes untouched, never cleared or
+    -- rewritten. Recognized nested legacy mon buckets upgrade in memory
+    -- only; anything else rejects loudly through canonical validation.
     local effective = record
     if type(record) == "table" and record.schema == "g4-game-save-v3" then
-      local options = selected.scriptCompatibility:validationOptions()
       if not isQuiescentScripts(record.scripts) then
         return nil,
           Errors.new(
@@ -168,7 +175,18 @@ function GameSaveValidation:validate(record, context)
           )
       end
       effective = GameSave.migrateV3(record)
-      effective.scripts = rebindScripts(record.scripts, options)
+      if type(effective.mons) == "table" then
+        local nestedSchema = effective.mons.schema
+        if
+          nestedSchema == MonStateMigration.LEGACY_BUCKET_SCHEMA
+          or nestedSchema == MonStateMigration.RETIRED_BUCKET_SCHEMA
+        then
+          local upgradedOk, upgraded = pcall(MonStateMigration.upgradeBucket, effective.mons)
+          if upgradedOk then
+            effective.mons = upgraded
+          end
+        end
+      end
     end
     local function playerDataValidate(value)
       return PlayerData.validate(value, selected)
@@ -190,23 +208,46 @@ function GameSaveValidation:validate(record, context)
     -- catalog, its fingerprint, the generated charmap, the native
     -- version/language mapping, and the structural met-date checks owned by
     -- the mon record validator. A context without a mon catalog fails
-    -- closed: no bucket is ever accepted unvalidated.
+    -- closed: no bucket is ever accepted unvalidated. Failures name the
+    -- offending record: the first mon the mon owner rejects is reported
+    -- with its zero-based slot, the precise cause, and the record itself,
+    -- while party- or generator-level failures fall through unchanged.
     local function monsValidate(value)
       local monCatalog = selected.monCatalog
       if monCatalog == nil then
         MonsErrors.raise(MonsErrors.SAVE_INVALID, "mons validation requires a mon catalog", {})
       end
       assert(monCatalog ~= nil, "mons validation requires a mon catalog")
-      -- MonsSave.validate reports success as a boolean; the canonical
-      -- bucket itself is what the save record carries forward, so a
-      -- re-validated record never degrades the bucket into `true`.
-      MonsSave.validate(value, {
+      local monContext = {
         catalog = monCatalog,
         charmap = selected.charmap,
         games = selected.monGames or HgssMonService.GAMES,
         languages = selected.monLanguages or HgssMonService.LANGUAGES,
-      })
-      return value
+      }
+      -- MonsSave.validate reports success as a boolean; the canonical
+      -- bucket itself is what the save record carries forward, so a
+      -- re-validated record never degrades the bucket into `true`.
+      local validOk, validFailure = pcall(MonsSave.validate, value, monContext)
+      if validOk then
+        return value
+      end
+      if type(value) == "table" and type(value.party) == "table" and type(value.party.mons) == "table" then
+        for index, mon in ipairs(value.party.mons) do
+          local monOk, monFailure = pcall(Mon.validate, mon, monContext)
+          if not monOk then
+            if Errors.is(monFailure) then
+              MonsErrors.raise(MonsErrors.SAVE_INVALID, monFailure.message, {
+                slot = index - 1,
+                cause = monFailure.code,
+                causeContext = monFailure.context,
+                mon = mon,
+              })
+            end
+            error(monFailure, 0)
+          end
+        end
+      end
+      error(validFailure, 0)
     end
     -- The single application owner of bag validation context: the version
     -- item catalog the bag bucket validates against. A context without an
