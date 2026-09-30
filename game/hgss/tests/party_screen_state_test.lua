@@ -16,6 +16,10 @@ local function fakeCatalog()
     species = function(_)
       return { name = "Chikorita", genderRatio = 127 }
     end,
+    item = function(_, item)
+      assert(item == "NONE")
+      return { name = "None" }
+    end,
     iconSelection = function(_, mon)
       return mon.species .. "/f" .. mon.form
     end,

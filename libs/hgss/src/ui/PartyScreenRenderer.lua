@@ -655,11 +655,9 @@ function PartyScreenRenderer:_drawDetailFacts(facts, originX, originY, slide, ic
   assert(type(displayName) == "string", "the detail name renders as text")
   local nicknameTextOrigin = assert(detail.nicknameTextOrigin, "party detail carries the nickname origin")
   self:_drawSlotText(displayName, originX + nicknameTextOrigin.x, originY + nicknameTextOrigin.y - slide, false)
-  if facts.heldItem ~= nil and facts.heldItem ~= "NONE" then
-    local heldName = assert(facts.heldItemName, "held items carry a display name")
-    local heldItemTextOrigin = assert(detail.heldItemTextOrigin, "party detail carries the held-item text origin")
-    self:_drawSlotText(heldName, originX + heldItemTextOrigin.x, originY + heldItemTextOrigin.y - slide, false)
-  end
+  local heldName = assert(facts.heldItemName, "detail facts carry a held-item display name")
+  local heldItemTextOrigin = assert(detail.heldItemTextOrigin, "party detail carries the held-item text origin")
+  self:_drawSlotText(heldName, originX + heldItemTextOrigin.x, originY + heldItemTextOrigin.y - slide, false)
 end
 
 ---@param presentation table<string, unknown>

@@ -225,6 +225,7 @@ local function occupiedSlot(slot0, overrides)
     hpFraction = 1,
     isEgg = false,
     heldItem = "NONE",
+    heldItemName = "None",
     capsule = nil,
     moves = {},
     shinyLeaves = 0,
@@ -745,6 +746,63 @@ function T.detail_facts_use_generated_geometry_and_draw_no_held_marker_obj()
     Assert.isTrue(found, expected.value .. " uses its generated detail text origin")
   end
   Assert.equal(upperHeldDraws, 0, "the upper detail pane has no held-item marker OBJ")
+end
+
+function T.itemless_detail_draws_name_at_generated_origin_without_held_obj()
+  local graphics = fakeGraphics()
+  local texts = {}
+  local manifest = sourceManifest()
+  local renderer = newRenderer(graphics, stubText(texts), manifest)
+  local resolved = PartyScreenLayout.resolve({ manifest = manifest, cancellable = true })
+  local placement = {
+    frame = { x = 0, y = 0, width = 256, height = 192 },
+    origin = { x = 0, y = 0 },
+    scale = 1,
+    logicalWidth = 256,
+    logicalHeight = 192,
+  }
+  local plan = {
+    panes = {
+      { id = "content", placement = placement, interactive = true },
+      { id = "detail", placement = placement, interactive = false },
+    },
+    frames = {},
+    content = resolved,
+    inputKey = "party",
+  }
+  local status = presentation({ cursorNode = 1, menuSlot = 1, state = "context" })
+  status.anim.panelSlide = 40
+  status.view.slots[2] = occupiedSlot(1)
+
+  renderer:drawPane(status, plan.panes[2], resolved, icons())
+
+  local detail = manifest.detail
+  local expected = {
+    value = "None",
+    x = detail.heldItemTextOrigin.x,
+    y = detail.heldItemTextOrigin.y - 40,
+  }
+  local found
+  for _, call in ipairs(texts) do
+    if call.value == expected.value and call.x == expected.x and call.y == expected.y then
+      found = true
+      break
+    end
+  end
+  Assert.isTrue(found, "itemless display name uses the generated detail origin and slide")
+
+  local heldImages = {}
+  for sequenceIndex = 1, 2 do
+    local path = manifest.visuals.held.sequences[sequenceIndex].frames[1].image
+    heldImages[renderer._images["asset:" .. path]] = true
+  end
+  local heldDraws = 0
+  for _, draw in ipairs(graphics.draws) do
+    if heldImages[draw.image] then
+      heldDraws = heldDraws + 1
+    end
+  end
+  Assert.equal(heldDraws, 0, "itemless detail draws no held-item or mail marker OBJ")
 end
 
 function T.detail_pane_hides_selected_facts_during_browse()

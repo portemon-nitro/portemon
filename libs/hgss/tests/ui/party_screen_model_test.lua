@@ -213,13 +213,13 @@ function T.mail_pocket_projects_the_mail_marker_kind()
 end
 
 function T.unset_facts_default_to_empty_values()
-  local _, service = openService()
+  local catalog, service = openService()
   give(service, "CHIKORITA")
   local view = PartyScreenModel.build(service)
   local lead = view.slots[1]
   Assert.isFalse(lead.isEgg)
   Assert.equal(lead.heldItem, "NONE")
-  Assert.isNil(lead.heldItemName, "mons without an item carry no held display name")
+  Assert.equal(lead.heldItemName, catalog:item("NONE").name, "itemless mons carry the catalog display name")
   Assert.isNil(lead.heldMarkerKind, "mons without an item carry no marker kind")
   Assert.isNil(lead.capsule, "mons without capsules carry no capsule record")
   Assert.isTrue(#lead.moves >= 0, "moves project as an array")

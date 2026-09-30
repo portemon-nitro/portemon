@@ -75,9 +75,9 @@ local function projectSlot(service, slot0, isEligible)
   local heldItem = mon.heldItem
   assert(type(heldItem) == "string", "party mons carry their held-item key")
   record.heldItem = heldItem
+  local definition = catalog:item(heldItem)
+  record.heldItemName = assert(definition.name, "held items carry a display name")
   if heldItem ~= "NONE" then
-    local definition = catalog:item(heldItem)
-    record.heldItemName = assert(definition.name, "held items carry a display name")
     record.heldMarkerKind = definition.pocket == "mail" and "mail" or "item"
   end
   if mon.capsule ~= nil then

@@ -126,6 +126,7 @@ local function slot(slot0, overrides)
     eligible = false,
     isEgg = false,
     heldItem = "NONE",
+    heldItemName = "None",
     capsule = nil,
     moves = {},
     shinyLeaves = 0,
