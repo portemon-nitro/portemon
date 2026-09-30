@@ -17,7 +17,7 @@ local Validate = require("libs.assets.src.Validate")
 ---@class PartyAssetSchema
 local PartyAssetSchema = {}
 
-PartyAssetSchema.SCHEMA = "g4-party-presentation-v2"
+PartyAssetSchema.SCHEMA = "g4-party-presentation-v3"
 PartyAssetSchema.PANE_WIDTH = 256
 PartyAssetSchema.PANE_HEIGHT = 192
 PartyAssetSchema.SLOT_COUNT = 6
@@ -113,6 +113,82 @@ local function checkRect(value, context, what)
   end
   if value.x + value.width > PartyAssetSchema.PANE_WIDTH or value.y + value.height > PartyAssetSchema.PANE_HEIGHT then
     fail(what .. " escapes the canonical pane", context)
+  end
+end
+
+local function checkColor(value, context, what)
+  if type(value) ~= "table" then
+    fail(what .. " must be a record", context)
+  end
+  checkKeys(value, { r = true, g = true, b = true, a = true }, context, what)
+  for _, channel in ipairs({ "r", "g", "b" }) do
+    if type(value[channel]) ~= "number" or value[channel] % 1 ~= 0 or value[channel] < 0 or value[channel] > 255 then
+      fail(what .. "." .. channel .. " must be a byte", context)
+    end
+  end
+  if value.a ~= nil then
+    if type(value.a) ~= "number" or value.a % 1 ~= 0 or value.a < 0 or value.a > 255 then
+      fail(what .. ".a must be a byte", context)
+    end
+  end
+end
+
+local function checkTextRole(value, context, what)
+  if type(value) ~= "table" then
+    fail(what .. " must be a record", context)
+  end
+  checkKeys(value, { foreground = true, shadow = true, background = true }, context, what)
+  checkColor(value.foreground, context, what .. ".foreground")
+  checkColor(value.shadow, context, what .. ".shadow")
+  checkColor(value.background, context, what .. ".background")
+end
+
+local function checkIconTimeline(value, context, what)
+  if type(value) ~= "table" then
+    fail(what .. " must be a record", context)
+  end
+  if type(value.loopFrom) ~= "number" or value.loopFrom % 1 ~= 0 then
+    fail(what .. ".loopFrom must be an integer", context)
+  end
+  if PLAYBACKS[value.playback] == nil then
+    fail(what .. ".playback must be static, loop or once", context)
+  end
+  local frames = #value
+  if frames == 0 then
+    fail(what .. " carries no frames", context)
+  end
+  if value.loopFrom < 1 or value.loopFrom > frames then
+    fail(what .. ".loopFrom must address a frame", context)
+  end
+  for key in pairs(value) do
+    if type(key) == "string" and key ~= "loopFrom" and key ~= "playback" then
+      fail(what .. " carries an unknown field " .. key, context)
+    end
+    if SOURCE_KEYS[key] == true then
+      fail(what .. " leaks source identity " .. tostring(key), context)
+    end
+    if type(key) == "number" and (key < 1 or key > frames or key % 1 ~= 0) then
+      fail(what .. " carries a non-contiguous frame", context)
+    end
+  end
+  for index = 1, frames do
+    local frame = value[index]
+    local where = what .. "[" .. index .. "]"
+    if type(frame) ~= "table" then
+      fail(where .. " must be a record", context)
+    end
+    checkKeys(frame, { iconFrame = true, durationTicks = true, translateX = true, translateY = true }, context, where)
+    if frame.iconFrame ~= 1 and frame.iconFrame ~= 2 then
+      fail(where .. ".iconFrame must address the two icon frames", context)
+    end
+    if type(frame.durationTicks) ~= "number" or frame.durationTicks % 1 ~= 0 or frame.durationTicks <= 0 then
+      fail(where .. ".durationTicks must be a positive integer", context)
+    end
+    for _, axis in ipairs({ "translateX", "translateY" }) do
+      if type(frame[axis]) ~= "number" or frame[axis] % 1 ~= 0 then
+        fail(where .. "." .. axis .. " must be an integer", context)
+      end
+    end
   end
 end
 
@@ -243,9 +319,10 @@ local function checkPanel(value, context, what, cursorSequenceCount)
   if type(value.text) ~= "table" then
     fail(what .. ".text must be a record", context)
   end
-  checkKeys(value.text, { name = true, level = true }, context, what .. ".text")
+  checkKeys(value.text, { name = true, level = true, gender = true }, context, what .. ".text")
   checkRect(value.text.name, context, what .. ".text.name")
   checkRect(value.text.level, context, what .. ".text.level")
+  checkPanePoint(value.text.gender, context, what .. ".text.gender")
   if type(value.hp) ~= "table" then
     fail(what .. ".hp must be a record", context)
   end
@@ -295,6 +372,87 @@ local function checkDpadRow(value, context, what)
   end
 end
 
+local function checkMenuEntry(value, context, what, count, lateral)
+  if type(value) ~= "table" then
+    fail(what .. " must be a record", context)
+  end
+  checkKeys(value, {
+    textRect = true,
+    frameRect = true,
+    frameShape = true,
+    style = true,
+    touch = true,
+    up = true,
+    down = true,
+    left = true,
+    right = true,
+  }, context, what)
+  checkRect(value.textRect, context, what .. ".textRect")
+  checkRect(value.frameRect, context, what .. ".frameRect")
+  if value.frameShape ~= "standard" and value.frameShape ~= "cancel" then
+    fail(what .. ".frameShape must be standard or cancel", context)
+  end
+  if type(value.style) ~= "string" or value.style == "" then
+    fail(what .. ".style must name its text/fill style", context)
+  end
+  checkTouchRect(value.touch, context, what .. ".touch")
+  for _, direction in ipairs({ "up", "down" }) do
+    if value[direction] ~= nil then
+      checkInt(value[direction], context, what .. "." .. direction)
+      if value[direction] < 1 or value[direction] > count then
+        fail(what .. "." .. direction .. " must address a semantic entry", context)
+      end
+    end
+  end
+  for _, direction in ipairs({ "left", "right" }) do
+    if lateral then
+      if value[direction] == nil then
+        fail(what .. "." .. direction .. " keeps the source lateral relation", context)
+      end
+      checkInt(value[direction], context, what .. "." .. direction)
+      if value[direction] < 1 or value[direction] > count then
+        fail(what .. "." .. direction .. " must address a semantic entry", context)
+      end
+    elseif value[direction] ~= nil then
+      fail(what .. "." .. direction .. " has no source lateral relation", context)
+    end
+  end
+end
+
+local function checkMenuSection(value, context, what, minCount, maxCount, lateral)
+  if type(value) ~= "table" then
+    fail(what .. " must be a record", context)
+  end
+  for count = minCount, maxCount do
+    local layout = value[count]
+    if layout == nil then
+      layout = value[tostring(count)]
+    end
+    if type(layout) ~= "table" then
+      fail(what .. " lacks its " .. count .. "-entry layout", context)
+    end
+    if not Validate.isArray(layout) or #layout ~= count then
+      fail(what .. "[" .. count .. "] must carry one record per entry", context)
+    end
+    for index, entry in ipairs(layout) do
+      checkMenuEntry(entry, context, what .. "[" .. count .. "][" .. index .. "]", count, lateral)
+    end
+  end
+  for key in pairs(value) do
+    local count = nil
+    if type(key) == "number" then
+      count = key
+    elseif type(key) == "string" and key:match("^%d+$") ~= nil then
+      count = tonumber(key)
+    else
+      fail(what .. " carries an unknown count " .. tostring(key), context)
+    end
+    if count < minCount or count > maxCount then
+      fail(what .. " carries an unsupported count " .. tostring(key), context)
+    end
+  end
+end
+
 local function checkSegment(value, context, what)
   if type(value) ~= "table" then
     fail(what .. " must be a record", context)
@@ -333,6 +491,7 @@ function PartyAssetSchema.assertManifest(manifest)
     windows = true,
     visuals = true,
     iconAnimations = true,
+    contextMenu = true,
     navigation = true,
     hitboxes = true,
     text = true,
@@ -368,8 +527,15 @@ function PartyAssetSchema.assertManifest(manifest)
     fail("manifest.controls.cancel must be a record", {})
   end
   local cancel = controls.cancel --[[@as table<string, unknown>]]
-  checkKeys(cancel, { anchor = true }, {}, "manifest.controls.cancel")
+  checkKeys(cancel, { anchor = true, label = true, textRect = true, align = true }, {}, "manifest.controls.cancel")
   checkPanePoint(cancel.anchor, {}, "manifest.controls.cancel.anchor")
+  if type(cancel.label) ~= "string" or cancel.label == "" then
+    fail("manifest.controls.cancel.label must be display text", {})
+  end
+  checkRect(cancel.textRect, {}, "manifest.controls.cancel.textRect")
+  if cancel.align ~= "center" then
+    fail("manifest.controls.cancel.align must keep the center-alignment contract", {})
+  end
   if type(root.detail) ~= "table" then
     fail("manifest.detail must be a record", {})
   end
@@ -387,9 +553,12 @@ function PartyAssetSchema.assertManifest(manifest)
   if type(root.windows) ~= "table" then
     fail("manifest.windows must be a record", {})
   end
-  checkKeys(root.windows, { message = true, context = true }, {}, "manifest.windows")
-  checkRect((root.windows --[[@as table<string, unknown>]]).message, {}, "manifest.windows.message")
-  checkRect((root.windows --[[@as table<string, unknown>]]).context, {}, "manifest.windows.context")
+  checkKeys(root.windows, { browse = true, context = true, action = true, prompt = true }, {}, "manifest.windows")
+  local windows = root.windows --[[@as table<string, unknown>]]
+  checkRect(windows.browse, {}, "manifest.windows.browse")
+  checkRect(windows.context, {}, "manifest.windows.context")
+  checkRect(windows.action, {}, "manifest.windows.action")
+  checkPanePoint(windows.prompt, {}, "manifest.windows.prompt")
   if type(root.visuals) ~= "table" then
     fail("manifest.visuals must be a record", {})
   end
@@ -455,27 +624,69 @@ function PartyAssetSchema.assertManifest(manifest)
     fail("manifest.iconAnimations must be a record", {})
   end
   local icons = root.iconAnimations --[[@as table<string, unknown>]]
-  checkKeys(
-    icons,
-    { periods = true, replacementDurations = true, replacementShift = true },
-    {},
-    "manifest.iconAnimations"
-  )
-  if type(icons.periods) ~= "table" or #icons.periods ~= 6 then
-    fail("manifest.iconAnimations.periods must carry six periods", {})
+  checkKeys(icons, { sequences = true }, {}, "manifest.iconAnimations")
+  if type(icons.sequences) ~= "table" or #icons.sequences ~= 6 then
+    fail("manifest.iconAnimations.sequences must carry six timelines", {})
   end
-  for index, period in
-    ipairs(icons.periods --[[@as table[] ]])
+  for index, timeline in
+    ipairs(icons.sequences --[[@as table[] ]])
   do
-    if type(period) ~= "number" or period % 1 ~= 0 or period <= 0 then
-      fail("manifest.iconAnimations.periods[" .. index .. "] must be a positive integer", {})
+    checkIconTimeline(timeline, {}, "manifest.iconAnimations.sequences[" .. index .. "]")
+  end
+  if type(root.contextMenu) ~= "table" then
+    fail("manifest.contextMenu must be a record", {})
+  end
+  local contextMenu = root.contextMenu --[[@as table<string, unknown>]]
+  checkKeys(contextMenu, {
+    topLevel = true,
+    subcontext = true,
+    textPalette = true,
+    fillPalette = true,
+    frames = true,
+  }, {}, "manifest.contextMenu")
+  checkMenuSection(contextMenu.topLevel, {}, "manifest.contextMenu.topLevel", 2, 8, true)
+  checkMenuSection(contextMenu.subcontext, {}, "manifest.contextMenu.subcontext", 2, 5, false)
+  if type(contextMenu.textPalette) ~= "table" then
+    fail("manifest.contextMenu.textPalette must be a record", {})
+  end
+  local textPalette = contextMenu.textPalette --[[@as table<string, unknown>]]
+  checkKeys(textPalette, { raised = true, depressed = true }, {}, "manifest.contextMenu.textPalette")
+  checkColor(textPalette.raised, {}, "manifest.contextMenu.textPalette.raised")
+  checkColor(textPalette.depressed, {}, "manifest.contextMenu.textPalette.depressed")
+  if type(contextMenu.fillPalette) ~= "table" then
+    fail("manifest.contextMenu.fillPalette must be a record", {})
+  end
+  local fillPalette = contextMenu.fillPalette --[[@as table<string, unknown>]]
+  checkKeys(fillPalette, { raised = true, depressed = true }, {}, "manifest.contextMenu.fillPalette")
+  checkColor(fillPalette.raised, {}, "manifest.contextMenu.fillPalette.raised")
+  checkColor(fillPalette.depressed, {}, "manifest.contextMenu.fillPalette.depressed")
+  if type(contextMenu.frames) ~= "table" then
+    fail("manifest.contextMenu.frames must be a record", {})
+  end
+  local frames = contextMenu.frames --[[@as table<string, unknown>]]
+  checkKeys(frames, { standard = true, cancel = true }, {}, "manifest.contextMenu.frames")
+  local frameShapes = {
+    standard = { width = 128, height = 32 },
+    cancel = { width = 56, height = 40 },
+  }
+  for _, shape in ipairs({ "standard", "cancel" }) do
+    local group = frames[shape]
+    if type(group) ~= "table" then
+      fail("manifest.contextMenu.frames." .. shape .. " must be a record", {})
     end
-  end
-  if type(icons.replacementDurations) ~= "table" or #icons.replacementDurations ~= 3 then
-    fail("manifest.iconAnimations.replacementDurations must carry three durations", {})
-  end
-  if type(icons.replacementShift) ~= "table" or #icons.replacementShift ~= 3 then
-    fail("manifest.iconAnimations.replacementShift must carry three shifts", {})
+    local typed = group --[[@as table<string, unknown>]]
+    checkKeys(typed, { raised = true, selected = true, pressed = true }, {}, "manifest.contextMenu.frames." .. shape)
+    local size = frameShapes[shape]
+    for _, state in ipairs({ "raised", "selected", "pressed" }) do
+      local visual = typed[state]
+      checkVisual(visual, {}, "manifest.contextMenu.frames." .. shape .. "." .. state)
+      if visual.width ~= size.width or visual.height ~= size.height then
+        fail(
+          "manifest.contextMenu.frames." .. shape .. "." .. state .. " must be " .. size.width .. "x" .. size.height,
+          {}
+        )
+      end
+    end
   end
   if type(root.navigation) ~= "table" then
     fail("manifest.navigation must be a record", {})
@@ -523,7 +734,7 @@ function PartyAssetSchema.assertManifest(manifest)
     fail("manifest.text must be a record", {})
   end
   local text = root.text --[[@as table<string, unknown>]]
-  checkKeys(text, { labels = true, templates = true }, {}, "manifest.text")
+  checkKeys(text, { labels = true, templates = true, roles = true }, {}, "manifest.text")
   if type(text.labels) ~= "table" or type(text.templates) ~= "table" then
     fail("manifest.text carries no label/template records", {})
   end
@@ -534,6 +745,21 @@ function PartyAssetSchema.assertManifest(manifest)
       fail("manifest.text.labels." .. tostring(name) .. " must be display text", {})
     end
   end
+  local labels = text.labels --[[@as table<string, unknown>]]
+  if type(labels.male) ~= "string" or labels.male == "" then
+    fail("manifest.text.labels.male must be display text", {})
+  end
+  if type(labels.female) ~= "string" or labels.female == "" then
+    fail("manifest.text.labels.female must be display text", {})
+  end
+  if type(text.roles) ~= "table" then
+    fail("manifest.text.roles must be a record", {})
+  end
+  local roles = text.roles --[[@as table<string, unknown>]]
+  checkKeys(roles, { ordinary = true, male = true, female = true }, {}, "manifest.text.roles")
+  checkTextRole(roles.ordinary, {}, "manifest.text.roles.ordinary")
+  checkTextRole(roles.male, {}, "manifest.text.roles.male")
+  checkTextRole(roles.female, {}, "manifest.text.roles.female")
   for name, template in
     pairs(text.templates --[[@as table<string, unknown>]])
   do
@@ -552,7 +778,7 @@ function PartyAssetSchema.assertManifest(manifest)
   local glyphs = root.numberGlyphs --[[@as table<string, unknown>]]
   checkKeys(
     glyphs,
-    { advance = true, height = true, digits = true, slash = true, level = true },
+    { advance = true, height = true, digits = true, slash = true, level = true, placement = true },
     {},
     "manifest.numberGlyphs"
   )
@@ -571,6 +797,20 @@ function PartyAssetSchema.assertManifest(manifest)
   end
   checkVisual(glyphs.slash, {}, "manifest.numberGlyphs.slash")
   checkVisual(glyphs.level, {}, "manifest.numberGlyphs.level")
+  if type(glyphs.placement) ~= "table" then
+    fail("manifest.numberGlyphs.placement must be a record", {})
+  end
+  local placement = glyphs.placement --[[@as table<string, unknown>]]
+  checkKeys(
+    placement,
+    { level = true, current = true, slash = true, max = true },
+    {},
+    "manifest.numberGlyphs.placement"
+  )
+  checkPoint(placement.level, {}, "manifest.numberGlyphs.placement.level")
+  checkPoint(placement.current, {}, "manifest.numberGlyphs.placement.current")
+  checkPoint(placement.slash, {}, "manifest.numberGlyphs.placement.slash")
+  checkPoint(placement.max, {}, "manifest.numberGlyphs.placement.max")
   if type(root.shinyLeaves) ~= "table" then
     fail("manifest.shinyLeaves must be a record", {})
   end

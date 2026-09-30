@@ -72,6 +72,7 @@ local function partyManifest()
       text = {
         name = rect(origin[1] + 48, origin[2] + 8, 72, 16),
         level = rect(origin[1] + 0, origin[2] + 32, 48, 16),
+        gender = { x = origin[1] + 112, y = origin[2] + 8 },
       },
       hp = {
         bar = rect(origin[1] + 64, origin[2] + 24, 48, 8),
@@ -105,6 +106,36 @@ local function partyManifest()
     end
     return { sequences = result }
   end
+  local function menuRole()
+    return { r = 248, g = 248, b = 248, a = 255 }
+  end
+  local function menuLayout(count, lateral)
+    local entries = {}
+    for index = 1, count do
+      entries[index] = {
+        textRect = rect(8, 8, 112, 16),
+        frameRect = rect(0, 0, 128, 32),
+        frameShape = "standard",
+        style = "raised",
+        touch = { top = 0, bottom = 32, left = 0, right = 128 },
+        up = 1,
+        down = 1,
+      }
+      if lateral then
+        entries[index].left = 1
+        entries[index].right = 1
+      end
+    end
+    return entries
+  end
+  local menuTopLevel = {}
+  for count = 2, 8 do
+    menuTopLevel[count] = menuLayout(count, true)
+  end
+  local menuSubcontext = {}
+  for count = 2, 5 do
+    menuSubcontext[count] = menuLayout(count, false)
+  end
   return {
     schema = PartyCache.SCHEMA,
     panes = {
@@ -113,8 +144,10 @@ local function partyManifest()
     },
     panels = panels,
     windows = {
-      message = rect(16, 168, 160, 16),
-      context = rect(152, 120, 96, 64),
+      browse = rect(16, 168, 160, 16),
+      context = rect(16, 152, 104, 32),
+      action = rect(16, 152, 216, 32),
+      prompt = { x = 200, y = 80 },
     },
     visuals = {
       cursor = sequences("assets/generated/party/fixture-cursor-0.png", 32, 32),
@@ -149,7 +182,14 @@ local function partyManifest()
         red = imageRef("assets/generated/party/fixture-hp-red.png", 48, 4),
       },
     },
-    controls = { cancel = { anchor = { x = 232, y = 176 } } },
+    controls = {
+      cancel = {
+        anchor = { x = 232, y = 176 },
+        label = "Cancel",
+        textRect = rect(200, 168, 48, 16),
+        align = "center",
+      },
+    },
     detail = {
       iconAnchor = { x = 30, y = 200 },
       statusAnchor = { x = 50, y = 220 },
@@ -157,9 +197,32 @@ local function partyManifest()
       heldItemTextOrigin = { x = 138, y = 212 },
     },
     iconAnimations = {
-      periods = { 1, 8, 12, 24, 40, 36 },
-      replacementDurations = { 32, 2, 2 },
-      replacementShift = { 0, 1, -1 },
+      sequences = {
+        { { iconFrame = 1, durationTicks = 1, translateX = 0, translateY = 0 }, loopFrom = 1, playback = "static" },
+        { { iconFrame = 1, durationTicks = 8, translateX = 0, translateY = 0 }, loopFrom = 1, playback = "static" },
+        { { iconFrame = 1, durationTicks = 12, translateX = 0, translateY = 0 }, loopFrom = 1, playback = "static" },
+        { { iconFrame = 1, durationTicks = 24, translateX = 0, translateY = 0 }, loopFrom = 1, playback = "static" },
+        { { iconFrame = 1, durationTicks = 40, translateX = 0, translateY = 0 }, loopFrom = 1, playback = "static" },
+        { { iconFrame = 1, durationTicks = 32, translateX = 0, translateY = 0 }, loopFrom = 1, playback = "static" },
+      },
+    },
+    contextMenu = {
+      topLevel = menuTopLevel,
+      subcontext = menuSubcontext,
+      textPalette = { raised = menuRole(), depressed = menuRole() },
+      fillPalette = { raised = menuRole(), depressed = menuRole() },
+      frames = {
+        standard = {
+          raised = imageRef("assets/generated/party/fixture-context-standard-raised.png", 128, 32),
+          selected = imageRef("assets/generated/party/fixture-context-standard-selected.png", 128, 32),
+          pressed = imageRef("assets/generated/party/fixture-context-standard-pressed.png", 128, 32),
+        },
+        cancel = {
+          raised = imageRef("assets/generated/party/fixture-context-cancel-raised.png", 56, 40),
+          selected = imageRef("assets/generated/party/fixture-context-cancel-selected.png", 56, 40),
+          pressed = imageRef("assets/generated/party/fixture-context-cancel-pressed.png", 56, 40),
+        },
+      },
     },
     navigation = { dpad = { default = dpadRow, alternate = dpadRow, union = dpadRow, contest = dpadRow } },
     hitboxes = {
@@ -169,13 +232,39 @@ local function partyManifest()
         context = { touch(0, 48, 0, 128) },
       },
     },
-    text = { labels = {}, templates = {} },
+    text = {
+      labels = { cancel = "Cancel", male = "M", female = "F" },
+      templates = { switchPrompt = { segments = { { kind = "text", value = "Switch?" } } } },
+      roles = {
+        ordinary = {
+          foreground = { r = 248, g = 248, b = 248, a = 255 },
+          shadow = { r = 88, g = 88, b = 88, a = 255 },
+          background = { r = 0, g = 0, b = 0, a = 255 },
+        },
+        male = {
+          foreground = { r = 248, g = 248, b = 248, a = 255 },
+          shadow = { r = 88, g = 88, b = 88, a = 255 },
+          background = { r = 0, g = 0, b = 0, a = 255 },
+        },
+        female = {
+          foreground = { r = 248, g = 248, b = 248, a = 255 },
+          shadow = { r = 88, g = 88, b = 88, a = 255 },
+          background = { r = 0, g = 0, b = 0, a = 255 },
+        },
+      },
+    },
     numberGlyphs = {
       advance = 8,
       height = 8,
       digits = digits,
       slash = imageRef("assets/generated/party/fixture-slash.png", 8, 8),
       level = imageRef("assets/generated/party/fixture-level.png", 16, 8),
+      placement = {
+        level = { x = 5, y = 2 },
+        current = { x = 0, y = 2 },
+        slash = { x = 28, y = 2 },
+        max = { x = 36, y = 2 },
+      },
     },
     shinyLeaves = {
       anchors = anchors,

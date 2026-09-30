@@ -9,6 +9,9 @@
 
 local Assert = require("tests.support.Assert")
 local ffi = require("ffi")
+local FieldMessageBank = require("romdump.src.digest.ui.FieldMessageBank")
+local FieldMessageTokenizer = require("romdump.src.digest.ui.FieldMessageTokenizer")
+local charmap = require("romdump.src.reference.hgss.charmap")
 local PartyCache = require("libs.assets.src.PartyCache")
 local Hashing = require("romdump.src.digest.Hashing")
 local G2dDecoder = require("romdump.src.digest.ui.G2dDecoder")
@@ -76,7 +79,7 @@ function T.every_selected_member_is_attributable_and_frames_resolve(romFs, versi
     end
   end
   local manifest = bundle.manifest
-  Assert.equal(manifest.schema, "g4-party-presentation-v2")
+  Assert.equal(manifest.schema, "g4-party-presentation-v3")
   local referenced = PartyCache.referencedPaths(manifest)
   Assert.isTrue(#referenced > 0, "the manifest references realized images")
   for _, path in ipairs(referenced) do
@@ -299,30 +302,423 @@ function T.party_markers_bind_rom_identity_and_content(romFs, versionId)
   Assert.isFalse(PartyCache.isReady(cache, forged), "a marker with a foreign ROM identity never reads as ready")
 end
 
+local function decodeArchiveMember(archive, memberId, kind, role)
+  local bytes = assert(archive:readMember(memberId), role .. " member resolves")
+  if string.byte(bytes, 1) == 0x10 then
+    bytes = assert(Lz10.decode(bytes), role .. " member decompresses")
+  end
+  return assert(G2dDecoder[kind](bytes, { label = "party " .. role }), role .. " decodes")
+end
+
+local function layoutFor(section, count, className)
+  local layout = section[count] or section[tostring(count)]
+  Assert.notNil(layout, className .. " covers " .. count .. " entries")
+  return layout
+end
+
+local function collectRgba(record)
+  local colors = {}
+  local function visit(value)
+    if type(value) ~= "table" then
+      return
+    end
+    if type(value.r) == "number" and type(value.g) == "number" and type(value.b) == "number" then
+      Assert.isTrue(
+        value.r % 1 == 0 and value.g % 1 == 0 and value.b % 1 == 0,
+        "generated colors use integer channels"
+      )
+      Assert.isTrue(
+        value.r >= 0 and value.r <= 255 and value.g >= 0 and value.g <= 255 and value.b >= 0 and value.b <= 255,
+        "generated colors stay inside the byte range"
+      )
+      local alpha = value.a == nil and 255 or value.a
+      Assert.isTrue(alpha % 1 == 0 and alpha >= 0 and alpha <= 255, "generated colors stay inside the byte range")
+      colors[string.char(value.r, value.g, value.b, alpha)] = true
+    else
+      for _, nested in pairs(value) do
+        visit(nested)
+      end
+    end
+  end
+  visit(record)
+  return colors
+end
+
+local function assertPaneRect(record, where)
+  Assert.notNil(record, where .. " publishes its rectangle")
+  Assert.isTrue(record.width > 0 and record.height > 0, where .. " size is realized")
+  Assert.isTrue(
+    record.x >= 0 and record.y >= 0 and record.x + record.width <= 256 and record.y + record.height <= 192,
+    where .. " fits the native pane"
+  )
+end
+
 function T.icon_animation_timing_stays_integral_and_bounded(romFs, versionId)
   local bundle = bundleFor(romFs, versionId)
   local animations = bundle.manifest.iconAnimations
-  Assert.isTrue(type(animations.periods) == "table", "icon periods resolve")
-  Assert.isTrue(#animations.periods > 0, "at least one icon period is compiled")
-  for index, ticks in ipairs(animations.periods) do
-    Assert.isTrue(
-      type(ticks) == "number" and ticks % 1 == 0 and ticks > 0,
-      "icon period is a positive integral tick count at " .. tostring(index)
+  Assert.isTrue(type(animations.sequences) == "table", "icon timelines resolve")
+  Assert.equal(#animations.sequences, 6, "all six icon sequences carry timelines")
+  for sequenceNo, timeline in ipairs(animations.sequences) do
+    Assert.isTrue(#timeline > 0, "icon sequence " .. sequenceNo .. " carries frames")
+    for frameIndex, record in ipairs(timeline) do
+      local where = "icon sequence " .. sequenceNo .. " frame " .. frameIndex
+      Assert.isTrue(
+        type(record.durationTicks) == "number" and record.durationTicks % 1 == 0 and record.durationTicks > 0,
+        where .. " timing is a positive integral tick count"
+      )
+      Assert.isTrue(
+        type(record.translateX) == "number"
+          and record.translateX % 1 == 0
+          and type(record.translateY) == "number"
+          and record.translateY % 1 == 0,
+        where .. " translations stay integral"
+      )
+    end
+  end
+end
+
+function T.icon_timelines_preserve_source_frame_cadence(romFs, versionId)
+  local PartySources = require("romdump.src.config.PartySources")
+  local bundle = bundleFor(romFs, versionId)
+  local animations = bundle.manifest.iconAnimations
+  Assert.notNil(animations, "the manifest publishes icon animation data")
+  local timelines = animations.sequences
+  Assert.notNil(timelines, "icon animation publishes exact per-frame timelines, not period totals alone")
+  Assert.equal(#timelines, 6, "all six icon sequences carry timelines")
+  local archive = assert(romFs:openNarc(PartySources.iconShared.archive), "the icon archive resolves")
+  local animation =
+    decodeArchiveMember(archive, PartySources.iconShared.animationMember, "decodeAnimation", "icon animation")
+  Assert.equal(#animation.anims, 6, "six source icon sequences are addressable")
+  local playbacks = { forward = "once", forward_loop = "loop", reverse = "once", reverse_loop = "loop" }
+  local expectedPeriods = { 1, 8, 12, 24, 40, 36 }
+  for sequenceNo = 1, 6 do
+    local where = "icon sequence " .. (sequenceNo - 1)
+    local timeline = timelines[sequenceNo]
+    Assert.notNil(timeline, where .. " has a timeline")
+    local source = animation.anims[sequenceNo]
+    Assert.equal(#timeline, #source.frames, where .. " keeps every source frame")
+    local total = 0
+    for frameIndex, record in ipairs(timeline) do
+      local frameWhere = where .. " frame " .. (frameIndex - 1)
+      local sourceFrame = source.frames[frameIndex]
+      Assert.isTrue(
+        record.iconFrame == 1 or record.iconFrame == 2,
+        frameWhere .. " references the two icon atlas frames"
+      )
+      Assert.isTrue(
+        type(record.durationTicks) == "number" and record.durationTicks > 0 and record.durationTicks % 1 == 0,
+        frameWhere .. " timing is a positive integer"
+      )
+      Assert.equal(record.durationTicks, sourceFrame.duration, frameWhere .. " keeps its source duration")
+      Assert.equal(record.translateX, sourceFrame.translateX, frameWhere .. " keeps its source x translation")
+      Assert.equal(record.translateY, sourceFrame.translateY, frameWhere .. " keeps its source y translation")
+      Assert.isTrue(
+        type(record.translateX) == "number"
+          and record.translateX % 1 == 0
+          and type(record.translateY) == "number"
+          and record.translateY % 1 == 0,
+        frameWhere .. " translations stay integral"
+      )
+      total = total + record.durationTicks
+    end
+    Assert.equal(total, expectedPeriods[sequenceNo], where .. " spans its source period")
+    Assert.equal(timeline.loopFrom, source.loopStartFrameIdx + 1, where .. " preserves the source loop origin")
+    if #source.frames == 1 then
+      Assert.equal(timeline.playback, "static", where .. " single-frame playback stays static")
+    else
+      Assert.equal(timeline.playback, playbacks[source.playMode], where .. " preserves the source playback")
+    end
+  end
+  local durations = {}
+  local shifts = {}
+  for _, record in ipairs(timelines[6]) do
+    durations[#durations + 1] = record.durationTicks
+    shifts[#shifts + 1] = record.translateX
+  end
+  Assert.deepEqual(durations, { 32, 2, 2 }, "the replacement sequence keeps its 32/2/2 keyframe durations")
+  Assert.deepEqual(shifts, { 0, 1, -1 }, "the replacement sequence keeps its 0/+1/-1 shifts")
+end
+
+function T.panel_text_roles_resolve_from_the_source_window_palette(romFs, versionId)
+  local bundle = bundleFor(romFs, versionId)
+  local text = bundle.manifest.text
+  Assert.notNil(text, "the manifest publishes party text")
+  local roles = text.roles
+  Assert.notNil(roles, "party text publishes its palette roles")
+  local archive = assert(romFs:openNarc("NARC_graphic_plist_gra"), "the party archive resolves")
+  local palette = decodeArchiveMember(archive, 16, "decodePalette", "party window palette")
+  local sourceColors = {}
+  for _, color in ipairs(palette.colors) do
+    sourceColors[string.char(color.r, color.g, color.b, 255)] = true
+  end
+  local roleSets = {}
+  for _, name in ipairs({ "ordinary", "male", "female" }) do
+    local role = roles[name]
+    Assert.notNil(role, "the " .. name .. " text role resolves")
+    local colors = collectRgba(role)
+    Assert.isTrue(next(colors) ~= nil, "the " .. name .. " role carries resolved colors")
+    for pixel in pairs(colors) do
+      Assert.isTrue(sourceColors[pixel], "the " .. name .. " role derives from the source window palette")
+    end
+    roleSets[name] = colors
+  end
+  local function distinct(first, second)
+    for pixel in pairs(first) do
+      if second[pixel] == nil then
+        return true
+      end
+    end
+    for pixel in pairs(second) do
+      if first[pixel] == nil then
+        return true
+      end
+    end
+    return false
+  end
+  Assert.isTrue(distinct(roleSets.ordinary, roleSets.male), "ordinary and male roles stay distinct")
+  Assert.isTrue(distinct(roleSets.ordinary, roleSets.female), "ordinary and female roles stay distinct")
+  Assert.isTrue(distinct(roleSets.male, roleSets.female), "male and female roles stay distinct")
+  assertNoSourceKeys(roles, "text.roles")
+end
+
+function T.numeric_fields_keep_their_source_window_origins(romFs, versionId)
+  local bundle = bundleFor(romFs, versionId)
+  local glyphs = bundle.manifest.numberGlyphs
+  Assert.notNil(glyphs, "number glyphs resolve")
+  local placement = glyphs.placement
+  Assert.notNil(placement, "number glyphs publish their window-relative placement")
+  Assert.deepEqual(placement.level, { x = 5, y = 2 }, "level numerals start inside the level window")
+  Assert.deepEqual(placement.current, { x = 0, y = 2 }, "current HP begins at the HP window origin row")
+  Assert.deepEqual(placement.slash, { x = 28, y = 2 }, "the HP slash keeps its source column")
+  Assert.deepEqual(placement.max, { x = 36, y = 2 }, "max HP keeps its source column")
+end
+
+function T.gender_labels_and_message_windows_come_from_source(romFs, versionId)
+  local bundle = bundleFor(romFs, versionId)
+  local text = bundle.manifest.text
+  Assert.notNil(text and text.labels, "party text publishes its labels")
+  local messageArchive = assert(romFs:openNarc("NARC_msgdata_msg"), "the message archive resolves")
+  local bankBytes = assert(messageArchive:readMember(300), "message bank 300 resolves")
+  local bank = assert(FieldMessageBank.decode(bankBytes, { label = "party-message-bank-300" }))
+  local function displayText(index)
+    local message = bank.messages[index + 1]
+    Assert.notNil(message, "bank 300 carries message " .. index)
+    local tokens = assert(
+      FieldMessageTokenizer.tokenize(message.raw, charmap, { bankId = 300, messageId = index })
+    )
+    local parts = {}
+    for _, token in ipairs(tokens) do
+      if token.kind == "eos" then
+        break
+      elseif token.kind == "glyph" then
+        parts[#parts + 1] = token.text
+      else
+        error("gender label carries a non-display token " .. tostring(token.kind), 0)
+      end
+    end
+    return table.concat(parts)
+  end
+  Assert.equal(text.labels.male, displayText(27), "the male label matches source message 27")
+  Assert.equal(text.labels.female, displayText(28), "the female label matches source message 28")
+  Assert.isTrue(text.labels.male ~= text.labels.female, "gender labels stay distinct")
+  local windows = bundle.manifest.windows
+  Assert.notNil(windows, "the manifest publishes its native windows")
+  for _, name in ipairs({ "browse", "context", "action" }) do
+    assertPaneRect(windows[name], "the " .. name .. " message window")
+  end
+  Assert.deepEqual(windows.prompt, { x = 200, y = 80 }, "the confirm prompt keeps its source anchor")
+  assertNoSourceKeys(windows, "windows")
+  local controls = bundle.manifest.controls
+  Assert.notNil(controls and controls.cancel, "the semantic cancel control resolves")
+  local cancel = controls.cancel
+  Assert.isTrue(type(cancel.label) == "string" and #cancel.label > 0, "cancel keeps its label on the text layer")
+  Assert.isNil(cancel.image, "the cancel label is not baked into a sprite")
+  assertPaneRect(cancel.textRect, "the cancel text rectangle")
+  Assert.equal(cancel.align, "center", "cancel keeps its center-alignment contract")
+end
+
+function T.panel_gender_origins_keep_the_name_window_mark_offset(romFs, versionId)
+  local bundle = bundleFor(romFs, versionId)
+  Assert.equal(#bundle.manifest.panels, 6, "six slot panels resolve")
+  for slot, panel in ipairs(bundle.manifest.panels) do
+    Assert.notNil(panel.text.name, "panel " .. slot .. " carries its name subrect")
+    Assert.notNil(panel.text.gender, "panel " .. slot .. " carries its gender origin")
+    local name, gender = panel.text.name, panel.text.gender
+    Assert.deepEqual(
+      { x = gender.x - name.x, y = gender.y - name.y },
+      { x = 64, y = 0 },
+      "panel " .. slot .. " places the mark at name-window-local (64,0)"
     )
   end
-  Assert.isTrue(type(animations.replacementDurations) == "table", "replacement durations resolve")
-  for index, ticks in ipairs(animations.replacementDurations) do
-    Assert.isTrue(
-      type(ticks) == "number" and ticks % 1 == 0 and ticks > 0,
-      "replacement duration is a positive integral tick count at " .. tostring(index)
-    )
+end
+
+function T.menu_layouts_cover_every_supported_entry_count(romFs, versionId)
+  local bundle = bundleFor(romFs, versionId)
+  local menu = bundle.manifest.contextMenu
+  Assert.notNil(menu, "the manifest publishes generated context-menu layouts")
+  Assert.notNil(menu.topLevel, "the top-level menu section resolves")
+  Assert.notNil(menu.subcontext, "the subcontext menu section resolves")
+  local styles = {}
+  for count = 2, 8 do
+    local layout = layoutFor(menu.topLevel, count, "top-level")
+    Assert.equal(#layout, count, "the " .. count .. "-entry top-level layout carries one record per entry")
+    for index, entry in ipairs(layout) do
+      local where = count .. "-entry top-level button " .. index
+      assertPaneRect(entry.textRect, where .. " text")
+      assertPaneRect(entry.frameRect, where .. " frame")
+      Assert.isTrue(
+        entry.frameShape == "standard" or entry.frameShape == "cancel",
+        where .. " names its native frame shape"
+      )
+      Assert.isTrue(type(entry.style) == "string" and #entry.style > 0, where .. " names its text/fill style")
+      styles[entry.style] = true
+      Assert.notNil(entry.touch, where .. " publishes its touch rectangle")
+      Assert.isTrue(entry.touch.top <= entry.touch.bottom, where .. " touch rows are ordered")
+      for _, neighbor in pairs({ up = entry.up, down = entry.down, left = entry.left, right = entry.right }) do
+        if neighbor ~= nil then
+          Assert.isTrue(
+            type(neighbor) == "number" and neighbor % 1 == 0 and neighbor >= 1 and neighbor <= count,
+            where .. " neighbors address semantic entries"
+          )
+        end
+      end
+      Assert.notNil(entry.left, where .. " keeps the source lateral relation")
+      Assert.notNil(entry.right, where .. " keeps the source lateral relation")
+    end
   end
-  Assert.isTrue(type(animations.replacementShift) == "table", "the replacement shift resolves")
-  for index, shift in ipairs(animations.replacementShift) do
-    Assert.isTrue(
-      type(shift) == "number" and shift % 1 == 0,
-      "the replacement shift stays integral at " .. tostring(index)
-    )
+  local distinct = 0
+  for _ in pairs(styles) do
+    distinct = distinct + 1
+  end
+  Assert.isTrue(distinct >= 2, "top-level layouts distinguish entry style families")
+  for count = 2, 5 do
+    local layout = layoutFor(menu.subcontext, count, "subcontext")
+    Assert.equal(#layout, count, "the " .. count .. "-entry subcontext layout carries one record per entry")
+    for index, entry in ipairs(layout) do
+      local where = count .. "-entry subcontext button " .. index
+      assertPaneRect(entry.textRect, where .. " text")
+      assertPaneRect(entry.frameRect, where .. " frame")
+      Assert.notNil(entry.touch, where .. " publishes its touch rectangle")
+      Assert.isNil(entry.left, where .. " has no source lateral relation")
+      Assert.isNil(entry.right, where .. " has no source lateral relation")
+      for _, neighbor in pairs({ up = entry.up, down = entry.down }) do
+        if neighbor ~= nil then
+          Assert.isTrue(
+            type(neighbor) == "number" and neighbor % 1 == 0 and neighbor >= 1 and neighbor <= count,
+            where .. " neighbors address semantic entries"
+          )
+        end
+      end
+    end
+  end
+  Assert.isTrue(
+    (menu.topLevel[1] or menu.topLevel["1"]) == nil,
+    "unsupported top-level counts have no fallback layout"
+  )
+  Assert.isTrue(
+    (menu.topLevel[9] or menu.topLevel["9"]) == nil,
+    "unsupported top-level counts have no fallback layout"
+  )
+  Assert.isTrue(
+    (menu.subcontext[1] or menu.subcontext["1"]) == nil,
+    "unsupported subcontext counts have no fallback layout"
+  )
+  Assert.isTrue(
+    (menu.subcontext[6] or menu.subcontext["6"]) == nil,
+    "unsupported subcontext counts have no fallback layout"
+  )
+  Assert.notNil(menu.textPalette, "context buttons publish their text roles")
+  Assert.notNil(menu.fillPalette, "context buttons publish their fill roles")
+  for _, palette in ipairs({ menu.textPalette, menu.fillPalette }) do
+    local colors = collectRgba(palette)
+    local paletteDistinct = 0
+    for _ in pairs(colors) do
+      paletteDistinct = paletteDistinct + 1
+    end
+    Assert.isTrue(paletteDistinct >= 2, "button palettes distinguish raised from depressed")
+  end
+  assertNoSourceKeys(menu, "contextMenu")
+end
+
+function T.context_frames_use_source_border_pixels(romFs, versionId)
+  local bundle = bundleFor(romFs, versionId)
+  local menu = bundle.manifest.contextMenu
+  Assert.notNil(menu, "context-menu layouts resolve before frame inspection")
+  local frames = menu.frames
+  Assert.notNil(frames, "context button frames publish generated visuals")
+  local groups = {
+    standard = { width = 128, height = 32 },
+    cancel = { width = 56, height = 40 },
+  }
+  local seenPaths = {}
+  local stateBytes = {}
+  for _, shape in ipairs({ "standard", "cancel" }) do
+    local size = groups[shape]
+    local group = frames[shape]
+    Assert.notNil(group, "the " .. shape .. " frame group resolves")
+    stateBytes[shape] = {}
+    for _, state in ipairs({ "raised", "selected", "pressed" }) do
+      local where = shape .. " " .. state .. " frame"
+      local visual = group[state]
+      Assert.notNil(visual, "the " .. where .. " resolves")
+      Assert.equal(visual.width, size.width, where .. " width")
+      Assert.equal(visual.height, size.height, where .. " height")
+      local bytes = assetBytes(assert(bundle.assets[visual.image], where .. " image resolves"))
+      local width, height, rgba = PngReader.rgba(bytes)
+      Assert.equal(width, size.width, where .. " image width")
+      Assert.equal(height, size.height, where .. " image height")
+      local opaque = 0
+      for x = 0, width - 1 do
+        if string.byte(pixel(rgba, width, x, 0), 4) ~= 0 then
+          opaque = opaque + 1
+        end
+        if string.byte(pixel(rgba, width, x, height - 1), 4) ~= 0 then
+          opaque = opaque + 1
+        end
+      end
+      for y = 0, height - 1 do
+        if string.byte(pixel(rgba, width, 0, y), 4) ~= 0 then
+          opaque = opaque + 1
+        end
+        if string.byte(pixel(rgba, width, width - 1, y), 4) ~= 0 then
+          opaque = opaque + 1
+        end
+      end
+      Assert.isTrue(opaque > 0, where .. " keeps an opaque border")
+      local center = pixel(rgba, width, math.floor(width / 2), math.floor(height / 2))
+      Assert.equal(string.byte(center, 4), 0, where .. " keeps a transparent interior")
+      local distinct = 0
+      local colors = {}
+      for offset = 1, #rgba, 4 do
+        if string.byte(rgba, offset + 3) ~= 0 then
+          colors[rgba:sub(offset, offset + 3)] = true
+        end
+      end
+      for _ in pairs(colors) do
+        distinct = distinct + 1
+      end
+      Assert.isTrue(distinct <= 16, where .. " uses a tiled border palette")
+      stateBytes[shape][state] = bytes
+      seenPaths[#seenPaths + 1] = visual.image
+    end
+  end
+  for shape, states in pairs(stateBytes) do
+    local stateNames = { "raised", "selected", "pressed" }
+    for first = 1, #stateNames do
+      for second = first + 1, #stateNames do
+        Assert.isFalse(
+          states[stateNames[first]] == states[stateNames[second]],
+          shape .. " " .. stateNames[first] .. "/" .. stateNames[second] .. " stay distinct visuals"
+        )
+      end
+    end
+  end
+  local referenced = {}
+  for _, path in ipairs(PartyCache.referencedPaths(bundle.manifest)) do
+    referenced[path] = true
+  end
+  for _, path in ipairs(seenPaths) do
+    Assert.isTrue(referenced[path], path .. " participates in cache readiness")
   end
 end
 

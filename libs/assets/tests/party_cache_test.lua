@@ -48,6 +48,7 @@ local function manifest()
       text = {
         name = rect(origin[1] + 48, origin[2] + 8, 72, 16),
         level = rect(origin[1] + 0, origin[2] + 32, 48, 16),
+        gender = { x = origin[1] + 112, y = origin[2] + 8 },
       },
       hp = {
         bar = rect(origin[1] + 64, origin[2] + 24, 48, 8),
@@ -69,16 +70,84 @@ local function manifest()
     dpadRow[entry] =
       { left = 64, top = 25, width = 0, height = 0, up = 7, down = 2, leftNeighbor = 7, rightNeighbor = 1 }
   end
+  local sequences = {}
+  for sequenceNo = 1, 6 do
+    sequences[sequenceNo] =
+      { { iconFrame = 1, durationTicks = 1, translateX = 0, translateY = 0 }, loopFrom = 1, playback = "static" }
+  end
+  local function role()
+    return {
+      foreground = { r = 248, g = 248, b = 248, a = 255 },
+      shadow = { r = 88, g = 88, b = 88, a = 255 },
+      background = { r = 0, g = 0, b = 0, a = 255 },
+    }
+  end
+  local function layout(count, lateral)
+    local entries = {}
+    for index = 1, count do
+      entries[index] = {
+        textRect = rect(8, 8, 112, 16),
+        frameRect = rect(0, 0, 128, 32),
+        frameShape = "standard",
+        style = "raised",
+        touch = touch(0, 32, 0, 128),
+        up = 1,
+        down = 1,
+      }
+      if lateral then
+        entries[index].left = 1
+        entries[index].right = 1
+      end
+    end
+    return entries
+  end
+  local topLevel = {}
+  for count = 2, 8 do
+    topLevel[count] = layout(count, true)
+  end
+  local subcontext = {}
+  for count = 2, 5 do
+    subcontext[count] = layout(count, false)
+  end
+  local function frameVisual(path, width, height)
+    return { image = path, width = width, height = height }
+  end
   return {
-    schema = "g4-party-presentation-v2",
+    schema = "g4-party-presentation-v3",
     panes = {
       main = { width = 256, height = 192 },
       sub = { width = 256, height = 192 },
     },
     panels = panels,
     windows = {
-      message = rect(16, 168, 160, 16),
-      context = rect(152, 120, 96, 64),
+      browse = rect(16, 168, 160, 16),
+      context = rect(16, 152, 104, 32),
+      action = rect(16, 152, 216, 32),
+      prompt = { x = 200, y = 80 },
+    },
+    contextMenu = {
+      topLevel = topLevel,
+      subcontext = subcontext,
+      textPalette = {
+        raised = { r = 248, g = 248, b = 248, a = 255 },
+        depressed = { r = 248, g = 0, b = 0, a = 255 },
+      },
+      fillPalette = {
+        raised = { r = 0, g = 0, b = 248, a = 255 },
+        depressed = { r = 0, g = 248, b = 0, a = 255 },
+      },
+      frames = {
+        standard = {
+          raised = frameVisual("assets/generated/party/context-standard-raised.png", 128, 32),
+          selected = frameVisual("assets/generated/party/context-standard-selected.png", 128, 32),
+          pressed = frameVisual("assets/generated/party/context-standard-pressed.png", 128, 32),
+        },
+        cancel = {
+          raised = frameVisual("assets/generated/party/context-cancel-raised.png", 56, 40),
+          selected = frameVisual("assets/generated/party/context-cancel-selected.png", 56, 40),
+          pressed = frameVisual("assets/generated/party/context-cancel-pressed.png", 56, 40),
+        },
+      },
     },
     visuals = {
       cursor = {
@@ -165,18 +234,21 @@ local function manifest()
         red = imageRef("assets/generated/party/hp-red.png", 48, 4),
       },
     },
-    controls = { cancel = { anchor = { x = 232, y = 176 } } },
+    controls = {
+      cancel = {
+        anchor = { x = 232, y = 176 },
+        label = "Cancel",
+        textRect = rect(200, 168, 48, 16),
+        align = "center",
+      },
+    },
     detail = {
       iconAnchor = { x = 30, y = 200 },
       statusAnchor = { x = 50, y = 220 },
       nicknameTextOrigin = { x = 56, y = 192 },
       heldItemTextOrigin = { x = 138, y = 212 },
     },
-    iconAnimations = {
-      periods = { 1, 8, 12, 24, 40, 36 },
-      replacementDurations = { 32, 2, 2 },
-      replacementShift = { 0, 1, -1 },
-    },
+    iconAnimations = { sequences = sequences },
     navigation = { dpad = { default = dpadRow, alternate = dpadRow, union = dpadRow, contest = dpadRow } },
     hitboxes = {
       touch = {
@@ -185,13 +257,23 @@ local function manifest()
         context = { touch(0, 48, 0, 128) },
       },
     },
-    text = { labels = {}, templates = {} },
+    text = {
+      labels = { cancel = "Cancel", male = "M", female = "F" },
+      templates = { switchPrompt = { segments = { { kind = "text", value = "Switch?" } } } },
+      roles = { ordinary = role(), male = role(), female = role() },
+    },
     numberGlyphs = {
       advance = 8,
       height = 8,
       digits = digits,
       slash = imageRef("assets/generated/party/slash.png", 8, 8),
       level = imageRef("assets/generated/party/level.png", 16, 8),
+      placement = {
+        level = { x = 5, y = 2 },
+        current = { x = 0, y = 2 },
+        slash = { x = 28, y = 2 },
+        max = { x = 36, y = 2 },
+      },
     },
     shinyLeaves = {
       anchors = anchors,
@@ -219,7 +301,7 @@ local function writeReady(cache, marker)
   for _, path in ipairs(PartyCache.referencedPaths(data)) do
     cache:write(path, "pixels")
   end
-  cache:writeLua(PartyCache.provenancePath(), { cacheFormat = PartyCache.FORMAT, schema = "g4-party-presentation-v2" })
+  cache:writeLua(PartyCache.provenancePath(), { cacheFormat = PartyCache.FORMAT, schema = "g4-party-presentation-v3" })
   cache:write(PartyCache.markerPath(), marker)
 end
 
@@ -227,7 +309,7 @@ function T.missing_image_is_not_ready()
   local cache = CacheFs.forVersion("heartgold", FakeCache.new())
   local marker = PartyCache.marker("abc", "dep")
   cache:writeLua(PartyCache.manifestPath(), manifest())
-  cache:writeLua(PartyCache.provenancePath(), { cacheFormat = PartyCache.FORMAT, schema = "g4-party-presentation-v2" })
+  cache:writeLua(PartyCache.provenancePath(), { cacheFormat = PartyCache.FORMAT, schema = "g4-party-presentation-v3" })
   cache:write(PartyCache.markerPath(), marker)
   Assert.isFalse(PartyCache.isReady(cache, marker), "referenced images must all exist")
 end
@@ -245,7 +327,7 @@ function T.missing_marker_is_not_ready()
   for _, path in ipairs(PartyCache.referencedPaths(data)) do
     cache:write(path, "pixels")
   end
-  cache:writeLua(PartyCache.provenancePath(), { cacheFormat = PartyCache.FORMAT, schema = "g4-party-presentation-v2" })
+  cache:writeLua(PartyCache.provenancePath(), { cacheFormat = PartyCache.FORMAT, schema = "g4-party-presentation-v3" })
   Assert.isFalse(PartyCache.isReady(cache, PartyCache.marker("abc", "dep")), "no marker means not ready")
 end
 
@@ -255,7 +337,150 @@ function T.current_valid_family_is_ready()
   writeReady(cache, marker)
   Assert.isTrue(PartyCache.isReady(cache, marker), "the complete family reads as ready")
   local loaded = PartyCache.loadManifest(cache)
-  Assert.equal(loaded.schema, "g4-party-presentation-v2")
+  Assert.equal(loaded.schema, "g4-party-presentation-v3")
+end
+
+-- The presentation contract under test extends the synthetic family with
+-- exact icon timelines, text roles, numeric placement, semantic windows,
+-- count-complete menu layouts, and the six generated frame visuals.
+-- Values are synthetic; only readiness participation is under test.
+local function v3manifest()
+  local data = manifest()
+  data.schema = "g4-party-presentation-v3"
+  local sequences = {}
+  for sequenceNo = 1, 6 do
+    sequences[sequenceNo] =
+      { { iconFrame = 1, durationTicks = 1, translateX = 0, translateY = 0 }, loopFrom = 1, playback = "static" }
+  end
+  data.iconAnimations = { sequences = sequences }
+  local function role()
+    return {
+      foreground = { r = 248, g = 248, b = 248, a = 255 },
+      shadow = { r = 88, g = 88, b = 88, a = 255 },
+      background = { r = 0, g = 0, b = 0, a = 255 },
+    }
+  end
+  data.text.roles = { ordinary = role(), male = role(), female = role() }
+  data.text.labels.male = "M"
+  data.text.labels.female = "F"
+  data.numberGlyphs.placement = {
+    level = { x = 5, y = 2 },
+    current = { x = 0, y = 2 },
+    slash = { x = 28, y = 2 },
+    max = { x = 36, y = 2 },
+  }
+  data.windows = {
+    browse = rect(16, 168, 160, 16),
+    context = rect(8, 64, 128, 24),
+    action = rect(8, 120, 160, 16),
+    prompt = { x = 200, y = 80 },
+  }
+  local function layout(count, lateral)
+    local entries = {}
+    for index = 1, count do
+      entries[index] = {
+        textRect = rect(8, 8, 112, 16),
+        frameRect = rect(0, 0, 128, 32),
+        frameShape = "standard",
+        style = "raised",
+        touch = touch(0, 32, 0, 128),
+        up = 1,
+        down = 1,
+      }
+      if lateral then
+        entries[index].left = 1
+        entries[index].right = 1
+      end
+    end
+    return entries
+  end
+  local topLevel = {}
+  for count = 2, 8 do
+    topLevel[count] = layout(count, true)
+  end
+  local subcontext = {}
+  for count = 2, 5 do
+    subcontext[count] = layout(count, false)
+  end
+  local function frameVisual(path, width, height)
+    return { image = path, width = width, height = height }
+  end
+  data.contextMenu = {
+    topLevel = topLevel,
+    subcontext = subcontext,
+    textPalette = {
+      raised = { r = 248, g = 248, b = 248, a = 255 },
+      depressed = { r = 248, g = 0, b = 0, a = 255 },
+    },
+    fillPalette = {
+      raised = { r = 0, g = 0, b = 248, a = 255 },
+      depressed = { r = 0, g = 248, b = 0, a = 255 },
+    },
+    frames = {
+      standard = {
+        raised = frameVisual("assets/generated/party/context-standard-raised.png", 128, 32),
+        selected = frameVisual("assets/generated/party/context-standard-selected.png", 128, 32),
+        pressed = frameVisual("assets/generated/party/context-standard-pressed.png", 128, 32),
+      },
+      cancel = {
+        raised = frameVisual("assets/generated/party/context-cancel-raised.png", 56, 40),
+        selected = frameVisual("assets/generated/party/context-cancel-selected.png", 56, 40),
+        pressed = frameVisual("assets/generated/party/context-cancel-pressed.png", 56, 40),
+      },
+    },
+  }
+  data.controls.cancel.label = "Cancel"
+  data.controls.cancel.textRect = rect(200, 168, 48, 16)
+  data.controls.cancel.align = "center"
+  return data
+end
+
+local function contextFramePaths()
+  return {
+    "assets/generated/party/context-standard-raised.png",
+    "assets/generated/party/context-standard-selected.png",
+    "assets/generated/party/context-standard-pressed.png",
+    "assets/generated/party/context-cancel-raised.png",
+    "assets/generated/party/context-cancel-selected.png",
+    "assets/generated/party/context-cancel-pressed.png",
+  }
+end
+
+local function writeReadyV3(cache, marker)
+  local data = v3manifest()
+  cache:writeLua(PartyCache.manifestPath(), data)
+  for _, path in ipairs(PartyCache.referencedPaths(data)) do
+    cache:write(path, "pixels")
+  end
+  cache:writeLua(PartyCache.provenancePath(), { cacheFormat = PartyCache.FORMAT, schema = "g4-party-presentation-v3" })
+  cache:write(PartyCache.markerPath(), marker)
+end
+
+function T.complete_v3_family_is_ready()
+  local cache = CacheFs.forVersion("heartgold", FakeCache.new())
+  local marker = PartyCache.marker("abc", "dep")
+  writeReadyV3(cache, marker)
+  Assert.isTrue(PartyCache.isReady(cache, marker), "the complete v3 family reads as ready")
+  local loaded = PartyCache.loadManifest(cache)
+  Assert.equal(loaded.schema, "g4-party-presentation-v3")
+end
+
+function T.missing_context_frame_is_not_ready()
+  local cache = CacheFs.forVersion("heartgold", FakeCache.new())
+  local marker = PartyCache.marker("abc", "dep")
+  writeReadyV3(cache, marker)
+  cache:remove(contextFramePaths()[1])
+  Assert.isFalse(PartyCache.isReady(cache, marker), "every generated frame visual must exist")
+end
+
+function T.context_frame_paths_are_referenced_exactly_once()
+  local counts = {}
+  for _, path in ipairs(PartyCache.referencedPaths(v3manifest())) do
+    counts[path] = (counts[path] or 0) + 1
+  end
+  for _, path in ipairs(contextFramePaths()) do
+    Assert.equal(counts[path], 1, path .. " participates in readiness exactly once")
+  end
 end
 
 return { tests = T }

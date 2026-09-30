@@ -151,4 +151,135 @@ function T.navigation_names_the_audited_layout_variants()
   Assert.deepEqual(PartySources.geometry.touch.default[2], { top = 8, bottom = 56, left = 128, right = 0 })
 end
 
+function T.message_labels_select_the_gender_messages()
+  local labels = PartySources.messages.labels
+  Assert.notNil(labels.male, "the producer selects the male gender label")
+  Assert.notNil(labels.female, "the producer selects the female gender label")
+  Assert.equal(labels.male.bank, 300, "the male label comes from the party message bank")
+  Assert.equal(labels.male.index, 27, "the male label is the dedicated source gender message")
+  Assert.equal(labels.female.bank, 300, "the female label comes from the party message bank")
+  Assert.equal(labels.female.index, 28, "the female label is the dedicated source gender message")
+end
+
+function T.window_inventory_names_each_native_message_placement()
+  local windows = PartySources.windows
+  for _, name in ipairs({ "browse", "context", "action" }) do
+    local record = windows[name]
+    Assert.notNil(record, "the producer transcribes the " .. name .. " message window")
+    Assert.isTrue(
+      record.width > 0 and record.height > 0,
+      "the " .. name .. " message window has a realized size"
+    )
+    Assert.isTrue(
+      record.x >= 0 and record.y >= 0 and record.x + record.width <= 256 and record.y + record.height <= 192,
+      "the " .. name .. " message window fits the native pane"
+    )
+  end
+  Assert.deepEqual(
+    windows.prompt,
+    { x = 200, y = 80 },
+    "the confirm prompt anchors at the source tile-derived position"
+  )
+end
+
+function T.lowered_menus_cover_every_supported_entry_count()
+  local compiled = PartyAssetCompiler.compileGeometry(PartySources)
+  local menu = compiled.contextMenu
+  Assert.notNil(menu, "geometry lowering publishes the source-shaped context menus")
+  Assert.notNil(menu.topLevel, "the top-level menu section resolves")
+  Assert.notNil(menu.subcontext, "the subcontext menu section resolves")
+  for count = 2, 8 do
+    local layout = menu.topLevel[count] or menu.topLevel[tostring(count)]
+    Assert.notNil(layout, "the top-level menu covers " .. count .. " entries")
+    Assert.equal(#layout, count, "the " .. count .. "-entry top-level layout carries one record per entry")
+  end
+  for count = 2, 5 do
+    local layout = menu.subcontext[count] or menu.subcontext[tostring(count)]
+    Assert.notNil(layout, "the subcontext menu covers " .. count .. " entries")
+    Assert.equal(#layout, count, "the " .. count .. "-entry subcontext layout carries one record per entry")
+  end
+  Assert.isTrue(
+    (menu.topLevel[1] or menu.topLevel["1"]) == nil,
+    "unsupported top-level counts have no fallback layout"
+  )
+  Assert.isTrue(
+    (menu.topLevel[9] or menu.topLevel["9"]) == nil,
+    "unsupported top-level counts have no fallback layout"
+  )
+  Assert.isTrue(
+    (menu.subcontext[1] or menu.subcontext["1"]) == nil,
+    "unsupported subcontext counts have no fallback layout"
+  )
+  Assert.isTrue(
+    (menu.subcontext[6] or menu.subcontext["6"]) == nil,
+    "unsupported subcontext counts have no fallback layout"
+  )
+end
+
+function T.lowered_menu_entries_carry_geometry_touch_and_navigation()
+  local compiled = PartyAssetCompiler.compileGeometry(PartySources)
+  local menu = assert(compiled.contextMenu, "menu layouts resolve before entry inspection")
+  local layout = menu.topLevel[8] or menu.topLevel["8"]
+  Assert.notNil(layout, "the widest top-level layout resolves before entry inspection")
+  local styles = {}
+  for index, entry in ipairs(layout) do
+    local where = "top-level entry " .. index
+    Assert.notNil(entry.textRect, where .. " publishes its text rectangle")
+    Assert.isTrue(entry.textRect.width > 0 and entry.textRect.height > 0, where .. " text size is realized")
+    Assert.notNil(entry.frameRect, where .. " publishes its outer frame rectangle")
+    Assert.isTrue(entry.frameRect.width > 0 and entry.frameRect.height > 0, where .. " frame size is realized")
+    Assert.isTrue(
+      entry.frameShape == "standard" or entry.frameShape == "cancel",
+      where .. " names its native frame shape"
+    )
+    Assert.isTrue(type(entry.style) == "string" and #entry.style > 0, where .. " names its text/fill style")
+    styles[entry.style] = true
+    Assert.notNil(entry.touch, where .. " publishes its touch rectangle")
+    for _, neighbor in pairs({ up = entry.up, down = entry.down, left = entry.left, right = entry.right }) do
+      if neighbor ~= nil then
+        Assert.isTrue(
+          neighbor >= 1 and neighbor <= #layout and neighbor % 1 == 0,
+          where .. " neighbors address semantic entries"
+        )
+      end
+    end
+    Assert.notNil(entry.left, where .. " keeps the source lateral relation")
+    Assert.notNil(entry.right, where .. " keeps the source lateral relation")
+  end
+  local distinct = 0
+  for _ in pairs(styles) do
+    distinct = distinct + 1
+  end
+  Assert.isTrue(distinct >= 2, "the widest layout distinguishes entry style families")
+  local sub = menu.subcontext[2] or menu.subcontext["2"]
+  Assert.notNil(sub, "the smallest subcontext layout resolves before entry inspection")
+  for index, entry in ipairs(sub) do
+    Assert.isNil(entry.left, "subcontext entry " .. index .. " has no source lateral relation")
+    Assert.isNil(entry.right, "subcontext entry " .. index .. " has no source lateral relation")
+  end
+end
+
+function T.gender_offset_names_the_name_window_local_mark()
+  Assert.deepEqual(PartySources.genderOffset, { x = 64, y = 0 }, "the gender mark sits at name-window-local (64,0)")
+  local compiled = PartyAssetCompiler.compileGeometry(PartySources)
+  Assert.equal(#compiled.panels, 6, "every slot lowers its gender origin")
+  for slot, panel in ipairs(compiled.panels) do
+    Assert.notNil(panel.text.name, "panel " .. slot .. " carries its name subrect")
+    local name = panel.text.name
+    Assert.deepEqual(
+      panel.text.gender,
+      { x = name.x + 64, y = name.y },
+      "panel " .. slot .. " resolves the mark from its name-subrect origin"
+    )
+  end
+end
+
+function T.text_palette_roles_name_the_source_printer_slots()
+  local roles = PartySources.textRoles
+  Assert.notNil(roles, "the producer transcribes the party text palette roles")
+  Assert.deepEqual(roles.ordinary, { 15, 14, 0 }, "ordinary text uses the panel printer slots")
+  Assert.deepEqual(roles.male, { 3, 4, 0 }, "male text uses the source gender slots")
+  Assert.deepEqual(roles.female, { 5, 6, 0 }, "female text uses the source gender slots")
+end
+
 return { tests = T }

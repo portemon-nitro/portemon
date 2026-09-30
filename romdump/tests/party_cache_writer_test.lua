@@ -37,6 +37,7 @@ local function manifest()
       text = {
         name = { x = origin[1] + 48, y = origin[2] + 8, width = 72, height = 16 },
         level = { x = origin[1] + 0, y = origin[2] + 32, width = 48, height = 16 },
+        gender = { x = origin[1] + 112, y = origin[2] + 8 },
       },
       hp = {
         bar = { x = origin[1] + 64, y = origin[2] + 24, width = 48, height = 8 },
@@ -58,16 +59,81 @@ local function manifest()
     dpadRow[entry] =
       { left = 64, top = 25, width = 0, height = 0, up = 7, down = 2, leftNeighbor = 7, rightNeighbor = 1 }
   end
+  local sequences = {}
+  for sequenceNo = 1, 6 do
+    sequences[sequenceNo] =
+      { { iconFrame = 1, durationTicks = 1, translateX = 0, translateY = 0 }, loopFrom = 1, playback = "static" }
+  end
+  local function role()
+    return {
+      foreground = { r = 248, g = 248, b = 248, a = 255 },
+      shadow = { r = 88, g = 88, b = 88, a = 255 },
+      background = { r = 0, g = 0, b = 0, a = 255 },
+    }
+  end
+  local function layout(count, lateral)
+    local entries = {}
+    for index = 1, count do
+      entries[index] = {
+        textRect = { x = 8, y = 8, width = 112, height = 16 },
+        frameRect = { x = 0, y = 0, width = 128, height = 32 },
+        frameShape = "standard",
+        style = "raised",
+        touch = { top = 0, bottom = 32, left = 0, right = 128 },
+        up = 1,
+        down = 1,
+      }
+      if lateral then
+        entries[index].left = 1
+        entries[index].right = 1
+      end
+    end
+    return entries
+  end
+  local topLevel = {}
+  for count = 2, 8 do
+    topLevel[count] = layout(count, true)
+  end
+  local subcontext = {}
+  for count = 2, 5 do
+    subcontext[count] = layout(count, false)
+  end
   return {
-    schema = "g4-party-presentation-v2",
+    schema = "g4-party-presentation-v3",
     panes = {
       main = { width = 256, height = 192 },
       sub = { width = 256, height = 192 },
     },
     panels = panels,
     windows = {
-      message = { x = 16, y = 168, width = 160, height = 16 },
-      context = { x = 152, y = 120, width = 96, height = 64 },
+      browse = { x = 16, y = 168, width = 160, height = 16 },
+      context = { x = 16, y = 152, width = 104, height = 32 },
+      action = { x = 16, y = 152, width = 216, height = 32 },
+      prompt = { x = 200, y = 80 },
+    },
+    contextMenu = {
+      topLevel = topLevel,
+      subcontext = subcontext,
+      textPalette = {
+        raised = { r = 248, g = 248, b = 248, a = 255 },
+        depressed = { r = 248, g = 0, b = 0, a = 255 },
+      },
+      fillPalette = {
+        raised = { r = 0, g = 0, b = 248, a = 255 },
+        depressed = { r = 0, g = 248, b = 0, a = 255 },
+      },
+      frames = {
+        standard = {
+          raised = { image = "assets/generated/party/context-standard-raised.png", width = 128, height = 32 },
+          selected = { image = "assets/generated/party/context-standard-selected.png", width = 128, height = 32 },
+          pressed = { image = "assets/generated/party/context-standard-pressed.png", width = 128, height = 32 },
+        },
+        cancel = {
+          raised = { image = "assets/generated/party/context-cancel-raised.png", width = 56, height = 40 },
+          selected = { image = "assets/generated/party/context-cancel-selected.png", width = 56, height = 40 },
+          pressed = { image = "assets/generated/party/context-cancel-pressed.png", width = 56, height = 40 },
+        },
+      },
     },
     visuals = {
       cursor = {
@@ -154,18 +220,21 @@ local function manifest()
         red = { image = "assets/generated/party/hp-red.png", width = 48, height = 4 },
       },
     },
-    controls = { cancel = { anchor = { x = 232, y = 176 } } },
+    controls = {
+      cancel = {
+        anchor = { x = 232, y = 176 },
+        label = "Cancel",
+        textRect = { x = 200, y = 168, width = 48, height = 16 },
+        align = "center",
+      },
+    },
     detail = {
       iconAnchor = { x = 30, y = 200 },
       statusAnchor = { x = 50, y = 220 },
       nicknameTextOrigin = { x = 56, y = 192 },
       heldItemTextOrigin = { x = 138, y = 212 },
     },
-    iconAnimations = {
-      periods = { 1, 8, 12, 24, 40, 36 },
-      replacementDurations = { 32, 2, 2 },
-      replacementShift = { 0, 1, -1 },
-    },
+    iconAnimations = { sequences = sequences },
     navigation = { dpad = { default = dpadRow, alternate = dpadRow, union = dpadRow, contest = dpadRow } },
     hitboxes = {
       touch = {
@@ -174,13 +243,23 @@ local function manifest()
         context = { { top = 0, bottom = 48, left = 0, right = 128 } },
       },
     },
-    text = { labels = {}, templates = {} },
+    text = {
+      labels = { cancel = "Cancel", male = "M", female = "F" },
+      templates = { switchPrompt = { segments = { { kind = "text", value = "Switch?" } } } },
+      roles = { ordinary = role(), male = role(), female = role() },
+    },
     numberGlyphs = {
       advance = 8,
       height = 8,
       digits = digits,
       slash = { image = "assets/generated/party/slash.png", width = 8, height = 8 },
       level = { image = "assets/generated/party/level.png", width = 16, height = 8 },
+      placement = {
+        level = { x = 5, y = 2 },
+        current = { x = 0, y = 2 },
+        slash = { x = 28, y = 2 },
+        max = { x = 36, y = 2 },
+      },
     },
     shinyLeaves = {
       anchors = anchors,
@@ -212,7 +291,7 @@ local function bundle(marker)
   return {
     marker = marker,
     manifest = data,
-    dependencies = { cacheFormat = PartyCache.FORMAT, schema = "g4-party-presentation-v2" },
+    dependencies = { cacheFormat = PartyCache.FORMAT, schema = PartyCache.SCHEMA },
     assets = assets,
   }
 end
@@ -224,7 +303,7 @@ function T.writes_the_class_and_reports_ready()
   Assert.isTrue(PartyCacheWriter.write(cache, bundle(marker)), "publication reports success")
   Assert.isTrue(PartyCache.isReady(cache, marker), "ready after write")
   local loaded = PartyCache.loadManifest(cache)
-  Assert.equal(loaded.schema, "g4-party-presentation-v2", "the published manifest loads back")
+  Assert.equal(loaded.schema, "g4-party-presentation-v3", "the published manifest loads back")
 end
 
 function T.rejects_a_malformed_class_without_publishing()

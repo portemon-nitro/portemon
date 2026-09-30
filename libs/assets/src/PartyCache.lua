@@ -91,6 +91,14 @@ function PartyCache.referencedPaths(manifest)
   addVisual(hpBars.green)
   addVisual(hpBars.yellow)
   addVisual(hpBars.red)
+  local menu = typed.contextMenu --[[@as table<string, unknown>]]
+  local menuFrames = menu.frames --[[@as table<string, table<string, unknown>>]]
+  for _, shape in ipairs({ "standard", "cancel" }) do
+    local group = menuFrames[shape]
+    for _, state in ipairs({ "raised", "selected", "pressed" }) do
+      addVisual(group[state])
+    end
+  end
   local glyphs = typed.numberGlyphs --[[@as table<string, unknown>]]
   local digits = glyphs.digits --[[@as table[] ]]
   for _, digit in ipairs(digits) do

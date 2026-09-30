@@ -189,8 +189,13 @@ PartySources.feedback =
 
 -- Fixed numeric font: NARC 16 member 5 holds consecutive 8x8 4bpp digit
 -- cells at byte offsets digit*32, the slash glyph at 0x140 (width 8) and
--- the level glyph at 0x160 (width 16), all height 8. The source recolors
--- indices 1/2/0 to foreground/shadow/background.
+-- the level glyph at 0x160 (width 16), all height 8. Glyph pixels recolor
+-- through the party text roles above, never bare font palette entries.
+-- Placement is window-relative pixels transcribed from the panel number
+-- routines: level numerals at level-window (5,2), current HP as a 3-digit
+-- right-aligned field at HP-window (0,2), the slash at (28,2), max HP as a
+-- 3-digit left-aligned field at (36,2)
+-- (PartyMenu_PrintMonLevelOnWindow/CurHp/DrawSlash/MaxHpOnWindow).
 PartySources.numeric = {
   fontSymbol = "NARC_graphic_font",
   member = 5,
@@ -200,6 +205,12 @@ PartySources.numeric = {
   slashWidth = 8,
   levelOffset = 0x160,
   levelWidth = 16,
+  placement = {
+    level = { x = 5, y = 2 },
+    current = { x = 0, y = 2 },
+    slash = { x = 28, y = 2 },
+    max = { x = 36, y = 2 },
+  },
 }
 
 -- Shiny Leaf/crown source: a/1/6/2 members 65-68 with animations 6 (leaf)
@@ -229,11 +240,161 @@ PartySources.badges = {
 }
 
 -- Message/context window placements transcribed from sAdditionalWindowTemplates
--- (party_context_menu.c): window 32 (lower message) is template index 2,
--- window 36 (context menu) is template index 6. Tile units become pixels.
+-- (party_context_menu.c): browse is source window 32 (template index 2),
+-- context is source window 33 (template index 3), action is source window 34
+-- (template index 4). Tile units become pixels. The confirm prompt anchors at
+-- the source tile-derived position (tile 25,10), in pixels.
 PartySources.windows = {
-  message = { x = 16, y = 168, width = 160, height = 16 },
-  context = { x = 152, y = 120, width = 96, height = 64 },
+  browse = { x = 16, y = 168, width = 160, height = 16 },
+  context = { x = 16, y = 152, width = 104, height = 32 },
+  action = { x = 16, y = 152, width = 216, height = 32 },
+  prompt = { x = 200, y = 80 },
+}
+
+-- Party text palette roles transcribed from the source printer slots:
+-- ordinary nickname text uses MAKE_TEXT_COLOR(15, 14, 0), the male symbol
+-- uses (3, 4, 0), the female symbol uses (5, 6, 0)
+-- (PartyMenu_PrintMonNicknameOnWindow). Each triple is
+-- { foreground, shadow, background } slots in the palette bank below; the
+-- bank-0 resolution is what carries the white/blue/red ink seen in-game.
+PartySources.textRoles = {
+  bank = 0,
+  ordinary = { 15, 14, 0 },
+  male = { 3, 4, 0 },
+  female = { 5, 6, 0 },
+}
+
+-- Context-button presentation roles transcribed from
+-- PartyMenu_PrintContextMenuItemText/getButtonColorRaised/getButtonColorDepressed:
+-- button windows carry palette selector 2; text ink spans slots 14/15 (both
+-- text states share foreground 14, the fill pair below carries the state
+-- change); window fills are FillWindowPixelBuffer 4 raised, 11 depressed.
+PartySources.contextRoles = {
+  bank = 2,
+  text = { raised = 14, depressed = 15 },
+  fill = { raised = 4, depressed = 11 },
+}
+
+-- Context-button frame source transcribed from sub_0207E3A8 and the member-26
+-- load in sub_02079A14 (member 26 NCGR loads at BG tile base 10; the raised,
+-- selected, and pressed VRAM tile starts 0x200A/0x2013/0x201C are member tiles
+-- 0/9/18). Tile offsets are sButtonFrameTileOffsets: corner, corner, corner,
+-- corner, left edge, right edge, top edge, bottom edge. Frames carry tilemap
+-- palette selector 2, resolved against the bank below.
+PartySources.contextFrames = {
+  member = 26,
+  tileBases = { raised = 0, selected = 9, pressed = 18 },
+  tileOffsets = { 0, 2, 6, 8, 3, 5, 1, 7 },
+  paletteBank = 2,
+}
+
+-- Context-menu button inventory transcribed from party_context_menu.c.
+-- textWindows are sButtonWindowTemplates in tile units { x, y, width, height };
+-- frames are sButtonRects in tile units (indices 0-6 and 8-11 are 16x4-tile
+-- standard buttons, index 7 is the 7x5-tile cancel button); windowIds are
+-- sButtonWindowIDs keyed by entry count with the producer state naming the
+-- slot menu (top) versus the item/mail submenu (sub), mapping each semantic
+-- entry to its button index; navTopLevel is sDpadNavParam_PartyMenu keyed by
+-- entry count ({ up, down, lateral } zero-based selections, -1 no move, one
+-- lateral relation shared by left and right); navSubcontext is
+-- sDpadNavParam_ContextMenu ({ up, down } only); hitboxes are sHitboxes and
+-- subHitboxes sContextMenuHitboxes in pixels { top, bottom, left, right }
+-- with right 0 encoding 256, indexed by button index and sub-hitbox index.
+PartySources.contextButtons = {
+  textWindows = {
+    { x = 17, y = 4, width = 14, height = 2 },
+    { x = 17, y = 8, width = 14, height = 2 },
+    { x = 17, y = 12, width = 14, height = 2 },
+    { x = 1, y = 3, width = 14, height = 2 },
+    { x = 1, y = 7, width = 14, height = 2 },
+    { x = 1, y = 11, width = 14, height = 2 },
+    { x = 1, y = 15, width = 14, height = 2 },
+    { x = 26, y = 20, width = 5, height = 3 },
+    { x = 17, y = 3, width = 14, height = 2 },
+    { x = 17, y = 7, width = 14, height = 2 },
+    { x = 17, y = 11, width = 14, height = 2 },
+    { x = 17, y = 15, width = 14, height = 2 },
+  },
+  frames = {
+    { x = 16, y = 3, width = 16, height = 4 },
+    { x = 16, y = 7, width = 16, height = 4 },
+    { x = 16, y = 11, width = 16, height = 4 },
+    { x = 0, y = 2, width = 16, height = 4 },
+    { x = 0, y = 6, width = 16, height = 4 },
+    { x = 0, y = 10, width = 16, height = 4 },
+    { x = 0, y = 14, width = 16, height = 4 },
+    { x = 25, y = 19, width = 7, height = 5 },
+    { x = 16, y = 2, width = 16, height = 4 },
+    { x = 16, y = 6, width = 16, height = 4 },
+    { x = 16, y = 10, width = 16, height = 4 },
+    { x = 16, y = 14, width = 16, height = 4 },
+  },
+  windowIds = {
+    top = {
+      [2] = { 0, 7 },
+      [3] = { 0, 1, 7 },
+      [4] = { 0, 1, 2, 7 },
+      [5] = { 0, 1, 2, 7, 3 },
+      [6] = { 0, 1, 2, 7, 3, 4 },
+      [7] = { 0, 1, 2, 7, 3, 4, 5 },
+      [8] = { 0, 1, 2, 7, 3, 4, 5, 6 },
+    },
+    sub = {
+      [2] = { 8, 7 },
+      [3] = { 8, 9, 7 },
+      [4] = { 8, 9, 10, 7 },
+      [5] = { 8, 9, 10, 11, 7 },
+    },
+  },
+  navTopLevel = {
+    [2] = { { 1, 1, -1 }, { 0, 0, -1 } },
+    [3] = { { 2, 1, -1 }, { 0, 2, -1 }, { 1, 0, -1 } },
+    [4] = { { 3, 1, -1 }, { 0, 2, -1 }, { 1, 3, -1 }, { 2, 0, -1 } },
+    [5] = { { 3, 1, 4 }, { 0, 2, 4 }, { 1, 3, 4 }, { 2, 0, -1 }, { -1, -1, 0 } },
+    [6] = { { 3, 1, 4 }, { 0, 2, 5 }, { 1, 3, 5 }, { 2, 0, -1 }, { 5, 5, 0 }, { 4, 4, 1 } },
+    [7] = {
+      { 3, 1, 4 },
+      { 0, 2, 5 },
+      { 1, 3, 6 },
+      { 2, 0, -1 },
+      { 6, 5, 0 },
+      { 4, 6, 1 },
+      { 5, 4, 2 },
+    },
+    [8] = {
+      { 3, 1, 4 },
+      { 0, 2, 5 },
+      { 1, 3, 6 },
+      { 2, 0, -1 },
+      { 7, 5, 0 },
+      { 4, 6, 1 },
+      { 5, 7, 2 },
+      { 6, 4, 2 },
+    },
+  },
+  navSubcontext = {
+    [2] = { { 1, 1 }, { 0, 0 } },
+    [3] = { { 2, 1 }, { 0, 2 }, { 1, 0 } },
+    [4] = { { 3, 1 }, { 0, 2 }, { 1, 3 }, { 2, 0 } },
+    [5] = { { 4, 1 }, { 0, 2 }, { 1, 3 }, { 2, 4 }, { 3, 0 } },
+  },
+  hitboxes = {
+    { top = 24, bottom = 56, left = 128, right = 0 },
+    { top = 56, bottom = 88, left = 128, right = 0 },
+    { top = 88, bottom = 120, left = 128, right = 0 },
+    { top = 16, bottom = 48, left = 0, right = 128 },
+    { top = 48, bottom = 80, left = 0, right = 128 },
+    { top = 80, bottom = 112, left = 0, right = 128 },
+    { top = 112, bottom = 144, left = 0, right = 128 },
+    { top = 152, bottom = 192, left = 200, right = 0 },
+  },
+  subHitboxes = {
+    { top = 16, bottom = 48, left = 128, right = 0 },
+    { top = 48, bottom = 80, left = 128, right = 0 },
+    { top = 80, bottom = 112, left = 128, right = 0 },
+    { top = 112, bottom = 144, left = 128, right = 0 },
+    { top = 152, bottom = 192, left = 200, right = 0 },
+  },
 }
 -- never through map-script reachability. Labels carry display text only;
 -- templates carry the closed substitution vocabulary below.
@@ -256,6 +417,8 @@ PartySources.messages = {
     set = { bank = 300, index = 149 },
     confirm = { bank = 300, index = 186 },
     cancel = { bank = 300, index = 1 },
+    male = { bank = 300, index = 27 },
+    female = { bank = 300, index = 28 },
     compatAltAble = { bank = 300, index = 158 },
     compatAltUnable = { bank = 300, index = 159 },
     compatAltLearned = { bank = 300, index = 160 },
@@ -334,7 +497,14 @@ PartySources.geometry = {
   -- one-based index used by the generated manifest.
   cursorSequenceSelectors = { 1, 0, 0, 0, 0, 0 },
   -- sub_02079D38 moves the raw sprite template by y-8 during normal setup.
-  controls = { cancel = { templateAnchor = { x = 232, y = 184 }, normalSetupOffset = { x = 0, y = -8 } } },
+  controls = {
+    cancel = {
+      templateAnchor = { x = 232, y = 184 },
+      normalSetupOffset = { x = 0, y = -8 },
+      textRect = { x = 200, y = 168, width = 48, height = 16 },
+      align = "center",
+    },
+  },
   detail = {
     iconAnchor = { x = 30, y = 200 },
     statusAnchor = { x = 50, y = 220 },
@@ -434,5 +604,13 @@ PartySources.panelWindows = {
   bar = { x = 64, y = 24, width = 48, height = 8 },
   compat = { x = 48, y = 32, width = 80, height = 16 },
 }
+
+-- Gender mark placement transcribed from PartyMenu_PrintMonNicknameOnWindow
+-- (party_context_menu.c): the nickname prints at name-window-local (0,0)
+-- and the gender mark at name-window-local (64,0), inside the 72px-wide
+-- name window. The compiler lowers this offset against each panel's
+-- name-subrect origin; the decomp symbol name stays in this producer
+-- comment only and never reaches the runtime manifest.
+PartySources.genderOffset = { x = 64, y = 0 }
 
 return PartySources

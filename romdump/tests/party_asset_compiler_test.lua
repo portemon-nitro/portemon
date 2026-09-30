@@ -4,8 +4,10 @@
 -- commercial payloads: assertions are counts, durations, and dimensions.
 
 local Assert = require("tests.support.Assert")
+local ffi = require("ffi")
 local G2dDecoder = require("romdump.src.digest.ui.G2dDecoder")
 local Lz10 = require("romdump.src.digest.Lz10")
+local PngReader = require("tests.support.PngReader")
 local RomSuite = require("tests.rom.support.RomSuite")
 
 local T = {}
@@ -117,6 +119,62 @@ function T.numeric_font_member5_layout(romFs, _)
   Assert.isTrue(#bytes >= PartySources.numeric.levelOffset + 32, "member 5 reaches the level cell")
   Assert.equal(PartySources.numeric.slashOffset, 0x140)
   Assert.equal(PartySources.numeric.levelOffset, 0x160)
+end
+
+-- Numeric glyphs draw through the party message-printer roles: every
+-- opaque digit/slash/level pixel must belong to the published ordinary
+-- text role instead of an arbitrary font-palette recolor.
+function T.numeric_glyphs_use_the_party_text_roles(romFs, _)
+  local PartyAssetCompiler = require("romdump.src.digest.ui.PartyAssetCompiler")
+  local bundle = assert(PartyAssetCompiler.compile(romFs))
+  local roles = bundle.manifest.text and bundle.manifest.text.roles
+  Assert.notNil(roles, "the compiled text publishes its palette roles")
+  local ordinary = roles.ordinary
+  Assert.notNil(ordinary, "the ordinary nickname role resolves")
+  local allowed = {}
+  local function collect(record)
+    for _, value in pairs(record) do
+      if type(value) == "table" then
+        if type(value.r) == "number" and type(value.g) == "number" and type(value.b) == "number" then
+          allowed[string.char(value.r, value.g, value.b, 255)] = true
+        else
+          collect(value)
+        end
+      end
+    end
+  end
+  collect(ordinary)
+  Assert.isTrue(next(allowed) ~= nil, "the ordinary role carries resolved colors")
+  local glyphs = bundle.manifest.numberGlyphs
+  local images = {}
+  for digit = 0, 9 do
+    images[#images + 1] = glyphs.digits[digit + 1].image
+  end
+  images[#images + 1] = glyphs.slash.image
+  images[#images + 1] = glyphs.level.image
+  local seen = {}
+  for _, path in ipairs(images) do
+    local raw = bundle.assets[path]
+    Assert.notNil(raw, path .. " resolves")
+    local bytes = raw
+    if type(raw) ~= "string" then
+      bytes = ffi.string(raw:getFFIPointer(), raw:getSize())
+    end
+    local width, height, rgba = PngReader.rgba(assert(bytes, path .. " decodes"))
+    Assert.isTrue(width > 0 and height > 0, path .. " has realized dimensions")
+    for offset = 1, #rgba, 4 do
+      if string.byte(rgba, offset + 3) ~= 0 then
+        local pixel = rgba:sub(offset, offset + 3)
+        Assert.isTrue(allowed[pixel], path .. " draws through the party text role")
+        seen[pixel] = true
+      end
+    end
+  end
+  local distinct = 0
+  for _ in pairs(seen) do
+    distinct = distinct + 1
+  end
+  Assert.equal(distinct, 2, "numeric glyphs use exactly the foreground/shadow pair")
 end
 
 local suite = RomSuite.fromFacts(T)
