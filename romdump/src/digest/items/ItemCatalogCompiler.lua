@@ -13,7 +13,9 @@
 
 local BinaryReader = require("libs.codec.src.BinaryReader")
 local Errors = require("libs.errors.src.Errors")
+local MonSources = require("romdump.src.config.MonSources")
 local ItemSources = require("romdump.src.config.ItemSources")
+local BattleSources = require("romdump.src.config.BattleSources")
 local ItemAssetSchema = require("libs.assets.src.ItemAssetSchema")
 local ItemCache = require("libs.assets.src.ItemCache")
 local FieldMessageBank = require("romdump.src.digest.ui.FieldMessageBank")
@@ -77,8 +79,11 @@ local function readMember(archive, memberId, alias)
 end
 
 -- Decode one 34-byte item_data member into the catalog-consumed facts: the
--- hold-effect byte driving friendship behavior, the toss/selectability
--- flags, the field pocket, and the party-use facts. The party parameter
+-- hold-effect byte driving friendship behavior, the Fling/Natural Gift
+-- throw facts at offsets 4-8 (pluckEffect@4, flingEffect@5, flingPower@6,
+-- naturalGiftPower@7, and naturalGiftType:5 at bits 0-4 of the bitfield u16
+-- at offset 8), the toss/selectability flags, the field pocket, and the
+-- party-use facts. The party parameter
 -- bytes follow struct ItemPartyParam in include/item.h: flag bytes carry
 -- slp/psn/brn/frz/prz/cfs/inf/guard_spec, revive/revive_all/level_up/evolve
 -- plus four-bit battle stages, pp_up/pp_max/pp_restore/pp_restore_all plus
@@ -118,6 +123,14 @@ function ItemCatalogCompiler.decodeItemData(member, context)
   return {
     price = reader:u16le(0),
     holdEffect = string.byte(member, ItemSources.ITEM_DATA_HOLD_EFFECT_OFFSET + 1),
+    -- Throw facts follow the struct ItemData field order directly: the
+    -- four bytes after the hold-effect parameter (1-based string positions
+    -- 6-8 for the 0-based offsets 5-7), then the low five bitfield bits.
+    -- No named source constants exist for these offsets.
+    flingEffect = string.byte(member, 6),
+    flingPower = string.byte(member, 7),
+    naturalGiftPower = string.byte(member, 8),
+    naturalGiftType = word % 32,
     preventToss = math.floor(word / tossBit) % 2 == 1,
     selectable = math.floor(word / selectBit) % 2 == 1,
     fieldPocket = math.floor(word / pocketShift) % (ItemSources.ITEM_DATA_FIELD_POCKET_MASK + 1),
@@ -480,6 +493,64 @@ local function requireText(texts, id, what, context)
   return text
 end
 
+-- Resolve one item into its semantic held behavior through the battle
+-- source inventory. Statically classified items (balls, plates, the
+-- Griseous Orb, mail) keep their pinned binding; every other item resolves
+-- its ROM hold-effect byte, naming unmapped effects instead of inventing
+-- semantics. A missing inventory binding fails the import naming the item.
+---@param nativeId integer
+---@param key string
+---@param pocketKey string
+---@param isHm boolean
+---@param decoded table<string, unknown>
+---@return table<string, unknown>
+local function resolveHeldBehavior(nativeId, key, pocketKey, isHm, decoded)
+  local inventory = BattleSources.heldItemBindings
+  local binding = inventory[key] or inventory[nativeId]
+  if type(binding) ~= "table" then
+    error(Errors.new("ITEM_HELD_UNBOUND", "item " .. key .. " has no held behavior binding", { item = key }), 0)
+  end
+  if binding.key ~= "held" then
+    return { key = binding.key, params = { nativeId = nativeId } }
+  end
+  if pocketKey == "key_items" or isHm then
+    return { key = "no_hold", params = { nativeId = nativeId } }
+  end
+  local holdEffect = assert(decoded.holdEffect, "item decode carries no hold effect")
+  assert(type(holdEffect) == "number", "item hold effect must be numeric")
+  if holdEffect == 0 then
+    return { key = "no_hold_effect", params = { nativeId = nativeId, holdEffect = holdEffect } }
+  elseif holdEffect == ItemSources.HOLD_EFFECT_FRIENDSHIP_UP then
+    return { key = "friendship_up", params = { nativeId = nativeId, holdEffect = holdEffect } }
+  end
+  return { key = "unmapped_hold_effect", params = { nativeId = nativeId, holdEffect = holdEffect } }
+end
+
+-- Project one item's Fling/Natural Gift throw facts from its decoded
+-- item_data row. Effects and powers stay numeric: no semantic Fling-effect
+-- inventory exists in this pipeline. The Natural Gift type resolves to its
+-- lower-case source key when the five bitfield bits name a real type and
+-- stays nil otherwise (non-berry rows carry out-of-range bits the battle
+-- reader never consumes); the raw bits travel as typeId so the projection
+-- stays exactly invertible.
+---@param decoded table<string, unknown>
+---@return table<string, unknown>
+local function resolveThrowFacts(decoded)
+  local giftTypeId = assert(decoded.naturalGiftType, "item decode carries no natural-gift type")
+  assert(type(giftTypeId) == "number", "item natural-gift type must be numeric")
+  return {
+    fling = {
+      effect = assert(decoded.flingEffect, "item decode carries no fling effect"),
+      power = assert(decoded.flingPower, "item decode carries no fling power"),
+    },
+    naturalGift = {
+      power = assert(decoded.naturalGiftPower, "item decode carries no natural-gift power"),
+      typeId = giftTypeId,
+      type = MonSources.typeKeys[giftTypeId],
+    },
+  }
+end
+
 -- Compile the complete semantic catalog from a supported dump. Every source
 -- item identity 0..536 becomes one source-independent definition; pocket,
 -- TM/HM, mail, and berry cross-checks fail the build instead of emitting
@@ -633,6 +704,10 @@ function ItemCatalogCompiler.compileCatalog(romFs, opts)
         record.berryNameSingular = berryName
         record.berryNamePlural = berryName
       end
+      record.heldBehavior = resolveHeldBehavior(nativeId, key, pocketKey, isHm, decoded)
+      local throwFacts = resolveThrowFacts(decoded)
+      record.fling = throwFacts.fling
+      record.naturalGift = throwFacts.naturalGift
       items[key] = record
     end
     local catalog = {

@@ -24,6 +24,7 @@ local MonCache = require("libs.assets.src.MonCache")
 local MonCacheWriter = require("romdump.src.digest.mons.MonCacheWriter")
 local MonCatalog = require("libs.mons.src.MonCatalog")
 local MonCatalogCompiler = require("romdump.src.digest.mons.MonCatalogCompiler")
+local BattleSources = require("romdump.src.config.BattleSources")
 local MonPresentationCompiler = require("romdump.src.digest.mons.MonPresentationCompiler")
 local MonSources = require("romdump.src.config.MonSources")
 local MonsSave = require("libs.mons.src.MonsSave")
@@ -240,6 +241,14 @@ local function syntheticRomFs()
       return member
     end),
     follower_params = fixedArchive(4096, function()
+      return allZero(4)
+    end),
+    -- The species weight table resolves through its pinned decomp symbol;
+    -- member 1 carries one zero s32 per species, member 0 is never read.
+    [BattleSources.weightSources.symbol] = fixedArchive(2, function(memberId)
+      if memberId == BattleSources.weightSources.memberId then
+        return allZero((MonSources.MAX_SPECIES + 1) * BattleSources.weightSources.entrySize)
+      end
       return allZero(4)
     end),
     item_data = fixedArchive(537, function()

@@ -30,7 +30,6 @@ function T.decodes_the_catalog_consumed_fields()
     memberId = 196,
   }))
   Assert.equal(decoded.holdEffect, 53)
-  Assert.isNil(decoded.naturalGiftPower)
   Assert.isFalse(decoded.preventToss)
   Assert.isFalse(decoded.selectable)
   Assert.equal(decoded.fieldPocket, 0)
@@ -58,7 +57,8 @@ function T.decodes_pocket_toss_and_selectable_bits()
 end
 
 function T.ignores_non_catalog_bitfields()
-  -- naturalGiftType and battlePocket bits never leak into catalog facts.
+  -- Battle-pocket bits never leak into catalog facts; the natural-gift
+  -- type bits project through their own facts below.
   local word = 31 + 31 * 2048
   local decoded = assert(compiler().decodeItemData(memberWith(0, word), {
     archive = "item_data",
@@ -67,6 +67,25 @@ function T.ignores_non_catalog_bitfields()
   Assert.equal(decoded.fieldPocket, 0)
   Assert.isFalse(decoded.preventToss)
   Assert.isFalse(decoded.selectable)
+  Assert.equal(decoded.naturalGiftType, 31)
+end
+
+function T.decodes_fling_and_natural_gift_throw_facts()
+  -- Cheri Berry shape: pluck/fling effects 1, fling power 10,
+  -- natural-gift power 60, gift type 10 (fire) over the berries pocket.
+  local word = 10 + 4 * 128
+  local member = string.char(100, 0, 0, 0, 1, 1, 10, 60, word % 256, math.floor(word / 256) % 256, 0, 0, 0, 0)
+    .. string.rep("\0", 20)
+  Assert.equal(#member, 34)
+  local decoded = assert(compiler().decodeItemData(member, {
+    archive = "item_data",
+    memberId = 127,
+  }))
+  Assert.equal(decoded.flingEffect, 1)
+  Assert.equal(decoded.flingPower, 10)
+  Assert.equal(decoded.naturalGiftPower, 60)
+  Assert.equal(decoded.naturalGiftType, 10)
+  Assert.equal(decoded.fieldPocket, 4)
 end
 
 function T.rejects_malformed_item_members()

@@ -316,9 +316,11 @@ DerivedAssetContract.starterChoice = {
 -- in the field-actor class; the catalog references field-actor visual IDs
 -- only. Item identity lives in the item class, never here: v3 drops the
 -- former generated item collection so item-only metadata changes never
--- invalidate mon buckets.
+-- invalidate mon buckets. v4 adds the per-species source weight in
+-- hectograms (cacheFormat v2), so a stale v3 catalog without those facts
+-- must fail readiness.
 DerivedAssetContract.mons = {
-  cacheFormat = "mon-cache-v1",
+  cacheFormat = "mon-cache-v2",
   catalogSchema = "g4-mon-catalog-v4",
   -- v2 replaces the whole-atlas index with a page inventory: the index binds
   -- the catalog hash to one marker per icon/portrait page.
@@ -329,13 +331,35 @@ DerivedAssetContract.mons = {
   portraitManifestSchema = "g4-mon-portrait-manifest-v2",
 }
 
+-- The battle input class carries the source-independent native battle,
+-- trainer, and encounter payloads compiled from the supported dumps. Each
+-- family stages its whole semantic payload plus a completion marker under
+-- its own cache format, so one family rebuilds without disturbing the
+-- others or any unrelated cache job.
+DerivedAssetContract.battleData = {
+  cacheFormat = "battle-data-cache-v1",
+  schema = "g4-battle-data-v1",
+}
+
+DerivedAssetContract.trainerCatalog = {
+  cacheFormat = "trainer-catalog-cache-v1",
+  schema = "g4-trainer-catalog-v1",
+}
+
+DerivedAssetContract.encounterCatalog = {
+  cacheFormat = "encounter-catalog-cache-v1",
+  schema = "g4-encounter-catalog-v1",
+}
+
 -- The item class carries the source-independent item catalog (definitions,
 -- pockets, pocket names) plus the item-icon atlas with its manifest. The
 -- mon package and the Bag runtime resolve item identity through this class.
 -- v2 adds held-item action metadata (isHm, canHold, heldFormEffect), so a
 -- stale v1 cache without those facts must fail readiness. v3 adds semantic
--- party-use metadata (partyUse), and v4 adds source item prices, so older
--- catalogs must fail readiness.
+-- party-use metadata (partyUse), so a stale v2 cache without those facts
+-- must fail readiness. v4 adds source item prices plus the Fling and
+-- Natural Gift throw facts (cacheFormat v4), so a stale v3 catalog without
+-- those facts must fail readiness.
 DerivedAssetContract.items = {
   cacheFormat = "item-cache-v4",
   catalogSchema = "g4-item-catalog-v4",
