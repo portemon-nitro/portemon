@@ -122,7 +122,7 @@ function T.contract_pins_the_current_asset_identities()
     },
     bag = {
       cacheFormat = "bag-cache-v2",
-      schema = "g4-bag-assets-v14",
+      schema = "g4-bag-assets-v15",
     },
     party = {
       cacheFormat = "party-cache-v1",

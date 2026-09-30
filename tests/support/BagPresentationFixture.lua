@@ -441,7 +441,6 @@ function BagPresentationFixture.manifest()
       overlays = {
         actionMenu = {
           face = bagImageRef("assets/generated/bag/action-face.png"),
-          selectedItemCenter = { x = 86, y = 76 },
           slots = {
             { center = { x = 48, y = 144 }, textRect = bagRect(8, 136, 80, 16), hitRect = bagRect(0, 128, 94, 32) },
             { center = { x = 144, y = 144 }, textRect = bagRect(104, 136, 80, 16), hitRect = bagRect(96, 128, 96, 32) },

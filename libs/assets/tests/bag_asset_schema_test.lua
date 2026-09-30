@@ -444,7 +444,7 @@ end
 
 local function validFocusManifest()
   local manifest = validManifest()
-  manifest.schema = "g4-bag-assets-v14"
+  manifest.schema = "g4-bag-assets-v15"
   manifest.interactive.overlays.tossPrompt = { x = 200, y = 48, shape = "compact", initialSelection = "yes" }
   manifest.interactive.overlays.selectedItem = {
     iconCenter = { x = 86, y = 76 },
@@ -509,7 +509,6 @@ local function validFocusManifest()
     playback = "once",
     totalTicks = 5,
   }
-  manifest.interactive.overlays.actionMenu.selectedItemCenter = { x = 86, y = 76 }
   local icon = function(key)
     return { image = "assets/generated/bag/move-" .. key .. ".png", width = 64, height = 16 }
   end
@@ -611,7 +610,7 @@ end
 -- scenario keeps the versioned focus fixture above.
 local function validTossManifest()
   local manifest = validFocusManifest()
-  manifest.schema = "g4-bag-assets-v14"
+  manifest.schema = "g4-bag-assets-v15"
   manifest.interactive.overlays.tossPrompt = { x = 200, y = 48, shape = "compact", initialSelection = "yes" }
   manifest.interactive.text.tossResult = {
     segments = {
@@ -716,6 +715,12 @@ function T.previous_bag_contract_is_rejected()
   Assert.isFalse(
     BagAssetSchema.isValidManifest(previousPostSelection),
     "the previous post-selection Bag contract must not validate as current"
+  )
+  local supersededPostSelection = validFocusManifest()
+  supersededPostSelection.schema = "g4-bag-assets-v14"
+  Assert.isFalse(
+    BagAssetSchema.isValidManifest(supersededPostSelection),
+    "the duplicate-center post-selection Bag contract must not validate as current"
   )
 end
 
@@ -888,9 +893,9 @@ end
 -- The strip contract is the current focus-manifest shape above.
 
 function T.pocket_strips_and_edge_colors_validate_as_the_current_contract()
-  Assert.equal(BagAssetSchema.SCHEMA, "g4-bag-assets-v14")
-  Assert.equal(DerivedAssetContract.bag.schema, "g4-bag-assets-v14")
-  Assert.equal(BagCache.SCHEMA, "g4-bag-assets-v14")
+  Assert.equal(BagAssetSchema.SCHEMA, "g4-bag-assets-v15")
+  Assert.equal(DerivedAssetContract.bag.schema, "g4-bag-assets-v15")
+  Assert.equal(BagCache.SCHEMA, "g4-bag-assets-v15")
   Assert.equal(BagCache.FORMAT, "bag-cache-v2")
   local manifest = validStripManifest()
   Assert.isTrue(BagAssetSchema.isValidManifest(manifest), "the pocket-strip manifest must pass the schema")
@@ -941,9 +946,9 @@ function T.selection_entry_and_selected_item_presentation_are_required()
   local missingText = validFocusManifest()
   missingText.interactive.text.selectedItem = nil
   assertInvalid(missingText, "a manifest without the selected-item text must fail")
-  local missingCenter = validFocusManifest()
-  missingCenter.interactive.overlays.actionMenu.selectedItemCenter = nil
-  assertInvalid(missingCenter, "a manifest without the selected-item center must fail")
+  local extraCenter = validFocusManifest()
+  extraCenter.interactive.overlays.actionMenu.selectedItemCenter = { x = 86, y = 76 }
+  assertInvalid(extraCenter, "a manifest with the removed duplicate center must fail")
   local badTotal = validFocusManifest()
   badTotal.interactive.selectionEntry.totalTicks = 4
   assertInvalid(badTotal, "a manifest with a wrong selection total must fail")

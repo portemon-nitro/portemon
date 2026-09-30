@@ -1806,10 +1806,6 @@ local function _compile(romFs)
         actionMenu = {
           face = sprites.actionFace,
           slots = geometry.actionSlots,
-          selectedItemCenter = {
-            x = BagSources.geometry.actionSelectedItemCenter.x,
-            y = BagSources.geometry.actionSelectedItemCenter.y,
-          },
         },
         quantity = {
           digits = geometry.quantityDigits,

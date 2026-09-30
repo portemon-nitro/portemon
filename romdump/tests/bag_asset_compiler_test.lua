@@ -908,7 +908,7 @@ local function syntheticBundle(marker)
     tabs[#tabs + 1] = { x = i * 32, y = 0, width = 32, height = 32 }
   end
   local manifest = {
-    schema = "g4-bag-assets-v14",
+    schema = "g4-bag-assets-v15",
     logicalSize = { width = 256, height = 192 },
     hero = {
       background = {
@@ -1223,7 +1223,6 @@ local function syntheticBundle(marker)
         },
         actionMenu = {
           face = visualRef("assets/generated/bag/action-face-frame-1.png"),
-          selectedItemCenter = { x = 86, y = 76 },
           slots = {
             {
               center = { x = 48, y = 144 },
@@ -1360,7 +1359,7 @@ function T.writer_publishes_the_class_and_reports_ready()
   Assert.isTrue(BagCacheWriter.write(cacheFs, bundle))
   Assert.isTrue(BagCacheWriter.isReady(cacheFs, bundle.marker))
   local loaded = BagCache.loadManifest(cacheFs)
-  Assert.equal(loaded.schema, "g4-bag-assets-v14")
+  Assert.equal(loaded.schema, "g4-bag-assets-v15")
   Assert.equal(loaded.hero.presentation.lights.count, 4)
   Assert.deepEqual(loaded.hero.presentation.lights.color, { r = 31, g = 31, b = 31 })
   Assert.equal(#loaded.hero.presentation.lights.vectors, 4)

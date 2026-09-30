@@ -633,7 +633,6 @@ BagSources.geometry = {
     hitRect = rect(96, 168, 78, 24),
   },
   quantityCancelHitRect = rect(178, 168, 78, 24),
-  actionSelectedItemCenter = { x = 86, y = 76 },
 }
 
 -- Movable focus targets in canonical pane pixels: the position records the

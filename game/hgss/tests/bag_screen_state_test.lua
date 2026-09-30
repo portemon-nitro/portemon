@@ -672,7 +672,6 @@ local function composedManifest()
     width = 96,
     height = 24,
   }
-  manifested.interactive.overlays.actionMenu.selectedItemCenter = { x = 86, y = 76 }
   manifested.interactive.overlays.quantity = {
     controls = {
       {

@@ -356,7 +356,6 @@ end
 function T.selection_entry_compiles_the_retail_blink_as_a_one_shot_sequence(romFs, versionId)
   Assert.deepEqual(BagSources.spriteStates.itemSelect, { animation = 41, palette = 9 })
   Assert.deepEqual(BagSources.messages.templates.selectedItem, { bank = 10, index = 43 })
-  Assert.deepEqual(BagSources.geometry.actionSelectedItemCenter, { x = 86, y = 76 })
   local bundle = bundleFor(romFs, versionId)
   local manifest = bundle.manifest
   local entry = assert(
@@ -394,7 +393,10 @@ function T.selection_entry_compiles_the_retail_blink_as_a_one_shot_sequence(romF
   Assert.equal(entry.totalTicks, total, "the selection total equals its frame duration sum")
   Assert.equal(total, 12, "the retail blink spans twelve ticks")
   Assert.deepEqual(segmentKinds(manifest.interactive.text.selectedItem), { "text", "item", "text" })
-  Assert.deepEqual(manifest.interactive.overlays.actionMenu.selectedItemCenter, { x = 86, y = 76 })
+  Assert.isNil(
+    manifest.interactive.overlays.actionMenu.selectedItemCenter,
+    "the action menu carries no duplicate selected-item center"
+  )
 end
 
 function T.registration_markers_are_distinct_40x16_assets(romFs, versionId)
@@ -732,7 +734,7 @@ end
 function T.pocket_strips_replay_the_retained_palette_state(romFs, versionId)
   local bundle = bundleFor(romFs, versionId)
   local manifest = bundle.manifest
-  Assert.equal(manifest.schema, "g4-bag-assets-v14", "the rebuilt bag cache must publish the current contract")
+  Assert.equal(manifest.schema, "g4-bag-assets-v15", "the rebuilt bag cache must publish the current contract")
   local strips =
     assert(manifest.interactive.pocketTabs.strips, "the rebuilt manifest must publish one strip per active pocket")
   local keys = {}

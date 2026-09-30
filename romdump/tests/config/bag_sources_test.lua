@@ -174,11 +174,6 @@ function T.lower_palette_names_the_pocket_dependent_member_and_remap()
     { animation = 41, palette = 9 },
     "the selection entry keeps its audited source animation"
   )
-  Assert.deepEqual(
-    BagSources.geometry.actionSelectedItemCenter,
-    { x = 86, y = 76 },
-    "the action screen keeps its audited selected-item center"
-  )
 end
 
 function T.presentation_facts_are_finite_source_independent_values()

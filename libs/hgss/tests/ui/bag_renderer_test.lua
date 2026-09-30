@@ -287,7 +287,6 @@ local function manifest()
         },
         actionMenu = {
           face = { image = "bag/action-face.png", width = 96, height = 24 },
-          selectedItemCenter = { x = 86, y = 76 },
           slots = {
             {
               center = { x = 48, y = 144 },

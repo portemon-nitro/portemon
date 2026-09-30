@@ -28,7 +28,7 @@ local ModelAsset = require("libs.assets.src.model.ModelAsset")
 ---@class BagAssetSchema
 local BagAssetSchema = {}
 
-BagAssetSchema.SCHEMA = "g4-bag-assets-v14"
+BagAssetSchema.SCHEMA = "g4-bag-assets-v15"
 BagAssetSchema.PANE_WIDTH = 256
 BagAssetSchema.PANE_HEIGHT = 192
 BagAssetSchema.TAB_COUNT = 8
@@ -888,12 +888,7 @@ local EXPECTED_QUANTITY_CONTROLS = {
 }
 
 local function checkActionMenu(actionMenu, context)
-  checkRecord(
-    actionMenu,
-    { face = true, slots = true, selectedItemCenter = true },
-    context,
-    "interactive.overlays.actionMenu"
-  )
+  checkRecord(actionMenu, { face = true, slots = true }, context, "interactive.overlays.actionMenu")
   checkVisual(actionMenu.face, context, "interactive.overlays.actionMenu.face")
   checkFixedArray(
     actionMenu.slots,
@@ -908,7 +903,6 @@ local function checkActionMenu(actionMenu, context)
     checkRect(slot.textRect, context, what .. ".textRect")
     checkRect(slot.hitRect, context, what .. ".hitRect")
   end
-  checkPoint(actionMenu.selectedItemCenter, context, "interactive.overlays.actionMenu.selectedItemCenter")
 end
 
 -- The browse-confirm selection entry: the Bag-local one-shot frame
