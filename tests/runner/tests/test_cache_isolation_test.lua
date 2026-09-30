@@ -252,6 +252,7 @@ local function runTestCommand(root, fakeLoveDir, args, extra)
     "export FAKE_ISOLATION_RECORD_DIR=" .. shellQuote(recordDir) .. ";",
     "export FAKE_RUN_TAG=" .. shellQuote((extra or {}).runTag or "run") .. ";",
     "export XDG_CACHE_HOME=" .. shellQuote(root .. "/cache") .. ";",
+    "export PORTEMON_SAVE_DIR=" .. shellQuote(root .. "/cache/portemon") .. ";",
   }
   for _, name in ipairs({
     "FAKE_SLOW_PREPARATION",
