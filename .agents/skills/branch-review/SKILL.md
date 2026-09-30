@@ -35,7 +35,9 @@ The dispatch prompt contains only:
 If a finalized implementation spec exists for the branch, also pass the absolute path to its
 `SPEC.md`, **every deliverable file listed in its Deliverables table**, and the applicable
 approved-deviation record, if any. Do not pass implementation notes, author
-summaries, failed approaches, or design rationalizations.
+summaries, failed approaches, or design rationalizations. If the reviewer has no shell/git,
+the dispatcher first stages `diff.patch` / `diff --stat` / `log --format=%B` artifacts under
+worktree `.agents/tmp/` and states who runs lint/tests.
 
 When the subagent returns, inspect the summary and independently verify the final branch gate
 before reporting completion.
