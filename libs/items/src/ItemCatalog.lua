@@ -1,12 +1,13 @@
 -- Immutable resolved item definitions. The constructor requires the
--- already-canonical generated asset root, copies it into package-owned
--- state, and indexes semantic and native identities. Lookups never mutate
--- and never reach source formats:
+-- already-canonical generated asset root, validates it through the owned
+-- asset schema, copies it into package-owned state, and indexes semantic and
+-- native identities. Lookups never mutate and never reach source formats:
 -- native numeric identities stay only because exact native encoding gives
 -- them current use. Pocket definitions are the schema-owned source
 -- contract, re-exported here for consumers.
 
 local ItemAssetSchema = require("libs.assets.src.ItemAssetSchema")
+local ResolvedItemSchema = require("libs.items.src.ResolvedItemSchema")
 local ItemErrors = require("libs.items.src.errors")
 
 ---@class ItemCatalog
@@ -31,33 +32,78 @@ local function copyValue(value)
   return out
 end
 
+-- One shared index builder for both constructors: entries without a
+-- declared numeric identity resolve semantically only and never occupy the
+-- native index, while duplicate declared identities fail loudly.
+---@param owned table<string, unknown>
+---@return table<integer, string> itemByNative
+---@return table<integer, string> pocketByNative
+local function buildIndexes(owned)
+  local itemByNative = {}
+  local pocketByNative = {}
+  for key, item in pairs(owned.items) do
+    local nativeId = item.nativeId
+    if nativeId ~= nil then
+      if itemByNative[nativeId] ~= nil then
+        ItemErrors.raise(
+          ItemErrors.RECORD_INVALID,
+          "duplicate native item identity " .. tostring(nativeId),
+          { item = key }
+        )
+      end
+      itemByNative[nativeId] = key
+    end
+  end
+  for key, pocket in pairs(owned.pockets) do
+    pocketByNative[pocket.nativeId] = key
+  end
+  return itemByNative, pocketByNative
+end
+
 ---@param root table<string, unknown>
 ---@return ItemCatalog
 function ItemCatalog.new(root)
   assert(type(root) == "table", "ItemCatalog requires the generated asset root")
+  ItemAssetSchema.assertCatalog(root)
   local owned = copyValue(root)
-  assert(type(owned.items) == "table", "ItemCatalog requires the items table")
-  assert(type(owned.pockets) == "table", "ItemCatalog requires the pockets table")
-  assert(type(owned.pocketNames) == "table", "ItemCatalog requires the pocket names table")
-  local self = setmetatable({
+  local itemByNative, pocketByNative = buildIndexes(owned)
+  return setmetatable({
     _root = owned,
-    _itemByNative = {},
-    _pocketByNative = {},
+    _itemByNative = itemByNative,
+    _pocketByNative = pocketByNative,
   }, ItemCatalog)
-  for key, item in pairs(owned.items) do
-    if self._itemByNative[item.nativeId] ~= nil then
-      ItemErrors.raise(
-        ItemErrors.RECORD_INVALID,
-        "duplicate native item identity " .. tostring(item.nativeId),
-        { item = key }
-      )
-    end
-    self._itemByNative[item.nativeId] = key
+end
+
+-- Composed catalog construction: validates through the resolved schema so
+-- namespaced custom entries without numeric identities resolve, then shares
+-- the single lookup implementation and ownership contract with native
+-- construction. The owned root is detached from the caller.
+---@param root table<string, unknown>
+---@return ItemCatalog
+function ItemCatalog.fromResolved(root)
+  assert(type(root) == "table", "ItemCatalog requires the composed asset root")
+  ResolvedItemSchema.assertCatalog(root)
+  local owned = copyValue(root)
+  local itemByNative, pocketByNative = buildIndexes(owned)
+  return setmetatable({
+    _root = owned,
+    _itemByNative = itemByNative,
+    _pocketByNative = pocketByNative,
+  }, ItemCatalog)
+end
+
+-- Stable pocket sorting key: native entries keep numeric source order while
+-- custom entries sort after every native entry, ordered semantically by
+-- pocket and key. Values compare with `<` and stay stable across builds.
+---@param key string
+---@return string
+function ItemCatalog:orderingKey(key)
+  local definition = self:item(key)
+  if definition.nativeId ~= nil then
+    return string.format("0:%06d", definition.nativeId)
   end
-  for key, pocket in pairs(owned.pockets) do
-    self._pocketByNative[pocket.nativeId] = key
-  end
-  return self
+  assert(type(definition.pocket) == "string", "composed items carry their pocket")
+  return "1:" .. definition.pocket .. ":" .. key
 end
 
 ---@param key string
