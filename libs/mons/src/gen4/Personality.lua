@@ -14,6 +14,10 @@ local Personality = {}
 
 local NATURE_COUNT = Stats.MAX_NATURE + 1
 local SHINY_XOR_THRESHOLD = 8
+local GENDER_RATIO_MALE = 0 -- always male
+local GENDER_RATIO_FEMALE = 254 -- always female
+local GENDER_RATIO_GENDERLESS = 255
+local BYTE_RANGE = 256
 
 ---@param personality integer
 ---@return integer
@@ -34,16 +38,16 @@ function Personality.gender(ratio, personality)
     type(personality) == "number" and personality % 1 == 0 and personality >= 0 and personality <= U32.MAX,
     "personality must be an unsigned 32-bit integer"
   )
-  if ratio == 255 then
+  if ratio == GENDER_RATIO_GENDERLESS then
     return "genderless"
   end
-  if ratio == 0 then
+  if ratio == GENDER_RATIO_MALE then
     return "male"
   end
-  if ratio == 254 then
+  if ratio == GENDER_RATIO_FEMALE then
     return "female"
   end
-  if (personality % 256) < ratio then
+  if (personality % BYTE_RANGE) < ratio then
     return "female"
   end
   return "male"

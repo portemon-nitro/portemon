@@ -22,8 +22,8 @@ local BGS_OFFSET = 0x10
 local BGS_HEADER_SIZE = 4
 local MIN_SIZE = BGS_OFFSET + BGS_HEADER_SIZE -- must reach the BGS payload length
 local BGS_SIGNATURE = 0x1234
-local PERMISSIONS_SIZE = 0x800
-local BUILDING_RECORD_SIZE = 0x30
+local PERMISSIONS_SIZE = HgssPermissionGrid.SIZE
+local BUILDING_RECORD_SIZE = BuildingPlacement.RECORD_SIZE
 local MIN_MODEL_SIZE = 0x10
 
 local function fail(code, message, context, extra)

@@ -11,7 +11,9 @@ local FixedPoint = require("libs.math.src.FixedPoint")
 
 local BuildingPlacement = {}
 
-local RECORD_SIZE = 0x30
+-- Byte size of one building record, shared with LandData's section-sum check.
+BuildingPlacement.RECORD_SIZE = 0x30
+local RECORD_SIZE = BuildingPlacement.RECORD_SIZE
 local TWO_PI = 2 * math.pi
 
 local function s16(reader, offset)

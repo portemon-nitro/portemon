@@ -30,6 +30,8 @@ BoxCodec.TERMINATOR = 0xFFFF
 -- Logical block order A, B, C, D placed at these stored offsets per row,
 -- where the row is bits 13..17 of the personality value. Rows 24..31 alias
 -- rows 0..7.
+local ROW_BIT_SHIFT = 8192 -- bit 13 of the personality value
+
 local PERMUTATION = {
   { 0x00, 0x20, 0x40, 0x60 },
   { 0x00, 0x20, 0x60, 0x40 },
@@ -307,17 +309,18 @@ end
 ---@param personality integer
 ---@return integer[], integer
 local function placeAndChecksum(blocks, personality)
-  local row = math.floor(personality / 8192) % 32
+  local row = math.floor(personality / ROW_BIT_SHIFT) % #PERMUTATION
   local order = PERMUTATION[row + 1]
   local slots = {}
   for logicalIndex = 1, 4 do
-    slots[order[logicalIndex] / 32 + 1] = blocks[logicalIndex]
+    slots[order[logicalIndex] / BoxCodec.BLOCK_SIZE + 1] = blocks[logicalIndex]
   end
   local placed = table.concat({ slots[1], slots[2], slots[3], slots[4] })
-  assert(#placed == 128, "placed boxed data must be 128 bytes")
+  local placedSize = BoxCodec.BLOCK_SIZE * 4
+  assert(#placed == placedSize, "placed boxed data must be " .. placedSize .. " bytes")
   local reader = BinaryReader.new(placed, "boxed data")
   local words = {}
-  for offset = 0, 126, 2 do
+  for offset = 0, placedSize - 2, 2 do
     words[#words + 1] = reader:u16le(offset)
   end
   return words, checksumWords(words)
