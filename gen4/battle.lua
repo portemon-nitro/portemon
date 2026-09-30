@@ -11,10 +11,9 @@
 --
 -- Contribution order is supplied by the caller and never inferred here.
 -- API 1 is not declared stable: until stability is explicitly declared the
--- surface stays minimal and incompatible cleanup is allowed. Session
--- creation arrives with the session provider and is not part of this
--- surface; this module exports working composition and registration APIs
--- only.
+-- surface stays minimal and incompatible cleanup is allowed. Headless
+-- session construction lives here now that the session owner exists; the
+-- session never exposes its private tables through this entrypoint.
 
 local ContentBuilder = require("libs.content.src.ContentBuilder")
 local BattleBehaviorBuilder = require("libs.battle.src.BattleBehaviorBuilder")
@@ -74,6 +73,18 @@ function Battle.compose(contributors)
   local bound = behaviors:freeze()
   local resolved = builder:freeze()
   return resolved, bound, BattleContent.new(resolved, bound)
+end
+
+-- Constructs a headless session over a detached scenario copy and frozen
+-- content. The scenario is validated before anything publishes, and the
+-- returned session owns its private state for its whole lifetime.
+---@param scenario table<string, unknown> detached serializable battle setup
+---@param content BattleContent frozen executable battle content
+---@return BattleSession live headless session
+function Battle.newSession(scenario, content)
+  assert(Battle.API_VERSION == 1, "the battle entrypoint carries its version")
+  local BattleSession = require("libs.battle.src.BattleSession")
+  return BattleSession.new(scenario, content)
 end
 
 return Battle
