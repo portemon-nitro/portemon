@@ -27,6 +27,8 @@ local PAGE = {
 }
 
 ---@class PokemonMenuFlow
+---@field private _effect (fun(sequence: string))? the production semantic sound boundary for bag children
+---@field private _textPolicy table<string, unknown>? the copied player text-speed cadence for bag children
 ---@field private _root string
 ---@field private _mons table<string, unknown>
 ---@field private _bag table<string, unknown>
@@ -206,6 +208,8 @@ function PokemonMenuFlow.new(opts)
   assert(type(prepareIcons) == "function", "the menu flow needs its icon preparation")
   local cancelIconPreparation = assert(opts.cancelIconPreparation, "the menu flow needs its preparation release")
   assert(type(cancelIconPreparation) == "function", "the menu flow needs its preparation release")
+  assert(opts.effect == nil or type(opts.effect) == "function", "the menu flow carries an effect function")
+  assert(opts.textPolicy == nil or type(opts.textPolicy) == "table", "the menu flow carries a text policy")
   local self = setmetatable({
     _root = opts.root,
     _mons = mons,
@@ -217,6 +221,8 @@ function PokemonMenuFlow.new(opts)
     _measureDisplay = opts.measureDisplay,
     _prepareIcons = prepareIcons,
     _cancelIconPreparation = cancelIconPreparation,
+    _effect = opts.effect,
+    _textPolicy = opts.textPolicy,
     _overrides = opts.overrides,
     _page = opts.root == "bag" and PAGE.BAG_BROWSE or PAGE.PARTY_BROWSE,
     _child = nil,
@@ -248,6 +254,8 @@ function PokemonMenuFlow:_openPage(page, continuation)
       measureDisplay = measureDisplay,
       context = "field",
       partyEmpty = self._mons:partyCount() == 0,
+      effect = self._effect,
+      textPolicy = self._textPolicy,
     })
   end
   if page == PAGE.BAG_PICK_HELD then
@@ -263,6 +271,8 @@ function PokemonMenuFlow:_openPage(page, continuation)
       measureDisplay = measureDisplay,
       context = "pick_held",
       partyEmpty = self._mons:partyCount() == 0,
+      effect = self._effect,
+      textPolicy = self._textPolicy,
     })
   end
   if page == PAGE.PARTY_BROWSE then

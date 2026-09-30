@@ -1873,7 +1873,19 @@ function FieldRuntime:_composePokemonMenu(cacheFs)
     local binding = assert(self._partyIconPreparation, "the menu composition requires its icon preparation binding")
     binding.cancel()
   end
+  -- The bag's semantic sound boundary and text cadence bind once at the
+  -- menu composition root: effects delegate to the composed audio service
+  -- and lower modules never read player options or audio services.
+  local function playBagSequence(sequence)
+    if runtime.audio then
+      runtime.audio:play(sequence)
+    end
+  end
+  local bagTextPolicy =
+    TextSpeedPolicy.forSpeed(assert(self.playerData and self.playerData.options and self.playerData.options.textSpeed))
   self.pokemonMenu = PokemonMenuComposition.create({
+    effect = playBagSequence,
+    textPolicy = bagTextPolicy,
     mons = assert(self.monService, "the menu composition requires the live mon service"),
     bag = assert(self.bagService, "the menu composition requires the live bag service"),
     bagCursor = assert(self.bagCursor, "the menu composition requires the runtime bag cursor"),

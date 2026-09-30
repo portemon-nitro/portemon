@@ -144,15 +144,43 @@ local function markerImage(path)
   return { image = path, width = 40, height = 16 }
 end
 
-local function backgrounds()
-  local out = {}
-  for _, state in ipairs({ "action", "quantity", "confirmation" }) do
-    local pockets = {}
-    for _, pocket in ipairs(POCKETS) do
-      pockets[pocket] = imageRef("assets/generated/bag/background-" .. state .. "-" .. pocket .. ".png")
+local function countKeyedBackgrounds(state)
+  local pockets = {}
+  for _, pocket in ipairs(POCKETS) do
+    local variants = {}
+    for count = 0, 6 do
+      variants[count] =
+        imageRef("assets/generated/bag/background-" .. state .. "-" .. pocket .. "-count-" .. count .. ".png")
     end
-    out[state] = pockets
+    pockets[pocket] = variants
   end
+  return pockets
+end
+
+local function backgrounds()
+  local out = {
+    action = countKeyedBackgrounds("action"),
+    quantity = countKeyedBackgrounds("quantity"),
+  }
+  local move = {}
+  for _, pocket in ipairs(POCKETS) do
+    local counts = {}
+    for count = 0, 6 do
+      local origins = {
+        none = imageRef(
+          "assets/generated/bag/background-move-" .. pocket .. "-count-" .. count .. "-origin-none.png"
+        ),
+      }
+      for _, origin in ipairs({ "0", "1", "2", "3", "4", "5" }) do
+        origins[origin] = imageRef(
+          "assets/generated/bag/background-move-" .. pocket .. "-count-" .. count .. "-origin-" .. origin .. ".png"
+        )
+      end
+      counts[count] = origins
+    end
+    move[pocket] = counts
+  end
+  out.move = move
   local browse = {}
   for _, pocket in ipairs(POCKETS) do
     local variants = {}
@@ -181,13 +209,6 @@ local function semanticText()
     movePrompt = {
       segments = {
         { kind = "text", value = "Move " },
-        { kind = "item" },
-        { kind = "text", value = "?" },
-      },
-    },
-    tossQuantity = {
-      segments = {
-        { kind = "text", value = "Toss how many " },
         { kind = "item" },
         { kind = "text", value = "?" },
       },
@@ -423,8 +444,47 @@ end
 
 local function validFocusManifest()
   local manifest = validManifest()
-  manifest.schema = "g4-bag-assets-v13"
+  manifest.schema = "g4-bag-assets-v14"
   manifest.interactive.overlays.tossPrompt = { x = 200, y = 48, shape = "compact", initialSelection = "yes" }
+  manifest.interactive.overlays.selectedItem = {
+    iconCenter = { x = 86, y = 76 },
+    textRect = rect(96, 56, 88, 32),
+    nameAt = { x = 0, y = 0 },
+    quantityAt = { x = 48, y = 16 },
+  }
+  manifest.interactive.overlays.messages = {
+    selected = { contentRect = rect(16, 8, 216, 16) },
+    modal = { contentRect = rect(16, 8, 216, 32) },
+  }
+  manifest.interactive.feedback = {
+    totalTicks = 4,
+    actionFace = {
+      normal = visualRef("assets/generated/bag/action-face.png"),
+      selected = visualRef("assets/generated/bag/action-face-selected.png"),
+    },
+    cancelFace = {
+      normal = visualRef("assets/generated/bag/cancel-face-selected-base.png"),
+      selected = visualRef("assets/generated/bag/cancel-face-selected.png"),
+    },
+    quantityConfirm = {
+      normal = visualRef("assets/generated/bag/quantity-confirm.png"),
+      selected = visualRef("assets/generated/bag/quantity-confirm-selected.png"),
+    },
+  }
+  local function moveClip(name, total)
+    return {
+      frames = {
+        { image = "assets/generated/bag/" .. name .. "-0.png", width = 32, height = 32, durationTicks = total },
+      },
+      playback = "once",
+      totalTicks = total,
+    }
+  end
+  manifest.interactive.moveTransition = { unchanged = moveClip("move-unchanged", 2), changed = moveClip("move-changed", 3) }
+  manifest.interactive.moveCursor = {
+    original = visualRef("assets/generated/bag/move-cursor-original.png"),
+    candidate = visualRef("assets/generated/bag/move-cursor-candidate.png"),
+  }
   manifest.interactive.text.tossResult = {
     segments = {
       { kind = "text", value = "Threw away " },
@@ -551,7 +611,7 @@ end
 -- scenario keeps the versioned focus fixture above.
 local function validTossManifest()
   local manifest = validFocusManifest()
-  manifest.schema = "g4-bag-assets-v13"
+  manifest.schema = "g4-bag-assets-v14"
   manifest.interactive.overlays.tossPrompt = { x = 200, y = 48, shape = "compact", initialSelection = "yes" }
   manifest.interactive.text.tossResult = {
     segments = {
@@ -651,6 +711,12 @@ function T.previous_bag_contract_is_rejected()
     BagAssetSchema.isValidManifest(perTabNormal),
     "the per-tab-normal Bag contract must not validate once strips are current"
   )
+  local previousPostSelection = validFocusManifest()
+  previousPostSelection.schema = "g4-bag-assets-v13"
+  Assert.isFalse(
+    BagAssetSchema.isValidManifest(previousPostSelection),
+    "the previous post-selection Bag contract must not validate as current"
+  )
 end
 
 function T.complete_manifest_with_text_and_registration_passes()
@@ -698,18 +764,34 @@ function T.control_visuals_are_current_and_each_is_referenced_once()
   for _, path in ipairs(paths) do
     counts[path] = (counts[path] or 0) + 1
   end
+  -- The shared normal faces back both the stable controls and the
+  -- feedback latch, so each appears twice; every flash, cursor, and
+  -- move-clip visual appears once.
   for _, path in ipairs({
     "assets/generated/bag/action-face.png",
+    "assets/generated/bag/quantity-confirm.png",
+  }) do
+    Assert.equal(counts[path], 2, path .. " backs its control and the feedback latch")
+  end
+  for _, path in ipairs({
     "assets/generated/bag/quantity-increment-normal.png",
     "assets/generated/bag/quantity-increment-pressed.png",
     "assets/generated/bag/quantity-decrement-normal.png",
     "assets/generated/bag/quantity-decrement-pressed.png",
-    "assets/generated/bag/quantity-confirm.png",
+    "assets/generated/bag/action-face-selected.png",
+    "assets/generated/bag/cancel-face-selected-base.png",
+    "assets/generated/bag/cancel-face-selected.png",
+    "assets/generated/bag/quantity-confirm-selected.png",
+    "assets/generated/bag/move-cursor-original.png",
+    "assets/generated/bag/move-cursor-candidate.png",
+    "assets/generated/bag/move-unchanged-0.png",
+    "assets/generated/bag/move-changed-0.png",
   }) do
     Assert.equal(counts[path], 1, path .. " is referenced exactly once")
   end
   for _, path in ipairs(paths) do
     Assert.isNil(path:find("quantity-alt", 1, true), "retired quantity alternate art is not required")
+    Assert.isNil(path:find("confirmation", 1, true), "no standalone confirmation surface survives")
   end
 end
 
@@ -806,9 +888,9 @@ end
 -- The strip contract is the current focus-manifest shape above.
 
 function T.pocket_strips_and_edge_colors_validate_as_the_current_contract()
-  Assert.equal(BagAssetSchema.SCHEMA, "g4-bag-assets-v13")
-  Assert.equal(DerivedAssetContract.bag.schema, "g4-bag-assets-v13")
-  Assert.equal(BagCache.SCHEMA, "g4-bag-assets-v13")
+  Assert.equal(BagAssetSchema.SCHEMA, "g4-bag-assets-v14")
+  Assert.equal(DerivedAssetContract.bag.schema, "g4-bag-assets-v14")
+  Assert.equal(BagCache.SCHEMA, "g4-bag-assets-v14")
   Assert.equal(BagCache.FORMAT, "bag-cache-v2")
   local manifest = validStripManifest()
   Assert.isTrue(BagAssetSchema.isValidManifest(manifest), "the pocket-strip manifest must pass the schema")

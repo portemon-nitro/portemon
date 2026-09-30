@@ -495,6 +495,12 @@ function T.tests.bag_blur_cancels_stale_press_and_fresh_input_recovers()
     end
     Assert.equal(bagView().state, "action_menu", "a fresh press after refocus must activate through the live session")
     pressCancel(game)
+    for _ = 1, 30 do
+      game:step()
+      if bagView().state == "browsing" then
+        break
+      end
+    end
     Assert.equal(bagView().state, "browsing", "cancelling the menu returns to browsing")
     closeApplication(game)
     game:advanceUntil("the start menu returns after the bag closes", function()
@@ -1464,7 +1470,12 @@ function T.tests.bag_nested_cancel_unwinds_while_outside_press_closes()
     local nested = assert(nestedFlow.child, "the bag flow must expose its live leaf status")
     Assert.equal(nested.state, "action_menu", "confirming an item opens the nested action menu")
     pressCancel(game)
-    game:step()
+    for _ = 1, 30 do
+      game:step()
+      if bagApp().state == "browsing" then
+        break
+      end
+    end
     local unwoundFlow =
       assert(game.runtime.applicationHost:status().application, "ordinary cancel must keep the bag open")
     local unwound = assert(unwoundFlow.child, "the bag flow must expose its live leaf status")

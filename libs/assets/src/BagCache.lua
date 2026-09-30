@@ -76,9 +76,20 @@ function BagCache.referencedPaths(manifest)
     end
   end
   local interactive = manifest.interactive
-  for _, state in ipairs({ "action", "quantity", "confirmation" }) do
+  for _, state in ipairs({ "action", "quantity" }) do
     for _, pocket in ipairs(BagAssetSchema.POCKETS) do
-      addVisual(interactive.backgrounds[state][pocket])
+      for count = 0, 6 do
+        addVisual(interactive.backgrounds[state][pocket][count])
+      end
+    end
+  end
+  for _, pocket in ipairs(BagAssetSchema.POCKETS) do
+    for count = 0, 6 do
+      local perCount = interactive.backgrounds.move[pocket][count]
+      addVisual(perCount.none)
+      for _, origin in ipairs({ "0", "1", "2", "3", "4", "5" }) do
+        addVisual(perCount[origin])
+      end
     end
   end
   for _, pocket in ipairs(BagAssetSchema.POCKETS) do
@@ -86,6 +97,19 @@ function BagCache.referencedPaths(manifest)
       addVisual(visual)
     end
   end
+  addVisual(interactive.feedback.actionFace.normal)
+  addVisual(interactive.feedback.actionFace.selected)
+  addVisual(interactive.feedback.cancelFace.normal)
+  addVisual(interactive.feedback.cancelFace.selected)
+  addVisual(interactive.feedback.quantityConfirm.normal)
+  addVisual(interactive.feedback.quantityConfirm.selected)
+  for _, key in ipairs({ "unchanged", "changed" }) do
+    for _, frame in ipairs(assert(interactive.moveTransition[key], "bag manifest carries its move clips").frames) do
+      addVisual(frame)
+    end
+  end
+  addVisual(interactive.moveCursor.original)
+  addVisual(interactive.moveCursor.candidate)
   for _, pocket in ipairs(BagAssetSchema.POCKETS) do
     addVisual(interactive.pocketTabs.strips[pocket])
   end

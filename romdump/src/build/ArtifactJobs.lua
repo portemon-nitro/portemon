@@ -236,6 +236,7 @@ local FIELD_RUNTIME_JOBS = {
   "message-bank:" .. tostring(MenuProtocol.START_MENU_MESSAGE_BANK),
   "message-bank:" .. tostring(MenuProtocol.STANDARD_MESSAGE_BANK),
   "audio-bank:750",
+  "audio-bank:700",
   "audio-catalog:global",
   "script-summary:global",
 }

@@ -13,6 +13,7 @@
 ---@class YesNoPromptController
 ---@field _width integer
 ---@field _height integer
+---@field _effect (fun(sequence: string))? the optional injected semantic sound boundary
 ---@field _active boolean
 ---@field _selected string
 ---@field _buttons table<string, { x: integer, y: integer, width: integer, height: integer }>|nil
@@ -24,9 +25,11 @@ local YesNoPromptController = {}
 YesNoPromptController.__index = YesNoPromptController
 
 ---@param compactShape { width: integer, height: integer, yes: FieldUiAssetCache.PromptRow, no: FieldUiAssetCache.PromptRow }
+---@param effect (fun(sequence: string))? the optional semantic sound boundary, silent when omitted
 ---@return YesNoPromptController
-function YesNoPromptController.new(compactShape)
+function YesNoPromptController.new(compactShape, effect)
   assert(type(compactShape) == "table", "the two-row prompt requires its generated compact shape")
+  assert(effect == nil or type(effect) == "function", "the two-row prompt effect must be a function")
   assert(
     compactShape.width == 48 and compactShape.height == 32,
     "the two-row prompt requires the compact 48x32 button geometry"
@@ -41,6 +44,7 @@ function YesNoPromptController.new(compactShape)
   return setmetatable({
     _width = compactShape.width,
     _height = compactShape.height,
+    _effect = effect,
     _active = false,
     _selected = "yes",
     _buttons = nil,
@@ -108,6 +112,9 @@ function YesNoPromptController:_latchChoice(choice)
   self._pending = choice
   self._confirmTimer = 0
   self._highlighted = true
+  if self._effect ~= nil then
+    self._effect("SEQ_SE_DP_BUTTON9")
+  end
 end
 
 -- Advances the confirmation blink one step. Pairs of highlighted updates
@@ -172,6 +179,9 @@ function YesNoPromptController:updateFixed(events)
     self:_latchChoice("no")
   elseif hasVertical then
     self._selected = self._selected == "yes" and "no" or "yes"
+    if self._effect ~= nil then
+      self._effect("SEQ_SE_DP_SELECT")
+    end
   end
 end
 

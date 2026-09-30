@@ -114,6 +114,7 @@ local function openFlow(game, root)
       return true
     end,
     cancelIconPreparation = function() end,
+    textPolicy = { interGlyphDelay = 0, glyphBudget = 512, abAcceleration = true },
   })
 end
 
@@ -192,7 +193,14 @@ local function chooseBagAction(flow, id)
     status = flowStatus(flow)
     child = bagChild(status)
     if child.actionNode == target then
-      return drive(flow, { { type = "confirm" } })
+      drive(flow, { { type = "confirm" } })
+      -- Activation latches behind feedback before the semantic transition
+      -- runs, so settle until the menu leaves or the flow changes pages.
+      return driveUntil(flow, "the chosen action", 30, function(current)
+        return current.page ~= "bag_browse"
+          or current.child == nil
+          or current.child.state ~= "action_menu"
+      end)
     end
     local node = assert(child.actionNode, "the action menu exposes its node")
     local queue = { { node = node, path = {} } }

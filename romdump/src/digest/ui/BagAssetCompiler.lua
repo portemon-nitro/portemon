@@ -1,6 +1,6 @@
 -- Compiles the generated field-bag presentation class: upper-pane hero
--- backdrops and description frame, lower-pane list/action/quantity/
--- confirmation screens, one pocket strip per active pocket replaying the
+-- backdrops and description frame, lower-pane browse/action/quantity/move
+-- state screens, one pocket strip per active pocket replaying the
 -- retail tab palette state plus the movable focus sprite visuals, the two
 -- registration-slot markers cropped from the marker source bitmap, semantic
 -- action labels and prompt templates lowered from the message banks, the
@@ -124,10 +124,10 @@ local SCREEN_ROLES = {
   { role = "upper-backdrop-female", member = BagSources.screens.upperBackdropFemale, upper = true },
   { role = "list-slots", member = BagSources.screens.listSlots, upper = false },
   { role = "list-wash", member = BagSources.screens.listWash, upper = false },
-  { role = "action-slots", member = BagSources.screens.actionSlots, upper = false },
-  { role = "action-wash", member = BagSources.screens.actionWash, upper = false },
-  { role = "confirmation", member = BagSources.screens.confirmation, upper = false },
-  { role = "quantity", member = BagSources.screens.quantity, upper = false },
+  { role = "move-slots", member = BagSources.screens.moveSlots, upper = false },
+  { role = "move-wash", member = BagSources.screens.moveWash, upper = false },
+  { role = "action-overlay", member = BagSources.screens.actionOverlay, upper = false },
+  { role = "quantity-overlay", member = BagSources.screens.quantityOverlay, upper = false },
 }
 
 local function compileScreens(archive, dependencies, assets)
@@ -184,7 +184,8 @@ local PLAYBACKS = { forward = "once", forward_loop = "loop", reverse = "once", r
 -- Only the realized frame visuals, once playback, and summed total reach
 -- the manifest; the source animation identity never leaves the producer
 -- boundary.
-local function compileSelectionEntry(spriteData, selector, assets)
+local function compileSelectionEntry(spriteData, selector, assets, stem)
+  assert(type(stem) == "string" and stem ~= "", "each realized clip needs its own asset stem")
   local charData, paletteData, cellData, animation = unpack(spriteData)
   local sequence = animation.anims[selector.animation + 1]
   if sequence == nil then
@@ -216,7 +217,7 @@ local function compileSelectionEntry(spriteData, selector, assets)
         frame = frameIndex - 1,
       })
     end
-    local path = BagCache.assetDir() .. "/selection-entry-" .. (frameIndex - 1) .. ".png"
+    local path = BagCache.assetDir() .. "/" .. stem .. "-" .. (frameIndex - 1) .. ".png"
     local cell = type(frame.cell) == "number" and cellData.cells[frame.cell + 1] or nil
     local visual
     if cell ~= nil and type(cell.objs) == "table" and #cell.objs == 0 then
@@ -297,6 +298,59 @@ local function compileVisual(spriteData, selector, role, assets)
     error(rendered, 0)
   end
   assert(type(rendered) == "table", "static visual rasterization returns an image")
+  return writeSpriteFrame(rendered, BagCache.assetDir() .. "/" .. role .. "-frame-1.png", assets)
+end
+
+-- Realize one static sprite frame under an alternate palette: the same
+-- source animation as its normal twin, so activation feedback can phase
+-- between the two without new source animation state.
+local function compileFlashVisual(spriteData, selector, flashPalette, role, assets)
+  local charData, paletteData, cellData, animation = unpack(spriteData)
+  local sequence = animation.anims[selector.animation + 1]
+  if sequence == nil then
+    sourceError(role .. " selects a missing animation sequence", { animation = selector.animation })
+  end
+  assert(sequence ~= nil, "missing animation sequences fail above")
+  if #sequence.frames ~= 1 then
+    sourceError(role .. " selects an animated sequence; the bag contract publishes static realizations only", {
+      animation = selector.animation,
+      frames = #sequence.frames,
+    })
+  end
+  local rendered = G2dRasterizer.renderAnimationFrame(
+    charData,
+    paletteData,
+    cellData,
+    sequence,
+    1,
+    { role = role, animation = selector.animation, frame = 0 },
+    flashPalette
+  )
+  return writeSpriteFrame(rendered, BagCache.assetDir() .. "/" .. role .. "-frame-1.png", assets)
+end
+
+-- Realize the first frame of a cursor animation as its static target
+-- visual: the move target cursor owns no press timeline, only the
+-- original/candidate selection state.
+local function compileCursorVisual(spriteData, selector, role, assets)
+  local charData, paletteData, cellData, animation = unpack(spriteData)
+  local sequence = animation.anims[selector.animation + 1]
+  if sequence == nil then
+    sourceError(role .. " selects a missing animation sequence", { animation = selector.animation })
+  end
+  assert(sequence ~= nil, "missing animation sequences fail above")
+  if #sequence.frames == 0 then
+    sourceError(role .. " carries no frames", { animation = selector.animation })
+  end
+  local rendered = G2dRasterizer.renderAnimationFrame(
+    charData,
+    paletteData,
+    cellData,
+    sequence,
+    1,
+    { role = role, animation = selector.animation, frame = 0 },
+    selector.palette
+  )
   return writeSpriteFrame(rendered, BagCache.assetDir() .. "/" .. role .. "-frame-1.png", assets)
 end
 
@@ -552,6 +606,7 @@ local function compileSprites(archive, dependencies, assets)
   end
   local focusStates = BagSources.spriteStates.focus
   local actionFace = compileVisual(tabsData, BagSources.spriteStates.actionFace, "action-face", assets)
+  local quantityConfirm = compileVisual(tabsData, BagSources.spriteStates.quantity.confirm, "quantity-confirm", assets)
   local increment = compilePressedPair(
     tabsData,
     BagSources.spriteStates.quantity.increment.normal,
@@ -574,7 +629,7 @@ local function compileSprites(archive, dependencies, assets)
   end
   return {
     strips = strips,
-    selectionEntry = compileSelectionEntry(tabsData, BagSources.spriteStates.itemSelect, assets),
+    selectionEntry = compileSelectionEntry(tabsData, BagSources.spriteStates.itemSelect, assets, "selection-entry"),
     focus = {
       tabs = compileVisual(tabsData, focusStates.tabs, "focus-tabs", assets),
       items = compileVisual(tabsData, focusStates.items, "focus-items", assets),
@@ -586,12 +641,41 @@ local function compileSprites(archive, dependencies, assets)
       increment = { normal = increment.normal, pressed = increment.pressed },
       decrement = { normal = decrement.normal, pressed = decrement.pressed },
       pressTicks = increment.pressTicks,
-      confirm = compileVisual(tabsData, BagSources.spriteStates.quantity.confirm, "quantity-confirm", assets),
+      confirm = quantityConfirm,
     },
     -- The unselected Cancel face is realized for finalized-background
     -- composition below; it is never written to the bundle as a runtime
     -- asset.
     cancelFace = renderStaticFrame(tabsData, BagSources.spriteStates.cancelFace, "cancel-face"),
+    feedback = {
+      totalTicks = BagSources.feedback.totalTicks,
+      actionFace = {
+        normal = actionFace,
+        selected = compileFlashVisual(tabsData, BagSources.spriteStates.actionFace, 9, "action-face-selected", assets),
+      },
+      cancelFace = {
+        normal = compileVisual(tabsData, BagSources.spriteStates.cancelFace, "cancel-face-selected-base", assets),
+        selected = compileFlashVisual(tabsData, BagSources.spriteStates.cancelFace, 9, "cancel-face-selected", assets),
+      },
+      quantityConfirm = {
+        normal = quantityConfirm,
+        selected = compileFlashVisual(
+          tabsData,
+          BagSources.spriteStates.quantity.confirm,
+          9,
+          "quantity-confirm-selected",
+          assets
+        ),
+      },
+    },
+    moveTransition = {
+      unchanged = compileSelectionEntry(tabsData, BagSources.moveTransition.unchanged, assets, "move-unchanged"),
+      changed = compileSelectionEntry(tabsData, BagSources.moveTransition.changed, assets, "move-changed"),
+    },
+    moveCursor = {
+      original = compileCursorVisual(tabsData, BagSources.moveCursor.original, "move-cursor-original", assets),
+      candidate = compileCursorVisual(tabsData, BagSources.moveCursor.candidate, "move-cursor-candidate", assets),
+    },
   }
 end
 
@@ -770,30 +854,191 @@ local function compositeCancelChrome(image, cancelFace)
   return { width = image.width, height = image.height, pixels = table.concat(spans) }
 end
 
-local function compileFixedBackgrounds(lower, screenRoles, cancelFace, assets)
-  local backgrounds = {}
-  for _, state in ipairs({ "action", "quantity", "confirmation" }) do
-    local pockets = {}
-    for pocketIndex, pocketState in ipairs(BagSources.hero.states) do
-      local palette = effectiveLowerPalette(lower.colors, pocketIndex - 1)
-      local layers = {}
-      for _, sourceName in ipairs(BagSources.lowerLayers[state]) do
-        local role = assert(screenRoles[sourceName], "audited Bag layer has no semantic role: " .. sourceName)
-        local screen = assert(lower.screens[role], "audited Bag layer was not decoded: " .. sourceName)
-        layers[#layers + 1] = rasterizeScreen(lower.charData, palette.colors, screen, role)
-      end
-      local image = RgbaImage.compose(layers, "interactive background " .. state)
-      image = RgbaImage.crop(image, { x = 0, y = 0, width = 256, height = 192 }, "interactive background " .. state)
-      if state == "action" then
-        image = compositeCancelChrome(image, cancelFace)
-      end
-      local path = BagCache.assetDir() .. "/background-" .. state .. "-" .. pocketState.pocket .. ".png"
+-- Action backgrounds carry one realized variant per pocket and visible
+-- occupied-item count 0..6 (retail variant 2): the count-mutated browse BG5
+-- retained under the action overlay on BG6.
+local function compileActionBackgrounds(lower, screenRoles, cancelFace, assets)
+  local washRole = assert(screenRoles.listWash, "audited Bag browse wash has no semantic role")
+  local slotsRole = assert(screenRoles.listSlots, "audited Bag browse slots have no semantic role")
+  local overlayRole = assert(screenRoles.actionOverlay, "audited Bag action overlay has no semantic role")
+  local pockets = {}
+  for pocketIndex, pocketState in ipairs(BagSources.hero.states) do
+    local palette = effectiveLowerPalette(lower.colors, pocketIndex - 1)
+    local wash = rasterizeScreen(lower.charData, palette.colors, assert(lower.screens[washRole]), washRole)
+    local overlay = rasterizeScreen(lower.charData, palette.colors, assert(lower.screens[overlayRole]), overlayRole)
+    local variants = {}
+    for count = 0, 6 do
+      local slots = browseScreenForCount(assert(lower.screens[slotsRole]), count)
+      local slotLayer = rasterizeScreen(lower.charData, palette.colors, slots, slotsRole)
+      local image = RgbaImage.compose({ wash, slotLayer, overlay }, "interactive background action")
+      image = RgbaImage.crop(image, { x = 0, y = 0, width = 256, height = 192 }, "interactive background action")
+      image = compositeCancelChrome(image, cancelFace)
+      local path = BagCache.assetDir() .. "/background-action-" .. pocketState.pocket .. "-count-" .. count .. ".png"
       assets[path] = PngWriter.encode(image.width, image.height, image.pixels)
-      pockets[pocketState.pocket] = { image = path, width = image.width, height = image.height }
+      variants[count] = { image = path, width = image.width, height = image.height }
     end
-    backgrounds[state] = pockets
+    pockets[pocketState.pocket] = variants
   end
-  return backgrounds
+  return pockets
+end
+
+-- Quantity backgrounds carry one realized variant per pocket and visible
+-- occupied-item count 0..6 (retail variant 3): the retained action BG5
+-- under the quantity overlay on BG6.
+local function compileQuantityBackgrounds(lower, screenRoles, cancelFace, assets)
+  local washRole = assert(screenRoles.listWash, "audited Bag browse wash has no semantic role")
+  local slotsRole = assert(screenRoles.listSlots, "audited Bag browse slots have no semantic role")
+  local overlayRole = assert(screenRoles.quantityOverlay, "audited Bag quantity overlay has no semantic role")
+  local pockets = {}
+  for pocketIndex, pocketState in ipairs(BagSources.hero.states) do
+    local palette = effectiveLowerPalette(lower.colors, pocketIndex - 1)
+    local wash = rasterizeScreen(lower.charData, palette.colors, assert(lower.screens[washRole]), washRole)
+    local overlay = rasterizeScreen(lower.charData, palette.colors, assert(lower.screens[overlayRole]), overlayRole)
+    local variants = {}
+    for count = 0, 6 do
+      local slots = browseScreenForCount(assert(lower.screens[slotsRole]), count)
+      local slotLayer = rasterizeScreen(lower.charData, palette.colors, slots, slotsRole)
+      local image = RgbaImage.compose({ wash, slotLayer, overlay }, "interactive background quantity")
+      image = RgbaImage.crop(image, { x = 0, y = 0, width = 256, height = 192 }, "interactive background quantity")
+      image = compositeCancelChrome(image, cancelFace)
+      local path = BagCache.assetDir() .. "/background-quantity-" .. pocketState.pocket .. "-count-" .. count .. ".png"
+      assets[path] = PngWriter.encode(image.width, image.height, image.pixels)
+      variants[count] = { image = path, width = image.width, height = image.height }
+    end
+    pockets[pocketState.pocket] = variants
+  end
+  return pockets
+end
+
+-- Replay one audited move count block against mutable tile entries in
+-- place. Coordinates are tile-grid positions; fills clear to the blank
+-- entry and a zero rectangle replays nothing.
+local function applyMoveCountBlock(screen, block, count)
+  if type(block) ~= "table" or #block ~= 2 then
+    sourceError("move count carries no complete two-operation mutation block", { count = count })
+  end
+  local columns = screen.width / 8
+  local rows = screen.height / 8
+  local context = { count = count }
+  for _, op in ipairs(block) do
+    if type(op) ~= "table" then
+      sourceError("move count carries a malformed tilemap operation", context)
+    end
+    if op.kind == "nop" then
+      -- No replay for this slot.
+    elseif op.kind == "fill" then
+      checkTileField(op.x, "fill x", context)
+      checkTileField(op.y, "fill y", context)
+      checkTileField(op.width, "fill width", context)
+      checkTileField(op.height, "fill height", context)
+      if op.x + op.width > columns or op.y + op.height > rows then
+        sourceError("move fill escapes the decoded move screen", context)
+      end
+      for ty = 0, op.height - 1 do
+        for tx = 0, op.width - 1 do
+          screen.entries[(op.y + ty) * columns + (op.x + tx) + 1] =
+            { tile = 0, flipH = false, flipV = false, palette = 0 }
+        end
+      end
+    else
+      sourceError("move count carries an unsupported tilemap operation " .. tostring(op.kind), context)
+    end
+  end
+end
+
+-- Stamp the original-item marker for one visible origin cell: copy the
+-- audited marker band block onto the audited cell rectangle through a
+-- snapshot so the source band survives the stamp. The band entry offset
+-- selects the low band for original rows 0..1 and the high band
+-- otherwise, exactly as ov15_021FD4C0 selects its copy source.
+local function stampMoveOrigin(screen, origin)
+  local row = assert(BagSources.moveOriginRows[origin + 1], "move origin selects an audited marker row")
+  local columns = screen.width / 8
+  local rows = screen.height / 8
+  if #screen.entries ~= columns * rows then
+    sourceError("move screen entries do not cover their decoded grid", {
+      entries = #screen.entries,
+      columns = columns,
+      rows = rows,
+    })
+  end
+  if row.x + row.width > columns or row.y + row.height > rows then
+    sourceError("move origin marker escapes the decoded move screen", { origin = origin })
+  end
+  local band = origin <= 1 and BagSources.moveMarkerBands.low or BagSources.moveMarkerBands.high
+  if band + row.width * row.height > #screen.entries then
+    sourceError("move marker band escapes the decoded move screen", { origin = origin, band = band })
+  end
+  local snapshot = {}
+  for ty = 0, row.height - 1 do
+    for tx = 0, row.width - 1 do
+      local source = screen.entries[band + ty * row.width + tx + 1]
+      snapshot[ty * row.width + tx + 1] =
+        { tile = source.tile, flipH = source.flipH, flipV = source.flipV, palette = source.palette }
+    end
+  end
+  for ty = 0, row.height - 1 do
+    for tx = 0, row.width - 1 do
+      screen.entries[(row.y + ty) * columns + (row.x + tx) + 1] = snapshot[ty * row.width + tx + 1]
+    end
+  end
+end
+
+-- Realize one decoded move slots screen for a visible count and origin
+-- selection: the audited count mutation for counts 1..4 (counts outside
+-- that audited coverage pass through), plus the original-item marker when
+-- the origin cell is visible.
+local function moveScreenForCountOrigin(slots, count, origin)
+  if type(count) ~= "number" or count % 1 ~= 0 or count < 0 or count > 6 then
+    sourceError("move count is outside the realized 0..6 range", { count = count })
+  end
+  local screen = copyScreenEntries(slots)
+  if count >= 1 and count <= 4 then
+    applyMoveCountBlock(screen, BagSources.moveCountBlocks[count], count)
+  end
+  if origin ~= nil then
+    stampMoveOrigin(screen, origin)
+  end
+  return screen
+end
+
+-- Move backgrounds carry one realized variant per pocket, visible
+-- occupied-item count 0..6, and origin selection (retail variant 1): the
+-- move wash under the count-mutated move slots, with the original-item
+-- marker stamped only when the origin cell is visible.
+local function compileMoveBackgrounds(lower, screenRoles, cancelFace, assets)
+  local washRole = assert(screenRoles.moveWash, "audited Bag move wash has no semantic role")
+  local slotsRole = assert(screenRoles.moveSlots, "audited Bag move slots have no semantic role")
+  local pockets = {}
+  for pocketIndex, pocketState in ipairs(BagSources.hero.states) do
+    local palette = effectiveLowerPalette(lower.colors, pocketIndex - 1)
+    local wash = rasterizeScreen(lower.charData, palette.colors, assert(lower.screens[washRole]), washRole)
+    local counts = {}
+    for count = 0, 6 do
+      local origins = {}
+      for _, originKey in ipairs({ "none", "0", "1", "2", "3", "4", "5" }) do
+        local origin = originKey == "none" and nil or tonumber(originKey)
+        local slots = moveScreenForCountOrigin(assert(lower.screens[slotsRole]), count, origin)
+        local slotLayer = rasterizeScreen(lower.charData, palette.colors, slots, slotsRole)
+        local image = RgbaImage.compose({ wash, slotLayer }, "interactive background move")
+        image = RgbaImage.crop(image, { x = 0, y = 0, width = 256, height = 192 }, "interactive background move")
+        image = compositeCancelChrome(image, cancelFace)
+        local path = BagCache.assetDir()
+          .. "/background-move-"
+          .. pocketState.pocket
+          .. "-count-"
+          .. count
+          .. "-origin-"
+          .. originKey
+          .. ".png"
+        assets[path] = PngWriter.encode(image.width, image.height, image.pixels)
+        origins[originKey] = { image = path, width = image.width, height = image.height }
+      end
+      counts[count] = origins
+    end
+    pockets[pocketState.pocket] = counts
+  end
+  return pockets
 end
 
 -- Browse backgrounds carry one realized variant per pocket and visible
@@ -827,12 +1072,15 @@ local function compileLowerBackgrounds(lower, cancelFace, assets)
   local screenRoles = {
     listWash = "list-wash",
     listSlots = "list-slots",
-    actionWash = "action-wash",
-    actionSlots = "action-slots",
-    quantity = "quantity",
-    confirmation = "confirmation",
+    moveWash = "move-wash",
+    moveSlots = "move-slots",
+    actionOverlay = "action-overlay",
+    quantityOverlay = "quantity-overlay",
   }
-  local backgrounds = compileFixedBackgrounds(lower, screenRoles, cancelFace, assets)
+  local backgrounds = {}
+  backgrounds.action = compileActionBackgrounds(lower, screenRoles, cancelFace, assets)
+  backgrounds.quantity = compileQuantityBackgrounds(lower, screenRoles, cancelFace, assets)
+  backgrounds.move = compileMoveBackgrounds(lower, screenRoles, cancelFace, assets)
   backgrounds.browse = compileBrowseBackgrounds(lower, screenRoles, cancelFace, assets)
   return backgrounds
 end
@@ -971,14 +1219,13 @@ local function compileText(messageArchive, dependencies)
     labels[action] = lowerLabel(bankOf(selector.bank), selector.bank, selector.index, "label:" .. action)
   end
   local templates = {}
-  for _, name in ipairs({ "movePrompt", "tossQuantity", "tossConfirm", "tossResult", "selectedItem" }) do
+  for _, name in ipairs({ "movePrompt", "tossConfirm", "tossResult", "selectedItem" }) do
     local selector = BagSources.messages.templates[name]
     templates[name] = lowerTemplate(bankOf(selector.bank), selector.bank, selector.index, "template:" .. name)
   end
   return {
     actions = labels,
     movePrompt = templates.movePrompt,
-    tossQuantity = templates.tossQuantity,
     tossConfirm = templates.tossConfirm,
     tossResult = templates.tossResult,
     selectedItem = templates.selectedItem,
@@ -1552,6 +1799,9 @@ local function _compile(romFs)
       cancel = geometry.cancel,
       text = text,
       selectionEntry = sprites.selectionEntry,
+      feedback = sprites.feedback,
+      moveTransition = sprites.moveTransition,
+      moveCursor = sprites.moveCursor,
       overlays = {
         actionMenu = {
           face = sprites.actionFace,
@@ -1578,6 +1828,19 @@ local function _compile(romFs)
         },
         descriptionFallback = { frame = geometry.descriptionFrame, textRect = geometry.descriptionText },
         tossPrompt = compileTossPrompt(),
+        selectedItem = {
+          iconCenter = {
+            x = BagSources.selectedItem.iconCenter.x,
+            y = BagSources.selectedItem.iconCenter.y,
+          },
+          textRect = BagSources.selectedItem.textRect,
+          nameAt = BagSources.selectedItem.nameAt,
+          quantityAt = BagSources.selectedItem.quantityAt,
+        },
+        messages = {
+          selected = { contentRect = BagSources.lowerMessages.selected.contentRect },
+          modal = { contentRect = BagSources.lowerMessages.modal.contentRect },
+        },
       },
     },
   }
@@ -1605,6 +1868,14 @@ local function _compile(romFs)
       itemIconCenters = BagSources.itemIconCenters,
       lowerLayers = BagSources.lowerLayers,
       browseCountBlocks = BagSources.browseCountBlocks,
+      moveCountBlocks = BagSources.moveCountBlocks,
+      moveOriginRows = BagSources.moveOriginRows,
+      moveMarkerBands = BagSources.moveMarkerBands,
+      moveTransition = BagSources.moveTransition,
+      moveCursor = BagSources.moveCursor,
+      selectedItem = BagSources.selectedItem,
+      lowerMessages = BagSources.lowerMessages,
+      feedback = BagSources.feedback,
       hero = BagSources.hero,
       messages = BagSources.messages,
       tossPrompt = BagSources.tossPrompt,

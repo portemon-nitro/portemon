@@ -339,15 +339,18 @@ DerivedAssetContract.items = {
 -- table) plus the lower-
 -- pane controls (one pocket strip per active pocket carrying the persistent
 -- selected-pocket treatment, six item slots, count readout, Cancel with
--- its source-centered label area, the browse count-variant backgrounds,
--- four action slots, six quantity controls with static press visuals, the
--- action/quantity/confirmation overlays, semantic action text/templates,
--- the toss prompt placement with its post-choice result text, and the two
--- registration-slot markers). Item icons stay in the item
+-- its source-centered label area, the browse/action/quantity count-variant
+-- backgrounds, the move count/origin-variant backgrounds, four action
+-- slots, six quantity controls with static press visuals, the retained
+-- selected-item panel, the short/tall lower-message geometry, activation
+-- feedback timing with control visuals, the unchanged/changed move commit
+-- clips, the original/candidate move target visuals, semantic action
+-- text/templates, the toss prompt placement with its post-choice result
+-- text, and the two registration-slot markers). Item icons stay in the item
 -- class; the bag manifest references no icon pixels.
 DerivedAssetContract.bag = {
   cacheFormat = "bag-cache-v2",
-  schema = "g4-bag-assets-v13",
+  schema = "g4-bag-assets-v14",
 }
 
 -- The party class carries the source-independent native party

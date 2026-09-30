@@ -21,7 +21,6 @@
 local FieldDrawState = require("libs.hgss.src.presentation.FieldDrawState")
 local LogicalSurface = require("libs.ui.src.LogicalSurface")
 local NativeDisplay = require("libs.ui.src.NativeDisplay")
-local MenuTextTemplate = require("libs.hgss.src.ui.MenuTextTemplate")
 local BagSave = require("libs.hgss.src.save.BagSave")
 local YesNoPromptRenderer = require("libs.hgss.src.ui.YesNoPromptRenderer")
 
@@ -33,6 +32,8 @@ local YesNoPromptRenderer = require("libs.hgss.src.ui.YesNoPromptRenderer")
 ---@field _images table<string, love.Image>
 ---@field _visuals table<string, table<string, unknown>>
 ---@field _promptRenderer table<string, unknown>? the owned modal prompt renderer for toss confirmation
+---@field _window table<string, unknown>? the borrowed shared frame-strip atlas owner, never released here
+---@field _frameIndex integer? the borrowed player-selected frame style, never owned here
 local BagRenderer = {}
 BagRenderer.__index = BagRenderer
 
@@ -57,117 +58,11 @@ local function plainText(value)
   return (value:gsub("{[^}]*}", ""))
 end
 
--- Formats one generated prompt template over display facts the controller
--- already projected. The closed substitution rule lives in the shared text
--- helper; the bag keeps its own quantity range and singular/plural choice
--- here so other consumers are never bound by three-digit cell limits.
----@param template table<string, unknown>
----@param itemName string
----@param quantity integer?
----@return string
-local function formatBagTemplate(template, itemName, quantity)
-  assert(type(itemName) == "string" and itemName ~= "", "item segments need the selected display name")
-  local bindings = { item = itemName }
-  if quantity ~= nil then
-    assert(
-      type(quantity) == "number" and quantity == math.floor(quantity) and quantity >= 1 and quantity <= 999,
-      "the picked amount fits three digit cells"
-    )
-    bindings.quantity = quantity
-  end
-  return MenuTextTemplate.format(template, bindings, "bag prompt")
-end
-
--- Selects the one state-owned prompt string when the controller holds a
--- move/toss state, independent of which control owns focus. Ordinary
--- browsing descriptions are never state prompts; the compact path gates
--- those separately on item-grid focus ownership.
----@param presentation table<string, unknown>
----@param manifest table<string, unknown>
----@return string?
-local function promptText(presentation, manifest)
-  local state = presentation.state
-  local interactive = assert(manifest.interactive, "the bag manifest must carry its interactive pane")
-  local generated = assert(interactive.text, "the bag manifest must carry its semantic text")
-  if state == "action_menu" then
-    local selected = assert(presentation.selected, "the action prompt needs its selected item")
-    local name = assert(selected.name, "the action prompt needs its selected display name")
-    return formatBagTemplate(assert(generated.selectedItem, "the bag manifest carries its selected-item text"), name)
-  elseif state == "move_select" then
-    local selected = assert(presentation.selected, "the move prompt needs its selected item")
-    local name = assert(selected.name, "the move prompt needs its selected display name")
-    return formatBagTemplate(assert(generated.movePrompt, "the bag manifest carries its move prompt"), name)
-  elseif state == "toss_quantity" then
-    local selected = assert(presentation.selected, "the toss prompt needs its selected item")
-    local name = assert(selected.name, "the toss prompt needs its selected display name")
-    return formatBagTemplate(assert(generated.tossQuantity, "the bag manifest carries its toss prompt"), name)
-  elseif state == "toss_confirm" then
-    local selected = assert(presentation.selected, "the toss prompt needs its selected item")
-    local quantity = assert(presentation.quantity, "the confirmation prompt carries its amount")
-    local itemName
-    if quantity == 1 then
-      itemName = assert(selected.name, "the toss prompt needs its singular display name")
-    else
-      itemName = assert(selected.namePlural, "the toss prompt needs its plural display name")
-    end
-    return formatBagTemplate(
-      assert(generated.tossConfirm, "the bag manifest carries its confirmation prompt"),
-      itemName,
-      quantity
-    )
-  elseif state == "toss_ack" then
-    local selected = assert(presentation.selected, "the toss prompt needs its selected item")
-    local quantity = assert(presentation.quantity, "the acknowledgement carries its amount")
-    local name = assert(selected.name, "the acknowledgement needs its singular display name")
-    local plural = assert(selected.namePlural, "the acknowledgement needs its plural display name")
-    local itemName = name
-    if quantity ~= 1 then
-      itemName = plural
-    end
-    return formatBagTemplate(
-      assert(generated.tossResult, "the bag manifest carries its result text"),
-      itemName,
-      quantity
-    )
-  end
-  return nil
-end
-
--- Selects the one contextual string for the current state: the selected
--- description while browsing or choosing an action, otherwise the generated
--- move/toss prompt formatted over the projected selection. A missing
--- selection outside a prompt state simply carries no text. This is the
--- hero-pane treatment, which keeps its existing visibility; the compact
--- lower-only path gates ordinary descriptions on focus ownership below.
----@param presentation table<string, unknown>
----@param manifest table<string, unknown>
----@return string?
-local function contextualText(presentation, manifest)
-  local prompt = promptText(presentation, manifest)
-  if prompt ~= nil then
-    return prompt
-  end
-  local selected = presentation.selected
-  if selected == nil then
-    return nil
-  end
-  assert(type(selected.description) == "string", "selected slots carry a description")
-  return selected.description
-end
-
--- Selects the compact lower-only contextual string: state-owned move/toss
--- prompts render whenever their state holds, while the ordinary selected
--- description renders only while browsing with the item grid focused. Tab
--- or cancel focus hides the ordinary description without clearing the
--- controller selection, so returning focus restores it.
----@param presentation table<string, unknown>
----@param manifest table<string, unknown>
----@return string?
-local function compactContextualText(presentation, manifest)
-  local prompt = promptText(presentation, manifest)
-  if prompt ~= nil then
-    return prompt
-  end
+-- Selects the compact lower-only contextual string: the ordinary selected
+-- description renders only while browsing with the item grid focused.
+-- Post-selection state messages own the lower message window below, never
+-- this fallback, so constrained layouts draw them exactly once.
+local function compactContextualText(presentation)
   if presentation.state ~= "browsing" then
     return nil
   end
@@ -252,12 +147,16 @@ local function fontSlot(fontDef, slot)
   return { r = r * 255, g = g * 255, b = b * 255 }
 end
 
----@param opts { cacheFs: CacheFs, manifest: table<string, unknown>, promptManifest: table<string, unknown>, text: table<string, unknown>, heroRenderer: table<string, unknown>, graphics?: love.graphics }
+---@param opts { cacheFs: CacheFs, manifest: table<string, unknown>, promptManifest: table<string, unknown>, text: table<string, unknown>, heroRenderer: table<string, unknown>, graphics?: love.graphics, window?: table<string, unknown>, frameIndex?: integer }
 ---@return BagRenderer
 function BagRenderer.new(opts)
   assert(type(opts) == "table", "bag renderer options must be a table")
   local cacheFs = assert(opts.cacheFs, "BagRenderer requires a CacheFs")
   local manifest = assert(opts.manifest, "BagRenderer requires the validated bag manifest")
+  assert(
+    opts.window == nil or type(opts.window.drawWindow) == "function",
+    "the borrowed window renderer draws framed windows"
+  )
   local promptManifest = assert(opts.promptManifest, "BagRenderer requires the validated field-UI prompt manifest")
   local text = assert(opts.text, "BagRenderer requires the shared text renderer")
   local heroRenderer = assert(opts.heroRenderer, "BagRenderer requires its borrowed hero model renderer")
@@ -274,6 +173,8 @@ function BagRenderer.new(opts)
     _text = text,
     _manifest = manifest,
     _heroRenderer = heroRenderer,
+    _window = opts.window,
+    _frameIndex = opts.frameIndex,
     _images = {},
     _visuals = {},
   }, BagRenderer)
@@ -298,26 +199,69 @@ function BagRenderer.new(opts)
         acquire("moveCategory:" .. key, visual)
       end
     end
-    for _, state in ipairs({ "browse", "action", "quantity", "confirmation" }) do
-      local pockets = assert(interactive.backgrounds[state], "the bag manifest carries its " .. state .. " backgrounds")
+    -- Seven realized count variants per pocket for browse, action, and
+    -- quantity, plus seven count/origin variants per pocket for move: bind
+    -- each variant under its count (and origin) so the state selection can
+    -- resolve it. Anything else fails at the lookup below instead of
+    -- borrowing another shape. Toss confirmation owns no background of its
+    -- own; it retains its action/quantity base.
+    do
+      local browse = assert(interactive.backgrounds.browse, "the bag manifest carries its browse backgrounds")
       for _, pocket in ipairs(BagSave.POCKET_ORDER) do
-        local published = assert(pockets[pocket], state .. " carries " .. pocket)
-        if state == "browse" then
-          -- Seven realized count variants per pocket: bind each variant
-          -- under its count so the visible-count selection can resolve it.
-          -- Anything else fails at the count lookup below instead of
-          -- borrowing another shape.
-          for count = 0, 6 do
-            acquire(
-              "background:browse:" .. pocket .. ":" .. count,
-              assert(published[count + 1], "browse carries " .. pocket .. " count " .. count)
-            )
-          end
-        else
-          acquire("background:" .. state .. ":" .. pocket, published)
+        local published = assert(browse[pocket], "browse carries " .. pocket)
+        for count = 0, 6 do
+          acquire(
+            "background:browse:" .. pocket .. ":" .. count,
+            assert(published[count + 1], "browse carries " .. pocket .. " count " .. count)
+          )
         end
       end
     end
+    for _, state in ipairs({ "action", "quantity" }) do
+      local pockets = assert(interactive.backgrounds[state], "the bag manifest carries its " .. state .. " backgrounds")
+      for _, pocket in ipairs(BagSave.POCKET_ORDER) do
+        local published = assert(pockets[pocket], state .. " carries " .. pocket)
+        for count = 0, 6 do
+          acquire(
+            "background:" .. state .. ":" .. pocket .. ":" .. count,
+            assert(published[count], state .. " carries " .. pocket .. " count " .. count)
+          )
+        end
+      end
+    end
+    do
+      local move = assert(interactive.backgrounds.move, "the bag manifest carries its move backgrounds")
+      for _, pocket in ipairs(BagSave.POCKET_ORDER) do
+        local published = assert(move[pocket], "move carries " .. pocket)
+        for count = 0, 6 do
+          local perCount = assert(published[count], "move carries " .. pocket .. " count " .. count)
+          for _, origin in ipairs({ "none", "0", "1", "2", "3", "4", "5" }) do
+            acquire(
+              "background:move:" .. pocket .. ":" .. count .. ":" .. origin,
+              assert(perCount[origin], "move carries " .. pocket .. " count " .. count .. " origin " .. origin)
+            )
+          end
+        end
+      end
+    end
+    local feedback = assert(interactive.feedback, "the bag manifest carries its activation feedback")
+    acquire("feedback:action:normal", assert(feedback.actionFace.normal, "feedback carries its action face"))
+    acquire("feedback:action:selected", assert(feedback.actionFace.selected, "feedback carries its action flash"))
+    acquire("feedback:cancel:normal", assert(feedback.cancelFace.normal, "feedback carries its cancel face"))
+    acquire("feedback:cancel:selected", assert(feedback.cancelFace.selected, "feedback carries its cancel flash"))
+    acquire(
+      "feedback:quantityConfirm:normal",
+      assert(feedback.quantityConfirm.normal, "feedback carries its quantity confirm")
+    )
+    acquire(
+      "feedback:quantityConfirm:selected",
+      assert(feedback.quantityConfirm.selected, "feedback carries its quantity flash")
+    )
+    local moveCursor = assert(interactive.moveCursor, "the bag manifest carries its move target cursor")
+    acquire("moveCursor:original", assert(moveCursor.original, "the move cursor carries its original target"))
+    acquire("moveCursor:candidate", assert(moveCursor.candidate, "the move cursor carries its candidate target"))
+    assert(interactive.overlays.selectedItem ~= nil, "the bag manifest carries its retained selected-item panel")
+    assert(interactive.overlays.messages ~= nil, "the bag manifest carries its lower-message geometry")
     -- One realized strip per active pocket, carrying the persistent
     -- selected-pocket treatment; the transient tab focus stays a separate
     -- visual drawn after the strip.
@@ -483,7 +427,7 @@ function BagRenderer:_drawHeroForeground(presentation, descriptionPalette)
   local graphics = self._graphics
   local manifest = self._manifest
   local selected = presentation.selected
-  if selected ~= nil and selected.moveSummary ~= nil and promptText(presentation, manifest) == nil then
+  if selected ~= nil and selected.moveSummary ~= nil then
     local summary = assert(manifest.hero.moveSummary)
     drawVisual(graphics, assert(self._visuals.moveSummaryBackground), 0, 0)
     local facts = assert(selected.moveSummary)
@@ -510,10 +454,10 @@ function BagRenderer:_drawHeroForeground(presentation, descriptionPalette)
   end
   drawVisual(graphics, assert(self._visuals.descriptionFrame), 0, 0)
   local textRect = manifest.hero.description.textRect
-  local contextual = contextualText(presentation, manifest)
-  if contextual ~= nil then
+  local selectedItem = presentation.selected
+  if selectedItem ~= nil and type(selectedItem.description) == "string" then
     setColor(self._graphics, WHITE)
-    self:_drawPaletteLines(contextual, textRect.x, textRect.y, descriptionPalette, 3)
+    self:_drawPaletteLines(selectedItem.description, textRect.x, textRect.y, descriptionPalette, 3)
   end
 end
 
@@ -536,34 +480,58 @@ local function visibleOccupiedCount(visibleSlots)
   return count
 end
 
+-- Resolves the visible occupied prefix of the six-cell window for
+-- count-aware background selection.
+---@param presentation table<string, unknown>
+---@return integer
+local function backgroundCount(presentation)
+  local visibleSlots = assert(presentation.visibleSlots, "the bag presentation lists its visible cells")
+  return visibleOccupiedCount(visibleSlots)
+end
+
+-- Resolves the move origin key for background selection: the visible
+-- zero-based original-item cell, or the origin-absent variant when the
+-- original item scrolled outside the current six-cell window.
+---@param presentation table<string, unknown>
+---@return string
+local function moveOriginKey(presentation)
+  local origin = assert(presentation.moveOrigin, "move selection carries its origin")
+  local start = assert(presentation.visibleStart, "the presentation carries its window start")
+  assert(type(origin) == "number" and type(start) == "number", "move origin indexes are numbers")
+  local cell = origin - start
+  if cell >= 0 and cell <= 5 then
+    return tostring(cell)
+  end
+  return "none"
+end
+
 -- Draws the one generated lower-pane background for the current state and
--- pocket. Browse states resolve the realized count variant from the visible
--- occupied prefix; every other state keeps its fixed pocket background.
--- Every image is asserted at construction, so an unknown state/pocket fails
--- instead of borrowing another pocket's screen.
+-- pocket. Browse, action, and quantity states resolve the realized count
+-- variant from the visible occupied prefix; move resolves the count/origin
+-- variant; toss confirmation owns no background of its own and retains its
+-- recorded action/quantity base. Every image is asserted at construction,
+-- so an unknown state/pocket fails instead of borrowing another screen.
 ---@param state string
 ---@param pocket string
 ---@param presentation table<string, unknown>
 function BagRenderer:_drawStateBackground(state, pocket, presentation)
-  local backgroundByState = {
-    browsing = "browse",
-    description_overlay = "browse",
-    item_select = "browse",
-    move_select = "browse",
-    action_menu = "action",
-    toss_quantity = "quantity",
-    toss_confirm = "confirmation",
-    toss_ack = "confirmation",
-  }
-  local background = assert(backgroundByState[state], "the bag renderer draws a known lower-pane state")
-  if background == "browse" then
-    local visibleSlots = assert(presentation.visibleSlots, "the bag presentation lists its visible cells")
-    local count = visibleOccupiedCount(visibleSlots)
-    local key = "background:browse:" .. pocket .. ":" .. count
-    drawVisual(self._graphics, assert(self._visuals[key], "the bag presentation names its pocket"), 0, 0)
-    return
+  local count = backgroundCount(presentation)
+  local key
+  if state == "browsing" or state == "description_overlay" or state == "item_select" then
+    key = "background:browse:" .. pocket .. ":" .. count
+  elseif state == "action_menu" then
+    key = "background:action:" .. pocket .. ":" .. count
+  elseif state == "toss_quantity" then
+    key = "background:quantity:" .. pocket .. ":" .. count
+  elseif state == "toss_confirm" or state == "toss_ack" then
+    local base = assert(presentation.tossBase, "toss confirmation retains its action/quantity base")
+    assert(base == "action" or base == "quantity", "toss confirmation retains a known base")
+    key = "background:" .. base .. ":" .. pocket .. ":" .. count
+  elseif state == "move_select" then
+    key = "background:move:" .. pocket .. ":" .. count .. ":" .. moveOriginKey(presentation)
+  else
+    error("the bag renderer draws a known lower-pane state", 0)
   end
-  local key = "background:" .. background .. ":" .. pocket
   drawVisual(self._graphics, assert(self._visuals[key], "the bag presentation names its pocket"), 0, 0)
 end
 
@@ -836,6 +804,77 @@ function BagRenderer:_drawItemCells(presentation, icons, iconImage, palettes)
   end
 end
 
+-- Draws the retained selected-item panel of the action-derived states:
+-- the selected icon at its canonical center plus the name and quantity in
+-- the dedicated text window, through the same item palette and anchors as
+-- the browse cells.
+---@param presentation table<string, unknown>
+---@param icons table<string, unknown>
+---@param iconImage love.Image
+---@param itemPalette table<string, unknown>
+function BagRenderer:_drawSelectedItemPanel(presentation, icons, iconImage, itemPalette)
+  local graphics = self._graphics
+  local panel =
+    assert(self._manifest.interactive.overlays.selectedItem, "the bag manifest carries its selected-item panel")
+  local center = assert(panel.iconCenter, "the selected-item panel carries its icon center")
+  local textRect = assert(panel.textRect, "the selected-item panel carries its text window")
+  local selected = assert(presentation.selected, "the panel states carry their selected item")
+  local iconKey = assert(selected.icon, "the selected item carries its icon key")
+  local quad = icons:quadFor(iconKey)
+  local dims = icons:dimensions(iconKey)
+  setColor(graphics, WHITE)
+  graphics.draw(iconImage, quad, center.x - dims.width / 2, center.y - dims.height / 2)
+  local nameAt = assert(panel.nameAt, "the selected-item panel carries its name anchor")
+  local quantityAt = assert(panel.quantityAt, "the selected-item panel carries its quantity anchor")
+  assert(type(selected.name) == "string", "the selected item carries a name")
+  self._text:drawTextWithPalette(plainText(selected.name), textRect.x + nameAt.x, textRect.y + nameAt.y, itemPalette)
+  assert(type(selected.quantity) == "number", "the selected item carries a quantity")
+  self._text:drawTextWithPalette(
+    "x" .. selected.quantity,
+    textRect.x + quantityAt.x,
+    textRect.y + quantityAt.y,
+    itemPalette
+  )
+end
+
+-- Draws the controller-owned lower message in its generated framed window:
+-- the short window for action/move messages, the tall window for toss
+-- confirmation/result. The borrowed shared window renderer draws the
+-- player-selected frame; without it the content box fills flat. Visible
+-- text arrives fully revealed from the controller; this draws and never
+-- advances clocks.
+---@param presentation table<string, unknown>
+---@param descriptionPalette table<string, unknown>
+function BagRenderer:_drawLowerMessage(presentation, descriptionPalette)
+  local message = presentation.lowerMessage
+  if message == nil then
+    return
+  end
+  local visibleText = assert(message.visibleText, "lower messages carry their visible text")
+  if visibleText == "" then
+    return
+  end
+  local messages = assert(self._manifest.interactive.overlays.messages, "the bag manifest carries its message windows")
+  local state = assert(presentation.state, "the bag presentation names its state")
+  local windowKey = (state == "toss_confirm" or state == "toss_ack") and "modal" or "selected"
+  local contentRect = assert(messages[windowKey].contentRect, "the bag manifest carries its message content rect")
+  local box = { x = contentRect.x, y = contentRect.y, width = contentRect.width, height = contentRect.height }
+  local background = { 0.12, 0.12, 0.18, 1 }
+  local window = self._window
+  if window ~= nil then
+    window:drawWindow(box, self._frameIndex, background)
+  else
+    setColor(self._graphics, background)
+    self._graphics.rectangle("fill", box.x, box.y, box.width, box.height)
+  end
+  setColor(self._graphics, WHITE)
+  if windowKey == "modal" then
+    self:_drawPaletteLines(visibleText, box.x + 4, box.y + 4, descriptionPalette, 2)
+  else
+    self:_drawPaletteLines(visibleText, box.x + 4, box.y + 2, descriptionPalette, 1)
+  end
+end
+
 ---@param presentation table<string, unknown>
 ---@param icons table<string, unknown>
 ---@param content table<string, unknown> the canonical logical content selecting compact fallbacks
@@ -886,18 +925,22 @@ function BagRenderer:_drawInteractive(presentation, icons, content, palettes)
     self:_drawActionFaces(presentation)
     self:_drawActionFocus(presentation)
     self:_drawActionLabels(presentation)
-    self:_drawSelectedItemIcon(presentation, icons, iconImage)
+    self:_drawSelectedItemPanel(presentation, icons, iconImage, palettes.item)
+    self:_drawLowerMessage(presentation, palettes.description)
   elseif state == "item_select" then
     self:_drawSelectionEntry(presentation)
   elseif state == "toss_quantity" then
+    self:_drawSelectedItemPanel(presentation, icons, iconImage, palettes.item)
     self:_drawQuantityState(presentation)
-  elseif state == "toss_confirm" then
+  elseif state == "toss_confirm" or state == "toss_ack" then
+    -- The acknowledgement carries no interactive widgets beyond the
+    -- retained panel, the result message, and the open prompt.
+    self:_drawSelectedItemPanel(presentation, icons, iconImage, palettes.item)
+    self:_drawLowerMessage(presentation, palettes.description)
     self:_drawTossPrompt(presentation)
-  elseif state == "toss_ack" then
-    -- The acknowledgement carries no interactive widgets: the result text
-    -- rides the hero and constrained contextual layers below.
   elseif state == "move_select" then
     self:_drawMoveHighlight(presentation)
+    self:_drawLowerMessage(presentation, palettes.description)
   elseif state ~= "browsing" then
     error("the bag renderer draws a known lower-pane state", 0)
   end
@@ -921,11 +964,24 @@ function BagRenderer:_drawActionFaces(presentation)
   local actions = assert(presentation.actions, "the action menu carries its actions")
   assert(type(actions) == "table", "the action menu carries its actions")
   local slots = self:_actionSlots()
+  local feedbackKind = type(presentation.feedback) == "table" and presentation.feedback.kind or nil
   for _, action in ipairs(actions) do
     assert(type(action.slot) == "number" and action.slot >= 0 and action.slot <= 3, "actions carry physical slots")
     local slot = assert(slots[action.slot + 1], "the action maps to a generated slot")
     local center = assert(slot.center, "action slots carry centers")
-    drawVisual(self._graphics, assert(self._visuals.actionFace), center.x, center.y)
+    local key = "actionFace"
+    if feedbackKind == "action:" .. action.slot then
+      key = "feedback:action:selected"
+    end
+    drawVisual(self._graphics, assert(self._visuals[key]), center.x, center.y)
+  end
+  if feedbackKind == "cancel" then
+    local focus = assert(self._manifest.interactive.focus, "the bag manifest must carry its focus visuals")
+    local cancelFocus = assert(focus.cancel, "the bag manifest carries its cancel focus")
+    local target = assert(cancelFocus.target, "the cancel focus carries its target")
+    local flash = assert(self._visuals["feedback:cancel:selected"], "feedback carries its cancel flash")
+    local offset = flash.offset or { x = 0, y = 0 }
+    drawVisual(self._graphics, flash, target.x + offset.x, target.y + offset.y)
   end
 end
 
@@ -952,65 +1008,6 @@ function BagRenderer:_drawActionLabels(presentation)
     local width = self._text:textWidth(content)
     self._text:drawTextWithPalette(content, rect.x + (rect.width - width) / 2, rect.y, palette)
   end
-end
-
--- Draws the selected item's icon at the generated action-screen center:
--- the stable action state keeps the chosen item visible without
--- restoring the six browse rows. The icon resolves through the same
--- provider/quads as the browse cells, never a duplicated asset.
----@param presentation table<string, unknown>
----@param icons table<string, unknown>
----@param iconImage love.Image
-function BagRenderer:_drawSelectedItemIcon(presentation, icons, iconImage)
-  local graphics = self._graphics
-  local menu = assert(self._manifest.interactive.overlays.actionMenu, "the action menu needs its generated slots")
-  local center = assert(menu.selectedItemCenter, "the action menu carries its selected-item center")
-  local selected = assert(presentation.selected, "the action menu carries its selected item")
-  local iconKey = assert(selected.icon, "the selected item carries its icon key")
-  local quad = icons:quadFor(iconKey)
-  local dims = icons:dimensions(iconKey)
-  setColor(graphics, WHITE)
-  graphics.draw(iconImage, quad, center.x - dims.width / 2, center.y - dims.height / 2)
-end
-
--- Responsive pointer affordances reuse the generated action-button
--- rectangles for centered labels. The confirm
--- label is the generated semantic action text shared with the action menu.
----@param buttons table<integer, table<string, number>>
----@param labeled table<integer, string>
-function BagRenderer:_drawResponsiveButtons(buttons, labeled)
-  local indexes = {}
-  for index in pairs(labeled) do
-    indexes[#indexes + 1] = index
-  end
-  table.sort(indexes)
-  for _, index in ipairs(indexes) do
-    local label = labeled[index]
-    local rect = assert(buttons[index], "responsive affordances reuse generated buttons")
-    setColor(self._graphics, WHITE)
-    self:_drawCentered(label, rect)
-  end
-end
-
----@return table<integer, table<string, number>>
-function BagRenderer:_actionButtons()
-  local menu = assert(self._manifest.interactive.overlays.actionMenu, "the nested states need their generated buttons")
-  local slots = assert(menu.slots, "the nested states need their generated slots")
-  assert(type(slots) == "table" and #slots == 4, "the nested states need their four generated slots")
-  local textRects = {}
-  for index, slot in ipairs(slots) do
-    textRects[index] = assert(slot.textRect, "action slots carry label rectangles")
-  end
-  return textRects
-end
-
----@return string
-function BagRenderer:_confirmLabel()
-  local text = assert(self._manifest.interactive.text, "the nested states need their generated text")
-  local actions = assert(text.actions, "the nested states need their generated labels")
-  local confirm = assert(actions.confirm, "the nested states need their generated confirm label")
-  assert(type(confirm) == "string" and confirm ~= "", "the generated confirm label is visible text")
-  return confirm
 end
 
 -- The quantity picker draws the picked decimal amount right-aligned over
@@ -1058,17 +1055,49 @@ function BagRenderer:_drawQuantityState(presentation)
     local center = assert(control.center, "quantity controls carry centers")
     drawVisual(self._graphics, assert(self._visuals[key]), center.x, center.y)
   end
+  local feedbackKind = type(presentation.feedback) == "table" and presentation.feedback.kind or nil
   local confirm = assert(overlay.confirm, "the quantity overlay carries confirm")
   local center = assert(confirm.center, "quantity confirm carries a center")
-  drawVisual(self._graphics, assert(self._visuals.quantityConfirm), center.x, center.y)
+  if feedbackKind == "quantityConfirm" then
+    drawVisual(self._graphics, assert(self._visuals["feedback:quantityConfirm:selected"]), center.x, center.y)
+  else
+    drawVisual(self._graphics, assert(self._visuals.quantityConfirm), center.x, center.y)
+  end
+  -- The confirm control prints TOSS and the fixed Cancel control prints
+  -- CANCEL through the generated semantic labels. Both hide once toss
+  -- confirmation owns the retained base.
+  local labels = assert(
+    self._manifest.interactive.text and self._manifest.interactive.text.actions,
+    "the quantity picker needs its generated labels"
+  )
+  local palette = self:_palettes().description
+  local tossLabel = assert(labels.toss, "the bag manifest carries its toss label")
+  local confirmRect = assert(confirm.hitRect, "quantity confirm carries its button rect")
+  setColor(self._graphics, WHITE)
+  self:_drawCenteredWithPalette(tossLabel, confirmRect, palette)
+  if feedbackKind == "quantityCancel" then
+    local focus = assert(self._manifest.interactive.focus, "the bag manifest must carry its focus visuals")
+    local cancelFocus = assert(focus.cancel, "the bag manifest carries its cancel focus")
+    local target = assert(cancelFocus.target, "the cancel focus carries its target")
+    local flash = assert(self._visuals["feedback:cancel:selected"], "feedback carries its cancel flash")
+    local offset = flash.offset or { x = 0, y = 0 }
+    drawVisual(self._graphics, flash, target.x + offset.x, target.y + offset.y)
+  end
+  local cancelLabel = assert(labels.cancel, "the bag manifest carries its cancel label")
+  local cancelRect = assert(overlay.cancelHitRect, "the quantity overlay carries its cancel button rect")
+  self:_drawCenteredWithPalette(cancelLabel, cancelRect, palette)
 end
 
--- The toss confirmation rests on its distinct generated screen while the
--- modal prompt renderer owns both button rows at the controller's prompt
--- presentation; the item and amount travel in the contextual prompt, so no
--- digit widgets, quantity layers, or Bag action-slot labels belong here.
+-- The toss confirmation retains its action/quantity base with the
+-- selected-item panel while the modal prompt renderer owns both button
+-- rows, and only while the controller reports the prompt open. The item
+-- and amount travel in the lower message window, so no digit widgets,
+-- quantity layers, or action-slot labels belong here.
 ---@param presentation table<string, unknown>
 function BagRenderer:_drawTossPrompt(presentation)
+  if presentation.yesNoPrompt == nil then
+    return
+  end
   local prompt = assert(self._promptRenderer, "the toss confirmation owns its modal prompt renderer")
   prompt:draw(presentation.yesNoPrompt)
 end
@@ -1091,7 +1120,7 @@ function BagRenderer:_drawConstrainedContextual(presentation, content, descripti
   if presentation.state == "description_overlay" then
     return
   end
-  local contextual = compactContextualText(presentation, self._manifest)
+  local contextual = compactContextualText(presentation)
   if contextual == nil then
     return
   end
@@ -1103,14 +1132,32 @@ function BagRenderer:_drawConstrainedContextual(presentation, content, descripti
   self:_drawPaletteLines(contextual, textRect.x, textRect.y, descriptionPalette, 3)
 end
 
--- The move target keeps its explicit confirm affordance; the controller
--- drives the window with the target, so the cell is always among the
--- visible six.
+-- The move target cursor uses the source original-target visual while the
+-- target equals the origin and the alternate valid-target visual
+-- otherwise, drawn at the target cell's generated focus point. No
+-- standalone confirm button exists.
 ---@param presentation table<string, unknown>
 function BagRenderer:_drawMoveHighlight(presentation)
   assert(presentation.moveTarget ~= nil, "move selection carries its target")
   assert(presentation.visibleStart ~= nil, "the presentation carries its window start")
-  self:_drawResponsiveButtons(self:_actionButtons(), { [3] = self:_confirmLabel() })
+  local key = presentation.moveTarget == presentation.moveOrigin and "moveCursor:original" or "moveCursor:candidate"
+  local focus = assert(self._manifest.interactive.focus, "the bag manifest must carry its focus visuals")
+  local itemFocus = assert(focus.items, "the bag manifest carries its item focus")
+  local targets = assert(itemFocus.targets, "the item focus carries its targets")
+  assert(type(targets) == "table" and #targets == 6, "the item focus targets its six visible cells")
+  local start = assert(presentation.visibleStart, "the presentation carries its window start")
+  assert(type(start) == "number", "the bag view needs its window start")
+  local cell = presentation.moveTarget - start + 1
+  if cell < 1 or cell > 6 then
+    return
+  end
+  local target = assert(targets[cell], "the move target resolves a focus target")
+  drawVisual(
+    self._graphics,
+    assert(self._visuals[key], "the bag presentation names its move cursor"),
+    target.x,
+    target.y
+  )
 end
 
 ---@param presentation table<string, unknown>
@@ -1209,6 +1256,9 @@ function BagRenderer:release()
   if promptRenderer ~= nil then
     promptRenderer:release()
   end
+  -- The shared window renderer is a borrowed collaborator owned by field
+  -- presentation resources: this releases it never, only drops the reference.
+  self._window = nil
 end
 
 return BagRenderer

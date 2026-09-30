@@ -31,6 +31,8 @@ local BagScreenState = {}
 BagScreenState.__index = BagScreenState
 
 ---@class BagScreenState.Options
+---@field effect (fun(sequence: string))? the production semantic sound boundary, silent when omitted
+---@field textPolicy { interGlyphDelay: integer, glyphBudget: integer, abAcceleration: boolean }? the copied player text-speed cadence
 ---@field service HgssBagService the live bag service
 ---@field cursor BagCursor the borrowed runtime-only field cursor
 ---@field manifest table<string, unknown> the validated bag presentation manifest
@@ -67,6 +69,29 @@ function BagScreenState.new(opts)
   assert(type(overlays) == "table", "the bag manifest carries its interactive pane")
   local bagOverlays = assert(overlays.overlays, "the bag manifest carries its overlay geometry")
   local tossPrompt = assert(bagOverlays.tossPrompt, "the bag manifest carries its toss prompt placement")
+  -- Post-selection timing and text ride the validated manifest: a bundle
+  -- missing them fails the open instead of animating with silent fallbacks.
+  local text = assert(overlays.text, "the bag manifest carries its semantic text")
+  assert(type(text) == "table", "the bag manifest carries its semantic text")
+  local feedback = assert(overlays.feedback, "the bag manifest carries its activation feedback")
+  assert(type(feedback) == "table", "the bag manifest carries its activation feedback")
+  local feedbackTicks = assert(feedback.totalTicks, "activation feedback carries its generated total")
+  assert(
+    type(feedbackTicks) == "number" and feedbackTicks % 1 == 0 and feedbackTicks >= 1,
+    "activation feedback carries a positive generated total"
+  )
+  ---@cast feedbackTicks integer
+  local moveTransition = assert(overlays.moveTransition, "the bag manifest carries its move commit transition")
+  assert(type(moveTransition) == "table", "the bag manifest carries its move commit transition")
+  for _, key in ipairs({ "unchanged", "changed" }) do
+    local clip = assert(moveTransition[key], "the move transition carries its " .. key .. " clip")
+    assert(
+      type(clip.totalTicks) == "number" and clip.totalTicks % 1 == 0 and clip.totalTicks >= 1,
+      "the " .. key .. " clip carries a positive generated total"
+    )
+  end
+  local textPolicy = assert(opts.textPolicy, "the bag screen requires its copied text-speed policy")
+  assert(type(textPolicy) == "table", "the bag screen requires its copied text-speed policy")
   local selectionEntry = assert(overlays.selectionEntry, "the bag manifest carries its selection-entry sequence")
   local itemSelectTicks = assert(selectionEntry.totalTicks, "the selection-entry sequence carries its generated total")
   assert(
@@ -144,6 +169,11 @@ function BagScreenState.new(opts)
       promptShape = promptShape,
       tossPrompt = tossPrompt,
       itemSelectTicks = itemSelectTicks,
+      effect = opts.effect,
+      textPolicy = textPolicy,
+      messages = text,
+      feedbackTicks = feedbackTicks,
+      moveTransition = moveTransition,
       isPickable = isPickable,
       commands = {
         toss = tossItem,

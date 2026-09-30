@@ -63,14 +63,21 @@ function T.quantity_background_uses_only_the_supported_source_screen(romFs, vers
   local bundle = bundleFor(romFs, versionId)
   Assert.deepEqual(
     bundle.dependencies.selection.lowerLayers.quantity,
-    { "quantity" },
-    "the Toss quantity state uses only its selected source screen"
+    { variant = 3, base = "action", overlay = "quantityOverlay" },
+    "the Toss quantity state retains the action surface under its overlay"
   )
   for _, dependency in ipairs(bundle.dependencies.dependencies) do
     Assert.isFalse(dependency.name == "bag_ui:member:53", "the alternate quantity screen is not a current dependency")
   end
-  local quantity = bundle.manifest.interactive.backgrounds.quantity.items
-  Assert.isTrue(type(bundle.assets[quantity.image]) == "string", "the single-screen quantity background is generated")
+  local quantity = assert(
+    bundle.manifest.interactive.backgrounds.quantity.items,
+    "the quantity background varies with the visible count"
+  )
+  for count = 0, 6 do
+    local variant = assert(quantity[count], "quantity publishes its count " .. count .. " variant")
+    local image = assert(variant.image, "quantity count " .. count .. " names its image")
+    Assert.isTrue(type(bundle.assets[image]) == "string", "the count " .. count .. " quantity background is generated")
+  end
 end
 
 function T.required_source_members_decode(romFs, _)
@@ -90,11 +97,12 @@ function T.required_source_members_decode(romFs, _)
     BagSources.screens.upperBackdropFemale,
     BagSources.screens.listSlots,
     BagSources.screens.listWash,
-    BagSources.screens.actionSlots,
-    BagSources.screens.actionWash,
-    BagSources.screens.confirmation,
-    BagSources.screens.quantity,
+    BagSources.screens.moveSlots,
+    BagSources.screens.moveWash,
+    BagSources.screens.actionOverlay,
+    BagSources.screens.quantityOverlay,
   }) do
+    Assert.notNil(memberId, "every audited screen role names its source member")
     assertDecodes("decodeScreen", memberId, "bag screen " .. memberId)
   end
   for _, memberId in ipairs({ BagSources.chars.upper, BagSources.chars.lower }) do
@@ -322,7 +330,6 @@ function T.compiled_text_lowers_labels_and_templates_in_order(romFs, versionId)
   Assert.equal(actions.use, "USE", "the Use label carries the source bank-10 text")
   Assert.equal(actions.give, "GIVE", "the Give label carries the source bank-10 text")
   Assert.deepEqual(segmentKinds(manifest.interactive.text.movePrompt), { "text", "item", "text" })
-  Assert.deepEqual(segmentKinds(manifest.interactive.text.tossQuantity), { "text", "item", "text" })
   Assert.deepEqual(segmentKinds(manifest.interactive.text.tossConfirm), { "text", "quantity", "text", "item", "text" })
 end
 
@@ -519,7 +526,10 @@ function T.finalized_backgrounds_carry_static_cancel_chrome(romFs, versionId)
       local published = bundle.manifest.interactive.backgrounds[state][pocket]
       local variants = published
       if state ~= "browse" then
-        variants = { published }
+        variants = {}
+        for count = 0, 6 do
+          variants[#variants + 1] = assert(published[count], state .. "/" .. pocket .. " publishes count " .. count)
+        end
       end
       for _, background in ipairs(variants) do
         local _, _, rgba =
@@ -722,7 +732,7 @@ end
 function T.pocket_strips_replay_the_retained_palette_state(romFs, versionId)
   local bundle = bundleFor(romFs, versionId)
   local manifest = bundle.manifest
-  Assert.equal(manifest.schema, "g4-bag-assets-v13", "the rebuilt bag cache must publish the current contract")
+  Assert.equal(manifest.schema, "g4-bag-assets-v14", "the rebuilt bag cache must publish the current contract")
   local strips =
     assert(manifest.interactive.pocketTabs.strips, "the rebuilt manifest must publish one strip per active pocket")
   local keys = {}

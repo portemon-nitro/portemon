@@ -473,10 +473,28 @@ local function tossSelectedWithSingleCopyStep(game, state)
   end
   Assert.equal(bagView(game).state, "action_menu", "confirming the composed selection opens the action menu")
   confirm(game)
+  for _ = 1, 30 do
+    game:step()
+    if bagView(game).state == "toss_quantity" then
+      break
+    end
+  end
   Assert.equal(bagView(game).state, "toss_quantity", "confirming toss enters the quantity picker")
   tapDirection(game, state, "w")
   confirm(game)
+  for _ = 1, 30 do
+    game:step()
+    if bagView(game).state == "toss_confirm" then
+      break
+    end
+  end
   Assert.equal(bagView(game).state, "toss_confirm", "confirming a quantity asks for confirmation")
+  for _ = 1, 120 do
+    game:step()
+    if bagView(game).yesNoPrompt ~= nil then
+      break
+    end
+  end
   confirm(game)
   Assert.equal(bagView(game).state, "toss_confirm", "the choice input latches without leaving confirmation")
   for _ = 1, 8 do
@@ -484,8 +502,25 @@ local function tossSelectedWithSingleCopyStep(game, state)
     Assert.equal(bagView(game).state, "toss_confirm", "each later prompt update stays in confirmation")
   end
   game:step()
-  Assert.equal(bagView(game).state, "toss_ack", "accepting the prompt opens the acknowledgement state")
+  Assert.equal(
+    bagView(game).state,
+    "toss_confirm",
+    "accepting the prompt starts the typed result before acknowledgement"
+  )
+  for _ = 1, 240 do
+    game:step()
+    if bagView(game).state == "toss_ack" then
+      break
+    end
+  end
+  Assert.equal(bagView(game).state, "toss_ack", "the completed result opens the acknowledgement state")
   confirm(game)
+  for _ = 1, 30 do
+    game:step()
+    if bagView(game).state == "browsing" then
+      break
+    end
+  end
   Assert.equal(bagView(game).state, "browsing", "the first acknowledgement commits back to browsing")
 end
 

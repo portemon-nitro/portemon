@@ -142,6 +142,52 @@ local function bagManifest()
         labelRect = { x = 200, y = 168, width = 48, height = 16 },
       },
       selectionEntry = { totalTicks = 3 },
+      text = {
+        actions = {
+          toss = "TOSS",
+          move = "MOVE",
+          register = "REGISTER",
+          unregister = "DESELECT",
+          cancel = "CANCEL",
+          confirm = "YES",
+          use = "USE",
+          give = "GIVE",
+        },
+        selectedItem = {
+          segments = {
+            { kind = "text", value = "The " },
+            { kind = "item" },
+            { kind = "text", value = " is selected." },
+          },
+        },
+        movePrompt = {
+          segments = {
+            { kind = "text", value = "Move " },
+            { kind = "item" },
+            { kind = "text", value = "?" },
+          },
+        },
+        tossConfirm = {
+          segments = {
+            { kind = "text", value = "Toss " },
+            { kind = "quantity" },
+            { kind = "text", value = " " },
+            { kind = "item" },
+            { kind = "text", value = "?" },
+          },
+        },
+        tossResult = {
+          segments = {
+            { kind = "text", value = "Threw away " },
+            { kind = "quantity" },
+            { kind = "text", value = " " },
+            { kind = "item" },
+            { kind = "text", value = "." },
+          },
+        },
+      },
+      feedback = { totalTicks = 4 },
+      moveTransition = { unchanged = { totalTicks = 3 }, changed = { totalTicks = 5 } },
       overlays = {
         descriptionFallback = {
           frame = { x = 0, y = 144, width = 256, height = 48 },
@@ -156,17 +202,18 @@ local function bagManifest()
             { hitRect = { x = 104, y = 168, width = 80, height = 16 } },
           },
         },
-      },
-      text = {
-        actions = {
-          toss = "TOSS",
-          move = "MOVE",
-          register = "REGISTER",
-          unregister = "DESELECT",
-          cancel = "CANCEL",
-          confirm = "YES",
-          use = "USE",
-          give = "GIVE",
+        quantity = {
+          controls = {
+            { delta = 100, role = "increment", hitRect = { x = 0, y = 128, width = 32, height = 32 } },
+            { delta = 10, role = "increment", hitRect = { x = 32, y = 128, width = 32, height = 32 } },
+            { delta = 1, role = "increment", hitRect = { x = 64, y = 128, width = 32, height = 32 } },
+            { delta = -100, role = "decrement", hitRect = { x = 0, y = 160, width = 32, height = 32 } },
+            { delta = -10, role = "decrement", hitRect = { x = 32, y = 160, width = 32, height = 32 } },
+            { delta = -1, role = "decrement", hitRect = { x = 64, y = 160, width = 32, height = 32 } },
+          },
+          pressTicks = 2,
+          cancelHitRect = { x = 178, y = 168, width = 78, height = 24 },
+          confirm = { hitRect = { x = 112, y = 160, width = 64, height = 32 } },
         },
       },
     },
@@ -231,6 +278,7 @@ local function openFlow(Flow, opts)
     measureDisplay = stubMeasurement,
     prepareIcons = assert(opts.prepareIcons, "the flow test supplies icon preparation"),
     cancelIconPreparation = assert(opts.cancelIconPreparation, "the flow test supplies preparation release"),
+    textPolicy = { interGlyphDelay = 0, glyphBudget = 512, abAcceleration = true },
   })
 end
 
@@ -309,7 +357,14 @@ local function driveToAction(rig, id)
     end
     Assert.notNil(target, "the menu must offer " .. id)
     if child.actionNode == target then
-      return drive(rig, { { type = "confirm" } })
+      drive(rig, { { type = "confirm" } })
+      -- Activation latches behind feedback before the semantic transition
+      -- runs, so settle until the menu leaves or the flow changes pages.
+      return driveUntil(rig, "the chosen action", 30, function(current)
+        return current.page ~= "bag_browse"
+          or current.child == nil
+          or current.child.state ~= "action_menu"
+      end)
     end
     local node = assert(child.actionNode, "the menu exposes its node")
     local queue = { { node = node, path = {} } }

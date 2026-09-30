@@ -325,10 +325,10 @@ local function fixture(opts)
     BagSources.screens.upperBackdropFemale,
     BagSources.screens.listSlots,
     BagSources.screens.listWash,
-    BagSources.screens.actionSlots,
-    BagSources.screens.actionWash,
-    BagSources.screens.confirmation,
-    BagSources.screens.quantity,
+    BagSources.screens.moveSlots,
+    BagSources.screens.moveWash,
+    BagSources.screens.actionOverlay,
+    BagSources.screens.quantityOverlay,
   }) do
     members[memberId + 1] = screenData()
   end
@@ -341,7 +341,7 @@ local function fixture(opts)
   members[BagSources.sprites.tabs.char + 1] = charData(200)
   members[BagSources.sprites.tabs.cell + 1] = cellData(tabCells)
   members[BagSources.sprites.tabs.palette + 1] = palette256()
-  members[BagSources.sprites.tabs.anim + 1] = animData(42)
+  members[BagSources.sprites.tabs.anim + 1] = animData(43)
   members[BagSources.palettes.tabState + 1] = palette256()
   local cursorCells = {}
   for _ = 1, 4 do
@@ -714,10 +714,10 @@ function T.producer_declares_the_audited_message_selection()
   })
   Assert.deepEqual(BagSources.spriteStates.cancelFace, { animation = 16, palette = 8 })
   Assert.deepEqual(BagSources.lowerLayers, {
-    browse = { "listWash", "listSlots" },
-    action = { "actionWash", "actionSlots" },
-    quantity = { "quantity" },
-    confirmation = { "confirmation" },
+    browse = { variant = 0, wash = "listWash", slots = "listSlots" },
+    action = { variant = 2, base = "browse", overlay = "actionOverlay" },
+    quantity = { variant = 3, base = "action", overlay = "quantityOverlay" },
+    move = { variant = 1, wash = "moveWash", slots = "moveSlots" },
   })
   local messages = assert(BagSources.messages, "the producer must declare its message selection")
   Assert.deepEqual(messages.actionLabels, {
@@ -732,7 +732,6 @@ function T.producer_declares_the_audited_message_selection()
   })
   Assert.deepEqual(messages.templates, {
     movePrompt = { bank = 10, index = 46 },
-    tossQuantity = { bank = 10, index = 53 },
     tossConfirm = { bank = 10, index = 55 },
     tossResult = { bank = 10, index = 54 },
     selectedItem = { bank = 10, index = 43 },
@@ -812,10 +811,26 @@ local function heroDescriptor(gender)
   }
 end
 
-local function pocketBackgrounds(state)
+local function countKeyedBackgrounds(state)
   local pockets = {}
   for _, pocket in ipairs(POCKETS) do
-    if state == "browse" then
+    local variants = {}
+    for count = 0, 6 do
+      variants[count] = {
+        image = "assets/generated/bag/background-" .. state .. "-" .. pocket .. "-count-" .. count .. ".png",
+        width = 256,
+        height = 192,
+      }
+    end
+    pockets[pocket] = variants
+  end
+  return pockets
+end
+
+local function pocketBackgrounds(state)
+  if state == "browse" then
+    local pockets = {}
+    for _, pocket in ipairs(POCKETS) do
       local variants = {}
       for count = 0, 6 do
         variants[#variants + 1] = {
@@ -825,10 +840,40 @@ local function pocketBackgrounds(state)
         }
       end
       pockets[pocket] = variants
-    else
-      pockets[pocket] =
-        { image = "assets/generated/bag/background-" .. state .. "-" .. pocket .. ".png", width = 256, height = 192 }
     end
+    return pockets
+  end
+  return countKeyedBackgrounds(state)
+end
+
+local function movePocketBackgrounds()
+  local pockets = {}
+  for _, pocket in ipairs(POCKETS) do
+    local counts = {}
+    for count = 0, 6 do
+      local origins = {
+        none = {
+          image = "assets/generated/bag/background-move-" .. pocket .. "-count-" .. count .. "-origin-none.png",
+          width = 256,
+          height = 192,
+        },
+      }
+      for _, origin in ipairs({ "0", "1", "2", "3", "4", "5" }) do
+        origins[origin] = {
+          image = "assets/generated/bag/background-move-"
+            .. pocket
+            .. "-count-"
+            .. count
+            .. "-origin-"
+            .. origin
+            .. ".png",
+          width = 256,
+          height = 192,
+        }
+      end
+      counts[count] = origins
+    end
+    pockets[pocket] = counts
   end
   return pockets
 end
@@ -863,7 +908,7 @@ local function syntheticBundle(marker)
     tabs[#tabs + 1] = { x = i * 32, y = 0, width = 32, height = 32 }
   end
   local manifest = {
-    schema = "g4-bag-assets-v13",
+    schema = "g4-bag-assets-v14",
     logicalSize = { width = 256, height = 192 },
     hero = {
       background = {
@@ -961,7 +1006,52 @@ local function syntheticBundle(marker)
         browse = pocketBackgrounds("browse"),
         action = pocketBackgrounds("action"),
         quantity = pocketBackgrounds("quantity"),
-        confirmation = pocketBackgrounds("confirmation"),
+        move = movePocketBackgrounds(),
+      },
+      feedback = {
+        totalTicks = 4,
+        actionFace = {
+          normal = visualRef("assets/generated/bag/action-face-frame-1.png"),
+          selected = visualRef("assets/generated/bag/action-face-selected.png"),
+        },
+        cancelFace = {
+          normal = visualRef("assets/generated/bag/cancel-face-selected-base.png"),
+          selected = visualRef("assets/generated/bag/cancel-face-selected.png"),
+        },
+        quantityConfirm = {
+          normal = visualRef("assets/generated/bag/quantity-confirm-frame-1.png"),
+          selected = visualRef("assets/generated/bag/quantity-confirm-selected.png"),
+        },
+      },
+      moveTransition = {
+        unchanged = {
+          frames = {
+            {
+              image = "assets/generated/bag/move-unchanged-0.png",
+              width = 32,
+              height = 32,
+              durationTicks = 2,
+            },
+          },
+          playback = "once",
+          totalTicks = 2,
+        },
+        changed = {
+          frames = {
+            {
+              image = "assets/generated/bag/move-changed-0.png",
+              width = 32,
+              height = 32,
+              durationTicks = 3,
+            },
+          },
+          playback = "once",
+          totalTicks = 3,
+        },
+      },
+      moveCursor = {
+        original = visualRef("assets/generated/bag/move-cursor-original.png"),
+        candidate = visualRef("assets/generated/bag/move-cursor-candidate.png"),
       },
       pocketTabs = {
         rects = tabs,
@@ -1086,9 +1176,6 @@ local function syntheticBundle(marker)
         movePrompt = {
           segments = { { kind = "text", value = "Move " }, { kind = "item" }, { kind = "text", value = "." } },
         },
-        tossQuantity = {
-          segments = { { kind = "text", value = "Toss " }, { kind = "item" }, { kind = "text", value = "?" } },
-        },
         tossConfirm = {
           segments = {
             { kind = "text", value = "Toss " },
@@ -1124,6 +1211,16 @@ local function syntheticBundle(marker)
         totalTicks = 3,
       },
       overlays = {
+        selectedItem = {
+          iconCenter = { x = 86, y = 76 },
+          textRect = { x = 96, y = 56, width = 88, height = 32 },
+          nameAt = { x = 0, y = 0 },
+          quantityAt = { x = 48, y = 16 },
+        },
+        messages = {
+          selected = { contentRect = { x = 16, y = 8, width = 216, height = 16 } },
+          modal = { contentRect = { x = 16, y = 8, width = 216, height = 32 } },
+        },
         actionMenu = {
           face = visualRef("assets/generated/bag/action-face-frame-1.png"),
           selectedItemCenter = { x = 86, y = 76 },
@@ -1263,7 +1360,7 @@ function T.writer_publishes_the_class_and_reports_ready()
   Assert.isTrue(BagCacheWriter.write(cacheFs, bundle))
   Assert.isTrue(BagCacheWriter.isReady(cacheFs, bundle.marker))
   local loaded = BagCache.loadManifest(cacheFs)
-  Assert.equal(loaded.schema, "g4-bag-assets-v13")
+  Assert.equal(loaded.schema, "g4-bag-assets-v14")
   Assert.equal(loaded.hero.presentation.lights.count, 4)
   Assert.deepEqual(loaded.hero.presentation.lights.color, { r = 31, g = 31, b = 31 })
   Assert.equal(#loaded.hero.presentation.lights.vectors, 4)

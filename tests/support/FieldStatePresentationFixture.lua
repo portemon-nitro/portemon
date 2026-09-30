@@ -11,7 +11,6 @@ local MeshWriter = require("libs.assets.src.model.MeshWriter")
 local PngWriter = require("libs.assets.src.PngWriter")
 local PartyCache = require("libs.assets.src.PartyCache")
 local BagCache = require("libs.assets.src.BagCache")
-local BagAssetSchema = require("libs.assets.src.BagAssetSchema")
 local ItemCache = require("libs.assets.src.ItemCache")
 local MonCache = require("libs.assets.src.MonCache")
 local FieldActorCache = require("libs.assets.src.field.FieldActorCache")
@@ -21,8 +20,6 @@ local FieldDialogueFixture = require("tests.support.FieldDialogueFixture")
 local FieldUiFixture = require("tests.support.FieldUiFixture")
 
 local FieldStatePresentationFixture = {}
-
-local BAG_POCKETS = BagAssetSchema.POCKETS
 
 ---@param width integer
 ---@param height integer
@@ -240,67 +237,13 @@ function FieldStatePresentationFixture.cache()
     representative = { "POTION" },
   })
   cache:write(ItemCache.iconImagePath(), solidPng(64, 64))
-  cache:writeLua(BagCache.manifestPath(), BagPresentationFixture.manifest())
-  cache:write("assets/generated/bag/hero-male.png", solidPng(32, 32))
-  cache:write("assets/generated/bag/hero-female.png", solidPng(32, 32))
-  cache:write("assets/generated/bag/description-frame.png", solidPng(32, 32))
-  cache:write("assets/generated/bag/hero-move-summary.png", solidPng(256, 192))
-  for _, key in ipairs({
-    "normal",
-    "fighting",
-    "flying",
-    "poison",
-    "ground",
-    "rock",
-    "bug",
-    "ghost",
-    "steel",
-    "mystery",
-    "fire",
-    "water",
-    "grass",
-    "electric",
-    "psychic",
-    "ice",
-    "dragon",
-    "dark",
-    "physical",
-    "special",
-    "status",
-  }) do
-    cache:write("assets/generated/bag/move-" .. key .. ".png", solidPng(64, 16))
+  local bagManifest = BagPresentationFixture.manifest()
+  cache:writeLua(BagCache.manifestPath(), bagManifest)
+  -- Every image the validated manifest references, so the eager bag
+  -- presentation resources resolve during FieldState construction.
+  for _, path in ipairs(BagCache.referencedPaths(bagManifest)) do
+    cache:write(path, solidPng(32, 32))
   end
-  for _, key in ipairs({
-    "action-face",
-    "quantity-increment-normal",
-    "quantity-increment-pressed",
-    "quantity-decrement-normal",
-    "quantity-decrement-pressed",
-    "quantity-confirm",
-  }) do
-    cache:write("assets/generated/bag/" .. key .. ".png", solidPng(64, 24))
-  end
-  for _, state in ipairs({ "action", "quantity", "confirmation" }) do
-    for _, pocket in ipairs(BAG_POCKETS) do
-      cache:write("assets/generated/bag/background-" .. state .. "-" .. pocket .. ".png", solidPng(32, 32))
-    end
-  end
-  for _, pocket in ipairs(BAG_POCKETS) do
-    for count = 0, 6 do
-      cache:write("assets/generated/bag/background-browse-" .. pocket .. "-count-" .. count .. ".png", solidPng(32, 32))
-    end
-  end
-  for _, pocket in ipairs(BAG_POCKETS) do
-    cache:write("assets/generated/bag/tabs-" .. pocket .. ".png", solidPng(256, 32))
-  end
-  cache:write("assets/generated/bag/focus-tabs.png", solidPng(32, 32))
-  cache:write("assets/generated/bag/focus-items.png", solidPng(32, 32))
-  cache:write("assets/generated/bag/focus-cancel.png", solidPng(32, 32))
-  cache:write("assets/generated/bag/focus-actions.png", solidPng(32, 32))
-  cache:write("assets/generated/bag/selection-entry-0.png", solidPng(32, 32))
-  cache:write("assets/generated/bag/selection-entry-1.png", solidPng(32, 32))
-  cache:write("assets/generated/bag/registration-slot-1.png", solidPng(40, 16))
-  cache:write("assets/generated/bag/registration-slot-2.png", solidPng(40, 16))
   -- Minimal party manifest and every image it references so the eager
   -- party presentation resources resolve during FieldState construction.
   local partyData = partyManifest()

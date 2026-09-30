@@ -312,6 +312,8 @@ function FieldPresentationResources.new(runtime)
       promptManifest = runtime.uiManifest,
       text = textRenderer,
       heroRenderer = self.heroRenderer,
+      window = self.windowRenderer,
+      frameIndex = self.applicationFrameIndex,
     })
     local entrancePool = GpuAssetPool.new(runtime.cacheFs)
     self.fieldEntranceIndicatorPool = entrancePool
@@ -500,8 +502,13 @@ function FieldPresentationResources:dispose()
     self.dialogueRenderer = nil
   end
   self.yesNoRenderer = nil
-  -- Borrowers release before their owner: dialogue rendering never owned
-  -- the shared atlas, so the owner releases exactly once here.
+  -- Borrowers release before their owner: the bag renderer drops its
+  -- borrowed window reference before dialogue rendering releases the
+  -- shared atlas, so the owner releases exactly once here.
+  if self.bagRenderer then
+    self.bagRenderer:release()
+    self.bagRenderer = nil
+  end
   if self.windowRenderer then
     self.windowRenderer:release()
     self.windowRenderer = nil
@@ -546,10 +553,6 @@ function FieldPresentationResources:dispose()
   if self.itemIconProvider then
     self.itemIconProvider:release()
     self.itemIconProvider = nil
-  end
-  if self.bagRenderer then
-    self.bagRenderer:release()
-    self.bagRenderer = nil
   end
   if self.heroRenderer then
     self.heroRenderer:release()

@@ -199,7 +199,12 @@ local function chooseBagAction(flow, id)
     status = flowStatus(flow)
     child = flowChild(status)
     if child.actionNode == target then
-      return drive(flow, { { type = "confirm" } })
+      status = drive(flow, { { type = "confirm" } })
+      -- Confirming latches behind the action feedback before the semantic
+      -- transition runs; settle the latch before callers read the next page.
+      return driveUntil(flow, "the settled action transition", 30, function(current)
+        return current.child == nil or current.child.feedback == nil
+      end)
     end
     local node = assert(child.actionNode, "the action menu exposes its node")
     local queue = { { node = node, path = {} } }

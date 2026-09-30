@@ -103,6 +103,7 @@ local function openFlow(game, root)
     end,
     prepareIcons = icons.prepare,
     cancelIconPreparation = icons.cancel,
+    textPolicy = { interGlyphDelay = 0, glyphBudget = 512, abAcceleration = true },
   })
 end
 
@@ -173,7 +174,14 @@ local function chooseBagAction(flow, id)
     status = flowStatus(flow)
     child = bagChild(status)
     if child.actionNode == target then
-      return drive(flow, { { type = "confirm" } })
+      drive(flow, { { type = "confirm" } })
+      -- Activation latches behind feedback before the semantic transition
+      -- runs, so settle until the menu leaves or the flow changes pages.
+      return driveUntil(flow, "the chosen action", 30, function(current)
+        return current.page ~= "bag_browse"
+          or current.child == nil
+          or current.child.state ~= "action_menu"
+      end)
     end
     local node = assert(child.actionNode, "the action menu exposes its node")
     local queue = { { node = node, path = {} } }
@@ -426,13 +434,19 @@ function T.tests.bag_edge_cases_keep_prior_contracts_with_use_give()
     Assert.equal(ids.use, 0, "Use rides the source slot zero")
     Assert.equal(ids.give, 2, "Give rides the source slot two")
     status = drive(flow, { { type = "cancel" } })
-    child = bagChild(flowStatus(flow))
+    status = driveUntil(flow, "the cancelled menu", 30, function(current)
+      return current.child == nil or current.child.state == "browsing"
+    end)
+    child = bagChild(status)
     Assert.isNil(child.actions, "cancelling the menu must leave browse state")
 
     status = chooseBagAction(flow, "toss")
     child = bagChild(status)
     Assert.equal(child.state, "toss_quantity", "the toss path must survive alongside Use/Give")
     status = drive(flow, { { type = "cancel" } })
+    status = driveUntil(flow, "the cancelled picker", 30, function(current)
+      return current.child == nil or current.child.state == "browsing"
+    end)
     Assert.equal(bag:quantity("POTION"), 3, "backing out of toss must consume nothing")
     flow:dispose()
   end)

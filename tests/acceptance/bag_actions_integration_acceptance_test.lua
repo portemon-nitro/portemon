@@ -398,8 +398,15 @@ local function chooseAction(game, state, id)
     view = bagView(game)
     if view.actionNode == target then
       confirm(game)
-      game:step()
-      game:step()
+      -- Activation latches behind feedback before the semantic transition
+      -- runs; move entry itself stays immediate.
+      for _ = 1, 30 do
+        game:step()
+        local settled = bagView(game)
+        if settled.state ~= "action_menu" or settled.feedback == nil then
+          return settled
+        end
+      end
       return bagView(game)
     end
     local node = assert(view.actionNode, "the action menu must expose its physical node")
@@ -454,13 +461,33 @@ end
 -- Return to plain browsing from any nested action state through bounded
 -- cancel presses; every cancel level must preserve the inventory.
 local function backToBrowsing(game)
-  for _ = 1, 6 do
+  for _ = 1, 12 do
     local view = bagView(game)
     if view.state == nil or view.state == "browsing" then
       return view
     end
-    pressCancel(game)
-    game:step()
+    if view.state == "toss_confirm" and view.yesNoPrompt == nil then
+      for _ = 1, 60 do
+        game:step()
+        if bagView(game).yesNoPrompt ~= nil then
+          break
+        end
+      end
+    else
+      pressCancel(game)
+      for _ = 1, 30 do
+        game:step()
+        if bagView(game).feedback == nil then
+          break
+        end
+      end
+    end
+    local settled = bagView(game)
+    if settled.state == "toss_confirm" and settled.yesNoPrompt ~= nil then
+      for _ = 1, 12 do
+        game:step()
+      end
+    end
   end
   error("cancel never returns the bag to browsing", 0)
 end
@@ -645,11 +672,21 @@ function T.tests.obtain_browse_mutate_save_reload_round_trip()
     Assert.equal(view.state, "toss_quantity", "choosing toss must enter the quantity picker")
     setQuantity(game, state, 2)
     confirm(game)
-    game:step()
-    game:step()
+    for _ = 1, 30 do
+      game:step()
+      if bagView(game).state == "toss_confirm" then
+        break
+      end
+    end
     view = bagView(game)
     Assert.equal(view.state, "toss_confirm", "confirming a quantity must ask for confirmation")
     Assert.equal(bag:revision(), revision, "entering confirmation must not mutate")
+    for _ = 1, 120 do
+      game:step()
+      if bagView(game).yesNoPrompt ~= nil then
+        break
+      end
+    end
     confirm(game)
     Assert.equal(bagView(game).state, "toss_confirm", "the choice input must latch without leaving confirmation")
     for _ = 1, 8 do
@@ -658,7 +695,19 @@ function T.tests.obtain_browse_mutate_save_reload_round_trip()
     end
     game:step()
     view = bagView(game)
-    Assert.equal(view.state, "toss_ack", "accepting YES must open the acknowledgement state")
+    Assert.equal(
+      view.state,
+      "toss_confirm",
+      "accepting YES starts the typed result before acknowledgement"
+    )
+    for _ = 1, 240 do
+      game:step()
+      if bagView(game).state == "toss_ack" then
+        break
+      end
+    end
+    view = bagView(game)
+    Assert.equal(view.state, "toss_ack", "the completed result must open the acknowledgement state")
     Assert.equal(bag:quantity(SECOND_KEY), 5, "accepting YES must change no quantities")
     Assert.equal(bag:revision(), revision, "accepting YES must bump no revision")
     confirm(game)
@@ -801,9 +850,19 @@ function T.tests.toss_rejection_and_delayed_commit_safety()
     Assert.equal(view.state, "toss_quantity", "choosing toss must enter the quantity picker")
     setQuantity(game, state, 2)
     confirm(game)
-    game:step()
-    game:step()
+    for _ = 1, 30 do
+      game:step()
+      if bagView(game).state == "toss_confirm" then
+        break
+      end
+    end
     Assert.equal(bagView(game).state, "toss_confirm", "confirming a quantity must ask for confirmation")
+    for _ = 1, 120 do
+      game:step()
+      if bagView(game).yesNoPrompt ~= nil then
+        break
+      end
+    end
     tapDirection(game, state, "s")
     confirm(game)
     Assert.equal(bagView(game).state, "toss_confirm", "the choice input must latch without leaving confirmation")
@@ -829,6 +888,12 @@ function T.tests.toss_rejection_and_delayed_commit_safety()
     Assert.equal(view.state, "toss_confirm", "a single copy must confirm without the quantity picker")
     Assert.equal(view.quantity, 1, "the skipped picker must carry the one owned copy")
     Assert.equal(bag:revision(), revision, "skipping the picker must not mutate")
+    for _ = 1, 120 do
+      game:step()
+      if bagView(game).yesNoPrompt ~= nil then
+        break
+      end
+    end
     confirm(game)
     local latched = bagView(game)
     Assert.equal(latched.state, "toss_confirm", "the choice input must latch without leaving confirmation")
@@ -859,7 +924,20 @@ function T.tests.toss_rejection_and_delayed_commit_safety()
       Assert.equal(bag:revision(), revision, "the confirmation interval must bump no revision")
     end
     game:step()
-    Assert.equal(bagView(game).state, "toss_ack", "only the terminal prompt update must acknowledge")
+    Assert.equal(
+      bagView(game).state,
+      "toss_confirm",
+      "only the terminal prompt update starts the typed result"
+    )
+    Assert.equal(bag:quantity(GRANTED_KEY), 1, "starting the result must change no quantities")
+    Assert.equal(bag:revision(), revision, "starting the result must bump no revision")
+    for _ = 1, 240 do
+      game:step()
+      if bagView(game).state == "toss_ack" then
+        break
+      end
+    end
+    Assert.equal(bagView(game).state, "toss_ack", "the completed result must open the acknowledgement")
     Assert.equal(bag:quantity(GRANTED_KEY), 1, "accepting YES must change no quantities")
     Assert.equal(bag:revision(), revision, "accepting YES must bump no revision")
     confirm(game)

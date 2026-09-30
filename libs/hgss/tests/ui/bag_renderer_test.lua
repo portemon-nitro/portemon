@@ -45,16 +45,45 @@ local function manifest()
   end
   local pockets = { "items", "medicine", "balls", "tmhm", "berries", "mail", "battle_items", "key_items" }
   local backgrounds = {}
-  for _, state in ipairs({ "action", "quantity", "confirmation" }) do
+  for _, state in ipairs({ "action", "quantity" }) do
     local variants = {}
     for _, pocket in ipairs(pockets) do
-      variants[pocket] = {
-        image = "bag/background-" .. state .. "-" .. pocket .. ".png",
-        width = 256,
-        height = 192,
-      }
+      local counts = {}
+      for count = 0, 6 do
+        counts[count] = {
+          image = "bag/background-" .. state .. "-" .. pocket .. "-" .. count .. ".png",
+          width = 256,
+          height = 192,
+        }
+      end
+      variants[pocket] = counts
     end
     backgrounds[state] = variants
+  end
+  do
+    local move = {}
+    for _, pocket in ipairs(pockets) do
+      local counts = {}
+      for count = 0, 6 do
+        local origins = {
+          none = {
+            image = "bag/background-move-" .. pocket .. "-" .. count .. "-none.png",
+            width = 256,
+            height = 192,
+          },
+        }
+        for _, origin in ipairs({ "0", "1", "2", "3", "4", "5" }) do
+          origins[origin] = {
+            image = "bag/background-move-" .. pocket .. "-" .. count .. "-" .. origin .. ".png",
+            width = 256,
+            height = 192,
+          }
+        end
+        counts[count] = origins
+      end
+      move[pocket] = counts
+    end
+    backgrounds.move = move
   end
   do
     local browse = {}
@@ -209,8 +238,49 @@ local function manifest()
         playback = "once",
         totalTicks = 5,
       },
+      feedback = {
+        totalTicks = 4,
+        actionFace = {
+          normal = { image = "bag/action-face.png", width = 96, height = 24 },
+          selected = { image = "bag/action-face-selected.png", width = 96, height = 24 },
+        },
+        cancelFace = {
+          normal = { image = "bag/cancel-face.png", width = 64, height = 24 },
+          selected = { image = "bag/cancel-face-selected.png", width = 64, height = 24 },
+        },
+        quantityConfirm = {
+          normal = { image = "bag/quantity-confirm.png", width = 64, height = 24 },
+          selected = { image = "bag/quantity-confirm-selected.png", width = 64, height = 24 },
+        },
+      },
+      moveTransition = {
+        unchanged = {
+          frames = { { image = "bag/move-unchanged-0.png", width = 32, height = 32, durationTicks = 2 } },
+          playback = "once",
+          totalTicks = 2,
+        },
+        changed = {
+          frames = { { image = "bag/move-changed-0.png", width = 32, height = 32, durationTicks = 3 } },
+          playback = "once",
+          totalTicks = 3,
+        },
+      },
+      moveCursor = {
+        original = { image = "bag/move-cursor-original.png", width = 96, height = 40 },
+        candidate = { image = "bag/move-cursor-candidate.png", width = 96, height = 40 },
+      },
       overlays = {
         tossPrompt = { x = 200, y = 48, shape = "compact", initialSelection = "yes" },
+        selectedItem = {
+          iconCenter = { x = 86, y = 76 },
+          textRect = { x = 96, y = 56, width = 88, height = 32 },
+          nameAt = { x = 0, y = 0 },
+          quantityAt = { x = 48, y = 16 },
+        },
+        messages = {
+          selected = { contentRect = { x = 16, y = 8, width = 216, height = 16 } },
+          modal = { contentRect = { x = 16, y = 8, width = 216, height = 32 } },
+        },
         descriptionFallback = {
           frame = { x = 0, y = 144, width = 256, height = 48 },
           textRect = { x = 20, y = 144, width = 236, height = 48 },
@@ -315,9 +385,19 @@ local function seedCache()
     "bag/hero-female.png",
     "bag/description.png",
   }
-  for _, state in ipairs({ "action", "quantity", "confirmation" }) do
+  for _, state in ipairs({ "action", "quantity" }) do
     for _, pocket in ipairs({ "items", "medicine", "balls", "tmhm", "berries", "mail", "battle_items", "key_items" }) do
-      paths[#paths + 1] = "bag/background-" .. state .. "-" .. pocket .. ".png"
+      for count = 0, 6 do
+        paths[#paths + 1] = "bag/background-" .. state .. "-" .. pocket .. "-" .. count .. ".png"
+      end
+    end
+  end
+  for _, pocket in ipairs({ "items", "medicine", "balls", "tmhm", "berries", "mail", "battle_items", "key_items" }) do
+    for count = 0, 6 do
+      paths[#paths + 1] = "bag/background-move-" .. pocket .. "-" .. count .. "-none.png"
+      for _, origin in ipairs({ "0", "1", "2", "3", "4", "5" }) do
+        paths[#paths + 1] = "bag/background-move-" .. pocket .. "-" .. count .. "-" .. origin .. ".png"
+      end
     end
   end
   for _, pocket in ipairs({ "items", "medicine", "balls", "tmhm", "berries", "mail", "battle_items", "key_items" }) do
@@ -333,6 +413,14 @@ local function seedCache()
   paths[#paths + 1] = "bag/focus-cancel.png"
   paths[#paths + 1] = "bag/focus-actions.png"
   paths[#paths + 1] = "bag/action-face.png"
+  paths[#paths + 1] = "bag/action-face-selected.png"
+  paths[#paths + 1] = "bag/cancel-face.png"
+  paths[#paths + 1] = "bag/cancel-face-selected.png"
+  paths[#paths + 1] = "bag/quantity-confirm-selected.png"
+  paths[#paths + 1] = "bag/move-unchanged-0.png"
+  paths[#paths + 1] = "bag/move-changed-0.png"
+  paths[#paths + 1] = "bag/move-cursor-original.png"
+  paths[#paths + 1] = "bag/move-cursor-candidate.png"
   for index = 0, 2 do
     paths[#paths + 1] = "bag/selection-entry-" .. index .. ".png"
   end
@@ -849,16 +937,23 @@ function T.semantic_visuals_drive_tabs_focus_and_state_backgrounds()
     for key in pairs(graphics.draws) do
       graphics.draws[key] = nil
     end
-    local record = status({ state = state, quantity = 2, quantityMax = 5, moveTarget = 1 })
+    local record = status({
+      state = state,
+      quantity = 2,
+      quantityMax = 5,
+      moveTarget = 1,
+      moveOrigin = 0,
+      tossBase = "action",
+    })
     if state == "action_menu" then
       record.actions = { { id = "toss", slot = 1 } }
       record.actionNode = 0
     end
     draw:draw(record, plan(true), { icons = icons() })
-    local key = state == "action_menu" and "background:action:balls"
-      or state == "toss_quantity" and "background:quantity:balls"
-      or state == "toss_confirm" and "background:confirmation:balls"
-      or "background:browse:balls:2"
+    local key = state == "action_menu" and "background:action:balls:2"
+      or state == "toss_quantity" and "background:quantity:balls:2"
+      or state == "toss_confirm" and "background:action:balls:2"
+      or "background:move:balls:2:0"
     Assert.isTrue(wasDrawn(graphics, draw._images[key]), state .. " selects its pocket-specific background")
   end
   draw:release()
@@ -1004,11 +1099,25 @@ local function actionStatus(overrides)
       { id = "move", enabled = true, slot = 3 },
     },
     actionNode = 1,
+    lowerMessage = { visibleText = "The POTION is selected.", fullText = "The POTION is selected." },
   })
   for key, value in pairs(overrides or {}) do
     record[key] = value
   end
   return record
+end
+
+-- Borrowed shared frame renderer: records every framed window with its
+-- content box and player-selected style without owning any pixels.
+local function windowSpy()
+  local spy = { calls = {}, releaseCount = 0 }
+  function spy:drawWindow(box, frameIndex, background)
+    self.calls[#self.calls + 1] = { box = box, frameIndex = frameIndex, background = background }
+  end
+  function spy:release()
+    self.releaseCount = self.releaseCount + 1
+  end
+  return spy
 end
 
 local function joinedText(content)
@@ -1087,6 +1196,7 @@ function T.action_menu_draws_generated_labels_and_never_raw_ids()
     local graphics = FakeGraphics({ imageSizes = IMAGE_SIZES })
     local content = text()
     local manifested = manifest()
+    local window = windowSpy()
     local draw = BagRenderer.new({
       cacheFs = seedCache(),
       manifest = manifested,
@@ -1094,6 +1204,8 @@ function T.action_menu_draws_generated_labels_and_never_raw_ids()
       text = content,
       graphics = graphics,
       heroRenderer = heroSpy(nil),
+      window = window,
+      frameIndex = 3,
     })
     draw:draw(actionStatus(), plan(mode ~= "interactive_only"), { icons = icons() })
     Assert.isTrue(printedText(content, "TRASH"), "the menu labels its toss action in " .. mode)
@@ -1119,7 +1231,15 @@ function T.action_menu_draws_generated_labels_and_never_raw_ids()
     Assert.equal(#graphics.rectangles, 0, "the action menu emits no primitive focus in " .. mode)
     Assert.equal(fillCount(graphics), 0, "no generic fill covers the generated action screen in " .. mode)
     Assert.equal(graphics.pushDepth(), 0, "the transform stack stays balanced in " .. mode)
+    local framed = assert(window.calls[1], "the lower message borrows the shared frame in " .. mode)
+    Assert.deepEqual(
+      framed.box,
+      { x = 16, y = 8, width = 216, height = 16 },
+      "the action message uses the generated short content rect in " .. mode
+    )
+    Assert.equal(framed.frameIndex, 3, "the lower message keeps the player-selected frame in " .. mode)
     draw:release()
+    Assert.equal(window.releaseCount, 0, "the borrowed frame renderer is never released in " .. mode)
   end
 end
 
@@ -1228,7 +1348,10 @@ function T.action_menu_acquires_faces_and_uses_physical_focus_nodes()
     actionNode = 3,
   })
   draw:draw(record, plan(true), { icons = icons() })
-  Assert.isTrue(#readPathsContaining(reads, "bag/action-face.png") == 1, "the action state acquires its normal face")
+  Assert.isTrue(
+    #readPathsContaining(reads, "bag/action-face.png") == 2,
+    "the shared normal face backs the action control and the feedback latch"
+  )
   Assert.isTrue(printedText(content, "TRASH"), "the populated slot keeps its semantic label")
   draw:release()
 end
@@ -1339,8 +1462,8 @@ function T.quantity_state_draws_generated_layers_digits_and_prompt()
   draw:draw(status({ state = "toss_quantity", quantity = 2, quantityMax = 5 }), plan(true), {
     icons = icons(),
   })
-  local joined = joinedText(content)
-  Assert.isTrue(joined:find("Toss POTION?", 1, true) ~= nil, "the quantity state formats its generated prompt")
+  Assert.isTrue(printedText(content, "TRASH"), "the quantity confirm prints its generated toss label")
+  Assert.isTrue(printedText(content, "BACK OUT"), "the quantity cancel prints its generated cancel label")
   Assert.isFalse(printedText(content, "x2"), "the quantity state never reuses the legacy amount panel text")
   local digits = manifest().interactive.overlays.quantity.digits
   local cell = digits[3]
@@ -1383,7 +1506,11 @@ function T.quantity_state_acquires_six_controls_and_no_text_surrogates()
   )
   Assert.equal(#readPathsContaining(reads, "bag/quantity-increment.png"), 1, "increment visuals are acquired")
   Assert.equal(#readPathsContaining(reads, "bag/quantity-decrement.png"), 1, "decrement visuals are acquired")
-  Assert.equal(#readPathsContaining(reads, "bag/quantity-confirm.png"), 1, "confirm visual is acquired")
+  Assert.equal(
+    #readPathsContaining(reads, "bag/quantity-confirm.png"),
+    2,
+    "the shared confirm visual backs the control and the feedback latch"
+  )
   Assert.isFalse(printedText(content, "-"), "quantity controls are not textual minus signs")
   Assert.isFalse(printedText(content, "+"), "quantity controls are not textual plus signs")
   Assert.isFalse(printedText(content, "YES"), "quantity controls are not textual YES")
@@ -1393,6 +1520,7 @@ end
 function T.confirmation_state_draws_its_own_screen_and_prompt()
   local graphics = FakeGraphics({ imageSizes = IMAGE_SIZES })
   local content = text()
+  local window = windowSpy()
   local draw = BagRenderer.new({
     cacheFs = seedCache(),
     manifest = manifest(),
@@ -1400,8 +1528,12 @@ function T.confirmation_state_draws_its_own_screen_and_prompt()
     text = content,
     graphics = graphics,
     heroRenderer = heroSpy(nil),
+    window = window,
+    frameIndex = 3,
   })
-  draw:draw(status({ state = "toss_confirm", quantity = 2, quantityMax = 5 }), plan(true), {
+  local record = status({ state = "toss_confirm", quantity = 2, quantityMax = 5, tossBase = "action" })
+  record.lowerMessage = { visibleText = "Toss 2 POTIONs?", fullText = "Toss 2 POTIONs?" }
+  draw:draw(record, plan(true), {
     icons = icons(),
   })
   local joined = joinedText(content)
@@ -1425,7 +1557,9 @@ function T.confirmation_state_keeps_the_singular_name_for_one_copy()
     graphics = graphics,
     heroRenderer = heroSpy(nil),
   })
-  draw:draw(status({ state = "toss_confirm", quantity = 1, quantityMax = 5 }), plan(true), {
+  local record = status({ state = "toss_confirm", quantity = 1, quantityMax = 5, tossBase = "action" })
+  record.lowerMessage = { visibleText = "Toss 1 POTION?", fullText = "Toss 1 POTION?" }
+  draw:draw(record, plan(true), {
     icons = icons(),
   })
   local joined = joinedText(content)
@@ -1435,9 +1569,11 @@ function T.confirmation_state_keeps_the_singular_name_for_one_copy()
 end
 
 function T.quantity_and_confirmation_states_are_visually_distinct()
+  local confirmed = status({ state = "toss_confirm", quantity = 2, quantityMax = 5, tossBase = "action" })
+  confirmed.lowerMessage = { visibleText = "Toss 2 POTIONs?", fullText = "Toss 2 POTIONs?" }
   local snaps = snapshotImages({
     status({ state = "toss_quantity", quantity = 2, quantityMax = 5 }),
-    status({ state = "toss_confirm", quantity = 2, quantityMax = 5 }),
+    confirmed,
   }, "horizontal")
   Assert.isFalse(sameImageSet(snaps[1], snaps[2]), "quantity and confirmation composite distinct generated screens")
 end
@@ -1458,8 +1594,10 @@ function T.move_state_communicates_the_generated_move_prompt()
     for index = 1, 6 do
       cells[index] = slot("ITEM_" .. index, 1)
     end
-    local record = status({ state = "move_select", visibleStart = 0, visibleSlots = cells, moveTarget = 1 })
+    local record =
+      status({ state = "move_select", visibleStart = 0, visibleSlots = cells, moveTarget = 1, moveOrigin = 0 })
     record.selected = slot("POTION", 5)
+    record.lowerMessage = { visibleText = "Move POTION.", fullText = "Move POTION." }
     draw:draw(record, plan(mode ~= "interactive_only"), { icons = icons() })
     local joined = joinedText(content)
     Assert.isTrue(joined:find("Move POTION.", 1, true) ~= nil, "the move prompt names the item in " .. mode)
@@ -1470,8 +1608,8 @@ end
 
 function T.toss_states_communicate_their_prompts_in_every_topology()
   local cases = {
-    { state = "toss_quantity", quantity = 2, expected = "Toss POTION?" },
-    { state = "toss_confirm", quantity = 2, expected = "Toss 2 POTIONs?" },
+    { state = "toss_quantity", quantity = 2, expected = "TRASH" },
+    { state = "toss_confirm", quantity = 2, expected = "Toss 2 POTIONs?", tossBase = "action" },
   }
   for _, case in ipairs(cases) do
     for _, mode in ipairs({ "horizontal", "vertical", "interactive_only" }) do
@@ -1485,8 +1623,12 @@ function T.toss_states_communicate_their_prompts_in_every_topology()
         graphics = graphics,
         heroRenderer = heroSpy(nil),
       })
+      local record = status({ state = case.state, quantity = case.quantity, quantityMax = 5, tossBase = case.tossBase })
+      if case.state == "toss_confirm" then
+        record.lowerMessage = { visibleText = case.expected, fullText = case.expected }
+      end
       draw:draw(
-        status({ state = case.state, quantity = case.quantity, quantityMax = 5 }),
+        record,
         plan(mode ~= "interactive_only"),
         { icons = icons() }
       )
@@ -1514,7 +1656,7 @@ function T.move_highlight_marks_the_target_across_a_page_boundary()
   for index = 1, 6 do
     cells[index] = slot("ITEM_" .. index, 1)
   end
-  local record = status({ state = "move_select", visibleStart = 2, visibleSlots = cells, moveTarget = 7 })
+  local record = status({ state = "move_select", visibleStart = 2, visibleSlots = cells, moveTarget = 7, moveOrigin = 7 })
   draw:draw(record, plan(true), { icons = icons() })
   local highlight = false
   for _, rectangle in ipairs(graphics.rectangles) do
@@ -1559,8 +1701,17 @@ function T.nested_states_label_their_responsive_buttons()
       text = content,
       graphics = graphics,
       heroRenderer = heroSpy(nil),
+      window = windowSpy(),
+      frameIndex = 3,
     })
-    draw:draw(status({ state = state, quantity = 2, quantityMax = 5, moveTarget = 1 }), plan(true), {
+    local record = status({ state = state, quantity = 2, quantityMax = 5, moveTarget = 1, moveOrigin = 0 })
+    if state == "toss_confirm" then
+      record.tossBase = "action"
+      record.lowerMessage = { visibleText = "Toss 2 POTIONs?", fullText = "Toss 2 POTIONs?" }
+    elseif state == "move_select" then
+      record.lowerMessage = { visibleText = "Move POTION.", fullText = "Move POTION." }
+    end
+    draw:draw(record, plan(true), {
       icons = icons(),
     })
     draw:release()
@@ -1579,7 +1730,14 @@ function T.nested_states_label_their_responsive_buttons()
   )
   Assert.equal(#confirmGraphics.rectangles, 0, "the confirmation state never falls back to primitive outlines")
   local moveGraphics, moveContent = drawFor("move_select")
-  Assert.isTrue(textInRect(moveContent, "YES", actionSlots[3].textRect), "move selection labels its confirm button")
+  Assert.isFalse(
+    textInRect(moveContent, "YES", actionSlots[3].textRect),
+    "move selection carries no invented confirm button"
+  )
+  Assert.isTrue(
+    joinedText(moveContent):find("Move POTION.", 1, true) ~= nil,
+    "move selection names the moved item in its lower message"
+  )
   Assert.equal(#moveGraphics.rectangles, 0, "move selection never falls back to primitive outlines")
   -- The visible YES label and the pointer confirmation target must agree:
   -- a point inside the slot-3 region where YES renders resolves through
@@ -1603,7 +1761,7 @@ end
 function T.release_frees_images_exactly_once()
   local graphics = FakeGraphics({ imageSizes = IMAGE_SIZES })
   local draw = renderer(graphics)
-  Assert.equal(#graphics.images, 110, "the renderer acquires bag and prompt button images")
+  Assert.equal(#graphics.images, 598, "the renderer acquires bag and prompt button images")
   draw:release()
   for _, image in ipairs(graphics.images) do
     Assert.equal(image.releaseCount, 1, "every image releases exactly once")
@@ -1724,7 +1882,7 @@ function T.acquisition_failure_releases_every_image_acquired_before_it()
   local bound = renderer(probe)
   local total = #probe.images
   bound:release()
-  Assert.equal(total, 110, "setup binds every generated state, tab, focus, control, and prompt image")
+  Assert.equal(total, 598, "setup binds every generated state, tab, focus, control, and prompt image")
   for _, failCall in ipairs({ 1, total }) do
     local graphics = FakeGraphics({ imageSizes = IMAGE_SIZES, failOnImageCall = failCall })
     Assert.throws(function()
@@ -2692,8 +2850,11 @@ function T.compact_browsing_description_follows_item_focus_while_prompts_persist
     draw:release()
   end
   do
-    local graphics, content, draw =
-      drawWith(status({ state = "move_select", focus = "tabs", selected = selected, moveTarget = 1, visibleStart = 0 }))
+    local record =
+      status({ state = "move_select", focus = "tabs", selected = selected, moveTarget = 1, moveOrigin = 0 })
+    record.visibleStart = 0
+    record.lowerMessage = { visibleText = "Move POTION.", fullText = "Move POTION." }
+    local graphics, content, draw = drawWith(record)
     local joined = {}
     for _, entry in ipairs(content.paletted) do
       joined[#joined + 1] = entry.text
@@ -2702,37 +2863,37 @@ function T.compact_browsing_description_follows_item_focus_while_prompts_persist
       table.concat(joined, "\n"):find("Move POTION.", 1, true) ~= nil,
       "the move prompt stays visible while item focus is elsewhere"
     )
-    Assert.isTrue(
+    Assert.isFalse(
       wasDrawn(graphics, assert(draw._images["descriptionFrame"])),
-      "the move prompt keeps the source frame"
+      "the move prompt never doubles into the description fallback"
     )
     draw:release()
   end
   do
-    local graphics, content, draw =
-      drawWith(status({ state = "toss_quantity", focus = "items", selected = selected, quantity = 2, quantityMax = 5 }))
-    local joined = {}
-    for _, entry in ipairs(content.paletted) do
-      joined[#joined + 1] = entry.text
-    end
+    local record =
+      status({ state = "toss_quantity", focus = "items", selected = selected, quantity = 2, quantityMax = 5 })
+    local graphics, content, draw = drawWith(record)
     Assert.isTrue(
-      table.concat(joined, "\n"):find("Toss POTION?", 1, true) ~= nil,
-      "the toss prompt stays visible in its own state"
+      wasDrawn(graphics, assert(draw._images.quantityConfirm)),
+      "the toss picker keeps its confirm control in the compact layout"
     )
-    Assert.isTrue(
+    Assert.isFalse(
       wasDrawn(graphics, assert(draw._images["descriptionFrame"])),
-      "the toss prompt keeps the source frame"
+      "the toss picker never doubles into the description fallback"
     )
     draw:release()
   end
   do
-    local _, content, draw = drawWith(status({
+    local record = status({
       state = "toss_confirm",
       focus = "items",
       selected = selected,
       quantity = 2,
       quantityMax = 5,
-    }))
+      tossBase = "action",
+    })
+    record.lowerMessage = { visibleText = "Toss 2 POTIONs?", fullText = "Toss 2 POTIONs?" }
+    local _, content, draw = drawWith(record)
     local joined = {}
     for _, entry in ipairs(content.paletted) do
       joined[#joined + 1] = entry.text
@@ -2752,8 +2913,9 @@ function T.toss_confirm_delegates_its_buttons_to_the_modal_prompt()
   local graphics = FakeGraphics({ imageSizes = IMAGE_SIZES })
   local content = text()
   local draw = renderer(graphics)
-  local record = status({ state = "toss_confirm", quantity = 2, quantityMax = 5 })
+  local record = status({ state = "toss_confirm", quantity = 2, quantityMax = 5, tossBase = "action" })
   record.yesNoPrompt = promptStatusAt(200, 48, "yes")
+  record.lowerMessage = { visibleText = "Toss 2 POTIONs?", fullText = "Toss 2 POTIONs?" }
   draw:draw(record, plan(true), { icons = icons() })
   local rows = {}
   for _, entry in ipairs(graphics.draws) do
@@ -2799,8 +2961,9 @@ function T.toss_ack_presents_the_generated_result_text()
     graphics = graphics,
     heroRenderer = heroSpy(nil),
   })
-  local record = status({ state = "toss_ack", quantity = 2, quantityMax = 5 })
+  local record = status({ state = "toss_ack", quantity = 2, quantityMax = 5, tossBase = "quantity" })
   record.selected = ackSelected("POTION", "POTIONS", 2)
+  record.lowerMessage = { visibleText = "Threw away 2 POTIONS.", fullText = "Threw away 2 POTIONS." }
   draw:draw(record, plan(true), { icons = icons() })
   local joined = joinedText(content)
   Assert.isTrue(
@@ -2832,8 +2995,9 @@ function T.toss_ack_keeps_the_singular_name_for_one_copy()
     graphics = graphics,
     heroRenderer = heroSpy(nil),
   })
-  local record = status({ state = "toss_ack", quantity = 1, quantityMax = 5 })
+  local record = status({ state = "toss_ack", quantity = 1, quantityMax = 5, tossBase = "quantity" })
   record.selected = ackSelected("POTION", "POTIONS", 1)
+  record.lowerMessage = { visibleText = "Threw away 1 POTION.", fullText = "Threw away 1 POTION." }
   draw:draw(record, plan(true), { icons = icons() })
   local joined = joinedText(content)
   Assert.isTrue(
@@ -2868,7 +3032,9 @@ function T.move_select_keeps_cells_but_hides_browse_chrome()
     focusedVisibleIndex = 1,
     visibleStart = 0,
     moveTarget = 0,
+    moveOrigin = 0,
   })
+  record.lowerMessage = { visibleText = "Move POTION.", fullText = "Move POTION." }
   record.visibleSlots[1].registrationSlot = 1
   draw:draw(record, plan(true), { icons = icons(calls) })
   Assert.isTrue(printedText(content, "POTION"), "move selection keeps the item cells that identify the target")
@@ -2885,7 +3051,10 @@ function T.move_select_keeps_cells_but_hides_browse_chrome()
   local targetX, targetY = focusOrigin(itemFocus, itemFocus.targets[1])
   Assert.isTrue(staticDrawnAt(graphics, targetX, targetY), "the move target carries the item focus visual")
   local actionSlots = manifested.interactive.overlays.actionMenu.slots
-  Assert.isTrue(textInRect(content, "YES", actionSlots[3].textRect), "move selection keeps its confirm affordance")
+  Assert.isFalse(
+    textInRect(content, "YES", actionSlots[3].textRect),
+    "move selection carries no invented confirm affordance"
+  )
   Assert.equal(graphics.pushDepth(), 0, "the transform stack stays balanced")
   draw:release()
 
@@ -2899,7 +3068,14 @@ function T.move_select_keeps_cells_but_hides_browse_chrome()
     heroRenderer = heroSpy(nil),
   })
   tabDraw:draw(
-    status({ state = "move_select", focus = "tabs", tabFocusPocket = "medicine", visibleStart = 0, moveTarget = 0 }),
+    status({
+      state = "move_select",
+      focus = "tabs",
+      tabFocusPocket = "medicine",
+      visibleStart = 0,
+      moveTarget = 0,
+      moveOrigin = 0,
+    }),
     plan(true),
     { icons = icons() }
   )
@@ -2918,7 +3094,7 @@ function T.move_select_keeps_cells_but_hides_browse_chrome()
     heroRenderer = heroSpy(nil),
   })
   cancelDraw:draw(
-    status({ state = "move_select", focus = "cancel", visibleStart = 0, moveTarget = 0 }),
+    status({ state = "move_select", focus = "cancel", visibleStart = 0, moveTarget = 0, moveOrigin = 0 }),
     plan(true),
     { icons = icons() }
   )
@@ -2970,16 +3146,17 @@ function T.toss_ack_hides_interactive_widgets_but_keeps_its_result()
     graphics = graphics,
     heroRenderer = heroSpy(nil),
   })
-  local record = status({ state = "toss_ack", quantity = 2, quantityMax = 5 })
+  local record = status({ state = "toss_ack", quantity = 2, quantityMax = 5, tossBase = "action" })
   record.selected = ackSelected("POTION", "POTIONS", 2)
+  record.lowerMessage = { visibleText = "Threw away 2 POTIONS.", fullText = "Threw away 2 POTIONS." }
   draw:draw(record, plan(true), { icons = icons(calls) })
-  Assert.equal(calls.quadFor, 0, "the acknowledgement resolves no item icons")
-  Assert.isFalse(printedText(content, "POTION"), "the acknowledgement draws no item cells")
+  Assert.isTrue(calls.quadFor >= 1, "the acknowledgement keeps the retained selected-item icon")
+  Assert.isTrue(printedText(content, "POTION"), "the acknowledgement keeps the retained selected-item name")
   Assert.isFalse(printedText(content, "1/1"), "the acknowledgement draws no page indicator")
   Assert.isFalse(printedText(content, "BACK OUT"), "the acknowledgement draws no cancel label")
   Assert.isTrue(
-    wasDrawn(graphics, draw._images["background:confirmation:balls"]),
-    "the acknowledgement keeps its confirmation background"
+    wasDrawn(graphics, draw._images["background:action:balls:2"]),
+    "the acknowledgement retains its action base"
   )
   local joined = joinedText(content)
   Assert.isTrue(

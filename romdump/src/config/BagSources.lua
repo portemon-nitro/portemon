@@ -29,8 +29,13 @@
 -- 2D backgrounds: char 7 + screens 9/54/93/94 (upper pane; 93 is the female
 -- backdrop and 94 the male backdrop, selected by the gender byte; 54 and 9
 -- are the mode-swapped description frame screens) and char 46 + screens
--- 39/42/43/44/45/52/53 (lower pane; 43+39 browse, 44+42 action menu, 45
--- confirmation, 52/53 quantity). Raster palettes 8 (upper) and 41 (lower)
+-- 39/42/43/44/45/52/53 (lower pane; 43+39 browse variant 0, 44+42 move
+-- variant 1, retained browse BG5 + 45 action variant 2, retained action
+-- BG5 + 52 quantity variant 3, 53 the unused alternate quantity screen).
+-- The variant selection lives in ov15_021FD574: case 0 loads 43 on BG5 and
+-- 39 on BG6, case 1 loads 44 on BG5 with the ov15_021FD4C0 mutation and 42
+-- on BG6, case 2 retains BG5 with the ov15_021FD43C count mutation and
+-- loads 45 on BG6, case 3 retains BG5 and loads 52 on BG6. Raster palettes 8 (upper) and 41 (lower)
 -- reproduce the retail layer colors; the lower palette below is the member
 -- the retail pocket switch selects (decoded GetPlttData slot 1), and the
 -- text-layer GetPlttData slot selections stay producer-side.
@@ -189,7 +194,12 @@ BagSources.moveSummary = {
   },
 }
 
--- Screen (NSCR) members by semantic role.
+-- Screen (NSCR) members by semantic role. The lower-pane roles follow the
+-- ov15_021FD574 variant call sites: 44+42 is the move surface (variant 1),
+-- 45 is the action overlay applied over the retained browse BG5 (variant
+-- 2), and 52 is the quantity overlay applied over the retained action BG5
+-- (variant 3). Member 53 is the unused alternate quantity screen and stays
+-- outside the implemented flow.
 BagSources.screens = {
   upperBase = 54,
   upperAlternate = 9,
@@ -197,10 +207,10 @@ BagSources.screens = {
   upperBackdropFemale = 93,
   listSlots = 43,
   listWash = 39,
-  actionSlots = 44,
-  actionWash = 42,
-  confirmation = 45,
-  quantity = 52,
+  moveSlots = 44,
+  moveWash = 42,
+  actionOverlay = 45,
+  quantityOverlay = 52,
 }
 
 -- Character (NCGR) members by semantic role. The registration marker source
@@ -292,13 +302,113 @@ BagSources.spriteStates = {
   itemSelect = { animation = 41, palette = 9 },
 }
 
--- BG surfaces are listed in retail bottom-to-top order. The producer applies
--- transparency while composing them, so this ordering never reaches runtime.
+-- Lower-pane composition facts by retail state variant (ov15_021FD574).
+-- Browse (variant 0) composes its wash under its slots; action (variant 2)
+-- retains the count-mutated browse BG5 and applies the action overlay on
+-- BG6; quantity (variant 3) retains the action BG5 and applies the
+-- quantity overlay on BG6; move (variant 1) composes its wash under its
+-- slots with the ov15_021FD4C0 count/origin mutation. There is no
+-- standalone confirmation background: toss confirmation retains its
+-- action/quantity base. Runtime receives only realized pixels, never
+-- these roles.
 BagSources.lowerLayers = {
-  browse = { "listWash", "listSlots" },
-  action = { "actionWash", "actionSlots" },
-  quantity = { "quantity" },
-  confirmation = { "confirmation" },
+  browse = { variant = 0, wash = "listWash", slots = "listSlots" },
+  action = { variant = 2, base = "browse", overlay = "actionOverlay" },
+  quantity = { variant = 3, base = "action", overlay = "quantityOverlay" },
+  move = { variant = 1, wash = "moveWash", slots = "moveSlots" },
+}
+
+-- Retained selected-item panel: the action-derived states redraw the
+-- selected item into its dedicated window (ov15_021FA4F8, ov15_021FF4EC,
+-- ov15_022002B4) with the icon at the action-screen center and the name
+-- and quantity in the dedicated text window. The window table created by
+-- ov15_021FE204 yields the canonical content rect below.
+BagSources.selectedItem = {
+  iconCenter = { x = 86, y = 76 },
+  textRect = { x = 96, y = 56, width = 88, height = 32 },
+  nameAt = { x = 0, y = 0 },
+  quantityAt = { x = 48, y = 16 },
+}
+
+-- Lower message windows from the ov15_021FE204 window table: the framed
+-- +0x24 window carries the action/move messages (43/46) and the framed
+-- +0x34 window carries the toss confirmation/result messages (55/54).
+BagSources.lowerMessages = {
+  selected = { contentRect = { x = 16, y = 8, width = 216, height = 16 } },
+  modal = { contentRect = { x = 16, y = 8, width = 216, height = 32 } },
+}
+
+-- Activation feedback cadence (ov15_021FD7D0 setup, ov15_021FD850 step):
+-- the palette-flash request cycles its palette override through its
+-- setup, hold, and release phases while reporting busy (0x23), for seven
+-- fixed ticks before the pending semantic transition may run.
+BagSources.feedback = {
+  totalTicks = 7,
+}
+
+-- Move commit clips: confirming on the original target plays the
+-- selection-entry clip (animation 41) with no reorder, while confirming a
+-- changed target plays the reorder clip (animation 42) before
+-- MoveItemSlotInList runs (ov15_021FAFFC).
+BagSources.moveTransition = {
+  unchanged = { animation = 41, palette = 9 },
+  changed = { animation = 42, palette = 9 },
+}
+
+-- Move target cursor states (ov15_021FFF34): the original-target visual
+-- while the target equals the source, the alternate valid-target visual
+-- otherwise.
+BagSources.moveCursor = {
+  original = { animation = 10, palette = 9 },
+  candidate = { animation = 20, palette = 9 },
+}
+
+-- Move count replay facts from ov15_021FD4C0 over the ov15_02201340 table:
+-- four visible-count entries of two tilemap fill operations for counts
+-- 1..4. A zero rectangle replays nothing. Counts outside 1..4 pass
+-- through unmutated: the audited table carries exactly these four entries.
+-- Coordinates are tile-grid positions in the decoded move screen.
+BagSources.moveCountBlocks = {
+  {
+    { kind = "fill", x = 0, y = 11, width = 16, height = 9 },
+    { kind = "fill", x = 16, y = 6, width = 16, height = 16 },
+  },
+  {
+    { kind = "fill", x = 0, y = 11, width = 32, height = 9 },
+    { kind = "nop" },
+  },
+  {
+    { kind = "fill", x = 0, y = 16, width = 16, height = 4 },
+    { kind = "fill", x = 16, y = 11, width = 16, height = 9 },
+  },
+  {
+    { kind = "fill", x = 0, y = 16, width = 32, height = 4 },
+    { kind = "nop" },
+  },
+}
+
+-- Move original-item marker rows from the ov15_02201328 table: one tile
+-- rectangle per visible cell selecting where ov15_021FD4C0 stamps the
+-- marker. The marker tiles are copied from the move screen's own marker
+-- band; the band entry offset selects the low band for original rows 0..1
+-- and the high band otherwise.
+BagSources.moveOriginRows = {
+  { x = 0, y = 4, width = 16, height = 6 },
+  { x = 16, y = 4, width = 16, height = 6 },
+  { x = 0, y = 9, width = 16, height = 6 },
+  { x = 16, y = 9, width = 16, height = 6 },
+  { x = 0, y = 14, width = 16, height = 6 },
+  { x = 16, y = 14, width = 16, height = 6 },
+}
+
+-- Marker band entry offsets (flat tile-entry starts) selecting the stamp
+-- source within the decoded move screen: the 0x600-byte region for
+-- original rows 0..1, the 0x6C0-byte region otherwise. LoadRectToBgTilemapRect
+-- copies the first cell-sized block of the band as a flat array, so the
+-- offsets are linear starts rather than positioned rectangles.
+BagSources.moveMarkerBands = {
+  low = 768,
+  high = 864,
 }
 
 -- Browse count replay facts from ov15_021FD43C over the ov15_022013A8 table:
@@ -357,9 +467,11 @@ BagSources.unboundAnimations = { 21 }
 -- within the bank. The
 -- runtime manifest carries only the lowered labels/templates, never these
 -- selectors. Pinned facts: msg_0010 carries USE (0), TRASH (1), REGISTER (2),
--- GIVE (3), CONFIRM (5), CANCEL (8), DESELECT (18), the move prompt (46), the toss
--- quantity prompt (53), the post-choice result text (54), the MOVE label
--- (75), and the toss confirmation prompt (55).
+-- GIVE (3), CONFIRM (5), CANCEL (8), DESELECT (18), the move prompt (46),
+-- the post-choice result text (54), the MOVE label
+-- (75), and the toss confirmation prompt (55). Message 53 (the alternate
+-- quantity prompt) has no call-site consumer in the implemented flow and
+-- stays out of the generated contract.
 BagSources.messages = {
   actionLabels = {
     toss = { bank = 10, index = 1 },
@@ -373,7 +485,6 @@ BagSources.messages = {
   },
   templates = {
     movePrompt = { bank = 10, index = 46 },
-    tossQuantity = { bank = 10, index = 53 },
     tossConfirm = { bank = 10, index = 55 },
     tossResult = { bank = 10, index = 54 },
     selectedItem = { bank = 10, index = 43 },

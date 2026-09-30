@@ -73,10 +73,10 @@ function T.two_dimensional_roles_cover_the_audited_members()
   Assert.equal(screens.upperBackdropFemale, 93)
   Assert.equal(screens.listSlots, 43)
   Assert.equal(screens.listWash, 39)
-  Assert.equal(screens.actionSlots, 44)
-  Assert.equal(screens.actionWash, 42)
-  Assert.equal(screens.confirmation, 45)
-  Assert.equal(screens.quantity, 52)
+  Assert.equal(screens.moveSlots, 44)
+  Assert.equal(screens.moveWash, 42)
+  Assert.equal(screens.actionOverlay, 45)
+  Assert.equal(screens.quantityOverlay, 52)
   Assert.equal(BagSources.chars.upper, 7)
   Assert.equal(BagSources.chars.lower, 46)
   Assert.equal(BagSources.chars.registrationMarker, 37)
@@ -228,7 +228,6 @@ function T.message_selection_names_the_audited_banks_and_indexes()
   })
   Assert.deepEqual(BagSources.messages.templates, {
     movePrompt = { bank = 10, index = 46 },
-    tossQuantity = { bank = 10, index = 53 },
     tossConfirm = { bank = 10, index = 55 },
     tossResult = { bank = 10, index = 54 },
     selectedItem = { bank = 10, index = 43 },

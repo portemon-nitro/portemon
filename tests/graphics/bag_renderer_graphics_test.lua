@@ -55,7 +55,7 @@ end
 local function manifestFor(versionId)
   local cacheFs = CacheFs.forVersion(versionId)
   local manifest = BagCache.loadManifest(cacheFs)
-  Assert.equal(manifest.schema, "g4-bag-assets-v13", versionId .. " renders the current bag manifest")
+  Assert.equal(manifest.schema, "g4-bag-assets-v14", versionId .. " renders the current bag manifest")
   return cacheFs, manifest
 end
 
@@ -615,6 +615,7 @@ function T.action_quantity_and_confirmation_render_distinct_states(scope, contex
       presentation(firstIcon, secondIcon, heroStatus, {
         state = "toss_confirm",
         quantity = 2,
+        tossBase = "action",
         yesNoPrompt = {
           active = true,
           selected = "yes",
@@ -633,6 +634,7 @@ function T.action_quantity_and_confirmation_render_distinct_states(scope, contex
       presentation(firstIcon, secondIcon, heroStatus, {
         state = "toss_ack",
         quantity = 2,
+        tossBase = "action",
       }),
       layout
     )
@@ -2016,6 +2018,10 @@ function T.compact_description_uses_the_source_frame_with_three_lines_and_focus_
       0,
       versionId .. " tab focus hides the ordinary compact description"
     )
+    local moveMessage = assert(
+      manifest.interactive.overlays.messages,
+      versionId .. " carries its lower-message windows"
+    ).selected.contentRect
     local moved = render(
       scope,
       owned,
@@ -2024,12 +2030,19 @@ function T.compact_description_uses_the_source_frame_with_three_lines_and_focus_
         state = "move_select",
         focus = "tabs",
         moveTarget = 1,
+        moveOrigin = 0,
         visibleStart = 0,
+        lowerMessage = { visibleText = "Move Smoke A.", fullText = "Move Smoke A." },
       }),
       layout
     )
     Assert.isTrue(
-      regionDistance(moved, empty, frameRegion, 2) > 0,
+      regionDistance(moved, empty, {
+        x = interactiveFrame.x + moveMessage.x,
+        y = interactiveFrame.y + moveMessage.y,
+        width = moveMessage.width,
+        height = moveMessage.height,
+      }, 2) > 0,
       versionId .. " the move prompt survives while item focus is elsewhere"
     )
   end
@@ -2105,6 +2118,7 @@ function T.modal_states_exclude_browse_only_dynamics(scope, context)
         overrides = {
           state = "toss_confirm",
           quantity = 2,
+          tossBase = "action",
           yesNoPrompt = {
             active = true,
             selected = "yes",
@@ -2116,7 +2130,10 @@ function T.modal_states_exclude_browse_only_dynamics(scope, context)
           },
         },
       },
-      { name = "toss acknowledgement", overrides = { state = "toss_ack", quantity = 2 } },
+      {
+        name = "toss acknowledgement",
+        overrides = { state = "toss_ack", quantity = 2, tossBase = "action" },
+      },
     }
     -- The stable action menu keeps the selected item's icon visible by
     -- contract, so the browse-only comparison holds the selected item

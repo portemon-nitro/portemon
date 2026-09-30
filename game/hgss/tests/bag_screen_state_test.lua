@@ -92,7 +92,34 @@ local function manifest()
             { kind = "text", value = " is selected." },
           },
         },
+        movePrompt = {
+          segments = {
+            { kind = "text", value = "Move " },
+            { kind = "item" },
+            { kind = "text", value = "?" },
+          },
+        },
+        tossConfirm = {
+          segments = {
+            { kind = "text", value = "Toss " },
+            { kind = "quantity" },
+            { kind = "text", value = " " },
+            { kind = "item" },
+            { kind = "text", value = "?" },
+          },
+        },
+        tossResult = {
+          segments = {
+            { kind = "text", value = "Threw away " },
+            { kind = "quantity" },
+            { kind = "text", value = " " },
+            { kind = "item" },
+            { kind = "text", value = "." },
+          },
+        },
       },
+      feedback = { totalTicks = 4 },
+      moveTransition = { unchanged = { totalTicks = 3 }, changed = { totalTicks = 5 } },
       overlays = {
         descriptionFallback = {
           frame = { x = 0, y = 144, width = 256, height = 48 },
@@ -161,6 +188,7 @@ local function composition(overrides)
     cursor = BagCursor.new(),
     manifest = manifest(),
     uiManifest = FieldUiFixture.manifest(),
+    textPolicy = { interGlyphDelay = 0, glyphBudget = 512, abAcceleration = true },
     heroGender = "male",
     measureDisplay = function()
       return measurementFor(box)
@@ -170,6 +198,36 @@ local function composition(overrides)
     options[key] = value
   end
   return options, box, bag
+end
+
+local function settleFeedback(state)
+  for _ = 1, 64 do
+    if state:status().feedback == nil then
+      return
+    end
+    state:updateFixed({})
+  end
+  Assert.isNil(state:status().feedback, "the latched activation settles into its transition")
+end
+
+local function settleTossPrompt(state)
+  for _ = 1, 512 do
+    if state:status().yesNoPrompt ~= nil then
+      return
+    end
+    state:updateFixed({})
+  end
+  Assert.isTrue(state:status().yesNoPrompt ~= nil, "the typed confirmation opens the modal prompt")
+end
+
+local function settleTossAck(state)
+  for _ = 1, 512 do
+    if state:status().state == "toss_ack" then
+      return
+    end
+    state:updateFixed({})
+  end
+  Assert.equal(state:status().state, "toss_ack", "the typed result settles into acknowledgement")
 end
 
 local function selectedKey(status)
@@ -237,6 +295,7 @@ function T.action_menu_registers_through_the_live_service()
   local status = state:status()
   Assert.equal(status.state, "action_menu", "the selection entry completes into the action menu")
   state:updateFixed({ { type = "confirm" } })
+  settleFeedback(state)
   status = state:status()
   Assert.equal(status.state, "browsing", "committing the single offered action returns to browsing")
   Assert.deepEqual(bag:registeredItems(), { "BICYCLE" }, "the menu registration reaches the live service")
@@ -257,15 +316,19 @@ function T.toss_flow_mutates_once_through_the_live_service()
   end
   Assert.equal(state:status().state, "action_menu", "the selection entry completes into the action menu")
   state:updateFixed({ { type = "confirm" } })
+  settleFeedback(state)
   Assert.equal(state:status().state, "toss_quantity", "confirming toss enters the quantity picker")
   state:updateFixed({ { type = "navigate", direction = "up" } })
   state:updateFixed({ { type = "confirm" } })
+  settleFeedback(state)
   Assert.equal(state:status().state, "toss_confirm", "confirming a quantity asks for confirmation")
   Assert.equal(bag:revision(), revision, "entering confirmation never mutates")
+  settleTossPrompt(state)
   state:updateFixed({ { type = "confirm" } })
   for _ = 1, 9 do
     state:updateFixed({})
   end
+  settleTossAck(state)
   Assert.equal(state:status().state, "toss_ack", "accepting YES waits for a later acknowledgement")
   Assert.equal(bag:quantity("POTION"), 5, "accepting YES changes no quantities")
   state:updateFixed({ { type = "confirm" } })
@@ -318,6 +381,7 @@ function T.pointer_only_register_flows_through_the_live_service()
   )
   Assert.equal(bag:revision(), revision, "opening the menu never mutates the inventory")
   tapLogical(144, 144)
+  settleFeedback(state)
   local status = state:status()
   Assert.equal(status.state, "browsing", "the pointer registration returns to browsing")
   Assert.deepEqual(bag:registeredItems(), { "BICYCLE" }, "the pointer registration reaches the live service")
@@ -540,16 +604,45 @@ local function composedManifest()
     textRect = { x = 20, y = 144, width = 228, height = 40 },
   }
   local backgrounds = {}
-  for _, state in ipairs({ "action", "quantity", "confirmation" }) do
+  for _, state in ipairs({ "action", "quantity" }) do
     local pockets = {}
     for _, pocket in ipairs(POCKETS) do
-      pockets[pocket] = {
-        image = "test/bag/background-" .. state .. "-" .. pocket .. ".png",
-        width = 256,
-        height = 192,
-      }
+      local counts = {}
+      for count = 0, 6 do
+        counts[count] = {
+          image = "test/bag/background-" .. state .. "-" .. pocket .. "-" .. count .. ".png",
+          width = 256,
+          height = 192,
+        }
+      end
+      pockets[pocket] = counts
     end
     backgrounds[state] = pockets
+  end
+  do
+    local move = {}
+    for _, pocket in ipairs(POCKETS) do
+      local counts = {}
+      for count = 0, 6 do
+        local origins = {
+          none = {
+            image = "test/bag/background-move-" .. pocket .. "-" .. count .. "-none.png",
+            width = 256,
+            height = 192,
+          },
+        }
+        for _, origin in ipairs({ "0", "1", "2", "3", "4", "5" }) do
+          origins[origin] = {
+            image = "test/bag/background-move-" .. pocket .. "-" .. count .. "-" .. origin .. ".png",
+            width = 256,
+            height = 192,
+          }
+        end
+        counts[count] = origins
+      end
+      move[pocket] = counts
+    end
+    backgrounds.move = move
   end
   do
     local browse = {}
@@ -697,6 +790,35 @@ local function composedManifest()
     slot2 = { image = "test/bag/registration-slot-2.png", width = 40, height = 16 },
     offset = { x = 0, y = 16 },
   }
+  manifested.interactive.overlays.selectedItem = {
+    iconCenter = { x = 86, y = 76 },
+    textRect = { x = 96, y = 56, width = 88, height = 32 },
+    nameAt = { x = 0, y = 0 },
+    quantityAt = { x = 48, y = 16 },
+  }
+  manifested.interactive.overlays.messages = {
+    selected = { contentRect = { x = 16, y = 8, width = 216, height = 16 } },
+    modal = { contentRect = { x = 16, y = 8, width = 216, height = 32 } },
+  }
+  manifested.interactive.feedback = {
+    totalTicks = 4,
+    actionFace = {
+      normal = { image = "test/bag/action-face.png", width = 96, height = 24 },
+      selected = { image = "test/bag/action-face-selected.png", width = 96, height = 24 },
+    },
+    cancelFace = {
+      normal = { image = "test/bag/cancel-face-selected-base.png", width = 64, height = 24 },
+      selected = { image = "test/bag/cancel-face-selected.png", width = 64, height = 24 },
+    },
+    quantityConfirm = {
+      normal = { image = "test/bag/quantity-confirm.png", width = 64, height = 24 },
+      selected = { image = "test/bag/quantity-confirm-selected.png", width = 64, height = 24 },
+    },
+  }
+  manifested.interactive.moveCursor = {
+    original = { image = "test/bag/move-cursor-original.png", width = 96, height = 40 },
+    candidate = { image = "test/bag/move-cursor-candidate.png", width = 96, height = 40 },
+  }
   manifested.interactive.text = {
     actions = {
       toss = "TOSS",
@@ -709,9 +831,6 @@ local function composedManifest()
     movePrompt = {
       segments = { { kind = "text", value = "Move " }, { kind = "item" }, { kind = "text", value = "?" } },
     },
-    tossQuantity = {
-      segments = { { kind = "text", value = "Toss " }, { kind = "item" }, { kind = "text", value = "?" } },
-    },
     tossConfirm = {
       segments = {
         { kind = "text", value = "Toss " },
@@ -719,6 +838,15 @@ local function composedManifest()
         { kind = "text", value = " " },
         { kind = "item" },
         { kind = "text", value = "?" },
+      },
+    },
+    tossResult = {
+      segments = {
+        { kind = "text", value = "Threw away " },
+        { kind = "quantity" },
+        { kind = "text", value = " " },
+        { kind = "item" },
+        { kind = "text", value = "." },
       },
     },
     selectedItem = {
@@ -754,11 +882,27 @@ local function seedComposedCache()
   put("test/bag/hero-male.png")
   put("test/bag/hero-female.png")
   put("test/bag/description.png")
-  for _, state in ipairs({ "action", "quantity", "confirmation" }) do
+  for _, state in ipairs({ "action", "quantity" }) do
     for _, pocket in ipairs(POCKETS) do
-      put("test/bag/background-" .. state .. "-" .. pocket .. ".png")
+      for count = 0, 6 do
+        put("test/bag/background-" .. state .. "-" .. pocket .. "-" .. count .. ".png")
+      end
     end
   end
+  for _, pocket in ipairs(POCKETS) do
+    for count = 0, 6 do
+      put("test/bag/background-move-" .. pocket .. "-" .. count .. "-none.png")
+      for _, origin in ipairs({ "0", "1", "2", "3", "4", "5" }) do
+        put("test/bag/background-move-" .. pocket .. "-" .. count .. "-" .. origin .. ".png")
+      end
+    end
+  end
+  put("test/bag/action-face-selected.png")
+  put("test/bag/cancel-face-selected-base.png")
+  put("test/bag/cancel-face-selected.png")
+  put("test/bag/quantity-confirm-selected.png")
+  put("test/bag/move-cursor-original.png")
+  put("test/bag/move-cursor-candidate.png")
   for _, pocket in ipairs(POCKETS) do
     for count = 0, 6 do
       put("test/bag/background-browse-" .. pocket .. "-" .. count .. ".png")
@@ -865,6 +1009,10 @@ function T.production_bag_draws_pocket_specific_presentation()
   local graphics = FakeGraphics({})
   local content = composedText()
   local hero = composedHeroSpy()
+  local frameSpy = { calls = {} }
+  function frameSpy:drawWindow(box, frameIndex, background)
+    self.calls[#self.calls + 1] = { box = box, frameIndex = frameIndex, background = background }
+  end
   local draw = BagRenderer.new({
     cacheFs = seedComposedCache(),
     manifest = manifested,
@@ -872,6 +1020,8 @@ function T.production_bag_draws_pocket_specific_presentation()
     text = content,
     graphics = graphics,
     heroRenderer = hero,
+    window = frameSpy,
+    frameIndex = 1,
   })
   local icons = composedIcons()
   draw:draw(view, assert(view.presentation, "the composed status carries its presentation plan"), { icons = icons })
@@ -1280,6 +1430,7 @@ function T.field_context_forwards_use_intents_with_item_identity()
   end
   Assert.equal(useSlot, 0, "Use rides the source slot zero")
   state:updateFixed({ { type = "confirm" } })
+  settleFeedback(state)
   local intent = assert(state:takeIntent(), "choosing Use must forward an intent")
   Assert.equal(intent.kind, "use", "the intent names its action")
   Assert.equal(intent.item, "POTION", "the intent snapshots the item identity")

@@ -23,7 +23,20 @@
 local BagSave = require("libs.hgss.src.save.BagSave")
 local BagLayout = require("libs.hgss.src.ui.BagLayout")
 local FocusGraph = require("libs.ui.src.FocusGraph")
+local MenuTextTemplate = require("libs.hgss.src.ui.MenuTextTemplate")
+local Utf8Glyphs = require("libs.assets.src.Utf8Glyphs")
 local YesNoPromptController = require("libs.hgss.src.ui.YesNoPromptController")
+
+-- Retail sound vocabulary for the post-selection bag path. The names stay
+-- private; the semantic mapping is fixed and production resolves every
+-- symbol through the composed audio service.
+local EFFECT = {
+  select = "SEQ_SE_DP_SELECT",
+  cancel = "SEQ_SE_GS_GEARCANCEL",
+  quantity = "SEQ_SE_DP_BAG_004",
+  invalid = "SEQ_SE_DP_BOX03",
+  promptDecision = "SEQ_SE_DP_BUTTON9",
+}
 
 ---@class BagControllerCommands semantic mutations bound to the live inventory service
 ---@field toss fun(itemKey: string, quantity: integer): boolean remove owned copies
@@ -56,6 +69,16 @@ local YesNoPromptController = require("libs.hgss.src.ui.YesNoPromptController")
 ---@field _itemSelectElapsed integer ticks elapsed in the selection entry
 ---@field _quantity integer
 ---@field _quantityMax integer
+---@field _effect (fun(sequence: string))? the optional injected semantic sound boundary
+---@field _textPolicy { interGlyphDelay: integer, glyphBudget: integer, abAcceleration: boolean } the copied text-speed cadence
+---@field _templates table<string, unknown> the generated lower-message templates
+---@field _feedbackTicks integer the generated activation-feedback total
+---@field _moveClipTotals { unchanged: integer, changed: integer } the generated move commit-clip totals
+---@field _feedback { kind: string, elapsed: integer, total: integer, continuation: table<string, unknown> }? the latched activation record
+---@field _message { full: string, glyphs: string[], revealed: integer, delay: integer }? the owned lower-message printer
+---@field _tossBase "action"|"quantity"? the retained base while toss confirmation owns the screen
+---@field _tossStage "confirm"|"prompt"|"result"? the confirmation sub-stage gating prompt and acknowledgement
+---@field _moveClip { changed: boolean, elapsed: integer, total: integer }? the running move commit clip
 ---@field _moveFromKey string?
 ---@field _moveFromPos integer
 ---@field _moveTarget integer
@@ -77,6 +100,11 @@ BagController.__index = BagController
 ---@field commands BagControllerCommands semantic mutations bound to the live inventory service
 ---@field resolveActions fun(view: table<string, unknown>): table<string, unknown>[] the injected inventory-local menu projection over the refreshed view
 ---@field itemSelectTicks integer the generated selection-entry total; the controller owns the clock but never the frame visuals
+---@field effect (fun(sequence: string))? the optional semantic sound boundary, silent when omitted
+---@field textPolicy { interGlyphDelay: integer, glyphBudget: integer, abAcceleration: boolean } the copied text-speed cadence
+---@field messages table<string, unknown>? the generated lower-message templates; direct unit construction falls back to the equivalent semantic defaults
+---@field feedbackTicks integer? the generated activation-feedback total; direct unit construction falls back to a small positive total
+---@field moveTransition table<string, unknown>? the generated move commit-clip totals; direct unit construction falls back to small positive totals
 ---@field context "inventory"|"field"|"pick_held"? the selection context (defaults to inventory)
 ---@field isPickable (fun(itemKey: string): boolean)? the held-item eligibility probe, required for pick_held
 
@@ -86,6 +114,54 @@ BagController.__index = BagController
 local function checkQuantity(value, what)
   assert(type(value) == "number" and value % 1 == 0 and value >= 1, what .. " must be a positive integer")
   return value
+end
+
+---@param value unknown
+---@param what string
+---@return integer
+local function checkPositiveTicks(value, what)
+  assert(type(value) == "number" and value % 1 == 0 and value >= 1, what .. " must be a positive integer")
+  return value
+end
+
+-- Semantic lower-message defaults for direct unit construction: the same
+-- text/item/quantity vocabulary production injects from the generated
+-- manifest, so printer gating and reveal behavior stay identical.
+local function defaultTemplates()
+  return {
+    selectedItem = {
+      segments = {
+        { kind = "text", value = "The " },
+        { kind = "item" },
+        { kind = "text", value = " is selected." },
+      },
+    },
+    movePrompt = {
+      segments = {
+        { kind = "text", value = "Move " },
+        { kind = "item" },
+        { kind = "text", value = "?" },
+      },
+    },
+    tossConfirm = {
+      segments = {
+        { kind = "text", value = "Toss " },
+        { kind = "quantity" },
+        { kind = "text", value = " " },
+        { kind = "item" },
+        { kind = "text", value = "?" },
+      },
+    },
+    tossResult = {
+      segments = {
+        { kind = "text", value = "Threw away " },
+        { kind = "quantity" },
+        { kind = "text", value = " " },
+        { kind = "item" },
+        { kind = "text", value = "." },
+      },
+    },
+  }
 end
 
 -- Browse focus node identities. Grid cells name their absolute zero-based
@@ -190,11 +266,45 @@ function BagController.new(opts)
     type(opts.itemSelectTicks) == "number" and opts.itemSelectTicks % 1 == 0 and opts.itemSelectTicks >= 1,
     "the bag controller needs its positive selection-entry total"
   )
+  assert(opts.effect == nil or type(opts.effect) == "function", "the bag effect boundary must be a function")
+  local textPolicy = assert(opts.textPolicy, "the bag controller needs its copied text-speed policy")
+  assert(type(textPolicy) == "table", "the bag controller needs its copied text-speed policy")
+  assert(
+    type(textPolicy.interGlyphDelay) == "number"
+      and textPolicy.interGlyphDelay % 1 == 0
+      and textPolicy.interGlyphDelay >= 0,
+    "the text policy carries a non-negative glyph delay"
+  )
+  assert(
+    type(textPolicy.glyphBudget) == "number" and textPolicy.glyphBudget % 1 == 0 and textPolicy.glyphBudget >= 1,
+    "the text policy carries a positive glyph budget"
+  )
+  assert(type(textPolicy.abAcceleration) == "boolean", "the text policy carries its acceleration flag")
+  local templates = opts.messages
+  if templates == nil then
+    templates = defaultTemplates()
+  end
+  assert(type(templates) == "table", "the bag controller needs its lower-message templates")
+  for _, key in ipairs({ "selectedItem", "movePrompt", "tossConfirm", "tossResult" }) do
+    assert(type(templates[key]) == "table", "the bag controller needs its " .. key .. " template")
+  end
+  local feedbackTicks = opts.feedbackTicks or 4
+  checkPositiveTicks(feedbackTicks, "the activation-feedback total")
+  local moveTransition = opts.moveTransition or { unchanged = { totalTicks = 3 }, changed = { totalTicks = 5 } }
+  assert(type(moveTransition) == "table", "the bag controller needs its move commit-clip totals")
+  local unchangedTicks = checkPositiveTicks(
+    type(moveTransition.unchanged) == "table" and moveTransition.unchanged.totalTicks,
+    "the unchanged move clip total"
+  )
+  local changedTicks = checkPositiveTicks(
+    type(moveTransition.changed) == "table" and moveTransition.changed.totalTicks,
+    "the changed move clip total"
+  )
   -- The modal prompt is bound once and owned for the controller lifetime:
   -- opening the supplied template here proves a malformed placement fails
   -- construction instead of falling back to action slots, and disposing
   -- leaves no active prompt behind.
-  local prompt = YesNoPromptController.new(opts.promptShape)
+  local prompt = YesNoPromptController.new(opts.promptShape, opts.effect)
   prompt:open(opts.tossPrompt)
   prompt:dispose()
   local self = setmetatable({
@@ -218,6 +328,20 @@ function BagController.new(opts)
     _itemSelectElapsed = 0,
     _quantity = 1,
     _quantityMax = 1,
+    _effect = opts.effect,
+    _textPolicy = {
+      interGlyphDelay = textPolicy.interGlyphDelay,
+      glyphBudget = textPolicy.glyphBudget,
+      abAcceleration = textPolicy.abAcceleration,
+    },
+    _templates = templates,
+    _feedbackTicks = feedbackTicks,
+    _moveClipTotals = { unchanged = unchangedTicks, changed = changedTicks },
+    _feedback = nil,
+    _message = nil,
+    _tossBase = nil,
+    _tossStage = nil,
+    _moveClip = nil,
     _moveFromKey = nil,
     _moveFromPos = 0,
     _moveTarget = 0,
@@ -514,9 +638,187 @@ function BagController:_toBrowsing()
   self._quantityMax = 1
   self._quantityPressedControl = nil
   self._quantityPressedTicks = 0
+  self._feedback = nil
+  self._message = nil
+  self._tossBase = nil
+  self._tossStage = nil
+  self._moveClip = nil
   self._moveFromKey = nil
   self._moveFromPos = 0
   self._moveTarget = 0
+end
+
+-- Emits one semantic sound through the injected boundary; pure unit
+-- construction without a boundary stays silent.
+---@param sequence string
+function BagController:_play(sequence)
+  if self._effect ~= nil then
+    self._effect(sequence)
+  end
+end
+
+-- Outside dismissal still sounds like its cancel equivalent while a
+-- cancellable nested menu owns the tick; the close itself stays terminal
+-- and never unwinds one level or mutates.
+function BagController:_playDismissSound()
+  if self._state == "action_menu" or self._state == "toss_quantity" or self._state == "move_select" then
+    self:_play(EFFECT.cancel)
+  end
+end
+
+-- Resolves the display name for a lower message: the singular form for
+-- one copy, the plural form otherwise, falling back to the singular name
+-- when a test fake carries no plural.
+---@param quantity integer
+---@return string
+function BagController:_displayName(quantity)
+  local selected = assert(self._view.selected, "lower messages need their selected item")
+  local name = assert(selected.name, "lower messages need the selected display name")
+  assert(type(name) == "string" and name ~= "", "lower messages need the selected display name")
+  if quantity == 1 then
+    return name
+  end
+  local plural = selected.namePlural
+  if type(plural) == "string" and plural ~= "" then
+    return plural
+  end
+  return name
+end
+
+---@param template table<string, unknown>
+---@param itemName string
+---@param quantity integer?
+---@return string
+function BagController:_formatMessage(template, itemName, quantity)
+  local bindings = { item = itemName }
+  if quantity ~= nil then
+    bindings.quantity = quantity
+  end
+  return MenuTextTemplate.format(template, bindings, "bag message")
+end
+
+-- Starts the owned lower-message printer over the full formatted text.
+-- Instant messages reveal everything at once; typed messages reveal
+-- nothing until fixed ticks advance them.
+---@param fullText string
+---@param instant boolean
+function BagController:_startMessage(fullText, instant)
+  assert(type(fullText) == "string" and fullText ~= "", "lower messages carry visible text")
+  local glyphs = {}
+  local nextGlyph = Utf8Glyphs.iter(fullText)
+  while true do
+    local glyph = nextGlyph()
+    if glyph == nil then
+      break
+    end
+    glyphs[#glyphs + 1] = glyph
+  end
+  assert(#glyphs >= 1, "lower messages carry at least one glyph")
+  self._message = {
+    full = fullText,
+    glyphs = glyphs,
+    revealed = instant and #glyphs or 0,
+    delay = 0,
+  }
+end
+
+---@return boolean true once every glyph is visible
+function BagController:_messageComplete()
+  local message = self._message
+  if message == nil then
+    return true
+  end
+  return message.revealed >= #message.glyphs
+end
+
+-- Advances the owned printer one fixed tick. Acceleration input reveals
+-- the remainder at once when the copied policy allows it; otherwise the
+-- tick reveals up to one glyph budget after the inter-glyph delay.
+---@param accelerate boolean
+function BagController:_stepMessage(accelerate)
+  local message = assert(self._message, "the printer steps only while a message is active")
+  if message.revealed >= #message.glyphs then
+    return
+  end
+  if accelerate and self._textPolicy.abAcceleration then
+    message.revealed = #message.glyphs
+    return
+  end
+  if message.delay > 0 then
+    message.delay = message.delay - 1
+    return
+  end
+  message.revealed = math.min(#message.glyphs, message.revealed + self._textPolicy.glyphBudget)
+  message.delay = self._textPolicy.interGlyphDelay
+end
+
+---@return string the currently visible prefix, glyph-safe
+function BagController:_visibleMessageText()
+  local message = assert(self._message, "visible text reads only while a message is active")
+  local parts = {}
+  for index = 1, message.revealed do
+    parts[#parts + 1] = message.glyphs[index]
+  end
+  return table.concat(parts)
+end
+
+-- Latches one activation behind the generated palette-flash cadence: the
+-- sound plays now, the captured semantic continuation runs only after the
+-- feedback total elapses. Conflicting activation while latched is ignored.
+---@param kind string the latched control identity for the renderer phase
+---@param continuation table<string, unknown> the pending semantic transition
+function BagController:_startFeedback(kind, continuation)
+  assert(type(kind) == "string" and kind ~= "", "feedback latches a named control")
+  assert(type(continuation) == "table", "feedback latches its semantic continuation")
+  if self._feedback ~= nil then
+    return
+  end
+  self._feedback = { kind = kind, elapsed = 0, total = self._feedbackTicks, continuation = continuation }
+end
+
+-- Advances latched activation one fixed tick and runs the captured
+-- continuation exactly once when the generated total elapses.
+function BagController:_stepFeedback()
+  local feedback = assert(self._feedback, "feedback steps only while latched")
+  feedback.elapsed = feedback.elapsed + 1
+  if feedback.elapsed < feedback.total then
+    return
+  end
+  local continuation = feedback.continuation
+  self._feedback = nil
+  self:_runContinuation(continuation)
+end
+
+-- Runs one captured post-feedback continuation after revalidating the
+-- pending selection. A stale selection reconciles safely instead of
+-- redirecting the transition onto another item.
+---@param continuation table<string, unknown>
+function BagController:_runContinuation(continuation)
+  local kind = assert(continuation.kind, "continuations carry their kind")
+  if kind == "toBrowsing" then
+    self:_toBrowsing()
+    return
+  end
+  self:_refresh()
+  if not self:_selectionMatchesAction() then
+    self:_toBrowsing()
+    return
+  end
+  if kind == "enterQuantity" then
+    self:_enterQuantity()
+  elseif kind == "enterMove" then
+    self:_enterMoveSelect()
+  elseif kind == "enterToss" then
+    self:_enterTossConfirm()
+  elseif kind == "register" then
+    self:_commitRegistration(continuation.register == true)
+  elseif kind == "intent" then
+    local itemKey = assert(self._actionItemKey, "field actions snapshot their item")
+    self:_toBrowsing()
+    self:_emitIntent(assert(continuation.intent, "intent continuations carry their kind"), itemKey)
+  else
+    error("unknown bag continuation " .. tostring(kind), 2)
+  end
 end
 
 -- The pending selection still names the same semantic item in the same
@@ -571,6 +873,7 @@ function BagController:_openActionMenu()
   self._overlay = false
   self._itemSelectElapsed = 0
   self._state = "item_select"
+  self:_play(EFFECT.select)
 end
 
 -- Emits one value-only selection intent for the owning flow: the item
@@ -598,6 +901,9 @@ end
 ---@param node integer physical action node
 function BagController:_chooseActionNode(node)
   assert(node >= 0 and node <= 4 and node % 1 == 0, "action focus is a physical node")
+  if self._feedback ~= nil then
+    return
+  end
   -- An external revision may have moved the selection under the open menu:
   -- re-resolve onto the current selection instead of dispatching the
   -- snapshotted action at a ghost. An empty pocket simply closes the menu.
@@ -609,7 +915,8 @@ function BagController:_chooseActionNode(node)
   end
   self._actions = self:_currentActions()
   if node == 4 then
-    self:_toBrowsing()
+    self:_play(EFFECT.cancel)
+    self:_startFeedback("cancel", { kind = "toBrowsing" })
     return
   end
   local action
@@ -622,27 +929,36 @@ function BagController:_chooseActionNode(node)
     return
   end
   local id = action.id
+  -- Move entry stays immediate: only the reorder commit waits for its
+  -- clip. Every other activation latches behind the generated
+  -- palette-flash cadence before its semantic transition runs.
+  if id == "move" then
+    self:_play(EFFECT.select)
+    self:_enterMoveSelect()
+    return
+  end
+  self:_play(EFFECT.select)
   if id == "use" or id == "give" then
-    local itemKey = assert(self._actionItemKey, "field actions snapshot their item")
-    self:_toBrowsing()
-    self:_emitIntent(id, itemKey)
+    self:_startFeedback("action:" .. node, { kind = "intent", intent = id })
     return
   end
   if id == "toss" then
-    self:_enterQuantity()
-  elseif id == "move" then
-    self:_enterMoveSelect()
+    self:_startFeedback("action:" .. node, { kind = "enterQuantity" })
   elseif id == "register" then
-    self:_commitRegistration(true)
+    self:_startFeedback("action:" .. node, { kind = "register", register = true })
   elseif id == "unregister" then
-    self:_commitRegistration(false)
+    self:_startFeedback("action:" .. node, { kind = "register", register = false })
   end
 end
 
 ---@param direction string
 function BagController:_moveAction(direction)
   assert(ACTION_NEIGHBORS[self._actionNode][direction], "unknown action direction")
-  self._actionNode = ACTION_NEIGHBORS[self._actionNode][direction]
+  local next = ACTION_NEIGHBORS[self._actionNode][direction]
+  if next ~= self._actionNode then
+    self._actionNode = next
+    self:_play(EFFECT.select)
+  end
 end
 
 -- Enters the quantity picker for the snapshotted item, preselecting one
@@ -668,6 +984,7 @@ end
 
 ---@param direction string
 function BagController:_adjustQuantity(direction)
+  local before = self._quantity
   if direction == "up" then
     self._quantity = self._quantity == self._quantityMax and 1 or self._quantity + 1
   elseif direction == "down" then
@@ -677,6 +994,9 @@ function BagController:_adjustQuantity(direction)
   elseif direction == "right" then
     self._quantity = math.min(self._quantityMax, self._quantity + 10)
   end
+  if self._quantity ~= before then
+    self:_play(EFFECT.quantity)
+  end
 end
 
 ---@param delta integer
@@ -685,10 +1005,14 @@ function BagController:_adjustQuantityByTouch(delta)
     delta == -100 or delta == -10 or delta == -1 or delta == 1 or delta == 10 or delta == 100,
     "quantity touch deltas are source controls"
   )
+  local before = self._quantity
   if delta > 0 then
     self._quantity = self._quantity == self._quantityMax and 1 or math.min(self._quantityMax, self._quantity + delta)
   else
     self._quantity = self._quantity == 1 and self._quantityMax or math.max(1, self._quantity + delta)
+  end
+  if self._quantity ~= before then
+    self:_play(EFFECT.quantity)
   end
 end
 
@@ -709,8 +1033,10 @@ end
 
 -- Confirms the picked quantity into the modal confirmation state, clamping
 -- to whatever the latest refresh still observes. A vanished selection
--- aborts instead of carrying a stale quantity forward. Opening the owned
--- prompt through the generated template starts it with YES selected.
+-- aborts instead of carrying a stale quantity forward. The retained base
+-- records which surface the confirmation owns while the typed
+-- confirmation message prints; the modal prompt opens only after the
+-- message completes, never in the same tick.
 function BagController:_enterTossConfirm()
   self:_refresh()
   if not self:_selectionMatchesAction() then
@@ -721,16 +1047,20 @@ function BagController:_enterTossConfirm()
   local owned = checkQuantity(selected.quantity, "selected slots carry a quantity")
   self._quantityMax = owned
   self._quantity = math.min(self._quantity, owned)
+  self._tossBase = self._state == "toss_quantity" and "quantity" or "action"
+  self._tossStage = "confirm"
   self:_clearQuantityPress()
   self:cancelPointerCapture()
-  self._prompt:open(self._tossPrompt)
+  self._prompt:dispose()
+  local quantity = self._quantity
+  self:_startMessage(self:_formatMessage(self._templates.tossConfirm, self:_displayName(quantity), quantity), false)
   self._state = "toss_confirm"
 end
 
 -- Consumes one modal prompt result after the tick-owned prompt step:
--- NO returns straight to browsing, YES waits for a later acknowledgement
--- in the post-choice state. Accepting YES never mutates; only the
--- acknowledgement input commits.
+-- NO returns straight to browsing, YES closes the prompt and starts the
+-- typed result message in the same lower window. Accepting YES never
+-- mutates; only acknowledgement after the result completes commits.
 function BagController:_resolveTossPrompt()
   local result = self._prompt:takeResult()
   if result == nil then
@@ -739,8 +1069,16 @@ function BagController:_resolveTossPrompt()
   if result == "no" then
     self:_toBrowsing()
   elseif result == "yes" then
+    self:_refresh()
+    if not self:_selectionMatchesAction() then
+      self:_toBrowsing()
+      return
+    end
     self._prompt:dispose()
-    self._state = "toss_ack"
+    self:cancelPointerCapture()
+    local quantity = self._quantity
+    self:_startMessage(self:_formatMessage(self._templates.tossResult, self:_displayName(quantity), quantity), false)
+    self._tossStage = "result"
   end
 end
 
@@ -766,6 +1104,8 @@ end
 -- Enters manual move-target selection, capturing the moved item by semantic
 -- key and absolute position. Navigation moves the insertion target through
 -- the pocket's ordered items; the cursor follows so the window tracks it.
+-- The instant lower message names the moved item; the upper description
+-- stays intact.
 function BagController:_enterMoveSelect()
   self:_refresh()
   if not self:_selectionMatchesAction() then
@@ -776,7 +1116,40 @@ function BagController:_enterMoveSelect()
   self._moveFromKey = self._actionItemKey
   self._moveFromPos = self._cursor:position(pocket)
   self._moveTarget = self._moveFromPos
+  self._moveClip = nil
+  local selected = assert(self._view.selected, "a matched selection carries its record")
+  local name = assert(selected.name, "lower messages need the selected display name")
+  self:_startMessage(self:_formatMessage(self._templates.movePrompt, name), true)
   self._state = "move_select"
+end
+
+-- Starts the generated move commit clip: the unchanged clip when the
+-- target equals the source, the changed clip otherwise. The reorder
+-- itself runs only when the clip completes, exactly once.
+---@param changed boolean
+function BagController:_startMoveClip(changed)
+  if self._moveClip ~= nil then
+    return
+  end
+  local total = changed and self._moveClipTotals.changed or self._moveClipTotals.unchanged
+  self._moveClip = { changed = changed, elapsed = 0, total = total }
+end
+
+-- Advances the running move clip one fixed tick. Completion restores
+-- browsing for an identity reorder or commits the reorder once for a
+-- changed target; a stale source reconciles without mutation.
+function BagController:_stepMoveClip()
+  local clip = assert(self._moveClip, "the move clip steps only while running")
+  clip.elapsed = clip.elapsed + 1
+  if clip.elapsed < clip.total then
+    return
+  end
+  self._moveClip = nil
+  if not clip.changed then
+    self:_toBrowsing()
+    return
+  end
+  self:_commitMove()
 end
 
 ---@param target integer zero-based absolute index
@@ -786,11 +1159,16 @@ function BagController:_setMoveTarget(target)
     return
   end
   local clamped = math.min(math.max(target, 0), count - 1)
+  if clamped == self._moveTarget then
+    self:_play(EFFECT.invalid)
+    return
+  end
   local pocket = self:_pocket()
   self._cursor:setPosition(pocket, clamped)
   self:_ensureVisible()
   self:_refresh()
   self._moveTarget = self._cursor:position(pocket)
+  self:_play(EFFECT.select)
 end
 
 ---@param direction string
@@ -810,9 +1188,10 @@ function BagController:_moveTargetStep(direction)
   self:_setMoveTarget(self._moveTarget + delta)
 end
 
--- The single reorder commit, addressed by absolute pocket index so window
--- scroll never changes its meaning. The moved item stays selected at its
--- new absolute position; a stale source aborts without mutation.
+-- The single reorder commit after the generated commit clip completes,
+-- addressed by absolute pocket index so window scroll never changes its
+-- meaning. The moved item stays selected at its new absolute position; a
+-- stale source aborts without mutation.
 function BagController:_commitMove()
   self:_refresh()
   local pocket = self:_pocket()
@@ -952,13 +1331,26 @@ function BagController:_confirm()
   if self._state == "action_menu" then
     self:_chooseActionNode(self._actionNode)
   elseif self._state == "toss_quantity" then
-    self:_enterTossConfirm()
+    if self._feedback ~= nil then
+      return
+    end
+    self:_play(EFFECT.select)
+    self:_startFeedback("quantityConfirm", { kind = "enterToss" })
   elseif self._state == "toss_confirm" then
     -- The modal prompt owns its fixed ticks; input from a batch that
     -- opens it here waits for the next update instead of reusing it.
     return
   elseif self._state == "move_select" then
-    self:_commitMove()
+    if self._moveClip ~= nil then
+      return
+    end
+    self:_refresh()
+    if self._moveFromKey == nil then
+      self:_toBrowsing()
+      return
+    end
+    self:_play(EFFECT.select)
+    self:_startMoveClip(self._moveTarget ~= self._moveFromPos)
   elseif self._focusNode == CANCEL_NODE then
     self._result = { kind = "closed" }
     self._closed = true
@@ -979,14 +1371,26 @@ function BagController:_cancel()
     return
   end
   if self._state == "action_menu" then
-    self:_toBrowsing()
+    if self._feedback ~= nil then
+      return
+    end
+    self:_play(EFFECT.cancel)
+    self:_startFeedback("cancel", { kind = "toBrowsing" })
   elseif self._state == "toss_quantity" then
-    self:_toBrowsing()
+    if self._feedback ~= nil then
+      return
+    end
+    self:_play(EFFECT.cancel)
+    self:_startFeedback("quantityCancel", { kind = "toBrowsing" })
   elseif self._state == "toss_confirm" then
     -- The modal prompt owns its fixed ticks; input from a batch that
     -- opens it here waits for the next update instead of reusing it.
     return
   elseif self._state == "move_select" then
+    if self._moveClip ~= nil then
+      return
+    end
+    self:_play(EFFECT.cancel)
     self:_cancelMove()
   else
     self._result = { kind = "closed" }
@@ -1090,7 +1494,11 @@ function BagController:_activate(target)
       self:_adjustQuantityByTouch(delta)
       self:_pressQuantityControl(assert(target.quantityControlIndex, "quantity targets name their control"))
     elseif target.kind == "confirm" then
-      self:_enterTossConfirm()
+      -- Pointer confirm shares the keyboard feedback gate.
+      if self._feedback == nil then
+        self:_play(EFFECT.select)
+        self:_startFeedback("quantityConfirm", { kind = "enterToss" })
+      end
     elseif target.kind == "cancel" then
       self:_cancel()
     end
@@ -1104,7 +1512,11 @@ function BagController:_activate(target)
       assert(type(start) == "number", "the bag view needs its window start")
       self:_setMoveTarget(start + target.visibleIndex)
     elseif target.kind == "confirm" then
-      self:_commitMove()
+      -- Pointer confirm shares the keyboard commit-clip gate.
+      if self._moveClip == nil and self._moveFromKey ~= nil then
+        self:_play(EFFECT.select)
+        self:_startMoveClip(self._moveTarget ~= self._moveFromPos)
+      end
     elseif target.kind == "cancel" then
       self:_cancel()
     end
@@ -1301,17 +1713,19 @@ function BagController:_stepItemSelect(uiInput)
   end
   if self._itemSelectElapsed >= self._itemSelectTicks then
     self._state = "action_menu"
+    local selected = assert(self._view.selected, "the action menu needs its selected item")
+    local name = assert(selected.name, "lower messages need the selected display name")
+    self:_startMessage(self:_formatMessage(self._templates.selectedItem, name), true)
   end
 end
 
--- Owns one fixed tick that begins with the modal prompt active: terminal
--- dismissal closes the bag without touching the prompt, otherwise the
--- tick advances the prompt exactly once and resolves its published result
--- once. This branch returns before the ordinary event loop, so opening
--- and terminal ticks never reuse their input as browse or acknowledgement
--- input.
+-- Owns one fixed tick inside toss confirmation: terminal dismissal closes
+-- without mutation, an incomplete message consumes the batch for
+-- acceleration only, a completed confirmation message opens the modal
+-- prompt on its own tick, a completed result message hands off to the
+-- acknowledgement state, and only an open prompt sees prompt input.
 ---@param uiInput table[]
-function BagController:_stepTossPrompt(uiInput)
+function BagController:_stepTossConfirm(uiInput)
   for _, event in ipairs(uiInput) do
     validateBagEvent(event)
     if event.type == "dismiss" then
@@ -1319,6 +1733,32 @@ function BagController:_stepTossPrompt(uiInput)
       self._closed = true
       return
     end
+  end
+  if not self:_messageComplete() then
+    local accelerate = false
+    for _, event in ipairs(uiInput) do
+      if event.type == "confirm" or event.type == "cancel" or event.type == "pointer_down" then
+        accelerate = true
+        break
+      end
+    end
+    self:_stepMessage(accelerate)
+    return
+  end
+  local promptStatus = self._prompt:status()
+  if not promptStatus.active then
+    if self._tossStage == "result" then
+      -- The result already completed on an earlier tick, so this batch
+      -- is a genuine acknowledgement, never the event that finished
+      -- printing: hand it straight to the acknowledgement step.
+      self._state = "toss_ack"
+      self:_stepTossAck(uiInput)
+      return
+    end
+    self._prompt:open(self._tossPrompt)
+    self:cancelPointerCapture()
+    self._tossStage = "prompt"
+    return
   end
   self._prompt:updateFixed(uiInput)
   self:_resolveTossPrompt()
@@ -1389,12 +1829,48 @@ function BagController:updateFixed(uiInput)
   if not self:_syncNested() then
     return
   end
+  -- Latched activation and move commit clips own their ticks: terminal
+  -- dismissal still closes, everything else waits for the generated total.
+  if self._feedback ~= nil then
+    for _, event in ipairs(uiInput) do
+      validateBagEvent(event)
+      if event.type == "dismiss" then
+        self:_playDismissSound()
+        self._result = { kind = "closed" }
+        self._closed = true
+        return
+      elseif event.type == "pointer_cancel" then
+        self:cancelPointerCapture()
+      end
+    end
+    if self._closed then
+      return
+    end
+    self:_stepFeedback()
+    return
+  end
+  if self._state == "move_select" and self._moveClip ~= nil then
+    for _, event in ipairs(uiInput) do
+      validateBagEvent(event)
+      if event.type == "dismiss" then
+        self:_playDismissSound()
+        self._result = { kind = "closed" }
+        self._closed = true
+        return
+      end
+    end
+    if self._closed then
+      return
+    end
+    self:_stepMoveClip()
+    return
+  end
   if self._state == "item_select" then
     self:_stepItemSelect(uiInput)
     return
   end
   if self._state == "toss_confirm" then
-    self:_stepTossPrompt(uiInput)
+    self:_stepTossConfirm(uiInput)
     return
   end
   if self._state == "toss_ack" then
@@ -1418,6 +1894,7 @@ function BagController:updateFixed(uiInput)
     elseif event.type == "dismiss" then
       -- Terminal outside dismissal: close immediately without unwinding
       -- nested action/toss/move/overlay state through _cancel.
+      self:_playDismissSound()
       self._result = { kind = "closed" }
       self._closed = true
     elseif event.type == "menu" then
@@ -1498,6 +1975,14 @@ function BagController:status()
     focusedAbsoluteIndex = focusedAbsolute,
     focusedVisibleIndex = focusedVisible,
   }
+  -- The value-only lower message for pure rendering: the visible prefix
+  -- plus the full formatted text. The renderer never recomputes reveal.
+  if self._message ~= nil and not self._overlay then
+    record.lowerMessage = { visibleText = self:_visibleMessageText(), fullText = self._message.full }
+  end
+  if self._feedback ~= nil and not self._overlay then
+    record.feedback = { kind = self._feedback.kind, elapsed = self._feedback.elapsed, total = self._feedback.total }
+  end
   if self._state == "action_menu" and not self._overlay then
     record.actions = self._actions
     record.actionNode = self._actionNode
@@ -1513,11 +1998,23 @@ function BagController:status()
     if self._state == "toss_quantity" and self._quantityPressedTicks > 0 then
       record.quantityPressedControl = self._quantityPressedControl
     end
-    if self._state == "toss_confirm" then
-      record.yesNoPrompt = self._prompt:status()
+    if self._state == "toss_confirm" or self._state == "toss_ack" then
+      record.tossBase = self._tossBase
+      local promptStatus = self._prompt:status()
+      if promptStatus.active then
+        record.yesNoPrompt = promptStatus
+      end
     end
   elseif self._state == "move_select" and not self._overlay then
     record.moveTarget = self._moveTarget
+    record.moveOrigin = self._moveFromPos
+    if self._moveClip ~= nil then
+      record.moveTransition = {
+        kind = self._moveClip.changed and "changed" or "unchanged",
+        elapsed = self._moveClip.elapsed,
+        total = self._moveClip.total,
+      }
+    end
   end
   return record
 end
@@ -1535,6 +2032,11 @@ end
 function BagController:dispose()
   self:_clearQuantityPress()
   self._prompt:dispose()
+  self._feedback = nil
+  self._message = nil
+  self._tossBase = nil
+  self._tossStage = nil
+  self._moveClip = nil
   self._result = nil
   self._closed = true
 end

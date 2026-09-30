@@ -8,10 +8,14 @@
 -- text windows and explicit text anchors plus registration markers, the
 -- semantic focus visuals with their canonical target points, the count
 -- readout, Cancel with its text window and source-centered label area,
--- pocket-aware browse count backgrounds (seven realized variants per
--- pocket), pocket-aware hero framing records, semantic action
--- text/templates, and the action/quantity/
--- confirmation overlays). Every loader, producer
+-- pocket-aware browse/action/quantity count backgrounds (seven realized
+-- variants per pocket), pocket-aware move count/origin backgrounds, the
+-- retained selected-item panel, short/tall lower-message geometry,
+-- activation feedback timing with control visuals, unchanged/changed move
+-- commit clips, original/candidate move target visuals, pocket-aware hero
+-- framing records, semantic action
+-- text/templates, and the action/quantity/move overlays with no standalone
+-- confirmation surface). Every loader, producer
 -- writer, and test calls these validators, so no second interpretation of
 -- the shapes exists. Unknown fields, wrong pane sizes, out-of-bounds
 -- geometry, wrong tab/slot cardinality, unresolvable animation states, and
@@ -24,7 +28,7 @@ local ModelAsset = require("libs.assets.src.model.ModelAsset")
 ---@class BagAssetSchema
 local BagAssetSchema = {}
 
-BagAssetSchema.SCHEMA = "g4-bag-assets-v13"
+BagAssetSchema.SCHEMA = "g4-bag-assets-v14"
 BagAssetSchema.PANE_WIDTH = 256
 BagAssetSchema.PANE_HEIGHT = 192
 BagAssetSchema.TAB_COUNT = 8
@@ -254,7 +258,6 @@ local function checkText(text, context)
   checkRecord(text, {
     actions = true,
     movePrompt = true,
-    tossQuantity = true,
     tossConfirm = true,
     tossResult = true,
     selectedItem = true,
@@ -269,7 +272,6 @@ local function checkText(text, context)
   local itemKinds = { text = true, item = true }
   local quantityKinds = { text = true, item = true, quantity = true }
   checkTemplate(text.movePrompt, context, "interactive.text.movePrompt", itemKinds)
-  checkTemplate(text.tossQuantity, context, "interactive.text.tossQuantity", itemKinds)
   checkTemplate(text.tossConfirm, context, "interactive.text.tossConfirm", quantityKinds)
   checkTossResult(text.tossResult, context)
   checkTemplate(text.selectedItem, context, "interactive.text.selectedItem", itemKinds)
@@ -752,26 +754,60 @@ local function checkTossPrompt(prompt, context)
   end
 end
 
--- Lower-pane backgrounds: one static visual per pocket for the
--- action/quantity/confirmation states plus seven browse count variants per
--- pocket, each using the canonical pane size.
+-- One realized count-variant background: a static visual using the
+-- canonical pane size.
+local function checkCountBackground(visual, visualWhat, context)
+  checkVisual(visual, context, visualWhat)
+  if visual.width ~= BagAssetSchema.PANE_WIDTH or visual.height ~= BagAssetSchema.PANE_HEIGHT then
+    fail(visualWhat .. " must use the canonical pane size", context)
+  end
+end
+
+local COUNT_KEYS = { [0] = true, [1] = true, [2] = true, [3] = true, [4] = true, [5] = true, [6] = true }
+
+-- Lower-pane backgrounds: seven browse count variants per pocket (an
+-- array), seven action and quantity count variants per pocket (keyed by
+-- visible count 0..6), and seven move count variants per pocket each
+-- carrying the origin-absent variant plus one variant per visible
+-- original-item cell. No standalone confirmation surface survives.
 local function checkPaneBackgrounds(backgrounds, context)
   checkRecord(backgrounds, {
     browse = true,
     action = true,
     quantity = true,
-    confirmation = true,
+    move = true,
   }, context, "interactive.backgrounds")
-  for _, state in ipairs({ "action", "quantity", "confirmation" }) do
+  for _, state in ipairs({ "action", "quantity" }) do
     local pockets = backgrounds[state]
     local what = "interactive.backgrounds." .. state
     checkRecord(pockets, POCKET_SET, context, what, "a pocket record")
     for _, pocket in ipairs(BagAssetSchema.POCKETS) do
-      local visual = pockets[pocket]
-      local visualWhat = what .. "." .. pocket
-      checkVisual(visual, context, visualWhat)
-      if visual.width ~= BagAssetSchema.PANE_WIDTH or visual.height ~= BagAssetSchema.PANE_HEIGHT then
-        fail(visualWhat .. " must use the canonical pane size", context)
+      local perPocket = pockets[pocket]
+      local pocketWhat = what .. "." .. pocket
+      checkRecord(perPocket, COUNT_KEYS, context, pocketWhat, "a visible-count record")
+      for count = 0, 6 do
+        checkCountBackground(perPocket[count], pocketWhat .. "[" .. count .. "]", context)
+      end
+    end
+  end
+  do
+    local move = backgrounds.move
+    local what = "interactive.backgrounds.move"
+    checkRecord(move, POCKET_SET, context, what, "a pocket record")
+    local originKeys =
+      { none = true, ["0"] = true, ["1"] = true, ["2"] = true, ["3"] = true, ["4"] = true, ["5"] = true }
+    for _, pocket in ipairs(BagAssetSchema.POCKETS) do
+      local perPocket = move[pocket]
+      local pocketWhat = what .. "." .. pocket
+      checkRecord(perPocket, COUNT_KEYS, context, pocketWhat, "a visible-count record")
+      for count = 0, 6 do
+        local perCount = perPocket[count]
+        local countWhat = pocketWhat .. "[" .. count .. "]"
+        checkRecord(perCount, originKeys, context, countWhat, "a move-origin record")
+        checkCountBackground(perCount.none, countWhat .. ".none", context)
+        for _, origin in ipairs({ "0", "1", "2", "3", "4", "5" }) do
+          checkCountBackground(perCount[origin], countWhat .. "[" .. origin .. "]", context)
+        end
       end
     end
   end
@@ -974,20 +1010,87 @@ local function checkQuantityOverlay(quantity, context)
   checkRect(quantity.cancelHitRect, context, "interactive.overlays.quantity.cancelHitRect")
 end
 
+-- The retained selected-item panel: the selected icon center plus the
+-- dedicated item text window with its explicit name/quantity anchors.
+local function checkSelectedItem(panel, context)
+  checkRecord(panel, {
+    iconCenter = true,
+    textRect = true,
+    nameAt = true,
+    quantityAt = true,
+  }, context, "interactive.overlays.selectedItem")
+  checkPoint(panel.iconCenter, context, "interactive.overlays.selectedItem.iconCenter")
+  checkRect(panel.textRect, context, "interactive.overlays.selectedItem.textRect")
+  checkLocalPoint(panel.nameAt, panel.textRect, context, "interactive.overlays.selectedItem.nameAt")
+  checkLocalPoint(panel.quantityAt, panel.textRect, context, "interactive.overlays.selectedItem.quantityAt")
+end
+
+-- Lower-message geometry: the short framed window for action/move
+-- messages and the tall framed window for toss confirmation/result.
+local function checkMessages(messages, context)
+  checkRecord(messages, { selected = true, modal = true }, context, "interactive.overlays.messages")
+  for _, key in ipairs({ "selected", "modal" }) do
+    local window = messages[key]
+    local what = "interactive.overlays.messages." .. key
+    checkRecord(window, { contentRect = true }, context, what)
+    checkRect(window.contentRect, context, what .. ".contentRect")
+  end
+end
+
 local function checkOverlays(overlays, context)
   checkRecord(overlays, {
     actionMenu = true,
     quantity = true,
     descriptionFallback = true,
     tossPrompt = true,
+    selectedItem = true,
+    messages = true,
   }, context, "interactive.overlays")
   checkTossPrompt(overlays.tossPrompt, context)
   checkActionMenu(overlays.actionMenu, context)
   checkQuantityOverlay(overlays.quantity, context)
+  checkSelectedItem(overlays.selectedItem, context)
+  checkMessages(overlays.messages, context)
   local fallback = overlays.descriptionFallback
   checkRecord(fallback, { frame = true, textRect = true }, context, "interactive.overlays.descriptionFallback")
   checkRect(fallback.frame, context, "interactive.overlays.descriptionFallback.frame")
   checkRect(fallback.textRect, context, "interactive.overlays.descriptionFallback.textRect")
+end
+
+-- Activation feedback: the generated palette-flash total plus the
+-- normal/selected control visuals the renderer phases while latched.
+local function checkFeedbackVisuals(visuals, context, what)
+  checkRecord(visuals, { normal = true, selected = true }, context, what)
+  checkVisual(visuals.normal, context, what .. ".normal")
+  checkVisual(visuals.selected, context, what .. ".selected")
+end
+
+local function checkFeedback(feedback, context)
+  checkRecord(feedback, {
+    totalTicks = true,
+    actionFace = true,
+    cancelFace = true,
+    quantityConfirm = true,
+  }, context, "interactive.feedback")
+  checkInteger(feedback.totalTicks, context, "interactive.feedback.totalTicks", 1, nil, "a positive integer")
+  checkFeedbackVisuals(feedback.actionFace, context, "interactive.feedback.actionFace")
+  checkFeedbackVisuals(feedback.cancelFace, context, "interactive.feedback.cancelFace")
+  checkFeedbackVisuals(feedback.quantityConfirm, context, "interactive.feedback.quantityConfirm")
+end
+
+-- Move commit clips: one one-shot sequence per reorder kind reusing the
+-- selection-entry sequence contract, plus the original/candidate target
+-- cursor visuals.
+local function checkMoveTransition(moveTransition, context)
+  checkRecord(moveTransition, { unchanged = true, changed = true }, context, "interactive.moveTransition")
+  checkSelectionEntry(moveTransition.unchanged, context)
+  checkSelectionEntry(moveTransition.changed, context)
+end
+
+local function checkMoveCursor(moveCursor, context)
+  checkRecord(moveCursor, { original = true, candidate = true }, context, "interactive.moveCursor")
+  checkVisual(moveCursor.original, context, "interactive.moveCursor.original")
+  checkVisual(moveCursor.candidate, context, "interactive.moveCursor.candidate")
 end
 
 local function checkInteractive(interactive, context)
@@ -1001,6 +1104,9 @@ local function checkInteractive(interactive, context)
     text = true,
     selectionEntry = true,
     overlays = true,
+    feedback = true,
+    moveTransition = true,
+    moveCursor = true,
   }, context, "interactive")
   checkPaneBackgrounds(interactive.backgrounds, context)
   local pocketTabs = interactive.pocketTabs
@@ -1024,6 +1130,9 @@ local function checkInteractive(interactive, context)
   end
   checkText(interactive.text, context)
   checkSelectionEntry(interactive.selectionEntry, context)
+  checkFeedback(interactive.feedback, context)
+  checkMoveTransition(interactive.moveTransition, context)
+  checkMoveCursor(interactive.moveCursor, context)
   checkRegistration(itemSlots.registration, itemSlots.slots, context)
   checkOverlays(interactive.overlays, context)
 end

@@ -41,6 +41,8 @@ local PokemonMenuComposition = {}
 ---@field fieldTravel table<string, unknown>? durable travel owner (borrowed)
 ---@field cacheFs table<string, unknown>? version cache reader for cited spawn landings
 ---@field overrides table<string, unknown>? per-case application overrides
+---@field effect (fun(sequence: string))? the production semantic sound boundary for bag children
+---@field textPolicy table<string, unknown>? the copied player text-speed cadence for bag children
 
 -- The menu flow's field-check port: capture the current world facts on
 -- every call, then answer the source eligibility decision. Fresh reads
@@ -89,6 +91,8 @@ function PokemonMenuComposition.create(deps)
   local worldPorts = assert(deps.worldPorts, "the menu composition needs the field world ports")
   assert(type(worldPorts) == "table", "the menu composition needs the field world ports")
   local overrides = deps.overrides
+  assert(deps.effect == nil or type(deps.effect) == "function", "the menu composition carries an effect function")
+  assert(deps.textPolicy == nil or type(deps.textPolicy) == "table", "the menu composition carries a text policy")
 
   local partyActions = PartyActions.new({ mons = mons, bag = bag })
   local ports = {}
@@ -118,6 +122,8 @@ function PokemonMenuComposition.create(deps)
   local function makeFlow(root)
     return PokemonMenuFlow.new({
       root = root,
+      effect = deps.effect,
+      textPolicy = deps.textPolicy,
       mons = mons,
       bag = bag,
       bagCursor = bagCursor,

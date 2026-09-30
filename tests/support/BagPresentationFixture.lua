@@ -195,12 +195,38 @@ function BagPresentationFixture.manifest()
     }
   end
   local backgrounds = {}
-  for _, state in ipairs({ "action", "quantity", "confirmation" }) do
+  for _, state in ipairs({ "action", "quantity" }) do
     local pockets = {}
     for _, pocket in ipairs(BagAssetSchema.POCKETS) do
-      pockets[pocket] = bagImageRef("assets/generated/bag/background-" .. state .. "-" .. pocket .. ".png")
+      local variants = {}
+      for count = 0, 6 do
+        variants[count] =
+          bagImageRef("assets/generated/bag/background-" .. state .. "-" .. pocket .. "-count-" .. count .. ".png")
+      end
+      pockets[pocket] = variants
     end
     backgrounds[state] = pockets
+  end
+  do
+    local move = {}
+    for _, pocket in ipairs(BagAssetSchema.POCKETS) do
+      local counts = {}
+      for count = 0, 6 do
+        local origins = {
+          none = bagImageRef(
+            "assets/generated/bag/background-move-" .. pocket .. "-count-" .. count .. "-origin-none.png"
+          ),
+        }
+        for _, origin in ipairs({ "0", "1", "2", "3", "4", "5" }) do
+          origins[origin] = bagImageRef(
+            "assets/generated/bag/background-move-" .. pocket .. "-count-" .. count .. "-origin-" .. origin .. ".png"
+          )
+        end
+        counts[count] = origins
+      end
+      move[pocket] = counts
+    end
+    backgrounds.move = move
   end
   do
     local browse = {}
@@ -368,9 +394,6 @@ function BagPresentationFixture.manifest()
         movePrompt = {
           segments = { { kind = "text", value = "Move " }, { kind = "item" }, { kind = "text", value = "?" } },
         },
-        tossQuantity = {
-          segments = { { kind = "text", value = "Toss " }, { kind = "item" }, { kind = "text", value = "?" } },
-        },
         tossConfirm = {
           segments = {
             { kind = "text", value = "Toss " },
@@ -456,6 +479,61 @@ function BagPresentationFixture.manifest()
         },
         descriptionFallback = { frame = bagRect(0, 144, 256, 48), textRect = bagRect(20, 144, 228, 40) },
         tossPrompt = { x = 200, y = 48, shape = "compact", initialSelection = "yes" },
+        selectedItem = {
+          iconCenter = { x = 86, y = 76 },
+          textRect = bagRect(96, 56, 88, 32),
+          nameAt = { x = 0, y = 0 },
+          quantityAt = { x = 48, y = 16 },
+        },
+        messages = {
+          selected = { contentRect = bagRect(16, 8, 216, 16) },
+          modal = { contentRect = bagRect(16, 8, 216, 32) },
+        },
+      },
+      feedback = {
+        totalTicks = 4,
+        actionFace = {
+          normal = bagImageRef("assets/generated/bag/action-face.png"),
+          selected = bagImageRef("assets/generated/bag/action-face-selected.png"),
+        },
+        cancelFace = {
+          normal = bagImageRef("assets/generated/bag/cancel-face.png"),
+          selected = bagImageRef("assets/generated/bag/cancel-face-selected.png"),
+        },
+        quantityConfirm = {
+          normal = bagImageRef("assets/generated/bag/quantity-confirm.png"),
+          selected = bagImageRef("assets/generated/bag/quantity-confirm-selected.png"),
+        },
+      },
+      moveTransition = {
+        unchanged = {
+          frames = {
+            {
+              image = "assets/generated/bag/move-unchanged-0.png",
+              width = 32,
+              height = 32,
+              durationTicks = 2,
+            },
+          },
+          playback = "once",
+          totalTicks = 2,
+        },
+        changed = {
+          frames = {
+            {
+              image = "assets/generated/bag/move-changed-0.png",
+              width = 32,
+              height = 32,
+              durationTicks = 3,
+            },
+          },
+          playback = "once",
+          totalTicks = 3,
+        },
+      },
+      moveCursor = {
+        original = bagImageRef("assets/generated/bag/move-cursor-original.png"),
+        candidate = bagImageRef("assets/generated/bag/move-cursor-candidate.png"),
       },
     },
   }

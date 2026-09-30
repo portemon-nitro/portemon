@@ -367,6 +367,42 @@ function T.open_bag_stays_controllable_across_window_blur()
           textRect = { x = 192, y = 168, width = 56, height = 16 },
         },
         selectionEntry = { totalTicks = 3 },
+        text = {
+          selectedItem = {
+            segments = {
+              { kind = "text", value = "The " },
+              { kind = "item" },
+              { kind = "text", value = " is selected." },
+            },
+          },
+          movePrompt = {
+            segments = {
+              { kind = "text", value = "Move " },
+              { kind = "item" },
+              { kind = "text", value = "?" },
+            },
+          },
+          tossConfirm = {
+            segments = {
+              { kind = "text", value = "Toss " },
+              { kind = "quantity" },
+              { kind = "text", value = " " },
+              { kind = "item" },
+              { kind = "text", value = "?" },
+            },
+          },
+          tossResult = {
+            segments = {
+              { kind = "text", value = "Threw away " },
+              { kind = "quantity" },
+              { kind = "text", value = " " },
+              { kind = "item" },
+              { kind = "text", value = "." },
+            },
+          },
+        },
+        feedback = { totalTicks = 4 },
+        moveTransition = { unchanged = { totalTicks = 3 }, changed = { totalTicks = 5 } },
         overlays = {
           descriptionFallback = {
             frame = { x = 0, y = 144, width = 256, height = 48 },
@@ -377,6 +413,7 @@ function T.open_bag_stays_controllable_across_window_blur()
       },
     },
     uiManifest = FieldUiFixture.manifest(),
+    textPolicy = { interGlyphDelay = 0, glyphBudget = 512, abAcceleration = true },
     heroGender = "male",
     measureDisplay = function()
       return {

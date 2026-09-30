@@ -165,6 +165,7 @@ local function controller(bag, cursor, layoutManifest)
     promptShape = promptShape(),
     tossPrompt = tossPrompt(),
     itemSelectTicks = 3,
+    textPolicy = { interGlyphDelay = 0, glyphBudget = 512, abAcceleration = true },
     commands = commands(bag),
     resolveActions = BagActionPolicy.forService(bag),
   })
@@ -249,6 +250,50 @@ local function actionSlot(view, id)
   return nil
 end
 
+-- Drains one latched activation behind its generated feedback total.
+local function settleFeedback(control)
+  for _ = 1, 64 do
+    if control:status().feedback == nil then
+      return
+    end
+    control:updateFixed({})
+  end
+  Assert.isNil(control:status().feedback, "the latched activation settles into its transition")
+end
+
+-- Settles the typed confirmation message until the modal prompt opens.
+local function settleTossPrompt(control)
+  for _ = 1, 512 do
+    if control:status().yesNoPrompt ~= nil then
+      return
+    end
+    control:updateFixed({})
+  end
+  Assert.isTrue(control:status().yesNoPrompt ~= nil, "the typed confirmation opens the modal prompt")
+end
+
+-- Settles the typed result message until the acknowledgement owns the tick.
+local function settleTossAck(control)
+  for _ = 1, 512 do
+    if control:status().state == "toss_ack" then
+      return
+    end
+    control:updateFixed({})
+  end
+  Assert.equal(control:status().state, "toss_ack", "the typed result settles into acknowledgement")
+end
+
+-- Settles the running move commit clip until the reorder commits.
+local function settleMoveClip(control)
+  for _ = 1, 64 do
+    if control:status().moveTransition == nil then
+      return
+    end
+    control:updateFixed({})
+  end
+  Assert.isNil(control:status().moveTransition, "the move clip settles into its commit")
+end
+
 -- Drive the action menu selection to the wanted semantic action through the
 -- fixed five-node source adjacency table, then confirm it.
 local function chooseAction(control, id)
@@ -260,6 +305,7 @@ local function chooseAction(control, id)
     view = control:status()
     if view.actionNode == target then
       control:updateFixed({ confirmEvent() })
+      settleFeedback(control)
       return control:status()
     end
     for _, direction in ipairs(directions) do
@@ -282,16 +328,23 @@ local function settlePromptChoice(control)
 end
 
 -- Return to plain browsing from any nested action state through bounded
--- cancel presses. A cancel inside confirmation only latches the refusal,
--- so the prompt interval settles before unwinding continues.
+-- cancel presses. Activation cancel latches behind feedback, a cancel
+-- inside confirmation only latches the refusal, so feedback drains and
+-- the prompt interval settles before unwinding continues.
 local function backToBrowsing(control)
-  for _ = 1, 6 do
+  for _ = 1, 12 do
     local view = control:status()
     if view.state == nil or view.state == "browsing" then
       return view
     end
-    control:updateFixed({ cancelEvent() })
-    if control:status().state == "toss_confirm" then
+    if view.state == "toss_confirm" and view.yesNoPrompt == nil then
+      settleTossPrompt(control)
+    else
+      control:updateFixed({ cancelEvent() })
+      settleFeedback(control)
+    end
+    local settled = control:status()
+    if settled.state == "toss_confirm" and settled.yesNoPrompt ~= nil then
       settlePromptChoice(control)
     end
   end
@@ -368,6 +421,7 @@ function T.cancelled_confirmation_never_mutates()
   view = chooseAction(control, "toss")
   Assert.equal(view.state, "toss_quantity", "choosing toss must enter the quantity picker")
   control:updateFixed({ confirmEvent() })
+  settleFeedback(control)
   view = control:status()
   Assert.equal(view.state, "toss_confirm", "confirming a quantity must ask for confirmation")
   local revision = bag:revision()
@@ -422,12 +476,15 @@ function T.confirmed_toss_removes_once_and_returns_to_browsing()
   control:updateFixed({ navigate("up") })
   Assert.equal(control:status().quantity, 2, "east steps the quantity up")
   control:updateFixed({ confirmEvent() })
+  settleFeedback(control)
   view = control:status()
   Assert.equal(view.state, "toss_confirm", "confirming a quantity must ask for confirmation")
   Assert.equal(view.quantity, 2, "the confirmation carries the picked quantity")
   Assert.equal(bag:revision(), revision, "entering confirmation never mutates")
+  settleTossPrompt(control)
   control:updateFixed({ confirmEvent() })
   settlePromptChoice(control)
+  settleTossAck(control)
   view = control:status()
   Assert.equal(view.state, "toss_ack", "accepting YES waits for a later acknowledgement")
   Assert.equal(bag:quantity("POTION"), 5, "accepting YES changes no quantities")
@@ -494,6 +551,7 @@ function T.failing_service_call_never_fakes_success()
     promptShape = promptShape(),
     tossPrompt = tossPrompt(),
     itemSelectTicks = 3,
+    textPolicy = { interGlyphDelay = 0, glyphBudget = 512, abAcceleration = true },
     commands = {
       toss = function(_, _)
         return false
@@ -514,9 +572,12 @@ function T.failing_service_call_never_fakes_success()
   openActionMenu(control)
   chooseAction(control, "toss")
   control:updateFixed({ confirmEvent() })
+  settleFeedback(control)
   Assert.equal(control:status().state, "toss_confirm", "setup reaches the modal confirmation")
+  settleTossPrompt(control)
   control:updateFixed({ confirmEvent() })
   settlePromptChoice(control)
+  settleTossAck(control)
   Assert.equal(control:status().state, "toss_ack", "accepting YES waits for a later acknowledgement")
   control:updateFixed({ confirmEvent() })
   local view = control:status()
@@ -549,6 +610,7 @@ function T.reorder_across_pages_keeps_the_moved_item_selected()
   view = control:status()
   Assert.equal(view.moveTarget, 3, "two rows up moves the target across the page boundary")
   control:updateFixed({ confirmEvent() })
+  settleMoveClip(control)
   view = control:status()
   Assert.equal(view.state, "browsing", "a committed move returns to browsing")
   local order = {}
@@ -620,10 +682,12 @@ function T.pointer_button_tap_matches_the_keyboard_choice()
   local layout = BagLayout.resolve({ manifest = layoutManifest, heroVisible = true })
   openActionMenu(control)
   tap(control, layout, 144, 144)
+  settleFeedback(control)
   local view = control:status()
   Assert.equal(view.state, "toss_quantity", "tapping the first button chooses toss like the keyboard")
   local revision = bag:revision()
   tap(control, layout, 220, 176)
+  settleFeedback(control)
   view = control:status()
   Assert.equal(view.state, "browsing", "tapping cancel leaves the picker like the cancel key")
   Assert.equal(bag:revision(), revision, "pointer navigation never mutates")
@@ -646,6 +710,7 @@ function T.pointer_cell_tap_steers_the_move_target()
   Assert.equal(control:status().moveTarget, 1, "tapping a cell steers the target like the keyboard")
   local revision = bag:revision()
   control:updateFixed({ confirmEvent() })
+  settleMoveClip(control)
   local order = {}
   for _, slot in ipairs(bag:pocketItems("medicine")) do
     order[#order + 1] = slot.item
@@ -730,6 +795,7 @@ function T.pointer_only_toss_picks_confirms_once_without_early_mutation()
   openMenuByPointer(control, layout, 0)
   Assert.equal(bag:revision(), revision, "opening the menu never mutates the inventory")
   tapButton(control, layout, layoutManifest, 1)
+  settleFeedback(control)
   local view = control:status()
   Assert.equal(view.state, "toss_quantity", "the first button enters the quantity picker by pointer alone")
   Assert.equal(view.quantity, 1, "the picker preselects one copy")
@@ -747,17 +813,20 @@ function T.pointer_only_toss_picks_confirms_once_without_early_mutation()
   tapButton(control, layout, layoutManifest, 1)
   Assert.equal(control:status().quantity, 3, "the picker settles on three copies")
   tapButton(control, layout, layoutManifest, 3)
+  settleFeedback(control)
   view = control:status()
   Assert.equal(view.state, "toss_confirm", "the third button enters confirmation by pointer alone")
   Assert.equal(view.quantity, 3, "the confirmation carries the picked quantity")
   Assert.equal(bag:revision(), revision, "entering confirmation never mutates the inventory")
   Assert.equal(bag:quantity("POTION"), 5, "entering confirmation changes no quantities")
+  settleTossPrompt(control)
   tapButton(control, layout, layoutManifest, 3)
   -- The press latched immediately, so the release half of the tap already
   -- consumed one confirmation step; eight further updates close the interval.
   for _ = 1, 8 do
     control:updateFixed({})
   end
+  settleTossAck(control)
   view = control:status()
   Assert.equal(view.state, "toss_ack", "the YES row acknowledges without mutating")
   Assert.equal(bag:quantity("POTION"), 5, "the acknowledgement changes no quantities yet")
@@ -783,19 +852,24 @@ function T.pointer_only_toss_cancellation_returns_one_level_without_mutation()
   local revision = bag:revision()
   openMenuByPointer(control, layout, 0)
   tapButton(control, layout, layoutManifest, 1)
+  settleFeedback(control)
   Assert.equal(control:status().state, "toss_quantity")
   tapButton(control, layout, layoutManifest, 2)
   Assert.equal(control:status().quantity, 2, "setup picks two copies")
   tapCancel(control, layout, layoutManifest)
+  settleFeedback(control)
   local view = control:status()
   Assert.equal(view.state, "browsing", "cancelling the quantity picker returns to browsing by pointer alone")
   Assert.equal(bag:revision(), revision, "cancelling the quantity picker mutates nothing")
   Assert.equal(bag:quantity("POTION"), 5, "cancelling the quantity picker changes no quantities")
   openMenuByPointer(control, layout, 0)
   tapButton(control, layout, layoutManifest, 1)
+  settleFeedback(control)
   Assert.equal(control:status().state, "toss_quantity", "the reopened menu still offers toss after cancellation")
   tapButton(control, layout, layoutManifest, 3)
+  settleFeedback(control)
   Assert.equal(control:status().state, "toss_confirm", "setup reaches confirmation")
+  settleTossPrompt(control)
   tapButton(control, layout, layoutManifest, 2)
   settlePromptChoice(control)
   view = control:status()
@@ -814,6 +888,7 @@ function T.pointer_quantity_controls_match_press_and_release_targets()
   local layout = BagLayout.resolve({ manifest = layoutManifest, heroVisible = true })
   openMenuByPointer(control, layout, 0)
   tapButton(control, layout, layoutManifest, 1)
+  settleFeedback(control)
   Assert.equal(control:status().state, "toss_quantity")
   tapButton(control, layout, layoutManifest, 2)
   tapButton(control, layout, layoutManifest, 2)
@@ -854,6 +929,7 @@ function T.pointer_only_move_selects_a_target_then_confirms_once()
   end
   Assert.deepEqual(order, { "POTION", "ITEM_1" }, "steering the target preserves the pocket order")
   tapButton(control, layout, layoutManifest, 3)
+  settleMoveClip(control)
   view = control:status()
   Assert.equal(view.state, "browsing", "the explicit confirm commits by pointer alone")
   order = {}
@@ -904,6 +980,7 @@ function T.pointer_only_register_and_unregister_commit_once_each_with_a_refresh(
   local view = openMenuByPointer(control, layout, 0)
   Assert.isTrue(hasAction(view, "register"), "an unregistered registerable item must offer to register")
   tapButton(control, layout, layoutManifest, 1)
+  settleFeedback(control)
   view = control:status()
   Assert.equal(view.state, "browsing", "a committed registration returns to browsing by pointer alone")
   Assert.deepEqual(bag:registeredItems(), { "BICYCLE" }, "registering must claim the first slot")
@@ -913,6 +990,7 @@ function T.pointer_only_register_and_unregister_commit_once_each_with_a_refresh(
   Assert.isTrue(hasAction(view, "unregister"), "a registered item must offer to unregister")
   Assert.isFalse(hasAction(view, "register"), "a registered item must not offer to register again")
   tapButton(control, layout, layoutManifest, 1)
+  settleFeedback(control)
   view = control:status()
   Assert.equal(view.state, "browsing", "a committed unregistration returns to browsing by pointer alone")
   Assert.deepEqual(bag:registeredItems(), {}, "unregistering must release the slot")
