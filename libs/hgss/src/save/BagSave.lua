@@ -113,7 +113,7 @@ local function validateRecord(value, itemCatalog)
       fail("bag pocket " .. pocketKey .. " exceeds its capacity", { pocket = pocketKey })
     end
     local canonicalSlots = {}
-    local previousNativeId = nil
+    local previousOrderingKey = nil
     for index = 1, #slots do
       local slot = slots[index]
       if type(slot) ~= "table" then
@@ -139,19 +139,24 @@ local function validateRecord(value, itemCatalog)
         or slot.quantity > pocket.maxQuantity
       then
         fail(
-          "bag item " .. slot.item .. " quantity is outside 1.." .. pocket.maxQuantity,
-          { pocket = pocketKey, item = slot.item }
+          "bag item " .. slot.item .. " quantity " .. tostring(slot.quantity) .. " is outside 1.." .. pocket.maxQuantity,
+          { pocket = pocketKey, item = slot.item, quantity = slot.quantity }
         )
       end
       if seen[slot.item] then
         fail("bag item " .. slot.item .. " is stored twice", { item = slot.item })
       end
       seen[slot.item] = true
+      -- Canonical pocket order is the catalog's ordering key: native
+      -- entries keep numeric source order while custom entries sort after
+      -- every native entry, ordered by pocket and key. Shared with the
+      -- live inventory, so validation never repairs order on its own.
       if pocket.ordering == "native_id" then
-        if previousNativeId ~= nil and definition.nativeId <= previousNativeId then
+        local orderingKey = itemCatalog:orderingKey(slot.item)
+        if previousOrderingKey ~= nil and orderingKey <= previousOrderingKey then
           fail("bag pocket " .. pocketKey .. " is not in native-id order", { pocket = pocketKey })
         end
-        previousNativeId = definition.nativeId
+        previousOrderingKey = orderingKey
       end
       canonicalSlots[index] = { item = slot.item, quantity = slot.quantity }
     end
