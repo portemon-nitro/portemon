@@ -106,8 +106,8 @@ local function foundationManifest()
       size = { width = 128, height = 48 },
       iconAnchor = { x = ox + 30, y = oy + 16 },
       ballAnchor = { x = ox + 16, y = oy + 14 },
-      heldAnchor = { x = ox + 47, y = oy + 25 },
-      capsuleAnchor = { x = ox + 12, y = oy + 25 },
+      heldAnchor = { x = ox + 38, y = oy + 24 },
+      capsuleAnchor = { x = ox + 46, y = oy + 24 },
       statusRect = { x = ox + 24, y = oy + 40, width = 24, height = 8 },
       cursorSequence = 1,
       chrome = {
@@ -216,15 +216,12 @@ local function foundationManifest()
       detailSub = { image = "test/detail-sub.png", width = 256, height = 256 },
       auxPanel = { image = "test/aux-panel.png", width = 128, height = 48 },
       status = {
-        frames = {
-          { image = "test/status-faint.png", width = 24, height = 8 },
-          { image = "test/status-sleep.png", width = 24, height = 8 },
-          { image = "test/status-poison.png", width = 24, height = 8 },
-          { image = "test/status-burn.png", width = 24, height = 8 },
-          { image = "test/status-freeze.png", width = 24, height = 8 },
-          { image = "test/status-paralysis.png", width = 24, height = 8 },
-          { image = "test/status-healthy.png", width = 24, height = 8 },
-        },
+        paralysis = { image = "test/status-paralysis.png", width = 24, height = 8 },
+        freeze = { image = "test/status-freeze.png", width = 24, height = 8 },
+        sleep = { image = "test/status-sleep.png", width = 24, height = 8 },
+        poison = { image = "test/status-poison.png", width = 24, height = 8 },
+        burn = { image = "test/status-burn.png", width = 24, height = 8 },
+        faint = { image = "test/status-faint.png", width = 24, height = 8 },
       },
       hpBars = {
         green = { image = "test/hp-green.png", width = 48, height = 4 },
@@ -232,7 +229,7 @@ local function foundationManifest()
         red = { image = "test/hp-red.png", width = 48, height = 4 },
       },
     },
-    controls = { cancel = { anchor = { x = 232, y = 184 } } },
+    controls = { cancel = { anchor = { x = 232, y = 176 } } },
     iconAnimations = { periods = { 1, 8, 12, 24, 40, 36 } },
     navigation = {
       dpad = {
@@ -292,7 +289,7 @@ local function foundationCache()
     stub("test/" .. path .. ".png", 256, 256, 20, 20, 20)
   end
   stub("test/aux-panel.png", 128, 48, 40, 40, 56)
-  for _, path in ipairs({ "status-faint", "status-sleep", "status-poison", "status-burn", "status-freeze", "status-paralysis", "status-healthy" }) do
+  for _, path in ipairs({ "status-faint", "status-sleep", "status-poison", "status-burn", "status-freeze", "status-paralysis" }) do
     stub("test/" .. path .. ".png", 24, 8, 230, 230, 230)
   end
   stub("test/hp-green.png", 48, 4, 40, 220, 40)

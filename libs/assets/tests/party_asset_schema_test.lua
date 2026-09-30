@@ -31,8 +31,8 @@ local function panel(originX, originY)
     size = { width = 128, height = 48 },
     iconAnchor = { x = originX + 30, y = originY + 16 },
     ballAnchor = { x = originX + 16, y = originY + 14 },
-    heldAnchor = { x = originX + 47, y = originY + 25 },
-    capsuleAnchor = { x = originX + 12, y = originY + 25 },
+    heldAnchor = { x = originX + 38, y = originY + 24 },
+    capsuleAnchor = { x = originX + 46, y = originY + 24 },
     statusRect = rect(originX + 24, originY + 40, 24, 8),
     cursorSequence = 1,
     chrome = {
@@ -45,11 +45,6 @@ local function panel(originX, originY)
     hp = { bar = rect(originX + 64, originY + 24, 48, 8), number = rect(originX + 56, originY + 32, 64, 16) },
     compat = rect(originX + 48, originY + 32, 80, 16),
   }
-end
-
-local statusFrames = {}
-for state = 1, 7 do
-  statusFrames[state] = imageRef("assets/generated/party/status-" .. state .. ".png", 24, 8)
 end
 
 local function manifest()
@@ -99,7 +94,14 @@ local function manifest()
           { frames = { frameRef("assets/generated/party/held-0.png", 8, 8) }, loopFrom = 1, playback = "static" },
         },
       },
-      status = { frames = statusFrames },
+      status = {
+        paralysis = imageRef("assets/generated/party/status-paralysis.png", 24, 8),
+        freeze = imageRef("assets/generated/party/status-freeze.png", 24, 8),
+        sleep = imageRef("assets/generated/party/status-sleep.png", 24, 8),
+        poison = imageRef("assets/generated/party/status-poison.png", 24, 8),
+        burn = imageRef("assets/generated/party/status-burn.png", 24, 8),
+        faint = imageRef("assets/generated/party/status-faint.png", 24, 8),
+      },
       feedback = {
         frames = {
           frameRef("assets/generated/party/feedback-0.png", 16, 16, 3),
@@ -120,7 +122,13 @@ local function manifest()
         red = imageRef("assets/generated/party/hp-red.png", 48, 4),
       },
     },
-    controls = { cancel = { anchor = { x = 232, y = 184 } } },
+    controls = { cancel = { anchor = { x = 232, y = 176 } } },
+    detail = {
+      iconAnchor = { x = 30, y = 200 },
+      statusAnchor = { x = 50, y = 220 },
+      nicknameTextOrigin = { x = 56, y = 192 },
+      heldItemTextOrigin = { x = 138, y = 212 },
+    },
     iconAnimations = {
       periods = { 1, 8, 12, 24, 40, 36 },
       replacementDurations = { 32, 2, 2 },
@@ -222,6 +230,41 @@ function T.schema_rejects_missing_v2_presentation_facts()
   local missingHp = manifest()
   missingHp.visuals.hpBars = nil
   Assert.isFalse(PartyAssetSchema.isValidManifest(missingHp), "source HP strips are required")
+
+  local missingDetail = manifest()
+  missingDetail.detail.statusAnchor = nil
+  Assert.isFalse(PartyAssetSchema.isValidManifest(missingDetail), "upper detail geometry is required")
+end
+
+function T.schema_requires_exact_semantic_status_visuals()
+  local missing = manifest()
+  missing.visuals.status.poison = nil
+  Assert.isFalse(PartyAssetSchema.isValidManifest(missing), "every semantic status visual is required")
+
+  local extra = manifest()
+  extra.visuals.status.ok = imageRef("assets/generated/party/status-ok.png", 24, 8)
+  Assert.isFalse(PartyAssetSchema.isValidManifest(extra), "healthy status is not a runtime visual")
+
+  local wrongDimensions = manifest()
+  wrongDimensions.visuals.status.faint = imageRef("assets/generated/party/status-faint.png", 24, 9)
+  Assert.isFalse(PartyAssetSchema.isValidManifest(wrongDimensions), "status visuals keep their 24x8 size")
+end
+
+function T.schema_accepts_strict_detail_points_beyond_the_visible_pane()
+  local complete = manifest()
+  Assert.isTrue(PartyAssetSchema.isValidManifest(complete), "rest geometry extends into the full detail surface")
+
+  local extra = manifest()
+  extra.detail.sourceSequence = 1
+  Assert.isFalse(PartyAssetSchema.isValidManifest(extra), "detail geometry has no source sequence field")
+
+  local fractional = manifest()
+  fractional.detail.statusAnchor.x = 50.5
+  Assert.isFalse(PartyAssetSchema.isValidManifest(fractional), "detail points are integral")
+
+  local outOfRange = manifest()
+  outOfRange.detail.heldItemTextOrigin.y = 256
+  Assert.isFalse(PartyAssetSchema.isValidManifest(outOfRange), "detail points fit the 256-pixel source surface")
 end
 
 function T.schema_rejects_a_v1_manifest()
@@ -252,10 +295,10 @@ function T.schema_rejects_off_pane_hitboxes_but_permits_negative_crop_offsets()
   Assert.isTrue(PartyAssetSchema.isValidManifest(cropped), "negative sprite crop offsets stay valid")
 end
 
-function T.modded_valid_visuals_pass_without_a_fixed_frame_count()
+function T.modded_animated_visuals_pass_without_a_fixed_frame_count()
   local modded = manifest()
   modded.visuals.balls.sequences[1].frames[2] = frameRef("assets/generated/party/ball-1.png", 40, 40, 12)
-  Assert.isTrue(PartyAssetSchema.isValidManifest(modded), "extra frames and sizes are modding freedom")
+  Assert.isTrue(PartyAssetSchema.isValidManifest(modded), "animated visual frame counts and sizes remain flexible")
 end
 
 function T.schema_rejects_source_identities_in_the_runtime_manifest()

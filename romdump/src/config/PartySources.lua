@@ -169,7 +169,21 @@ PartySources.iconReplacement = { durations = { 32, 2, 2 }, shiftX = { 0, 1, -1 }
 -- seven static sequences with OK hidden; feedback hides its sprite when
 -- frame index 2 is reached instead of drawing all six ticks. Member roles
 -- verified by decode against the canonical dump.
-PartySources.status = { animationMember = 62, cellMember = 63, charMember = 64, paletteMember = 65 }
+PartySources.status = {
+  animationMember = 62,
+  cellMember = 63,
+  charMember = 64,
+  paletteMember = 65,
+  -- PartyMonStatusIconId maps PRZ/FRZ/SLP/PSN/BRN/FNT to sequences 1..6.
+  semanticSequences = {
+    { key = "paralysis", sequence = 1 },
+    { key = "freeze", sequence = 2 },
+    { key = "sleep", sequence = 3 },
+    { key = "poison", sequence = 4 },
+    { key = "burn", sequence = 5 },
+    { key = "faint", sequence = 6 },
+  },
+}
 PartySources.feedback =
   { animationMember = 27, cellMember = 28, charMember = 29, paletteMember = 23, sequence = 0, durations = { 3, 2, 1 } }
 
@@ -313,26 +327,20 @@ PartySources.geometry = {
     { x = 16, y = 110 },
     { x = 144, y = 118 },
   },
-  heldAnchors = {
-    { x = 47, y = 25 },
-    { x = 175, y = 33 },
-    { x = 47, y = 73 },
-    { x = 175, y = 81 },
-    { x = 47, y = 121 },
-    { x = 175, y = 129 },
-  },
-  capsuleAnchors = {
-    { x = 12, y = 25 },
-    { x = 140, y = 33 },
-    { x = 12, y = 73 },
-    { x = 140, y = 81 },
-    { x = 12, y = 121 },
-    { x = 140, y = 129 },
-  },
+  -- PartyMenu_SetMonHeldItemIconCoords derives held from icon +(8,8);
+  -- PartyMenu_RefreshMonCapsuleIconSpritePos derives capsule from held +(8,0).
+  indicatorOffsets = { heldFromIcon = { x = 8, y = 8 }, capsuleFromHeld = { x = 8, y = 0 } },
   -- Values select source cursor sequences; the compiler lowers them to the
   -- one-based index used by the generated manifest.
   cursorSequenceSelectors = { 1, 0, 0, 0, 0, 0 },
-  controls = { cancelAnchor = { x = 232, y = 184 } },
+  -- sub_02079D38 moves the raw sprite template by y-8 during normal setup.
+  controls = { cancel = { templateAnchor = { x = 232, y = 184 }, normalSetupOffset = { x = 0, y = -8 } } },
+  detail = {
+    iconAnchor = { x = 30, y = 200 },
+    statusAnchor = { x = 50, y = 220 },
+    nicknameTextOrigin = { x = 56, y = 192 },
+    heldItemTextOrigin = { x = 138, y = 212 },
+  },
   statusRects = {
     { x = 24, y = 40, width = 24, height = 8 },
     { x = 152, y = 48, width = 24, height = 8 },

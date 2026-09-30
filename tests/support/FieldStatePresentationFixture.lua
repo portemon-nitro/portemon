@@ -62,8 +62,8 @@ local function partyManifest()
       size = { width = 128, height = 48 },
       iconAnchor = { x = origin[1] + 30, y = origin[2] + 16 },
       ballAnchor = { x = origin[1] + 16, y = origin[2] + 14 },
-      heldAnchor = { x = origin[1] + 47, y = origin[2] + 25 },
-      capsuleAnchor = { x = origin[1] + 12, y = origin[2] + 25 },
+      heldAnchor = { x = origin[1] + 38, y = origin[2] + 24 },
+      capsuleAnchor = { x = origin[1] + 46, y = origin[2] + 24 },
       statusRect = rect(origin[1] + 24, origin[2] + 40, 24, 8),
       cursorSequence = 1,
       chrome = {
@@ -120,15 +120,12 @@ local function partyManifest()
       buttons = sequences("assets/generated/party/fixture-button-0.png", 32, 32),
       held = sequences("assets/generated/party/fixture-held-0.png", 8, 8),
       status = {
-        frames = {
-          imageRef("assets/generated/party/fixture-status-1.png", 24, 8),
-          imageRef("assets/generated/party/fixture-status-2.png", 24, 8),
-          imageRef("assets/generated/party/fixture-status-3.png", 24, 8),
-          imageRef("assets/generated/party/fixture-status-4.png", 24, 8),
-          imageRef("assets/generated/party/fixture-status-5.png", 24, 8),
-          imageRef("assets/generated/party/fixture-status-6.png", 24, 8),
-          imageRef("assets/generated/party/fixture-status-7.png", 24, 8),
-        },
+        paralysis = imageRef("assets/generated/party/fixture-status-paralysis.png", 24, 8),
+        freeze = imageRef("assets/generated/party/fixture-status-freeze.png", 24, 8),
+        sleep = imageRef("assets/generated/party/fixture-status-sleep.png", 24, 8),
+        poison = imageRef("assets/generated/party/fixture-status-poison.png", 24, 8),
+        burn = imageRef("assets/generated/party/fixture-status-burn.png", 24, 8),
+        faint = imageRef("assets/generated/party/fixture-status-faint.png", 24, 8),
       },
       feedback = {
         frames = {
@@ -150,7 +147,13 @@ local function partyManifest()
         red = imageRef("assets/generated/party/fixture-hp-red.png", 48, 4),
       },
     },
-    controls = { cancel = { anchor = { x = 232, y = 184 } } },
+    controls = { cancel = { anchor = { x = 232, y = 176 } } },
+    detail = {
+      iconAnchor = { x = 30, y = 200 },
+      statusAnchor = { x = 50, y = 220 },
+      nicknameTextOrigin = { x = 56, y = 192 },
+      heldItemTextOrigin = { x = 138, y = 212 },
+    },
     iconAnimations = {
       periods = { 1, 8, 12, 24, 40, 36 },
       replacementDurations = { 32, 2, 2 },

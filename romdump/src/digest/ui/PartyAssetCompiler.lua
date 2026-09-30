@@ -87,6 +87,10 @@ function PartyAssetCompiler.compileGeometry(sources)
   local controls = geometry.controls --[[@as table<string, unknown>]]
   local placements = geometry.panels --[[@as table[] ]]
   assert(#placements == 6, "party geometry carries six slot placements")
+  local indicatorOffsets = geometry.indicatorOffsets --[[@as table<string, table<string, integer>>]]
+  local heldFromIcon = indicatorOffsets.heldFromIcon
+  local capsuleFromHeld = indicatorOffsets.capsuleFromHeld
+  local cancelSource = controls.cancel --[[@as table<string, table<string, integer>>]]
   local function shift(rect, origin)
     local typed = rect --[[@as table<string, unknown>]]
     return {
@@ -103,13 +107,15 @@ function PartyAssetCompiler.compileGeometry(sources)
     local origin = record.origin --[[@as table<string, integer>]]
     local selector = cursorSelectors[slot]
     assert(selector ~= nil, "every slot has a source cursor sequence")
+    local iconAnchor = geometry.monAnchors[slot] --[[@as table<string, integer>]]
+    local heldAnchor = { x = iconAnchor.x + heldFromIcon.x, y = iconAnchor.y + heldFromIcon.y }
     panels[slot] = {
       origin = { x = origin.x, y = origin.y },
       size = { width = 128, height = 48 },
-      iconAnchor = geometry.monAnchors[slot],
+      iconAnchor = iconAnchor,
       ballAnchor = geometry.ballAnchors[slot],
-      heldAnchor = geometry.heldAnchors[slot],
-      capsuleAnchor = geometry.capsuleAnchors[slot],
+      heldAnchor = heldAnchor,
+      capsuleAnchor = { x = heldAnchor.x + capsuleFromHeld.x, y = heldAnchor.y + capsuleFromHeld.y },
       statusRect = geometry.statusRects[slot],
       cursorSequence = selector + 1,
       text = {
@@ -125,7 +131,15 @@ function PartyAssetCompiler.compileGeometry(sources)
   end
   return {
     panels = panels,
-    controls = { cancel = { anchor = controls.cancelAnchor } },
+    controls = {
+      cancel = {
+        anchor = {
+          x = cancelSource.templateAnchor.x + cancelSource.normalSetupOffset.x,
+          y = cancelSource.templateAnchor.y + cancelSource.normalSetupOffset.y,
+        },
+      },
+    },
+    detail = geometry.detail,
     navigation = geometry.navigation,
     hitboxes = geometry.hitboxes,
     iconAnimations = {
@@ -764,8 +778,10 @@ local function _compile(romFs)
   if #statusAnimation.anims ~= 7 then
     sourceError("status carries an unexpected sequence census", { sequences = #statusAnimation.anims })
   end
-  local statusFrames = {}
-  for sequenceNo = 0, 6 do
+  local statusVisuals = {}
+  for _, statusRecord in ipairs(PartySources.status.semanticSequences) do
+    local semanticKey = statusRecord.key
+    local sequenceNo = statusRecord.sequence
     local compiled = compileSequence(
       statusChar,
       statusPalette.colors,
@@ -774,7 +790,7 @@ local function _compile(romFs)
       sequenceNo,
       "status",
       assets,
-      "status-" .. sequenceNo,
+      "status-" .. semanticKey,
       2
     )
     if #compiled.frames ~= 1 then
@@ -784,7 +800,7 @@ local function _compile(romFs)
     if frame.width ~= 24 or frame.height ~= 8 then
       sourceError("status label escapes 24x8", { sequence = sequenceNo, width = frame.width, height = frame.height })
     end
-    statusFrames[sequenceNo + 1] = { image = frame.image, width = frame.width, height = frame.height }
+    statusVisuals[semanticKey] = { image = frame.image, width = frame.width, height = frame.height }
   end
   local feedbackChar = decode(
     "decodeChar",
@@ -840,13 +856,14 @@ local function _compile(romFs)
     },
     panels = panels,
     controls = geometry.controls,
+    detail = geometry.detail,
     windows = PartySources.windows,
     visuals = {
       cursor = cursor,
       balls = balls,
       buttons = buttons,
       held = held,
-      status = { frames = statusFrames },
+      status = statusVisuals,
       feedback = { frames = feedbackFrames, loopFrom = 1, playback = "once", hideAtFrame = 3 },
       hpBars = hpBars,
       backdropMain = screens.backdropMain,

@@ -35,8 +35,8 @@ local function manifest()
       size = { width = 128, height = 48 },
       iconAnchor = { x = origin[1] + 30, y = origin[2] + 16 },
       ballAnchor = { x = origin[1] + 16, y = origin[2] + 14 },
-      heldAnchor = { x = origin[1] + 47, y = origin[2] + 25 },
-      capsuleAnchor = { x = origin[1] + 12, y = origin[2] + 25 },
+      heldAnchor = { x = origin[1] + 38, y = origin[2] + 24 },
+      capsuleAnchor = { x = origin[1] + 46, y = origin[2] + 24 },
       statusRect = rect(origin[1] + 24, origin[2] + 40, 24, 8),
       cursorSequence = 1,
       chrome = {
@@ -118,15 +118,12 @@ local function manifest()
         },
       },
       status = {
-        frames = {
-          { image = "assets/generated/party/status-1.png", width = 24, height = 8 },
-          { image = "assets/generated/party/status-2.png", width = 24, height = 8 },
-          { image = "assets/generated/party/status-3.png", width = 24, height = 8 },
-          { image = "assets/generated/party/status-4.png", width = 24, height = 8 },
-          { image = "assets/generated/party/status-5.png", width = 24, height = 8 },
-          { image = "assets/generated/party/status-6.png", width = 24, height = 8 },
-          { image = "assets/generated/party/status-7.png", width = 24, height = 8 },
-        },
+        paralysis = imageRef("assets/generated/party/status-paralysis.png", 24, 8),
+        freeze = imageRef("assets/generated/party/status-freeze.png", 24, 8),
+        sleep = imageRef("assets/generated/party/status-sleep.png", 24, 8),
+        poison = imageRef("assets/generated/party/status-poison.png", 24, 8),
+        burn = imageRef("assets/generated/party/status-burn.png", 24, 8),
+        faint = imageRef("assets/generated/party/status-faint.png", 24, 8),
       },
       feedback = {
         frames = {
@@ -148,7 +145,13 @@ local function manifest()
         red = imageRef("assets/generated/party/hp-red.png", 48, 4),
       },
     },
-    controls = { cancel = { anchor = { x = 232, y = 184 } } },
+    controls = { cancel = { anchor = { x = 232, y = 176 } } },
+    detail = {
+      iconAnchor = { x = 30, y = 200 },
+      statusAnchor = { x = 50, y = 220 },
+      nicknameTextOrigin = { x = 56, y = 192 },
+      heldItemTextOrigin = { x = 138, y = 212 },
+    },
     iconAnimations = {
       periods = { 1, 8, 12, 24, 40, 36 },
       replacementDurations = { 32, 2, 2 },

@@ -65,12 +65,41 @@ function T.compiled_geometry_publishes_source_independent_runtime_anchors()
     Assert.deepEqual(panel.iconAnchor, PartySources.geometry.monAnchors[slot], "icon anchor " .. slot)
     Assert.deepEqual(panel.ballAnchor, PartySources.geometry.ballAnchors[slot], "ball anchor " .. slot)
     Assert.deepEqual(panel.statusRect, PartySources.geometry.statusRects[slot], "status rectangle " .. slot)
-    Assert.isTrue(type(panel.heldAnchor) == "table", "held-item anchor " .. slot .. " is published")
-    Assert.isTrue(type(panel.capsuleAnchor) == "table", "capsule anchor " .. slot .. " is published")
+    Assert.deepEqual(
+      { x = panel.heldAnchor.x - panel.iconAnchor.x, y = panel.heldAnchor.y - panel.iconAnchor.y },
+      { x = 8, y = 8 },
+      "held-item anchor " .. slot .. " derives from its icon"
+    )
+    Assert.deepEqual(
+      { x = panel.capsuleAnchor.x - panel.iconAnchor.x, y = panel.capsuleAnchor.y - panel.iconAnchor.y },
+      { x = 16, y = 8 },
+      "capsule anchor " .. slot .. " derives from its icon"
+    )
     Assert.isTrue(type(panel.cursorSequence) == "number", "cursor selector " .. slot .. " is published")
   end
-  Assert.deepEqual(compiled.controls.cancel.anchor, { x = 232, y = 184 })
+  Assert.deepEqual(compiled.panels[1].heldAnchor, { x = 38, y = 24 })
+  Assert.deepEqual(compiled.panels[1].capsuleAnchor, { x = 46, y = 24 })
+  Assert.deepEqual(compiled.panels[6].heldAnchor, { x = 166, y = 128 })
+  Assert.deepEqual(compiled.panels[6].capsuleAnchor, { x = 174, y = 128 })
+  Assert.deepEqual(compiled.controls.cancel.anchor, { x = 232, y = 176 })
   Assert.isNil(compiled.controls.cancel.memberId, "runtime control geometry omits source identities")
+  Assert.deepEqual(compiled.detail, {
+    iconAnchor = { x = 30, y = 200 },
+    statusAnchor = { x = 50, y = 220 },
+    nicknameTextOrigin = { x = 56, y = 192 },
+    heldItemTextOrigin = { x = 138, y = 212 },
+  })
+end
+
+function T.status_inventory_names_the_native_sequence_for_each_semantic_status()
+  Assert.deepEqual(PartySources.status.semanticSequences, {
+    { key = "paralysis", sequence = 1 },
+    { key = "freeze", sequence = 2 },
+    { key = "sleep", sequence = 3 },
+    { key = "poison", sequence = 4 },
+    { key = "burn", sequence = 5 },
+    { key = "faint", sequence = 6 },
+  })
 end
 
 function T.status_rects_match_the_sprite_template_centers()

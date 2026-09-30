@@ -78,9 +78,8 @@ function PartyCache.referencedPaths(manifest)
   addSequences(visuals.buttons)
   addSequences(visuals.held)
   local status = visuals.status --[[@as table<string, unknown>]]
-  local statusFrames = status.frames --[[@as table[] ]]
-  for _, visual in ipairs(statusFrames) do
-    addVisual(visual)
+  for _, name in ipairs({ "paralysis", "freeze", "sleep", "poison", "burn", "faint" }) do
+    addVisual(status[name])
   end
   addAnimated(visuals.feedback)
   addVisual(visuals.backdropMain)

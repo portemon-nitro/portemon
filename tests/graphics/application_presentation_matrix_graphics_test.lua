@@ -309,8 +309,8 @@ local function matrixPartyManifest()
       origin = { x = ox, y = oy },
       iconAnchor = { x = ox + 30, y = oy + 16 },
       ballAnchor = { x = ox + 16, y = oy + 14 },
-      heldAnchor = { x = ox + 47, y = oy + 25 },
-      capsuleAnchor = { x = ox + 12, y = oy + 25 },
+      heldAnchor = { x = ox + 38, y = oy + 24 },
+      capsuleAnchor = { x = ox + 46, y = oy + 24 },
       statusRect = { x = ox + 24, y = oy + 40, width = 24, height = 8 },
       cursorSequence = 1,
       size = { width = 128, height = 48 },
@@ -348,7 +348,13 @@ local function matrixPartyManifest()
   end
   return {
     panels = panels,
-    controls = { cancel = { anchor = { x = 232, y = 184 } } },
+    controls = { cancel = { anchor = { x = 232, y = 176 } } },
+    detail = {
+      iconAnchor = { x = 30, y = 200 },
+      statusAnchor = { x = 50, y = 220 },
+      nicknameTextOrigin = { x = 56, y = 192 },
+      heldItemTextOrigin = { x = 138, y = 212 },
+    },
     text = {
       templates = { chooseMon = { segments = { { kind = "text", value = "Choose a Pokémon." } } } },
     },
@@ -657,15 +663,14 @@ local function matrixPartyVisuals()
       sequence("test/button.png", 56, 32),
       sequence("test/button.png", 56, 32),
     } },
-    status = { frames = {
-      imageRef("test/status.png", 24, 8),
-      imageRef("test/status.png", 24, 8),
-      imageRef("test/status.png", 24, 8),
-      imageRef("test/status.png", 24, 8),
-      imageRef("test/status.png", 24, 8),
-      imageRef("test/status.png", 24, 8),
-      imageRef("test/status.png", 24, 8),
-    } },
+    status = {
+      paralysis = imageRef("test/status.png", 24, 8),
+      freeze = imageRef("test/status.png", 24, 8),
+      sleep = imageRef("test/status.png", 24, 8),
+      poison = imageRef("test/status.png", 24, 8),
+      burn = imageRef("test/status.png", 24, 8),
+      faint = imageRef("test/status.png", 24, 8),
+    },
     hpBars = {
       green = imageRef("test/hp-green.png", 48, 4),
       yellow = imageRef("test/hp-yellow.png", 48, 4),

@@ -11,6 +11,9 @@ local Assert = require("tests.support.Assert")
 local ffi = require("ffi")
 local PartyCache = require("libs.assets.src.PartyCache")
 local Hashing = require("romdump.src.digest.Hashing")
+local G2dDecoder = require("romdump.src.digest.ui.G2dDecoder")
+local G2dRasterizer = require("romdump.src.digest.ui.G2dRasterizer")
+local Lz10 = require("romdump.src.digest.Lz10")
 local PngReader = require("tests.support.PngReader")
 local RgbaImage = require("romdump.src.digest.ui.RgbaImage")
 local CacheFs = require("libs.storage.src.CacheFs")
@@ -80,6 +83,62 @@ function T.every_selected_member_is_attributable_and_frames_resolve(romFs, versi
     Assert.isTrue(#assetBytes(assert(bundle.assets[path], path .. " resolves")) > 0, path .. " has pixels")
   end
   assertNoSourceKeys(manifest, "manifest")
+end
+
+function T.status_visuals_match_the_semantic_source_sequences(romFs, versionId)
+  local PartySources = require("romdump.src.config.PartySources")
+  local bundle = bundleFor(romFs, versionId)
+  local archive = assert(romFs:openNarc(PartySources.statusArchive.symbol), "the status archive resolves")
+  local function decode(kind, memberId, role)
+    local bytes = assert(archive:readMember(memberId), role .. " member resolves")
+    if string.byte(bytes, 1) == 0x10 then
+      bytes = assert(Lz10.decode(bytes), role .. " member decompresses")
+    end
+    return assert(G2dDecoder[kind](bytes, { label = "party status " .. role }), role .. " decodes")
+  end
+  local char = decode("decodeChar", PartySources.status.charMember, "character")
+  local palette = decode("decodePalette", PartySources.status.paletteMember, "palette")
+  local cell = decode("decodeCell", PartySources.status.cellMember, "cell")
+  local animation = decode("decodeAnimation", PartySources.status.animationMember, "animation")
+  local visuals = assert(bundle.manifest.visuals.status, "status visuals publish")
+  local expected = {
+    { name = "paralysis", sequence = 1 },
+    { name = "freeze", sequence = 2 },
+    { name = "sleep", sequence = 3 },
+    { name = "poison", sequence = 4 },
+    { name = "burn", sequence = 5 },
+    { name = "faint", sequence = 6 },
+  }
+  Assert.isNil(visuals.frames, "semantic status visuals do not publish a sequence array")
+  Assert.isNil(visuals.unset, "UNSET has no runtime status visual")
+  Assert.isNil(visuals.ok, "healthy status has no runtime visual")
+  for _, mapping in ipairs(expected) do
+    local visual = assert(visuals[mapping.name], mapping.name .. " has a semantic visual")
+    Assert.equal(visual.width, 24, mapping.name .. " width")
+    Assert.equal(visual.height, 8, mapping.name .. " height")
+    local sequence = assert(animation.anims[mapping.sequence + 1], mapping.name .. " source sequence exists")
+    Assert.equal(#sequence.frames, 1, mapping.name .. " source sequence is static")
+    local source = G2dRasterizer.renderAnimationFrame(
+      char,
+      { colors = palette.colors },
+      cell,
+      sequence,
+      1,
+      { role = "party-status-" .. mapping.name, frame = 0 },
+      2
+    )
+    local width, height, rgba = PngReader.rgba(assert(bundle.assets[visual.image], mapping.name .. " image resolves"))
+    Assert.equal(width, 24, mapping.name .. " generated image width")
+    Assert.equal(height, 8, mapping.name .. " generated image height")
+    Assert.equal(rgba, source.pixels, mapping.name .. " pixels match its source sequence")
+  end
+  local referenced = {}
+  for _, path in ipairs(PartyCache.referencedPaths(bundle.manifest)) do
+    referenced[path] = true
+  end
+  for _, mapping in ipairs(expected) do
+    Assert.isTrue(referenced[visuals[mapping.name].image], mapping.name .. " image participates in cache readiness")
+  end
 end
 
 function T.panel_palette_states_are_compiled_as_source_images(romFs, versionId)

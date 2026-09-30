@@ -90,6 +90,13 @@ local function checkPanePoint(value, context, what)
   end
 end
 
+local function checkDetailPoint(value, context, what)
+  checkPoint(value, context, what)
+  if value.x < 0 or value.x > 255 or value.y < 0 or value.y > 255 then
+    fail(what .. " escapes the detail surface", context)
+  end
+end
+
 local function checkRect(value, context, what)
   if type(value) ~= "table" then
     fail(what .. " must be a record", context)
@@ -321,6 +328,7 @@ function PartyAssetSchema.assertManifest(manifest)
     panes = true,
     panels = true,
     controls = true,
+    detail = true,
     windows = true,
     visuals = true,
     iconAnimations = true,
@@ -361,6 +369,20 @@ function PartyAssetSchema.assertManifest(manifest)
   local cancel = controls.cancel --[[@as table<string, unknown>]]
   checkKeys(cancel, { anchor = true }, {}, "manifest.controls.cancel")
   checkPanePoint(cancel.anchor, {}, "manifest.controls.cancel.anchor")
+  if type(root.detail) ~= "table" then
+    fail("manifest.detail must be a record", {})
+  end
+  local detail = root.detail --[[@as table<string, unknown>]]
+  checkKeys(detail, {
+    iconAnchor = true,
+    statusAnchor = true,
+    nicknameTextOrigin = true,
+    heldItemTextOrigin = true,
+  }, {}, "manifest.detail")
+  checkDetailPoint(detail.iconAnchor, {}, "manifest.detail.iconAnchor")
+  checkDetailPoint(detail.statusAnchor, {}, "manifest.detail.statusAnchor")
+  checkDetailPoint(detail.nicknameTextOrigin, {}, "manifest.detail.nicknameTextOrigin")
+  checkDetailPoint(detail.heldItemTextOrigin, {}, "manifest.detail.heldItemTextOrigin")
   if type(root.windows) ~= "table" then
     fail("manifest.windows must be a record", {})
   end
@@ -397,14 +419,18 @@ function PartyAssetSchema.assertManifest(manifest)
     fail("manifest.visuals.status must be a record", {})
   end
   local status = visuals.status --[[@as table<string, unknown>]]
-  checkKeys(status, { frames = true }, {}, "manifest.visuals.status")
-  if type(status.frames) ~= "table" or #status.frames ~= 7 then
-    fail("manifest.visuals.status.frames must carry seven state frames", {})
+  local statusNames = { "paralysis", "freeze", "sleep", "poison", "burn", "faint" }
+  local statusKeys = {}
+  for _, name in ipairs(statusNames) do
+    statusKeys[name] = true
   end
-  for index, visual in
-    ipairs(status.frames --[[@as table[] ]])
-  do
-    checkVisual(visual, {}, "manifest.visuals.status.frames[" .. index .. "]")
+  checkKeys(status, statusKeys, {}, "manifest.visuals.status")
+  for _, name in ipairs(statusNames) do
+    local visual = status[name]
+    checkVisual(visual, {}, "manifest.visuals.status." .. name)
+    if visual.width ~= 24 or visual.height ~= 8 then
+      fail("manifest.visuals.status." .. name .. " must be 24x8", {})
+    end
   end
   checkAnimated(visuals.feedback, {}, "manifest.visuals.feedback", true)
   checkVisual(visuals.backdropMain, {}, "manifest.visuals.backdropMain")
