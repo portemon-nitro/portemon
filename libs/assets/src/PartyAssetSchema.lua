@@ -12,6 +12,7 @@
 -- filesystem-free.
 
 local Errors = require("libs.errors.src.Errors")
+local Validate = require("libs.assets.src.Validate")
 
 ---@class PartyAssetSchema
 local PartyAssetSchema = {}
@@ -182,8 +183,8 @@ local function checkSequenceGroup(value, context, what, minimumSequences)
     fail(what .. " must be a record", context)
   end
   checkKeys(value, { sequences = true }, context, what)
-  if type(value.sequences) ~= "table" or #value.sequences < minimumSequences then
-    fail(what .. " must contain at least " .. minimumSequences .. " sequences", context)
+  if not Validate.isArray(value.sequences) or #value.sequences < minimumSequences then
+    fail(what .. " must contain at least " .. minimumSequences .. " contiguous sequences", context)
   end
   for index, sequence in ipairs(value.sequences) do
     checkAnimated(sequence, context, what .. ".sequences[" .. index .. "]")

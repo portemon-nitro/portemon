@@ -216,6 +216,32 @@ function T.runtime_required_sequence_prefixes_are_mandatory()
   Assert.isTrue(PartyAssetSchema.isValidManifest(manifest()), "the complete runtime prefixes are valid")
 end
 
+function T.rejects_sequence_group_with_non_array_keys()
+  local bad = manifest()
+  bad.visuals.balls.sequences.extra = bad.visuals.balls.sequences[1]
+  Assert.isFalse(
+    PartyAssetSchema.isValidManifest(bad),
+    "a hash key must not widen a sequence group past its dense prefix"
+  )
+  local err = Assert.throws(function()
+    PartyAssetSchema.assertManifest(bad)
+  end)
+  Assert.notNil(tostring(err):find("PARTY_MANIFEST_INVALID"), "rejections carry the protocol code")
+end
+
+function T.rejects_sequence_group_with_a_hole_before_later_sequences()
+  local bad = manifest()
+  bad.visuals.held.sequences[1] = nil
+  Assert.isFalse(
+    PartyAssetSchema.isValidManifest(bad),
+    "a missing required index must not hide behind a later sequence"
+  )
+  local err = Assert.throws(function()
+    PartyAssetSchema.assertManifest(bad)
+  end)
+  Assert.notNil(tostring(err):find("PARTY_MANIFEST_INVALID"), "rejections carry the protocol code")
+end
+
 function T.producer_tail_sequences_remain_validated()
   local currentProducer = manifest()
   currentProducer.visuals.buttons.sequences[3] = {
