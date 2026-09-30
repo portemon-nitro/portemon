@@ -106,6 +106,13 @@ local function buildDoubles(sink, calls)
     ["libs.hgss.src.ui.FieldTextRenderer"] = {
       new = function(_)
         local instance = releasable(calls, "text")
+        instance.fontDef = {
+          palette = {
+            [2] = { r = 1, g = 2, b = 3 },
+            [3] = { r = 4, g = 5, b = 6 },
+            [16] = { r = 7, g = 8, b = 9 },
+          },
+        }
         function instance:drawText(_, _, _) end
         function instance:drawTextWithPalette(_, _, _, _) end
         function instance:textWidth(_)
