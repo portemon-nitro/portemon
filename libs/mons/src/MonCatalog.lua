@@ -1,18 +1,13 @@
 -- Immutable resolved mon definitions. The constructor requires the
 -- already-canonical generated asset root plus the shared item catalog,
--- validates the root through the owned asset schema, copies it into
--- package-owned state, and indexes semantic and native identities. Item
--- identity is never copied here: item lookups delegate to the injected
--- catalog, and the fingerprint digests only mon-owned data so item-only
--- metadata changes never invalidate persisted mon buckets. Lookups never
--- mutate and never reach source formats: native numeric identities stay only
--- because exact native encoding gives them current use.
+-- copies it into package-owned state, and indexes semantic and native
+-- identities. Item identity is never copied here: item lookups delegate to
+-- the injected catalog. Lookups never mutate and never reach source
+-- formats: native numeric identities stay only because exact native
+-- encoding gives them current use.
 
-local LuaWriter = require("libs.codec.src.LuaWriter")
-local U32 = require("libs.codec.src.U32")
-local MonAssetSchema = require("libs.assets.src.MonAssetSchema")
-local ResolvedMonSchema = require("libs.mons.src.ResolvedMonSchema")
 local MonsErrors = require("libs.mons.src.errors")
+local ResolvedMonSchema = require("libs.mons.src.ResolvedMonSchema")
 
 ---@class MonCatalog
 ---@field private _root table<string, unknown>
@@ -20,7 +15,6 @@ local MonsErrors = require("libs.mons.src.errors")
 ---@field private _speciesByNative table<integer, string>
 ---@field private _moveByNative table<integer, string>
 ---@field private _abilityByNative table<integer, string>
----@field private _fingerprint string
 local MonCatalog = {}
 MonCatalog.__index = MonCatalog
 
@@ -35,35 +29,6 @@ local function copyValue(value)
     out[key] = copyValue(item)
   end
   return out
-end
-
----@param a integer
----@param b integer
----@return integer
-local function xorByte(a, b)
-  local value = 0
-  local place = 1
-  for _ = 1, 8 do
-    local abit = math.floor(a / place) % 2
-    local bbit = math.floor(b / place) % 2
-    if abit ~= bbit then
-      value = value + place
-    end
-    place = place * 2
-  end
-  return value
-end
-
----@param text string
----@return string
-local function fingerprintText(text)
-  local hash = 2166136261
-  for index = 1, #text do
-    local low = hash % 256
-    hash = (hash - low) + xorByte(low, text:byte(index))
-    hash = U32.mul(hash, 16777619)
-  end
-  return string.format("%08x", hash)
 end
 
 -- One shared index builder for both constructors: entries without a
@@ -116,19 +81,19 @@ end
 ---@return MonCatalog
 function MonCatalog.new(root, items)
   checkArguments(root, items)
-  MonAssetSchema.assertCatalog(root)
   local owned = copyValue(root)
+  assert(type(owned.species) == "table", "MonCatalog requires the species table")
+  assert(type(owned.moves) == "table", "MonCatalog requires the moves table")
+  assert(type(owned.abilities) == "table", "MonCatalog requires the abilities table")
+  assert(type(owned.growthCurves) == "table", "MonCatalog requires the growth curves table")
   local speciesByNative, moveByNative, abilityByNative = buildIndexes(owned)
-  local self = setmetatable({
+  return setmetatable({
     _root = owned,
     _items = items,
     _speciesByNative = speciesByNative,
     _moveByNative = moveByNative,
     _abilityByNative = abilityByNative,
-    _fingerprint = "",
   }, MonCatalog)
-  self._fingerprint = fingerprintText(LuaWriter.encode(owned))
-  return self
 end
 
 -- Composed catalog construction: validates through the resolved schema so
@@ -143,21 +108,13 @@ function MonCatalog.fromResolved(root, items)
   ResolvedMonSchema.assertCatalog(root)
   local owned = copyValue(root)
   local speciesByNative, moveByNative, abilityByNative = buildIndexes(owned)
-  local self = setmetatable({
+  return setmetatable({
     _root = owned,
     _items = items,
     _speciesByNative = speciesByNative,
     _moveByNative = moveByNative,
     _abilityByNative = abilityByNative,
-    _fingerprint = "",
   }, MonCatalog)
-  self._fingerprint = fingerprintText(LuaWriter.encode(owned))
-  return self
-end
-
----@return string
-function MonCatalog:fingerprint()
-  return self._fingerprint
 end
 
 ---@return string[] caller-owned species keys in native identity order

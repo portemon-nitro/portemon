@@ -322,7 +322,7 @@ function T.heal_party_restores_full_health()
   service:healParty()
   for slot = 0, 1 do
     local mon = service:partyMon(slot)
-    Assert.equal(mon.condition.status, 0, "status clears")
+    Assert.deepEqual(mon.condition.effects, {}, "conditions clear")
     Assert.isTrue(mon.condition.currentHp > 0, "health is full")
   end
   Assert.equal(service:partyRevision(), revision + 2, "each restored mon is one owned mutation")

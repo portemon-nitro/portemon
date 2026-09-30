@@ -220,8 +220,7 @@ function SummaryModel.buildMon(mon, options)
     heldItem = heldItem,
     heldItemName = heldItemName,
     status = PartyScreenTheme.statusKey(
-      assert(condition.status, "conditions carry status bits"),
-      assert(condition.currentHp, "conditions carry current health")
+      condition --[[@as { currentHp: integer, effects: table<integer, table<string, unknown>> }]]
     ),
     currentHp = condition.currentHp,
     leaves = projectLeaves(mask),

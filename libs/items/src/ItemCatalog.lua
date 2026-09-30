@@ -1,7 +1,7 @@
 -- Immutable resolved item definitions. The constructor requires the
--- already-canonical generated asset root, validates it through the owned
--- asset schema, copies it into package-owned state, and indexes semantic and
--- native identities. Lookups never mutate and never reach source formats:
+-- already-canonical generated asset root, copies it into package-owned
+-- state, and indexes semantic and native identities. Lookups never mutate
+-- and never reach source formats:
 -- native numeric identities stay only because exact native encoding gives
 -- them current use. Pocket definitions are the schema-owned source
 -- contract, re-exported here for consumers.
@@ -64,8 +64,10 @@ end
 ---@return ItemCatalog
 function ItemCatalog.new(root)
   assert(type(root) == "table", "ItemCatalog requires the generated asset root")
-  ItemAssetSchema.assertCatalog(root)
   local owned = copyValue(root)
+  assert(type(owned.items) == "table", "ItemCatalog requires the items table")
+  assert(type(owned.pockets) == "table", "ItemCatalog requires the pockets table")
+  assert(type(owned.pocketNames) == "table", "ItemCatalog requires the pocket names table")
   local itemByNative, pocketByNative = buildIndexes(owned)
   return setmetatable({
     _root = owned,

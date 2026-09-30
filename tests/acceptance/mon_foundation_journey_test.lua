@@ -723,10 +723,6 @@ function T.tests.preselection_trio_reproduces_through_the_public_creation_seam()
   Assert.equal(hexes[1], expectedHex(versionId), "the first candidate equals the fixed vector")
 end
 
--- Content identity at the product boundary: a stored bucket carrying a stale
--- fingerprint field is malformed under the current schema and fails
--- continue at the owning mon restore, while the valid record still boots
--- afterwards. Catalog drift alone (no shape change) never gates restore.
 function T.tests.continue_rejects_a_stale_fingerprint_field_as_malformed()
   local versionId = AcceptanceHarness.defaultVersion()
   local valid = harness():boot({ versionId = versionId, map = "MAP_BURNED_TOWER_1F", save = "fresh" })

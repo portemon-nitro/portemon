@@ -118,6 +118,9 @@ function MonsSave.validate(bucket, context)
     end
     error(failure, 0)
   end
+  -- Reference-based compatibility: every selected reference resolves
+  -- through party validation below, so unrelated catalog edits never
+  -- reject a current bucket.
   local partyOk, partyFailure = pcall(Party.validate, bucket.party, context)
   if not partyOk then
     if type(bucket.party) == "table" and type(bucket.party.mons) == "table" then

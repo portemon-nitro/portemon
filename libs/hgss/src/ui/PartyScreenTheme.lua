@@ -4,11 +4,11 @@
 -- src/unk_0208805C.c CalculateHpBarPixelsLength/HpBar_GetColorIdx, with the
 -- full-HP fast path of CalculateHpBarColor): pixels hp*48/maxHp (at least
 -- one while HP remains), green above half the bar, yellow above a fifth,
--- red otherwise, fainted at zero. The status key follows the source icon
--- order (include/party_menu.h PartyMonStatusIconId with the
--- include/constants/pokemon.h MON_STATUS_* masks): no HP is fainted, then
--- sleep, poison (including toxic), burn, freeze, paralysis. Labels reuse
--- the source icon codes. Pure module: no love, no I/O.
+-- red otherwise, fainted at zero. The status key projects the semantic
+-- condition records to the source icon order (include/party_menu.h
+-- PartyMonStatusIconId over the native persistent conditions): no HP is
+-- fainted, then sleep, poison (including toxic), burn, freeze, paralysis.
+-- Labels reuse the source icon codes. Pure module: no love, no I/O.
 
 ---@class PartyScreenTheme
 local PartyScreenTheme = {}
@@ -66,7 +66,7 @@ end
 -- (full 1, green 2, yellow 3, red 4). The controller preserves phase
 -- within a sequence and resets it only when the sequence changes.
 ---@param zone "full"|"green"|"yellow"|"red"|"fainted"
----@param statusKey "ok"|"sleep"|"poison"|"burn"|"freeze"|"paralysis"|"faint"
+---@param statusKey "ok"|"sleep"|"poison"|"burn"|"freeze"|"paralysis"|"faint"|"custom"
 ---@return integer
 function PartyScreenTheme.iconSequence(zone, statusKey)
   assert(
@@ -80,7 +80,8 @@ function PartyScreenTheme.iconSequence(zone, statusKey)
       or statusKey == "burn"
       or statusKey == "freeze"
       or statusKey == "paralysis"
-      or statusKey == "faint",
+      or statusKey == "faint"
+      or statusKey == "custom",
     "unknown status key " .. tostring(statusKey)
   )
   if zone == "fainted" then
@@ -101,50 +102,60 @@ function PartyScreenTheme.iconSequence(zone, statusKey)
   return 4
 end
 
-local STATUS_SLEEP_MASK = 0x7
-local STATUS_POISON_MASK = 0x8
-local STATUS_BURN_MASK = 0x10
-local STATUS_FREEZE_MASK = 0x20
-local STATUS_PARALYSIS_MASK = 0x40
-local STATUS_TOXIC_MASK = 0x80
+local STATUS_SLEEP = "sleep"
+local STATUS_POISON = "poison"
+local STATUS_TOXIC = "toxic"
+local STATUS_BURN = "burn"
+local STATUS_FREEZE = "freeze"
+local STATUS_PARALYSIS = "paralysis"
 
----@param statusBits integer
----@param bit integer
+---@param effects table<integer, table<string, unknown>>
+---@param key string
 ---@return boolean
-local function hasBit(statusBits, bit)
-  return math.floor(statusBits / bit) % 2 == 1
+local function hasEffect(effects, key)
+  for _, effect in ipairs(effects) do
+    if type(effect) == "table" and effect.key == key then
+      return true
+    end
+  end
+  return false
 end
 
----@param statusBits integer
----@param currentHp integer
----@return "ok"|"sleep"|"poison"|"burn"|"freeze"|"paralysis"|"faint"
-function PartyScreenTheme.statusKey(statusBits, currentHp)
-  assert(
-    type(statusBits) == "number" and statusBits % 1 == 0 and statusBits >= 0,
-    "the status key requires non-negative integer status bits"
-  )
+-- Projects the semantic condition to the source status icon key. Native
+-- visual precedence applies (faint, sleep, poison including toxic, burn,
+-- freeze, paralysis); a custom condition resolves to an explicit
+-- presentation key instead of borrowing a native icon.
+---@param condition { currentHp: integer, effects: table<integer, table<string, unknown>> }
+---@return "ok"|"sleep"|"poison"|"burn"|"freeze"|"paralysis"|"faint"|"custom"
+function PartyScreenTheme.statusKey(condition)
+  assert(type(condition) == "table", "the status key requires the mon condition")
+  local currentHp = assert(condition.currentHp) --[[@as integer]]
   assert(
     type(currentHp) == "number" and currentHp % 1 == 0 and currentHp >= 0,
     "the status key requires non-negative integer current HP"
   )
+  local effects = assert(condition.effects) --[[@as table<integer, table<string, unknown>>]]
+  assert(type(effects) == "table", "the status key requires the condition effects")
   if currentHp == 0 then
     return "faint"
   end
-  if statusBits % 8 ~= 0 then
-    assert(STATUS_SLEEP_MASK == 0x7, "sleep occupies the low three bits")
+  if hasEffect(effects, STATUS_SLEEP) then
     return "sleep"
   end
-  if hasBit(statusBits, STATUS_POISON_MASK) or hasBit(statusBits, STATUS_TOXIC_MASK) then
+  if hasEffect(effects, STATUS_POISON) or hasEffect(effects, STATUS_TOXIC) then
     return "poison"
   end
-  if hasBit(statusBits, STATUS_BURN_MASK) then
+  if hasEffect(effects, STATUS_BURN) then
     return "burn"
   end
-  if hasBit(statusBits, STATUS_FREEZE_MASK) then
+  if hasEffect(effects, STATUS_FREEZE) then
     return "freeze"
   end
-  if hasBit(statusBits, STATUS_PARALYSIS_MASK) then
+  if hasEffect(effects, STATUS_PARALYSIS) then
     return "paralysis"
+  end
+  if #effects > 0 then
+    return "custom"
   end
   return "ok"
 end
@@ -169,7 +180,8 @@ function PartyScreenTheme.statusLabel(key)
       or key == "burn"
       or key == "freeze"
       or key == "paralysis"
-      or key == "faint",
+      or key == "faint"
+      or key == "custom",
     "unknown party status key " .. key
   )
   return STATUS_LABELS[key]

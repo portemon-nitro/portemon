@@ -1,8 +1,9 @@
 -- Party-screen presentation semantics: the HP bar zone follows the source
 -- 48-pixel bar thresholds (full, green above half, yellow above a fifth,
--- red otherwise, fainted at zero) and the persistent status key follows the
--- source status-icon order (faint, sleep, poison, burn, freeze, paralysis).
--- Labels reuse the source status-icon codes.
+-- red otherwise, fainted at zero) and the persistent status key projects
+-- the semantic condition to the source status-icon order (faint, sleep,
+-- poison, burn, freeze, paralysis). Labels reuse the source status-icon
+-- codes; custom conditions resolve to an explicit presentation key.
 
 local Assert = require("tests.support.Assert")
 local PartyScreenTheme = require("libs.hgss.src.ui.PartyScreenTheme")
@@ -28,16 +29,31 @@ function T.hp_zone_quantizes_like_the_source_pixel_bar()
 end
 
 function T.status_key_follows_the_source_icon_priority()
-  Assert.equal(PartyScreenTheme.statusKey(0, 35), "ok")
-  Assert.equal(PartyScreenTheme.statusKey(0, 0), "faint")
-  Assert.equal(PartyScreenTheme.statusKey(0x40, 35), "paralysis")
-  Assert.equal(PartyScreenTheme.statusKey(0x20, 35), "freeze")
-  Assert.equal(PartyScreenTheme.statusKey(0x03, 35), "sleep")
-  Assert.equal(PartyScreenTheme.statusKey(0x08, 35), "poison")
-  Assert.equal(PartyScreenTheme.statusKey(0x80, 35), "poison")
-  Assert.equal(PartyScreenTheme.statusKey(0x10, 35), "burn")
-  Assert.equal(PartyScreenTheme.statusKey(0x48, 35), "poison", "poison outranks paralysis")
-  Assert.equal(PartyScreenTheme.statusKey(0x08, 0), "faint", "no HP outranks every status bit")
+  local function condition(currentHp, effects)
+    return { currentHp = currentHp, effects = effects }
+  end
+  local function effect(key, state)
+    return { key = key, version = 1, state = state or {} }
+  end
+  Assert.equal(PartyScreenTheme.statusKey(condition(35, {})), "ok")
+  Assert.equal(PartyScreenTheme.statusKey(condition(0, {})), "faint")
+  Assert.equal(PartyScreenTheme.statusKey(condition(35, { effect("paralysis") })), "paralysis")
+  Assert.equal(PartyScreenTheme.statusKey(condition(35, { effect("freeze") })), "freeze")
+  Assert.equal(PartyScreenTheme.statusKey(condition(35, { effect("sleep", { turns = 3 }) })), "sleep")
+  Assert.equal(PartyScreenTheme.statusKey(condition(35, { effect("poison") })), "poison")
+  Assert.equal(PartyScreenTheme.statusKey(condition(35, { effect("toxic", { counter = 5 }) })), "poison")
+  Assert.equal(PartyScreenTheme.statusKey(condition(35, { effect("burn") })), "burn")
+  Assert.equal(
+    PartyScreenTheme.statusKey(condition(35, { effect("poison"), effect("paralysis") })),
+    "poison",
+    "poison outranks paralysis"
+  )
+  Assert.equal(PartyScreenTheme.statusKey(condition(0, { effect("poison") })), "faint", "no HP outranks every condition")
+  Assert.equal(
+    PartyScreenTheme.statusKey(condition(35, { effect("ember:BOND", { stage = 1 }) })),
+    "custom",
+    "custom conditions never borrow a native icon"
+  )
 end
 
 function T.status_labels_reuse_the_source_icon_codes()
@@ -48,6 +64,7 @@ function T.status_labels_reuse_the_source_icon_codes()
   Assert.equal(PartyScreenTheme.statusLabel("paralysis"), "PRZ")
   Assert.equal(PartyScreenTheme.statusLabel("sleep"), "SLP")
   Assert.equal(PartyScreenTheme.statusLabel("faint"), "FNT")
+  Assert.isNil(PartyScreenTheme.statusLabel("custom"), "a custom condition shows no native label")
 end
 
 function T.fill_length_quantizes_the_48_pixel_bar_with_a_minimum_of_one()
@@ -66,6 +83,7 @@ function T.icon_sequence_maps_zone_and_status_to_source_sequences()
   Assert.equal(PartyScreenTheme.iconSequence("green", "poison"), 5, "persistent status overrides the zone")
   Assert.equal(PartyScreenTheme.iconSequence("full", "sleep"), 5)
   Assert.equal(PartyScreenTheme.iconSequence("fainted", "faint"), 0, "fainted outranks status")
+  Assert.equal(PartyScreenTheme.iconSequence("green", "custom"), 5, "custom conditions take the status icon")
 end
 
 return { tests = T }

@@ -60,7 +60,7 @@ function T.mixed_party_projects_authoritative_display_values()
   local maxHp = service:partyMonDerived(0).maxHp
   store(service, 0, function(mon)
     mon.nickname = "LEAFY"
-    mon.condition = { status = 0x8, currentHp = maxHp - 2 }
+    mon.condition = { currentHp = maxHp - 2, effects = { { key = "poison", version = 1, state = {} } } }
   end)
   give(service, "SHEDINJA")
 

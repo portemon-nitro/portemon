@@ -16,6 +16,14 @@ local function evSet(hp, attack, defense, speed, specialAttack, specialDefense)
   }
 end
 
+local function effect(key, state)
+  return { key = key, version = 1, state = state or {} }
+end
+
+local function condition(currentHp, effects)
+  return { currentHp = currentHp, effects = effects or {} }
+end
+
 local function mon(overrides)
   local record = {
     species = "CHIKORITA",
@@ -31,7 +39,7 @@ local function mon(overrides)
     },
     origin = { ball = "POKE_BALL" },
     egg = { location = 7 },
-    condition = { status = 0, currentHp = 30 },
+    condition = condition(30, {}),
   }
   for key, value in pairs(overrides or {}) do
     record[key] = value
@@ -100,10 +108,10 @@ function T.malformed_metadata_raises()
 end
 
 function T.inputs_are_never_mutated()
-  local target = mon({ condition = { status = 0, currentHp = 10 } })
+  local target = mon({ condition = condition(10, {}) })
   local snapshot = {
     hp = target.condition.currentHp,
-    status = target.condition.status,
+    effects = target.condition.effects,
     friendship = target.friendship,
     ev = target.evs.hp,
   }
@@ -114,18 +122,18 @@ function T.inputs_are_never_mutated()
   local plan = PartyItemEffects.plan(target, { partyUse = definition }, nil, context(), derived())
   Assert.equal(plan.kind, "ready")
   Assert.equal(target.condition.currentHp, snapshot.hp, "planning never mutates hit points")
-  Assert.equal(target.condition.status, snapshot.status, "planning never mutates status")
+  Assert.deepEqual(target.condition.effects, snapshot.effects, "planning never mutates conditions")
   Assert.equal(target.friendship, snapshot.friendship, "planning never mutates friendship")
   Assert.equal(target.evs.hp, snapshot.ev, "planning never mutates effort values")
 end
 
 function T.fixed_restore_heals_without_overheal()
   local definition = medicine({ restore = { kind = "fixed", amount = 20 } })
-  local small = mon({ condition = { status = 0, currentHp = 25 } })
+  local small = mon({ condition = condition(25, {}) })
   local smallPlan = PartyItemEffects.plan(small, { partyUse = definition }, nil, context(), derived(30))
   Assert.equal(smallPlan.kind, "ready")
   Assert.equal(smallPlan.updates.condition.currentHp, 30, "healing clamps at the derived maximum")
-  local hurt = mon({ condition = { status = 0, currentHp = 5 } })
+  local hurt = mon({ condition = condition(5, {}) })
   local plan = PartyItemEffects.plan(hurt, { partyUse = definition }, nil, context(), derived(30))
   Assert.equal(plan.kind, "ready")
   Assert.equal(plan.updates.condition.currentHp, 25, "fixed amounts add exactly")
@@ -135,7 +143,7 @@ end
 
 function T.quarter_restore_uses_integer_division()
   local definition = medicine({ restore = { kind = "quarter" } })
-  local target = mon({ condition = { status = 0, currentHp = 10 } })
+  local target = mon({ condition = condition(10, {}) })
   local plan = PartyItemEffects.plan(target, { partyUse = definition }, nil, context(), derived(31))
   Assert.equal(plan.kind, "ready")
   Assert.equal(plan.updates.condition.currentHp, 10 + math.floor(31 / 4), "quarters divide down")
@@ -143,7 +151,7 @@ end
 
 function T.max_hp_one_restores_single_point()
   local definition = medicine({ restore = { kind = "fixed", amount = 20 } })
-  local shedinja = mon({ species = "SHEDINJA", condition = { status = 0, currentHp = 0 } })
+  local shedinja = mon({ species = "SHEDINJA", condition = condition(0, {}) })
   local plan = PartyItemEffects.plan(shedinja, { partyUse = definition }, nil, context(), derived(1))
   Assert.equal(plan.kind, "no_effect", "plain medicine cannot revive the one-health mon")
 end
@@ -158,11 +166,50 @@ function T.poison_cure_clears_toxic_bits()
       paralysis = false,
     },
   })
-  local target = mon({ condition = { status = 0x8 + 0x80 + 0x500, currentHp = 30 } })
+  local target = mon({ condition = condition(30, { effect("poison"), effect("toxic", { counter = 5 }) }) })
   local plan = PartyItemEffects.plan(target, { partyUse = definition }, nil, context(), derived(30))
   Assert.equal(plan.kind, "ready")
-  Assert.equal(plan.updates.condition.status, 0, "poison cure clears poison, toxic and counter bits")
+  Assert.deepEqual(plan.updates.condition.effects, {}, "poison cure clears poison and toxic records")
   Assert.equal(plan.updates.condition.currentHp, 30, "a pure cure changes no hit points")
+end
+
+function T.targeted_cures_match_only_their_condition()
+  local sleeping = mon({ condition = condition(30, { effect("sleep", { turns = 3 }) }) })
+  local wakeful = medicine({
+    cures = {
+      sleep = true,
+      poison = false,
+      burn = false,
+      freeze = false,
+      paralysis = false,
+    },
+  })
+  local woken = PartyItemEffects.plan(sleeping, { partyUse = wakeful }, nil, context(), derived(30))
+  Assert.equal(woken.kind, "ready")
+  Assert.deepEqual(woken.updates.condition.effects, {}, "a sleep cure clears the sleep record")
+  Assert.deepEqual(woken.feedback.slots[1].effectsBefore, sleeping.condition.effects, "feedback keeps the entry state")
+  Assert.deepEqual(woken.feedback.slots[1].effectsAfter, {}, "feedback reports the cleared state")
+
+  local burned = mon({ condition = condition(30, { effect("burn") }) })
+  Assert.equal(
+    PartyItemEffects.plan(burned, { partyUse = wakeful }, nil, context(), derived(30)).kind,
+    "no_effect",
+    "a sleep cure ignores a burn"
+  )
+  local thawing = medicine({
+    cures = {
+      sleep = false,
+      poison = false,
+      burn = false,
+      freeze = true,
+      paralysis = false,
+    },
+  })
+  Assert.equal(
+    PartyItemEffects.plan(burned, { partyUse = thawing }, nil, context(), derived(30)).kind,
+    "no_effect",
+    "a freeze cure ignores a burn"
+  )
 end
 
 function T.unmatched_cure_is_no_effect()
@@ -217,7 +264,7 @@ function T.vitamin_caps_and_preserves_damage()
     friendship = { lo = 5, med = 3, hi = 2 },
     mood = 8,
   }
-  local target = mon({ evs = evSet(95, 0, 0, 0, 0, 0), condition = { status = 0, currentHp = 20 } })
+  local target = mon({ evs = evSet(95, 0, 0, 0, 0, 0), condition = condition(20, {}) })
   local plan = PartyItemEffects.plan(target, { partyUse = definition }, nil, context(), derived(30))
   Assert.equal(plan.kind, "ready")
   Assert.equal(plan.updates.evs.hp, 100, "vitamins cap the affected value at one hundred")
@@ -258,8 +305,8 @@ function T.friendship_bonuses_follow_source_order()
 end
 
 function T.transfer_moves_the_full_fifth()
-  local donor = mon({ condition = { status = 0, currentHp = 50 } })
-  local recipient = mon({ condition = { status = 0, currentHp = 27 } })
+  local donor = mon({ condition = condition(50, {}) })
+  local recipient = mon({ condition = condition(27, {}) })
   local plan = PartyItemEffects.planTransfer(donor, recipient, derived(100), derived(30))
   Assert.equal(plan.kind, "ready")
   Assert.equal(plan.donor.condition.currentHp, 30, "the donor loses the full fifth")
@@ -268,15 +315,15 @@ function T.transfer_moves_the_full_fifth()
 end
 
 function T.transfer_rejects_bad_targets()
-  local donor = mon({ condition = { status = 0, currentHp = 50 } })
+  local donor = mon({ condition = condition(50, {}) })
   Assert.equal(PartyItemEffects.planTransfer(donor, donor, derived(100), derived(100)).kind, "ineligible")
-  local fainted = mon({ condition = { status = 0, currentHp = 0 } })
+  local fainted = mon({ condition = condition(0, {}) })
   Assert.equal(PartyItemEffects.planTransfer(donor, fainted, derived(100), derived(30)).kind, "ineligible")
-  local full = mon({ condition = { status = 0, currentHp = 30 } })
+  local full = mon({ condition = condition(30, {}) })
   Assert.equal(PartyItemEffects.planTransfer(donor, full, derived(100), derived(30)).kind, "ineligible")
-  local weak = mon({ condition = { status = 0, currentHp = 20 } })
+  local weak = mon({ condition = condition(20, {}) })
   Assert.equal(PartyItemEffects.planTransfer(weak, full, derived(100), derived(30)).kind, "ineligible")
-  local egg = mon({ isEgg = true, condition = { status = 0, currentHp = 10 } })
+  local egg = mon({ isEgg = true, condition = condition(10, {}) })
   Assert.equal(PartyItemEffects.planTransfer(donor, egg, derived(100), derived(30)).kind, "ineligible")
 end
 
