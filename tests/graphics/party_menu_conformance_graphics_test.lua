@@ -227,7 +227,7 @@ function T.status_uses_its_generated_sprite_frame(scope)
     local image, _ = renderPane(scope, cacheFs, manifest, presentation())
     local panel = manifest.panels[2]
     local rect = panel.statusRect
-    local source = sourceImage(scope, cacheFs, manifest.visuals.status.frames[3])
+    local source = sourceImage(scope, cacheFs, manifest.visuals.status.poison)
     local matches, opaque = matchingOpaquePixels(image, source, rect.x, rect.y, rect.width, rect.height)
     Assert.isTrue(opaque > 4, versionId .. " compiles visible poison status pixels")
     Assert.equal(matches, opaque, versionId .. " draws the generated poison frame without tinting")

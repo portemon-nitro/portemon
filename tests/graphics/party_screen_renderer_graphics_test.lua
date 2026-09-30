@@ -451,6 +451,58 @@ function T.status_and_hp_use_source_shaped_visuals(scope)
   end
 end
 
+function T.mail_and_capsule_draw_at_generated_indicator_anchors(scope)
+  for _, versionId in ipairs(readyVersions()) do
+    local cacheFs, manifest = manifestFor(versionId)
+    local mailStatus = presentation()
+    mailStatus.view.slots[2] = slot(1, {
+      heldItem = "GRASS_MAIL",
+      heldItemName = "Mail",
+      heldMarkerKind = "mail",
+    })
+    local mailImage = renderPane(scope, cacheFs, manifest, mailStatus)
+    local mailFrame = assert(manifest.visuals.held.sequences[2].frames[1], versionId .. " carries its mail visual")
+    local mailAnchor = assert(manifest.panels[2].heldAnchor, versionId .. " carries the held marker anchor")
+    local mailSource = visualPixels(scope, cacheFs, mailFrame)
+    local mailMatches, mailOpaque = matchingOpaquePixels(
+      mailImage,
+      mailSource,
+      0,
+      0,
+      mailAnchor.x + (mailFrame.offset and mailFrame.offset.x or 0),
+      mailAnchor.y + (mailFrame.offset and mailFrame.offset.y or 0),
+      mailFrame.width,
+      mailFrame.height
+    )
+    Assert.isTrue(mailOpaque > 0, versionId .. " compiles visible mail marker pixels")
+    Assert.equal(mailMatches, mailOpaque, versionId .. " paints mail at its generated anchor with frame offset")
+
+    local capsuleStatus = presentation()
+    capsuleStatus.view.slots[2] = slot(1, { capsule = { id = 3, seals = {} } })
+    local capsuleImage = renderPane(scope, cacheFs, manifest, capsuleStatus)
+    local capsuleFrame =
+      assert(manifest.visuals.held.sequences[3].frames[1], versionId .. " carries its capsule visual")
+    local capsuleAnchor = assert(manifest.panels[2].capsuleAnchor, versionId .. " carries the capsule anchor")
+    local capsuleSource = visualPixels(scope, cacheFs, capsuleFrame)
+    local capsuleMatches, capsuleOpaque = matchingOpaquePixels(
+      capsuleImage,
+      capsuleSource,
+      0,
+      0,
+      capsuleAnchor.x + (capsuleFrame.offset and capsuleFrame.offset.x or 0),
+      capsuleAnchor.y + (capsuleFrame.offset and capsuleFrame.offset.y or 0),
+      capsuleFrame.width,
+      capsuleFrame.height
+    )
+    Assert.isTrue(capsuleOpaque > 0, versionId .. " compiles visible capsule marker pixels")
+    Assert.equal(
+      capsuleMatches,
+      capsuleOpaque,
+      versionId .. " paints capsule at its generated anchor with frame offset"
+    )
+  end
+end
+
 function T.browse_message_does_not_follow_selection_and_info_stays_available(scope)
   for _, versionId in ipairs(readyVersions()) do
     local cacheFs, manifest = manifestFor(versionId)

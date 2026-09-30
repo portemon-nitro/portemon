@@ -153,6 +153,7 @@ function T.facts_carry_egg_held_capsule_move_and_leaf_records()
   Assert.isTrue(lead.isEgg, "egg state projects for presentation policy")
   Assert.equal(lead.heldItem, "SITRUS_BERRY", "the held semantic key projects, never a source id")
   Assert.equal(lead.heldItemName, catalog:item("SITRUS_BERRY").name, "detail presentation uses the catalog display name")
+  Assert.equal(lead.heldMarkerKind, "item", "ordinary held items project the ordinary marker kind")
   Assert.deepEqual(lead.capsule, { id = 3, seals = {} }, "the capsule record projects for its indicator")
   Assert.deepEqual(
     lead.moves,
@@ -160,6 +161,55 @@ function T.facts_carry_egg_held_capsule_move_and_leaf_records()
     "learned moves project in move-slot order with semantic keys"
   )
   Assert.equal(lead.shinyLeaves, 21, "the six-bit leaf mask projects for badge display")
+end
+
+function T.mail_pocket_projects_the_mail_marker_kind()
+  local _, service = openService()
+  give(service, "CHIKORITA")
+  local grassMail = "ITEM_137"
+
+  local sourceCatalog = service:catalog()
+  local mailCatalog = {
+    species = function(_, key)
+      return sourceCatalog:species(key)
+    end,
+    iconSelection = function(_, mon)
+      return sourceCatalog:iconSelection(mon)
+    end,
+    item = function(_, key)
+      local definition = sourceCatalog:item(key)
+      if key == grassMail then
+        return { name = definition.name, pocket = "mail" }
+      end
+      return definition
+    end,
+  }
+  local mailService = {
+    partyCount = function()
+      return service:partyCount()
+    end,
+    partyRevision = function()
+      return service:partyRevision()
+    end,
+    partyMon = function(_, slot)
+      local mon = service:partyMon(slot)
+      if slot == 0 then
+        mon.heldItem = grassMail
+      end
+      return mon
+    end,
+    partyMonDerived = function(_, slot)
+      return service:partyMonDerived(slot)
+    end,
+    catalog = function()
+      return mailCatalog
+    end,
+  }
+
+  local lead = PartyScreenModel.build(mailService).slots[1]
+  Assert.equal(lead.heldItem, grassMail, "mail classification preserves the semantic item key")
+  Assert.equal(lead.heldItemName, sourceCatalog:item(grassMail).name)
+  Assert.equal(lead.heldMarkerKind, "mail", "the catalog pocket determines the mail marker")
 end
 
 function T.unset_facts_default_to_empty_values()
@@ -170,6 +220,7 @@ function T.unset_facts_default_to_empty_values()
   Assert.isFalse(lead.isEgg)
   Assert.equal(lead.heldItem, "NONE")
   Assert.isNil(lead.heldItemName, "mons without an item carry no held display name")
+  Assert.isNil(lead.heldMarkerKind, "mons without an item carry no marker kind")
   Assert.isNil(lead.capsule, "mons without capsules carry no capsule record")
   Assert.isTrue(#lead.moves >= 0, "moves project as an array")
   for _, move in ipairs(lead.moves) do

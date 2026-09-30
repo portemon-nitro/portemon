@@ -16,10 +16,6 @@ local YesNoPromptRenderer = require("libs.hgss.src.ui.YesNoPromptRenderer")
 local PartyScreenRenderer = {}
 PartyScreenRenderer.__index = PartyScreenRenderer
 
--- Source detail anchors are in the sub-screen's source coordinate space.
-local DETAIL_ICON = { x = 30, y = 200 }
-local DETAIL_STATUS = { x = 50, y = 220 }
-
 -- Selected-icon base shift and healthy bob amplitude in pixels.
 local SELECT_SHIFT = 2
 local BOB_UP = -3
@@ -65,7 +61,7 @@ local DIMMED = { 1, 1, 1, 0.45 }
 local MENU_HIGHLIGHT = { 0.3, 0.3, 0.45, 1 }
 local ZERO_OFFSET = { x = 0, y = 0 }
 
-local STATUS_SEQUENCE = { faint = 1, sleep = 2, poison = 3, burn = 4, freeze = 5, paralysis = 6 }
+local STATUS_KEYS = { "paralysis", "freeze", "sleep", "poison", "burn", "faint" }
 
 ---@param manifest table<string, unknown>
 ---@param section string
@@ -160,8 +156,9 @@ function PartyScreenRenderer:_acquire(cacheFs, manifest, uiManifest)
   acquireSequence("cursor")
   acquireSequence("buttons")
   local status = assert(visuals.status, "the party manifest carries status visuals")
-  for _, frame in ipairs(assert(status.frames, "party status carries frames")) do
-    acquire(assert(frame.image, "party status frames carry image paths"))
+  for _, key in ipairs(STATUS_KEYS) do
+    local visual = assert(status[key], "party status visuals carry " .. key)
+    acquire(assert(visual.image, "party status visuals carry image paths"))
   end
   local hpBars = assert(visuals.hpBars, "the party manifest carries HP bars")
   for _, zone in ipairs({ "green", "yellow", "red" }) do
@@ -443,7 +440,9 @@ function PartyScreenRenderer:_drawIndicators(record, panel, dx, selected, tick)
   local ballAnchor = assert(panel.ballAnchor, "party panels carry the ball anchor")
   self:_drawSequence(ballSequence, tick, { x = ballAnchor.x + dx, y = ballAnchor.y })
   if record.heldItem ~= nil and record.heldItem ~= "NONE" then
-    local heldSequence = assert(visuals.held.sequences[1], "party held visuals carry the item marker")
+    local sequenceIndex = record.heldMarkerKind == "item" and 1 or record.heldMarkerKind == "mail" and 2
+    assert(sequenceIndex ~= nil, "held items carry a semantic marker kind")
+    local heldSequence = assert(visuals.held.sequences[sequenceIndex], "party held visuals carry the marker")
     local heldAnchor = assert(panel.heldAnchor, "party panels carry the held-item anchor")
     self:_drawSequence(heldSequence, tick, { x = heldAnchor.x + dx, y = heldAnchor.y })
   end
@@ -517,12 +516,11 @@ function PartyScreenRenderer:_drawSlot(record, panel, dx, selected, phase, tick,
     self:_drawLevel(assert(record.level, "occupied slots carry a level"), shiftedLevel)
   end
   if status ~= "ok" then
-    local sequence = assert(STATUS_SEQUENCE[status], "party status has a source sprite")
-    local frame = assert(self._manifest.visuals.status.frames[sequence], "party status carries its source frame")
+    local visual = assert(self._manifest.visuals.status[status], "party status carries its semantic visual")
     local statusRect = assert(panel.statusRect, "party panels carry the status rectangle")
     setColor(graphics, WHITE)
     graphics.draw(
-      self:_image(assert(frame.image, "party status frames carry image paths")),
+      self:_image(assert(visual.image, "party status visuals carry image paths")),
       statusRect.x + dx,
       statusRect.y
     )
@@ -619,49 +617,48 @@ function PartyScreenRenderer:_drawPrompt(promptStatus)
   prompt:draw(promptStatus)
 end
 
--- Draws the selected mon's detail facts at the source upper-screen
--- anchors: icon, status label, name, and HP numerals with its indicators.
+-- Draws selected mon facts at the generated upper-detail rest geometry.
 ---@param facts table<string, unknown>
 ---@param originX number
 ---@param originY number
 ---@param slide number
----@param tick integer
 ---@param icons table<string, unknown>
-function PartyScreenRenderer:_drawDetailFacts(facts, originX, originY, slide, tick, icons)
+function PartyScreenRenderer:_drawDetailFacts(facts, originX, originY, slide, icons)
   local graphics = self._graphics
   local iconKey = assert(facts.iconKey, "detail facts carry an icon key")
   local iconImage = icons:image(iconKey)
   local quad = icons:quadFor(iconKey)
   setColor(graphics, WHITE)
   local dims = icons:dimensions(iconKey)
+  local detail = assert(self._manifest.detail, "the party manifest carries detail geometry")
+  local iconAnchor = assert(detail.iconAnchor, "party detail carries the icon anchor")
   graphics.draw(
     iconImage,
     quad,
-    originX + DETAIL_ICON.x - dims.width / 2,
-    originY + DETAIL_ICON.y - slide - dims.height / 2
+    originX + iconAnchor.x - dims.width / 2,
+    originY + iconAnchor.y - slide - dims.height / 2
   )
   local status = assert(facts.status, "detail facts carry a status")
   if status ~= "ok" then
-    local sequence = assert(STATUS_SEQUENCE[status], "detail status has a source sprite")
-    local frame = assert(self._manifest.visuals.status.frames[sequence], "party status carries its source frame")
+    local visual = assert(self._manifest.visuals.status[status], "detail status carries its semantic visual")
+    local statusAnchor = assert(detail.statusAnchor, "party detail carries the status anchor")
+    local width = assert(visual.width, "party status visuals carry widths")
+    local height = assert(visual.height, "party status visuals carry heights")
     setColor(graphics, WHITE)
     graphics.draw(
-      self:_image(assert(frame.image, "party status frames carry image paths")),
-      originX + DETAIL_STATUS.x,
-      originY + DETAIL_STATUS.y - slide
+      self:_image(assert(visual.image, "party status visuals carry image paths")),
+      originX + statusAnchor.x - width / 2,
+      originY + statusAnchor.y - slide - height / 2
     )
   end
   local displayName = assert(facts.displayName, "detail facts carry a display name")
   assert(type(displayName) == "string", "the detail name renders as text")
-  self:_drawSlotText(displayName, originX + DETAIL_STATUS.x, originY + DETAIL_STATUS.y - slide - 16, false)
+  local nicknameTextOrigin = assert(detail.nicknameTextOrigin, "party detail carries the nickname origin")
+  self:_drawSlotText(displayName, originX + nicknameTextOrigin.x, originY + nicknameTextOrigin.y - slide, false)
   if facts.heldItem ~= nil and facts.heldItem ~= "NONE" then
     local heldName = assert(facts.heldItemName, "held items carry a display name")
-    local heldSequence = assert(self._manifest.visuals.held.sequences[1], "party held visuals carry the item marker")
-    self:_drawSequence(heldSequence, tick, {
-      x = originX + DETAIL_ICON.x + 40,
-      y = originY + DETAIL_ICON.y - slide,
-    })
-    self:_drawSlotText(heldName, originX + DETAIL_STATUS.x, originY + DETAIL_STATUS.y - slide + 8, false)
+    local heldItemTextOrigin = assert(detail.heldItemTextOrigin, "party detail carries the held-item text origin")
+    self:_drawSlotText(heldName, originX + heldItemTextOrigin.x, originY + heldItemTextOrigin.y - slide, false)
   end
 end
 
@@ -688,7 +685,7 @@ function PartyScreenRenderer:_drawDetailPane(presentation, placement, icons)
   graphics.draw(self:_image(assert(visuals.backdropSub.image, "the sub backdrop carries an image path")), 0, 0)
   graphics.draw(self:_image(assert(visuals.detailSub.image, "the detail layer carries an image path")), 0, -slide)
   if slide > 0 and type(facts) == "table" and facts.occupied then
-    self:_drawDetailFacts(facts, 0, 0, slide, presentation.anim and presentation.anim.tick or 0, icons)
+    self:_drawDetailFacts(facts, 0, 0, slide, icons)
   end
 end
 

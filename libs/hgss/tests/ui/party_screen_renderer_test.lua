@@ -415,7 +415,11 @@ function T.occupied_slots_draw_chrome_icons_glyphs_and_status()
   local renderer = newRenderer(graphics, stubText(texts))
   local status = presentation()
   status.view.slots[1] = occupiedSlot(0, { status = "poison", currentHp = 7, maxHp = 20 })
-  status.view.slots[2] = occupiedSlot(1, { heldItem = "SITRUS_BERRY", capsule = { id = 3, seals = {} } })
+  status.view.slots[2] = occupiedSlot(1, {
+    heldItem = "SITRUS_BERRY",
+    heldMarkerKind = "item",
+    capsule = { id = 3, seals = {} },
+  })
   renderer:draw(status, layout(), icons())
   local chromeAt = {}
   local quadKeys = {}
@@ -431,6 +435,71 @@ function T.occupied_slots_draw_chrome_icons_glyphs_and_status()
   Assert.isFalse(hasString(texts, "PSN"), "status uses its generated sprite rather than a text label")
   Assert.isFalse(hasString(texts, "M"), "no gender letter ever prints")
   Assert.isFalse(hasString(texts, "F"), "no gender letter ever prints")
+end
+
+function T.status_visuals_follow_semantic_keys_for_lower_cards()
+  local graphics = fakeGraphics()
+  local manifest = sourceManifest()
+  local renderer = newRenderer(graphics, stubText({}), manifest)
+  local keys = { "paralysis", "freeze", "sleep", "poison", "burn", "faint" }
+  local status = presentation()
+  for slot0, key in ipairs(keys) do
+    status.view.slots[slot0] = occupiedSlot(slot0 - 1, { status = key })
+  end
+
+  renderer:draw(status, PartyScreenLayout.resolve({ manifest = manifest, cancellable = true }), icons())
+
+  for slot0, key in ipairs(keys) do
+    local visual = manifest.visuals.status[key]
+    local expectedImage = renderer._images["asset:" .. visual.image]
+    local expectedRect = manifest.panels[slot0].statusRect
+    local found
+    for _, draw in ipairs(graphics.draws) do
+      if draw.image == expectedImage and draw.x == expectedRect.x and draw.y == expectedRect.y then
+        found = true
+        break
+      end
+    end
+    Assert.isTrue(found, key .. " status uses its semantic visual at the generated panel rectangle")
+  end
+end
+
+function T.held_mail_and_capsule_use_semantic_kind_and_generated_anchors()
+  local graphics = fakeGraphics()
+  local manifest = sourceManifest()
+  local heldFrame = manifest.visuals.held.sequences[2].frames[1]
+  heldFrame.offset = { x = 2, y = -1 }
+  local capsuleFrame = manifest.visuals.held.sequences[3].frames[1]
+  capsuleFrame.offset = { x = -2, y = 3 }
+  local renderer = newRenderer(graphics, stubText({}), manifest)
+  local status = presentation()
+  status.view.slots[1] = occupiedSlot(0, {
+    heldItem = "SITRUS_BERRY",
+    heldItemName = "Sitrus Berry",
+    heldMarkerKind = "mail",
+    capsule = { id = 3, seals = {} },
+  })
+
+  renderer:draw(status, PartyScreenLayout.resolve({ manifest = manifest, cancellable = true }), icons())
+
+  for _, expected in ipairs({
+    { frame = heldFrame, anchor = manifest.panels[1].heldAnchor },
+    { frame = capsuleFrame, anchor = manifest.panels[1].capsuleAnchor },
+  }) do
+    local image = renderer._images["asset:" .. expected.frame.image]
+    local found
+    for _, draw in ipairs(graphics.draws) do
+      if
+        draw.image == image
+        and draw.x == expected.anchor.x + expected.frame.offset.x
+        and draw.y == expected.anchor.y + expected.frame.offset.y
+      then
+        found = true
+        break
+      end
+    end
+    Assert.isTrue(found, "the semantic held marker or capsule uses its generated anchor and frame offset")
+  end
 end
 
 function T.eggs_print_names_without_level_or_hp()
@@ -602,6 +671,80 @@ function T.detail_pane_draws_selected_facts_at_upper_anchors()
   renderer:drawPane(status, plan.panes[2], resolved, icons())
   Assert.isTrue(hasString(texts, "MON1"), "the detail pane names the cursor mon")
   Assert.isFalse(hasString(texts, "BRN"), "the detail pane status uses its source sprite")
+end
+
+function T.detail_facts_use_generated_geometry_and_draw_no_held_marker_obj()
+  local graphics = fakeGraphics()
+  local texts = {}
+  local manifest = sourceManifest()
+  local renderer = newRenderer(graphics, stubText(texts), manifest)
+  local resolved = PartyScreenLayout.resolve({ manifest = manifest, cancellable = true })
+  local placement = {
+    frame = { x = 0, y = 0, width = 256, height = 192 },
+    origin = { x = 0, y = 0 },
+    scale = 1,
+    logicalWidth = 256,
+    logicalHeight = 192,
+  }
+  local plan = {
+    panes = {
+      { id = "content", placement = placement, interactive = true },
+      { id = "detail", placement = placement, interactive = false },
+    },
+    frames = {},
+    content = resolved,
+    inputKey = "party",
+  }
+  local status = presentation({ cursorNode = 1, menuSlot = 1, state = "context" })
+  status.anim.panelSlide = 40
+  status.view.slots[2] = occupiedSlot(1, {
+    status = "burn",
+    heldItem = "SITRUS_BERRY",
+    heldItemName = "Sitrus Berry",
+    heldMarkerKind = "item",
+  })
+
+  renderer:drawPane(status, plan.panes[2], resolved, icons())
+
+  local iconDraw
+  local upperHeldImage = renderer._images["asset:" .. manifest.visuals.held.sequences[1].frames[1].image]
+  local upperHeldDraws = 0
+  for _, draw in ipairs(graphics.draws) do
+    if draw.quad ~= nil and draw.quad.key == "MON1/f0" then
+      iconDraw = draw
+    elseif draw.image == upperHeldImage then
+      upperHeldDraws = upperHeldDraws + 1
+    end
+  end
+  Assert.notNil(iconDraw, "the selected icon draws in the detail pane")
+  Assert.deepEqual({ iconDraw.x, iconDraw.y }, { 14, 144 }, "the detail icon centers at (30,160)")
+
+  local burnImage = renderer._images["asset:" .. manifest.visuals.status.burn.image]
+  local statusDraw
+  for _, draw in ipairs(graphics.draws) do
+    if draw.image == burnImage then
+      statusDraw = draw
+      break
+    end
+  end
+  Assert.notNil(statusDraw, "detail status uses the semantic status visual")
+  Assert.deepEqual({ statusDraw.x, statusDraw.y }, { 38, 176 }, "the detail status centers at (50,180)")
+
+  local expectedText = {
+    { value = "MON1", x = 56, y = 152 },
+    { value = "Sitrus Berry", x = 138, y = 172 },
+  }
+  for _, expected in ipairs(expectedText) do
+    local found
+    for _, call in ipairs(texts) do
+      if call.value == expected.value and call.x == expected.x and call.y == expected.y then
+        found = true
+        break
+      end
+    end
+    Assert.isTrue(found, expected.value .. " uses its generated detail text origin")
+  end
+  Assert.equal(upperHeldDraws, 0, "the upper detail pane has no held-item marker OBJ")
 end
 
 function T.detail_pane_hides_selected_facts_during_browse()
