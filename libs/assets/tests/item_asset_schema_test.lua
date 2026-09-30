@@ -175,7 +175,7 @@ end
 
 function T.catalogs_require_held_item_action_metadata()
   local ItemAssetSchema = schema()
-  Assert.equal(ItemAssetSchema.CATALOG_SCHEMA, "g4-item-catalog-v3")
+  Assert.equal(ItemAssetSchema.CATALOG_SCHEMA, "g4-item-catalog-v4")
   Assert.isTrue(ItemAssetSchema.isValidCatalog(validRoot()))
   for _, key in ipairs({ "isHm", "canHold", "heldFormEffect" }) do
     local root = validRoot()
@@ -191,6 +191,68 @@ function T.catalogs_require_held_item_action_metadata()
   local oldSchema = validRoot()
   oldSchema.schema = "g4-item-catalog-v2"
   Assert.isFalse(ItemAssetSchema.isValidCatalog(oldSchema), "the v2 schema no longer validates")
+end
+
+function T.catalogs_accept_enriched_held_behavior()
+  local ItemAssetSchema = schema()
+  local enriched = validRoot()
+  enriched.items["POTION"].heldBehavior = { key = "no_hold_effect", params = { nativeId = 17, holdEffect = 0 } }
+  enriched.items["POKE_BALL"].heldBehavior = { key = "ball", params = { nativeId = 4 } }
+  Assert.isTrue(ItemAssetSchema.isValidCatalog(enriched))
+  Assert.isTrue(ItemAssetSchema.assertCatalog(enriched))
+  Assert.isTrue(ItemAssetSchema.isValidCatalog(validRoot()), "records without held behavior stay valid")
+end
+
+function T.catalogs_reject_malformed_held_behavior()
+  local ItemAssetSchema = schema()
+  local cases = {
+    empty_key = { key = "", params = {} },
+    missing_params = { key = "ball" },
+    non_scalar_param = { key = "ball", params = { nativeId = {} } },
+  }
+  for name, heldBehavior in pairs(cases) do
+    local root = validRoot()
+    root.items["POTION"].heldBehavior = heldBehavior
+    Assert.isFalse(ItemAssetSchema.isValidCatalog(root), "malformed held behavior must be rejected: " .. name)
+  end
+end
+
+function T.catalogs_accept_enriched_throw_facts()
+  local ItemAssetSchema = schema()
+  local enriched = validRoot()
+  enriched.items["POTION"].fling = { effect = 0, power = 30 }
+  enriched.items["POTION"].naturalGift = { power = 0, typeId = 31, type = nil }
+  enriched.items["CHERI_BERRY"].fling = { effect = 1, power = 10 }
+  enriched.items["CHERI_BERRY"].naturalGift = { power = 60, typeId = 10, type = "fire" }
+  Assert.isTrue(ItemAssetSchema.isValidCatalog(enriched))
+  Assert.isTrue(ItemAssetSchema.assertCatalog(enriched))
+  Assert.isTrue(ItemAssetSchema.isValidCatalog(validRoot()), "records without throw facts stay valid")
+end
+
+function T.catalogs_reject_malformed_throw_facts()
+  local ItemAssetSchema = schema()
+  local flingCases = {
+    missing_power = { effect = 0 },
+    negative_power = { effect = 0, power = -1 },
+    past_byte_power = { effect = 0, power = 256 },
+    unknown_field = { effect = 0, power = 10, spin = 1 },
+  }
+  for name, fling in pairs(flingCases) do
+    local root = validRoot()
+    root.items["POTION"].fling = fling
+    Assert.isFalse(ItemAssetSchema.isValidCatalog(root), "malformed fling facts must be rejected: " .. name)
+  end
+  local giftCases = {
+    missing_type_bits = { power = 60, type = "fire" },
+    past_bit_power = { power = 256, typeId = 10, type = "fire" },
+    past_field_type_bits = { power = 60, typeId = 32, type = nil },
+    unknown_type_key = { power = 60, typeId = 10, type = "inferno" },
+  }
+  for name, naturalGift in pairs(giftCases) do
+    local root = validRoot()
+    root.items["POTION"].naturalGift = naturalGift
+    Assert.isFalse(ItemAssetSchema.isValidCatalog(root), "malformed natural-gift facts must be rejected: " .. name)
+  end
 end
 
 function T.catalogs_require_party_use_metadata()

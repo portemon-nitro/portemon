@@ -52,6 +52,11 @@ ArtifactState.KINDS = {
   items = true,
   bag = true,
   party = true,
+  -- One staged battle input artifact per job: move battle facts, trainer
+  -- records, and encounter tables each own their payload and marker.
+  ["battle-data"] = true,
+  trainers = true,
+  encounters = true,
   -- One staged message bank (or the family summary) per job: each bank owns
   -- its payload and marker, the summary owns only the index and completion.
   ["message-bank"] = true,

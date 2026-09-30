@@ -203,7 +203,7 @@ function ItemFixture.buildAssetRoot()
     key_items = { nativeId = 7, capacity = 50, maxQuantity = 999, ordering = "manual" },
   }
   return {
-    schema = "g4-item-catalog-v3",
+    schema = "g4-item-catalog-v4",
     version = { id = "heartgold", language = "en" },
     items = items,
     pockets = pockets,

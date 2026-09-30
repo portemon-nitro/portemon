@@ -12,6 +12,7 @@ local MonCacheWriter = require("romdump.src.digest.mons.MonCacheWriter")
 local MonCatalogCompiler = require("romdump.src.digest.mons.MonCatalogCompiler")
 local MonPresentationCompiler = require("romdump.src.digest.mons.MonPresentationCompiler")
 local MonSources = require("romdump.src.config.MonSources")
+local BattleSources = require("romdump.src.config.BattleSources")
 local PreparedArtifact = require("romdump.src.build.PreparedArtifact")
 
 local T = {}
@@ -205,6 +206,14 @@ local function syntheticRomFs()
       return member
     end),
     follower_params = fixedArchive(4096, function()
+      return allZero(4)
+    end),
+    -- The species weight table resolves through its pinned decomp symbol;
+    -- member 1 carries one zero s32 per species, member 0 is never read.
+    [BattleSources.weightSources.symbol] = fixedArchive(2, function(memberId)
+      if memberId == BattleSources.weightSources.memberId then
+        return allZero((MonSources.MAX_SPECIES + 1) * BattleSources.weightSources.entrySize)
+      end
       return allZero(4)
     end),
     item_data = fixedArchive(537, function()
@@ -445,7 +454,7 @@ function T.summary_dispatch_reads_published_results_without_recompiling()
     zeroCurve[level] = 0
   end
   local catalog = {
-    schema = "g4-mon-catalog-v3",
+    schema = "g4-mon-catalog-v4",
     version = { id = "heartgold", language = "english" },
     species = {},
     moves = {},

@@ -57,7 +57,7 @@ end
 
 local function catalogWith(species, moves, abilities, growthCurves)
   return {
-    schema = "g4-mon-catalog-v3",
+    schema = "g4-mon-catalog-v4",
     version = { id = "heartgold", language = "english" },
     species = species,
     moves = moves,
@@ -270,6 +270,75 @@ function T.catalogs_resolve_every_cross_reference()
   -- nothing dangling: the shared validForm already resolves.
   Assert.isTrue(MonAssetSchema.assertCatalog(catalog))
   Assert.isTrue(MonAssetSchema.isValidCatalog(catalog))
+end
+
+local function battleFacts()
+  return {
+    behavior = { key = "move_tackle", params = { nativeId = 33 } },
+    target = "range_0",
+    flags = { dealsDamage = true, checksAccuracy = true },
+  }
+end
+
+function T.moves_accept_enriched_battle_facts()
+  local MonAssetSchema = schema()
+  local enriched = catalogWith(validSpecies(), validMoves(), validAbilities(), zeroCurves())
+  enriched.moves.TACKLE.battle = battleFacts()
+  Assert.isTrue(MonAssetSchema.assertCatalog(enriched))
+  Assert.isTrue(MonAssetSchema.isValidCatalog(enriched))
+  local bare = catalogWith(validSpecies(), validMoves(), validAbilities(), zeroCurves())
+  Assert.isTrue(MonAssetSchema.isValidCatalog(bare), "records without battle facts stay valid")
+end
+
+function T.moves_reject_malformed_battle_facts()
+  local MonAssetSchema = schema()
+  local cases = {
+    empty_key = { behavior = { key = "", params = {} }, target = "range_0", flags = {} },
+    missing_params = { behavior = { key = "move_tackle" }, target = "range_0", flags = {} },
+    empty_target = { behavior = { key = "move_tackle", params = {} }, target = "", flags = {} },
+    nonboolean_flag = {
+      behavior = { key = "move_tackle", params = {} },
+      target = "range_0",
+      flags = { dealsDamage = 1 },
+    },
+    unknown_field = {
+      behavior = { key = "move_tackle", params = {} },
+      target = "range_0",
+      flags = {},
+      damage = 35,
+    },
+  }
+  for name, battle in pairs(cases) do
+    local catalog = catalogWith(validSpecies(), validMoves(), validAbilities(), zeroCurves())
+    catalog.moves.TACKLE.battle = battle
+    Assert.isFalse(MonAssetSchema.isValidCatalog(catalog), "malformed battle facts must be rejected: " .. name)
+  end
+end
+
+function T.species_accept_source_weights()
+  local MonAssetSchema = schema()
+  local enriched = catalogWith(validSpecies(), validMoves(), validAbilities(), zeroCurves())
+  enriched.species.CHIKORITA.weight = 64
+  enriched.species.BAYLEEF.weight = 158
+  Assert.isTrue(MonAssetSchema.assertCatalog(enriched))
+  Assert.isTrue(MonAssetSchema.isValidCatalog(enriched))
+  local bare = catalogWith(validSpecies(), validMoves(), validAbilities(), zeroCurves())
+  Assert.isTrue(MonAssetSchema.isValidCatalog(bare), "records without weights stay valid")
+end
+
+function T.species_reject_malformed_weights()
+  local MonAssetSchema = schema()
+  local cases = {
+    negative = -1,
+    fractional = 64.5,
+    text = "64",
+    past_s32 = 2147483648,
+  }
+  for name, weight in pairs(cases) do
+    local catalog = catalogWith(validSpecies(), validMoves(), validAbilities(), zeroCurves())
+    catalog.species.CHIKORITA.weight = weight
+    Assert.isFalse(MonAssetSchema.isValidCatalog(catalog), "malformed weight must be rejected: " .. name)
+  end
 end
 
 function T.catalogs_reject_dangling_references_and_duplicates()

@@ -198,7 +198,7 @@ end
 
 function CatalogFixture.buildAssetRoot()
   local root = {
-    schema = "g4-mon-catalog-v3",
+    schema = "g4-mon-catalog-v4",
     version = { id = "heartgold", language = "english" },
     species = {
       CHIKORITA = speciesEntry({

@@ -11,6 +11,7 @@
 
 local Errors = require("libs.errors.src.Errors")
 local Validate = require("libs.assets.src.Validate")
+local BattleDataSchema = require("libs.assets.src.battle.BattleDataSchema")
 
 ---@class MonAssetSchema
 local MonAssetSchema = {}
@@ -324,6 +325,7 @@ local SPECIES_FIELDS = {
   color = true,
   flip = true,
   forms = true,
+  weight = true,
 }
 
 local function assertSpecies(key, species, context)
@@ -355,6 +357,12 @@ local function assertSpecies(key, species, context)
   if type(species.flip) ~= "boolean" then
     fail("MON_CATALOG_INVALID", "species " .. key .. " flip must be a boolean", context)
   end
+  -- Source weight in hectograms is optional: catalogs produced before the
+  -- weight projection stay valid, while enriched species validate the full
+  -- non-negative s32 domain rather than freezing the observed maximum.
+  if species.weight ~= nil then
+    checkInt(species.weight, 0, 2147483647, context, "MON_CATALOG_INVALID", "species " .. key .. " weight")
+  end
   if type(species.forms) ~= "table" or species.forms[0] == nil then
     fail("MON_CATALOG_INVALID", "species " .. key .. " must carry its base form", context)
   end
@@ -380,6 +388,7 @@ local MOVE_FIELDS = {
   flags = true,
   unknownC = true,
   contestType = true,
+  battle = true,
 }
 
 local function assertMove(key, move, context)
@@ -405,6 +414,12 @@ local function assertMove(key, move, context)
   checkU8(move.flags, context, "MON_CATALOG_INVALID", "move " .. key .. " flags")
   checkU8(move.unknownC, context, "MON_CATALOG_INVALID", "move " .. key .. " unknownC")
   checkU8(move.contestType, context, "MON_CATALOG_INVALID", "move " .. key .. " contestType")
+  -- Semantic execution facts are optional: catalogs produced before the
+  -- battle import pipeline stay valid, while enriched records validate
+  -- their behavior reference, target, and flags through the shared check.
+  if move.battle ~= nil then
+    BattleDataSchema.assertBattleRecord(move.battle, context, "move " .. key .. " battle")
+  end
 end
 
 local function collectKeys(section, context, code, what)
@@ -523,8 +538,8 @@ function MonAssetSchema.assertCatalog(catalog)
     abilities = true,
     growthCurves = true,
   }, context, "MON_CATALOG_INVALID", "catalog")
-  if catalog.schema ~= "g4-mon-catalog-v3" then
-    fail("MON_CATALOG_INVALID", "catalog schema must be g4-mon-catalog-v3", context)
+  if catalog.schema ~= "g4-mon-catalog-v4" then
+    fail("MON_CATALOG_INVALID", "catalog schema must be g4-mon-catalog-v4", context)
   end
   checkRecord(catalog.version, { id = true, language = true }, context, "MON_CATALOG_INVALID", "catalog version")
   checkNonEmptyString(catalog.version.id, context, "MON_CATALOG_INVALID", "catalog version id")

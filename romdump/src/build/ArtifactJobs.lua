@@ -1264,6 +1264,140 @@ local function validateParty(check)
   return PartyCache.isReady(check.cacheFs, check.marker)
 end
 
+-- Battle input families stage their whole semantic payload plus a
+-- completion marker; readiness revalidates the staged payload through its
+-- semantic schema. Dependencies name the semantic identity catalogs the
+-- projection resolves against (species/move/item keys).
+---@return { kind: string, key: string }[], boolean
+local function dependenciesBattleData()
+  return { { kind = "mon-catalog", key = "global" }, { kind = "items", key = "global" } }, true
+end
+
+---@return { kind: string, key: string }[], boolean
+local function dependenciesTrainers()
+  return { { kind = "mon-catalog", key = "global" }, { kind = "items", key = "global" } }, true
+end
+
+---@return { kind: string, key: string }[], boolean
+local function dependenciesEncounters()
+  return { { kind = "mon-catalog", key = "global" } }, true
+end
+
+---@param artifact table<string, unknown>
+---@param context table<string, unknown>
+---@param job ArtifactJobs.Job
+---@param family string
+---@param compile fun(romFs: table<string, unknown>, versionId: string): table<string, unknown>?, unknown
+---@param payloadPath string
+---@param markerPath string
+---@param mark fun(romSha1: string, depHash: string): string
+---@return string compiler marker for the receipt
+local function executeBattleFamily(artifact, context, job, family, compile, payloadPath, markerPath, mark)
+  local Hashing = require("romdump.src.digest.Hashing")
+  local romFs = assert(context.romFs, family .. " jobs require a source reader")
+  local versionId = assert(context.versionId, family .. " jobs require a version")
+  local compiled, compileErr = compile(romFs, versionId)
+  if compiled == nil then
+    error(family .. " emission failed for generation " .. job.generationId .. ": " .. tostring(compileErr), 0)
+  end
+  assert(compiled ~= nil, family .. " emission produced no payload")
+  local stage = artifact:stageFs()
+  artifact:addOwnedRoot(payloadPath)
+  artifact:addOwnedRoot(markerPath)
+  stage:writeLua(payloadPath, compiled)
+  local metadata = romFs:metadata()
+  local marker = mark(metadata.sha1, Hashing.hashLua(compiled))
+  stage:write(markerPath, marker)
+  return marker
+end
+
+---@param artifact table<string, unknown>
+---@param context table<string, unknown>
+---@param job ArtifactJobs.Job
+---@return string
+local function executeBattleDataJob(artifact, context, job)
+  local BattleDataCompiler = require("romdump.src.digest.battle.BattleDataCompiler")
+  local BattleDataCache = require("libs.assets.src.battle.BattleDataCache")
+  local function compile(romFs, versionId)
+    return BattleDataCompiler.compileFromDump(romFs, { versionId = versionId })
+  end
+  return executeBattleFamily(
+    artifact,
+    context,
+    job,
+    "battle-data",
+    compile,
+    BattleDataCache.battleDataPath(),
+    BattleDataCache.battleDataMarkerPath(),
+    BattleDataCache.marker
+  )
+end
+
+---@param artifact table<string, unknown>
+---@param context table<string, unknown>
+---@param job ArtifactJobs.Job
+---@return string
+local function executeTrainersJob(artifact, context, job)
+  local TrainerCatalogCompiler = require("romdump.src.digest.battle.TrainerCatalogCompiler")
+  local BattleDataCache = require("libs.assets.src.battle.BattleDataCache")
+  local function compile(romFs, versionId)
+    return TrainerCatalogCompiler.compileFromDump(romFs, { versionId = versionId })
+  end
+  return executeBattleFamily(
+    artifact,
+    context,
+    job,
+    "trainers",
+    compile,
+    BattleDataCache.trainersPath(),
+    BattleDataCache.trainersMarkerPath(),
+    BattleDataCache.trainersMarker
+  )
+end
+
+---@param artifact table<string, unknown>
+---@param context table<string, unknown>
+---@param job ArtifactJobs.Job
+---@return string
+local function executeEncountersJob(artifact, context, job)
+  local EncounterCatalogCompiler = require("romdump.src.digest.encounters.EncounterCatalogCompiler")
+  local BattleDataCache = require("libs.assets.src.battle.BattleDataCache")
+  local function compile(romFs, versionId)
+    return EncounterCatalogCompiler.compileFromDump(romFs, { versionId = versionId })
+  end
+  return executeBattleFamily(
+    artifact,
+    context,
+    job,
+    "encounters",
+    compile,
+    BattleDataCache.encountersPath(),
+    BattleDataCache.encountersMarkerPath(),
+    BattleDataCache.encountersMarker
+  )
+end
+
+---@param check ArtifactJobs.ReadinessCheck
+---@return boolean
+local function validateBattleData(check)
+  local BattleDataCache = require("libs.assets.src.battle.BattleDataCache")
+  return BattleDataCache.isBattleDataReady(check.cacheFs, check.marker)
+end
+
+---@param check ArtifactJobs.ReadinessCheck
+---@return boolean
+local function validateTrainers(check)
+  local BattleDataCache = require("libs.assets.src.battle.BattleDataCache")
+  return BattleDataCache.isTrainersReady(check.cacheFs, check.marker)
+end
+
+---@param check ArtifactJobs.ReadinessCheck
+---@return boolean
+local function validateEncounters(check)
+  local BattleDataCache = require("libs.assets.src.battle.BattleDataCache")
+  return BattleDataCache.isEncountersReady(check.cacheFs, check.marker)
+end
+
 ---@param check ArtifactJobs.ReadinessCheck
 ---@return boolean
 local function validateSpawnDestinations(check)
@@ -1666,6 +1800,25 @@ DESCRIPTORS = {
     size = "normal",
     execute = executeItems,
     validate = validateItems,
+  },
+  -- Battle input families: semantic projection over the supported dump.
+  ["battle-data"] = {
+    size = "normal",
+    dependencies = dependenciesBattleData,
+    execute = executeBattleDataJob,
+    validate = validateBattleData,
+  },
+  trainers = {
+    size = "normal",
+    dependencies = dependenciesTrainers,
+    execute = executeTrainersJob,
+    validate = validateTrainers,
+  },
+  encounters = {
+    size = "normal",
+    dependencies = dependenciesEncounters,
+    execute = executeEncountersJob,
+    validate = validateEncounters,
   },
   bag = {
     size = "normal",

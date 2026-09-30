@@ -51,6 +51,10 @@ local DOMAINS = {
     "IntroAssetCache",
     "NewGameInitCache",
   },
+  battle = {
+    "BattleDataCache",
+    "BattleDataSchema",
+  },
 }
 
 local SHARED = {
@@ -174,6 +178,7 @@ function T.representative_contracts_load_from_each_domain_path()
   requireFromNewPath("libs.assets.src.model.ModelAsset", "model contracts")
   requireFromNewPath("libs.assets.src.field.FieldMapDataCache", "field contracts")
   requireFromNewPath("libs.assets.src.newgame.IntroAssetCache", "New Game contracts")
+  requireFromNewPath("libs.assets.src.battle.BattleDataCache", "battle contracts")
 end
 
 function T.old_asset_paths_and_requires_are_absent()
