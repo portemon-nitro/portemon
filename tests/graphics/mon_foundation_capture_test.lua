@@ -104,7 +104,18 @@ local function foundationManifest()
     panels[slot] = {
       origin = { x = ox, y = oy },
       size = { width = 128, height = 48 },
-      chrome = { normal = { image = "test/panel.png", width = 128, height = 48 } },
+      iconAnchor = { x = ox + 30, y = oy + 16 },
+      ballAnchor = { x = ox + 16, y = oy + 14 },
+      heldAnchor = { x = ox + 47, y = oy + 25 },
+      capsuleAnchor = { x = ox + 12, y = oy + 25 },
+      statusRect = { x = ox + 24, y = oy + 40, width = 24, height = 8 },
+      cursorSequence = 1,
+      chrome = {
+        normal = { image = "test/panel.png", width = 128, height = 48 },
+        selected = { image = "test/panel.png", width = 128, height = 48 },
+        fainted = { image = "test/panel.png", width = 128, height = 48 },
+        selectedFainted = { image = "test/panel.png", width = 128, height = 48 },
+      },
       text = {
         name = { x = ox + 48, y = oy + 8, width = 72, height = 16 },
         level = { x = ox + 0, y = oy + 32, width = 48, height = 16 },
@@ -148,11 +159,15 @@ local function foundationManifest()
             frames = {
               { image = "test/ball.png", width = 32, height = 32, offset = { x = 0, y = 0 }, durationTicks = 1 },
             },
+            loopFrom = 1,
+            playback = "static",
           },
           {
             frames = {
               { image = "test/ball.png", width = 32, height = 32, offset = { x = 0, y = 0 }, durationTicks = 1 },
             },
+            loopFrom = 1,
+            playback = "static",
           },
         },
       },
@@ -162,6 +177,26 @@ local function foundationManifest()
             frames = {
               { image = "test/held.png", width = 8, height = 8, offset = { x = 0, y = 0 }, durationTicks = 1 },
             },
+            loopFrom = 1,
+            playback = "static",
+          },
+        },
+      },
+      buttons = {
+        sequences = {
+          {
+            frames = {
+              { image = "test/button.png", width = 56, height = 32, offset = { x = 0, y = 0 }, durationTicks = 1 },
+            },
+            loopFrom = 1,
+            playback = "static",
+          },
+          {
+            frames = {
+              { image = "test/button.png", width = 56, height = 32, offset = { x = 0, y = 0 }, durationTicks = 1 },
+            },
+            loopFrom = 1,
+            playback = "static",
           },
         },
       },
@@ -171,10 +206,33 @@ local function foundationManifest()
             frames = {
               { image = "test/cursor.png", width = 128, height = 48, offset = { x = 0, y = 0 }, durationTicks = 1 },
             },
+            loopFrom = 1,
+            playback = "static",
           },
         },
       },
+      backdropMain = { image = "test/backdrop-main.png", width = 256, height = 256 },
+      backdropSub = { image = "test/backdrop-sub.png", width = 256, height = 256 },
+      detailSub = { image = "test/detail-sub.png", width = 256, height = 256 },
+      auxPanel = { image = "test/aux-panel.png", width = 128, height = 48 },
+      status = {
+        frames = {
+          { image = "test/status-faint.png", width = 24, height = 8 },
+          { image = "test/status-sleep.png", width = 24, height = 8 },
+          { image = "test/status-poison.png", width = 24, height = 8 },
+          { image = "test/status-burn.png", width = 24, height = 8 },
+          { image = "test/status-freeze.png", width = 24, height = 8 },
+          { image = "test/status-paralysis.png", width = 24, height = 8 },
+          { image = "test/status-healthy.png", width = 24, height = 8 },
+        },
+      },
+      hpBars = {
+        green = { image = "test/hp-green.png", width = 48, height = 4 },
+        yellow = { image = "test/hp-yellow.png", width = 48, height = 4 },
+        red = { image = "test/hp-red.png", width = 48, height = 4 },
+      },
     },
+    controls = { cancel = { anchor = { x = 232, y = 184 } } },
     iconAnimations = { periods = { 1, 8, 12, 24, 40, 36 } },
     navigation = {
       dpad = {
@@ -209,7 +267,10 @@ local function foundationManifest()
       level = { image = "test/level.png", width = 16, height = 8 },
       slash = { image = "test/slash.png", width = 8, height = 8 },
     },
-    text = { labels = {}, templates = {} },
+    text = {
+      labels = {},
+      templates = { chooseMon = { segments = { { kind = "text", value = "Choose a Pokémon." } } } },
+    },
   }
 end
 
@@ -226,6 +287,17 @@ local function foundationCache()
   stub("test/ball.png", 32, 32, 60, 60, 80)
   stub("test/held.png", 8, 8, 200, 200, 80)
   stub("test/cursor.png", 128, 48, 0, 0, 0, 0)
+  stub("test/button.png", 56, 32, 80, 80, 80)
+  for _, path in ipairs({ "backdrop-main", "backdrop-sub", "detail-sub" }) do
+    stub("test/" .. path .. ".png", 256, 256, 20, 20, 20)
+  end
+  stub("test/aux-panel.png", 128, 48, 40, 40, 56)
+  for _, path in ipairs({ "status-faint", "status-sleep", "status-poison", "status-burn", "status-freeze", "status-paralysis", "status-healthy" }) do
+    stub("test/" .. path .. ".png", 24, 8, 230, 230, 230)
+  end
+  stub("test/hp-green.png", 48, 4, 40, 220, 40)
+  stub("test/hp-yellow.png", 48, 4, 220, 220, 40)
+  stub("test/hp-red.png", 48, 4, 230, 30, 30)
   for digit = 0, 9 do
     stub("test/digit-" .. digit .. ".png", 8, 8, 230, 230, 230)
   end

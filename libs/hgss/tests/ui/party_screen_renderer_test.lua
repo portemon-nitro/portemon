@@ -26,14 +26,29 @@ local function frameRef(path, width, height)
   return { image = path, width = width or 32, height = height or 32, offset = { x = 0, y = 0 }, durationTicks = 1 }
 end
 
+local function sequence(path, width, height)
+  return { frames = { frameRef(path, width, height) }, loopFrom = 1, playback = "static" }
+end
+
 local function sourceManifest()
   local panels = {}
   local origins = { { 0, 0 }, { 128, 8 }, { 0, 48 }, { 128, 56 }, { 0, 96 }, { 128, 104 } }
   for slot, origin in ipairs(origins) do
     panels[slot] = {
       origin = { x = origin[1], y = origin[2] },
+      iconAnchor = { x = origin[1] + 30, y = origin[2] + 16 },
+      ballAnchor = { x = origin[1] + 16, y = origin[2] + 14 },
+      heldAnchor = { x = origin[1] + 47, y = origin[2] + 25 },
+      capsuleAnchor = { x = origin[1] + 12, y = origin[2] + 25 },
+      statusRect = rect(origin[1] + 24, origin[2] + 40, 24, 8),
+      cursorSequence = 1,
       size = { width = 128, height = 48 },
-      chrome = { normal = imageRef("assets/generated/party/panel.png", 128, 48) },
+      chrome = {
+        normal = imageRef("assets/generated/party/panel.png", 128, 48),
+        selected = imageRef("assets/generated/party/panel-selected.png", 128, 48),
+        fainted = imageRef("assets/generated/party/panel-fainted.png", 128, 48),
+        selectedFainted = imageRef("assets/generated/party/panel-selected-fainted.png", 128, 48),
+      },
       text = {
         name = rect(origin[1] + 48, origin[2] + 8, 72, 16),
         level = rect(origin[1] + 0, origin[2] + 32, 48, 16),
@@ -73,13 +88,44 @@ local function sourceManifest()
     visuals = {
       balls = {
         sequences = {
-          { frames = { frameRef("assets/generated/party/ball-0.png") } },
-          { frames = { frameRef("assets/generated/party/ball-1.png") } },
+          sequence("assets/generated/party/ball-0.png"),
+          sequence("assets/generated/party/ball-1.png"),
         },
       },
-      held = { sequences = { { frames = { frameRef("assets/generated/party/held.png", 8, 8) } } } },
-      cursor = { sequences = { { frames = { frameRef("assets/generated/party/cursor.png", 128, 48) } } } },
+      held = { sequences = {
+        sequence("assets/generated/party/held.png", 8, 8),
+        sequence("assets/generated/party/mail.png", 8, 8),
+        sequence("assets/generated/party/capsule.png", 8, 8),
+      } },
+      cursor = { sequences = { sequence("assets/generated/party/cursor.png", 128, 48) } },
+      buttons = {
+        sequences = {
+          sequence("assets/generated/party/button-normal.png", 56, 32),
+          sequence("assets/generated/party/button-selected.png", 56, 32),
+          sequence("assets/generated/party/button-extra-0.png", 56, 16),
+          sequence("assets/generated/party/button-extra-1.png", 56, 16),
+        },
+      },
+      status = { frames = {
+        imageRef("assets/generated/party/status-faint.png", 24, 8),
+        imageRef("assets/generated/party/status-sleep.png", 24, 8),
+        imageRef("assets/generated/party/status-poison.png", 24, 8),
+        imageRef("assets/generated/party/status-burn.png", 24, 8),
+        imageRef("assets/generated/party/status-freeze.png", 24, 8),
+        imageRef("assets/generated/party/status-paralysis.png", 24, 8),
+        imageRef("assets/generated/party/status-healthy.png", 24, 8),
+      } },
+      hpBars = {
+        green = imageRef("assets/generated/party/hp-green.png", 48, 4),
+        yellow = imageRef("assets/generated/party/hp-yellow.png", 48, 4),
+        red = imageRef("assets/generated/party/hp-red.png", 48, 4),
+      },
+      backdropMain = imageRef("assets/generated/party/backdrop-main.png", 256, 256),
+      backdropSub = imageRef("assets/generated/party/backdrop-sub.png", 256, 256),
+      detailSub = imageRef("assets/generated/party/detail-sub.png", 256, 256),
+      auxPanel = imageRef("assets/generated/party/aux-panel.png", 128, 48),
     },
+    controls = { cancel = { anchor = { x = 232, y = 184 } } },
     iconAnimations = { periods = { 1, 8, 12, 24, 40, 36 } },
     navigation = {
       dpad = {
@@ -114,7 +160,12 @@ local function sourceManifest()
       level = imageRef("assets/generated/party/level.png", 16, 8),
       slash = imageRef("assets/generated/party/slash.png", 8, 8),
     },
-    text = { labels = {}, templates = {} },
+    text = {
+      labels = { cancel = "Cancel" },
+      templates = {
+        chooseMon = { segments = { { kind = "glyph", code = 65, colorIndex = 0 } } },
+      },
+    },
   }
 end
 
@@ -212,11 +263,11 @@ local function layout()
   return PartyScreenLayout.resolve({ manifest = sourceManifest(), cancellable = true })
 end
 
-local function newRenderer(graphics, texts)
+local function newRenderer(graphics, texts, manifest)
   return PartyScreenRenderer.new({
     graphics = graphics,
     cacheFs = fakeCacheFs(),
-    manifest = sourceManifest(),
+    manifest = manifest or sourceManifest(),
     text = texts,
   })
 end
@@ -230,10 +281,118 @@ local function stubText(calls)
     drawText = function(_, value, x, y)
       calls[#calls + 1] = { value = value, x = x, y = y }
     end,
+    drawLine = function(_, tokens, x, y)
+      calls[#calls + 1] = { tokens = tokens, x = x, y = y }
+    end,
     textWidth = function(_, value)
       return #value * 8
     end,
   }
+end
+
+function T.cancel_focus_does_not_draw_slot_four_name_as_footer()
+  local graphics = fakeGraphics()
+  local texts = {}
+  local manifest = sourceManifest()
+  local renderer = newRenderer(graphics, stubText(texts), manifest)
+  local status = presentation({ cursorNode = "cancel" })
+  status.view.slots[1] = occupiedSlot(0, { displayName = "LEAD" })
+  status.view.slots[5] = occupiedSlot(4, { displayName = "FOUR" })
+  local resolved = PartyScreenLayout.resolve({ manifest = manifest, cancellable = true })
+  renderer:draw(status, resolved, icons())
+
+  local footerNameDraws = 0
+  for _, call in ipairs(texts) do
+    if call.value == "FOUR" and call.x == resolved.nameRect.x and call.y == resolved.nameRect.y then
+      footerNameDraws = footerNameDraws + 1
+    end
+  end
+  Assert.equal(footerNameDraws, 0, "Cancel focus does not borrow slot 4's name for the browse footer")
+
+end
+
+function T.numeric_cursor_and_normal_cancel_use_their_manifest_anchors()
+  local graphics = fakeGraphics()
+  local manifest = sourceManifest()
+  local panelAnchor = manifest.navigation.dpad.default[1]
+  panelAnchor.left, panelAnchor.top = 64, 25
+  local cursorFrame = manifest.visuals.cursor.sequences[1].frames[1]
+  cursorFrame.offset = { x = 3, y = -2 }
+  local cursorImage = manifest.visuals.cursor.sequences[1].frames[1].image
+  local buttonFrame = manifest.visuals.buttons.sequences[1].frames[1]
+  local buttonImage = buttonFrame.image
+  local cancelAnchor = manifest.controls.cancel.anchor
+  local renderer = newRenderer(graphics, stubText({}), manifest)
+
+  renderer:draw(presentation({ cursorNode = 0 }), PartyScreenLayout.resolve({ manifest = manifest, cancellable = true }), icons())
+
+  local cursorDraw, buttonDraw
+  for _, draw in ipairs(graphics.draws) do
+    if draw.image == renderer._images["asset:" .. cursorImage] then
+      cursorDraw = draw
+    elseif draw.image == renderer._images["asset:" .. buttonImage] then
+      buttonDraw = draw
+    end
+  end
+  Assert.notNil(cursorDraw, "numeric focus draws the slot cursor")
+  Assert.deepEqual(
+    { cursorDraw.x, cursorDraw.y },
+    { panelAnchor.left + cursorFrame.offset.x, panelAnchor.top + cursorFrame.offset.y },
+    "slot cursor uses the generated dpad position plus frame offset"
+  )
+  Assert.notNil(buttonDraw, "ordinary numeric focus keeps the normal Cancel button visible")
+  Assert.deepEqual(
+    { buttonDraw.x, buttonDraw.y },
+    { cancelAnchor.x + buttonFrame.offset.x, cancelAnchor.y + buttonFrame.offset.y },
+    "normal Cancel button uses its generated anchor plus frame offset"
+  )
+end
+
+function T.source_frames_without_offsets_draw_at_their_anchor()
+  local graphics = fakeGraphics()
+  local manifest = sourceManifest()
+  manifest.visuals.balls.sequences[1].frames[1].offset = nil
+  local ballImage = manifest.visuals.balls.sequences[1].frames[1].image
+  local renderer = newRenderer(graphics, stubText({}), manifest)
+  local status = presentation({ cursorNode = 5 })
+  status.view.slots[1] = occupiedSlot(0)
+
+  renderer:draw(status, PartyScreenLayout.resolve({ manifest = manifest, cancellable = true }), icons())
+
+  local ballDraw
+  for _, draw in ipairs(graphics.draws) do
+    if draw.image == renderer._images["asset:" .. ballImage] then
+      ballDraw = draw
+      break
+    end
+  end
+  Assert.notNil(ballDraw, "a source frame without an explicit offset still draws")
+  Assert.deepEqual({ ballDraw.x, ballDraw.y }, { 16, 14 }, "an omitted zero offset uses the sprite anchor")
+end
+
+function T.browse_message_draws_compiled_template_inside_source_window()
+  local graphics = fakeGraphics()
+  local texts = {}
+  local manifest = sourceManifest()
+  local renderer = newRenderer(graphics, stubText(texts), manifest)
+  local resolved = PartyScreenLayout.resolve({ manifest = manifest, cancellable = true })
+  local message = manifest.text.templates.chooseMon
+  for _, focus in ipairs({ 0, "cancel" }) do
+    local status = presentation({ cursorNode = focus })
+    status.view.slots[1] = occupiedSlot(0, { displayName = "LEAD" })
+    status.view.slots[5] = occupiedSlot(4, { displayName = "FOUR" })
+    local firstNewCall = #texts + 1
+    renderer:draw(status, resolved, icons())
+
+    local messageDraws = 0
+    for index = firstNewCall, #texts do
+      local call = texts[index]
+      if call.tokens == message.segments and call.x == 20 and call.y == 172 then
+        messageDraws = messageDraws + 1
+      end
+    end
+    Assert.equal(messageDraws, 1, "the compiled choose-mon template draws inside the message window")
+  end
 end
 
 local function hasString(calls, value)
@@ -264,7 +423,7 @@ function T.occupied_slots_draw_chrome_icons_glyphs_and_status()
   end
   Assert.isTrue(#chromeAt >= 6, "every panel paints its chrome")
   Assert.isTrue(hasString(texts, "MON0"), "names print through the generated font")
-  Assert.isTrue(hasString(texts, "PSN"), "status text replaces the level line")
+  Assert.isFalse(hasString(texts, "PSN"), "status uses its generated sprite rather than a text label")
   Assert.isFalse(hasString(texts, "M"), "no gender letter ever prints")
   Assert.isFalse(hasString(texts, "F"), "no gender letter ever prints")
 end
@@ -290,8 +449,8 @@ function T.empty_slots_draw_chrome_without_facts()
   local draws = #graphics.draws
   local strings = #texts
   renderer:draw(status, layout(), icons())
-  Assert.isTrue(#graphics.draws > draws, "empty chrome still paints")
-  Assert.equal(#texts, strings + 3, "the occupied name prints on its card and in the footer, plus cancel")
+  Assert.isTrue(#graphics.draws > draws, "empty panels and source backdrop still paint")
+  Assert.isTrue(#texts > strings, "the occupied name and browse message print")
 end
 
 function T.selected_icons_shift_with_healthy_bob()
@@ -302,13 +461,25 @@ function T.selected_icons_shift_with_healthy_bob()
   healthy.view.slots[1] = occupiedSlot(0)
   healthy.anim.phases[1] = 0
   renderer:draw(healthy, layout(), icons())
-  local selectedDraw = graphics.draws[2]
+  local selectedDraw = nil
+  for _, draw in ipairs(graphics.draws) do
+    if draw.quad ~= nil and draw.quad.key == "MON0/f0" then
+      selectedDraw = draw
+      break
+    end
+  end
   local plain = presentation({ cursorNode = 5 })
   plain.view.slots[1] = occupiedSlot(0)
   local graphics2 = fakeGraphics()
   local renderer2 = newRenderer(graphics2, stubText({}))
   renderer2:draw(plain, layout(), icons())
-  local unselectedDraw = graphics2.draws[2]
+  local unselectedDraw = nil
+  for _, draw in ipairs(graphics2.draws) do
+    if draw.quad ~= nil and draw.quad.key == "MON0/f0" then
+      unselectedDraw = draw
+      break
+    end
+  end
   Assert.isTrue(selectedDraw.x ~= unselectedDraw.x or selectedDraw.y ~= unselectedDraw.y, "selection shifts the icon")
 end
 
@@ -388,21 +559,14 @@ function T.detail_pane_draws_in_pane_local_logical_coordinates()
     content = resolved,
     inputKey = "party",
   }
-  local status = presentation({ cursorNode = 1 })
+  local status = presentation({ cursorNode = 1, menuSlot = 1 })
+  status.anim.panelSlide = 40
   status.view.slots[1] = occupiedSlot(0)
   status.view.slots[2] = occupiedSlot(1, { status = "burn", currentHp = 3, maxHp = 20 })
-  renderer:draw(status, plan, icons())
-  local background = nil
-  for _, rectangle in ipairs(graphics.rectangles) do
-    if rectangle.w == 256 and rectangle.h == 192 then
-      background = rectangle
-    end
-  end
-  Assert.notNil(background, "the detail pane paints its logical background")
-  Assert.equal(background.x, 0, "the detail background starts at the pane-local origin")
-  Assert.equal(background.y, 0, "the detail background starts at the pane-local origin")
+  renderer:drawPane(status, plan.panes[2], resolved, icons())
+  Assert.isTrue(#graphics.draws > 0, "the source backdrop and detail layer draw inside the logical pane")
   Assert.isTrue(hasString(texts, "MON1"), "the detail pane names the cursor mon")
-  Assert.isTrue(hasString(texts, "BRN"), "the detail pane shows its status")
+  Assert.isFalse(hasString(texts, "BRN"), "the detail pane status uses its source sprite")
 end
 
 function T.detail_pane_draws_selected_facts_at_upper_anchors()
@@ -426,12 +590,40 @@ function T.detail_pane_draws_selected_facts_at_upper_anchors()
     content = resolved,
     inputKey = "party",
   }
-  local status = presentation({ cursorNode = 1 })
+  local status = presentation({ cursorNode = 1, menuSlot = 1 })
+  status.anim.panelSlide = 40
   status.view.slots[1] = occupiedSlot(0)
   status.view.slots[2] = occupiedSlot(1, { status = "burn", currentHp = 3, maxHp = 20 })
-  renderer:draw(status, plan, icons())
+  renderer:drawPane(status, plan.panes[2], resolved, icons())
   Assert.isTrue(hasString(texts, "MON1"), "the detail pane names the cursor mon")
-  Assert.isTrue(hasString(texts, "BRN"), "the detail pane shows its status")
+  Assert.isFalse(hasString(texts, "BRN"), "the detail pane status uses its source sprite")
+end
+
+function T.detail_pane_hides_selected_facts_during_browse()
+  local graphics = fakeGraphics()
+  local texts = {}
+  local renderer = newRenderer(graphics, stubText(texts))
+  local resolved = layout()
+  local placement = {
+    frame = { x = 0, y = 0, width = 256, height = 192 },
+    origin = { x = 0, y = 0 },
+    scale = 1,
+    logicalWidth = 256,
+    logicalHeight = 192,
+  }
+  local plan = {
+    panes = {
+      { id = "content", placement = placement, interactive = true },
+      { id = "detail", placement = placement, interactive = false },
+    },
+    frames = {},
+    content = resolved,
+    inputKey = "party",
+  }
+  local status = presentation({ cursorNode = 1 })
+  status.view.slots[2] = occupiedSlot(1)
+  renderer:drawPane(status, plan.panes[2], resolved, icons())
+  Assert.isFalse(hasString(texts, "MON1"), "browse does not show selected context facts")
 end
 
 function T.closed_presentation_draws_nothing()

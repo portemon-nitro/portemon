@@ -75,6 +75,9 @@ local function projectSlot(service, slot0, isEligible)
   local heldItem = mon.heldItem
   assert(type(heldItem) == "string", "party mons carry their held-item key")
   record.heldItem = heldItem
+  if heldItem ~= "NONE" then
+    record.heldItemName = assert(catalog:item(heldItem).name, "held items carry a display name")
+  end
   if mon.capsule ~= nil then
     assert(type(mon.capsule) == "table", "party capsules arrive as records")
     if mon.capsule.id ~= nil and mon.capsule.id ~= 0 then

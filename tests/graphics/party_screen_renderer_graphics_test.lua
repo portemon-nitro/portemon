@@ -1,9 +1,6 @@
--- Graphics smoke for the native party screen: the compiled party manifest
--- draws its staggered chrome panels, source-sized icons, glyph HP/level
--- numerals, status text, cursor, context menu rows, and footer name at
--- 1x and 2x through the real renderer, icon provider, and generated
--- font. Pixel checks pin manifest geometry and draw order, not host
--- font rasterization.
+-- Graphics coverage for Party pane composition, source visuals, generated
+-- geometry, and the detail slide through the real renderer and icon provider.
+-- Pixel checks pin relationships, not copyrighted screenshots.
 
 local Assert = require("tests.support.Assert")
 local CacheFs = require("libs.storage.src.CacheFs")
@@ -79,6 +76,46 @@ local function scanRegion(data, cornerR, cornerG, cornerB, x0, y0, width, height
   return other, distinct
 end
 
+local function visualPixels(scope, cacheFs, visual)
+  local bytes = assert(cacheFs:read(visual.image), "the generated Party visual is present")
+  local fileData = love.filesystem.newFileData(bytes, visual.image)
+  return scope:own(love.image.newImageData(fileData))
+end
+
+local function matchingOpaquePixels(rendered, source, sourceX, sourceY, x0, y0, width, height)
+  local matches = 0
+  local opaque = 0
+  for y = 0, height - 1 do
+    for x = 0, width - 1 do
+      local sr, sg, sb, sa = source:getPixel(sourceX + x, sourceY + y)
+      if quantize(sa) == 255 then
+        opaque = opaque + 1
+        local rr, rg, rb, ra = rendered:getPixel(x0 + x, y0 + y)
+        if quantize(rr) == quantize(sr) and quantize(rg) == quantize(sg) and quantize(rb) == quantize(sb) then
+          if quantize(ra) == 255 then
+            matches = matches + 1
+          end
+        end
+      end
+    end
+  end
+  return matches, opaque
+end
+
+local function differingPixels(left, right, x0, y0, width, height)
+  local differences = 0
+  for y = y0, y0 + height - 1 do
+    for x = x0, x0 + width - 1 do
+      local lr, lg, lb = left:getPixel(x, y)
+      local rr, rg, rb = right:getPixel(x, y)
+      if quantize(lr) ~= quantize(rr) or quantize(lg) ~= quantize(rg) or quantize(lb) ~= quantize(rb) then
+        differences = differences + 1
+      end
+    end
+  end
+  return differences
+end
+
 ---@param slot0 integer
 ---@param overrides table<string, any>?
 ---@return table<string, any>
@@ -144,6 +181,43 @@ local function presentation(overrides)
   return status
 end
 
+local function renderPane(scope, cacheFs, manifest, status)
+  local text = scope:own(FieldTextRenderer.new({ cacheFs = FieldUiFixture.cacheWithFontAndFrames() }))
+  local layout = PartyScreenLayout.resolve({ manifest = manifest, cancellable = true })
+  local provider = scope:own(PreparedMonIcons.preparedProvider(PreparedMonIcons.iconCache(), { "MON0/f0" }))
+  local renderer =
+    PartyScreenRenderer.new({ graphics = love.graphics, cacheFs = cacheFs, manifest = manifest, text = text })
+  local canvas = scope:own(love.graphics.newCanvas(256, 192))
+  love.graphics.setCanvas(canvas)
+  love.graphics.clear(0, 0, 0, 0)
+  renderer:draw(status, layout, provider)
+  love.graphics.setCanvas()
+  return scope:own(canvas:newImageData()), layout
+end
+
+local function renderDetailPane(scope, cacheFs, manifest, status)
+  local text = scope:own(FieldTextRenderer.new({ cacheFs = FieldUiFixture.cacheWithFontAndFrames() }))
+  local layout = PartyScreenLayout.resolve({ manifest = manifest, cancellable = true })
+  local provider = scope:own(PreparedMonIcons.preparedProvider(PreparedMonIcons.iconCache(), { "MON0/f0" }))
+  local renderer =
+    PartyScreenRenderer.new({ graphics = love.graphics, cacheFs = cacheFs, manifest = manifest, text = text })
+  local canvas = scope:own(love.graphics.newCanvas(600, 440))
+  local hostPlacement = assert(
+    PixelScale.placeFixed({ x = 20, y = 12, width = 512, height = 384 }, 256, 192),
+    "the detail pane fits at an offset two-times host placement"
+  )
+  love.graphics.setCanvas(canvas)
+  love.graphics.clear(0, 0, 0, 0)
+  LogicalSurface.draw(love.graphics, hostPlacement, function()
+    renderer:drawPane(status, {
+      id = "detail",
+      placement = { logicalWidth = 256, logicalHeight = 192 },
+    }, layout, provider)
+  end)
+  love.graphics.setCanvas()
+  return scope:own(canvas:newImageData()), hostPlacement
+end
+
 function T.party_view_paints_frame_slots_icons_hp_and_cursor(scope)
   for _, versionId in ipairs(readyVersions()) do
     local cacheFs, manifest = manifestFor(versionId)
@@ -175,14 +249,327 @@ function T.party_view_paints_frame_slots_icons_hp_and_cursor(scope)
         end
       end
       Assert.isTrue(iconRed > 10, versionId .. " the icon quad draws inside the lead slot")
-      -- The damaged second slot keeps a red HP bar segment.
-      local second = layout.slotRects[2]
-      local barY = math.floor(second.y + second.height - 10 + 3)
-      local barX = math.floor(second.x + 6 + 32 + 8 + 4)
-      local hr, hg = image:getPixel(barX, barY)
-      Assert.isTrue(hr > 0.7 and hg < 0.5, versionId .. " low HP paints the red zone")
+      -- The damaged second slot paints the compiled red strip.
+      local bar = manifest.panels[2].hp.bar
+      local redStrip = visualPixels(scope, cacheFs, manifest.visuals.hpBars.red)
+      local redMatches = matchingOpaquePixels(image, redStrip, 0, 0, bar.x, bar.y + 2, 9, 4)
+      Assert.equal(redMatches, 36, versionId .. " low HP uses the generated four-row red strip")
       provider:release()
     end
+  end
+end
+
+-- The upper left strip is uncovered by the staggered slot panels, so it
+-- proves that the content backdrop is composed independently of card art.
+-- An unoccupied card also must not reuse the normal occupied chrome.
+function T.backdrop_and_empty_slot_use_their_generated_visuals(scope)
+  for _, versionId in ipairs(readyVersions()) do
+    local cacheFs, manifest = manifestFor(versionId)
+    local image, layout = renderPane(scope, cacheFs, manifest, presentation())
+    local cornerR, cornerG, cornerB = 0, 0, 0
+    local backdropPixels = scanRegion(image, cornerR, cornerG, cornerB, 128, 0, 128, 8)
+    Assert.isTrue(backdropPixels > 10, versionId .. " paints the uncovered main-backdrop strip")
+
+    local auxiliary = manifest.visuals.auxPanel
+    local panelOrigin = manifest.panels[3].origin
+    Assert.equal(auxiliary.width, 128, versionId .. " publishes canonical empty-panel width")
+    Assert.equal(auxiliary.height, 48, versionId .. " publishes canonical empty-panel height")
+    local emptyRect = layout.slotRects[3]
+    local auxiliaryPixels = visualPixels(scope, cacheFs, auxiliary)
+    local auxiliaryMatches =
+      matchingOpaquePixels(image, auxiliaryPixels, 0, 0, emptyRect.x, emptyRect.y, auxiliary.width, auxiliary.height)
+    Assert.isTrue(auxiliaryMatches > 100, versionId .. " composes the generated empty-panel art")
+    local panelPixels = scanRegion(
+      image,
+      cornerR,
+      cornerG,
+      cornerB,
+      emptyRect.x + 8,
+      emptyRect.y + 8,
+      emptyRect.width - 16,
+      emptyRect.height - 16
+    )
+    Assert.isTrue(panelPixels > 100, versionId .. " paints a source empty-slot panel")
+    Assert.deepEqual(
+      { emptyRect.x, emptyRect.y },
+      { panelOrigin.x, panelOrigin.y },
+      versionId .. " places the empty panel at its generated origin"
+    )
+  end
+end
+
+-- A provider icon's painted bounds must be centered on the source anchor;
+-- this checks geometry rather than a copyrighted screenshot.
+function T.pokemon_icons_are_centered_on_generated_anchors(scope)
+  for _, versionId in ipairs(readyVersions()) do
+    local cacheFs, manifest = manifestFor(versionId)
+    local status = presentation({ cursorNode = 5 })
+    local image, _ = renderPane(scope, cacheFs, manifest, status)
+    local noIcon = presentation({ cursorNode = 5 })
+    noIcon.view.slots[1] = slot(0)
+    local background, _ = renderPane(scope, cacheFs, manifest, noIcon)
+    local anchor = manifest.panels[1].iconAnchor
+    local minX, minY, maxX, maxY
+    for y = 0, 63 do
+      for x = 0, 63 do
+        local r, g, b = image:getPixel(x, y)
+        local br, bg, bb = background:getPixel(x, y)
+        if
+          (quantize(r) ~= quantize(br) or quantize(g) ~= quantize(bg) or quantize(b) ~= quantize(bb))
+          and r > 0.7
+          and g < 0.3
+          and b < 0.3
+        then
+          minX = minX and math.min(minX, x) or x
+          minY = minY and math.min(minY, y) or y
+          maxX = maxX and math.max(maxX, x) or x
+          maxY = maxY and math.max(maxY, y) or y
+        end
+      end
+    end
+    Assert.notNil(minX, versionId .. " paints the fixture Pokémon icon")
+    Assert.deepEqual(
+      { minX + 16, minY + 16 },
+      { anchor.x, anchor.y },
+      versionId .. " centers the provider-sized icon on its generated anchor"
+    )
+  end
+end
+
+function T.focus_uses_selected_panel_chrome(scope)
+  for _, versionId in ipairs(readyVersions()) do
+    local cacheFs, manifest = manifestFor(versionId)
+    local focused = presentation({ cursorNode = 0 })
+    local image, _ = renderPane(scope, cacheFs, manifest, focused)
+    local panel = manifest.panels[1]
+    local selected = visualPixels(scope, cacheFs, panel.chrome.selected)
+    local matches = matchingOpaquePixels(image, selected, 64, 0, 64, 0, 40, 8)
+    Assert.isTrue(matches > 50, versionId .. " paints selected chrome beneath the focused cursor")
+
+    local focusCursor = manifest.visuals.cursor.sequences[panel.cursorSequence].frames[1]
+    local cursorPixels = visualPixels(scope, cacheFs, focusCursor)
+    local cursorAnchor = manifest.navigation.dpad.default[1]
+    local cursorMatches = matchingOpaquePixels(
+      image,
+      cursorPixels,
+      0,
+      0,
+      cursorAnchor.left + (focusCursor.offset and focusCursor.offset.x or 0),
+      cursorAnchor.top + (focusCursor.offset and focusCursor.offset.y or 0),
+      focusCursor.width,
+      focusCursor.height
+    )
+    Assert.isTrue(cursorMatches > 4, versionId .. " paints the slot selector at its generated dpad anchor")
+    local ballFrame = manifest.visuals.balls.sequences[2].frames[1]
+    local ballPixels = visualPixels(scope, cacheFs, ballFrame)
+    local ballAnchor = panel.ballAnchor
+    local ballMatches = matchingOpaquePixels(
+      image,
+      ballPixels,
+      0,
+      0,
+      ballAnchor.x + (ballFrame.offset and ballFrame.offset.x or 0),
+      ballAnchor.y + (ballFrame.offset and ballFrame.offset.y or 0),
+      ballFrame.width,
+      ballFrame.height
+    )
+    Assert.isTrue(ballMatches > 4, versionId .. " paints the selected ball sequence at its generated anchor")
+
+    local fainted = presentation({ cursorNode = 0 })
+    fainted.view.slots[1] = slot(0, { status = "faint", currentHp = 0, maxHp = 20, hpFraction = 0 })
+    local faintedImage, _ = renderPane(scope, cacheFs, manifest, fainted)
+    local selectedFainted = visualPixels(scope, cacheFs, panel.chrome.selectedFainted)
+    local faintMatches = matchingOpaquePixels(faintedImage, selectedFainted, 64, 0, 64, 0, 40, 8)
+    Assert.isTrue(faintMatches > 50, versionId .. " paints selected-fainted chrome beneath the focused cursor")
+  end
+end
+
+function T.cancel_focus_uses_the_generated_button_without_a_slot_cursor(scope)
+  for _, versionId in ipairs(readyVersions()) do
+    local cacheFs, manifest = manifestFor(versionId)
+    local focused = presentation({ cursorNode = "cancel" })
+    local image, layout = renderPane(scope, cacheFs, manifest, focused)
+    local buttonSequence = assert(manifest.visuals.buttons.sequences[2], versionId .. " carries focused Cancel art")
+    local frame = assert(buttonSequence.frames[1], versionId .. " carries the focused Cancel frame")
+    local button = visualPixels(scope, cacheFs, frame)
+    local anchor = manifest.controls.cancel.anchor
+    local matches, opaque = matchingOpaquePixels(
+      image,
+      button,
+      0,
+      0,
+      anchor.x + (frame.offset and frame.offset.x or 0),
+      anchor.y + (frame.offset and frame.offset.y or 0),
+      math.min(frame.width, 256 - anchor.x - (frame.offset and frame.offset.x or 0)),
+      math.min(frame.height, 192 - anchor.y - (frame.offset and frame.offset.y or 0))
+    )
+    Assert.isTrue(
+      opaque > 4 and matches == opaque,
+      versionId .. " paints every visible opaque Cancel pixel at its generated anchor"
+    )
+    local rect = assert(layout.cancelRect, versionId .. " exposes the Cancel hit target")
+    local cursor = visualPixels(scope, cacheFs, manifest.visuals.cursor.sequences[1].frames[1])
+    local cursorMatches = matchingOpaquePixels(image, cursor, 0, 0, rect.x, rect.y, 8, 8)
+    Assert.isTrue(cursorMatches < 4, versionId .. " does not paint the slot cursor over Cancel")
+  end
+end
+
+function T.status_and_hp_use_source_shaped_visuals(scope)
+  for _, versionId in ipairs(readyVersions()) do
+    local cacheFs, manifest = manifestFor(versionId)
+    local poisoned = presentation()
+    poisoned.view.slots[2] = slot(1, { status = "poison", currentHp = 4, maxHp = 20, hpFraction = 0.2 })
+    local lowHp, layout = renderPane(scope, cacheFs, manifest, poisoned)
+    local healthy = presentation()
+    healthy.view.slots[2] = slot(1, { status = "ok", currentHp = 0, maxHp = 20, hpFraction = 0 })
+    local noHp, _ = renderPane(scope, cacheFs, manifest, healthy)
+    local panel = manifest.panels[2]
+    local statusRect = panel.statusRect
+    local statusDifferences =
+      differingPixels(lowHp, noHp, statusRect.x, statusRect.y, statusRect.width, statusRect.height)
+    Assert.isTrue(statusDifferences > 4, versionId .. " paints status art in the generated status rectangle")
+    local bar = panel.hp.bar
+    local rowChanges = {}
+    for y = 0, bar.height - 1 do
+      for x = 0, bar.width - 1 do
+        local r1, g1, b1 = lowHp:getPixel(bar.x + x, bar.y + y)
+        local r2, g2, b2 = noHp:getPixel(bar.x + x, bar.y + y)
+        if quantize(r1) ~= quantize(r2) or quantize(g1) ~= quantize(g2) or quantize(b1) ~= quantize(b2) then
+          rowChanges[y + 1] = true
+        end
+      end
+    end
+    Assert.isTrue(
+      rowChanges[3] and rowChanges[4] and rowChanges[5] and rowChanges[6],
+      versionId .. " paints four HP rows"
+    )
+    Assert.isFalse(
+      rowChanges[1] or rowChanges[2] or rowChanges[7] or rowChanges[8],
+      versionId .. " leaves HP trough rows clear"
+    )
+    Assert.equal(layout.slotRects[2].x, panel.origin.x, versionId .. " keeps status geometry pane-local")
+  end
+end
+
+function T.browse_message_does_not_follow_selection_and_info_stays_available(scope)
+  for _, versionId in ipairs(readyVersions()) do
+    local cacheFs, manifest = manifestFor(versionId)
+    local selected = presentation({ cursorNode = 0 })
+    selected.view.slots[5] = slot(4, { displayName = "FOUR" })
+    local selectedImage, layout = renderPane(scope, cacheFs, manifest, selected)
+    local cancel = presentation({ cursorNode = "cancel" })
+    cancel.view.slots[5] = slot(4, { displayName = "FOUR" })
+    local cancelImage, _ = renderPane(scope, cacheFs, manifest, cancel)
+    Assert.equal(
+      differingPixels(selectedImage, cancelImage, 16, 168, 160, 16),
+      0,
+      versionId .. " keeps the browse message stable while selection changes"
+    )
+    local info = presentation({ cursorNode = "cancel", infoOverlay = true })
+    info.view.slots[5] = slot(4, { displayName = "FOUR" })
+    local infoImage, _ = renderPane(scope, cacheFs, manifest, info)
+    local infoRect = layout.infoRect
+    Assert.isTrue(
+      differingPixels(cancelImage, infoImage, infoRect.x, infoRect.y, infoRect.width, infoRect.height) > 0,
+      versionId .. " keeps the one-display info affordance outside the message band"
+    )
+  end
+end
+
+function T.panel_slide_moves_detail_only_inside_logical_panes(scope)
+  for _, versionId in ipairs(readyVersions()) do
+    local cacheFs, manifest = manifestFor(versionId)
+    local menu = {
+      { kind = "summary", label = "SUMMARY" },
+      { kind = "switch", label = "SWITCH" },
+    }
+    local before = presentation({ cursorNode = 0, menuSlot = 0, state = "context", menu = menu, menuIndex = 1 })
+    before.view.slots[1] = slot(0, {})
+    local after = presentation({ cursorNode = 0, menuSlot = 0, state = "context", menu = menu, menuIndex = 1 })
+    after.view.slots[1] = slot(0, {})
+    after.anim.panelSlide = 40
+    local first, layout = renderPane(scope, cacheFs, manifest, before)
+    local last, _ = renderPane(scope, cacheFs, manifest, after)
+    local panel = assert(layout.slotRects[1], versionId .. " carries the lead panel")
+    local contentDelta = differingPixels(first, last, panel.x, panel.y, panel.width, panel.height)
+    Assert.equal(contentDelta, 0, versionId .. " keeps lower-panel pixels fixed during the detail slide")
+
+    local slideImages = {}
+    for _, slide in ipairs({ 12, 24, 36, 40 }) do
+      local status = presentation({ cursorNode = 0, menuSlot = 0, state = "context", menu = menu, menuIndex = 1 })
+      status.view.slots[1] = slot(0, {})
+      status.anim.panelSlide = slide
+      local image, placement = renderDetailPane(scope, cacheFs, manifest, status)
+      slideImages[#slideImages + 1] = { image = image, placement = placement }
+    end
+    local function iconTop(entry)
+      local frame = entry.placement.frame
+      local minY
+      for y = frame.y, frame.y + frame.height - 1 do
+        for x = frame.x + 60, frame.x + 124 do
+          local r, g, b = entry.image:getPixel(x, y)
+          if r > 0.7 and g < 0.3 and b < 0.3 then
+            minY = minY and math.min(minY, y) or y
+          end
+        end
+      end
+      return assert(minY, versionId .. " shows the selected detail icon during its slide")
+    end
+    local expectedDeltas = { 24, 24, 8 }
+    for index = 2, #slideImages do
+      Assert.equal(
+        iconTop(slideImages[index - 1]) - iconTop(slideImages[index]),
+        expectedDeltas[index - 1],
+        versionId
+          .. " advances the detail icon by 12 logical pixels per slide frame (observed "
+          .. tostring(iconTop(slideImages[index - 1]) - iconTop(slideImages[index]))
+          .. ")"
+      )
+    end
+  end
+end
+
+function T.opened_context_moves_detail_facts_up_with_panel_slide(scope)
+  for _, versionId in ipairs(readyVersions()) do
+    local cacheFs, manifest = manifestFor(versionId)
+    local menu = {
+      { kind = "summary", label = "SUMMARY" },
+      { kind = "switch", label = "SWITCH" },
+    }
+    local function detailAt(slide)
+      local status = presentation({
+        cursorNode = 0,
+        state = "context",
+        menu = menu,
+        menuIndex = 1,
+        menuSlot = 0,
+      })
+      status.view.slots[1] = slot(0, { displayName = "MON0" })
+      status.anim.panelSlide = slide
+      local image, placement = renderDetailPane(scope, cacheFs, manifest, status)
+      return { image = image, frame = placement.frame }
+    end
+
+    local before = detailAt(36)
+    local after = detailAt(40)
+    local function iconTop(entry)
+      local minY
+      for y = entry.frame.y, entry.frame.y + entry.frame.height - 1 do
+        for x = entry.frame.x + 20, entry.frame.x + 112 do
+          local r, g, b = entry.image:getPixel(x, y)
+          if r > 0.7 and g < 0.3 and b < 0.3 then
+            minY = minY and math.min(minY, y) or y
+          end
+        end
+      end
+      return assert(minY, versionId .. " draws selected detail facts at the panel-slide position")
+    end
+
+    Assert.equal(
+      iconTop(before) - iconTop(after),
+      8,
+      versionId .. " moves the detail icon upward by 4 logical pixels from panel slide 36 to 40"
+    )
   end
 end
 
@@ -210,7 +597,7 @@ function T.native_panels_render_staggered_chrome_icons_and_glyphs(scope)
     local canvas = scope:own(love.graphics.newCanvas(256, 192))
     love.graphics.setCanvas(canvas)
     love.graphics.clear(0, 0, 0, 0)
-    renderer:draw(presentation(), layout, provider)
+    renderer:draw(presentation({ cursorNode = 5 }), layout, provider)
     love.graphics.setCanvas()
     local image = scope:own(canvas:newImageData())
     -- Chrome paints across the full first panel: every corner differs
@@ -225,7 +612,8 @@ function T.native_panels_render_staggered_chrome_icons_and_glyphs(scope)
     end
     Assert.isTrue(painted >= 1, versionId .. " paints panel chrome over the background")
     -- The lead icon comes from the red fixture atlas inside its region.
-    local ir, ig = image:getPixel(30 + 16, 16 + 16)
+    local anchor = manifest.panels[1].iconAnchor
+    local ir, ig = image:getPixel(anchor.x, anchor.y)
     Assert.near(ir, 200 / 255, 0.08, versionId .. " draws the icon quad inside the lead panel")
     Assert.near(ig, 40 / 255, 0.08)
     -- The damaged second slot keeps painted HP numerals: its number
@@ -267,9 +655,9 @@ function T.context_menu_covers_its_window_with_highlighted_focus(scope)
   end
 end
 
--- The footer band shows the selected full name through the generated
--- font, and the same content magnifies uniformly at an integral scale.
-function T.footer_name_paints_and_magnifies_uniformly(scope)
+-- The native browse message band paints through the generated font and
+-- magnifies uniformly at an integral scale.
+function T.browse_message_paints_and_magnifies_uniformly(scope)
   for _, versionId in ipairs(readyVersions()) do
     local cacheFs, manifest = manifestFor(versionId)
     local text = scope:own(FieldTextRenderer.new({ cacheFs = FieldUiFixture.cacheWithFontAndFrames() }))
@@ -285,9 +673,9 @@ function T.footer_name_paints_and_magnifies_uniformly(scope)
     local image = scope:own(canvas:newImageData())
     local cr, cg, cb = image:getPixel(0, 0)
     local cornerR, cornerG, cornerB = quantize(cr), quantize(cg), quantize(cb)
-    local footer, footerColors = scanRegion(image, cornerR, cornerG, cornerB, 4, 172, 184, 16)
-    Assert.isTrue(footer > 20, versionId .. " paints the selected name in the footer band")
-    Assert.isTrue(footerColors >= 2, versionId .. " carries more than flat background in the footer")
+    local message, messageColors = scanRegion(image, cornerR, cornerG, cornerB, 16, 168, 160, 16)
+    Assert.isTrue(message > 20, versionId .. " paints the choose-mon message in its native window")
+    Assert.isTrue(messageColors >= 2, versionId .. " carries more than flat background in the message band")
     local doubled = scope:own(love.graphics.newCanvas(512, 384))
     love.graphics.setCanvas(doubled)
     love.graphics.clear(0, 0, 0, 0)
@@ -302,8 +690,8 @@ function T.footer_name_paints_and_magnifies_uniformly(scope)
     local doubledImage = scope:own(doubled:newImageData())
     local dr, dg, db = doubledImage:getPixel(0, 0)
     local dCornerR, dCornerG, dCornerB = quantize(dr), quantize(dg), quantize(db)
-    local dFooter, _ = scanRegion(doubledImage, dCornerR, dCornerG, dCornerB, 8, 344, 368, 32)
-    Assert.isTrue(dFooter > 40, versionId .. " paints the footer name at the doubled scale")
+    local dMessage, _ = scanRegion(doubledImage, dCornerR, dCornerG, dCornerB, 32, 336, 320, 32)
+    Assert.isTrue(dMessage > 40, versionId .. " paints the browse message at the doubled scale")
   end
 end
 

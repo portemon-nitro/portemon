@@ -1,5 +1,5 @@
 -- Cross-system visual proof for the native party screen: egg cards
--- print names without battle detail, status text replaces the level
+-- print names without battle detail, status art uses its compiled frame,
 -- line, context menus render one row per entry across counts, mid-swap
 -- frames differ from steady state while the exchanged frame matches the
 -- swapped records, and panes magnify uniformly across host scales with
@@ -143,6 +143,35 @@ local function activityIn(image, cornerR, cornerG, cornerB, x0, y0, width, heigh
   return other, distinct
 end
 
+local function sourceImage(scope, cacheFs, visual)
+  local bytes = assert(cacheFs:read(visual.image), "the generated Party visual is present")
+  local fileData = love.filesystem.newFileData(bytes, visual.image)
+  return scope:own(love.image.newImageData(fileData))
+end
+
+local function matchingOpaquePixels(rendered, source, x0, y0, width, height)
+  local matches = 0
+  local opaque = 0
+  for y = 0, height - 1 do
+    for x = 0, width - 1 do
+      local sr, sg, sb, sa = source:getPixel(x, y)
+      if quantize(sa) == 255 then
+        opaque = opaque + 1
+        local rr, rg, rb, ra = rendered:getPixel(x0 + x, y0 + y)
+        if
+          quantize(rr) == quantize(sr)
+          and quantize(rg) == quantize(sg)
+          and quantize(rb) == quantize(sb)
+          and quantize(ra) == 255
+        then
+          matches = matches + 1
+        end
+      end
+    end
+  end
+  return matches, opaque
+end
+
 local function renderPane(scope, cacheFs, manifest, status, width, height)
   local text = scope:own(FieldTextRenderer.new({ cacheFs = FieldUiFixture.cacheWithFontAndFrames() }))
   local layout = PartyScreenLayout.resolve({ manifest = manifest, cancellable = true })
@@ -190,36 +219,22 @@ function T.egg_cards_print_names_without_battle_detail(scope)
   end
 end
 
--- A statused mon paints its status label where the healthy lead paints
--- level digits: the two level rects carry different content.
-function T.status_text_replaces_the_level_line(scope)
+-- Poison paints the compiled PSN sprite at the generated status rectangle;
+-- level digits remain in their own panel subrect.
+function T.status_uses_its_generated_sprite_frame(scope)
   for _, versionId in ipairs(readyVersions()) do
     local cacheFs, manifest = manifestFor(versionId)
     local image, _ = renderPane(scope, cacheFs, manifest, presentation())
+    local panel = manifest.panels[2]
+    local rect = panel.statusRect
+    local source = sourceImage(scope, cacheFs, manifest.visuals.status.frames[3])
+    local matches, opaque = matchingOpaquePixels(image, source, rect.x, rect.y, rect.width, rect.height)
+    Assert.isTrue(opaque > 4, versionId .. " compiles visible poison status pixels")
+    Assert.equal(matches, opaque, versionId .. " draws the generated poison frame without tinting")
+    local levelRect = assert(panel.text.level, versionId .. " carries its independent level subrect")
     local cornerR, cornerG, cornerB = backgroundOf(image)
-    local leadRect = assert(manifest.panels[1].text.level, versionId .. " carries the lead level subrect")
-    local sickRect = assert(manifest.panels[2].text.level, versionId .. " carries the status level subrect")
-    local leadPaint =
-      activityIn(image, cornerR, cornerG, cornerB, leadRect.x, leadRect.y, leadRect.width, leadRect.height)
-    local sickPaint =
-      activityIn(image, cornerR, cornerG, cornerB, sickRect.x, sickRect.y, sickRect.width, sickRect.height)
-    Assert.isTrue(leadPaint > 2, versionId .. " paints level digits for the healthy lead")
-    Assert.isTrue(sickPaint > 2, versionId .. " paints a status label for the poisoned mon")
-    local same = true
-    for y = 0, math.min(leadRect.height, sickRect.height) - 1 do
-      for x = 0, math.min(leadRect.width, sickRect.width) - 1 do
-        local r1, g1, b1 = image:getPixel(leadRect.x + x, leadRect.y + y)
-        local r2, g2, b2 = image:getPixel(sickRect.x + x, sickRect.y + y)
-        if quantize(r1) ~= quantize(r2) or quantize(g1) ~= quantize(g2) or quantize(b1) ~= quantize(b2) then
-          same = false
-          break
-        end
-      end
-      if not same then
-        break
-      end
-    end
-    Assert.isFalse(same, versionId .. " paints different content for status versus level digits")
+    local levelPaint = activityIn(image, cornerR, cornerG, cornerB, levelRect.x, levelRect.y, levelRect.width, levelRect.height)
+    Assert.isTrue(levelPaint > 2, versionId .. " keeps level numerals separate from status art")
   end
 end
 

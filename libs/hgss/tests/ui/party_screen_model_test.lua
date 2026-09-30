@@ -139,7 +139,7 @@ function T.injected_eligibility_marks_slots_without_touching_values()
 end
 
 function T.facts_carry_egg_held_capsule_move_and_leaf_records()
-  local _, service = openService()
+  local catalog, service = openService()
   give(service, "CHIKORITA")
   store(service, 0, function(mon)
     mon.isEgg = true
@@ -152,6 +152,7 @@ function T.facts_carry_egg_held_capsule_move_and_leaf_records()
   local lead = view.slots[1]
   Assert.isTrue(lead.isEgg, "egg state projects for presentation policy")
   Assert.equal(lead.heldItem, "SITRUS_BERRY", "the held semantic key projects, never a source id")
+  Assert.equal(lead.heldItemName, catalog:item("SITRUS_BERRY").name, "detail presentation uses the catalog display name")
   Assert.deepEqual(lead.capsule, { id = 3, seals = {} }, "the capsule record projects for its indicator")
   Assert.deepEqual(
     lead.moves,
@@ -168,6 +169,7 @@ function T.unset_facts_default_to_empty_values()
   local lead = view.slots[1]
   Assert.isFalse(lead.isEgg)
   Assert.equal(lead.heldItem, "NONE")
+  Assert.isNil(lead.heldItemName, "mons without an item carry no held display name")
   Assert.isNil(lead.capsule, "mons without capsules carry no capsule record")
   Assert.isTrue(#lead.moves >= 0, "moves project as an array")
   for _, move in ipairs(lead.moves) do

@@ -307,8 +307,19 @@ local function matrixPartyManifest()
     local ox, oy = origin[1], origin[2]
     panels[slot] = {
       origin = { x = ox, y = oy },
+      iconAnchor = { x = ox + 30, y = oy + 16 },
+      ballAnchor = { x = ox + 16, y = oy + 14 },
+      heldAnchor = { x = ox + 47, y = oy + 25 },
+      capsuleAnchor = { x = ox + 12, y = oy + 25 },
+      statusRect = { x = ox + 24, y = oy + 40, width = 24, height = 8 },
+      cursorSequence = 1,
       size = { width = 128, height = 48 },
-      chrome = {},
+      chrome = {
+        normal = { image = "test/panel.png", width = 128, height = 48 },
+        selected = { image = "test/panel-selected.png", width = 128, height = 48 },
+        fainted = { image = "test/panel-fainted.png", width = 128, height = 48 },
+        selectedFainted = { image = "test/panel-selected-fainted.png", width = 128, height = 48 },
+      },
       text = {
         name = { x = ox + 48, y = oy + 8, width = 72, height = 16 },
         level = { x = ox + 0, y = oy + 32, width = 48, height = 16 },
@@ -337,6 +348,10 @@ local function matrixPartyManifest()
   end
   return {
     panels = panels,
+    controls = { cancel = { anchor = { x = 232, y = 184 } } },
+    text = {
+      templates = { chooseMon = { segments = { { kind = "text", value = "Choose a Pokémon." } } } },
+    },
     windows = {
       message = { x = 16, y = 168, width = 160, height = 16 },
       context = { x = 152, y = 120, width = 96, height = 64 },
@@ -581,9 +596,22 @@ local function partyAssetCache()
     cache:write(path, PngWriter.encode(width, height, table.concat(pixels)))
   end
   stub("test/panel.png", 128, 48, 40, 40, 56)
+  stub("test/panel-selected.png", 128, 48, 56, 40, 40)
+  stub("test/panel-fainted.png", 128, 48, 32, 32, 48)
+  stub("test/panel-selected-fainted.png", 128, 48, 48, 32, 32)
+  stub("test/aux.png", 128, 48, 32, 48, 48)
+  stub("test/backdrop-main.png", 256, 256, 24, 64, 72)
+  stub("test/backdrop-sub.png", 256, 256, 64, 72, 24)
+  stub("test/detail-sub.png", 256, 256, 72, 24, 64)
   stub("test/ball.png", 32, 32, 60, 60, 80)
   stub("test/held.png", 8, 8, 200, 200, 80)
   stub("test/cursor.png", 128, 48, 0, 0, 0, 0)
+  stub("test/button.png", 56, 32, 120, 120, 120)
+  stub("test/button-selected.png", 56, 32, 180, 180, 180)
+  stub("test/status.png", 24, 8, 240, 64, 64)
+  stub("test/hp-green.png", 48, 4, 32, 200, 48)
+  stub("test/hp-yellow.png", 48, 4, 220, 200, 40)
+  stub("test/hp-red.png", 48, 4, 220, 48, 40)
   for digit = 0, 9 do
     stub("test/digit-" .. digit .. ".png", 8, 8, 230, 230, 230)
   end
@@ -603,17 +631,52 @@ local function matrixPartyVisuals()
   for digit = 0, 9 do
     digits[digit + 1] = imageRef("test/digit-" .. digit .. ".png", 8, 8)
   end
-  return {
+  local function sequence(path, width, height)
+    return {
+      frames = { frameRef(path, width, height) },
+      loopFrom = 1,
+      playback = "static",
+    }
+  end
+  local visuals = {
     balls = {
       sequences = {
-        { frames = { frameRef("test/ball.png") } },
-        { frames = { frameRef("test/ball.png") } },
+        sequence("test/ball.png"),
+        sequence("test/ball.png"),
       },
     },
-    held = { sequences = { { frames = { frameRef("test/held.png", 8, 8) } } } },
-    cursor = { sequences = { { frames = { frameRef("test/cursor.png", 128, 48) } } } },
-    digits = digits,
+    held = { sequences = {
+      sequence("test/held.png", 8, 8),
+      sequence("test/held.png", 8, 8),
+      sequence("test/held.png", 8, 8),
+    } },
+    cursor = { sequences = { sequence("test/cursor.png", 128, 48) } },
+    buttons = { sequences = {
+      sequence("test/button.png", 56, 32),
+      sequence("test/button-selected.png", 56, 32),
+      sequence("test/button.png", 56, 32),
+      sequence("test/button.png", 56, 32),
+    } },
+    status = { frames = {
+      imageRef("test/status.png", 24, 8),
+      imageRef("test/status.png", 24, 8),
+      imageRef("test/status.png", 24, 8),
+      imageRef("test/status.png", 24, 8),
+      imageRef("test/status.png", 24, 8),
+      imageRef("test/status.png", 24, 8),
+      imageRef("test/status.png", 24, 8),
+    } },
+    hpBars = {
+      green = imageRef("test/hp-green.png", 48, 4),
+      yellow = imageRef("test/hp-yellow.png", 48, 4),
+      red = imageRef("test/hp-red.png", 48, 4),
+    },
+    backdropMain = imageRef("test/backdrop-main.png", 256, 256),
+    backdropSub = imageRef("test/backdrop-sub.png", 256, 256),
+    detailSub = imageRef("test/detail-sub.png", 256, 256),
+    auxPanel = imageRef("test/aux.png", 128, 48),
   }
+  return visuals, digits
 end
 
 -- Party readability through the real renderer and borrowed fixture text:
@@ -625,18 +688,14 @@ function T.party_cards_stay_readable_across_densities(scope)
   local provider = preparedProvider(iconCache(), { "MON0/f0" })
   local cacheFs = partyAssetCache()
   local manifest = matrixPartyManifest()
-  local visuals = matrixPartyVisuals()
+  local visuals, digits = matrixPartyVisuals()
   manifest.visuals = visuals
   manifest.numberGlyphs = {
     advance = 8,
-    digits = visuals.digits,
+    digits = digits,
     level = { image = "test/level.png", width = 16, height = 8 },
     slash = { image = "test/slash.png", width = 8, height = 8 },
   }
-  local chrome = { normal = { image = "test/panel.png", width = 128, height = 48 } }
-  for _, panel in ipairs(manifest.panels) do
-    panel.chrome = chrome
-  end
   local renderer = PartyScreenRenderer.new({ graphics = lg, cacheFs = cacheFs, manifest = manifest, text = text })
   local function slots()
     local list = {}

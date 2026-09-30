@@ -60,7 +60,18 @@ local function partyManifest()
     panels[slot] = {
       origin = { x = origin[1], y = origin[2] },
       size = { width = 128, height = 48 },
-      chrome = { normal = imageRef("assets/generated/party/fixture-panel.png", 128, 48) },
+      iconAnchor = { x = origin[1] + 30, y = origin[2] + 16 },
+      ballAnchor = { x = origin[1] + 16, y = origin[2] + 14 },
+      heldAnchor = { x = origin[1] + 47, y = origin[2] + 25 },
+      capsuleAnchor = { x = origin[1] + 12, y = origin[2] + 25 },
+      statusRect = rect(origin[1] + 24, origin[2] + 40, 24, 8),
+      cursorSequence = 1,
+      chrome = {
+        normal = imageRef("assets/generated/party/fixture-panel.png", 128, 48),
+        selected = imageRef("assets/generated/party/fixture-panel.png", 128, 48),
+        fainted = imageRef("assets/generated/party/fixture-panel.png", 128, 48),
+        selectedFainted = imageRef("assets/generated/party/fixture-panel.png", 128, 48),
+      },
       text = {
         name = rect(origin[1] + 48, origin[2] + 8, 72, 16),
         level = rect(origin[1] + 0, origin[2] + 32, 48, 16),
@@ -133,7 +144,13 @@ local function partyManifest()
       detailSub = imageRef("assets/generated/party/fixture-detail-sub.png", 256, 256),
       decoration = imageRef("assets/generated/party/fixture-decoration.png", 128, 16),
       auxPanel = imageRef("assets/generated/party/fixture-panel-aux.png", 128, 48),
+      hpBars = {
+        green = imageRef("assets/generated/party/fixture-hp-green.png", 48, 4),
+        yellow = imageRef("assets/generated/party/fixture-hp-yellow.png", 48, 4),
+        red = imageRef("assets/generated/party/fixture-hp-red.png", 48, 4),
+      },
     },
+    controls = { cancel = { anchor = { x = 232, y = 184 } } },
     iconAnimations = {
       periods = { 1, 8, 12, 24, 40, 36 },
       replacementDurations = { 32, 2, 2 },
