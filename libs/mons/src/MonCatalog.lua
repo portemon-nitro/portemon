@@ -11,6 +11,7 @@
 local LuaWriter = require("libs.codec.src.LuaWriter")
 local U32 = require("libs.codec.src.U32")
 local MonAssetSchema = require("libs.assets.src.MonAssetSchema")
+local ResolvedMonSchema = require("libs.mons.src.ResolvedMonSchema")
 local MonsErrors = require("libs.mons.src.errors")
 
 ---@class MonCatalog
@@ -65,10 +66,41 @@ local function fingerprintText(text)
   return string.format("%08x", hash)
 end
 
+-- One shared index builder for both constructors: entries without a
+-- declared numeric identity resolve semantically only and never occupy the
+-- native index, while duplicate declared identities fail loudly.
+---@param owned table<string, unknown>
+---@return table<integer, string> speciesByNative
+---@return table<integer, string> moveByNative
+---@return table<integer, string> abilityByNative
+local function buildIndexes(owned)
+  local indexes = { species = {}, moves = {}, abilities = {} }
+  local sections = {
+    { records = owned.species, index = indexes.species, what = "species" },
+    { records = owned.moves, index = indexes.moves, what = "move" },
+    { records = owned.abilities, index = indexes.abilities, what = "ability" },
+  }
+  for _, section in ipairs(sections) do
+    for key, record in pairs(section.records) do
+      local nativeId = record.nativeId
+      if nativeId ~= nil then
+        if section.index[nativeId] ~= nil then
+          MonsErrors.raise(
+            MonsErrors.RECORD_INVALID,
+            "duplicate native " .. section.what .. " identity " .. tostring(nativeId),
+            { [section.what] = key }
+          )
+        end
+        section.index[nativeId] = key
+      end
+    end
+  end
+  return indexes.species, indexes.moves, indexes.abilities
+end
+
 ---@param root table<string, unknown>
 ---@param items table<string, unknown> shared item catalog; item lookups delegate to it
----@return MonCatalog
-function MonCatalog.new(root, items)
+local function checkArguments(root, items)
   assert(type(root) == "table", "MonCatalog requires the generated asset root")
   assert(
     type(items) == "table"
@@ -77,46 +109,48 @@ function MonCatalog.new(root, items)
       and type(items.itemKeyByNativeId) == "function",
     "MonCatalog requires the shared item catalog"
   )
+end
+
+---@param root table<string, unknown>
+---@param items table<string, unknown> shared item catalog; item lookups delegate to it
+---@return MonCatalog
+function MonCatalog.new(root, items)
+  checkArguments(root, items)
   MonAssetSchema.assertCatalog(root)
   local owned = copyValue(root)
+  local speciesByNative, moveByNative, abilityByNative = buildIndexes(owned)
   local self = setmetatable({
     _root = owned,
     _items = items,
-    _speciesByNative = {},
-    _moveByNative = {},
-    _abilityByNative = {},
+    _speciesByNative = speciesByNative,
+    _moveByNative = moveByNative,
+    _abilityByNative = abilityByNative,
     _fingerprint = "",
   }, MonCatalog)
-  for key, species in pairs(owned.species) do
-    if self._speciesByNative[species.nativeId] ~= nil then
-      MonsErrors.raise(
-        MonsErrors.RECORD_INVALID,
-        "duplicate native species identity " .. tostring(species.nativeId),
-        { species = key }
-      )
-    end
-    self._speciesByNative[species.nativeId] = key
-  end
-  for key, move in pairs(owned.moves) do
-    if self._moveByNative[move.nativeId] ~= nil then
-      MonsErrors.raise(
-        MonsErrors.RECORD_INVALID,
-        "duplicate native move identity " .. tostring(move.nativeId),
-        { move = key }
-      )
-    end
-    self._moveByNative[move.nativeId] = key
-  end
-  for key, ability in pairs(owned.abilities) do
-    if self._abilityByNative[ability.nativeId] ~= nil then
-      MonsErrors.raise(
-        MonsErrors.RECORD_INVALID,
-        "duplicate native ability identity " .. tostring(ability.nativeId),
-        { ability = key }
-      )
-    end
-    self._abilityByNative[ability.nativeId] = key
-  end
+  self._fingerprint = fingerprintText(LuaWriter.encode(owned))
+  return self
+end
+
+-- Composed catalog construction: validates through the resolved schema so
+-- namespaced custom entries without numeric identities resolve, then shares
+-- the single lookup implementation and ownership contract with native
+-- construction. The owned root is detached from the caller.
+---@param root table<string, unknown>
+---@param items table<string, unknown> shared item catalog; item lookups delegate to it
+---@return MonCatalog
+function MonCatalog.fromResolved(root, items)
+  checkArguments(root, items)
+  ResolvedMonSchema.assertCatalog(root)
+  local owned = copyValue(root)
+  local speciesByNative, moveByNative, abilityByNative = buildIndexes(owned)
+  local self = setmetatable({
+    _root = owned,
+    _items = items,
+    _speciesByNative = speciesByNative,
+    _moveByNative = moveByNative,
+    _abilityByNative = abilityByNative,
+    _fingerprint = "",
+  }, MonCatalog)
   self._fingerprint = fingerprintText(LuaWriter.encode(owned))
   return self
 end
