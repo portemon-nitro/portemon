@@ -234,7 +234,7 @@ function FieldUiAssetCache.isReady(cacheFs, expectedMarker)
   return true
 end
 
-checkManifest = function(manifest)
+function checkManifest(manifest)
   if type(manifest) ~= "table" then
     reject("manifest is not a table", {})
   end
@@ -282,7 +282,7 @@ checkManifest = function(manifest)
   checkYesNoPrompt(demandSection(manifest, "yesNoPrompt"), atlases)
 end
 
-checkDialogueFrames = function(s, atlases)
+function checkDialogueFrames(s, atlases)
   checkInteger(s.count, 1, nil, "dialogueFrames.count must be a positive integer", {})
   if type(s.frameTiles) ~= "table" then
     reject("dialogueFrames.frameTiles must be a table", {})
@@ -386,7 +386,7 @@ checkDialogueFrames = function(s, atlases)
   end
 end
 
-checkSignposts = function(s, atlases)
+function checkSignposts(s, atlases)
   -- v5 schema requires textColors: the source palette slot assignments.
   if type(s.textColors) ~= "table" then
     reject("signposts.textColors must be a table", {})
@@ -451,7 +451,7 @@ checkSignposts = function(s, atlases)
   end
 end
 
-checkStartMenu = function(s, atlases)
+function checkStartMenu(s, atlases)
   checkAtlasRect(s.background, atlases, FieldUiAssetCache.ASSET.START_MENU_BACKGROUND, "start menu background")
   checkStartMenuCursor(s.cursor, atlases)
   checkStartMenuIconTable(s.iconTable, atlases)
@@ -463,7 +463,7 @@ checkStartMenu = function(s, atlases)
   checkStartMenuLabelPalette(s.labelPalette)
 end
 
-checkTrainerCard = function(s, atlases)
+function checkTrainerCard(s, atlases)
   checkAtlasRect(s.front, atlases, FieldUiAssetCache.ASSET.TRAINER_CARD_FRONT, "trainer card front")
 end
 
@@ -478,7 +478,7 @@ end
 -- home-row variants, the stepping entry slots with normal/selected
 -- visuals, and the anchored male/female player subjects. Every sprite
 -- record draws at anchor plus the generated frame offset.
-checkNamingScreen = function(s, atlases)
+function checkNamingScreen(s, atlases)
   checkNamingScreenBaseAndPlacement(s, atlases)
   checkNamingScreenText(s.text)
   checkNamingScreenControls(s.controls, atlases)
@@ -493,7 +493,7 @@ end
 -- per row with a normal and a selected visual each. Every visual resolves
 -- through the shared asset index by semantic id; the section carries no
 -- source archive, member, tile, palette, or background identities.
-checkYesNoPrompt = function(s, atlases)
+function checkYesNoPrompt(s, atlases)
   if type(s.shapes) ~= "table" then
     reject("yesNoPrompt.shapes must be a table", {})
   end
@@ -573,7 +573,7 @@ checkYesNoPrompt = function(s, atlases)
   end
 end
 
-checkStartMenuCursor = function(cursor, atlases)
+function checkStartMenuCursor(cursor, atlases)
   if type(cursor) ~= "table" or type(cursor.frames) ~= "table" or #cursor.frames < 1 then
     reject("startMenu.cursor must carry at least one frame", {})
   end
@@ -583,7 +583,7 @@ checkStartMenuCursor = function(cursor, atlases)
   end
 end
 
-checkStartMenuIconTable = function(iconTable, atlases)
+function checkStartMenuIconTable(iconTable, atlases)
   if type(iconTable) ~= "table" then
     reject("startMenu.iconTable must be a table", {})
   end
@@ -593,7 +593,7 @@ checkStartMenuIconTable = function(iconTable, atlases)
   end
 end
 
-checkStartMenuIconRow = function(row, index, atlases)
+function checkStartMenuIconRow(row, index, atlases)
   if type(row) ~= "table" then
     reject("startMenu.iconTable row " .. index .. " must be a table", {})
   end
@@ -628,7 +628,7 @@ checkStartMenuIconRow = function(row, index, atlases)
   end
 end
 
-checkStartMenuIconPalette = function(palette, pokeIcons, atlases)
+function checkStartMenuIconPalette(palette, pokeIcons, atlases)
   if type(palette) ~= "table" or type(palette.asset) ~= "string" or atlases[palette.asset] == nil then
     reject("startMenu.iconPalette must reference an indexed asset", {})
   end
@@ -650,7 +650,7 @@ checkStartMenuIconPalette = function(palette, pokeIcons, atlases)
   end
 end
 
-checkStartMenuContexts = function(contexts, iconTable)
+function checkStartMenuContexts(contexts, iconTable)
   if type(contexts) ~= "table" then
     reject("startMenu.contexts must be a table", {})
   end
@@ -672,7 +672,7 @@ checkStartMenuContexts = function(contexts, iconTable)
   end
 end
 
-checkStartMenuActionIcons = function(actionIcons, iconTable)
+function checkStartMenuActionIcons(actionIcons, iconTable)
   if type(actionIcons) ~= "table" then
     reject("startMenu.actionIcons must be a table", {})
   end
@@ -693,7 +693,7 @@ end
 -- rectangle. Anchors are integral canonical points; label and hit rectangles
 -- stay inside the canonical 256x192 surface; every candidate names a normal
 -- position.
-checkStartMenuInteractive = function(interactive)
+function checkStartMenuInteractive(interactive)
   if type(interactive) ~= "table" then
     reject("startMenu.interactive must be a table", {})
   end
@@ -716,7 +716,7 @@ checkStartMenuInteractive = function(interactive)
   end
 end
 
-checkStartMenuInteractivePosition = function(record, position)
+function checkStartMenuInteractivePosition(record, position)
   if type(record) ~= "table" then
     reject("startMenu.interactive position " .. position .. " must be a table", {})
   end
@@ -756,14 +756,18 @@ checkStartMenuInteractivePosition = function(record, position)
         candidate,
         0,
         6,
-        "startMenu.interactive position " .. position .. " " .. direction .. " candidates must name normal positions 0..6",
+        "startMenu.interactive position "
+          .. position
+          .. " "
+          .. direction
+          .. " candidates must name normal positions 0..6",
         {}
       )
     end
   end
 end
 
-checkStartMenuChrome = function(chrome, atlases)
+function checkStartMenuChrome(chrome, atlases)
   if type(chrome) ~= "table" or type(chrome.main) ~= "table" or type(chrome.sub) ~= "table" then
     reject("startMenu.chrome must carry its main and sub sets", {})
   end
@@ -780,7 +784,7 @@ end
 -- label-window roles as byte RGB with compositing alpha. Ink stays opaque
 -- while the background stays transparent, so glyph background-class pixels
 -- reveal the already-rendered chrome instead of repainting it.
-checkStartMenuLabelPalette = function(labelPalette)
+function checkStartMenuLabelPalette(labelPalette)
   if type(labelPalette) ~= "table" then
     reject("startMenu.labelPalette must be a table", {})
   end
@@ -793,7 +797,7 @@ checkStartMenuLabelPalette = function(labelPalette)
   checkLabelRole(labelPalette, "background", 0)
 end
 
-checkNamingScreenBaseAndPlacement = function(s, atlases)
+function checkNamingScreenBaseAndPlacement(s, atlases)
   if type(s.base) ~= "table" then
     reject("namingScreen.base must be a table", {})
   end
@@ -834,7 +838,7 @@ checkNamingScreenBaseAndPlacement = function(s, atlases)
   end
 end
 
-checkNamingScreenText = function(text)
+function checkNamingScreenText(text)
   if type(text) ~= "table" then
     reject("namingScreen.text must be a table", {})
   end
@@ -867,7 +871,7 @@ checkNamingScreenText = function(text)
   end
 end
 
-checkNamingScreenControls = function(controls, atlases)
+function checkNamingScreenControls(controls, atlases)
   if type(controls) ~= "table" then
     reject("namingScreen.controls must be a table", {})
   end
@@ -881,7 +885,7 @@ checkNamingScreenControls = function(controls, atlases)
   end
 end
 
-checkNamingScreenCursor = function(cursor, atlases)
+function checkNamingScreenCursor(cursor, atlases)
   if type(cursor) ~= "table" then
     reject("namingScreen.cursor must be a table", {})
   end
@@ -906,7 +910,7 @@ checkNamingScreenCursor = function(cursor, atlases)
   end
 end
 
-checkNamingScreenEntrySlots = function(entrySlots, atlases)
+function checkNamingScreenEntrySlots(entrySlots, atlases)
   if type(entrySlots) ~= "table" then
     reject("namingScreen.entrySlots must be a table", {})
   end
@@ -922,7 +926,7 @@ checkNamingScreenEntrySlots = function(entrySlots, atlases)
   checkAnimationRecord(entrySlots.selected, atlases, "namingScreen.entrySlots.selected", false)
 end
 
-checkNamingScreenPlayerSubjects = function(playerSubjects, atlases)
+function checkNamingScreenPlayerSubjects(playerSubjects, atlases)
   if type(playerSubjects) ~= "table" then
     reject("namingScreen.playerSubjects must be a table", {})
   end
@@ -936,7 +940,7 @@ checkNamingScreenPlayerSubjects = function(playerSubjects, atlases)
   end
 end
 
-checkNamingScreenPokemonSubject = function(pokemonSubject)
+function checkNamingScreenPokemonSubject(pokemonSubject)
   if type(pokemonSubject) ~= "table" then
     reject("namingScreen.pokemonSubject must be a table", {})
   end
@@ -964,7 +968,7 @@ checkNamingScreenPokemonSubject = function(pokemonSubject)
   end
 end
 
-checkNamingScreenPokemonSubjectFrame = function(frame, index)
+function checkNamingScreenPokemonSubjectFrame(frame, index)
   local frameWhat = "namingScreen.pokemonSubject frame " .. index
   if type(frame) ~= "table" then
     reject(frameWhat .. " must be a table", {})
@@ -982,7 +986,7 @@ checkNamingScreenPokemonSubjectFrame = function(frame, index)
   end
 end
 
-checkNamingScreenPokemonSubjectPart = function(part, partWhat)
+function checkNamingScreenPokemonSubjectPart(part, partWhat)
   if
     type(part) ~= "table"
     or part.iconFrame ~= 1
@@ -1004,7 +1008,7 @@ checkNamingScreenPokemonSubjectPart = function(part, partWhat)
   end
 end
 
-checkNamingScreenGenderMarkers = function(genderMarkers, atlases)
+function checkNamingScreenGenderMarkers(genderMarkers, atlases)
   if type(genderMarkers) ~= "table" then
     reject("namingScreen.pokemonGenderMarkers must be a table", {})
   end
@@ -1018,7 +1022,7 @@ end
 -- primitives: the most reusable and least specific to this file's own
 -- domain, so they sit last, under every function that uses them.
 
-demandSection = function(manifest, name)
+function demandSection(manifest, name)
   local sectionData = manifest[name]
   if type(sectionData) ~= "table" then
     reject("manifest section " .. name .. " must be a table", {
@@ -1033,7 +1037,7 @@ end
 -- the compositor offset and a positive duration. Cursor records
 -- additionally name their pulse-mask atlas and carry a same-size mask
 -- rect per frame; subject records carry no pulse fields.
-checkAnimationRecord = function(record, atlases, what, isCursor)
+function checkAnimationRecord(record, atlases, what, isCursor)
   if type(record) ~= "table" then
     reject(what .. " must be a table", { what = what })
   end
@@ -1083,7 +1087,7 @@ end
 -- anchor plus the compositor's frame offset. The asset must be indexed
 -- with matching dimensions; the offset may be negative (a cell whose
 -- objects start below the source origin shifts the frame).
-checkNamingSprite = function(record, atlases, what)
+function checkNamingSprite(record, atlases, what)
   if type(record) ~= "table" then
     reject(what .. " must be a table", { what = what })
   end
@@ -1101,7 +1105,7 @@ checkNamingSprite = function(record, atlases, what)
   checkFrameOffset(record.offset, what .. " must carry the generated frame offset", { what = what })
 end
 
-checkSignedPoint = function(point, message)
+function checkSignedPoint(point, message)
   if type(point) ~= "table" or not isSignedInteger(point.x) or not isSignedInteger(point.y) then
     reject(message, {})
   end
@@ -1109,11 +1113,11 @@ end
 
 -- One signed integral coordinate: icon parts and Pokemon anchors may extend
 -- left/up of their source origin, so only finite integrality is required.
-isSignedInteger = function(value)
+function isSignedInteger(value)
   return type(value) == "number" and value % 1 == 0 and value ~= math.huge and value ~= -math.huge
 end
 
-checkCanonicalPoint = function(point, what)
+function checkCanonicalPoint(point, what)
   if
     type(point) ~= "table"
     or not Validate.isNonNegativeInteger(point.x)
@@ -1123,7 +1127,7 @@ checkCanonicalPoint = function(point, what)
   end
 end
 
-checkLabelRole = function(labelPalette, role, expectedAlpha)
+function checkLabelRole(labelPalette, role, expectedAlpha)
   local color = labelPalette[role]
   if type(color) ~= "table" then
     reject("startMenu.labelPalette." .. role .. " must be a table", {})
@@ -1145,7 +1149,7 @@ end
 -- One composed sprite visual: an indexed atlas asset, a non-negative
 -- in-atlas rect, and the compositor's frame offset. The offset is a
 -- signed integral pair: a frame may extend left/up of its source anchor.
-checkSpriteVisual = function(visual, atlases, what)
+function checkSpriteVisual(visual, atlases, what)
   if type(visual) ~= "table" then
     reject(what .. " must be a table", { what = what })
   end
@@ -1158,7 +1162,7 @@ end
 
 -- One generated frame offset: a signed integral pair. A frame may extend
 -- left/up of its source anchor, so only integrality is required here.
-checkFrameOffset = function(offset, message, context)
+function checkFrameOffset(offset, message, context)
   if
     type(offset) ~= "table"
     or type(offset.x) ~= "number"
@@ -1173,7 +1177,7 @@ end
 -- Rejects unless `t` is a dense, non-empty array (no holes, no non-integer
 -- keys). Returns its length. Animation frame lists and per-frame icon
 -- parts share this shape.
-demandDenseSequence = function(t, message, context)
+function demandDenseSequence(t, message, context)
   local count = 0
   for _ in pairs(t) do
     count = count + 1
@@ -1189,7 +1193,7 @@ end
 -- signpost type share this exact 16-slot palette shape. `extraContext`
 -- fields (such as the owning frame/type) are merged into every reported
 -- diagnostic alongside the failing slot.
-checkPalette16 = function(palette, what, extraContext)
+function checkPalette16(palette, what, extraContext)
   if type(palette) ~= "table" then
     reject(what .. " must be a table", {})
   end
@@ -1222,7 +1226,7 @@ end
 -- several fixed-size tables (retail row/context/position counts, navigation
 -- direction sets, per-record field sets); this is their single shared arity
 -- gate instead of a repeated counting loop per call site.
-demandCount = function(t, count, message, context)
+function demandCount(t, count, message, context)
   local actual = 0
   for _ in pairs(t) do
     actual = actual + 1
@@ -1236,7 +1240,7 @@ end
 -- Dialogue/signpost frames are the 18-tile 144x8 row; wayfinding rects
 -- are validated separately as 48x32 final surfaces. The atlas-bound check
 -- additionally proves the rect is addressable in its PNG.
-checkStrip = function(rect, atlases, atlasKey, what, width)
+function checkStrip(rect, atlases, atlasKey, what, width)
   checkAtlasRect(rect, atlases, atlasKey, what)
   if rect.width ~= width or rect.height ~= 8 then
     reject(what .. " must be the " .. width .. "x8 HGSS strip", {
@@ -1247,7 +1251,7 @@ checkStrip = function(rect, atlases, atlasKey, what, width)
   end
 end
 
-checkAtlasRect = function(rect, atlases, atlasKey, what)
+function checkAtlasRect(rect, atlases, atlasKey, what)
   local atlas = atlases[atlasKey]
   local message = what .. " escapes its atlas " .. atlasKey
   local context = { what = what, atlas = atlasKey }
@@ -1258,7 +1262,7 @@ checkAtlasRect = function(rect, atlases, atlasKey, what)
   end
 end
 
-checkRect = function(rect, what, limitWidth, limitHeight, outsideMessage, outsideContext)
+function checkRect(rect, what, limitWidth, limitHeight, outsideMessage, outsideContext)
   if type(rect) ~= "table" then
     reject(what .. " must be a rectangle", { what = what })
   end
@@ -1281,7 +1285,7 @@ end
 -- `shapeMessage`; a bad channel reports `channelMessage`. `context`
 -- carries the fixed diagnostic fields and gains the failing channel under
 -- `channelKey` when one is named.
-checkByteColor = function(color, nilMessage, shapeMessage, channelMessage, context, channelKey)
+function checkByteColor(color, nilMessage, shapeMessage, channelMessage, context, channelKey)
   if color == nil then
     reject(nilMessage, context)
   end
@@ -1306,7 +1310,7 @@ end
 -- Single scalar gate: every integral domain in this validator funnels
 -- through here. Unbounded non-negative integers reuse the shared predicate;
 -- any other bound stays explicit per domain.
-checkInteger = function(value, minimum, maximum, message, context)
+function checkInteger(value, minimum, maximum, message, context)
   local valid
   if minimum == 0 and maximum == nil then
     valid = Validate.isNonNegativeInteger(value)
@@ -1324,7 +1328,7 @@ end
 ---@param message string
 ---@param context Errors.Context?
 ---@noreturn
-reject = function(message, context)
+function reject(message, context)
   Errors.raise(MANIFEST_INVALID, message, context)
 end
 
