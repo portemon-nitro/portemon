@@ -29,6 +29,7 @@ local ScriptSave = require("libs.script.src.ScriptSave")
 ---@field clock table<string, unknown> live local clock
 ---@field pcApplications table<string, unknown> script-owned PC application host
 ---@field pcTerminal table<string, unknown> PC terminal effect service
+---@field battle table<string, unknown>? the battle host for script battle tasks (absent until the application wires it)
 local FieldScriptComposition = {}
 
 ---@param runtime FieldRuntime
@@ -100,6 +101,7 @@ function FieldScriptComposition.compose(runtime, options)
     starterBalls = options.starterBalls,
     pcApplications = runtime.pcApplicationHost,
     pcTerminal = runtime.pcTerminal,
+    battle = options.battle,
   })
   local function restore()
     if options.loadedGame then

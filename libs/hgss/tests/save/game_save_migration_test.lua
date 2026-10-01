@@ -7,10 +7,14 @@ local Assert = require("tests.support.Assert")
 local Errors = require("libs.errors.src.Errors")
 local GameSave = require("libs.hgss.src.save.GameSave")
 local BagSave = require("libs.hgss.src.save.BagSave")
+
 local FashionCaseState = require("libs.hgss.src.save.FashionCaseState")
 local Mailbox = require("libs.hgss.src.save.Mailbox")
 local MartSave = require("libs.hgss.src.save.MartSave")
 local PhotoAlbum = require("libs.hgss.src.save.PhotoAlbum")
+local EncounterSave = require("libs.hgss.src.save.EncounterSave")
+local PokedexSave = require("libs.hgss.src.save.PokedexSave")
+
 
 local T = {}
 
@@ -69,6 +73,8 @@ local function v4record(overrides)
   value.schema = "g4-game-save-v4"
   value.playerData.profile.badges = 0
   value.fieldTravel = { lastHealSpawn = "SPAWN_NEW_BARK" }
+  value.encounters = EncounterSave.initial()
+  value.pokedex = PokedexSave.initial()
   return value
 end
 
@@ -141,12 +147,14 @@ function T.current_envelope_normalizes_while_old_schemas_migrate_first()
   Assert.equal(migratedV5.schema, GameSave.SCHEMA)
 end
 
+
 function T.v4_migration_adds_only_national_dex_and_mart_state()
   local source = v4record()
   source.schema = "g4-game-save-v4"
   source.scripts = {
     registryFingerprint = "pre-update-registry",
     taskFingerprint = "pre-update-tasks",
+
     nextTaskId = 7,
     environments = {},
     instances = {},
@@ -299,6 +307,8 @@ function T.master_records_advance_with_fashion_case_and_current_mons_state()
   local err = Assert.throws(function()
     GameSave.migrateV5(inconsistent)
   end)
+
+
   Assert.isTrue(Errors.is(err))
   Assert.notNil(inconsistent.fashionCase, "rejection leaves the inconsistent source untouched")
 end

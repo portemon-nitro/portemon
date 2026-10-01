@@ -4655,4 +4655,31 @@ function T.choice_host_without_a_presentation_callback_is_rejected()
   Assert.notNil(tostring(err):find("contextChoicePresentation", 1, true), "the missing callback is named")
 end
 
+function T.battle_ownership_freezes_player_input_initiation()
+  local started = 0
+  local player = defaultPlayer()
+  local baseUpdate = player.updateFixed
+  player.updateFixed = function(self, input)
+    started = started + 1
+    return baseUpdate(self, input)
+  end
+  local session = FieldSession.new(baseOptions({ player = player }))
+  Assert.isFalse(session:isBattleActive(), "sessions start outside battles")
+  session:updateFixed({ pressedDirection = "north" })
+  Assert.isTrue(started >= 1, "an idle field initiates movement from input")
+
+  session:setBattleActive(true)
+  Assert.isTrue(session:isBattleActive(), "the battle flag reports its owner")
+  local held = started
+  Assert.equal(player.facing, "south", "the fixture starts facing south")
+  session:updateFixed({ pressedDirection = "north" })
+  Assert.equal(started, held, "an owned battle never initiates movement from input")
+  Assert.equal(player.facing, "south", "an owned battle never turns the player")
+  Assert.equal(player.fieldX, 4, "an owned battle holds the player tile")
+  Assert.equal(player.fieldZ, 13, "an owned battle holds the player tile")
+
+  session:setBattleActive(false)
+  Assert.isFalse(session:isBattleActive(), "returning clears the battle flag")
+end
+
 return { tests = T }

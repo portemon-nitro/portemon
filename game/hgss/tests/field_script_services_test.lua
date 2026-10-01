@@ -108,8 +108,12 @@ local function sliceChunk(id, steps)
       lines[#lines + 1] = '    { op = "set_spawn", spawn = "' .. step.spawn .. '" },'
     elseif step.op == "field_move" then
       lines[#lines + 1] = '    { op = "field_move", source = "pending" },'
+    elseif step.op == "battle_launch" then
+      lines[#lines + 1] = '    { op = "battle_launch", kind = "wild", details = { species = "TOTODILE", level = 4 }, result = { value = "var", id = "VAR_TEMP_x4001" } },'
+    elseif step.op == "battle_result" then
+      lines[#lines + 1] = '    { op = "battle_result", result = { value = "var", id = "VAR_TEMP_x4002" } },'
     else
-      error("services harness covers set_spawn and pending field_move only", 0)
+      error("services harness covers set_spawn, pending field_move, and battle ops only", 0)
     end
   end
   lines[#lines + 1] = "  },"
@@ -146,6 +150,7 @@ local function driveSlice(services, id, steps)
     contextChoice = {},
     travel = services.travel,
     fieldMoves = services.fieldMoves,
+    battle = services.battle,
   }
   local platform = FieldScripts.new(args --[[@as FieldScriptsOptions]])
   local composed = assert(platform.composition:effective(id), "the slice must compose")
@@ -176,6 +181,43 @@ function T.tests.pending_field_move_reaches_the_injected_runtime()
   Assert.isFalse(ok, "an empty pending queue faults instead of succeeding")
   Assert.equal(takes, 1, "the task reads the injected runtime exactly once")
   Assert.isTrue(tostring(err):find("pending") ~= nil, "the fault names the missing queue: " .. tostring(err))
+end
+
+function T.tests.script_battle_launch_suspends_on_the_host_and_resumes_committed()
+  local launches = {}
+  local battleHost = {
+    launchBattle = function(_, spec)
+      launches[#launches + 1] = spec
+      return "script-launch-1"
+    end,
+    battleStatus = function(_)
+      return { phase = "complete", committed = true, result = "win", sourceResult = 1 }
+    end,
+    lastBattleResult = function(_)
+      return { result = "win", sourceResult = 1 }
+    end,
+  }
+  local platform = driveSlice({ travel = nil, fieldMoves = nil, battle = battleHost }, "test.battle_slice", {
+    { op = "battle_launch" },
+    { op = "battle_result" },
+  })
+  for _ = 1, 8 do
+    platform.scheduler:step(100 + _, nil)
+  end
+  Assert.equal(#launches, 1, "the launch reaches the injected host exactly once")
+  Assert.equal(launches[1].kind, "wild")
+  Assert.equal(launches[1].details.species, "TOTODILE", "launch details evaluate before the host")
+  local symbols = require("libs.assets.src.field.FieldScriptSymbols")
+  Assert.equal(
+    platform.worldState:getVar(symbols.variablesByName.VAR_TEMP_x4001),
+    1,
+    "the completed task writes its outcome code"
+  )
+  Assert.equal(
+    platform.worldState:getVar(symbols.variablesByName.VAR_TEMP_x4002),
+    1,
+    "the script resumes on the committed result"
+  )
 end
 
 return T

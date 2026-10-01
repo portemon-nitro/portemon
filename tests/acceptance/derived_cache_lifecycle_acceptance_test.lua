@@ -11,6 +11,8 @@
 -- nothing renders.
 
 local Assert = require("tests.support.Assert")
+local EncounterSave = require("libs.hgss.src.save.EncounterSave")
+local PokedexSave = require("libs.hgss.src.save.PokedexSave")
 local AcceptanceHarness = require("tests.acceptance.support.AcceptanceHarness")
 local FakeAudioOutput = require("tests.acceptance.support.FakeAudioOutput")
 local FakeCache = require("tests.support.FakeCache")
@@ -89,6 +91,8 @@ local function seedRecord(saveId, versionId)
     mart = MartSave.empty(),
     mailbox = require("libs.hgss.src.save.Mailbox").new():capture(),
     photoAlbum = require("libs.hgss.src.save.PhotoAlbum").new():capture(),
+    encounters = EncounterSave.initial(),
+    pokedex = PokedexSave.initial(),
   }
 end
 

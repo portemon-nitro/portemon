@@ -987,6 +987,94 @@ local function handlePartySelectResult(node, run)
   return Runtime.OUTCOME_CONTINUE
 end
 
+-- Battle launch and result. The launch suspends the script on the battle
+-- task: the injected battle host owns the lifetime and the commit, and
+-- the completed task writes the script-visible outcome code into the
+-- launch result variable. The result read answers from the host's latest
+-- committed outcome without touching battle internals. Neither handler
+-- executes mechanics inline.
+--
+-- The main chunk is at LuaJIT's 200-local limit; these handlers live in
+-- a block so their names never become more file-scoped locals.
+do
+  local function battleHostFor(run)
+    local host = run.services.battle
+    if host == nil then
+      Errors.raise(
+        ScriptErrors.SCRIPT_SERVICE_MISSING,
+        "battle service is unavailable",
+        { scriptId = run.instance.scriptId }
+      )
+    end
+    return host
+  end
+
+  -- Resolves kind-specific launch details with value references evaluated
+  -- through the run semantics. Plain data rides through untouched; only
+  -- reference records evaluate, so static payloads never change shape.
+  local function resolveBattleDetail(value, run)
+    if type(value) ~= "table" then
+      return value
+    end
+    local record = value --[[@as table<string, unknown>]]
+    if type(record.value) == "string" then
+      return semanticsFor(run).evaluateValue(record, run)
+    end
+    local out = {}
+    for key, item in pairs(record) do
+      out[key] = resolveBattleDetail(item, run)
+    end
+    return out
+  end
+
+  local function handleBattleLaunch(node, run)
+    requireForeground(run, "battle_launch")
+    battleHostFor(run)
+    local details = {}
+    if node.details ~= nil then
+      assert(type(node.details) == "table", "battle launch details stay a record")
+      details = resolveBattleDetail(node.details, run) --[[@as table<string, unknown>]]
+    end
+    local spec = { kind = node.kind, details = details }
+    if node.launchId ~= nil then
+      spec.launchId = semanticsFor(run).evaluateValue(node.launchId, run)
+    end
+    return blockOnTask(run, "battle", spec, node.result)
+  end
+
+  -- Outcome words the host may report, mapped per read context to the
+  -- script-visible code. An unrecorded battle reads back not-won (the
+  -- zero-initialized result), never a guessed victory.
+  local battleWonWords = { win = true }
+  local battleWonOrCaughtWords = { win = true, capture = true }
+
+  local function handleBattleResult(node, run)
+    local host = battleHostFor(run)
+    assert(host ~= nil, "the host check carries the battle host")
+    local latest = host:lastBattleResult()
+    local code = 0
+    if latest ~= nil then
+      assert(type(latest) == "table", "battle results stay records")
+      local words = node.context == "static_wild_won_or_caught" and battleWonOrCaughtWords or battleWonWords
+      if type(latest.result) ~= "string" then
+        Errors.raise(
+          ScriptErrors.SCRIPT_INVALID_REFERENCE,
+          "battle results report an outcome word",
+          { scriptId = run.instance.scriptId }
+        )
+      end
+      if words[latest.result] == true then
+        code = 1
+      end
+    end
+    semanticsFor(run).writeRef(node.result, code, run)
+    return Runtime.OUTCOME_CONTINUE
+  end
+
+  HANDLERS.battle_launch = handleBattleLaunch
+  HANDLERS.battle_result = handleBattleResult
+end
+
 -- Follower operations. Each handler calls exactly one named operation on
 -- the injected following-mon collaborator (the field controller behind the
 -- `followingMon` service) and writes its source-shaped result. No handler

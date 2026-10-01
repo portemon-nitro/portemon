@@ -50,7 +50,7 @@ local function fakeMons(moveKeys, secondMoves)
       form = 0,
       nickname = nil,
       personality = 0,
-      condition = { status = 0, currentHp = 20 },
+      condition = { currentHp = 20, effects = {} },
       moves = entries,
       heldItem = "NONE",
       isEgg = false,

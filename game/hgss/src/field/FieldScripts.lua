@@ -226,6 +226,7 @@ end
 ---@field fashionCase table<string, unknown> live fashion accessory inventory
 ---@field pcApplications table<string, unknown> the script-owned PC application host
 ---@field pcTerminal table<string, unknown> source PC terminal effects
+---@field battle table<string, unknown>|nil the battle host for script battle tasks (absent -> SCRIPT_SERVICE_MISSING on use)
 
 ---@class FieldScripts
 ---@field registry table<string, unknown>
@@ -388,6 +389,13 @@ function FieldScripts.new(opts)
 
   -- The live task registry: the scheduler routes through it.
   local liveTaskRegistry = HgssScript.registerTasks(TaskRegistry.new())
+  -- The battle task registers beside the composed tasks so persisted
+  -- battle continuations validate through the same registry. Registering
+  -- one more type never invalidates unrelated saved tasks: resolution is
+  -- per type and version, so every previously registered task resolves
+  -- exactly as before.
+  local BattleTask = require("libs.hgss.src.script.tasks.BattleTask") --[[@as TaskImplementation]]
+  liveTaskRegistry:register(BattleTask.type, BattleTask.version, BattleTask)
 
   local scheduler
   local function advanceAsync()
@@ -441,6 +449,7 @@ function FieldScripts.new(opts)
       starterBalls = opts.starterBalls,
       pcApplications = opts.pcApplications,
       pcTerminal = opts.pcTerminal,
+      battle = opts.battle,
       advanceAsync = advanceAsync,
     },
     taskRegistry = liveTaskRegistry,

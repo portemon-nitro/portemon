@@ -15,6 +15,8 @@
 local Assert = require("tests.support.Assert")
 local AcceptanceHarness = require("tests.acceptance.support.AcceptanceHarness")
 local BagCache = require("libs.assets.src.BagCache")
+local EncounterSave = require("libs.hgss.src.save.EncounterSave")
+local PokedexSave = require("libs.hgss.src.save.PokedexSave")
 local BagSave = require("libs.hgss.src.save.BagSave")
 local Mailbox = require("libs.hgss.src.save.Mailbox")
 local MartSave = require("libs.hgss.src.save.MartSave")
@@ -25,7 +27,6 @@ local FakeCache = require("tests.support.FakeCache")
 local GameSave = require("libs.hgss.src.save.GameSave")
 local LuaWriter = require("libs.codec.src.LuaWriter")
 local FashionCaseState = require("libs.hgss.src.save.FashionCaseState")
-local MartSave = require("libs.hgss.src.save.MartSave")
 local MonsSave = require("libs.mons.src.MonsSave")
 local PartyActions = require("libs.hgss.src.field.PartyActions")
 local PartyCache = require("libs.assets.src.PartyCache")
@@ -470,6 +471,8 @@ local function validRecord(saveId)
     mart = MartSave.empty(),
     mailbox = Mailbox.new():capture(),
     photoAlbum = PhotoAlbum.new():capture(),
+    encounters = EncounterSave.initial(),
+    pokedex = PokedexSave.initial(),
   }
 end
 

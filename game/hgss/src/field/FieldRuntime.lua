@@ -60,6 +60,7 @@ local MapAssetCache = require("libs.assets.src.MapAssetCache")
 local MapSceneLoader = require("libs.hgss.src.presentation.MapSceneLoader")
 local AssetPreparationQueue = require("libs.hgss.src.presentation.AssetPreparationQueue")
 local NeighborRing = require("libs.hgss.src.presentation.NeighborRing")
+local MetatileBehavior = require("libs.hgss.src.world.MetatileBehavior")
 local FieldWeatherCache = require("libs.assets.src.field.FieldWeatherCache")
 local FollowerInteractionCache = require("libs.assets.src.field.FollowerInteractionCache")
 local FieldWeatherResolver = require("libs.hgss.src.world.FieldWeatherResolver")
@@ -190,6 +191,15 @@ end
 ---@field martService MartService the live mart inventory/session service
 ---@field martHost table<string, unknown> the one script-owned mart child host
 ---@field martStockResolver function the selected mart stock provider
+---@field battleRuntime table<string, unknown>? the owned application battle lifetime (nil outside battles)
+---@field battlePresentation table<string, unknown>? presentation port for owned battles
+---@field pendingEncounterId integer|nil prepared unconsumed encounter identity
+---@field pendingEncounter table<string, unknown>? prepared unconsumed encounter
+---@field _battleHost table<string, unknown>? narrow battle host for script battle tasks
+---@field roamerState table<string, unknown>? the owned roamer and encounter persistence
+---@field dexKnowledge table<string, unknown>? the owned dex knowledge
+---@field playerDataContext table<string, unknown>? the generated charmap and frame-index context behind player validation
+---@field _lastBattleResult table<string, unknown>? latest committed battle outcome words
 ---@field bagCursor BagCursor the runtime-only field bag cursor
 ---@field pokemonMenu table<string, unknown>? the owned menu composition (nil before composition / after teardown)
 ---@field menuLaneWarps table<string, unknown>? the long-lived menu-origin warp service (nil before composition / after teardown)
@@ -615,6 +625,7 @@ function FieldRuntime:_loadRuntimeAssets(boot, loadOptions)
   self.martCatalog = MartCache.loadCatalog(boot.cacheFs)
   self.monCatalog = MonCatalog.new(monRoot, self.itemCatalog)
   self.monLanguage = monRoot.version.language
+  boot.monRoot = monRoot
   self.fieldEntranceIndicatorAsset, self.fieldEntranceIndicator = FieldEntranceIndicatorRuntime.load(boot.cacheFs)
   self.fieldEmoteModels = FieldActorEmoteRuntime.load(boot.cacheFs)
   self.fieldEffectAssets = self.fieldEntranceIndicatorAsset
@@ -1117,6 +1128,11 @@ function FieldRuntime:_composeFieldServices(boot)
   self.mailbox = Mailbox.new(boot.loadedGame and boot.loadedGame.mailbox or nil)
   self.photoAlbum = PhotoAlbum.new(boot.loadedGame and boot.loadedGame.photoAlbum or nil)
   self:_composeBag(boot.activeGame, boot.loadedGame)
+  self:_composeBattleState(
+    boot.loadedGame,
+    assert(boot.monRoot, "mon catalog root is required for battle state"),
+    boot.world
+  )
   local martBucket = boot.loadedGame and boot.loadedGame.mart
     or assert(self.game.mart, "finalized game mart bucket is required")
   self.martService = MartService.new({
@@ -1207,6 +1223,7 @@ function FieldRuntime:_composeFieldServices(boot)
     clock = self.localClock,
     followerTransition = self.followingMonTransition,
     starterBalls = self.starterBalls,
+    battle = self._battleHost,
     pcApplications = self.pcApplicationHost,
     pcTerminal = self.pcTerminal,
   })
@@ -1654,6 +1671,24 @@ function FieldRuntime:update(dt)
     self.session.accumulator = self.session.accumulator - discarded * FIXED_DT
   end
 
+  -- Directly constructed battles freeze player input through the shared
+  -- live party owner: while one owns decisions, field input never
+  -- initiates, even though the field runtime holds no handle on it.
+  -- Field-owned battles set the same flag through their direct handle.
+  if self.session ~= nil and self.monService ~= nil then
+    local DirectBattle = require("game.hgss.src.battle.BattleRuntime")
+    if DirectBattle.isActiveFor(self.monService) then
+      self.session:setBattleActive(true)
+    end
+  end
+  -- The owned battle lifetime pumps once per runtime update, after the
+  -- field settles: simulation and presentation acknowledgements advance
+  -- together while entry/return readiness still gates phase transitions.
+  -- Step encounters attempt at the committed-step boundary right after.
+  if self.battleRuntime ~= nil then
+    self:updateBattle()
+  end
+  self:pollStepEncounters()
   -- The audio output clock: pump PCM from the engine into the host sink once
   -- per runtime update, separate from the field fixed tick (the sink never
   -- advances game-semantic audio state).
@@ -1847,6 +1882,375 @@ end
 
 function FieldRuntime:_captureManualSaveFromMenu()
   return assert(self.saveCoordinator, "field runtime has no save coordinator"):captureManual()
+end
+
+-- Composes the battle-era persistent owners: roamer and encounter state
+-- plus dex knowledge, restored from the loaded battle-era buckets or
+-- started fresh. Reference sets come from the same mon root and world
+-- catalog the runtime boots from, so selected custom content resolves
+-- exactly as validation sees it.
+---@param loadedGame table<string, unknown>?
+---@param monRoot table<string, unknown>
+---@param world table<string, unknown>
+function FieldRuntime:_composeBattleState(loadedGame, monRoot, world)
+  local HgssRoamerState = require("libs.hgss.src.encounters.HgssRoamerState")
+  local PokedexKnowledge = require("libs.hgss.src.mons.PokedexKnowledge")
+  local speciesRefs = {}
+  for key in pairs(assert(monRoot.species, "mon catalog root carries its species")) do
+    speciesRefs[key] = true
+  end
+  local mapRefs = {}
+  for mapId in pairs(assert(world.byId, "world catalog carries its map index")) do
+    mapRefs[mapId] = true
+  end
+  if loadedGame ~= nil and loadedGame.encounters ~= nil then
+    self.roamerState = HgssRoamerState.restore(loadedGame.encounters, { species = speciesRefs, maps = mapRefs })
+  else
+    self.roamerState = HgssRoamerState.new({ records = {}, species = speciesRefs, maps = mapRefs })
+  end
+  if loadedGame ~= nil and loadedGame.pokedex ~= nil then
+    self.dexKnowledge = PokedexKnowledge.restore(loadedGame.pokedex, { species = speciesRefs })
+  else
+    self.dexKnowledge = PokedexKnowledge.new({ species = speciesRefs })
+  end
+  self.battleRuntime = nil
+  self.battlePresentation = nil
+  self.pendingEncounterId = nil
+  self.pendingEncounter = nil
+  self._lastBattleResult = nil
+  -- The narrow battle host for script battle tasks: launch, status, and
+  -- result reads delegate to the runtime's battle face. The adapter (not
+  -- the whole runtime) is what scheduler services carry.
+  local owner = self
+  local function hostLaunch(_, spec)
+    return owner:launchBattle(spec)
+  end
+  local function hostStatus(_, launchId)
+    return owner:battleStatus(launchId)
+  end
+  local function hostResult(_)
+    return owner:lastBattleResult()
+  end
+  self._battleHost = { launchBattle = hostLaunch, battleStatus = hostStatus, lastBattleResult = hostResult }
+end
+
+-- Attaches the presentation port owned battles present through. Without
+-- an attached port, owned battles acknowledge immediately; an attached
+-- later UI may instead remain waiting, which holds the lifecycle without
+-- touching simulation.
+---@param port table<string, unknown>
+function FieldRuntime:attachBattlePresentation(port)
+  assert(type(port) == "table", "battle presentation stays a record")
+  assert(type(port.enter) == "function", "battle presentation implements enter")
+  assert(type(port.present) == "function", "battle presentation implements present")
+  assert(type(port.leave) == "function", "battle presentation implements leave")
+  assert(type(port.dispose) == "function", "battle presentation implements dispose")
+  self.battlePresentation = port
+end
+
+-- Builds the detached scenario for one launch request from the prepared
+-- encounter (consuming a matching pending preparation exactly once), the
+-- supplied trainer party, or an explicit staged scenario. Trainer parties
+-- are never invented here: a trainer launch without its party records
+-- fails loudly.
+---@param request table<string, unknown>
+---@return table<string, unknown> detached scenario fragment
+function FieldRuntime:_scenarioForRequest(request)
+  local HgssBattleScenarioFactory = require("libs.hgss.src.battle.HgssBattleScenarioFactory")
+  assert(type(request) == "table" and type(request.kind) == "string", "scenario builds need their request")
+  local live = { party = self.monService, bag = self.bagService, world = self.scripts.worldState }
+  if request.kind == "wild" then
+    local payload = request.payload
+    assert(type(payload) == "table", "wild launches carry their payload")
+    if self.pendingEncounter ~= nil then
+      local pending = self.pendingEncounter --[[@as table<string, unknown>]]
+      if payload.attemptId == nil or payload.attemptId == pending.id then
+        local encounter = self:_consumePendingEncounter()
+        local mons = encounter.mons --[[@as table<integer, unknown>]]
+        assert(type(mons) == "table" and type(mons[1]) == "table", "prepared encounters carry their mon")
+        local first = mons[1] --[[@as table<string, unknown>]]
+        assert(type(first.mon) == "table", "prepared encounters carry their mon record")
+        return HgssBattleScenarioFactory.fromEncounter({
+          attemptId = encounter.id,
+          mon = first.mon,
+          format = encounter.format,
+          environment = encounter.environment,
+        }, live)
+      end
+    end
+    return HgssBattleScenarioFactory.fromEncounter(payload --[[@as table<string, unknown>]], live)
+  end
+  if request.kind == "trainer" then
+    return HgssBattleScenarioFactory.fromTrainer(request.payload --[[@as table<string, unknown>]], live)
+  end
+  return HgssBattleScenarioFactory.fromScript(request.payload --[[@as table<string, unknown>]], live)
+end
+
+-- Starts the owned application battle lifetime for one launch request and
+-- freezes player input until it returns. Only one battle runs at a time;
+-- presentation readiness (attached or default) gates entry and return.
+---@param args { request: table<string, unknown>, scenario: table<string, unknown>?, presentation: table<string, unknown>?, trainerProgram: table<string, unknown>?, seed: integer? }
+---@return table<string, unknown> the owned application battle lifetime
+function FieldRuntime:startBattle(args)
+  assert(type(args) == "table", "battle launches require an argument record")
+  assert(self.battleRuntime == nil, "a battle is already active")
+  local BattleRuntime = require("game.hgss.src.battle.BattleRuntime")
+  local request = assert(args.request, "battle launches require their request")
+  local scenario = args.scenario or self:_scenarioForRequest(request)
+  -- Live consequence owners ride along so resolution stages through
+  -- them: the bag and dex owners plus the player money facts. Prize
+  -- inputs, captures, planned consumption, and roamer deltas arrive from
+  -- explicit drivers; without them the runtime stages only what the
+  -- executed battle determines.
+  local playerFacts = nil
+  if self.playerData ~= nil and self.playerDataContext ~= nil then
+    playerFacts = { record = self.playerData, context = self.playerDataContext }
+  end
+  local battle = BattleRuntime.new({
+    request = request,
+    scenario = scenario,
+    presentation = args.presentation or self.battlePresentation,
+    party = self.monService,
+    bag = self.bagService,
+    dex = self.dexKnowledge,
+    player = playerFacts,
+    trainerProgram = args.trainerProgram,
+    seed = args.seed,
+  })
+  self.battleRuntime = battle
+  if self.session ~= nil then
+    self.session:setBattleActive(true)
+  end
+  return battle
+end
+
+-- Drives the owned battle once per runtime update and returns through the
+-- stable field when it settles. A committed battle records its outcome
+-- words for script result reads; a failed battle faults the runtime
+-- loudly instead of resuming the story as a success.
+function FieldRuntime:updateBattle()
+  local battle = self.battleRuntime
+  if battle == nil then
+    return
+  end
+  battle:update()
+  local status = battle:status()
+  if status.phase ~= "complete" and status.phase ~= "failed" then
+    return
+  end
+  if status.phase == "complete" and status.outcomeReceipt ~= nil and status.outcomeReceipt.committed == true then
+    self._lastBattleResult = { result = status.result, sourceResult = status.sourceResult }
+  end
+  if self.session ~= nil then
+    self.session:setBattleActive(false)
+  end
+  battle:dispose()
+  self.battleRuntime = nil
+  if status.phase == "failed" then
+    self.errorText = tostring(status.error or "the battle reported a failure")
+  end
+end
+
+-- Battle host observation for script result reads: the latest committed
+-- outcome words, or nil when no battle has committed yet.
+---@return table<string, unknown>?
+function FieldRuntime:lastBattleResult()
+  return self._lastBattleResult
+end
+
+-- Battle host observation for script battle tasks: the owned battle's
+-- committed outcome for one launch, or nil when no owned battle carries
+-- that identity.
+---@param launchId string
+---@return table<string, unknown>?
+function FieldRuntime:battleStatus(launchId)
+  local battle = self.battleRuntime
+  if battle == nil then
+    return nil
+  end
+  return battle:battleStatus(launchId)
+end
+
+-- Battle host launch for script battle tasks: issues a unique launch
+-- identity per call (two runs of one script site never share a commit
+-- receipt) and starts the owned battle for the evaluated payload.
+---@param spec { launchId: string?, kind: string?, details: table<string, unknown>? }
+---@return string the issued launch identity
+function FieldRuntime:launchBattle(spec)
+  assert(type(spec) == "table", "battle host launches require a spec record")
+  self._launchCounter = (self._launchCounter or 0) + 1
+  local tag = spec.launchId or spec.kind or "battle"
+  local launchId = tostring(tag) .. "#" .. tostring(self._launchCounter)
+  local payload = spec.details or {}
+  assert(type(payload) == "table", "battle host launches carry their payload record")
+  self:startBattle({ request = { id = launchId, kind = spec.kind or "wild", payload = payload } })
+  return launchId
+end
+
+-- Releases a prepared but unconsumed encounter without rerolling: the
+-- service protection lifts and later steps may attempt anew. The prepared
+-- mon is discarded, never battled and never committed.
+---@return boolean released true when a pending encounter was held
+function FieldRuntime:cancelPendingEncounter()
+  if self.pendingEncounter == nil then
+    return false
+  end
+  self:_consumePendingEncounter()
+  return true
+end
+
+---@return table<string, unknown> the consumed prepared encounter
+function FieldRuntime:_consumePendingEncounter()
+  local pending = assert(self.pendingEncounter, "no prepared encounter to consume")
+  local id = self.pendingEncounterId
+  self.pendingEncounter = nil
+  self.pendingEncounterId = nil
+  if self._encounters ~= nil and id ~= nil then
+    return self._encounters:consume(id)
+  end
+  return pending
+end
+
+-- Composes the concrete encounter service over a compiled encounter
+-- catalog, sharing the live party, catalogs, and roamer state. The
+-- service stays absent until composed, so field boots without encounter
+-- data behave exactly as before.
+---@param compiled table<string, unknown> compiled encounter catalog record
+function FieldRuntime:composeEncounters(compiled)
+  local HgssEncounterCatalog = require("libs.hgss.src.encounters.HgssEncounterCatalog")
+  local WildMonFactory = require("libs.hgss.src.encounters.WildMonFactory")
+  local HgssEncounterService = require("libs.hgss.src.encounters.HgssEncounterService")
+  local catalog = HgssEncounterCatalog.new(compiled)
+  local fontDef = FieldFontLoader.load(assert(self.cacheFs, "encounter composition requires its cache"))
+  local factory = WildMonFactory.new({
+    catalog = assert(self.monCatalog, "encounter composition requires the mon catalog"),
+    items = assert(self.itemCatalog, "encounter composition requires the item catalog"),
+    charmap = fontDef.charmap,
+    games = HgssMonService.GAMES,
+    languages = HgssMonService.LANGUAGES,
+    game = self.versionId,
+    language = self.monLanguage,
+  })
+  self._encounters = HgssEncounterService.new({
+    catalog = catalog,
+    wildFactory = factory,
+    roamers = assert(self.roamerState, "encounter composition requires its roamer state"),
+    game = self.versionId,
+  })
+end
+
+-- Runs one encounter attempt over the composed service. Without a service
+-- (or while a battle or preparation owns the field) there is nothing to
+-- attempt. A prepared encounter is held exactly once under its attempt
+-- identity; later steps skip until it is consumed or released. Maps
+-- without tables miss instead of faulting: no table means no encounter.
+---@param context table<string, unknown> encounter attempt context
+---@return table<string, unknown>? attempt result
+function FieldRuntime:attemptEncounter(context)
+  local service = self._encounters
+  if service == nil then
+    return nil
+  end
+  if self.battleRuntime ~= nil or self.pendingEncounterId ~= nil then
+    return nil
+  end
+  local worldState = assert(self.scripts, "encounter attempts require their script platform").worldState
+  local worldRng = assert(worldState.rng, "encounter attempts draw from the world generator")
+  local function drawU16(_, _, _)
+    return worldRng:nextRaw() % 65536
+  end
+  local stream = { nextU16 = drawU16 }
+  local Errors = require("libs.errors.src.Errors")
+  local ok, result = pcall(service.attempt, service, context, stream)
+  if not ok then
+    if Errors.is(result) and result.code == "ENCOUNTER_MISSING_TABLE" then
+      return { kind = "miss", reason = "no_table" }
+    end
+    error(result, 0)
+  end
+  assert(type(result) == "table", "attempts answer with a result record")
+  if result.kind == "prepared" then
+    self.pendingEncounterId = result.attemptId
+    self.pendingEncounter = result.encounter
+  end
+  return result
+end
+
+-- The field-step encounter hook: after committed player steps, attempts at
+-- the exact opportunity boundary for tall-grass (and surfing) tiles. Inert
+-- without a composed encounter service; a prepared encounter is held for
+-- an explicit battle launch instead of auto-running without presentation.
+function FieldRuntime:pollStepEncounters()
+  if self._encounters == nil or self.session == nil or self.player == nil then
+    return
+  end
+  if self.battleRuntime ~= nil or self.pendingEncounterId ~= nil then
+    return
+  end
+  local player = self.player --[[@as table<string, unknown>]]
+  local cell = player.committedSourceCellKey
+  if cell == nil or cell == self._lastStepCell then
+    self._lastStepCell = cell
+    return
+  end
+  self._lastStepCell = cell
+  local session = self.session --[[@as table<string, unknown>]]
+  if session.mapEntryController:isActive() or session.dialogue:isModal() then
+    return
+  end
+  local map = session.currentMap --[[@as table<string, unknown>]]
+  local method = self:_stepEncounterMethod(map, player)
+  if method == nil then
+    return
+  end
+  self:attemptEncounter({
+    eventId = session.tick,
+    mapId = map.mapId,
+    method = method,
+    movement = "step",
+    modifiers = {},
+    environment = {},
+    playerProfile = self.playerData.profile,
+  })
+end
+
+---@param map table<string, unknown>
+---@param player table<string, unknown>
+---@return string? encounter method for the arrival tile, when one applies
+function FieldRuntime:_stepEncounterMethod(map, player)
+  if map.collision == nil then
+    return nil
+  end
+  local ok, localX, localZ = pcall(FieldCoordinates.fieldToLocal, map, player.fieldX, player.fieldZ)
+  if not ok then
+    return nil
+  end
+  local collision = map.collision --[[@as table<string, unknown>]]
+  local contains = collision.containsLocal
+  if type(contains) ~= "function" then
+    return nil
+  end
+  if not collision:containsLocal(localX, localZ) then
+    return nil
+  end
+  local behavior = collision:getLocal(localX, localZ).behavior
+  if MetatileBehavior.isTallGrass(behavior) or MetatileBehavior.isVeryTallGrass(behavior) then
+    return "grass"
+  end
+  if MetatileBehavior.isSurfableWater(behavior) and self:_isSurfing() then
+    return "surf"
+  end
+  return nil
+end
+
+---@return boolean true while the avatar surfs
+function FieldRuntime:_isSurfing()
+  local avatar = self.playerAvatar
+  if avatar == nil then
+    return false
+  end
+  local status = avatar:status()
+  return type(status) == "table" and status.durableState == "surfing"
 end
 
 function FieldRuntime:_saveCheckpoint()
@@ -2110,6 +2514,10 @@ end
 -- dialogue -- and the field clearing means reset never leaves a hand-picked
 -- subset behind for its re-boot.
 function FieldRuntime:_releaseAll()
+  if self.battleRuntime then
+    self.battleRuntime:dispose()
+  end
+  self.battleRuntime = nil
   if self.transition then
     self:_disposePreparedSwap(self.transition.resolution, self.transition.prepared)
   end
