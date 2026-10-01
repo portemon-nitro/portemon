@@ -153,6 +153,22 @@ local function bagChild(status)
   return assert(status.child, "the active page carries its child status")
 end
 
+-- Fresh party children reveal before accepting input: after any arrival
+-- on a party page, wait out the reveal plus its handover/settling ticks
+-- so driven input acts. Bag pages return immediately.
+local function settleParty(flow)
+  local status = flowStatus(flow)
+  if type(status.page) ~= "string" or status.page:sub(1, 5) ~= "party" then
+    return status
+  end
+  status = driveUntil(flow, "the party reveal", 30, function(current)
+    local child = current.child
+    return child ~= nil and child.phase == "interactive"
+  end)
+  drive(flow, {})
+  return drive(flow, {})
+end
+
 -- Confirming a browsed item parks in the source selection entry before
 -- the stable action menu opens: settle the generated transition clock
 -- before callers read the action state or its actions.
@@ -308,6 +324,7 @@ function T.tests.bag_medicine_round_trip_preserves_navigation()
 
     status = chooseBagAction(flow, "use")
     Assert.equal(status.page, "party_item_target", "choosing Use must open the party target page")
+    status = settleParty(flow)
     status = drive(flow, { { type = "confirm" } })
     Assert.equal(
       mons:partyMon(0).condition.currentHp,
@@ -357,6 +374,7 @@ function T.tests.party_give_round_trip_preserves_target_identity()
     local status = driveUntil(flow, "the party browse page", 30, function(current)
       return current.page == "party_browse"
     end)
+    status = settleParty(flow)
     status = choosePartySlot(flow, 1)
     status = choosePartyMenu(flow, "item")
     status = choosePartyMenu(flow, "give")
@@ -376,6 +394,7 @@ function T.tests.party_give_round_trip_preserves_target_identity()
     status = gotoPocket(flow, "medicine")
     status = drive(flow, { { type = "confirm" } })
     Assert.equal(status.page, "party_give_confirm", "picking for an occupied holder must ask before publishing")
+    status = settleParty(flow)
     status = drive(flow, {})
     status = drive(flow, { { type = "navigate", direction = "down" } })
     status = drive(flow, { { type = "confirm" } })
@@ -399,6 +418,7 @@ function T.tests.summary_return_follows_displayed_mon()
     local status = driveUntil(flow, "the party browse page", 30, function(current)
       return current.page == "party_browse"
     end)
+    status = settleParty(flow)
     status = drive(flow, { { type = "confirm" } })
     status = choosePartyMenu(flow, "summary")
     Assert.equal(status.page, "summary", "choosing Summary must open the summary page")

@@ -477,6 +477,21 @@ local function childView(flow)
   return assert(status.child, "the party flow holds a live child")
 end
 
+-- A fresh party page clears its open before input: wait for the leaf
+-- to turn interactive, then run out the handover ticks that still drop
+-- input so the first navigation acts.
+local function drainOpen(flow)
+  for _ = 1, 30 do
+    local child = childView(flow)
+    if child.phase == "interactive" then
+      break
+    end
+    flow:updateFixed({})
+  end
+  flow:updateFixed({})
+  flow:updateFixed({})
+end
+
 local function focusSlot(flow, slot)
   for _ = 1, 12 do
     local child = childView(flow)
@@ -558,7 +573,7 @@ function T.tests.fly_is_the_only_checked_silent_noop()
     local status = flow:status()
     Assert.isTrue(status.open, "the party flow opens")
     Assert.equal(status.page, "party_browse", "a party root opens the party page")
-    flow:updateFixed({})
+    drainOpen(flow)
     focusSlot(flow, pidgey)
     activateMenuMove(flow, "FLY")
     status = flow:status()

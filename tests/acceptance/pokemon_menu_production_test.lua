@@ -177,6 +177,22 @@ local function childView(flow)
   return assert(status.child, "the party flow holds a live child")
 end
 
+-- A fresh party page clears its open before input: wait for the leaf
+-- to turn interactive, then run out the handover ticks that still drop
+-- input so the first navigation acts.
+local function drainOpen(flow)
+  for _ = 1, 30 do
+    local status = flow:status()
+    local child = status.child
+    if child ~= nil and child.phase == "interactive" then
+      break
+    end
+    flow:updateFixed({})
+  end
+  flow:updateFixed({})
+  flow:updateFixed({})
+end
+
 local function focusSlot(flow, slot, direction)
   -- Party slots run left to right; down from a slot reaches cancel.
   -- A fresh screen reports no cursor while icon preparation pends:
@@ -254,6 +270,19 @@ function T.tests.production_pokemon_destination_opens_the_native_flow(context)
     game:advanceUntil("the pokemon destination owns the tick", function()
       return hostPhase(game) == FieldApplicationHost.PHASES.application
     end, 120)
+    game:advanceUntil("the party reveal completes before the close", function()
+      local hostStatus = game.runtime.applicationHost:status()
+      if hostStatus.phase ~= FieldApplicationHost.PHASES.application then
+        return false
+      end
+      local flow = hostStatus.application
+      local leaf = flow ~= nil and flow.child or nil
+      return leaf ~= nil and leaf.phase == "interactive"
+    end, 120)
+    -- The handover and its settling tick still drop input; the close
+    -- presses only once the screen forwards.
+    game:step()
+    game:step()
     local child = applicationStatus(game)
     Assert.equal(child.page, "party_browse", "the pokemon destination opens the native party flow")
     Assert.equal(child.root, "party", "the pokemon destination roots the flow at party")
@@ -302,6 +331,7 @@ function T.tests.flow_behaviors_persist_through_production_composition(context)
     local composition = assert(runtime.pokemonMenu, "the production runtime owns the menu composition")
     local flow = composition.makePartyFlow()
     Assert.isTrue(flow:status().open, "the composed party flow opens")
+    drainOpen(flow)
     -- Summary returns to the displayed member.
     focusSlot(flow, aron)
     activateMenuRow(flow, function(row)
@@ -318,6 +348,9 @@ function T.tests.flow_behaviors_persist_through_production_composition(context)
       flow:updateFixed({})
     end
     Assert.equal(returned, aron, "summary returns to the displayed member")
+    -- The summary return reopens the party page on a fresh leaf, so its
+    -- open clears again before the switch leg drives.
+    drainOpen(flow)
     -- Switch persists through the live service after its animation.
     local mons = assert(runtime.monService, "live mon service required")
     local before = mons:partyRevision()
@@ -369,6 +402,7 @@ function T.tests.field_handoff_executes_once_on_the_live_scheduler(context)
     local runtime = game.runtime
     local composition = assert(runtime.pokemonMenu, "the production runtime owns the menu composition")
     local flow = composition.makePartyFlow()
+    drainOpen(flow)
     focusSlot(flow, swimmer)
     activateMenuRow(flow, function(row)
       return row.move == "SURF"
