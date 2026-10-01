@@ -35,7 +35,7 @@ end
 local function manifestFor(versionId)
   local cacheFs = CacheFs.forVersion(versionId)
   local manifest = PartyCache.loadManifest(cacheFs)
-  Assert.equal(manifest.schema, "g4-party-presentation-v3", versionId .. " renders the current party manifest")
+  Assert.equal(manifest.schema, "g4-party-presentation-v4", versionId .. " renders the current party manifest")
   return cacheFs, manifest
 end
 
@@ -785,12 +785,16 @@ local function contextPresentation(overrides)
   return presentation(base)
 end
 
+-- Top icon row through the brightened content: the fixture icon red
+-- keeps its red dominance under the white step while brightened
+-- chrome, cursor, and trough rows do not. Every pixel the old pure
+-- channel test accepted still passes; only washed reds are added.
 local function iconTopRow(image, x0, y0, width, height)
   for y = y0, y0 + height - 1 do
     local red = 0
     for x = x0, x0 + width - 1 do
       local ir, ig, ib = image:getPixel(x, y)
-      if ir > 0.7 and ig < 0.3 and ib < 0.3 then
+      if ir > 0.7 and (ir - ig) > 0.2 and (ir - ib) > 0.2 then
         red = red + 1
       end
     end
@@ -878,22 +882,35 @@ function T.hp_fields_hold_slash_and_max_steady_across_current_values(scope)
   end
 end
 
-function T.context_message_names_its_slot_in_the_action_window(scope)
+function T.context_message_names_its_slot_in_the_context_window(scope)
   for _, versionId in ipairs(readyVersions()) do
     local cacheFs, manifest = manifestFor(versionId)
-    local window = assert(manifest.windows.action, versionId .. " carries the action window")
+    local window = assert(manifest.windows.context, versionId .. " carries the context window")
+    local action = assert(manifest.windows.action, versionId .. " carries the action window")
     local function renderNamed(name)
       local status = contextPresentation({ cursorNode = 5 })
       status.view.slots[1] = slot(0, { displayName = name })
       local image, _ = renderPane(scope, cacheFs, manifest, status)
       return image
     end
-    -- Same-length names keep panel numerals identical, so any action-
-    -- window difference is the context message naming its slot.
-    local first = renderNamed("LEADMONA")
-    local second = renderNamed("LEADMONB")
+    -- Same-length names differing in the first glyph keep panel layout
+    -- identical, so any context-window difference is the open-menu
+    -- message naming its slot at the name start inside its window.
+    local first = renderNamed("AEADMONA")
+    local second = renderNamed("BEADMONA")
     local delta = differingPixels(first, second, window.x, window.y, window.width, window.height)
     Assert.isTrue(delta > 4, versionId .. " paints the context message naming its slot")
+    -- The transient action window carries no open-menu copy: past the
+    -- context window its pixels stay identical across slot names.
+    local acted = differingPixels(
+      first,
+      second,
+      window.x + window.width,
+      action.y,
+      action.x + action.width - window.x - window.width,
+      action.height
+    )
+    Assert.equal(acted, 0, versionId .. " keeps the action window clear of the open-menu message")
   end
 end
 
@@ -909,6 +926,67 @@ function T.native_content_ignores_the_host_overlay_flag(scope)
       0,
       versionId .. " renders identical native pixels with or without the host overlay flag"
     )
+  end
+end
+
+-- Opening the context menu brightens the underlying panel content while
+-- the menu button frames keep their exact source pixels: the same
+-- slots render different panel pixels than browse, but every opaque
+-- frame pixel still matches the generated art.
+function T.context_brightens_content_below_unbrightened_menu_buttons(scope)
+  for _, versionId in ipairs(readyVersions()) do
+    local cacheFs, manifest = manifestFor(versionId)
+    local browsingImage, _ = renderPane(scope, cacheFs, manifest, presentation({ cursorNode = 0 }))
+    local menu = {
+      { kind = "summary", label = "SUMMARY" },
+      { kind = "switch", label = "SWITCH" },
+      { kind = "quit", label = "QUIT" },
+    }
+    local opened = presentation({ cursorNode = 0, state = "context", menu = menu, menuIndex = 1, menuSlot = 0 })
+    local openedImage, _ = renderPane(scope, cacheFs, manifest, opened)
+    local panel = manifest.panels[1]
+    local brightened = differingPixels(browsingImage, openedImage, panel.origin.x, panel.origin.y, 128, 48)
+    Assert.isTrue(brightened > 100, versionId .. " brightens the underlying panel content with the menu open")
+    local generated = assert(manifest.contextMenu.topLevel[3], versionId .. " carries the three-entry layout")
+    local first = assert(generated[1], versionId .. " carries its first entry")
+    local rect = assert(first.frameRect, versionId .. " carries entry frame rectangles")
+    local frames = assert(manifest.contextMenu.frames, versionId .. " carries menu frames")
+    local group = assert(frames[first.frameShape], versionId .. " carries the entry frame")
+    local selected =
+      visualPixels(scope, cacheFs, assert(group.selected, versionId .. " carries the selected frame"))
+    local matches, opaque = matchingOpaquePixels(openedImage, selected, 0, 0, rect.x, rect.y, rect.width, rect.height)
+    Assert.isTrue(opaque > 100, versionId .. " compiles visible selected-frame pixels")
+    Assert.equal(matches, opaque, versionId .. " keeps menu button pixels at source ink under brightness")
+  end
+end
+
+-- Switch selection paints the generated bank-7 chrome on both the
+-- locked source and the current candidate with no runtime tint, even
+-- when the source is fainted.
+function T.switch_selection_paints_generated_bank_seven_chrome(scope)
+  for _, versionId in ipairs(readyVersions()) do
+    local cacheFs, manifest = manifestFor(versionId)
+    -- Cancel focus parks the slot cursor away from both panels, so the
+    -- proven top strip isolates the chrome under test.
+    local status = presentation({
+      cursorNode = "cancel",
+      state = "choose_swap",
+      switchSelect = { source = 0, candidate = 3 },
+    })
+    status.view.slots[1] = slot(0, { status = "faint", currentHp = 0, maxHp = 20, hpFraction = 0 })
+    status.view.slots[4] = slot(3, {})
+    local image, _ = renderPane(scope, cacheFs, manifest, status)
+    for _, slot0 in ipairs({ 0, 3 }) do
+      local panel = manifest.panels[slot0 + 1]
+      local chrome = assert(panel.chrome.switchSelection, versionId .. " carries switch-selection chrome")
+      local source = visualPixels(scope, cacheFs, chrome)
+      -- The proven top strip stays clear of icons, balls, and text, so
+      -- every opaque chrome pixel there must match exactly.
+      local matches, opaque =
+        matchingOpaquePixels(image, source, 64, 0, panel.origin.x + 64, panel.origin.y, 40, 8)
+      Assert.isTrue(opaque > 50, versionId .. " compiles visible switch-selection pixels")
+      Assert.equal(matches, opaque, versionId .. " paints generated switch chrome without tint")
+    end
   end
 end
 

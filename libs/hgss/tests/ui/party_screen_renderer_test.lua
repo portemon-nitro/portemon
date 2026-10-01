@@ -184,6 +184,67 @@ local function sourceManifest()
   }
 end
 
+-- Source-complete presentation shape the renderer must consume: semantic
+-- context text roles selected by generated entry style, source message
+-- windows, bank-7 switch-selection chrome, and the generated empty-take
+-- template. Values stay synthetic; only the contract shape is under test.
+-- The six-entry top-level section carries a field-style entry at index 5,
+-- matching the producer rule that entries past the first four resolve the
+-- field ink while the fixed cancel entry keeps command ink.
+local function v4Manifest()
+  local manifest = sourceManifest()
+  manifest.schema = "g4-party-presentation-v4"
+  manifest.windows = {
+    browse = rect(16, 168, 160, 16),
+    context = rect(16, 152, 104, 32),
+    action = rect(16, 152, 216, 32),
+    prompt = { x = 200, y = 80 },
+  }
+  local function triple(fr, fg, fb, sr, sg, sb, br, bg, bb)
+    return {
+      foreground = { r = fr, g = fg, b = fb },
+      shadow = { r = sr, g = sg, b = sb },
+      background = { r = br, g = bg, b = bb },
+    }
+  end
+  local contextMenu = assert(manifest.contextMenu, "the v4 manifest carries context menus")
+  contextMenu.textPalette = nil
+  contextMenu.fillPalette = nil
+  contextMenu.textRoles = {
+    command = {
+      raised = triple(248, 248, 248, 136, 136, 136, 64, 64, 64),
+      depressed = triple(255, 255, 255, 80, 80, 80, 16, 16, 16),
+    },
+    field = {
+      raised = triple(144, 192, 248, 40, 80, 160, 64, 64, 64),
+      depressed = triple(160, 208, 255, 32, 64, 144, 16, 16, 16),
+    },
+    cancel = {
+      raised = triple(248, 248, 248, 136, 136, 136, 64, 64, 64),
+      depressed = triple(255, 255, 255, 80, 80, 80, 16, 16, 16),
+    },
+  }
+  contextMenu.topLevel[6][5].style = "field"
+  for _, panel in ipairs(assert(manifest.panels, "the v4 manifest carries panels")) do
+    assert(panel.chrome, "panels carry chrome").switchSelection =
+      imageRef("assets/generated/party/panel-switch-selection.png", 128, 48)
+  end
+  local templates = assert(manifest.text.templates, "the v4 manifest carries templates")
+  templates.takeNoItem = {
+    segments = {
+      { kind = "text", value = "EMPTY" },
+      { kind = "lineBreak" },
+      { kind = "name" },
+      { kind = "text", value = "!" },
+    },
+  }
+  return manifest
+end
+
+local function v4Layout(manifest)
+  return PartyScreenLayout.resolve({ manifest = manifest, cancellable = true })
+end
+
 local function fakeCacheFs()
   return {
     read = function(_)
@@ -275,14 +336,14 @@ local function presentation(overrides)
 end
 
 local function layout()
-  return PartyScreenLayout.resolve({ manifest = sourceManifest(), cancellable = true })
+  return PartyScreenLayout.resolve({ manifest = v4Manifest(), cancellable = true })
 end
 
 local function newRenderer(graphics, texts, manifest)
   return PartyScreenRenderer.new({
     graphics = graphics,
     cacheFs = fakeCacheFs(),
-    manifest = manifest or sourceManifest(),
+    manifest = manifest or v4Manifest(),
     text = texts,
   })
 end
@@ -317,7 +378,7 @@ end
 function T.cancel_focus_does_not_draw_slot_four_name_as_footer()
   local graphics = fakeGraphics()
   local texts = {}
-  local manifest = sourceManifest()
+  local manifest = v4Manifest()
   local renderer = newRenderer(graphics, stubText(texts), manifest)
   local status = presentation({ cursorNode = "cancel" })
   status.view.slots[1] = occupiedSlot(0, { displayName = "LEAD" })
@@ -339,7 +400,7 @@ end
 
 function T.numeric_cursor_and_normal_cancel_use_their_manifest_anchors()
   local graphics = fakeGraphics()
-  local manifest = sourceManifest()
+  local manifest = v4Manifest()
   local panelAnchor = manifest.navigation.dpad.default[1]
   panelAnchor.left, panelAnchor.top = 64, 25
   local cursorFrame = manifest.visuals.cursor.sequences[1].frames[1]
@@ -376,7 +437,7 @@ end
 
 function T.source_frames_without_offsets_draw_at_their_anchor()
   local graphics = fakeGraphics()
-  local manifest = sourceManifest()
+  local manifest = v4Manifest()
   manifest.visuals.balls.sequences[1].frames[1].offset = nil
   local ballImage = manifest.visuals.balls.sequences[1].frames[1].image
   local renderer = newRenderer(graphics, stubText({}), manifest)
@@ -399,7 +460,7 @@ end
 function T.browse_message_draws_compiled_template_inside_source_window()
   local graphics = fakeGraphics()
   local texts = {}
-  local manifest = sourceManifest()
+  local manifest = v4Manifest()
   local renderer = newRenderer(graphics, stubText(texts), manifest)
   local resolved = PartyScreenLayout.resolve({ manifest = manifest, cancellable = true })
   local window = manifest.windows.browse
@@ -463,7 +524,7 @@ end
 
 function T.status_visuals_follow_semantic_keys_for_lower_cards()
   local graphics = fakeGraphics()
-  local manifest = sourceManifest()
+  local manifest = v4Manifest()
   local renderer = newRenderer(graphics, stubText({}), manifest)
   local keys = { "paralysis", "freeze", "sleep", "poison", "burn", "faint" }
   local status = presentation()
@@ -490,7 +551,7 @@ end
 
 function T.held_mail_and_capsule_use_semantic_kind_and_generated_anchors()
   local graphics = fakeGraphics()
-  local manifest = sourceManifest()
+  local manifest = v4Manifest()
   local heldFrame = manifest.visuals.held.sequences[2].frames[1]
   heldFrame.offset = { x = 2, y = -1 }
   local capsuleFrame = manifest.visuals.held.sequences[3].frames[1]
@@ -700,7 +761,7 @@ end
 function T.detail_facts_use_generated_geometry_and_draw_no_held_marker_obj()
   local graphics = fakeGraphics()
   local texts = {}
-  local manifest = sourceManifest()
+  local manifest = v4Manifest()
   local renderer = newRenderer(graphics, stubText(texts), manifest)
   local resolved = PartyScreenLayout.resolve({ manifest = manifest, cancellable = true })
   local placement = {
@@ -774,7 +835,7 @@ end
 function T.itemless_detail_draws_name_at_generated_origin_without_held_obj()
   local graphics = fakeGraphics()
   local texts = {}
-  local manifest = sourceManifest()
+  local manifest = v4Manifest()
   local renderer = newRenderer(graphics, stubText(texts), manifest)
   local resolved = PartyScreenLayout.resolve({ manifest = manifest, cancellable = true })
   local placement = {
@@ -882,20 +943,62 @@ function T.missing_manifest_sections_fail_at_construction()
   end, "a manifest without panels fails instead of drawing blanks")
 end
 
--- Source-faithful native rendering through the v3 manifest: exact icon
+-- Native rendering through the compiled-shape manifest: exact icon
 -- timeline frames with per-frame translation and frame-gated selected
 -- bob, palette-role text with gender marks, fixed numeric fields,
 -- source pass ordering, generated context buttons with press phases,
 -- native message windows, generated Cancel labeling, and no synthetic
--- info pixels. Presentations stay in menu-adjacent states because the
--- retired v2 message window no longer exists on the manifest; the one
--- browse-state scenario below names that missing consumption directly.
-local function v3Manifest()
-  return PartyPresentationFixture.manifest()
+-- info pixels.
+-- Borrowed window-decoration double: records every framed-window request
+-- so tests can prove lower messages route through shared composition
+-- with caller-supplied geometry instead of manual fills.
+local function recordingWindow(calls)
+  return {
+    draws = calls,
+    drawWindow = function(_, box, frameIndex, background)
+      calls[#calls + 1] = { box = box, frameIndex = frameIndex, background = background }
+    end,
+  }
 end
 
-local function v3Layout(manifest)
-  return PartyScreenLayout.resolve({ manifest = manifest, cancellable = true })
+-- Graphics proxy that preserves every FakeGraphics record while adding one
+-- unified call sequence across rectangle fills and image draws, so tests
+-- can pin layer order (brightening between content and menu layers).
+local function sequenceGraphics()
+  local base = fakeGraphics()
+  local proxy = { sequence = {}, base = base }
+  for key, value in pairs(base) do
+    proxy[key] = value
+  end
+  function proxy.rectangle(mode, x, y, width, height, rx, ry)
+    base.rectangle(mode, x, y, width, height, rx, ry)
+    proxy.sequence[#proxy.sequence + 1] = { kind = "rectangle", index = #base.rectangles }
+  end
+  function proxy.draw(image, quad, x, y, rotation, sx, sy)
+    base.draw(image, quad, x, y, rotation, sx, sy)
+    proxy.sequence[#proxy.sequence + 1] = { kind = "draw", index = #base.draws }
+  end
+  return proxy
+end
+
+-- A translucent white fill is the brightening step composited over already
+-- rendered content; opaque flats and fully transparent clears are not.
+local function isBrighteningFill(record)
+  local color = record.color
+  return record.mode == "fill"
+    and type(color) == "table"
+    and color[1] >= 0.85
+    and color[2] >= 0.85
+    and color[3] >= 0.85
+    and color[4] ~= nil
+    and color[4] > 0
+    and color[4] < 1
+end
+
+local function rectCovers(record, x, y)
+  local width = record.width or record.w
+  local height = record.height or record.h
+  return x >= record.x and x < record.x + width and y >= record.y and y < record.y + height
 end
 
 -- Palette-aware font double: records plain and palette draws separately
@@ -968,7 +1071,7 @@ local function iconDrawsFor(graphics, key)
 end
 
 function T.icon_frames_resolve_from_the_generated_timeline_with_source_translation()
-  local manifest = v3Manifest()
+  local manifest = v4Manifest()
   local graphics = fakeGraphics()
   local iconCalls = {}
   local renderer = newRenderer(graphics, paletteText({}), manifest)
@@ -978,7 +1081,7 @@ function T.icon_frames_resolve_from_the_generated_timeline_with_source_translati
     anim = { tick = 5, sequences = { 1, 1, 1, 1, 1, 1 }, sequenceTicks = { 5, 0, 0, 0, 0, 0 }, panelSlide = 0 },
   })
   status.view.slots[1] = occupiedSlot(0)
-  renderer:draw(status, v3Layout(manifest), frameIcons(iconCalls))
+  renderer:draw(status, v4Layout(manifest), frameIcons(iconCalls))
   Assert.equal(#iconCalls, 1, "the visible slot resolves exactly one icon frame")
   Assert.equal(iconCalls[1].frameIndex, 2, "tick 5 of the eight-tick timeline selects atlas frame 2")
   local anchor = manifest.panels[1].iconAnchor
@@ -992,7 +1095,7 @@ function T.icon_frames_resolve_from_the_generated_timeline_with_source_translati
 end
 
 function T.selected_healthy_bob_follows_the_resolved_frame_not_the_coarse_phase()
-  local manifest = v3Manifest()
+  local manifest = v4Manifest()
   local graphics = fakeGraphics()
   local renderer = newRenderer(graphics, paletteText({}), manifest)
   local status = contextStatus({
@@ -1000,7 +1103,7 @@ function T.selected_healthy_bob_follows_the_resolved_frame_not_the_coarse_phase(
     anim = { tick = 9, sequences = { 1, 1, 1, 1, 1, 1 }, sequenceTicks = { 4, 0, 0, 0, 0, 0 }, panelSlide = 0 },
   })
   status.view.slots[1] = occupiedSlot(0)
-  renderer:draw(status, v3Layout(manifest), frameIcons({}))
+  renderer:draw(status, v4Layout(manifest), frameIcons({}))
   local anchor = manifest.panels[1].iconAnchor
   local draws = iconDrawsFor(graphics, "MON0/f0")
   Assert.equal(#draws, 1)
@@ -1012,7 +1115,7 @@ function T.selected_healthy_bob_follows_the_resolved_frame_not_the_coarse_phase(
 end
 
 function T.status_sequences_draw_without_healthy_bob()
-  local manifest = v3Manifest()
+  local manifest = v4Manifest()
   local graphics = fakeGraphics()
   local iconCalls = {}
   local renderer = newRenderer(graphics, paletteText({}), manifest)
@@ -1021,7 +1124,7 @@ function T.status_sequences_draw_without_healthy_bob()
     anim = { tick = 3, sequences = { 5, 1, 1, 1, 1, 1 }, phases = { 1, 0, 0, 0, 0, 0 }, sequenceTicks = { 3, 0, 0, 0, 0, 0 }, panelSlide = 0 },
   })
   status.view.slots[1] = occupiedSlot(0, { status = "poison", currentHp = 4, maxHp = 20, hpFraction = 0.2 })
-  renderer:draw(status, v3Layout(manifest), frameIcons(iconCalls))
+  renderer:draw(status, v4Layout(manifest), frameIcons(iconCalls))
   Assert.equal(iconCalls[1].frameIndex, 1, "tick 3 of the status timeline still resolves its own frame")
   local anchor = manifest.panels[1].iconAnchor
   local draws = iconDrawsFor(graphics, "MON0/f0")
@@ -1033,13 +1136,13 @@ function T.status_sequences_draw_without_healthy_bob()
 end
 
 function T.names_draw_full_length_with_the_ordinary_role()
-  local manifest = v3Manifest()
+  local manifest = v4Manifest()
   local graphics = fakeGraphics()
   local texts = {}
   local renderer = newRenderer(graphics, paletteText(texts), manifest)
   local status = contextStatus()
   status.view.slots[1] = occupiedSlot(0, { displayName = "ABCDEFGHIJKL" })
-  renderer:draw(status, v3Layout(manifest), frameIcons({}))
+  renderer:draw(status, v4Layout(manifest), frameIcons({}))
   local nameRect = manifest.panels[1].text.name
   local full = nil
   for _, call in ipairs(texts) do
@@ -1056,13 +1159,13 @@ function T.names_draw_full_length_with_the_ordinary_role()
 end
 
 function T.gender_marks_draw_at_the_fixed_origin_with_their_role()
-  local manifest = v3Manifest()
+  local manifest = v4Manifest()
   local graphics = fakeGraphics()
   local texts = {}
   local renderer = newRenderer(graphics, paletteText(texts), manifest)
   local status = contextStatus()
   status.view.slots[1] = occupiedSlot(0, { genderSymbol = "female" })
-  renderer:draw(status, v3Layout(manifest), frameIcons({}))
+  renderer:draw(status, v4Layout(manifest), frameIcons({}))
   local mark = nil
   for _, call in ipairs(texts) do
     if call.kind == "palette" and call.value == manifest.text.labels.female then
@@ -1076,12 +1179,12 @@ function T.gender_marks_draw_at_the_fixed_origin_with_their_role()
 end
 
 function T.hp_numerals_use_fixed_source_fields()
-  local manifest = v3Manifest()
+  local manifest = v4Manifest()
   local graphics = fakeGraphics()
   local renderer = newRenderer(graphics, paletteText({}), manifest)
   local status = contextStatus()
   status.view.slots[1] = occupiedSlot(0, { level = 7, currentHp = 5, maxHp = 20, hpFraction = 0.25 })
-  renderer:draw(status, v3Layout(manifest), frameIcons({}))
+  renderer:draw(status, v4Layout(manifest), frameIcons({}))
   local number = manifest.panels[1].hp.number
   local placement = manifest.numberGlyphs.placement
   local advance = manifest.numberGlyphs.advance
@@ -1114,13 +1217,13 @@ function T.hp_numerals_use_fixed_source_fields()
 end
 
 function T.selected_chrome_paints_under_text_and_sprite_layers()
-  local manifest = v3Manifest()
+  local manifest = v4Manifest()
   local graphics = fakeGraphics()
   local texts = {}
   local renderer = newRenderer(graphics, paletteText(texts), manifest)
   local status = contextStatus({ cursorNode = 0 })
   status.view.slots[1] = occupiedSlot(0)
-  renderer:draw(status, v3Layout(manifest), frameIcons({}))
+  renderer:draw(status, v4Layout(manifest), frameIcons({}))
   local orderOf = function(image)
     for index, draw in ipairs(graphics.draws) do
       if draw.image == image then
@@ -1157,13 +1260,13 @@ function T.selected_chrome_paints_under_text_and_sprite_layers()
 end
 
 function T.context_menu_draws_generated_buttons_without_a_shared_window()
-  local manifest = v3Manifest()
+  local manifest = v4Manifest()
   local graphics = fakeGraphics()
   local texts = {}
   local renderer = newRenderer(graphics, paletteText(texts), manifest)
   local status = contextStatus({ menuIndex = 2 })
   status.view.slots[1] = occupiedSlot(0)
-  renderer:draw(status, v3Layout(manifest), frameIcons({}))
+  renderer:draw(status, v4Layout(manifest), frameIcons({}))
   local window = manifest.windows.context
   local function insideWindow(rect)
     return rect.x >= window.x
@@ -1189,30 +1292,35 @@ function T.context_menu_draws_generated_buttons_without_a_shared_window()
   end
   Assert.equal(raised, 2, "unfocused entries draw the raised button frame")
   Assert.equal(selected, 1, "the focused entry draws the selected button frame")
-  local depressed = manifest.contextMenu.textPalette.depressed
-  local labeled = false
+  -- Entry ink follows the generated style, never one flat pair: the two
+  -- leading entries resolve the command role while the fixed cancel entry
+  -- keeps command ink through its own role.
+  local roles = assert(manifest.contextMenu.textRoles, "the v4 manifest carries semantic roles")
+  local palettes = {}
   for _, call in ipairs(texts) do
-    if call.kind == "palette" and call.value == "SWITCH" then
-      Assert.deepEqual(
-        call.palette,
-        { foreground = depressed, shadow = depressed, background = depressed },
-        "focus uses the depressed text role"
-      )
-      labeled = true
+    if call.kind == "palette" then
+      palettes[call.value] = call.palette
     end
   end
-  Assert.isTrue(labeled, "the focused label draws with the depressed text role")
+  Assert.deepEqual(palettes.SUMMARY, roles.command.raised, "unfocused command entries use the raised command role")
+  Assert.deepEqual(
+    palettes.SWITCH,
+    roles.command.depressed,
+    "the focused command entry uses the depressed command role"
+  )
+  Assert.deepEqual(palettes.QUIT, roles.cancel.raised, "cancel resolves its own role at the same ink")
+  Assert.deepEqual(roles.cancel.raised, roles.command.raised, "cancel keeps command ink")
 end
 
 function T.press_phases_drive_pressed_then_selected_button_frames()
-  local manifest = v3Manifest()
+  local manifest = v4Manifest()
   local selectedImage = manifest.contextMenu.frames.standard.selected.image
   local pressedImage = manifest.contextMenu.frames.standard.pressed.image
   local graphics = fakeGraphics()
   local renderer = newRenderer(graphics, paletteText({}), manifest)
   local status = contextStatus({ menuPress = { index = 1, phase = "pressed" } })
   status.view.slots[1] = occupiedSlot(0)
-  renderer:draw(status, v3Layout(manifest), frameIcons({}))
+  renderer:draw(status, v4Layout(manifest), frameIcons({}))
   local pressed, selected = 0, 0
   for _, draw in ipairs(graphics.draws) do
     if draw.image == renderer._images["asset:" .. pressedImage] then
@@ -1227,7 +1335,7 @@ function T.press_phases_drive_pressed_then_selected_button_frames()
   local renderer2 = newRenderer(graphics2, paletteText({}), manifest)
   local held = contextStatus({ menuPress = { index = 1, phase = "selected" } })
   held.view.slots[1] = occupiedSlot(0)
-  renderer2:draw(held, v3Layout(manifest), frameIcons({}))
+  renderer2:draw(held, v4Layout(manifest), frameIcons({}))
   local pressed2, selected2 = 0, 0
   for _, draw in ipairs(graphics2.draws) do
     if draw.image == renderer2._images["asset:" .. pressedImage] then
@@ -1240,38 +1348,48 @@ function T.press_phases_drive_pressed_then_selected_button_frames()
   Assert.equal(selected2, 1, "the second press half draws the selected button frame")
 end
 
-function T.context_message_uses_the_action_window_and_item_template()
-  local manifest = v3Manifest()
+function T.open_context_message_uses_the_context_window()
+  local manifest = v4Manifest()
   local graphics = fakeGraphics()
   local texts = {}
-  local renderer = newRenderer(graphics, paletteText(texts), manifest)
+  local window = recordingWindow({})
+  local renderer = PartyScreenRenderer.new({
+    graphics = graphics,
+    cacheFs = fakeCacheFs(),
+    manifest = manifest,
+    text = paletteText(texts),
+    window = window,
+    frameIndex = 1,
+  })
   local status = contextStatus()
   status.view.slots[1] = occupiedSlot(0, { displayName = "LEAD" })
-  renderer:draw(status, v3Layout(manifest), frameIcons({}))
-  local window = manifest.windows.action
+  renderer:draw(status, v4Layout(manifest), frameIcons({}))
+  local box = assert(manifest.windows.context, "the v4 manifest carries the context window")
+  Assert.equal(#window.draws, 1, "the open-context message composes one shared window")
+  Assert.deepEqual(window.draws[1].box, box, "open context explains itself in the context window")
   local named = false
   for _, call in ipairs(texts) do
     local inside = type(call.x) == "number"
-      and call.x >= window.x
-      and call.x < window.x + window.width
+      and call.x >= box.x
+      and call.x < box.x + box.width
       and type(call.y) == "number"
-      and call.y >= window.y
-      and call.y < window.y + window.height
+      and call.y >= box.y
+      and call.y < box.y + box.height
     if inside and type(call.value) == "string" and call.value:find("LEAD", 1, true) ~= nil then
       named = true
     end
   end
-  Assert.isTrue(named, "the open context names its slot inside the action window")
+  Assert.isTrue(named, "the open context names its slot inside the context window")
 end
 
 function T.browse_message_paints_through_the_generated_browse_window()
-  local manifest = v3Manifest()
+  local manifest = v4Manifest()
   local graphics = fakeGraphics()
   local texts = {}
   local renderer = newRenderer(graphics, paletteText(texts), manifest)
   local status = presentation({ cursorNode = 0 })
   status.view.slots[1] = occupiedSlot(0)
-  renderer:draw(status, v3Layout(manifest), frameIcons({}))
+  renderer:draw(status, v4Layout(manifest), frameIcons({}))
   local window = manifest.windows.browse
   local painted = false
   for _, call in ipairs(texts) do
@@ -1290,8 +1408,8 @@ function T.browse_message_paints_through_the_generated_browse_window()
 end
 
 function T.content_paints_no_info_pixels()
-  local manifest = v3Manifest()
-  local resolved = v3Layout(manifest)
+  local manifest = v4Manifest()
+  local resolved = v4Layout(manifest)
   -- The retired host affordance corner: native layout exposes no target
   -- here, so content must paint nothing in this box with or without any
   -- host overlay flag supplied by callers.
@@ -1340,13 +1458,13 @@ function T.content_paints_no_info_pixels()
 end
 
 function T.cancel_uses_the_generated_label_without_a_slot_cursor()
-  local manifest = v3Manifest()
+  local manifest = v4Manifest()
   local graphics = fakeGraphics()
   local texts = {}
   local renderer = newRenderer(graphics, paletteText(texts), manifest)
   local status = contextStatus({ cursorNode = "cancel" })
   status.view.slots[1] = occupiedSlot(0)
-  renderer:draw(status, v3Layout(manifest), frameIcons({}))
+  renderer:draw(status, v4Layout(manifest), frameIcons({}))
   local cancel = manifest.controls.cancel
   local labeled = false
   for _, call in ipairs(texts) do
@@ -1366,7 +1484,7 @@ function T.cancel_uses_the_generated_label_without_a_slot_cursor()
 end
 
 function T.context_frame_images_acquire_once_and_release_idempotently()
-  local manifest = v3Manifest()
+  local manifest = v4Manifest()
   local graphics = fakeGraphics()
   local renderer = newRenderer(graphics, paletteText({}), manifest)
   local acquired = {}
@@ -1387,6 +1505,301 @@ function T.context_frame_images_acquire_once_and_release_idempotently()
   for _, image in ipairs(acquired) do
     Assert.equal(image.releaseCount, 1, "a second release publishes nothing more")
   end
+end
+
+function T.acquisition_failure_releases_every_image_acquired_before_it()
+  local probe = fakeGraphics()
+  local bound = newRenderer(probe, paletteText({}), v4Manifest())
+  local total = #probe.images
+  Assert.equal(total, 46, "setup binds panel chrome with switch selection plus frames and glyphs")
+  bound:release()
+  for _, image in ipairs(probe.images) do
+    Assert.equal(image.releaseCount, 1, "setup release publishes every owned image exactly once")
+  end
+  for _, failCall in ipairs({ 1, total }) do
+    local graphics = fakeGraphics({ failOnImageCall = failCall })
+    Assert.throws(function()
+      PartyScreenRenderer.new({
+        graphics = graphics,
+        cacheFs = fakeCacheFs(),
+        manifest = v4Manifest(),
+        text = paletteText({}),
+      })
+    end, "an acquisition failure unwinds the images acquired before it")
+    Assert.equal(#graphics.images, failCall - 1, "only the images before the failure exist")
+    for _, image in ipairs(graphics.images) do
+      Assert.equal(image.releaseCount, 1, "every acquired image releases exactly once")
+    end
+  end
+end
+
+-- Context presentation consumes the generated semantic roles and confines
+-- source brightness below the menu: command entries resolve command ink,
+-- later entries resolve field ink, cancel keeps command ink, and a
+-- translucent white step covers already-rendered content before the menu
+-- button frames draw, never after them. Browse rendering stays silent.
+function T.context_menu_uses_semantic_roles_with_brightness_confined_below_the_menu()
+  local manifest = v4Manifest()
+  local graphics = sequenceGraphics()
+  local texts = {}
+  local renderer = newRenderer(graphics, paletteText(texts), manifest)
+  local resolved = v4Layout(manifest)
+  local menu = {
+    { kind = "summary", label = "CMD_ONE" },
+    { kind = "summary", label = "CMD_TWO" },
+    { kind = "summary", label = "CMD_THREE" },
+    { kind = "summary", label = "CMD_FOUR" },
+    { kind = "field_move", label = "FIELD_FIVE" },
+    { kind = "quit", label = "QUIT" },
+  }
+  local roles = assert(manifest.contextMenu.textRoles, "the v4 manifest carries semantic roles")
+  local status = contextStatus({ menu = menu, menuIndex = 5, menuSlot = 0 })
+  status.view.slots[1] = occupiedSlot(0)
+  renderer:draw(status, resolved, frameIcons({}))
+  local palettes = {}
+  for _, call in ipairs(texts) do
+    if call.kind == "palette" then
+      palettes[call.value] = call.palette
+    end
+  end
+  Assert.deepEqual(
+    palettes.CMD_ONE,
+    roles.command.raised,
+    "unfocused command entries use the raised command role"
+  )
+  Assert.deepEqual(
+    palettes.FIELD_FIVE,
+    roles.field.depressed,
+    "the focused field entry uses the depressed field role"
+  )
+  Assert.deepEqual(palettes.QUIT, roles.cancel.raised, "cancel keeps command ink through its own role")
+  Assert.isTrue(
+    roles.command.raised.foreground.r ~= roles.field.raised.foreground.r,
+    "command and field ink stay distinct"
+  )
+  local texts2 = {}
+  local renderer2 = newRenderer(sequenceGraphics(), paletteText(texts2), manifest)
+  local refocused = contextStatus({ menu = menu, menuIndex = 1, menuSlot = 0 })
+  refocused.view.slots[1] = occupiedSlot(0)
+  renderer2:draw(refocused, resolved, frameIcons({}))
+  local palettes2 = {}
+  for _, call in ipairs(texts2) do
+    if call.kind == "palette" then
+      palettes2[call.value] = call.palette
+    end
+  end
+  Assert.deepEqual(
+    palettes2.CMD_ONE,
+    roles.command.depressed,
+    "the focused command entry uses the depressed command role"
+  )
+  Assert.deepEqual(
+    palettes2.FIELD_FIVE,
+    roles.field.raised,
+    "unfocused field entries use the raised field role"
+  )
+  local fills = {}
+  for _, entry in ipairs(graphics.sequence) do
+    if entry.kind == "rectangle" and isBrighteningFill(graphics.base.rectangles[entry.index]) then
+      fills[#fills + 1] = entry.index
+    end
+  end
+  Assert.isTrue(#fills >= 1, "opening a context menu brightens the underlying content toward white")
+  for _, fillIndex in ipairs(fills) do
+    local record = graphics.base.rectangles[fillIndex]
+    Assert.isTrue(rectCovers(record, 8, 8), "the brightening step covers content above the menu")
+    Assert.isTrue(rectCovers(record, 200, 140), "the brightening step covers content below the menu")
+  end
+  local frames = manifest.contextMenu.frames.standard
+  local frameImages = {}
+  for _, state in ipairs({ "raised", "selected", "pressed" }) do
+    frameImages[renderer._images["asset:" .. assert(frames[state], "menu frames carry " .. state).image]] = true
+  end
+  local firstMenuDraw = nil
+  for seqIndex, entry in ipairs(graphics.sequence) do
+    if entry.kind == "draw" and frameImages[graphics.base.draws[entry.index].image] then
+      firstMenuDraw = seqIndex
+      break
+    end
+  end
+  Assert.notNil(firstMenuDraw, "menu button frames draw")
+  for seqIndex, entry in ipairs(graphics.sequence) do
+    if entry.kind == "rectangle" and isBrighteningFill(graphics.base.rectangles[entry.index]) then
+      Assert.isTrue(
+        seqIndex < firstMenuDraw,
+        "brightening stays at the content/context boundary, never over the menu"
+      )
+    end
+  end
+  local browseGraphics = sequenceGraphics()
+  local browse = presentation({ cursorNode = 0 })
+  browse.view.slots[1] = occupiedSlot(0)
+  newRenderer(browseGraphics, paletteText({}), manifest):draw(browse, resolved, frameIcons({}))
+  for _, entry in ipairs(browseGraphics.sequence) do
+    if entry.kind == "rectangle" then
+      Assert.isFalse(
+        isBrighteningFill(browseGraphics.base.rectangles[entry.index]),
+        "closing the menu ceases brightness immediately"
+      )
+    end
+  end
+end
+
+-- Lower messages route through shared composition with source geometry:
+-- browse through window 32, the open-context explanation through window
+-- 33, transient messages through window 34, each at its window-local
+-- origin with no manual fill over the window.
+function T.lower_messages_route_through_shared_composition_with_source_windows()
+  local manifest = v4Manifest()
+  local graphics = fakeGraphics()
+  local texts = {}
+  local window = recordingWindow({})
+  local renderer = PartyScreenRenderer.new({
+    graphics = graphics,
+    cacheFs = fakeCacheFs(),
+    manifest = manifest,
+    text = paletteText(texts),
+    window = window,
+    frameIndex = 1,
+  })
+  local resolved = v4Layout(manifest)
+  local browse = presentation({ cursorNode = 0 })
+  browse.view.slots[1] = occupiedSlot(0)
+  renderer:draw(browse, resolved, frameIcons({}))
+  Assert.equal(#window.draws, 1, "the browse message composes one shared window")
+  Assert.deepEqual(window.draws[1].box, manifest.windows.browse, "browse uses source window 32")
+  local chooseMon = assert(manifest.text.templates.chooseMon, "the manifest carries chooseMon")
+  local chooseText = assert(chooseMon.segments[1].value, "chooseMon carries display text")
+  local browseBox = assert(manifest.windows.browse, "the manifest carries the browse window")
+  local browseOrigin = false
+  for _, call in ipairs(texts) do
+    if call.kind == "palette" and call.value == chooseText and call.x == browseBox.x and call.y == browseBox.y then
+      browseOrigin = true
+    end
+  end
+  Assert.isTrue(browseOrigin, "browse text starts at the window-local origin")
+  local open = contextStatus()
+  open.view.slots[1] = occupiedSlot(0, { displayName = "LEAD" })
+  renderer:draw(open, resolved, frameIcons({}))
+  Assert.equal(#window.draws, 2, "the open-context message composes one shared window")
+  Assert.deepEqual(window.draws[2].box, manifest.windows.context, "open context uses source window 33")
+  local acted = presentation({ cursorNode = 0, state = "message", message = "SENT ON" })
+  acted.view.slots[1] = occupiedSlot(0)
+  renderer:draw(acted, resolved, frameIcons({}))
+  Assert.equal(#window.draws, 3, "the transient message composes one shared window")
+  local actionBox = assert(manifest.windows.action, "the manifest carries the action window")
+  Assert.deepEqual(window.draws[3].box, actionBox, "transient messages use source window 34")
+  local actionOrigin = false
+  for _, call in ipairs(texts) do
+    if call.kind == "palette" and call.value == "SENT ON" and call.x == actionBox.x and call.y == actionBox.y then
+      actionOrigin = true
+    end
+  end
+  Assert.isTrue(actionOrigin, "transient text starts at the window-local origin")
+  for _, record in ipairs(graphics.rectangles) do
+    for _, box in ipairs({ browseBox, manifest.windows.context, actionBox }) do
+      local same = record.x == box.x and record.y == box.y and record.w == box.width and record.h == box.height
+      Assert.isFalse(record.mode == "fill" and same, "lower messages never paint manual fills")
+    end
+  end
+end
+
+-- Switch selection paints generated bank-7 chrome: the locked source and
+-- the current candidate resolve switchSelection even when fainted, while
+-- uninvolved slots keep their normal and fainted chrome.
+function T.switch_selection_uses_generated_bank_seven_chrome()
+  local manifest = v4Manifest()
+  local graphics = fakeGraphics()
+  local renderer = newRenderer(graphics, paletteText({}), manifest)
+  local switchPath = "assets/generated/party/panel-switch-selection.png"
+  local switchImage = renderer._images["asset:" .. switchPath]
+  Assert.notNil(switchImage, "bank-7 switch-selection chrome acquires")
+  local status = presentation({
+    cursorNode = 3,
+    state = "choose_swap",
+    switchSelect = { source = 0, candidate = 3 },
+  })
+  status.view.slots[1] = occupiedSlot(0, { status = "faint", currentHp = 0, maxHp = 20 })
+  status.view.slots[2] = occupiedSlot(1, { status = "faint", currentHp = 0, maxHp = 20 })
+  status.view.slots[3] = occupiedSlot(2)
+  status.view.slots[4] = occupiedSlot(3)
+  renderer:draw(status, v4Layout(manifest), frameIcons({}))
+  local function chromeDrawn(image, slot0)
+    local panel = manifest.panels[slot0 + 1]
+    for _, draw in ipairs(graphics.draws) do
+      if draw.image == image and draw.x == panel.origin.x and draw.y == panel.origin.y then
+        return true
+      end
+    end
+    return false
+  end
+  Assert.isTrue(chromeDrawn(switchImage, 0), "the locked source uses switch-selection chrome even fainted")
+  Assert.isTrue(chromeDrawn(switchImage, 3), "the current candidate uses switch-selection chrome")
+  local faintedImage = renderer._images["asset:" .. manifest.panels[2].chrome.fainted.image]
+  Assert.isTrue(chromeDrawn(faintedImage, 1), "uninvolved fainted slots keep fainted chrome")
+  Assert.isFalse(
+    chromeDrawn(faintedImage, 0),
+    "the fainted source never falls back to fainted chrome plus tint"
+  )
+  local normalImage = renderer._images["asset:" .. manifest.panels[3].chrome.normal.image]
+  Assert.isTrue(chromeDrawn(normalImage, 2), "uninvolved healthy slots keep normal chrome")
+end
+
+-- Action descriptors resolve generated templates in the action window:
+-- the empty-take template expands with its display name, and unknown
+-- keys fail instead of defaulting to invented text.
+function T.generated_action_descriptors_render_in_the_action_window()
+  local manifest = v4Manifest()
+  local graphics = fakeGraphics()
+  local texts = {}
+  local window = recordingWindow({})
+  local renderer = PartyScreenRenderer.new({
+    graphics = graphics,
+    cacheFs = fakeCacheFs(),
+    manifest = manifest,
+    text = paletteText(texts),
+    window = window,
+    frameIndex = 1,
+  })
+  local resolved = v4Layout(manifest)
+  local status = presentation({
+    cursorNode = 0,
+    state = "message",
+    message = { templateKey = "takeNoItem", displayName = "LEAD" },
+  })
+  status.view.slots[1] = occupiedSlot(0)
+  renderer:draw(status, resolved, frameIcons({}))
+  local box = assert(manifest.windows.action, "the manifest carries the action window")
+  Assert.equal(#window.draws, 1, "the descriptor composes through the shared window")
+  Assert.deepEqual(window.draws[1].box, box, "descriptors render in the action window")
+  local function inside(value)
+    for _, call in ipairs(texts) do
+      if
+        call.kind == "palette"
+        and call.value == value
+        and type(call.x) == "number"
+        and call.x >= box.x
+        and call.x < box.x + box.width
+        and type(call.y) == "number"
+        and call.y >= box.y
+        and call.y < box.y + box.height
+      then
+        return true
+      end
+    end
+    return false
+  end
+  Assert.isTrue(inside("EMPTY"), "the generated template text draws")
+  Assert.isTrue(inside("LEAD"), "the display name expands inside the template")
+  local bad = presentation({ cursorNode = 0, state = "message", message = { templateKey = "noSuchTemplate" } })
+  bad.view.slots[1] = occupiedSlot(0)
+  local err = Assert.throws(function()
+    renderer:draw(bad, resolved, frameIcons({}))
+  end, "unknown template keys fail instead of defaulting")
+  Assert.isTrue(
+    tostring(err):find("noSuchTemplate", 1, true) ~= nil,
+    "the failure names the unknown template key"
+  )
 end
 
 return { tests = T }

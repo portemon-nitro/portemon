@@ -1481,7 +1481,8 @@ end
 ---@field menu PartyScreenController.MenuEntry[]?
 ---@field menuSlot integer?
 ---@field menuPress { index: integer, phase: "pressed"|"selected" }? the armed press gate presentation
----@field message string?
+---@field message string|{ templateKey: string, displayName: string? }?
+---@field switchSelect { source: integer, candidate: integer|"cancel" }? the locked switch source and current candidate
 ---@field prompt table<string, unknown>?
 ---@field swap table<string, unknown>?
 ---@field anim table<string, unknown>? tick, per-slot icon sequences and sequence-local ticks, panel slide
@@ -1535,6 +1536,10 @@ function PartyScreenController:status()
       phase = self._menuPress.timer < 2 and "pressed" or "selected",
     }
   end
+  local switchSelect
+  if self._state == "choose_swap" and self._swapSource ~= nil then
+    switchSelect = { source = self._swapSource, candidate = self._cursorNode }
+  end
   return {
     open = true,
     context = self._context,
@@ -1547,6 +1552,7 @@ function PartyScreenController:status()
     menuSlot = self._menuSlot,
     menuPress = menuPress,
     message = self._message,
+    switchSelect = switchSelect,
     prompt = self._prompt and self._prompt:status() or nil,
     swap = swapStatus,
     anim = {
