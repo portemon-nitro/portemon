@@ -212,4 +212,28 @@ function T.switch_without_a_sound_boundary_still_reorders_once()
   Assert.equal(service:partyRevision(), revision + 1, "exactly one revision publishes the reorder")
 end
 
+function T.switch_arming_stays_silent_until_the_first_animation_tick()
+  local service, calls = fakeMons()
+  local sounds = {}
+  local rig = openPartyFlow(service, function(sequence)
+    sounds[#sounds + 1] = sequence
+  end)
+  armSwitch(rig)
+  rig.flow:updateFixed({ { type = "navigate", direction = "right" } })
+  Assert.equal(childStatus(rig).cursorNode, 1, "setup focuses the destination slot")
+  rig.flow:updateFixed({ { type = "confirm" } })
+  local armed = childStatus(rig)
+  Assert.equal(armed.state, "swapping", "confirming the destination starts the animation")
+  Assert.isTrue(armed.swap ~= nil, "arming publishes its swap record")
+  Assert.equal(armed.swap.xOffset, 0, "arming holds tile-step zero")
+  Assert.isFalse(armed.swap.exchanged == true, "arming exchanges nothing yet")
+  Assert.equal(#sounds, 0, "arming stays silent until the first animation tick")
+  Assert.equal(#calls.swaps, 0, "arming publishes nothing")
+  rig.flow:updateFixed({})
+  local started = childStatus(rig)
+  Assert.equal(started.swap.xOffset, 0, "the first animation tick holds offset zero")
+  Assert.deepEqual(sounds, { SWITCH_SOUND }, "the first animation tick sounds once")
+  Assert.equal(#calls.swaps, 0, "the first animation tick publishes nothing")
+end
+
 return { tests = T }

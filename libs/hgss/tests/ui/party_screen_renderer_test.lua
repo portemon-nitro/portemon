@@ -651,7 +651,6 @@ function T.swap_ticks_offset_both_records_and_exchange_at_midpoint()
     swap = {
       source = 0,
       destination = 1,
-      step = 10,
       xOffset = 9,
       offsets = { [0] = -72, [1] = 72 },
       directions = { [0] = -1, [1] = 1 },
@@ -667,7 +666,6 @@ function T.swap_ticks_offset_both_records_and_exchange_at_midpoint()
     swap = {
       source = 0,
       destination = 1,
-      step = 18,
       xOffset = 16,
       offsets = { [0] = -128, [1] = 128 },
       directions = { [0] = -1, [1] = 1 },
@@ -1878,10 +1876,11 @@ function T.leading_name_template_expands_the_supplied_display_name()
   end, "a leading name without a display name fails instead of drawing blanks")
 end
 
--- Switch motion moves each slot outward from its own column with the
--- whole slot composition clipped to its home panel rectangle. Statuses
--- carry the proposed per-slot contract: an integral tile-step clock
--- plus a direction map keyed by slot.
+-- Switch motion moves each slot outward from its own column: panel chrome
+-- and text rows clip to the home panel rectangle while ball, icon, status,
+-- and held markers share the same slide under the viewport. Swap records
+-- carry the per-slot contract: an integral tile-step clock plus a
+-- direction map keyed by slot.
 local function swappingStatus(source, destination, xOffset, exchanged)
   local directions = {}
   directions[source] = (source % 2 == 0) and -1 or 1
@@ -1967,46 +1966,6 @@ function T.switch_animation_translates_each_column_outward()
   )
 end
 
-function T.switch_animation_clips_slots_to_their_home_panels()
-  local manifest = v4Manifest()
-  local resolved = PartyScreenLayout.resolve({ manifest = manifest, cancellable = true })
-  local graphics = fakeGraphics()
-  local scissors = {}
-  local setScissor = graphics.setScissor
-  graphics.setScissor = function(x, y, width, height)
-    if x ~= nil then
-      scissors[#scissors + 1] = { x, y, width, height }
-    end
-    return setScissor(x, y, width, height)
-  end
-  local renderer = newRenderer(graphics, stubText({}), manifest)
-  renderer:draw(swappingStatus(0, 1, 4, false), resolved, icons())
-  local regions = {}
-  for _, rect in ipairs(scissors) do
-    regions[#regions + 1] = table.concat(rect, ",")
-  end
-  for _, recorded in ipairs(graphics.scissorIntersections) do
-    regions[#regions + 1] = table.concat({
-      recorded.x or recorded[1],
-      recorded.y or recorded[2],
-      recorded.width or recorded[3],
-      recorded.height or recorded[4],
-    }, ",")
-  end
-  for _, slot0 in ipairs({ 0, 1 }) do
-    local panel = manifest.panels[slot0 + 1]
-    local expected = table.concat({ panel.origin.x, panel.origin.y, 128, 48 }, ",")
-    local found = false
-    for _, region in ipairs(regions) do
-      if region == expected then
-        found = true
-      end
-    end
-    Assert.isTrue(found, "slot " .. slot0 .. " draws inside its 128x48 home panel")
-  end
-  Assert.isTrue(graphics.getScissor() == nil, "the animation restores the scissor after drawing")
-end
-
 function T.switch_animation_moves_slot_text_and_icons_with_their_panels()
   local manifest = v4Manifest()
   local resolved = PartyScreenLayout.resolve({ manifest = manifest, cancellable = true })
@@ -2053,6 +2012,243 @@ function T.switch_midpoint_presents_exchanged_records_in_home_slots()
   )
   Assert.equal(status.view.slots[1].displayName, "MON0", "the exchange never rewrites the domain view")
   Assert.equal(status.view.slots[2].displayName, "MON1", "the exchange never rewrites the domain view")
+end
+
+local function scissorKey(scissor)
+  if scissor == nil then
+    return "outer"
+  end
+  return table.concat({ scissor[1], scissor[2], scissor[3], scissor[4] }, ",")
+end
+
+local function homeKey(panel)
+  local size = assert(panel.size, "panels carry sizes")
+  local width = assert(size.width, "sizes carry width")
+  local height = assert(size.height, "sizes carry height")
+  return table.concat({ panel.origin.x, panel.origin.y, width, height }, ",")
+end
+
+function T.switch_moving_panels_clip_while_sprites_travel_free()
+  local manifest = v4Manifest()
+  local resolved = PartyScreenLayout.resolve({ manifest = manifest, cancellable = true })
+  local base = fakeGraphics()
+  local imageScissors = {}
+  local originalDraw = base.draw
+  base.draw = function(image, quad, x, y, rotation, sx, sy)
+    local drawQuad, drawX, drawY = quad, x, y
+    if type(quad) == "number" then
+      drawQuad, drawX, drawY = nil, quad, x
+      rotation, sx, sy = y, rotation, sx
+    end
+    local clipX, clipY, clipW, clipH = base.getScissor()
+    local current = nil
+    if clipX ~= nil then
+      current = { clipX, clipY, clipW, clipH }
+    end
+    imageScissors[#imageScissors + 1] = { image = image, quad = drawQuad, x = drawX, y = drawY, scissor = current }
+    return originalDraw(image, quad, x, y, rotation, sx, sy)
+  end
+  local textCalls = {}
+  local textScissors = {}
+  local recordingText = {
+    drawText = function(_, value, x, y)
+      local clipX, clipY, clipW, clipH = base.getScissor()
+      local current = nil
+      if clipX ~= nil then
+        current = { clipX, clipY, clipW, clipH }
+      end
+      textCalls[#textCalls + 1] = { value = value, x = x, y = y }
+      textScissors[#textScissors + 1] = { value = value, scissor = current }
+    end,
+    drawLine = function(_, _, _, _)
+      error("switch text draws through the palette path", 0)
+    end,
+    textWidth = function(_, value)
+      return #value * 8
+    end,
+    drawTextWithPalette = function(_, value, x, y, palette)
+      local clipX, clipY, clipW, clipH = base.getScissor()
+      local current = nil
+      if clipX ~= nil then
+        current = { clipX, clipY, clipW, clipH }
+      end
+      textCalls[#textCalls + 1] = { value = value, x = x, y = y, palette = palette }
+      textScissors[#textScissors + 1] = { value = value, scissor = current }
+    end,
+    drawLineWithPalette = function(_, _, _, _, _)
+      error("switch text draws one string at a time", 0)
+    end,
+    windowBackgroundColor = function(_)
+      return { 0, 0, 0, 1 }
+    end,
+  }
+  local renderer = PartyScreenRenderer.new({
+    graphics = base,
+    cacheFs = fakeCacheFs(),
+    manifest = manifest,
+    text = recordingText,
+  })
+  local status = presentation({ cursorNode = "cancel", state = "swapping" })
+  status.view.slots[1] = occupiedSlot(0, {
+    status = "poison",
+    currentHp = 7,
+    maxHp = 20,
+    heldItem = "SITRUS_BERRY",
+    heldMarkerKind = "item",
+    capsule = { id = 3, seals = {} },
+  })
+  status.view.slots[2] = occupiedSlot(1, {
+    status = "burn",
+    currentHp = 11,
+    maxHp = 20,
+    heldItem = "GRASS_MAIL",
+    heldMarkerKind = "mail",
+    capsule = { id = 5, seals = {} },
+  })
+  status.swap = {
+    source = 0,
+    destination = 1,
+    xOffset = 4,
+    offsets = { [0] = -32, [1] = 32 },
+    directions = { [0] = -1, [1] = 1 },
+    exchanged = false,
+  }
+  renderer:draw(status, resolved, icons())
+  local panel0 = manifest.panels[1]
+  local panel1 = manifest.panels[2]
+  local chrome0 = renderer._images["asset:" .. panel0.chrome.normal.image]
+  local chrome1 = renderer._images["asset:" .. panel1.chrome.normal.image]
+  local chromeBySlot = { [0] = nil, [1] = nil }
+  for _, record in ipairs(imageScissors) do
+    if record.image == chrome0 and record.y == panel0.origin.y then
+      chromeBySlot[0] = record
+    elseif record.image == chrome1 and record.y == panel1.origin.y then
+      chromeBySlot[1] = record
+    end
+  end
+  Assert.notNil(chromeBySlot[0], "the even panel chrome draws")
+  Assert.notNil(chromeBySlot[1], "the odd panel chrome draws")
+  Assert.equal(chromeBySlot[0].x, panel0.origin.x - 32, "the even chrome exits left by the signed offset")
+  Assert.equal(chromeBySlot[1].x, panel1.origin.x + 32, "the odd chrome exits right by the signed offset")
+  Assert.equal(
+    scissorKey(chromeBySlot[0].scissor),
+    homeKey(panel0),
+    "the even panel chrome draws inside its home panel"
+  )
+  Assert.equal(
+    scissorKey(chromeBySlot[1].scissor),
+    homeKey(panel1),
+    "the odd panel chrome draws inside its home panel"
+  )
+  for _, record in ipairs(textScissors) do
+    if record.value == "MON0" then
+      Assert.equal(scissorKey(record.scissor), homeKey(panel0), "the even name draws inside its home panel")
+    elseif record.value == "MON1" then
+      Assert.equal(scissorKey(record.scissor), homeKey(panel1), "the odd name draws inside its home panel")
+    end
+  end
+  local panelImages = {}
+  for _, zone in ipairs({ "green", "yellow", "red" }) do
+    panelImages[renderer._images["asset:" .. manifest.visuals.hpBars[zone].image]] = true
+  end
+  for digit = 0, 9 do
+    panelImages[renderer._images["digit:" .. digit]] = true
+  end
+  panelImages[renderer._images.slash] = true
+  local homeKeys = { [homeKey(panel0)] = true, [homeKey(panel1)] = true }
+  local hpDraws = 0
+  for _, record in ipairs(imageScissors) do
+    if panelImages[record.image] then
+      hpDraws = hpDraws + 1
+      Assert.isTrue(
+        homeKeys[scissorKey(record.scissor)],
+        "HP numerals and bars draw inside their home panel"
+      )
+    end
+  end
+  Assert.isTrue(hpDraws >= 4, "HP numerals and bars draw through the clipped text pass")
+  local ballImage = renderer._images["asset:" .. manifest.visuals.balls.sequences[1].frames[1].image]
+  local heldItemImage = renderer._images["asset:" .. manifest.visuals.held.sequences[1].frames[1].image]
+  local heldMailImage = renderer._images["asset:" .. manifest.visuals.held.sequences[2].frames[1].image]
+  local capsuleImage = renderer._images["asset:" .. manifest.visuals.held.sequences[3].frames[1].image]
+  local poisonImage = renderer._images["asset:" .. manifest.visuals.status.poison.image]
+  local burnImage = renderer._images["asset:" .. manifest.visuals.status.burn.image]
+  local spriteImages = {
+    [ballImage] = true,
+    [heldItemImage] = true,
+    [heldMailImage] = true,
+    [capsuleImage] = true,
+    [poisonImage] = true,
+    [burnImage] = true,
+  }
+  local spriteDraws = 0
+  for _, record in ipairs(imageScissors) do
+    if spriteImages[record.image] then
+      spriteDraws = spriteDraws + 1
+      Assert.isNil(record.scissor, "sprites travel under the outer viewport instead of the home panel")
+    end
+    if record.quad ~= nil and type(record.quad.key) == "string" then
+      spriteDraws = spriteDraws + 1
+      Assert.isNil(record.scissor, "icons travel under the outer viewport instead of the home panel")
+    end
+  end
+  Assert.isTrue(spriteDraws >= 8, "ball, icon, status, held, and capsule sprites all draw")
+  local ballBySlot = { [0] = nil, [1] = nil }
+  for _, record in ipairs(imageScissors) do
+    if record.image == ballImage then
+      if record.x == panel0.ballAnchor.x - 32 then
+        ballBySlot[0] = record
+      elseif record.x == panel1.ballAnchor.x + 32 then
+        ballBySlot[1] = record
+      end
+    end
+  end
+  Assert.notNil(ballBySlot[0], "the even ball shares the signed panel offset")
+  Assert.notNil(ballBySlot[1], "the odd ball shares the signed panel offset")
+  Assert.isNil(base.getScissor(), "the switch frame restores the prior scissor")
+end
+
+function T.switch_clipped_panel_restores_the_prior_scissor_when_its_draw_fails()
+  local manifest = v4Manifest()
+  local resolved = PartyScreenLayout.resolve({ manifest = manifest, cancellable = true })
+  local graphics = fakeGraphics({ scissor = { 1, 2, 3, 4 } })
+  local throwingText = stubText({})
+  function throwingText.drawTextWithPalette()
+    error("injected panel text failure", 0)
+  end
+  local renderer = newRenderer(graphics, throwingText, manifest)
+  Assert.throws(function()
+    renderer:draw(swappingStatus(0, 1, 4, false), resolved, icons())
+  end, "a failing clipped panel draw still propagates its error")
+  local x, y, width, height = graphics.getScissor()
+  Assert.deepEqual(
+    { x, y, width, height },
+    { 1, 2, 3, 4 },
+    "the failed clip restores the exact prior scissor"
+  )
+end
+
+function T.switch_settled_zero_offset_keeps_the_cursor_hidden()
+  local manifest = v4Manifest()
+  local resolved = PartyScreenLayout.resolve({ manifest = manifest, cancellable = true })
+  local graphics = fakeGraphics()
+  local renderer = newRenderer(graphics, stubText({}), manifest)
+  local status = presentation({ cursorNode = 1, state = "swapping" })
+  status.view.slots[1] = occupiedSlot(0)
+  status.view.slots[2] = occupiedSlot(1)
+  status.swap = {
+    source = 0,
+    destination = 1,
+    xOffset = 0,
+    offsets = { [0] = 0, [1] = 0 },
+    directions = { [0] = -1, [1] = 1 },
+    exchanged = true,
+  }
+  renderer:draw(status, resolved, icons())
+  local cursorImage = renderer._images["asset:" .. manifest.visuals.cursor.sequences[1].frames[1].image]
+  for _, draw in ipairs(graphics.draws) do
+    Assert.isTrue(draw.image ~= cursorImage, "the cursor stays hidden while the swap record survives")
+  end
 end
 
 return { tests = T }

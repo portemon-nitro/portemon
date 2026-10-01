@@ -363,29 +363,13 @@ local function swapSlideOf(swap, slot0)
   return slide
 end
 
--- Resolves the swap tile-step clock for cursor visibility from the
--- controller-published clock.
----@param swap table<string, unknown>
----@return number tile-step clock
-local function swapClockOf(swap)
-  local clock = assert(swap.xOffset, "swap records carry their tile-step clock")
-  assert(type(clock) == "number", "swap records carry their tile-step clock")
-  return clock
-end
-
--- The destination focus hides while either slot is displaced and returns
--- once the exchanged records settle home at tile-step zero, which already
--- draws exactly like the restored browse frame.
+-- The cursor stays hidden while a swap record exists: the native task
+-- hides cursors when the operation arms and restores them only after the
+-- final task clears it.
 ---@param swap table<string, unknown>?
 ---@return boolean hides
 local function swapHidesCursor(swap)
-  if type(swap) ~= "table" then
-    return false
-  end
-  if swap.exchanged == true and swapClockOf(swap) == 0 then
-    return false
-  end
-  return true
+  return type(swap) == "table"
 end
 
 -- Returns true when the slot is the locked switch source or the current
@@ -652,7 +636,8 @@ end
 -- Draws one occupied slot's text row: the display name in the ordinary
 -- role at the name origin, the gender mark in its role at the fixed
 -- generated origin, the level for healthy non-eggs, and the fixed HP
--- fields with the status sprite for non-egg slots.
+-- fields for non-egg slots. The status sprite travels with the sprite
+-- pass below, never inside this panel-clipped row.
 ---@param record table<string, unknown>
 ---@param panel table<string, unknown>
 ---@param dx number horizontal swap offset applied to every panel coordinate
@@ -696,16 +681,27 @@ function PartyScreenRenderer:_drawSlotTextRow(record, panel, dx)
       assert(record.maxHp, "occupied slots carry max HP")
     )
   end
-  if status ~= "ok" then
-    local visual = assert(self._manifest.visuals.status[status], "party status carries its semantic visual")
-    local statusRect = assert(panel.statusRect, "party panels carry the status rectangle")
-    setColor(self._graphics, WHITE)
-    self._graphics.draw(
-      self:_image(assert(visual.image, "party status visuals carry image paths")),
-      statusRect.x + dx,
-      statusRect.y
-    )
+end
+
+-- Draws the status sprite at its generated rectangle with the same slide
+-- as the travelling slot. Status markers move with the ball, icon, and
+-- held markers under the viewport, outside the home-panel clip.
+---@param record table<string, unknown>
+---@param panel table<string, unknown>
+---@param dx number horizontal swap offset applied to the panel coordinate
+function PartyScreenRenderer:_drawStatusMarker(record, panel, dx)
+  local status = assert(record.status, "occupied slots carry a status")
+  if status == "ok" then
+    return
   end
+  local visual = assert(self._manifest.visuals.status[status], "party status carries its semantic visual")
+  local statusRect = assert(panel.statusRect, "party panels carry the status rectangle")
+  setColor(self._graphics, WHITE)
+  self._graphics.draw(
+    self:_image(assert(visual.image, "party status visuals carry image paths")),
+    statusRect.x + dx,
+    statusRect.y
+  )
 end
 
 -- Draws the open context menu as independent generated buttons: one
@@ -1092,19 +1088,21 @@ function PartyScreenRenderer:_brightenContent()
   graphics.rectangle("fill", minX, minY, maxX - minX, maxY - minY)
 end
 
--- Draws one slot-owned group with its swap slide, clipping the whole
--- composition to the home panel rectangle while displaced. Stationary
--- slots draw directly so settled frames match the unclipped browse path
--- exactly. The previous scissor restores even when the group fails.
+-- Draws one travelling panel's tilemap content with its swap slide,
+-- clipping to the home panel rectangle while displaced: the native panel
+-- step clears and copies inside the fixed home rectangle while sprites
+-- move freely under the viewport. Stationary slots draw directly so
+-- settled frames match the unclipped browse path exactly. The previous
+-- scissor restores even when the panel callback fails.
 ---@param swap table<string, unknown>?
 ---@param panel table<string, unknown>
 ---@param slot0 integer
 ---@param slide number signed slide in units
----@param drawGroup fun(slide: number)
-function PartyScreenRenderer:_drawSlotGroup(swap, panel, slot0, slide, drawGroup)
+---@param drawPanel fun(slide: number)
+function PartyScreenRenderer:_drawClippedPanel(swap, panel, slot0, slide, drawPanel)
   local involved = swap ~= nil and (slot0 == swap.source or slot0 == swap.destination)
   if not involved or slide == 0 then
-    drawGroup(slide)
+    drawPanel(slide)
     return
   end
   local graphics = self._graphics
@@ -1117,7 +1115,7 @@ function PartyScreenRenderer:_drawSlotGroup(swap, panel, slot0, slide, drawGroup
     assert(size.width, "party sizes carry width"),
     assert(size.height, "party sizes carry height")
   )
-  local ok, err = pcall(drawGroup, slide)
+  local ok, err = pcall(drawPanel, slide)
   graphics.setScissor(saveX, saveY, saveWidth, saveHeight)
   if not ok then
     error(err, 0)
@@ -1170,7 +1168,9 @@ function PartyScreenRenderer:_drawContent(presentation, layout, icons)
   end
   -- Source-relative passes across all six slots: panel chrome first, then
   -- the focus cursor under the sprites, then balls under icons, then held
-  -- markers over icons, then text.
+  -- markers over icons, then text, then status markers. Panel passes clip
+  -- to the home rectangle while displaced; sprite passes share the same
+  -- slide under the viewport.
   for slot0 = 0, 5 do
     local facts = factsOf[slot0 + 1]
     local panel = assert(panels[slot0 + 1], "the party manifest carries six panels")
@@ -1186,7 +1186,7 @@ function PartyScreenRenderer:_drawContent(presentation, layout, icons)
     local panelVisual = facts.occupied and assert(chrome[chromeKey], "party panels carry state chrome")
       or assert(self._manifest.visuals.auxPanel, "party assets carry the empty-slot panel")
     local origin = assert(panel.origin, "party panels carry origins")
-    self:_drawSlotGroup(swap, panel, slot0, slideOf[slot0 + 1], function(slide)
+    self:_drawClippedPanel(swap, panel, slot0, slideOf[slot0 + 1], function(slide)
       self:_drawChrome(panelVisual, origin.x + slide, origin.y)
     end)
   end
@@ -1201,9 +1201,7 @@ function PartyScreenRenderer:_drawContent(presentation, layout, icons)
     local facts = factsOf[slot0 + 1]
     if facts.occupied then
       local panel = assert(panels[slot0 + 1], "the party manifest carries six panels")
-      self:_drawSlotGroup(swap, panel, slot0, slideOf[slot0 + 1], function(slide)
-        self:_drawBall(panel, slide, selectedOf[slot0 + 1], tick)
-      end)
+      self:_drawBall(panel, slideOf[slot0 + 1], selectedOf[slot0 + 1], tick)
     end
   end
   for slot0 = 0, 5 do
@@ -1213,27 +1211,30 @@ function PartyScreenRenderer:_drawContent(presentation, layout, icons)
       local sequence = assert(sequences[slot0 + 1], "animation clocks sequence every slot")
       local sequenceTick = assert(sequenceTicks[slot0 + 1], "icon timelines need sequence-local ticks")
       assert(sequence % 1 == 0 and sequenceTick % 1 == 0, "icon clocks stay integral")
-      self:_drawSlotGroup(swap, panel, slot0, slideOf[slot0 + 1], function(slide)
-        self:_drawIcon(facts, panel, slide, selectedOf[slot0 + 1], sequenceTick, sequence, icons)
-      end)
+      self:_drawIcon(facts, panel, slideOf[slot0 + 1], selectedOf[slot0 + 1], sequenceTick, sequence, icons)
     end
   end
   for slot0 = 0, 5 do
     local facts = factsOf[slot0 + 1]
     if facts.occupied then
       local panel = assert(panels[slot0 + 1], "the party manifest carries six panels")
-      self:_drawSlotGroup(swap, panel, slot0, slideOf[slot0 + 1], function(slide)
-        self:_drawHeldMarkers(facts, panel, slide, tick)
-      end)
+      self:_drawHeldMarkers(facts, panel, slideOf[slot0 + 1], tick)
     end
   end
   for slot0 = 0, 5 do
     local facts = factsOf[slot0 + 1]
     if facts.occupied then
       local panel = assert(panels[slot0 + 1], "the party manifest carries six panels")
-      self:_drawSlotGroup(swap, panel, slot0, slideOf[slot0 + 1], function(slide)
+      self:_drawClippedPanel(swap, panel, slot0, slideOf[slot0 + 1], function(slide)
         self:_drawSlotTextRow(facts, panel, slide)
       end)
+    end
+  end
+  for slot0 = 0, 5 do
+    local facts = factsOf[slot0 + 1]
+    if facts.occupied then
+      local panel = assert(panels[slot0 + 1], "the party manifest carries six panels")
+      self:_drawStatusMarker(facts, panel, slideOf[slot0 + 1])
     end
   end
   if layout.cancelRect ~= nil then

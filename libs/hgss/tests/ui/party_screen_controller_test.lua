@@ -1416,10 +1416,7 @@ local function driveInward(controller, source, destination, checkMotion)
     local progressed = nativeStatus(controller).swap
     if progressed ~= nil then
       local after = swapClock(progressed)
-      Assert.isTrue(
-        after == before - 1 or (before == 0 and after == 0),
-        "each inward tick returns exactly one tile-step (" .. before .. " -> " .. after .. ")"
-      )
+      Assert.equal(after, before - 1, "each inward tick returns exactly one tile-step")
       clocks[#clocks + 1] = after
       if checkMotion ~= false then
         for _, slot0 in ipairs({ source, destination }) do
@@ -1459,7 +1456,7 @@ function T.switch_tile_clock_covers_zero_to_sixteen_with_no_over_tick()
   beginSwap(controller, 1, { "down" })
   local clocks = {}
   local first = swapClock(assert(nativeStatus(controller).swap, "the animation publishes its clock"))
-  Assert.isTrue(first == 0 or first == 1, "the animation starts at its tile-step origin")
+  Assert.equal(first, 0, "arming holds tile-step zero until the first swap tick")
   driveOutward(controller, 0, 1, false)
   for _ = 1, 60 do
     local swap = nativeStatus(controller).swap
@@ -1487,7 +1484,7 @@ end
 function T.switch_start_sounds_once_the_first_step_moves()
   local controller, _, _, sounds = soundingController()
   beginSwap(controller, 1, { "down" })
-  Assert.isTrue(#sounds <= 1, "the start sounds at most once before motion")
+  Assert.equal(#sounds, 0, "arming stays silent before motion")
   controller:updateFixed({})
   Assert.deepEqual(sounds, { SWITCH_SOUND }, "the first visible step carries the start sound")
 end
@@ -1521,6 +1518,89 @@ function T.switch_final_return_commits_once_and_restores_browse()
   end
   Assert.equal(#calls.swaps, 1, "post-commit ticks never republish")
   Assert.deepEqual(sounds, { SWITCH_SOUND, SWITCH_SOUND }, "post-commit ticks sound nothing more")
+end
+
+function T.switch_arming_is_silent_with_zero_offset_then_sounds_on_first_tick()
+  local controller, calls, _, sounds = soundingController()
+  local revision = nativeStatus(controller).view.revision
+  beginSwap(controller, 1, { "down" })
+  local armed = assert(nativeStatus(controller).swap, "arming publishes its swap record")
+  Assert.equal(swapClock(armed), 0, "arming holds tile-step zero")
+  Assert.isFalse(armed.exchanged == true, "arming exchanges nothing yet")
+  Assert.equal(#sounds, 0, "arming stays silent until the first swap tick")
+  Assert.equal(#calls.swaps, 0, "arming publishes nothing")
+  controller:updateFixed({})
+  local started = assert(nativeStatus(controller).swap, "the first swap tick keeps its swap record")
+  Assert.equal(swapClock(started), 0, "the first swap tick holds offset zero")
+  Assert.isFalse(started.exchanged == true, "the first swap tick exchanges nothing")
+  Assert.deepEqual(sounds, { SWITCH_SOUND }, "the first swap tick sounds once")
+  Assert.equal(#calls.swaps, 0, "the first swap tick publishes nothing")
+  for expected = 1, 16 do
+    controller:updateFixed({})
+    local leg = assert(nativeStatus(controller).swap, "the outward leg keeps its swap record at " .. expected)
+    Assert.equal(swapClock(leg), expected, "each outward tick advances exactly one tile-step")
+    Assert.isFalse(leg.exchanged == true, "the outward leg exchanges nothing")
+    for _, slot0 in ipairs({ 0, 1 }) do
+      Assert.equal(
+        slotSlidePx(leg, slot0),
+        columnDirection(slot0) * expected * SWITCH_STEP_PX,
+        "slot " .. slot0 .. " exits outward from its own column"
+      )
+    end
+    Assert.equal(#calls.swaps, 0, "the outward leg publishes nothing")
+  end
+  Assert.deepEqual(sounds, { SWITCH_SOUND }, "outward motion sounds nothing more")
+  controller:updateFixed({})
+  local midpoint = assert(nativeStatus(controller).swap, "the exchange keeps its swap record")
+  Assert.equal(swapClock(midpoint), SWITCH_FULL_STEPS, "the exchange holds full exit")
+  Assert.isTrue(midpoint.exchanged == true, "the exchange flips the temporary records")
+  Assert.deepEqual(sounds, { SWITCH_SOUND, SWITCH_SOUND }, "the exchange replays the list sound")
+  Assert.equal(#calls.swaps, 0, "the visual exchange publishes nothing")
+  Assert.equal(nativeStatus(controller).view.revision, revision, "authoritative order holds at the exchange")
+end
+
+function T.switch_inward_returns_step_by_step_then_commits_on_its_own_tick()
+  local controller, calls, _, sounds = soundingController()
+  local revision = nativeStatus(controller).view.revision
+  beginSwap(controller, 1, { "down" })
+  controller:updateFixed({})
+  for _ = 1, 16 do
+    controller:updateFixed({})
+  end
+  controller:updateFixed({})
+  local midpoint = assert(nativeStatus(controller).swap, "the inward leg starts from the exchange")
+  Assert.equal(swapClock(midpoint), SWITCH_FULL_STEPS, "the inward leg starts at full exit")
+  Assert.isTrue(midpoint.exchanged == true, "the inward leg keeps exchanged records")
+  for expected = 15, 0, -1 do
+    controller:updateFixed({})
+    local leg = assert(
+      nativeStatus(controller).swap,
+      "the swap record survives the inward step to " .. expected
+    )
+    Assert.equal(swapClock(leg), expected, "each inward tick returns exactly one tile-step")
+    Assert.isTrue(leg.exchanged == true, "the inward leg keeps exchanged records")
+    for _, slot0 in ipairs({ 0, 1 }) do
+      Assert.equal(
+        slotSlidePx(leg, slot0),
+        columnDirection(slot0) * expected * SWITCH_STEP_PX,
+        "slot " .. slot0 .. " returns inward along its own column"
+      )
+    end
+    Assert.equal(#calls.swaps, 0, "the inward leg publishes nothing")
+  end
+  local held = assert(nativeStatus(controller).swap, "the zero-offset hold keeps its swap record")
+  Assert.equal(swapClock(held), 0, "the hold rests at tile-step zero")
+  Assert.equal(#calls.swaps, 0, "the zero-offset hold publishes nothing")
+  Assert.equal(nativeStatus(controller).state, "swapping", "the hold still owns the controller")
+  controller:updateFixed({})
+  Assert.equal(#calls.swaps, 1, "the final tick publishes exactly once")
+  Assert.deepEqual(calls.swaps[1], { 0, 1 }, "the commit carries its source and destination")
+  Assert.deepEqual(sounds, { SWITCH_SOUND, SWITCH_SOUND }, "exactly two sounds fire across the animation")
+  local status = nativeStatus(controller)
+  Assert.equal(status.state, "browse", "completion returns to browse")
+  Assert.equal(status.cursorNode, 1, "focus follows the destination")
+  Assert.isNil(status.swap, "completion clears the swap record")
+  Assert.equal(status.view.revision, revision + 1, "exactly one revision publishes")
 end
 
 function T.switch_cancel_at_destination_pick_abandons_quietly()
