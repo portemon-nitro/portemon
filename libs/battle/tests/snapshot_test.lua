@@ -161,4 +161,96 @@ function T.captured_state_holds_no_live_references_and_restores_exactly()
   session:dispose()
 end
 
+-- Interruption captures validate explicitly and reject foreign or live
+-- state: a capture taken while replacement and learning requests wait
+-- validates cleanly, restores its pending batches exactly, and any copy
+-- tainted with a function, a coroutine, a foreign schema version, or an
+-- unknown field fails validation and restore without publishing partial
+-- state behind it.
+function T.interruption_captures_validate_and_reject_foreign_or_live_state()
+  local contracts = SessionFixture.sessionContracts()
+  local Snapshot = contracts.Snapshot
+  Assert.isTrue(
+    type(Snapshot.validate) == "function",
+    "missing interruption behavior: typed captures own explicit validation (BattleSnapshot.validate)"
+  )
+
+  local session = SessionFixture.newSession(contracts, SessionFixture.buildScenario(interruptible()))
+  local frame = SessionFixture.driveUntilSettled(session, 64)
+  Assert.equal(frame.status, "waiting", "open battles wait for decisions")
+  Assert.notNil(frame.request, "waiting frames carry their pending decision batch")
+  Assert.isTrue(#frame.request.requests > 0, "interrupted work holds at least one pending request")
+  local held = session:capture()
+  SessionFixture.assertPlainData(held, "pending")
+  Snapshot.validate(held)
+
+  local twin = contracts.Session.restore(held, SessionFixture.makeContent())
+  Assert.notNil(twin, "validated captures restore without host services")
+  Assert.deepEqual(twin:capture(), held, "validated captures round-trip exactly")
+  twin:dispose()
+
+  local foreign = session:capture()
+  foreign.version = held.version --[[@as integer]] + 1000
+  Assert.throws(function()
+    Snapshot.validate(foreign)
+  end, "foreign schema versions never validate")
+  Assert.throws(function()
+    contracts.Session.restore(foreign, SessionFixture.makeContent())
+  end, "foreign schema versions never restore")
+
+  local withFunction = session:capture()
+  withFunction.environment = function()
+    return "none"
+  end
+  Assert.throws(function()
+    Snapshot.validate(withFunction)
+  end, "captured functions never validate")
+  Assert.throws(function()
+    contracts.Session.restore(withFunction, SessionFixture.makeContent())
+  end, "captured functions never restore")
+
+  local withThread = session:capture()
+  withThread.environment = coroutine.create(function()
+    return "none"
+  end)
+  Assert.throws(function()
+    Snapshot.validate(withThread)
+  end, "captured coroutines never validate")
+  Assert.throws(function()
+    contracts.Session.restore(withThread, SessionFixture.makeContent())
+  end, "captured coroutines never restore")
+
+  local clean = contracts.Session.restore(held, SessionFixture.makeContent())
+  Assert.deepEqual(clean:capture(), held, "rejected captures publish no partial state behind them")
+  clean:dispose()
+  session:dispose()
+end
+
+-- Rejects non-record captures before any shape check: validation is
+-- nil-safe on the way out but never accepts absent or scalar input, and
+-- restore follows the same boundary.
+function T.snapshot_validation_rejects_non_records()
+  local contracts = SessionFixture.sessionContracts()
+  local Snapshot = contracts.Snapshot
+  Assert.throws(function()
+    Snapshot.validate(nil)
+  end, "absent captures never validate")
+  Assert.throws(function()
+    Snapshot.validate("held")
+  end, "scalar captures never validate")
+  Assert.throws(function()
+    Snapshot.validate({})
+  end, "empty records never validate")
+  Assert.throws(function()
+    contracts.Session.restore(nil, SessionFixture.makeContent())
+  end, "absent captures never restore")
+
+  local session = SessionFixture.newSession(contracts, SessionFixture.buildScenario(interruptible()))
+  local frame = SessionFixture.driveUntilSettled(session, 64)
+  Assert.equal(frame.status, "waiting", "open battles wait for decisions")
+  local held = session:capture()
+  Assert.isTrue(Snapshot.validate(held), "well-formed captures validate")
+  session:dispose()
+end
+
 return { tests = T }
