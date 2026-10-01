@@ -1802,4 +1802,237 @@ function T.generated_action_descriptors_render_in_the_action_window()
   )
 end
 
+-- The generated empty-take template leads with the acting mon's name:
+-- a descriptor carrying that display name expands inside the action
+-- window, while a descriptor without it fails instead of drawing a
+-- blank name.
+function T.leading_name_template_expands_the_supplied_display_name()
+  local manifest = v4Manifest()
+  manifest.text.templates.takeNoItem = {
+    segments = {
+      { kind = "name" },
+      { kind = "text", value = " is empty." },
+    },
+  }
+  local graphics = fakeGraphics()
+  local texts = {}
+  local window = recordingWindow({})
+  local renderer = PartyScreenRenderer.new({
+    graphics = graphics,
+    cacheFs = fakeCacheFs(),
+    manifest = manifest,
+    text = paletteText(texts),
+    window = window,
+    frameIndex = 1,
+  })
+  local resolved = v4Layout(manifest)
+  local status = presentation({
+    cursorNode = 0,
+    state = "message",
+    message = { templateKey = "takeNoItem", displayName = "LEAD" },
+  })
+  status.view.slots[1] = occupiedSlot(0)
+  renderer:draw(status, resolved, frameIcons({}))
+  local box = assert(manifest.windows.action, "the manifest carries the action window")
+  Assert.equal(#window.draws, 1, "the leading-name descriptor composes through the shared window")
+  local named = false
+  for _, call in ipairs(texts) do
+    if
+      call.kind == "palette"
+      and call.value == "LEAD"
+      and type(call.x) == "number"
+      and call.x >= box.x
+      and call.x < box.x + box.width
+      and type(call.y) == "number"
+      and call.y >= box.y
+      and call.y < box.y + box.height
+    then
+      named = true
+    end
+  end
+  Assert.isTrue(named, "the leading name expands to the supplied display name")
+  local nameless = presentation({
+    cursorNode = 0,
+    state = "message",
+    message = { templateKey = "takeNoItem" },
+  })
+  nameless.view.slots[1] = occupiedSlot(0)
+  Assert.throws(function()
+    renderer:draw(nameless, resolved, frameIcons({}))
+  end, "a leading name without a display name fails instead of drawing blanks")
+end
+
+-- Switch motion moves each slot outward from its own column with the
+-- whole slot composition clipped to its home panel rectangle. Statuses
+-- carry the proposed per-slot contract: an integral tile-step clock
+-- plus a direction map keyed by slot.
+local function swappingStatus(source, destination, xOffset, exchanged)
+  local directions = {}
+  directions[source] = (source % 2 == 0) and -1 or 1
+  directions[destination] = (destination % 2 == 0) and -1 or 1
+  local status = presentation({
+    cursorNode = "cancel",
+    state = "swapping",
+    swap = {
+      source = source,
+      destination = destination,
+      xOffset = xOffset,
+      directions = directions,
+      exchanged = exchanged == true,
+    },
+  })
+  status.view.slots[source + 1] = occupiedSlot(source)
+  status.view.slots[destination + 1] = occupiedSlot(destination)
+  return status
+end
+
+local function chromeDrawX(graphics, image, y)
+  for _, draw in ipairs(graphics.draws) do
+    if draw.image == image and draw.y == y then
+      return draw.x
+    end
+  end
+  return nil
+end
+
+local function iconDrawX(graphics, key)
+  for _, draw in ipairs(graphics.draws) do
+    if draw.quad ~= nil and draw.quad.key == key then
+      return draw.x
+    end
+  end
+  return nil
+end
+
+local function textDrawX(calls, value)
+  for _, call in ipairs(calls) do
+    if call.value == value then
+      return call.x
+    end
+  end
+  return nil
+end
+
+function T.switch_animation_translates_each_column_outward()
+  local manifest = v4Manifest()
+  local resolved = PartyScreenLayout.resolve({ manifest = manifest, cancellable = true })
+  local graphics = fakeGraphics()
+  local renderer = newRenderer(graphics, stubText({}), manifest)
+  renderer:draw(swappingStatus(0, 1, 4, false), resolved, icons())
+  local chromeImage = renderer._images["asset:" .. manifest.panels[1].chrome.normal.image]
+  Assert.notNil(chromeImage, "the panel chrome resolves its generated art")
+  Assert.equal(
+    chromeDrawX(graphics, chromeImage, manifest.panels[1].origin.y),
+    manifest.panels[1].origin.x - 32,
+    "the even slot exits left by eight units per step"
+  )
+  Assert.equal(
+    chromeDrawX(graphics, chromeImage, manifest.panels[2].origin.y),
+    manifest.panels[2].origin.x + 32,
+    "the odd slot exits right by eight units per step"
+  )
+  local sameColumn = fakeGraphics()
+  local sameRenderer = newRenderer(sameColumn, stubText({}), manifest)
+  sameRenderer:draw(swappingStatus(0, 2, 4, false), resolved, icons())
+  local sameChrome = sameRenderer._images["asset:" .. manifest.panels[1].chrome.normal.image]
+  Assert.equal(
+    chromeDrawX(sameColumn, sameChrome, manifest.panels[1].origin.y),
+    manifest.panels[1].origin.x - 32,
+    "the even source exits left with its column"
+  )
+  Assert.equal(
+    chromeDrawX(sameColumn, sameChrome, manifest.panels[3].origin.y),
+    manifest.panels[3].origin.x - 32,
+    "the even destination exits left with its column"
+  )
+end
+
+function T.switch_animation_clips_slots_to_their_home_panels()
+  local manifest = v4Manifest()
+  local resolved = PartyScreenLayout.resolve({ manifest = manifest, cancellable = true })
+  local graphics = fakeGraphics()
+  local scissors = {}
+  local setScissor = graphics.setScissor
+  graphics.setScissor = function(x, y, width, height)
+    if x ~= nil then
+      scissors[#scissors + 1] = { x, y, width, height }
+    end
+    return setScissor(x, y, width, height)
+  end
+  local renderer = newRenderer(graphics, stubText({}), manifest)
+  renderer:draw(swappingStatus(0, 1, 4, false), resolved, icons())
+  local regions = {}
+  for _, rect in ipairs(scissors) do
+    regions[#regions + 1] = table.concat(rect, ",")
+  end
+  for _, recorded in ipairs(graphics.scissorIntersections) do
+    regions[#regions + 1] = table.concat({
+      recorded.x or recorded[1],
+      recorded.y or recorded[2],
+      recorded.width or recorded[3],
+      recorded.height or recorded[4],
+    }, ",")
+  end
+  for _, slot0 in ipairs({ 0, 1 }) do
+    local panel = manifest.panels[slot0 + 1]
+    local expected = table.concat({ panel.origin.x, panel.origin.y, 128, 48 }, ",")
+    local found = false
+    for _, region in ipairs(regions) do
+      if region == expected then
+        found = true
+      end
+    end
+    Assert.isTrue(found, "slot " .. slot0 .. " draws inside its 128x48 home panel")
+  end
+  Assert.isTrue(graphics.getScissor() == nil, "the animation restores the scissor after drawing")
+end
+
+function T.switch_animation_moves_slot_text_and_icons_with_their_panels()
+  local manifest = v4Manifest()
+  local resolved = PartyScreenLayout.resolve({ manifest = manifest, cancellable = true })
+  local plainGraphics = fakeGraphics()
+  local plainRenderer = newRenderer(plainGraphics, stubText({}), manifest)
+  local plain = swappingStatus(0, 1, 4, false)
+  plain.swap = nil
+  plain.state = "browse"
+  plainRenderer:draw(plain, resolved, icons())
+  local baseIconX = iconDrawX(plainGraphics, "MON1/f0")
+  Assert.notNil(baseIconX, "the baseline draws the odd slot icon")
+  local graphics = fakeGraphics()
+  local texts = {}
+  local renderer = newRenderer(graphics, stubText(texts), manifest)
+  renderer:draw(swappingStatus(0, 1, 4, false), resolved, icons())
+  local nameRect = manifest.panels[2].text.name
+  Assert.equal(
+    textDrawX(texts, "MON1"),
+    nameRect.x + 32,
+    "the odd slot name exits right with its panel"
+  )
+  local movedIconX = iconDrawX(graphics, "MON1/f0")
+  Assert.notNil(movedIconX, "the animation still draws the odd slot icon")
+  Assert.equal(movedIconX - baseIconX, 32, "the odd slot icon exits right with its panel")
+end
+
+function T.switch_midpoint_presents_exchanged_records_in_home_slots()
+  local manifest = v4Manifest()
+  local resolved = PartyScreenLayout.resolve({ manifest = manifest, cancellable = true })
+  local graphics = fakeGraphics()
+  local texts = {}
+  local renderer = newRenderer(graphics, stubText(texts), manifest)
+  local status = swappingStatus(0, 1, 16, true)
+  renderer:draw(status, resolved, icons())
+  Assert.equal(
+    textDrawX(texts, "MON1"),
+    manifest.panels[1].text.name.x - 128,
+    "the midpoint shows the exchanged record exiting left with the even column"
+  )
+  Assert.equal(
+    textDrawX(texts, "MON0"),
+    manifest.panels[2].text.name.x + 128,
+    "the midpoint shows the exchanged record exiting right with the odd column"
+  )
+  Assert.equal(status.view.slots[1].displayName, "MON0", "the exchange never rewrites the domain view")
+  Assert.equal(status.view.slots[2].displayName, "MON1", "the exchange never rewrites the domain view")
+end
+
 return { tests = T }

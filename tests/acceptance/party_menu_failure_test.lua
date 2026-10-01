@@ -363,10 +363,8 @@ function T.tests.take_into_full_bag_refuses_without_touching_the_mon(context)
     choosePartySlot(flow, 0)
     choosePartyMenu(flow, "item")
     choosePartyMenu(flow, "take")
-    -- Complete the yes/no prompt and run out its confirmation
-    -- interval: only a published refusal proves the conservation below.
-    drive(flow, { { type = "navigate", direction = "up" } })
-    drive(flow, { { type = "confirm" } })
+    -- Take answers directly with no confirmation: settle the dispatch,
+    -- then only a published refusal proves the conservation below.
     for _ = 1, 15 do
       flow:updateFixed({})
     end

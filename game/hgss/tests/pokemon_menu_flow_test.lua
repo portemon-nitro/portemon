@@ -445,6 +445,22 @@ local function drivePartyMenu(rig, kind)
   error("the party menu never selects " .. kind, 0)
 end
 
+-- Opens the ordinary Item submenu over slot zero and answers its entry
+-- kinds in display order. Slot zero carries the focused mon on a fresh
+-- browse page, so no cursor travel is needed before opening the menu.
+local function itemSubmenuKinds(rig)
+  local status = drive(rig, {})
+  status = settleParty(rig)
+  status = drive(rig, { { type = "confirm" } })
+  status = drivePartyMenu(rig, "item")
+  local submenu = assert(partyChild(status).menu, "the item entry opens its submenu")
+  local kinds = {}
+  for _, entry in ipairs(submenu) do
+    kinds[#kinds + 1] = assert(entry.kind, "submenu entries carry their kind")
+  end
+  return kinds
+end
+
 -- Stocks the bag and hands one item to an empty holder through the real
 -- action owner, so the journey starts from an occupied holder.
 local function occupyHolder(rig, slot, itemKey)
@@ -496,6 +512,75 @@ local function injureLead(rig, amount)
   Assert.isNil(reason, "injury staging must prepare cleanly")
   assert(preparation).publish()
   return maxHp
+end
+
+function T.tests.item_submenu_always_lists_give_take_quit_in_order(context)
+  local versions = readyVersions()
+  if #versions == 0 then
+    if context ~= nil and type(context.hasCapability) == "function" then
+      context:skip("requires rom_dump and prepared assets")
+    end
+    error("menu flow needs a ready versioned cache", 0)
+  end
+  for _, versionId in ipairs(versions) do
+    local rig = liveComposition(versionId, "party")
+    Assert.deepEqual(
+      itemSubmenuKinds(rig),
+      { "give", "take", "quit" },
+      "an empty holder still exposes Take between Give and Quit"
+    )
+    rig.flow:dispose()
+    local held = liveComposition(versionId, "party")
+    occupyHolder(held, 0, "CHERI_BERRY")
+    Assert.deepEqual(
+      itemSubmenuKinds(held),
+      { "give", "take", "quit" },
+      "a holder keeps Give, Take, Quit in the same order"
+    )
+    held.flow:dispose()
+  end
+end
+
+function T.tests.empty_take_reports_the_generated_template_without_mutation(context)
+  local versions = readyVersions()
+  if #versions == 0 then
+    if context ~= nil and type(context.hasCapability) == "function" then
+      context:skip("requires rom_dump and prepared assets")
+    end
+    error("menu flow needs a ready versioned cache", 0)
+  end
+  for _, versionId in ipairs(versions) do
+    local rig = liveComposition(versionId, "party")
+    local partyRevision = rig.mons:partyRevision()
+    local bagRevision = rig.bag:revision()
+    local status = drive(rig, {})
+    status = settleParty(rig)
+    status = drive(rig, { { type = "confirm" } })
+    status = drivePartyMenu(rig, "item")
+    status = drivePartyMenu(rig, "take")
+    local child = partyChild(status)
+    Assert.equal(child.state, "message", "an empty Take answers with its message")
+    local message = child.message
+    Assert.equal(type(message), "table", "an empty Take renders the generated template")
+    Assert.equal(message.templateKey, "takeNoItem", "an empty Take shows the empty-take template")
+    Assert.equal(
+      message.displayName,
+      assert(child.view, "the party child carries its view").slots[1].displayName,
+      "an empty Take names the acting mon the party screen shows"
+    )
+    Assert.equal(rig.mons:partyMon(0).heldItem, "NONE", "an empty Take holds nothing new")
+    Assert.equal(rig.mons:partyRevision(), partyRevision, "an empty Take publishes no party revision")
+    Assert.equal(rig.bag:revision(), bagRevision, "an empty Take publishes no bag revision")
+    Assert.isNil(rig.flow:takeResult(), "an empty Take reports no terminal result")
+    status = drive(rig, { { type = "confirm" } })
+    status = driveUntil(rig, "the dismissed message", 30, function(current)
+      return partyChild(current).state == "browse"
+    end)
+    Assert.equal(status.page, "party_browse", "dismissal stays on party browse")
+    Assert.equal(partyChild(status).cursorNode, 0, "dismissal refocuses the same slot")
+    Assert.isNil(rig.flow:takeResult(), "dismissal reports no terminal result")
+    rig.flow:dispose()
+  end
 end
 
 function T.tests.bag_root_opens_on_the_borrowed_cursor(context)

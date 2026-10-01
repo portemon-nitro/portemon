@@ -8,6 +8,7 @@
 -- production admission of a terminal field request belongs to the host.
 
 local BagCursor = require("libs.hgss.src.items.BagCursor")
+local Mon = require("libs.mons.src.Mon")
 local BagScreenState = require("game.hgss.src.field.BagScreenState")
 local PartyScreenState = require("game.hgss.src.field.PartyScreenState")
 local SummaryScreenState = require("game.hgss.src.field.SummaryScreenState")
@@ -126,9 +127,10 @@ local PARTY_FIELD_MOVES = {
 
 -- The flow-owned party action policy: source menu order (summary, switch,
 -- item-or-mail, quit, then admitted source field moves in move-slot order;
--- eggs keep summary, switch, quit), take drives through confirmation,
--- incompatible egg targets explain instead of committing. Private to this
--- leaf; the standalone production and script policies keep their own owners.
+-- eggs keep summary, switch, quit), the ordinary item submenu always lists
+-- give, take, quit with take answering directly, incompatible egg targets
+-- explain instead of committing. Private to this leaf; the standalone
+-- production and script policies keep their own owners.
 ---@param manifest table<string, unknown>?
 ---@return table<string, unknown>
 local function flowPartyPolicy(manifest)
@@ -178,16 +180,14 @@ local function flowPartyPolicy(manifest)
       }
     end
     assert(menuKind == "item", "party submenus stay in the closed item/mail set")
-    -- The flow always offers Give into the held-item picker (the pick
-    -- confirmation behind it is the exchange confirmation); Take stays
-    -- for holders behind its confirmation.
-    local entries = {}
-    if facts.heldItem ~= nil and facts.heldItem ~= "NONE" then
-      entries[#entries + 1] = { kind = "take", label = text("take", "TAKE"), confirm = true }
-    end
-    entries[#entries + 1] = { kind = "give", label = text("give", "GIVE") }
-    entries[#entries + 1] = { kind = "quit", label = text("quit", "QUIT") }
-    return entries
+    -- The ordinary submenu always offers Give, Take, Quit in that order.
+    -- Take stays direct even for empty holders; the empty result answers
+    -- through the generated template at commit time.
+    return {
+      { kind = "give", label = text("give", "GIVE") },
+      { kind = "take", label = text("take", "TAKE") },
+      { kind = "quit", label = text("quit", "QUIT") },
+    }
   end
   local function evaluateTarget(facts, contextName)
     assert(type(facts) == "table", "target evaluation reads slot facts")
@@ -445,8 +445,26 @@ function PokemonMenuFlow:_rewind(continuation)
   self:_replace(returnPage, nil)
 end
 
+-- Maps the expected empty-take outcome onto the generated template
+-- descriptor the party message state expands; every other outcome
+-- completes as its own kind. The empty template names the acting mon,
+-- so the descriptor carries the same nickname-or-species name the party
+-- screen shows for that slot.
+---@param outcome table<string, unknown>
+---@param displayName string
+---@return table<string, unknown>
+local function takeCompletion(outcome, displayName)
+  assert(type(outcome) == "table", "take outcomes arrive as records")
+  if outcome.kind == "no_effect" then
+    assert(type(displayName) == "string", "empty takes name the acting mon")
+    return { kind = outcome.kind, message = { templateKey = "takeNoItem", displayName = displayName } }
+  end
+  return { kind = outcome.kind }
+end
+
 -- Completes a parked party intent with a publication outcome; the child
--- shows carried text and otherwise returns silently to its origin.
+-- shows carried text or a template descriptor and otherwise returns
+-- silently to its origin.
 ---@param outcome table<string, unknown>
 function PokemonMenuFlow:_completeParty(outcome)
   local child = assert(self._child, "completion answers the live child")
@@ -762,13 +780,14 @@ function PokemonMenuFlow:_routeBrowseIntent(intent)
     return
   end
   if intent.kind == "take" then
+    local slot = assert(intent.slot, "take intents name their slot")
     local outcome = self._partyActions:commit({
       kind = "take",
-      slot = assert(intent.slot, "take intents name their slot"),
+      slot = slot,
       partyRevision = assert(intent.partyRevision, "take intents carry the party revision"),
       bagRevision = self._bag:revision(),
     })
-    self:_completeParty({ kind = outcome.kind })
+    self:_completeParty(takeCompletion(outcome, Mon.displayName(self._mons:partyMon(slot), self._mons:catalog())))
     return
   end
   if intent.kind == "transfer_hp" then
