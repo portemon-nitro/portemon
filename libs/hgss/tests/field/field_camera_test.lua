@@ -441,4 +441,120 @@ function T.elms_lab_profile_has_exact_canonical_orthographic_extents()
   Assert.isTrue(approx(camera.eye.z, 62.930273, 1e-5))
 end
 
+local function copyMatrix(values)
+  local copy = {}
+  for index = 1, 16 do
+    copy[index] = values[index]
+  end
+  return copy
+end
+
+local function sameProjection(a, b)
+  for index = 1, 16 do
+    if a[index] ~= b[index] then
+      return false
+    end
+  end
+  return true
+end
+
+---@param camera table
+local function requireRawPort(camera)
+  Assert.equal(
+    type(camera.rawPerspective),
+    "function",
+    "the outdoor white fade needs the live raw perspective angle reader"
+  )
+  Assert.equal(
+    type(camera.adjustRawPerspective),
+    "function",
+    "the outdoor white fade needs the live raw perspective angle stepper"
+  )
+end
+
+---@param camera table
+---@return integer
+local function readRaw(camera)
+  requireRawPort(camera)
+  local raw = camera:rawPerspective()
+  Assert.equal(raw % 1, 0, "the live angle stays in whole raw units")
+  return raw
+end
+
+---@param camera table
+---@param delta number
+local function stepRaw(camera, delta)
+  requireRawPort(camera)
+  camera:adjustRawPerspective(delta)
+end
+
+-- The outdoor white fade observes and steps the live perspective angle in
+-- whole Nintendo raw units. Every step moves the world and billboard
+-- projections together, and the inverse step restores both exactly while
+-- reusing the same live arrays.
+function T.live_raw_perspective_angle_drives_world_and_billboard_projections()
+  local settings = profile()
+  local camera = FieldCamera.new(settings, { initialTarget = { x = 0, y = 0, z = 0 } })
+  requireRawPort(camera)
+  local rawUnit = 2 * math.pi / 65536
+  local start = readRaw(camera)
+  Assert.isTrue(
+    math.abs(start * rawUnit - settings.halfFovRadians) <= rawUnit,
+    "the live angle starts from the profile half angle"
+  )
+  local projectionArray = camera:projection()
+  local billboardArray = camera:billboardProjection()
+  local beforeProjection = copyMatrix(projectionArray)
+  local beforeBillboard = copyMatrix(billboardArray)
+  local verticalBefore = beforeProjection[6]
+
+  stepRaw(camera, -12)
+  Assert.equal(readRaw(camera), start - 12, "an exit step subtracts twelve raw units")
+  Assert.equal(camera:projection(), projectionArray, "angle steps refresh the projection array in place")
+  Assert.equal(camera:billboardProjection(), billboardArray, "angle steps refresh the billboard array in place")
+  Assert.isFalse(
+    sameProjection(copyMatrix(camera:projection()), beforeProjection),
+    "an exit step moves the world projection"
+  )
+  Assert.isFalse(
+    sameProjection(copyMatrix(camera:billboardProjection()), beforeBillboard),
+    "an exit step moves the billboard projection"
+  )
+  Assert.isTrue(camera:projection()[6] > verticalBefore, "a smaller half angle narrows the view")
+
+  stepRaw(camera, 12)
+  Assert.equal(readRaw(camera), start, "the inverse step restores the live angle exactly")
+  Assert.isTrue(
+    sameProjection(copyMatrix(camera:projection()), beforeProjection),
+    "the restored angle restores the world projection"
+  )
+  Assert.isTrue(
+    sameProjection(copyMatrix(camera:billboardProjection()), beforeBillboard),
+    "the restored angle restores the billboard projection"
+  )
+end
+
+-- Fractional and non-finite deltas are programming faults: they raise before
+-- moving anything, so the live angle and both projections stay put.
+function T.raw_perspective_steps_reject_fractional_and_nonfinite_deltas()
+  local camera = FieldCamera.new(profile(), { initialTarget = { x = 0, y = 0, z = 0 } })
+  requireRawPort(camera)
+  local start = readRaw(camera)
+  local beforeProjection = copyMatrix(camera:projection())
+  local beforeBillboard = copyMatrix(camera:billboardProjection())
+  for _, delta in ipairs({ 0.5, -12.5, 0 / 0, math.huge, -math.huge, "12" }) do
+    local ok = pcall(stepRaw, camera, delta)
+    Assert.isFalse(ok, "delta " .. tostring(delta) .. " must raise instead of stepping")
+    Assert.equal(readRaw(camera), start, "a rejected delta keeps the live angle")
+  end
+  Assert.isTrue(
+    sameProjection(copyMatrix(camera:projection()), beforeProjection),
+    "rejected deltas keep the world projection"
+  )
+  Assert.isTrue(
+    sameProjection(copyMatrix(camera:billboardProjection()), beforeBillboard),
+    "rejected deltas keep the billboard projection"
+  )
+end
+
 return { tests = T }
