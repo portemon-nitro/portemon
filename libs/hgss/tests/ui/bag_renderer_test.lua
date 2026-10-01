@@ -516,6 +516,16 @@ local function text()
     textWidth = function(_, content)
       return #content * 8
     end,
+    windowBackgroundColor = function(_)
+      local slot = palette[16]
+      local function unit(component)
+        if component > 1 then
+          return component / 255
+        end
+        return component
+      end
+      return { unit(slot.r), unit(slot.g), unit(slot.b), 1 }
+    end,
   }
 end
 
@@ -2002,6 +2012,16 @@ local function paletteText()
   function fake:textWidth(content)
     return #content * 8
   end
+  function fake:windowBackgroundColor()
+    local slot = palette[16]
+    local function unit(component)
+      if component > 1 then
+        return component / 255
+      end
+      return component
+    end
+    return { unit(slot.r), unit(slot.g), unit(slot.b), 1 }
+  end
   return fake
 end
 
@@ -3164,6 +3184,121 @@ function T.toss_ack_hides_interactive_widgets_but_keeps_its_result()
   )
   Assert.equal(graphics.pushDepth(), 0, "the transform stack stays balanced")
   draw:release()
+end
+
+-- The selected-item message fills its generated short window with the
+-- source field-window fill and prints through the source list roles with
+-- its first glyph at the content-box origin: no invented dark fill and no
+-- helper-invented inset may survive.
+function T.selected_message_uses_the_source_fill_role_and_origin()
+  local graphics = FakeGraphics({ imageSizes = IMAGE_SIZES })
+  local content = paletteText()
+  local manifested = manifest()
+  local window = windowSpy()
+  local draw = BagRenderer.new({
+    cacheFs = seedCache(),
+    manifest = manifested,
+    promptManifest = promptManifest(),
+    text = content,
+    graphics = graphics,
+    heroRenderer = heroSpy(nil),
+    window = window,
+    frameIndex = 3,
+  })
+  draw:draw(actionStatus(), plan(true), { icons = icons() })
+  local framed = assert(window.calls[1], "the selected message borrows the shared frame")
+  local box = assert(manifested.interactive.overlays.messages.selected.contentRect, "the message owns its content rect")
+  Assert.deepEqual(
+    framed.box,
+    { x = box.x, y = box.y, width = box.width, height = box.height },
+    "the selected message uses the generated short content rect"
+  )
+  Assert.equal(framed.frameIndex, 3, "the selected message keeps the player-selected frame")
+  local slot15 = assert(content.fontDef.palette[16], "the font carries its field-window slot")
+  local function unit(component)
+    if component > 1 then
+      return component / 255
+    end
+    return component
+  end
+  Assert.deepEqual(
+    framed.background,
+    { unit(slot15.r), unit(slot15.g), unit(slot15.b), 1 },
+    "the selected message fills with the source field-window slot"
+  )
+  local message =
+    assert(palettedAt(content, "The POTION is selected."), "the selected message prints through the palette path")
+  Assert.equal(message.x, box.x, "the first glyph starts at the content-box origin")
+  Assert.equal(message.y, box.y, "the first glyph keeps the content-box top")
+  local entries = content.fontDef.palette
+  local foreground = assert(entries[2], "the font carries its first list slot")
+  local shadow = assert(entries[3], "the font carries its second list slot")
+  Assert.deepEqual(
+    message.palette.foreground,
+    { r = foreground.r, g = foreground.g, b = foreground.b },
+    "the selected message uses the source foreground slot"
+  )
+  Assert.deepEqual(
+    message.palette.shadow,
+    { r = shadow.r, g = shadow.g, b = shadow.b },
+    "the selected message uses the source shadow slot"
+  )
+  Assert.equal(message.palette.background.r, slot15.r, "the selected message text shares the source fill red")
+  Assert.equal(message.palette.background.g, slot15.g, "the selected message text shares the source fill green")
+  Assert.equal(message.palette.background.b, slot15.b, "the selected message text shares the source fill blue")
+  Assert.equal(graphics.pushDepth(), 0, "the transform stack stays balanced")
+  draw:release()
+end
+
+-- Cancel feedback flashes at the generated target plus exactly the
+-- descriptor-owned offset: the caller passes the raw anchor and the visual
+-- path applies its offset once, in both the action menu and the quantity
+-- picker. A doubled offset drifts the flash off its source target.
+function T.cancel_feedback_applies_the_generated_offset_exactly_once()
+  local manifested = manifest()
+  manifested.interactive.feedback.cancelFace.selected.offset = { x = 5, y = -3 }
+  local cancelFocus = manifested.interactive.focus.cancel
+  local target = assert(cancelFocus.target, "the cancel focus carries its target")
+  local function flashDraws(record)
+    local graphics = FakeGraphics({ imageSizes = IMAGE_SIZES })
+    local draw = BagRenderer.new({
+      cacheFs = seedCache(),
+      manifest = manifested,
+      promptManifest = promptManifest(),
+      text = text(),
+      graphics = graphics,
+      heroRenderer = heroSpy(nil),
+    })
+    draw:draw(record, plan(true), { icons = icons() })
+    local flash = assert(draw._visuals["feedback:cancel:selected"], "the cancel flash is bound")
+    local found = {}
+    for _, entry in ipairs(graphics.draws) do
+      if entry.image == flash.image then
+        found[#found + 1] = entry
+      end
+    end
+    draw:release()
+    return found
+  end
+  do
+    local record = actionStatus({ feedback = { kind = "cancel" } })
+    local found = flashDraws(record)
+    Assert.equal(#found, 1, "the action menu flashes Cancel exactly once")
+    Assert.equal(found[1].x, target.x + 5, "the action flash applies the generated horizontal offset once")
+    Assert.equal(found[1].y, target.y - 3, "the action flash applies the generated vertical offset once")
+  end
+  do
+    local record = status({
+      state = "toss_quantity",
+      quantity = 2,
+      quantityMax = 5,
+      feedback = { kind = "quantityCancel" },
+    })
+    local found = flashDraws(record)
+    Assert.equal(#found, 1, "the quantity picker flashes Cancel exactly once")
+    Assert.equal(found[1].x, target.x + 5, "the quantity flash applies the generated horizontal offset once")
+    Assert.equal(found[1].y, target.y - 3, "the quantity flash applies the generated vertical offset once")
+  end
 end
 
 -- An unknown lower-pane state is a composition error, never an empty or

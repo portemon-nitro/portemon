@@ -2216,6 +2216,56 @@ function T.offered_action_slot_carries_its_action_face(scope, context)
   end
 end
 
+-- The selected-item message keeps the source field-window fill across its
+-- generated short window: pixels past the end of a short message match the
+-- shared text renderer's window background exactly, never an invented dark
+-- fill. The smoke renderer draws without the shared frame owner, so the
+-- sampled pixels prove the flat fill color itself.
+function T.selected_message_fills_its_window_with_the_source_slot(scope, context)
+  local versions = readyVersions()
+  if #versions == 0 then
+    context:skip("the bag smoke needs a ready user-owned ROM with a derived cache")
+  end
+  for _, versionId in ipairs(versions) do
+    local cacheFs, manifest = manifestFor(versionId)
+    local layout = twoPaneLayout(manifest)
+    local firstIcon, secondIcon = iconKeys(cacheFs, versionId)
+    local owned = owners(cacheFs, manifest, scope, versionId)
+    local pocket = twoPockets(manifest, versionId)
+    local heroStatus = heroStatusAt(manifest, pocket, 6)
+    local interactiveFrame = interactiveFrameOf(layout, versionId)
+    local messages = assert(manifest.interactive.overlays.messages, versionId .. " carries its message windows")
+    local contentRect =
+      assert(messages.selected.contentRect, versionId .. " carries its selected-message rect")
+    local composed = render(scope, owned, presentation(firstIcon, secondIcon, heroStatus, {
+      state = "action_menu",
+      actions = { { id = "toss", slot = 1 } },
+      actionNode = 1,
+      lowerMessage = { visibleText = "Smoke A.", fullText = "Smoke A." },
+    }), layout)
+    local fill = owned.text:windowBackgroundColor()
+    local expected = { quantize(fill[1]), quantize(fill[2]), quantize(fill[3]) }
+    local matched, sampled = 0, 0
+    for y = contentRect.y, contentRect.y + contentRect.height - 1 do
+      for x = contentRect.x + contentRect.width - 4, contentRect.x + contentRect.width - 1 do
+        local red, green, blue, alpha =
+          composed:getPixel(interactiveFrame.x + x, interactiveFrame.y + y)
+        sampled = sampled + 1
+        if
+          alpha > 0.5
+          and quantize(red) == expected[1]
+          and quantize(green) == expected[2]
+          and quantize(blue) == expected[3]
+        then
+          matched = matched + 1
+        end
+      end
+    end
+    Assert.isTrue(sampled > 0, versionId .. " samples trailing message-window pixels")
+    Assert.equal(matched, sampled, versionId .. " the selected message keeps the source fill past its text")
+  end
+end
+
 local suite = GraphicsSmoke.suite(T)
 suite.metadata.capabilities = { "graphics", "rom_dump" }
 suite.metadata.derivedAssets = { "bag:global", "items:global", "field-font:global", "field-ui:global" }

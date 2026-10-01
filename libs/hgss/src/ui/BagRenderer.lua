@@ -22,6 +22,7 @@ local FieldDrawState = require("libs.hgss.src.presentation.FieldDrawState")
 local LogicalSurface = require("libs.ui.src.LogicalSurface")
 local NativeDisplay = require("libs.ui.src.NativeDisplay")
 local BagSave = require("libs.hgss.src.save.BagSave")
+local FieldTextWindowRenderer = require("libs.hgss.src.ui.FieldTextWindowRenderer")
 local YesNoPromptRenderer = require("libs.hgss.src.ui.YesNoPromptRenderer")
 
 ---@class BagRenderer
@@ -145,6 +146,23 @@ local function fontSlot(fontDef, slot)
     r, g, b = r / 255, g / 255, b / 255
   end
   return { r = r * 255, g = g * 255, b = b * 255 }
+end
+
+-- Builds one transparent-background text palette from explicit field-font
+-- slots: the glyph background stays transparent so generated pixels remain
+-- visible beneath glyph masks.
+---@param fontDef table<string, unknown>
+---@param foregroundSlot integer
+---@param shadowSlot integer
+---@param backgroundSlot integer
+---@return table<string, unknown>
+local function paletteRecord(fontDef, foregroundSlot, shadowSlot, backgroundSlot)
+  local background = fontSlot(fontDef, backgroundSlot)
+  return {
+    foreground = fontSlot(fontDef, foregroundSlot),
+    shadow = fontSlot(fontDef, shadowSlot),
+    background = { r = background.r, g = background.g, b = background.b, a = 0 },
+  }
 end
 
 ---@param opts { cacheFs: CacheFs, manifest: table<string, unknown>, promptManifest: table<string, unknown>, text: table<string, unknown>, heroRenderer: table<string, unknown>, graphics?: love.graphics, window?: table<string, unknown>, frameIndex?: integer }
@@ -392,18 +410,10 @@ end
 ---@return { item: table<string, unknown>, count: table<string, unknown>, description: table<string, unknown> }
 function BagRenderer:_palettes()
   local fontDef = assert(self._text.fontDef, "bag text needs the shared field font definition")
-  local function record(foregroundSlot, shadowSlot)
-    local background = fontSlot(fontDef, 0)
-    return {
-      foreground = fontSlot(fontDef, foregroundSlot),
-      shadow = fontSlot(fontDef, shadowSlot),
-      background = { r = background.r, g = background.g, b = background.b, a = 0 },
-    }
-  end
   return {
-    item = record(1, 2),
-    count = record(15, 1),
-    description = record(15, 14),
+    item = paletteRecord(fontDef, 1, 2, 0),
+    count = paletteRecord(fontDef, 15, 1, 0),
+    description = paletteRecord(fontDef, 15, 14, 0),
   }
 end
 
@@ -839,13 +849,15 @@ end
 
 -- Draws the controller-owned lower message in its generated framed window:
 -- the short window for action/move messages, the tall window for toss
--- confirmation/result. The borrowed shared window renderer draws the
--- player-selected frame; without it the content box fills flat. Visible
--- text arrives fully revealed from the controller; this draws and never
--- advances clocks.
+-- confirmation/result. The message fills with the field-window slot and
+-- prints through the list roles at explicit window-local origins: the
+-- selected message starts at the content-box origin, while the two-line
+-- confirmation/result keeps its state rows. The borrowed shared window
+-- renderer draws the player-selected frame; without it the content box
+-- fills flat. Visible text arrives fully revealed from the controller;
+-- this draws and never advances clocks.
 ---@param presentation table<string, unknown>
----@param descriptionPalette table<string, unknown>
-function BagRenderer:_drawLowerMessage(presentation, descriptionPalette)
+function BagRenderer:_drawLowerMessage(presentation)
   local message = presentation.lowerMessage
   if message == nil then
     return
@@ -859,19 +871,40 @@ function BagRenderer:_drawLowerMessage(presentation, descriptionPalette)
   local windowKey = (state == "toss_confirm" or state == "toss_ack") and "modal" or "selected"
   local contentRect = assert(messages[windowKey].contentRect, "the bag manifest carries its message content rect")
   local box = { x = contentRect.x, y = contentRect.y, width = contentRect.width, height = contentRect.height }
-  local background = { 0.12, 0.12, 0.18, 1 }
+  local background = self._text:windowBackgroundColor()
+  local fontDef = assert(self._text.fontDef, "bag text needs the shared field font definition")
+  local palette = paletteRecord(fontDef, 1, 2, 15)
+  local maxLines = windowKey == "modal" and 2 or 1
+  local lines = {}
+  for line in (plainText(visibleText) .. "\n"):gmatch("([^\n]*)\n") do
+    if #lines >= maxLines then
+      break
+    end
+    if windowKey == "modal" then
+      lines[#lines + 1] = { text = line, x = 4, y = 4 + #lines * LINE_HEIGHT }
+    else
+      lines[#lines + 1] = { text = line, x = 0, y = 0 }
+    end
+  end
   local window = self._window
   if window ~= nil then
-    window:drawWindow(box, self._frameIndex, background)
+    FieldTextWindowRenderer.draw({
+      graphics = self._graphics,
+      window = window,
+      text = self._text,
+      box = box,
+      frameIndex = self._frameIndex,
+      background = background,
+      palette = palette,
+      lines = lines,
+    })
   else
     setColor(self._graphics, background)
     self._graphics.rectangle("fill", box.x, box.y, box.width, box.height)
-  end
-  setColor(self._graphics, WHITE)
-  if windowKey == "modal" then
-    self:_drawPaletteLines(visibleText, box.x + 4, box.y + 4, descriptionPalette, 2)
-  else
-    self:_drawPaletteLines(visibleText, box.x + 4, box.y + 2, descriptionPalette, 1)
+    setColor(self._graphics, WHITE)
+    for _, line in ipairs(lines) do
+      self._text:drawTextWithPalette(line.text, box.x + line.x, box.y + line.y, palette)
+    end
   end
 end
 
@@ -926,7 +959,7 @@ function BagRenderer:_drawInteractive(presentation, icons, content, palettes)
     self:_drawActionFocus(presentation)
     self:_drawActionLabels(presentation)
     self:_drawSelectedItemPanel(presentation, icons, iconImage, palettes.item)
-    self:_drawLowerMessage(presentation, palettes.description)
+    self:_drawLowerMessage(presentation)
   elseif state == "item_select" then
     self:_drawSelectionEntry(presentation)
   elseif state == "toss_quantity" then
@@ -936,11 +969,11 @@ function BagRenderer:_drawInteractive(presentation, icons, content, palettes)
     -- The acknowledgement carries no interactive widgets beyond the
     -- retained panel, the result message, and the open prompt.
     self:_drawSelectedItemPanel(presentation, icons, iconImage, palettes.item)
-    self:_drawLowerMessage(presentation, palettes.description)
+    self:_drawLowerMessage(presentation)
     self:_drawTossPrompt(presentation)
   elseif state == "move_select" then
     self:_drawMoveHighlight(presentation)
-    self:_drawLowerMessage(presentation, palettes.description)
+    self:_drawLowerMessage(presentation)
   elseif state ~= "browsing" then
     error("the bag renderer draws a known lower-pane state", 0)
   end
@@ -980,8 +1013,8 @@ function BagRenderer:_drawActionFaces(presentation)
     local cancelFocus = assert(focus.cancel, "the bag manifest carries its cancel focus")
     local target = assert(cancelFocus.target, "the cancel focus carries its target")
     local flash = assert(self._visuals["feedback:cancel:selected"], "feedback carries its cancel flash")
-    local offset = flash.offset or { x = 0, y = 0 }
-    drawVisual(self._graphics, flash, target.x + offset.x, target.y + offset.y)
+    -- Feedback visual descriptors own their own generated offset.
+    drawVisual(self._graphics, flash, target.x, target.y)
   end
 end
 
@@ -1080,8 +1113,8 @@ function BagRenderer:_drawQuantityState(presentation)
     local cancelFocus = assert(focus.cancel, "the bag manifest carries its cancel focus")
     local target = assert(cancelFocus.target, "the cancel focus carries its target")
     local flash = assert(self._visuals["feedback:cancel:selected"], "feedback carries its cancel flash")
-    local offset = flash.offset or { x = 0, y = 0 }
-    drawVisual(self._graphics, flash, target.x + offset.x, target.y + offset.y)
+    -- Feedback visual descriptors own their own generated offset.
+    drawVisual(self._graphics, flash, target.x, target.y)
   end
   local cancelLabel = assert(labels.cancel, "the bag manifest carries its cancel label")
   local cancelRect = assert(overlay.cancelHitRect, "the quantity overlay carries its cancel button rect")
