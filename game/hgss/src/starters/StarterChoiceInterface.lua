@@ -14,7 +14,7 @@
 -- per-case override replaces the whole render/input pair, never a mode
 -- token.
 
-local ApplicationLayout = require("game.hgss.src.ui.ApplicationLayout")
+local ApplicationLayout = require("libs.ui.src.ApplicationLayout")
 local NativeDisplay = require("libs.ui.src.NativeDisplay")
 
 ---@class StarterChoiceInterface

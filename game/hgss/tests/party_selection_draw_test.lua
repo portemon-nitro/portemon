@@ -15,7 +15,7 @@ local MonsSave = require("libs.mons.src.MonsSave")
 local Party = require("libs.mons.src.Party")
 local PartyCache = require("libs.assets.src.PartyCache")
 local RomImporter = require("romdump.src.source.RomImporter")
-local ScreenTopology = require("libs.hgss.src.ui.ScreenTopology")
+local ScreenTopology = require("libs.ui.src.ScreenTopology")
 
 local HOST_MODULE = "game.hgss.src.field.PartySelectionHost"
 local TARGET_MODULE = "game.hgss.src.field.FieldPresentationResources"

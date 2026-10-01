@@ -8,8 +8,8 @@
 
 local Assert = require("tests.support.Assert")
 local AcceptanceHarness = require("tests.acceptance.support.AcceptanceHarness")
-local ApplicationLayout = require("game.hgss.src.ui.ApplicationLayout")
-local ApplicationPresentation = require("game.hgss.src.ui.ApplicationPresentation")
+local ApplicationLayout = require("libs.ui.src.ApplicationLayout")
+local ApplicationPresentation = require("libs.ui.src.ApplicationPresentation")
 local BagCache = require("libs.assets.src.BagCache")
 local CacheFs = require("libs.storage.src.CacheFs")
 local FakeAudioOutput = require("tests.acceptance.support.FakeAudioOutput")
@@ -30,13 +30,22 @@ local PixelScale = require("libs.ui.src.PixelScale")
 local PlayTime = require("libs.hgss.src.save.PlayTime")
 local RepoFs = require("game.src.RepoFs")
 local SaveFs = require("libs.storage.src.SaveFs")
-local ScreenTopology = require("libs.hgss.src.ui.ScreenTopology")
+local ScreenTopology = require("libs.ui.src.ScreenTopology")
 local StartMenuInterface = require("game.hgss.src.field.StartMenuInterface")
 
 local T = {
   metadata = {
     capabilities = { "rom_dump" },
-    derivedAssets = { "field-runtime", "new-game-intro", "map:7", "map:61", "map:64" },
+    derivedAssets = {
+      "field-runtime",
+      "new-game-intro",
+      "audio-bank:730",
+      "map-data:7",
+      "map-data:61",
+      "map:7",
+      "map:61",
+      "map:64",
+    },
     tags = { "product", "presentation", "integration", "topology" },
   },
   tests = {},

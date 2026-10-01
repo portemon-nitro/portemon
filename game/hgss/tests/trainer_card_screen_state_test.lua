@@ -5,7 +5,7 @@
 -- effects, and releases both owners idempotently.
 
 local Assert = require("tests.support.Assert")
-local ScreenTopology = require("libs.hgss.src.ui.ScreenTopology")
+local ScreenTopology = require("libs.ui.src.ScreenTopology")
 local TrainerCardScreenState = require("game.hgss.src.field.TrainerCardScreenState")
 
 local T = {}

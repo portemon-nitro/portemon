@@ -1,7 +1,7 @@
 -- Interactive presentation over the non-rendering field runtime.
 
 local FieldRuntime = require("game.hgss.src.field.FieldRuntime")
-local DisplayContext = require("game.hgss.src.ui.DisplayContext")
+local DisplayContext = require("libs.ui.src.DisplayContext")
 local FieldActorPresentation = require("game.hgss.src.field.FieldActorPresentation")
 local FieldPresentationResources = require("game.hgss.src.field.FieldPresentationResources")
 local DevScreenLayout = require("game.hgss.src.ui.DevScreenLayout")

@@ -1,6 +1,6 @@
 -- Field-local host for the reusable Pokemon Naming Screen.
 
-local ApplicationPresentation = require("game.hgss.src.ui.ApplicationPresentation")
+local ApplicationPresentation = require("libs.ui.src.ApplicationPresentation")
 local NamingInterface = require("game.hgss.src.newgame.NamingInterface")
 local NamingScreenController = require("libs.hgss.src.ui.NamingScreenController")
 

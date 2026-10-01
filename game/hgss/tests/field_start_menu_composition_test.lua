@@ -14,7 +14,7 @@ local MenuProtocol = require("libs.assets.src.MenuProtocol")
 local FieldMenuCompositionCoordinator = require("game.hgss.src.field.FieldMenuCompositionCoordinator")
 local FieldScriptSymbols = require("libs.assets.src.field.FieldScriptSymbols")
 local FieldUiFixture = require("tests.support.FieldUiFixture")
-local ScreenTopology = require("libs.hgss.src.ui.ScreenTopology")
+local ScreenTopology = require("libs.ui.src.ScreenTopology")
 
 local T = { tests = {} }
 

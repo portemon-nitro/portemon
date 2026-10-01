@@ -6,7 +6,7 @@
 -- the session, never in the host. Construction is failure-safe: a failed
 -- session or controller releases whatever the open acquired.
 
-local ApplicationPresentation = require("game.hgss.src.ui.ApplicationPresentation")
+local ApplicationPresentation = require("libs.ui.src.ApplicationPresentation")
 local StartMenuController = require("libs.hgss.src.ui.StartMenuController")
 local StartMenuInterface = require("game.hgss.src.field.StartMenuInterface")
 

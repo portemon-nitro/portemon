@@ -9,7 +9,7 @@
 -- close-only controller holds no pointer press, so capture cancellation is
 -- session-owned; the controller keeps its current input contract unchanged.
 
-local ApplicationPresentation = require("game.hgss.src.ui.ApplicationPresentation")
+local ApplicationPresentation = require("libs.ui.src.ApplicationPresentation")
 local TrainerCardController = require("libs.hgss.src.ui.TrainerCardController")
 local TrainerCardInterface = require("game.hgss.src.field.TrainerCardInterface")
 

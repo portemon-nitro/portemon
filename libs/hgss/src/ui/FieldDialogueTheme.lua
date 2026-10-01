@@ -12,6 +12,7 @@
 -- All geometry is pure so the box layout is testable headlessly at every
 -- host aspect; the LÖVE renderer draws exactly what this module computes.
 
+local ApplicationLayout = require("libs.ui.src.ApplicationLayout")
 local Utf8Glyphs = require("libs.assets.src.Utf8Glyphs")
 
 ---@class FieldDialogueTheme
@@ -113,22 +114,11 @@ FieldDialogueTheme.applicationFrameTiles =
 local TILE_SIZE = FieldDialogueTheme.frameTileSize
 local CAP_OVERLAP = FieldDialogueTheme.applicationFrameCapOverlap
 local FRAME_TILES = FieldDialogueTheme.applicationFrameTiles
-local APPLICATION_FRAME_INSETS = {
-  left = TILE_SIZE,
-  top = TILE_SIZE - CAP_OVERLAP,
-  right = TILE_SIZE,
-  bottom = TILE_SIZE - CAP_OVERLAP,
-}
 
 -- Exterior room the application frame reserves outside the content box.
 ---@return { left: integer, top: integer, right: integer, bottom: integer }
 function FieldDialogueTheme.applicationFrameInsets()
-  return {
-    left = APPLICATION_FRAME_INSETS.left,
-    top = APPLICATION_FRAME_INSETS.top,
-    right = APPLICATION_FRAME_INSETS.right,
-    bottom = APPLICATION_FRAME_INSETS.bottom,
-  }
+  return ApplicationLayout.applicationFrameInsets()
 end
 
 -- Application frame tile targets: one exterior side column per side (tile 6

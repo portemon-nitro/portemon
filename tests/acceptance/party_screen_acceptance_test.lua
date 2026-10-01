@@ -11,7 +11,7 @@ local FieldApplicationHost = require("libs.hgss.src.field.FieldApplicationHost")
 local FieldScriptSymbols = require("libs.assets.src.field.FieldScriptSymbols")
 local FieldState = require("game.hgss.src.field.FieldState")
 local LayoutGeometry = require("libs.ui.src.LayoutGeometry")
-local ScreenTopology = require("libs.hgss.src.ui.ScreenTopology")
+local ScreenTopology = require("libs.ui.src.ScreenTopology")
 
 local T = {
   metadata = {

@@ -180,7 +180,7 @@ end
 local FieldState = require("game.hgss.src.field.FieldState")
 local FieldRuntime = require("game.hgss.src.field.FieldRuntime")
 local FieldViewport = require("libs.hgss.src.presentation.FieldViewport")
-local ScreenTopology = require("libs.hgss.src.ui.ScreenTopology")
+local ScreenTopology = require("libs.ui.src.ScreenTopology")
 local FieldStatePresentationFixture = require("tests.support.FieldStatePresentationFixture")
 local FieldUiFixture = require("tests.support.FieldUiFixture")
 local FieldTerrainEffectController = require("libs.hgss.src.world.FieldTerrainEffectController")

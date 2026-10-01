@@ -6,7 +6,7 @@
 local Assert = require("tests.support.Assert")
 local FieldState = require("game.hgss.src.field.FieldState")
 local FieldViewport = require("libs.hgss.src.presentation.FieldViewport")
-local ScreenTopology = require("libs.hgss.src.ui.ScreenTopology")
+local ScreenTopology = require("libs.ui.src.ScreenTopology")
 local InactivePokemonNaming = require("tests.support.InactivePokemonNaming")
 
 local T = {}

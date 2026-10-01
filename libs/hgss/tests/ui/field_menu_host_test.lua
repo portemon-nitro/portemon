@@ -3,7 +3,7 @@
 local Assert = require("tests.support.Assert")
 local FieldInput = require("libs.hgss.src.field.FieldInput")
 local FieldMenuHost = require("libs.hgss.src.ui.FieldMenuHost")
-local ScreenTopology = require("libs.hgss.src.ui.ScreenTopology")
+local ScreenTopology = require("libs.ui.src.ScreenTopology")
 
 local T = {}
 

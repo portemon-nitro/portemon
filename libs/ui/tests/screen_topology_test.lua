@@ -1,7 +1,7 @@
 -- ScreenTopology fixtures define presentation surfaces without choosing menu geometry.
 
 local Assert = require("tests.support.Assert")
-local ScreenTopology = require("libs.hgss.src.ui.ScreenTopology")
+local ScreenTopology = require("libs.ui.src.ScreenTopology")
 
 local T = {}
 

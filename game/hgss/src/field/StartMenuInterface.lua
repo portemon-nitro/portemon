@@ -9,7 +9,7 @@
 -- token. Resolvers require the complete context the owning session
 -- supplies.
 
-local ApplicationLayout = require("game.hgss.src.ui.ApplicationLayout")
+local ApplicationLayout = require("libs.ui.src.ApplicationLayout")
 local NativeDisplay = require("libs.ui.src.NativeDisplay")
 
 ---@class StartMenuInterface

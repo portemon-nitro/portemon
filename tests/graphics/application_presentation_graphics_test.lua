@@ -7,14 +7,14 @@
 
 local Assert = require("tests.support.Assert")
 local GraphicsSmoke = require("tests.support.GraphicsSmoke")
-local ApplicationPresentation = require("game.hgss.src.ui.ApplicationPresentation")
+local ApplicationPresentation = require("libs.ui.src.ApplicationPresentation")
 local FieldDialogueTheme = require("libs.hgss.src.ui.FieldDialogueTheme")
 local FieldUiFixture = require("tests.support.FieldUiFixture")
 local FieldWindowRenderer = require("libs.hgss.src.ui.FieldWindowRenderer")
 local PngWriter = require("libs.assets.src.PngWriter")
 local LogicalSurface = require("libs.ui.src.LogicalSurface")
 local StartMenuInterface = require("game.hgss.src.field.StartMenuInterface")
-local ScreenTopology = require("libs.hgss.src.ui.ScreenTopology")
+local ScreenTopology = require("libs.ui.src.ScreenTopology")
 local CacheFs = require("libs.storage.src.CacheFs")
 local FieldUiAssetCache = require("libs.assets.src.field.FieldUiAssetCache")
 

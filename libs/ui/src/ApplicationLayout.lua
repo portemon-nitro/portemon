@@ -17,6 +17,18 @@ local NATIVE_WIDTH = NativeDisplay.WIDTH
 local NATIVE_HEIGHT = NativeDisplay.HEIGHT
 local ENTER_TOLERANCE = 12
 local RETAIN_TOLERANCE = 14
+local APPLICATION_FRAME_INSETS = { left = 8, top = 7, right = 8, bottom = 7 }
+
+-- Shared exterior room reserved around framed application content.
+---@return { left: integer, top: integer, right: integer, bottom: integer }
+function ApplicationLayout.applicationFrameInsets()
+  return {
+    left = APPLICATION_FRAME_INSETS.left,
+    top = APPLICATION_FRAME_INSETS.top,
+    right = APPLICATION_FRAME_INSETS.right,
+    bottom = APPLICATION_FRAME_INSETS.bottom,
+  }
+end
 
 ---@param value unknown
 ---@param name string
@@ -334,8 +346,7 @@ function ApplicationLayout.framed(context, native, options)
   if usable == nil then
     return emptyGeometry()
   end
-  local FieldDialogueTheme = require("libs.hgss.src.ui.FieldDialogueTheme")
-  local insets = FieldDialogueTheme.applicationFrameInsets()
+  local insets = ApplicationLayout.applicationFrameInsets()
   local outerWidth = native.width + insets.left + insets.right
   local outerHeight = native.height + insets.top + insets.bottom
   local preferredScale, _, _ = fitOptions(options)
@@ -595,8 +606,7 @@ local function composedPair(context, upperNative, lowerNative, options, horizont
       envelope = envelope,
     }
   end
-  local FieldDialogueTheme = require("libs.hgss.src.ui.FieldDialogueTheme")
-  local insets = FieldDialogueTheme.applicationFrameInsets()
+  local insets = ApplicationLayout.applicationFrameInsets()
   local outer = PixelScale.placeFixed(
     usable,
     envelopeWidth + insets.left + insets.right,

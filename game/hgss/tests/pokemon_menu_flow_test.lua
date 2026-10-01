@@ -20,7 +20,7 @@ local Party = require("libs.mons.src.Party")
 local PartyActions = require("libs.hgss.src.field.PartyActions")
 local PartyCache = require("libs.assets.src.PartyCache")
 local RomImporter = require("romdump.src.source.RomImporter")
-local ScreenTopology = require("libs.hgss.src.ui.ScreenTopology")
+local ScreenTopology = require("libs.ui.src.ScreenTopology")
 
 local FLOW_MODULE = "game.hgss.src.field.PokemonMenuFlow"
 

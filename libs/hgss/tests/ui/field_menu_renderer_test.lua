@@ -5,7 +5,7 @@ local Assert = require("tests.support.Assert")
 local FieldMenuController = require("libs.hgss.src.ui.FieldMenuController")
 local FieldMenuRenderer = require("libs.hgss.src.ui.FieldMenuRenderer")
 local MenuLayout = require("libs.hgss.src.ui.MenuLayout")
-local ScreenTopology = require("libs.hgss.src.ui.ScreenTopology")
+local ScreenTopology = require("libs.ui.src.ScreenTopology")
 
 local T = {}
 

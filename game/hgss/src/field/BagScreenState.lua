@@ -8,7 +8,7 @@
 -- open acquired. Missing production capabilities fail at construction,
 -- never on first draw.
 
-local ApplicationPresentation = require("game.hgss.src.ui.ApplicationPresentation")
+local ApplicationPresentation = require("libs.ui.src.ApplicationPresentation")
 local BagActionPolicy = require("libs.hgss.src.ui.BagActionPolicy")
 local BagController = require("libs.hgss.src.ui.BagController")
 local BagHeroPresenter = require("libs.hgss.src.presentation.BagHeroPresenter")

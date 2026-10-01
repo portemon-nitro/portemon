@@ -11,8 +11,8 @@
 -- normal reorders publish one complete mon update through the owned
 -- preparation path, and move_pick mode is strictly read-only.
 
-local ApplicationLayout = require("game.hgss.src.ui.ApplicationLayout")
-local ApplicationPresentation = require("game.hgss.src.ui.ApplicationPresentation")
+local ApplicationLayout = require("libs.ui.src.ApplicationLayout")
+local ApplicationPresentation = require("libs.ui.src.ApplicationPresentation")
 local NativeDisplay = require("libs.ui.src.NativeDisplay")
 local SummaryController = require("libs.hgss.src.ui.SummaryController")
 local SummaryModel = require("libs.hgss.src.ui.SummaryModel")

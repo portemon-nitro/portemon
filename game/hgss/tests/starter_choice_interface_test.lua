@@ -7,8 +7,8 @@
 -- replacing its matched rendering and input together.
 
 local Assert = require("tests.support.Assert")
-local ApplicationLayout = require("game.hgss.src.ui.ApplicationLayout")
-local ScreenTopology = require("libs.hgss.src.ui.ScreenTopology")
+local ApplicationLayout = require("libs.ui.src.ApplicationLayout")
+local ScreenTopology = require("libs.ui.src.ScreenTopology")
 
 local T = { tests = {} }
 

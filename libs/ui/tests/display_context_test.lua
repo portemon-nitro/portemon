@@ -4,7 +4,7 @@
 -- signature; provider records are validated and copied, never retained.
 
 local Assert = require("tests.support.Assert")
-local DisplayContext = require("game.hgss.src.ui.DisplayContext")
+local DisplayContext = require("libs.ui.src.DisplayContext")
 
 local T = { tests = {} }
 

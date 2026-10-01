@@ -9,7 +9,7 @@
 -- and never release them.
 
 local LayoutGeometry = require("libs.ui.src.LayoutGeometry")
-local ApplicationLayout = require("game.hgss.src.ui.ApplicationLayout")
+local ApplicationLayout = require("libs.ui.src.ApplicationLayout")
 
 ---@class ApplicationPresentation.Capture
 ---@field kind string content press

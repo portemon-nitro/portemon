@@ -25,7 +25,7 @@ local Lcrng = require("libs.mons.src.gen4.Lcrng")
 local MonsSave = require("libs.mons.src.MonsSave")
 local Party = require("libs.mons.src.Party")
 local PartyActions = require("libs.hgss.src.field.PartyActions")
-local ScreenTopology = require("libs.hgss.src.ui.ScreenTopology")
+local ScreenTopology = require("libs.ui.src.ScreenTopology")
 
 local T = {
   metadata = { tags = { "menu", "wiring", "handoff" } },

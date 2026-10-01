@@ -378,7 +378,7 @@ end
 -- plus caller-owned window memory. Opening resolves the shared plan
 -- through these facts; headless compositions never draw.
 local function headlessBox()
-  local ScreenTopology = assert(require("libs.hgss.src.ui.ScreenTopology"))
+  local ScreenTopology = assert(require("libs.ui.src.ScreenTopology"))
   return {
     width = 640,
     height = 400,

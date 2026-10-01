@@ -8,7 +8,7 @@ local FieldEventState = require("libs.hgss.src.field.FieldEventState")
 local FieldScriptSymbols = require("libs.assets.src.field.FieldScriptSymbols")
 local LayoutGeometry = require("libs.ui.src.LayoutGeometry")
 local PlayTime = require("libs.hgss.src.save.PlayTime")
-local ScreenTopology = require("libs.hgss.src.ui.ScreenTopology")
+local ScreenTopology = require("libs.ui.src.ScreenTopology")
 
 local T = {
   metadata = {

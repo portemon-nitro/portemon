@@ -6,7 +6,7 @@ local Assert = require("tests.support.Assert")
 local GraphicsSmoke = require("tests.support.GraphicsSmoke")
 local FieldState = require("game.hgss.src.field.FieldState")
 local FieldViewport = require("libs.hgss.src.presentation.FieldViewport")
-local ScreenTopology = require("libs.hgss.src.ui.ScreenTopology")
+local ScreenTopology = require("libs.ui.src.ScreenTopology")
 local WindowConfig = require("game.src.WindowConfig")
 
 local FIELD_BACKDROP_BLACK = { 0, 0, 0 }

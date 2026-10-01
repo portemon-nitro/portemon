@@ -8,7 +8,7 @@ local FieldPixelScale = require("libs.hgss.src.presentation.FieldPixelScale")
 local FieldPresentation = require("data.manifests.field_presentation")
 local FieldState = require("game.hgss.src.field.FieldState")
 local FieldYesNoHost = require("libs.hgss.src.ui.FieldYesNoHost")
-local ScreenTopology = require("libs.hgss.src.ui.ScreenTopology")
+local ScreenTopology = require("libs.ui.src.ScreenTopology")
 local FieldUiFixture = require("tests.support.FieldUiFixture")
 local PixelScale = require("libs.ui.src.PixelScale")
 

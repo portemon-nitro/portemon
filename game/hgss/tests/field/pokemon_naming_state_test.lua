@@ -4,7 +4,7 @@ local Assert = require("tests.support.Assert")
 local LayoutGeometry = require("libs.ui.src.LayoutGeometry")
 local PokemonNamingState = require("game.hgss.src.field.PokemonNamingState")
 local FieldState = require("game.hgss.src.field.FieldState")
-local ScreenTopology = require("libs.hgss.src.ui.ScreenTopology")
+local ScreenTopology = require("libs.ui.src.ScreenTopology")
 local CatalogFixture = require("libs.mons.tests.catalog_fixture")
 
 local T = { tests = {} }

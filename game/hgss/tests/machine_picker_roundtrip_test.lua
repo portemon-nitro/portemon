@@ -8,7 +8,7 @@ local CatalogFixture = require("libs.mons.tests.catalog_fixture")
 local Lcrng = require("libs.mons.src.gen4.Lcrng")
 local MonsSave = require("libs.mons.src.MonsSave")
 local Party = require("libs.mons.src.Party")
-local ScreenTopology = require("libs.hgss.src.ui.ScreenTopology")
+local ScreenTopology = require("libs.ui.src.ScreenTopology")
 local SummaryScreenState = require("game.hgss.src.field.SummaryScreenState")
 
 local function openService(catalog, seed)

@@ -414,7 +414,7 @@ function T.tests.failed_return_warp_fabricates_nothing()
 end
 
 local function stubMeasurement()
-  local ScreenTopology = require("libs.hgss.src.ui.ScreenTopology")
+  local ScreenTopology = require("libs.ui.src.ScreenTopology")
   return {
     width = 256,
     height = 192,

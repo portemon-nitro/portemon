@@ -3,7 +3,7 @@
 local Assert = require("tests.support.Assert")
 local AcceptanceHarness = require("tests.acceptance.support.AcceptanceHarness")
 local FieldPresentation = require("data.manifests.field_presentation")
-local ScreenTopology = require("libs.hgss.src.ui.ScreenTopology")
+local ScreenTopology = require("libs.ui.src.ScreenTopology")
 local FieldViewport = require("libs.hgss.src.presentation.FieldViewport")
 
 local T = {

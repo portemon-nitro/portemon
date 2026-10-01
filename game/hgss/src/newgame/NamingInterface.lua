@@ -8,7 +8,7 @@
 -- cancellation stays mute. Resolvers require the complete context the
 -- owning session supplies.
 
-local ApplicationLayout = require("game.hgss.src.ui.ApplicationLayout")
+local ApplicationLayout = require("libs.ui.src.ApplicationLayout")
 local LogicalSurface = require("libs.ui.src.LogicalSurface")
 local NamingScreenLayout = require("libs.hgss.src.ui.NamingScreenLayout")
 local NativeDisplay = require("libs.ui.src.NativeDisplay")

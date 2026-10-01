@@ -13,7 +13,7 @@
 -- release exactly once on close/dispose while the candidate records stay
 -- with the task.
 
-local ApplicationPresentation = require("game.hgss.src.ui.ApplicationPresentation")
+local ApplicationPresentation = require("libs.ui.src.ApplicationPresentation")
 local StarterChoiceAssetCache = require("libs.assets.src.StarterChoiceAssetCache")
 local MonCache = require("libs.assets.src.MonCache")
 local Personality = require("libs.mons.src.gen4.Personality")

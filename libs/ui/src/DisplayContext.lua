@@ -1,11 +1,11 @@
--- Actual drawable/topology measurement shared by the HGSS entry states. The
+-- Actual drawable/topology measurement shared by application states. The
 -- context owns the graphics boundary (dimensions and framebuffer ratio) and
 -- the topology provider; every measurement is a fresh caller-owned record
 -- with a stable structural signature, so entry states reconcile on content
 -- rather than on timestamps. Defaults are acquired at construction, never
 -- at module load. Pure otherwise: no layout, no gameplay state.
 
-local ScreenTopology = require("libs.hgss.src.ui.ScreenTopology")
+local ScreenTopology = require("libs.ui.src.ScreenTopology")
 
 ---@class DisplayContext
 ---@field _graphics table<string, unknown> the host graphics namespace behind getDimensions/getDPIScale

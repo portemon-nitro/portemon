@@ -24,7 +24,7 @@ local RomImporter = require("romdump.src.source.RomImporter")
 local S = require("gen4.script")
 local Scheduler = require("libs.script.src.Scheduler")
 local ScriptSave = require("libs.script.src.ScriptSave")
-local ScreenTopology = require("libs.hgss.src.ui.ScreenTopology")
+local ScreenTopology = require("libs.ui.src.ScreenTopology")
 local RuntimeValues = require("libs.hgss.src.script.RuntimeValues")
 local TaskRegistry = require("libs.script.src.TaskRegistry")
 

@@ -22,7 +22,7 @@ local PartyScreenLayout = require("libs.hgss.src.ui.PartyScreenLayout")
 local PartyScreenRenderer = require("libs.hgss.src.ui.PartyScreenRenderer")
 local PngWriter = require("libs.assets.src.PngWriter")
 local RomImporter = require("romdump.src.source.RomImporter")
-local ScreenTopology = require("libs.hgss.src.ui.ScreenTopology")
+local ScreenTopology = require("libs.ui.src.ScreenTopology")
 local FieldTextRenderer = require("libs.hgss.src.ui.FieldTextRenderer")
 
 local HOST_MODULE = "game.hgss.src.field.PartySelectionHost"

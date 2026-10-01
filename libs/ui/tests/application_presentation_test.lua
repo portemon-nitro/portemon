@@ -14,7 +14,7 @@ local T = { tests = {} }
 -- The shared session owns capture and cancellation; per-application pointer
 -- math cannot provide it.
 local function sharedSession()
-  local ok, module = pcall(require, "game.hgss.src.ui.ApplicationPresentation")
+  local ok, module = pcall(require, "libs.ui.src.ApplicationPresentation")
   Assert.isTrue(ok, "one shared session must own pointer capture and ordered cancellation")
   return module
 end
@@ -69,7 +69,7 @@ function T.tests.a_press_cancelled_by_reflow_never_activates_on_release()
 end
 
 local function stubMeasurement(width, height, signature)
-  local ScreenTopology = require("libs.hgss.src.ui.ScreenTopology")
+  local ScreenTopology = require("libs.ui.src.ScreenTopology")
   return {
     width = width,
     height = height,
@@ -220,7 +220,7 @@ function T.tests.failed_measurement_validation_keeps_the_previous_plan()
 end
 
 function T.tests.unpresentable_space_publishes_an_inactive_plan()
-  local ScreenTopology = require("libs.hgss.src.ui.ScreenTopology")
+  local ScreenTopology = require("libs.ui.src.ScreenTopology")
   local StartMenuInterface = require("game.hgss.src.field.StartMenuInterface")
   local sessionModule = sharedSession()
   local session = sessionModule.new(StartMenuInterface.defaults())
@@ -685,7 +685,7 @@ local function leafMeasurement(width, height)
 end
 
 local function leafContext(measured, configuration, interfaceTable)
-  local ApplicationLayout = require("game.hgss.src.ui.ApplicationLayout")
+  local ApplicationLayout = require("libs.ui.src.ApplicationLayout")
   local selection = ApplicationLayout.selectSurfaces(measured)
   return {
     measurement = measured,

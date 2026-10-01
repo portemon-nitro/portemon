@@ -8,7 +8,7 @@ local BagCursor = require("libs.hgss.src.items.BagCursor")
 local BagScreenState = require("game.hgss.src.field.BagScreenState")
 local HgssBagService = require("libs.hgss.src.items.HgssBagService")
 local ItemFixture = require("libs.items.tests.item_fixture")
-local ScreenTopology = require("libs.hgss.src.ui.ScreenTopology")
+local ScreenTopology = require("libs.ui.src.ScreenTopology")
 local HgssInputBindings = require("libs.hgss.src.ui.HgssInputBindings")
 local FieldUiFixture = require("tests.support.FieldUiFixture")
 local InactivePokemonNaming = require("tests.support.InactivePokemonNaming")
@@ -537,7 +537,7 @@ function T.focus_loss_clears_physical_input_and_cancels_presentation_capture()
 end
 
 function T.update_refreshes_the_display_before_runtime_ticks()
-  local DisplayContext = require("game.hgss.src.ui.DisplayContext")
+  local DisplayContext = require("libs.ui.src.DisplayContext")
   local topology = ScreenTopology.oneDisplay({
     id = "main",
     rect = { x = 0, y = 0, width = 640, height = 480 },

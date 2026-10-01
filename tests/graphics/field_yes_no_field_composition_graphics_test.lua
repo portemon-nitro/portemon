@@ -13,7 +13,7 @@ local AcceptanceScriptFs = require("tests.acceptance.support.AcceptanceScriptFs"
 local AcceptanceScripts = require("tests.acceptance.support.AcceptanceScripts")
 local RepoFs = require("game.src.RepoFs")
 local RomImporter = require("romdump.src.source.RomImporter")
-local ScreenTopology = require("libs.hgss.src.ui.ScreenTopology")
+local ScreenTopology = require("libs.ui.src.ScreenTopology")
 
 local T = {}
 

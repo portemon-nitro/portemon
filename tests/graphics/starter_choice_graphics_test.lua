@@ -8,7 +8,7 @@ local GameVersion = require("romdump.src.source.GameVersion")
 local GraphicsSmoke = require("tests.support.GraphicsSmoke")
 local LayoutGeometry = require("libs.ui.src.LayoutGeometry")
 local RomImporter = require("romdump.src.source.RomImporter")
-local ScreenTopology = require("libs.hgss.src.ui.ScreenTopology")
+local ScreenTopology = require("libs.ui.src.ScreenTopology")
 
 local T = {}
 

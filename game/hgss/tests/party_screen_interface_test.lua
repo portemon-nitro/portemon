@@ -6,9 +6,9 @@
 -- the canonical compact grid; render and input callbacks match.
 
 local Assert = require("tests.support.Assert")
-local ApplicationLayout = require("game.hgss.src.ui.ApplicationLayout")
+local ApplicationLayout = require("libs.ui.src.ApplicationLayout")
 local PartyScreenInterface = require("game.hgss.src.field.PartyScreenInterface")
-local ScreenTopology = require("libs.hgss.src.ui.ScreenTopology")
+local ScreenTopology = require("libs.ui.src.ScreenTopology")
 
 local T = {}
 
@@ -145,7 +145,7 @@ local function partyInterface()
 end
 
 local function partySession(overrides)
-  local sessionModule = require("game.hgss.src.ui.ApplicationPresentation")
+  local sessionModule = require("libs.ui.src.ApplicationPresentation")
   return sessionModule.new(PartyScreenInterface.defaults(sourceManifest()), overrides)
 end
 

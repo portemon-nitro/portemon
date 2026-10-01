@@ -6,7 +6,7 @@ local FieldDialogueFixture = require("tests.support.FieldDialogueFixture")
 local FieldDialogueTheme = require("libs.hgss.src.ui.FieldDialogueTheme")
 local FieldTextRenderer = require("libs.hgss.src.ui.FieldTextRenderer")
 local FieldYesNoHost = require("libs.hgss.src.ui.FieldYesNoHost")
-local ScreenTopology = require("libs.hgss.src.ui.ScreenTopology")
+local ScreenTopology = require("libs.ui.src.ScreenTopology")
 
 local T = {}
 

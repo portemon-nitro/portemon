@@ -6,8 +6,8 @@
 -- resulting snapshot. Scroll offsets stay logical across resizes;
 -- keyboard, gamepad and wheel keep their direct controller paths.
 
-local ApplicationPresentation = require("game.hgss.src.ui.ApplicationPresentation")
-local DisplayContext = require("game.hgss.src.ui.DisplayContext")
+local ApplicationPresentation = require("libs.ui.src.ApplicationPresentation")
+local DisplayContext = require("libs.ui.src.DisplayContext")
 local Errors = require("libs.errors.src.Errors")
 local HgssInputBindings = require("libs.hgss.src.ui.HgssInputBindings")
 local GameSave = require("libs.hgss.src.save.GameSave")

@@ -8,7 +8,7 @@ local FieldMenuRenderer = require("libs.hgss.src.ui.FieldMenuRenderer")
 local FieldMenuTheme = require("libs.hgss.src.ui.FieldMenuTheme")
 local GraphicsSmoke = require("tests.support.GraphicsSmoke")
 local MenuLayout = require("libs.hgss.src.ui.MenuLayout")
-local ScreenTopology = require("libs.hgss.src.ui.ScreenTopology")
+local ScreenTopology = require("libs.ui.src.ScreenTopology")
 
 local T = {}
 

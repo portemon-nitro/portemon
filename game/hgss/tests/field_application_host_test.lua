@@ -5,7 +5,7 @@
 local Assert = require("tests.support.Assert")
 local FieldScriptSymbols = require("libs.assets.src.field.FieldScriptSymbols")
 local LayoutGeometry = require("libs.ui.src.LayoutGeometry")
-local ScreenTopology = require("libs.hgss.src.ui.ScreenTopology")
+local ScreenTopology = require("libs.ui.src.ScreenTopology")
 local StartMenuPolicy = require("libs.hgss.src.ui.StartMenuPolicy")
 local AcceptanceHarness = require("tests.acceptance.support.AcceptanceHarness")
 

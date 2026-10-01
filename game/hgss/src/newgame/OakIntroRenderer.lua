@@ -4,7 +4,7 @@
 
 local TextButton = require("libs.ui.src.TextButton")
 local ImageButton = require("libs.ui.src.ImageButton")
-local ApplicationPresentation = require("game.hgss.src.ui.ApplicationPresentation")
+local ApplicationPresentation = require("libs.ui.src.ApplicationPresentation")
 local FieldDrawState = require("libs.hgss.src.presentation.FieldDrawState")
 local PixelScale = require("libs.ui.src.PixelScale")
 local NamingScreenRenderer = require("libs.hgss.src.ui.NamingScreenRenderer")

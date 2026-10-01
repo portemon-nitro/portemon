@@ -5,7 +5,7 @@
 local Assert = require("tests.support.Assert")
 local AcceptanceHarness = require("tests.acceptance.support.AcceptanceHarness")
 local FieldApplicationHost = require("libs.hgss.src.field.FieldApplicationHost")
-local ScreenTopology = require("libs.hgss.src.ui.ScreenTopology")
+local ScreenTopology = require("libs.ui.src.ScreenTopology")
 
 local T = {
   metadata = {

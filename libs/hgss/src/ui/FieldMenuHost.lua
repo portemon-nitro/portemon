@@ -3,7 +3,7 @@
 -- code any authority over script results.
 
 local MenuLayout = require("libs.hgss.src.ui.MenuLayout")
-local ScreenTopology = require("libs.hgss.src.ui.ScreenTopology")
+local ScreenTopology = require("libs.ui.src.ScreenTopology")
 
 ---@class FieldMenuHost.Active
 ---@field definition FieldMenuController.Spec

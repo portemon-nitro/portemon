@@ -7,7 +7,7 @@
 local Assert = require("tests.support.Assert")
 local FieldUiFixture = require("tests.support.FieldUiFixture")
 local LayoutGeometry = require("libs.ui.src.LayoutGeometry")
-local ScreenTopology = require("libs.hgss.src.ui.ScreenTopology")
+local ScreenTopology = require("libs.ui.src.ScreenTopology")
 
 local T = { tests = {} }
 

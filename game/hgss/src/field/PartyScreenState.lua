@@ -10,7 +10,7 @@
 -- Intents and completions forward to the controller; only the final close
 -- record translates for the host.
 
-local ApplicationPresentation = require("game.hgss.src.ui.ApplicationPresentation")
+local ApplicationPresentation = require("libs.ui.src.ApplicationPresentation")
 local PartyScreenController = require("libs.hgss.src.ui.PartyScreenController")
 local PartyScreenInterface = require("game.hgss.src.field.PartyScreenInterface")
 local PartyScreenLayout = require("libs.hgss.src.ui.PartyScreenLayout")

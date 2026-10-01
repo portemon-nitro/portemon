@@ -13,7 +13,7 @@ local FieldActorFixture = require("tests.support.FieldActorFixture")
 local FieldActorManager = require("libs.hgss.src.actors.FieldActorManager")
 local FieldEventState = require("libs.hgss.src.field.FieldEventState")
 local FieldViewport = require("libs.hgss.src.presentation.FieldViewport")
-local ScreenTopology = require("libs.hgss.src.ui.ScreenTopology")
+local ScreenTopology = require("libs.ui.src.ScreenTopology")
 local TerrainSurface = require("libs.hgss.src.world.TerrainSurface")
 local InactivePokemonNaming = require("tests.support.InactivePokemonNaming")
 

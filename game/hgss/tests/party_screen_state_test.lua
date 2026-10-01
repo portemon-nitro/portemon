@@ -8,7 +8,7 @@
 local Assert = require("tests.support.Assert")
 local PartyPresentationFixture = require("tests.support.PartyPresentationFixture")
 local PartyScreenState = require("game.hgss.src.field.PartyScreenState")
-local ScreenTopology = require("libs.hgss.src.ui.ScreenTopology")
+local ScreenTopology = require("libs.ui.src.ScreenTopology")
 
 local T = {}
 
@@ -572,7 +572,7 @@ end
 function T.custom_compositions_without_party_panes_ignore_the_host_menu()
   local PartyScreenInterface = require("game.hgss.src.field.PartyScreenInterface")
   local interfaces = PartyScreenInterface.defaults(sourceManifest())
-  local selection = require("game.hgss.src.ui.ApplicationLayout").selectSurfaces(
+  local selection = require("libs.ui.src.ApplicationLayout").selectSurfaces(
     displayMeasurement(800, 600, oneDisplayTopo(800, 600), "custom-placement:800x600")
   )
   local stolen = interfaces.nativeLike({

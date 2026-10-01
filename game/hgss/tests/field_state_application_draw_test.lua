@@ -10,12 +10,12 @@
 
 local Assert = require("tests.support.Assert")
 local FieldState = require("game.hgss.src.field.FieldState")
-local ApplicationPresentation = require("game.hgss.src.ui.ApplicationPresentation")
+local ApplicationPresentation = require("libs.ui.src.ApplicationPresentation")
 local DialoguePresentationLayout = require("libs.hgss.src.ui.DialoguePresentationLayout")
 local FieldApplicationIds = require("libs.hgss.src.field.FieldApplicationIds")
 local FieldViewport = require("libs.hgss.src.presentation.FieldViewport")
 local PixelScale = require("libs.ui.src.PixelScale")
-local ScreenTopology = require("libs.hgss.src.ui.ScreenTopology")
+local ScreenTopology = require("libs.ui.src.ScreenTopology")
 
 local T = {}
 

@@ -8,7 +8,7 @@
 
 local Assert = require("tests.support.Assert")
 local FieldDialogueTheme = require("libs.hgss.src.ui.FieldDialogueTheme")
-local ScreenTopology = require("libs.hgss.src.ui.ScreenTopology")
+local ScreenTopology = require("libs.ui.src.ScreenTopology")
 
 local T = { tests = {} }
 
@@ -36,7 +36,7 @@ end
 -- The shared policy module owns classification; the per-application gutter
 -- heuristics it replaces cannot answer it.
 local function sharedPolicy()
-  local ok, module = pcall(require, "game.hgss.src.ui.ApplicationLayout")
+  local ok, module = pcall(require, "libs.ui.src.ApplicationLayout")
   Assert.isTrue(ok, "one shared policy must classify actual host surfaces into display configurations")
   return module
 end
@@ -82,6 +82,13 @@ function T.tests.a_genuine_world_auxiliary_pair_is_dual()
     "dualDisplay",
     "a world/auxiliary role pair classifies before any aspect heuristic"
   )
+end
+
+function T.tests.application_frame_insets_are_fresh_shared_geometry()
+  local policy = sharedPolicy()
+  local insets = policy.applicationFrameInsets()
+  Assert.deepEqual(insets, { left = 8, top = 7, right = 8, bottom = 7 })
+  Assert.isTrue(insets ~= policy.applicationFrameInsets(), "insets are fresh records")
 end
 
 function T.tests.native_classification_has_stable_hysteresis()

@@ -3,8 +3,8 @@
 -- finalized unpublished candidate to its caller.
 
 local HgssInputBindings = require("libs.hgss.src.ui.HgssInputBindings")
-local ApplicationPresentation = require("game.hgss.src.ui.ApplicationPresentation")
-local DisplayContext = require("game.hgss.src.ui.DisplayContext")
+local ApplicationPresentation = require("libs.ui.src.ApplicationPresentation")
+local DisplayContext = require("libs.ui.src.DisplayContext")
 local NamingInterface = require("game.hgss.src.newgame.NamingInterface")
 local OakIntroLayout = require("game.hgss.src.newgame.OakIntroLayout")
 local OakIntroRenderer = require("game.hgss.src.newgame.OakIntroRenderer")

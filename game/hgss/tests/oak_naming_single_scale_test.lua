@@ -3,7 +3,7 @@
 -- and no crash when the dialogue-reserved scene region is small.
 
 local Assert = require("tests.support.Assert")
-local ApplicationPresentation = require("game.hgss.src.ui.ApplicationPresentation")
+local ApplicationPresentation = require("libs.ui.src.ApplicationPresentation")
 local FakeGraphics = require("tests.support.FakeGraphics")
 local FieldUiFixture = require("tests.support.FieldUiFixture")
 local NamingScreenLayout = require("libs.hgss.src.ui.NamingScreenLayout")
