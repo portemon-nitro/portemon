@@ -84,7 +84,7 @@ local function withSpies(fn)
   end)
   local NewGameInitialization = require("game.hgss.src.newgame.NewGameInitialization")
   local FieldTextRenderer = require("libs.hgss.src.ui.FieldTextRenderer")
-  local MainMenuRenderer = require("game.hgss.src.menu.MainMenuRenderer")
+  local MainMenuRenderer = require("app.src.mainmenu.MainMenuRenderer")
   local originalApply = NewGameInitialization.apply
   local originalInitialLocation = NewGameInitialization.initialLocation
   local originalFieldStateNew = FieldState.new
@@ -268,6 +268,7 @@ local function newGame(context, candidate)
   function context.oakState:dispose() end
   local game = HgssGame.new({
     versionId = "heartgold",
+    entry = { kind = "new_game" },
     onExit = function() end,
     derivedAssets = readyHost(),
     fieldMapLoader = planningLoader(),
@@ -291,7 +292,6 @@ function T.fresh_oak_completion_applies_startup_initialization_before_field_stat
       end,
     }
     local game, controller = newGame(context, candidate)
-    game.state:keypressed("return")
     controller.phase = "complete"
     game:update(0)
     settle(game)
@@ -334,11 +334,11 @@ function T.continue_never_reapplies_fresh_startup_initialization()
     context.store = store
     local game = HgssGame.new({
       versionId = "heartgold",
+      entry = { kind = "continue", saveId = clearedFlagGame.saveId },
       onExit = function() end,
       derivedAssets = readyHost(),
       fieldMapLoader = planningLoader(),
     })
-    game.state:keypressed("return")
     settle(game)
     Assert.equal(#applyCalls, 0, "Continue must never invoke fresh startup initialization")
     Assert.equal(#fieldStateCalls, 1)
@@ -367,7 +367,6 @@ function T.fresh_oak_completion_requests_the_covered_field_entry()
       end,
     }
     local game, controller = newGame(context, candidate)
-    game.state:keypressed("return")
     controller.phase = "complete"
     game:update(0)
     settle(game)
@@ -405,11 +404,11 @@ function T.continue_enters_the_field_without_the_covered_entry()
     context.store = store
     local game = HgssGame.new({
       versionId = "heartgold",
+      entry = { kind = "continue", saveId = clearedFlagGame.saveId },
       onExit = function() end,
       derivedAssets = readyHost(),
       fieldMapLoader = planningLoader(),
     })
-    game.state:keypressed("return")
     settle(game)
     Assert.equal(#fieldStateCalls, 1)
     local options = context.fieldOptions[1] or {}
@@ -667,11 +666,11 @@ function T.presented_oak_black_draw_precedes_field_construction()
     end
     local game = HgssGame.new({
       versionId = "heartgold",
+      entry = { kind = "new_game" },
       onExit = function() end,
       derivedAssets = readyHost(),
       fieldMapLoader = planningLoader(),
     })
-    game.state:keypressed("return")
     settle(game)
     local routedComplete = assert(oakState.onComplete, "the Oak handoff must carry the production completion route")
     oakState.onComplete = function(result)
@@ -740,11 +739,11 @@ function T.continue_constructs_the_field_without_the_oak_handoff()
     end)
     local game = HgssGame.new({
       versionId = "heartgold",
+      entry = { kind = "continue", saveId = clearedFlagGame.saveId },
       onExit = function() end,
       derivedAssets = readyHost(),
       fieldMapLoader = planningLoader(),
     })
-    game.state:keypressed("return")
     settle(game)
     Assert.equal(composeCalls, 0, "Continue must never compose the Oak handoff")
     Assert.equal(#applyCalls, 0, "Continue must never invoke fresh startup initialization")

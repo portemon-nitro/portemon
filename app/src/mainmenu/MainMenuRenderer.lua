@@ -1,4 +1,4 @@
--- Recomp-owned Main Menu presentation over the shared image-button chrome
+-- Product-owned Main Menu presentation over the shared image-button chrome
 -- and the generated field font. All drawing is logical pixels inside one
 -- root placement: text, chrome and hit bounds share the transform, and no
 -- inner helper multiplies by a presentation scale. Launcher colors live

@@ -6,18 +6,12 @@ local Assert = require("tests.support.Assert")
 local AcceptanceHarness = require("tests.acceptance.support.AcceptanceHarness")
 local GameSaveStore = require("libs.hgss.src.save.GameSaveStore")
 local LayoutGeometry = require("libs.ui.src.LayoutGeometry")
-local GameSaveValidation = require("libs.hgss.src.save.GameSaveValidation")
-local MainMenuState = require("game.hgss.src.menu.MainMenuState")
-local MainMenuRenderer = require("game.hgss.src.menu.MainMenuRenderer")
-local FieldTextRenderer = require("libs.hgss.src.ui.FieldTextRenderer")
-local CacheFs = require("libs.storage.src.CacheFs")
-local RepoFs = require("game.src.RepoFs")
 local SaveFs = require("libs.storage.src.SaveFs")
 
 local T = {
   metadata = {
     capabilities = { "rom_dump" },
-    derivedAssets = { "field-runtime", "map:7" },
+    derivedAssets = { "field-runtime", "map-data:7", "map:7" },
     tags = { "product", "menu", "save-management" },
   },
   tests = {},
@@ -97,6 +91,7 @@ local function freshRecord(versionId)
     versionId = versionId,
     map = "MAP_BURNED_TOWER_1F",
     save = "fresh",
+    fieldOptions = { recordingScriptHosts = true },
   })
   local ok, result = xpcall(function()
     game:waitForFieldReady()
@@ -157,30 +152,33 @@ local function withMenu(count, width, height, options, fn)
   local saveFs = SaveFs.global(backend)
   local saveIds = seedRecords(saveFs, count, options and options.corruptSave)
   local results = {}
-  local validation = GameSaveValidation.new({
-    overrideFs = RepoFs.new(love.filesystem.getSourceBaseDirectory()),
-  })
-  local store = GameSaveStore.new(saveFs, {
-    recordValidate = function(record)
-      return validation:validate(record)
-    end,
-  })
-  local menuText = FieldTextRenderer.new({ cacheFs = CacheFs.forVersion(templateRecord.versionId) })
-  local menuRenderer = MainMenuRenderer.new({
-    text = menuText,
-    cacheFs = CacheFs.forVersion(templateRecord.versionId),
-    versionId = templateRecord.versionId,
-  })
-  local menu = MainMenuState.new({
-    saveStore = store,
-    readyVersions = { templateRecord.versionId },
-    onResult = function(result)
-      results[#results + 1] = result
-    end,
-    width = width,
-    height = height,
-    renderer = menuRenderer,
-  })
+  local originalGlobal = SaveFs.global
+  SaveFs.global = function(backendOverride)
+    assert(backendOverride == nil, "app menu must use its global save root")
+    return saveFs
+  end
+  local compositionOk, MainMenuComposition = pcall(require, "app.src.mainmenu.MainMenuComposition")
+  if not compositionOk then
+    SaveFs.global = originalGlobal
+    removeTree(namespace)
+    error("the app-owned Main Menu composition is unavailable", 0)
+  end
+  local menuOk, menuOrError = xpcall(function()
+    return MainMenuComposition.new({
+      versionId = templateRecord.versionId,
+      onResult = function(result)
+        results[#results + 1] = result
+      end,
+      width = width,
+      height = height,
+    })
+  end, debug.traceback)
+  SaveFs.global = originalGlobal
+  if not menuOk then
+    removeTree(namespace)
+    error(menuOrError, 0)
+  end
+  local menu = menuOrError
   local ok, err = xpcall(function()
     renderTrap(function()
       fn(menu, saveIds, results, saveFs)

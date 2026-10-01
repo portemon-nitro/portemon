@@ -104,6 +104,8 @@ local function withAppHarness(opts, ready, fn)
   local originalOpts = App.opts
   local originalIsReady = RomImporter.isReady
   local originalNew = HgssGame.new
+  local MainMenuComposition = require("app.src.mainmenu.MainMenuComposition")
+  local originalMenuNew = MainMenuComposition.new
   local graphics = love.graphics
   local originalPrint = graphics.print
   local originalGetDimensions = graphics.getDimensions
@@ -122,6 +124,7 @@ local function withAppHarness(opts, ready, fn)
     prints = 0,
     state = countingState(),
     launches = {},
+    menus = {},
     selectOptions = {},
     quitCodes = {},
     provisionerDisposals = 0,
@@ -193,6 +196,12 @@ local function withAppHarness(opts, ready, fn)
     result.launches[#result.launches + 1] = options
     return result.state
   end
+  MainMenuComposition.new = function(options)
+    local menu = countingState()
+    menu.options = options
+    result.menus[#result.menus + 1] = menu
+    return menu
+  end
   graphics.print = function()
     result.prints = result.prints + 1
   end
@@ -209,6 +218,7 @@ local function withAppHarness(opts, ready, fn)
   FirstPlayCompletion.hasStored = originalHasStored
   FirstPlayCompletion.publish = originalPublish
   HgssGame.new = originalNew
+  MainMenuComposition.new = originalMenuNew
   graphics.print = originalPrint
   graphics.getDimensions = originalGetDimensions
   love.event.quit = originalQuit
@@ -406,13 +416,77 @@ function T.boot_existing_with_one_ready_version_enters_the_main_menu()
     return id == "heartgold"
   end, function(result)
     App._bootExisting()
-    local launch = assert(result.launches[1])
-    Assert.keySet(launch, "derivedAssets,development,onExit,versionId")
-    Assert.equal(launch.versionId, "heartgold")
-    Assert.isFalse(launch.development)
-    Assert.equal(App.state, result.state)
+    Assert.equal(#result.launches, 0, "selecting a version installs the product menu without starting retail")
+    Assert.equal(App.state, result.menus[1])
     Assert.equal(result.provisionerDisposals, 0, "launch must not dispose its new provisioner")
     Assert.equal(result.warmups, 1, "menu installation authorizes background completion once")
+  end)
+end
+
+function T.cancelled_retail_entries_restore_the_product_menu_on_the_same_selection()
+  withAppHarness({ dev = false }, function(id)
+    return id == "heartgold"
+  end, function(result)
+    local compositionPath = "app.src.mainmenu.MainMenuComposition"
+    local previousComposition = package.loaded[compositionPath]
+    local MainMenuComposition = previousComposition or {}
+    local originalNew = MainMenuComposition.new
+    local menus = {}
+    MainMenuComposition.new = function(options)
+      local menu = countingState()
+      menu.options = options
+      menus[#menus + 1] = menu
+      return menu
+    end
+    package.loaded[compositionPath] = MainMenuComposition
+    local requests = {}
+    result.service.request = function(_, _, selector)
+      requests[#requests + 1] = selector
+    end
+
+    local ok, err = pcall(function()
+      App._bootExisting()
+      local provisioner = App.provisioner
+      local epoch = App.epoch
+      local activeState = App.state
+      local gameOptions
+      Assert.equal(#menus, 1, "selection installs one app-owned menu")
+      Assert.equal(activeState, menus[1], "the app installs its product menu")
+      menus[1].options.onResult({ kind = "new_game" })
+      Assert.equal(App.state, result.state, "New Game enters the retail application")
+      gameOptions = assert(result.launches[1])
+      Assert.equal(gameOptions.entry.kind, "new_game")
+
+      gameOptions.onExit({ kind = "main_menu" })
+      Assert.isTrue(App.state ~= activeState, "main_menu exit must publish an app-owned menu state")
+      Assert.equal(#menus, 2, "retail cancellation installs a fresh product menu")
+      Assert.equal(App.provisioner, provisioner, "the selected provisioner stays live across return")
+      Assert.equal(App.epoch, epoch, "the selected epoch stays live across return")
+
+      menus[2].options.onResult({ kind = "continue", saveId = "save-00000042" })
+      Assert.equal(result.launches[2].entry.kind, "continue")
+      Assert.equal(result.launches[2].entry.saveId, "save-00000042")
+      result.launches[2].onExit({ kind = "main_menu" })
+      Assert.equal(#menus, 3, "a second cancellation restores the product menu again")
+      Assert.equal(App.provisioner, provisioner)
+      Assert.equal(App.epoch, epoch)
+      Assert.equal(#result.selectOptions, 1, "return does not select the version again")
+      Assert.equal(result.provisionerDisposals, 0, "return does not retire the provisioner")
+      Assert.equal(result.warmups, 1, "only the initial menu authorizes background warmup")
+
+      local introNearRequests = 0
+      for _, selector in ipairs(requests) do
+        if selector.requestKind == "milestone" and selector.name == "new-game-intro" and selector.urgency == "near" then
+          introNearRequests = introNearRequests + 1
+        end
+      end
+      Assert.equal(introNearRequests, 1, "menu restoration does not repeat the initial intro prefetch")
+    end)
+    MainMenuComposition.new = originalNew
+    package.loaded[compositionPath] = previousComposition
+    if not ok then
+      error(err, 0)
+    end
   end)
 end
 
@@ -426,11 +500,9 @@ function T.boot_existing_with_two_ready_versions_offers_the_selector_over_the_re
     Assert.equal(getmetatable(selector).__index, VersionSelectState)
     Assert.deepEqual(selector.ready, { "heartgold", "soulsilver" })
     selector.onPick("soulsilver")
-    local launch = assert(result.launches[1])
-    Assert.keySet(launch, "derivedAssets,development,onExit,versionId")
-    Assert.equal(launch.versionId, "soulsilver")
-    Assert.isTrue(launch.development)
-    Assert.equal(App.state, result.state)
+    Assert.equal(#result.launches, 0, "selecting a version installs the product menu")
+    Assert.equal(result.menus[1].options.versionId, "soulsilver")
+    Assert.equal(App.state, result.menus[1])
   end)
 end
 
@@ -438,9 +510,7 @@ function T.completed_import_launches_the_imported_version_through_the_hgss_entry
   withAppHarness({ dev = false }, function(id)
     return id == "heartgold"
   end, function(result)
-    -- A fresh import frontloads first-play preparation before the menu:
-    -- once the closure is ready, the import still lands on the Hgss
-    -- menu entry with the same launch contract as before.
+    -- A fresh import completes first-play preparation before installing the app menu.
     local original = HgssGame.newFirstPlayCachePreparation
     HgssGame.newFirstPlayCachePreparation = function(_)
       local preparation = {}
@@ -453,10 +523,9 @@ function T.completed_import_launches_the_imported_version_through_the_hgss_entry
     local ok, err = pcall(function()
       App._onImported("heartgold")
       App.update(0.016)
-      local launch = assert(result.launches[1])
-      Assert.keySet(launch, "derivedAssets,development,onExit,versionId")
-      Assert.equal(launch.versionId, "heartgold")
-      Assert.equal(App.state, result.state)
+      Assert.equal(#result.launches, 0, "import completion installs the product menu only")
+      Assert.equal(result.menus[1].options.versionId, "heartgold")
+      Assert.equal(App.state, result.menus[1])
     end)
     HgssGame.newFirstPlayCachePreparation = original
     if not ok then
@@ -470,6 +539,7 @@ function T.shell_exit_mapping_quits_only_for_a_hgss_quit_result()
     return id == "heartgold"
   end, function(result)
     App._bootMainMenu({ "heartgold" })
+    result.menus[1].options.onResult({ kind = "new_game" })
     local launch = assert(result.launches[1])
     launch.onExit({ kind = "continue" })
     launch.onExit(nil)
@@ -509,8 +579,9 @@ function T.release_startup_passes_the_release_counter_without_reading_producer_s
       )
       Assert.isNil(options.sweepEnabled, "exhaustive intent travels as an explicit request, never a construction flag")
       Assert.equal(touches, 0)
-      Assert.equal(#result.launches, 1)
-      Assert.equal(App.state, result.state)
+      Assert.equal(#result.launches, 0)
+      Assert.equal(#result.menus, 1)
+      Assert.equal(App.state, result.menus[1])
     end)
   end)
 end
@@ -534,7 +605,8 @@ function T.release_startup_selects_the_per_game_release_counter()
         options.developmentRepositoryRoot,
         "release selection passes no checkout root; the release counter is derived below the controller"
       )
-      Assert.equal(#result.launches, 1)
+      Assert.equal(#result.launches, 0)
+      Assert.equal(#result.menus, 1)
     end)
   end)
 end
@@ -583,7 +655,8 @@ function T.development_startup_passes_frozen_checkout_selectors_without_scanning
           { first.versionId, first.development, first.repositoryRoot },
           "reselection passes the same frozen selectors without rescanning"
         )
-        Assert.equal(#result.launches, 2)
+        Assert.equal(#result.launches, 0)
+        Assert.equal(#result.menus, 2)
       end)
     end)
   end)
@@ -760,7 +833,8 @@ function T.existing_selection_with_a_current_completion_keeps_the_bootstrap_path
     if not ok then
       error(err, 0)
     end
-    Assert.equal(#result.launches, 1, "a completed first-play closure still launches through selection")
+    Assert.equal(#result.launches, 0, "a completed first-play closure installs the product menu")
+    Assert.equal(#result.menus, 1)
     Assert.equal(factoryCalls, 0, "a current completion never reconstructs first-play preparation")
   end)
 end
@@ -815,7 +889,8 @@ function T.first_play_completion_publishes_only_on_success()
       Assert.equal(#result.firstPlayPublished, 0, "pending preparation publishes nothing")
       script.ready = true
       App.update(0.016)
-      assert(result.launches[1], "preparation readiness launches the game")
+      Assert.equal(#result.launches, 0, "preparation readiness installs the app menu")
+      Assert.equal(#result.menus, 1)
       Assert.deepEqual(
         result.firstPlayPublished,
         { { versionId = "heartgold", generationId = "test-generation" } },
@@ -840,21 +915,25 @@ function T.unknown_generation_waits_without_demands_then_transfers_on_validation
     result.cannedGeneration = nil
     result.firstPlayCurrent = false
     result.firstPlayStored = true
-    local requests = 0
-    result.service.request = function()
-      requests = requests + 1
+    local requests = {}
+    result.service.request = function(_, _, selector)
+      requests[#requests + 1] = selector
     end
     App._bootExisting()
     App.update(0.016)
     Assert.equal(#result.launches, 0, "an unvalidated completion never launches the menu")
-    Assert.equal(requests, 0, "no closure demand issues while the generation is unknown")
+    Assert.equal(#requests, 0, "no closure demand issues while the generation is unknown")
     Assert.equal(getmetatable(App.state).__index, CachePreparationState)
     Assert.equal(App.state.kind, "first-play")
     result.cannedGeneration = "test-generation"
     result.firstPlayCurrent = true
     App.update(0.016)
-    assert(result.launches[1], "the validated completion transfers to the menu")
-    Assert.equal(requests, 0, "the transfer demands no closure work")
+    Assert.equal(#result.menus, 1, "the validated completion transfers to the app menu")
+    Assert.deepEqual(
+      requests,
+      { { requestKind = "milestone", name = "new-game-intro", urgency = "near" } },
+      "menu installation requests only its one speculative intro prefetch"
+    )
     Assert.deepEqual(
       result.firstPlayPublished,
       { { versionId = "heartgold", generationId = "test-generation" } },
@@ -903,7 +982,11 @@ function T.fresh_import_hands_the_same_provisioner_epoch_to_the_game()
       local selections = #result.selectOptions
       script.ready = true
       App.update(0.016)
-      local launch = assert(result.launches[1], "preparation readiness launches the game")
+      Assert.equal(#result.launches, 0, "preparation readiness installs the app menu")
+      Assert.equal(#result.menus, 1)
+      result.menus[1].options.onResult({ kind = "new_game" })
+      local launch = assert(result.launches[1], "the menu routes New Game to an explicit retail entry")
+      Assert.equal(launch.entry.kind, "new_game")
       Assert.equal(#result.selectOptions, selections, "the launch reuses the preparation epoch without reselection")
       Assert.equal(result.provisionerDisposals, 0, "nothing disposes between preparation and launch")
       Assert.equal(App.epoch, epoch, "the epoch is stable across the handoff")
@@ -943,7 +1026,8 @@ function T.fresh_import_preparation_requests_no_corpus_work_or_early_sweep()
       end
       script.ready = true
       App.update(0.016)
-      assert(result.launches[1], "preparation readiness launches the game")
+      Assert.equal(#result.launches, 0, "preparation readiness installs the app menu")
+      Assert.equal(#result.menus, 1)
       Assert.equal(result.warmups, 1, "menu installation authorizes background completion exactly once")
       App.update(0.016)
       Assert.equal(result.warmups, 1, "sweep authorization never repeats")
@@ -1032,7 +1116,7 @@ function T.fresh_import_first_play_stays_on_the_import_surface_until_the_menu()
       Assert.equal(#result.launches, 0, "the menu waits while first-play preparation is pending")
       script.ready = true
       App.update(0.016)
-      assert(result.launches[1], "preparation readiness still installs the menu")
+      Assert.equal(#result.menus, 1, "preparation readiness still installs the menu")
     end)
     HgssGame.newFirstPlayCachePreparation = original
     if not ok then

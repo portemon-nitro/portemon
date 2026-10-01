@@ -234,7 +234,16 @@ local PACKAGE_RULES = {
   app = {
     sourcePrefix = "app/src/",
     scanRoot = "app",
-    allowed = { app = true, game = true, game_hgss = true, romdump = true, errors = true },
+    allowed = {
+      app = true,
+      game = true,
+      game_hgss = true,
+      romdump = true,
+      errors = true,
+      hgss = true,
+      ui = true,
+      storage = true,
+    },
   },
 }
 
@@ -276,6 +285,11 @@ local ROOT_FILE_PACKAGES = {
   ["app/conf.lua"] = "app",
   ["romdump/main.lua"] = "romdump",
   ["romdump/conf.lua"] = "romdump",
+}
+
+local ROOT_FILE_ALLOWED = {
+  app = { app = true, game = true, game_hgss = true, romdump = true, errors = true },
+  romdump = PACKAGE_RULES.romdump.allowed,
 }
 
 local function sourcePackageFor(file)
@@ -330,11 +344,12 @@ local function packageViolationsFor(files, packageName)
   local violations = {}
   for _, file in ipairs(sortedFiles(files)) do
     if sourcePackageFor(file) == packageName then
+      local allowed = ROOT_FILE_ALLOWED[ROOT_FILE_PACKAGES[file]] or rule.allowed
       for _, module in ipairs(files[file]) do
         local targetPackage, reason = targetPackageFor(module)
         if reason ~= nil then
           violations[#violations + 1] = file .. " requires " .. module .. " (" .. packageName .. " -> " .. reason .. ")"
-        elseif targetPackage ~= nil and rule.allowed[targetPackage] ~= true then
+        elseif targetPackage ~= nil and allowed[targetPackage] ~= true then
           violations[#violations + 1] = file
             .. " requires "
             .. module
@@ -423,6 +438,9 @@ end
 function T.app_cross_package_imports_match_exact_semantic_seams()
   local fixtures = {
     { module = "game.hgss.src.HgssGame", allowed = true },
+    { module = "libs.hgss.src.save.GameSaveStore", allowed = true },
+    { module = "libs.ui.src.LayoutGeometry", allowed = true },
+    { module = "libs.storage.src.SaveFs", allowed = true },
     { module = "romdump.src.source.GameVersion", allowed = true },
     { module = "romdump.src.source.RomImporter", allowed = true },
     { module = "romdump.src.FirstPlayCompletion", allowed = true },

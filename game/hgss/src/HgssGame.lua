@@ -12,9 +12,6 @@ local NewGamePreparationState = require("game.hgss.src.newgame.NewGamePreparatio
 local PreparedFieldEntry = require("game.hgss.src.field.PreparedFieldEntry")
 local FieldState = require("game.hgss.src.field.FieldState")
 local FieldPreparationState = require("game.hgss.src.field.FieldPreparationState")
-local MainMenuState = require("game.hgss.src.menu.MainMenuState")
-local MainMenuRenderer = require("game.hgss.src.menu.MainMenuRenderer")
-local FieldTextRenderer = require("libs.hgss.src.ui.FieldTextRenderer")
 local GameSaveValidation = require("libs.hgss.src.save.GameSaveValidation")
 local OakIntroComposition = require("game.hgss.src.newgame.OakIntroComposition")
 local RepoFs = require("game.src.RepoFs")
@@ -29,12 +26,22 @@ local ItemCatalog = require("libs.items.src.ItemCatalog")
 
 ---@class HgssGameOptions
 ---@field versionId string
+---@field entry HgssGameEntry
 ---@field onExit fun(result: table<string, unknown>|nil)
 ---@field development boolean?
 ---@field derivedAssets table<string, function> semantic derived-asset host for gated field entry
 ---@field fieldMapLoader table<string, unknown>? borrowed metadata-only loader for entry planning
 ---@field topologyProvider (fun(width: number, height: number): ScreenTopology)? actual host surfaces for every entry route
 ---@field presentationOverrides table<string, table<string, unknown>>? per-case function overrides by application
+
+---@class HgssGameNewGameEntry
+---@field kind "new_game"
+
+---@class HgssGameContinueEntry
+---@field kind "continue"
+---@field saveId string
+
+---@alias HgssGameEntry HgssGameNewGameEntry|HgssGameContinueEntry
 
 local HgssGame = {}
 
@@ -111,15 +118,13 @@ end
 ---@param versionId string
 local function installRoutes(options, game, saveStore, saveValidation, versionId)
   -- One actual-display measurement owner and one copied override record
-  -- for every entry route: the field consumes them now, and the separately
-  -- owned Main Menu and Oak routes receive the same inputs in their slices.
+  -- for each retail route, shared by field and Oak presentation.
   local displayContext = DisplayContext.new({ topologyProvider = options.topologyProvider })
   local presentationOverrides = copyPresentationOverrides(options.presentationOverrides)
   local derivedAssets = assert(options.derivedAssets, "HgssGame requires the derived-asset host")
   local oakPrepared -- forward: the Oak lifetime owns the staged bedroom entry
-  local bootMenu -- forward: menu construction closes over the result router below
-  local function backToMenu()
-    game:setState(bootMenu())
+  local function returnToMainMenu()
+    game:exit({ kind = "main_menu" })
   end
   local function enterField(record, extraOptions)
     game:setState(FieldState.new(
@@ -156,7 +161,7 @@ local function installRoutes(options, game, saveStore, saveValidation, versionId
       saveStore = saveStore,
       createLoader = entryLoader,
       enterField = enterField,
-      onCancel = backToMenu,
+      onCancel = returnToMainMenu,
     }))
   end
 
@@ -227,55 +232,24 @@ local function installRoutes(options, game, saveStore, saveValidation, versionId
     game:setState(stateOrError)
   end
 
-  local function onMenuResult(result)
-    if result.kind == "quit" then
-      game:exit(result)
-    elseif result.kind == "new_game" then
-      -- New Game waits for its semantic intro closure: the candidate and
-      -- Oak composition run only inside the ready transfer, so a cold
-      -- partial cache shows preparation instead of missing-asset failure.
-      game:setState(NewGamePreparationState.new({
-        derivedAssets = derivedAssets,
-        onReady = bootOakIntro,
-        onCancel = backToMenu,
-      }))
-    elseif result.kind == "continue" then
-      -- Continue is a save intent, not a loaded record: entry planning,
-      -- the field runtime, strict validation and location geometry gate
-      -- the transfer.
-      enterPreparation({ kind = "continue", saveId = assert(result.saveId) })
-    end
+  local function startNewGame()
+    -- New Game waits for its semantic intro closure: the candidate and
+    -- Oak composition run only inside the ready transfer, so a cold
+    -- partial cache shows preparation instead of missing-asset failure.
+    game:setState(NewGamePreparationState.new({
+      derivedAssets = derivedAssets,
+      onReady = bootOakIntro,
+      onCancel = returnToMainMenu,
+    }))
   end
 
-  local function makeMenuRenderer()
-    local versionCache = CacheFs.forVersion(versionId)
-    local menuText = FieldTextRenderer.new({ cacheFs = versionCache })
-    local rendererOk, menuRendererOrError = pcall(MainMenuRenderer.new, { text = menuText, versionId = versionId })
-    if not rendererOk then
-      menuText:release()
-      error(menuRendererOrError, 0)
-    end
-    return assert(menuRendererOrError)
+  if options.entry.kind == "new_game" then
+    startNewGame()
+  else
+    -- Continue remains an intent until field planning and strict validation
+    -- have completed in the existing preparation state.
+    enterPreparation({ kind = "continue", saveId = options.entry.saveId })
   end
-  function bootMenu()
-    return MainMenuState.new({
-      saveStore = saveStore,
-      readyVersions = { versionId },
-      width = game.drawableWidth,
-      height = game.drawableHeight,
-      renderer = makeMenuRenderer(),
-      onResult = onMenuResult,
-      displayContext = displayContext,
-      overrides = presentationOverrides ~= nil and presentationOverrides.main_menu or nil,
-    })
-  end
-
-  game:setState(bootMenu())
-  -- Speculative New Game warmth once the menu exists: the intro closure
-  -- prefetches at near, and choosing New Game later promotes the same
-  -- milestone to required. Readiness is ignored here; pending work simply
-  -- continues in the background.
-  derivedAssets.requestMilestone("new-game-intro", "near")
 end
 
 -- App-facing first-play preparation for the import path: builds
@@ -298,6 +272,12 @@ function HgssGame.new(options)
   local versionId = assert(options.versionId, "HgssGame requires a versionId")
   assert(type(versionId) == "string" and versionId ~= "", "HgssGame versionId is invalid")
   assert(type(options.onExit) == "function", "HgssGame requires an onExit callback")
+  local entry = options.entry
+  assert(type(entry) == "table", "HgssGame requires an explicit entry")
+  if entry.kind ~= "new_game" then
+    assert(entry.kind == "continue", "HgssGame entry kind is invalid")
+    assert(type(entry.saveId) == "string" and entry.saveId ~= "", "Continue entry saveId is invalid")
+  end
 
   local game = Game.new({ onExit = options.onExit })
 

@@ -8,7 +8,7 @@
 -- per-case override replaces the whole render/input pair, never a mode
 -- token. Resolvers require the complete context the owning session supplies.
 
-local MainMenuLayout = require("game.hgss.src.menu.MainMenuLayout")
+local MainMenuLayout = require("app.src.mainmenu.MainMenuLayout")
 local NativeDisplay = require("libs.ui.src.NativeDisplay")
 local PixelScale = require("libs.ui.src.PixelScale")
 

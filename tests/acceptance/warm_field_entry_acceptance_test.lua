@@ -239,9 +239,8 @@ end
 local function waitForMenu(deadlineSeconds)
   local deadline = love.timer.getTime() + (deadlineSeconds or 120)
   while love.timer.getTime() < deadline do
-    local game = App.state
-    local inner = game and game.state or nil
-    local view = inner and inner.view and inner:view() or nil
+    local menu = App.state
+    local view = menu and menu.view and menu:view() or nil
     if view ~= nil and view.kind == "main_menu" then
       return
     end
@@ -251,9 +250,8 @@ local function waitForMenu(deadlineSeconds)
 end
 
 local function menuInstalled()
-  local game = App.state
-  local inner = game and game.state or nil
-  local view = inner and inner.view and inner:view() or nil
+  local menu = App.state
+  local view = menu and menu.view and menu:view() or nil
   return view ~= nil and view.kind == "main_menu"
 end
 

@@ -6,6 +6,7 @@ local RomImporter = require("romdump.src.source.RomImporter")
 local FirstPlayCompletion = require("romdump.src.FirstPlayCompletion")
 local CacheService = require("app.src.CacheService")
 local HgssGame = require("game.hgss.src.HgssGame")
+local MainMenuComposition = require("app.src.mainmenu.MainMenuComposition")
 local DerivedAssetProvisioner = require("app.src.DerivedAssetProvisioner")
 local CachePreparationState = require("app.src.launcher.CachePreparationState")
 local ImportState = require("app.src.launcher.ImportState")
@@ -71,30 +72,69 @@ function App._retireSelection()
   end
 end
 
--- Launches the menu on the current provisioner without touching source
--- ownership: menu/Oak/field transitions within one selection never rotate
--- the epoch. Background corpus completion is authorized once the menu
--- game owns the process state; the authorization itself performs no
--- cache work.
+---@param versionId string
+local function installMenu(versionId)
+  local ok, menuOrError = pcall(MainMenuComposition.new, {
+    versionId = versionId,
+    width = App.drawableWidth,
+    height = App.drawableHeight,
+    onResult = function(result)
+      if result.kind == "new_game" then
+        App._launchGameWithProvisioner(versionId, { kind = "new_game" })
+      elseif result.kind == "continue" then
+        App._launchGameWithProvisioner(versionId, { kind = "continue", saveId = result.saveId })
+      elseif result.kind == "quit" then
+        love.event.quit(0)
+      end
+    end,
+  })
+  if not ok then
+    App._showVersionSelector()
+    error(menuOrError, 0)
+  end
+  App.setState(assert(menuOrError))
+end
+
+-- Installs the selected-version product menu and starts the one-time
+-- speculative work that is useful while it remains open.
+---@param versionId string
 function App._launchMenuWithProvisioner(versionId)
   local provisioner = assert(App.provisioner, "selection has no provisioner")
-  local function onExit(result)
-    if result and result.kind == "quit" then
-      love.event.quit(0)
-    end
-  end
-  local ok, game = pcall(HgssGame.new, {
+  installMenu(versionId)
+  provisioner:gameHost().requestMilestone("new-game-intro", "near")
+  provisioner:startBackgroundWarmup()
+end
+
+-- Cancellation restores only the menu state; the current selection and its
+-- warmup authorization remain owned by the App.
+---@param versionId string
+function App._restoreMenuWithProvisioner(versionId)
+  assert(App.provisioner, "selection has no provisioner")
+  installMenu(versionId)
+end
+
+---@param versionId string
+---@param entry table<string, unknown>
+function App._launchGameWithProvisioner(versionId, entry)
+  local provisioner = assert(App.provisioner, "selection has no provisioner")
+  local ok, gameOrError = pcall(HgssGame.new, {
     versionId = versionId,
-    onExit = onExit,
+    entry = entry,
+    onExit = function(result)
+      if result and result.kind == "main_menu" then
+        App._restoreMenuWithProvisioner(versionId)
+      elseif result and result.kind == "quit" then
+        love.event.quit(0)
+      end
+    end,
     development = App.opts.dev,
     derivedAssets = provisioner:gameHost(),
   })
   if not ok then
     App._showVersionSelector()
-    error(game, 0)
+    error(gameOrError, 0)
   end
-  App.setState(game)
-  provisioner:startBackgroundWarmup()
+  App.setState(assert(gameOrError))
 end
 
 function App._showVersionSelector()

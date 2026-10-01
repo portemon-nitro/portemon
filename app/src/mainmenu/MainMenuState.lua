@@ -12,9 +12,9 @@ local Errors = require("libs.errors.src.Errors")
 local HgssInputBindings = require("libs.hgss.src.ui.HgssInputBindings")
 local GameSave = require("libs.hgss.src.save.GameSave")
 local LayoutGeometry = require("libs.ui.src.LayoutGeometry")
-local MainMenuController = require("game.hgss.src.menu.MainMenuController")
-local MainMenuInterface = require("game.hgss.src.menu.MainMenuInterface")
-local MainMenuLayout = require("game.hgss.src.menu.MainMenuLayout")
+local MainMenuController = require("app.src.mainmenu.MainMenuController")
+local MainMenuInterface = require("app.src.mainmenu.MainMenuInterface")
+local MainMenuLayout = require("app.src.mainmenu.MainMenuLayout")
 local PlayerProgression = require("libs.hgss.src.save.PlayerProgression")
 
 ---@class MainMenuSaveStore

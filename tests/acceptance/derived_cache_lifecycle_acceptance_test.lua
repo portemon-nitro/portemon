@@ -31,7 +31,24 @@ local PlayTime = require("libs.hgss.src.save.PlayTime")
 local T = {
   metadata = {
     capabilities = { "rom_dump" },
-    derivedAssets = { "field-runtime", "new-game-intro", "map:60", "map:61" },
+    derivedAssets = {
+      "field-runtime",
+      "new-game-intro",
+      "map-data:31",
+      "map-data:33",
+      "map-data:47",
+      "map-data:48",
+      "map-data:64",
+      "map-data:60",
+      "map-data:61",
+      "map:31",
+      "map:33",
+      "map:47",
+      "map:48",
+      "map:64",
+      "map:60",
+      "map:61",
+    },
     tags = { "cache", "lifecycle", "application" },
   },
   tests = {},
@@ -210,18 +227,17 @@ function T.tests.continue_waits_for_readiness_then_validates_before_field()
     return entered
   end, function()
     local stopCounting, loaderBuilds = countLoaderBuilds()
-    local game = HgssGame.new({ versionId = versionId, onExit = function() end, derivedAssets = host })
-    Assert.equal(requestedMilestones[1], "new-game-intro", "installing the menu prefetches the intro closure")
+    local game = HgssGame.new({
+      versionId = versionId,
+      entry = { kind = "continue", saveId = saveId },
+      onExit = function() end,
+      derivedAssets = host,
+    })
     local ok, err = pcall(function()
-      local card = game.state:view().saves[1]
-      Assert.equal(card.saveId, saveId)
-      Assert.isTrue(card.canContinue, "a displayed record stays continuable while entry readiness is pending")
-      Assert.isNil(card.errorSummary, "a pending cache never reads as a corrupt save")
-      game.state:keypressed("return")
       Assert.equal(#fieldCalls, 0, "Continue waits for entry readiness before strict load")
       Assert.deepEqual(loads, {}, "strict load runs only after entry readiness")
       pumpGame(game, 5)
-      Assert.equal(#fieldCalls, 0, "the menu stays responsive without entering field while readiness is pending")
+      Assert.equal(#fieldCalls, 0, "pending readiness does not enter field")
       Assert.deepEqual(loads, {}, "pumping never loads before entry readiness")
       Assert.equal(loaderBuilds(), 0, "pending readiness never constructs the production planning loader")
       entryReady = true
@@ -435,10 +451,19 @@ function T.tests.new_game_holds_the_finalized_handoff_until_readiness_and_geomet
         local function preparationCalls()
           return preparationBuilds
         end
-        local game = HgssGame.new({ versionId = versionId, onExit = function() end, derivedAssets = host })
+        local game = HgssGame.new({
+          versionId = versionId,
+          entry = { kind = "new_game" },
+          onExit = function() end,
+          derivedAssets = host,
+        })
         local ok, err = pcall(function()
-          Assert.equal(requested.milestones[1], "new-game-intro", "installing the menu prefetches the intro closure")
-          game.state:keypressed("return")
+          game:update(1 / 60)
+          Assert.deepEqual(
+            requested.milestoneDemands[1],
+            { name = "new-game-intro", urgency = "required" },
+            "the explicit New Game entry requests its intro closure as required"
+          )
           Assert.isNil(game.state.view, "New Game waits in preparation while the intro closure is pending")
           introReady = true
           local oakState = nil
@@ -679,7 +704,7 @@ function T.tests.warp_waits_under_cover_then_commits_once()
     versionId = versionId,
     map = "MAP_NEW_BARK",
     save = "fresh",
-    fieldOptions = { derivedAssets = host },
+    fieldOptions = { derivedAssets = host, recordingScriptHosts = true },
   })
   local ok, err = xpcall(function()
     game:waitForFieldEntry()

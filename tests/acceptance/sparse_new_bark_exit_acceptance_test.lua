@@ -423,15 +423,14 @@ function T.tests.sparse_house_exit_reaches_new_bark_with_a_logical_route_27()
     App._bootMainMenu({ AcceptanceHarness.defaultVersion() })
     local deadline = love.timer.getTime() + 60
     while love.timer.getTime() < deadline do
-      local game = App.state
-      local inner = game and game.state or nil
-      local view = inner and inner.view and inner:view() or nil
+      local menu = App.state
+      local view = menu and menu.view and menu:view() or nil
       if view ~= nil and view.kind == "main_menu" then
         break
       end
       App.update(1 / 60)
     end
-    Assert.equal(App.state.state:view().kind, "main_menu")
+    Assert.equal(App.state:view().kind, "main_menu")
     press("a")
     completeOak()
     local runtime = assert(App.state.state.runtime, "New Game must enter the real field")

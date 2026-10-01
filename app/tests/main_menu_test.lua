@@ -4,10 +4,10 @@ local Assert = require("tests.support.Assert")
 local Errors = require("libs.errors.src.Errors")
 local FakeGraphics = require("tests.support.FakeGraphics")
 local LayoutGeometry = require("libs.ui.src.LayoutGeometry")
-local MainMenuController = require("game.hgss.src.menu.MainMenuController")
-local MainMenuLayout = require("game.hgss.src.menu.MainMenuLayout")
-local MainMenuRenderer = require("game.hgss.src.menu.MainMenuRenderer")
-local MainMenuState = require("game.hgss.src.menu.MainMenuState")
+local MainMenuController = require("app.src.mainmenu.MainMenuController")
+local MainMenuLayout = require("app.src.mainmenu.MainMenuLayout")
+local MainMenuRenderer = require("app.src.mainmenu.MainMenuRenderer")
+local MainMenuState = require("app.src.mainmenu.MainMenuState")
 
 local T = {}
 

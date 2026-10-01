@@ -12,7 +12,7 @@ local SaveFs = require("libs.storage.src.SaveFs")
 local GameSave = require("libs.hgss.src.save.GameSave")
 local BagSave = require("libs.hgss.src.save.BagSave")
 local GameSaveStore = require("libs.hgss.src.save.GameSaveStore")
-local MainMenuState = require("game.hgss.src.menu.MainMenuState")
+local MainMenuState = require("app.src.mainmenu.MainMenuState")
 local FieldCoverage = require("libs.hgss.src.world.FieldCoverage")
 local MonsSave = require("libs.mons.src.MonsSave")
 local CachePreparationState = require("app.src.launcher.CachePreparationState")
@@ -197,7 +197,11 @@ local function newMenuService(events)
     epoch = epoch + 1
     return epoch
   end
-  function service:request(_, _) end
+  function service:request(_, selector)
+    if selector.requestKind == "milestone" and selector.name == "new-game-intro" then
+      events[#events + 1] = "menu:near-prefetch"
+    end
+  end
   function service:observe(_, _)
     return nil, nil
   end
@@ -212,6 +216,7 @@ end
 local function withAppStubs(fn)
   local App = require("app.src.App")
   local HgssGame = require("game.hgss.src.HgssGame")
+  local MainMenuComposition = require("app.src.mainmenu.MainMenuComposition")
   local RomImporter = require("romdump.src.source.RomImporter")
   local Store = require("libs.hgss.src.save.GameSaveStore")
   local original = {
@@ -224,12 +229,14 @@ local function withAppStubs(fn)
     opts = App.opts,
     saveDir = App.saveDir,
     gameNew = HgssGame.new,
+    menuNew = MainMenuComposition.new,
     isReady = RomImporter.isReady,
     storeNew = Store.new,
     dimensions = love.graphics.getDimensions,
   }
   local context = {
     games = {},
+    menus = {},
     importers = {},
     epochs = {},
     requests = {},
@@ -346,8 +353,17 @@ local function withAppStubs(fn)
     context.games[#context.games + 1] = game
     return game
   end
+  MainMenuComposition.new = function(options)
+    local menu = { disposed = 0, options = options }
+    function menu:dispose()
+      self.disposed = self.disposed + 1
+    end
+    context.menus[#context.menus + 1] = menu
+    return menu
+  end
   local ok, err = pcall(fn, App, context)
   HgssGame.new = original.gameNew
+  MainMenuComposition.new = original.menuNew
   RomImporter.isReady = original.isReady
   restoreFirstPlayCompletion(completionOriginals)
   rawset(Store, "new", original.storeNew)
@@ -365,7 +381,7 @@ local function withAppStubs(fn)
   end
 end
 
-function T.game_switch_retires_the_old_epoch_on_the_shared_process_service()
+function T.menu_reselection_retires_the_old_epoch_on_the_shared_process_service()
   withAppStubs(function(App, context)
     local service = assert(App.service, "the application owns one process cache service")
     App._bootMainMenu({ VERSION })
@@ -373,8 +389,8 @@ function T.game_switch_retires_the_old_epoch_on_the_shared_process_service()
     Assert.equal(App.service, service, "a switch reuses the service instead of spawning a second")
     Assert.deepEqual(context.epochs, { 1, 2 }, "returning to a game mints a new epoch even when the generation matches")
     Assert.deepEqual(context.retires, { 1 }, "the old epoch retires exactly once without joining workers")
-    Assert.equal(#context.games, 2)
-    Assert.equal(context.games[1].disposed, 1, "switching disposes the old game consumer")
+    Assert.equal(#context.menus, 2)
+    Assert.equal(context.menus[1].disposed, 1, "switching disposes the old menu owner")
     Assert.equal(context.warmups, 2, "each menu installation authorizes background completion once")
     Assert.isNil(context.shutdown, "switching never shuts down the process service")
   end)
@@ -622,13 +638,13 @@ function T.provisioner_wraps_a_selected_service_with_string_urgencies_and_retire
 end
 
 -- Menu installation authorizes background completion exactly once after the
--- state handoff: constructor, state installation, then warmup authorization.
--- A failed game constructor recovers to the selector without authorizing.
-function T.menu_installation_authorizes_warmup_only_after_successful_handoff()
+-- Menu publication precedes the one-time prefetch and warmup authorization.
+-- A failed menu constructor recovers to the selector without authorizing.
+function T.menu_installation_authorizes_warmup_only_after_publication()
   local App = require("app.src.App")
-  local HgssGame = require("game.hgss.src.HgssGame")
+  local MainMenuComposition = require("app.src.mainmenu.MainMenuComposition")
   local Provisioner = require("app.src.DerivedAssetProvisioner")
-  local originalGameNew = HgssGame.new
+  local originalMenuNew = MainMenuComposition.new
   local originalSetState = App.setState
   local originalShowSelector = App._showVersionSelector
   local originalState = App.state
@@ -636,14 +652,10 @@ function T.menu_installation_authorizes_warmup_only_after_successful_handoff()
   local originalOpts = App.opts
   App.opts = { dev = false }
   local events = {}
-  local game = {
-    update = function() end,
-    dispose = function() end,
-  }
-  HgssGame.new = function(options)
-    events[#events + 1] = "game:new"
-    Assert.notNil(options.derivedAssets, "the menu game receives the semantic host")
-    return game
+  local menu = { dispose = function() end }
+  MainMenuComposition.new = function(_)
+    events[#events + 1] = "menu:new"
+    return menu
   end
   App.setState = function(next)
     events[#events + 1] = "app:setState"
@@ -663,8 +675,8 @@ function T.menu_installation_authorizes_warmup_only_after_successful_handoff()
   for _, event in ipairs(events) do
     launchedEvents[#launchedEvents + 1] = event
   end
-  HgssGame.new = function()
-    error("synthetic game failure", 0)
+  MainMenuComposition.new = function()
+    error("synthetic menu failure", 0)
   end
   local selectorShown = 0
   App._showVersionSelector = function()
@@ -676,7 +688,7 @@ function T.menu_installation_authorizes_warmup_only_after_successful_handoff()
     failOk, failErr = pcall(App._launchMenuWithProvisioner, "heartgold")
   end)
   local failedSelectorShown = selectorShown
-  HgssGame.new = originalGameNew
+  MainMenuComposition.new = originalMenuNew
   App.setState = originalSetState
   App._showVersionSelector = originalShowSelector
   App.state = originalState
@@ -688,16 +700,16 @@ function T.menu_installation_authorizes_warmup_only_after_successful_handoff()
   if not innerOk then
     error(innerErr, 0)
   end
-  Assert.equal(launchedState, game, "the launched game becomes the process state")
+  Assert.equal(launchedState, menu, "the app-owned menu becomes the process state")
   Assert.deepEqual(
     launchedEvents,
-    { "game:new", "app:setState", "provisioner:startBackgroundWarmup" },
-    "menu installation authorizes background completion after the state is installed"
+    { "menu:new", "app:setState", "menu:near-prefetch", "provisioner:startBackgroundWarmup" },
+    "menu publication precedes prefetch and warmup authorization"
   )
   Assert.isFalse(failOk, "a failed game constructor still surfaces its error")
   Assert.isTrue(
-    tostring(failErr):find("synthetic game failure", 1, true) ~= nil,
-    "the surfaced error is the game failure"
+    tostring(failErr):find("synthetic menu failure", 1, true) ~= nil,
+    "the surfaced error is the menu failure"
   )
   Assert.equal(failedSelectorShown, 1, "a failed launch recovers to the version selector")
 end
@@ -706,9 +718,9 @@ end
 -- through the owner-only seam. The game host never carries the control.
 function T.menu_installation_authorizes_background_warmup_after_state_handoff()
   local App = require("app.src.App")
-  local HgssGame = require("game.hgss.src.HgssGame")
+  local MainMenuComposition = require("app.src.mainmenu.MainMenuComposition")
   local Provisioner = require("app.src.DerivedAssetProvisioner")
-  local originalGameNew = HgssGame.new
+  local originalMenuNew = MainMenuComposition.new
   local originalSetState = App.setState
   local originalState = App.state
   local originalProvisioner = App.provisioner
@@ -722,14 +734,10 @@ function T.menu_installation_authorizes_background_warmup_after_state_handoff()
     enabled = enabled + 1
     realEnable(self, epoch)
   end
-  local game = {
-    update = function() end,
-    dispose = function() end,
-  }
-  HgssGame.new = function(options)
-    events[#events + 1] = "game:new"
-    Assert.notNil(options.derivedAssets, "the menu game receives the semantic host")
-    return game
+  local menu = { dispose = function() end }
+  MainMenuComposition.new = function(_)
+    events[#events + 1] = "menu:new"
+    return menu
   end
   App.setState = function(next)
     events[#events + 1] = "app:setState"
@@ -747,7 +755,7 @@ function T.menu_installation_authorizes_background_warmup_after_state_handoff()
     )
   end)
   local launchedState = App.state
-  HgssGame.new = originalGameNew
+  MainMenuComposition.new = originalMenuNew
   App.setState = originalSetState
   App.state = originalState
   App.provisioner = originalProvisioner
@@ -755,11 +763,11 @@ function T.menu_installation_authorizes_background_warmup_after_state_handoff()
   if not ok then
     error(err, 0)
   end
-  Assert.equal(launchedState, game, "the launched game becomes the process state")
+  Assert.equal(launchedState, menu, "the app-owned menu becomes the process state")
   Assert.deepEqual(
     events,
-    { "game:new", "app:setState", "provisioner:startBackgroundWarmup" },
-    "menu installation authorizes background warmup after the handoff"
+    { "menu:new", "app:setState", "menu:near-prefetch", "provisioner:startBackgroundWarmup" },
+    "menu publication precedes prefetch and warmup authorization"
   )
   Assert.equal(enabled, 1, "a successful launch authorizes the background cursor once")
 end
@@ -1455,7 +1463,8 @@ function T.selection_switch_to_another_version_reuses_the_service_with_a_fresh_e
     Assert.equal(App.service, service, "a switch reuses the service instead of spawning a second")
     Assert.deepEqual(context.epochs, { 1, 2 }, "switching versions mints a new epoch on the shared service")
     Assert.deepEqual(context.retires, { 1 }, "the old interest retires exactly once without joining workers")
-    Assert.equal(#context.games, 2, "a ready selection launches its menu through the single route")
+    Assert.equal(#context.games, 0, "a ready selection installs the app menu without launching retail")
+    Assert.equal(#context.menus, 2, "each selected version publishes its own menu")
   end)
 end
 

@@ -5,6 +5,7 @@
 local Assert = require("tests.support.Assert")
 local App = require("app.src.App")
 local HgssGame = require("game.hgss.src.HgssGame")
+local MainMenuComposition = require("app.src.mainmenu.MainMenuComposition")
 local RomImporter = require("romdump.src.source.RomImporter")
 local FirstPlayCompletion = require("romdump.src.FirstPlayCompletion")
 local ProducerFingerprint = require("romdump.src.ProducerFingerprint")
@@ -23,6 +24,7 @@ local function withApp(fn)
   local originalService = App.service
   local originalOpts = App.opts
   local originalNew = HgssGame.new
+  local originalMenuNew = MainMenuComposition.new
   local originalReady = RomImporter.isReady
   local originalDimensions = love.graphics.getDimensions
   local originalQuit = love.event.quit
@@ -81,6 +83,10 @@ local function withApp(fn)
       end,
     }
   end
+  MainMenuComposition.new = function(options)
+    result.menuOptions = options
+    return { dispose = function() end }
+  end
 
   local ok, err = pcall(fn, result)
 
@@ -90,6 +96,7 @@ local function withApp(fn)
   App.service = originalService
   App.opts = originalOpts
   HgssGame.new = originalNew
+  MainMenuComposition.new = originalMenuNew
   RomImporter.isReady = originalReady
   FirstPlayCompletion.isCurrent = originalIsCurrent
   FirstPlayCompletion.hasStored = originalHasStored
@@ -121,6 +128,9 @@ T.tests["the selected game receives only the semantic provisioning host"] = func
     function service:retire(_) end
     App.service = service
     App._bootMainMenu({ "heartgold" })
+    Assert.equal(#result.launches, 0, "selection installs the product menu before launching retail")
+    local menuOptions = assert(result.menuOptions)
+    menuOptions.onResult({ kind = "new_game" })
     local launch = assert(result.launches[1])
     local host = assert(launch.derivedAssets, "the running game must receive a derived-asset host")
     Assert.keySet(
