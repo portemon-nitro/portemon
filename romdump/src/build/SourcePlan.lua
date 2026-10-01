@@ -130,11 +130,7 @@ end
 ---@param identity { versionId: string, generationId: string, producerId: string }
 ---@return true|nil
 ---@return string|nil
-function SourcePlan.validate(plan, identity)
-  assert(type(identity) == "table", "source inventory validation requires its generation identity")
-  if type(plan) ~= "table" then
-    return nil, "source inventory is not a table"
-  end
+local function validateEnvelope(plan, identity)
   local allowed = {
     schema = true,
     versionId = true,
@@ -173,10 +169,14 @@ function SourcePlan.validate(plan, identity)
   if type(plan.romSha1) ~= "string" or plan.romSha1:match("^[0-9a-fA-F]+$") == nil or #plan.romSha1 ~= 40 then
     return nil, "source inventory carries no ROM identity"
   end
-  local ok, reason = checkDataOnly(plan, {})
-  if not ok then
-    return nil, reason
-  end
+  return checkDataOnly(plan, {})
+end
+
+---@param plan table<string, unknown>
+---@return true|nil
+---@return string|nil
+---@return integer[]|nil worldIds ascending, duplicate-free world map identities
+local function validateWorld(plan)
   local world = plan.world --[[@as table<string, unknown>]]
   if type(world) ~= "table" then
     return nil, "source inventory carries no world membership"
@@ -186,18 +186,16 @@ function SourcePlan.validate(plan, identity)
     return nil, "source inventory carries no world membership"
   end
   local worldIds = {}
-  do
-    local seen = {}
-    for _, record in ipairs(worldMaps) do
-      if type(record) ~= "table" or not isInteger(record.id) or record.id < 0 then
-        return nil, "source inventory carries an unidentified world map"
-      end
-      if seen[record.id] then
-        return nil, "source inventory carries a duplicate world map " .. tostring(record.id)
-      end
-      seen[record.id] = true
-      worldIds[#worldIds + 1] = record.id
+  local seen = {}
+  for _, record in ipairs(worldMaps) do
+    if type(record) ~= "table" or not isInteger(record.id) or record.id < 0 then
+      return nil, "source inventory carries an unidentified world map"
     end
+    if seen[record.id] then
+      return nil, "source inventory carries a duplicate world map " .. tostring(record.id)
+    end
+    seen[record.id] = true
+    worldIds[#worldIds + 1] = record.id
   end
   table.sort(worldIds)
   local analysis = world.analysis
@@ -215,6 +213,14 @@ function SourcePlan.validate(plan, identity)
       return nil, "source inventory carries an unexplained source exclusion"
     end
   end
+  return true, nil, worldIds
+end
+
+---@param plan table<string, unknown>
+---@return true|nil
+---@return string|nil
+---@return table<string, true>|nil cells canonical "matrixMemberId-index" keys
+local function validateFieldCellIndexBundle(plan)
   local bundle = plan.fieldCellIndexBundle --[[@as table<string, unknown>]]
   if type(bundle) ~= "table" or type(bundle.index) ~= "table" or type(bundle.indexMarker) ~= "string" then
     return nil, "source inventory carries no canonical cell index"
@@ -240,6 +246,13 @@ function SourcePlan.validate(plan, identity)
       cells[descriptor.matrixMemberId .. "-" .. descriptor.index] = true
     end
   end
+  return true, nil, cells
+end
+
+---@param plan table<string, unknown>
+---@return true|nil
+---@return string|nil
+local function validateScriptMembership(plan)
   local scriptPlan = plan.scriptPlan --[[@as table<string, unknown>]]
   if type(scriptPlan) ~= "table" then
     return nil, "source inventory carries no script membership"
@@ -251,38 +264,35 @@ function SourcePlan.validate(plan, identity)
   if type(scriptPlan.generationKey) ~= "string" or scriptPlan.generationKey == "" then
     return nil, "source inventory carries no script generation"
   end
-  do
-    local membersOk, membersReason = checkAscendingMembers(scriptMembers, "memberId", "script member", "script members")
-    if not membersOk then
-      return nil, membersReason
-    end
-  end
+  return checkAscendingMembers(scriptMembers, "memberId", "script member", "script members")
+end
+
+---@param plan table<string, unknown>
+---@return true|nil
+---@return string|nil
+local function validateAudioMembership(plan)
   local audioPlan = plan.audioPlan --[[@as table<string, unknown>]]
   if type(audioPlan) ~= "table" then
     return nil, "source inventory carries no audio membership"
   end
   local audioBankPlans = audioPlan.bankPlans --[[@as table[] ]]
-  if type(audioPlan) ~= "table" or type(audioPlan.index) ~= "table" or type(audioBankPlans) ~= "table" then
+  if type(audioPlan.index) ~= "table" or type(audioBankPlans) ~= "table" then
     return nil, "source inventory carries no audio membership"
   end
-  do
-    local banksOk, banksReason = checkAscendingMembers(audioBankPlans, "bankId", "audio bank", "audio banks")
-    if not banksOk then
-      return nil, banksReason
-    end
+  local banksOk, banksReason = checkAscendingMembers(audioBankPlans, "bankId", "audio bank", "audio banks")
+  if not banksOk then
+    return nil, banksReason
   end
   local audioIdentity = plan.audioIdentity --[[@as table<string, unknown>]]
   if type(audioIdentity) ~= "table" then
     return nil, "source inventory carries no sound archive identity"
   end
-  do
-    local fields = 0
-    for _ in pairs(audioIdentity) do
-      fields = fields + 1
-    end
-    if fields ~= 3 then
-      return nil, "source inventory sound archive identity carries an unexpected field"
-    end
+  local fields = 0
+  for _ in pairs(audioIdentity) do
+    fields = fields + 1
+  end
+  if fields ~= 3 then
+    return nil, "source inventory sound archive identity carries an unexpected field"
   end
   if
     type(audioIdentity.romSha1) ~= "string"
@@ -304,36 +314,79 @@ function SourcePlan.validate(plan, identity)
   if audioIdentity.romSha1 ~= plan.romSha1 then
     return nil, "source inventory sound archive identity disagrees with the ROM identity"
   end
+  return true
+end
+
+---@param plan table<string, unknown>
+---@param worldIds integer[] ascending world map identities
+---@param cells table<string, true> canonical cell keys from the index bundle
+---@return true|nil
+---@return string|nil
+local function validateMapCellKeys(plan, worldIds, cells)
   local mapCellKeys = plan.mapCellKeys --[[@as table<integer, string[]> ]]
   if type(mapCellKeys) ~= "table" then
     return nil, "source inventory carries no map cell keys"
   end
-  do
-    local keyed = {}
-    for mapId in pairs(mapCellKeys) do
-      if not isInteger(mapId) or mapId < 0 then
-        return nil, "source inventory carries an unidentified map cell record"
-      end
-      keyed[#keyed + 1] = mapId
+  local keyed = {}
+  for mapId in pairs(mapCellKeys) do
+    if not isInteger(mapId) or mapId < 0 then
+      return nil, "source inventory carries an unidentified map cell record"
     end
-    table.sort(keyed)
-    if not equalIdLists(keyed, worldIds) then
-      return nil, "source inventory map membership is incomplete"
+    keyed[#keyed + 1] = mapId
+  end
+  table.sort(keyed)
+  if not equalIdLists(keyed, worldIds) then
+    return nil, "source inventory map membership is incomplete"
+  end
+  for _, mapId in ipairs(keyed) do
+    local keys = mapCellKeys[mapId]
+    if not isAscendingUniqueKeys(keys) then
+      return nil, "source inventory cell keys for map " .. tostring(mapId) .. " are not sorted and unique"
     end
-    for _, mapId in ipairs(keyed) do
-      local keys = mapCellKeys[mapId]
-      if not isAscendingUniqueKeys(keys) then
-        return nil, "source inventory cell keys for map " .. tostring(mapId) .. " are not sorted and unique"
-      end
-      ---@cast keys string[]
-      for _, key in ipairs(keys) do
-        if key:match("^[0-9]+-[0-9]+$") == nil or cells[key] == nil then
-          return nil, "source inventory cell key " .. key .. " for map " .. tostring(mapId) .. " is not canonical"
-        end
+    ---@cast keys string[]
+    for _, key in ipairs(keys) do
+      if key:match("^[0-9]+-[0-9]+$") == nil or cells[key] == nil then
+        return nil, "source inventory cell key " .. key .. " for map " .. tostring(mapId) .. " is not canonical"
       end
     end
   end
   return true
+end
+
+---@param plan table<string, unknown>
+---@param identity { versionId: string, generationId: string, producerId: string }
+---@return true|nil
+---@return string|nil
+function SourcePlan.validate(plan, identity)
+  assert(type(identity) == "table", "source inventory validation requires its generation identity")
+  if type(plan) ~= "table" then
+    return nil, "source inventory is not a table"
+  end
+  local ok, reason = validateEnvelope(plan, identity)
+  if not ok then
+    return nil, reason
+  end
+  local worldIds
+  ok, reason, worldIds = validateWorld(plan)
+  if not ok then
+    return nil, reason
+  end
+  local cells
+  ok, reason, cells = validateFieldCellIndexBundle(plan)
+  if not ok then
+    return nil, reason
+  end
+  ok, reason = validateScriptMembership(plan)
+  if not ok then
+    return nil, reason
+  end
+  ok, reason = validateAudioMembership(plan)
+  if not ok then
+    return nil, reason
+  end
+  ---@cast worldIds integer[]
+  ---@cast cells table<string, true>
+  return validateMapCellKeys(plan, worldIds, cells)
 end
 
 ---@param romFs table<string, unknown> RomFs-shaped source filesystem
