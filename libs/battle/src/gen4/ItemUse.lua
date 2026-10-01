@@ -11,6 +11,7 @@
 -- or live side effects.
 
 local Errors = require("libs.errors.src.Errors")
+local CaptureContext = require("libs.battle.src.gen4.CaptureContext")
 
 local ItemUse = {}
 
@@ -28,8 +29,8 @@ ItemUse.HEAL_AMOUNT = 20
 ---@field moveSlot integer? zero-based move slot for PP use
 
 ---@class BattleItemEffectOperation
----@field kind string operation vocabulary, heal for restorative use
----@field amount integer fixed restoration of heal operations
+---@field kind string operation vocabulary, heal for restorative use and capture for thrown balls
+---@field amount integer? fixed restoration of heal operations, nil for capture work
 ---@field target BattleItemTarget holder the operation applies to
 
 ---@class ItemUsePlan
@@ -195,13 +196,17 @@ function ItemUse.plan(choice, view)
       failureReason = reason,
     }
   end
+  local operations = {} ---@type BattleItemEffectOperation[]
+  if CaptureContext.isBall(item) then
+    operations[#operations + 1] = { kind = "capture", target = copyTarget(target) }
+  else
+    operations[#operations + 1] = { kind = "heal", amount = ItemUse.HEAL_AMOUNT, target = copyTarget(target) }
+  end
   return {
     item = item,
     inventoryId = inventoryId,
     target = target,
-    effectOperations = {
-      { kind = "heal", amount = ItemUse.HEAL_AMOUNT, target = copyTarget(target) },
-    },
+    effectOperations = operations,
     consumptionCheckpoint = ItemUse.CONSUMPTION_CHECKPOINT,
     failureReason = nil,
   }
@@ -226,13 +231,17 @@ local function checkStock(plan, battle)
 end
 
 --- Executes a plan exactly once at its checkpoint: one unit leaves battle
---- stock, one delta enters the battle ledger, the holder recovers, and
---- the plan is stamped. Refused, stale, repeated, and malformed plans
---- raise their typed failure before any mutation.
+--- stock, one delta enters the battle ledger, the holder recovers for heal
+--- plans, and the plan is stamped. Ball plans spend the same owned unit
+--- and return the capture outcome shape for the capture owner to settle:
+--- the session routes ball plans to the capture path with full battle and
+--- stream context, which this planner never fabricates. Refused, stale,
+--- repeated, and malformed plans raise their typed failure before any
+--- mutation.
 ---@param plan ItemUsePlan executable plan under execution
 ---@param battle table<string, unknown> battle-owned execution state being consumed
 ---@param rng table<string, unknown>? accepted battle stream, never drawn by deterministic use
----@return table<string, boolean> execution outcome marking the consumption
+---@return table<string, unknown> execution outcome marking the consumption and, for balls, the capture outcome
 function ItemUse.execute(plan, battle, rng)
   assert(rng == nil or type(rng) == "table", "battle item execution accepts the battle stream")
   if type(plan) ~= "table" then
@@ -294,6 +303,10 @@ function ItemUse.execute(plan, battle, rng)
     delta = -1,
     checkpoint = executable.consumptionCheckpoint,
   }
+  if CaptureContext.isBall(executable.item) then
+    executable.executed = true
+    return { consumed = true, result = { ball = executable.item, target = target.combatant } }
+  end
   holder.hp = math.min(holder.maxHp, holder.hp + ItemUse.HEAL_AMOUNT)
   executable.executed = true
   return { consumed = true }
