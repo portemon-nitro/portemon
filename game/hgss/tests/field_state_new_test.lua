@@ -13,7 +13,7 @@ local ScreenTopology = require("libs.hgss.src.ui.ScreenTopology")
 local FieldTerrainEffectController = require("libs.hgss.src.world.FieldTerrainEffectController")
 local FieldRuntime = require("game.hgss.src.field.FieldRuntime")
 local FieldState = require("game.hgss.src.field.FieldState")
-local GameSaveValidation = require("game.hgss.src.save.GameSaveValidation")
+local GameSaveValidation = require("libs.hgss.src.save.GameSaveValidation")
 local InactivePokemonNaming = require("tests.support.InactivePokemonNaming")
 
 local T = {}

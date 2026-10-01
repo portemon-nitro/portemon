@@ -6,7 +6,7 @@
 
 local Assert = require("tests.support.Assert")
 local CacheFs = require("libs.storage.src.CacheFs")
-local FieldScriptCompatibility = require("game.hgss.src.field.FieldScriptCompatibility")
+local FieldScriptCompatibility = require("libs.hgss.src.script.FieldScriptCompatibility")
 local HgssScript = require("libs.hgss.src.script.Composition")
 local Registry = require("libs.script.src.Registry")
 local ScriptLoader = require("libs.script.src.ScriptLoader")
