@@ -193,4 +193,47 @@ function T.result_records_carry_exact_keys()
   )
 end
 
+-- The reward checkpoint spawns exactly one child per settled knockout:
+-- each knockout carries its complete facts to the hook in order, the
+-- outcome collects the children, and re-stepping a drained settlement
+-- spawns nothing more. Without a hook the settlement still drains with
+-- no children.
+function T.reward_children_spawn_once_per_settled_ko()
+  local Fainting = faintingOwner("the native faint queue owns settlement order")
+  local queue = {}
+  Fainting.detect(queue, target(1, 7), { kind = "damage", actionId = 3 }, 1)
+  Fainting.detect(queue, target(2, 1), { kind = "damage", actionId = 3 }, 2)
+  local spawned = {}
+  local context = {
+    queue = queue,
+    progression = function(record)
+      spawned[#spawned + 1] = record.target.combatant
+      return { kind = "reward", combatant = record.target.combatant }
+    end,
+  }
+  local outcome = Fainting.step(context, Fainting.validateFrame({ kind = "faint", cursor = "start" }))
+  Assert.isTrue(outcome.done, "a reward-hooked settlement still drains")
+  Assert.deepEqual(spawned, { 1, 2 }, "each settled knockout spawns exactly one reward child in order")
+  Assert.equal(#outcome.progression, 2, "the outcome collects one child per knockout")
+  Assert.equal(outcome.progression[1].combatant, 1, "the first child carries the first knockout facts")
+  Assert.equal(outcome.progression[2].combatant, 2, "the second child carries the second knockout facts")
+  local repeated = Fainting.step(context, outcome.frame)
+  Assert.equal(#spawned, 2, "re-stepping a drained settlement spawns no further children")
+  Assert.equal(#repeated.progression, 0, "a drained settlement collects no children")
+  local plain = Fainting.step(
+    { queue = {} },
+    Fainting.validateFrame({ kind = "faint", cursor = "start" })
+  )
+  Assert.isTrue(plain.done, "a hookless settlement still drains")
+  Assert.equal(#plain.progression, 0, "a hookless settlement collects no children")
+  local broken = { queue = {} }
+  Fainting.detect(broken, target(3, 1), { kind = "damage", actionId = 3 }, 1)
+  Assert.throws(function()
+    Fainting.step(
+      { queue = broken, progression = { kind = "not-a-function" } },
+      Fainting.validateFrame({ kind = "faint", cursor = "start" })
+    )
+  end, "a non-function reward hook fails before settlement")
+end
+
 return { tests = T }
