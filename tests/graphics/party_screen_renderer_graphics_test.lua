@@ -1062,6 +1062,71 @@ function T.switch_animation_exits_outward_and_empties_panels_at_full_exit(scope)
   end
 end
 
+-- Opening the context menu brightens the backdrop strip below the slot
+-- panels while the menu button frames keep their exact source pixels:
+-- a left-margin probe below the panel union and clear of later window
+-- and menu chrome changes with the menu open, but every opaque frame
+-- pixel still matches the generated art.
+function T.context_brightness_reaches_below_panels_without_touching_menu_frames(scope)
+  for _, versionId in ipairs(readyVersions()) do
+    local cacheFs, manifest = manifestFor(versionId)
+    local browsingImage, layout = renderPane(scope, cacheFs, manifest, presentation({ cursorNode = 0 }))
+    local menu = {
+      { kind = "summary", label = "SUMMARY" },
+      { kind = "switch", label = "SWITCH" },
+      { kind = "quit", label = "QUIT" },
+    }
+    local opened = presentation({ cursorNode = 0, state = "context", menu = menu, menuIndex = 1, menuSlot = 0 })
+    local openedImage, _ = renderPane(scope, cacheFs, manifest, opened)
+    local panelBottom = 0
+    for _, panel in ipairs(assert(manifest.panels, versionId .. " carries panels")) do
+      local origin = assert(panel.origin, versionId .. " carries panel origins")
+      local size = assert(panel.size, versionId .. " carries panel sizes")
+      panelBottom = math.max(panelBottom, origin.y + size.height)
+    end
+    Assert.isTrue(panelBottom < 192, versionId .. " leaves a backdrop strip below the panels")
+    local probeX, probeY, probeW, probeH = 4, panelBottom + 6, 8, 8
+    local function intersects(ax, ay, aw, ah, box)
+      return ax < box.x + box.width and box.x < ax + aw and ay < box.y + box.height and box.y < ay + ah
+    end
+    for _, box in ipairs({ manifest.windows.browse, manifest.windows.context, manifest.windows.action }) do
+      Assert.isFalse(
+        intersects(probeX, probeY, probeW, probeH, box),
+        versionId .. " keeps the lower probe clear of message windows"
+      )
+    end
+    local generated = assert(manifest.contextMenu.topLevel[3], versionId .. " carries the three-entry layout")
+    for _, entry in ipairs(generated) do
+      local rect = assert(entry.frameRect, versionId .. " carries entry frame rectangles")
+      local box = { x = rect.x, y = rect.y, width = rect.width, height = rect.height }
+      Assert.isFalse(
+        intersects(probeX, probeY, probeW, probeH, box),
+        versionId .. " keeps the lower probe clear of menu frames"
+      )
+    end
+    local cancelRect = assert(layout.cancelRect, versionId .. " exposes the Cancel hit target")
+    local cancelBox = { x = cancelRect.x, y = cancelRect.y, width = cancelRect.width, height = cancelRect.height }
+    Assert.isFalse(
+      intersects(probeX, probeY, probeW, probeH, cancelBox),
+      versionId .. " keeps the lower probe clear of Cancel"
+    )
+    local brightened = differingPixels(browsingImage, openedImage, probeX, probeY, probeW, probeH)
+    Assert.isTrue(
+      brightened > 10,
+      versionId .. " brightens the backdrop strip below the panels with the menu open"
+    )
+    local first = assert(generated[1], versionId .. " carries its first entry")
+    local rect = assert(first.frameRect, versionId .. " carries entry frame rectangles")
+    local frames = assert(manifest.contextMenu.frames, versionId .. " carries menu frames")
+    local group = assert(frames[first.frameShape], versionId .. " carries the entry frame")
+    local selected =
+      visualPixels(scope, cacheFs, assert(group.selected, versionId .. " carries the selected frame"))
+    local matches, opaque = matchingOpaquePixels(openedImage, selected, 0, 0, rect.x, rect.y, rect.width, rect.height)
+    Assert.isTrue(opaque > 100, versionId .. " compiles visible selected-frame pixels")
+    Assert.equal(matches, opaque, versionId .. " keeps menu button pixels at source ink under brightness")
+  end
+end
+
 local suite = GraphicsSmoke.suite(T, { capabilities = { "graphics", "rom_dump" } })
 suite.metadata.derivedAssets = { "party:global" }
 return suite
