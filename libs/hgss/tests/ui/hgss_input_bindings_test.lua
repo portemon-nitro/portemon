@@ -5,7 +5,7 @@ local Assert = require("tests.support.Assert")
 
 local T = { tests = {} }
 
-local BINDINGS_REQUIRE_OK, HgssInputBindings = pcall(require, "game.hgss.src.HgssInputBindings")
+local BINDINGS_REQUIRE_OK, HgssInputBindings = pcall(require, "libs.hgss.src.ui.HgssInputBindings")
 local Manifest = require("data.manifests.field_presentation")
 
 local ACTION_ALIASES = { "space", "return", "kpenter" }

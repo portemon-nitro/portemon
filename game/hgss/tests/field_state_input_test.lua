@@ -9,7 +9,7 @@ local BagScreenState = require("game.hgss.src.field.BagScreenState")
 local HgssBagService = require("libs.hgss.src.items.HgssBagService")
 local ItemFixture = require("libs.items.tests.item_fixture")
 local ScreenTopology = require("libs.hgss.src.ui.ScreenTopology")
-local HgssInputBindings = require("game.hgss.src.HgssInputBindings")
+local HgssInputBindings = require("libs.hgss.src.ui.HgssInputBindings")
 local FieldUiFixture = require("tests.support.FieldUiFixture")
 local InactivePokemonNaming = require("tests.support.InactivePokemonNaming")
 

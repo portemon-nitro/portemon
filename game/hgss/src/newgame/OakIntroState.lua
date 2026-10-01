@@ -2,7 +2,7 @@
 -- semantic controller, owns text-input mode and intro images, and hands one
 -- finalized unpublished candidate to its caller.
 
-local HgssInputBindings = require("game.hgss.src.HgssInputBindings")
+local HgssInputBindings = require("libs.hgss.src.ui.HgssInputBindings")
 local ApplicationPresentation = require("game.hgss.src.ui.ApplicationPresentation")
 local DisplayContext = require("game.hgss.src.ui.DisplayContext")
 local NamingInterface = require("game.hgss.src.newgame.NamingInterface")

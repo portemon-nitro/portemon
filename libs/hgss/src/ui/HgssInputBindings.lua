@@ -1,8 +1,8 @@
--- Game-local physical button alias authority for HGSS A/confirm, B/cancel,
--- and X/menu semantics. Field gameplay, the Oak-hosted naming screen, and
--- the Main Menu share this module so their keyboard aliases cannot drift
--- apart again. Gamepad buttons keep their existing host mapping (south is
--- action, east is cancel) and are not part of these keyboard lookups.
+-- Reusable HGSS physical button alias authority for A/confirm, B/cancel, and
+-- X/menu semantics. Field gameplay, the Oak-hosted naming screen, and the
+-- Main Menu share this module so their keyboard aliases cannot drift apart.
+-- Gamepad buttons keep their existing host mapping (south is action, east is
+-- cancel) and are not part of these keyboard lookups.
 
 local FieldPresentation = require("data.manifests.field_presentation")
 
