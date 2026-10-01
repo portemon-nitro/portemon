@@ -33,6 +33,7 @@ local function manifest()
         selected = { image = "assets/generated/party/panel-selected.png", width = 128, height = 48 },
         fainted = { image = "assets/generated/party/panel-fainted.png", width = 128, height = 48 },
         selectedFainted = { image = "assets/generated/party/panel-selected-fainted.png", width = 128, height = 48 },
+        switchSelection = { image = "assets/generated/party/panel-switch-selection.png", width = 128, height = 48 },
       },
       text = {
         name = { x = origin[1] + 48, y = origin[2] + 8, width = 72, height = 16 },
@@ -99,7 +100,7 @@ local function manifest()
     subcontext[count] = layout(count, false)
   end
   return {
-    schema = "g4-party-presentation-v3",
+    schema = "g4-party-presentation-v4",
     panes = {
       main = { width = 256, height = 192 },
       sub = { width = 256, height = 192 },
@@ -114,13 +115,10 @@ local function manifest()
     contextMenu = {
       topLevel = topLevel,
       subcontext = subcontext,
-      textPalette = {
-        raised = { r = 248, g = 248, b = 248, a = 255 },
-        depressed = { r = 248, g = 0, b = 0, a = 255 },
-      },
-      fillPalette = {
-        raised = { r = 0, g = 0, b = 248, a = 255 },
-        depressed = { r = 0, g = 248, b = 0, a = 255 },
+      textRoles = {
+        command = { raised = role(), depressed = role() },
+        field = { raised = role(), depressed = role() },
+        cancel = { raised = role(), depressed = role() },
       },
       frames = {
         standard = {
@@ -245,7 +243,10 @@ local function manifest()
     },
     text = {
       labels = { cancel = "Cancel", male = "M", female = "F" },
-      templates = { switchPrompt = { segments = { { kind = "text", value = "Switch?" } } } },
+      templates = {
+        switchPrompt = { segments = { { kind = "text", value = "Switch?" } } },
+        takeNoItem = { segments = { { kind = "text", value = "Nothing held." } } },
+      },
       roles = { ordinary = role(), male = role(), female = role() },
     },
     numberGlyphs = {
@@ -303,7 +304,7 @@ function T.writes_the_class_and_reports_ready()
   Assert.isTrue(PartyCacheWriter.write(cache, bundle(marker)), "publication reports success")
   Assert.isTrue(PartyCache.isReady(cache, marker), "ready after write")
   local loaded = PartyCache.loadManifest(cache)
-  Assert.equal(loaded.schema, "g4-party-presentation-v3", "the published manifest loads back")
+  Assert.equal(loaded.schema, "g4-party-presentation-v4", "the published manifest loads back")
 end
 
 function T.rejects_a_malformed_class_without_publishing()

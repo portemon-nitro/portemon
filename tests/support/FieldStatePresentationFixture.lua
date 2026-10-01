@@ -68,6 +68,7 @@ local function partyManifest()
         selected = imageRef("assets/generated/party/fixture-panel.png", 128, 48),
         fainted = imageRef("assets/generated/party/fixture-panel.png", 128, 48),
         selectedFainted = imageRef("assets/generated/party/fixture-panel.png", 128, 48),
+        switchSelection = imageRef("assets/generated/party/fixture-panel-switch-selection.png", 128, 48),
       },
       text = {
         name = rect(origin[1] + 48, origin[2] + 8, 72, 16),
@@ -106,8 +107,12 @@ local function partyManifest()
     end
     return { sequences = result }
   end
-  local function menuRole()
-    return { r = 248, g = 248, b = 248, a = 255 }
+  local function textRole()
+    return {
+      foreground = { r = 248, g = 248, b = 248, a = 255 },
+      shadow = { r = 88, g = 88, b = 88, a = 255 },
+      background = { r = 0, g = 0, b = 0, a = 255 },
+    }
   end
   local function menuLayout(count, lateral)
     local entries = {}
@@ -209,8 +214,11 @@ local function partyManifest()
     contextMenu = {
       topLevel = menuTopLevel,
       subcontext = menuSubcontext,
-      textPalette = { raised = menuRole(), depressed = menuRole() },
-      fillPalette = { raised = menuRole(), depressed = menuRole() },
+      textRoles = {
+        command = { raised = textRole(), depressed = textRole() },
+        field = { raised = textRole(), depressed = textRole() },
+        cancel = { raised = textRole(), depressed = textRole() },
+      },
       frames = {
         standard = {
           raised = imageRef("assets/generated/party/fixture-context-standard-raised.png", 128, 32),
@@ -234,7 +242,10 @@ local function partyManifest()
     },
     text = {
       labels = { cancel = "Cancel", male = "M", female = "F" },
-      templates = { switchPrompt = { segments = { { kind = "text", value = "Switch?" } } } },
+      templates = {
+        switchPrompt = { segments = { { kind = "text", value = "Switch?" } } },
+        takeNoItem = { segments = { { kind = "text", value = "Nothing held." } } },
+      },
       roles = {
         ordinary = {
           foreground = { r = 248, g = 248, b = 248, a = 255 },

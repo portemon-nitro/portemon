@@ -71,10 +71,11 @@ PartySources.panelTemplates = {
 
 -- The main palette's Party panel data begins at NCLR byte offset 0x60. The
 -- ordinary browse loader selects four of its 16-color states at two-bank
--- strides; empty panels use absolute bank 1.
+-- strides, and the switch-selection state resolves bank 7; empty panels use
+-- absolute bank 1.
 PartySources.panelPalette = {
   firstColor = 0x60 / 2,
-  stateBanks = { normal = 0, fainted = 2, selected = 4, selectedFainted = 6 },
+  stateBanks = { normal = 0, fainted = 2, selected = 4, selectedFainted = 6, switchSelection = 7 },
   emptyBank = 1,
   hpBars = {
     green = { bank = 0, edge = 10, body = 9 },
@@ -266,13 +267,16 @@ PartySources.textRoles = {
 
 -- Context-button presentation roles transcribed from
 -- PartyMenu_PrintContextMenuItemText/getButtonColorRaised/getButtonColorDepressed:
--- button windows carry palette selector 2; text ink spans slots 14/15 (both
--- text states share foreground 14, the fill pair below carries the state
--- change); window fills are FillWindowPixelBuffer 4 raised, 11 depressed.
+-- button windows carry palette selector 2. Command entries, later field
+-- entries, and the fixed cancel entry each resolve a raised/depressed
+-- foreground/shadow/background triple; command and cancel share the bright
+-- ink pair while field entries keep their own ink. Each triple names source
+-- palette slots in the bank below.
 PartySources.contextRoles = {
   bank = 2,
-  text = { raised = 14, depressed = 15 },
-  fill = { raised = 4, depressed = 11 },
+  command = { raised = { 14, 15, 4 }, depressed = { 14, 15, 11 } },
+  field = { raised = { 9, 10, 4 }, depressed = { 9, 10, 11 } },
+  cancel = { raised = { 14, 15, 4 }, depressed = { 14, 15, 11 } },
 }
 
 -- Context-button frame source transcribed from sub_0207E3A8 and the member-26
@@ -442,6 +446,7 @@ PartySources.messages = {
     didNotLearn = { bank = 300, index = 59 },
     forgetMove = { bank = 300, index = 60 },
     noEffect = { bank = 300, index = 102 },
+    takeNoItem = { bank = 300, index = 82 },
     fieldMoveConfirm = { bank = 300, index = 139 },
     levelTotal = { bank = 300, index = 167 },
     eggSelect = { bank = 300, index = 184 },

@@ -177,6 +177,45 @@ function T.numeric_glyphs_use_the_party_text_roles(romFs, _)
   Assert.equal(distinct, 2, "numeric glyphs use exactly the foreground/shadow pair")
 end
 
+-- The compiled presentation replaces the flat button palettes with the
+-- semantic text roles, compiles switch-selection chrome for every slot,
+-- and lowers the empty-take template through the message machinery.
+function T.compiled_presentation_carries_semantic_roles_switch_chrome_and_take_template(romFs, _)
+  local PartyAssetCompiler = require("romdump.src.digest.ui.PartyAssetCompiler")
+  local PartyCache = require("libs.assets.src.PartyCache")
+  local bundle = assert(PartyAssetCompiler.compile(romFs))
+  Assert.equal(bundle.manifest.schema, "g4-party-presentation-v4")
+  local menu = bundle.manifest.contextMenu
+  Assert.isNil(menu.textPalette, "flat text values do not survive lowering")
+  Assert.isNil(menu.fillPalette, "flat fill values do not survive lowering")
+  local roles = assert(menu.textRoles, "context buttons publish their semantic text roles")
+  for _, name in ipairs({ "command", "field", "cancel" }) do
+    local role = assert(roles[name], "the " .. name .. " text role resolves")
+    for _, state in ipairs({ "raised", "depressed" }) do
+      local triple = assert(role[state], "the " .. name .. " " .. state .. " triple resolves")
+      Assert.notNil(triple.foreground, "the " .. name .. " " .. state .. " foreground resolves")
+      Assert.notNil(triple.shadow, "the " .. name .. " " .. state .. " shadow resolves")
+      Assert.notNil(triple.background, "the " .. name .. " " .. state .. " background resolves")
+    end
+  end
+  Assert.equal(#bundle.manifest.panels, 6, "six slot panels resolve")
+  local referenced = {}
+  for _, path in ipairs(PartyCache.referencedPaths(bundle.manifest)) do
+    referenced[path] = true
+  end
+  for slot, panel in ipairs(bundle.manifest.panels) do
+    local visual = panel.chrome.switchSelection
+    Assert.notNil(visual, "panel " .. slot .. " publishes switch-selection chrome")
+    Assert.equal(visual.width, 128, "panel " .. slot .. " switch-selection width")
+    Assert.equal(visual.height, 48, "panel " .. slot .. " switch-selection height")
+    Assert.isTrue(bundle.assets[visual.image] ~= nil, "panel " .. slot .. " switch-selection pixels resolve")
+    Assert.isTrue(referenced[visual.image], "panel " .. slot .. " switch-selection participates in readiness")
+  end
+  local template = bundle.manifest.text.templates.takeNoItem
+  Assert.notNil(template, "the empty-take template resolves")
+  Assert.isTrue(#template.segments > 0, "the empty-take template carries segments")
+end
+
 local suite = RomSuite.fromFacts(T)
 suite.metadata.capabilities = { "rom_dump" }
 return suite

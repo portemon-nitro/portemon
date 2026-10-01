@@ -732,8 +732,11 @@ local function resolveTextRoles(mainPalette)
   }
 end
 
--- Resolves the context-button text/fill roles against the button-window
--- palette bank.
+-- Resolves the context-button text roles against the button-window
+-- palette bank. Command and cancel entries share the bright ink pair
+-- while field entries keep their own ink; every role keeps its
+-- raised/depressed foreground/shadow/background triple. Records carry
+-- detached byte channels, never palette indices.
 local function resolveContextPalettes(mainPalette)
   local config = PartySources.contextRoles --[[@as table<string, unknown>]]
   local bank = paletteSlice(mainPalette, config.bank --[[@as integer]] * 16, 16, "context buttons")
@@ -745,21 +748,36 @@ local function resolveContextPalettes(mainPalette)
     assert(color ~= nil, "missing button role entries fail above")
     return { r = color.r, g = color.g, b = color.b, a = 255 }
   end
-  local text = config.text --[[@as table<string, integer>]]
-  local fill = config.fill --[[@as table<string, integer>]]
+  local function role(triples, name)
+    local states = triples --[[@as table<string, integer[]>]]
+    local resolved = {}
+    for _, state in ipairs({ "raised", "depressed" }) do
+      local slots = states[state]
+      if type(slots) ~= "table" or #slots ~= 3 then
+        sourceError("context button role keeps a foreground/shadow/background triple", { role = name, state = state })
+      end
+      resolved[state] = {
+        foreground = pick(slots[1], name .. ".foreground"),
+        shadow = pick(slots[2], name .. ".shadow"),
+        background = pick(slots[3], name .. ".background"),
+      }
+    end
+    return resolved
+  end
   return {
-    textPalette = { raised = pick(text.raised, "textRaised"), depressed = pick(text.depressed, "textDepressed") },
-    fillPalette = { raised = pick(fill.raised, "fillRaised"), depressed = pick(fill.depressed, "fillDepressed") },
+    textRoles = {
+      command = role(config.command, "command"),
+      field = role(config.field, "field"),
+      cancel = role(config.cancel, "cancel"),
+    },
   }
 end
 
 -- Composes one context-frame image from member-26 source tiles: the corner
 -- tiles pin the corners while the edge tiles repeat along each side, so
 -- pixel art never scales. The interior stays transparent for the runtime
--- window fill and text. The source tiles carry transparent outer margins, so
--- the composed border is extended flush to its rect by replicating the
--- nearest content pixel outward (never inward, never interpolated): every
--- source content pixel is preserved one-to-one and no new color appears.
+-- window fill and text. Every decoded source pixel is preserved one-to-one:
+-- transparent source margins stay transparent and no new color appears.
 local function composeContextFrame(tiles, tileIds, bank, width, height, role)
   local cells = {}
   local function setPixel(x, y, value)
@@ -808,54 +826,6 @@ local function composeContextFrame(tiles, tileIds, bank, width, height, role)
             setPixel(tx * 8 + x, ty * 8 + y, tileValue(tile, x, y))
           end
         end
-      end
-    end
-  end
-  local function isOpaque(pixel)
-    return pixel ~= nil and string.byte(pixel, 4) ~= 0
-  end
-  -- Vertical pass: extend each content column outward to the image edges.
-  for x = 0, width - 1 do
-    local top, bottom = nil, nil
-    for y = 0, height - 1 do
-      if isOpaque(cells[y * width + x + 1]) then
-        if top == nil then
-          top = y
-        end
-        bottom = y
-      end
-    end
-    if top ~= nil then
-      local upper = cells[top * width + x + 1]
-      for y = 0, top - 1 do
-        cells[y * width + x + 1] = upper
-      end
-      local lower = cells[bottom * width + x + 1]
-      for y = bottom + 1, height - 1 do
-        cells[y * width + x + 1] = lower
-      end
-    end
-  end
-  -- Horizontal pass: extend each content row outward, covering the columns
-  -- the vertical pass could not reach.
-  for y = 0, height - 1 do
-    local left, right = nil, nil
-    for x = 0, width - 1 do
-      if isOpaque(cells[y * width + x + 1]) then
-        if left == nil then
-          left = x
-        end
-        right = x
-      end
-    end
-    if left ~= nil then
-      local leading = cells[y * width + left + 1]
-      for x = 0, left - 1 do
-        cells[y * width + x + 1] = leading
-      end
-      local trailing = cells[y * width + right + 1]
-      for x = right + 1, width - 1 do
-        cells[y * width + x + 1] = trailing
       end
     end
   end
@@ -1310,8 +1280,7 @@ local function _compile(romFs)
     contextMenu = {
       topLevel = menuGeometry.topLevel,
       subcontext = menuGeometry.subcontext,
-      textPalette = contextPalettes.textPalette,
-      fillPalette = contextPalettes.fillPalette,
+      textRoles = contextPalettes.textRoles,
       frames = contextFrames,
     },
     navigation = { dpad = PartySources.geometry.dpad },
