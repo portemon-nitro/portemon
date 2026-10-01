@@ -43,7 +43,7 @@ local YesNoPromptController = require("libs.hgss.src.ui.YesNoPromptController")
 ---@field _swapOp { source: integer, destination: integer, revision: integer, step: integer }?
 ---@field _intent table<string, unknown>?
 ---@field _origin PartyScreenController.Origin?
----@field _message string?
+---@field _message string|{ templateKey: string, displayName: string? }?
 ---@field _messageReturn string
 ---@field _prompt YesNoPromptController?
 ---@field _promptReturn string
@@ -614,11 +614,17 @@ function PartyScreenController:_closePrompt()
 end
 
 -- Shows a message over the originating flow state; acknowledgement
--- returns there without replaying anything.
----@param text string
+-- returns there without replaying anything. Either existing literal text
+-- or a generated-template descriptor the renderer expands.
+---@param text string|{ templateKey: string, displayName: string? }
 ---@param returnState string
 function PartyScreenController:_showMessage(text, returnState)
-  assert(type(text) == "string" and text ~= "", "messages carry display text")
+  if type(text) == "table" then
+    assert(type(text.templateKey) == "string" and text.templateKey ~= "", "descriptors name their template")
+    assert(text.displayName == nil or type(text.displayName) == "string", "descriptors carry an optional display name")
+  else
+    assert(type(text) == "string" and text ~= "", "messages carry display text")
+  end
   self._message = text
   self._messageReturn = returnState
   self:_transition("message")
@@ -1577,8 +1583,10 @@ end
 
 -- Resolves the pending intent from the flow. The presentation-only no-op
 -- returns to the originating state with no message, mutation, or new
--- intent; any other outcome shows its text when present and otherwise
--- returns silently. Outcomes for another state are a programming error.
+-- intent; a text outcome shows its text over the originating state, a
+-- template-descriptor outcome shows the generated template over browse
+-- refocused on the acting slot, and any other outcome returns silently.
+-- Outcomes for another state are a programming error.
 ---@param outcome table<string, unknown>
 function PartyScreenController:completeAction(outcome)
   assert(type(outcome) == "table", "action completion carries an outcome")
@@ -1589,6 +1597,11 @@ function PartyScreenController:completeAction(outcome)
   self._origin = nil
   if outcome.kind == "no_op" then
     self:_restoreOrigin(origin)
+    return
+  end
+  if type(outcome.message) == "table" then
+    self._cursorNode = origin.cursorNode
+    self:_showMessage(outcome.message, "browse")
     return
   end
   if type(outcome.text) == "string" and outcome.text ~= "" then

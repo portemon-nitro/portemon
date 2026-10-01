@@ -402,11 +402,8 @@ function T.tests.production_medicine_give_take_round_trip(context)
     choosePartySlot(party, 1)
     choosePartyMenu(party, "item")
     choosePartyMenu(party, "take")
-    -- Take confirms through a yes/no prompt starting on no: move to
-    -- yes, confirm, then run out the prompt confirmation interval
-    -- (fixed ticks are the behavior under test here) before asserting.
-    drive(party, { { type = "navigate", direction = "up" } })
-    drive(party, { { type = "confirm" } })
+    -- Take answers directly with no confirmation: settle the dispatch
+    -- before asserting the transfer.
     for _ = 1, 15 do
       party:updateFixed({})
     end
@@ -596,6 +593,99 @@ function T.tests.production_script_selection_answers_through_the_live_host(conte
     Assert.isNil(host:result(handle), "the live answer is one-shot")
     host:close(handle)
     Assert.isNil(host:status(), "closing releases the live selection")
+  end)
+end
+
+function T.tests.production_empty_take_reports_the_generated_template_without_mutation(context)
+  requireVersions(context)
+  withGame(function(game)
+    giftPair(game)
+    local mons = assert(game.runtime.monService, "field runtime owns the live mon service")
+    local bag = assert(game.runtime.bagService, "field runtime owns the live bag service")
+    local partyRevision = mons:partyRevision()
+    local bagRevision = bag:revision()
+    local flow = composition(game).makePartyFlow()
+    driveUntil(flow, "the party browse page", 30, function(current)
+      return current.page == "party_browse"
+    end)
+    drainOpen(flow)
+    choosePartySlot(flow, 0)
+    choosePartyMenu(flow, "item")
+    choosePartyMenu(flow, "take")
+    local status = flowStatus(flow)
+    local child = flowChild(status)
+    Assert.equal(child.state, "message", "an empty Take answers with its message")
+    local message = child.message
+    Assert.equal(type(message), "table", "an empty Take renders the generated template")
+    Assert.equal(message.templateKey, "takeNoItem", "an empty Take shows the empty-take template")
+    Assert.equal(
+      message.displayName,
+      assert(child.view, "the party child carries its view").slots[1].displayName,
+      "an empty Take names the acting mon the party screen shows"
+    )
+    Assert.equal(mons:partyMon(0).heldItem, "NONE", "an empty Take holds nothing new")
+    Assert.equal(mons:partyRevision(), partyRevision, "an empty Take publishes no mon revision")
+    Assert.equal(bag:revision(), bagRevision, "an empty Take publishes no bag revision")
+    Assert.isNil(flow:takeResult(), "an empty Take reports no terminal result")
+    drive(flow, { { type = "confirm" } })
+    driveUntil(flow, "the dismissed message", 30, function(current)
+      return flowChild(current).state == "browse"
+    end)
+    status = flowStatus(flow)
+    Assert.equal(status.page, "party_browse", "dismissal stays on party browse")
+    Assert.equal(flowChild(status).cursorNode, 0, "dismissal refocuses the same slot")
+    Assert.isNil(flow:takeResult(), "dismissal reports no terminal result")
+    flow:dispose()
+  end)
+end
+
+function T.tests.production_held_take_keeps_its_transfer(context)
+  requireVersions(context)
+  withGame(function(game)
+    local mons = assert(game.runtime.monService, "field runtime owns the live mon service")
+    Assert.isTrue(
+      mons:giveMon({ species = "CHIKORITA", level = 5, heldItem = "POTION" }),
+      "setup gift must enter the party holding a potion"
+    )
+    Assert.isTrue(mons:giveMon({ species = "TOTODILE", level = 5 }), "setup gift must enter the party")
+    local bag = assert(game.runtime.bagService, "field runtime owns the live bag service")
+    local bagQuantity = bag:quantity("POTION")
+    local partyRevision = mons:partyRevision()
+    local bagRevision = bag:revision()
+    local flow = composition(game).makePartyFlow()
+    driveUntil(flow, "the party browse page", 30, function(current)
+      return current.page == "party_browse"
+    end)
+    drainOpen(flow)
+    choosePartySlot(flow, 0)
+    choosePartyMenu(flow, "item")
+    choosePartyMenu(flow, "take")
+    -- Answer the confirmation while the composition asks one: a direct
+    -- Take settles without it, so only answer a visibly open prompt.
+    for _ = 1, 10 do
+      local leaf = flowChild(flowStatus(flow))
+      if leaf.prompt == nil and leaf.state ~= "confirm" then
+        break
+      end
+      drive(flow, { { type = "navigate", direction = "up" } })
+      drive(flow, { { type = "confirm" } })
+    end
+    for _ = 1, 15 do
+      flow:updateFixed({})
+    end
+    Assert.equal(mons:partyMon(0).heldItem, "NONE", "taking must clear the held slot")
+    Assert.equal(
+      bag:quantity("POTION"),
+      bagQuantity + 1,
+      "the taken potion returns to the bag exactly once"
+    )
+    Assert.isTrue(mons:partyRevision() == partyRevision + 1, "taking publishes exactly one mon revision")
+    Assert.isTrue(bag:revision() == bagRevision + 1, "taking publishes exactly one bag revision")
+    local status = flowStatus(flow)
+    Assert.equal(status.page, "party_browse", "taking returns to party browse")
+    Assert.equal(flowChild(status).cursorNode, 0, "taking refocuses the taken slot")
+    Assert.isNil(flow:takeResult(), "taking reports no terminal result")
+    flow:dispose()
   end)
 end
 
