@@ -273,6 +273,10 @@ function FieldWorldSwapCoordinator:createTransition(runtime, doorAt, escalatorAt
       runtime.camera:setTransitionPlayer(player)
     end
     runtime.camera:adjustTransition(profile, adjustment)
+    -- Hand the live camera back so the transition can drive timed angle
+    -- choreography on its own source-frame clock. This stays an adapter:
+    -- no counters, timing, or angle policy live here.
+    return runtime.camera
   end
   local function onPanel(phase)
     runtime.transitionPanel = phase
