@@ -282,4 +282,38 @@ function T.text_palette_roles_name_the_source_printer_slots()
   Assert.deepEqual(roles.female, { 5, 6, 0 }, "female text uses the source gender slots")
 end
 
+function T.context_roles_carry_complete_triples_for_every_entry_family()
+  local roles = PartySources.contextRoles
+  Assert.notNil(roles, "the producer transcribes the context-button presentation roles")
+  Assert.equal(roles.bank, 2, "context-button roles resolve against the button-window bank")
+  Assert.deepEqual(
+    roles.command,
+    { raised = { 14, 15, 4 }, depressed = { 14, 15, 11 } },
+    "command entries keep the bright ink triple"
+  )
+  Assert.deepEqual(
+    roles.field,
+    { raised = { 9, 10, 4 }, depressed = { 9, 10, 11 } },
+    "field entries keep their own ink triple"
+  )
+  Assert.deepEqual(
+    roles.cancel,
+    { raised = { 14, 15, 4 }, depressed = { 14, 15, 11 } },
+    "the cancel entry keeps the command ink triple"
+  )
+end
+
+function T.panel_palette_names_the_switch_selection_bank()
+  local banks = PartySources.panelPalette.stateBanks
+  Assert.equal(banks.switchSelection, 7, "the switch-selection state resolves bank 7")
+  Assert.equal(banks.normal, 0, "the ordinary state still resolves bank 0")
+end
+
+function T.message_templates_select_the_empty_take_message()
+  local template = PartySources.messages.templates.takeNoItem
+  Assert.notNil(template, "the producer selects the empty-take message")
+  Assert.equal(template.bank, 300, "the empty-take message comes from the party message bank")
+  Assert.equal(template.index, 82, "the empty-take message is the dedicated source message")
+end
+
 return { tests = T }

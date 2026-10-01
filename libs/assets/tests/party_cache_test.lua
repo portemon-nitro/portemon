@@ -44,6 +44,7 @@ local function manifest()
         selected = imageRef("assets/generated/party/panel-selected.png", 128, 48),
         fainted = imageRef("assets/generated/party/panel-fainted.png", 128, 48),
         selectedFainted = imageRef("assets/generated/party/panel-selected-fainted.png", 128, 48),
+        switchSelection = imageRef("assets/generated/party/panel-switch-selection.png", 128, 48),
       },
       text = {
         name = rect(origin[1] + 48, origin[2] + 8, 72, 16),
@@ -113,7 +114,7 @@ local function manifest()
     return { image = path, width = width, height = height }
   end
   return {
-    schema = "g4-party-presentation-v3",
+    schema = "g4-party-presentation-v4",
     panes = {
       main = { width = 256, height = 192 },
       sub = { width = 256, height = 192 },
@@ -128,13 +129,10 @@ local function manifest()
     contextMenu = {
       topLevel = topLevel,
       subcontext = subcontext,
-      textPalette = {
-        raised = { r = 248, g = 248, b = 248, a = 255 },
-        depressed = { r = 248, g = 0, b = 0, a = 255 },
-      },
-      fillPalette = {
-        raised = { r = 0, g = 0, b = 248, a = 255 },
-        depressed = { r = 0, g = 248, b = 0, a = 255 },
+      textRoles = {
+        command = { raised = role(), depressed = role() },
+        field = { raised = role(), depressed = role() },
+        cancel = { raised = role(), depressed = role() },
       },
       frames = {
         standard = {
@@ -259,7 +257,10 @@ local function manifest()
     },
     text = {
       labels = { cancel = "Cancel", male = "M", female = "F" },
-      templates = { switchPrompt = { segments = { { kind = "text", value = "Switch?" } } } },
+      templates = {
+        switchPrompt = { segments = { { kind = "text", value = "Switch?" } } },
+        takeNoItem = { segments = { { kind = "text", value = "Nothing held." } } },
+      },
       roles = { ordinary = role(), male = role(), female = role() },
     },
     numberGlyphs = {
@@ -301,7 +302,7 @@ local function writeReady(cache, marker)
   for _, path in ipairs(PartyCache.referencedPaths(data)) do
     cache:write(path, "pixels")
   end
-  cache:writeLua(PartyCache.provenancePath(), { cacheFormat = PartyCache.FORMAT, schema = "g4-party-presentation-v3" })
+  cache:writeLua(PartyCache.provenancePath(), { cacheFormat = PartyCache.FORMAT, schema = "g4-party-presentation-v4" })
   cache:write(PartyCache.markerPath(), marker)
 end
 
@@ -309,7 +310,7 @@ function T.missing_image_is_not_ready()
   local cache = CacheFs.forVersion("heartgold", FakeCache.new())
   local marker = PartyCache.marker("abc", "dep")
   cache:writeLua(PartyCache.manifestPath(), manifest())
-  cache:writeLua(PartyCache.provenancePath(), { cacheFormat = PartyCache.FORMAT, schema = "g4-party-presentation-v3" })
+  cache:writeLua(PartyCache.provenancePath(), { cacheFormat = PartyCache.FORMAT, schema = "g4-party-presentation-v4" })
   cache:write(PartyCache.markerPath(), marker)
   Assert.isFalse(PartyCache.isReady(cache, marker), "referenced images must all exist")
 end
@@ -327,7 +328,7 @@ function T.missing_marker_is_not_ready()
   for _, path in ipairs(PartyCache.referencedPaths(data)) do
     cache:write(path, "pixels")
   end
-  cache:writeLua(PartyCache.provenancePath(), { cacheFormat = PartyCache.FORMAT, schema = "g4-party-presentation-v3" })
+  cache:writeLua(PartyCache.provenancePath(), { cacheFormat = PartyCache.FORMAT, schema = "g4-party-presentation-v4" })
   Assert.isFalse(PartyCache.isReady(cache, PartyCache.marker("abc", "dep")), "no marker means not ready")
 end
 
@@ -337,16 +338,16 @@ function T.current_valid_family_is_ready()
   writeReady(cache, marker)
   Assert.isTrue(PartyCache.isReady(cache, marker), "the complete family reads as ready")
   local loaded = PartyCache.loadManifest(cache)
-  Assert.equal(loaded.schema, "g4-party-presentation-v3")
+  Assert.equal(loaded.schema, "g4-party-presentation-v4")
 end
 
 -- The presentation contract under test extends the synthetic family with
 -- exact icon timelines, text roles, numeric placement, semantic windows,
 -- count-complete menu layouts, and the six generated frame visuals.
 -- Values are synthetic; only readiness participation is under test.
-local function v3manifest()
+local function v4manifest()
   local data = manifest()
-  data.schema = "g4-party-presentation-v3"
+  data.schema = "g4-party-presentation-v4"
   local sequences = {}
   for sequenceNo = 1, 6 do
     sequences[sequenceNo] =
@@ -408,13 +409,10 @@ local function v3manifest()
   data.contextMenu = {
     topLevel = topLevel,
     subcontext = subcontext,
-    textPalette = {
-      raised = { r = 248, g = 248, b = 248, a = 255 },
-      depressed = { r = 248, g = 0, b = 0, a = 255 },
-    },
-    fillPalette = {
-      raised = { r = 0, g = 0, b = 248, a = 255 },
-      depressed = { r = 0, g = 248, b = 0, a = 255 },
+    textRoles = {
+      command = { raised = role(), depressed = role() },
+      field = { raised = role(), depressed = role() },
+      cancel = { raised = role(), depressed = role() },
     },
     frames = {
       standard = {
@@ -446,36 +444,63 @@ local function contextFramePaths()
   }
 end
 
-local function writeReadyV3(cache, marker)
-  local data = v3manifest()
+local function writeReadyV4(cache, marker)
+  local data = v4manifest()
   cache:writeLua(PartyCache.manifestPath(), data)
   for _, path in ipairs(PartyCache.referencedPaths(data)) do
     cache:write(path, "pixels")
   end
-  cache:writeLua(PartyCache.provenancePath(), { cacheFormat = PartyCache.FORMAT, schema = "g4-party-presentation-v3" })
+  cache:writeLua(PartyCache.provenancePath(), { cacheFormat = PartyCache.FORMAT, schema = "g4-party-presentation-v4" })
   cache:write(PartyCache.markerPath(), marker)
 end
 
-function T.complete_v3_family_is_ready()
+function T.complete_v4_family_is_ready()
   local cache = CacheFs.forVersion("heartgold", FakeCache.new())
   local marker = PartyCache.marker("abc", "dep")
-  writeReadyV3(cache, marker)
-  Assert.isTrue(PartyCache.isReady(cache, marker), "the complete v3 family reads as ready")
+  writeReadyV4(cache, marker)
+  Assert.isTrue(PartyCache.isReady(cache, marker), "the complete v4 family reads as ready")
   local loaded = PartyCache.loadManifest(cache)
-  Assert.equal(loaded.schema, "g4-party-presentation-v3")
+  Assert.equal(loaded.schema, "g4-party-presentation-v4")
+end
+
+function T.stale_v3_family_is_not_ready()
+  local cache = CacheFs.forVersion("heartgold", FakeCache.new())
+  local marker = PartyCache.marker("abc", "dep")
+  for _, path in ipairs(PartyCache.referencedPaths(v4manifest())) do
+    cache:write(path, "pixels")
+  end
+  local stale = v4manifest()
+  stale.schema = "g4-party-presentation-v3"
+  stale.contextMenu.textRoles = nil
+  stale.contextMenu.textPalette = {
+    raised = { r = 248, g = 248, b = 248, a = 255 },
+    depressed = { r = 248, g = 0, b = 0, a = 255 },
+  }
+  stale.contextMenu.fillPalette = {
+    raised = { r = 0, g = 0, b = 248, a = 255 },
+    depressed = { r = 0, g = 248, b = 0, a = 255 },
+  }
+  for _, panel in ipairs(stale.panels) do
+    panel.chrome.switchSelection = nil
+  end
+  stale.text.templates.takeNoItem = nil
+  cache:writeLua(PartyCache.manifestPath(), stale)
+  cache:writeLua(PartyCache.provenancePath(), { cacheFormat = PartyCache.FORMAT, schema = "g4-party-presentation-v3" })
+  cache:write(PartyCache.markerPath(), marker)
+  Assert.isFalse(PartyCache.isReady(cache, marker), "the previous family never reads as ready")
 end
 
 function T.missing_context_frame_is_not_ready()
   local cache = CacheFs.forVersion("heartgold", FakeCache.new())
   local marker = PartyCache.marker("abc", "dep")
-  writeReadyV3(cache, marker)
+  writeReadyV4(cache, marker)
   cache:remove(contextFramePaths()[1])
   Assert.isFalse(PartyCache.isReady(cache, marker), "every generated frame visual must exist")
 end
 
 function T.context_frame_paths_are_referenced_exactly_once()
   local counts = {}
-  for _, path in ipairs(PartyCache.referencedPaths(v3manifest())) do
+  for _, path in ipairs(PartyCache.referencedPaths(v4manifest())) do
     counts[path] = (counts[path] or 0) + 1
   end
   for _, path in ipairs(contextFramePaths()) do
