@@ -62,6 +62,13 @@ local DOMAINS = {
     "TransitionTrigger",
     "WarpSystem",
   },
+  encounters = {
+    "EncounterSelection",
+    "HgssEncounterCatalog",
+    "HgssEncounterService",
+    "HgssRoamerState",
+    "WildMonFactory",
+  },
 }
 
 local FIELD_COORDINATION = {
