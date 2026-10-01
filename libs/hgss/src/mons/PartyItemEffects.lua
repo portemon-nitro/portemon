@@ -18,6 +18,7 @@
 -- source integer flooring, then clamps to 0..255; mood clamps to -127..127.
 
 local ItemErrors = require("libs.items.src.errors")
+local ProgressionItemUse = require("libs.hgss.src.mons.ProgressionItemUse")
 
 ---@class PartyItemEffects
 local PartyItemEffects = {}
@@ -457,11 +458,124 @@ local function planEv(staged, partyUse)
   return "friendship_check"
 end
 
+-- Builds the progression item-use context from the caller-supplied world
+-- facts. Every fact must be explicit: when the host has not identified the
+-- item or supplied the bag, party, and clock facts, planning stays honestly
+-- deferred instead of guessing.
+---@param context table<string, unknown>
+---@param catalog table<string, unknown>
+---@return table<string, unknown>?
+local function deferredItemContext(context, catalog)
+  if type(context.item) ~= "string" or context.item == "" then
+    return nil
+  end
+  if type(context.inventory) ~= "table" then
+    return nil
+  end
+  if type(context.party) ~= "table" then
+    return nil
+  end
+  if type(context.timeOfDay) ~= "string" then
+    return nil
+  end
+  return {
+    catalog = catalog,
+    game = context.game,
+    timeOfDay = context.timeOfDay,
+    location = context.location,
+    party = context.party,
+    inventory = context.inventory,
+  }
+end
+
+---@param mon table<string, unknown>
+---@return integer
+---@return table<integer, table<string, unknown>>
+local function conditionFacts(mon)
+  local condition = assert(mon.condition, "progression planning carries a condition record")
+  assert(type(condition) == "table", "progression planning carries a condition record")
+  local hp = assert(condition.currentHp, "progression planning carries current health") --[[@as integer]]
+  assert(type(hp) == "number", "progression planning carries current health")
+  local effects = assert(condition.effects, "progression planning carries condition effects")
+  assert(type(effects) == "table", "progression planning carries condition effects")
+  return hp, copyValue(effects)
+end
+
+-- Translates one sweet plan into the party-effect vocabulary: decision-free
+-- gains stage a ready plan while pending learning or an earned evolution
+-- waits on an explicit confirmation instead of answering silently.
+---@param planned table<string, unknown>
+---@param mon table<string, unknown>
+---@param itemKey string
+---@return table<string, unknown>
+local function translateLevelItem(planned, mon, itemKey)
+  if not planned.applied then
+    return { kind = "no_effect" }
+  end
+  local hpBefore, effectsBefore = conditionFacts(mon)
+  local crossed = assert(planned.crossedLevels, "level plans report crossed levels")
+  assert(type(crossed) == "table" and #crossed > 0, "applied level plans cross one level")
+  local learning = assert(planned.learningOpportunities, "level plans report learning chances")
+  assert(type(learning) == "table", "level plans report learning chances")
+  local feedback = {
+    slots = { slotFacts(planned.mon, hpBefore, effectsBefore) },
+    textKey = "level_up",
+    bindings = { item = itemKey, level = crossed[#crossed] },
+  }
+  if #learning == 0 and planned.evolution == nil then
+    return { kind = "ready", updates = planned.mon, feedback = feedback }
+  end
+  return { kind = "needs_confirmation", candidate = planned, feedback = feedback }
+end
+
+-- Plans one deferred level or evolution item through the progression owner.
+-- Eggs stay ineligible; non-progression deferrals stay unavailable; foreign
+-- items raise through the progression owner without consuming anything.
+---@param mon table<string, unknown>
+---@param partyUse table<string, unknown>
+---@param context table<string, unknown>
+---@return table<string, unknown>
+local function planDeferred(mon, partyUse, context)
+  local reason = partyUse.reason
+  if reason ~= "level_up" and reason ~= "evolution" then
+    return { kind = "feature_unavailable" }
+  end
+  if mon.isEgg == true then
+    return { kind = "ineligible" }
+  end
+  local catalog = assert(context.catalog, "effect planning needs a catalog in context")
+  local itemContext = deferredItemContext(context, catalog)
+  if itemContext == nil then
+    return { kind = "feature_unavailable" }
+  end
+  local itemKey = assert(context.item, "identified progression items carry their key")
+  assert(type(itemKey) == "string", "identified progression items carry their key")
+  if reason == "level_up" then
+    return translateLevelItem(ProgressionItemUse.planLevelItem(mon, itemKey, itemContext), mon, itemKey)
+  end
+  local staged = ProgressionItemUse.planEvolutionItem(mon, itemKey, itemContext)
+  if staged == nil then
+    return { kind = "no_effect" }
+  end
+  local hpBefore, effectsBefore = conditionFacts(mon)
+  return {
+    kind = "needs_confirmation",
+    candidate = staged,
+    feedback = {
+      slots = { slotFacts(copyValue(mon), hpBefore, effectsBefore) },
+      textKey = "evolution_confirm",
+      bindings = { item = itemKey, species = staged.plan.monAfter.species },
+    },
+  }
+end
+
 -- Plans a single party-item use on copied facts. Returns a ready plan with
 -- the staged mon and presentation feedback, needs_move when a power-point
 -- item still needs its target move, no_effect when nothing may change,
--- ineligible for the wrong target, or feature_unavailable for explicitly
--- deferred effects. Malformed generated metadata raises loudly.
+-- ineligible for the wrong target, needs_confirmation when a progression
+-- item earns learning or an evolution the host must confirm, or
+-- feature_unavailable for effects the host cannot plan yet. Malformed
+-- generated metadata raises loudly.
 ---@param mon table<string, unknown>
 ---@param itemDefinition table<string, unknown>
 ---@param moveSlot integer|nil
@@ -476,8 +590,11 @@ function PartyItemEffects.plan(mon, itemDefinition, moveSlot, context, derived)
   assert(type(maxHp) == "number" and maxHp % 1 == 0 and maxHp >= 1, "derived facts carry the maximum")
   local partyUse = partyUseOf(itemDefinition)
   local kind = partyUse.kind
-  if kind == "machine" or kind == "deferred" then
+  if kind == "machine" then
     return { kind = "feature_unavailable" }
+  end
+  if kind == "deferred" then
+    return planDeferred(mon, partyUse, context)
   end
   if kind == "none" then
     return { kind = "ineligible" }

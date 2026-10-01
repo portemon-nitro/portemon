@@ -327,4 +327,215 @@ function T.transfer_rejects_bad_targets()
   Assert.equal(PartyItemEffects.planTransfer(donor, egg, derived(100), derived(30)).kind, "ineligible")
 end
 
+-- Deferred progression items plan through the progression owner once the
+-- host identifies the item and supplies bag, party, and clock facts. The
+-- vectors below reuse the real mon and item catalogs with local slot edits
+-- only, so delegation is proved against production arithmetic.
+local CatalogFixture = require("libs.mons.tests.catalog_fixture")
+local ProgressionExperience = require("libs.mons.src.gen4.Experience")
+local ProgressionStats = require("libs.mons.src.gen4.MonStats")
+
+---@return table mon catalog with a level slot and a stone slot on CHIKORITA
+local function progressionCatalog()
+  local root = CatalogFixture.buildAssetRoot()
+  local ItemFixture = require("libs.items.tests.item_fixture")
+  local asset = ItemFixture.buildAssetRoot()
+  for _, swap in ipairs({ { from = "ITEM_43", to = "RARE_CANDY" }, { from = "ITEM_210", to = "FIRE_STONE" } }) do
+    local record = asset.items[swap.from]
+    assert(record ~= nil, "the item fixture carries placeholder " .. swap.from)
+    asset.items[swap.from] = nil
+    asset.items[swap.to] = record
+  end
+  local ItemCatalog = require("libs.items.src.ItemCatalog")
+  local catalog = require("libs.mons.src.MonCatalog").new(root, ItemCatalog.new(asset))
+  local species = root.species
+  assert(species.CHIKORITA ~= nil, "the fixture carries CHIKORITA")
+  return catalog
+end
+
+---@param catalog table mon catalog under test
+---@param seed integer fixed generator state for this roster member
+---@param level integer pinned level for this vector
+---@return table persistent mon record at exactly the pinned level
+local function progressionMon(catalog, seed, level)
+  local factory = CatalogFixture.makeFactory(seed, catalog)
+  local record = factory:createNormal(CatalogFixture.normalRequest({}))
+  local species = catalog:species(record.species)
+  record.experience = ProgressionExperience.expFor(catalog:growthCurve(species.growthCurve), level)
+  for _, key in ipairs({ "hp", "attack", "defense", "speed", "specialAttack", "specialDefense" }) do
+    record.ivs[key] = 10
+    record.evs[key] = 0
+  end
+  record.condition.currentHp = ProgressionStats.derive(record, catalog).maxHp
+  return record
+end
+
+---@param catalog table mon catalog under test
+---@param record table mon record under test
+---@param item string identified item key for this vector
+---@param inventory table<string, integer> bag counts visible to the vector
+---@return table<string, unknown> progression planning context with frozen world facts
+local function progressionContext(catalog, record, item, inventory)
+  return {
+    location = 7,
+    catalog = catalog,
+    item = item,
+    inventory = inventory,
+    party = { record },
+    timeOfDay = "day",
+    game = "heartgold",
+  }
+end
+
+---@param reason string deferred party-use reason for this vector
+---@return table<string, unknown> generated-style item definition carrying the deferral
+local function deferredDefinition(reason)
+  return { nativeId = 43, partyUse = { kind = "deferred", reason = reason } }
+end
+
+---@param catalog table mon catalog under test
+---@param record table mon record under test
+---@return table<string, unknown> derived facts carrying the live maximum
+local function liveDerived(catalog, record)
+  return { maxHp = ProgressionStats.derive(record, catalog).maxHp }
+end
+
+function T.deferred_sweets_stage_real_levels()
+  local catalog = progressionCatalog()
+  local target = progressionMon(catalog, 811, 9)
+  target.moves = {
+    { move = "TACKLE", pp = 35, ppUps = 0 },
+    { move = "GROWL", pp = 40, ppUps = 0 },
+    { move = "RAZOR_LEAF", pp = 25, ppUps = 0 },
+    { move = "POISONPOWDER", pp = 35, ppUps = 0 },
+  }
+  local plan = PartyItemEffects.plan(
+    target,
+    deferredDefinition("level_up"),
+    nil,
+    progressionContext(catalog, target, "RARE_CANDY", { RARE_CANDY = 1 }),
+    liveDerived(catalog, target)
+  )
+  Assert.equal(plan.kind, "ready", "a decision-free sweet stages a ready plan")
+  local species = catalog:species("CHIKORITA")
+  local curve = catalog:growthCurve(species.growthCurve)
+  Assert.equal(
+    plan.updates.experience,
+    ProgressionExperience.expFor(curve, 10),
+    "the staged record carries next-level experience"
+  )
+  Assert.equal(plan.feedback.textKey, "level_up", "the feedback names the level gain")
+  Assert.equal(plan.feedback.bindings.level, 10, "the feedback names the crossed level")
+end
+
+function T.deferred_sweets_wait_on_pending_decisions()
+  local catalog = progressionCatalog()
+  local target = progressionMon(catalog, 823, 5)
+  target.moves = {
+    { move = "TACKLE", pp = 35, ppUps = 0 },
+  }
+  local plan = PartyItemEffects.plan(
+    target,
+    deferredDefinition("level_up"),
+    nil,
+    progressionContext(catalog, target, "RARE_CANDY", { RARE_CANDY = 1 }),
+    liveDerived(catalog, target)
+  )
+  Assert.equal(plan.kind, "needs_confirmation", "pending learning waits on confirmation")
+  Assert.isTrue(#plan.candidate.learningOpportunities > 0, "the candidate carries the chances")
+  local capped = progressionMon(catalog, 827, 9)
+  local refused = PartyItemEffects.plan(
+    capped,
+    deferredDefinition("level_up"),
+    nil,
+    progressionContext(catalog, capped, "RARE_CANDY", {}),
+    liveDerived(catalog, capped)
+  )
+  Assert.equal(refused.kind, "no_effect", "an empty pocket reports no effect")
+end
+
+function T.deferred_stones_stage_confirmable_plans()
+  local root = CatalogFixture.buildAssetRoot()
+  local forms = root.species.CHIKORITA.forms
+  forms[0].evolutions = {
+    { method = "stone", item = "FIRE_STONE", target = "EEVEE", form = 0 },
+  }
+  local ItemFixture = require("libs.items.tests.item_fixture")
+  local asset = ItemFixture.buildAssetRoot()
+  local stone = asset.items.ITEM_210
+  assert(stone ~= nil, "the item fixture carries placeholder ITEM_210")
+  asset.items.ITEM_210 = nil
+  asset.items.FIRE_STONE = stone
+  local ItemCatalog = require("libs.items.src.ItemCatalog")
+  local MonCatalog = require("libs.mons.src.MonCatalog")
+  local catalog = MonCatalog.new(root, ItemCatalog.new(asset))
+  local target = progressionMon(catalog, 839, 12)
+  local plan = PartyItemEffects.plan(
+    target,
+    { nativeId = 210, partyUse = { kind = "deferred", reason = "evolution" } },
+    nil,
+    progressionContext(catalog, target, "FIRE_STONE", { FIRE_STONE = 2 }),
+    liveDerived(catalog, target)
+  )
+  Assert.equal(plan.kind, "needs_confirmation", "stones wait on confirmation")
+  Assert.equal(plan.candidate.plan.monAfter.species, "EEVEE", "the candidate carries the stone target")
+  Assert.deepEqual(
+    plan.candidate.plan.inventoryDeltas,
+    { { item = "FIRE_STONE", delta = -1 } },
+    "the candidate spends exactly one stone"
+  )
+  Assert.equal(plan.candidate.consumedOnAccept, 1, "accepting spends exactly one")
+  Assert.equal(plan.candidate.consumedOnCancel, 0, "declining spends nothing")
+  local wrong = PartyItemEffects.plan(
+    target,
+    { nativeId = 210, partyUse = { kind = "deferred", reason = "evolution" } },
+    nil,
+    progressionContext(catalog, target, "FIRE_STONE", {}),
+    liveDerived(catalog, target)
+  )
+  Assert.equal(wrong.kind, "no_effect", "an empty pocket reports no effect")
+end
+
+function T.deferred_items_without_identified_facts_stay_deferred()
+  local catalog = progressionCatalog()
+  local target = progressionMon(catalog, 853, 9)
+  local bare = { location = 7, catalog = catalog }
+  Assert.equal(
+    PartyItemEffects.plan(target, deferredDefinition("level_up"), nil, bare, liveDerived(catalog, target)).kind,
+    "feature_unavailable",
+    "an unidentified item stays deferred"
+  )
+  local noBag = progressionContext(catalog, target, "RARE_CANDY", { RARE_CANDY = 1 })
+  noBag.inventory = nil
+  Assert.equal(
+    PartyItemEffects.plan(target, deferredDefinition("level_up"), nil, noBag, liveDerived(catalog, target)).kind,
+    "feature_unavailable",
+    "missing bag facts stay deferred"
+  )
+  Assert.equal(
+    PartyItemEffects.plan(
+      target,
+      deferredDefinition("battle_only"),
+      nil,
+      progressionContext(catalog, target, "RARE_CANDY", { RARE_CANDY = 1 }),
+      liveDerived(catalog, target)
+    ).kind,
+    "feature_unavailable",
+    "non-progression deferrals stay unavailable"
+  )
+  local egg = progressionMon(catalog, 859, 9)
+  egg.isEgg = true
+  Assert.equal(
+    PartyItemEffects.plan(
+      egg,
+      deferredDefinition("level_up"),
+      nil,
+      progressionContext(catalog, egg, "RARE_CANDY", { RARE_CANDY = 1 }),
+      liveDerived(catalog, egg)
+    ).kind,
+    "ineligible",
+    "eggs stay ineligible"
+  )
+end
+
 return { tests = T }
