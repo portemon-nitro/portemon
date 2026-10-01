@@ -95,6 +95,21 @@ local function assertNamedBinding(kind, key, definition, owner)
   if definition.chart ~= nil and (type(definition.chart) ~= "string" or definition.chart == "") then
     Errors.raise("BATTLE_INVALID", kind .. " " .. key .. " chart must be a non-empty string", context)
   end
+  if kind == "formats" and definition.actionKinds ~= nil then
+    local kinds = definition.actionKinds
+    if type(kinds) ~= "table" or #kinds == 0 then
+      Errors.raise("BATTLE_INVALID", kind .. " " .. key .. " actionKinds must be a non-empty array", context)
+    end
+    for index, admitted in ipairs(kinds) do
+      if type(admitted) ~= "string" or admitted == "" then
+        Errors.raise(
+          "BATTLE_INVALID",
+          kind .. " " .. key .. " actionKinds[" .. index .. "] must be a non-empty string",
+          context
+        )
+      end
+    end
+  end
 end
 
 ---@param value unknown
