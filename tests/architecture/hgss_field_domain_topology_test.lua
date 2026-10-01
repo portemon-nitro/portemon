@@ -67,6 +67,9 @@ local DOMAINS = {
     "HgssTrainerFactory",
     "HgssTrainerAi",
     "HgssOpponentControllers",
+    "HgssBattleCommitter",
+    "HgssBattleRewards",
+    "HgssSendToPcStub",
     "ai/NativeAiEvaluator",
   },
   encounters = {
