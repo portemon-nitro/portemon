@@ -13,7 +13,7 @@ local LocalClock = require("game.src.LocalClock")
 local PlayTime = require("libs.hgss.src.save.PlayTime")
 local RecordingScriptHosts = require("tests.acceptance.support.RecordingScriptHosts")
 local AcceptanceScriptFs = require("tests.acceptance.support.AcceptanceScriptFs")
-local RepoFs = require("game.src.RepoFs")
+local RepoFs = require("libs.storage.src.RepoFs")
 local FieldMovement = require("tests.acceptance.support.FieldMovement")
 local BagSave = require("libs.hgss.src.save.BagSave")
 

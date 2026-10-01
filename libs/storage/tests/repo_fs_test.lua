@@ -8,7 +8,7 @@
 
 local Assert = require("tests.support.Assert")
 
-local RepoFs = require("game.src.RepoFs")
+local RepoFs = require("libs.storage.src.RepoFs")
 
 local T = {
   metadata = {
@@ -41,8 +41,8 @@ function T.tests.traversal_paths_are_rejected()
 end
 
 function T.tests.normal_relative_paths_still_resolve()
-  local fs = RepoFs.new("game")
-  local content = fs:read("src/RepoFs.lua")
+  local fs = RepoFs.new(".")
+  local content = fs:read("libs/storage/src/RepoFs.lua")
   Assert.notNil(content, "normal path must resolve")
   Assert.notNil(string.find(content --[[@as string]], "RepoFs"), "resolved content must be the real file")
 
@@ -53,7 +53,7 @@ function T.tests.normal_relative_paths_still_resolve()
 end
 
 function T.tests.canonical_root_escape_attempts_fail_at_the_boundary()
-  local fs = RepoFs.new("game")
+  local fs = RepoFs.new(".")
   assertRejected(fs, "src/../../AGENTS.md")
   assertRejected(fs, "src/game/../../../../README.md")
 end

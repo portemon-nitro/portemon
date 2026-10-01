@@ -68,7 +68,7 @@ local FieldWorldSwapCoordinator = require("game.hgss.src.field.FieldWorldSwapCoo
 local FieldSaveCoordinator = require("game.hgss.src.field.FieldSaveCoordinator")
 local GameSaveValidation = require("libs.hgss.src.save.GameSaveValidation")
 local LocalClock = require("game.src.LocalClock")
-local RepoFs = require("game.src.RepoFs")
+local RepoFs = require("libs.storage.src.RepoFs")
 local WindowConfig = require("game.src.WindowConfig")
 
 local function composeStarterBalls(runtime)

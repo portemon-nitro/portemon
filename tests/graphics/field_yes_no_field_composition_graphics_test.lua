@@ -11,7 +11,7 @@ local PixelScale = require("libs.ui.src.PixelScale")
 local PlayTime = require("libs.hgss.src.save.PlayTime")
 local AcceptanceScriptFs = require("tests.acceptance.support.AcceptanceScriptFs")
 local AcceptanceScripts = require("tests.acceptance.support.AcceptanceScripts")
-local RepoFs = require("game.src.RepoFs")
+local RepoFs = require("libs.storage.src.RepoFs")
 local RomImporter = require("romdump.src.source.RomImporter")
 local ScreenTopology = require("libs.ui.src.ScreenTopology")
 

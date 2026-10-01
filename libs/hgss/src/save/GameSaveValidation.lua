@@ -76,27 +76,13 @@ local function contextForCache(cacheFs, overrideFs, versionId)
   )
   return {
     charmap = fontDef.charmap,
+    language = monLanguage,
     frameIndexes = frameIndexes,
     audioSequenceIds = audioSequenceIds,
     scriptCompatibility = FieldScriptCompatibility.new({ cacheFs = cacheFs, overrideFs = overrideFs }),
     monCatalog = monCatalog,
     itemCatalog = itemCatalog,
   }
-end
-
--- Only a validated empty old script bucket rebinds to the current
--- fingerprints: no environments, instances, or tasks may be live. Counters
--- and every other bucket field survive untouched.
----@param bucket unknown
----@return boolean
-local function isQuiescentScripts(bucket)
-  return type(bucket) == "table"
-    and type(bucket.environments) == "table"
-    and #bucket.environments == 0
-    and type(bucket.instances) == "table"
-    and #bucket.instances == 0
-    and type(bucket.tasks) == "table"
-    and #bucket.tasks == 0
 end
 
 ---@param bucket table<string, unknown>
@@ -125,7 +111,9 @@ function GameSaveValidation.new(options)
   }, GameSaveValidation)
 end
 
-function GameSaveValidation:_context(versionId)
+---@param versionId string
+---@return table<string, unknown> context borrowed from this validator, read-only
+function GameSaveValidation:contextForVersion(versionId)
   local context = self.contexts[versionId]
   if context then
     return context
@@ -151,7 +139,7 @@ function GameSaveValidation:validate(record, context)
     if context == nil and (type(record) ~= "table" or type(record.versionId) ~= "string") then
       return GameSave.validate(record)
     end
-    local selected = context or self:_context(record.versionId)
+    local selected = context or self:contextForVersion(record.versionId)
     -- Explicit v3 -> v4 migration before canonical validation. Quiescent
     -- old script buckets rebind to the current fingerprints (counters and
     -- world/RNG data preserved); an incompatible active graph is rejected
@@ -159,7 +147,7 @@ function GameSaveValidation:validate(record, context)
     local effective = record
     if type(record) == "table" and record.schema == "g4-game-save-v3" then
       local options = selected.scriptCompatibility:validationOptions()
-      if not isQuiescentScripts(record.scripts) then
+      if not ScriptSave.isQuiescent(record.scripts) then
         return nil,
           Errors.new(
             GameSaveErrors.GAME_SAVE_SCHEMA_UNSUPPORTED,
