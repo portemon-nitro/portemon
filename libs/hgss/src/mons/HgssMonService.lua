@@ -31,6 +31,26 @@ local Errors = require("libs.errors.src.Errors")
 local HgssMonService = {}
 HgssMonService.__index = HgssMonService
 
+-- Live field parties, newest last with weak values so finished runtimes
+-- never pin memory. The single-player field owns one party at a time;
+-- battle result publication resolves that party when the caller hands it
+-- bare capture results without staging a party batch first. Explicitly
+-- staged batches always take precedence over this record.
+local LIVE_OWNERS = setmetatable({}, { __mode = "v" })
+
+-- Returns live field parties newest first, skipping collected runtimes.
+---@return HgssMonService[]
+function HgssMonService.liveOwners()
+  local owners = {}
+  for index = #LIVE_OWNERS, 1, -1 do
+    local owner = LIVE_OWNERS[index]
+    if owner ~= nil then
+      owners[#owners + 1] = owner
+    end
+  end
+  return owners
+end
+
 -- Native game identities (pret/pokeheartgold version layout; the domain
 -- tests pin heartgold to 7 and soulsilver to 8).
 HgssMonService.GAMES = { heartgold = 7, soulsilver = 8 }
@@ -175,7 +195,7 @@ function HgssMonService.new(opts)
     game = opts.game,
     language = opts.language,
   })
-  return setmetatable({
+  local service = setmetatable({
     _catalog = opts.catalog,
     _context = context,
     _party = restored.party,
@@ -187,6 +207,8 @@ function HgssMonService.new(opts)
     _mapSection = opts.mapSection,
     _date = opts.date ~= nil and opts.date or opts.dateProvider,
   }, HgssMonService)
+  LIVE_OWNERS[#LIVE_OWNERS + 1] = service
+  return service
 end
 
 ---@return MonCatalog
@@ -430,10 +452,12 @@ end
 ---@field publish fun()
 ---@param expectedRevision integer
 ---@param updates { slot: integer, mon: table<string, unknown> }[]
+---@param appends table<string, unknown>[]
 ---@return PartyPreparation|nil, string|nil
-function HgssMonService:preparePartyChanges(expectedRevision, updates)
+function HgssMonService:preparePartyBatch(expectedRevision, updates, appends)
   assert(type(expectedRevision) == "number", "party preparation requires the expected revision")
   assert(type(updates) == "table", "party preparation requires an update array")
+  assert(type(appends) == "table", "party preparation requires an append array")
   if expectedRevision ~= self._party:revision() then
     return nil, "stale"
   end
@@ -442,7 +466,11 @@ function HgssMonService:preparePartyChanges(expectedRevision, updates)
     assert(type(update) == "table", "party preparation updates must be records")
     checked[#checked + 1] = { slot = update.slot, mon = self:_checked(update.mon) }
   end
-  local candidate = self._party:withUpdates(checked)
+  local catches = {}
+  for _, mon in ipairs(appends) do
+    catches[#catches + 1] = self:_checked(mon)
+  end
+  local candidate = self._party:withChanges(checked, catches)
   local captured = self._party
   local capturedRevision = self._party:revision()
   local changed = candidate:revision() ~= capturedRevision
@@ -456,6 +484,13 @@ function HgssMonService:preparePartyChanges(expectedRevision, updates)
     self._party = candidate
   end
   return { changed = changed, isCurrent = isCurrent, publish = publish }
+end
+
+---@param expectedRevision integer
+---@param updates { slot: integer, mon: table<string, unknown> }[]
+---@return PartyPreparation|nil, string|nil
+function HgssMonService:preparePartyChanges(expectedRevision, updates)
+  return self:preparePartyBatch(expectedRevision, updates, {})
 end
 
 ---@param mon table<string, unknown>

@@ -107,20 +107,15 @@ function Party:set(slot0, mon)
   self._revision = self._revision + 1
 end
 
--- Stages a same-size replacement without mutating the party: each update
--- names a unique existing zero-based slot and its replacement record. The
--- candidate carries copies, so later caller edits never leak into it. An
--- empty update set preserves the revision; any non-empty set advances it
--- exactly once. Rejected stagings raise before allocating a candidate.
 ---@param updates { slot: integer, mon: table<string, unknown> }[]
----@return Party
-function Party:withUpdates(updates)
+---@param count integer live mon count
+local function checkUpdates(updates, count)
   assert(type(updates) == "table", "party staging requires an update array")
   local seen = {}
   for _, update in ipairs(updates) do
     assert(type(update) == "table", "party staging updates must be records")
     local slot = update.slot
-    if type(slot) ~= "number" or slot % 1 ~= 0 or slot < 0 or slot >= #self._mons then
+    if type(slot) ~= "number" or slot % 1 ~= 0 or slot < 0 or slot >= count then
       MonsErrors.raise(MonsErrors.SAVE_INVALID, "party staging slot is out of range", { slot = slot })
     end
     assert(type(slot) == "number", "staging slot validated above")
@@ -132,15 +127,58 @@ function Party:withUpdates(updates)
       MonsErrors.raise(MonsErrors.SAVE_INVALID, "party staging requires a mon record", { slot = slot })
     end
   end
+end
+
+---@param appends table<string, unknown>[]
+---@param count integer live mon count
+local function checkAppends(appends, count)
+  assert(type(appends) == "table", "party staging requires an append array")
+  for _, mon in ipairs(appends) do
+    if type(mon) ~= "table" then
+      MonsErrors.raise(MonsErrors.SAVE_INVALID, "party staging requires a mon record", {})
+    end
+  end
+  if count + #appends > Party.MAX then
+    MonsErrors.raise(MonsErrors.SAVE_INVALID, "party staging exceeds six mons", { count = count })
+  end
+end
+
+-- Stages validated replacements plus caught-mon appends without mutating
+-- the party: each update names a unique existing zero-based slot and its
+-- replacement record, and each append carries one caught mon for the
+-- first free slots in order. The candidate carries copies, so later
+-- caller edits never leak into it. An empty batch preserves the
+-- revision; any non-empty batch advances it exactly once. Rejected
+-- stagings raise before allocating a candidate.
+---@param updates { slot: integer, mon: table<string, unknown> }[]
+---@param appends table<string, unknown>[]
+---@return Party
+function Party:withChanges(updates, appends)
+  checkUpdates(updates, #self._mons)
+  checkAppends(appends, #self._mons)
   local mons = copyValue(self._mons)
   for _, update in ipairs(updates) do
     mons[update.slot + 1] = copyValue(update.mon)
   end
+  for _, mon in ipairs(appends) do
+    mons[#mons + 1] = copyValue(mon)
+  end
   local revision = self._revision
-  if #updates > 0 then
+  if #updates > 0 or #appends > 0 then
     revision = revision + 1
   end
   return build(mons, revision)
+end
+
+-- Stages a same-size replacement without mutating the party: each update
+-- names a unique existing zero-based slot and its replacement record. The
+-- candidate carries copies, so later caller edits never leak into it. An
+-- empty update set preserves the revision; any non-empty set advances it
+-- exactly once. Rejected stagings raise before allocating a candidate.
+---@param updates { slot: integer, mon: table<string, unknown> }[]
+---@return Party
+function Party:withUpdates(updates)
+  return self:withChanges(updates, {})
 end
 
 ---@param predicate fun(mon: table<string, unknown>): boolean
