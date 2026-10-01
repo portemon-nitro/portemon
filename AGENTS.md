@@ -30,13 +30,13 @@ Read the narrowest authoritative source instead of duplicating it:
 - `romdump/AGENTS.md`: ROM/HGSS/decomp-source rules.
 - `libs/nds/AGENTS.md`: Nintendo DS/Nitro platform ownership and dependency direction.
 - `libs/script/AGENTS.md`: mod scripting platform ownership and injected game meaning.
-- `libs/hgss/AGENTS.md`: recreated HGSS runtime mechanism ownership.
-- `libs/ui/AGENTS.md`: shared game-independent widget ownership.
+- `libs/hgss/AGENTS.md`: reusable HGSS runtime mechanism ownership.
+- `libs/ui/AGENTS.md`: shared game-independent widget and presentation ownership.
 - `libs/assets/AGENTS.md`: generated/mod-facing asset contract rules.
 - `libs/mons/AGENTS.md`: mon/party domain and Generation-IV representation rules.
-- `app/AGENTS.md`: process, launcher, and provisioning rules.
-- `game/AGENTS.md`: game-agnostic lifecycle and host-adapter rules.
-- `game/hgss/AGENTS.md`: concrete HGSS application composition and policy rules.
+- `app/AGENTS.md`: product process, launcher, tooling, and provisioning rules.
+- `game/AGENTS.md`: retail-game layer and generic running-game host rules.
+- `game/hgss/AGENTS.md`: concrete HGSS retail composition and policy rules.
 - `.agents/docs/adr/`: durable rationale for architectural decisions likely to be revisited.
 - `.agents/skills/`: workflows. Skills should consume repository guidance, not restate it.
 
@@ -100,16 +100,26 @@ package.
 
 - The repository has two runnable LÖVE apps, `app/` and `romdump/`, plus shared libraries.
   See `docs/architecture.md` for the current map.
-- `app/` owns the LÖVE process shell, launcher, version selection, ROM provisioning, and
-  process exit policy. It may reach `romdump` only for provisioning and composes a concrete
-  game application; it does not import HGSS mechanisms directly.
+- Classify ownership by why behavior exists and by the lowest reusable owner that can express
+  it without upward dependencies; the current caller's directory is not proof of ownership.
+  Portemon-created product behavior belongs in `app` unless it is reusable mechanism/domain
+  logic. Retail-game observable behavior belongs in `game/<family>`. Reusable domain and
+  runtime mechanisms belong in `libs/<domain>`. ROM/decomp interpretation and generated
+  artifact production belong in `romdump`.
+- `app/` owns the LÖVE process shell, launcher, startup Main Menu, product tooling, version
+  selection, ROM provisioning, and process exit policy. It may consume reusable libraries
+  admitted by the architecture gate and may reach `romdump` only for provisioning. Retail
+  behavior enters through the concrete game seam.
 - `game/src/` owns the game-agnostic running-game lifecycle and host adapters (`Game`,
   `WindowConfig`, `LocalClock`, `RepoFs`, and audio output). It must not import `app`,
   `game/hgss`, `libs/hgss`, `libs/nds`, or `romdump`.
-- `game/hgss/` owns the concrete HeartGold/SoulSilver application: menu, new-game/Oak,
-  field application, save compatibility, and application audio. It
-  consumes the generic `game` host and reusable mechanisms, but does not import `app`,
-  `romdump`, or `libs/nds`.
+- `game/<family>/` owns reproduction of a concrete retail game's observable application
+  flow and composition. `game/hgss/` owns HGSS New Game/Continue/Oak/field flows and retail
+  application composition; it consumes the generic `game` host and reusable mechanisms but
+  does not import `app`, `romdump`, or `libs/nds`.
+- `libs/<domain>/` owns reusable semantic mechanisms. HGSS-specific save compatibility and
+  input/script semantics can remain reusable within `libs/hgss`; shared presentation
+  mechanisms belong in `libs/ui`. Reusable does not mean game-agnostic.
 - Domain logic should remain independently testable from LÖVE. `libs/assets`, `libs/codec`,
   `libs/storage`, `libs/errors`, and `libs/math` must not `require` love.
 - Reusable Nintendo container and Nitro/NNS format mechanics belong in `libs/nds`.

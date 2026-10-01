@@ -23,9 +23,11 @@ on window size or hide required controls.
 
 ## Shared presentation owners
 
-Three product-local owners in `game/hgss/src/ui` carry the common
-policy; leaf interfaces supply only their own geometry and callbacks.
+Shared display and presentation mechanisms in `libs/ui` carry common policy;
+feature interfaces supply their own semantic geometry and callbacks.
 
+- `ScreenTopology` describes available host surfaces and their semantic roles.
+  It provides facts, not a universal interface policy.
 - `DisplayContext` measures the actual drawable: host dimensions,
   topology surfaces with safe areas and reservations, and the uniform
   framebuffer-pixels-per-host-unit ratio. It never invents surfaces.
@@ -155,8 +157,9 @@ Three surfaces never gain an outer frame or outside dismissal:
 - Oak Naming stays canonical 256x192, centered and scaled but
   undecorated, and outside presses neither insert glyphs nor leave
   name editing.
-- The startup Main Menu is a responsive fullscreen surface with its
-  own backdrop and no HGSS frame.
+- The startup Main Menu is an app-owned product surface: responsive and fullscreen, with its
+  own backdrop and no HGSS frame. Retail field/Oak interfaces remain owned by their HGSS
+  application features.
 - Starter Choice draws an outer frame when underfilled but stays
   blocking: outside presses never dismiss it.
 

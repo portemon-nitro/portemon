@@ -18,7 +18,8 @@ that way, because HGSS works that way, because the mod platform works that way, 
 portemon stores or composes it that way? The answer determines its owner.
 
 The application-top refinement is recorded separately in
-[Application and game boundaries](application-game-boundaries.md). This ADR remains the
+[Product, retail-game, and reusable-library boundaries](product-retail-library-boundaries.md).
+This ADR remains the
 accepted decision for the reusable runtime packages and their relationship to producers.
 
 ## Decision
@@ -43,12 +44,13 @@ alongside the existing foundation and asset packages.
   presentation policy.
 - `romdump` owns supported-ROM identity, HGSS source interpretation, lowering, and derived
   asset compilation. It may consume lower reusable packages but never HGSS runtime code.
-- `app` owns the process shell, launcher, version selection, provisioning, and process exit
-  policy. `game` owns the generic running-game lifecycle and host adapters. `game/hgss` owns
-  the concrete HGSS application composition, story and new-game flow, intro policy, and
-  user-facing product states. The application packages reach Nintendo mechanisms through
-  HGSS-facing APIs and do not import `libs.nds` directly; `app` may use the existing narrow
-  `romdump` provisioning boundary.
+- `app` owns the process shell, product startup Main Menu and tooling, launcher, version
+  selection, provisioning, and process exit policy. `game/src` owns the generic running-game
+  lifecycle and host adapters; `game/hgss` owns concrete HGSS retail application composition,
+  story and new-game flow, and intro policy. The application packages reach Nintendo
+  mechanisms through HGSS-facing APIs and do not import `libs.nds` directly; `app` may use
+  the narrow `romdump` provisioning boundary and reusable libraries admitted by the
+  architecture gate.
 
 The dependency edges run from NDS to foundations, from assets and script to their allowed
 lower layers, from HGSS to NDS/script/assets, and from `game/hgss` to the generic game host

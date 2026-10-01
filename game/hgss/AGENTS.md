@@ -8,14 +8,15 @@ playable product.
 
 - `game/hgss/src/HgssGame.lua` is the concrete HGSS game entry. It creates the generic
   `game.src.Game` host and installs the HGSS states and services for one selected version.
-- This package owns HGSS application policy and composition for the Main Menu, Continue,
-  New Game, Professor Oak's intro, field entry, save compatibility, and application audio.
+- This package owns HGSS retail application composition for explicit Continue or New Game
+  entry, Professor Oak's intro, field entry, retail-specific UI, and application audio. The
+  product startup Main Menu belongs to `app`; returning to it is an app-owned route.
 - `field/` owns the HGSS `FieldRuntime`/`FieldState` application composition; its
   `FieldSession` remains the reusable field-simulation mechanism in `libs/hgss` and is not
   the game entry point.
-- `newgame/`, `menu/`, `audio/`, `save/`, and `dev/` contain application-specific policy or
-  composition. Reusable field, script, audio, presentation, and save mechanisms remain
-  in `libs/hgss`; reusable game-independent widgets belong in `libs/ui`.
+- `newgame/` and `audio/` contain application-specific policy or composition. Reusable field,
+  script, audio, presentation, and save mechanisms remain in their libraries; reusable
+  game-independent widgets belong in `libs/ui`.
 
 ## Dependencies and data
 
@@ -25,6 +26,9 @@ playable product.
 - Do not import `app`, `romdump`, or `libs/nds` directly. Process callbacks, launcher and
   provisioning policy belong to `app`; ROM/source interpretation belongs to `romdump`; NDS
   implementation details stay behind reusable HGSS-facing seams.
+- Reusable complete save validation, field-script compatibility, HGSS input bindings, and
+  shared presentation mechanisms belong to their libraries. Application ownership remains
+  here for HGSS retail-specific behavior and composition.
 - Existing `data.*` module paths and data layout are unchanged. This package does not own a
   data migration or a cross-game namespace.
 
@@ -33,7 +37,8 @@ playable product.
 - The package split is an internal ownership boundary, not a public/mod plugin API. Do not
   add a registry, generic Gen-IV framework, or second-game protocol without concrete evidence
   of a shared contract.
-- Preserve the current HGSS boot, menu, new-game/Oak, continue, field, save, input, resize,
-  and shutdown behavior when changing composition.
+- Preserve the current HGSS boot, retail in-game menu, new-game/Oak, continue, field, save,
+  input, resize, and shutdown behavior when changing composition. The product startup Main
+  Menu is app-owned.
 - Unit/component tests live under `game/hgss/tests`; acceptance tests use the real HGSS
   application/field composition when wiring or user-visible sequencing is the contract.

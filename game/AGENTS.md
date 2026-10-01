@@ -1,7 +1,8 @@
 # game Agent Guidance
 
-Read root `AGENTS.md` first. `game` is the game-agnostic running-game layer: it owns the
-host lifecycle and adapters used by a concrete game application.
+Read root `AGENTS.md` first. `game/` is the retail-game layer. Its `src/` subtree is the thin,
+game-agnostic running-game host and adapters; `game/<family>/` contains concrete retail-game
+application reproduction and composition.
 
 ## Composition boundary
 
@@ -10,14 +11,16 @@ host lifecycle and adapters used by a concrete game application.
 - `game/src/WindowConfig.lua`, `LocalClock.lua`, `RepoFs.lua`, and
   `audio/LoveAudioSink.lua` own reusable host concerns that are not HGSS product policy.
 - `game/src` must not import `app`, `game/hgss`, `libs/hgss`, `libs/nds`, or `romdump`.
-  Concrete HGSS composition and product behavior belong in `game/hgss`; reusable HGSS
-  mechanisms belong in `libs/hgss`.
-- `game` is not a LÖVE root and does not own process callbacks, launcher/import UI, version
-  selection, file-drop provisioning, or process exit policy. Those belong to `app`.
+  Concrete HGSS retail composition belongs in `game/hgss`; reusable HGSS mechanisms belong
+  in `libs/hgss`.
+- Portemon-created launcher, startup Main Menu, and future product tooling do not belong in
+  `game`; they belong in `app`. `game/<family>` owns retail-game screens and observable
+  application behavior, including when presented through Portemon's host.
 
 ## Application boundary
 
-- `game/hgss` creates a `Game` host and installs its concrete states and services. Keep
+- A concrete `game/<family>` package creates a `Game` host and installs its retail states and
+  services. `game/hgss` creates that host for HGSS. Keep
   `FieldSession` a field-simulation mechanism rather than treating it as a game entry point.
 - Do not introduce a plugin registry, generic Gen-IV package, or hypothetical second-game
   interface. A second concrete game with a proven common lifecycle is the evidence needed to

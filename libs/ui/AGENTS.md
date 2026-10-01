@@ -8,6 +8,10 @@ This package owns the narrow game-independent widget primitives:
 - `PixelScale` owns integer presentation policy: preferred integer scale selection, ceil-covered logical allocations, and logical-pixel snapping. Generic rectangle validation, fit geometry, placement records, and host↔logical transforms belong to `LayoutGeometry`. `PixelScale` composes `LayoutGeometry`; it must not reproduce or wrap its generic public APIs.
 - `LogicalSurface` owns stateless execution of one logical coordinate boundary: `draw` applies a resolved placement (single root transform with intersected clipping) and `clip` scopes a logical subregion, both restoring borrowed graphics state even on callback failure. It allocates no GPU objects, retains no state, and knows no application, topology, or device.
 - `FocusGraph` owns stateless ordered directional candidate resolution only (`FocusGraph.move`). Graph construction, current focus state, wrap policy, enabled state, pointer behavior, history, layout, and rendering remain consumer-owned.
+- `ScreenTopology` describes host display capabilities and surfaces. `DisplayContext` measures
+  drawable and topology facts. `ApplicationLayout` resolves shared placement and frame
+  geometry, and `ApplicationPresentation` owns publication of a resolved presentation plan.
+  These mechanisms do not own feature-specific semantic layouts or retail application policy.
 
 ## Ownership
 
@@ -17,7 +21,9 @@ This package owns the narrow game-independent widget primitives:
 
 ## Boundaries
 
-- Generic button and layout-geometry behavior belongs here; HGSS-specific dialogue, field-menu, font, or source-aware UI stays in `libs/hgss/src/ui`. Semantic layouts (`BagLayout`, `PartyScreenLayout`, `ScreenTopology`) remain HGSS consumers of `LayoutGeometry` and keep their own placement policy.
+- Generic widgets, display facts, and shared presentation behavior belong here. HGSS-specific
+  dialogue, field-menu, font, or source-aware UI stays in `libs/hgss/src/ui`. Semantic retail
+  layouts and interfaces remain in their feature consumers and keep their own placement policy.
 - Every new shared abstraction needs a concrete current consumer in the repository. A single caller is evidence to keep code local.
 
 ## Verification

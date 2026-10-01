@@ -1,9 +1,11 @@
 # ADR: Application and game boundaries
 
-**Status:** Accepted
+**Status:** Superseded
 **Date:** 2026-08-31
 **Scope:** Ownership of the interactive process shell, running-game lifecycle, concrete HGSS
 application, and reusable HGSS mechanisms.
+
+**Superseded by:** [Product, retail-game, and reusable-library boundaries](product-retail-library-boundaries.md)
 
 ## Context
 
