@@ -62,6 +62,13 @@ local DOMAINS = {
     "TransitionTrigger",
     "WarpSystem",
   },
+  battle = {
+    "HgssTrainerCatalog",
+    "HgssTrainerFactory",
+    "HgssTrainerAi",
+    "HgssOpponentControllers",
+    "ai/NativeAiEvaluator",
+  },
   encounters = {
     "EncounterSelection",
     "HgssEncounterCatalog",
