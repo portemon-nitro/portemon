@@ -91,6 +91,10 @@ function PartyScreenRenderer.new(opts)
     graphics and graphics.rectangle and graphics.draw and graphics.setColor and graphics.newImage,
     "PartyScreenRenderer requires love.graphics"
   )
+  assert(
+    type(graphics.setScissor) == "function" and type(graphics.getScissor) == "function",
+    "PartyScreenRenderer clips travelling slots through the graphics scissor"
+  )
   local text = assert(opts.text, "the party renderer requires the generated font")
   assert(
     type(text.drawText) == "function" and type(text.textWidth) == "function",
@@ -341,6 +345,48 @@ end
 -- white before the menu layers draw. The coefficient names the source
 -- blend step on the sixteen-step scale.
 local BRIGHTEN_ALPHA = 8 / 16
+
+-- Resolves one swap slot's signed horizontal slide in units from the
+-- controller-published per-slot map. Records without the map are a
+-- programming fault and fail instead of sliding by a guessed offset.
+---@param swap table<string, unknown>?
+---@param slot0 integer
+---@return number signed slide in units
+local function swapSlideOf(swap, slot0)
+  if type(swap) ~= "table" then
+    return 0
+  end
+  local offsets = assert(swap.offsets, "swap records carry their per-slot slide map")
+  assert(type(offsets) == "table", "swap records carry their per-slot slide map")
+  local slide = assert(offsets[slot0], "swap records slide every travelling slot")
+  assert(type(slide) == "number", "swap records slide every travelling slot")
+  return slide
+end
+
+-- Resolves the swap tile-step clock for cursor visibility from the
+-- controller-published clock.
+---@param swap table<string, unknown>
+---@return number tile-step clock
+local function swapClockOf(swap)
+  local clock = assert(swap.xOffset, "swap records carry their tile-step clock")
+  assert(type(clock) == "number", "swap records carry their tile-step clock")
+  return clock
+end
+
+-- The destination focus hides while either slot is displaced and returns
+-- once the exchanged records settle home at tile-step zero, which already
+-- draws exactly like the restored browse frame.
+---@param swap table<string, unknown>?
+---@return boolean hides
+local function swapHidesCursor(swap)
+  if type(swap) ~= "table" then
+    return false
+  end
+  if swap.exchanged == true and swapClockOf(swap) == 0 then
+    return false
+  end
+  return true
+end
 
 -- Returns true when the slot is the locked switch source or the current
 -- switch candidate.
@@ -1046,6 +1092,38 @@ function PartyScreenRenderer:_brightenContent()
   graphics.rectangle("fill", minX, minY, maxX - minX, maxY - minY)
 end
 
+-- Draws one slot-owned group with its swap slide, clipping the whole
+-- composition to the home panel rectangle while displaced. Stationary
+-- slots draw directly so settled frames match the unclipped browse path
+-- exactly. The previous scissor restores even when the group fails.
+---@param swap table<string, unknown>?
+---@param panel table<string, unknown>
+---@param slot0 integer
+---@param slide number signed slide in units
+---@param drawGroup fun(slide: number)
+function PartyScreenRenderer:_drawSlotGroup(swap, panel, slot0, slide, drawGroup)
+  local involved = swap ~= nil and (slot0 == swap.source or slot0 == swap.destination)
+  if not involved or slide == 0 then
+    drawGroup(slide)
+    return
+  end
+  local graphics = self._graphics
+  local origin = assert(panel.origin, "party panels carry origins")
+  local size = assert(panel.size, "party panels carry sizes")
+  local saveX, saveY, saveWidth, saveHeight = graphics.getScissor()
+  graphics.setScissor(
+    assert(origin.x, "party origins carry x"),
+    assert(origin.y, "party origins carry y"),
+    assert(size.width, "party sizes carry width"),
+    assert(size.height, "party sizes carry height")
+  )
+  local ok, err = pcall(drawGroup, slide)
+  graphics.setScissor(saveX, saveY, saveWidth, saveHeight)
+  if not ok then
+    error(err, 0)
+  end
+end
+
 ---@param presentation table<string, unknown>
 ---@param layout table<string, unknown>
 ---@param icons table<string, unknown>
@@ -1066,23 +1144,18 @@ function PartyScreenRenderer:_drawContent(presentation, layout, icons)
   local mainBackdrop = assert(visuals.backdropMain, "party visuals carry the main backdrop")
   setColor(graphics, WHITE)
   graphics.draw(self:_image(assert(mainBackdrop.image, "the main backdrop carries an image path")), 0, 0)
-  -- Per-slot swap geometry resolves once: swap ticks offset the two
-  -- records leftward and exchange their content at the visual midpoint;
-  -- the start tick hides the source.
+  -- Per-slot swap geometry resolves once: each travelling slot slides
+  -- outward from its own column and exchanges its visible record at full
+  -- exit while the domain order holds for the final commit.
   local factsOf = {}
-  local offsetOf = {}
-  local hiddenOf = {}
+  local slideOf = {}
   local selectedOf = {}
   for slot0 = 0, 5 do
     local record = assert(view.slots[slot0 + 1], "the view carries six slots")
     local facts = record
-    local offsetX = 0
-    local hidden = false
+    local slide = 0
     if swap ~= nil and (slot0 == swap.source or slot0 == swap.destination) then
-      offsetX = swap.offsetPx or 0
-      if swap.stage == "start" and slot0 == swap.source then
-        hidden = true
-      end
+      slide = swapSlideOf(swap, slot0)
       if swap.exchanged == true then
         if slot0 == swap.source then
           facts = assert(view.slots[swap.destination + 1], "swap exchanges visible records")
@@ -1092,36 +1165,32 @@ function PartyScreenRenderer:_drawContent(presentation, layout, icons)
       end
     end
     factsOf[slot0 + 1] = facts
-    offsetOf[slot0 + 1] = offsetX
-    hiddenOf[slot0 + 1] = hidden
+    slideOf[slot0 + 1] = slide
     selectedOf[slot0 + 1] = cursorNode == slot0
   end
   -- Source-relative passes across all six slots: panel chrome first, then
   -- the focus cursor under the sprites, then balls under icons, then held
   -- markers over icons, then text.
   for slot0 = 0, 5 do
-    if not hiddenOf[slot0 + 1] then
-      local facts = factsOf[slot0 + 1]
-      local panel = assert(panels[slot0 + 1], "the party manifest carries six panels")
-      local chrome = assert(panel.chrome, "party panels carry chrome")
-      local chromeKey = "normal"
-      if switchSelected(presentation.switchSelect, slot0) then
-        chromeKey = "switchSelection"
-      elseif selectedOf[slot0 + 1] then
-        chromeKey = facts.status == "faint" and "selectedFainted" or "selected"
-      elseif facts.occupied and facts.status == "faint" then
-        chromeKey = "fainted"
-      end
-      local panelVisual = facts.occupied and assert(chrome[chromeKey], "party panels carry state chrome")
-        or assert(self._manifest.visuals.auxPanel, "party assets carry the empty-slot panel")
-      self:_drawChrome(
-        panelVisual,
-        assert(panel.origin, "party panels carry origins").x + offsetOf[slot0 + 1],
-        panel.origin.y
-      )
+    local facts = factsOf[slot0 + 1]
+    local panel = assert(panels[slot0 + 1], "the party manifest carries six panels")
+    local chrome = assert(panel.chrome, "party panels carry chrome")
+    local chromeKey = "normal"
+    if switchSelected(presentation.switchSelect, slot0) then
+      chromeKey = "switchSelection"
+    elseif selectedOf[slot0 + 1] then
+      chromeKey = facts.status == "faint" and "selectedFainted" or "selected"
+    elseif facts.occupied and facts.status == "faint" then
+      chromeKey = "fainted"
     end
+    local panelVisual = facts.occupied and assert(chrome[chromeKey], "party panels carry state chrome")
+      or assert(self._manifest.visuals.auxPanel, "party assets carry the empty-slot panel")
+    local origin = assert(panel.origin, "party panels carry origins")
+    self:_drawSlotGroup(swap, panel, slot0, slideOf[slot0 + 1], function(slide)
+      self:_drawChrome(panelVisual, origin.x + slide, origin.y)
+    end)
   end
-  if type(cursorNode) == "number" then
+  if type(cursorNode) == "number" and not swapHidesCursor(swap) then
     local panel = assert(panels[cursorNode + 1], "numeric focus addresses a Party panel")
     local cursorSequence = assert(visuals.cursor.sequences[panel.cursorSequence], "panel cursor sequence exists")
     local cursorPosition =
@@ -1129,42 +1198,42 @@ function PartyScreenRenderer:_drawContent(presentation, layout, icons)
     self:_drawSequence(cursorSequence, tick, { x = cursorPosition.left, y = cursorPosition.top })
   end
   for slot0 = 0, 5 do
-    if not hiddenOf[slot0 + 1] then
-      local facts = factsOf[slot0 + 1]
-      if facts.occupied then
-        local panel = assert(panels[slot0 + 1], "the party manifest carries six panels")
-        self:_drawBall(panel, offsetOf[slot0 + 1], selectedOf[slot0 + 1], tick)
-      end
+    local facts = factsOf[slot0 + 1]
+    if facts.occupied then
+      local panel = assert(panels[slot0 + 1], "the party manifest carries six panels")
+      self:_drawSlotGroup(swap, panel, slot0, slideOf[slot0 + 1], function(slide)
+        self:_drawBall(panel, slide, selectedOf[slot0 + 1], tick)
+      end)
     end
   end
   for slot0 = 0, 5 do
-    if not hiddenOf[slot0 + 1] then
-      local facts = factsOf[slot0 + 1]
-      if facts.occupied then
-        local panel = assert(panels[slot0 + 1], "the party manifest carries six panels")
-        local sequence = assert(sequences[slot0 + 1], "animation clocks sequence every slot")
-        local sequenceTick = assert(sequenceTicks[slot0 + 1], "icon timelines need sequence-local ticks")
-        assert(sequence % 1 == 0 and sequenceTick % 1 == 0, "icon clocks stay integral")
-        self:_drawIcon(facts, panel, offsetOf[slot0 + 1], selectedOf[slot0 + 1], sequenceTick, sequence, icons)
-      end
+    local facts = factsOf[slot0 + 1]
+    if facts.occupied then
+      local panel = assert(panels[slot0 + 1], "the party manifest carries six panels")
+      local sequence = assert(sequences[slot0 + 1], "animation clocks sequence every slot")
+      local sequenceTick = assert(sequenceTicks[slot0 + 1], "icon timelines need sequence-local ticks")
+      assert(sequence % 1 == 0 and sequenceTick % 1 == 0, "icon clocks stay integral")
+      self:_drawSlotGroup(swap, panel, slot0, slideOf[slot0 + 1], function(slide)
+        self:_drawIcon(facts, panel, slide, selectedOf[slot0 + 1], sequenceTick, sequence, icons)
+      end)
     end
   end
   for slot0 = 0, 5 do
-    if not hiddenOf[slot0 + 1] then
-      local facts = factsOf[slot0 + 1]
-      if facts.occupied then
-        local panel = assert(panels[slot0 + 1], "the party manifest carries six panels")
-        self:_drawHeldMarkers(facts, panel, offsetOf[slot0 + 1], tick)
-      end
+    local facts = factsOf[slot0 + 1]
+    if facts.occupied then
+      local panel = assert(panels[slot0 + 1], "the party manifest carries six panels")
+      self:_drawSlotGroup(swap, panel, slot0, slideOf[slot0 + 1], function(slide)
+        self:_drawHeldMarkers(facts, panel, slide, tick)
+      end)
     end
   end
   for slot0 = 0, 5 do
-    if not hiddenOf[slot0 + 1] then
-      local facts = factsOf[slot0 + 1]
-      if facts.occupied then
-        local panel = assert(panels[slot0 + 1], "the party manifest carries six panels")
-        self:_drawSlotTextRow(facts, panel, offsetOf[slot0 + 1])
-      end
+    local facts = factsOf[slot0 + 1]
+    if facts.occupied then
+      local panel = assert(panels[slot0 + 1], "the party manifest carries six panels")
+      self:_drawSlotGroup(swap, panel, slot0, slideOf[slot0 + 1], function(slide)
+        self:_drawSlotTextRow(facts, panel, slide)
+      end)
     end
   end
   if layout.cancelRect ~= nil then

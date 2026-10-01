@@ -524,6 +524,7 @@ local function nativeController(opts)
     initialFocus = opts.initialFocus,
     allowCancel = opts.allowCancel,
     item = opts.item,
+    effect = opts.effect,
   })
   return controller, calls, {
     setRevision = function(nextRevision)
@@ -1272,6 +1273,284 @@ function T.pointer_down_latches_its_row_across_keyboard_focus_changes()
   pressThrough(controller)
   local intent = controller:takeIntent()
   Assert.notNil(intent, "the latched entry dispatches once")
+end
+
+-- Column-parity switch motion: each slot exits outward from its own
+-- column at eight units per source tick, presentation records exchange
+-- at full exit while the party order holds, and the list sound fires at
+-- the start and the midpoint with the order committing once at the end.
+-- Statuses publish the per-slot contract the renderer consumes: an
+-- integral tile-step clock plus a signed-unit map keyed by slot.
+local SWITCH_SOUND = "SEQ_SE_DP_POKELIST_001"
+local SWITCH_STEP_PX = 8
+local SWITCH_FULL_STEPS = 16
+
+local function columnDirection(slot0)
+  if slot0 % 2 == 0 then
+    return -1
+  end
+  return 1
+end
+
+---@param swap table
+---@param slot0 integer
+---@return number signed slide in units
+local function slotSlidePx(swap, slot0)
+  local offsets = assert(swap.offsets, "the swap publishes its per-slot slide map")
+  local slide = assert(offsets[slot0], "the swap slides every travelling slot")
+  assert(type(slide) == "number", "the swap publishes numeric slide offsets")
+  return slide
+end
+
+---@param swap table
+---@return number integral tile-step clock
+local function swapClock(swap)
+  assert(swap.xOffset % 1 == 0 and swap.xOffset >= 0, "the swap clock stays a non-negative integer")
+  return swap.xOffset
+end
+
+---@param opts table?
+---@return table controller, table calls, table control, string[] sounds
+local function soundingController(opts)
+  opts = opts or {}
+  local sounds = {}
+  opts.effect = function(sequence)
+    sounds[#sounds + 1] = sequence
+  end
+  local controller, calls, control = nativeController(opts)
+  return controller, calls, control, sounds
+end
+
+local function fourLeadSpecs()
+  return { [1] = {}, [2] = {}, [3] = {}, [4] = {} }
+end
+
+-- Opens the context menu on the focused slot and arms the switch
+-- destination pick through the gated press cadence.
+---@param controller table
+local function armSwitch(controller)
+  controller:updateFixed({ { type = "confirm" } })
+  Assert.equal(nativeStatus(controller).state, "context", "setup opens the context menu")
+  controller:updateFixed({ { type = "navigate", direction = "down" } })
+  controller:updateFixed({ { type = "confirm" } })
+  pressThrough(controller)
+  Assert.equal(nativeStatus(controller).state, "choose_swap", "the switch entry arms the destination pick")
+end
+
+-- Starts the switch animation from the focused source toward the
+-- destination reached through the given moves.
+---@param controller table
+---@param destination integer
+---@param moves string[]
+local function beginSwap(controller, destination, moves)
+  armSwitch(controller)
+  for _, direction in ipairs(moves) do
+    controller:updateFixed({ { type = "navigate", direction = direction } })
+  end
+  Assert.equal(nativeStatus(controller).cursorNode, destination, "setup focuses the destination slot")
+  controller:updateFixed({ { type = "confirm" } })
+  Assert.equal(nativeStatus(controller).state, "swapping", "confirming the destination starts the animation")
+end
+
+-- Advances until the midpoint exchange, asserting each outward step
+-- slides both slots exactly one tile-step outward from their columns
+-- when motion checks are on. Returns the midpoint record.
+---@param controller table
+---@param source integer
+---@param destination integer
+---@param checkMotion boolean?
+---@return table midpoint swap record
+local function driveOutward(controller, source, destination, checkMotion)
+  local stalledAtStart = false
+  for _ = 1, 60 do
+    local swap = assert(nativeStatus(controller).swap, "the outward leg publishes its swap record")
+    if swap.exchanged == true then
+      Assert.equal(swapClock(swap), SWITCH_FULL_STEPS, "the exchange happens at full exit")
+      return swap
+    end
+    local before = swapClock(swap)
+    controller:updateFixed({})
+    local progressed = nativeStatus(controller).swap
+    if progressed ~= nil and progressed.exchanged ~= true then
+      local after = swapClock(progressed)
+      if after == before then
+        Assert.isTrue(
+          before == 0 and not stalledAtStart,
+          "only the start presentation tick holds the clock at zero"
+        )
+        stalledAtStart = true
+      else
+        Assert.equal(after, before + 1, "each outward tick advances exactly one tile-step")
+        if checkMotion ~= false then
+          for _, slot0 in ipairs({ source, destination }) do
+            Assert.equal(
+              slotSlidePx(progressed, slot0),
+              columnDirection(slot0) * after * SWITCH_STEP_PX,
+              "slot " .. slot0 .. " exits outward from its own column"
+            )
+          end
+        end
+      end
+    end
+  end
+  error("the outward leg never reaches its exchange", 0)
+end
+
+-- Advances until the animation clears, asserting each inward step
+-- returns both slots exactly one tile-step with the direction inverted
+-- when motion checks are on. Returns every observed inward clock.
+---@param controller table
+---@param source integer
+---@param destination integer
+---@param checkMotion boolean?
+---@return number[]
+local function driveInward(controller, source, destination, checkMotion)
+  local clocks = {}
+  for _ = 1, 60 do
+    local swap = nativeStatus(controller).swap
+    if swap == nil then
+      return clocks
+    end
+    local before = swapClock(swap)
+    controller:updateFixed({})
+    local progressed = nativeStatus(controller).swap
+    if progressed ~= nil then
+      local after = swapClock(progressed)
+      Assert.isTrue(
+        after == before - 1 or (before == 0 and after == 0),
+        "each inward tick returns exactly one tile-step (" .. before .. " -> " .. after .. ")"
+      )
+      clocks[#clocks + 1] = after
+      if checkMotion ~= false then
+        for _, slot0 in ipairs({ source, destination }) do
+          Assert.equal(
+            slotSlidePx(progressed, slot0),
+            columnDirection(slot0) * after * SWITCH_STEP_PX,
+            "slot " .. slot0 .. " returns inward along its own column"
+          )
+        end
+      end
+    end
+  end
+  error("the inward leg never clears", 0)
+end
+
+function T.switch_mixed_columns_exit_opposite_sides()
+  local controller = soundingController()
+  beginSwap(controller, 1, { "down" })
+  driveOutward(controller, 0, 1)
+end
+
+function T.switch_even_pair_exits_left_together()
+  local controller = soundingController({ specs = fourLeadSpecs(), initialFocus = 0 })
+  beginSwap(controller, 2, { "down", "down" })
+  driveOutward(controller, 0, 2)
+end
+
+function T.switch_odd_pair_exits_right_together()
+  local controller = soundingController({ specs = fourLeadSpecs(), initialFocus = 1 })
+  beginSwap(controller, 3, { "down", "down" })
+  driveOutward(controller, 1, 3)
+end
+
+function T.switch_tile_clock_covers_zero_to_sixteen_with_no_over_tick()
+  local controller, calls, _, sounds = soundingController()
+  local revision = nativeStatus(controller).view.revision
+  beginSwap(controller, 1, { "down" })
+  local clocks = {}
+  local first = swapClock(assert(nativeStatus(controller).swap, "the animation publishes its clock"))
+  Assert.isTrue(first == 0 or first == 1, "the animation starts at its tile-step origin")
+  driveOutward(controller, 0, 1, false)
+  for _ = 1, 60 do
+    local swap = nativeStatus(controller).swap
+    if swap == nil then
+      break
+    end
+    local clock = swapClock(swap)
+    clocks[#clocks + 1] = clock
+    Assert.isTrue(clock % 1 == 0 and clock >= 0 and clock <= 16, "every swap clock stays within 0..16")
+    controller:updateFixed({})
+  end
+  Assert.isNil(nativeStatus(controller).swap, "the animation clears its swap record")
+  local seen16, seen0 = false, false
+  for _, clock in ipairs(clocks) do
+    seen16 = seen16 or clock == 16
+    seen0 = seen0 or clock == 0
+  end
+  Assert.isTrue(seen16, "the animation reaches full exit")
+  Assert.isTrue(seen0, "the animation returns to zero before committing")
+  Assert.equal(#calls.swaps, 1, "the return commits exactly once")
+  Assert.equal(nativeStatus(controller).view.revision, revision + 1, "exactly one revision publishes")
+  Assert.deepEqual(sounds, { SWITCH_SOUND, SWITCH_SOUND }, "start and midpoint sound exactly once each")
+end
+
+function T.switch_start_sounds_once_the_first_step_moves()
+  local controller, _, _, sounds = soundingController()
+  beginSwap(controller, 1, { "down" })
+  Assert.isTrue(#sounds <= 1, "the start sounds at most once before motion")
+  controller:updateFixed({})
+  Assert.deepEqual(sounds, { SWITCH_SOUND }, "the first visible step carries the start sound")
+end
+
+function T.switch_midpoint_exchanges_presentation_not_domain_with_second_sound()
+  local controller, calls, _, sounds = soundingController()
+  local revision = nativeStatus(controller).view.revision
+  beginSwap(controller, 1, { "down" })
+  local midpoint = driveOutward(controller, 0, 1, false)
+  Assert.isTrue(midpoint.exchanged == true, "temporary draw records exchange at the midpoint")
+  Assert.equal(#calls.swaps, 0, "the visual midpoint publishes nothing")
+  Assert.equal(nativeStatus(controller).view.revision, revision, "authoritative order holds at the midpoint")
+  Assert.deepEqual(sounds, { SWITCH_SOUND, SWITCH_SOUND }, "the midpoint replays the list sound")
+end
+
+function T.switch_final_return_commits_once_and_restores_browse()
+  local controller, calls, _, sounds = soundingController()
+  beginSwap(controller, 1, { "down" })
+  driveOutward(controller, 0, 1, false)
+  driveInward(controller, 0, 1, false)
+  Assert.equal(#calls.swaps, 1, "the final state publishes exactly once")
+  Assert.deepEqual(calls.swaps[1], { 0, 1 }, "the commit carries its source and destination")
+  Assert.deepEqual(sounds, { SWITCH_SOUND, SWITCH_SOUND }, "exactly two sounds fire across the animation")
+  local status = nativeStatus(controller)
+  Assert.equal(status.state, "browse", "completion returns to browse")
+  Assert.equal(status.cursorNode, 1, "focus follows the destination")
+  Assert.isNil(status.swap, "completion clears the swap record")
+  Assert.isNil(controller:takeResult(), "completion reports no terminal result")
+  for _ = 1, 5 do
+    controller:updateFixed({})
+  end
+  Assert.equal(#calls.swaps, 1, "post-commit ticks never republish")
+  Assert.deepEqual(sounds, { SWITCH_SOUND, SWITCH_SOUND }, "post-commit ticks sound nothing more")
+end
+
+function T.switch_cancel_at_destination_pick_abandons_quietly()
+  local controller, calls, _, sounds = soundingController()
+  armSwitch(controller)
+  controller:updateFixed({ { type = "cancel" } })
+  Assert.equal(nativeStatus(controller).state, "browse", "cancelling the pick returns to browse")
+  Assert.isNil(nativeStatus(controller).swap, "cancelling arms no swap")
+  Assert.equal(#calls.swaps, 0, "cancelling publishes nothing")
+  Assert.equal(#sounds, 0, "cancelling sounds nothing")
+  Assert.isNil(controller:takeResult(), "cancelling completes nothing")
+end
+
+function T.switch_ignores_input_while_animating()
+  local controller, calls = soundingController()
+  beginSwap(controller, 1, { "down" })
+  for _ = 1, 3 do
+    controller:updateFixed({})
+  end
+  Assert.equal(nativeStatus(controller).state, "swapping", "setup is mid-animation")
+  controller:updateFixed({
+    { type = "navigate", direction = "down" },
+    { type = "confirm" },
+    { type = "cancel" },
+  })
+  Assert.equal(nativeStatus(controller).state, "swapping", "input never interrupts the animation")
+  driveOutward(controller, 0, 1, false)
+  driveInward(controller, 0, 1, false)
+  Assert.equal(#calls.swaps, 1, "the locked animation still commits exactly once")
+  Assert.equal(nativeStatus(controller).state, "browse", "the locked animation still returns to browse")
 end
 
 function T.menu_restore_after_complete_action_carries_no_armed_press()

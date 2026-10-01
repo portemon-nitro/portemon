@@ -15,7 +15,7 @@ local FieldScriptSymbols = require("libs.assets.src.field.FieldScriptSymbols")
 local FieldState = require("game.hgss.src.field.FieldState")
 
 local T = {
-  metadata = { capabilities = { "rom_dump" }, derivedAssets = { "field-runtime", "map:7" }, tags = { "party", "bag", "journey" } },
+  metadata = { capabilities = { "rom_dump" }, derivedAssets = { "field-runtime", "audio-bank:759", "map:7" }, tags = { "party", "bag", "journey" } },
   tests = {},
 }
 
@@ -686,6 +686,38 @@ function T.tests.production_held_take_keeps_its_transfer(context)
     Assert.equal(flowChild(status).cursorNode, 0, "taking refocuses the taken slot")
     Assert.isNil(flow:takeResult(), "taking reports no terminal result")
     flow:dispose()
+  end)
+end
+
+function T.tests.production_switch_reorders_once_and_restores_browse(context)
+  requireVersions(context)
+  withGame(function(game)
+    giftPair(game)
+    local mons = assert(game.runtime.monService, "field runtime owns the live mon service")
+    local partyRevision = mons:partyRevision()
+    local party = composition(game).makePartyFlow()
+    driveUntil(party, "the party browse page", 30, function(current)
+      return current.page == "party_browse"
+    end)
+    drainOpen(party)
+    -- A UI-driven switch commits once at the end of its animation and
+    -- hands focus to the destination with the browse message restored.
+    choosePartySlot(party, 0)
+    choosePartyMenu(party, "switch")
+    choosePartySlot(party, 1)
+    drive(party, { { type = "confirm" } })
+    for _ = 1, 40 do
+      party:updateFixed({})
+    end
+    Assert.equal(mons:partyRevision(), partyRevision + 1, "the switch publishes exactly one revision")
+    Assert.equal(mons:partyMon(0).species, "TOTODILE", "the switch reorders the live party")
+    Assert.equal(mons:partyMon(1).species, "CHIKORITA", "the switch keeps every member")
+    local child = flowChild(flowStatus(party))
+    Assert.equal(child.state, "browse", "completion returns to browse")
+    Assert.equal(child.cursorNode, 1, "focus follows the switch destination")
+    Assert.isNil(child.swap, "completion clears the animation")
+    Assert.isNil(party:takeResult(), "returning to the root reports no terminal result")
+    party:dispose()
   end)
 end
 

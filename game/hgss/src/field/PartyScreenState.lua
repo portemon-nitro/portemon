@@ -103,6 +103,7 @@ end
 ---@field overrides table<string, unknown>? per-case function overrides for this application
 ---@field prepareIcons fun(iconKeys: string[]): boolean, string? required icon preparation collaborator
 ---@field cancelIconPreparation fun() required preparation release collaborator
+---@field effect fun(sequence: string)? the borrowed swap sound boundary forwarded to the native controller
 
 ---@param opts PartyScreenState.Options
 ---@return PartyScreenState
@@ -112,6 +113,9 @@ function PartyScreenState.new(opts)
   assert(type(opts.measureDisplay) == "function", "the party screen requires the display facts")
   assert(type(opts.prepareIcons) == "function", "the party screen requires its icon preparation")
   assert(type(opts.cancelIconPreparation) == "function", "the party screen requires its preparation release")
+  if opts.effect ~= nil then
+    assert(type(opts.effect) == "function", "the party sound boundary is a function")
+  end
   assert(
     type(service.partyCount) == "function" and service:partyCount() > 0,
     "the party screen requires a non-empty party"
@@ -188,6 +192,7 @@ function PartyScreenState.new(opts)
       actionPolicy = self._policy,
       promptShape = self._promptShape,
       item = self._item,
+      effect = opts.effect,
     })
   end)
   if not built then

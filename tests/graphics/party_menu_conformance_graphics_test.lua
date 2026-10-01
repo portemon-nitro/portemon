@@ -321,7 +321,15 @@ function T.swap_midpoint_differs_from_committed(scope)
       cacheFs,
       manifest,
       presentation({
-        swap = { source = 0, destination = 1, step = 2, stage = "out", offsetPx = -8, exchanged = false },
+        swap = {
+          source = 0,
+          destination = 1,
+          step = 2,
+          xOffset = 2,
+          offsets = { [0] = -16, [1] = 16 },
+          directions = { [0] = -1, [1] = 1 },
+          exchanged = false,
+        },
       })
     )
     local function difference(a, b)
@@ -346,7 +354,15 @@ function T.swap_midpoint_differs_from_committed(scope)
       cacheFs,
       manifest,
       presentation({
-        swap = { source = 0, destination = 1, step = 35, stage = "in", offsetPx = 0, exchanged = true },
+        swap = {
+          source = 0,
+          destination = 1,
+          step = 35,
+          xOffset = 0,
+          offsets = { [0] = 0, [1] = 0 },
+          directions = { [0] = -1, [1] = 1 },
+          exchanged = true,
+        },
       })
     )
     Assert.isTrue(difference(steady, exchanged) > 100, versionId .. " shows swapped records after commit")
