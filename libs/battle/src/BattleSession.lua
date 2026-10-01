@@ -16,20 +16,27 @@ local BattleScenario = require("libs.battle.src.BattleScenario")
 local BattleSnapshot = require("libs.battle.src.BattleSnapshot")
 local BattleState = require("libs.battle.src.BattleState")
 local BattleView = require("libs.battle.src.BattleView")
+local NativeFormats = require("libs.battle.src.gen4.formats.NativeFormats")
 local Lcrng = require("libs.mons.src.gen4.Lcrng")
 
 ---@class BattleSession
 ---@field private _state table<string, unknown>?
 ---@field private _content table<string, unknown>?
+---@field private _admitted string[]
 ---@field private _disposed boolean
 local BattleSession = {}
 BattleSession.__index = BattleSession
 
--- The one executable decision point owned by this kernel. Later battle
--- phases register their own rulesets through the same construction
--- boundary instead of branching here.
+-- The one decision vocabulary owned by this kernel. The executable marker
+-- names the scripted decision point the application stamps onto its native
+-- scenarios; content may resolve additional rulesets for custom formats,
+-- which this kernel executes with the same atomic validation, causal
+-- events, and deterministic continuations. Formats own the admitted action
+-- kinds and per-actor budgets for every one of them.
 BattleSession.EXECUTABLE_RULESET = "test:scripted"
 BattleSession.DECISION_KIND = "action"
+
+BattleSession.DEFAULT_ACTION_KINDS = { "attack", "switch", "confirm", "item" }
 
 ---@param value unknown
 ---@return unknown
@@ -110,11 +117,59 @@ local function checkContent(content, ruleset)
   if not ok then
     error(BattleErrors.missingBehavior("battle content must resolve the scenario ruleset", { ruleset = ruleset }))
   end
-  if ruleset ~= BattleSession.EXECUTABLE_RULESET then
-    error(BattleErrors.missingBehavior("only the scripted decision point executes in this kernel", {
-      ruleset = ruleset,
-    }))
+end
+
+---@param kinds unknown candidate admitted vocabulary under copy
+---@return string[] detached admitted action kinds
+local function copyKinds(kinds)
+  assert(type(kinds) == "table", "admitted vocabularies stay arrays")
+  local admitted = {} ---@type string[]
+  for _, kind in
+    ipairs(kinds --[[@as string[] ]])
+  do
+    assert(type(kind) == "string" and kind ~= "", "admitted action kinds stay named")
+    admitted[#admitted + 1] = kind
   end
+  assert(#admitted > 0, "admitted vocabularies stay non-empty")
+  return admitted
+end
+
+-- Resolves the admitted action vocabulary for one format identity.
+-- Registered content formats win over native keys: a content-registered
+-- policy carries its own admitted kinds (or the standard vocabulary when
+-- the registration names none), while a native key additionally proves
+-- its topology against the scenario under construction. Anything else is
+-- missing behavior naming the unknown key: sessions never run an unknown
+-- or misspelled format on a guessed vocabulary.
+---@param formatKey string format identity owning the admitted action vocabulary
+---@param content table<string, unknown> frozen executable battle content
+---@param validated table<string, unknown>? detached scenario under construction for native topology proof
+---@return string[] admitted action kinds for the decision batches
+local function admittedKindsFor(formatKey, content, validated)
+  local contentRecord = content --[[@as table<string, unknown>]]
+  local lookup = contentRecord.format
+  if type(lookup) == "function" then
+    local okCustom, custom = pcall(lookup, contentRecord, formatKey)
+    if okCustom and type(custom) == "table" then
+      local kinds = (custom --[[@as table<string, unknown>]]).actionKinds
+      if kinds == nil then
+        return copyValue(BattleSession.DEFAULT_ACTION_KINDS) --[[@as string[] ]]
+      end
+      return copyKinds(kinds)
+    end
+  end
+  local okNative, policy = pcall(NativeFormats.policyFor, formatKey)
+  if okNative and type(policy) == "table" then
+    if validated ~= nil then
+      NativeFormats.validateScenario(formatKey, validated)
+    end
+    local kinds = (policy --[[@as table<string, unknown>]]).actionKinds
+    if kinds == nil then
+      return copyValue(BattleSession.DEFAULT_ACTION_KINDS) --[[@as string[] ]]
+    end
+    return copyKinds(kinds)
+  end
+  error(BattleErrors.missingBehavior("unknown battle format " .. formatKey, { format = formatKey }))
 end
 
 ---@param state table<string, unknown>
@@ -142,9 +197,10 @@ end
 
 ---@param live table<string, unknown>
 ---@param content table<string, unknown>
+---@param admitted string[] admitted action kinds resolved at construction
 ---@return BattleSession
-local function wrap(live, content)
-  return setmetatable({ _state = live, _content = content, _disposed = false }, BattleSession)
+local function wrap(live, content, admitted)
+  return setmetatable({ _state = live, _content = content, _admitted = admitted, _disposed = false }, BattleSession)
 end
 
 ---@param scenarioRecord table<string, unknown> detached serializable battle setup
@@ -154,7 +210,8 @@ function BattleSession.new(scenarioRecord, content)
   assert(type(scenarioRecord) == "table", "session construction requires its scenario record")
   local validated = BattleScenario.validate(scenarioRecord)
   checkContent(content, validated.ruleset --[[@as string]])
-  return wrap(BattleState.create(validated), content --[[@as table<string, unknown>]])
+  local admitted = admittedKindsFor(validated.format --[[@as string]], content, validated)
+  return wrap(BattleState.create(validated), content --[[@as table<string, unknown>]], admitted)
 end
 
 ---@param snapshotData unknown interruption capture under validation
@@ -163,9 +220,10 @@ end
 function BattleSession.restore(snapshotData, content)
   local live = BattleSnapshot.restore(snapshotData)
   checkContent(content, live.ruleset --[[@as string]])
+  local admitted = admittedKindsFor(live.format --[[@as string]], content, nil)
   live.rng = Lcrng.restore(live.rng --[[@as table<string, integer>]])
   checkRestoredShape(live)
-  return wrap(live, content)
+  return wrap(live, content, admitted)
 end
 
 ---@return table<string, unknown> live battle state, failing after disposal
@@ -229,7 +287,8 @@ local function pushCheckedFrame(context, frame)
 end
 
 ---@param state table<string, unknown>
-local function buildBatch(state)
+---@param admitted string[] admitted action kinds resolved at construction
+local function buildBatch(state, admitted)
   local context = BattleContext.wrap(state)
   local counter = state.batchCounter --[[@as integer]] + 1
   state.batchCounter = counter
@@ -280,7 +339,7 @@ local function buildBatch(state)
       controller = controller,
       kind = BattleSession.DECISION_KIND,
       actors = byController[controller],
-      legalChoices = { kinds = { "attack", "switch", "confirm", "item" } },
+      legalChoices = { kinds = admitted },
     })
   end
   state.status = "waiting"
@@ -678,7 +737,7 @@ function BattleSession:advance(operationBudget)
       if remaining < 1 then
         return { status = "running", events = drainOutbox(state) }
       end
-      buildBatch(state)
+      buildBatch(state, self._admitted)
       remaining = remaining - 1
     elseif batchComplete(state) then
       if remaining < 1 then
@@ -773,6 +832,154 @@ function BattleSession:submit(reply)
     wanted.requestId --[[@as integer]]
   ] = copyValue(stored) --[[@as table<string, unknown>]]
   return true, nil
+end
+
+--- Publishes a staged topology join at its declared settlement boundary.
+--- New roster, participant, position, and inventory entries land under this
+--- owner exactly once; occupants enter with fresh activation tokens and
+--- entry effects, and an open decision batch moves to a new epoch so stale
+--- replies cannot retarget the changed topology. Joined combatants wait
+--- for the next batch: the open batch keeps its addressed actors.
+---@param staged unknown staging record from validated topology preparation
+---@return table<string, unknown> join receipt carrying the published identities
+function BattleSession:applyJoin(staged)
+  local state = self:_live()
+  if type(staged) ~= "table" then
+    error(BattleErrors.input("joins apply a staged record", {}))
+  end
+  local join = staged --[[@as table<string, unknown>]]
+  if join.version ~= 1 then
+    error(BattleErrors.input("staged joins carry the current version", {}))
+  end
+  if join.targetKind ~= "session" then
+    error(BattleErrors.input("scenario assemblies apply at construction, not mid-battle", {}))
+  end
+  if join.format ~= state.format or join.ruleset ~= state.ruleset then
+    error(BattleErrors.input("staged joins must match the session format and ruleset", {}))
+  end
+  if join.baseCounter ~= state.batchCounter then
+    error(BattleErrors.input("stale join staging cannot publish onto a moved battle", {}))
+  end
+  local newcomers = join.combatants --[[@as table<integer, unknown>]]
+  local seats = join.positions --[[@as table<integer, unknown>]]
+  assert(type(newcomers) == "table" and type(seats) == "table", "staged joins carry their membership lists")
+  local participants = state.participants --[[@as table<integer, table<string, unknown>>]]
+  local roster = {} ---@type table<integer, integer>
+  local owner = nil ---@type integer?
+  if #newcomers > 0 then
+    local stagedOwner = join.participant --[[@as table<string, unknown>]]
+    assert(type(stagedOwner) == "table", "staged joins name their owning participant")
+    owner = stagedOwner.id --[[@as integer]]
+    for _, entry in ipairs(newcomers) do
+      roster[#roster + 1] = (entry --[[@as table<string, unknown>]]).id --[[@as integer]]
+    end
+    local known = participants[
+      owner --[[@as integer]]
+    ]
+    if known == nil then
+      participants[
+        owner --[[@as integer]]
+      ] = {
+        id = owner,
+        side = stagedOwner.side,
+        controller = stagedOwner.controller,
+        inventoryId = stagedOwner.inventoryId,
+        roster = copyValue(roster),
+        context = copyValue(stagedOwner.context),
+      }
+      local participantOrder = state.participantOrder --[[@as integer[] ]]
+      participantOrder[#participantOrder + 1] = owner --[[@as integer]]
+      local sides = state.sides --[[@as table<integer, table<string, unknown>>]]
+      local side = sides[
+        stagedOwner.side --[[@as integer]]
+      ]
+      local members = side.participants --[[@as table<integer, unknown>]]
+      members[#members + 1] = owner
+    else
+      local existing = known.roster --[[@as table<integer, unknown>]]
+      for _, id in ipairs(roster) do
+        existing[#existing + 1] = id
+      end
+    end
+    local combatants = state.combatants --[[@as table<integer, table<string, unknown>>]]
+    local combatantOrder = state.combatantOrder --[[@as integer[] ]]
+    for _, entry in ipairs(newcomers) do
+      local seed = entry --[[@as table<string, unknown>]]
+      local id = seed.id --[[@as integer]]
+      local mon = seed.mon --[[@as table<string, unknown>]]
+      local hp = (mon.condition --[[@as table<string, unknown>]]).currentHp --[[@as integer]]
+      combatants[id] = {
+        id = id,
+        participant = owner,
+        mon = copyValue(mon),
+        source = copyValue(seed.source),
+        hp = hp,
+        entryHp = hp,
+        active = nil,
+        volatiles = {},
+        materialized = {},
+      }
+      combatantOrder[#combatantOrder + 1] = id
+    end
+  end
+  local positions = state.positions --[[@as table<integer, table<string, unknown>>]]
+  local positionOrder = state.positionOrder --[[@as integer[] ]]
+  for _, entry in ipairs(seats) do
+    local seat = entry --[[@as table<string, unknown>]]
+    local id = seat.id --[[@as integer]]
+    if positions[id] == nil then
+      positions[id] = {
+        id = id,
+        side = seat.side,
+        eligible = copyValue(seat.eligibleParticipants),
+        occupant = nil,
+        activation = nil,
+      }
+      positionOrder[#positionOrder + 1] = id
+    end
+  end
+  for _, entry in
+    ipairs(join.inventories --[[@as table<integer, unknown>]])
+  do
+    local inventory = entry --[[@as table<string, unknown>]]
+    local owned = state.inventories --[[@as table<string, table<string, unknown>>]]
+    owned[
+      inventory.id --[[@as string]]
+    ] = {
+      id = inventory.id,
+      owners = copyValue(inventory.owners),
+      quantities = copyValue(inventory.quantities),
+    }
+  end
+  local context = BattleContext.wrap(state)
+  local placed = {} ---@type table<integer, table<string, integer>>
+  for _, entry in ipairs(seats) do
+    local seat = entry --[[@as table<string, unknown>]]
+    if seat.occupant ~= nil then
+      local token = BattleState.enter(state, seat.occupant --[[@as integer]], seat.id --[[@as integer]])
+      placed[#placed + 1] = {
+        combatant = seat.occupant --[[@as integer]],
+        position = seat.id --[[@as integer]],
+        activation = token,
+      }
+      context:emit("join", { kind = "join", reason = join.reason, combatant = seat.occupant }, {
+        position = seat.id,
+        combatant = seat.occupant,
+        activation = token,
+      })
+    end
+  end
+  state.batchCounter = state.batchCounter --[[@as integer]] + 1
+  if state.pending ~= nil then
+    local pending = state.pending --[[@as table<string, unknown>]]
+    local batch = pending.batch --[[@as table<string, unknown>]]
+    batch.epoch = state.batchCounter
+  end
+  return {
+    combatants = copyValue(roster),
+    seats = copyValue(placed),
+    epoch = state.batchCounter,
+  }
 end
 
 ---@param controller string

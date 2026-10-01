@@ -123,6 +123,11 @@ function SessionFixture.makeContent()
     { key = SessionFixture.RULESET, chart = SessionFixture.RULESET },
     "session-tests"
   )
+  behaviors:registerFormat(
+    SessionFixture.FORMAT,
+    { key = SessionFixture.FORMAT, chart = SessionFixture.RULESET },
+    "session-tests"
+  )
   local bound = behaviors:freeze()
   local resolved = builder:freeze()
   return BattleContent.new(resolved, bound)
