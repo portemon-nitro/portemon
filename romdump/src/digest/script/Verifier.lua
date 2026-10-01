@@ -63,6 +63,7 @@ local BLOCKING_OPS = {
   warp = true,
   call_common = true,
   wait_signpost_action = true,
+  battle_launch = true,
   trainer_tips_print = true,
   wait_signpost = true,
   follower_wait = true,

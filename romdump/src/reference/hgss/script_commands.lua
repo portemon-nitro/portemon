@@ -252,18 +252,30 @@ return {
     },
     [36] = {
       name = "ScrCmd_SetTrainerFlag",
+      feature = "battle",
+      disposition = "deferred",
+      deferredReason = "battle",
+      deferredNote = "trainer defeat flags need the trainer flag owner",
       widths = {
         [1] = 2,
       },
     },
     [37] = {
       name = "ScrCmd_ClearTrainerFlag",
+      feature = "battle",
+      disposition = "deferred",
+      deferredReason = "battle",
+      deferredNote = "trainer defeat flags need the trainer flag owner",
       widths = {
         [1] = 2,
       },
     },
     [38] = {
       name = "ScrCmd_CheckTrainerFlag",
+      feature = "battle",
+      disposition = "deferred",
+      deferredReason = "battle",
+      deferredNote = "trainer defeat checks need the trainer flag owner",
       widths = {
         [1] = 2,
       },
@@ -1171,12 +1183,20 @@ return {
     },
     [168] = {
       name = "ScrCmd_GetTrainerPathToPlayer",
+      feature = "battle",
+      disposition = "deferred",
+      deferredReason = "battle",
+      deferredNote = "trainer approach needs the field trainer application",
       widths = {
         [1] = 2,
       },
     },
     [169] = {
       name = "ScrCmd_TrainerStepTowardsPlayer",
+      feature = "battle",
+      disposition = "deferred",
+      deferredReason = "battle",
+      deferredNote = "trainer approach needs the field trainer application",
       widths = {
         [1] = 2,
         [2] = 2,
@@ -1184,12 +1204,20 @@ return {
     },
     [170] = {
       name = "ScrCmd_GetTrainerEyeType",
+      feature = "battle",
+      disposition = "deferred",
+      deferredReason = "battle",
+      deferredNote = "trainer approach needs the field trainer application",
       widths = {
         [1] = 2,
       },
     },
     [171] = {
       name = "ScrCmd_GetEyeTrainerNum",
+      feature = "battle",
+      disposition = "deferred",
+      deferredReason = "battle",
+      deferredNote = "trainer approach needs the field trainer application",
       widths = {
         [1] = 2,
         [2] = 2,
@@ -1499,12 +1527,19 @@ return {
     },
     [212] = {
       name = "ScrCmd_GetTrainerNum",
+      feature = "battle",
+      disposition = "deferred",
+      deferredReason = "battle",
+      deferredNote = "trainer approach needs the field trainer application",
       widths = {
         [1] = 2,
       },
     },
     [213] = {
       name = "ScrCmd_TrainerBattle",
+      feature = "battle",
+      disposition = "supported",
+      classification = "native_wait",
       widths = {
         [1] = 2,
         [2] = 2,
@@ -1514,6 +1549,10 @@ return {
     },
     [214] = {
       name = "ScrCmd_TrainerMessage",
+      feature = "battle",
+      disposition = "deferred",
+      deferredReason = "battle",
+      deferredNote = "trainer battle messages need the battle presentation application",
       widths = {
         [1] = 2,
         [2] = 2,
@@ -1521,6 +1560,10 @@ return {
     },
     [215] = {
       name = "ScrCmd_GetTrainerMsgParams",
+      feature = "battle",
+      disposition = "deferred",
+      deferredReason = "battle",
+      deferredNote = "trainer battle messages need the battle presentation application",
       widths = {
         [1] = 2,
         [2] = 2,
@@ -1529,6 +1572,10 @@ return {
     },
     [216] = {
       name = "ScrCmd_GetRematchMsgParams",
+      feature = "battle",
+      disposition = "deferred",
+      deferredReason = "battle",
+      deferredNote = "trainer battle messages need the battle presentation application",
       widths = {
         [1] = 2,
         [2] = 2,
@@ -1537,28 +1584,47 @@ return {
     },
     [217] = {
       name = "ScrCmd_TrainerIsDoubleBattle",
+      feature = "battle",
+      disposition = "deferred",
+      deferredReason = "battle",
+      deferredNote = "double-battle trainer checks need the battle application",
       widths = {
         [1] = 2,
       },
     },
     [218] = {
       name = "ScrCmd_EncounterMusic",
+      feature = "battle",
+      disposition = "deferred",
+      deferredReason = "battle",
+      deferredNote = "encounter music needs the battle music application",
       widths = {
         [1] = 2,
       },
     },
     [219] = {
       name = "ScrCmd_WhiteOut",
+      feature = "battle",
+      disposition = "deferred",
+      deferredReason = "battle",
+      deferredNote = "blackout sequencing needs the field loss application",
       widths = {},
     },
     [220] = {
       name = "ScrCmd_CheckBattleWon",
+      feature = "battle",
+      disposition = "supported",
+      classification = "continue_same_tick",
       widths = {
         [1] = 2,
       },
     },
     [221] = {
       name = "ScrCmd_StaticWildWonOrCaughtCheck",
+      feature = "battle",
+      disposition = "deferred",
+      deferredReason = "battle",
+      deferredNote = "static wild outcomes need the static encounter application",
       widths = {
         [1] = 2,
         [2] = 1,
@@ -1584,6 +1650,10 @@ return {
     },
     [225] = {
       name = "ScrCmd_GoToIfTrainerDefeated",
+      feature = "battle",
+      disposition = "deferred",
+      deferredReason = "battle",
+      deferredNote = "trainer defeat branches need the trainer flag owner",
       widths = {
         [1] = 4,
       },
@@ -1765,6 +1835,10 @@ return {
     },
     [249] = {
       name = "ScrCmd_RocketTrapBattle",
+      feature = "battle",
+      disposition = "deferred",
+      deferredReason = "battle",
+      deferredNote = "trap battles need the special battle application",
       widths = {
         [1] = 2,
         [2] = 2,
@@ -1947,6 +2021,10 @@ return {
     },
     [279] = {
       name = "ScrCmd_OverworldWhiteOut",
+      feature = "battle",
+      disposition = "deferred",
+      deferredReason = "battle",
+      deferredNote = "blackout sequencing needs the field loss application",
       widths = {},
     },
     [280] = {
@@ -1994,6 +2072,10 @@ return {
     },
     [288] = {
       name = "ScrCmd_UnionRoomAvatarIdxToTrainerClass",
+      feature = "battle",
+      disposition = "deferred",
+      deferredReason = "battle",
+      deferredNote = "union room needs the link transport application",
       widths = {
         [1] = 2,
         [2] = 2,
@@ -3503,6 +3585,10 @@ return {
     },
     [485] = {
       name = "ScrCmd_StartBattleRegulationMenuTask",
+      feature = "battle",
+      disposition = "deferred",
+      deferredReason = "battle",
+      deferredNote = "battle regulation needs the frontier rules application",
       widths = {
         [1] = 2,
       },
@@ -4019,6 +4105,10 @@ return {
     },
     [557] = {
       name = "ScrCmd_CheckBattlePoints",
+      feature = "battle",
+      disposition = "deferred",
+      deferredReason = "battle",
+      deferredNote = "battle points need the frontier application",
       widths = {
         [1] = 2,
         [2] = 2,
@@ -4056,6 +4146,10 @@ return {
     },
     [562] = {
       name = "ScrCmd_MultiBattle",
+      feature = "battle",
+      disposition = "deferred",
+      deferredReason = "battle",
+      deferredNote = "multi battles need the special battle application",
       widths = {
         [1] = 2,
         [2] = 2,
@@ -4234,6 +4328,9 @@ return {
     },
     [589] = {
       name = "ScrCmd_WildBattle",
+      feature = "battle",
+      disposition = "supported",
+      classification = "native_wait",
       widths = {
         [1] = 2,
         [2] = 2,
@@ -4778,6 +4875,10 @@ return {
     },
     [660] = {
       name = "ScrCmd_BufferTrainerName",
+      feature = "battle",
+      disposition = "deferred",
+      deferredReason = "battle",
+      deferredNote = "trainer name buffers need the trainer text application",
       widths = {
         [1] = 1,
         [2] = 2,
@@ -4961,6 +5062,10 @@ return {
     },
     [683] = {
       name = "ScrCmd_GetStaticEncounterOutcome",
+      feature = "battle",
+      disposition = "deferred",
+      deferredReason = "battle",
+      deferredNote = "static encounter outcomes need the static encounter application",
       widths = {
         [1] = 2,
       },
@@ -5034,6 +5139,10 @@ return {
     },
     [692] = {
       name = "ScrCmd_BufferBattleHallStreak",
+      feature = "battle",
+      disposition = "deferred",
+      deferredReason = "battle",
+      deferredNote = "battle hall needs the facility application",
       widths = {
         [1] = 1,
         [2] = 1,
@@ -5045,12 +5154,20 @@ return {
     },
     [693] = {
       name = "ScrCmd_BattleHallCountUsedSpecies",
+      feature = "battle",
+      disposition = "deferred",
+      deferredReason = "battle",
+      deferredNote = "battle hall needs the facility application",
       widths = {
         [1] = 2,
       },
     },
     [694] = {
       name = "ScrCmd_BattleHallGetTotalStreak",
+      feature = "battle",
+      disposition = "deferred",
+      deferredReason = "battle",
+      deferredNote = "battle hall needs the facility application",
       widths = {
         [1] = 2,
       },
@@ -5107,6 +5224,10 @@ return {
     },
     [702] = {
       name = "ScrCmd_BattleTowerSetUpMultiBattle",
+      feature = "battle",
+      disposition = "deferred",
+      deferredReason = "battle",
+      deferredNote = "battle tower needs the facility application",
       widths = {},
     },
     [703] = {
@@ -5465,6 +5586,10 @@ return {
     },
     [754] = {
       name = "ScrCmd_TryHeadbuttEncounter",
+      feature = "battle",
+      disposition = "deferred",
+      deferredReason = "battle",
+      deferredNote = "headbutt encounters need the field encounter application",
       widths = {
         [1] = 2,
       },
@@ -5795,6 +5920,10 @@ return {
     },
     [807] = {
       name = "ScrCmd_SetTrainerHouseSprite",
+      feature = "battle",
+      disposition = "deferred",
+      deferredReason = "battle",
+      deferredNote = "trainer house needs the facility application",
       widths = {
         [1] = 2,
         [2] = 2,
@@ -5808,6 +5937,10 @@ return {
     },
     [809] = {
       name = "ScrCmd_ShowTrainerHouseIntroMessage",
+      feature = "battle",
+      disposition = "deferred",
+      deferredReason = "battle",
+      deferredNote = "trainer house needs the facility application",
       widths = {
         [1] = 2,
       },
@@ -6070,6 +6203,10 @@ return {
     },
     [849] = {
       name = "ScrCmd_BufferTrainerClassNameIndef",
+      feature = "battle",
+      disposition = "deferred",
+      deferredReason = "battle",
+      deferredNote = "trainer name buffers need the trainer text application",
       widths = {
         [1] = 1,
         [2] = 2,

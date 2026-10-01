@@ -14,6 +14,8 @@
 local Assert = require("tests.support.Assert")
 local AcceptanceHarness = require("tests.acceptance.support.AcceptanceHarness")
 local BagCache = require("libs.assets.src.BagCache")
+local EncounterSave = require("libs.hgss.src.save.EncounterSave")
+local PokedexSave = require("libs.hgss.src.save.PokedexSave")
 local BagSave = require("libs.hgss.src.save.BagSave")
 local CatalogFixture = require("libs.mons.tests.catalog_fixture")
 local Errors = require("libs.errors.src.Errors")
@@ -428,7 +430,7 @@ end
 
 local function validRecord(saveId)
   return {
-    schema = "g4-game-save-v4",
+    schema = "g4-game-save-v5",
     saveId = saveId,
     versionId = "heartgold",
     playTimeSeconds = 0,
@@ -458,6 +460,8 @@ local function validRecord(saveId)
     audio = {},
     mons = monsBucket(),
     bag = BagSave.empty(),
+    encounters = EncounterSave.initial(),
+    pokedex = PokedexSave.initial(),
   }
 end
 
@@ -564,7 +568,7 @@ function T.tests.v3_record_migrates_through_store_load()
   local saveId = assert(store:reserve(), "reservation must succeed")
   Assert.isTrue(store:publishFirst(v3record(saveId)), "a quiescent v3 record must publish as migrated")
   local loaded = assert(store:load(saveId), "the migrated record must load")
-  Assert.equal(loaded.schema, "g4-game-save-v4", "load exposes the migrated schema")
+  Assert.equal(loaded.schema, "g4-game-save-v5", "load exposes the migrated schema")
   Assert.equal(loaded.playerData.profile.badges, 0, "migration starts with zero badges")
   Assert.deepEqual(loaded.fieldTravel, { lastHealSpawn = "SPAWN_NEW_BARK" }, "migration seeds the mother spawn")
   Assert.equal(loaded.playerData.profile.name, "GOLD", "migration preserves the profile")

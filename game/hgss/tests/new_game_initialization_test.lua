@@ -1,4 +1,6 @@
 local Assert = require("tests.support.Assert")
+local EncounterSave = require("libs.hgss.src.save.EncounterSave")
+local PokedexSave = require("libs.hgss.src.save.PokedexSave")
 local FieldEventState = require("libs.hgss.src.field.FieldEventState")
 local FieldScriptSymbols = require("libs.assets.src.field.FieldScriptSymbols")
 local MonsSave = require("libs.mons.src.MonsSave")
@@ -270,6 +272,8 @@ function T.lottery_persists_through_world_capture_and_game_save()
     audio = {},
     mons = MonsSave.empty("test-catalog-fingerprint", 7),
     bag = BagSave.empty(),
+    encounters = EncounterSave.initial(),
+    pokedex = PokedexSave.initial(),
   }
   local validated = assert(GameSave.validate(record))
   Assert.equal(validated.world.variables[vars.VAR_LOTO_NUMBER_LO], 0x5678)

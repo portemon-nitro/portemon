@@ -5,6 +5,8 @@ local Assert = require("tests.support.Assert")
 local Errors = require("libs.errors.src.Errors")
 local GameSave = require("libs.hgss.src.save.GameSave")
 local BagSave = require("libs.hgss.src.save.BagSave")
+local EncounterSave = require("libs.hgss.src.save.EncounterSave")
+local PokedexSave = require("libs.hgss.src.save.PokedexSave")
 
 local T = {}
 
@@ -29,6 +31,8 @@ local function record(overrides)
     audio = {},
     mons = {},
     bag = BagSave.empty(),
+    encounters = EncounterSave.initial(),
+    pokedex = PokedexSave.initial(),
   }
   for key, replacement in pairs(overrides or {}) do
     rawset(value, key, replacement)
@@ -143,6 +147,12 @@ function T.uses_injected_authoritative_bucket_validators()
     fieldTravelValidate = function(value)
       calls.fieldTravel = value
     end,
+    encountersValidate = function(value)
+      calls.encounters = value
+    end,
+    pokedexValidate = function(value)
+      calls.pokedex = value
+    end,
   }
   local valid = assert(GameSave.validate(record(), opts))
   Assert.deepEqual(valid.playerData, { canonical = true })
@@ -154,6 +164,8 @@ function T.uses_injected_authoritative_bucket_validators()
   Assert.notNil(calls.mons)
   Assert.notNil(calls.bag)
   Assert.notNil(calls.fieldTravel)
+  Assert.notNil(calls.encounters)
+  Assert.notNil(calls.pokedex)
 end
 
 function T.rejects_non_table_and_missing_required_buckets()
@@ -161,7 +173,7 @@ function T.rejects_non_table_and_missing_required_buckets()
     ---@diagnostic disable-next-line: param-type-mismatch -- test deliberately exercises an invalid call
     return GameSave.validate(nil)
   end)
-  for _, key in ipairs({ "playerData", "world", "auxiliaryUi", "audio", "mons", "fieldTravel" }) do
+  for _, key in ipairs({ "playerData", "world", "auxiliaryUi", "audio", "mons", "fieldTravel", "encounters", "pokedex" }) do
     returnsCode("GAME_SAVE_BUCKET_INVALID", function()
       local value = record()
       value[key] = nil

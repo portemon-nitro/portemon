@@ -10,6 +10,8 @@ local ItemFixture = require("libs.items.tests.item_fixture")
 local ItemCatalog = require("libs.items.src.ItemCatalog")
 local MonCatalog = require("libs.mons.src.MonCatalog")
 local GameSaveValidation = require("game.hgss.src.save.GameSaveValidation")
+local EncounterSave = require("libs.hgss.src.save.EncounterSave")
+local PokedexSave = require("libs.hgss.src.save.PokedexSave")
 local BagSave = require("libs.hgss.src.save.BagSave")
 local MonsSave = require("libs.mons.src.MonsSave")
 local Lcrng = require("libs.mons.src.gen4.Lcrng")
@@ -60,7 +62,7 @@ end
 local function baseRecord(saveId, scripts)
   local monCatalog = CatalogFixture.makeCatalog()
   return {
-    schema = "g4-game-save-v4",
+    schema = "g4-game-save-v5",
     saveId = saveId,
     versionId = "heartgold",
     playTimeSeconds = 0,
@@ -82,6 +84,8 @@ local function baseRecord(saveId, scripts)
     audio = { fieldMusicOverride = 7 },
     mons = partyBucket(monCatalog),
     bag = stockedBag(),
+    encounters = EncounterSave.initial(),
+    pokedex = PokedexSave.initial(),
   }
 end
 

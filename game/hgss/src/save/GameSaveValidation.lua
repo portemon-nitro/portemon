@@ -2,6 +2,9 @@
 -- records and the PlayerData boundary used by an in-memory new game.
 
 local CacheFs = require("libs.storage.src.CacheFs")
+local EncounterSave = require("libs.hgss.src.save.EncounterSave")
+local PokedexSave = require("libs.hgss.src.save.PokedexSave")
+local MapAssetCache = require("libs.assets.src.MapAssetCache")
 local FieldFontLoader = require("libs.hgss.src.ui.FieldFontLoader")
 local FieldUiAssetCache = require("libs.assets.src.field.FieldUiAssetCache")
 local PlayerData = require("libs.hgss.src.save.PlayerData")
@@ -63,11 +66,28 @@ local function contextForCache(cacheFs, overrideFs, versionId)
   -- loaded once per version context through the ready cache path, then
   -- held as the immutable domain catalog its fingerprint belongs to. The
   -- shared item catalog loads beside it: mon composition consumes it now,
-  -- and later Bag validation reuses the same version context.
+  -- and later Bag validation reuses the same version context. The resolved
+  -- species set behind the encounter and dex buckets comes from the same
+  -- root, so custom content resolves exactly as the runtime sees it.
   local monRoot = MonCache.loadCatalog(cacheFs)
   local itemCatalog = ItemCatalog.new(ItemCache.loadCatalog(cacheFs))
   local monCatalog = MonCatalog.new(monRoot, itemCatalog)
   local monLanguage = monRoot.version.language
+  local speciesRefs = {}
+  for key in pairs(assert(monRoot.species, "mon catalog root carries its species")) do
+    speciesRefs[key] = true
+  end
+  -- The resolved map set behind roamer locations comes from the same
+  -- world catalog the field runtime boots from.
+  local worldManifest, worldErr = cacheFs:loadLua(MapAssetCache.worldPath())
+  if worldManifest == nil then
+    error(worldErr)
+  end
+  assert(type(worldManifest) == "table" and type(worldManifest.byId) == "table", "world catalog is invalid")
+  local mapRefs = {}
+  for mapId in pairs(worldManifest.byId) do
+    mapRefs[mapId] = true
+  end
   assert(
     HgssMonService.GAMES[versionId] ~= nil,
     "GameSave validation requires a native game identity for " .. tostring(versionId)
@@ -83,6 +103,8 @@ local function contextForCache(cacheFs, overrideFs, versionId)
     scriptCompatibility = FieldScriptCompatibility.new({ cacheFs = cacheFs, overrideFs = overrideFs }),
     monCatalog = monCatalog,
     itemCatalog = itemCatalog,
+    speciesRefs = speciesRefs,
+    mapRefs = mapRefs,
   }
 end
 
@@ -158,12 +180,13 @@ function GameSaveValidation:validate(record, context)
       return GameSave.validate(record)
     end
     local selected = context or self:_context(record.versionId)
-    -- Explicit v3 -> v4 migration before canonical validation. Quiescent
-    -- old script buckets pass through with their recorded provenance
-    -- (counters and world/RNG data preserved); an incompatible active
-    -- graph is rejected with the save bytes untouched, never cleared or
-    -- rewritten. Recognized nested legacy mon buckets upgrade in memory
-    -- only; anything else rejects loudly through canonical validation.
+    -- Explicit chained migration before canonical validation: v3 -> v4,
+    -- then v4 -> the battle era. Quiescent old script buckets pass through
+    -- with their recorded provenance (counters and world/RNG data
+    -- preserved); an incompatible active graph is rejected with the save
+    -- bytes untouched, never cleared or rewritten. Recognized nested
+    -- legacy mon buckets upgrade in memory only; anything else rejects
+    -- loudly through canonical validation.
     local effective = record
     if type(record) == "table" and record.schema == "g4-game-save-v3" then
       if not isQuiescentScripts(record.scripts) then
@@ -187,6 +210,9 @@ function GameSaveValidation:validate(record, context)
           end
         end
       end
+    end
+    if type(effective) == "table" and effective.schema == GameSave.HISTORICAL_SCHEMA_V4 then
+      effective = GameSave.migrateV4(effective)
     end
     local function playerDataValidate(value)
       return PlayerData.validate(value, selected)
@@ -249,6 +275,20 @@ function GameSaveValidation:validate(record, context)
       end
       error(validFailure, 0)
     end
+    -- The single application owner of encounter and dex validation: the
+    -- resolved species and map sets from the runtime composition. A
+    -- context without those sets fails closed (only empty buckets
+    -- validate); selected custom content resolves because the sets come
+    -- from the same roots the runtime boots from.
+    local function encountersValidate(value)
+      return EncounterSave.validate(value, {
+        species = selected.speciesRefs or {},
+        maps = selected.mapRefs or {},
+      })
+    end
+    local function pokedexValidate(value)
+      return PokedexSave.validate(value, { species = selected.speciesRefs or {} })
+    end
     -- The single application owner of bag validation context: the version
     -- item catalog the bag bucket validates against. A context without an
     -- item catalog fails closed: no bucket is ever accepted unvalidated.
@@ -287,6 +327,8 @@ function GameSaveValidation:validate(record, context)
       monsValidate = monsValidate,
       bagValidate = bagValidate,
       fieldTravelValidate = fieldTravelValidate,
+      encountersValidate = encountersValidate,
+      pokedexValidate = pokedexValidate,
     })
   end)
   if ok then

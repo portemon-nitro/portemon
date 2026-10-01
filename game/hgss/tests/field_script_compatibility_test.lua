@@ -176,4 +176,24 @@ T["validation options carry stable resolvers and no global gate"] = function()
   )
 end
 
+-- The battle task registers beside the composed tasks for persisted save
+-- validation. Adding this one type never invalidates unrelated saved
+-- tasks: resolution stays per type and version.
+T["the battle task registers without invalidating unrelated saved tasks"] = function()
+  local cache = hashIndexedCache()
+  local fs = overrideFs()
+  local compatibility = FieldScriptCompatibility.new({ cacheFs = cache, overrideFs = fs })
+  ---@cast compatibility FieldScriptCompatibilityTestSurface
+  local options = compatibility:validationOptions()
+  local battle = options.resolveTask("battle", 1)
+  Assert.notNil(battle, "the battle task resolves for save validation")
+  Assert.isNil(battle.validate({ launchId = "launch-1", kind = "wild", completed = false }))
+  local waitTicks, waitErr = options.resolveTask("wait_ticks", 1)
+  Assert.notNil(waitTicks, "unrelated saved tasks keep resolving")
+  Assert.isNil(waitErr)
+  local unknown, unknownErr = options.resolveTask("safari", 1)
+  Assert.isNil(unknown, "unknown task types still fail closed")
+  Assert.notNil(unknownErr)
+end
+
 return { tests = T }

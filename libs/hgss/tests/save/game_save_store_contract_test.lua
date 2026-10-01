@@ -8,11 +8,13 @@ local FakeCache = require("tests.support.FakeCache")
 local LuaWriter = require("libs.codec.src.LuaWriter")
 local MonsSave = require("libs.mons.src.MonsSave")
 local BagSave = require("libs.hgss.src.save.BagSave")
+local EncounterSave = require("libs.hgss.src.save.EncounterSave")
+local PokedexSave = require("libs.hgss.src.save.PokedexSave")
 local SaveFs = require("libs.storage.src.SaveFs")
 
 local T = {}
 
-local GAME_SCHEMA = "g4-game-save-v4"
+local GAME_SCHEMA = "g4-game-save-v5"
 
 local function newStore(backend, opts)
   local loaded, GameSaveStore = pcall(require, "libs.hgss.src.save.GameSaveStore")
@@ -47,6 +49,8 @@ local function record(saveId, versionId, overrides)
     audio = {},
     mons = MonsSave.empty("test-catalog-fingerprint", 7),
     bag = BagSave.empty(),
+    encounters = EncounterSave.initial(),
+    pokedex = PokedexSave.initial(),
   }
   for key, valueOverride in pairs(overrides or {}) do
     value[key] = valueOverride
@@ -208,6 +212,7 @@ function T.first_publication_validates_payload_before_catalog_visibility_and_can
   retryStore:publishFirst(retryValue)
   Assert.notNil(findEntry(assert(retryStore:list()), retryId))
   retryValue.avatar = { state = "walking" }
+  retryValue.playerData.options.battleStyle = "shift"
   Assert.deepEqual(assert(retryStore:load(retryId)), retryValue)
 end
 
@@ -250,8 +255,9 @@ function T.update_and_delete_failures_preserve_a_valid_checkpoint_and_order()
     store:save(replacement)
   end)
   -- Loading canonicalizes the legacy record: validation backfills the
-  -- reserved avatar field to walking.
+  -- reserved avatar field to walking and the battle style to shift.
   first.avatar = { state = "walking" }
+  first.playerData.options.battleStyle = "shift"
   Assert.deepEqual(assert(store:load(firstId)), first)
   local afterFailedUpdate = assert(store:list())
   Assert.equal(afterFailedUpdate[1].saveId, before[1].saveId)

@@ -1293,6 +1293,43 @@ local function processSoundplate()
   return { op = "process_soundplate" }
 end
 
+-- Battle launch and result lowering. TrainerBattle and WildBattle become
+-- blocking battle_launch operations carrying their pinned operand layout:
+-- the leading identity operands ride value-or-variable references (the
+-- source reads them through ScriptGetVar) while trailing operands are
+-- preserved opaquely for the battle host, whose meanings stay unpinned.
+-- CheckBattleWon becomes the same-tick battle_result read into its
+-- result variable. No unknown battle opcode maps to an ordinary launch:
+-- anything else stays an explicit unsupported node with its owning
+-- application named in the command catalog.
+local function trainerBattle(ins)
+  return {
+    op = "battle_launch",
+    kind = "trainer",
+    details = {
+      trainer = Operands.varRef(ins.operands[1]),
+      encounter = Operands.varRef(ins.operands[2]),
+      args = { Operands.operandValue(ins.operands[3]), Operands.operandValue(ins.operands[4]) },
+    },
+  }
+end
+
+local function wildBattle(ins)
+  return {
+    op = "battle_launch",
+    kind = "wild",
+    details = {
+      species = Operands.varRef(ins.operands[1]),
+      level = Operands.varRef(ins.operands[2]),
+      args = { Operands.operandValue(ins.operands[3]) },
+    },
+  }
+end
+
+local function checkBattleWon(ins)
+  return { op = "battle_result", result = Operands.varRef(ins.operands[1]) }
+end
+
 local function actorOscillate(ins)
   local sourceAmplitudeX = Operands.varRef(ins.operands[4])
   local sourceAmplitudeZ = Operands.varRef(ins.operands[5])
@@ -1459,6 +1496,9 @@ return {
   [294] = checkBadge,
   [295] = awardBadge,
   [296] = countBadges,
+  [213] = trainerBattle,
+  [220] = checkBattleWon,
+  [589] = wildBattle,
   [746] = hideAuxiliaryUi,
   [747] = showAuxiliaryUi,
   [748] = contextChoice,

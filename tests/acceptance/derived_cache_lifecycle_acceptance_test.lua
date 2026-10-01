@@ -11,6 +11,8 @@
 -- nothing renders.
 
 local Assert = require("tests.support.Assert")
+local EncounterSave = require("libs.hgss.src.save.EncounterSave")
+local PokedexSave = require("libs.hgss.src.save.PokedexSave")
 local AcceptanceHarness = require("tests.acceptance.support.AcceptanceHarness")
 local FakeAudioOutput = require("tests.acceptance.support.FakeAudioOutput")
 local FakeCache = require("tests.support.FakeCache")
@@ -67,6 +69,8 @@ local function seedRecord(saveId, versionId)
     audio = {},
     mons = MonsSave.empty("test-catalog-fingerprint", 7),
     bag = BagSave.empty(),
+    encounters = EncounterSave.initial(),
+    pokedex = PokedexSave.initial(),
   }
 end
 

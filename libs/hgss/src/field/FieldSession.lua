@@ -110,6 +110,7 @@ local MetatileBehavior = require("libs.hgss.src.world.MetatileBehavior")
 ---@field mapEntryController FieldMapEntryController
 ---@field private fieldMoves FieldSession.FieldMoves? validated push/disembark port; absent sessions bump boulders
 ---@field childResumePending boolean
+---@field battleActive boolean whether an application battle owns player input
 ---@field tick integer
 ---@field accumulator number
 ---@field navigationBoundary table<string, unknown>?
@@ -380,6 +381,7 @@ function FieldSession.new(options)
       autoAcknowledgePresentation = options.autoAcknowledgePresentation == true,
     }),
     childResumePending = false,
+    battleActive = false,
     navigationBoundary = options.navigationBoundary,
     fieldMoves = options.fieldMoves,
     tick = 0,
@@ -435,6 +437,21 @@ function FieldSession:onChildApplicationResume()
   self.childResumePending = true
 end
 
+-- Marks the application battle lifetime: while active, player input never
+-- initiates movement or opens the Start Menu, so decisions owned by the
+-- battle cannot leak through to the field. Ambient actors and the script
+-- scheduler keep stepping (the launching script itself stays blocked on
+-- its battle task); only player initiation is gated.
+---@param active boolean
+function FieldSession:setBattleActive(active)
+  self.battleActive = active == true
+end
+
+---@return boolean
+function FieldSession:isBattleActive()
+  return self.battleActive == true
+end
+
 -- A seamless connection never leaves the world: it stays outside the fade
 -- transition and remains presentable for its whole lifecycle. Only a full
 -- entry hides the destination until it has been presented.
@@ -478,6 +495,7 @@ local function canOpenStartMenu(self)
     and not self.contextChoice:isActive()
     and not isForegroundActive(self.scriptScheduler)
     and not isPlayerInputOwned(self.scriptScheduler)
+    and not self.battleActive
 end
 
 function FieldSession:_advanceTick()
@@ -883,7 +901,7 @@ function FieldSession:updateFixed(inputSnapshot)
 
   local playerInputOwnedAfterScheduler = isPlayerInputOwned(self.scriptScheduler)
   local foregroundActive = isForegroundActive(self.scriptScheduler)
-  local inputSuppressedThisTick = playerInputOwnedAtTickStart or playerInputOwnedAfterScheduler
+  local inputSuppressedThisTick = playerInputOwnedAtTickStart or playerInputOwnedAfterScheduler or self.battleActive
 
   -- Start Menu arbitration: a pending script reopen request (opcode 61's
   -- startMenuReopen service) opens the menu unconditionally at this point,

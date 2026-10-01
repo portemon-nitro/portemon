@@ -59,6 +59,13 @@ Schema.ENUMS = {
   -- The three persistent follower map-object movement modes opcode 604 may
   -- select; raw source selectors never appear past the generated boundary.
   follower_movement_type = { "follow_player", "follow_transition_a", "follow_transition_b" },
+  -- Battle launch kinds: wild encounters, trainer battles, staged script
+  -- fights, and fully explicit scenarios. Numeric source codes never
+  -- appear at runtime (lowering converts them).
+  battle_kind = { "wild", "trainer", "scripted", "scenario" },
+  -- Battle result read contexts: the ordinary won check and the static
+  -- wild won-or-caught check.
+  battle_result_context = { "battle_won", "static_wild_won_or_caught" },
 }
 
 Schema.ACTOR_SPECIALS = { "player", "self", "last_talked", "partner", "camera_target" }
@@ -1059,6 +1066,28 @@ Schema.OPERATIONS = {
       slot = { type = "scalar_or_value" },
     },
   },
+  -- Battle launch and result. A launch suspends the script on the battle
+  -- task: the injected battle host owns the lifetime and the commit, and
+  -- the completed task writes the script-visible outcome code into the
+  -- result variable. The result read answers from the host's latest
+  -- committed outcome (1 for a won or caught battle, else 0), so scripts
+  -- branch on real results without touching battle internals. No numeric
+  -- source flags here: only the semantic kind, opaque kind-specific
+  -- details validated by the host, and variable references.
+  battle_launch = {
+    fields = {
+      launchId = { type = "scalar_or_value" },
+      kind = { type = "enum:battle_kind", required = true },
+      details = { type = "serializable" },
+      result = { type = "value" },
+    },
+  },
+  battle_result = {
+    fields = {
+      result = { type = "value", required = true },
+      context = { type = "enum:battle_result_context", default = "battle_won" },
+    },
+  },
   -- Follower operations. Every node routes to the one field following
   -- controller through the injected collaborator; boolean results write 1
   -- or 0, and the movement mode carries one semantic mode string.
@@ -1828,6 +1857,16 @@ Schema.CONSTRUCTORS = {
         signature = "S.pokemonNicknameInput(spec)",
         canonical = "op=pokemon_nickname_input",
         notes = "spec={slot,result}; blocks on the field Pokemon Naming Screen.",
+      },
+      {
+        signature = "S.battleLaunch(spec)",
+        canonical = "op=battle_launch",
+        notes = "spec={kind,details=nil,result=nil,launchId=nil}; blocks on the battle task owned by the injected host.",
+      },
+      {
+        signature = "S.battleResult(spec)",
+        canonical = "op=battle_result",
+        notes = "spec={result,context=battle_won}; reads the host latest committed outcome as 1 or 0.",
       },
     },
   },

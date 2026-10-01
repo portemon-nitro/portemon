@@ -391,7 +391,7 @@ function T.tests.save_round_trip_preserves_domain_badges_travel_and_leaves(conte
     Assert.isTrue(bag:add("POTION", 3), "setup must stock potions")
     local potionBefore = bag:quantity("POTION")
     local record = assert(runtime:captureGameSave(), "a settled field captures")
-    Assert.equal(record.schema, "g4-game-save-v4", "production capture writes the current save schema")
+    Assert.equal(record.schema, "g4-game-save-v5", "production capture writes the current save schema")
     Assert.isTrue(record.playerData.profile.badges > 0, "awarded badges persist in the record")
     Assert.isTrue(type(record.fieldTravel) == "table", "the record carries travel facts")
     Assert.equal(record.fieldTravel.lastHealSpawn, "SPAWN_NEW_BARK", "the mother spawn survives capture")
@@ -458,7 +458,7 @@ function T.tests.busy_save_is_denied_then_recovers_without_data_loss(context)
     Assert.isTrue(type(reason) == "string" and reason ~= "", "the denial explains itself")
     composition.fieldMoves:discardPending()
     local record = assert(runtime:captureGameSave(), "capture recovers after the queue clears")
-    Assert.equal(record.schema, "g4-game-save-v4", "recovered capture writes the current schema")
+    Assert.equal(record.schema, "g4-game-save-v5", "recovered capture writes the current schema")
   end)
 end
 

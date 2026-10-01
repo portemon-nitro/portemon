@@ -5,14 +5,19 @@
 local Errors = require("libs.errors.src.Errors")
 local GameSaveErrors = require("libs.hgss.src.save.GameSaveErrors")
 local FieldTravelState = require("libs.hgss.src.field.FieldTravelState")
+local EncounterSave = require("libs.hgss.src.save.EncounterSave")
+local PokedexSave = require("libs.hgss.src.save.PokedexSave")
+local PlayerData = require("libs.hgss.src.save.PlayerData")
 
 local GameSave = {}
 
-GameSave.SCHEMA = "g4-game-save-v4"
--- The one historical envelope listing still recognizes: v3 records predate
--- the travel bucket and the badge mask but otherwise share the v4 shape.
--- Listing a v3 envelope implies nothing loadable; semantic validation
--- migrates or rejects it separately.
+GameSave.SCHEMA = "g4-game-save-v5"
+-- Historical envelopes listing still recognizes: v4 records predate the
+-- encounter and dex buckets and the battle-style option; v3 records predate
+-- those plus the travel bucket and the badge mask. Listing an old envelope
+-- implies nothing loadable; semantic validation migrates or rejects it
+-- separately.
+GameSave.HISTORICAL_SCHEMA_V4 = "g4-game-save-v4"
 GameSave.HISTORICAL_SCHEMA_V3 = "g4-game-save-v3"
 GameSave.MAX_PLAY_TIME_SECONDS = 999 * 60 * 60 + 59 * 60 + 59
 
@@ -22,6 +27,7 @@ local TOP_LEVEL_FIELDS = {
   audio = true,
   auxiliaryUi = true,
   bag = true,
+  encounters = true,
   facing = true,
   fieldTravel = true,
   fieldX = true,
@@ -29,6 +35,7 @@ local TOP_LEVEL_FIELDS = {
   mapId = true,
   mons = true,
   playTimeSeconds = true,
+  pokedex = true,
   playerData = true,
   saveId = true,
   schema = true,
@@ -92,7 +99,85 @@ local function validateSaveIdRaised(saveId)
   end
 end
 
-local function validateBucket(record, key, opts, validatorKey)
+-- Structural validators for the battle-era buckets. The envelope owns shape
+-- and intra-bucket consistency only: references are checked against the
+-- bucket's own entries, so unknown selected content still fails loudly at
+-- the application validation boundary (which resolves the real content
+-- composition) while malformed present data fails here. An existing
+-- malformed bucket is never equivalent to an absent one.
+---@param bucket unknown
+---@return table<string, unknown> canonical detached shape without reference checks
+local function defaultEncountersValidate(bucket)
+  local species = {}
+  local maps = {}
+  if type(bucket) == "table" and type(bucket.roamers) == "table" then
+    for _, record in pairs(bucket.roamers) do
+      if type(record) == "table" then
+        if type(record.mon) == "table" and type(record.mon.species) == "string" then
+          species[record.mon.species] = true
+        end
+        local location = record.location
+        if type(location) == "string" or (type(location) == "number" and location == location) then
+          maps[location] = true
+        end
+      end
+    end
+  end
+  return EncounterSave.validate(bucket, { species = species, maps = maps })
+end
+
+---@param bucket unknown
+---@return table<string, unknown> canonical detached shape without reference checks
+local function defaultPokedexValidate(bucket)
+  local species = {}
+  if type(bucket) == "table" then
+    for _, key in ipairs({ "seen", "caught" }) do
+      if type(bucket[key]) == "table" then
+        for _, entry in ipairs(bucket[key]) do
+          if type(entry) == "string" then
+            species[entry] = true
+          end
+        end
+      end
+    end
+  end
+  return PokedexSave.validate(bucket, { species = species })
+end
+
+-- The native battle style defaults to shift for envelopes predating the
+-- option; a present unknown style fails at this boundary. PlayerData owns
+-- the same rule, so application validation (which runs that owner) and
+-- this structural pass always agree.
+---@param playerData table<string, unknown>
+---@return table<string, unknown> canonical player data with its battle style
+local function canonicalizeBattleStyle(playerData)
+  if type(playerData) ~= "table" or type(playerData.options) ~= "table" then
+    return playerData
+  end
+  local style = playerData.options.battleStyle
+  if style == nil then
+    local canonical = {}
+    for key, value in pairs(playerData) do
+      canonical[key] = value
+    end
+    local options = {}
+    for key, value in pairs(playerData.options) do
+      options[key] = value
+    end
+    options.battleStyle = PlayerData.DEFAULT_BATTLE_STYLE
+    canonical.options = options
+    return canonical
+  end
+  if PlayerData.BATTLE_STYLES[style] ~= true then
+    Errors.raise(GameSaveErrors.GAME_SAVE_BUCKET_INVALID, "game save playerData battle style is invalid", {
+      bucket = "playerData",
+      battleStyle = style,
+    })
+  end
+  return playerData
+end
+
+local function validateBucket(record, key, opts, validatorKey, defaultValidate)
   if type(record[key]) ~= "table" then
     Errors.raise(
       GameSaveErrors.GAME_SAVE_BUCKET_INVALID,
@@ -101,6 +186,9 @@ local function validateBucket(record, key, opts, validatorKey)
     )
   end
   local validator = opts and opts[validatorKey]
+  if validator == nil then
+    validator = defaultValidate
+  end
   if validator == nil then
     return record[key]
   end
@@ -208,6 +296,7 @@ local function validate(record, opts)
     )
   end
   local canonicalPlayerData = validateBucket(record, "playerData", opts, "playerDataValidate")
+  canonicalPlayerData = canonicalizeBattleStyle(canonicalPlayerData)
   local world = validateBucket(record, "world", opts, "worldValidate")
   for _, key in ipairs({ "flags", "variables", "objects", "rng" }) do
     if type(world[key]) ~= "table" then
@@ -221,6 +310,9 @@ local function validate(record, opts)
   local canonicalScripts = validateBucket(record, "scripts", opts, "scriptsValidate")
   local canonicalMons = validateBucket(record, "mons", opts, "monsValidate")
   local canonicalBag = validateBucket(record, "bag", opts, "bagValidate")
+  local canonicalEncounters =
+    validateBucket(record, "encounters", opts, "encountersValidate", defaultEncountersValidate)
+  local canonicalPokedex = validateBucket(record, "pokedex", opts, "pokedexValidate", defaultPokedexValidate)
   local canonicalFieldTravel = validateBucket(record, "fieldTravel", opts, "fieldTravelValidate")
   local canonicalAuxiliaryUi = validateBucket(record, "auxiliaryUi", opts, "auxiliaryUiValidate")
   local canonicalAudio = validateBucket(record, "audio", opts, "audioValidate")
@@ -234,6 +326,8 @@ local function validate(record, opts)
   canonical.scripts = canonicalScripts
   canonical.mons = canonicalMons
   canonical.bag = canonicalBag
+  canonical.encounters = canonicalEncounters
+  canonical.pokedex = canonicalPokedex
   canonical.fieldTravel = canonicalFieldTravel
   canonical.auxiliaryUi = canonicalAuxiliaryUi
   canonical.audio = canonicalAudio
@@ -244,9 +338,9 @@ end
 -- Pure v3 -> v4 migration: copies every known field without mutating the
 -- input, initializes the badge mask to zero (old profiles had no badge
 -- owner, so no achievement is invented), and falls back to the documented
--- mother-spawn respawn with no cave entrance. The result still passes
--- through canonical v4 validation afterwards; this step never repairs
--- malformed current data.
+-- mother-spawn respawn with no cave entrance. The result is a historical
+-- v4 envelope: the battle-era migration carries it the rest of the way.
+-- This step never repairs malformed data.
 ---@param record table<string, unknown> a v3 save record
 ---@return table<string, unknown> the migrated v4 record
 function GameSave.migrateV3(record)
@@ -268,7 +362,7 @@ function GameSave.migrateV3(record)
   end
   playerData.profile = profile
   migrated.playerData = playerData
-  migrated.schema = GameSave.SCHEMA
+  migrated.schema = GameSave.HISTORICAL_SCHEMA_V4
   migrated.fieldTravel = { lastHealSpawn = FieldTravelState.DEFAULT_LAST_HEAL_SPAWN }
   return migrated
 end
@@ -290,7 +384,7 @@ end
 -- display profile name and the integral bounded play time. It performs no
 -- generated-cache lookup and implies no semantic validity; a listed record
 -- is not thereby loadable. The current schema and the one supported
--- historical envelope (v3) list; anything else stays unsupported.
+-- historical envelopes (v4, v3) list; anything else stays unsupported.
 -- Never throws a validation failure: malformed
 -- input returns a structured error instead.
 ---@param record unknown
@@ -301,7 +395,11 @@ function GameSave.metadata(record)
       Errors.raise(GameSaveErrors.GAME_SAVE_INVALID, "game save must be a table", {})
     end
     assert(type(record) == "table")
-    if record.schema ~= GameSave.SCHEMA and record.schema ~= GameSave.HISTORICAL_SCHEMA_V3 then
+    if
+      record.schema ~= GameSave.SCHEMA
+      and record.schema ~= GameSave.HISTORICAL_SCHEMA_V4
+      and record.schema ~= GameSave.HISTORICAL_SCHEMA_V3
+    then
       Errors.raise(
         GameSaveErrors.GAME_SAVE_SCHEMA_UNSUPPORTED,
         "unsupported game save schema",
@@ -357,6 +455,54 @@ function GameSave.metadata(record)
     return nil, envelopeOrError --[[@as Errors.Error]]
   end
   error(envelopeOrError)
+end
+
+-- Battle-era migration: fills the genuinely absent battle-era buckets with
+-- their defined source defaults while preserving every carried value. The
+-- input record is never mutated. Only absence initializes: a present
+-- bucket (even an empty one) rides through untouched for validation to
+-- judge, and a present malformed battle style fails loudly instead of
+-- being repaired. Safe to run over an already-current record.
+---@param record table<string, unknown> a previous supported save record
+---@return table<string, unknown> the migrated battle-era record
+function GameSave.migrateV4(record)
+  assert(type(record) == "table", "GameSave.migrateV4 requires a record")
+  if type(record.playerData) ~= "table" or type(record.playerData.options) ~= "table" then
+    Errors.raise(GameSaveErrors.GAME_SAVE_BUCKET_INVALID, "game save playerData bucket is required", {
+      bucket = "playerData",
+    })
+  end
+  assert(type(record.playerData) == "table", "the bucket check carries the player record")
+  local migrated = {}
+  for key, value in pairs(record) do
+    migrated[key] = value
+  end
+  migrated.schema = GameSave.SCHEMA
+  if migrated.encounters == nil then
+    migrated.encounters = EncounterSave.initial()
+  end
+  if migrated.pokedex == nil then
+    migrated.pokedex = PokedexSave.initial()
+  end
+  local playerData = {}
+  for key, value in pairs(migrated.playerData) do
+    playerData[key] = value
+  end
+  local options = {}
+  for key, value in pairs(playerData.options) do
+    options[key] = value
+  end
+  if options.battleStyle == nil then
+    options.battleStyle = PlayerData.DEFAULT_BATTLE_STYLE
+  elseif PlayerData.BATTLE_STYLES[options.battleStyle] ~= true then
+    Errors.raise(GameSaveErrors.GAME_SAVE_BUCKET_INVALID, "game save playerData battle style is invalid", {
+      bucket = "playerData",
+      battleStyle = options.battleStyle,
+    })
+  end
+  playerData.options = options
+  migrated.playerData = playerData
+  return migrated
 end
 
 ---@param record table<string, unknown>
