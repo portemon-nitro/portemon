@@ -55,6 +55,9 @@ function HgssSchedule.step(queue, frame, stream, budget)
     type(allowance) == "number" and allowance % 1 == 0 and allowance >= 1,
     "schedule steps spend a positive operation budget"
   )
+  if #frame.pendingFaints > 0 then
+    return nil
+  end
   for _, action in ipairs(queue) do
     if action.progress == "queued" then
       action.progress = "running"
