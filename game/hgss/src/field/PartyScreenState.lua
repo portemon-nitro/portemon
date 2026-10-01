@@ -30,6 +30,10 @@ local PartyScreenModel = require("libs.hgss.src.ui.PartyScreenModel")
 ---@field _preparationError string?
 ---@field _preparedKeys string?
 ---@field _preparationReleased boolean
+---@field _revealPhase "opening"|"interactive"? the post-preparation lifecycle; nil while icons are not ready
+---@field _revealFirst integer the completed steps of the first-pane leg (0..6)
+---@field _revealSecond integer the completed steps of the second-pane leg (0..6)
+---@field _settleTicks integer gated interactive ticks remaining before input forwards
 ---@field _detailOverlay boolean the wrapper-owned host toggle for the one-display detail overlay; never persisted, never native state
 ---@field _controller PartyScreenController
 ---@field _session ApplicationPresentation the per-open presentation session
@@ -146,6 +150,10 @@ function PartyScreenState.new(opts)
     _preparationError = nil,
     _preparedKeys = nil,
     _preparationReleased = false,
+    _revealPhase = nil,
+    _revealFirst = 0,
+    _revealSecond = 0,
+    _settleTicks = 0,
     _detailOverlay = false,
     _disposed = false,
   }, PartyScreenState)
@@ -240,7 +248,7 @@ function PartyScreenState:_layout()
   })
 end
 
----@return table<string, unknown> the controller snapshot plus the wrapper-owned host overlay flag for resolvers and renderers
+---@return table<string, unknown> the controller snapshot plus the wrapper-owned host overlay flag and reveal progress for resolvers and renderers
 function PartyScreenState:_view()
   ---@type table<string, unknown>
   local view = {}
@@ -248,6 +256,12 @@ function PartyScreenState:_view()
     view[key] = value
   end
   view.detailOverlay = self._detailOverlay == true
+  if self._revealPhase ~= nil then
+    view.phase = self._revealPhase
+    if self._revealPhase == "opening" then
+      view.opening = { subStep = self._revealFirst, mainStep = self._revealSecond }
+    end
+  end
   return view
 end
 
@@ -322,6 +336,47 @@ function PartyScreenState:updateFixed(uiInput)
     if #cancellations > 0 then
       self._controller:updateFixed(cancellations)
     end
+    return
+  end
+  -- The opening reveal runs before any controller input: the ready tick
+  -- publishes fully covered panes, the next twelve fixed ticks clear the
+  -- first pane then the second one step per tick, the following tick
+  -- hands over to the interactive phase, and one settling tick after the
+  -- handover still drops its batch so the batch completing the reveal and
+  -- the batch arriving on the first interactive tick can never act or
+  -- replay. Every gated batch is validated and discarded, never queued.
+  if self._revealPhase == nil then
+    self._revealPhase = "opening"
+    self._revealFirst = 0
+    self._revealSecond = 0
+    self._settleTicks = 0
+  elseif self._revealPhase == "opening" then
+    if self._revealFirst < 6 then
+      self._revealFirst = self._revealFirst + 1
+    elseif self._revealSecond < 6 then
+      self._revealSecond = self._revealSecond + 1
+    else
+      self._revealPhase = "interactive"
+      self._settleTicks = 2
+    end
+  end
+  if self._revealPhase == "opening" or self._settleTicks > 0 then
+    for _, event in ipairs(assert(uiInput, "the party input must be an event list")) do
+      assert(type(event) == "table" and type(event.type) == "string", "party events need a type")
+    end
+    if self._settleTicks > 0 then
+      self._settleTicks = self._settleTicks - 1
+    end
+    local session = self._session
+    local measurement = self:_measured()
+    local signature = measurement.signature
+    if signature ~= nil and signature ~= self._signature then
+      if self._signature ~= nil then
+        self:cancelPointerCapture()
+      end
+      self._signature = signature
+    end
+    session:resolve(measurement, self:_view())
     return
   end
   local session = self._session

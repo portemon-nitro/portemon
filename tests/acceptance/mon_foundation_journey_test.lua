@@ -555,6 +555,19 @@ function T.tests.elm_starter_to_continue_preserves_the_chosen_mon()
         local currentFlow = current.application
         return currentFlow ~= nil and currentFlow.child ~= nil and currentFlow.child.view ~= nil
       end, 180)
+      game:advanceUntil("the party reveal completes before inspection", function()
+        local hostStatus = game.runtime.applicationHost:status()
+        if hostStatus.phase ~= FieldApplicationHost.PHASES.application then
+          return false
+        end
+        local currentFlow = hostStatus.application
+        local leaf = currentFlow ~= nil and currentFlow.child or nil
+        return leaf ~= nil and leaf.phase == "interactive"
+      end, 180)
+      -- The handover and its settling tick still drop input; the
+      -- inspection reads and the close presses only once the screen forwards.
+      game:step()
+      game:step()
       shown = game.runtime.applicationHost:status()
       local flow = assert(shown.application, "the party application must expose its flow status")
       local view = assert(flow.child.view, "the party screen exposes its view")

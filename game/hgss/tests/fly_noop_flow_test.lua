@@ -161,6 +161,20 @@ local function childView(flow)
   return assert(status.child, "the party flow holds a live child")
 end
 
+-- A fresh party page clears its open before input: wait for the leaf
+-- to turn interactive, then run out the handover ticks that still drop
+-- input so the first navigation acts.
+local function drainOpen(flow)
+  for _ = 1, 30 do
+    if childView(flow).phase == "interactive" then
+      break
+    end
+    flow:updateFixed({})
+  end
+  flow:updateFixed({})
+  flow:updateFixed({})
+end
+
 local function focusSlot(flow, slot)
   -- A fresh screen reports no cursor while icon preparation pends:
   -- wait for the visible cursor before navigating.
@@ -278,6 +292,7 @@ function T.tests.checked_fly_restores_party_without_mutation(context)
       end
     end
     Assert.notNil(flyPp, "the setup must teach fly before the no-op leg")
+    drainOpen(flow)
     focusSlot(flow, 0)
     activateMenuMove(flow, "FLY")
     status = flow:status()

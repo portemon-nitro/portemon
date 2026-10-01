@@ -137,6 +137,17 @@ local function childStatus(rig)
 end
 
 local function openContextMenu(rig)
+  -- A fresh party page clears its open before input: wait for the leaf
+  -- to turn interactive, then run out the handover ticks that still
+  -- drop input so the confirm acts.
+  for _ = 1, 30 do
+    if childStatus(rig).phase == "interactive" then
+      break
+    end
+    rig.flow:updateFixed({})
+  end
+  rig.flow:updateFixed({})
+  rig.flow:updateFixed({})
   rig.flow:updateFixed({ { type = "confirm" } })
   local child = childStatus(rig)
   Assert.equal(child.state, "context", "confirming the lead opens its context menu")

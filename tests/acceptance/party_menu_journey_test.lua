@@ -170,6 +170,18 @@ local function flowChild(status)
   return assert(status.child, "the active page carries its child status")
 end
 
+-- A fresh party page clears its open before input: wait for the leaf
+-- to turn interactive, then run out the handover ticks that still drop
+-- input so the first navigation acts.
+local function drainOpen(flow)
+  driveUntil(flow, "the open clears before input", 30, function(current)
+    local child = current.child
+    return child ~= nil and child.phase == "interactive"
+  end)
+  drive(flow, {})
+  drive(flow, {})
+end
+
 local BAG_NEIGHBORS = {
   [0] = { up = 2, down = 2, left = 1, right = 1 },
   [1] = { up = 3, down = 3, left = 0, right = 0 },
@@ -350,6 +362,7 @@ function T.tests.production_medicine_give_take_round_trip(context)
     end)
     local status = chooseBagAction(flow, "use")
     Assert.equal(status.page, "party_item_target", "choosing Use must open the party target page")
+    drainOpen(flow)
     status = drive(flow, { { type = "confirm" } })
     Assert.equal(
       mons:partyMon(0).condition.currentHp,
@@ -369,6 +382,7 @@ function T.tests.production_medicine_give_take_round_trip(context)
     driveUntil(party, "the party browse page", 30, function(current)
       return current.page == "party_browse"
     end)
+    drainOpen(party)
     local partyRevision = mons:partyRevision()
     choosePartySlot(party, 1)
     choosePartyMenu(party, "item")
@@ -382,6 +396,7 @@ function T.tests.production_medicine_give_take_round_trip(context)
     driveUntil(party, "the party browse page", 30, function(current)
       return current.page == "party_browse"
     end)
+    drainOpen(party)
     Assert.equal(mons:partyMon(1).heldItem, "POTION", "accepting the pick must hold the potion on slot one")
     Assert.isTrue(mons:partyRevision() == partyRevision + 1, "exactly one revision publishes the give")
     choosePartySlot(party, 1)
@@ -413,6 +428,7 @@ function T.tests.production_swap_summary_save_reload_persists(context)
     driveUntil(party, "the party browse page", 30, function(current)
       return current.page == "party_browse"
     end)
+    drainOpen(party)
     -- A UI-driven switch commits once at the end of its animation.
     choosePartySlot(party, 1)
     choosePartyMenu(party, "switch")
@@ -463,6 +479,17 @@ function T.tests.production_swap_summary_save_reload_persists(context)
     game:advanceUntil("the pokemon destination owns the tick", function()
       return hostPhase(game) == FieldApplicationHost.PHASES.application
     end, 120)
+    game:advanceUntil("the open clears before the close", function()
+      local hostStatus = game.runtime.applicationHost:status()
+      if hostStatus.phase ~= FieldApplicationHost.PHASES.application then
+        return false
+      end
+      local flow = hostStatus.application
+      local leaf = flow ~= nil and flow.child or nil
+      return leaf ~= nil and leaf.phase == "interactive"
+    end, 120)
+    game:step()
+    game:step()
     local child = game.runtime.applicationHost:status()
     Assert.equal(child.phase, FieldApplicationHost.PHASES.application, "the pokemon destination owns the tick")
     cancel(game)
@@ -539,6 +566,17 @@ function T.tests.production_script_selection_answers_through_the_live_host(conte
       host:open({ focus = 1, allowCancel = true, policy = "occupied" }),
       "opening a script selection on the live party must succeed"
     )
+    -- The open clears before input: run out the covered ticks plus
+    -- the handover ticks so the first navigation acts.
+    for _ = 1, 30 do
+      local status = host:status()
+      if status ~= nil and status.phase == "interactive" then
+        break
+      end
+      host:step(handle, {})
+    end
+    host:step(handle, {})
+    host:step(handle, {})
     local focused = nil
     for _ = 1, 12 do
       host:step(handle, {})

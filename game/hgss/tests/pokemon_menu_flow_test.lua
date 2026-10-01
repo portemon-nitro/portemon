@@ -397,6 +397,22 @@ local function driveToAction(rig, id)
   error("the action menu never selects " .. id, 0)
 end
 
+-- Fresh party children reveal before accepting input: after any arrival
+-- on a party page, wait out the reveal plus its handover/settling ticks
+-- so driven input acts. Bag pages return immediately.
+local function settleParty(rig)
+  local status = liveStatus(rig)
+  if type(status.page) ~= "string" or status.page:sub(1, 5) ~= "party" then
+    return status
+  end
+  status = driveUntil(rig, "the party reveal", 30, function(current)
+    local child = current.child
+    return child ~= nil and child.phase == "interactive"
+  end)
+  drive(rig, {})
+  return drive(rig, {})
+end
+
 local function partyChild(status)
   return assert(status.child, "the party page carries its child status")
 end
@@ -443,11 +459,13 @@ local function occupyHolder(rig, slot, itemKey)
   Assert.equal(outcome.kind, "changed", "the setup give must publish onto the empty holder")
 end
 
--- The page transition never opens the replacement question itself: one
--- empty tick lets the fresh confirmation child open its prompt before
--- the answer drives it. A settling tick after the answer lets the fresh
--- root child finish its icon preparation before callers read it.
+-- The page transition never opens the replacement question itself: settle
+-- the fresh confirmation child's reveal, then one empty tick lets it open
+-- its prompt before the answer drives it. A settling tick after the answer
+-- lets the fresh root child finish its icon preparation before callers
+-- read it.
 local function answerYes(rig)
+  settleParty(rig)
   drive(rig, {})
   local status = drive(rig, { { type = "navigate", direction = "down" } })
   Assert.equal(status.page, "party_give_confirm", "toggling the answer stays on the confirmation")
@@ -459,6 +477,7 @@ local function answerYes(rig)
 end
 
 local function answerNo(rig)
+  settleParty(rig)
   drive(rig, {})
   drive(rig, { { type = "cancel" } })
   driveUntil(rig, "the declined confirmation", 30, function(current)
@@ -534,6 +553,7 @@ function T.tests.bag_use_heals_once_and_returns_to_bag(context)
     Assert.equal(useSlot, 0, "Use rides the source slot zero")
     status = driveToAction(rig, "use")
     Assert.equal(status.page, "party_item_target", "choosing Use opens the party target page")
+    status = settleParty(rig)
     status = drive(rig, { { type = "confirm" } })
     Assert.equal(rig.mons:partyMon(0).condition.currentHp, maxHp, "confirming the lead heals it once")
     Assert.equal(rig.bag:quantity("POTION"), 2, "exactly one potion is consumed")
@@ -726,8 +746,10 @@ function T.tests.bag_give_to_an_occupied_holder_asks_before_any_change(context)
     Assert.equal(status.child.state, "action_menu", "confirming opens the action menu")
     status = driveToAction(rig, "give")
     Assert.equal(status.page, "party_give_target", "choosing Give opens the party target page")
+    status = settleParty(rig)
     status = drive(rig, { { type = "confirm" } })
     Assert.equal(status.page, "party_give_confirm", "targeting an occupied holder asks instead of publishing")
+    status = settleParty(rig)
     status = drive(rig, {})
     Assert.equal(
       status.child.prompt and status.child.prompt.selected,
@@ -750,6 +772,7 @@ function T.tests.bag_give_to_an_occupied_holder_asks_before_any_change(context)
     status = drive(rig, { { type = "confirm" } })
     status = driveToAction(rig, "give")
     Assert.equal(status.page, "party_give_target", "the declined Give can be chosen again")
+    status = settleParty(rig)
     status = drive(rig, { { type = "confirm" } })
     Assert.equal(status.page, "party_give_confirm", "the retry asks again")
     status = answerYes(rig)
@@ -783,6 +806,7 @@ function T.tests.party_give_decline_then_retry_confirms_once(context)
 
     local status = drive(rig, {})
     Assert.equal(status.page, "party_browse", "a party root opens the party browse page")
+    status = settleParty(rig)
     status = drive(rig, { { type = "confirm" } })
     status = drivePartyMenu(rig, "item")
     status = drivePartyMenu(rig, "give")
@@ -798,6 +822,7 @@ function T.tests.party_give_decline_then_retry_confirms_once(context)
 
     status = answerNo(rig)
     Assert.equal(status.page, "party_browse", "declining returns to the originating party")
+    status = settleParty(rig)
     Assert.equal(partyChild(status).cursorNode, 0, "declining resumes on the original mon")
     Assert.equal(rig.mons:partyMon(0).heldItem, "CHERI_BERRY", "declining keeps the held item")
     Assert.equal(rig.mons:partyRevision(), partyRevision, "declining publishes no party revision")
@@ -842,6 +867,7 @@ function T.tests.same_item_pick_keeps_the_picker_usable(context)
     local bagRevision = rig.bag:revision()
 
     local status = drive(rig, {})
+    status = settleParty(rig)
     status = drive(rig, { { type = "confirm" } })
     status = drivePartyMenu(rig, "item")
     status = drivePartyMenu(rig, "give")
@@ -903,6 +929,7 @@ function T.tests.raced_give_unwinds_without_a_partial_change(context)
     status = drive(rig, { { type = "confirm" } })
     status = driveToAction(rig, "give")
     Assert.equal(status.page, "party_give_target", "choosing Give opens the party target page")
+    status = settleParty(rig)
     status = drive(rig, { { type = "confirm" } })
     Assert.equal(status.page, "party_give_confirm", "targeting an occupied holder asks first")
     Assert.isTrue(rig.bag:add("CHERI_BERRY", 998), "the race fills the return stack")
@@ -920,6 +947,7 @@ function T.tests.raced_give_unwinds_without_a_partial_change(context)
 
     status = drive(rig, { { type = "confirm" } })
     status = driveToAction(rig, "give")
+    status = settleParty(rig)
     status = drive(rig, { { type = "confirm" } })
     Assert.equal(status.page, "party_give_target", "a full return pocket never reaches the confirmation")
     Assert.equal(rig.mons:partyMon(0).heldItem, "CHERI_BERRY", "the refused preview mutates nothing")
@@ -936,6 +964,7 @@ function T.tests.raced_give_unwinds_without_a_partial_change(context)
     status = drive(rig, { { type = "navigate", direction = "right" } })
     status = drive(rig, { { type = "confirm" } })
     status = driveToAction(rig, "give")
+    status = settleParty(rig)
     status = drive(rig, { { type = "confirm" } })
     Assert.equal(status.page, "party_give_confirm", "the freed pocket asks again")
     Assert.isTrue(rig.bag:add("POTION", 1), "the second race moves the bag revision")

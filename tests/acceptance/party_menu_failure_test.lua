@@ -164,6 +164,18 @@ local function bagChild(status)
   return assert(status.child, "the active page carries its child status")
 end
 
+-- A fresh party page clears its open before input: wait for the leaf
+-- to turn interactive, then run out the handover ticks that still drop
+-- input so the first navigation acts.
+local function drainOpen(flow)
+  driveUntil(flow, "the open clears before input", 30, function(current)
+    local child = current.child
+    return child ~= nil and child.phase == "interactive"
+  end)
+  drive(flow, {})
+  drive(flow, {})
+end
+
 local BAG_NEIGHBORS = {
   [0] = { up = 2, down = 2, left = 1, right = 1 },
   [1] = { up = 3, down = 3, left = 0, right = 0 },
@@ -347,6 +359,7 @@ function T.tests.take_into_full_bag_refuses_without_touching_the_mon(context)
     driveUntil(flow, "the party browse page", 30, function(current)
       return current.page == "party_browse"
     end)
+    drainOpen(flow)
     choosePartySlot(flow, 0)
     choosePartyMenu(flow, "item")
     choosePartyMenu(flow, "take")
@@ -379,6 +392,7 @@ function T.tests.flow_dispose_with_uncommitted_swap_abandons_safely(context)
     driveUntil(flow, "the party browse page", 30, function(current)
       return current.page == "party_browse"
     end)
+    drainOpen(flow)
     choosePartySlot(flow, 0)
     choosePartyMenu(flow, "switch")
     -- Confirm the target but never tick the animation to commit.
