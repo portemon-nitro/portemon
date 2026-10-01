@@ -14,6 +14,13 @@
 ---@field detectedOrdinal integer detection order
 ---@field processed boolean whether settlement already progressed this record
 
+---@class FaintOutcome
+---@field done boolean whether settlement drained
+---@field events table<string, unknown>[] faint facts in detection order
+---@field frame FaintFrame continuation frame
+---@field needsReplacement unknown|nil outstanding replacement while open
+---@field progression unknown[] one reward child per settled knockout, in order
+
 ---@class FaintFrame
 ---@field kind string settlement identity
 ---@field cursor string continuation cursor
@@ -74,6 +81,12 @@ end
 function Fainting.step(context, frame)
   assert(type(context) == "table", "faint settlement steps carry their settlement context")
   Fainting.validateFrame(frame)
+  if context.progression ~= nil then
+    assert(
+      type(context.progression) == "function",
+      "faint settlement spawns reward children through a progression function"
+    )
+  end
   local queue = context.queue
   assert(type(queue) == "table", "faint settlement drains an explicit queue")
   local pending = {}
@@ -87,9 +100,16 @@ function Fainting.step(context, frame)
     return a.detectedOrdinal < b.detectedOrdinal
   end)
   local events = {}
+  local children = {}
   for _, record in ipairs(pending) do
     if type(context.progress) == "function" then
       context.progress(record)
+    end
+    -- The reward checkpoint spawns exactly one child per settled knockout
+    -- with the complete knockout facts; already processed records never
+    -- reach it again, so restored settlements cannot award twice.
+    if type(context.progression) == "function" then
+      children[#children + 1] = context.progression(record)
     end
     record.processed = true
     events[#events + 1] = {
@@ -99,7 +119,7 @@ function Fainting.step(context, frame)
     }
   end
   local settled = { kind = "faint", cursor = "done" }
-  local outcome = { done = true, events = events, frame = settled, needsReplacement = nil }
+  local outcome = { done = true, events = events, frame = settled, needsReplacement = nil, progression = children }
   local reserves = context.reserves
   if type(reserves) == "table" and #reserves > 0 then
     outcome.done = false
