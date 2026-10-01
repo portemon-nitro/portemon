@@ -26,6 +26,43 @@ local function copyValue(value)
   return out
 end
 
+---@param value unknown interruption data under inspection
+---@param active table<table, boolean> tables on the current traversal path
+local function checkPlain(value, active)
+  local kind = type(value)
+  if kind == "function" or kind == "thread" or kind == "userdata" then
+    error(BattleErrors.incompatibleSnapshot("battle snapshots carry plain data only", { kind = kind }))
+  end
+  if kind ~= "table" then
+    return
+  end
+  local node = value --[[@as table<unknown, unknown>]]
+  if active[node] == true then
+    error(BattleErrors.incompatibleSnapshot("battle snapshots must not loop back on themselves", {}))
+  end
+  active[node] = true
+  for key, item in pairs(node) do
+    checkPlain(key, active)
+    checkPlain(item, active)
+  end
+  active[node] = nil
+end
+
+--- Validates an interruption capture without publishing anything: the
+--- record must be plain data (no functions, coroutines, userdata, or
+--- cycles) and must carry the current snapshot shape. Throws on any
+--- foreign or live state; returns true for a well-formed capture.
+---@param data unknown interruption capture under validation
+---@return boolean true when the capture is well-formed plain snapshot data
+function BattleSnapshot.validate(data)
+  if type(data) ~= "table" then
+    error(BattleErrors.incompatibleSnapshot("battle snapshots must be records", {}))
+  end
+  checkPlain(data, {})
+  BattleState.validateSnapshot(data --[[@as table<string, unknown>]])
+  return true
+end
+
 ---@param state table<string, unknown> live battle state at an atomic boundary
 ---@return table<string, unknown> detached plain interruption capture
 function BattleSnapshot.capture(state)
@@ -64,16 +101,14 @@ function BattleSnapshot.capture(state)
     outcome = copyValue(state.outcome),
   }
   local owned = snapshot --[[@as table<string, unknown>]]
-  BattleState.validateSnapshot(owned)
+  BattleSnapshot.validate(owned)
   return owned
 end
 
 ---@param data unknown interruption capture under validation
 ---@return table<string, unknown> live-ready battle state (generator still a plain record)
 function BattleSnapshot.restore(data)
-  if type(data) ~= "table" then
-    error(BattleErrors.incompatibleSnapshot("battle snapshots must be records", {}))
-  end
+  BattleSnapshot.validate(data)
   local snapshot = copyValue(data) --[[@as table<string, unknown>]]
   BattleState.validateSnapshot(snapshot)
   return snapshot
