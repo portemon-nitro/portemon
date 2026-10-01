@@ -947,6 +947,16 @@ local function composedText()
   function fake:textWidth(content)
     return #content * 8
   end
+  function fake:windowBackgroundColor()
+    local slot = palette[16]
+    local function unit(component)
+      if component > 1 then
+        return component / 255
+      end
+      return component
+    end
+    return { unit(slot.r), unit(slot.g), unit(slot.b), 1 }
+  end
   return fake
 end
 
