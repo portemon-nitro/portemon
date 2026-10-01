@@ -41,7 +41,7 @@ local YesNoPromptController = require("libs.hgss.src.ui.YesNoPromptController")
 ---@field _pressId string?
 ---@field _pressCapture PartyScreenController.Capture?
 ---@field _pressEpoch integer?
----@field _swapOp { source: integer, destination: integer, revision: integer, step: integer }?
+---@field _swapOp { source: integer, destination: integer, revision: integer, phase: string, xOffset: integer, exchanged: boolean }?
 ---@field _intent table<string, unknown>?
 ---@field _origin PartyScreenController.Origin?
 ---@field _message string|{ templateKey: string, displayName: string? }?
@@ -111,17 +111,12 @@ PartyScreenController.__index = PartyScreenController
 ---@field item { key: string, bagRevision: integer }?
 ---@field effect fun(sequence: string)? the borrowed swap sound boundary; swap stays silent without it
 
--- The native switch choreography over update ticks after entering the swap
--- subtask: one start presentation tick at tile-step zero, sixteen outward
--- tile-steps to full exit, one midpoint tick exchanging only temporary draw
--- records, sixteen inward tile-steps with settling ticks at zero, and one
--- final commit tick publishing exactly once. Each slot exits outward from
--- its own column: even slots move left, odd slots move right, eight units
--- per tile-step. The list sound fires at the start and at the midpoint
--- through the borrowed effect boundary.
-local SWAP_FULL_STEPS = 16
-local SWAP_EXCHANGE_STEP = 17
-local SWAP_COMMIT_STEP = 35
+-- The native switch task slides each travelling slot out from its own
+-- column and back: sixteen tile-steps to full exit, eight pixels per
+-- step. Even slots exit left, odd slots exit right. The list sound fires
+-- on the opening task and again when the visible records exchange; only
+-- the final task publishes the authoritative order.
+local SWAP_MAX_OFFSET = 16
 local SWAP_PIXEL_STEP = 8
 local SWAP_SOUND = "SEQ_SE_DP_POKELIST_001"
 
@@ -640,30 +635,27 @@ function PartyScreenController:_showMessage(text, returnState)
   self:_transition("message")
 end
 
--- Maps an armed swap tick to its integral tile-step clock in 0..16: the
--- start presentation holds zero, outward ticks climb to full exit, the
--- midpoint tick holds full exit while records exchange, inward ticks
--- descend, and settling ticks hold zero before the final commit.
----@param step integer update ticks since the swap armed
----@return integer tile-step clock in 0..16
-local function swapClockForStep(step)
-  if step <= SWAP_FULL_STEPS then
-    return math.max(step, 0)
-  end
-  return math.max(SWAP_FULL_STEPS - (step - SWAP_EXCHANGE_STEP), 0)
-end
-
+-- Private operation semantics, not a public schema.
+-- start: sound/no motion; outward: xOffset 1..16; exchange: swap visible
+-- records + sound; inward: xOffset 15..0; commit: validate and publish
+-- authoritative party order.
 -- Starts the column-parity swap: the source, destination, and live revision
--- freeze now; the midpoint tick exchanges only temporary draw records and
--- the final tick revalidates before publishing once. The list sound fires
--- on entry through the borrowed boundary when the owner supplied one.
+-- freeze now; arming stays silent and the opening tick carries the sound.
+-- The exchange tick swaps only temporary draw records and the final tick
+-- revalidates before publishing once.
 ---@param source integer
 ---@param destination integer
 function PartyScreenController:_beginSwap(source, destination)
   local port = assert(self._swap, "swapping requires the injected domain port")
-  self._swapOp = { source = source, destination = destination, revision = port.partyRevision(), step = 0 }
+  self._swapOp = {
+    source = source,
+    destination = destination,
+    revision = port.partyRevision(),
+    phase = "start",
+    xOffset = 0,
+    exchanged = false,
+  }
   self:_transition("swapping")
-  self:_requestSwapSound()
 end
 
 -- Requests one list sound through the borrowed effect boundary when the
@@ -691,22 +683,43 @@ function PartyScreenController:_abortSwap()
   self:_transition("browse")
 end
 
--- Advances one swap tick. The tile-step clock runs 0..16 outward, holds
--- full exit across the midpoint exchange, returns 16..0, and settles at
--- zero before the final stage. Only the final stage touches the domain:
--- it revalidates the frozen revision, publishes exactly once through the
--- injected port, then re-reads the live party and restores the cursor.
--- The midpoint tick replays the list sound after the records exchange.
+-- Advances exactly one swap phase per tick. The opening tick sounds with
+-- no motion, outward ticks climb 1..16, the exchange tick swaps only
+-- temporary draw records with the second sound, inward ticks descend
+-- 15..0, and only the final tick touches the domain: it revalidates the
+-- frozen revision, publishes exactly once through the injected port, then
+-- re-reads the live party and restores the cursor.
 function PartyScreenController:_advanceSwap()
   local op = assert(self._swapOp, "swap ticks require an armed operation")
   local port = assert(self._swap, "swapping requires the injected domain port")
-  op.step = op.step + 1
-  if op.step == SWAP_EXCHANGE_STEP then
+  if op.phase == "start" then
     self:_requestSwapSound()
-  end
-  if op.step < SWAP_COMMIT_STEP then
+    op.phase = "outward"
     return
   end
+  if op.phase == "outward" then
+    op.xOffset = op.xOffset + 1
+    assert(op.xOffset >= 0 and op.xOffset <= SWAP_MAX_OFFSET, "swap offsets stay within full exit")
+    if op.xOffset >= SWAP_MAX_OFFSET then
+      op.phase = "exchange"
+    end
+    return
+  end
+  if op.phase == "exchange" then
+    op.exchanged = true
+    self:_requestSwapSound()
+    op.phase = "inward"
+    return
+  end
+  if op.phase == "inward" then
+    op.xOffset = op.xOffset - 1
+    assert(op.xOffset >= 0 and op.xOffset <= SWAP_MAX_OFFSET, "swap offsets stay within full exit")
+    if op.xOffset <= 0 then
+      op.phase = "commit"
+    end
+    return
+  end
+  assert(op.phase == "commit", "swap ticks run start, outward, exchange, inward, then commit")
   if port.partyRevision() ~= op.revision then
     self:_abortSwap()
     return
@@ -1548,8 +1561,9 @@ function PartyScreenController:status()
   if self._swapOp ~= nil then
     local op = assert(self._swapOp, "swap status reads an armed operation")
     assert(op.source >= 0 and op.source < 6 and op.destination >= 0 and op.destination < 6, "swap slots stay in 0..5")
-    local xOffset = swapClockForStep(op.step)
-    local exchanged = op.step >= SWAP_EXCHANGE_STEP
+    local xOffset = op.xOffset
+    assert(xOffset % 1 == 0 and xOffset >= 0 and xOffset <= SWAP_MAX_OFFSET, "swap offsets stay within full exit")
+    local exchanged = op.exchanged
     local offsets = {}
     local directions = {}
     for _, slot0 in ipairs({ op.source, op.destination }) do
@@ -1561,7 +1575,6 @@ function PartyScreenController:status()
     swapStatus = {
       source = op.source,
       destination = op.destination,
-      step = op.step,
       xOffset = xOffset,
       offsets = offsets,
       directions = directions,
