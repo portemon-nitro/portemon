@@ -648,7 +648,15 @@ function T.swap_ticks_offset_both_records_and_exchange_at_midpoint()
   local renderer = newRenderer(graphics, stubText(texts))
   local status = presentation({
     state = "swapping",
-    swap = { source = 0, destination = 1, step = 10, stage = "out", offsetPx = -72, exchanged = false },
+    swap = {
+      source = 0,
+      destination = 1,
+      step = 10,
+      xOffset = 9,
+      offsets = { [0] = -72, [1] = 72 },
+      directions = { [0] = -1, [1] = 1 },
+      exchanged = false,
+    },
   })
   status.view.slots[1] = occupiedSlot(0)
   status.view.slots[2] = occupiedSlot(1)
@@ -656,7 +664,15 @@ function T.swap_ticks_offset_both_records_and_exchange_at_midpoint()
   Assert.isTrue(#graphics.draws > 0, "offset records still draw")
   local mid = presentation({
     state = "swapping",
-    swap = { source = 0, destination = 1, step = 18, stage = "in", offsetPx = -128, exchanged = true },
+    swap = {
+      source = 0,
+      destination = 1,
+      step = 18,
+      xOffset = 16,
+      offsets = { [0] = -128, [1] = 128 },
+      directions = { [0] = -1, [1] = 1 },
+      exchanged = true,
+    },
   })
   mid.view.slots[1] = occupiedSlot(0)
   mid.view.slots[2] = occupiedSlot(1)
@@ -1870,6 +1886,9 @@ local function swappingStatus(source, destination, xOffset, exchanged)
   local directions = {}
   directions[source] = (source % 2 == 0) and -1 or 1
   directions[destination] = (destination % 2 == 0) and -1 or 1
+  local offsets = {}
+  offsets[source] = directions[source] * xOffset * 8
+  offsets[destination] = directions[destination] * xOffset * 8
   local status = presentation({
     cursorNode = "cancel",
     state = "swapping",
@@ -1877,6 +1896,7 @@ local function swappingStatus(source, destination, xOffset, exchanged)
       source = source,
       destination = destination,
       xOffset = xOffset,
+      offsets = offsets,
       directions = directions,
       exchanged = exchanged == true,
     },

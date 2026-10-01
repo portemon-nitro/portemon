@@ -317,6 +317,7 @@ function PokemonMenuFlow:_openPage(page, continuation)
       measureDisplay = measureDisplay,
       prepareIcons = self._prepareIcons,
       cancelIconPreparation = self._cancelIconPreparation,
+      effect = self._effect,
     })
   end
   if page == PAGE.PARTY_ITEM_TARGET or page == PAGE.PARTY_GIVE_TARGET then
@@ -335,6 +336,7 @@ function PokemonMenuFlow:_openPage(page, continuation)
       measureDisplay = measureDisplay,
       prepareIcons = self._prepareIcons,
       cancelIconPreparation = self._cancelIconPreparation,
+      effect = self._effect,
     })
   end
   if page == PAGE.PARTY_GIVE_CONFIRM then
@@ -353,6 +355,7 @@ function PokemonMenuFlow:_openPage(page, continuation)
       measureDisplay = measureDisplay,
       prepareIcons = self._prepareIcons,
       cancelIconPreparation = self._cancelIconPreparation,
+      effect = self._effect,
     })
   end
   if page == PAGE.SUMMARY then

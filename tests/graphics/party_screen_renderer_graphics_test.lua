@@ -990,6 +990,78 @@ function T.switch_selection_paints_generated_bank_seven_chrome(scope)
   end
 end
 
+-- Switch motion exits each slot outward from its own column and
+-- empties both home panels at full exit: the even slot shifts left
+-- while the odd slot shifts right, with the whole composition leaving
+-- the home rectangles instead of lingering unmoved.
+function T.switch_animation_exits_outward_and_empties_panels_at_full_exit(scope)
+  for _, versionId in ipairs(readyVersions()) do
+    local cacheFs, manifest = manifestFor(versionId)
+    local browsing, layout = renderPane(scope, cacheFs, manifest, presentation({ cursorNode = "cancel" }))
+    local directions = { [0] = -1, [1] = 1 }
+    local moving = presentation({
+      cursorNode = "cancel",
+      state = "swapping",
+      swap = {
+        source = 0,
+        destination = 1,
+        xOffset = 4,
+        offsets = { [0] = -32, [1] = 32 },
+        directions = directions,
+        exchanged = false,
+      },
+    })
+    local moved, _ = renderPane(scope, cacheFs, manifest, moving)
+    for _, slot0 in ipairs({ 0, 1 }) do
+      local rect = layout.slotRects[slot0 + 1]
+      local changed = differingPixels(browsing, moved, rect.x, rect.y, rect.width, rect.height)
+      Assert.isTrue(changed > 100, versionId .. " slot " .. slot0 .. " visibly leaves its home panel")
+      local panel = manifest.panels[slot0 + 1]
+      local chrome = assert(panel.chrome.normal, versionId .. " carries normal panel chrome")
+      local source = visualPixels(scope, cacheFs, chrome)
+      local direction = directions[slot0]
+      -- Right-exiting slots compare the outer third: the travelling icon
+      -- covers the middle third under whole-slot motion, while the outer
+      -- band still proves chrome identity (it differs fully between normal
+      -- and switch-selection art at this band).
+      local matches, opaque =
+        matchingOpaquePixels(moved, source, 64 - direction * 32, 0, panel.origin.x + 64 + (direction == 1 and 32 or 0), panel.origin.y, 32, 8)
+      Assert.isTrue(opaque > 0, versionId .. " compiles chrome pixels for slot " .. slot0)
+      Assert.equal(
+        matches,
+        opaque,
+        versionId .. " slot " .. slot0 .. " shifts its chrome outward by column"
+      )
+    end
+    local emptied = presentation({
+      cursorNode = "cancel",
+      state = "swapping",
+      swap = {
+        source = 0,
+        destination = 1,
+        xOffset = 16,
+        offsets = { [0] = -128, [1] = 128 },
+        directions = directions,
+        exchanged = true,
+      },
+    })
+    local empty, _ = renderPane(scope, cacheFs, manifest, emptied)
+    for _, slot0 in ipairs({ 0, 1 }) do
+      local rect = layout.slotRects[slot0 + 1]
+      local iconRed = 0
+      for y = rect.y, rect.y + rect.height - 1 do
+        for x = rect.x, rect.x + rect.width - 1 do
+          local ir, ig, ib = empty:getPixel(x, y)
+          if ir > 0.7 and ig < 0.3 and ib < 0.3 then
+            iconRed = iconRed + 1
+          end
+        end
+      end
+      Assert.equal(iconRed, 0, versionId .. " full exit clears slot " .. slot0 .. " of its icon")
+    end
+  end
+end
+
 local suite = GraphicsSmoke.suite(T, { capabilities = { "graphics", "rom_dump" } })
 suite.metadata.derivedAssets = { "party:global" }
 return suite
