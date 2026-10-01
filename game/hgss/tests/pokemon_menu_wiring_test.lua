@@ -13,6 +13,7 @@ local FieldApplicationHost = require("libs.hgss.src.field.FieldApplicationHost")
 local FieldMoveContext = require("game.hgss.src.field.FieldMoveContext")
 local FieldMovePolicy = require("libs.hgss.src.field.FieldMovePolicy")
 local FieldMoveTask = require("libs.hgss.src.script.tasks.FieldMoveTask")
+local FieldMenuCompositionCoordinator = require("game.hgss.src.field.FieldMenuCompositionCoordinator")
 local FieldRuntime = require("game.hgss.src.field.FieldRuntime")
 local FieldSaveCoordinator = require("game.hgss.src.field.FieldSaveCoordinator")
 local FieldUiFixture = require("tests.support.FieldUiFixture")
@@ -399,7 +400,7 @@ local function admissionRuntime(composition, client, readerOverrides)
   for key, item in pairs(readerOverrides or {}) do
     readers[key] = item
   end
-  return setmetatable({
+  local runtime = setmetatable({
     session = { tick = 41 },
     pokemonMenu = composition,
     scripts = { client = client },
@@ -410,6 +411,8 @@ local function admissionRuntime(composition, client, readerOverrides)
     playerAvatar = readers.playerAvatar,
     followingMon = readers.followingMon,
   }, FieldRuntime)
+  runtime.menuComposer = FieldMenuCompositionCoordinator.new(runtime)
+  return runtime
 end
 
 function T.tests.stale_admission_refusal_never_reaches_the_scheduler()

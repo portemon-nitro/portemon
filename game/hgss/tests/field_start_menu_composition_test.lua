@@ -11,7 +11,7 @@ local FakeCache = require("tests.support.FakeCache")
 local FieldMessageCache = require("libs.assets.src.field.FieldMessageCache")
 local FieldMessageProvider = require("libs.hgss.src.interaction.FieldMessageProvider")
 local MenuProtocol = require("libs.assets.src.MenuProtocol")
-local FieldRuntime = require("game.hgss.src.field.FieldRuntime")
+local FieldMenuCompositionCoordinator = require("game.hgss.src.field.FieldMenuCompositionCoordinator")
 local FieldScriptSymbols = require("libs.assets.src.field.FieldScriptSymbols")
 local FieldUiFixture = require("tests.support.FieldUiFixture")
 local ScreenTopology = require("libs.hgss.src.ui.ScreenTopology")
@@ -127,6 +127,10 @@ local function composeSelf(overrides)
   }
 end
 
+local function composeStartMenu(self, rememberedActionId)
+  return FieldMenuCompositionCoordinator.new(self):composeStartMenu(rememberedActionId)
+end
+
 local function actionById(status, id)
   assert(status.open, "the start menu must stay open")
   for _, action in ipairs(status.actions) do
@@ -138,7 +142,7 @@ local function actionById(status, id)
 end
 
 function T.tests.static_labels_resolve_from_the_source_bank_and_trainer_card_uses_the_live_name()
-  local controller = assert(FieldRuntime._composeStartMenu(composeSelf()), "the full normal menu composes a controller")
+  local controller = assert(composeStartMenu(composeSelf()), "the full normal menu composes a controller")
   local status = controller:status()
   local expected = {
     ["vanilla.pokedex"] = "DEX-LABEL",
@@ -158,7 +162,7 @@ function T.tests.sparse_menus_keep_fixed_positions_with_holes_instead_of_compact
   local self = composeSelf({
     worldState = worldWith({ "FLAG_GOT_TRAINER_CARD", "FLAG_GOT_SAVE_BUTTON", "FLAG_GOT_OPTIONS_BUTTON" }),
   })
-  local status = FieldRuntime._composeStartMenu(self):status()
+  local status = composeStartMenu(self):status()
   Assert.equal(#status.actions, 3, "only the present actions compose entries")
   Assert.equal(actionById(status, "vanilla.trainer_card").position, 4)
   Assert.equal(actionById(status, "vanilla.save").position, 5)
@@ -173,7 +177,7 @@ function T.tests.disabled_but_visible_actions_still_carry_their_labels()
       flags[#flags + 1] = name
     end
   end
-  local status = FieldRuntime._composeStartMenu(composeSelf({ worldState = worldWith(flags) })):status()
+  local status = composeStartMenu(composeSelf({ worldState = worldWith(flags) })):status()
   local card = actionById(status, "vanilla.trainer_card")
   Assert.equal(card.enabled, false, "an unlock-gated action stays visible but disabled")
   Assert.equal(card.label, "PLAYER", "a disabled action still carries its label")
@@ -183,7 +187,7 @@ function T.tests.composition_without_the_source_label_bank_fails_instead_of_leav
   local cache = CacheFs.forVersion("heartgold", FakeCache.new())
   local self = composeSelf({ messageProvider = FieldMessageProvider.new(cache) })
   local err = Assert.throws(function()
-    FieldRuntime._composeStartMenu(self)
+    composeStartMenu(self)
   end)
   Assert.isTrue(tostring(err):find("196", 1, true) ~= nil, "the failure names the missing source label bank")
 end
@@ -196,7 +200,7 @@ function T.tests.pinned_source_label_bank_needs_no_bespoke_cleanup()
   seedLabelBank(cache)
   local provider = FieldMessageProvider.new(cache)
   assert(provider:acquireBank(SOURCE_LABEL_BANK))
-  FieldRuntime._composeStartMenu(composeSelf({ messageProvider = provider }))
+  composeStartMenu(composeSelf({ messageProvider = provider }))
   provider:dispose()
   provider:dispose()
   Assert.equal(provider:stats().live, 0, "disposal clears the pinned bank")

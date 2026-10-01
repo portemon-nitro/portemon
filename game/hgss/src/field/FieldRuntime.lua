@@ -10,8 +10,8 @@ local FieldActorDefinitionProvider = require("libs.hgss.src.actors.FieldActorDef
 local AuxiliaryFieldUi = require("libs.hgss.src.ui.AuxiliaryFieldUi")
 local ContextChoiceProvider = require("libs.hgss.src.interaction.ContextChoiceProvider")
 local FieldActorManager = require("libs.hgss.src.actors.FieldActorManager")
+local FieldMenuCompositionCoordinator = require("game.hgss.src.field.FieldMenuCompositionCoordinator")
 local FieldApplicationHost = require("libs.hgss.src.field.FieldApplicationHost")
-local FieldApplicationIds = require("libs.hgss.src.field.FieldApplicationIds")
 local FieldApplicationRegistry = require("libs.hgss.src.field.FieldApplicationRegistry")
 local FieldCamera = require("libs.hgss.src.field.FieldCamera")
 local FieldCoordinates = require("libs.hgss.src.field.FieldCoordinates")
@@ -28,16 +28,13 @@ local FieldMenuHost = require("libs.hgss.src.ui.FieldMenuHost")
 local FieldYesNoHost = require("libs.hgss.src.ui.FieldYesNoHost")
 local FieldInteractionResolver = require("libs.hgss.src.interaction.FieldInteractionResolver")
 local FieldEventResolver = require("libs.hgss.src.interaction.FieldEventResolver")
-local FieldMapDataCache = require("libs.assets.src.field.FieldMapDataCache")
 local FieldMapLoader = require("libs.hgss.src.world.FieldMapLoader")
 local FieldMessageProvider = require("libs.hgss.src.interaction.FieldMessageProvider")
-local MenuProtocol = require("libs.assets.src.MenuProtocol")
 local FieldPlayer = require("libs.hgss.src.actors.FieldPlayer")
 local FieldPlayerAvatarState = require("libs.hgss.src.actors.FieldPlayerAvatarState")
 local FieldPlayerVisual = require("libs.hgss.src.actors.FieldPlayerVisual")
 local FieldZoneIdentity = require("libs.hgss.src.world.FieldZoneIdentity")
 local FollowingMonController = require("libs.hgss.src.field.FollowingMonController")
-local FollowingMonTransitionController = require("libs.hgss.src.field.FollowingMonTransitionController")
 local GameSave = require("libs.hgss.src.save.GameSave")
 local PlayTime = require("libs.hgss.src.save.PlayTime")
 local FieldScriptScreenFade = require("libs.hgss.src.transition.FieldScriptScreenFade")
@@ -61,14 +58,9 @@ local MapProps = require("libs.hgss.src.world.MapProps")
 local MetatileBehavior = require("libs.hgss.src.world.MetatileBehavior")
 local FieldWeatherCache = require("libs.assets.src.field.FieldWeatherCache")
 local FieldWeatherResolver = require("libs.hgss.src.world.FieldWeatherResolver")
-local StartMenuPolicy = require("libs.hgss.src.ui.StartMenuPolicy")
-local StartMenuState = require("game.hgss.src.field.StartMenuState")
 local DisplayContext = require("game.hgss.src.ui.DisplayContext")
-local TrainerCardScreenState = require("game.hgss.src.field.TrainerCardScreenState")
-local FieldAudio = require("game.hgss.src.audio.FieldAudio")
 local FieldEntranceIndicatorRuntime = require("game.hgss.src.field.FieldEntranceIndicatorRuntime")
 local FieldActorEmoteRuntime = require("game.hgss.src.field.FieldActorEmoteRuntime")
-local TimeOfDayProps = require("libs.hgss.src.presentation.TimeOfDayProps")
 local HgssInputBindings = require("game.hgss.src.HgssInputBindings")
 local FieldPresentation = require("data.manifests.field_presentation")
 local FieldPixelScale = require("libs.hgss.src.presentation.FieldPixelScale")
@@ -181,6 +173,7 @@ end
 ---@field savePublished boolean whether the reserved record has been published
 ---@field saveCoordinator FieldSaveCoordinator required save capture/publication owner
 ---@field worldSwapCoordinator FieldWorldSwapCoordinator required staged transition/world owner
+---@field menuComposer FieldMenuCompositionCoordinator required menu/presentation composition owner
 ---@field playerData table<string, unknown> the validated profile/options authority (PlayerData shape)
 ---@field avatar table<string, unknown> the gender-selected compiled avatar capability
 ---@field playerAvatar FieldPlayerAvatarState? the one avatar transition owner
@@ -246,45 +239,7 @@ FieldRuntime.__index = FieldRuntime
 ---@field previous FieldCoverage?
 ---@field state "prepared"|"committed"|"released"
 
--- The audio-output sample rate of the production composition (the mixer and
--- the LÖVE sink render at this rate, the DS SPU rate; source waves are
--- ratio-scaled, so the pitch is preserved at any output rate).
-local AUDIO_SAMPLE_RATE = 32768
 local CAMERA_PROFILES_PATH = FieldCameraCache.profilesPath()
--- Builds headless follower-transition part instances: deterministic frame
--- counters with the controller's timing contract and no GPU state.
--- Presentation replaces this factory with renderer-backed model instances.
-local function headlessTransitionFactory()
-  local function buildPart(part, descriptor)
-    local frameCount = 0
-    if part == "animated" then
-      local animations = descriptor.animations
-      assert(type(animations) == "table", "transition animated part requires its clip")
-      local clip = animations[1]
-      assert(type(clip) == "table" and type(clip.frameCount) == "number", "transition clip requires its frame count")
-      frameCount = clip.frameCount
-    end
-    local player = { part = part, frame = 0, frameCount = frameCount, complete = false, disposed = false }
-    function player:updateFixed()
-      self.frame = self.frame + 1
-      if self.frame >= self.frameCount then
-        self.complete = true
-      end
-    end
-    function player:isComplete()
-      return self.complete
-    end
-    function player:reset()
-      self.frame = 0
-      self.complete = false
-    end
-    function player:dispose()
-      self.disposed = true
-    end
-    return player
-  end
-  return buildPart
-end
 
 ---@param avatars table[]
 local function validateAvatarConfig(avatars)
@@ -642,6 +597,7 @@ function FieldRuntime.new(game, options)
   end
   self.saveCoordinator = FieldSaveCoordinator.new(self)
   self.worldSwapCoordinator = FieldWorldSwapCoordinator.new(self)
+  self.menuComposer = FieldMenuCompositionCoordinator.new(self)
   self.weatherClock = self.weatherClock or defaultWeatherClock(self.localClock)
   self:_load(options)
   return self
@@ -1541,80 +1497,9 @@ function FieldRuntime:releaseMenu()
   requireLiveInput(self):releaseMenu("runtime")
 end
 
--- Helper: determine if this port has implemented the destination application
--- for an action kind.
-local function implementationAvailable(self, entry)
-  if entry.actionKind == "field_action" then
-    return entry.id == "vanilla.save" and self.saveStore ~= nil
-  end
-  if entry.actionKind == "application" then
-    return entry.targetApplication ~= nil and self.applications:has(entry.targetApplication)
-  end
-  return false
-end
-
--- The Start Menu composition step: build the final action list from the
--- authoritative world-state unlock flags (read through FieldScriptSymbols,
--- never raw numbers) and the registered destination capabilities. The source
--- policy produces source-present entries; the runtime separates source
--- enablement from implementation capability and combines them to set the final
--- enabled state. Construct the controller with the selection remembered
--- across a child-application round trip. Return nil only when no source-present
--- actions exist; disabled entries are visible and remain in the menu.
--- The field application catalogue: the registry holds child destinations
--- only, and the runtime registers the production destinations itself. Each
--- factory must return a fully usable controller or raise. The catalogue is
--- immutable after construction; canonical unimplemented destinations get
--- capability state, never dummy factories. The Start Menu is not a registry
--- entry: the application host composes it through its own menu factory.
--- A method (rather than an inline block in _load) so the boot closure stays
--- under the VM upvalue limit: file-level owners are upvalues of this small
--- method instead of the giant boot function.
 ---@return { id: string, factory: fun(...): table<string, unknown> }[] application descriptors for FieldApplicationRegistry.new
 function FieldRuntime:_applicationDescriptors()
-  local function playSequence(sequence)
-    if self.audio then
-      self.audio:play(sequence)
-    end
-  end
-  local function trainerCardFactory()
-    -- The Trainer Card factory wraps the close-input-only controller in
-    -- its presentation session, keeping the authoritative profile fields
-    -- with the existing controller ownership.
-    local cardOverrides = self.presentationOverrides ~= nil and self.presentationOverrides.trainer_card or nil
-    local function measureDisplay()
-      return self.presentationDisplay
-    end
-    return TrainerCardScreenState.new({
-      profile = self.playerData.profile,
-      playTimeSeconds = self.playTime:seconds(),
-      effect = playSequence,
-      measureDisplay = measureDisplay,
-      overrides = cardOverrides,
-    })
-  end
-  local function partyScreenFactory()
-    local composition = assert(self.pokemonMenu, "the pokemon application requires the menu composition")
-    return composition.makePartyFlow()
-  end
-  local function bagFactory()
-    local composition = assert(self.pokemonMenu, "the bag application requires the menu composition")
-    return composition.makeBagFlow()
-  end
-  return {
-    {
-      id = FieldApplicationIds.TRAINER_CARD,
-      factory = trainerCardFactory,
-    },
-    {
-      id = FieldApplicationIds.POKEMON,
-      factory = partyScreenFactory,
-    },
-    {
-      id = FieldApplicationIds.BAG,
-      factory = bagFactory,
-    },
-  }
+  return self.menuComposer:applicationDescriptors()
 end
 
 ---@param prepare fun(iconKeys: string[]): boolean, string? presented icon preparation
@@ -1643,472 +1528,40 @@ end
 ---@param rememberedActionId string?
 ---@return StartMenuState? nil when the source has no present actions
 function FieldRuntime:_composeStartMenu(rememberedActionId)
-  local world = self.scripts.worldState
-  local flags = FieldScriptSymbols.flagsByName
-
-  -- Source policy: returns all present actions (regardless of implementation)
-  local sourceEntries = StartMenuPolicy.actions({
-    hasPokedex = world:isFlagSet(flags.FLAG_GOT_POKEDEX),
-    hasStarter = world:isFlagSet(flags.FLAG_GOT_STARTER),
-    bagUnlocked = world:isFlagSet(flags.FLAG_GOT_BAG),
-    hasPokegear = world:isFlagSet(flags.FLAG_GOT_POKEGEAR),
-    trainerCardUnlocked = world:isFlagSet(flags.FLAG_GOT_TRAINER_CARD),
-    saveUnlocked = world:isFlagSet(flags.FLAG_GOT_SAVE_BUTTON),
-    optionsUnlocked = world:isFlagSet(flags.FLAG_GOT_OPTIONS_BUTTON),
-  })
-
-  if #sourceEntries == 0 then
-    return nil
-  end
-
-  local function playMenuSequence(sequence)
-    if self.audio then
-      self.audio:play(sequence)
-    end
-  end
-
-  -- Compose source policy with implementation capability: set enabled to
-  -- true only when both source-enabled AND implementation-available. The
-  -- party action additionally requires an owned mon: an empty party must
-  -- never offer a usable route into the party screen, even past the
-  -- starter progression gate.
-  --
-  -- The normal visual composition admits exactly the icon-backed entries:
-  -- the manifest's action-to-icon map for the normal context intersects the
-  -- source-present policy list. The cancel sentinel and the bookkeeping
-  -- specials carry no icon slot, so they stay source-policy facts but are
-  -- not visual buttons. Icon-backed entries keep their source and
-  -- implementation enabled state (a disabled visual entry renders and
-  -- confirms as a no-op). Labels resolve per icon-table row: the
-  -- player-name row carries the live player name, never baked text; static
-  -- rows resolve their label-bank message through the pinned source label
-  -- bank (a missing bank or message id is a composition failure, never an
-  -- unlabeled icon).
-  local startMenuSection = assert(self.uiManifest.startMenu, "the field UI manifest must carry the start menu section")
-  local actionIcons = assert(startMenuSection.actionIcons, "the field UI manifest must carry the start menu action map")
-  local iconTable = assert(startMenuSection.iconTable, "the field UI manifest must carry the start menu icon table")
-  local profile = assert(self.playerData and self.playerData.profile, "the start menu requires the player profile")
-  local playerName = assert(profile.name, "the start menu requires the player name")
-  local entries = {}
-  for _, source in ipairs(sourceEntries) do
-    local icon = actionIcons[source.id]
-    if icon ~= nil then
-      local implemented = implementationAvailable(self, source)
-      local enabled = source.sourceEnabled and implemented
-      if enabled and source.id == "vanilla.pokemon" then
-        enabled = self.monService:partyCount() > 0
-      end
-      if enabled and source.id == "vanilla.bag" then
-        enabled = self.bagService ~= nil and self.bagCursor ~= nil and self.itemCatalog ~= nil
-      end
-      local row = assert(iconTable[icon + 1], "action " .. source.id .. " maps outside the start menu icon table")
-      local label
-      if row.labelKind == "player_name" then
-        label = playerName
-      else
-        assert(type(row.label) == "number", "action " .. source.id .. " has no static start menu label")
-        local template, labelErr = self.messageProvider:get(MenuProtocol.START_MENU_MESSAGE_BANK, row.label)
-        if template == nil then
-          error(labelErr, 0)
-        end
-        label = template.text
-      end
-      entries[#entries + 1] = {
-        id = source.id,
-        displayPosition = source.displayPosition,
-        actionKind = source.actionKind,
-        targetApplication = source.targetApplication,
-        sourcePresent = true,
-        sourceEnabled = source.sourceEnabled,
-        implemented = implemented,
-        enabled = enabled,
-        icon = icon,
-        label = label,
-      }
-    end
-  end
-
-  if #entries == 0 then
-    return nil
-  end
-
-  local startMenuInteractive =
-    assert(startMenuSection.interactive, "the field UI manifest must carry the start menu interactive record")
-  local startMenuOverrides = self.presentationOverrides ~= nil and self.presentationOverrides.start_menu or nil
-  local function measureDisplay()
-    return self.presentationDisplay
-  end
-  return StartMenuState.new({
-    entries = entries,
-    interactive = startMenuInteractive,
-    rememberedActionId = rememberedActionId,
-    effect = playMenuSequence,
-    measureDisplay = measureDisplay,
-    overrides = startMenuOverrides,
-  })
+  return self.menuComposer:composeStartMenu(rememberedActionId)
 end
 
--- The production audio composition and the script audio service are
--- independent axes: the composition is constructed when no recording
--- script audio adapter is injected OR an audio-output host is explicitly
--- provided (a recording adapter then stays the script service while the
--- production renderer/output composition still exists). FieldAudio.compose
--- wires HGSS field policy over the NDS sound runtime, supplies the cry
--- boundary, and builds the LÖVE sink over the injected audio-output host
--- boundary (acceptance fakes it; production defaults to the love.audio +
--- love.sound namespaces, and a host with no audio module has no sink to
--- pump). The caller consumes only the composed service and sink; the
--- FieldAudioController owns the map music/soundplate field policy through
--- enterMap, resolving each map's music through the injected
--- fieldDataForMap lookup. The day/night source defaults to the wall-clock
--- IsNighttime predicate (hours 0-3 and 20-23, the bandForHour nite band);
--- tests and hosts inject a deterministic one.
--- Composes the one live Bag service and the runtime-only field cursor
--- outside the boot closure (which sits close to LuaJIT's per-function
--- upvalue limit). The bucket is the validated continue record or the
--- unpublished new-game bucket; a missing bucket fails loudly instead of
--- synthesizing an empty bag at boot.
 ---@param activeGame table<string, unknown>
 ---@param loadedGame table<string, unknown>?
 function FieldRuntime:_composeBag(activeGame, loadedGame)
-  local HgssBagService = require("libs.hgss.src.items.HgssBagService")
-  local BagCursor = require("libs.hgss.src.items.BagCursor")
-  local bucket = loadedGame and loadedGame.bag or assert(activeGame.bag, "finalized game bag bucket is required")
-  self.bagService = HgssBagService.new({ catalog = self.itemCatalog, bag = bucket })
-  self.bagCursor = BagCursor.new()
+  self.menuComposer:composeBag(activeGame, loadedGame)
 end
 
--- Composes the one live Pokemon menu composition outside the boot
--- closure (which sits close to LuaJIT's per-function upvalue limit).
--- Joins the live mon/Bag services, manifests, display facts, and field
--- ports into PartyActions, the single field-move runtime/world pair,
--- and Bag/Party flow factories. Missing collaborators fail loudly
--- instead of opening half-built menus.
 ---@param cacheFs table<string, unknown> version cache reader for cited spawn landings
 function FieldRuntime:_composePokemonMenu(cacheFs)
-  local PokemonMenuComposition = require("game.hgss.src.field.PokemonMenuComposition")
-  local BagCache = require("libs.assets.src.BagCache")
-  local PartyCache = require("libs.assets.src.PartyCache")
-  local ScriptMapsService = require("libs.hgss.src.script.ScriptMapsService")
-  local avatar = assert(self.avatar, "the menu composition requires the player avatar")
-  assert(avatar.gender == 0 or avatar.gender == 1, "the bag hero gender is unsupported")
-  local heroGender = avatar.gender == 0 and "male" or "female"
-  local function measureDisplay()
-    return self.presentationDisplay
-  end
-  local lane = ScriptMapsService.new({
-    transition = assert(self.transition, "menu-origin returns require the live transition"),
-    loader = assert(self.mapLoader, "menu-origin returns require the map loader"),
-    sourceMap = assert(self.runtimeMap, "menu-origin returns require the active map"),
-  })
-  self.menuLaneWarps = lane
-  -- The warp port always serves the live map: the lane instance keeps
-  -- no stale source across map swaps because every call re-reads it
-  -- first. Ordinary fade lifecycle, never script-authored cover.
-  local runtime = self
-  local function startLaneWarp(_, target)
-    lane:setSourceMap(assert(runtime.runtimeMap, "menu-origin returns require the active map"))
-    return lane:startWarp(target)
-  end
-  local function laneWarpDone(_)
-    return lane:warpDone()
-  end
-  local function lanePendingError(_)
-    return lane:pendingError()
-  end
-  local function resolveLaneWarp(_, ref)
-    return lane:resolve(ref)
-  end
-  local warps = {
-    startWarp = startLaneWarp,
-    warpDone = laneWarpDone,
-    pendingError = lanePendingError,
-    resolve = resolveLaneWarp,
-  }
-  local function changeLiveWeather(_, weatherId)
-    runtime:_setLiveWeather(assert(runtime.runtimeMap, "flash needs the active map"), weatherId)
-  end
-  local function dispatchFlashReaction(_, kind)
-    assert(kind == "alph_flash", "unknown field reaction " .. tostring(kind))
-    -- Chamber illumination state for the compiled map content:
-    -- the flash flag is the only illumination owner available.
-    assert(runtime.eventState, "field reactions require the event state"):setFlag(
-      require("libs.assets.src.field.FieldScriptSymbols").flagsByName.FLAG_SYS_FLASH
-    )
-  end
-  local function readCurrentMap()
-    local map = assert(runtime.runtimeMap, "field context needs the active map")
-    return { symbol = map.mapSymbol, id = map.mapId, fieldUse = map.fieldData.fieldUse }
-  end
-  local function readRuntimeMap()
-    return assert(runtime.runtimeMap, "field context needs the active map")
-  end
-  local worldPorts = {
-    actors = assert(self.actors, "the menu composition requires the actor manager"),
-    events = assert(self.eventState, "the menu composition requires the event state"),
-    maps = {
-      current = readCurrentMap,
-      runtimeMap = readRuntimeMap,
-    },
-    player = self:_menuPlayerPort(),
-    profile = assert(self.playerData and self.playerData.profile, "the menu composition requires the player profile"),
-    weather = {
-      change = changeLiveWeather,
-    },
-    reactions = {
-      dispatch = dispatchFlashReaction,
-    },
-    warps = warps,
-  }
-  -- The icon preparation binding belongs to the presentation lifetime
-  -- and may postdate this composition: the closures resolve it per
-  -- flow construction, when a screen is actually opened.
-  ---@param iconKeys string[]
-  ---@return boolean, string?
-  local function prepareMenuIcons(iconKeys)
-    local binding = assert(self._partyIconPreparation, "the menu composition requires its icon preparation binding")
-    return binding.prepare(iconKeys)
-  end
-  local function cancelMenuIconPreparation()
-    local binding = assert(self._partyIconPreparation, "the menu composition requires its icon preparation binding")
-    binding.cancel()
-  end
-  -- The bag's semantic sound boundary and text cadence bind once at the
-  -- menu composition root: effects delegate to the composed audio service
-  -- and lower modules never read player options or audio services.
-  local function playBagSequence(sequence)
-    if runtime.audio then
-      runtime.audio:play(sequence)
-    end
-  end
-  local bagTextPolicy =
-    TextSpeedPolicy.forSpeed(assert(self.playerData and self.playerData.options and self.playerData.options.textSpeed))
-  self.pokemonMenu = PokemonMenuComposition.create({
-    effect = playBagSequence,
-    textPolicy = bagTextPolicy,
-    mons = assert(self.monService, "the menu composition requires the live mon service"),
-    bag = assert(self.bagService, "the menu composition requires the live bag service"),
-    bagCursor = assert(self.bagCursor, "the menu composition requires the runtime bag cursor"),
-    itemCatalog = assert(self.itemCatalog, "the menu composition requires the shared item catalog"),
-    monCatalog = assert(self.monCatalog, "the menu composition requires the shared mon catalog"),
-    bagManifest = BagCache.loadManifest(cacheFs),
-    partyManifest = PartyCache.loadManifest(cacheFs),
-    uiManifest = assert(self.uiManifest, "the menu composition requires the validated field-UI manifest"),
-    heroGender = heroGender,
-    measureDisplay = measureDisplay,
-    contextSources = self:_menuFieldSources(),
-    worldPorts = worldPorts,
-    fieldTravel = self.fieldTravel,
-    cacheFs = cacheFs,
-    overrides = self.presentationOverrides,
-    prepareIcons = prepareMenuIcons,
-    cancelIconPreparation = cancelMenuIconPreparation,
-  })
+  self.menuComposer:composePokemonMenu(cacheFs)
 end
 
--- The field world player facade over the live player and avatar: tile
--- reads from the player, avatar transitions from the avatar owner.
--- Mirrors the return-move acceptance shape; missing owners fail the
--- composition loudly instead of planning against dead ports.
 ---@return table<string, unknown>
 function FieldRuntime:_menuPlayerPort()
-  local player = assert(self.player, "the menu composition requires the live player")
-  local avatar = assert(self.playerAvatar, "the menu composition requires the avatar transition owner")
-  local runtime = self
-  local function readPosition(_)
-    return { fieldX = player.fieldX, fieldZ = player.fieldZ, worldY = player.worldY }
-  end
-  local function readFacing(_)
-    return player.facing
-  end
-  local function beginPlayerAction(_, action)
-    return player:beginScriptedAction(action)
-  end
-  local function advancePlayerAction(_, progressTicks, durationTicks)
-    return player:advanceScriptedAction(progressTicks, durationTicks)
-  end
-  local function commitPlayerAction(_)
-    return player:commitScriptedAction()
-  end
-  local function cancelPlayerMovement(_)
-    return player:cancelScriptedMovement()
-  end
-  local function playerMoving(_)
-    return player:isScriptedMoving()
-  end
-  local function queuePlayerTransition(_, name)
-    return avatar:queueTransition(name)
-  end
-  local function applyPlayerTransitions(_)
-    return runtime:applyAvatarTransitions()
-  end
-  return {
-    position = readPosition,
-    facing = readFacing,
-    beginScriptedAction = beginPlayerAction,
-    advanceScriptedAction = advancePlayerAction,
-    commitScriptedAction = commitPlayerAction,
-    cancelScriptedMovement = cancelPlayerMovement,
-    isScriptedMoving = playerMoving,
-    queueAvatarTransition = queuePlayerTransition,
-    applyAvatarTransitions = applyPlayerTransitions,
-  }
+  return self.menuComposer:menuPlayerPort()
 end
 
--- Cardinal facing deltas for the facing-tile read below.
-local MENU_FACING_DELTAS = {
-  north = { fieldX = 0, fieldZ = -1 },
-  south = { fieldX = 0, fieldZ = 1 },
-  west = { fieldX = -1, fieldZ = 0 },
-  east = { fieldX = 1, fieldZ = 0 },
-}
-
--- Live world reads for one eligibility check: badges, map identity and
--- generated policy, avatar mode, follower state, and facing-tile facts
--- resolved through the live collision and actor owners. States with no
--- owner in this engine (human escorts, costumes, safari/park zones,
--- recording input, weather fog for the out-of-scope Defog check) read
--- as their absent value with the reason beside them.
 ---@return fun(): table<string, unknown>
 function FieldRuntime:_menuFieldSources()
-  local runtime = self
-  local function readSources()
-    local profile = assert(runtime.playerData and runtime.playerData.profile, "field context needs the player profile")
-    local runtimeMap = assert(runtime.runtimeMap, "field context needs the active map")
-    local player = assert(runtime.player, "field context needs the live player")
-    local fieldData = assert(runtimeMap.fieldData, "field context needs the compiled map record")
-    local delta = assert(MENU_FACING_DELTAS[player.facing], "field context needs a cardinal facing")
-    local toX, toZ = player.fieldX + delta.fieldX, player.fieldZ + delta.fieldZ
-    local actors = assert(runtime.actors, "field context needs actors")
-    local facingActor = nil
-    for _, actor in ipairs(actors:actorsOf(runtimeMap.mapId)) do
-      local at = actors:getPosition(actor.actorId)
-      if at ~= nil and at.fieldX == toX and at.fieldZ == toZ then
-        local event = actor.sourceEvent
-        facingActor = {
-          identity = actor.actorId,
-          obstacleKind = event and event.obstacleKind or nil,
-          mapSymbol = runtimeMap.mapSymbol,
-          fieldX = toX,
-          fieldZ = toZ,
-        }
-        break
-      end
-    end
-    local localX, localZ = FieldCoordinates.fieldToLocal(runtimeMap, toX, toZ)
-    local cell = runtimeMap.collision:getLocal(localX, localZ)
-    local behavior = cell and cell.behavior or nil
-    local avatar = assert(runtime.playerAvatar, "field context needs the avatar transition owner")
-    local follower = runtime.followingMon
-    return {
-      badges = profile.badges,
-      mapSymbol = runtimeMap.mapSymbol,
-      mapId = runtimeMap.mapId,
-      fieldUse = fieldData.fieldUse,
-      weatherId = runtimeMap.effectiveWeatherId,
-      avatarMode = avatar:status().durableState,
-      humanFollower = false,
-      followingMon = follower ~= nil and follower:isVisible() == true,
-      rocketCostume = false,
-      safari = false,
-      palPark = false,
-      surfEdge = behavior ~= nil and MetatileBehavior.isSurfableWater(behavior),
-      facingWaterfall = behavior == MetatileBehavior.BEHAVIOR.WATERFALL,
-      facingWhirlpool = behavior == MetatileBehavior.BEHAVIOR.WHIRLPOOL,
-      climbTile = behavior == MetatileBehavior.BEHAVIOR.ROCK_CLIMB_NORTH_SOUTH
-        or behavior == MetatileBehavior.BEHAVIOR.ROCK_CLIMB_EAST_WEST,
-      headbuttTree = facingActor ~= nil and facingActor.obstacleKind == "headbutt_tree",
-      foggy = false,
-      chatterOpen = false,
-      facingActor = facingActor,
-    }
-  end
-  return readSources
+  return self.menuComposer:menuFieldSources()
 end
 
--- Composes the one follower-transition owner outside the boot closure
--- (which sits close to LuaJIT's per-function upvalue limit). The generated
--- definition loads through the ready cache path; the controller validates it
--- strictly, so a missing or malformed definition fails the boot loudly.
 ---@param cacheFs CacheFs
 function FieldRuntime:_composeFollowerTransition(cacheFs)
-  local transitionEntry = assert(
-    self.fieldEntranceIndicatorAsset.index.effects.follower_transition,
-    "field-effect index is missing follower_transition"
-  )
-  local definition =
-    assert(cacheFs:loadLua(transitionEntry.path), "field-effect definition is missing: follower_transition")
-  self.followerTransitionDefinition = definition
-  self.followingMonTransition = FollowingMonTransitionController.new({
-    actors = self.actors,
-    definition = definition,
-    modelFactory = headlessTransitionFactory(),
-  })
+  self.menuComposer:composeFollowerTransition(cacheFs)
 end
 
 ---@param cacheFs unknown
 ---@param restoredAudio table<string, unknown>? the restored save's audio bucket, when resuming
 ---@return table<string, unknown> audioService the GameSound instance, or the injected recording adapter
 function FieldRuntime:_composeAudio(cacheFs, restoredAudio)
-  assert(type(cacheFs) == "table" and type(cacheFs.loadLua) == "function", "field runtime cache reader required")
-  ---@cast cacheFs CacheFs
-  local audioService = self.scriptHosts and self.scriptHosts.audio
-  if audioService == nil or self.audioOutput ~= nil then
-    local function defaultDayNight()
-      return TimeOfDayProps.bandForHour(self.localClock:nowLocal().hour) == "nite" and "night" or "day"
-    end
-    self.mapMusicDayNight = self.dayNight or defaultDayNight
-    local world =
-      assert(cacheFs:loadLua(MapAssetCache.worldPath()), "world.lua missing -- run `scripts/buildcache.sh` first")
-    local function fieldPosition()
-      return self.player.fieldX, self.player.fieldZ
-    end
-    local function fieldDataForMap(mapIdOrSymbol)
-      local mapId = mapIdOrSymbol
-      if type(mapIdOrSymbol) == "string" then
-        mapId = world.bySymbol and world.bySymbol[mapIdOrSymbol]
-      end
-      if mapId == nil then
-        error("unknown map symbol " .. tostring(mapIdOrSymbol))
-      end
-      local mapData = cacheFs:loadLua(FieldMapDataCache.fieldPath(mapId))
-      if mapData == nil then
-        return nil
-      end
-      if type(mapData) ~= "table" then
-        error("missing field data for map " .. tostring(mapIdOrSymbol) .. " (" .. tostring(mapId) .. ")")
-      end
-      if mapData.schema ~= FieldMapDataCache.FIELD_SCHEMA then
-        error("field data schema mismatch for map " .. tostring(mapId))
-      end
-      if mapData.mapId ~= mapId then
-        error("field data mapId mismatch for map " .. tostring(mapId))
-      end
-      return mapData
-    end
-    local audio = FieldAudio.compose({
-      cacheFs = cacheFs,
-      outputRate = AUDIO_SAMPLE_RATE,
-      eventState = self.eventState,
-      fieldPosition = fieldPosition,
-      dayNight = self.mapMusicDayNight,
-      fieldDataForMap = fieldDataForMap,
-      outputHost = self.audioOutput,
-    })
-    self.audio = audio.service
-    self.audioSink = audio.sink
-    if audioService == nil then
-      audioService = self.audio
-    end
-    -- Initialize the FieldAudioController with the current map.
-    -- Fresh boot: no override. Resume: restore the persisted override.
-    self.audio:enterMap(self.runtimeMap, {
-      play = true,
-      restoredMusicOverride = restoredAudio and restoredAudio.fieldMusicOverride or nil,
-    })
-  end
-  assert(audioService ~= nil, "field runtime audio composition must produce a service")
-  return audioService
+  return self.menuComposer:composeAudio(cacheFs, restoredAudio)
 end
 
 -- Materialize pending avatar transitions: apply them in source order through
