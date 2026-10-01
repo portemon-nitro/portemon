@@ -1059,33 +1059,19 @@ function PartyScreenRenderer:draw(presentation, planOrLayout, icons)
   end
 end
 
--- Brightens the already-rendered party content toward white at the
--- source coefficient. Runs after the content passes and strictly before
--- the context window and menu layers, so menu pixels keep their ink.
--- Covers the union of the generated slot panels, never invented chrome.
+-- Source G2_SetBlendBrightness(30, 8) affects BG1/BG2/BG3/OBJ across the main screen.
+-- In the flattened renderer, base Party content is already composed here; BG0-like
+-- context/message/menu layers are drawn afterward and therefore remain unbrightened.
 function PartyScreenRenderer:_brightenContent()
   local graphics = self._graphics
-  local panels = assert(self._manifest.panels, "the party manifest carries panels")
-  local first = assert(panels[1], "the party manifest carries six panels")
-  local firstOrigin = assert(first.origin, "party panels carry origins")
-  local firstSize = assert(first.size, "party panels carry sizes")
-  local minX = assert(firstOrigin.x, "party origins carry x")
-  local minY = assert(firstOrigin.y, "party origins carry y")
-  local maxX = minX + assert(firstSize.width, "party sizes carry width")
-  local maxY = minY + assert(firstSize.height, "party sizes carry height")
-  for slot0 = 1, 5 do
-    local panel = assert(panels[slot0 + 1], "the party manifest carries six panels")
-    local origin = assert(panel.origin, "party panels carry origins")
-    local size = assert(panel.size, "party panels carry sizes")
-    local x0 = assert(origin.x, "party origins carry x")
-    local y0 = assert(origin.y, "party origins carry y")
-    local x1 = x0 + assert(size.width, "party sizes carry width")
-    local y1 = y0 + assert(size.height, "party sizes carry height")
-    minX, minY = math.min(minX, x0), math.min(minY, y0)
-    maxX, maxY = math.max(maxX, x1), math.max(maxY, y1)
-  end
+  local visuals = assert(self._manifest.visuals, "the party manifest carries visuals")
+  local backdrop = assert(visuals.backdropMain, "party visuals carry the main backdrop")
+  local width = assert(backdrop.width, "the main backdrop carries its width")
+  local height = assert(backdrop.height, "the main backdrop carries its height")
+  assert(type(width) == "number" and width > 0, "the main backdrop width stays positive")
+  assert(type(height) == "number" and height > 0, "the main backdrop height stays positive")
   setColor(graphics, { 1, 1, 1, BRIGHTEN_ALPHA })
-  graphics.rectangle("fill", minX, minY, maxX - minX, maxY - minY)
+  graphics.rectangle("fill", 0, 0, width, height)
 end
 
 -- Draws one travelling panel's tilemap content with its swap slide,

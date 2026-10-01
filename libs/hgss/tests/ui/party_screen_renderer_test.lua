@@ -1426,7 +1426,9 @@ function T.content_paints_no_info_pixels()
   local resolved = v4Layout(manifest)
   -- The retired host affordance corner: native layout exposes no target
   -- here, so content must paint nothing in this box with or without any
-  -- host overlay flag supplied by callers.
+  -- host overlay flag supplied by callers. The context brightening step
+  -- spans the full generated backdrop and reaches this corner by contract,
+  -- so only that step may touch it.
   local info = { x = 184, y = 172, width = 8, height = 16 }
   local function render(status)
     local graphics = fakeGraphics()
@@ -1444,7 +1446,8 @@ function T.content_paints_no_info_pixels()
   local function touchesInfo(graphicsCalls, textCalls)
     for _, rect in ipairs(graphicsCalls.rectangles) do
       if
-        rect.x < info.x + info.width
+        not isBrighteningFill(rect)
+        and rect.x < info.x + info.width
         and info.x < rect.x + rect.w
         and rect.y < info.y + info.height
         and info.y < rect.y + rect.h
@@ -1645,6 +1648,99 @@ function T.context_menu_uses_semantic_roles_with_brightness_confined_below_the_m
       )
     end
   end
+  local browseGraphics = sequenceGraphics()
+  local browse = presentation({ cursorNode = 0 })
+  browse.view.slots[1] = occupiedSlot(0)
+  newRenderer(browseGraphics, paletteText({}), manifest):draw(browse, resolved, frameIcons({}))
+  for _, entry in ipairs(browseGraphics.sequence) do
+    if entry.kind == "rectangle" then
+      Assert.isFalse(
+        isBrighteningFill(browseGraphics.base.rectangles[entry.index]),
+        "closing the menu ceases brightness immediately"
+      )
+    end
+  end
+end
+
+-- Context brightness covers the full generated backdrop surface at the
+-- content boundary: the translucent white step spans the backdrop
+-- dimensions from the origin, reaches the backdrop strip below the slot
+-- panels without touching later menu layers, and stays absent in browse.
+function T.context_brightness_covers_the_full_generated_backdrop()
+  local manifest = v4Manifest()
+  local backdrop = assert(manifest.visuals.backdropMain, "the manifest carries the main backdrop")
+  local backdropWidth = assert(backdrop.width, "the backdrop carries its width")
+  local backdropHeight = assert(backdrop.height, "the backdrop carries its height")
+  Assert.isTrue(backdropWidth > 0, "the backdrop width stays positive")
+  Assert.isTrue(backdropHeight > 0, "the backdrop height stays positive")
+  local panelBottom = 0
+  for _, panel in ipairs(assert(manifest.panels, "the manifest carries panels")) do
+    local origin = assert(panel.origin, "panels carry origins")
+    local size = assert(panel.size, "panels carry sizes")
+    panelBottom =
+      math.max(panelBottom, assert(origin.y, "origins carry y") + assert(size.height, "sizes carry height"))
+  end
+  Assert.isTrue(panelBottom < backdropHeight, "the panel union ends above the backdrop edge")
+  local resolved = v4Layout(manifest)
+  local menu = {
+    { kind = "summary", label = "CMD_ONE" },
+    { kind = "switch", label = "CMD_TWO" },
+    { kind = "quit", label = "QUIT" },
+  }
+  local entries = assert(resolved.menuLayout("topLevel", #menu), "the layout carries menu records")
+  local function insideBox(x, y, box)
+    return x >= box.x and x < box.x + box.width and y >= box.y and y < box.y + box.height
+  end
+  -- Left-margin probe below the panels: left of every lower window and
+  -- below every menu frame, so only the backdrop brightening may change it.
+  local probeX, probeY = 8, panelBottom + 8
+  for _, box in ipairs({ manifest.windows.browse, manifest.windows.context, manifest.windows.action }) do
+    Assert.isFalse(insideBox(probeX, probeY, box), "the lower probe stays clear of message windows")
+  end
+  for _, generated in ipairs(entries) do
+    local frameRect = assert(generated.frameRect, "menu entries carry frame rectangles")
+    local frameBox = { x = frameRect.x, y = frameRect.y, width = frameRect.width, height = frameRect.height }
+    Assert.isFalse(insideBox(probeX, probeY, frameBox), "the lower probe stays clear of menu frames")
+  end
+  local graphics = sequenceGraphics()
+  local renderer = newRenderer(graphics, paletteText({}), manifest)
+  local status = contextStatus({ menu = menu, menuIndex = 1, menuSlot = 0 })
+  status.view.slots[1] = occupiedSlot(0)
+  renderer:draw(status, resolved, frameIcons({}))
+  local fills = {}
+  for _, entry in ipairs(graphics.sequence) do
+    if entry.kind == "rectangle" and isBrighteningFill(graphics.base.rectangles[entry.index]) then
+      fills[#fills + 1] = graphics.base.rectangles[entry.index]
+    end
+  end
+  Assert.equal(#fills, 1, "an open menu brightens the content surface exactly once")
+  local fill = fills[1]
+  Assert.deepEqual(
+    { fill.x, fill.y, fill.w, fill.h },
+    { 0, 0, backdropWidth, backdropHeight },
+    "the brightening step spans the full generated backdrop from the origin"
+  )
+  Assert.isTrue(rectCovers(fill, probeX, probeY), "the brightening step reaches below the panel union")
+  local frames = manifest.contextMenu.frames.standard
+  local frameImages = {}
+  for _, state in ipairs({ "raised", "selected", "pressed" }) do
+    frameImages[renderer._images["asset:" .. assert(frames[state], "menu frames carry " .. state).image]] = true
+  end
+  local fillSeq, firstMenuDraw = nil, nil
+  for seqIndex, entry in ipairs(graphics.sequence) do
+    if entry.kind == "rectangle" and isBrighteningFill(graphics.base.rectangles[entry.index]) then
+      fillSeq = seqIndex
+    elseif entry.kind == "draw" and frameImages[graphics.base.draws[entry.index].image] then
+      if firstMenuDraw == nil then
+        firstMenuDraw = seqIndex
+      end
+    end
+  end
+  Assert.notNil(firstMenuDraw, "menu button frames draw")
+  Assert.isTrue(
+    fillSeq < firstMenuDraw,
+    "brightening stays at the content boundary, never over the menu"
+  )
   local browseGraphics = sequenceGraphics()
   local browse = presentation({ cursorNode = 0 })
   browse.view.slots[1] = occupiedSlot(0)
