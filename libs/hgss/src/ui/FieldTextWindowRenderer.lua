@@ -51,7 +51,7 @@ end
 -- Draws one text window: the frame/fill first, then each line at
 -- box.x + line.x, box.y + line.y with no implicit padding. Every input is
 -- validated before anything draws, so a malformed record draws nothing.
----@param spec { graphics: table<string, unknown>?, window: table<string, unknown>, text: table<string, unknown>, box: { x: number, y: number, width: number, height: number }, frameIndex: integer?, background: number[], palette: { foreground: { r: number, g: number, b: number }, shadow: { r: number, g: number, b: number }, background: { r: number, g: number, b: number, a: number? } }, lines: { text: string, x: number, y: number }[] }
+---@param spec { window: table<string, unknown>, text: table<string, unknown>, box: { x: number, y: number, width: number, height: number }, frameIndex: integer?, background: number[], palette: { foreground: { r: number, g: number, b: number }, shadow: { r: number, g: number, b: number }, background: { r: number, g: number, b: number, a: number? } }, lines: { text: string, x: number, y: number }[] }
 function FieldTextWindowRenderer.draw(spec)
   assert(type(spec) == "table", "a draw record is required")
   local window = assert(spec.window, "the borrowed window primitive is required")

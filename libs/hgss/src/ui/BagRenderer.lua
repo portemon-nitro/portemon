@@ -889,7 +889,6 @@ function BagRenderer:_drawLowerMessage(presentation)
   local window = self._window
   if window ~= nil then
     FieldTextWindowRenderer.draw({
-      graphics = self._graphics,
       window = window,
       text = self._text,
       box = box,

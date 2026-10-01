@@ -829,7 +829,6 @@ function PartyScreenRenderer:_drawLowerWindow(box, ops)
       lines[#lines + 1] = { text = op.value, x = op.x, y = op.y }
     end
     FieldTextWindowRenderer.draw({
-      graphics = self._graphics,
       window = window,
       text = self._text,
       box = box,
