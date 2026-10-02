@@ -17,6 +17,11 @@
 ---@field synchronousLogicalFallbackLoads integer
 ---@field initialized boolean
 ---@field disposed boolean
+---@field _livePrefetchCoverage FieldCoverage?
+---@field _livePrefetchAnchorX integer?
+---@field _livePrefetchAnchorZ integer?
+---@field _livePrefetchIds integer[]
+---@field _livePrefetchSatisfied boolean
 local FieldResidencyCoordinator = {}
 FieldResidencyCoordinator.__index = FieldResidencyCoordinator
 
@@ -101,6 +106,11 @@ function FieldResidencyCoordinator.new(options)
     synchronousLogicalFallbackLoads = 0,
     initialized = false,
     disposed = false,
+    _livePrefetchCoverage = nil,
+    _livePrefetchAnchorX = nil,
+    _livePrefetchAnchorZ = nil,
+    _livePrefetchIds = {},
+    _livePrefetchSatisfied = false,
   }, FieldResidencyCoordinator)
 end
 
@@ -166,6 +176,22 @@ function FieldResidencyCoordinator:_prefetchMapIds(anchorX, anchorZ)
   if not self.coverage then
     return {}
   end
+  if anchorX == nil and anchorZ == nil then
+    local coverage = assert(self.coverage)
+    if
+      self._livePrefetchCoverage ~= coverage
+      or self._livePrefetchAnchorX ~= coverage.anchorX
+      or self._livePrefetchAnchorZ ~= coverage.anchorZ
+    then
+      local descriptors = coverage:prefetchDescriptorsView()
+      self._livePrefetchCoverage = coverage
+      self._livePrefetchAnchorX = coverage.anchorX
+      self._livePrefetchAnchorZ = coverage.anchorZ
+      self._livePrefetchIds = self:_desiredIds(descriptors)
+      self._livePrefetchSatisfied = false
+    end
+    return self._livePrefetchIds
+  end
   local descriptors
   if type(self.coverage.prefetchDescriptors) == "function" then
     descriptors = self.coverage:prefetchDescriptors(anchorX, anchorZ)
@@ -197,9 +223,6 @@ function FieldResidencyCoordinator:initialize()
     self:_acquireResident(mapId)
   end
   self.initialized = true
-  if self.coverage then
-    self.coverage:queuePrefetch()
-  end
   return self
 end
 
@@ -238,11 +261,17 @@ end
 ---@param _ integer? legacy caller budget, intentionally ignored
 function FieldResidencyCoordinator:updatePrefetch(_)
   assert(not self.disposed and self.initialized, "field residency coordinator is not ready")
+  local mapIds = self:_prefetchMapIds()
+  if self._livePrefetchSatisfied then
+    return 0
+  end
   local completed = 0
+  local hasPhysicalWork = false
   if self.coverage then
     completed = self.coverage:updatePrefetch(1)
+    hasPhysicalWork = self.coverage:hasPrefetchWork()
   end
-  for _, mapId in ipairs(self:_prefetchMapIds()) do
+  for _, mapId in ipairs(mapIds) do
     if not self.residents[mapId] then
       if not self:_demandPrefetchMap(mapId) then
         return completed
@@ -250,6 +279,9 @@ function FieldResidencyCoordinator:updatePrefetch(_)
       self:_acquireResident(mapId)
       return completed + 1
     end
+  end
+  if not hasPhysicalWork then
+    self._livePrefetchSatisfied = true
   end
   return completed
 end
@@ -515,7 +547,6 @@ function FieldResidencyCoordinator:afterCommittedMove(player, context)
         self:_release(mapId)
       end
     end
-    self.coverage:queuePrefetch(targetX, targetZ)
   end
   return result or self:status()
 end

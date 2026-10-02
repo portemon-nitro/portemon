@@ -80,6 +80,10 @@ local function coverageFixture()
     return self.footprint
   end
 
+  function coverage:prefetchDescriptorsView()
+    return self.footprint
+  end
+
   function coverage:committedMapIds()
     return ids(self.committed)
   end
@@ -108,6 +112,10 @@ local function coverageFixture()
     end
     self.queued = 0
     return 0
+  end
+
+  function coverage:hasPrefetchWork()
+    return self.queued > 0
   end
 
   function coverage:status()
@@ -336,6 +344,83 @@ local function live_prefetch_logical_failure_fails_loudly()
     string.find(tostring(err), "injected logical failure", 1, true) ~= nil,
     "the logical cause is preserved"
   )
+  coordinator:dispose()
+end
+
+local function live_prefetch_reuses_the_current_descriptor_and_logical_plan()
+  local coordinator, coverage, loader = coordinatorFixture()
+  local descriptorViewCalls = 0
+  coverage.prefetchDescriptorsView = function()
+    descriptorViewCalls = descriptorViewCalls + 1
+    return coverage.footprint
+  end
+  local originalDefinesMap = loader.definesMap
+  local definedMapCalls = {}
+  function loader:definesMap(mapId)
+    definedMapCalls[mapId] = (definedMapCalls[mapId] or 0) + 1
+    return originalDefinesMap(self, mapId)
+  end
+  local ready = false
+  local demands = {}
+  loader.derivedAssets = {
+    requestLogicalField = function(mapId)
+      demands[#demands + 1] = mapId
+      return ready
+    end,
+    requestField = function()
+      return true
+    end,
+  }
+
+  coordinator:initialize()
+  local defineCallsAfterInitialize = {}
+  for mapId, calls in pairs(definedMapCalls) do
+    defineCallsAfterInitialize[mapId] = calls
+  end
+  coordinator:updatePrefetch(1)
+  ready = true
+  coordinator:updatePrefetch(1)
+
+  Assert.equal(descriptorViewCalls, 1, "one live anchor derives its descriptor view once")
+  Assert.deepEqual(demands, { 30, 30 }, "a pending retry keeps the same sorted logical plan")
+  for mapId, count in pairs(definedMapCalls) do
+    Assert.equal(count - (defineCallsAfterInitialize[mapId] or 0), 1, "each plan ID is classified once")
+  end
+  Assert.equal(loader.logicalLoadCounts[30], 1, "the ready plan acquires its halo map once")
+  coordinator:dispose()
+end
+
+local function satisfied_live_prefetch_is_idle_until_the_anchor_changes()
+  local coordinator, coverage, loader = coordinatorFixture()
+  local descriptorViewCalls = 0
+  coverage.prefetchDescriptorsView = function()
+    descriptorViewCalls = descriptorViewCalls + 1
+    return coverage.footprint
+  end
+  coverage.hasPrefetchWork = function()
+    return false
+  end
+
+  coordinator:initialize()
+  coordinator:updatePrefetch(1)
+  coordinator:updatePrefetch(1)
+  local physicalCallsAtSatisfied = coverage.prefetchCalls
+  Assert.equal(descriptorViewCalls, 1, "the current plan is derived once before satisfaction")
+
+  Assert.equal(coordinator:updatePrefetch(1), 0)
+  Assert.equal(coverage.prefetchCalls, physicalCallsAtSatisfied, "a satisfied plan skips physical work")
+  Assert.equal(descriptorViewCalls, 1, "an unchanged satisfied plan is not rebuilt")
+
+  coverage.anchorX = 1
+  coverage.footprint = {
+    { cellKey = "1:0", mapHeaderId = 10 },
+    { cellKey = "2:0", mapHeaderId = 20 },
+    { cellKey = "3:0", mapHeaderId = 40 },
+  }
+  Assert.equal(coordinator:updatePrefetch(1), 1, "the changed plan resumes one logical acquisition")
+  Assert.equal(descriptorViewCalls, 2, "a new anchor derives a new descriptor view")
+  Assert.equal(coverage.prefetchCalls, physicalCallsAtSatisfied + 1, "the changed plan receives physical work")
+  Assert.equal(loader.logicalLoadCounts[40], 1, "the new halo map joins residency once")
   coordinator:dispose()
 end
 
@@ -950,6 +1035,8 @@ return {
     supplied_destination_map_is_used_without_reacquiring = supplied_destination_map_is_used_without_reacquiring,
     live_prefetch_holds_logical_acquisition_until_near_demand_is_ready = live_prefetch_holds_logical_acquisition_until_near_demand_is_ready,
     live_prefetch_logical_failure_fails_loudly = live_prefetch_logical_failure_fails_loudly,
+    live_prefetch_reuses_the_current_descriptor_and_logical_plan = live_prefetch_reuses_the_current_descriptor_and_logical_plan,
+    satisfied_live_prefetch_is_idle_until_the_anchor_changes = satisfied_live_prefetch_is_idle_until_the_anchor_changes,
     transition_staging_skips_halo_residents_with_pending_logical_closures = transition_staging_skips_halo_residents_with_pending_logical_closures,
     transition_staging_fails_loudly_on_logical_closure_failure = transition_staging_fails_loudly_on_logical_closure_failure,
   },
