@@ -53,6 +53,7 @@ local MovementCalibration = require("libs.hgss.src.script.tasks.MovementCalibrat
 ---@field settlePresentation fun(self: FieldObjectActor)
 ---@field currentAction fun(self: FieldObjectActor): string?
 ---@field presentationState fun(self: FieldObjectActor): FieldObjectActor.PresentationState
+---@field presentationStateInto fun(self: FieldObjectActor, out: FieldObjectActor.PresentationState): FieldObjectActor.PresentationState
 ---@field scriptedMotionState fun(self: FieldObjectActor): table<string, unknown>?
 ---@field setFacing fun(self: FieldObjectActor, direction: FieldDirection)
 ---@field setVisible fun(self: FieldObjectActor, visible: boolean)
@@ -821,12 +822,18 @@ end
 -- the actor while exposing the complete draw contract to its consumers.
 ---@return FieldObjectActor.PresentationState
 function FieldObjectActor:presentationState()
+  return self:presentationStateInto({ gestureOffsetY = 0 })
+end
+
+---@param out FieldObjectActor.PresentationState
+---@return FieldObjectActor.PresentationState
+function FieldObjectActor:presentationStateInto(out)
+  assert(type(out) == "table", "field actor presentation output is required")
   local state = self:_numeric()
-  return {
-    gesturePose = self._gesturePose,
-    gestureTick = state.hasGestureTick == 1 and state.gestureTick or nil,
-    gestureOffsetY = state.gestureOffsetY,
-  }
+  out.gesturePose = self._gesturePose
+  out.gestureTick = state.hasGestureTick == 1 and state.gestureTick or nil
+  out.gestureOffsetY = state.gestureOffsetY
+  return out
 end
 
 -- --- Scripted mutation  ------------------------------------
