@@ -75,6 +75,13 @@ end
 ---@param slot integer zero-based power-point slot under execution
 ---@return table frame inputs over fixed random state
 local function frameInputs(move, slot)
+  local powers = {
+    TRANSFORM = 0,
+    SKETCH = 0,
+    FUTURE_SIGHT = 80,
+    BEAT_UP = 1,
+    EXPLOSION = 250,
+  }
   return {
     actionId = 1,
     actor = { combatant = 1 },
@@ -87,6 +94,10 @@ local function frameInputs(move, slot)
     moves = {
       { move = move, pp = 10, ppUps = 0 },
     },
+    moveFacts = {
+      [move] = { power = powers[move] or 50, accuracy = 100, category = "physical", moveType = "normal" },
+    },
+    combat = { level = 10, attack = 50, defense = 50 },
     stream = BattleRng.new(FIXED_SEED),
   }
 end

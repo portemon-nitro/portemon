@@ -62,6 +62,14 @@ local function liveContext(state)
   return Context.wrap(state)
 end
 
+---@return table<string, table<string, unknown>> immutable move facts for the transition fixtures
+local function tacticFacts()
+  return {
+    TACKLE = { power = 35, accuracy = 95, category = "physical", moveType = "normal" },
+    SLEEP_TALK = { power = 0, accuracy = 0, category = "other", moveType = "normal" },
+  }
+end
+
 ---@return table<string, unknown>[] persistent move entries with explicit power-point state
 local function twoMoveSet()
   return {
@@ -153,6 +161,7 @@ function T.pp_is_consumed_from_the_owning_slot_at_the_native_checkpoint()
     selectedTarget = plan.selectedTarget,
     targets = { { combatant = 2 } },
     moves = moves,
+    moveFacts = tacticFacts(),
     stream = fixedStream(),
   })
   local validated = Execution.validateFrame(frame)
@@ -171,6 +180,7 @@ function T.pp_is_consumed_from_the_owning_slot_at_the_native_checkpoint()
     selectedTarget = SessionFixture.positionTarget(2),
     targets = { { combatant = 2 } },
     moves = calledMoves,
+    moveFacts = tacticFacts(),
     stream = fixedStream(),
   })
   Assert.equal(
@@ -253,6 +263,8 @@ function T.rejection_failure_and_started_frames_stay_distinct()
     selectedTarget = SessionFixture.positionTarget(2),
     targets = { { combatant = 2 } },
     moves = twoMoveSet(),
+    moveFacts = tacticFacts(),
+    combat = { level = 10, attack = 50, defense = 50 },
     stream = fixedStream(),
   })
   local validated = Execution.validateFrame(frame)
@@ -353,6 +365,321 @@ function T.namespaced_custom_moves_execute_through_the_same_frame_contract()
     type(Execution.start) == "function" and type(Execution.step) == "function",
     "custom moves run through the shared continuation steps"
   )
+end
+
+-- Native damage answers to real combatants: the same strike over the
+-- same seed deals different damage for deliberately different attacker
+-- and defender facts, and running without combat facts never silently
+-- falls back to the old reference triple.
+function T.damage_uses_actual_combatant_facts()
+  local Execution = executionOwner("the shared move continuation owns hit progression")
+
+  ---@param combat table<string, unknown>|nil real attacker/defender facts under the strike
+  ---@return integer damage dealt by one tackle over fixed random state
+  local function strike(combat)
+    local state = liveState()
+    local ctx = liveContext(state)
+    local frame = Execution.validateFrame(Execution.start({
+      actionId = 1,
+      actor = actorRef(0),
+      requestedMove = "TACKLE",
+      executingMove = "TACKLE",
+      ppOwnerSlot = 0,
+      calledBy = nil,
+      selectedTarget = SessionFixture.positionTarget(2),
+      targets = { { combatant = 2 } },
+      moves = { { move = "TACKLE", pp = 35, ppUps = 0 } },
+      moveFacts = {
+        TACKLE = { power = 35, accuracy = 95, category = "physical", moveType = "normal" },
+      },
+      combat = combat,
+      stream = fixedStream(),
+    }))
+    local outcome = frame
+    for _ = 1, 32 do
+      local stepped = Execution.step(ctx, outcome)
+      if stepped.kind == "complete" then
+        outcome = stepped
+        break
+      end
+      outcome = stepped.frame or stepped
+    end
+    Assert.equal(outcome.kind, "complete", "the tackle execution runs to completion")
+    local defender = state.combatants --[[@as table<integer, table<string, unknown>>]]
+    local record = defender[2] --[[@as table<string, unknown>]]
+    return (record.entryHp --[[@as integer]]) - (record.hp --[[@as integer]])
+  end
+
+  local hard = strike({ level = 50, attack = 120, defense = 90 })
+  local soft = strike({ level = 5, attack = 30, defense = 40 })
+  Assert.isTrue(hard > soft, "different real combat facts deal different damage")
+  Assert.isTrue(soft >= 1, "the weaker pair still lands its minimum strike")
+  local fallbackTriple = strike({ level = 10, attack = 50, defense = 50 })
+  Assert.isTrue(hard ~= fallbackTriple, "real combat facts never silently equal the old reference triple")
+  local unstated = Assert.throws(function()
+    strike(nil)
+  end, "unstated combat facts fail instead of falling back")
+  Assert.equal(unstated.code, "BATTLE_MISSING_BEHAVIOR", "the missing facts name their behavior")
+end
+
+-- Registered but unmodeled native semantics never fake success: an
+-- ordinary damage identity without implemented behavior and a condition
+-- identity without implemented behavior both fail explicitly instead of
+-- emitting a successful move result.
+function T.unimplemented_native_moves_fail_explicitly()
+  local Execution = executionOwner("the shared move continuation owns hit progression")
+
+  ---@param move string registered move identity without modeled semantics
+  local function attempt(move)
+    local state = liveState()
+    local ctx = liveContext(state)
+    local frame = Execution.validateFrame(Execution.start({
+      actionId = 1,
+      actor = actorRef(0),
+      requestedMove = move,
+      executingMove = move,
+      ppOwnerSlot = 0,
+      calledBy = nil,
+      selectedTarget = SessionFixture.positionTarget(2),
+      targets = { { combatant = 2 } },
+      moves = { { move = move, pp = 15, ppUps = 0 } },
+      moveFacts = {
+        [move] = { power = 40, accuracy = 100, category = "special", moveType = "fire" },
+      },
+      combat = { level = 20, attack = 60, defense = 55 },
+      stream = fixedStream(),
+    }))
+    local eventsBefore = #state.outbox
+    local failure = Assert.throws(function()
+      Execution.step(ctx, frame)
+    end, move .. " fails instead of fake-succeeding")
+    Assert.equal(failure.code, "BATTLE_MISSING_BEHAVIOR", move .. " names its missing behavior")
+    Assert.equal(failure.context.key, move, "the failure names the unimplemented move")
+    Assert.equal(#state.outbox, eventsBefore, move .. " emits no success-shaped outcome")
+    local defender = state.combatants --[[@as table<integer, table<string, unknown>>]]
+    local record = defender[2] --[[@as table<string, unknown>]]
+    Assert.equal(
+      record.hp --[[@as integer]],
+      record.entryHp --[[@as integer]],
+      move .. " deals no fabricated damage"
+    )
+  end
+
+  attempt("EMBER")
+  attempt("GROWL")
+end
+
+-- Frames without resolved move facts never validate: the transition
+-- refuses to build them, hand-built frames are rejected, and validation
+-- itself consumes no draws.
+function T.frames_without_move_facts_fail_validation()
+  local Execution = executionOwner("the shared move continuation owns hit progression")
+  local refused = Assert.throws(function()
+    Execution.start({
+      actionId = 1,
+      actor = actorRef(0),
+      requestedMove = "TACKLE",
+      executingMove = "TACKLE",
+      ppOwnerSlot = 0,
+      calledBy = nil,
+      selectedTarget = SessionFixture.positionTarget(2),
+      targets = { { combatant = 2 } },
+      moves = twoMoveSet(),
+      stream = fixedStream(),
+    })
+  end, "the transition resolves move facts before publishing")
+  Assert.equal(refused.code, "BATTLE_MISSING_BEHAVIOR", "the missing facts name their behavior")
+  local malformed = Assert.throws(function()
+    Execution.validateFrame({
+      actionId = 1,
+      actor = actorRef(0),
+      requestedMove = "TACKLE",
+      executingMove = "TACKLE",
+      selectedTarget = SessionFixture.positionTarget(2),
+      targets = { { combatant = 2 } },
+      moves = twoMoveSet(),
+      stream = fixedStream(),
+      locals = {},
+    })
+  end, "validation rejects frames without executing move facts")
+  Assert.equal(malformed.code, "BATTLE_INVALID_STATE", "the malformed frame names its state")
+
+  local stream = fixedStream()
+  local frame = Execution.start({
+    actionId = 2,
+    actor = actorRef(0),
+    requestedMove = "TACKLE",
+    executingMove = "TACKLE",
+    ppOwnerSlot = 0,
+    calledBy = nil,
+    selectedTarget = SessionFixture.positionTarget(2),
+    targets = { { combatant = 2 } },
+    moves = twoMoveSet(),
+    moveFacts = tacticFacts(),
+    stream = stream,
+  })
+  local snapshot = stream:capture()
+  Execution.validateFrame(frame)
+  Assert.deepEqual(stream:capture(), snapshot, "support validation consumes no draws")
+end
+
+-- Specialized gates keep their explicit failure policy without modeled
+-- facts: level-fixed damage and one-hit knockouts settle as failures
+-- instead of dealing guessed damage.
+function T.specialized_gates_fail_without_required_facts()
+  local Execution = executionOwner("the shared move continuation owns hit progression")
+
+  ---@param move string gated damage identity under execution
+  ---@return table<string, unknown> terminal step for the gated execution
+  local function settle(move)
+    local state = liveState()
+    local ctx = liveContext(state)
+    local frame = Execution.validateFrame(Execution.start({
+      actionId = 1,
+      actor = actorRef(0),
+      requestedMove = move,
+      executingMove = move,
+      ppOwnerSlot = 0,
+      calledBy = nil,
+      selectedTarget = SessionFixture.positionTarget(2),
+      targets = { { combatant = 2 } },
+      moves = { { move = move, pp = 15, ppUps = 0 } },
+      moveFacts = {
+        [move] = { power = 1, accuracy = 100, category = "physical", moveType = "normal" },
+      },
+      stream = fixedStream(),
+    }))
+    local outcome = Execution.step(ctx, frame)
+    local defender = state.combatants --[[@as table<integer, table<string, unknown>>]]
+    local record = defender[2] --[[@as table<string, unknown>]]
+    Assert.equal(
+      record.hp --[[@as integer]],
+      record.entryHp --[[@as integer]],
+      move .. " deals no guessed damage without its facts"
+    )
+    return outcome
+  end
+
+  Assert.equal(settle("SEISMIC_TOSS").result, "failed", "level-fixed damage fails without its level fact")
+  Assert.equal(settle("GUILLOTINE").result, "failed", "one-hit knockouts fail without their level gate")
+end
+
+-- Sequence strikes read power from the compiled move facts: the same
+-- charge strike over the same seed deals different damage for different
+-- compiled powers, and a strike without compiled power fails explicitly
+-- instead of dealing curated-table damage.
+function T.sequence_strikes_read_power_from_compiled_move_facts()
+  local Execution = executionOwner("the shared move continuation owns hit progression")
+
+  ---@param power integer|nil compiled strike power under the attempt
+  ---@return integer damage dealt by one charge strike over fixed random state
+  local function strike(power)
+    local state = liveState()
+    local ctx = liveContext(state)
+    local moveFacts = { accuracy = 100, category = "physical", moveType = "flying" }
+    if power ~= nil then
+      moveFacts.power = power
+    end
+    local frame = Execution.validateFrame(Execution.start({
+      actionId = 1,
+      actor = actorRef(0),
+      requestedMove = "FLY",
+      executingMove = "FLY",
+      ppOwnerSlot = 0,
+      calledBy = nil,
+      selectedTarget = SessionFixture.positionTarget(2),
+      targets = { { combatant = 2 } },
+      moves = { { move = "FLY", pp = 15, ppUps = 0 } },
+      moveFacts = { FLY = moveFacts },
+      combat = { level = 50, attack = 120, defense = 90 },
+      stream = fixedStream(),
+    }))
+    local outcome = frame
+    for _ = 1, 32 do
+      local stepped = Execution.step(ctx, outcome)
+      if stepped.kind == "complete" then
+        outcome = stepped
+        break
+      end
+      outcome = stepped.frame or stepped
+    end
+    Assert.equal(outcome.kind, "complete", "the charge strike runs to completion")
+    local defender = state.combatants --[[@as table<integer, table<string, unknown>>]]
+    local record = defender[2] --[[@as table<string, unknown>]]
+    return (record.entryHp --[[@as integer]]) - (record.hp --[[@as integer]])
+  end
+
+  local hard = strike(150)
+  local soft = strike(10)
+  Assert.isTrue(hard > soft, "different compiled powers deal different sequence damage")
+  local missing = Assert.throws(function()
+    strike(nil)
+  end, "a sequence strike without compiled power fails instead of curating damage")
+  Assert.equal(missing.code, "BATTLE_MISSING_BEHAVIOR", "the missing power names its behavior")
+end
+
+-- Delayed strikes read power from the compiled move facts at impact:
+-- scheduling succeeds without it, but the landing fails explicitly
+-- instead of dealing curated-table damage.
+function T.delayed_strikes_read_power_from_compiled_move_facts()
+  local Execution = executionOwner("the shared move continuation owns hit progression")
+
+  ---@param power integer|nil compiled strike power under the landing
+  ---@return integer damage dealt by the delayed landing over fixed random state
+  local function land(power)
+    local state = liveState()
+    local ctx = liveContext(state)
+    local moveFacts = { accuracy = 100, category = "special", moveType = "psychic" }
+    if power ~= nil then
+      moveFacts.power = power
+    end
+    local frame = Execution.validateFrame(Execution.start({
+      actionId = 1,
+      actor = actorRef(0),
+      requestedMove = "FUTURE_SIGHT",
+      executingMove = "FUTURE_SIGHT",
+      ppOwnerSlot = 0,
+      calledBy = nil,
+      selectedTarget = SessionFixture.positionTarget(2),
+      targets = { { combatant = 2 } },
+      moves = { { move = "FUTURE_SIGHT", pp = 10, ppUps = 0 } },
+      moveFacts = { FUTURE_SIGHT = moveFacts },
+      combat = { level = 50, attack = 120, defense = 90 },
+      stream = fixedStream(),
+    }))
+    local scheduled = Execution.step(ctx, frame)
+    Assert.isTrue(scheduled.kind ~= nil, "the delayed scheduling answers through the frame protocol")
+    local landed = Execution.step(ctx, scheduled.frame or scheduled)
+    Assert.equal(landed.kind, "complete", "the delayed landing runs to completion")
+    local defender = state.combatants --[[@as table<integer, table<string, unknown>>]]
+    local record = defender[2] --[[@as table<string, unknown>]]
+    return (record.entryHp --[[@as integer]]) - (record.hp --[[@as integer]])
+  end
+
+  local hard = land(140)
+  local soft = land(20)
+  Assert.isTrue(hard > soft, "different compiled powers deal different delayed damage")
+  local state = liveState()
+  local ctx = liveContext(state)
+  local frame = Execution.validateFrame(Execution.start({
+    actionId = 1,
+    actor = actorRef(0),
+    requestedMove = "FUTURE_SIGHT",
+    executingMove = "FUTURE_SIGHT",
+    ppOwnerSlot = 0,
+    calledBy = nil,
+    selectedTarget = SessionFixture.positionTarget(2),
+    targets = { { combatant = 2 } },
+    moves = { { move = "FUTURE_SIGHT", pp = 10, ppUps = 0 } },
+    moveFacts = { FUTURE_SIGHT = { accuracy = 100, category = "special", moveType = "psychic" } },
+    combat = { level = 50, attack = 120, defense = 90 },
+    stream = fixedStream(),
+  }))
+  local scheduled = Execution.step(ctx, frame)
+  local missing = Assert.throws(function()
+    Execution.step(ctx, scheduled.frame or scheduled)
+  end, "a delayed landing without compiled power fails instead of curating damage")
+  Assert.equal(missing.code, "BATTLE_MISSING_BEHAVIOR", "the missing delayed power names its behavior")
 end
 
 return { tests = T }

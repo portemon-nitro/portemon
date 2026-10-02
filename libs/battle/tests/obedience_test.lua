@@ -175,6 +175,10 @@ function T.frustration_reads_explicit_friendship_facts()
       targets = { { combatant = 2 } },
       moves = { { move = "FRUSTRATION", pp = 20, ppUps = 0 } },
       friendship = friendship,
+      moveFacts = {
+        FRUSTRATION = { power = 1, accuracy = 100, category = "physical", moveType = "normal" },
+      },
+      combat = { level = 10, attack = 50, defense = 50 },
       stream = BattleRng.new(FIXED_SEED),
     }))
     local outcome = frame
@@ -209,6 +213,9 @@ function T.frustration_reads_explicit_friendship_facts()
       selectedTarget = SessionFixture.positionTarget(2),
       targets = { { combatant = 2 } },
       moves = { { move = "FRUSTRATION", pp = 20, ppUps = 0 } },
+      moveFacts = {
+        FRUSTRATION = { power = 1, accuracy = 100, category = "physical", moveType = "normal" },
+      },
       stream = BattleRng.new(FIXED_SEED),
     }))
   end)
