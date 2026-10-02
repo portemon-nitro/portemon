@@ -218,8 +218,37 @@ function T.trainer_prize_and_message_selectors_survive_projection()
   local trainer = assert(compiled.trainers[8], "trainer 8 must survive projection")
   Assert.equal(trainer.trainerClass, CLASS_YOUNGSTER, "the class identity survives projection")
   Assert.isTrue(type(trainer.prizeMoney) == "table", "prize-money class data survives projection")
+  Assert.equal(trainer.prizeMoney.trainerClass, CLASS_YOUNGSTER, "the prize record keeps its class")
+  Assert.equal(trainer.prizeMoney.classRate, 4, "the prize record carries the pinned class rate")
   Assert.isTrue(type(trainer.messageSelectors) == "table", "message selectors survive projection")
   Assert.deepEqual(trainer.items, { "POTION" }, "held trainer items resolve to item keys in order")
+end
+
+function T.trainer_class_rates_cover_every_native_class_without_fallback()
+  local TrainerCatalogCompiler = require("romdump.src.digest.battle.TrainerCatalogCompiler")
+  local BattleSources = require("romdump.src.config.BattleSources")
+  local rates = assert(BattleSources.prizeMoneyRates, "the pinned payout table must exist")
+  for class = 0, 128 do
+    local rate = rates[class]
+    Assert.isTrue(
+      type(rate) == "number" and rate % 1 == 0 and rate >= 0,
+      "class " .. class .. " carries a pinned non-negative integer rate"
+    )
+  end
+  Assert.equal(rates[2], 4, "the youngster rate matches the source table")
+  Assert.equal(rates[34], 50, "the gentleman rate matches the source table")
+  Assert.equal(rates[44], 1, "the tuber rate matches the source table")
+  Assert.equal(rates[0], 0, "the player-stand-in class awards nothing")
+  Assert.equal(rates[124], 45, "the rocket-boss rate matches the source table")
+  Assert.equal(rates[109], 50, "the red rate matches the source table")
+  Assert.equal(rates[110], 40, "the blue rate matches the source table")
+  -- A class outside the pinned table never compiles: unknown classes fail
+  -- instead of borrowing another class's rate.
+  local bad, badErr = TrainerCatalogCompiler.compile(nativeInput({
+    [8] = { data = trdata(TRTYPE_MON, 200, 1, {}, 0, 0), members = plainMember(30, 5, 19) },
+  }))
+  Assert.isNil(bad, "a class outside the pinned payout table must not compile")
+  Assert.isTrue(badErr ~= nil, "the unknown class must report a typed error")
 end
 
 function T.malformed_trainer_records_fail_with_attributed_errors()

@@ -27,8 +27,12 @@ function T.trainer_win_plans_money_through_the_player_owner_only()
   Assert.isTrue(type(Rewards.planLoss) == "function", "blackout loss plans through one entry point")
   Assert.isTrue(type(Rewards.planPostBattle) == "function", "post-battle effects plan through one entry point")
 
-  local plan = Rewards.planMoney({ trainerClass = "YOUNGSTER", partyLevels = { 5, 5 }, basePayout = 140 })
-  Assert.isTrue(plan.amount >= 0, "a planned prize is never negative")
+  local plan = Rewards.planMoney({
+    trainers = { { trainerClass = 2, partyLevels = { 5, 5 }, classRate = 4 } },
+    battleFormat = "single",
+    moneyMultiplier = 1,
+  })
+  Assert.equal(plan.amount, 80, "a planned prize follows level * 4 * class rate")
   Assert.isTrue(plan.amount <= 999999, "a planned prize respects the player money cap")
 
   local Knowledge = requirePresent(KNOWLEDGE_MODULE, "minimal seen and caught knowledge")
@@ -61,24 +65,84 @@ function T.loss_resolves_blackout_without_resuming_a_failed_commit()
   Assert.isNil(Committer.receipt("outcome-failed-loss"), "a failed commit records no receipt")
 end
 
-function T.prize_scales_with_the_strongest_level_under_the_cap()
+function T.prize_uses_the_final_party_level_class_rate_and_multiplier()
   local Rewards = requirePresent(REWARDS_MODULE, "native prize and loss planning")
-  local plan = Rewards.planMoney({ trainerClass = "YOUNGSTER", partyLevels = { 5, 5 }, basePayout = 140 })
-  Assert.equal(plan.amount, 700, "the prize multiplies the base payout by the strongest level")
-  Assert.equal(plan.level, 5, "the plan records its deciding level")
-  local capped = Rewards.planMoney({ trainerClass = "ELITE_FOUR", partyLevels = { 60 }, basePayout = 99999 })
-  Assert.equal(capped.amount, 999999, "the prize never passes the money ceiling")
+  local function single(trainerClass, partyLevels, classRate, moneyMultiplier)
+    return Rewards.planMoney({
+      trainers = { { trainerClass = trainerClass, partyLevels = partyLevels, classRate = classRate } },
+      battleFormat = "single",
+      moneyMultiplier = moneyMultiplier,
+    })
+  end
+  -- The final party member decides the prize level even when it is not
+  -- the strongest: class 2 pays rate 4, so level 9 awards 9 * 4 * 4.
+  local final = single(2, { 12, 5, 9 }, 4, 1)
+  Assert.equal(final.amount, 144, "the prize uses the final party level, not the strongest")
+  Assert.equal(final.trainers[1].level, 9, "the plan records its deciding level")
+  Assert.equal(final.trainers[1].classRate, 4, "the plan records its class rate")
+  -- The money-up multiplier doubles the payout exactly once.
+  local boosted = single(2, { 12, 5, 9 }, 4, 2)
+  Assert.equal(boosted.amount, 288, "an active money-up effect doubles the prize once")
+  -- A zero-rate class legitimately awards nothing, even when boosted.
+  local zeroed = single(0, { 10 }, 0, 2)
+  Assert.equal(zeroed.amount, 0, "a zero-rate class awards zero")
+  -- An ordinary doubles battle doubles one trainer's prize once.
+  local doubles = Rewards.planMoney({
+    trainers = { { trainerClass = 2, partyLevels = { 12, 5, 9 }, classRate = 4 } },
+    battleFormat = "double",
+    moneyMultiplier = 1,
+  })
+  Assert.equal(doubles.amount, 288, "an ordinary doubles battle doubles one prize once")
+  -- A paired battle sums both trainers without the doubles doubling:
+  -- 6 * 4 * 4 plus 10 * 4 * 16.
+  local pair = Rewards.planMoney({
+    trainers = {
+      { trainerClass = 2, partyLevels = { 6 }, classRate = 4 },
+      { trainerClass = 23, partyLevels = { 4, 10 }, classRate = 16 },
+    },
+    battleFormat = "double",
+    moneyMultiplier = 1,
+  })
+  Assert.equal(pair.amount, 736, "a paired battle sums both trainers without doubling")
+  local boostedPair = Rewards.planMoney({
+    trainers = {
+      { trainerClass = 2, partyLevels = { 6 }, classRate = 4 },
+      { trainerClass = 23, partyLevels = { 4, 10 }, classRate = 16 },
+    },
+    battleFormat = "double",
+    moneyMultiplier = 2,
+  })
+  Assert.equal(boostedPair.amount, 1472, "money-up scales every paired prize once")
   Assert.isFalse(
-    pcall(Rewards.planMoney, { trainerClass = "YOUNGSTER", partyLevels = {}, basePayout = 140 }),
+    pcall(single, 2, {}, 4, 1),
     "an empty level array never plans"
   )
   Assert.isFalse(
-    pcall(Rewards.planMoney, { trainerClass = "YOUNGSTER", partyLevels = { 5 }, basePayout = -1 }),
-    "a negative payout never plans"
+    pcall(single, 2, { 5 }, nil, 1),
+    "a missing class rate never plans"
   )
   Assert.isFalse(
-    pcall(Rewards.planMoney, { trainerClass = "", partyLevels = { 5 }, basePayout = 140 }),
-    "a missing trainer class never plans"
+    pcall(Rewards.planMoney, {
+      trainers = { { trainerClass = "YOUNGSTER", partyLevels = { 5 }, classRate = 4 } },
+      battleFormat = "single",
+      moneyMultiplier = 1,
+    }),
+    "a display-name class never plans"
+  )
+  Assert.isFalse(
+    pcall(Rewards.planMoney, {
+      trainers = {
+        { trainerClass = 2, partyLevels = { 6 }, classRate = 4 },
+        { trainerClass = 23, partyLevels = { 10 }, classRate = 16 },
+      },
+      battleFormat = "single",
+      moneyMultiplier = 1,
+    }),
+    "a paired battle on a singles field never plans"
+  )
+  Assert.isFalse(
+    pcall(single, 2, { 5 }, 4, 3),
+    "an unknown multiplier never plans"
   )
 end
 
@@ -143,7 +207,11 @@ function T.player_money_facts_cap_and_floor_through_the_committer()
 
   local Committer = requirePresent(COMMITTER_MODULE, "reward commit without duplicated story flags")
   local Rewards = requirePresent(REWARDS_MODULE, "native prize and loss planning")
-  local plan = Rewards.planMoney({ trainerClass = "YOUNGSTER", partyLevels = { 5, 5 }, basePayout = 140 })
+  local plan = Rewards.planMoney({
+    trainers = { { trainerClass = 2, partyLevels = { 5, 5 }, classRate = 4 } },
+    battleFormat = "single",
+    moneyMultiplier = 1,
+  })
   local base, baseContext = playerRecord(1000)
   local prepared = Committer.prepare({
     outcome = { id = "outcome-money-through-commit", result = "win" },
@@ -153,7 +221,7 @@ function T.player_money_facts_cap_and_floor_through_the_committer()
   })
   local receipt = Committer.commit(prepared)
   Assert.isTrue(receipt.committed, "the money batch commits")
-  Assert.equal(receipt.player.profile.money, 1700, "the receipt carries the validated money candidate")
+  Assert.equal(receipt.player.profile.money, 1080, "the receipt carries the validated money candidate")
   Assert.isTrue(receipt.scriptFlags.gym1, "script-owned flags echo back unapplied")
   Assert.equal(base.profile.money, 1000, "staging never touches the input record")
 end

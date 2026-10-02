@@ -38,13 +38,18 @@ end
 ---@param level integer
 ---@param seed integer
 ---@param hp integer? entry health override
+---@param heldItem string? held item key override
 ---@return table full mon-domain record
-local function foeRecord(species, level, seed, hp)
+local function foeRecord(species, level, seed, hp, heldItem)
   local catalog = CatalogFixture.makeCatalog()
   local factory = CatalogFixture.makeFactory(seed, catalog)
   local record = factory:createNormal(CatalogFixture.normalRequest({ species = species, level = level }))
   if hp ~= nil then
     record.condition.currentHp = hp
+  end
+  if heldItem ~= nil then
+    catalog:item(heldItem)
+    record.heldItem = heldItem
   end
   return record
 end
@@ -138,35 +143,90 @@ local function trainerScenario(trainers, ctx)
   return ScenarioFactory.fromTrainer({ id = "trainer-prize", trainers = trainers }, ctx)
 end
 
-function T.trainer_win_stages_prize_credit_through_the_committer()
+function T.trainer_win_pays_the_native_prize_once_without_injected_inputs()
   local BattleRuntime = requirePresent(RUNTIME_MODULE, "application battle lifetime with consequence staging")
   requirePresent(COMMITTER_MODULE, "end-to-end exactly-once result publication")
 
   local party = newPartyOwner()
   local facts = playerFacts(3000)
+  -- Class 2 pays rate 4, so the final level-4 party member awards
+  -- 4 * 4 * 4 with no injected prize inputs anywhere. The foe strikes
+  -- with a modeled move so either turn order settles the standing.
   local foe = foeRecord("TOTODILE", 4, 0x5EED0001, 1)
-  local scenario = trainerScenario({
+  foe.moves = { { move = "TACKLE", pp = 35, ppUps = 0 } }
+  local trainers = {
     {
       id = "rival-early",
+      class = 2,
       party = { foe },
+      partyLevels = { 4 },
+      prizeMoney = { trainerClass = 2, classRate = 4 },
       program = { key = "rival_opening", revision = "native-1", instructions = {}, entryPoints = {} },
     },
-  }, { party = party })
+  }
+  local scenario = trainerScenario(trainers, { party = party })
   local battle = BattleRuntime.new({
-    request = { id = "launch-prize-credit", kind = "trainer", payload = { trainer = "rival-early" } },
+    request = { id = "launch-native-prize", kind = "trainer", payload = { trainer = "rival-early" } },
     scenario = scenario,
     party = party,
     player = facts,
-    prize = { trainerClass = "YOUNGSTER", basePayout = 140 },
   })
   driveToSettlement(battle)
   Assert.equal(battle:status().phase, "complete", "answered decisions finish the trainer battle")
   Assert.equal(battle:status().result, "win", "a fainted enemy side reports the win")
   local receipt = assert(battle:status().outcomeReceipt, "completion carries its commit receipt")
   Assert.isTrue(receipt.committed, "the prize batch commits")
-  Assert.equal(receipt.rewards.amount, 560, "the prize multiplies the base payout by the foe level")
-  Assert.equal(receipt.player.profile.money, 3560, "the receipt carries the credited money candidate")
+  Assert.equal(receipt.rewards.amount, 64, "the prize follows the native class rate and final level")
+  Assert.equal(receipt.player.profile.money, 3064, "the receipt carries the credited money candidate")
   Assert.equal(facts.record.profile.money, 3000, "staging never touches the input record")
+  battle:dispose()
+  -- Replaying the same terminal outcome under its launch identity reuses
+  -- the recorded receipt instead of crediting the prize a second time.
+  local replay = BattleRuntime.new({
+    request = { id = "launch-native-prize", kind = "trainer", payload = { trainer = "rival-early" } },
+    scenario = trainerScenario(trainers, { party = party }),
+    party = party,
+    player = facts,
+  })
+  driveToSettlement(replay)
+  Assert.equal(replay:status().phase, "complete", "the replayed battle still settles")
+  local second = assert(replay:status().outcomeReceipt, "the replay carries its commit receipt")
+  Assert.equal(second.rewards.amount, 64, "the replayed prize matches the recorded amount")
+  Assert.equal(second.player.profile.money, 3064, "the replay credits nothing twice")
+  replay:dispose()
+end
+
+function T.trainer_win_doubles_the_prize_while_a_money_up_holder_stands()
+  local BattleRuntime = requirePresent(RUNTIME_MODULE, "application battle lifetime with consequence staging")
+
+  local party = newPartyOwner()
+  local facts = playerFacts(3000)
+  -- The foe carries the money-up hold effect, so the battle-local
+  -- multiplier doubles the same native prize once.
+  local foe = foeRecord("TOTODILE", 4, 0x5EED0002, 1, "AMULET_COIN")
+  foe.moves = { { move = "TACKLE", pp = 35, ppUps = 0 } }
+  local scenario = trainerScenario({
+    {
+      id = "rival-coin",
+      class = 2,
+      party = { foe },
+      partyLevels = { 4 },
+      prizeMoney = { trainerClass = 2, classRate = 4 },
+      program = { key = "rival_opening", revision = "native-1", instructions = {}, entryPoints = {} },
+    },
+  }, { party = party })
+  local battle = BattleRuntime.new({
+    request = { id = "launch-coin-prize", kind = "trainer", payload = { trainer = "rival-coin" } },
+    scenario = scenario,
+    party = party,
+    player = facts,
+  })
+  driveToSettlement(battle)
+  Assert.equal(battle:status().phase, "complete", "answered decisions finish the trainer battle")
+  Assert.equal(battle:status().result, "win", "a fainted enemy side reports the win")
+  local receipt = assert(battle:status().outcomeReceipt, "completion carries its commit receipt")
+  Assert.equal(receipt.rewards.amount, 128, "an active money-up holder doubles the native prize once")
+  Assert.equal(receipt.player.profile.money, 3128, "the receipt carries the doubled money candidate")
   battle:dispose()
 end
 

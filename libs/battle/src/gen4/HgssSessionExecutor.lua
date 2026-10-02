@@ -47,6 +47,7 @@ local TurnOrder = require("libs.battle.src.gen4.TurnOrder")
 ---@field private _admitted string[]
 ---@field private _moveFacts table<string, table<string, unknown>>
 ---@field private _speciesFacts table<string, SpeciesFormFacts>
+---@field private _moneyUpItems table<string, boolean>
 ---@field private _ruleset table<string, unknown>?
 ---@field private _finalized boolean
 ---@field private _disposed boolean
@@ -509,6 +510,49 @@ local function bracketFor(kind)
   return STRIKE_BRACKET
 end
 
+---@param validated table<string, unknown> detached validated battle setup under construction
+---@return string[] held-item keys carrying the money-up effect, in stable order
+local function checkMoneyUpItems(validated)
+  local declared = validated.moneyUpItems
+  if declared == nil then
+    return {}
+  end
+  if type(declared) ~= "table" then
+    error(BattleErrors.missingBehavior("sessions carry their money-up items as an array", {
+      ruleset = tostring(validated.ruleset),
+    }))
+  end
+  local keys = {} ---@type string[]
+  for _, key in
+    ipairs(declared --[[@as table<integer, unknown>]])
+  do
+    if type(key) ~= "string" or key == "" then
+      error(BattleErrors.missingBehavior("money-up items name their item key", {
+        ruleset = tostring(validated.ruleset),
+      }))
+    end
+    keys[#keys + 1] = key --[[@as string]]
+  end
+  table.sort(keys)
+  return keys
+end
+
+-- Scans one entering combatant for the money-up hold effect. The latch
+-- only ever moves 1 -> 2: once any sent-out battler carries the effect,
+-- the multiplier persists for the battle even if that holder later
+-- leaves, faints, or loses the item.
+---@param live table<string, unknown> live battle state under entry settlement
+---@param moneySet table<string, boolean> held-item keys carrying the money-up effect
+---@param combatantId integer entering combatant under inspection
+local function noteEntry(live, moneySet, combatantId)
+  local combatant = BattleState.combatant(live, combatantId)
+  local mon = combatant.mon
+  local held = type(mon) == "table" and (mon --[[@as table<string, unknown>]]).heldItem or nil
+  if type(held) == "string" and moneySet[held] == true then
+    live.prizeMoneyValue = 2
+  end
+end
+
 ---@class NativeTurnHandlers
 ---@field openTurn fun(choices: table<integer, table<string, unknown>>)
 ---@field executeAction fun(action: table<string, unknown>)
@@ -518,8 +562,9 @@ end
 ---@param executor HgssSessionExecutor live native session owning the turn
 ---@param moveFacts table<string, table<string, unknown>> immutable move facts carried by the session
 ---@param speciesFacts table<string, SpeciesFormFacts> static species facts carried by the session
+---@param moneySet table<string, boolean> held-item keys carrying the money-up effect
 ---@return NativeTurnHandlers lifecycle handlers bound to the session
-local function bindTurnHandlers(executor, moveFacts, speciesFacts)
+local function bindTurnHandlers(executor, moveFacts, speciesFacts, moneySet)
   ---@param choices table<integer, table<string, unknown>> committed choices in commit order
   local function openTurn(choices)
     local state = executor:_live()
@@ -697,6 +742,9 @@ local function bindTurnHandlers(executor, moveFacts, speciesFacts)
       local slot = active.position --[[@as integer]]
       BattleState.leave(state, slot)
       BattleState.enter(state, payload.replacement --[[@as integer]], slot)
+      -- Replacements send out under the money-up scan: the latch only
+      -- ever moves 1 -> 2 and never resets when the holder leaves.
+      noteEntry(state, moneySet, payload.replacement --[[@as integer]])
       local event = context:emit("switch", cause, {
         position = slot,
         from = actor.combatant,
@@ -857,21 +905,46 @@ end
 ---@param admitted string[] admitted action kinds resolved at construction
 ---@param moveFacts table<string, table<string, unknown>> immutable move facts carried by the session
 ---@param speciesFacts table<string, SpeciesFormFacts> static species facts carried by the session
+---@param moneyUpItems string[] held-item keys carrying the money-up effect, in stable order
 ---@return HgssSessionExecutor
-local function wrap(live, content, admitted, moveFacts, speciesFacts)
+local function wrap(live, content, admitted, moveFacts, speciesFacts, moneyUpItems)
   live.queue = live.queue or {}
   live.schedule = live.schedule or freshSchedule()
   live.faints = live.faints or {}
-  return setmetatable({
+  live.moneyUpItems = copyValue(moneyUpItems or {})
+  if live.prizeMoneyValue == nil then
+    live.prizeMoneyValue = 1
+  elseif live.prizeMoneyValue ~= 1 and live.prizeMoneyValue ~= 2 then
+    error(BattleErrors.invalidState("prize multipliers stay 1 or 2", {}))
+  end
+  local moneySet = {} ---@type table<string, boolean>
+  for _, key in ipairs(moneyUpItems or {}) do
+    moneySet[
+      key --[[@as string]]
+    ] = true
+  end
+  local executor = setmetatable({
     _state = live,
     _content = content,
     _admitted = admitted,
     _moveFacts = moveFacts,
     _speciesFacts = speciesFacts,
+    _moneyUpItems = moneySet,
     _ruleset = nil,
     _finalized = false,
     _disposed = false,
   }, HgssSessionExecutor)
+  -- Opening occupants send out with the battle: scan them before the
+  -- first turn so a holder in the starting lineup latches immediately.
+  for _, positionId in
+    ipairs(live.positionOrder --[[@as integer[] ]])
+  do
+    local occupant = BattleState.position(live, positionId).occupant
+    if occupant ~= nil then
+      noteEntry(live, moneySet, occupant --[[@as integer]])
+    end
+  end
+  return executor
 end
 
 ---@param scenarioRecord table<string, unknown> detached serializable battle setup
@@ -889,11 +962,12 @@ function HgssSessionExecutor.new(scenarioRecord, content)
   local admitted = admittedKindsFor(validated.format --[[@as string]], content, validated)
   local moveFacts = checkMoveFacts(validated)
   local speciesFacts = checkSpeciesFacts(validated)
+  local moneyUpItems = checkMoneyUpItems(validated)
   local live = BattleState.create(validated)
   live.rng = BattleRng.new(validated
     .random --[[@as table<string, unknown>]]
     .seed --[[@as integer]])
-  local executor = wrap(live, content --[[@as table<string, unknown>]], admitted, moveFacts, speciesFacts)
+  local executor = wrap(live, content --[[@as table<string, unknown>]], admitted, moveFacts, speciesFacts, moneyUpItems)
   executor:_bindLifecycle()
   return executor
 end
@@ -933,12 +1007,14 @@ function HgssSessionExecutor.restore(snapshotData, content)
   if type(live.speciesFacts) ~= "table" then
     error(BattleErrors.incompatibleSnapshot("native snapshots carry their static species facts", {}))
   end
+  local moneyUpItems = checkMoneyUpItems(live)
   local executor = wrap(
     live,
     content --[[@as table<string, unknown>]],
     admitted,
     live.moveFacts --[[@as table<string, table<string, unknown>>]],
-    live.speciesFacts --[[@as table<string, SpeciesFormFacts>]]
+    live.speciesFacts --[[@as table<string, SpeciesFormFacts>]],
+    moneyUpItems
   )
   executor:_bindLifecycle()
   return executor
@@ -948,7 +1024,7 @@ end
 --- session object, matching construction and restoration.
 function HgssSessionExecutor:_bindLifecycle()
   assert(self._ruleset == nil, "native lifecycles bind once")
-  local ruleset = HgssRuleset.new(bindTurnHandlers(self, self._moveFacts, self._speciesFacts))
+  local ruleset = HgssRuleset.new(bindTurnHandlers(self, self._moveFacts, self._speciesFacts, self._moneyUpItems))
   self._ruleset = ruleset
   ruleset:initialize(self)
 end
@@ -1341,7 +1417,7 @@ function HgssSessionExecutor:view(controller)
   return BattleView.forController(self, controller)
 end
 
----@return table<string, unknown> detached plain interruption capture
+----@return table<string, unknown> detached plain interruption capture
 function HgssSessionExecutor:capture()
   local state = self:_live()
   local snapshot = BattleSnapshot.capture(state)
@@ -1350,6 +1426,12 @@ function HgssSessionExecutor:capture()
   snapshot.faints = copyValue(state.faints)
   snapshot.moveFacts = copyValue(self._moveFacts)
   snapshot.speciesFacts = copyValue(self._speciesFacts)
+  snapshot.moneyUpItems = copyValue(state.moneyUpItems or {})
+  local prizeMoneyValue = state.prizeMoneyValue
+  if prizeMoneyValue ~= 1 and prizeMoneyValue ~= 2 then
+    error(BattleErrors.invalidState("prize multipliers stay 1 or 2", {}))
+  end
+  snapshot.prizeMoneyValue = prizeMoneyValue
   BattleSnapshot.validate(snapshot)
   return snapshot
 end

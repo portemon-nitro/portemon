@@ -2358,6 +2358,7 @@ function FieldRuntime:_trainerPayload(payload)
         name = bundle.name,
         party = bundle.mons,
         partyLevels = bundle.partyLevels,
+        prizeMoney = bundle.prizeMoney,
         program = program,
         aiPasses = bundle.aiPasses,
         items = bundle.items,

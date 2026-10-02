@@ -135,7 +135,7 @@ local function playerFacts(game)
 end
 
 ---@param versionId string booted game version behind the journey
----@return table trainer template from the native compiled catalog with its class and top level
+---@return table trainer template from the native compiled catalog with its class, final member, and prize facts
 local function nativeTrainer(versionId)
   local RomFs = require("romdump.src.source.RomFs")
   local romFs = assert(RomFs.open(versionId), "the prize leg needs its ready dump")
@@ -157,18 +157,27 @@ local function nativeTrainer(versionId)
     local record = template --[[@as table<string, unknown>]]
     local reference = record.nameReference --[[@as table<string, unknown>]]
     local party = record.party --[[@as table<integer, unknown>]]
-    if type(reference) == "table" and reference.rival ~= true and #party > 0 then
-      local top = 0
-      local topSpecies = nil ---@type string?
-      for _, member in ipairs(party) do
-        local entry = member --[[@as table<string, unknown>]]
-        if type(entry.level) == "number" and entry.level > top then
-          top = entry.level --[[@as integer]]
-          topSpecies = entry.species --[[@as string]]
-        end
-      end
-      if top > 0 and topSpecies ~= nil then
-        return { key = key, trainerClass = record.trainerClass, species = topSpecies, level = top }
+    local prize = record.prizeMoney --[[@as table<string, unknown>]]
+    if
+      type(reference) == "table"
+      and reference.rival ~= true
+      and #party > 0
+      and type(record.trainerClass) == "number"
+      and type(prize) == "table"
+      and type(prize.classRate) == "number"
+    then
+      -- The prize level is the final ordered party member, even when a
+      -- stronger member stands earlier in the native party.
+      local final = party[#party] --[[@as table<string, unknown>]]
+      if type(final.species) == "string" and type(final.level) == "number" then
+        return {
+          key = key,
+          trainerClass = record.trainerClass,
+          classRate = prize.classRate,
+          species = final.species,
+          level = final.level,
+          partyLevels = { final.level },
+        }
       end
     end
   end
@@ -305,8 +314,11 @@ function T.tests.post_battle_consequences_commit_through_the_live_owners()
     )
     capture:dispose()
 
-    -- The trainer win credits prize money derived from the native trainer
-    -- class data compiled out of the ready dump.
+    -- The trainer win credits the exact native prize: the staged entry
+    -- carries the compiled trainer's class, final-member level, and
+    -- pinned class rate, so the win settles level * 4 * class rate for a
+    -- single battle with no money-up holder, published once through the
+    -- player owner with no injected prize inputs.
     local trainer = nativeTrainer(versionId)
     local champion = enemyRecord(liveCatalog, trainer.species, trainer.level, 0x7EA00001, 1)
     local prizeRecord = { enters = 0, frames = {}, leaves = 0, disposed = 0 }
@@ -317,12 +329,17 @@ function T.tests.post_battle_consequences_commit_through_the_live_owners()
       trainers = {
         {
           id = tostring(trainer.key),
+          class = trainer.trainerClass,
           party = { champion },
+          partyLevels = trainer.partyLevels,
+          prizeMoney = { trainerClass = trainer.trainerClass, classRate = trainer.classRate },
           program = { key = "consequence_opening", revision = "native-1", instructions = {}, entryPoints = {} },
         },
       },
     }, { party = game.runtime.monService })
-    local expectedPrize = 140 * trainer.level
+    -- Derived independently from the pinned class rate and the final
+    -- member level, never through the production reward planner.
+    local expectedPrize = trainer.level * 4 * trainer.classRate
     local prize = BattleRuntime.new({
       request = prizeLaunch,
       scenario = prizeScenario,
@@ -330,7 +347,6 @@ function T.tests.post_battle_consequences_commit_through_the_live_owners()
       party = game.runtime.monService,
       dex = dex,
       player = playerFacts(game),
-      prize = { trainerClass = "trainer-class-" .. tostring(trainer.trainerClass), basePayout = 140 },
     })
     driveToCompletion(game, prize)
     Assert.equal(prize:status().phase, "complete", "answered decisions finish the trainer battle")
@@ -340,7 +356,7 @@ function T.tests.post_battle_consequences_commit_through_the_live_owners()
     Assert.equal(
       prizeReceipt.rewards.amount,
       expectedPrize,
-      "the prize multiplies the base payout by the native top level"
+      "the prize follows the native class rate and the final member level"
     )
     Assert.equal(
       prizeReceipt.player.profile.money,

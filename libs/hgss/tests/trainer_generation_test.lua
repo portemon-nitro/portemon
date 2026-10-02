@@ -237,6 +237,26 @@ function T.plain_members_materialize_identity_level_learned_moves_and_stats()
   )
 end
 
+-- Built bundles carry the compiled prize record alongside the ordered
+-- party facts, so reward planning reads the class rate from materialized
+-- trainer metadata instead of looking the class up again.
+function T.built_parties_carry_the_compiled_prize_record()
+  local Catalog = requirePresent(CATALOG_MODULE, "immutable trainer templates resolve runtime content keys")
+  requirePresent(FACTORY_MODULE, "source trainer generation builds native parties")
+  local monCatalog = vectorMonCatalog()
+  local catalog = Catalog.new(compiledInput({
+    [8] = trainerRecord("youngster", { plainMember() }, {
+      prizeMoney = { trainerClass = 2, classRate = 4 },
+    }),
+  }))
+  local factory = vectorFactory(catalog, monCatalog)
+  local bundle = factory:build(buildContext(catalog, 8, spyStream(FIXED_SEED)))
+  local prize = assert(bundle.prizeMoney, "built bundles carry their compiled prize record")
+  Assert.equal(prize.trainerClass, 2, "the prize record keeps its class")
+  Assert.equal(prize.classRate, 4, "the prize record keeps its pinned class rate")
+  Assert.deepEqual(bundle.partyLevels, { 5 }, "ordered party levels ride with the prize record")
+end
+
 -- All four party shapes preserve their exact move and item records,
 -- including the zero-friendship edge that powers full-strength
 -- disappointment-driven moves and the full-friendship edge behind
