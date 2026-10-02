@@ -152,6 +152,12 @@ end
 
 local function drive(flow, events)
   flow:updateFixed(events)
+  for _ = 1, 6 do
+    if flow:status().transition == nil then
+      break
+    end
+    flow:updateFixed({})
+  end
   return flowStatus(flow)
 end
 
@@ -215,7 +221,7 @@ local function chooseBagAction(flow, id)
       -- Confirming latches behind the action feedback before the semantic
       -- transition runs; settle the latch before callers read the next page.
       return driveUntil(flow, "the settled action transition", 30, function(current)
-        return current.child == nil or current.child.feedback == nil
+        return current.page ~= "bag_browse" or current.child == nil
       end)
     end
     local node = assert(child.actionNode, "the action menu exposes its node")
@@ -395,6 +401,14 @@ function T.tests.production_medicine_give_take_round_trip(context)
     status = drive(party, { { type = "confirm" } })
     driveUntil(party, "the party browse page", 30, function(current)
       return current.page == "party_browse"
+    end)
+    driveUntil(party, "the Give result message", 30, function(current)
+      return current.page == "party_browse" and current.child ~= nil and current.child.state == "message"
+    end)
+    drainOpen(party)
+    drive(party, { { type = "confirm" } })
+    driveUntil(party, "the acknowledged give result", 30, function(current)
+      return current.page == "party_browse" and current.child ~= nil and current.child.state == "browse"
     end)
     drainOpen(party)
     Assert.equal(mons:partyMon(1).heldItem, "POTION", "accepting the pick must hold the potion on slot one")

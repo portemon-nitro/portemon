@@ -19,7 +19,7 @@ local RomFs = require("romdump.src.source.RomFs")
 
 local T = {
   metadata = { capabilities = { "rom_dump" },
-    derivedAssets = { "field-runtime", "audio-bank:700", "audio-bank:702", "audio-bank:709", "audio-bank:758", "map-data:31", "map-data:33", "map-data:47", "map-data:48", "map-data:60", "map:33", "map:60" }, tags = { "menu", "production" } },
+    derivedAssets = { "field-runtime", "audio-bank:700", "audio-bank:702", "audio-bank:709", "audio-bank:758", "audio-bank:759", "map-data:31", "map-data:33", "map-data:47", "map-data:48", "map-data:60", "map:33", "map:60" }, tags = { "menu", "production" } },
   tests = {},
 }
 
@@ -177,6 +177,19 @@ local function childView(flow)
   return assert(status.child, "the party flow holds a live child")
 end
 
+local function settleTransition(flow)
+  for _ = 1, 6 do
+    if flow:status().transition == nil then
+      break
+    end
+    flow:updateFixed({})
+  end
+  if not flow:status().open then
+    -- The host consumes a terminal result after presenting the opaque frame.
+    flow:updateFixed({})
+  end
+end
+
 -- A fresh party page clears its open before input: wait for the leaf
 -- to turn interactive, then run out the handover ticks that still drop
 -- input so the first navigation acts.
@@ -236,10 +249,12 @@ local function activateMenuRow(flow, match, what)
       for _ = 1, 10 do
         local status = flow:status()
         if not status.open then
+          settleTransition(flow)
           return
         end
         local settled = assert(status.child, "the party flow holds a live child")
         if settled.menuPress == nil then
+          settleTransition(flow)
           return
         end
         flow:updateFixed({})

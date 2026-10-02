@@ -172,6 +172,29 @@ local function buildPresenters(owner)
     }, status, plan)
     drawApplicationFrames(hostGraphics, owner, plan)
   end
+  ---@param hostGraphics table<string, unknown>
+  ---@param transition table<string, unknown>?
+  local function drawMenuFlowFade(hostGraphics, transition)
+    if transition == nil then
+      return
+    end
+    local coefficient = assert(transition.coefficient, "menu fades carry their coefficient")
+    assert(
+      type(coefficient) == "number" and coefficient % 1 == 0 and coefficient >= 0 and coefficient <= 16,
+      "menu fade coefficients stay in 0..16"
+    )
+    assert(transition.color == 0 and transition.direction == "out", "menu flow fades out to black")
+    hostGraphics.push("all")
+    local ok, err = xpcall(function()
+      local width, height = hostGraphics.getDimensions()
+      hostGraphics.setColor(0, 0, 0, coefficient / 16)
+      hostGraphics.rectangle("fill", 0, 0, width, height)
+    end, debug.traceback)
+    hostGraphics.pop()
+    if not ok then
+      error(err, 0)
+    end
+  end
   -- Both menu applications run the shared Bag/Party flow, whose single
   -- live child follows the active page: the bag hosts party targets for
   -- Use/Give, and the party hosts the bag picker for Give. Dispatch on
@@ -183,6 +206,12 @@ local function buildPresenters(owner)
   ---@param applicationId string
   local function drawMenuFlow(presentation, applicationId)
     if drawPartyWait(presentation) then
+      local transition = presentation and presentation.transition
+      if transition ~= nil then
+        local hostGraphics = love and love.graphics
+        assert(type(hostGraphics) == "table", applicationId .. " drawing requires its host graphics namespace")
+        drawMenuFlowFade(hostGraphics, transition)
+      end
       return
     end
     local status = assert(presentation, "the " .. applicationId .. " application presents its status")
@@ -197,6 +226,7 @@ local function buildPresenters(owner)
     else
       error("the " .. applicationId .. " application cannot present plan " .. tostring(inputKey), 0)
     end
+    drawMenuFlowFade(hostGraphics, status.transition)
   end
   local function drawPokemon(presentation, _)
     drawMenuFlow(presentation, FieldApplicationIds.POKEMON)
@@ -459,7 +489,16 @@ function FieldPresentationResources:drawApplication(applicationId, presentation,
   -- statuses carry their own plan and pass through untouched; a plan-less
   -- flow status reaches the presenter, which fails loudly by contract.
   if type(presentation) == "table" and presentation.presentation == nil then
-    presentation = presentation.child
+    local flowStatus = presentation
+    presentation = flowStatus.child
+    if presentation ~= nil and flowStatus.transition ~= nil then
+      local childStatus = {}
+      for key, value in pairs(presentation) do
+        childStatus[key] = value
+      end
+      childStatus.transition = flowStatus.transition
+      presentation = childStatus
+    end
   end
   draw(presentation, runtime)
 end

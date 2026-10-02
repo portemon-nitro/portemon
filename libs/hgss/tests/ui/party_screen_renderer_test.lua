@@ -2115,6 +2115,14 @@ end
 -- keys fail instead of defaulting to invented text.
 function T.generated_action_descriptors_render_in_the_action_window()
   local manifest = v5Manifest()
+  manifest.text.templates.giveHeldItem = {
+    segments = {
+      { kind = "name" },
+      { kind = "text", value = " was given the " },
+      { kind = "item" },
+      { kind = "text", value = " to hold." },
+    },
+  }
   local graphics = fakeGraphics()
   local texts = {}
   local window = recordingWindow({})
@@ -2156,6 +2164,14 @@ function T.generated_action_descriptors_render_in_the_action_window()
   end
   Assert.isTrue(inside("EMPTY"), "the generated template text draws")
   Assert.isTrue(inside("LEAD"), "the display name expands inside the template")
+  local give = presentation({
+    cursorNode = 0,
+    state = "message",
+    message = { templateKey = "giveHeldItem", displayName = "LEAD", itemName = "GREAT BALL" },
+  })
+  give.view.slots[1] = occupiedSlot(0)
+  renderer:draw(give, resolved, frameIcons({}))
+  Assert.isTrue(inside("GREAT BALL"), "the source item substitution expands in the action window")
   local bad = presentation({ cursorNode = 0, state = "message", message = { templateKey = "noSuchTemplate" } })
   bad.view.slots[1] = occupiedSlot(0)
   local err = Assert.throws(function()

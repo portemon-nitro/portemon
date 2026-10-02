@@ -522,6 +522,7 @@ local function nativeController(opts)
     actionPolicy = opts.actionPolicy or nativePolicy(),
     promptShape = nativePromptShape(),
     initialFocus = opts.initialFocus,
+    initialMessage = opts.initialMessage,
     allowCancel = opts.allowCancel,
     item = opts.item,
     effect = opts.effect,
@@ -535,6 +536,18 @@ local function nativeController(opts)
       revision = revision + 1
     end,
   }
+end
+
+function T.initial_message_enters_the_party_owned_acknowledgement_state()
+  local controller = nativeController({
+    initialMessage = { templateKey = "giveHeldItem", displayName = "LEAD", itemName = "GREAT BALL" },
+  })
+  local shown = controller:status()
+  Assert.equal(shown.state, "message", "the initial result enters the owned message state")
+  Assert.equal(shown.message.templateKey, "giveHeldItem", "the source template remains a descriptor")
+  controller:updateFixed({ { type = "confirm" } })
+  local resumed = controller:status()
+  Assert.equal(resumed.state, "browse", "acknowledgement returns to browse")
 end
 
 local function nativeStatus(controller)

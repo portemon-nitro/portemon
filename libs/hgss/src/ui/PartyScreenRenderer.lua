@@ -781,8 +781,9 @@ end
 -- segments on one line keep their measured horizontal advance.
 ---@param segments table[]
 ---@param displayName string?
+---@param itemName string?
 ---@return { value: string, x: number, y: number }[]
-function PartyScreenRenderer:_templateOps(segments, displayName)
+function PartyScreenRenderer:_templateOps(segments, displayName, itemName)
   local text = self._text
   local ops = {}
   local cursorX, cursorY = 0, 0
@@ -799,8 +800,12 @@ function PartyScreenRenderer:_templateOps(segments, displayName)
       local name = assert(displayName, "name segments expand the menu slot display name")
       ops[#ops + 1] = { value = name, x = cursorX, y = cursorY }
       cursorX = cursorX + text:textWidth(name)
+    elseif segment.kind == "item" then
+      local item = assert(itemName, "the held-item result expands its item name")
+      ops[#ops + 1] = { value = item, x = cursorX, y = cursorY }
+      cursorX = cursorX + text:textWidth(item)
     else
-      error("party message templates render text, line breaks, and names", 0)
+      error("party message templates render text, line breaks, names, and the held-item result", 0)
     end
   end
   return ops
@@ -885,7 +890,7 @@ end
 -- Resolves a transient action message to window-local text placements:
 -- either existing literal text or a generated-template descriptor
 -- expanded with its display name.
----@param message string|{ templateKey: string, displayName: string? }
+---@param message string|{ templateKey: string, displayName: string?, itemName: string? }
 ---@return { value: string, x: number, y: number }[]
 function PartyScreenRenderer:_actionOps(message)
   if type(message) == "string" then
@@ -896,11 +901,11 @@ function PartyScreenRenderer:_actionOps(message)
   assert(type(key) == "string", "action descriptors name their template")
   local templates = assert(self._manifest.text.templates, "the party manifest carries templates")
   local template = assert(templates[key], "the party manifest carries template " .. key)
-  return self:_templateOps(assert(template.segments, key .. " carries segments"), message.displayName)
+  return self:_templateOps(assert(template.segments, key .. " carries segments"), message.displayName, message.itemName)
 end
 
 -- Draws a transient action message through the generated action window.
----@param message string|{ templateKey: string, displayName: string? }
+---@param message string|{ templateKey: string, displayName: string?, itemName: string? }
 function PartyScreenRenderer:_drawActionMessage(message)
   local manifest = self._manifest
   local windows = assert(manifest.windows, "the party manifest carries windows")
