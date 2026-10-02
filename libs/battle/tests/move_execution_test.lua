@@ -96,6 +96,16 @@ local function selectionInputs(moves, prevention)
   }
 end
 
+---@return table<string, unknown> neutral type modifiers keeping strike arithmetic unchanged
+local function typeFacts()
+  local CombatFixture = require("libs.battle.tests.combat_fixture")
+  return {
+    attackerTypes = { "fire" },
+    defenderTypes = { [2] = { "normal" } },
+    typeChart = CombatFixture.chart(CombatFixture.makeVanilla(), CombatFixture.VANILLA_RULESET),
+  }
+end
+
 -- Selection keeps three identities apart: the requested slot move, the
 -- move that actually executes after source overrides, and the slot owning
 -- the spent power points. A called move executes the drawn move while the
@@ -265,6 +275,9 @@ function T.rejection_failure_and_started_frames_stay_distinct()
     moves = twoMoveSet(),
     moveFacts = tacticFacts(),
     combat = { level = 10, attack = 50, defense = 50 },
+    attackerTypes = typeFacts().attackerTypes,
+    defenderTypes = typeFacts().defenderTypes,
+    typeChart = typeFacts().typeChart,
     stream = fixedStream(),
   })
   local validated = Execution.validateFrame(frame)
@@ -393,6 +406,9 @@ function T.damage_uses_actual_combatant_facts()
         TACKLE = { power = 35, accuracy = 95, category = "physical", moveType = "normal" },
       },
       combat = combat,
+      attackerTypes = typeFacts().attackerTypes,
+      defenderTypes = typeFacts().defenderTypes,
+      typeChart = typeFacts().typeChart,
       stream = fixedStream(),
     }))
     local outcome = frame
@@ -592,6 +608,9 @@ function T.sequence_strikes_read_power_from_compiled_move_facts()
       moves = { { move = "FLY", pp = 15, ppUps = 0 } },
       moveFacts = { FLY = moveFacts },
       combat = { level = 50, attack = 120, defense = 90 },
+      attackerTypes = typeFacts().attackerTypes,
+      defenderTypes = typeFacts().defenderTypes,
+      typeChart = typeFacts().typeChart,
       stream = fixedStream(),
     }))
     local outcome = frame
@@ -645,6 +664,9 @@ function T.delayed_strikes_read_power_from_compiled_move_facts()
       moves = { { move = "FUTURE_SIGHT", pp = 10, ppUps = 0 } },
       moveFacts = { FUTURE_SIGHT = moveFacts },
       combat = { level = 50, attack = 120, defense = 90 },
+      attackerTypes = typeFacts().attackerTypes,
+      defenderTypes = typeFacts().defenderTypes,
+      typeChart = typeFacts().typeChart,
       stream = fixedStream(),
     }))
     local scheduled = Execution.step(ctx, frame)
@@ -673,6 +695,9 @@ function T.delayed_strikes_read_power_from_compiled_move_facts()
     moves = { { move = "FUTURE_SIGHT", pp = 10, ppUps = 0 } },
     moveFacts = { FUTURE_SIGHT = { accuracy = 100, category = "special", moveType = "psychic" } },
     combat = { level = 50, attack = 120, defense = 90 },
+    attackerTypes = typeFacts().attackerTypes,
+    defenderTypes = typeFacts().defenderTypes,
+    typeChart = typeFacts().typeChart,
     stream = fixedStream(),
   }))
   local scheduled = Execution.step(ctx, frame)
@@ -680,6 +705,215 @@ function T.delayed_strikes_read_power_from_compiled_move_facts()
     Execution.step(ctx, scheduled.frame or scheduled)
   end, "a delayed landing without compiled power fails instead of curating damage")
   Assert.equal(missing.code, "BATTLE_MISSING_BEHAVIOR", "the missing delayed power names its behavior")
+end
+
+-- Sequence strikes resolve exact STAB and effectiveness through the
+-- session chart: a same-type attacker deals more than a mismatched one,
+-- super-effective relations deal more than resisted ones, and chart
+-- immunities deal zero instead of silent neutral damage.
+function T.sequence_strikes_resolve_exact_stab_and_effectiveness()
+  local Execution = executionOwner("the shared move continuation owns hit progression")
+  local CombatFixture = require("libs.battle.tests.combat_fixture")
+
+  ---@param move string sequence strike identity under the attempt
+  ---@param moveType string compiled move type under the strike
+  ---@param attacker string attacker semantic type under the strike
+  ---@param defender string[] defender semantic types under the strike
+  ---@return integer damage dealt by one strike over fixed random state
+  local function strike(move, moveType, attacker, defender)
+    local state = liveState()
+    local ctx = liveContext(state)
+    local frame = Execution.validateFrame(Execution.start({
+      actionId = 1,
+      actor = actorRef(0),
+      requestedMove = move,
+      executingMove = move,
+      ppOwnerSlot = 0,
+      calledBy = nil,
+      selectedTarget = SessionFixture.positionTarget(2),
+      targets = { { combatant = 2 } },
+      moves = { { move = move, pp = 15, ppUps = 0 } },
+      moveFacts = { [move] = { power = 20, accuracy = 100, category = "physical", moveType = moveType } },
+      combat = { level = 5, attack = 30, defense = 40 },
+      attackerTypes = { attacker },
+      defenderTypes = { [2] = defender },
+      typeChart = CombatFixture.chart(CombatFixture.makeVanilla(), CombatFixture.VANILLA_RULESET),
+      stream = fixedStream(),
+    }))
+    local outcome = frame
+    for _ = 1, 32 do
+      local stepped = Execution.step(ctx, outcome)
+      if stepped.kind == "complete" then
+        outcome = stepped
+        break
+      end
+      outcome = stepped.frame or stepped
+    end
+    Assert.equal(outcome.kind, "complete", "the sequence strike runs to completion")
+    local defenders = state.combatants --[[@as table<integer, table<string, unknown>>]]
+    local record = defenders[2] --[[@as table<string, unknown>]]
+    return (record.entryHp --[[@as integer]]) - (record.hp --[[@as integer]])
+  end
+
+  local stabbed = strike("FLY", "fire", "fire", { "normal" })
+  local unstabbed = strike("FLY", "fire", "water", { "normal" })
+  Assert.isTrue(stabbed > unstabbed, "same-type attackers deal STAB sequence damage")
+  local super = strike("DIVE", "water", "normal", { "fire" })
+  local resisted = strike("DIVE", "water", "normal", { "water" })
+  Assert.isTrue(super > resisted, "effectiveness scales sequence damage exactly")
+  local immune = strike("DIG", "ground", "normal", { "flying" })
+  Assert.equal(immune, 0, "chart immunities deal zero sequence damage")
+  local control = strike("DIG", "ground", "normal", { "normal" })
+  Assert.isTrue(control >= 1, "the immunity control still lands its minimum strike")
+end
+
+-- Stockpile releases never take the staged path: without accumulated
+-- stacks SPIT_UP fails explicitly instead of dealing neutral damage, so
+-- fixed-model members stay fixed and never gain silent STAB.
+function T.stockpile_releases_fail_instead_of_dealing_neutral_damage()
+  local Execution = executionOwner("the shared move continuation owns hit progression")
+  local state = liveState()
+  local ctx = liveContext(state)
+  local frame = Execution.validateFrame(Execution.start({
+    actionId = 1,
+    actor = actorRef(0),
+    requestedMove = "SPIT_UP",
+    executingMove = "SPIT_UP",
+    ppOwnerSlot = 0,
+    calledBy = nil,
+    selectedTarget = SessionFixture.positionTarget(2),
+    targets = { { combatant = 2 } },
+    moves = { { move = "SPIT_UP", pp = 10, ppUps = 0 } },
+    moveFacts = { SPIT_UP = { power = 100, accuracy = 100, category = "special", moveType = "normal" } },
+    combat = { level = 50, attack = 120, defense = 90 },
+    attackerTypes = typeFacts().attackerTypes,
+    defenderTypes = typeFacts().defenderTypes,
+    typeChart = typeFacts().typeChart,
+    stream = fixedStream(),
+  }))
+  local outcome = Execution.step(ctx, frame)
+  Assert.equal(outcome.result, "failed", "spit up fails without its accumulated stacks")
+  local defender = state.combatants --[[@as table<integer, table<string, unknown>>]]
+  local record = defender[2] --[[@as table<string, unknown>]]
+  Assert.equal(
+    record.hp --[[@as integer]],
+    record.entryHp --[[@as integer]],
+    "the failed release deals no neutral damage"
+  )
+end
+
+-- Sequence strikes never assume neutral type facts: a strike without
+-- attacker types, without a session chart, or a delayed landing without
+-- defender types fails with its missing behavior instead of succeeding.
+function T.sequence_strikes_fail_without_type_facts()
+  local Execution = executionOwner("the shared move continuation owns hit progression")
+
+  ---@param overrides table<string, unknown> type facts replacing the complete set
+  ---@param move string sequence identity under the attempt
+  local function attemptImmediate(overrides, move)
+    local state = liveState()
+    local ctx = liveContext(state)
+    local inputs = {
+      actionId = 1,
+      actor = actorRef(0),
+      requestedMove = move,
+      executingMove = move,
+      ppOwnerSlot = 0,
+      calledBy = nil,
+      selectedTarget = SessionFixture.positionTarget(2),
+      targets = { { combatant = 2 } },
+      moves = { { move = move, pp = 15, ppUps = 0 } },
+      moveFacts = { [move] = { power = 90, accuracy = 100, category = "physical", moveType = "flying" } },
+      combat = { level = 50, attack = 120, defense = 90 },
+      stream = fixedStream(),
+    }
+    for key, value in pairs(overrides) do
+      inputs[key] = value
+    end
+    local frame = Execution.validateFrame(Execution.start(inputs))
+    local failure = Assert.throws(function()
+      Execution.step(ctx, frame)
+    end, move .. " fails without its complete type facts")
+    Assert.equal(failure.code, "BATTLE_MISSING_BEHAVIOR", "the missing facts name their behavior")
+  end
+
+  attemptImmediate({
+    defenderTypes = typeFacts().defenderTypes,
+    typeChart = typeFacts().typeChart,
+  }, "FLY")
+  attemptImmediate({
+    attackerTypes = typeFacts().attackerTypes,
+    defenderTypes = typeFacts().defenderTypes,
+  }, "FLY")
+
+  local state = liveState()
+  local ctx = liveContext(state)
+  local frame = Execution.validateFrame(Execution.start({
+    actionId = 1,
+    actor = actorRef(0),
+    requestedMove = "FUTURE_SIGHT",
+    executingMove = "FUTURE_SIGHT",
+    ppOwnerSlot = 0,
+    calledBy = nil,
+    selectedTarget = SessionFixture.positionTarget(2),
+    targets = { { combatant = 2 } },
+    moves = { { move = "FUTURE_SIGHT", pp = 10, ppUps = 0 } },
+    moveFacts = { FUTURE_SIGHT = { power = 80, accuracy = 100, category = "special", moveType = "psychic" } },
+    combat = { level = 50, attack = 120, defense = 90 },
+    attackerTypes = typeFacts().attackerTypes,
+    typeChart = typeFacts().typeChart,
+    stream = fixedStream(),
+  }))
+  local scheduled = Execution.step(ctx, frame)
+  local failure = Assert.throws(function()
+    Execution.step(ctx, scheduled.frame or scheduled)
+  end, "the delayed landing fails without its defender types")
+  Assert.equal(failure.code, "BATTLE_MISSING_BEHAVIOR", "the missing landing facts name their behavior")
+end
+
+-- Delayed impacts land as typeless Generation-IV damage: attacker STAB
+-- and chart relations never scale the landing, so identical landings
+-- from different types deal identical damage through the explicit
+-- typeless contract.
+function T.delayed_impacts_land_typeless_without_stab_or_relation()
+  local Execution = executionOwner("the shared move continuation owns hit progression")
+  local CombatFixture = require("libs.battle.tests.combat_fixture")
+
+  ---@param attacker string attacker semantic type under the landing
+  ---@param defender string[] defender semantic types under the landing
+  ---@return integer damage dealt by the delayed landing over fixed random state
+  local function land(attacker, defender)
+    local state = liveState()
+    local ctx = liveContext(state)
+    local frame = Execution.validateFrame(Execution.start({
+      actionId = 1,
+      actor = actorRef(0),
+      requestedMove = "FUTURE_SIGHT",
+      executingMove = "FUTURE_SIGHT",
+      ppOwnerSlot = 0,
+      calledBy = nil,
+      selectedTarget = SessionFixture.positionTarget(2),
+      targets = { { combatant = 2 } },
+      moves = { { move = "FUTURE_SIGHT", pp = 10, ppUps = 0 } },
+      moveFacts = { FUTURE_SIGHT = { power = 80, accuracy = 100, category = "special", moveType = "psychic" } },
+      combat = { level = 50, attack = 120, defense = 90 },
+      attackerTypes = { attacker },
+      defenderTypes = { [2] = defender },
+      typeChart = CombatFixture.chart(CombatFixture.makeVanilla(), CombatFixture.VANILLA_RULESET),
+      stream = fixedStream(),
+    }))
+    local scheduled = Execution.step(ctx, frame)
+    local landed = Execution.step(ctx, scheduled.frame or scheduled)
+    Assert.equal(landed.kind, "complete", "the delayed landing runs to completion")
+    local defenders = state.combatants --[[@as table<integer, table<string, unknown>>]]
+    local record = defenders[2] --[[@as table<string, unknown>]]
+    return (record.entryHp --[[@as integer]]) - (record.hp --[[@as integer]])
+  end
+
+  local fromPsychic = land("psychic", { "fire" })
+  local fromNormal = land("normal", { "water" })
+  Assert.equal(fromPsychic, fromNormal, "typeless landings ignore STAB and chart relations")
+  Assert.isTrue(fromPsychic >= 1, "the typeless landing still deals its minimum damage")
 end
 
 return { tests = T }

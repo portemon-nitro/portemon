@@ -172,6 +172,75 @@ function T.chart_with_a_missing_pair_fails_before_freeze()
   end)
 end
 
+function T.native_chart_covers_every_directed_pair_and_rejects_gaps()
+  local NativeTypeChart = requireContract(
+    "libs.battle.src.gen4.NativeTypeChart",
+    "the native type matrix installs through content composition"
+  )
+  local ContentBuilder = requireContract(
+    "libs.content.src.ContentBuilder",
+    "ordered type definitions have no composition owner"
+  )
+  local BattleBehaviorBuilder = requireContract(
+    "libs.battle.src.BattleBehaviorBuilder",
+    "typed ruleset registration has no owner"
+  )
+  local BattleContent = requireContract(
+    "libs.battle.src.BattleContent",
+    "frozen executable battle bindings have no owner"
+  )
+  local universe = {
+    "normal",
+    "fighting",
+    "flying",
+    "poison",
+    "ground",
+    "rock",
+    "bug",
+    "ghost",
+    "steel",
+    "mystery",
+    "fire",
+    "water",
+    "grass",
+    "electric",
+    "psychic",
+    "ice",
+    "dragon",
+    "dark",
+  }
+  local builder = ContentBuilder.new()
+  NativeTypeChart.install(builder, "native-chart-tests")
+  local behaviors = BattleBehaviorBuilder.new()
+  behaviors:registerRuleset("test:native", { key = "test:native", chart = "test:native" }, "native-chart-tests")
+  local content = BattleContent.new(builder:freeze(), behaviors:freeze())
+  local chart = content:typeChart("test:native")
+  for _, attack in ipairs(universe) do
+    for _, defend in ipairs(universe) do
+      local pair = chart:effectiveness(attack, defend)
+      Assert.isTrue(
+        type(pair.numerator) == "number" and type(pair.denominator) == "number",
+        "the native chart resolves " .. attack .. " into " .. defend
+      )
+    end
+  end
+  assertRational(chart:effectiveness("fire", "grass"), 2, 1)
+  assertRational(chart:effectiveness("water", "fire"), 2, 1)
+  assertRational(chart:effectiveness("electric", "water"), 2, 1)
+  assertRational(chart:effectiveness("fire", "water"), 1, 2)
+  assertRational(chart:effectiveness("ghost", "steel"), 1, 2)
+  assertRational(chart:effectiveness("normal", "ghost"), 0, 1)
+  assertRational(chart:effectiveness("electric", "ground"), 0, 1)
+  assertRational(chart:effectiveness("poison", "steel"), 0, 1)
+
+  local gapped = ContentBuilder.new()
+  NativeTypeChart.install(gapped, "native-chart-tests")
+  gapped:patch("types", "fire", { { op = "remove", path = { "relations", 1 } } }, "native-chart-tests")
+  Assert.throws(function()
+    gapped:freeze()
+  end, "a native chart missing one directed pair never freezes")
+end
+
 function T.separate_compositions_keep_independent_definitions()
   local ContentBuilder = requireContract(
     "libs.content.src.ContentBuilder",

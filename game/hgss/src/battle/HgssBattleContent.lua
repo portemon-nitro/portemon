@@ -55,7 +55,9 @@ end
 ---@return BattleContent the frozen native battle binding set
 function HgssBattleContent.nativeContent()
   local Executor = require("libs.battle.src.gen4.HgssSessionExecutor")
+  local NativeTypeChart = require("libs.battle.src.gen4.NativeTypeChart")
   local builder = ContentBuilder.new()
+  NativeTypeChart.install(builder, "battle-runtime")
   local behaviors = BattleBehaviorBuilder.new()
   behaviors:registerRuleset(Executor.RULESET, { key = Executor.RULESET, chart = Executor.RULESET }, "battle-runtime")
   for _, formatKey in ipairs({ "wild-single", "single", "double" }) do

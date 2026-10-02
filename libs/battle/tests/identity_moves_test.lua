@@ -71,6 +71,16 @@ local function combatantOf(state, id)
   return State.combatant(state, id) --[[@as table<string, unknown>]]
 end
 
+---@return table neutral type modifiers keeping strike arithmetic unchanged
+local function typeFacts()
+  local CombatFixture = require("libs.battle.tests.combat_fixture")
+  return {
+    attackerTypes = { "fire" },
+    defenderTypes = { [2] = { "normal" } },
+    typeChart = CombatFixture.chart(CombatFixture.makeVanilla(), CombatFixture.VANILLA_RULESET),
+  }
+end
+
 ---@param move string move identity under execution
 ---@param slot integer zero-based power-point slot under execution
 ---@return table frame inputs over fixed random state
@@ -98,6 +108,9 @@ local function frameInputs(move, slot)
       [move] = { power = powers[move] or 50, accuracy = 100, category = "physical", moveType = "normal" },
     },
     combat = { level = 10, attack = 50, defense = 50 },
+    attackerTypes = typeFacts().attackerTypes,
+    defenderTypes = typeFacts().defenderTypes,
+    typeChart = typeFacts().typeChart,
     stream = BattleRng.new(FIXED_SEED),
   }
 end
