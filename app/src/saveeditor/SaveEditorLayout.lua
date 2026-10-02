@@ -687,6 +687,7 @@ function Layout.compute(view, width, height, metrics)
   end
 
   local roleById = {}
+  local focusedValueHelp
   for _, row in ipairs(rows) do
     roleById[row.targetId] = row.role
   end
@@ -787,12 +788,35 @@ function Layout.compute(view, width, height, metrics)
       viewportId = viewportId,
     }
   end
+  for _, row in ipairs(rows) do
+    local target = targetRecords[row.targetId]
+    if target then
+      local rowRect = target.rect
+      local inset = row.iconKey and 22 or 4
+      row.labelRect = rect(rowRect.x + inset, rowRect.y + 2, rowRect.width - inset - 4, rowRect.height - 4)
+      if row.value ~= nil then
+        row.valueText = type(row.value) == "boolean" and (row.value and "ON" or "OFF") or tostring(row.value)
+        local availableWidth = rowRect.width - inset - 8
+        local valueWidth =
+          math.min(availableWidth * 0.7, math.max(availableWidth * 0.32, metrics.measure(row.valueText) + 2))
+        valueWidth = math.floor(valueWidth)
+        row.valueTruncated = metrics.measure(row.valueText) > valueWidth
+        local valueX = rowRect.x + rowRect.width - valueWidth - 4
+        row.labelRect = rect(rowRect.x + inset, rowRect.y + 2, valueX - rowRect.x - inset - 4, rowRect.height - 4)
+        row.valueRect = rect(valueX, rowRect.y + 2, valueWidth, rowRect.height - 4)
+        if row.valueTruncated and row.targetId == view.focus then
+          focusedValueHelp = row.label .. ": " .. row.valueText
+        end
+      end
+    end
+  end
   return {
     viewport = rect(0, 0, width, height),
     header = rect(margin, 2, innerWidth, headerHeight - 2),
     content = rect(contentX, contentTop, innerWidth, contentBottom - contentTop),
     footer = rect(margin, height - footerHeight, innerWidth, footerHeight),
     rows = rows,
+    focusedValueHelp = focusedValueHelp,
     navigation = navigation,
     focusOrder = focusOrder,
     focusGraph = focusGraph,

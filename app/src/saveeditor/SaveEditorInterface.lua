@@ -6,6 +6,7 @@ local PixelScale = require("libs.ui.src.PixelScale")
 
 local Interface = {}
 local WIDTH, HEIGHT = 256, 192
+local MAX_DENSITY = 3
 
 local function chooseSurface(context)
   local primary = context.primary
@@ -24,6 +25,10 @@ end
 
 local function render(resources, view, plan)
   assert(resources.renderer):draw(view, plan)
+end
+
+local function copyBounds(bounds)
+  return { x = bounds.x, y = bounds.y, width = bounds.width, height = bounds.height }
 end
 
 local function mapInput(event, view, plan)
@@ -56,6 +61,7 @@ function Interface.resolve(context, view)
     return {
       panes = {},
       frames = {},
+      hostBackgrounds = {},
       content = {},
       inputKey = "save-editor-inactive",
       render = function() end,
@@ -70,19 +76,33 @@ function Interface.resolve(context, view)
   if context.configuration == "wide" then
     authoredWidth, authoredHeight = 400, 300
   end
-  local scale = PixelScale.fitPreferred(bounds, authoredWidth, authoredHeight, 3)
-  local covered = PixelScale.cover(bounds, scale, pixelRatio)
-  local logicalWidth = math.max(authoredWidth, covered.logicalViewport.width)
-  local logicalHeight = math.max(authoredHeight, covered.logicalViewport.height)
-  local placement = LayoutGeometry.centeredFit(bounds, logicalWidth, logicalHeight)
+  local physicalWidth, physicalHeight = bounds.width * pixelRatio, bounds.height * pixelRatio
+  local logicalWidth, logicalHeight, placement
+  if physicalWidth < authoredWidth or physicalHeight < authoredHeight then
+    logicalWidth, logicalHeight = authoredWidth, authoredHeight
+    placement = LayoutGeometry.centeredFit(bounds, authoredWidth, authoredHeight)
+    placement.pixelScale = placement.scale * pixelRatio
+    placement.pixelRatio = pixelRatio
+    placement.visibleLogicalRect = { x = 0, y = 0, width = authoredWidth, height = authoredHeight }
+  else
+    local density = math.max(
+      1,
+      math.min(MAX_DENSITY, math.floor(math.min(physicalWidth / authoredWidth, physicalHeight / authoredHeight)))
+    )
+    local covered = PixelScale.cover(bounds, density, pixelRatio)
+    logicalWidth, logicalHeight = covered.logicalViewport.width, covered.logicalViewport.height
+    placement = covered.placement
+  end
   local metrics = assert(view.textMetrics, "save editor layout requires borrowed font metrics")
   local layout = Layout.compute(view, logicalWidth, logicalHeight, metrics)
   local pane = { id = "editor", placement = placement, interactive = true }
   local panes = { pane }
+  local hostBackgrounds = { copyBounds(bounds) }
   local primary = context.primary
   if context.secondary ~= nil and surface == context.secondary and primary.usableBounds ~= nil then
     local previewPlacement = LayoutGeometry.centeredFit(primary.usableBounds, WIDTH, HEIGHT)
     panes[#panes + 1] = { id = "context", placement = previewPlacement, interactive = false }
+    hostBackgrounds[#hostBackgrounds + 1] = copyBounds(primary.usableBounds)
   end
   local identity = table.concat(
     { surface.surface.id, tostring(logicalWidth), tostring(logicalHeight), view.scope.id, tostring(view.scope.epoch) },
@@ -91,6 +111,7 @@ function Interface.resolve(context, view)
   return {
     panes = panes,
     frames = {},
+    hostBackgrounds = hostBackgrounds,
     content = { layout = layout, width = logicalWidth, height = logicalHeight, interactiveSurface = surface.surface.id },
     inputKey = identity,
     render = render,

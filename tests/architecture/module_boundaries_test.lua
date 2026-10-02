@@ -368,6 +368,7 @@ local function packageViolationsFor(files, packageName)
           and file:sub(1, #"app/src/saveeditor/") == "app/src/saveeditor/"
           and targetPackage == "app"
           and module:sub(1, #"app.src.saveeditor.") ~= "app.src.saveeditor."
+          and module ~= "app.src.ui.ProductMenuSkin"
         if editorAppViolation then
           violations[#violations + 1] = file .. " requires " .. module .. " (saveeditor may import only its own subtree)"
         elseif reason ~= nil then
@@ -486,6 +487,8 @@ end
 function T.saveeditor_imports_stay_inside_the_declared_neutral_boundary()
   local fixtures = {
     { module = "app.src.saveeditor.SaveEditorComposition", allowed = true },
+    { module = "app.src.ui.ProductMenuSkin", allowed = true },
+    { module = "app.src.ui.UnrelatedWidget", allowed = false },
     { module = "libs.ui.src.LayoutGeometry", allowed = true },
     { module = "libs.hgss.src.save.GameSaveValidation", allowed = true },
     { module = "libs.storage.src.RepoFs", allowed = true },

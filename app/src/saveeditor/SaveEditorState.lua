@@ -131,7 +131,7 @@ function State.new(options)
     end
   assert(type(dateProvider) == "function", "save editor date provider must be callable")
   local text = makeText(options.versionId)
-  local rendererOk, rendererOrError = pcall(Renderer.new, { text = text })
+  local rendererOk, rendererOrError = pcall(Renderer.new, { text = text, versionId = options.versionId })
   if not rendererOk then
     pcall(function()
       text:release()

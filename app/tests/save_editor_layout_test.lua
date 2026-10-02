@@ -166,4 +166,51 @@ function T.tests.location_navigation_uses_transient_cursor_zoom_and_matched_poin
   Assert.equal(controller:locationSnapshot().cursor.fieldX, 35, "panning does not replace the inspected tile")
 end
 
+function T.tests.player_rows_reserve_measured_raw_value_width_in_a_separate_text_cell()
+  local view = {
+    status = "ready",
+    ready = true,
+    section = "Player",
+    scope = { id = "section:Player", epoch = 0 },
+    session = { playerName = "PLAYER", money = 4294967295 },
+  }
+  local metrics = {
+    lineHeight = 12,
+    measure = function(text)
+      local width = 0
+      for glyph in text:gmatch(".") do
+        width = width + (glyph:match("%d") and 9 or 5)
+      end
+      return width
+    end,
+  }
+  local layout = Layout.compute(view, 256, 192, metrics)
+  local row = nil
+  for _, candidate in ipairs(layout.rows) do
+    if candidate.targetId == "money" then
+      row = candidate
+      break
+    end
+  end
+  row = assert(row, "the Player layout contains the raw money value")
+
+  Assert.isTrue(row.valueRect.width >= metrics.measure(tostring(view.session.money)))
+  Assert.isTrue(row.labelRect.x + row.labelRect.width < row.valueRect.x, "label and raw value have separate cells")
+  Assert.isTrue(
+    row.valueRect.x + row.valueRect.width <= layout.targets.money.rect.x + layout.targets.money.rect.width,
+    "the measured value cell remains inside the row target"
+  )
+
+  view.focus = "money"
+  metrics.measure = function(text)
+    local digits = 0
+    for glyph in text:gmatch(".") do
+      digits = digits + (glyph:match("%d") and 30 or 20)
+    end
+    return digits
+  end
+  layout = Layout.compute(view, 256, 192, metrics)
+  Assert.equal(layout.focusedValueHelp, "Money: 4294967295", "the full value stays visible when the row must truncate it")
+end
+
 return T

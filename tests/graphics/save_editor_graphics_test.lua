@@ -135,12 +135,19 @@ local function draw(scope, width, height, topology, name, section, variant)
   local view, presentation, plan = fixture(scope, width, height, topology, section, variant)
   local drawnText = {}
   local text = {
+    textWidth = function(_, value)
+      return #value * 8
+    end,
+    drawTextWithPalette = function(_, value, x, y)
+      drawnText[#drawnText + 1] = value
+      graphics.print(value, x, y)
+    end,
     drawText = function(_, value, x, y)
       drawnText[#drawnText + 1] = value
       graphics.print(value, x, y)
     end,
   }
-  local renderer = Renderer.new({ text = text })
+  local renderer = Renderer.new({ text = text, versionId = "heartgold" })
   local canvas = scope:own(graphics.newCanvas(width, height))
   graphics.setCanvas(canvas)
   graphics.clear(0.94, 0.94, 0.94, 1)
@@ -366,12 +373,19 @@ function T.name_editor_renders_the_real_naming_snapshot_in_a_neutral_dialog(scop
   view.presentation, view.layout = plan, plan.content.layout
   local drawn = {}
   local text = {
+    textWidth = function(_, value)
+      return #value * 8
+    end,
+    drawTextWithPalette = function(_, value, x, y)
+      drawn[#drawn + 1] = value
+      love.graphics.print(value, x, y)
+    end,
     drawText = function(_, value, x, y)
       drawn[#drawn + 1] = value
       love.graphics.print(value, x, y)
     end,
   }
-  local renderer = Renderer.new({ text = text })
+  local renderer = Renderer.new({ text = text, versionId = "heartgold" })
   local canvas = scope:own(love.graphics.newCanvas(width, height))
   love.graphics.setCanvas(canvas)
   love.graphics.clear(0.94, 0.94, 0.94, 1)

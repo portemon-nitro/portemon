@@ -475,7 +475,7 @@ function T.visible_party_rows_prepare_only_their_icon_keys()
   end
 
   local ok, err = xpcall(function()
-    local renderer = Renderer.new({ text = {}, graphics = {} })
+    local renderer = Renderer.new({ text = {}, graphics = {}, versionId = "heartgold" })
     renderer:prepareVisibleIcons({ section = "Party", partyPage = "list" }, {
       content = { layout = { rows = { { iconKey = "0001:0" }, { iconKey = "0004:0" } } } },
     }, {}, {})

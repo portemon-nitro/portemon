@@ -6,6 +6,9 @@ Renderer.__index = Renderer
 local AssetPreparationQueue = require("libs.hgss.src.presentation.AssetPreparationQueue")
 local Errors = require("libs.errors.src.Errors")
 local MonIconAssetProvider = require("libs.hgss.src.presentation.MonIconAssetProvider")
+local LogicalSurface = require("libs.ui.src.LogicalSurface")
+local ProductMenuSkin = require("app.src.ui.ProductMenuSkin")
+local FieldMessageText = require("libs.assets.src.field.FieldMessageText")
 
 ---@class SaveEditorRenderer
 ---@field text table<string, unknown>
@@ -20,11 +23,6 @@ local MonIconAssetProvider = require("libs.hgss.src.presentation.MonIconAssetPro
 ---@field dispose fun(self: SaveEditorRenderer)
 ---@field prepareVisibleIcons fun(self: SaveEditorRenderer, view: table<string, unknown>, plan: table<string, unknown>, cacheFs: table<string, unknown>, derivedAssets: table<string, unknown>)
 
-local INK = { 0.12, 0.18, 0.25, 1 }
-local CARD = { 1, 1, 1, 1 }
-local BORDER = { 0.2, 0.32, 0.4, 1 }
-local SELECTED = { 0.84, 0.19, 0.2, 1 }
-local MUTED = { 0.42, 0.48, 0.52, 1 }
 local Utf8Glyphs = require("libs.assets.src.Utf8Glyphs")
 
 ---@param cacheFs table<string, unknown>
@@ -35,13 +33,21 @@ local function createIconProvider(cacheFs, options)
 end
 
 local function setColor(graphics, color)
-  graphics.setColor(color[1], color[2], color[3], color[4] or 1)
+  if color.r ~= nil then
+    graphics.setColor(color.r / 255, color.g / 255, color.b / 255, color.a or 1)
+  else
+    graphics.setColor(color[1], color[2], color[3], color[4] or 1)
+  end
 end
 
 function Renderer.new(options)
   assert(type(options) == "table" and options.text, "save editor renderer needs field text")
+  local versionId = options.versionId
+  assert(type(versionId) == "string" and versionId ~= "", "save editor needs a game version")
+  ---@cast versionId string
   return setmetatable({
     text = options.text,
+    skin = ProductMenuSkin.forVersion(versionId),
     graphics = options.graphics or love.graphics,
     _disposed = false,
     _iconQueue = nil,
@@ -115,27 +121,62 @@ function Renderer:metrics()
   }
 end
 
-local function drawText(renderer, value, x, y, color)
-  renderer.graphics.setColor(color[1], color[2], color[3], color[4] or 1)
-  renderer.text:drawText(tostring(value or ""), x, y)
+local function visibleText(renderer, value)
+  local text = tostring(value or "")
+  if not text:find("{", 1, true) then
+    return text
+  end
+  local tokens, parseError = FieldMessageText.parse(text, renderer.text.fontDef)
+  if parseError ~= nil then
+    error(parseError, 0)
+  end
+  local glyphs = {}
+  for _, token in ipairs(assert(tokens)) do
+    if token.kind == "glyph" then
+      glyphs[#glyphs + 1] = token.text
+    elseif token.kind == "line_break" or token.kind == "prompt_break" then
+      glyphs[#glyphs + 1] = " "
+    end
+  end
+  return table.concat(glyphs)
 end
 
-local function fitText(value, width)
-  local text = tostring(value or "")
-  local limit = math.max(1, math.floor(width / 8))
-  local glyphs = {}
+local function drawText(renderer, value, x, y, role)
+  local textRole = type(role) == "string" and role or "normal"
+  if role == renderer.skin.text.hint.foreground then
+    textRole = "hint"
+  elseif role == renderer.skin.text.information.foreground then
+    textRole = "information"
+  elseif role == renderer.skin.text.error.foreground then
+    textRole = "error"
+  end
+  ProductMenuSkin.drawText(
+    renderer.graphics,
+    renderer.text,
+    renderer.skin,
+    textRole,
+    visibleText(renderer, value),
+    x,
+    y
+  )
+end
+
+local function fitText(renderer, value, width)
+  local text = visibleText(renderer, value)
+  local textRenderer = assert(renderer.text)
+  if textRenderer:textWidth(text) <= width then
+    return text
+  end
+  local visible = {}
   for glyph in Utf8Glyphs.iter(text) do
-    glyphs[#glyphs + 1] = glyph
-  end
-  if #glyphs > limit then
-    local visible = {}
-    for index = 1, math.max(1, limit - 1) do
-      visible[index] = glyphs[index]
+    local candidate = table.concat(visible) .. glyph
+    if textRenderer:textWidth(candidate .. "…") > width then
+      break
     end
-    visible[#visible + 1] = "…"
-    return table.concat(visible)
+    visible[#visible + 1] = glyph
   end
-  return text
+  local fitted = table.concat(visible) .. "…"
+  return textRenderer:textWidth(fitted) <= width and fitted or ""
 end
 
 local function targetRect(layout, targetId)
@@ -143,17 +184,17 @@ local function targetRect(layout, targetId)
   return target and target.rect
 end
 
-local function wrapText(value, width)
-  local limit = math.max(1, math.floor(width / 8))
+local function wrapText(renderer, value, width)
   local lines, line = {}, ""
   for word in tostring(value or ""):gmatch("%S+") do
-    if line ~= "" and #line + 1 + #word > limit then
+    local candidate = line == "" and word or (line .. " " .. word)
+    if line ~= "" and renderer.text:textWidth(candidate) > width then
       lines[#lines + 1] = line
       line = word
     elseif line == "" then
       line = word
     else
-      line = line .. " " .. word
+      line = candidate
     end
   end
   if line ~= "" then
@@ -168,24 +209,38 @@ local function paintPane(self, view, plan, pane)
   local graphics = self.graphics
   local layout = assert(plan.content.layout)
   local placement = pane.placement
-  graphics.push()
-  graphics.translate(placement.frame.x, placement.frame.y)
-  graphics.scale(placement.scale, placement.scale)
-  graphics.setColor(0.93, 0.94, 0.92, 1)
+  local INK = self.skin.text.normal.foreground
+  local CARD = { 1, 1, 1, 1 }
+  local BORDER = self.skin.cards.normal.border
+  local SELECTED = self.skin.cards.normal.selectedRim
+  local MUTED = self.skin.text.hint.foreground
+  setColor(graphics, self.skin.background)
   graphics.rectangle("fill", 0, 0, placement.logicalWidth, placement.logicalHeight)
-  setColor(graphics, BORDER)
-  graphics.rectangle("fill", layout.header.x, layout.header.y, layout.header.width, layout.header.height)
-  drawText(self, "Save Editor", layout.header.x + 5, layout.header.y + 3, CARD)
-  if view.session then
+  ProductMenuSkin.drawCard(graphics, self.skin, layout.header, "normal", false, false)
+  drawText(self, "Save Editor", layout.header.x + 5, layout.header.y + 3)
+  if view.valueEditor and view.valueEditor.kind == "choice" then
+    drawText(
+      self,
+      fitText(self, "Search: " .. (view.valueEditor.query or ""), layout.header.width - 10),
+      layout.header.x + 5,
+      layout.header.y + 17
+    )
+  elseif view.session then
     local identity = view.session.playerName .. " " .. view.session.versionId .. " " .. tostring(view.saveId or "")
-    drawText(self, fitText(identity, layout.header.width - 10), layout.header.x + 5, layout.header.y + 17, CARD)
+    drawText(self, fitText(self, identity, layout.header.width - 10), layout.header.x + 5, layout.header.y + 17)
   end
   for _, navigation in ipairs(layout.navigation) do
     local target = targetRect(layout, navigation.targetId)
     if target then
-      setColor(graphics, navigation.targetId == ("section:" .. view.section) and SELECTED or BORDER)
-      graphics.rectangle("line", target.x, target.y, target.width, target.height)
-      drawText(self, navigation.label, target.x + 4, target.y + 3, INK)
+      ProductMenuSkin.drawCard(
+        graphics,
+        self.skin,
+        target,
+        "inset",
+        navigation.targetId == ("section:" .. view.section),
+        false
+      )
+      drawText(self, navigation.label, target.x + 4, target.y + 3)
     end
   end
   if view.section == "Party" and (view.partyPage == "detail" or view.partyPage == "draft") then
@@ -193,31 +248,36 @@ local function paintPane(self, view, plan, pane)
       local id = "party:subpage:" .. subpage
       local target = targetRect(layout, id)
       if target then
-        setColor(graphics, view.partySubpage == subpage and SELECTED or BORDER)
-        graphics.rectangle("fill", target.x, target.y, target.width, target.height)
-        drawText(self, fitText(subpage, target.width - 6), target.x + 3, target.y + 3, CARD)
+        ProductMenuSkin.drawCard(graphics, self.skin, target, "inset", view.partySubpage == subpage, false)
+        drawText(self, fitText(self, subpage, target.width - 6), target.x + 3, target.y + 3)
       end
     end
   end
   for _, row in ipairs(layout.rows) do
     local rect = targetRect(layout, row.targetId)
     if rect then
-      setColor(graphics, row.targetId == view.focus and SELECTED or BORDER)
-      graphics.rectangle("line", rect.x, rect.y, rect.width, rect.height)
-      local labelWidth = row.role == "warning" and rect.width - 8 or rect.width * 0.5 - 8
-      local icon = row.iconKey and self._icons[row.iconKey]
-      local labelX = rect.x + 4
-      if icon and graphics.draw then
-        graphics.draw(icon.image, icon.quad, rect.x + 3, rect.y + 2)
-        labelX = rect.x + 22
-        labelWidth = labelWidth - 18
-      end
-      drawText(self, fitText(row.label, labelWidth), labelX, rect.y + 3, INK)
-      if row.value ~= nil then
-        local value = type(row.value) == "boolean" and (row.value and "ON" or "OFF") or tostring(row.value)
-        local valueX = rect.x + math.min(rect.width * 0.52, 128)
-        drawText(self, fitText(value, rect.x + rect.width - valueX - 4), valueX, rect.y + 3, INK)
-      end
+      local target = assert(layout.targets[row.targetId])
+      LogicalSurface.clip(graphics, target.clip or rect, function()
+        ProductMenuSkin.drawCard(
+          graphics,
+          self.skin,
+          rect,
+          row.value == nil and "normal" or "inset",
+          row.targetId == view.focus,
+          row.enabled == false
+        )
+        local icon = row.iconKey and self._icons[row.iconKey]
+        if icon and graphics.draw then
+          graphics.draw(icon.image, icon.quad, rect.x + 3, rect.y + 2)
+        end
+        local labelRect = assert(row.labelRect, "layout rows own their label text bounds")
+        local textRole = row.role == "warning" and "error" or row.role == "read-only value" and "hint" or "normal"
+        drawText(self, fitText(self, row.label, labelRect.width), labelRect.x, rect.y + 3, textRole)
+        if row.valueText ~= nil and row.valueRect ~= nil then
+          local valueRect = row.valueRect
+          drawText(self, fitText(self, row.valueText, valueRect.width), valueRect.x, rect.y + 3)
+        end
+      end)
     end
   end
   if view.section == "Location" then
@@ -236,68 +296,63 @@ local function paintPane(self, view, plan, pane)
   for _, action in ipairs(layout.actions) do
     local rect = targetRect(layout, action.id)
     if rect then
-      setColor(graphics, action.enabled and BORDER or MUTED)
-      graphics.rectangle("fill", rect.x, rect.y, rect.width, rect.height)
+      ProductMenuSkin.drawCard(graphics, self.skin, rect, "normal", action.id == view.focus, not action.enabled)
       local label = action.id == "save" and view.locationSave and "Cancel check" or action.label
-      drawText(self, label, rect.x + 4, rect.y + 4, CARD)
+      drawText(self, label, rect.x + 4, rect.y + 4, action.enabled and "normal" or "hint")
     end
+  end
+  local footerMessage = view.locationSave and "Checking destination · Save cancels"
+    or (view.dirty and "Unsaved changes" or "Saved")
+  local footerRole = "normal"
+  if layout.focusedValueHelp then
+    footerMessage = "Full value · " .. layout.focusedValueHelp
+    footerRole = "hint"
   end
   drawText(
     self,
-    view.locationSave and "Checking destination · Save cancels" or (view.dirty and "Unsaved changes" or "Saved"),
+    fitText(self, footerMessage, layout.footer.width - 8),
     layout.footer.x + 4,
     layout.footer.y + 2,
-    INK
+    footerRole
   )
   if view.valueEditor then
     local dialog = view.valueEditor
-    graphics.setColor(0.96, 0.97, 0.96, 1)
-    graphics.rectangle("fill", layout.content.x, layout.content.y, layout.content.width, layout.content.height)
+    ProductMenuSkin.drawCard(graphics, self.skin, layout.content, "normal", false, false)
     if dialog.kind == "choice" then
       local groupPrevious = assert(targetRect(layout, "group-previous"))
       local clearSearch = assert(targetRect(layout, "clear-search"))
       local groupNext = assert(targetRect(layout, "group-next"))
-      drawText(self, "Search: " .. (dialog.query or ""), layout.content.x + 4, layout.content.y + 2, INK)
-      setColor(graphics, BORDER)
-      graphics.rectangle("line", groupPrevious.x, groupPrevious.y, groupPrevious.width, groupPrevious.height)
-      graphics.rectangle("line", clearSearch.x, clearSearch.y, clearSearch.width, clearSearch.height)
-      graphics.rectangle("line", groupNext.x, groupNext.y, groupNext.width, groupNext.height)
+      ProductMenuSkin.drawCard(graphics, self.skin, groupPrevious, "inset", false, false)
+      ProductMenuSkin.drawCard(graphics, self.skin, clearSearch, "inset", false, false)
+      ProductMenuSkin.drawCard(graphics, self.skin, groupNext, "inset", false, false)
       drawText(self, "Group " .. (dialog.group or "All"), groupPrevious.x + 3, groupPrevious.y + 3, INK)
       drawText(self, "Clear", clearSearch.x + 3, clearSearch.y + 3, INK)
       drawText(self, "Next group", groupNext.x + 3, groupNext.y + 3, INK)
       local viewport = assert(layout.viewports["value:choice"])
-      graphics.push("all")
-      graphics.intersectScissor(viewport.clip.x, viewport.clip.y, viewport.clip.width, viewport.clip.height)
-      for _, option in ipairs(dialog.options) do
-        local rect = targetRect(layout, "choice:" .. option.key)
-        if rect then
-          setColor(graphics, option.key == dialog.selectedKey and SELECTED or BORDER)
-          graphics.rectangle("line", rect.x, rect.y, rect.width, rect.height)
-          drawText(self, fitText(option.label, rect.width - 8), rect.x + 4, rect.y + 3, INK)
+      LogicalSurface.clip(graphics, viewport.clip, function()
+        for _, option in ipairs(dialog.options) do
+          local rect = targetRect(layout, "choice:" .. option.key)
+          if rect then
+            ProductMenuSkin.drawCard(graphics, self.skin, rect, "normal", option.key == dialog.selectedKey, false)
+            drawText(self, fitText(self, option.label, rect.width - 8), rect.x + 4, rect.y + 3, INK)
+          end
         end
-      end
-      graphics.pop()
+      end)
       if dialog.empty then
         drawText(
           self,
           "No matching choices. Clear search or change group.",
           viewport.clip.x + 3,
           viewport.clip.y + 3,
-          MUTED
+          "hint"
         )
       end
       for _, id in ipairs({ "confirm", "cancel" }) do
         local rect = targetRect(layout, id)
         assert(rect)
-        setColor(graphics, BORDER)
-        graphics.rectangle("line", rect.x, rect.y, rect.width, rect.height)
-        drawText(
-          self,
-          id == "cancel" and "Cancel" or id == "page-next" and "Next" or "Previous",
-          rect.x + 3,
-          rect.y + 3,
-          INK
-        )
+        local disabled = id == "confirm" and dialog.empty == true
+        ProductMenuSkin.drawCard(graphics, self.skin, rect, "normal", id == view.focus, disabled)
+        drawText(self, id == "cancel" and "Cancel" or "Choose", rect.x + 3, rect.y + 3, disabled and "hint" or "normal")
       end
     elseif dialog.kind == "name" then
       local naming = dialog.naming
@@ -331,7 +386,7 @@ local function paintPane(self, view, plan, pane)
       drawText(self, dialog.buffer or "", layout.content.x + 5, layout.content.y + 30, INK)
       drawText(
         self,
-        "Range " .. tostring(dialog.minimum) .. "–" .. tostring(dialog.maximum),
+        "Range " .. tostring(dialog.minimum) .. "-" .. tostring(dialog.maximum),
         layout.content.x + 5,
         layout.content.y + 46,
         MUTED
@@ -342,7 +397,7 @@ local function paintPane(self, view, plan, pane)
           view.editorFeedback or "Enter a whole number within the allowed range.",
           layout.content.x + 5,
           layout.content.y + 60,
-          SELECTED
+          "error"
         )
       end
       for _, id in ipairs({ "digit-left", "digit-right", "digit-down", "digit-up", "confirm", "cancel" }) do
@@ -351,9 +406,9 @@ local function paintPane(self, view, plan, pane)
           setColor(graphics, BORDER)
           graphics.rectangle("line", rect.x, rect.y, rect.width, rect.height)
           local labels = {
-            ["digit-left"] = "◀ digit",
-            ["digit-right"] = "digit ▶",
-            ["digit-down"] = "−",
+            ["digit-left"] = "Left",
+            ["digit-right"] = "Right",
+            ["digit-down"] = "-",
             ["digit-up"] = "+",
             confirm = "OK",
             cancel = "Cancel",
@@ -369,14 +424,13 @@ local function paintPane(self, view, plan, pane)
       "Preparing party icons…",
       layout.content.x + 4,
       layout.content.y + layout.content.height - 16,
-      MUTED
+      "hint"
     )
   elseif view.iconStatus == "failed" then
-    drawText(self, "Icons unavailable", layout.content.x + 4, layout.content.y + layout.content.height - 16, MUTED)
+    drawText(self, "Icons unavailable", layout.content.x + 4, layout.content.y + layout.content.height - 16, "error")
   end
   if view.modal then
-    graphics.setColor(0, 0, 0, 0.78)
-    graphics.rectangle("fill", layout.content.x, layout.content.y, layout.content.width, layout.content.height)
+    ProductMenuSkin.drawCard(graphics, self.skin, layout.content, "normal", false, false)
     local choices, prompt
     if view.modal == "draft" then
       choices, prompt = { "apply", "discard", "cancel" }, "Apply party changes?"
@@ -389,17 +443,19 @@ local function paintPane(self, view, plan, pane)
     for _, id in ipairs(choices) do
       local rect = targetRect(layout, id)
       if rect then
-        setColor(graphics, id == view.focus and SELECTED or BORDER)
-        graphics.rectangle("fill", rect.x, rect.y, rect.width, rect.height)
-        drawText(self, id:sub(1, 1):upper() .. id:sub(2), rect.x + 4, rect.y + 6, CARD)
+        ProductMenuSkin.drawCard(graphics, self.skin, rect, "normal", id == view.focus, false)
+        drawText(self, id:sub(1, 1):upper() .. id:sub(2), rect.x + 4, rect.y + 6)
       end
     end
   end
-  graphics.pop()
 end
 
 drawLocation = function(self, view, layout)
   local graphics = self.graphics
+  local INK = self.skin.text.normal.foreground
+  local BORDER = self.skin.cards.normal.border
+  local SELECTED = self.skin.cards.normal.selectedRim
+  local MUTED = self.skin.text.hint.foreground
   local location = assert(view.location)
   local navigation = assert(view.locationNavigation)
   local grid = layout.locationGrid
@@ -437,40 +493,42 @@ drawLocation = function(self, view, layout)
         local tile = tiles[key]
         local x = grid.originX + column * grid.tileSize
         local y = grid.originY + row * grid.tileSize
-        if tile and tile.selectable == true then
-          setColor(graphics, { 0.75, 0.87, 0.7, 1 })
-          graphics.rectangle("fill", x, y, grid.tileSize, grid.tileSize)
-          setColor(graphics, { 0.46, 0.62, 0.42, 1 })
-          for offset = -grid.tileSize, grid.tileSize * 2, 8 do
-            graphics.line(x + offset, y, x + offset - grid.tileSize, y + grid.tileSize)
+        LogicalSurface.clip(graphics, { x = x, y = y, width = grid.tileSize, height = grid.tileSize }, function()
+          if tile and tile.selectable == true then
+            setColor(graphics, { 0.75, 0.87, 0.7, 1 })
+            graphics.rectangle("fill", x, y, grid.tileSize, grid.tileSize)
+            setColor(graphics, { 0.46, 0.62, 0.42, 1 })
+            for offset = -grid.tileSize, grid.tileSize * 2, 8 do
+              graphics.line(x + offset, y, x + offset - grid.tileSize, y + grid.tileSize)
+            end
+          elseif tile and tile.selectable == false then
+            setColor(graphics, { 0.73, 0.75, 0.75, 1 })
+            graphics.rectangle("fill", x, y, grid.tileSize, grid.tileSize)
+            setColor(graphics, { 0.38, 0.42, 0.44, 1 })
+            graphics.line(x + 3, y + 3, x + grid.tileSize - 3, y + grid.tileSize - 3)
+            graphics.line(x + grid.tileSize - 3, y + 3, x + 3, y + grid.tileSize - 3)
+          else
+            setColor(graphics, { 0.89, 0.9, 0.87, 1 })
+            graphics.rectangle("fill", x, y, grid.tileSize, grid.tileSize)
+            setColor(graphics, MUTED)
+            graphics.line(x + 2, y + grid.tileSize - 2, x + grid.tileSize - 2, y + 2)
           end
-        elseif tile and tile.selectable == false then
-          setColor(graphics, { 0.73, 0.75, 0.75, 1 })
-          graphics.rectangle("fill", x, y, grid.tileSize, grid.tileSize)
-          setColor(graphics, { 0.38, 0.42, 0.44, 1 })
-          graphics.line(x + 3, y + 3, x + grid.tileSize - 3, y + grid.tileSize - 3)
-          graphics.line(x + grid.tileSize - 3, y + 3, x + 3, y + grid.tileSize - 3)
-        else
-          setColor(graphics, { 0.89, 0.9, 0.87, 1 })
-          graphics.rectangle("fill", x, y, grid.tileSize, grid.tileSize)
-          setColor(graphics, MUTED)
-          graphics.line(x + 2, y + grid.tileSize - 2, x + grid.tileSize - 2, y + 2)
-        end
-        setColor(graphics, BORDER)
-        graphics.rectangle("line", x, y, grid.tileSize, grid.tileSize)
-        if saved and saved.mapId == location.mapId and fieldX == saved.fieldX and fieldZ == saved.fieldZ then
-          setColor(graphics, { 0.16, 0.38, 0.72, 1 })
-          graphics.rectangle("line", x + 2, y + 2, grid.tileSize - 4, grid.tileSize - 4)
-        end
-        if pending and pending.mapId == location.mapId and fieldX == pending.fieldX and fieldZ == pending.fieldZ then
-          setColor(graphics, { 0.83, 0.23, 0.18, 1 })
-          graphics.rectangle("line", x + 4, y + 4, grid.tileSize - 8, grid.tileSize - 8)
-        end
-        local cursor = navigation.cursor
-        if cursor and fieldX == cursor.fieldX and fieldZ == cursor.fieldZ then
-          setColor(graphics, { 0.12, 0.18, 0.25, 1 })
-          graphics.rectangle("line", x + 1, y + 1, grid.tileSize - 2, grid.tileSize - 2)
-        end
+          setColor(graphics, BORDER)
+          graphics.rectangle("line", x, y, grid.tileSize, grid.tileSize)
+          if saved and saved.mapId == location.mapId and fieldX == saved.fieldX and fieldZ == saved.fieldZ then
+            setColor(graphics, { 0.16, 0.38, 0.72, 1 })
+            graphics.rectangle("line", x + 2, y + 2, grid.tileSize - 4, grid.tileSize - 4)
+          end
+          if pending and pending.mapId == location.mapId and fieldX == pending.fieldX and fieldZ == pending.fieldZ then
+            setColor(graphics, { 0.83, 0.23, 0.18, 1 })
+            graphics.rectangle("line", x + 4, y + 4, grid.tileSize - 8, grid.tileSize - 8)
+          end
+          local cursor = navigation.cursor
+          if cursor and fieldX == cursor.fieldX and fieldZ == cursor.fieldZ then
+            setColor(graphics, { 0.12, 0.18, 0.25, 1 })
+            graphics.rectangle("line", x + 1, y + 1, grid.tileSize - 2, grid.tileSize - 2)
+          end
+        end)
       end
     end
   end
@@ -484,10 +542,10 @@ drawLocation = function(self, view, layout)
     or "Map unavailable"
   drawText(
     self,
-    fitText(mapLabel .. " · " .. statusLabel, layout.content.width - 8),
+    fitText(self, mapLabel .. " · " .. statusLabel, layout.content.width - 8),
     layout.content.x + 4,
     statusY,
-    INK
+    status.state == "ready" and "information" or status.state == "failed" and "error" or "hint"
   )
   local function markerLabel(label, marker)
     if marker == nil then
@@ -506,7 +564,7 @@ drawLocation = function(self, view, layout)
   if view.pendingLocation then
     markerText = markerText .. " · " .. markerLabel("Pending", view.pendingLocation)
   end
-  drawText(self, fitText(markerText, layout.content.width - 8), layout.content.x + 4, statusY + 28, INK)
+  drawText(self, fitText(self, markerText, layout.content.width - 8), layout.content.x + 4, statusY + 28, INK)
   local cursor = navigation.cursor
   if cursor then
     local inspected = tiles[string.format("%d:%d", cursor.fieldX, cursor.fieldZ)]
@@ -514,6 +572,7 @@ drawLocation = function(self, view, layout)
     drawText(
       self,
       fitText(
+        self,
         string.format("Global tile %d, %d %s", cursor.fieldX, cursor.fieldZ, tileReason),
         layout.content.width - 8
       ),
@@ -529,45 +588,69 @@ drawLocation = function(self, view, layout)
       break
     end
   end
-  for lineIndex, line in ipairs(wrapText(help, layout.content.width - 8)) do
+  for lineIndex, line in ipairs(wrapText(self, help, layout.content.width - 8)) do
     drawText(self, line, layout.content.x + 4, statusY + 56 + (lineIndex - 1) * 14, MUTED)
   end
 end
 
 local function paintLocationContext(self, view, pane)
   local graphics = self.graphics
+  local INK = self.skin.text.normal.foreground
+  local MUTED = self.skin.text.hint.foreground
   local location = assert(view.location)
-  graphics.push()
-  graphics.translate(pane.placement.frame.x, pane.placement.frame.y)
-  graphics.scale(pane.placement.scale, pane.placement.scale)
-  graphics.setColor(0.88, 0.9, 0.88, 1)
+  setColor(graphics, self.skin.background)
   graphics.rectangle("fill", 0, 0, pane.placement.logicalWidth, pane.placement.logicalHeight)
   drawText(self, "Location context", 8, 8, INK)
-  drawText(self, fitText(location.symbol or tostring(location.mapId), pane.placement.logicalWidth - 16), 8, 28, INK)
-  local current = assert(view.savedLocation)
-  drawText(self, string.format("Current %d, %d", current.fieldX, current.fieldZ), 8, 46, INK)
+  drawText(
+    self,
+    fitText(self, location.symbol or tostring(location.mapId), pane.placement.logicalWidth - 16),
+    8,
+    28,
+    INK
+  )
+  local current = view.savedLocation
+  if current then
+    drawText(self, string.format("Current %d, %d", current.fieldX, current.fieldZ), 8, 46, INK)
+  elseif view.session then
+    drawText(
+      self,
+      fitText(self, view.session.playerName .. " · " .. view.session.versionId, pane.placement.logicalWidth - 16),
+      8,
+      46
+    )
+  end
   local status = location.status
   drawText(self, status.state == "ready" and "Map ready" or status.reason or "Preparing map data", 8, 64, MUTED)
-  graphics.pop()
 end
 
 function Renderer:draw(view, plan)
   assert(not self._disposed, "disposed save editor renderer cannot draw")
   local graphics = self.graphics
+  for _, background in ipairs(plan.hostBackgrounds or {}) do
+    setColor(graphics, self.skin.background)
+    graphics.rectangle("fill", background.x, background.y, background.width, background.height)
+  end
   for _, pane in ipairs(plan.panes) do
     if pane.interactive then
-      paintPane(self, view, plan, pane)
+      LogicalSurface.draw(graphics, pane.placement, function()
+        paintPane(self, view, plan, pane)
+      end)
     else
-      if view.section == "Location" then
-        paintLocationContext(self, view, pane)
-      else
-        graphics.push()
-        graphics.translate(pane.placement.frame.x, pane.placement.frame.y)
-        graphics.scale(pane.placement.scale, pane.placement.scale)
-        graphics.setColor(0.88, 0.9, 0.88, 1)
-        graphics.rectangle("fill", 0, 0, pane.placement.logicalWidth, pane.placement.logicalHeight)
-        graphics.pop()
-      end
+      LogicalSurface.draw(graphics, pane.placement, function()
+        if view.section == "Location" then
+          paintLocationContext(self, view, pane)
+        else
+          setColor(graphics, self.skin.background)
+          graphics.rectangle("fill", 0, 0, pane.placement.logicalWidth, pane.placement.logicalHeight)
+          drawText(
+            self,
+            view.session and (view.session.playerName .. " · " .. view.session.versionId) or "Save context",
+            8,
+            8
+          )
+          drawText(self, view.dirty and "Unsaved changes" or "Saved", 8, 26, view.dirty and "information" or "hint")
+        end
+      end)
     end
   end
 end
