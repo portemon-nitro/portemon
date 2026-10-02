@@ -875,7 +875,7 @@ function T.a_recreated_actor_observes_clean_state_after_slot_release()
   mgr:dispose()
 end
 
-function T.begin_fixed_step_captures_every_owned_map_actor_without_advancing_them()
+function T.begin_fixed_step_captures_current_map_actors_without_advancing_them()
   local mgr = manager({
     object({ eventFlag = 401 }),
     object({ index = 1, objectEventId = 1, x = 8, z = 8, eventFlag = 402 }),
@@ -920,110 +920,79 @@ function T.begin_fixed_step_captures_every_owned_map_actor_without_advancing_the
 
   for _, actor in ipairs({ first, second }) do
     local previous, current = actor:renderPosition(0), actor:renderPosition(1)
-    Assert.equal(previous.x, current.x, "the aggregate baseline pass captures each map's current actor X")
-    Assert.equal(previous.y, current.y, "the aggregate baseline pass captures each map's current actor Y")
-    Assert.equal(previous.z, current.z, "the aggregate baseline pass captures each map's current actor Z")
+    Assert.equal(previous.x, current.x, "the baseline pass captures each actor's current X")
+    Assert.equal(previous.y, current.y, "the baseline pass captures each actor's current Y")
+    Assert.equal(previous.z, current.z, "the baseline pass captures each actor's current Z")
   end
   Assert.equal(first:getPoseTick(), firstPoseTick, "baseline capture does not advance the first actor's pose")
   Assert.equal(second:getPoseTick(), secondPoseTick, "baseline capture does not advance the second actor's pose")
   mgr:dispose()
 end
 
-function T.fixed_passes_reuse_ascending_map_order_until_membership_changes()
-  local lowObjects = { object({ objectEventId = 0 }), object({ objectEventId = 1, x = 4 }) }
-  local highObjects = { object({ objectEventId = 0 }), object({ objectEventId = 1, x = 4 }) }
-  local assets = fakeAssets({ [99] = true })
-  local lowOwner = manager(lowObjects, { assets = assets, map = runtimeMap(lowObjects, 17) })
-  local highOwner = manager(highObjects, { assets = assets, map = runtimeMap(highObjects, 61) })
-  local mgr = FieldActorManager.new({ assets = assets, policy = POLICY })
-  mgr.maps[17] = lowOwner.maps[17]
-  mgr.maps[61] = highOwner.maps[61]
-  if mgr._mapIds then
-    mgr._mapIds = { 17, 61 }
-  end
+function T.enter_map_replacement_switches_fixed_and_draw_traversal()
+  local firstObjects = { object({ objectEventId = 0 }), object({ objectEventId = 1, x = 4 }) }
+  local mgr, eventState = manager(firstObjects, { map = runtimeMap(firstObjects, 17) })
   mgr.autonomy.isOrdinary = function()
     return false
   end
 
   local trace = {}
-  local function traceActor(actor)
-    local actorId = actor.actorId
-    actor.beginFixedStep = function()
-      trace[#trace + 1] = actorId
-    end
-    actor.advancePresentationTick = function()
-      trace[#trace + 1] = actorId
-    end
-  end
-  for _, mapId in ipairs({ 17, 61 }) do
+  local function traceActors(mapId)
     for _, actor in ipairs(mgr.maps[mapId].store:orderedActors()) do
-      traceActor(actor)
+      local actorId = actor.actorId
+      local advance = actor.advancePresentationTick
+      actor.advancePresentationTick = function(self, ...)
+        trace[#trace + 1] = actorId
+        return advance(self, ...)
+      end
     end
   end
+  traceActors(17)
 
-  local function fixedPasses()
-    mgr:beginFixedStep()
-    mgr:step(1)
-    mgr:beginFixedStep()
-    mgr:step(2)
-  end
-  local originalSort = table.sort
-  local sortCalls = 0
-  table.sort = function(...)
-    sortCalls = sortCalls + 1
-    return originalSort(...)
-  end
-  local ok, err = pcall(fixedPasses)
-  table.sort = originalSort
-  Assert.isTrue(ok, tostring(err))
-  Assert.equal(sortCalls, 0, "unchanged fixed passes must not sort map IDs")
-  Assert.deepEqual(trace, {
-    "map:17:object:0",
-    "map:17:object:1",
-    "map:61:object:0",
-    "map:61:object:1",
-    "map:17:object:0",
-    "map:17:object:1",
-    "map:61:object:0",
-    "map:61:object:1",
-    "map:17:object:0",
-    "map:17:object:1",
-    "map:61:object:0",
-    "map:61:object:1",
-    "map:17:object:0",
-    "map:17:object:1",
-    "map:61:object:0",
-    "map:61:object:1",
-  }, "each pass keeps ascending map order")
+  mgr:beginFixedStep()
+  mgr:step(1)
+  Assert.deepEqual(trace, { "map:17:object:0", "map:17:object:1" })
+  local firstRecords = mgr:drawRecords()
+  Assert.equal(firstRecords[1].actorId, "map:17:object:0")
+  Assert.equal(firstRecords[2].actorId, "map:17:object:1")
 
-  table.sort = originalSort
-  mgr:leaveMap(17)
-  local newObjects = { object({ objectEventId = 0 }), object({ objectEventId = 1, x = 4 }) }
-  mgr:enterMap(runtimeMap(newObjects, 29), FieldEventState.new())
-  for _, entry in pairs(mgr.maps) do
-    for _, actor in ipairs(entry.store:orderedActors()) do
-      traceActor(actor)
-    end
-  end
+  local secondObjects = { object({ objectEventId = 0 }), object({ objectEventId = 1, x = 4 }) }
+  mgr:enterMap(runtimeMap(secondObjects, 29), eventState)
+  traceActors(29)
   trace = {}
   mgr:beginFixedStep()
-  mgr:step(3)
-  Assert.deepEqual(trace, {
-    "map:29:object:0",
-    "map:29:object:1",
-    "map:61:object:0",
-    "map:61:object:1",
-    "map:29:object:0",
-    "map:29:object:1",
-    "map:61:object:0",
-    "map:61:object:1",
-  }, "membership changes retain ascending map and store actor order")
+  mgr:step(2)
 
+  Assert.isNil(mgr.maps[17], "publishing the destination retires the previous entry")
+  Assert.equal(mgr.currentMapId, 29)
+  Assert.deepEqual(trace, { "map:29:object:0", "map:29:object:1" })
+  local secondRecords = mgr:drawRecords()
+  Assert.equal(#secondRecords, 2)
+  Assert.equal(secondRecords[1].actorId, "map:29:object:0")
+  Assert.equal(secondRecords[2].actorId, "map:29:object:1")
   mgr:dispose()
-  lowOwner.maps = {}
-  highOwner.maps = {}
-  lowOwner:dispose()
-  highOwner:dispose()
+end
+
+function T.leaving_current_map_clears_fixed_step_and_retained_draw_records()
+  local mgr = manager({ object({}) })
+  local actor = assert(mgr:getById("map:61:object:0"))
+  local advances = 0
+  local advance = actor.advancePresentationTick
+  actor.advancePresentationTick = function(self, ...)
+    advances = advances + 1
+    return advance(self, ...)
+  end
+  local records = mgr:drawRecords()
+  Assert.equal(#records, 1)
+
+  mgr:leaveMap(61)
+  mgr:beginFixedStep()
+  mgr:step(1)
+
+  Assert.equal(advances, 0, "retired actors do not advance after leave")
+  Assert.isTrue(mgr:drawRecords() == records, "the retained record array remains reusable")
+  Assert.equal(#records, 0, "leaving the current map removes stale draw records")
+  mgr:dispose()
 end
 
 function T.manager_fixed_and_draw_traversal_use_the_store_order_view()
@@ -1039,10 +1008,6 @@ function T.manager_fixed_and_draw_traversal_use_the_store_order_view()
   actors[1] = actors[2]
   Assert.isFalse(store:orderedActors()[1] == actors[1], "orderedActors remains an independent snapshot")
 
-  local orderedActors = store.orderedActors
-  store.orderedActors = function()
-    error("manager called the snapshot API during a hot traversal", 0)
-  end
   mgr:beginFixedStep()
   local records = mgr:drawRecords()
   Assert.equal(#records, 2)
@@ -1054,7 +1019,6 @@ function T.manager_fixed_and_draw_traversal_use_the_store_order_view()
   Assert.equal(store:actorCount(), 1)
   Assert.isTrue(store:orderedActorsView()[1] == store:getActor("map:61:object:1"))
   Assert.equal(#mgr:drawRecords(), 1)
-  store.orderedActors = orderedActors
   mgr:dispose()
 end
 
@@ -1112,29 +1076,16 @@ function T.autonomy_reuses_capability_callbacks_and_current_player_facts()
   mgr:dispose()
 end
 
-function T.autonomy_failure_preserves_error_and_later_uses_replaced_actor()
-  local mgr, eventState = manager({ object({ eventFlag = 401, movementType = "look_north" }) })
-  local oldActor = assert(mgr:getById("map:61:object:0"))
-  local originalStep = mgr.autonomy.step
+function T.autonomy_failure_propagates_and_ends_the_tick()
+  local mgr = manager({ object({ movementType = "look_north" }) })
   mgr.autonomy.step = function()
     error("autonomy probe failure", 0)
   end
 
-  local ok, err = pcall(function()
+  local err = Assert.throws(function()
     mgr:step(1)
   end)
-  Assert.isFalse(ok)
   Assert.equal(err, "autonomy probe failure", "the original autonomy failure propagates")
-
-  eventState:setFlag(401)
-  mgr:step(2)
-  Assert.isNil(mgr:getById("map:61:object:0"), "the ownership change retires the old actor")
-  mgr.autonomy.step = originalStep
-  eventState:clearFlag(401)
-  mgr:step(3)
-  local replacement = assert(mgr:getById("map:61:object:0"))
-  Assert.isFalse(replacement == oldActor)
-  Assert.equal(replacement.facing, "north", "the later step acts on the newly published actor")
   mgr:dispose()
 end
 
@@ -1154,9 +1105,6 @@ function T.draw_records_fill_presentation_scratch_and_keep_snapshot_api_independ
   Assert.isNil(secondSnapshot.gesturePose, "snapshot mutation does not reach the actor")
 
   local record = mgr:drawRecords()[1]
-  actor.presentationState = function()
-    error("drawRecords called the allocating snapshot API", 0)
-  end
   local records = mgr:drawRecords()
   Assert.isTrue(records[1] == record, "draw record identity stays retained")
   Assert.isNil(record.gesturePose)

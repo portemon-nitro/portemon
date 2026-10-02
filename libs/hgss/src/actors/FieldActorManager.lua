@@ -118,12 +118,8 @@ local AUTONOMOUS_STEP_TICKS = assert(MovementCalibration.SPEED_TICKS.normal)
 ---@field _drawRecords FieldActorManager.DrawRecord[]
 ---@field _drawRecordByActorId table<string, FieldActorManager.DrawRecord>
 ---@field _renderSample { x: number?, y: number?, z: number? }
----@field _mapIds integer[]
 ---@field _autonomyCapability FieldActorManager.AutonomyCapability
 ---@field _playerFacts { fieldX: integer?, fieldZ: integer?, positionYBand: integer? }
----@field _autonomyActor FieldActorManager.Actor?
----@field _autonomyEntry FieldActorManager.Entry?
----@field _autonomyContext FieldActorStepContext?
 ---@field _presentationSample FieldObjectActor.PresentationState
 ---@field autonomy FieldActorAutonomy
 ---@field beginFixedStep fun(self: FieldActorManager)
@@ -233,6 +229,9 @@ local AUTONOMOUS_STEP_TICKS = assert(MovementCalibration.SPEED_TICKS.normal)
 ---@field positionYBand integer?
 ---@field facingOverride boolean?
 ---@field player { fieldX: integer?, fieldZ: integer?, positionYBand: integer? }?
+---@field _actor FieldActorManager.Actor?
+---@field _entry FieldActorManager.Entry?
+---@field _context FieldActorStepContext?
 ---@field setFacing fun(self: FieldActorManager.AutonomyCapability, actorId: string, direction: FieldDirection)
 ---@field walk fun(self: FieldActorManager.AutonomyCapability, actorId: string, direction: FieldDirection): boolean
 ---@field patternStep fun(self: FieldActorManager.AutonomyCapability, actorId: string, direction: FieldDirection): boolean
@@ -314,11 +313,7 @@ function FieldActorManager.new(opts)
     _drawRecords = {},
     _drawRecordByActorId = {},
     _renderSample = { x = 0, y = 0, z = 0 },
-    _mapIds = {},
     _playerFacts = {},
-    _autonomyActor = nil,
-    _autonomyEntry = nil,
-    _autonomyContext = nil,
     _presentationSample = { gesturePose = nil, gestureTick = nil, gestureOffsetY = 0 },
     autonomy = FieldActorAutonomy.new({
       rng = opts.autonomyRng or ScriptRng.new(opts.autonomySeed or "field:autonomy"),
@@ -326,28 +321,28 @@ function FieldActorManager.new(opts)
     }),
   }, FieldActorManager)
   ---@cast manager FieldActorManager
-  local function setFacing(_, actorId, direction)
-    local actor = assert(manager._autonomyActor, "autonomy actor binding is missing")
+  local function setFacing(capability, actorId, direction)
+    local actor = assert(capability._actor, "autonomy actor binding is missing")
     assert(actor.actorId == actorId, "autonomy facing callback actor disagrees")
     if actor.interactionFacingOverride == nil then
       actor:setFacing(direction)
     end
   end
-  local function walk(_, actorId, direction)
-    local actor = assert(manager._autonomyActor, "autonomy actor binding is missing")
+  local function walk(capability, actorId, direction)
+    local actor = assert(capability._actor, "autonomy actor binding is missing")
     assert(actor.actorId == actorId, "autonomy walk callback actor disagrees")
-    local entry = assert(manager._autonomyEntry, "autonomy entry binding is missing")
-    local context = assert(manager._autonomyContext, "autonomy context binding is missing")
+    local entry = assert(capability._entry, "autonomy entry binding is missing")
+    local context = assert(capability._context, "autonomy context binding is missing")
     return manager:_beginAutonomousAction(entry, actor, direction, context)
   end
-  local function patternStep(_, actorId, direction)
-    local actor = assert(manager._autonomyActor, "autonomy actor binding is missing")
+  local function patternStep(capability, actorId, direction)
+    local actor = assert(capability._actor, "autonomy actor binding is missing")
     assert(actor.actorId == actorId, "autonomy pattern callback actor disagrees")
     if actor.interactionFacingOverride == nil then
       actor:setFacing(direction)
     end
-    local entry = assert(manager._autonomyEntry, "autonomy entry binding is missing")
-    local context = assert(manager._autonomyContext, "autonomy context binding is missing")
+    local entry = assert(capability._entry, "autonomy entry binding is missing")
+    local context = assert(capability._context, "autonomy context binding is missing")
     return manager:_beginAutonomousAction(entry, actor, direction, context, true)
   end
   manager._autonomyCapability = {
@@ -356,31 +351,6 @@ function FieldActorManager.new(opts)
     patternStep = patternStep,
   } --[[@as FieldActorManager.AutonomyCapability]]
   return manager
-end
-
----@param mapIds integer[]
----@param mapId integer
-local function insertMapId(mapIds, mapId)
-  for index, existingMapId in ipairs(mapIds) do
-    assert(existingMapId ~= mapId, "field actor map order already contains the map id")
-    if existingMapId > mapId then
-      table.insert(mapIds, index, mapId)
-      return
-    end
-  end
-  mapIds[#mapIds + 1] = mapId
-end
-
----@param mapIds integer[]
----@param mapId integer
-local function removeMapId(mapIds, mapId)
-  for index, existingMapId in ipairs(mapIds) do
-    if existingMapId == mapId then
-      table.remove(mapIds, index)
-      return
-    end
-  end
-  error("field actor map order is missing a live map id")
 end
 
 ---@param plate table<string, unknown>
@@ -1282,7 +1252,6 @@ local function retireEntry(self, entry)
   local mapId = entry.runtimeMap.mapId
   if self.maps[mapId] == entry then
     self.maps[mapId] = nil
-    removeMapId(self._mapIds, mapId)
     if self.currentMapId == mapId then
       self.currentMapId = nil
     end
@@ -1331,11 +1300,7 @@ function FieldActorManager:enterMap(runtimeMap, eventState, restoredObjects)
   end
 
   local previous = self.currentMapId and self.maps[self.currentMapId] or nil
-  local isNewMapId = existing == nil
   self.maps[mapId] = entry
-  if isNewMapId then
-    insertMapId(self._mapIds, mapId)
-  end
   self.currentMapId = mapId
   if entry.store:actorCount() > 0 then
     self._visualRevision = self._visualRevision + 1
@@ -1814,8 +1779,8 @@ function FieldActorManager:_advanceAutonomousAction(entry, actor, action)
 end
 
 function FieldActorManager:beginFixedStep()
-  for _, mapId in ipairs(self._mapIds) do
-    local entry = assert(self.maps[mapId])
+  local entry = self.currentMapId and assert(self.maps[self.currentMapId], "current actor map entry is missing")
+  if entry then
     for _, actor in ipairs(entry.store:orderedActorsView()) do
       actor:beginFixedStep()
     end
@@ -1842,8 +1807,8 @@ function FieldActorManager:step(tick, context)
     playerFacts.fieldZ = nil
     playerFacts.positionYBand = nil
   end
-  for _, mapId in ipairs(self._mapIds) do
-    local entry = assert(self.maps[mapId])
+  local entry = self.currentMapId and assert(self.maps[self.currentMapId], "current actor map entry is missing")
+  if entry then
     for _, actor in ipairs(entry.store:orderedActorsView()) do
       local movementLocked = context.autonomousLocked == true
       if not movementLocked and context.actorLocked then
@@ -1874,16 +1839,13 @@ function FieldActorManager:step(tick, context)
           capability.positionYBand = stepWorldY ~= nil and sourcePositionYBand(stepWorldY) or nil
           capability.facingOverride = actor.interactionFacingOverride ~= nil
           capability.player = context.player and playerFacts or nil
-          self._autonomyActor = actor
-          self._autonomyEntry = entry
-          self._autonomyContext = context
-          local ok, err = pcall(self.autonomy.step, self.autonomy, actor.actorId, capability)
-          self._autonomyActor = nil
-          self._autonomyEntry = nil
-          self._autonomyContext = nil
-          if not ok then
-            error(err, 0)
-          end
+          capability._actor = actor
+          capability._entry = entry
+          capability._context = context
+          self.autonomy:step(actor.actorId, capability)
+          capability._actor = nil
+          capability._entry = nil
+          capability._context = nil
         end
         if hasAutonomousPresentationCarry then
           if entry.autonomousActions[actor.actorId] == nil then
@@ -2075,7 +2037,8 @@ end
 function FieldActorManager:drawRecords(alpha)
   local records = self._drawRecords
   local count = 0
-  for _, entry in pairs(self.maps) do
+  local entry = self.currentMapId and assert(self.maps[self.currentMapId], "current actor map entry is missing")
+  if entry then
     for _, actor in ipairs(entry.store:orderedActorsView()) do
       local state = actor:numericState()
       if state.resident == 0 then
