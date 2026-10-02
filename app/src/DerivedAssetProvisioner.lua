@@ -184,16 +184,6 @@ function DerivedAssetProvisioner:startBackgroundWarmup()
   self.service:enableSweep(self.epoch)
 end
 
--- Pump transport observations once. Production work, failure attribution,
--- and readiness all live below the controller; this call only moves
--- bounded request/status traffic.
-function DerivedAssetProvisioner:update()
-  if self.retired then
-    return
-  end
-  self.service:update()
-end
-
 function DerivedAssetProvisioner:dispose()
   if self.retired then
     return

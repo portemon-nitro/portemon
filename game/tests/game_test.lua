@@ -61,6 +61,7 @@ function T.callbacks_preserve_host_tuples_and_reconcile_settled_dimensions()
   local graphics = love.graphics
   local originalGetDimensions = graphics.getDimensions
   local liveWidth, liveHeight = 800, 600
+  local dimensionReads = 0
   local events = {}
   local joystick = {}
   local host
@@ -100,14 +101,17 @@ function T.callbacks_preserve_host_tuples_and_reconcile_settled_dimensions()
     end,
   }
   graphics.getDimensions = function()
+    dimensionReads = dimensionReads + 1
     return liveWidth, liveHeight
   end
 
   local ok, err = pcall(function()
     host = Game.new({ onExit = function() end })
     host:setState(state)
+    local constructorReads = dimensionReads
     host:resize(800, 600)
     host:update(0.016)
+    Assert.equal(dimensionReads, constructorReads, "explicit resize and update do not poll host dimensions")
 
     host:gamepadaxis(joystick, "leftx", 0.75)
     host:mousepressed(12.5, 34.5, 1, true, 2)
@@ -119,6 +123,7 @@ function T.callbacks_preserve_host_tuples_and_reconcile_settled_dimensions()
     host:touchreleased("finger-1", 5.5, 6.5, 0.25, 0.5, 0.8)
 
     liveWidth, liveHeight = 900, 700
+    host:resize(liveWidth, liveHeight)
     host:update(0.016)
     liveWidth, liveHeight = 1024, 768
     host:draw()
@@ -146,10 +151,10 @@ function T.callbacks_preserve_host_tuples_and_reconcile_settled_dimensions()
     { "touchreleased", "finger-1", 5.5, 6.5, 0.25, 0.5, 0.8 },
     { "resize", 900, 700 },
     { "update" },
-    { "resize", 1024, 768 },
     { "draw" },
     { "draw" },
   })
+  Assert.equal(dimensionReads, 1, "only construction measures host dimensions")
 end
 
 return { tests = T }

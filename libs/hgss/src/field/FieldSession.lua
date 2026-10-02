@@ -832,11 +832,9 @@ function FieldSession:updateFixed(inputSnapshot)
     if inputSnapshot.menuPressed then
       uiEvents[#uiEvents + 1] = { type = "menu" }
     end
-    local status = self.applicationHost.status and self.applicationHost:status() or nil
-    local wasApplication = status and status.phase == "application"
+    local wasApplication = self.applicationHost:phase() == "application"
     self.applicationHost:updateFixed(uiEvents)
-    local afterStatus = self.applicationHost.status and self.applicationHost:status() or nil
-    local afterPhase = afterStatus and afterStatus.phase
+    local afterPhase = self.applicationHost:phase()
     -- A completed child returns to a refreshed menu or to the field on the
     -- same tick; either successful return resumes field obligations, while
     -- the terminal failure state queues nothing.
@@ -1082,7 +1080,7 @@ function FieldSession:updateFixed(inputSnapshot)
   -- owner. Cycling, rocket, and every other durable state mean walking
   -- physics; only surfing surfs.
   if self.playerAvatar ~= nil and self.player.motion == "idle" then
-    local durable = self.playerAvatar:status().durableState
+    local durable = self.playerAvatar:durableState()
     self.player:setTraversalMode(durable == "surfing" and "surfing" or "walking")
   end
   -- Strength-push arbitration: an idle player's step into an enabled

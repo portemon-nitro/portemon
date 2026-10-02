@@ -576,6 +576,14 @@ function T.draw_sends_static_actor_models_to_world_and_billboards_to_presentatio
   local staticModel = { kind = "actor", billboardProjection = false }
   local sprite = { kind = "actor", billboardProjection = true }
   local received
+  local topologyShifted = false
+  local resizeCalls = {}
+  local dimensionReads = 0
+  local originalGetDimensions = love.graphics.getDimensions
+  love.graphics.getDimensions = function()
+    dimensionReads = dimensionReads + 1
+    return 640, 480
+  end
   local state = setmetatable({
     runtime = {
       runtimeMap = { sceneRuntime = sceneRuntime },
@@ -645,13 +653,15 @@ function T.draw_sends_static_actor_models_to_world_and_billboards_to_presentatio
         end,
       },
       yesNoHost = idleChoiceHost(),
-      resizePresentation = function() end,
+      resizePresentation = function(_, width, height, topology)
+        resizeCalls[#resizeCalls + 1] = { width, height, topology }
+      end,
     },
     _pollPresentationTopology = true,
     topologyProvider = function()
       return ScreenTopology.oneDisplay({
         id = "main",
-        rect = { x = 0, y = 0, width = 640, height = 480 },
+        rect = { x = topologyShifted and 1 or 0, y = 0, width = 640, height = 480 },
         touch = false,
         role = "world",
       })
@@ -670,7 +680,22 @@ function T.draw_sends_static_actor_models_to_world_and_billboards_to_presentatio
     return { staticModel, sprite }
   end
 
-  state:draw()
+  local ok, err = pcall(function()
+    state:draw()
+    Assert.equal(#resizeCalls, 1, "initial custom topology is published once")
+    state:draw()
+    Assert.equal(#resizeCalls, 1, "unchanged topology is not republished")
+    topologyShifted = true
+    state:draw()
+    Assert.equal(#resizeCalls, 2, "same-size custom topology changes remain observable")
+    Assert.equal(resizeCalls[2][1], 640)
+    Assert.equal(resizeCalls[2][2], 480)
+    Assert.equal(dimensionReads, 0, "field draw consumes settled viewport dimensions")
+  end)
+  love.graphics.getDimensions = originalGetDimensions
+  if not ok then
+    error(err, 0)
+  end
   Assert.equal(received.worldParts[6][1], staticModel)
   Assert.equal(received.spriteItems[1], sprite)
   Assert.equal(#received.worldParts[6], 1)
@@ -1417,17 +1442,26 @@ function T.surf_draw_items_adapt_active_state_and_bypass_inactive_surf()
   local drawItems = { { kind = "surf-attachment" } }
   local player = {
     facing = "east",
-    renderPosition = function(_, alpha)
+    renderPosition = function()
+      error("surf draw must use the allocation-free render position", 2)
+    end,
+    renderPositionInto = function(_, out, alpha)
       Assert.equal(alpha, 0.25, "surf uses the frame's interpolated render alpha")
       renderPositionCalls = renderPositionCalls + 1
-      return anchor
+      out.x, out.y, out.z = anchor.x, anchor.y, anchor.z
+      return out
     end,
   }
   local state = setmetatable({
     runtime = {
       playerAvatar = {
         presentationState = function()
-          return { surf = { active = surfActive, attachmentOffsetY = 0.25 } }
+          error("surf draw must use the allocation-free avatar presentation", 2)
+        end,
+        presentationStateInto = function(_, out)
+          out.surf.active = surfActive
+          out.surf.attachmentOffsetY = 0.25
+          return out
         end,
       },
       player = player,
@@ -1443,6 +1477,8 @@ function T.surf_draw_items_adapt_active_state_and_bypass_inactive_surf()
         end,
       },
     },
+    _surfPresentation = { playerOffset = {}, surf = {} },
+    _surfAnchor = { x = 0, y = 0, z = 0 },
   }, FieldState)
 
   local first = state:_surfDrawItems(0.25)

@@ -91,6 +91,9 @@ local function applicationHostFake(overrides)
   function host:isActive()
     return self.active
   end
+  function host:phase()
+    return self.active and "application" or "closed"
+  end
   function host:updateFixed(uiInput)
     self.updateCalls = self.updateCalls + 1
     self.events = uiInput
@@ -3979,6 +3982,9 @@ function T.supplied_avatar_state_advances_once_per_fixed_tick_in_every_branch()
     function fake:status()
       return { durableState = "walking" }
     end
+    function fake:durableState()
+      return "walking"
+    end
     return fake
   end
   local function sessionWithAvatar(overrides)
@@ -4085,15 +4091,18 @@ end
 -- nothing.
 local function sessionWithScriptedHost(firstPhase, lastPhase)
   local host = applicationHostFake({ active = true })
-  host.phase = firstPhase
+  host.currentPhase = firstPhase
   host.lastPhase = lastPhase
+  function host:phase()
+    return self.currentPhase
+  end
   function host:status()
-    return { phase = self.phase }
+    error("fixed-tick arbitration must not build an application snapshot", 2)
   end
   local stepped = host.updateFixed
   function host:updateFixed(uiInput)
     stepped(self, uiInput)
-    self.phase = self.lastPhase
+    self.currentPhase = self.lastPhase
   end
   return FieldSession.new(baseOptions({ applicationHost = host }))
 end
@@ -4114,6 +4123,12 @@ function T.a_tick_failing_from_application_queues_no_child_resume()
   local session = sessionWithScriptedHost("application", "failed")
   session:updateFixed({})
   Assert.isFalse(session.childResumePending, "a terminal failure must never queue the field resume")
+end
+
+function T.a_tick_staying_in_application_queues_no_child_resume()
+  local session = sessionWithScriptedHost("application", "application")
+  session:updateFixed({})
+  Assert.isFalse(session.childResumePending, "a child that remains active must not queue the field resume")
 end
 
 function T.a_tick_staying_in_menu_queues_no_child_resume()
@@ -4303,6 +4318,9 @@ local function disembarkSession(overrides)
     status = function(self)
       return { durableState = self.durable }
     end,
+    durableState = function(self)
+      return self.durable
+    end,
   }
   local options = baseOptions({
     player = player,
@@ -4389,6 +4407,12 @@ end
 
 function T.idle_ticks_sync_player_mode_from_the_avatar_durable()
   local session, spy = disembarkSession({ decision = "step" })
+  spy.avatar.durableState = function(self)
+    return self.durable
+  end
+  spy.avatar.status = function()
+    error("fixed-tick traversal lookup must not build an avatar snapshot", 2)
+  end
   session:updateFixed({})
   Assert.isTrue(#spy.modes >= 1, "idle ticks sync the traversal mode")
   Assert.equal(spy.modes[#spy.modes], "surfing", "a surfing avatar means surfing physics")

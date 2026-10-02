@@ -351,6 +351,40 @@ function T.app_draw_keeps_the_emergency_brand_text_only_in_dev_mode()
   end
 end
 
+function T.app_measures_once_during_update_and_draws_without_remeasuring()
+  withAppHarness({ dev = false }, function()
+    return false
+  end, function()
+    local graphics = love.graphics
+    local originalGetDimensions = graphics.getDimensions
+    local dimensions = { 800, 600 }
+    local reads, events = 0, {}
+    graphics.getDimensions = function()
+      reads = reads + 1
+      return dimensions[1], dimensions[2]
+    end
+    App.drawableWidth, App.drawableHeight = 640, 480
+    App.state = {
+      resize = function(_, width, height)
+        events[#events + 1] = { "resize", width, height }
+      end,
+      update = function()
+        events[#events + 1] = { "update" }
+      end,
+      draw = function()
+        events[#events + 1] = { "draw" }
+      end,
+    }
+    App.update(1 / 60)
+    local readsAfterUpdate = reads
+    App.draw()
+    graphics.getDimensions = originalGetDimensions
+    Assert.equal(readsAfterUpdate, 1, "update performs the steady dimension measurement")
+    Assert.equal(reads, readsAfterUpdate, "draw forwards without another measurement")
+    Assert.deepEqual(events, { { "resize", 800, 600 }, { "update" }, { "draw" } })
+  end)
+end
+
 -- An import session is single-use. A file drop during gameplay after a
 -- finished import (complete or failed) must enter a fresh import session
 -- through the import state; the stale importer's completion callback would

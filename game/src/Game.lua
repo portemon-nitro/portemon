@@ -36,27 +36,13 @@ function Game:setState(nextState)
   end
 end
 
-function Game:_syncDrawableSize()
-  local width, height = love.graphics.getDimensions()
-  if width == self.drawableWidth and height == self.drawableHeight then
-    return
-  end
-  self.drawableWidth = width
-  self.drawableHeight = height
-  if self.state and self.state.resize then
-    self.state:resize(width, height)
-  end
-end
-
 function Game:update(dt)
-  self:_syncDrawableSize()
   if self.state and self.state.update then
     self.state:update(dt)
   end
 end
 
 function Game:draw()
-  self:_syncDrawableSize()
   if self.state and self.state.draw then
     self.state:draw()
   end
@@ -107,21 +93,18 @@ function Game:gamepadaxis(joystick, axis, value)
 end
 
 function Game:mousepressed(x, y, button, istouch, presses)
-  self:_syncDrawableSize()
   if self.state and self.state.mousepressed then
     self.state:mousepressed(x, y, button, istouch, presses)
   end
 end
 
 function Game:mousemoved(x, y, dx, dy, istouch)
-  self:_syncDrawableSize()
   if self.state and self.state.mousemoved then
     self.state:mousemoved(x, y, dx, dy, istouch)
   end
 end
 
 function Game:mousereleased(x, y, button, istouch, presses)
-  self:_syncDrawableSize()
   if self.state and self.state.mousereleased then
     self.state:mousereleased(x, y, button, istouch, presses)
   end
@@ -134,21 +117,18 @@ function Game:wheelmoved(x, y)
 end
 
 function Game:touchpressed(id, x, y, dx, dy, pressure)
-  self:_syncDrawableSize()
   if self.state and self.state.touchpressed then
     self.state:touchpressed(id, x, y, dx, dy, pressure)
   end
 end
 
 function Game:touchmoved(id, x, y, dx, dy, pressure)
-  self:_syncDrawableSize()
   if self.state and self.state.touchmoved then
     self.state:touchmoved(id, x, y, dx, dy, pressure)
   end
 end
 
 function Game:touchreleased(id, x, y, dx, dy, pressure)
-  self:_syncDrawableSize()
   if self.state and self.state.touchreleased then
     self.state:touchreleased(id, x, y, dx, dy, pressure)
   end

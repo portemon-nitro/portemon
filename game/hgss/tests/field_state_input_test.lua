@@ -536,52 +536,33 @@ function T.focus_loss_clears_physical_input_and_cancels_presentation_capture()
   Assert.equal(cancelled, 1, "regaining focus cancels nothing")
 end
 
-function T.update_refreshes_the_display_before_runtime_ticks()
-  local DisplayContext = require("libs.ui.src.DisplayContext")
-  local topology = ScreenTopology.oneDisplay({
-    id = "main",
-    rect = { x = 0, y = 0, width = 640, height = 480 },
-    role = "world",
-    touch = false,
-  })
-  local displayContext = DisplayContext.new({
-    graphics = {
-      getDimensions = function()
-        return 640, 480
-      end,
-      getDPIScale = function()
-        return 1
-      end,
-    },
-    topologyProvider = function()
-      return topology
-    end,
-  })
+function T.default_update_does_not_measure_display_or_resize_runtime()
   local updates, resizes = 0, {}
   local state = setmetatable({
     runtime = {
       pokemonNaming = inactivePokemonNaming(),
       update = function()
         updates = updates + 1
-        Assert.equal(#resizes, 1, "the display refreshes before the first runtime tick")
+        Assert.equal(#resizes, 0, "ordinary update does not publish display geometry")
       end,
       resizePresentation = function(_, width, height, measured)
         resizes[#resizes + 1] = { width, height, measured }
       end,
       starterChoice = nil,
     },
-    displayContext = displayContext,
+    displayContext = {
+      measure = function()
+        error("ordinary update must not measure display facts", 2)
+      end,
+    },
     actorPresentation = {
       sync = function() end,
     },
   }, FieldState)
   state:update(0.016)
-  Assert.equal(updates, 1, "the runtime ticks after the refresh")
-  Assert.equal(#resizes, 1, "one structural sync reaches the runtime")
-  Assert.equal(resizes[1][1], 640, "the refresh measures the actual drawable")
-  Assert.equal(resizes[1][2], 480, "the refresh measures the actual drawable")
   state:update(0.016)
-  Assert.equal(#resizes, 1, "an unchanged display never re-syncs")
+  Assert.equal(updates, 2, "ordinary updates reach the runtime")
+  Assert.equal(#resizes, 0, "ordinary updates retain settled geometry")
 end
 
 return { tests = T }
