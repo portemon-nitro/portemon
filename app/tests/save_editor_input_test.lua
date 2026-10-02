@@ -490,6 +490,67 @@ function T.tests.location_cursor_inspection_and_zoom_do_not_stage_a_destination(
   end)
 end
 
+function T.tests.location_view_keeps_saved_and_pending_map_identity_separate()
+  withEditor(640, 480, ScreenTopology.oneDisplay({
+    id = "main",
+    rect = { x = 0, y = 0, width = 640, height = 480 },
+    touch = false,
+    role = "world",
+  }), function(state)
+    for _ = 1, 8 do
+      if state.locationService:snapshot().status.state == "ready" then
+        break
+      end
+      state:update(0)
+    end
+    local saved = copy(state.session:snapshot().originalLocation)
+    local houseMapId = assert(state.dependencies.world.bySymbol.MAP_NEW_BARK_PLAYER_HOUSE_1F)
+    state.controller:chooseLocationMap(houseMapId, 4, 5)
+    for _ = 1, 8 do
+      state:update(0)
+      if state.locationService:snapshot().status.state == "ready" then
+        break
+      end
+    end
+    local readyView = state.locationService:snapshot()
+    Assert.equal(readyView.status.state, "ready", "the real Player House map data is ready")
+    local pending, resolveStatus = state.locationService:resolve(
+      houseMapId,
+      4,
+      5,
+      readyView.generation
+    )
+    Assert.notNil(pending, "the real Player House ground resolves to a destination")
+    Assert.equal(resolveStatus.state, "ready")
+    Assert.isTrue(state.session:setLocation(assert(pending)).ok, "the resolved tuple stages through Session")
+
+    local stagedView = state:view()
+    Assert.equal(stagedView.savedLocation.mapId, saved.mapId, "Saved stays tied to the opening baseline map")
+    Assert.equal(stagedView.pendingLocation.mapId, houseMapId, "Pending follows the staged Session destination")
+    Assert.deepEqual(stagedView.savedLocation, saved, "Saved retains the full baseline location tuple")
+    Assert.deepEqual(stagedView.pendingLocation, pending, "Pending retains the full staged location tuple")
+
+    local unrelatedMapId = assert(state.dependencies.world.bySymbol.MAP_NEW_BARK_PLAYER_HOUSE_2F)
+    state.controller:chooseLocationMap(unrelatedMapId, 4, 5)
+    state:update(0)
+    local unrelatedView = state:view()
+    Assert.equal(unrelatedView.location.mapId, unrelatedMapId)
+    Assert.equal(unrelatedView.savedLocation.mapId, saved.mapId)
+    Assert.equal(unrelatedView.pendingLocation.mapId, houseMapId)
+    Assert.equal(state.session:revision(), stagedView.session.revision, "passive browsing does not revise the save")
+
+    state.controller:openLocationMaps()
+    state:textinput("no-map-matches-this-query")
+    Assert.equal(#state:view().location.maps, 0, "the map search can produce a recoverable empty result")
+    state:keypressed("delete")
+    Assert.isTrue(#state:view().location.maps > 0, "Clear restores the searchable structural map list")
+    state:keypressed("escape")
+    Assert.equal(state.controller.locationPage, "grid", "Back returns from the map list")
+    Assert.isTrue(state.session:discard(), "Discard restores the original location tuple")
+    Assert.deepEqual(state.session:snapshot().location, saved)
+  end)
+end
+
 function T.tests.save_blocks_when_destination_revalidation_changes_any_location_field()
   withEditor(640, 480, ScreenTopology.oneDisplay({
     id = "main",

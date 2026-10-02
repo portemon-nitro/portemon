@@ -258,7 +258,7 @@ function Layout.compute(view, width, height, metrics)
         addFocusable(id)
       end
       local status = location.status
-      local reason = status.state == "error" and status.reason
+      local reason = status.state == "failed" and status.reason
         or status.state == "pending" and "Preparing map data"
         or ""
       rows[#rows + 1] = {

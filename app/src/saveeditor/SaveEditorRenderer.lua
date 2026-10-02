@@ -238,10 +238,17 @@ local function paintPane(self, view, plan, pane)
     if rect then
       setColor(graphics, action.enabled and BORDER or MUTED)
       graphics.rectangle("fill", rect.x, rect.y, rect.width, rect.height)
-      drawText(self, action.label, rect.x + 4, rect.y + 4, CARD)
+      local label = action.id == "save" and view.locationSave and "Cancel check" or action.label
+      drawText(self, label, rect.x + 4, rect.y + 4, CARD)
     end
   end
-  drawText(self, view.dirty and "Unsaved changes" or "Saved", layout.footer.x + 4, layout.footer.y + 2, INK)
+  drawText(
+    self,
+    view.locationSave and "Checking destination · Save cancels" or (view.dirty and "Unsaved changes" or "Saved"),
+    layout.footer.x + 4,
+    layout.footer.y + 2,
+    INK
+  )
   if view.valueEditor then
     local dialog = view.valueEditor
     graphics.setColor(0.96, 0.97, 0.96, 1)
@@ -405,7 +412,10 @@ drawLocation = function(self, view, layout)
     if target then
       setColor(graphics, targetId == view.focus and SELECTED or BORDER)
       graphics.rectangle("line", target.x, target.y, target.width, target.height)
-      local label = targetId == "location:map-picker" and "Change Map"
+      local label = targetId == "location:map-picker"
+          and navigation.page == "map-list"
+          and ("Search maps: " .. tostring(view.query or ""))
+        or targetId == "location:map-picker" and "Change Map"
         or targetId == "location:zoom-out" and "−"
         or targetId == "location:zoom-in" and "+"
         or "Back"
@@ -417,8 +427,8 @@ drawLocation = function(self, view, layout)
     local clip = grid.clip
     setColor(graphics, { 0.84, 0.87, 0.84, 1 })
     graphics.rectangle("fill", clip.x, clip.y, clip.width, clip.height)
-    local original = location.original or view.session.location
-    local draft = location.draft or view.session.location
+    local saved = view.savedLocation
+    local pending = view.pendingLocation
     for row = 0, grid.rows - 1 do
       for column = 0, grid.columns - 1 do
         local fieldX = grid.firstFieldX + column
@@ -448,11 +458,11 @@ drawLocation = function(self, view, layout)
         end
         setColor(graphics, BORDER)
         graphics.rectangle("line", x, y, grid.tileSize, grid.tileSize)
-        if original and fieldX == original.fieldX and fieldZ == original.fieldZ then
+        if saved and saved.mapId == location.mapId and fieldX == saved.fieldX and fieldZ == saved.fieldZ then
           setColor(graphics, { 0.16, 0.38, 0.72, 1 })
           graphics.rectangle("line", x + 2, y + 2, grid.tileSize - 4, grid.tileSize - 4)
         end
-        if draft and fieldX == draft.fieldX and fieldZ == draft.fieldZ then
+        if pending and pending.mapId == location.mapId and fieldX == pending.fieldX and fieldZ == pending.fieldZ then
           setColor(graphics, { 0.83, 0.23, 0.18, 1 })
           graphics.rectangle("line", x + 4, y + 4, grid.tileSize - 8, grid.tileSize - 8)
         end
@@ -479,6 +489,24 @@ drawLocation = function(self, view, layout)
     statusY,
     INK
   )
+  local function markerLabel(label, marker)
+    if marker == nil then
+      return label .. " —"
+    end
+    local markerMapName = "Map " .. tostring(marker.mapId)
+    for _, candidate in ipairs(view.location.maps) do
+      if candidate.mapId == marker.mapId then
+        markerMapName = candidate.symbol
+        break
+      end
+    end
+    return string.format("%s %s %d,%d", label, markerMapName, marker.fieldX, marker.fieldZ)
+  end
+  local markerText = markerLabel("Saved", view.savedLocation)
+  if view.pendingLocation then
+    markerText = markerText .. " · " .. markerLabel("Pending", view.pendingLocation)
+  end
+  drawText(self, fitText(markerText, layout.content.width - 8), layout.content.x + 4, statusY + 28, INK)
   local cursor = navigation.cursor
   if cursor then
     local inspected = tiles[string.format("%d:%d", cursor.fieldX, cursor.fieldZ)]
@@ -490,7 +518,7 @@ drawLocation = function(self, view, layout)
         layout.content.width - 8
       ),
       layout.content.x + 4,
-      statusY + 14,
+      statusY + 42,
       INK
     )
   end
@@ -502,7 +530,7 @@ drawLocation = function(self, view, layout)
     end
   end
   for lineIndex, line in ipairs(wrapText(help, layout.content.width - 8)) do
-    drawText(self, line, layout.content.x + 4, statusY + 28 + (lineIndex - 1) * 14, MUTED)
+    drawText(self, line, layout.content.x + 4, statusY + 56 + (lineIndex - 1) * 14, MUTED)
   end
 end
 
@@ -516,7 +544,7 @@ local function paintLocationContext(self, view, pane)
   graphics.rectangle("fill", 0, 0, pane.placement.logicalWidth, pane.placement.logicalHeight)
   drawText(self, "Location context", 8, 8, INK)
   drawText(self, fitText(location.symbol or tostring(location.mapId), pane.placement.logicalWidth - 16), 8, 28, INK)
-  local current = location.original or view.session.location
+  local current = assert(view.savedLocation)
   drawText(self, string.format("Current %d, %d", current.fieldX, current.fieldZ), 8, 46, INK)
   local status = location.status
   drawText(self, status.state == "ready" and "Map ready" or status.reason or "Preparing map data", 8, 64, MUTED)

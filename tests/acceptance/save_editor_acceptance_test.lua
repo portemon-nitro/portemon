@@ -5,6 +5,9 @@ local AcceptanceHarness = require("tests.acceptance.support.AcceptanceHarness")
 local Fixture = require("app.tests.support.SaveEditorAcceptanceFixture")
 local FieldScriptSymbols = require("libs.assets.src.field.FieldScriptSymbols")
 local FieldMapDataCache = require("libs.assets.src.field.FieldMapDataCache")
+local FieldEventResolver = require("libs.hgss.src.interaction.FieldEventResolver")
+local DisplayContext = require("libs.ui.src.DisplayContext")
+local LayoutGeometry = require("libs.ui.src.LayoutGeometry")
 local SaveFs = require("libs.storage.src.SaveFs")
 
 local T = {
@@ -16,6 +19,11 @@ local T = {
       "audio-bank:702",
       "audio-bank:709",
       "map-data:7",
+      "map-data:48",
+      "map-data:34",
+      "map-data:47",
+      "map-data:60",
+      "map-data:67",
       "map-data:33",
       "map-data:63",
       "map:7",
@@ -60,6 +68,27 @@ local function readyHost()
       return true
     end,
   }
+end
+
+local function withoutRendering(fn)
+  local graphics = love.graphics
+  local names = { "newShader", "newCanvas", "newImage", "newMesh", "newQuad", "draw", "setCanvas" }
+  local originals, attempts = {}, 0
+  for _, name in ipairs(names) do
+    originals[name] = graphics[name]
+    graphics[name] = function()
+      attempts = attempts + 1
+      error("save editor acceptance attempted love.graphics." .. name)
+    end
+  end
+  local ok, result = xpcall(fn, debug.traceback)
+  for _, name in ipairs(names) do
+    graphics[name] = originals[name]
+  end
+  if not ok then
+    error(result, 0)
+  end
+  Assert.equal(attempts, 0, "the editor acceptance path stops before GPU rendering")
 end
 
 local function locationServiceModule()
@@ -134,10 +163,16 @@ local function resolvedHousePlacement(graph, fixture, host)
       2
     )
   end, debug.traceback)
+  for _, name in ipairs(names) do
+    graphics[name] = originals[name]
+  end
+  if not ok then
+    error(placement, 0)
+  end
+  Assert.equal(trapped, 0, "headless location preparation never requests GPU rendering")
 
-  local function unavailableAtSourceEvent(mapId, mapRecord, event, reason, label)
-    local fieldX = mapRecord.worldOriginX + event.x
-    local fieldZ = mapRecord.worldOriginZ + event.z
+  local function unavailableAtSourceEvent(mapId, event, reason, label)
+    local fieldX, fieldZ = event.x, event.z
     service:openMap(mapId)
     service:setViewport(fieldX, fieldZ, 1, 1)
     local view
@@ -161,34 +196,49 @@ local function resolvedHousePlacement(graph, fixture, host)
 
   if ok then
     local warp = assert(fieldData.events.warps[1], "Player House generated field data contains a source warp")
-    unavailableAtSourceEvent(houseMapId, worldRecord, warp, "warp", "source warp")
+    unavailableAtSourceEvent(houseMapId, warp, "warp", "source warp")
     local coordinateMapId = assert(graph.world.bySymbol.MAP_BURNED_TOWER_1F)
-    local coordinateMapRecord = assert(graph.world.maps[assert(graph.world.byId[coordinateMapId])])
     local coordinateFieldData = assert(graph.cacheFs:loadLua(FieldMapDataCache.fieldPath(coordinateMapId)))
     local coordinate = assert(
       coordinateFieldData.events.coordinates[1],
       "Burned Tower generated field data contains a source coordinate rectangle"
     )
+    local oracleIntent = FieldEventResolver.resolveCoordinate(
+      { mapId = coordinateMapId, fieldData = coordinateFieldData },
+      { fieldX = coordinate.x, fieldZ = coordinate.z, facing = "south" },
+      {
+        getVar = function(_, variableId)
+          Assert.equal(variableId, coordinate.variableId)
+          return coordinate.requiredValue
+        end,
+      }
+    )
+    Assert.notNil(oracleIntent, "the retail field resolver recognizes the exact generated coordinate event")
+    Assert.equal(oracleIntent.coordinate.event, coordinate, "the oracle identifies the source event directly")
     unavailableAtSourceEvent(
       coordinateMapId,
-      coordinateMapRecord,
       coordinate,
       "coordinate_trigger",
       "source coordinate rectangle"
     )
+    local actorMapId = assert(graph.world.bySymbol.MAP_ROUTE_29)
+    local actorMapRecord = assert(graph.world.maps[assert(graph.world.byId[actorMapId])])
+    Assert.isTrue(
+      actorMapRecord.worldOriginX ~= 0 or actorMapRecord.worldOriginZ ~= 0,
+      "the ROM hazard is checked on a map with a nonzero world origin"
+    )
+    local actorFieldData = assert(graph.cacheFs:loadLua(FieldMapDataCache.fieldPath(actorMapId)))
+    local object = assert(
+      actorFieldData.events.objects[1],
+      "Route 29 generated field data contains a source actor event"
+    )
+    unavailableAtSourceEvent(actorMapId, object, "possible_actor", "source actor")
   end
 
-  for _, name in ipairs(names) do
-    graphics[name] = originals[name]
-  end
-  if not ok then
-    error(placement, 0)
-  end
-  Assert.equal(trapped, 0, "headless location preparation never requests GPU rendering")
   return service, placement
 end
 
-local function resolvedOutdoorBoundaryPlacement(graph, fixture, host, service)
+local function resolvedOutdoorPlacement(graph, service)
   local mapId = assert(graph.world.bySymbol.MAP_ROUTE_29)
   local origin = assert(graph.world.maps[assert(graph.world.byId[mapId])])
   local viewportX, viewportZ = origin.worldOriginX + 16, origin.worldOriginZ + 16
@@ -205,17 +255,35 @@ local function resolvedOutdoorBoundaryPlacement(graph, fixture, host, service)
   Assert.equal(assert(view).status.state, "ready", "the route source map prepares outdoor coverage")
 
   local viewportAnchorX = math.floor(viewportX / 32)
-  local boundaryX = (viewportAnchorX + 1) * 32
-  Assert.equal(boundaryX, 640, "the selected destination starts the next 32-tile physical anchor")
-  local placement, resolution = service:resolve(mapId, boundaryX, 386, view.generation)
-  Assert.equal(resolution.state, "ready", "the known Route 29 tile across the boundary resolves after recenter")
+  local destinationX, destinationZ = 625, 400
+  local placement, resolution = service:resolve(mapId, destinationX, destinationZ, view.generation)
+  Assert.equal(resolution.state, "ready", "the known represented Route 29 destination resolves")
   Assert.notNil(placement)
-  Assert.equal(math.floor(placement.fieldX / 32), viewportAnchorX + 1)
-  Assert.equal(placement.fieldZ, 386)
+  Assert.equal(math.floor(placement.fieldX / 32), viewportAnchorX)
+  Assert.equal(placement.fieldZ, destinationZ)
   Assert.equal(placement.mapId, mapId)
-  local recentered = service:snapshot()
-  Assert.isTrue(recentered.generation > view.generation, "resolving across the boundary invalidates the old viewport")
   return placement
+end
+
+local function activateTarget(state, targetId)
+  local view = state:view()
+  local target = assert(view.layout.targets[targetId], "the product layout exposes " .. targetId)
+  local targetRect = target.rect
+  local pane
+  for _, candidate in ipairs(assert(view.presentation).panes) do
+    if candidate.interactive then
+      pane = candidate
+      break
+    end
+  end
+  local interactivePane = assert(pane, "the editor publishes an interactive product pane")
+  local hostX, hostY = LayoutGeometry.logicalToHost(
+    interactivePane.placement,
+    targetRect.x + targetRect.width / 2,
+    targetRect.y + targetRect.height / 2
+  )
+  state:mousepressed(hostX, hostY, 1)
+  state:mousereleased(hostX, hostY, 1)
 end
 
 local function editMon(session)
@@ -249,8 +317,9 @@ function T.tests.combined_editor_save_reloads_and_resumes_at_the_resolved_destin
     graph = openComposition(fixture, host)
     local session = graph.session
     local original = copy(fixture.initial)
-    service = resolvedHousePlacement(graph, fixture, host)
-    local placement = resolvedOutdoorBoundaryPlacement(graph, fixture, host, service)
+    local housePlacement
+    service, housePlacement = resolvedHousePlacement(graph, fixture, host)
+    local placement = resolvedOutdoorPlacement(graph, service)
 
     local locationBeforeBrowse = session:captureCandidate()
     Assert.deepEqual(locationBeforeBrowse, original, "loading and browsing a destination make no save edits")
@@ -381,6 +450,134 @@ function T.tests.combined_editor_save_reloads_and_resumes_at_the_resolved_destin
       service:dispose()
     end)
   end
+  fixture.cleanup()
+  if not ok then
+    error(err, 0)
+  end
+end
+
+function T.tests.one_save_intent_keeps_the_browser_and_publishes_after_destination_readiness()
+  local fixture = Fixture.new()
+  local baseHost = readyHost()
+  local graph, service, state
+  local originalGlobal = SaveFs.global
+  SaveFs.global = function(backend)
+    Assert.isNil(backend, "the editor uses the isolated acceptance save backend")
+    return fixture.saveFs
+  end
+  local originalWrite = fixture.saveFs.backend.write
+  local recordWrites = 0
+  fixture.saveFs.backend.write = function(backend, path, data)
+    if path:match("games/.*%.lua%.tmp$") then
+      recordWrites = recordWrites + 1
+    end
+    return originalWrite(backend, path, data)
+  end
+
+  local destinationMapId = nil
+  local destinationReady = false
+  local controlledHost = {
+    requestMilestone = function()
+      return true
+    end,
+    requestField = function(mapId)
+      return mapId ~= destinationMapId or destinationReady
+    end,
+    requestLogicalField = function(mapId)
+      return mapId ~= destinationMapId or destinationReady
+    end,
+    requestCell = function()
+      return true
+    end,
+    ensureField = function()
+      return true
+    end,
+    ensureLogicalField = function()
+      return true
+    end,
+    ensureCell = function()
+      return true
+    end,
+  }
+  local ok, err = xpcall(function()
+    graph = openComposition(fixture, baseHost)
+    local housePlacement
+    service, housePlacement = resolvedHousePlacement(graph, fixture, baseHost)
+    local placement = resolvedOutdoorPlacement(graph, service)
+    destinationMapId = placement.mapId
+
+    local State = require("app.src.saveeditor.SaveEditorState")
+    local results = {}
+    state = State.new({
+      versionId = fixture.versionId,
+      saveId = fixture.saveId,
+      width = 640,
+      height = 480,
+      derivedAssets = controlledHost,
+      repositoryRoot = love.filesystem.getSourceBaseDirectory(),
+      displayContext = DisplayContext.new({}),
+      onResult = function(result)
+        results[#results + 1] = result
+      end,
+    })
+    state:update(0)
+    withoutRendering(function()
+      Assert.equal(state:view().status, "ready", "the production editor opens against the real selected save")
+      local browserMapId = assert(state:view().location.mapId)
+      Assert.isTrue(state.session:setLocation(placement).ok, "the existing Session stages a resolved outdoor tuple")
+      local expected = state.session:captureCandidate()
+      state.controller:setSection("Player")
+      activateTarget(state, "save")
+      state:update(0)
+      Assert.equal(recordWrites, 0, "the Save intent waits while destination data is pending")
+      Assert.equal(
+        state:view().location.mapId,
+        browserMapId,
+        "a pending destination check does not replace the user's browser map"
+      )
+
+      destinationReady = true
+      for _ = 1, 8 do
+        state:update(0)
+        if recordWrites > 0 then
+          break
+        end
+      end
+      Assert.equal(recordWrites, 1, "one Save intent publishes exactly one save after readiness")
+      Assert.deepEqual(assert(fixture.store:load(fixture.saveId)), expected, "the authorized tuple and edits publish")
+      Assert.equal(state:view().location.mapId, browserMapId, "verification leaves the browser selection untouched")
+      Assert.equal(#results, 0, "Save keeps the editor open")
+
+      Assert.isTrue(state.session:setLocation(assert(housePlacement)).ok)
+      destinationMapId = housePlacement.mapId
+      destinationReady = false
+      activateTarget(state, "save")
+      state:update(0)
+      Assert.notNil(state:view().locationSave, "the second Save owns one pending verification")
+      Assert.equal(recordWrites, 1, "the replacement destination is still waiting")
+
+      Assert.isTrue(state.session:setMoney(fixture.initialMoney + 2).ok, "a later edit changes the session revision")
+      state:update(0)
+      Assert.isNil(state:view().locationSave, "the stale verification is canceled after an edit")
+      destinationReady = true
+      for _ = 1, 8 do
+        state:update(0)
+      end
+      Assert.equal(recordWrites, 1, "readiness cannot publish after the authorized revision changes")
+    end)
+  end, debug.traceback)
+  if state then
+    pcall(function()
+      state:dispose()
+    end)
+  end
+  if service then
+    pcall(function()
+      service:dispose()
+    end)
+  end
+  fixture.saveFs.backend.write = originalWrite
+  SaveFs.global = originalGlobal
   fixture.cleanup()
   if not ok then
     error(err, 0)

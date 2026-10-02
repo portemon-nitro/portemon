@@ -200,12 +200,9 @@ local function indoorBounds(runtimeMap)
   }
 end
 
-local function appendEvents(target, source, mapId, loader)
+local function appendEvents(target, source, mapId)
   for _, event in ipairs(source) do
     local copied = copy(event)
-    local origin = loader:globalPosition(mapId, 0, 0)
-    copied.x = copied.x + origin.x
-    copied.z = copied.z + origin.z
     copied.mapId = mapId
     target[#target + 1] = copied
   end
@@ -358,9 +355,9 @@ function SaveEditorLocationService:_collectRepresented()
     local currentMap = assert(map, "represented logical map acquisition returned no map")
     local ok, err = pcall(function()
       local events = assert(currentMap.fieldData.events, "field map event collections are required")
-      appendEvents(objectEvents, assert(events.objects), representedMapId, self.loader)
-      appendEvents(warpEvents, assert(events.warps), representedMapId, self.loader)
-      appendEvents(coordinateEvents, assert(events.coordinates), representedMapId, self.loader)
+      appendEvents(objectEvents, assert(events.objects), representedMapId)
+      appendEvents(warpEvents, assert(events.warps), representedMapId)
+      appendEvents(coordinateEvents, assert(events.coordinates), representedMapId)
     end)
     if ownsMap then
       currentMap:release()
@@ -385,7 +382,7 @@ end
 function SaveEditorLocationService:_prepareAt(fieldX, fieldZ)
   local ready, err = self.loader:requestLocation(self.mapId, fieldX, fieldZ, "required")
   if err ~= nil then
-    self.status = status("error", err)
+    self.status = status("failed", err)
     return false
   end
   if not ready then
@@ -427,7 +424,7 @@ function SaveEditorLocationService:_prepareAt(fieldX, fieldZ)
     if not Errors.is(prepareError) then
       error(prepareError, 0)
     end
-    self.status = status("error", Errors.format(prepareError))
+    self.status = status("failed", Errors.format(prepareError))
     return false
   end
   self.status = status("ready")
@@ -624,7 +621,7 @@ function SaveEditorLocationService:resolve(mapId, fieldX, fieldZ, expectedGenera
 
   local requested, requestError = self.loader:requestLocation(mapId, fieldX, fieldZ, "required")
   if requestError ~= nil then
-    return nil, status("error", requestError)
+    return nil, status("failed", requestError)
   end
   if not requested then
     return nil, status("pending")

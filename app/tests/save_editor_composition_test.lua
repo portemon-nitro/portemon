@@ -5,6 +5,17 @@ local Fixture = require("app.tests.support.SaveEditorAcceptanceFixture")
 local DisplayContext = require("libs.ui.src.DisplayContext")
 local SaveFs = require("libs.storage.src.SaveFs")
 
+local function copy(value)
+  if type(value) ~= "table" then
+    return value
+  end
+  local result = {}
+  for key, child in pairs(value) do
+    result[key] = copy(child)
+  end
+  return result
+end
+
 local T = {
   metadata = {
     capabilities = { "rom_dump" },
@@ -59,7 +70,7 @@ function T.tests.pending_opening_can_cancel_and_ignores_late_readiness()
       if readiness == "ready" then
         return true
       end
-      return nil
+      return false
     end,
   }
   local state = State.new({
@@ -113,7 +124,7 @@ function T.tests.failed_borrowed_readiness_can_retry_into_a_real_session()
       Assert.equal(urgency, "required")
       Assert.isTrue(name == "field-planning" or name == "field-runtime")
       if failed then
-        return { state = "failed", failure = "derived cache preparation failed" }
+        return false, "derived cache preparation failed"
       end
       return true
     end,
@@ -159,8 +170,23 @@ function T.tests.failed_borrowed_readiness_can_retry_into_a_real_session()
 
     state:update(0)
     Assert.isTrue(hostRequests > 0, "opening must observe the borrowed host's terminal failure")
+    Assert.equal(state:view().status, "error", "the production readiness failure becomes visible immediately")
+    Assert.equal(
+      state:view().errorMessage,
+      "derived cache preparation failed",
+      "the original readiness error is retained for the user"
+    )
+    Assert.isTrue(type(state:view().errorMessage) == "string", "the error page remains observable before Recheck")
+    local failedRequests = hostRequests
+    state:keypressed("return")
+    state:keyreleased("return")
+    state:update(0)
+    Assert.isTrue(hostRequests > failedRequests, "Recheck issues the same borrowed readiness request")
+    Assert.equal(state:view().status, "error", "a latched failure remains an error after Recheck")
+    Assert.equal(state:view().errorMessage, "derived cache preparation failed")
     failed = false
     state:keypressed("return")
+    state:keyreleased("return")
     state:update(0)
     Assert.isTrue(hostRequests > 1, "Retry requests readiness again from the borrowed host")
     local opened = state:view()
@@ -220,6 +246,176 @@ function T.tests.open_exposes_borrowed_location_inputs_and_saved_actor_snapshot(
     graph.savedObjects.rng == fixture.initial.world.objects.rng,
     "nested saved-object snapshots are copied as well"
   )
+end
+
+function T.tests.compatible_legacy_saves_open_without_writes_and_publish_only_after_an_edit()
+  local fixture = Fixture.new()
+  local State = stateModule()
+  local originalGlobal = SaveFs.global
+  SaveFs.global = function(backend)
+    Assert.isNil(backend, "the editor uses the fixture's isolated save backend")
+    return fixture.saveFs
+  end
+
+  local legacy = copy(fixture.initial)
+  legacy.schema = "g4-game-save-v3"
+  legacy.fieldTravel = nil
+  legacy.playerData.profile.badges = nil
+  local function publishLegacy(record)
+    fixture.saveFs:writeLua("games/" .. fixture.saveId .. ".lua", record)
+    return assert(fixture.saveFs:read("games/" .. fixture.saveId .. ".lua"))
+  end
+
+  local beforeOpen = publishLegacy(legacy)
+  local state
+  local results = {}
+  local host = {
+    requestMilestone = function()
+      return true
+    end,
+    requestField = function()
+      return true
+    end,
+    requestLogicalField = function()
+      return true
+    end,
+    requestCell = function()
+      return true
+    end,
+    ensureField = function()
+      return true
+    end,
+    ensureLogicalField = function()
+      return true
+    end,
+    ensureCell = function()
+      return true
+    end,
+  }
+  local ok, err = xpcall(function()
+    state = State.new({
+      versionId = fixture.versionId,
+      saveId = fixture.saveId,
+      width = 256,
+      height = 192,
+      derivedAssets = host,
+      repositoryRoot = love.filesystem.getSourceBaseDirectory(),
+      displayContext = DisplayContext.new({}),
+      onResult = function(result)
+        results[#results + 1] = result
+      end,
+    })
+    state:update(0)
+    Assert.equal(state:view().status, "ready", "the selected authoritative validator accepts quiescent v3 data")
+    Assert.equal(state.session:captureCandidate().schema, "g4-game-save-v4")
+    state:requestClose("back")
+    Assert.equal(#results, 1, "Cancel returns from the editor without publishing the migration")
+    Assert.equal(results[1].kind, "main_menu")
+    Assert.equal(
+      assert(fixture.saveFs:read("games/" .. fixture.saveId .. ".lua")),
+      beforeOpen,
+      "opening and canceling preserve the exact legacy payload"
+    )
+    Assert.isNil(fixture.saveFs:read("games/" .. fixture.saveId .. ".lua.bak"), "open does not create a backup")
+  end, debug.traceback)
+  if state then
+    pcall(function()
+      state:dispose()
+    end)
+  end
+
+  if ok then
+    SaveFs.global = originalGlobal
+    local editedFixture = Fixture.new()
+    local editOk, editErr = xpcall(function()
+      local editedLegacy = copy(editedFixture.initial)
+      editedLegacy.schema = "g4-game-save-v3"
+      editedLegacy.fieldTravel = nil
+      editedLegacy.playerData.profile.badges = nil
+      editedFixture.saveFs:writeLua("games/" .. editedFixture.saveId .. ".lua", editedLegacy)
+      SaveFs.global = function(backend)
+        Assert.isNil(backend, "the editor uses the second fixture's isolated save backend")
+        return editedFixture.saveFs
+      end
+      local graph = require("app.src.saveeditor.SaveEditorComposition").open({
+        versionId = editedFixture.versionId,
+        saveId = editedFixture.saveId,
+        repositoryRoot = love.filesystem.getSourceBaseDirectory(),
+        derivedAssets = host,
+      })
+      Assert.isTrue(graph.session:setMoney(editedFixture.initialMoney + 1).ok)
+      Assert.isTrue(graph.session:save().ok, "a supported edit publishes through the normal save transaction")
+      Assert.equal(
+        assert(editedFixture.store:load(editedFixture.saveId)).schema,
+        "g4-game-save-v4",
+        "the first real edit writes the canonical representation"
+      )
+    end, debug.traceback)
+    editedFixture.cleanup()
+    if not editOk then
+      ok, err = false, editErr
+    end
+  end
+
+  SaveFs.global = originalGlobal
+  fixture.cleanup()
+  if not ok then
+    error(err, 0)
+  end
+end
+
+function T.tests.active_invalid_and_mismatched_records_are_refused_without_rewrites()
+  local fixture = Fixture.new()
+  local Composition = require("app.src.saveeditor.SaveEditorComposition")
+  local originalGlobal = SaveFs.global
+  SaveFs.global = function(backend)
+    Assert.isNil(backend, "the editor uses the fixture's isolated save backend")
+    return fixture.saveFs
+  end
+  local active = copy(fixture.initial)
+  active.schema = "g4-game-save-v3"
+  active.fieldTravel = nil
+  active.playerData.profile.badges = nil
+  active.scripts.tasks = {
+    {
+      taskId = 1,
+      taskType = "field_move",
+      taskVersion = 1,
+      ownerInstanceId = 1,
+      environmentId = 1,
+      state = {},
+    },
+  }
+  local invalid = copy(fixture.initial)
+  invalid.world.variables = "malformed"
+  local mismatched = copy(fixture.initial)
+  mismatched.saveId = "save-00000999"
+  local cases = { active, invalid, mismatched }
+  local ok, err = xpcall(function()
+    for _, record in ipairs(cases) do
+      fixture.saveFs:writeLua("games/" .. fixture.saveId .. ".lua", record)
+      local before = assert(fixture.saveFs:read("games/" .. fixture.saveId .. ".lua"))
+      local opened = pcall(function()
+        Composition.open({
+          versionId = fixture.versionId,
+          saveId = fixture.saveId,
+          repositoryRoot = love.filesystem.getSourceBaseDirectory(),
+          derivedAssets = { requestMilestone = function() return true end },
+        })
+      end)
+      Assert.isFalse(opened, "unsafe or mismatched data is refused before Session publication")
+      Assert.equal(
+        assert(fixture.saveFs:read("games/" .. fixture.saveId .. ".lua")),
+        before,
+        "failed validation leaves the saved bytes untouched"
+      )
+    end
+  end, debug.traceback)
+  SaveFs.global = originalGlobal
+  fixture.cleanup()
+  if not ok then
+    error(err, 0)
+  end
 end
 
 return T

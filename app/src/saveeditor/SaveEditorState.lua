@@ -65,6 +65,8 @@ local Personality = require("libs.mons.src.gen4.Personality")
 ---@field dateProvider fun(): table<string, integer>
 ---@field iconStatus string?
 ---@field iconFailure string?
+---@field pendingLocationSave { operationId: integer, sessionRevision: integer, location: SaveEditorLocation, leave: boolean, closeReason: ("back"|"quit")?, verifier: SaveEditorLocationService }?
+---@field locationSaveOperationId integer
 ---@field pendingRemove table<string, unknown>?
 ---@field pendingQuantity table<string, unknown>?
 ---@field fieldInput FieldInput
@@ -88,6 +90,15 @@ local PRINTABLE_KEY_NAMES = {
 
 local function isPrintableKeyName(key)
   return (#key == 1 and key:match("^[%w%p ]$") ~= nil) or key:match("^kp%d$") ~= nil or PRINTABLE_KEY_NAMES[key] == true
+end
+
+local function sameLocation(left, right)
+  return left.mapId == right.mapId
+    and left.fieldX == right.fieldX
+    and left.fieldZ == right.fieldZ
+    and left.surfaceId == right.surfaceId
+    and left.worldY == right.worldY
+    and left.terrainDependencyHash == right.terrainDependencyHash
 end
 
 local function message(value)
@@ -153,6 +164,8 @@ function State.new(options)
     locationService = nil,
     locationViewport = nil,
     locationServiceMapId = nil,
+    pendingLocationSave = nil,
+    locationSaveOperationId = 0,
     valueEditor = nil,
     errorMessage = nil,
     notice = nil,
@@ -191,29 +204,17 @@ function State.new(options)
 end
 
 function State:_readyReadiness()
-  local ready = true
+  local allReady = true
   for _, name in ipairs({ "field-planning", "field-runtime" }) do
-    local result = self.derivedAssets.requestMilestone(name, "required")
-    if result == true then
-      -- Milestone available.
-    elseif type(result) == "table" and result.state == "failed" then
-      error(
-        Errors.new(
-          "SAVE_EDITOR_ASSET_PREPARATION_FAILED",
-          tostring(result.failure or (name .. " preparation failed")),
-          {
-            milestone = name,
-          }
-        ),
-        0
-      )
-    elseif type(result) == "table" and result.state == "ready" then
-      -- Explicit terminal success from a host adapter.
-    else
-      ready = false
+    local ready, failure = self.derivedAssets.requestMilestone(name, "required")
+    if ready ~= true then
+      if failure ~= nil then
+        error(Errors.new("SAVE_EDITOR_ASSET_PREPARATION_FAILED", tostring(failure), { milestone = name }), 0)
+      end
+      allReady = false
     end
   end
-  return ready
+  return allReady
 end
 
 function State:update(dt)
@@ -272,6 +273,13 @@ function State:update(dt)
   end
   if self.status == "ready" and self.locationService then
     self:_updateLocationService()
+  end
+  if self.status == "ready" and self.pendingLocationSave then
+    local updated, updateError = pcall(self._updatePendingLocationSave, self)
+    if not updated then
+      self:_cancelPendingLocationSave()
+      error(updateError, 0)
+    end
   end
   if self.status == "ready" and self.renderer and self.dependencies then
     local view = self:_snapshot()
@@ -344,6 +352,35 @@ function State:_snapshot()
   if self.locationService then
     local location = self.locationService:snapshot()
     location.maps = self.locationService:listMaps()
+    if self.controller.locationPage == "map-list" then
+      local query = self.controller.query:lower()
+      if query ~= "" then
+        local filtered = {}
+        for _, map in ipairs(location.maps) do
+          if
+            map.symbol:lower():find(query, 1, true)
+            or map.section:lower():find(query, 1, true)
+            or tostring(map.mapId):find(query, 1, true)
+          then
+            filtered[#filtered + 1] = map
+          end
+        end
+        location.maps = filtered
+      end
+      local focusedMapId = self.controller.focus:match("^location:map:(%d+)$")
+      if focusedMapId then
+        local visible = false
+        for _, map in ipairs(location.maps) do
+          if map.mapId == tonumber(focusedMapId) then
+            visible = true
+            break
+          end
+        end
+        if not visible then
+          self.controller.focus = "location:map-picker"
+        end
+      end
+    end
     location.symbol = location.map and location.map.symbol or nil
     location.actionStatus = self.locationActionStatus
         and {
@@ -353,6 +390,17 @@ function State:_snapshot()
       or nil
     view.location = location
   end
+  if session then
+    view.savedLocation = session.originalLocation
+    view.pendingLocation = session.locationChanged and session.location or nil
+  end
+  view.locationSave = self.pendingLocationSave
+      and {
+        operationId = self.pendingLocationSave.operationId,
+        state = "pending",
+        cancelTarget = "save",
+      }
+    or nil
   for key, value in pairs(party) do
     view[key] = value
   end
@@ -390,6 +438,9 @@ function State:_snapshot()
     scopeId = "section:Bag:" .. self.controller.bagPocket
   else
     scopeId = "section:" .. self.controller.section .. ":" .. self.controller.locationPage
+    if self.controller.section == "Location" and self.controller.locationPage == "map-list" then
+      scopeId = scopeId .. ":" .. self.controller.query
+    end
   end
   if scopeId ~= self.activeScopeId then
     self.activeScopeId = scopeId
@@ -788,6 +839,7 @@ function State:_bagView()
 end
 
 function State:_openEditor(descriptor)
+  self:_cancelPendingLocationSave()
   assert(type(descriptor) == "table" and type(descriptor.kind) == "string")
   local options = { kind = descriptor.kind }
   if descriptor.kind == "integer" then
@@ -1057,7 +1109,7 @@ function State:_selectLocationTile(fieldX, fieldZ)
   self.locationActionStatus = { state = "ready" }
 end
 
-function State:_prepareLocationForSave()
+function State:_prepareLocationForSave(leave)
   local session = assert(self.session)
   local snapshot = session:snapshot()
   if not snapshot.locationChanged then
@@ -1065,41 +1117,152 @@ function State:_prepareLocationForSave()
   end
   local location = snapshot.location
   local maps = assert(self.dependencies.world.maps)
-  local record =
-    assert(maps[self.dependencies.world.byId[location.mapId]], "staged map must be in structural world data")
-  self.controller:chooseLocationMap(location.mapId, location.fieldX, location.fieldZ)
-  self.locationServiceMapId = nil
-  self.locationViewport = nil
-  self:_updateLocationService()
-  local placement, status = self.locationService:resolve(
-    location.mapId,
-    location.fieldX,
-    location.fieldZ,
-    self.locationService:snapshot().generation
-  )
-  self.locationActionStatus = status
-  if placement == nil then
-    self.errorMessage = status.reason
-      or (
-        status.state == "pending" and "Preparing destination data. Save again when it is ready."
-        or "The destination is unavailable."
-      )
-    return false
+  assert(maps[self.dependencies.world.byId[location.mapId]], "staged map must be in structural world data")
+  self:_startPendingLocationSave(snapshot, leave)
+  return false
+end
+
+function State:_cancelPendingLocationSave()
+  local pending = self.pendingLocationSave
+  if pending == nil then
+    return
   end
-  if
-    record.id ~= placement.mapId
-    or location.fieldX ~= placement.fieldX
-    or location.fieldZ ~= placement.fieldZ
-    or location.surfaceId ~= placement.surfaceId
-    or location.worldY ~= placement.worldY
-    or location.terrainDependencyHash ~= placement.terrainDependencyHash
-  then
+  self.pendingLocationSave = nil
+  pending.verifier:dispose()
+end
+
+function State:_startPendingLocationSave(snapshot, leave)
+  if self.pendingLocationSave then
+    return
+  end
+  local location = snapshot.location
+  local verifier = LocationService.new({
+    cacheFs = assert(self.dependencies).cacheFs,
+    world = self.dependencies.world,
+    derivedAssets = self.derivedAssets,
+    savedObjects = assert(self.dependencies.savedObjects),
+  })
+  local started, startError = pcall(function()
+    verifier:openMap(location.mapId)
+    verifier:setViewport(location.fieldX, location.fieldZ, 1, 1)
+  end)
+  if not started then
+    verifier:dispose()
+    error(startError, 0)
+  end
+  self.locationSaveOperationId = self.locationSaveOperationId + 1
+  self.pendingLocationSave = {
+    operationId = self.locationSaveOperationId,
+    sessionRevision = snapshot.revision,
+    location = {
+      mapId = location.mapId,
+      fieldX = location.fieldX,
+      fieldZ = location.fieldZ,
+      surfaceId = location.surfaceId,
+      worldY = location.worldY,
+      terrainDependencyHash = location.terrainDependencyHash,
+    },
+    leave = leave,
+    closeReason = self.closeRequest and self.closeRequest.reason or nil,
+    verifier = verifier,
+  }
+  self.errorMessage = nil
+end
+
+function State:_updatePendingLocationSave()
+  local pending = self.pendingLocationSave
+  if pending == nil or self.session == nil then
+    return
+  end
+  local snapshot = self.session:snapshot()
+  if snapshot.revision ~= pending.sessionRevision or not sameLocation(snapshot.location, pending.location) then
+    self:_cancelPendingLocationSave()
+    self.errorMessage = "The destination check was canceled after the save changed."
+    if self.closeRequest then
+      self.closeRequest.phase = "confirm"
+    end
+    return
+  end
+  pending.verifier:update()
+  local readiness = pending.verifier:snapshot().status
+  if readiness.state == "pending" then
+    return
+  end
+  if readiness.state ~= "ready" then
+    self:_cancelPendingLocationSave()
+    self.errorMessage = readiness.reason or "The destination could not be verified."
+    if self.closeRequest then
+      self.closeRequest.phase = "confirm"
+    end
+    return
+  end
+  local placement, resolution = pending.verifier:resolve(
+    pending.location.mapId,
+    pending.location.fieldX,
+    pending.location.fieldZ,
+    pending.verifier:snapshot().generation
+  )
+  if placement == nil then
+    self:_cancelPendingLocationSave()
+    self.locationActionStatus = resolution
+    self.errorMessage = resolution.reason or "The destination is unavailable."
+    if self.closeRequest then
+      self.closeRequest.phase = "confirm"
+    end
+    return
+  end
+  if not sameLocation(placement, pending.location) then
+    self:_cancelPendingLocationSave()
     self.locationActionStatus = { state = "unavailable", reason = "destination_changed_during_resolution" }
     self.errorMessage = "The destination changed while it was being checked. Review it and save again."
-    return false
+    if self.closeRequest then
+      self.closeRequest.phase = "confirm"
+    end
+    return
+  end
+  if
+    self.pendingLocationSave ~= pending
+    or self.pendingLocationSave.operationId ~= pending.operationId
+    or self.session:snapshot().revision ~= pending.sessionRevision
+    or not sameLocation(self.session:snapshot().location, pending.location)
+  then
+    self:_cancelPendingLocationSave()
+    self.errorMessage = "The destination check was canceled after the save changed."
+    if self.closeRequest then
+      self.closeRequest.phase = "confirm"
+    end
+    return
+  end
+  if self.valueEditor ~= nil or self.monDraft ~= nil then
+    self:_cancelPendingLocationSave()
+    self.errorMessage = "Finish or cancel the open edit before saving."
+    if self.closeRequest then
+      self.closeRequest.phase = "confirm"
+    end
+    return
+  end
+  self.pendingLocationSave = nil
+  pending.verifier:dispose()
+  local saved, saveError = self.session:save(false)
+  if not saved.ok then
+    self.errorMessage = message(saveError)
+    if self.closeRequest then
+      self.closeRequest.phase = "confirm"
+    end
+    return
   end
   self.errorMessage = nil
-  return true
+  if pending.leave then
+    local request = self.closeRequest
+    self.closeRequest = nil
+    self.controller.modal = nil
+    if request and request.reason == "quit" then
+      self.approvedExit = true
+      love.event.quit(0)
+    else
+      self:_sendResult()
+    end
+  end
 end
 
 function State:_sendResult()
@@ -1158,6 +1321,10 @@ function State:_performDeferred(action)
       self.controller.focus = "party:add"
     end
   elseif action.kind == "location-page" then
+    if action.page == "map-list" then
+      self.controller.query = ""
+      self.controller.locationMapOffset = 0
+    end
     self.errorMessage = nil
   elseif action.kind == "location-map-select" then
     local world = assert(self.dependencies.world)
@@ -1286,7 +1453,13 @@ function State:_save(leave)
   if not self.session then
     return false
   end
-  if not self:_prepareLocationForSave() then
+  if self.pendingLocationSave then
+    return false
+  end
+  if not self:_prepareLocationForSave(leave) then
+    if self.pendingLocationSave then
+      return false
+    end
     if leave and self.closeRequest ~= nil then
       self.closeRequest.phase = "confirm"
     end
@@ -1317,6 +1490,7 @@ function State:_save(leave)
 end
 
 function State:_discard(leave)
+  self:_cancelPendingLocationSave()
   local request = self.closeRequest
   if self.valueEditor then
     self.valueEditor:cancel()
@@ -1385,7 +1559,11 @@ function State:requestClose(reason)
   if self.disposed then
     return false
   end
+  self:_cancelPendingLocationSave()
   if self.closeRequest ~= nil then
+    if self.closeRequest.phase == "saving" then
+      self.closeRequest.phase = "confirm"
+    end
     return true
   end
   local draftPending = self.monDraft ~= nil and (self.monDraft:mode() == "add" or self.monDraft:isDirty())
@@ -1498,6 +1676,7 @@ function State:_activate(targetId)
       end
     elseif targetId == "cancel" then
       if self.controller.modal == "leave" and self.closeRequest ~= nil then
+        self:_cancelPendingLocationSave()
         local request = assert(self.closeRequest)
         self.closeRequest = nil
         self.controller.modal = request.previousModal
@@ -1514,6 +1693,9 @@ function State:_activate(targetId)
     elseif targetId == "save" then
       if self.closeRequest ~= nil then
         self:_performClose("save")
+      elseif self.pendingLocationSave then
+        self:_cancelPendingLocationSave()
+        self.errorMessage = "Destination verification canceled."
       else
         self:_save(true)
       end
@@ -1550,6 +1732,7 @@ function State:_activate(targetId)
     return
   end
   if targetId == "money" then
+    self:_cancelPendingLocationSave()
     local money = assert(self.session:snapshot().money)
     self.valueEditor =
       ValueEditor.new({ kind = "integer", value = money, min = 0, max = PlayerData.MAX_MONEY, base = "decimal" })
@@ -1562,7 +1745,12 @@ function State:_activate(targetId)
       self.errorMessage = message(result.error)
     end
   elseif targetId == "save" then
-    self:_requestDraftResolution({ kind = "save" })
+    if self.pendingLocationSave then
+      self:_cancelPendingLocationSave()
+      self.errorMessage = "Destination verification canceled."
+    else
+      self:_requestDraftResolution({ kind = "save" })
+    end
   elseif targetId == "discard" then
     self:_requestDraftResolution({ kind = "session-discard" })
   elseif targetId == "back" then
@@ -1571,6 +1759,7 @@ function State:_activate(targetId)
     local slot0 = assert(tonumber(targetId:match("^party:slot:(%d+)$")))
     self:_requestDraftResolution({ kind = "party-slot", slot0 = slot0 })
   elseif targetId == "party:add" then
+    self:_cancelPendingLocationSave()
     local catalog = assert(self.dependencies.context.monCatalog)
     local options = self:_catalogOptions(catalog:speciesKeys(), function(key)
       return catalog:species(key).name or key
@@ -1579,6 +1768,7 @@ function State:_activate(targetId)
     self.valuePurpose = "party_add_species"
     self.valueEditor = ValueEditor.new({ kind = "choice", options = options })
   elseif targetId == "party:edit" then
+    self:_cancelPendingLocationSave()
     local slot0 = assert(self.controller.partySlot0)
     local draft, draftError = self.session:beginMonEdit(slot0)
     if draft == nil then
@@ -1635,6 +1825,7 @@ function State:_activate(targetId)
       self.monDraft:removeMove(slot0)
     end
   elseif targetId == "party:move:add" then
+    self:_cancelPendingLocationSave()
     local catalog = assert(self.dependencies.context.monCatalog)
     self.valuePurpose = "party_add_move"
     self.valueEditor = ValueEditor.new({
@@ -1644,6 +1835,7 @@ function State:_activate(targetId)
       end),
     })
   elseif targetId == "bag:pocket:choose" then
+    self:_cancelPendingLocationSave()
     local options = {}
     for _, pocket in ipairs(self:_bagView().bagPockets) do
       options[#options + 1] = { key = pocket.key, label = pocket.label }
@@ -1656,10 +1848,13 @@ function State:_activate(targetId)
   elseif targetId:match("^bag:item:") then
     self.controller:selectBagItem(assert(targetId:match("^bag:item:(.+)$")))
   elseif targetId == "bag:add" then
+    self:_cancelPendingLocationSave()
     self:_beginBagAdd()
   elseif targetId == "bag:quantity" then
+    self:_cancelPendingLocationSave()
     self:_openBagQuantity("set")
   elseif targetId == "bag:remove" then
+    self:_cancelPendingLocationSave()
     self.pendingRemove = { kind = "bag", itemKey = assert(self.controller.bagItemKey) }
     self.controller:openModal("remove")
   end
@@ -1756,6 +1951,7 @@ function State:_dispatchIntent(intent)
     self:_performDeferred(intent)
   elseif intent.kind == "cancel" then
     if intent.modal == "leave" and self.closeRequest ~= nil then
+      self:_cancelPendingLocationSave()
       local request = assert(self.closeRequest)
       self.closeRequest = nil
       self.controller.modal = request.previousModal
@@ -2003,6 +2199,24 @@ function State:keypressed(key, _, isrepeat)
     end
     return
   end
+  if self.controller.section == "Location" and self.controller.locationPage == "map-list" then
+    if key == "delete" then
+      self.controller.query = ""
+      self.controller.locationMapOffset = 0
+      return
+    elseif key == "backspace" then
+      local glyphs = {}
+      for glyph in Utf8Glyphs.iter(self.controller.query) do
+        glyphs[#glyphs + 1] = glyph
+      end
+      if #glyphs > 0 then
+        table.remove(glyphs)
+        self.controller.query = table.concat(glyphs)
+        self.controller.locationMapOffset = 0
+      end
+      return
+    end
+  end
   if self.controller.section == "Progress" and isPrintableKeyName(key) then
     return
   end
@@ -2023,8 +2237,14 @@ function State:textinput(text)
   if self.valueEditor then
     self.valueEditor:textinput(text)
     self.editorFeedback = nil
-  elseif self.controller.section == "Progress" then
+  elseif
+    self.controller.section == "Progress"
+    or (self.controller.section == "Location" and self.controller.locationPage == "map-list")
+  then
     self.controller.query = self.controller.query .. text
+    if self.controller.section == "Location" then
+      self.controller.locationMapOffset = 0
+    end
   end
 end
 
@@ -2132,6 +2352,7 @@ function State:dispose()
   end
   self.disposed = true
   self.generation = self.generation + 1
+  self:_cancelPendingLocationSave()
   if self.locationService then
     self.locationService:dispose()
     self.locationService = nil

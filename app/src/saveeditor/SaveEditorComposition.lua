@@ -35,23 +35,20 @@ function SaveEditorComposition.open(options)
   local saveFs = SaveFs.global()
   local validation = GameSaveValidation.new({ overrideFs = repoFs })
   local context = validation:contextForVersion(versionId)
-  local store = GameSaveStore.new(saveFs)
-  local record, loadError = store:load(saveId)
-  if record == nil then
-    error(assert(loadError, "save load failed without a structured error"), 0)
+  local function validateRecord(record)
+    if record.saveId ~= saveId or record.versionId ~= versionId then
+      return nil,
+        Errors.new("SAVE_EDITOR_IDENTITY_MISMATCH", "The selected save no longer matches its catalog entry.", {
+          saveId = saveId,
+          versionId = versionId,
+        })
+    end
+    return validation:validate(record, context)
   end
-  if record.saveId ~= saveId or record.versionId ~= versionId then
-    error(
-      Errors.new("SAVE_EDITOR_IDENTITY_MISMATCH", "The selected save no longer matches its catalog entry.", {
-        saveId = saveId,
-        versionId = versionId,
-      }),
-      0
-    )
-  end
-  local validated, validationError = validation:validate(record, context)
+  local store = GameSaveStore.new(saveFs, { recordValidate = validateRecord })
+  local validated, loadError = store:load(saveId)
   if validated == nil then
-    error(assert(validationError, "save validation failed without a structured error"), 0)
+    error(assert(loadError, "save load failed without a structured error"), 0)
   end
   if not ScriptSave.isQuiescent(validated.scripts) then
     error(Errors.new("SAVE_EDITOR_NOT_QUIESCENT", "Resume and save at a stable point before editing this save."), 0)
@@ -65,9 +62,7 @@ function SaveEditorComposition.open(options)
     context = context,
     saveStore = store,
     saveFs = saveFs,
-    validateRecord = function(candidate)
-      return validation:validate(candidate, context)
-    end,
+    validateRecord = validateRecord,
     symbols = FieldScriptSymbols,
   })
   if session == nil then

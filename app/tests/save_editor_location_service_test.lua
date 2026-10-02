@@ -72,6 +72,15 @@ local function readyIndoorCacheFs()
         xRange = -1,
         yRange = -1,
       }
+    else
+      events.objects[1] = {
+        objectEventId = 8,
+        movementType = "stationary",
+        x = 32,
+        z = 0,
+        xRange = 0,
+        yRange = 0,
+      }
     end
     files[MapAssetCache.mapDir(mapId) .. "/scene.lua"] = {
       schema = MapAssetCache.SCENE_SCHEMA,
@@ -227,6 +236,45 @@ function T.tests.pending_and_stale_map_requests_never_activate_or_change_the_ses
   Assert.equal(session:revision(), revision, "disposing an unselected view leaves the Session untouched")
 end
 
+function T.tests.global_source_actor_coordinates_are_not_offset_twice()
+  local LocationService = require("app.src.saveeditor.SaveEditorLocationService")
+  local cache = readyIndoorCacheFs()
+  local eventPath = FieldMapDataCache.fieldPath(13)
+  local sourceMap = assert(cache:loadLua(eventPath))
+  local sourceEvent = sourceMap.events.objects[1]
+  local savedObjects = { actors = {} }
+  local beforeActors = {
+    actors = {},
+  }
+  local service = LocationService.new({
+    cacheFs = cache,
+    world = structuralWorld(),
+    derivedAssets = {
+      requestField = function() return true end,
+      requestLogicalField = function() return true end,
+      requestCell = function() return true end,
+      ensureField = function() return true end,
+      ensureLogicalField = function() return true end,
+      ensureCell = function() return true end,
+    },
+    savedObjects = savedObjects,
+  })
+
+  service:openMap(13)
+  service:setViewport(32, 0, 1, 1)
+  service:update()
+  local view = service:snapshot()
+  Assert.equal(view.status.state, "ready", "the synthetic nonzero-origin map is prepared")
+  local placement, resolution = service:resolve(13, 32, 0, view.generation)
+  Assert.isNil(placement, "the global source actor coordinate cannot be selected")
+  Assert.equal(resolution.state, "unavailable")
+  Assert.equal(resolution.reason, "possible_actor", "the event is applied at its global coordinate")
+  Assert.equal(sourceEvent.x, 32, "the source event x remains immutable")
+  Assert.equal(sourceEvent.z, 0, "the source event z remains immutable")
+  Assert.deepEqual(savedObjects, beforeActors, "analysis never mutates the saved actor snapshot")
+  service:dispose()
+end
+
 function T.tests.indoor_unbounded_actor_extent_uses_central_collision_dimensions()
   local loaded, LocationService = pcall(require, "app.src.saveeditor.SaveEditorLocationService")
   Assert.isTrue(loaded, "the Location service reads indoor central collision dimensions")
@@ -324,7 +372,7 @@ function T.tests.failed_retry_keeps_map_owner_and_active_action_is_destination_s
   demand.failure = "temporary field demand failure"
   service:setViewport(30, 30, 1, 1)
   service:update()
-  Assert.equal(service:snapshot().status.state, "error", "a failed request reports its error")
+  Assert.equal(service:snapshot().status.state, "failed", "a failed request reports its error")
   Assert.equal(service.loader:get(12), retainedMap, "the failed request leaves the prior usable map owner resident")
 
   demand.failure = nil
@@ -403,7 +451,7 @@ function T.tests.failed_coverage_recenter_reports_an_error_and_keeps_the_previou
   local updateOk, updateError = pcall(service.update, service)
   Assert.isTrue(updateOk, "a structured recenter failure is displayed instead of escaping the service")
   Assert.isNil(updateError)
-  Assert.equal(service:snapshot().status.state, "error")
+  Assert.equal(service:snapshot().status.state, "failed")
   Assert.isTrue(service:snapshot().status.reason:match("TEST_COVERAGE_RETRY") ~= nil)
   Assert.equal(service.coverage, retainedCoverage, "failed recenter retains the previously published coverage")
   Assert.equal(service:tileStatus(63, 31).state, "pending", "the failed view clears stale selectable tile classifications")
