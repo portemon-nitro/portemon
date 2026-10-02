@@ -19,6 +19,7 @@ local NativeMoves = require("libs.battle.src.gen4.behaviors.NativeMoves")
 local MoveExecution = {}
 
 local cachedHandlers = nil
+local cachedRoster = nil
 
 ---@return table<string, fun(ctx: BattleContext, frame: table<string, unknown>): table<string, unknown>> executable native handlers by move identity
 local function handlers()
@@ -28,6 +29,23 @@ local function handlers()
     cachedHandlers = bound
   end
   return cachedHandlers --[[@as table<string, fun(ctx: BattleContext, frame: table<string, unknown>): table<string, unknown>>]]
+end
+
+--- Answers the sorted metronome candidate roster: every bound native move
+--- identity in stable order, so the single-draw selection stays
+--- deterministic for a given registry and stream. Ban filtering stays in
+--- the called-move owner; this roster is the unfiltered candidate supply.
+---@return string[] sorted bound native move identities
+local function metronomeRoster()
+  if cachedRoster == nil then
+    local roster = {}
+    for key in pairs(handlers()) do
+      roster[#roster + 1] = key
+    end
+    table.sort(roster)
+    cachedRoster = roster
+  end
+  return cachedRoster --[[@as string[] ]]
 end
 
 ---@param value unknown value under test
@@ -177,6 +195,7 @@ function MoveExecution.start(inputs)
     requestedMove = plan.requestedMove,
     executingMove = plan.executingMove,
     stream = plan.stream,
+    pool = metronomeRoster(),
     party = plan.party,
     usable = plan.usable,
     copiedMove = plan.copiedMove,
@@ -231,6 +250,7 @@ function MoveExecution.start(inputs)
       locals[key] = plan[key]
     end
   end
+  locals.pool = metronomeRoster()
   return MoveExecution.validateFrame(frame)
 end
 

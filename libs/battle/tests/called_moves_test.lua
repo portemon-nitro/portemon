@@ -8,6 +8,7 @@
 local Assert = require("tests.support.Assert")
 local SessionFixture = require("libs.battle.tests.session_fixture")
 local BattleRng = require("libs.battle.src.gen4.BattleRng")
+local BattleSources = require("romdump.src.config.BattleSources")
 
 local T = {}
 
@@ -82,32 +83,107 @@ local function calledInputs(caller, seed)
   }
 end
 
+--- Source-banned metronome identities from pret/pokeheartgold
+--- sMetronomeUnuseableMoves (src/battle/overlay_12_0224E4FC.c): the static
+--- exclusion list applied on top of the gravity/heal-block dynamic checks.
+---@return string[] every statically banned metronome identity in source order
+local function bannedMetronomeMoves()
+  return {
+    "METRONOME",
+    "STRUGGLE",
+    "SKETCH",
+    "MIMIC",
+    "CHATTER",
+    "SLEEP_TALK",
+    "ASSIST",
+    "MIRROR_MOVE",
+    "COUNTER",
+    "MIRROR_COAT",
+    "PROTECT",
+    "DETECT",
+    "ENDURE",
+    "DESTINY_BOND",
+    "THIEF",
+    "FOLLOW_ME",
+    "SNATCH",
+    "HELPING_HAND",
+    "COVET",
+    "TRICK",
+    "FOCUS_PUNCH",
+    "FEINT",
+    "COPYCAT",
+    "ME_FIRST",
+    "SWITCHEROO",
+  }
+end
+
 ---@return table<string, boolean> every move the caller may legally draw
 local function eligibleSet()
-  return { TACKLE = true, SPLASH = true, PROTECT = true }
+  local banned = {}
+  for _, move in ipairs(bannedMetronomeMoves()) do
+    banned[move] = true
+  end
+  local eligible = {}
+  for key in pairs(BattleSources.moveBindings) do
+    if banned[key] ~= true then
+      eligible[key] = true
+    end
+  end
+  return eligible
+end
+
+-- Metronome carries the source static ban list exactly: every banned
+-- identity names a real inventory move, and the production table matches
+-- the pinned source list with no additions or omissions.
+function T.metronome_ban_list_matches_the_source_table()
+  local Called = calledOwner("metronome-class selection owns the called-move path")
+  Assert.isTrue(type(Called.METRONOME_BANNED) == "table", "the called family publishes its metronome ban set")
+  local pinned = bannedMetronomeMoves()
+  Assert.equal(#pinned, 25, "the pinned source ban list stays complete")
+  local seen = {}
+  for _, move in ipairs(pinned) do
+    Assert.isTrue(BattleSources.moveBindings[move] ~= nil, "banned " .. move .. " names a real inventory move")
+    Assert.isTrue(Called.METRONOME_BANNED[move] == true, "production bans " .. move)
+    seen[move] = true
+  end
+  local extra = 0
+  for move in pairs(Called.METRONOME_BANNED) do
+    if seen[move] ~= true then
+      extra = extra + 1
+    end
+  end
+  Assert.equal(extra, 0, "production bans nothing beyond the source list")
 end
 
 -- Metronome selects only eligible moves and never struggle: sweeping
 -- fixed seeds keeps every drawn move inside the eligible set, the same
--- seed always draws the same move, and the stream advances by exactly the
--- native draw count per attempt.
+-- seed always draws the same move, banned identities never surface, and
+-- the pool spans the source inventory rather than a stand-in handful.
 function T.metronome_selects_only_eligible_moves_with_native_draws()
   local Called = calledOwner("metronome-class selection owns the called-move path")
   local Execution = executionOwner("the shared move continuation owns hit progression")
   Assert.isTrue(type(Called.register) == "function", "the called family registers its bindings")
   local eligible = eligibleSet()
+  local distinct = {}
   local firstDraw = nil
   for seed = FIXED_SEED, FIXED_SEED + 31 do
     local frame = Execution.validateFrame(Execution.start(calledInputs("METRONOME", seed)))
     local drawn = frame.executingMove
     Assert.isTrue(eligible[drawn] == true, "seed " .. seed .. " draws an eligible move, got " .. tostring(drawn))
     Assert.isTrue(drawn ~= "STRUGGLE", "the called draw never falls back to struggle")
+    Assert.isTrue(drawn ~= "PROTECT", "the source ban list excludes protections from the draw")
+    distinct[drawn] = true
     if seed == FIXED_SEED then
       firstDraw = drawn
     end
   end
   local replay = Execution.validateFrame(Execution.start(calledInputs("METRONOME", FIXED_SEED)))
   Assert.equal(replay.executingMove, firstDraw, "the same seed draws the same move")
+  local count = 0
+  for _ in pairs(distinct) do
+    count = count + 1
+  end
+  Assert.isTrue(count > 3, "the draw pool spans the inventory, got " .. count .. " distinct draws")
 end
 
 -- Assist reads only party moves: members outside the party roster never
@@ -133,6 +209,23 @@ function T.assist_reads_only_party_moves()
     Assert.isTrue(member, "assist draws a party move, got " .. tostring(drawn))
     Assert.isNil(outsiders[drawn], "assist never draws outside the party roster")
     Assert.equal(frame.ppOwnerSlot, 0, "the drawn move charges the calling slot")
+  end
+end
+
+-- Assist refuses the remaining source-banned thieves and mimics: party
+-- rosters carrying covet, feint, or switcheroo never see them drawn, per
+-- the source ban table shared with metronome legality.
+function T.assist_refuses_covet_feint_and_switcheroo()
+  local Execution = executionOwner("the shared move continuation owns hit progression")
+  local party = { "TACKLE", "COVET", "FEINT", "SWITCHEROO" }
+  local refused = { COVET = true, FEINT = true, SWITCHEROO = true }
+  for seed = FIXED_SEED, FIXED_SEED + 31 do
+    local inputs = calledInputs("ASSIST", seed)
+    inputs.party = party
+    local frame = Execution.validateFrame(Execution.start(inputs))
+    local drawn = frame.executingMove
+    Assert.isNil(refused[drawn], "assist never draws a banned move, got " .. tostring(drawn))
+    Assert.equal(drawn, "TACKLE", "the lone eligible party move answers every draw")
   end
 end
 
