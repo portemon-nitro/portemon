@@ -319,6 +319,21 @@ end
 
 local PLAYBACKS = { forward = "once", forward_loop = "loop", reverse = "once", reverse_loop = "loop" }
 
+local function paletteSlice(colors, startColor, count, role)
+  if startColor < 0 or count <= 0 or startColor + count > #colors then
+    sourceError(role .. " palette range is unavailable", {
+      startColor = startColor,
+      count = count,
+      available = #colors,
+    })
+  end
+  local slice = {}
+  for index = 1, count do
+    slice[index] = colors[startColor + index]
+  end
+  return slice
+end
+
 local function writeFrame(rendered, durationTicks, path, assets)
   assets[path] = PngWriter.encode(rendered.width, rendered.height, rendered.pixels)
   local visual = { image = path, width = rendered.width, height = rendered.height, durationTicks = durationTicks }
@@ -361,9 +376,9 @@ local function compileSequence(charData, paletteColors, cellData, animation, seq
 end
 
 -- Realizes one sprite group: every listed sequence keeps all its frames.
--- Palette slots come from the audited sprite templates (cursor 0, status 2,
--- held 6); every group reuses its adjacent palette bank member.
-local function compileSpriteGroup(archive, group, slot, role, dependencies, assets, prefix, archiveLabel)
+-- `paletteBank` is local to the group's decoded palette resource; source OBJ
+-- allocation slots are normalized before they reach rasterization.
+local function compileSpriteGroup(archive, group, paletteBank, role, dependencies, assets, prefix, archiveLabel)
   local charData =
     decode("decodeChar", readMember(archive, group.char, role .. "-char", dependencies, archiveLabel), role .. "-char")
   local paletteData = decode(
@@ -371,6 +386,7 @@ local function compileSpriteGroup(archive, group, slot, role, dependencies, asse
     readMember(archive, group.palette, role .. "-palette", dependencies, archiveLabel),
     role .. "-palette"
   )
+  local localPalette = paletteSlice(paletteData.colors, paletteBank * 16, 16, role)
   local cellData =
     decode("decodeCell", readMember(archive, group.cell, role .. "-cell", dependencies, archiveLabel), role .. "-cell")
   local animation = decode(
@@ -382,14 +398,14 @@ local function compileSpriteGroup(archive, group, slot, role, dependencies, asse
   for _, sequenceNo in ipairs(group.sequences) do
     sequences[#sequences + 1] = compileSequence(
       charData,
-      paletteData.colors,
+      localPalette,
       cellData,
       animation,
       sequenceNo,
       role,
       assets,
       prefix .. "-" .. sequenceNo,
-      slot
+      0
     )
   end
   return { sequences = sequences }
@@ -432,21 +448,6 @@ local function compileScreens(archive, dependencies, assets)
     panelScreen = panelScreen,
     mainPalette = mainPalette.colors,
   }
-end
-
-local function paletteSlice(colors, startColor, count, role)
-  if startColor < 0 or count <= 0 or startColor + count > #colors then
-    sourceError(role .. " palette range is unavailable", {
-      startColor = startColor,
-      count = count,
-      available = #colors,
-    })
-  end
-  local slice = {}
-  for index = 1, count do
-    slice[index] = colors[startColor + index]
-  end
-  return slice
 end
 
 local function templateScreen(screen, tileRow, role)
@@ -1169,7 +1170,8 @@ local function _compile(romFs)
   local balls = compileSpriteGroup(archive, ballGroup, 0, "ball", dependencies, assets, "ball")
   local cursor = compileSpriteGroup(archive, cursorGroup, 0, "cursor", dependencies, assets, "cursor")
   local buttons = compileSpriteGroup(archive, buttonGroup, 0, "button", dependencies, assets, "button")
-  local held = compileSpriteGroup(archive, heldGroup, 6, "held", dependencies, assets, "held")
+  local held =
+    compileSpriteGroup(archive, heldGroup, PartySources.heldItemPaletteBank, "held", dependencies, assets, "held")
   local statusChar = decode(
     "decodeChar",
     readMember(statusArchive, PartySources.status.charMember, "status-char", dependencies, "status"),
@@ -1194,19 +1196,20 @@ local function _compile(romFs)
     sourceError("status carries an unexpected sequence census", { sequences = #statusAnimation.anims })
   end
   local statusVisuals = {}
+  local localStatusPalette = paletteSlice(statusPalette.colors, PartySources.status.paletteBank * 16, 16, "status")
   for _, statusRecord in ipairs(PartySources.status.semanticSequences) do
     local semanticKey = statusRecord.key
     local sequenceNo = statusRecord.sequence
     local compiled = compileSequence(
       statusChar,
-      statusPalette.colors,
+      localStatusPalette,
       statusCell,
       statusAnimation,
       sequenceNo,
       "status",
       assets,
       "status-" .. semanticKey,
-      2
+      0
     )
     if #compiled.frames ~= 1 then
       sourceError("status carries an animated sequence", { sequence = sequenceNo })

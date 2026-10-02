@@ -128,7 +128,7 @@ function T.status_visuals_match_the_semantic_source_sequences(romFs, versionId)
       sequence,
       1,
       { role = "party-status-" .. mapping.name, frame = 0 },
-      2
+      0
     )
     local width, height, rgba = PngReader.rgba(assert(bundle.assets[visual.image], mapping.name .. " image resolves"))
     Assert.equal(width, 24, mapping.name .. " generated image width")
@@ -142,6 +142,56 @@ function T.status_visuals_match_the_semantic_source_sequences(romFs, versionId)
   for _, mapping in ipairs(expected) do
     Assert.isTrue(referenced[visuals[mapping.name].image], mapping.name .. " image participates in cache readiness")
   end
+end
+
+function T.held_item_marker_pixels_use_their_resource_palette(romFs, versionId)
+  local PartySources = require("romdump.src.config.PartySources")
+  local bundle = bundleFor(romFs, versionId)
+  local archive = assert(romFs:openNarc(PartySources.archive.symbol), "the party archive resolves")
+  local function decode(kind, memberId, role)
+    local bytes = assert(archive:readMember(memberId), role .. " member resolves")
+    if string.byte(bytes, 1) == 0x10 then
+      bytes = assert(Lz10.decode(bytes), role .. " member decompresses")
+    end
+    return assert(G2dDecoder[kind](bytes, { label = "party " .. role }), role .. " decodes")
+  end
+  local char = decode("decodeChar", 20, "held marker character")
+  local palette = decode("decodePalette", 21, "held marker palette")
+  local cell = decode("decodeCell", 19, "held marker cell")
+  local animation = decode("decodeAnimation", 18, "held marker animation")
+  local source = G2dRasterizer.renderAnimationFrame(
+    char,
+    { colors = palette.colors },
+    cell,
+    animation.anims[2],
+    1,
+    { role = "party-held-item", frame = 0 },
+    0
+  )
+  local held = assert(bundle.manifest.visuals.held, "held marker sequences publish")
+  local itemSequence = assert(held.sequences[2], "the held-item sequence resolves")
+  local frame = assert(itemSequence.frames[1], "the held-item frame resolves")
+  local width, height, pixels = PngReader.rgba(assert(bundle.assets[frame.image], "the held-item pixels resolve"))
+  Assert.equal(width, source.width, "the held-item frame keeps source width")
+  Assert.equal(height, source.height, "the held-item frame keeps source height")
+  Assert.equal(pixels, source.pixels, "held-item pixels use the palette local to their resource")
+  local hasOpaque = false
+  local hasSourceColor = false
+  for offset = 1, #pixels, 4 do
+    local alpha = string.byte(pixels, offset + 3)
+    if alpha ~= 0 then
+      hasOpaque = true
+      if
+        string.byte(pixels, offset) ~= 0
+        or string.byte(pixels, offset + 1) ~= 0
+        or string.byte(pixels, offset + 2) ~= 0
+      then
+        hasSourceColor = true
+      end
+    end
+  end
+  Assert.isTrue(hasOpaque, "the held-item marker has opaque pixels")
+  Assert.isTrue(hasSourceColor, "the held-item marker retains its non-black source color")
 end
 
 function T.panel_palette_states_are_compiled_as_source_images(romFs, versionId)
