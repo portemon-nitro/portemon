@@ -7,12 +7,14 @@
 -- animation clocks.
 
 local FieldTextWindowRenderer = require("libs.hgss.src.ui.FieldTextWindowRenderer")
+local FieldTextRenderer = require("libs.hgss.src.ui.FieldTextRenderer")
 local PartyScreenTheme = require("libs.hgss.src.ui.PartyScreenTheme")
 local YesNoPromptRenderer = require("libs.hgss.src.ui.YesNoPromptRenderer")
 
 ---@class PartyScreenRenderer
 ---@field _graphics love.graphics
 ---@field _text table<string, unknown> the borrowed generated-font collaborator
+---@field _contextText FieldTextRenderer? the owned context-menu font renderer
 ---@field _images table<string, love.Image> owned realized images, released exactly once
 ---@field _manifest table<string, unknown> the validated party presentation manifest
 ---@field _prompt YesNoPromptRenderer the owned source prompt renderer
@@ -114,6 +116,7 @@ function PartyScreenRenderer.new(opts)
     _frameIndex = opts.frameIndex,
   }, PartyScreenRenderer)
   local ok, err = pcall(function()
+    renderer._contextText = FieldTextRenderer.new({ cacheFs = cacheFs, fontId = 4, graphics = graphics })
     renderer:_acquire(cacheFs, manifest, opts.uiManifest)
   end)
   if not ok then
@@ -278,6 +281,10 @@ end
 -- Releases every owned image exactly once; draw-after-release is a no-op
 -- through the cleared table.
 function PartyScreenRenderer:release()
+  if self._contextText ~= nil then
+    self._contextText:release()
+    self._contextText = nil
+  end
   local images = self._images
   self._images = {}
   for _, image in pairs(images) do
@@ -754,11 +761,17 @@ function PartyScreenRenderer:_drawMenu(menu, menuIndex, menuPress, kind, layout)
     )
     local background = assert(ink.background, "context roles carry their background")
     setColor(graphics, { background.r / 255, background.g / 255, background.b / 255, 1 })
-    graphics.rectangle("fill", frameRect.x, frameRect.y, frameRect.width, frameRect.height)
+    graphics.rectangle("fill", textRect.x, textRect.y, textRect.width, textRect.height)
     local visual = assert(group[frameState], "context frames carry the " .. frameState .. " state")
     setColor(graphics, WHITE)
     graphics.draw(self:_image(assert(visual.image, "context frames carry image paths")), frameRect.x, frameRect.y)
-    self:_paletteText(assert(entry.label, "menu entries carry display labels"), textRect.x, textRect.y, ink)
+    local label = assert(entry.label, "menu entries carry display labels")
+    local labelX, labelY = textRect.x, textRect.y
+    if style == "cancel" then
+      labelX = labelX + math.floor((textRect.width - self._contextText:textWidth(label)) / 2)
+      labelY = labelY + 4
+    end
+    self._contextText:drawTextWithPalette(label, labelX, labelY, ink)
   end
 end
 
@@ -844,12 +857,17 @@ end
 -- Draws the browse message through the generated browse window and the
 -- choose-mon template.
 function PartyScreenRenderer:_drawBrowseMessage()
+  self:_drawNamedLowerPrompt("chooseMon")
+end
+
+---@param templateKey string
+function PartyScreenRenderer:_drawNamedLowerPrompt(templateKey)
   local manifest = self._manifest
   local windows = assert(manifest.windows, "the party manifest carries windows")
   local box = assert(windows.browse, "the party manifest carries the browse window")
   local templates = assert(manifest.text.templates, "the party manifest carries templates")
-  local template = assert(templates.chooseMon, "the party manifest carries chooseMon")
-  self:_drawLowerWindow(box, self:_templateOps(assert(template.segments, "chooseMon carries segments"), nil))
+  local template = assert(templates[templateKey], "the party manifest carries template " .. templateKey)
+  self:_drawLowerWindow(box, self:_templateOps(assert(template.segments, templateKey .. " carries segments"), nil))
 end
 
 -- Draws the open-menu message through the source context window with
@@ -1232,7 +1250,7 @@ function PartyScreenRenderer:_drawContent(presentation, layout, icons)
     local roles = assert(self._manifest.text, "the party manifest carries text").roles
     local ordinary = roleFor(assert(roles.ordinary, "party text carries the ordinary role"), "ordinary")
     local width = self._text:textWidth(label)
-    self:_paletteText(label, textRect.x + (textRect.width - width) / 2, textRect.y, ordinary)
+    self:_paletteText(label, textRect.x + math.floor((textRect.width - width) / 2), textRect.y, ordinary)
   end
   local inMenu = presentation.state == "context"
     or presentation.state == "item_context"
@@ -1248,7 +1266,11 @@ function PartyScreenRenderer:_drawContent(presentation, layout, icons)
     local slot = assert(presentation.menuSlot, "menu states remember their slot")
     local record = assert(view.slots[slot + 1], "menu messages address a party slot")
     self:_drawContextMessage(assert(record.displayName, "menu slots carry a display name"))
-  elseif presentation.state == "browse" or presentation.state == "swapping" then
+  elseif presentation.state == "choosing_item_target" then
+    self:_drawNamedLowerPrompt("giveTarget")
+  elseif presentation.state == "choose_swap" or presentation.state == "swapping" then
+    self:_drawNamedLowerPrompt("moveTarget")
+  elseif presentation.state == "browse" then
     self:_drawBrowseMessage()
   end
   if inMenu then

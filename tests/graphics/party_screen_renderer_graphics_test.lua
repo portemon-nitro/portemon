@@ -720,6 +720,58 @@ function T.context_menu_covers_its_window_with_highlighted_focus(scope)
   end
 end
 
+function T.context_menu_labels_match_the_source_font(scope)
+  for _, versionId in ipairs(readyVersions()) do
+    local cacheFs, manifest = manifestFor(versionId)
+    local menu = {
+      { kind = "summary", label = "SUMMARY" },
+      { kind = "switch", label = "SWITCH" },
+      { kind = "quit", label = "QUIT" },
+    }
+    local status = presentation({ state = "context", menu = menu, menuIndex = 2, menuSlot = 0 })
+    local image, layout = renderPane(scope, cacheFs, manifest, status)
+    local generated = assert(layout.menuLayout("topLevel", #menu)[2], "the switch row has generated geometry")
+    local textRect = generated.textRect
+    local role = assert(manifest.contextMenu.textRoles[generated.style], "the switch row has a text role")
+    local sourceInk = assert(role.depressed, "the focused switch row uses depressed ink")
+    local function normalized(color)
+      return { r = color.r, g = color.g, b = color.b, a = color.a and color.a / 255 or nil }
+    end
+    local ink = {
+      foreground = normalized(sourceInk.foreground),
+      shadow = normalized(sourceInk.shadow),
+      background = normalized(sourceInk.background),
+    }
+    local font = scope:own(FieldTextRenderer.new({ cacheFs = cacheFs, fontId = 4 }))
+    local expectedCanvas = scope:own(love.graphics.newCanvas(256, 192))
+    love.graphics.setCanvas(expectedCanvas)
+    love.graphics.clear(0, 0, 0, 0)
+    font:drawTextWithPalette("SWITCH", textRect.x, textRect.y, ink)
+    love.graphics.setCanvas()
+    local expected = scope:own(expectedCanvas:newImageData())
+    local compared, matched = 0, 0
+    for y = textRect.y, textRect.y + textRect.height - 1 do
+      for x = textRect.x, textRect.x + textRect.width - 1 do
+        local er, eg, eb, ea = expected:getPixel(x, y)
+        if quantize(ea) > 0 then
+          compared = compared + 1
+          local ar, ag, ab, aa = image:getPixel(x, y)
+          if
+            quantize(aa) == quantize(ea)
+            and quantize(ar) == quantize(er)
+            and quantize(ag) == quantize(eg)
+            and quantize(ab) == quantize(eb)
+          then
+            matched = matched + 1
+          end
+        end
+      end
+    end
+    Assert.isTrue(compared > 10, versionId .. " provides font-4 source glyph pixels")
+    Assert.equal(matched, compared, versionId .. " renders context labels with the font-4 glyph mask")
+  end
+end
+
 -- The native browse message band paints through the generated font and
 -- magnifies uniformly at an integral scale.
 function T.browse_message_paints_and_magnifies_uniformly(scope)
@@ -757,6 +809,45 @@ function T.browse_message_paints_and_magnifies_uniformly(scope)
     local dCornerR, dCornerG, dCornerB = quantize(dr), quantize(dg), quantize(db)
     local dMessage, _ = scanRegion(doubledImage, dCornerR, dCornerG, dCornerB, 32, 336, 320, 32)
     Assert.isTrue(dMessage > 40, versionId .. " paints the browse message at the doubled scale")
+  end
+end
+
+function T.target_and_swap_states_keep_their_lower_prompts(scope)
+  for _, versionId in ipairs(readyVersions()) do
+    local cacheFs, manifest = manifestFor(versionId)
+    local empty, _ = renderPane(scope, cacheFs, manifest, presentation({ state = "message" }))
+    local browse, _ = renderPane(scope, cacheFs, manifest, presentation({ state = "browse" }))
+    local giveTarget, _ = renderPane(scope, cacheFs, manifest, presentation({ state = "choosing_item_target" }))
+    local chooseSwap, _ = renderPane(scope, cacheFs, manifest, presentation({ state = "choose_swap" }))
+    local swappingStatus = presentation({ state = "swapping" })
+    swappingStatus.swap = {
+      source = 0,
+      destination = 1,
+      xOffset = 0,
+      offsets = { [0] = 0, [1] = 0 },
+      directions = { [0] = -1, [1] = 1 },
+      exchanged = false,
+    }
+    local swapping, _ = renderPane(scope, cacheFs, manifest, swappingStatus)
+    local window = assert(manifest.windows.browse, "Party prompt text uses the lower window")
+    local area = { window.x, window.y, window.width, window.height }
+    Assert.isTrue(
+      differingPixels(giveTarget, empty, area[1], area[2], area[3], area[4]) > 10,
+      versionId .. " paints the Give-target prompt in the lower window"
+    )
+    Assert.isTrue(
+      differingPixels(chooseSwap, empty, area[1], area[2], area[3], area[4]) > 10,
+      versionId .. " paints the switch prompt before the swap"
+    )
+    Assert.equal(
+      differingPixels(chooseSwap, swapping, area[1], area[2], area[3], area[4]),
+      0,
+      versionId .. " keeps the switch prompt visible for the full swap animation"
+    )
+    Assert.isTrue(
+      differingPixels(swapping, browse, area[1], area[2], area[3], area[4]) > 10,
+      versionId .. " returns to the browse prompt after the swap completes"
+    )
   end
 end
 
@@ -1128,5 +1219,5 @@ function T.context_brightness_reaches_below_panels_without_touching_menu_frames(
 end
 
 local suite = GraphicsSmoke.suite(T, { capabilities = { "graphics", "rom_dump" } })
-suite.metadata.derivedAssets = { "party:global" }
+suite.metadata.derivedAssets = { "party:global", "field-font:global" }
 return suite

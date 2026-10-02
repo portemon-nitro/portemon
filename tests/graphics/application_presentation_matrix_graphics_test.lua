@@ -622,6 +622,7 @@ end
 -- graphics smoke.
 local function partyAssetCache()
   local cache = CacheFs.forVersion("heartgold", FakeCache.new())
+  FieldUiFixture.writeFont(cache, 4)
   local function stub(path, width, height, r, g, b, a)
     local pixels = {}
     for _ = 1, width * height do
