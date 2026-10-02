@@ -116,6 +116,13 @@ local function enemyRecord(catalog, species, level, seed)
   return factory:createNormal(CatalogFixture.normalRequest({ species = species, level = level }))
 end
 
+---@param record table full mon-domain record under test preparation
+---@return table the same record striking with a single known move
+local function tackleOnly(record)
+  record.moves = { { move = "TACKLE", pp = 35, ppUps = 0 } }
+  return record
+end
+
 function T.tests.wild_and_trainer_battles_run_the_production_path_and_return()
   local versionId = AcceptanceHarness.defaultVersion()
   local game = harness():boot({
@@ -142,8 +149,14 @@ function T.tests.wild_and_trainer_battles_run_the_production_path_and_return()
     local bagRevisionBefore = game.runtime.bagService:revision()
 
     -- First the wild encounter through the live owners.
+    local liveCatalog = game.runtime.monService:catalog()
+    local wildFoe = tackleOnly(enemyRecord(liveCatalog, "TOTODILE", 4, 0xB1AC0002))
     local wildRecord = { enters = 0, frames = {}, leaves = 0, disposed = 0 }
-    local wildLaunch = { id = "launch-opening-wild", kind = "wild", payload = { species = "TOTODILE", level = 4 } }
+    local wildLaunch = {
+      id = "launch-opening-wild",
+      kind = "wild",
+      payload = { species = "TOTODILE", level = 4, mon = wildFoe },
+    }
     local wildScenario = ScenarioFactory.fromEncounter(wildLaunch.payload, {
       party = game.runtime.monService,
       bag = game.runtime.bagService,
@@ -208,8 +221,7 @@ function T.tests.wild_and_trainer_battles_run_the_production_path_and_return()
     -- Then a trainer battle on the same live field: the trainer fields
     -- real records and answers through its bound selection program while
     -- the player keeps answering real decisions.
-    local liveCatalog = game.runtime.monService:catalog()
-    local foe = enemyRecord(liveCatalog, "TOTODILE", 4, 0x5EED0001)
+    local foe = tackleOnly(enemyRecord(liveCatalog, "TOTODILE", 4, 0x5EED0001))
     Assert.equal(foe.species, "TOTODILE", "the trainer fields its own record")
     local trainerRecord = { enters = 0, frames = {}, leaves = 0, disposed = 0 }
     local trainerLaunch = { id = "launch-first-rival", kind = "trainer", payload = { trainer = "rival-early" } }

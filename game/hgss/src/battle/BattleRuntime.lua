@@ -22,17 +22,17 @@
 -- (presentation and phase ownership without simulation or publication); it
 -- never commits and never reports a receipt.
 --
--- Combat executes through the kernel's scripted decision point: strikes
--- deal the kernel's scripted damage over its bounded round budget, and a
--- battle that reaches the bound with both sides standing settles as a
--- draw. No victory is ever invented: only a fainted enemy side reports a
--- win. Committed party health writeback carries the executed damage into
--- the live party through the committer's staged batch.
+-- Combat executes through the native HGSS lifecycle: ordered actions
+-- run the shared move continuation with the combatants' carried facts,
+-- knockouts settle through faint ownership, and a battle that reaches the
+-- bound with both sides standing settles as a draw. No victory is ever
+-- invented: only a fainted enemy side reports a win. Committed party
+-- health writeback carries the executed damage into the live party through
+-- the committer's staged batch.
 
-local BattleSession = require("libs.battle.src.BattleSession")
-local ContentBuilder = require("libs.content.src.ContentBuilder")
-local BattleBehaviorBuilder = require("libs.battle.src.BattleBehaviorBuilder")
-local BattleContent = require("libs.battle.src.BattleContent")
+local Battle = require("gen4.battle")
+local HgssBattleContent = require("game.hgss.src.battle.HgssBattleContent")
+local Executor = require("libs.battle.src.gen4.HgssSessionExecutor")
 local BattleErrors = require("libs.battle.src.errors")
 local Lcrng = require("libs.mons.src.gen4.Lcrng")
 local BattleTask = require("libs.hgss.src.script.tasks.BattleTask")
@@ -86,7 +86,7 @@ local HgssTrainerAi = require("libs.hgss.src.battle.HgssTrainerAi")
 ---@field _phase string
 ---@field _task table<string, unknown>?
 ---@field _content table<string, unknown>?
----@field _session BattleSession?
+---@field _session table<string, unknown>?
 ---@field _selection table<string, unknown>?
 ---@field _controllers table<string, BattleBoundController>
 ---@field _answered table<string, boolean>?
@@ -341,27 +341,10 @@ function BattleRuntime.new(args)
   return self
 end
 
----@return table<string, unknown> executable content for the kernel's decision point
+---@return table<string, unknown> executable content carrying the native HGSS bundle
 function BattleRuntime:_executableContent()
   if self._content == nil then
-    local builder = ContentBuilder.new()
-    local behaviors = BattleBehaviorBuilder.new()
-    -- The kernel executes exactly one decision point; later battle phases
-    -- register their own rulesets through the same construction boundary.
-    -- Full native behavior arrives with those phases, so this bundle
-    -- carries only the executable binding, never test vocabulary.
-    behaviors:registerRuleset(
-      BattleSession.EXECUTABLE_RULESET,
-      { key = BattleSession.EXECUTABLE_RULESET, chart = BattleSession.EXECUTABLE_RULESET },
-      "battle-runtime"
-    )
-    -- The field scenario sources name their application formats; each one
-    -- resolves through this registered policy instead of a guessed
-    -- vocabulary, so a misspelled production key fails at construction.
-    for _, formatKey in ipairs({ "wild-single", "single", "double" }) do
-      behaviors:registerFormat(formatKey, { key = formatKey }, "battle-runtime")
-    end
-    self._content = BattleContent.new(builder:freeze(), behaviors:freeze())
+    self._content = HgssBattleContent.nativeContent()
   end
   assert(self._content ~= nil, "executable content builds once")
   return self._content
@@ -464,14 +447,183 @@ function BattleRuntime:_enterPresentation()
   return self._presentation.enter(plan) == true
 end
 
--- Builds the live kernel session from the detached scenario. The ruleset
--- stamped here is the kernel's own executable contract (single owner in
--- the battle package); everything else rides the detached fragment.
+-- Collects the static identities a detached scenario references for fact
+-- resolution: distinct record-backed move identities plus distinct combatant
+-- species forms. Malformed fragments contribute nothing here; scenario
+-- validation still owns malformation errors, and executions naming
+-- unprovisioned facts fail explicitly at their own boundary.
+---@param record table<string, unknown> detached scenario under session construction
+---@return string[] sorted distinct referenced move identities
+---@return table<integer, { species: string, form: integer }> sorted distinct referenced species forms
+local function referencedStaticKeys(record)
+  local moves = {} ---@type table<string, boolean>
+  local forms = {} ---@type table<string, table<integer, boolean>>
+  local participants = record.participants
+  if type(participants) == "table" then
+    for _, entry in
+      ipairs(participants --[[@as table<integer, unknown>]])
+    do
+      if type(entry) == "table" then
+        local roster = (entry --[[@as table<string, unknown>]]).roster
+        if type(roster) == "table" then
+          for _, seed in
+            ipairs(roster --[[@as table<integer, unknown>]])
+          do
+            if type(seed) == "table" then
+              local mon = (seed --[[@as table<string, unknown>]]).mon
+              if type(mon) == "table" then
+                local seedRecord = mon --[[@as table<string, unknown>]]
+                local species = seedRecord.species
+                local form = seedRecord.form
+                if type(species) == "string" and species ~= "" then
+                  if type(form) == "number" and form % 1 == 0 then
+                    local bucket = forms[species]
+                    if bucket == nil then
+                      bucket = {}
+                      forms[species] = bucket
+                    end
+                    bucket[form] = true
+                  end
+                end
+                local entries = seedRecord.moves
+                if type(entries) == "table" then
+                  for _, moveEntry in
+                    ipairs(entries --[[@as table<integer, unknown>]])
+                  do
+                    if type(moveEntry) == "table" then
+                      local key = (moveEntry --[[@as table<string, unknown>]]).move
+                      if type(key) == "string" and key ~= "" then
+                        moves[key] = true
+                      end
+                    end
+                  end
+                end
+              end
+            end
+          end
+        end
+      end
+    end
+  end
+  local moveKeys = {}
+  for key in pairs(moves) do
+    moveKeys[#moveKeys + 1] = key
+  end
+  table.sort(moveKeys)
+  local speciesKeys = {}
+  for key in pairs(forms) do
+    speciesKeys[#speciesKeys + 1] = key
+  end
+  table.sort(speciesKeys)
+  local speciesForms = {} ---@type table<integer, { species: string, form: integer }>
+  for _, key in ipairs(speciesKeys) do
+    local formKeys = {}
+    for form in pairs(forms[key]) do
+      formKeys[#formKeys + 1] = form
+    end
+    table.sort(formKeys)
+    for _, form in ipairs(formKeys) do
+      speciesForms[#speciesForms + 1] = { species = key, form = form }
+    end
+  end
+  return moveKeys, speciesForms
+end
+
+---@return table<string, unknown>? live party catalog when the owner exposes one
+function BattleRuntime:_factCatalog()
+  local party = self._party --[[@as table<string, unknown>]]
+  if type(party) == "table" and type(party.catalog) == "function" then
+    local resolve = party.catalog --[[@as fun(self: table<string, unknown>): table<string, unknown>]]
+    local catalog = resolve(party)
+    if type(catalog) == "table" then
+      return catalog
+    end
+  end
+  return nil
+end
+
+-- Resolves the immutable move facts the detached scenario references through
+-- the live party catalog: every distinct record-backed move identity plus the
+-- explicit fallback action. Record-backed identities must resolve, so an
+-- unknown record move fails the build instead of guessing; the fallback
+-- action is provisioned only when the catalog carries it, and executions
+-- naming an unprovisioned move still fail explicitly at the move boundary.
+-- Battles without a fact source carry no facts and fail the same way on
+-- their first offending execution.
+---@param record table<string, unknown> detached scenario under session construction
+---@return table<string, table<string, unknown>> immutable move facts for the referenced moves
+function BattleRuntime:_sessionMoveFacts(record)
+  local facts = {} ---@type table<string, table<string, unknown>>
+  local catalog = self:_factCatalog()
+  if catalog == nil then
+    return facts
+  end
+  local source = catalog --[[@as table<string, unknown>]]
+  local moveByName = source.move --[[@as fun(self: table<string, unknown>, key: string): table<string, unknown>]]
+  assert(type(moveByName) == "function", "move facts resolve through the mon catalog")
+  local moveKeys = referencedStaticKeys(record)
+  for _, key in ipairs(moveKeys) do
+    facts[key] = copyValue(moveByName(source, key))
+  end
+  local ok, fallback = pcall(moveByName, source, "STRUGGLE")
+  if ok then
+    facts["STRUGGLE"] = copyValue(fallback)
+  end
+  return facts
+end
+
+-- Resolves the minimal static species facts the detached scenario references
+-- through the live party catalog: base stats plus the growth curve per
+-- referenced species and form. Unresolvable species fail the build instead
+-- of guessing; battles without a fact source carry no facts and fail
+-- explicitly on their first offending execution.
+---@param record table<string, unknown> detached scenario under session construction
+---@return table<string, SpeciesFormFacts> static species facts by species and form
+function BattleRuntime:_sessionSpeciesFacts(record)
+  local facts = {} ---@type table<string, SpeciesFormFacts>
+  local catalog = self:_factCatalog()
+  if catalog == nil then
+    return facts
+  end
+  local source = catalog --[[@as table<string, unknown>]]
+  local speciesByKey = source.species --[[@as fun(self: table<string, unknown>, key: string): table<string, unknown>]]
+  local formByKey = source.form --[[@as fun(self: table<string, unknown>, speciesKey: string, form: integer): table<string, unknown>]]
+  local curveByKey = source.growthCurve --[[@as fun(self: table<string, unknown>, key: string): table<integer, integer>]]
+  assert(
+    type(speciesByKey) == "function" and type(formByKey) == "function" and type(curveByKey) == "function",
+    "species facts resolve through the mon catalog"
+  )
+  local _, speciesForms = referencedStaticKeys(record)
+  for _, entry in ipairs(speciesForms) do
+    local speciesRecord = speciesByKey(source, entry.species)
+    local curveKey = speciesRecord.growthCurve
+    assert(type(curveKey) == "string", "species records name their growth curve")
+    local formRecord = formByKey(source, entry.species, entry.form)
+    assert(type(formRecord.baseStats) == "table", "species forms carry their base stats")
+    local bucket = facts[entry.species]
+    if bucket == nil then
+      bucket = {}
+      facts[entry.species] = bucket
+    end
+    bucket[entry.form] = {
+      baseStats = copyValue(formRecord.baseStats),
+      growthCurve = copyValue(curveByKey(source, curveKey --[[@as string]])),
+    }
+  end
+  return facts
+end
+
+-- Builds the live session from the detached scenario. The stamped ruleset
+-- is the native HGSS contract, and the common battle entrypoint selects
+-- the native executor from it; everything else rides the detached
+-- fragment.
 function BattleRuntime:_buildSession()
   local record = copyValue(self._scenario)
   assert(type(record) == "table", "session builds need their scenario")
-  record.ruleset = BattleSession.EXECUTABLE_RULESET
-  self._session = BattleSession.new(record, self:_executableContent())
+  record.ruleset = Executor.RULESET
+  record.moveFacts = self:_sessionMoveFacts(record --[[@as table<string, unknown>]])
+  record.speciesFacts = self:_sessionSpeciesFacts(record --[[@as table<string, unknown>]])
+  self._session = Battle.newSession(record, self:_executableContent())
 end
 
 function BattleRuntime:_updatePreparing()
@@ -635,7 +787,7 @@ function BattleRuntime:_partyUpdates()
   if self._party == nil or self._session == nil then
     return updates
   end
-  local session = self._session --[[@as BattleSession]]
+  local session = self._session --[[@as table<string, unknown>]]
   local snapshot = session:capture()
   local combatants = snapshot.combatants --[[@as table<integer, table<string, unknown>>]]
   local participants = snapshot.participants --[[@as table<integer, table<string, unknown>>]]

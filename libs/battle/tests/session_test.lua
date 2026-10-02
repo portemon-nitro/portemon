@@ -220,4 +220,43 @@ function T.duplicate_occupancy_invalid_ownership_and_undeclared_controllers_fail
   end, "positions cannot name combatants outside every declared roster")
 end
 
+function T.custom_ruleset_sessions_keep_the_generic_strike_settlement()
+  local contracts = SessionFixture.sessionContracts()
+  local session = SessionFixture.newSession(contracts, SessionFixture.buildScenario(singles()))
+
+  local collected = SessionFixture.driveToEnd(session, 64, function(request)
+    local opposing = 2
+    if request.controller == "beta" then
+      opposing = 1
+    end
+    local choices = {}
+    for _, actor in ipairs(request.actors) do
+      choices[#choices + 1] = SessionFixture.attackChoice(actor, 0, SessionFixture.positionTarget(opposing))
+    end
+    return choices
+  end)
+
+  local strikes = 0
+  for _, event in ipairs(collected) do
+    if event.kind == "strike" then
+      strikes = strikes + 1
+      local payload = event.payload --[[@as table<string, unknown>]]
+      Assert.notNil(payload.resolved, "generic strikes resolve their target")
+      Assert.equal(
+        payload.after,
+        payload.before --[[@as integer]] - 1,
+        "generic strikes settle for exactly one point"
+      )
+    end
+  end
+  Assert.isTrue(strikes > 0, "custom ruleset attacks settle as generic strikes")
+
+  local snapshot = session:capture()
+  SessionFixture.assertPlainData(snapshot)
+  local revived = contracts.Session.restore(snapshot, SessionFixture.makeContent())
+  Assert.notNil(revived, "generic snapshots restore their session")
+  session:dispose()
+  revived:dispose()
+end
+
 return { tests = T }

@@ -47,6 +47,23 @@ end
 ---@field bound BoundBehaviors the frozen bound behavior registries
 ---@field content BattleContent the frozen executable battle binding set
 
+-- Builds the frozen executable battle content for production sessions:
+-- the native HGSS ruleset plus the application battle formats, frozen
+-- together with no catalog dependency. Sessions resolve their mechanics
+-- executor from the bound ruleset, so this bundle is what selects the
+-- native lifecycle for field-owned battles.
+---@return BattleContent the frozen native battle binding set
+function HgssBattleContent.nativeContent()
+  local Executor = require("libs.battle.src.gen4.HgssSessionExecutor")
+  local builder = ContentBuilder.new()
+  local behaviors = BattleBehaviorBuilder.new()
+  behaviors:registerRuleset(Executor.RULESET, { key = Executor.RULESET, chart = Executor.RULESET }, "battle-runtime")
+  for _, formatKey in ipairs({ "wild-single", "single", "double" }) do
+    behaviors:registerFormat(formatKey, { key = formatKey }, "battle-runtime")
+  end
+  return BattleContent.new(builder:freeze(), behaviors:freeze())
+end
+
 ---@param options HgssBattleContentOptions
 ---@return HgssBattleContentBundle
 function HgssBattleContent.build(options)
