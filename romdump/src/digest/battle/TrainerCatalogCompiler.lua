@@ -261,6 +261,23 @@ function TrainerCatalogCompiler.compile(nativeInput)
       else
         nameReference = { trainerIndex = trainerIndex }
       end
+      -- The prize rate comes from the pinned class payout table: a class
+      -- outside that table fails here instead of borrowing another
+      -- class's rate.
+      local classRate = BattleSources.prizeMoneyRates[header.trainerClass]
+      if classRate == nil then
+        error(
+          Errors.new(
+            "TRAINER_BAD_CLASS",
+            "trainer " .. trainerIndex .. " names class " .. header.trainerClass .. " outside the pinned payout table",
+            {
+              trainer = trainerIndex,
+              trainerClass = header.trainerClass,
+            }
+          ),
+          0
+        )
+      end
       trainers[trainerIndex] = {
         trainerClass = header.trainerClass,
         nameReference = nameReference,
@@ -268,7 +285,7 @@ function TrainerCatalogCompiler.compile(nativeInput)
         aiPasses = projectAiPasses(header.aiFlags),
         doubleBattle = header.doubleBattle ~= 0,
         items = items,
-        prizeMoney = { trainerClass = header.trainerClass },
+        prizeMoney = { trainerClass = header.trainerClass, classRate = classRate },
         messageSelectors = { intro = 0, lose = 1, after = 2 },
       }
     end

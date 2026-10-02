@@ -113,6 +113,7 @@ end
 
 function T.pins_the_friendship_and_ball_source_facts()
   Assert.equal(ItemSources.HOLD_EFFECT_FRIENDSHIP_UP, 53)
+  Assert.equal(ItemSources.HOLD_EFFECT_MONEY_UP, 58)
   for _, nativeId in ipairs({ 1, 4, 16, 492, 498, 500 }) do
     Assert.isTrue(ItemSources.ballItemIds[nativeId] == true, "item " .. nativeId .. " is a ball")
   end

@@ -7,6 +7,14 @@
 -- applied twice). Amounts never go negative and prize money respects the
 -- player money ceiling. Pure domain module: no live state, no love
 -- dependency.
+--
+-- Trainer prize money follows the native rule: the defeated trainer's
+-- final ordered party member decides the prize level, the trainer
+-- class contributes its pinned payout rate, and the amount is
+-- level * 4 * class rate * money multiplier, doubled once for an
+-- ordinary doubles battle. Paired battles sum both trainers without the
+-- doubles doubling. Unknown classes, empty parties, and malformed reward
+-- metadata fail planning before anything publishes.
 
 local PlayerData = require("libs.hgss.src.save.PlayerData")
 
@@ -34,34 +42,94 @@ local function checkLevels(levels)
   return strongest
 end
 
--- Plans trainer prize money: the supplied base payout scaled by the
--- strongest opposing party level, capped at the player money ceiling.
+---@param levels unknown
+---@param index integer
+---@return integer final ordered party level deciding the prize
+local function checkPrizeLevels(levels, index)
+  if type(levels) ~= "table" or #levels == 0 then
+    error("prize planning requires trainer " .. index .. " to carry a non-empty party level array", 0)
+  end
+  for _, level in ipairs(levels) do
+    if type(level) ~= "number" or level % 1 ~= 0 or level < 1 or level > 100 then
+      error("prize planning needs trainer " .. index .. " party levels in 1..100", 0)
+    end
+  end
+  return levels[#levels] --[[@as integer]]
+end
+
+---@param trainer unknown
+---@param index integer
+---@return table<string, unknown> detached per-trainer prize facts
+local function checkTrainerReward(trainer, index)
+  if type(trainer) ~= "table" then
+    error("prize planning requires trainer " .. index .. " reward facts as a record", 0)
+  end
+  local entry = trainer --[[@as table<string, unknown>]]
+  if type(entry.trainerClass) ~= "number" or entry.trainerClass % 1 ~= 0 or entry.trainerClass < 0 then
+    error("prize planning requires trainer " .. index .. " to carry its numeric trainer class", 0)
+  end
+  if type(entry.classRate) ~= "number" or entry.classRate % 1 ~= 0 or entry.classRate < 0 then
+    error("prize planning requires trainer " .. index .. " to carry its class payout rate", 0)
+  end
+  local level = checkPrizeLevels(entry.partyLevels, index)
+  return {
+    trainerClass = entry.trainerClass,
+    level = level,
+    classRate = entry.classRate,
+  }
+end
+
+-- Plans trainer prize money from detached native trainer facts: one or two
+-- trainers carrying their numeric class, ordered party levels, and pinned
+-- class rate, plus the represented battle format and the battle-local
+-- money multiplier (1, or 2 while a money-up holder has sent out).
 -- Trainer-defeat flags and story rewards stay script-owned: anything the
 -- caller declares under scriptRewards is echoed back for the owning
 -- script to apply, never applied here.
----@param args { trainerClass: string, partyLevels: integer[], basePayout: integer, scriptRewards: table<string, unknown>? }
----@return { kind: string, trainerClass: string, level: integer, basePayout: integer, amount: integer, scriptRewards: table<string, unknown> }
+---@param args { trainers: table<integer, table<string, unknown>>, battleFormat: string, moneyMultiplier: integer, scriptRewards: table<string, unknown>? }
+---@return { kind: string, battleFormat: string, multiplier: integer, trainers: table<integer, table<string, unknown>>, amount: integer, scriptRewards: table<string, unknown> }
 function HgssBattleRewards.planMoney(args)
   if type(args) ~= "table" then
     error("prize planning requires an argument record", 0)
   end
-  if type(args.trainerClass) ~= "string" or args.trainerClass == "" then
-    error("prize planning requires a trainer class", 0)
+  if type(args.trainers) ~= "table" or #args.trainers == 0 or #args.trainers > 2 then
+    error("prize planning settles one defeated trainer, or two in a paired battle", 0)
   end
-  if type(args.basePayout) ~= "number" or args.basePayout % 1 ~= 0 or args.basePayout < 0 then
-    error("prize planning requires a non-negative integer base payout", 0)
+  if args.battleFormat ~= "single" and args.battleFormat ~= "double" then
+    error("prize planning settles a represented singles or doubles battle", 0)
   end
-  local strongest = checkLevels(args.partyLevels)
+  if args.moneyMultiplier ~= 1 and args.moneyMultiplier ~= 2 then
+    error("prize planning scales through a money multiplier of 1 or 2", 0)
+  end
   local scriptRewards = args.scriptRewards or {}
   if type(scriptRewards) ~= "table" then
     error("prize planning script rewards must be a record when present", 0)
   end
+  if #args.trainers == 2 and args.battleFormat ~= "double" then
+    error("prize planning settles paired trainers only on a doubles field", 0)
+  end
+  local trainers = {} ---@type table<integer, table<string, unknown>>
+  local amount = 0
+  for index, trainer in ipairs(args.trainers) do
+    local facts = checkTrainerReward(trainer, index)
+    local level = facts.level --[[@as integer]]
+    local classRate = facts.classRate --[[@as integer]]
+    local share = level * 4 * classRate * args.moneyMultiplier --[[@as integer]]
+    -- An ordinary doubles battle doubles one trainer's prize once; a
+    -- paired battle instead sums both trainers without doubling.
+    if #args.trainers == 1 and args.battleFormat == "double" then
+      share = share * 2
+    end
+    facts.amount = share
+    trainers[#trainers + 1] = facts
+    amount = amount + share
+  end
   return {
     kind = "money",
-    trainerClass = args.trainerClass,
-    level = strongest,
-    basePayout = args.basePayout,
-    amount = math.min(PlayerData.MAX_MONEY, args.basePayout * strongest),
+    battleFormat = args.battleFormat,
+    multiplier = args.moneyMultiplier,
+    trainers = trainers,
+    amount = math.min(PlayerData.MAX_MONEY, amount),
     scriptRewards = scriptRewards,
   }
 end

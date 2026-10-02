@@ -26,6 +26,16 @@ function T.machine_holdability_splits_tm_from_hm()
   Assert.isFalse(lastHm.canHold)
 end
 
+function T.money_up_items_share_one_held_behavior()
+  local items = catalog()
+  for _, key in ipairs({ "AMULET_COIN", "LUCK_INCENSE" }) do
+    local held = assert(items:item(key).heldBehavior, key .. " carries its held behavior")
+    Assert.equal(held.key, "money_up", key .. " classifies through the money-up hold effect")
+    Assert.equal(held.params.holdEffect, 58, key .. " carries the source hold-effect byte")
+  end
+  Assert.isNil(items:item("POTION").heldBehavior, "effectless items carry no held behavior")
+end
+
 function T.key_items_and_mail_never_attach()
   local items = catalog()
   Assert.isFalse(items:item("BICYCLE").canHold)

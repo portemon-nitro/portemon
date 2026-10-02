@@ -57,6 +57,16 @@ local KNOWN = {
     },
   },
   SOOTHE_BELL = { nativeId = 218, pocket = "items", friendshipBoost = true },
+  AMULET_COIN = {
+    nativeId = 223,
+    pocket = "items",
+    heldBehavior = { key = "money_up", params = { nativeId = 223, holdEffect = 58 } },
+  },
+  LUCK_INCENSE = {
+    nativeId = 319,
+    pocket = "items",
+    heldBehavior = { key = "money_up", params = { nativeId = 319, holdEffect = 58 } },
+  },
   TM01 = { nativeId = 328, pocket = "tmhm", tmhmMoveNativeId = 264 },
   HM01 = { nativeId = 420, pocket = "tmhm", tmhmMoveNativeId = 15, isHm = true, canHold = false },
   CHERI_BERRY = {
@@ -178,6 +188,7 @@ function ItemFixture.buildAssetRoot()
         isHm = known.isHm or false,
         canHold = known.canHold,
         heldFormEffect = known.heldFormEffect or "none",
+        heldBehavior = known.heldBehavior,
         partyUse = known.partyUse or { kind = "none" },
       }
       if record.canHold == nil then

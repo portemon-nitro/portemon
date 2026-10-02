@@ -528,12 +528,21 @@ function HgssTrainerFactory:build(context)
   if type(catalog.program) == "function" then
     program = catalog:program(context.trainerKey)
   end
+  -- The compiled prize record rides along untouched: the reward planner
+  -- reads the class rate from these detached facts instead of looking
+  -- the class up again. Templates without one plan no reward.
+  local prizeMoney = nil
+  if type(record.prizeMoney) == "table" then
+    local prize = record.prizeMoney --[[@as table<string, unknown>]]
+    prizeMoney = { trainerClass = prize.trainerClass, classRate = prize.classRate }
+  end
   return {
     name = name,
     mons = mons,
     trainerKey = context.trainerKey,
     trainerClass = record.trainerClass,
     partyLevels = partyLevels,
+    prizeMoney = prizeMoney,
     doubleBattle = record.doubleBattle == true,
     aiPasses = record.aiPasses or {},
     items = record.items or {},

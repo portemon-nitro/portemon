@@ -168,6 +168,34 @@ BattleSources.trainerSources = {
   memberAlignment = 4,
 }
 
+-- Pinned trainer-class payout rates from
+-- asm/overlay_12_battle_command.s sPrizeMoneyTbl
+-- (pret/pokeheartgold@0985e8718df4f25e64d6507d89c0c97c0d288981): one
+-- non-negative integer rate per numeric trainer class 0..128, keyed by
+-- that class identity. The source table order is not numeric order; this
+-- projection is keyed so consumers never depend on row position. The
+-- battle consequence planner and the trainer compiler are the only
+-- readers; no other module carries a copy of these rates.
+---@type table<integer, integer>
+BattleSources.prizeMoneyRates = {
+  [0] = 0, [1] = 0, [2] = 4, [3] = 4, [4] = 4, [5] = 4, [6] = 4, [7] = 8,
+  [8] = 4, [9] = 8, [10] = 4, [11] = 8, [12] = 8, [13] = 8, [14] = 6, [15] = 12,
+  [16] = 12, [17] = 12, [18] = 4, [19] = 8, [20] = 16, [21] = 16, [22] = 2, [23] = 16,
+  [24] = 15, [25] = 15, [26] = 8, [27] = 20, [28] = 2, [29] = 8, [30] = 8, [31] = 8,
+  [32] = 40, [33] = 40, [34] = 50, [35] = 50, [36] = 14, [37] = 16, [38] = 10, [39] = 15,
+  [40] = 15, [41] = 12, [42] = 4, [43] = 4, [44] = 1, [45] = 1, [46] = 8, [47] = 30,
+  [48] = 12, [49] = 8, [50] = 8, [51] = 30, [52] = 6, [53] = 15, [54] = 15, [55] = 10,
+  [56] = 8, [57] = 6, [58] = 6, [59] = 10, [60] = 5, [61] = 5, [62] = 10, [63] = 4,
+  [64] = 8, [65] = 4, [66] = 30, [67] = 30, [68] = 16, [69] = 8, [70] = 30, [71] = 10,
+  [72] = 30, [73] = 30, [74] = 30, [75] = 30, [76] = 30, [77] = 12, [78] = 12, [79] = 12,
+  [80] = 8, [81] = 8, [82] = 12, [83] = 8, [84] = 10, [85] = 18, [86] = 50, [87] = 30,
+  [88] = 30, [89] = 30, [90] = 30, [91] = 30, [92] = 30, [93] = 30, [94] = 30, [95] = 25,
+  [96] = 25, [97] = 0, [98] = 30, [99] = 0, [100] = 0, [101] = 0, [102] = 0, [103] = 30,
+  [104] = 30, [105] = 30, [106] = 30, [107] = 30, [108] = 30, [109] = 50, [110] = 40, [111] = 30,
+  [112] = 30, [113] = 8, [114] = 20, [115] = 8, [116] = 20, [117] = 10, [118] = 10, [119] = 25,
+  [120] = 30, [121] = 30, [122] = 16, [123] = 0, [124] = 45, [125] = 0, [126] = 0, [127] = 0,
+  [128] = 0,
+}
 -- Pinned EncounterData member facts from include/wild_encounter.h: the
 -- 0xC4-byte member with per-method slot counts and byte offsets of every
 -- rate array, level/species array, and replacement field.

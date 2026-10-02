@@ -64,7 +64,6 @@ local HgssTrainerAi = require("libs.hgss.src.battle.HgssTrainerAi")
 ---@field dex table<string, unknown>? live dex knowledge staging sightings and catches
 ---@field roamer table<string, unknown>? roamer battle record with its owner, key, and revision
 ---@field player table<string, unknown>? player money facts with their validation context
----@field prize table<string, unknown>? trainer prize inputs with their class and base payout
 ---@field captures table<integer, table<string, unknown>>? battle capture results in committer shape
 ---@field trainerProgram table<string, unknown>? bound selection program for trainer controllers
 ---@field seed integer? unsigned 32-bit stream seed, derived from the launch identity when absent
@@ -79,7 +78,6 @@ local HgssTrainerAi = require("libs.hgss.src.battle.HgssTrainerAi")
 ---@field _dex table<string, unknown>?
 ---@field _roamer table<string, unknown>?
 ---@field _player table<string, unknown>?
----@field _prize table<string, unknown>?
 ---@field _captures table<integer, table<string, unknown>>?
 ---@field _trainerProgram table<string, unknown>?
 ---@field _seed integer
@@ -251,9 +249,6 @@ local function checkConsequenceInputs(args)
     assert(type(args.player.record) == "table", "player money facts carry their record")
     assert(type(args.player.context) == "table", "player money facts carry their context")
   end
-  if args.prize ~= nil then
-    assert(type(args.prize) == "table", "trainer prize inputs arrive as a record")
-  end
   if args.captures ~= nil then
     assert(type(args.captures) == "table", "battle captures arrive as an array")
   end
@@ -279,8 +274,11 @@ end
 -- session work happens in preparing so build failures report through the
 -- failed phase instead of raising. Consequence inputs beyond the request
 -- are all optional: the live bag and dex owners plus planned bag
--- consumption, the live roamer battle record, the player money facts with
--- the trainer prize inputs, and the battle capture results. Battle code
+-- consumption, the live roamer battle record, the player money facts,
+-- and the battle capture results. Trainer prize money needs no caller
+-- inputs: the detached scenario carries the defeated trainers' native
+-- reward facts and the live session carries the battle-local money
+-- multiplier, so a trainer win plans its own reward. Battle code
 -- never mutates a live owner directly: every staged consequence commits
 -- through the battle committer at resolution.
 ---@param args BattleRuntimeArgs construction record carrying the request and consequence inputs
@@ -307,7 +305,6 @@ function BattleRuntime.new(args)
     _dex = args.dex,
     _roamer = args.roamer,
     _player = args.player,
-    _prize = args.prize ~= nil and copyValue(args.prize) or nil,
     _captures = args.captures ~= nil and copyValue(args.captures) or nil,
     _trainerProgram = args.trainerProgram,
     _seed = args.seed or hashIdentity(request.id --[[@as string]]),
@@ -613,6 +610,61 @@ function BattleRuntime:_sessionSpeciesFacts(record)
   return facts
 end
 
+-- Resolves the money-up held items the detached scenario carries through
+-- the live party catalog: every distinct held key on a battle record is
+-- classified through its compiled held behavior, so the session entry
+-- scan latches on data, never on item names. Descriptor combatants carry
+-- no item and contribute nothing; battles without a fact source carry no
+-- facts and never latch.
+---@param record table<string, unknown> detached scenario under session construction
+---@return string[] sorted distinct held-item keys carrying the money-up effect
+function BattleRuntime:_sessionMoneyUpItems(record)
+  local found = {} ---@type table<string, boolean>
+  local catalog = self:_factCatalog()
+  if catalog == nil then
+    return {}
+  end
+  local source = catalog --[[@as table<string, unknown>]]
+  local itemByKey = source.item --[[@as fun(self: table<string, unknown>, key: string): table<string, unknown>]]
+  assert(type(itemByKey) == "function", "money-up facts resolve through the mon catalog")
+  local participants = record.participants
+  if type(participants) ~= "table" then
+    return {}
+  end
+  for _, entry in
+    ipairs(participants --[[@as table<integer, unknown>]])
+  do
+    if type(entry) == "table" then
+      local roster = (entry --[[@as table<string, unknown>]]).roster
+      if type(roster) == "table" then
+        for _, seed in
+          ipairs(roster --[[@as table<integer, unknown>]])
+        do
+          if type(seed) == "table" then
+            local mon = (seed --[[@as table<string, unknown>]]).mon
+            if type(mon) == "table" then
+              local held = (mon --[[@as table<string, unknown>]]).heldItem
+              if type(held) == "string" and held ~= "" and found[held] == nil then
+                local definition = itemByKey(source, held)
+                local behavior = definition.heldBehavior
+                if type(behavior) == "table" and behavior.key == "money_up" then
+                  found[held] = true
+                end
+              end
+            end
+          end
+        end
+      end
+    end
+  end
+  local keys = {} ---@type string[]
+  for key in pairs(found) do
+    keys[#keys + 1] = key
+  end
+  table.sort(keys)
+  return keys
+end
+
 -- Builds the live session from the detached scenario. The stamped ruleset
 -- is the native HGSS contract, and the common battle entrypoint selects
 -- the native executor from it; everything else rides the detached
@@ -623,6 +675,7 @@ function BattleRuntime:_buildSession()
   record.ruleset = Executor.RULESET
   record.moveFacts = self:_sessionMoveFacts(record --[[@as table<string, unknown>]])
   record.speciesFacts = self:_sessionSpeciesFacts(record --[[@as table<string, unknown>]])
+  record.moneyUpItems = self:_sessionMoneyUpItems(record --[[@as table<string, unknown>]])
   self._session = Battle.newSession(record, self:_executableContent())
 end
 
@@ -921,22 +974,65 @@ function BattleRuntime:_commitCaptures()
   return staged
 end
 
+---@return table<integer, table<string, unknown>> detached per-trainer native reward facts
+function BattleRuntime:_trainerRewardFacts()
+  local scenario = assert(self._scenario, "trainer rewards read the detached scenario")
+  local trainers = scenario.trainer
+  if type(trainers) ~= "table" or #trainers == 0 then
+    error("trainer rewards require the defeated trainer entries", 0)
+  end
+  local facts = {} ---@type table<integer, table<string, unknown>>
+  for index, entry in ipairs(trainers) do
+    if type(entry) ~= "table" then
+      error("trainer reward entry " .. index .. " stays a record", 0)
+    end
+    local trainer = entry --[[@as table<string, unknown>]]
+    local prize = trainer.prizeMoney
+    facts[#facts + 1] = {
+      trainerClass = trainer.class,
+      partyLevels = trainer.partyLevels,
+      classRate = type(prize) == "table" and (prize --[[@as table<string, unknown>]]).classRate or nil,
+    }
+  end
+  return facts
+end
+
+---@return string represented battle format settling the reward
+function BattleRuntime:_rewardFormat()
+  local scenario = assert(self._scenario, "trainer rewards read the detached scenario")
+  local format = scenario.format
+  if format ~= "single" and format ~= "double" then
+    error("trainer rewards settle a represented singles or doubles battle", 0)
+  end
+  return format --[[@as string]]
+end
+
+---@return integer battle-local money multiplier latched by the session entry scan
+function BattleRuntime:_rewardMultiplier()
+  local session = assert(self._session, "trainer rewards read the live session")
+  local snapshot = session:capture()
+  local multiplier = snapshot.prizeMoneyValue
+  if multiplier == nil then
+    return 1
+  end
+  if multiplier ~= 1 and multiplier ~= 2 then
+    error("battle money multipliers stay 1 or 2", 0)
+  end
+  return multiplier --[[@as integer]]
+end
+
 ---@param result string outcome word the commit carries
 ---@return table<string, unknown> reward plan, or an empty record when nothing is owed
 function BattleRuntime:_commitRewards(result)
-  if result == "win" and self._request.kind == "trainer" and self._prize ~= nil then
-    local prize = self._prize --[[@as table<string, unknown>]]
-    if type(prize.trainerClass) ~= "string" or prize.trainerClass == "" then
-      error("trainer prize inputs name their trainer class", 0)
-    end
-    if type(prize.basePayout) ~= "number" or prize.basePayout % 1 ~= 0 or prize.basePayout < 0 then
-      error("trainer prize inputs carry a non-negative integer base payout", 0)
-    end
+  if result == "win" and self._request.kind == "trainer" then
+    -- Native trainer wins derive their own reward inputs from the
+    -- materialized trainer entries and the live battle state: no
+    -- caller-injected prize is required, and incomplete reward facts
+    -- fail planning before anything publishes.
     return HgssBattleRewards.planMoney({
-      trainerClass = prize.trainerClass,
-      partyLevels = self:_sideLevels(false),
-      basePayout = prize.basePayout,
-      scriptRewards = prize.scriptRewards,
+      trainers = self:_trainerRewardFacts(),
+      battleFormat = self:_rewardFormat(),
+      moneyMultiplier = self:_rewardMultiplier(),
     })
   end
   if result == "loss" and self._player ~= nil then

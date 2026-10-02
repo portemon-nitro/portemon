@@ -232,4 +232,91 @@ function T.snapshots_resume_deterministically_and_reject_garbage()
   end, "foreign schedule frames reject instead of resuming")
 end
 
+---@param holderItem string? held item key carried by the opening lead
+---@param bench boolean true when a benched reserve joins the opening roster
+---@return table detached native battle setup record with its money-up facts
+local function prizeScenario(holderItem, bench)
+  local Executor = executorOwner()
+  local alpha = tackleCombatant(1, 11)
+  if holderItem ~= nil then
+    alpha.mon.heldItem = holderItem
+  end
+  local seeds = { alpha }
+  local roster = { alpha }
+  if bench == true then
+    local reserve = bareCombatant(3)
+    seeds[#seeds + 1] = reserve
+    roster[#roster + 1] = reserve
+  end
+  local beta = bareCombatant(2)
+  seeds[#seeds + 1] = beta
+  return {
+    ruleset = Executor.RULESET,
+    format = NATIVE_FORMAT,
+    sides = { SessionFixture.side(1, { 1 }), SessionFixture.side(2, { 2 }) },
+    participants = {
+      SessionFixture.participant(1, 1, "alpha", roster),
+      SessionFixture.participant(2, 2, "beta", { beta }),
+    },
+    positions = {
+      SessionFixture.position(1, 1, { 1 }, 1),
+      SessionFixture.position(2, 2, { 2 }, 2),
+    },
+    inventories = {},
+    environment = { weather = "none" },
+    random = { seed = NATIVE_SEED },
+    formatState = {},
+    moveFacts = scenarioMoveFacts(),
+    speciesFacts = scenarioSpeciesFacts(seeds),
+    moneyUpItems = { "COIN" },
+  }
+end
+
+function T.entry_scan_latches_the_prize_multiplier()
+  local contracts = SessionFixture.sessionContracts()
+  local content = nativeContent()
+  local holding = contracts.Battle.newSession(prizeScenario("COIN", false), content)
+  Assert.equal(holding:capture().prizeMoneyValue, 2, "a money-up holder on the field latches the multiplier")
+  holding:dispose()
+  local plain = contracts.Battle.newSession(prizeScenario(nil, false), content)
+  Assert.equal(plain:capture().prizeMoneyValue, 1, "battles without the hold effect keep the base multiplier")
+  plain:dispose()
+end
+
+function T.the_latched_multiplier_survives_the_holder_leaving()
+  local contracts = SessionFixture.sessionContracts()
+  local content = nativeContent()
+  local session = contracts.Battle.newSession(prizeScenario("COIN", true), content)
+  Assert.equal(session:capture().prizeMoneyValue, 2, "the holder latches the multiplier at send-out")
+  local waiting = SessionFixture.driveUntilSettled(session)
+  Assert.equal(waiting.status, "waiting", "the battle opens its decision boundary")
+  for _, request in ipairs(waiting.request.requests) do
+    local choices
+    if request.controller == "alpha" then
+      local actor = assert(request.actors[1], "the alpha request addresses its holder")
+      choices = { SessionFixture.switchChoice(actor, 3) }
+    else
+      choices = answer(request)
+    end
+    local ok, replyErr = session:submit(SessionFixture.replyFor(request, choices))
+    Assert.isTrue(ok, "the boundary accepts the replies: " .. tostring(replyErr))
+  end
+  session:advance(64)
+  Assert.equal(session:capture().prizeMoneyValue, 2, "the multiplier persists after the holder leaves")
+  session:dispose()
+end
+
+function T.snapshots_preserve_the_latched_multiplier()
+  local contracts = SessionFixture.sessionContracts()
+  local Executor = executorOwner()
+  local content = nativeContent()
+  local session = contracts.Battle.newSession(prizeScenario("COIN", false), content)
+  local snapshot = session:capture()
+  Assert.equal(snapshot.prizeMoneyValue, 2, "captures carry the latched multiplier")
+  local revived = Executor.restore(snapshot, content)
+  Assert.equal(revived:capture().prizeMoneyValue, 2, "restored sessions keep the latched multiplier")
+  session:dispose()
+  revived:dispose()
+end
+
 return { tests = T }

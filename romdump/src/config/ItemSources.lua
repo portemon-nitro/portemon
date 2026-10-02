@@ -673,6 +673,10 @@ ItemSources.machineMoves = {
 -- (HOLD_EFFECT_FRIENDSHIP_UP in include/constants/items.h).
 ItemSources.HOLD_EFFECT_FRIENDSHIP_UP = 53
 
+-- Item hold-effect constant doubling trainer prize money while any battler
+-- holds it (HOLD_EFFECT_MONEY_UP in include/constants/items.h).
+ItemSources.HOLD_EFFECT_MONEY_UP = 58
+
 -- item_data member layout (struct ItemData in include/item.h): fixed 34-byte
 -- rows. Audited field offsets: u16 price at 0, hold-effect byte at 2,
 -- hold-effect parameter at 3, the packed bitfield u16 at 8
