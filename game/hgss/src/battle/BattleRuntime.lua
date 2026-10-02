@@ -27,8 +27,8 @@
 -- knockouts settle through faint ownership, and a battle that reaches the
 -- bound with both sides standing settles as a draw. No victory is ever
 -- invented: only a fainted enemy side reports a win. Committed party
--- health writeback carries the executed damage into the live party through
--- the committer's staged batch.
+-- writeback carries the executed damage and the earned knockout
+-- progression into the live party through the committer's staged batch.
 
 local Battle = require("gen4.battle")
 local HgssBattleContent = require("game.hgss.src.battle.HgssBattleContent")
@@ -50,6 +50,7 @@ local HgssTrainerAi = require("libs.hgss.src.battle.HgssTrainerAi")
 
 ---@class BattlePartyOwner
 ---@field partyRevision fun(self: BattlePartyOwner): integer
+---@field partyMon (fun(self: BattlePartyOwner, slot0: integer): table<string, unknown>)? reads the current live party slot record
 
 ---@class BattleBoundController
 ---@field kind string
@@ -712,6 +713,23 @@ function BattleRuntime:_sessionMoveFacts(record)
   for _, key in ipairs(moveKeys) do
     facts[key] = copyValue(moveByName(source, key))
   end
+  -- Knockout rewards learn through level-up learnsets, so every learnset
+  -- move of a referenced form resolves beside the carried move sets.
+  local formByKey = source.form --[[@as fun(self: table<string, unknown>, speciesKey: string, form: integer): table<string, unknown>]]
+  assert(type(formByKey) == "function", "learnset moves resolve through the mon catalog")
+  local _, speciesForms = referencedStaticKeys(record)
+  for _, entry in ipairs(speciesForms) do
+    local formRecord = formByKey(source, entry.species, entry.form)
+    assert(type(formRecord.levelUpMoves) == "table", "species forms carry their learnsets")
+    for _, chance in
+      ipairs(formRecord.levelUpMoves --[[@as table<integer, table<string, unknown>>]])
+    do
+      local move = chance.move --[[@as string]]
+      if facts[move] == nil then
+        facts[move] = copyValue(moveByName(source, move))
+      end
+    end
+  end
   local ok, fallback = pcall(moveByName, source, "STRUGGLE")
   if ok then
     facts["STRUGGLE"] = copyValue(fallback)
@@ -720,10 +738,11 @@ function BattleRuntime:_sessionMoveFacts(record)
 end
 
 -- Resolves the minimal static species facts the detached scenario references
--- through the live party catalog: base stats, semantic form types, plus the
--- growth curve per referenced species and form. Unresolvable species fail the
--- build instead of guessing; battles without a fact source carry no facts
--- and fail explicitly on their first offending execution.
+-- through the live party catalog: base stats, semantic form types, the
+-- growth curve, the level-up learnset, and the knockout yields per
+-- referenced species and form. Unresolvable species fail the build instead
+-- of guessing; battles without a fact source carry no facts and fail
+-- explicitly on their first offending execution.
 ---@param record table<string, unknown> detached scenario under session construction
 ---@return table<string, SpeciesFormFacts> static species facts by species and form
 function BattleRuntime:_sessionSpeciesFacts(record)
@@ -756,6 +775,9 @@ function BattleRuntime:_sessionSpeciesFacts(record)
       assert(type(key) == "string" and key ~= "", "species types name their semantic key")
       types[#types + 1] = key
     end
+    assert(type(formRecord.levelUpMoves) == "table", "species forms carry their learnsets")
+    assert(type(speciesRecord.baseExpYield) == "number", "species records carry their base experience yield")
+    assert(type(speciesRecord.evYield) == "table", "species records carry their effort yield")
     local bucket = facts[entry.species]
     if bucket == nil then
       bucket = {}
@@ -765,6 +787,9 @@ function BattleRuntime:_sessionSpeciesFacts(record)
       baseStats = copyValue(formRecord.baseStats),
       growthCurve = copyValue(curveByKey(source, curveKey --[[@as string]])),
       types = types,
+      levelUpMoves = copyValue(formRecord.levelUpMoves),
+      baseExpYield = speciesRecord.baseExpYield,
+      evYield = copyValue(speciesRecord.evYield),
     }
   end
   return facts
@@ -994,7 +1019,56 @@ function BattleRuntime:_mapOutcome()
   error("unknown battle outcome kind " .. tostring(outcome.kind), 0)
 end
 
----@return table<integer, unknown> party slot updates carrying executed health
+---@param left unknown
+---@param right unknown
+---@return boolean equal true when both values carry the same data
+local function valuesEqual(left, right)
+  if type(left) ~= type(right) then
+    return false
+  end
+  if type(left) ~= "table" then
+    return left == right
+  end
+  local leftRecord = left --[[@as table<string, unknown>]]
+  local rightRecord = right --[[@as table<string, unknown>]]
+  for key, value in pairs(leftRecord) do
+    if not valuesEqual(value, rightRecord[key]) then
+      return false
+    end
+  end
+  for key, _ in pairs(rightRecord) do
+    if leftRecord[key] == nil then
+      return false
+    end
+  end
+  return true
+end
+
+-- Reports whether the staged combatant copy carries knockout progression
+-- the live party slot record lacks: experience, derived level, effort
+-- values, or the move set. Health is excluded: the caller already stages
+-- every health change, so this covers exactly the undamaged recipients
+-- whose gains the health-only rule silently dropped.
+---@param live table<string, unknown> current live party slot record
+---@param staged table<string, unknown> battle-owned combatant copy under staging
+---@return boolean changed true when progression differs
+local function progressionChanged(live, staged)
+  if live.experience ~= staged.experience then
+    return true
+  end
+  if live.level ~= staged.level then
+    return true
+  end
+  if not valuesEqual(live.evs, staged.evs) then
+    return true
+  end
+  if not valuesEqual(live.moves, staged.moves) then
+    return true
+  end
+  return false
+end
+
+---@return table<integer, unknown> party slot updates carrying executed health and knockout progression
 function BattleRuntime:_partyUpdates()
   local updates = {}
   if self._party == nil or self._session == nil then
@@ -1016,10 +1090,20 @@ function BattleRuntime:_partyUpdates()
         local record = mon --[[@as table<string, unknown>]]
         local condition = record.condition --[[@as table<string, unknown>]]
         assert(type(condition) == "table", "writeback carries the combatant condition")
-        if combatant.hp ~= combatant.entryHp then
-          condition.currentHp = combatant.hp
+        local slot0 = source.slot --[[@as integer]] - 1
+        condition.currentHp = combatant.hp
+        local healthChanged = combatant.hp ~= combatant.entryHp
+        local progressed = false
+        if not healthChanged then
+          local party = self._party --[[@as BattlePartyOwner]]
+          local reader = party.partyMon
+          if type(reader) == "function" then
+            progressed = progressionChanged(reader(party, slot0), record)
+          end
+        end
+        if healthChanged or progressed then
           updates[#updates + 1] = {
-            slot = source.slot --[[@as integer]] - 1,
+            slot = slot0,
             mon = record,
           }
         end

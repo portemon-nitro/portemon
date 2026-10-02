@@ -18,7 +18,10 @@ local BattleState = {}
 
 -- Interruption captures carrying an older version reject as incompatible:
 -- pre-release battle snapshots never migrate, they fail before publication.
-BattleState.VERSION = 2
+-- Version 3 carries the knockout-reward continuation (reward children,
+-- battle participation, and evolution eligibility) alongside the version-2
+-- replacement lifecycle.
+BattleState.VERSION = 3
 
 ---@param value unknown
 ---@return unknown

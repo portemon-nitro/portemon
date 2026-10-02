@@ -53,14 +53,30 @@ local function bareCombatant(id)
   return entry
 end
 
----@return table<string, table<string, unknown>> immutable move facts for the fixture strikes
-local function scenarioMoveFacts()
+---@param seeds table<integer, table<string, unknown>>? combatant seeds whose strikes and learnsets resolve
+---@return table<string, table<string, unknown>> immutable move facts for the fixture strikes and learnsets
+local function scenarioMoveFacts(seeds)
   local CatalogFixture = require("libs.mons.tests.catalog_fixture")
   local catalog = CatalogFixture.makeCatalog()
-  return {
+  local facts = {
     TACKLE = catalog:move("TACKLE"),
     STRUGGLE = { power = 50, accuracy = 100, category = "physical", moveType = "normal", priority = 0 },
   }
+  for _, seed in ipairs(seeds or {}) do
+    local learned = seed.mon --[[@as table<string, unknown>]]
+    for _, entry in ipairs(learned.moves --[[@as table<integer, table<string, unknown>>]]) do
+      if type(entry) == "table" and type(entry.move) == "string" and facts[entry.move] == nil then
+        facts[entry.move] = catalog:move(entry.move)
+      end
+    end
+    local form = catalog:form(learned.species --[[@as string]], learned.form --[[@as integer]])
+    for _, chance in ipairs(form.levelUpMoves) do
+      if facts[chance.move] == nil then
+        facts[chance.move] = catalog:move(chance.move)
+      end
+    end
+  end
+  return facts
 end
 
 ---@param formRecord table<string, unknown> catalog form record carrying its semantic types
@@ -93,6 +109,9 @@ local function scenarioSpeciesFacts(seeds)
       baseStats = catalog:form(species, form).baseStats,
       growthCurve = catalog:growthCurve(speciesRecord.growthCurve --[[@as string]]),
       types = copyFormTypes(catalog:form(species, form)),
+      levelUpMoves = catalog:form(species, form).levelUpMoves,
+      baseExpYield = speciesRecord.baseExpYield,
+      evYield = speciesRecord.evYield,
     }
   end
   return facts
@@ -119,7 +138,7 @@ local function nativeScenario()
     environment = { weather = "none" },
     random = { seed = NATIVE_SEED },
     formatState = {},
-    moveFacts = scenarioMoveFacts(),
+    moveFacts = scenarioMoveFacts({ alpha, beta }),
     speciesFacts = scenarioSpeciesFacts({ alpha, beta }),
   }
 end
@@ -145,7 +164,7 @@ local function healthyDuelScenario()
     environment = { weather = "none" },
     random = { seed = NATIVE_SEED },
     formatState = {},
-    moveFacts = scenarioMoveFacts(),
+    moveFacts = scenarioMoveFacts({ alpha, beta }),
     speciesFacts = scenarioSpeciesFacts({ alpha, beta }),
   }
 end
@@ -180,7 +199,7 @@ local function woundedLeadScenario(woundedSide)
     environment = { weather = "none" },
     random = { seed = NATIVE_SEED },
     formatState = {},
-    moveFacts = scenarioMoveFacts(),
+    moveFacts = scenarioMoveFacts(seeds),
     speciesFacts = scenarioSpeciesFacts(seeds),
   }
 end
@@ -229,6 +248,116 @@ local function announcesFaint(collected, combatant)
     end
   end
   return false
+end
+
+---@return table combatant seed pinned one experience below level twelve with a full move set
+local function rewardRecipient(id, seed)
+  local entry = { id = id, mon = SessionFixture.makeMon(seed, { species = "CHIKORITA", level = 11 }) }
+  entry.mon.experience = 972
+  entry.mon.moves = {
+    { move = "TACKLE", pp = 35, ppUps = 0 },
+    { move = "GROWL", pp = 40, ppUps = 0 },
+    { move = "RAZOR_LEAF", pp = 25, ppUps = 0 },
+    { move = "POISONPOWDER", pp = 30, ppUps = 0 },
+  }
+  return entry
+end
+
+---@return table detached native battle setup with a pinned recipient against a wounded foe
+local function rewardScenario()
+  local Executor = executorOwner()
+  local alpha = rewardRecipient(1, 11)
+  local beta = tackleCombatant(2, 23)
+  beta.mon.condition.currentHp = 1
+  return {
+    ruleset = Executor.RULESET,
+    format = NATIVE_FORMAT,
+    sides = { SessionFixture.side(1, { 1 }), SessionFixture.side(2, { 2 }) },
+    participants = {
+      SessionFixture.participant(1, 1, "alpha", { alpha }),
+      SessionFixture.participant(2, 2, "beta", { beta }),
+    },
+    positions = {
+      SessionFixture.position(1, 1, { 1 }, 1),
+      SessionFixture.position(2, 2, { 2 }, 2),
+    },
+    inventories = {},
+    environment = { weather = "none" },
+    random = { seed = NATIVE_SEED },
+    formatState = {},
+    moveFacts = scenarioMoveFacts({ alpha, beta }),
+    speciesFacts = scenarioSpeciesFacts({ alpha, beta }),
+  }
+end
+
+---@param frame table settled battle frame under inspection
+---@return table|nil the pending learning prompt, when one is open
+local function findLearnPrompt(frame)
+  if frame.request == nil then
+    return nil
+  end
+  for _, request in ipairs(frame.request.requests) do
+    if request.kind == "learn_move" then
+      return request
+    end
+  end
+  return nil
+end
+
+---@param actor table addressed recipient entry under reply
+---@param decision string replace or decline
+---@param slot integer? zero-based move slot for replacements
+---@return table decision choice carrying the learning reply
+local function learnChoice(actor, decision, slot)
+  local payload = { decision = decision }
+  if slot ~= nil then
+    payload.slot = slot
+  end
+  return { actor = actor, kind = "confirm", payload = payload }
+end
+
+---@param events table[] emitted events under inspection
+---@param kind string event identity under inspection
+---@return table|nil the first event carrying that identity
+local function findSessionEvent(events, kind)
+  for _, event in ipairs(events) do
+    if type(event) == "table" and event.kind == kind then
+      return event
+    end
+  end
+  return nil
+end
+
+---@param events table[] emitted events under inspection
+---@param kind string event identity under inspection
+---@return integer events carrying that identity
+local function countSessionEvents(events, kind)
+  local seen = 0
+  for _, event in ipairs(events) do
+    if type(event) == "table" and event.kind == kind then
+      seen = seen + 1
+    end
+  end
+  return seen
+end
+
+---@param session table live headless session under test
+---@param budget integer operations per advance call
+---@return table boundary frame at the next atomic boundary
+---@return table[] every event emitted along the way
+local function advanceCollecting(session, budget)
+  local collected = {}
+  for _ = 1, 64 do
+    local frame = session:advance(budget)
+    Assert.notNil(frame, "advance returns a battle frame")
+    for _, event in ipairs(frame.events or {}) do
+      collected[#collected + 1] = event
+    end
+    if frame.status ~= "running" then
+      return frame, collected
+    end
+  end
+  error("session did not settle within its operation bound")
 end
 
 ---@param request table pending decision request under test
@@ -386,7 +515,7 @@ local function prizeScenario(holderItem, bench)
     environment = { weather = "none" },
     random = { seed = NATIVE_SEED },
     formatState = {},
-    moveFacts = scenarioMoveFacts(),
+    moveFacts = scenarioMoveFacts(seeds),
     speciesFacts = scenarioSpeciesFacts(seeds),
     moneyUpItems = { "COIN" },
   }
@@ -674,7 +803,7 @@ function T.a_final_knockout_without_a_reserve_ends_the_battle()
     environment = { weather = "none" },
     random = { seed = NATIVE_SEED },
     formatState = {},
-    moveFacts = scenarioMoveFacts(),
+    moveFacts = scenarioMoveFacts({ alpha, beta }),
     speciesFacts = scenarioSpeciesFacts({ alpha, beta }),
   }
   local session = contracts.Battle.newSession(scenario, content)
@@ -877,6 +1006,9 @@ local function typedSpeciesFacts(entries)
         baseStats = catalog:form(entry.species, 0).baseStats,
         growthCurve = catalog:growthCurve(speciesRecord.growthCurve),
         types = types,
+        levelUpMoves = catalog:form(entry.species, 0).levelUpMoves,
+        baseExpYield = speciesRecord.baseExpYield,
+        evYield = speciesRecord.evYield,
       },
     }
   end
@@ -1442,6 +1574,443 @@ function T.restored_speed_stages_steer_the_replayed_order()
   Assert.isTrue(damageTaken(revived, 1) > 0, "the staged restore still lands the slower strike")
   Assert.isTrue(damageTaken(revived, 2) > 0, "the staged restore still lands the faster strike")
   revived:dispose()
+end
+
+-- A knockout pays its reward through the resumable reward owner before the
+-- battle moves on: the strike knocks out the wounded foe, experience and
+-- effort land once on the battle-owned recipient with a level stat reload,
+-- the full-set learning prompt suspends the battle with no terminal result
+-- yet, and the chosen replacement applies exactly once before the battle
+-- ends carrying the level gain for post-battle handling.
+function T.knockout_rewards_pause_on_move_learning_before_the_outcome()
+  local contracts = SessionFixture.sessionContracts()
+  local content = nativeContent()
+  local session = contracts.Battle.newSession(rewardScenario(), content)
+  local opening = SessionFixture.driveUntilSettled(session)
+  Assert.equal(opening.status, "waiting", "the opening turn asks for decisions")
+  Assert.equal(
+    #session:capture().combatants[1].mon.moves,
+    4,
+    "the recipient enters with a full move set"
+  )
+  for _, request in ipairs(opening.request.requests) do
+    local ok, replyErr = session:submit(SessionFixture.replyFor(request, answer(request)))
+    Assert.isTrue(ok, "opening replies are accepted")
+    Assert.isNil(replyErr, "accepted replies carry no input error")
+  end
+  local boundary, collected = advanceCollecting(session, 64)
+  Assert.isTrue(announcesFaint(collected, 2), "the strike knocks out the wounded foe")
+  Assert.equal(session:capture().combatants[2].hp, 0, "the foe stays knocked out")
+  Assert.equal(
+    boundary.status,
+    "waiting",
+    "the knockout suspends on its learning prompt instead of ending the battle"
+  )
+  Assert.notNil(boundary.request, "suspended battles carry their pending prompt")
+  local prompt = findLearnPrompt(boundary)
+  Assert.notNil(prompt, "the suspension names the pending learning prompt")
+  Assert.equal(prompt.controller, "alpha", "the owning side answers its own learning prompt")
+  local actor = assert(prompt.actors[1], "the prompt addresses its recipient")
+  Assert.equal(actor.combatant, 1, "the prompt addresses the battle recipient")
+  Assert.equal(prompt.incomingMove, "SYNTHESIS", "crossing to level twelve prompts synthesis")
+  Assert.equal(#prompt.currentMoves, 4, "the prompt carries the four current moves")
+  Assert.isTrue(prompt.canDecline, "the prompt can be declined")
+  local award = findSessionEvent(collected, "exp")
+  Assert.notNil(award, "the knockout awards experience through the reward owner")
+  Assert.equal(award.combatant, 1, "the award names the battle recipient")
+  Assert.isTrue(type(award.gained) == "number", "awards report their experience")
+  Assert.isTrue(award.gained --[[@as integer]] >= 1, "the award is positive")
+  local reload = findSessionEvent(collected, "stats")
+  Assert.notNil(reload, "the award recalculates level stats")
+  Assert.isTrue(type(reload.maxHpBefore) == "number", "reloads report their previous maximum")
+  Assert.isTrue(type(reload.maxHpAfter) == "number", "reloads report their recalculated maximum")
+  Assert.isTrue(
+    reload.maxHpAfter --[[@as integer]] > reload.maxHpBefore --[[@as integer]],
+    "the level crossing raises the health maximum"
+  )
+  Assert.isNil(findSessionEvent(collected, "learn"), "no move is learned before the reply")
+  local pending = session:capture()
+  Assert.isNil(pending.outcome, "no terminal result is named while learning waits")
+  local recipient = pending.combatants[1].mon
+  Assert.equal(
+    recipient.experience,
+    972 + award.gained --[[@as integer]],
+    "the award lands exactly once on the battle copy"
+  )
+  Assert.deepEqual(recipient.evs, {
+    hp = 0,
+    attack = 0,
+    defense = 0,
+    speed = 0,
+    specialAttack = 0,
+    specialDefense = 1,
+  }, "the defeated yield lands as effort once")
+  local CatalogFixture = require("libs.mons.tests.catalog_fixture")
+  local Experience = require("libs.mons.src.gen4.Experience")
+  local catalog = CatalogFixture.makeCatalog()
+  local species = catalog:species("CHIKORITA")
+  Assert.equal(
+    Experience.level(catalog:growthCurve(species.growthCurve), recipient.experience),
+    12,
+    "the award crosses to level twelve"
+  )
+  local ok, replyErr =
+    session:submit(SessionFixture.replyFor(prompt, { learnChoice(actor, "replace", 3) }))
+  Assert.isTrue(ok, "the learning reply is accepted")
+  Assert.isNil(replyErr, "accepted replies carry no input error")
+  local ended, closing = advanceCollecting(session, 64)
+  Assert.equal(
+    ended.status,
+    "ended",
+    "the battle ends once learning resolves with no reserve behind the foe"
+  )
+  local learned = findSessionEvent(closing, "learn")
+  Assert.notNil(learned, "the reply learns its move")
+  Assert.equal(learned.move, "SYNTHESIS", "the reply learns the prompted move")
+  Assert.equal(learned.combatant, 1, "the reply learns on the battle recipient")
+  local finished = session:capture()
+  Assert.equal(
+    finished.combatants[1].mon.moves[4].move,
+    "SYNTHESIS",
+    "the replacement lands in the named slot"
+  )
+  Assert.equal(countSessionEvents(collected, "exp"), 1, "the opening run awards experience once")
+  Assert.equal(countSessionEvents(closing, "exp"), 0, "the reply awards no experience again")
+  Assert.equal(
+    finished.combatants[1].mon.experience,
+    972 + award.gained --[[@as integer]],
+    "the reply never awards twice"
+  )
+  Assert.notNil(ended.outcome, "the finished battle names its terminal result")
+  Assert.deepEqual(
+    ended.outcome.evolutionEligible,
+    { 1 },
+    "the level gain surfaces once for post-battle handling"
+  )
+  local again, againErr =
+    session:submit(SessionFixture.replyFor(prompt, { learnChoice(actor, "replace", 3) }))
+  Assert.isFalse(again, "a stale reply after completion answers nothing")
+  Assert.notNil(againErr, "stale replies report their input error")
+  session:dispose()
+end
+
+-- A learning suspension survives interruption: capturing while the prompt
+-- is open and restoring reopens the identical prompt, accepts the same
+-- reply, replays the same completion, awards nothing twice, and carries
+-- the same single post-battle eligibility.
+function T.learning_suspensions_restore_without_a_second_award()
+  local contracts = SessionFixture.sessionContracts()
+  local Executor = executorOwner()
+  local content = nativeContent()
+  local session = contracts.Battle.newSession(rewardScenario(), content)
+  local opening = SessionFixture.driveUntilSettled(session)
+  Assert.equal(opening.status, "waiting", "the opening turn asks for decisions")
+  for _, request in ipairs(opening.request.requests) do
+    local ok, replyErr = session:submit(SessionFixture.replyFor(request, answer(request)))
+    Assert.isTrue(ok, "opening replies are accepted")
+    Assert.isNil(replyErr, "accepted replies carry no input error")
+  end
+  local boundary, collected = advanceCollecting(session, 64)
+  Assert.equal(boundary.status, "waiting", "the knockout suspends on its learning prompt")
+  local prompt = findLearnPrompt(boundary)
+  Assert.notNil(prompt, "the suspension names the pending learning prompt")
+  local snapshot = session:capture()
+  SessionFixture.assertPlainData(snapshot, "pending learning")
+  local revived = Executor.restore(snapshot, content)
+  local first = SessionFixture.driveUntilSettled(session)
+  local second = SessionFixture.driveUntilSettled(revived)
+  Assert.deepEqual(second.request, first.request, "restored sessions reopen the identical learning prompt")
+  local firstPrompt = findLearnPrompt(first)
+  local secondPrompt = findLearnPrompt(second)
+  Assert.notNil(firstPrompt, "the uninterrupted run keeps its prompt")
+  Assert.notNil(secondPrompt, "the restored run keeps its prompt")
+  Assert.equal(
+    secondPrompt.incomingMove,
+    firstPrompt.incomingMove,
+    "both runs prompt the same move"
+  )
+  for _, live in ipairs({ session, revived }) do
+    local held = live == session and firstPrompt or secondPrompt
+    local entry = assert(held.actors[1], "the prompt addresses its recipient")
+    local liveOk, liveErr = live:submit(
+      SessionFixture.replyFor(held, { learnChoice(entry, "replace", 3) })
+    )
+    Assert.isTrue(liveOk, "restored sessions accept the open learning reply")
+    Assert.isNil(liveErr, "accepted replies carry no input error")
+  end
+  local firstEnded, firstClosing = advanceCollecting(session, 64)
+  local secondEnded, secondClosing = advanceCollecting(revived, 64)
+  Assert.equal(firstEnded.status, "ended", "the uninterrupted run ends after learning")
+  Assert.equal(secondEnded.status, "ended", "the restored run ends after learning")
+  Assert.deepEqual(secondClosing, firstClosing, "restored sessions replay the same completion")
+  Assert.deepEqual(revived:capture(), session:capture(), "restored sessions reach the same following state")
+  Assert.equal(countSessionEvents(collected, "exp"), 1, "the suspended run awards experience once")
+  Assert.equal(countSessionEvents(firstClosing, "exp"), 0, "completing the run awards nothing again")
+  Assert.equal(countSessionEvents(secondClosing, "exp"), 0, "completing the restore awards nothing again")
+  local final = session:capture()
+  local twin = revived:capture()
+  Assert.equal(
+    final.combatants[1].mon.experience,
+    twin.combatants[1].mon.experience,
+    "both runs award identical experience"
+  )
+  Assert.deepEqual(
+    firstEnded.outcome.evolutionEligible,
+    { 1 },
+    "the uninterrupted run surfaces eligibility once"
+  )
+  Assert.deepEqual(
+    secondEnded.outcome.evolutionEligible,
+    firstEnded.outcome.evolutionEligible,
+    "the restored run surfaces identical eligibility"
+  )
+  session:dispose()
+  revived:dispose()
+end
+
+-- A knockout into a free move slot learns without prompting: the
+-- recipient carries two moves across the same learning level, so the
+-- award lands, the new move fills the first free slot with base power
+-- points, and the battle ends with no suspension and single eligibility.
+function T.rewards_with_a_free_slot_learn_silently_without_a_prompt()
+  local contracts = SessionFixture.sessionContracts()
+  local content = nativeContent()
+  local Executor = executorOwner()
+  local alpha = rewardRecipient(1, 11)
+  alpha.mon.moves = {
+    { move = "TACKLE", pp = 35, ppUps = 0 },
+    { move = "GROWL", pp = 40, ppUps = 0 },
+  }
+  local beta = tackleCombatant(2, 23)
+  beta.mon.condition.currentHp = 1
+  local scenario = {
+    ruleset = Executor.RULESET,
+    format = NATIVE_FORMAT,
+    sides = { SessionFixture.side(1, { 1 }), SessionFixture.side(2, { 2 }) },
+    participants = {
+      SessionFixture.participant(1, 1, "alpha", { alpha }),
+      SessionFixture.participant(2, 2, "beta", { beta }),
+    },
+    positions = {
+      SessionFixture.position(1, 1, { 1 }, 1),
+      SessionFixture.position(2, 2, { 2 }, 2),
+    },
+    inventories = {},
+    environment = { weather = "none" },
+    random = { seed = NATIVE_SEED },
+    formatState = {},
+    moveFacts = scenarioMoveFacts({ alpha, beta }),
+    speciesFacts = scenarioSpeciesFacts({ alpha, beta }),
+  }
+  local session = contracts.Battle.newSession(scenario, content)
+  local opening = SessionFixture.driveUntilSettled(session)
+  Assert.equal(opening.status, "waiting", "the opening turn asks for decisions")
+  for _, request in ipairs(opening.request.requests) do
+    local ok, replyErr = session:submit(SessionFixture.replyFor(request, answer(request)))
+    Assert.isTrue(ok, "opening replies are accepted")
+    Assert.isNil(replyErr, "accepted replies carry no input error")
+  end
+  local ended, collected = advanceCollecting(session, 64)
+  Assert.isTrue(announcesFaint(collected, 2), "the strike knocks out the wounded foe")
+  Assert.equal(ended.status, "ended", "a free slot never suspends the battle")
+  Assert.isNil(findLearnPrompt(ended), "a free slot never prompts")
+  local award = findSessionEvent(collected, "exp")
+  Assert.notNil(award, "the knockout awards experience through the reward owner")
+  Assert.equal(countSessionEvents(collected, "exp"), 1, "the award lands exactly once")
+  local learned = findSessionEvent(collected, "learn")
+  Assert.notNil(learned, "the free slot reports its learned move")
+  Assert.equal(learned.move, "SYNTHESIS", "the free slot learns the level-twelve move")
+  local finished = session:capture()
+  Assert.equal(
+    finished.combatants[1].mon.moves[3].move,
+    "SYNTHESIS",
+    "the new move fills the first free slot"
+  )
+  Assert.equal(
+    finished.combatants[1].mon.moves[3].pp,
+    5,
+    "an auto-learned move resets to its base power points"
+  )
+  Assert.equal(
+    finished.combatants[1].mon.experience,
+    972 + award.gained --[[@as integer]],
+    "the award lands exactly once on the battle copy"
+  )
+  Assert.deepEqual(
+    ended.outcome.evolutionEligible,
+    { 1 },
+    "the level gain surfaces once for post-battle handling"
+  )
+  session:dispose()
+end
+
+-- Rejected learning replies hold the prompt open: an unknown decision, a
+-- stray slot, and a foreign request all fail with an input error while
+-- the identical prompt waits, and only the valid decline completes the
+-- battle without touching the move set.
+function T.invalid_learning_replies_hold_the_prompt_open()
+  local contracts = SessionFixture.sessionContracts()
+  local content = nativeContent()
+  local session = contracts.Battle.newSession(rewardScenario(), content)
+  local opening = SessionFixture.driveUntilSettled(session)
+  Assert.equal(opening.status, "waiting", "the opening turn asks for decisions")
+  for _, request in ipairs(opening.request.requests) do
+    local ok, replyErr = session:submit(SessionFixture.replyFor(request, answer(request)))
+    Assert.isTrue(ok, "opening replies are accepted")
+    Assert.isNil(replyErr, "accepted replies carry no input error")
+  end
+  local boundary = SessionFixture.driveUntilSettled(session)
+  Assert.equal(boundary.status, "waiting", "the knockout suspends on its learning prompt")
+  local prompt = findLearnPrompt(boundary)
+  Assert.notNil(prompt, "the suspension names the pending learning prompt")
+  local actor = assert(prompt.actors[1], "the prompt addresses its recipient")
+  local held = session:capture().combatants[1].mon
+  local unknown, unknownErr =
+    session:submit(SessionFixture.replyFor(prompt, { learnChoice(actor, "forget") }))
+  Assert.isFalse(unknown, "an unknown decision answers nothing")
+  Assert.notNil(unknownErr, "rejected replies report their input error")
+  local stray, strayErr = session:submit(SessionFixture.replyFor(prompt, { learnChoice(actor, "replace", 9) }))
+  Assert.isFalse(stray, "a stray slot answers nothing")
+  Assert.notNil(strayErr, "rejected slots report their input error")
+  local foreign, foreignErr = session:submit({
+    requestId = prompt.requestId + 1000,
+    epoch = prompt.epoch,
+    controller = prompt.controller,
+    choices = { learnChoice(actor, "decline") },
+  })
+  Assert.isFalse(foreign, "a foreign request answers nothing")
+  Assert.notNil(foreignErr, "foreign requests report their input error")
+  local again = SessionFixture.driveUntilSettled(session)
+  Assert.equal(again.status, "waiting", "rejected replies leave the prompt open")
+  Assert.equal(
+    findLearnPrompt(again).requestId,
+    prompt.requestId,
+    "the same prompt waits after every rejection"
+  )
+  Assert.equal(
+    session:capture().combatants[1].mon.experience,
+    held.experience,
+    "rejected replies award nothing more"
+  )
+  local declined, declineErr =
+    session:submit(SessionFixture.replyFor(prompt, { learnChoice(actor, "decline") }))
+  Assert.isTrue(declined, "the decline is accepted")
+  Assert.isNil(declineErr, "accepted replies carry no input error")
+  local ended, closing = advanceCollecting(session, 64)
+  Assert.equal(ended.status, "ended", "the decline completes the battle")
+  Assert.isNil(findSessionEvent(closing, "learn"), "a decline learns no move")
+  Assert.equal(
+    session:capture().combatants[1].mon.moves[4].move,
+    "POISONPOWDER",
+    "a decline keeps the old set"
+  )
+  Assert.deepEqual(
+    ended.outcome.evolutionEligible,
+    { 1 },
+    "the level gain still surfaces once after a decline"
+  )
+  session:dispose()
+end
+
+-- Sequential knockouts award in faint order without double counting: the
+-- foe fields a wounded lead and a healthy reserve behind it, the
+-- free-slot recipient crosses its learning level on the first knockout,
+-- and both awards land exactly once while eligibility names the
+-- recipient a single time.
+function T.sequential_knockouts_award_in_order_without_double_counting()
+  local contracts = SessionFixture.sessionContracts()
+  local content = nativeContent()
+  local Executor = executorOwner()
+  local alpha = rewardRecipient(1, 11)
+  alpha.mon.moves = {
+    { move = "TACKLE", pp = 35, ppUps = 0 },
+    { move = "GROWL", pp = 40, ppUps = 0 },
+  }
+  local betaLead = tackleCombatant(2, 23)
+  betaLead.mon.condition.currentHp = 1
+  local betaReserve = tackleCombatant(3, 31)
+  local seeds = { alpha, betaLead, betaReserve }
+  local scenario = {
+    ruleset = Executor.RULESET,
+    format = NATIVE_FORMAT,
+    sides = { SessionFixture.side(1, { 1 }), SessionFixture.side(2, { 2 }) },
+    participants = {
+      SessionFixture.participant(1, 1, "alpha", { alpha }),
+      SessionFixture.participant(2, 2, "beta", { betaLead, betaReserve }),
+    },
+    positions = {
+      SessionFixture.position(1, 1, { 1 }, 1),
+      SessionFixture.position(2, 2, { 2 }, 2),
+    },
+    inventories = {},
+    environment = { weather = "none" },
+    random = { seed = NATIVE_SEED },
+    formatState = {},
+    moveFacts = scenarioMoveFacts(seeds),
+    speciesFacts = scenarioSpeciesFacts(seeds),
+  }
+  local session = contracts.Battle.newSession(scenario, content)
+  local collected = {}
+  local ended = nil
+  for _ = 1, 64 do
+    local frame = SessionFixture.driveUntilSettled(session)
+    for _, event in ipairs(frame.events or {}) do
+      collected[#collected + 1] = event
+    end
+    if frame.status == "ended" then
+      ended = frame
+      break
+    end
+    Assert.equal(frame.status, "waiting", "every open boundary asks for decisions")
+    Assert.isNil(findLearnPrompt(frame), "free slots never interrupt the run")
+    for _, request in ipairs(frame.request.requests) do
+      local ok, replyErr = session:submit(SessionFixture.replyFor(request, answer(request)))
+      Assert.isTrue(ok, "open replies are accepted")
+      Assert.isNil(replyErr, "accepted replies carry no input error")
+    end
+    local settled = session:advance(64)
+    for _, event in ipairs(settled.events or {}) do
+      collected[#collected + 1] = event
+    end
+    if settled.status == "ended" then
+      ended = settled
+      break
+    end
+  end
+  Assert.notNil(ended, "the run ends once both foes fall")
+  local first, second = nil, nil
+  for _, event in ipairs(collected) do
+    if event.kind == "faint" then
+      local payload = event.payload --[[@as table<string, unknown>]]
+      if first == nil then
+        first = payload.combatant
+      else
+        second = payload.combatant
+      end
+    end
+  end
+  Assert.equal(first, 2, "the wounded lead falls first")
+  Assert.equal(second, 3, "the reserve falls second")
+  Assert.equal(countSessionEvents(collected, "exp"), 2, "each knockout awards exactly once")
+  local gains = 0
+  for _, event in ipairs(collected) do
+    if type(event) == "table" and event.kind == "exp" then
+      gains = gains + event.gained --[[@as integer]]
+    end
+  end
+  local finished = session:capture()
+  Assert.equal(
+    finished.combatants[1].mon.experience,
+    972 + gains,
+    "both awards land on the battle copy with no double count"
+  )
+  Assert.deepEqual(
+    finished.combatants[1].mon.moves[3].move,
+    "SYNTHESIS",
+    "the first crossing still auto-learns into the free slot"
+  )
+  Assert.deepEqual(ended.outcome.evolutionEligible, { 1 }, "eligibility names the recipient once")
+  session:dispose()
 end
 
 return { tests = T }
