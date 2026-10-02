@@ -137,6 +137,22 @@ local function click(state, pane, rect, touch)
   end
 end
 
+local function selectSection(state, Layout, section)
+  local _ = Layout
+  state.controller:setSection(section)
+end
+
+local function copy(value)
+  if type(value) ~= "table" then
+    return value
+  end
+  local result = {}
+  for key, child in pairs(value) do
+    result[copy(key)] = copy(child)
+  end
+  return result
+end
+
 local function withEditor(width, height, topology, fn)
   local State = stateModule()
   local fixture = Fixture.new()
@@ -149,6 +165,24 @@ local function withEditor(width, height, topology, fn)
   local host = {
     requestMilestone = function(name, urgency)
       requests[#requests + 1] = { name = name, urgency = urgency }
+      return true
+    end,
+    requestField = function()
+      return true
+    end,
+    requestLogicalField = function()
+      return true
+    end,
+    requestCell = function()
+      return true
+    end,
+    ensureLogicalField = function()
+      return true
+    end,
+    ensureField = function()
+      return true
+    end,
+    ensureCell = function()
       return true
     end,
   }
@@ -197,6 +231,7 @@ function T.tests.input_reaches_money_and_toggle_rows_on_compact_and_dual_touch()
     role = "world",
   })
   withEditor(256, 192, compact, function(state, fixture)
+    selectSection(state, Layout, "Player")
     state:onImportAttempt()
     local notice = state:view()
     Assert.equal(notice.notice, "Close the editor before importing another ROM.")
@@ -283,6 +318,7 @@ function T.tests.input_reaches_money_and_toggle_rows_on_compact_and_dual_touch()
     role = "auxiliary",
   })
   withEditor(256, 384, dual, function(state, fixture)
+    selectSection(state, Layout, "Player")
     local view = state:view()
     local layout = Layout.compute(view, 256, 192)
     local pane = selectedPane(view)
@@ -311,6 +347,7 @@ function T.tests.failed_close_save_keeps_the_state_until_explicit_discard()
     role = "world",
   })
   withEditor(256, 192, compact, function(state, fixture)
+    selectSection(state, Layout, "Player")
     local originalWrite = fixture.saveFs.backend.write
     fixture.saveFs.backend.write = function(backend, path, data)
       if path:find("editor%-backups") then
@@ -358,6 +395,99 @@ function T.tests.failed_close_save_keeps_the_state_until_explicit_discard()
   end)
 end
 
+function T.tests.location_cursor_inspection_and_zoom_do_not_stage_a_destination()
+  local _, Layout = stateModule()
+  local topology = ScreenTopology.oneDisplay({
+    id = "main",
+    rect = { x = 0, y = 0, width = 256, height = 192 },
+    touch = true,
+    role = "world",
+  })
+  withEditor(256, 192, topology, function(state, fixture)
+    for _ = 1, 8 do
+      if state.locationService:snapshot().status.state == "ready" then
+        break
+      end
+      state:update(0)
+    end
+    local view = state:view()
+    Assert.equal(view.section, "Location", "a successfully opened editor starts on Location")
+    Assert.equal(
+      view.location.status.state,
+      "ready",
+      "the source map prepares before tile interaction: "
+        .. tostring(view.location.status.reason)
+        .. ", map "
+        .. tostring(view.location.mapId)
+        .. ", editor "
+        .. tostring(state.errorMessage)
+    )
+    local layout = Layout.compute(view, 256, 192)
+    local zoom = assert(layout.targets["location:zoom-in"], "Location exposes a reachable zoom control")
+    local before = copy(view.session.location)
+    local revision = view.session.revision
+    click(state, selectedPane(view), zoom, false)
+    Assert.deepEqual(state:view().session.location, before, "zooming changes only the view")
+    Assert.equal(state:view().session.revision, revision, "view controls do not revise the save transaction")
+
+    local joystick = {} --[[@as love.Joystick]]
+    state:gamepadpressed(joystick, "dpdown")
+    local inspected = state:view()
+    Assert.isTrue(
+      inspected.locationNavigation.cursor.fieldX ~= before.fieldX
+        or inspected.locationNavigation.cursor.fieldZ ~= before.fieldZ,
+      "D-pad moves the inspection cursor independently of the staged destination"
+    )
+    Assert.deepEqual(inspected.session.location, before, "cursor movement does not stage a location")
+    state:gamepadpressed(joystick, "b")
+    Assert.deepEqual(state:view().session.location, before, "canceling inspection leaves the destination unchanged")
+  end)
+end
+
+function T.tests.save_blocks_when_destination_revalidation_changes_any_location_field()
+  withEditor(640, 480, ScreenTopology.oneDisplay({
+    id = "main",
+    rect = { x = 0, y = 0, width = 640, height = 480 },
+    touch = false,
+    role = "world",
+  }), function(state, fixture)
+    local fields = { "mapId", "fieldX", "fieldZ", "surfaceId", "worldY", "terrainDependencyHash" }
+    for _, field in ipairs(fields) do
+      local staged = copy(state.session:snapshot().location)
+      staged.fieldX = staged.fieldX + 1
+      Assert.isTrue(state.session:setLocation(staged).ok, "a valid tuple can be staged for save-gate verification")
+      local resolved = copy(staged)
+      if field == "mapId" then
+        for _, map in ipairs(state.dependencies.world.maps) do
+          if map.id ~= staged.mapId then
+            resolved.mapId = map.id
+            break
+          end
+        end
+      elseif field == "fieldX" then
+        resolved.fieldX = resolved.fieldX + 1
+      elseif field == "fieldZ" then
+        resolved.fieldZ = resolved.fieldZ + 1
+      elseif field == "surfaceId" then
+        resolved.surfaceId = resolved.surfaceId + 1
+      elseif field == "worldY" then
+        resolved.worldY = resolved.worldY + 1
+      else
+        resolved.terrainDependencyHash = resolved.terrainDependencyHash .. "-changed"
+      end
+      state.locationService.resolve = function()
+        return resolved, { state = "ready" }
+      end
+
+      Assert.isFalse(state:_save(false), "revalidation changing " .. field .. " must block the write")
+      Assert.deepEqual(state.session:snapshot().location, staged, "the staged destination remains available to correct")
+      Assert.deepEqual(fixture.store:load(fixture.saveId), fixture.initial, "the canonical save remains untouched")
+      Assert.isTrue(state.session:isDirty(), "blocking a stale resolve preserves the full edit transaction")
+      state:_discard(false)
+    end
+  end)
+end
+
 function T.tests.quit_with_an_unapplied_value_draft_opens_the_leave_choice()
   local _, Layout = stateModule()
   local compact = ScreenTopology.oneDisplay({
@@ -367,6 +497,7 @@ function T.tests.quit_with_an_unapplied_value_draft_opens_the_leave_choice()
     role = "world",
   })
   withEditor(256, 192, compact, function(state, fixture)
+    selectSection(state, Layout, "Player")
     local view = state:view()
     click(state, selectedPane(view), targetFor(Layout.compute(view, 256, 192), view, "money"), false)
     Assert.isTrue(state:requestClose("quit"), "an open value draft must veto root quit")

@@ -117,6 +117,24 @@ function T.tests.failed_borrowed_readiness_can_retry_into_a_real_session()
       end
       return true
     end,
+    requestField = function()
+      return true
+    end,
+    requestLogicalField = function()
+      return true
+    end,
+    requestCell = function()
+      return true
+    end,
+    ensureField = function()
+      return true
+    end,
+    ensureLogicalField = function()
+      return true
+    end,
+    ensureCell = function()
+      return true
+    end,
     dispose = function()
       hostDisposals = hostDisposals + 1
     end,
@@ -145,6 +163,9 @@ function T.tests.failed_borrowed_readiness_can_retry_into_a_real_session()
     state:keypressed("return")
     state:update(0)
     Assert.isTrue(hostRequests > 1, "Retry requests readiness again from the borrowed host")
+    local opened = state:view()
+    Assert.notNil(opened.session, "successful retry installs a live Session")
+    state.controller:setSection("Player")
     Assert.isTrue(stateHasRole(state:view(), "integer value"), "successful retry installs a real editable Session")
     Assert.equal(#results, 0, "Retry keeps the editor open after publishing its Session")
     Assert.equal(hostDisposals, 0, "failed and successful attempts never retire the borrowed cache host")
@@ -162,6 +183,43 @@ function T.tests.failed_borrowed_readiness_can_retry_into_a_real_session()
   if not ok then
     error(err, 0)
   end
+end
+
+function T.tests.open_exposes_borrowed_location_inputs_and_saved_actor_snapshot()
+  local fixture = Fixture.new()
+  local Composition = require("app.src.saveeditor.SaveEditorComposition")
+  local host = { requestMilestone = function() return true end }
+  local originalGlobal = SaveFs.global
+  SaveFs.global = function(backend)
+    Assert.isNil(backend, "the editor uses the isolated composition fixture save backend")
+    return fixture.saveFs
+  end
+
+  local ok, graphOrError = xpcall(function()
+    return Composition.open({
+      versionId = fixture.versionId,
+      saveId = fixture.saveId,
+      repositoryRoot = love.filesystem.getSourceBaseDirectory(),
+      derivedAssets = host,
+    })
+  end, debug.traceback)
+  SaveFs.global = originalGlobal
+  fixture.cleanup()
+  if not ok then
+    error(graphOrError, 0)
+  end
+
+  local graph = graphOrError
+  Assert.isNil(graph.mapLoader, "composition leaves headless loader ownership to the location reader")
+  Assert.notNil(graph.cacheFs, "location composition borrows the version cache filesystem")
+  Assert.notNil(graph.world, "location composition borrows the structural world snapshot")
+  Assert.equal(graph.derivedAssets, host, "location composition borrows the opening readiness host")
+  Assert.deepEqual(graph.savedObjects, fixture.initial.world.objects, "location composition receives the save's actor snapshot")
+  Assert.isFalse(graph.savedObjects == fixture.initial.world.objects, "the actor snapshot is separately owned")
+  Assert.isFalse(
+    graph.savedObjects.rng == fixture.initial.world.objects.rng,
+    "nested saved-object snapshots are copied as well"
+  )
 end
 
 return T

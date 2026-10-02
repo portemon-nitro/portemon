@@ -33,15 +33,15 @@ local STALE_DRAFT = "SAVE_EDITOR_STALE_DRAFT"
 ---@field flags boolean
 ---@field party boolean
 ---@field bag boolean
+---@field location boolean
 
----@class SaveEditorLocationSnapshot
+---@class SaveEditorLocation
 ---@field mapId integer
 ---@field fieldX integer
 ---@field fieldZ integer
 ---@field worldY number
 ---@field surfaceId integer
 ---@field terrainDependencyHash string
----@field facing string
 
 ---@class SaveEditorSnapshot
 ---@field saveId string
@@ -49,9 +49,10 @@ local STALE_DRAFT = "SAVE_EDITOR_STALE_DRAFT"
 ---@field playerName string
 ---@field money integer
 ---@field flags table<integer, boolean>
----@field location SaveEditorLocationSnapshot
----@field originalLocation SaveEditorLocationSnapshot
+---@field location SaveEditorLocation
+---@field originalLocation SaveEditorLocation
 ---@field dirtySections SaveEditorDirtySections
+---@field locationChanged boolean
 ---@field revision integer
 
 ---@class SaveEditorSession
@@ -68,11 +69,13 @@ local STALE_DRAFT = "SAVE_EDITOR_STALE_DRAFT"
 ---@field setBagQuantity fun(self: SaveEditorSession, itemKey: string, quantity: integer): table<string, unknown>
 ---@field setMoney fun(self: SaveEditorSession, value: unknown): table<string, unknown>
 ---@field setFlag fun(self: SaveEditorSession, name: unknown, value: unknown): table<string, unknown>
+---@field setLocation fun(self: SaveEditorSession, placement: SaveEditorLocation): table<string, unknown>
 ---@field save fun(self: SaveEditorSession, hasUnappliedDraft: boolean?): table<string, unknown>
 ---@field discard fun(self: SaveEditorSession): boolean
 ---@field private _baseline table<string, unknown>
 ---@field private _entryCheckpoint table<string, unknown>
 ---@field private _money integer
+---@field private _location SaveEditorLocation
 ---@field private _events FieldEventState
 ---@field private _symbols table<string, unknown>
 ---@field private _saveStore table<string, unknown>
@@ -163,7 +166,7 @@ local function newMonService(options, bucket)
 end
 
 ---@param record table<string, unknown>
----@return SaveEditorLocationSnapshot
+---@return SaveEditorLocation
 local function locationSnapshot(record)
   return {
     mapId = record.mapId --[[@as integer]],
@@ -172,8 +175,88 @@ local function locationSnapshot(record)
     worldY = record.worldY --[[@as number]],
     surfaceId = record.surfaceId --[[@as integer]],
     terrainDependencyHash = record.terrainDependencyHash --[[@as string]],
-    facing = record.facing --[[@as string]],
   }
+end
+
+---@param value unknown
+---@return boolean
+local function validLocation(value)
+  if type(value) ~= "table" then
+    return false
+  end
+  local expected = {
+    mapId = true,
+    fieldX = true,
+    fieldZ = true,
+    surfaceId = true,
+    worldY = true,
+    terrainDependencyHash = true,
+  }
+  local count = 0
+  for key in pairs(value) do
+    if expected[key] ~= true then
+      return false
+    end
+    count = count + 1
+  end
+  return count == 6
+    and finiteInteger(value.mapId)
+    and value.mapId >= 0
+    and value.mapId <= 0xFFFF
+    and finiteInteger(value.fieldX)
+    and value.fieldX >= 0
+    and value.fieldX <= 0xFFFF
+    and finiteInteger(value.fieldZ)
+    and value.fieldZ >= 0
+    and value.fieldZ <= 0xFFFF
+    and finiteInteger(value.surfaceId)
+    and value.surfaceId >= 0
+    and value.surfaceId <= 0xFFFF
+    and type(value.worldY) == "number"
+    and value.worldY == value.worldY
+    and value.worldY ~= math.huge
+    and value.worldY ~= -math.huge
+    and type(value.terrainDependencyHash) == "string"
+    and value.terrainDependencyHash ~= ""
+end
+
+---@param left SaveEditorLocation
+---@param right SaveEditorLocation
+---@return boolean
+local function sameLocation(left, right)
+  return left.mapId == right.mapId
+    and left.fieldX == right.fieldX
+    and left.fieldZ == right.fieldZ
+    and left.surfaceId == right.surfaceId
+    and left.worldY == right.worldY
+    and left.terrainDependencyHash == right.terrainDependencyHash
+end
+
+---@param candidate table<string, unknown>
+---@param location SaveEditorLocation
+---@param baseline table<string, unknown>
+local function applyLocation(candidate, location, baseline)
+  candidate.avatar = copy(baseline.avatar)
+  candidate.suppression = copy(baseline.suppression)
+  candidate.weatherId = baseline.weatherId
+  candidate.audio = copy(baseline.audio)
+  candidate.mapId = location.mapId
+  candidate.fieldX = location.fieldX
+  candidate.fieldZ = location.fieldZ
+  candidate.surfaceId = location.surfaceId
+  candidate.worldY = location.worldY
+  candidate.terrainDependencyHash = location.terrainDependencyHash
+  if sameLocation(location, locationSnapshot(baseline)) then
+    return
+  end
+
+  candidate.avatar = { state = "walking" }
+  candidate.suppression = nil
+  if location.mapId ~= baseline.mapId then
+    candidate.weatherId = nil
+    local audio = candidate.audio --[[@as table<string, unknown>]]
+    audio.fieldMusicOverride = nil
+  end
 end
 
 ---@param events FieldEventState
@@ -252,6 +335,7 @@ function SaveEditorSession.new(options)
     _baseline = baseline,
     _entryCheckpoint = copy(baseline),
     _money = profile.money,
+    _location = locationSnapshot(baseline),
     _events = events,
     _symbols = options.symbols or FieldScriptSymbols,
     _saveStore = options.saveStore,
@@ -275,6 +359,8 @@ function SaveEditorSession:snapshot()
   local playerData = self._baseline.playerData --[[@as table<string, unknown>]]
   local profile = playerData.profile --[[@as table<string, unknown>]]
   local baselineLocation = locationSnapshot(self._baseline)
+  local stagedLocation = copy(self._location)
+  local locationChanged = not sameLocation(stagedLocation, baselineLocation)
   local dirtyMoney, dirtyFlags = dirtyAgainst(self._baseline, self._money, self._events)
   local candidate = self:captureCandidate()
   return {
@@ -283,13 +369,15 @@ function SaveEditorSession:snapshot()
     playerName = profile.name --[[@as string]],
     money = self._money,
     flags = flagsFrom(self._events),
-    location = copy(baselineLocation),
+    location = stagedLocation,
     originalLocation = copy(baselineLocation),
+    locationChanged = locationChanged,
     dirtySections = {
       money = dirtyMoney,
       flags = dirtyFlags,
       party = not equal(candidate.mons, self._baseline.mons),
       bag = not equal(candidate.bag, self._baseline.bag),
+      location = locationChanged,
     },
     revision = self._revision,
   }
@@ -547,6 +635,7 @@ function SaveEditorSession:isDirty()
     or dirtyFlags
     or not equal(candidate.mons, self._baseline.mons)
     or not equal(candidate.bag, self._baseline.bag)
+    or not sameLocation(self._location, locationSnapshot(self._baseline))
 end
 
 ---@param value unknown
@@ -601,6 +690,44 @@ function SaveEditorSession:setFlag(name, value)
   return success(true)
 end
 
+---@param placement SaveEditorLocation
+---@return table<string, unknown>
+function SaveEditorSession:setLocation(placement)
+  if self._busy then
+    return failure(BUSY, "A save operation is already in progress.", {})
+  end
+  if not validLocation(placement) then
+    return failure(VALUE_INVALID, "Choose a complete resolved field location.", {})
+  end
+
+  ---@type SaveEditorLocation
+  local nextLocation = {
+    mapId = placement.mapId,
+    fieldX = placement.fieldX,
+    fieldZ = placement.fieldZ,
+    surfaceId = placement.surfaceId,
+    worldY = placement.worldY,
+    terrainDependencyHash = placement.terrainDependencyHash,
+  }
+  if sameLocation(self._location, nextLocation) then
+    return success(false)
+  end
+
+  local candidate = self:captureCandidate()
+  applyLocation(candidate, nextLocation, self._baseline)
+  local validated, validationError = self._validateRecord(candidate)
+  if validated == nil then
+    if Errors.is(validationError) then
+      return { ok = false, error = validationError }
+    end
+    return failure(VALUE_INVALID, "The destination did not pass complete save validation.", {})
+  end
+
+  self._location = locationSnapshot(validated)
+  self._revision = self._revision + 1
+  return success(true)
+end
+
 ---@return table<string, unknown>
 function SaveEditorSession:captureCandidate()
   local candidate = copy(self._baseline)
@@ -611,6 +738,7 @@ function SaveEditorSession:captureCandidate()
   world.flags = flagsFrom(self._events)
   candidate.mons = self._monService:capture()
   candidate.bag = self._bagService:capture()
+  applyLocation(candidate, self._location, self._baseline)
   return candidate
 end
 
@@ -671,6 +799,7 @@ function SaveEditorSession:save(hasUnappliedDraft)
 
     self._saveStore:save(candidate)
     self._baseline = copy(candidate)
+    self._location = locationSnapshot(self._baseline)
     return success(true)
   end)
   self._busy = false
@@ -696,6 +825,7 @@ function SaveEditorSession:discard()
   local playerData = self._baseline.playerData --[[@as table<string, unknown>]]
   local profile = playerData.profile --[[@as table<string, unknown>]]
   self._money = profile.money --[[@as integer]]
+  self._location = locationSnapshot(self._baseline)
   self._events = FieldEventState.new(eventSnapshot(self._baseline))
   if not equal(self._monService:capture(), self._baseline.mons) then
     self._monService = newMonService(self._monServiceOptions, self._baseline.mons --[[@as table<string, unknown>]])

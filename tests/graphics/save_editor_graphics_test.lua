@@ -72,6 +72,31 @@ local function fixture(width, height, topology, section, variant)
     view.bagSelectedQuantity = 2
     view.bagPockets = { { key = "items", label = "Items" } }
     view.bagRows = { { item = "POTION", label = "Potion", quantity = 2 } }
+  elseif section == "Location" then
+    view.location = {
+      mapId = 12,
+      symbol = "MAP_TEST_ROUTE",
+      section = "TEST_SECTION",
+      maps = { { mapId = 12, symbol = "MAP_TEST_ROUTE", section = "TEST_SECTION" } },
+      generation = 1,
+      status = { state = "ready" },
+      tiles = {
+        { fieldX = 32, fieldZ = 48, selectable = true },
+        { fieldX = 33, fieldZ = 48, selectable = false, reason = "blocked" },
+      },
+      cursor = { fieldX = 33, fieldZ = 48 },
+      original = { fieldX = 31, fieldZ = 48 },
+      draft = { fieldX = 32, fieldZ = 48 },
+      scale = 24,
+    }
+    view.locationNavigation = {
+      page = "grid",
+      mapId = 12,
+      cursor = { fieldX = 33, fieldZ = 48 },
+      center = { fieldX = 32, fieldZ = 48 },
+      scale = 24,
+      mapOffset = 0,
+    }
   end
   local context = DisplayContext.new({
     graphics = love.graphics,
@@ -130,6 +155,12 @@ local function draw(scope, width, height, topology, name, section, variant)
       Assert.notNil(layout.targets["party:apply"], name .. " exposes the nested Apply decision")
       Assert.notNil(layout.targets["party:cancel"], name .. " exposes the nested Cancel decision")
     end
+  elseif view.section == "Location" then
+    Assert.notNil(layout.targets["location:map-picker"], name .. " exposes Change Map")
+    Assert.notNil(layout.targets["location:zoom-in"], name .. " exposes a focusable zoom control")
+    Assert.notNil(layout.targets["location:zoom-out"], name .. " exposes a focusable zoom control")
+    Assert.notNil(layout.locationGrid, name .. " publishes the canonical clipped tile grid")
+    Assert.isTrue(layout.locationGrid.clip.width > 0 and layout.locationGrid.clip.height > 0)
   else
     Assert.notNil(layout.targets["bag:item:POTION"], name .. " exposes the selected stack")
     Assert.notNil(layout.targets["bag:quantity"], name .. " exposes quantity editing")
@@ -169,6 +200,27 @@ local function draw(scope, width, height, topology, name, section, variant)
         targetId,
         name .. " maps group browse touch targets"
       )
+    end
+  end
+  if view.section == "Location" then
+    Assert.isTrue(renderedText:find("MAP_TEST_ROUTE", 1, true) ~= nil, name .. " shows the structural map symbol")
+    Assert.isTrue(renderedText:find("33", 1, true) ~= nil, name .. " shows the inspected global X coordinate")
+    Assert.isTrue(renderedText:find("48", 1, true) ~= nil, name .. " shows global tile coordinates")
+    Assert.isTrue(renderedText:find("blocked", 1, true) ~= nil, name .. " explains the inspected tile refusal")
+    local helpLines = {}
+    for _, line in ipairs(drawnText) do
+      if line:find("Physical placement", 1, true) or line:find("isn't checked.", 1, true) then
+        helpLines[#helpLines + 1] = line
+      end
+    end
+    Assert.equal(
+      table.concat(helpLines, " "),
+      "Physical placement only; story consistency isn't checked.",
+      name .. " preserves the full Location help contract"
+    )
+    local maxLineLength = math.floor((plan.content.layout.content.width - 8) / 8)
+    for _, line in ipairs(helpLines) do
+      Assert.isTrue(#line <= maxLineLength, name .. " wraps help text before the content edge")
     end
   end
   renderer:dispose()
@@ -223,6 +275,35 @@ function T.party_and_bag_render_on_compact_and_wide_surfaces(scope)
   draw(scope, 1280, 720, wide, "party-wide", "Party")
   draw(scope, 1280, 720, wide, "party-raw-wide", "Party", "draft")
   draw(scope, 1280, 720, wide, "bag-wide", "Bag")
+end
+
+function T.location_grid_shows_status_and_controls_on_compact_wide_tall_and_dual_touch(scope)
+  local compact = ScreenTopology.oneDisplay({
+    id = "main",
+    rect = { x = 0, y = 0, width = 256, height = 192 },
+    touch = false,
+    role = "world",
+  })
+  draw(scope, 256, 192, compact, "location-compact", "Location")
+  local wide = ScreenTopology.oneDisplay({
+    id = "main",
+    rect = { x = 0, y = 0, width = 1280, height = 720 },
+    touch = false,
+    role = "world",
+  })
+  draw(scope, 1280, 720, wide, "location-wide", "Location")
+  local tall = ScreenTopology.oneDisplay({
+    id = "main",
+    rect = { x = 0, y = 0, width = 360, height = 640 },
+    touch = true,
+    role = "world",
+  })
+  draw(scope, 360, 640, tall, "location-tall", "Location")
+  local dual = ScreenTopology.dualDisplay(
+    { id = "upper", rect = { x = 0, y = 0, width = 256, height = 192 }, touch = false, role = "world" },
+    { id = "lower", rect = { x = 0, y = 192, width = 256, height = 192 }, touch = true, role = "auxiliary" }
+  )
+  draw(scope, 256, 384, dual, "location-dual-touch", "Location")
 end
 
 function T.name_editor_renders_the_real_naming_snapshot_in_a_neutral_dialog(scope)

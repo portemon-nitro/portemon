@@ -127,6 +127,27 @@ local function fitText(value, width)
   return text
 end
 
+local function wrapText(value, width)
+  local limit = math.max(1, math.floor(width / 8))
+  local lines, line = {}, ""
+  for word in tostring(value or ""):gmatch("%S+") do
+    if line ~= "" and #line + 1 + #word > limit then
+      lines[#lines + 1] = line
+      line = word
+    elseif line == "" then
+      line = word
+    else
+      line = line .. " " .. word
+    end
+  end
+  if line ~= "" then
+    lines[#lines + 1] = line
+  end
+  return lines
+end
+
+local drawLocation
+
 local function paintPane(self, view, plan, pane)
   local graphics = self.graphics
   local layout = assert(plan.content.layout)
@@ -180,6 +201,9 @@ local function paintPane(self, view, plan, pane)
         drawText(self, fitText(value, rect.x + rect.width - valueX - 4), valueX, rect.y + 3, INK)
       end
     end
+  end
+  if view.section == "Location" then
+    drawLocation(self, view, layout)
   end
   if view.section == "Progress" then
     for _, id in ipairs({ "group-previous", "group-next" }) do
@@ -307,6 +331,138 @@ local function paintPane(self, view, plan, pane)
   graphics.pop()
 end
 
+drawLocation = function(self, view, layout)
+  local graphics = self.graphics
+  local location = assert(view.location)
+  local navigation = assert(view.locationNavigation)
+  local grid = layout.locationGrid
+  local tiles = {}
+  for _, tile in ipairs(location.tiles or {}) do
+    tiles[string.format("%d:%d", tile.fieldX, tile.fieldZ)] = tile
+  end
+  for _, targetId in ipairs({ "location:map-picker", "location:zoom-out", "location:zoom-in", "location:map-back" }) do
+    local target = layout.targets[targetId]
+    if target then
+      setColor(graphics, targetId == view.focus and SELECTED or BORDER)
+      graphics.rectangle("line", target.x, target.y, target.width, target.height)
+      local label = targetId == "location:map-picker" and "Change Map"
+        or targetId == "location:zoom-out" and "−"
+        or targetId == "location:zoom-in" and "+"
+        or "Back"
+      drawText(self, label, target.x + 4, target.y + 3, INK)
+    end
+  end
+
+  if grid then
+    local clip = grid.clip
+    setColor(graphics, { 0.84, 0.87, 0.84, 1 })
+    graphics.rectangle("fill", clip.x, clip.y, clip.width, clip.height)
+    local original = location.original or view.session.location
+    local draft = location.draft or view.session.location
+    for row = 0, grid.rows - 1 do
+      for column = 0, grid.columns - 1 do
+        local fieldX = grid.firstFieldX + column
+        local fieldZ = grid.firstFieldZ + row
+        local key = string.format("%d:%d", fieldX, fieldZ)
+        local tile = tiles[key]
+        local x = grid.originX + column * grid.tileSize
+        local y = grid.originY + row * grid.tileSize
+        if tile and tile.selectable == true then
+          setColor(graphics, { 0.75, 0.87, 0.7, 1 })
+          graphics.rectangle("fill", x, y, grid.tileSize, grid.tileSize)
+          setColor(graphics, { 0.46, 0.62, 0.42, 1 })
+          for offset = -grid.tileSize, grid.tileSize * 2, 8 do
+            graphics.line(x + offset, y, x + offset - grid.tileSize, y + grid.tileSize)
+          end
+        elseif tile and tile.selectable == false then
+          setColor(graphics, { 0.73, 0.75, 0.75, 1 })
+          graphics.rectangle("fill", x, y, grid.tileSize, grid.tileSize)
+          setColor(graphics, { 0.38, 0.42, 0.44, 1 })
+          graphics.line(x + 3, y + 3, x + grid.tileSize - 3, y + grid.tileSize - 3)
+          graphics.line(x + grid.tileSize - 3, y + 3, x + 3, y + grid.tileSize - 3)
+        else
+          setColor(graphics, { 0.89, 0.9, 0.87, 1 })
+          graphics.rectangle("fill", x, y, grid.tileSize, grid.tileSize)
+          setColor(graphics, MUTED)
+          graphics.line(x + 2, y + grid.tileSize - 2, x + grid.tileSize - 2, y + 2)
+        end
+        setColor(graphics, BORDER)
+        graphics.rectangle("line", x, y, grid.tileSize, grid.tileSize)
+        if original and fieldX == original.fieldX and fieldZ == original.fieldZ then
+          setColor(graphics, { 0.16, 0.38, 0.72, 1 })
+          graphics.rectangle("line", x + 2, y + 2, grid.tileSize - 4, grid.tileSize - 4)
+        end
+        if draft and fieldX == draft.fieldX and fieldZ == draft.fieldZ then
+          setColor(graphics, { 0.83, 0.23, 0.18, 1 })
+          graphics.rectangle("line", x + 4, y + 4, grid.tileSize - 8, grid.tileSize - 8)
+        end
+        local cursor = navigation.cursor
+        if cursor and fieldX == cursor.fieldX and fieldZ == cursor.fieldZ then
+          setColor(graphics, { 0.12, 0.18, 0.25, 1 })
+          graphics.rectangle("line", x + 1, y + 1, grid.tileSize - 2, grid.tileSize - 2)
+        end
+      end
+    end
+  end
+
+  local statusY = grid and (grid.clip.y + grid.clip.height + 2) or (layout.content.y + 30)
+  local mapLabel = location.symbol or ("Map " .. tostring(location.mapId or "—"))
+  local status = location.status
+  local statusLabel = status.state == "ready" and "Ready"
+    or status.state == "pending" and "Preparing map data"
+    or status.reason
+    or "Map unavailable"
+  drawText(
+    self,
+    fitText(mapLabel .. " · " .. statusLabel, layout.content.width - 8),
+    layout.content.x + 4,
+    statusY,
+    INK
+  )
+  local cursor = navigation.cursor
+  if cursor then
+    local inspected = tiles[string.format("%d:%d", cursor.fieldX, cursor.fieldZ)]
+    local tileReason = inspected and inspected.reason or ""
+    drawText(
+      self,
+      fitText(
+        string.format("Global tile %d, %d %s", cursor.fieldX, cursor.fieldZ, tileReason),
+        layout.content.width - 8
+      ),
+      layout.content.x + 4,
+      statusY + 14,
+      INK
+    )
+  end
+  local help = "Physical placement only; story consistency isn't checked."
+  for _, row in ipairs(layout.rows) do
+    if row.targetId == "location:help" then
+      help = row.label
+      break
+    end
+  end
+  for lineIndex, line in ipairs(wrapText(help, layout.content.width - 8)) do
+    drawText(self, line, layout.content.x + 4, statusY + 28 + (lineIndex - 1) * 14, MUTED)
+  end
+end
+
+local function paintLocationContext(self, view, pane)
+  local graphics = self.graphics
+  local location = assert(view.location)
+  graphics.push()
+  graphics.translate(pane.placement.frame.x, pane.placement.frame.y)
+  graphics.scale(pane.placement.scale, pane.placement.scale)
+  graphics.setColor(0.88, 0.9, 0.88, 1)
+  graphics.rectangle("fill", 0, 0, pane.placement.logicalWidth, pane.placement.logicalHeight)
+  drawText(self, "Location context", 8, 8, INK)
+  drawText(self, fitText(location.symbol or tostring(location.mapId), pane.placement.logicalWidth - 16), 8, 28, INK)
+  local current = location.original or view.session.location
+  drawText(self, string.format("Current %d, %d", current.fieldX, current.fieldZ), 8, 46, INK)
+  local status = location.status
+  drawText(self, status.state == "ready" and "Map ready" or status.reason or "Preparing map data", 8, 64, MUTED)
+  graphics.pop()
+end
+
 function Renderer:draw(view, plan)
   assert(not self._disposed, "disposed save editor renderer cannot draw")
   local graphics = self.graphics
@@ -314,12 +470,16 @@ function Renderer:draw(view, plan)
     if pane.interactive then
       paintPane(self, view, plan, pane)
     else
-      graphics.push()
-      graphics.translate(pane.placement.frame.x, pane.placement.frame.y)
-      graphics.scale(pane.placement.scale, pane.placement.scale)
-      graphics.setColor(0.88, 0.9, 0.88, 1)
-      graphics.rectangle("fill", 0, 0, pane.placement.logicalWidth, pane.placement.logicalHeight)
-      graphics.pop()
+      if view.section == "Location" then
+        paintLocationContext(self, view, pane)
+      else
+        graphics.push()
+        graphics.translate(pane.placement.frame.x, pane.placement.frame.y)
+        graphics.scale(pane.placement.scale, pane.placement.scale)
+        graphics.setColor(0.88, 0.9, 0.88, 1)
+        graphics.rectangle("fill", 0, 0, pane.placement.logicalWidth, pane.placement.logicalHeight)
+        graphics.pop()
+      end
     end
   end
 end

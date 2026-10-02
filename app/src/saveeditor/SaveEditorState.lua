@@ -12,12 +12,22 @@ local Renderer = require("app.src.saveeditor.SaveEditorRenderer")
 local Controller = require("app.src.saveeditor.SaveEditorController")
 local ValueEditor = require("app.src.saveeditor.SaveEditorValueEditor")
 local Composition = require("app.src.saveeditor.SaveEditorComposition")
+local LocationService = require("app.src.saveeditor.SaveEditorLocationService")
 local FieldScriptSymbols = require("libs.assets.src.field.FieldScriptSymbols")
 local Utf8Glyphs = require("libs.assets.src.Utf8Glyphs")
 local HgssMonService = require("libs.hgss.src.mons.HgssMonService")
 local ItemAssetSchema = require("libs.assets.src.ItemAssetSchema")
 local Experience = require("libs.mons.src.gen4.Experience")
 local Personality = require("libs.mons.src.gen4.Personality")
+
+---@class SaveEditorLocationService
+---@field listMaps fun(self: SaveEditorLocationService): table[]
+---@field openMap fun(self: SaveEditorLocationService, mapId: integer)
+---@field setViewport fun(self: SaveEditorLocationService, centerX: integer, centerZ: integer, widthTiles: integer, heightTiles: integer)
+---@field update fun(self: SaveEditorLocationService)
+---@field snapshot fun(self: SaveEditorLocationService): table<string, unknown>
+---@field resolve fun(self: SaveEditorLocationService, mapId: integer, fieldX: integer, fieldZ: integer, expectedGeneration: integer): SaveEditorLocation?, table<string, unknown>
+---@field dispose fun(self: SaveEditorLocationService)
 
 ---@class SaveEditorState
 ---@field valueEditor SaveEditorValueEditor?
@@ -27,7 +37,7 @@ local Personality = require("libs.mons.src.gen4.Personality")
 ---@field height number
 ---@field derivedAssets { requestMilestone: fun(name: string, urgency: string): unknown }
 ---@field repositoryRoot string
----@field onResult fun(result: table<string, unknown>)
+---@field onResult fun(result: { kind: string })
 ---@field displayContext DisplayContext
 ---@field controller SaveEditorController
 ---@field renderer SaveEditorRenderer?
@@ -36,6 +46,9 @@ local Personality = require("libs.mons.src.gen4.Personality")
 ---@field message string
 ---@field session SaveEditorSession?
 ---@field dependencies table<string, unknown>?
+---@field locationService SaveEditorLocationService?
+---@field locationViewport table<string, number>?
+---@field locationServiceMapId integer?
 ---@field errorMessage string?
 ---@field notice string?
 ---@field generation number
@@ -115,6 +128,9 @@ function State.new(options)
     message = "Preparing save data",
     session = nil,
     dependencies = nil,
+    locationService = nil,
+    locationViewport = nil,
+    locationServiceMapId = nil,
     valueEditor = nil,
     errorMessage = nil,
     notice = nil,
@@ -205,8 +221,22 @@ function State:update()
     end
     self.dependencies = graphOrError
     self.session = assert(graphOrError.session)
+    self.locationService = LocationService.new({
+      cacheFs = assert(graphOrError.cacheFs),
+      world = assert(graphOrError.world),
+      derivedAssets = assert(graphOrError.derivedAssets),
+      savedObjects = assert(graphOrError.savedObjects),
+    })
+    local originalLocation = assert(self.session:snapshot().location)
+    self.controller:enterLocation(originalLocation)
+    self.controller:setSection("Location")
+    self.locationService:openMap(originalLocation.mapId)
+    self.locationServiceMapId = originalLocation.mapId
     self.status, self.errorMessage = "ready", nil
     self:_resolve(self:_snapshot())
+  end
+  if self.status == "ready" and self.locationService then
+    self:_updateLocationService()
   end
   if self.status == "ready" and self.renderer and self.dependencies then
     local view = self:_snapshot()
@@ -262,7 +292,20 @@ function State:_snapshot()
     unappliedDraft = self.monDraft ~= nil,
     iconStatus = self.iconStatus,
     iconFailure = self.iconFailure,
+    locationNavigation = self.controller:locationSnapshot(),
   }
+  if self.locationService then
+    local location = self.locationService:snapshot()
+    location.maps = self.locationService:listMaps()
+    location.symbol = location.map and location.map.symbol or nil
+    location.actionStatus = self.locationActionStatus
+        and {
+          state = self.locationActionStatus.state,
+          reason = self.locationActionStatus.reason,
+        }
+      or nil
+    view.location = location
+  end
   for key, value in pairs(party) do
     view[key] = value
   end
@@ -820,6 +863,125 @@ function State:_resolve(view)
   return self.presentation:resolve(self.displayContext:measure(self.width, self.height), view)
 end
 
+function State:_updateLocationService()
+  local service = self.locationService
+  if service == nil then
+    return
+  end
+  local navigation = self.controller:locationSnapshot()
+  local mapId = navigation.mapId
+  if mapId == nil then
+    return
+  end
+  if self.locationServiceMapId ~= mapId then
+    service:openMap(mapId)
+    self.locationServiceMapId = mapId
+    self.locationViewport = nil
+  end
+
+  local plan = self:_resolve(self:_snapshot())
+  local grid = plan.content.layout.locationGrid
+  local center = assert(navigation.center, "Location viewport needs a center")
+  local viewport = {
+    centerX = center.fieldX,
+    centerZ = center.fieldZ,
+    widthTiles = grid and grid.columns or 1,
+    heightTiles = grid and grid.rows or 1,
+  }
+  local previous = self.locationViewport
+  if
+    previous == nil
+    or previous.centerX ~= viewport.centerX
+    or previous.centerZ ~= viewport.centerZ
+    or previous.widthTiles ~= viewport.widthTiles
+    or previous.heightTiles ~= viewport.heightTiles
+  then
+    service:setViewport(viewport.centerX, viewport.centerZ, viewport.widthTiles, viewport.heightTiles)
+    self.locationViewport = viewport
+  end
+  service:update()
+end
+
+function State:_syncLocationToSession()
+  local current = assert(self.session:snapshot().location)
+  self.controller:enterLocation(current)
+  self.locationActionStatus = nil
+  self.locationServiceMapId = nil
+  self.locationViewport = nil
+end
+
+function State:_locationGridSize()
+  local layout = self:_resolve(self:_snapshot()).content.layout
+  local grid = layout.locationGrid
+  return grid and grid.columns or 1, grid and grid.rows or 1
+end
+
+function State:_selectLocationTile(fieldX, fieldZ)
+  local service = assert(self.locationService, "ready Location input needs its service")
+  local navigation = self.controller:locationSnapshot()
+  local mapId = assert(navigation.mapId)
+  local placement, status = service:resolve(mapId, fieldX, fieldZ, service:snapshot().generation)
+  self.locationActionStatus = status
+  if placement == nil then
+    self.errorMessage = status.reason
+      or (status.state == "pending" and "Preparing destination data." or "Destination unavailable.")
+    return
+  end
+  local result = self.session:setLocation(placement)
+  if not result.ok then
+    self.errorMessage = message(result.error)
+    self.locationActionStatus = { state = "unavailable", reason = self.errorMessage }
+    return
+  end
+  self.errorMessage = nil
+  self.locationActionStatus = { state = "ready" }
+end
+
+function State:_prepareLocationForSave()
+  local session = assert(self.session)
+  local snapshot = session:snapshot()
+  if not snapshot.locationChanged then
+    return true
+  end
+  local location = snapshot.location
+  local maps = assert(self.dependencies.world.maps)
+  local record =
+    assert(maps[self.dependencies.world.byId[location.mapId]], "staged map must be in structural world data")
+  self.controller:chooseLocationMap(location.mapId, location.fieldX, location.fieldZ)
+  self.locationServiceMapId = nil
+  self.locationViewport = nil
+  self:_updateLocationService()
+  local placement, status = self.locationService:resolve(
+    location.mapId,
+    location.fieldX,
+    location.fieldZ,
+    self.locationService:snapshot().generation
+  )
+  self.locationActionStatus = status
+  if placement == nil then
+    self.errorMessage = status.reason
+      or (
+        status.state == "pending" and "Preparing destination data. Save again when it is ready."
+        or "The destination is unavailable."
+      )
+    return false
+  end
+  if
+    record.id ~= placement.mapId
+    or location.fieldX ~= placement.fieldX
+    or location.fieldZ ~= placement.fieldZ
+    or location.surfaceId ~= placement.surfaceId
+    or location.worldY ~= placement.worldY
+    or location.terrainDependencyHash ~= placement.terrainDependencyHash
+  then
+    self.locationActionStatus = { state = "unavailable", reason = "destination_changed_during_resolution" }
+    self.errorMessage = "The destination changed while it was being checked. Review it and save again."
+    return false
+  end
+  self.errorMessage = nil
+  return true
+end
+
 function State:_sendResult()
   if self.resultSent then
     return
@@ -865,6 +1027,8 @@ function State:_performDeferred(action)
     self.controller:setSection(action.section)
     if action.section == "Progress" then
       self.controller.focus = "flag:" .. self:_firstFlagName()
+    elseif action.section == "Location" and self.locationService then
+      self:_updateLocationService()
     end
     self.errorMessage = nil
   elseif action.kind == "save" then
@@ -886,6 +1050,67 @@ function State:_performDeferred(action)
       self.controller.partyPage = "list"
       self.controller.focus = "party:add"
     end
+  elseif action.kind == "location-page" then
+    self.errorMessage = nil
+  elseif action.kind == "location-map-select" then
+    local world = assert(self.dependencies.world)
+    local record = world.maps[assert(world.byId[action.mapId], "selected map must be in structural world data")]
+    self.controller:chooseLocationMap(action.mapId, record.worldOriginX + 16, record.worldOriginZ + 16)
+    self.locationServiceMapId = nil
+    self.locationViewport = nil
+    self.locationActionStatus = nil
+    self.errorMessage = nil
+    self:_updateLocationService()
+  elseif action.kind == "location-map-move" then
+    local plan = self:_resolve(self:_snapshot())
+    local layout = plan.content.layout
+    local maps = self.locationService:listMaps()
+    if action.direction == "up" or action.direction == "down" then
+      local currentIndex
+      for index, map in ipairs(maps) do
+        if self.controller.focus == "location:map:" .. map.mapId then
+          currentIndex = index
+          break
+        end
+      end
+      local delta = action.direction == "down" and 1 or -1
+      if currentIndex == nil then
+        currentIndex = delta > 0 and 0 or (#maps + 1)
+      end
+      currentIndex = math.max(1, math.min(#maps, currentIndex + delta))
+      self.controller.focus = "location:map:" .. maps[currentIndex].mapId
+      local visible = 0
+      for targetId in pairs(layout.targets) do
+        if targetId:match("^location:map:%d+$") then
+          visible = visible + 1
+        end
+      end
+      visible = math.max(1, visible)
+      if currentIndex <= self.controller.locationMapOffset then
+        self.controller.locationMapOffset = currentIndex - 1
+      elseif currentIndex > self.controller.locationMapOffset + visible then
+        self.controller.locationMapOffset = currentIndex - visible
+      end
+    else
+      self.controller:moveFocus(layout.focusable, action.direction)
+    end
+  elseif action.kind == "location-cursor-move" then
+    local width, height = self:_locationGridSize()
+    self.controller:moveLocationCursor(action.direction, width, height)
+    self:_updateLocationService()
+  elseif action.kind == "location-pan" then
+    if action.centerX ~= nil and action.centerZ ~= nil then
+      self.controller.locationCenterX = action.centerX
+      self.controller.locationCenterZ = action.centerZ
+    else
+      local width, height = self:_locationGridSize()
+      self.controller:panLocation(action.direction, width, height)
+    end
+    self:_updateLocationService()
+  elseif action.kind == "location-zoom" then
+    self:_updateLocationService()
+  elseif action.kind == "select_tile" then
+    self:_selectLocationTile(action.fieldX, action.fieldZ)
   end
 end
 
@@ -955,12 +1180,16 @@ function State:_save(leave)
   if not self.session then
     return false
   end
+  if not self:_prepareLocationForSave() then
+    return false
+  end
   local result = self.session:save(self.valueEditor ~= nil or self.monDraft ~= nil)
   if not result.ok then
     self.errorMessage = message(result.error)
     return false
   end
   self.errorMessage = nil
+  self:_syncLocationToSession()
   if leave then
     self.controller.modal = nil
     if self.closeReason == "quit" then
@@ -980,6 +1209,9 @@ function State:_discard(leave)
   end
   if self.session then
     self.session:discard()
+  end
+  if self.session then
+    self:_syncLocationToSession()
   end
   self.monDraft = nil
   self.pendingDraftAction = nil
@@ -1098,7 +1330,7 @@ function State:_activate(targetId)
   end
   local section = targetId:match("^section:(.+)$")
   if targetId == "section" then
-    local sections = { "Player", "Party", "Bag", "Progress" }
+    local sections = { "Location", "Player", "Party", "Bag", "Progress" }
     local current = 1
     for index, value in ipairs(sections) do
       if value == self.controller.section then
@@ -1326,6 +1558,16 @@ function State:_dispatchIntent(intent)
     self:_activate(intent.targetId)
   elseif intent.kind == "action" then
     self:_activate(intent.action)
+  elseif
+    intent.kind == "location-page"
+    or intent.kind == "location-map-select"
+    or intent.kind == "location-map-move"
+    or intent.kind == "location-cursor-move"
+    or intent.kind == "location-pan"
+    or intent.kind == "location-zoom"
+    or intent.kind == "select_tile"
+  then
+    self:_performDeferred(intent)
   elseif intent.kind == "cancel" then
     if self.valueEditor then
       self.valueEditor:cancel()
@@ -1340,7 +1582,7 @@ function State:_dispatchIntent(intent)
     end
   elseif intent.kind == "move" then
     if self.width < 400 and (intent.direction == "left" or intent.direction == "right") then
-      local sections = { "Player", "Party", "Bag", "Progress" }
+      local sections = { "Location", "Player", "Party", "Bag", "Progress" }
       local current = 1
       for index, section in ipairs(sections) do
         if section == self.controller.section then
@@ -1441,6 +1683,7 @@ function State:resize(width, height)
   self.width, self.height = width, height
   self.presentation:cancelPointers()
   self.controller:cancelInteraction()
+  self.locationViewport = nil
 end
 
 function State:focus(focused)
@@ -1589,6 +1832,10 @@ function State:dispose()
   end
   self.disposed = true
   self.generation = self.generation + 1
+  if self.locationService then
+    self.locationService:dispose()
+    self.locationService = nil
+  end
   self.presentation:dispose()
   if self.renderer then
     self.renderer:dispose()

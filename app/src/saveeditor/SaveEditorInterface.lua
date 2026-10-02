@@ -30,15 +30,26 @@ local function mapInput(event, view, plan)
   if event.outside then
     return { type = event.type, pointerId = event.pointerId }
   end
-  if event.type ~= "pointer_down" and event.type ~= "pointer_up" then
+  if
+    event.type ~= "pointer_down"
+    and event.type ~= "pointer_up"
+    and not (view.section == "Location" and event.type == "pointer_move")
+  then
     return nil
   end
   local content = assert(plan.content)
   local targetId = Layout.hitTest(content.layout, view, event.x, event.y)
-  if targetId == nil then
+  if targetId == nil and event.type ~= "pointer_move" then
     return { type = event.type, pointerId = event.pointerId }
   end
-  return { type = event.type, pointerId = event.pointerId, targetId = targetId }
+  return {
+    type = event.type,
+    pointerId = event.pointerId,
+    targetId = targetId,
+    x = event.x,
+    y = event.y,
+    grid = content.layout.locationGrid,
+  }
 end
 
 function Interface.resolve(context, view)

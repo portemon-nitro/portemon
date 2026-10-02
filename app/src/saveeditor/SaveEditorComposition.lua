@@ -6,13 +6,23 @@ local RepoFs = require("libs.storage.src.RepoFs")
 local SaveFs = require("libs.storage.src.SaveFs")
 local GameSaveStore = require("libs.hgss.src.save.GameSaveStore")
 local GameSaveValidation = require("libs.hgss.src.save.GameSaveValidation")
-local FieldMapLoader = require("libs.hgss.src.world.FieldMapLoader")
 local FieldScriptSymbols = require("libs.assets.src.field.FieldScriptSymbols")
 local MapAssetCache = require("libs.assets.src.MapAssetCache")
 local ScriptSave = require("libs.script.src.ScriptSave")
 local SaveEditorSession = require("app.src.saveeditor.SaveEditorSession")
 
 local SaveEditorComposition = {}
+
+local function copy(value)
+  if type(value) ~= "table" then
+    return value
+  end
+  local result = {}
+  for key, item in pairs(value) do
+    result[key] = copy(item)
+  end
+  return result
+end
 
 ---@param options table<string, unknown>
 ---@return table<string, unknown>
@@ -50,7 +60,6 @@ function SaveEditorComposition.open(options)
   if world == nil then
     error(assert(worldError, "field world metadata is missing"), 0)
   end
-  local mapLoader = FieldMapLoader.new(cacheFs, world, { derivedAssets = options.derivedAssets })
   local session, sessionError = SaveEditorSession.new({
     record = validated,
     context = context,
@@ -70,7 +79,8 @@ function SaveEditorComposition.open(options)
     cacheFs = cacheFs,
     saveFs = saveFs,
     world = world,
-    mapLoader = mapLoader,
+    derivedAssets = options.derivedAssets,
+    savedObjects = copy(validated.world.objects),
     validation = validation,
     saveStore = store,
   }

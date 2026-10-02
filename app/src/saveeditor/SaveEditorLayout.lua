@@ -13,6 +13,7 @@ function Layout.compute(view, width, height)
   local headerHeight = height <= 200 and 32 or 48
   local railWidth = width >= 400 and 88 or 0
   local rows, targets, focusable, disabledTargets = {}, {}, {}, {}
+  local locationGrid
   local focusableSet = {}
   local function addFocusable(targetId)
     if not focusableSet[targetId] then
@@ -26,7 +27,7 @@ function Layout.compute(view, width, height)
   local contentBottom = math.max(contentTop + 1, height - footerHeight - 2)
   local section = view.section or "Player"
   local rowHeight = height <= 200 and ((section == "Bag" or section == "Party") and 19 or 22) or 34
-  local enabledSections = { "Player", "Party", "Bag", "Progress" }
+  local enabledSections = { "Location", "Player", "Party", "Bag", "Progress" }
   local navigation = {}
   if railWidth > 0 then
     for index, name in ipairs(enabledSections) do
@@ -98,6 +99,122 @@ function Layout.compute(view, width, height)
     addRow("warning", "error", "Save unavailable", view.message or "Could not open save")
     addRow("action", "retry", "Retry", "", true)
     addRow("action", "back", "Back", "", true)
+  elseif section == "Location" then
+    local location = assert(view.location, "Location needs the headless service snapshot")
+    local locationNav = assert(view.locationNavigation, "Location needs controller navigation state")
+    local maps = assert(location.maps, "Location needs copied structural map summaries")
+    local page = locationNav.page
+    local wide = width >= 640
+    local listWidth = wide and math.min(200, math.max(144, math.floor(innerWidth * 0.24))) or 0
+    local gridLeft = contentX
+    if wide then
+      gridLeft = contentX + listWidth + 8
+      for index, map in ipairs(maps) do
+        local id = "location:map:" .. map.mapId
+        local y = contentTop + (index - 1 - locationNav.mapOffset) * rowHeight
+        if y >= contentTop and y + rowHeight <= contentBottom then
+          targets[id] = rect(contentX, y, listWidth, rowHeight - 2)
+          navigation[#navigation + 1] = {
+            role = "action",
+            targetId = id,
+            label = map.symbol,
+          }
+          addFocusable(id)
+        end
+      end
+    elseif page == "map-list" then
+      local rowTop = contentTop + rowHeight
+      targets["location:map-picker"] = rect(contentX, contentTop, innerWidth, rowHeight - 2)
+      navigation[#navigation + 1] = {
+        role = "action",
+        targetId = "location:map-picker",
+        label = "Change Map",
+      }
+      addFocusable("location:map-picker")
+      for index, map in ipairs(maps) do
+        local id = "location:map:" .. map.mapId
+        local y = rowTop + (index - 1 - locationNav.mapOffset) * rowHeight
+        if y + rowHeight <= contentBottom then
+          targets[id] = rect(contentX, y, innerWidth, rowHeight - 2)
+          rows[#rows + 1] = { role = "action", targetId = id, label = map.symbol, value = map.section }
+          addFocusable(id)
+        end
+      end
+      targets["location:map-back"] = rect(contentX, contentBottom - rowHeight, innerWidth, rowHeight - 2)
+      navigation[#navigation + 1] = { role = "action", targetId = "location:map-back", label = "Back" }
+      addFocusable("location:map-back")
+    end
+
+    if page ~= "map-list" or wide then
+      local controlHeight = math.min(22, rowHeight)
+      local controlY = contentTop
+      local controlX = gridLeft
+      local gridWidth = math.max(1, contentX + innerWidth - gridLeft)
+      local pickerWidth = math.min(gridWidth * 0.55, wide and 240 or 144)
+      targets["location:map-picker"] = rect(controlX, controlY, pickerWidth, controlHeight)
+      navigation[#navigation + 1] = {
+        role = "action",
+        targetId = "location:map-picker",
+        label = "Change Map",
+      }
+      addFocusable("location:map-picker")
+      local zoomWidth = math.min(36, math.floor(gridWidth / 4))
+      targets["location:zoom-out"] = rect(controlX + gridWidth - zoomWidth * 2 - 2, controlY, zoomWidth, controlHeight)
+      targets["location:zoom-in"] = rect(controlX + gridWidth - zoomWidth, controlY, zoomWidth, controlHeight)
+      navigation[#navigation + 1] = { role = "action", targetId = "location:zoom-out", label = "−" }
+      navigation[#navigation + 1] = { role = "action", targetId = "location:zoom-in", label = "+" }
+      addFocusable("location:zoom-out")
+      addFocusable("location:zoom-in")
+
+      local statusHeight = 58
+      local gridClip = rect(
+        gridLeft,
+        controlY + controlHeight + 3,
+        gridWidth,
+        math.max(1, contentBottom - controlY - controlHeight - statusHeight - 5)
+      )
+      local tileSize = locationNav.scale
+      assert(tileSize == 16 or tileSize == 24 or tileSize == 32, "location scale must be one of the supported steps")
+      local columns = math.max(1, math.floor(gridClip.width / tileSize))
+      local gridRows = math.max(1, math.floor(gridClip.height / tileSize))
+      local center = assert(locationNav.center, "Location needs a grid center")
+      local firstFieldX = center.fieldX - math.floor(columns / 2)
+      local firstFieldZ = center.fieldZ - math.floor(gridRows / 2)
+      local renderedWidth, renderedHeight = columns * tileSize, gridRows * tileSize
+      locationGrid = {
+        clip = gridClip,
+        originX = gridClip.x + (gridClip.width - renderedWidth) / 2,
+        originY = gridClip.y + (gridClip.height - renderedHeight) / 2,
+        tileSize = tileSize,
+        columns = columns,
+        rows = gridRows,
+        firstFieldX = firstFieldX,
+        firstFieldZ = firstFieldZ,
+        renderedWidth = renderedWidth,
+        renderedHeight = renderedHeight,
+      }
+
+      local cursor = locationNav.cursor
+      if cursor ~= nil then
+        local id = string.format("location:tile:%d:%d", cursor.fieldX, cursor.fieldZ)
+        addFocusable(id)
+      end
+      local status = location.status
+      local reason = status.state == "error" and status.reason
+        or status.state == "pending" and "Preparing map data"
+        or ""
+      rows[#rows + 1] = {
+        role = "read-only value",
+        targetId = "location:status",
+        label = location.symbol or ("Map " .. tostring(location.mapId)),
+        value = reason,
+      }
+      rows[#rows + 1] = {
+        role = "read-only value",
+        targetId = "location:help",
+        label = "Physical placement only; story consistency isn't checked.",
+      }
+    end
   elseif section == "Player" then
     local snapshot = assert(view.session)
     addRow("read-only value", "player", "Player", snapshot.playerName)
@@ -298,6 +415,7 @@ function Layout.compute(view, width, height)
     disabledTargets = disabledTargets,
     actions = actions,
     activeSection = section,
+    locationGrid = locationGrid,
     scrollOffset = view.scrollOffset or 0,
   }
 end
@@ -316,6 +434,19 @@ function Layout.hitTest(layout, view, x, y)
         and y < target.y + target.height
       then
         return targetId
+      end
+    end
+  end
+  if view.section == "Location" and view.locationNavigation and view.locationNavigation.page ~= "map-list" then
+    local grid = layout.locationGrid
+    if grid then
+      local clip = grid.clip
+      if x >= clip.x and x < clip.x + clip.width and y >= clip.y and y < clip.y + clip.height then
+        local column = math.floor((x - grid.originX) / grid.tileSize)
+        local row = math.floor((y - grid.originY) / grid.tileSize)
+        if column >= 0 and column < grid.columns and row >= 0 and row < grid.rows then
+          return string.format("location:tile:%d:%d", grid.firstFieldX + column, grid.firstFieldZ + row)
+        end
       end
     end
   end
