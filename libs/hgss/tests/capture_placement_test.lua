@@ -54,11 +54,18 @@ local function newPartyOwner(count)
   return owner
 end
 
+---@param species string
+---@param seed integer
+---@return table<string, unknown> a fixed caught mon record of the requested species
+local function caughtMonOf(species, seed)
+  local catalog = CatalogFixture.makeCatalog()
+  local factory = CatalogFixture.makeFactory(seed, catalog)
+  return factory:createNormal(CatalogFixture.normalRequest({ species = species, level = 5 }))
+end
+
 ---@return table<string, unknown> a fixed caught mon record
 local function caughtMon()
-  local catalog = CatalogFixture.makeCatalog()
-  local factory = CatalogFixture.makeFactory(0x66666666, catalog)
-  return factory:createNormal(CatalogFixture.normalRequest({ species = "EEVEE", level = 5 }))
+  return caughtMonOf("EEVEE", 0x66666666)
 end
 
 ---@return HgssBagService bag owner holding a fixed ball stock
@@ -91,8 +98,12 @@ function T.full_party_capture_reports_the_explicit_unplaced_handoff()
   end
 
   local Committer = requirePresent(COMMITTER_MODULE, "capture commit without hidden storage")
-  local capture = { captureId = 1, species = "EEVEE", ball = "POKE_BALL", success = true }
-  local prepared = Committer.prepare({ outcome = { id = "outcome-full-party", result = "capture" }, captures = { capture } })
+  local capture = { captureId = 1, ball = "POKE_BALL", success = true, mon = caughtMon() }
+  local prepared = Committer.prepare({
+    outcome = { id = "outcome-full-party", result = "capture" },
+    partyOwner = party,
+    captures = { capture },
+  })
   local receipt = Committer.commit(prepared)
   Assert.isTrue(receipt.committed, "the capture still commits its battle consequences")
   Assert.equal(#receipt.placements, 1, "the capture yields exactly one placement")
@@ -107,8 +118,12 @@ function T.capture_with_room_appends_the_caught_mon_exactly_once()
   Assert.equal(party:partyCount(), 5, "the room case starts with five mons")
 
   local Committer = requirePresent(COMMITTER_MODULE, "capture commit into a free slot")
-  local capture = { captureId = 2, species = "EEVEE", ball = "POKE_BALL", success = true }
-  local prepared = Committer.prepare({ outcome = { id = "outcome-room-capture", result = "capture" }, captures = { capture } })
+  local capture = { captureId = 2, ball = "POKE_BALL", success = true, mon = caughtMon() }
+  local prepared = Committer.prepare({
+    outcome = { id = "outcome-room-capture", result = "capture" },
+    partyOwner = party,
+    captures = { capture },
+  })
   local receipt = Committer.commit(prepared)
   Assert.isTrue(receipt.committed, "the room capture commits")
   Assert.equal(#receipt.placements, 1, "the room capture yields exactly one placement")
@@ -164,7 +179,7 @@ function T.explicit_full_party_owner_stays_an_honest_handoff()
   local prepared = Committer.prepare({
     outcome = { id = "outcome-explicit-full-party", result = "capture" },
     partyOwner = party,
-    captures = { { captureId = 9, species = "EEVEE", ball = "POKE_BALL", success = true } },
+    captures = { { captureId = 9, ball = "POKE_BALL", success = true, mon = caughtMon() } },
   })
   local receipt = Committer.commit(prepared)
   Assert.isTrue(receipt.committed, "the full-party capture still commits")
@@ -178,10 +193,12 @@ end
 function T.unknown_species_never_reaches_publication()
   local party = newPartyOwner(5)
   local Committer = requirePresent(COMMITTER_MODULE, "capture commit into a free slot")
+  local bogus = caughtMon()
+  bogus.species = "MISSINGNO"
   local ok, err = pcall(Committer.prepare, {
     outcome = { id = "outcome-unknown-species", result = "capture" },
     partyOwner = party,
-    captures = { { captureId = 10, species = "MISSINGNO", ball = "POKE_BALL", success = true } },
+    captures = { { captureId = 10, ball = "POKE_BALL", success = true, mon = bogus } },
   })
   Assert.isFalse(ok, "an unknown species never stages: " .. tostring(err))
   Assert.equal(party:partyCount(), 5, "a rejected capture appends nothing")
@@ -196,6 +213,97 @@ function T.stub_stays_pure_across_repeated_handoffs()
   Assert.isFalse(first.retained, "repeated handoffs retain nothing")
   Assert.equal(first.destination, "pc", "repeated handoffs name the destination")
   Assert.equal(first.reason, "pc_unimplemented", "repeated handoffs name the limitation")
+end
+
+function T.successful_capture_without_a_caught_record_is_rejected_before_publication()
+  local party = newPartyOwner(5)
+  local Committer = requirePresent(COMMITTER_MODULE, "capture commit into a free slot")
+  local ok, err = pcall(Committer.prepare, {
+    outcome = { id = "outcome-bare-species-rejected", result = "capture" },
+    partyOwner = party,
+    captures = { { captureId = 31, species = "EEVEE", ball = "POKE_BALL", success = true } },
+  })
+  Assert.isFalse(ok, "a species-only success never stages: " .. tostring(err))
+  Assert.equal(party:partyCount(), 5, "a rejected capture appends nothing")
+  Assert.isNil(Committer.receipt("outcome-bare-species-rejected"), "a rejected capture records no receipt")
+end
+
+function T.retained_capture_keeps_the_exact_caught_record()
+  local party = newPartyOwner(5)
+  local caught = caughtMon()
+  local Committer = requirePresent(COMMITTER_MODULE, "capture commit into a free slot")
+  local prepared = Committer.prepare({
+    outcome = { id = "outcome-exact-record-kept", result = "capture" },
+    partyOwner = party,
+    captures = { { captureId = 33, ball = "POKE_BALL", success = true, mon = caught } },
+  })
+  local receipt = Committer.commit(prepared)
+  Assert.isTrue(receipt.committed, "the exact capture commits")
+  Assert.equal(#receipt.placements, 1, "the exact capture yields exactly one placement")
+  local placement = receipt.placements[1]
+  Assert.isTrue(placement.retained, "the exact capture retains the mon")
+  Assert.equal(placement.destination, "party", "the exact capture lands in the party")
+  Assert.equal(placement.partySlot, 5, "the exact capture takes the first free slot")
+  Assert.equal(placement.captureId, 33, "the placement echoes its capture")
+  Assert.deepEqual(party:partyMon(5), caught, "the appended mon keeps its exact caught identity")
+end
+
+function T.full_party_capture_forwards_the_caught_record_and_replays_identically()
+  local party = newPartyOwner(6)
+  local caught = caughtMon()
+  local before = {}
+  for slot = 0, 5 do
+    before[slot] = party:partyMon(slot)
+  end
+  local Committer = requirePresent(COMMITTER_MODULE, "capture commit without hidden storage")
+  local prepared = Committer.prepare({
+    outcome = { id = "outcome-overflow-keeps-record", result = "capture" },
+    partyOwner = party,
+    captures = { { captureId = 32, ball = "POKE_BALL", success = true, mon = caught } },
+  })
+  local receipt = Committer.commit(prepared)
+  Assert.isTrue(receipt.committed, "the overflow capture still commits")
+  Assert.equal(#receipt.placements, 1, "the overflow capture yields exactly one placement")
+  local placement = receipt.placements[1]
+  Assert.isFalse(placement.retained, "the overflow capture retains nothing")
+  Assert.equal(placement.destination, "pc", "the overflow placement names the unimplemented destination")
+  Assert.equal(placement.reason, "pc_unimplemented", "the overflow placement stays honest")
+  Assert.equal(placement.captureId, 32, "the placement echoes its capture")
+  Assert.equal(party:partyCount(), 6, "the overflow commit stores the mon nowhere")
+  for slot = 0, 5 do
+    Assert.deepEqual(party:partyMon(slot), before[slot], "slot " .. tostring(slot) .. " stays untouched")
+  end
+  local repeatReceipt = Committer.commit(prepared)
+  Assert.deepEqual(repeatReceipt, receipt, "a replayed overflow commit reuses the recorded receipt")
+  Assert.equal(party:partyCount(), 6, "a replayed overflow commit never mutates the party")
+end
+
+function T.scarce_slot_goes_to_the_first_capture_in_order()
+  local party = newPartyOwner(5)
+  local first = caughtMonOf("TOTODILE", 0x77777777)
+  local second = caughtMonOf("CHIKORITA", 0x88888888)
+  local Committer = requirePresent(COMMITTER_MODULE, "capture commit into a free slot")
+  local prepared = Committer.prepare({
+    outcome = { id = "outcome-scarce-slot-order", result = "capture" },
+    partyOwner = party,
+    captures = {
+      { captureId = 34, ball = "POKE_BALL", success = true, mon = first },
+      { captureId = 35, ball = "POKE_BALL", success = true, mon = second },
+    },
+  })
+  local receipt = Committer.commit(prepared)
+  Assert.isTrue(receipt.committed, "the scarce-slot batch commits")
+  Assert.equal(#receipt.placements, 2, "each capture reports its placement in order")
+  Assert.isTrue(receipt.placements[1].retained, "the first capture retains the scarce slot")
+  Assert.equal(receipt.placements[1].destination, "party", "the first capture lands in the party")
+  Assert.equal(receipt.placements[1].partySlot, 5, "the first capture takes the first free slot")
+  Assert.equal(receipt.placements[1].captureId, 34, "the first placement echoes its capture")
+  Assert.isFalse(receipt.placements[2].retained, "the second capture retains nothing")
+  Assert.equal(receipt.placements[2].destination, "pc", "the second capture names the handoff")
+  Assert.equal(receipt.placements[2].reason, "pc_unimplemented", "the second placement stays honest")
+  Assert.equal(receipt.placements[2].captureId, 35, "the second placement echoes its capture")
+  Assert.equal(party:partyCount(), 6, "only the fitting capture appends")
+  Assert.deepEqual(party:partyMon(5), first, "the scarce slot keeps the first caught identity")
 end
 
 return { tests = T }

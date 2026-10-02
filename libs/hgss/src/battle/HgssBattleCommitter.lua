@@ -23,12 +23,6 @@ local PlayerData = require("libs.hgss.src.save.PlayerData")
 ---@class HgssBattleCommitter
 local HgssBattleCommitter = {}
 
--- Fallback level for bare capture results that name a species but carry
--- no caught record and no level. Callers with real battle data pass the
--- full caught mon, which keeps its own level; this default only keeps the
--- species-only path total.
-HgssBattleCommitter.FALLBACK_CAPTURE_LEVEL = 5
-
 ---@type table<string, table<string, unknown>>
 local RECEIPTS = {}
 
@@ -116,22 +110,12 @@ local function checkCapture(capture, index)
   if entry.success ~= true then
     return nil
   end
-  if entry.mon ~= nil and type(entry.mon) ~= "table" then
-    error("battle commit capture " .. tostring(index) .. " carries a mon record when present", 0)
-  end
-  if entry.mon == nil and type(entry.species) ~= "string" then
-    error("battle commit capture " .. tostring(index) .. " names a species without a mon record", 0)
+  -- A successful capture keeps its exact caught identity: the full mon
+  -- record is mandatory and is never reconstructed from bare fields.
+  if type(entry.mon) ~= "table" then
+    error("battle commit capture " .. tostring(index) .. " carries the full caught mon on success", 0)
   end
   return entry
-end
-
----@param level unknown
----@return integer
-local function captureLevel(level)
-  if type(level) == "number" and level % 1 == 0 and level >= 1 and level <= 100 then
-    return level
-  end
-  return HgssBattleCommitter.FALLBACK_CAPTURE_LEVEL
 end
 
 -- Stages every affected owner and validates the detached records without
@@ -185,21 +169,35 @@ function HgssBattleCommitter.prepare(args)
     error("battle commit stages party updates and captures through one batch", 0)
   end
   local ownerBatch = nil
-  local appends = {}
+  local fitting = {}
+  local overflow = {}
   if owner ~= nil then
+    -- Scarce party slots go to the earliest captures in order; the rest
+    -- overflow to the honest handoff instead of invalidating the batch.
+    -- Party updates never change the roster size, so live capacity is the
+    -- only bound. Every record's species key is validated read-only here,
+    -- before any publication; fitting records pass full validation through
+    -- the staged batch below.
+    local capacity = Party.MAX - owner:partyCount()
     for _, entry in ipairs(captures) do
-      if entry.mon ~= nil then
-        appends[#appends + 1] = entry.mon
+      local mon = entry.mon --[[@as table<string, unknown>]]
+      if type(mon.species) ~= "string" then
+        error("battle commit captures name their caught species", 0)
+      end
+      -- Unknown species fail here, before any publication, through a
+      -- read-only lookup that mutates nothing.
+      owner:countSpecies(mon.species)
+      if #fitting < capacity then
+        fitting[#fitting + 1] = entry
       else
-        -- Unknown species fail here, before any publication, through a
-        -- read-only lookup that mutates nothing.
-        owner:countSpecies(entry.species)
+        overflow[#overflow + 1] = entry
       end
     end
+    local appends = {}
+    for _, entry in ipairs(fitting) do
+      appends[#appends + 1] = entry.mon
+    end
     if #updates > 0 or #appends > 0 then
-      if owner:partyCount() + #appends > Party.MAX then
-        error("battle commit capture appends exceed the party", 0)
-      end
       local batch, reason = owner:preparePartyBatch(owner:partyRevision(), updates, appends)
       if batch == nil then
         error("battle commit party batch went stale: " .. tostring(reason), 0)
@@ -243,6 +241,8 @@ function HgssBattleCommitter.prepare(args)
     owner = owner,
     ownerBatch = ownerBatch,
     captures = captures,
+    fitting = fitting,
+    overflow = overflow,
     rewards = copyValue(args.rewards),
     scriptFlags = copyValue(args.scriptFlags) or {},
     playerCandidate = playerCandidate,
@@ -260,6 +260,8 @@ end
 ---@field owner HgssMonService?
 ---@field ownerBatch { isCurrent: fun(): boolean, publish: fun() }?
 ---@field captures table<string, unknown>[]
+---@field fitting table<string, unknown>[]
+---@field overflow table<string, unknown>[]
 ---@field rewards table<string, unknown>?
 ---@field scriptFlags table<string, unknown>
 ---@field playerCandidate table<string, unknown>?
@@ -283,7 +285,9 @@ end
 ---@param entry table<string, unknown>
 ---@return table<string, unknown>
 local function placeUnplaced(owner, entry)
-  local placement = HgssSendToPcStub.send({ species = entry.species }, {
+  -- Overflow keeps its exact caught record: the handoff receives the same
+  -- mon that battle execution produced and reports that nothing is stored.
+  local placement = HgssSendToPcStub.send(entry.mon, {
     partyCount = owner:partyCount(),
     captureId = entry.captureId,
   })
@@ -337,17 +341,18 @@ function HgssBattleCommitter.commit(prepared)
   local placements = {}
   local owner = staged.owner
   if owner ~= nil then
-    -- Staged record appends land first as one contiguous tail in capture
-    -- order, so their slots are known before the species-only leftovers.
-    local recordAppends = 0
-    for _, entry in ipairs(staged.captures) do
-      if entry.mon ~= nil then
-        recordAppends = recordAppends + 1
-      end
+    -- Staged fitting appends land first as one contiguous tail in capture
+    -- order, so their slots are known before the overflow handoffs.
+    -- Placements follow capture order regardless of classification.
+    local overflowed = {}
+    for _, entry in ipairs(staged.overflow) do
+      overflowed[entry] = true
     end
-    local recordSlot = owner:partyCount() - recordAppends
+    local recordSlot = owner:partyCount() - #staged.fitting
     for _, entry in ipairs(staged.captures) do
-      if entry.mon ~= nil then
+      if overflowed[entry] then
+        placements[#placements + 1] = placeUnplaced(owner, entry)
+      else
         placements[#placements + 1] = {
           captureId = entry.captureId,
           retained = true,
@@ -356,23 +361,6 @@ function HgssBattleCommitter.commit(prepared)
           reason = "retained",
         }
         recordSlot = recordSlot + 1
-      else
-        local slot = owner:partyCount()
-        local added = false
-        if slot < Party.MAX then
-          added = owner:giveMon({ species = entry.species, level = captureLevel(entry.level) })
-        end
-        if added then
-          placements[#placements + 1] = {
-            captureId = entry.captureId,
-            retained = true,
-            destination = "party",
-            partySlot = slot,
-            reason = "retained",
-          }
-        else
-          placements[#placements + 1] = placeUnplaced(owner, entry)
-        end
       end
     end
   end

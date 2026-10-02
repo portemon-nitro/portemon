@@ -239,6 +239,7 @@ function T.full_party_capture_stays_an_honest_noop_while_consuming_the_ball()
   local dex = newDexOwner()
   local launch = { id = "launch-full-party-wire", kind = "wild", payload = { species = "EEVEE", level = 4 } }
   local scenario = ScenarioFactory.fromEncounter(launch.payload, { party = party })
+  local caught = foeRecord("EEVEE", 4, 0xAAAA0002)
   local battle = BattleRuntime.new({
     request = launch,
     scenario = scenario,
@@ -246,7 +247,7 @@ function T.full_party_capture_stays_an_honest_noop_while_consuming_the_ball()
     bag = bag,
     bagDeltas = { { op = "take", item = "POKE_BALL", quantity = 1 } },
     dex = dex,
-    captures = { { captureId = 22, ball = "POKE_BALL", success = true, species = "EEVEE", level = 4 } },
+    captures = { { captureId = 22, ball = "POKE_BALL", success = true, mon = caught } },
   })
   driveToSettlement(battle)
   Assert.equal(battle:status().phase, "complete", "answered decisions finish the full-party battle")
@@ -299,11 +300,13 @@ function T.unknown_capture_species_fails_the_resolution()
   local party = newPartyOwner()
   local launch = { id = "launch-unknown-capture", kind = "wild", payload = { species = "TOTODILE", level = 4 } }
   local scenario = ScenarioFactory.fromEncounter(launch.payload, { party = party })
+  local bogus = foeRecord("EEVEE", 4, 0xAAAA0003)
+  bogus.species = "MISSINGNO"
   local battle = BattleRuntime.new({
     request = launch,
     scenario = scenario,
     party = party,
-    captures = { { captureId = 23, ball = "POKE_BALL", success = true, species = "MISSINGNO" } },
+    captures = { { captureId = 23, ball = "POKE_BALL", success = true, mon = bogus } },
   })
   driveToSettlement(battle)
   Assert.equal(battle:status().phase, "failed", "an unknown capture never stages")
