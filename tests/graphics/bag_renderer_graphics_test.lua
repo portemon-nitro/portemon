@@ -1231,6 +1231,117 @@ function T.cancel_label_paints_centered_on_its_source_label_area(scope, context)
   end
 end
 
+-- Modal toss text starts at the generated content-window origin and keeps
+-- the established line cadence. The draw spy forwards every call to the real
+-- text renderer, so the production BagRenderer remains the exercised owner.
+function T.toss_confirmation_text_starts_at_its_content_window_origin(scope, context)
+  local versions = readyVersions()
+  if #versions == 0 then
+    context:skip("the bag smoke needs a ready user-owned ROM with a derived cache")
+  end
+  for _, versionId in ipairs(versions) do
+    local cacheFs, manifest = manifestFor(versionId)
+    local layout = twoPaneLayout(manifest)
+    local firstIcon, secondIcon = iconKeys(cacheFs, versionId)
+    local owned = owners(cacheFs, manifest, scope, versionId)
+    local pocket = twoPockets(manifest, versionId)
+    local heroStatus = heroStatusAt(manifest, pocket, 6)
+    local modalRect = assert(
+      manifest.interactive.overlays.messages.modal.contentRect,
+      versionId .. " carries its modal message content window"
+    )
+    local calls = {}
+    local drawText = owned.text.drawTextWithPalette
+    owned.text.drawTextWithPalette = function(text, value, x, y, palette)
+      if value == "First line" or value == "Second line" then
+        calls[value] = { x = x, y = y }
+      end
+      return drawText(text, value, x, y, palette)
+    end
+
+    render(
+      scope,
+      owned,
+      presentation(firstIcon, secondIcon, heroStatus, {
+        state = "toss_confirm",
+        quantity = 2,
+        tossBase = "action",
+        lowerMessage = { visibleText = "First line\nSecond line", fullText = "First line\nSecond line" },
+        yesNoPrompt = {
+          active = true,
+          selected = "yes",
+          selectionHighlighted = true,
+          buttons = {
+            yes = { x = 200, y = 48, width = 48, height = 32 },
+            no = { x = 200, y = 80, width = 48, height = 32 },
+          },
+        },
+      }),
+      layout
+    )
+
+    Assert.equal(assert(calls["First line"]).x, modalRect.x, versionId .. " starts the first modal line at its content origin")
+    Assert.equal(assert(calls["First line"]).y, modalRect.y, versionId .. " starts the first modal line at its content origin")
+    Assert.equal(assert(calls["Second line"]).x, modalRect.x, versionId .. " keeps the second modal line left aligned")
+    Assert.equal(assert(calls["Second line"]).y, modalRect.y + 16, versionId .. " keeps the source line cadence")
+  end
+end
+
+-- Browse and action-menu Cancel share one generated label placement. A
+-- controlled odd remainder makes source integer truncation observable while
+-- every draw still passes through the production renderer and real font.
+function T.cancel_label_uses_integer_center_in_browse_and_action_menu(scope, context)
+  local versions = readyVersions()
+  if #versions == 0 then
+    context:skip("the bag smoke needs a ready user-owned ROM with a derived cache")
+  end
+  for _, versionId in ipairs(versions) do
+    local cacheFs, manifest = manifestFor(versionId)
+    local layout = twoPaneLayout(manifest)
+    local firstIcon, secondIcon = iconKeys(cacheFs, versionId)
+    local owned = owners(cacheFs, manifest, scope, versionId)
+    local interactive = assert(manifest.interactive, versionId .. " carries the interactive pane")
+    local labelRect = assert(interactive.cancel.labelRect, versionId .. " carries its Cancel label area")
+    local label = assert(interactive.text.actions.cancel, versionId .. " carries its Cancel label")
+    local plainLabel = label:gsub("{[^}]*}", "")
+    local remainingWidth = 7
+    local originalWidth = owned.text.textWidth
+    owned.text.textWidth = function(text, value)
+      if value == plainLabel then
+        return labelRect.width - remainingWidth
+      end
+      return originalWidth(text, value)
+    end
+    local calls = {}
+    local drawText = owned.text.drawTextWithPalette
+    owned.text.drawTextWithPalette = function(text, value, x, y, palette)
+      if value == plainLabel then
+        calls[#calls + 1] = { x = x, y = y }
+      end
+      return drawText(text, value, x, y, palette)
+    end
+    local pocket = twoPockets(manifest, versionId)
+    local heroStatus = heroStatusAt(manifest, pocket, 6)
+    local states = {
+      presentation(firstIcon, secondIcon, heroStatus),
+      presentation(firstIcon, secondIcon, heroStatus, {
+        state = "action_menu",
+        actions = { { id = "toss", slot = 1 } },
+        actionNode = 1,
+      }),
+    }
+    local expectedX = labelRect.x + math.floor(remainingWidth / 2)
+    for index, record in ipairs(states) do
+      calls = {}
+      render(scope, owned, record, layout)
+      Assert.equal(#calls, 1, versionId .. " draws one shared Cancel label in state " .. index)
+      Assert.equal(calls[1].x, expectedX, versionId .. " integer-centers Cancel in state " .. index)
+      Assert.equal(calls[1].y, labelRect.y, versionId .. " preserves Cancel's generated y in state " .. index)
+      Assert.equal(calls[1].x, math.floor(calls[1].x), versionId .. " keeps Cancel on an integer logical pixel")
+    end
+  end
+end
+
 -- The action menu carries the generated action focus at the selected
 -- target: two renders differing only in the selected action differ inside
 -- both affected footprints.
