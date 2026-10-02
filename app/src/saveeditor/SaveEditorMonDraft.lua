@@ -30,6 +30,8 @@ local Stats = require("libs.mons.src.gen4.Stats")
 ---@field private _initial table<string, unknown>
 ---@field private _context table<string, unknown>
 ---@field private _creationCandidate table<string, unknown>?
+---@field private _revision integer
+---@field private _projectionCache { revision: integer, value: SaveEditorMonProjection }?
 local SaveEditorMonDraft = {}
 SaveEditorMonDraft.__index = SaveEditorMonDraft
 
@@ -178,7 +180,19 @@ function SaveEditorMonDraft.new(options)
     _initial = copy(record),
     _context = options.context,
     _creationCandidate = copy(options.creationCandidate),
+    _revision = 0,
+    _projectionCache = nil,
   }, SaveEditorMonDraft)
+end
+
+---@return integer
+function SaveEditorMonDraft:revision()
+  return self._revision
+end
+
+function SaveEditorMonDraft:_changed()
+  self._revision = self._revision + 1
+  self._projectionCache = nil
 end
 
 ---@return table<string, unknown>
@@ -218,9 +232,16 @@ function SaveEditorMonDraft:setScalar(fieldId, value)
     if type(self._record.condition) ~= "table" then
       return false
     end
-    condition(self._record)[fieldId] = value
+    local values = condition(self._record)
+    if values[fieldId] ~= value then
+      values[fieldId] = value
+      self:_changed()
+    end
   else
-    self._record[fieldId] = value
+    if self._record[fieldId] ~= value then
+      self._record[fieldId] = value
+      self:_changed()
+    end
   end
   return true
 end
@@ -232,7 +253,10 @@ function SaveEditorMonDraft:setIV(stat, value)
   if not STAT_FIELDS[stat] or not hasPrimitiveType(value, "u8") or value > 31 then
     return false
   end
-  self._record.ivs[stat] = value
+  if self._record.ivs[stat] ~= value then
+    self._record.ivs[stat] = value
+    self:_changed()
+  end
   return true
 end
 
@@ -243,7 +267,10 @@ function SaveEditorMonDraft:setEV(stat, value)
   if not STAT_FIELDS[stat] or not hasPrimitiveType(value, "u8") then
     return false
   end
-  self._record.evs[stat] = value
+  if self._record.evs[stat] ~= value then
+    self._record.evs[stat] = value
+    self:_changed()
+  end
   return true
 end
 
@@ -261,7 +288,11 @@ function SaveEditorMonDraft:setMove(slot0, component, value)
   if not allowed then
     return false
   end
-  self._record.moves[slot0 + 1][component] = value
+  local move = self._record.moves[slot0 + 1]
+  if move[component] ~= value then
+    move[component] = value
+    self:_changed()
+  end
   return true
 end
 
@@ -279,6 +310,7 @@ function SaveEditorMonDraft:addMove(moveKey)
     error(definition, 0)
   end
   self._record.moves[#self._record.moves + 1] = { move = moveKey, pp = definition.basePp, ppUps = 0 }
+  self:_changed()
   return true
 end
 
@@ -289,6 +321,7 @@ function SaveEditorMonDraft:removeMove(slot0)
     return false
   end
   table.remove(self._record.moves, slot0 + 1)
+  self:_changed()
   return true
 end
 
@@ -300,7 +333,10 @@ function SaveEditorMonDraft:setOrigin(fieldId, value)
   if kind == nil or not hasPrimitiveType(value, kind) then
     return false
   end
-  self._record.origin[fieldId] = value
+  if self._record.origin[fieldId] ~= value then
+    self._record.origin[fieldId] = value
+    self:_changed()
+  end
   return true
 end
 
@@ -314,20 +350,27 @@ function SaveEditorMonDraft:setMet(fieldId, value)
   end
   local dateKey = dateField(fieldId)
   if dateKey then
-    self._record.met.date[dateKey] = value
+    if self._record.met.date[dateKey] ~= value then
+      self._record.met.date[dateKey] = value
+      self:_changed()
+    end
   else
-    self._record.met[fieldId] = value
+    if self._record.met[fieldId] ~= value then
+      self._record.met[fieldId] = value
+      self:_changed()
+    end
   end
   return true
 end
 
+---@param record table<string, unknown>
+---@param context table<string, unknown>
 ---@return SaveEditorMonProjection
-function SaveEditorMonDraft:projection()
-  local record = self._record
+local function projectRecord(record, context)
   local projection = {}
   local species, form
   if type(record.species) == "string" then
-    local ok, result = pcall(self._context.catalog.species, self._context.catalog, record.species)
+    local ok, result = pcall(context.catalog.species, context.catalog, record.species)
     if ok then
       species = result
     elseif not Errors.is(result) then
@@ -335,7 +378,7 @@ function SaveEditorMonDraft:projection()
     end
   end
   if species ~= nil and type(record.form) == "number" and record.form % 1 == 0 then
-    local ok, result = pcall(self._context.catalog.form, self._context.catalog, record.species, record.form)
+    local ok, result = pcall(context.catalog.form, context.catalog, record.species, record.form)
     if ok then
       form = result
     elseif not Errors.is(result) then
@@ -345,7 +388,7 @@ function SaveEditorMonDraft:projection()
 
   local curve
   if species ~= nil then
-    local ok, result = pcall(self._context.catalog.growthCurve, self._context.catalog, species.growthCurve)
+    local ok, result = pcall(context.catalog.growthCurve, context.catalog, species.growthCurve)
     if ok then
       curve = result
     elseif not Errors.is(result) then
@@ -393,6 +436,28 @@ function SaveEditorMonDraft:projection()
       projection.stats.hp = 1
     end
   end
+  return projection
+end
+
+---@param record table<string, unknown>
+---@param context table<string, unknown>
+---@return SaveEditorMonProjection
+function SaveEditorMonDraft.projectRecord(record, context)
+  assert(type(record) == "table", "raw mon record is required")
+  assert(type(context) == "table" and type(context.catalog) == "table", "mon projection context is required")
+  return projectRecord(record, context)
+end
+
+---@return SaveEditorMonProjection
+function SaveEditorMonDraft:projection()
+  if self._projectionCache and self._projectionCache.revision == self._revision then
+    return copy(self._projectionCache.value) --[[@as SaveEditorMonProjection]]
+  end
+  local projection = projectRecord(self._record, self._context)
+  self._projectionCache = {
+    revision = self._revision,
+    value = copy(projection) --[[@as SaveEditorMonProjection]],
+  }
   return projection
 end
 

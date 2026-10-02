@@ -4,6 +4,7 @@ local Assert = require("tests.support.Assert")
 local Controller = require("app.src.saveeditor.SaveEditorController")
 local Layout = require("app.src.saveeditor.SaveEditorLayout")
 local SaveEditorState = require("app.src.saveeditor.SaveEditorState")
+local PartyView = require("app.src.saveeditor.SaveEditorPartyView")
 local ValueEditor = require("app.src.saveeditor.SaveEditorValueEditor")
 local CatalogFixture = require("libs.mons.tests.catalog_fixture")
 
@@ -355,11 +356,10 @@ function T.nickname_blank_and_clear_have_distinct_raw_results()
   local factory = CatalogFixture.makeFactory(0x12345678, catalog)
   local mon = factory:createNormal(CatalogFixture.normalRequest())
   mon.nickname = nil
-  local editorState = setmetatable({
-    dependencies = { context = { monCatalog = catalog, itemCatalog = CatalogFixture.makeItemCatalog() } },
-  }, SaveEditorState)
+  local context = { monCatalog = catalog, itemCatalog = CatalogFixture.makeItemCatalog() }
+  local partyView = PartyView.new(context)
   local projection = { nature = require("libs.mons.src.gen4.Personality").nature(mon.personality) }
-  local rows = editorState:_monRows(mon, projection, "Identity", true)
+  local rows = PartyView.rows(partyView, mon, projection, "Identity", true)
   local nickname
   local clearAction
   for _, row in ipairs(rows) do
@@ -408,12 +408,11 @@ function T.identity_explains_native_ids_and_pid_ability_slot_without_editing_the
   local catalog = CatalogFixture.makeCatalog()
   local factory = CatalogFixture.makeFactory(0x12345678, catalog)
   local mon = factory:createNormal(CatalogFixture.normalRequest())
-  local editorState = setmetatable({
-    dependencies = { context = { monCatalog = catalog, itemCatalog = CatalogFixture.makeItemCatalog() } },
-  }, SaveEditorState)
+  local context = { monCatalog = catalog, itemCatalog = CatalogFixture.makeItemCatalog() }
+  local partyView = PartyView.new(context)
   local personality = require("libs.mons.src.gen4.Personality")
   local projection = { nature = personality.nature(mon.personality) }
-  local rows = editorState:_monRows(mon, projection, "Identity", true)
+  local rows = PartyView.rows(partyView, mon, projection, "Identity", true)
   local fields = {}
   for _, row in ipairs(rows) do
     fields[row.id] = row
@@ -428,7 +427,7 @@ function T.identity_explains_native_ids_and_pid_ability_slot_without_editing_the
     Assert.equal(fields[fieldId].enabled, false, fieldId .. " is explanatory only")
   end
 
-  local moveRows = editorState:_monRows(mon, projection, "Moves", true)
+  local moveRows = PartyView.rows(partyView, mon, projection, "Moves", true)
   local moveFields = {}
   for _, row in ipairs(moveRows) do
     if row.id ~= nil then

@@ -12,15 +12,14 @@ local Interface = require("app.src.saveeditor.SaveEditorInterface")
 local Renderer = require("app.src.saveeditor.SaveEditorRenderer")
 local Controller = require("app.src.saveeditor.SaveEditorController")
 local ValueEditor = require("app.src.saveeditor.SaveEditorValueEditor")
+local PartyView = require("app.src.saveeditor.SaveEditorPartyView")
+local Draft = require("app.src.saveeditor.SaveEditorMonDraft")
 local ScrollViewport = require("libs.ui.src.ScrollViewport")
 local Composition = require("app.src.saveeditor.SaveEditorComposition")
 local LocationService = require("app.src.saveeditor.SaveEditorLocationService")
 local FieldScriptSymbols = require("libs.assets.src.field.FieldScriptSymbols")
 local Utf8Glyphs = require("libs.assets.src.Utf8Glyphs")
-local HgssMonService = require("libs.hgss.src.mons.HgssMonService")
 local ItemAssetSchema = require("libs.assets.src.ItemAssetSchema")
-local Experience = require("libs.mons.src.gen4.Experience")
-local Personality = require("libs.mons.src.gen4.Personality")
 
 ---@class SaveEditorLocationService
 ---@field listMaps fun(self: SaveEditorLocationService): table[]
@@ -59,6 +58,8 @@ local Personality = require("libs.mons.src.gen4.Personality")
 ---@field approvedExit boolean
 ---@field closeRequest { reason: "back"|"quit", phase: "confirm"|"saving", previousModal: string?, previousFocus: string }?
 ---@field monDraft SaveEditorMonDraft?
+---@field partyView SaveEditorPartyView?
+---@field partyProjectionCache { partyRevision: integer, slot0: integer, value: SaveEditorMonProjection }?
 ---@field pendingDraftAction table<string, unknown>?
 ---@field activeDraftField table<string, unknown>?
 ---@field valuePurpose string?
@@ -175,6 +176,8 @@ function State.new(options)
     approvedExit = false,
     closeRequest = nil,
     monDraft = nil,
+    partyView = nil,
+    partyProjectionCache = nil,
     pendingDraftAction = nil,
     activeDraftField = nil,
     valuePurpose = nil,
@@ -256,6 +259,7 @@ function State:update(dt)
       return
     end
     self.dependencies = graphOrError
+    self.partyView = PartyView.new(assert(graphOrError.context))
     self.session = assert(graphOrError.session)
     self.locationService = LocationService.new({
       cacheFs = assert(graphOrError.cacheFs),
@@ -312,9 +316,10 @@ function State:_snapshot()
     end
   end
   local session = self.session and self.session:snapshot() or nil
-  local flags = session and self:_flagRows(session.flags) or {}
-  local party = session and self:_partyView() or {}
-  local bag = session and self:_bagView() or {}
+  local section = self.controller.section
+  local flags = session and section == "Progress" and self:_flagRows(session.flags) or {}
+  local party = session and section == "Party" and self:_partyView() or {}
+  local bag = session and section == "Bag" and self:_bagView() or {}
   local view = {
     kind = "save_editor",
     status = self.status,
@@ -488,6 +493,7 @@ function State:_partyView()
   local dependencies = assert(self.dependencies, "ready Party view requires editor dependencies")
   local context = assert(dependencies.context)
   local catalog = assert(context.monCatalog)
+  local partyView = assert(self.partyView, "ready Party view requires its catalog-backed row builder")
   local snapshot = self.session:partySnapshot()
   local members = snapshot.members
   local controller = self.controller:snapshot()
@@ -519,12 +525,27 @@ function State:_partyView()
     end
   elseif controller.partySlot0 ~= nil or self.monDraft ~= nil then
     local mon = self.monDraft and self.monDraft:record() or self:_selectedPartyMon(members)
-    local projection = self.monDraft and self.monDraft:projection() or {}
+    local projection
+    if self.monDraft then
+      projection = self.monDraft:projection()
+    else
+      local cached = self.partyProjectionCache
+      if cached and cached.partyRevision == snapshot.revision and cached.slot0 == controller.partySlot0 then
+        projection = cached.value
+      else
+        projection = Draft.projectRecord(mon, { catalog = catalog })
+        self.partyProjectionCache = {
+          partyRevision = snapshot.revision,
+          slot0 = assert(controller.partySlot0),
+          value = projection,
+        }
+      end
+    end
     local valid, validationError = mon, nil
     if self.monDraft then
       valid, validationError = self.monDraft:validate()
     end
-    rows = self:_monRows(mon, projection, controller.partySubpage, self.monDraft ~= nil)
+    rows = PartyView.rows(partyView, mon, projection, controller.partySubpage, self.monDraft ~= nil, controller.focus)
     if validationError ~= nil then
       rows[#rows + 1] = { role = "warning", targetId = "party:validation", label = message(validationError) }
     elseif self.monDraft and valid == nil then
@@ -557,245 +578,6 @@ function State:_selectedPartyMon(members)
     end
   end
   error("selected party slot is no longer available", 2)
-end
-
-function State:_monRows(mon, projection, subpage, editable)
-  local dependencies = assert(self.dependencies)
-  local context = assert(dependencies.context)
-  local catalog = assert(context.monCatalog)
-  local rows = {}
-  local function add(fieldId, label, value, role, editor)
-    rows[#rows + 1] = {
-      role = editable and role or "read-only value",
-      targetId = editable and editor and ("party:field:" .. fieldId) or ("party:readonly:" .. fieldId),
-      id = fieldId,
-      label = label,
-      value = value,
-      editor = editable and editor or nil,
-      enabled = editable and editor ~= nil,
-    }
-  end
-  local function integer(fieldId, label, value, minimum, maximum, base, setter)
-    add(fieldId, label, value, "integer value", {
-      kind = "integer",
-      value = value,
-      min = minimum,
-      max = maximum,
-      base = base or "decimal",
-      setter = setter or "scalar",
-      fieldId = fieldId,
-    })
-  end
-  local function choice(fieldId, label, value, options, setter, convert)
-    add(fieldId, label, value, "named choice", {
-      kind = "choice",
-      value = value,
-      options = options,
-      setter = setter or "scalar",
-      fieldId = fieldId,
-      convert = convert,
-    })
-  end
-  local function textName(fieldId, label, value, kind, subject)
-    add(fieldId, label, value, "action", {
-      kind = "name",
-      value = value or "",
-      nameKind = kind,
-      subject = subject,
-      setter = fieldId == "nickname" and "scalar" or "origin",
-      fieldId = fieldId,
-    })
-    if fieldId == "nickname" and editable then
-      rows[#rows + 1] = {
-        role = "action",
-        targetId = "party:clear-nickname",
-        id = "clear-nickname",
-        label = "Clear nickname",
-        enabled = true,
-      }
-    end
-  end
-
-  if subpage == "Identity" then
-    local species = catalog:species(mon.species)
-    local speciesOptions = self:_catalogOptions(catalog:speciesKeys(), function(key)
-      return catalog:species(key).name or key
-    end)
-    local forms = {}
-    for formId in pairs(species.forms) do
-      forms[#forms + 1] = formId
-    end
-    table.sort(forms)
-    local formOptions = self:_catalogOptions(forms, function(key)
-      return tostring(key)
-    end)
-    local abilityOptions = {}
-    local formOk, form = pcall(catalog.form, catalog, mon.species, mon.form)
-    if formOk then
-      abilityOptions = self:_catalogOptions(form.abilities, function(key)
-        return catalog:ability(key).name or key
-      end)
-    end
-    local itemCatalog = assert(context.itemCatalog)
-    local heldItems = itemCatalog:itemKeys()
-    local heldOptions = self:_catalogOptions(heldItems, function(key)
-      return itemCatalog:item(key).name or key
-    end)
-    choice("species", "Species", mon.species, speciesOptions)
-    choice("form", "Form", tostring(mon.form), formOptions, "scalar", "integer")
-    textName(
-      "nickname",
-      "Nickname",
-      mon.nickname,
-      "pokemon",
-      { kind = "pokemon", species = assert(species.nativeId), form = mon.form }
-    )
-    integer("personality", "Personality", mon.personality, 0, 4294967295, "hex")
-    choice("ability", "Ability", mon.ability, abilityOptions)
-    choice("heldItem", "Held item", mon.heldItem, heldOptions)
-    local abilityId = "Unavailable"
-    local abilityOk, abilityDefinition = pcall(catalog.ability, catalog, mon.ability)
-    if abilityOk then
-      abilityId = abilityDefinition.nativeId
-    elseif not Errors.is(abilityDefinition) then
-      error(abilityDefinition, 0)
-    end
-    add("species-native-id", "Native species ID", species.nativeId)
-    add("form-native-id", "Native form ID", mon.form)
-    add("ability-native-id", "Native ability ID", abilityId)
-    ---@type string|integer
-    local abilitySlot = "Unavailable"
-    if formOk and projection.nature ~= nil then
-      abilitySlot = Personality.abilitySlot(#form.abilities, mon.personality)
-    end
-    add("pid-ability-slot", "PID ability slot", abilitySlot)
-    add("nature", "Nature (derived)", projection.nature or "Unavailable")
-    add("gender", "Gender (derived)", projection.gender or "Unavailable")
-    add("shiny", "Shiny (derived)", projection.shiny == nil and "Unavailable" or (projection.shiny and "Yes" or "No"))
-  elseif subpage == "Training" then
-    local species = catalog:species(mon.species)
-    local expRange = "Unavailable"
-    if projection.level then
-      local curve = catalog:growthCurve(species.growthCurve)
-      local lower = Experience.expFor(curve, projection.level)
-      local upper = projection.level < 100 and Experience.expFor(curve, projection.level + 1) or nil
-      expRange = tostring(lower) .. "–" .. tostring(upper or "MAX")
-    end
-    integer("experience", "Experience", mon.experience, 0, 4294967295)
-    integer("friendship", "Friendship", mon.friendship, 0, 255)
-    add("level", "Level (derived)", projection.level or "Unavailable")
-    add("growth-curve", "Growth curve", species.growthCurve)
-    add("exp-interval", "Current level EXP interval", expRange)
-  elseif subpage == "Stats" then
-    local names = {
-      { "hp", "HP" },
-      { "attack", "Attack" },
-      { "defense", "Defense" },
-      { "speed", "Speed" },
-      { "specialAttack", "Special Attack" },
-      { "specialDefense", "Special Defense" },
-    }
-    for _, stat in ipairs(names) do
-      integer("iv:" .. stat[1], stat[2] .. " IV", mon.ivs[stat[1]], 0, 31, nil, "iv")
-      integer("ev:" .. stat[1], stat[2] .. " EV", mon.evs[stat[1]], 0, 255, nil, "ev")
-      add("stat:" .. stat[1], stat[2] .. " (derived)", projection.stats and projection.stats[stat[1]] or "Unavailable")
-    end
-    add("max-hp", "Maximum HP (derived)", projection.stats and projection.stats.hp or "Unavailable")
-    integer("currentHp", "Current HP", mon.condition.currentHp, 0, 4294967295)
-    integer("status", "Status", mon.condition.status, 0, 4294967295, "hex")
-    local evTotal = 0
-    for _, value in pairs(mon.evs) do
-      evTotal = evTotal + value
-    end
-    add("ev-total", "EV total", evTotal)
-    add("ev-limit", "EV limit", "510")
-  elseif subpage == "Moves" then
-    for slot0, move in ipairs(mon.moves) do
-      local index0 = slot0 - 1
-      local prefix = "move:" .. index0 .. ":"
-      local moveOptions = self:_catalogOptions(catalog:moveKeys(), function(key)
-        return catalog:move(key).name or key
-      end)
-      choice(prefix .. "move", "Move " .. (index0 + 1), move.move, moveOptions, "move")
-      local moveData = catalog:move(move.move)
-      add(prefix .. "native-id", "Move native ID", moveData.nativeId)
-      add(prefix .. "type", "Move type", moveData.type)
-      add(prefix .. "power", "Move power", moveData.power)
-      add(prefix .. "accuracy", "Move accuracy", moveData.accuracy)
-      add(prefix .. "base-pp", "Base PP allowance", moveData.basePp)
-      add(
-        prefix .. "allowed-pp",
-        "PP allowance at current Ups",
-        moveData.basePp + math.floor(moveData.basePp * move.ppUps / 5)
-      )
-      integer(prefix .. "pp", "PP", move.pp, 0, 255, nil, "move")
-      integer(prefix .. "ppUps", "PP Ups", move.ppUps, 0, 3, nil, "move")
-      rows[#rows + 1] =
-        { role = "action", targetId = "party:move:remove:" .. index0, label = "Remove move " .. (index0 + 1) }
-    end
-    if #mon.moves < 4 then
-      rows[#rows + 1] = { role = "action", targetId = "party:move:add", label = "Add move" }
-    end
-  else
-    local origin, met = mon.origin, mon.met
-    local genders = { { key = "0", label = "Male" }, { key = "1", label = "Female" } }
-    integer("trainerId", "Trainer ID", origin.trainerId, 0, 4294967295, "hex", "origin")
-    textName("trainerName", "Trainer name", origin.trainerName, "player", {
-      kind = "player",
-      gender = origin.trainerGender,
-    })
-    choice("trainerGender", "Trainer gender", tostring(origin.trainerGender), genders, "origin", "integer")
-    choice(
-      "game",
-      "Origin game",
-      origin.game,
-      self:_catalogOptions(HgssMonService.GAMES, function(key)
-        return key
-      end, true),
-      "origin"
-    )
-    choice(
-      "language",
-      "Language",
-      origin.language,
-      self:_catalogOptions(HgssMonService.LANGUAGES, function(key)
-        return key
-      end, true),
-      "origin"
-    )
-    local ballOptions = {}
-    for _, key in ipairs(context.itemCatalog:itemKeys()) do
-      if context.itemCatalog:item(key).pocket == "balls" then
-        ballOptions[#ballOptions + 1] = { key = key, label = context.itemCatalog:item(key).name or key }
-      end
-    end
-    choice("ball", "Ball", origin.ball, ballOptions, "origin")
-    integer("location", "Met location", met.location, 0, 65535, nil, "met")
-    integer("year", "Met year", met.date.year, 2000, 2255, nil, "met")
-    integer("month", "Met month", met.date.month, 1, 12, nil, "met")
-    integer("day", "Met day", met.date.day, 1, 31, nil, "met")
-    integer("level", "Met level", met.level, 1, 100, nil, "met")
-    integer("terrain", "Met terrain", met.terrain, 0, 255, nil, "met")
-  end
-  return rows
-end
-
-function State:_catalogOptions(keys, labelFor, numericKeys)
-  local options = {}
-  for key, value in pairs(keys) do
-    local optionKey = numericKeys and key or value
-    if numericKeys then
-      optionKey = key
-    elseif type(keys) == "table" and type(key) == "number" then
-      optionKey = value
-    end
-    local textKey = tostring(optionKey)
-    options[#options + 1] = { key = textKey, label = labelFor(textKey) }
-  end
-  table.sort(options, function(a, b)
-    return a.key < b.key
-  end)
-  return options
 end
 
 function State:_bagView()
@@ -1761,7 +1543,9 @@ function State:_activate(targetId)
   elseif targetId == "party:add" then
     self:_cancelPendingLocationSave()
     local catalog = assert(self.dependencies.context.monCatalog)
-    local options = self:_catalogOptions(catalog:speciesKeys(), function(key)
+    local options = PartyView.options(assert(self.partyView), "species", function()
+      return catalog:speciesKeys()
+    end, function(key)
       return catalog:species(key).name or key
     end)
     self.controller.partyReturnFocus = self.controller.focus
@@ -1830,7 +1614,9 @@ function State:_activate(targetId)
     self.valuePurpose = "party_add_move"
     self.valueEditor = ValueEditor.new({
       kind = "choice",
-      options = self:_catalogOptions(catalog:moveKeys(), function(key)
+      options = PartyView.options(assert(self.partyView), "moves", function()
+        return catalog:moveKeys()
+      end, function(key)
         return catalog:move(key).name or key
       end),
     })
@@ -2365,6 +2151,8 @@ function State:dispose()
   self.valueEditor = nil
   self.session = nil
   self.dependencies = nil
+  self.partyView = nil
+  self.partyProjectionCache = nil
 end
 
 return State

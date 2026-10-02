@@ -90,6 +90,7 @@ local STALE_DRAFT = "SAVE_EDITOR_STALE_DRAFT"
 ---@field private _drafts table<SaveEditorMonDraft, table<string, unknown>>
 ---@field private _busy boolean
 ---@field private _backupPublished boolean
+---@field private _readCache { revision: integer, snapshot: SaveEditorSnapshot }?
 
 local function copy(value)
   if type(value) ~= "table" then
@@ -350,20 +351,25 @@ function SaveEditorSession.new(options)
     _drafts = setmetatable({}, { __mode = "k" }),
     _busy = false,
     _backupPublished = false,
+    _readCache = nil,
   }, SaveEditorSession)
   return session
 end
 
 ---@return SaveEditorSnapshot
 function SaveEditorSession:snapshot()
+  if self._readCache and self._readCache.revision == self._revision then
+    return copy(self._readCache.snapshot) --[[@as SaveEditorSnapshot]]
+  end
   local playerData = self._baseline.playerData --[[@as table<string, unknown>]]
   local profile = playerData.profile --[[@as table<string, unknown>]]
   local baselineLocation = locationSnapshot(self._baseline)
   local stagedLocation = copy(self._location)
   local locationChanged = not sameLocation(stagedLocation, baselineLocation)
   local dirtyMoney, dirtyFlags = dirtyAgainst(self._baseline, self._money, self._events)
-  local candidate = self:captureCandidate()
-  return {
+  local partyDirty = not equal(self._monService:capture(), self._baseline.mons)
+  local bagDirty = not equal(self._bagService:capture(), self._baseline.bag)
+  local snapshot = {
     saveId = self._baseline.saveId --[[@as string]],
     versionId = self._baseline.versionId --[[@as string]],
     playerName = profile.name --[[@as string]],
@@ -375,12 +381,17 @@ function SaveEditorSession:snapshot()
     dirtySections = {
       money = dirtyMoney,
       flags = dirtyFlags,
-      party = not equal(candidate.mons, self._baseline.mons),
-      bag = not equal(candidate.bag, self._baseline.bag),
+      party = partyDirty,
+      bag = bagDirty,
       location = locationChanged,
     },
     revision = self._revision,
   }
+  self._readCache = {
+    revision = self._revision,
+    snapshot = copy(snapshot) --[[@as SaveEditorSnapshot]],
+  }
+  return snapshot
 end
 
 ---@return integer
@@ -629,13 +640,8 @@ end
 
 ---@return boolean
 function SaveEditorSession:isDirty()
-  local dirtyMoney, dirtyFlags = dirtyAgainst(self._baseline, self._money, self._events)
-  local candidate = self:captureCandidate()
-  return dirtyMoney
-    or dirtyFlags
-    or not equal(candidate.mons, self._baseline.mons)
-    or not equal(candidate.bag, self._baseline.bag)
-    or not sameLocation(self._location, locationSnapshot(self._baseline))
+  local dirty = self:snapshot().dirtySections
+  return dirty.money or dirty.flags or dirty.party or dirty.bag or dirty.location
 end
 
 ---@param value unknown
@@ -800,6 +806,7 @@ function SaveEditorSession:save(hasUnappliedDraft)
     self._saveStore:save(candidate)
     self._baseline = copy(candidate)
     self._location = locationSnapshot(self._baseline)
+    self._readCache = nil
     return success(true)
   end)
   self._busy = false
