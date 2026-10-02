@@ -137,6 +137,13 @@ local DEFINITIONS = {
     lifecycle = lifecycle("replace", "clear"),
   },
   {
+    key = "aquaring",
+    stateVersion = 1,
+    validateState = emptyState(1),
+    timings = { binding("residual", "aquaring", "recovery") },
+    lifecycle = lifecycle("replace", "clear"),
+  },
+  {
     key = "curse",
     stateVersion = 1,
     validateState = emptyState(1),

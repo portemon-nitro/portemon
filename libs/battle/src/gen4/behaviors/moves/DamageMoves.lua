@@ -510,7 +510,7 @@ end
 ---@param defender integer defender combatant under the hit
 ---@return boolean true when a marked substitute absorbed the hit
 local function substituteAbsorbs(ctx, defender)
-  if ctx:removeEffect(defender, "SUBSTITUTE") then
+  if ctx:removeBattleEffect(defender, "substitute") then
     return true
   end
   return false
@@ -583,6 +583,12 @@ end
 ---@return boolean true when the strike connects
 local function accuracyGate(ctx, frame, defender, accuracy)
   local stream = checkStream(frame.stream)
+  local userStages = ctx:entryOf(userOf(frame)).stages --[[@as table<string, integer>]]
+  local targetStages = ctx:entryOf(defender).stages --[[@as table<string, integer>]]
+  local stages = {
+    accuracyStage = userStages.accuracy,
+    evasionStage = targetStages.evasion,
+  }
   local resolution
   if accuracy == nil or accuracy == 0 then
     resolution = Accuracy.resolve({
@@ -597,6 +603,8 @@ local function accuracyGate(ctx, frame, defender, accuracy)
       target = { kind = "combatant" },
       cause = causeFor(frame),
       protected = false,
+      accuracyStage = stages.accuracyStage,
+      evasionStage = stages.evasionStage,
     }, stream)
   end
   if resolution.kind == "hit" then

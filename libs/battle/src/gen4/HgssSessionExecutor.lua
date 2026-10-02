@@ -37,6 +37,8 @@ local BattleState = require("libs.battle.src.BattleState")
 local BattleView = require("libs.battle.src.BattleView")
 local Capture = require("libs.battle.src.gen4.Capture")
 local CaptureContext = require("libs.battle.src.gen4.CaptureContext")
+local EffectBag = require("libs.battle.src.EffectBag")
+local EffectDispatch = require("libs.battle.src.EffectDispatch")
 local Escape = require("libs.battle.src.gen4.Escape")
 local Experience = require("libs.mons.src.gen4.Experience")
 local Fainting = require("libs.battle.src.gen4.Fainting")
@@ -44,6 +46,7 @@ local HgssRuleset = require("libs.battle.src.gen4.HgssRuleset")
 local HgssSchedule = require("libs.battle.src.gen4.HgssSchedule")
 local ItemUse = require("libs.battle.src.gen4.ItemUse")
 local MoveExecution = require("libs.battle.src.gen4.MoveExecution")
+local NativeEffectHandlers = require("libs.battle.src.gen4.behaviors.effects.NativeEffectHandlers")
 local NativeFormats = require("libs.battle.src.gen4.formats.NativeFormats")
 local OutcomePolicy = require("libs.battle.src.gen4.OutcomePolicy")
 local Personality = require("libs.mons.src.gen4.Personality")
@@ -53,6 +56,7 @@ local StatStages = require("libs.battle.src.gen4.StatStages")
 local RewardEffort = require("libs.battle.src.gen4.Effort")
 local RewardExperience = require("libs.battle.src.gen4.Experience")
 local Stats = require("libs.mons.src.gen4.Stats")
+local Status = require("libs.battle.src.gen4.Status")
 local Switching = require("libs.battle.src.gen4.Switching")
 local TurnOrder = require("libs.battle.src.gen4.TurnOrder")
 
@@ -622,6 +626,14 @@ local function projectCombatant(combatant, speciesFacts)
     nature
   )
   stats.level = level
+  -- Battle maximum health travels with the projection so recovery
+  -- handlers heal fractions of the true ceiling instead of guessing;
+  -- it sits above the entry value whenever the entry arrived wounded.
+  local ceiling = combatant.maxHp
+  if type(ceiling) ~= "number" then
+    ceiling = combatant.entryHp
+  end
+  stats.maxHp = ceiling --[[@as integer]]
   local stages = combatStages(combatant)
   for _, key in ipairs(STAGED_STATS) do
     stats[key] = StatStages.effective(stats[key] --[[@as integer]], stages[key] --[[@as integer]], key)
@@ -781,6 +793,83 @@ local function noteEntry(live, moneySet, combatantId)
   end
 end
 
+---@param state table<string, unknown> live battle state under the pass
+---@return table<string, unknown> live scoped-instance owner held by the state
+local function liveEffectBag(state)
+  local bag = state.effectBag
+  if type(bag) ~= "table" or type(bag.add) ~= "function" then
+    error(BattleErrors.invalidState("the native session owns its live effect bag", {}))
+  end
+  return bag --[[@as table<string, unknown>]]
+end
+
+-- Ticks persistent poison, burn, and toxic through the same health map
+-- the dispatch pass consumes, in sampled Speed order with combatant
+-- identity breaking ties. Poison and burn drain one eighth of maximum
+-- health; toxic increments its owned counter first (capped at the
+-- native fifteen) and drains one sixteenth per counter point. Every
+-- tick floors at a minimum of one. Sleep, freeze, and paralysis carry
+-- no residual damage; their law lives at the before-action gate.
+---@param state table<string, unknown> live battle state under the pass
+---@param context table<string, unknown> validated mechanics context under the pass
+---@param health table<integer, integer> battle-local health under the pass
+---@param speeds table<integer, integer> sampled effective Speed per combatant
+---@param ceilings table<integer, integer> battle maximum health per combatant
+local function tickPersistentConditions(state, context, health, speeds, ceilings)
+  local order = {}
+  for combatantId in pairs(health) do
+    order[#order + 1] = combatantId
+  end
+  table.sort(order, function(left, right)
+    local leftSpeed = speeds[left] or 0
+    local rightSpeed = speeds[right] or 0
+    if leftSpeed ~= rightSpeed then
+      return leftSpeed > rightSpeed
+    end
+    return left < right
+  end)
+  local typed = context --[[@as BattleContext]]
+  for _, combatantId in ipairs(order) do
+    if health[combatantId] > 0 then
+      local combatant = BattleState.combatant(state, combatantId)
+      local mon = combatant.mon --[[@as table<string, unknown>]]
+      local effects = (mon.condition --[[@as table<string, unknown>]]).effects
+      local current = (effects --[[@as table<integer, table<string, unknown>>]])[1]
+      if current ~= nil then
+        local key = current.key --[[@as string]]
+        if key == "poison" or key == "burn" then
+          local damage = math.floor(ceilings[combatantId] --[[@as integer]] / 8)
+          if damage < 1 then
+            damage = 1
+          end
+          health[combatantId] = health[combatantId] - damage
+          typed:emit("tick", { kind = "residual", key = key }, {
+            combatant = combatantId,
+            key = key,
+            amount = damage,
+          })
+        elseif key == "toxic" then
+          local counter = (current.state --[[@as table<string, unknown>]]).counter --[[@as integer]] + 1
+          if counter > 15 then
+            counter = 15
+          end
+          current.state = { counter = counter }
+          local damage = math.floor(ceilings[combatantId] --[[@as integer]] / 16) * counter
+          if damage < 1 then
+            damage = 1
+          end
+          health[combatantId] = health[combatantId] - damage
+          typed:emit("tick", { kind = "residual", key = key }, {
+            combatant = combatantId,
+            key = key,
+            amount = damage,
+          })
+        end
+      end
+    end
+  end
+end
+
 ---@param state table<string, unknown> live battle state under reserve inspection
 ---@return table<integer, integer> living benched roster members pooled across participants
 local function pooledReserves(state)
@@ -869,9 +958,6 @@ end
 
 -- Closes a battle that ends mid-turn through flight or capture. The
 -- round frame closes here so no residual pass or outcome resettlement
--- can resurrect the decided result.
--- Closes a battle that ends mid-turn through flight or capture. The
--- round frame closes here so no residual pass or outcome resettlement
 -- can resurrect the decided result. Earned evolution eligibility rides
 -- along exactly as it does on faint-decided terminals, since earlier
 -- knockouts keep their rewards when the battle ends by flight or throw.
@@ -890,6 +976,23 @@ local function isExternalObligation(obligation)
   -- seats the player participant there, so bereaved opponents resolve
   -- deterministically in roster order while the player side chooses.
   return obligation.side == 1
+end
+
+---@param state table<string, unknown> live battle state under replacement
+---@param outgoing integer departing combatant identity
+---@param incoming integer arriving combatant identity
+---@param activation integer entry token of the incoming occupant
+local function settleEntry(state, outgoing, incoming, activation)
+  -- Replacement clears outgoing activation-local instances per
+  -- definition lifecycle while carry-policy state follows its combatant
+  -- dormant, restarts the outgoing toxic counter, and re-anchors the
+  -- incoming entry's own carried state. Persistent conditions otherwise
+  -- survive untouched and stages already reset at entry.
+  local bag = liveEffectBag(state)
+  local departed = BattleState.combatant(state, outgoing).mon --[[@as table<string, unknown>]]
+  Status.switchReset(departed, bag, outgoing, activation)
+  local arriving = BattleState.combatant(state, incoming).mon --[[@as table<string, unknown>]]
+  Status.switchReset(arriving, bag, incoming, activation)
 end
 
 ---@param state table<string, unknown> live battle state under replacement
@@ -921,7 +1024,8 @@ local function enterReserve(state, moneySet, obligation, reserveId)
   })
   local stepped = Switching.step({}, frame)
   assert(stepped.done == true, "faint replacement exchanges settle without interception")
-  BattleState.enter(state, reserveId, obligation.position --[[@as integer]])
+  local activation = BattleState.enter(state, reserveId, obligation.position --[[@as integer]])
+  settleEntry(state, obligation.combatant --[[@as integer]], reserveId, activation)
   -- Replacements send out under the money-up scan: the latch only ever
   -- moves 1 -> 2 and never resets when the holder leaves.
   noteEntry(state, moneySet, reserveId)
@@ -1474,6 +1578,25 @@ local function bindTurnHandlers(executor, moveFacts, speciesFacts, chart, moneyS
     assert(type(stream.nextU16) == "function", "native strikes draw from the battle stream")
     local actor = action.actor --[[@as table<string, unknown>]]
     local combatant = BattleState.combatant(state, actor.combatant --[[@as integer]])
+    -- Persistent status gates every strike at the before-action
+    -- checkpoint: blocked actions never start, spend nothing, and draw
+    -- nothing beyond the gate's own labeled roll. Switching and item
+    -- use bypass the gate, so only the attack branch funnels here.
+    local gate = Status.beforeAction(
+      combatant.mon --[[@as table<string, unknown>]],
+      stream --[[@as table<string, unknown>]],
+      { kind = "status-gate", combatant = actor.combatant }
+    )
+    if gate.event ~= nil then
+      context:emit("status-gate", { kind = "status-gate", combatant = actor.combatant }, {
+        combatant = actor.combatant,
+        key = gate.event.key,
+        outcome = gate.event.outcome,
+      })
+    end
+    if not gate.acts then
+      return
+    end
     local payload = action.payload --[[@as table<string, unknown>]]
     local moveName, ownerSlot = resolveMove(combatant.mon, payload.moveSlot)
     local defenderId =
@@ -1574,7 +1697,10 @@ local function bindTurnHandlers(executor, moveFacts, speciesFacts, chart, moneyS
     local stepped = Switching.step({}, frame)
     assert(stepped.done == true, "voluntary exchanges settle without interception")
     BattleState.leave(state, slot)
-    BattleState.enter(state, payload.replacement --[[@as integer]], slot)
+    local activation = BattleState.enter(state, payload.replacement --[[@as integer]], slot)
+    -- Voluntary replacement clears outgoing activation-local instances
+    -- per definition lifecycle and resets the outgoing toxic counter.
+    settleEntry(state, actor.combatant --[[@as integer]], payload.replacement --[[@as integer]], activation)
     -- Replacements send out under the money-up scan: the latch only
     -- ever moves 1 -> 2 and never resets when the holder leaves.
     noteEntry(state, moneySet, payload.replacement --[[@as integer]])
@@ -1802,35 +1928,100 @@ local function bindTurnHandlers(executor, moveFacts, speciesFacts, chart, moneyS
 
   local function applyResiduals()
     local state = executor:_live()
+    local bag = liveEffectBag(state)
     local health = {} ---@type table<integer, integer>
+    local speeds = {} ---@type table<integer, integer>
+    local ceilings = {} ---@type table<integer, integer>
+    local typeMap = {} ---@type table<integer, string[]>
+    local occupants = {} ---@type table<integer, integer>
     for _, combatantId in
       ipairs(state.combatantOrder --[[@as integer[] ]])
     do
       local combatant = BattleState.combatant(state, combatantId)
       if combatant.active ~= nil then
         health[combatantId] = combatant.hp --[[@as integer]]
+        speeds[combatantId] = projectCombatant(combatant, speciesFacts).speed
+        -- Residual fractions scale to battle maximum health, which sits
+        -- above the entry value whenever the entry arrived wounded.
+        local ceiling = combatant.maxHp
+        if type(ceiling) ~= "number" then
+          ceiling = combatant.entryHp
+        end
+        ceilings[combatantId] = ceiling --[[@as integer]]
+        typeMap[combatantId] = combatantTypes(combatant, speciesFacts)
+        local active = combatant.active --[[@as table<string, unknown>]]
+        occupants[
+          active.position --[[@as integer]]
+        ] = combatantId
       end
     end
-    ---@return table<integer, table<string, unknown>> no residual instances yet
-    local function collectNoResiduals()
-      return {}
-    end
-    ---@return table<string, unknown> settled empty pass
-    local function invokeEmptyResiduals()
-      return { events = {}, done = true, checkpoint = nil }
-    end
-    local dispatch = { collect = collectNoResiduals, invoke = invokeEmptyResiduals }
     local stream = state.rng --[[@as table<string, unknown>]]
     assert(type(stream.nextU16) == "function", "native residuals draw from the battle stream")
-    local outcome = Residuals.step(dispatch, {
-      speeds = {},
+    local context = BattleContext.wrap(state)
+    -- Persistent conditions tick first in sampled Speed order through
+    -- the status owner; battle-local instances follow through the
+    -- shared finite dispatch over the same health map.
+    tickPersistentConditions(state, context, health, speeds, ceilings)
+    -- The dispatch owner serves the residual view through named
+    -- collection and invocation: the view contract is duck-typed, so
+    -- the session adapts method calls to plain view functions.
+    local dispatchOwner = EffectDispatch.new(
+      bag,
+      NativeEffectHandlers.handlersFor({ maxHp = ceilings, types = typeMap, occupants = occupants })
+    )
+    local function collectResiduals(_, timing, passContext)
+      return dispatchOwner:collect(timing --[[@as string]], passContext --[[@as table<string, unknown>]])
+    end
+    local function invokeResiduals(_, timing, passContext, budget)
+      return dispatchOwner:invoke(
+        timing --[[@as string]],
+        passContext --[[@as table<string, unknown>]],
+        budget --[[@as integer?]]
+      )
+    end
+    local outcome = Residuals.step({ collect = collectResiduals, invoke = invokeResiduals }, {
+      speeds = speeds,
       health = health,
       stream = stream,
     })
-    local context = BattleContext.wrap(state)
     for _, event in ipairs(outcome.events) do
       local record = event --[[@as table<string, unknown>]]
-      context:emit(record.kind --[[@as string]], { kind = record.kind }, copyValue(record))
+      if
+        record.kind --[[@as string]]
+        ~= "faint"
+      then
+        context:emit(record.kind --[[@as string]], { kind = record.kind }, copyValue(record))
+      end
+    end
+    -- Residual faint markers stay internal: committing health first lets
+    -- faint settlement emit the single canonical faint per knockout.
+    for combatantId, hp in pairs(health) do
+      local combatant = BattleState.combatant(state, combatantId)
+      local settled = hp --[[@as integer]]
+      if settled < 0 then
+        settled = 0
+      end
+      -- The commit never heals past the residual ceiling, so bag and
+      -- move recovery earned earlier in the turn survives the pass.
+      local ceiling = ceilings[combatantId] --[[@as integer]]
+      if settled > ceiling then
+        settled = ceiling
+      end
+      combatant.hp = settled
+    end
+    -- Expired countdowns leave after their final tick; the zero turn
+    -- already fired, so the sweep never drops a pending effect early.
+    -- The pass runs to completion synchronously, so no continuation
+    -- survives the turn and capture only ever sees settled state.
+    for _, record in ipairs(bag:capture()) do
+      local instanceState = record.state --[[@as table<string, unknown>]]
+      if
+        type(instanceState.turns) == "number"
+        and instanceState.turns --[[@as integer]]
+          <= 0
+      then
+        bag:remove(record.id --[[@as integer]])
+      end
     end
     sweepFaints(state)
   end
@@ -2215,6 +2406,12 @@ local function wrap(live, content, admitted, moveFacts, speciesFacts, moneyUpIte
   live.progressionChildren = live.progressionChildren or {}
   live.participated = live.participated or {}
   live.evolutionEligible = live.evolutionEligible or {}
+  -- The live effect owner travels with the state like the running
+  -- generator: fresh sessions start empty while restored sessions
+  -- rebuild their owner from the captured plain records.
+  if type(live.effectBag) ~= "table" or type(live.effectBag.add) ~= "function" then
+    live.effectBag = EffectBag.new(live.effectBag --[[@as table<integer, unknown>?]])
+  end
   live.moneyUpItems = copyValue(moneyUpItems or {})
   if live.escapeAttempts == nil then
     live.escapeAttempts = 0

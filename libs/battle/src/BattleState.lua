@@ -3,13 +3,14 @@
 -- surface; external callers receive detached copies. A combatant owns one
 -- canonical persistent-mon copy plus battle-local health and activation
 -- bookkeeping: health persists across entries (roster-local) while entry
--- tokens, volatiles, and stat stages reset per entry (activation-local),
+-- tokens and stat stages reset per entry (activation-local),
 -- so a replacement can never inherit a stale action, effect, or modifier
 -- through a reused slot integer.
 -- The live random generator object is held outside the serializable shape;
 -- interruption captures carry its plain record instead.
 
 local BattleErrors = require("libs.battle.src.errors")
+local EffectBag = require("libs.battle.src.EffectBag")
 local StatStages = require("libs.battle.src.gen4.StatStages")
 local Lcrng = require("libs.mons.src.gen4.Lcrng")
 
@@ -18,11 +19,12 @@ local BattleState = {}
 
 -- Interruption captures carrying an older version reject as incompatible:
 -- pre-release battle snapshots never migrate, they fail before publication.
--- Version 4 carries the knockout-reward continuation (reward children,
+-- Version 5 carries the knockout-reward continuation (reward children,
 -- battle participation, and evolution eligibility) alongside the version-2
--- replacement lifecycle and the session-owned action ledger (escape
--- attempts, capture identities, capture records, and item consumption).
-BattleState.VERSION = 4
+-- replacement lifecycle, the session-owned action ledger (escape
+-- attempts, capture identities, capture records, and item consumption),
+-- and the live battle-local effect records owned by the effect bag.
+BattleState.VERSION = 5
 
 ---@param value unknown
 ---@return unknown
@@ -105,6 +107,11 @@ function BattleState.create(validated)
     outbox = {},
     status = "running",
     outcome = nil,
+    -- The live scoped-instance owner for battle-local effects. Like the
+    -- running generator, the live bag object stays out of the
+    -- serializable shape: interruption captures carry its plain records
+    -- instead, and restoration rebuilds the owner from those records.
+    effectBag = EffectBag.new(),
   }
   local owned = state --[[@as table<string, unknown>]]
   local sideOrder = owned.sideOrder --[[@as integer[] ]]
@@ -149,7 +156,6 @@ function BattleState.create(validated)
         hp = hp,
         entryHp = hp,
         active = nil,
-        volatiles = {},
         stages = zeroStages(),
         materialized = {},
       }
@@ -276,7 +282,6 @@ function BattleState.enter(state, combatantId, positionId)
   combatant.hp = hp
   combatant.entryHp = hp
   combatant.active = { position = positionId, activation = counter }
-  combatant.volatiles = {}
   combatant.stages = zeroStages()
   position.occupant = combatantId
   position.activation = counter
@@ -294,7 +299,6 @@ function BattleState.leave(state, positionId)
   local combatantId = position.occupant --[[@as integer]]
   local combatant = BattleState.combatant(state, combatantId)
   combatant.active = nil
-  combatant.volatiles = {}
   position.occupant = nil
   position.activation = nil
   return combatantId
@@ -397,8 +401,8 @@ function BattleState.validateSnapshot(snapshot)
         error(BattleErrors.incompatibleSnapshot("snapshot entries must name position and token", {}))
       end
     end
-    if type(combatant.volatiles) ~= "table" or type(combatant.materialized) ~= "table" then
-      error(BattleErrors.incompatibleSnapshot("snapshot combatants must carry effect scopes", {}))
+    if type(combatant.materialized) ~= "table" then
+      error(BattleErrors.incompatibleSnapshot("snapshot combatants must carry materialized state", {}))
     end
   end
   for _, id in ipairs(positionOrder) do
@@ -497,6 +501,14 @@ function BattleState.validateSnapshot(snapshot)
     error(BattleErrors.incompatibleSnapshot("battle snapshots must carry their consumption ledger", {}))
   end
   checkSnapshotSequence(snapshot.ledger --[[@as table<integer, unknown>]], "snapshot consumption")
+  if type(snapshot.effects) ~= "table" then
+    error(BattleErrors.incompatibleSnapshot("battle snapshots must carry their live effect records", {}))
+  end
+  -- Rebuilding the owner validates every record shape, so malformed
+  -- effect state rejects before restore instead of publishing half-live
+  -- instances. The rebuilt owner is discarded; restoration rebuilds its
+  -- own from the same records.
+  EffectBag.new(snapshot.effects --[[@as table<integer, unknown>]])
   if type(snapshot.environment) ~= "table" or type(snapshot.formatState) ~= "table" then
     error(BattleErrors.incompatibleSnapshot("battle snapshots must carry environment records", {}))
   end
