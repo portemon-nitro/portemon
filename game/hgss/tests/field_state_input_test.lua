@@ -537,7 +537,7 @@ function T.focus_loss_clears_physical_input_and_cancels_presentation_capture()
 end
 
 function T.default_update_does_not_measure_display_or_resize_runtime()
-  local updates, resizes = 0, {}
+  local updates, measureCalls, resizes = 0, 0, {}
   local state = setmetatable({
     runtime = {
       pokemonNaming = inactivePokemonNaming(),
@@ -552,7 +552,7 @@ function T.default_update_does_not_measure_display_or_resize_runtime()
     },
     displayContext = {
       measure = function()
-        error("ordinary update must not measure display facts", 2)
+        measureCalls = measureCalls + 1
       end,
     },
     actorPresentation = {
@@ -562,6 +562,7 @@ function T.default_update_does_not_measure_display_or_resize_runtime()
   state:update(0.016)
   state:update(0.016)
   Assert.equal(updates, 2, "ordinary updates reach the runtime")
+  Assert.equal(measureCalls, 0, "ordinary updates do not measure display facts")
   Assert.equal(#resizes, 0, "ordinary updates retain settled geometry")
 end
 

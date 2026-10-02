@@ -6,8 +6,9 @@ application reproduction and composition.
 
 ## Composition boundary
 
-- `game/src/Game.lua` owns state replacement, update/draw and input forwarding, drawable-size
-  reconciliation, exit notification, and exactly-once state disposal for one running game.
+- `game/src/Game.lua` owns state replacement, update/draw and input forwarding, explicit resize
+  forwarding from the process shell, exit notification, and exactly-once state disposal for one
+  running game. Host display observation belongs to `app`.
 - `game/src/WindowConfig.lua`, `LocalClock.lua`, `RepoFs.lua`, and
   `audio/LoveAudioSink.lua` own reusable host concerns that are not HGSS product policy.
 - `game/src` must not import `app`, `game/hgss`, `libs/hgss`, `libs/nds`, or `romdump`.

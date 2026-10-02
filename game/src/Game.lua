@@ -5,8 +5,6 @@
 
 ---@class Game
 ---@field state table<string, unknown>|nil
----@field drawableWidth number
----@field drawableHeight number
 ---@field onExit fun(result: table<string, unknown>|nil)
 ---@field terminal boolean
 local Game = {}
@@ -16,11 +14,8 @@ Game.__index = Game
 ---@return Game
 function Game.new(options)
   assert(type(options) == "table" and type(options.onExit) == "function", "Game requires an onExit callback")
-  local width, height = love.graphics.getDimensions()
   return setmetatable({
     state = nil,
-    drawableWidth = width,
-    drawableHeight = height,
     onExit = options.onExit,
     terminal = false,
   }, Game)
@@ -49,8 +44,6 @@ function Game:draw()
 end
 
 function Game:resize(width, height)
-  self.drawableWidth = width
-  self.drawableHeight = height
   if self.state and self.state.resize then
     self.state:resize(width, height)
   end
