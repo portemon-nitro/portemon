@@ -151,6 +151,7 @@ local function openParty(ready, failure, calls, screenOptions)
     manifest = sourceManifest(),
     context = screenOptions and screenOptions.context,
     item = screenOptions and screenOptions.item,
+    targetPromptKey = screenOptions and screenOptions.targetPromptKey,
     initialFocus = screenOptions and screenOptions.initialFocus,
     measureDisplay = function()
       return measurement
@@ -195,6 +196,37 @@ function T.give_resume_intent_waits_for_party_opening_handoff()
   )
   Assert.isNil(state:takeIntent(), "the wrapper forwards the intent once")
   state:dispose()
+end
+
+function T.target_context_exposes_its_required_prompt_key()
+  local item = { key = "POTION", bagRevision = 1 }
+  for _, case in ipairs({
+    { context = "give_target", targetPromptKey = "giveTarget", item = item },
+    { context = "item_target", targetPromptKey = "useTarget", item = item },
+    { context = "item_target", targetPromptKey = "teachTarget", item = item },
+  }) do
+    local calls = { swaps = {} }
+    local state = openParty(true, nil, calls, case)
+    state:updateFixed({})
+    Assert.equal(state:status().targetPromptKey, case.targetPromptKey, "target status carries its source prompt identity")
+    state:dispose()
+  end
+end
+
+function T.target_context_rejects_missing_or_mismatched_prompt_keys()
+  local item = { key = "POTION", bagRevision = 1 }
+  for _, case in ipairs({
+    { context = "give_target", item = item },
+    { context = "give_target", targetPromptKey = "useTarget", item = item },
+    { context = "item_target", item = item },
+    { context = "item_target", targetPromptKey = "giveTarget", item = item },
+    { context = "item_target", targetPromptKey = "unknown", item = item },
+  }) do
+    local ok = pcall(function()
+      openParty(true, nil, { swaps = {} }, case)
+    end)
+    Assert.isFalse(ok, "target contexts reject missing or invalid prompt identities")
+  end
 end
 
 -- Activation held while icons prepare must not select anything: the screen

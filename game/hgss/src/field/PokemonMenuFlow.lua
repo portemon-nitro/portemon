@@ -363,15 +363,25 @@ function PokemonMenuFlow:_openPage(page, continuation)
   end
   if page == PAGE.PARTY_ITEM_TARGET or page == PAGE.PARTY_GIVE_TARGET then
     local cont = assert(continuation, "target pages open for a captured item")
+    local itemKey = assert(cont.itemKey, "target pages carry the item key")
     local context = page == PAGE.PARTY_ITEM_TARGET and "item_target" or "give_target"
+    local targetPromptKey = "giveTarget"
+    if page == PAGE.PARTY_ITEM_TARGET then
+      if self:_useKind(itemKey) == "machine" then
+        targetPromptKey = "teachTarget"
+      else
+        targetPromptKey = "useTarget"
+      end
+    end
     return PartyScreenState.new({
       service = self._mons,
       manifest = assets.partyManifest,
       actionPolicy = flowPartyPolicy(assets.partyManifest),
       uiManifest = assets.uiManifest,
       context = context,
+      targetPromptKey = targetPromptKey,
       item = {
-        key = assert(cont.itemKey, "target pages carry the item key"),
+        key = itemKey,
         bagRevision = assert(cont.bagRevision, "target pages carry the bag revision"),
       },
       measureDisplay = measureDisplay,

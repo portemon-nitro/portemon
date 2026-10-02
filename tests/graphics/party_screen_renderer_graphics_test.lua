@@ -822,7 +822,12 @@ function T.target_and_swap_states_keep_their_lower_prompts(scope)
     local cacheFs, manifest = manifestFor(versionId)
     local empty, _ = renderPane(scope, cacheFs, manifest, presentation({ state = "message" }))
     local browse, _ = renderPane(scope, cacheFs, manifest, presentation({ state = "browse" }))
-    local giveTarget, _ = renderPane(scope, cacheFs, manifest, presentation({ state = "choosing_item_target" }))
+    local giveTarget, _ = renderPane(
+      scope,
+      cacheFs,
+      manifest,
+      presentation({ state = "choosing_item_target", targetPromptKey = "giveTarget" })
+    )
     local chooseSwap, _ = renderPane(scope, cacheFs, manifest, presentation({ state = "choose_swap" }))
     local swappingStatus = presentation({ state = "swapping" })
     swappingStatus.swap = {
