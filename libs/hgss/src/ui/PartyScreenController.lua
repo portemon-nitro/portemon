@@ -121,6 +121,7 @@ PartyScreenController.__index = PartyScreenController
 local SWAP_MAX_OFFSET = 16
 local SWAP_PIXEL_STEP = 8
 local SWAP_SOUND = "SEQ_SE_DP_POKELIST_001"
+local CANCEL_SOUND = "SEQ_SE_GS_GEARCANCEL"
 
 -- The top-panel show/hide slide in source pixels.
 local PANEL_SLIDE_STEPS = { 0, 12, 24, 36, 40 }
@@ -685,6 +686,14 @@ function PartyScreenController:_requestSwapSound()
   end
 end
 
+-- Requests the source cancel sound through the borrowed effect boundary.
+function PartyScreenController:_requestCancelSound()
+  local effect = self._effect
+  if effect ~= nil then
+    effect(CANCEL_SOUND)
+  end
+end
+
 -- Abandons an uncommitted swap with no domain mutation.
 function PartyScreenController:_abortSwap()
   self._swapOp = nil
@@ -874,6 +883,7 @@ function PartyScreenController:_confirmMenuEntry()
   local slot = assert(self._menuSlot, "menu activation remembers its slot")
   local revision = self._observedRevision
   if entry.kind == "quit" then
+    self:_requestCancelSound()
     self._result = { kind = "closed" }
     self:_transition("closing")
     return
@@ -976,6 +986,7 @@ end
 function PartyScreenController:_confirmBrowse()
   local node = self._cursorNode
   if node == "cancel" then
+    self:_requestCancelSound()
     self._result = { kind = "closed" }
     self:_transition("closing")
     return
@@ -1024,6 +1035,7 @@ function PartyScreenController:_cancel()
       return
     end
     if self._cancellable then
+      self:_requestCancelSound()
       self._result = { kind = "closed" }
       self:_transition("closing")
     end

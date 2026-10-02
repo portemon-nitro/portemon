@@ -82,6 +82,11 @@ function T.compiled_geometry_publishes_source_independent_runtime_anchors()
   Assert.deepEqual(compiled.panels[6].heldAnchor, { x = 166, y = 128 })
   Assert.deepEqual(compiled.panels[6].capsuleAnchor, { x = 174, y = 128 })
   Assert.deepEqual(compiled.controls.cancel.anchor, { x = 232, y = 176 })
+  -- party_menu.c window 31 is the main-screen Cancel text window.
+  Assert.deepEqual(PartySources.geometry.controls.cancel.textRect, { x = 208, y = 168, width = 40, height = 16 })
+  Assert.equal(PartySources.geometry.controls.cancel.align, "center")
+  Assert.deepEqual(compiled.controls.cancel.textRect, PartySources.geometry.controls.cancel.textRect)
+  Assert.equal(compiled.controls.cancel.align, "center")
   Assert.isNil(compiled.controls.cancel.memberId, "runtime control geometry omits source identities")
   Assert.deepEqual(compiled.detail, {
     iconAnchor = { x = 30, y = 200 },

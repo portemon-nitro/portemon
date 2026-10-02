@@ -170,6 +170,7 @@ local function newController(opts)
       yes = { normal = {}, selected = {} },
       no = { normal = {}, selected = {} },
     },
+    effect = opts.effect,
   })
   return controller,
     calls,
@@ -1330,6 +1331,35 @@ local function soundingController(opts)
   end
   local controller, calls, control = nativeController(opts)
   return controller, calls, control, sounds
+end
+
+function T.root_back_plays_one_source_cancel_effect_and_closes_once()
+  local rootBack, _, _, rootSounds = soundingController()
+  rootBack:updateFixed({ { type = "cancel" } })
+  Assert.deepEqual(rootBack:takeResult(), { kind = "closed" }, "root B closes the Party")
+  Assert.deepEqual(rootSounds, { "SEQ_SE_GS_GEARCANCEL" }, "root B requests one cancel sound")
+  Assert.isNil(rootBack:takeResult(), "root B close is delivered once")
+  rootBack:dispose()
+  Assert.deepEqual(rootSounds, { "SEQ_SE_GS_GEARCANCEL" }, "draining and disposal do not replay the sound")
+end
+
+function T.main_cancel_plays_one_source_cancel_effect_and_closes()
+  local mainCancel, _, _, cancelSounds = soundingController({ initialFocus = "cancel" })
+  mainCancel:updateFixed({ { type = "confirm" } })
+  Assert.deepEqual(mainCancel:takeResult(), { kind = "closed" }, "main CANCEL closes the Party")
+  Assert.deepEqual(cancelSounds, { "SEQ_SE_GS_GEARCANCEL" }, "main CANCEL requests one cancel sound")
+end
+
+function T.top_level_quit_plays_one_source_cancel_effect_and_closes()
+  local quit, _, _, quitSounds = soundingController()
+  quit:updateFixed({ { type = "confirm" } })
+  for _ = 1, #nativeStatus(quit).menu - 1 do
+    quit:updateFixed({ { type = "navigate", direction = "down" } })
+  end
+  quit:updateFixed({ { type = "confirm" } })
+  pressThrough(quit)
+  Assert.deepEqual(quit:takeResult(), { kind = "closed" }, "top-level QUIT closes the Party")
+  Assert.deepEqual(quitSounds, { "SEQ_SE_GS_GEARCANCEL" }, "top-level QUIT requests one cancel sound")
 end
 
 local function fourLeadSpecs()
