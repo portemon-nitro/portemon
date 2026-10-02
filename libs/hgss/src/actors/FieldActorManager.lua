@@ -118,6 +118,13 @@ local AUTONOMOUS_STEP_TICKS = assert(MovementCalibration.SPEED_TICKS.normal)
 ---@field _drawRecords FieldActorManager.DrawRecord[]
 ---@field _drawRecordByActorId table<string, FieldActorManager.DrawRecord>
 ---@field _renderSample { x: number?, y: number?, z: number? }
+---@field _mapIds integer[]
+---@field _autonomyCapability FieldActorManager.AutonomyCapability
+---@field _playerFacts { fieldX: integer?, fieldZ: integer?, positionYBand: integer? }
+---@field _autonomyActor FieldActorManager.Actor?
+---@field _autonomyEntry FieldActorManager.Entry?
+---@field _autonomyContext FieldActorStepContext?
+---@field _presentationSample FieldObjectActor.PresentationState
 ---@field autonomy FieldActorAutonomy
 ---@field beginFixedStep fun(self: FieldActorManager)
 ---@field step fun(self: FieldActorManager, tick: integer, context: FieldActorStepContext?)
@@ -218,6 +225,18 @@ local AUTONOMOUS_STEP_TICKS = assert(MovementCalibration.SPEED_TICKS.normal)
 ---@field activeEmoteKind string?
 ---@field visible boolean
 
+---@class FieldActorManager.AutonomyCapability
+---@field fieldX integer?
+---@field fieldZ integer?
+---@field surfaceId integer?
+---@field worldY number?
+---@field positionYBand integer?
+---@field facingOverride boolean?
+---@field player { fieldX: integer?, fieldZ: integer?, positionYBand: integer? }?
+---@field setFacing fun(self: FieldActorManager.AutonomyCapability, actorId: string, direction: FieldDirection)
+---@field walk fun(self: FieldActorManager.AutonomyCapability, actorId: string, direction: FieldDirection): boolean
+---@field patternStep fun(self: FieldActorManager.AutonomyCapability, actorId: string, direction: FieldDirection): boolean
+
 -- The physical-projection input for one action endpoint: logical field
 -- coordinates plus the surface/height context the terrain path resolves.
 -- Committed actors satisfy this directly; action destinations supply the
@@ -295,13 +314,73 @@ function FieldActorManager.new(opts)
     _drawRecords = {},
     _drawRecordByActorId = {},
     _renderSample = { x = 0, y = 0, z = 0 },
+    _mapIds = {},
+    _playerFacts = {},
+    _autonomyActor = nil,
+    _autonomyEntry = nil,
+    _autonomyContext = nil,
+    _presentationSample = { gesturePose = nil, gestureTick = nil, gestureOffsetY = 0 },
     autonomy = FieldActorAutonomy.new({
       rng = opts.autonomyRng or ScriptRng.new(opts.autonomySeed or "field:autonomy"),
       profiles = FieldObjectMovement,
     }),
   }, FieldActorManager)
   ---@cast manager FieldActorManager
+  local function setFacing(_, actorId, direction)
+    local actor = assert(manager._autonomyActor, "autonomy actor binding is missing")
+    assert(actor.actorId == actorId, "autonomy facing callback actor disagrees")
+    if actor.interactionFacingOverride == nil then
+      actor:setFacing(direction)
+    end
+  end
+  local function walk(_, actorId, direction)
+    local actor = assert(manager._autonomyActor, "autonomy actor binding is missing")
+    assert(actor.actorId == actorId, "autonomy walk callback actor disagrees")
+    local entry = assert(manager._autonomyEntry, "autonomy entry binding is missing")
+    local context = assert(manager._autonomyContext, "autonomy context binding is missing")
+    return manager:_beginAutonomousAction(entry, actor, direction, context)
+  end
+  local function patternStep(_, actorId, direction)
+    local actor = assert(manager._autonomyActor, "autonomy actor binding is missing")
+    assert(actor.actorId == actorId, "autonomy pattern callback actor disagrees")
+    if actor.interactionFacingOverride == nil then
+      actor:setFacing(direction)
+    end
+    local entry = assert(manager._autonomyEntry, "autonomy entry binding is missing")
+    local context = assert(manager._autonomyContext, "autonomy context binding is missing")
+    return manager:_beginAutonomousAction(entry, actor, direction, context, true)
+  end
+  manager._autonomyCapability = {
+    setFacing = setFacing,
+    walk = walk,
+    patternStep = patternStep,
+  } --[[@as FieldActorManager.AutonomyCapability]]
   return manager
+end
+
+---@param mapIds integer[]
+---@param mapId integer
+local function insertMapId(mapIds, mapId)
+  for index, existingMapId in ipairs(mapIds) do
+    assert(existingMapId ~= mapId, "field actor map order already contains the map id")
+    if existingMapId > mapId then
+      table.insert(mapIds, index, mapId)
+      return
+    end
+  end
+  mapIds[#mapIds + 1] = mapId
+end
+
+---@param mapIds integer[]
+---@param mapId integer
+local function removeMapId(mapIds, mapId)
+  for index, existingMapId in ipairs(mapIds) do
+    if existingMapId == mapId then
+      table.remove(mapIds, index)
+      return
+    end
+  end
+  error("field actor map order is missing a live map id")
 end
 
 ---@param plate table<string, unknown>
@@ -1074,7 +1153,7 @@ function FieldActorManager:_restoreEntry(entry, eventState, snapshot)
     runtimeMap = entry.runtimeMap,
     managerSlot = managerSlotForEntry,
   })
-  for _, actor in ipairs(entry.store:orderedActors()) do
+  for _, actor in ipairs(entry.store:orderedActorsView()) do
     local plan = plans[actor.actorId]
     local state = actor:numericState()
     local projection = plan and plan.projection
@@ -1203,11 +1282,12 @@ local function retireEntry(self, entry)
   local mapId = entry.runtimeMap.mapId
   if self.maps[mapId] == entry then
     self.maps[mapId] = nil
+    removeMapId(self._mapIds, mapId)
     if self.currentMapId == mapId then
       self.currentMapId = nil
     end
   end
-  if #entry.store:orderedActors() > 0 then
+  if entry.store:actorCount() > 0 then
     self._visualRevision = self._visualRevision + 1
   end
   destroyEntry(self, entry)
@@ -1251,9 +1331,13 @@ function FieldActorManager:enterMap(runtimeMap, eventState, restoredObjects)
   end
 
   local previous = self.currentMapId and self.maps[self.currentMapId] or nil
+  local isNewMapId = existing == nil
   self.maps[mapId] = entry
+  if isNewMapId then
+    insertMapId(self._mapIds, mapId)
+  end
   self.currentMapId = mapId
-  if #entry.store:orderedActors() > 0 then
+  if entry.store:actorCount() > 0 then
     self._visualRevision = self._visualRevision + 1
   end
   if existing then
@@ -1729,19 +1813,10 @@ function FieldActorManager:_advanceAutonomousAction(entry, actor, action)
   end
 end
 
-local function sortedMapIds(maps)
-  local ids = {}
-  for mapId in pairs(maps) do
-    ids[#ids + 1] = mapId
-  end
-  table.sort(ids)
-  return ids
-end
-
 function FieldActorManager:beginFixedStep()
-  for _, mapId in ipairs(sortedMapIds(self.maps)) do
+  for _, mapId in ipairs(self._mapIds) do
     local entry = assert(self.maps[mapId])
-    for _, actor in ipairs(entry.store:orderedActors()) do
+    for _, actor in ipairs(entry.store:orderedActorsView()) do
       actor:beginFixedStep()
     end
   end
@@ -1756,19 +1831,20 @@ function FieldActorManager:step(tick, context)
     self.eventState:setTick(tick)
   end
   self:syncEventStateChanges()
-  local playerFacts
+  local playerFacts = self._playerFacts
   if context.player then
-    playerFacts = {}
-    for key, value in pairs(context.player) do
-      playerFacts[key] = value
-    end
-    if context.player.worldY ~= nil then
-      playerFacts.positionYBand = sourcePositionYBand(context.player.worldY)
-    end
+    playerFacts.fieldX = context.player.fieldX
+    playerFacts.fieldZ = context.player.fieldZ
+    playerFacts.positionYBand = context.player.worldY ~= nil and sourcePositionYBand(context.player.worldY)
+      or context.player.positionYBand
+  else
+    playerFacts.fieldX = nil
+    playerFacts.fieldZ = nil
+    playerFacts.positionYBand = nil
   end
-  for _, mapId in ipairs(sortedMapIds(self.maps)) do
+  for _, mapId in ipairs(self._mapIds) do
     local entry = assert(self.maps[mapId])
-    for _, actor in ipairs(entry.store:orderedActors()) do
+    for _, actor in ipairs(entry.store:orderedActorsView()) do
       local movementLocked = context.autonomousLocked == true
       if not movementLocked and context.actorLocked then
         movementLocked = context.actorLocked(actor.actorId) == true
@@ -1790,36 +1866,24 @@ function FieldActorManager:step(tick, context)
           and not movementLocked
           and self.autonomy:isOrdinary(actor.actorId)
         then
-          local function setFacing(_, id, direction)
-            local target = assert(self:getById(id))
-            if target.interactionFacingOverride == nil then
-              target:setFacing(direction)
-            end
+          local capability = self._autonomyCapability
+          capability.fieldX = stepState.fieldX
+          capability.fieldZ = stepState.fieldZ
+          capability.surfaceId = stepState.hasSurfaceId == 1 and stepState.surfaceId or nil
+          capability.worldY = stepWorldY
+          capability.positionYBand = stepWorldY ~= nil and sourcePositionYBand(stepWorldY) or nil
+          capability.facingOverride = actor.interactionFacingOverride ~= nil
+          capability.player = context.player and playerFacts or nil
+          self._autonomyActor = actor
+          self._autonomyEntry = entry
+          self._autonomyContext = context
+          local ok, err = pcall(self.autonomy.step, self.autonomy, actor.actorId, capability)
+          self._autonomyActor = nil
+          self._autonomyEntry = nil
+          self._autonomyContext = nil
+          if not ok then
+            error(err, 0)
           end
-          local function walk(_, id, direction)
-            local target = assert(self:getById(id))
-            return self:_beginAutonomousAction(entry, target, direction, context)
-          end
-          local function patternStep(_, id, direction)
-            local target = assert(self:getById(id))
-            if target.interactionFacingOverride == nil then
-              target:setFacing(direction)
-            end
-            return self:_beginAutonomousAction(entry, target, direction, context, true)
-          end
-          local capability = {
-            fieldX = stepState.fieldX,
-            fieldZ = stepState.fieldZ,
-            surfaceId = stepState.hasSurfaceId == 1 and stepState.surfaceId or nil,
-            worldY = stepWorldY,
-            positionYBand = stepWorldY ~= nil and sourcePositionYBand(stepWorldY) or nil,
-            facingOverride = actor.interactionFacingOverride ~= nil,
-            player = playerFacts,
-            setFacing = setFacing,
-            walk = walk,
-            patternStep = patternStep,
-          }
-          self.autonomy:step(actor.actorId, capability)
         end
         if hasAutonomousPresentationCarry then
           if entry.autonomousActions[actor.actorId] == nil then
@@ -1954,7 +2018,7 @@ function FieldActorManager:reconcilePhysicalWorld()
       managerSlot = managerSlotForEntry,
     })
     local plans = {}
-    for _, actor in ipairs(entry.store:orderedActors()) do
+    for _, actor in ipairs(entry.store:orderedActorsView()) do
       local plan = { actor = actor }
       local reconcileState = actor:numericState()
       if isResident(runtimeMap, reconcileState.fieldX, reconcileState.fieldZ) then
@@ -1999,7 +2063,7 @@ end
 function FieldActorManager:collectSpriteIds(out)
   assert(type(out) == "table", "collectSpriteIds requires a set table")
   for _, entry in pairs(self.maps) do
-    for _, actor in ipairs(entry.store:orderedActors()) do
+    for _, actor in ipairs(entry.store:orderedActorsView()) do
       out[actor.spriteId] = true
     end
   end
@@ -2012,7 +2076,7 @@ function FieldActorManager:drawRecords(alpha)
   local records = self._drawRecords
   local count = 0
   for _, entry in pairs(self.maps) do
-    for _, actor in ipairs(entry.store:orderedActors()) do
+    for _, actor in ipairs(entry.store:orderedActorsView()) do
       local state = actor:numericState()
       if state.resident == 0 then
         goto continue
@@ -2036,7 +2100,7 @@ function FieldActorManager:drawRecords(alpha)
       -- previous/current base point; the actor's logical
       -- worldX/worldY/worldZ (read by terrain, collision, and save) never
       -- carry it.
-      local presentation = actor:presentationState()
+      local presentation = actor:presentationStateInto(self._presentationSample)
       local gestureOffsetY = presentation.gestureOffsetY
       local base = actor:renderPositionInto(self._renderSample, alpha)
       record.actorId = actor.actorId

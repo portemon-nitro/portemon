@@ -208,6 +208,31 @@ function T.direct_store_owns_identity_order_and_manager_slots()
   Assert.deepEqual(store:orderedActors(), { second })
 end
 
+function T.store_order_view_is_borrowed_while_ordered_actors_stays_a_snapshot()
+  local store = FieldActorStore.new()
+  local first = actor("first", 4)
+  local second = actor("second", 9)
+  store:addActor(first)
+  store:addActor(second)
+
+  local snapshot = store:orderedActors()
+  Assert.deepEqual(snapshot, { first, second })
+  snapshot[1] = second
+  Assert.deepEqual(store:orderedActors(), { first, second }, "the convenience result remains caller-owned")
+
+  local view = store:orderedActorsView()
+  Assert.isTrue(view == store:orderedActorsView(), "the order view keeps store identity")
+  Assert.equal(store:actorCount(), 2)
+  Assert.deepEqual(view, { first, second })
+
+  store:removeActor(first)
+  local third = actor("third", 10)
+  store:addActor(third)
+  Assert.isTrue(view == store:orderedActorsView(), "the borrowed view reflects later store mutations")
+  Assert.deepEqual(view, { second, third })
+  Assert.equal(store:actorCount(), 2)
+end
+
 function T.direct_occupancy_orders_claims_and_reservations_through_a_slot_callback()
   local slots = { first = 0, second = 1 }
   local occupancy = FieldActorOccupancy.new({
