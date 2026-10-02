@@ -194,6 +194,9 @@ local BAG_NEIGHBORS = {
 -- the stable action menu opens: settle the generated transition clock
 -- before callers read the action state or its actions.
 local function chooseBagAction(flow, id)
+  driveUntil(flow, "the Bag opening settles", 30, function(current)
+    return current.child ~= nil and current.child.phase == "interactive"
+  end)
   local status = drive(flow, { { type = "confirm" } })
   status = driveUntil(flow, "the stable action menu", 30, function(current)
     return current.child ~= nil and current.child.state == "action_menu"

@@ -138,6 +138,19 @@ local function flowStatus(flow)
 end
 
 local function drive(flow, events)
+  local before = flowStatus(flow)
+  if #events > 0 and before.child ~= nil and before.child.phase == "opening" then
+    local ready = false
+    for _ = 1, 18 do
+      flow:updateFixed({})
+      local current = flow:status()
+      if current.child ~= nil and current.child.phase == "interactive" then
+        ready = true
+        break
+      end
+    end
+    Assert.isTrue(ready, "the Bag reveal settles before driven input")
+  end
   flow:updateFixed(events)
   for _ = 1, 6 do
     if flow:status().transition == nil then

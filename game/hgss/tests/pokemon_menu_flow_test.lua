@@ -235,6 +235,21 @@ local function stubMeasurement()
   }
 end
 
+local function resizedMeasurement()
+  return {
+    width = 512,
+    height = 384,
+    topology = ScreenTopology.oneDisplay({
+      id = "main",
+      rect = { x = 0, y = 0, width = 512, height = 384 },
+      touch = true,
+      role = "world",
+    }),
+    pixelRatio = 1,
+    signature = "menu-flow-test:512x384",
+  }
+end
+
 local function recordingIcons()
   local calls = { prepared = {}, cancels = 0 }
   local function prepare(iconKeys)
@@ -320,6 +335,21 @@ local function liveStatus(rig)
 end
 
 local function drive(rig, events)
+  local before = rig.flow:status()
+  if before.transition ~= nil and before.transition.phase == "app_exit" and before.transition.step == 6 then
+    rig.flow:updateFixed({})
+    before = rig.flow:status()
+  end
+  if #events > 0 and before.transition == nil and before.child ~= nil and before.child.phase == "opening" then
+    for _ = 1, 16 do
+      if rig.flow:status().child.phase == "interactive" then
+        break
+      end
+      rig.flow:updateFixed({})
+    end
+    rig.flow:updateFixed({})
+    rig.flow:updateFixed({})
+  end
   rig.flow:updateFixed(events)
   for _ = 1, 6 do
     if rig.flow:status().transition == nil then
@@ -327,7 +357,25 @@ local function drive(rig, events)
     end
     rig.flow:updateFixed({})
   end
+  local after = rig.flow:status()
+  if after.transition ~= nil and after.transition.phase == "app_exit" and after.transition.step == 6 then
+    rig.flow:updateFixed({})
+    after = rig.flow:status()
+  end
   return liveStatus(rig)
+end
+
+local function settleBagOpening(rig)
+  for _ = 1, 18 do
+    local status = liveStatus(rig)
+    if status.transition == nil and status.child ~= nil and status.child.phase == "interactive" then
+      rig.flow:updateFixed({})
+      rig.flow:updateFixed({})
+      return
+    end
+    rig.flow:updateFixed({})
+  end
+  error("the Bag opening did not hand input to its interactive phase", 0)
 end
 
 local function driveUntil(rig, label, maxSteps, predicate)
@@ -794,8 +842,25 @@ function T.tests.terminal_field_action_emits_typed_output(context)
   end
   for _, versionId in ipairs(versions) do
     local rig = liveComposition(versionId, "party")
-    local status = drive(rig, {})
-    Assert.equal(status.page, "party_browse", "a party root opens the party browse page")
+    rig.flow:_routeFieldMove({ move = "CUT", slot = 0, moveSlot = 0 })
+    local status = rig.flow:status()
+    Assert.equal(status.transition.phase, "app_exit", "a field action starts the source app exit")
+    Assert.isNil(rig.flow:takeResult(), "the field action waits for app closure")
+    for step = 1, 5 do
+      rig.flow:updateFixed({})
+      status = rig.flow:status()
+      Assert.equal(status.transition.phase, "app_exit", "field-action exit stays in its source phase")
+      Assert.equal(status.transition.step, step, "field-action exit advances one source step")
+      Assert.isNil(rig.flow:takeResult(), "the field action waits through app exit")
+    end
+    rig.flow:updateFixed({})
+    local result = rig.flow:takeResult()
+    Assert.notNil(result, "field-action result publishes at full app closure")
+    Assert.equal(result.kind, "field_action", "the terminal result carries the typed field action")
+    Assert.equal(result.actionId, "pokemon.field_move", "the host receives the field-action id")
+    status = rig.flow:status()
+    Assert.isNil(status.transition, "field-action closure never starts menu return")
+    Assert.isNil(rig.flow:takeResult(), "the field-action result drains exactly once")
     rig.flow:dispose()
   end
 end
@@ -809,30 +874,71 @@ function T.tests.root_close_reports_close_and_releases_once(context)
     error("menu flow needs a ready versioned cache", 0)
   end
   for _, versionId in ipairs(versions) do
-    local rig = liveComposition(versionId, "bag")
-    local status = drive(rig, {})
-    Assert.equal(status.page, "bag_browse", "a bag root opens the bag browse page")
-    rig.flow:updateFixed({ { type = "cancel" } })
-    status = rig.flow:status()
-    Assert.isTrue(status.open, "the root child remains published during its outgoing fade")
-    Assert.isTrue(status.child.open, "the closed Bag still presents its last drawable child state")
-    Assert.notNil(status.child.presentation, "the outgoing fade retains the Bag presentation plan")
-    Assert.isNil(rig.flow:takeResult(), "the host result waits until the outgoing fade completes")
-    for _ = 1, 6 do
+    for _, root in ipairs({ "bag", "party" }) do
+      local rig = liveComposition(versionId, root)
+      local status = drive(rig, {})
+      Assert.equal(status.root, root, "the flow remembers its root application")
+      if root == "bag" then
+        Assert.equal(status.page, "bag_browse", "a Bag root opens the bag browse page")
+        settleBagOpening(rig)
+      else
+        Assert.equal(status.page, "party_browse", "a Party root opens the party browse page")
+        status = settleParty(rig)
+      end
+      rig.flow:updateFixed({ { type = "cancel" } })
+      status = rig.flow:status()
+      Assert.isTrue(status.open, "the root child remains published during its outgoing fade")
+      Assert.notNil(status.child, "the outgoing root child stays published through app exit")
+      Assert.notNil(status.child.presentation, "the outgoing fade retains its presentation plan")
+      local outgoingSnapshot = status.child
+      local originalPlan = status.child.presentation
+      Assert.isNil(rig.flow:takeResult(), "the host result waits until the outgoing fade completes")
+      rig.flow._child._measureDisplay = resizedMeasurement
+      rig.flow._measureDisplay = resizedMeasurement
+      for index = 1, 6 do
+        rig.flow:updateFixed({})
+        status = rig.flow:status()
+        if index == 1 then
+          local pane = assert(status.child.presentation.panes[1], "the closing app keeps its current pane")
+          Assert.equal(pane.placement.frame.width, 512, "terminal app exit re-resolves after resize")
+          Assert.isFalse(status.child == outgoingSnapshot, "resolving an exit does not mutate its prior status snapshot")
+          Assert.isTrue(outgoingSnapshot.presentation == originalPlan, "the prior snapshot keeps its original plan")
+        elseif index < 6 then
+          Assert.notNil(status.child.presentation, "the closing child remains drawable through app exit")
+        else
+          Assert.isNil(status.child, "menu return starts after the outgoing child is retired")
+        end
+      end
+      Assert.isTrue(status.open, "the flow stays published during the menu return reveal")
+      Assert.isNil(status.child, "menu return draws no stale child content")
+      Assert.equal(status.transition.phase, "menu_return", "root close starts the retained-menu reveal")
+      Assert.equal(status.transition.inputKey, root, "menu return keeps the matching root application")
+      Assert.equal(status.transition.brightnessCoefficient, 16, "menu return begins fully covered")
+      local retainedPane = assert(status.transition.panes[1], "menu return retains an app pane")
+      retainedPane.placement.frame.width = 1
+      status = rig.flow:status()
+      Assert.equal(
+        status.transition.panes[1].placement.frame.width,
+        512,
+        "menu-return status copies its retained placement facts"
+      )
+      Assert.isNil(rig.flow:takeResult(), "the terminal result waits for the menu reveal")
+      for _, coefficient in ipairs({ 14, 11, 9, 6, 3, 0 }) do
+        rig.flow:updateFixed({ { type = "confirm" } })
+        status = rig.flow:status()
+        Assert.equal(status.transition.brightnessCoefficient, coefficient, "menu return advances one brightness step")
+        local pane = assert(status.transition.panes[1], "menu return retains a current app pane")
+        Assert.equal(pane.placement.frame.width, 512, "menu return keeps the final app-exit placement")
+        Assert.isNil(rig.flow:takeResult(), "the close is withheld through the reveal")
+      end
       rig.flow:updateFixed({})
+      local result = rig.flow:takeResult()
+      Assert.notNil(result, "cancelling the root must report a terminal result")
+      Assert.equal(result.kind, "close", "a root cancel closes back to the menu")
+      Assert.isNil(rig.flow:takeResult(), "the terminal result drains exactly once")
+      rig.flow:dispose()
+      rig.flow:dispose()
     end
-    status = rig.flow:status()
-    Assert.isFalse(status.open, "the root child releases at full black")
-    Assert.notNil(status.child.presentation, "the terminal frame keeps a drawable outgoing plan")
-    Assert.equal(status.transition.coefficient, 16, "the terminal status retains an opaque frame for presentation")
-    Assert.isNil(rig.flow:takeResult(), "the terminal result waits through the opaque presentation tick")
-    rig.flow:updateFixed({})
-    local result = rig.flow:takeResult()
-    Assert.notNil(result, "cancelling the root must report a terminal result")
-    Assert.equal(result.kind, "close", "a root cancel closes back to the menu")
-    Assert.isNil(rig.flow:takeResult(), "the terminal result drains exactly once")
-    rig.flow:dispose()
-    rig.flow:dispose()
   end
 end
 
@@ -874,6 +980,11 @@ function T.tests.sibling_handoffs_keep_the_outgoing_child_through_six_updates(co
   for _, versionId in ipairs(versions) do
     for _, route in ipairs(routes) do
       local rig = liveComposition(versionId, route.root)
+      if route.root == "bag" then
+        settleBagOpening(rig)
+      else
+        settleParty(rig)
+      end
       local outgoing = rig.flow._child
       local outgoingLifecycle = recordChildLifecycle(outgoing)
       local openPage = rig.flow._openPage
@@ -888,20 +999,34 @@ function T.tests.sibling_handoffs_keep_the_outgoing_child_through_six_updates(co
       route.route(rig)
       local status = rig.flow:status()
       Assert.equal(status.page, route.outgoingPage, "the outgoing page stays published after staging")
-      Assert.equal(status.transition.coefficient, 0, "the outgoing fade begins at coefficient zero")
-      Assert.equal(status.transition.color, 0, "the outgoing fade is black")
-      Assert.equal(status.transition.direction, "out", "the staged handoff fades outward")
+      Assert.equal(status.transition.phase, "app_exit", "the staged handoff begins the source app exit")
+      Assert.equal(status.transition.step, 0, "the shutter begins fully open")
+      Assert.equal(status.transition.brightnessCoefficient, 0, "the sub pane begins at brightness zero")
       Assert.notNil(staged, "the incoming child is constructed before the fade")
       Assert.equal(outgoingLifecycle.disposals, 0, "the outgoing child stays alive while fading")
+      outgoing._measureDisplay = resizedMeasurement
       local coefficients = { 2, 5, 7, 10, 13, 16 }
       for index, coefficient in ipairs(coefficients) do
         rig.flow:updateFixed({ { type = "confirm" } })
         status = rig.flow:status()
-        Assert.equal(status.transition.coefficient, coefficient, "the flow exposes the standard fade recurrence")
         if index < #coefficients then
+          Assert.equal(status.transition.phase, "app_exit", "the outgoing app remains in its exit phase")
+          Assert.notNil(status.child.presentation, "the outgoing child keeps its drawable snapshot")
+          Assert.equal(status.transition.step, index, "the flow exposes each live source shutter step")
+          Assert.equal(
+            status.transition.brightnessCoefficient,
+            coefficient,
+            "the sub pane uses the standard fade recurrence"
+          )
           Assert.equal(status.page, route.outgoingPage, "the outgoing page stays published before full black")
+          if index == 1 then
+            local plan = assert(status.child.presentation, "the resized outgoing child keeps its current plan")
+            local pane = assert(plan.panes[1], "the outgoing plan has a transition pane")
+            Assert.equal(pane.placement.frame.width, 512, "the outgoing transition maps to the resized host")
+          end
         else
           Assert.equal(status.page, route.incomingPage, "the replacement publishes at full black")
+          Assert.isNil(status.transition, "the outgoing phase ends at the closure handoff")
         end
       end
       Assert.equal(outgoingLifecycle.nonEmptyUpdates, 0, "fade input is not replayed to the outgoing child")
@@ -1024,9 +1149,11 @@ function T.tests.bag_give_to_an_occupied_holder_asks_before_any_change(context)
     status = settleParty(rig)
     status = drive(rig, { { type = "confirm" } })
     Assert.equal(status.page, "party_give_target", "the target child owns the replacement question")
+    Assert.isNil(status.transition, "the occupied-item question does not create an app transition")
     Assert.equal(status.child.state, "message", "source msg79 appears before Yes/No")
     Assert.equal(status.child.message.templateKey, "switchHeldPrompt", "the held-item question uses its generated template")
     status = drive(rig, { { type = "confirm" } })
+    Assert.isNil(status.transition, "entering Yes/No stays inside the existing Party app")
     status = drive(rig, {})
     Assert.equal(
       status.child.prompt and status.child.prompt.selected,
@@ -1036,9 +1163,11 @@ function T.tests.bag_give_to_an_occupied_holder_asks_before_any_change(context)
     Assert.equal(rig.mons:partyMon(0).heldItem, "CHERI_BERRY", "asking publishes nothing yet")
     Assert.equal(rig.mons:partyRevision(), partyRevision, "asking publishes no party revision")
     Assert.equal(rig.bag:revision(), bagRevision, "asking publishes no bag revision")
+    Assert.isNil(status.transition, "the active replacement prompt remains transition-free")
 
     status = answerNo(rig)
     Assert.equal(status.page, "bag_browse", "declining returns to the originating bag")
+    Assert.isNil(status.transition, "declining the occupied-item question stays transition-free")
     Assert.equal(rig.mons:partyMon(0).heldItem, "CHERI_BERRY", "declining keeps the held item")
     Assert.equal(rig.bag:quantity("SITRUS_BERRY"), 2, "declining consumes nothing")
     Assert.equal(rig.bag:quantity("CHERI_BERRY"), 0, "declining returns nothing")
@@ -1054,6 +1183,7 @@ function T.tests.bag_give_to_an_occupied_holder_asks_before_any_change(context)
     Assert.equal(status.page, "party_give_target", "the retry asks in the same target child")
     status = answerYes(rig)
     Assert.equal(status.page, "bag_browse", "accepting returns to the originating bag")
+    Assert.isNil(status.transition, "accepting the occupied-item question stays transition-free")
     Assert.equal(rig.mons:partyMon(0).heldItem, "SITRUS_BERRY", "accepting exchanges the held item")
     Assert.equal(rig.bag:quantity("SITRUS_BERRY"), 1, "accepting consumes exactly one replacement")
     Assert.equal(rig.bag:quantity("CHERI_BERRY"), 1, "accepting returns the displaced item once")
@@ -1315,6 +1445,7 @@ function T.tests.raced_give_unwinds_without_a_partial_change(context)
     Assert.equal(rig.mons:partyRevision(), partyRevision, "a stale Yes publishes no party revision")
     Assert.equal(rig.bag:revision(), bagRevision, "a stale Yes publishes no bag revision of its own")
     Assert.isNil(rig.flow:takeResult(), "a stale Yes reports no terminal result")
+    settleBagOpening(rig)
     rig.flow:updateFixed({ { type = "cancel" } })
     for _ = 1, 6 do
       if not rig.flow:status().open then
@@ -1323,9 +1454,15 @@ function T.tests.raced_give_unwinds_without_a_partial_change(context)
       rig.flow:updateFixed({})
     end
     status = rig.flow:status()
-    Assert.isFalse(status.open, "cancelling the root still releases the child")
-    Assert.equal(status.transition.coefficient, 16, "the outgoing Party frame stays opaque until drawn")
-    Assert.isNil(rig.flow:takeResult(), "the root result waits through its final presentation frame")
+    Assert.isTrue(status.open, "cancelling the root keeps the flow during menu return")
+    Assert.equal(status.transition.phase, "menu_return", "the root begins a retained-menu reveal")
+    Assert.equal(status.transition.brightnessCoefficient, 16, "menu return starts fully covered")
+    for _, coefficient in ipairs({ 14, 11, 9, 6, 3, 0 }) do
+      rig.flow:updateFixed({})
+      status = rig.flow:status()
+      Assert.equal(status.transition.brightnessCoefficient, coefficient, "menu return reveals through source brightness steps")
+      Assert.isNil(rig.flow:takeResult(), "root close waits through the transparent presentation frame")
+    end
     rig.flow:updateFixed({})
     local result = rig.flow:takeResult()
     Assert.notNil(result, "cancelling the root still reports")

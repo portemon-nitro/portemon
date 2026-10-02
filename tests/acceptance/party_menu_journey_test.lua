@@ -200,6 +200,9 @@ local BAG_NEIGHBORS = {
 -- the stable action menu opens: settle the generated transition clock
 -- before callers read the action state or its actions.
 local function chooseBagAction(flow, id)
+  driveUntil(flow, "the Bag opening settles", 30, function(current)
+    return current.child ~= nil and current.child.phase == "interactive"
+  end)
   local status = drive(flow, { { type = "confirm" } })
   status = driveUntil(flow, "the stable action menu", 30, function(current)
     return current.child ~= nil and current.child.state == "action_menu"
@@ -348,6 +351,11 @@ function T.tests.production_medicine_give_take_round_trip(context)
     game:advanceUntil("the bag destination owns the tick", function()
       return hostPhase(game) == FieldApplicationHost.PHASES.application
     end, 120)
+    game:advanceUntil("the Bag opening settles before cancellation", function()
+      local flow = game.runtime.applicationHost:status().application
+      local leaf = flow ~= nil and flow.child or nil
+      return leaf ~= nil and leaf.phase == "interactive"
+    end, 120)
     cancel(game)
     game:advanceUntil("cancelling the flow returns to the menu", function()
       return hostPhase(game) == FieldApplicationHost.PHASES.menu
@@ -363,6 +371,9 @@ function T.tests.production_medicine_give_take_round_trip(context)
     local cursor = assert(game.runtime.bagCursor, "field runtime owns the live bag cursor")
     cursor:setPocket("medicine")
     cursor:setPosition("medicine", 0)
+    driveUntil(flow, "the Bag opening settles", 30, function(current)
+      return current.child ~= nil and current.child.phase == "interactive"
+    end)
     driveUntil(flow, "the bag browse page", 30, function(current)
       return current.page == "bag_browse"
     end)
@@ -385,10 +396,10 @@ function T.tests.production_medicine_give_take_round_trip(context)
 
     -- Held-item Give through the picker, then Take back.
     local party = composition(game).makePartyFlow()
+    drainOpen(party)
     driveUntil(party, "the party browse page", 30, function(current)
       return current.page == "party_browse"
     end)
-    drainOpen(party)
     local partyRevision = mons:partyRevision()
     choosePartySlot(party, 1)
     choosePartyMenu(party, "item")
@@ -397,6 +408,9 @@ function T.tests.production_medicine_give_take_round_trip(context)
       return current.page == "bag_pick_held"
     end)
     Assert.isTrue(status.open, "party Give must open the held-item picker")
+    driveUntil(party, "the held-item Bag opening settles", 30, function(current)
+      return current.child ~= nil and current.child.phase == "interactive"
+    end)
     status = gotoPocket(party, "medicine")
     status = drive(party, { { type = "confirm" } })
     driveUntil(party, "the party browse page", 30, function(current)

@@ -26,6 +26,11 @@ local BagModel = require("libs.hgss.src.ui.BagModel")
 ---@field _session ApplicationPresentation the per-open presentation session
 ---@field _hero BagHeroPresenter
 ---@field _heroPocket string?
+---@field _openingPhase "opening"|"interactive"?
+---@field _openingSubStep integer
+---@field _openingMainStep integer
+---@field _openingInitialTick boolean
+---@field _settleTicks integer
 ---@field _disposed boolean
 local BagScreenState = {}
 BagScreenState.__index = BagScreenState
@@ -120,6 +125,11 @@ function BagScreenState.new(opts)
     _heroGender = heroGender,
     _measureDisplay = opts.measureDisplay,
     _heroPocket = nil,
+    _openingPhase = "opening",
+    _openingSubStep = 0,
+    _openingMainStep = 0,
+    _openingInitialTick = true,
+    _settleTicks = 0,
     _disposed = false,
   }, BagScreenState)
   self._hero = BagHeroPresenter.new({ manifest = manifest, gender = heroGender })
@@ -214,7 +224,17 @@ end
 
 ---@return table<string, unknown> the controller snapshot for resolvers and renderers
 function BagScreenState:_view()
-  return self._controller:status()
+  local view = {}
+  for key, value in pairs(self._controller:status()) do
+    view[key] = value
+  end
+  if self._openingPhase ~= nil then
+    view.phase = self._openingPhase
+    if self._openingPhase == "opening" then
+      view.opening = { subStep = self._openingSubStep, mainStep = self._openingMainStep }
+    end
+  end
+  return view
 end
 
 -- The canonical logical content the controller hits against: the current
@@ -223,6 +243,14 @@ end
 function BagScreenState:resolveLayout()
   local plan = self._session:plan()
   return assert(plan.content, "the bag plan carries its canonical content")
+end
+
+-- Re-resolves host placement without advancing the Bag or hero clocks.
+---@param view table<string, unknown>?
+---@return table<string, unknown> current presentation plan
+function BagScreenState:refreshPresentation(view)
+  assert(not self._disposed, "a disposed bag wrapper refreshes nothing")
+  return self._session:resolve(self:_measured(), view or self:_view())
 end
 
 -- One fixed tick: resolve, map once, advance the controller once, sync
@@ -235,7 +263,42 @@ function BagScreenState:updateFixed(uiInput)
   local session = self._session
   local measurement = self:_measured()
   session:resolve(measurement, self:_view())
-  local mapped = session:mapInput(assert(uiInput, "the bag input must be an event list"), self:_view())
+  local gated = false
+  if self._openingPhase == "opening" then
+    if self._openingInitialTick then
+      self._openingInitialTick = false
+    elseif self._openingSubStep < 6 then
+      self._openingSubStep = self._openingSubStep + 1
+    elseif self._openingMainStep < 6 then
+      self._openingMainStep = self._openingMainStep + 1
+    elseif self._settleTicks == 0 then
+      self._settleTicks = 2
+    else
+      self._settleTicks = self._settleTicks - 1
+      if self._settleTicks == 0 then
+        self._openingPhase = "interactive"
+      end
+    end
+    gated = true
+  end
+  local input = assert(uiInput, "the bag input must be an event list")
+  if gated then
+    for _, event in ipairs(input) do
+      assert(type(event) == "table" and type(event.type) == "string", "bag events need their type")
+    end
+    self._controller:updateFixed({})
+    local status = self._controller:status()
+    if status.open then
+      if status.pocket ~= self._heroPocket then
+        self._hero:selectPocket(status.pocket)
+        self._heroPocket = status.pocket
+      end
+      self._hero:updateFixed()
+    end
+    session:resolve(measurement, self:_view())
+    return
+  end
+  local mapped = session:mapInput(input, self:_view())
   self._controller:updateFixed(mapped)
   local status = self._controller:status()
   if status.open then

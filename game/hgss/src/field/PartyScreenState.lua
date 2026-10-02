@@ -297,6 +297,14 @@ function PartyScreenState:resolveLayout()
   return assert(plan.content, "the party plan carries its canonical content")
 end
 
+-- Re-resolves host placement without advancing icon preparation or the Party clock.
+---@param view table<string, unknown>?
+---@return table<string, unknown> current presentation plan
+function PartyScreenState:refreshPresentation(view)
+  assert(not self._disposed, "a disposed party wrapper refreshes nothing")
+  return self._session:resolve(self:_measured(), view or self:_view())
+end
+
 -- The published plan is the native-like one-display shape exactly when
 -- it carries only the interaction pane, optionally followed by the
 -- noninteractive host overlay: content-only, or content plus overlay.
