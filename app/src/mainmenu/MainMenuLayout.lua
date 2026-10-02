@@ -3,6 +3,7 @@
 -- at the outer draw/input boundary, never inside these metrics.
 
 local PixelScale = require("libs.ui.src.PixelScale")
+local ScrollViewport = require("libs.ui.src.ScrollViewport")
 
 local MainMenuLayout = {}
 
@@ -134,11 +135,7 @@ function MainMenuLayout.compute(
   local focusedIndex = focusIndex(saves, focus)
   local focusedTop = errorHeight + errorGap + (focusedIndex - 1) * (cardHeight + cardGap)
   if focus.region == "saves" then
-    if focusedTop < offset then
-      offset = focusedTop
-    elseif focusedTop + cardHeight > offset + saveViewport.height then
-      offset = focusedTop + cardHeight - saveViewport.height
-    end
+    offset = ScrollViewport.reveal(offset, saveViewport.height, focusedTop, cardHeight)
   end
   offset = math.max(0, offset)
 

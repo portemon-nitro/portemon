@@ -900,6 +900,62 @@ function T.scroll_state_pins_new_game_and_reports_edge_availability()
   Assert.isNil(visible.saves.scrollIndicators.down)
 end
 
+function T.layout_resize_retains_overscroll_until_navigation_reveals_focus()
+  local ids = {}
+  for index = 1, 12 do
+    ids[#ids + 1] = string.format("save-%d", index)
+  end
+  local list = saves(ids)
+  local controller = MainMenuController.new(globalActions(), list)
+  controller:focusSave("save-12", "body")
+  local compact = MainMenuLayout.compute(
+    globalActions(),
+    list,
+    controller:snapshot().focus,
+    320,
+    180,
+    0,
+    nil,
+    nil,
+    false
+  )
+  local large = MainMenuLayout.compute(
+    globalActions(),
+    list,
+    controller:snapshot().focus,
+    640,
+    480,
+    compact.saves.offset,
+    nil,
+    nil,
+    false
+  )
+  local focused = assert(large.saves.cards["save-12"])
+  Assert.isTrue(large.saves.offset > large.saves.totalContentHeight - large.saves.viewport.height)
+  Assert.equal(large.saves.offset, compact.saves.offset, "resize retains the prior logical offset")
+  Assert.isTrue(focused.frame.y >= large.saves.viewport.y)
+  Assert.isTrue(focused.frame.y + focused.frame.height <= large.saves.viewport.y + large.saves.viewport.height)
+
+  controller:move("up")
+  local moved = MainMenuLayout.compute(
+    globalActions(),
+    list,
+    controller:snapshot().focus,
+    640,
+    480,
+    large.saves.offset,
+    nil,
+    nil,
+    false
+  )
+  Assert.isTrue(moved.saves.offset < large.saves.offset, "navigation reveals the newly focused preceding card")
+  local movedFocus = assert(moved.saves.cards["save-11"])
+  Assert.equal(movedFocus.frame.y, moved.saves.viewport.y, "the preceding card aligns to the viewport start")
+  Assert.isTrue(
+    movedFocus.frame.y + movedFocus.frame.height <= moved.saves.viewport.y + moved.saves.viewport.height
+  )
+end
+
 local SELECTED_RIM = { 1, 58 / 255, 58 / 255 }
 local NEUTRAL_RIM = { 48 / 255, 73 / 255, 97 / 255 }
 local CARD_FACE = { 0xFB / 255, 0xFB / 255, 0xFB / 255 }
