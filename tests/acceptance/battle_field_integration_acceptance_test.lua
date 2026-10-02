@@ -78,7 +78,7 @@ local function newPartyOwner(catalog, leadLevel)
   local HgssMonService = require("libs.hgss.src.mons.HgssMonService")
   local owner = HgssMonService.new({
     catalog = catalog,
-    bucket = MonsSave.capture(Party.new():capture(), Lcrng.new(0x22222222):capture(), catalog:fingerprint()),
+    bucket = MonsSave.capture(Party.new():capture(), Lcrng.new(0x22222222):capture()),
     profile = CatalogFixture.profile(),
     game = "heartgold",
     language = "english",
@@ -109,7 +109,7 @@ end
 ---@return table player record and its validation context
 local function playerFacts(money)
   local record = {
-    profile = { name = "GOLD", gender = 0, trainerId = 1, money = money, badges = 0 },
+    profile = { name = "GOLD", gender = 0, trainerId = 1, money = money, badges = 0, nationalDex = false },
     options = { textFrame = 0, textSpeed = "fastest" },
   }
   local context = { charmap = CatalogFixture.CHARMAP, frameIndexes = { [0] = true } }
