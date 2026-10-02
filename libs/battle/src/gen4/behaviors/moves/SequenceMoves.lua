@@ -13,6 +13,7 @@ local BattleErrors = require("libs.battle.src.errors")
 local BattleRng = require("libs.battle.src.gen4.BattleRng")
 local Critical = require("libs.battle.src.gen4.Critical")
 local Damage = require("libs.battle.src.gen4.Damage")
+local StagedTypeModifiers = require("libs.battle.src.gen4.behaviors.moves.StagedTypeModifiers")
 
 ---@class SequenceMoves
 local SequenceMoves = {}
@@ -226,13 +227,14 @@ local function strikeTarget(ctx, frame, defender, override)
   }, stream)
   assert(resolution.kind == "hit", "unrolled checks always connect")
   local critical = Critical.resolve(0, stream, causeFor(record))
+  local stab, effectiveness = StagedTypeModifiers.forStrike(record, defender)
   local result = Damage.calculate({
     level = combat.level,
     power = power,
     attack = combat.attack,
     defense = combat.defense,
-    stab = { numerator = 1, denominator = 1 },
-    effectiveness = { numerator = 1, denominator = 1 },
+    stab = stab,
+    effectiveness = effectiveness,
     critical = critical.critical,
   }, stream)
   local outcome = ctx:damage(defender, result.amount, causeFor(record))
@@ -418,13 +420,14 @@ local function makeDelayed()
       local power = strikePowerOf(record)
       local combat = combatOf(record)
       local stream = checkStream(record.stream)
+      local stab, effectiveness = StagedTypeModifiers.forDelayedImpact(record, defender)
       local result = Damage.calculate({
         level = combat.level,
         power = power,
         attack = combat.attack,
         defense = combat.defense,
-        stab = { numerator = 1, denominator = 1 },
-        effectiveness = { numerator = 1, denominator = 1 },
+        stab = stab,
+        effectiveness = effectiveness,
       }, stream)
       local outcome = ctx:damage(defender, result.amount, causeFor(record))
       ctx:emit("struck", causeFor(record), {

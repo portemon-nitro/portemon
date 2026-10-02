@@ -9,10 +9,12 @@
 -- turn closes through the residual and outcome owners. Choices the records
 -- cannot back (no usable move entry) execute the explicit struggle action
 -- rather than guessing. Live combat projections derive at execution time
--- from the session species facts through the mon domain owners; stage
--- modifiers stay unmodeled. Facts the records cannot back stay absent
--- from the move frames, so executions needing them fail explicitly instead
--- of guessing; residual
+-- from the session species facts through the mon domain owners: strike
+-- priority reads the selected move's compiled priority, Speed samples the
+-- stage-adjusted materialized stat, and ordinary damage resolves STAB and
+-- effectiveness through the session chart. Facts the records cannot back
+-- stay absent from the move frames, so executions needing them fail
+-- explicitly instead of guessing; residual
 -- instances are collected from live effect state once mechanics create that
 -- state, so the end-of-turn pass settles empty today. Fainted combatants
 -- leave the field and never act again; sides fight short-handed only while
@@ -38,6 +40,7 @@ local NativeFormats = require("libs.battle.src.gen4.formats.NativeFormats")
 local OutcomePolicy = require("libs.battle.src.gen4.OutcomePolicy")
 local Personality = require("libs.mons.src.gen4.Personality")
 local Residuals = require("libs.battle.src.gen4.Residuals")
+local StatStages = require("libs.battle.src.gen4.StatStages")
 local Stats = require("libs.mons.src.gen4.Stats")
 local Switching = require("libs.battle.src.gen4.Switching")
 local TurnOrder = require("libs.battle.src.gen4.TurnOrder")
@@ -50,6 +53,7 @@ local TurnOrder = require("libs.battle.src.gen4.TurnOrder")
 ---@field private _admitted string[]
 ---@field private _moveFacts table<string, table<string, unknown>>
 ---@field private _speciesFacts table<string, SpeciesFormFacts>
+---@field private _chart table<string, unknown>
 ---@field private _moneyUpItems table<string, boolean>
 ---@field private _ruleset table<string, unknown>?
 ---@field private _finalized boolean
@@ -65,19 +69,11 @@ HgssSessionExecutor.DECISION_KIND = "action"
 
 HgssSessionExecutor.DEFAULT_ACTION_KINDS = { "attack", "switch", "confirm", "item" }
 
--- Action brackets for turn ordering. Strikes run on the neutral bracket;
--- move-specific priority stays unmodeled, so every strike shares one
--- bracket and stream-drawn ties decide. Exchanges and item use run on the
--- source escape bracket, ahead of any strike. Prompts carry no battlefield
--- effect and share the neutral bracket.
-local STRIKE_BRACKET = 0
+-- Action brackets for turn ordering. Exchanges and item use run on the
+-- source escape bracket, ahead of any strike. Strikes never share one
+-- bracket: every strike samples the selected move's compiled priority.
+-- Prompts carry no battlefield effect and share the neutral bracket.
 local ESCAPE_BRACKET = 6
-
--- Sampled speed while combatant stat projection stays unthreaded: every
--- action shares one neutral speed, so same-bracket pairs always resolve
--- through battle-stream ties in selection order. Deterministic for a fixed
--- seed; speed-accurate ordering arrives with real combatant facts.
-local NEUTRAL_SPEED = 0
 
 ---@param value unknown
 ---@return unknown
@@ -471,10 +467,18 @@ local function resolveMove(mon, moveSlot)
   return "STRUGGLE", nil
 end
 
+-- Battle stats carrying a stage law: attack, defense, speed, and the
+-- special pair sample through their battle-local stage, while accuracy
+-- and evasion stages gate their own checkpoint later.
+local STAGED_STATS = { "attack", "defense", "speed", "specialAttack", "specialDefense" }
+
+-- Every stage key an entry carries, including the gating pair.
+local STAGE_KEYS = { "attack", "defense", "speed", "specialAttack", "specialDefense", "accuracy", "evasion" }
+
 ---@param mon unknown battle-local mon record under fact sampling
 ---@param speciesFacts table<string, SpeciesFormFacts> static species facts by species and form
----@return table<string, integer> live level and battle stats for the record
-local function projectCombatant(mon, speciesFacts)
+---@return table<string, unknown> static species facts for the record
+local function staticFacts(mon, speciesFacts)
   if type(mon) ~= "table" then
     error(BattleErrors.missingBehavior("damage reads its real combat facts", { fact = "mon" }))
   end
@@ -505,6 +509,36 @@ local function projectCombatant(mon, speciesFacts)
       fact = species --[[@as string]],
     }))
   end
+  return facts
+end
+
+---@param combatant table<string, unknown> live combatant under projection
+---@return table<string, integer> battle-local stat stages for the entry
+local function combatStages(combatant)
+  local stages = combatant.stages
+  if type(stages) ~= "table" then
+    error(BattleErrors.invalidState("entries carry their battle-local stages", {}))
+  end
+  local record = stages --[[@as table<string, unknown>]]
+  for _, key in ipairs(STAGE_KEYS) do
+    local stage = record[key]
+    if type(stage) ~= "number" or stage % 1 ~= 0 or stage < StatStages.MIN or stage > StatStages.MAX then
+      error(BattleErrors.invalidState("entries carry clamped integer stages", {}))
+    end
+  end
+  return record --[[@as table<string, integer>]]
+end
+
+---@param combatant table<string, unknown> live combatant under fact sampling
+---@param speciesFacts table<string, SpeciesFormFacts> static species facts by species and form
+---@return table<string, integer> live level and stage-effective battle stats for the entry
+local function projectCombatant(combatant, speciesFacts)
+  local mon = combatant.mon
+  if type(mon) ~= "table" then
+    error(BattleErrors.missingBehavior("damage reads its real combat facts", { fact = "mon" }))
+  end
+  local facts = staticFacts(mon, speciesFacts)
+  local record = mon --[[@as table<string, unknown>]]
   local experience = record.experience
   if type(experience) ~= "number" or experience % 1 ~= 0 or experience < 0 then
     error(BattleErrors.missingBehavior("damage reads its real combat facts", { fact = "experience" }))
@@ -528,7 +562,51 @@ local function projectCombatant(mon, speciesFacts)
     nature
   )
   stats.level = level
+  local stages = combatStages(combatant)
+  for _, key in ipairs(STAGED_STATS) do
+    stats[key] = StatStages.effective(stats[key] --[[@as integer]], stages[key] --[[@as integer]], key)
+  end
   return stats
+end
+
+---@param combatant table<string, unknown> live combatant under fact sampling
+---@param speciesFacts table<string, SpeciesFormFacts> static species facts by species and form
+---@return string[] detached semantic types for the entry
+local function combatantTypes(combatant, speciesFacts)
+  local mon = combatant.mon
+  if type(mon) ~= "table" then
+    error(BattleErrors.missingBehavior("damage reads its real combat facts", { fact = "mon" }))
+  end
+  local facts = staticFacts(mon, speciesFacts)
+  local declared = facts.types
+  if type(declared) ~= "table" or #declared == 0 then
+    error(BattleErrors.missingBehavior("damage reads its semantic type facts", { fact = "types" }))
+  end
+  local types = {} ---@type string[]
+  for _, key in
+    ipairs(declared --[[@as string[] ]])
+  do
+    if type(key) ~= "string" or key == "" then
+      error(BattleErrors.missingBehavior("damage reads its semantic type facts", { fact = "types" }))
+    end
+    types[#types + 1] = key
+  end
+  return types
+end
+
+---@param moveFacts table<string, table<string, unknown>> immutable move facts carried by the session
+---@param moveName string executing move identity under ordering
+---@return integer compiled move priority for the strike
+local function movePriority(moveFacts, moveName)
+  local record = moveFacts[moveName]
+  if type(record) ~= "table" then
+    error(BattleErrors.missingBehavior("ordering reads its compiled move priority", { key = moveName }))
+  end
+  local priority = (record --[[@as table<string, unknown>]]).priority
+  if type(priority) ~= "number" or priority % 1 ~= 0 then
+    error(BattleErrors.missingBehavior("ordering reads its compiled move priority", { key = moveName }))
+  end
+  return priority --[[@as integer]]
 end
 
 ---@param attacker table<string, integer> live attacker level and battle stats
@@ -550,12 +628,12 @@ local function combatPair(attacker, defender, category, moveName)
 end
 
 ---@param kind string committed choice class under ordering
----@return integer sampled priority bracket for the action
+---@return integer sampled priority bracket for non-strike actions
 local function bracketFor(kind)
   if kind == "switch" or kind == "item" then
     return ESCAPE_BRACKET
   end
-  return STRIKE_BRACKET
+  return 0
 end
 
 ---@param validated table<string, unknown> detached validated battle setup under construction
@@ -750,9 +828,10 @@ end
 ---@param executor HgssSessionExecutor live native session owning the turn
 ---@param moveFacts table<string, table<string, unknown>> immutable move facts carried by the session
 ---@param speciesFacts table<string, SpeciesFormFacts> static species facts carried by the session
+---@param chart table<string, unknown> session chart view resolving directed effectiveness
 ---@param moneySet table<string, boolean> held-item keys carrying the money-up effect
 ---@return NativeTurnHandlers lifecycle handlers bound to the session
-local function bindTurnHandlers(executor, moveFacts, speciesFacts, moneySet)
+local function bindTurnHandlers(executor, moveFacts, speciesFacts, chart, moneySet)
   ---@param choices table<integer, table<string, unknown>> committed choices in commit order
   local function openTurn(choices)
     local state = executor:_live()
@@ -762,14 +841,22 @@ local function bindTurnHandlers(executor, moveFacts, speciesFacts, moneySet)
     for ordinal, entry in ipairs(choices) do
       local choice = entry.choice --[[@as table<string, unknown>]]
       local actor = choice.actor --[[@as table<string, unknown>]]
+      local kind = choice.kind --[[@as string]]
+      local combatant = BattleState.combatant(state, actor.combatant --[[@as integer]])
+      local priority = bracketFor(kind)
+      if kind == "attack" then
+        local payload = choice.payload --[[@as table<string, unknown>]]
+        local moveName = resolveMove(combatant.mon, payload.moveSlot)
+        priority = movePriority(moveFacts, moveName)
+      end
       candidates[#candidates + 1] = {
         id = ordinal,
         actor = { combatant = actor.combatant, activation = actor.activation },
-        kind = choice.kind,
+        kind = kind,
         payload = copyValue(choice.payload),
         selectedOrdinal = ordinal,
-        priority = bracketFor(choice.kind --[[@as string]]),
-        speed = NEUTRAL_SPEED,
+        priority = priority,
+        speed = projectCombatant(combatant, speciesFacts).speed,
       }
       entry.ordinal = ordinal
     end
@@ -879,11 +966,13 @@ local function bindTurnHandlers(executor, moveFacts, speciesFacts, moneySet)
     local moveRecord = moveFacts[moveName]
     local category = type(moveRecord) == "table" and (moveRecord --[[@as table<string, unknown>]]).category or nil
     local facts = combatPair(
-      projectCombatant(combatant.mon, speciesFacts),
-      projectCombatant(defender.mon, speciesFacts),
+      projectCombatant(combatant, speciesFacts),
+      projectCombatant(defender, speciesFacts),
       category,
       moveName
     )
+    local defenderTypes = {} ---@type table<integer, string[]>
+    defenderTypes[defenderId] = combatantTypes(defender, speciesFacts)
     local moves = combatant
       .mon --[[@as table<string, unknown>]]
       .moves
@@ -902,6 +991,9 @@ local function bindTurnHandlers(executor, moveFacts, speciesFacts, moneySet)
       moves = moves,
       moveFacts = moveFacts,
       combat = facts,
+      attackerTypes = combatantTypes(combatant, speciesFacts),
+      defenderTypes = defenderTypes,
+      typeChart = chart,
       stream = stream,
     }
     local node = MoveExecution.start(inputs)
@@ -1216,6 +1308,21 @@ local function checkSpeciesFacts(validated)
   return validated.speciesFacts --[[@as table<string, SpeciesFormFacts>]]
 end
 
+---@param content table<string, unknown> frozen executable battle content
+---@param ruleset string native ruleset owning the session chart
+---@return table<string, unknown> isolated chart view over the composition type matrix
+local function sessionChart(content, ruleset)
+  local lookup = content.typeChart
+  if type(lookup) ~= "function" then
+    error(BattleErrors.missingBehavior("sessions require their session type chart", { ruleset = ruleset }))
+  end
+  local ok, chart = pcall(lookup, content, ruleset)
+  if not ok or type(chart) ~= "table" then
+    error(BattleErrors.missingBehavior("sessions require their session type chart", { ruleset = ruleset }))
+  end
+  return chart --[[@as table<string, unknown>]]
+end
+
 ---@param live table<string, unknown>
 ---@param content table<string, unknown>
 ---@param admitted string[] admitted action kinds resolved at construction
@@ -1245,6 +1352,7 @@ local function wrap(live, content, admitted, moveFacts, speciesFacts, moneyUpIte
     _admitted = admitted,
     _moveFacts = moveFacts,
     _speciesFacts = speciesFacts,
+    _chart = sessionChart(content, HgssSessionExecutor.RULESET),
     _moneyUpItems = moneySet,
     _ruleset = nil,
     _finalized = false,
@@ -1340,7 +1448,8 @@ end
 --- session object, matching construction and restoration.
 function HgssSessionExecutor:_bindLifecycle()
   assert(self._ruleset == nil, "native lifecycles bind once")
-  local ruleset = HgssRuleset.new(bindTurnHandlers(self, self._moveFacts, self._speciesFacts, self._moneyUpItems))
+  local ruleset =
+    HgssRuleset.new(bindTurnHandlers(self, self._moveFacts, self._speciesFacts, self._chart, self._moneyUpItems))
   self._ruleset = ruleset
   ruleset:initialize(self)
 end

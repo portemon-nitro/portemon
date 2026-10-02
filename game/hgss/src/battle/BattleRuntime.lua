@@ -570,10 +570,10 @@ function BattleRuntime:_sessionMoveFacts(record)
 end
 
 -- Resolves the minimal static species facts the detached scenario references
--- through the live party catalog: base stats plus the growth curve per
--- referenced species and form. Unresolvable species fail the build instead
--- of guessing; battles without a fact source carry no facts and fail
--- explicitly on their first offending execution.
+-- through the live party catalog: base stats, semantic form types, plus the
+-- growth curve per referenced species and form. Unresolvable species fail the
+-- build instead of guessing; battles without a fact source carry no facts
+-- and fail explicitly on their first offending execution.
 ---@param record table<string, unknown> detached scenario under session construction
 ---@return table<string, SpeciesFormFacts> static species facts by species and form
 function BattleRuntime:_sessionSpeciesFacts(record)
@@ -597,6 +597,15 @@ function BattleRuntime:_sessionSpeciesFacts(record)
     assert(type(curveKey) == "string", "species records name their growth curve")
     local formRecord = formByKey(source, entry.species, entry.form)
     assert(type(formRecord.baseStats) == "table", "species forms carry their base stats")
+    local formTypes = formRecord.types
+    assert(type(formTypes) == "table" and #formTypes > 0, "species forms carry their semantic types")
+    local types = {} ---@type string[]
+    for _, key in
+      ipairs(formTypes --[[@as string[] ]])
+    do
+      assert(type(key) == "string" and key ~= "", "species types name their semantic key")
+      types[#types + 1] = key
+    end
     local bucket = facts[entry.species]
     if bucket == nil then
       bucket = {}
@@ -605,6 +614,7 @@ function BattleRuntime:_sessionSpeciesFacts(record)
     bucket[entry.form] = {
       baseStats = copyValue(formRecord.baseStats),
       growthCurve = copyValue(curveByKey(source, curveKey --[[@as string]])),
+      types = types,
     }
   end
   return facts

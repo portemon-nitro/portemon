@@ -16,6 +16,7 @@ local BattleErrors = require("libs.battle.src.errors")
 local BattleRng = require("libs.battle.src.gen4.BattleRng")
 local Critical = require("libs.battle.src.gen4.Critical")
 local Damage = require("libs.battle.src.gen4.Damage")
+local StagedTypeModifiers = require("libs.battle.src.gen4.behaviors.moves.StagedTypeModifiers")
 
 ---@class DamageMoves
 local DamageMoves = {}
@@ -559,13 +560,14 @@ local function stagedHit(ctx, frame, defender, power, hitIndex, targetCount)
   local combat = combatOf(frame)
   local stream = checkStream(frame.stream)
   local critical = Critical.resolve(0, stream, causeFor(frame))
+  local stab, effectiveness = StagedTypeModifiers.forStrike(frame, defender)
   local result = Damage.calculate({
     level = combat.level,
     power = power,
     attack = combat.attack,
     defense = combat.defense,
-    stab = { numerator = 1, denominator = 1 },
-    effectiveness = { numerator = 1, denominator = 1 },
+    stab = stab,
+    effectiveness = effectiveness,
     targetCount = targetCount,
     critical = critical.critical,
   }, stream)

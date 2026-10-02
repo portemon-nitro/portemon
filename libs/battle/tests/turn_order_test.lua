@@ -152,6 +152,28 @@ function T.priority_speed_and_ties_follow_recorded_selection_order()
   Assert.deepEqual(orderIds(entriesAgain), orderIds(entries), "entry sequencing rebuilds identically")
 end
 
+function T.staged_speeds_sample_through_exact_truncation()
+  local TurnOrder =
+    SessionFixture.requirePresent("libs.battle.src.gen4.TurnOrder", "recorded traversal owns turn and action ordering")
+  local BattleRng =
+    SessionFixture.requirePresent("libs.battle.src.gen4.BattleRng", "labeled native draws own the battle stream")
+  local StatStages =
+    SessionFixture.requirePresent("libs.battle.src.gen4.StatStages", "stage clamps and ratios own battle stat stages")
+  Assert.equal(StatStages.effective(55, -6, "speed"), 13, "a fully lowered speed truncates down exactly")
+  Assert.equal(StatStages.effective(55, 0, "speed"), 55, "an unstaged speed samples unchanged")
+  Assert.equal(StatStages.effective(55, 6, "speed"), 220, "a fully raised speed quadruples exactly")
+
+  local ordered = build(TurnOrder, BattleRng, {
+    candidate(1, 1, "attack", 0, StatStages.effective(45, 6, "speed")),
+    candidate(2, 2, "attack", 0, StatStages.effective(200, -6, "speed")),
+  }, false, 7)
+  Assert.deepEqual(
+    orderIds(ordered),
+    { 1, 2 },
+    "a fully raised slower base outruns a fully lowered faster base"
+  )
+end
+
 function T.malformed_candidates_fail_without_consuming_draws()
   local TurnOrder =
     SessionFixture.requirePresent("libs.battle.src.gen4.TurnOrder", "recorded traversal owns turn and action ordering")

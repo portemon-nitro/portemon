@@ -160,6 +160,16 @@ function T.frustration_reads_explicit_friendship_facts()
   )
   Assert.isTrue(type(Damage.register) == "function", "the damage family registers its bindings")
 
+  ---@return table<string, unknown> neutral type modifiers keeping strike arithmetic unchanged
+  local function typeFacts()
+    local CombatFixture = require("libs.battle.tests.combat_fixture")
+    return {
+      attackerTypes = { "fire" },
+      defenderTypes = { [2] = { "normal" } },
+      typeChart = CombatFixture.chart(CombatFixture.makeVanilla(), CombatFixture.VANILLA_RULESET),
+    }
+  end
+
   ---@param friendship integer explicit friendship fact under the strike
   ---@return integer damage dealt with fixed combatants and random state
   local function strikeWith(friendship)
@@ -179,6 +189,9 @@ function T.frustration_reads_explicit_friendship_facts()
         FRUSTRATION = { power = 1, accuracy = 100, category = "physical", moveType = "normal" },
       },
       combat = { level = 10, attack = 50, defense = 50 },
+      attackerTypes = typeFacts().attackerTypes,
+      defenderTypes = typeFacts().defenderTypes,
+      typeChart = typeFacts().typeChart,
       stream = BattleRng.new(FIXED_SEED),
     }))
     local outcome = frame

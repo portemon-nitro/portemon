@@ -342,12 +342,13 @@ function T.roamer_battle_advances_the_roamer_revision()
 
   local party = newPartyOwner()
   local roamer = newRoamerOwner()
-  local standin = foeRecord("EEVEE", 20, 0x90A4E001, 1)
+  local standin = foeRecord("EEVEE", 14, 0x90A4E001, 1)
   local launch =
-    { id = "launch-roamer-wire", kind = "wild", payload = { species = "EEVEE", level = 20, mon = standin } }
+    { id = "launch-roamer-wire", kind = "wild", payload = { species = "EEVEE", level = 14, mon = standin } }
   local scenario = ScenarioFactory.fromEncounter(launch.payload, { party = party })
   -- The roaming record tracks its own battle health; the scenario foe is a
-  -- 1-HP stand-in so the executed battle settles the standing.
+  -- 1-HP stand-in so the executed battle settles the standing. The stand-in
+  -- races at level 14 so the level-5 lead still answers under exact STAB.
   local battle = BattleRuntime.new({
     request = launch,
     scenario = scenario,

@@ -25,8 +25,10 @@ local function nativeContent()
   local ContentBuilder = require("libs.content.src.ContentBuilder")
   local BattleBehaviorBuilder = require("libs.battle.src.BattleBehaviorBuilder")
   local BattleContent = require("libs.battle.src.BattleContent")
+  local NativeTypeChart = require("libs.battle.src.gen4.NativeTypeChart")
   local Executor = executorOwner()
   local builder = ContentBuilder.new()
+  NativeTypeChart.install(builder, "native-session-tests")
   local behaviors = BattleBehaviorBuilder.new()
   behaviors:registerRuleset(
     Executor.RULESET,
@@ -57,8 +59,18 @@ local function scenarioMoveFacts()
   local catalog = CatalogFixture.makeCatalog()
   return {
     TACKLE = catalog:move("TACKLE"),
-    STRUGGLE = { power = 50, accuracy = 100, category = "physical", moveType = "normal" },
+    STRUGGLE = { power = 50, accuracy = 100, category = "physical", moveType = "normal", priority = 0 },
   }
+end
+
+---@param formRecord table<string, unknown> catalog form record carrying its semantic types
+---@return string[] detached semantic types for the form
+local function copyFormTypes(formRecord)
+  local types = {} ---@type string[]
+  for _, key in ipairs(formRecord.types --[[@as string[] ]]) do
+    types[#types + 1] = key --[[@as string]]
+  end
+  return types
 end
 
 ---@param seeds table<integer, table<string, unknown>> combatant seeds under fact resolution
@@ -80,6 +92,7 @@ local function scenarioSpeciesFacts(seeds)
     bucket[form] = {
       baseStats = catalog:form(species, form).baseStats,
       growthCurve = catalog:growthCurve(speciesRecord.growthCurve --[[@as string]]),
+      types = copyFormTypes(catalog:form(species, form)),
     }
   end
   return facts
@@ -812,6 +825,622 @@ function T.open_replacements_restore_identically_across_snapshots()
   Assert.deepEqual(secondFrame.events, firstFrame.events, "restored sessions replay the same entry")
   Assert.deepEqual(revived:capture(), session:capture(), "restored sessions reach the same following state")
   session:dispose()
+  revived:dispose()
+end
+
+-- Fixed battle-stream seed for the projection duels below. Its early
+-- draws never crit, so damage comparisons stay roll-shaped in every
+-- action order the tests below exercise.
+local PROJECTION_SEED = 7
+
+---@param priority integer compiled move priority carried by the immutable facts
+---@param moveType string semantic move type carried by the immutable facts
+---@param power integer compiled strike power carried by the immutable facts
+---@return table<string, unknown> immutable facts for one ordinary strike
+local function strikeFacts(priority, moveType, power)
+  return { power = power, accuracy = 0, category = "physical", moveType = moveType, priority = priority }
+end
+
+---@return table<string, unknown> immutable fallback facts for the struggle action
+local function struggleFacts()
+  return { power = 50, accuracy = 100, category = "physical", moveType = "normal", priority = 0 }
+end
+
+---@param id integer nonreused positive combatant identity
+---@param seed integer fixed generator state for the underlying mon
+---@param species string catalog species key
+---@param move string move identity carried by the single slot
+---@return table combatant seed with one usable move entry
+local function singleMoveCombatant(id, seed, species, move)
+  local CatalogFixture = require("libs.mons.tests.catalog_fixture")
+  local catalog = CatalogFixture.makeCatalog()
+  local factory = CatalogFixture.makeFactory(seed, catalog)
+  local mon = factory:createNormal(CatalogFixture.normalRequest({ species = species, level = 9 }))
+  mon.moves = { { move = move, pp = 35, ppUps = 0 } }
+  return { id = id, mon = mon }
+end
+
+---@param entries table[] static species entries pairing a catalog species with its semantic types
+---@return table<string, table<integer, table<string, unknown>>> static species facts with semantic types
+local function typedSpeciesFacts(entries)
+  local CatalogFixture = require("libs.mons.tests.catalog_fixture")
+  local catalog = CatalogFixture.makeCatalog()
+  local facts = {}
+  for _, entry in ipairs(entries) do
+    local speciesRecord = catalog:species(entry.species)
+    local types = {}
+    for _, key in ipairs(entry.types) do
+      types[#types + 1] = key
+    end
+    facts[entry.species] = {
+      [0] = {
+        baseStats = catalog:form(entry.species, 0).baseStats,
+        growthCurve = catalog:growthCurve(speciesRecord.growthCurve),
+        types = types,
+      },
+    }
+  end
+  return facts
+end
+
+---@return table frozen battle content binding the native ruleset over a closed test chart
+local function chartContent()
+  local ContentBuilder = require("libs.content.src.ContentBuilder")
+  local BattleBehaviorBuilder = require("libs.battle.src.BattleBehaviorBuilder")
+  local BattleContent = require("libs.battle.src.BattleContent")
+  local Executor = executorOwner()
+  local keys = { "normal", "fire", "water", "grass", "ice", "dragon", "bug", "ghost" }
+  local doubled = {
+    ["fire|grass"] = true,
+    ["fire|ice"] = true,
+    ["fire|bug"] = true,
+    ["water|fire"] = true,
+    ["grass|water"] = true,
+    ["ice|grass"] = true,
+    ["ice|dragon"] = true,
+    ["dragon|dragon"] = true,
+    ["ghost|ghost"] = true,
+    ["bug|grass"] = true,
+  }
+  local halved = {
+    ["fire|fire"] = true,
+    ["fire|water"] = true,
+    ["fire|dragon"] = true,
+    ["water|water"] = true,
+    ["water|grass"] = true,
+    ["water|dragon"] = true,
+    ["grass|fire"] = true,
+    ["grass|grass"] = true,
+    ["grass|dragon"] = true,
+    ["grass|bug"] = true,
+    ["ice|fire"] = true,
+    ["ice|water"] = true,
+  }
+  local builder = ContentBuilder.new()
+  for _, attack in ipairs(keys) do
+    local relations = {}
+    for _, defend in ipairs(keys) do
+      local numerator, denominator = 1, 1
+      local pair = attack .. "|" .. defend
+      if doubled[pair] == true then
+        numerator, denominator = 2, 1
+      elseif halved[pair] == true then
+        numerator, denominator = 1, 2
+      elseif pair == "normal|ghost" then
+        numerator, denominator = 0, 1
+      end
+      relations[#relations + 1] = { attack = attack, defend = defend, numerator = numerator, denominator = denominator }
+    end
+    builder:define("types", attack, { key = attack, name = attack, relations = relations }, "projection-tests")
+  end
+  local behaviors = BattleBehaviorBuilder.new()
+  behaviors:registerRuleset(
+    Executor.RULESET,
+    { key = Executor.RULESET, chart = Executor.RULESET },
+    "projection-tests"
+  )
+  behaviors:registerFormat(NATIVE_FORMAT, { key = NATIVE_FORMAT }, "projection-tests")
+  return BattleContent.new(builder:freeze(), behaviors:freeze())
+end
+
+---@param alpha table combatant seed for the owning side
+---@param beta table combatant seed for the opposing side
+---@param moveFacts table<string, table<string, unknown>> immutable move facts
+---@param speciesFacts table static species facts with semantic types
+---@param seed integer battle stream seed
+---@return table live native session over the projection duel
+local function projectionDuel(alpha, beta, moveFacts, speciesFacts, seed)
+  local contracts = SessionFixture.sessionContracts()
+  local Executor = executorOwner()
+  local scenario = {
+    ruleset = Executor.RULESET,
+    format = NATIVE_FORMAT,
+    sides = { SessionFixture.side(1, { 1 }), SessionFixture.side(2, { 2 }) },
+    participants = {
+      SessionFixture.participant(1, 1, "alpha", { alpha }),
+      SessionFixture.participant(2, 2, "beta", { beta }),
+    },
+    positions = {
+      SessionFixture.position(1, 1, { 1 }, 1),
+      SessionFixture.position(2, 2, { 2 }, 2),
+    },
+    inventories = {},
+    environment = { weather = "none" },
+    random = { seed = seed },
+    formatState = {},
+    moveFacts = moveFacts,
+    speciesFacts = speciesFacts,
+  }
+  return contracts.Battle.newSession(scenario, chartContent())
+end
+
+---@param session table live native session at its opening decision boundary
+---@return table[] turn events in execution order
+local function playOpeningTurn(session)
+  local frame = SessionFixture.driveUntilSettled(session)
+  Assert.equal(frame.status, "waiting", "the opening turn asks for decisions")
+  for _, request in ipairs(frame.request.requests) do
+    local target = 2
+    if request.controller == "beta" then
+      target = 1
+    end
+    local choices = {}
+    for _, actor in ipairs(request.actors) do
+      choices[#choices + 1] = SessionFixture.attackChoice(actor, 0, SessionFixture.positionTarget(target))
+    end
+    local ok, replyErr = session:submit(SessionFixture.replyFor(request, choices))
+    Assert.isTrue(ok, "opening replies are accepted")
+    Assert.isNil(replyErr, "accepted replies carry no input error")
+  end
+  local turn = session:advance(64)
+  return turn.events or {}
+end
+
+---@param events table[] emitted events in execution order
+---@return string|nil move identity behind the first landed strike
+local function firstStriker(events)
+  for _, event in ipairs(events) do
+    if event.kind == "struck" then
+      local cause = event.cause --[[@as table<string, unknown>]]
+      return cause.key --[[@as string]]
+    end
+  end
+  return nil
+end
+
+---@param session table live native session after its turn
+---@param combatant integer combatant identity under inspection
+---@return integer damage dealt to that combatant so far
+local function damageTaken(session, combatant)
+  local snapshot = session:capture()
+  local combatants = snapshot.combatants --[[@as table<integer, table<string, unknown>>]]
+  local record = combatants[combatant] --[[@as table<string, unknown>]]
+  return (record.entryHp --[[@as integer]]) - (record.hp --[[@as integer]])
+end
+
+-- Move priority brackets dominate Speed while lowered priority waits: across
+-- battle seeds a slower combatant striking with raised priority always lands
+-- before a faster neutral strike, and a faster combatant striking with lowered
+-- priority always lands after a slower neutral strike. Both strikes are weak
+-- enough that every seed lands both, so the first landed strike names the
+-- winner without any knockout masking the order.
+function T.slower_raised_priority_strikes_first_and_faster_lowered_priority_strikes_last()
+  local facts = {
+    TACKLE = strikeFacts(0, "normal", 1),
+    QUICK_ATTACK = strikeFacts(1, "normal", 1),
+    VITAL_THROW = strikeFacts(-1, "normal", 1),
+    STRUGGLE = struggleFacts(),
+  }
+  local species = typedSpeciesFacts({
+    { species = "CHIKORITA", types = { "grass" } },
+    { species = "EEVEE", types = { "normal" } },
+  })
+  for seed = 1, 8 do
+    local raised = projectionDuel(
+      singleMoveCombatant(1, 11, "CHIKORITA", "QUICK_ATTACK"),
+      singleMoveCombatant(2, 11, "EEVEE", "TACKLE"),
+      facts,
+      species,
+      seed
+    )
+    Assert.equal(
+      firstStriker(playOpeningTurn(raised)),
+      "QUICK_ATTACK",
+      "raised priority beats Speed on seed " .. seed
+    )
+    raised:dispose()
+
+    local lowered = projectionDuel(
+      singleMoveCombatant(1, 11, "EEVEE", "VITAL_THROW"),
+      singleMoveCombatant(2, 11, "CHIKORITA", "TACKLE"),
+      facts,
+      species,
+      seed
+    )
+    Assert.equal(
+      firstStriker(playOpeningTurn(lowered)),
+      "TACKLE",
+      "lowered priority waits on seed " .. seed
+    )
+    lowered:dispose()
+  end
+end
+
+-- Only genuine Speed ties draw the battle stream: an unequal-Speed turn
+-- consumes exactly one fewer draw than the same turn with tied Speeds, and
+-- the faster combatant leads every seed without any draw to take.
+function T.unequal_speeds_order_without_tie_draws_while_true_ties_draw_once()
+  local facts = {
+    TACKLE = strikeFacts(0, "normal", 1),
+    QUICK_ATTACK = strikeFacts(0, "normal", 1),
+    STRUGGLE = struggleFacts(),
+  }
+  local species = typedSpeciesFacts({
+    { species = "CHIKORITA", types = { "grass" } },
+    { species = "EEVEE", types = { "normal" } },
+  })
+  local mixed = projectionDuel(
+    singleMoveCombatant(1, 11, "CHIKORITA", "TACKLE"),
+    singleMoveCombatant(2, 11, "EEVEE", "QUICK_ATTACK"),
+    facts,
+    species,
+    PROJECTION_SEED
+  )
+  playOpeningTurn(mixed)
+  local mixedCalls = mixed:capture().rng.calls
+  mixed:dispose()
+  local tied = projectionDuel(
+    singleMoveCombatant(1, 11, "CHIKORITA", "TACKLE"),
+    singleMoveCombatant(2, 11, "CHIKORITA", "QUICK_ATTACK"),
+    facts,
+    species,
+    PROJECTION_SEED
+  )
+  playOpeningTurn(tied)
+  local tiedCalls = tied:capture().rng.calls
+  tied:dispose()
+  Assert.equal(tiedCalls, mixedCalls + 1, "a genuine tie costs exactly one tie draw over its unequal control")
+  for seed = 1, 8 do
+    local duel = projectionDuel(
+      singleMoveCombatant(1, 11, "CHIKORITA", "TACKLE"),
+      singleMoveCombatant(2, 11, "EEVEE", "QUICK_ATTACK"),
+      facts,
+      species,
+      seed
+    )
+    Assert.equal(
+      firstStriker(playOpeningTurn(duel)),
+      "QUICK_ATTACK",
+      "the faster combatant leads on seed " .. seed
+    )
+    duel:dispose()
+  end
+end
+
+-- Same-type bonus and matchup ratios reshape ordinary strikes: a matching
+-- attacker type hits harder than an unmatching one with the same strike, a
+-- doubled matchup hits harder than a halved one with the same stats, and a
+-- chart immunity deals nothing where a neutral matchup wounds.
+function T.matching_types_and_matchup_ratios_reshape_ordinary_strikes()
+  local leaf = {
+    MAGICAL_LEAF = strikeFacts(0, "grass", 60),
+    STRUGGLE = struggleFacts(),
+  }
+  local honest = typedSpeciesFacts({
+    { species = "CHIKORITA", types = { "grass" } },
+    { species = "TOTODILE", types = { "water" } },
+    { species = "EEVEE", types = { "normal" } },
+    { species = "SHEDINJA", types = { "bug", "ghost" } },
+  })
+  local stabbed = projectionDuel(
+    singleMoveCombatant(1, 11, "CHIKORITA", "MAGICAL_LEAF"),
+    singleMoveCombatant(2, 23, "EEVEE", "MAGICAL_LEAF"),
+    leaf,
+    honest,
+    PROJECTION_SEED
+  )
+  playOpeningTurn(stabbed)
+  local stabbedDamage = damageTaken(stabbed, 2)
+  stabbed:dispose()
+  local unstabbed = projectionDuel(
+    singleMoveCombatant(1, 11, "EEVEE", "MAGICAL_LEAF"),
+    singleMoveCombatant(2, 23, "EEVEE", "MAGICAL_LEAF"),
+    leaf,
+    honest,
+    PROJECTION_SEED
+  )
+  playOpeningTurn(unstabbed)
+  local plainDamage = damageTaken(unstabbed, 2)
+  unstabbed:dispose()
+  Assert.isTrue(stabbedDamage > plainDamage, "matching attacker types hit harder with the same strike")
+
+  local fire = {
+    AERIAL_ACE = strikeFacts(0, "fire", 60),
+    STRUGGLE = struggleFacts(),
+  }
+  local intoGrass = projectionDuel(
+    singleMoveCombatant(1, 11, "CHIKORITA", "AERIAL_ACE"),
+    singleMoveCombatant(2, 23, "CHIKORITA", "AERIAL_ACE"),
+    fire,
+    honest,
+    PROJECTION_SEED
+  )
+  playOpeningTurn(intoGrass)
+  local grassDamage = damageTaken(intoGrass, 2)
+  intoGrass:dispose()
+  local intoWater = projectionDuel(
+    singleMoveCombatant(1, 11, "CHIKORITA", "AERIAL_ACE"),
+    singleMoveCombatant(2, 23, "TOTODILE", "AERIAL_ACE"),
+    fire,
+    honest,
+    PROJECTION_SEED
+  )
+  playOpeningTurn(intoWater)
+  local waterDamage = damageTaken(intoWater, 2)
+  intoWater:dispose()
+  Assert.isTrue(grassDamage > waterDamage, "doubled matchups hit harder than halved ones with the same stats")
+
+  local heavy = {
+    TACKLE = strikeFacts(0, "normal", 40),
+    STRUGGLE = struggleFacts(),
+  }
+  local intoGhost = projectionDuel(
+    singleMoveCombatant(1, 11, "EEVEE", "TACKLE"),
+    singleMoveCombatant(2, 23, "SHEDINJA", "TACKLE"),
+    heavy,
+    honest,
+    PROJECTION_SEED
+  )
+  playOpeningTurn(intoGhost)
+  local ghostDamage = damageTaken(intoGhost, 2)
+  intoGhost:dispose()
+  local intoPlain = projectionDuel(
+    singleMoveCombatant(1, 11, "EEVEE", "TACKLE"),
+    singleMoveCombatant(2, 23, "EEVEE", "TACKLE"),
+    heavy,
+    honest,
+    PROJECTION_SEED
+  )
+  playOpeningTurn(intoPlain)
+  local plainTackle = damageTaken(intoPlain, 2)
+  intoPlain:dispose()
+  Assert.equal(ghostDamage, 0, "chart immunities deal nothing")
+  Assert.isTrue(plainTackle > 0, "the neutral control wounds")
+end
+
+-- Combined and special attack identities follow the composed chart: one fire
+-- strike doubles twice into a doubly weak pair, stays level on a split
+-- pair, quarters into a doubly resisted pair, typeless strikes take no
+-- attacker bonus without turning immune, and undeclared types fail instead
+-- of striking neutrally. Defender pairs below are detached chart-projection
+-- facts exercising the combining seam, mirroring the existing custom-chart
+-- suites; attacker and defender species stay distinct so each side keeps
+-- its own declared types.
+function T.combined_and_special_attack_identities_follow_the_composed_chart()
+  local fireFacts = {
+    FLARE_BLITZ = strikeFacts(0, "fire", 60),
+    TACKLE = strikeFacts(0, "normal", 1),
+    STRUGGLE = struggleFacts(),
+  }
+  local attackerFacts = typedSpeciesFacts({
+    { species = "CHIKORITA", types = { "grass" } },
+    { species = "TOTODILE", types = { "grass", "ice" } },
+  })
+  local splitFacts = typedSpeciesFacts({
+    { species = "CHIKORITA", types = { "grass" } },
+    { species = "TOTODILE", types = { "grass", "water" } },
+  })
+  local resistedFacts = typedSpeciesFacts({
+    { species = "CHIKORITA", types = { "grass" } },
+    { species = "TOTODILE", types = { "water", "dragon" } },
+  })
+  local function fireInto(defenderTypesFacts)
+    local duel = projectionDuel(
+      singleMoveCombatant(1, 11, "CHIKORITA", "FLARE_BLITZ"),
+      singleMoveCombatant(2, 23, "TOTODILE", "FLARE_BLITZ"),
+      fireFacts,
+      defenderTypesFacts,
+      PROJECTION_SEED
+    )
+    playOpeningTurn(duel)
+    local dealt = damageTaken(duel, 2)
+    duel:dispose()
+    return dealt
+  end
+  local quadrupled = fireInto(attackerFacts)
+  local level = fireInto(splitFacts)
+  local quartered = fireInto(resistedFacts)
+  Assert.isTrue(quadrupled > level, "doubly weak pairs take more than split pairs")
+  Assert.isTrue(level > quartered, "split pairs take more than doubly resisted pairs")
+
+  local waterFacts = {
+    AQUA_JET = strikeFacts(0, "water", 60),
+    SWIFT = strikeFacts(0, "typeless", 60),
+    TACKLE = strikeFacts(0, "normal", 1),
+    STRUGGLE = struggleFacts(),
+  }
+  local waterHonest = typedSpeciesFacts({
+    { species = "TOTODILE", types = { "water" } },
+    { species = "EEVEE", types = { "normal" } },
+    { species = "SHEDINJA", types = { "bug", "ghost" } },
+  })
+  local stabbedWater = projectionDuel(
+    singleMoveCombatant(1, 11, "TOTODILE", "AQUA_JET"),
+    singleMoveCombatant(2, 23, "EEVEE", "TACKLE"),
+    waterFacts,
+    waterHonest,
+    PROJECTION_SEED
+  )
+  playOpeningTurn(stabbedWater)
+  local waterDamage = damageTaken(stabbedWater, 2)
+  stabbedWater:dispose()
+  local typelessWater = projectionDuel(
+    singleMoveCombatant(1, 11, "TOTODILE", "SWIFT"),
+    singleMoveCombatant(2, 23, "EEVEE", "TACKLE"),
+    waterFacts,
+    waterHonest,
+    PROJECTION_SEED
+  )
+  playOpeningTurn(typelessWater)
+  local typelessDamage = damageTaken(typelessWater, 2)
+  typelessWater:dispose()
+  Assert.isTrue(waterDamage > typelessDamage, "typeless strikes take no attacker bonus")
+  local typelessGhost = projectionDuel(
+    singleMoveCombatant(1, 11, "TOTODILE", "SWIFT"),
+    singleMoveCombatant(2, 23, "SHEDINJA", "TACKLE"),
+    waterFacts,
+    waterHonest,
+    PROJECTION_SEED
+  )
+  playOpeningTurn(typelessGhost)
+  local ghostTypeless = damageTaken(typelessGhost, 2)
+  typelessGhost:dispose()
+  Assert.isTrue(ghostTypeless > 0, "typeless strikes stay neutral against immunities")
+
+  local voidFacts = {
+    AURA_SPHERE = strikeFacts(0, "void", 60),
+    TACKLE = strikeFacts(0, "normal", 1),
+    STRUGGLE = struggleFacts(),
+  }
+  local plainSpecies = typedSpeciesFacts({
+    { species = "EEVEE", types = { "normal" } },
+  })
+  local voidStriker = projectionDuel(
+    singleMoveCombatant(1, 11, "EEVEE", "AURA_SPHERE"),
+    singleMoveCombatant(2, 23, "EEVEE", "TACKLE"),
+    voidFacts,
+    plainSpecies,
+    PROJECTION_SEED
+  )
+  local waiting = SessionFixture.driveUntilSettled(voidStriker)
+  Assert.equal(waiting.status, "waiting", "the void strike opens its turn")
+  for _, request in ipairs(waiting.request.requests) do
+    local target = 2
+    if request.controller == "beta" then
+      target = 1
+    end
+    local choices = {}
+    for _, actor in ipairs(request.actors) do
+      choices[#choices + 1] = SessionFixture.attackChoice(actor, 0, SessionFixture.positionTarget(target))
+    end
+    local ok, replyErr = voidStriker:submit(SessionFixture.replyFor(request, choices))
+    Assert.isTrue(ok, "void strike replies are accepted")
+    Assert.isNil(replyErr, "accepted replies carry no input error")
+  end
+  Assert.throws(function()
+    voidStriker:advance(64)
+  end, "undeclared attacking types fail instead of striking neutrally")
+  voidStriker:dispose()
+
+  local voidDefender = typedSpeciesFacts({
+    { species = "CHIKORITA", types = { "grass" } },
+    { species = "EEVEE", types = { "void" } },
+  })
+  local voidShield = projectionDuel(
+    singleMoveCombatant(1, 11, "CHIKORITA", "FLARE_BLITZ"),
+    singleMoveCombatant(2, 23, "EEVEE", "TACKLE"),
+    fireFacts,
+    voidDefender,
+    PROJECTION_SEED
+  )
+  local shieldWaiting = SessionFixture.driveUntilSettled(voidShield)
+  Assert.equal(shieldWaiting.status, "waiting", "the void shield opens its turn")
+  for _, request in ipairs(shieldWaiting.request.requests) do
+    local target = 2
+    if request.controller == "beta" then
+      target = 1
+    end
+    local choices = {}
+    for _, actor in ipairs(request.actors) do
+      choices[#choices + 1] = SessionFixture.attackChoice(actor, 0, SessionFixture.positionTarget(target))
+    end
+    local ok, replyErr = voidShield:submit(SessionFixture.replyFor(request, choices))
+    Assert.isTrue(ok, "void shield replies are accepted")
+    Assert.isNil(replyErr, "accepted replies carry no input error")
+  end
+  Assert.throws(function()
+    voidShield:advance(64)
+  end, "undeclared defending types fail instead of striking neutrally")
+  voidShield:dispose()
+end
+
+---@param snapshot table<string, unknown> detached interruption capture under staging
+---@return table<string, unknown> detached capture with the slower lead fully raised in Speed
+local function copySnapshotStages(snapshot)
+  local staged = {}
+  for key, value in pairs(snapshot) do
+    if type(value) == "table" then
+      local branch = {}
+      for innerKey, innerValue in pairs(value --[[@as table<unknown, unknown>]]) do
+        if type(innerValue) == "table" then
+          local leaf = {}
+          for leafKey, leafValue in pairs(innerValue --[[@as table<unknown, unknown>]]) do
+            leaf[leafKey] = leafValue
+          end
+          branch[innerKey] = leaf
+        else
+          branch[innerKey] = innerValue
+        end
+      end
+      staged[key] = branch
+    else
+      staged[key] = value
+    end
+  end
+  local combatants = staged.combatants --[[@as table<integer, table<string, unknown>>]]
+  combatants[1].stages =
+    { attack = 0, defense = 0, speed = 6, specialAttack = 0, specialDefense = 0, accuracy = 0, evasion = 0 }
+  return staged
+end
+
+-- Restored stage state steers later turns: raising the slower lead's
+-- Speed stage through six stages in the interruption capture flips the
+-- opening order after restore, while an untouched restore replays the
+-- same order with both strikes still landing.
+function T.restored_speed_stages_steer_the_replayed_order()
+  local Executor = executorOwner()
+  local facts = {
+    TACKLE = strikeFacts(0, "normal", 1),
+    QUICK_ATTACK = strikeFacts(0, "normal", 1),
+    STRUGGLE = struggleFacts(),
+  }
+  local species = typedSpeciesFacts({
+    { species = "CHIKORITA", types = { "grass" } },
+    { species = "EEVEE", types = { "normal" } },
+  })
+  local function duel()
+    return projectionDuel(
+      singleMoveCombatant(1, 11, "CHIKORITA", "TACKLE"),
+      singleMoveCombatant(2, 11, "EEVEE", "QUICK_ATTACK"),
+      facts,
+      species,
+      PROJECTION_SEED
+    )
+  end
+  local session = duel()
+  local snapshot = session:capture()
+  SessionFixture.assertPlainData(snapshot)
+  session:dispose()
+
+  local plain = Executor.restore(snapshot, chartContent())
+  Assert.equal(
+    firstStriker(playOpeningTurn(plain)),
+    "QUICK_ATTACK",
+    "the untouched restore keeps the faster lead first"
+  )
+  Assert.isTrue(damageTaken(plain, 1) > 0, "the untouched restore still lands the slower strike")
+  Assert.isTrue(damageTaken(plain, 2) > 0, "the untouched restore still lands the faster strike")
+  plain:dispose()
+
+  local boosted = copySnapshotStages(snapshot)
+  local revived = Executor.restore(boosted, chartContent())
+  Assert.equal(
+    firstStriker(playOpeningTurn(revived)),
+    "TACKLE",
+    "a fully raised slower lead moves first after restore"
+  )
+  Assert.isTrue(damageTaken(revived, 1) > 0, "the staged restore still lands the slower strike")
+  Assert.isTrue(damageTaken(revived, 2) > 0, "the staged restore still lands the faster strike")
   revived:dispose()
 end
 

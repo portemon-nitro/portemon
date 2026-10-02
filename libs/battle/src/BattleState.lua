@@ -3,12 +3,14 @@
 -- surface; external callers receive detached copies. A combatant owns one
 -- canonical persistent-mon copy plus battle-local health and activation
 -- bookkeeping: health persists across entries (roster-local) while entry
--- tokens and volatiles reset per entry (activation-local), so a replacement
--- can never inherit a stale action or effect through a reused slot integer.
+-- tokens, volatiles, and stat stages reset per entry (activation-local),
+-- so a replacement can never inherit a stale action, effect, or modifier
+-- through a reused slot integer.
 -- The live random generator object is held outside the serializable shape;
 -- interruption captures carry its plain record instead.
 
 local BattleErrors = require("libs.battle.src.errors")
+local StatStages = require("libs.battle.src.gen4.StatStages")
 local Lcrng = require("libs.mons.src.gen4.Lcrng")
 
 ---@class BattleState
@@ -30,6 +32,25 @@ local function copyValue(value)
     out[key] = copyValue(item)
   end
   return out
+end
+
+-- Battle-local stat stages in native stage law. Every combatant starts
+-- each activation at all-zero stages; stage mutation clamps through the
+-- stage owner, so this module only ever writes zeros and validates the
+-- native bounds on restore.
+local STAGE_KEYS = { "attack", "defense", "speed", "specialAttack", "specialDefense", "accuracy", "evasion" }
+
+---@return table<string, integer> fresh all-zero stage record
+local function zeroStages()
+  return {
+    attack = 0,
+    defense = 0,
+    speed = 0,
+    specialAttack = 0,
+    specialDefense = 0,
+    accuracy = 0,
+    evasion = 0,
+  }
 end
 
 ---@param hp unknown
@@ -121,6 +142,7 @@ function BattleState.create(validated)
         entryHp = hp,
         active = nil,
         volatiles = {},
+        stages = zeroStages(),
         materialized = {},
       }
     end
@@ -247,6 +269,7 @@ function BattleState.enter(state, combatantId, positionId)
   combatant.entryHp = hp
   combatant.active = { position = positionId, activation = counter }
   combatant.volatiles = {}
+  combatant.stages = zeroStages()
   position.occupant = combatantId
   position.activation = counter
   return counter
@@ -343,6 +366,20 @@ function BattleState.validateSnapshot(snapshot)
     end
     checkEntryHp(combatant.hp, combatantId)
     checkEntryHp(combatant.entryHp, combatantId)
+    local stages = combatant.stages
+    if type(stages) ~= "table" then
+      error(BattleErrors.incompatibleSnapshot("snapshot combatants must carry their stat stages", {
+        combatant = combatantId,
+      }))
+    end
+    for _, key in ipairs(STAGE_KEYS) do
+      local stage = (stages --[[@as table<string, unknown>]])[key]
+      if type(stage) ~= "number" or stage % 1 ~= 0 or stage < StatStages.MIN or stage > StatStages.MAX then
+        error(BattleErrors.incompatibleSnapshot("snapshot stages stay clamped integer stages", {
+          combatant = combatantId,
+        }))
+      end
+    end
     if combatant.active ~= nil then
       if type(combatant.active) ~= "table" then
         error(BattleErrors.incompatibleSnapshot("snapshot entries must be records", {}))

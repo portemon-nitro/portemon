@@ -74,6 +74,16 @@ local function syntheticFacts()
   })
 end
 
+---@return table<string, unknown> neutral type modifiers keeping strike arithmetic unchanged
+local function typeFacts()
+  local CombatFixture = require("libs.battle.tests.combat_fixture")
+  return {
+    attackerTypes = { "fire" },
+    defenderTypes = { [2] = { "normal" } },
+    typeChart = CombatFixture.chart(CombatFixture.makeVanilla(), CombatFixture.VANILLA_RULESET),
+  }
+end
+
 ---@param caller string calling move identity under execution
 ---@param seed integer fixed generator state for the candidate roll
 ---@return table frame inputs for a called-move attempt
@@ -91,6 +101,9 @@ local function calledInputs(caller, seed)
       { move = caller, pp = 10, ppUps = 0 },
     },
     moveFacts = syntheticFacts(),
+    attackerTypes = typeFacts().attackerTypes,
+    defenderTypes = typeFacts().defenderTypes,
+    typeChart = typeFacts().typeChart,
     stream = BattleRng.new(seed),
   }
 end
