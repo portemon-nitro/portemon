@@ -326,8 +326,68 @@ function T.tests.production_bag_destination_opens_the_native_flow(context)
     local child = applicationStatus(game)
     Assert.equal(child.page, "bag_browse", "the bag destination opens the native bag flow")
     Assert.equal(child.root, "bag", "the bag destination roots the flow at bag")
+
+    -- Opening batches are consumed while the Bag performs its source
+    -- sub-then-main reveal. The first cancel must not close the new app.
+    cancel(game)
+    game:advanceUntil("the Bag resolves its opening batch", function()
+      if hostPhase(game) ~= FieldApplicationHost.PHASES.application then
+        return true
+      end
+      local flow = game.runtime.applicationHost:status().application
+      local leaf = flow ~= nil and flow.child or nil
+      return leaf ~= nil and leaf.phase == "interactive"
+    end, 120)
+    Assert.equal(hostPhase(game), FieldApplicationHost.PHASES.application, "opening cancel input is discarded")
+    child = applicationStatus(game)
+    Assert.equal(child.page, "bag_browse", "the Bag stays active after opening input is discarded")
     cancel(game)
     game:advanceUntil("cancelling the flow returns to the menu", function()
+      return hostPhase(game) == FieldApplicationHost.PHASES.menu
+    end, 120)
+    cancel(game)
+    game:advanceUntil("cancelling the menu returns to the field", function()
+      return hostPhase(game) == FieldApplicationHost.PHASES.closed
+    end, 120)
+  end)
+end
+
+function T.tests.production_bag_return_reveals_the_retained_menu(context)
+  requireVersions(context)
+  withGame(function(game)
+    local state = hostCallbacks(game)
+    game:setWorldState({ flag = FLAG_GOT_BAG })
+    openStartMenu(game)
+    navigateTo(game, state, "vanilla.bag")
+    confirm(game)
+    game:advanceUntil("the bag destination owns the tick", function()
+      return hostPhase(game) == FieldApplicationHost.PHASES.application
+    end, 120)
+
+    -- Let Bag's source opening finish before testing the root close.
+    game:advanceUntil("the Bag is ready for root close", function()
+      if hostPhase(game) ~= FieldApplicationHost.PHASES.application then
+        return false
+      end
+      local flow = game.runtime.applicationHost:status().application
+      local leaf = flow ~= nil and flow.child or nil
+      return leaf ~= nil and (leaf.phase == nil or leaf.phase == "interactive")
+    end, 120)
+    game:step()
+    game:step()
+    cancel(game)
+
+    -- Six app-exit steps finish the outgoing Bag. The next tick starts
+    -- brightness-in over the retained menu, before close is published.
+    for _ = 1, 7 do
+      game:step()
+    end
+    Assert.equal(
+      hostPhase(game),
+      FieldApplicationHost.PHASES.application,
+      "the Bag flow stays published while the retained Start Menu is revealed"
+    )
+    game:advanceUntil("the completed reveal returns to the retained menu", function()
       return hostPhase(game) == FieldApplicationHost.PHASES.menu
     end, 120)
     cancel(game)

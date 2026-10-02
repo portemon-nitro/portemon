@@ -46,10 +46,9 @@ local PAGE = {
 ---@field private _continuation table<string, unknown>?
 ---@field private _picker table<string, unknown>? the live temporary picker cursor
 ---@field private _result table<string, unknown>?
----@field private _terminalResultPending table<string, unknown>? published after the opaque terminal fade frame
+---@field private _terminalResultPending table<string, unknown>? published after the final transparent return frame
 ---@field private _lastChildStatus table<string, unknown>?
 ---@field private _transition PokemonMenuFlow.Transition?
----@field private _transitionStatus table<string, unknown>?
 ---@field private _terminalChildStatus table<string, unknown>?
 ---@field private _disposed boolean
 local PokemonMenuFlow = {}
@@ -57,17 +56,21 @@ PokemonMenuFlow.__index = PokemonMenuFlow
 
 ---@class PokemonMenuFlow.ReplacementTransition
 ---@field kind "replacement"
+---@field phase "app_exit"
 ---@field fade StandardFade
 ---@field page string
 ---@field continuation table<string, unknown>?
 ---@field child table<string, unknown>
----@field childStatus table<string, unknown> the last drawable outgoing child status
+---@field childStatus table<string, unknown>? the last drawable outgoing child status
 
 ---@class PokemonMenuFlow.TerminalTransition
 ---@field kind "terminal"
+---@field phase "app_exit"|"menu_return"
 ---@field fade StandardFade
 ---@field result table<string, unknown>
 ---@field childStatus table<string, unknown> the last drawable outgoing child status
+---@field inputKey string? retained app pane role during menu return
+---@field panes table[]? retained pane placements during menu return
 
 ---@alias PokemonMenuFlow.Transition PokemonMenuFlow.ReplacementTransition|PokemonMenuFlow.TerminalTransition
 
@@ -280,7 +283,6 @@ function PokemonMenuFlow.new(opts)
     _terminalResultPending = nil,
     _lastChildStatus = nil,
     _transition = nil,
-    _transitionStatus = nil,
     _terminalChildStatus = nil,
     _disposed = false,
   }, PokemonMenuFlow)
@@ -460,17 +462,22 @@ end
 ---@param page string
 ---@param continuation table<string, unknown>?
 function PokemonMenuFlow:_replace(page, continuation)
-  assert(self._transition == nil, "menu replacements cannot overlap an outgoing fade")
+  assert(self._transition == nil, "menu replacements cannot overlap an app transition")
   local previous = assert(self._child, "replacement retires a live child")
   local replacement = self:_openPage(page, continuation)
+  local currentStatus = previous:status()
+  local outgoingStatus = currentStatus.open == true and currentStatus.presentation ~= nil and currentStatus
+    or self._lastChildStatus
+    or currentStatus
   previous:cancelPointerCapture()
   self._transition = {
     kind = "replacement",
+    phase = "app_exit",
     fade = StandardFade.new({ direction = "out", color = 0 }),
     page = page,
     continuation = continuation,
     child = replacement,
-    childStatus = self._lastChildStatus or previous:status(),
+    childStatus = outgoingStatus,
   }
 end
 
@@ -1047,15 +1054,16 @@ function PokemonMenuFlow:_routeResult(result)
   self:_rewind(continuation)
 end
 
--- Stages a terminal handoff, keeping the last drawable child status for
--- the outgoing fade. The host result publishes after the opaque frame.
+-- Stages a terminal handoff with the last drawable child status. Root close
+-- returns through the menu reveal; field actions publish at app closure.
 ---@param result table<string, unknown>
 function PokemonMenuFlow:_terminate(result)
-  assert(self._transition == nil, "menu termination cannot overlap an outgoing fade")
+  assert(self._transition == nil, "menu termination cannot overlap an app transition")
   local child = assert(self._child, "termination retires a live child")
   child:cancelPointerCapture()
   self._transition = {
     kind = "terminal",
+    phase = "app_exit",
     fade = StandardFade.new({ direction = "out", color = 0 }),
     result = result,
     childStatus = self._lastChildStatus or child:status(),
@@ -1073,6 +1081,20 @@ function PokemonMenuFlow:_takeIntent()
   return child:takeIntent()
 end
 
+---@param record table<string, unknown>
+---@return table<string, unknown>
+local function copyPresentationFacts(record)
+  local copy = {}
+  for key, value in pairs(record) do
+    if type(value) == "table" then
+      copy[key] = copyPresentationFacts(value)
+    else
+      copy[key] = value
+    end
+  end
+  return copy
+end
+
 -- One fixed tick: the active child owns the batch, then one drained
 -- intent or result routes exactly once. A replacement never sees the
 -- launching batch; a terminal result ends input ownership.
@@ -1086,6 +1108,7 @@ function PokemonMenuFlow:updateFixed(uiInput)
   if self._terminalResultPending ~= nil then
     self._result = self._terminalResultPending
     self._terminalResultPending = nil
+    self._transition = nil
     return
   end
   if self._transition ~= nil then
@@ -1094,6 +1117,32 @@ function PokemonMenuFlow:updateFixed(uiInput)
     end
     local transition = assert(self._transition, "active transitions remain published until completion")
     local fade = assert(transition.fade, "outgoing transitions own their standard fade")
+    if transition.phase == "menu_return" then
+      fade:updateSourceFrame()
+      if fade.completed then
+        self._terminalResultPending = transition.result
+      end
+      return
+    end
+    assert(transition.phase == "app_exit", "menu transition phase is recognized")
+    local outgoing = assert(self._child, "app exit keeps its outgoing child alive")
+    local childStatus = assert(transition.childStatus, "app exit retains the outgoing child status")
+    local currentPlan = childStatus.presentation
+    local currentInputKey = type(currentPlan) == "table" and currentPlan.inputKey or nil
+    if
+      currentInputKey == "bag"
+      or currentInputKey == "bag-inactive"
+      or currentInputKey == "party"
+      or currentInputKey == "party-inactive"
+    then
+      local presentation = outgoing:refreshPresentation(childStatus)
+      childStatus = {}
+      for key, value in pairs(transition.childStatus) do
+        childStatus[key] = value
+      end
+      childStatus.presentation = presentation
+      transition.childStatus = childStatus
+    end
     fade:updateSourceFrame()
     if fade.completed then
       local previous = assert(self._child, "transition completion retires the published child")
@@ -1102,21 +1151,42 @@ function PokemonMenuFlow:updateFixed(uiInput)
         self._page = transition.page
         self._continuation = transition.continuation
         self._lastChildStatus = assert(self._child):status()
+        self._transition = nil
       else
         assert(transition.kind == "terminal", "active transitions have a replacement or terminal owner")
-        self._terminalChildStatus = transition.childStatus
-        self._child = nil
-        self._continuation = nil
-        self._picker = nil
-        self._terminalResultPending = assert(transition.result, "terminal transitions publish a result")
+        if transition.result.kind == "close" then
+          local plan = assert(transition.childStatus.presentation, "root close retains the outgoing pane plan")
+          local inputKey = assert(plan.inputKey, "the returning application has a pane role")
+          assert(inputKey == "bag" or inputKey == "party", "root close belongs to a Bag or Party plan")
+          local panes = {}
+          for _, pane in ipairs(assert(plan.panes, "the returning app plan carries its panes")) do
+            if pane.id == "interaction" or pane.id == "hero" or pane.id == "content" or pane.id == "detail" then
+              panes[#panes + 1] = { id = pane.id, placement = copyPresentationFacts(pane.placement) }
+            end
+          end
+          assert(#panes > 0, "root close retains at least one app pane placement")
+          transition.phase = "menu_return"
+          transition.fade = StandardFade.new({ direction = "in", color = 0 })
+          transition.inputKey = inputKey
+          transition.panes = panes
+          transition.childStatus = nil
+          self._child = nil
+          self._continuation = nil
+          self._picker = nil
+          self._terminalChildStatus = nil
+        else
+          self._terminalChildStatus = transition.childStatus
+          self._child = nil
+          self._continuation = nil
+          self._picker = nil
+          self._result = assert(transition.result, "terminal transitions publish a result at closure")
+          self._transition = nil
+        end
       end
       previous:dispose()
-      self._transitionStatus = fade:status()
-      self._transition = nil
     end
     return
   end
-  self._transitionStatus = nil
   self._terminalChildStatus = nil
   local child = assert(self._child, "the flow owns one active child")
   self._lastChildStatus = child:status()
@@ -1144,24 +1214,47 @@ end
 -- status. The continuation never leaves the flow.
 ---@return table<string, unknown>
 function PokemonMenuFlow:status()
-  if self._disposed or self._child == nil then
+  if self._disposed then
     return {
       open = false,
-      child = self._terminalChildStatus,
-      transition = self._transitionStatus,
     }
   end
+  local transition = self._transition
+  if transition ~= nil and transition.phase == "menu_return" then
+    local fade = assert(transition.fade, "menu return owns its brightness-in fade")
+    local panes = {}
+    for _, pane in ipairs(assert(transition.panes, "menu return retains its pane placements")) do
+      panes[#panes + 1] = { id = pane.id, placement = copyPresentationFacts(pane.placement) }
+    end
+    return {
+      open = true,
+      root = self._root,
+      page = self._page,
+      transition = {
+        phase = "menu_return",
+        brightnessCoefficient = fade.coefficient,
+        inputKey = assert(transition.inputKey),
+        panes = panes,
+      },
+    }
+  end
+  if self._child == nil then
+    return { open = false, child = self._terminalChildStatus }
+  end
   local childStatus
-  if self._transition ~= nil then
-    childStatus = self._transition.childStatus
+  if transition ~= nil then
+    childStatus = transition.childStatus
   else
     childStatus = self._child:status()
   end
   local status = { open = true, root = self._root, page = self._page, child = childStatus }
-  if self._transition ~= nil then
-    status.transition = assert(self._transition.fade, "outgoing transitions own their standard fade"):status()
-  elseif self._transitionStatus ~= nil then
-    status.transition = self._transitionStatus
+  if transition ~= nil then
+    local fade = assert(transition.fade, "app exit owns its brightness-out fade")
+    status.transition = {
+      phase = "app_exit",
+      step = fade.updates,
+      brightnessCoefficient = fade.coefficient,
+    }
   end
   return status
 end
@@ -1200,7 +1293,6 @@ function PokemonMenuFlow:dispose()
   self._lastChildStatus = nil
   self._picker = nil
   self._transition = nil
-  self._transitionStatus = nil
   self._terminalChildStatus = nil
   if child ~= nil then
     child:dispose()

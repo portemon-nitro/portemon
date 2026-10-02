@@ -615,27 +615,60 @@ function T.party_wait_renders_without_icon_getters()
   local savedLove = rawget(_G, "love")
   local graphics = require("tests.support.FakeGraphics").new({})
   graphics.getDimensions = function()
-    return 640, 480
+    error("party transition uses its resolved pane placement")
   end
   rawset(_G, "love", { graphics = graphics })
   local ok, err = pcall(function()
     withProductionComposition(sink, calls, compositionRuntime(), function(resources)
-      local frame = { x = 0, y = 0, width = 640, height = 480 }
+      local LayoutGeometry = require("libs.ui.src.LayoutGeometry")
+      local frame = { x = 0, y = 0, width = 256, height = 192 }
+      local placement = LayoutGeometry.centeredFit({ x = 48, y = 36, width = 256, height = 192 }, 256, 192)
+      local plan = {
+        inputKey = "party",
+        panes = {
+          { id = "content", placement = placement },
+          {
+            id = "detail",
+            placement = LayoutGeometry.centeredFit({ x = 420, y = 180, width = 256, height = 192 }, 256, 192),
+          },
+        },
+      }
       resources:drawApplication(
         FieldApplicationIds.POKEMON,
         {
-          child = { preparationState = "pending", layout = { frame = frame } },
-          transition = { coefficient = 8, color = 0, direction = "out" },
+          child = {
+            preparationState = "pending",
+            layout = { frame = frame },
+            presentation = plan,
+          },
+          transition = { phase = "app_exit", step = 3, brightnessCoefficient = 7 },
         },
         drawRuntime()
       )
       Assert.equal(#sink, 1, "the wait renders exactly one message")
       Assert.equal(sink[1][1], "text", "pending party icons render as text, never icon getters")
-      Assert.equal(#graphics.rectangles, 1, "the outgoing fade overlays the Party wait screen")
-      Assert.deepEqual(graphics.rectangles[1].color, { 0, 0, 0, 0.5 }, "the wait screen keeps the fade opacity")
+      Assert.equal(#graphics.rectangles, 3, "the outgoing shutter and sub-pane brightness cover the Party wait")
+      Assert.deepEqual(
+        { graphics.rectangles[1].x, graphics.rectangles[1].y, graphics.rectangles[1].w, graphics.rectangles[1].h },
+        { 0, 0, 256, 48 },
+        "the Party wait uses the same source shutter geometry"
+      )
+      Assert.deepEqual(
+        graphics.scissorIntersections[1].effective,
+        { placement.frame.x, placement.frame.y, placement.frame.width, placement.frame.height },
+        "the Party wait shutter stays inside its resolved content pane"
+      )
+      Assert.equal(graphics.rectangles[3].color[4], 7 / 16, "the detail pane keeps its exit brightness")
       resources:drawApplication(
         FieldApplicationIds.POKEMON,
-        { child = { preparationState = "failed", preparationError = "boom", layout = { frame = frame } } },
+        {
+          child = {
+            preparationState = "failed",
+            preparationError = "boom",
+            layout = { frame = frame },
+            presentation = plan,
+          },
+        },
         drawRuntime()
       )
       Assert.equal(#sink, 2, "the failure renders exactly one message")
@@ -650,6 +683,168 @@ function T.party_wait_renders_without_icon_getters()
   rawset(_G, "love", savedLove)
   if not ok then
     error(err, 0)
+  end
+end
+
+function T.menu_app_exit_uses_pane_local_shutter_and_brightness()
+  local coefficients = { 0, 2, 5, 7, 10, 13, 16 }
+  for step, coefficient in ipairs(coefficients) do
+    local sourceStep = step - 1
+    local sink, calls = {}, {}
+    local savedLove = rawget(_G, "love")
+    local graphics = require("tests.support.FakeGraphics").new({})
+    graphics.getDimensions = function()
+      error("menu transitions do not cover the host window")
+    end
+    rawset(_G, "love", { graphics = graphics })
+    local ok, err = pcall(function()
+      withProductionComposition(sink, calls, compositionRuntime(), function(resources)
+        local LayoutGeometry = require("libs.ui.src.LayoutGeometry")
+        local function placement(x, y)
+          return LayoutGeometry.centeredFit({ x = x, y = y, width = 256, height = 192 }, 256, 192)
+        end
+        local mainPlacement = placement(48, 36)
+        local subPlacement = placement(420, 180)
+        local plan = {
+          panes = {
+            { id = "content", placement = mainPlacement, interactive = true },
+            { id = "detail", placement = subPlacement, interactive = false },
+          },
+          frames = {},
+          content = {},
+          inputKey = "party",
+          render = function(_, _, _) end,
+          mapInput = function(_, _, _) end,
+        }
+        resources:drawApplication(
+          FieldApplicationIds.POKEMON,
+          {
+            child = { open = true, presentation = plan },
+            transition = { phase = "app_exit", step = sourceStep, brightnessCoefficient = coefficient },
+          },
+          drawRuntime()
+        )
+
+        local edge = 16 * sourceStep
+        Assert.equal(#graphics.rectangles, 3, "the exit draws two main shutter bars and one sub overlay")
+        Assert.deepEqual(
+          { graphics.rectangles[1].x, graphics.rectangles[1].y, graphics.rectangles[1].w, graphics.rectangles[1].h },
+          { 0, 0, 256, edge },
+          "the top shutter edge follows the source step"
+        )
+        Assert.deepEqual(
+          {
+            graphics.rectangles[2].x,
+            graphics.rectangles[2].y,
+            graphics.rectangles[2].w,
+            graphics.rectangles[2].h,
+          },
+          { 0, 192 - edge, 256, edge },
+          "the bottom shutter edge follows the source step"
+        )
+        Assert.deepEqual(
+          { graphics.rectangles[1].color[1], graphics.rectangles[1].color[2], graphics.rectangles[1].color[3] },
+          { 0, 0, 0 },
+          "the main shutter is opaque black"
+        )
+        Assert.equal(graphics.rectangles[3].color[4], coefficient / 16, "the sub pane follows source brightness")
+        Assert.equal(
+          graphics.rectangles[1].h + graphics.rectangles[2].h,
+          math.min(192, 32 * sourceStep),
+          "the two shutter bars cover exactly the source distance"
+        )
+
+        local mainClip = graphics.scissorIntersections[1].effective
+        local subClip = graphics.scissorIntersections[2].effective
+        Assert.deepEqual(
+          mainClip,
+          { mainPlacement.frame.x, mainPlacement.frame.y, mainPlacement.frame.width, mainPlacement.frame.height },
+          "the main shutter is clipped to its inset app pane"
+        )
+        Assert.deepEqual(
+          subClip,
+          { subPlacement.frame.x, subPlacement.frame.y, subPlacement.frame.width, subPlacement.frame.height },
+          "the sub brightness is clipped to its separate app pane"
+        )
+        Assert.isTrue(
+          mainClip[1] > 0 and mainClip[2] > 0 and mainClip[1] + mainClip[3] < 800,
+          "the main shutter leaves the host matte outside its pane untouched"
+        )
+        Assert.isTrue(
+          subClip[1] > mainClip[1] + mainClip[3] and subClip[2] > mainClip[2],
+          "the sub overlay remains in its distinct host pane"
+        )
+        if sourceStep == 0 then
+          Assert.equal(graphics.rectangles[1].h + graphics.rectangles[2].h, 0, "step zero leaves the aperture open")
+          Assert.equal(graphics.rectangles[3].color[4], 0, "step zero leaves sub brightness unchanged")
+        elseif sourceStep == 6 then
+          Assert.equal(graphics.rectangles[1].h + graphics.rectangles[2].h, 192, "step six closes the full pane")
+          Assert.equal(graphics.rectangles[1].y + graphics.rectangles[1].h, 96, "the top bar reaches center")
+          Assert.equal(graphics.rectangles[2].y, 96, "the bottom bar meets the top bar at center")
+        end
+        resources:dispose()
+      end)
+    end)
+    rawset(_G, "love", savedLove)
+    if not ok then
+      error(err, 0)
+    end
+  end
+end
+
+function T.menu_return_draws_brightness_inside_retained_panes_without_a_child()
+  local savedLove = rawget(_G, "love")
+  local cases = {
+    { applicationId = FieldApplicationIds.BAG, inputKey = "bag", mainId = "interaction", subId = "hero" },
+    { applicationId = FieldApplicationIds.POKEMON, inputKey = "party", mainId = "content", subId = "detail" },
+  }
+  for _, case in ipairs(cases) do
+    local sink, calls = {}, {}
+    local graphics = require("tests.support.FakeGraphics").new({})
+    graphics.getDimensions = function()
+      error("menu return does not cover the host window")
+    end
+    rawset(_G, "love", { graphics = graphics })
+    local ok, err = pcall(function()
+      withProductionComposition(sink, calls, compositionRuntime(), function(resources)
+        local LayoutGeometry = require("libs.ui.src.LayoutGeometry")
+        local mainPlacement = LayoutGeometry.centeredFit({ x = 48, y = 36, width = 256, height = 192 }, 256, 192)
+        local subPlacement = LayoutGeometry.centeredFit({ x = 420, y = 180, width = 256, height = 192 }, 256, 192)
+        resources:drawApplication(
+          case.applicationId,
+          {
+            transition = {
+              phase = "menu_return",
+              brightnessCoefficient = 9,
+              inputKey = case.inputKey,
+              panes = {
+                { id = case.mainId, placement = mainPlacement },
+                { id = case.subId, placement = subPlacement },
+              },
+            },
+          },
+          drawRuntime()
+        )
+        Assert.equal(#graphics.rectangles, 2, "menu return overlays both retained app panes")
+        Assert.equal(graphics.rectangles[1].color[4], 9 / 16, "the main pane uses the return brightness")
+        Assert.equal(graphics.rectangles[2].color[4], 9 / 16, "the sub pane uses the return brightness")
+        Assert.deepEqual(
+          graphics.scissorIntersections[1].effective,
+          { mainPlacement.frame.x, mainPlacement.frame.y, mainPlacement.frame.width, mainPlacement.frame.height },
+          "main return brightness stays inside its retained placement"
+        )
+        Assert.deepEqual(
+          graphics.scissorIntersections[2].effective,
+          { subPlacement.frame.x, subPlacement.frame.y, subPlacement.frame.width, subPlacement.frame.height },
+          "sub return brightness stays inside its retained placement"
+        )
+        resources:dispose()
+      end)
+    end)
+    rawset(_G, "love", savedLove)
+    if not ok then
+      error(err, 0)
+    end
   end
 end
 

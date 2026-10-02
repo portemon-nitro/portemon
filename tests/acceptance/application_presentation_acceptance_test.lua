@@ -254,8 +254,14 @@ local function openBag(game, state)
   Assert.equal(status.applicationId, BAG_APPLICATION, "the launched application must be the bag")
   -- Production serves destinations through the bounded menu flow: the
   -- live leaf status rides one level down with identical content.
-  local flow = assert(status.application, "the bag application must expose its flow status")
-  return assert(flow.child, "the bag flow must expose its live leaf status")
+  assert(status.application, "the bag application must expose its flow status")
+  game:advanceUntil("the Bag opening settles", function()
+    local current = game.runtime.applicationHost:status().application
+    local leaf = current ~= nil and current.child or nil
+    return leaf ~= nil and leaf.phase == "interactive"
+  end, 120)
+  local readyFlow = assert(game.runtime.applicationHost:status().application, "the bag application stays active")
+  return assert(readyFlow.child, "the bag flow must expose its live leaf status")
 end
 
 local function closeApplication(game)
