@@ -217,11 +217,13 @@ function T.tests.post_battle_consequences_commit_through_the_live_owners()
     local liveCatalog = game.runtime.monService:catalog()
     local dex = assert(game.runtime.dexKnowledge, "the journey needs its live dex knowledge")
 
-    -- The loss comes first with a solo lead: repeated wild battles wear
-    -- the lead down through committed writebacks until the standings
-    -- report the loss, and the blackout debit stages against the live
-    -- money facts. The debit depends only on the lead level, so the wear
-    -- count adapts without pinning hit points.
+    -- The loss comes first with a solo lead: native terminals settle
+    -- every battle as a win or a loss, so repeated fresh wild launches
+    -- wear the same lead down through committed writebacks until the
+    -- standings report the loss, and the blackout debit stages against
+    -- the live money facts. Wins now grant EXP, so the lead may level
+    -- mid-loop: the attempt cap stays small without pinning hit points,
+    -- and the debit derives from the live lead level.
     Assert.isTrue(
       game.runtime.monService:giveMon({ species = "CHIKORITA", level = 5, heldItem = "NONE", form = 0 }),
       "the journey needs its faint-bound lead"
@@ -231,7 +233,7 @@ function T.tests.post_battle_consequences_commit_through_the_live_owners()
     local wear = 0
     while lossReceipt == nil do
       wear = wear + 1
-      Assert.isTrue(wear <= 12, "the solo lead faints within its hit-point budget")
+      Assert.isTrue(wear <= 20, "the solo lead faints within its hit-point budget")
       local lossRecord = { enters = 0, frames = {}, leaves = 0, disposed = 0 }
       local lossFoe = tackleOnly(enemyRecord(liveCatalog, "TOTODILE", 4, 0xB1AC0001 + wear))
       local lossLaunch = {
@@ -256,7 +258,7 @@ function T.tests.post_battle_consequences_commit_through_the_live_owners()
       if word == "loss" then
         lossReceipt = receipt
       else
-        Assert.equal(word, "draw", "standing battles settle without a victor")
+        Assert.equal(word, "win", "native terminals settle wins or losses, never scripted draws")
       end
       loss:dispose()
     end
@@ -266,9 +268,26 @@ function T.tests.post_battle_consequences_commit_through_the_live_owners()
     local settledPlayer = settled.player --[[@as table<string, unknown>]]
     local settledProfile = settledPlayer.profile --[[@as table<string, unknown>]]
     Assert.equal(rewards.kind, "loss", "the loss plans through the money planning owner")
-    Assert.equal(rewards.amount, 40, "the debit scales the lead level without badges")
-    Assert.equal(settledProfile.money, moneyBefore - 40, "the receipt carries the debited money candidate")
+    local strongest = 0
+    for slot = 0, game.runtime.monService:partyCount() - 1 do
+      local derived = game.runtime.monService:partyMonDerived(slot)
+      if derived.level > strongest then
+        strongest = derived.level
+      end
+    end
+    local Rewards = require("libs.hgss.src.battle.HgssBattleRewards")
+    local badges = game.runtime.playerData.profile.badges or 0
+    local expectedDebit = math.min(moneyBefore, strongest * Rewards.BLACKOUT_PER_LEVEL * (2 ^ badges))
+    Assert.equal(rewards.level, strongest, "the loss plans from the live lead level")
+    Assert.equal(rewards.amount, expectedDebit, "the debit scales the live lead level without badges")
+    Assert.equal(settledProfile.money, moneyBefore - expectedDebit, "the receipt carries the debited money candidate")
     Assert.isTrue(dex:isSeen("TOTODILE"), "the lost battle still registers the sighting")
+
+    -- Blackout recovery heals the live party through its owner, mirroring
+    -- the native return with a healed party: the later legs assume a
+    -- functional party, and the 1-HP roamer stand-in settles the standing
+    -- only when the party can land one hit.
+    game.runtime.monService:healParty()
 
     -- A healthy lead and stocked balls set up the capture: the caught wild
     -- mon must land in the live party and dex while the ball leaves the bag.
@@ -382,6 +401,10 @@ function T.tests.post_battle_consequences_commit_through_the_live_owners()
     local roamerFoe = tackleOnly(enemyRecord(liveCatalog, "EEVEE", 20, 0x90A4CE02, 1))
     local roamerLaunch =
       { id = "launch-consequence-roamer", kind = "wild", payload = { species = "EEVEE", level = 20, mon = roamerFoe } }
+    -- Leg-setup staging restores the roamer premise: the capture battle
+    -- fought since blackout recovery re-damaged the party, and the 1-HP
+    -- stand-in settles the standing only when the party can land one hit.
+    game.runtime.monService:healParty()
     local roamerScenario =
       ScenarioFactory.fromEncounter(roamerLaunch.payload, { party = game.runtime.monService })
     local roamerBattle = BattleRuntime.new({

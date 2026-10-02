@@ -14,7 +14,9 @@ local Lcrng = require("libs.mons.src.gen4.Lcrng")
 ---@class BattleState
 local BattleState = {}
 
-BattleState.VERSION = 1
+-- Interruption captures carrying an older version reject as incompatible:
+-- pre-release battle snapshots never migrate, they fail before publication.
+BattleState.VERSION = 2
 
 ---@param value unknown
 ---@return unknown
@@ -54,7 +56,6 @@ function BattleState.create(validated)
       .random --[[@as table<string, unknown>]]
       .seed --[[@as integer]]),
     round = 1,
-    maxRounds = 3,
     batchCounter = 0,
     requestCounter = 0,
     sequence = 0,
@@ -304,7 +305,7 @@ function BattleState.validateSnapshot(snapshot)
   if not rngOk then
     error(BattleErrors.incompatibleSnapshot("battle snapshots must carry a valid generator record", {}))
   end
-  for _, field in ipairs({ "round", "maxRounds", "batchCounter", "requestCounter", "sequence", "activationCounter" }) do
+  for _, field in ipairs({ "round", "batchCounter", "requestCounter", "sequence", "activationCounter" }) do
     local value = snapshot[field]
     if type(value) ~= "number" or value ~= value or value % 1 ~= 0 or value < 0 then
       error(BattleErrors.incompatibleSnapshot("battle snapshots must carry integral counters", { field = field }))

@@ -27,6 +27,12 @@ local Lcrng = require("libs.mons.src.gen4.Lcrng")
 local BattleSession = {}
 BattleSession.__index = BattleSession
 
+-- Scripted battles still run under an explicit round bound: this generic
+-- kernel owns the bound on its own live state, outside the shared battle
+-- shape, so native rulesets never see a round terminal. An explicit
+-- scripted consumer (notably interruption round-trips) requires it.
+local SCRIPTED_MAX_ROUNDS = 3
+
 -- The one decision vocabulary owned by this kernel. The executable marker
 -- names the scripted decision point the application stamps onto its native
 -- scenarios; content may resolve additional rulesets for custom formats,
@@ -211,7 +217,9 @@ function BattleSession.new(scenarioRecord, content)
   local validated = BattleScenario.validate(scenarioRecord)
   checkContent(content, validated.ruleset --[[@as string]])
   local admitted = admittedKindsFor(validated.format --[[@as string]], content, validated)
-  return wrap(BattleState.create(validated), content --[[@as table<string, unknown>]], admitted)
+  local live = BattleState.create(validated)
+  live.maxRounds = SCRIPTED_MAX_ROUNDS
+  return wrap(live, content --[[@as table<string, unknown>]], admitted)
 end
 
 ---@param snapshotData unknown interruption capture under validation
@@ -219,6 +227,15 @@ end
 ---@return BattleSession
 function BattleSession.restore(snapshotData, content)
   local live = BattleSnapshot.restore(snapshotData)
+  if
+    type(live.maxRounds) ~= "number"
+    or live.maxRounds --[[@as integer]]
+      % 1 ~= 0
+    or live.maxRounds --[[@as integer]]
+      < 1
+  then
+    error(BattleErrors.incompatibleSnapshot("scripted snapshots must carry their round bound", {}))
+  end
   checkContent(content, live.ruleset --[[@as string]])
   local admitted = admittedKindsFor(live.format --[[@as string]], content, nil)
   live.rng = Lcrng.restore(live.rng --[[@as table<string, integer>]])
@@ -992,7 +1009,10 @@ end
 ---@return table<string, unknown> detached plain interruption capture
 function BattleSession:capture()
   local state = self:_live()
-  return BattleSnapshot.capture(state)
+  local snapshot = BattleSnapshot.capture(state)
+  snapshot.maxRounds = state.maxRounds
+  BattleSnapshot.validate(snapshot)
+  return snapshot
 end
 
 function BattleSession:dispose()

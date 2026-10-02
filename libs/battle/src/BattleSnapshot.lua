@@ -78,7 +78,6 @@ function BattleSnapshot.capture(state)
     format = state.format,
     rng = generator.capture(generator),
     round = state.round,
-    maxRounds = state.maxRounds,
     batchCounter = state.batchCounter,
     requestCounter = state.requestCounter,
     sequence = state.sequence,

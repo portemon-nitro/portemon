@@ -14,16 +14,22 @@
 ---@field detectedOrdinal integer detection order
 ---@field processed boolean whether settlement already progressed this record
 
+---@class FaintObligation
+---@field combatant integer knocked-out roster identity owing a replacement
+---@field activation integer knocked-out entry token the obligation binds
+
 ---@class FaintOutcome
 ---@field done boolean whether settlement drained
 ---@field events table<string, unknown>[] faint facts in detection order
----@field frame FaintFrame continuation frame
----@field needsReplacement unknown|nil outstanding replacement while open
+---@field frame FaintFrame continuation frame carrying the open obligations while open
+---@field needsReplacement table<string, unknown>|nil first outstanding replacement while open
+---@field replacements FaintObligation[] ordered replacement obligations, one per settled knockout
 ---@field progression unknown[] one reward child per settled knockout, in order
 
 ---@class FaintFrame
 ---@field kind string settlement identity
 ---@field cursor string continuation cursor
+---@field obligations FaintObligation[]|nil ordered replacement obligations carried while open; absent on fresh and drained frames
 
 ---@class Fainting
 local Fainting = {}
@@ -73,14 +79,33 @@ function Fainting.detect(queue, target, cause, ordinal)
 end
 
 --- Settles the faint queue in detection order. Each knockout is progressed
---- exactly once and marked processed; while reserves still owe a
---- replacement the settlement stays open and names it instead of finishing.
+--- exactly once and marked processed; while eligible reserves still owe a
+--- replacement the settlement stays open and names one ordered obligation
+--- per settled knockout, bound to its fainted entry, instead of finishing.
+--- The open obligations travel in the returned frame as plain data, so
+--- re-stepping the open frame resumes the same request with no new events
+--- and no new progression children, without touching queue records.
 ---@param context table<string, unknown> settlement inputs carrying the queue, reserves, and progression hook
 ---@param frame FaintFrame
----@return table<string, unknown> step outcome carrying done, events, frame, and needsReplacement while open
+---@return table<string, unknown> step outcome carrying done, events, frame, ordered replacements, and needsReplacement while open
 function Fainting.step(context, frame)
   assert(type(context) == "table", "faint settlement steps carry their settlement context")
   Fainting.validateFrame(frame)
+  local carried = frame.obligations
+  if type(carried) == "table" and #carried > 0 then
+    -- Open-frame resume: the obligations already settled stay settled.
+    -- Records are never re-touched and no child is re-spawned; the same
+    -- carried obligation tables answer again so repeated steps name the
+    -- identical replacement request.
+    return {
+      done = false,
+      events = {},
+      frame = frame,
+      needsReplacement = carried[1],
+      replacements = carried,
+      progression = {},
+    }
+  end
   if context.progression ~= nil then
     assert(
       type(context.progression) == "function",
@@ -119,11 +144,32 @@ function Fainting.step(context, frame)
     }
   end
   local settled = { kind = "faint", cursor = "done" }
-  local outcome = { done = true, events = events, frame = settled, needsReplacement = nil, progression = children }
+  local outcome = {
+    done = true,
+    events = events,
+    frame = settled,
+    needsReplacement = nil,
+    replacements = {},
+    progression = children,
+  }
   local reserves = context.reserves
   if type(reserves) == "table" and #reserves > 0 then
-    outcome.done = false
-    outcome.needsReplacement = reserves[1]
+    -- One plain-data obligation per knockout settled above, in detection
+    -- order: callers match each obligation against live reserve
+    -- eligibility, so simultaneous faints never collapse to one reserve.
+    local obligations = {} ---@type table<integer, table<string, integer>>
+    for _, record in ipairs(pending) do
+      obligations[#obligations + 1] = {
+        combatant = record.target.combatant,
+        activation = record.target.activation,
+      }
+    end
+    outcome.replacements = obligations
+    if #obligations > 0 then
+      outcome.done = false
+      outcome.needsReplacement = obligations[1]
+      outcome.frame = { kind = "faint", cursor = "open", obligations = obligations }
+    end
   end
   return outcome
 end
@@ -135,6 +181,20 @@ function Fainting.validateFrame(frame)
   assert(type(frame) == "table", "faint frames are records")
   assert(frame.kind == "faint", "faint frames carry the faint settlement identity")
   assert(type(frame.cursor) == "string" and frame.cursor ~= "", "faint frames name their cursor")
+  if frame.obligations ~= nil then
+    assert(type(frame.obligations) == "table", "faint frames carry plain-data obligations")
+    for index, obligation in ipairs(frame.obligations) do
+      assert(type(obligation) == "table", "faint obligations are records")
+      assert(
+        isPositiveInt(obligation.combatant),
+        "faint obligations name the knocked-out combatant at position " .. tostring(index)
+      )
+      assert(
+        isPositiveInt(obligation.activation),
+        "faint obligations pin the knocked-out entry token at position " .. tostring(index)
+      )
+    end
+  end
   return frame
 end
 
