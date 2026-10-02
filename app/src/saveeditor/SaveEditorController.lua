@@ -15,6 +15,7 @@ Controller.__index = Controller
 ---@field flagGroup string?
 ---@field partyPage string
 ---@field partySlot0 integer?
+---@field partyReturnFocus string?
 ---@field partySubpage string
 ---@field bagPocket string
 ---@field bagItemKey string?
@@ -32,7 +33,7 @@ Controller.__index = Controller
 ---@field setFocus fun(self: SaveEditorController, targetId: string)
 ---@field moveFocus fun(self: SaveEditorController, focusable: string[], direction: string)
 ---@field selectPartySlot fun(self: SaveEditorController, slot0: integer)
----@field openPartyDraft fun(self: SaveEditorController)
+---@field openPartyDraft fun(self: SaveEditorController, mode: "add"|"edit", slot0: integer?)
 ---@field closePartyDetail fun(self: SaveEditorController)
 ---@field selectPartySubpage fun(self: SaveEditorController, subpage: string)
 ---@field selectBagPocket fun(self: SaveEditorController, pocket: string)
@@ -62,6 +63,7 @@ function Controller.new()
     flagFilter = "Named",
     partyPage = "list",
     partySlot0 = nil,
+    partyReturnFocus = nil,
     partySubpage = "Identity",
     bagPocket = "items",
     bagItemKey = nil,
@@ -352,8 +354,14 @@ function Controller:selectPartySlot(slot0)
   self:cancelInteraction()
 end
 
-function Controller:openPartyDraft()
-  assert(self.partySlot0 ~= nil or self.focus == "party:add")
+function Controller:openPartyDraft(mode, slot0)
+  assert(mode == "add" or mode == "edit", "party draft mode is explicit")
+  if mode == "add" then
+    assert(slot0 == nil, "an Add draft has no party slot")
+  else
+    assert(type(slot0) == "number" and slot0 % 1 == 0 and slot0 >= 0 and slot0 < 6, "an Edit draft has a party slot")
+  end
+  self.partySlot0 = slot0
   self.partyPage = "draft"
   self.focus = "party:apply"
   self:cancelInteraction()

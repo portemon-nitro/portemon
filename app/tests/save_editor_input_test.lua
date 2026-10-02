@@ -507,4 +507,106 @@ function T.tests.quit_with_an_unapplied_value_draft_opens_the_leave_choice()
   end)
 end
 
+function T.tests.add_species_uses_draft_identity_independent_of_choice_focus()
+  local _, Layout = stateModule()
+  local topology = ScreenTopology.oneDisplay({
+    id = "main",
+    rect = { x = 0, y = 0, width = 800, height = 600 },
+    touch = true,
+    role = "world",
+  })
+  withEditor(800, 600, topology, function(state)
+    selectSection(state, Layout, "Party")
+    state:_activate("party:add")
+    local picker = state:view()
+    local species = assert(picker.valueEditor.options[1], "the species picker exposes at least one species")
+    state.controller.focus = species.key
+    state:_activate(species.key)
+
+    local draft = state:view()
+    Assert.isTrue(draft.unappliedDraft, "choosing a species opens a local mon draft")
+    Assert.equal(#state.session:partySnapshot().members, 0, "Add does not publish a member before Apply")
+    Assert.notNil(Layout.compute(draft, 800, 600).targets["party:apply"], "the new member draft exposes Apply")
+    state:_activate("party:apply")
+    Assert.equal(#state.session:partySnapshot().members, 1, "Apply publishes exactly one selected member")
+  end)
+end
+
+function T.tests.subpage_navigation_keeps_the_same_mon_draft_open()
+  local _, Layout = stateModule()
+  local topology = ScreenTopology.oneDisplay({
+    id = "main",
+    rect = { x = 0, y = 0, width = 800, height = 600 },
+    touch = true,
+    role = "world",
+  })
+  withEditor(800, 600, topology, function(state)
+    selectSection(state, Layout, "Party")
+    state:_beginMonAdd("CHIKORITA")
+    local draft = assert(state.monDraft)
+    local view = state:view()
+    state:_activate("party:subpage:Origin")
+
+    local after = state:view()
+    Assert.isNil(after.modal, "changing the current member page does not ask to resolve its draft")
+    Assert.equal(after.partySubpage, "Origin")
+    Assert.equal(state.monDraft, draft, "the transaction identity survives page navigation")
+    Assert.equal(#state.session:partySnapshot().members, 0, "navigation does not apply a new member")
+  end)
+end
+
+function T.tests.discard_reconciles_selection_after_removing_staged_member()
+  local _, Layout = stateModule()
+  local topology = ScreenTopology.oneDisplay({
+    id = "main",
+    rect = { x = 0, y = 0, width = 800, height = 600 },
+    touch = true,
+    role = "world",
+  })
+  withEditor(800, 600, topology, function(state)
+    selectSection(state, Layout, "Party")
+    state:_beginMonAdd("CHIKORITA")
+    state:_resolveDraftChoice("apply")
+    Assert.equal(#state.session:partySnapshot().members, 1)
+    Assert.equal(state.controller.partySlot0, 0)
+
+    state:_discard(false)
+    local view = state:view()
+    Assert.equal(#state.session:partySnapshot().members, 0, "Session discard restores the baseline party")
+    Assert.isNil(view.partySlot0, "navigation no longer points at the discarded member")
+    Assert.equal(view.partyPage, "list", "the Party view returns to a usable baseline list")
+  end)
+end
+
+function T.tests.quit_keeps_an_invalid_scalar_draft_until_close_decision()
+  local _, Layout = stateModule()
+  local topology = ScreenTopology.oneDisplay({
+    id = "main",
+    rect = { x = 0, y = 0, width = 800, height = 600 },
+    touch = true,
+    role = "world",
+  })
+  withEditor(800, 600, topology, function(state)
+    selectSection(state, Layout, "Party")
+    state:_beginMonAdd("CHIKORITA")
+    state.controller:selectPartySubpage("Training")
+    local row = state:_partyField("party:field:friendship")
+    Assert.notNil(row)
+    state:_openEditor(row)
+    state:textinput("invalid")
+    local before = state:view().valueEditor.buffer
+    local previousState = App.state
+    App.state = state
+    local veto = App.quit()
+    local after = state:view()
+    App.state = previousState
+
+    Assert.isTrue(veto, "the App quit boundary synchronously vetoes while nested work is open")
+    Assert.notNil(after.modal, "quit opens an explicit close decision")
+    Assert.notNil(after.valueEditor, "the open scalar editor remains alive behind the close decision")
+    Assert.equal(after.valueEditor.buffer, before, "close dialog preserves the invalid scalar text")
+    Assert.isTrue(after.unappliedDraft, "the mon draft remains owned while close is pending")
+  end)
+end
+
 return T

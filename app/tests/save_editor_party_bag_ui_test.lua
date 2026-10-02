@@ -412,4 +412,94 @@ function T.controller_cancel_clears_pending_removal()
   Assert.isNil(state.pendingRemove, "Escape/gamepad cancel drops the pending removal record")
 end
 
+function T.close_cancel_restores_an_open_removal_decision_without_resolving_it()
+  local controller = Controller.new()
+  controller:openModal("remove")
+  local pendingRemove = { kind = "party", slot0 = 0 }
+  local draft = { mode = function() return "add" end }
+  local valueEditor = ValueEditor.new({ kind = "integer", value = 12, min = 0, max = 999, base = "decimal" })
+  Assert.isTrue(valueEditor:textinput("x"))
+  local session = { isDirty = function() return true end }
+  local state = setmetatable({
+    controller = controller,
+    session = session,
+    monDraft = draft,
+    valueEditor = valueEditor,
+    valuePurpose = "money",
+    pendingRemove = pendingRemove,
+  }, SaveEditorState)
+
+  Assert.isTrue(state:requestClose("quit"), "work at all levels vetoes process exit synchronously")
+  Assert.equal(state.monDraft, draft, "the close prompt leaves the mon draft live")
+  Assert.equal(state.pendingRemove, pendingRemove, "the close prompt does not resolve the removal")
+  state:_dispatchIntent(controller:press("cancel"))
+
+  Assert.equal(controller.modal, "remove", "Cancel restores the decision the user was already making")
+  Assert.equal(state.pendingRemove, pendingRemove, "Cancel leaves the removal pending for an explicit choice")
+  Assert.equal(state.monDraft, draft, "Cancel keeps the raw draft available")
+  Assert.equal(state.valueEditor, valueEditor, "Cancel keeps the nested value editor available")
+  Assert.equal(valueEditor:snapshot().buffer, "x", "Cancel preserves the exact nested value buffer")
+end
+
+function T.clean_edit_draft_does_not_veto_quit()
+  local controller = Controller.new()
+  local draft = {
+    mode = function() return "edit" end,
+    isDirty = function() return false end,
+  }
+  local state = setmetatable({
+    approvedExit = false,
+    disposed = false,
+    pendingLocationSave = nil,
+    closeRequest = nil,
+    valueEditor = nil,
+    monDraft = draft,
+    session = { isDirty = function() return false end },
+    controller = controller,
+  }, SaveEditorState)
+
+  Assert.isFalse(state:requestClose("quit"), "a clean edit draft is not pending user work")
+  Assert.isNil(state.closeRequest, "a clean edit draft does not create a close decision")
+  Assert.isNil(controller.modal, "a clean edit draft does not open the leave dialog")
+end
+
+function T.canceling_a_raw_draft_does_not_discard_the_session()
+  local controller = Controller.new()
+  controller:openModal("draft")
+  local draft = { mode = function() return "add" end }
+  local discarded = 0
+  local session = { discard = function() discarded = discarded + 1 end }
+  local state = setmetatable({
+    controller = controller,
+    session = session,
+    monDraft = draft,
+    pendingDraftAction = { kind = "section", section = "Bag" },
+  }, SaveEditorState)
+
+  state:_resolveDraftChoice("cancel")
+
+  Assert.equal(state.monDraft, draft, "cancel leaves the local raw transaction open")
+  Assert.equal(discarded, 0, "canceling a raw transaction does not discard staged Session work")
+  Assert.isNil(state.pendingDraftAction, "a canceled draft decision drops its deferred action")
+end
+
+function T.rejected_raw_field_publication_keeps_its_value_editor_recoverable()
+  local editor = ValueEditor.new({ kind = "integer", value = 12, min = 0, max = 999, base = "decimal" })
+  Assert.isTrue(editor:textinput("73"))
+  Assert.isTrue(editor:submit())
+  local draft = { setScalar = function() return false end }
+  local state = setmetatable({
+    valueEditor = editor,
+    valuePurpose = "party_field",
+    activeDraftField = { setter = "scalar", fieldId = "experience" },
+    monDraft = draft,
+  }, SaveEditorState)
+
+  Assert.isFalse(state:_finishValueEditor(), "a rejected domain write must be reported")
+  Assert.equal(state.valueEditor, editor, "the editor remains live after a rejected write")
+  Assert.equal(state.valuePurpose, "party_field", "the editor purpose remains attached to the buffer")
+  Assert.isNil(editor:result(), "the refused confirmation becomes editable again")
+  Assert.equal(editor:snapshot().buffer, "73", "the exact entered value remains available for correction")
+end
+
 return { tests = T }

@@ -55,7 +55,7 @@ local Personality = require("libs.mons.src.gen4.Personality")
 ---@field disposed boolean
 ---@field resultSent boolean
 ---@field approvedExit boolean
----@field closeReason string?
+---@field closeRequest { reason: "back"|"quit", phase: "confirm"|"saving", previousModal: string?, previousFocus: string }?
 ---@field monDraft SaveEditorMonDraft?
 ---@field pendingDraftAction table<string, unknown>?
 ---@field activeDraftField table<string, unknown>?
@@ -138,7 +138,7 @@ function State.new(options)
     disposed = false,
     resultSent = false,
     approvedExit = false,
-    closeReason = nil,
+    closeRequest = nil,
     monDraft = nil,
     pendingDraftAction = nil,
     activeDraftField = nil,
@@ -748,25 +748,36 @@ function State:_finishValueEditor()
   end
   local result = editor:result()
   if result == nil then
-    return
+    return false
   end
   local purpose = self.valuePurpose
   local descriptor = self.activeDraftField
-  self.valueEditor, self.valuePurpose, self.activeDraftField = nil, nil, nil
   if result.kind == "cancel" then
+    self.valueEditor, self.valuePurpose, self.activeDraftField = nil, nil, nil
     self.pendingQuantity = nil
-    return
+    if purpose == "party_add_species" then
+      self.controller.focus = self.controller.partyReturnFocus or "party:add"
+      self.controller.partyReturnFocus = nil
+    end
+    return true
   end
   if purpose == "money" then
     local changed = self.session:setMoney(result.value)
     if not changed.ok then
       self.errorMessage = message(changed.error)
+      editor:retry()
+      return false
     end
   elseif purpose == "party_add_species" then
-    self:_beginMonAdd(result.value)
+    if not self:_beginMonAdd(result.value) then
+      editor:retry()
+      return false
+    end
   elseif purpose == "party_add_move" then
     if not self.monDraft:addMove(result.value) then
       self.errorMessage = "That move cannot be added to this member."
+      editor:retry()
+      return false
     else
       self.errorMessage = nil
     end
@@ -783,7 +794,10 @@ function State:_finishValueEditor()
       self.pendingRemove = { kind = "bag", itemKey = pending.itemKey }
       self.controller:openModal("remove")
     else
-      self:_publishBagQuantity(pending.itemKey, result.value)
+      if not self:_publishBagQuantity(pending.itemKey, result.value) then
+        editor:retry()
+        return false
+      end
     end
     self.pendingQuantity = nil
   elseif descriptor ~= nil and self.monDraft ~= nil then
@@ -793,8 +807,12 @@ function State:_finishValueEditor()
     end
     if not self:_setDraftValue(descriptor, value) then
       self.errorMessage = "That value is not valid for this field."
+      editor:retry()
+      return false
     end
   end
+  self.valueEditor, self.valuePurpose, self.activeDraftField = nil, nil, nil
+  return true
 end
 
 function State:_beginMonAdd(species)
@@ -808,12 +826,12 @@ function State:_beginMonAdd(species)
   })
   if draft == nil then
     self.errorMessage = message(assert(draftError))
-    return
+    return false
   end
   self.monDraft = draft
-  self.controller:openPartyDraft()
-  self.controller.partySlot0 = nil
+  self.controller:openPartyDraft("add", nil)
   self.errorMessage = nil
+  return true
 end
 
 function State:_beginBagAdd()
@@ -854,8 +872,10 @@ function State:_publishBagQuantity(itemKey, quantity)
   local result = self.session:setBagQuantity(itemKey, quantity)
   if not result.ok then
     self.errorMessage = message(result.error)
+    return false
   else
     self.errorMessage = nil
+    return true
   end
 end
 
@@ -1011,16 +1031,8 @@ function State:_performDeferred(action)
     return
   elseif action.kind == "back" then
     if self.session and self.session:isDirty() then
-      self.closeReason = "back"
-      self.controller:openModal("leave")
+      self:requestClose("back")
     else
-      self:_sendResult()
-    end
-  elseif action.kind == "close" then
-    if action.reason == "quit" and self.session and self.session:isDirty() then
-      self.closeReason = "quit"
-      self.controller:openModal("leave")
-    elseif action.reason == "back" then
       self:_sendResult()
     end
   elseif action.kind == "section" then
@@ -1035,13 +1047,8 @@ function State:_performDeferred(action)
     self:_save(false)
   elseif action.kind == "session-discard" then
     self:_discard(false)
-  elseif action.kind == "leave-save" then
-    self.closeReason = action.reason
-    self:_save(true)
   elseif action.kind == "party-slot" then
     self.controller:selectPartySlot(action.slot0)
-  elseif action.kind == "party-subpage" then
-    self.controller:selectPartySubpage(action.subpage)
   elseif action.kind == "party-detail" then
     if self.controller.partySlot0 ~= nil then
       self.controller.partyPage = "detail"
@@ -1181,18 +1188,26 @@ function State:_save(leave)
     return false
   end
   if not self:_prepareLocationForSave() then
+    if leave and self.closeRequest ~= nil then
+      self.closeRequest.phase = "confirm"
+    end
     return false
   end
   local result = self.session:save(self.valueEditor ~= nil or self.monDraft ~= nil)
   if not result.ok then
     self.errorMessage = message(result.error)
+    if leave and self.closeRequest ~= nil then
+      self.closeRequest.phase = "confirm"
+    end
     return false
   end
   self.errorMessage = nil
   self:_syncLocationToSession()
   if leave then
+    local request = self.closeRequest
+    self.closeRequest = nil
     self.controller.modal = nil
-    if self.closeReason == "quit" then
+    if request ~= nil and request.reason == "quit" then
       self.approvedExit = true
       love.event.quit(0)
     else
@@ -1203,10 +1218,12 @@ function State:_save(leave)
 end
 
 function State:_discard(leave)
+  local request = self.closeRequest
   if self.valueEditor then
     self.valueEditor:cancel()
     self.valueEditor = nil
   end
+  self.valuePurpose, self.activeDraftField = nil, nil
   if self.session then
     self.session:discard()
   end
@@ -1215,10 +1232,23 @@ function State:_discard(leave)
   end
   self.monDraft = nil
   self.pendingDraftAction = nil
+  self.closeRequest = nil
+  self.pendingRemove = nil
+  self.pendingQuantity = nil
   self.errorMessage = nil
+  self.controller.partyPage = "list"
+  self.controller.partySubpage = "Identity"
+  self.controller.partySlot0 = nil
+  self.controller.bagItemKey = nil
+  self.controller.partyReturnFocus = nil
+  if self.controller.section == "Party" then
+    self.controller.focus = "party:add"
+  elseif self.controller.section == "Bag" then
+    self.controller.focus = "bag:pocket:" .. self.controller.bagPocket
+  end
   if leave then
     self.controller.modal = nil
-    if self.closeReason == "quit" then
+    if request ~= nil and request.reason == "quit" then
       self.approvedExit = true
       love.event.quit(0)
     else
@@ -1242,8 +1272,7 @@ function State:_requestBack()
     self.controller.bagItemKey = nil
     self.controller.focus = "bag:pocket:" .. self.controller.bagPocket
   elseif self.session and self.session:isDirty() then
-    self.closeReason = "back"
-    self.controller:openModal("leave")
+    self:requestClose("back")
   else
     self:_sendResult()
   end
@@ -1257,22 +1286,67 @@ function State:requestClose(reason)
   if self.disposed then
     return false
   end
-  if self.valueEditor and self.monDraft ~= nil then
-    self.valueEditor:cancel()
-    self.valueEditor = nil
-    self.valuePurpose = nil
-    self.activeDraftField = nil
+  if self.closeRequest ~= nil then
+    return true
   end
-  if self.monDraft ~= nil then
-    return self:_requestDraftResolution({ kind = "close", reason })
-  elseif self.valueEditor ~= nil or (self.session and self.session:isDirty()) then
-    self.closeReason = reason
+  local draftPending = self.monDraft ~= nil and (self.monDraft:mode() == "add" or self.monDraft:isDirty())
+  if self.valueEditor ~= nil or draftPending or (self.session and self.session:isDirty()) then
+    self.closeRequest = {
+      reason = reason,
+      phase = "confirm",
+      previousModal = self.controller.modal,
+      previousFocus = self.controller.focus,
+    }
     self.controller:openModal("leave")
     return true
   elseif reason == "back" then
     self:_sendResult()
   end
   return false
+end
+
+function State:_performClose(action)
+  local request = self.closeRequest
+  if request == nil or request.phase ~= "confirm" then
+    return
+  end
+  if action == "discard" then
+    request.phase = "saving"
+    self:_discard(true)
+    return
+  end
+  request.phase = "saving"
+  if self.valueEditor ~= nil then
+    local submitted, reason = self.valueEditor:submit()
+    if not submitted then
+      self.errorMessage = reason or "Finish or cancel the open value before saving."
+      request.phase = "confirm"
+      return
+    end
+    if not self:_finishValueEditor() then
+      request.phase = "confirm"
+      return
+    end
+  end
+  if self.monDraft ~= nil then
+    local draft = assert(self.monDraft)
+    local canonical, validationError = draft:validate()
+    if canonical == nil then
+      self.errorMessage = message(assert(validationError))
+      request.phase = "confirm"
+      return
+    end
+    local result = assert(self.session):applyMonDraft(draft)
+    if not result.ok then
+      self.errorMessage = message(result.error)
+      request.phase = "confirm"
+      return
+    end
+    self.monDraft = nil
+  end
+  if not self:_save(true) and self.closeRequest ~= nil then
+    self.closeRequest.phase = "confirm"
+  end
 end
 
 function State:onImportAttempt()
@@ -1320,11 +1394,26 @@ function State:_activate(targetId)
         self.controller.modal = nil
       end
     elseif targetId == "cancel" then
-      self.controller.modal = nil
+      if self.controller.modal == "leave" and self.closeRequest ~= nil then
+        local request = assert(self.closeRequest)
+        self.closeRequest = nil
+        self.controller.modal = request.previousModal
+        self.controller.focus = request.previousFocus
+      else
+        self.controller.modal = nil
+      end
     elseif targetId == "discard" then
-      self:_discard(true)
+      if self.closeRequest ~= nil then
+        self:_performClose("discard")
+      else
+        self:_discard(false)
+      end
     elseif targetId == "save" then
-      self:_requestDraftResolution({ kind = "leave-save", reason = self.closeReason })
+      if self.closeRequest ~= nil then
+        self:_performClose("save")
+      else
+        self:_save(true)
+      end
     end
     return
   end
@@ -1384,6 +1473,7 @@ function State:_activate(targetId)
     local options = self:_catalogOptions(catalog:speciesKeys(), function(key)
       return catalog:species(key).name or key
     end)
+    self.controller.partyReturnFocus = self.controller.focus
     self.valuePurpose = "party_add_species"
     self.valueEditor = ValueEditor.new({ kind = "choice", options = options })
   elseif targetId == "party:edit" then
@@ -1393,7 +1483,7 @@ function State:_activate(targetId)
       self.errorMessage = message(assert(draftError))
     else
       self.monDraft = draft
-      self.controller:openPartyDraft()
+      self.controller:openPartyDraft("edit", slot0)
       self.errorMessage = nil
     end
   elseif targetId:match("^party:field:") then
@@ -1410,11 +1500,7 @@ function State:_activate(targetId)
     end
   elseif targetId:match("^party:subpage:") then
     local subpage = assert(targetId:match("^party:subpage:(.+)$"))
-    if self.monDraft then
-      self:_requestDraftResolution({ kind = "party-subpage", subpage = subpage })
-    else
-      self.controller:selectPartySubpage(subpage)
-    end
+    self.controller:selectPartySubpage(subpage)
   elseif targetId == "party:back" then
     if self.monDraft then
       self:_requestDraftResolution({ kind = "party-detail" })
@@ -1569,7 +1655,12 @@ function State:_dispatchIntent(intent)
   then
     self:_performDeferred(intent)
   elseif intent.kind == "cancel" then
-    if self.valueEditor then
+    if intent.modal == "leave" and self.closeRequest ~= nil then
+      local request = assert(self.closeRequest)
+      self.closeRequest = nil
+      self.controller.modal = request.previousModal
+      self.controller.focus = request.previousFocus
+    elseif self.valueEditor then
       self.valueEditor:cancel()
       self:_finishValueEditor()
     elseif intent.modal == "draft" then

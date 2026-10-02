@@ -19,6 +19,10 @@ local Utf8Glyphs = require("libs.assets.src.Utf8Glyphs")
 ---@field _group string?
 ---@field _page number?
 ---@field _name NamingScreenController?
+---@field _nameKind "player"|"pokemon"|nil
+---@field _nameMaxLength integer?
+---@field _nameCharmap table<string, integer>?
+---@field retry fun(self: SaveEditorValueEditor): boolean
 local SaveEditorValueEditor = {}
 SaveEditorValueEditor.__index = SaveEditorValueEditor
 
@@ -72,6 +76,9 @@ function SaveEditorValueEditor.new(options)
     self._group = nil
     self._page = 1
   elseif options.kind == "name" then
+    self._nameKind = options.nameKind
+    self._nameMaxLength = options.maxLength
+    self._nameCharmap = options.charmap
     self._name = NamingScreenController.new({
       kind = options.nameKind,
       maxLength = options.maxLength,
@@ -116,7 +123,7 @@ function SaveEditorValueEditor:press(action)
   if self._result then
     return false
   end
-  if action == "cancel" or action == "escape" or action == "b" then
+  if action == "cancel" or action == "escape" or action == "b" or action == "back" then
     return self:cancel()
   end
   if self._kind == "integer" then
@@ -149,12 +156,7 @@ function SaveEditorValueEditor:press(action)
       self._cursor = #self._buffer
       return true
     elseif action == "confirm" or action == "a" or action == "return" then
-      local value = parseInteger(self._buffer, self._base)
-      if value == nil or value < self._min or value > self._max then
-        return false
-      end
-      self._result = { kind = "confirm", value = value }
-      return true
+      return self:submit()
     end
   elseif self._kind == "choice" then
     local filtered = self:_filteredOptions()
@@ -205,20 +207,14 @@ function SaveEditorValueEditor:press(action)
       self._page = math.floor((self._index - 1) / 8) + 1
       return true
     elseif action == "confirm" or action == "a" then
-      self._result = { kind = "confirm", value = filtered[self._index].key }
-      return true
+      return self:submit()
     end
   elseif self._kind == "name" then
     if action == "backspace" then
       return self._name:deleteGlyph()
     end
     if action == "confirm" or action == "a" then
-      self._name:press("submit")
-      local result = self._name:result()
-      if result and result.kind == "submit" then
-        self._result = { kind = "confirm", value = result.text }
-      end
-      return result ~= nil
+      return self:submit()
     end
     if action == "cancel" then
       return self:cancel()
@@ -229,6 +225,9 @@ function SaveEditorValueEditor:press(action)
 end
 
 function SaveEditorValueEditor:activateTarget(targetId)
+  if targetId == "cancel" or targetId == "back" then
+    return self:cancel()
+  end
   if self._kind == "integer" then
     if targetId == "confirm" then
       return self:press("confirm")
@@ -273,11 +272,58 @@ function SaveEditorValueEditor:activateTarget(targetId)
   return false
 end
 
+function SaveEditorValueEditor:submit()
+  if self._result ~= nil then
+    return false
+  end
+  if self._kind == "integer" then
+    local value = parseInteger(self._buffer, self._base)
+    if value == nil or value < self._min or value > self._max then
+      return false, "Enter a whole number within the allowed range."
+    end
+    self._result = { kind = "confirm", value = value }
+  elseif self._kind == "choice" then
+    local filtered = self:_filteredOptions()
+    local option = filtered[self._index]
+    if option == nil then
+      return false, "Choose an available option."
+    end
+    self._result = { kind = "confirm", value = option.key }
+  else
+    assert(self._name ~= nil)
+    if not self._name:press("submit") then
+      return false, "The name could not be submitted."
+    end
+    local result = self._name:result()
+    assert(result ~= nil and result.kind == "submit")
+    self._result = { kind = "confirm", value = result.text }
+  end
+  return true
+end
+
 function SaveEditorValueEditor:cancel()
   if self._result then
     return false
   end
   self._result = { kind = "cancel" }
+  return true
+end
+
+function SaveEditorValueEditor:retry()
+  if self._result == nil or self._result.kind ~= "confirm" then
+    return false
+  end
+  if self._kind == "name" then
+    local naming = assert(self._name):snapshot()
+    self._name = NamingScreenController.new({
+      kind = assert(self._nameKind),
+      maxLength = assert(self._nameMaxLength),
+      initialText = assert(naming.text),
+      charmap = assert(self._nameCharmap),
+      subject = assert(naming.subject),
+    })
+  end
+  self._result = nil
   return true
 end
 

@@ -45,6 +45,66 @@ function T.cancel_discards_partial_numeric_input()
   Assert.deepEqual(editor:result(), { kind = "cancel" })
 end
 
+function T.explicit_submit_is_one_shot_and_rejected_values_stay_local()
+  local invalid = integerEditor(12, 0, 99)
+  Assert.isTrue(invalid:textinput("x"))
+  Assert.isFalse(invalid:submit(), "invalid text cannot be published by an explicit close action")
+  Assert.isNil(invalid:result(), "rejected values remain editable")
+  Assert.isTrue(invalid:press("backspace"))
+  Assert.isTrue(invalid:textinput("7"))
+  Assert.isTrue(invalid:submit(), "valid text can be explicitly submitted without activating a focused key")
+  Assert.deepEqual(invalid:result(), { kind = "confirm", value = 7 })
+  Assert.isFalse(invalid:submit(), "a completed editor cannot submit twice")
+end
+
+function T.refused_publication_can_resume_the_exact_confirmed_buffer()
+  local editor = integerEditor(12, 0, 999)
+  Assert.isTrue(editor:textinput("7"))
+  Assert.isTrue(editor:submit())
+  Assert.isTrue(editor:retry(), "a refused publication returns its confirm buffer to editing")
+  Assert.isNil(editor:result())
+  Assert.equal(editor:snapshot().buffer, "7")
+  Assert.isTrue(editor:textinput("3"))
+  Assert.isTrue(editor:submit())
+  Assert.deepEqual(editor:result(), { kind = "confirm", value = 73 })
+end
+
+function T.refused_name_publication_resumes_with_its_confirmed_text()
+  local editor = SaveEditorValueEditor.new({
+    kind = "name",
+    nameKind = "player",
+    maxLength = 7,
+    initialText = "A",
+    charmap = { A = 1, B = 2 },
+    subject = { kind = "player", gender = 0 },
+  })
+  Assert.isTrue(editor:textinput("B"))
+  Assert.isTrue(editor:submit())
+  Assert.isTrue(editor:retry())
+  Assert.equal(editor:snapshot().naming.text, "AB")
+  Assert.isTrue(editor:textinput("A"), "the name editor remains interactive after a refused publication")
+  Assert.isTrue(editor:submit())
+  Assert.deepEqual(editor:result(), { kind = "confirm", value = "ABA" })
+end
+
+function T.cancel_target_and_semantic_back_cancel_choices_without_selecting_them()
+  local choice = SaveEditorValueEditor.new({
+    kind = "choice",
+    value = "A",
+    options = { { key = "A" }, { key = "B" } },
+  })
+  Assert.isTrue(choice:activateTarget("cancel"))
+  Assert.deepEqual(choice:result(), { kind = "cancel" })
+
+  local second = SaveEditorValueEditor.new({
+    kind = "choice",
+    value = "A",
+    options = { { key = "A" }, { key = "B" } },
+  })
+  Assert.isTrue(second:press("back"))
+  Assert.deepEqual(second:result(), { kind = "cancel" })
+end
+
 function T.invalid_or_out_of_range_numeric_text_cannot_confirm()
   for _, text in ipairs({ "12.5", "1e3", "42x", "1000" }) do
     local editor = integerEditor(12, 0, 999)
