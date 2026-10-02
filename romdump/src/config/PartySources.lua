@@ -175,6 +175,7 @@ PartySources.status = {
   cellMember = 63,
   charMember = 64,
   paletteMember = 65,
+  paletteBank = 0,
   -- PartyMonStatusIconId maps PRZ/FRZ/SLP/PSN/BRN/FNT to sequences 1..6.
   semanticSequences = {
     { key = "paralysis", sequence = 1 },
@@ -185,6 +186,9 @@ PartySources.status = {
     { key = "faint", sequence = 6 },
   },
 }
+-- The palette resource is local to this marker. Source OBJ allocator slots
+-- are not bank indices within the decoded member 21 palette.
+PartySources.heldItemPaletteBank = 0
 PartySources.feedback =
   { animationMember = 27, cellMember = 28, charMember = 29, paletteMember = 23, sequence = 0, durations = { 3, 2, 1 } }
 
