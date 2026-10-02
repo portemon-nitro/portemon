@@ -195,6 +195,8 @@ end
 ---@field battlePresentation table<string, unknown>? presentation port for owned battles
 ---@field pendingEncounterId integer|nil prepared unconsumed encounter identity
 ---@field pendingEncounter table<string, unknown>? prepared unconsumed encounter
+---@field _trainerCatalog table<string, unknown>? composed immutable trainer template catalog (nil before composition)
+---@field _trainerFactory table<string, unknown>? composed native trainer party materializer (nil before composition)
 ---@field _battleHost table<string, unknown>? narrow battle host for script battle tasks
 ---@field roamerState table<string, unknown>? the owned roamer and encounter persistence
 ---@field dexKnowledge table<string, unknown>? the owned dex knowledge
@@ -1950,9 +1952,10 @@ end
 
 -- Builds the detached scenario for one launch request from the prepared
 -- encounter (consuming a matching pending preparation exactly once), the
--- supplied trainer party, or an explicit staged scenario. Trainer parties
--- are never invented here: a trainer launch without its party records
--- fails loudly.
+-- resolved trainer party, or an explicit staged scenario. Native trainer
+-- identities resolve through the composed trainer catalog and materializer
+-- before shaping; explicit caller-authored parties still ride through
+-- untouched, and unknown trainer identities fail loudly.
 ---@param request table<string, unknown>
 ---@return table<string, unknown> detached scenario fragment
 function FieldRuntime:_scenarioForRequest(request)
@@ -1981,9 +1984,101 @@ function FieldRuntime:_scenarioForRequest(request)
     return HgssBattleScenarioFactory.fromEncounter(payload --[[@as table<string, unknown>]], live)
   end
   if request.kind == "trainer" then
-    return HgssBattleScenarioFactory.fromTrainer(request.payload --[[@as table<string, unknown>]], live)
+    return HgssBattleScenarioFactory.fromTrainer(
+      self:_trainerPayload(request.payload --[[@as table<string, unknown>]]),
+      live
+    )
   end
   return HgssBattleScenarioFactory.fromScript(request.payload --[[@as table<string, unknown>]], live)
+end
+
+-- Resolves one trainer launch payload into the detached trainer entries the
+-- scenario shaper consumes. Entries already carrying their full party
+-- records (explicit staged/scripted authoring) ride through untouched;
+-- bare native identities resolve through the composed catalog and
+-- materializer into detached bundles retaining the native identity, class,
+-- ordered party, and controller metadata. Unknown identities fail before
+-- any battle publishes; nothing here invents a party.
+---@param payload table<string, unknown>
+---@return table<string, unknown> scenario-ready trainer payload
+function FieldRuntime:_trainerPayload(payload)
+  assert(type(payload) == "table", "trainer launches carry their payload")
+  local source = payload.trainers
+  if source == nil then
+    source = { { id = payload.trainer, party = payload.party, program = payload.program } }
+  end
+  assert(type(source) == "table" and #source > 0, "trainer battles field at least one trainer")
+  local catalog = assert(self._trainerCatalog, "trainer launches require their composed trainer catalog")
+  local factory = assert(self._trainerFactory, "trainer launches require their composed trainer materializer")
+  local Errors = require("libs.errors.src.Errors")
+  local world = self.scripts ~= nil and self.scripts.worldState or nil
+  local stream = world ~= nil and world.rng or nil
+  assert(type(stream) == "table", "trainer materialization threads the world stream untouched")
+  -- The rival display name stays an indirection: an explicit staged-launch
+  -- override wins, otherwise the script world supplies it when it models
+  -- one. Bracket reads mark both as optional open-record fields rather
+  -- than specified payload shape.
+  local rivalName = nil
+  local payloadRival = payload["rivalName"]
+  if type(payloadRival) == "string" and payloadRival ~= "" then
+    rivalName = payloadRival
+  elseif type(world) == "table" then
+    local worldRival = (world --[[@as table<string, unknown>]])["rivalName"]
+    if type(worldRival) == "function" then
+      local named = worldRival(world)
+      if type(named) == "string" and named ~= "" then
+        rivalName = named
+      end
+    end
+  end
+  local resolved = {}
+  for _, entry in ipairs(source) do
+    assert(type(entry) == "table", "trainer entries stay records")
+    local item = entry --[[@as table<string, unknown>]]
+    if type(item.party) == "table" and #item.party > 0 then
+      resolved[#resolved + 1] = { id = item.id, party = item.party, program = item.program }
+    else
+      local id = item.id
+      if id == nil then
+        id = payload.trainer
+      end
+      if type(id) ~= "string" and type(id) ~= "number" then
+        Errors.raise("TRAINER_UNKNOWN", "trainer launches name their trainer identity", {
+          trainer = tostring(id),
+        })
+      end
+      local bundle = factory:build({
+        trainerKey = id,
+        rivalName = rivalName,
+        storyVariant = item.storyVariant or payload.storyVariant,
+        rng = stream,
+      })
+      local program = item.program
+      if program == nil and type(catalog.program) == "function" then
+        program = catalog:program(id)
+      end
+      resolved[#resolved + 1] = {
+        id = id,
+        class = bundle.trainerClass,
+        name = bundle.name,
+        party = bundle.mons,
+        partyLevels = bundle.partyLevels,
+        program = program,
+        aiPasses = bundle.aiPasses,
+        items = bundle.items,
+        doubleBattle = bundle.doubleBattle,
+      }
+    end
+  end
+  return {
+    attemptId = payload.attemptId,
+    id = payload.id,
+    format = payload.format,
+    trainers = resolved,
+    inventories = payload.inventories,
+    environment = payload.environment,
+    formatState = payload.formatState,
+  }
 end
 
 -- Starts the owned application battle lifetime for one launch request and
@@ -2136,6 +2231,28 @@ function FieldRuntime:composeEncounters(compiled)
     wildFactory = factory,
     roamers = assert(self.roamerState, "encounter composition requires its roamer state"),
     game = self.versionId,
+  })
+end
+
+-- Composes the concrete trainer materializer over a compiled trainer
+-- catalog, sharing the domain mon catalog and creation policy. The
+-- composition stays absent until composed, so field boots without trainer
+-- data fail trainer launches loudly instead of inventing parties.
+---@param compiled table<string, unknown> compiled trainer catalog record
+function FieldRuntime:composeTrainers(compiled)
+  local HgssTrainerCatalog = require("libs.hgss.src.battle.HgssTrainerCatalog")
+  local HgssTrainerFactory = require("libs.hgss.src.battle.HgssTrainerFactory")
+  local catalog = HgssTrainerCatalog.new(compiled)
+  local fontDef = FieldFontLoader.load(assert(self.cacheFs, "trainer composition requires its cache"))
+  self._trainerCatalog = catalog
+  self._trainerFactory = HgssTrainerFactory.new({
+    catalog = catalog,
+    monCatalog = assert(self.monCatalog, "trainer composition requires the mon catalog"),
+    charmap = fontDef.charmap,
+    games = HgssMonService.GAMES,
+    languages = HgssMonService.LANGUAGES,
+    game = self.versionId,
+    language = assert(self.monLanguage, "trainer composition requires the mon language"),
   })
 end
 

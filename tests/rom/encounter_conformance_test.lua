@@ -273,7 +273,23 @@ function T.native_trainer_generation_maps_difficulty_applies_overrides_and_names
     },
     programs = {},
   })
-  local factory = Factory.new({ catalog = catalog })
+  local CatalogFixture = require("libs.mons.tests.catalog_fixture")
+  local ItemFixture = require("libs.items.tests.item_fixture")
+  local MonCatalog = require("libs.mons.src.MonCatalog")
+  local MonCatalogCompiler = require("romdump.src.digest.mons.MonCatalogCompiler")
+  local MonSources = require("romdump.src.config.MonSources")
+  local monRoot = assert(MonCatalogCompiler.compileCatalog(romFs, { versionId = versionId }))
+  local monCatalog = MonCatalog.new(monRoot, ItemFixture.makeCatalog())
+  local factory = Factory.new({
+    catalog = catalog,
+    monCatalog = monCatalog,
+    charmap = CatalogFixture.CHARMAP,
+    games = CatalogFixture.GAMES,
+    languages = CatalogFixture.LANGUAGES,
+    game = versionId,
+    language = MonSources.versionLanguages[versionId],
+  })
+  local trainerIds = { falkner = 8, overridden = 9, rival = 27 }
   ---@param trainerKey string
   ---@param stream table labeled native stream
   ---@param extra table<string, unknown>|nil
@@ -282,6 +298,7 @@ function T.native_trainer_generation_maps_difficulty_applies_overrides_and_names
     local context = {
       catalog = catalog,
       trainerKey = trainerKey,
+      trainerId = trainerIds[trainerKey],
       playerProfile = { name = "GOLD", id = 12345 },
       rivalName = "SILVER",
       rng = stream,
@@ -312,12 +329,13 @@ function T.native_trainer_generation_maps_difficulty_applies_overrides_and_names
   }
   Fixture.validate(difficultyRecord)
   local difficultyActual = Fixture.run(function()
+    local MonStats = require("libs.mons.src.gen4.MonStats")
     local party = factory:build(buildContext("falkner", BattleRng.new(FIXED_SEED)))
     local mon = assert(party.mons, "built parties carry their ordered mons")[1]
     Assert.isTrue(type(mon.moves) == "table" and #mon.moves >= 1, "plain members resolve initial-learnset moves")
     return {
       species = mon.species,
-      level = mon.level,
+      level = MonStats.derive(mon, monCatalog).level,
       friendship = mon.friendship,
       heldItem = mon.heldItem,
       ivs = mon.ivs,
@@ -339,13 +357,16 @@ function T.native_trainer_generation_maps_difficulty_applies_overrides_and_names
       oracleMethod = "hand transcription of the override polarity, cross-checked by the trainer generation suite",
     },
     input = { trainerKey = "overridden", seed = FIXED_SEED },
-    expected = { gender = "male", abilitySlot = 1, capsule = 7 },
+    expected = { gender = "male", ability = "RUN_AWAY", capsule = 7 },
   }
   Fixture.validate(overrideRecord)
   local overrideActual = Fixture.run(function()
     local party = factory:build(buildContext("overridden", BattleRng.new(FIXED_SEED)))
     local mon = assert(party.mons, "built parties carry their ordered mons")[1]
-    return { gender = mon.gender, abilitySlot = mon.abilitySlot, capsule = mon.capsule }
+    local Personality = require("libs.mons.src.gen4.Personality")
+    local ratio = monCatalog:species("EEVEE").genderRatio
+    Assert.equal(ratio, 31, "the dump carries the skewed EEVEE gender fact")
+    return { gender = Personality.gender(ratio, mon.personality), ability = mon.ability, capsule = mon.capsule.id }
   end, overrideRecord)
   Assert.isNil(
     Fixture.compare(overrideActual, { expected = overrideRecord.expected }),
