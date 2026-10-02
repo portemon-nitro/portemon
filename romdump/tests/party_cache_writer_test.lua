@@ -100,7 +100,7 @@ local function manifest()
     subcontext[count] = layout(count, false)
   end
   return {
-    schema = "g4-party-presentation-v4",
+    schema = "g4-party-presentation-v5",
     panes = {
       main = { width = 256, height = 192 },
       sub = { width = 256, height = 192 },
@@ -248,6 +248,7 @@ local function manifest()
         takeNoItem = { segments = { { kind = "text", value = "Nothing held." } } },
       },
       roles = { ordinary = role(), male = role(), female = role() },
+      messageRole = role(),
     },
     numberGlyphs = {
       advance = 8,
@@ -304,7 +305,7 @@ function T.writes_the_class_and_reports_ready()
   Assert.isTrue(PartyCacheWriter.write(cache, bundle(marker)), "publication reports success")
   Assert.isTrue(PartyCache.isReady(cache, marker), "ready after write")
   local loaded = PartyCache.loadManifest(cache)
-  Assert.equal(loaded.schema, "g4-party-presentation-v4", "the published manifest loads back")
+  Assert.equal(loaded.schema, "g4-party-presentation-v5", "the published manifest loads back")
 end
 
 function T.rejects_a_malformed_class_without_publishing()

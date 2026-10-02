@@ -258,12 +258,22 @@ PartySources.windows = {
 -- (PartyMenu_PrintMonNicknameOnWindow). Each triple is
 -- { foreground, shadow, background } slots in the palette bank below; the
 -- bank-0 resolution is what carries the white/blue/red ink seen in-game.
+-- The background slot keeps its source RGB, but the compiler lowers it to
+-- transparent runtime ink because panel text prints over existing chrome.
 PartySources.textRoles = {
   bank = 0,
   ordinary = { 15, 14, 0 },
   male = { 3, 4, 0 },
   female = { 5, 6, 0 },
 }
+
+-- Lower-message palette selection: party message windows print through
+-- font 1 over fill color 15, so their ink comes from the loaded font
+-- palette member 8 (LoadFontPal1 in src/font.c loads NARC_graphic_font
+-- member 8; PartyMenu_PrintMessageOnWindowEx in src/party_context_menu.c
+-- fills with color index 15). Entries name { foreground, shadow,
+-- background } slots in that font palette member.
+PartySources.messageRole = { paletteMember = 8, foreground = 1, shadow = 2, background = 15 }
 
 -- Context-button presentation roles transcribed from
 -- PartyMenu_PrintContextMenuItemText/getButtonColorRaised/getButtonColorDepressed:

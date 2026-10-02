@@ -126,7 +126,7 @@ function T.contract_pins_the_current_asset_identities()
     },
     party = {
       cacheFormat = "party-cache-v1",
-      schema = "g4-party-presentation-v4",
+      schema = "g4-party-presentation-v5",
     },
     audio = {
       cacheFormat = "g4-audio-cache-v1",
@@ -198,9 +198,9 @@ function T.cache_modules_consume_the_contract_constants()
   Assert.equal(StarterChoiceAssetCache.SCHEMA, DerivedAssetContract.starterChoice.schema)
 end
 
-function T.party_contract_advertises_the_v4_presentation_schema()
+function T.party_contract_advertises_the_v5_presentation_schema()
   Assert.equal(DerivedAssetContract.party.cacheFormat, "party-cache-v1")
-  Assert.equal(DerivedAssetContract.party.schema, "g4-party-presentation-v4")
+  Assert.equal(DerivedAssetContract.party.schema, "g4-party-presentation-v5")
 end
 
 return { tests = T }

@@ -17,7 +17,7 @@ local SchemaCheck = require("libs.assets.src.SchemaCheck")
 ---@class PartyAssetSchema
 local PartyAssetSchema = {}
 
-PartyAssetSchema.SCHEMA = "g4-party-presentation-v4"
+PartyAssetSchema.SCHEMA = "g4-party-presentation-v5"
 PartyAssetSchema.PANE_WIDTH = 256
 PartyAssetSchema.PANE_HEIGHT = 192
 PartyAssetSchema.SLOT_COUNT = 6
@@ -730,7 +730,7 @@ function PartyAssetSchema.assertManifest(manifest)
     fail("manifest.text must be a record", {})
   end
   local text = root.text --[[@as table<string, unknown>]]
-  checkKeys(text, { labels = true, templates = true, roles = true }, {}, "manifest.text")
+  checkKeys(text, { labels = true, templates = true, roles = true, messageRole = true }, {}, "manifest.text")
   if type(text.labels) ~= "table" or type(text.templates) ~= "table" then
     fail("manifest.text carries no label/template records", {})
   end
@@ -756,6 +756,7 @@ function PartyAssetSchema.assertManifest(manifest)
   checkTextRole(roles.ordinary, {}, "manifest.text.roles.ordinary")
   checkTextRole(roles.male, {}, "manifest.text.roles.male")
   checkTextRole(roles.female, {}, "manifest.text.roles.female")
+  checkTextRole(text.messageRole, {}, "manifest.text.messageRole")
   for name, template in
     pairs(text.templates --[[@as table<string, unknown>]])
   do

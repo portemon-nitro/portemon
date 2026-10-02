@@ -316,4 +316,13 @@ function T.message_templates_select_the_empty_take_message()
   Assert.equal(template.index, 82, "the empty-take message is the dedicated source message")
 end
 
+function T.lower_message_role_selects_the_loaded_font_palette()
+  local role = PartySources.messageRole
+  Assert.notNil(role, "the producer selects the lower-message font palette")
+  Assert.equal(role.paletteMember, 8, "lower messages resolve the loaded font palette member")
+  Assert.equal(role.foreground, 1, "the lower-message foreground keeps its font slot")
+  Assert.equal(role.shadow, 2, "the lower-message shadow keeps its font slot")
+  Assert.equal(role.background, 15, "the lower-message background keeps its font fill slot")
+end
+
 return { tests = T }

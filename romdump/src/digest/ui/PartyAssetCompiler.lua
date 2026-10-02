@@ -721,7 +721,12 @@ local function resolveTextRoles(mainPalette)
         sourceError("party text role slot is unavailable", { role = name, slot = slot })
       end
       assert(color ~= nil, "missing text role entries fail above")
-      colors[position] = { r = color.r, g = color.g, b = color.b, a = 255 }
+      -- Panel text is printed over existing panel chrome. Preserve source
+      -- RGB for the background class, but make that class transparent in
+      -- the flattened runtime compositor. Position 3 is the background of
+      -- the { foreground, shadow, background } triple assembled below.
+      local alpha = position == 3 and 0 or 255
+      colors[position] = { r = color.r, g = color.g, b = color.b, a = alpha }
     end
     return { foreground = colors[1], shadow = colors[2], background = colors[3] }
   end
@@ -732,6 +737,29 @@ local function resolveTextRoles(mainPalette)
   }
 end
 
+-- Resolves the producer lower-message font selection to the opaque runtime
+-- message role. Party lower messages use FontPal1, not the field font
+-- palette: the source is the loaded font palette member named by the
+-- producer selection, never the panel or button-window banks. Records
+-- carry detached byte channels, never palette indices.
+local function resolveMessageRole(fontArchive, dependencies)
+  local selection = PartySources.messageRole --[[@as table<string, integer>]]
+  local member = readMember(fontArchive, selection.paletteMember, "message-role-palette", dependencies, "font")
+  local palette = decode("decodePalette", member, "message-role-palette")
+  local function pick(slot, position)
+    local color = palette.colors[slot + 1]
+    if color == nil then
+      sourceError("party message role slot is unavailable", { slot = slot, position = position })
+    end
+    assert(color ~= nil, "missing message role entries fail above")
+    return { r = color.r, g = color.g, b = color.b, a = 255 }
+  end
+  return {
+    foreground = pick(selection.foreground, "foreground"),
+    shadow = pick(selection.shadow, "shadow"),
+    background = pick(selection.background, "background"),
+  }
+end
 -- Resolves the context-button text roles against the button-window
 -- palette bank. Command and cancel entries share the bright ink pair
 -- while field entries keep their own ink; every role keeps its
@@ -1240,6 +1268,7 @@ local function _compile(romFs)
   local shinyLeaves = compileBadges(badgeArchive, dependencies, assets)
   local text = compileText(messageArchive, dependencies)
   text.roles = textRoles
+  text.messageRole = resolveMessageRole(fontArchive, dependencies)
   local decoration = compileDecoration(archive, screens.mainPalette, dependencies, assets)
   local controlsGeometry = geometry.controls --[[@as table<string, unknown>]]
   local cancelGeometry = controlsGeometry.cancel --[[@as table<string, unknown>]]

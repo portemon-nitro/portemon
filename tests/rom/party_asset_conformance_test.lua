@@ -79,7 +79,7 @@ function T.every_selected_member_is_attributable_and_frames_resolve(romFs, versi
     end
   end
   local manifest = bundle.manifest
-  Assert.equal(manifest.schema, "g4-party-presentation-v4")
+  Assert.equal(manifest.schema, "g4-party-presentation-v5")
   local referenced = PartyCache.referencedPaths(manifest)
   Assert.isTrue(#referenced > 0, "the manifest references realized images")
   for _, path in ipairs(referenced) do
@@ -455,11 +455,18 @@ function T.panel_text_roles_resolve_from_the_source_window_palette(romFs, versio
   for _, name in ipairs({ "ordinary", "male", "female" }) do
     local role = roles[name]
     Assert.notNil(role, "the " .. name .. " text role resolves")
+    for _, position in ipairs({ "foreground", "shadow", "background" }) do
+      local record = assert(role[position], "the " .. name .. " " .. position .. " resolves")
+      Assert.isTrue(
+        sourceColors[string.char(record.r, record.g, record.b, 255)],
+        "the " .. name .. " " .. position .. " keeps its source window palette color"
+      )
+    end
+    Assert.equal(role.foreground.a, 255, "the " .. name .. " foreground stays opaque")
+    Assert.equal(role.shadow.a, 255, "the " .. name .. " shadow stays opaque")
+    Assert.equal(role.background.a, 0, "the " .. name .. " background stays transparent over panel chrome")
     local colors = collectRgba(role)
     Assert.isTrue(next(colors) ~= nil, "the " .. name .. " role carries resolved colors")
-    for pixel in pairs(colors) do
-      Assert.isTrue(sourceColors[pixel], "the " .. name .. " role derives from the source window palette")
-    end
     roleSets[name] = colors
   end
   local function distinct(first, second)
