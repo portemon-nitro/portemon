@@ -366,7 +366,7 @@ DerivedAssetContract.bag = {
 -- the party manifest references no icon pixels.
 DerivedAssetContract.party = {
   cacheFormat = "party-cache-v1",
-  schema = "g4-party-presentation-v4",
+  schema = "g4-party-presentation-v5",
 }
 
 DerivedAssetContract.audio = {

@@ -104,10 +104,6 @@ function PartyScreenRenderer.new(opts)
     type(text.drawTextWithPalette) == "function" and type(text.drawLineWithPalette) == "function",
     "the party renderer draws source text through palette roles"
   )
-  assert(
-    type(text.windowBackgroundColor) == "function",
-    "the party renderer fills message windows with the generated window color"
-  )
   local renderer = setmetatable({
     _graphics = graphics,
     _text = text,
@@ -819,9 +815,10 @@ end
 ---@param box ScreenTopology.Rectangle
 ---@param ops { value: string, x: number, y: number }[]
 function PartyScreenRenderer:_drawLowerWindow(box, ops)
-  local roles = assert(self._manifest.text, "the party manifest carries text").roles
-  local ordinary = roleFor(assert(roles.ordinary, "party text carries the ordinary role"), "ordinary")
-  local background = self._text:windowBackgroundColor()
+  local textSection = assert(self._manifest.text, "the party manifest carries text")
+  local message = roleFor(assert(textSection.messageRole, "party text carries the message role"), "message role")
+  local fill = assert(message.background, "message roles carry their background")
+  local background = { fill.r / 255, fill.g / 255, fill.b / 255, 1 }
   local window = self._window
   if window ~= nil then
     local lines = {}
@@ -834,13 +831,13 @@ function PartyScreenRenderer:_drawLowerWindow(box, ops)
       box = box,
       frameIndex = self._frameIndex,
       background = background,
-      palette = ordinary,
+      palette = message,
       lines = lines,
     })
     return
   end
   for _, op in ipairs(ops) do
-    self:_paletteText(op.value, box.x + op.x, box.y + op.y, ordinary)
+    self:_paletteText(op.value, box.x + op.x, box.y + op.y, message)
   end
 end
 

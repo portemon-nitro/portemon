@@ -35,7 +35,7 @@ end
 local function manifestFor(versionId)
   local cacheFs = CacheFs.forVersion(versionId)
   local manifest = PartyCache.loadManifest(cacheFs)
-  Assert.equal(manifest.schema, "g4-party-presentation-v4", versionId .. " renders the current party manifest")
+  Assert.equal(manifest.schema, "g4-party-presentation-v5", versionId .. " renders the current party manifest")
   return cacheFs, manifest
 end
 
