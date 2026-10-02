@@ -2,15 +2,17 @@
 -- level damage, one-hit knockouts, counter-style reactions, variable
 -- power, and multi-hit sequences. Every member binds its own handler, so
 -- moves with disjoint mechanics never share one function; members without
--- pinned native parameters run the family canonical sequence, which emits
--- the ordered move event and completes without inventing power, accuracy,
--- or secondary effects. Curated members carry source parameters beside
--- their bodies. Damage arithmetic always travels the staged owner, and
--- per-hit draws, faint stops, and substitute breaks follow source order.
--- Source references: src/battle/battle_command.c and
--- src/battle/overlay_12_0224E4FC.c.
+-- modeled native semantics fail explicitly instead of emitting fabricated
+-- damage, accuracy, or secondary effects. Curated members carry only their
+-- move-specific control rules beside their bodies: strike power and
+-- accuracy always arrive in the frame move facts, and combat facts always
+-- arrive as real battle-owned projections. Damage arithmetic always
+-- travels the staged owner, and per-hit draws, faint stops, and substitute
+-- breaks follow source order. Source references:
+-- src/battle/battle_command.c and src/battle/overlay_12_0224E4FC.c.
 
 local Accuracy = require("libs.battle.src.gen4.Accuracy")
+local BattleErrors = require("libs.battle.src.errors")
 local BattleRng = require("libs.battle.src.gen4.BattleRng")
 local Critical = require("libs.battle.src.gen4.Critical")
 local Damage = require("libs.battle.src.gen4.Damage")
@@ -18,52 +20,45 @@ local Damage = require("libs.battle.src.gen4.Damage")
 ---@class DamageMoves
 local DamageMoves = {}
 
--- Reference combat inputs for the staged arithmetic when the frame carries
--- no explicit combat facts. Power derivation stays exact for every
--- curated member; these inputs only fill the level/attack/defense slots
--- the frame protocol does not thread yet.
-local REFERENCE_LEVEL = 10
-local REFERENCE_ATTACK = 50
-local REFERENCE_DEFENSE = 50
-
--- Pinned native parameters for curated members: power and accuracy are
--- source facts, recoil names its fraction, and focus marks the
--- interrupted-setup gate.
+-- Per-move strike controls beside their bodies: recoil names its
+-- fraction, crash marks the miss backlash, and selfKo marks the user
+-- faint. Strike power and accuracy always arrive in the frame move facts,
+-- so nothing here duplicates them.
 local STRIKERS = {
-  TACKLE = { power = 35, accuracy = 95 },
-  JUMP_KICK = { power = 85, crash = true },
-  HI_JUMP_KICK = { power = 100, crash = true },
-  TAKE_DOWN = { power = 90, recoil = "quarter" },
-  DOUBLE_EDGE = { power = 120, recoil = "quarter" },
-  SUBMISSION = { power = 80, recoil = "quarter" },
-  BRAVE_BIRD = { power = 120, recoil = "third" },
-  FLARE_BLITZ = { power = 120, recoil = "third" },
-  VOLT_TACKLE = { power = 120, recoil = "third" },
-  WOOD_HAMMER = { power = 120, recoil = "third" },
-  HEAD_SMASH = { power = 150, recoil = "half" },
-  STRUGGLE = { power = 50, recoil = "quarter" },
-  EXPLOSION = { power = 250, selfKo = true },
-  SELFDESTRUCT = { power = 200, selfKo = true },
-  FAINT_ATTACK = { power = 60, skipAccuracy = true },
-  SWIFT = { power = 60, skipAccuracy = true },
-  AERIAL_ACE = { power = 60, skipAccuracy = true },
-  SHADOW_PUNCH = { power = 60, skipAccuracy = true },
-  MAGNET_BOMB = { power = 60, skipAccuracy = true },
-  AURA_SPHERE = { power = 90, skipAccuracy = true },
-  SHOCK_WAVE = { power = 60, skipAccuracy = true },
-  MAGICAL_LEAF = { power = 60, skipAccuracy = true },
-  MACH_PUNCH = { power = 40 },
-  QUICK_ATTACK = { power = 40 },
-  ICE_SHARD = { power = 40 },
-  AQUA_JET = { power = 40 },
-  BULLET_PUNCH = { power = 40 },
-  SHADOW_SNEAK = { power = 40 },
-  VACUUM_WAVE = { power = 40 },
-  EXTREME_SPEED = { power = 80 },
-  VITAL_THROW = { power = 70 },
-  RAPID_SPIN = { power = 20 },
-  FOCUS_PUNCH = { power = 150, focus = true },
-  DREAM_EATER = { power = 100 },
+  TACKLE = {},
+  JUMP_KICK = { crash = true },
+  HI_JUMP_KICK = { crash = true },
+  TAKE_DOWN = { recoil = "quarter" },
+  DOUBLE_EDGE = { recoil = "quarter" },
+  SUBMISSION = { recoil = "quarter" },
+  BRAVE_BIRD = { recoil = "third" },
+  FLARE_BLITZ = { recoil = "third" },
+  VOLT_TACKLE = { recoil = "third" },
+  WOOD_HAMMER = { recoil = "third" },
+  HEAD_SMASH = { recoil = "half" },
+  STRUGGLE = { recoil = "quarter" },
+  EXPLOSION = { selfKo = true },
+  SELFDESTRUCT = { selfKo = true },
+  FAINT_ATTACK = {},
+  SWIFT = {},
+  AERIAL_ACE = {},
+  SHADOW_PUNCH = {},
+  MAGNET_BOMB = {},
+  AURA_SPHERE = {},
+  SHOCK_WAVE = {},
+  MAGICAL_LEAF = {},
+  MACH_PUNCH = {},
+  QUICK_ATTACK = {},
+  ICE_SHARD = {},
+  AQUA_JET = {},
+  BULLET_PUNCH = {},
+  SHADOW_SNEAK = {},
+  VACUUM_WAVE = {},
+  EXTREME_SPEED = {},
+  VITAL_THROW = {},
+  RAPID_SPIN = {},
+  FOCUS_PUNCH = {},
+  DREAM_EATER = {},
 }
 
 -- Members dealing a fixed amount without staged arithmetic.
@@ -431,22 +426,50 @@ DamageMoves.MEMBERS = {
 ---@param frame table<string, unknown> move frame under execution
 ---@return table<string, integer> staged combat inputs for the arithmetic owner
 local function combatOf(frame)
-  local locals = frame.locals --[[@as table<string, unknown>]]
+  local record = frame --[[@as table<string, unknown>]]
+  local key = record.executingMove --[[@as string]]
+  local locals = record.locals --[[@as table<string, unknown>]]
   local facts = locals.combat
-  local level, attack, defense = REFERENCE_LEVEL, REFERENCE_ATTACK, REFERENCE_DEFENSE
-  if type(facts) == "table" then
-    local record = facts --[[@as table<string, unknown>]]
-    if type(record.level) == "number" then
-      level = record.level --[[@as integer]]
-    end
-    if type(record.attack) == "number" then
-      attack = record.attack --[[@as integer]]
-    end
-    if type(record.defense) == "number" then
-      defense = record.defense --[[@as integer]]
+  if type(facts) ~= "table" then
+    error(BattleErrors.missingBehavior("damage reads its real combat facts", { key = key, fact = "combat" }))
+  end
+  local combat = facts --[[@as table<string, unknown>]]
+  for _, fact in ipairs({ "level", "attack", "defense" }) do
+    local value = combat[fact]
+    if type(value) ~= "number" or value % 1 ~= 0 or value < 1 then
+      error(BattleErrors.missingBehavior("damage reads its real combat facts", { key = key, fact = fact }))
     end
   end
-  return { level = level, attack = attack, defense = defense }
+  return {
+    level = combat.level --[[@as integer]],
+    attack = combat.attack --[[@as integer]],
+    defense = combat.defense --[[@as integer]],
+  }
+end
+
+---@param frame table<string, unknown> move frame under execution
+---@return table<string, integer> strike power and accuracy from the immutable move facts
+local function strikeFactsOf(frame)
+  local record = frame --[[@as table<string, unknown>]]
+  local key = record.executingMove --[[@as string]]
+  local locals = record.locals --[[@as table<string, unknown>]]
+  local facts = locals.move
+  if type(facts) ~= "table" then
+    error(BattleErrors.missingBehavior("damage reads its immutable move facts", { key = key, fact = "move" }))
+  end
+  local move = facts --[[@as table<string, unknown>]]
+  local power = move.power
+  if type(power) ~= "number" or power % 1 ~= 0 or power < 1 then
+    error(BattleErrors.missingBehavior("damage reads its immutable move facts", { key = key, fact = "power" }))
+  end
+  local accuracy = move.accuracy
+  if type(accuracy) ~= "number" or accuracy % 1 ~= 0 or accuracy < 0 then
+    error(BattleErrors.missingBehavior("damage reads its immutable move facts", { key = key, fact = "accuracy" }))
+  end
+  return {
+    power = power --[[@as integer]],
+    accuracy = accuracy --[[@as integer]],
+  }
 end
 
 ---@param stream unknown battle stream under the staged arithmetic
@@ -554,12 +577,12 @@ end
 ---@param ctx BattleContext mechanics context under execution
 ---@param frame table<string, unknown> move frame under execution
 ---@param defender integer defender combatant under the strike
----@param accuracy integer? native accuracy percentage, nil skips the roll
+---@param accuracy integer native accuracy percentage, 0 skips the roll
 ---@return boolean true when the strike connects
 local function accuracyGate(ctx, frame, defender, accuracy)
   local stream = checkStream(frame.stream)
   local resolution
-  if accuracy == nil then
+  if accuracy == nil or accuracy == 0 then
     resolution = Accuracy.resolve({
       target = { kind = "combatant" },
       cause = causeFor(frame),
@@ -618,21 +641,24 @@ end
 
 ---@param ctx BattleContext mechanics context under execution
 ---@param frame table<string, unknown> move frame under execution
----@param params table<string, unknown> curated strike parameters owning the hit
+---@param params table<string, unknown> curated strike controls owning the hit; power stays
+--- in the frame move facts unless a move-specific source rule overrides it
 ---@return table<string, unknown> terminal execution step for the strike
 local function runStriker(ctx, frame, params)
   local targets = frame.targets --[[@as table<integer, unknown>]]
-  local power = params.power --[[@as integer]]
-  local accuracy = params.accuracy
+  local strike = strikeFactsOf(frame)
+  local power = strike.power
+  if params.power ~= nil then
+    power = params.power --[[@as integer]]
+  end
+  local accuracy = strike.accuracy
   local connected, dealtTotal = false, 0
   for hitIndex = 1, #targets do
     local defender = targetOf(targets[hitIndex])
     if substituteAbsorbs(ctx, defender) then
       ctx:emit("substitute-broke", causeFor(frame), { target = defender, hitIndex = hitIndex })
       connected = true
-    elseif
-      accuracyGate(ctx, frame, defender, accuracy --[[@as integer?]])
-    then
+    elseif accuracyGate(ctx, frame, defender, accuracy) then
       dealtTotal = dealtTotal + stagedHit(ctx, frame, defender, power, hitIndex, #targets)
       connected = true
       if params.drain == true then
@@ -683,10 +709,9 @@ local function stepCanonical(ctx, frame)
   assert(type(ctx) == "table", "damage steps through the battle context")
   assert(type(frame) == "table", "damage steps from its move frame")
   local record = frame --[[@as table<string, unknown>]]
-  ctx:emit("move-used", causeFor(record), {
-    targets = #record.targets,
-  })
-  return { kind = "complete", result = "hit" }
+  error(BattleErrors.missingBehavior("no native damage semantics are modeled for the source identity", {
+    key = record.executingMove --[[@as string]],
+  }))
 end
 
 local function stepGated(ctx, frame)

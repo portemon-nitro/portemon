@@ -1,14 +1,14 @@
 -- Status, stage, recovery, and field move families: conditions that alter
 -- combatants or the shared field rather than dealing direct damage. Every
--- member binds its own handler; members without pinned native parameters
--- run the family canonical sequence, which validates its target, emits
--- the ordered move event, and completes without inventing status masks,
--- stage amounts, or recovery quantities. Curated members carry their
--- source checks beside their bodies: volatile prevention and trapping
--- markers settle through the validated surface, while persistent status
--- and stage projection stay with their owning behavior layers. Source
--- references: src/battle/battle_command.c and
+-- member binds its own handler; members without modeled native semantics
+-- fail explicitly instead of emitting a successful move result. Curated
+-- members carry their source checks beside their bodies: volatile
+-- prevention and trapping markers settle through the validated surface,
+-- while persistent status and stage projection stay with their owning
+-- behavior layers. Source references: src/battle/battle_command.c and
 -- src/battle/overlay_12_0224E4FC.c.
+
+local BattleErrors = require("libs.battle.src.errors")
 
 ---@class ConditionMoves
 local ConditionMoves = {}
@@ -202,8 +202,10 @@ end
 local function stepCanonical(ctx, frame)
   assert(type(ctx) == "table", "conditions step through the battle context")
   assert(type(frame) == "table", "conditions step from their move frame")
-  emitUsed(ctx, frame)
-  return { kind = "complete", result = "hit" }
+  local record = frame --[[@as table<string, unknown>]]
+  error(BattleErrors.missingBehavior("no native condition semantics are modeled for the source identity", {
+    key = record.executingMove --[[@as string]],
+  }))
 end
 
 -- Splash never connects to anything: the canonical nothing-happens

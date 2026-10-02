@@ -63,6 +63,17 @@ local function liveContext(state)
   return Context.wrap(state)
 end
 
+---@return table<string, table<string, unknown>> synthetic facts covering any drawn identity
+local function syntheticFacts()
+  return setmetatable({}, {
+    __index = function(entries, key)
+      local facts = { power = 50, accuracy = 100, category = "physical", moveType = "normal" }
+      entries[key] = facts
+      return facts
+    end,
+  })
+end
+
 ---@param caller string calling move identity under execution
 ---@param seed integer fixed generator state for the candidate roll
 ---@return table frame inputs for a called-move attempt
@@ -79,6 +90,7 @@ local function calledInputs(caller, seed)
     moves = {
       { move = caller, pp = 10, ppUps = 0 },
     },
+    moveFacts = syntheticFacts(),
     stream = BattleRng.new(seed),
   }
 end
@@ -163,11 +175,23 @@ function T.metronome_selects_only_eligible_moves_with_native_draws()
   local Called = calledOwner("metronome-class selection owns the called-move path")
   local Execution = executionOwner("the shared move continuation owns hit progression")
   Assert.isTrue(type(Called.register) == "function", "the called family registers its bindings")
+  local nativeFacts = {}
+  for key, binding in pairs(BattleSources.moveBindings) do
+    nativeFacts[key] = {
+      power = 50,
+      accuracy = 100,
+      category = "physical",
+      moveType = "normal",
+      nativeId = binding.params.nativeId,
+    }
+  end
   local eligible = eligibleSet()
   local distinct = {}
   local firstDraw = nil
   for seed = FIXED_SEED, FIXED_SEED + 31 do
-    local frame = Execution.validateFrame(Execution.start(calledInputs("METRONOME", seed)))
+    local inputs = calledInputs("METRONOME", seed)
+    inputs.moveFacts = nativeFacts
+    local frame = Execution.validateFrame(Execution.start(inputs))
     local drawn = frame.executingMove
     Assert.isTrue(eligible[drawn] == true, "seed " .. seed .. " draws an eligible move, got " .. tostring(drawn))
     Assert.isTrue(drawn ~= "STRUGGLE", "the called draw never falls back to struggle")
@@ -177,7 +201,9 @@ function T.metronome_selects_only_eligible_moves_with_native_draws()
       firstDraw = drawn
     end
   end
-  local replay = Execution.validateFrame(Execution.start(calledInputs("METRONOME", FIXED_SEED)))
+  local replayInputs = calledInputs("METRONOME", FIXED_SEED)
+  replayInputs.moveFacts = nativeFacts
+  local replay = Execution.validateFrame(Execution.start(replayInputs))
   Assert.equal(replay.executingMove, firstDraw, "the same seed draws the same move")
   local count = 0
   for _ in pairs(distinct) do
@@ -270,6 +296,7 @@ function T.mirror_move_copies_the_last_move_targeting_the_caller()
   local ctx = liveContext(state)
   local inputs = calledInputs("MIRROR_MOVE", FIXED_SEED)
   inputs.copiedMove = "TACKLE"
+  inputs.combat = { level = 10, attack = 50, defense = 50 }
   local frame = Execution.validateFrame(Execution.start(inputs))
   Assert.equal(frame.executingMove, "TACKLE", "mirror move executes the copied identity")
   Assert.equal(frame.ppOwnerSlot, 0, "the copied move charges the mirror-move slot")
@@ -318,8 +345,18 @@ function T.called_execution_never_charges_a_second_ordinary_action()
     { move = "METRONOME", pp = 10, ppUps = 0 },
     { move = "TACKLE", pp = 35, ppUps = 0 },
   }
+  local MonSources = SessionFixture.requirePresent(
+    "romdump.src.config.MonSources",
+    "the pinned source inventory owns native move identities"
+  )
   local inputs = calledInputs("METRONOME", FIXED_SEED)
   inputs.moves = moves
+  local byNative = {}
+  for nativeId = 1, MonSources.NUM_MOVES do
+    byNative[nativeId] = "TACKLE"
+  end
+  inputs.byNative = byNative
+  inputs.combat = { level = 10, attack = 50, defense = 50 }
   local frame = Execution.validateFrame(Execution.start(inputs))
   local outcome = frame
   for _ = 1, 32 do
@@ -333,6 +370,205 @@ function T.called_execution_never_charges_a_second_ordinary_action()
   Assert.equal(outcome.kind, "complete", "the called execution runs to completion")
   Assert.equal((moves[1] --[[@as table<string, unknown>]]).pp, 9, "exactly one point leaves the calling slot")
   Assert.equal((moves[2] --[[@as table<string, unknown>]]).pp, 35, "the drawn move entry keeps its points")
+end
+
+-- Metronome retries in source order: each rejected candidate consumes
+-- its own labeled draw, user moves, static bans, gravity-illegal moves,
+-- and heal-blocked moves are all rejected before the first legal
+-- candidate is accepted. Toggling the dynamic conditions changes
+-- acceptance at the corresponding draw without moving earlier draws.
+function T.metronome_rejects_and_retries_in_source_order()
+  local Called = calledOwner("metronome-class selection owns the called-move path")
+  local byNative = {
+    [11] = "TACKLE",
+    [12] = "PROTECT",
+    [13] = "FLY",
+    [14] = "RECOVER",
+    [15] = "POUND",
+    [16] = "SPLASH",
+    [17] = "QUICK_ATTACK",
+    [18] = "EMBER",
+  }
+
+  ---@param script integer[] fixed roll values standing in for the battle stream
+  ---@return table<string, unknown> scripted stream recording every labeled draw
+  local function scriptedStream(script)
+    local record = { calls = 0, labels = {}, script = script }
+    function record:nextU16(label, cause)
+      assert(type(label) == "string" and label ~= "", "scripted draws name their call site")
+      assert(type(cause) == "table", "scripted draws carry their semantic cause")
+      self.calls = self.calls + 1
+      self.labels[#self.labels + 1] = label
+      return self.script[((self.calls - 1) % #self.script) + 1]
+    end
+    return record
+  end
+
+  ---@param stream table<string, unknown> scripted stream under the selection
+  ---@param gravity boolean gravity field condition under the selection
+  ---@param healBlock boolean heal-block condition on the user under the selection
+  ---@return string accepted move identity
+  local function select(stream, gravity, healBlock)
+    local decision = Called.choose({
+      requestedMove = "METRONOME",
+      executingMove = "METRONOME",
+      stream = stream,
+      byNative = byNative,
+      userMoves = { "TACKLE", "QUICK_ATTACK", "", "" },
+      gravity = gravity,
+      healBlock = healBlock,
+    })
+    Assert.notNil(decision, "metronome answers with a decision")
+    Assert.isNil(decision.failed, "the scripted stream reaches a legal candidate")
+    return decision.executingMove
+  end
+
+  local full = scriptedStream({ 10, 11, 12, 13, 14 })
+  Assert.equal(select(full, true, true), "POUND", "the fifth candidate is the first legal one")
+  Assert.equal(full.calls, 5, "every rejected candidate consumes its own draw")
+  for _, label in ipairs(full.labels) do
+    Assert.equal(label, "metronome", "rejected attempts keep the source draw label")
+  end
+
+  local calm = scriptedStream({ 10, 11, 12, 13, 14 })
+  Assert.equal(select(calm, false, false), "FLY", "lifting gravity accepts at the third draw")
+  Assert.equal(calm.calls, 3, "earlier consumption stays identical without gravity")
+
+  local unwarded = scriptedStream({ 10, 11, 12, 13, 14 })
+  Assert.equal(select(unwarded, true, false), "RECOVER", "lifting heal block accepts at the fourth draw")
+  Assert.equal(unwarded.calls, 4, "the heal-block toggle changes acceptance at its own draw")
+end
+
+-- Metronome draws raw native identities: over the real 467-entry
+-- source-ordered pool, scripted rolls naming the native identities of a
+-- user move, a static ban, a gravity-illegal move, a heal-blocked move,
+-- and a legal move accept exactly the legal one after five draws.
+function T.metronome_draws_raw_native_identities()
+  local Called = calledOwner("metronome-class selection owns the called-move path")
+  local MonSources = SessionFixture.requirePresent(
+    "romdump.src.config.MonSources",
+    "the pinned source inventory owns native move identities"
+  )
+  Assert.equal(MonSources.NUM_MOVES, 467, "the candidate range stays 1..467")
+  local byNative = {}
+  for nativeId = 1, MonSources.NUM_MOVES do
+    local key = MonSources.moveKeys[nativeId]
+    Assert.isTrue(type(key) == "string" and key ~= "", "native identity " .. nativeId .. " names a move")
+    byNative[nativeId] = key
+  end
+  ---@param key string move identity whose native identity the script must draw
+  ---@return integer native identity of the move
+  local function nativeIdOf(key)
+    for nativeId = 1, MonSources.NUM_MOVES do
+      if MonSources.moveKeys[nativeId] == key then
+        return nativeId
+      end
+    end
+    error("unknown move identity: " .. key)
+  end
+  local script = {
+    nativeIdOf("TACKLE") - 1,
+    nativeIdOf("PROTECT") - 1,
+    nativeIdOf("FLY") - 1,
+    nativeIdOf("RECOVER") - 1,
+    nativeIdOf("POUND") - 1,
+  }
+  local calls = 0
+  local stream = {}
+  function stream:nextU16(label, cause)
+    assert(type(label) == "string" and label ~= "", "native draws name their call site")
+    assert(type(cause) == "table", "native draws carry their semantic cause")
+    calls = calls + 1
+    return script[calls]
+  end
+  local decision = Called.choose({
+    requestedMove = "METRONOME",
+    executingMove = "METRONOME",
+    stream = stream,
+    byNative = byNative,
+    userMoves = { "TACKLE" },
+    gravity = true,
+    healBlock = true,
+  })
+  Assert.notNil(decision, "metronome answers with a decision")
+  Assert.isNil(decision.failed, "the scripted native stream reaches a legal candidate")
+  Assert.equal(decision.executingMove, "POUND", "the first source-legal native identity wins")
+  Assert.equal(calls, 5, "all five native draws are consumed in order")
+end
+
+-- An accepted candidate without a bound handler fails after selection:
+-- the raw draw is consumed exactly once, no power points leave, and the
+-- transition names the unhandled identity instead of redrawing past it.
+function T.metronome_accepts_unhandled_candidates_then_fails_explicitly()
+  local Execution = executionOwner("the shared move continuation owns hit progression")
+  local byNative = {}
+  for nativeId = 1, 467 do
+    byNative[nativeId] = "UNBOUND_STRIKE"
+  end
+  local moves = {
+    { move = "METRONOME", pp = 10, ppUps = 0 },
+  }
+  local stream = BattleRng.new(FIXED_SEED)
+  local before = stream:capture()
+  local failure = Assert.throws(function()
+    Execution.start({
+      actionId = 1,
+      actor = { combatant = 1 },
+      requestedMove = "METRONOME",
+      executingMove = "METRONOME",
+      ppOwnerSlot = 0,
+      calledBy = nil,
+      selectedTarget = SessionFixture.positionTarget(2),
+      targets = { { combatant = 2 } },
+      moves = moves,
+      moveFacts = {
+        METRONOME = { power = 0, accuracy = 0, category = "other", moveType = "normal" },
+        UNBOUND_STRIKE = { power = 50, accuracy = 100, category = "physical", moveType = "normal" },
+      },
+      byNative = byNative,
+      stream = stream,
+    })
+  end, "an accepted candidate without a bound handler fails instead of redrawing")
+  Assert.equal(failure.code, "BATTLE_MISSING_BEHAVIOR", "the unhandled candidate names its behavior")
+  Assert.equal(failure.context.key, "UNBOUND_STRIKE", "the failure names the accepted candidate")
+  Assert.equal((moves[1] --[[@as table<string, unknown>]]).pp, 10, "the failed selection spends no points")
+  local after = stream:capture()
+  Assert.isTrue(after.calls == before.calls + 1, "the accepted candidate consumes exactly one draw")
+end
+
+-- Metronome dynamic legality matches the pinned source tables exactly:
+-- every gravity-illegal and heal-blocked identity names a real inventory
+-- move, and production carries neither additions nor omissions.
+function T.metronome_dynamic_tables_match_the_source_lists()
+  local Called = calledOwner("metronome-class selection owns the called-move path")
+  local gravity = { "FLY", "BOUNCE", "JUMP_KICK", "HI_JUMP_KICK", "SPLASH", "MAGNET_RISE" }
+  Assert.equal(#gravity, 6, "the pinned gravity list stays complete")
+  local healBlocked =
+    { "RECOVER", "SOFTBOILED", "REST", "MILK_DRINK", "MORNING_SUN", "SYNTHESIS", "MOONLIGHT", "SWALLOW", "HEAL_ORDER", "SLACK_OFF", "ROOST", "LUNAR_DANCE", "HEALING_WISH", "WISH" }
+  Assert.equal(#healBlocked, 14, "the pinned heal-block list stays complete")
+  local seen = {}
+  for _, move in ipairs(gravity) do
+    Assert.isTrue(BattleSources.moveBindings[move] ~= nil, "gravity-illegal " .. move .. " names a real move")
+    Assert.isTrue(Called.GRAVITY_ILLEGAL[move] == true, "production rejects " .. move .. " under gravity")
+    seen[move] = true
+  end
+  for _, move in ipairs(healBlocked) do
+    Assert.isTrue(BattleSources.moveBindings[move] ~= nil, "heal-blocked " .. move .. " names a real move")
+    Assert.isTrue(Called.HEALBLOCK_ILLEGAL[move] == true, "production rejects " .. move .. " under heal block")
+    seen[move] = true
+  end
+  local extra = 0
+  for move in pairs(Called.GRAVITY_ILLEGAL) do
+    if seen[move] ~= true then
+      extra = extra + 1
+    end
+  end
+  for move in pairs(Called.HEALBLOCK_ILLEGAL) do
+    if seen[move] ~= true then
+      extra = extra + 1
+    end
+  end
+  Assert.equal(extra, 0, "production rejects nothing beyond the source lists")
 end
 
 return { tests = T }

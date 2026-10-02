@@ -67,38 +67,64 @@ SequenceMoves.MEMBERS = {
   "HELPING_HAND",
 }
 
--- Reference combat inputs matching the damage family triple, used only
--- when the frame carries no explicit combat facts.
-local REFERENCE_LEVEL = 10
-local REFERENCE_ATTACK = 50
-local REFERENCE_DEFENSE = 50
+-- Combat facts always arrive as real battle-owned projections in the
+-- frame; without them the strike cannot resolve and fails explicitly.
+---@param frame table<string, unknown> move frame under execution
+---@return table<string, integer> staged combat inputs for the arithmetic owner
+local function combatOf(frame)
+  local record = frame --[[@as table<string, unknown>]]
+  local key = record.executingMove --[[@as string]]
+  local locals = record.locals --[[@as table<string, unknown>]]
+  local facts = locals.combat
+  if type(facts) ~= "table" then
+    error(BattleErrors.missingBehavior("sequences read their real combat facts", { key = key, fact = "combat" }))
+  end
+  local combat = facts --[[@as table<string, unknown>]]
+  for _, fact in ipairs({ "level", "attack", "defense" }) do
+    local value = combat[fact]
+    if type(value) ~= "number" or value % 1 ~= 0 or value < 1 then
+      error(BattleErrors.missingBehavior("sequences read their real combat facts", { key = key, fact = fact }))
+    end
+  end
+  return {
+    level = combat.level --[[@as integer]],
+    attack = combat.attack --[[@as integer]],
+    defense = combat.defense --[[@as integer]],
+  }
+end
 
--- Curated strike powers for the immediate-strike reduction of charging,
--- recharge, rampage, and interruption members.
-local STRIKE_POWER = {
-  FLY = 70,
-  DIG = 80,
-  DIVE = 80,
-  BOUNCE = 85,
-  SHADOW_FORCE = 120,
-  SKULL_BASH = 100,
-  SKY_ATTACK = 140,
-  RAZOR_WIND = 80,
-  SOLAR_BEAM = 120,
-  HYPER_BEAM = 150,
-  GIGA_IMPACT = 150,
-  FRENZY_PLANT = 150,
-  BLAST_BURN = 150,
-  HYDRO_CANNON = 150,
-  ROAR_OF_TIME = 150,
-  THRASH = 90,
-  OUTRAGE = 120,
-  PETAL_DANCE = 90,
-  UPROAR = 90,
-  RAGE = 20,
-  FOCUS_PUNCH = 150,
-  FAKE_OUT = 40,
-  PURSUIT = 40,
+-- Strike power always arrives in the frame move facts; without it the
+-- strike cannot resolve and fails explicitly.
+---@param frame table<string, unknown> move frame under execution
+---@return integer compiled strike power under the staged arithmetic
+local function strikePowerOf(frame)
+  local record = frame --[[@as table<string, unknown>]]
+  local key = record.executingMove --[[@as string]]
+  local locals = record.locals --[[@as table<string, unknown>]]
+  local facts = locals.move
+  if type(facts) ~= "table" then
+    error(BattleErrors.missingBehavior("sequences read their immutable move facts", { key = key, fact = "move" }))
+  end
+  local power = (facts --[[@as table<string, unknown>]]).power
+  if type(power) ~= "number" or power % 1 ~= 0 or power < 1 then
+    error(BattleErrors.missingBehavior("sequences read their immutable move facts", { key = key, fact = "power" }))
+  end
+  return power --[[@as integer]]
+end
+
+-- Members resolving the immediate-strike reduction of their charge; the
+-- strike power travels in the frame move facts, so this set carries only
+-- the charge membership for the scheduling owner.
+local CHARGE = {
+  FLY = true,
+  DIG = true,
+  DIVE = true,
+  BOUNCE = true,
+  SHADOW_FORCE = true,
+  SKULL_BASH = true,
+  SKY_ATTACK = true,
+  RAZOR_WIND = true,
+  SOLAR_BEAM = true,
 }
 
 -- Members whose strike locks the user into a multi-action sequence; the
@@ -131,10 +157,12 @@ local SWITCH_MODES = {
   ROAR = "force-foe-out",
 }
 
--- Delayed-attack powers beside their scheduling bodies.
-local DELAYED_POWER = {
-  FUTURE_SIGHT = 80,
-  DOOM_DESIRE = 140,
+-- Delayed-attack members beside their scheduling bodies; the landing
+-- power travels in the frame move facts, so this set carries only the
+-- delay membership for the scheduling owner.
+local DELAYED = {
+  FUTURE_SIGHT = true,
+  DOOM_DESIRE = true,
 }
 
 ---@param stream unknown battle stream under the sequence
@@ -170,27 +198,6 @@ local function targetOf(entry)
   return record.combatant --[[@as integer]]
 end
 
----@param frame table<string, unknown> move frame under execution
----@return table<string, integer> staged combat inputs for the arithmetic owner
-local function combatOf(frame)
-  local locals = frame.locals --[[@as table<string, unknown>]]
-  local facts = locals.combat
-  local level, attack, defense = REFERENCE_LEVEL, REFERENCE_ATTACK, REFERENCE_DEFENSE
-  if type(facts) == "table" then
-    local record = facts --[[@as table<string, unknown>]]
-    if type(record.level) == "number" then
-      level = record.level --[[@as integer]]
-    end
-    if type(record.attack) == "number" then
-      attack = record.attack --[[@as integer]]
-    end
-    if type(record.defense) == "number" then
-      defense = record.defense --[[@as integer]]
-    end
-  end
-  return { level = level, attack = attack, defense = defense }
-end
-
 ---@param ctx BattleContext mechanics context under execution
 ---@param combatant integer combatant receiving the volatile marker
 ---@param key string volatile identity under the marker
@@ -201,11 +208,15 @@ end
 ---@param ctx BattleContext mechanics context under execution
 ---@param frame table<string, unknown> move frame under execution
 ---@param defender integer defender combatant under the strike
----@param power integer curated move power under the staged arithmetic
+---@param override integer|nil ramped power under the source doubling rule; when absent the compiled base resolves
 ---@return integer damage dealt by the strike
-local function strikeTarget(ctx, frame, defender, power)
+local function strikeTarget(ctx, frame, defender, override)
   local record = frame --[[@as table<string, unknown>]]
   local combat = combatOf(record)
+  local power = override
+  if power == nil then
+    power = strikePowerOf(record)
+  end
   local stream = checkStream(record.stream)
   local resolution = Accuracy.resolve({
     target = { kind = "combatant" },
@@ -241,16 +252,15 @@ end
 -- Charging strikes land their immediate-strike reduction after recording
 -- the charge; the two-turn shape belongs to the scheduling owner, so the
 -- single action resolves the strike it can observe.
----@param power integer curated strike power under the charge
 ---@return fun(ctx: BattleContext, frame: table<string, unknown>): table<string, unknown> step handler charging then striking
-local function makeChargeStrike(power)
+local function makeChargeStrike()
   local function stepChargeStrike(ctx, frame)
     assert(type(ctx) == "table", "sequences step through the battle context")
     assert(type(frame) == "table", "sequences step from their move frame")
     local record = frame --[[@as table<string, unknown>]]
     ctx:emit("charged", causeFor(record), { target = userOf(record) })
     local defender = targetOf((record.targets --[[@as table<integer, unknown>]])[1])
-    strikeTarget(ctx, record, defender, power)
+    strikeTarget(ctx, record, defender)
     return { kind = "complete", result = "hit" }
   end
   return stepChargeStrike
@@ -258,29 +268,29 @@ end
 
 -- Recharge and rampage strikes land then record their lock for the
 -- scheduling owner.
----@param power integer curated strike power under the lock
 ---@param marker string lock identity recorded on the user
 ---@return fun(ctx: BattleContext, frame: table<string, unknown>): table<string, unknown> step handler striking then locking
-local function makeLockStrike(power, marker)
+local function makeLockStrike(marker)
   local function stepLockStrike(ctx, frame)
     assert(type(ctx) == "table", "sequences step through the battle context")
     assert(type(frame) == "table", "sequences step from their move frame")
     local record = frame --[[@as table<string, unknown>]]
     local defender = targetOf((record.targets --[[@as table<integer, unknown>]])[1])
-    strikeTarget(ctx, record, defender, power)
+    strikeTarget(ctx, record, defender)
     markVolatile(ctx, userOf(record), marker)
     return { kind = "complete", result = "hit" }
   end
   return stepLockStrike
 end
 
--- Rollout-class strikes double their base while the sequence continues;
--- the ramp counter lives in the frame locals, so one observed action
--- resolves its current rung and records the next.
----@param base integer ramp base power under the sequence
----@param cap integer maximum doublings under the sequence
+-- Rollout-class strikes double their compiled base while the sequence
+-- continues; the ramp counter lives in the frame locals, so one observed
+-- action resolves its current rung and records the next. The doubling
+-- progression is the move-specific source rule; the base itself stays in
+-- the frame move facts.
+---@param cap integer maximum doublings under the source sequence rule
 ---@return fun(ctx: BattleContext, frame: table<string, unknown>): table<string, unknown> step handler striking at the current rung
-local function makeRampStrike(base, cap)
+local function makeRampStrike(cap)
   local function stepRampStrike(ctx, frame)
     assert(type(ctx) == "table", "sequences step through the battle context")
     assert(type(frame) == "table", "sequences step from their move frame")
@@ -293,12 +303,14 @@ local function makeRampStrike(base, cap)
     if rung > cap then
       rung = cap
     end
-    local power = base
+    local power = strikePowerOf(record)
     for _ = 1, rung do
       power = power * 2
     end
     locals.ramp = rung + 1
     local defender = targetOf((record.targets --[[@as table<integer, unknown>]])[1])
+    -- The rung doubling is the move-specific source rule, so the strike
+    -- resolves at the ramped power rather than the compiled base.
     strikeTarget(ctx, record, defender, power)
     return { kind = "complete", result = "hit" }
   end
@@ -337,7 +349,7 @@ local function stepFocusPunch(ctx, frame)
     return { kind = "complete", result = "failed" }
   end
   local defender = targetOf((record.targets --[[@as table<integer, unknown>]])[1])
-  strikeTarget(ctx, record, defender, STRIKE_POWER.FOCUS_PUNCH)
+  strikeTarget(ctx, record, defender)
   return { kind = "complete", result = "hit" }
 end
 
@@ -356,7 +368,7 @@ local function stepFakeOut(ctx, frame)
   assert(type(frame) == "table", "sequences step from their move frame")
   local record = frame --[[@as table<string, unknown>]]
   local defender = targetOf((record.targets --[[@as table<integer, unknown>]])[1])
-  strikeTarget(ctx, record, defender, STRIKE_POWER.FAKE_OUT)
+  strikeTarget(ctx, record, defender)
   markVolatile(ctx, defender, "FLINCH")
   return { kind = "complete", result = "hit" }
 end
@@ -368,7 +380,7 @@ local function stepPursuit(ctx, frame)
   assert(type(frame) == "table", "sequences step from their move frame")
   local record = frame --[[@as table<string, unknown>]]
   local defender = targetOf((record.targets --[[@as table<integer, unknown>]])[1])
-  strikeTarget(ctx, record, defender, STRIKE_POWER.PURSUIT)
+  strikeTarget(ctx, record, defender)
   return { kind = "complete", result = "hit" }
 end
 
@@ -393,9 +405,8 @@ end
 -- Delayed attacks schedule on the first step and land on the resume. The
 -- resumed frame binds the defender slot plus the attacker snapshot, so
 -- the hit resolves even after the attacker leaves.
----@param power integer delayed strike power under the landing
 ---@return fun(ctx: BattleContext, frame: table<string, unknown>): table<string, unknown> step handler scheduling then landing the delay
-local function makeDelayed(power)
+local function makeDelayed()
   local function stepDelayed(ctx, frame)
     assert(type(ctx) == "table", "sequences step through the battle context")
     assert(type(frame) == "table", "sequences step from their move frame")
@@ -404,6 +415,7 @@ local function makeDelayed(power)
     if locals.phase == "impact" then
       local defender = locals.defender --[[@as integer]]
       assert(type(defender) == "number", "delayed damage binds its defender slot")
+      local power = strikePowerOf(record)
       local combat = combatOf(record)
       local stream = checkStream(record.stream)
       local result = Damage.calculate({
@@ -501,14 +513,14 @@ end
 ---@param key string sequence move identity under binding
 ---@return fun(ctx: BattleContext, frame: table<string, unknown>): table<string, unknown> distinct per-move handler for the registry
 local function bodyFor(key)
-  if DELAYED_POWER[key] ~= nil then
-    return bind(makeDelayed(DELAYED_POWER[key]))
+  if DELAYED[key] == true then
+    return bind(makeDelayed())
   end
   if key == "ROLLOUT" or key == "ICE_BALL" then
-    return bind(makeRampStrike(30, 4))
+    return bind(makeRampStrike(4))
   end
   if key == "FURY_CUTTER" then
-    return bind(makeRampStrike(10, 4))
+    return bind(makeRampStrike(4))
   end
   if key == "PROTECT" or key == "DETECT" then
     return bind(makeProtection(true))
@@ -547,13 +559,13 @@ local function bodyFor(key)
     return bind(makeCooperation(key))
   end
   if LOCKED[key] == true then
-    return bind(makeLockStrike(STRIKE_POWER[key], key))
+    return bind(makeLockStrike(key))
   end
   if RECHARGE[key] == true then
-    return bind(makeLockStrike(STRIKE_POWER[key], "RECHARGE"))
+    return bind(makeLockStrike("RECHARGE"))
   end
-  if STRIKE_POWER[key] ~= nil then
-    return bind(makeChargeStrike(STRIKE_POWER[key]))
+  if CHARGE[key] == true then
+    return bind(makeChargeStrike())
   end
   error(BattleErrors.missingBehavior("no sequence handler is bound for the source identity", { key = key }))
 end

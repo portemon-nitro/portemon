@@ -19,7 +19,6 @@ local NativeMoves = require("libs.battle.src.gen4.behaviors.NativeMoves")
 local MoveExecution = {}
 
 local cachedHandlers = nil
-local cachedRoster = nil
 
 ---@return table<string, fun(ctx: BattleContext, frame: table<string, unknown>): table<string, unknown>> executable native handlers by move identity
 local function handlers()
@@ -31,21 +30,25 @@ local function handlers()
   return cachedHandlers --[[@as table<string, fun(ctx: BattleContext, frame: table<string, unknown>): table<string, unknown>>]]
 end
 
---- Answers the sorted metronome candidate roster: every bound native move
---- identity in stable order, so the single-draw selection stays
---- deterministic for a given registry and stream. Ban filtering stays in
---- the called-move owner; this roster is the unfiltered candidate supply.
----@return string[] sorted bound native move identities
-local function metronomeRoster()
-  if cachedRoster == nil then
-    local roster = {}
-    for key in pairs(handlers()) do
-      roster[#roster + 1] = key
+--- Answers the native-ordered metronome roster from the resolved compiled
+--- move facts: the native move identity indexes the semantic move key.
+--- Derived once per transition from the same facts the frame carries, so
+--- selection never consults a second move catalog. Ban and legality
+--- filtering stays in the called-move owner; this roster is the
+--- unfiltered candidate supply.
+---@param catalog table<string, unknown> resolved compiled move facts by semantic key
+---@return table<integer, string> semantic move key by native move identity
+local function metronomeRoster(catalog)
+  local roster = {}
+  for key, facts in pairs(catalog) do
+    if type(facts) == "table" then
+      local nativeId = (facts --[[@as table<string, unknown>]]).nativeId
+      if type(nativeId) == "number" and nativeId % 1 == 0 and nativeId >= 1 then
+        roster[nativeId] = key --[[@as string]]
+      end
     end
-    table.sort(roster)
-    cachedRoster = roster
   end
-  return cachedRoster --[[@as string[] ]]
+  return roster
 end
 
 ---@param value unknown value under test
@@ -126,8 +129,9 @@ local function copyTargets(entries)
   return copy
 end
 
---- Validates a move frame shape plus its move-specific facts: friendship
---- moves require their explicit friendship fact instead of defaulting.
+--- Validates a move frame shape plus its move-specific facts: every frame
+--- carries its executing move facts record, and friendship moves require
+--- their explicit friendship fact instead of defaulting.
 ---@param frame table<string, unknown> move frame under validation
 ---@return table<string, unknown> the validated move frame
 function MoveExecution.validateFrame(frame)
@@ -173,6 +177,9 @@ function MoveExecution.validateFrame(frame)
   end
   assert(BattleRng.ALGORITHM == "gen4-lcrng", "move frames draw from the native battle stream")
   local locals = checkRecord(frame.locals)
+  if type(locals.move) ~= "table" then
+    error(BattleErrors.invalidState("move frames carry their executing move facts", {}))
+  end
   if frame.executingMove == "FRUSTRATION" or frame.executingMove == "RETURN" then
     local friendship = locals.friendship
     if type(friendship) ~= "number" or friendship % 1 ~= 0 or friendship < 0 or friendship > 255 then
@@ -182,23 +189,47 @@ function MoveExecution.validateFrame(frame)
   return frame
 end
 
---- Runs the action-to-move transition: resolves selection, draws called
---- moves, spends exactly one power point from the owning slot, and
---- publishes the validated move frame. Failed selections publish without
---- spending, drawing, or emitting.
+--- Runs the action-to-move transition: resolves requested and executing
+--- move facts, runs called-move selection, spends exactly one power point
+--- from the owning slot, and publishes the validated move frame carrying
+--- the executing facts plus the sampled combat and legality inputs.
+--- Failed selections publish without spending, drawing, or emitting.
 ---@param inputs table<string, unknown> transition inputs carrying action, actor, moves, stream, targets, and calling facts
 ---@return table<string, unknown> validated move frame for the hit loop
 function MoveExecution.start(inputs)
   checkTransitionInputs(checkRecord(inputs))
   local plan = MoveSelection.resolveExecution(inputs)
+  local catalog = plan.moveFacts
+  if type(catalog) ~= "table" then
+    error(BattleErrors.missingBehavior("move execution resolves its immutable move facts", {
+      key = plan.requestedMove --[[@as string]],
+    }))
+  end
+  local facts = catalog --[[@as table<string, unknown>]]
+  if
+    type(facts[
+      plan.requestedMove --[[@as string]]
+    ]) ~= "table"
+  then
+    error(BattleErrors.missingBehavior("move execution resolves its requested move facts", {
+      key = plan.requestedMove --[[@as string]],
+    }))
+  end
+  local byNative = plan.byNative
+  if byNative == nil then
+    byNative = metronomeRoster(facts)
+  end
   local decision = CalledMoves.choose({
     requestedMove = plan.requestedMove,
     executingMove = plan.executingMove,
     stream = plan.stream,
-    pool = metronomeRoster(),
+    byNative = byNative,
     party = plan.party,
     usable = plan.usable,
     copiedMove = plan.copiedMove,
+    userMoves = plan.userMoves,
+    gravity = plan.gravity,
+    healBlock = plan.healBlock,
   })
   local executing = plan.executingMove --[[@as string]]
   local failed = nil
@@ -210,6 +241,9 @@ function MoveExecution.start(inputs)
     end
   end
   if failed == nil then
+    if type(facts[executing]) ~= "table" then
+      error(BattleErrors.missingBehavior("move execution resolves its executing move facts", { key = executing }))
+    end
     if handlers()[executing] == nil then
       error(
         BattleErrors.missingBehavior("no native move handler is bound for the source identity", { key = executing })
@@ -245,12 +279,23 @@ function MoveExecution.start(inputs)
   if failed ~= nil then
     locals.failed = failed
   end
-  for _, key in ipairs({ "friendship", "party", "usable", "status", "copiedMove", "combat" }) do
+  for _, key in ipairs({
+    "friendship",
+    "party",
+    "usable",
+    "status",
+    "copiedMove",
+    "combat",
+    "userMoves",
+    "gravity",
+    "healBlock",
+  }) do
     if plan[key] ~= nil then
       locals[key] = plan[key]
     end
   end
-  locals.pool = metronomeRoster()
+  locals.move = facts[executing]
+  locals.byNative = byNative
   return MoveExecution.validateFrame(frame)
 end
 

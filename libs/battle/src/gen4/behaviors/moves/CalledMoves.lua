@@ -5,13 +5,15 @@
 -- set is empty; step handlers settle frames that already carry a drawn
 -- move and resume frames that still name their calling move, so a called
 -- execution charges its caller exactly once and never spends the drawn
--- move entry. Candidate filtering mirrors the source static eligibility
--- rules in src/battle/battle_command.c and overlay 12 (CheckLegalMetronomeMove
+-- move entry. Candidate filtering mirrors the source eligibility rules in
+-- src/battle/battle_command.c and overlay 12 (CheckLegalMetronomeMove
 -- over sMetronomeUnuseableMoves, plus CheckMoveCallsOtherMove for assist);
 -- the tables below are the single edit point for eligibility changes.
--- Two adaptations stay explicit: every draw spends exactly one labeled roll
--- rather than the native retry loop, and the dynamic gravity/heal-block
--- legality checks stay unmodeled, so the static tables are the whole filter.
+-- Metronome draws raw native identities one at a time and retries
+-- without a ceiling, exactly like the source loop: each attempt consumes
+-- one labeled roll, maps the drawn identity through the native-ordered
+-- roster, rejects the attacker's own moves first, then applies the
+-- dynamic gravity and heal-block legality before the static ban list.
 
 local BattleErrors = require("libs.battle.src.errors")
 local BattleRng = require("libs.battle.src.gen4.BattleRng")
@@ -21,9 +23,10 @@ local CalledMoves = {}
 
 -- Moves metronome never draws, mirroring the source static ban table
 -- sMetronomeUnuseableMoves (pret/pokeheartgold src/battle/overlay_12_0224E4FC.c).
--- The caller supplies the full candidate roster (the executable native
--- registry keys); the draw filters that roster through this table, so every
--- entry stays reachable and struggle can never surface as a fallback.
+-- The caller supplies the native-ordered roster (native identity to
+-- semantic key); each drawn identity maps through that roster before this
+-- table filters it, so every native entry stays reachable and struggle
+-- can never surface as a fallback.
 CalledMoves.METRONOME_BANNED = {
   METRONOME = true,
   STRUGGLE = true,
@@ -51,6 +54,44 @@ CalledMoves.METRONOME_BANNED = {
   ME_FIRST = true,
   SWITCHEROO = true,
 }
+
+-- Moves metronome rejects while gravity holds the field, mirroring the
+-- source gravity table sGravityUnusableMoves beside
+-- BattleContext_CheckMoveUnuseableInGravity
+-- (pret/pokeheartgold src/battle/overlay_12_0224E4FC.c).
+CalledMoves.GRAVITY_ILLEGAL = {
+  FLY = true,
+  BOUNCE = true,
+  JUMP_KICK = true,
+  HI_JUMP_KICK = true,
+  SPLASH = true,
+  MAGNET_RISE = true,
+}
+
+-- Moves metronome rejects while heal block seals the user, mirroring the
+-- source heal-block table sHealBlockUnusableMoves beside
+-- BattleContext_CheckMoveHealBlocked
+-- (pret/pokeheartgold src/battle/overlay_12_0224E4FC.c).
+CalledMoves.HEALBLOCK_ILLEGAL = {
+  RECOVER = true,
+  SOFTBOILED = true,
+  REST = true,
+  MILK_DRINK = true,
+  MORNING_SUN = true,
+  SYNTHESIS = true,
+  MOONLIGHT = true,
+  SWALLOW = true,
+  HEAL_ORDER = true,
+  SLACK_OFF = true,
+  ROOST = true,
+  LUNAR_DANCE = true,
+  HEALING_WISH = true,
+  WISH = true,
+}
+
+-- Native move identities drawn by metronome, 1-based and contiguous over
+-- the usable source move range.
+local NATIVE_MOVE_COUNT = 467
 
 local CALLING = {
   METRONOME = true,
@@ -109,6 +150,26 @@ local function checkRoster(list, what)
   return pool
 end
 
+---@param list unknown native-ordered roster under test, indexed by native move identity
+---@param what string selection the roster feeds
+---@return table<integer, string> semantic move key by native move identity
+local function checkNativeRoster(list, what)
+  if type(list) ~= "table" then
+    error(BattleErrors.invalidState(what .. " reads its native move roster", {}))
+  end
+  local roster = list --[[@as table<integer, unknown>]]
+  local byNative = {}
+  for nativeId, entry in pairs(roster) do
+    if type(nativeId) == "number" and nativeId % 1 == 0 then
+      if type(entry) ~= "string" or entry == "" then
+        error(BattleErrors.invalidState(what .. " candidates must name their move", { index = nativeId }))
+      end
+      byNative[nativeId] = entry --[[@as string]]
+    end
+  end
+  return byNative
+end
+
 ---@param pool string[] ordered candidates under filtering
 ---@param banned table<string, boolean> source ban set under test
 ---@return string[] eligible candidates in pool order
@@ -133,11 +194,56 @@ local function drawFrom(select, pool, label)
   return pool[(roll % #pool) + 1]
 end
 
+--- Resolves an unresolved metronome call the source way: draw one raw
+--- native identity per attempt, map it through the native-ordered roster,
+--- reject the attacker's own moves, then the gravity-illegal,
+--- heal-blocked, and statically banned candidates, and repeat without a
+--- ceiling until the first legal candidate is accepted. Every rejected
+--- attempt consumes its draw. A drawn identity with no roster entry fails
+--- explicitly; an accepted candidate without a bound handler stays
+--- accepted here and fails at the existing post-selection check instead
+--- of biasing the draw.
+---@param select table<string, unknown> unresolved metronome selection under test
+---@return table<string, string> decision carrying executingMove or failed
+local function chooseMetronome(select)
+  local byNative = checkNativeRoster(select.byNative, "metronome")
+  local stream = checkStream(select.stream)
+  local cause = { key = select.requestedMove }
+  local userMoves = {}
+  if type(select.userMoves) == "table" then
+    for _, key in
+      pairs(select.userMoves --[[@as table<string, unknown>]])
+    do
+      if type(key) == "string" and key ~= "" then
+        userMoves[key] = true
+      end
+    end
+  end
+  local gravity = select.gravity == true
+  local healBlock = select.healBlock == true
+  while true do
+    local nativeId = (stream:nextU16("metronome", cause) % NATIVE_MOVE_COUNT) + 1
+    local candidate = byNative[nativeId]
+    if candidate == nil then
+      error(BattleErrors.missingBehavior("metronome maps its drawn native identity", { nativeId = nativeId }))
+    end
+    if
+      userMoves[candidate] ~= true
+      and not (gravity and CalledMoves.GRAVITY_ILLEGAL[candidate] == true)
+      and not (healBlock and CalledMoves.HEALBLOCK_ILLEGAL[candidate] == true)
+      and CalledMoves.METRONOME_BANNED[candidate] ~= true
+    then
+      return { executingMove = candidate }
+    end
+  end
+end
+
 --- Resolves an unresolved calling move to its drawn identity. Returns nil
 --- when the executing move needs no calling-move selection; otherwise
---- returns either the drawn move or a failure naming the empty set. Draws
---- happen only for nonempty eligible sets, so failures spend no power
---- points and consume no selection draws.
+--- returns either the drawn move or a failure naming the empty set.
+--- Assist and sleep-talk draws happen only for nonempty eligible sets,
+--- so those failures spend no power points and consume no selection
+--- draws; metronome retries its raw draws until a legal candidate wins.
 ---@param select table<string, unknown> unresolved calling-move selection under test
 ---@return table<string, string>? decision carrying executingMove or failed
 function CalledMoves.choose(select)
@@ -150,11 +256,7 @@ function CalledMoves.choose(select)
     return nil
   end
   if calling == "METRONOME" then
-    local pool = eligible(checkRoster(select.pool, "metronome"), CalledMoves.METRONOME_BANNED)
-    if #pool == 0 then
-      return { failed = "no-eligible-moves" }
-    end
-    return { executingMove = drawFrom(select, pool, "metronome") }
+    return chooseMetronome(select)
   end
   if calling == "ASSIST" then
     local pool = eligible(checkRoster(select.party, "assist"), CalledMoves.METRONOME_BANNED)
@@ -190,10 +292,13 @@ local function selectFromFrame(frame)
     requestedMove = frame.requestedMove,
     executingMove = frame.executingMove,
     stream = frame.stream,
-    pool = locals.pool,
+    byNative = locals.byNative,
     party = locals.party,
     usable = locals.usable,
     copiedMove = locals.copiedMove,
+    userMoves = locals.userMoves,
+    gravity = locals.gravity,
+    healBlock = locals.healBlock,
   }
 end
 
