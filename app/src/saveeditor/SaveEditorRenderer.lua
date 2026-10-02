@@ -3,11 +3,21 @@
 local Renderer = {}
 Renderer.__index = Renderer
 
+local AssetPreparationQueue = require("libs.hgss.src.presentation.AssetPreparationQueue")
+local Errors = require("libs.errors.src.Errors")
+local MonIconAssetProvider = require("libs.hgss.src.presentation.MonIconAssetProvider")
+
 ---@class SaveEditorRenderer
 ---@field text table<string, unknown>
 ---@field graphics table<string, unknown>
 ---@field _disposed boolean
+---@field _iconQueue table<string, unknown>?
+---@field _iconProvider MonIconAssetProvider?
+---@field _icons table<string, { image: love.Image, quad: love.Quad }>
+---@field iconStatus string?
+---@field iconFailure string?
 ---@field dispose fun(self: SaveEditorRenderer)
+---@field prepareVisibleIcons fun(self: SaveEditorRenderer, view: table<string, unknown>, plan: table<string, unknown>, cacheFs: table<string, unknown>, derivedAssets: table<string, unknown>)
 
 local INK = { 0.12, 0.18, 0.25, 1 }
 local CARD = { 1, 1, 1, 1 }
@@ -16,16 +26,82 @@ local SELECTED = { 0.84, 0.19, 0.2, 1 }
 local MUTED = { 0.42, 0.48, 0.52, 1 }
 local Utf8Glyphs = require("libs.assets.src.Utf8Glyphs")
 
+---@param cacheFs table<string, unknown>
+---@param options table<string, unknown>
+---@return MonIconAssetProvider|Errors.Error
+local function createIconProvider(cacheFs, options)
+  return MonIconAssetProvider.new(cacheFs, options)
+end
+
 local function setColor(graphics, color)
   graphics.setColor(color[1], color[2], color[3], color[4] or 1)
 end
 
 function Renderer.new(options)
   assert(type(options) == "table" and options.text, "save editor renderer needs field text")
-  return setmetatable(
-    { text = options.text, graphics = options.graphics or love.graphics, _disposed = false },
-    Renderer
-  )
+  return setmetatable({
+    text = options.text,
+    graphics = options.graphics or love.graphics,
+    _disposed = false,
+    _iconQueue = nil,
+    _iconProvider = nil,
+    _icons = {},
+    iconStatus = nil,
+    iconFailure = nil,
+  }, Renderer)
+end
+
+function Renderer:prepareVisibleIcons(view, plan, cacheFs, derivedAssets)
+  if view.section ~= "Party" then
+    self.iconStatus, self.iconFailure = nil, nil
+    return
+  end
+  local iconKeys = {}
+  for _, row in ipairs(assert(plan.content.layout).rows) do
+    if row.iconKey ~= nil then
+      iconKeys[#iconKeys + 1] = row.iconKey
+    end
+  end
+  if #iconKeys == 0 then
+    self.iconStatus, self.iconFailure = nil, nil
+    return
+  end
+  if self._iconProvider == nil then
+    local queue = AssetPreparationQueue.new(cacheFs)
+    local ok, providerOrError = pcall(createIconProvider, cacheFs, {
+      graphics = self.graphics,
+      preparationQueue = queue,
+      derivedAssets = derivedAssets,
+    })
+    if not ok then
+      queue:release()
+      if Errors.is(providerOrError) then
+        ---@cast providerOrError Errors.Error
+        self.iconStatus, self.iconFailure = "failed", providerOrError.message
+        return
+      end
+      error(providerOrError, 0)
+    end
+    self._iconQueue = queue
+    self._iconProvider = assert(providerOrError)
+  end
+  local ready, failure = self._iconProvider:prepareKeys(iconKeys)
+  if failure ~= nil then
+    self.iconStatus, self.iconFailure = "failed", failure
+    return
+  elseif not ready then
+    self.iconStatus, self.iconFailure = "pending", nil
+    return
+  end
+  for _, iconKey in ipairs(iconKeys) do
+    if self._icons[iconKey] == nil then
+      self._icons[iconKey] = {
+        image = self._iconProvider:image(iconKey),
+        quad = self._iconProvider:quadFor(iconKey, 1),
+      }
+    end
+  end
+  self.iconStatus, self.iconFailure = "ready", nil
 end
 
 local function drawText(renderer, value, x, y, color)
@@ -73,13 +149,31 @@ local function paintPane(self, view, plan, pane)
     graphics.rectangle("line", rect.x, rect.y, rect.width, rect.height)
     drawText(self, navigation.label, rect.x + 4, rect.y + 3, INK)
   end
+  if view.section == "Party" and (view.partyPage == "detail" or view.partyPage == "draft") then
+    for _, subpage in ipairs(view.partySubpages or {}) do
+      local id = "party:subpage:" .. subpage
+      local rect = layout.targets[id]
+      if rect then
+        setColor(graphics, view.partySubpage == subpage and SELECTED or BORDER)
+        graphics.rectangle("fill", rect.x, rect.y, rect.width, rect.height)
+        drawText(self, fitText(subpage, rect.width - 6), rect.x + 3, rect.y + 3, CARD)
+      end
+    end
+  end
   for _, row in ipairs(layout.rows) do
     local rect = layout.targets[row.targetId]
     if rect then
       setColor(graphics, row.targetId == view.focus and SELECTED or BORDER)
       graphics.rectangle("line", rect.x, rect.y, rect.width, rect.height)
       local labelWidth = row.role == "warning" and rect.width - 8 or rect.width * 0.5 - 8
-      drawText(self, fitText(row.label, labelWidth), rect.x + 4, rect.y + 3, INK)
+      local icon = row.iconKey and self._icons[row.iconKey]
+      local labelX = rect.x + 4
+      if icon and graphics.draw then
+        graphics.draw(icon.image, icon.quad, rect.x + 3, rect.y + 2)
+        labelX = rect.x + 22
+        labelWidth = labelWidth - 18
+      end
+      drawText(self, fitText(row.label, labelWidth), labelX, rect.y + 3, INK)
       if row.value ~= nil then
         local value = type(row.value) == "boolean" and (row.value and "ON" or "OFF") or tostring(row.value)
         local valueX = rect.x + math.min(rect.width * 0.52, 128)
@@ -178,15 +272,36 @@ local function paintPane(self, view, plan, pane)
       end
     end
   end
+  if view.iconStatus == "pending" then
+    drawText(
+      self,
+      "Preparing party icons…",
+      layout.content.x + 4,
+      layout.content.y + layout.content.height - 16,
+      MUTED
+    )
+  elseif view.iconStatus == "failed" then
+    drawText(self, "Icons unavailable", layout.content.x + 4, layout.content.y + layout.content.height - 16, MUTED)
+  end
   if view.modal then
     graphics.setColor(0, 0, 0, 0.78)
     graphics.rectangle("fill", layout.content.x, layout.content.y, layout.content.width, layout.content.height)
-    drawText(self, "Save changes before leaving?", layout.content.x + 8, layout.content.y + 18, CARD)
-    for _, id in ipairs({ "save", "discard", "cancel" }) do
+    local choices, prompt
+    if view.modal == "draft" then
+      choices, prompt = { "apply", "discard", "cancel" }, "Apply party changes?"
+    elseif view.modal == "remove" then
+      choices, prompt = { "remove", "cancel" }, "Remove this entry?"
+    else
+      choices, prompt = { "save", "discard", "cancel" }, "Save changes before leaving?"
+    end
+    drawText(self, prompt, layout.content.x + 8, layout.content.y + 18, CARD)
+    for _, id in ipairs(choices) do
       local rect = layout.targets[id]
-      setColor(graphics, id == view.focus and SELECTED or BORDER)
-      graphics.rectangle("fill", rect.x, rect.y, rect.width, rect.height)
-      drawText(self, id:sub(1, 1):upper() .. id:sub(2), rect.x + 4, rect.y + 6, CARD)
+      if rect then
+        setColor(graphics, id == view.focus and SELECTED or BORDER)
+        graphics.rectangle("fill", rect.x, rect.y, rect.width, rect.height)
+        drawText(self, id:sub(1, 1):upper() .. id:sub(2), rect.x + 4, rect.y + 6, CARD)
+      end
     end
   end
   graphics.pop()
@@ -214,6 +329,15 @@ function Renderer:dispose()
     return
   end
   self._disposed = true
+  if self._iconProvider then
+    self._iconProvider:release()
+    self._iconProvider = nil
+  end
+  if self._iconQueue then
+    self._iconQueue:release()
+    self._iconQueue = nil
+  end
+  self._icons = {}
   if self.text and self.text.release then
     self.text:release()
   end

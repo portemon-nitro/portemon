@@ -12,12 +12,13 @@ local ScreenTopology = require("libs.ui.src.ScreenTopology")
 
 local T = {}
 
-local function fixture(width, height, topology)
+local function fixture(width, height, topology, section, variant)
+  section = section or "Progress"
   local view = {
     status = "ready",
     versionId = "heartgold",
     saveId = "TEST-SAVE-42",
-    section = "Progress",
+    section = section,
     ready = true,
     dirty = true,
     focus = "flag:FLAG_TEST",
@@ -26,9 +27,57 @@ local function fixture(width, height, topology)
     flagFilter = "Named",
     flagGroupLabel = "Named",
   }
+  if section == "Party" then
+    view.partyPage = variant or "list"
+    if view.partyPage == "list" then
+      view.partyCanAdd = true
+      view.partyMemberCount = 1
+      view.partyRows = {
+        { role = "action", targetId = "party:slot:0", label = "Pikachu", value = "Lv. 25" },
+      }
+    else
+      view.partyDirty = true
+      view.partyValid = false
+      view.partySubpage = "Identity"
+      view.partySubpages = { "Identity", "Training", "Stats", "Moves", "Origin" }
+      view.partyRows = {
+        {
+          role = "named choice",
+          targetId = "party:field:species",
+          id = "species",
+          label = "Species",
+          value = "PIKACHU",
+        },
+        {
+          role = "integer value",
+          targetId = "party:field:personality",
+          id = "personality",
+          label = "Personality",
+          value = 123456789,
+        },
+        {
+          role = "read-only value",
+          targetId = "party:readonly:nature",
+          id = "nature",
+          label = "Nature",
+          value = "Hardy",
+        },
+        { role = "warning", targetId = "party:validation", label = "HP exceeds calculated maximum" },
+      }
+    end
+  elseif section == "Bag" then
+    view.bagPocket = "items"
+    view.bagPocketLabel = "Items"
+    view.bagSelectedItem = "POTION"
+    view.bagSelectedQuantity = 2
+    view.bagPockets = { { key = "items", label = "Items" } }
+    view.bagRows = { { item = "POTION", label = "Potion", quantity = 2 } }
+  end
   local context = DisplayContext.new({
     graphics = love.graphics,
-    topologyProvider = function() return topology end,
+    topologyProvider = function()
+      return topology
+    end,
   })
   local presentation = ApplicationPresentation.new(Interface.defaults())
   local plan = presentation:resolve(context:measure(width, height), view)
@@ -37,14 +86,16 @@ local function fixture(width, height, topology)
   return view, presentation, plan
 end
 
-local function draw(scope, width, height, topology, name)
+local function draw(scope, width, height, topology, name, section, variant)
   local graphics = love.graphics
-  local view, presentation, plan = fixture(width, height, topology)
+  local view, presentation, plan = fixture(width, height, topology, section, variant)
   local drawnText = {}
-  local text = { drawText = function(_, value, x, y)
-    drawnText[#drawnText + 1] = value
-    graphics.print(value, x, y)
-  end }
+  local text = {
+    drawText = function(_, value, x, y)
+      drawnText[#drawnText + 1] = value
+      graphics.print(value, x, y)
+    end,
+  }
   local renderer = Renderer.new({ text = text })
   local canvas = scope:own(graphics.newCanvas(width, height))
   graphics.setCanvas(canvas)
@@ -52,10 +103,8 @@ local function draw(scope, width, height, topology, name)
   ApplicationPresentation.draw(graphics, { renderer = renderer }, view, plan)
   graphics.setCanvas()
   local data = scope:own(canvas:newImageData())
-  local output = io.open(
-    love.filesystem.getSourceBaseDirectory() .. "/tmp/agents/captures/save-editor-" .. name .. ".png",
-    "wb"
-  )
+  local output =
+    io.open(love.filesystem.getSourceBaseDirectory() .. "/tmp/agents/captures/save-editor-" .. name .. ".png", "wb")
   if output then
     output:write(data:encode("png"):getString())
     output:close()
@@ -68,10 +117,30 @@ local function draw(scope, width, height, topology, name)
     Assert.isTrue(target.x + target.width <= plan.content.width + 0.01, name .. " " .. targetId .. " fits width")
     Assert.isTrue(target.y + target.height <= plan.content.height + 0.01, name .. " " .. targetId .. " fits height")
   end
-  local row = assert(layout.targets["flag:FLAG_TEST"], name .. " must expose its flag target")
-  Assert.isTrue(row.y >= layout.content.y and row.y + row.height <= layout.content.y + layout.content.height)
+  if view.section == "Progress" then
+    local row = assert(layout.targets["flag:FLAG_TEST"], name .. " must expose its flag target")
+    Assert.isTrue(row.y >= layout.content.y and row.y + row.height <= layout.content.y + layout.content.height)
+  elseif view.section == "Party" then
+    if view.partyPage == "list" then
+      Assert.notNil(layout.targets["party:add"], name .. " keeps Add visible")
+      Assert.notNil(layout.targets["party:slot:0"], name .. " exposes the occupied slot")
+    else
+      Assert.notNil(layout.targets["party:field:personality"], name .. " exposes raw identity")
+      Assert.notNil(layout.targets["party:readonly:nature"], name .. " explains derived nature")
+      Assert.notNil(layout.targets["party:apply"], name .. " exposes the nested Apply decision")
+      Assert.notNil(layout.targets["party:cancel"], name .. " exposes the nested Cancel decision")
+    end
+  else
+    Assert.notNil(layout.targets["bag:item:POTION"], name .. " exposes the selected stack")
+    Assert.notNil(layout.targets["bag:quantity"], name .. " exposes quantity editing")
+    Assert.notNil(layout.targets["bag:add"], name .. " exposes Add item")
+  end
   local pane
-  for _, candidate in ipairs(plan.panes) do if candidate.interactive then pane = candidate end end
+  for _, candidate in ipairs(plan.panes) do
+    if candidate.interactive then
+      pane = candidate
+    end
+  end
   Assert.notNil(pane, name .. " must have an interactive pane")
   if name == "dual-touch" then
     Assert.isTrue(pane.placement.frame.y >= 192, "touch auxiliary owns the complete interactive editor")
@@ -81,7 +150,9 @@ local function draw(scope, width, height, topology, name)
   for y = 0, height - 1, 4 do
     for x = 0, width - 1, 4 do
       local r, g, b = data:getPixel(x, y)
-      if r < 0.9 or g < 0.9 or b < 0.9 then changed = changed + 1 end
+      if r < 0.9 or g < 0.9 or b < 0.9 then
+        changed = changed + 1
+      end
     end
   end
   Assert.isTrue(changed > 20, name .. " must render visible editor chrome")
@@ -90,13 +161,15 @@ local function draw(scope, width, height, topology, name)
   Assert.isTrue(renderedText:find("PLAYER"), name .. " shows the player identity")
   Assert.isTrue(renderedText:find("HEARTGOLD"), name .. " shows the game version")
   Assert.isTrue(renderedText:find("Unsaved changes"), name .. " shows the current dirty state in the footer")
-  for _, targetId in ipairs({ "group-previous", "group-next" }) do
-    local target = assert(layout.targets[targetId], name .. " exposes touch browsing for flag groups")
-    Assert.equal(
-      Layout.hitTest(layout, view, target.x + target.width / 2, target.y + target.height / 2),
-      targetId,
-      name .. " maps group browse touch targets"
-    )
+  if view.section == "Progress" then
+    for _, targetId in ipairs({ "group-previous", "group-next" }) do
+      local target = assert(layout.targets[targetId], name .. " exposes touch browsing for flag groups")
+      Assert.equal(
+        Layout.hitTest(layout, view, target.x + target.width / 2, target.y + target.height / 2),
+        targetId,
+        name .. " maps group browse touch targets"
+      )
+    end
   end
   renderer:dispose()
   presentation:dispose()
@@ -105,15 +178,24 @@ end
 
 function T.layouts_render_reachable_actions_on_compact_wide_tall_and_dual_surfaces(scope)
   local compact = ScreenTopology.oneDisplay({
-    id = "main", rect = { x = 0, y = 0, width = 256, height = 192 }, touch = false, role = "world",
+    id = "main",
+    rect = { x = 0, y = 0, width = 256, height = 192 },
+    touch = false,
+    role = "world",
   })
   draw(scope, 256, 192, compact, "compact")
   local wide = ScreenTopology.oneDisplay({
-    id = "main", rect = { x = 0, y = 0, width = 1280, height = 720 }, touch = false, role = "world",
+    id = "main",
+    rect = { x = 0, y = 0, width = 1280, height = 720 },
+    touch = false,
+    role = "world",
   })
   draw(scope, 1280, 720, wide, "wide")
   local tall = ScreenTopology.oneDisplay({
-    id = "main", rect = { x = 0, y = 0, width = 360, height = 640 }, touch = true, role = "world",
+    id = "main",
+    rect = { x = 0, y = 0, width = 360, height = 640 },
+    touch = true,
+    role = "world",
   })
   draw(scope, 360, 640, tall, "tall")
   local dual = ScreenTopology.dualDisplay(
@@ -123,10 +205,33 @@ function T.layouts_render_reachable_actions_on_compact_wide_tall_and_dual_surfac
   draw(scope, 256, 384, dual, "dual-touch")
 end
 
+function T.party_and_bag_render_on_compact_and_wide_surfaces(scope)
+  local compact = ScreenTopology.oneDisplay({
+    id = "main",
+    rect = { x = 0, y = 0, width = 256, height = 192 },
+    touch = false,
+    role = "world",
+  })
+  draw(scope, 256, 192, compact, "party-compact", "Party")
+  draw(scope, 256, 192, compact, "bag-compact", "Bag")
+  local wide = ScreenTopology.oneDisplay({
+    id = "main",
+    rect = { x = 0, y = 0, width = 1280, height = 720 },
+    touch = false,
+    role = "world",
+  })
+  draw(scope, 1280, 720, wide, "party-wide", "Party")
+  draw(scope, 1280, 720, wide, "party-raw-wide", "Party", "draft")
+  draw(scope, 1280, 720, wide, "bag-wide", "Bag")
+end
+
 function T.name_editor_renders_the_real_naming_snapshot_in_a_neutral_dialog(scope)
   local width, height = 256, 192
   local topology = ScreenTopology.oneDisplay({
-    id = "main", rect = { x = 0, y = 0, width = width, height = height }, touch = true, role = "world",
+    id = "main",
+    rect = { x = 0, y = 0, width = width, height = height },
+    touch = true,
+    role = "world",
   })
   local view = {
     status = "ready",
@@ -145,15 +250,22 @@ function T.name_editor_renders_the_real_naming_snapshot_in_a_neutral_dialog(scop
       subject = { kind = "player", gender = 0 },
     }):snapshot(),
   }
-  local context = DisplayContext.new({ graphics = love.graphics, topologyProvider = function() return topology end })
+  local context = DisplayContext.new({
+    graphics = love.graphics,
+    topologyProvider = function()
+      return topology
+    end,
+  })
   local presentation = ApplicationPresentation.new(Interface.defaults())
   local plan = presentation:resolve(context:measure(width, height), view)
   view.presentation, view.layout = plan, plan.content.layout
   local drawn = {}
-  local text = { drawText = function(_, value, x, y)
-    drawn[#drawn + 1] = value
-    love.graphics.print(value, x, y)
-  end }
+  local text = {
+    drawText = function(_, value, x, y)
+      drawn[#drawn + 1] = value
+      love.graphics.print(value, x, y)
+    end,
+  }
   local renderer = Renderer.new({ text = text })
   local canvas = scope:own(love.graphics.newCanvas(width, height))
   love.graphics.setCanvas(canvas)

@@ -3,6 +3,9 @@
 
 local Assert = require("tests.support.Assert")
 local Fixture = require("app.tests.support.SaveEditorFixture")
+local CatalogFixture = require("libs.mons.tests.catalog_fixture")
+local HgssBagService = require("libs.hgss.src.items.HgssBagService")
+local HgssMonService = require("libs.hgss.src.mons.HgssMonService")
 
 local T = {}
 
@@ -21,6 +24,22 @@ local function sessionFor(fixture)
     saveFs = fixture.saveFs,
     validateRecord = fixture.validateRecord,
     symbols = fixture.symbols,
+  })
+end
+
+local function monServiceFor(fixture, bucket)
+  local profile = fixture.initial.playerData.profile
+  return HgssMonService.new({
+    catalog = fixture.context.monCatalog,
+    bucket = bucket or fixture.initial.mons,
+    profile = { name = profile.name, gender = profile.gender, trainerId = profile.trainerId },
+    game = fixture.initial.versionId,
+    language = fixture.context.language,
+    charmap = CatalogFixture.CHARMAP,
+    games = CatalogFixture.GAMES,
+    languages = CatalogFixture.LANGUAGES,
+    date = CatalogFixture.metDate(),
+    mapSection = 7,
   })
 end
 
@@ -143,14 +162,30 @@ end
 
 function T.failed_publication_keeps_checkpoint_and_staged_state_for_retry()
   for _, failure in ipairs({
-    { method = "write", matches = function(path) return path:match("editor%-backups/.*%.tmp$") ~= nil end },
-    { method = "replace", matches = function(path, destination)
-      return path:match("editor%-backups/.*%.tmp$") ~= nil and destination:match("editor%-backups/.*%.lua$") ~= nil
-    end },
-    { method = "write", matches = function(path) return path:match("games/.*%.lua%.tmp$") ~= nil end },
-    { method = "replace", matches = function(path, destination)
-      return path:match("games/.*%.lua%.tmp$") ~= nil and destination:match("games/.*%.lua$") ~= nil
-    end },
+    {
+      method = "write",
+      matches = function(path)
+        return path:match("editor%-backups/.*%.tmp$") ~= nil
+      end,
+    },
+    {
+      method = "replace",
+      matches = function(path, destination)
+        return path:match("editor%-backups/.*%.tmp$") ~= nil and destination:match("editor%-backups/.*%.lua$") ~= nil
+      end,
+    },
+    {
+      method = "write",
+      matches = function(path)
+        return path:match("games/.*%.lua%.tmp$") ~= nil
+      end,
+    },
+    {
+      method = "replace",
+      matches = function(path, destination)
+        return path:match("games/.*%.lua%.tmp$") ~= nil and destination:match("games/.*%.lua$") ~= nil
+      end,
+    },
   }) do
     local fixture = Fixture.new()
     local session = stagedSession(fixture)
@@ -166,14 +201,21 @@ function T.failed_publication_keeps_checkpoint_and_staged_state_for_retry()
     Assert.isTrue(saved.ok, "the retained staged transaction must be retryable")
     Assert.isTrue(saved.changed)
     Assert.equal(assert(fixture.store:load(fixture.saveId)).playerData.profile.money, 6200)
-    Assert.notNil(fixture.backend.files[backupPath(fixture.saveId)], "the canonical session-entry checkpoint is retained")
+    Assert.notNil(
+      fixture.backend.files[backupPath(fixture.saveId)],
+      "the canonical session-entry checkpoint is retained"
+    )
     local checkpoint, checkpointError = fixture.saveFs:loadLua("editor-backups/" .. fixture.saveId .. ".lua")
     Assert.isNil(checkpointError)
     Assert.deepEqual(checkpoint, oldPublished)
     local backupBytes = fixture.backend.files[backupPath(fixture.saveId)]
     ok(session:setMoney(7300))
     Assert.isTrue(session:save().ok)
-    Assert.equal(fixture.backend.files[backupPath(fixture.saveId)], backupBytes, "one session keeps its entry checkpoint")
+    Assert.equal(
+      fixture.backend.files[backupPath(fixture.saveId)],
+      backupBytes,
+      "one session keeps its entry checkpoint"
+    )
     Assert.equal(assert(fixture.store:load(fixture.saveId)).playerData.profile.money, 7300)
   end
 
@@ -372,6 +414,88 @@ function T.flag_capacity_and_pending_drafts_leave_the_transaction_unchanged()
   Assert.isFalse(result.ok)
   Assert.equal(result.error.code, "SAVE_EDITOR_DRAFT_PENDING")
   Assert.isTrue(dirty:isDirty())
+end
+
+function T.party_and_bag_staging_use_real_domain_owners_and_reject_stale_drafts()
+  local fixture = Fixture.new()
+  local monService = monServiceFor(fixture)
+  for _, species in ipairs({ "CHIKORITA", "TOTODILE" }) do
+    Assert.isTrue(monService:giveMon({
+      species = species,
+      level = 5,
+      location = 7,
+      date = CatalogFixture.metDate(),
+    }))
+  end
+  local bagService = HgssBagService.new({ catalog = fixture.context.itemCatalog, bag = fixture.initial.bag })
+  Assert.isTrue(bagService:add("GREAT_BALL", 2))
+  local initial = fixture.copy(fixture.initial)
+  initial.mons = monService:capture()
+  initial.bag = bagService:capture()
+  Assert.isTrue(fixture.store:save(initial))
+  fixture.initial = assert(fixture.store:load(fixture.saveId))
+
+  local session = sessionFor(fixture)
+  local revision = session:partyRevision()
+  local party = session:partySnapshot()
+  Assert.equal(party.revision, revision)
+  Assert.equal(#party.members, 2)
+  Assert.deepEqual(party.members[1], { slot0 = 0, mon = monService:partyMon(0) })
+  party.members[1].mon.friendship = 0
+  Assert.deepEqual(session:captureCandidate().mons, fixture.initial.mons, "party snapshots are owned copies")
+
+  local stale = assert(session:beginMonEdit(0))
+  Assert.isTrue(stale:setScalar("friendship", 71))
+  Assert.isTrue(session:swapPartyMons(0, 1).ok)
+  local afterSwap = session:captureCandidate().mons
+  local rejected = session:applyMonDraft(stale)
+  Assert.isFalse(rejected.ok, "a draft cannot overwrite a new slot occupant")
+  Assert.deepEqual(session:captureCandidate().mons, afterSwap)
+
+  local edit = assert(session:beginMonEdit(0))
+  Assert.isTrue(edit:setScalar("friendship", 72))
+  local beforeAdd = session:captureCandidate()
+  local abandonedAdd = assert(session:beginMonAdd("EEVEE", {
+    location = 7,
+    date = CatalogFixture.metDate(),
+  }))
+  Assert.isTrue(abandonedAdd:record() ~= nil)
+  Assert.deepEqual(session:captureCandidate(), beforeAdd, "canceling a generated candidate leaves staged RNG untouched")
+  Assert.isTrue(session:applyMonDraft(edit).ok)
+  Assert.equal(session:partyRevision(), revision + 2)
+
+  local added = assert(session:beginMonAdd("EEVEE", {
+    location = 7,
+    date = CatalogFixture.metDate(),
+  }))
+  Assert.isTrue(session:applyMonDraft(added).ok)
+  Assert.equal(session:partyRevision(), revision + 3)
+  Assert.equal(session:captureCandidate().mons.party.mons[3].species, "EEVEE")
+
+  local bag = session:bagSnapshot("balls")
+  Assert.deepEqual(bag, { { item = "GREAT_BALL", quantity = 2 } })
+  bag[1].quantity = 0
+  Assert.equal(session:bagSnapshot("balls")[1].quantity, 2, "bag snapshots are owned copies")
+  local beforeRejectedBagCandidate = fixture.copy(session:captureCandidate().bag)
+  Assert.isFalse(session:setBagQuantity("GREAT_BALL", 1000).ok, "real stack caps reject invalid quantities")
+  Assert.deepEqual(
+    session:captureCandidate().bag,
+    beforeRejectedBagCandidate,
+    "a rejected cloned inventory candidate leaves the staged owner unchanged"
+  )
+  Assert.isTrue(session:setBagQuantity("GREAT_BALL", 4).ok)
+  Assert.isTrue(session:setBagQuantity("POTION", 3).ok)
+  Assert.equal(session:captureCandidate().bag.pockets.balls[1].quantity, 4)
+  Assert.equal(session:captureCandidate().bag.pockets.medicine[1].item, "POTION")
+  Assert.isTrue(session:setBagQuantity("GREAT_BALL", 0).ok)
+  Assert.equal(session:captureCandidate().bag.pockets.balls[1], nil)
+  Assert.isTrue(session:isDirty(), "party and inventory changes participate in transaction dirtiness")
+  local dirtyPartyRevision = session:partyRevision()
+  Assert.isTrue(session:discard())
+  Assert.equal(session:partyRevision(), dirtyPartyRevision + 1, "Discard invalidates party drafts")
+  Assert.isFalse(session:isDirty())
+  Assert.deepEqual(session:captureCandidate().mons, fixture.initial.mons)
+  Assert.deepEqual(session:captureCandidate().bag, fixture.initial.bag)
 end
 
 return { tests = T }

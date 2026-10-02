@@ -14,6 +14,10 @@ local ValueEditor = require("app.src.saveeditor.SaveEditorValueEditor")
 local Composition = require("app.src.saveeditor.SaveEditorComposition")
 local FieldScriptSymbols = require("libs.assets.src.field.FieldScriptSymbols")
 local Utf8Glyphs = require("libs.assets.src.Utf8Glyphs")
+local HgssMonService = require("libs.hgss.src.mons.HgssMonService")
+local ItemAssetSchema = require("libs.assets.src.ItemAssetSchema")
+local Experience = require("libs.mons.src.gen4.Experience")
+local Personality = require("libs.mons.src.gen4.Personality")
 
 ---@class SaveEditorState
 ---@field valueEditor SaveEditorValueEditor?
@@ -39,6 +43,15 @@ local Utf8Glyphs = require("libs.assets.src.Utf8Glyphs")
 ---@field resultSent boolean
 ---@field approvedExit boolean
 ---@field closeReason string?
+---@field monDraft SaveEditorMonDraft?
+---@field pendingDraftAction table<string, unknown>?
+---@field activeDraftField table<string, unknown>?
+---@field valuePurpose string?
+---@field dateProvider fun(): table<string, integer>
+---@field iconStatus string?
+---@field iconFailure string?
+---@field pendingRemove table<string, unknown>?
+---@field pendingQuantity table<string, unknown>?
 local State = {}
 State.__index = State
 
@@ -64,6 +77,12 @@ function State.new(options)
   if width == nil or height == nil then
     width, height = love.graphics.getDimensions()
   end
+  local dateProvider = options.dateProvider
+    or function()
+      local date = os.date("*t")
+      return { year = date.year, month = date.month, day = date.day }
+    end
+  assert(type(dateProvider) == "function", "save editor date provider must be callable")
   local text = makeText(options.versionId)
   local rendererOk, rendererOrError = pcall(Renderer.new, { text = text })
   if not rendererOk then
@@ -104,6 +123,15 @@ function State.new(options)
     resultSent = false,
     approvedExit = false,
     closeReason = nil,
+    monDraft = nil,
+    pendingDraftAction = nil,
+    activeDraftField = nil,
+    valuePurpose = nil,
+    dateProvider = dateProvider,
+    iconStatus = nil,
+    iconFailure = nil,
+    pendingRemove = nil,
+    pendingQuantity = nil,
   }, State)
   local resolveOk, resolveError = pcall(function()
     self:_resolve(self:_snapshot())
@@ -144,40 +172,48 @@ function State:_readyReadiness()
 end
 
 function State:update()
-  if self.disposed or self.status ~= "opening" then
+  if self.disposed then
     return
   end
-  local generation = self.generation
-  local readyOk, ready = pcall(function()
-    return self:_readyReadiness()
-  end)
-  if generation ~= self.generation or self.disposed then
-    return
+  if self.status == "opening" then
+    local generation = self.generation
+    local readyOk, ready = pcall(function()
+      return self:_readyReadiness()
+    end)
+    if generation ~= self.generation or self.disposed then
+      return
+    end
+    if not readyOk then
+      self:_openingFailed(ready)
+      return
+    end
+    if not ready then
+      return
+    end
+    local opened, graphOrError = pcall(Composition.open, {
+      versionId = self.versionId,
+      saveId = self.saveId,
+      repositoryRoot = self.repositoryRoot,
+      derivedAssets = self.derivedAssets,
+    })
+    if generation ~= self.generation or self.disposed then
+      return
+    end
+    if not opened then
+      self:_openingFailed(graphOrError)
+      return
+    end
+    self.dependencies = graphOrError
+    self.session = assert(graphOrError.session)
+    self.status, self.errorMessage = "ready", nil
+    self:_resolve(self:_snapshot())
   end
-  if not readyOk then
-    self:_openingFailed(ready)
-    return
+  if self.status == "ready" and self.renderer and self.dependencies then
+    local view = self:_snapshot()
+    local plan = self:_resolve(view)
+    self.renderer:prepareVisibleIcons(view, plan, self.dependencies.cacheFs, self.derivedAssets)
+    self.iconStatus, self.iconFailure = self.renderer.iconStatus, self.renderer.iconFailure
   end
-  if not ready then
-    return
-  end
-  local opened, graphOrError = pcall(Composition.open, {
-    versionId = self.versionId,
-    saveId = self.saveId,
-    repositoryRoot = self.repositoryRoot,
-    derivedAssets = self.derivedAssets,
-  })
-  if generation ~= self.generation or self.disposed then
-    return
-  end
-  if not opened then
-    self:_openingFailed(graphOrError)
-    return
-  end
-  self.dependencies = graphOrError
-  self.session = assert(graphOrError.session)
-  self.status, self.errorMessage = "ready", nil
-  self:_resolve(self:_snapshot())
 end
 
 function State:_openingFailed(err)
@@ -193,7 +229,9 @@ end
 function State:_snapshot()
   local session = self.session and self.session:snapshot() or nil
   local flags = session and self:_flagRows(session.flags) or {}
-  return {
+  local party = session and self:_partyView() or {}
+  local bag = session and self:_bagView() or {}
+  local view = {
     kind = "save_editor",
     status = self.status,
     message = self.errorMessage or self.message,
@@ -203,7 +241,7 @@ function State:_snapshot()
     saveId = self.saveId,
     session = session,
     ready = session ~= nil,
-    dirty = self.session ~= nil and self.session:isDirty() or false,
+    dirty = self.session ~= nil and self.session:isDirty() or self.monDraft ~= nil,
     dirtySections = session and session.dirtySections or { money = false, flags = false },
     section = self.controller.section,
     sections = self.controller:snapshot().sections,
@@ -221,7 +259,17 @@ function State:_snapshot()
     flagFilterLabel = self.controller.flagGroup or self.controller.flagFilter,
     flagRows = flags,
     valueEditor = self.valueEditor and self.valueEditor:snapshot() or nil,
+    unappliedDraft = self.monDraft ~= nil,
+    iconStatus = self.iconStatus,
+    iconFailure = self.iconFailure,
   }
+  for key, value in pairs(party) do
+    view[key] = value
+  end
+  for key, value in pairs(bag) do
+    view[key] = value
+  end
+  return view
 end
 
 function State:_flagRows(values)
@@ -243,6 +291,531 @@ function State:_flagRows(values)
   return rows
 end
 
+function State:_partyView()
+  local dependencies = assert(self.dependencies, "ready Party view requires editor dependencies")
+  local context = assert(dependencies.context)
+  local catalog = assert(context.monCatalog)
+  local snapshot = self.session:partySnapshot()
+  local members = snapshot.members
+  local controller = self.controller:snapshot()
+  local rows = {}
+  if controller.partyPage == "list" then
+    local bySlot = {}
+    for _, member in ipairs(members) do
+      bySlot[member.slot0] = member.mon
+    end
+    for slot0 = 0, 5 do
+      local mon = bySlot[slot0]
+      if mon ~= nil then
+        local species = catalog:species(mon.species)
+        rows[#rows + 1] = {
+          role = "action",
+          targetId = "party:slot:" .. slot0,
+          label = mon.nickname ~= nil and mon.nickname ~= "" and mon.nickname or species.name or mon.species,
+          value = mon.species,
+          iconKey = catalog:iconSelection(mon),
+          slot0 = slot0,
+        }
+      else
+        rows[#rows + 1] = {
+          role = "read-only value",
+          targetId = "party:empty-slot:" .. slot0,
+          label = "Empty slot " .. (slot0 + 1),
+        }
+      end
+    end
+  elseif controller.partySlot0 ~= nil or self.monDraft ~= nil then
+    local mon = self.monDraft and self.monDraft:record() or self:_selectedPartyMon(members)
+    local projection = self.monDraft and self.monDraft:projection() or {}
+    local valid, validationError = mon, nil
+    if self.monDraft then
+      valid, validationError = self.monDraft:validate()
+    end
+    rows = self:_monRows(mon, projection, controller.partySubpage, self.monDraft ~= nil)
+    if validationError ~= nil then
+      rows[#rows + 1] = { role = "warning", targetId = "party:validation", label = message(validationError) }
+    elseif self.monDraft and valid == nil then
+      rows[#rows + 1] =
+        { role = "warning", targetId = "party:validation", label = "Correct invalid fields before Apply." }
+    end
+  end
+  local selected = controller.partySlot0
+  local draftDirty = self.monDraft ~= nil and (self.monDraft:mode() == "add" or self.monDraft:isDirty())
+  return {
+    partyPage = controller.partyPage,
+    partySlot0 = selected,
+    partyLastSlot0 = #members - 1,
+    partySubpage = controller.partySubpage,
+    partySubpages = { "Identity", "Training", "Stats", "Moves", "Origin" },
+    partyRows = rows,
+    partyCanAdd = #members < 6,
+    partyDirty = draftDirty,
+    partyValid = self.monDraft ~= nil and self.monDraft:validate() ~= nil,
+    partyMemberCount = #members,
+    partyError = self.errorMessage,
+  }
+end
+
+function State:_selectedPartyMon(members)
+  local slot0 = assert(self.controller.partySlot0, "Party detail requires a selected slot")
+  for _, member in ipairs(members) do
+    if member.slot0 == slot0 then
+      return member.mon
+    end
+  end
+  error("selected party slot is no longer available", 2)
+end
+
+function State:_monRows(mon, projection, subpage, editable)
+  local dependencies = assert(self.dependencies)
+  local context = assert(dependencies.context)
+  local catalog = assert(context.monCatalog)
+  local rows = {}
+  local function add(fieldId, label, value, role, editor)
+    rows[#rows + 1] = {
+      role = editable and role or "read-only value",
+      targetId = editable and editor and ("party:field:" .. fieldId) or ("party:readonly:" .. fieldId),
+      id = fieldId,
+      label = label,
+      value = value,
+      editor = editable and editor or nil,
+      enabled = editable and editor ~= nil,
+    }
+  end
+  local function integer(fieldId, label, value, minimum, maximum, base, setter)
+    add(fieldId, label, value, "integer value", {
+      kind = "integer",
+      value = value,
+      min = minimum,
+      max = maximum,
+      base = base or "decimal",
+      setter = setter or "scalar",
+      fieldId = fieldId,
+    })
+  end
+  local function choice(fieldId, label, value, options, setter, convert)
+    add(fieldId, label, value, "named choice", {
+      kind = "choice",
+      value = value,
+      options = options,
+      setter = setter or "scalar",
+      fieldId = fieldId,
+      convert = convert,
+    })
+  end
+  local function textName(fieldId, label, value, kind, subject)
+    add(fieldId, label, value, "action", {
+      kind = "name",
+      value = value or "",
+      nameKind = kind,
+      subject = subject,
+      setter = fieldId == "nickname" and "scalar" or "origin",
+      fieldId = fieldId,
+    })
+    if fieldId == "nickname" and editable then
+      rows[#rows + 1] = {
+        role = "action",
+        targetId = "party:clear-nickname",
+        id = "clear-nickname",
+        label = "Clear nickname",
+        enabled = true,
+      }
+    end
+  end
+
+  if subpage == "Identity" then
+    local species = catalog:species(mon.species)
+    local speciesOptions = self:_catalogOptions(catalog:speciesKeys(), function(key)
+      return catalog:species(key).name or key
+    end)
+    local forms = {}
+    for formId in pairs(species.forms) do
+      forms[#forms + 1] = formId
+    end
+    table.sort(forms)
+    local formOptions = self:_catalogOptions(forms, function(key)
+      return tostring(key)
+    end)
+    local abilityOptions = {}
+    local formOk, form = pcall(catalog.form, catalog, mon.species, mon.form)
+    if formOk then
+      abilityOptions = self:_catalogOptions(form.abilities, function(key)
+        return catalog:ability(key).name or key
+      end)
+    end
+    local itemCatalog = assert(context.itemCatalog)
+    local heldItems = itemCatalog:itemKeys()
+    local heldOptions = self:_catalogOptions(heldItems, function(key)
+      return itemCatalog:item(key).name or key
+    end)
+    choice("species", "Species", mon.species, speciesOptions)
+    choice("form", "Form", tostring(mon.form), formOptions, "scalar", "integer")
+    textName(
+      "nickname",
+      "Nickname",
+      mon.nickname,
+      "pokemon",
+      { kind = "pokemon", species = mon.species, form = mon.form }
+    )
+    integer("personality", "Personality", mon.personality, 0, 4294967295, "hex")
+    choice("ability", "Ability", mon.ability, abilityOptions)
+    choice("heldItem", "Held item", mon.heldItem, heldOptions)
+    local abilityId = "Unavailable"
+    local abilityOk, abilityDefinition = pcall(catalog.ability, catalog, mon.ability)
+    if abilityOk then
+      abilityId = abilityDefinition.nativeId
+    elseif not Errors.is(abilityDefinition) then
+      error(abilityDefinition, 0)
+    end
+    add("species-native-id", "Native species ID", species.nativeId)
+    add("form-native-id", "Native form ID", mon.form)
+    add("ability-native-id", "Native ability ID", abilityId)
+    ---@type string|integer
+    local abilitySlot = "Unavailable"
+    if formOk and projection.nature ~= nil then
+      abilitySlot = Personality.abilitySlot(#form.abilities, mon.personality)
+    end
+    add("pid-ability-slot", "PID ability slot", abilitySlot)
+    add("nature", "Nature (derived)", projection.nature or "Unavailable")
+    add("gender", "Gender (derived)", projection.gender or "Unavailable")
+    add("shiny", "Shiny (derived)", projection.shiny == nil and "Unavailable" or (projection.shiny and "Yes" or "No"))
+  elseif subpage == "Training" then
+    local species = catalog:species(mon.species)
+    local expRange = "Unavailable"
+    if projection.level then
+      local curve = catalog:growthCurve(species.growthCurve)
+      local lower = Experience.expFor(curve, projection.level)
+      local upper = projection.level < 100 and Experience.expFor(curve, projection.level + 1) or nil
+      expRange = tostring(lower) .. "–" .. tostring(upper or "MAX")
+    end
+    integer("experience", "Experience", mon.experience, 0, 4294967295)
+    integer("friendship", "Friendship", mon.friendship, 0, 255)
+    add("level", "Level (derived)", projection.level or "Unavailable")
+    add("growth-curve", "Growth curve", species.growthCurve)
+    add("exp-interval", "Current level EXP interval", expRange)
+  elseif subpage == "Stats" then
+    local names = {
+      { "hp", "HP" },
+      { "attack", "Attack" },
+      { "defense", "Defense" },
+      { "speed", "Speed" },
+      { "specialAttack", "Special Attack" },
+      { "specialDefense", "Special Defense" },
+    }
+    for _, stat in ipairs(names) do
+      integer("iv:" .. stat[1], stat[2] .. " IV", mon.ivs[stat[1]], 0, 31, nil, "iv")
+      integer("ev:" .. stat[1], stat[2] .. " EV", mon.evs[stat[1]], 0, 255, nil, "ev")
+      add("stat:" .. stat[1], stat[2] .. " (derived)", projection.stats and projection.stats[stat[1]] or "Unavailable")
+    end
+    add("max-hp", "Maximum HP (derived)", projection.stats and projection.stats.hp or "Unavailable")
+    integer("currentHp", "Current HP", mon.condition.currentHp, 0, 4294967295)
+    integer("status", "Status", mon.condition.status, 0, 4294967295, "hex")
+    local evTotal = 0
+    for _, value in pairs(mon.evs) do
+      evTotal = evTotal + value
+    end
+    add("ev-total", "EV total", evTotal)
+    add("ev-limit", "EV limit", "510")
+  elseif subpage == "Moves" then
+    for slot0, move in ipairs(mon.moves) do
+      local index0 = slot0 - 1
+      local prefix = "move:" .. index0 .. ":"
+      local moveOptions = self:_catalogOptions(catalog:moveKeys(), function(key)
+        return catalog:move(key).name or key
+      end)
+      choice(prefix .. "move", "Move " .. (index0 + 1), move.move, moveOptions, "move")
+      local moveData = catalog:move(move.move)
+      add(prefix .. "native-id", "Move native ID", moveData.nativeId)
+      add(prefix .. "type", "Move type", moveData.type)
+      add(prefix .. "power", "Move power", moveData.power)
+      add(prefix .. "accuracy", "Move accuracy", moveData.accuracy)
+      add(prefix .. "base-pp", "Base PP allowance", moveData.basePp)
+      add(
+        prefix .. "allowed-pp",
+        "PP allowance at current Ups",
+        moveData.basePp + math.floor(moveData.basePp * move.ppUps / 5)
+      )
+      integer(prefix .. "pp", "PP", move.pp, 0, 255, nil, "move")
+      integer(prefix .. "ppUps", "PP Ups", move.ppUps, 0, 3, nil, "move")
+      rows[#rows + 1] =
+        { role = "action", targetId = "party:move:remove:" .. index0, label = "Remove move " .. (index0 + 1) }
+    end
+    if #mon.moves < 4 then
+      rows[#rows + 1] = { role = "action", targetId = "party:move:add", label = "Add move" }
+    end
+  else
+    local origin, met = mon.origin, mon.met
+    local genders = { { key = "0", label = "Male" }, { key = "1", label = "Female" } }
+    integer("trainerId", "Trainer ID", origin.trainerId, 0, 4294967295, "hex", "origin")
+    textName("trainerName", "Trainer name", origin.trainerName, "player", {
+      kind = "player",
+      gender = origin.trainerGender,
+    })
+    choice("trainerGender", "Trainer gender", tostring(origin.trainerGender), genders, "origin", "integer")
+    choice(
+      "game",
+      "Origin game",
+      origin.game,
+      self:_catalogOptions(HgssMonService.GAMES, function(key)
+        return key
+      end, true),
+      "origin"
+    )
+    choice(
+      "language",
+      "Language",
+      origin.language,
+      self:_catalogOptions(HgssMonService.LANGUAGES, function(key)
+        return key
+      end, true),
+      "origin"
+    )
+    local ballOptions = {}
+    for _, key in ipairs(context.itemCatalog:itemKeys()) do
+      if context.itemCatalog:item(key).pocket == "balls" then
+        ballOptions[#ballOptions + 1] = { key = key, label = context.itemCatalog:item(key).name or key }
+      end
+    end
+    choice("ball", "Ball", origin.ball, ballOptions, "origin")
+    integer("location", "Met location", met.location, 0, 65535, nil, "met")
+    integer("year", "Met year", met.date.year, 2000, 2255, nil, "met")
+    integer("month", "Met month", met.date.month, 1, 12, nil, "met")
+    integer("day", "Met day", met.date.day, 1, 31, nil, "met")
+    integer("level", "Met level", met.level, 1, 100, nil, "met")
+    integer("terrain", "Met terrain", met.terrain, 0, 255, nil, "met")
+  end
+  return rows
+end
+
+function State:_catalogOptions(keys, labelFor, numericKeys)
+  local options = {}
+  for key, value in pairs(keys) do
+    local optionKey = numericKeys and key or value
+    if numericKeys then
+      optionKey = key
+    elseif type(keys) == "table" and type(key) == "number" then
+      optionKey = value
+    end
+    local textKey = tostring(optionKey)
+    options[#options + 1] = { key = textKey, label = labelFor(textKey) }
+  end
+  table.sort(options, function(a, b)
+    return a.key < b.key
+  end)
+  return options
+end
+
+function State:_bagView()
+  local context = assert(self.dependencies.context)
+  local itemCatalog = assert(context.itemCatalog)
+  local pocketKeys = {}
+  for key in pairs(ItemAssetSchema.POCKETS) do
+    pocketKeys[#pocketKeys + 1] = key
+  end
+  table.sort(pocketKeys, function(a, b)
+    return itemCatalog:pocket(a).nativeId < itemCatalog:pocket(b).nativeId
+  end)
+  local pockets = {}
+  for _, key in ipairs(pocketKeys) do
+    pockets[#pockets + 1] = { key = key, label = itemCatalog:pocketName(key) }
+  end
+  local snapshot = self.session:bagSnapshot(self.controller.bagPocket)
+  local rows = {}
+  for _, entry in ipairs(snapshot) do
+    rows[#rows + 1] = {
+      item = entry.item,
+      label = itemCatalog:item(entry.item).name or entry.item,
+      quantity = entry.quantity,
+    }
+  end
+  local selectedQuantity = nil
+  for _, row in ipairs(rows) do
+    if row.item == self.controller.bagItemKey then
+      selectedQuantity = row.quantity
+      break
+    end
+  end
+  return {
+    bagPocket = self.controller.bagPocket,
+    bagPocketLabel = itemCatalog:pocketName(self.controller.bagPocket),
+    bagPockets = pockets,
+    bagRows = rows,
+    bagSelectedItem = self.controller.bagItemKey,
+    bagSelectedQuantity = selectedQuantity,
+  }
+end
+
+function State:_openEditor(descriptor)
+  assert(type(descriptor) == "table" and type(descriptor.kind) == "string")
+  local options = { kind = descriptor.kind }
+  if descriptor.kind == "integer" then
+    options.value = descriptor.value
+    options.min = descriptor.min
+    options.max = descriptor.max
+    options.base = descriptor.base
+  elseif descriptor.kind == "choice" then
+    options.options = descriptor.options
+    options.value = descriptor.value
+  else
+    options.nameKind = descriptor.nameKind
+    options.maxLength = descriptor.nameKind == "pokemon" and 10 or 7
+    options.initialText = descriptor.value
+    options.charmap = assert(self.dependencies.context.charmap)
+    options.subject = descriptor.subject
+  end
+  self.valueEditor = ValueEditor.new(options)
+  self.activeDraftField = descriptor
+end
+
+function State:_partyField(targetId)
+  local view = self:_snapshot()
+  for _, row in ipairs(view.partyRows) do
+    if row.targetId == targetId then
+      return row.editor
+    end
+  end
+  return nil
+end
+
+function State:_setDraftValue(descriptor, value)
+  local draft = assert(self.monDraft, "raw Party fields require an active draft")
+  if descriptor.setter == "iv" then
+    return draft:setIV(descriptor.fieldId:sub(4), value)
+  elseif descriptor.setter == "ev" then
+    return draft:setEV(descriptor.fieldId:sub(4), value)
+  elseif descriptor.setter == "move" then
+    local slot0, component = descriptor.fieldId:match("^move:(%d+):(.+)$")
+    assert(slot0 ~= nil and component ~= nil, "move field descriptor carries its slot and component")
+    local moveSlot0 = assert(tonumber(slot0))
+    assert(moveSlot0 % 1 == 0, "move slot index is an integer")
+    ---@cast moveSlot0 integer
+    return draft:setMove(moveSlot0, component, value)
+  elseif descriptor.setter == "origin" then
+    return draft:setOrigin(descriptor.fieldId, value)
+  elseif descriptor.setter == "met" then
+    return draft:setMet(descriptor.fieldId, value)
+  end
+  return draft:setScalar(descriptor.fieldId, value)
+end
+
+function State:_finishValueEditor()
+  local editor = self.valueEditor
+  if editor == nil then
+    return
+  end
+  local result = editor:result()
+  if result == nil then
+    return
+  end
+  local purpose = self.valuePurpose
+  local descriptor = self.activeDraftField
+  self.valueEditor, self.valuePurpose, self.activeDraftField = nil, nil, nil
+  if result.kind == "cancel" then
+    self.pendingQuantity = nil
+    return
+  end
+  if purpose == "money" then
+    local changed = self.session:setMoney(result.value)
+    if not changed.ok then
+      self.errorMessage = message(changed.error)
+    end
+  elseif purpose == "party_add_species" then
+    self:_beginMonAdd(result.value)
+  elseif purpose == "party_add_move" then
+    if not self.monDraft:addMove(result.value) then
+      self.errorMessage = "That move cannot be added to this member."
+    else
+      self.errorMessage = nil
+    end
+  elseif purpose == "bag_pocket" then
+    self.controller:selectBagPocket(result.value)
+  elseif purpose == "bag_add_item" then
+    self.controller:selectBagItem(result.value)
+    self:_openBagQuantity("add")
+  elseif purpose == "bag_quantity" then
+    local pending = assert(self.pendingQuantity)
+    if pending.mode == "add" and result.value == 0 then
+      self.errorMessage = "Add item must set a quantity above zero."
+    elseif result.value == 0 then
+      self.pendingRemove = { kind = "bag", itemKey = pending.itemKey }
+      self.controller:openModal("remove")
+    else
+      self:_publishBagQuantity(pending.itemKey, result.value)
+    end
+    self.pendingQuantity = nil
+  elseif descriptor ~= nil and self.monDraft ~= nil then
+    local value = result.value
+    if descriptor.convert == "integer" then
+      value = assert(tonumber(value))
+    end
+    if not self:_setDraftValue(descriptor, value) then
+      self.errorMessage = "That value is not valid for this field."
+    end
+  end
+end
+
+function State:_beginMonAdd(species)
+  local world = assert(self.dependencies.world)
+  local currentMapId = self.session:snapshot().location.mapId
+  local map = assert(world.maps[world.byId[currentMapId]], "current map must be present in structural world data")
+  local date = self.dateProvider()
+  local draft, draftError = self.session:beginMonAdd(species, {
+    location = assert(map.mapSectionNativeId),
+    date = date,
+  })
+  if draft == nil then
+    self.errorMessage = message(assert(draftError))
+    return
+  end
+  self.monDraft = draft
+  self.controller:openPartyDraft()
+  self.controller.partySlot0 = nil
+  self.errorMessage = nil
+end
+
+function State:_beginBagAdd()
+  local catalog = assert(self.dependencies.context.itemCatalog)
+  local options = {}
+  for _, key in ipairs(catalog:itemKeys()) do
+    local item = catalog:item(key)
+    if key ~= "NONE" and item.pocket == self.controller.bagPocket then
+      options[#options + 1] = { key = key, label = item.name or key }
+    end
+  end
+  if #options == 0 then
+    self.errorMessage = "This pocket has no items to add."
+    return
+  end
+  self.valuePurpose = "bag_add_item"
+  self.valueEditor = ValueEditor.new({ kind = "choice", options = options })
+end
+
+function State:_openBagQuantity(mode)
+  local itemKey = assert(self.controller.bagItemKey)
+  local catalog = assert(self.dependencies.context.itemCatalog)
+  local item = catalog:item(itemKey)
+  local pocket = catalog:pocket(item.pocket)
+  local current = self:_bagView().bagSelectedQuantity or 0
+  self.pendingQuantity = { itemKey = itemKey, mode = mode }
+  self.valuePurpose = "bag_quantity"
+  self.valueEditor = ValueEditor.new({
+    kind = "integer",
+    value = mode == "add" and current + 1 or current,
+    min = 0,
+    max = pocket.maxQuantity,
+    base = "decimal",
+  })
+end
+
+function State:_publishBagQuantity(itemKey, quantity)
+  local result = self.session:setBagQuantity(itemKey, quantity)
+  if not result.ok then
+    self.errorMessage = message(result.error)
+  else
+    self.errorMessage = nil
+  end
+end
+
 function State:_resolve(view)
   return self.presentation:resolve(self.displayContext:measure(self.width, self.height), view)
 end
@@ -255,11 +828,134 @@ function State:_sendResult()
   self.onResult({ kind = "main_menu" })
 end
 
+function State:_requestDraftResolution(action)
+  if self.monDraft == nil then
+    self:_performDeferred(action)
+    return false
+  end
+  local dirty = self.monDraft:mode() == "add" or self.monDraft:isDirty()
+  if not dirty then
+    self.monDraft = nil
+    self:_performDeferred(action)
+    return false
+  end
+  self.pendingDraftAction = action
+  self.controller:openModal("draft")
+  return true
+end
+
+function State:_performDeferred(action)
+  if action == nil then
+    return
+  elseif action.kind == "back" then
+    if self.session and self.session:isDirty() then
+      self.closeReason = "back"
+      self.controller:openModal("leave")
+    else
+      self:_sendResult()
+    end
+  elseif action.kind == "close" then
+    if action.reason == "quit" and self.session and self.session:isDirty() then
+      self.closeReason = "quit"
+      self.controller:openModal("leave")
+    elseif action.reason == "back" then
+      self:_sendResult()
+    end
+  elseif action.kind == "section" then
+    self.controller:setSection(action.section)
+    if action.section == "Progress" then
+      self.controller.focus = "flag:" .. self:_firstFlagName()
+    end
+    self.errorMessage = nil
+  elseif action.kind == "save" then
+    self:_save(false)
+  elseif action.kind == "session-discard" then
+    self:_discard(false)
+  elseif action.kind == "leave-save" then
+    self.closeReason = action.reason
+    self:_save(true)
+  elseif action.kind == "party-slot" then
+    self.controller:selectPartySlot(action.slot0)
+  elseif action.kind == "party-subpage" then
+    self.controller:selectPartySubpage(action.subpage)
+  elseif action.kind == "party-detail" then
+    if self.controller.partySlot0 ~= nil then
+      self.controller.partyPage = "detail"
+      self.controller.focus = "party:edit"
+    else
+      self.controller.partyPage = "list"
+      self.controller.focus = "party:add"
+    end
+  end
+end
+
+function State:_resolveDraftChoice(action)
+  local draft = assert(self.monDraft)
+  if action == "cancel" then
+    self.controller.modal = nil
+    self.pendingDraftAction = nil
+    return
+  elseif action == "apply" then
+    local canonical, validationError = draft:validate()
+    if canonical == nil then
+      self.errorMessage = message(assert(validationError))
+      return
+    end
+    local result = self.session:applyMonDraft(draft)
+    if not result.ok then
+      self.errorMessage = message(result.error)
+      return
+    end
+  elseif action ~= "discard" then
+    return
+  end
+  local previous = draft
+  self.monDraft = nil
+  self.errorMessage = nil
+  if previous:mode() == "add" and action == "discard" then
+    self.controller.partyPage = "list"
+    self.controller.partySlot0 = nil
+    self.controller.focus = "party:add"
+  elseif previous:mode() == "add" then
+    local members = self.session:partySnapshot().members
+    local added = assert(members[#members], "applied new member must appear in the party")
+    self.controller.partySlot0 = added.slot0
+    self.controller.partyPage = "detail"
+    self.controller.focus = "party:edit"
+  else
+    self.controller.partyPage = "detail"
+    self.controller.focus = "party:edit"
+  end
+  self.controller.modal = nil
+  local pending = self.pendingDraftAction
+  self.pendingDraftAction = nil
+  self:_performDeferred(pending)
+end
+
+function State:_confirmRemoval()
+  local pending = assert(self.pendingRemove)
+  self.pendingRemove = nil
+  self.controller.modal = nil
+  if pending.kind == "party" then
+    local result = self.session:removePartyMon(pending.slot0)
+    if not result.ok then
+      self.errorMessage = message(result.error)
+      return
+    end
+    self.controller.partyPage = "list"
+    self.controller.partySlot0 = nil
+    self.controller.focus = "party:add"
+  else
+    self:_publishBagQuantity(pending.itemKey, 0)
+    self.controller.bagItemKey = nil
+  end
+end
+
 function State:_save(leave)
   if not self.session then
     return false
   end
-  local result = self.session:save(self.valueEditor ~= nil)
+  local result = self.session:save(self.valueEditor ~= nil or self.monDraft ~= nil)
   if not result.ok then
     self.errorMessage = message(result.error)
     return false
@@ -285,6 +981,8 @@ function State:_discard(leave)
   if self.session then
     self.session:discard()
   end
+  self.monDraft = nil
+  self.pendingDraftAction = nil
   self.errorMessage = nil
   if leave then
     self.controller.modal = nil
@@ -301,7 +999,16 @@ function State:_requestBack()
   if self.valueEditor then
     self.valueEditor:cancel()
     self.valueEditor = nil
+    self.valuePurpose = nil
+    self.activeDraftField = nil
     self.controller:cancelInteraction()
+  elseif self.monDraft ~= nil then
+    self:_requestDraftResolution({ kind = "back" })
+  elseif self.controller.section == "Party" and self.controller.partyPage == "detail" then
+    self.controller:closePartyDetail()
+  elseif self.controller.section == "Bag" and self.controller.bagItemKey ~= nil then
+    self.controller.bagItemKey = nil
+    self.controller.focus = "bag:pocket:" .. self.controller.bagPocket
   elseif self.session and self.session:isDirty() then
     self.closeReason = "back"
     self.controller:openModal("leave")
@@ -318,12 +1025,19 @@ function State:requestClose(reason)
   if self.disposed then
     return false
   end
-  if self.valueEditor or (self.session and self.session:isDirty()) then
+  if self.valueEditor and self.monDraft ~= nil then
+    self.valueEditor:cancel()
+    self.valueEditor = nil
+    self.valuePurpose = nil
+    self.activeDraftField = nil
+  end
+  if self.monDraft ~= nil then
+    return self:_requestDraftResolution({ kind = "close", reason })
+  elseif self.valueEditor ~= nil or (self.session and self.session:isDirty()) then
     self.closeReason = reason
     self.controller:openModal("leave")
     return true
-  end
-  if reason == "back" then
+  elseif reason == "back" then
     self:_sendResult()
   end
   return false
@@ -343,63 +1057,59 @@ function State:_activate(targetId)
     end
     return
   end
-  if self.valueEditor then
+  if self.valueEditor and self.controller.modal == nil then
     local valueKind = self.valueEditor:snapshot().kind
     local digitAction = targetId:match("^digit%-(.+)$")
     if digitAction then
       self.valueEditor:press(digitAction)
-    elseif valueKind == "choice" then
-      if targetId == "page-next" then
-        self.valueEditor:press("page_next")
-      elseif targetId == "page-previous" then
-        self.valueEditor:press("page_previous")
-      else
-        self.valueEditor:activateTarget(targetId)
-      end
+    elseif targetId == "page-next" then
+      self.valueEditor:press("page_next")
+    elseif targetId == "page-previous" then
+      self.valueEditor:press("page_previous")
     elseif valueKind == "name" then
       local controlId = targetId:match("^name%-control:(.+)$")
-      if controlId then
-        self.valueEditor:activateTarget(controlId)
-      else
-        self.valueEditor:activateTarget(targetId)
-      end
+      self.valueEditor:activateTarget(controlId or targetId)
     elseif targetId == "confirm" then
-      if self.valueEditor:press("confirm") then
-        local result = self.valueEditor:result()
-        if result and result.kind == "confirm" then
-          local changed = self.session:setMoney(result.value)
-          if changed.ok then
-            self.valueEditor = nil
-          else
-            self.errorMessage = message(changed.error)
-          end
-        end
-      end
-    elseif targetId == "cancel" then
-      self.valueEditor:cancel()
-      self.valueEditor = nil
+      self.valueEditor:press("confirm")
+    else
+      self.valueEditor:activateTarget(targetId)
     end
+    self:_finishValueEditor()
     return
   end
   if self.controller.modal then
-    if targetId == "cancel" then
+    if self.controller.modal == "draft" then
+      self:_resolveDraftChoice(targetId)
+    elseif self.controller.modal == "remove" then
+      if targetId == "remove" then
+        self:_confirmRemoval()
+      elseif targetId == "cancel" then
+        self.pendingRemove = nil
+        self.controller.modal = nil
+      end
+    elseif targetId == "cancel" then
       self.controller.modal = nil
     elseif targetId == "discard" then
       self:_discard(true)
     elseif targetId == "save" then
-      self:_save(true)
+      self:_requestDraftResolution({ kind = "leave-save", reason = self.closeReason })
     end
     return
   end
-  if targetId == "section:Player" or targetId == "section:Progress" then
-    self.controller.section = targetId:sub(9)
-    self.controller.focus = self.controller.section == "Player" and "money" or ("flag:" .. self:_firstFlagName())
-    self.controller:cancelInteraction()
-    return
-  end
+  local section = targetId:match("^section:(.+)$")
   if targetId == "section" then
-    self.controller.section = self.controller.section == "Player" and "Progress" or "Player"
-    self.controller.focus = self.controller.section == "Player" and "money" or ("flag:" .. self:_firstFlagName())
+    local sections = { "Player", "Party", "Bag", "Progress" }
+    local current = 1
+    for index, value in ipairs(sections) do
+      if value == self.controller.section then
+        current = index
+        break
+      end
+    end
+    section = sections[current % #sections + 1]
+  end
+  if section ~= nil then
+    self:_requestDraftResolution({ kind = "section", section = section })
     return
   end
   if targetId == "group-previous" then
@@ -419,6 +1129,7 @@ function State:_activate(targetId)
     local money = assert(self.session:snapshot().money)
     self.valueEditor =
       ValueEditor.new({ kind = "integer", value = money, min = 0, max = PlayerData.MAX_MONEY, base = "decimal" })
+    self.valuePurpose = "money"
     self._pointerOpenedValue = self._pointerDispatching == true
   elseif targetId:sub(1, 5) == "flag:" then
     local name = targetId:sub(6)
@@ -428,11 +1139,109 @@ function State:_activate(targetId)
       self.errorMessage = message(result.error)
     end
   elseif targetId == "save" then
-    self:_save(false)
+    self:_requestDraftResolution({ kind = "save" })
   elseif targetId == "discard" then
-    self:_discard(false)
+    self:_requestDraftResolution({ kind = "session-discard" })
   elseif targetId == "back" then
     self:_requestBack()
+  elseif targetId:match("^party:slot:") then
+    local slot0 = assert(tonumber(targetId:match("^party:slot:(%d+)$")))
+    self:_requestDraftResolution({ kind = "party-slot", slot0 = slot0 })
+  elseif targetId == "party:add" then
+    local catalog = assert(self.dependencies.context.monCatalog)
+    local options = self:_catalogOptions(catalog:speciesKeys(), function(key)
+      return catalog:species(key).name or key
+    end)
+    self.valuePurpose = "party_add_species"
+    self.valueEditor = ValueEditor.new({ kind = "choice", options = options })
+  elseif targetId == "party:edit" then
+    local slot0 = assert(self.controller.partySlot0)
+    local draft, draftError = self.session:beginMonEdit(slot0)
+    if draft == nil then
+      self.errorMessage = message(assert(draftError))
+    else
+      self.monDraft = draft
+      self.controller:openPartyDraft()
+      self.errorMessage = nil
+    end
+  elseif targetId:match("^party:field:") then
+    local descriptor = self:_partyField(targetId)
+    if descriptor ~= nil then
+      self:_openEditor(descriptor)
+      self.valuePurpose = "party_field"
+    end
+  elseif targetId == "party:clear-nickname" then
+    if not self:_setDraftValue({ setter = "scalar", fieldId = "nickname" }, nil) then
+      self.errorMessage = "Nickname could not be cleared."
+    else
+      self.errorMessage = nil
+    end
+  elseif targetId:match("^party:subpage:") then
+    local subpage = assert(targetId:match("^party:subpage:(.+)$"))
+    if self.monDraft then
+      self:_requestDraftResolution({ kind = "party-subpage", subpage = subpage })
+    else
+      self.controller:selectPartySubpage(subpage)
+    end
+  elseif targetId == "party:back" then
+    if self.monDraft then
+      self:_requestDraftResolution({ kind = "party-detail" })
+    else
+      self.controller:closePartyDetail()
+    end
+  elseif targetId == "party:apply" then
+    self:_resolveDraftChoice("apply")
+  elseif targetId == "party:discard" then
+    self:_resolveDraftChoice("discard")
+  elseif targetId == "party:cancel" then
+    self:_requestDraftResolution({ kind = "party-detail" })
+  elseif targetId == "party:remove" then
+    self.pendingRemove = { kind = "party", slot0 = assert(self.controller.partySlot0) }
+    self.controller:openModal("remove")
+  elseif targetId == "party:move-up" or targetId == "party:move-down" then
+    local slot0 = assert(self.controller.partySlot0)
+    local other = targetId == "party:move-up" and slot0 - 1 or slot0 + 1
+    local result = self.session:swapPartyMons(slot0, other)
+    if not result.ok then
+      self.errorMessage = message(result.error)
+    else
+      self.controller.partySlot0 = other
+    end
+  elseif targetId:match("^party:move:remove:") then
+    local slot0 = assert(tonumber(targetId:match("^party:move:remove:(%d+)$")))
+    if self.monDraft then
+      assert(slot0 % 1 == 0, "move slot index is an integer")
+      ---@cast slot0 integer
+      self.monDraft:removeMove(slot0)
+    end
+  elseif targetId == "party:move:add" then
+    local catalog = assert(self.dependencies.context.monCatalog)
+    self.valuePurpose = "party_add_move"
+    self.valueEditor = ValueEditor.new({
+      kind = "choice",
+      options = self:_catalogOptions(catalog:moveKeys(), function(key)
+        return catalog:move(key).name or key
+      end),
+    })
+  elseif targetId == "bag:pocket:choose" then
+    local options = {}
+    for _, pocket in ipairs(self:_bagView().bagPockets) do
+      options[#options + 1] = { key = pocket.key, label = pocket.label }
+    end
+    self.valuePurpose = "bag_pocket"
+    self.valueEditor = ValueEditor.new({ kind = "choice", options = options, value = self.controller.bagPocket })
+  elseif targetId:match("^bag:pocket:") then
+    local pocket = assert(targetId:match("^bag:pocket:(.+)$"))
+    self.controller:selectBagPocket(pocket)
+  elseif targetId:match("^bag:item:") then
+    self.controller:selectBagItem(assert(targetId:match("^bag:item:(.+)$")))
+  elseif targetId == "bag:add" then
+    self:_beginBagAdd()
+  elseif targetId == "bag:quantity" then
+    self:_openBagQuantity("set")
+  elseif targetId == "bag:remove" then
+    self.pendingRemove = { kind = "bag", itemKey = assert(self.controller.bagItemKey) }
+    self.controller:openModal("remove")
   end
 end
 
@@ -518,9 +1327,31 @@ function State:_dispatchIntent(intent)
   elseif intent.kind == "action" then
     self:_activate(intent.action)
   elseif intent.kind == "cancel" then
-    self.controller.modal = nil
+    if self.valueEditor then
+      self.valueEditor:cancel()
+      self:_finishValueEditor()
+    elseif intent.modal == "draft" then
+      self:_resolveDraftChoice("cancel")
+    elseif intent.modal == "remove" then
+      self.pendingRemove = nil
+    else
+      self.controller.modal = nil
+      self.pendingDraftAction = nil
+    end
   elseif intent.kind == "move" then
-    if self.controller.section == "Progress" then
+    if self.width < 400 and (intent.direction == "left" or intent.direction == "right") then
+      local sections = { "Player", "Party", "Bag", "Progress" }
+      local current = 1
+      for index, section in ipairs(sections) do
+        if section == self.controller.section then
+          current = index
+          break
+        end
+      end
+      local offset = intent.direction == "right" and 1 or -1
+      local nextSection = sections[(current - 1 + offset) % #sections + 1]
+      self:_requestDraftResolution({ kind = "section", section = nextSection })
+    elseif self.controller.section == "Progress" then
       if intent.direction == "left" then
         self.controller.section = "Player"
         self.controller.focus = "money"
@@ -529,14 +1360,40 @@ function State:_dispatchIntent(intent)
       elseif intent.direction == "up" or intent.direction == "down" then
         self:_moveFlagFocus(intent.direction == "down" and 1 or -1)
       end
-    elseif intent.direction == "right" or intent.direction == "down" then
-      self.controller.section = "Progress"
-      self.controller.focus = "flag:" .. self:_firstFlagName()
     else
-      self.controller.section = "Player"
-      self.controller.focus = "money"
+      local plan = self:_resolve(self:_snapshot())
+      local focusable = assert(plan.content.layout).focusable
+      self.controller:moveFocus(focusable, intent.direction)
+      if self.controller.section == "Party" or self.controller.section == "Bag" then
+        self:_revealFocusedRow(focusable)
+      end
     end
     self.controller:cancelInteraction()
+  end
+end
+
+function State:_revealFocusedRow(focusable)
+  local _ = focusable
+  local view = self:_snapshot()
+  local rows = self.controller.section == "Party" and view.partyRows or view.bagRows
+  local rowIndex
+  for index, row in ipairs(rows or {}) do
+    local targetId = row.targetId or ("bag:item:" .. row.item)
+    if targetId == self.controller.focus then
+      rowIndex = index
+      break
+    end
+  end
+  if rowIndex == nil then
+    return
+  end
+  local layout = assert(self:_resolve(view).content.layout)
+  local rowHeight = layout.viewport.height <= 200 and 22 or 34
+  local visible = math.max(1, math.floor(layout.content.height / rowHeight) - 3)
+  if rowIndex > self.controller.scrollOffset + visible then
+    self.controller.scrollOffset = rowIndex - visible
+  elseif rowIndex <= self.controller.scrollOffset then
+    self.controller.scrollOffset = rowIndex - 1
   end
 end
 
@@ -621,7 +1478,7 @@ function State:keypressed(key, _, isrepeat)
       self:_activate("confirm")
     elseif key == "escape" then
       self.valueEditor:cancel()
-      self.valueEditor = nil
+      self:_finishValueEditor()
     elseif key == "backspace" then
       self.valueEditor:press("backspace")
     elseif key == "left" or key == "right" or key == "up" or key == "down" then
@@ -682,6 +1539,7 @@ function State:gamepadpressed(_, button)
   if self.valueEditor then
     if action then
       self.valueEditor:press(action)
+      self:_finishValueEditor()
     end
   elseif action then
     self:_dispatchIntent(self.controller:press(action))
@@ -716,7 +1574,13 @@ function State:touchreleased(id, x, y)
   self:_pointer({ { type = "pointer_up", pointerId = "touch:" .. tostring(id), x = x, y = y } })
 end
 function State:wheelmoved(_, y)
-  self.controller.scrollOffset = math.max(0, math.floor(self.controller.scrollOffset - y))
+  local view = self:_snapshot()
+  local rows = self.controller.section == "Party" and view.partyRows
+    or self.controller.section == "Bag" and view.bagRows
+    or self.controller.section == "Progress" and view.flagRows
+    or {}
+  self.controller.scrollOffset =
+    math.max(0, math.min(math.max(0, #rows - 1), math.floor(self.controller.scrollOffset - y)))
 end
 
 function State:dispose()

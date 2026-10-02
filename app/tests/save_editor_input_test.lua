@@ -71,7 +71,8 @@ local function rectangles(layout)
     if type(value) ~= "table" then
       return
     end
-    if type(value.x) == "number"
+    if
+      type(value.x) == "number"
       and type(value.y) == "number"
       and type(value.width) == "number"
       and type(value.height) == "number"
@@ -106,7 +107,8 @@ local function targetFor(layout, view, token)
   local rowId = row.targetId or row.id or row.key
   local targets = rectangles(layout)
   for _, candidate in ipairs(targets) do
-    if (rowId ~= nil and candidate.id:find(tostring(rowId), 1, true))
+    if
+      (rowId ~= nil and candidate.id:find(tostring(rowId), 1, true))
       or candidate.description:find(lowered, 1, true)
     then
       return candidate.rect
@@ -125,11 +127,7 @@ local function selectedPane(view)
 end
 
 local function click(state, pane, rect, touch)
-  local hostX, hostY = LayoutGeometry.logicalToHost(
-    pane.placement,
-    rect.x + rect.width / 2,
-    rect.y + rect.height / 2
-  )
+  local hostX, hostY = LayoutGeometry.logicalToHost(pane.placement, rect.x + rect.width / 2, rect.y + rect.height / 2)
   if touch then
     state:touchpressed("editor-touch", hostX, hostY)
     state:touchreleased("editor-touch", hostX, hostY)
@@ -202,8 +200,10 @@ function T.tests.input_reaches_money_and_toggle_rows_on_compact_and_dual_touch()
     state:onImportAttempt()
     local notice = state:view()
     Assert.equal(notice.notice, "Close the editor before importing another ROM.")
-    Assert.notNil(Layout.compute(notice, 256, 192).targets.notice,
-      "the ready shell gives the ignored import notice a visible warning row")
+    Assert.notNil(
+      Layout.compute(notice, 256, 192).targets.notice,
+      "the ready shell gives the ignored import notice a visible warning row"
+    )
     local view = state:view()
     local layout = Layout.compute(view, 256, 192)
     local moneyRect = targetFor(layout, view, "money")
@@ -223,19 +223,27 @@ function T.tests.input_reaches_money_and_toggle_rows_on_compact_and_dual_touch()
     Assert.equal(moneyValue, 4200, "keyboard entry must stage the exact money value")
 
     local joystick = {} --[[@as love.Joystick]]
-    state:gamepadpressed(joystick, "dpright")
+    for _ = 1, 3 do
+      state:gamepadpressed(joystick, "dpright")
+    end
     local progressView = state:view()
     Assert.equal(progressView.section, "Progress")
-    Assert.equal(progressView.focus, "flag:" .. progressView.flagRows[1].name,
-      "Progress focus must identify an actual semantic flag row")
+    Assert.equal(
+      progressView.focus,
+      "flag:" .. progressView.flagRows[1].name,
+      "Progress focus must identify an actual semantic flag row"
+    )
     local focusedFlag = progressView.focus:sub(6)
     local focusedFlagId = require("libs.assets.src.field.FieldScriptSymbols").flagsByName[focusedFlag]
     local valueBeforeTextKey = progressView.session.flags[focusedFlagId]
     state:keypressed("space")
     state:textinput(" ")
     Assert.equal(state:view().query, " ", "the configured action key's printable character enters search")
-    Assert.equal(state:view().session.flags[focusedFlagId], valueBeforeTextKey,
-      "a query character bound to confirm must not toggle the focused flag")
+    Assert.equal(
+      state:view().session.flags[focusedFlagId],
+      valueBeforeTextKey,
+      "a query character bound to confirm must not toggle the focused flag"
+    )
     state:keypressed("backspace")
     local groupTarget = Layout.compute(progressView, 256, 192).targets["group-next"]
     click(state, selectedPane(progressView), groupTarget, false)
@@ -256,24 +264,24 @@ function T.tests.input_reaches_money_and_toggle_rows_on_compact_and_dual_touch()
     local leaveView = state:view()
     local discardRect = targetFor(Layout.compute(leaveView, 256, 192), leaveView, "discard")
     click(state, selectedPane(leaveView), discardRect, false)
-    Assert.equal(assert(fixture.store:load(fixture.saveId)).playerData.profile.money, fixture.initialMoney,
-      "discard must leave the published record unchanged")
+    Assert.equal(
+      assert(fixture.store:load(fixture.saveId)).playerData.profile.money,
+      fixture.initialMoney,
+      "discard must leave the published record unchanged"
+    )
   end)
 
-  local dual = ScreenTopology.dualDisplay(
-    {
-      id = "upper",
-      rect = { x = 0, y = 0, width = 256, height = 192 },
-      touch = false,
-      role = "world",
-    },
-    {
-      id = "lower",
-      rect = { x = 0, y = 192, width = 256, height = 192 },
-      touch = true,
-      role = "auxiliary",
-    }
-  )
+  local dual = ScreenTopology.dualDisplay({
+    id = "upper",
+    rect = { x = 0, y = 0, width = 256, height = 192 },
+    touch = false,
+    role = "world",
+  }, {
+    id = "lower",
+    rect = { x = 0, y = 192, width = 256, height = 192 },
+    touch = true,
+    role = "auxiliary",
+  })
   withEditor(256, 384, dual, function(state, fixture)
     local view = state:view()
     local layout = Layout.compute(view, 256, 192)
@@ -286,8 +294,11 @@ function T.tests.input_reaches_money_and_toggle_rows_on_compact_and_dual_touch()
     local dirtyView = state:view()
     local saveRect = targetFor(Layout.compute(dirtyView, 256, 192), dirtyView, "save")
     click(state, selectedPane(dirtyView), saveRect, true)
-    Assert.equal(assert(fixture.store:load(fixture.saveId)).playerData.profile.money, 4300,
-      "touch-only Save must publish the money value")
+    Assert.equal(
+      assert(fixture.store:load(fixture.saveId)).playerData.profile.money,
+      4300,
+      "touch-only Save must publish the money value"
+    )
   end)
 end
 
@@ -309,7 +320,8 @@ function T.tests.failed_close_save_keeps_the_state_until_explicit_discard()
     end
     local quitCount = 0
     local originalQuit = love.event.quit
-    local originalState, originalProvisioner, originalService, originalEpoch = App.state, App.provisioner, App.service, App.epoch
+    local originalState, originalProvisioner, originalService, originalEpoch =
+      App.state, App.provisioner, App.service, App.epoch
     App.state, App.provisioner, App.service = state, nil, nil
     love.event.quit = function(code)
       Assert.equal(code, 0)
@@ -327,8 +339,10 @@ function T.tests.failed_close_save_keeps_the_state_until_explicit_discard()
     local failed = state:view()
     Assert.isTrue(failed.dirty, "a failed close-save keeps staged values dirty")
     Assert.isTrue(failed.errorMessage ~= nil, "the ready editor shows the save failure")
-    Assert.notNil(Layout.compute(failed, 256, 192).targets["error-notice"],
-      "the failed save message is rendered while the close choice remains available")
+    Assert.notNil(
+      Layout.compute(failed, 256, 192).targets["error-notice"],
+      "the failed save message is rendered while the close choice remains available"
+    )
 
     Assert.isTrue(App.quit(), "root quit is vetoed while staged changes need a decision")
     Assert.isTrue(App.state == state and not state.disposed, "the real App boundary retains the editor after veto")
@@ -339,7 +353,8 @@ function T.tests.failed_close_save_keeps_the_state_until_explicit_discard()
     Assert.isNil(App.state, "approved shutdown clears the root state")
     love.event.quit = originalQuit
     fixture.saveFs.backend.write = originalWrite
-    App.state, App.provisioner, App.service, App.epoch = originalState, originalProvisioner, originalService, originalEpoch
+    App.state, App.provisioner, App.service, App.epoch =
+      originalState, originalProvisioner, originalService, originalEpoch
   end)
 end
 
