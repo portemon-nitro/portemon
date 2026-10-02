@@ -46,6 +46,7 @@ local MonCache = require("libs.assets.src.MonCache")
 local MonCatalog = require("libs.mons.src.MonCatalog")
 local ItemCache = require("libs.assets.src.ItemCache")
 local ItemCatalog = require("libs.items.src.ItemCatalog")
+local BattleDataCache = require("libs.assets.src.battle.BattleDataCache")
 local FieldScriptSymbols = require("libs.assets.src.field.FieldScriptSymbols")
 local FieldSession = require("libs.hgss.src.field.FieldSession")
 local FieldSignpostController = require("libs.hgss.src.interaction.FieldSignpostController")
@@ -1210,6 +1211,13 @@ function FieldRuntime:_load(loadOptions)
     })
     self:_composeBag(activeGame, loadedGame)
     self:_composeBattleState(loadedGame, monRoot, world)
+    -- Encounter and trainer data compose during boot from the same cache:
+    -- a missing or invalid payload fails the boot instead of leaving
+    -- the battle owners absent.
+    local encounters = BattleDataCache.loadEncounters(cacheFs)
+    local trainers = BattleDataCache.loadTrainers(cacheFs)
+    self:composeEncounters(encounters)
+    self:composeTrainers(trainers)
     -- The one following-mon controller: derived follower presentation over
     -- the live party, driven once per fixed tick after the session update.
     -- The player accessor tracks warp rebinds, so the controller never holds
@@ -2503,16 +2511,17 @@ function FieldRuntime:_consumePendingEncounter()
 end
 
 -- Composes the concrete encounter service over a compiled encounter
--- catalog, sharing the live party, catalogs, and roamer state. The
--- service stays absent until composed, so field boots without encounter
--- data behave exactly as before.
+-- catalog, sharing the live party, catalogs, and roamer state. Field
+-- boot composes it from generated data; a missing or invalid payload
+-- fails the boot instead of leaving the service absent.
 ---@param compiled table<string, unknown> compiled encounter catalog record
 function FieldRuntime:composeEncounters(compiled)
   local HgssEncounterCatalog = require("libs.hgss.src.encounters.HgssEncounterCatalog")
   local WildMonFactory = require("libs.hgss.src.encounters.WildMonFactory")
   local HgssEncounterService = require("libs.hgss.src.encounters.HgssEncounterService")
   local catalog = HgssEncounterCatalog.new(compiled)
-  local fontDef = FieldFontLoader.load(assert(self.cacheFs, "encounter composition requires its cache"))
+  local encounterCacheFs = assert(self.cacheFs, "encounter composition requires its cache")
+  local fontDef = FieldFontLoader.load(encounterCacheFs)
   local factory = WildMonFactory.new({
     catalog = assert(self.monCatalog, "encounter composition requires the mon catalog"),
     items = assert(self.itemCatalog, "encounter composition requires the item catalog"),
@@ -2531,15 +2540,16 @@ function FieldRuntime:composeEncounters(compiled)
 end
 
 -- Composes the concrete trainer materializer over a compiled trainer
--- catalog, sharing the domain mon catalog and creation policy. The
--- composition stays absent until composed, so field boots without trainer
--- data fail trainer launches loudly instead of inventing parties.
+-- catalog, sharing the domain mon catalog and creation policy. Field
+-- boot composes it from generated data; a missing or invalid payload
+-- fails the boot instead of leaving trainer launches uncomposed.
 ---@param compiled table<string, unknown> compiled trainer catalog record
 function FieldRuntime:composeTrainers(compiled)
   local HgssTrainerCatalog = require("libs.hgss.src.battle.HgssTrainerCatalog")
   local HgssTrainerFactory = require("libs.hgss.src.battle.HgssTrainerFactory")
   local catalog = HgssTrainerCatalog.new(compiled)
-  local fontDef = FieldFontLoader.load(assert(self.cacheFs, "trainer composition requires its cache"))
+  local trainerCacheFs = assert(self.cacheFs, "trainer composition requires its cache")
+  local fontDef = FieldFontLoader.load(trainerCacheFs)
   self._trainerCatalog = catalog
   self._trainerFactory = HgssTrainerFactory.new({
     catalog = catalog,

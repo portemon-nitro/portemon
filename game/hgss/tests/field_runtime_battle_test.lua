@@ -1,13 +1,21 @@
 -- Field runtime battle ownership: explicit launches run the application
 -- lifetime to commit and return, failed battles fault loudly instead of
 -- resuming the story, prepared encounters are consumed exactly once, and
--- only one battle runs at a time. The runtime is a focused composition
--- fake (no cache boot); the live-boot journey lives in the acceptance
--- layer.
+-- only one battle runs at a time. Most of the suite drives the runtime
+-- through a focused composition fake; the two boot witnesses below
+-- construct the real cache-backed runtime and prove field boot composes
+-- the live encounter service and the trainer catalog/materializer before
+-- any field step or launch can ask for battle work.
 
 local Assert = require("tests.support.Assert")
+local BattleDataCache = require("libs.assets.src.battle.BattleDataCache")
+local CacheFs = require("libs.storage.src.CacheFs")
 local CatalogFixture = require("libs.mons.tests.catalog_fixture")
+local FieldEventState = require("libs.hgss.src.field.FieldEventState")
 local FieldRuntime = require("game.hgss.src.field.FieldRuntime")
+local GameVersion = require("romdump.src.source.GameVersion")
+local PlayTime = require("libs.hgss.src.save.PlayTime")
+local RomImporter = require("romdump.src.source.RomImporter")
 local Lcrng = require("libs.mons.src.gen4.Lcrng")
 local MonsSave = require("libs.mons.src.MonsSave")
 local Party = require("libs.mons.src.Party")
@@ -261,4 +269,143 @@ function T.attempts_wait_while_a_battle_or_preparation_owns_the_field()
   Assert.isNil(quiet:attemptEncounter({}), "an absent service attempts nothing")
 end
 
-return { tests = T }
+local function readyVersions()
+  local versions = {}
+  for _, versionId in ipairs(GameVersion.ORDER) do
+    if RomImporter.isReady(versionId) then
+      versions[#versions + 1] = versionId
+    end
+  end
+  return versions
+end
+
+local function validEntry(versionId)
+  local entry = {
+    saveId = "save-00000001",
+    versionId = versionId,
+    location = {
+      mapSymbol = "MAP_NEW_BARK_PLAYER_HOUSE_2F",
+      fieldX = 6,
+      fieldZ = 6,
+      facing = "south",
+    },
+    playerData = {
+      profile = { name = "GOLD", gender = 0, trainerId = 1, money = 3000, badges = 0 },
+      options = { textSpeed = "mid", textFrame = 0 },
+    },
+    fieldTravel = { lastHealSpawn = "SPAWN_NEW_BARK" },
+    playTime = PlayTime.new(),
+    worldState = FieldEventState.new(),
+    mons = require("tests.support.MonBucket").emptyForVersion(versionId),
+    bag = require("libs.hgss.src.save.BagSave").empty(),
+  }
+  return entry
+end
+
+-- The smallest generated trainer identity in canonical order, so the
+-- witness resolves whatever the prepared cache actually carries instead
+-- of freezing one numeric identity into the suite.
+local function firstTrainerKey(compiled)
+  assert(
+    type(compiled) == "table" and type(compiled.trainers) == "table",
+    "generated trainers carry their records"
+  )
+  local keys = {}
+  for key in pairs(compiled.trainers) do
+    keys[#keys + 1] = key
+  end
+  Assert.isTrue(#keys > 0, "generated trainers name at least one identity")
+  table.sort(keys, function(left, right)
+    return tostring(left) < tostring(right)
+  end)
+  return keys[1]
+end
+
+local function requireVersions(context)
+  local versions = readyVersions()
+  if #versions == 0 then
+    if context ~= nil and type(context.hasCapability) == "function" then
+      context:skip("requires rom_dump and prepared assets")
+    end
+    error("production battle boot needs a ready versioned cache", 0)
+  end
+  return versions
+end
+
+-- A production boot reaches the real encounter service: an attempt on the
+-- boot interior answers through composed generated data instead of the
+-- absent-service nil. The interior table exists with zeroed rates, so the
+-- composed service reports the zero-rate miss.
+function T.boot_composes_the_live_encounter_service(context)
+  local versions = requireVersions(context)
+  for _, versionId in ipairs(versions) do
+    local runtime = FieldRuntime.new(validEntry(versionId), { presentation = false })
+    local ok, err = xpcall(function()
+      local result = runtime:attemptEncounter({
+        eventId = 1,
+        mapId = runtime.runtimeMap.mapId,
+        method = "grass",
+        movement = "step",
+        modifiers = {},
+        environment = {},
+        timeOfDay = "day",
+      })
+      Assert.notNil(result, "production boot composes the live encounter service")
+      Assert.equal(result.kind, "none", "a zero-rate interior table misses without an encounter")
+      Assert.equal(result.reason, "no_opportunity", "zeroed rates miss instead of faulting")
+    end, debug.traceback)
+    local closeOk, closeErr = pcall(function()
+      runtime:dispose()
+    end)
+    if ok and not closeOk then
+      ok, err = false, closeErr
+    end
+    if not ok then
+      error(err, 0)
+    end
+  end
+end
+
+-- A production boot resolves a generated trainer identity through the
+-- composed catalog and materializer: the numeric payload shapes a
+-- trainer scenario carrying the materialized party under its native
+-- identity, with no caller-assigned collaborators.
+function T.boot_resolves_a_generated_trainer_identity(context)
+  local versions = requireVersions(context)
+  for _, versionId in ipairs(versions) do
+    local runtime = FieldRuntime.new(validEntry(versionId), { presentation = false })
+    local ok, err = xpcall(function()
+      Assert.notNil(runtime._trainerCatalog, "production boot composes the trainer catalog")
+      Assert.notNil(runtime._trainerFactory, "production boot composes the trainer materializer")
+      local compiled = BattleDataCache.loadTrainers(CacheFs.forVersion(versionId))
+      local key = firstTrainerKey(compiled)
+      -- The smallest generated identity is a rival template, which resolves
+      -- its display name from the saved rival name (non-rival templates
+      -- ignore it); the suite supplies the canonical default.
+      local scenario =
+        runtime:_scenarioForRequest({ kind = "trainer", payload = { trainer = key, rivalName = "SILVER" } })
+      Assert.equal(scenario.kind, "trainer", "the generated identity shapes a trainer scenario")
+      local foe = assert(scenario.participants[2], "the enemy side fields its trainer")
+      local lead = assert(foe.roster[1], "the enemy roster carries its lead")
+      Assert.notNil(lead.mon, "the lead slot carries its materialized record")
+      Assert.equal(foe.controller, "trainer:" .. tostring(key), "the native identity survives resolution")
+    end, debug.traceback)
+    local closeOk, closeErr = pcall(function()
+      runtime:dispose()
+    end)
+    if ok and not closeOk then
+      ok, err = false, closeErr
+    end
+    if not ok then
+      error(err, 0)
+    end
+  end
+end
+
+return {
+  tests = T,
+  metadata = {
+    capabilities = { "rom_dump", "derived_assets" },
+    derivedAssets = { "field-runtime", "map:64", "trainers:global", "encounters:global" },
+  },
+}
