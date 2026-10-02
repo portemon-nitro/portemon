@@ -236,4 +236,65 @@ function T.reward_children_spawn_once_per_settled_ko()
   end, "a non-function reward hook fails before settlement")
 end
 
+-- Simultaneous knockouts keep every ordered replacement: both faints emit
+-- in detection order, each names its own ordered replacement obligation
+-- bound to its fainted entry, and settlement stays open until every
+-- obligation is resolved instead of collapsing to one anonymous reserve.
+function T.simultaneous_faints_keep_every_ordered_replacement()
+  local Fainting = faintingOwner("the native faint queue owns settlement order")
+  local queue = {}
+  Fainting.detect(queue, target(1, 7), { kind = "damage", actionId = 3 }, 1)
+  Fainting.detect(queue, target(2, 1), { kind = "damage", actionId = 3 }, 2)
+  local outcome = Fainting.step({
+    queue = queue,
+    reserves = { 5, 6 },
+    progress = function(_)
+      return { kind = "progressed" }
+    end,
+  }, Fainting.validateFrame({ kind = "faint", cursor = "start" }))
+  Assert.isFalse(outcome.done, "outstanding replacements keep the settlement open")
+  Assert.equal(#outcome.events, 2, "both faints emit before any replacement resolves")
+  Assert.equal(outcome.events[1].combatant, 1, "the earlier detection settles first")
+  Assert.equal(outcome.events[2].combatant, 2, "the later detection settles second")
+  Assert.notNil(outcome.replacements, "the settlement names every ordered replacement")
+  Assert.equal(#outcome.replacements, 2, "no side loses its replacement obligation")
+  Assert.equal(outcome.replacements[1].combatant, 1, "the earlier detection names its replacement first")
+  Assert.equal(outcome.replacements[1].activation, 7, "the first obligation binds its fainted entry")
+  Assert.equal(outcome.replacements[2].combatant, 2, "the later detection names its replacement second")
+  Assert.equal(outcome.replacements[2].activation, 1, "the second obligation binds its fainted entry")
+  SessionFixture.assertPlainData(outcome.replacements, "replacements")
+end
+
+-- An open frame carries its obligations forward: re-stepping the returned
+-- frame answers the same replacement request with no new faint events and
+-- no new reward children, leaving already settled records untouched.
+function T.open_frame_carries_its_obligations_for_resume()
+  local Fainting = faintingOwner("the native faint queue owns settlement order")
+  local queue = {}
+  Fainting.detect(queue, target(1, 7), { kind = "damage", actionId = 3 }, 1)
+  local spawned = 0
+  local context = {
+    queue = queue,
+    reserves = { 5 },
+    progression = function(_)
+      spawned = spawned + 1
+      return { kind = "reward", combatant = 1 }
+    end,
+  }
+  local first = Fainting.step(context, Fainting.validateFrame({ kind = "faint", cursor = "start" }))
+  Assert.isFalse(first.done, "reserves waiting keep the settlement open")
+  Assert.notNil(first.frame.obligations, "the open frame carries its obligations")
+  Assert.deepEqual(first.frame.obligations, first.replacements, "the carried obligations match the request")
+  SessionFixture.assertPlainData(first.frame, "frame")
+  Fainting.validateFrame(first.frame)
+  local request = first.needsReplacement
+  local resumed = Fainting.step(context, first.frame)
+  Assert.isFalse(resumed.done, "the resumed settlement stays open")
+  Assert.equal(resumed.needsReplacement, request, "the resumed step names the same replacement")
+  Assert.deepEqual(resumed.replacements, first.replacements, "the resumed obligations stay stable")
+  Assert.equal(#resumed.events, 0, "the resumed step emits no new faint")
+  Assert.equal(#resumed.progression, 0, "the resumed step spawns no new reward child")
+  Assert.equal(spawned, 1, "the knockout is progressed exactly once across the resume")
+end
+
 return { tests = T }

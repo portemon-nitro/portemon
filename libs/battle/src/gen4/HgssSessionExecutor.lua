@@ -5,8 +5,8 @@
 -- one-point strike: submitted batches become ordered native actions, strikes
 -- execute through the shared move continuation with the combatant facts the
 -- records carry and the immutable move facts the session carries, knockouts
--- settle through the faint owner, and each turn
--- closes through the residual and outcome owners. Choices the records
+-- settle through the faint owner with ordered reserve replacement, and each
+-- turn closes through the residual and outcome owners. Choices the records
 -- cannot back (no usable move entry) execute the explicit struggle action
 -- rather than guessing. Live combat projections derive at execution time
 -- from the session species facts through the mon domain owners; stage
@@ -15,9 +15,10 @@
 -- of guessing; residual
 -- instances are collected from live effect state once mechanics create that
 -- state, so the end-of-turn pass settles empty today. Fainted combatants
--- leave the field and never act again; sides fight short-handed until the
--- round bound or an empty field settles the outcome, matching the generic
--- terminal words the application already maps.
+-- leave the field and never act again; sides fight short-handed only while
+-- no living reserve can fill the vacated position, and the outcome names
+-- the surviving standings once every mandatory replacement resolves.
+-- Battles never end by round count: the round counter only sequences turns.
 
 local ActionQueue = require("libs.battle.src.gen4.ActionQueue")
 local BattleContext = require("libs.battle.src.BattleContext")
@@ -34,9 +35,11 @@ local HgssRuleset = require("libs.battle.src.gen4.HgssRuleset")
 local HgssSchedule = require("libs.battle.src.gen4.HgssSchedule")
 local MoveExecution = require("libs.battle.src.gen4.MoveExecution")
 local NativeFormats = require("libs.battle.src.gen4.formats.NativeFormats")
+local OutcomePolicy = require("libs.battle.src.gen4.OutcomePolicy")
 local Personality = require("libs.mons.src.gen4.Personality")
 local Residuals = require("libs.battle.src.gen4.Residuals")
 local Stats = require("libs.mons.src.gen4.Stats")
+local Switching = require("libs.battle.src.gen4.Switching")
 local TurnOrder = require("libs.battle.src.gen4.TurnOrder")
 
 ---@alias SpeciesFormFacts table<integer, table<string, unknown>>
@@ -203,6 +206,47 @@ local function admittedKindsFor(formatKey, content, validated)
   error(BattleErrors.missingBehavior("unknown battle format " .. formatKey, { format = formatKey }))
 end
 
+---@param value unknown
+---@return boolean
+local function isPositiveInt(value)
+  return type(value) == "number" and value == value and value % 1 == 0 and value >= 1 and value <= 9007199254740991
+end
+
+---@param replacement unknown open replacement continuation under validation
+local function checkReplacementShape(replacement)
+  if type(replacement) ~= "table" then
+    error(BattleErrors.incompatibleSnapshot("replacement continuations must be records", {}))
+  end
+  local obligations = (replacement --[[@as table<string, unknown>]]).obligations
+  if type(obligations) ~= "table" then
+    error(BattleErrors.incompatibleSnapshot("replacement continuations must carry their obligations", {}))
+  end
+  for index = 1, #obligations --[[@as table<integer, unknown>]] do
+    local entry = (obligations --[[@as table<integer, unknown>]])[index]
+    if type(entry) ~= "table" then
+      error(BattleErrors.incompatibleSnapshot("replacement obligations must be records", { index = index }))
+    end
+    local obligation = entry --[[@as table<string, unknown>]]
+    for _, field in ipairs({ "combatant", "activation", "position", "participant", "side" }) do
+      if not isPositiveInt(obligation[field]) then
+        error(BattleErrors.incompatibleSnapshot("replacement obligations must name their " .. field, {
+          index = index,
+        }))
+      end
+    end
+    if type(obligation.controller) ~= "string" or obligation.controller == "" then
+      error(BattleErrors.incompatibleSnapshot("replacement obligations must name their controller", {
+        index = index,
+      }))
+    end
+    if type(obligation.internal) ~= "boolean" then
+      error(BattleErrors.incompatibleSnapshot("replacement obligations must mark internal resolution", {
+        index = index,
+      }))
+    end
+  end
+end
+
 ---@param state table<string, unknown>
 local function checkRestoredShape(state)
   local frames = state.frames --[[@as table<integer, table<string, unknown>>]]
@@ -215,6 +259,10 @@ local function checkRestoredShape(state)
     end
     if #frames ~= 1 or frames[1].kind ~= "round" then
       error(BattleErrors.incompatibleSnapshot("waiting snapshots hold one round frame", {}))
+    end
+    local pending = state.pending --[[@as table<string, unknown>]]
+    if pending.replacement ~= nil then
+      checkReplacementShape(pending.replacement)
     end
   elseif state.status == "running" then
     if state.pending ~= nil then
@@ -553,6 +601,146 @@ local function noteEntry(live, moneySet, combatantId)
   end
 end
 
+---@param state table<string, unknown> live battle state under reserve inspection
+---@return table<integer, integer> living benched roster members pooled across participants
+local function pooledReserves(state)
+  local pooled = {} ---@type table<integer, integer>
+  for _, combatantId in
+    ipairs(state.combatantOrder --[[@as integer[] ]])
+  do
+    local combatant = BattleState.combatant(state, combatantId)
+    if
+      combatant.active == nil
+      and combatant.hp --[[@as integer]]
+        > 0
+    then
+      pooled[#pooled + 1] = combatantId
+    end
+  end
+  return pooled
+end
+
+---@param state table<string, unknown> live battle state under reserve inspection
+---@param participantId integer roster owner under inspection
+---@param claimed table<integer, boolean> reserves already promised to earlier obligations
+---@return integer[] living benched reserves in declared roster order
+local function eligibleReserves(state, participantId, claimed)
+  local participant = BattleState.participant(state, participantId)
+  local eligible = {} ---@type integer[]
+  for _, combatantId in
+    ipairs(participant.roster --[[@as integer[] ]])
+  do
+    local combatant = BattleState.combatant(state, combatantId)
+    if
+      combatant.active == nil
+      and combatant.hp --[[@as integer]]
+        > 0
+      and not claimed[combatantId]
+    then
+      eligible[#eligible + 1] = combatantId
+    end
+  end
+  return eligible
+end
+
+---@param obligation table<string, unknown> faint replacement obligation under resolution
+---@return boolean true when the bereaved side answers through the decision protocol
+local function isExternalObligation(obligation)
+  -- The externally-directed side is side one: every production scenario
+  -- seats the player participant there, so bereaved opponents resolve
+  -- deterministically in roster order while the player side chooses.
+  return obligation.side == 1
+end
+
+---@param state table<string, unknown> live battle state under replacement
+---@param moneySet table<string, boolean> held-item keys carrying the money-up effect
+---@param obligation table<string, unknown> faint replacement obligation under resolution
+---@param reserveId integer arriving roster member entering the vacated position
+local function enterReserve(state, moneySet, obligation, reserveId)
+  local eligible = Switching.eligible({
+    position = obligation.position,
+    incoming = reserveId,
+    reason = "faint",
+    reserves = eligibleReserves(state, obligation.participant --[[@as integer]], {}),
+    reserved = {},
+    fainted = { obligation.combatant },
+  })
+  if not eligible.ok then
+    error(BattleErrors.invalidState("faint replacements must stay eligible", {
+      reason = tostring(eligible.reason),
+    }))
+  end
+  local frame = Switching.start({
+    position = obligation.position,
+    outgoing = { combatant = obligation.combatant, activation = obligation.activation },
+    incoming = reserveId,
+    reason = "faint",
+    reserves = eligibleReserves(state, obligation.participant --[[@as integer]], {}),
+    reserved = {},
+    fainted = { obligation.combatant },
+  })
+  local stepped = Switching.step({}, frame)
+  assert(stepped.done == true, "faint replacement exchanges settle without interception")
+  BattleState.enter(state, reserveId, obligation.position --[[@as integer]])
+  -- Replacements send out under the money-up scan: the latch only ever
+  -- moves 1 -> 2 and never resets when the holder leaves.
+  noteEntry(state, moneySet, reserveId)
+  local context = BattleContext.wrap(state)
+  context:emit("switch", {
+    kind = "faint",
+    combatant = obligation.combatant,
+    activation = obligation.activation,
+  }, {
+    position = obligation.position,
+    from = obligation.combatant,
+    to = reserveId,
+  })
+end
+
+---@param state table<string, unknown> live battle state under terminal evaluation
+---@return table<integer, table<string, unknown>> side standings for the terminal result selector
+local function sideStandings(state)
+  local standings = {} ---@type table<integer, table<string, unknown>>
+  for _, sideId in
+    ipairs(state.sideOrder --[[@as integer[] ]])
+  do
+    local standing = 0
+    for _, combatantId in
+      ipairs(state.combatantOrder --[[@as integer[] ]])
+    do
+      local combatant = BattleState.combatant(state, combatantId)
+      local participant = BattleState.participant(state, combatant.participant --[[@as integer]])
+      if
+        participant.side == sideId
+        and combatant.hp --[[@as integer]]
+          > 0
+      then
+        standing = standing + 1
+      end
+    end
+    standings[#standings + 1] = { id = sideId, standing = standing, fled = false }
+  end
+  return standings
+end
+
+---@param state table<string, unknown> live battle state under terminal evaluation
+local function settleOutcome(state)
+  local result = OutcomePolicy.evaluate({
+    sides = sideStandings(state),
+    pendingReplacements = 0,
+    captured = {},
+  })
+  if result == nil then
+    state.round = state.round --[[@as integer]] + 1
+    state.status = "running"
+  else
+    -- Terminal standings decide: the application maps the surviving
+    -- health to its win/loss/draw words from this terminal marker.
+    state.status = "ended"
+    state.outcome = { kind = "no_actors", rounds = state.round }
+  end
+end
+
 ---@class NativeTurnHandlers
 ---@field openTurn fun(choices: table<integer, table<string, unknown>>)
 ---@field executeAction fun(action: table<string, unknown>)
@@ -612,14 +800,19 @@ local function bindTurnHandlers(executor, moveFacts, speciesFacts, moneySet)
     local context = BattleContext.wrap(state)
     local combatant = BattleState.combatant(state, cause.combatant --[[@as integer]])
     local active = combatant.active --[[@as table<string, unknown>]]
+    local position = active.position --[[@as integer]]
     local event = context:emit("faint", { kind = "faint", combatant = cause.combatant }, {
       combatant = cause.combatant,
       activation = active.activation,
+      position = position,
     })
-    BattleState.leave(state, active.position --[[@as integer]])
+    BattleState.leave(state, position)
     return event
   end
 
+  --- Settles newly zero-HP actives in detection order: each knockout
+  --- emits once, leaves its position, and records its fainted identity
+  --- with its vacated position for turn-end replacement work.
   ---@param state table<string, unknown> live battle state under faint settlement
   local function sweepFaints(state)
     local detected = false
@@ -644,9 +837,25 @@ local function bindTurnHandlers(executor, moveFacts, speciesFacts, moneySet)
     if not detected then
       return
     end
-    local outcome = Fainting.step({ queue = state.faints }, { kind = "faint", cursor = "settle" })
+    local outcome = Fainting.step(
+      { queue = state.faints, reserves = pooledReserves(state) },
+      { kind = "faint", cursor = "settle" }
+    )
+    local settled = state.turnSettled
+    if settled == nil then
+      settled = {}
+      state.turnSettled = settled
+    end
+    local settledList = settled --[[@as table<integer, table<string, unknown>>]]
     for _, event in ipairs(outcome.events) do
-      emitFaint(state, event --[[@as table<string, unknown>]])
+      local record = event --[[@as table<string, unknown>]]
+      local emitted = emitFaint(state, record)
+      local payload = emitted.payload --[[@as table<string, unknown>]]
+      settledList[#settledList + 1] = {
+        combatant = record.combatant,
+        activation = payload.activation,
+        position = payload.position,
+      }
     end
   end
 
@@ -848,6 +1057,100 @@ local function bindTurnHandlers(executor, moveFacts, speciesFacts, moneySet)
     sweepFaints(state)
   end
 
+  -- Derives ordered replacement obligations from this turn's settled
+  -- knockouts: each fainted entry with a living benched reserve owes one,
+  -- in settlement order; faints with no reserve contribute to defeat.
+  -- Reserves promise once across same-roster obligations.
+  ---@param state table<string, unknown> live battle state under replacement work
+  ---@return table<integer, table<string, unknown>> ordered replacement obligations
+  local function drainObligations(state)
+    local obligations = {} ---@type table<integer, table<string, unknown>>
+    local settled = state.turnSettled --[[@as table<integer, table<string, unknown>>?]]
+    state.turnSettled = nil
+    if settled == nil then
+      return obligations
+    end
+    local claimed = {} ---@type table<integer, boolean>
+    for _, settledFaint in ipairs(settled) do
+      local combatant = BattleState.combatant(state, settledFaint.combatant --[[@as integer]])
+      local participant = BattleState.participant(state, combatant.participant --[[@as integer]])
+      local reserves = eligibleReserves(state, participant.id --[[@as integer]], claimed)
+      if #reserves > 0 then
+        claimed[reserves[1]] = true
+        local obligation = {
+          combatant = settledFaint.combatant,
+          activation = settledFaint.activation,
+          position = settledFaint.position,
+          participant = participant.id,
+          controller = participant.controller,
+          side = participant.side,
+          internal = false,
+        }
+        obligation.internal = not isExternalObligation(obligation)
+        obligations[#obligations + 1] = obligation
+      end
+    end
+    return obligations
+  end
+
+  ---@param state table<string, unknown> live battle state under replacement work
+  ---@param obligations table<integer, table<string, unknown>> ordered replacement obligations
+  local function buildReplacementBatch(state, obligations)
+    local context = BattleContext.wrap(state)
+    local counter = state.batchCounter --[[@as integer]] + 1
+    state.batchCounter = counter
+    local stored = {} ---@type table<integer, table<string, unknown>>
+    for _, obligation in ipairs(obligations) do
+      stored[#stored + 1] = {
+        combatant = obligation.combatant,
+        activation = obligation.activation,
+        position = obligation.position,
+        participant = obligation.participant,
+        controller = obligation.controller,
+        side = obligation.side,
+        internal = obligation.internal,
+      }
+    end
+    state.pending = {
+      batch = { id = counter, epoch = counter, requests = {} },
+      submitted = {},
+      reserved = { replacements = {}, items = {} },
+      replacement = { obligations = stored },
+    }
+    pushCheckedFrame(context, {
+      kind = "round",
+      version = 1,
+      cursor = "awaiting_replies",
+      state = { round = state.round },
+    })
+    local byController = {} ---@type table<string, table<integer, table<string, unknown>>>
+    local controllerOrder = {} ---@type string[]
+    for _, participantId in
+      ipairs(state.participantOrder --[[@as integer[] ]])
+    do
+      for _, obligation in ipairs(obligations) do
+        if obligation.participant == participantId and not obligation.internal then
+          local controller = obligation.controller --[[@as string]]
+          if byController[controller] == nil then
+            byController[controller] = {}
+            controllerOrder[#controllerOrder + 1] = controller
+          end
+          local actors = byController[controller]
+          actors[#actors + 1] = { combatant = obligation.combatant, activation = obligation.activation }
+        end
+      end
+    end
+    for _, controller in ipairs(controllerOrder) do
+      context:requestDecision({
+        controller = controller,
+        kind = HgssSessionExecutor.DECISION_KIND,
+        actors = byController[controller],
+        legalChoices = { kinds = { "switch" } },
+      })
+    end
+    state.status = "waiting"
+  end
+
   local function closeTurn()
     local state = executor:_live()
     local frames = state.frames --[[@as table<integer, table<string, unknown>>]]
@@ -858,16 +1161,29 @@ local function bindTurnHandlers(executor, moveFacts, speciesFacts, moneySet)
     -- The turn queue drained fully: every staged action completed, so the
     -- next turn stages into a fresh queue instead of reusing identities.
     state.queue = {}
-    state.round = state.round --[[@as integer]] + 1
-    if
-      state.round --[[@as integer]]
-      > state.maxRounds --[[@as integer]]
-    then
-      state.status = "ended"
-      state.outcome = { kind = "scripted_complete", rounds = state.maxRounds }
-    else
-      state.status = "running"
+    local obligations = drainObligations(state)
+    local external = 0
+    for _, obligation in ipairs(obligations) do
+      if not obligation.internal then
+        external = external + 1
+      end
     end
+    if external > 0 then
+      -- Mandatory replacement precedes the next ordinary action batch:
+      -- suspend with the replacement batch open instead of sequencing.
+      -- The turn frame above already closed; the replacement batch opens
+      -- its own below.
+      buildReplacementBatch(state, obligations)
+      return
+    end
+    local claimed = {} ---@type table<integer, boolean>
+    for _, obligation in ipairs(obligations) do
+      local reserves = eligibleReserves(state, obligation.participant --[[@as integer]], claimed)
+      assert(#reserves > 0, "internally resolved replacements keep their reserve")
+      claimed[reserves[1]] = true
+      enterReserve(state, moneySet, obligation, reserves[1])
+    end
+    settleOutcome(state)
   end
 
   return {
@@ -1068,6 +1384,8 @@ end
 ---@param allowance integer? operations the current advance may still spend
 function HgssSessionExecutor:_commitBatch(state, allowance)
   local pending = state.pending --[[@as table<string, unknown>]]
+  assert(pending.replacement == nil, "replacement batches commit through their own path")
+  state.turnSettled = {}
   local submitted = pending.submitted --[[@as table<integer, table<string, unknown>>]]
   local ordered = {}
   for _, request in ipairs(batchRequests(state)) do
@@ -1105,6 +1423,69 @@ function HgssSessionExecutor:_commitBatch(state, allowance)
   end
   ruleset:handler("applyResiduals")()
   ruleset:handler("closeTurn")()
+end
+
+---@param state table<string, unknown> live battle state under replacement commit
+function HgssSessionExecutor:_commitReplacement(state)
+  local pending = state.pending --[[@as table<string, unknown>]]
+  local replacement = pending.replacement --[[@as table<string, unknown>]]
+  local obligations = replacement.obligations --[[@as table<integer, table<string, unknown>>]]
+  local submitted = pending.submitted --[[@as table<integer, table<string, unknown>>]]
+  -- Index externally chosen arrivals by fainted combatant. Replies were
+  -- validated on submit and suspension stages no intervening mechanics,
+  -- so every open obligation answers exactly once here.
+  local picks = {} ---@type table<integer, integer>
+  for _, request in ipairs(batchRequests(state)) do
+    local reply = submitted[
+      request.requestId --[[@as integer]]
+    ]
+    assert(reply ~= nil, "replacement commits only over complete batches")
+    for _, choice in
+      ipairs((reply --[[@as table<string, unknown>]]).choices --[[@as table<integer, unknown>]])
+    do
+      local entry = choice --[[@as table<string, unknown>]]
+      local actor = entry.actor --[[@as table<string, unknown>]]
+      local payload = entry.payload --[[@as table<string, unknown>]]
+      assert(picks[
+        actor.combatant --[[@as integer]]
+      ] == nil, "replacements answer once per fainted entry")
+      picks[
+        actor.combatant --[[@as integer]]
+      ] = payload.replacement --[[@as integer]]
+    end
+  end
+  local claimed = {} ---@type table<integer, boolean>
+  for _, obligation in ipairs(obligations) do
+    local reserve ---@type integer
+    if obligation.internal then
+      local reserves = eligibleReserves(state, obligation.participant --[[@as integer]], claimed)
+      assert(#reserves > 0, "held internal replacements keep their reserve")
+      reserve = reserves[1]
+    else
+      local picked = picks[
+        obligation.combatant --[[@as integer]]
+      ]
+      assert(picked ~= nil, "open replacements commit only with every reply stored")
+      local live = eligibleReserves(state, obligation.participant --[[@as integer]], claimed)
+      local held = false
+      for _, candidate in ipairs(live) do
+        if candidate == picked then
+          held = true
+        end
+      end
+      assert(held, "replacement replies hold their reserve through suspension")
+      reserve = picked
+    end
+    claimed[reserve] = true
+    enterReserve(state, self._moneyUpItems, obligation, reserve)
+  end
+  local frames = state.frames --[[@as table<integer, table<string, unknown>>]]
+  local roundFrame = frames[#frames]
+  assert(roundFrame ~= nil and roundFrame.kind == "round", "replacement commits its round frame")
+  frames[#frames] = nil
+  state.pending = nil
+  state.queue = {}
+  settleOutcome(state)
 end
 
 ---@param state table<string, unknown>
@@ -1179,11 +1560,76 @@ local function replyChoices(state)
 end
 
 ---@param state table<string, unknown>
+---@param replacement table<string, unknown> open replacement continuation
+---@param choice table<string, unknown>
+---@return table<string, unknown>? input error, or nil when the replacement binds
+local function checkReplacementBinding(state, replacement, choice)
+  local actor = choice.actor --[[@as table<string, unknown>]]
+  local payload = choice.payload --[[@as table<string, unknown>]]
+  local obligations = replacement.obligations --[[@as table<integer, table<string, unknown>>]]
+  local wanted = nil
+  for _, obligation in ipairs(obligations) do
+    if
+      not obligation.internal
+      and obligation.combatant == actor.combatant
+      and obligation.activation == actor.activation
+    then
+      wanted = obligation
+    end
+  end
+  if wanted == nil then
+    return BattleErrors.input("replies must address exactly the requested entries", {})
+  end
+  if choice.kind ~= "switch" then
+    return BattleErrors.input("replacements answer with switches", {})
+  end
+  local reserve = (state.combatants --[[@as table<integer, table<string, unknown>>]])[
+    payload.replacement --[[@as integer]]
+  ]
+  if reserve == nil then
+    return BattleErrors.input("replacements must name a declared combatant", {})
+  end
+  if reserve.participant ~= wanted.participant then
+    return BattleErrors.input("replacements must share the actor roster", {})
+  end
+  if reserve.active ~= nil then
+    return BattleErrors.input("replacements must start benched", {})
+  end
+  if
+    reserve.hp --[[@as integer]]
+    <= 0
+  then
+    return BattleErrors.input("replacements must be living", {})
+  end
+  local pending = state.pending --[[@as table<string, unknown>]]
+  local reserved = pending.reserved --[[@as table<string, unknown>]]
+  local taken = (reserved.replacements --[[@as table<integer, integer>]])[
+    payload.replacement --[[@as integer]]
+  ]
+  if taken ~= nil then
+    return BattleErrors.input("replacements are reserved once per batch", {})
+  end
+  for _, other in ipairs((replyChoices(state))) do
+    if other.kind == "switch" and other.payload.replacement == payload.replacement then
+      return BattleErrors.input("replacements are reserved once per batch", {})
+    end
+  end
+  return nil
+end
+
+---@param state table<string, unknown>
 ---@param choice table<string, unknown>
 ---@return table<string, unknown>? input error, or nil when the choice binds
 local function checkChoiceBinding(state, choice)
   local actor = choice.actor --[[@as table<string, unknown>]]
   local payload = choice.payload --[[@as table<string, unknown>]]
+  local openBatch = state.pending --[[@as table<string, unknown>]]
+  if openBatch ~= nil and openBatch.replacement ~= nil then
+    -- Replacement batches address fainted entries: the live-entry binding
+    -- below cannot hold, so obligations bind instead. Stale pre-faint
+    -- actions still fail here when they name no open obligation.
+    return checkReplacementBinding(state, openBatch.replacement --[[@as table<string, unknown>]], choice)
+  end
   local combatant = BattleState.combatant(state, actor.combatant --[[@as integer]])
   local active = combatant.active --[[@as table<string, unknown>]]
   if active == nil or active.activation ~= actor.activation then
@@ -1316,7 +1762,12 @@ function HgssSessionExecutor:advance(operationBudget)
       if remaining < 1 then
         return { status = "running", events = drainOutbox(state) }
       end
-      self:_commitBatch(state, remaining)
+      local completed = state.pending --[[@as table<string, unknown>]]
+      if completed.replacement ~= nil then
+        self:_commitReplacement(state)
+      else
+        self:_commitBatch(state, remaining)
+      end
       remaining = remaining - 1
       if state.pending == nil and state.status == "ended" then
         self:_finalizeOnce()

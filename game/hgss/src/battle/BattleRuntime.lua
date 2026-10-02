@@ -816,7 +816,7 @@ end
 function BattleRuntime:_mapOutcome()
   local outcome = self._outcome or {}
   assert(type(outcome) == "table", "resolution maps the session outcome")
-  if outcome.kind == "no_actors" or outcome.kind == "scripted_complete" then
+  if outcome.kind == "no_actors" then
     -- Terminal standings decide the word: a fainted enemy side reports a
     -- win and a fainted player side reports a loss, while two standing
     -- sides settle as a draw. No victory is ever invented beyond the
