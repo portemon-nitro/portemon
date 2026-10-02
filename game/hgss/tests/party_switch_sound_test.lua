@@ -13,7 +13,7 @@ local FieldUiFixture = require("tests.support.FieldUiFixture")
 local HgssBagService = require("libs.hgss.src.items.HgssBagService")
 local ItemFixture = require("libs.items.tests.item_fixture")
 local PartyPresentationFixture = require("tests.support.PartyPresentationFixture")
-local ScreenTopology = require("libs.hgss.src.ui.ScreenTopology")
+local ScreenTopology = require("libs.ui.src.ScreenTopology")
 
 local T = {}
 

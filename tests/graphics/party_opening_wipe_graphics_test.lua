@@ -4,11 +4,11 @@
 -- screen shows the pane content with no black left. Synthetic geometry with
 -- a flat white pane painter keeps the proof on the cover behavior itself.
 
-local ApplicationLayout = require("game.hgss.src.ui.ApplicationLayout")
+local ApplicationLayout = require("libs.ui.src.ApplicationLayout")
 local Assert = require("tests.support.Assert")
 local GraphicsSmoke = require("tests.support.GraphicsSmoke")
 local PartyScreenInterface = require("game.hgss.src.field.PartyScreenInterface")
-local ScreenTopology = require("libs.hgss.src.ui.ScreenTopology")
+local ScreenTopology = require("libs.ui.src.ScreenTopology")
 
 local T = {}
 
