@@ -323,9 +323,10 @@ end
 -- trainers, for simultaneous native pairs) and carries each trainer's full
 -- party records; trainer parties are never invented here. Each trainer
 -- fields its own participant (and controller) so simultaneous pairs keep
--- their native double engagement. The bound selection program rides the
--- participant context when supplied and stays absent otherwise; the
--- application battle owner refuses to run a trainer side without one.
+-- their native double engagement. The compiled AI passes and carried
+-- items ride the participant context when supplied and stay absent
+-- otherwise; the application battle owner refuses to run a trainer side
+-- without its pass facts.
 ---@param payload table<string, unknown>
 ---@param ctx table<string, unknown>?
 ---@return table<string, unknown> detached trainer scenario fragment
@@ -381,6 +382,12 @@ function HgssBattleScenarioFactory.fromTrainer(payload, ctx)
     local program = entry.program or (index == 1 and context.trainerProgram or nil)
     if program ~= nil then
       enemyContext.program = copyValue(program)
+    end
+    if entry.aiPasses ~= nil then
+      enemyContext.aiPasses = copyValue(entry.aiPasses)
+    end
+    if entry.items ~= nil then
+      enemyContext.items = copyValue(entry.items)
     end
     enemies[#enemies + 1] = {
       id = participantId,

@@ -355,6 +355,7 @@ function T.tests.post_battle_consequences_commit_through_the_live_owners()
           partyLevels = trainer.partyLevels,
           prizeMoney = { trainerClass = trainer.trainerClass, classRate = trainer.classRate },
           program = { key = "consequence_opening", revision = "native-1", instructions = {}, entryPoints = {} },
+          aiPasses = {},
         },
       },
     }, { party = game.runtime.monService })

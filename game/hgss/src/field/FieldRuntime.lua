@@ -2091,7 +2091,7 @@ end
 -- Starts the owned application battle lifetime for one launch request and
 -- freezes player input until it returns. Only one battle runs at a time;
 -- presentation readiness (attached or default) gates entry and return.
----@param args { request: table<string, unknown>, scenario: table<string, unknown>?, presentation: table<string, unknown>?, trainerProgram: table<string, unknown>?, seed: integer? }
+---@param args { request: table<string, unknown>, scenario: table<string, unknown>?, presentation: table<string, unknown>?, seed: integer? }
 ---@return table<string, unknown> the owned application battle lifetime
 function FieldRuntime:startBattle(args)
   assert(type(args) == "table", "battle launches require an argument record")
@@ -2116,7 +2116,6 @@ function FieldRuntime:startBattle(args)
     bag = self.bagService,
     dex = self.dexKnowledge,
     player = playerFacts,
-    trainerProgram = args.trainerProgram,
     seed = args.seed,
   })
   self.battleRuntime = battle
