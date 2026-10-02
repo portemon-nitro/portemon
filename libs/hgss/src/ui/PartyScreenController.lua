@@ -1,6 +1,6 @@
 -- The native party-screen controller: one fixed-tick state machine over an
 -- injected immutable view. Named contexts (browse, pick, item_target,
--- give_target, give_confirm) replace the legacy view/select modes. Browse opens
+-- give_target, give_resume) replace the legacy view/select modes. Browse opens
 -- source-ordered context menus (summary, switch, item-or-mail, quit, then
 -- field moves in move-slot order; eggs get summary, switch, quit) with a
 -- separate item/mail submenu mapping; switch reorders through the
@@ -18,7 +18,7 @@ local PartyScreenTheme = require("libs.hgss.src.ui.PartyScreenTheme")
 local YesNoPromptController = require("libs.hgss.src.ui.YesNoPromptController")
 
 ---@class PartyScreenController
----@field _context "browse"|"pick"|"item_target"|"give_target"|"give_confirm"
+---@field _context "browse"|"pick"|"item_target"|"give_target"|"give_resume"
 ---@field _model PartyScreenController.Model
 ---@field _layout fun(): table<string, unknown>
 ---@field _swap PartyScreenController.SwapPort?
@@ -44,7 +44,7 @@ local YesNoPromptController = require("libs.hgss.src.ui.YesNoPromptController")
 ---@field _swapOp { source: integer, destination: integer, revision: integer, phase: string, xOffset: integer, exchanged: boolean }?
 ---@field _intent table<string, unknown>?
 ---@field _origin PartyScreenController.Origin?
----@field _message string|{ templateKey: string, displayName: string?, itemName: string? }?
+---@field _message string|{ templateKey: string, displayName: string?, itemNames: string[]? }?
 ---@field _messageReturn string
 ---@field _prompt YesNoPromptController?
 ---@field _promptReturn string
@@ -60,6 +60,7 @@ local YesNoPromptController = require("libs.hgss.src.ui.YesNoPromptController")
 ---@field _seqBase integer[]
 ---@field _panelSlide integer
 ---@field _targetOrigin "menu"|"context"?
+---@field _giveDisposition "party"|"bag"?
 local PartyScreenController = {}
 PartyScreenController.__index = PartyScreenController
 
@@ -96,11 +97,11 @@ PartyScreenController.__index = PartyScreenController
 ---@field partyRevision integer
 
 ---@class PartyScreenController.Result
----@field kind "closed"|"selected"|"cancelled"
+---@field kind "closed"|"selected"|"cancelled"|"give_complete"
 ---@field slot integer?
 
 ---@class PartyScreenController.Options
----@field context "browse"|"pick"|"item_target"|"give_target"|"give_confirm"
+---@field context "browse"|"pick"|"item_target"|"give_target"|"give_resume"
 ---@field initialFocus integer|"cancel"?
 ---@field allowCancel boolean?
 ---@field model PartyScreenController.Model
@@ -110,7 +111,7 @@ PartyScreenController.__index = PartyScreenController
 ---@field promptShape table<string, unknown>?
 ---@field item { key: string, bagRevision: integer }?
 ---@field effect fun(sequence: string)? the borrowed swap sound boundary; swap stays silent without it
----@field initialMessage { templateKey: "giveHeldItem", displayName: string, itemName: string }? initial Party-owned held-item result
+---@field initialMessage { templateKey: "giveHeldItem", displayName: string, itemNames: string[] }? initial Party-owned held-item result
 
 -- The native switch task slides each travelling slot out from its own
 -- column and back: sixteen tile-steps to full exit, eight pixels per
@@ -166,8 +167,8 @@ function PartyScreenController.new(opts)
       or opts.context == "pick"
       or opts.context == "item_target"
       or opts.context == "give_target"
-      or opts.context == "give_confirm",
-    "the party controller requires a named browse, pick, item_target, give_target, or give_confirm context"
+      or opts.context == "give_resume",
+    "the party controller requires a named browse, pick, item_target, give_target, or give_resume context"
   )
   assert(
     type(opts.model) == "table" and type(opts.model.refresh) == "function",
@@ -206,7 +207,7 @@ function PartyScreenController.new(opts)
       "initial result uses the Party held-item template"
     )
     assert(
-      type(message.displayName) == "string" and type(message.itemName) == "string",
+      type(message.displayName) == "string" and type(message.itemNames) == "table" and #message.itemNames == 1,
       "held-item result names its mon and item"
     )
   end
@@ -266,25 +267,22 @@ function PartyScreenController.new(opts)
     _seqBase = {},
     _panelSlide = 0,
     _targetOrigin = nil,
+    _giveDisposition = opts.context == "give_resume" and "party" or (opts.context == "give_target" and "bag" or nil),
   }, PartyScreenController)
   if opts.context == "item_target" or opts.context == "give_target" then
     assert(opts.item ~= nil, "target contexts require the pending item identity")
     self._state = "choosing_item_target"
     self._targetOrigin = "context"
-  elseif opts.context == "give_confirm" then
-    -- The replacement question records its target now but opens its
-    -- prompt on the first fixed update: presentation layout is not
-    -- resolved during controller construction, and the opening batch
-    -- must never activate the new prompt.
-    assert(opts.item ~= nil, "the replacement question names its pending item")
+  elseif opts.context == "give_resume" then
+    assert(opts.item ~= nil, "the give continuation names its pending item")
     assert(
       type(opts.initialFocus) == "number"
         and opts.initialFocus % 1 == 0
         and opts.initialFocus >= 0
         and opts.initialFocus < 6,
-      "the replacement question targets a party slot"
+      "the give continuation targets a party slot"
     )
-    self._state = "give_confirm"
+    self._state = "give_resume"
   end
   local view = self:_refresh()
   ---@type integer|string?
@@ -299,8 +297,8 @@ function PartyScreenController.new(opts)
     error("the party screen has no selectable slot", 2)
   end
   self._cursorNode = start
-  if opts.context == "give_confirm" then
-    assert(self:_selectable(view, opts.initialFocus), "the replacement question targets an occupied slot")
+  if opts.context == "give_resume" then
+    assert(self:_selectable(view, opts.initialFocus), "the give continuation targets an occupied slot")
     self._cursorNode = opts.initialFocus
   end
   return self
@@ -634,13 +632,18 @@ end
 -- Shows a message over the originating flow state; acknowledgement
 -- returns there without replaying anything. Either existing literal text
 -- or a generated-template descriptor the renderer expands.
----@param text string|{ templateKey: string, displayName: string?, itemName: string? }
+---@param text string|{ templateKey: string, displayName: string?, itemNames: string[]? }
 ---@param returnState string
 function PartyScreenController:_showMessage(text, returnState)
   if type(text) == "table" then
     assert(type(text.templateKey) == "string" and text.templateKey ~= "", "descriptors name their template")
     assert(text.displayName == nil or type(text.displayName) == "string", "descriptors carry an optional display name")
-    assert(text.itemName == nil or type(text.itemName) == "string", "descriptors carry an optional item name")
+    if text.itemNames ~= nil then
+      assert(type(text.itemNames) == "table", "descriptors carry ordered item names")
+      for _, itemName in ipairs(text.itemNames) do
+        assert(type(itemName) == "string", "descriptors carry ordered item names")
+      end
+    end
   else
     assert(type(text) == "string" and text ~= "", "messages carry display text")
   end
@@ -1133,9 +1136,8 @@ function PartyScreenController:_resolvePrompt()
     return
   end
   assert(result == "no", "prompts resolve yes or no")
-  if self._context == "give_confirm" then
-    self._result = { kind = "cancelled" }
-    self:_transition("closing")
+  if self._giveDisposition ~= nil then
+    self:_finishGive()
     return
   end
   self:_transition(returnState)
@@ -1149,12 +1151,32 @@ end
 function PartyScreenController:_declinePrompt()
   local returnState = self._promptReturn
   self:_closePrompt()
-  if self._context == "give_confirm" then
-    self._result = { kind = "cancelled" }
-    self:_transition("closing")
+  if self._giveDisposition ~= nil then
+    self:_finishGive()
     return
   end
   self:_transition(returnState)
+end
+
+-- Finishes the caller-specific held-item transaction after its question
+-- or result message has been acknowledged.
+function PartyScreenController:_finishGive()
+  local disposition = assert(self._giveDisposition, "held-item feedback records its caller")
+  self._giveDisposition = nil
+  self._pendingItem = nil
+  self._menu = nil
+  self._menuIndex = nil
+  self._menuSlot = nil
+  self._originSlot = nil
+  self._origin = nil
+  if disposition == "party" then
+    self._context = "browse"
+    self._result = { kind = "give_complete" }
+    self:_transition("browse")
+  else
+    self._result = { kind = "cancelled" }
+    self:_transition("closing")
+  end
 end
 
 -- Owns one fixed tick inside the yes/no confirm: unknown events raise
@@ -1198,7 +1220,11 @@ function PartyScreenController:_acknowledgeMessage()
     self._origin = nil
     self:_restoreOrigin(origin)
   else
-    self:_transition(self._messageReturn)
+    if self._messageReturn == "give_result" then
+      self:_finishGive()
+    else
+      self:_transition(self._messageReturn)
+    end
   end
 end
 
@@ -1393,10 +1419,20 @@ function PartyScreenController:updateFixed(uiInput)
     self:_stepPrompt(uiInput)
     return
   end
-  if self._state == "give_confirm" then
-    -- First fixed update with a resolved layout: open the replacement
-    -- question and ignore this batch, so the transition that opened the
-    -- page can never answer its own prompt.
+  if self._state == "give_resume" then
+    local item = assert(self._pendingItem, "give continuations retain their item")
+    local slot = assert(self._cursorNode, "give continuations retain their original slot")
+    assert(isSlotNode(slot), "give continuations target a party slot")
+    self:_emitIntent({
+      kind = "give",
+      slot = slot,
+      partyRevision = self._observedRevision,
+      bagRevision = item.bagRevision,
+      item = item.key,
+    })
+    return
+  end
+  if self._state == "give_question" then
     self:_openGiveConfirm()
     return
   end
@@ -1547,9 +1583,9 @@ end
 -- advances them.
 ---@class PartyScreenController.Status
 ---@field open boolean
----@field context "browse"|"pick"|"item_target"|"give_target"|"give_confirm"?
+---@field context "browse"|"pick"|"item_target"|"give_target"|"give_resume"?
 ---@field state string?
----@field mode "browse"|"pick"|"item_target"|"give_target"|"give_confirm"?
+---@field mode "browse"|"pick"|"item_target"|"give_target"|"give_resume"?
 ---@field action string?
 ---@field cursorNode integer|"cancel"?
 ---@field menuIndex integer?
@@ -1665,6 +1701,23 @@ function PartyScreenController:completeAction(outcome)
   local origin = assert(self._origin, "waiting remembers its origin")
   self:_refresh()
   self._origin = nil
+  if self._giveDisposition ~= nil then
+    self._cursorNode = self:_reconciledCursor(self._view, origin.cursorNode)
+    if type(outcome.disposition) == "string" then
+      assert(outcome.disposition == self._giveDisposition, "held-item completion preserves its caller")
+    end
+    if outcome.kind == "needs_confirmation" then
+      assert(type(outcome.message) == "table", "replacement questions carry generated message data")
+      self:_showMessage(outcome.message, "give_question")
+      return
+    end
+    if type(outcome.message) == "table" then
+      self:_showMessage(outcome.message, "give_result")
+      return
+    end
+    self:_finishGive()
+    return
+  end
   if outcome.kind == "no_op" then
     self:_restoreOrigin(origin)
     return
@@ -1733,11 +1786,11 @@ end
 
 -- The one-shot result contract: nil until a terminal event, then exactly
 -- one semantic record.
----@return { kind: "closed"|"selected"|"cancelled", slot?: integer }?
+---@return { kind: "closed"|"selected"|"cancelled"|"give_complete", slot?: integer }?
 function PartyScreenController:takeResult()
   local result = self._result
   self._result = nil
-  if result ~= nil then
+  if result ~= nil and result.kind ~= "give_complete" then
     self:_transition("closed")
   end
   return result

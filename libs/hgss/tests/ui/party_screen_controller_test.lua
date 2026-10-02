@@ -540,7 +540,7 @@ end
 
 function T.initial_message_enters_the_party_owned_acknowledgement_state()
   local controller = nativeController({
-    initialMessage = { templateKey = "giveHeldItem", displayName = "LEAD", itemName = "GREAT BALL" },
+    initialMessage = { templateKey = "giveHeldItem", displayName = "LEAD", itemNames = { "GREAT BALL" } },
   })
   local shown = controller:status()
   Assert.equal(shown.state, "message", "the initial result enters the owned message state")
@@ -931,120 +931,118 @@ function T.mail_menu_routes_read_directly_and_take_through_confirm()
   Assert.deepEqual(controller:takeIntent(), { kind = "read_mail", slot = 0, partyRevision = 11 })
 end
 
-function T.give_confirm_waits_for_layout_before_opening_its_prompt()
+function T.give_resume_emits_once_after_first_eligible_update()
   local controller = nativeController({
-    context = "give_confirm",
+    context = "give_resume",
     initialFocus = 0,
     item = { key = "SITRUS_BERRY", bagRevision = 7 },
   })
-  Assert.isTrue(nativeStatus(controller).state ~= "confirm", "construction opens no prompt yet")
+  Assert.equal(nativeStatus(controller).state, "give_resume", "construction only records the continuation")
+  Assert.isNil(controller:takeIntent(), "construction does not emit the held-item operation")
+  Assert.isNil(controller:takeIntent(), "status and intent reads do not arm it")
   controller:updateFixed({ { type = "confirm" } })
-  local state = nativeStatus(controller)
-  Assert.equal(state.state, "confirm", "the first update opens the replacement question")
-  Assert.equal(state.prompt and state.prompt.selected, "no", "the question keeps its safe default")
-  Assert.isNil(controller:takeIntent(), "the opening batch emits nothing")
-  Assert.isNil(controller:takeResult(), "the opening batch completes nothing")
-  controller:updateFixed({ { type = "navigate", direction = "down" } })
-  controller:updateFixed({ { type = "confirm" } })
-  for _ = 1, 8 do
-    controller:updateFixed({})
-    Assert.equal(nativeStatus(controller).state, "confirm", "the interval owns its ticks")
-  end
-  controller:updateFixed({})
-  Assert.equal(nativeStatus(controller).state, "waiting_action")
   Assert.deepEqual(
     controller:takeIntent(),
-    { kind = "give", slot = 0, partyRevision = 11, bagRevision = 7, item = "SITRUS_BERRY", confirmed = true },
-    "the ignored opening batch never latches, so Yes still answers"
+    { kind = "give", slot = 0, partyRevision = 11, bagRevision = 7, item = "SITRUS_BERRY" },
+    "the first eligible update emits the captured operation without replaying input"
   )
+  Assert.isNil(controller:takeIntent(), "the operation emits exactly once")
+  Assert.equal(nativeStatus(controller).state, "waiting_action")
 end
 
-function T.give_confirm_no_answer_cancels_without_an_intent()
+function T.give_resume_decline_returns_to_browse_in_the_same_controller()
   local controller = nativeController({
-    context = "give_confirm",
+    context = "give_resume",
     initialFocus = 1,
     item = { key = "SITRUS_BERRY", bagRevision = 7 },
   })
   controller:updateFixed({})
-  Assert.equal(nativeStatus(controller).state, "confirm")
-  controller:updateFixed({ { type = "confirm" } })
-  local result = nil
-  for _ = 1, 20 do
-    controller:updateFixed({})
-    result = controller:takeResult()
-    if result ~= nil then
-      break
-    end
-  end
-  Assert.deepEqual(result, { kind = "cancelled" }, "answering No declines the replacement")
-  Assert.isNil(controller:takeIntent(), "declining emits no intent")
-  Assert.isNil(controller:takeResult(), "the decline reports exactly once")
-end
-
-function T.give_confirm_cancel_event_cancels_without_an_intent()
-  local controller = nativeController({
-    context = "give_confirm",
-    initialFocus = 0,
-    item = { key = "SITRUS_BERRY", bagRevision = 7 },
+  Assert.notNil(controller:takeIntent(), "the continuation starts its held-item operation")
+  controller:completeAction({
+    kind = "needs_confirmation",
+    disposition = "party",
+    message = { templateKey = "switchHeldPrompt", displayName = "LEAD", itemNames = { "CHERI BERRY" } },
   })
+  Assert.equal(nativeStatus(controller).state, "message", "the replacement text appears before Yes/No")
+  controller:updateFixed({ { type = "confirm" } })
+  Assert.equal(nativeStatus(controller).state, "give_question", "message acknowledgement opens the prompt on a later tick")
   controller:updateFixed({})
   Assert.equal(nativeStatus(controller).state, "confirm")
   controller:updateFixed({ { type = "cancel" } })
-  Assert.deepEqual(controller:takeResult(), { kind = "cancelled" }, "cancelling declines the replacement")
-  Assert.isNil(controller:takeIntent(), "cancelling emits no intent")
+  Assert.deepEqual(controller:takeResult(), { kind = "give_complete" }, "decline completes in the same Party child")
+  Assert.equal(nativeStatus(controller).context, "browse", "the same controller becomes ordinary browse")
+  Assert.equal(nativeStatus(controller).state, "browse")
 end
 
-function T.give_confirm_dismiss_event_cancels_without_an_intent()
+function T.give_resume_yes_shows_ordered_result_then_browses_in_place()
   local controller = nativeController({
-    context = "give_confirm",
+    context = "give_resume",
     initialFocus = 0,
     item = { key = "SITRUS_BERRY", bagRevision = 7 },
   })
   controller:updateFixed({})
-  Assert.equal(nativeStatus(controller).state, "confirm")
-  controller:updateFixed({ { type = "dismiss" } })
-  Assert.deepEqual(controller:takeResult(), { kind = "cancelled" }, "dismissing declines the replacement")
-  Assert.isNil(controller:takeIntent(), "dismissing emits no intent")
-end
-
-function T.give_confirm_yes_answer_emits_one_confirmed_give_intent()
-  local controller = nativeController({
-    context = "give_confirm",
-    initialFocus = 0,
-    item = { key = "SITRUS_BERRY", bagRevision = 7 },
+  controller:takeIntent()
+  controller:completeAction({
+    kind = "needs_confirmation",
+    disposition = "party",
+    message = { templateKey = "switchHeldPrompt", displayName = "LEAD", itemNames = { "CHERI BERRY" } },
   })
+  controller:updateFixed({ { type = "confirm" } })
   controller:updateFixed({})
-  Assert.equal(nativeStatus(controller).state, "confirm")
   controller:updateFixed({ { type = "navigate", direction = "down" } })
   controller:updateFixed({ { type = "confirm" } })
-  for tick = 1, 8 do
+  for _ = 1, 8 do
     controller:updateFixed({})
-    Assert.equal(nativeStatus(controller).state, "confirm", "the confirmation interval owns its ticks (" .. tick .. ")")
   end
   controller:updateFixed({})
-  Assert.equal(nativeStatus(controller).state, "waiting_action")
   Assert.deepEqual(
     controller:takeIntent(),
     { kind = "give", slot = 0, partyRevision = 11, bagRevision = 7, item = "SITRUS_BERRY", confirmed = true },
-    "only the affirmative answer authorizes the exchange"
+    "Yes emits one revision-qualified confirmed request"
   )
-  Assert.isNil(controller:takeIntent(), "the intent yields exactly once")
-  Assert.isNil(controller:takeResult(), "accepting completes nothing itself")
+  controller:completeAction({
+    kind = "changed",
+    disposition = "party",
+    message = {
+      templateKey = "switchHeldResult",
+      displayName = "LEAD",
+      itemNames = { "CHERI BERRY", "SITRUS BERRY" },
+    },
+  })
+  Assert.equal(nativeStatus(controller).state, "message", "the swap result stays in the active child")
+  controller:updateFixed({ { type = "confirm" } })
+  Assert.deepEqual(controller:takeResult(), { kind = "give_complete" })
+  Assert.equal(nativeStatus(controller).context, "browse")
+  Assert.equal(nativeStatus(controller).state, "browse")
 end
 
-function T.give_confirm_requires_its_pending_item()
-  Assert.throws(function()
-    nativeController({ context = "give_confirm", initialFocus = 0 })
-  end, "the replacement question names its pending item")
+function T.bag_give_question_decline_returns_from_the_same_controller()
+  local controller = nativeController({
+    context = "give_target",
+    item = { key = "SITRUS_BERRY", bagRevision = 7 },
+  })
+  controller:updateFixed({ { type = "confirm" } })
+  local intent = assert(controller:takeIntent(), "the target selection emits its give")
+  controller:completeAction({
+    kind = "needs_confirmation",
+    disposition = "bag",
+    message = { templateKey = "switchHeldPrompt", displayName = "LEAD", itemNames = { "CHERI BERRY" } },
+  })
+  controller:updateFixed({ { type = "confirm" } })
+  controller:updateFixed({})
+  controller:updateFixed({ { type = "cancel" } })
+  Assert.deepEqual(controller:takeResult(), { kind = "cancelled" }, "Bag caller returns after the in-place decline")
+  Assert.isFalse(nativeStatus(controller).open, "the original Bag-origin target child returns to its caller")
+  Assert.notNil(intent)
 end
 
-function T.give_confirm_requires_a_numeric_target_slot()
+function T.give_resume_requires_its_pending_item_and_slot()
   Assert.throws(function()
-    nativeController({
-      context = "give_confirm",
-      item = { key = "SITRUS_BERRY", bagRevision = 7 },
-    })
-  end, "the replacement question targets a party slot")
+    nativeController({ context = "give_resume", initialFocus = 0 })
+  end, "the give continuation names its pending item")
+  Assert.throws(function()
+    nativeController({ context = "give_resume", item = { key = "SITRUS_BERRY", bagRevision = 7 } })
+  end, "the give continuation targets a party slot")
 end
 
 -- Source-faithful native behavior: exact icon sequence clocks, generated
