@@ -149,7 +149,7 @@ end
 ---@param cursor BagCursor
 ---@param layoutManifest table<string, unknown>?
 ---@return BagController
-local function controller(bag, cursor, layoutManifest)
+local function controller(bag, cursor, layoutManifest, effect)
   layoutManifest = layoutManifest or manifest()
   local function resolveLayout()
     return BagLayout.resolve({ manifest = layoutManifest, heroVisible = true })
@@ -168,6 +168,7 @@ local function controller(bag, cursor, layoutManifest)
     textPolicy = { interGlyphDelay = 0, glyphBudget = 512, abAcceleration = true },
     commands = commands(bag),
     resolveActions = BagActionPolicy.forService(bag),
+    effect = effect,
   })
 end
 
@@ -585,6 +586,41 @@ function T.failing_service_call_never_fakes_success()
   Assert.equal(bag:quantity("POTION"), 5, "a failed toss changes nothing")
   Assert.equal(bag:revision(), revision, "a failed toss bumps no revision")
   Assert.equal(view.selected.item, "POTION", "the refreshed model shows the surviving item")
+end
+
+function T.root_back_plays_one_source_effect_and_closes_once()
+  local sounds = {}
+  local control = controller(service(), BagCursor.new(), nil, function(sequence)
+    sounds[#sounds + 1] = sequence
+  end)
+
+  control:updateFixed({ cancelEvent() })
+
+  Assert.deepEqual(control:takeResult(), { kind = "closed" }, "root back closes the Bag")
+  Assert.deepEqual(sounds, { "SEQ_SE_GS_GEARCANCEL" }, "root back requests the source cancel sound")
+  Assert.isNil(control:takeResult(), "the close result is delivered once")
+  control:dispose()
+  Assert.deepEqual(sounds, { "SEQ_SE_GS_GEARCANCEL" }, "result draining and disposal do not replay the sound")
+end
+
+function T.visible_cancel_plays_one_source_effect_and_closes()
+  local bag = service()
+  Assert.isTrue(bag:add("POTION", 5), "setup stocks the browse grid")
+  local sounds = {}
+  local control = controller(bag, BagCursor.new(), nil, function(sequence)
+    sounds[#sounds + 1] = sequence
+  end)
+  for _ = 1, 3 do
+    control:updateFixed({ navigate("down") })
+  end
+  Assert.equal(control:status().focus, "cancel", "browsing navigation focuses the visible CANCEL control")
+
+  control:updateFixed({ confirmEvent() })
+
+  Assert.deepEqual(control:takeResult(), { kind = "closed" }, "visible CANCEL closes the Bag")
+  Assert.deepEqual(sounds, { "SEQ_SE_GS_GEARCANCEL" }, "visible CANCEL requests the source cancel sound")
+  control:dispose()
+  Assert.deepEqual(sounds, { "SEQ_SE_GS_GEARCANCEL" }, "disposal does not replay the sound")
 end
 
 function T.reorder_across_pages_keeps_the_moved_item_selected()

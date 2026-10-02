@@ -217,7 +217,7 @@ function PartyPresentationFixture.manifest()
       cancel = {
         anchor = { x = 232, y = 176 },
         label = "CANCEL",
-        textRect = { x = 200, y = 168, width = 48, height = 16 },
+        textRect = { x = 208, y = 168, width = 40, height = 16 },
         align = "center",
       },
     },

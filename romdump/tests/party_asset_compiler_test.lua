@@ -185,6 +185,8 @@ function T.compiled_presentation_carries_semantic_roles_switch_chrome_and_take_t
   local PartyCache = require("libs.assets.src.PartyCache")
   local bundle = assert(PartyAssetCompiler.compile(romFs))
   Assert.equal(bundle.manifest.schema, "g4-party-presentation-v5")
+  Assert.deepEqual(bundle.manifest.controls.cancel.textRect, { x = 208, y = 168, width = 40, height = 16 })
+  Assert.equal(bundle.manifest.controls.cancel.align, "center")
   local menu = bundle.manifest.contextMenu
   Assert.isNil(menu.textPalette, "flat text values do not survive lowering")
   Assert.isNil(menu.fillPalette, "flat fill values do not survive lowering")

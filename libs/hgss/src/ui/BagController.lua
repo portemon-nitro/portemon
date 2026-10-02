@@ -1352,6 +1352,7 @@ function BagController:_confirm()
     self:_play(EFFECT.select)
     self:_startMoveClip(self._moveTarget ~= self._moveFromPos)
   elseif self._focusNode == CANCEL_NODE then
+    self:_play(EFFECT.cancel)
     self._result = { kind = "closed" }
     self._closed = true
   elseif parseTab(self._focusNode) ~= nil then
@@ -1393,6 +1394,7 @@ function BagController:_cancel()
     self:_play(EFFECT.cancel)
     self:_cancelMove()
   else
+    self:_play(EFFECT.cancel)
     self._result = { kind = "closed" }
     self._closed = true
   end

@@ -523,7 +523,7 @@ PartySources.geometry = {
     cancel = {
       templateAnchor = { x = 232, y = 184 },
       normalSetupOffset = { x = 0, y = -8 },
-      textRect = { x = 200, y = 168, width = 48, height = 16 },
+      textRect = { x = 208, y = 168, width = 40, height = 16 },
       align = "center",
     },
   },

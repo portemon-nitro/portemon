@@ -402,6 +402,11 @@ function T.cancel_focus_uses_the_generated_button_without_a_slot_cursor(scope)
     -- the frame-pixel proof covers the rows above and below that band;
     -- the label itself is proved through the unit suite.
     local labelRect = assert(manifest.controls.cancel.textRect, versionId .. " carries the Cancel text rectangle")
+    Assert.deepEqual(
+      labelRect,
+      { x = 208, y = 168, width = 40, height = 16 },
+      versionId .. " generates the Party Cancel text window from its source geometry"
+    )
     local topH = math.max(labelRect.y - drawY, 0)
     local bottomY = math.max(labelRect.y + labelRect.height - drawY, 0)
     local totalMatches, totalOpaque = 0, 0

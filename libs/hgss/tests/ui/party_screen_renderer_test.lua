@@ -134,7 +134,7 @@ local function sourceManifest()
       cancel = {
         anchor = { x = 232, y = 176 },
         label = v3.controls.cancel.label,
-        textRect = rect(200, 168, 48, 16),
+        textRect = rect(208, 168, 40, 16),
         align = "center",
       },
     },
@@ -804,25 +804,6 @@ function T.target_and_swap_states_draw_their_source_lower_prompts()
     renderer:draw(status, v5Layout(manifest), icons())
     Assert.isTrue(hasString(texts, case.prompt), case.state .. " draws its lower-window prompt")
   end
-end
-
-function T.party_cancel_uses_integer_centering()
-  local manifest = v5Manifest()
-  local texts = {}
-  local text = stubText(texts)
-  text.textWidth = function(_, value)
-    return #value * 7 + 1
-  end
-  local renderer = newRenderer(fakeGraphics(), text, manifest)
-  renderer:draw(presentation({ cursorNode = "cancel" }), v5Layout(manifest), icons())
-
-  for _, call in ipairs(texts) do
-    if call.value == manifest.controls.cancel.label then
-      Assert.equal(call.x % 1, 0, "the Party Cancel label stays on an integer source pixel")
-      return
-    end
-  end
-  error("the Party Cancel label was not drawn", 0)
 end
 
 function T.message_draws_its_window_text()
@@ -1623,7 +1604,8 @@ function T.cancel_uses_the_generated_label_without_a_slot_cursor()
   local manifest = v5Manifest()
   local graphics = fakeGraphics()
   local texts = {}
-  local renderer = newRenderer(graphics, paletteText(texts), manifest)
+  local font = paletteText(texts)
+  local renderer = newRenderer(graphics, font, manifest)
   local status = contextStatus({ cursorNode = "cancel" })
   status.view.slots[1] = occupiedSlot(0)
   renderer:draw(status, v5Layout(manifest), frameIcons({}))
@@ -1632,9 +1614,10 @@ function T.cancel_uses_the_generated_label_without_a_slot_cursor()
   for _, call in ipairs(texts) do
     if call.value == cancel.label then
       labeled = true
-      Assert.isTrue(
-        call.x >= cancel.textRect.x and call.x < cancel.textRect.x + cancel.textRect.width,
-        "the Cancel label centers inside its generated text rectangle"
+      Assert.equal(
+        call.x,
+        cancel.textRect.x + math.floor((cancel.textRect.width - font:textWidth(call.value)) / 2),
+        "the Cancel label is centered integrally in its generated text rectangle"
       )
     end
   end
