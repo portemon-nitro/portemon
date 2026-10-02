@@ -268,8 +268,10 @@ local function matchesTrade(slot, mon)
 end
 
 -- Returns the first matching evolution slot in source order, or nil when
--- nothing matches. The blocker held item stops level and trade checks but
--- never bag-item use, matching the source gate.
+-- nothing matches. The marked baby form never evolves. The blocker held
+-- item stops level and trade checks but never bag-item use, except for
+-- one trade-evolving species that still answers level and trade checks
+-- while holding it.
 ---@param mon table<string, unknown>
 ---@param context table<string, unknown>
 ---@param catalog table<string, unknown>
@@ -282,7 +284,10 @@ function Evolution.check(mon, context, catalog)
   assert(type(trigger) == "table", "evolution trigger facts form a record")
   local kind = trigger.kind
   assert(kind == "level" or kind == "item" or kind == "trade", "evolution triggers name their kind")
-  if mon.heldItem == EVERSTONE_KEY and kind ~= "item" then
+  if mon.species == "PICHU" and mon.form == 1 then
+    return nil
+  end
+  if mon.heldItem == EVERSTONE_KEY and kind ~= "item" and mon.species ~= "KADABRA" then
     return nil
   end
   local form = catalog:form(mon.species, mon.form)
