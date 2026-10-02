@@ -162,6 +162,7 @@ function T.trainer_win_pays_the_native_prize_once_without_injected_inputs()
       partyLevels = { 4 },
       prizeMoney = { trainerClass = 2, classRate = 4 },
       program = { key = "rival_opening", revision = "native-1", instructions = {}, entryPoints = {} },
+      aiPasses = {},
     },
   }
   local scenario = trainerScenario(trainers, { party = party })
@@ -213,6 +214,7 @@ function T.trainer_win_doubles_the_prize_while_a_money_up_holder_stands()
       partyLevels = { 4 },
       prizeMoney = { trainerClass = 2, classRate = 4 },
       program = { key = "rival_opening", revision = "native-1", instructions = {}, entryPoints = {} },
+      aiPasses = {},
     },
   }, { party = party })
   local battle = BattleRuntime.new({

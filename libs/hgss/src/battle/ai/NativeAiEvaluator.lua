@@ -5,10 +5,14 @@
 -- per-move scoring passes themselves execute inside
 -- asm/overlay_10_trainer_ai.s. The assembly branches are normalized here
 -- into a small closed set of semantic instructions; this evaluator executes
--- exactly that set. It is not the battle move virtual machine and not a
+-- exactly that set. Compiled AI pass names (one per native flag bit, as
+-- projected by the trainer compiler) compile to those instructions in bit
+-- order, so pass-driven selection and explicit instruction programs share
+-- one execution core. It is not the battle move virtual machine and not a
 -- general scripting layer: every instruction draws from the battle stream
--- with its own source label, unknown instructions fail instead of falling
--- back to a legal random move, and damage previews never touch the stream.
+-- with its own source label, unknown instructions and passes fail instead
+-- of falling back to a legal random move, and damage previews never touch
+-- the stream.
 
 local Errors = require("libs.errors.src.Errors")
 
@@ -27,6 +31,19 @@ local INSTRUCTIONS = {
   "consider_switch",
   "consider_item",
   "roll_tiebreak",
+  "check_bad_move",
+  "try_to_faint",
+}
+
+-- Native pass bits with source-backed scoring flow, in dispatch order.
+-- Bit 0 checks bad moves (matchup scoring plus the negated-move penalty);
+-- bit 1 seeks the faint (strongest-blow preference plus the
+-- doubly-effective bonus). Bits without an entry here fail closed at
+-- compilation; the doubles bit never reaches this table because the
+-- producer projects it into the doubles fact instead.
+local PASS_STAGES = {
+  [0] = { "score_matchup", "check_bad_move" },
+  [1] = { "try_to_faint" },
 }
 
 local KNOWN = {}
@@ -91,7 +108,7 @@ local EFFECTIVENESS = {
   steel = { fire = 0.5, water = 0.5, electric = 0.5, ice = 2, rock = 2, steel = 0.5 },
 }
 
----@param moveType string
+---@param moveType string|nil
 ---@param defenderTypes table<integer, string>
 ---@return number combined multiplier across every defender type
 local function effectiveness(moveType, defenderTypes)
@@ -119,6 +136,17 @@ local function stab(moveType, userTypes)
     end
   end
   return 1
+end
+
+--- Selection-scoring preview shared with the trainer controller: the
+--- combined effectiveness estimate behind matchup scoring and reserve
+--- exposure comparison. This is selection preview only; the authoritative
+--- battle chart stays with the combat arithmetic owner.
+---@param moveType string|nil
+---@param defenderTypes table<integer, string>|nil
+---@return number combined multiplier across every defender type
+function NativeAiEvaluator.effectiveness(moveType, defenderTypes)
+  return effectiveness(moveType, defenderTypes or {})
 end
 
 ---@return string[] the closed instruction set in canonical order
@@ -203,6 +231,39 @@ local function applyInstruction(op, scores, knowledge, stream)
     -- Routing markers for the reserve and bag branches. They consume their
     -- evaluation draw in program order; the branch itself runs through the
     -- dedicated switch/item selectors, never by mutating move scores here.
+  elseif op == "check_bad_move" then
+    -- The bad-move check withholds points from negated strikes: a move the
+    -- foe is immune to falls below scoreless status attempts instead of
+    -- tying them.
+    local foeTypes = knowledge.foe.types or {}
+    for index in ipairs(scores) do
+      if effectiveness(knowledge.active.moves[index].moveType, foeTypes) == 0 then
+        scores[index].score = scores[index].score - 10
+      end
+    end
+  elseif op == "try_to_faint" then
+    -- The faint-seeking adjustment prefers the finishing blow: damaging
+    -- moves weaker than the strongest candidate lose a point, while a
+    -- doubly-effective strike gains two unless the labeled draw declines
+    -- the bonus. Status attempts keep their score either way.
+    local best = 0
+    for index in ipairs(scores) do
+      local power = knowledge.active.moves[index].power or 0
+      if power > best then
+        best = power
+      end
+    end
+    local foeTypes = knowledge.foe.types or {}
+    for index in ipairs(scores) do
+      local move = knowledge.active.moves[index]
+      local power = move.power or 0
+      if power > 0 and power < best then
+        scores[index].score = scores[index].score - 1
+      end
+      if power > 0 and effectiveness(move.moveType, foeTypes) == 4 and draw % 100 < 80 then
+        scores[index].score = scores[index].score + 2
+      end
+    end
   elseif op == "roll_tiebreak" then
     return draw
   end
@@ -220,6 +281,49 @@ local function orderedInstructions(instructions)
     return (a.order or 0) < (b.order or 0)
   end)
   return ordered
+end
+
+--- Compiles compiled pass names into the selection program executing
+--- them in native bit order with the tiebreak settler last. Passes may
+--- arrive in any order and repeat; unknown or malformed names fail closed
+--- naming the offending pass instead of answering a fallback move. A
+--- flagless trainer compiles to the tiebreak alone, which resolves the
+--- all-equal scores uniformly from the labeled stream.
+---@param aiPasses string[] compiled pass names
+---@return table<string, unknown> selection program for the enabled passes
+function NativeAiEvaluator.compilePassProgram(aiPasses)
+  assert(type(aiPasses) == "table", "pass programs compile from pass name lists")
+  local bits = {}
+  local seen = {}
+  for index, pass in ipairs(aiPasses) do
+    local name = type(pass) == "string" and pass:match("^ai_pass_(%d+)$") or nil
+    local bit = (type(name) == "string" and tonumber(name)) or nil
+    if bit == nil or PASS_STAGES[bit] == nil then
+      Errors.raise("AI_UNKNOWN_PASS", "trainer AI passes reject names outside the closed pass set", {
+        pass = tostring(pass),
+        index = index,
+      })
+    end
+    assert(bit ~= nil, "pass bits stay numeric")
+    if seen[bit] ~= true then
+      seen[bit] = true
+      bits[#bits + 1] = bit
+    end
+  end
+  table.sort(bits)
+  local instructions = {}
+  for _, bit in ipairs(bits) do
+    for _, op in ipairs(PASS_STAGES[bit]) do
+      instructions[#instructions + 1] = { op = op, order = #instructions + 1 }
+    end
+  end
+  instructions[#instructions + 1] = { op = "roll_tiebreak", order = #instructions + 1 }
+  return {
+    key = "native-trainer-ai",
+    revision = "native-1",
+    instructions = instructions,
+    entryPoints = { action = 1, switch = 1, item = 1 },
+  }
 end
 
 ---@param program table<string, unknown>

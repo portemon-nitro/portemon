@@ -237,6 +237,7 @@ function T.tests.wild_and_trainer_battles_run_the_production_path_and_return()
             instructions = {},
             entryPoints = {},
           },
+          aiPasses = {},
         },
       },
     }, {

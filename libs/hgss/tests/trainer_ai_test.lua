@@ -266,4 +266,348 @@ function T.preview_calculations_never_consume_execution_randomness()
   Assert.deepEqual(previewStream:capture(), before, "damage previews leave the execution stream untouched")
 end
 
+-- Native passes choose the winning owned slot without a bound selection
+-- record: the grass campaign against the rock-ground foe answers from
+-- its middle slot, the reply echoes its request, an identical controller
+-- answers identically from the same seed, and repeating the open request
+-- returns the recorded reply without further draws.
+function T.selects_winning_nonzero_move_slot_from_passes_and_memoizes_reply()
+  local Ai = requirePresent(AI_MODULE, "the native controller answers owned requests from its pass facts")
+  local knowledge = {
+    active = {
+      combatant = 1,
+      species = "CHIKORITA",
+      level = 5,
+      hp = 20,
+      maxHp = 20,
+      types = { "grass" },
+      moves = {
+        { key = "TACKLE", moveType = "normal", power = 35 },
+        { key = "RAZOR_LEAF", moveType = "grass", power = 55 },
+        { key = "POISONPOWDER", moveType = "poison", power = 0 },
+      },
+    },
+    foe = {
+      combatant = 2,
+      species = "GEODUDE",
+      level = 5,
+      hp = 14,
+      maxHp = 20,
+      types = { "rock", "ground" },
+    },
+    reserves = {},
+  }
+  local request =
+    { requestId = 11, epoch = 0, controller = "ai", kind = "action", actors = { { combatant = 1 } } }
+  local controller = Ai.new({ aiPasses = { "ai_pass_0", "ai_pass_1" }, trainerItems = {} })
+  local stream = spyStream(FIXED_SEED)
+  local reply = controller:decide(request, controller:observe(knowledge), stream)
+  Assert.equal(reply.requestId, 11, "replies echo their request identity")
+  Assert.equal(reply.epoch, 0, "replies echo their batch epoch")
+  Assert.isTrue(type(reply.choices) == "table" and #reply.choices == 1, "one owned actor draws one choice")
+  local choice = reply.choices[1]
+  Assert.equal(choice.kind, "attack", "the healthy attacker with no reserves answers with a strike")
+  Assert.isTrue(type(choice.payload) == "table", "strike choices carry their payload")
+  Assert.equal(choice.payload.moveSlot, 1, "the winning grass strike answers from its owned middle slot")
+  local draws = #stream:drawLabels()
+  local repeated = controller:decide(request, controller:observe(knowledge), stream)
+  Assert.deepEqual(repeated, reply, "repeating the open request returns the recorded reply")
+  Assert.equal(#stream:drawLabels(), draws, "repeated polls draw nothing further")
+  local twin = Ai.new({ aiPasses = { "ai_pass_0", "ai_pass_1" }, trainerItems = {} })
+  local twinReply = twin:decide(request, twin:observe(knowledge), spyStream(FIXED_SEED))
+  Assert.deepEqual(twinReply, reply, "identical passes answer identically from the same seed")
+end
+
+-- Switch and item answers ride the same pass-driven controller: an exposed
+-- fire attacker facing a water foe answers with its living grass reserve
+-- (never the fainted one), a wounded attacker with stock answers with its
+-- stocked cure, and healthy or stockless attackers never invent bag use.
+function T.answers_switch_and_item_branches_from_live_roster_and_stock()
+  local Ai = requirePresent(AI_MODULE, "the native controller answers owned requests from its pass facts")
+  local switchKnowledge = {
+    active = {
+      combatant = 1,
+      species = "CHARMANDER",
+      level = 5,
+      hp = 18,
+      maxHp = 20,
+      types = { "fire" },
+      moves = {
+        { key = "SCRATCH", moveType = "normal", power = 40 },
+        { key = "EMBER", moveType = "fire", power = 40 },
+      },
+    },
+    foe = {
+      combatant = 2,
+      species = "TOTODILE",
+      level = 5,
+      hp = 14,
+      maxHp = 20,
+      types = { "water" },
+    },
+    reserves = {
+      { combatant = 3, species = "CHIKORITA", level = 5, hp = 19, maxHp = 19, types = { "grass" } },
+      { combatant = 4, species = "TOTODILE", level = 5, hp = 0, maxHp = 21, types = { "water" } },
+    },
+  }
+  local switchRequest =
+    { requestId = 21, epoch = 0, controller = "ai", kind = "action", actors = { { combatant = 1 } } }
+  local switcher = Ai.new({ aiPasses = { "ai_pass_0", "ai_pass_1" }, trainerItems = {} })
+  local switchReply = switcher:decide(switchRequest, switcher:observe(switchKnowledge), spyStream(FIXED_SEED))
+  Assert.isTrue(
+    type(switchReply.choices) == "table" and #switchReply.choices == 1,
+    "one owned actor draws one choice"
+  )
+  local exchange = switchReply.choices[1]
+  Assert.equal(exchange.kind, "switch", "the exposed attacker answers the hostile matchup by exchanging")
+  Assert.isTrue(type(exchange.payload) == "table", "exchange choices carry their payload")
+  Assert.equal(exchange.payload.replacement, 3, "the living grass reserve answers the water foe")
+  Assert.isTrue(exchange.payload.replacement ~= 4, "fainted reserves are never chosen")
+
+  ---@param hp integer current health of the wounded attacker
+  ---@return table knowledge projection with no reserves
+  local function woundedKnowledge(hp)
+    return {
+      active = {
+        combatant = 1,
+        species = "CHIKORITA",
+        level = 5,
+        hp = hp,
+        maxHp = 20,
+        types = { "grass" },
+        moves = {
+          { key = "TACKLE", moveType = "normal", power = 35 },
+        },
+      },
+      foe = {
+        combatant = 2,
+        species = "GEODUDE",
+        level = 5,
+        hp = 14,
+        maxHp = 20,
+        types = { "rock", "ground" },
+      },
+      reserves = {},
+    }
+  end
+  local itemRequest =
+    { requestId = 22, epoch = 0, controller = "ai", kind = "action", actors = { { combatant = 1 } } }
+  local stocked = Ai.new({ aiPasses = { "ai_pass_0", "ai_pass_1" }, trainerItems = { "POTION" } })
+  local cure = stocked:decide(itemRequest, stocked:observe(woundedKnowledge(4)), spyStream(FIXED_SEED))
+  Assert.isTrue(type(cure.choices) == "table" and #cure.choices == 1, "one owned actor draws one choice")
+  Assert.equal(cure.choices[1].kind, "item", "the wounded attacker with stock answers with its bag")
+  Assert.isTrue(type(cure.choices[1].payload) == "table", "bag choices carry their payload")
+  Assert.equal(cure.choices[1].payload.item, "POTION", "the stocked cure is the one actually carried")
+  local bare = Ai.new({ aiPasses = { "ai_pass_0", "ai_pass_1" }, trainerItems = {} })
+  local withoutStock = bare:decide(itemRequest, bare:observe(woundedKnowledge(4)), spyStream(FIXED_SEED))
+  Assert.isTrue(
+    withoutStock.choices[1].kind ~= "item",
+    "attackers without usable items never invent bag stock"
+  )
+  local healthyRequest =
+    { requestId = 23, epoch = 0, controller = "ai", kind = "action", actors = { { combatant = 1 } } }
+  local healthy = stocked:decide(healthyRequest, stocked:observe(woundedKnowledge(18)), spyStream(FIXED_SEED))
+  Assert.isTrue(healthy.choices[1].kind ~= "item", "healthy attackers decline the bag")
+end
+
+-- Pass names outside the closed native set fail closed: an unknown bit
+-- and a malformed name both raise naming the offending pass instead of
+-- answering a fallback move.
+function T.unknown_pass_names_fail_closed()
+  local Ai = requirePresent(AI_MODULE, "the native controller answers owned requests from its pass facts")
+  local errBit = Assert.throws(function()
+    Ai.new({ aiPasses = { "ai_pass_9" }, trainerItems = {} })
+  end, "passes outside the closed set fail instead of falling back")
+  Assert.isTrue(string.find(tostring(errBit), "ai_pass_9", 1, true) ~= nil, "the failure names the unknown pass")
+  local errMalformed = Assert.throws(function()
+    Ai.new({ aiPasses = { "bogus" }, trainerItems = {} })
+  end, "malformed pass names fail instead of falling back")
+  Assert.isTrue(
+    string.find(tostring(errMalformed), "bogus", 1, true) ~= nil,
+    "the failure names the malformed pass"
+  )
+end
+
+-- Flagless trainers still answer legally without a program: with no
+-- scoring pass every owned move ties, so selection draws uniformly from
+-- the labeled stream, stays deterministic for a fixed seed, and memoizes
+-- the open request without further draws.
+function T.flagless_trainers_select_without_scoring_passes()
+  local Ai = requirePresent(AI_MODULE, "the native controller answers owned requests from its pass facts")
+  local knowledge = mixedKnowledge()
+  knowledge.reserves = {}
+  local request =
+    { requestId = 31, epoch = 0, controller = "ai", kind = "action", actors = { { combatant = 1 } } }
+  local controller = Ai.new({ aiPasses = {}, trainerItems = {} })
+  local stream = spyStream(FIXED_SEED)
+  local reply = controller:decide(request, controller:observe(knowledge), stream)
+  Assert.isTrue(type(reply.choices) == "table" and #reply.choices == 1, "one owned actor draws one choice")
+  Assert.equal(reply.choices[1].kind, "attack", "the flagless attacker still strikes")
+  local slot = reply.choices[1].payload.moveSlot
+  Assert.isTrue(slot == 0 or slot == 1 or slot == 2, "the strike names an owned move slot")
+  local draws = #stream:drawLabels()
+  Assert.isTrue(draws > 0, "the first evaluation draws from the native stream")
+  local repeated = controller:decide(request, controller:observe(knowledge), stream)
+  Assert.deepEqual(repeated, reply, "repeating the open request returns the recorded reply")
+  Assert.equal(#stream:drawLabels(), draws, "repeated polls draw nothing further")
+  local twin = Ai.new({ aiPasses = {}, trainerItems = {} })
+  Assert.deepEqual(
+    twin:decide(request, twin:observe(knowledge), spyStream(FIXED_SEED)),
+    reply,
+    "identical passes answer identically from the same seed"
+  )
+end
+
+-- Power-point exhaustion selects the struggle state instead of an
+-- invalid slot: fully spent moves answer slot zero for the session to
+-- resolve as struggle, while a spent lead move is excluded in favor of
+-- a live winning slot.
+function T.exhausted_power_points_select_the_struggle_state()
+  local Ai = requirePresent(AI_MODULE, "the native controller answers owned requests from its pass facts")
+  ---@param moves table[] candidate moves carrying their remaining power points
+  ---@return table knowledge projection with no reserves
+  local function spentKnowledge(moves)
+    return {
+      active = {
+        combatant = 1,
+        species = "CHIKORITA",
+        level = 5,
+        hp = 20,
+        maxHp = 20,
+        types = { "grass" },
+        moves = moves,
+      },
+      foe = {
+        combatant = 2,
+        species = "GEODUDE",
+        level = 5,
+        hp = 14,
+        maxHp = 20,
+        types = { "rock", "ground" },
+      },
+      reserves = {},
+    }
+  end
+  local request =
+    { requestId = 41, epoch = 0, controller = "ai", kind = "action", actors = { { combatant = 1 } } }
+  local controller = Ai.new({ aiPasses = { "ai_pass_0", "ai_pass_1" }, trainerItems = {} })
+  local spent = controller:decide(
+    request,
+    controller:observe(spentKnowledge({
+      { key = "TACKLE", moveType = "normal", power = 35, pp = 0 },
+      { key = "RAZOR_LEAF", moveType = "grass", power = 55, pp = 0 },
+    })),
+    spyStream(FIXED_SEED)
+  )
+  Assert.equal(spent.choices[1].kind, "attack", "spent attackers still answer with a strike")
+  Assert.equal(spent.choices[1].payload.moveSlot, 0, "no usable move selects the struggle state")
+  local partialRequest =
+    { requestId = 42, epoch = 0, controller = "ai", kind = "action", actors = { { combatant = 1 } } }
+  local partial = controller:decide(
+    partialRequest,
+    controller:observe(spentKnowledge({
+      { key = "TACKLE", moveType = "normal", power = 35, pp = 0 },
+      { key = "RAZOR_LEAF", moveType = "grass", power = 55, pp = 12 },
+    })),
+    spyStream(FIXED_SEED)
+  )
+  Assert.equal(partial.choices[1].payload.moveSlot, 1, "the spent lead is excluded for the live winner")
+end
+
+-- Selection adjustments prefer sound finishing moves: a scoreless
+-- no-effect strike falls below a status attempt under the bad-move pass,
+-- and the most powerful neutral strike wins outright under the
+-- faint-seeking pass without needing a tiebreak draw.
+function T.selection_adjustments_prefer_sound_finishing_moves()
+  local Evaluator = requirePresent(
+    EVALUATOR_MODULE,
+    "the typed instruction evaluator executes every reachable selection branch"
+  )
+  local immuneKnowledge = {
+    active = {
+      combatant = 1,
+      species = "CHIKORITA",
+      level = 5,
+      hp = 20,
+      maxHp = 20,
+      types = { "grass" },
+      moves = {
+        { key = "TACKLE", moveType = "normal", power = 35 },
+        { key = "SLEEP_POWDER", moveType = "grass", power = 0 },
+      },
+    },
+    foe = {
+      combatant = 2,
+      species = "GASTLY",
+      level = 5,
+      hp = 14,
+      maxHp = 20,
+      types = { "ghost" },
+    },
+    reserves = {},
+  }
+  local immune = Evaluator.evaluate(
+    programWith({ "score_matchup", "check_bad_move" }),
+    immuneKnowledge,
+    spyStream(FIXED_SEED)
+  )
+  Assert.equal(immune.action, "SLEEP_POWDER", "the negated strike falls below the status attempt")
+  local powerKnowledge = {
+    active = {
+      combatant = 1,
+      species = "CHARMANDER",
+      level = 5,
+      hp = 20,
+      maxHp = 20,
+      types = { "fire" },
+      moves = {
+        { key = "EMBER", moveType = "fire", power = 40 },
+        { key = "SCRATCH", moveType = "normal", power = 60 },
+      },
+    },
+    foe = {
+      combatant = 2,
+      species = "PIDGEY",
+      level = 5,
+      hp = 14,
+      maxHp = 20,
+      types = { "normal", "flying" },
+    },
+    reserves = {},
+  }
+  local faint = Evaluator.evaluate(programWith({ "try_to_faint" }), powerKnowledge, spyStream(FIXED_SEED))
+  Assert.equal(faint.action, "SCRATCH", "the most powerful strike wins outright")
+end
+
+-- Raw perspective views still answer legally without scoring: callers
+-- that pass the session view directly get one strike per owned actor
+-- from the owned move count, with the visible opposing position as the
+-- target and identical memoized replies on repeat polls.
+function T.raw_views_answer_legally_without_scoring()
+  local Ai = requirePresent(AI_MODULE, "the native controller answers owned requests from its pass facts")
+  local view = {
+    controller = "ai",
+    combatants = {
+      { combatant = 1, hp = 20, mon = { moves = { { move = "TACKLE" }, { move = "GROWL" } } } },
+    },
+    opponents = {
+      { combatant = 2, position = 2, hp = 14 },
+    },
+  }
+  local request =
+    { requestId = 51, epoch = 0, controller = "ai", kind = "action", actors = { { combatant = 1 } } }
+  local controller = Ai.new({ aiPasses = {}, trainerItems = {} })
+  local stream = spyStream(FIXED_SEED)
+  local reply = controller:decide(request, view, stream)
+  Assert.isTrue(type(reply.choices) == "table" and #reply.choices == 1, "one owned actor draws one choice")
+  Assert.equal(reply.choices[1].kind, "attack", "view callers still answer with a strike")
+  local slot = reply.choices[1].payload.moveSlot
+  Assert.isTrue(slot == 0 or slot == 1, "the strike names an owned move slot")
+  Assert.equal(reply.choices[1].payload.target.position, 2, "the strike targets the visible position")
+  local draws = #stream:drawLabels()
+  local repeated = controller:decide(request, view, stream)
+  Assert.deepEqual(repeated, reply, "repeating the open request returns the recorded reply")
+  Assert.equal(#stream:drawLabels(), draws, "repeated polls draw nothing further")
+end
+
 return { tests = T }
