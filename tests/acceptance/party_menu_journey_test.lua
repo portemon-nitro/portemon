@@ -15,7 +15,7 @@ local FieldScriptSymbols = require("libs.assets.src.field.FieldScriptSymbols")
 local FieldState = require("game.hgss.src.field.FieldState")
 
 local T = {
-  metadata = { capabilities = { "rom_dump" }, derivedAssets = { "field-runtime", "audio-bank:759", "map:7" }, tags = { "party", "bag", "journey" } },
+  metadata = { capabilities = { "rom_dump" }, derivedAssets = { "field-runtime", "audio-bank:700", "audio-bank:730", "audio-bank:759", "map-data:7", "map:7" }, tags = { "party", "bag", "journey" } },
   tests = {},
 }
 
@@ -425,6 +425,60 @@ function T.tests.production_medicine_give_take_round_trip(context)
     Assert.equal(bag:quantity("POTION"), 2, "the taken potion returns to the bag exactly once")
     Assert.isNil(party:takeResult(), "returning to the root reports no terminal result")
     party:dispose()
+  end)
+end
+
+local function exerciseBagTargetPrompt(game, item, pocket, action, targetPage, prompt)
+  giftPair(game)
+  local bag = assert(game.runtime.bagService, "field runtime owns the live bag service")
+  Assert.isTrue(bag:add(item, 1), "the target-prompt fixture must stock " .. item)
+  local cursor = assert(game.runtime.bagCursor, "field runtime owns the live bag cursor")
+  cursor:setPocket(pocket)
+  cursor:setPosition(pocket, 0)
+  local flow = composition(game).makeBagFlow()
+  driveUntil(flow, "the bag browse page", 30, function(current)
+    return current.page == "bag_browse"
+  end)
+
+  local status = chooseBagAction(flow, action)
+  Assert.equal(status.page, targetPage, "the Bag operation must enter its matching Party target context")
+  drainOpen(flow)
+  local child = flowChild(flow:status())
+  Assert.equal(child.state, "choosing_item_target", "target operations share Party target navigation")
+  if prompt == nil then
+    Assert.equal(child.context, "give_target", "Bag Give keeps its source Party target context")
+  else
+    Assert.equal(child.targetPromptKey, prompt, "the Party presentation carries the operation's lower prompt")
+  end
+
+  drive(flow, { { type = "navigate", direction = "right" } })
+  child = flowChild(flow:status())
+  if prompt == nil then
+    Assert.equal(child.context, "give_target", "target navigation preserves Bag Give")
+  else
+    Assert.equal(child.targetPromptKey, prompt, "target navigation keeps the operation prompt visible")
+  end
+  flow:dispose()
+end
+
+function T.tests.production_bag_give_keeps_its_party_target_context(context)
+  requireVersions(context)
+  withGame(function(game)
+    exerciseBagTargetPrompt(game, "GREAT_BALL", "balls", "give", "party_give_target", nil)
+  end)
+end
+
+function T.tests.production_ordinary_item_use_shows_its_target_prompt(context)
+  requireVersions(context)
+  withGame(function(game)
+    exerciseBagTargetPrompt(game, "POTION", "medicine", "use", "party_item_target", "useTarget")
+  end)
+end
+
+function T.tests.production_machine_use_shows_its_target_prompt(context)
+  requireVersions(context)
+  withGame(function(game)
+    exerciseBagTargetPrompt(game, "TM28", "tmhm", "use", "party_item_target", "teachTarget")
   end)
 end
 

@@ -1280,7 +1280,7 @@ function PartyScreenRenderer:_drawContent(presentation, layout, icons)
     local record = assert(view.slots[slot + 1], "menu messages address a party slot")
     self:_drawContextMessage(assert(record.displayName, "menu slots carry a display name"))
   elseif presentation.state == "choosing_item_target" then
-    self:_drawNamedLowerPrompt("giveTarget")
+    self:_drawNamedLowerPrompt(assert(presentation.targetPromptKey, "item target presentation carries its prompt key"))
   elseif presentation.state == "choose_swap" or presentation.state == "swapping" then
     self:_drawNamedLowerPrompt("moveTarget")
   elseif presentation.state == "browse" then

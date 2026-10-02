@@ -22,6 +22,7 @@ local PartyScreenModel = require("libs.hgss.src.ui.PartyScreenModel")
 ---@field _policy table<string, unknown> the injected action policy
 ---@field _promptShape table<string, unknown> the yes/no prompt shape for confirmations
 ---@field _context string the named party context for this open
+---@field _targetPromptKey ("giveTarget"|"useTarget"|"teachTarget")? the lower prompt for item target contexts
 ---@field _item { key: string, bagRevision: integer }? the pending item for give continuation and target contexts
 ---@field _measureDisplay fun(): DisplayMeasurement the live display facts
 ---@field _prepareIcons fun(iconKeys: string[]): boolean, string?
@@ -97,6 +98,7 @@ end
 ---@field actionPolicy table<string, unknown>? the action policy (defaults to the production browse policy)
 ---@field uiManifest table<string, unknown>? the field-UI manifest carrying the yes/no prompt shape
 ---@field context string? the named party context (defaults to browse)
+---@field targetPromptKey ("giveTarget"|"useTarget"|"teachTarget")? the lower prompt for item target contexts
 ---@field item { key: string, bagRevision: integer }? the pending item for give continuation and target contexts
 ---@field measureDisplay fun(): DisplayMeasurement the current display facts
 ---@field initialFocus integer|"cancel"? the opening cursor (defaults to the nearest selectable node)
@@ -141,12 +143,24 @@ function PartyScreenState.new(opts)
       or context == "give_resume",
     "the party screen requires a named context"
   )
+  local targetPromptKey = opts.targetPromptKey
+  if context == "give_target" then
+    assert(targetPromptKey == "giveTarget", "give targets require the Give prompt")
+  elseif context == "item_target" then
+    assert(
+      targetPromptKey == "useTarget" or targetPromptKey == "teachTarget",
+      "item targets require the Use or Teach prompt"
+    )
+  else
+    assert(targetPromptKey == nil, "only target contexts carry a target prompt")
+  end
   local self = setmetatable({
     _service = service,
     _manifest = manifest,
     _policy = opts.actionPolicy or productionPolicy(service, manifestLabels(manifest)),
     _promptShape = promptShape,
     _context = context,
+    _targetPromptKey = targetPromptKey,
     _item = opts.item,
     _measureDisplay = opts.measureDisplay,
     _prepareIcons = opts.prepareIcons,
@@ -263,6 +277,9 @@ function PartyScreenState:_view()
     view[key] = value
   end
   view.detailOverlay = self._detailOverlay == true
+  if self._targetPromptKey ~= nil then
+    view.targetPromptKey = self._targetPromptKey
+  end
   if self._revealPhase ~= nil then
     view.phase = self._revealPhase
     if self._revealPhase == "opening" then

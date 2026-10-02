@@ -240,6 +240,8 @@ local function v5Manifest()
     },
   }
   templates.giveTarget = { segments = { { kind = "text", value = "GIVE TARGET" } } }
+  templates.useTarget = { segments = { { kind = "text", value = "USE TARGET" } } }
+  templates.teachTarget = { segments = { { kind = "text", value = "TEACH TARGET" } } }
   templates.moveTarget = { segments = { { kind = "text", value = "MOVE TARGET" } } }
   manifest.text.messageRole = {
     foreground = { r = 250, g = 246, b = 217, a = 255 },
@@ -784,7 +786,9 @@ end
 function T.target_and_swap_states_draw_their_source_lower_prompts()
   local manifest = v5Manifest()
   local expected = {
-    { state = "choosing_item_target", prompt = "GIVE TARGET" },
+    { state = "choosing_item_target", targetPromptKey = "giveTarget", prompt = "GIVE TARGET" },
+    { state = "choosing_item_target", targetPromptKey = "useTarget", prompt = "USE TARGET" },
+    { state = "choosing_item_target", targetPromptKey = "teachTarget", prompt = "TEACH TARGET" },
     { state = "choose_swap", prompt = "MOVE TARGET" },
     { state = "swapping", prompt = "MOVE TARGET" },
   }
@@ -793,6 +797,7 @@ function T.target_and_swap_states_draw_their_source_lower_prompts()
     local texts = {}
     local renderer = newRenderer(graphics, stubText(texts), manifest)
     local status = presentation({ state = case.state })
+    status.targetPromptKey = case.targetPromptKey
     status.swap = case.state == "swapping" and {
       source = 0,
       destination = 1,
