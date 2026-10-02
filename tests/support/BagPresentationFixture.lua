@@ -473,6 +473,12 @@ function BagPresentationFixture.manifest()
             visual = bagImageRef("assets/generated/bag/quantity-confirm.png"),
             center = { x = 136, y = 176 },
             hitRect = bagRect(96, 168, 78, 24),
+            labelAt = { x = 117, y = 168 },
+          },
+          cancel = {
+            visual = bagImageRef("assets/generated/bag/quantity-cancel.png"),
+            center = { x = 224, y = 176 },
+            labelAt = { x = 197, y = 168 },
           },
           cancelHitRect = bagRect(178, 168, 78, 24),
         },
@@ -502,6 +508,10 @@ function BagPresentationFixture.manifest()
         quantityConfirm = {
           normal = bagImageRef("assets/generated/bag/quantity-confirm.png"),
           selected = bagImageRef("assets/generated/bag/quantity-confirm-selected.png"),
+        },
+        quantityCancel = {
+          normal = bagImageRef("assets/generated/bag/quantity-cancel.png"),
+          selected = bagImageRef("assets/generated/bag/quantity-cancel-selected.png"),
         },
       },
       moveTransition = {

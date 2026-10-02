@@ -715,7 +715,13 @@ local function composedManifest()
     confirm = {
       center = { x = 144, y = 176 },
       hitRect = { x = 112, y = 160, width = 64, height = 32 },
+      labelAt = { x = 117, y = 168 },
       visual = { image = "test/bag/quantity-confirm.png", width = 64, height = 24 },
+    },
+    cancel = {
+      center = { x = 224, y = 176 },
+      labelAt = { x = 197, y = 168 },
+      visual = { image = "test/bag/quantity-cancel.png", width = 64, height = 24 },
     },
     cancelHitRect = { x = 178, y = 168, width = 78, height = 24 },
     visuals = {
@@ -813,6 +819,10 @@ local function composedManifest()
       normal = { image = "test/bag/quantity-confirm.png", width = 64, height = 24 },
       selected = { image = "test/bag/quantity-confirm-selected.png", width = 64, height = 24 },
     },
+    quantityCancel = {
+      normal = { image = "test/bag/quantity-cancel.png", width = 64, height = 24 },
+      selected = { image = "test/bag/quantity-cancel-selected.png", width = 64, height = 24 },
+    },
   }
   manifested.interactive.moveCursor = {
     original = { image = "test/bag/move-cursor-original.png", width = 96, height = 40 },
@@ -900,6 +910,8 @@ local function seedComposedCache()
   put("test/bag/cancel-face-selected-base.png")
   put("test/bag/cancel-face-selected.png")
   put("test/bag/quantity-confirm-selected.png")
+  put("test/bag/quantity-cancel.png")
+  put("test/bag/quantity-cancel-selected.png")
   put("test/bag/move-cursor-original.png")
   put("test/bag/move-cursor-candidate.png")
   for _, pocket in ipairs(POCKETS) do

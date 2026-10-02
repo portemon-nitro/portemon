@@ -547,6 +547,83 @@ function T.finalized_backgrounds_carry_static_cancel_chrome(romFs, versionId)
   end
 end
 
+-- The quantity background is the one lower background without baked generic
+-- Cancel chrome: the runtime quantity Cancel face owns those pixels, so the
+-- generic face must not linger underneath. Move backgrounds keep the
+-- finalized chrome like browse and action do. Only fully opaque face pixels
+-- participate: those copy verbatim through chrome composition, while any
+-- partial-alpha edge blends with the surface beneath.
+function T.quantity_background_omits_the_generic_cancel_chrome(romFs, versionId)
+  local bundle = bundleFor(romFs, versionId)
+  local manifest = bundle.manifest
+  local face =
+    assert(manifest.interactive.feedback.cancelFace.normal, "the manifest publishes the generic cancel face")
+  local faceWidth, faceHeight, faceRgba =
+    PngReader.rgba(assetBytes(assert(bundle.assets[face.image], "the generic cancel face bytes must compile")))
+  Assert.equal(faceWidth, face.width, "the generic cancel face keeps its compiled width")
+  Assert.equal(faceHeight, face.height, "the generic cancel face keeps its compiled height")
+  local offset = face.offset or { x = 0, y = 0 }
+  local anchor = assert(manifest.interactive.focus.cancel.target, "the cancel focus carries its target")
+  local originX, originY = anchor.x + offset.x, anchor.y + offset.y
+  Assert.isTrue(
+    originX >= 0 and originY >= 0 and originX + faceWidth <= 256 and originY + faceHeight <= 192,
+    "the generic cancel face sits inside the canonical pane"
+  )
+  local function backgroundCarriesChrome(background, label)
+    local width, _, rgba =
+      PngReader.rgba(assetBytes(assert(bundle.assets[background.image], label .. " must compile")))
+    Assert.equal(width, 256, label .. " keeps the pane width")
+    for y = 0, faceHeight - 1 do
+      for x = 0, faceWidth - 1 do
+        local faceOffset = (y * faceWidth + x) * 4 + 1
+        if string.byte(faceRgba, faceOffset + 3) == 255 then
+          local targetOffset = ((originY + y) * 256 + (originX + x)) * 4 + 1
+          for channel = 0, 2 do
+            if string.byte(faceRgba, faceOffset + channel) ~= string.byte(rgba, targetOffset + channel) then
+              return false
+            end
+          end
+        end
+      end
+    end
+    return true
+  end
+  local pockets = { "items", "medicine", "balls", "tmhm", "berries", "mail", "battle_items", "key_items" }
+  local quantity = assert(manifest.interactive.backgrounds.quantity, "the bundle publishes quantity backgrounds")
+  for _, pocket in ipairs(pockets) do
+    for count = 0, 6 do
+      local variant = assert(quantity[pocket][count], pocket .. " publishes quantity count " .. count)
+      Assert.isFalse(
+        backgroundCarriesChrome(variant, "quantity/" .. pocket .. "/" .. count),
+        "quantity/" .. pocket .. " count " .. count .. " carries no baked generic cancel chrome"
+      )
+    end
+  end
+  local move = assert(manifest.interactive.backgrounds.move, "the bundle publishes move backgrounds")
+  local function moveVariant(pocket, count, origin)
+    return assert(
+      move[pocket][count][origin],
+      "move/" .. pocket .. " count " .. count .. " origin " .. origin .. " is published"
+    )
+  end
+  for count = 0, 6 do
+    Assert.isTrue(
+      backgroundCarriesChrome(moveVariant("items", count, "none"), "move/items/" .. count),
+      "move/items count " .. count .. " keeps the generic cancel chrome"
+    )
+  end
+  for _, pocket in ipairs(pockets) do
+    Assert.isTrue(
+      backgroundCarriesChrome(moveVariant(pocket, 0, "none"), "move/" .. pocket .. "/0"),
+      "move/" .. pocket .. " keeps the generic cancel chrome"
+    )
+  end
+  Assert.isTrue(
+    backgroundCarriesChrome(moveVariant("items", 3, "2"), "move/items/3/origin-2"),
+    "a stamped move origin variant keeps the generic cancel chrome"
+  )
+end
+
 -- The compiled lower pane publishes one realized browse background per
 -- pocket and visible occupied-item count 0..6: an empty row and a full row
 -- resolve distinct compiled chrome instead of one static image.
@@ -734,7 +811,7 @@ end
 function T.pocket_strips_replay_the_retained_palette_state(romFs, versionId)
   local bundle = bundleFor(romFs, versionId)
   local manifest = bundle.manifest
-  Assert.equal(manifest.schema, "g4-bag-assets-v15", "the rebuilt bag cache must publish the current contract")
+  Assert.equal(manifest.schema, "g4-bag-assets-v16", "the rebuilt bag cache must publish the current contract")
   local strips =
     assert(manifest.interactive.pocketTabs.strips, "the rebuilt manifest must publish one strip per active pocket")
   local keys = {}

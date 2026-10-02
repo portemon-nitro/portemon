@@ -41,8 +41,14 @@ function T.geometry_preserves_the_audited_rectangles()
   Assert.deepEqual(geometry.quantityConfirm, {
     center = { x = 136, y = 176 },
     hitRect = { x = 96, y = 168, width = 78, height = 24 },
+    labelAt = { x = 117, y = 168 },
   })
   Assert.deepEqual(geometry.quantityCancelHitRect, { x = 178, y = 168, width = 78, height = 24 })
+  Assert.deepEqual(
+    geometry.quantityCancelLabelAt,
+    { x = 197, y = 168 },
+    "the quantity cancel label lowers as its own text origin"
+  )
 end
 
 function T.states_name_one_pose_and_pattern_per_pocket()

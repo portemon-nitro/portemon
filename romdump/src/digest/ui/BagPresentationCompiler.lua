@@ -197,8 +197,10 @@ function BagPresentationCompiler.compileGeometry(config)
   local quantityConfirm = {
     center = checkPoint(geometry.quantityConfirm.center, "quantity confirm center"),
     hitRect = checkRect(geometry.quantityConfirm.hitRect, "quantity confirm hit rect"),
+    labelAt = checkPoint(geometry.quantityConfirm.labelAt, "quantity confirm label"),
   }
   local quantityCancelHitRect = checkRect(geometry.quantityCancelHitRect, "quantity cancel hit rect")
+  local quantityCancelLabelAt = checkPoint(geometry.quantityCancelLabelAt, "quantity cancel label")
   local cancelSource = geometry.cancel
   if type(cancelSource) ~= "table" then
     Errors.raise(BagPresentationCompiler.ERROR.GEOMETRY_INVALID, "bag geometry carries no cancel affordance", {})
@@ -257,6 +259,7 @@ function BagPresentationCompiler.compileGeometry(config)
     quantityControls = quantityControls,
     quantityConfirm = quantityConfirm,
     quantityCancelHitRect = quantityCancelHitRect,
+    quantityCancelLabelAt = quantityCancelLabelAt,
   }
 end
 

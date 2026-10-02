@@ -275,6 +275,14 @@ function BagRenderer.new(opts)
       "feedback:quantityConfirm:selected",
       assert(feedback.quantityConfirm.selected, "feedback carries its quantity flash")
     )
+    acquire(
+      "feedback:quantityCancel:normal",
+      assert(feedback.quantityCancel.normal, "feedback carries its quantity cancel face")
+    )
+    acquire(
+      "feedback:quantityCancel:selected",
+      assert(feedback.quantityCancel.selected, "feedback carries its quantity cancel flash")
+    )
     local moveCursor = assert(interactive.moveCursor, "the bag manifest carries its move target cursor")
     acquire("moveCursor:original", assert(moveCursor.original, "the move cursor carries its original target"))
     acquire("moveCursor:candidate", assert(moveCursor.candidate, "the move cursor carries its candidate target"))
@@ -313,6 +321,7 @@ function BagRenderer.new(opts)
       assert(quantityVisuals.decrement.pressed, "the quantity carries pressed decrement visuals")
     )
     acquire("quantityConfirm", assert(quantity.confirm.visual, "the quantity carries its confirm visual"))
+    acquire("quantityCancel", assert(quantity.cancel.visual, "the quantity carries its cancel visual"))
     local registration =
       assert(interactive.itemSlots.registration, "the bag manifest must carry its registration markers")
     local slot1 = assert(registration.slot1, "the bag manifest must carry its first registration marker")
@@ -571,8 +580,8 @@ local INTERACTIVE_LAYERS = {
   browsing = { cells = true, browseFocus = true, moveFocus = false, page = true, cancelLabel = true },
   description_overlay = { cells = true, browseFocus = true, moveFocus = false, page = true, cancelLabel = true },
   item_select = { cells = true, browseFocus = false, moveFocus = false, page = true, cancelLabel = true },
-  move_select = { cells = true, browseFocus = false, moveFocus = true, page = false, cancelLabel = false },
-  action_menu = { cells = false, browseFocus = false, moveFocus = false, page = false, cancelLabel = false },
+  move_select = { cells = true, browseFocus = false, moveFocus = true, page = false, cancelLabel = true },
+  action_menu = { cells = false, browseFocus = false, moveFocus = false, page = false, cancelLabel = true },
   toss_quantity = { cells = false, browseFocus = false, moveFocus = false, page = false, cancelLabel = false },
   toss_confirm = { cells = false, browseFocus = false, moveFocus = false, page = false, cancelLabel = false },
   toss_ack = { cells = false, browseFocus = false, moveFocus = false, page = false, cancelLabel = false },
@@ -1089,35 +1098,38 @@ function BagRenderer:_drawQuantityState(presentation)
   end
   local feedbackKind = type(presentation.feedback) == "table" and presentation.feedback.kind or nil
   local confirm = assert(overlay.confirm, "the quantity overlay carries confirm")
-  local center = assert(confirm.center, "quantity confirm carries a center")
+  local cancel = assert(overlay.cancel, "the quantity overlay carries cancel")
+  -- Each face draws exactly once: the selected activation visual replaces
+  -- its normal twin, never alongside it.
   if feedbackKind == "quantityConfirm" then
+    local center = assert(confirm.center, "quantity confirm carries a center")
     drawVisual(self._graphics, assert(self._visuals["feedback:quantityConfirm:selected"]), center.x, center.y)
   else
+    local center = assert(confirm.center, "quantity confirm carries a center")
     drawVisual(self._graphics, assert(self._visuals.quantityConfirm), center.x, center.y)
   end
-  -- The confirm control prints TOSS and the fixed Cancel control prints
-  -- CANCEL through the generated semantic labels. Both hide once toss
-  -- confirmation owns the retained base.
+  if feedbackKind == "quantityCancel" then
+    local center = assert(cancel.center, "quantity cancel carries a center")
+    drawVisual(self._graphics, assert(self._visuals["feedback:quantityCancel:selected"]), center.x, center.y)
+  else
+    local center = assert(cancel.center, "quantity cancel carries a center")
+    drawVisual(self._graphics, assert(self._visuals.quantityCancel), center.x, center.y)
+  end
+  -- The confirm control prints TOSS and the quantity Cancel control prints
+  -- CANCEL through the generated semantic labels at their generated text
+  -- origins. Both hide once toss confirmation owns the retained base.
   local labels = assert(
     self._manifest.interactive.text and self._manifest.interactive.text.actions,
     "the quantity picker needs its generated labels"
   )
   local palette = self:_palettes().description
   local tossLabel = assert(labels.toss, "the bag manifest carries its toss label")
-  local confirmRect = assert(confirm.hitRect, "quantity confirm carries its button rect")
+  local confirmLabelAt = assert(confirm.labelAt, "quantity confirm carries its label origin")
   setColor(self._graphics, WHITE)
-  self:_drawCenteredWithPalette(tossLabel, confirmRect, palette)
-  if feedbackKind == "quantityCancel" then
-    local focus = assert(self._manifest.interactive.focus, "the bag manifest must carry its focus visuals")
-    local cancelFocus = assert(focus.cancel, "the bag manifest carries its cancel focus")
-    local target = assert(cancelFocus.target, "the cancel focus carries its target")
-    local flash = assert(self._visuals["feedback:cancel:selected"], "feedback carries its cancel flash")
-    -- Feedback visual descriptors own their own generated offset.
-    drawVisual(self._graphics, flash, target.x, target.y)
-  end
+  self._text:drawTextWithPalette(plainText(tossLabel), confirmLabelAt.x, confirmLabelAt.y, palette)
   local cancelLabel = assert(labels.cancel, "the bag manifest carries its cancel label")
-  local cancelRect = assert(overlay.cancelHitRect, "the quantity overlay carries its cancel button rect")
-  self:_drawCenteredWithPalette(cancelLabel, cancelRect, palette)
+  local cancelLabelAt = assert(cancel.labelAt, "quantity cancel carries its label origin")
+  self._text:drawTextWithPalette(plainText(cancelLabel), cancelLabelAt.x, cancelLabelAt.y, palette)
 end
 
 -- The toss confirmation retains its action/quantity base with the
