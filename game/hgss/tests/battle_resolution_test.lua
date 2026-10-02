@@ -419,4 +419,69 @@ function T.unstaged_dex_reference_fails_the_resolution()
   battle:dispose()
 end
 
+-- Knockout progression reaches the committed party even when the
+-- recipient's health never moved: an undamaged Exp-Share-style earner
+-- stages its experience and effort writeback, and the commit publishes
+-- exactly one party revision with health untouched.
+function T.undamaged_knockout_progression_reaches_the_committed_party()
+  local BattleRuntime = requirePresent(RUNTIME_MODULE, "application battle lifetime with consequence staging")
+  local Committer = requirePresent(COMMITTER_MODULE, "end-to-end exactly-once result publication")
+
+  local party = newPartyOwner()
+  local live = party:partyMon(0)
+  local liveCondition = live.condition --[[@as table<string, unknown>]]
+  local entryHp = liveCondition.currentHp --[[@as integer]]
+  local entryExp = live.experience --[[@as integer]]
+  local liveEvs = live.evs --[[@as table<string, unknown>]]
+  local entryAttack = liveEvs.attack --[[@as integer]]
+  local revision = party:partyRevision()
+
+  local rewarded = party:partyMon(0)
+  rewarded.experience = entryExp + 40
+  local rewardedEvs = rewarded.evs --[[@as table<string, unknown>]]
+  rewardedEvs.attack = entryAttack + 1
+  local battle = BattleRuntime.new({
+    request = { id = "launch-undamaged-progression", kind = "wild", payload = { species = "TOTODILE", level = 4 } },
+    party = party,
+  })
+  battle._session = {
+    dispose = function(_) end,
+    capture = function(_self)
+      return {
+        combatants = {
+          {
+            participant = 1,
+            hp = entryHp,
+            entryHp = entryHp,
+            source = { kind = "party", slot = 1 },
+            mon = rewarded,
+          },
+        },
+        participants = { { controller = "player" } },
+      }
+    end,
+  }
+  local updates = battle:_partyUpdates()
+  Assert.equal(#updates, 1, "an undamaged recipient with gains still stages its writeback")
+  local staged = updates[1] --[[@as table<string, unknown>]]
+  Assert.equal(staged.slot, 0, "the staged writeback names the live slot")
+  local stagedMon = staged.mon --[[@as table<string, unknown>]]
+  Assert.equal(stagedMon.experience, entryExp + 40, "the staged writeback carries the earned experience")
+  local prepared = Committer.prepare({
+    outcome = { id = "launch-undamaged-progression", result = "win" },
+    partyOwner = party,
+    partyUpdates = updates,
+  })
+  local receipt = Committer.commit(prepared)
+  Assert.isTrue(receipt.committed, "the progression batch commits")
+  local stored = party:partyMon(0)
+  Assert.equal(stored.experience, entryExp + 40, "earned experience reaches the committed party")
+  local storedEvs = stored.evs --[[@as table<string, unknown>]]
+  Assert.equal(storedEvs.attack, entryAttack + 1, "earned effort reaches the committed party")
+  local storedCondition = stored.condition --[[@as table<string, unknown>]]
+  Assert.equal(storedCondition.currentHp, entryHp, "untouched health stays untouched")
+  Assert.equal(party:partyRevision(), revision + 1, "the progression publishes exactly one revision")
+  battle:dispose()
+end
+
 return { tests = T }

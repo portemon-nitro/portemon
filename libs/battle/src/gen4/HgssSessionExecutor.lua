@@ -16,7 +16,11 @@
 -- stay absent from the move frames, so executions needing them fail
 -- explicitly instead of guessing; residual
 -- instances are collected from live effect state once mechanics create that
--- state, so the end-of-turn pass settles empty today. Fainted combatants
+-- state, so the end-of-turn pass settles empty today. Eligible knockouts pay
+-- experience, effort, levels, and move learning through the resumable reward
+-- owner before replacement or the terminal result: full move sets suspend on
+-- a learning prompt until its reply is consumed, and level gains accumulate
+-- once for post-battle handling without evolving mid-battle. Fainted combatants
 -- leave the field and never act again; sides fight short-handed only while
 -- no living reserve can fill the vacated position, and the outcome names
 -- the surviving standings once every mandatory replacement resolves.
@@ -39,8 +43,11 @@ local MoveExecution = require("libs.battle.src.gen4.MoveExecution")
 local NativeFormats = require("libs.battle.src.gen4.formats.NativeFormats")
 local OutcomePolicy = require("libs.battle.src.gen4.OutcomePolicy")
 local Personality = require("libs.mons.src.gen4.Personality")
+local Progression = require("libs.battle.src.gen4.Progression")
 local Residuals = require("libs.battle.src.gen4.Residuals")
 local StatStages = require("libs.battle.src.gen4.StatStages")
+local RewardEffort = require("libs.battle.src.gen4.Effort")
+local RewardExperience = require("libs.battle.src.gen4.Experience")
 local Stats = require("libs.mons.src.gen4.Stats")
 local Switching = require("libs.battle.src.gen4.Switching")
 local TurnOrder = require("libs.battle.src.gen4.TurnOrder")
@@ -56,6 +63,7 @@ local TurnOrder = require("libs.battle.src.gen4.TurnOrder")
 ---@field private _chart table<string, unknown>
 ---@field private _moneyUpItems table<string, boolean>
 ---@field private _ruleset table<string, unknown>?
+---@field private _commitLearningHandler fun(state: table<string, unknown>)?
 ---@field private _finalized boolean
 ---@field private _disposed boolean
 local HgssSessionExecutor = {}
@@ -73,6 +81,14 @@ HgssSessionExecutor.DEFAULT_ACTION_KINDS = { "attack", "switch", "confirm", "ite
 -- source escape bracket, ahead of any strike. Strikes never share one
 -- bracket: every strike samples the selected move's compiled priority.
 -- Prompts carry no battlefield effect and share the neutral bracket.
+-- Move-learning prompts suspend faint settlement through the shared
+-- decision protocol: one learn_move request carrying the incoming move,
+-- the current set, and whether decline is allowed, answered with exactly
+-- one confirm choice per addressed recipient reusing the reward vocabulary.
+HgssSessionExecutor.LEARN_DECISION_KIND = "learn_move"
+if not BattleProtocol.isDecisionKind(HgssSessionExecutor.LEARN_DECISION_KIND) then
+  BattleProtocol.registerDecisionKind(HgssSessionExecutor.LEARN_DECISION_KIND, { "confirm" })
+end
 local ESCAPE_BRACKET = 6
 
 ---@param value unknown
@@ -260,6 +276,11 @@ local function checkRestoredShape(state)
     if pending.replacement ~= nil then
       checkReplacementShape(pending.replacement)
     end
+    -- Learning suspensions hold the same obligation shape aside while
+    -- the recipient answers: replacement work resumes after the reply.
+    if pending.learning ~= nil then
+      checkReplacementShape(pending.learning --[[@as table<string, unknown>]])
+    end
   elseif state.status == "running" then
     if state.pending ~= nil then
       error(BattleErrors.incompatibleSnapshot("running snapshots carry no batch", {}))
@@ -373,6 +394,7 @@ local function buildBatch(state, admitted)
     state.outcome = {
       kind = "no_actors",
       rounds = state.round --[[@as integer]] - 1,
+      evolutionEligible = copyValue(state.evolutionEligible),
     }
     return
   end
@@ -721,6 +743,19 @@ local function eligibleReserves(state, participantId, claimed)
   return eligible
 end
 
+-- Closes a battle that ends mid-turn through flight or capture. The
+-- round frame closes here so no residual pass or outcome resettlement
+-- can resurrect the decided result. Earned evolution eligibility rides
+-- along exactly as it does on faint-decided terminals, since earlier
+-- knockouts keep their rewards when the battle ends by flight or throw.
+---@param state table<string, unknown> live battle state under early terminal settlement
+---@param outcome table<string, unknown> terminal marker for the early result
+local function endBattleEarly(state, outcome)
+  state.status = "ended"
+  state.outcome = outcome
+  state.outcome.evolutionEligible = copyValue(state.evolutionEligible)
+end
+
 ---@param obligation table<string, unknown> faint replacement obligation under resolution
 ---@return boolean true when the bereaved side answers through the decision protocol
 local function isExternalObligation(obligation)
@@ -763,6 +798,12 @@ local function enterReserve(state, moneySet, obligation, reserveId)
   -- Replacements send out under the money-up scan: the latch only ever
   -- moves 1 -> 2 and never resets when the holder leaves.
   noteEntry(state, moneySet, reserveId)
+  -- Taking the field marks knockout-reward participation: switched-in
+  -- reserves earn even when they never strike.
+  local arrivals = state.participated --[[@as table<integer, boolean>]]
+  if type(state.participated) == "table" then
+    arrivals[reserveId] = true
+  end
   local context = BattleContext.wrap(state)
   context:emit("switch", {
     kind = "faint",
@@ -813,9 +854,343 @@ local function settleOutcome(state)
     state.status = "running"
   else
     -- Terminal standings decide: the application maps the surviving
-    -- health to its win/loss/draw words from this terminal marker.
+    -- health to its win/loss/draw words from this terminal marker. Level
+    -- gains accumulated through knockout rewards ride along once for
+    -- post-battle handling; nothing evolves mid-battle.
     state.status = "ended"
-    state.outcome = { kind = "no_actors", rounds = state.round }
+    state.outcome = {
+      kind = "no_actors",
+      rounds = state.round,
+      evolutionEligible = copyValue(state.evolutionEligible),
+    }
+  end
+end
+
+---@class RewardRecipientCursor
+---@field combatant integer roster identity earning the reward
+---@field monIndex integer position of the battle-owned copy inside the reward child
+---@field opportunities table<integer, table<string, unknown>> ordered learning chances
+---@field cursor integer learning cursor inside the chances
+---@field touched boolean whether the award facts were reported
+---@field expAward integer landed experience
+---@field maxHpBefore integer previous health maximum
+---@field maxHpAfter integer recalculated health maximum
+
+---@class RewardFrame
+---@field kind string reward identity
+---@field defeated table<string, unknown> knocked-out entry the reward answers
+---@field recipients table<integer, RewardRecipientCursor> recipient cursors in award order
+---@field recipientIndex integer recipient cursor inside the recipients
+---@field pending table<string, unknown>? outstanding learning prompt, when one waits
+
+---@class RewardChild
+---@field defeated table<string, unknown> knocked-out entry the reward answers
+---@field mons table<integer, table<string, unknown>> current detached battle-owned copies
+---@field frame RewardFrame resumable reward frame
+---@field evolutionEligible table<integer, integer> recipients that gained a level
+---@field done boolean whether the child drained fully
+
+---@class RewardCatalog
+---@field species fun(self: RewardCatalog, key: string): table<string, unknown>
+---@field growthCurve fun(self: RewardCatalog, key: string): table<integer, integer>
+---@field form fun(self: RewardCatalog, speciesKey: string, form: integer): table<string, unknown>
+---@field move fun(self: RewardCatalog, key: string): table<string, unknown>
+
+-- Minimal catalog over the immutable session facts for the resumable
+-- reward owner: growth curves, base stats, learnsets, base experience
+-- yields, effort yields, and base power points resolve through the
+-- scenario facts while every lookup failure stays an explicit missing
+-- fact. The facade is rebuilt from plain facts on every construction and
+-- restoration and never enters snapshots.
+---@param speciesFacts table<string, SpeciesFormFacts> static species facts carried by the session
+---@param moveFacts table<string, table<string, unknown>> immutable move facts carried by the session
+---@return RewardCatalog reward-only catalog over session facts
+local function rewardCatalogFor(speciesFacts, moveFacts)
+  assert(type(speciesFacts) == "table", "reward work reads the static species facts")
+  assert(type(moveFacts) == "table", "reward work reads the immutable move facts")
+  local catalog = {}
+  ---@param key string species identity under lookup
+  ---@return table<string, unknown> species record carrying its opaque curve identity
+  local function catalogSpecies(_, key)
+    if type(speciesFacts[key]) ~= "table" then
+      error(BattleErrors.missingBehavior("reward work needs the species facts", { species = tostring(key) }))
+    end
+    return { growthCurve = key }
+  end
+  ---@param key string opaque curve identity from the species record
+  ---@return table<integer, integer> growth curve table for the species
+  local function catalogGrowthCurve(_, key)
+    local curve = nil
+    local bucket = speciesFacts[key]
+    if type(bucket) == "table" then
+      for _, static in pairs(bucket) do
+        if type(static) == "table" then
+          curve = static.growthCurve
+          break
+        end
+      end
+    end
+    if type(curve) ~= "table" then
+      error(BattleErrors.missingBehavior("reward work needs the growth curve", { species = tostring(key) }))
+    end
+    return curve
+  end
+  ---@param speciesKey string species identity under lookup
+  ---@param form integer form index under lookup
+  ---@return table<string, unknown> form record carrying stats, learnset, and yields
+  local function catalogForm(_, speciesKey, form)
+    local bucket = speciesFacts[speciesKey]
+    local static = type(bucket) == "table" and bucket[form] or nil
+    if type(static) ~= "table" then
+      error(BattleErrors.missingBehavior("reward work needs the form facts", { species = tostring(speciesKey) }))
+    end
+    local record = static
+    if type(record.baseStats) ~= "table" or type(record.growthCurve) ~= "table" then
+      error(
+        BattleErrors.missingBehavior(
+          "reward work needs base stats and the growth curve",
+          { species = tostring(speciesKey) }
+        )
+      )
+    end
+    if type(record.levelUpMoves) ~= "table" then
+      error(BattleErrors.missingBehavior("reward work needs the form learnset", { species = tostring(speciesKey) }))
+    end
+    return record
+  end
+  ---@param key string move identity under lookup
+  ---@return table<string, unknown> move record carrying its base power points
+  local function catalogMove(_, key)
+    local definition = moveFacts[key]
+    if type(definition) ~= "table" then
+      error(BattleErrors.missingBehavior("reward work needs the move facts", { move = tostring(key) }))
+    end
+    if type(definition.basePp) ~= "number" then
+      error(BattleErrors.missingBehavior("reward work needs the move base power points", { move = tostring(key) }))
+    end
+    return definition
+  end
+  catalog.species = catalogSpecies
+  catalog.growthCurve = catalogGrowthCurve
+  catalog.form = catalogForm
+  catalog.move = catalogMove
+  return catalog --[[@as RewardCatalog]]
+end
+
+local EV_STAT_KEYS = { "hp", "attack", "defense", "speed", "specialAttack", "specialDefense" }
+
+---@param yield unknown knockout effort yield under validation
+---@return table<string, integer> validated six-stat yield
+local function checkEvYield(yield)
+  if type(yield) ~= "table" then
+    error(BattleErrors.missingBehavior("reward work needs the defeated effort yield", {}))
+  end
+  local record = yield --[[@as table<string, integer>]]
+  for _, stat in ipairs(EV_STAT_KEYS) do
+    if type(record[stat]) ~= "number" or record[stat] % 1 ~= 0 or record[stat] < 0 then
+      error(BattleErrors.missingBehavior("reward work needs a six-stat effort yield", { stat = stat }))
+    end
+  end
+  return record
+end
+
+---@param state table<string, unknown> live battle state under reward work
+---@param combatantId integer recipient identity under lookup
+---@return table<string, unknown>? freshest unstepped reward copy, when one is open
+local function inflightRewardMon(state, combatantId)
+  local children = state.progressionChildren --[[@as table<integer, RewardChild>?]]
+  if type(children) ~= "table" then
+    return nil
+  end
+  local freshest = nil
+  for _, child in ipairs(children) do
+    if child.done ~= true then
+      for _, recipient in ipairs(child.frame.recipients) do
+        if recipient.combatant == combatantId then
+          freshest = child.mons[recipient.monIndex]
+        end
+      end
+    end
+  end
+  return freshest
+end
+
+---@param state table<string, unknown> live battle state under reward work
+---@return boolean true when the enemy side answers to a trainer controller
+local function trainerBattleFor(state)
+  -- The application trainer factory seats enemy participants behind the
+  -- "trainer:" controller prefix while wild encounters answer as "wild".
+  for _, participantId in
+    ipairs(state.participantOrder --[[@as integer[] ]])
+  do
+    local participant = BattleState.participant(state, participantId)
+    if participant.side ~= 1 and type(participant.controller) == "string" then
+      local controller = participant.controller --[[@as string]]
+      if controller:sub(1, 8) == "trainer:" then
+        return true
+      end
+    end
+  end
+  return false
+end
+
+---@param state table<string, unknown> live battle state under reward work
+---@param catalog RewardCatalog reward catalog over session facts
+---@param defeatedId integer knocked-out roster identity under reward
+---@param defeatedActivation integer knocked-out entry token under reward
+---@return table<string, unknown>? reward start input, or nil when nothing is owed
+local function buildRewardInput(state, catalog, defeatedId, defeatedActivation)
+  local defeated = BattleState.combatant(state, defeatedId)
+  local foeParticipant = BattleState.participant(state, defeated.participant --[[@as integer]])
+  if foeParticipant.side == 1 then
+    return nil
+  end
+  local foeMon = defeated.mon --[[@as table<string, unknown>]]
+  if type(defeated.mon) ~= "table" then
+    error(BattleErrors.missingBehavior("reward work reads the defeated mon", { combatant = defeatedId }))
+  end
+  local foeForm = catalog:form(foeMon.species --[[@as string]], foeMon.form --[[@as integer]])
+  local baseYield = foeForm.baseExpYield
+  if type(baseYield) ~= "number" or baseYield % 1 ~= 0 or baseYield < 0 then
+    error(BattleErrors.missingBehavior("reward work needs the defeated base yield", { combatant = defeatedId }))
+  end
+  local evYield = checkEvYield(foeForm.evYield)
+  local foeSpecies = catalog:species(foeMon.species --[[@as string]])
+  local foeLevel =
+    Experience.level(catalog:growthCurve(foeSpecies.growthCurve --[[@as string]]), foeMon.experience --[[@as integer]])
+  local battlers = {}
+  for _, combatantId in
+    ipairs(state.combatantOrder --[[@as integer[] ]])
+  do
+    local combatant = BattleState.combatant(state, combatantId)
+    local owner = BattleState.participant(state, combatant.participant --[[@as integer]])
+    if owner.side == 1 then
+      assert(type(combatant.mon) == "table", "reward work reads recipient mons")
+      local source = inflightRewardMon(state, combatantId) or combatant.mon --[[@as table<string, unknown>]]
+      local recipientSpecies = catalog:species(source.species --[[@as string]])
+      local level = Experience.level(
+        catalog:growthCurve(recipientSpecies.growthCurve --[[@as string]]),
+        source.experience --[[@as integer]]
+      )
+      local seen = state.participated --[[@as table<integer, boolean>]]
+      battlers[#battlers + 1] = {
+        combatant = combatantId,
+        participated = type(seen) == "table" and seen[combatantId] == true,
+        expShare = source.heldItem == "EXP__SHARE",
+        fainted = combatant.hp --[[@as integer]] <= 0,
+        isEgg = source.isEgg == true,
+        level = level,
+      }
+    end
+  end
+  local selected = RewardExperience.recipients({ battlers = battlers })
+  if #selected == 0 then
+    return nil
+  end
+  local battlerCount, holderCount = 0, 0
+  for _, recipient in ipairs(selected) do
+    if recipient.kind == "battler" then
+      battlerCount = battlerCount + 1
+    else
+      holderCount = holderCount + 1
+    end
+  end
+  local knockout = { baseYield = baseYield, level = foeLevel, trainerBattle = trainerBattleFor(state) }
+  local entries = {}
+  for _, recipient in ipairs(selected) do
+    local combatant = BattleState.combatant(state, recipient.combatant)
+    local chained = inflightRewardMon(state, recipient.combatant)
+    local entryMon = copyValue(chained or combatant.mon) --[[@as table<string, unknown>]]
+    if chained == nil then
+      entryMon.hp = combatant.hp
+    end
+    entries[#entries + 1] = {
+      combatant = recipient.combatant,
+      mon = entryMon,
+      expAward = RewardExperience.calculate(knockout, {
+        kind = recipient.kind,
+        battlers = battlerCount,
+        holders = holderCount,
+        luckyEgg = entryMon.heldItem == "LUCKY_EGG",
+      }),
+      evAward = RewardEffort.calculate(evYield, {}),
+    }
+  end
+  return {
+    defeated = { combatant = defeatedId, activation = defeatedActivation },
+    entries = entries,
+    catalog = catalog,
+  }
+end
+
+---@param state table<string, unknown> live battle state under faint settlement
+---@param catalog RewardCatalog reward catalog over session facts
+---@param record table<string, unknown> settled faint record under reward
+---@return table<string, unknown> plain reward summary for the faint outcome
+local function startRewardChild(state, catalog, record)
+  local target = record.target --[[@as table<string, unknown>]]
+  local summary = { combatant = target.combatant, rewarded = false }
+  local input =
+    buildRewardInput(state, catalog, target.combatant --[[@as integer]], target.activation --[[@as integer]])
+  if input == nil then
+    return summary
+  end
+  local opened = Progression.start(input)
+  local children = state.progressionChildren --[[@as table<integer, RewardChild>]]
+  assert(type(state.progressionChildren) == "table", "reward children travel as an array")
+  children[#children + 1] = {
+    defeated = opened.frame.defeated,
+    mons = opened.flow.mons,
+    frame = opened.frame,
+    evolutionEligible = opened.flow.evolutionEligible,
+    done = false,
+  }
+  local eligible = state.evolutionEligible --[[@as table<integer, integer>]]
+  assert(type(state.evolutionEligible) == "table", "evolution eligibility travels as an array")
+  for _, combatantId in ipairs(opened.flow.evolutionEligible) do
+    local known = false
+    for _, seen in ipairs(eligible) do
+      if seen == combatantId then
+        known = true
+      end
+    end
+    if not known then
+      eligible[#eligible + 1] = combatantId
+    end
+  end
+  summary.rewarded = true
+  return summary
+end
+
+---@param state table<string, unknown> live battle state under reward work
+---@param child RewardChild reward child under synchronization
+local function syncRewardMons(state, child)
+  for _, recipient in ipairs(child.frame.recipients) do
+    local mon = child.mons[recipient.monIndex]
+    assert(type(mon) == "table", "reward recipients name a battle-owned mon")
+    local synced = copyValue(mon) --[[@as table<string, unknown>]]
+    child.mons[recipient.monIndex] = synced
+    local combatant = BattleState.combatant(state, recipient.combatant)
+    -- Rewards earned while alive survive later knocks in the same turn,
+    -- but the battle health never revives: a recipient that fell after
+    -- its award keeps zero health with its gains on the record.
+    if
+      type(synced.hp) == "number"
+      and combatant.hp --[[@as integer]]
+        > 0
+    then
+      combatant.hp = synced.hp --[[@as integer]]
+    end
+    -- The reward owner tracks health on a working top-level field the
+    -- persistent mon schema forbids: fold it into the condition and drop
+    -- it before the copy reaches battle state.
+    if type(synced.condition) == "table" then
+      synced
+        .condition --[[@as table<string, unknown>]]
+        .currentHp = combatant.hp
+    end
+    synced.hp = nil
+    combatant.mon = synced
   end
 end
 
@@ -824,6 +1199,7 @@ end
 ---@field executeAction fun(action: table<string, unknown>)
 ---@field applyResiduals fun()
 ---@field closeTurn fun()
+---@field commitLearning fun(state: table<string, unknown>)
 
 ---@param executor HgssSessionExecutor live native session owning the turn
 ---@param moveFacts table<string, table<string, unknown>> immutable move facts carried by the session
@@ -832,6 +1208,10 @@ end
 ---@param moneySet table<string, boolean> held-item keys carrying the money-up effect
 ---@return NativeTurnHandlers lifecycle handlers bound to the session
 local function bindTurnHandlers(executor, moveFacts, speciesFacts, chart, moneySet)
+  -- The resumable reward owner resolves its levels, stats, learnsets,
+  -- and yields through the immutable session facts on every faint,
+  -- rebuilt here from the same tables the snapshots carry.
+  local rewardCatalog = rewardCatalogFor(speciesFacts, moveFacts)
   ---@param choices table<integer, table<string, unknown>> committed choices in commit order
   local function openTurn(choices)
     local state = executor:_live()
@@ -924,10 +1304,14 @@ local function bindTurnHandlers(executor, moveFacts, speciesFacts, chart, moneyS
     if not detected then
       return
     end
-    local outcome = Fainting.step(
-      { queue = state.faints, reserves = pooledReserves(state) },
-      { kind = "faint", cursor = "settle" }
-    )
+    local function spawnRewardChild(record)
+      return startRewardChild(state, rewardCatalog, record)
+    end
+    local outcome = Fainting.step({
+      queue = state.faints,
+      reserves = pooledReserves(state),
+      progression = spawnRewardChild,
+    }, { kind = "faint", cursor = "settle" })
     local settled = state.turnSettled
     if settled == nil then
       settled = {}
@@ -1046,6 +1430,12 @@ local function bindTurnHandlers(executor, moveFacts, speciesFacts, chart, moneyS
       -- Replacements send out under the money-up scan: the latch only
       -- ever moves 1 -> 2 and never resets when the holder leaves.
       noteEntry(state, moneySet, payload.replacement --[[@as integer]])
+      local volunteers = state.participated --[[@as table<integer, boolean>]]
+      if type(state.participated) == "table" then
+        volunteers[
+          payload.replacement --[[@as integer]]
+        ] = true
+      end
       local event = context:emit("switch", cause, {
         position = slot,
         from = actor.combatant,
@@ -1243,17 +1633,129 @@ local function bindTurnHandlers(executor, moveFacts, speciesFacts, chart, moneyS
     state.status = "waiting"
   end
 
-  local function closeTurn()
-    local state = executor:_live()
-    local frames = state.frames --[[@as table<integer, table<string, unknown>>]]
-    local roundFrame = frames[#frames]
-    assert(roundFrame ~= nil and roundFrame.kind == "round", "commit closes its round frame")
-    frames[#frames] = nil
-    state.pending = nil
-    -- The turn queue drained fully: every staged action completed, so the
-    -- next turn stages into a fresh queue instead of reusing identities.
-    state.queue = {}
-    local obligations = drainObligations(state)
+  --- Publishes one reward-owner event through the session stream,
+  --- keeping the recipient and award facts on the event itself beside
+  --- the payload.
+  ---@param state table<string, unknown> live battle state under reward work
+  ---@param child RewardChild reward child owning the event
+  ---@param event table<string, unknown> reward-owner event under publication
+  local function emitRewardEvent(state, child, event)
+    local payload = {}
+    for key, value in pairs(event) do
+      if key ~= "kind" then
+        payload[key] = copyValue(value)
+      end
+    end
+    local defeated = child.defeated --[[@as table<string, unknown>]]
+    local emitted =
+      BattleContext.wrap(state)
+        :emit(event.kind --[[@as string]], { kind = "progression", combatant = defeated.combatant }, payload)
+    for key, value in pairs(payload) do
+      emitted[key] = value
+    end
+  end
+
+  --- Suspends faint settlement on one move-learning prompt: the
+  --- recipient side answers through the decision protocol while
+  --- replacement and outcome work waits on the stored obligations.
+  ---@param state table<string, unknown> live battle state under reward work
+  ---@param child RewardChild reward child owning the prompt
+  ---@param request table<string, unknown> learning prompt from the reward owner
+  ---@param obligations table<integer, table<string, unknown>> deferred replacement obligations
+  local function buildLearningBatch(state, child, request, obligations)
+    local context = BattleContext.wrap(state)
+    local recipientId = request.combatant --[[@as integer]]
+    local recipientFrame = nil
+    for _, cursor in ipairs(child.frame.recipients) do
+      if cursor.combatant == recipientId then
+        recipientFrame = cursor
+      end
+    end
+    assert(recipientFrame ~= nil, "learning prompts address a reward recipient")
+    local mon = child.mons[
+      recipientFrame.monIndex --[[@as integer]]
+    ] --[[@as table<string, unknown>]]
+    assert(type(mon) == "table", "learning prompts read the recipient mon")
+    local moves = {}
+    for _, entry in
+      ipairs(mon.moves --[[@as table<integer, table<string, unknown>>]])
+    do
+      moves[#moves + 1] = { move = entry.move, pp = entry.pp, ppUps = entry.ppUps }
+    end
+    local combatant = BattleState.combatant(state, recipientId)
+    local owner = BattleState.participant(state, combatant.participant --[[@as integer]])
+    -- Address the live entry token; benched earners carry no token, so
+    -- the stored zero still binds their reply exactly once.
+    local token = 0
+    if combatant.active ~= nil then
+      local active = combatant.active --[[@as table<string, unknown>]]
+      token = active.activation --[[@as integer]]
+    end
+    local counter = state.batchCounter --[[@as integer]] + 1
+    state.batchCounter = counter
+    state.pending = {
+      batch = { id = counter, epoch = counter, requests = {} },
+      submitted = {},
+      reserved = { replacements = {}, items = {} },
+      learning = { obligations = obligations },
+    }
+    pushCheckedFrame(context, {
+      kind = "round",
+      version = 1,
+      cursor = "awaiting_replies",
+      state = { round = state.round },
+    })
+    local issued = context:requestDecision({
+      controller = owner.controller,
+      kind = HgssSessionExecutor.LEARN_DECISION_KIND,
+      actors = { { combatant = recipientId, activation = token } },
+      legalChoices = { kinds = { "confirm" } },
+    })
+    -- The protocol envelope carries only the decision identity; the
+    -- learning facts ride the request beside it for the controller.
+    issued.incomingMove = request.incomingMove
+    issued.currentMoves = moves
+    issued.canDecline = true
+    state.status = "waiting"
+  end
+
+  --- Steps every open reward child in faint order, publishing its events
+  --- and synchronizing its battle copies. The first learning prompt
+  --- suspends the session with the deferred obligations held aside;
+  --- completion returns true with every child done.
+  ---@param state table<string, unknown> live battle state under reward work
+  ---@param obligations table<integer, table<string, unknown>> deferred replacement obligations
+  ---@return boolean true when every reward child is done
+  local function drainRewardChildren(state, obligations)
+    local children = state.progressionChildren --[[@as table<integer, RewardChild>]]
+    assert(type(state.progressionChildren) == "table", "reward children travel as an array")
+    for _, child in ipairs(children) do
+      if not child.done then
+        local flow = { mons = child.mons, catalog = rewardCatalog, evolutionEligible = child.evolutionEligible }
+        local result = Progression.step(flow, child.frame --[[@as table<string, unknown>]], nil)
+        child.frame = result.frame --[[@as RewardFrame]]
+        for _, event in
+          ipairs(result.events --[[@as table<integer, table<string, unknown>>]])
+        do
+          emitRewardEvent(state, child, event)
+        end
+        syncRewardMons(state, child)
+        if result.request ~= nil then
+          buildLearningBatch(state, child, result.request --[[@as table<string, unknown>]], obligations)
+          return false
+        end
+        child.done = true
+      end
+    end
+    return true
+  end
+
+  --- Finishes the turn once every reward child is done: mandatory
+  --- replacements precede the next ordinary action batch, and the
+  --- terminal result follows only after every replacement resolves.
+  ---@param state table<string, unknown> live battle state under turn close
+  ---@param obligations table<integer, table<string, unknown>> ordered replacement obligations
+  local function finishTurn(state, obligations)
     local external = 0
     for _, obligation in ipairs(obligations) do
       if not obligation.internal then
@@ -1278,11 +1780,87 @@ local function bindTurnHandlers(executor, moveFacts, speciesFacts, chart, moneyS
     settleOutcome(state)
   end
 
+  local function closeTurn()
+    local state = executor:_live()
+    local frames = state.frames --[[@as table<integer, table<string, unknown>>]]
+    local roundFrame = frames[#frames]
+    assert(roundFrame ~= nil and roundFrame.kind == "round", "commit closes its round frame")
+    frames[#frames] = nil
+    state.pending = nil
+    -- The turn queue drained fully: every staged action completed, so the
+    -- next turn stages into a fresh queue instead of reusing identities.
+    state.queue = {}
+    local obligations = drainObligations(state)
+    -- Knockout rewards settle before mandatory replacement or the
+    -- terminal result: the first learning prompt suspends the turn here
+    -- with the computed obligations held aside.
+    if not drainRewardChildren(state, obligations) then
+      return
+    end
+    state.progressionChildren = {}
+    finishTurn(state, obligations)
+  end
+
+  --- Consumes one stored learning reply, then drains forward: another
+  --- prompt suspends again while completion resumes the deferred
+  --- replacement and outcome work.
+  ---@param state table<string, unknown> live battle state under reward work
+  local function commitLearning(state)
+    local pending = state.pending --[[@as table<string, unknown>]]
+    assert(type(state.pending) == "table" and type(pending.learning) == "table", "learning commits over its own batch")
+    local learning = pending.learning --[[@as table<string, unknown>]]
+    local obligations = learning.obligations --[[@as table<integer, table<string, unknown>>]]
+    local requests = batchRequests(state)
+    assert(#requests == 1, "learning batches suspend on one prompt")
+    local submitted = pending.submitted --[[@as table<integer, table<string, unknown>>]]
+    local reply = submitted[
+      requests[1].requestId --[[@as integer]]
+    ]
+    assert(type(reply) == "table", "learning commits only with its reply stored")
+    local choices = reply.choices --[[@as table<integer, table<string, unknown>>]]
+    assert(type(reply.choices) == "table" and #choices == 1, "learning replies answer their recipient once")
+    local choice = choices[1]
+    local payload = choice.payload --[[@as table<string, unknown>]]
+    local actor = choice.actor --[[@as table<string, unknown>]]
+    local children = state.progressionChildren --[[@as table<integer, RewardChild>]]
+    local child = nil
+    for _, candidate in ipairs(children) do
+      if not candidate.done and candidate.frame.pending ~= nil then
+        child = candidate
+      end
+    end
+    assert(child ~= nil, "learning replies consume an open prompt")
+    local flow = { mons = child.mons, catalog = rewardCatalog, evolutionEligible = child.evolutionEligible }
+    local result = Progression.step(flow, child.frame --[[@as table<string, unknown>]], {
+      combatant = actor.combatant,
+      decision = payload.decision,
+      slot = payload.slot,
+    })
+    child.frame = result.frame --[[@as RewardFrame]]
+    for _, event in
+      ipairs(result.events --[[@as table<integer, table<string, unknown>>]])
+    do
+      emitRewardEvent(state, child, event)
+    end
+    syncRewardMons(state, child)
+    if result.request ~= nil then
+      buildLearningBatch(state, child, result.request --[[@as table<string, unknown>]], obligations)
+      return
+    end
+    child.done = true
+    if not drainRewardChildren(state, obligations) then
+      return
+    end
+    state.progressionChildren = {}
+    finishTurn(state, obligations)
+  end
+
   return {
     openTurn = openTurn,
     executeAction = executeAction,
     applyResiduals = applyResiduals,
     closeTurn = closeTurn,
+    commitLearning = commitLearning,
   }
 end
 
@@ -1334,6 +1912,12 @@ local function wrap(live, content, admitted, moveFacts, speciesFacts, moneyUpIte
   live.queue = live.queue or {}
   live.schedule = live.schedule or freshSchedule()
   live.faints = live.faints or {}
+  -- Knockout-reward continuations travel beside the faint queue: open
+  -- reward children with their battle-owned copies, the send-out set
+  -- backing participation, and the accumulated evolution eligibility.
+  live.progressionChildren = live.progressionChildren or {}
+  live.participated = live.participated or {}
+  live.evolutionEligible = live.evolutionEligible or {}
   live.moneyUpItems = copyValue(moneyUpItems or {})
   if live.prizeMoneyValue == nil then
     live.prizeMoneyValue = 1
@@ -1366,6 +1950,12 @@ local function wrap(live, content, admitted, moveFacts, speciesFacts, moneyUpIte
     local occupant = BattleState.position(live, positionId).occupant
     if occupant ~= nil then
       noteEntry(live, moneySet, occupant --[[@as integer]])
+      local arrivals = live.participated --[[@as table<integer, boolean>]]
+      if type(live.participated) == "table" then
+        arrivals[
+          occupant --[[@as integer]]
+        ] = true
+      end
     end
   end
   return executor
@@ -1425,6 +2015,57 @@ function HgssSessionExecutor.restore(snapshotData, content)
   if live.faints ~= nil and type(live.faints) ~= "table" then
     error(BattleErrors.incompatibleSnapshot("native snapshots carry their faint queue", {}))
   end
+  if live.progressionChildren ~= nil then
+    if type(live.progressionChildren) ~= "table" then
+      error(BattleErrors.incompatibleSnapshot("native snapshots carry their reward children", {}))
+    end
+    for _, child in
+      ipairs(live.progressionChildren --[[@as table<integer, unknown>]])
+    do
+      if type(child) ~= "table" then
+        error(BattleErrors.incompatibleSnapshot("reward children must be records", {}))
+      end
+      local record = child --[[@as table<string, unknown>]]
+      local defeated = record.defeated --[[@as table<string, unknown>]]
+      if
+        type(record.defeated) ~= "table"
+        or not isPositiveInt(defeated.combatant)
+        or not isPositiveInt(defeated.activation)
+      then
+        error(BattleErrors.incompatibleSnapshot("reward children must name their defeated entry", {}))
+      end
+      if type(record.mons) ~= "table" then
+        error(BattleErrors.incompatibleSnapshot("reward children must carry their battle-owned copies", {}))
+      end
+      if record.done ~= true and record.done ~= false then
+        error(BattleErrors.incompatibleSnapshot("reward children must mark their completion", {}))
+      end
+      if type(record.evolutionEligible) ~= "table" then
+        error(BattleErrors.incompatibleSnapshot("reward children must carry their eligibility", {}))
+      end
+      local ok, frameErr = pcall(Progression.validateFrame, record.frame)
+      if not ok then
+        error(BattleErrors.incompatibleSnapshot("reward children must carry a valid reward frame", {
+          detail = tostring(frameErr),
+        }))
+      end
+    end
+  end
+  if live.participated ~= nil and type(live.participated) ~= "table" then
+    error(BattleErrors.incompatibleSnapshot("native snapshots carry their participation set", {}))
+  end
+  if live.evolutionEligible ~= nil then
+    if type(live.evolutionEligible) ~= "table" then
+      error(BattleErrors.incompatibleSnapshot("native snapshots carry their evolution eligibility", {}))
+    end
+    for _, combatantId in
+      ipairs(live.evolutionEligible --[[@as table<integer, unknown>]])
+    do
+      if not isPositiveInt(combatantId) then
+        error(BattleErrors.incompatibleSnapshot("evolution eligibility names combatants", {}))
+      end
+    end
+  end
   if type(live.moveFacts) ~= "table" then
     error(BattleErrors.incompatibleSnapshot("native snapshots carry their immutable move facts", {}))
   end
@@ -1448,8 +2089,11 @@ end
 --- session object, matching construction and restoration.
 function HgssSessionExecutor:_bindLifecycle()
   assert(self._ruleset == nil, "native lifecycles bind once")
-  local ruleset =
-    HgssRuleset.new(bindTurnHandlers(self, self._moveFacts, self._speciesFacts, self._chart, self._moneyUpItems))
+  local turnHandlers = bindTurnHandlers(self, self._moveFacts, self._speciesFacts, self._chart, self._moneyUpItems)
+  local ruleset = HgssRuleset.new(turnHandlers)
+  -- The learning continuation closes over the same turn seam but is not
+  -- a scheduled lifecycle phase, so the executor holds it directly.
+  self._commitLearningHandler = turnHandlers.commitLearning
   self._ruleset = ruleset
   ruleset:initialize(self)
 end
@@ -1532,6 +2176,13 @@ function HgssSessionExecutor:_commitBatch(state, allowance)
   end
   ruleset:handler("applyResiduals")()
   ruleset:handler("closeTurn")()
+end
+
+---@param state table<string, unknown> live battle state under learning commit
+function HgssSessionExecutor:_commitLearning(state)
+  local commit = self._commitLearningHandler
+  assert(type(commit) == "function", "learning commits after lifecycle binding")
+  commit(state)
 end
 
 ---@param state table<string, unknown> live battle state under replacement commit
@@ -1726,6 +2377,76 @@ local function checkReplacementBinding(state, replacement, choice)
   return nil
 end
 
+--- Validates one learning reply against the open prompt without
+--- touching the reward child: unknown decisions, stray slots, and
+--- mismatched actors fail as input errors with the continuation held.
+---@param state table<string, unknown> live battle state under reply validation
+---@param choice table<string, unknown> learning reply choice under validation
+---@return table<string, unknown>? input error, or nil when the reply binds
+local function checkLearningBinding(state, choice)
+  local child = nil
+  local children = state.progressionChildren --[[@as table<integer, RewardChild>]]
+  if type(state.progressionChildren) == "table" then
+    for _, candidate in ipairs(children) do
+      if not candidate.done and candidate.frame.pending ~= nil then
+        child = candidate
+      end
+    end
+  end
+  if child == nil then
+    return BattleErrors.input("learning replies require an open prompt", {})
+  end
+  local requests = batchRequests(state)
+  if #requests ~= 1 then
+    return BattleErrors.input("learning batches suspend on one prompt", {})
+  end
+  local addressed = requests[1].actors --[[@as table<integer, table<string, unknown>>]]
+  if type(requests[1].actors) ~= "table" or #addressed ~= 1 then
+    return BattleErrors.input("learning prompts address their recipient once", {})
+  end
+  local actor = choice.actor --[[@as table<string, unknown>]]
+  local expected = addressed[1]
+  if actor.combatant ~= expected.combatant or actor.activation ~= expected.activation then
+    return BattleErrors.input("replies must address exactly the requested entries", {})
+  end
+  if choice.kind ~= "confirm" then
+    return BattleErrors.input("learning replies confirm the prompt", {})
+  end
+  local payload = choice.payload --[[@as table<string, unknown>]]
+  local decision = payload.decision
+  if decision ~= "replace" and decision ~= "decline" then
+    return BattleErrors.input("learning replies decide replace or decline", {})
+  end
+  if decision == "decline" then
+    return nil
+  end
+  local slot = payload.slot
+  if type(slot) ~= "number" or slot % 1 ~= 0 or slot < 0 then
+    return BattleErrors.input("replacements name a zero-based move slot", {})
+  end
+  local recipient = nil
+  for _, cursor in ipairs(child.frame.recipients) do
+    if cursor.combatant == actor.combatant then
+      recipient = cursor
+    end
+  end
+  if recipient == nil then
+    return BattleErrors.input("learning replies address their recipient", {})
+  end
+  local mon = child.mons[
+    recipient.monIndex --[[@as integer]]
+  ] --[[@as table<string, unknown>]]
+  if type(mon) ~= "table" or type(mon.moves) ~= "table" then
+    return BattleErrors.input("learning replies address a held move set", {})
+  end
+  if
+    slot >= #mon.moves --[[@as table<integer, unknown>]]
+  then
+    return BattleErrors.input("replacements name a held zero-based move slot", {})
+  end
+  return nil
+end
+
 ---@param state table<string, unknown>
 ---@param choice table<string, unknown>
 ---@return table<string, unknown>? input error, or nil when the choice binds
@@ -1733,6 +2454,11 @@ local function checkChoiceBinding(state, choice)
   local actor = choice.actor --[[@as table<string, unknown>]]
   local payload = choice.payload --[[@as table<string, unknown>]]
   local openBatch = state.pending --[[@as table<string, unknown>]]
+  if openBatch ~= nil and openBatch.learning ~= nil then
+    -- Learning batches address reward recipients through their prompt:
+    -- the live-entry binding below cannot hold, so prompts bind instead.
+    return checkLearningBinding(state, choice)
+  end
   if openBatch ~= nil and openBatch.replacement ~= nil then
     -- Replacement batches address fainted entries: the live-entry binding
     -- below cannot hold, so obligations bind instead. Stale pre-faint
@@ -1874,6 +2600,8 @@ function HgssSessionExecutor:advance(operationBudget)
       local completed = state.pending --[[@as table<string, unknown>]]
       if completed.replacement ~= nil then
         self:_commitReplacement(state)
+      elseif completed.learning ~= nil then
+        self:_commitLearning(state)
       else
         self:_commitBatch(state, remaining)
       end
@@ -1984,6 +2712,14 @@ function HgssSessionExecutor:capture()
   snapshot.queue = copyValue(state.queue)
   snapshot.schedule = copyValue(state.schedule)
   snapshot.faints = copyValue(state.faints)
+  -- Reward continuations ride as plain frame plus semantic facts: the
+  -- detached battle-owned copies with their resumable frames, the
+  -- send-out participation set, and the accumulated eligibility. The
+  -- reward catalog itself is rebuilt from the facts above on restore and
+  -- never serialized.
+  snapshot.progressionChildren = copyValue(state.progressionChildren)
+  snapshot.participated = copyValue(state.participated)
+  snapshot.evolutionEligible = copyValue(state.evolutionEligible)
   snapshot.moveFacts = copyValue(self._moveFacts)
   snapshot.speciesFacts = copyValue(self._speciesFacts)
   snapshot.moneyUpItems = copyValue(state.moneyUpItems or {})
