@@ -35,10 +35,14 @@ local BattleScenario = require("libs.battle.src.BattleScenario")
 local BattleSnapshot = require("libs.battle.src.BattleSnapshot")
 local BattleState = require("libs.battle.src.BattleState")
 local BattleView = require("libs.battle.src.BattleView")
+local Capture = require("libs.battle.src.gen4.Capture")
+local CaptureContext = require("libs.battle.src.gen4.CaptureContext")
+local Escape = require("libs.battle.src.gen4.Escape")
 local Experience = require("libs.mons.src.gen4.Experience")
 local Fainting = require("libs.battle.src.gen4.Fainting")
 local HgssRuleset = require("libs.battle.src.gen4.HgssRuleset")
 local HgssSchedule = require("libs.battle.src.gen4.HgssSchedule")
+local ItemUse = require("libs.battle.src.gen4.ItemUse")
 local MoveExecution = require("libs.battle.src.gen4.MoveExecution")
 local NativeFormats = require("libs.battle.src.gen4.formats.NativeFormats")
 local OutcomePolicy = require("libs.battle.src.gen4.OutcomePolicy")
@@ -58,6 +62,7 @@ local TurnOrder = require("libs.battle.src.gen4.TurnOrder")
 ---@field private _state table<string, unknown>?
 ---@field private _content table<string, unknown>?
 ---@field private _admitted string[]
+---@field private _battleKind string
 ---@field private _moveFacts table<string, table<string, unknown>>
 ---@field private _speciesFacts table<string, SpeciesFormFacts>
 ---@field private _chart table<string, unknown>
@@ -76,6 +81,24 @@ HgssSessionExecutor.RULESET = "hgss:battle"
 HgssSessionExecutor.DECISION_KIND = "action"
 
 HgssSessionExecutor.DEFAULT_ACTION_KINDS = { "attack", "switch", "confirm", "item" }
+
+-- Encounter kind selects the flight and capture policy. Production wild
+-- encounters run the "wild-single" format while trainer battles run
+-- "single"/"double"; an explicit scenario kind wins when present so
+-- format overrides never flip the policy, and unknown formats refuse
+-- flight and balls rather than guessing wild behavior.
+---@param formatKey string format identity owning the encounter
+---@param scenarioKind unknown scenario kind carrying the encounter class, when present
+---@return string "wild" for runnable wild encounters, "trainer" otherwise
+local function battleKindFor(formatKey, scenarioKind)
+  if scenarioKind == "wild" or scenarioKind == "trainer" then
+    return scenarioKind --[[@as string]]
+  end
+  if formatKey == "wild-single" then
+    return "wild"
+  end
+  return "trainer"
+end
 
 -- Action brackets for turn ordering. Exchanges and item use run on the
 -- source escape bracket, ahead of any strike. Strikes never share one
@@ -187,6 +210,21 @@ local function copyKinds(kinds)
   return admitted
 end
 
+-- Wild encounters admit flight beside the standard vocabulary.
+-- Explicitly registered vocabularies are never rewritten: only the
+-- standard fallback gains the run action, and only for wild battles.
+---@param formatKey string format identity owning the admitted action vocabulary
+---@param validated table<string, unknown>? detached scenario under construction for native topology proof
+---@return string[] standard admitted action kinds for the encounter kind
+local function defaultKindsFor(formatKey, validated)
+  local kinds = copyKinds(HgssSessionExecutor.DEFAULT_ACTION_KINDS)
+  local scenarioKind = validated ~= nil and validated.kind or nil
+  if battleKindFor(formatKey, scenarioKind) == "wild" then
+    kinds[#kinds + 1] = "run"
+  end
+  return kinds
+end
+
 ---@param formatKey string format identity owning the admitted action vocabulary
 ---@param content table<string, unknown> frozen executable battle content
 ---@param validated table<string, unknown>? detached scenario under construction for native topology proof
@@ -199,7 +237,7 @@ local function admittedKindsFor(formatKey, content, validated)
     if okCustom and type(custom) == "table" then
       local kinds = (custom --[[@as table<string, unknown>]]).actionKinds
       if kinds == nil then
-        return copyValue(HgssSessionExecutor.DEFAULT_ACTION_KINDS) --[[@as string[] ]]
+        return defaultKindsFor(formatKey, validated)
       end
       return copyKinds(kinds)
     end
@@ -211,7 +249,7 @@ local function admittedKindsFor(formatKey, content, validated)
     end
     local kinds = (policy --[[@as table<string, unknown>]]).actionKinds
     if kinds == nil then
-      return copyValue(HgssSessionExecutor.DEFAULT_ACTION_KINDS) --[[@as string[] ]]
+      return defaultKindsFor(formatKey, validated)
     end
     return copyKinds(kinds)
   end
@@ -591,6 +629,48 @@ local function projectCombatant(combatant, speciesFacts)
   return stats
 end
 
+-- Backfills each combatant's battle maximum health from the same
+-- effective projection strikes sample. Facts the records cannot back
+-- stay absent: sessions that cannot project keep the missing maximum
+-- and fail explicitly where bag or capture law reads it.
+---@param live table<string, unknown> live battle state under maximum-health backfill
+---@param speciesFacts table<string, SpeciesFormFacts> static species facts carried by the session
+local function ensureEntryHealth(live, speciesFacts)
+  for _, combatantId in
+    ipairs(live.combatantOrder --[[@as integer[] ]])
+  do
+    local combatant = BattleState.combatant(live, combatantId)
+    if combatant.maxHp == nil and type(speciesFacts) == "table" then
+      local ok, stats = pcall(projectCombatant, combatant, speciesFacts)
+      if ok and type(stats) == "table" then
+        combatant.maxHp = stats.hp
+      end
+    end
+  end
+end
+
+---@param state table<string, unknown> live battle state under speed sampling
+---@param combatant table<string, unknown> running combatant under speed sampling
+---@param speciesFacts table<string, SpeciesFormFacts> static species facts carried by the session
+---@return integer runner effective speed
+---@return integer opposing entry effective speed
+local function stagedEscapeSpeeds(state, combatant, speciesFacts)
+  local runner = projectCombatant(combatant, speciesFacts).speed
+  local runnerOwner = BattleState.participant(state, combatant.participant --[[@as integer]])
+  for _, combatantId in
+    ipairs(state.combatantOrder --[[@as integer[] ]])
+  do
+    local other = BattleState.combatant(state, combatantId)
+    if other.active ~= nil then
+      local owner = BattleState.participant(state, other.participant --[[@as integer]])
+      if owner.side ~= runnerOwner.side then
+        return runner, projectCombatant(other, speciesFacts).speed
+      end
+    end
+  end
+  error(BattleErrors.invalidState("flight reads its opposing entry", {}))
+end
+
 ---@param combatant table<string, unknown> live combatant under fact sampling
 ---@param speciesFacts table<string, SpeciesFormFacts> static species facts by species and form
 ---@return string[] detached semantic types for the entry
@@ -652,7 +732,7 @@ end
 ---@param kind string committed choice class under ordering
 ---@return integer sampled priority bracket for non-strike actions
 local function bracketFor(kind)
-  if kind == "switch" or kind == "item" then
+  if kind == "switch" or kind == "item" or kind == "run" then
     return ESCAPE_BRACKET
   end
   return 0
@@ -743,6 +823,53 @@ local function eligibleReserves(state, participantId, claimed)
   return eligible
 end
 
+-- Reserves promised to sibling positions in the open batch, leaving out
+-- the choice's own promise. The exchange owner refuses a shared reserve
+-- twice, so voluntary switches prove the same reservation gate faint
+-- replacements already prove.
+---@param state table<string, unknown> live battle state under reservation inspection
+---@param except integer? the choice's own promised reserve, never a sibling conflict
+---@return integer[] sibling-promised reserves in ascending order
+local function siblingReserves(state, except)
+  local promised = {} ---@type integer[]
+  local pending = state.pending --[[@as table<string, unknown>?]]
+  if type(pending) == "table" then
+    local reserved = pending.reserved --[[@as table<string, unknown>?]]
+    if type(reserved) == "table" and type(reserved.replacements) == "table" then
+      for reserve in
+        pairs(reserved.replacements --[[@as table<integer, integer>]])
+      do
+        if reserve ~= except then
+          promised[#promised + 1] = reserve
+        end
+      end
+    end
+  end
+  table.sort(promised)
+  return promised
+end
+
+---@param state table<string, unknown> live battle state under faint inspection
+---@return integer[] roster identities with no health left
+local function faintedIds(state)
+  local fainted = {} ---@type integer[]
+  for _, combatantId in
+    ipairs(state.combatantOrder --[[@as integer[] ]])
+  do
+    local combatant = BattleState.combatant(state, combatantId)
+    if
+      combatant.hp --[[@as integer]]
+      <= 0
+    then
+      fainted[#fainted + 1] = combatantId
+    end
+  end
+  return fainted
+end
+
+-- Closes a battle that ends mid-turn through flight or capture. The
+-- round frame closes here so no residual pass or outcome resettlement
+-- can resurrect the decided result.
 -- Closes a battle that ends mid-turn through flight or capture. The
 -- round frame closes here so no residual pass or outcome resettlement
 -- can resurrect the decided result. Earned evolution eligibility rides
@@ -1206,8 +1333,9 @@ end
 ---@param speciesFacts table<string, SpeciesFormFacts> static species facts carried by the session
 ---@param chart table<string, unknown> session chart view resolving directed effectiveness
 ---@param moneySet table<string, boolean> held-item keys carrying the money-up effect
+---@param battleKind string wild-or-trainer encounter policy selecting flight and capture law
 ---@return NativeTurnHandlers lifecycle handlers bound to the session
-local function bindTurnHandlers(executor, moveFacts, speciesFacts, chart, moneySet)
+local function bindTurnHandlers(executor, moveFacts, speciesFacts, chart, moneySet, battleKind)
   -- The resumable reward owner resolves its levels, stats, learnsets,
   -- and yields through the immutable session facts on every faint,
   -- rebuilt here from the same tables the snapshots carry.
@@ -1255,6 +1383,13 @@ local function bindTurnHandlers(executor, moveFacts, speciesFacts, chart, moneyS
         then
           staged.controller = entry.controller
         end
+      end
+      if staged.kind == "run" then
+        -- Flight odds compare the committed matchup: both speeds freeze
+        -- here, so a mid-turn arrival never rewrites the staged escape.
+        local runner = BattleState.combatant(state, staged.actor.combatant --[[@as integer]])
+        local player, enemy = stagedEscapeSpeeds(state, runner, speciesFacts)
+        staged.escapeSpeeds = { player = player, enemy = enemy }
       end
       ActionQueue.enqueue(queue, action)
     end
@@ -1401,12 +1536,218 @@ local function bindTurnHandlers(executor, moveFacts, speciesFacts, chart, moneyS
   end
 
   ---@param state table<string, unknown> live battle state under execution
+  ---@param context table<string, unknown> validated mutation surface emitting the exchange
+  ---@param action table<string, unknown> queued native action under execution
+  ---@param ordinal integer commit order of this action
+  ---@param cause table<string, unknown> semantic reason carried by the emitted event
+  local function executeSwitch(state, context, action, ordinal, cause)
+    local actor = action.actor --[[@as table<string, unknown>]]
+    local payload = action.payload --[[@as table<string, unknown>]]
+    local combatant = BattleState.combatant(state, actor.combatant --[[@as integer]])
+    local active = combatant.active --[[@as table<string, unknown>]]
+    local slot = active.position --[[@as integer]]
+    local reserves = eligibleReserves(state, combatant.participant --[[@as integer]], {})
+    local reserved = siblingReserves(state, payload.replacement --[[@as integer]])
+    local fainted = faintedIds(state)
+    local verdict = Switching.eligible({
+      position = slot,
+      incoming = payload.replacement,
+      reason = "voluntary",
+      reserves = reserves,
+      reserved = reserved,
+      fainted = fainted,
+      trap = combatant.trap,
+    })
+    if not verdict.ok then
+      error(BattleErrors.invalidState("committed exchanges stay eligible", { reason = verdict.reason }))
+    end
+    local frame = Switching.start({
+      position = slot,
+      outgoing = { combatant = actor.combatant, activation = actor.activation },
+      incoming = payload.replacement,
+      reason = "voluntary",
+      reserves = reserves,
+      reserved = reserved,
+      fainted = fainted,
+      trap = combatant.trap,
+    })
+    local stepped = Switching.step({}, frame)
+    assert(stepped.done == true, "voluntary exchanges settle without interception")
+    BattleState.leave(state, slot)
+    BattleState.enter(state, payload.replacement --[[@as integer]], slot)
+    -- Replacements send out under the money-up scan: the latch only
+    -- ever moves 1 -> 2 and never resets when the holder leaves.
+    noteEntry(state, moneySet, payload.replacement --[[@as integer]])
+    -- Voluntary arrivals join the reward participation set, so a reserve
+    -- taking the field before the knockout still counts as a recipient.
+    local volunteers = state.participated --[[@as table<integer, boolean>]]
+    if type(state.participated) == "table" then
+      volunteers[
+        payload.replacement --[[@as integer]]
+      ] = true
+    end
+    local event = context:emit("switch", cause, {
+      position = slot,
+      from = actor.combatant,
+      to = payload.replacement,
+    })
+    event.actionId = ordinal
+  end
+
+  ---@param state table<string, unknown> live battle state under execution
+  ---@param context table<string, unknown> validated mutation surface emitting the throw
+  ---@param action table<string, unknown> queued native action under execution
+  ---@param plan table<string, unknown> executable bag plan naming the thrown ball
+  ---@param choice table<string, unknown> validated bag choice carrying the target
+  ---@param ordinal integer commit order of this action
+  ---@param cause table<string, unknown> semantic reason carried by the emitted events
+  local function executeBall(state, context, action, plan, choice, ordinal, cause)
+    if battleKind ~= "wild" then
+      error(BattleErrors.invalidState("committed throws keep their wild encounter kind", {}))
+    end
+    local actor = action.actor --[[@as table<string, unknown>]]
+    local target = choice.target --[[@as table<string, unknown>]]
+    local planRecord = plan --[[@as table<string, unknown>]]
+    local outcome = Capture.execute({
+      actor = actor.combatant,
+      inventoryId = choice.inventoryId,
+      ball = planRecord.item,
+      target = { combatant = target.combatant },
+    }, state, state.rng --[[@as table<string, unknown>]])
+    local ledger = state.captures --[[@as table<integer, table<string, unknown>>]]
+    ledger[#ledger + 1] = copyValue(outcome.result)
+    for _, emitted in ipairs(outcome.events) do
+      local record = emitted --[[@as table<string, unknown>]]
+      local detail = {} ---@type table<string, unknown>
+      for name, value in pairs(record) do
+        if name ~= "kind" then
+          detail[name] = copyValue(value)
+        end
+      end
+      local event = context:emit(record.kind --[[@as string]], cause, detail)
+      event.actionId = ordinal
+    end
+    if outcome.result.success == true then
+      endBattleEarly(state, { kind = "captured", rounds = state.round })
+    end
+  end
+
+  ---@param state table<string, unknown> live battle state under execution
+  ---@param context table<string, unknown> validated mutation surface emitting the bag use
+  ---@param action table<string, unknown> queued native action under execution
+  ---@param ordinal integer commit order of this action
+  ---@param cause table<string, unknown> semantic reason carried by the emitted event
+  local function executeItem(state, context, action, ordinal, cause)
+    local actor = action.actor --[[@as table<string, unknown>]]
+    local payload = action.payload --[[@as table<string, unknown>]]
+    local combatant = BattleState.combatant(state, actor.combatant --[[@as integer]])
+    local participant = BattleState.participant(state, combatant.participant --[[@as integer]])
+    local inventoryId = participant.inventoryId --[[@as string]]
+    if type(inventoryId) ~= "string" or inventoryId == "" then
+      error(BattleErrors.invalidState("committed bag use keeps its declared inventory", {}))
+    end
+    local holder = payload.target --[[@as table<string, unknown>]]
+    assert(type(holder) == "table", "committed bag use keeps its validated holder")
+    local choice = {
+      inventoryId = inventoryId,
+      item = payload.item,
+      target = { kind = "combatant", combatant = holder.combatant },
+    }
+    -- Reservations were accounted when the reply was sealed, so planning
+    -- here classifies without double-counting the sealed promise.
+    local plan = ItemUse.plan(choice, {
+      inventories = state.inventories,
+      combatants = state.combatants,
+      outstanding = {},
+    })
+    if plan.failureReason ~= nil then
+      -- The holder left the field after the reply was sealed: the
+      -- serving is refused with no stock, ledger, draw, or health
+      -- effect. Planning draws nothing, so the stream is untouched.
+      local refused = context:emit("item", cause, {
+        item = payload.item,
+        inventory = inventoryId,
+        refused = plan.failureReason,
+      })
+      refused.actionId = ordinal
+      return
+    end
+    if CaptureContext.isBall(plan.item) then
+      executeBall(state, context, action, plan, choice, ordinal, cause)
+      return
+    end
+    local holderState = (state.combatants --[[@as table<integer, table<string, unknown>>]])[
+      holder.combatant --[[@as integer]]
+    ]
+    if
+      type(holderState) ~= "table"
+      or holderState.hp --[[@as integer]]
+        <= 0
+    then
+      local faintedHolder = context:emit("item", cause, {
+        item = payload.item,
+        inventory = inventoryId,
+        refused = "invalid_target",
+      })
+      faintedHolder.actionId = ordinal
+      return
+    end
+    if type(holderState.maxHp) ~= "number" then
+      error(BattleErrors.missingBehavior("bag use reads its holder maximum health", {}))
+    end
+    ItemUse.execute(plan, state, state.rng --[[@as table<string, unknown>]])
+    local event = context:emit("item", cause, { item = payload.item, inventory = inventoryId })
+    event.actionId = ordinal
+  end
+
+  ---@param state table<string, unknown> live battle state under execution
+  ---@param context table<string, unknown> validated mutation surface emitting the flight
+  ---@param action table<string, unknown> queued native action under execution
+  ---@param ordinal integer commit order of this action
+  ---@param cause table<string, unknown> semantic reason carried by the emitted event
+  local function executeRun(state, context, action, ordinal, cause)
+    local actor = action.actor --[[@as table<string, unknown>]]
+    local staged = action.escapeSpeeds --[[@as table<string, unknown>?]]
+    if type(staged) ~= "table" or type(staged.player) ~= "number" or type(staged.enemy) ~= "number" then
+      error(BattleErrors.invalidState("flight carries its staged speeds", {}))
+    end
+    local combatant = BattleState.combatant(state, actor.combatant --[[@as integer]])
+    local result = Escape.attempt({
+      battleKind = battleKind,
+      trapped = combatant.trap,
+      speeds = { player = staged.player, enemy = staged.enemy },
+      attempts = state.escapeAttempts,
+      stream = state.rng,
+    })
+    if result.escaped == true then
+      local fled = context:emit("flee", cause, {
+        combatant = actor.combatant,
+        activation = actor.activation,
+        escaped = true,
+        reason = result.reason,
+        attempts = result.attempts,
+      })
+      fled.actionId = ordinal
+      endBattleEarly(state, { kind = "escaped", rounds = state.round })
+      return
+    end
+    state.escapeAttempts = result.attempts
+    local held = context:emit("flee", cause, {
+      combatant = actor.combatant,
+      activation = actor.activation,
+      escaped = false,
+      reason = result.reason,
+      attempts = result.attempts,
+    })
+    held.actionId = ordinal
+  end
+
+  ---@param state table<string, unknown> live battle state under execution
   ---@param action table<string, unknown> queued native action under execution
   ---@param ordinal integer commit order of this action
   local function executeChoice(state, action, ordinal)
     local context = BattleContext.wrap(state)
     local actor = action.actor --[[@as table<string, unknown>]]
-    local payload = action.payload --[[@as table<string, unknown>]]
     local cause = {
       kind = "decision",
       controller = action.controller,
@@ -1416,34 +1757,7 @@ local function bindTurnHandlers(executor, moveFacts, speciesFacts, chart, moneyS
     if action.kind == "attack" then
       executeAttack(state, action, ordinal)
     elseif action.kind == "switch" then
-      pushCheckedFrame(context, {
-        kind = "switch",
-        version = 1,
-        cursor = "apply",
-        state = { combatant = actor.combatant, replacement = payload.replacement },
-      })
-      local combatant = BattleState.combatant(state, actor.combatant --[[@as integer]])
-      local active = combatant.active --[[@as table<string, unknown>]]
-      local slot = active.position --[[@as integer]]
-      BattleState.leave(state, slot)
-      BattleState.enter(state, payload.replacement --[[@as integer]], slot)
-      -- Replacements send out under the money-up scan: the latch only
-      -- ever moves 1 -> 2 and never resets when the holder leaves.
-      noteEntry(state, moneySet, payload.replacement --[[@as integer]])
-      local volunteers = state.participated --[[@as table<integer, boolean>]]
-      if type(state.participated) == "table" then
-        volunteers[
-          payload.replacement --[[@as integer]]
-        ] = true
-      end
-      local event = context:emit("switch", cause, {
-        position = slot,
-        from = actor.combatant,
-        to = payload.replacement,
-      })
-      event.actionId = ordinal
-      local frames = state.frames --[[@as table<integer, table<string, unknown>>]]
-      frames[#frames] = nil
+      executeSwitch(state, context, action, ordinal, cause)
     elseif action.kind == "confirm" then
       pushCheckedFrame(context, {
         kind = "action",
@@ -1456,27 +1770,9 @@ local function bindTurnHandlers(executor, moveFacts, speciesFacts, chart, moneyS
       local frames = state.frames --[[@as table<integer, table<string, unknown>>]]
       frames[#frames] = nil
     elseif action.kind == "item" then
-      pushCheckedFrame(context, {
-        kind = "action",
-        version = 1,
-        cursor = "apply",
-        state = { combatant = actor.combatant, activation = actor.activation },
-      })
-      local combatant = BattleState.combatant(state, actor.combatant --[[@as integer]])
-      local participant = BattleState.participant(state, combatant.participant --[[@as integer]])
-      local inventory = (state.inventories --[[@as table<string, table<string, unknown>>]])[
-        participant.inventoryId --[[@as string]]
-      ]
-      local quantities = inventory.quantities --[[@as table<string, integer>]]
-      quantities[
-        payload.item --[[@as string]]
-      ] = quantities[
-        payload.item --[[@as string]]
-      ] - 1
-      local event = context:emit("item", cause, { item = payload.item, inventory = inventory.id })
-      event.actionId = ordinal
-      local frames = state.frames --[[@as table<integer, table<string, unknown>>]]
-      frames[#frames] = nil
+      executeItem(state, context, action, ordinal, cause)
+    elseif action.kind == "run" then
+      executeRun(state, context, action, ordinal, cause)
     else
       error(BattleErrors.invalidState("commit met an unvalidated choice", {}))
     end
@@ -1907,8 +2203,9 @@ end
 ---@param moveFacts table<string, table<string, unknown>> immutable move facts carried by the session
 ---@param speciesFacts table<string, SpeciesFormFacts> static species facts carried by the session
 ---@param moneyUpItems string[] held-item keys carrying the money-up effect, in stable order
+---@param battleKind string wild-or-trainer encounter policy selecting flight and capture law
 ---@return HgssSessionExecutor
-local function wrap(live, content, admitted, moveFacts, speciesFacts, moneyUpItems)
+local function wrap(live, content, admitted, moveFacts, speciesFacts, moneyUpItems, battleKind)
   live.queue = live.queue or {}
   live.schedule = live.schedule or freshSchedule()
   live.faints = live.faints or {}
@@ -1919,6 +2216,29 @@ local function wrap(live, content, admitted, moveFacts, speciesFacts, moneyUpIte
   live.participated = live.participated or {}
   live.evolutionEligible = live.evolutionEligible or {}
   live.moneyUpItems = copyValue(moneyUpItems or {})
+  if live.escapeAttempts == nil then
+    live.escapeAttempts = 0
+  end
+  assert(
+    type(live.escapeAttempts) == "number" and live.escapeAttempts --[[@as integer]] % 1 == 0,
+    "escape attempts stay counted"
+  )
+  if live.captures == nil then
+    live.captures = {}
+  end
+  assert(type(live.captures) == "table", "capture results stay ledgered")
+  if live.captureSeq == nil then
+    live.captureSeq = 0
+  end
+  assert(
+    type(live.captureSeq) == "number" and live.captureSeq --[[@as integer]] % 1 == 0,
+    "capture identities stay counted"
+  )
+  if live.ledger == nil then
+    live.ledger = {}
+  end
+  assert(type(live.ledger) == "table", "bag and throw consumption stays ledgered")
+  ensureEntryHealth(live, speciesFacts)
   if live.prizeMoneyValue == nil then
     live.prizeMoneyValue = 1
   elseif live.prizeMoneyValue ~= 1 and live.prizeMoneyValue ~= 2 then
@@ -1934,6 +2254,7 @@ local function wrap(live, content, admitted, moveFacts, speciesFacts, moneyUpIte
     _state = live,
     _content = content,
     _admitted = admitted,
+    _battleKind = battleKind,
     _moveFacts = moveFacts,
     _speciesFacts = speciesFacts,
     _chart = sessionChart(content, HgssSessionExecutor.RULESET),
@@ -1981,7 +2302,15 @@ function HgssSessionExecutor.new(scenarioRecord, content)
   live.rng = BattleRng.new(validated
     .random --[[@as table<string, unknown>]]
     .seed --[[@as integer]])
-  local executor = wrap(live, content --[[@as table<string, unknown>]], admitted, moveFacts, speciesFacts, moneyUpItems)
+  local executor = wrap(
+    live,
+    content --[[@as table<string, unknown>]],
+    admitted,
+    moveFacts,
+    speciesFacts,
+    moneyUpItems,
+    battleKindFor(validated.format --[[@as string]], validated.kind)
+  )
   executor:_bindLifecycle()
   return executor
 end
@@ -2079,7 +2408,8 @@ function HgssSessionExecutor.restore(snapshotData, content)
     admitted,
     live.moveFacts --[[@as table<string, table<string, unknown>>]],
     live.speciesFacts --[[@as table<string, SpeciesFormFacts>]],
-    moneyUpItems
+    moneyUpItems,
+    battleKindFor(live.format --[[@as string]], live.kind)
   )
   executor:_bindLifecycle()
   return executor
@@ -2089,7 +2419,8 @@ end
 --- session object, matching construction and restoration.
 function HgssSessionExecutor:_bindLifecycle()
   assert(self._ruleset == nil, "native lifecycles bind once")
-  local turnHandlers = bindTurnHandlers(self, self._moveFacts, self._speciesFacts, self._chart, self._moneyUpItems)
+  local turnHandlers =
+    bindTurnHandlers(self, self._moveFacts, self._speciesFacts, self._chart, self._moneyUpItems, self._battleKind)
   local ruleset = HgssRuleset.new(turnHandlers)
   -- The learning continuation closes over the same turn seam but is not
   -- a scheduled lifecycle phase, so the executor holds it directly.
@@ -2167,12 +2498,24 @@ function HgssSessionExecutor:_commitBatch(state, allowance)
   local schedule = state.schedule --[[@as table<string, unknown>]]
   local stream = state.rng --[[@as table<string, unknown>]]
   assert(type(stream.nextU16) == "function", "native turns draw from the battle stream")
-  while true do
+  while state.status ~= "ended" do
     local due = ruleset:advanceFrame(queue, schedule, stream, stepBudget)
     if due == nil then
       break
     end
     ruleset:handler("executeAction")(due)
+  end
+  if state.status == "ended" then
+    -- Flight and capture close the battle mid-turn: the round frame
+    -- closes here so no residual pass or outcome resettlement can
+    -- resurrect the decided result, and queued strikes never land.
+    local frames = state.frames --[[@as table<integer, table<string, unknown>>]]
+    local roundFrame = frames[#frames]
+    assert(roundFrame ~= nil and roundFrame.kind == "round", "early terminals close their round frame")
+    frames[#frames] = nil
+    state.pending = nil
+    state.queue = {}
+    return
   end
   ruleset:handler("applyResiduals")()
   ruleset:handler("closeTurn")()
@@ -2449,8 +2792,10 @@ end
 
 ---@param state table<string, unknown>
 ---@param choice table<string, unknown>
+---@param admitted string[] admitted action kinds resolved at construction
+---@param battleKind string wild-or-trainer encounter policy selecting flight and capture law
 ---@return table<string, unknown>? input error, or nil when the choice binds
-local function checkChoiceBinding(state, choice)
+local function checkChoiceBinding(state, choice, admitted, battleKind)
   local actor = choice.actor --[[@as table<string, unknown>]]
   local payload = choice.payload --[[@as table<string, unknown>]]
   local openBatch = state.pending --[[@as table<string, unknown>]]
@@ -2525,6 +2870,21 @@ local function checkChoiceBinding(state, choice)
         return BattleErrors.input("replacements are reserved once per batch", {})
       end
     end
+    -- Voluntary exchanges bind through the exchange owner: trapping and
+    -- reserves that cannot fight refuse here, before anything moves.
+    local reserves = eligibleReserves(state, combatant.participant --[[@as integer]], {})
+    local verdict = Switching.eligible({
+      position = active.position,
+      incoming = payload.replacement,
+      reason = "voluntary",
+      reserves = reserves,
+      reserved = siblingReserves(state, payload.replacement --[[@as integer]]),
+      fainted = faintedIds(state),
+      trap = combatant.trap,
+    })
+    if not verdict.ok then
+      return BattleErrors.input("the exchange is not eligible", { reason = verdict.reason })
+    end
   elseif choice.kind == "item" then
     local participant = BattleState.participant(state, combatant.participant --[[@as integer]])
     if participant.inventoryId == nil then
@@ -2557,6 +2917,48 @@ local function checkChoiceBinding(state, choice)
     end
     if stock - claimed < 1 then
       return BattleErrors.input("item use requires reserved stock", { item = payload.item })
+    end
+    if
+      CaptureContext.isBall(payload.item --[[@as string]]) and battleKind ~= "wild"
+    then
+      return BattleErrors.input("thrown balls refuse trainer battles", {})
+    end
+    -- Bag choices bind through the item owner: unknown stock, spent
+    -- stacks, and holders that are not on the field refuse here with the
+    -- stock untouched.
+    local holder = payload.target --[[@as table<string, unknown>?]]
+    local outstanding = {} ---@type table<integer, table<string, unknown>>
+    for _ = 1, claimed do
+      outstanding[#outstanding + 1] = { inventoryId = participant.inventoryId, item = payload.item }
+    end
+    local okChoice, refusal = ItemUse.validateChoice({
+      inventoryId = participant.inventoryId,
+      item = payload.item,
+      target = {
+        kind = "combatant",
+        combatant = type(holder) == "table" and holder.combatant or nil,
+      },
+    }, {
+      inventories = state.inventories,
+      combatants = state.combatants,
+      outstanding = outstanding,
+    })
+    if okChoice == nil then
+      local reason = refusal ~= nil and refusal.code or "refused"
+      return BattleErrors.input("the battle item choice is refused", { reason = reason })
+    end
+  elseif choice.kind == "run" then
+    local allowed = false
+    for _, kind in ipairs(admitted) do
+      if kind == "run" then
+        allowed = true
+      end
+    end
+    if not allowed then
+      return BattleErrors.input("the admitted vocabulary names no flight", {})
+    end
+    if battleKind ~= "wild" then
+      return BattleErrors.input("flight refuses trainer battles", {})
     end
   end
   return nil
@@ -2657,7 +3059,7 @@ function HgssSessionExecutor:submit(reply)
   for _, choice in
     ipairs(stored.choices --[[@as table<integer, table<string, unknown>>]])
   do
-    local bindingError = checkChoiceBinding(state, choice)
+    local bindingError = checkChoiceBinding(state, choice, self._admitted, self._battleKind)
     if bindingError ~= nil then
       return false, bindingError
     end

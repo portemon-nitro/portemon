@@ -484,4 +484,130 @@ function T.undamaged_knockout_progression_reaches_the_committed_party()
   battle:dispose()
 end
 
+---@param values integer[] scripted draw results in consumption order
+---@return table stream double spending the scripted draws
+local function thrownStream(values)
+  local used = 0
+  return {
+    nextU16 = function(self, label, cause)
+      assert(self ~= nil, "draws arrive through the stream")
+      assert(type(label) == "string" and label ~= "", "shake draws name their call site")
+      assert(type(cause) == "table", "shake draws carry their semantic cause")
+      used = used + 1
+      return values[used] or 0
+    end,
+  }
+end
+
+---@param mon table persistent mon record held by the target slot
+---@return table battle-owned execution state holding the weakened target
+local function weakenedThrow(mon)
+  return {
+    mode = "wild",
+    inventories = { party = { quantities = { GREAT_BALL = 1 }, revision = 0 } },
+    ledger = {},
+    combatants = { [1] = { hp = 30, maxHp = 30 }, [2] = { mon = mon, hp = 1, maxHp = 30 } },
+  }
+end
+
+---@return table owner-generated successful capture result over a real mon record
+local function thrownCapture()
+  local Capture = requirePresent("libs.battle.src.gen4.Capture", "throwing owns live captures")
+  local caught = foeRecord("TOTODILE", 4, 0xC0FFEE11)
+  local outcome = Capture.execute(
+    { actor = 1, inventoryId = "party", ball = "GREAT_BALL", target = { combatant = 2 } },
+    weakenedThrow(caught),
+    thrownStream({ 0, 0, 0 })
+  )
+  Assert.isTrue(outcome.result.success, "the thrown ball lands deterministically")
+  return outcome.result
+end
+
+---@return table bag owner holding one great ball for the thrown capture
+local function newThrowBag()
+  local HgssBagService = require("libs.hgss.src.items.HgssBagService")
+  local bag = HgssBagService.new({ catalog = ItemFixture.makeCatalog() })
+  Assert.isTrue(bag:add("GREAT_BALL", 1), "the thrown capture needs its ball stock")
+  return bag
+end
+
+-- Captures shaped by the throw owner commit through the runtime mapping
+-- without reconstruction: the generated record carries no hand-written
+-- species or level, yet the party keeps the exact mon, dex knowledge
+-- lands, and the ball stays consumed; a full party keeps the honest
+-- no-op placement while still consuming the ball and the knowledge.
+function T.thrown_captures_commit_through_the_runtime_without_reconstruction()
+  local BattleRuntime = requirePresent(RUNTIME_MODULE, "application battle lifetime with consequence staging")
+  local ScenarioFactory = requirePresent(SCENARIO_FACTORY_MODULE, "field sources mapped to one detached scenario")
+
+  local generated = thrownCapture()
+  Assert.isNil(generated.species, "the generated record carries no rebuilt species")
+  local party = newPartyOwner()
+  local bag = newThrowBag()
+  local dex = newDexOwner()
+  local foe = tackleOnly(foeRecord("TOTODILE", 4, 0xC0FFEE12))
+  local launch =
+    { id = "launch-thrown-capture", kind = "wild", payload = { species = "TOTODILE", level = 4, mon = foe } }
+  local scenario = ScenarioFactory.fromEncounter(launch.payload, { party = party })
+  local battle = BattleRuntime.new({
+    request = launch,
+    scenario = scenario,
+    party = party,
+    bag = bag,
+    bagDeltas = { { op = "take", item = "GREAT_BALL", quantity = 1 } },
+    dex = dex,
+    captures = { generated },
+  })
+  driveToSettlement(battle)
+  Assert.equal(battle:status().phase, "complete", "answered decisions finish the capture battle")
+  local receipt = assert(battle:status().outcomeReceipt, "completion carries its commit receipt")
+  Assert.isTrue(receipt.committed, "the capture batch commits")
+  Assert.equal(#receipt.placements, 1, "the capture reports its placement")
+  Assert.isTrue(receipt.placements[1].retained, "room in the party retains the capture")
+  Assert.equal(party:partyCount(), 2, "the caught mon lands in the live party")
+  local stored = party:partyMon(1)
+  Assert.equal(stored.species, "TOTODILE", "the appended mon keeps its species")
+  Assert.equal(stored.personality, generated.mon.personality, "the appended mon keeps its identity")
+  Assert.isTrue(dex:isCaught("TOTODILE"), "the capture registers caught knowledge")
+  Assert.isTrue(dex:isSeen("TOTODILE"), "a caught mon counts as seen")
+  Assert.equal(bag:quantity("GREAT_BALL"), 0, "the thrown ball stays consumed")
+  battle:dispose()
+
+  local fullParty = newPartyOwner()
+  local catalog = CatalogFixture.makeCatalog()
+  local factory = CatalogFixture.makeFactory(0xBBBB0001, catalog)
+  for _, key in ipairs({ "TOTODILE", "EEVEE", "CHIKORITA", "TOTODILE", "EEVEE" }) do
+    local record = factory:createNormal(CatalogFixture.normalRequest({ species = key }))
+    Assert.isTrue(fullParty:addMon(record), "the no-op case needs a full party")
+  end
+  Assert.equal(fullParty:partyCount(), 6, "the party starts full")
+  local fullBag = newThrowBag()
+  local fullDex = newDexOwner()
+  local fullFoe = tackleOnly(foeRecord("TOTODILE", 4, 0xBBBB0004))
+  local fullLaunch =
+    { id = "launch-thrown-capture-full", kind = "wild", payload = { species = "TOTODILE", level = 4, mon = fullFoe } }
+  local fullScenario = ScenarioFactory.fromEncounter(fullLaunch.payload, { party = fullParty })
+  local fullBattle = BattleRuntime.new({
+    request = fullLaunch,
+    scenario = fullScenario,
+    party = fullParty,
+    bag = fullBag,
+    bagDeltas = { { op = "take", item = "GREAT_BALL", quantity = 1 } },
+    dex = fullDex,
+    captures = { thrownCapture() },
+  })
+  driveToSettlement(fullBattle)
+  Assert.equal(fullBattle:status().phase, "complete", "answered decisions finish the full-party battle")
+  local fullReceipt = assert(fullBattle:status().outcomeReceipt, "completion carries its commit receipt")
+  Assert.isTrue(fullReceipt.committed, "the full-party batch commits")
+  Assert.equal(#fullReceipt.placements, 1, "the capture reports its placement")
+  Assert.isFalse(fullReceipt.placements[1].retained, "a full party retains nothing")
+  Assert.equal(fullReceipt.placements[1].destination, "pc", "the placement names the unimplemented backend")
+  Assert.equal(fullReceipt.placements[1].reason, "pc_unimplemented", "the placement stays honest")
+  Assert.equal(fullParty:partyCount(), 6, "the live party is unchanged")
+  Assert.isTrue(fullDex:isCaught("TOTODILE"), "the capture still registers caught knowledge")
+  Assert.equal(fullBag:quantity("GREAT_BALL"), 0, "the ball stays consumed")
+  fullBattle:dispose()
+end
+
 return { tests = T }

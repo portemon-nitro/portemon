@@ -2013,4 +2013,708 @@ function T.sequential_knockouts_award_in_order_without_double_counting()
   session:dispose()
 end
 
+-- Production wild/trainer format keys exercised through the test content
+-- binding. The content registers the same keys the application composition
+-- uses, so encounter-kind behavior keyed off the format travels the same
+-- path in tests and in production.
+local WILD_FORMAT = "wild-single"
+local TRAINER_FORMAT = "single"
+
+---@return table frozen battle content binding the native ruleset over the production wild/trainer formats
+local function actionContent()
+  local ContentBuilder = require("libs.content.src.ContentBuilder")
+  local BattleBehaviorBuilder = require("libs.battle.src.BattleBehaviorBuilder")
+  local BattleContent = require("libs.battle.src.BattleContent")
+  local NativeTypeChart = require("libs.battle.src.gen4.NativeTypeChart")
+  local Executor = executorOwner()
+  local builder = ContentBuilder.new()
+  NativeTypeChart.install(builder, "native-action-tests")
+  local behaviors = BattleBehaviorBuilder.new()
+  behaviors:registerRuleset(
+    Executor.RULESET,
+    { key = Executor.RULESET, chart = Executor.RULESET },
+    "native-action-tests"
+  )
+  behaviors:registerFormat(WILD_FORMAT, { key = WILD_FORMAT }, "native-action-tests")
+  behaviors:registerFormat(TRAINER_FORMAT, { key = TRAINER_FORMAT }, "native-action-tests")
+  return BattleContent.new(builder:freeze(), behaviors:freeze())
+end
+
+---@param id integer nonreused positive combatant identity
+---@param seed integer fixed generator state for the underlying mon
+---@param species string catalog species key
+---@param level integer battle level for the underlying mon
+---@return table combatant seed with one usable move entry
+local function leveledCombatant(id, seed, species, level)
+  local CatalogFixture = require("libs.mons.tests.catalog_fixture")
+  local catalog = CatalogFixture.makeCatalog()
+  local factory = CatalogFixture.makeFactory(seed, catalog)
+  local mon = factory:createNormal(CatalogFixture.normalRequest({ species = species, level = level }))
+  mon.moves = { { move = "TACKLE", pp = 35, ppUps = 0 } }
+  return { id = id, mon = mon }
+end
+
+---@param id integer nonreused positive combatant identity
+---@param seed integer fixed generator state for the underlying mon
+---@return table combatant seed already knocked out on the bench
+local function faintedCombatant(id, seed)
+  local entry = tackleCombatant(id, seed)
+  local mon = entry.mon --[[@as table<string, unknown>]]
+  local condition = mon.condition --[[@as table<string, unknown>]]
+  condition.currentHp = 0
+  return entry
+end
+
+---@param formatKey string production format key under test
+---@param alpha table[] owning-side combatant seeds in scenario order
+---@param beta table[] opposing-side combatant seeds in scenario order
+---@param pack table|nil battle inventory seed for the owning side
+---@return table detached native battle setup record
+local function actionScenario(formatKey, alpha, beta, pack)
+  local Executor = executorOwner()
+  local seeds = {}
+  for _, seed in ipairs(alpha) do
+    seeds[#seeds + 1] = seed
+  end
+  for _, seed in ipairs(beta) do
+    seeds[#seeds + 1] = seed
+  end
+  local alphaSpec = SessionFixture.participant(1, 1, "alpha", alpha)
+  if pack ~= nil then
+    alphaSpec.inventoryId = (pack --[[@as table<string, unknown>]]).id
+  end
+  local alphaLead = alpha[1] --[[@as table<string, unknown>]]
+  local betaLead = beta[1] --[[@as table<string, unknown>]]
+  local scenario = {
+    ruleset = Executor.RULESET,
+    format = formatKey,
+    sides = { SessionFixture.side(1, { 1 }), SessionFixture.side(2, { 2 }) },
+    participants = {
+      alphaSpec,
+      SessionFixture.participant(2, 2, "beta", beta),
+    },
+    positions = {
+      SessionFixture.position(1, 1, { 1 }, alphaLead.id --[[@as integer]]),
+      SessionFixture.position(2, 2, { 2 }, betaLead.id --[[@as integer]]),
+    },
+    inventories = {},
+    environment = { weather = "none" },
+    random = { seed = NATIVE_SEED },
+    formatState = {},
+    moveFacts = scenarioMoveFacts(),
+    speciesFacts = scenarioSpeciesFacts(seeds),
+  }
+  if pack ~= nil then
+    scenario.inventories = { pack }
+  end
+  return scenario
+end
+
+---@param actor table combatant reference the choice is issued for
+---@param item string item key requested from the shared stack
+---@param holder integer combatant receiving the item
+---@return table validated decision payload for bag use
+local function bagChoice(actor, item, holder)
+  return {
+    actor = actor,
+    kind = "item",
+    payload = { item = item, target = { kind = "combatant", combatant = holder } },
+  }
+end
+
+---@param actor table combatant reference the choice is issued for
+---@return table validated decision payload for flight
+local function runChoice(actor)
+  return { actor = actor, kind = "run", payload = {} }
+end
+
+---@param frame table waiting battle frame under inspection
+---@param controller string decision producer owning the wanted request
+---@return table the pending decision request for the controller
+local function requestFor(frame, controller)
+  for _, request in ipairs(frame.request.requests) do
+    if request.controller == controller then
+      return request
+    end
+  end
+  error("the " .. controller .. " request stays open")
+end
+
+---@param events table[]|nil emitted events under inspection
+---@param kind string event kind under counting
+---@return integer events carrying the kind
+local function countKind(events, kind)
+  local found = 0
+  for _, event in ipairs(events or {}) do
+    if event.kind == kind then
+      found = found + 1
+    end
+  end
+  return found
+end
+
+-- Exchanges into reserves that cannot fight are refused before anything
+-- moves: the reply is rejected as invalid input, the outgoing lead keeps
+-- its position and entry token, both reserves stay benched, no exchange
+-- event escapes, and the stream spends nothing.
+function T.voluntary_switches_refuse_ineligible_reserves_without_moving_anyone()
+  local contracts = SessionFixture.sessionContracts()
+  local content = actionContent()
+  local session = contracts.Battle.newSession(
+    actionScenario(
+      WILD_FORMAT,
+      { tackleCombatant(1, 11), tackleCombatant(3, 31), faintedCombatant(5, 51) },
+      { tackleCombatant(2, 23) },
+      nil
+    ),
+    content
+  )
+  local opening = SessionFixture.driveUntilSettled(session)
+  Assert.equal(opening.status, "waiting", "the opening turn asks for decisions")
+  local before = session:capture()
+  local leadActivation = before.combatants[1].active.activation
+  local callsBefore = before.rng.calls
+  local alpha = requestFor(opening, "alpha")
+  local actor = assert(alpha.actors[1], "the owning request addresses its lead")
+  local refused, refuseErr =
+    session:submit(SessionFixture.replyFor(alpha, { SessionFixture.switchChoice(actor, 5) }))
+  Assert.isFalse(refused, "an exchange into a fainted reserve is refused")
+  Assert.notNil(refuseErr, "refused exchanges report their input error")
+  local waiting = SessionFixture.driveUntilSettled(session)
+  Assert.equal(waiting.status, "waiting", "refused exchanges leave the turn open")
+  Assert.equal(
+    requestFor(waiting, "alpha").requestId,
+    alpha.requestId,
+    "the owning side is asked again with the same request"
+  )
+  local settled = session:capture()
+  Assert.equal(settled.positions[1].occupant, 1, "the outgoing lead stays on the field")
+  Assert.equal(
+    settled.combatants[1].active.activation,
+    leadActivation,
+    "the outgoing entry keeps its token"
+  )
+  Assert.isNil(settled.combatants[5].active, "the fainted reserve stays benched")
+  Assert.isNil(settled.combatants[3].active, "the healthy reserve stays benched")
+  Assert.equal(countKind(waiting.events, "switch"), 0, "refused exchanges emit no exchange event")
+  Assert.equal(settled.rng.calls, callsBefore, "refused exchanges draw nothing")
+  session:dispose()
+end
+
+-- A free exchange completes its lifecycle: the reserve takes the vacated
+-- position with a fresh entry token, the outgoing lead leaves the field,
+-- a strike locked to the departed entry fizzles without wounding the
+-- arrival, and the following turn addresses the reserve with no terminal
+-- result named.
+function T.voluntary_switches_complete_the_exchange_with_a_fresh_entry()
+  local contracts = SessionFixture.sessionContracts()
+  local content = actionContent()
+  local session = contracts.Battle.newSession(
+    actionScenario(WILD_FORMAT, { tackleCombatant(1, 11), tackleCombatant(3, 31) }, { tackleCombatant(2, 23) }, nil),
+    content
+  )
+  local opening = SessionFixture.driveUntilSettled(session)
+  Assert.equal(opening.status, "waiting", "the opening turn asks for decisions")
+  local leadActivation = session:capture().combatants[1].active.activation
+  local callsBefore = session:capture().rng.calls
+  local alpha = requestFor(opening, "alpha")
+  local beta = requestFor(opening, "beta")
+  local actor = assert(alpha.actors[1], "the owning request addresses its lead")
+  local foe = assert(beta.actors[1], "the opposing request addresses its lead")
+  local ok, replyErr = session:submit(SessionFixture.replyFor(alpha, { SessionFixture.switchChoice(actor, 3) }))
+  Assert.isTrue(ok, "the free exchange is accepted")
+  Assert.isNil(replyErr, "accepted exchanges carry no input error")
+  local answered, answerErr = session:submit(
+    SessionFixture.replyFor(
+      beta,
+      { SessionFixture.attackChoice(foe, 0, SessionFixture.combatantTarget(1, leadActivation)) }
+    )
+  )
+  Assert.isTrue(answered, "the locked strike is accepted")
+  Assert.isNil(answerErr, "accepted strikes carry no input error")
+  local turn = session:advance(64)
+  Assert.isTrue(countKind(turn.events, "switch") >= 1, "the exchange announces itself")
+  local settled = session:capture()
+  Assert.equal(settled.positions[1].occupant, 3, "the reserve takes the vacated position")
+  Assert.isNil(settled.combatants[1].active, "the outgoing lead leaves the field")
+  Assert.notNil(settled.combatants[3].active, "the reserve enters the field")
+  Assert.isTrue(
+    settled.combatants[3].active.activation ~= leadActivation,
+    "the reserve enters with a fresh entry"
+  )
+  Assert.equal(
+    settled.combatants[3].hp,
+    settled.combatants[3].entryHp,
+    "the strike locked to the departed entry never wounds the arrival"
+  )
+  Assert.equal(countKind(turn.events, "struck"), 0, "the stale strike lands nothing")
+  Assert.equal(settled.rng.calls, callsBefore, "the exchange turn spends no draws")
+  local following = SessionFixture.driveUntilSettled(session)
+  Assert.equal(following.status, "waiting", "the following turn asks for decisions")
+  local addressesReserve = false
+  for _, entry in ipairs(requestFor(following, "alpha").actors) do
+    if entry.combatant == 3 then
+      addressesReserve = true
+    end
+  end
+  Assert.isTrue(addressesReserve, "the following turn addresses the reserve")
+  Assert.isNil(session:capture().outcome, "no terminal result is named after a free exchange")
+  session:dispose()
+end
+
+-- Bag healing applies the modeled restoration through the shared stack:
+-- the wounded holder recovers exactly the modeled amount, one unit leaves
+-- the declared stock, deterministic use spends no draws, the spent stack
+-- refuses a second serving, and a throw at a holder that is not on the
+-- field is refused without touching the stock.
+function T.bag_healing_restores_health_and_spends_exactly_one_unit()
+  local contracts = SessionFixture.sessionContracts()
+  local content = actionContent()
+  local lead = leveledCombatant(1, 23, "EEVEE", 20)
+  lead.mon.condition.currentHp = 1
+  local pack = SessionFixture.inventory("party", { 1 }, { POTION = 1 })
+  local session = contracts.Battle.newSession(
+    actionScenario(
+      WILD_FORMAT,
+      { lead },
+      { leveledCombatant(2, 41, "EEVEE", 5), leveledCombatant(4, 43, "EEVEE", 5) },
+      pack
+    ),
+    content
+  )
+  local opening = SessionFixture.driveUntilSettled(session)
+  Assert.equal(opening.status, "waiting", "the opening turn asks for decisions")
+  local callsBefore = session:capture().rng.calls
+  local alpha = requestFor(opening, "alpha")
+  local beta = requestFor(opening, "beta")
+  local actor = assert(alpha.actors[1], "the owning request addresses its lead")
+  local foe = assert(beta.actors[1], "the opposing request addresses its lead")
+  local ok, replyErr =
+    session:submit(SessionFixture.replyFor(alpha, { bagChoice(actor, "POTION", 1) }))
+  Assert.isTrue(ok, "the healing choice is accepted")
+  Assert.isNil(replyErr, "accepted bag use carries no input error")
+  local answered, answerErr =
+    session:submit(SessionFixture.replyFor(beta, { SessionFixture.switchChoice(foe, 4) }))
+  Assert.isTrue(answered, "the opposing exchange is accepted")
+  Assert.isNil(answerErr, "accepted exchanges carry no input error")
+  local turn = session:advance(64)
+  Assert.isTrue(countKind(turn.events, "item") >= 1, "the bag use announces itself")
+  local settled = session:capture()
+  Assert.equal(settled.combatants[1].hp, 21, "the wounded holder recovers the modeled amount")
+  Assert.equal(settled.inventories.party.quantities.POTION, 0, "exactly one unit leaves the stock")
+  Assert.equal(settled.rng.calls, callsBefore, "deterministic bag use draws nothing")
+  local following = SessionFixture.driveUntilSettled(session)
+  Assert.equal(following.status, "waiting", "the following turn asks for decisions")
+  local again = requestFor(following, "alpha")
+  local user = assert(again.actors[1], "the following request addresses the healed lead")
+  local spent, spentErr = session:submit(SessionFixture.replyFor(again, { bagChoice(user, "POTION", 1) }))
+  Assert.isFalse(spent, "the spent stack serves nothing more")
+  Assert.notNil(spentErr, "the spent stack reports its input error")
+  Assert.equal(
+    session:capture().inventories.party.quantities.POTION,
+    0,
+    "the refused serving consumes nothing more"
+  )
+  session:dispose()
+
+  local freshLead = leveledCombatant(1, 23, "EEVEE", 20)
+  freshLead.mon.condition.currentHp = 1
+  local fresh = contracts.Battle.newSession(
+    actionScenario(
+      WILD_FORMAT,
+      { freshLead },
+      { leveledCombatant(2, 41, "EEVEE", 5), leveledCombatant(4, 43, "EEVEE", 5) },
+      SessionFixture.inventory("party", { 1 }, { POTION = 1 })
+    ),
+    content
+  )
+  local boundary = SessionFixture.driveUntilSettled(fresh)
+  Assert.equal(boundary.status, "waiting", "the second battle opens its turn")
+  local holder = assert(requestFor(boundary, "alpha").actors[1], "the second request addresses its lead")
+  local refused, refuseErr = fresh:submit(SessionFixture.replyFor(requestFor(boundary, "alpha"), {
+    bagChoice(holder, "POTION", 9),
+  }))
+  Assert.isFalse(refused, "a holder that is not on the field is refused")
+  Assert.notNil(refuseErr, "the refused holder reports its input error")
+  Assert.equal(
+    fresh:capture().inventories.party.quantities.POTION,
+    1,
+    "the refused holder leaves the stock untouched"
+  )
+  fresh:dispose()
+end
+
+-- A thrown ball runs the capture path and closes the wild battle: the
+-- session records the exact caught mon in plain snapshot-safe data, the
+-- throw tells its ordered throw, shakes, and catch, the shared stack
+-- drops by exactly one unit with no draw spent on the guaranteed ball,
+-- and the battle ends with both sides standing.
+function T.thrown_balls_record_the_caught_mon_and_close_the_wild_battle()
+  local contracts = SessionFixture.sessionContracts()
+  local content = actionContent()
+  local pack = SessionFixture.inventory("party", { 1 }, { MASTER_BALL = 1 })
+  local session = contracts.Battle.newSession(
+    actionScenario(
+      WILD_FORMAT,
+      { leveledCombatant(1, 11, "CHIKORITA", 20) },
+      { leveledCombatant(2, 23, "EEVEE", 5) },
+      pack
+    ),
+    content
+  )
+  local opening = SessionFixture.driveUntilSettled(session)
+  Assert.equal(opening.status, "waiting", "the opening turn asks for decisions")
+  local foeRecord = session:capture().combatants[2].mon
+  local callsBefore = session:capture().rng.calls
+  local alpha = requestFor(opening, "alpha")
+  local beta = requestFor(opening, "beta")
+  local actor = assert(alpha.actors[1], "the owning request addresses its lead")
+  local foe = assert(beta.actors[1], "the opposing request addresses its lead")
+  local ok, replyErr = session:submit(SessionFixture.replyFor(alpha, { bagChoice(actor, "MASTER_BALL", 2) }))
+  Assert.isTrue(ok, "the thrown ball is accepted")
+  Assert.isNil(replyErr, "accepted throws carry no input error")
+  local answered, answerErr = session:submit(
+    SessionFixture.replyFor(beta, { SessionFixture.attackChoice(foe, 0, SessionFixture.positionTarget(1)) })
+  )
+  Assert.isTrue(answered, "the opposing strike is accepted")
+  Assert.isNil(answerErr, "accepted strikes carry no input error")
+  local turn = session:advance(64)
+  local kinds = {}
+  for _, event in ipairs(turn.events or {}) do
+    kinds[#kinds + 1] = event.kind
+  end
+  local wanted = { "throw", "shake", "shake", "shake", "caught" }
+  local cursor = 1
+  for _, kind in ipairs(kinds) do
+    if kind == wanted[cursor] then
+      cursor = cursor + 1
+    end
+    if cursor > #wanted then
+      break
+    end
+  end
+  Assert.equal(cursor, #wanted + 1, "the throw tells throw, shakes, and catch in order")
+  Assert.equal(kinds[#kinds], "caught", "the successful throw closes with the catch")
+  local boundary = SessionFixture.driveUntilSettled(session)
+  Assert.equal(boundary.status, "ended", "the successful wild capture ends the battle")
+  Assert.notNil(boundary.outcome, "the closed capture names its terminal result")
+  local settled = session:capture()
+  Assert.equal(
+    settled.inventories.party.quantities.MASTER_BALL,
+    0,
+    "the throw spends exactly one ball"
+  )
+  Assert.equal(settled.rng.calls, callsBefore, "the guaranteed throw spends no roll")
+  Assert.equal(countKind(turn.events, "struck"), 0, "the catch preempts the queued strike")
+  local ledger = settled.captures
+  Assert.notNil(ledger, "the session owns its capture ledger")
+  Assert.equal(#ledger, 1, "the throw records exactly one capture")
+  local record = ledger[1]
+  Assert.isTrue(record.success, "the guaranteed throw lands")
+  Assert.equal(record.ball, "MASTER_BALL", "the record names its ball")
+  Assert.deepEqual(record.mon, foeRecord, "the record keeps the exact caught mon")
+  SessionFixture.assertPlainData(ledger, "captures")
+  Assert.isTrue(settled.combatants[1].hp > 0, "the thrower is still standing")
+  Assert.isTrue(settled.combatants[2].hp > 0, "the catch ends the battle without a knockout")
+  session:dispose()
+end
+
+-- Flight follows escape law: a failed wild attempt spends exactly one
+-- labeled roll and the battle continues with both leads in place, a
+-- faster wild lead leaves outright with no roll and the queued strike
+-- never lands, and flight from a trainer battle is refused before
+-- anything moves, draws, or ends.
+function T.run_attempts_follow_escape_law_and_trainer_flight_stays_refused()
+  local contracts = SessionFixture.sessionContracts()
+  local content = actionContent()
+  local slow = contracts.Battle.newSession(
+    actionScenario(
+      WILD_FORMAT,
+      { leveledCombatant(1, 11, "CHIKORITA", 5) },
+      { leveledCombatant(2, 23, "EEVEE", 40), leveledCombatant(4, 41, "EEVEE", 5) },
+      nil
+    ),
+    content
+  )
+  local opening = SessionFixture.driveUntilSettled(slow)
+  Assert.equal(opening.status, "waiting", "the slow turn asks for decisions")
+  local callsBefore = slow:capture().rng.calls
+  local slowActivation = slow:capture().combatants[1].active.activation
+  local alpha = requestFor(opening, "alpha")
+  local beta = requestFor(opening, "beta")
+  local runner = assert(alpha.actors[1], "the slow request addresses its lead")
+  local foe = assert(beta.actors[1], "the opposing request addresses its lead")
+  local ok, replyErr = slow:submit(SessionFixture.replyFor(alpha, { runChoice(runner) }))
+  Assert.isTrue(ok, "the wild run is accepted")
+  Assert.isNil(replyErr, "accepted runs carry no input error")
+  local answered, answerErr =
+    slow:submit(SessionFixture.replyFor(beta, { SessionFixture.switchChoice(foe, 4) }))
+  Assert.isTrue(answered, "the opposing exchange is accepted")
+  Assert.isNil(answerErr, "accepted exchanges carry no input error")
+  slow:advance(64)
+  local waiting = SessionFixture.driveUntilSettled(slow)
+  Assert.equal(waiting.status, "waiting", "the failed attempt continues the battle")
+  Assert.isNil(slow:capture().outcome, "the failed attempt names no terminal result")
+  local settled = slow:capture()
+  Assert.equal(settled.positions[1].occupant, 1, "the slow lead stays on the field")
+  Assert.equal(
+    settled.combatants[1].active.activation,
+    slowActivation,
+    "the slow entry keeps its token"
+  )
+  Assert.equal(settled.positions[2].occupant, 4, "the opposing exchange still runs its turn")
+  Assert.equal(settled.rng.calls, callsBefore + 1, "the failed attempt spends exactly one roll")
+  slow:dispose()
+
+  local swift = contracts.Battle.newSession(
+    actionScenario(
+      WILD_FORMAT,
+      { leveledCombatant(1, 11, "CHIKORITA", 20) },
+      { leveledCombatant(2, 13, "CHIKORITA", 5) },
+      nil
+    ),
+    content
+  )
+  local dash = SessionFixture.driveUntilSettled(swift)
+  Assert.equal(dash.status, "waiting", "the swift turn asks for decisions")
+  local dashCalls = swift:capture().rng.calls
+  local dashHp = swift:capture().combatants[1].hp
+  local dashEntry = swift:capture().combatants[1].entryHp
+  local dashAlpha = requestFor(dash, "alpha")
+  local dashBeta = requestFor(dash, "beta")
+  local escaper = assert(dashAlpha.actors[1], "the swift request addresses its lead")
+  local chaser = assert(dashBeta.actors[1], "the chasing request addresses its lead")
+  local fled, fledErr = swift:submit(SessionFixture.replyFor(dashAlpha, { runChoice(escaper) }))
+  Assert.isTrue(fled, "the swift run is accepted")
+  Assert.isNil(fledErr, "accepted runs carry no input error")
+  local chased, chasedErr = swift:submit(
+    SessionFixture.replyFor(dashBeta, { SessionFixture.attackChoice(chaser, 0, SessionFixture.positionTarget(1)) })
+  )
+  Assert.isTrue(chased, "the chasing strike is accepted")
+  Assert.isNil(chasedErr, "accepted strikes carry no input error")
+  local flight = swift:advance(64)
+  Assert.equal(countKind(flight.events, "struck"), 0, "the escape preempts the queued strike")
+  local escaped = SessionFixture.driveUntilSettled(swift)
+  Assert.equal(escaped.status, "ended", "the successful wild run ends the battle")
+  Assert.notNil(escaped.outcome, "the escape names its terminal result")
+  local fledState = swift:capture()
+  Assert.equal(fledState.combatants[1].hp, dashHp, "the escapee leaves unwounded")
+  Assert.equal(fledState.combatants[1].hp, dashEntry, "the escapee keeps its entry health")
+  Assert.equal(fledState.rng.calls, dashCalls, "the outright escape spends no roll")
+  Assert.isTrue(fledState.combatants[2].hp > 0, "the escape claims no knockout")
+  swift:dispose()
+
+  local trainer = contracts.Battle.newSession(
+    actionScenario(
+      TRAINER_FORMAT,
+      { leveledCombatant(1, 11, "CHIKORITA", 20) },
+      { leveledCombatant(2, 23, "EEVEE", 5) },
+      nil
+    ),
+    content
+  )
+  local standoff = SessionFixture.driveUntilSettled(trainer)
+  Assert.equal(standoff.status, "waiting", "the trainer turn asks for decisions")
+  local standoffCalls = trainer:capture().rng.calls
+  local trainerAlpha = requestFor(standoff, "alpha")
+  local athletic = assert(trainerAlpha.actors[1], "the trainer request addresses its lead")
+  local refused, refuseErr = trainer:submit(SessionFixture.replyFor(trainerAlpha, { runChoice(athletic) }))
+  Assert.isFalse(refused, "flight from a trainer battle is refused")
+  Assert.notNil(refuseErr, "the refused flight reports its input error")
+  local held = SessionFixture.driveUntilSettled(trainer)
+  Assert.equal(held.status, "waiting", "the refused flight continues the battle")
+  Assert.equal(
+    requestFor(held, "alpha").requestId,
+    trainerAlpha.requestId,
+    "the trainer side is asked again with the same request"
+  )
+  local heldState = trainer:capture()
+  Assert.equal(heldState.positions[1].occupant, 1, "the refused lead stays on the field")
+  Assert.equal(heldState.positions[2].occupant, 2, "the opposing lead stays on the field")
+  Assert.equal(heldState.rng.calls, standoffCalls, "the refused flight spends no roll")
+  Assert.isNil(heldState.outcome, "the refused flight names no terminal result")
+  trainer:dispose()
+end
+
+-- Servings the shared stack never carried are refused before anything
+-- moves: the reply is rejected as invalid input, the declared stock
+-- stays untouched, the holder keeps its health, and the stream spends
+-- nothing.
+function T.bag_unknown_items_refuse_without_spending_stock()
+  local contracts = SessionFixture.sessionContracts()
+  local content = actionContent()
+  local lead = leveledCombatant(1, 23, "EEVEE", 20)
+  local session = contracts.Battle.newSession(
+    actionScenario(
+      WILD_FORMAT,
+      { lead },
+      { leveledCombatant(2, 41, "EEVEE", 5) },
+      SessionFixture.inventory("party", { 1 }, { POTION = 1 })
+    ),
+    content
+  )
+  local opening = SessionFixture.driveUntilSettled(session)
+  Assert.equal(opening.status, "waiting", "the opening turn asks for decisions")
+  local callsBefore = session:capture().rng.calls
+  local hpBefore = session:capture().combatants[1].hp
+  local alpha = requestFor(opening, "alpha")
+  local actor = assert(alpha.actors[1], "the owning request addresses its lead")
+  local refused, refuseErr =
+    session:submit(SessionFixture.replyFor(alpha, { bagChoice(actor, "ANTIDOTE", 1) }))
+  Assert.isFalse(refused, "a serving the stack never carried is refused")
+  Assert.notNil(refuseErr, "the refused serving reports its input error")
+  local waiting = SessionFixture.driveUntilSettled(session)
+  Assert.equal(waiting.status, "waiting", "the refused serving leaves the turn open")
+  Assert.equal(
+    requestFor(waiting, "alpha").requestId,
+    alpha.requestId,
+    "the owning side is asked again with the same request"
+  )
+  local settled = session:capture()
+  Assert.equal(settled.inventories.party.quantities.POTION, 1, "the declared stock stays untouched")
+  Assert.equal(settled.combatants[1].hp, hpBefore, "the holder keeps its health")
+  Assert.equal(settled.rng.calls, callsBefore, "the refused serving draws nothing")
+  Assert.isNil(settled.outcome, "the refused serving names no terminal result")
+  session:dispose()
+end
+
+-- Thrown balls refuse trainer targets before anything moves: the reply
+-- is rejected as invalid input, the shared stack keeps its ball, both
+-- leads stay put, no capture is ledgered, and the stream spends nothing.
+function T.thrown_balls_refuse_trainer_targets_without_spending()
+  local contracts = SessionFixture.sessionContracts()
+  local content = actionContent()
+  local session = contracts.Battle.newSession(
+    actionScenario(
+      TRAINER_FORMAT,
+      { leveledCombatant(1, 11, "CHIKORITA", 20) },
+      { leveledCombatant(2, 23, "EEVEE", 5) },
+      SessionFixture.inventory("party", { 1 }, { MASTER_BALL = 1 })
+    ),
+    content
+  )
+  local opening = SessionFixture.driveUntilSettled(session)
+  Assert.equal(opening.status, "waiting", "the trainer turn asks for decisions")
+  local callsBefore = session:capture().rng.calls
+  local alpha = requestFor(opening, "alpha")
+  local actor = assert(alpha.actors[1], "the owning request addresses its lead")
+  local refused, refuseErr =
+    session:submit(SessionFixture.replyFor(alpha, { bagChoice(actor, "MASTER_BALL", 2) }))
+  Assert.isFalse(refused, "a throw at a trainer target is refused")
+  Assert.notNil(refuseErr, "the refused throw reports its input error")
+  local waiting = SessionFixture.driveUntilSettled(session)
+  Assert.equal(waiting.status, "waiting", "the refused throw leaves the turn open")
+  Assert.equal(
+    requestFor(waiting, "alpha").requestId,
+    alpha.requestId,
+    "the owning side is asked again with the same request"
+  )
+  local settled = session:capture()
+  Assert.equal(settled.positions[1].occupant, 1, "the refused lead stays on the field")
+  Assert.equal(settled.positions[2].occupant, 2, "the opposing lead stays on the field")
+  Assert.equal(settled.inventories.party.quantities.MASTER_BALL, 1, "the shared stack keeps its ball")
+  Assert.equal(#settled.captures, 0, "the refused throw ledgers no capture")
+  Assert.equal(settled.rng.calls, callsBefore, "the refused throw draws nothing")
+  Assert.isNil(settled.outcome, "the refused throw names no terminal result")
+  session:dispose()
+end
+
+-- Attempt counters and capture ledgers ride interruption captures
+-- exactly once: a restored failed run spends its single roll from the
+-- restored stream position, and a restored successful catch keeps its
+-- one ledger record with the battle still ended.
+function T.escape_attempts_and_capture_ledgers_survive_restore_without_duplication()
+  local contracts = SessionFixture.sessionContracts()
+  local Executor = executorOwner()
+  local content = actionContent()
+  local slow = contracts.Battle.newSession(
+    actionScenario(
+      WILD_FORMAT,
+      { leveledCombatant(1, 11, "CHIKORITA", 5) },
+      { leveledCombatant(2, 23, "EEVEE", 40), leveledCombatant(4, 41, "EEVEE", 5) },
+      nil
+    ),
+    content
+  )
+  local opening = SessionFixture.driveUntilSettled(slow)
+  Assert.equal(opening.status, "waiting", "the slow turn asks for decisions")
+  local snapshot = slow:capture()
+  SessionFixture.assertPlainData(snapshot)
+  local callsBefore = snapshot.rng.calls
+  local revived = Executor.restore(snapshot, content)
+  for _, live in ipairs({ slow, revived }) do
+    local boundary = SessionFixture.driveUntilSettled(live)
+    Assert.equal(boundary.status, "waiting", "the restored turn asks for decisions")
+    local alpha = requestFor(boundary, "alpha")
+    local beta = requestFor(boundary, "beta")
+    local runner = assert(alpha.actors[1], "the slow request addresses its lead")
+    local foe = assert(beta.actors[1], "the opposing request addresses its lead")
+    local ok, replyErr = live:submit(SessionFixture.replyFor(alpha, { runChoice(runner) }))
+    Assert.isTrue(ok, "the wild run is accepted")
+    Assert.isNil(replyErr, "accepted runs carry no input error")
+    local answered, answerErr =
+      live:submit(SessionFixture.replyFor(beta, { SessionFixture.switchChoice(foe, 4) }))
+    Assert.isTrue(answered, "the opposing exchange is accepted")
+    Assert.isNil(answerErr, "accepted exchanges carry no input error")
+    live:advance(64)
+  end
+  for _, live in ipairs({ slow, revived }) do
+    local waiting = SessionFixture.driveUntilSettled(live)
+    Assert.equal(waiting.status, "waiting", "the restored attempt still continues the battle")
+    local settled = live:capture()
+    Assert.equal(settled.escapeAttempts, 1, "the failed attempt counts exactly once")
+    Assert.equal(settled.rng.calls, callsBefore + 1, "the restored attempt spends exactly one roll")
+    Assert.equal(settled.positions[2].occupant, 4, "the opposing exchange still runs its turn")
+  end
+  Assert.deepEqual(revived:capture().escapeAttempts, slow:capture().escapeAttempts, "restore replays the counter")
+  slow:dispose()
+  revived:dispose()
+
+  local pack = SessionFixture.inventory("party", { 1 }, { MASTER_BALL = 1 })
+  local catcher = contracts.Battle.newSession(
+    actionScenario(
+      WILD_FORMAT,
+      { leveledCombatant(1, 11, "CHIKORITA", 20) },
+      { leveledCombatant(2, 23, "EEVEE", 5) },
+      pack
+    ),
+    content
+  )
+  local duel = SessionFixture.driveUntilSettled(catcher)
+  Assert.equal(duel.status, "waiting", "the capture turn asks for decisions")
+  local thrower = assert(requestFor(duel, "alpha").actors[1], "the owning request addresses its lead")
+  local target = assert(requestFor(duel, "beta").actors[1], "the opposing request addresses its lead")
+  local thrown, thrownErr =
+    catcher:submit(SessionFixture.replyFor(requestFor(duel, "alpha"), { bagChoice(thrower, "MASTER_BALL", 2) }))
+  Assert.isTrue(thrown, "the thrown ball is accepted")
+  Assert.isNil(thrownErr, "accepted throws carry no input error")
+  local struck, struckErr = catcher:submit(
+    SessionFixture.replyFor(
+      requestFor(duel, "beta"),
+      { SessionFixture.attackChoice(target, 0, SessionFixture.positionTarget(1)) }
+    )
+  )
+  Assert.isTrue(struck, "the opposing strike is accepted")
+  Assert.isNil(struckErr, "accepted strikes carry no input error")
+  catcher:advance(64)
+  local closed = SessionFixture.driveUntilSettled(catcher)
+  Assert.equal(closed.status, "ended", "the successful wild capture ends the battle")
+  local caught = catcher:capture()
+  Assert.equal(#caught.captures, 1, "the throw records exactly one capture")
+  SessionFixture.assertPlainData(caught.captures, "captures")
+  local kept = Executor.restore(caught, content)
+  Assert.deepEqual(kept:capture().captures, caught.captures, "restore keeps the one ledger record")
+  Assert.equal(kept:capture().captureSeq, caught.captureSeq, "restore keeps the capture identity counter")
+  Assert.equal(
+    kept:capture().inventories.party.quantities.MASTER_BALL,
+    0,
+    "restore never re-spends the ball"
+  )
+  local reclosed = SessionFixture.driveUntilSettled(kept)
+  Assert.equal(reclosed.status, "ended", "the restored capture stays ended")
+  Assert.equal(reclosed.outcome.kind, "captured", "the restored capture keeps its terminal result")
+  catcher:dispose()
+  kept:dispose()
+end
+
 return { tests = T }
