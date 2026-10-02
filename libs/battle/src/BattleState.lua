@@ -18,10 +18,11 @@ local BattleState = {}
 
 -- Interruption captures carrying an older version reject as incompatible:
 -- pre-release battle snapshots never migrate, they fail before publication.
--- Version 3 carries the knockout-reward continuation (reward children,
+-- Version 4 carries the knockout-reward continuation (reward children,
 -- battle participation, and evolution eligibility) alongside the version-2
--- replacement lifecycle.
-BattleState.VERSION = 3
+-- replacement lifecycle and the session-owned action ledger (escape
+-- attempts, capture identities, capture records, and item consumption).
+BattleState.VERSION = 4
 
 ---@param value unknown
 ---@return unknown
@@ -93,6 +94,10 @@ function BattleState.create(validated)
     positionOrder = {},
     positions = {},
     inventories = {},
+    escapeAttempts = 0,
+    captureSeq = 0,
+    captures = {},
+    ledger = {},
     environment = copyValue(validated.environment),
     formatState = copyValue(validated.formatState),
     frames = {},
@@ -459,6 +464,39 @@ function BattleState.validateSnapshot(snapshot)
   if type(snapshot.inventories) ~= "table" then
     error(BattleErrors.incompatibleSnapshot("battle snapshots must carry inventories", {}))
   end
+  if
+    type(snapshot.escapeAttempts) ~= "number"
+    or snapshot.escapeAttempts --[[@as integer]]
+      % 1 ~= 0
+    or snapshot.escapeAttempts --[[@as integer]]
+      < 0
+  then
+    error(BattleErrors.incompatibleSnapshot("battle snapshots must count their escape attempts", {}))
+  end
+  if
+    type(snapshot.captureSeq) ~= "number"
+    or snapshot.captureSeq --[[@as integer]]
+      % 1 ~= 0
+    or snapshot.captureSeq --[[@as integer]]
+      < 0
+  then
+    error(BattleErrors.incompatibleSnapshot("battle snapshots must count their capture identities", {}))
+  end
+  if type(snapshot.captures) ~= "table" then
+    error(BattleErrors.incompatibleSnapshot("battle snapshots must carry their capture ledger", {}))
+  end
+  checkSnapshotSequence(snapshot.captures --[[@as table<integer, unknown>]], "snapshot captures")
+  for _, entry in
+    ipairs(snapshot.captures --[[@as table<integer, unknown>]])
+  do
+    if type(entry) ~= "table" then
+      error(BattleErrors.incompatibleSnapshot("snapshot captures must be records", {}))
+    end
+  end
+  if type(snapshot.ledger) ~= "table" then
+    error(BattleErrors.incompatibleSnapshot("battle snapshots must carry their consumption ledger", {}))
+  end
+  checkSnapshotSequence(snapshot.ledger --[[@as table<integer, unknown>]], "snapshot consumption")
   if type(snapshot.environment) ~= "table" or type(snapshot.formatState) ~= "table" then
     error(BattleErrors.incompatibleSnapshot("battle snapshots must carry environment records", {}))
   end

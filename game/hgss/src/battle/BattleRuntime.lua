@@ -1001,7 +1001,7 @@ end
 function BattleRuntime:_mapOutcome()
   local outcome = self._outcome or {}
   assert(type(outcome) == "table", "resolution maps the session outcome")
-  if outcome.kind == "no_actors" then
+  if outcome.kind == "no_actors" or outcome.kind == "escaped" or outcome.kind == "captured" then
     -- Terminal standings decide the word: a fainted enemy side reports a
     -- win and a fainted player side reports a loss, while two standing
     -- sides settle as a draw. No victory is ever invented beyond the
@@ -1214,6 +1214,33 @@ function BattleRuntime:_commitCaptures()
       level = entry.level,
       ball = entry.ball,
     }
+  end
+  -- Ordinary production captures originate from the executed battle:
+  -- the session ledger records the throw owner's complete result and
+  -- this mapping only reshapes it into the existing committer shape.
+  -- Explicitly injected captures above stay for the proven scripted and
+  -- test drivers that stage them directly.
+  if self._session ~= nil then
+    local session = self._session --[[@as table<string, unknown>]]
+    local snapshot = session.capture(session) --[[@as table<string, unknown>]]
+    local ledger = snapshot.captures
+    assert(type(ledger) == "table", "session captures arrive as an array")
+    for _, record in
+      ipairs(ledger --[[@as table<integer, unknown>]])
+    do
+      if type(record) ~= "table" then
+        error("battle captures must be records", 0)
+      end
+      local entry = record --[[@as table<string, unknown>]]
+      staged[#staged + 1] = {
+        captureId = entry.id,
+        success = entry.success,
+        mon = entry.mon,
+        species = entry.species,
+        level = entry.level,
+        ball = entry.ball,
+      }
+    end
   end
   return staged
 end

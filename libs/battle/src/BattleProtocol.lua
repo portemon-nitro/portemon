@@ -33,7 +33,7 @@ end
 -- vocabulary; later battle phases register narrower kinds through the same
 -- boundary instead of branching inside the session.
 local decisionKinds = {
-  action = { attack = true, switch = true, confirm = true, item = true },
+  action = { attack = true, switch = true, confirm = true, item = true, run = true },
 }
 
 ---@param kind string
@@ -46,7 +46,7 @@ function BattleProtocol.registerDecisionKind(kind, allowed)
   end
   local accepted = {}
   for _, choice in ipairs(allowed) do
-    if choice ~= "attack" and choice ~= "switch" and choice ~= "confirm" and choice ~= "item" then
+    if choice ~= "attack" and choice ~= "switch" and choice ~= "confirm" and choice ~= "item" and choice ~= "run" then
       error(BattleErrors.input("decision kinds accept only known choice vocabulary", {
         kind = kind,
         choice = tostring(choice),
@@ -159,6 +159,10 @@ function BattleProtocol.validateChoice(choice, decisionKind)
     if payload.target ~= nil then
       BattleProtocol.validateTarget(payload.target)
     end
+  elseif kind == "run" then
+    -- Flight carries an empty payload. Whether flight is legal (wild
+    -- against trainer formats, trapping) is format and session policy,
+    -- decided where the live battle facts are, not here.
   else
     error(BattleErrors.input("battle choices must name a known kind", { choice = kind }))
   end
