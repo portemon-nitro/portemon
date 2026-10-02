@@ -102,13 +102,15 @@ function FieldDialogueFixture.fontDef()
       count = FieldMessageText.FOCUS_INDICATOR_COUNT,
       width = 24,
       height = 32,
-      sourcePaletteSlots = { 11, 12, 13, 14 },
       frames = (function()
         local frames = {}
         for field = 0, FieldMessageText.FOCUS_INDICATOR_COUNT - 1 do
           local layers = {}
           for index, slot in ipairs({ 11, 12, 13, 14 }) do
-            layers[slot] = { x = (index - 1) * 24, y = field * 32, width = 24, height = 32 }
+            layers[index] = {
+              paletteSlot = slot,
+              rect = { x = (index - 1) * 24, y = field * 32, width = 24, height = 32 },
+            }
           end
           frames[field] = { layers = layers }
         end
