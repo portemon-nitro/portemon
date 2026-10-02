@@ -6,6 +6,8 @@
 local BattleErrors = require("libs.battle.src.errors")
 local BattleProtocol = require("libs.battle.src.BattleProtocol")
 local BattleState = require("libs.battle.src.BattleState")
+local StatStages = require("libs.battle.src.gen4.StatStages")
+local Status = require("libs.battle.src.gen4.Status")
 
 ---@class BattleContext
 ---@field private _state table<string, unknown>
@@ -89,50 +91,233 @@ function BattleContext:heal(combatantId, amount, cause)
   local combatant = BattleState.combatant(self._state, combatantId)
   local before = combatant.hp --[[@as integer]]
   local after = before + amount --[[@as integer]]
+  -- Recovery ceilings mirror entryOf: the battle maximum sits above the
+  -- entry value whenever the entry arrived wounded.
+  local ceiling = combatant.maxHp
+  if type(ceiling) ~= "number" then
+    ceiling = combatant.entryHp
+  end
   if
-    after > combatant.entryHp --[[@as integer]]
+    after > ceiling --[[@as integer]]
   then
-    after = combatant.entryHp --[[@as integer]]
+    after = ceiling --[[@as integer]]
   end
   combatant.hp = after
   return { before = before, after = after }
 end
 
----@param combatantId integer
----@param effect table<string, unknown>
-function BattleContext:addEffect(combatantId, effect)
-  assert(type(combatantId) == "number", "effect writes require their combatant")
-  assert(type(effect) == "table", "effect writes require their effect record")
-  if type(effect.key) ~= "string" or effect.key == "" then
-    error(BattleErrors.invalidState("effects must name their key", { combatant = combatantId }))
-  end
-  if type(effect.scope) ~= "string" or effect.scope == "" then
-    error(BattleErrors.invalidState("effects must name their scope", { combatant = combatantId }))
-  end
+-- Battle-local stat stages in native stage law, shared with the state
+-- owner so entry reads and stage writes name the same seven keys.
+local STAGE_KEYS = { "attack", "defense", "speed", "specialAttack", "specialDefense", "accuracy", "evasion" }
+
+---@param combatantId integer combatant under entry projection
+---@return table<string, unknown> detached entry facts for scopes, stages, and health reads
+function BattleContext:entryOf(combatantId)
+  assert(type(combatantId) == "number", "entry reads require their combatant")
   local combatant = BattleState.combatant(self._state, combatantId)
-  local volatiles = combatant.volatiles --[[@as table<integer, table<string, unknown>>]]
-  for _, held in ipairs(volatiles) do
-    if held.key == effect.key then
-      error(BattleErrors.invalidState("effects never stack under one key", {
-        combatant = combatantId,
-        effect = effect.key,
-      }))
+  local participant = BattleState.participant(self._state, combatant.participant --[[@as integer]])
+  local stages = {}
+  local carried = combatant.stages
+  if type(carried) == "table" then
+    local tableCarried = carried --[[@as table<string, integer>]]
+    for _, key in ipairs(STAGE_KEYS) do
+      local stage = tableCarried[key]
+      if type(stage) == "number" and stage % 1 == 0 then
+        stages[key] = stage
+      else
+        stages[key] = 0
+      end
+    end
+  else
+    -- Stageless shapes (notably the generic scripted kernel) read as
+    -- flat stages so shared strike checkpoints keep one code path.
+    for _, key in ipairs(STAGE_KEYS) do
+      stages[key] = 0
     end
   end
-  volatiles[#volatiles + 1] = copyValue(effect) --[[@as table<string, unknown>]]
+  -- Recovery ceilings read battle maximum health, which sits above
+  -- the entry value whenever the entry arrived wounded; entries that
+  -- never projected a maximum keep their entry value.
+  local ceiling = combatant.maxHp
+  if type(ceiling) ~= "number" then
+    ceiling = combatant.entryHp
+  end
+  local view = {
+    side = participant.side,
+    position = nil,
+    activation = nil,
+    stages = stages,
+    hp = combatant.hp,
+    maxHp = ceiling,
+  }
+  local active = combatant.active --[[@as table<string, unknown>?]]
+  if active ~= nil then
+    view.position = active.position
+    view.activation = active.activation
+  end
+  return view
 end
 
----@param combatantId integer
----@param key string
----@return boolean true when a held instance was removed
-function BattleContext:removeEffect(combatantId, key)
-  assert(type(combatantId) == "number", "effect removal requires its combatant")
-  assert(type(key) == "string" and key ~= "", "effect removal requires its key")
+---@param combatantId integer combatant under roster projection
+---@return integer[] combatant identities sharing the participant roster, in roster order
+function BattleContext:rosterOf(combatantId)
+  assert(type(combatantId) == "number", "roster reads require their combatant")
   local combatant = BattleState.combatant(self._state, combatantId)
-  local volatiles = combatant.volatiles --[[@as table<integer, table<string, unknown>>]]
-  for index, held in ipairs(volatiles) do
-    if held.key == key then
-      table.remove(volatiles, index)
+  local participant = BattleState.participant(self._state, combatant.participant --[[@as integer]])
+  local roster = {}
+  for _, id in
+    ipairs(participant.roster --[[@as integer[] ]])
+  do
+    roster[#roster + 1] = id
+  end
+  return roster
+end
+
+---@return integer[] active combatant identities in battle order
+function BattleContext:activeCombatants()
+  local actives = {}
+  local order = self._state.combatantOrder --[[@as integer[] ]]
+  for _, id in ipairs(order) do
+    local combatant = BattleState.combatant(self._state, id)
+    if combatant.active ~= nil then
+      actives[#actives + 1] = id
+    end
+  end
+  return actives
+end
+
+---@param combatantId integer combatant owning the stage
+---@param stat string stage identity under the write
+---@param stage integer clamped stage value to install
+---@param cause table<string, unknown> semantic reason ordering the change
+---@return table<string, integer> before/after stages around the change
+function BattleContext:changeStage(combatantId, stat, stage, cause)
+  assert(type(combatantId) == "number", "stage writes require their combatant")
+  assert(type(cause) == "table", "stage writes carry their cause")
+  local known = false
+  for _, key in ipairs(STAGE_KEYS) do
+    if key == stat then
+      known = true
+    end
+  end
+  if not known then
+    error(BattleErrors.invalidState("stage writes name a native stage", { combatant = combatantId }))
+  end
+  if type(stage) ~= "number" or stage % 1 ~= 0 or stage < StatStages.MIN or stage > StatStages.MAX then
+    error(BattleErrors.invalidState("stage writes carry clamped integer stages", { combatant = combatantId }))
+  end
+  local combatant = BattleState.combatant(self._state, combatantId)
+  if combatant.active == nil then
+    error(BattleErrors.invalidState("stages change only on active combatants", { combatant = combatantId }))
+  end
+  local stages = combatant.stages --[[@as table<string, integer>]]
+  local before = stages[
+    stat --[[@as string]]
+  ] --[[@as integer]]
+  stages[
+    stat --[[@as string]]
+  ] = stage --[[@as integer]]
+  self:emit("stage", cause, { target = combatantId, stat = stat, before = before, after = stage })
+  return { before = before, after = stage }
+end
+
+---@param combatantId integer combatant receiving the condition
+---@param key string native major condition under application
+---@param state table<string, unknown> candidate typed state for the condition
+---@param cause table<string, unknown> semantic reason ordering the application
+---@return boolean true when the condition was applied
+function BattleContext:applyStatus(combatantId, key, state, cause)
+  assert(type(combatantId) == "number", "condition writes require their combatant")
+  assert(type(cause) == "table", "condition writes carry their cause")
+  local combatant = BattleState.combatant(self._state, combatantId)
+  if combatant.active == nil then
+    return false
+  end
+  if
+    combatant.hp --[[@as integer]]
+    <= 0
+  then
+    return false
+  end
+  local mon = combatant.mon --[[@as table<string, unknown>]]
+  local condition = mon.condition --[[@as table<string, unknown>]]
+  local effects = condition.effects --[[@as table<integer, unknown>]]
+  if #effects > 0 then
+    return false
+  end
+  Status.apply(mon --[[@as table<string, unknown>]], key, cause, state)
+  self:emit("status", cause, { target = combatantId, key = key })
+  return true
+end
+
+---@param combatantId integer combatant owning the condition
+---@param key string native major condition under the cure
+---@param cause table<string, unknown> semantic reason ordering the cure
+---@return boolean true when a condition was cured
+function BattleContext:cureStatus(combatantId, key, cause)
+  assert(type(combatantId) == "number", "condition cures require their combatant")
+  assert(type(cause) == "table", "condition cures carry their cause")
+  local combatant = BattleState.combatant(self._state, combatantId)
+  local cured = Status.cure(combatant.mon --[[@as table<string, unknown>]], key)
+  if cured then
+    self:emit("cured", cause, { target = combatantId, key = key })
+  end
+  return cured
+end
+
+---@param state table<string, unknown> live battle state holding the effect owner
+---@return table<string, unknown> live scoped-instance owner held by the state
+local function liveBag(state)
+  local bag = state.effectBag
+  if type(bag) ~= "table" or type(bag.add) ~= "function" then
+    error(BattleErrors.invalidState("typed effect writes require the live effect owner", {}))
+  end
+  return bag --[[@as table<string, unknown>]]
+end
+
+---@param definition table<string, unknown> effect definition carrying key, version, validator, timings, and lifecycle
+---@param scope table<string, unknown> owner scope the instance attaches to
+---@param source table<string, unknown> causal source attributed to the instance
+---@param state unknown candidate typed state validated by the definition
+---@return table<string, unknown> detached copy of the stored instance
+function BattleContext:addBattleEffect(definition, scope, source, state)
+  assert(type(definition) == "table", "typed writes require their definition")
+  assert(type(scope) == "table", "typed writes require their owner scope")
+  assert(type(source) == "table", "typed writes carry their causal source")
+  local bag = liveBag(self._state)
+  local add = bag.add --[[@as fun(self: table<string, unknown>, definition: table<string, unknown>, scope: table<string, unknown>, source: table<string, unknown>, state: unknown): table<string, unknown>]]
+  return add(bag, definition, scope, source, state)
+end
+
+---@param combatantId integer combatant identity owning the instance scope
+---@param key string definition identity under removal
+---@return boolean true when a held instance was removed
+function BattleContext:removeBattleEffect(combatantId, key)
+  assert(type(combatantId) == "number", "effect removal requires their combatant")
+  assert(type(key) == "string" and key ~= "", "effect removal requires its key")
+  local bag = liveBag(self._state)
+  local capture = bag.capture --[[@as fun(self: table<string, unknown>): table<integer, table<string, unknown>>]]
+  for _, record in ipairs(capture(bag)) do
+    local scope = record.scope --[[@as table<string, unknown>]]
+    if record.key == key and type(scope) == "table" and scope.combatant == combatantId then
+      local remove = bag.remove --[[@as fun(self: table<string, unknown>, id: integer): boolean]]
+      return remove(bag, record.id --[[@as integer]])
+    end
+  end
+  return false
+end
+
+---@param combatantId integer combatant identity owning the instance scope
+---@param key string definition identity under the query
+---@return boolean true when a live instance names the key on the combatant scope
+function BattleContext:hasBattleEffect(combatantId, key)
+  assert(type(combatantId) == "number", "effect queries require their combatant")
+  assert(type(key) == "string" and key ~= "", "effect queries require their key")
+  local bag = liveBag(self._state)
+  local capture = bag.capture --[[@as fun(self: table<string, unknown>): table<integer, table<string, unknown>>]]
+  for _, record in ipairs(capture(bag)) do
+    local scope = record.scope --[[@as table<string, unknown>]]
+    if record.key == key and type(scope) == "table" and scope.combatant == combatantId then
       return true
     end
   end

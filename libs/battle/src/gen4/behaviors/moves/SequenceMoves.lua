@@ -14,6 +14,7 @@ local BattleRng = require("libs.battle.src.gen4.BattleRng")
 local Critical = require("libs.battle.src.gen4.Critical")
 local Damage = require("libs.battle.src.gen4.Damage")
 local StagedTypeModifiers = require("libs.battle.src.gen4.behaviors.moves.StagedTypeModifiers")
+local NativeEffectHandlers = require("libs.battle.src.gen4.behaviors.effects.NativeEffectHandlers")
 
 ---@class SequenceMoves
 local SequenceMoves = {}
@@ -199,11 +200,58 @@ local function targetOf(entry)
   return record.combatant --[[@as integer]]
 end
 
+---@param state unknown candidate typed state under the inert recording
+---@return table<string, unknown> the versioned record
+local function validateInert(state)
+  if type(state) ~= "table" or state.version ~= 1 then
+    error("inert markers carry their schema version")
+  end
+  return { version = 1 }
+end
+
 ---@param ctx BattleContext mechanics context under execution
 ---@param combatant integer combatant receiving the volatile marker
 ---@param key string volatile identity under the marker
 local function markVolatile(ctx, combatant, key)
-  ctx:addEffect(combatant, { key = key, scope = "volatile" })
+  -- Unmigrated sequence markers record presence only: no dispatched
+  -- timing collects them (leave is never dispatched by any session
+  -- lifecycle), and leaving discards them with the rest of the
+  -- activation-local instances. Their mechanics are not yet implemented
+  -- and must never be mistaken for live behavior.
+  local entry = ctx:entryOf(combatant)
+  if entry.activation == nil then
+    error("sequence markers scope to a live entry")
+  end
+  ctx:addBattleEffect(
+    {
+      key = key,
+      stateVersion = 1,
+      validateState = validateInert,
+      timings = { { timing = "leave", handler = key, orderClass = "affliction" } },
+      lifecycle = { stacking = "replace", transfer = "clear", persistent = false },
+    },
+    { kind = "active", combatant = combatant, activation = entry.activation },
+    { kind = "move", combatant = combatant },
+    { version = 1 }
+  )
+end
+
+---@param ctx BattleContext mechanics context under execution
+---@param defender integer defender combatant receiving the live flinch
+local function markFlinch(ctx, defender)
+  -- Flinch resolves through its real native definition: the before-action
+  -- timing is never dispatched yet, so the instance records presence
+  -- today and gates correctly once interception lands.
+  local entry = ctx:entryOf(defender)
+  if entry.activation == nil then
+    error("flinch scopes to a live entry")
+  end
+  ctx:addBattleEffect(
+    NativeEffectHandlers.definitionFor("flinch"),
+    { kind = "active", combatant = defender, activation = entry.activation },
+    { kind = "move", combatant = defender },
+    { version = 1 }
+  )
 end
 
 ---@param ctx BattleContext mechanics context under execution
@@ -371,7 +419,7 @@ local function stepFakeOut(ctx, frame)
   local record = frame --[[@as table<string, unknown>]]
   local defender = targetOf((record.targets --[[@as table<integer, unknown>]])[1])
   strikeTarget(ctx, record, defender)
-  markVolatile(ctx, defender, "FLINCH")
+  markFlinch(ctx, defender)
   return { kind = "complete", result = "hit" }
 end
 

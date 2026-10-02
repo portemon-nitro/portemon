@@ -154,7 +154,11 @@ function T.transform_then_switch_discards_only_transient_copies()
     (reentry.active --[[@as table<string, unknown>]]).activation ~= firstActivation,
     "re-entry mints a fresh activation without copied residue"
   )
-  Assert.deepEqual(reentry.volatiles, {}, "re-entry carries no copied transient state")
+  Assert.deepEqual(
+    reentry.stages,
+    { attack = 0, defense = 0, speed = 0, specialAttack = 0, specialDefense = 0, accuracy = 0, evasion = 0 },
+    "re-entry carries no copied transient state"
+  )
 end
 
 -- Sketch is the intentional permanent change: the sketched move lands in

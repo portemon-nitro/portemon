@@ -94,18 +94,40 @@ local function targetOf(entry)
   return record.combatant --[[@as integer]]
 end
 
+---@param state unknown candidate typed state under the inert recording
+---@return table<string, unknown> the versioned record
+local function validateInert(state)
+  if type(state) ~= "table" or state.version ~= 1 then
+    error("inert markers carry their schema version")
+  end
+  return { version = 1 }
+end
+
 ---@param ctx BattleContext mechanics context under execution
 ---@param combatant integer combatant receiving the volatile marker
 ---@param key string volatile identity under the marker
----@param extra table<string, unknown>? additional marker facts under the record
-local function markVolatile(ctx, combatant, key, extra)
-  local effect = { key = key, scope = "volatile" }
-  if extra ~= nil then
-    for name, value in pairs(extra) do
-      effect[name] = value
-    end
+local function markVolatile(ctx, combatant, key)
+  -- Unmigrated identity markers record presence only: no dispatched
+  -- timing collects them (leave is never dispatched by any session
+  -- lifecycle), and leaving discards them with the rest of the
+  -- activation-local instances. Their mechanics are not yet implemented
+  -- and must never be mistaken for live behavior.
+  local entry = ctx:entryOf(combatant)
+  if entry.activation == nil then
+    error("identity markers scope to a live entry")
   end
-  ctx:addEffect(combatant, effect)
+  ctx:addBattleEffect(
+    {
+      key = key,
+      stateVersion = 1,
+      validateState = validateInert,
+      timings = { { timing = "leave", handler = key, orderClass = "affliction" } },
+      lifecycle = { stacking = "replace", transfer = "clear", persistent = false },
+    },
+    { kind = "active", combatant = combatant, activation = entry.activation },
+    { kind = "move", combatant = combatant },
+    { version = 1 }
+  )
 end
 
 ---@param ctx BattleContext mechanics context under execution
@@ -134,7 +156,7 @@ local function stepTransform(ctx, frame)
   assert(type(frame) == "table", "identity changes step from their move frame")
   local record = frame --[[@as table<string, unknown>]]
   local defender = targetOf((record.targets --[[@as table<integer, unknown>]])[1])
-  markVolatile(ctx, userOf(record), "TRANSFORM", { copiedFrom = defender })
+  markVolatile(ctx, userOf(record), "TRANSFORM")
   ctx:emit("transformed", causeFor(record), { target = userOf(record), copiedFrom = defender })
   return { kind = "complete", result = "hit" }
 end

@@ -72,6 +72,11 @@ function BattleSnapshot.capture(state)
   end
   local generator = state.rng
   assert(type(generator) == "table" and type(generator.capture) == "function", "live state carries its generator")
+  local effectRecords = {}
+  local bag = state.effectBag
+  if type(bag) == "table" and type(bag.capture) == "function" then
+    effectRecords = bag:capture(bag)
+  end
   local snapshot = {
     version = BattleState.VERSION,
     ruleset = state.ruleset,
@@ -98,6 +103,7 @@ function BattleSnapshot.capture(state)
     environment = copyValue(state.environment),
     formatState = copyValue(state.formatState),
     frames = copyValue(state.frames),
+    effects = effectRecords,
     pending = copyValue(state.pending),
     outbox = copyValue(state.outbox),
     status = state.status,

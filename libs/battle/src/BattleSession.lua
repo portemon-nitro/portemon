@@ -16,6 +16,7 @@ local BattleScenario = require("libs.battle.src.BattleScenario")
 local BattleSnapshot = require("libs.battle.src.BattleSnapshot")
 local BattleState = require("libs.battle.src.BattleState")
 local BattleView = require("libs.battle.src.BattleView")
+local EffectBag = require("libs.battle.src.EffectBag")
 local NativeFormats = require("libs.battle.src.gen4.formats.NativeFormats")
 local Lcrng = require("libs.mons.src.gen4.Lcrng")
 
@@ -239,6 +240,11 @@ function BattleSession.restore(snapshotData, content)
   checkContent(content, live.ruleset --[[@as string]])
   local admitted = admittedKindsFor(live.format --[[@as string]], content, nil)
   live.rng = Lcrng.restore(live.rng --[[@as table<string, integer>]])
+  -- Restored snapshots carry plain effect records; rebuild the live
+  -- owner from them exactly as construction does.
+  if type(live.effectBag) ~= "table" or type(live.effectBag.add) ~= "function" then
+    live.effectBag = EffectBag.new(live.effectBag --[[@as table<integer, unknown>?]])
+  end
   checkRestoredShape(live)
   return wrap(live, content, admitted)
 end
@@ -933,7 +939,6 @@ function BattleSession:applyJoin(staged)
         hp = hp,
         entryHp = hp,
         active = nil,
-        volatiles = {},
         materialized = {},
       }
       combatantOrder[#combatantOrder + 1] = id
