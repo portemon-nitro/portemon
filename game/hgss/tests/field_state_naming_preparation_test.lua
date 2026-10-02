@@ -35,7 +35,6 @@ local function stateFor(preparationResults)
     presentationResources = resources,
     actorPresentation = { sync = function(_) end },
   }, FieldState)
-  state._refreshDisplay = function(_) end
   state._advanceStarterPreparation = function(_) end
   state._syncStarterPresentationInput = function(_) end
   state._advanceEntryCover = function(_, _) end

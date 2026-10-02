@@ -428,9 +428,6 @@ function App.update(dt)
   if App.service then
     App.service:update()
   end
-  if App.provisioner then
-    App.provisioner:update()
-  end
   if App.state and App.state.update then
     App.state:update(dt)
   end
@@ -457,7 +454,6 @@ function App._syncDrawableSize()
 end
 
 function App.draw()
-  App._syncDrawableSize()
   if App.state and App.state.draw then
     App.state:draw()
     return
