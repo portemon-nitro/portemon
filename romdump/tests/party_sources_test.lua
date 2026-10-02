@@ -323,6 +323,17 @@ function T.message_templates_select_the_source_held_item_result()
   Assert.equal(template.index, 107, "the held-item result uses its source message")
 end
 
+function T.message_templates_select_source_held_item_question_and_swap_result()
+  local prompt = PartySources.messages.templates.switchHeldPrompt
+  local result = PartySources.messages.templates.switchHeldResult
+  Assert.notNil(prompt, "the producer selects the held-item replacement question")
+  Assert.equal(prompt.bank, 300, "the replacement question comes from the party message bank")
+  Assert.equal(prompt.index, 79, "the replacement question uses its source message")
+  Assert.notNil(result, "the producer selects the held-item swap result")
+  Assert.equal(result.bank, 300, "the swap result comes from the party message bank")
+  Assert.equal(result.index, 85, "the swap result uses its source message")
+end
+
 function T.lower_message_role_selects_the_loaded_font_palette()
   local role = PartySources.messageRole
   Assert.notNil(role, "the producer selects the lower-message font palette")

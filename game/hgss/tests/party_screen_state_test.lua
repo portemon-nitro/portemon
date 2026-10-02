@@ -130,7 +130,7 @@ local function sourceManifest()
   }
 end
 
-local function openParty(ready, failure, calls)
+local function openParty(ready, failure, calls, screenOptions)
   local preparations = 0
   local cancels = 0
   local service = fakeService(calls)
@@ -149,6 +149,9 @@ local function openParty(ready, failure, calls)
   local state = PartyScreenState.new({
     service = service,
     manifest = sourceManifest(),
+    context = screenOptions and screenOptions.context,
+    item = screenOptions and screenOptions.item,
+    initialFocus = screenOptions and screenOptions.initialFocus,
     measureDisplay = function()
       return measurement
     end,
@@ -169,6 +172,29 @@ local function openParty(ready, failure, calls)
         return cancels
       end,
     }
+end
+
+function T.give_resume_intent_waits_for_party_opening_handoff()
+  local calls = { swaps = {} }
+  local state = openParty(true, nil, calls, {
+    context = "give_resume",
+    item = { key = "SITRUS_BERRY", bagRevision = 3 },
+    initialFocus = 0,
+  })
+  Assert.isNil(state:takeIntent(), "construction emits no continuation intent")
+  for _ = 1, 15 do
+    state:updateFixed({})
+    state:status()
+    Assert.isNil(state:takeIntent(), "opening and settling never emit the continuation")
+  end
+  state:updateFixed({})
+  Assert.deepEqual(
+    state:takeIntent(),
+    { kind = "give", slot = 0, partyRevision = 1, bagRevision = 3, item = "SITRUS_BERRY" },
+    "the first interactive controller update emits the pending operation"
+  )
+  Assert.isNil(state:takeIntent(), "the wrapper forwards the intent once")
+  state:dispose()
 end
 
 -- Activation held while icons prepare must not select anything: the screen

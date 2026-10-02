@@ -1027,7 +1027,11 @@ local function lowerSegments(bank, bankId, index, role, allowFlow)
     elseif token.kind == "substitution" and token.control == NAME_SUBSTITUTION then
       flush()
       segments[#segments + 1] = { kind = "name" }
-    elseif role == "template:giveHeldItem" and token.kind == "substitution" and token.control == ITEM_SUBSTITUTION then
+    elseif
+      (role == "template:giveHeldItem" or role == "template:switchHeldPrompt" or role == "template:switchHeldResult")
+      and token.kind == "substitution"
+      and token.control == ITEM_SUBSTITUTION
+    then
       flush()
       segments[#segments + 1] = { kind = "item" }
     elseif token.kind == "substitution" and token.control == MOVE_SUBSTITUTION then

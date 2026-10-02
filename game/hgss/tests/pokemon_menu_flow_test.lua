@@ -338,7 +338,12 @@ local function driveUntil(rig, label, maxSteps, predicate)
     end
     rig.flow:updateFixed({})
   end
-  error("the flow never reaches " .. label, 0)
+  local status = rig.flow:status()
+  error(
+    "the flow never reaches " .. label .. "; page=" .. tostring(status.page)
+      .. "; child state=" .. tostring(status.child and status.child.state),
+    0
+  )
 end
 
 local function recordChildLifecycle(child)
@@ -502,31 +507,44 @@ local function occupyHolder(rig, slot, itemKey)
   Assert.equal(outcome.kind, "changed", "the setup give must publish onto the empty holder")
 end
 
--- The page transition never opens the replacement question itself: settle
--- the fresh confirmation child's reveal, then one empty tick lets it open
--- its prompt before the answer drives it. A settling tick after the answer
--- lets the fresh root child finish its icon preparation before callers
--- read it.
+-- The Party child owns the replacement text, prompt, and result. Bag
+-- callers return only after feedback; Party callers remain in that child.
 local function answerYes(rig)
   settleParty(rig)
-  drive(rig, {})
-  local status = drive(rig, { { type = "navigate", direction = "down" } })
-  Assert.equal(status.page, "party_give_confirm", "toggling the answer stays on the confirmation")
-  status = drive(rig, { { type = "confirm" } })
-  driveUntil(rig, "the answered confirmation", 30, function(current)
-    return current.page ~= "party_give_confirm"
+  drive(rig, { { type = "confirm" } }) -- acknowledge the generated replacement question
+  drive(rig, {}) -- arm the prompt after the message handoff
+  drive(rig, { { type = "navigate", direction = "down" } })
+  drive(rig, { { type = "confirm" } })
+  local status = driveUntil(rig, "the held-item result or safe Bag return", 30, function(current)
+    return current.page == "bag_browse" or (current.child ~= nil and current.child.state == "message")
   end)
-  return drive(rig, {})
+  if status.page == "bag_browse" then
+    return status
+  end
+  status = drive(rig, { { type = "confirm" } })
+  if status.page == "party_browse" then
+    return driveUntil(rig, "ordinary Party browse", 10, function(current)
+      return current.child ~= nil and current.child.state == "browse"
+    end)
+  end
+  return driveUntil(rig, "the originating Bag", 30, function(current)
+    return current.page == "bag_browse"
+  end)
 end
 
 local function answerNo(rig)
   settleParty(rig)
-  drive(rig, {})
-  drive(rig, { { type = "cancel" } })
-  driveUntil(rig, "the declined confirmation", 30, function(current)
-    return current.page ~= "party_give_confirm"
+  drive(rig, { { type = "confirm" } }) -- acknowledge the generated replacement question
+  drive(rig, {}) -- arm the prompt after the message handoff
+  local status = drive(rig, { { type = "cancel" } })
+  if status.page == "party_browse" then
+    return driveUntil(rig, "ordinary Party browse", 10, function(current)
+      return current.child ~= nil and current.child.state == "browse"
+    end)
+  end
+  return driveUntil(rig, "the originating Bag", 30, function(current)
+    return current.page == "bag_browse"
   end)
-  return drive(rig, {})
 end
 
 local function injureLead(rig, amount)
@@ -1005,8 +1023,10 @@ function T.tests.bag_give_to_an_occupied_holder_asks_before_any_change(context)
     Assert.equal(status.page, "party_give_target", "choosing Give opens the party target page")
     status = settleParty(rig)
     status = drive(rig, { { type = "confirm" } })
-    Assert.equal(status.page, "party_give_confirm", "targeting an occupied holder asks instead of publishing")
-    status = settleParty(rig)
+    Assert.equal(status.page, "party_give_target", "the target child owns the replacement question")
+    Assert.equal(status.child.state, "message", "source msg79 appears before Yes/No")
+    Assert.equal(status.child.message.templateKey, "switchHeldPrompt", "the held-item question uses its generated template")
+    status = drive(rig, { { type = "confirm" } })
     status = drive(rig, {})
     Assert.equal(
       status.child.prompt and status.child.prompt.selected,
@@ -1031,7 +1051,7 @@ function T.tests.bag_give_to_an_occupied_holder_asks_before_any_change(context)
     Assert.equal(status.page, "party_give_target", "the declined Give can be chosen again")
     status = settleParty(rig)
     status = drive(rig, { { type = "confirm" } })
-    Assert.equal(status.page, "party_give_confirm", "the retry asks again")
+    Assert.equal(status.page, "party_give_target", "the retry asks in the same target child")
     status = answerYes(rig)
     Assert.equal(status.page, "bag_browse", "accepting returns to the originating bag")
     Assert.equal(rig.mons:partyMon(0).heldItem, "SITRUS_BERRY", "accepting exchanges the held item")
@@ -1074,7 +1094,7 @@ function T.tests.party_give_decline_then_retry_confirms_once(context)
       "the picker opens on the stocked replacement"
     )
     status = drive(rig, { { type = "confirm" } })
-    Assert.equal(status.page, "party_give_confirm", "picking for an occupied holder asks instead of publishing")
+    Assert.equal(status.page, "party_browse", "the continuation Party child owns the replacement question")
     Assert.equal(rig.mons:partyMon(0).heldItem, "CHERI_BERRY", "asking publishes nothing yet")
 
     status = answerNo(rig)
@@ -1091,7 +1111,7 @@ function T.tests.party_give_decline_then_retry_confirms_once(context)
     status = drivePartyMenu(rig, "give")
     Assert.equal(status.page, "bag_pick_held", "the declined Give can be chosen again")
     status = drive(rig, { { type = "confirm" } })
-    Assert.equal(status.page, "party_give_confirm", "the retry asks again")
+    Assert.equal(status.page, "party_browse", "the retry asks in the continuation Party child")
     status = answerYes(rig)
     Assert.equal(status.page, "party_browse", "accepting returns to the originating party")
     Assert.equal(partyChild(status).cursorNode, 0, "accepting resumes on the exchanged mon")
@@ -1102,6 +1122,59 @@ function T.tests.party_give_decline_then_retry_confirms_once(context)
     Assert.isTrue(rig.bag:revision() == bagRevision + 1, "accepting publishes exactly one bag revision")
     Assert.isNil(rig.flow:takeResult(), "accepting reports no terminal result")
     rig.flow:dispose()
+  end
+end
+
+function T.tests.failed_party_give_continuation_keeps_picker_and_domains(context)
+  local versions = readyVersions()
+  if #versions == 0 then
+    if context ~= nil and type(context.hasCapability) == "function" then
+      context:skip("requires rom_dump and prepared assets")
+    end
+    error("menu flow needs a ready versioned cache", 0)
+  end
+  for _, versionId in ipairs(versions) do
+    local rig = liveComposition(versionId, "party")
+    Assert.isTrue(rig.bag:add("SITRUS_BERRY", 1), "the fixture stocks a held item")
+    Assert.isTrue(rig.bag:add("CHERI_BERRY", 1), "a second row makes cursor adoption observable")
+    rig.cursor:setPocket("berries")
+    rig.cursor:setPosition("berries", 0)
+    local partyRevision = rig.mons:partyRevision()
+    local bagRevision = rig.bag:revision()
+    local fieldPosition = rig.cursor:position("berries")
+
+    local status = drive(rig, {})
+    status = settleParty(rig)
+    status = drive(rig, { { type = "confirm" } })
+    status = drivePartyMenu(rig, "item")
+    status = drivePartyMenu(rig, "give")
+    Assert.equal(status.page, "bag_pick_held", "Party Give opens its temporary picker")
+    status = drive(rig, { { type = "navigate", direction = "right" } })
+    local pickerPosition = rig.flow._picker:position("berries")
+    Assert.isTrue(pickerPosition ~= fieldPosition, "the temporary picker has moved independently")
+    local outgoing = rig.flow._child
+    local lifecycle = recordChildLifecycle(outgoing)
+    local moduleName = "game.hgss.src.field.PartyScreenState"
+    local partyState = assert(package.loaded[moduleName], "the flow holds the Party screen state")
+    local realNew = partyState.new
+    partyState.new = function(_)
+      error("injected continuation construction fault", 0)
+    end
+    local ok, err = pcall(function()
+      rig.flow:updateFixed({ { type = "confirm" } })
+    end)
+    partyState.new = realNew
+    Assert.isFalse(ok, "the staged Party construction failure reaches its owner")
+    Assert.notNil(tostring(err):find("injected continuation construction fault", 1, true))
+    Assert.equal(rig.flow._child, outgoing, "the live picker remains published")
+    Assert.equal(rig.flow:status().page, "bag_pick_held", "the picker remains the active page")
+    Assert.equal(lifecycle.disposals, 0, "the picker stays alive after staging failure")
+    Assert.equal(rig.mons:partyRevision(), partyRevision, "staging failure publishes no Party revision")
+    Assert.equal(rig.bag:revision(), bagRevision, "staging failure publishes no Bag revision")
+    Assert.equal(rig.mons:partyMon(0).heldItem, "NONE", "staging failure applies no held item")
+    Assert.equal(rig.cursor:position("berries"), fieldPosition, "staging failure does not adopt picker movement")
+    rig.flow:dispose()
+    Assert.equal(lifecycle.disposals, 1, "disposing the surviving picker releases it once")
   end
 end
 
@@ -1135,7 +1208,16 @@ function T.tests.same_item_pick_keeps_the_picker_usable(context)
       "SITRUS_BERRY",
       "the picker focuses the already-held item"
     )
+    local preview = rig.actions.preview
+    local previewKind
+    rig.actions.preview = function(actions, request)
+      local decision = preview(actions, request)
+      previewKind = decision.kind
+      return decision
+    end
     status = drive(rig, { { type = "confirm" } })
+    rig.actions.preview = preview
+    Assert.equal(previewKind, "no_effect", "the action owner classifies a same-item pick without committing")
     Assert.equal(status.page, "bag_pick_held", "a no-op pick holds the picker open")
     Assert.equal(rig.mons:partyMon(0).heldItem, "SITRUS_BERRY", "a no-op pick mutates nothing")
     Assert.equal(rig.bag:quantity("SITRUS_BERRY"), 1, "a no-op pick consumes nothing")
@@ -1149,7 +1231,7 @@ function T.tests.same_item_pick_keeps_the_picker_usable(context)
       "the held picker still takes input after the no-op"
     )
     status = drive(rig, { { type = "confirm" } })
-    Assert.equal(status.page, "party_give_confirm", "the retryable picker still asks for a real replacement")
+    Assert.equal(status.page, "party_browse", "the continuation Party child owns the real replacement question")
     status = answerNo(rig)
     Assert.equal(status.page, "party_browse", "declining returns to the originating party")
     Assert.equal(rig.mons:partyMon(0).heldItem, "SITRUS_BERRY", "the declined retry mutates nothing")
@@ -1188,7 +1270,7 @@ function T.tests.raced_give_unwinds_without_a_partial_change(context)
     Assert.equal(status.page, "party_give_target", "choosing Give opens the party target page")
     status = settleParty(rig)
     status = drive(rig, { { type = "confirm" } })
-    Assert.equal(status.page, "party_give_confirm", "targeting an occupied holder asks first")
+    Assert.equal(status.page, "party_give_target", "the target child asks before publishing")
     Assert.isTrue(rig.bag:add("CHERI_BERRY", 998), "the race fills the return stack")
     local bagRevision = rig.bag:revision()
     status = answerYes(rig)
@@ -1223,7 +1305,7 @@ function T.tests.raced_give_unwinds_without_a_partial_change(context)
     status = driveToAction(rig, "give")
     status = settleParty(rig)
     status = drive(rig, { { type = "confirm" } })
-    Assert.equal(status.page, "party_give_confirm", "the freed pocket asks again")
+    Assert.equal(status.page, "party_give_target", "the freed pocket asks in the same target child")
     Assert.isTrue(rig.bag:add("POTION", 1), "the second race moves the bag revision")
     bagRevision = rig.bag:revision()
     status = answerYes(rig)

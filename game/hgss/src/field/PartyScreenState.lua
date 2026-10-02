@@ -22,7 +22,7 @@ local PartyScreenModel = require("libs.hgss.src.ui.PartyScreenModel")
 ---@field _policy table<string, unknown> the injected action policy
 ---@field _promptShape table<string, unknown> the yes/no prompt shape for confirmations
 ---@field _context string the named party context for this open
----@field _item { key: string, bagRevision: integer }? the pending item for target contexts
+---@field _item { key: string, bagRevision: integer }? the pending item for give continuation and target contexts
 ---@field _measureDisplay fun(): DisplayMeasurement the live display facts
 ---@field _prepareIcons fun(iconKeys: string[]): boolean, string?
 ---@field _cancelIconPreparation fun()
@@ -97,10 +97,10 @@ end
 ---@field actionPolicy table<string, unknown>? the action policy (defaults to the production browse policy)
 ---@field uiManifest table<string, unknown>? the field-UI manifest carrying the yes/no prompt shape
 ---@field context string? the named party context (defaults to browse)
----@field item { key: string, bagRevision: integer }? the pending item for target contexts
+---@field item { key: string, bagRevision: integer }? the pending item for give continuation and target contexts
 ---@field measureDisplay fun(): DisplayMeasurement the current display facts
 ---@field initialFocus integer|"cancel"? the opening cursor (defaults to the nearest selectable node)
----@field initialMessage { templateKey: "giveHeldItem", displayName: string, itemName: string }? Party-owned held-item result on entry
+---@field initialMessage { templateKey: "giveHeldItem", displayName: string, itemNames: string[] }? Party-owned held-item result on entry
 ---@field overrides table<string, unknown>? per-case function overrides for this application
 ---@field prepareIcons fun(iconKeys: string[]): boolean, string? required icon preparation collaborator
 ---@field cancelIconPreparation fun() required preparation release collaborator
@@ -138,7 +138,7 @@ function PartyScreenState.new(opts)
       or context == "pick"
       or context == "item_target"
       or context == "give_target"
-      or context == "give_confirm",
+      or context == "give_resume",
     "the party screen requires a named context"
   )
   local self = setmetatable({

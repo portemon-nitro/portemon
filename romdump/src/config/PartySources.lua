@@ -461,6 +461,8 @@ PartySources.messages = {
     forgetMove = { bank = 300, index = 60 },
     noEffect = { bank = 300, index = 102 },
     takeNoItem = { bank = 300, index = 82 },
+    switchHeldPrompt = { bank = 300, index = 79 },
+    switchHeldResult = { bank = 300, index = 85 },
     giveHeldItem = { bank = 300, index = 107 },
     fieldMoveConfirm = { bank = 300, index = 139 },
     levelTotal = { bank = 300, index = 167 },

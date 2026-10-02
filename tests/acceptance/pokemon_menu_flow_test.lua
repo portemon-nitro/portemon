@@ -156,7 +156,12 @@ local function driveUntil(flow, label, maxSteps, predicate)
     end
     flow:updateFixed({})
   end
-  error("the flow never reaches " .. label, 0)
+  local status = flow:status()
+  error(
+    "the flow never reaches " .. label .. "; page=" .. tostring(status.page)
+      .. "; child state=" .. tostring(status.child and status.child.state),
+    0
+  )
 end
 
 local function bagChild(status)
@@ -417,25 +422,79 @@ function T.tests.party_give_round_trip_preserves_target_identity()
     end)
     Assert.equal(status.page, "bag_pick_held", "reopening Give must return to the picker")
     status = gotoPocket(flow, "medicine")
-    status = drive(flow, { { type = "confirm" } })
-    status = driveUntil(flow, "the replacement question", 30, function(current)
-      return current.page == "party_give_confirm"
+    local bagRevision = bag:revision()
+    status = flowStatus(flow)
+    flow:updateFixed({ { type = "confirm" } })
+    status = flowStatus(flow)
+    Assert.equal(mons:partyMon(0).heldItem, "GREAT_BALL", "the occupied holder waits for a Party answer")
+    Assert.equal(mons:partyRevision(), revisionBefore, "asking to replace an item publishes no party revision")
+    Assert.equal(bag:revision(), bagRevision, "asking to replace an item publishes no bag revision")
+    status = driveUntil(flow, "the source replacement message", 30, function(current)
+      return current.child ~= nil and current.child.state == "message"
     end)
-    Assert.equal(status.page, "party_give_confirm", "picking for an occupied holder must ask before publishing")
+    Assert.equal(status.child.message.templateKey, "switchHeldPrompt", "the generated replacement text precedes Yes/No")
+    Assert.equal(
+      status.page,
+      "party_browse",
+      "the replacement question stays in the active Party application; got " .. tostring(status.page)
+    )
+    local questionChild = flow._child
+    status = drive(flow, { { type = "confirm" } })
+    status = drive(flow, {})
+    Assert.notNil(partyChild(status).prompt, "the active Party child owns the replacement question")
+    status = drive(flow, {})
+    status = drive(flow, { { type = "cancel" } })
+    status = driveUntil(flow, "the declined Party browse state", 30, function(current)
+      return current.page == "party_browse" and current.child ~= nil and current.child.state == "browse"
+    end)
+    Assert.equal(flow._child, questionChild, "declining stays in the same Party child")
+    Assert.equal(mons:partyMon(0).heldItem, "GREAT_BALL", "declining preserves the original held item")
+    Assert.equal(mons:partyRevision(), revisionBefore, "declining publishes no party revision")
+    Assert.equal(bag:revision(), bagRevision, "declining publishes no bag revision")
+
+    status = choosePartySlot(flow, 0)
+    status = choosePartyMenu(flow, "item")
+    status = choosePartyMenu(flow, "give")
+    status = driveUntil(flow, "the held-item picker", 30, function(current)
+      return current.page == "bag_pick_held"
+    end)
+    status = gotoPocket(flow, "medicine")
+    status = drive(flow, { { type = "confirm" } })
+    status = driveUntil(flow, "the second source replacement message", 30, function(current)
+      return current.child ~= nil and current.child.state == "message"
+    end)
+    Assert.equal(status.child.message.templateKey, "switchHeldPrompt", "the retry repeats the source question text")
+    status = drive(flow, { { type = "confirm" } })
+    status = drive(flow, {})
+    Assert.equal(status.child.state, "confirm", "the prompt follows the source replacement text")
+    Assert.equal(
+      status.page,
+      "party_browse",
+      "the second question stays in the active Party application; got " .. tostring(status.page)
+    )
+    questionChild = flow._child
     status = settleParty(flow)
     status = drive(flow, {})
-    status = drive(flow, { { type = "navigate", direction = "down" } })
+    status = drive(flow, { { type = "navigate", direction = "up" } })
     status = drive(flow, { { type = "confirm" } })
-    status = driveUntil(flow, "the party browse page", 30, function(current)
-      return current.page == "party_browse"
+    for _ = 1, 8 do
+      status = drive(flow, {})
+    end
+    status = driveUntil(flow, "the held-item exchange message", 30, function(current)
+      return current.page == "party_browse" and current.child ~= nil and current.child.state == "message"
     end)
-    status = settleParty(flow)
-    Assert.equal(partyChild(status).state, "message")
+    Assert.equal(flow._child, questionChild, "accepting stays in the same Party child")
     Assert.equal(cursor:currentPocket(), "medicine", "the pick writes picker navigation back")
-    Assert.equal(mons:partyMon(0).heldItem, "POTION", "accepting must exchange onto slot zero")
+    Assert.equal(mons:partyMon(0).heldItem, "POTION", "accepting exchanges onto slot zero")
     Assert.isTrue(mons:partyRevision() == revisionBefore + 1, "exactly one revision publishes the exchange")
     Assert.equal(bag:quantity("POTION"), 2, "the picked stock decreases once")
     Assert.equal(bag:quantity("GREAT_BALL"), 1, "the displaced item returns to the bag once")
+    status = drive(flow, { { type = "confirm" } })
+    status = driveUntil(flow, "ordinary Party browse after acknowledgement", 30, function(current)
+      return current.page == "party_browse" and current.child ~= nil and current.child.state == "browse"
+    end)
+    Assert.equal(flow._child, questionChild, "acknowledging the result keeps the same Party child")
+    Assert.equal(partyChild(status).cursorNode, 0, "the Party child returns to the original slot")
     Assert.isNil(flow:takeResult(), "returning to the root reports no terminal result")
     flow:dispose()
   end)
@@ -468,14 +527,124 @@ function T.tests.party_give_from_an_empty_holder_resumes_its_result()
       "GREAT_BALL",
       "the picker focuses the stocked item"
     )
-    status = drive(flow, { { type = "confirm" } })
+    local bagRevision = bag:revision()
+    flow:updateFixed({ { type = "confirm" } })
+    status = flowStatus(flow)
+    Assert.equal(mons:partyMon(0).heldItem, "NONE", "the empty holder is unchanged while the Bag picker is active")
+    Assert.equal(mons:partyRevision(), revisionBefore, "the Bag picker cannot publish a party revision")
+    Assert.equal(bag:quantity("GREAT_BALL"), 1, "the Bag picker retains its selected item until Party resumes")
+    Assert.equal(bag:revision(), bagRevision, "the Bag picker cannot publish a bag revision")
     status = driveUntil(flow, "the resumed party result", 30, function(current)
       return current.page == "party_browse" and current.child ~= nil and current.child.state == "message"
     end)
 
+    local continuationChild = flow._child
     Assert.equal(mons:partyMon(0).heldItem, "GREAT_BALL", "the selected item applies to the originating slot")
     Assert.isTrue(mons:partyRevision() == revisionBefore + 1, "the resumed operation publishes once")
     Assert.equal(partyChild(status).cursorNode, 0, "the resumed operation keeps focus on the originating slot")
+    status = drive(flow, { { type = "confirm" } })
+    status = driveUntil(flow, "ordinary Party browse after result acknowledgement", 30, function(current)
+      return current.page == "party_browse" and current.child ~= nil and current.child.state == "browse"
+    end)
+    Assert.equal(flow._child, continuationChild, "the result returns to browse in the continuation child")
+    flow:dispose()
+  end)
+end
+
+function T.tests.bag_give_resolves_inside_party_before_returning_to_bag()
+  withGame(function(game)
+    givePair(game)
+    local mons = assert(game.runtime.monService, "field runtime owns the live mon service")
+    local bag = assert(game.runtime.bagService, "field runtime owns the live bag service")
+    Assert.isTrue(bag:add("GREAT_BALL", 1), "the occupied holder fixture must start with an item")
+    Assert.isTrue(bag:add("POTION", 2), "the Bag must stock the replacement item")
+    local setup = PartyActions.new({ mons = mons, bag = bag }):commit({
+      kind = "give",
+      slot = 0,
+      partyRevision = mons:partyRevision(),
+      bagRevision = bag:revision(),
+      item = "GREAT_BALL",
+      confirmed = true,
+    })
+    Assert.equal(setup.kind, "changed", "the lead must own the displaced item")
+    local cursor = assert(game.runtime.bagCursor, "field runtime owns the live bag cursor")
+    cursor:setPocket("medicine")
+    cursor:setPosition("medicine", 0)
+    cursor:setScroll("medicine", 0)
+    local revisionBefore = mons:partyRevision()
+    local bagRevision = bag:revision()
+
+    local flow = openFlow(game, "bag")
+    local status = driveUntil(flow, "the bag browse page", 30, function(current)
+      return current.page == "bag_browse"
+    end)
+    status = chooseBagAction(flow, "give")
+    Assert.equal(status.page, "party_give_target", "Bag Give opens Party target selection")
+    status = settleParty(flow)
+    status = choosePartySlot(flow, 0)
+    status = driveUntil(flow, "the source replacement message", 30, function(current)
+      return current.child ~= nil and current.child.state == "message"
+    end)
+    Assert.equal(status.child.message.templateKey, "switchHeldPrompt", "Bag Give shows source text before Yes/No")
+    Assert.equal(
+      status.page,
+      "party_give_target",
+      "the replacement question stays in the target Party application; got " .. tostring(status.page)
+    )
+    local questionChild = flow._child
+    status = drive(flow, { { type = "confirm" } })
+    status = drive(flow, {})
+    Assert.notNil(partyChild(status).prompt, "the target Party child owns the replacement question")
+    Assert.equal(mons:partyMon(0).heldItem, "GREAT_BALL", "the question preserves the current held item")
+    Assert.equal(mons:partyRevision(), revisionBefore, "the question publishes no party revision")
+    Assert.equal(bag:revision(), bagRevision, "the question publishes no bag revision")
+
+    status = drive(flow, {})
+    status = drive(flow, { { type = "cancel" } })
+    status = driveUntil(flow, "the originating Bag after decline", 30, function(current)
+      return current.page == "bag_browse"
+    end)
+    Assert.equal(mons:partyMon(0).heldItem, "GREAT_BALL", "declining preserves the held item")
+    Assert.equal(mons:partyRevision(), revisionBefore, "declining publishes no party revision")
+    Assert.equal(bag:revision(), bagRevision, "declining publishes no bag revision")
+
+    status = chooseBagAction(flow, "give")
+    status = settleParty(flow)
+    status = choosePartySlot(flow, 0)
+    status = driveUntil(flow, "the next source replacement message", 30, function(current)
+      return current.child ~= nil and current.child.state == "message"
+    end)
+    Assert.equal(status.child.message.templateKey, "switchHeldPrompt", "the second Bag Give repeats source text")
+    status = drive(flow, { { type = "confirm" } })
+    status = drive(flow, {})
+    Assert.equal(status.child.state, "confirm", "the Bag prompt follows its source replacement text")
+    Assert.equal(
+      status.page,
+      "party_give_target",
+      "the second replacement question stays in the target Party application; got " .. tostring(status.page)
+    )
+    questionChild = flow._child
+    status = settleParty(flow)
+    status = drive(flow, {})
+    status = drive(flow, { { type = "navigate", direction = "up" } })
+    status = drive(flow, { { type = "confirm" } })
+    for _ = 1, 8 do
+      status = drive(flow, {})
+    end
+    status = driveUntil(flow, "the exchange result message", 30, function(current)
+      return current.page == "party_give_target" and current.child ~= nil and current.child.state == "message"
+    end)
+    Assert.equal(flow._child, questionChild, "the exchange result stays in the target Party child")
+    Assert.equal(mons:partyMon(0).heldItem, "POTION", "accepting exchanges the held item")
+    Assert.equal(mons:partyRevision(), revisionBefore + 1, "the exchange publishes once")
+    Assert.equal(bag:quantity("POTION"), 1, "the replacement stock decreases once")
+    Assert.equal(bag:quantity("GREAT_BALL"), 1, "the displaced item returns once")
+    status = drive(flow, { { type = "confirm" } })
+    status = driveUntil(flow, "the originating Bag after result acknowledgement", 30, function(current)
+      return current.page == "bag_browse"
+    end)
+    Assert.equal(bagChild(status).pocket, "medicine", "the return restores the Bag caller")
+    Assert.equal(mons:partyRevision(), revisionBefore + 1, "the return does not repeat the exchange")
     flow:dispose()
   end)
 end

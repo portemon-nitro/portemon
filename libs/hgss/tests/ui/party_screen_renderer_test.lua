@@ -2123,6 +2123,15 @@ function T.generated_action_descriptors_render_in_the_action_window()
       { kind = "text", value = " to hold." },
     },
   }
+  manifest.text.templates.switchHeldResult = {
+    segments = {
+      { kind = "name" },
+      { kind = "text", value = " held " },
+      { kind = "item" },
+      { kind = "text", value = " for " },
+      { kind = "item" },
+    },
+  }
   local graphics = fakeGraphics()
   local texts = {}
   local window = recordingWindow({})
@@ -2167,11 +2176,38 @@ function T.generated_action_descriptors_render_in_the_action_window()
   local give = presentation({
     cursorNode = 0,
     state = "message",
-    message = { templateKey = "giveHeldItem", displayName = "LEAD", itemName = "GREAT BALL" },
+    message = { templateKey = "giveHeldItem", displayName = "LEAD", itemNames = { "GREAT BALL" } },
   })
   give.view.slots[1] = occupiedSlot(0)
   renderer:draw(give, resolved, frameIcons({}))
   Assert.isTrue(inside("GREAT BALL"), "the source item substitution expands in the action window")
+  local swap = presentation({
+    cursorNode = 0,
+    state = "message",
+    message = {
+      templateKey = "switchHeldResult",
+      displayName = "LEAD",
+      itemNames = { "CHERI BERRY", "SITRUS BERRY" },
+    },
+  })
+  swap.view.slots[1] = occupiedSlot(0)
+  renderer:draw(swap, resolved, frameIcons({}))
+  local itemCalls = {}
+  for _, call in ipairs(texts) do
+    if call.kind == "palette" and (call.value == "CHERI BERRY" or call.value == "SITRUS BERRY") then
+      itemCalls[#itemCalls + 1] = call.value
+    end
+  end
+  Assert.deepEqual(itemCalls, { "CHERI BERRY", "SITRUS BERRY" }, "old and new held items expand in source order")
+  local missing = presentation({
+    cursorNode = 0,
+    state = "message",
+    message = { templateKey = "switchHeldResult", displayName = "LEAD", itemNames = { "CHERI BERRY" } },
+  })
+  missing.view.slots[1] = occupiedSlot(0)
+  Assert.throws(function()
+    renderer:draw(missing, resolved, frameIcons({}))
+  end, "each item segment has a matching item name")
   local bad = presentation({ cursorNode = 0, state = "message", message = { templateKey = "noSuchTemplate" } })
   bad.view.slots[1] = occupiedSlot(0)
   local err = Assert.throws(function()

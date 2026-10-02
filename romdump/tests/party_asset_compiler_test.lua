@@ -223,6 +223,25 @@ function T.compiled_presentation_carries_semantic_roles_switch_chrome_and_take_t
     { kind = "text", value = " to hold." },
     { kind = "lineBreak", flow = "prompt" },
   }, "the source held-item result preserves its NAME and ITEM substitutions")
+  local prompt = bundle.manifest.text.templates.switchHeldPrompt
+  local result = bundle.manifest.text.templates.switchHeldResult
+  local function segmentKinds(template)
+    local kinds = {}
+    for _, segment in ipairs(template.segments) do
+      kinds[#kinds + 1] = segment.kind
+    end
+    return kinds
+  end
+  Assert.deepEqual(
+    segmentKinds(prompt),
+    { "name", "text", "lineBreak", "item", "text", "lineBreak", "text", "lineBreak", "text" },
+    "the replacement question lowers its mon and old-item bindings in source order"
+  )
+  Assert.deepEqual(
+    segmentKinds(result),
+    { "text", "item", "text", "lineBreak", "text", "item", "text", "lineBreak" },
+    "the swap result lowers old then new item bindings around its source text"
+  )
 end
 
 -- Panel nickname/gender text prints over existing panel chrome, so the
