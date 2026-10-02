@@ -139,6 +139,91 @@ local function addNincadaLine(root)
   abilities.SPEED_BOOST = { nativeId = 3, name = "Speed Boost", description = "Speed Boost" }
 end
 
+-- Exception species for the native eligibility gates: one baby species
+-- with a plain form and a marked form carrying identical matching slots,
+-- plus one trade-evolving species with level, trade, and stone slots.
+---@param root table<string, unknown> mutable synthetic mon asset root
+local function addExceptionSpecies(root)
+  local species = root.species --[[@as table<string, table<string, unknown>>]]
+  local function stats(hp, attack, defense, speed, specialAttack, specialDefense)
+    return {
+      hp = hp,
+      attack = attack,
+      defense = defense,
+      speed = speed,
+      specialAttack = specialAttack,
+      specialDefense = specialDefense,
+    }
+  end
+  local function form(evolutions)
+    return {
+      baseStats = stats(20, 40, 15, 60, 35, 35),
+      types = { "electric" },
+      abilities = { "STATIC" },
+      tmhm = {},
+      levelUpMoves = {
+        { level = 1, move = "TACKLE" },
+        { level = 1, move = "GROWL" },
+      },
+      evolutions = evolutions,
+      icon = "PICHU/f0",
+      portrait = "PICHU/f0/male/plain",
+    }
+  end
+  local held = {
+    common = { item = "NONE", nativeId = 0 },
+    rare = { item = "NONE", nativeId = 0 },
+  }
+  local babySlots = {
+    { method = "level", level = 10, target = "TOTODILE", form = 0 },
+    { method = "stone", item = "FIRE_STONE", target = "EEVEE", form = 0 },
+    { method = "trade", target = "SHEDINJA", form = 0 },
+  }
+  species.PICHU = {
+    nativeId = 172,
+    name = "PICHU",
+    growthCurve = "medium_fast",
+    baseFriendship = 70,
+    genderRatio = 31,
+    eggCycles = 10,
+    eggGroups = { "undiscovered", "undiscovered" },
+    catchRate = 190,
+    baseExpYield = 42,
+    evYield = stats(0, 0, 0, 1, 0, 0),
+    heldItems = copy(held),
+    color = 3,
+    flip = false,
+    forms = {
+      [0] = form(copy(babySlots)),
+      [1] = form(copy(babySlots)),
+    },
+  }
+  species.KADABRA = {
+    nativeId = 64,
+    name = "KADABRA",
+    growthCurve = "medium_slow",
+    baseFriendship = 70,
+    genderRatio = 31,
+    eggCycles = 20,
+    eggGroups = { "human_like", "human_like" },
+    catchRate = 100,
+    baseExpYield = 145,
+    evYield = stats(0, 0, 0, 0, 2, 0),
+    heldItems = copy(held),
+    color = 3,
+    flip = false,
+    forms = {
+      [0] = form({
+        { method = "level", level = 10, target = "TOTODILE", form = 0 },
+        { method = "stone", item = "FIRE_STONE", target = "EEVEE", form = 0 },
+        { method = "trade", target = "SHEDINJA", form = 0 },
+      }),
+    },
+  }
+  local abilities = root.abilities --[[@as table<string, table<string, unknown>>]]
+  abilities.STATIC = { nativeId = 9, name = "Static", description = "Static" }
+end
+
 ---@param mutate fun(root: table<string, unknown>)|nil slot and species edits for one vector
 ---@return table mon catalog carrying exactly the vector slots
 local function buildCatalog(mutate)
@@ -816,6 +901,90 @@ function T.party_species_slots_read_the_whole_party()
   local found = Evolution.check(mon, vectorContext({ party = { mon } }), catalog)
   Assert.notNil(found, "the membership check reads every party member")
   Assert.equal(found.target, "TOTODILE", "the party slot answers")
+end
+
+-- The marked baby form never evolves even with matching slots in every
+-- trigger family, while the plain form of the same species follows its
+-- own identical slots.
+function T.marked_baby_forms_never_evolve_while_plain_forms_follow_slots()
+  local Evolution = requirePresent("libs.mons.src.gen4.Evolution", "pure native evolution planning owns eligibility")
+  local catalog = buildCatalog(addExceptionSpecies)
+  local marked = pinLevel(makeMon(catalog, 701, { species = "PICHU", form = 1 }), catalog, 12)
+  Assert.isTrue(
+    Evolution.check(marked, vectorContext(), catalog) == nil,
+    "the marked form ignores its matching level slot"
+  )
+  Assert.isTrue(
+    Evolution.check(marked, vectorContext({ trigger = { kind = "item", item = "FIRE_STONE" } }), catalog) == nil,
+    "the marked form ignores its matching stone slot"
+  )
+  Assert.isTrue(
+    Evolution.check(marked, vectorContext({ trigger = { kind = "trade" } }), catalog) == nil,
+    "the marked form ignores its matching trade slot"
+  )
+  Assert.isTrue(
+    Evolution.plan(marked, vectorContext(), catalog) == nil,
+    "the marked form stages no plan"
+  )
+  local plain = pinLevel(makeMon(catalog, 703, { species = "PICHU", form = 0 }), catalog, 12)
+  local grown = Evolution.check(plain, vectorContext(), catalog)
+  Assert.notNil(grown, "the plain form matches its level slot")
+  Assert.equal(grown.target, "TOTODILE", "the plain level slot answers")
+  local stoned = Evolution.check(
+    plain,
+    vectorContext({ trigger = { kind = "item", item = "FIRE_STONE" } }),
+    catalog
+  )
+  Assert.notNil(stoned, "the plain form matches its stone slot")
+  Assert.equal(stoned.target, "EEVEE", "the plain stone slot answers")
+  local traded = Evolution.check(plain, vectorContext({ trigger = { kind = "trade" } }), catalog)
+  Assert.notNil(traded, "the plain form matches its trade slot")
+  Assert.equal(traded.target, "SHEDINJA", "the plain trade slot answers")
+end
+
+-- The evolution blocker stops trade and level checks for ordinary species
+-- but one source-named species still matches those slots while holding
+-- it; bag-item use bypasses the blocker for every species.
+function T.trade_blocker_exempts_one_source_species_while_controls_stay_blocked()
+  local Evolution = requirePresent("libs.mons.src.gen4.Evolution", "pure native evolution planning owns eligibility")
+  local catalog = buildCatalog(function(root)
+    addExceptionSpecies(root)
+    local species = root.species --[[@as table<string, table<string, unknown>>]]
+    local forms = species.CHIKORITA.forms --[[@as table<integer, table<string, unknown>>]]
+    forms[0].evolutions = {
+      { method = "level", level = 10, target = "TOTODILE", form = 0 },
+      { method = "trade", target = "EEVEE", form = 0 },
+    }
+  end)
+  local held = pinLevel(makeMon(catalog, 727, { species = "KADABRA" }), catalog, 12)
+  held.heldItem = "EVERSTONE"
+  local traded = Evolution.check(held, vectorContext({ trigger = { kind = "trade" } }), catalog)
+  Assert.notNil(traded, "the exempt species matches its trade slot while holding the blocker")
+  Assert.equal(traded.target, "SHEDINJA", "the trade slot answers")
+  local grown = Evolution.check(held, vectorContext(), catalog)
+  Assert.notNil(grown, "the exempt species matches its level slot while holding the blocker")
+  Assert.equal(grown.target, "TOTODILE", "the level slot answers")
+  local stoned = Evolution.check(
+    held,
+    vectorContext({ trigger = { kind = "item", item = "FIRE_STONE" } }),
+    catalog
+  )
+  Assert.notNil(stoned, "bag-item use still answers while holding the blocker")
+  Assert.equal(stoned.target, "EEVEE", "the stone slot answers")
+  local control = pinLevel(makeMon(catalog, 733, {}), catalog, 12)
+  control.heldItem = "EVERSTONE"
+  Assert.isTrue(
+    Evolution.check(control, vectorContext({ trigger = { kind = "trade" } }), catalog) == nil,
+    "the blocker still stops an ordinary trade evolution"
+  )
+  Assert.isTrue(
+    Evolution.check(control, vectorContext(), catalog) == nil,
+    "the blocker still stops an ordinary level evolution"
+  )
+  control.heldItem = "NONE"
+  local freed = Evolution.check(control, vectorContext({ trigger = { kind = "trade" } }), catalog)
+  Assert.notNil(freed, "removing the blocker restores the ordinary trade evolution")
+  Assert.equal(freed.target, "EEVEE", "the ordinary trade slot answers")
 end
 
 return { tests = T }
