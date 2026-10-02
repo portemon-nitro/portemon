@@ -5,9 +5,13 @@
 -- set is empty; step handlers settle frames that already carry a drawn
 -- move and resume frames that still name their calling move, so a called
 -- execution charges its caller exactly once and never spends the drawn
--- move entry. Candidate filtering mirrors the source eligibility rules in
--- src/battle/battle_command.c; the tables below are the single edit point
--- for eligibility changes.
+-- move entry. Candidate filtering mirrors the source static eligibility
+-- rules in src/battle/battle_command.c and overlay 12 (CheckLegalMetronomeMove
+-- over sMetronomeUnuseableMoves, plus CheckMoveCallsOtherMove for assist);
+-- the tables below are the single edit point for eligibility changes.
+-- Two adaptations stay explicit: every draw spends exactly one labeled roll
+-- rather than the native retry loop, and the dynamic gravity/heal-block
+-- legality checks stay unmodeled, so the static tables are the whole filter.
 
 local BattleErrors = require("libs.battle.src.errors")
 local BattleRng = require("libs.battle.src.gen4.BattleRng")
@@ -15,10 +19,38 @@ local BattleRng = require("libs.battle.src.gen4.BattleRng")
 ---@class CalledMoves
 local CalledMoves = {}
 
--- Eligible metronome candidates for the native candidate roll. The draw
--- selects index roll % #candidates + 1, so every entry stays reachable and
--- struggle can never surface as a fallback.
-CalledMoves.METRONOME_CANDIDATES = { "TACKLE", "SPLASH", "PROTECT" }
+-- Moves metronome never draws, mirroring the source static ban table
+-- sMetronomeUnuseableMoves (pret/pokeheartgold src/battle/overlay_12_0224E4FC.c).
+-- The caller supplies the full candidate roster (the executable native
+-- registry keys); the draw filters that roster through this table, so every
+-- entry stays reachable and struggle can never surface as a fallback.
+CalledMoves.METRONOME_BANNED = {
+  METRONOME = true,
+  STRUGGLE = true,
+  SKETCH = true,
+  MIMIC = true,
+  CHATTER = true,
+  SLEEP_TALK = true,
+  ASSIST = true,
+  MIRROR_MOVE = true,
+  COUNTER = true,
+  MIRROR_COAT = true,
+  PROTECT = true,
+  DETECT = true,
+  ENDURE = true,
+  DESTINY_BOND = true,
+  THIEF = true,
+  FOLLOW_ME = true,
+  SNATCH = true,
+  HELPING_HAND = true,
+  COVET = true,
+  TRICK = true,
+  FOCUS_PUNCH = true,
+  FEINT = true,
+  COPYCAT = true,
+  ME_FIRST = true,
+  SWITCHEROO = true,
+}
 
 local CALLING = {
   METRONOME = true,
@@ -31,33 +63,12 @@ local CALLING = {
   MIMIC = true,
 }
 
--- Moves assist refuses to call, mirroring the source ban list: calling
--- convolutions, counters, protections, and moves without a standalone
--- target never pass through an assist draw.
-local ASSIST_BANNED = {
-  ASSIST = true,
-  CHATTER = true,
-  COPYCAT = true,
-  COUNTER = true,
-  DESTINY_BOND = true,
-  DETECT = true,
-  ENDURE = true,
-  FOCUS_PUNCH = true,
-  FOLLOW_ME = true,
-  HELPING_HAND = true,
-  ME_FIRST = true,
-  METRONOME = true,
-  MIMIC = true,
-  MIRROR_COAT = true,
-  MIRROR_MOVE = true,
-  PROTECT = true,
-  SKETCH = true,
-  SLEEP_TALK = true,
-  SNATCH = true,
-  STRUGGLE = true,
-  THIEF = true,
-  TRICK = true,
-}
+-- Moves assist refuses to call. The native assist filter conjoins
+-- CheckMoveCallsOtherMove with CheckLegalMetronomeMove (pret/pokeheartgold
+-- src/battle/battle_command.c BtlCmd_TryAssist and src/battle/overlay_12_0224E4FC.c),
+-- and every calling convolution refused by the former (sleep talk, copycat,
+-- assist, me first, mirror move, metronome) already sits in the ban table
+-- above, so the assist filter shares that one table rather than copying it.
 
 -- Sleep talk never calls its own slot and never falls back to struggle.
 local SLEEP_TALK_BANNED = {
@@ -139,10 +150,14 @@ function CalledMoves.choose(select)
     return nil
   end
   if calling == "METRONOME" then
-    return { executingMove = drawFrom(select, CalledMoves.METRONOME_CANDIDATES, "metronome") }
+    local pool = eligible(checkRoster(select.pool, "metronome"), CalledMoves.METRONOME_BANNED)
+    if #pool == 0 then
+      return { failed = "no-eligible-moves" }
+    end
+    return { executingMove = drawFrom(select, pool, "metronome") }
   end
   if calling == "ASSIST" then
-    local pool = eligible(checkRoster(select.party, "assist"), ASSIST_BANNED)
+    local pool = eligible(checkRoster(select.party, "assist"), CalledMoves.METRONOME_BANNED)
     if #pool == 0 then
       return { failed = "no-eligible-moves" }
     end
@@ -156,6 +171,9 @@ function CalledMoves.choose(select)
     return { executingMove = drawFrom(select, pool, "sleep-talk") }
   end
   if calling == "MIRROR_MOVE" or calling == "COPYCAT" or calling == "MIMIC" or calling == "ME_FIRST" then
+    -- The native me-first legality check compares move effects
+    -- (CheckLegalMeFirstMove); with no effect data at this seam the copied
+    -- identity is accepted unfiltered once a caller supplies it.
     if type(select.copiedMove) == "string" and select.copiedMove ~= "" then
       return { executingMove = select.copiedMove }
     end
@@ -172,6 +190,7 @@ local function selectFromFrame(frame)
     requestedMove = frame.requestedMove,
     executingMove = frame.executingMove,
     stream = frame.stream,
+    pool = locals.pool,
     party = locals.party,
     usable = locals.usable,
     copiedMove = locals.copiedMove,
