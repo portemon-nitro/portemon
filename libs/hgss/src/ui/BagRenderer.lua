@@ -409,7 +409,7 @@ end
 function BagRenderer:_drawCancelLabel(label, labelRect, palette)
   local content = plainText(label)
   local width = self._text:textWidth(content)
-  self._text:drawTextWithPalette(content, labelRect.x + (labelRect.width - width) / 2, labelRect.y, palette)
+  self._text:drawTextWithPalette(content, labelRect.x + math.floor((labelRect.width - width) / 2), labelRect.y, palette)
 end
 
 -- The three field-font slot triples the Bag uses: item rows, the count
@@ -890,7 +890,7 @@ function BagRenderer:_drawLowerMessage(presentation)
       break
     end
     if windowKey == "modal" then
-      lines[#lines + 1] = { text = line, x = 4, y = 4 + #lines * LINE_HEIGHT }
+      lines[#lines + 1] = { text = line, x = 0, y = #lines * LINE_HEIGHT }
     else
       lines[#lines + 1] = { text = line, x = 0, y = 0 }
     end
