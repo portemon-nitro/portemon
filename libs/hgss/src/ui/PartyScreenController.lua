@@ -44,7 +44,7 @@ local YesNoPromptController = require("libs.hgss.src.ui.YesNoPromptController")
 ---@field _swapOp { source: integer, destination: integer, revision: integer, phase: string, xOffset: integer, exchanged: boolean }?
 ---@field _intent table<string, unknown>?
 ---@field _origin PartyScreenController.Origin?
----@field _message string|{ templateKey: string, displayName: string? }?
+---@field _message string|{ templateKey: string, displayName: string?, itemName: string? }?
 ---@field _messageReturn string
 ---@field _prompt YesNoPromptController?
 ---@field _promptReturn string
@@ -110,6 +110,7 @@ PartyScreenController.__index = PartyScreenController
 ---@field promptShape table<string, unknown>?
 ---@field item { key: string, bagRevision: integer }?
 ---@field effect fun(sequence: string)? the borrowed swap sound boundary; swap stays silent without it
+---@field initialMessage { templateKey: "giveHeldItem", displayName: string, itemName: string }? initial Party-owned held-item result
 
 -- The native switch task slides each travelling slot out from its own
 -- column and back: sixteen tile-steps to full exit, eight pixels per
@@ -197,6 +198,18 @@ function PartyScreenController.new(opts)
       "the initial focus must be a party position in 0..5 or cancel"
     )
   end
+  if opts.initialMessage ~= nil then
+    local message = opts.initialMessage
+    assert(opts.context == "browse", "initial result messages enter only the browse context")
+    assert(
+      type(message) == "table" and message.templateKey == "giveHeldItem",
+      "initial result uses the Party held-item template"
+    )
+    assert(
+      type(message.displayName) == "string" and type(message.itemName) == "string",
+      "held-item result names its mon and item"
+    )
+  end
   local cancellable = opts.allowCancel
   if cancellable == nil then
     cancellable = true
@@ -221,7 +234,7 @@ function PartyScreenController.new(opts)
     _promptShape = opts.promptShape,
     _pendingItem = opts.item,
     _cancellable = cancellable,
-    _state = "browse",
+    _state = opts.initialMessage ~= nil and "message" or "browse",
     _cursorNode = 0,
     _menu = nil,
     _menuIndex = nil,
@@ -236,7 +249,7 @@ function PartyScreenController.new(opts)
     _swapOp = nil,
     _intent = nil,
     _origin = nil,
-    _message = nil,
+    _message = opts.initialMessage,
     _messageReturn = "browse",
     _prompt = nil,
     _promptReturn = "browse",
@@ -621,12 +634,13 @@ end
 -- Shows a message over the originating flow state; acknowledgement
 -- returns there without replaying anything. Either existing literal text
 -- or a generated-template descriptor the renderer expands.
----@param text string|{ templateKey: string, displayName: string? }
+---@param text string|{ templateKey: string, displayName: string?, itemName: string? }
 ---@param returnState string
 function PartyScreenController:_showMessage(text, returnState)
   if type(text) == "table" then
     assert(type(text.templateKey) == "string" and text.templateKey ~= "", "descriptors name their template")
     assert(text.displayName == nil or type(text.displayName) == "string", "descriptors carry an optional display name")
+    assert(text.itemName == nil or type(text.itemName) == "string", "descriptors carry an optional item name")
   else
     assert(type(text) == "string" and text ~= "", "messages carry display text")
   end

@@ -100,6 +100,7 @@ end
 ---@field item { key: string, bagRevision: integer }? the pending item for target contexts
 ---@field measureDisplay fun(): DisplayMeasurement the current display facts
 ---@field initialFocus integer|"cancel"? the opening cursor (defaults to the nearest selectable node)
+---@field initialMessage { templateKey: "giveHeldItem", displayName: string, itemName: string }? Party-owned held-item result on entry
 ---@field overrides table<string, unknown>? per-case function overrides for this application
 ---@field prepareIcons fun(iconKeys: string[]): boolean, string? required icon preparation collaborator
 ---@field cancelIconPreparation fun() required preparation release collaborator
@@ -181,6 +182,7 @@ function PartyScreenState.new(opts)
     controller = PartyScreenController.new({
       context = context,
       initialFocus = opts.initialFocus,
+      initialMessage = opts.initialMessage,
       model = {
         refresh = refreshModel,
       },

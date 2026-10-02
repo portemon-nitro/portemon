@@ -146,6 +146,12 @@ end
 
 local function drive(flow, events)
   flow:updateFixed(events)
+  for _ = 1, 6 do
+    if flow:status().transition == nil then
+      break
+    end
+    flow:updateFixed({})
+  end
   return flowStatus(flow)
 end
 
@@ -209,9 +215,7 @@ local function chooseBagAction(flow, id)
       -- Activation latches behind feedback before the semantic transition
       -- runs, so settle until the menu leaves or the flow changes pages.
       return driveUntil(flow, "the chosen action", 30, function(current)
-        return current.page ~= "bag_browse"
-          or current.child == nil
-          or current.child.state ~= "action_menu"
+        return current.page ~= "bag_browse" or current.child == nil
       end)
     end
     local node = assert(child.actionNode, "the action menu exposes its node")

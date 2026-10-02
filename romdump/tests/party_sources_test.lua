@@ -316,6 +316,13 @@ function T.message_templates_select_the_empty_take_message()
   Assert.equal(template.index, 82, "the empty-take message is the dedicated source message")
 end
 
+function T.message_templates_select_the_source_held_item_result()
+  local template = PartySources.messages.templates.giveHeldItem
+  Assert.notNil(template, "the producer selects the held-item result message")
+  Assert.equal(template.bank, 300, "the held-item result comes from the party message bank")
+  Assert.equal(template.index, 107, "the held-item result uses its source message")
+end
+
 function T.lower_message_role_selects_the_loaded_font_palette()
   local role = PartySources.messageRole
   Assert.notNil(role, "the producer selects the lower-message font palette")

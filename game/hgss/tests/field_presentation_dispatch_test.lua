@@ -612,28 +612,45 @@ end
 
 function T.party_wait_renders_without_icon_getters()
   local sink, calls = {}, {}
-  withProductionComposition(sink, calls, compositionRuntime(), function(resources)
-    local frame = { x = 0, y = 0, width = 640, height = 480 }
-    resources:drawApplication(
-      FieldApplicationIds.POKEMON,
-      { child = { preparationState = "pending", layout = { frame = frame } } },
-      drawRuntime()
-    )
-    Assert.equal(#sink, 1, "the wait renders exactly one message")
-    Assert.equal(sink[1][1], "text", "pending party icons render as text, never icon getters")
-    resources:drawApplication(
-      FieldApplicationIds.POKEMON,
-      { child = { preparationState = "failed", preparationError = "boom", layout = { frame = frame } } },
-      drawRuntime()
-    )
-    Assert.equal(#sink, 2, "the failure renders exactly one message")
-    Assert.equal(sink[1][1], "text", "failed party icons render as text, never icon getters")
-    Assert.isTrue(
-      tostring(sink[2][2]):find("boom", 1, true) ~= nil,
-      "the failure message carries the preparation cause"
-    )
-    resources:dispose()
+  local savedLove = rawget(_G, "love")
+  local graphics = require("tests.support.FakeGraphics").new({})
+  graphics.getDimensions = function()
+    return 640, 480
+  end
+  rawset(_G, "love", { graphics = graphics })
+  local ok, err = pcall(function()
+    withProductionComposition(sink, calls, compositionRuntime(), function(resources)
+      local frame = { x = 0, y = 0, width = 640, height = 480 }
+      resources:drawApplication(
+        FieldApplicationIds.POKEMON,
+        {
+          child = { preparationState = "pending", layout = { frame = frame } },
+          transition = { coefficient = 8, color = 0, direction = "out" },
+        },
+        drawRuntime()
+      )
+      Assert.equal(#sink, 1, "the wait renders exactly one message")
+      Assert.equal(sink[1][1], "text", "pending party icons render as text, never icon getters")
+      Assert.equal(#graphics.rectangles, 1, "the outgoing fade overlays the Party wait screen")
+      Assert.deepEqual(graphics.rectangles[1].color, { 0, 0, 0, 0.5 }, "the wait screen keeps the fade opacity")
+      resources:drawApplication(
+        FieldApplicationIds.POKEMON,
+        { child = { preparationState = "failed", preparationError = "boom", layout = { frame = frame } } },
+        drawRuntime()
+      )
+      Assert.equal(#sink, 2, "the failure renders exactly one message")
+      Assert.equal(sink[1][1], "text", "failed party icons render as text, never icon getters")
+      Assert.isTrue(
+        tostring(sink[2][2]):find("boom", 1, true) ~= nil,
+        "the failure message carries the preparation cause"
+      )
+      resources:dispose()
+    end)
   end)
+  rawset(_G, "love", savedLove)
+  if not ok then
+    error(err, 0)
+  end
 end
 
 function T.bag_flow_party_target_wait_renders_without_icon_getters()

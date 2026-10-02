@@ -461,6 +461,7 @@ PartySources.messages = {
     forgetMove = { bank = 300, index = 60 },
     noEffect = { bank = 300, index = 102 },
     takeNoItem = { bank = 300, index = 82 },
+    giveHeldItem = { bank = 300, index = 107 },
     fieldMoveConfirm = { bank = 300, index = 139 },
     levelTotal = { bank = 300, index = 167 },
     eggSelect = { bank = 300, index = 184 },

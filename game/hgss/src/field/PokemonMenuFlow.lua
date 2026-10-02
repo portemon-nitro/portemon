@@ -12,6 +12,7 @@ local Mon = require("libs.mons.src.Mon")
 local BagScreenState = require("game.hgss.src.field.BagScreenState")
 local PartyScreenState = require("game.hgss.src.field.PartyScreenState")
 local SummaryScreenState = require("game.hgss.src.field.SummaryScreenState")
+local StandardFade = require("libs.hgss.src.presentation.StandardFade")
 
 local TERMINAL_FIELD_ACTION = "pokemon.field_move"
 
@@ -46,9 +47,30 @@ local PAGE = {
 ---@field private _continuation table<string, unknown>?
 ---@field private _picker table<string, unknown>? the live temporary picker cursor
 ---@field private _result table<string, unknown>?
+---@field private _terminalResultPending table<string, unknown>? published after the opaque terminal fade frame
+---@field private _lastChildStatus table<string, unknown>?
+---@field private _transition PokemonMenuFlow.Transition?
+---@field private _transitionStatus table<string, unknown>?
+---@field private _terminalChildStatus table<string, unknown>?
 ---@field private _disposed boolean
 local PokemonMenuFlow = {}
 PokemonMenuFlow.__index = PokemonMenuFlow
+
+---@class PokemonMenuFlow.ReplacementTransition
+---@field kind "replacement"
+---@field fade StandardFade
+---@field page string
+---@field continuation table<string, unknown>?
+---@field child table<string, unknown>
+---@field childStatus table<string, unknown> the last drawable outgoing child status
+
+---@class PokemonMenuFlow.TerminalTransition
+---@field kind "terminal"
+---@field fade StandardFade
+---@field result table<string, unknown>
+---@field childStatus table<string, unknown> the last drawable outgoing child status
+
+---@alias PokemonMenuFlow.Transition PokemonMenuFlow.ReplacementTransition|PokemonMenuFlow.TerminalTransition
 
 local function checkServices(opts)
   local mons = assert(opts.mons, "the menu flow borrows the live mon service")
@@ -256,9 +278,15 @@ function PokemonMenuFlow.new(opts)
     _child = nil,
     _continuation = nil,
     _result = nil,
+    _terminalResultPending = nil,
+    _lastChildStatus = nil,
+    _transition = nil,
+    _transitionStatus = nil,
+    _terminalChildStatus = nil,
     _disposed = false,
   }, PokemonMenuFlow)
   self._child = self:_openPage(self._page, nil)
+  self._lastChildStatus = assert(self._child):status()
   return self
 end
 
@@ -305,8 +333,10 @@ function PokemonMenuFlow:_openPage(page, continuation)
   end
   if page == PAGE.PARTY_BROWSE then
     local focusSlot = nil
+    local initialMessage = nil
     if type(continuation) == "table" then
       focusSlot = continuation.focusSlot
+      initialMessage = continuation.initialMessage
     end
     return PartyScreenState.new({
       service = self._mons,
@@ -314,6 +344,7 @@ function PokemonMenuFlow:_openPage(page, continuation)
       actionPolicy = flowPartyPolicy(assets.partyManifest),
       uiManifest = assets.uiManifest,
       initialFocus = focusSlot,
+      initialMessage = initialMessage,
       measureDisplay = measureDisplay,
       prepareIcons = self._prepareIcons,
       cancelIconPreparation = self._cancelIconPreparation,
@@ -382,6 +413,19 @@ function PokemonMenuFlow:_openPage(page, continuation)
   error("unknown menu flow page " .. tostring(page), 0)
 end
 
+---@param slot integer
+---@param itemKey string
+---@return { templateKey: "giveHeldItem", displayName: string, itemName: string }
+function PokemonMenuFlow:_giveHeldItemMessage(slot, itemKey)
+  local mon = self._mons:partyMon(slot)
+  local item = self._assets.itemCatalog:item(itemKey)
+  return {
+    templateKey = "giveHeldItem",
+    displayName = Mon.displayName(mon, self._mons:catalog()),
+    itemName = assert(item.name, "the item catalog publishes its display name"),
+  }
+end
+
 -- A separate temporary picker cursor seeded from the field cursor: pocket
 -- navigation inside the picker never disturbs the borrowed cursor until a
 -- pick completes ordinarily.
@@ -408,21 +452,25 @@ function PokemonMenuFlow:_adoptPickerCursor(picker)
   self._bagCursor:setScroll(pocket, picker:scroll(pocket))
 end
 
--- Centralizes the normative replacement: the fully constructed child
--- publishes first, the previous child releases exactly once after, and
--- the replacement never sees the launching batch. A focusSlot-only
--- continuation carries navigation focus without operation identity.
+-- Stages a replacement before the outgoing fade, then publishes it at full
+-- black and releases the outgoing child exactly once. The replacement never
+-- sees the launching batch. A focusSlot-only continuation carries navigation
+-- focus without operation identity.
 ---@param page string
 ---@param continuation table<string, unknown>?
 function PokemonMenuFlow:_replace(page, continuation)
+  assert(self._transition == nil, "menu replacements cannot overlap an outgoing fade")
   local previous = assert(self._child, "replacement retires a live child")
-  previous:cancelPointerCapture()
   local replacement = self:_openPage(page, continuation)
-  -- Publication is a field-menu flow concern, never a renderer concern.
-  self._child = replacement
-  self._page = page
-  self._continuation = continuation
-  previous:dispose()
+  previous:cancelPointerCapture()
+  self._transition = {
+    kind = "replacement",
+    fade = StandardFade.new({ direction = "out", color = 0 }),
+    page = page,
+    continuation = continuation,
+    child = replacement,
+    childStatus = self._lastChildStatus or previous:status(),
+  }
 end
 
 -- A continuation stays valid only while both captured revisions still
@@ -546,11 +594,13 @@ function PokemonMenuFlow:_routePick(intent)
     return
   end
   local slot = assert(continuation.slot, "give operations capture their slot")
-  self:_replace(PAGE.PARTY_BROWSE, { focusSlot = slot })
+  self:_replace(PAGE.PARTY_BROWSE, {
+    focusSlot = slot,
+    initialMessage = self:_giveHeldItemMessage(slot, assert(request.item)),
+  })
   local picker = assert(self._picker, "the picker holds its temporary cursor")
   self:_adoptPickerCursor(picker)
   self._picker = nil
-  self._continuation = nil
 end
 
 -- Routes a party target selection for a bag-originated operation: the
@@ -615,7 +665,7 @@ end
 function PokemonMenuFlow:_routeConfirmIntent(intent)
   local continuation = assert(self._continuation, "confirmed exchanges resolve a captured replacement")
   assert(intent.confirmed == true, "replacements commit only after the affirmative answer")
-  self._partyActions:commit({
+  local outcome = self._partyActions:commit({
     kind = "give",
     slot = assert(intent.slot, "confirmed exchanges name their slot"),
     partyRevision = assert(intent.partyRevision, "confirmed exchanges carry the party revision"),
@@ -624,18 +674,26 @@ function PokemonMenuFlow:_routeConfirmIntent(intent)
     confirmed = true,
   })
   -- Changed or refused, the question retires to its recorded root.
-  self:_returnGiveConfirm(continuation)
+  local message = nil
+  if outcome.kind == "changed" and continuation.returnPage == PAGE.PARTY_BROWSE then
+    message = self:_giveHeldItemMessage(assert(continuation.slot), assert(continuation.itemKey))
+  end
+  self:_returnGiveConfirm(continuation, message)
 end
 
 -- Retires one replacement question to its recorded root: bag-origin
 -- exchanges return to the bag, party-origin exchanges refocus the
 -- exchanged mon. The continuation carries navigation focus only.
 ---@param continuation table<string, unknown>
-function PokemonMenuFlow:_returnGiveConfirm(continuation)
+---@param initialMessage { templateKey: "giveHeldItem", displayName: string, itemName: string }?
+function PokemonMenuFlow:_returnGiveConfirm(continuation, initialMessage)
   local returnPage = assert(continuation.returnPage, "replacements record their return page")
   assert(returnPage == PAGE.BAG_BROWSE or returnPage == PAGE.PARTY_BROWSE, "replacements return to a root browse page")
   if returnPage == PAGE.PARTY_BROWSE then
-    self:_replace(returnPage, { focusSlot = assert(continuation.slot, "replacements record their slot") })
+    self:_replace(returnPage, {
+      focusSlot = assert(continuation.slot, "replacements record their slot"),
+      initialMessage = initialMessage,
+    })
   else
     self:_replace(returnPage, nil)
   end
@@ -838,12 +896,7 @@ function PokemonMenuFlow:_routeFieldMove(intent)
     return
   end
   if decision.kind == "ok" then
-    local child = assert(self._child, "terminal handoff retires a live child")
-    child:cancelPointerCapture()
-    child:dispose()
-    self._child = nil
-    self._continuation = nil
-    self._result = {
+    self:_terminate({
       kind = "field_action",
       actionId = TERMINAL_FIELD_ACTION,
       request = {
@@ -851,7 +904,7 @@ function PokemonMenuFlow:_routeFieldMove(intent)
         slot = assert(intent.slot, "field intents name their slot"),
         moveSlot = intent.moveSlot,
       },
-    }
+    })
     return
   end
   self:_completeParty({ kind = decision.kind })
@@ -948,17 +1001,19 @@ function PokemonMenuFlow:_routeResult(result)
   self:_rewind(continuation)
 end
 
--- Publishes one terminal result and releases the active child exactly
--- once; remaining input clears with the retired batch.
+-- Stages a terminal handoff, keeping the last drawable child status for
+-- the outgoing fade. The host result publishes after the opaque frame.
 ---@param result table<string, unknown>
 function PokemonMenuFlow:_terminate(result)
+  assert(self._transition == nil, "menu termination cannot overlap an outgoing fade")
   local child = assert(self._child, "termination retires a live child")
   child:cancelPointerCapture()
-  child:dispose()
-  self._child = nil
-  self._continuation = nil
-  self._picker = nil
-  self._result = result
+  self._transition = {
+    kind = "terminal",
+    fade = StandardFade.new({ direction = "out", color = 0 }),
+    result = result,
+    childStatus = self._lastChildStatus or child:status(),
+  }
 end
 
 -- Drains one intent from bag and party children; summaries answer
@@ -981,8 +1036,52 @@ function PokemonMenuFlow:updateFixed(uiInput)
   if self._result ~= nil then
     return
   end
+  assert(type(uiInput) == "table", "the menu flow steps on an event list")
+  if self._terminalResultPending ~= nil then
+    self._result = self._terminalResultPending
+    self._terminalResultPending = nil
+    return
+  end
+  if self._transition ~= nil then
+    for _, event in ipairs(uiInput) do
+      assert(type(event) == "table" and type(event.type) == "string", "menu events carry their type")
+    end
+    local transition = assert(self._transition, "active transitions remain published until completion")
+    local fade = assert(transition.fade, "outgoing transitions own their standard fade")
+    fade:updateSourceFrame()
+    if fade.completed then
+      local previous = assert(self._child, "transition completion retires the published child")
+      if transition.kind == "replacement" then
+        self._child = transition.child
+        self._page = transition.page
+        self._continuation = transition.continuation
+        self._lastChildStatus = assert(self._child):status()
+      else
+        assert(transition.kind == "terminal", "active transitions have a replacement or terminal owner")
+        self._terminalChildStatus = transition.childStatus
+        self._child = nil
+        self._continuation = nil
+        self._picker = nil
+        self._terminalResultPending = assert(transition.result, "terminal transitions publish a result")
+      end
+      previous:dispose()
+      self._transitionStatus = fade:status()
+      self._transition = nil
+    end
+    return
+  end
+  self._transitionStatus = nil
+  self._terminalChildStatus = nil
   local child = assert(self._child, "the flow owns one active child")
-  child:updateFixed(assert(uiInput, "the menu flow steps on an event list"))
+  self._lastChildStatus = child:status()
+  child:updateFixed(uiInput)
+  local currentChildStatus = child:status()
+  if
+    currentChildStatus.open == true
+    and (currentChildStatus.presentation ~= nil or currentChildStatus.preparationState ~= nil)
+  then
+    self._lastChildStatus = currentChildStatus
+  end
   local intent = self:_takeIntent()
   if intent ~= nil then
     self:_routeIntent(intent)
@@ -1000,9 +1099,25 @@ end
 ---@return table<string, unknown>
 function PokemonMenuFlow:status()
   if self._disposed or self._child == nil then
-    return { open = false }
+    return {
+      open = false,
+      child = self._terminalChildStatus,
+      transition = self._transitionStatus,
+    }
   end
-  return { open = true, root = self._root, page = self._page, child = self._child:status() }
+  local childStatus
+  if self._transition ~= nil then
+    childStatus = self._transition.childStatus
+  else
+    childStatus = self._child:status()
+  end
+  local status = { open = true, root = self._root, page = self._page, child = childStatus }
+  if self._transition ~= nil then
+    status.transition = assert(self._transition.fade, "outgoing transitions own their standard fade"):status()
+  elseif self._transitionStatus ~= nil then
+    status.transition = self._transitionStatus
+  end
+  return status
 end
 
 -- The one-shot host result: a root close or a checked field handoff, then
@@ -1031,12 +1146,21 @@ function PokemonMenuFlow:dispose()
   end
   self._disposed = true
   local child = self._child
+  local transition = self._transition
   self._child = nil
   self._continuation = nil
   self._result = nil
+  self._terminalResultPending = nil
+  self._lastChildStatus = nil
   self._picker = nil
+  self._transition = nil
+  self._transitionStatus = nil
+  self._terminalChildStatus = nil
   if child ~= nil then
     child:dispose()
+  end
+  if transition ~= nil and transition.kind == "replacement" then
+    transition.child:dispose()
   end
 end
 

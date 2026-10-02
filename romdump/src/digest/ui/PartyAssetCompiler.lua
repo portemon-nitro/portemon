@@ -42,6 +42,7 @@ PartyAssetCompiler.ERROR = {
 -- and the quantity field feeds quantity records. Every other substitution
 -- or control is malformed source, never a runtime marker to interpret.
 local NAME_SUBSTITUTION = FieldMessageText.STRVAR_1 + 1
+local ITEM_SUBSTITUTION = FieldMessageText.STRVAR_1 + 8
 local MOVE_SUBSTITUTION = FieldMessageText.STRVAR_1 + 6
 local QUANTITY_SUBSTITUTION = FieldMessageText.STRVAR_1 + 52
 
@@ -1026,6 +1027,9 @@ local function lowerSegments(bank, bankId, index, role, allowFlow)
     elseif token.kind == "substitution" and token.control == NAME_SUBSTITUTION then
       flush()
       segments[#segments + 1] = { kind = "name" }
+    elseif role == "template:giveHeldItem" and token.kind == "substitution" and token.control == ITEM_SUBSTITUTION then
+      flush()
+      segments[#segments + 1] = { kind = "item" }
     elseif token.kind == "substitution" and token.control == MOVE_SUBSTITUTION then
       flush()
       segments[#segments + 1] = { kind = "move" }

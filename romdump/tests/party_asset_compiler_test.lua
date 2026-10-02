@@ -214,6 +214,15 @@ function T.compiled_presentation_carries_semantic_roles_switch_chrome_and_take_t
   local template = bundle.manifest.text.templates.takeNoItem
   Assert.notNil(template, "the empty-take template resolves")
   Assert.isTrue(#template.segments > 0, "the empty-take template carries segments")
+  local give = bundle.manifest.text.templates.giveHeldItem
+  Assert.deepEqual(give.segments, {
+    { kind = "name" },
+    { kind = "text", value = " was given the" },
+    { kind = "lineBreak" },
+    { kind = "item" },
+    { kind = "text", value = " to hold." },
+    { kind = "lineBreak", flow = "prompt" },
+  }, "the source held-item result preserves its NAME and ITEM substitutions")
 end
 
 -- Panel nickname/gender text prints over existing panel chrome, so the
