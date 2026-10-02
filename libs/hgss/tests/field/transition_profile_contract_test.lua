@@ -379,6 +379,59 @@ function T.tests.ordinary_profiles_share_source_exit_audio_and_fade()
   Assert.equal(observations[2].fade.coefficient, observations[1].fade.coefficient)
 end
 
+function T.tests.west_indoor_entry_plays_exit_sound_and_fades_with_no_entry_step()
+  local sounds = {}
+  local steps = {}
+  local player = {
+    motion = "idle",
+    beginTransitionStep = function(self, direction)
+      steps[#steps + 1] = direction
+      self.motion = "walking"
+      return true
+    end,
+    updateFixed = function(self)
+      self.motion = "idle"
+      return true
+    end,
+  }
+  local transition = FieldTransition.new({
+    loader = {
+      requestWarp = function()
+        return true
+      end,
+    },
+    player = player,
+    resolveDestination = function()
+      return {
+        destinationMap = { mapId = 60 },
+        fieldX = 4,
+        fieldZ = 4,
+        surfaceId = 0,
+        worldY = 0,
+      }
+    end,
+    prepare = function() end,
+    commit = function() end,
+    playSound = function(sound)
+      sounds[#sounds + 1] = sound
+    end,
+  })
+  transition:start({ mapId = 61 }, {
+    warp = { index = 0, destinationMapId = 60, destinationWarpId = 0 },
+    transition = { mode = "fixed", profile = FieldTransitionProfile.ORDINARY_INDOOR },
+    destinationFacing = "west",
+  }, "south")
+  advanceTo(transition, "idle", 128)
+  Assert.equal(transition.phase, "idle", "the west indoor entry completes")
+  Assert.deepEqual(sounds, { "SEQ_SE_DP_KAIDAN2" }, "the west indoor entry plays the exit sound once")
+  Assert.deepEqual(steps, {}, "the west indoor entry authors no player step")
+  Assert.deepEqual(
+    transition.completed,
+    { sourceMapId = 61, destinationMapId = 60, sourceWarpId = 0 },
+    "the fade lifecycle completes through the destination swap"
+  )
+end
+
 local function ladderSourceFixture(profile)
   local sounds = {}
   local updates = 0

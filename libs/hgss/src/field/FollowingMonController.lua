@@ -65,7 +65,7 @@ FollowingMonController.__index = FollowingMonController
 ---@field dispose fun(self: FollowingMonController)
 ---@field _descriptor fun(self: FollowingMonController, snapshot: table<string, unknown>): table<string, unknown>?
 ---@field _desiredLead fun(self: FollowingMonController): table<string, unknown>?
----@field _reconcileLead fun(self: FollowingMonController)
+---@field _reconcileLead fun(self: FollowingMonController, mapChanged: boolean)
 ---@field _permitted fun(self: FollowingMonController, mapId: integer): boolean
 ---@field _spec fun(self: FollowingMonController, mapId: integer, fieldX: integer, fieldZ: integer, facing: string, worldY: number?, initiallyVisible: boolean?): FieldActorManager.PartnerSpec
 ---@field _tryInstall fun(self: FollowingMonController, spec: FieldActorManager.PartnerSpec): string?
@@ -74,7 +74,7 @@ FollowingMonController.__index = FollowingMonController
 ---@field _suppress fun(self: FollowingMonController)
 ---@field _clearAll fun(self: FollowingMonController)
 ---@field _discontinuity fun(self: FollowingMonController, mapId: integer)
----@field _handleMapChange fun(self: FollowingMonController, mapId: integer)
+---@field _handleMapChange fun(self: FollowingMonController, mapId: integer, coveredRebuild: boolean)
 ---@field _observePlayer fun(self: FollowingMonController, mapId: integer)
 ---@field _commitMatchesLiveStart fun(self: FollowingMonController, previous: table<string, unknown>?, anchor: table<string, unknown>, mapId: integer): boolean
 ---@field _observeMovementStart fun(self: FollowingMonController, mapId: integer)
@@ -317,9 +317,12 @@ end
 
 -- Recompute the desired lead identity on party revisions. Actor work happens
 -- in the publish step so a revision that changes nothing observable performs
--- no actor operations at all.
+-- no actor operations at all. A lead first reconciled on a map-change epoch
+-- births visible; a lead first reconciled while staying on the same map
+-- births hidden.
 ---@param self FollowingMonController
-function FollowingMonController:_reconcileLead()
+---@param mapChanged boolean whether this tick observed a new actor map
+function FollowingMonController:_reconcileLead(mapChanged)
   local previous = self._lead
   local lead = self:_desiredLead()
   if lead == nil then
@@ -328,7 +331,7 @@ function FollowingMonController:_reconcileLead()
     return
   end
   if previous == nil then
-    if not self._mapEntry and self._actors:partnerId() == nil then
+    if not mapChanged and self._actors:partnerId() == nil then
       self._pendingHiddenLead = lead
     else
       self._pendingHiddenLead = nil
@@ -488,9 +491,11 @@ function FollowingMonController:_tryUpdate(spec)
 end
 
 -- Publish the desired lead: replace in place when an actor is live,
--- otherwise install behind the player or on the oldest yielded anchor when
--- the behind tile is blocked. Success clears the stale queue and records
--- the published identity; anything less retries on a later tick.
+-- otherwise install on the player's exact tile while a pending map entry
+-- is owed, or behind the player (falling back to the oldest yielded
+-- anchor when the behind tile is blocked) for any other birth. Success
+-- records the published identity and retires the pending entry; a
+-- classified placement rejection keeps the pending entry for a later tick.
 ---@param self FollowingMonController
 ---@param mapId integer
 function FollowingMonController:_publish(mapId)
@@ -503,6 +508,7 @@ function FollowingMonController:_publish(mapId)
       self._published = self._lead
       self._queue = {}
       self._lastFollowerCommand = nil
+      self._mapEntry = false
     end
     return
   end
@@ -515,6 +521,17 @@ function FollowingMonController:_publish(mapId)
     initiallyVisible = false
   end
   local anchor = self._playerOf():committedAnchor()
+  if self._mapEntry then
+    local exactId =
+      self:_tryInstall(self:_spec(mapId, anchor.fieldX, anchor.fieldZ, anchor.facing, anchor.worldY, initiallyVisible))
+    if exactId ~= nil then
+      self._published = self._lead
+      self._pendingHiddenLead = nil
+      self._lastFollowerCommand = nil
+      self._mapEntry = false
+    end
+    return
+  end
   local behind = behindTile(anchor)
   local id = self:_tryInstall(self:_spec(mapId, behind.x, behind.z, anchor.facing, anchor.worldY, initiallyVisible))
   if id == nil and self._queue[1] ~= nil then
@@ -587,12 +604,15 @@ end
 
 -- A map ownership change: the manager retired the old entry (releasing the
 -- old visual), so drop movement state without touching the manager and let
--- the normal publish path reinstall on the new map.
+-- the normal publish path reinstall on the new map. The pending-entry latch
+-- is owed only when the new map follows the exit teardown; any other
+-- ownership change reinstalls behind the player.
 ---@param self FollowingMonController
 ---@param mapId integer
-function FollowingMonController:_handleMapChange(mapId)
+---@param coveredRebuild boolean whether the new actor map follows the exit teardown
+function FollowingMonController:_handleMapChange(mapId, coveredRebuild)
   self._lastMapId = mapId
-  self._mapEntry = true
+  self._mapEntry = coveredRebuild == true
   self._queue = {}
   self._action = nil
   self._movementType = "follow_player"
@@ -746,11 +766,16 @@ function FollowingMonController:_beginOrdinaryFollow(mapId, tx)
     toZ = tx.to.fieldZ,
   }
   local partnerId = assert(self._actors:partnerId(), "ordinary follow requires the partner actor")
+  local position = assert(self._actors:getPosition(partnerId), "partner position is required")
+  if position.fieldX == tx.from.fieldX and position.fieldZ == tx.from.fieldZ then
+    -- The follower already stands on the vacated tile, so the obligation
+    -- is satisfied with no walk, no queue entry, and no repair.
+    return
+  end
   if self._paused or self._action ~= nil then
     self:_enqueueVacatedTarget(tx, speed)
     return
   end
-  local position = assert(self._actors:getPosition(partnerId), "partner position is required")
   local target = { fieldX = tx.from.fieldX, fieldZ = tx.from.fieldZ }
   if not isAdjacent(position, target) then
     self:_discontinuity(mapId)
@@ -951,6 +976,12 @@ function FollowingMonController:_driveQueue(mapId)
     return
   end
   local position = assert(self._actors:getPosition(partnerId), "partner position is required")
+  if position.fieldX == head.fieldX and position.fieldZ == head.fieldZ then
+    -- The follower already stands on the queued tile, so the head drains
+    -- satisfied with no walk and no repair.
+    table.remove(self._queue, 1)
+    return
+  end
   if not isAdjacent(position, head) then
     self:_discontinuity(mapId)
     return
@@ -993,22 +1024,25 @@ function FollowingMonController:update()
   if mapId == nil then
     return
   end
+  local coveredRebuild = false
   if self._suspended then
     if mapId == self._lastMapId then
       return
     end
+    coveredRebuild = true
     self._suspended = false
   end
-  if mapId ~= self._lastMapId then
-    self:_handleMapChange(mapId)
+  local mapChanged = mapId ~= self._lastMapId
+  if mapChanged then
+    self:_handleMapChange(mapId, coveredRebuild)
   end
   local partyRevision = self._service:partyRevision()
   if partyRevision ~= self._lastPartyRevision then
     self._lastPartyRevision = partyRevision
-    self:_reconcileLead()
+    self:_reconcileLead(mapChanged)
   end
-  self._mapEntry = false
   if not self:isActive() then
+    self._mapEntry = false
     self:_clearAll()
     return
   end
@@ -1016,6 +1050,7 @@ function FollowingMonController:update()
     -- Permission lost: clear the visible partner but keep the party-derived
     -- lead, so returning to an allowed map republishes the same follower.
     -- The player baseline keeps tracking so no stale anchor replays later.
+    self._mapEntry = false
     self:_suppress()
     self:_observePlayer(mapId)
     return
