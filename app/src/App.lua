@@ -7,6 +7,7 @@ local FirstPlayCompletion = require("romdump.src.FirstPlayCompletion")
 local CacheService = require("app.src.CacheService")
 local HgssGame = require("game.hgss.src.HgssGame")
 local MainMenuComposition = require("app.src.mainmenu.MainMenuComposition")
+local SaveEditorState = require("app.src.saveeditor.SaveEditorState")
 local DerivedAssetProvisioner = require("app.src.DerivedAssetProvisioner")
 local CachePreparationState = require("app.src.launcher.CachePreparationState")
 local ImportState = require("app.src.launcher.ImportState")
@@ -83,6 +84,26 @@ local function installMenu(versionId)
         App._launchGameWithProvisioner(versionId, { kind = "new_game" })
       elseif result.kind == "continue" then
         App._launchGameWithProvisioner(versionId, { kind = "continue", saveId = result.saveId })
+      elseif result.kind == "edit" then
+        local provisioner = assert(App.provisioner, "save editing needs the selected provisioner")
+        local ok, stateOrError = pcall(SaveEditorState.new, {
+          versionId = versionId,
+          saveId = assert(result.saveId),
+          width = App.drawableWidth,
+          height = App.drawableHeight,
+          derivedAssets = provisioner:gameHost(),
+          repositoryRoot = love.filesystem.getSourceBaseDirectory(),
+          onResult = function(editorResult)
+            if editorResult.kind == "main_menu" then
+              App._restoreMenuWithProvisioner(versionId)
+            end
+          end,
+        })
+        if not ok then
+          App._restoreMenuWithProvisioner(versionId)
+          error(stateOrError, 0)
+        end
+        App.setState(assert(stateOrError))
       elseif result.kind == "quit" then
         love.event.quit(0)
       end
@@ -469,6 +490,11 @@ function App.draw()
 end
 
 function App.filedropped(file)
+  local currentState = App.state
+  if currentState ~= nil and type(currentState.onImportAttempt) == "function" then
+    currentState:onImportAttempt()
+    return
+  end
   if App.importer and App.importer:isBusy() then
     return
   end
@@ -615,6 +641,12 @@ function App.focus(focused)
 end
 
 function App.quit()
+  local currentState = App.state
+  if currentState ~= nil and type(currentState.requestClose) == "function" then
+    if currentState:requestClose("quit") then
+      return true
+    end
+  end
   App.setState(nil)
   App._retireSelection()
   -- Process shutdown alone joins the controller thread; selection

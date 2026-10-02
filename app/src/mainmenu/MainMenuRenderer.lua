@@ -323,19 +323,34 @@ function MainMenuRenderer:draw(view, plan)
 
       if view.popup then
         local popup = assert(layout.popup)
-        local shapedPopup = popup --[[@as { box: table<string, number>, actions: { delete: table<string, number> } }]]
+        local shapedPopup = popup --[[@as { box: table<string, number>, actions: { edit: table<string, number>|nil, delete: table<string, number>|nil } }]]
         graphics.setColor(0, 0, 0, 0.45)
         graphics.rectangle("fill", 0, 0, viewport.width, viewport.height)
         drawCard(graphics, shapedPopup.box, false)
-        drawInset(graphics, shapedPopup.actions.delete, true)
-        drawPaletteText(
-          graphics,
-          text,
-          displayUpper("Delete"),
-          shapedPopup.actions.delete.x + 4,
-          shapedPopup.actions.delete.y + 4,
-          TEXT_PALETTE
-        )
+        if shapedPopup.actions.edit then
+          local selected = view.popup.focusedAction == "edit"
+          drawInset(graphics, shapedPopup.actions.edit, selected)
+          drawPaletteText(
+            graphics,
+            text,
+            displayUpper("Edit"),
+            shapedPopup.actions.edit.x + 4,
+            shapedPopup.actions.edit.y + 4,
+            TEXT_PALETTE
+          )
+        end
+        if shapedPopup.actions.delete then
+          local selected = view.popup.focusedAction == "delete"
+          drawInset(graphics, shapedPopup.actions.delete, selected)
+          drawPaletteText(
+            graphics,
+            text,
+            displayUpper("Delete"),
+            shapedPopup.actions.delete.x + 4,
+            shapedPopup.actions.delete.y + 4,
+            TEXT_PALETTE
+          )
+        end
       end
       if view.confirmation then
         local confirmation = assert(layout.confirmation)

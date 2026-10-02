@@ -48,6 +48,12 @@ local DRAFT_PENDING = "SAVE_EDITOR_DRAFT_PENDING"
 ---@field revision integer
 
 ---@class SaveEditorSession
+---@field snapshot fun(self: SaveEditorSession): SaveEditorSnapshot
+---@field isDirty fun(self: SaveEditorSession): boolean
+---@field setMoney fun(self: SaveEditorSession, value: unknown): table<string, unknown>
+---@field setFlag fun(self: SaveEditorSession, name: unknown, value: unknown): table<string, unknown>
+---@field save fun(self: SaveEditorSession, hasUnappliedDraft: boolean?): table<string, unknown>
+---@field discard fun(self: SaveEditorSession): boolean
 ---@field private _baseline table<string, unknown>
 ---@field private _entryCheckpoint table<string, unknown>
 ---@field private _money integer

@@ -385,6 +385,28 @@ function T.state_translates_catalog_failures_to_recoverable_state_and_emits_cont
   Assert.isTrue(intentMenu:view().saves[1].canContinue)
 end
 
+function T.saves_for_an_unselected_version_cannot_enter_the_editor()
+  local menu = state({
+    saveStore = {
+      listMetadata = function()
+        return {
+          {
+            saveId = "save-00000002",
+            versionId = "soulsilver",
+            playerData = { profile = { name = "PLAYER" } },
+            playTimeSeconds = 0,
+          },
+        }
+      end,
+    },
+    readyVersions = { "heartgold" },
+  })
+
+  local item = assert(menu:view().saves[1])
+  Assert.isFalse(item.canContinue)
+  Assert.isFalse(item.canEdit, "the editor cannot load a save with another version's cache context")
+end
+
 function T.state_deletes_unavailable_save_only_after_confirmation()
   local entries = {
     { saveId = "save-00000001", playerData = {}, versionId = "heartgold", playTimeSeconds = 0 },
@@ -579,6 +601,7 @@ function T.pointer_confirmation_click_activates_the_clicked_action()
   })
   menu:keypressed("right")
   menu:keypressed("return")
+  menu:keypressed("down")
   menu:keypressed("return")
   menu:keypressed("right")
   Assert.equal(menu.controller.confirmation.focusedAction, "delete")
@@ -612,6 +635,7 @@ function T.pointer_confirmation_click_activates_the_clicked_action()
   })
   cancelMenu:keypressed("right")
   cancelMenu:keypressed("return")
+  cancelMenu:keypressed("down")
   cancelMenu:keypressed("return")
   cancelMenu:keypressed("right")
   Assert.equal(cancelMenu.controller.confirmation.focusedAction, "delete")
@@ -775,6 +799,7 @@ function T.pointer_click_on_focused_delete_action_confirms_deletion()
   })
   menu:keypressed("right")
   menu:keypressed("return")
+  menu:keypressed("down")
   menu:keypressed("return")
   Assert.equal(menu:view().confirmation.focusedAction, "cancel")
   menu:keypressed("right")
@@ -1026,6 +1051,7 @@ function T.confirmation_focus_marks_only_the_active_action()
   local drawn = drawnMenu({ catalogEntry("save-00000001", "PLAYER", 60) }, 640, 480, function(menu)
     menu:keypressed("right")
     menu:keypressed("return")
+    menu:keypressed("down")
     menu:keypressed("return")
     menu:keypressed("right")
   end)
@@ -2119,6 +2145,7 @@ function T.hit_test_resolves_confirmation_modal_precedence()
   menu:keypressed("right")
   menu:keypressed("return")
   Assert.notNil(menu:view().popup, "overflow activation must open the save popup")
+  menu:keypressed("down")
   menu:keypressed("return")
   Assert.notNil(menu:view().confirmation, "popup activation must open the delete confirmation")
   local published = menu:view()
