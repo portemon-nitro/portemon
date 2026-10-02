@@ -354,6 +354,54 @@ function T.failed_acquisition_keeps_active_anchor()
   Assert.equal(coverage:status().anchorZ, 1)
 end
 
+function T.failed_recenter_preserves_retained_presentation()
+  local failCandidatePresentation = false
+  local releases = {}
+  local coverage = FieldCoverage.new({
+    matrixMemberId = 1,
+    index = makeIndex(6, 3),
+    anchorX = 1,
+    anchorZ = 1,
+    loadCell = function(descriptor)
+      local runtime = runtimeFactory(releases)(descriptor)
+      runtime.presentation = {
+        mapDraws = {
+          {
+            cellKey = runtime.key,
+            transform = failCandidatePresentation and descriptor.x == 3 and {} or nil,
+          },
+        },
+      }
+      return runtime
+    end,
+  })
+  local beforeParts = coverage:worldParts()
+  local beforeValues = {}
+  for index, part in ipairs(beforeParts) do
+    beforeValues[index] = { cellKey = part.cellKey, translation = part.translation }
+  end
+
+  failCandidatePresentation = true
+  local err = Assert.throws(function()
+    coverage:recenter(2, 1)
+  end)
+
+  Assert.notNil(err, "candidate presentation translation failure propagates")
+  Assert.equal(coverage:status().anchorX, 1, "failed recenter preserves the published anchor")
+  Assert.equal(coverage:status().anchorZ, 1)
+  Assert.equal(coverage:worldParts(), beforeParts, "failed recenter keeps the last known-good array")
+  local afterParts = coverage:worldParts()
+  Assert.equal(#afterParts, #beforeValues)
+  for index, expected in ipairs(beforeValues) do
+    Assert.equal(afterParts[index].cellKey, expected.cellKey)
+    Assert.deepEqual(afterParts[index].translation, expected.translation)
+  end
+  Assert.equal(releases["3:0"], 1, "newly acquired candidate cells release after failed staging")
+  Assert.equal(releases["3:1"], 1)
+  Assert.equal(releases["3:2"], 1)
+  coverage:release()
+end
+
 function T.failed_runtime_normalization_releases_acquired_cell()
   local releases = 0
   Assert.throws(function()
@@ -792,6 +840,30 @@ function T.ready_halo_cells_promote_without_boundary_acquisition()
   Assert.equal(status.committedCount, 9)
   Assert.equal(status.readyPrefetchCount, 3)
   Assert.equal(status.queuedPrefetchCount, 3)
+  coverage:release()
+end
+
+function T.prefetch_descriptors_copy_is_independent_from_current_borrowed_view()
+  local coverage = FieldCoverage.new({
+    matrixMemberId = 1,
+    index = makeIndex(),
+    anchorX = 1,
+    anchorZ = 1,
+    loadCell = function(descriptor)
+      return runtimeFactory({})(descriptor)
+    end,
+  })
+
+  local currentView = coverage:prefetchDescriptorsView()
+  Assert.equal(coverage:prefetchDescriptorsView(), currentView, "the current-anchor view is stable")
+  local arbitrary = coverage:prefetchDescriptors(0, 0)
+  Assert.isFalse(arbitrary == currentView, "arbitrary-anchor callers receive an owned array")
+  Assert.equal(arbitrary[1].x, 0)
+  Assert.equal(arbitrary[1].z, 0)
+  table.remove(arbitrary, 1)
+  Assert.equal(#currentView, 12, "mutating an arbitrary result does not alter the borrowed view")
+  Assert.equal(currentView[1].x, 0)
+  Assert.equal(currentView[1].z, 0)
   coverage:release()
 end
 
