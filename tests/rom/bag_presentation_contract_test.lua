@@ -78,8 +78,8 @@ function T.rebuilt_bundle_publishes_the_semantic_focus_contract(romFs)
   local bundle = compile(romFs)
   local manifest = assert(bundle.manifest)
 
-  Assert.equal(manifest.schema, "g4-bag-assets-v15", "the rebuilt Bag cache must publish the current contract")
-  Assert.equal(BagCache.SCHEMA, "g4-bag-assets-v15", "the loader must require the current contract")
+  Assert.equal(manifest.schema, "g4-bag-assets-v16", "the rebuilt Bag cache must publish the current contract")
+  Assert.equal(BagCache.SCHEMA, "g4-bag-assets-v16", "the loader must require the current contract")
   Assert.equal(BagCache.FORMAT, "bag-cache-v2", "the cache framing must not change with the semantic migration")
   for _, stale in ipairs({
     "g4-bag-assets-v2",
@@ -274,16 +274,40 @@ function T.quantity_overlay_publishes_source_controls_and_static_press_feedback(
   Assert.equal(overlay.pressTicks, 2, "quantity press feedback carries the source duration")
   Assert.deepEqual(overlay.confirm.center, { x = 136, y = 176 })
   Assert.deepEqual(overlay.confirm.hitRect, { x = 96, y = 168, width = 78, height = 24 })
+  Assert.deepEqual(
+    overlay.confirm.labelAt,
+    { x = 117, y = 168 },
+    "the toss label keeps its source text origin"
+  )
   Assert.deepEqual(overlay.cancelHitRect, { x = 178, y = 168, width = 78, height = 24 })
+  local cancel = assert(overlay.cancel, "the quantity overlay carries its own cancel face")
+  Assert.deepEqual(
+    cancel.center,
+    { x = 224, y = 176 },
+    "the quantity cancel centers on the cancel focus target"
+  )
+  Assert.deepEqual(
+    cancel.labelAt,
+    { x = 197, y = 168 },
+    "the quantity cancel label keeps its source text origin"
+  )
   for _, visual in ipairs({
     overlay.visuals.increment.normal,
     overlay.visuals.increment.pressed,
     overlay.visuals.decrement.normal,
     overlay.visuals.decrement.pressed,
     overlay.confirm.visual,
+    cancel.visual,
   }) do
     assertImage(bundle, visual, "quantity control visual")
     assertNoTimelineOrSourceIdentity(visual, "quantity control visual")
+  end
+  local feedback = assert(bundle.manifest.interactive.feedback, "the manifest publishes activation feedback")
+  local quantityCancel =
+    assert(feedback.quantityCancel, "quantity cancel carries its own activation feedback")
+  for _, visual in ipairs({ quantityCancel.normal, quantityCancel.selected }) do
+    assertImage(bundle, visual, "quantity cancel feedback visual")
+    assertNoTimelineOrSourceIdentity(visual, "quantity cancel feedback visual")
   end
 end
 
@@ -305,7 +329,7 @@ end
 function T.machine_summary_publishes_the_complete_semantic_contract(romFs, versionId)
   local bundle = compile(romFs)
   local manifest = assert(bundle.manifest)
-  Assert.equal(manifest.schema, "g4-bag-assets-v15", "the rebuilt Bag cache must publish the move-summary contract")
+  Assert.equal(manifest.schema, "g4-bag-assets-v16", "the rebuilt Bag cache must publish the move-summary contract")
   local summary = assert(assert(manifest.hero).moveSummary, "the hero must publish a machine move summary")
   Assert.isNil(manifest.hero.description.frame.alternateImage, "the retired alternate-image owner is removed")
   Assert.deepEqual(summary.labels, {

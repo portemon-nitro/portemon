@@ -353,6 +353,12 @@ local function validManifest()
             visual = visualRef("assets/generated/bag/quantity-confirm.png"),
             center = { x = 136, y = 176 },
             hitRect = rect(96, 168, 78, 24),
+            labelAt = { x = 117, y = 168 },
+          },
+          cancel = {
+            visual = visualRef("assets/generated/bag/quantity-cancel.png"),
+            center = { x = 224, y = 176 },
+            labelAt = { x = 197, y = 168 },
           },
           cancelHitRect = rect(178, 168, 78, 24),
         },
@@ -444,7 +450,7 @@ end
 
 local function validFocusManifest()
   local manifest = validManifest()
-  manifest.schema = "g4-bag-assets-v15"
+  manifest.schema = "g4-bag-assets-v16"
   manifest.interactive.overlays.tossPrompt = { x = 200, y = 48, shape = "compact", initialSelection = "yes" }
   manifest.interactive.overlays.selectedItem = {
     iconCenter = { x = 86, y = 76 },
@@ -469,6 +475,10 @@ local function validFocusManifest()
     quantityConfirm = {
       normal = visualRef("assets/generated/bag/quantity-confirm.png"),
       selected = visualRef("assets/generated/bag/quantity-confirm-selected.png"),
+    },
+    quantityCancel = {
+      normal = visualRef("assets/generated/bag/quantity-cancel.png"),
+      selected = visualRef("assets/generated/bag/quantity-cancel-selected.png"),
     },
   }
   local function moveClip(name, total)
@@ -610,7 +620,7 @@ end
 -- scenario keeps the versioned focus fixture above.
 local function validTossManifest()
   local manifest = validFocusManifest()
-  manifest.schema = "g4-bag-assets-v15"
+  manifest.schema = "g4-bag-assets-v16"
   manifest.interactive.overlays.tossPrompt = { x = 200, y = 48, shape = "compact", initialSelection = "yes" }
   manifest.interactive.text.tossResult = {
     segments = {
@@ -682,6 +692,24 @@ function T.cache_reports_ready_only_with_every_referenced_file()
   Assert.isFalse(BagCache.isReady(cacheFs, marker), "a missing tab image is not ready")
 end
 
+function T.cache_reports_not_ready_without_the_quantity_cancel_visuals()
+  local manifest = validFocusManifest()
+  local marker = BagCache.marker("deadbeef", "feedface")
+  local cacheFs = CacheFs.forVersion("heartgold", FakeCache.new())
+  cacheFs:writeLua(BagCache.manifestPath(), manifest)
+  for _, path in ipairs(BagCache.referencedPaths(manifest)) do
+    cacheFs:write(path, "payload")
+  end
+  cacheFs:writeLua(BagCache.provenancePath(), { cacheFormat = BagCache.FORMAT, schema = BagCache.SCHEMA })
+  cacheFs:write(BagCache.markerPath(), marker)
+  Assert.isTrue(BagCache.isReady(cacheFs, marker), "the complete class is ready before damage")
+  cacheFs:remove("assets/generated/bag/quantity-cancel.png")
+  Assert.isFalse(BagCache.isReady(cacheFs, marker), "a missing quantity cancel visual is not ready")
+  cacheFs:write("assets/generated/bag/quantity-cancel.png", "payload")
+  cacheFs:remove("assets/generated/bag/quantity-cancel-selected.png")
+  Assert.isFalse(BagCache.isReady(cacheFs, marker), "a missing quantity cancel flash is not ready")
+end
+
 function T.previous_bag_contract_is_rejected()
   local manifest = validFocusManifest()
   manifest.schema = "g4-bag-assets-v2"
@@ -721,6 +749,12 @@ function T.previous_bag_contract_is_rejected()
   Assert.isFalse(
     BagAssetSchema.isValidManifest(supersededPostSelection),
     "the duplicate-center post-selection Bag contract must not validate as current"
+  )
+  local supersededQuantityFaces = validFocusManifest()
+  supersededQuantityFaces.schema = "g4-bag-assets-v15"
+  Assert.isFalse(
+    BagAssetSchema.isValidManifest(supersededQuantityFaces),
+    "the pre-quantity-face Bag contract must not validate as current"
   )
 end
 
@@ -775,6 +809,7 @@ function T.control_visuals_are_current_and_each_is_referenced_once()
   for _, path in ipairs({
     "assets/generated/bag/action-face.png",
     "assets/generated/bag/quantity-confirm.png",
+    "assets/generated/bag/quantity-cancel.png",
   }) do
     Assert.equal(counts[path], 2, path .. " backs its control and the feedback latch")
   end
@@ -787,6 +822,7 @@ function T.control_visuals_are_current_and_each_is_referenced_once()
     "assets/generated/bag/cancel-face-selected-base.png",
     "assets/generated/bag/cancel-face-selected.png",
     "assets/generated/bag/quantity-confirm-selected.png",
+    "assets/generated/bag/quantity-cancel-selected.png",
     "assets/generated/bag/move-cursor-original.png",
     "assets/generated/bag/move-cursor-candidate.png",
     "assets/generated/bag/move-unchanged-0.png",
@@ -893,9 +929,9 @@ end
 -- The strip contract is the current focus-manifest shape above.
 
 function T.pocket_strips_and_edge_colors_validate_as_the_current_contract()
-  Assert.equal(BagAssetSchema.SCHEMA, "g4-bag-assets-v15")
-  Assert.equal(DerivedAssetContract.bag.schema, "g4-bag-assets-v15")
-  Assert.equal(BagCache.SCHEMA, "g4-bag-assets-v15")
+  Assert.equal(BagAssetSchema.SCHEMA, "g4-bag-assets-v16")
+  Assert.equal(DerivedAssetContract.bag.schema, "g4-bag-assets-v16")
+  Assert.equal(BagCache.SCHEMA, "g4-bag-assets-v16")
   Assert.equal(BagCache.FORMAT, "bag-cache-v2")
   local manifest = validStripManifest()
   Assert.isTrue(BagAssetSchema.isValidManifest(manifest), "the pocket-strip manifest must pass the schema")
@@ -918,6 +954,35 @@ function T.pocket_strips_and_edge_colors_validate_as_the_current_contract()
   Assert.isFalse(
     BagAssetSchema.isValidManifest(retired),
     "the previous per-tab normal manifest must not validate once strips are current"
+  )
+end
+
+function T.quantity_cancel_and_label_origins_are_required()
+  -- Each required quantity record is omitted on its own: every case
+  -- starts from the valid contract and removes exactly one field.
+  local withoutTossLabel = validFocusManifest()
+  withoutTossLabel.interactive.overlays.quantity.confirm.labelAt = nil
+  Assert.isFalse(
+    BagAssetSchema.isValidManifest(withoutTossLabel),
+    "a manifest without the toss label origin must fail"
+  )
+  local withoutCancel = validFocusManifest()
+  withoutCancel.interactive.overlays.quantity.cancel = nil
+  Assert.isFalse(
+    BagAssetSchema.isValidManifest(withoutCancel),
+    "a manifest without the quantity cancel record must fail"
+  )
+  local withoutCancelLabel = validFocusManifest()
+  withoutCancelLabel.interactive.overlays.quantity.cancel.labelAt = nil
+  Assert.isFalse(
+    BagAssetSchema.isValidManifest(withoutCancelLabel),
+    "a manifest without the cancel label origin must fail"
+  )
+  local withoutCancelFeedback = validFocusManifest()
+  withoutCancelFeedback.interactive.feedback.quantityCancel = nil
+  Assert.isFalse(
+    BagAssetSchema.isValidManifest(withoutCancelFeedback),
+    "a manifest without quantity cancel activation feedback must fail"
   )
 end
 

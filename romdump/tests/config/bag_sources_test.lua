@@ -137,6 +137,7 @@ function T.canonical_geometry_covers_tabs_slots_and_affordances()
     "quantityControls",
     "quantityConfirm",
     "quantityCancelHitRect",
+    "quantityCancelLabelAt",
   }) do
     Assert.notNil(geometry[name], "geometry must carry " .. name)
   end
@@ -207,6 +208,45 @@ function T.hero_light_vectors_carry_the_audited_static_directions()
   for index, vector in ipairs(lights.vectors) do
     Assert.deepEqual(vector, { x = 1, y = 0, z = 0 }, "static light " .. index .. " points down positive x")
   end
+end
+
+function T.quantity_faces_and_label_origins_name_the_picker_sources()
+  local BagSources = sources()
+  Assert.deepEqual(
+    BagSources.spriteStates.quantity.confirm,
+    { animation = 37, palette = 8 },
+    "the quantity picker confirms through its own source face"
+  )
+  Assert.deepEqual(
+    BagSources.spriteStates.quantity.cancel,
+    { animation = 39, palette = 8 },
+    "the quantity picker cancels through its own source face"
+  )
+  Assert.deepEqual(
+    BagSources.spriteStates.cancelFace,
+    { animation = 16, palette = 8 },
+    "the generic cancel face stays on its own source animation"
+  )
+  Assert.deepEqual(
+    BagSources.geometry.quantityConfirm.labelAt,
+    { x = 117, y = 168 },
+    "the toss label keeps its source text origin"
+  )
+  Assert.deepEqual(
+    BagSources.geometry.quantityCancelLabelAt,
+    { x = 197, y = 168 },
+    "the quantity cancel label keeps its source text origin"
+  )
+  Assert.deepEqual(
+    BagSources.geometry.quantityConfirm.hitRect,
+    { x = 96, y = 168, width = 78, height = 24 },
+    "the toss touch rectangle is unchanged"
+  )
+  Assert.deepEqual(
+    BagSources.geometry.quantityCancelHitRect,
+    { x = 178, y = 168, width = 78, height = 24 },
+    "the cancel touch rectangle is unchanged"
+  )
 end
 
 function T.message_selection_names_the_audited_banks_and_indexes()

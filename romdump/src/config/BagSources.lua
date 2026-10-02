@@ -295,7 +295,11 @@ BagSources.spriteStates = {
   quantity = {
     increment = { normal = { animation = 25, palette = 8 }, pressed = { animation = 26, palette = 8 } },
     decrement = { normal = { animation = 27, palette = 8 }, pressed = { animation = 28, palette = 8 } },
-    confirm = { animation = 31, palette = 8 },
+    -- The quantity picker confirms through its own TOSS/A face and cancels
+    -- through its own Cancel/B face; the label origins below are text
+    -- placement, never touch geometry.
+    confirm = { animation = 37, palette = 8 },
+    cancel = { animation = 39, palette = 8 },
   },
   cancelFace = { animation = 16, palette = 8 },
   cursor = { animations = { 0, 1, 2, 3 } },
@@ -631,8 +635,10 @@ BagSources.geometry = {
   quantityConfirm = {
     center = { x = 136, y = 176 },
     hitRect = rect(96, 168, 78, 24),
+    labelAt = { x = 117, y = 168 },
   },
   quantityCancelHitRect = rect(178, 168, 78, 24),
+  quantityCancelLabelAt = { x = 197, y = 168 },
 }
 
 -- Movable focus targets in canonical pane pixels: the position records the

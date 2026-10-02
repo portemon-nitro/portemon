@@ -710,7 +710,8 @@ function T.producer_declares_the_audited_message_selection()
   Assert.deepEqual(BagSources.spriteStates.quantity, {
     increment = { normal = { animation = 25, palette = 8 }, pressed = { animation = 26, palette = 8 } },
     decrement = { normal = { animation = 27, palette = 8 }, pressed = { animation = 28, palette = 8 } },
-    confirm = { animation = 31, palette = 8 },
+    confirm = { animation = 37, palette = 8 },
+    cancel = { animation = 39, palette = 8 },
   })
   Assert.deepEqual(BagSources.spriteStates.cancelFace, { animation = 16, palette = 8 })
   Assert.deepEqual(BagSources.lowerLayers, {
@@ -908,7 +909,7 @@ local function syntheticBundle(marker)
     tabs[#tabs + 1] = { x = i * 32, y = 0, width = 32, height = 32 }
   end
   local manifest = {
-    schema = "g4-bag-assets-v15",
+    schema = "g4-bag-assets-v16",
     logicalSize = { width = 256, height = 192 },
     hero = {
       background = {
@@ -1021,6 +1022,10 @@ local function syntheticBundle(marker)
         quantityConfirm = {
           normal = visualRef("assets/generated/bag/quantity-confirm-frame-1.png"),
           selected = visualRef("assets/generated/bag/quantity-confirm-selected.png"),
+        },
+        quantityCancel = {
+          normal = visualRef("assets/generated/bag/quantity-cancel-frame-1.png"),
+          selected = visualRef("assets/generated/bag/quantity-cancel-selected.png"),
         },
       },
       moveTransition = {
@@ -1305,6 +1310,12 @@ local function syntheticBundle(marker)
             visual = visualRef("assets/generated/bag/quantity-confirm-frame-1.png"),
             center = { x = 136, y = 176 },
             hitRect = { x = 96, y = 168, width = 78, height = 24 },
+            labelAt = { x = 117, y = 168 },
+          },
+          cancel = {
+            visual = visualRef("assets/generated/bag/quantity-cancel-frame-1.png"),
+            center = { x = 224, y = 176 },
+            labelAt = { x = 197, y = 168 },
           },
           cancelHitRect = { x = 178, y = 168, width = 78, height = 24 },
         },
@@ -1359,7 +1370,7 @@ function T.writer_publishes_the_class_and_reports_ready()
   Assert.isTrue(BagCacheWriter.write(cacheFs, bundle))
   Assert.isTrue(BagCacheWriter.isReady(cacheFs, bundle.marker))
   local loaded = BagCache.loadManifest(cacheFs)
-  Assert.equal(loaded.schema, "g4-bag-assets-v15")
+  Assert.equal(loaded.schema, "g4-bag-assets-v16")
   Assert.equal(loaded.hero.presentation.lights.count, 4)
   Assert.deepEqual(loaded.hero.presentation.lights.color, { r = 31, g = 31, b = 31 })
   Assert.equal(#loaded.hero.presentation.lights.vectors, 4)

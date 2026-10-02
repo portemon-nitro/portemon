@@ -29,7 +29,7 @@ local ModelAsset = require("libs.assets.src.model.ModelAsset")
 ---@class BagAssetSchema
 local BagAssetSchema = {}
 
-BagAssetSchema.SCHEMA = "g4-bag-assets-v15"
+BagAssetSchema.SCHEMA = "g4-bag-assets-v16"
 BagAssetSchema.PANE_WIDTH = 256
 BagAssetSchema.PANE_HEIGHT = 192
 BagAssetSchema.TAB_COUNT = 8
@@ -937,6 +937,7 @@ local function checkQuantityOverlay(quantity, context)
     visuals = true,
     pressTicks = true,
     confirm = true,
+    cancel = true,
     cancelHitRect = true,
   }, context, "interactive.overlays.quantity")
   checkFixedArray(
@@ -981,13 +982,19 @@ local function checkQuantityOverlay(quantity, context)
   local confirm = quantity.confirm
   checkRecord(
     confirm,
-    { visual = true, center = true, hitRect = true },
+    { visual = true, center = true, hitRect = true, labelAt = true },
     context,
     "interactive.overlays.quantity.confirm"
   )
   checkVisual(confirm.visual, context, "interactive.overlays.quantity.confirm.visual")
   checkPoint(confirm.center, context, "interactive.overlays.quantity.confirm.center")
   checkRect(confirm.hitRect, context, "interactive.overlays.quantity.confirm.hitRect")
+  checkPoint(confirm.labelAt, context, "interactive.overlays.quantity.confirm.labelAt")
+  local cancel = quantity.cancel
+  checkRecord(cancel, { visual = true, center = true, labelAt = true }, context, "interactive.overlays.quantity.cancel")
+  checkVisual(cancel.visual, context, "interactive.overlays.quantity.cancel.visual")
+  checkPoint(cancel.center, context, "interactive.overlays.quantity.cancel.center")
+  checkPoint(cancel.labelAt, context, "interactive.overlays.quantity.cancel.labelAt")
   checkRect(quantity.cancelHitRect, context, "interactive.overlays.quantity.cancelHitRect")
 end
 
@@ -1052,11 +1059,13 @@ local function checkFeedback(feedback, context)
     actionFace = true,
     cancelFace = true,
     quantityConfirm = true,
+    quantityCancel = true,
   }, context, "interactive.feedback")
   checkInteger(feedback.totalTicks, context, "interactive.feedback.totalTicks", 1, nil, "a positive integer")
   checkFeedbackVisuals(feedback.actionFace, context, "interactive.feedback.actionFace")
   checkFeedbackVisuals(feedback.cancelFace, context, "interactive.feedback.cancelFace")
   checkFeedbackVisuals(feedback.quantityConfirm, context, "interactive.feedback.quantityConfirm")
+  checkFeedbackVisuals(feedback.quantityCancel, context, "interactive.feedback.quantityCancel")
 end
 
 -- Move commit clips: one one-shot sequence per reorder kind reusing the
