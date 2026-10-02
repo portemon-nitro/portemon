@@ -5,12 +5,14 @@ local CacheFs = require("libs.storage.src.CacheFs")
 local Errors = require("libs.errors.src.Errors")
 local FieldTextRenderer = require("libs.hgss.src.ui.FieldTextRenderer")
 local HgssInputBindings = require("libs.hgss.src.ui.HgssInputBindings")
+local FieldInput = require("libs.hgss.src.field.FieldInput")
 local PlayerData = require("libs.hgss.src.save.PlayerData")
 local DisplayContext = require("libs.ui.src.DisplayContext")
 local Interface = require("app.src.saveeditor.SaveEditorInterface")
 local Renderer = require("app.src.saveeditor.SaveEditorRenderer")
 local Controller = require("app.src.saveeditor.SaveEditorController")
 local ValueEditor = require("app.src.saveeditor.SaveEditorValueEditor")
+local ScrollViewport = require("libs.ui.src.ScrollViewport")
 local Composition = require("app.src.saveeditor.SaveEditorComposition")
 local LocationService = require("app.src.saveeditor.SaveEditorLocationService")
 local FieldScriptSymbols = require("libs.assets.src.field.FieldScriptSymbols")
@@ -65,8 +67,28 @@ local Personality = require("libs.mons.src.gen4.Personality")
 ---@field iconFailure string?
 ---@field pendingRemove table<string, unknown>?
 ---@field pendingQuantity table<string, unknown>?
+---@field fieldInput FieldInput
+---@field inputTick integer
+---@field tickRemainder number
+---@field activeScopeId string?
+---@field scopeEpoch integer
+---@field editorFeedback string?
 local State = {}
 State.__index = State
+local FIELD_DIRECTIONS = { up = "north", down = "south", left = "west", right = "east" }
+local PRINTABLE_KEY_NAMES = {
+  space = true,
+  kpdecimal = true,
+  kpdivide = true,
+  kpmultiply = true,
+  kpminus = true,
+  kpplus = true,
+  kpequals = true,
+}
+
+local function isPrintableKeyName(key)
+  return (#key == 1 and key:match("^[%w%p ]$") ~= nil) or key:match("^kp%d$") ~= nil or PRINTABLE_KEY_NAMES[key] == true
+end
 
 local function message(value)
   if Errors.is(value) then
@@ -148,7 +170,14 @@ function State.new(options)
     iconFailure = nil,
     pendingRemove = nil,
     pendingQuantity = nil,
+    fieldInput = FieldInput.new(),
+    inputTick = 0,
+    tickRemainder = 0,
+    activeScopeId = nil,
+    scopeEpoch = 0,
+    editorFeedback = nil,
   }, State)
+  self.fieldInput:beginUi(self.inputTick)
   local resolveOk, resolveError = pcall(function()
     self:_resolve(self:_snapshot())
   end)
@@ -187,9 +216,15 @@ function State:_readyReadiness()
   return ready
 end
 
-function State:update()
+function State:update(dt)
   if self.disposed then
     return
+  end
+  self.tickRemainder = self.tickRemainder + (dt or 0) * 60
+  if self.tickRemainder >= 1 then
+    self.inputTick = self.inputTick + math.floor(self.tickRemainder)
+    self.tickRemainder = self.tickRemainder % 1
+    self:_consumeUiInput(self.fieldInput:uiSnapshot(self.inputTick))
   end
   if self.status == "opening" then
     local generation = self.generation
@@ -257,6 +292,17 @@ function State:_openingFailed(err)
 end
 
 function State:_snapshot()
+  if self.valueEditor and self.controller.modal == nil then
+    local value = self.valueEditor:snapshot()
+    if value.kind == "choice" and value.selectedKey then
+      self.controller.focus = "choice:" .. value.selectedKey
+    elseif value.kind == "name" then
+      local cursor = assert(value.naming.cursor)
+      self.controller.focus = tostring(cursor.row) .. ":" .. tostring(cursor.column)
+    else
+      self.controller.focus = "value:buffer"
+    end
+  end
   local session = self.session and self.session:snapshot() or nil
   local flags = session and self:_flagRows(session.flags) or {}
   local party = session and self:_partyView() or {}
@@ -289,6 +335,7 @@ function State:_snapshot()
     flagFilterLabel = self.controller.flagGroup or self.controller.flagFilter,
     flagRows = flags,
     valueEditor = self.valueEditor and self.valueEditor:snapshot() or nil,
+    editorFeedback = self.editorFeedback,
     unappliedDraft = self.monDraft ~= nil,
     iconStatus = self.iconStatus,
     iconFailure = self.iconFailure,
@@ -312,6 +359,58 @@ function State:_snapshot()
   for key, value in pairs(bag) do
     view[key] = value
   end
+  local scopeId
+  if self.controller.modal then
+    scopeId = "decision:" .. self.controller.modal
+  elseif self.valueEditor then
+    local value = self.valueEditor:snapshot()
+    local query = value.kind == "choice" and value.query or ""
+    scopeId = "value:" .. (self.valuePurpose or "editor") .. ":" .. query
+  elseif self.monDraft then
+    scopeId = table.concat({
+      "mon-draft",
+      self.monDraft:mode(),
+      tostring(self.controller.partySlot0),
+      self.controller.partySubpage,
+    }, ":")
+  elseif self.controller.section == "Party" and self.controller.partyPage ~= "list" then
+    scopeId = table.concat({
+      "party-detail",
+      tostring(self.controller.partySlot0),
+      self.controller.partySubpage,
+    }, ":")
+  elseif self.controller.section == "Progress" then
+    scopeId = table.concat({
+      "section:Progress",
+      self.controller.flagFilter,
+      tostring(self.controller.flagGroup),
+      self.controller.query,
+    }, ":")
+  elseif self.controller.section == "Bag" then
+    scopeId = "section:Bag:" .. self.controller.bagPocket
+  else
+    scopeId = "section:" .. self.controller.section .. ":" .. self.controller.locationPage
+  end
+  if scopeId ~= self.activeScopeId then
+    self.activeScopeId = scopeId
+    self.scopeEpoch = self.scopeEpoch + 1
+    self.fieldInput:beginUi(self.inputTick)
+    self.controller:cancelInteraction()
+  end
+  self.controller.scopeId, self.controller.scopeEpoch = scopeId, self.scopeEpoch
+  local scopeKind = self.controller.modal and "decision"
+    or self.valueEditor and "value"
+    or self.monDraft and "mon-draft"
+    or self.controller.section == "Party" and self.controller.partyPage ~= "list" and "party-detail"
+    or "section"
+  view.scope = {
+    id = scopeId,
+    epoch = self.scopeEpoch,
+    kind = scopeKind,
+    focusId = self.controller.focus,
+  }
+  view.scrollOffsets = self.controller.scrollOffsets
+  view.locationGridMode = self.controller.locationGridMode
   return view
 end
 
@@ -498,7 +597,7 @@ function State:_monRows(mon, projection, subpage, editable)
       "Nickname",
       mon.nickname,
       "pokemon",
-      { kind = "pokemon", species = mon.species, form = mon.form }
+      { kind = "pokemon", species = assert(species.nativeId), form = mon.form }
     )
     integer("personality", "Personality", mon.personality, 0, 4294967295, "hex")
     choice("ability", "Ability", mon.ability, abilityOptions)
@@ -880,6 +979,7 @@ function State:_publishBagQuantity(itemKey, quantity)
 end
 
 function State:_resolve(view)
+  view.textMetrics = assert(self.renderer):metrics()
   return self.presentation:resolve(self.displayContext:measure(self.width, self.height), view)
 end
 
@@ -1086,20 +1186,19 @@ function State:_performDeferred(action)
       end
       currentIndex = math.max(1, math.min(#maps, currentIndex + delta))
       self.controller.focus = "location:map:" .. maps[currentIndex].mapId
-      local visible = 0
-      for targetId in pairs(layout.targets) do
-        if targetId:match("^location:map:%d+$") then
-          visible = visible + 1
-        end
-      end
-      visible = math.max(1, visible)
-      if currentIndex <= self.controller.locationMapOffset then
-        self.controller.locationMapOffset = currentIndex - 1
-      elseif currentIndex > self.controller.locationMapOffset + visible then
-        self.controller.locationMapOffset = currentIndex - visible
-      end
+      local viewport = assert(layout.viewports["location:map-list"])
+      self.controller.locationMapOffset = ScrollViewport.clamp(
+        ScrollViewport.reveal(
+          viewport.offset,
+          viewport.clip.height,
+          (currentIndex - 1) * viewport.rowExtent,
+          viewport.rowExtent
+        ),
+        viewport.contentExtent,
+        viewport.clip.height
+      )
     else
-      self.controller:moveFocus(layout.focusable, action.direction)
+      self.controller:moveFocus(layout.focusGraph, action.direction)
     end
   elseif action.kind == "location-cursor-move" then
     local width, height = self:_locationGridSize()
@@ -1372,6 +1471,10 @@ function State:_activate(targetId)
       self.valueEditor:press("page_next")
     elseif targetId == "page-previous" then
       self.valueEditor:press("page_previous")
+    elseif targetId:sub(1, 7) == "choice:" then
+      self.valueEditor:activateTarget(targetId:sub(8))
+    elseif targetId == "clear-search" then
+      self.valueEditor:press("clear_search")
     elseif valueKind == "name" then
       local controlId = targetId:match("^name%-control:(.+)$")
       self.valueEditor:activateTarget(controlId or targetId)
@@ -1451,7 +1554,6 @@ function State:_activate(targetId)
     self.valueEditor =
       ValueEditor.new({ kind = "integer", value = money, min = 0, max = PlayerData.MAX_MONEY, base = "decimal" })
     self.valuePurpose = "money"
-    self._pointerOpenedValue = self._pointerDispatching == true
   elseif targetId:sub(1, 5) == "flag:" then
     local name = targetId:sub(6)
     local current = self.session:snapshot().flags[FieldScriptSymbols.flagsByName[name]] == true
@@ -1583,13 +1685,11 @@ function State:_moveFlagFocus(direction)
   self.controller.focus = "flag:" .. rows[current].name
   local plan = self:_resolve(self:_snapshot())
   local layout = assert(plan.content.layout)
-  local rowHeight = layout.viewport.height <= 200 and 22 or 34
-  local visibleFlags = math.max(1, math.floor(layout.content.height / rowHeight) - 2)
-  if current > self.controller.scrollOffset + visibleFlags then
-    self.controller.scrollOffset = current - visibleFlags
-  elseif current <= self.controller.scrollOffset then
-    self.controller.scrollOffset = current - 1
-  end
+  local viewport = assert(layout.viewports.flags)
+  local offset =
+    ScrollViewport.reveal(viewport.offset, viewport.clip.height, (current - 1) * viewport.rowExtent, viewport.rowExtent)
+  self.controller.scrollOffsets["flags:" .. tostring(self.controller.flagGroup or self.controller.flagFilter)] =
+    ScrollViewport.clamp(offset, viewport.contentExtent, viewport.clip.height)
 end
 
 function State:_cycleFlagFilter(direction)
@@ -1630,7 +1730,7 @@ function State:_cycleFlagFilter(direction)
   local nextFilter = ordered[(index - 1 + direction) % #ordered + 1]
   self.controller.flagFilter = nextFilter == "All" and "All" or "Named"
   self.controller.flagGroup = nextFilter ~= "All" and nextFilter ~= "Named" and nextFilter or nil
-  self.controller.scrollOffset = 0
+  self.controller.scrollOffsets["flags:" .. tostring(nextFilter)] = 0
   self.controller.focus = "flag:" .. self:_firstFlagName()
 end
 
@@ -1672,7 +1772,11 @@ function State:_dispatchIntent(intent)
       self.pendingDraftAction = nil
     end
   elseif intent.kind == "move" then
-    if self.width < 400 and (intent.direction == "left" or intent.direction == "right") then
+    if
+      self.width < 400
+      and not self.controller.locationGridMode
+      and (intent.direction == "left" or intent.direction == "right")
+    then
       local sections = { "Location", "Player", "Party", "Bag", "Progress" }
       local current = 1
       for index, section in ipairs(sections) do
@@ -1684,34 +1788,44 @@ function State:_dispatchIntent(intent)
       local offset = intent.direction == "right" and 1 or -1
       local nextSection = sections[(current - 1 + offset) % #sections + 1]
       self:_requestDraftResolution({ kind = "section", section = nextSection })
-    elseif self.controller.section == "Progress" then
-      if intent.direction == "left" then
-        self.controller.section = "Player"
-        self.controller.focus = "money"
-      elseif intent.direction == "right" then
+    elseif
+      self.controller.section == "Progress"
+      and (
+        intent.direction == "right"
+        or (self.controller.focus:sub(1, 5) == "flag:" and (intent.direction == "up" or intent.direction == "down"))
+      )
+    then
+      if intent.direction == "right" then
         self:_cycleFlagFilter(1)
-      elseif intent.direction == "up" or intent.direction == "down" then
+      else
         self:_moveFlagFocus(intent.direction == "down" and 1 or -1)
       end
     else
       local plan = self:_resolve(self:_snapshot())
-      local focusable = assert(plan.content.layout).focusable
-      self.controller:moveFocus(focusable, intent.direction)
-      if self.controller.section == "Party" or self.controller.section == "Bag" then
-        self:_revealFocusedRow(focusable)
+      local layout = assert(plan.content.layout)
+      self.controller:moveFocus(layout.focusGraph, intent.direction)
+      if
+        self.controller.section == "Party"
+        or self.controller.section == "Bag"
+        or self.controller.section == "Progress"
+      then
+        self:_revealFocusedRow(layout.focusOrder)
       end
     end
     self.controller:cancelInteraction()
   end
 end
 
-function State:_revealFocusedRow(focusable)
-  local _ = focusable
+function State:_revealFocusedRow(_)
   local view = self:_snapshot()
-  local rows = self.controller.section == "Party" and view.partyRows or view.bagRows
+  local section = self.controller.section
+  local rows = section == "Party" and view.partyRows
+    or section == "Bag" and view.bagRows
+    or section == "Progress" and view.flagRows
+    or {}
   local rowIndex
   for index, row in ipairs(rows or {}) do
-    local targetId = row.targetId or ("bag:item:" .. row.item)
+    local targetId = row.targetId or (section == "Bag" and ("bag:item:" .. row.item) or "flag:" .. row.name)
     if targetId == self.controller.focus then
       rowIndex = index
       break
@@ -1721,13 +1835,18 @@ function State:_revealFocusedRow(focusable)
     return
   end
   local layout = assert(self:_resolve(view).content.layout)
-  local rowHeight = layout.viewport.height <= 200 and 22 or 34
-  local visible = math.max(1, math.floor(layout.content.height / rowHeight) - 3)
-  if rowIndex > self.controller.scrollOffset + visible then
-    self.controller.scrollOffset = rowIndex - visible
-  elseif rowIndex <= self.controller.scrollOffset then
-    self.controller.scrollOffset = rowIndex - 1
-  end
+  local viewportId = section == "Party" and "party" or section == "Bag" and "bag" or "flags"
+  local viewport = assert(layout.viewports[viewportId])
+  local offset = ScrollViewport.reveal(
+    viewport.offset,
+    viewport.clip.height,
+    (rowIndex - 1) * viewport.rowExtent,
+    viewport.rowExtent
+  )
+  local purpose = section == "Party" and ("party:" .. view.partyPage .. ":" .. tostring(view.partySubpage or "list"))
+    or section == "Bag" and ("bag:" .. tostring(view.bagPocket))
+    or ("flags:" .. tostring(view.flagGroup or view.flagFilter))
+  self.controller.scrollOffsets[purpose] = ScrollViewport.clamp(offset, viewport.contentExtent, viewport.clip.height)
 end
 
 function State:_pointer(events)
@@ -1781,50 +1900,95 @@ function State:focus(focused)
   if not focused then
     self.presentation:cancelPointers()
     self.controller:cancelInteraction()
+    self.fieldInput:clearAll()
+    self.fieldInput:beginUi(self.inputTick)
+  end
+end
+
+function State:_consumeUiInput(events)
+  for _, event in ipairs(events) do
+    if event.type == "navigate" then
+      if self.controller.modal then
+        self:_dispatchIntent(self.controller:press(event.direction))
+      elseif self.valueEditor then
+        local snapshot = self.valueEditor:snapshot()
+        if snapshot.kind == "choice" and (event.direction == "up" or event.direction == "down") then
+          self.valueEditor:press(event.direction)
+        elseif snapshot.kind == "name" or snapshot.kind == "integer" then
+          self.valueEditor:press(event.direction)
+        elseif snapshot.kind == "choice" then
+          self.valueEditor:press(event.direction)
+        end
+      elseif self.controller.section == "Location" and self.controller.locationGridMode then
+        self:_dispatchIntent(self.controller:press(event.direction))
+      else
+        self:_dispatchIntent(self.controller:press(event.direction))
+      end
+    elseif event.type == "confirm" then
+      if self.controller.modal then
+        self:_dispatchIntent(self.controller:press("confirm"))
+      elseif self.valueEditor then
+        if self.valueEditor:snapshot().kind == "name" then
+          self.valueEditor:press("confirm")
+          self:_finishValueEditor()
+        else
+          local submitted, reason = self.valueEditor:submit()
+          self.editorFeedback = submitted and nil or reason
+          self:_finishValueEditor()
+        end
+      else
+        self:_dispatchIntent(self.controller:press("confirm"))
+      end
+    elseif event.type == "cancel" then
+      if self.controller.modal then
+        self:_dispatchIntent(self.controller:press("cancel"))
+      elseif self.valueEditor then
+        self.valueEditor:cancel()
+        self:_finishValueEditor()
+      else
+        self:_dispatchIntent(self.controller:press("cancel"))
+      end
+    end
   end
 end
 
 function State:keypressed(key, _, isrepeat)
-  if self.disposed or isrepeat then
+  if self.disposed or isrepeat or self.status == "opening" then
     return
   end
-  if self.status == "opening" and not HgssInputBindings.isCancelKey(key) then
+  if self.controller.modal then
+    local source = "key:" .. key
+    if key == "up" or key == "down" or key == "left" or key == "right" then
+      self.fieldInput:pressDirection(FIELD_DIRECTIONS[key], source)
+    elseif HgssInputBindings.isCancelKey(key) then
+      self.fieldInput:pressCancel(source)
+    elseif HgssInputBindings.isActionKey(key) or key == "return" or key == "kpenter" then
+      self.fieldInput:pressAction(source)
+    else
+      return
+    end
+    self:_consumeUiInput(self.fieldInput:uiSnapshot(self.inputTick))
     return
   end
   if self.valueEditor then
     if key == "home" then
       self.valueEditor:press("group_previous")
-      return
     elseif key == "end" then
       self.valueEditor:press("group_next")
-      return
-    end
-    if key == "pageup" then
-      self.valueEditor:press("page_previous")
-      return
-    elseif key == "pagedown" then
-      self.valueEditor:press("page_next")
-      return
-    end
-    if (key == "return" or key == "kpenter") and self._pointerOpenedValue then
-      self._pointerOpenedValue = false
     elseif key == "return" or key == "kpenter" then
-      self:_activate("confirm")
+      local submitted, reason = self.valueEditor:submit()
+      self.editorFeedback = submitted and nil or reason
+      self:_finishValueEditor()
     elseif key == "escape" then
       self.valueEditor:cancel()
       self:_finishValueEditor()
     elseif key == "backspace" then
       self.valueEditor:press("backspace")
+    elseif key == "delete" then
+      self.valueEditor:press("clear_search")
     elseif key == "left" or key == "right" or key == "up" or key == "down" then
       self.valueEditor:press(key)
     end
-    return
-  end
-  if self.controller.section == "Progress" and key == "home" then
-    self:_cycleFlagFilter(-1)
-    return
-  elseif self.controller.section == "Progress" and key == "end" then
-    self:_cycleFlagFilter(1)
     return
   end
   if self.controller.section == "Progress" and key == "backspace" then
@@ -1839,49 +2003,75 @@ function State:keypressed(key, _, isrepeat)
     end
     return
   end
-  if self.controller.section == "Progress" and (#key == 1 or key == "space") then
+  if self.controller.section == "Progress" and isPrintableKeyName(key) then
     return
   end
-  local action = key
-  if HgssInputBindings.isCancelKey(key) then
-    action = "back"
-  elseif HgssInputBindings.isActionKey(key) then
-    action = "confirm"
+  local source = "key:" .. key
+  if key == "up" or key == "down" or key == "left" or key == "right" then
+    self.fieldInput:pressDirection(FIELD_DIRECTIONS[key], source)
+  elseif HgssInputBindings.isCancelKey(key) then
+    self.fieldInput:pressCancel(source)
+  elseif HgssInputBindings.isActionKey(key) or key == "return" or key == "kpenter" then
+    self.fieldInput:pressAction(source)
+  elseif self.controller.section == "Progress" then
+    return
   end
-  if self.controller.modal and (key == "left" or key == "right" or key == "up" or key == "down") then
-    self:_dispatchIntent(self.controller:press(action))
-  elseif self.status == "error" then
-    self:_activate(key == "escape" and "back" or "retry")
-  else
-    self:_dispatchIntent(self.controller:press(action))
-  end
+  self:_consumeUiInput(self.fieldInput:uiSnapshot(self.inputTick))
 end
 
 function State:textinput(text)
   if self.valueEditor then
     self.valueEditor:textinput(text)
+    self.editorFeedback = nil
   elseif self.controller.section == "Progress" then
     self.controller.query = self.controller.query .. text
   end
 end
 
-function State:keyreleased() end
-
-function State:gamepadpressed(_, button)
-  local keys = { dpup = "up", dpdown = "down", dpleft = "left", dpright = "right", a = "confirm", b = "back" }
-  local action = keys[button]
-  if self.valueEditor then
-    if action then
-      self.valueEditor:press(action)
-      self:_finishValueEditor()
-    end
-  elseif action then
-    self:_dispatchIntent(self.controller:press(action))
-  end
+function State:keyreleased(key)
+  local source = "key:" .. key
+  self.fieldInput:releaseDirection(source)
+  self.fieldInput:releaseAction(source)
+  self.fieldInput:releaseCancel(source)
 end
 
-function State:gamepadreleased() end
-function State:gamepadaxis() end
+local function joystickSource(joystick)
+  if joystick and joystick.getGUID then
+    return "joystick:" .. joystick:getGUID() .. ":" .. tostring(joystick)
+  end
+  return "joystick:" .. tostring(joystick)
+end
+
+function State:gamepadpressed(joystick, button)
+  local source = joystickSource(joystick) .. ":" .. button
+  local directions = { dpup = "up", dpdown = "down", dpleft = "left", dpright = "right" }
+  local direction = directions[button]
+  if direction then
+    self.fieldInput:pressDirection(FIELD_DIRECTIONS[direction], source)
+  elseif button == "a" then
+    self.fieldInput:pressAction(source)
+  elseif button == "b" then
+    self.fieldInput:pressCancel(source)
+  end
+  self:_consumeUiInput(self.fieldInput:uiSnapshot(self.inputTick))
+end
+
+function State:gamepadreleased(joystick, button)
+  local source = joystickSource(joystick) .. ":" .. button
+  self.fieldInput:releaseDirection(source)
+  self.fieldInput:releaseAction(source)
+  self.fieldInput:releaseCancel(source)
+end
+
+function State:gamepadaxis(joystick, axis, value)
+  local source = joystickSource(joystick) .. ":left"
+  if axis == "leftx" then
+    self.fieldInput:setStickAxis(source, "x", value)
+  elseif axis == "lefty" then
+    self.fieldInput:setStickAxis(source, "y", value)
+  end
+  self:_consumeUiInput(self.fieldInput:uiSnapshot(self.inputTick))
+end
 
 function State:mousepressed(x, y, button, istouch)
   if button == 1 and not istouch then
@@ -1909,12 +2099,31 @@ function State:touchreleased(id, x, y)
 end
 function State:wheelmoved(_, y)
   local view = self:_snapshot()
-  local rows = self.controller.section == "Party" and view.partyRows
-    or self.controller.section == "Bag" and view.bagRows
-    or self.controller.section == "Progress" and view.flagRows
-    or {}
-  self.controller.scrollOffset =
-    math.max(0, math.min(math.max(0, #rows - 1), math.floor(self.controller.scrollOffset - y)))
+  local layout = assert(self:_resolve(view).content.layout)
+  local section = self.controller.section
+  local viewportId = section == "Party" and "party"
+    or section == "Bag" and "bag"
+    or section == "Progress" and "flags"
+    or section == "Location" and self.controller.locationPage == "map-list" and "location:map-list"
+    or self.valueEditor and self.valueEditor:snapshot().kind == "choice" and "value:choice"
+  if viewportId == nil then
+    return
+  end
+  local viewport = layout.viewports[viewportId]
+  if viewport == nil then
+    return
+  end
+  if viewportId == "location:map-list" then
+    self.controller.locationMapOffset =
+      ScrollViewport.clamp(viewport.offset - y * viewport.rowExtent, viewport.contentExtent, viewport.clip.height)
+    return
+  end
+  local purpose = section == "Party" and ("party:" .. view.partyPage .. ":" .. tostring(view.partySubpage or "list"))
+    or section == "Bag" and ("bag:" .. tostring(view.bagPocket))
+    or section == "Progress" and ("flags:" .. tostring(view.flagGroup or view.flagFilter))
+    or "value:choice"
+  self.controller.scrollOffsets[purpose] =
+    ScrollViewport.clamp(viewport.offset - y * viewport.rowExtent, viewport.contentExtent, viewport.clip.height)
 end
 
 function State:dispose()

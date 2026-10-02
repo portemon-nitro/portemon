@@ -3,6 +3,7 @@
 local Assert = require("tests.support.Assert")
 
 local loaded, SaveEditorValueEditor = pcall(require, "app.src.saveeditor.SaveEditorValueEditor")
+local SaveEditorLayout = require("app.src.saveeditor.SaveEditorLayout")
 
 local T = {}
 
@@ -149,22 +150,126 @@ function T.hexadecimal_high_bit_values_and_digit_edits_remain_unsigned()
   end
 end
 
-function T.choice_browsing_pages_groups_and_search_keeps_every_key_selectable()
+function T.choice_browsing_uses_the_full_filtered_sequence()
   Assert.isTrue(loaded)
   local options = {}
   for index = 1, 20 do
     options[index] = { key = string.format("K%02d", index), label = "Choice " .. index }
   end
   local editor = SaveEditorValueEditor.new({ kind = "choice", value = "K01", options = options })
-  Assert.equal(editor:snapshot().pageCount, 3)
-  Assert.isTrue(editor:press("page_next"))
-  Assert.equal(editor:snapshot().options[1].key, "K09")
+  Assert.equal(#editor:snapshot().options, 20)
+  Assert.isTrue(editor:press("down"))
+  Assert.equal(editor:snapshot().selectedKey, "K02")
   Assert.isTrue(editor:press("group_next"))
   Assert.equal(editor:snapshot().group, "K")
   Assert.isTrue(editor:textinput("Choice 1"))
   Assert.equal(editor:snapshot().options[1].key, "K01")
   Assert.isTrue(editor:press("backspace"), "search backspace removes one UTF-8 glyph")
   Assert.isTrue(editor:press("cancel"))
+end
+
+function T.choice_filter_keeps_the_opening_identity_visible_and_recovers_from_no_results()
+  local options = {}
+  for index = 1, 24 do
+    options[index] = { key = string.format("K%02d", index), label = "Choice " .. index }
+  end
+  local editor = SaveEditorValueEditor.new({ kind = "choice", value = "K18", options = options })
+  local opening = editor:snapshot()
+  local layout = SaveEditorLayout.compute({
+    section = "Bag", status = "ready", ready = true, dirty = false, bagRows = {}, valueEditor = opening,
+    scope = { id = "value:choice", epoch = 1 }, scrollOffsets = {},
+  }, 256, 192, { lineHeight = 14, measure = function(text) return #text * 7 end })
+  local selectedVisible = layout.targets["choice:K18"] ~= nil and layout.viewports["value:choice"].offset > 0
+  editor:textinput("no matching choice")
+  local backspaceRecovered = editor:press("backspace")
+  local clearRecovered = editor:press("clear_search")
+  local recovered = editor:snapshot()
+  local allOptionsReturned = #recovered.options == 24 and recovered.query == "" and recovered.selectedKey == "K18"
+  local selected = editor:submit()
+  local recoveredChoice = editor:result()
+
+  local mouseCancel = SaveEditorValueEditor.new({ kind = "choice", value = "K01", options = options })
+  local mouseCanceled = mouseCancel:activateTarget("cancel")
+  local touchCancel = SaveEditorValueEditor.new({ kind = "choice", value = "K01", options = options })
+  local touchCanceled = touchCancel:activateTarget("cancel")
+  local escapeCancel = SaveEditorValueEditor.new({ kind = "choice", value = "K01", options = options })
+  local escapeCanceled = escapeCancel:press("escape")
+  local buttonCancel = SaveEditorValueEditor.new({ kind = "choice", value = "K01", options = options })
+  local buttonCanceled = buttonCancel:press("b")
+
+  local everyCancelHandled = mouseCanceled and touchCanceled and escapeCanceled and buttonCanceled
+  local mouseResult, touchResult = mouseCancel:result(), touchCancel:result()
+  local escapeResult, buttonResult = escapeCancel:result(), buttonCancel:result()
+  local everyCancelResultIsTerminal = mouseResult ~= nil
+    and mouseResult.kind == "cancel"
+    and touchResult ~= nil
+    and touchResult.kind == "cancel"
+    and escapeResult ~= nil
+    and escapeResult.kind == "cancel"
+    and buttonResult ~= nil
+    and buttonResult.kind == "cancel"
+  Assert.isTrue(
+    selectedVisible
+      and backspaceRecovered
+      and clearRecovered
+      and allOptionsReturned
+      and selected
+      and recoveredChoice ~= nil
+      and recoveredChoice.value == "K18"
+      and everyCancelHandled
+      and everyCancelResultIsTerminal,
+    string.format(
+      "selection=%s backspace=%s clear=%s restored=%s choice=%s cancels=%s terminal=%s",
+      tostring(selectedVisible),
+      tostring(backspaceRecovered),
+      tostring(clearRecovered),
+      tostring(allOptionsReturned),
+      tostring(recoveredChoice and recoveredChoice.value),
+      tostring(everyCancelHandled),
+      tostring(everyCancelResultIsTerminal)
+    )
+  )
+end
+
+function T.name_action_key_activates_the_selected_glyph_without_submitting()
+  local editor = SaveEditorValueEditor.new({
+    kind = "name",
+    nameKind = "pokemon",
+    maxLength = 7,
+    initialText = "A",
+    charmap = { A = 1, B = 2 },
+    subject = { kind = "pokemon", species = 152, form = 0 },
+  })
+
+  Assert.deepEqual(
+    editor:snapshot().naming.subject,
+    { kind = "pokemon", species = 152, form = 0 },
+    "the naming controller receives a supported native species identity"
+  )
+  local beforeAction = editor:snapshot().naming.text
+  Assert.isTrue(editor:press("a"), "the action key is handled by the naming control")
+  Assert.isNil(editor:result(), "the action key does not submit the whole name")
+  Assert.isTrue(editor:snapshot().naming.text ~= beforeAction, "the selected glyph is inserted into the active name")
+end
+
+function T.repeated_digit_adjustment_preserves_decimal_and_hexadecimal_significance()
+  local decimal = integerEditor(128, 0, 999)
+  Assert.isTrue(decimal:press("left"))
+  Assert.isTrue(decimal:press("up"))
+  Assert.isTrue(decimal:press("up"))
+  Assert.equal(decimal:snapshot().buffer, "148", "both adjustments continue to target tens")
+
+  local hexadecimal = SaveEditorValueEditor.new({
+    kind = "integer",
+    value = 0x1A2,
+    min = 0,
+    max = 0xFFF,
+    base = "hex",
+  })
+  Assert.isTrue(hexadecimal:press("left"))
+  Assert.isTrue(hexadecimal:press("up"))
+  Assert.isTrue(hexadecimal:press("up"))
+  Assert.equal(hexadecimal:snapshot().buffer, "1C2", "both adjustments continue to target the middle hex digit")
 end
 
 function T.name_variant_uses_naming_snapshot_and_submits_real_text()
@@ -180,11 +285,13 @@ function T.name_variant_uses_naming_snapshot_and_submits_real_text()
   local snapshot = editor:snapshot()
   Assert.equal(snapshot.naming.kind, "player")
   Assert.equal(snapshot.naming.text, "A")
+  Assert.isTrue(editor:activateTarget("lower"), "a named page control is routed to the naming screen")
+  Assert.equal(editor:snapshot().naming.page, "lower", "the lower page control changes the active glyph page")
   Assert.isTrue(editor:textinput("é"))
   Assert.isTrue(editor:press("backspace"), "backspace removes the complete multibyte glyph")
   Assert.equal(editor:snapshot().naming.text, "A")
   Assert.isTrue(editor:textinput("B"))
-  Assert.isTrue(editor:press("confirm"))
+  Assert.isTrue(editor:submit())
   Assert.deepEqual(editor:result(), { kind = "confirm", value = "AB" })
 
   local cancelEditor = SaveEditorValueEditor.new({

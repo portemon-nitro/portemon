@@ -5,6 +5,9 @@ local Controller = require("app.src.saveeditor.SaveEditorController")
 local Layout = require("app.src.saveeditor.SaveEditorLayout")
 
 local T = { tests = {} }
+local function computeLayout(view, width, height)
+  return Layout.compute(view, width, height, { lineHeight = 14, measure = function(text) return #text * 7 end })
+end
 
 local function locationView()
   return {
@@ -63,12 +66,41 @@ function T.tests.location_section_is_controller_reachable_and_keeps_footer_targe
     { width = 1280, height = 720 },
   }) do
     local view = locationView()
-    local layout = Layout.compute(view, viewport.width, viewport.height)
+    local layout = computeLayout(view, viewport.width, viewport.height)
     for _, targetId in ipairs({ "save", "discard", "back" }) do
       local target = assert(layout.targets[targetId], "Location must retain the " .. targetId .. " action")
-      Assert.isTrue(target.x >= 0 and target.y >= 0, "footer actions stay inside the logical viewport")
-      Assert.isTrue(target.x + target.width <= viewport.width, "footer action fits the measured width")
-      Assert.isTrue(target.y + target.height <= viewport.height, "footer action fits the measured height")
+      local rect = target.rect
+      Assert.isTrue(rect.x >= 0 and rect.y >= 0, "footer actions stay inside the logical viewport")
+      Assert.isTrue(rect.x + rect.width <= viewport.width, "footer action fits the measured width")
+      Assert.isTrue(rect.y + rect.height <= viewport.height, "footer action fits the measured height")
+    end
+  end
+end
+
+function T.tests.naming_keyboard_rows_do_not_overlap_the_footer_cancel_target()
+  for _, viewport in ipairs({
+    { width = 256, height = 192 },
+    { width = 640, height = 480 },
+  }) do
+    local view = locationView()
+    view.valueEditor = {
+      kind = "name",
+      naming = { controls = { { id = "lower", firstColumn = 1, lastColumn = 1 } } },
+    }
+    local layout = computeLayout(view, viewport.width, viewport.height)
+    local cancel = assert(layout.targets.cancel)
+    cancel = cancel.rect
+    for row = 1, 6 do
+      for column = 1, 13 do
+        local key = assert(layout.targets[row .. ":" .. column])
+        key = key.rect
+        local overlaps =
+          key.x < cancel.x + cancel.width
+          and cancel.x < key.x + key.width
+          and key.y < cancel.y + cancel.height
+          and cancel.y < key.y + key.height
+        Assert.isFalse(overlaps, "name key " .. row .. ":" .. column .. " must not overlap Cancel")
+      end
     end
   end
 end

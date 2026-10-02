@@ -30,11 +30,7 @@ local function mapInput(event, view, plan)
   if event.outside then
     return { type = event.type, pointerId = event.pointerId }
   end
-  if
-    event.type ~= "pointer_down"
-    and event.type ~= "pointer_up"
-    and not (view.section == "Location" and event.type == "pointer_move")
-  then
+  if event.type ~= "pointer_down" and event.type ~= "pointer_up" and event.type ~= "pointer_move" then
     return nil
   end
   local content = assert(plan.content)
@@ -49,6 +45,8 @@ local function mapInput(event, view, plan)
     x = event.x,
     y = event.y,
     grid = content.layout.locationGrid,
+    scopeId = view.scope.id,
+    scopeEpoch = view.scope.epoch,
   }
 end
 
@@ -77,7 +75,8 @@ function Interface.resolve(context, view)
   local logicalWidth = math.max(authoredWidth, covered.logicalViewport.width)
   local logicalHeight = math.max(authoredHeight, covered.logicalViewport.height)
   local placement = LayoutGeometry.centeredFit(bounds, logicalWidth, logicalHeight)
-  local layout = Layout.compute(view, logicalWidth, logicalHeight)
+  local metrics = assert(view.textMetrics, "save editor layout requires borrowed font metrics")
+  local layout = Layout.compute(view, logicalWidth, logicalHeight, metrics)
   local pane = { id = "editor", placement = placement, interactive = true }
   local panes = { pane }
   local primary = context.primary
@@ -86,7 +85,7 @@ function Interface.resolve(context, view)
     panes[#panes + 1] = { id = "context", placement = previewPlacement, interactive = false }
   end
   local identity = table.concat(
-    { surface.surface.id, tostring(logicalWidth), tostring(logicalHeight), view.section or "", view.modal or "" },
+    { surface.surface.id, tostring(logicalWidth), tostring(logicalHeight), view.scope.id, tostring(view.scope.epoch) },
     ":"
   )
   return {

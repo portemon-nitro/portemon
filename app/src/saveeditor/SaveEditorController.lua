@@ -2,6 +2,7 @@
 
 local Controller = {}
 Controller.__index = Controller
+local FocusGraph = require("libs.ui.src.FocusGraph")
 
 ---@class SaveEditorController
 ---@field section string
@@ -26,12 +27,17 @@ Controller.__index = Controller
 ---@field locationCenterX integer?
 ---@field locationCenterZ integer?
 ---@field locationScale integer
----@field locationMapOffset integer
+---@field locationMapOffset number
 ---@field locationPointerStart {x: number, y: number, targetId: string?, centerX: integer?, centerZ: integer?}?
 ---@field locationDragging boolean
+---@field scrollOffsets table<string, number>
+---@field locationGridMode boolean
+---@field scopeId string
+---@field scopeEpoch integer
+---@field pointerScope string?
 ---@field setSection fun(self: SaveEditorController, section: string)
 ---@field setFocus fun(self: SaveEditorController, targetId: string)
----@field moveFocus fun(self: SaveEditorController, focusable: string[], direction: string)
+---@field moveFocus fun(self: SaveEditorController, focusGraph: table<string, { up: string[], down: string[], left: string[], right: string[] }>, direction: "up"|"down"|"left"|"right")
 ---@field selectPartySlot fun(self: SaveEditorController, slot0: integer)
 ---@field openPartyDraft fun(self: SaveEditorController, mode: "add"|"edit", slot0: integer?)
 ---@field closePartyDetail fun(self: SaveEditorController)
@@ -77,6 +83,10 @@ function Controller.new()
     locationMapOffset = 0,
     locationPointerStart = nil,
     locationDragging = false,
+    scrollOffsets = {},
+    locationGridMode = false,
+    scopeId = "section:Player",
+    scopeEpoch = 0,
   }, Controller)
 end
 
@@ -95,6 +105,14 @@ function Controller:snapshot()
     bagPocket = self.bagPocket,
     bagItemKey = self.bagItemKey,
     location = self:locationSnapshot(),
+    scope = {
+      id = self.scopeId,
+      epoch = self.scopeEpoch,
+      kind = self.modal and "decision" or "section",
+      focusId = self.focus,
+    },
+    scrollOffsets = self.scrollOffsets,
+    locationGridMode = self.locationGridMode,
   }
 end
 
@@ -126,9 +144,16 @@ function Controller:press(action)
     end
     return nil
   end
+  if (action == "confirm" or action == "activate") and self.focus:match("^section:") then
+    return { kind = "activate", targetId = self.focus }
+  end
   if self.section == "Location" then
     if action == "back" or action == "cancel" then
-      if self.locationPage == "map-list" then
+      if self.locationGridMode then
+        self.locationGridMode = false
+        self.focus = "location:grid"
+        return { kind = "location-grid-mode", active = false }
+      elseif self.locationPage == "map-list" then
         self.locationPage = "grid"
         self.focus = "location:map-picker"
         self:cancelInteraction()
@@ -139,10 +164,10 @@ function Controller:press(action)
       if self.locationPage == "map-list" then
         return { kind = "location-map-move", direction = action }
       end
-      if action == "left" or action == "right" then
-        return { kind = "location-pan", direction = action }
+      if self.locationGridMode then
+        return { kind = "location-cursor-move", direction = action }
       end
-      return { kind = "location-cursor-move", direction = action }
+      return { kind = "move", direction = action }
     elseif action == "confirm" or action == "activate" then
       if self.locationPage == "map-list" then
         local mapId = self.focus:match("^location:map:(%d+)$")
@@ -155,6 +180,15 @@ function Controller:press(action)
         self.locationPage = "grid"
         self.focus = "location:map-picker"
         return { kind = "location-page", page = "grid" }
+      elseif self.focus == "location:grid" then
+        self.locationGridMode = true
+        local cursor = self.locationCursorX
+          and string.format("location:tile:%d:%d", self.locationCursorX, self.locationCursorZ)
+        self.focus = cursor or "location:grid"
+        return { kind = "location-grid-mode", active = true }
+      elseif self.locationGridMode and self.focus:match("^location:tile:") then
+        local fieldX, fieldZ = self.focus:match("^location:tile:(%-?%d+):(%-?%d+)$")
+        return { kind = "select_tile", fieldX = tonumber(fieldX), fieldZ = tonumber(fieldZ) }
       elseif self.focus == "location:zoom-in" then
         self:zoomLocation(1)
         return { kind = "location-zoom", scale = self.locationScale }
@@ -207,7 +241,7 @@ function Controller:setSection(section)
   elseif section == "Player" then
     self.focus = "money"
   elseif section == "Location" then
-    self.focus = self.locationPage == "map-list" and "location:map-picker" or "location:map-picker"
+    self.focus = self.locationPage == "map-list" and "location:map-picker" or "location:grid"
   else
     self.focus = "flag:" .. (self.focus:match("^flag:(.+)$") or "")
   end
@@ -228,7 +262,7 @@ function Controller:enterLocation(location)
   self.locationCursorX, self.locationCursorZ = fieldX, fieldZ
   self.locationCenterX, self.locationCenterZ = fieldX, fieldZ
   if self.section == "Location" then
-    self.focus = "location:map-picker"
+    self.focus = "location:grid"
   end
 end
 
@@ -330,19 +364,10 @@ function Controller:setFocus(targetId)
   self.focus = targetId
 end
 
-function Controller:moveFocus(focusable, direction)
-  if #focusable == 0 then
-    return
-  end
-  local current = 1
-  for index, targetId in ipairs(focusable) do
-    if targetId == self.focus then
-      current = index
-      break
-    end
-  end
-  local delta = (direction == "up" or direction == "left") and -1 or 1
-  self.focus = focusable[(current - 1 + delta) % #focusable + 1]
+---@param focusGraph table<string, { up: string[], down: string[], left: string[], right: string[] }>
+---@param direction "up"|"down"|"left"|"right"
+function Controller:moveFocus(focusGraph, direction)
+  self.focus = FocusGraph.move(focusGraph, self.focus, direction)
 end
 
 function Controller:selectPartySlot(slot0)
@@ -405,7 +430,16 @@ function Controller:pointer(event)
     return nil
   end
   if event.type == "pointer_down" then
+    if event.x == nil or event.y == nil or event.targetId == nil then
+      self:cancelInteraction()
+      return nil
+    end
+    if event.scopeId ~= nil and event.scopeId ~= self.scopeId then
+      return nil
+    end
     self.capturedTarget, self.pointerId = event.targetId, event.pointerId
+    self.capturedScopeEpoch = event.scopeEpoch
+    self.pointerScope = table.concat({ self.modal or "", self.section, self.partyPage, self.locationPage }, ":")
     if event.targetId ~= nil then
       self.focus = event.targetId
     end
@@ -421,8 +455,8 @@ function Controller:pointer(event)
     end
     return nil
   elseif event.type == "pointer_move" then
-    local start = self.locationPointerStart
-    if self.section ~= "Location" or self.pointerId ~= event.pointerId or start == nil then
+    local start = self.pointerId == event.pointerId and self.locationPointerStart or nil
+    if start == nil or event.x == nil or event.y == nil then
       return nil
     end
     local dx, dy = event.x - start.x, event.y - start.y
@@ -439,7 +473,18 @@ function Controller:pointer(event)
     return nil
   elseif event.type == "pointer_up" then
     local target = event.targetId
-    if self.pointerId == event.pointerId and self.capturedTarget ~= nil and target == self.capturedTarget then
+    local currentScope = table.concat({ self.modal or "", self.section, self.partyPage, self.locationPage }, ":")
+    if self.pointerScope ~= nil and self.pointerScope ~= currentScope then
+      self:cancelInteraction()
+      return nil
+    end
+    if
+      self.pointerId == event.pointerId
+      and self.capturedTarget ~= nil
+      and target == self.capturedTarget
+      and (event.scopeId == nil or event.scopeId == self.scopeId)
+      and (event.scopeEpoch == nil or event.scopeEpoch == self.capturedScopeEpoch)
+    then
       self.capturedTarget, self.pointerId = nil, nil
       local start = self.locationPointerStart
       if self.section == "Location" and start ~= nil then
@@ -480,6 +525,8 @@ end
 
 function Controller:cancelInteraction()
   self.capturedTarget, self.pointerId = nil, nil
+  self.capturedScopeEpoch = nil
+  self.pointerScope = nil
   self.locationPointerStart, self.locationDragging = nil, false
 end
 

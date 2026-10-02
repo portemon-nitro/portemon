@@ -8,10 +8,14 @@ local ValueEditor = require("app.src.saveeditor.SaveEditorValueEditor")
 local CatalogFixture = require("libs.mons.tests.catalog_fixture")
 
 local T = {}
+local function computeLayout(view, width, height)
+  return Layout.compute(view, width, height, { lineHeight = 14, measure = function(text) return #text * 7 end })
+end
 
 local function targetCenter(layout, targetId)
   local target = assert(layout.targets[targetId], "the active page must publish " .. targetId)
-  return target.x + target.width / 2, target.y + target.height / 2
+  local rect = target.rect
+  return rect.x + rect.width / 2, rect.y + rect.height / 2
 end
 
 function T.party_layout_exposes_raw_and_readonly_fields_and_keeps_u32_edit_reachable()
@@ -56,7 +60,7 @@ function T.party_layout_exposes_raw_and_readonly_fields_and_keeps_u32_edit_reach
   }
 
   for _, dimensions in ipairs({ { 256, 192 }, { 800, 600 } }) do
-    local layout = Layout.compute(navView, dimensions[1], dimensions[2])
+    local layout = computeLayout(navView, dimensions[1], dimensions[2])
     local sectionTargets = {}
     for _, row in ipairs(layout.navigation) do
       sectionTargets[row.targetId] = true
@@ -113,12 +117,12 @@ function T.bag_layout_exposes_catalog_pockets_and_quantity_targets()
       { item = "POKE_BALL", label = "Poké Ball", quantity = 3 },
     },
   }
-  local layout = Layout.compute(view, 800, 600)
+  local layout = computeLayout(view, 800, 600)
   local pocketX, pocketY = targetCenter(layout, "bag:pocket:balls")
   local itemX, itemY = targetCenter(layout, "bag:item:POKE_BALL")
   Assert.equal(Layout.hitTest(layout, view, pocketX, pocketY), "bag:pocket:balls")
   Assert.equal(Layout.hitTest(layout, view, itemX, itemY), "bag:item:POKE_BALL")
-  local compact = Layout.compute(view, 256, 192)
+  local compact = computeLayout(view, 256, 192)
   Assert.notNil(compact.targets["bag:pocket:choose"], "compact screens must offer a touchable pocket chooser")
   Assert.notNil(compact.targets["bag:quantity"], "quantity editing must remain reachable on compact screens")
 end
@@ -137,37 +141,35 @@ function T.party_draft_and_remove_modals_publish_their_own_actions()
     modal = "draft",
     focus = "cancel",
   }
-  local draftLayout = Layout.compute(draft, 800, 600)
+  draft.modal = nil
+  local pageLayout = computeLayout(draft, 800, 600)
+  local pageFocus = {}
+  for _, targetId in ipairs(pageLayout.focusOrder) do
+    pageFocus[targetId] = true
+  end
+  Assert.isTrue(pageFocus["party:subpage:Moves"], "keyboard and controller focus must reach Party subpages")
+
+  draft.modal = "draft"
+  local draftLayout = computeLayout(draft, 800, 600)
+  Assert.isNil(draftLayout.targets["party:subpage:Identity"], "the decision scope excludes draft navigation")
   for _, targetId in ipairs({
-    "party:subpage:Identity",
-    "party:subpage:Moves",
     "apply",
     "discard",
     "cancel",
   }) do
     Assert.notNil(draftLayout.targets[targetId], "draft action must be reachable: " .. targetId)
   end
-  local save = draftLayout.targets.save
   Assert.isNil(
-    Layout.hitTest(draftLayout, draft, save.x + save.width / 2, save.y + save.height / 2),
-    "the nested draft decision must not activate the underlying Save action"
+    draftLayout.targets.save,
+    "the nested draft decision excludes the underlying Save action"
   )
 
   draft.modal = "remove"
-  local removeLayout = Layout.compute(draft, 800, 600)
+  local removeLayout = computeLayout(draft, 800, 600)
   Assert.notNil(removeLayout.targets.remove)
   Assert.notNil(removeLayout.targets.cancel)
-  save = removeLayout.targets.save
-  Assert.isNil(
-    Layout.hitTest(removeLayout, draft, save.x + save.width / 2, save.y + save.height / 2),
-    "removal confirmation must not activate the underlying Save action"
-  )
+  Assert.isNil(removeLayout.targets.save, "removal confirmation excludes the underlying Save action")
 
-  local focusable = {}
-  for _, targetId in ipairs(draftLayout.focusable) do
-    focusable[targetId] = true
-  end
-  Assert.isTrue(focusable["party:subpage:Moves"], "keyboard and controller focus must reach Party subpages")
 end
 
 function T.party_draft_actions_remain_visible_beside_a_long_raw_page()
@@ -192,7 +194,7 @@ function T.party_draft_actions_remain_visible_beside_a_long_raw_page()
     }
   end
 
-  local layout = Layout.compute(view, 256, 192)
+  local layout = computeLayout(view, 256, 192)
 
   Assert.notNil(layout.targets["party:apply"], "the compact raw editor keeps Apply visible")
   Assert.notNil(layout.targets["party:discard"], "the compact raw editor keeps Discard visible")
@@ -224,22 +226,128 @@ function T.compact_party_keeps_add_visible_and_hidden_members_in_keyboard_focus_
     targetId = "party:empty-slot:5",
     label = "Empty slot 6",
   }
-  local compact = Layout.compute(view, 256, 192)
+  local compact = computeLayout(view, 256, 192)
   Assert.notNil(compact.targets["party:add"], "the compact Party list must keep Add visible")
   local focusable = {}
-  for _, targetId in ipairs(compact.focusable) do
+  for _, targetId in ipairs(compact.focusOrder) do
     focusable[targetId] = true
   end
   Assert.isTrue(focusable["party:slot:4"], "keyboard and controller focus must include clipped member rows")
   Assert.isFalse(focusable["party:empty-slot:5"], "empty slots are informational, not focusable")
   view.scrollOffset = 4
-  local scrolled = Layout.compute(view, 256, 192)
+  local scrolled = computeLayout(view, 256, 192)
   Assert.notNil(scrolled.targets["party:slot:4"], "scrolling must reveal the focused member row")
   view.scrollOffset = 5
-  local emptySlot = Layout.compute(view, 256, 192)
+  local emptySlot = computeLayout(view, 256, 192)
   Assert.notNil(emptySlot.targets["party:empty-slot:5"], "scrolling must reveal an informational empty slot")
   local emptySlotX, emptySlotY = targetCenter(emptySlot, "party:empty-slot:5")
   Assert.isNil(Layout.hitTest(emptySlot, view, emptySlotX, emptySlotY))
+end
+
+function T.compact_bag_keeps_fixed_actions_reachable_beside_a_long_scrolling_list()
+  local view = {
+    section = "Bag",
+    status = "ready",
+    ready = true,
+    dirty = false,
+    bagPocket = "items",
+    bagPocketLabel = "Items",
+    bagSelectedItem = "POTION",
+    bagSelectedQuantity = 3,
+    bagRows = {},
+  }
+  for index = 1, 40 do
+    view.bagRows[index] = {
+      item = "ITEM_" .. index,
+      label = "Item " .. index,
+      quantity = index,
+    }
+  end
+
+  local layout = computeLayout(view, 256, 192)
+  local missingActions = {}
+  for _, targetId in ipairs({ "bag:pocket:choose", "bag:quantity", "bag:remove", "bag:add", "save", "back" }) do
+    if layout.targets[targetId] == nil then
+      missingActions[#missingActions + 1] = targetId
+    end
+  end
+  local firstRowsReachable = true
+  for _, firstIndex in ipairs({ 1, 9, 25, 37 }) do
+    view.scrollOffset = firstIndex - 1
+    local scrolled = computeLayout(view, 256, 192)
+    firstRowsReachable = firstRowsReachable and scrolled.targets["bag:item:ITEM_" .. firstIndex] ~= nil
+  end
+  view.scrollOffset = 0
+  layout = computeLayout(view, 256, 192)
+  local noBodyActionOverlap = true
+  local actionRects = {
+    layout.targets["bag:quantity"],
+    layout.targets["bag:remove"],
+    layout.targets["bag:add"],
+  }
+  for index = 1, 40 do
+    local row = layout.targets["bag:item:ITEM_" .. index]
+    if row ~= nil then
+      row = row.rect
+      for _, action in ipairs(actionRects) do
+        if action ~= nil then
+          action = action.rect
+          noBodyActionOverlap = noBodyActionOverlap
+            and (
+              row.y + row.height <= action.y
+                or action.y + action.height <= row.y
+            )
+        end
+      end
+    end
+  end
+  local shortPocket = {
+    section = "Bag",
+    status = "ready",
+    ready = true,
+    dirty = false,
+    bagPocket = "key_items",
+    bagPocketLabel = "Key Items",
+    bagRows = {
+      { item = "BICYCLE", label = "Bicycle", quantity = 1 },
+      { item = "CARD_KEY", label = "Card Key", quantity = 1 },
+    },
+    scrollOffset = 0,
+  }
+  local shortLayout = computeLayout(shortPocket, 256, 192)
+  local readonlyHelp = {
+    section = "Party",
+    status = "ready",
+    ready = true,
+    dirty = false,
+    partyPage = "detail",
+    partySlot0 = 0,
+    partyLastSlot0 = 0,
+    partyRows = {
+      { role = "read-only value", targetId = "party:readonly:help", label = "Derived values cannot be edited.", value = nil },
+    },
+  }
+  local helpLayout = computeLayout(readonlyHelp, 256, 192)
+  local compactLayoutComplete = missingActions[#missingActions] == nil
+    and firstRowsReachable
+    and noBodyActionOverlap
+    and shortLayout.targets["bag:item:BICYCLE"] ~= nil
+    and helpLayout.targets["party:readonly:help"] ~= nil
+    and layout.targets["bag:item:ITEM_1"] ~= nil
+    and layout.targets["bag:item:ITEM_40"] == nil
+  Assert.isTrue(
+    compactLayoutComplete,
+    string.format(
+      "missing=%s rows=%s overlap=%s short=%s help=%s first=%s lastOffscreen=%s",
+      table.concat(missingActions, ","),
+      tostring(firstRowsReachable),
+      tostring(noBodyActionOverlap),
+      tostring(shortLayout.targets["bag:item:BICYCLE"] ~= nil),
+      tostring(helpLayout.targets["party:readonly:help"] ~= nil),
+      tostring(layout.targets["bag:item:ITEM_1"] ~= nil),
+      tostring(layout.targets["bag:item:ITEM_40"] == nil)
+    )
+  )
 end
 
 function T.nickname_blank_and_clear_have_distinct_raw_results()

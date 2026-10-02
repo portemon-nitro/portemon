@@ -4,6 +4,8 @@ local Assert = require("tests.support.Assert")
 local GraphicsSmoke = require("tests.support.GraphicsSmoke")
 local ApplicationPresentation = require("libs.ui.src.ApplicationPresentation")
 local DisplayContext = require("libs.ui.src.DisplayContext")
+local FieldTextRenderer = require("libs.hgss.src.ui.FieldTextRenderer")
+local FieldUiFixture = require("tests.support.FieldUiFixture")
 local Interface = require("app.src.saveeditor.SaveEditorInterface")
 local Layout = require("app.src.saveeditor.SaveEditorLayout")
 local Renderer = require("app.src.saveeditor.SaveEditorRenderer")
@@ -12,7 +14,17 @@ local ScreenTopology = require("libs.ui.src.ScreenTopology")
 
 local T = {}
 
-local function fixture(width, height, topology, section, variant)
+local function realTextMetrics(scope)
+  local fieldText = scope:own(FieldTextRenderer.new({ cacheFs = FieldUiFixture.cacheWithFontAndFrames() }))
+  return {
+    lineHeight = fieldText.fontDef.lineHeight,
+    measure = function(text)
+      return fieldText:textWidth(text)
+    end,
+  }
+end
+
+local function fixture(scope, width, height, topology, section, variant)
   section = section or "Progress"
   local view = {
     status = "ready",
@@ -26,6 +38,13 @@ local function fixture(width, height, topology, section, variant)
     flagRows = { { name = "FLAG_TEST", id = 1, value = false } },
     flagFilter = "Named",
     flagGroupLabel = "Named",
+    scope = {
+      id = "section:" .. section,
+      epoch = 1,
+      kind = "section",
+      focusId = "flag:FLAG_TEST",
+    },
+    textMetrics = realTextMetrics(scope),
   }
   if section == "Party" then
     view.partyPage = variant or "list"
@@ -113,7 +132,7 @@ end
 
 local function draw(scope, width, height, topology, name, section, variant)
   local graphics = love.graphics
-  local view, presentation, plan = fixture(width, height, topology, section, variant)
+  local view, presentation, plan = fixture(scope, width, height, topology, section, variant)
   local drawnText = {}
   local text = {
     drawText = function(_, value, x, y)
@@ -135,16 +154,18 @@ local function draw(scope, width, height, topology, name, section, variant)
     output:close()
   end
 
-  local layout = Layout.compute(view, plan.content.width, plan.content.height)
+  local layout = Layout.compute(view, plan.content.width, plan.content.height, view.textMetrics)
   for _, targetId in ipairs({ "save", "discard", "back" }) do
     local target = assert(layout.targets[targetId], name .. " must publish " .. targetId)
-    Assert.isTrue(target.x >= 0 and target.y >= 0)
-    Assert.isTrue(target.x + target.width <= plan.content.width + 0.01, name .. " " .. targetId .. " fits width")
-    Assert.isTrue(target.y + target.height <= plan.content.height + 0.01, name .. " " .. targetId .. " fits height")
+    local rect = target.rect
+    Assert.isTrue(rect.x >= 0 and rect.y >= 0)
+    Assert.isTrue(rect.x + rect.width <= plan.content.width + 0.01, name .. " " .. targetId .. " fits width")
+    Assert.isTrue(rect.y + rect.height <= plan.content.height + 0.01, name .. " " .. targetId .. " fits height")
   end
   if view.section == "Progress" then
     local row = assert(layout.targets["flag:FLAG_TEST"], name .. " must expose its flag target")
-    Assert.isTrue(row.y >= layout.content.y and row.y + row.height <= layout.content.y + layout.content.height)
+    local rect = row.rect
+    Assert.isTrue(rect.y >= layout.content.y and rect.y + rect.height <= layout.content.y + layout.content.height)
   elseif view.section == "Party" then
     if view.partyPage == "list" then
       Assert.notNil(layout.targets["party:add"], name .. " keeps Add visible")
@@ -195,8 +216,9 @@ local function draw(scope, width, height, topology, name, section, variant)
   if view.section == "Progress" then
     for _, targetId in ipairs({ "group-previous", "group-next" }) do
       local target = assert(layout.targets[targetId], name .. " exposes touch browsing for flag groups")
+      local rect = target.rect
       Assert.equal(
-        Layout.hitTest(layout, view, target.x + target.width / 2, target.y + target.height / 2),
+        Layout.hitTest(layout, view, rect.x + rect.width / 2, rect.y + rect.height / 2),
         targetId,
         name .. " maps group browse touch targets"
       )
@@ -322,6 +344,8 @@ function T.name_editor_renders_the_real_naming_snapshot_in_a_neutral_dialog(scop
     ready = true,
     dirty = false,
     session = { playerName = "PLAYER", versionId = "HEARTGOLD" },
+    scope = { id = "value:player-name:", epoch = 1, kind = "value", focusId = "2:1" },
+    textMetrics = realTextMetrics(scope),
     valueEditor = ValueEditor.new({
       kind = "name",
       nameKind = "player",

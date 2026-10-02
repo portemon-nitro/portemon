@@ -16,6 +16,7 @@ local MonIconAssetProvider = require("libs.hgss.src.presentation.MonIconAssetPro
 ---@field _icons table<string, { image: love.Image, quad: love.Quad }>
 ---@field iconStatus string?
 ---@field iconFailure string?
+---@field metrics fun(self: SaveEditorRenderer): { lineHeight: number, measure: fun(value: string): number }
 ---@field dispose fun(self: SaveEditorRenderer)
 ---@field prepareVisibleIcons fun(self: SaveEditorRenderer, view: table<string, unknown>, plan: table<string, unknown>, cacheFs: table<string, unknown>, derivedAssets: table<string, unknown>)
 
@@ -104,6 +105,16 @@ function Renderer:prepareVisibleIcons(view, plan, cacheFs, derivedAssets)
   self.iconStatus, self.iconFailure = "ready", nil
 end
 
+function Renderer:metrics()
+  local text = assert(self.text)
+  return {
+    lineHeight = assert(text.fontDef.lineHeight),
+    measure = function(value)
+      return text:textWidth(value)
+    end,
+  }
+end
+
 local function drawText(renderer, value, x, y, color)
   renderer.graphics.setColor(color[1], color[2], color[3], color[4] or 1)
   renderer.text:drawText(tostring(value or ""), x, y)
@@ -125,6 +136,11 @@ local function fitText(value, width)
     return table.concat(visible)
   end
   return text
+end
+
+local function targetRect(layout, targetId)
+  local target = layout.targets[targetId]
+  return target and target.rect
 end
 
 local function wrapText(value, width)
@@ -165,24 +181,26 @@ local function paintPane(self, view, plan, pane)
     drawText(self, fitText(identity, layout.header.width - 10), layout.header.x + 5, layout.header.y + 17, CARD)
   end
   for _, navigation in ipairs(layout.navigation) do
-    local rect = layout.targets[navigation.targetId]
-    setColor(graphics, navigation.targetId == ("section:" .. view.section) and SELECTED or BORDER)
-    graphics.rectangle("line", rect.x, rect.y, rect.width, rect.height)
-    drawText(self, navigation.label, rect.x + 4, rect.y + 3, INK)
+    local target = targetRect(layout, navigation.targetId)
+    if target then
+      setColor(graphics, navigation.targetId == ("section:" .. view.section) and SELECTED or BORDER)
+      graphics.rectangle("line", target.x, target.y, target.width, target.height)
+      drawText(self, navigation.label, target.x + 4, target.y + 3, INK)
+    end
   end
   if view.section == "Party" and (view.partyPage == "detail" or view.partyPage == "draft") then
     for _, subpage in ipairs(view.partySubpages or {}) do
       local id = "party:subpage:" .. subpage
-      local rect = layout.targets[id]
-      if rect then
+      local target = targetRect(layout, id)
+      if target then
         setColor(graphics, view.partySubpage == subpage and SELECTED or BORDER)
-        graphics.rectangle("fill", rect.x, rect.y, rect.width, rect.height)
-        drawText(self, fitText(subpage, rect.width - 6), rect.x + 3, rect.y + 3, CARD)
+        graphics.rectangle("fill", target.x, target.y, target.width, target.height)
+        drawText(self, fitText(subpage, target.width - 6), target.x + 3, target.y + 3, CARD)
       end
     end
   end
   for _, row in ipairs(layout.rows) do
-    local rect = layout.targets[row.targetId]
+    local rect = targetRect(layout, row.targetId)
     if rect then
       setColor(graphics, row.targetId == view.focus and SELECTED or BORDER)
       graphics.rectangle("line", rect.x, rect.y, rect.width, rect.height)
@@ -207,17 +225,21 @@ local function paintPane(self, view, plan, pane)
   end
   if view.section == "Progress" then
     for _, id in ipairs({ "group-previous", "group-next" }) do
-      local rect = layout.targets[id]
-      setColor(graphics, BORDER)
-      graphics.rectangle("line", rect.x, rect.y, rect.width, rect.height)
-      drawText(self, id == "group-previous" and "<" or ">", rect.x + 4, rect.y + 3, INK)
+      local rect = targetRect(layout, id)
+      if rect then
+        setColor(graphics, BORDER)
+        graphics.rectangle("line", rect.x, rect.y, rect.width, rect.height)
+        drawText(self, id == "group-previous" and "<" or ">", rect.x + 4, rect.y + 3, INK)
+      end
     end
   end
   for _, action in ipairs(layout.actions) do
-    local rect = layout.targets[action.id]
-    setColor(graphics, action.enabled and BORDER or MUTED)
-    graphics.rectangle("fill", rect.x, rect.y, rect.width, rect.height)
-    drawText(self, action.label, rect.x + 4, rect.y + 4, CARD)
+    local rect = targetRect(layout, action.id)
+    if rect then
+      setColor(graphics, action.enabled and BORDER or MUTED)
+      graphics.rectangle("fill", rect.x, rect.y, rect.width, rect.height)
+      drawText(self, action.label, rect.x + 4, rect.y + 4, CARD)
+    end
   end
   drawText(self, view.dirty and "Unsaved changes" or "Saved", layout.footer.x + 4, layout.footer.y + 2, INK)
   if view.valueEditor then
@@ -225,29 +247,41 @@ local function paintPane(self, view, plan, pane)
     graphics.setColor(0.96, 0.97, 0.96, 1)
     graphics.rectangle("fill", layout.content.x, layout.content.y, layout.content.width, layout.content.height)
     if dialog.kind == "choice" then
-      local groupPrevious = layout.targets["group-previous"]
-      local groupNext = layout.targets["group-next"]
+      local groupPrevious = assert(targetRect(layout, "group-previous"))
+      local clearSearch = assert(targetRect(layout, "clear-search"))
+      local groupNext = assert(targetRect(layout, "group-next"))
       drawText(self, "Search: " .. (dialog.query or ""), layout.content.x + 4, layout.content.y + 2, INK)
       setColor(graphics, BORDER)
       graphics.rectangle("line", groupPrevious.x, groupPrevious.y, groupPrevious.width, groupPrevious.height)
+      graphics.rectangle("line", clearSearch.x, clearSearch.y, clearSearch.width, clearSearch.height)
       graphics.rectangle("line", groupNext.x, groupNext.y, groupNext.width, groupNext.height)
       drawText(self, "Group " .. (dialog.group or "All"), groupPrevious.x + 3, groupPrevious.y + 3, INK)
+      drawText(self, "Clear", clearSearch.x + 3, clearSearch.y + 3, INK)
       drawText(self, "Next group", groupNext.x + 3, groupNext.y + 3, INK)
-      for index, option in ipairs(dialog.options) do
-        local rect = layout.targets[option.key]
-        setColor(graphics, index == dialog.index and SELECTED or BORDER)
-        graphics.rectangle("line", rect.x, rect.y, rect.width, rect.height)
-        drawText(self, fitText(option.label, rect.width - 8), rect.x + 4, rect.y + 3, INK)
+      local viewport = assert(layout.viewports["value:choice"])
+      graphics.push("all")
+      graphics.intersectScissor(viewport.clip.x, viewport.clip.y, viewport.clip.width, viewport.clip.height)
+      for _, option in ipairs(dialog.options) do
+        local rect = targetRect(layout, "choice:" .. option.key)
+        if rect then
+          setColor(graphics, option.key == dialog.selectedKey and SELECTED or BORDER)
+          graphics.rectangle("line", rect.x, rect.y, rect.width, rect.height)
+          drawText(self, fitText(option.label, rect.width - 8), rect.x + 4, rect.y + 3, INK)
+        end
       end
-      drawText(
-        self,
-        "Page " .. dialog.page .. "/" .. dialog.pageCount,
-        layout.content.x + 4,
-        layout.content.y + layout.content.height - 24,
-        INK
-      )
-      for _, id in ipairs({ "page-previous", "page-next", "cancel" }) do
-        local rect = layout.targets[id]
+      graphics.pop()
+      if dialog.empty then
+        drawText(
+          self,
+          "No matching choices. Clear search or change group.",
+          viewport.clip.x + 3,
+          viewport.clip.y + 3,
+          MUTED
+        )
+      end
+      for _, id in ipairs({ "confirm", "cancel" }) do
+        local rect = targetRect(layout, id)
+        assert(rect)
         setColor(graphics, BORDER)
         graphics.rectangle("line", rect.x, rect.y, rect.width, rect.height)
         drawText(
@@ -264,7 +298,7 @@ local function paintPane(self, view, plan, pane)
       for row = 1, 6 do
         for column = 1, 13 do
           local id = row .. ":" .. column
-          local rect = layout.targets[id]
+          local rect = assert(targetRect(layout, id))
           local cell = naming.grid[row][column]
           setColor(graphics, naming.cursor.row == row and naming.cursor.column == column and SELECTED or BORDER)
           graphics.rectangle("line", rect.x, rect.y, rect.width, rect.height)
@@ -273,25 +307,51 @@ local function paintPane(self, view, plan, pane)
       end
       for _, control in ipairs(naming.controls) do
         local id = "name-control:" .. control.id
-        local rect = layout.targets[id]
+        local rect = assert(targetRect(layout, id))
         setColor(graphics, BORDER)
         graphics.rectangle("line", rect.x, rect.y, rect.width, rect.height)
         drawText(self, control.label, rect.x + 2, rect.y + 2, INK)
       end
       for _, id in ipairs({ "confirm", "cancel" }) do
-        local rect = layout.targets[id]
+        local rect = targetRect(layout, id)
         setColor(graphics, BORDER)
         graphics.rectangle("line", rect.x, rect.y, rect.width, rect.height)
         drawText(self, id == "confirm" and "OK" or "Cancel", rect.x + 3, rect.y + 3, INK)
       end
     else
-      drawText(self, dialog.buffer or "", layout.content.x + 5, layout.content.y + 36, INK)
+      local validity = dialog.parsedValue
+      local inRange = type(validity) == "number" and validity >= dialog.minimum and validity <= dialog.maximum
+      drawText(self, dialog.buffer or "", layout.content.x + 5, layout.content.y + 30, INK)
+      drawText(
+        self,
+        "Range " .. tostring(dialog.minimum) .. "–" .. tostring(dialog.maximum),
+        layout.content.x + 5,
+        layout.content.y + 46,
+        MUTED
+      )
+      if view.editorFeedback or not inRange then
+        drawText(
+          self,
+          view.editorFeedback or "Enter a whole number within the allowed range.",
+          layout.content.x + 5,
+          layout.content.y + 60,
+          SELECTED
+        )
+      end
       for _, id in ipairs({ "digit-left", "digit-right", "digit-down", "digit-up", "confirm", "cancel" }) do
-        local rect = layout.targets[id]
+        local rect = targetRect(layout, id)
         if rect then
           setColor(graphics, BORDER)
           graphics.rectangle("line", rect.x, rect.y, rect.width, rect.height)
-          drawText(self, id:gsub("digit-", ""), rect.x + 3, rect.y + 3, INK)
+          local labels = {
+            ["digit-left"] = "◀ digit",
+            ["digit-right"] = "digit ▶",
+            ["digit-down"] = "−",
+            ["digit-up"] = "+",
+            confirm = "OK",
+            cancel = "Cancel",
+          }
+          drawText(self, labels[id], rect.x + 3, rect.y + 3, INK)
         end
       end
     end
@@ -320,7 +380,7 @@ local function paintPane(self, view, plan, pane)
     end
     drawText(self, prompt, layout.content.x + 8, layout.content.y + 18, CARD)
     for _, id in ipairs(choices) do
-      local rect = layout.targets[id]
+      local rect = targetRect(layout, id)
       if rect then
         setColor(graphics, id == view.focus and SELECTED or BORDER)
         graphics.rectangle("fill", rect.x, rect.y, rect.width, rect.height)
@@ -341,7 +401,7 @@ drawLocation = function(self, view, layout)
     tiles[string.format("%d:%d", tile.fieldX, tile.fieldZ)] = tile
   end
   for _, targetId in ipairs({ "location:map-picker", "location:zoom-out", "location:zoom-in", "location:map-back" }) do
-    local target = layout.targets[targetId]
+    local target = targetRect(layout, targetId)
     if target then
       setColor(graphics, targetId == view.focus and SELECTED or BORDER)
       graphics.rectangle("line", target.x, target.y, target.width, target.height)

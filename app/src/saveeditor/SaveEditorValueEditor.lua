@@ -15,6 +15,7 @@ local Utf8Glyphs = require("libs.assets.src.Utf8Glyphs")
 ---@field _hasInput boolean?
 ---@field _options { key: string, label: string }[]?
 ---@field _index number?
+---@field _selectedKey string?
 ---@field _query string?
 ---@field _group string?
 ---@field _page number?
@@ -67,11 +68,16 @@ function SaveEditorValueEditor.new(options)
       self._options[i] = { key = option.key, label = option.label or option.key }
     end
     self._index = 1
+    local seen = {}
     for index, option in ipairs(self._options) do
+      assert(not seen[option.key], "choice option keys must be unique")
+      seen[option.key] = true
       if option.key == options.value then
         self._index = index
+        self._selectedKey = option.key
       end
     end
+    self._selectedKey = self._selectedKey or self._options[1].key
     self._query = ""
     self._group = nil
     self._page = 1
@@ -111,8 +117,7 @@ function SaveEditorValueEditor:textinput(text)
     return true
   elseif self._kind == "choice" then
     self._query = self._query .. text
-    self._page = 1
-    self._index = 1
+    self:_reconcileSelection()
     return true
   end
   return self._name:inputText(text)
@@ -152,40 +157,27 @@ function SaveEditorValueEditor:press(action)
       if candidate < self._min or candidate > self._max then
         return false
       end
+      local significance = math.max(0, #self._buffer - self._cursor)
       self._buffer = self._base == "hex" and string.format("%X", candidate) or tostring(candidate)
-      self._cursor = #self._buffer
+      self._cursor = math.max(0, #self._buffer - significance)
       return true
     elseif action == "confirm" or action == "a" or action == "return" then
       return self:submit()
     end
   elseif self._kind == "choice" then
     local filtered = self:_filteredOptions()
-    if #filtered == 0 then
-      return false
-    end
-    local pageCount = math.max(1, math.ceil(#filtered / 8))
-    if action == "page_next" or action == "pagedown" then
-      self._page = self._page % pageCount + 1
-      self._index = (self._page - 1) * 8 + 1
-      return true
-    elseif action == "page_previous" or action == "pageup" then
-      self._page = (self._page - 2) % pageCount + 1
-      self._index = (self._page - 1) * 8 + 1
-      return true
-    elseif action == "backspace" then
+    if action == "backspace" then
       local glyphs = {}
       for glyph in Utf8Glyphs.iter(self._query) do
         glyphs[#glyphs + 1] = glyph
       end
       table.remove(glyphs)
       self._query = table.concat(glyphs)
-      self._index = 1
-      self._page = 1
+      self:_reconcileSelection()
       return true
     elseif action == "clear_search" then
       self._query = ""
-      self._index = 1
-      self._page = 1
+      self:_reconcileSelection()
       return true
     elseif action == "group_next" or action == "group_previous" then
       local groups = self:_groups()
@@ -198,13 +190,16 @@ function SaveEditorValueEditor:press(action)
       end
       local delta = action == "group_next" and 1 or -1
       self._group = groups[(current - 1 + delta) % #groups + 1]
-      self._page, self._index = 1, 1
+      self:_reconcileSelection()
       return true
+    end
+    if #filtered == 0 then
+      return false
     end
     if action == "up" or action == "down" or action == "left" or action == "right" then
       local delta = (action == "up" or action == "left") and -1 or 1
       self._index = (self._index - 1 + delta) % #filtered + 1
-      self._page = math.floor((self._index - 1) / 8) + 1
+      self._selectedKey = filtered[self._index].key
       return true
     elseif action == "confirm" or action == "a" then
       return self:submit()
@@ -214,7 +209,10 @@ function SaveEditorValueEditor:press(action)
       return self._name:deleteGlyph()
     end
     if action == "confirm" or action == "a" then
-      return self:submit()
+      local cursor = self._name:snapshot().cursor
+      local activated = self._name:activateAt(cursor.row, cursor.column)
+      self:_collectNameResult()
+      return activated
     end
     if action == "cancel" then
       return self:cancel()
@@ -235,17 +233,19 @@ function SaveEditorValueEditor:activateTarget(targetId)
     if targetId == "cancel" then
       return self:cancel()
     end
-    return self._name:activateControl(targetId)
+    return false
   elseif self._kind == "choice" then
     local options = self:_filteredOptions()
     for index, option in ipairs(options) do
       if option.key == targetId then
-        self._index = index
+        self._index, self._selectedKey = index, option.key
         self._result = { kind = "confirm", value = option.key }
         return true
       end
     end
-    if targetId == "group-next" then
+    if targetId == "clear-search" then
+      return self:press("clear_search")
+    elseif targetId == "group-next" then
       return self:press("group_next")
     end
     if targetId == "group-previous" then
@@ -255,15 +255,23 @@ function SaveEditorValueEditor:activateTarget(targetId)
     local row, column = targetId:match("^(%d+):(%d+)$")
     if row then
       local rowIndex, columnIndex = assert(tonumber(row)), assert(tonumber(column))
-      return self._name:activateAt(rowIndex --[[@as integer]], columnIndex --[[@as integer]])
+      local activated = self._name:activateAt(rowIndex --[[@as integer]], columnIndex --[[@as integer]])
+      self:_collectNameResult()
+      return activated
+    end
+    if
+      targetId == "upper"
+      or targetId == "lower"
+      or targetId == "symbols"
+      or targetId == "back"
+      or targetId == "ok"
+    then
+      local activated = self._name:activateControl(targetId)
+      self:_collectNameResult()
+      return activated
     end
     if targetId == "confirm" then
-      self._name:press("submit")
-      local result = self._name:result()
-      if result and result.kind == "submit" then
-        self._result = { kind = "confirm", value = result.text }
-      end
-      return result ~= nil
+      return self:submit()
     end
     if targetId == "cancel" then
       return self:cancel()
@@ -342,6 +350,29 @@ function SaveEditorValueEditor:_filteredOptions()
   return filtered
 end
 
+function SaveEditorValueEditor:_reconcileSelection()
+  local filtered = self:_filteredOptions()
+  for index, option in ipairs(filtered) do
+    if option.key == self._selectedKey then
+      self._index = index
+      return
+    end
+  end
+  if #filtered == 0 then
+    self._index = 0
+    return
+  end
+  self._index = 1
+  self._selectedKey = filtered[1] and filtered[1].key or nil
+end
+
+function SaveEditorValueEditor:_collectNameResult()
+  local result = assert(self._name):result()
+  if result and result.kind == "submit" then
+    self._result = { kind = "confirm", value = result.text }
+  end
+end
+
 function SaveEditorValueEditor:_groups()
   local groups = {}
   for _, option in ipairs(self._options) do
@@ -367,6 +398,7 @@ end
 
 function SaveEditorValueEditor:snapshot()
   if self._kind == "integer" then
+    local parsedValue = parseInteger(self._buffer, self._base)
     return {
       kind = "integer",
       value = self._value,
@@ -374,25 +406,30 @@ function SaveEditorValueEditor:snapshot()
       base = self._base,
       minimum = self._min,
       maximum = self._max,
+      parsedValue = parsedValue,
+      valid = parsedValue ~= nil and parsedValue >= self._min and parsedValue <= self._max,
       cursor = self._cursor,
       result = self:result(),
     }
   elseif self._kind == "choice" then
     local options = self:_filteredOptions()
-    local selected = options[self._index]
-    local pageItems = {}
-    local first = (self._page - 1) * 8 + 1
-    for index = first, math.min(first + 7, #options) do
-      pageItems[#pageItems + 1] = options[index]
+    local selected
+    for index, option in ipairs(options) do
+      if option.key == self._selectedKey then
+        selected = index
+        break
+      end
     end
     return {
       kind = "choice",
-      options = pageItems,
-      index = selected and (self._index - (self._page - 1) * 8) or 1,
-      page = self._page,
-      pageCount = math.max(1, math.ceil(#options / 8)),
+      options = options,
+      index = selected or 0,
+      selectedKey = self._selectedKey,
+      page = 1,
+      pageCount = 1,
       query = self._query,
       group = self._group,
+      empty = #options == 0,
       result = self:result(),
     }
   end
