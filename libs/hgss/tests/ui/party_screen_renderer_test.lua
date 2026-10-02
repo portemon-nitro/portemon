@@ -7,6 +7,7 @@
 -- created; the manifest fixture mirrors the compiled source shape.
 
 local Assert = require("tests.support.Assert")
+local FieldDialogueFixture = require("tests.support.FieldDialogueFixture")
 local PartyPresentationFixture = require("tests.support.PartyPresentationFixture")
 local PartyScreenLayout = require("libs.hgss.src.ui.PartyScreenLayout")
 local PartyScreenRenderer = require("libs.hgss.src.ui.PartyScreenRenderer")
@@ -238,6 +239,8 @@ local function v5Manifest()
       { kind = "text", value = "!" },
     },
   }
+  templates.giveTarget = { segments = { { kind = "text", value = "GIVE TARGET" } } }
+  templates.moveTarget = { segments = { { kind = "text", value = "MOVE TARGET" } } }
   manifest.text.messageRole = {
     foreground = { r = 250, g = 246, b = 217, a = 255 },
     shadow = { r = 144, g = 128, b = 96, a = 255 },
@@ -251,9 +254,13 @@ local function v5Layout(manifest)
 end
 
 local function fakeCacheFs()
+  local fonts = FieldDialogueFixture.cacheWithFontId(4)
   return {
-    read = function(_)
-      return "stub-bytes"
+    read = function(_, path)
+      return fonts:read(path) or "stub-bytes"
+    end,
+    loadLua = function(_, path)
+      return fonts:loadLua(path)
     end,
   }
 end
@@ -351,6 +358,15 @@ local function newRenderer(graphics, texts, manifest)
     manifest = manifest or v5Manifest(),
     text = texts,
   })
+end
+
+local function recordContextText(renderer, calls)
+  local text = renderer._contextText
+  local drawText = text.drawTextWithPalette
+  text.drawTextWithPalette = function(self, value, x, y, palette)
+    calls[#calls + 1] = { kind = "palette", value = value, x = x, y = y, palette = palette }
+    drawText(self, value, x, y, palette)
+  end
 end
 
 -- The borrowed generated-font collaborator: records drawn strings while
@@ -710,9 +726,103 @@ function T.context_menu_draws_one_row_per_entry()
   local status = presentation({ state = "context", menu = menu, menuIndex = 2, menuSlot = 0 })
   status.view.slots[1] = occupiedSlot(0)
   renderer:draw(status, layout(), icons())
-  Assert.isTrue(hasString(texts, "SUMMARY"), "menu rows print their labels")
-  Assert.isTrue(hasString(texts, "SWITCH"), "menu rows print their labels")
-  Assert.isTrue(hasString(texts, "QUIT"), "menu rows print their labels")
+  local menuFrames = renderer._manifest.contextMenu.frames.standard
+  local frameImages = {}
+  for _, frame in pairs(menuFrames) do
+    frameImages[renderer._images["asset:" .. frame.image]] = true
+  end
+  local drawnFrames = 0
+  for _, draw in ipairs(graphics.draws) do
+    if frameImages[draw.image] then
+      drawnFrames = drawnFrames + 1
+    end
+  end
+  Assert.equal(drawnFrames, #menu, "menu labels keep one generated frame per entry")
+end
+
+function T.context_menu_fills_only_the_text_window()
+  local graphics = fakeGraphics()
+  local manifest = v5Manifest()
+  local renderer = newRenderer(graphics, stubText({}), manifest)
+  local menu = {
+    { kind = "summary", label = "SUMMARY" },
+    { kind = "switch", label = "SWITCH" },
+    { kind = "quit", label = "QUIT" },
+  }
+  local status = presentation({ state = "context", menu = menu, menuIndex = 2, menuSlot = 0 })
+  status.view.slots[1] = occupiedSlot(0)
+  renderer:draw(status, layout(), icons())
+
+  local entries = layout().menuLayout("topLevel", #menu)
+  for index, entry in ipairs(entries) do
+    local textRect = entry.textRect
+    local frameRect = entry.frameRect
+    local fill
+    for _, rectangle in ipairs(graphics.rectangles) do
+      if
+        rectangle.mode == "fill"
+        and rectangle.x == textRect.x
+        and rectangle.y == textRect.y
+        and rectangle.w == textRect.width
+        and rectangle.h == textRect.height
+      then
+        fill = rectangle
+      end
+      Assert.isFalse(
+        rectangle.mode == "fill"
+          and rectangle.x == frameRect.x
+          and rectangle.y == frameRect.y
+          and rectangle.w == frameRect.width
+          and rectangle.h == frameRect.height,
+        "menu fills never cover the outer frame rectangle"
+      )
+    end
+    Assert.isTrue(fill ~= nil, "each menu button fill matches its text window")
+  end
+end
+
+function T.target_and_swap_states_draw_their_source_lower_prompts()
+  local manifest = v5Manifest()
+  local expected = {
+    { state = "choosing_item_target", prompt = "GIVE TARGET" },
+    { state = "choose_swap", prompt = "MOVE TARGET" },
+    { state = "swapping", prompt = "MOVE TARGET" },
+  }
+  for _, case in ipairs(expected) do
+    local graphics = fakeGraphics()
+    local texts = {}
+    local renderer = newRenderer(graphics, stubText(texts), manifest)
+    local status = presentation({ state = case.state })
+    status.swap = case.state == "swapping" and {
+      source = 0,
+      destination = 1,
+      xOffset = 4,
+      offsets = { [0] = -32, [1] = 32 },
+      directions = { [0] = -1, [1] = 1 },
+      exchanged = false,
+    } or nil
+    renderer:draw(status, v5Layout(manifest), icons())
+    Assert.isTrue(hasString(texts, case.prompt), case.state .. " draws its lower-window prompt")
+  end
+end
+
+function T.party_cancel_uses_integer_centering()
+  local manifest = v5Manifest()
+  local texts = {}
+  local text = stubText(texts)
+  text.textWidth = function(_, value)
+    return #value * 7 + 1
+  end
+  local renderer = newRenderer(fakeGraphics(), text, manifest)
+  renderer:draw(presentation({ cursorNode = "cancel" }), v5Layout(manifest), icons())
+
+  for _, call in ipairs(texts) do
+    if call.value == manifest.controls.cancel.label then
+      Assert.equal(call.x % 1, 0, "the Party Cancel label stays on an integer source pixel")
+      return
+    end
+  end
+  error("the Party Cancel label was not drawn", 0)
 end
 
 function T.message_draws_its_window_text()
@@ -1296,21 +1406,27 @@ function T.context_menu_draws_generated_buttons_without_a_shared_window()
   local graphics = fakeGraphics()
   local texts = {}
   local renderer = newRenderer(graphics, paletteText(texts), manifest)
+  recordContextText(renderer, texts)
   local status = contextStatus({ menuIndex = 2 })
   status.view.slots[1] = occupiedSlot(0)
   renderer:draw(status, v5Layout(manifest), frameIcons({}))
-  local window = manifest.windows.context
-  local function insideWindow(rect)
-    return rect.x >= window.x
-      and rect.y >= window.y
-      and rect.x + rect.w <= window.x + window.width
-      and rect.y + rect.h <= window.y + window.height
-  end
-  for _, rect in ipairs(graphics.rectangles) do
-    Assert.isFalse(
-      rect.mode == "fill" and insideWindow(rect),
-      "menu entries never paint a synthetic highlight rectangle"
-    )
+  local entries = v5Layout(manifest).menuLayout("topLevel", #status.menu)
+  for _, entry in ipairs(entries) do
+    local textRect = entry.textRect
+    local filled = false
+    for _, rect in ipairs(graphics.rectangles) do
+      if
+        rect.mode == "fill"
+        and rect.x == textRect.x
+        and rect.y == textRect.y
+        and rect.w == textRect.width
+        and rect.h == textRect.height
+      then
+        filled = true
+        break
+      end
+    end
+    Assert.isTrue(filled, "each menu entry fills only its source text window")
   end
   local raisedImage = renderer._images["asset:" .. manifest.contextMenu.frames.standard.raised.image]
   local selectedImage = renderer._images["asset:" .. manifest.contextMenu.frames.standard.selected.image]
@@ -1342,6 +1458,17 @@ function T.context_menu_draws_generated_buttons_without_a_shared_window()
   )
   Assert.deepEqual(palettes.QUIT, roles.cancel.raised, "cancel resolves its own role at the same ink")
   Assert.deepEqual(roles.cancel.raised, roles.command.raised, "cancel keeps command ink")
+  for _, call in ipairs(texts) do
+    if call.value == "QUIT" then
+      local textRect = entries[3].textRect
+      Assert.equal(call.y, textRect.y + 4, "context Cancel uses the source font y offset")
+      Assert.equal(
+        call.x,
+        textRect.x + math.floor((textRect.width - renderer._contextText:textWidth("QUIT")) / 2),
+        "context Cancel uses integer centering"
+      )
+    end
+  end
 end
 
 function T.press_phases_drive_pressed_then_selected_button_frames()
@@ -1546,7 +1673,7 @@ function T.acquisition_failure_releases_every_image_acquired_before_it()
   local probe = fakeGraphics()
   local bound = newRenderer(probe, paletteText({}), v5Manifest())
   local total = #probe.images
-  Assert.equal(total, 46, "setup binds panel chrome with switch selection plus frames and glyphs")
+  Assert.equal(total, 49, "setup binds font 4 plus panel chrome, frames, and glyphs")
   bound:release()
   for _, image in ipairs(probe.images) do
     Assert.equal(image.releaseCount, 1, "setup release publishes every owned image exactly once")
@@ -1578,6 +1705,7 @@ function T.context_menu_uses_semantic_roles_with_brightness_confined_below_the_m
   local graphics = sequenceGraphics()
   local texts = {}
   local renderer = newRenderer(graphics, paletteText(texts), manifest)
+  recordContextText(renderer, texts)
   local resolved = v5Layout(manifest)
   local menu = {
     { kind = "summary", label = "CMD_ONE" },
@@ -1614,6 +1742,7 @@ function T.context_menu_uses_semantic_roles_with_brightness_confined_below_the_m
   )
   local texts2 = {}
   local renderer2 = newRenderer(sequenceGraphics(), paletteText(texts2), manifest)
+  recordContextText(renderer2, texts2)
   local refocused = contextStatus({ menu = menu, menuIndex = 1, menuSlot = 0 })
   refocused.view.slots[1] = occupiedSlot(0)
   renderer2:draw(refocused, resolved, frameIcons({}))

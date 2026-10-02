@@ -510,5 +510,5 @@ end
 
 local suite = GraphicsSmoke.suite(T)
 suite.metadata.capabilities = { "graphics", "rom_dump" }
-suite.metadata.derivedAssets = { "party:global" }
+suite.metadata.derivedAssets = { "field-font:global", "party:global" }
 return suite
