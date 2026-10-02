@@ -6,7 +6,11 @@
 -- layer.
 
 local Assert = require("tests.support.Assert")
+local CatalogFixture = require("libs.mons.tests.catalog_fixture")
 local FieldRuntime = require("game.hgss.src.field.FieldRuntime")
+local Lcrng = require("libs.mons.src.gen4.Lcrng")
+local MonsSave = require("libs.mons.src.MonsSave")
+local Party = require("libs.mons.src.Party")
 local ScenarioFactory = require("libs.hgss.src.battle.HgssBattleScenarioFactory")
 local SessionFixture = require("libs.battle.tests.session_fixture")
 
@@ -72,6 +76,45 @@ local function wildScenario()
   return ScenarioFactory.fromEncounter({ species = "TOTODILE", level = 4 }, {})
 end
 
+---@param record table full mon-domain record under test preparation
+---@return table the same record striking with a single known move
+local function tackleOnly(record)
+  record.moves = { { move = "TACKLE", pp = 35, ppUps = 0 } }
+  return record
+end
+
+---@param species string
+---@param level integer
+---@param seed integer
+---@return table full mon-domain record
+local function foeRecord(species, level, seed)
+  local catalog = CatalogFixture.makeCatalog()
+  local factory = CatalogFixture.makeFactory(seed, catalog)
+  return tackleOnly(factory:createNormal(CatalogFixture.normalRequest({ species = species, level = level })))
+end
+
+---@return table party owner holding one fixed lead
+local function newPartyOwner()
+  local HgssMonService = require("libs.hgss.src.mons.HgssMonService")
+  local catalog = CatalogFixture.makeCatalog()
+  local owner = HgssMonService.new({
+    catalog = catalog,
+    bucket = MonsSave.capture(Party.new():capture(), Lcrng.new(0x22222222):capture(), catalog:fingerprint()),
+    profile = CatalogFixture.profile(),
+    game = "heartgold",
+    language = "english",
+    charmap = CatalogFixture.CHARMAP,
+    games = CatalogFixture.GAMES,
+    languages = CatalogFixture.LANGUAGES,
+    items = CatalogFixture.ITEMS,
+    balls = CatalogFixture.BALLS,
+    mapSection = 7,
+    date = CatalogFixture.metDate(),
+  })
+  Assert.isTrue(owner:addMon(foeRecord("CHIKORITA", 5, 0x33333333)), "the owned lifetime needs its live party lead")
+  return owner
+end
+
 local function wildRequest(id)
   return { id = id or "launch-field-1", kind = "wild", payload = { species = "TOTODILE", level = 4 } }
 end
@@ -96,11 +139,15 @@ local function driveToSettled(runtime, battle)
 end
 
 function T.startBattle_runs_the_owned_lifetime_to_commit_and_return()
-  local runtime, battleFlags = fakeRuntime()
+  local party = newPartyOwner()
+  local runtime, battleFlags = fakeRuntime({ monService = party })
   local portRecord = { enters = 0, frames = {}, leaves = 0, disposed = 0 }
+  local foe = foeRecord("TOTODILE", 4, 0x5EED0004)
+  local request = { id = "launch-field-1", kind = "wild", payload = { species = "TOTODILE", level = 4, mon = foe } }
+  local scenario = ScenarioFactory.fromEncounter(request.payload, { party = party })
   local battle = runtime:startBattle({
-    request = wildRequest(),
-    scenario = wildScenario(),
+    request = request,
+    scenario = scenario,
     presentation = headlessPort(portRecord),
   })
   Assert.isTrue(battleFlags[1], "launch freezes player input")

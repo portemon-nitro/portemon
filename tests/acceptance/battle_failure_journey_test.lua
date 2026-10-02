@@ -42,6 +42,20 @@ local function requirePresent(name, behavior)
   return loaded --[[@as table]]
 end
 
+---@param catalog table live mon catalog behind the journey
+---@return table full enemy record detached from every live owner
+local function enemyRecord(catalog, species, level, seed)
+  local factory = CatalogFixture.makeFactory(seed, catalog)
+  return factory:createNormal(CatalogFixture.normalRequest({ species = species, level = level }))
+end
+
+---@param record table full mon-domain record under test preparation
+---@return table the same record striking with a single known move
+local function tackleOnly(record)
+  record.moves = { { move = "TACKLE", pp = 35, ppUps = 0 } }
+  return record
+end
+
 ---@return table party owner holding one fixed mon
 local function newPartyOwner()
   local catalog = CatalogFixture.makeCatalog()
@@ -250,7 +264,13 @@ function T.tests.invalid_replies_return_typed_errors_and_the_battle_still_comple
     )
     local partyRevisionBefore = game.runtime.monService:partyRevision()
     local record = { enters = 0, frames = {}, leaves = 0, disposed = 0 }
-    local launch = { id = "launch-typed-replies", kind = "wild", payload = { species = "TOTODILE", level = 4 } }
+    local liveCatalog = game.runtime.monService:catalog()
+    local typedFoe = tackleOnly(enemyRecord(liveCatalog, "TOTODILE", 4, 0x7E401001))
+    local launch = {
+      id = "launch-typed-replies",
+      kind = "wild",
+      payload = { species = "TOTODILE", level = 4, mon = typedFoe },
+    }
     local battle = BattleRuntime.new({
       request = launch,
       scenario = ScenarioFactory.fromEncounter(launch.payload, {

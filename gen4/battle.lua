@@ -516,12 +516,21 @@ end
 
 -- Constructs a headless session over a detached scenario copy and frozen
 -- content. The scenario is validated before anything publishes, and the
--- returned session owns its private state for its whole lifetime.
+-- returned session owns its private state for its whole lifetime. The
+-- scenario's bound ruleset selects the mechanics executor: the native HGSS
+-- key runs the private native lifecycle, while every other bound ruleset
+-- keeps the generic session, so custom content never changes behavior.
 ---@param scenario table<string, unknown> detached serializable battle setup
 ---@param content BattleContent frozen executable battle content
----@return BattleSession live headless session
+---@return table<string, unknown> live headless session
 function Battle.newSession(scenario, content)
   assert(Battle.apiVersion == 1, "the battle entrypoint carries its version")
+  if type(scenario) == "table" and scenario.ruleset ~= nil then
+    local Executor = require("libs.battle.src.gen4.HgssSessionExecutor")
+    if scenario.ruleset == Executor.RULESET then
+      return Executor.new(scenario, content)
+    end
+  end
   local BattleSession = require("libs.battle.src.BattleSession")
   return BattleSession.new(scenario, content)
 end

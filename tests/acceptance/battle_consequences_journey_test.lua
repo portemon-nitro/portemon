@@ -118,6 +118,13 @@ local function enemyRecord(catalog, species, level, seed, hp)
   return record
 end
 
+---@param record table full mon-domain record under test preparation
+---@return table the same record striking with a single known move
+local function tackleOnly(record)
+  record.moves = { { move = "TACKLE", pp = 35, ppUps = 0 } }
+  return record
+end
+
 ---@return table player money facts over the live player record
 local function playerFacts(game)
   local CatalogFixture = require("libs.mons.tests.catalog_fixture")
@@ -217,8 +224,12 @@ function T.tests.post_battle_consequences_commit_through_the_live_owners()
       wear = wear + 1
       Assert.isTrue(wear <= 12, "the solo lead faints within its hit-point budget")
       local lossRecord = { enters = 0, frames = {}, leaves = 0, disposed = 0 }
-      local lossLaunch =
-        { id = "launch-consequence-loss-" .. wear, kind = "wild", payload = { species = "TOTODILE", level = 4 } }
+      local lossFoe = tackleOnly(enemyRecord(liveCatalog, "TOTODILE", 4, 0xB1AC0001 + wear))
+      local lossLaunch = {
+        id = "launch-consequence-loss-" .. wear,
+        kind = "wild",
+        payload = { species = "TOTODILE", level = 4, mon = lossFoe },
+      }
       local lossScenario = ScenarioFactory.fromEncounter(lossLaunch.payload, { party = game.runtime.monService })
       local loss = BattleRuntime.new({
         request = lossLaunch,
@@ -260,7 +271,7 @@ function T.tests.post_battle_consequences_commit_through_the_live_owners()
     local ballsBefore = game.runtime.bagService:quantity("POKE_BALL")
     local partyBefore = game.runtime.monService:partyCount()
     local catchRecord = { enters = 0, frames = {}, leaves = 0, disposed = 0 }
-    local wildFoe = enemyRecord(liveCatalog, "TOTODILE", 4, 0xCA7C4001)
+    local wildFoe = tackleOnly(enemyRecord(liveCatalog, "TOTODILE", 4, 0xCA7C4001))
     local catchLaunch =
       { id = "launch-consequence-catch", kind = "wild", payload = { species = "TOTODILE", level = 4, mon = wildFoe } }
     local catchScenario =
@@ -352,7 +363,7 @@ function T.tests.post_battle_consequences_commit_through_the_live_owners()
       maps = { [location] = true },
     })
     local roamerRecord = { enters = 0, frames = {}, leaves = 0, disposed = 0 }
-    local roamerFoe = enemyRecord(liveCatalog, "EEVEE", 20, 0x90A4CE02, 1)
+    local roamerFoe = tackleOnly(enemyRecord(liveCatalog, "EEVEE", 20, 0x90A4CE02, 1))
     local roamerLaunch =
       { id = "launch-consequence-roamer", kind = "wild", payload = { species = "EEVEE", level = 20, mon = roamerFoe } }
     local roamerScenario =

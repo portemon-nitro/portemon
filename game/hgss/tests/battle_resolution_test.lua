@@ -27,6 +27,13 @@ local function requirePresent(name, behavior)
   return loaded --[[@as table]]
 end
 
+---@param record table full mon-domain record under test preparation
+---@return table the same record striking with a single known move
+local function tackleOnly(record)
+  record.moves = { { move = "TACKLE", pp = 35, ppUps = 0 } }
+  return record
+end
+
 ---@param species string
 ---@param level integer
 ---@param seed integer
@@ -169,7 +176,9 @@ function T.loss_stages_blackout_debit_through_the_committer()
 
   local party = newPartyOwner(1)
   local facts = playerFacts(3000)
-  local launch = { id = "launch-blackout-debit", kind = "wild", payload = { species = "TOTODILE", level = 4 } }
+  local foe = tackleOnly(foeRecord("TOTODILE", 4, 0xB1AC0001))
+  local launch =
+    { id = "launch-blackout-debit", kind = "wild", payload = { species = "TOTODILE", level = 4, mon = foe } }
   local scenario = ScenarioFactory.fromEncounter(launch.payload, { party = party })
   local battle = BattleRuntime.new({
     request = launch,
@@ -195,7 +204,9 @@ function T.capture_stages_party_dex_and_bag_through_the_committer()
   local bag = newBagOwner()
   local dex = newDexOwner()
   local caught = foeRecord("TOTODILE", 4, 0xC0FFEE01)
-  local launch = { id = "launch-capture-wire", kind = "wild", payload = { species = "TOTODILE", level = 4 } }
+  local foe = tackleOnly(foeRecord("TOTODILE", 4, 0xC0FFEE02))
+  local launch =
+    { id = "launch-capture-wire", kind = "wild", payload = { species = "TOTODILE", level = 4, mon = foe } }
   local scenario = ScenarioFactory.fromEncounter(launch.payload, { party = party })
   local battle = BattleRuntime.new({
     request = launch,
@@ -237,7 +248,9 @@ function T.full_party_capture_stays_an_honest_noop_while_consuming_the_ball()
   Assert.equal(party:partyCount(), 6, "the party starts full")
   local bag = newBagOwner()
   local dex = newDexOwner()
-  local launch = { id = "launch-full-party-wire", kind = "wild", payload = { species = "EEVEE", level = 4 } }
+  local foe = tackleOnly(foeRecord("EEVEE", 4, 0xAAAA0004))
+  local launch =
+    { id = "launch-full-party-wire", kind = "wild", payload = { species = "EEVEE", level = 4, mon = foe } }
   local scenario = ScenarioFactory.fromEncounter(launch.payload, { party = party })
   local caught = foeRecord("EEVEE", 4, 0xAAAA0002)
   local battle = BattleRuntime.new({
@@ -298,7 +311,9 @@ function T.unknown_capture_species_fails_the_resolution()
   local Committer = requirePresent(COMMITTER_MODULE, "end-to-end exactly-once result publication")
 
   local party = newPartyOwner()
-  local launch = { id = "launch-unknown-capture", kind = "wild", payload = { species = "TOTODILE", level = 4 } }
+  local foe = tackleOnly(foeRecord("TOTODILE", 4, 0xAAAA0005))
+  local launch =
+    { id = "launch-unknown-capture", kind = "wild", payload = { species = "TOTODILE", level = 4, mon = foe } }
   local scenario = ScenarioFactory.fromEncounter(launch.payload, { party = party })
   local bogus = foeRecord("EEVEE", 4, 0xAAAA0003)
   bogus.species = "MISSINGNO"
@@ -324,7 +339,9 @@ function T.unstaged_dex_reference_fails_the_resolution()
 
   local party = newPartyOwner()
   local dex = PokedexKnowledge.new({ species = { CHIKORITA = true } })
-  local launch = { id = "launch-unstaged-dex", kind = "wild", payload = { species = "TOTODILE", level = 4 } }
+  local foe = tackleOnly(foeRecord("TOTODILE", 4, 0xAAAA0006))
+  local launch =
+    { id = "launch-unstaged-dex", kind = "wild", payload = { species = "TOTODILE", level = 4, mon = foe } }
   local scenario = ScenarioFactory.fromEncounter(launch.payload, { party = party })
   local battle = BattleRuntime.new({
     request = launch,

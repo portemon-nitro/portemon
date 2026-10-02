@@ -87,6 +87,21 @@ local function strikeWithLeadMove(request)
   return choices
 end
 
+---@param catalog table live mon catalog behind the journey
+---@return table full enemy record detached from every live owner
+local function enemyRecord(catalog, species, level, seed)
+  local CatalogFixture = require("libs.mons.tests.catalog_fixture")
+  local factory = CatalogFixture.makeFactory(seed, catalog)
+  return factory:createNormal(CatalogFixture.normalRequest({ species = species, level = level }))
+end
+
+---@param record table full mon-domain record under test preparation
+---@return table the same record striking with a single known move
+local function tackleOnly(record)
+  record.moves = { { move = "TACKLE", pp = 35, ppUps = 0 } }
+  return record
+end
+
 function T.tests.field_battle_returns_to_the_live_field_after_commit()
   local versionId = AcceptanceHarness.defaultVersion()
   local game = harness():boot({
@@ -115,7 +130,13 @@ function T.tests.field_battle_returns_to_the_live_field_after_commit()
     local tileBefore = { fieldX = game:snapshot().player.fieldX, fieldZ = game:snapshot().player.fieldZ }
 
     local portRecord = { enters = 0, frames = {}, leaves = 0, disposed = 0 }
-    local launch = { id = "launch-opening-wild", kind = "wild", payload = { species = "TOTODILE", level = 4 } }
+    local liveCatalog = game.runtime.monService:catalog()
+    local wildFoe = tackleOnly(enemyRecord(liveCatalog, "TOTODILE", 4, 0xB1AC0003))
+    local launch = {
+      id = "launch-opening-wild",
+      kind = "wild",
+      payload = { species = "TOTODILE", level = 4, mon = wildFoe },
+    }
     local scenario = ScenarioFactory.fromEncounter(launch.payload, {
       party = game.runtime.monService,
       bag = game.runtime.bagService,
