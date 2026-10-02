@@ -218,7 +218,9 @@ local function checkRequest(request)
     local single = payload.trainer
     local several = payload.trainers
     assert(
-      (type(single) == "string" and single ~= "") or (type(several) == "table" and #several > 0),
+      (type(single) == "string" and single ~= "")
+        or type(single) == "number"
+        or (type(several) == "table" and #several > 0),
       "trainer launches name their trainer"
     )
   end

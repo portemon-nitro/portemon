@@ -1,26 +1,38 @@
--- Source-specific non-player trainer party generation. Ports
+-- Source-faithful non-player trainer party generation. Ports
 -- pret/pokeheartgold src/trainer_data.c CreateNPCTrainerParty across all
 -- four trainer record variants (plain, custom moves, held item, both):
--- trainer and class identity seed a private generator per member,
--- difficulty maps to uniform individual values, personality and
--- gender/ability overrides follow the native override rules, supplied moves
--- are kept in source order while plain members fall back to a leading-slot
--- strike, held items and capsule facts survive, and friendship follows the
--- template value with the native minimum-friendship rule for
--- disappointment-driven moves. The surrounding battle stream is never
--- drawn from: generation owns a private generator per member and leaves
--- the caller stream bit-identical, so rebuilds replay every personality
--- and individual value exactly. Templates without native numeric inputs
--- build only through a declared semantic generation policy and never by
--- silently borrowing the native formula.
+-- difficulty, level, numeric species, and numeric trainer identity seed a
+-- private generator per member; the generator advances once per numeric
+-- trainer class; the personality combines the final generator output with
+-- the class/override selector; difficulty maps to uniform individual
+-- values; gender and ability overrides read the actual species/form facts;
+-- plain members learn their native initial moveset; custom moves keep
+-- source order with catalog power points; held item, form, capsule, and
+-- the disappointment-move friendship apply after base creation in source
+-- order. Every member validates as a full domain record. The surrounding
+-- stream is never drawn from: generation owns a private generator per
+-- member and leaves the caller stream bit-identical, so rebuilds replay
+-- every personality and individual value exactly. Templates without native
+-- numeric inputs build only through a declared semantic generation policy
+-- and never by silently borrowing the native formula.
 
 local Errors = require("libs.errors.src.Errors")
+local Experience = require("libs.mons.src.gen4.Experience")
 local Lcrng = require("libs.mons.src.gen4.Lcrng")
+local Mon = require("libs.mons.src.Mon")
+local Moves = require("libs.mons.src.gen4.Moves")
+local NativeLegality = require("libs.mons.src.gen4.NativeLegality")
 local Personality = require("libs.mons.src.gen4.Personality")
 local Stats = require("libs.mons.src.gen4.Stats")
 
 ---@class HgssTrainerFactory
 ---@field private _catalog table<string, unknown>
+---@field private _monCatalog table<string, unknown>
+---@field private _charmap table<string, unknown>
+---@field private _games table<string, integer>
+---@field private _languages table<string, integer>
+---@field private _game string
+---@field private _language string
 local HgssTrainerFactory = {}
 HgssTrainerFactory.__index = HgssTrainerFactory
 
@@ -49,15 +61,24 @@ assert(#CLASS_GENDERS == 129, "the class gender table covers every native traine
 -- numeric identities the native class header assigns them.
 local CLASS_NUMBERS = { YOUNGSTER = 2, RIVAL = 23 }
 
-local LEADING_MOVE_FALLBACK = "TACKLE"
 local FRIENDSHIP_MAX = 255
-local GENDER_RATIO_FALLBACK = 127
+local FRUSTRATION_MOVE = "FRUSTRATION"
 local PID_FEMALE_BASE = 0x78
 local PID_MALE_BASE = 0x88
 local MAX_U32 = 4294967295
 
+-- Neutral creation facts for detached battle-owned records. The trainer,
+-- not the player, owns these mons, so the origin names a fixed trainer
+-- profile instead of borrowing the live party identity; the met facts stay
+-- constant because generation must replay bit-identically.
+local DEFAULT_PROFILE = { name = "TRAINER", gender = 0, trainerId = 0 }
+local DEFAULT_BALL = "POKE_BALL"
+local DEFAULT_LOCATION = 0
+local DEFAULT_TERRAIN = 0
+local DEFAULT_DATE = { year = 2000, month = 1, day = 1 }
+
 ---@param text string
----@return integer deterministic unsigned 32-bit seed for synthetic identities
+---@return integer deterministic unsigned 32-bit seed for semantic identities
 local function hashSeed(text)
   local hash = 0
   for index = 1, #text do
@@ -128,6 +149,22 @@ local function assertNativeInputs(member)
   )
 end
 
+---@param trainerId unknown
+---@param trainerKey unknown
+---@return integer numeric trainer identity backing the native seed
+local function nativeTrainerId(trainerId, trainerKey)
+  local identity = trainerId
+  if identity == nil then
+    identity = trainerKey
+  end
+  if type(identity) ~= "number" or identity % 1 ~= 0 or identity < 0 then
+    Errors.raise("TRAINER_NATIVE_INPUTS_MISSING", "native generation needs the numeric trainer identity", {
+      trainer = tostring(trainerKey),
+    })
+  end
+  return identity --[[@as integer]]
+end
+
 ---@param member table<string, unknown>
 ---@return string[] custom moves in source order
 local function customMoves(member)
@@ -149,6 +186,21 @@ local function overrideNibbles(params)
     return 0, 0
   end
   return params.genderOverride or 0, params.abilityOverride or 0
+end
+
+---@param params table<string, unknown>|nil
+---@return integer capsule word carried by the template
+local function capsuleWord(params)
+  if type(params) ~= "table" or params.capsule == nil then
+    return 0
+  end
+  local capsule = params.capsule --[[@as unknown]]
+  if type(capsule) ~= "number" or capsule % 1 ~= 0 or capsule < 0 or capsule > 255 then
+    Errors.raise("TRAINER_NATIVE_INPUTS_MISSING", "capsule facts stay an unsigned byte", {
+      capsule = tostring(params.capsule),
+    })
+  end
+  return capsule --[[@as integer]]
 end
 
 ---@param pid integer
@@ -176,15 +228,15 @@ local function applyOverrides(pid, genderOverride, abilityOverride, ratio)
   return value
 end
 
----@param species string
----@param level integer
 ---@param difficulty integer
----@param trainerKey string|integer
+---@param level integer
+---@param nativeSpeciesId integer
+---@param trainerId integer
 ---@param trainerClass string|integer|nil
 ---@param pidByte integer
 ---@return integer, integer personality value and uniform individual value
-local function nativeIdentity(species, level, difficulty, trainerKey, trainerClass, pidByte)
-  local seed = (difficulty + level + hashSeed(species .. ":" .. tostring(trainerKey))) % (MAX_U32 + 1)
+local function nativeIdentity(difficulty, level, nativeSpeciesId, trainerId, trainerClass, pidByte)
+  local seed = (difficulty + level + nativeSpeciesId + trainerId) % (MAX_U32 + 1)
   local generator = Lcrng.new(seed)
   local rolled = seed % 65536
   for _ = 1, classRolls(trainerClass) do
@@ -195,52 +247,99 @@ local function nativeIdentity(species, level, difficulty, trainerKey, trainerCla
   return personality, iv
 end
 
----@param level integer
----@param iv integer
----@param personality integer
----@return table<string, integer> battle stats from the native stat formula
-local function fallbackStats(level, iv, personality)
-  local base = { hp = 10, attack = 10, defense = 10, speed = 10, specialAttack = 10, specialDefense = 10 }
-  local ivs = {
-    hp = iv,
-    attack = iv,
-    defense = iv,
-    speed = iv,
-    specialAttack = iv,
-    specialDefense = iv,
-  }
-  local evs = { hp = 0, attack = 0, defense = 0, speed = 0, specialAttack = 0, specialDefense = 0 }
-  return Stats.calculate(base, ivs, evs, level, Personality.nature(personality))
-end
-
----@param templateValue integer template-carried friendship in 0..255
----@param moves string[] resolved move keys for the disappointment-move rule
+---@param templateValue integer|nil template-carried friendship, full when absent
+---@param moves { move: string }[] resolved moves for the disappointment-move rule
 ---@return integer friendship after the native disappointment-move rule
 local function friendshipFor(templateValue, moves)
-  for _, move in ipairs(moves) do
-    if move == "FRUSTRATION" then
+  local friendship = templateValue
+  if friendship == nil then
+    friendship = FRIENDSHIP_MAX
+  end
+  assert(
+    type(friendship) == "number" and friendship % 1 == 0 and friendship >= 0 and friendship <= FRIENDSHIP_MAX,
+    "friendship stays an unsigned byte"
+  )
+  for _, entry in ipairs(moves) do
+    if entry.move == FRUSTRATION_MOVE then
       return 0
     end
   end
-  return templateValue
+  return friendship --[[@as integer]]
 end
 
----@param args { catalog: table<string, unknown> }
+---@return table<string, unknown> domain validation context behind generated records
+function HgssTrainerFactory:_validationContext()
+  return {
+    catalog = self._monCatalog,
+    charmap = self._charmap,
+    games = self._games,
+    languages = self._languages,
+  }
+end
+
+---@param member table<string, unknown>
+---@param formDef table<string, unknown>
+---@return { move: string, pp: integer, ppUps: integer }[] domain moves in source order
+function HgssTrainerFactory:_resolveMoves(member, formDef)
+  local monCatalog = self._monCatalog
+  if member.moves ~= nil then
+    local entries = {}
+    for _, key in ipairs(customMoves(member)) do
+      local definition = monCatalog:move(key)
+      entries[#entries + 1] = { move = key, pp = definition.basePp, ppUps = 0 }
+    end
+    return entries
+  end
+  local level = member.level --[[@as integer]]
+  return Moves.initial(formDef.levelUpMoves, level, monCatalog)
+end
+
+---@param profile table<string, unknown>|nil
+---@return table<string, unknown> origin profile behind generated records
+local function originProfile(profile)
+  if profile == nil then
+    return { name = DEFAULT_PROFILE.name, gender = DEFAULT_PROFILE.gender, trainerId = DEFAULT_PROFILE.trainerId }
+  end
+  assert(type(profile) == "table", "generation profiles stay records")
+  local entry = profile --[[@as table<string, unknown>]]
+  assert(type(entry.name) == "string" and entry.name ~= "", "generation profiles name their trainer")
+  assert(type(entry.gender) == "number", "generation profiles carry their trainer gender")
+  assert(type(entry.trainerId) == "number", "generation profiles carry their trainer identity")
+  return { name = entry.name, gender = entry.gender, trainerId = entry.trainerId }
+end
+
+---@param args { catalog: table<string, unknown>, monCatalog: table<string, unknown>, charmap: table<string, unknown>, games: table<string, integer>, languages: table<string, integer>, game: string, language: string }
 ---@return HgssTrainerFactory
 function HgssTrainerFactory.new(args)
   assert(type(args) == "table", "trainer generation reads its template catalog")
   assert(type(args.catalog) == "table", "trainer generation reads its template catalog")
-  return setmetatable({ _catalog = args.catalog }, HgssTrainerFactory)
+  assert(args.monCatalog ~= nil, "trainer generation reads its domain mon catalog")
+  assert(type(args.charmap) == "table", "trainer generation reads its text charmap")
+  assert(type(args.games) == "table", "trainer generation reads its game table")
+  assert(type(args.languages) == "table", "trainer generation reads its language table")
+  assert(type(args.game) == "string" and args.games[args.game] ~= nil, "trainer generation game must resolve")
+  assert(
+    type(args.language) == "string" and args.languages[args.language] ~= nil,
+    "trainer generation language must resolve"
+  )
+  return setmetatable({
+    _catalog = args.catalog,
+    _monCatalog = args.monCatalog,
+    _charmap = args.charmap,
+    _games = args.games,
+    _languages = args.languages,
+    _game = args.game,
+    _language = args.language,
+  }, HgssTrainerFactory)
 end
 
 ---@param member table<string, unknown> party member template
 ---@param context table<string, unknown> build context carrying the trainer identity and stream
----@return table<string, unknown> byte-projectable party mon
+---@return table<string, unknown> validated full domain record for the member
 function HgssTrainerFactory:buildNativeMon(member, context)
   assertMemberShape(member, "trainer generation")
   assert(type(context) == "table", "member generation reads its build context")
   assert(type(context.rng) == "table", "member generation threads the surrounding stream untouched")
-  local trainerKey = context.trainerKey or "trainer"
   local trainerClass = context.trainerClass
   local native = isNativePolicy(member.identityPolicy)
   if native then
@@ -251,35 +350,49 @@ function HgssTrainerFactory:buildNativeMon(member, context)
       "custom templates declare their semantic generation policy"
     )
   end
-  local difficulty = member.difficulty or 0
+  local monCatalog = self._monCatalog
+  local speciesDef = monCatalog:species(member.species)
+  local form = member.form or 0
+  assert(type(form) == "number" and form % 1 == 0 and form >= 0, "member forms stay non-negative integers")
+  local formDef = monCatalog:form(member.species, form)
+  local genderRatio = speciesDef.genderRatio
+  assert(
+    type(genderRatio) == "number" and genderRatio % 1 == 0 and genderRatio >= 0 and genderRatio <= 255,
+    "species gender ratios stay unsigned bytes"
+  )
   local genderOverride, abilityOverride = overrideNibbles(member.identityParams)
-  local params = member.identityParams
-  local capsule = 0
-  if type(params) == "table" and params.capsule ~= nil then
-    assert(
-      type(params.capsule) == "number" and params.capsule % 1 == 0 and params.capsule >= 0,
-      "capsule facts stay non-negative integers"
-    )
-    capsule = params.capsule
-  end
-  local pidByte = applyOverrides(classBasePid(trainerClass), genderOverride, abilityOverride, GENDER_RATIO_FALLBACK)
-  local personality, iv = nativeIdentity(member.species, member.level, difficulty, trainerKey, trainerClass, pidByte)
-  local moves = nil
-  if member.moves ~= nil then
-    moves = customMoves(member)
+  local capsule = capsuleWord(member.identityParams)
+  local ratio = genderRatio --[[@as integer]]
+  local level = member.level --[[@as integer]]
+  local personality, iv
+  if native then
+    local nativeSpeciesId = speciesDef.nativeId
+    if type(nativeSpeciesId) ~= "number" then
+      Errors.raise("TRAINER_NATIVE_INPUTS_MISSING", "native generation needs the numeric species identity", {
+        species = member.species,
+      })
+    end
+    local speciesId = nativeSpeciesId --[[@as integer]]
+    local difficultyValue = member.difficulty --[[@as integer]]
+    local trainerId = nativeTrainerId(context.trainerId, context.trainerKey)
+    local pidByte = applyOverrides(classBasePid(trainerClass), genderOverride, abilityOverride, ratio)
+    personality, iv = nativeIdentity(difficultyValue, level, speciesId, trainerId, trainerClass, pidByte)
   else
-    moves = { LEADING_MOVE_FALLBACK }
+    local seed = hashSeed(member.species .. "|" .. tostring(level) .. "|" .. tostring(member.identityPolicy))
+    personality = seed
+    iv = 0
+    if member.difficulty ~= nil then
+      assertNativeInputs(member)
+      local difficultyValue = member.difficulty --[[@as integer]]
+      iv = math.floor((difficultyValue * 31) / 255)
+    end
   end
+  local abilitySlot = Personality.abilitySlot(#formDef.abilities, personality)
+  local ability = formDef.abilities[abilitySlot]
+  local moves = self:_resolveMoves(member, formDef)
   local heldItem = member.heldItem or "NONE"
   assert(type(heldItem) == "string" and heldItem ~= "", "held items name their item key")
-  local friendship = member.friendship
-  if friendship == nil then
-    friendship = FRIENDSHIP_MAX
-  end
-  assert(
-    type(friendship) == "number" and friendship % 1 == 0 and friendship >= 0 and friendship <= FRIENDSHIP_MAX,
-    "friendship stays an unsigned byte"
-  )
+  monCatalog:item(heldItem)
   local ivs = {
     hp = iv,
     attack = iv,
@@ -288,24 +401,78 @@ function HgssTrainerFactory:buildNativeMon(member, context)
     specialAttack = iv,
     specialDefense = iv,
   }
-  return {
+  local evs = { hp = 0, attack = 0, defense = 0, speed = 0, specialAttack = 0, specialDefense = 0 }
+  local curve = monCatalog:growthCurve(speciesDef.growthCurve)
+  local experience = Experience.expFor(curve, level)
+  local nature = Personality.nature(personality)
+  local derived = Stats.calculate(formDef.baseStats, ivs, evs, level, nature)
+  local maxHp = derived.hp
+  if member.species == "SHEDINJA" then
+    maxHp = 1
+  end
+  local profile = originProfile(context.profile)
+  local ball = context.ball or DEFAULT_BALL
+  assert(type(ball) == "string" and ball ~= "", "generation balls name their item key")
+  local location = context.location
+  if location == nil then
+    location = DEFAULT_LOCATION
+  end
+  assert(type(location) == "number" and location % 1 == 0 and location >= 0, "met locations stay non-negative integers")
+  local terrain = context.terrain
+  if terrain == nil then
+    terrain = DEFAULT_TERRAIN
+  end
+  assert(type(terrain) == "number" and terrain % 1 == 0 and terrain >= 0, "met terrains stay unsigned bytes")
+  local date = context.date or DEFAULT_DATE
+  assert(type(date) == "table", "generation dates stay records")
+  local record = {
+    schema = Mon.SCHEMA,
     species = member.species,
-    form = member.form or 0,
-    level = member.level,
+    form = form,
     personality = personality,
-    ivs = ivs,
-    stats = fallbackStats(member.level, iv, personality),
-    moves = moves,
+    experience = experience,
+    friendship = friendshipFor(member.friendship, moves),
+    ability = ability,
     heldItem = heldItem,
-    friendship = friendshipFor(friendship, moves),
-    gender = Personality.gender(GENDER_RATIO_FALLBACK, personality),
-    abilitySlot = (personality % 2) + 1,
-    capsule = capsule,
+    markings = 0,
+    evs = evs,
+    contest = { cool = 0, beauty = 0, cute = 0, smart = 0, tough = 0, sheen = 0 },
+    moves = moves,
+    ivs = ivs,
+    isEgg = false,
+    nickname = nil,
+    ribbons = { ds1 = 0, gba = 0, ds2 = 0 },
+    fatefulEncounter = false,
+    shinyLeaves = 0,
+    egg = { location = 0 },
+    met = {
+      location = location,
+      date = { year = date.year, month = date.month, day = date.day },
+      level = level,
+      terrain = terrain,
+    },
+    origin = {
+      trainerId = profile.trainerId,
+      trainerName = profile.name,
+      trainerGender = profile.gender,
+      game = self._game,
+      ball = ball,
+      language = self._language,
+    },
+    pokerus = 0,
+    mood = 0,
+    condition = { currentHp = maxHp, effects = {} },
+    capsule = { id = capsule, seals = {} },
+    mail = {},
   }
+  local domain = self:_validationContext()
+  local canonical = Mon.validate(record, domain)
+  NativeLegality.project(canonical, domain)
+  return canonical
 end
 
 ---@param context table<string, unknown> build context carrying the trainer key, names, and stream
----@return table<string, unknown> built party with its resolved display name
+---@return table<string, unknown> built party with its resolved display name and native metadata
 function HgssTrainerFactory:build(context)
   assert(type(context) == "table", "party generation reads its build context")
   assert(context.trainerKey ~= nil, "party generation names its trainer")
@@ -342,19 +509,35 @@ function HgssTrainerFactory:build(context)
   local memberContext = {
     rng = context.rng,
     trainerKey = context.trainerKey,
+    trainerId = context.trainerId,
     trainerClass = record.trainerClass,
+    profile = context.profile,
+    ball = context.ball,
+    location = context.location,
+    terrain = context.terrain,
+    date = context.date,
   }
   local mons = {}
+  local partyLevels = {}
   for _, member in ipairs(party) do
     mons[#mons + 1] = self:buildNativeMon(member, memberContext)
+    local entry = member --[[@as table<string, unknown>]]
+    partyLevels[#partyLevels + 1] = entry.level
+  end
+  local program = nil
+  if type(catalog.program) == "function" then
+    program = catalog:program(context.trainerKey)
   end
   return {
     name = name,
     mons = mons,
     trainerKey = context.trainerKey,
+    trainerClass = record.trainerClass,
+    partyLevels = partyLevels,
     doubleBattle = record.doubleBattle == true,
     aiPasses = record.aiPasses or {},
     items = record.items or {},
+    program = program,
   }
 end
 

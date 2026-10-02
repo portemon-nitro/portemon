@@ -335,7 +335,10 @@ function HgssBattleScenarioFactory.fromTrainer(payload, ctx)
   assert(type(context) == "table", "scenario context stays a record")
   local trainers = payload.trainers
   if trainers == nil then
-    if type(payload.trainer) ~= "string" or payload.trainer == "" then
+    if type(payload.trainer) ~= "string" and type(payload.trainer) ~= "number" then
+      error("trainer battles require their trainer identity", 0)
+    end
+    if payload.trainer == "" then
       error("trainer battles require their trainer identity", 0)
     end
     trainers = { { id = payload.trainer, party = payload.party, program = payload.program } }
@@ -349,7 +352,10 @@ function HgssBattleScenarioFactory.fromTrainer(payload, ctx)
   for index, trainer in ipairs(trainers) do
     assert(type(trainer) == "table", "trainer entries stay records")
     local entry = trainer --[[@as table<string, unknown>]]
-    if type(entry.id) ~= "string" or entry.id == "" then
+    if type(entry.id) ~= "string" and type(entry.id) ~= "number" then
+      error("trainer battles require every trainer identity", 0)
+    end
+    if entry.id == "" then
       error("trainer battles require every trainer identity", 0)
     end
     local party = entry.party or (index == 1 and context.trainerParty or nil)
@@ -366,7 +372,7 @@ function HgssBattleScenarioFactory.fromTrainer(payload, ctx)
       roster[#roster + 1] = {
         id = combatantId,
         mon = copyValue(member),
-        source = { kind = "trainer", owner = "enemy", key = entry.id },
+        source = { kind = "trainer", owner = "enemy", key = tostring(entry.id) },
       }
     end
     local participantId = 1 + index
