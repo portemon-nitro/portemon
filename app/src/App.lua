@@ -22,6 +22,7 @@ local VersionSelectState = require("app.src.launcher.VersionSelectState")
 ---@field pendingQuiesce table<string, integer>|nil unacknowledged source-close barrier for import
 ---@field drawableWidth number?
 ---@field drawableHeight number?
+---@field pixelRatio number?
 local App = {}
 
 ---@class AppOptions
@@ -336,6 +337,7 @@ end
 function App.load(opts)
   App.opts = opts or {}
   App.drawableWidth, App.drawableHeight = love.graphics.getDimensions()
+  App.pixelRatio = love.graphics.getDPIScale()
   App.importer = nil
   App.provisioner = nil
   App.service = nil
@@ -436,6 +438,7 @@ end
 function App.resize(width, height)
   App.drawableWidth = width
   App.drawableHeight = height
+  App.pixelRatio = love.graphics.getDPIScale()
   if App.state and App.state.resize then
     App.state:resize(width, height)
   end
@@ -443,11 +446,13 @@ end
 
 function App._syncDrawableSize()
   local width, height = love.graphics.getDimensions()
-  if width == App.drawableWidth and height == App.drawableHeight then
+  local pixelRatio = love.graphics.getDPIScale()
+  if width == App.drawableWidth and height == App.drawableHeight and pixelRatio == App.pixelRatio then
     return
   end
   App.drawableWidth = width
   App.drawableHeight = height
+  App.pixelRatio = pixelRatio
   if App.state and App.state.resize then
     App.state:resize(width, height)
   end

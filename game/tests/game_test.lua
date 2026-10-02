@@ -1,5 +1,5 @@
 -- Component coverage for the generic running-game state host. The host owns
--- state replacement, event forwarding, settled drawable dimensions, and the
+-- state replacement, event forwarding, explicit resize forwarding, and the
 -- terminal exit/disposal contract without knowing HGSS or ROM concepts.
 
 local Assert = require("tests.support.Assert")
@@ -56,7 +56,7 @@ function T.state_replacement_and_exit_dispose_each_owner_once()
   Assert.deepEqual(exits, { result })
 end
 
-function T.callbacks_preserve_host_tuples_and_reconcile_settled_dimensions()
+function T.callbacks_preserve_host_tuples_without_polling_host_dimensions()
   local Game = loadGame()
   local graphics = love.graphics
   local originalGetDimensions = graphics.getDimensions
@@ -108,10 +108,8 @@ function T.callbacks_preserve_host_tuples_and_reconcile_settled_dimensions()
   local ok, err = pcall(function()
     host = Game.new({ onExit = function() end })
     host:setState(state)
-    local constructorReads = dimensionReads
     host:resize(800, 600)
     host:update(0.016)
-    Assert.equal(dimensionReads, constructorReads, "explicit resize and update do not poll host dimensions")
 
     host:gamepadaxis(joystick, "leftx", 0.75)
     host:mousepressed(12.5, 34.5, 1, true, 2)
@@ -154,7 +152,7 @@ function T.callbacks_preserve_host_tuples_and_reconcile_settled_dimensions()
     { "draw" },
     { "draw" },
   })
-  Assert.equal(dimensionReads, 1, "only construction measures host dimensions")
+  Assert.equal(dimensionReads, 0, "Game construction and callbacks never measure host dimensions")
 end
 
 return { tests = T }
