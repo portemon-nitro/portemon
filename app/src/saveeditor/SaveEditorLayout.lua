@@ -545,7 +545,7 @@ function Layout.compute(view, width, height, metrics)
           break
         end
       end
-      if selectedIndex then
+      if selectedIndex and not view.preserveChoiceScroll then
         offset = ScrollViewport.reveal(offset, bodyHeight, (selectedIndex - 1) * rowHeight, rowHeight)
       end
       offset = ScrollViewport.clamp(offset, contentExtent, bodyHeight)

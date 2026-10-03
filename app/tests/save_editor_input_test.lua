@@ -150,6 +150,80 @@ local function click(state, pane, rect, touch)
   end
 end
 
+local function pressKey(state, key)
+  state:keypressed(key)
+  state:keyreleased(key)
+end
+
+local function dragViewport(state, view, viewportId, deltaY, pointerId)
+  local viewport = assert(view.layout.viewports[viewportId], "the active view publishes its scroll viewport")
+  local pane = selectedPane(view)
+  local x = viewport.clip.x + viewport.clip.width / 2
+  local y = viewport.clip.y + viewport.clip.height / 2
+  local hostX, hostY = LayoutGeometry.logicalToHost(pane.placement, x, y)
+  local _, endY = LayoutGeometry.logicalToHost(pane.placement, x, y + deltaY)
+  state:touchpressed(pointerId, hostX, hostY)
+  state:touchmoved(pointerId, hostX, endY)
+  state:touchreleased(pointerId, hostX, endY)
+end
+
+local function filteredMapMatches(map, query)
+  query = query:lower()
+  return map.symbol:lower():find(query, 1, true) ~= nil
+    or map.section:lower():find(query, 1, true) ~= nil
+    or tostring(map.mapId):find(query, 1, true) ~= nil
+end
+
+local function repeatedMapQuery(maps)
+  local candidates = {}
+  for _, map in ipairs(maps) do
+    for _, source in ipairs({ map.symbol, map.section }) do
+      local lowered = source:lower()
+      for first = 1, #lowered - 2 do
+        for last = first + 2, #lowered do
+          candidates[lowered:sub(first, last)] = true
+        end
+      end
+    end
+  end
+  for query in pairs(candidates) do
+    local matches = {}
+    for _, map in ipairs(maps) do
+      if filteredMapMatches(map, query) then
+        matches[#matches + 1] = map
+      end
+    end
+    if #matches >= 2 and #matches < #maps and matches[1].mapId ~= maps[1].mapId then
+      return query, matches
+    end
+  end
+  error("the structural map catalog must contain a repeated substring with a proper filtered subset", 2)
+end
+
+local function fillBagPocket(state, minimumRows)
+  local catalog = assert(state.dependencies.context.itemCatalog)
+  local pocket = state.controller.bagPocket
+  local present = {}
+  for _, entry in ipairs(state.session:bagSnapshot(pocket)) do
+    present[entry.item] = true
+  end
+  local count = #state.session:bagSnapshot(pocket)
+  for _, itemKey in ipairs(catalog:itemKeys()) do
+    if count >= minimumRows then
+      break
+    end
+    local item = catalog:item(itemKey)
+    if item.pocket == pocket and not present[itemKey] then
+      local result = state.session:setBagQuantity(itemKey, 1)
+      if result.ok then
+        present[itemKey] = true
+        count = count + 1
+      end
+    end
+  end
+  Assert.isTrue(count >= minimumRows, "the real item catalog can fill the selected Bag viewport")
+end
+
 local function selectSection(state, Layout, section)
   local _ = Layout
   state.controller:setSection(section)
@@ -1362,6 +1436,291 @@ function T.tests.subpage_navigation_keeps_the_same_mon_draft_open()
     Assert.equal(after.partySubpage, "Origin")
     Assert.equal(state.monDraft, draft, "the transaction identity survives page navigation")
     Assert.equal(#state.session:partySnapshot().members, 0, "navigation does not apply a new member")
+  end)
+end
+
+function T.tests.filtered_location_map_navigation_uses_the_rendered_matches()
+  local _, Layout = stateModule()
+  local topology = ScreenTopology.oneDisplay({
+    id = "main",
+    rect = { x = 0, y = 0, width = 800, height = 600 },
+    touch = true,
+    role = "world",
+  })
+  withEditor(800, 600, topology, function(state)
+    for _ = 1, 8 do
+      if state.locationService:snapshot().status.state == "ready" then
+        break
+      end
+      state:update(0)
+    end
+    state.controller:openLocationMaps()
+    local catalog = state.locationService:listMaps()
+    local query, matches = repeatedMapQuery(catalog)
+    state:textinput(query)
+    local filtered = state:view().location.maps
+    Assert.deepEqual(
+      filtered,
+      matches,
+      "the map picker renders the same structural sequence used to choose its search query"
+    )
+
+    local expected = {}
+    for _, map in ipairs(filtered) do
+      expected["location:map:" .. map.mapId] = true
+    end
+    local navigationConsistent = true
+    for _ = 1, #filtered do
+      pressKey(state, "down")
+      local view = state:view()
+      navigationConsistent = navigationConsistent and expected[view.focus] == true
+    end
+    for _ = 1, #filtered do
+      pressKey(state, "up")
+      local view = state:view()
+      navigationConsistent = navigationConsistent and expected[view.focus] == true
+    end
+
+    state.controller:openLocationMaps()
+    pressKey(state, "delete")
+    state:textinput(query)
+    local beforeSelection = state:view()
+    filtered = beforeSelection.location.maps
+    local renderedTargetId
+    local selectedMap
+    for _, map in ipairs(filtered) do
+      local targetId = "location:map:" .. map.mapId
+      if beforeSelection.layout.targets[targetId] ~= nil then
+        renderedTargetId, selectedMap = targetId, map
+        break
+      end
+    end
+    Assert.notNil(renderedTargetId, "the filtered map view publishes a visible result target")
+    click(
+      state,
+      selectedPane(beforeSelection),
+      assert(computeLayout(Layout, beforeSelection, 800, 600).targets[renderedTargetId]),
+      true
+    )
+    Assert.equal(
+      state:view().locationNavigation.mapId,
+      selectedMap.mapId,
+      "activating a rendered filtered result selects that same map"
+    )
+    Assert.isTrue(navigationConsistent, "map-list movement keeps focus and reveal among visible filtered matches")
+  end)
+end
+
+function T.tests.wheel_input_belongs_to_the_active_choice_or_decision_scope()
+  local _, Layout = stateModule()
+  local topology = ScreenTopology.oneDisplay({
+    id = "main",
+    rect = { x = 0, y = 0, width = 256, height = 192 },
+    touch = true,
+    role = "world",
+  })
+  withEditor(256, 192, topology, function(state)
+    selectSection(state, Layout, "Bag")
+    fillBagPocket(state, 8)
+    local bag = state:view()
+    state:wheelmoved(0, -1)
+    local scrolledBag = state:view()
+    local bagOffset = scrolledBag.layout.viewports.bag.offset
+    click(state, selectedPane(scrolledBag), scrolledBag.layout.targets["bag:add"], true)
+
+    local choice = state:view()
+    local choiceOffset = choice.layout.viewports["value:choice"].offset
+    Assert.isTrue(
+      choice.layout.viewports["value:choice"].contentExtent > choice.layout.viewports["value:choice"].clip.height,
+      "the real item catalog makes the Add picker scrollable"
+    )
+    state:wheelmoved(0, -1)
+    local scrolledChoice = state:view()
+    local choiceScrolled = scrolledChoice.layout.viewports["value:choice"].offset > choiceOffset
+    local choiceBagStable = scrolledChoice.layout.viewports.bag.offset == bagOffset
+    local choiceBagOffset = scrolledChoice.layout.viewports.bag.offset
+
+    state:keypressed("escape")
+    state.session:setMoney(state.session:snapshot().money + 1)
+    Assert.isTrue(state:requestClose("back"), "a dirty session opens its leave decision")
+    local modal = state:view()
+    Assert.notNil(modal.modal, "the leave decision owns the current interaction scope")
+    local modalBagOffset = modal.layout.viewports.bag.offset
+    state:wheelmoved(0, -1)
+    local modalListStable = state:view().layout.viewports.bag.offset == modalBagOffset
+    Assert.isTrue(
+      choiceScrolled and choiceBagStable and modalListStable,
+      string.format(
+        "choice wheel scrolls only its picker and modal wheel changes no hidden offset (choice=%s, bag=%s->%s, modal=%s)",
+        tostring(choiceScrolled),
+        tostring(bagOffset),
+        tostring(choiceBagOffset),
+        tostring(modalListStable)
+      )
+    )
+  end)
+end
+
+function T.tests.touch_drag_scrolls_each_existing_long_list_viewport()
+  local _, Layout = stateModule()
+  local topology = ScreenTopology.oneDisplay({
+    id = "main",
+    rect = { x = 0, y = 0, width = 256, height = 192 },
+    touch = true,
+    role = "world",
+  })
+  withEditor(256, 192, topology, function(state)
+    local partyScrolled = false
+    local bagScrolled = false
+    local flagsScrolled = false
+    local choiceScrolled = false
+    local mapListScrolled = false
+    local partyViewport = function()
+      local view = state:view()
+      local viewport = assert(view.layout.viewports.party)
+      Assert.isTrue(viewport.contentExtent > viewport.clip.height, "Party has a scrollable detail page")
+      local before = viewport.offset
+      dragViewport(state, view, "party", -36, "party-scroll")
+      partyScrolled = state:view().layout.viewports.party.offset > before
+    end
+    selectSection(state, Layout, "Party")
+    Assert.isTrue(state:_beginMonAdd("CHIKORITA"), "the real species catalog opens a Party draft")
+    state:_resolveDraftChoice("apply")
+    state.controller:selectPartySlot(0)
+    state.controller:selectPartySubpage("Training")
+    partyViewport()
+
+    selectSection(state, Layout, "Bag")
+    fillBagPocket(state, 8)
+    local bag = state:view()
+    local bagViewport = assert(bag.layout.viewports.bag)
+    Assert.isTrue(bagViewport.contentExtent > bagViewport.clip.height, "Bag exposes its long real item list")
+    local bagBefore = bagViewport.offset
+    dragViewport(state, bag, "bag", -36, "bag-scroll")
+    bagScrolled = state:view().layout.viewports.bag.offset > bagBefore
+
+    selectSection(state, Layout, "Progress")
+    state.controller.flagFilter = "All"
+    local progress = state:view()
+    local flags = assert(progress.layout.viewports.flags)
+    Assert.isTrue(flags.contentExtent > flags.clip.height, "the real flag catalog is scrollable")
+    local flagsBefore = flags.offset
+    dragViewport(state, progress, "flags", -36, "flags-scroll")
+    flagsScrolled = state:view().layout.viewports.flags.offset > flagsBefore
+
+    selectSection(state, Layout, "Bag")
+    local bagView = state:view()
+    click(state, selectedPane(bagView), bagView.layout.targets["bag:add"], true)
+    local choice = state:view()
+    local choiceViewport = assert(choice.layout.viewports["value:choice"])
+    Assert.isTrue(choiceViewport.contentExtent > choiceViewport.clip.height, "the item picker is scrollable")
+    local choiceBefore = choiceViewport.offset
+    dragViewport(state, choice, "value:choice", -36, "choice-scroll")
+    choiceScrolled = state:view().layout.viewports["value:choice"].offset > choiceBefore
+
+    state:keypressed("escape")
+    selectSection(state, Layout, "Location")
+    state.controller:openLocationMaps()
+    local maps = state:view()
+    local mapViewport = assert(maps.layout.viewports["location:map-list"])
+    Assert.isTrue(mapViewport.contentExtent > mapViewport.clip.height, "the structural map list is scrollable")
+    local mapBefore = mapViewport.offset
+    dragViewport(state, maps, "location:map-list", -36, "map-list-scroll")
+    mapListScrolled = state:view().layout.viewports["location:map-list"].offset > mapBefore
+    Assert.isTrue(
+      partyScrolled and bagScrolled and flagsScrolled and choiceScrolled and mapListScrolled,
+      string.format(
+        "touch drag changes each active list offset (Party=%s, Bag=%s, Progress=%s, choice=%s, maps=%s)",
+        tostring(partyScrolled),
+        tostring(bagScrolled),
+        tostring(flagsScrolled),
+        tostring(choiceScrolled),
+        tostring(mapListScrolled)
+      )
+    )
+  end)
+end
+
+function T.tests.location_grid_drag_pans_while_map_list_and_decision_drags_do_not()
+  local _, Layout = stateModule()
+  local topology = ScreenTopology.oneDisplay({
+    id = "main",
+    rect = { x = 0, y = 0, width = 800, height = 600 },
+    touch = true,
+    role = "world",
+  })
+  withEditor(800, 600, topology, function(state)
+    for _ = 1, 8 do
+      if state.locationService:snapshot().status.state == "ready" then
+        break
+      end
+      state:update(0)
+    end
+    local view = state:view()
+    local grid = assert(view.layout.locationGrid, "the ready Location page publishes its grid clip")
+    local gridClip = grid.clip
+    local pane = selectedPane(view)
+    local x, y = LayoutGeometry.logicalToHost(
+      pane.placement,
+      gridClip.x + gridClip.width / 2,
+      gridClip.y + gridClip.height / 2
+    )
+    local _, movedY = LayoutGeometry.logicalToHost(
+      pane.placement,
+      gridClip.x + gridClip.width / 2,
+      gridClip.y + gridClip.height / 2 - 36
+    )
+    local centerBefore = copy(view.locationNavigation.center)
+    state:touchpressed("grid-pan", x, y)
+    state:touchmoved("grid-pan", x, movedY)
+    state:touchreleased("grid-pan", x, movedY)
+    local panned = state:view()
+    Assert.isTrue(
+      panned.locationNavigation.center.fieldX ~= centerBefore.fieldX
+        or panned.locationNavigation.center.fieldZ ~= centerBefore.fieldZ,
+      "dragging the Location grid pans its center"
+    )
+
+    state.controller:openLocationMaps()
+    local mapList = state:view()
+    local mapViewport = assert(mapList.layout.viewports["location:map-list"])
+    local mapCenter = copy(mapList.locationNavigation.center)
+    local mapOffset = mapViewport.offset
+    dragViewport(state, mapList, "location:map-list", -36, "map-list-pan-check")
+    local movedList = state:view()
+    local mapListScrolled = movedList.layout.viewports["location:map-list"].offset > mapOffset
+    local mapCenterStable = movedList.locationNavigation.center.fieldX == mapCenter.fieldX
+      and movedList.locationNavigation.center.fieldZ == mapCenter.fieldZ
+
+    state.controller:openModal("leave")
+    local modal = state:view()
+    local modalCenter = copy(modal.locationNavigation.center)
+    local modalListOffset = modal.locationNavigation.mapOffset
+    local modalPane = selectedPane(modal)
+    local modalTarget = assert(modal.layout.targets.cancel)
+    modalTarget = modalTarget.rect or modalTarget
+    local downX, downY = LayoutGeometry.logicalToHost(
+      modalPane.placement,
+      modalTarget.x + modalTarget.width / 2,
+      modalTarget.y + modalTarget.height / 2
+    )
+    state:touchpressed("modal-drag", downX, downY)
+    state:touchmoved("modal-drag", downX, downY - 36)
+    state:touchreleased("modal-drag", downX, downY - 36)
+    local afterModalDrag = state:view()
+    local modalCenterStable = afterModalDrag.locationNavigation.center.fieldX == modalCenter.fieldX
+      and afterModalDrag.locationNavigation.center.fieldZ == modalCenter.fieldZ
+    local modalListStable = afterModalDrag.locationNavigation.mapOffset == modalListOffset
+    Assert.isTrue(
+      mapListScrolled and mapCenterStable and modalCenterStable and modalListStable,
+      string.format(
+        "map-list and decision drag ownership stays scoped (listScrolled=%s, listCenterStable=%s, modalCenterStable=%s, modalListStable=%s)",
+        tostring(mapListScrolled),
+        tostring(mapCenterStable),
+        tostring(modalCenterStable),
+        tostring(modalListStable)
+      )
+    )
   end)
 end
 

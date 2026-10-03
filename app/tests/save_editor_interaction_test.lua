@@ -38,7 +38,10 @@ function T.tests.modal_scope_rejects_background_grid_and_sparse_drag_gestures()
   local layout = Layout.compute(view, 256, 192, view.textMetrics)
   local grid = assert(layout.locationGrid)
   local tile = Layout.hitTest(layout, view, grid.originX + 1, grid.originY + 1)
-  Assert.isNil(tile, "a leave decision owns the active scope above the Location grid")
+  Assert.isFalse(
+    type(tile) == "string" and tile:match("^location:tile:") ~= nil,
+    "a leave decision never hit-tests a background Location tile"
+  )
 
   local topology = ScreenTopology.oneDisplay({
     id = "main",

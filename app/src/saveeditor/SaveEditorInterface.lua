@@ -31,6 +31,10 @@ local function copyBounds(bounds)
   return { x = bounds.x, y = bounds.y, width = bounds.width, height = bounds.height }
 end
 
+local function containsPoint(bounds, x, y)
+  return x >= bounds.x and x < bounds.x + bounds.width and y >= bounds.y and y < bounds.y + bounds.height
+end
+
 local function mapInput(event, view, plan)
   if event.outside then
     return { type = event.type, pointerId = event.pointerId }
@@ -40,19 +44,41 @@ local function mapInput(event, view, plan)
   end
   local content = assert(plan.content)
   local targetId = Layout.hitTest(content.layout, view, event.x, event.y)
-  if targetId == nil and event.type ~= "pointer_move" then
+  local scrollViewportId = view.scrollOwner
+  local scrollViewport
+  if scrollViewportId ~= nil then
+    scrollViewport = assert(content.layout.viewports[scrollViewportId], "active scroll owner needs a viewport")
+    if not containsPoint(scrollViewport.clip, event.x, event.y) then
+      scrollViewport = nil
+    end
+  end
+  local locationGrid
+  if view.scope.kind == "section" and view.section == "Location" and view.locationNavigation.page == "grid" then
+    local grid = content.layout.locationGrid
+    if grid ~= nil and containsPoint(grid.clip, event.x, event.y) then
+      locationGrid = grid
+    end
+  end
+  if targetId == nil and scrollViewport == nil and locationGrid == nil and event.type ~= "pointer_move" then
     return { type = event.type, pointerId = event.pointerId }
   end
-  return {
+  local mapped = {
     type = event.type,
     pointerId = event.pointerId,
     targetId = targetId,
     x = event.x,
     y = event.y,
-    grid = content.layout.locationGrid,
+    grid = locationGrid,
     scopeId = view.scope.id,
     scopeEpoch = view.scope.epoch,
   }
+  if scrollViewport ~= nil then
+    mapped.scrollViewportId = scrollViewportId
+    mapped.scrollOffset = scrollViewport.offset
+    mapped.scrollContentExtent = scrollViewport.contentExtent
+    mapped.scrollViewportExtent = scrollViewport.clip.height
+  end
+  return mapped
 end
 
 function Interface.resolve(context, view)

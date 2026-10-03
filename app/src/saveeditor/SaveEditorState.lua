@@ -32,6 +32,7 @@ local ItemAssetSchema = require("libs.assets.src.ItemAssetSchema")
 
 ---@class SaveEditorState
 ---@field valueEditor SaveEditorValueEditor?
+---@field preserveChoiceScroll boolean
 ---@field valueReturnFocus string?
 ---@field pendingFocusReturn string?
 ---@field versionId string
@@ -111,6 +112,60 @@ local function message(value)
   return tostring(value)
 end
 
+local function filterLocationMaps(maps, query)
+  local normalized = query:lower()
+  if normalized == "" then
+    return maps
+  end
+  local filtered = {}
+  for _, map in ipairs(maps) do
+    if
+      map.symbol:lower():find(normalized, 1, true)
+      or map.section:lower():find(normalized, 1, true)
+      or tostring(map.mapId):find(normalized, 1, true)
+    then
+      filtered[#filtered + 1] = map
+    end
+  end
+  return filtered
+end
+
+local function scrollOwner(controller, valueEditor)
+  if controller.modal ~= nil then
+    return nil
+  end
+  if valueEditor ~= nil and valueEditor:snapshot().kind == "choice" then
+    return "value:choice"
+  end
+  if controller.section == "Location" and controller.locationPage == "map-list" then
+    return "location:map-list"
+  end
+  if controller.section == "Party" then
+    return "party"
+  end
+  if controller.section == "Bag" then
+    return "bag"
+  end
+  if controller.section == "Progress" then
+    return "flags"
+  end
+  return nil
+end
+
+local function scrollPurpose(viewportId, view)
+  if viewportId == "party" then
+    return "party:" .. view.partyPage .. ":" .. tostring(view.partySubpage or "list")
+  elseif viewportId == "bag" then
+    return "bag:" .. tostring(view.bagPocket)
+  elseif viewportId == "flags" then
+    return "flags:" .. tostring(view.flagGroup or view.flagFilter)
+  elseif viewportId == "value:choice" then
+    return "value:choice"
+  end
+  assert(viewportId == "location:map-list", "unknown save editor scroll viewport " .. viewportId)
+  return nil
+end
+
 local function makeText(versionId)
   return FieldTextRenderer.new({ cacheFs = CacheFs.forVersion(versionId) })
 end
@@ -170,6 +225,7 @@ function State.new(options)
     pendingLocationSave = nil,
     locationSaveOperationId = 0,
     valueEditor = nil,
+    preserveChoiceScroll = false,
     valueReturnFocus = nil,
     pendingFocusReturn = nil,
     errorMessage = nil,
@@ -349,36 +405,9 @@ function State:_snapshot()
   }
   if self.locationService then
     local location = self.locationService:snapshot()
-    location.maps = self.locationService:listMaps()
-    if self.controller.locationPage == "map-list" then
-      local query = self.controller.query:lower()
-      if query ~= "" then
-        local filtered = {}
-        for _, map in ipairs(location.maps) do
-          if
-            map.symbol:lower():find(query, 1, true)
-            or map.section:lower():find(query, 1, true)
-            or tostring(map.mapId):find(query, 1, true)
-          then
-            filtered[#filtered + 1] = map
-          end
-        end
-        location.maps = filtered
-      end
-      local focusedMapId = self.controller.focus:match("^location:map:(%d+)$")
-      if focusedMapId then
-        local visible = false
-        for _, map in ipairs(location.maps) do
-          if map.mapId == tonumber(focusedMapId) then
-            visible = true
-            break
-          end
-        end
-        if not visible then
-          self.controller.focus = "location:map-picker"
-        end
-      end
-    end
+    local maps = self.locationService:listMaps()
+    location.maps = self.controller.locationPage == "map-list" and filterLocationMaps(maps, self.controller.query)
+      or maps
     location.symbol = location.map and location.map.symbol or nil
     location.actionStatus = self.locationActionStatus
         and {
@@ -458,6 +487,8 @@ function State:_snapshot()
     kind = scopeKind,
     focusId = self.controller.focus,
   }
+  view.scrollOwner = scrollOwner(self.controller, self.valueEditor)
+  view.preserveChoiceScroll = self.preserveChoiceScroll and view.scrollOwner == "value:choice"
   view.scrollOffsets = self.controller.scrollOffsets
   view.locationGridMode = self.controller.locationGridMode
   return view
@@ -676,6 +707,7 @@ function State:_finishValueEditor()
   if result == nil then
     return false
   end
+  self.preserveChoiceScroll = false
   local purpose = self.valuePurpose
   local descriptor = self.activeDraftField
   if result.kind == "cancel" then
@@ -839,6 +871,7 @@ function State:_installValueEditor(editor, purpose, returnFocus)
   self.valueReturnFocus = returnFocus or self.controller.focus
   self.valueEditor = editor
   self.valuePurpose = purpose
+  self.preserveChoiceScroll = false
 end
 
 function State:_updateLocationService()
@@ -1142,9 +1175,14 @@ function State:_performDeferred(action)
     self.errorMessage = nil
     self:_updateLocationService()
   elseif action.kind == "location-map-move" then
-    local plan = self:_resolve(self:_snapshot())
+    local view = self:_snapshot()
+    local plan = self:_resolve(view)
     local layout = plan.content.layout
-    local maps = self.locationService:listMaps()
+    local maps = assert(view.location).maps
+    if #maps == 0 then
+      self.controller.focus = "location:map-picker"
+      return
+    end
     if action.direction == "up" or action.direction == "down" then
       local currentIndex
       for index, map in ipairs(maps) do
@@ -1763,6 +1801,13 @@ function State:_dispatchIntent(intent)
       self.controller:closeModal()
       self.pendingDraftAction = nil
     end
+  elseif intent.kind == "scroll-drag" then
+    local view = self:_snapshot()
+    if intent.scopeId ~= view.scope.id or intent.scopeEpoch ~= view.scope.epoch then
+      return
+    end
+    local layout = assert(self:_resolve(view).content.layout)
+    self:_setScrollOffset(view, layout, intent.viewportId, intent.offset)
   elseif intent.kind == "move" then
     if
       self.width < 400
@@ -1898,6 +1943,9 @@ function State:_consumeUiInput(events)
         self:_dispatchIntent(self.controller:press(event.direction))
       elseif self.valueEditor then
         local snapshot = self.valueEditor:snapshot()
+        if snapshot.kind == "choice" then
+          self.preserveChoiceScroll = false
+        end
         if snapshot.kind == "choice" and (event.direction == "up" or event.direction == "down") then
           self.valueEditor:press(event.direction)
         elseif snapshot.kind == "name" or snapshot.kind == "integer" then
@@ -1958,6 +2006,7 @@ function State:keypressed(key, _, isrepeat)
     return
   end
   if self.valueEditor then
+    self.preserveChoiceScroll = false
     if key == "home" then
       self.valueEditor:press("group_previous")
     elseif key == "end" then
@@ -1995,6 +2044,7 @@ function State:keypressed(key, _, isrepeat)
     if key == "delete" then
       self.controller.query = ""
       self.controller.locationMapOffset = 0
+      self:_reconcileFocus()
       return
     elseif key == "backspace" then
       local glyphs = {}
@@ -2005,6 +2055,7 @@ function State:keypressed(key, _, isrepeat)
         table.remove(glyphs)
         self.controller.query = table.concat(glyphs)
         self.controller.locationMapOffset = 0
+        self:_reconcileFocus()
       end
       return
     end
@@ -2027,6 +2078,9 @@ end
 
 function State:textinput(text)
   if self.valueEditor then
+    if self.valueEditor:snapshot().kind == "choice" then
+      self.preserveChoiceScroll = false
+    end
     self.valueEditor:textinput(text)
     self.editorFeedback = nil
   elseif
@@ -2036,6 +2090,9 @@ function State:textinput(text)
     self.controller.query = self.controller.query .. text
     if self.controller.section == "Location" then
       self.controller.locationMapOffset = 0
+      if self.controller.locationPage == "map-list" then
+        self:_reconcileFocus()
+      end
     end
   end
 end
@@ -2109,33 +2166,31 @@ end
 function State:touchreleased(id, x, y)
   self:_pointer({ { type = "pointer_up", pointerId = "touch:" .. tostring(id), x = x, y = y } })
 end
+
+function State:_setScrollOffset(view, layout, viewportId, offset)
+  assert(view.scrollOwner == viewportId, "scroll intent must belong to the active owner")
+  local viewport = assert(layout.viewports[viewportId], "active scroll owner needs a published viewport")
+  local clamped = ScrollViewport.clamp(offset, viewport.contentExtent, viewport.clip.height)
+  if viewportId == "location:map-list" then
+    self.controller.locationMapOffset = clamped
+    return
+  end
+  if viewportId == "value:choice" then
+    self.preserveChoiceScroll = true
+  end
+  local purpose = assert(scrollPurpose(viewportId, view))
+  self.controller.scrollOffsets[purpose] = clamped
+end
+
 function State:wheelmoved(_, y)
   local view = self:_snapshot()
   local layout = assert(self:_resolve(view).content.layout)
-  local section = self.controller.section
-  local viewportId = section == "Party" and "party"
-    or section == "Bag" and "bag"
-    or section == "Progress" and "flags"
-    or section == "Location" and self.controller.locationPage == "map-list" and "location:map-list"
-    or self.valueEditor and self.valueEditor:snapshot().kind == "choice" and "value:choice"
+  local viewportId = view.scrollOwner
   if viewportId == nil then
     return
   end
-  local viewport = layout.viewports[viewportId]
-  if viewport == nil then
-    return
-  end
-  if viewportId == "location:map-list" then
-    self.controller.locationMapOffset =
-      ScrollViewport.clamp(viewport.offset - y * viewport.rowExtent, viewport.contentExtent, viewport.clip.height)
-    return
-  end
-  local purpose = section == "Party" and ("party:" .. view.partyPage .. ":" .. tostring(view.partySubpage or "list"))
-    or section == "Bag" and ("bag:" .. tostring(view.bagPocket))
-    or section == "Progress" and ("flags:" .. tostring(view.flagGroup or view.flagFilter))
-    or "value:choice"
-  self.controller.scrollOffsets[purpose] =
-    ScrollViewport.clamp(viewport.offset - y * viewport.rowExtent, viewport.contentExtent, viewport.clip.height)
+  local viewport = assert(layout.viewports[viewportId], "active scroll owner needs a published viewport")
+  self:_setScrollOffset(view, layout, viewportId, viewport.offset - y * viewport.rowExtent)
 end
 
 function State:dispose()
