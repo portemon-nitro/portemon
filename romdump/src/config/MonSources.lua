@@ -35,6 +35,7 @@ MonSources.provenance = {
     "src/follow_mon.c",
     "src/message_format.c",
     "src/item.c",
+    "src/pokemon.c",
   },
 }
 
@@ -54,6 +55,25 @@ MonSources.LEARNSET_TERMINATOR = 0xFFFF
 MonSources.LEARNSET_MOVE_MASK = 0x01FF
 MonSources.LEARNSET_LEVEL_SHIFT = 9
 MonSources.GROWTH_ENTRY_COUNT = 101
+MonSources.PERFORMANCE_MEMBER_SIZE = 20
+MonSources.PERFORMANCE_MEMBER_COUNT = 554
+
+-- Compressed directly from src/pokemon.c:sPokeathlonPerformanceArcIdxs.
+-- Each interval maps speciesId to speciesId + offset; forms use base + form.
+local PERFORMANCE_MEMBER_RANGES = {
+  { 0, 0, 0 },
+  { 1, 172, -1 },
+  { 173, 201, 0 },
+  { 202, 386, 27 },
+  { 387, 412, 30 },
+  { 413, 413, 32 },
+  { 414, 422, 34 },
+  { 423, 423, 35 },
+  { 424, 479, 36 },
+  { 480, 487, 41 },
+  { 488, 492, 42 },
+  { 493, 493, 43 },
+}
 
 -- Authoritative message-bank selection from src/message_format.c call sites:
 -- BufferSpeciesName reads bank 237, BufferMoveName reads bank 750,
@@ -3411,6 +3431,32 @@ function MonSources.runtimeForms(speciesId)
     forms[#forms + 1] = form
   end
   return forms
+end
+
+-- The source's form performance member is `sPokeathlonPerformanceArcIdxs[species] + form`.
+---@param speciesId integer
+---@param form integer
+---@return integer|nil
+function MonSources.performanceMember(speciesId, form)
+  if type(speciesId) ~= "number" or speciesId % 1 ~= 0 or type(form) ~= "number" or form % 1 ~= 0 then
+    return nil
+  end
+  local base
+  for _, range in ipairs(PERFORMANCE_MEMBER_RANGES) do
+    if speciesId >= range[1] and speciesId <= range[2] then
+      base = speciesId + range[3]
+      break
+    end
+  end
+  if base == nil then
+    return nil
+  end
+  for _, runtimeForm in ipairs(MonSources.runtimeForms(speciesId)) do
+    if runtimeForm == form then
+      return base + form
+    end
+  end
+  return nil
 end
 
 -- Personal/learnset member resolution ported from ResolveMonForm

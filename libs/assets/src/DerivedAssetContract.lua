@@ -210,7 +210,7 @@ DerivedAssetContract.fieldMapData = {
   -- permissions, Flash/dark facts, cave environment, Union/Colosseum
   -- exclusion, and the Ice Path/Alph source exceptions) plus proven
   -- facing-actor obstacle kinds on object events.
-  fieldSchema = "g4-field-map-v10",
+  fieldSchema = "g4-field-map-v11",
   -- The teleport landing index is a separate family-level record carrying
   -- cited spawn-keyed outdoor arrival destinations (never source numeric
   -- identities); the runtime return planner reads it, never producer data.
@@ -272,10 +272,10 @@ DerivedAssetContract.newGameInit = {
 }
 
 DerivedAssetContract.fieldEffects = {
-  -- v8 carries the persistent surf attachment and the follower-transition
-  -- effect alongside the existing grass hold and trainer reveal definitions.
-  cacheFormat = "field-effect-cache-v8",
-  indexSchema = "g4-field-effect-index-v2",
+  -- v9 adds the source-selected follower reaction clips to the field-effect
+  -- index and publishes their shared-model dynamic descriptors.
+  cacheFormat = "field-effect-cache-v9",
+  indexSchema = "g4-field-effect-index-v3",
 }
 
 DerivedAssetContract.fieldEmotes = {
@@ -310,7 +310,7 @@ DerivedAssetContract.starterChoice = {
 -- invalidate mon buckets.
 DerivedAssetContract.mons = {
   cacheFormat = "mon-cache-v1",
-  catalogSchema = "g4-mon-catalog-v3",
+  catalogSchema = "g4-mon-catalog-v4",
   -- v2 replaces the whole-atlas index with a page inventory: the index binds
   -- the catalog hash to one marker per icon/portrait page.
   indexSchema = "g4-mon-index-v2",
@@ -329,9 +329,14 @@ DerivedAssetContract.mons = {
 -- must fail readiness.
 DerivedAssetContract.items = {
   cacheFormat = "item-cache-v3",
-  catalogSchema = "g4-item-catalog-v3",
+  catalogSchema = "g4-item-catalog-v4",
   indexSchema = "g4-item-index-v1",
   iconManifestSchema = "g4-item-icons-v1",
+}
+
+DerivedAssetContract.followerInteractions = {
+  cacheFormat = "follower-interaction-cache-v1",
+  schema = "g4-follower-interactions-v1",
 }
 
 -- The bag class carries the source-independent field-bag presentation: the

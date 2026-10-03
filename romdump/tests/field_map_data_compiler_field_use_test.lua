@@ -22,7 +22,7 @@ end
 
 function T.field_use_projects_source_flags_per_map()
   local bark = compileOk(60)
-  Assert.equal(bark.field.schema, "g4-field-map-v10")
+  Assert.equal(bark.field.schema, "g4-field-map-v11")
   Assert.deepEqual(bark.field.fieldUse, {
     flyAllowed = true,
     teleportAllowed = true,

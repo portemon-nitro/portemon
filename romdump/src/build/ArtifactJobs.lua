@@ -229,12 +229,15 @@ local FIELD_RUNTIME_JOBS = {
   "mon-catalog:global",
   "mon-layout:global",
   "items:global",
+  "follower-interactions:global",
   "bag:global",
   "party:global",
   "spawns:global",
   "starter-choice:global",
   "message-bank:" .. tostring(MenuProtocol.START_MENU_MESSAGE_BANK),
   "message-bank:" .. tostring(MenuProtocol.STANDARD_MESSAGE_BANK),
+  "message-bank:40",
+  "message-bank:265",
   "audio-bank:750",
   "audio-bank:700",
   "audio-catalog:global",
@@ -488,6 +491,16 @@ local function executeFieldEmotes(artifact, context)
   local bundle = compileOrRaise(function()
     return Compiler.compile(romFs), nil
   end, "field emotes")
+  return Writer.stage(artifact, bundle)
+end
+
+local function executeFollowerInteractions(artifact, context)
+  local Compiler = require("romdump.src.digest.field.FollowerInteractionCompiler")
+  local Writer = require("romdump.src.digest.field.FollowerInteractionCacheWriter")
+  local romFs = assert(context.romFs, "follower interaction jobs require a source reader")
+  local bundle = compileOrRaise(function()
+    return Compiler.compile(romFs), nil
+  end, "follower interactions")
   return Writer.stage(artifact, bundle)
 end
 
@@ -1052,6 +1065,13 @@ end
 
 ---@param check ArtifactJobs.ReadinessCheck
 ---@return boolean
+local function validateFollowerInteractions(check)
+  local Cache = require("libs.assets.src.field.FollowerInteractionCache")
+  return Cache.isReady(check.cacheFs, check.marker)
+end
+
+---@param check ArtifactJobs.ReadinessCheck
+---@return boolean
 local function validateFieldUi(check)
   local FieldUiAssetCache = require("libs.assets.src.field.FieldUiAssetCache")
   return FieldUiAssetCache.isReady(check.cacheFs, check.marker)
@@ -1600,6 +1620,11 @@ DESCRIPTORS = {
     execute = executeFieldEmotes,
     validate = validateFieldEmotes,
   },
+  ["follower-interactions"] = {
+    size = "normal",
+    execute = executeFollowerInteractions,
+    validate = validateFollowerInteractions,
+  },
   ["field-ui"] = {
     size = "normal",
     execute = executeFieldUi,
@@ -1887,6 +1912,7 @@ local COMPLETE_STATIC_GLOBALS = {
   "actors",
   "starter-choice",
   "items",
+  "follower-interactions",
   "bag",
   "party",
   "spawns",

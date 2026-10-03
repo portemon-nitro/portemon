@@ -13,7 +13,7 @@ local SchemaCheck = require("libs.assets.src.SchemaCheck")
 ---@class ItemAssetSchema
 local ItemAssetSchema = {}
 
-ItemAssetSchema.CATALOG_SCHEMA = "g4-item-catalog-v3"
+ItemAssetSchema.CATALOG_SCHEMA = "g4-item-catalog-v4"
 ItemAssetSchema.ICON_MANIFEST_SCHEMA = "g4-item-icons-v1"
 
 -- The eight source pockets in native order: native id, occupied-slot
@@ -55,6 +55,7 @@ local ITEM_FIELDS = {
   canHold = true,
   heldFormEffect = true,
   partyUse = true,
+  naturalGiftPower = true,
 }
 
 local fail = SchemaCheck.fail
@@ -267,6 +268,7 @@ local function assertItem(key, record, context)
   checkBoolean(record.selectable, context, "ITEM_CATALOG_INVALID", "item " .. key .. " selectable")
   checkBoolean(record.isBall, context, "ITEM_CATALOG_INVALID", "item " .. key .. " isBall")
   checkBoolean(record.friendshipBoost, context, "ITEM_CATALOG_INVALID", "item " .. key .. " friendshipBoost")
+  checkInteger(record.naturalGiftPower, context, "ITEM_CATALOG_INVALID", "item " .. key .. " naturalGiftPower", 0, 255)
   checkNonEmptyString(record.icon, context, "ITEM_CATALOG_INVALID", "item " .. key .. " icon")
   -- Held-item action metadata: HMs never leave the bag, key items and mail
   -- never attach to a mon, and only plates and the griseous orb carry a

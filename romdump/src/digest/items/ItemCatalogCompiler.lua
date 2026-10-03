@@ -117,6 +117,7 @@ function ItemCatalogCompiler.decodeItemData(member, context)
   local b1, b2, b3, b4 = flag(1), flag(2), flag(3), flag(4)
   return {
     holdEffect = string.byte(member, ItemSources.ITEM_DATA_HOLD_EFFECT_OFFSET + 1),
+    naturalGiftPower = reader:u8(7),
     preventToss = math.floor(word / tossBit) % 2 == 1,
     selectable = math.floor(word / selectBit) % 2 == 1,
     fieldPocket = math.floor(word / pocketShift) % (ItemSources.ITEM_DATA_FIELD_POCKET_MASK + 1),
@@ -618,6 +619,7 @@ function ItemCatalogCompiler.compileCatalog(romFs, opts)
         canHold = pocketKey ~= "key_items" and pocketKey ~= "mail" and not isHm,
         heldFormEffect = heldFormEffect,
         partyUse = normalizePartyUse(nativeId, key, pocketKey, isMachine, decoded),
+        naturalGiftPower = decoded.naturalGiftPower,
       }
       if type(record.description) ~= "string" then
         error(Errors.new("ITEM_TEXT_MISSING", "item " .. nativeId .. " has no description", { nativeId = nativeId }), 0)

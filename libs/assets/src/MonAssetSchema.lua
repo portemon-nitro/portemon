@@ -124,6 +124,7 @@ local FORM_FIELDS = {
   icon = true,
   portrait = true,
   follower = true,
+  performance = true,
 }
 
 local fail = SchemaCheck.fail
@@ -280,6 +281,30 @@ function MonAssetSchema.assertForm(form, context)
   end
   checkNonEmptyString(form.icon, context, "MON_FORM_INVALID", "icon selector")
   checkNonEmptyString(form.portrait, context, "MON_FORM_INVALID", "portrait selector")
+  local hasUnindexablePerformance = context.speciesId == 494 or context.speciesId == 495
+  if form.performance == nil then
+    if not hasUnindexablePerformance then
+      fail("MON_FORM_INVALID", "performance is required for source-indexable species", context)
+    end
+  else
+    checkRecord(
+      form.performance,
+      { power = true, skill = true, speed = true, jump = true, stamina = true },
+      context,
+      "MON_FORM_INVALID",
+      "performance"
+    )
+    for _, key in ipairs({ "power", "skill", "speed", "jump", "stamina" }) do
+      local value = form.performance[key]
+      checkRecord(value, { base = true, min = true, max = true }, context, "MON_FORM_INVALID", "performance." .. key)
+      checkInt(value.base, 0, 7, context, "MON_FORM_INVALID", "performance." .. key .. ".base")
+      checkInt(value.min, 0, 7, context, "MON_FORM_INVALID", "performance." .. key .. ".min")
+      checkInt(value.max, 0, 7, context, "MON_FORM_INVALID", "performance." .. key .. ".max")
+      if value.min > value.base or value.base > value.max then
+        fail("MON_FORM_INVALID", "performance." .. key .. " must satisfy min <= base <= max", context)
+      end
+    end
+  end
   if form.follower ~= nil then
     checkFollowerShape(form.follower, context, "MON_FORM_INVALID")
   end
@@ -341,7 +366,7 @@ local function assertSpecies(key, species, context)
   end
   for formId, form in pairs(species.forms) do
     checkInt(formId, 0, nil, context, "MON_CATALOG_INVALID", "species " .. key .. " form id")
-    MonAssetSchema.assertForm(form, { species = key, form = formId })
+    MonAssetSchema.assertForm(form, { species = key, speciesId = species.nativeId, form = formId })
   end
 end
 
@@ -504,8 +529,8 @@ function MonAssetSchema.assertCatalog(catalog)
     abilities = true,
     growthCurves = true,
   }, context, "MON_CATALOG_INVALID", "catalog")
-  if catalog.schema ~= "g4-mon-catalog-v3" then
-    fail("MON_CATALOG_INVALID", "catalog schema must be g4-mon-catalog-v3", context)
+  if catalog.schema ~= "g4-mon-catalog-v4" then
+    fail("MON_CATALOG_INVALID", "catalog schema must be g4-mon-catalog-v4", context)
   end
   checkRecord(catalog.version, { id = true, language = true }, context, "MON_CATALOG_INVALID", "catalog version")
   checkNonEmptyString(catalog.version.id, context, "MON_CATALOG_INVALID", "catalog version id")

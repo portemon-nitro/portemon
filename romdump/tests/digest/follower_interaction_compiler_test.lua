@@ -1,0 +1,124 @@
+-- Source member layouts follow pret/pokeheartgold overlay_02_02248728.s and
+-- unk_02026DE0.s at commit 9d8b7591f09b65804da2fb2dfd56f320633e0d36.
+
+local Assert = require("tests.support.Assert")
+local Compiler = require("romdump.src.digest.field.FollowerInteractionCompiler")
+
+local T = {}
+
+local function u16(value)
+  return string.char(value % 256, math.floor(value / 256) % 256)
+end
+
+local function u32(value)
+  return u16(value % 65536) .. u16(math.floor(value / 65536))
+end
+
+local function setByte(bytes, offset, value)
+  return bytes:sub(1, offset) .. string.char(value) .. bytes:sub(offset + 2)
+end
+
+function T.rule_packing_keeps_each_source_predicate_and_boundary_selector()
+  local bytes = string.rep("\0", 20)
+  bytes = setByte(bytes, 0, 2)
+  bytes = setByte(bytes, 1, 0xAB)
+  bytes = setByte(bytes, 2, 0xE9)
+  bytes = setByte(bytes, 3, 17)
+  bytes = setByte(bytes, 4, 223)
+  bytes = setByte(bytes, 5, 2)
+  bytes = setByte(bytes, 6, 252)
+  bytes = setByte(bytes, 7, 3)
+  bytes = setByte(bytes, 8, 5)
+  bytes = setByte(bytes, 9, 160)
+  bytes = setByte(bytes, 10, 0x8D)
+  bytes = setByte(bytes, 11, 8)
+  bytes = setByte(bytes, 12, 0x34)
+  bytes = setByte(bytes, 13, 0x12)
+  bytes = setByte(bytes, 14, 0x78)
+  bytes = setByte(bytes, 15, 0x56)
+  bytes = setByte(bytes, 16, 157)
+  bytes = setByte(bytes, 17, 73)
+  bytes = setByte(bytes, 18, 0x84)
+  bytes = setByte(bytes, 19, 3)
+
+  local rule = Compiler.decodeRuleMember(bytes)
+  Assert.equal(rule.interactionId, 34)
+  Assert.equal(rule.percentage, 73)
+  Assert.equal(rule.requiredFlagId, 900)
+  Assert.equal(rule.criteria.hpClass, 2)
+  Assert.equal(rule.criteria.moodClass, 11)
+  Assert.equal(rule.criteria.friendshipClass, 10)
+  Assert.equal(rule.criteria.natureClass, 1)
+  Assert.equal(rule.criteria.genderClass, 5)
+  Assert.equal(rule.criteria.statusClass, 7)
+  Assert.equal(rule.criteria.heldItemClass, 17)
+  Assert.equal(rule.criteria.typeClass, 31)
+  Assert.equal(rule.criteria.pokeathlonClass, 6)
+  Assert.equal(rule.criteria.encounterClass, 2)
+  Assert.equal(rule.criteria.speciesClass, 252)
+  Assert.equal(rule.criteria.leafClass, 3)
+  Assert.equal(rule.criteria.weatherClass, 5)
+  Assert.equal(rule.criteria.facingClass, 5)
+  Assert.equal(rule.criteria.nearbyObjectClass, 5)
+  Assert.equal(rule.criteria.timeClass, 1)
+  Assert.equal(rule.criteria.mapId, 0x1233)
+  Assert.equal(rule.criteria.metatileBehaviorId, 0x5678)
+  Assert.equal(rule.criteria.levelClass, 2)
+  Assert.equal(rule.criteria.specialSpriteClass, 3)
+  Assert.equal(rule.criteria.hiddenItemClass, 4)
+end
+
+function T.program_steps_stop_at_ffff_and_preserve_signed_rewards_and_continuations()
+  local bytes = u16(3)
+    .. u16(0x123)
+    .. u16(0x456)
+    .. string.char(2, 2)
+    .. u16(0xFFFF)
+    .. string.rep("\0", 30)
+    .. string.char(1, 0, 0, 0)
+    .. u16(0x3FE)
+    .. u16(0x2FD)
+    .. string.char(0xFE, 0x03, 100, 5)
+  local program = Compiler.decodeProgramMember(bytes)
+  Assert.equal(#program.steps, 1)
+  Assert.equal(program.steps[1].motionId, 3)
+  Assert.equal(program.steps[1].messageId, 0x123)
+  Assert.equal(program.steps[1].soundId, 0x456)
+  Assert.equal(program.steps[1].reactionId, 2)
+  Assert.equal(program.steps[1].delayTicks, 2)
+  Assert.equal(program.continuation.choice0InteractionId, 0x3FE)
+  Assert.equal(program.continuation.choice1InteractionId, 0x2FD)
+  Assert.equal(program.friendshipDelta, -2)
+  Assert.equal(program.moodDelta, 3)
+  Assert.equal(program.fashionAccessoryId, 99)
+  Assert.equal(program.shinyLeafId, 5)
+end
+
+function T.motion_records_decode_signed_offsets_and_sound_presence_until_facing_ff()
+  local record = string.char(2, 7, 0xFE, 3, 0x81, 1, 0xAA, 0x55)
+  local motion = Compiler.decodeMotionMember(record .. string.char(0xFF) .. string.rep("\0", 71))
+  Assert.equal(#motion, 1)
+  Assert.equal(motion[1].facing, 2)
+  Assert.equal(motion[1].ticks, 7)
+  Assert.equal(motion[1].x, -2)
+  Assert.equal(motion[1].y, 3)
+  Assert.equal(motion[1].z, -127)
+  Assert.isTrue(motion[1].sound)
+end
+
+function T.reaction_descriptor_keeps_thresholds_and_unlabeled_selector_arrays()
+  local bytes = u32(4) .. u16(0) .. u16(5) .. u16(9) .. u16(16) .. string.char(1, 2, 3, 4, 5, 6, 7, 8)
+  local descriptor = Compiler.decodeReactionDescriptor(bytes)
+  Assert.equal(#descriptor.keys, 4)
+  Assert.equal(descriptor.keys[3].frame, 9)
+  Assert.equal(descriptor.keys[4].texIdx, 4)
+  Assert.equal(descriptor.keys[1].plttIdx, 5)
+end
+
+function T.reaction_descriptor_rejects_nonretail_key_counts()
+  Assert.throws(function()
+    Compiler.decodeReactionDescriptor(u32(3) .. string.rep("\0", 16))
+  end)
+end
+
+return { tests = T }

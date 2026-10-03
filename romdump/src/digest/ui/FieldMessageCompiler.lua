@@ -192,6 +192,9 @@ function FieldMessageCompiler.requiredBankIds()
   set[MenuProtocol.START_MENU_MESSAGE_BANK] = true
   set[OAK_INTRO_MESSAGE_BANK] = true
   set[OPPOSITE_PROTAGONIST_NAME_BANK] = true
+  -- Follower reaction text is addressed directly by the retail overlay.
+  set[40] = true
+  set[265] = true
   local out = {}
   for bankId in pairs(set) do
     out[#out + 1] = bankId

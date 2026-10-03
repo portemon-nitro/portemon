@@ -50,7 +50,7 @@ local function fixture(mapCount)
     }
     files[scene.collision.file] = CollisionFixture.asset(32, 32)
     files[string.format("data/generated/field/maps/%04d/field.lua", mapId)] = {
-      schema = "g4-field-map-v10",
+      schema = "g4-field-map-v11",
       initScripts = {},
       mapId = mapId,
       mapSymbol = symbol,
@@ -186,7 +186,7 @@ function T.loads_visual_field_collision_and_terrain_into_one_aggregate()
   local map = loader:load("MAP_0")
   Assert.equal(map.mapId, 0)
   Assert.equal(map.sceneRuntime.scene.mapSymbol, "MAP_0")
-  Assert.equal(map.fieldData.schema, "g4-field-map-v10")
+  Assert.equal(map.fieldData.schema, "g4-field-map-v11")
   Assert.equal(map.fieldRegion.collision, map.collision)
   Assert.isTrue(map.fieldRegion.cells[1].collision:containsLocal(4, 4))
   Assert.isTrue(map.collision:containsLocal(4, 4))
@@ -965,7 +965,7 @@ function T.logical_load_publishes_semantic_fields_without_visual_assets()
   Assert.equal(map.mapSection, "TEST_SECTION")
   Assert.equal(map.mapSectionNativeId, 7)
   Assert.equal(map.followMode, "ALLOW")
-  Assert.equal(map.fieldData.schema, "g4-field-map-v10")
+  Assert.equal(map.fieldData.schema, "g4-field-map-v11")
   Assert.equal(map.cameraType, map.fieldData.cameraType)
   Assert.deepEqual(map.coordinateOrigin, { x = 96, z = 64 })
   Assert.isNil(map.scene)
@@ -1344,7 +1344,7 @@ function T.request_warp_plans_indexed_and_direct_destinations_as_required()
   local cache, world = outdoorPlanningFixture()
   local fieldPath = "data/generated/field/maps/0000/field.lua"
   local fieldData = {
-    schema = "g4-field-map-v10",
+    schema = "g4-field-map-v11",
     mapId = 0,
     mapSymbol = "MAP_0",
     transitionEnvironment = "outdoors",

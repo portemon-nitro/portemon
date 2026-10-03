@@ -4,6 +4,7 @@
 
 local Errors = require("libs.errors.src.Errors")
 local Nsbmd = require("libs.nds.src.nitro.g3d.Nsbmd")
+local Nsbtx = require("libs.nds.src.nitro.g3d.Nsbtx")
 local NitroAnimation = require("libs.nds.src.nitro.g3d.NitroAnimation")
 local FieldEffectPatternAnimation = require("romdump.src.digest.field.FieldEffectPatternAnimation")
 local ModelAssetCompiler = require("romdump.src.digest.model.ModelAssetCompiler")
@@ -281,6 +282,166 @@ end
 
 local compileDynamicModel = compileDynamicEffect
 
+-- Compile one follower reaction as the renderer consumes it: the common model
+-- and its frame-zero texture binding come from the base resources, while the
+-- selector schedule animates against that reaction's texture pack. The
+-- common pattern's later frames belong to other callers and are not played
+-- by this renderer path.
+local function compileFollowerReaction(narc, source, basePack, basePattern)
+  local modelMemberId = FieldEffects.followerReactionBase.modelMember
+  local modelBytes = member(narc, modelMemberId)
+  local decodedModel = assert(Nsbmd.decode(modelBytes, {
+    alias = FieldEffects.archive.alias,
+    memberId = modelMemberId,
+    section = "follower-reaction-model",
+  }))
+  local model = decodedModel.models[1]
+  if not model then
+    Errors.raise("FIELD_EFFECT_SOURCE_INVALID", "follower-reaction model has no model record", {
+      archive = FieldEffects.archive.alias,
+      memberId = modelMemberId,
+    })
+  end
+  if #model.materials ~= 1 then
+    Errors.raise("FIELD_EFFECT_SOURCE_INVALID", "follower-reaction model must have one material", {
+      archive = FieldEffects.archive.alias,
+      memberId = modelMemberId,
+      materialCount = #model.materials,
+    })
+  end
+  local baseKey = basePattern.keys[1]
+  if baseKey.frame ~= 0 or baseKey.texIdx ~= 0 or baseKey.plttIdx ~= 0 then
+    Errors.raise(
+      "FIELD_EFFECT_SOURCE_INVALID",
+      "follower-reaction base binding is not frame-zero texture and palette 0",
+      {
+        archive = FieldEffects.archive.alias,
+        memberId = FieldEffects.followerReactionBase.patternMember,
+        frame = baseKey.frame,
+        texture = baseKey.texIdx,
+        palette = baseKey.plttIdx,
+      }
+    )
+  end
+
+  local selectorPackBytes = member(narc, source.textureMember)
+  local selectorPack, packErr = Nsbtx.decode(selectorPackBytes, {
+    alias = FieldEffects.archive.alias,
+    memberId = source.textureMember,
+    section = source.key,
+  })
+  if not selectorPack then
+    Errors.raise("FIELD_EFFECT_SOURCE_INVALID", "follower-reaction texture pack could not be decoded", {
+      archive = FieldEffects.archive.alias,
+      memberId = source.textureMember,
+      error = packErr,
+    })
+  end
+  assert(selectorPack)
+
+  local animationMemberId = source.descriptorMember
+  local animationBytes = member(narc, animationMemberId)
+  local decodedPattern, patternErr = FieldEffectPatternAnimation.decode(animationBytes, {
+    alias = FieldEffects.archive.alias,
+    memberId = animationMemberId,
+    section = source.key,
+  })
+  if not decodedPattern then
+    Errors.raise("FIELD_EFFECT_SOURCE_INVALID", "follower-reaction pattern could not be decoded", {
+      archive = FieldEffects.archive.alias,
+      memberId = animationMemberId,
+      error = patternErr,
+    })
+  end
+  assert(decodedPattern)
+
+  local textureNames, paletteNames = {}, {}
+  for _, texture in ipairs(selectorPack.textures) do
+    textureNames[#textureNames + 1] = texture.name
+  end
+  for _, palette in ipairs(selectorPack.palettes) do
+    paletteNames[#paletteNames + 1] = palette.name
+  end
+  local keys = {}
+  for keyIndex, key in ipairs(decodedPattern.keys) do
+    if key.texIdx < 0 or key.texIdx >= #textureNames then
+      Errors.raise("FIELD_EFFECT_SOURCE_INVALID", "follower-reaction texture selector is out of range", {
+        effect = source.key,
+        memberId = animationMemberId,
+        keyIndex = keyIndex - 1,
+        selector = key.texIdx,
+        textureCount = #textureNames,
+      })
+    end
+    if #paletteNames < 1 then
+      Errors.raise("FIELD_EFFECT_SOURCE_INVALID", "follower-reaction texture pack has no palette", {
+        effect = source.key,
+        memberId = source.textureMember,
+      })
+    end
+    keys[#keys + 1] = { frame = key.frame, texIdx = key.texIdx, plttIdx = 0 }
+  end
+
+  local material = model.materials[1]
+  local normalizedAnimation = {
+    format = "NSBTP",
+    bytes = animationBytes,
+    animations = {
+      {
+        name = "follower-reaction-pattern",
+        resource = {
+          numFrame = decodedPattern.lastFrame + 1,
+          textureNames = textureNames,
+          paletteNames = paletteNames,
+          targets = {
+            { index = 0, name = material.name, rate = 1, keys = keys },
+          },
+        },
+      },
+    },
+  }
+  local clip = MapPropAnimCompiler.compileDecoded(normalizedAnimation, {
+    name = normalizedAnimation.animations[1].name,
+    id = source.key .. ":animation",
+    source = {
+      type = "field-effect",
+      format = FieldEffectPatternAnimation.FORMAT,
+      archive = FieldEffects.archive.alias,
+      memberId = animationMemberId,
+      sha1 = Hashing.sha1hex(animationBytes),
+    },
+  })
+  local meshes, textures = {}, {}
+  -- The model has its own TEX0, but the reaction clip resolves against its
+  -- selector pack while regular material bindings come from `basePack`.
+  local variantModel = { embeddedTextures = selectorPack }
+  local descriptor, unresolved = DynamicModelCompiler.compile(model, variantModel, basePack, { clips = { clip } }, {
+    role = "field-effect-follower-reaction",
+    modelArchive = FieldEffects.archive.alias,
+    modelMemberId = modelMemberId,
+    modelName = model.name,
+    textureArchive = FieldEffects.archive.alias,
+    textureMemberId = FieldEffects.followerReactionBase.textureMember,
+    finalizeMeshes = true,
+  }, modelMemberId, textures, meshes)
+  if #unresolved > 0 then
+    Errors.raise("FIELD_EFFECT_SOURCE_INVALID", "follower-reaction model has unresolved materials", {
+      archive = FieldEffects.archive.alias,
+      memberId = modelMemberId,
+      unresolved = unresolved,
+    })
+  end
+  descriptor.key = "field-effect:" .. source.key:gsub("_", "-")
+  rewriteEffectPaths(descriptor)
+  ModelAsset.validate(descriptor)
+  return descriptor,
+    meshes,
+    textures,
+    Hashing.sha1hex(modelBytes),
+    Hashing.sha1hex(selectorPackBytes),
+    Hashing.sha1hex(animationBytes)
+end
+
 -- Compile the transient follower effect from its two source models and the
 -- single animation member. The animation rides the shared Nitro dispatch
 -- (member 164 decodes on the NSBTA path, unlike the pattern animations of
@@ -475,6 +636,46 @@ function Compiler.compile(romFs, hashLua)
       animation = sourceHashes(animationNarc, source.animationMembers, FieldEffects.animationArchive.alias),
     }
   end
+  local basePack, basePackErr = Nsbtx.decode(member(narc, FieldEffects.followerReactionBase.textureMember), {
+    alias = FieldEffects.archive.alias,
+    memberId = FieldEffects.followerReactionBase.textureMember,
+    section = "follower-reaction-base-texture",
+  })
+  if not basePack then
+    Errors.raise("FIELD_EFFECT_SOURCE_INVALID", "follower-reaction base texture pack could not be decoded", {
+      archive = FieldEffects.archive.alias,
+      memberId = FieldEffects.followerReactionBase.textureMember,
+      error = basePackErr,
+    })
+  end
+  assert(basePack)
+  local basePatternBytes = member(narc, FieldEffects.followerReactionBase.patternMember)
+  local basePattern, basePatternErr = FieldEffectPatternAnimation.decode(basePatternBytes, {
+    alias = FieldEffects.archive.alias,
+    memberId = FieldEffects.followerReactionBase.patternMember,
+    section = "follower-reaction-base-pattern",
+  })
+  if not basePattern then
+    Errors.raise("FIELD_EFFECT_SOURCE_INVALID", "follower-reaction base pattern could not be decoded", {
+      archive = FieldEffects.archive.alias,
+      memberId = FieldEffects.followerReactionBase.patternMember,
+      error = basePatternErr,
+    })
+  end
+  assert(basePattern)
+  sourceHashesByKind.follower_reactions = {
+    model = sourceHashes(narc, { FieldEffects.followerReactionBase.modelMember }, FieldEffects.archive.alias),
+    baseTexture = sourceHashes(narc, { FieldEffects.followerReactionBase.textureMember }, FieldEffects.archive.alias),
+    basePattern = sourceHashes(narc, { FieldEffects.followerReactionBase.patternMember }, FieldEffects.archive.alias),
+    selectors = {},
+  }
+  for _, source in ipairs(FieldEffects.followerReactions) do
+    sourceHashesByKind.follower_reactions.selectors[#sourceHashesByKind.follower_reactions.selectors + 1] = {
+      key = source.key,
+      texture = sourceHashes(narc, { source.textureMember }, FieldEffects.archive.alias),
+      pattern = sourceHashes(narc, { source.descriptorMember }, FieldEffects.archive.alias),
+    }
+  end
   local model, meshes, textures, warpSha = compileModel(
     narc,
     FieldEffects.effects.warp_entrance.modelMembers[1],
@@ -626,6 +827,25 @@ function Compiler.compile(romFs, hashLua)
     },
     follower_transition = transition,
   }
+  local reactionMeshes, reactionTextures, reactionSha1s = {}, {}, {}
+  for _, source in ipairs(FieldEffects.followerReactions) do
+    local descriptor, reactionSourceMeshes, reactionSourceTextures, modelSha1, textureSha1, patternSha1 =
+      compileFollowerReaction(narc, source, basePack, basePattern)
+    effects[source.key] = {
+      definition = source.key,
+      model = descriptor,
+      lifecycle = { mode = "once", frameCount = descriptor.animations[1].frameCount },
+    }
+    for sha1, mesh in pairs(reactionSourceMeshes) do
+      reactionMeshes[sha1] = mesh
+    end
+    for sha1, texture in pairs(reactionSourceTextures) do
+      reactionTextures[sha1] = texture
+    end
+    reactionSha1s[#reactionSha1s + 1] = modelSha1
+    reactionSha1s[#reactionSha1s + 1] = textureSha1
+    reactionSha1s[#reactionSha1s + 1] = patternSha1
+  end
   local index = {
     schema = Contract.fieldEffects.indexSchema,
     effects = {
@@ -661,9 +881,25 @@ function Compiler.compile(romFs, hashLua)
       },
     },
   }
+  for _, source in ipairs(FieldEffects.followerReactions) do
+    index.effects[source.key] = {
+      kind = "reaction",
+      definition = source.key,
+      path = FieldEffectAssetCache.definitionPath(source.key),
+    }
+  end
   local memberSha1 = { warpSha, tallSha, veryTallSha, trainerRevealSha, surfSha }
   for _, sha1 in ipairs(transitionSha1s) do
     memberSha1[#memberSha1 + 1] = sha1
+  end
+  for _, sha1 in ipairs(reactionSha1s) do
+    memberSha1[#memberSha1 + 1] = sha1
+  end
+  for sha1, mesh in pairs(reactionMeshes) do
+    meshes[sha1] = mesh
+  end
+  for sha1, texture in pairs(reactionTextures) do
+    textures[sha1] = texture
   end
   local depHash = hashLua({
     memberSha1 = memberSha1,

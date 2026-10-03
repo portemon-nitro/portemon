@@ -16,10 +16,11 @@ local function compiler()
   return require("romdump.src.digest.items.ItemCatalogCompiler")
 end
 
-local function memberWith(holdEffect, word)
+local function memberWith(holdEffect, word, naturalGiftPower)
   local low = word % 256
   local high = math.floor(word / 256) % 256
-  return string.char(100, 0, holdEffect, 0, 0, 0, 0, 0, low, high) .. string.rep("\0", 34 - 10)
+  return string.char(100, 0, holdEffect, 0, 0, 0, 0, naturalGiftPower or 0, low, high)
+    .. string.rep("\0", 34 - 10)
 end
 
 function T.decodes_the_catalog_consumed_fields()
@@ -28,9 +29,18 @@ function T.decodes_the_catalog_consumed_fields()
     memberId = 196,
   }))
   Assert.equal(decoded.holdEffect, 53)
+  Assert.equal(decoded.naturalGiftPower, 0)
   Assert.isFalse(decoded.preventToss)
   Assert.isFalse(decoded.selectable)
   Assert.equal(decoded.fieldPocket, 0)
+end
+
+function T.preserves_natural_gift_power_source_byte()
+  local decoded = assert(compiler().decodeItemData(memberWith(0, 0, 120), {
+    archive = "item_data",
+    memberId = 234,
+  }))
+  Assert.equal(decoded.naturalGiftPower, 120)
 end
 
 function T.decodes_pocket_toss_and_selectable_bits()

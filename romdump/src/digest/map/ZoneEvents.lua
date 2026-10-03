@@ -81,10 +81,11 @@ end
 
 local function decodeBackground(reader, offset, index)
   local eventType = reader:u16le(offset + 2)
+  local scriptId = reader:u16le(offset)
   local directionRaw = reader:u32le(offset + 16)
-  return {
+  local event = {
     index = index,
-    scriptId = reader:u16le(offset),
+    scriptId = scriptId,
     type = eventType,
     hiddenItem = eventType == 2,
     x = s32(reader:u32le(offset + 4)),
@@ -93,6 +94,16 @@ local function decodeBackground(reader, offset, index)
     directionRaw = directionRaw,
     direction = DIRECTIONS[directionRaw] or "unknown",
   }
+  if event.hiddenItem then
+    if scriptId < 8000 or scriptId >= 9000 then
+      Errors.raise("ZONE_EVENTS_HIDDEN_ITEM_SCRIPT_INVALID", "hidden item standard script is out of range", {
+        scriptId = scriptId,
+        recordIndex = index,
+      })
+    end
+    event.hiddenItemFlagId = 800 + (scriptId - 8000)
+  end
+  return event
 end
 
 local function decodeObject(reader, offset, index)

@@ -60,7 +60,7 @@ function T.contract_pins_the_current_asset_identities()
     },
     fieldMapData = {
       cacheFormat = "g4-field-map-cache-v1",
-      fieldSchema = "g4-field-map-v10",
+      fieldSchema = "g4-field-map-v11",
       spawnIndexSchema = "g4-field-spawn-index-v1",
     },
     messages = {
@@ -87,8 +87,12 @@ function T.contract_pins_the_current_asset_identities()
       schema = "g4-new-game-init-v3",
     },
     fieldEffects = {
-      cacheFormat = "field-effect-cache-v8",
-      indexSchema = "g4-field-effect-index-v2",
+      cacheFormat = "field-effect-cache-v9",
+      indexSchema = "g4-field-effect-index-v3",
+    },
+    followerInteractions = {
+      cacheFormat = "follower-interaction-cache-v1",
+      schema = "g4-follower-interactions-v1",
     },
     fieldEmotes = {
       cacheFormat = "field-emotes-cache-v2",
@@ -109,14 +113,14 @@ function T.contract_pins_the_current_asset_identities()
     },
     mons = {
       cacheFormat = "mon-cache-v1",
-      catalogSchema = "g4-mon-catalog-v3",
+      catalogSchema = "g4-mon-catalog-v4",
       indexSchema = "g4-mon-index-v2",
       iconManifestSchema = "g4-mon-icon-manifest-v2",
       portraitManifestSchema = "g4-mon-portrait-manifest-v2",
     },
     items = {
       cacheFormat = "item-cache-v3",
-      catalogSchema = "g4-item-catalog-v3",
+      catalogSchema = "g4-item-catalog-v4",
       indexSchema = "g4-item-index-v1",
       iconManifestSchema = "g4-item-icons-v1",
     },

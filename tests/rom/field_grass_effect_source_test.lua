@@ -179,8 +179,8 @@ end
 
 local suite = RomSuite.fromFacts({
   ["compiles source field-effect definitions with normalized presentation"] = function(romFs)
-    Assert.equal(Contract.fieldEffects.cacheFormat, "field-effect-cache-v8")
-    Assert.equal(FieldEffectAssetCache.FORMAT, "field-effect-cache-v8")
+    Assert.equal(Contract.fieldEffects.cacheFormat, "field-effect-cache-v9")
+    Assert.equal(FieldEffectAssetCache.FORMAT, "field-effect-cache-v9")
 
     local animationNarc = assert(romFs:openNarc(FieldEffects.animationArchive.alias))
     local compiled = FieldEntranceIndicatorCompiler.compile(romFs)

@@ -118,6 +118,7 @@ local function placeholder(nativeId, key)
     canHold = true,
     heldFormEffect = "none",
     partyUse = { kind = "none" },
+    naturalGiftPower = 0,
   }
   if nativeId >= 328 and nativeId <= 427 then
     record.pocket = "tmhm"
@@ -175,6 +176,7 @@ function ItemFixture.buildAssetRoot()
         canHold = known.canHold,
         heldFormEffect = known.heldFormEffect or "none",
         partyUse = known.partyUse or { kind = "none" },
+        naturalGiftPower = 0,
       }
       if record.canHold == nil then
         record.canHold = known.pocket ~= "key_items" and known.pocket ~= "mail"
@@ -203,7 +205,7 @@ function ItemFixture.buildAssetRoot()
     key_items = { nativeId = 7, capacity = 50, maxQuantity = 999, ordering = "manual" },
   }
   return {
-    schema = "g4-item-catalog-v3",
+    schema = "g4-item-catalog-v4",
     version = { id = "heartgold", language = "en" },
     items = items,
     pockets = pockets,

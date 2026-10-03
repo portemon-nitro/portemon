@@ -190,6 +190,39 @@ local function validTransitionDefinition(definition)
   return validLifecycle(lifecycle, animatedClip.frameCount) and validPlacement(definition.placementOffset)
 end
 
+local function isFollowerReaction(kind)
+  local selector = type(kind) == "string" and kind:match("^follower_reaction_(%d+)$")
+  local number = tonumber(selector)
+  return number ~= nil and number >= 1 and number <= 14
+end
+
+local function validReactionDefinition(definition, kind)
+  local selector = assert(kind:match("^follower_reaction_(%d+)$"))
+  if type(definition) ~= "table" or definition.definition ~= kind then
+    return false
+  end
+  local fieldCount = 0
+  for _ in pairs(definition) do
+    fieldCount = fieldCount + 1
+  end
+  local model = definition.model
+  local animations = type(model) == "table" and model.animations
+  local clip = type(animations) == "table" and animations[1]
+  return fieldCount == 3
+    and type(model) == "table"
+    and model.key == "field-effect:follower-reaction-" .. selector
+    and model.kind == "nitro-dynamic"
+    and type(model.dynamic) == "table"
+    and type(animations) == "table"
+    and #animations == 1
+    and type(clip) == "table"
+    and clip.category == "material"
+    and clip.kind == "pattern"
+    and type(definition.lifecycle) == "table"
+    and definition.lifecycle.mode == "once"
+    and validLifecycle(definition.lifecycle, clip.frameCount)
+end
+
 function FieldEffectAssetCache.indexPath()
   return INDEX
 end
@@ -229,6 +262,9 @@ function FieldEffectAssetCache.isReady(cacheFs, expectedMarker)
     "surf_attachment",
     "follower_transition",
   }
+  for selector = 1, 14 do
+    required[#required + 1] = "follower_reaction_" .. selector
+  end
   if type(index.effects) ~= "table" then
     return false
   end
@@ -247,6 +283,9 @@ function FieldEffectAssetCache.isReady(cacheFs, expectedMarker)
     surf_attachment = "model",
     follower_transition = "transition",
   }
+  for selector = 1, 14 do
+    expectedKinds["follower_reaction_" .. selector] = "reaction"
+  end
   for _, kind in ipairs(required) do
     local entry = index.effects and index.effects[kind]
 
@@ -260,6 +299,10 @@ function FieldEffectAssetCache.isReady(cacheFs, expectedMarker)
     end
     local definitionLoaded, definition = pcall(cacheFs.loadLua, cacheFs, entry.path)
     if not definitionLoaded or type(definition) ~= "table" then
+      return false
+    end
+    local isReaction = isFollowerReaction(kind)
+    if isReaction and not validReactionDefinition(definition, kind) then
       return false
     end
     local descriptors = definition.models or { definition.model }

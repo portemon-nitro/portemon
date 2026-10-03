@@ -37,6 +37,8 @@ local function sourceReferenceBankIds()
   -- from this bank through the player gender; see FieldMessageCompiler's
   -- opposite-protagonist name bank.
   ids[445] = true
+  ids[40] = true
+  ids[265] = true
   local out = {}
   for bankId in pairs(ids) do
     out[#out + 1] = bankId
@@ -186,6 +188,8 @@ function T.source_references_form_one_sorted_bank_set()
   -- from this bank through the player gender; see FieldMessageCompiler's
   -- opposite-protagonist name bank.
   expected[445] = true
+  expected[40] = true
+  expected[265] = true
 
   Assert.deepEqual(required, sourceReferenceBankIds())
 

@@ -75,7 +75,7 @@ function T.compiles_catalog_identity_source_and_events()
   local romFs, sha1, hashLua = fixture()
   local bundle = assert(FieldMapDataCompiler.compile(romFs, 60, sha1, hashLua))
   Assert.equal(bundle.mapId, 60)
-  Assert.equal(bundle.field.schema, "g4-field-map-v10")
+  Assert.equal(bundle.field.schema, "g4-field-map-v11")
   Assert.equal(bundle.field.mapSymbol, "MAP_NEW_BARK")
   Assert.equal(bundle.field.cameraType, 0)
   -- Source identity lives only in the dependency record; the runtime asset
@@ -98,7 +98,7 @@ end
 function T.emits_strict_init_script_array_for_every_map()
   local romFs, sha1, hashLua = fixture()
   local bundle = assert(FieldMapDataCompiler.compile(romFs, 60, sha1, hashLua))
-  Assert.equal(bundle.field.schema, "g4-field-map-v10")
+  Assert.equal(bundle.field.schema, "g4-field-map-v11")
   Assert.deepEqual(bundle.field.initScripts, {})
 end
 

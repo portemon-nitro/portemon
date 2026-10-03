@@ -56,6 +56,7 @@ function T.catalogs_reject_malformed_item_records()
   local ItemAssetSchema = schema()
   local variants = {
     extra_field = { price = 200 },
+    bad_natural_gift_power = { naturalGiftPower = 256 },
     text_ball = { isBall = "yes" },
     negative_id = { nativeId = -1 },
     past_range_id = { nativeId = 537 },
@@ -73,7 +74,7 @@ function T.catalogs_reject_malformed_item_records()
   end
   -- Nil assignments are not expressible as table patches, so the missing
   -- required fields are dropped explicitly.
-  for _, key in ipairs({ "friendshipBoost", "icon" }) do
+  for _, key in ipairs({ "friendshipBoost", "icon", "naturalGiftPower" }) do
     local root = validRoot()
     root.items["ITEM_55"][key] = nil
     Assert.isFalse(ItemAssetSchema.isValidCatalog(root), "missing item field must be rejected: " .. key)
@@ -175,7 +176,7 @@ end
 
 function T.catalogs_require_held_item_action_metadata()
   local ItemAssetSchema = schema()
-  Assert.equal(ItemAssetSchema.CATALOG_SCHEMA, "g4-item-catalog-v3")
+  Assert.equal(ItemAssetSchema.CATALOG_SCHEMA, "g4-item-catalog-v4")
   Assert.isTrue(ItemAssetSchema.isValidCatalog(validRoot()))
   for _, key in ipairs({ "isHm", "canHold", "heldFormEffect" }) do
     local root = validRoot()
@@ -189,8 +190,19 @@ function T.catalogs_require_held_item_action_metadata()
   badHold.items["ITEM_55"].canHold = "yes"
   Assert.isFalse(ItemAssetSchema.isValidCatalog(badHold))
   local oldSchema = validRoot()
-  oldSchema.schema = "g4-item-catalog-v2"
+  oldSchema.schema = "g4-item-catalog-v3"
   Assert.isFalse(ItemAssetSchema.isValidCatalog(oldSchema), "the v2 schema no longer validates")
+end
+
+function T.catalogs_require_natural_gift_power_in_v4()
+  local ItemAssetSchema = schema()
+  Assert.equal(ItemAssetSchema.CATALOG_SCHEMA, "g4-item-catalog-v4")
+  local missing = validRoot()
+  missing.items.POTION.naturalGiftPower = nil
+  Assert.isFalse(ItemAssetSchema.isValidCatalog(missing))
+  local outOfRange = validRoot()
+  outOfRange.items.POTION.naturalGiftPower = 256
+  Assert.isFalse(ItemAssetSchema.isValidCatalog(outOfRange))
 end
 
 function T.catalogs_require_party_use_metadata()

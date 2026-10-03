@@ -42,7 +42,7 @@ local function runVersion(scope, versionId)
     assets.effects[kind] = assert(cache:loadLua(index.effects[kind].path))
   end
 
-  Assert.equal(Contract.fieldEffects.cacheFormat, "field-effect-cache-v8")
+  Assert.equal(Contract.fieldEffects.cacheFormat, "field-effect-cache-v9")
   local pool = scope:own(GpuAssetPool.new(cache))
   local renderer = FieldTerrainEffectRenderer.new(assets, pool)
   scope:own({

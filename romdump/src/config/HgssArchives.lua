@@ -24,6 +24,11 @@ HgssArchives.provenance = {
 -- alias; version-neutral aliases are resolved separately below.
 local ALIAS_TO_SYMBOL = {
   personal = "NARC_poketool_personal_personal",
+  performance = "NARC_poketool_personal_performance",
+  follower_interaction_rules = "NARC_a_2_2_0",
+  follower_interaction_programs = "NARC_a_2_2_1",
+  follower_interaction_motions = "NARC_a_2_2_2",
+  follower_interaction_species_classes = "NARC_a_2_3_1",
   growth_tables = "NARC_poketool_personal_growtbl",
   pokemon_graphics = "NARC_poketool_pokegra_pokegra",
   pokemon_graphics_other = "NARC_poketool_pokegra_otherpoke",
@@ -72,6 +77,11 @@ local ALIAS_TO_SYMBOL = {
 
 local REQUIRED = {
   personal = true,
+  performance = true,
+  follower_interaction_rules = true,
+  follower_interaction_programs = true,
+  follower_interaction_motions = true,
+  follower_interaction_species_classes = true,
   moves = true,
   messages = true,
   map_matrices = true,

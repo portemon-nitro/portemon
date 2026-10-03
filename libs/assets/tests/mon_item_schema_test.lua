@@ -34,7 +34,7 @@ end
 
 local function catalogRoot()
   return {
-    schema = "g4-mon-catalog-v3",
+    schema = "g4-mon-catalog-v4",
     version = { id = "heartgold", language = "english" },
     species = {
       CHIKORITA = {
@@ -61,6 +61,13 @@ local function catalogRoot()
             evolutions = {},
             icon = "CHIKORITA/f0",
             portrait = "CHIKORITA/f0/male/plain",
+            performance = {
+              power = { base = 3, min = 2, max = 5 },
+              skill = { base = 3, min = 2, max = 5 },
+              speed = { base = 3, min = 2, max = 5 },
+              jump = { base = 3, min = 2, max = 5 },
+              stamina = { base = 3, min = 2, max = 5 },
+            },
           },
         },
       },
