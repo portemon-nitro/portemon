@@ -611,7 +611,18 @@ function T.context_cancel_returns_to_browse_without_result_or_intent()
   local controller = nativeController()
   controller:updateFixed({ { type = "confirm" } })
   Assert.equal(nativeStatus(controller).state, "context")
+  local quitCount = #assert(nativeStatus(controller).menu, "setup holds the context menu")
   controller:updateFixed({ { type = "cancel" } })
+  Assert.equal(
+    nativeStatus(controller).menuIndex,
+    quitCount,
+    "cancelling moves focus to the final row"
+  )
+  Assert.notNil(nativeStatus(controller).menuPress, "cancelling arms the press gate")
+  Assert.equal(nativeStatus(controller).state, "context", "cancelling waits for the press cadence")
+  Assert.isNil(controller:takeResult(), "an armed cancel completes nothing yet")
+  Assert.isNil(controller:takeIntent(), "an armed cancel emits nothing yet")
+  pressThrough(controller)
   Assert.equal(nativeStatus(controller).state, "browse")
   Assert.isNil(controller:takeResult())
   Assert.isNil(controller:takeIntent())
@@ -898,6 +909,10 @@ function T.top_panel_slide_advances_source_steps_on_show_and_reverses_on_hide()
   end
   Assert.deepEqual(seen, { 12, 24, 36, 40 }, "show advances 0,12,24,36,40")
   controller:updateFixed({ { type = "cancel" } })
+  Assert.notNil(nativeStatus(controller).menuPress, "cancelling arms the press gate")
+  Assert.equal(nativeStatus(controller).state, "context", "cancelling waits for the press cadence")
+  pressThrough(controller)
+  Assert.equal(nativeStatus(controller).state, "browse", "the gated cancel returns to browse")
   local hid = {}
   for _ = 1, 4 do
     controller:updateFixed({})
@@ -1266,6 +1281,18 @@ function T.cancel_from_an_eight_entry_menu_returns_to_browse_cleanly()
   end
   Assert.equal(nativeStatus(controller).menuIndex, 8, "the cancel-position entry stays reachable")
   controller:updateFixed({ { type = "cancel" } })
+  local quitAt = nil
+  for index, entry in ipairs(assert(nativeStatus(controller).menu, "setup keeps the menu open")) do
+    if entry.kind == "quit" then
+      quitAt = index
+    end
+  end
+  Assert.equal(nativeStatus(controller).menuIndex, quitAt, "cancelling moves to the quit row")
+  Assert.notNil(nativeStatus(controller).menuPress, "cancelling arms the press gate")
+  Assert.equal(nativeStatus(controller).state, "context", "cancelling waits for the press cadence")
+  Assert.isNil(controller:takeResult(), "an armed cancel completes nothing yet")
+  Assert.isNil(controller:takeIntent(), "an armed cancel emits nothing yet")
+  pressThrough(controller)
   Assert.equal(nativeStatus(controller).state, "browse")
   Assert.isNil(controller:takeResult())
   Assert.isNil(controller:takeIntent())
@@ -1452,7 +1479,22 @@ function T.menu_cancel_requests_one_cancel_effect_in_each_menu_state()
       case.name .. " setup holds its menu"
     )
     controller:updateFixed({ { type = "cancel" } })
-    Assert.equal(nativeStatus(controller).state, "browse", case.name .. " cancel returns to browse")
+    local quitCount = #assert(nativeStatus(controller).menu, case.name .. " menu stays open")
+    Assert.equal(
+      nativeStatus(controller).menuIndex,
+      quitCount,
+      case.name .. " moves focus to the final row"
+    )
+    Assert.deepEqual(sounds, { "SEQ_SE_GS_GEARCANCEL" }, case.name .. " sounds once when the press starts")
+    Assert.notNil(
+      nativeStatus(controller).menuPress,
+      case.name .. " arms the press instead of tearing down"
+    )
+    Assert.equal(nativeStatus(controller).state, openState, case.name .. " waits for the press cadence")
+    Assert.isNil(controller:takeResult(), case.name .. " completes nothing yet")
+    Assert.isNil(controller:takeIntent(), case.name .. " emits nothing yet")
+    pressThrough(controller)
+    Assert.equal(nativeStatus(controller).state, "browse", case.name .. " returns to browse after the gate")
     Assert.equal(nativeStatus(controller).cursorNode, 0, case.name .. " cancel restores the acting slot")
     Assert.isNil(nativeStatus(controller).menu, case.name .. " cancel releases the menu")
     Assert.isNil(controller:takeResult(), case.name .. " cancel emits no terminal result")
@@ -1792,6 +1834,222 @@ function T.menu_restore_after_complete_action_carries_no_armed_press()
     restored.menuIndex >= 1 and restored.menuIndex <= #restored.menu,
     "the restored focus stays inside the generated count"
   )
+end
+
+function T.quit_request_sounds_when_the_press_starts_and_finishes_silently()
+  local cases = {
+    { name = "top", specs = nil, submenu = false },
+    { name = "item", specs = { [1] = { heldItem = "SITRUS_BERRY" } }, submenu = true },
+    { name = "mail", specs = { [1] = { mail = true, heldItem = "TEST_MAIL" } }, submenu = true },
+  }
+  for _, case in ipairs(cases) do
+    local sounds = {}
+    local controller = nativeController({
+      specs = case.specs,
+      effect = function(sequence)
+        sounds[#sounds + 1] = sequence
+      end,
+    })
+    controller:updateFixed({ { type = "confirm" } })
+    if case.submenu then
+      controller:updateFixed({ { type = "navigate", direction = "down" } })
+      controller:updateFixed({ { type = "navigate", direction = "down" } })
+      controller:updateFixed({ { type = "confirm" } })
+      pressThrough(controller)
+    end
+    local openState = nativeStatus(controller).state
+    Assert.isTrue(
+      openState == "context" or openState == "item_context" or openState == "mail_context",
+      case.name .. " setup holds its menu"
+    )
+    local quitCount = #assert(nativeStatus(controller).menu, case.name .. " menu stays open")
+    for _ = 1, quitCount - 1 do
+      controller:updateFixed({ { type = "navigate", direction = "down" } })
+    end
+    Assert.equal(nativeStatus(controller).menuIndex, quitCount, case.name .. " setup focuses the final row")
+    controller:updateFixed({ { type = "confirm" } })
+    Assert.deepEqual(sounds, { "SEQ_SE_GS_GEARCANCEL" }, case.name .. " sounds once when the press starts")
+    Assert.notNil(nativeStatus(controller).menuPress, case.name .. " arms the press instead of dismissing early")
+    Assert.equal(nativeStatus(controller).state, openState, case.name .. " waits for the press cadence")
+    Assert.isNil(controller:takeResult(), case.name .. " completes nothing yet")
+    Assert.isNil(controller:takeIntent(), case.name .. " emits nothing yet")
+    pressThrough(controller)
+    Assert.equal(nativeStatus(controller).state, "browse", case.name .. " returns to browse after the gate")
+    Assert.equal(nativeStatus(controller).cursorNode, 0, case.name .. " restores the acting slot")
+    Assert.isNil(nativeStatus(controller).menu, case.name .. " releases the menu")
+    Assert.isNil(controller:takeResult(), case.name .. " emits no terminal result")
+    Assert.isNil(controller:takeIntent(), case.name .. " emits no domain intent")
+    Assert.deepEqual(sounds, { "SEQ_SE_GS_GEARCANCEL" }, case.name .. " sounds exactly once in total")
+  end
+  do
+    local touchSounds = {}
+    local touched = nativeController({
+      layout = v3Layout(),
+      effect = function(sequence)
+        touchSounds[#touchSounds + 1] = sequence
+      end,
+    })
+    touched:updateFixed({ { type = "confirm" } })
+    local count = #assert(nativeStatus(touched).menu, "touch setup opens the context menu")
+    local touch = generatedTopLevel(count)[count].touch
+    local right = touch.right == 0 and 256 or touch.right
+    local tapX, tapY = touch.left + math.floor((right - touch.left) / 2), touch.top + 1
+    touched:updateFixed({ { type = "pointer_down", pointerId = "p", x = tapX, y = tapY } })
+    touched:updateFixed({ { type = "pointer_up", pointerId = "p", x = tapX, y = tapY } })
+    Assert.deepEqual(touchSounds, { "SEQ_SE_GS_GEARCANCEL" }, "touch sounds once when the press starts")
+    Assert.notNil(
+      nativeStatus(touched).menuPress,
+      "a pointer tap arms the press instead of dismissing"
+    )
+    Assert.equal(nativeStatus(touched).state, "context", "touch waits for the press cadence")
+    Assert.isNil(touched:takeResult(), "an armed touch completes nothing yet")
+    Assert.isNil(touched:takeIntent(), "an armed touch emits nothing yet")
+    pressThrough(touched)
+    Assert.equal(nativeStatus(touched).state, "browse", "touch returns to browse after the gate")
+    Assert.equal(nativeStatus(touched).cursorNode, 0, "touch restores the acting slot")
+    Assert.isNil(touched:takeResult(), "touch emits no terminal result")
+    Assert.isNil(touched:takeIntent(), "touch emits no domain intent")
+    Assert.deepEqual(touchSounds, { "SEQ_SE_GS_GEARCANCEL" }, "touch sounds exactly once in total")
+  end
+end
+
+function T.menu_cancel_moves_to_the_final_row_and_waits_for_the_press_gate()
+  local cases = {
+    { name = "context", specs = nil, submenu = false },
+    { name = "item", specs = { [1] = { heldItem = "SITRUS_BERRY" } }, submenu = true },
+    { name = "mail", specs = { [1] = { mail = true, heldItem = "TEST_MAIL" } }, submenu = true },
+  }
+  for _, case in ipairs(cases) do
+    local sounds = {}
+    local controller = nativeController({
+      specs = case.specs,
+      effect = function(sequence)
+        sounds[#sounds + 1] = sequence
+      end,
+    })
+    controller:updateFixed({ { type = "confirm" } })
+    if case.submenu then
+      controller:updateFixed({ { type = "navigate", direction = "down" } })
+      controller:updateFixed({ { type = "navigate", direction = "down" } })
+      controller:updateFixed({ { type = "confirm" } })
+      pressThrough(controller)
+    end
+    local openState = nativeStatus(controller).state
+    Assert.isTrue(
+      openState == "context" or openState == "item_context" or openState == "mail_context",
+      case.name .. " setup holds its menu"
+    )
+    Assert.equal(nativeStatus(controller).menuIndex, 1, case.name .. " setup starts away from the final row")
+    controller:updateFixed({ { type = "cancel" } })
+    local quitCount = #assert(nativeStatus(controller).menu, case.name .. " menu stays open")
+    Assert.equal(
+      nativeStatus(controller).menuIndex,
+      quitCount,
+      case.name .. " moves focus to the final row"
+    )
+    Assert.deepEqual(sounds, { "SEQ_SE_GS_GEARCANCEL" }, case.name .. " sounds once when the press starts")
+    Assert.notNil(nativeStatus(controller).menuPress, case.name .. " arms the press instead of tearing down")
+    Assert.equal(nativeStatus(controller).state, openState, case.name .. " waits for the press cadence")
+    Assert.isNil(controller:takeResult(), case.name .. " completes nothing yet")
+    Assert.isNil(controller:takeIntent(), case.name .. " emits nothing yet")
+    pressThrough(controller)
+    Assert.equal(nativeStatus(controller).state, "browse", case.name .. " returns to browse after the gate")
+    Assert.equal(nativeStatus(controller).cursorNode, 0, case.name .. " restores the acting slot")
+    Assert.isNil(nativeStatus(controller).menu, case.name .. " releases the menu")
+    Assert.isNil(controller:takeResult(), case.name .. " emits no terminal result")
+    Assert.isNil(controller:takeIntent(), case.name .. " emits no domain intent")
+    Assert.deepEqual(sounds, { "SEQ_SE_GS_GEARCANCEL" }, case.name .. " sounds exactly once in total")
+  end
+end
+
+function T.outside_pointer_down_closes_before_nested_work_runs()
+  local sounds = {}
+  local armed, _, _ = soundingController()
+  armed:updateFixed({ { type = "confirm" } })
+  armed:updateFixed({ { type = "confirm" } })
+  Assert.notNil(nativeStatus(armed).menuPress, "setup arms a menu press")
+  armed:updateFixed({ { type = "dismiss" } })
+  Assert.deepEqual(armed:takeResult(), { kind = "closed" }, "armed press closes terminally")
+  Assert.isFalse(nativeStatus(armed).open, "armed press leaves nothing open")
+  Assert.isNil(armed:takeIntent(), "armed press dispatches nothing later")
+  for _ = 1, 5 do
+    armed:updateFixed({})
+  end
+  Assert.isNil(armed:takeIntent(), "the preempted press never dispatches")
+  Assert.isNil(armed:takeResult(), "the close reports exactly once")
+
+  local swapping, swapCalls, _, swapSounds = soundingController()
+  beginSwap(swapping, 1, { "down" })
+  for _ = 1, 3 do
+    swapping:updateFixed({})
+  end
+  Assert.equal(nativeStatus(swapping).state, "swapping", "setup is mid-animation")
+  swapping:updateFixed({ { type = "dismiss" } })
+  Assert.deepEqual(swapping:takeResult(), { kind = "closed" }, "mid-swap closes terminally")
+  Assert.isFalse(nativeStatus(swapping).open, "mid-swap leaves nothing open")
+  Assert.equal(#swapCalls.swaps, 0, "mid-swap publishes no order")
+  Assert.deepEqual(swapSounds, { SWITCH_SOUND }, "mid-swap sounds nothing on dismiss")
+  for _ = 1, 40 do
+    swapping:updateFixed({})
+  end
+  Assert.equal(#swapCalls.swaps, 0, "the preempted swap never publishes")
+  Assert.isNil(swapping:takeResult(), "the close reports exactly once")
+
+  local confirming
+  do
+    local innerSounds = sounds
+    confirming = nativeController({
+      specs = { [1] = { heldItem = "SITRUS_BERRY" } },
+      effect = function(sequence)
+        innerSounds[#innerSounds + 1] = sequence
+      end,
+    })
+  end
+  confirming:updateFixed({ { type = "confirm" } })
+  confirming:updateFixed({ { type = "navigate", direction = "down" } })
+  confirming:updateFixed({ { type = "navigate", direction = "down" } })
+  confirming:updateFixed({ { type = "confirm" } })
+  pressThrough(confirming)
+  Assert.equal(nativeStatus(confirming).state, "item_context", "setup opens the submenu")
+  confirming:updateFixed({ { type = "confirm" } })
+  pressThrough(confirming)
+  Assert.equal(nativeStatus(confirming).state, "confirm", "setup opens the yes/no prompt")
+  confirming:updateFixed({ { type = "dismiss" } })
+  Assert.deepEqual(confirming:takeResult(), { kind = "closed" }, "prompt closes terminally, not as decline")
+  Assert.isFalse(nativeStatus(confirming).open, "prompt leaves nothing open")
+  Assert.isNil(confirming:takeIntent(), "prompt publishes nothing on dismiss")
+  Assert.deepEqual(sounds, {}, "prompt dismiss stays silent")
+
+  local messaged = nativeController({
+    context = "item_target",
+    item = { key = "POTION", bagRevision = 7 },
+    specs = { [1] = { isEgg = true } },
+  })
+  messaged:updateFixed({ { type = "confirm" } })
+  Assert.equal(nativeStatus(messaged).state, "message", "setup shows the explanation")
+  messaged:updateFixed({ { type = "dismiss" } })
+  Assert.deepEqual(messaged:takeResult(), { kind = "closed" }, "message closes terminally, not as acknowledgement")
+  Assert.isFalse(nativeStatus(messaged).open, "message leaves nothing open")
+  Assert.isNil(messaged:takeIntent(), "message emits nothing on dismiss")
+  messaged:updateFixed({ { type = "confirm" } })
+  Assert.isNil(messaged:takeIntent(), "the preempted message never continues")
+  Assert.isNil(messaged:takeResult(), "the close reports exactly once")
+
+  local heldSounds = {}
+  local held = nativeController({
+    context = "give_resume",
+    initialFocus = 0,
+    item = { key = "SITRUS_BERRY", bagRevision = 7 },
+    effect = function(sequence)
+      heldSounds[#heldSounds + 1] = sequence
+    end,
+  })
+  Assert.equal(nativeStatus(held).state, "give_resume", "setup holds the continuation")
+  held:updateFixed({ { type = "dismiss" } })
+  Assert.deepEqual(held:takeResult(), { kind = "closed" }, "continuation closes terminally")
+  Assert.isFalse(nativeStatus(held).open, "continuation leaves nothing open")
+  Assert.isNil(held:takeIntent(), "continuation emits nothing on dismiss")
+  Assert.deepEqual(heldSounds, {}, "continuation dismiss stays silent")
 end
 
 return { tests = T }
