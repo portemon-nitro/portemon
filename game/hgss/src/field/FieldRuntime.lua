@@ -54,8 +54,6 @@ local MapAssetCache = require("libs.assets.src.MapAssetCache")
 local MapSceneLoader = require("libs.hgss.src.presentation.MapSceneLoader")
 local AssetPreparationQueue = require("libs.hgss.src.presentation.AssetPreparationQueue")
 local NeighborRing = require("libs.hgss.src.presentation.NeighborRing")
-local MapProps = require("libs.hgss.src.world.MapProps")
-local MetatileBehavior = require("libs.hgss.src.world.MetatileBehavior")
 local FieldWeatherCache = require("libs.assets.src.field.FieldWeatherCache")
 local FieldWeatherResolver = require("libs.hgss.src.world.FieldWeatherResolver")
 local DisplayContext = require("libs.ui.src.DisplayContext")
@@ -483,39 +481,6 @@ local function loadGameLocation(game, mapLoader, composeMap)
     }
 end
 
--- Build the non-GPU door facade used by simulation and acceptance runtimes.
--- It reads the generated scene/model contracts only to recover the source
--- door's semantic sound selector; no presentation instance is acquired.
-local function headlessMapProps(runtimeMap, cacheFs)
-  local scene = runtimeMap.scene
-  local placements = {}
-  for _, placement in ipairs(scene.buildingInstances) do
-    local descriptor = assert(cacheFs:loadLua(MapAssetCache.modelPath(placement.modelKey)))
-    placements[#placements + 1] = {
-      placementIndex = placement.placementIndex,
-      modelKey = placement.modelKey,
-      transform = placement.transform,
-      doorSoundType = descriptor.doorSoundType,
-    }
-  end
-  local doorTiles = {}
-  local origin = runtimeMap.coordinateOrigin
-  for _, warp in ipairs(runtimeMap.fieldData.events.warps) do
-    local localX, localZ = warp.x - origin.x, warp.z - origin.z
-    if
-      runtimeMap.collision:containsLocal(localX, localZ)
-      and MetatileBehavior.isDoor(runtimeMap.collision:getLocal(localX, localZ).behavior)
-    then
-      doorTiles[#doorTiles + 1] = { x = localX, z = localZ }
-    end
-  end
-  return MapProps.new({
-    placements = placements,
-    instances = {},
-    doorTiles = doorTiles,
-  })
-end
-
 -- Acquires the runtime map loader and its preparation worker. A prepared
 -- New Game entry moves its already-staged loader and queue in before the
 -- initial map acquisition, so the first load hits the resident bedroom
@@ -801,40 +766,19 @@ function FieldRuntime:_loadInitialWorld(boot)
   -- `direct` records carry global destination coordinates and resolve
   -- through their own branch. Fallible destination preparation runs before
   -- the commit, so a failed warp never touches current-map ownership.
-  -- Door choreography is a presentation capability. A simulation-only
-  -- runtime has no resolver and therefore runs door-kind warps through the
-  -- ordinary fade lifecycle.
+  -- Door identity is semantic: the owning physical cell (outdoor) or the
+  -- map's canonical resolver (indoor) answers with generated sound and
+  -- role state whether or not presentation instances are attached.
+  -- A simulation-only runtime has no resolver and therefore runs
+  -- door-kind warps through the ordinary fade lifecycle.
 end
 
 -- Install the transition boundary while the runtime still owns boot rollback.
 ---@param boot table<string, unknown>
 function FieldRuntime:_composeTransitions(boot)
-  local headlessProps = {}
   local doorAt
   local escalatorAt
   if self.presentation or self.runtimeMap.sceneRuntime or self.runtimeMap.scene then
-    -- Outdoor realized maps carry no central collision by design (tiles
-    -- stream through the shared window): graft the window fields onto a
-    -- disposable view mirroring syncPhysicalFields so the facade and its
-    -- queries share one coordinate space. Window-relative facades are
-    -- never cached: the window recenters under them.
-    local function windowView(runtimeMap)
-      local coverage = assert(self.physicalCoverage, "window grafting requires shared physical coverage")
-      local region = assert(coverage.region, "window grafting requires the coverage region")
-      assert(region.collision ~= nil, "window grafting requires region collision")
-      local origin = assert(coverage.origin, "window grafting requires the coverage origin")
-      local view = {}
-      for key, value in pairs(runtimeMap) do
-        view[key] = value
-      end
-      view.fieldRegion = region
-      view.collision = region.collision
-      view.terrain = region.terrain
-      view.terrainDependencyHash = coverage.terrainDependencyHash
-      view.coordinateOrigin = { x = origin.x, z = origin.z }
-      view.physicalOrigin = origin
-      return view
-    end
     local function resolveDoorAt(runtimeMap, doorFieldX, doorFieldZ)
       -- A scene-less logical map carries no placements or collision:
       -- door identity is unknowable, so the warp resolves no door and
@@ -845,51 +789,55 @@ function FieldRuntime:_composeTransitions(boot)
       if runtimeMap.scene == nil and runtimeMap.sceneRuntime == nil then
         return nil
       end
+      -- Outdoor maps resolve through the committed physical cell that
+      -- owns the trigger coordinate; the cell's semantic resolver
+      -- carries the generated sound and role state with or without
+      -- live presentation instances.
+      if runtimeMap.coverage then
+        return runtimeMap.coverage:doorAt(runtimeMap, doorFieldX, doorFieldZ)
+      end
+      -- A bare outdoor load (the realized source visual a scene-less
+      -- resident is replaced with before choreography) carries its
+      -- scene but no composed coverage. It still resolves through the
+      -- runtime-owned committed coverage, which owns the same canonical
+      -- cells the composed path would have used; no semantic census is
+      -- built here, the owning cell answers. Indoor maps never take
+      -- this branch: without coverage they keep their map/scene owner.
+      local scene = runtimeMap.scene
+      if scene and scene.type == "outdoor" and self.physicalCoverage then
+        return self.physicalCoverage:doorAt(runtimeMap, doorFieldX, doorFieldZ)
+      end
+      if runtimeMap.mapProps then
+        return runtimeMap.mapProps:doorAt(runtimeMap, doorFieldX, doorFieldZ)
+      end
       local sceneRuntime = runtimeMap.sceneRuntime
       if sceneRuntime and sceneRuntime.mapProps then
         return sceneRuntime.mapProps:doorAt(runtimeMap, doorFieldX, doorFieldZ)
       end
-      local target, cacheable = runtimeMap, true
-      if runtimeMap.collision == nil then
-        local view = windowView(runtimeMap)
-        if view == nil then
-          return nil
-        end
-        target, cacheable = view, false
-      end
-      local props = cacheable and headlessProps[target.mapId] or nil
-      if not props then
-        props = headlessMapProps(target, boot.cacheFs)
-        if cacheable then
-          headlessProps[target.mapId] = props
-        end
-      end
-      return props:doorAt(target, doorFieldX, doorFieldZ)
+      return nil
     end
     local function resolveEscalatorAt(runtimeMap, escalatorFieldX, escalatorFieldZ)
       if runtimeMap.scene == nil and runtimeMap.sceneRuntime == nil then
         return nil
       end
+      if runtimeMap.coverage then
+        return runtimeMap.coverage:propAt(runtimeMap, escalatorFieldX, escalatorFieldZ)
+      end
+      -- Same bare-outdoor-load ownership as door lookup: the
+      -- runtime-owned committed coverage answers through the owning
+      -- cell's semantic resolver.
+      local scene = runtimeMap.scene
+      if scene and scene.type == "outdoor" and self.physicalCoverage then
+        return self.physicalCoverage:propAt(runtimeMap, escalatorFieldX, escalatorFieldZ)
+      end
+      if runtimeMap.mapProps then
+        return runtimeMap.mapProps:propAt(runtimeMap, escalatorFieldX, escalatorFieldZ)
+      end
       local sceneRuntime = runtimeMap.sceneRuntime
       if sceneRuntime and sceneRuntime.mapProps then
         return sceneRuntime.mapProps:propAt(runtimeMap, escalatorFieldX, escalatorFieldZ)
       end
-      local target, cacheable = runtimeMap, true
-      if runtimeMap.collision == nil then
-        local view = windowView(runtimeMap)
-        if view == nil then
-          return nil
-        end
-        target, cacheable = view, false
-      end
-      local props = cacheable and headlessProps[target.mapId] or nil
-      if not props then
-        props = headlessMapProps(target, boot.cacheFs)
-        if cacheable then
-          headlessProps[target.mapId] = props
-        end
-      end
-      return props:propAt(target, escalatorFieldX, escalatorFieldZ)
+      return nil
     end
     doorAt = resolveDoorAt
     escalatorAt = resolveEscalatorAt

@@ -339,20 +339,17 @@ end
 -- live ModelInstances into the SAME resolver instead of building a second
 -- one (MapSceneLoader:attachInstances).
 ---@param cacheFs CacheFs
----@param scene table<string, unknown>
+---@param buildingInstances table<string, unknown>[]
 ---@param fieldData table<string, unknown>
----@param centralCollision table<string, unknown>
+---@param collision table<string, unknown>
+---@param originX integer
+---@param originZ integer
 ---@return MapProps
-local function buildMapProps(cacheFs, scene, fieldData, centralCollision)
-  local doorTiles = warpBearingDoorTiles(
-    DoorTiles.fromGrid(centralCollision),
-    fieldData.events.warps,
-    scene.matrix.worldOriginX,
-    scene.matrix.worldOriginZ
-  )
+local function buildMapProps(cacheFs, buildingInstances, fieldData, collision, originX, originZ)
+  local doorTiles = warpBearingDoorTiles(DoorTiles.fromGrid(collision), fieldData.events.warps, originX, originZ)
   local doorMetaByModelKey = {}
   local placements = {}
-  for _, inst in ipairs(scene.buildingInstances) do
+  for _, inst in ipairs(buildingInstances) do
     local meta = doorMetaByModelKey[inst.modelKey]
     if meta == nil then
       local desc = assert(cacheFs:loadLua(MapAssetCache.modelPath(inst.modelKey)), "missing model " .. inst.modelKey)
@@ -579,7 +576,14 @@ local function prepareLoad(loader, record)
       worldOriginX = scene.matrix.worldOriginX,
       worldOriginZ = scene.matrix.worldOriginZ,
     })
-    mapProps = buildMapProps(loader.cacheFs, scene, fieldData, centralCollision)
+    mapProps = buildMapProps(
+      loader.cacheFs,
+      scene.buildingInstances,
+      fieldData,
+      centralCollision,
+      scene.matrix.worldOriginX,
+      scene.matrix.worldOriginZ
+    )
   end
   return {
     record = record,
@@ -1167,15 +1171,41 @@ function FieldMapLoader:createPhysicalCoverage(runtimeMap, position)
     merged.assetPreparation = self.assetPreparation
     sceneOptions = merged
   end
+  -- The semantic resolver for one newly normalized physical cell. A header
+  -- with no logical world record is filler and owns no resolver; a real
+  -- cell reuses the single generated semantic assembly with its own
+  -- placements, collision, and global origin, so door keys stay cell-local
+  -- while warp records stay global. Failures propagate into the staging
+  -- transaction; only the filler absence returns nil.
+  local mapLoader = self
+  local function mapPropsFactory(runtime, descriptor)
+    local cell = runtime.descriptor or descriptor
+    local cellRecord = cell and findRecord(mapLoader.world, cell.mapHeaderId)
+    if not cellRecord then
+      return nil
+    end
+    local fieldData = loadSemanticFieldData(mapLoader.cacheFs, cellRecord)
+    local origin = assert(runtime.origin, "physical cell origin is missing")
+    return buildMapProps(mapLoader.cacheFs, cell.buildingInstances, fieldData, runtime.collision, origin.x, origin.z)
+  end
+  local function cellOptions(runtime)
+    local options = {}
+    if sceneOptions then
+      for key, value in pairs(sceneOptions) do
+        options[key] = value
+      end
+    end
+    options.mapProps = runtime.mapProps
+    return options
+  end
   if self.sceneLoader and self.sceneLoader.beginCell then
-    local mapLoader = self
-    local function beginCell(_, cell)
-      return mapLoader.sceneLoader.beginCell(mapLoader.cacheFs, cell, sceneOptions)
+    local function beginCell(runtime, cell)
+      return mapLoader.sceneLoader.beginCell(mapLoader.cacheFs, cell, cellOptions(runtime))
     end
     presentationTaskFactory = beginCell
   elseif self.sceneLoader and self.sceneLoader.loadCell then
-    local function loadCell(_, cell)
-      return self.sceneLoader.loadCell(self.cacheFs, cell, sceneOptions)
+    local function loadCell(runtime, cell)
+      return mapLoader.sceneLoader.loadCell(mapLoader.cacheFs, cell, cellOptions(runtime))
     end
     presentationLoader = loadCell
   end
@@ -1185,6 +1215,7 @@ function FieldMapLoader:createPhysicalCoverage(runtimeMap, position)
     matrixMemberId = matrixMemberId,
     anchorX = math.floor(position.fieldX / 32),
     anchorZ = math.floor(position.fieldZ / 32),
+    mapPropsFactory = mapPropsFactory,
     presentationLoader = presentationLoader,
     presentationTaskFactory = presentationTaskFactory,
     derivedAssets = self.derivedAssets,

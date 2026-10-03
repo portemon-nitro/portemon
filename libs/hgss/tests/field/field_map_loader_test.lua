@@ -1906,4 +1906,135 @@ function T.begin_load_on_a_resident_entry_returns_it_ready()
   loader:release()
 end
 
+-- An outdoor physical cell owns the same generated semantic door state a
+-- headless composition would build: the cell collision supplies the door
+-- tiles, the cell building placements supply the pivots, and the model
+-- descriptor supplies the sound identity and role durations. Presentation
+-- attaches to that same resolver instead of building a second census, and
+-- a filler cell (a header with no logical map) stays a valid resident cell
+-- with no semantic owner.
+function T.physical_cell_doors_share_one_semantic_owner_between_timing_and_presentation()
+  local cache, world, _, _, files = fixture(1)
+  world.maps[1].matrix = { memberId = 0 }
+  local scene = files["data/generated/maps/0000/scene.lua"]
+  scene.type = "outdoor"
+  local doorLocal = { x = 5, z = 7 }
+  local doorGlobal = { x = 69, z = 39 }
+  files["data/generated/field/maps/0000/field.lua"].events.warps = {
+    { index = 0, x = doorGlobal.x, z = doorGlobal.z, destinationMapId = 0, destinationWarpId = 0 },
+  }
+  local pivotX, pivotZ = FieldGrid.tileCenterToWorld(doorLocal.x, doorLocal.z)
+  local function physicalCell(cellIndex, cellX, cellZ, mapHeaderId, placements)
+    return {
+      schema = FieldCellCache.CELL_SCHEMA,
+      matrixMemberId = 0,
+      index = cellIndex,
+      x = cellX,
+      z = cellZ,
+      mapHeaderId = mapHeaderId,
+      altitude = 0,
+      origin = { x = cellX * 32, y = 0, z = cellZ * 32 },
+      landDataMemberId = 0,
+      areaDataMemberId = 0,
+      file = FieldCellCache.cellPath(0, cellIndex),
+      collision = { file = FieldCellCache.collisionPath(0, cellIndex) },
+      terrain = { file = FieldCellCache.terrainPath(0, cellIndex), schema = "g4-terrain-surfaces-v1" },
+      batches = {},
+      materials = {},
+      buildingInstances = placements,
+      terrainAnimations = { textureSrt = false },
+    }
+  end
+  local realCell = physicalCell(0, 2, 1, 0, {
+    {
+      placementIndex = 0,
+      modelKey = "fixture:outdoor-door",
+      transform = { 1, 0, 0, 0, 0, 1, 0, 0, 0, 0, 1, 0, pivotX, 0, pivotZ, 1 },
+    },
+  })
+  local fillerCell = physicalCell(1, 3, 1, 7, {})
+  files[FieldCellCache.indexPath()] = {
+    schema = FieldCellCache.INDEX_SCHEMA,
+    matrices = { { matrixMemberId = 0, width = 4, height = 2, cells = { realCell, fillerCell } } },
+  }
+  files[realCell.file] = realCell
+  files[realCell.collision.file] = doorCollisionAsset(32, 32, doorLocal)
+  files[realCell.terrain.file] = {
+    schema = "g4-terrain-surfaces-v1",
+    source = { bdhcSha1 = "door-cell" },
+    plates = {},
+  }
+  files[fillerCell.file] = fillerCell
+  files[fillerCell.collision.file] = CollisionFixture.asset(32, 32)
+  files[fillerCell.terrain.file] = {
+    schema = "g4-terrain-surfaces-v1",
+    source = { bdhcSha1 = "filler-cell" },
+    plates = {},
+  }
+  files[MapAssetCache.modelPath("fixture:outdoor-door")] = {
+    doorSoundType = 1,
+    animations = {
+      { semanticNames = { "door.open" }, frameCount = 4 },
+      { semanticNames = { "door.close" }, frameCount = 4 },
+    },
+  }
+  cache.exists = function(_, path)
+    return path == FieldCellCache.indexPath()
+  end
+  local presented = {}
+  local sceneLoader = {
+    load = function()
+      error("representative scene geometry must not be acquired", 0)
+    end,
+    loadEnvironment = function(_, environmentScene)
+      return { scene = environmentScene, release = function() end }
+    end,
+    beginCell = function(_, cell, opts)
+      presented[#presented + 1] = { x = cell.x, z = cell.z, mapProps = opts and opts.mapProps }
+      local task = {}
+      function task:advance(_)
+        return 0
+      end
+      function task:isReady()
+        return true
+      end
+      function task:takeResult()
+        return { cellKey = cell.x .. ":" .. cell.z, release = function() end }
+      end
+      function task:finish()
+        return task:takeResult()
+      end
+      function task:release() end
+      return task
+    end,
+  }
+  local loader = FieldMapLoader.new(cache, world, { sceneLoader = sceneLoader })
+  local map = loader:load(0)
+  local coverage = loader:createPhysicalCoverage(map, { fieldX = doorGlobal.x, fieldZ = doorGlobal.z })
+
+  local realRuntime = assert(coverage.cells["2:1"], "the door cell is committed")
+  Assert.notNil(realRuntime.mapProps, "a real logical cell owns a semantic door resolver")
+  local door =
+    assert(coverage:doorAt(map, doorGlobal.x, doorGlobal.z), "the cell door resolves at its global coordinate")
+  Assert.equal(door:open(), "SEQ_SE_DP_DOOR_OPEN", "the generated sound identity needs no live instance")
+  Assert.isFalse(door:isFinished(), "the semantic open role starts unfinished")
+  for _ = 1, 4 do
+    coverage:updateAnimated()
+  end
+  Assert.isTrue(door:isFinished(), "four fixed ticks complete the four-frame generated open role")
+  local handoff
+  for _, entry in ipairs(presented) do
+    if entry.x == 2 and entry.z == 1 then
+      handoff = entry
+    end
+  end
+  Assert.notNil(handoff, "the door cell built presentation")
+  Assert.isTrue(handoff.mapProps == realRuntime.mapProps, "presentation attaches to the same semantic owner")
+
+  local fillerRuntime = assert(coverage.cells["3:1"], "the filler cell stays resident")
+  Assert.isNil(fillerRuntime.mapProps, "a header with no logical map owns no semantic resolver")
+  coverage:release()
+  loader:release()
+end
+
 return { tests = T }
