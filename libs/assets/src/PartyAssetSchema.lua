@@ -17,7 +17,7 @@ local SchemaCheck = require("libs.assets.src.SchemaCheck")
 ---@class PartyAssetSchema
 local PartyAssetSchema = {}
 
-PartyAssetSchema.SCHEMA = "g4-party-presentation-v5"
+PartyAssetSchema.SCHEMA = "g4-party-presentation-v6"
 PartyAssetSchema.PANE_WIDTH = 256
 PartyAssetSchema.PANE_HEIGHT = 192
 PartyAssetSchema.SLOT_COUNT = 6
@@ -771,6 +771,9 @@ function PartyAssetSchema.assertManifest(manifest)
   end
   if text.templates.takeNoItem == nil then
     fail("manifest.text.templates.takeNoItem is required", {})
+  end
+  if text.templates.bagFull == nil then
+    fail("manifest.text.templates.bagFull is required", {})
   end
   if type(root.numberGlyphs) ~= "table" then
     fail("manifest.numberGlyphs must be a record", {})
