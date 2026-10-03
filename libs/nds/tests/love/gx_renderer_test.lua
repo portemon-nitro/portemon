@@ -38,10 +38,6 @@ local T = {}
 ---@field release fun(self: GxRendererTest.Canvas)
 ---@class GxRendererTest.CanvasOptions
 ---@field format string?
----@class GxRendererTest.TargetDescriptor : GxRenderer.TargetDescriptor
----@field [1] GxRendererTest.Canvas
----@field [2] GxRendererTest.Canvas
----@field depthstencil GxRendererTest.Canvas
 ---@class GxRendererTest.GraphicsCalls
 ---@field canvas table[]
 ---@field blend table[]
@@ -319,13 +315,17 @@ local function fakeGraphics(opts)
         depthWrite = state.depthWrite,
         blendMode = state.blendMode,
         blendAlpha = state.blendAlpha,
+        scissor = state.scissor and { table.unpack(state.scissor) } or nil,
       }
       if opts.failOnDrawCall == drawCalls then
         error("injected draw failure")
       end
     end,
     clear = function(...)
-      calls.clear[#calls.clear + 1] = { ... }
+      local clearCall = { ... }
+      clearCall.canvas = state.canvas
+      clearCall.scissor = state.scissor and { table.unpack(state.scissor) } or nil
+      calls.clear[#calls.clear + 1] = clearCall
     end,
     getScissor = function()
       if state.scissor == nil then
@@ -454,12 +454,6 @@ local function assertResourcesReleased(lg)
   for _, canvas in ipairs(lg.canvases) do
     Assert.equal(canvas.releaseCount, 1, "renderer released every created canvas exactly once")
   end
-end
-
----@param value table
----@return GxRendererTest.TargetDescriptor
-local function targetDescriptor(value)
-  return value --[[@as GxRendererTest.TargetDescriptor]]
 end
 
 function T.rejects_stale_scene_schema()
@@ -601,7 +595,6 @@ function T.state_target_recreation_failure_releases_partials_and_keeps_previous_
     render(renderer, scene.runtime, scene.camera, nil, nil, FieldViewport.new(640, 480, { mode = "strict" }), 0)
     local oldColorW, oldColorH, oldStateW, oldStateH =
       renderer.colorW, renderer.colorH, renderer.stateW, renderer.stateH
-    local oldColorTargets = renderer._colorTargets
     Assert.equal(#lg.canvases, generationSize, "the first target generation is complete")
     local oldCanvases = {}
     for _, canvas in ipairs(lg.canvases) do
@@ -621,7 +614,6 @@ function T.state_target_recreation_failure_releases_partials_and_keeps_previous_
     Assert.equal(renderer.colorH, oldColorH, "the recorded color size survives")
     Assert.equal(renderer.stateW, oldStateW, "the recorded state width survives")
     Assert.equal(renderer.stateH, oldStateH, "the recorded state height survives")
-    Assert.equal(renderer._colorTargets, oldColorTargets, "the previous color target descriptor survives")
     for canvas in pairs(oldCanvases) do
       Assert.equal(canvas.releaseCount, 0, "the previous generation remains owned")
     end
@@ -673,6 +665,8 @@ local function headlessSpriteItem()
     material = { texMatrix = Matrix4.identity() },
     transform = Matrix4.identity(),
     modelNormal = Matrix3.identity(),
+    billboardCenter = { 0, 0, 0 },
+    billboardScale = { 1, 1, 1 },
     billboardProjection = true,
     alphaClass = "opaque",
     cullMode = "back",
@@ -682,7 +676,40 @@ local function headlessSpriteItem()
     lightMask = 0,
     alphaCutoff = 0.5 / 255,
     center = { 0, 0, 0 },
+    bounds = { width = 0.1, height = 0.2, depth = 0 },
   }
+end
+
+local function boundedSpriteItem(x, y)
+  local item = headlessSpriteItem()
+  item.billboardCenter = { x, y, 0 }
+  item.billboardScale = { 1, 1, 1 }
+  item.billboardBase = Matrix4.translate(x, y, 0)
+  item.transform = item.billboardBase
+  item.bounds = { width = 0.1, height = 0.2, depth = 0 }
+  return item
+end
+
+local function spriteScissor(renderer, lg, mesh)
+  local rasterScissor
+  for _, call in ipairs(lg.calls.draw) do
+    if call.mesh == mesh then
+      rasterScissor = call.scissor
+    end
+  end
+  local clearScissor
+  for _, call in ipairs(lg.calls.clear) do
+    if call.canvas == renderer._spriteTargets then
+      clearScissor = call.scissor
+    end
+  end
+  local compositeScissor
+  for _, call in ipairs(lg.calls.draw) do
+    if call.mesh == renderer._spriteColor then
+      compositeScissor = call.scissor
+    end
+  end
+  return clearScissor, rasterScissor, compositeScissor
 end
 
 function T.presentation_scale_does_not_change_world_edge_radius()
@@ -812,6 +839,8 @@ function T.logical_sprite_draw_uses_replace_with_depth_writes()
     material = { texMatrix = Matrix4.identity() },
     transform = Matrix4.identity(),
     modelNormal = Matrix3.identity(),
+    billboardCenter = { 0, 0, 0 },
+    billboardScale = { 1, 1, 1 },
     billboardProjection = true,
     alphaClass = "opaque",
     cullMode = "back",
@@ -821,6 +850,7 @@ function T.logical_sprite_draw_uses_replace_with_depth_writes()
     lightMask = 0,
     alphaCutoff = 0.5 / 255,
     center = { 0, 0, 0 },
+    bounds = { width = 0.1, height = 0.2, depth = 0 },
   }
   local scene = emptySceneCamera()
   render(
@@ -868,6 +898,201 @@ function T.logical_sprite_draw_uses_replace_with_depth_writes()
   assertRestoredState(lg, canvas, shader)
   renderer:release()
   assertResourcesReleased(lg)
+end
+
+function T.presentation_sprite_work_uses_a_conservative_dirty_union()
+  local lg = fakeGraphics()
+  local renderer = GxRenderer.new({ graphics = lg })
+  local scene = emptySceneCamera()
+  local first = boundedSpriteItem(0, 0)
+  local second = boundedSpriteItem(0.3, 0)
+  local viewport = { worldViewport = { x = 20, y = 30, width = 640, height = 480 } }
+
+  render(renderer, scene.runtime, scene.camera, nil, { first, second }, viewport, 0, nil, 3)
+
+  Assert.equal(renderer._spriteW, 640, "dirty rendering retains physical sprite target width")
+  Assert.equal(renderer._spriteH, 480, "dirty rendering retains physical sprite target height")
+  local clearScissor, firstScissor, compositeScissor = spriteScissor(renderer, lg, first.mesh)
+  local _, secondScissor = spriteScissor(renderer, lg, second.mesh)
+  Assert.notNil(clearScissor, "sprite color clear is clipped to the dirty union")
+  Assert.notNil(firstScissor, "sprite raster is clipped to the dirty union")
+  Assert.deepEqual(secondScissor, firstScissor, "all visible sprites share the conservative union")
+  Assert.isTrue(clearScissor[3] < 640 and clearScissor[4] < 480, "a centered union touches less than the full target")
+  Assert.deepEqual(clearScissor, firstScissor, "clear and raster use the same target-local rectangle")
+  Assert.notNil(compositeScissor, "the final composite is clipped")
+  Assert.equal(compositeScissor[1], clearScissor[1] + 20, "composite translates dirty x to presentation coordinates")
+  Assert.equal(compositeScissor[2], clearScissor[2] + 30, "composite translates dirty y to presentation coordinates")
+  Assert.equal(compositeScissor[3], clearScissor[3])
+  Assert.equal(compositeScissor[4], clearScissor[4])
+  renderer:release()
+end
+
+function T.presentation_sprite_dirty_union_clamps_billboards_at_each_viewport_edge()
+  local lg = fakeGraphics()
+  local renderer = GxRenderer.new({ graphics = lg })
+  local scene = emptySceneCamera()
+  local width, height = 600, 420
+  local viewport = { worldViewport = { x = 20, y = 30, width = width, height = height } }
+  local cases = {
+    { label = "left", x = -1, y = 0, at = 1, dimension = 3, extent = width },
+    { label = "right", x = 1, y = 0, at = 1, dimension = 3, extent = width },
+    { label = "top", x = 0, y = 1, at = 2, dimension = 4, extent = height },
+    { label = "bottom", x = 0, y = -1, at = 2, dimension = 4, extent = height },
+  }
+
+  for _, case in ipairs(cases) do
+    local item = boundedSpriteItem(case.x, case.y)
+    render(renderer, scene.runtime, scene.camera, nil, { item }, viewport, 0, nil, 3)
+
+    local clearScissor, rasterScissor, compositeScissor = spriteScissor(renderer, lg, item.mesh)
+    Assert.notNil(clearScissor, case.label .. " edge billboard clears a clipped dirty region")
+    Assert.deepEqual(rasterScissor, clearScissor, case.label .. " raster uses the clamped dirty region")
+    Assert.notNil(compositeScissor, case.label .. " edge billboard is composited")
+    Assert.isTrue(clearScissor[case.dimension] < case.extent, case.label .. " dirty region remains bounded")
+    if case.label == "left" then
+      Assert.equal(clearScissor[case.at], 0, "left dirty bound clamps to target x zero")
+    elseif case.label == "right" then
+      Assert.equal(
+        clearScissor[case.at] + clearScissor[case.dimension],
+        width,
+        "right dirty bound clamps to target width"
+      )
+    elseif case.label == "top" then
+      Assert.equal(clearScissor[case.at], 0, "top dirty bound clamps to target y zero")
+    else
+      Assert.equal(
+        clearScissor[case.at] + clearScissor[case.dimension],
+        height,
+        "bottom dirty bound clamps to target height"
+      )
+    end
+    Assert.equal(
+      compositeScissor[case.at],
+      clearScissor[case.at] + (case.at == 1 and 20 or 30),
+      case.label .. " composite translates the clamped bound into presentation coordinates"
+    )
+    Assert.equal(compositeScissor[case.dimension], clearScissor[case.dimension])
+  end
+
+  renderer:release()
+end
+
+function T.unsafe_sprite_projection_uses_the_full_target_but_restores_caller_scissor()
+  local lg = fakeGraphics({ scissor = { 5, 7, 100, 80 } })
+  local renderer = GxRenderer.new({ graphics = lg })
+  local scene = emptySceneCamera()
+  local item = boundedSpriteItem(0, 0)
+  scene.camera.billboardProjection = function()
+    local projection = Matrix4.identity()
+    projection[16] = -1
+    return projection
+  end
+
+  render(
+    renderer,
+    scene.runtime,
+    scene.camera,
+    nil,
+    { item },
+    { worldViewport = { x = 20, y = 30, width = 640, height = 480 } },
+    0,
+    nil,
+    3
+  )
+
+  local clearScissor = spriteScissor(renderer, lg, item.mesh)
+  Assert.deepEqual(clearScissor, { 0, 0, 640, 480 }, "a bound behind the projection plane falls back to the whole sprite target")
+  local sx, sy, sw, sh = lg.getScissor()
+  Assert.deepEqual({ sx, sy, sw, sh }, { 5, 7, 100, 80 }, "the caller scissor is restored after success")
+  renderer:release()
+end
+
+function T.nonpositive_sprite_anchor_projection_uses_full_target_fallback()
+  local lg = fakeGraphics()
+  local renderer = GxRenderer.new({ graphics = lg })
+  local scene = emptySceneCamera()
+  local item = boundedSpriteItem(0, 0)
+  item.center = { 0, 3, 0 }
+  item.bounds = { width = 0.1, height = 1, depth = 0 }
+  scene.camera.billboardProjection = function()
+    local projection = Matrix4.identity()
+    projection[6] = 1
+    projection[8] = 1
+    projection[14] = -3
+    projection[16] = -2
+    return projection
+  end
+
+  render(
+    renderer,
+    scene.runtime,
+    scene.camera,
+    nil,
+    { item },
+    { worldViewport = { x = 0, y = 0, width = 640, height = 480 } },
+    0,
+    nil,
+    3
+  )
+
+  local clearScissor = spriteScissor(renderer, lg, item.mesh)
+  Assert.deepEqual(
+    clearScissor,
+    { 0, 0, 640, 480 },
+    "a nonpositive anchor projection falls back even when all model-bound corners are in front"
+  )
+  renderer:release()
+end
+
+function T.nonfinite_sprite_bounds_fail_instead_of_using_full_target_fallback()
+  local lg = fakeGraphics()
+  local renderer = GxRenderer.new({ graphics = lg })
+  local scene = emptySceneCamera()
+  local item = boundedSpriteItem(0, 0)
+  item.bounds.width = math.huge
+
+  local err = Assert.throws(function()
+    render(
+      renderer,
+      scene.runtime,
+      scene.camera,
+      nil,
+      { item },
+      { worldViewport = { x = 0, y = 0, width = 640, height = 480 } },
+      0,
+      nil,
+      3
+    )
+  end)
+
+  Assert.isTrue(tostring(err):find("bounds", 1, true) ~= nil, "non-finite generated bounds are an invariant failure")
+  Assert.isNil(renderer._spriteTargets, "malformed bounds fail before sprite target allocation")
+  renderer:release()
+end
+
+function T.safe_empty_sprite_projection_skips_the_sprite_stage()
+  local lg = fakeGraphics()
+  local renderer = GxRenderer.new({ graphics = lg })
+  local scene = emptySceneCamera()
+  local item = boundedSpriteItem(100, 0)
+
+  render(
+    renderer,
+    scene.runtime,
+    scene.camera,
+    nil,
+    { item },
+    { worldViewport = { x = 0, y = 0, width = 640, height = 480 } },
+    0,
+    nil,
+    3
+  )
+
+  Assert.isNil(renderer._spriteTargets, "a safely empty projection allocates no sprite targets")
+  for _, call in ipairs(lg.calls.draw) do
+    Assert.isTrue(call.mesh ~= item.mesh, "an entirely offscreen sprite is not submitted")
+  end
+  renderer:release()
 end
 
 -- Physical sprite target allocation tracks only the visible viewport: N is a
@@ -1022,7 +1247,7 @@ function T.logical_sprite_composite_restores_exact_caller_state_and_scissor_on_f
   })
   local renderer = GxRenderer.new({ graphics = lg })
   local scene = emptySceneCamera()
-  local item = headlessSpriteItem()
+  local item = boundedSpriteItem(0, 0)
   local viewport = { worldViewport = { x = 0, y = 0, width = 120, height = 90 } }
 
   render(renderer, scene.runtime, scene.camera, nil, { item }, viewport, 0, nil, 3)
@@ -1032,9 +1257,15 @@ function T.logical_sprite_composite_restores_exact_caller_state_and_scissor_on_f
   Assert.equal(sy, 19)
   Assert.equal(sw, 200)
   Assert.equal(sh, 150)
+  local localScissor = spriteScissor(renderer, lg, item.mesh)
+  Assert.notNil(localScissor, "sprite work installs a target-local dirty scissor")
+  Assert.isTrue(
+    localScissor[1] ~= 17 or localScissor[2] ~= 19 or localScissor[3] ~= 200 or localScissor[4] ~= 150,
+    "the target-local dirty scissor is not mistaken for the caller's presentation scissor"
+  )
   Assert.isTrue(#lg.calls.scissor >= 2, "the sprite composite temporarily applies and then restores clipping")
 
-  lg.setFailOnScissor(#lg.calls.scissor + 1)
+  lg.setFailOnScissor(#lg.calls.scissor + 2)
   local failed = Assert.throws(function()
     render(renderer, scene.runtime, scene.camera, nil, { item }, viewport, 0, nil, 3)
   end)
@@ -1344,8 +1575,6 @@ function T.canvas_recreation_failure_releases_partial_new_canvases()
     lg.setFailOnNewCanvas(generationSize + failureOffset)
     local oldColorW, oldColorH, oldStateW, oldStateH =
       renderer.colorW, renderer.colorH, renderer.stateW, renderer.stateH
-    local oldColorTargets = renderer._colorTargets
-
     local err = Assert.throws(function()
       render(renderer, scene.runtime, scene.camera, nil, nil, FieldViewport.new(1280, 720, { mode = "expanded" }), 0)
     end)
@@ -1359,7 +1588,6 @@ function T.canvas_recreation_failure_releases_partial_new_canvases()
     Assert.equal(renderer.colorH, oldColorH, "the recorded color size survives")
     Assert.equal(renderer.stateW, oldStateW, "the recorded state size survives")
     Assert.equal(renderer.stateH, oldStateH, "the recorded state size survives")
-    Assert.equal(renderer._colorTargets, oldColorTargets, "the previous color target descriptor survives")
     for canvas in pairs(oldCanvases) do
       Assert.equal(canvas.releaseCount, 0, "the previous generation is still owned")
     end
@@ -1371,8 +1599,7 @@ function T.canvas_recreation_failure_releases_partial_new_canvases()
   end
 end
 
--- Renderer-owned frame storage is stable while its contents reset. The
--- target descriptors remain stable while dimensions are unchanged. The final
+-- Renderer-owned frame storage is stable while its contents reset. The final
 -- resolve rebinds its state texture every frame, including after compositing.
 function T.draw_reuses_frame_storage_and_configures_edges_at_change_boundaries()
   local lg = fakeGraphics()
@@ -1388,10 +1615,6 @@ function T.draw_reuses_frame_storage_and_configures_edges_at_change_boundaries()
   Assert.equal(shaderSendCount(edgeShader, "u_edgeColors"), 0, "construction sends no scene-derived edge colors")
 
   render(renderer, scene.runtime, scene.camera, nil, nil, viewport, 0)
-  local colorTargets = assert(renderer._colorTargets, "successful canvas creation publishes the MRT descriptor")
-  Assert.equal(colorTargets[1], renderer.sceneColor)
-  Assert.equal(colorTargets.depthstencil, renderer.colorDepth)
-  Assert.equal(colorTargets[2], renderer.renderState)
   Assert.equal(renderer.stats, stats, "draw reuses the public stats table")
   Assert.equal(shaderSendCount(edgeShader, "u_renderState"), 1)
   Assert.equal(shaderSendCount(edgeShader, "u_stateSize"), 1)
@@ -1404,8 +1627,6 @@ function T.draw_reuses_frame_storage_and_configures_edges_at_change_boundaries()
   Assert.equal(shaderSendCount(edgeShader, "u_edgeColors"), 1, "the first draw establishes the scene edge table")
 
   render(renderer, scene.runtime, scene.camera, nil, nil, viewport, 0)
-  Assert.equal(renderer._colorTargets, colorTargets, "unchanged dimensions reuse the color descriptor")
-  Assert.equal(renderer._colorTargets, colorTargets, "unchanged dimensions reuse the MRT descriptor")
   Assert.equal(renderer.stats, stats, "later draws retain stats identity")
   Assert.equal(shaderSendCount(edgeShader, "u_renderState"), 2, "each final resolve binds its current state texture")
   Assert.equal(shaderSendCount(edgeShader, "u_stateSize"), 2, "each final resolve sends its current state size")
@@ -1418,8 +1639,6 @@ function T.draw_reuses_frame_storage_and_configures_edges_at_change_boundaries()
 
   viewport:resize(1280, 800)
   render(renderer, scene.runtime, scene.camera, nil, nil, viewport, 0)
-  Assert.isTrue(renderer._colorTargets ~= colorTargets, "replacement publishes a new color descriptor")
-  Assert.isTrue(renderer._colorTargets ~= colorTargets, "replacement publishes a new MRT descriptor")
   Assert.equal(shaderSendCount(edgeShader, "u_renderState"), 3)
   Assert.equal(shaderSendCount(edgeShader, "u_stateSize"), 3)
   Assert.equal(
@@ -1441,8 +1660,6 @@ function T.draw_reuses_frame_storage_and_configures_edges_at_change_boundaries()
   Assert.equal(shaderSendCount(edgeShader, "u_edgeAlpha"), 0, "no alpha-mix uniform exists on the fidelity path")
 
   renderer:release()
-  Assert.isNil(renderer._colorTargets, "release clears the color descriptor")
-  Assert.isNil(renderer._colorTargets, "release clears the MRT descriptor")
 end
 
 -- The decoded values GxRenderer sends for u_edgeColors are the scene's edge
@@ -1961,48 +2178,26 @@ function T.exact_compositor_sends_invariant_bindings_once_per_blended_frame()
   renderer:release()
 end
 
-function T.target_descriptors_retain_identity_through_steady_draws_and_exact_swaps()
+function T.exact_compositing_preserves_opaque_state()
   local lg = fakeGraphics()
   local renderer = GxRenderer.new({ graphics = lg, translucencyMode = GxRenderer.TRANSLUCENCY_EXACT })
   local scene = emptySceneCamera()
   local viewport = FieldViewport.new(640, 480, { mode = "strict" })
-  local oneBlended = { { passItem("translucent", 0) } }
-  local twoBlended = {
-    { passItem("translucent", 0) },
-    { passItem("translucent", 1) },
-  }
+  render(renderer, scene.runtime, scene.camera, nil, nil, viewport, 0)
+  local opaqueState = renderer.renderState
 
-  render(renderer, scene.runtime, scene.camera, oneBlended, nil, viewport, 0)
-  local colorTargets = assert(renderer._colorTargets)
-  local stateClearTargets = assert(renderer._stateClearTargets)
-  local colorClearTargets = assert(renderer._colorClearTargets)
-  local sourceTargets = assert(renderer._sourceTargets)
-  local sourceMetaTargets = assert(renderer._sourceMetaTargets)
-  render(renderer, scene.runtime, scene.camera, oneBlended, nil, viewport, 0)
-  Assert.equal(renderer._colorTargets, colorTargets)
-  Assert.equal(renderer._stateClearTargets, stateClearTargets)
-  Assert.equal(renderer._colorClearTargets, colorClearTargets)
-  Assert.equal(renderer._sourceTargets, sourceTargets)
-  Assert.equal(renderer._sourceMetaTargets, sourceMetaTargets)
-  local startingSceneColor = renderer.sceneColor
-  local startingRenderState = renderer.renderState
+  render(renderer, scene.runtime, scene.camera, { { passItem("translucent", 0) } }, nil, viewport, 0)
+  render(
+    renderer,
+    scene.runtime,
+    scene.camera,
+    { { passItem("translucent", 0) }, { passItem("translucent", 1) } },
+    nil,
+    viewport,
+    0
+  )
 
-  render(renderer, scene.runtime, scene.camera, twoBlended, nil, viewport, 0)
-  Assert.equal(renderer._colorTargets, colorTargets)
-  Assert.equal(renderer._stateClearTargets, stateClearTargets)
-  Assert.equal(renderer._colorClearTargets, colorClearTargets)
-  Assert.equal(renderer._sourceTargets, sourceTargets)
-  Assert.equal(renderer._sourceMetaTargets, sourceMetaTargets)
-  Assert.equal(renderer._colorTargets[1], renderer.sceneColor)
-  Assert.equal(renderer._colorTargets[2], renderer.renderState)
-  Assert.equal(renderer._colorTargets[3], renderer._translucentState)
-  Assert.equal(targetDescriptor(renderer._colorTargets).depthstencil, renderer.colorDepth)
-  Assert.equal(renderer.sceneColor, startingSceneColor, "an even exact swap preserves the active color canvas")
-  Assert.equal(renderer.renderState, startingRenderState, "exact composites preserve opaque state")
-  Assert.equal(stateClearTargets[1], renderer.renderState)
-  Assert.equal(colorClearTargets[1], renderer.sceneColor)
-  Assert.equal(sourceTargets[1], renderer._sourceColor)
-  Assert.equal(sourceMetaTargets[1], renderer._sourceMeta)
+  Assert.equal(renderer.renderState, opaqueState, "exact composites leave opaque scene state unchanged")
   renderer:release()
 end
 
@@ -2092,10 +2287,7 @@ function T.lighting_delivery_clears_each_shader_on_lit_to_unlit_transition()
   renderer:release()
 end
 
--- One opaque world item is submitted once to the shared MRT target. The
--- target's second color attachment carries render state, and the same depth
--- attachment governs both outputs.
-function T.one_opaque_world_item_submits_once_to_the_shared_color_state_target()
+function T.one_opaque_world_item_records_one_geometry_submission()
   local lg = fakeGraphics()
   local renderer = GxRenderer.new({ graphics = lg })
   local item = passItem("opaque", 0)
@@ -2105,27 +2297,17 @@ function T.one_opaque_world_item_submits_once_to_the_shared_color_state_target()
     worldViewport = { x = 0, y = 0, width = 640, height = 480 },
   }, 0)
 
-  Assert.equal(renderer.stats.drawCalls, 1, "one opaque item produces one geometry submission")
-  Assert.isNil(rawget(renderer.stats, "stateDrawCalls"), "state replay is not a separate draw counter")
-  Assert.equal(renderer._colorTargets[1], renderer.sceneColor, "MRT target 0 is scene color")
-  Assert.equal(renderer._colorTargets[2], renderer.renderState, "MRT target 1 is render state")
-  Assert.equal(
-    targetDescriptor(renderer._colorTargets).depthstencil,
-    renderer.colorDepth,
-    "MRT uses one shared depth attachment"
-  )
+  Assert.equal(renderer.stats.geometrySubmissions, 1, "one opaque item produces one geometry submission")
   renderer:release()
 end
 
-function T.mrt_target_ownership_has_no_state_shader_or_state_depth_and_rolls_back_resize_failure()
+function T.target_generation_rolls_back_resize_failure()
   local lg = fakeGraphics()
   local renderer = GxRenderer.new({ graphics = lg })
-  Assert.isNil(rawget(renderer, "stateShader"), "the dedicated state shader is not owned")
 
   local scene = emptySceneCamera()
   local viewport = { worldViewport = { x = 0, y = 0, width = 640, height = 480 } }
   render(renderer, scene.runtime, scene.camera, nil, nil, viewport, 0)
-  local previousTargets = renderer._colorTargets
   local previousColor = renderer.sceneColor
   local previousCanvasCount = #lg.canvases
 
@@ -2136,7 +2318,6 @@ function T.mrt_target_ownership_has_no_state_shader_or_state_depth_and_rolls_bac
     render(renderer, scene.runtime, scene.camera, nil, nil, viewport, 0)
   end)
   Assert.isTrue(tostring(err):find("injected canvas failure", 1, true) ~= nil, "resize failure reaches the caller")
-  Assert.equal(renderer._colorTargets, previousTargets, "the previous MRT target set remains published")
   Assert.equal(renderer.sceneColor, previousColor, "the previous scene color remains usable")
   for index = previousCanvasCount + 1, #lg.canvases do
     Assert.equal(lg.canvases[index].releaseCount, 1, "every staged canvas is released")
@@ -2270,11 +2451,6 @@ function T.actor_draw_item_reaches_the_shared_world_pipeline_with_its_rom_polygo
   Assert.notNil(
     sent.u_billboardCenter,
     "the actor's billboard projection selection reaches the shared billboard branch"
-  )
-  Assert.equal(
-    #lg.shaders,
-    3,
-    "the actor drew through the shared color/state shaders, no separate sprite shader was created"
   )
   renderer:release()
 end
@@ -2715,79 +2891,6 @@ function T.default_translucency_uses_direct_alpha_and_no_exact_resources()
   Assert.equal(callCount(lg.calls.blend, { mode = "alpha", alpha = "alphamultiply" }), 1)
   Assert.isNil(renderer._sourceColor, "default mode does not allocate source color")
   Assert.isNil(renderer._sourceMeta, "default mode does not allocate source metadata")
-  renderer:release()
-end
-
--- The approximate blended pass must bind the renderer-owned single-color and
--- depth descriptor, not an equivalent frame-local setup table.
-function T.approximate_blended_pass_binds_the_renderer_owned_descriptor()
-  local lg = fakeGraphics()
-  local renderer = GxRenderer.new({ graphics = lg, worldRasterScale = 2 })
-  local scene = emptySceneCamera()
-
-  drawTranslucentFrame(renderer, scene, translucentItems(1))
-
-  local approximateTargets
-  for index = #lg.calls.canvas, 1, -1 do
-    if lg.calls.canvas[index] == renderer._colorClearTargets then
-      approximateTargets = lg.calls.canvas[index]
-      break
-    end
-  end
-  Assert.equal(approximateTargets, renderer._colorClearTargets, "approximate pass uses the persistent descriptor")
-  Assert.equal(approximateTargets[1], renderer.sceneColor, "descriptor color follows the active scene color")
-  Assert.equal(
-    targetDescriptor(approximateTargets).depthstencil,
-    renderer.colorDepth,
-    "descriptor depth follows the color depth"
-  )
-  renderer:release()
-end
-
--- The descriptor lifetime follows target generations: repeated same-size
--- blended frames reuse it, while a raster-size change publishes one replacement.
-function T.approximate_blended_frames_reuse_descriptor_until_resize()
-  local lg = fakeGraphics()
-  local renderer = GxRenderer.new({ graphics = lg, worldRasterScale = 2 })
-  local scene = emptySceneCamera()
-  local viewport = FieldViewport.new(1920, 1080, { mode = "expanded" })
-  local function drawAndRecord()
-    render(renderer, scene.runtime, scene.camera, { translucentItems(1) }, nil, viewport, 0)
-    for index = #lg.calls.canvas, 1, -1 do
-      if lg.calls.canvas[index] == renderer._colorClearTargets then
-        return lg.calls.canvas[index]
-      end
-    end
-    return nil
-  end
-
-  local firstDescriptor = drawAndRecord()
-  Assert.equal(firstDescriptor, renderer._colorClearTargets, "first blended frame uses its generation descriptor")
-  local secondDescriptor = drawAndRecord()
-  local thirdDescriptor = drawAndRecord()
-  Assert.equal(secondDescriptor, firstDescriptor, "same-size second frame reuses the descriptor")
-  Assert.equal(thirdDescriptor, firstDescriptor, "same-size third frame reuses the descriptor")
-
-  local resizedViewport = FieldViewport.new(1280, 800, { mode = "expanded" })
-  local function drawResizedAndRecord()
-    render(renderer, scene.runtime, scene.camera, { translucentItems(1) }, nil, resizedViewport, 0)
-    for index = #lg.calls.canvas, 1, -1 do
-      if lg.calls.canvas[index] == renderer._colorClearTargets then
-        return lg.calls.canvas[index]
-      end
-    end
-    return nil
-  end
-  local resizedDescriptor = drawResizedAndRecord()
-  Assert.isTrue(resizedDescriptor ~= firstDescriptor, "resize publishes a new generation descriptor")
-  Assert.equal(resizedDescriptor, renderer._colorClearTargets, "resized frame uses the new persistent descriptor")
-  Assert.equal(resizedDescriptor[1], renderer.sceneColor, "resized descriptor color follows the new scene color")
-  Assert.equal(
-    targetDescriptor(resizedDescriptor).depthstencil,
-    renderer.colorDepth,
-    "resized descriptor depth follows the new color depth"
-  )
-  Assert.equal(drawResizedAndRecord(), resizedDescriptor, "same-size frame after resize reuses the replacement")
   renderer:release()
 end
 

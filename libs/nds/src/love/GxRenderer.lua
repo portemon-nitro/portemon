@@ -232,6 +232,124 @@ local function validatePresentationPixelScale(scale)
   return scale
 end
 
+local function isFinite(value)
+  return value == value and value ~= math.huge and value ~= -math.huge
+end
+
+-- Mirror map.glsl's billboard projection while preserving clip W so perspective
+-- bounds never become optimistic around the projection plane.
+local function projectViewPoint(projection, viewX, viewY, viewZ, x, y, z)
+  local positionX, positionY, positionZ = viewX + x, viewY + y, viewZ + z
+  local clipX = projection[1] * positionX + projection[5] * positionY + projection[9] * positionZ + projection[13]
+  local clipY = -(projection[2] * positionX + projection[6] * positionY + projection[10] * positionZ + projection[14])
+  local clipW = projection[4] * positionX + projection[8] * positionY + projection[12] * positionZ + projection[16]
+  return clipX, clipY, clipW
+end
+
+-- Return nil for unsafe projection, otherwise the target-local projected bounds.
+local function projectSpriteBounds(item, viewMatrix, projection, stateW, stateH, spriteW, spriteH, scale, offset)
+  local billboardCenter = item.billboardCenter
+  if billboardCenter == nil then
+    -- Non-billboard items can still use this presentation layer; their model
+    -- transform is outside this actor-bounds projection, so keep the full target.
+    return nil
+  end
+  local billboardScale = assert(item.billboardScale, "presentation sprite requires billboardScale")
+  local bounds = assert(item.bounds, "presentation sprite requires validated bounds")
+  assert(
+    type(bounds.width) == "number"
+      and isFinite(bounds.width)
+      and bounds.width >= 0
+      and type(bounds.height) == "number"
+      and isFinite(bounds.height)
+      and bounds.height >= 0
+      and type(bounds.depth) == "number"
+      and isFinite(bounds.depth)
+      and bounds.depth >= 0,
+    "presentation sprite bounds must be finite non-negative dimensions"
+  )
+  local center = assert(item.center, "presentation sprite requires model-space center")
+  local viewX = viewMatrix[1] * billboardCenter[1]
+    + viewMatrix[5] * billboardCenter[2]
+    + viewMatrix[9] * billboardCenter[3]
+    + viewMatrix[13]
+  local viewY = viewMatrix[2] * billboardCenter[1]
+    + viewMatrix[6] * billboardCenter[2]
+    + viewMatrix[10] * billboardCenter[3]
+    + viewMatrix[14]
+  local viewZ = viewMatrix[3] * billboardCenter[1]
+    + viewMatrix[7] * billboardCenter[2]
+    + viewMatrix[11] * billboardCenter[3]
+    + viewMatrix[15]
+  local centerClipX, centerClipY, centerClipW = projectViewPoint(projection, viewX, viewY, viewZ, 0, 0, 0)
+  if not isFinite(centerClipX) or not isFinite(centerClipY) or not isFinite(centerClipW) or centerClipW <= 0 then
+    return nil
+  end
+
+  local snapX, snapY = 0, 0
+  if centerClipW > 0 then
+    local centerNdcX, centerNdcY = centerClipX / centerClipW, centerClipY / centerClipW
+    local rasterX = (centerNdcX * 0.5 + 0.5) * stateW
+    local rasterY = (centerNdcY * 0.5 + 0.5) * stateH
+    if not isFinite(rasterX) or not isFinite(rasterY) then
+      return nil
+    end
+    snapX = ((math.floor(rasterX) + 0.5) / stateW) * 2 - 1 - centerNdcX
+    snapY = ((math.floor(rasterY) + 0.5) / stateH) * 2 - 1 - centerNdcY
+  end
+
+  local minX, minY, maxX, maxY = math.huge, math.huge, -math.huge, -math.huge
+  local halfWidth, halfHeight, halfDepth = bounds.width * 0.5, bounds.height * 0.5, bounds.depth * 0.5
+  for corner = 0, 7 do
+    local localX = center[1] + (corner % 2 == 0 and -halfWidth or halfWidth)
+    local localY = center[2] + (math.floor(corner / 2) % 2 == 0 and -halfHeight or halfHeight)
+    local localZ = center[3] + (corner < 4 and -halfDepth or halfDepth)
+    local clipX, clipY, clipW = projectViewPoint(
+      projection,
+      viewX,
+      viewY,
+      viewZ,
+      localX * billboardScale[1],
+      localY * billboardScale[2],
+      localZ * billboardScale[3]
+    )
+    if not isFinite(clipX) or not isFinite(clipY) or not isFinite(clipW) or clipW <= 0 then
+      return nil
+    end
+    local ndcX = (clipX / clipW + snapX) * scale[1] + offset[1]
+    local ndcY = (clipY / clipW + snapY) * scale[2] + offset[2]
+    local x = (ndcX * 0.5 + 0.5) * spriteW
+    local y = (ndcY * 0.5 + 0.5) * spriteH
+    if not isFinite(x) or not isFinite(y) then
+      return nil
+    end
+    minX, maxX = math.min(minX, x), math.max(maxX, x)
+    minY, maxY = math.min(minY, y), math.max(maxY, y)
+  end
+  return minX, minY, maxX, maxY
+end
+
+local function spriteDirtyRectangle(items, viewMatrix, projection, stateW, stateH, spriteW, spriteH, scale, offset)
+  local minX, minY, maxX, maxY = math.huge, math.huge, -math.huge, -math.huge
+  for _, item in ipairs(items) do
+    local itemMinX, itemMinY, itemMaxX, itemMaxY =
+      projectSpriteBounds(item, viewMatrix, projection, stateW, stateH, spriteW, spriteH, scale, offset)
+    if itemMinX == nil then
+      return 0, 0, spriteW, spriteH
+    end
+    minX, minY = math.min(minX, itemMinX), math.min(minY, itemMinY)
+    maxX, maxY = math.max(maxX, itemMaxX), math.max(maxY, itemMaxY)
+  end
+  local x0 = math.max(0, math.floor(minX) - 1)
+  local y0 = math.max(0, math.floor(minY) - 1)
+  local x1 = math.min(spriteW, math.ceil(maxX) + 1)
+  local y1 = math.min(spriteH, math.ceil(maxY) + 1)
+  if x1 <= x0 or y1 <= y0 then
+    return nil
+  end
+  return x0, y0, x1, y1
+end
+
 ---@param displayWidth number
 ---@param displayHeight number
 ---@param scale number?
@@ -1190,21 +1308,12 @@ function GxRenderer:draw(frame)
     -- so host depth is never borrowed for sprite ordering or cleared as part
     -- of this path.
     if hasPresentationSprites then
-      self._activeShader = self:_ensureSpriteShader()
-      local spriteShader = assert(self._activeShader)
-      spriteShader:send("u_presentationSprite", true)
       -- The sprite raster target is physical/presentation resolution: the
       -- camera projection determines every billboard vertex, so this
       -- resolution must not coarsen it. The world state target below supplies
       -- the shared anchor lattice used to register the actor to world pixels.
       local visibleW, visibleH = rectangle.width, rectangle.height
       local spriteW, spriteH = math.ceil(visibleW), math.ceil(visibleH)
-      self:_ensureSpriteTargets(spriteW, spriteH)
-      local spriteTargets = assert(self._spriteTargets)
-      lg.setCanvas(spriteTargets)
-      lg.clear(0, 0, 0, 0, false, true)
-      lg.setDepthMode("less", true)
-      lg.setBlendMode("replace", "premultiplied")
       -- Embed the exact visible physical viewport into the ceil-allocated
       -- sprite target: any ceil fringe lands only on the right/bottom.
       local scale = self._presentationScale
@@ -1213,55 +1322,79 @@ function GxRenderer:draw(frame)
       scale[2] = visibleH / spriteH
       offset[1] = scale[1] - 1
       offset[2] = scale[2] - 1
-      spriteShader:send("u_presentationScale", scale)
-      spriteShader:send("u_presentationOffset", offset)
-      spriteShader:send("u_view", "column", viewMatrix)
-      spriteShader:send("u_renderState", opaqueState)
-      spriteShader:send("u_stateSize", { self.stateW, self.stateH })
-      self:_sendSpriteFog(frame)
-      self:_sendLighting(frame, spriteShader)
-      lg.setShader(spriteShader)
-      lg.setBlendMode("replace", "premultiplied")
-
-      local function drawSprite(item, fragmentPass)
-        spriteShader:send("u_spriteFogEnabled", item.fogEnabled == true)
-        self:_drawItem(item, frame.billboardProjection, fragmentPass)
-      end
-      for _, item in ipairs(spriteItems) do
-        local fragmentPass
-        if item.alphaClass == AlphaClassifier.OPAQUE then
-          fragmentPass = FRAGMENT_PASS_OPAQUE
-        elseif item.alphaClass == AlphaClassifier.CUTOUT then
-          fragmentPass = FRAGMENT_PASS_CUTOUT
-        else
-          error("ordinary billboard has unsupported alpha class: " .. tostring(item.alphaClass))
-        end
-        drawSprite(item, fragmentPass)
-      end
-      self._activeShader = nil
-
       local callerScissorX, callerScissorY, callerScissorW, callerScissorH = lg.getScissor()
-      local clipX, clipY = rectangle.x, rectangle.y
-      local clipRight, clipBottom = rectangle.x + rectangle.width, rectangle.y + rectangle.height
-      if callerScissorX ~= nil then
-        clipX = math.max(clipX, callerScissorX)
-        clipY = math.max(clipY, callerScissorY)
-        clipRight = math.min(clipRight, callerScissorX + callerScissorW)
-        clipBottom = math.min(clipBottom, callerScissorY + callerScissorH)
-      end
-      if clipRight > clipX and clipBottom > clipY then
-        lg.setScissor(clipX, clipY, clipRight - clipX, clipBottom - clipY)
-        lg.setCanvas(presentationCanvas)
-        lg.setDepthMode()
+      local dirtyX0, dirtyY0, dirtyX1, dirtyY1 = spriteDirtyRectangle(
+        spriteItems,
+        viewMatrix,
+        frame.billboardProjection,
+        self.stateW,
+        self.stateH,
+        spriteW,
+        spriteH,
+        scale,
+        offset
+      )
+      if dirtyX0 ~= nil then
+        self._activeShader = self:_ensureSpriteShader()
+        local spriteShader = assert(self._activeShader)
+        spriteShader:send("u_presentationSprite", true)
+        self:_ensureSpriteTargets(spriteW, spriteH)
+        local spriteTargets = assert(self._spriteTargets)
+        lg.setCanvas(spriteTargets)
+        lg.setScissor(dirtyX0, dirtyY0, dirtyX1 - dirtyX0, dirtyY1 - dirtyY0)
+        lg.clear(0, 0, 0, 0, false, true)
+        lg.setDepthMode("less", true)
         lg.setBlendMode("replace", "premultiplied")
-        lg.setColor(1, 1, 1, 1)
-        local compositeShader = self:_ensureSpriteCompositeShader()
-        compositeShader:send("u_coverage", self._spriteCoverage)
-        lg.setShader(compositeShader)
-        -- The sprite canvas is already physical/presentation resolution, so
-        -- the final composite is 1:1 -- no more magnification by N.
-        lg.draw(assert(self._spriteColor), rectangle.x, rectangle.y)
-        lg.setShader()
+        spriteShader:send("u_presentationScale", scale)
+        spriteShader:send("u_presentationOffset", offset)
+        spriteShader:send("u_view", "column", viewMatrix)
+        spriteShader:send("u_renderState", opaqueState)
+        spriteShader:send("u_stateSize", { self.stateW, self.stateH })
+        self:_sendSpriteFog(frame)
+        self:_sendLighting(frame, spriteShader)
+        lg.setShader(spriteShader)
+        lg.setBlendMode("replace", "premultiplied")
+
+        for _, item in ipairs(spriteItems) do
+          local fragmentPass
+          if item.alphaClass == AlphaClassifier.OPAQUE then
+            fragmentPass = FRAGMENT_PASS_OPAQUE
+          elseif item.alphaClass == AlphaClassifier.CUTOUT then
+            fragmentPass = FRAGMENT_PASS_CUTOUT
+          else
+            error("ordinary billboard has unsupported alpha class: " .. tostring(item.alphaClass))
+          end
+          spriteShader:send("u_spriteFogEnabled", item.fogEnabled == true)
+          self:_drawItem(item, frame.billboardProjection, fragmentPass)
+        end
+        self._activeShader = nil
+
+        local clipX, clipY = rectangle.x + dirtyX0, rectangle.y + dirtyY0
+        local clipRight, clipBottom = rectangle.x + dirtyX1, rectangle.y + dirtyY1
+        clipX = math.max(clipX, rectangle.x)
+        clipY = math.max(clipY, rectangle.y)
+        clipRight = math.min(clipRight, rectangle.x + visibleW)
+        clipBottom = math.min(clipBottom, rectangle.y + visibleH)
+        if callerScissorX ~= nil then
+          clipX = math.max(clipX, callerScissorX)
+          clipY = math.max(clipY, callerScissorY)
+          clipRight = math.min(clipRight, callerScissorX + callerScissorW)
+          clipBottom = math.min(clipBottom, callerScissorY + callerScissorH)
+        end
+        if clipRight > clipX and clipBottom > clipY then
+          lg.setScissor(clipX, clipY, clipRight - clipX, clipBottom - clipY)
+          lg.setCanvas(presentationCanvas)
+          lg.setDepthMode()
+          lg.setBlendMode("replace", "premultiplied")
+          lg.setColor(1, 1, 1, 1)
+          local compositeShader = self:_ensureSpriteCompositeShader()
+          compositeShader:send("u_coverage", self._spriteCoverage)
+          lg.setShader(compositeShader)
+          -- The sprite canvas is already physical/presentation resolution, so
+          -- the final composite is 1:1 -- no more magnification by N.
+          lg.draw(assert(self._spriteColor), rectangle.x, rectangle.y)
+          lg.setShader()
+        end
       end
     end
   end

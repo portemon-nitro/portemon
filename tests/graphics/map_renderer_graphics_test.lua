@@ -56,6 +56,8 @@ local DRAW_ITEM_FIELDS = {
   "material",
   "transform",
   "modelNormal",
+  "center",
+  "bounds",
   "billboardCenter",
   "billboardScale",
   "alphaClass",
@@ -375,6 +377,7 @@ function T.an_actor_billboard_draw_leaks_no_render_state(scope)
     billboardBase = IDENTITY,
     billboardCenter = { 0, 0, 0 },
     billboardScale = { 1, 1, 1 },
+    bounds = { width = 2, height = 2, depth = 0 },
     alphaClass = "cutout",
     cullMode = "back",
     polygonAlpha = 1.0,
@@ -920,6 +923,7 @@ function T.draw_restores_exact_caller_state_on_real_graphics(scope)
     billboardBase = IDENTITY,
     billboardCenter = { 0, 0, 0 },
     billboardScale = { 1, 1, 1 },
+    bounds = { width = 2, height = 2, depth = 0 },
     alphaClass = "cutout",
     cullMode = "back",
     polygonAlpha = 1.0,
@@ -3616,6 +3620,15 @@ local function depthOpaqueQuad(scope, z, r, g, b, polygonId, fogEnabled)
   return item
 end
 
+local function asPresentationSprite(item, z)
+  item.billboardProjection = true
+  item.billboardCenter = { 0, 0, 0 }
+  item.billboardScale = { 1, 1, 1 }
+  item.center = { 1, 1, z }
+  item.bounds = { width = 4, height = 4, depth = 0 }
+  return item
+end
+
 -- Read one pixel from a sceneColor readback, resolving the driver's Y-mirror
 -- by taking the brighter (non-black-clear) of the pixel and its mirror.
 local function scenePixel(renderer, colorImg, x, y)
@@ -4493,8 +4506,7 @@ end
 function T.presentation_world_depth_rejects_behind_sprite(scope)
   local renderer = scope:own(GxRenderer.new({ worldRasterScale = 2 }))
   local world = depthOpaqueQuad(scope, -0.5, 220, 20, 20, 3, false)
-  local behind = depthOpaqueQuad(scope, -1.0, 20, 220, 20, 4, false)
-  behind.billboardProjection = true
+  local behind = asPresentationSprite(depthOpaqueQuad(scope, -1.0, 20, 220, 20, 4, false), -1.0)
 
   local target, color = presentationTarget(scope, 640, 480)
   love.graphics.setCanvas(target)
@@ -4517,10 +4529,8 @@ end
 
 function T.presentation_host_depth_keeps_near_sprite_when_far_submitted_later(scope)
   local renderer = scope:own(GxRenderer.new({ worldRasterScale = 2 }))
-  local near = depthOpaqueQuad(scope, -0.25, 20, 20, 220, 5, false)
-  local far = depthOpaqueQuad(scope, -0.75, 220, 20, 20, 6, false)
-  near.billboardProjection = true
-  far.billboardProjection = true
+  local near = asPresentationSprite(depthOpaqueQuad(scope, -0.25, 20, 20, 220, 5, false), -0.25)
+  local far = asPresentationSprite(depthOpaqueQuad(scope, -0.75, 220, 20, 20, 6, false), -0.75)
 
   local target, color = presentationTarget(scope, 640, 480)
   love.graphics.setCanvas(target)
@@ -4542,10 +4552,8 @@ end
 
 function T.presentation_host_depth_is_cleared_between_frames(scope)
   local renderer = scope:own(GxRenderer.new({ worldRasterScale = 2 }))
-  local near = depthOpaqueQuad(scope, -0.25, 20, 20, 220, 5, false)
-  local far = depthOpaqueQuad(scope, -0.75, 220, 20, 20, 6, false)
-  near.billboardProjection = true
-  far.billboardProjection = true
+  local near = asPresentationSprite(depthOpaqueQuad(scope, -0.25, 20, 20, 220, 5, false), -0.25)
+  local far = asPresentationSprite(depthOpaqueQuad(scope, -0.75, 220, 20, 20, 6, false), -0.75)
 
   local target, color = presentationTarget(scope, 640, 480)
   love.graphics.setCanvas(target)
@@ -4563,8 +4571,7 @@ end
 -- the active viewport dimensions when targets are resized.
 function T.presentation_sprites_retain_resolution_and_composition(scope)
   local renderer = scope:own(GxRenderer.new({ worldRasterScale = 2 }))
-  local sprite = depthOpaqueQuad(scope, -0.5, 180, 180, 180, 6, true)
-  sprite.billboardProjection = true
+  local sprite = asPresentationSprite(depthOpaqueQuad(scope, -0.5, 180, 180, 180, 6, true), -0.5)
   local runtime = emptyRuntime()
   runtime.edgeColors[1] = 0x7fff
   runtime.fog = {
@@ -4652,6 +4659,7 @@ local function presentationSprite(_, mesh, image)
     alphaCutoff = 0.5 / 255,
     fogEnabled = false,
     center = { 0, 0, 0 },
+    bounds = { width = 2, height = 2, depth = 0 },
   }
 end
 
@@ -5007,6 +5015,51 @@ function T.presentation_sprites_stay_inside_a_portrait_expanded_world_viewport(s
   local pixels = color:newImageData()
   local center = { pixels:getPixel(300, 360) }
   Assert.isTrue(center[2] > 0.5, "the centered actor remains visible in the portrait world")
+end
+
+function T.presentation_billboards_cross_each_viewport_edge_without_losing_visible_pixels(scope)
+  local width, height = 640, 480
+  local renderer = scope:own(GxRenderer.new())
+  local target, color = presentationTarget(scope, width, height)
+  local image = solidAlphaImage(scope, 255, 0, 0, 255)
+  local viewport = FieldViewport.new(width, height, { mode = "strict" })
+  local edges = {
+    { label = "left", center = { -0.95, 0, 0 }, x = 0, y = 240 },
+    { label = "right", center = { 0.95, 0, 0 }, x = width - 1, y = 240 },
+    { label = "top", center = { 0, 0.95, 0 }, x = 320, y = 0 },
+    { label = "bottom", center = { 0, -0.95, 0 }, x = 320, y = height - 1 },
+  }
+
+  for _, edge in ipairs(edges) do
+    local sprite = presentationSprite(scope, presentationQuadMesh(scope, 0), image)
+    sprite.billboardCenter = edge.center
+    sprite.billboardScale = { 0.2, 0.2, 1 }
+    love.graphics.setCanvas(target)
+    love.graphics.clear(0, 0, 0, 1)
+    render(renderer, emptyRuntime(), fixedCamera(), {}, { sprite }, viewport)
+    love.graphics.setCanvas()
+
+    local pixels = color:newImageData()
+    local bounds = redBounds(pixels)
+    local edgePixel = { pixels:getPixel(edge.x, edge.y) }
+    Assert.isTrue(
+      edgePixel[1] > 0.75 and edgePixel[2] < 0.1 and edgePixel[3] < 0.1,
+      edge.label .. " billboard keeps its visible pixel at the viewport edge"
+    )
+    Assert.isTrue(
+      bounds.left >= 0 and bounds.top >= 0 and bounds.right < width and bounds.bottom < height,
+      edge.label .. " billboard readback stays inside the viewport"
+    )
+    if edge.label == "left" then
+      Assert.equal(bounds.left, 0, "left billboard reaches the clamped viewport boundary")
+    elseif edge.label == "right" then
+      Assert.equal(bounds.right, width - 1, "right billboard reaches the clamped viewport boundary")
+    elseif edge.label == "top" then
+      Assert.equal(bounds.top, 0, "top billboard reaches the clamped viewport boundary")
+    else
+      Assert.equal(bounds.bottom, height - 1, "bottom billboard reaches the clamped viewport boundary")
+    end
+  end
 end
 
 function T.presentation_sprite_fog_uses_the_world_endpoint_density_rules(scope)
@@ -5414,6 +5467,8 @@ end
 local function renderActorPattern(scope, renderer, width, height, presentationPixelScale, center)
   local target, color = presentationTarget(scope, width, height)
   local sprite = presentationSprite(scope, actorBillboardMesh(scope), actorPatternImage(scope))
+  sprite.center = { 0, -16, 0 }
+  sprite.bounds = { width = 32, height = 32, depth = 0 }
   sprite.billboardCenter = center
   sprite.billboardScale = {
     2 / (width / presentationPixelScale),
