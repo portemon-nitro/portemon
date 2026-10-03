@@ -2069,8 +2069,9 @@ end
 ---@param alpha table[] owning-side combatant seeds in scenario order
 ---@param beta table[] opposing-side combatant seeds in scenario order
 ---@param pack table|nil battle inventory seed for the owning side
+---@param itemFacts table<string, table<string, unknown>>? detached semantic facts for the stocked items
 ---@return table detached native battle setup record
-local function actionScenario(formatKey, alpha, beta, pack)
+local function actionScenario(formatKey, alpha, beta, pack, itemFacts)
   local Executor = executorOwner()
   local seeds = {}
   for _, seed in ipairs(alpha) do
@@ -2106,6 +2107,9 @@ local function actionScenario(formatKey, alpha, beta, pack)
   }
   if pack ~= nil then
     scenario.inventories = { pack }
+  end
+  if itemFacts ~= nil then
+    scenario.itemFacts = itemFacts
   end
   return scenario
 end
@@ -2270,6 +2274,17 @@ end
 function T.bag_healing_restores_health_and_spends_exactly_one_unit()
   local contracts = SessionFixture.sessionContracts()
   local content = actionContent()
+  local facts = {
+    POTION = {
+      partyUse = {
+        kind = "medicine",
+        restore = { kind = "fixed", amount = 20 },
+        cures = { sleep = false, poison = false, burn = false, freeze = false, paralysis = false },
+        revive = "none",
+        mood = 0,
+      },
+    },
+  }
   local lead = leveledCombatant(1, 23, "EEVEE", 20)
   lead.mon.condition.currentHp = 1
   local pack = SessionFixture.inventory("party", { 1 }, { POTION = 1 })
@@ -2278,7 +2293,8 @@ function T.bag_healing_restores_health_and_spends_exactly_one_unit()
       WILD_FORMAT,
       { lead },
       { leveledCombatant(2, 41, "EEVEE", 5), leveledCombatant(4, 43, "EEVEE", 5) },
-      pack
+      pack,
+      facts
     ),
     content
   )
@@ -2324,7 +2340,8 @@ function T.bag_healing_restores_health_and_spends_exactly_one_unit()
       WILD_FORMAT,
       { freshLead },
       { leveledCombatant(2, 41, "EEVEE", 5), leveledCombatant(4, 43, "EEVEE", 5) },
-      SessionFixture.inventory("party", { 1 }, { POTION = 1 })
+      SessionFixture.inventory("party", { 1 }, { POTION = 1 }),
+      facts
     ),
     content
   )
@@ -2576,6 +2593,99 @@ function T.bag_unknown_items_refuse_without_spending_stock()
   Assert.equal(settled.rng.calls, callsBefore, "the refused serving draws nothing")
   Assert.isNil(settled.outcome, "the refused serving names no terminal result")
   session:dispose()
+end
+
+-- Interruption captures preserve the serving facts: the held capture
+-- carries the exact projected facts, later scenario edits never reach
+-- the live session, and a restored session serves the identical
+-- restoration with the identical event through the same turn.
+function T.interruption_captures_preserve_item_facts_for_restored_servings()
+  local contracts = SessionFixture.sessionContracts()
+  local Executor = executorOwner()
+  local content = actionContent()
+  local facts = {
+    POTION = {
+      partyUse = {
+        kind = "medicine",
+        restore = { kind = "fixed", amount = 20 },
+        cures = { sleep = false, poison = false, burn = false, freeze = false, paralysis = false },
+        revive = "none",
+        mood = 0,
+      },
+    },
+  }
+  local lead = leveledCombatant(1, 23, "EEVEE", 20)
+  lead.mon.condition.currentHp = 1
+  local scenario = actionScenario(
+    WILD_FORMAT,
+    { lead },
+    { leveledCombatant(2, 41, "EEVEE", 5), leveledCombatant(4, 43, "EEVEE", 5) },
+    SessionFixture.inventory("party", { 1 }, { POTION = 1 }),
+    facts
+  )
+  local session = contracts.Battle.newSession(scenario, content)
+  local opening = SessionFixture.driveUntilSettled(session)
+  Assert.equal(opening.status, "waiting", "the opening turn asks for decisions")
+  facts.POTION.partyUse.restore.amount = 999
+  local hpBefore = session:capture().combatants[1].hp
+  local held = session:capture()
+  Assert.equal(
+    held.itemFacts.POTION.partyUse.restore.amount,
+    20,
+    "the held capture keeps the projected restoration"
+  )
+  Assert.deepEqual(held.itemFacts.POTION.partyUse.cures, {
+    sleep = false,
+    poison = false,
+    burn = false,
+    freeze = false,
+    paralysis = false,
+  }, "the held capture keeps the projected cures")
+  local twin = Executor.restore(held, content)
+  local served = {}
+  for _, live in ipairs({ session, twin }) do
+    local frame = SessionFixture.driveUntilSettled(live)
+    Assert.equal(frame.status, "waiting", "both sessions reopen the serving boundary")
+    local alpha = requestFor(frame, "alpha")
+    local beta = requestFor(frame, "beta")
+    local actor = assert(alpha.actors[1], "the serving request addresses its lead")
+    local foe = assert(beta.actors[1], "the opposing request addresses its lead")
+    local ok, replyErr = live:submit(SessionFixture.replyFor(alpha, { bagChoice(actor, "POTION", 1) }))
+    Assert.isTrue(ok, "the restored facts accept the serving")
+    Assert.isNil(replyErr, "accepted servings carry no input error")
+    local answered, answerErr =
+      live:submit(SessionFixture.replyFor(beta, { SessionFixture.switchChoice(foe, 4) }))
+    Assert.isTrue(answered, "the opposing exchange is accepted")
+    Assert.isNil(answerErr, "accepted exchanges carry no input error")
+    served[#served + 1] = live:advance(64)
+  end
+  local payloads = {}
+  for _, turn in ipairs(served) do
+    for _, event in ipairs(turn.events or {}) do
+      if event.kind == "item" then
+        payloads[#payloads + 1] = event.payload
+      end
+    end
+  end
+  Assert.equal(#payloads, 2, "both sessions announce their serving")
+  Assert.deepEqual(payloads[1], payloads[2], "restored sessions serve the identical event")
+  Assert.equal(payloads[1].restored, 20, "the restored serving reports the generated restoration")
+  Assert.equal(payloads[1].item, "POTION", "the restored serving names its item")
+  local settled = session:capture()
+  local revived = twin:capture()
+  Assert.equal(settled.combatants[1].hp, hpBefore + 20, "the live session heals the generated amount")
+  Assert.equal(revived.combatants[1].hp, settled.combatants[1].hp, "restored servings heal identically")
+  Assert.equal(
+    revived.combatants[1].mon.condition.currentHp,
+    settled.combatants[1].hp,
+    "restored servings synchronize the condition mirror"
+  )
+  Assert.deepEqual(revived.inventories, settled.inventories, "restored servings spend identical stock")
+  Assert.deepEqual(revived.ledger, settled.ledger, "restored servings ledger identical deltas")
+  Assert.deepEqual(revived.itemFacts, settled.itemFacts, "restored sessions carry identical facts")
+  Assert.equal(revived.rng.calls, settled.rng.calls, "restored servings draw identically")
+  session:dispose()
+  twin:dispose()
 end
 
 -- Thrown balls refuse trainer targets before anything moves: the reply

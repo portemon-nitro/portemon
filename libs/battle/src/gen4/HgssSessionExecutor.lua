@@ -71,6 +71,7 @@ local TurnOrder = require("libs.battle.src.gen4.TurnOrder")
 ---@field private _battleKind string
 ---@field private _moveFacts table<string, table<string, unknown>>
 ---@field private _speciesFacts table<string, SpeciesFormFacts>
+---@field private _itemFacts table<string, table<string, unknown>>
 ---@field private _chart table<string, unknown>
 ---@field private _moneyUpItems table<string, boolean>
 ---@field private _ruleset table<string, unknown>?
@@ -2036,11 +2037,12 @@ end
 ---@param executor HgssSessionExecutor live native session owning the turn
 ---@param moveFacts table<string, table<string, unknown>> immutable move facts carried by the session
 ---@param speciesFacts table<string, SpeciesFormFacts> static species facts carried by the session
+---@param itemFacts table<string, table<string, unknown>> immutable item facts carried by the session
 ---@param chart table<string, unknown> session chart view resolving directed effectiveness
 ---@param moneySet table<string, boolean> held-item keys carrying the money-up effect
 ---@param battleKind string wild-or-trainer encounter policy selecting flight and capture law
 ---@return NativeTurnHandlers lifecycle handlers bound to the session
-local function bindTurnHandlers(executor, moveFacts, speciesFacts, chart, moneySet, battleKind)
+local function bindTurnHandlers(executor, moveFacts, speciesFacts, itemFacts, chart, moneySet, battleKind)
   -- The resumable reward owner resolves its levels, stats, learnsets,
   -- and yields through the immutable session facts on every faint,
   -- rebuilt here from the same tables the snapshots carry.
@@ -2595,12 +2597,13 @@ local function bindTurnHandlers(executor, moveFacts, speciesFacts, chart, moneyS
       target = { kind = "combatant", combatant = holder.combatant },
     }
     -- Reservations were accounted when the reply was sealed, so planning
-    -- here classifies without double-counting the sealed promise.
+    -- here classifies without double-counting the sealed promise. Servings
+    -- read the immutable session item facts; balls never reach them.
     local plan = ItemUse.plan(choice, {
       inventories = state.inventories,
       combatants = state.combatants,
       outstanding = {},
-    })
+    }, itemFacts)
     if plan.failureReason ~= nil then
       -- The holder left the field after the reply was sealed: the
       -- serving is refused with no stock, ledger, draw, or health
@@ -2636,8 +2639,13 @@ local function bindTurnHandlers(executor, moveFacts, speciesFacts, chart, moneyS
     if type(holderState.maxHp) ~= "number" then
       error(BattleErrors.missingBehavior("bag use reads its holder maximum health", {}))
     end
-    ItemUse.execute(plan, state, state.rng --[[@as table<string, unknown>]])
-    local event = context:emit("item", cause, { item = payload.item, inventory = inventoryId })
+    local outcome = ItemUse.execute(plan, state, state.rng --[[@as table<string, unknown>]])
+    local event = context:emit("item", cause, {
+      item = payload.item,
+      inventory = inventoryId,
+      target = copyValue(outcome.target),
+      restored = outcome.restored,
+    })
     event.actionId = ordinal
   end
 
@@ -3184,6 +3192,46 @@ local function checkMoveFacts(validated)
   return validated.moveFacts --[[@as table<string, table<string, unknown>>]]
 end
 
+---@param facts table<string, unknown> immutable item facts under entry validation
+---@param raise fun(message: string, context: table<string, unknown>): table<string, unknown> error factory for malformed entries
+local function checkItemEntries(facts, raise)
+  for key, entry in pairs(facts) do
+    if type(key) ~= "string" or key == "" then
+      error(raise("session item facts name their item key", {}))
+    end
+    if type(entry) ~= "table" then
+      error(raise("session item facts carry their party use", { item = tostring(key) }))
+    end
+    local record = entry --[[@as table<string, unknown>]]
+    if type(record.partyUse) ~= "table" then
+      error(raise("session item facts carry their party use", { item = tostring(key) }))
+    end
+    for field in pairs(record) do
+      if field ~= "partyUse" then
+        error(raise("session item facts carry only their party use", { item = tostring(key) }))
+      end
+    end
+  end
+end
+
+---@param validated table<string, unknown> detached validated battle setup under construction
+---@return table<string, table<string, unknown>> immutable item facts carried by the session
+local function checkItemFacts(validated)
+  local facts = validated.itemFacts
+  if facts == nil then
+    return {}
+  end
+  if type(facts) ~= "table" then
+    error(BattleErrors.missingBehavior("sessions require their immutable item facts", {
+      ruleset = tostring(validated.ruleset),
+    }))
+  end
+  checkItemEntries(facts --[[@as table<string, unknown>]], function(message, context)
+    return BattleErrors.missingBehavior(message, context)
+  end)
+  return facts --[[@as table<string, table<string, unknown>>]]
+end
+
 ---@param validated table<string, unknown> detached validated battle setup under construction
 ---@return table<string, SpeciesFormFacts> static species facts carried by the session
 local function checkSpeciesFacts(validated)
@@ -3215,11 +3263,22 @@ end
 ---@param admitted string[] admitted action kinds resolved at construction
 ---@param moveFacts table<string, table<string, unknown>> immutable move facts carried by the session
 ---@param speciesFacts table<string, SpeciesFormFacts> static species facts carried by the session
+---@param itemFacts table<string, table<string, unknown>> immutable item facts carried by the session
 ---@param moneyUpItems string[] held-item keys carrying the money-up effect, in stable order
 ---@param battleKind string wild-or-trainer encounter policy selecting flight and capture law
 ---@param seedParticipation boolean true for fresh sessions whose opening field seeds reward records; restored sessions keep their snapshot records untouched
 ---@return HgssSessionExecutor
-local function wrap(live, content, admitted, moveFacts, speciesFacts, moneyUpItems, battleKind, seedParticipation)
+local function wrap(
+  live,
+  content,
+  admitted,
+  moveFacts,
+  speciesFacts,
+  itemFacts,
+  moneyUpItems,
+  battleKind,
+  seedParticipation
+)
   live.queue = live.queue or {}
   live.schedule = live.schedule or freshSchedule()
   live.faints = live.faints or {}
@@ -3279,6 +3338,7 @@ local function wrap(live, content, admitted, moveFacts, speciesFacts, moneyUpIte
     _battleKind = battleKind,
     _moveFacts = moveFacts,
     _speciesFacts = speciesFacts,
+    _itemFacts = itemFacts,
     _chart = sessionChart(content, HgssSessionExecutor.RULESET),
     _moneyUpItems = moneySet,
     _ruleset = nil,
@@ -3320,6 +3380,7 @@ function HgssSessionExecutor.new(scenarioRecord, content)
   local admitted = admittedKindsFor(validated.format --[[@as string]], content, validated)
   local moveFacts = checkMoveFacts(validated)
   local speciesFacts = checkSpeciesFacts(validated)
+  local itemFacts = checkItemFacts(validated)
   local moneyUpItems = checkMoneyUpItems(validated)
   local live = BattleState.create(validated)
   live.rng = BattleRng.new(validated
@@ -3331,6 +3392,7 @@ function HgssSessionExecutor.new(scenarioRecord, content)
     admitted,
     moveFacts,
     speciesFacts,
+    itemFacts,
     moneyUpItems,
     battleKindFor(validated.format --[[@as string]], validated.kind),
     true
@@ -3465,6 +3527,15 @@ function HgssSessionExecutor.restore(snapshotData, content)
   if type(live.speciesFacts) ~= "table" then
     error(BattleErrors.incompatibleSnapshot("native snapshots carry their static species facts", {}))
   end
+  if live.itemFacts == nil then
+    live.itemFacts = {}
+  end
+  if type(live.itemFacts) ~= "table" then
+    error(BattleErrors.incompatibleSnapshot("native snapshots carry their immutable item facts", {}))
+  end
+  checkItemEntries(live.itemFacts --[[@as table<string, unknown>]], function(message, context)
+    return BattleErrors.incompatibleSnapshot(message, context)
+  end)
   local moneyUpItems = checkMoneyUpItems(live)
   local executor = wrap(
     live,
@@ -3472,6 +3543,7 @@ function HgssSessionExecutor.restore(snapshotData, content)
     admitted,
     live.moveFacts --[[@as table<string, table<string, unknown>>]],
     live.speciesFacts --[[@as table<string, SpeciesFormFacts>]],
+    live.itemFacts --[[@as table<string, table<string, unknown>>]],
     moneyUpItems,
     battleKindFor(live.format --[[@as string]], live.kind),
     false
@@ -3484,8 +3556,15 @@ end
 --- session object, matching construction and restoration.
 function HgssSessionExecutor:_bindLifecycle()
   assert(self._ruleset == nil, "native lifecycles bind once")
-  local turnHandlers =
-    bindTurnHandlers(self, self._moveFacts, self._speciesFacts, self._chart, self._moneyUpItems, self._battleKind)
+  local turnHandlers = bindTurnHandlers(
+    self,
+    self._moveFacts,
+    self._speciesFacts,
+    self._itemFacts,
+    self._chart,
+    self._moneyUpItems,
+    self._battleKind
+  )
   local ruleset = HgssRuleset.new(turnHandlers)
   -- The learning continuation closes over the same turn seam but is not
   -- a scheduled lifecycle phase, so the executor holds it directly.
@@ -4290,6 +4369,7 @@ function HgssSessionExecutor:capture()
   snapshot.evolutionEligible = copyValue(state.evolutionEligible)
   snapshot.moveFacts = copyValue(self._moveFacts)
   snapshot.speciesFacts = copyValue(self._speciesFacts)
+  snapshot.itemFacts = copyValue(self._itemFacts)
   snapshot.moneyUpItems = copyValue(state.moneyUpItems or {})
   local prizeMoneyValue = state.prizeMoneyValue
   if prizeMoneyValue ~= 1 and prizeMoneyValue ~= 2 then

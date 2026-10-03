@@ -18,6 +18,7 @@
 -- source integer flooring, then clamps to 0..255; mood clamps to -127..127.
 
 local ItemErrors = require("libs.items.src.errors")
+local PartyUse = require("libs.items.src.PartyUse")
 local ProgressionItemUse = require("libs.hgss.src.mons.ProgressionItemUse")
 
 ---@class PartyItemEffects
@@ -79,27 +80,6 @@ local function withoutEffects(effects, keys)
     end
   end
   return kept
-end
-
----@param maxHp integer
----@param restore table<string, unknown>
----@return integer
-local function restoreAmount(maxHp, restore)
-  assert(type(maxHp) == "number" and maxHp % 1 == 0 and maxHp >= 1, "restore needs the derived maximum")
-  if maxHp == 1 then
-    return 1
-  end
-  if restore.kind == "full" then
-    return maxHp
-  elseif restore.kind == "half" then
-    return math.floor(maxHp / 2)
-  elseif restore.kind == "quarter" then
-    return math.floor(maxHp / 4)
-  end
-  assert(restore.kind == "fixed", "restore names a closed amount kind")
-  local amount = assert(restore.amount) --[[@as integer]]
-  assert(type(amount) == "number" and amount % 1 == 0 and amount >= 1, "fixed restore needs a positive amount")
-  return amount
 end
 
 -- Source TryModEV order (src/use_item_on_mon.c): reject lowering zero,
@@ -318,7 +298,7 @@ local function planMedicine(staged, partyUse, maxHp)
     -- revives, matching the source eligibility order.
     if revive == "single" then
       if restore ~= nil then
-        condition.currentHp = math.min(restoreAmount(maxHp, restore --[[@as table<string, unknown>]]), maxHp)
+        condition.currentHp = math.min(PartyUse.restoreAmount(maxHp, restore --[[@as table<string, unknown>]]), maxHp)
       else
         condition.currentHp = maxHp
       end
@@ -327,7 +307,7 @@ local function planMedicine(staged, partyUse, maxHp)
   elseif restore ~= nil and (revive == "none" or changed) and hp < maxHp then
     -- A revival-flagged item heals the living only alongside a cured
     -- status; otherwise restoration belongs to unflagged medicine.
-    condition.currentHp = math.min(hp + restoreAmount(maxHp, restore --[[@as table<string, unknown>]]), maxHp)
+    condition.currentHp = math.min(hp + PartyUse.restoreAmount(maxHp, restore --[[@as table<string, unknown>]]), maxHp)
     changed = true
   end
   return changed

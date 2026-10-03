@@ -497,9 +497,14 @@ local function healingBattle(species, level, seed)
   Assert.isTrue(bag:add("POTION", 3), "setup potion stock enters the live bag")
   Assert.isTrue(bag:add("POKE_BALL", 2), "setup ball stock enters the live bag")
   -- Wound the live lead without touching the live bag: the session must
-  -- heal from its detached stock and publish back exactly once.
+  -- heal from its detached stock and publish back exactly once. The party
+  -- owner hands out detached copies, so the wound publishes through the
+  -- ordinary preparation for the scenario and the battle to observe it.
   local wounded = party:partyMon(0)
   wounded.condition.currentHp = 1
+  local wounding = party:preparePartyBatch(party:partyRevision(), { { slot = 0, mon = wounded } }, {})
+  Assert.notNil(wounding, "the setup wound stages against the live party")
+  wounding.publish()
   local foe = foeRecord(species, level, seed)
   local scenario = ScenarioFactory.fromEncounter(
     { attemptId = "attempt-item-" .. seed, mon = foe },
@@ -567,6 +572,54 @@ function T.session_healing_publishes_one_live_bag_decrement()
   Assert.equal(bag:quantity("POTION"), 2, "repeated settlement never consumes again")
   Assert.equal(bag:revision(), bagRevision + 1, "repeated settlement never republishes")
   Assert.isTrue(party:partyMon(0).condition.currentHp > 1, "the healed lead keeps its recovered health")
+  battle:dispose()
+end
+
+-- Application fact projection resolves each distinct non-ball inventory
+-- key through the item catalog and copies exactly its generated
+-- party-use record: repeated keys project once, balls and unknown keys
+-- stay absent for their own paths, no presentation or native field
+-- crosses, and later projector edits never reach the live catalog.
+function T.session_item_facts_project_exactly_the_referenced_party_use()
+  local BattleRuntime = requirePresent(RUNTIME_MODULE, "application battle lifetime with readiness waits")
+  local party = newPartyOwner()
+  local portRecord = { ready = true, enters = 0, frames = {}, leaves = 0, disposed = 0 }
+  local battle = BattleRuntime.new({
+    request = launchFor("item-facts"),
+    party = party,
+    presentation = headlessPort(portRecord),
+  })
+  local record = {
+    inventories = {
+      { id = "party", owners = { 1 }, quantities = { POTION = 3, POKE_BALL = 2, TONIC = 1 } },
+      { id = "side", owners = { 1 }, quantities = { POTION = 1, CHERI_BERRY = 1 } },
+    },
+  }
+  local facts = battle:_sessionItemFacts(record)
+  local catalog = party:catalog()
+  Assert.deepEqual(
+    facts.POTION,
+    { partyUse = catalog:item("POTION").partyUse },
+    "the repeated key projects its generated party use once"
+  )
+  Assert.deepEqual(
+    facts.CHERI_BERRY,
+    { partyUse = catalog:item("CHERI_BERRY").partyUse },
+    "the berry key projects its generated party use"
+  )
+  local projected = 0
+  for _ in pairs(facts) do
+    projected = projected + 1
+  end
+  Assert.equal(projected, 2, "only referenced non-ball catalog keys project")
+  Assert.isNil(facts.POKE_BALL, "balls serve through the capture owner without facts")
+  Assert.isNil(facts.TONIC, "unknown keys stay absent until their selection fails")
+  facts.POTION.partyUse.restore.amount = 999
+  Assert.equal(
+    catalog:item("POTION").partyUse.restore.amount,
+    20,
+    "projector edits never reach the live catalog"
+  )
   battle:dispose()
 end
 
