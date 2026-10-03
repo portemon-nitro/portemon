@@ -109,67 +109,242 @@ local function descriptorMon(descriptor)
   return mon
 end
 
+-- Production player snapshot: every live party slot is read exactly once
+-- and every non-egg record becomes a roster combatant in slot order with
+-- the one party revision stamped on each seed. Eggs never become battle
+-- combatants; fainted non-eggs ride along as ineligible benched records.
+-- Without a live party service there is no snapshot (headless staged
+-- drivers keep the explicit placeholder below); with one, a missing
+-- conscious non-egg fails the build instead of inventing a combatant.
 ---@param party unknown
----@return table<string, unknown>? detached live lead plus its zero-based slot
-local function snapshotLead(party)
+---@return table<string, unknown>? ordered seeds plus the opening roster index
+local function snapshotParty(party)
   if type(party) ~= "table" then
     return nil
   end
   local service = party --[[@as table<string, unknown>]]
-  if type(service.partyCount) ~= "function" then
+  if type(service.partyCount) ~= "function" or type(service.partyMon) ~= "function" then
     return nil
   end
-  if service:partyCount() == 0 then
-    return nil
-  end
-  -- The conscious lead fields the player side, matching native entry.
-  -- A wiped party yields no snapshot (the placeholder path below), so a
-  -- fainted roster can never leak live state into the detached scenario.
-  if type(service.leadAliveSlot) ~= "function" then
-    return nil
-  end
-  local slot = service:leadAliveSlot()
-  if slot == nil then
-    return nil
-  end
-  assert(type(slot) == "number" and slot % 1 == 0 and slot >= 0, "party leads sit in a zero-based slot")
-  local mon = service:partyMon(slot)
-  assert(type(mon) == "table", "the live party carries its lead record")
   local revision = 0
   if type(service.partyRevision) == "function" then
     revision = service:partyRevision()
   end
-  return { mon = copyValue(mon), slot = slot, revision = revision }
+  local count = service:partyCount()
+  assert(type(count) == "number" and count % 1 == 0 and count >= 0, "party counts stay non-negative integers")
+  local seeds = {} ---@type table<integer, table<string, unknown>>
+  for slot0 = 0, count - 1 do
+    local mon = service:partyMon(slot0)
+    assert(type(mon) == "table", "the live party carries every slot record")
+    local record = mon --[[@as table<string, unknown>]]
+    if not record.isEgg then
+      seeds[#seeds + 1] = { mon = copyValue(record), slot = slot0 + 1, revision = revision }
+    end
+  end
+  if #seeds == 0 then
+    error("production battles require a non-egg party member", 0)
+  end
+  -- The conscious lead fields the opening position, matching native
+  -- entry. The slot must correspond to an included living non-egg, so a
+  -- wiped roster fails here instead of leaking fainted state as an
+  -- opener.
+  local opening = nil ---@type integer?
+  if type(service.leadAliveSlot) == "function" then
+    local slot = service:leadAliveSlot()
+    if slot ~= nil then
+      assert(type(slot) == "number" and slot % 1 == 0 and slot >= 0, "party leads sit in a zero-based slot")
+      for index, seed in ipairs(seeds) do
+        if seed.slot == slot + 1 then
+          local condition = (seed.mon --[[@as table<string, unknown>]]).condition
+          if type(condition) == "table" and condition.currentHp > 0 then
+            opening = index
+          end
+          break
+        end
+      end
+      if opening == nil then
+        error("production battles require a conscious opening combatant", 0)
+      end
+    else
+      error("production battles require a conscious party member", 0)
+    end
+  else
+    for index, seed in ipairs(seeds) do
+      local condition = (seed.mon --[[@as table<string, unknown>]]).condition
+      if type(condition) == "table" and condition.currentHp > 0 then
+        opening = index
+        break
+      end
+    end
+    if opening == nil then
+      error("production battles require a conscious party member", 0)
+    end
+  end
+  return { seeds = seeds, opening = opening }
 end
 
----@param snapshot table<string, unknown>?
----@param combatantId integer
----@return table<string, unknown> kernel combatant seed for the player side
-local function playerSeed(snapshot, combatantId)
+---@param snapshot table<string, unknown>? ordered party seeds plus the opening roster index
+---@return table<string, unknown>[] ordered kernel combatant seeds for the player side
+---@return integer opening combatant identity holding the first position
+local function playerRoster(snapshot)
   if snapshot ~= nil then
-    return {
-      id = combatantId,
-      mon = snapshot.mon,
-      source = {
-        kind = "party",
-        owner = "player",
-        key = "party",
-        slot = snapshot.slot + 1,
-        revision = snapshot.revision,
-      },
-    }
+    local roster = {} ---@type table<string, unknown>[]
+    for index, seed in
+      ipairs(snapshot.seeds --[[@as table<integer, table<string, unknown>>]])
+    do
+      local entry = seed --[[@as table<string, unknown>]]
+      roster[#roster + 1] = {
+        id = index,
+        mon = entry.mon,
+        source = {
+          kind = "party",
+          owner = "player",
+          key = "party",
+          slot = entry.slot,
+          revision = entry.revision,
+        },
+      }
+    end
+    return roster, snapshot.opening --[[@as integer]]
   end
   return {
-    id = combatantId,
-    mon = {
-      schema = Mon.SCHEMA,
-      species = "UNKNOWN",
-      level = HgssBattleScenarioFactory.DESCRIPTOR_LEVEL,
-      form = 0,
-      condition = { currentHp = HgssBattleScenarioFactory.DESCRIPTOR_ENTRY_HP },
+    {
+      id = 1,
+      mon = {
+        schema = Mon.SCHEMA,
+        species = "UNKNOWN",
+        level = HgssBattleScenarioFactory.DESCRIPTOR_LEVEL,
+        form = 0,
+        condition = { currentHp = HgssBattleScenarioFactory.DESCRIPTOR_ENTRY_HP },
+      },
+      source = { kind = "placeholder", owner = "field", key = "placeholder" },
     },
-    source = { kind = "placeholder", owner = "field", key = "placeholder" },
-  }
+  },
+    1
+end
+
+-- Flattens one detached bag capture into battle stock: every pocket stack
+-- contributes its semantic item quantity, registration and ordering never
+-- enter battle state, and a repeated item across stacks fails as an
+-- internal invariant breach because live storage keeps one stack per item.
+---@param bag unknown live bag service under projection
+---@return table<string, integer> detached positive battle stock by semantic item key
+local function flattenBag(bag)
+  local stock = {} ---@type table<string, integer>
+  if type(bag) ~= "table" then
+    return stock
+  end
+  local service = bag --[[@as table<string, unknown>]]
+  if type(service.capture) ~= "function" then
+    return stock
+  end
+  local captured = service:capture()
+  assert(type(captured) == "table", "bag projection reads the detached capture")
+  local pockets = (captured --[[@as table<string, unknown>]]).pockets
+  assert(type(pockets) == "table", "bag captures carry their pockets")
+  for _, slots in
+    pairs(pockets --[[@as table<string, table>]])
+  do
+    assert(type(slots) == "table", "bag pockets carry their stacks")
+    for _, slot in ipairs(slots) do
+      assert(type(slot) == "table", "bag pocket slots stay records")
+      local entry = slot --[[@as table<string, unknown>]]
+      assert(type(entry.item) == "string" and entry.item ~= "", "bag stacks name their item")
+      assert(
+        type(entry.quantity) == "number" and entry.quantity % 1 == 0 and entry.quantity >= 1,
+        "bag stacks carry positive quantities"
+      )
+      if
+        stock[
+          entry.item --[[@as string]]
+        ] ~= nil
+      then
+        error("bag captures carry one stack per item: " .. tostring(entry.item), 0)
+      end
+      stock[
+        entry.item --[[@as string]]
+      ] = entry.quantity --[[@as integer]]
+    end
+  end
+  return stock
+end
+
+-- Counts one trainer's finite carried list into battle stock, preserving
+-- multiplicity. A missing list yields no stock; a malformed entry fails
+-- instead of guessing.
+---@param items unknown carried trainer item list under projection
+---@return table<string, integer>? finite battle stock, nil when the trainer carries no list
+local function trainerStock(items)
+  if items == nil then
+    return nil
+  end
+  assert(type(items) == "table", "trainer items arrive as a list")
+  local stock = {} ---@type table<string, integer>
+  for index, item in
+    ipairs(items --[[@as table<integer, unknown>]])
+  do
+    if type(item) ~= "string" or item == "" then
+      error("trainer item " .. index .. " names its item", 0)
+    end
+    stock[
+      item --[[@as string]]
+    ] = (
+      stock[
+        item --[[@as string]]
+      ] or 0
+    ) + 1
+  end
+  return stock
+end
+
+HgssBattleScenarioFactory.PLAYER_INVENTORY_ID = "player-bag"
+
+---@param index integer one-based trainer order under inventory naming
+---@return string deterministic trainer stock identity
+local function trainerInventoryId(index)
+  return "trainer-" .. index .. "-items"
+end
+
+-- Joins production-owned inventories with caller-authored additions.
+-- Production identities win only by refusing collisions, never by
+-- silently overwriting staged stock.
+---@param generated table<integer, table<string, unknown>> production-owned inventories under assembly
+---@param explicit unknown caller-authored inventories under assembly
+---@return table<integer, table<string, unknown>> combined detached inventories
+local function joinInventories(generated, explicit)
+  local out = {} ---@type table<integer, table<string, unknown>>
+  local seen = {} ---@type table<string, boolean>
+  for _, inventory in ipairs(generated) do
+    seen[
+      inventory.id --[[@as string]]
+    ] = true
+    out[#out + 1] = inventory
+  end
+  if explicit == nil then
+    return out
+  end
+  assert(type(explicit) == "table", "scenario inventories arrive as an array")
+  for _, entry in
+    ipairs(explicit --[[@as table<integer, unknown>]])
+  do
+    assert(type(entry) == "table", "scenario inventories stay records")
+    local record = entry --[[@as table<string, unknown>]]
+    if type(record.id) ~= "string" or record.id == "" then
+      error("scenario inventories stay named", 0)
+    end
+    if
+      seen[
+        record.id --[[@as string]]
+      ]
+    then
+      error("production inventory owns its identity: " .. tostring(record.id), 0)
+    end
+    seen[
+      record.id --[[@as string]]
+    ] = true
+    out[#out + 1] = copyValue(record)
+  end
+  return out
 end
 
 ---@param mon table<string, unknown> detached enemy mon (record or descriptor)
@@ -205,29 +380,38 @@ local function kernelShape(fragment)
 end
 
 ---@param payload table<string, unknown>
----@param heart table<string, unknown> normalized enemy description
+---@param heart table<string, unknown> normalized battle description
 ---@return table<string, unknown> scenario fragment
 local function assemble(payload, heart)
   assert(type(payload) == "table", "scenario sources arrive as records")
+  local players = heart.players --[[@as table<integer, table<string, unknown>>]]
+  assert(type(players) == "table" and #players > 0, "production scenarios field their player roster")
   local sides = {
     { id = 1, participants = { 1 } },
     { id = 2, participants = heart.enemyIds },
   }
-  local participants = {
-    {
-      id = 1,
-      side = 1,
-      controller = HgssBattleScenarioFactory.PLAYER_CONTROLLER,
-      roster = { heart.player },
-      context = {},
-    },
+  local playerParticipant = {
+    id = 1,
+    side = 1,
+    controller = HgssBattleScenarioFactory.PLAYER_CONTROLLER,
+    roster = players,
+    context = {},
   }
-  for index, enemy in ipairs(heart.enemies) do
+  if heart.playerInventoryId ~= nil then
+    playerParticipant.inventoryId = heart.playerInventoryId
+  end
+  local participants = { playerParticipant }
+  for index, enemy in
+    ipairs(heart.enemies --[[@as table<integer, table<string, unknown>>]])
+  do
     participants[#participants + 1] = enemy
-    assert(enemy.id == heart.enemyIds[index], "enemy membership follows participant order")
+    assert(
+      enemy.id == (heart.enemyIds --[[@as table<integer, integer>]])[index],
+      "enemy membership follows participant order"
+    )
   end
   local positions = {
-    { id = 1, side = 1, eligibleParticipants = { 1 }, occupant = heart.player.id },
+    { id = 1, side = 1, eligibleParticipants = { 1 }, occupant = heart.openingId },
   }
   for index, enemy in ipairs(heart.enemies) do
     local lead = enemy.roster[1]
@@ -246,7 +430,7 @@ local function assemble(payload, heart)
     sides = sides,
     participants = participants,
     positions = positions,
-    inventories = copyValue(payload.inventories) or {},
+    inventories = joinInventories(heart.inventories or {}, payload.inventories),
     environment = copyValue(payload.environment) or { weather = "none" },
     random = { seed = scenarioSeed(payload) },
     formatState = copyValue(payload.formatState) or {},
@@ -258,9 +442,11 @@ end
 -- Builds the wild-battle fragment from a prepared encounter or a bare wild
 -- descriptor. The payload carries the encounter identity (attemptId or id),
 -- the enemy as `mon` (a full record or a species/level descriptor), and the
--- optional format/environment overrides. The live party lead (ctx.party)
--- fields the player side when present; without one the player side enters
--- as an explicitly marked placeholder that can never write back.
+-- optional format/environment overrides. The live party (ctx.party) fields
+-- the player side with every non-egg member when present, opening with the
+-- first conscious member, and the live bag (ctx.bag) projects the detached
+-- player stock; without a live party the player side enters as an
+-- explicitly marked placeholder that can never write back.
 ---@param payload table<string, unknown>
 ---@param ctx table<string, unknown>?
 ---@return table<string, unknown> detached wild scenario fragment
@@ -297,22 +483,36 @@ function HgssBattleScenarioFactory.fromEncounter(payload, ctx)
     end
   end
   local attemptId = payload.attemptId or payload.id
-  local lead = snapshotLead(context.party)
-  local player = playerSeed(lead, 1)
+  local snapshot = snapshotParty(context.party)
+  local players, openingId = playerRoster(snapshot)
   local key = attemptId or enemy.species or "wild"
-  local foe = enemySeed(copyValue(enemy), 2, {
+  local foeId = #players + 1
+  local foe = enemySeed(copyValue(enemy), foeId, {
     kind = "wild",
     owner = "enemy",
     key = tostring(key),
   })
+  local inventories = {}
+  local playerInventoryId = nil ---@type string?
+  if snapshot ~= nil then
+    playerInventoryId = HgssBattleScenarioFactory.PLAYER_INVENTORY_ID
+    inventories[#inventories + 1] = {
+      id = playerInventoryId,
+      owners = { 1 },
+      quantities = flattenBag(context.bag),
+    }
+  end
   return assemble(payload, {
     attemptId = attemptId,
     kind = "wild",
     format = payload.format or "wild-single",
-    enemyIds = { 2 },
-    player = player,
+    enemyIds = { foeId },
+    players = players,
+    openingId = openingId,
+    playerInventoryId = playerInventoryId,
+    inventories = inventories,
     enemies = {
-      { id = 2, side = 2, controller = HgssBattleScenarioFactory.WILD_CONTROLLER, roster = { foe }, context = {} },
+      { id = foeId, side = 2, controller = HgssBattleScenarioFactory.WILD_CONTROLLER, roster = { foe }, context = {} },
     },
     mon = copyValue(enemy),
     trainer = nil,
@@ -345,11 +545,21 @@ function HgssBattleScenarioFactory.fromTrainer(payload, ctx)
     trainers = { { id = payload.trainer, party = payload.party, program = payload.program } }
   end
   assert(type(trainers) == "table" and #trainers > 0, "trainer battles field at least one trainer")
-  local lead = snapshotLead(context.party)
-  local player = playerSeed(lead, 1)
+  local snapshot = snapshotParty(context.party)
+  local players, openingId = playerRoster(snapshot)
+  local inventories = {}
+  local playerInventoryId = nil ---@type string?
+  if snapshot ~= nil then
+    playerInventoryId = HgssBattleScenarioFactory.PLAYER_INVENTORY_ID
+    inventories[#inventories + 1] = {
+      id = playerInventoryId,
+      owners = { 1 },
+      quantities = flattenBag(context.bag),
+    }
+  end
   local enemies = {}
   local enemyIds = {}
-  local combatantId = 1
+  local combatantId = #players
   for index, trainer in ipairs(trainers) do
     assert(type(trainer) == "table", "trainer entries stay records")
     local entry = trainer --[[@as table<string, unknown>]]
@@ -389,13 +599,23 @@ function HgssBattleScenarioFactory.fromTrainer(payload, ctx)
     if entry.items ~= nil then
       enemyContext.items = copyValue(entry.items)
     end
-    enemies[#enemies + 1] = {
+    local enemy = {
       id = participantId,
       side = 2,
       controller = "trainer:" .. entry.id,
       roster = roster,
       context = enemyContext,
     }
+    -- Finite trainer stock rides its own battle inventory beside the
+    -- decision context: the session consumes those detached quantities
+    -- and the trainer inventory never publishes to the live bag.
+    local stock = trainerStock(entry.items)
+    if stock ~= nil then
+      local inventoryId = trainerInventoryId(index)
+      inventories[#inventories + 1] = { id = inventoryId, owners = { participantId }, quantities = stock }
+      enemy.inventoryId = inventoryId
+    end
+    enemies[#enemies + 1] = enemy
   end
   local attemptId = payload.attemptId or payload.id
   return assemble(payload, {
@@ -403,7 +623,10 @@ function HgssBattleScenarioFactory.fromTrainer(payload, ctx)
     kind = "trainer",
     format = payload.format or (#trainers > 1 and "double" or "single"),
     enemyIds = enemyIds,
-    player = player,
+    players = players,
+    openingId = openingId,
+    playerInventoryId = playerInventoryId,
+    inventories = inventories,
     enemies = enemies,
     mon = nil,
     trainer = copyValue(trainers),
