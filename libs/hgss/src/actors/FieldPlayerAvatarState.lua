@@ -157,7 +157,9 @@ function FieldPlayerAvatarState:_restartSurf()
   self._surfActive = true
   self._oscY = presentation.oscillator.initialY
   self._oscDelta = presentation.oscillator.stepY
-  self._playerOffset = { x = initial.x, y = initial.y, z = initial.z }
+  self._playerOffset.x = initial.x
+  self._playerOffset.y = initial.y
+  self._playerOffset.z = initial.z
   self._attachmentY = presentation.attachmentBaseOffset.y + self._oscY
 end
 
@@ -225,7 +227,9 @@ function FieldPlayerAvatarState:applyTransitions()
   else
     self._surfActive = working.surfActive
     if not working.surfActive then
-      self._playerOffset = working.playerOffset
+      self._playerOffset.x = working.playerOffset.x
+      self._playerOffset.y = working.playerOffset.y
+      self._playerOffset.z = working.playerOffset.z
       self._attachmentY = working.attachmentY
       self._oscY = 0
       self._oscDelta = 0
@@ -257,7 +261,9 @@ function FieldPlayerAvatarState:updateFixed()
   self._oscY = height
   self._oscDelta = delta
   local base = self._surf.playerBaseOffset
-  self._playerOffset = { x = base.x, y = base.y + height, z = base.z }
+  self._playerOffset.x = base.x
+  self._playerOffset.y = base.y + height
+  self._playerOffset.z = base.z
   self._attachmentY = self._surf.attachmentBaseOffset.y + height
 end
 
@@ -266,13 +272,30 @@ function FieldPlayerAvatarState:currentSpriteId()
   return self._capability.states[self._visual]
 end
 
+---@return string
+function FieldPlayerAvatarState:durableState()
+  return self._durable
+end
+
+---@param out { playerOffset: { x: number, y: number, z: number }, surf: { active: boolean, attachmentOffsetY: number } }
+---@return { playerOffset: { x: number, y: number, z: number }, surf: { active: boolean, attachmentOffsetY: number } }
+function FieldPlayerAvatarState:presentationStateInto(out)
+  assert(type(out) == "table", "avatar presentation output required")
+  local playerOffset =
+    assert(type(out.playerOffset) == "table" and out.playerOffset, "avatar presentation output needs playerOffset")
+  local surf = assert(type(out.surf) == "table" and out.surf, "avatar presentation output needs surf")
+  playerOffset.x = self._playerOffset.x
+  playerOffset.y = self._playerOffset.y
+  playerOffset.z = self._playerOffset.z
+  surf.active = self._surfActive
+  surf.attachmentOffsetY = self._attachmentY
+  return out
+end
+
 -- Presentation-only offsets plus surf status. Carries no logical coordinates.
 ---@return { playerOffset: { x: number, y: number, z: number }, surf: { active: boolean, attachmentOffsetY: number } }
 function FieldPlayerAvatarState:presentationState()
-  return {
-    playerOffset = { x = self._playerOffset.x, y = self._playerOffset.y, z = self._playerOffset.z },
-    surf = { active = self._surfActive, attachmentOffsetY = self._attachmentY },
-  }
+  return self:presentationStateInto({ playerOffset = {}, surf = {} })
 end
 
 -- True only with no pending transitions and no temporary visual override.

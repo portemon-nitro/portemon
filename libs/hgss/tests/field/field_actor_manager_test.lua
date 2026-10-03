@@ -875,7 +875,7 @@ function T.a_recreated_actor_observes_clean_state_after_slot_release()
   mgr:dispose()
 end
 
-function T.begin_fixed_step_captures_every_owned_map_actor_without_advancing_them()
+function T.begin_fixed_step_captures_current_map_actors_without_advancing_them()
   local mgr = manager({
     object({ eventFlag = 401 }),
     object({ index = 1, objectEventId = 1, x = 8, z = 8, eventFlag = 402 }),
@@ -920,12 +920,196 @@ function T.begin_fixed_step_captures_every_owned_map_actor_without_advancing_the
 
   for _, actor in ipairs({ first, second }) do
     local previous, current = actor:renderPosition(0), actor:renderPosition(1)
-    Assert.equal(previous.x, current.x, "the aggregate baseline pass captures each map's current actor X")
-    Assert.equal(previous.y, current.y, "the aggregate baseline pass captures each map's current actor Y")
-    Assert.equal(previous.z, current.z, "the aggregate baseline pass captures each map's current actor Z")
+    Assert.equal(previous.x, current.x, "the baseline pass captures each actor's current X")
+    Assert.equal(previous.y, current.y, "the baseline pass captures each actor's current Y")
+    Assert.equal(previous.z, current.z, "the baseline pass captures each actor's current Z")
   end
   Assert.equal(first:getPoseTick(), firstPoseTick, "baseline capture does not advance the first actor's pose")
   Assert.equal(second:getPoseTick(), secondPoseTick, "baseline capture does not advance the second actor's pose")
+  mgr:dispose()
+end
+
+function T.enter_map_replacement_switches_fixed_and_draw_traversal()
+  local firstObjects = { object({ objectEventId = 0 }), object({ objectEventId = 1, x = 4 }) }
+  local mgr, eventState = manager(firstObjects, { map = runtimeMap(firstObjects, 17) })
+  mgr.autonomy.isOrdinary = function()
+    return false
+  end
+
+  local trace = {}
+  local function traceActors(mapId)
+    for _, actor in ipairs(mgr.maps[mapId].store:orderedActors()) do
+      local actorId = actor.actorId
+      local advance = actor.advancePresentationTick
+      actor.advancePresentationTick = function(self, ...)
+        trace[#trace + 1] = actorId
+        return advance(self, ...)
+      end
+    end
+  end
+  traceActors(17)
+
+  mgr:beginFixedStep()
+  mgr:step(1)
+  Assert.deepEqual(trace, { "map:17:object:0", "map:17:object:1" })
+  local firstRecords = mgr:drawRecords()
+  Assert.equal(firstRecords[1].actorId, "map:17:object:0")
+  Assert.equal(firstRecords[2].actorId, "map:17:object:1")
+
+  local secondObjects = { object({ objectEventId = 0 }), object({ objectEventId = 1, x = 4 }) }
+  mgr:enterMap(runtimeMap(secondObjects, 29), eventState)
+  traceActors(29)
+  trace = {}
+  mgr:beginFixedStep()
+  mgr:step(2)
+
+  Assert.isNil(mgr.maps[17], "publishing the destination retires the previous entry")
+  Assert.equal(mgr.currentMapId, 29)
+  Assert.deepEqual(trace, { "map:29:object:0", "map:29:object:1" })
+  local secondRecords = mgr:drawRecords()
+  Assert.equal(#secondRecords, 2)
+  Assert.equal(secondRecords[1].actorId, "map:29:object:0")
+  Assert.equal(secondRecords[2].actorId, "map:29:object:1")
+  mgr:dispose()
+end
+
+function T.leaving_current_map_clears_fixed_step_and_retained_draw_records()
+  local mgr = manager({ object({}) })
+  local actor = assert(mgr:getById("map:61:object:0"))
+  local advances = 0
+  local advance = actor.advancePresentationTick
+  actor.advancePresentationTick = function(self, ...)
+    advances = advances + 1
+    return advance(self, ...)
+  end
+  local records = mgr:drawRecords()
+  Assert.equal(#records, 1)
+
+  mgr:leaveMap(61)
+  mgr:beginFixedStep()
+  mgr:step(1)
+
+  Assert.equal(advances, 0, "retired actors do not advance after leave")
+  Assert.isTrue(mgr:drawRecords() == records, "the retained record array remains reusable")
+  Assert.equal(#records, 0, "leaving the current map removes stale draw records")
+  mgr:dispose()
+end
+
+function T.manager_fixed_and_draw_traversal_use_the_store_order_view()
+  local mgr, eventState = manager({
+    object({ objectEventId = 0, eventFlag = 401 }),
+    object({ objectEventId = 1, eventFlag = 402, x = 4 }),
+  })
+  local store = mgr.maps[61].store
+  local actors = store:orderedActors()
+  local view = store:orderedActorsView()
+  Assert.isTrue(view == store:orderedActorsView())
+  Assert.isTrue(view[1] == actors[1] and view[2] == actors[2], "the borrowed order contains the same actors")
+  actors[1] = actors[2]
+  Assert.isFalse(store:orderedActors()[1] == actors[1], "orderedActors remains an independent snapshot")
+
+  mgr:beginFixedStep()
+  local records = mgr:drawRecords()
+  Assert.equal(#records, 2)
+  Assert.equal(records[1].actorId, "map:61:object:0")
+  Assert.equal(records[2].actorId, "map:61:object:1")
+
+  eventState:setFlag(401)
+  mgr:step(1)
+  Assert.equal(store:actorCount(), 1)
+  Assert.isTrue(store:orderedActorsView()[1] == store:getActor("map:61:object:1"))
+  Assert.equal(#mgr:drawRecords(), 1)
+  mgr:dispose()
+end
+
+function T.autonomy_reuses_capability_callbacks_and_current_player_facts()
+  local mgr = manager({
+    object({ objectEventId = 0, movementType = "look_north" }),
+    object({ objectEventId = 1, movementType = "look_north", x = 4 }),
+  })
+  local originalAutonomy = mgr.autonomy
+  local observations = {}
+  mgr.autonomy = {
+    isOrdinary = function()
+      return true
+    end,
+    step = function(_, actorId, capability)
+      observations[#observations + 1] = {
+        actorId = actorId,
+        capability = capability,
+        setFacing = capability.setFacing,
+        walk = capability.walk,
+        patternStep = capability.patternStep,
+        player = capability.player,
+        playerX = capability.player and capability.player.fieldX or nil,
+      }
+      capability:setFacing(actorId, actorId:match("object:(%d+)$") == "0" and "north" or "east")
+    end,
+  } --[[@as FieldActorAutonomy]]
+
+  local firstPlayer = { fieldX = 3, fieldZ = 5, positionYBand = 1 }
+  mgr:step(1, { player = firstPlayer })
+  local secondPlayer = { fieldX = 8, fieldZ = 9, positionYBand = -1 }
+  mgr:step(2, { player = secondPlayer })
+  mgr:step(3)
+
+  Assert.equal(#observations, 6)
+  local first = observations[1]
+  for _, observation in ipairs(observations) do
+    Assert.isTrue(observation.capability == first.capability, "the manager reuses one autonomy capability")
+    Assert.isTrue(observation.setFacing == first.setFacing)
+    Assert.isTrue(observation.walk == first.walk)
+    Assert.isTrue(observation.patternStep == first.patternStep)
+  end
+  Assert.isTrue(observations[1].player == observations[2].player)
+  Assert.isTrue(observations[1].player == observations[3].player, "player facts use retained manager storage")
+  Assert.equal(observations[1].playerX, 3)
+  Assert.equal(observations[2].playerX, 3)
+  Assert.equal(observations[3].playerX, 8)
+  Assert.equal(observations[4].playerX, 8)
+  Assert.isNil(observations[5].player, "a context-free tick clears the player binding")
+  Assert.isNil(observations[6].player)
+  Assert.equal(firstPlayer.positionYBand, 1, "manager scratch never mutates caller facts")
+  Assert.equal(mgr:getById("map:61:object:0").facing, "north")
+  Assert.equal(mgr:getById("map:61:object:1").facing, "east")
+  mgr.autonomy = originalAutonomy
+  mgr:dispose()
+end
+
+function T.autonomy_failure_propagates_and_ends_the_tick()
+  local mgr = manager({ object({ movementType = "look_north" }) })
+  mgr.autonomy.step = function()
+    error("autonomy probe failure", 0)
+  end
+
+  local err = Assert.throws(function()
+    mgr:step(1)
+  end)
+  Assert.equal(err, "autonomy probe failure", "the original autonomy failure propagates")
+  mgr:dispose()
+end
+
+function T.draw_records_fill_presentation_scratch_and_keep_snapshot_api_independent()
+  local mgr = manager({ object({}) })
+  local actor = assert(mgr:getById("map:61:object:0"))
+  local firstSnapshot = actor:presentationState()
+  local secondSnapshot = actor:presentationState()
+  Assert.isFalse(firstSnapshot == secondSnapshot, "presentationState remains an allocating snapshot")
+  firstSnapshot.gesturePose = "caller mutation"
+
+  local scratch = { gesturePose = "stale", gestureTick = 99, gestureOffsetY = 17 }
+  Assert.isTrue(actor:presentationStateInto(scratch) == scratch)
+  Assert.isNil(scratch.gesturePose)
+  Assert.isNil(scratch.gestureTick)
+  Assert.equal(scratch.gestureOffsetY, 0)
+  Assert.isNil(secondSnapshot.gesturePose, "snapshot mutation does not reach the actor")
+
+  local record = mgr:drawRecords()[1]
+  local records = mgr:drawRecords()
+  Assert.isTrue(records[1] == record, "draw record identity stays retained")
+  Assert.isNil(record.gesturePose)
+  Assert.isNil(record.gestureTick)
+  Assert.equal(record.world.y, actor:getWorldPosition().y)
   mgr:dispose()
 end
 

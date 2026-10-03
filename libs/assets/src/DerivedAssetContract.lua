@@ -224,6 +224,8 @@ DerivedAssetContract.messages = {
   provenanceSchema = "g4-field-message-provenance-v1",
 }
 
+-- v6/v5: focus indicators use four ordered white alpha masks per frame,
+-- each carrying its palette slot and rect, instead of separate slot keys.
 -- v5/v4: focus indicators use four white alpha masks per frame, keyed by
 -- source palette slots, instead of a precolored single image.
 -- v4: the font class requires font IDs 0 and 4 in one atomic publication;
@@ -232,8 +234,8 @@ DerivedAssetContract.messages = {
 -- atlas) so palette-driven presentation can recolor glyphs against an
 -- arbitrary runtime palette instead of the font's own baked color bands.
 DerivedAssetContract.font = {
-  cacheFormat = "field-font-cache-v5",
-  schema = "g4-field-font-v4",
+  cacheFormat = "field-font-cache-v6",
+  schema = "g4-field-font-v5",
 }
 
 DerivedAssetContract.scripts = {

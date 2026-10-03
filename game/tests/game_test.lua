@@ -1,5 +1,5 @@
 -- Component coverage for the generic running-game state host. The host owns
--- state replacement, event forwarding, settled drawable dimensions, and the
+-- state replacement, event forwarding, explicit resize forwarding, and the
 -- terminal exit/disposal contract without knowing HGSS or ROM concepts.
 
 local Assert = require("tests.support.Assert")
@@ -56,11 +56,12 @@ function T.state_replacement_and_exit_dispose_each_owner_once()
   Assert.deepEqual(exits, { result })
 end
 
-function T.callbacks_preserve_host_tuples_and_reconcile_settled_dimensions()
+function T.callbacks_preserve_host_tuples_without_polling_host_dimensions()
   local Game = loadGame()
   local graphics = love.graphics
   local originalGetDimensions = graphics.getDimensions
   local liveWidth, liveHeight = 800, 600
+  local dimensionReads = 0
   local events = {}
   local joystick = {}
   local host
@@ -100,6 +101,7 @@ function T.callbacks_preserve_host_tuples_and_reconcile_settled_dimensions()
     end,
   }
   graphics.getDimensions = function()
+    dimensionReads = dimensionReads + 1
     return liveWidth, liveHeight
   end
 
@@ -119,6 +121,7 @@ function T.callbacks_preserve_host_tuples_and_reconcile_settled_dimensions()
     host:touchreleased("finger-1", 5.5, 6.5, 0.25, 0.5, 0.8)
 
     liveWidth, liveHeight = 900, 700
+    host:resize(liveWidth, liveHeight)
     host:update(0.016)
     liveWidth, liveHeight = 1024, 768
     host:draw()
@@ -146,10 +149,10 @@ function T.callbacks_preserve_host_tuples_and_reconcile_settled_dimensions()
     { "touchreleased", "finger-1", 5.5, 6.5, 0.25, 0.5, 0.8 },
     { "resize", 900, 700 },
     { "update" },
-    { "resize", 1024, 768 },
     { "draw" },
     { "draw" },
   })
+  Assert.equal(dimensionReads, 0, "Game construction and callbacks never measure host dimensions")
 end
 
 return { tests = T }

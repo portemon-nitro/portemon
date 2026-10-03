@@ -450,17 +450,19 @@ function FieldUiFixture.cardFontDef()
       count = FieldMessageText.FOCUS_INDICATOR_COUNT,
       width = FieldFontCache.FOCUS_FRAME_WIDTH,
       height = FieldFontCache.FOCUS_FRAME_HEIGHT,
-      sourcePaletteSlots = { 11, 12, 13, 14 },
       frames = (function()
         local frames = {}
         for field = 0, FieldMessageText.FOCUS_INDICATOR_COUNT - 1 do
           local layers = {}
           for index, slot in ipairs({ 11, 12, 13, 14 }) do
-            layers[slot] = {
-              x = (index - 1) * FieldFontCache.FOCUS_FRAME_WIDTH,
-              y = field * FieldFontCache.FOCUS_FRAME_HEIGHT,
-              width = FieldFontCache.FOCUS_FRAME_WIDTH,
-              height = FieldFontCache.FOCUS_FRAME_HEIGHT,
+            layers[index] = {
+              paletteSlot = slot,
+              rect = {
+                x = (index - 1) * FieldFontCache.FOCUS_FRAME_WIDTH,
+                y = field * FieldFontCache.FOCUS_FRAME_HEIGHT,
+                width = FieldFontCache.FOCUS_FRAME_WIDTH,
+                height = FieldFontCache.FOCUS_FRAME_HEIGHT,
+              },
             }
           end
           frames[field] = { layers = layers }

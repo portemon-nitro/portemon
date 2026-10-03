@@ -33,6 +33,8 @@ local GAMEPAD_DIRECTIONS = { dpup = "north", dpdown = "south", dpleft = "west", 
 ---@field actorPresentation FieldActorPresentation?
 ---@field _lastGeometrySignature string? the structural presentation-geometry signature the last sync consumed
 ---@field _pollPresentationTopology boolean whether injected topology changes are polled during draw
+---@field _surfPresentation { playerOffset: { x: number, y: number, z: number }, surf: { active: boolean, attachmentOffsetY: number } }
+---@field _surfAnchor { x: number, y: number, z: number }
 ---@field worldParts table[][] ordered map, static building, animated building, neighbor, entrance-indicator, actor, movement-emote, and terrain-effect draw arrays
 ---@field worldActorItems table[] persistent actor items kept in the world raster
 ---@field spriteItems table[] persistent presentation-resolution actor sprites
@@ -46,7 +48,6 @@ local GAMEPAD_DIRECTIONS = { dpup = "north", dpdown = "south", dpleft = "west", 
 ---@field topologyProvider fun(width: number, height: number): ScreenTopology
 ---@field displayContext DisplayContext the shared actual-display measurement owner
 ---@field presentationOverrides table<string, table<string, unknown>>? product-root per-case function overrides by application
----@field _displaySignature string? the structural display identity the last sync consumed
 ---@field _starterUiSuspended boolean whether modal UI semantics are suspended while the open starter chooser prepares
 local FieldState = {}
 FieldState.__index = FieldState
@@ -105,6 +106,8 @@ function FieldState.new(game, options)
     worldParts = {},
     worldActorItems = {},
     spriteItems = {},
+    _surfPresentation = { playerOffset = {}, surf = {} },
+    _surfAnchor = { x = 0, y = 0, z = 0 },
     _entryFade = options.initialFadeIn == true and StandardFade.new({ direction = "in", color = 0 }) or nil,
     _entryAccumulator = 0,
     _starterUiSuspended = false,
@@ -136,7 +139,6 @@ function FieldState.new(game, options)
 end
 
 function FieldState:update(dt)
-  self:_refreshDisplay()
   self.runtime:update(dt)
   local pokemonNaming = self.runtime.pokemonNaming
   if self.runtime.errorText ~= nil then
@@ -292,25 +294,6 @@ function FieldState:_advanceEntryCover(dt)
   end
 end
 
--- Refreshes the measured display state before runtime input/ticks: the
--- shared context measures fresh host facts, and only a structural change
--- reaches the runtime geometry owner. Fixture-built states without a
--- display context keep their existing resize/draw paths.
-function FieldState:_refreshDisplay()
-  local displayContext = self.displayContext
-  if displayContext == nil then
-    return
-  end
-  local measurement = displayContext:measure()
-  if measurement.signature == self._displaySignature then
-    return
-  end
-  self._displaySignature = measurement.signature
-  local width = measurement.width --[[@as integer]]
-  local height = measurement.height --[[@as integer]]
-  self.runtime:resizePresentation(width, height, measurement.topology)
-end
-
 -- Single predicate for the covered-entry input gate: while the one-shot
 -- reveal is active, new gameplay presses are ignored.
 function FieldState:_entryCoverActive()
@@ -340,11 +323,11 @@ function FieldState:_surfDrawItems(alpha)
   if avatar == nil then
     return NO_DRAWS
   end
-  local presentation = avatar:presentationState()
+  local presentation = avatar:presentationStateInto(self._surfPresentation)
   if not presentation.surf.active then
     return NO_DRAWS
   end
-  local anchor = runtime.player:renderPosition(alpha)
+  local anchor = runtime.player:renderPositionInto(self._surfAnchor, alpha)
   local surfPresentation = assert(resources.surfPresentation, "surf presentation is unavailable")
   local yaw = assert(surfPresentation.yawDegrees[runtime.player.facing], "surf presentation is missing facing yaw")
   return renderer:drawItems({
@@ -522,18 +505,14 @@ function FieldState:draw()
     lg.printf(self.runtime.errorText, margin, margin + line, lg.getWidth() - 2 * margin)
     return
   end
-  local width, height = lg.getDimensions()
-  assert(width and height, "graphics dimensions are required for field presentation")
-  assert(width % 1 == 0 and height % 1 == 0, "graphics dimensions must be integral")
+  local width = assert(self.runtime.viewport.width, "field viewport width is required for presentation")
+  local height = assert(self.runtime.viewport.height, "field viewport height is required for presentation")
+  assert(type(width) == "number" and type(height) == "number", "field viewport dimensions must be numeric")
+  assert(width % 1 == 0 and height % 1 == 0, "field viewport dimensions must be integral")
   width, height =
     width, --[[@as integer]]
     height --[[@as integer]]
-  local resized = false
-  if width ~= self.runtime.viewport.width or height ~= self.runtime.viewport.height then
-    self:resize(width, height)
-    resized = true
-  end
-  if self._pollPresentationTopology and not resized then
+  if self._pollPresentationTopology then
     local provider = assert(self.topologyProvider, "field presentation needs its topology provider")
     local topology = provider(width, height)
     local integerWidth = width --[[@as integer]]
@@ -1065,7 +1044,6 @@ function FieldState:dispose()
   self._entryAccumulator = 0
   self._starterUiSuspended = false
   self._lastGeometrySignature = nil
-  self._displaySignature = nil
   self.displayContext = nil
   self.presentationOverrides = nil
   if self.worldParts then

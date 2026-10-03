@@ -67,6 +67,7 @@ local SHARED = {
   "PartyAssetSchema",
   "PartyCache",
   "PngWriter",
+  "SchemaCheck",
   "ScriptCache",
   "ScriptIdentity",
   "ScriptOverrides",

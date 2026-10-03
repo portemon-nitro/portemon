@@ -23,6 +23,7 @@
 
 local Errors = require("libs.errors.src.Errors")
 local Validate = require("libs.assets.src.Validate")
+local SchemaCheck = require("libs.assets.src.SchemaCheck")
 local ModelAsset = require("libs.assets.src.model.ModelAsset")
 
 ---@class BagAssetSchema
@@ -60,38 +61,24 @@ local SOURCE_KEYS = {
 }
 
 local function fail(message, context)
-  Errors.raise("BAG_MANIFEST_INVALID", message, context or {})
+  SchemaCheck.fail("BAG_MANIFEST_INVALID", message, context)
 end
 
 local function checkKeys(record, allowed, context, what)
-  for key in pairs(record) do
-    if allowed[key] == nil then
-      fail(what .. " carries an unknown field " .. tostring(key), context)
-    end
-  end
+  SchemaCheck.checkKeys(record, allowed, context, "BAG_MANIFEST_INVALID", what)
 end
 
 -- One record guard for every manifest record: the value must be a table
 -- carrying exactly the allowed keys. Adds no default empty tables.
 local function checkRecord(value, allowed, context, what, noun)
-  if type(value) ~= "table" then
-    fail(what .. " must be " .. (noun or "a record"), context)
-  end
-  checkKeys(value, allowed, context, what)
+  SchemaCheck.checkRecord(value, allowed, context, "BAG_MANIFEST_INVALID", what, noun)
 end
 
 -- One integer-range check shared by non-negative points/rectangles,
 -- positive dimensions/cadences, and bounded channel fields. Signed offsets
 -- and finite non-integral camera/model values keep their own domains.
 local function checkInteger(value, context, what, minimum, maximum, expectation)
-  if
-    type(value) ~= "number"
-    or value % 1 ~= 0
-    or (minimum ~= nil and value < minimum)
-    or (maximum ~= nil and value > maximum)
-  then
-    fail(what .. " must be " .. expectation, context)
-  end
+  SchemaCheck.checkInteger(value, context, "BAG_MANIFEST_INVALID", what, minimum, maximum, expectation)
 end
 
 -- One fixed-shape collection check for the manifest's exact-cardinality

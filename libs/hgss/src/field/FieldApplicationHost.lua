@@ -113,6 +113,11 @@ function FieldApplicationHost:status()
   return status
 end
 
+---@return string
+function FieldApplicationHost:phase()
+  return self._phase
+end
+
 -- Whether the host owns the tick: while active, the field session steps no
 -- world simulation and the save gate stays closed.
 ---@return boolean

@@ -60,6 +60,9 @@ stylua "${STYLUA_ARGS[@]}" "${LUA_FILES[@]}"
 
 scripts/lib/check-repository.sh
 scripts/lib/check-invariants.sh
+# The staged index is what a commit records: a worktree repair without
+# re-staging must still fail here so lint and the hook agree.
+scripts/lib/check-invariants.sh --cached
 
 # Reject references to the planning spec ("tmp/spec", "spec section N",
 # "Workstream N", "milestone N", "slice N", "WS N"), planning language

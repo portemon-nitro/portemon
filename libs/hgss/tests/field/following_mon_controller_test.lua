@@ -182,6 +182,44 @@ local function tick(w, count)
   end
 end
 
+-- Retire the old actor entry and rebind the player to a fresh destination
+-- map, mirroring the production world-swap publication order the
+-- controller observes.
+local function enterMap(w, mapId)
+  local nextMap = runtimeMap(mapId)
+  w.mgr:enterMap(nextMap, FieldEventState.new())
+  w.player.currentMap = nextMap
+  return nextMap
+end
+
+-- A destination map whose (4,5) tile keeps a valid surface while the tile
+-- directly north of it, (4,6), has no terrain surface at all. Collision
+-- still covers both tiles, so only surface selection distinguishes them.
+local function northHoleMap(mapId)
+  local map = runtimeMap(mapId)
+  map.terrain = TerrainSurface.new({
+    plates = {
+      {
+        id = 0,
+        minX = 0,
+        minZ = 0,
+        maxX = 32,
+        maxZ = 6,
+        normal = { x = 0, y = 1, z = 0 },
+        distance = 0,
+        slopeClass = "flat",
+      },
+    },
+  })
+  return map
+end
+
+local function enterCustomMap(w, map)
+  w.mgr:enterMap(map, FieldEventState.new())
+  w.player.currentMap = map
+  return map
+end
+
 -- Drives one scripted player walk through the same fixed-step epoch the
 -- production runtime uses, then settles both actors. Returns the tile the
 -- player vacated.
@@ -1576,6 +1614,445 @@ function T.started_queue_head_leaves_pending_queue_at_start()
   Assert.equal(actor:getFieldPosition().fieldX, 4, "both queued walks hold the remembered column")
   Assert.equal(actor:getFieldPosition().fieldZ, 6, "both queued walks replay in order")
   Assert.isTrue(w.controller:isMovementSettled(), "the drained queue settles")
+  w.mgr:dispose()
+end
+
+-- After the old map retires through the controller exit signal, the
+-- destination recreates the follower on the player's exact destination
+-- tile and facing instead of one tile behind, and the entry itself starts
+-- no follower locomotion.
+function T.map_exit_reinstalls_on_the_player_tile_with_no_entry_motion()
+  local w = world({ fieldX = 10, fieldZ = 7, facing = "west" })
+  w.svc:setLead(0, mon())
+  tick(w, 2)
+  Assert.notNil(w.mgr:partnerId(), "setup installs the partner")
+  w.controller:handleMapExit()
+  Assert.isNil(w.mgr:partnerId(), "covered teardown clears the partner")
+  enterMap(w, 62)
+  tick(w, 3)
+  local actor = assert(w.mgr:getById("field:partner"), "the destination reinstalls the partner")
+  Assert.equal(actor.mapId, 62, "the reinstalled actor belongs to the destination map")
+  local anchor = w.player:committedAnchor()
+  Assert.equal(
+    actor:getFieldPosition().fieldX,
+    anchor.fieldX,
+    "the follower recreates on the player destination tile, not behind it"
+  )
+  Assert.equal(
+    actor:getFieldPosition().fieldZ,
+    anchor.fieldZ,
+    "the follower recreates on the player destination tile, not behind it"
+  )
+  Assert.equal(actor.facing, "west", "the follower keeps the player destination facing")
+  Assert.isNil(actor:scriptedMotionState(), "the entry itself starts no follower locomotion")
+  Assert.isTrue(w.controller:isMovementSettled(), "the reinstalled follower settles with no trail")
+  w.mgr:dispose()
+end
+
+-- Selecting the player destination tile must not touch the behind tile:
+-- when that tile has no terrain surface, the follower still installs on
+-- the valid player anchor instead of raising the behind-tile failure.
+function T.map_exit_never_requests_the_missing_behind_tile()
+  local w = world({ fieldX = 4, fieldZ = 5, facing = "north" })
+  w.svc:setLead(0, mon())
+  tick(w, 2)
+  Assert.notNil(w.mgr:partnerId(), "setup installs the partner")
+  w.controller:handleMapExit()
+  enterCustomMap(w, northHoleMap(62))
+  tick(w, 3)
+  local actor = assert(w.mgr:getById("field:partner"), "the follower installs on the valid player anchor")
+  Assert.equal(
+    actor:getFieldPosition().fieldX,
+    4,
+    "the follower recreates on the player tile despite the missing behind surface"
+  )
+  Assert.equal(
+    actor:getFieldPosition().fieldZ,
+    5,
+    "the follower recreates on the player tile despite the missing behind surface"
+  )
+  Assert.equal(actor.facing, "north", "the follower keeps the player destination facing")
+  Assert.isTrue(w.controller:isMovementSettled(), "the reinstalled follower settles with no trail")
+  w.mgr:dispose()
+end
+
+-- A follower already standing on the tile the player vacates treats that
+-- first ordinary step as satisfied: no walk starts, nothing queues, and
+-- the player still commits one tile away.
+function T.overlapped_first_step_consumes_the_vacated_tile_without_moving()
+  local w = world()
+  w.svc:setLead(0, mon())
+  tick(w, 2)
+  local partnerId = assert(w.mgr:partnerId(), "setup installs the partner")
+  -- Recreate the retail entry overlap through the public placement seam:
+  -- the follower already shares the committed player tile.
+  w.controller:repositionRelativeToPlayer(99, 1)
+  local home = { fieldX = w.player.fieldX, fieldZ = w.player.fieldZ }
+  local overlapped = assert(w.mgr:getById(partnerId), "the partner actor is required")
+  Assert.equal(
+    overlapped:getFieldPosition().fieldX,
+    home.fieldX,
+    "setup overlaps the follower onto the player tile"
+  )
+  Assert.equal(
+    overlapped:getFieldPosition().fieldZ,
+    home.fieldZ,
+    "setup overlaps the follower onto the player tile"
+  )
+
+  Assert.isTrue(w.player:tryStep("south"), "the fixture step must start")
+  w.controller:update()
+  local actor = assert(w.mgr:getById(partnerId), "the partner survives the step start")
+  Assert.equal(
+    actor:getFieldPosition().fieldX,
+    home.fieldX,
+    "the satisfied vacated tile starts no follower walk"
+  )
+  Assert.equal(
+    actor:getFieldPosition().fieldZ,
+    home.fieldZ,
+    "the satisfied vacated tile starts no follower walk"
+  )
+  Assert.isNil(actor:scriptedMotionState(), "the satisfied step starts no presentation action")
+  Assert.equal(#w.controller._queue, 0, "the satisfied step queues no obligation")
+  Assert.isTrue(w.controller:isMovementSettled(), "the satisfied step stays settled")
+
+  for _ = 1, 12 do
+    if w.player.motion ~= "idle" then
+      w.player:updateFixed({})
+    end
+    w.controller:update()
+  end
+  Assert.equal(w.player.fieldZ, home.fieldZ + 1, "the player commits one tile south")
+  actor = assert(w.mgr:getById(partnerId), "the partner survives the step")
+  Assert.equal(
+    actor:getFieldPosition().fieldX,
+    home.fieldX,
+    "the commit replays no walk onto the consumed tile"
+  )
+  Assert.equal(
+    actor:getFieldPosition().fieldZ,
+    home.fieldZ,
+    "the commit replays no walk onto the consumed tile"
+  )
+  Assert.isTrue(w.controller:isMovementSettled(), "the follower stays settled after the commit")
+  w.mgr:dispose()
+end
+
+-- The satisfied first step must not disable normal following: the next
+-- genuine step walks the follower onto the newly vacated tile, one tile
+-- behind the player, with the stable partner actor.
+function T.second_step_resumes_the_ordinary_trail()
+  local w = world()
+  w.svc:setLead(0, mon())
+  tick(w, 2)
+  local partnerId = assert(w.mgr:partnerId(), "setup installs the partner")
+  w.controller:repositionRelativeToPlayer(99, 1)
+  local home = { fieldX = w.player.fieldX, fieldZ = w.player.fieldZ }
+
+  Assert.isTrue(w.player:tryStep("south"), "the first fixture step must start")
+  w.controller:update()
+  for _ = 1, 12 do
+    if w.player.motion ~= "idle" then
+      w.player:updateFixed({})
+    end
+    w.controller:update()
+  end
+  Assert.equal(w.player.fieldZ, home.fieldZ + 1, "the first step commits one tile south")
+
+  local vacated = { fieldX = w.player.fieldX, fieldZ = w.player.fieldZ }
+  Assert.isTrue(w.player:tryStep("south"), "the second fixture step must start")
+  w.controller:update()
+  Assert.isFalse(w.controller:isMovementSettled(), "the second step starts a real trail")
+  local walking = assert(w.mgr:getById(partnerId), "the partner survives the second step start")
+  Assert.equal(walking.pose, "walk", "the resumed trail walks toward the vacated tile")
+  for _ = 1, 12 do
+    if w.player.motion ~= "idle" then
+      w.player:updateFixed({})
+    end
+    w.controller:update()
+  end
+  Assert.equal(w.player.fieldZ, vacated.fieldZ + 1, "the second step commits one tile south")
+  local actor = assert(w.mgr:getById(partnerId), "the partner survives the second step")
+  Assert.equal(
+    actor:getFieldPosition().fieldX,
+    vacated.fieldX,
+    "the resumed trail settles onto the vacated tile"
+  )
+  Assert.equal(
+    actor:getFieldPosition().fieldZ,
+    vacated.fieldZ,
+    "the resumed trail settles onto the vacated tile"
+  )
+  Assert.equal(w.mgr:partnerId(), partnerId, "the resumed trail keeps the stable actor")
+  Assert.isTrue(w.controller:isMovementSettled(), "the resumed trail settles")
+  w.mgr:dispose()
+end
+
+-- A new vacated tile stays owed while an older walk is still in flight,
+-- even when the follower still reports that tile as its committed
+-- position: the in-flight walk can move the follower away, so the new
+-- target waits behind it and the follower finishes on the latest tile.
+function T.ordinary_same_tile_start_retains_target_while_older_walk_is_active()
+  local w = world()
+  w.svc:setLead(0, mon())
+  tick(w, 2)
+  local partnerId = assert(w.mgr:partnerId(), "setup installs the partner")
+  w.controller:setMovementPaused(true)
+  Assert.isTrue(w.player:tryStep("south"), "the first fixture step must start")
+  w.controller:update()
+  Assert.equal(#w.controller._queue, 1, "the paused step retains its obligation")
+  for _ = 1, 10 do
+    w.player:updateFixed({})
+  end
+  Assert.equal(w.player.motion, "idle", "the first step commits while paused")
+  tick(w, 2)
+  local current = { fieldX = w.player.fieldX, fieldZ = w.player.fieldZ }
+  w.mgr:setPosition(partnerId, { fieldX = current.fieldX, fieldZ = current.fieldZ })
+  local parked = assert(w.mgr:getPosition(partnerId), "the follower position is required")
+  Assert.equal(parked.fieldX, current.fieldX, "setup parks the follower on the player tile")
+  Assert.equal(parked.fieldZ, current.fieldZ, "setup parks the follower on the player tile")
+
+  w.controller:setMovementPaused(false)
+  w.controller:update()
+  Assert.notNil(w.controller._action, "the older obligation starts on release")
+  Assert.equal(#w.controller._queue, 0, "the started head leaves the pending queue")
+
+  local vacated = { fieldX = w.player.fieldX, fieldZ = w.player.fieldZ }
+  local committed = assert(w.mgr:getPosition(partnerId), "the follower position is required")
+  Assert.equal(committed.fieldX, vacated.fieldX, "the new step starts from the follower tile")
+  Assert.equal(committed.fieldZ, vacated.fieldZ, "the new step starts from the follower tile")
+  Assert.isTrue(w.player:tryStep("south"), "the second fixture step must start")
+  w.controller:update()
+  Assert.notNil(w.controller._action, "the older walk is still in flight")
+  Assert.equal(#w.controller._queue, 1, "the new vacated tile waits behind the older walk")
+  local retained = assert(w.controller._queue[1], "the retained target is required")
+  Assert.equal(retained.fieldX, vacated.fieldX, "the retained target is the latest vacated tile")
+  Assert.equal(retained.fieldZ, vacated.fieldZ, "the retained target is the latest vacated tile")
+
+  for _ = 1, 12 do
+    if w.player.motion ~= "idle" then
+      w.player:updateFixed({})
+    end
+    w.controller:update()
+  end
+  Assert.equal(w.player.fieldZ, vacated.fieldZ + 1, "the player commits one tile south")
+  for _ = 1, 40 do
+    w.controller:update()
+  end
+  local actor = assert(w.mgr:getById(partnerId), "the partner survives the retained trail")
+  Assert.equal(actor:getFieldPosition().fieldX, vacated.fieldX, "the follower finishes on the latest vacated tile")
+  Assert.equal(actor:getFieldPosition().fieldZ, vacated.fieldZ, "the follower finishes on the latest vacated tile")
+  Assert.equal(#w.controller._queue, 0, "no pending obligation remains")
+  Assert.isNil(w.controller._action, "no walk remains in flight")
+  Assert.isTrue(w.controller:isMovementSettled(), "the retained trail settles")
+  w.mgr:dispose()
+end
+
+-- A new vacated tile waits behind an older pending obligation instead of
+-- reading the shared tile as satisfied: the queue keeps the older target
+-- first and the latest vacated tile second, and the follower settles on
+-- the latest tile after both execute in order.
+function T.ordinary_same_tile_start_retains_target_behind_older_queue()
+  local w = world()
+  w.svc:setLead(0, mon())
+  tick(w, 2)
+  local partnerId = assert(w.mgr:partnerId(), "setup installs the partner")
+  w.controller:setMovementPaused(true)
+  Assert.isTrue(w.player:tryStep("south"), "the first fixture step must start")
+  w.controller:update()
+  Assert.equal(#w.controller._queue, 1, "the paused step retains its obligation")
+  for _ = 1, 10 do
+    w.player:updateFixed({})
+  end
+  Assert.equal(w.player.motion, "idle", "the first step commits while paused")
+  tick(w, 2)
+  local older = assert(w.controller._queue[1], "the older obligation is required")
+  local current = { fieldX = w.player.fieldX, fieldZ = w.player.fieldZ }
+  w.mgr:setPosition(partnerId, { fieldX = current.fieldX, fieldZ = current.fieldZ })
+  local parked = assert(w.mgr:getPosition(partnerId), "the follower position is required")
+  Assert.equal(parked.fieldX, current.fieldX, "setup parks the follower on the player tile")
+  Assert.equal(parked.fieldZ, current.fieldZ, "setup parks the follower on the player tile")
+  Assert.isNil(w.controller._action, "no walk starts while paused")
+  Assert.equal(#w.controller._queue, 1, "the older obligation stays pending")
+
+  local vacated = { fieldX = w.player.fieldX, fieldZ = w.player.fieldZ }
+  Assert.isTrue(w.player:tryStep("south"), "the second fixture step must start")
+  w.controller:update()
+  Assert.equal(#w.controller._queue, 2, "the new target waits behind the older obligation")
+  local first = assert(w.controller._queue[1], "the older obligation is required")
+  Assert.equal(first.fieldX, older.fieldX, "the older obligation keeps its order")
+  Assert.equal(first.fieldZ, older.fieldZ, "the older obligation keeps its order")
+  local retained = assert(w.controller._queue[2], "the retained target is required")
+  Assert.equal(retained.fieldX, vacated.fieldX, "the retained target is the latest vacated tile")
+  Assert.equal(retained.fieldZ, vacated.fieldZ, "the retained target is the latest vacated tile")
+
+  for _ = 1, 10 do
+    w.player:updateFixed({})
+  end
+  Assert.equal(w.player.motion, "idle", "the second step commits while paused")
+  tick(w, 2)
+  Assert.equal(#w.controller._queue, 2, "the commit keeps both obligations while paused")
+  w.controller:setMovementPaused(false)
+  for _ = 1, 60 do
+    w.controller:update()
+  end
+  Assert.equal(w.player.fieldZ, vacated.fieldZ + 1, "the player commits one tile south")
+  local actor = assert(w.mgr:getById(partnerId), "the partner survives the retained trail")
+  Assert.equal(actor:getFieldPosition().fieldX, vacated.fieldX, "the follower finishes on the latest vacated tile")
+  Assert.equal(actor:getFieldPosition().fieldZ, vacated.fieldZ, "the follower finishes on the latest vacated tile")
+  Assert.equal(#w.controller._queue, 0, "no pending obligation remains")
+  Assert.isNil(w.controller._action, "no walk remains in flight")
+  Assert.isTrue(w.controller:isMovementSettled(), "the retained trail settles")
+  w.mgr:dispose()
+end
+
+-- A queued coordinate obligation already occupied by the follower drains
+-- as satisfied: no walk starts and no snap reinstalls the actor. A
+-- direction-only replay head still executes its remembered walk.
+function T.queued_same_tile_target_drains_without_movement()
+  local w = world()
+  w.svc:setLead(0, mon())
+  tick(w, 2)
+  local partnerId = assert(w.mgr:partnerId(), "setup installs the partner")
+  w.controller:repositionRelativeToPlayer(99, 1)
+  local home = { fieldX = w.player.fieldX, fieldZ = w.player.fieldZ }
+  local before = assert(w.mgr:getById(partnerId), "the partner actor is required")
+
+  -- A satisfied obligation enqueues nothing even while paused: the
+  -- overlapped step is already complete, so no trail is retained.
+  w.controller:setMovementPaused(true)
+  Assert.isTrue(w.player:tryStep("south"), "the fixture step must start")
+  w.controller:update()
+  local held = assert(w.mgr:getById(partnerId), "the partner survives the satisfied step")
+  Assert.equal(held:getFieldPosition().fieldX, home.fieldX, "the satisfied step starts no walk")
+  Assert.equal(held:getFieldPosition().fieldZ, home.fieldZ, "the satisfied step starts no walk")
+  Assert.isNil(held:scriptedMotionState(), "the satisfied step starts no presentation action")
+  Assert.equal(#w.controller._queue, 0, "the satisfied step queues no obligation")
+  for _ = 1, 12 do
+    if w.player.motion ~= "idle" then
+      w.player:updateFixed({})
+    end
+    w.controller:update()
+  end
+  Assert.equal(w.player.fieldZ, home.fieldZ + 1, "the player commits one tile south")
+  Assert.equal(#w.controller._queue, 0, "the commit replays no walk onto the consumed tile")
+
+  -- A genuinely-behind obligation still queues while paused. Parking the
+  -- follower onto that head through the actor seam leaves a satisfied head
+  -- for the queue driver while the player step stays in flight.
+  local vacated = { fieldX = w.player.fieldX, fieldZ = w.player.fieldZ }
+  Assert.isTrue(w.player:tryStep("south"), "the second fixture step must start")
+  w.controller:update()
+  Assert.equal(#w.controller._queue, 1, "the paused step retains its obligation")
+  -- The player step stays in flight so the satisfied drain is observed
+  -- before any commit could rebaseline the trail.
+  w.mgr:setPosition(partnerId, { fieldX = vacated.fieldX, fieldZ = vacated.fieldZ })
+  local moved = assert(w.mgr:getById(partnerId), "the partner actor is required")
+  Assert.equal(moved:getFieldPosition().fieldX, vacated.fieldX, "setup parks the follower on the queued tile")
+  Assert.equal(moved:getFieldPosition().fieldZ, vacated.fieldZ, "setup parks the follower on the queued tile")
+  w.controller:setMovementPaused(false)
+  w.controller:update()
+  local actor = assert(w.mgr:getById(partnerId), "the partner survives the drain")
+  Assert.equal(actor:getFieldPosition().fieldX, vacated.fieldX, "the satisfied head moves nothing")
+  Assert.equal(actor:getFieldPosition().fieldZ, vacated.fieldZ, "the satisfied head moves nothing")
+  Assert.isNil(actor:scriptedMotionState(), "the satisfied head starts no presentation action")
+  Assert.equal(#w.controller._queue, 0, "the satisfied head leaves no obligation")
+  Assert.equal(
+    w.mgr:getById(partnerId),
+    before,
+    "the satisfied head reinstalls no actor"
+  )
+  Assert.isTrue(w.controller:isMovementSettled(), "the drained queue settles")
+  for _ = 1, 12 do
+    if w.player.motion ~= "idle" then
+      w.player:updateFixed({})
+    end
+    w.controller:update()
+  end
+  Assert.equal(w.player.fieldZ, vacated.fieldZ + 1, "the player commits one tile south")
+  actor = assert(w.mgr:getById(partnerId), "the partner survives the commit")
+  Assert.equal(
+    actor:getFieldPosition().fieldX,
+    vacated.fieldX,
+    "the commit replays no walk onto the drained tile"
+  )
+  Assert.equal(
+    actor:getFieldPosition().fieldZ,
+    vacated.fieldZ,
+    "the commit replays no walk onto the drained tile"
+  )
+  Assert.isTrue(w.controller:isMovementSettled(), "the follower stays settled after the commit")
+  w.mgr:dispose()
+
+  local replay = world()
+  replay.svc:setLead(0, mon())
+  tick(replay, 2)
+  driveScriptedWalk(replay, "south", "normal")
+  Assert.deepEqual(
+    replay.controller._lastFollowerCommand,
+    { direction = "south", speed = "normal" },
+    "setup remembers the executed walk"
+  )
+  replay.controller:setMovementType("follow_transition_b")
+  local replayId = assert(replay.mgr:partnerId(), "setup installs the partner")
+  local replayStart = assert(replay.mgr:getPosition(replayId), "the follower position is required")
+  replay.controller:setMovementPaused(true)
+  replay.player:beginScriptedAction({ action = "walk", direction = "east", speed = "normal" })
+  replay.controller:update()
+  Assert.equal(#replay.controller._queue, 1, "the paused replay retains its obligation")
+  replay.controller:setMovementPaused(false)
+  replay.controller:update()
+  local walker = assert(replay.mgr:getById(replayId), "the partner survives the replay start")
+  local motion = assert(walker:scriptedMotionState(), "the replay head still executes its walk")
+  Assert.equal(motion.action, "walk", "the replay head walks instead of draining as satisfied")
+  Assert.equal(walker.facing, "south", "the replay keeps the remembered direction")
+  for progress = 1, MovementCalibration.SPEED_TICKS.normal do
+    replay.player:advanceScriptedAction(progress, MovementCalibration.SPEED_TICKS.normal)
+    replay.controller:update()
+  end
+  replay.player:commitScriptedAction()
+  for _ = 1, 12 do
+    replay.controller:update()
+  end
+  walker = assert(replay.mgr:getById(replayId), "the partner survives the replay")
+  Assert.equal(
+    walker:getFieldPosition().fieldX,
+    replayStart.fieldX,
+    "the replay holds its column"
+  )
+  Assert.equal(
+    walker:getFieldPosition().fieldZ,
+    replayStart.fieldZ + 1,
+    "the replay steps the remembered walk"
+  )
+  Assert.isTrue(replay.controller:isMovementSettled(), "the replay settles")
+  replay.mgr:dispose()
+end
+
+-- A map ownership change without the controller exit signal keeps the
+-- existing behind-player publication: only the exit-teardown path recreates
+-- the follower on the player tile.
+function T.direct_map_change_without_exit_keeps_behind_player_placement()
+  local w = world({ fieldX = 10, fieldZ = 7, facing = "west" })
+  w.svc:setLead(0, mon())
+  tick(w, 2)
+  Assert.notNil(w.mgr:partnerId(), "setup installs the partner")
+  enterMap(w, 62)
+  tick(w, 3)
+  local actor = assert(w.mgr:getById("field:partner"), "the new map reinstalls the partner")
+  Assert.equal(actor.mapId, 62, "the reinstalled actor belongs to the new map")
+  Assert.equal(
+    actor:getFieldPosition().fieldX,
+    11,
+    "a direct map change still installs behind the west-facing player"
+  )
+  Assert.equal(
+    actor:getFieldPosition().fieldZ,
+    7,
+    "a direct map change still installs behind the west-facing player"
+  )
+  Assert.isTrue(w.controller:isMovementSettled(), "the reinstalled follower settles")
   w.mgr:dispose()
 end
 

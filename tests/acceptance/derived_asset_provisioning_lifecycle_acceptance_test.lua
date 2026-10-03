@@ -151,25 +151,21 @@ T.tests["the selected game receives only the semantic provisioning host"] = func
   end)
 end
 
-T.tests["producer progress runs before the running game update"] = function()
+T.tests["process cache progress runs before the running game update"] = function()
   withApp(function(result)
     local order = {}
-    local provisioner = {
-      epoch = 1,
-      retired = false,
-      host = nil,
+    App.service = {
       update = function()
-        order[#order + 1] = "provisioner:update"
+        order[#order + 1] = "service:update"
       end,
     }
-    App.provisioner = provisioner
     App.state = {
       update = function()
         order[#order + 1] = "game:update"
       end,
     }
     App.update(1 / 30)
-    Assert.deepEqual(order, { "provisioner:update", "game:update" })
+    Assert.deepEqual(order, { "service:update", "game:update" })
     Assert.deepEqual(result.events, {})
   end)
 end

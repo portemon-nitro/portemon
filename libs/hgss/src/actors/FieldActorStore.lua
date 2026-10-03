@@ -99,6 +99,17 @@ function FieldActorStore:orderedActors()
   return result
 end
 
+-- Borrowed view of the store-owned actor order. Callers must not mutate it.
+---@return FieldActorManager.Actor[]
+function FieldActorStore:orderedActorsView()
+  return self._order
+end
+
+---@return integer
+function FieldActorStore:actorCount()
+  return #self._order
+end
+
 ---@return FieldActorManager.Actor[]
 function FieldActorStore:actorsByManagerSlot()
   local actors = {}
