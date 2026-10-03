@@ -50,6 +50,7 @@ ArtifactState.KINDS = {
   -- catalog (definitions, pockets, icon atlas with manifest) and the
   -- field-bag/party presentations each own their payload and marker.
   items = true,
+  mart = true,
   bag = true,
   party = true,
   -- One staged message bank (or the family summary) per job: each bank owns

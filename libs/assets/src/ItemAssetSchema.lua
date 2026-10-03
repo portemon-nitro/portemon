@@ -13,7 +13,7 @@ local SchemaCheck = require("libs.assets.src.SchemaCheck")
 ---@class ItemAssetSchema
 local ItemAssetSchema = {}
 
-ItemAssetSchema.CATALOG_SCHEMA = "g4-item-catalog-v3"
+ItemAssetSchema.CATALOG_SCHEMA = "g4-item-catalog-v4"
 ItemAssetSchema.ICON_MANIFEST_SCHEMA = "g4-item-icons-v1"
 
 -- The eight source pockets in native order: native id, occupied-slot
@@ -38,6 +38,7 @@ ItemAssetSchema.MAX_MOVE_NATIVE_ID = 467
 
 local ITEM_FIELDS = {
   nativeId = true,
+  price = true,
   name = true,
   nameIndefinite = true,
   namePlural = true,
@@ -257,6 +258,7 @@ local function assertItem(key, record, context)
   checkNonEmptyString(record.name, context, "ITEM_CATALOG_INVALID", "item " .. key .. " name")
   checkNonEmptyString(record.nameIndefinite, context, "ITEM_CATALOG_INVALID", "item " .. key .. " nameIndefinite")
   checkNonEmptyString(record.namePlural, context, "ITEM_CATALOG_INVALID", "item " .. key .. " namePlural")
+  checkInteger(record.price, context, "ITEM_CATALOG_INVALID", "item " .. key .. " price", 0, 65535)
   if type(record.description) ~= "string" then
     fail("ITEM_CATALOG_INVALID", "item " .. key .. " description must be a string", context)
   end

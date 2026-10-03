@@ -105,6 +105,7 @@ local MANUAL_POCKETS = { "items", "medicine", "balls", "mail", "battle_items", "
 local function placeholder(nativeId, key)
   local record = {
     nativeId = nativeId,
+    price = 0,
     name = key,
     nameIndefinite = "a " .. key,
     namePlural = key .. "s",
@@ -161,6 +162,7 @@ function ItemFixture.buildAssetRoot()
       local known = KNOWN[key]
       local record = {
         nativeId = nativeId,
+        price = known.price or 0,
         name = known.name or key,
         nameIndefinite = "a " .. (known.name or key),
         namePlural = (known.name or key) .. "s",
@@ -203,7 +205,7 @@ function ItemFixture.buildAssetRoot()
     key_items = { nativeId = 7, capacity = 50, maxQuantity = 999, ordering = "manual" },
   }
   return {
-    schema = "g4-item-catalog-v3",
+    schema = "g4-item-catalog-v4",
     version = { id = "heartgold", language = "en" },
     items = items,
     pockets = pockets,

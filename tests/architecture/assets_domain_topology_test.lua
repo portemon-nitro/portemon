@@ -60,6 +60,8 @@ local SHARED = {
   "ErrorCodes",
   "ItemAssetSchema",
   "ItemCache",
+  "MartAssetSchema",
+  "MartCache",
   "MapAssetCache",
   "MenuProtocol",
   "MonAssetSchema",

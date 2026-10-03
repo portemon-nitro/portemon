@@ -115,10 +115,15 @@ function T.contract_pins_the_current_asset_identities()
       portraitManifestSchema = "g4-mon-portrait-manifest-v2",
     },
     items = {
-      cacheFormat = "item-cache-v3",
-      catalogSchema = "g4-item-catalog-v3",
+      cacheFormat = "item-cache-v4",
+      catalogSchema = "g4-item-catalog-v4",
       indexSchema = "g4-item-index-v1",
       iconManifestSchema = "g4-item-icons-v1",
+    },
+    mart = {
+      cacheFormat = "mart-cache-v1",
+      catalogSchema = "g4-mart-catalog-v1",
+      schema = "g4-mart-presentation-v1",
     },
     bag = {
       cacheFormat = "bag-cache-v2",

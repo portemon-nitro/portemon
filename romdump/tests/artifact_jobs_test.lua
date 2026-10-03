@@ -36,6 +36,7 @@ local CANONICAL_KEYS = {
   ["actors"] = "global",
   ["starter-choice"] = "global",
   ["items"] = "global",
+  mart = "global",
   ["bag"] = "global",
   ["mon-catalog"] = "global",
   ["mon-layout"] = "global",
@@ -59,6 +60,25 @@ function T.every_family_key_shape_resolves_to_a_receipt_path()
     local path = assert(ArtifactState.path(kind, key))
     Assert.equal(path, "data/generated/jobs/" .. kind .. "/" .. key .. ".lua")
   end
+end
+
+function T.mart_is_registered_for_field_runtime_and_uses_existing_catalog_dependencies()
+  Assert.isTrue(ArtifactState.KINDS.mart == true, "mart is a recognized generated family")
+
+  local runtimeSet = {}
+  for _, job in ipairs(ArtifactJobs.fieldRuntimeJobs()) do
+    runtimeSet[job.kind .. ":" .. job.key] = true
+  end
+  Assert.isTrue(runtimeSet["mart:global"] == true, "field runtime prepares the mart family")
+
+  local dependencies, complete = ArtifactJobs.dependencies("mart", "global", {})
+  Assert.isFalse(complete, "mart audio dependencies remain unresolved until the catalog is adopted")
+  local dependencySet = {}
+  for _, job in ipairs(dependencies) do
+    dependencySet[job.kind .. ":" .. job.key] = true
+  end
+  Assert.isTrue(dependencySet["items:global"] == true, "mart prices depend on the shared item catalog")
+  Assert.isTrue(dependencySet["audio-catalog:global"] == true, "mart cues depend on the shared audio catalog")
 end
 
 function T.unknown_kinds_are_rejected_before_planning()

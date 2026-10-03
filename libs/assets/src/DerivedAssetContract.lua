@@ -331,13 +331,19 @@ DerivedAssetContract.mons = {
 -- mon package and the Bag runtime resolve item identity through this class.
 -- v2 adds held-item action metadata (isHm, canHold, heldFormEffect), so a
 -- stale v1 cache without those facts must fail readiness. v3 adds semantic
--- party-use metadata (partyUse), so a stale v2 cache without those facts
--- must fail readiness.
+-- party-use metadata (partyUse), and v4 adds source item prices, so older
+-- catalogs must fail readiness.
 DerivedAssetContract.items = {
-  cacheFormat = "item-cache-v3",
-  catalogSchema = "g4-item-catalog-v3",
+  cacheFormat = "item-cache-v4",
+  catalogSchema = "g4-item-catalog-v4",
   indexSchema = "g4-item-index-v1",
   iconManifestSchema = "g4-item-icons-v1",
+}
+
+DerivedAssetContract.mart = {
+  cacheFormat = "mart-cache-v1",
+  catalogSchema = "g4-mart-catalog-v1",
+  schema = "g4-mart-presentation-v1",
 }
 
 -- The bag class carries the source-independent field-bag presentation: the

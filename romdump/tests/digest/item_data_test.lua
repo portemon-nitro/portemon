@@ -16,10 +16,12 @@ local function compiler()
   return require("romdump.src.digest.items.ItemCatalogCompiler")
 end
 
-local function memberWith(holdEffect, word)
+local function memberWith(holdEffect, word, price)
+  price = price or 100
   local low = word % 256
   local high = math.floor(word / 256) % 256
-  return string.char(100, 0, holdEffect, 0, 0, 0, 0, 0, low, high) .. string.rep("\0", 34 - 10)
+  return string.char(price % 256, math.floor(price / 256), holdEffect, 0, 0, 0, 0, 0, low, high)
+    .. string.rep("\0", 34 - 10)
 end
 
 function T.decodes_the_catalog_consumed_fields()
@@ -203,8 +205,9 @@ end
 -- normalized record through compileCatalog with a stub dump. Only the two
 -- crafted members carry party flags; every other identity decodes to an
 -- inert member with its source-required pocket so the build stays valid.
-local function catalogBytes(word, partyUse, flags, params)
-  local bytes = { 100, 0, 0, 0, 0, 0, 0, 0, word % 256, math.floor(word / 256) % 256, 0, 0, partyUse and 1 or 0, 0 }
+local function catalogBytes(word, partyUse, flags, params, price)
+  price = price or 100
+  local bytes = { price % 256, math.floor(price / 256), 0, 0, 0, 0, 0, 0, word % 256, math.floor(word / 256) % 256, 0, 0, partyUse and 1 or 0, 0 }
   for index = 1, 7 do
     bytes[#bytes + 1] = (flags and flags[index]) or 0
   end
@@ -304,6 +307,39 @@ local function stubCatalogRom(overrides)
       return "heartgold"
     end,
   }
+end
+
+function T.item_price_is_required_source_metadata_from_decode_through_catalog()
+  local zero = assert(compiler().decodeItemData(memberWith(0, 128, 0), {
+    archive = "item_data",
+    memberId = 17,
+  }))
+  local listed = assert(compiler().decodeItemData(memberWith(0, 128, 301), {
+    archive = "item_data",
+    memberId = 18,
+  }))
+  Assert.equal(zero.price, 0, "zero is a valid item price")
+  Assert.equal(listed.price, 301, "item price is decoded in source money units")
+
+  local partyPotion = catalogBytes(128, true, { 0, 0, 0, 0, 0, 0x04, 0 }, { 0, 0, 0, 0, 0, 0, 20 }, 0)
+  local partyAntidote = catalogBytes(128, true, { 0, 0, 0, 0, 0, 0x04, 0 }, { 0, 0, 0, 0, 0, 0, 20 }, 301)
+  local root = assert(compiler().compileCatalog(stubCatalogRom({ [17] = partyPotion, [18] = partyAntidote }), {
+    versionId = "heartgold",
+  }))
+  local ItemCatalog = require("libs.items.src.ItemCatalog")
+  local ItemAssetSchema = require("libs.assets.src.ItemAssetSchema")
+  local items = ItemCatalog.new(root)
+  Assert.equal(items:item("POTION").price, 0)
+  Assert.equal(items:item("ANTIDOTE").price, 301)
+  Assert.equal(math.floor(items:item("ANTIDOTE").price / 2), 150, "a consumer can derive the sale value from catalog metadata")
+  Assert.equal(items:item("POTION").pocket, "medicine")
+  Assert.equal(items:item("POTION").partyUse.kind, "medicine")
+  Assert.equal(items:item("POTION").partyUse.restore.amount, 20)
+  Assert.isFalse(items:item("POTION").preventToss)
+  Assert.equal(items:item("POTION").icon, "POTION", "existing icon metadata survives price projection")
+
+  root.items.POTION.price = nil
+  Assert.isFalse(ItemAssetSchema.isValidCatalog(root), "the strict item schema rejects a missing price")
 end
 
 function T.mixed_party_families_fail_the_catalog_build()
