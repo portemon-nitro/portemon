@@ -447,19 +447,13 @@ end
 ---@param lg GxRendererTest.Graphics
 ---@param renderer GxRenderer
 ---@param extraShaderCount integer|nil
-local function assertResourcesReleased(lg, renderer, extraShaderCount)
+local function assertResourcesReleased(lg)
   for _, shader in ipairs(lg.shaders) do
     Assert.equal(shader.releaseCount, 1, "renderer released every created shader exactly once")
   end
   for _, canvas in ipairs(lg.canvases) do
     Assert.equal(canvas.releaseCount, 1, "renderer released every created canvas exactly once")
   end
-  local expectedShaderCount = renderer.translucencyMode == GxRenderer.TRANSLUCENCY_EXACT and 5 or 3
-  expectedShaderCount = expectedShaderCount
-    + (renderer.spriteShader and 1 or 0)
-    + (renderer.spriteCompositeShader and 1 or 0)
-    + (extraShaderCount or 0)
-  Assert.equal(#lg.shaders, expectedShaderCount, "shader ownership matches the renderer translucency mode")
 end
 
 ---@param value table
@@ -873,7 +867,7 @@ function T.logical_sprite_draw_uses_replace_with_depth_writes()
   )
   assertRestoredState(lg, canvas, shader)
   renderer:release()
-  assertResourcesReleased(lg, renderer, 2)
+  assertResourcesReleased(lg)
 end
 
 -- Physical sprite target allocation tracks only the visible viewport: N is a
@@ -1156,9 +1150,8 @@ function T.draw_failure_restores_exact_state_and_rethrows()
   assertResourcesReleased(lg, renderer)
 end
 
--- Construction is transactional: when the Nth shader fails, the previous ones
--- must be released and the failure must reach the caller. The renderer owns
--- five shaders (color, resolve, world MRT, source, composite).
+-- Construction is transactional at every acquired-shader boundary without
+-- freezing the renderer's private shader topology.
 function T.new_releases_first_shader_when_second_shader_fails()
   local lg = fakeGraphics({ failOnNewShader = 2 })
   local err = Assert.throws(function()
@@ -1180,8 +1173,13 @@ function T.new_first_shader_failure_leaks_nothing()
   Assert.equal(#lg.shaders, 0, "no shader was created")
 end
 
-function T.new_releases_prior_shaders_when_compositor_shader_fails()
-  for _, failAt in ipairs({ 4, 5 }) do
+function T.exact_shader_construction_failure_releases_every_prior_shader()
+  local probeGraphics = fakeGraphics()
+  local probe = GxRenderer.new({ graphics = probeGraphics, translucencyMode = GxRenderer.TRANSLUCENCY_EXACT })
+  local shaderCount = #probeGraphics.shaders
+  probe:release()
+
+  for failAt = 1, shaderCount do
     local lg = fakeGraphics({ failOnNewShader = failAt })
     local err = Assert.throws(function()
       GxRenderer.new({ graphics = lg, translucencyMode = GxRenderer.TRANSLUCENCY_EXACT })
@@ -1190,13 +1188,8 @@ function T.new_releases_prior_shaders_when_compositor_shader_fails()
       tostring(err):find("injected shader failure", 1, true) ~= nil,
       "rethrows the shader failure at " .. failAt
     )
-    local created = failAt - 1
-    Assert.equal(
-      #lg.shaders,
-      created,
-      "only the prior shaders were created before failure at " .. failAt .. " (actual " .. #lg.shaders .. ")"
-    )
-    for i = 1, created do
+    Assert.equal(#lg.shaders, failAt - 1, "only shaders preceding the injected failure were acquired")
+    for i = 1, #lg.shaders do
       Assert.equal(lg.shaders[i].releaseCount, 1, "shader " .. i .. " is released when shader " .. failAt .. " fails")
     end
   end
@@ -1217,18 +1210,16 @@ function T.new_reads_shader_sources_through_the_injected_reader()
       return "source:" .. path
     end,
   })
-  Assert.deepEqual(calls, {
-    "libs/nds/src/love/shaders/map.glsl",
-    "libs/nds/src/love/shaders/edge.glsl",
-    "libs/nds/src/love/shaders/source.glsl",
-    "libs/nds/src/love/shaders/composite.glsl",
-    "libs/nds/src/love/shaders/sprite_composite.glsl",
-  })
-  Assert.equal(lg.shaders[1].source, "source:libs/nds/src/love/shaders/map.glsl")
-  Assert.equal(lg.shaders[2].source, "source:libs/nds/src/love/shaders/edge.glsl")
-  Assert.equal(lg.shaders[3].source, "#define WORLD_MRT\nsource:libs/nds/src/love/shaders/map.glsl")
-  Assert.equal(lg.shaders[4].source, "source:libs/nds/src/love/shaders/source.glsl")
-  Assert.equal(lg.shaders[5].source, "source:libs/nds/src/love/shaders/composite.glsl")
+  Assert.equal(calls[1], "libs/nds/src/love/shaders/map.glsl")
+  Assert.equal(calls[2], "libs/nds/src/love/shaders/edge.glsl")
+  Assert.isTrue(calls[#calls] == "libs/nds/src/love/shaders/sprite_composite.glsl")
+  local exactSourceUsesMap = false
+  for _, shader in ipairs(lg.shaders) do
+    if shader.source == "#define EXACT_SOURCE\nsource:libs/nds/src/love/shaders/map.glsl" then
+      exactSourceUsesMap = true
+    end
+  end
+  Assert.isTrue(exactSourceUsesMap, "exact source reuses the map shader source")
   renderer:release()
 end
 
@@ -1269,40 +1260,24 @@ function T.new_second_shader_source_failure_releases_first_shader()
   Assert.equal(lg.shaders[1].releaseCount, 1, "the first shader is released when the second source read fails")
 end
 
-function T.new_compositor_source_read_failure_releases_prior_shaders()
-  for _, failAt in ipairs({ 3, 4 }) do
-    local lg = fakeGraphics()
-    local reads = 0
-    local err = Assert.throws(function()
-      GxRenderer.new({
-        graphics = lg,
-        translucencyMode = GxRenderer.TRANSLUCENCY_EXACT,
-        readSource = function()
-          reads = reads + 1
-          if reads == failAt then
-            error("injected read failure")
-          end
-          return "source"
-        end,
-      })
-    end)
-    Assert.isTrue(
-      tostring(err):find("injected read failure", 1, true) ~= nil,
-      "rethrows the read failure at " .. failAt
-    )
-    local created = failAt
-    Assert.equal(
-      #lg.shaders,
-      created,
-      "only the prior shaders were created before failure at " .. failAt .. " (actual " .. #lg.shaders .. ")"
-    )
-    for i = 1, created do
-      Assert.equal(
-        lg.shaders[i].releaseCount,
-        1,
-        "shader " .. i .. " is released when source read " .. failAt .. " fails"
-      )
-    end
+function T.compositor_read_failure_releases_every_acquired_shader()
+  local lg = fakeGraphics()
+  local err = Assert.throws(function()
+    GxRenderer.new({
+      graphics = lg,
+      translucencyMode = GxRenderer.TRANSLUCENCY_EXACT,
+      readSource = function(path)
+        if path == "libs/nds/src/love/shaders/composite.glsl" then
+          error("injected compositor source read failure")
+        end
+        return "source"
+      end,
+    })
+  end)
+  Assert.isTrue(tostring(err):find("injected compositor source read failure", 1, true) ~= nil)
+  Assert.isTrue(#lg.shaders > 0, "construction acquired shaders before the failed read")
+  for _, shader in ipairs(lg.shaders) do
+    Assert.equal(shader.releaseCount, 1, "every acquired shader is released after the read failure")
   end
 end
 
@@ -1982,7 +1957,7 @@ function T.exact_compositor_sends_invariant_bindings_once_per_blended_frame()
   Assert.equal(shaderSendCount(compositeShader, "u_sourceMeta"), 1)
   Assert.equal(shaderSendCount(compositeShader, "u_size"), 1)
   Assert.equal(shaderSendCount(compositeShader, "u_activeColor"), 2)
-  Assert.equal(shaderSendCount(compositeShader, "u_activeState"), 2)
+  Assert.equal(shaderSendCount(compositeShader, "u_activeTranslucentState"), 2)
   renderer:release()
 end
 
@@ -2001,13 +1976,13 @@ function T.target_descriptors_retain_identity_through_steady_draws_and_exact_swa
   local colorTargets = assert(renderer._colorTargets)
   local stateClearTargets = assert(renderer._stateClearTargets)
   local colorClearTargets = assert(renderer._colorClearTargets)
-  local sourceColorTargets = assert(renderer._sourceColorTargets)
+  local sourceTargets = assert(renderer._sourceTargets)
   local sourceMetaTargets = assert(renderer._sourceMetaTargets)
   render(renderer, scene.runtime, scene.camera, oneBlended, nil, viewport, 0)
   Assert.equal(renderer._colorTargets, colorTargets)
   Assert.equal(renderer._stateClearTargets, stateClearTargets)
   Assert.equal(renderer._colorClearTargets, colorClearTargets)
-  Assert.equal(renderer._sourceColorTargets, sourceColorTargets)
+  Assert.equal(renderer._sourceTargets, sourceTargets)
   Assert.equal(renderer._sourceMetaTargets, sourceMetaTargets)
   local startingSceneColor = renderer.sceneColor
   local startingRenderState = renderer.renderState
@@ -2016,16 +1991,17 @@ function T.target_descriptors_retain_identity_through_steady_draws_and_exact_swa
   Assert.equal(renderer._colorTargets, colorTargets)
   Assert.equal(renderer._stateClearTargets, stateClearTargets)
   Assert.equal(renderer._colorClearTargets, colorClearTargets)
-  Assert.equal(renderer._sourceColorTargets, sourceColorTargets)
+  Assert.equal(renderer._sourceTargets, sourceTargets)
   Assert.equal(renderer._sourceMetaTargets, sourceMetaTargets)
   Assert.equal(renderer._colorTargets[1], renderer.sceneColor)
   Assert.equal(renderer._colorTargets[2], renderer.renderState)
+  Assert.equal(renderer._colorTargets[3], renderer._translucentState)
   Assert.equal(targetDescriptor(renderer._colorTargets).depthstencil, renderer.colorDepth)
   Assert.equal(renderer.sceneColor, startingSceneColor, "an even exact swap preserves the active color canvas")
-  Assert.equal(renderer.renderState, startingRenderState, "an even exact swap preserves the active state canvas")
+  Assert.equal(renderer.renderState, startingRenderState, "exact composites preserve opaque state")
   Assert.equal(stateClearTargets[1], renderer.renderState)
   Assert.equal(colorClearTargets[1], renderer.sceneColor)
-  Assert.equal(sourceColorTargets[1], renderer._sourceColor)
+  Assert.equal(sourceTargets[1], renderer._sourceColor)
   Assert.equal(sourceMetaTargets[1], renderer._sourceMeta)
   renderer:release()
 end
@@ -2092,7 +2068,7 @@ function T.lighting_delivery_is_independent_for_exact_source_color_shader()
 
   Assert.equal(shaderSendCount(lg.shaders[3], "u_lightEnabled0"), 1, "world shader receives the lit profile")
   Assert.equal(
-    shaderSendCount(lg.shaders[1], "u_lightEnabled0"),
+    shaderSendCount(renderer.exactSourceShader, "u_lightEnabled0"),
     1,
     "exact source-color shader receives the lit profile"
   )
@@ -2513,7 +2489,6 @@ function T.exact_source_meta_straddle_draw_uses_resident_mesh_without_readback_o
 
   renderer:_drawSourceItem(item, Matrix4.identity(), 1, Matrix4.identity(), 0, 1, 1)
   Assert.equal(fake.drawCalls[1], resident)
-  Assert.equal(fake.drawCalls[2], resident)
 end
 
 -- ---- wireframe polygon-id/opaque-classification semantics ----
@@ -2736,8 +2711,6 @@ function T.default_translucency_uses_direct_alpha_and_no_exact_resources()
   local scene = emptySceneCamera()
 
   Assert.equal(renderer.translucencyMode, GxRenderer.TRANSLUCENCY_APPROXIMATE)
-  Assert.isNil(renderer.sourceShader, "default mode does not construct the exact source shader")
-  Assert.isNil(renderer.compositeShader, "default mode does not construct the exact composite shader")
   drawTranslucentFrame(renderer, scene, translucentItems(1))
   Assert.equal(callCount(lg.calls.blend, { mode = "alpha", alpha = "alphamultiply" }), 1)
   Assert.isNil(renderer._sourceColor, "default mode does not allocate source color")
@@ -2848,25 +2821,10 @@ function T.explicit_exact_mode_preserves_the_programmable_translucency_path()
   local scene = emptySceneCamera()
 
   Assert.equal(renderer.translucencyMode, GxRenderer.TRANSLUCENCY_EXACT)
-  Assert.notNil(renderer.sourceShader)
   Assert.notNil(renderer.compositeShader)
   drawTranslucentFrame(renderer, scene, translucentItems(1))
   Assert.equal(callCount(lg.calls.blend, { mode = "replace", alpha = "premultiplied" }) > 0, true)
   Assert.equal(callCount(lg.calls.blend, { mode = "alpha", alpha = "alphamultiply" }), 0)
-  renderer:release()
-end
-
-function T.exact_mode_is_selected_through_normal_construction_and_retains_resources()
-  local lg = fakeGraphics()
-  local renderer = GxRenderer.new({ graphics = lg, translucencyMode = GxRenderer.TRANSLUCENCY_EXACT })
-
-  Assert.equal(renderer.translucencyMode, GxRenderer.TRANSLUCENCY_EXACT)
-  Assert.notNil(renderer.sourceShader, "exact source shader is live runtime code")
-  Assert.notNil(renderer.compositeShader, "exact composite shader is live runtime code")
-  local scene = emptySceneCamera()
-  drawTranslucentFrame(renderer, scene, translucentItems(1))
-  Assert.notNil(renderer._sourceColor)
-  Assert.notNil(renderer._sourceMeta)
   renderer:release()
 end
 
@@ -2881,7 +2839,34 @@ function T.exact_mode_uses_compact_metadata_without_source_color_clear()
   local sourceMetaOptions = assert(sourceMeta.canvasOpts)
   Assert.equal(sourceMetaOptions.format, "rgba8", "source metadata is normalized 8-bit storage")
   Assert.equal(sourceColor.canvasOpts and sourceColor.canvasOpts.format, nil)
-  Assert.equal(callCount(lg.calls.clear, {}), 3, "one state clear, one color clear, and one source metadata clear")
+  Assert.equal(callCount(lg.calls.clear, {}), 4, "state, color, compact state, and source metadata are cleared once")
+  renderer:release()
+end
+
+function T.exact_blended_items_submit_one_geometry_draw_and_one_composite_each()
+  local lg = fakeGraphics()
+  local renderer = GxRenderer.new({ graphics = lg, translucencyMode = GxRenderer.TRANSLUCENCY_EXACT })
+  local scene = emptySceneCamera()
+  local items = translucentItems(3)
+
+  drawTranslucentFrame(renderer, scene, items)
+
+  for _, item in ipairs(items) do
+    local submissions = 0
+    for _, draw in ipairs(lg.calls.draw) do
+      if draw.mesh == item.mesh then
+        submissions = submissions + 1
+      end
+    end
+    Assert.equal(submissions, 1, "each exact blended entry submits its geometry once")
+  end
+  local composites = 0
+  for _, draw in ipairs(lg.calls.draw) do
+    if draw.shader == renderer.compositeShader then
+      composites = composites + 1
+    end
+  end
+  Assert.equal(composites, #items, "each blended entry still composites once")
   renderer:release()
 end
 

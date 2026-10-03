@@ -2418,12 +2418,17 @@ function T.translucent_draw_does_not_overwrite_final_state_established_by_opaque
   local function stateInterior(renderer, parts)
     render(renderer, emptyRuntime(), camera, parts, nil, viewport)
     local img = renderer.renderState:newImageData()
+    local compactImg = assert(renderer._translucentState):newImageData()
     local ax, ay = statePixel(renderer, 382, 178)
     local bx, by = statePixel(renderer, 382, 302)
     local a, b = { img:getPixel(ax, ay) }, { img:getPixel(bx, by) }
+    local compactA, compactB = { compactImg:getPixel(ax, ay) }, { compactImg:getPixel(bx, by) }
     -- Whichever sample is not the rear-plane clear (r == 1.0, id 63) carries
     -- the drawn geometry's own renderState value.
-    return a[1] < 0.99 and a or b
+    if a[1] < 0.99 then
+      return { opaque = a, compact = compactA }
+    end
+    return { opaque = b, compact = compactB }
   end
 
   local renderer = scope:own(exactRenderer())
@@ -2441,14 +2446,14 @@ function T.translucent_draw_does_not_overwrite_final_state_established_by_opaque
   local withTranslucentOnTop = stateInterior(renderer, { { opaqueUnder, translucentOver } })
 
   Assert.near(
-    withTranslucentOnTop[1],
-    baseline[1],
+    withTranslucentOnTop.opaque[1],
+    baseline.opaque[1],
     1 / 255,
     "a non-depth-writing translucent draw must not replace the opaque edge polygon id underneath it"
   )
   Assert.near(
-    withTranslucentOnTop[2],
-    baseline[2],
+    withTranslucentOnTop.opaque[2],
+    baseline.opaque[2],
     1,
     "a non-depth-writing translucent draw must not replace the opaque depth value underneath it"
   )
@@ -2457,17 +2462,17 @@ function T.translucent_draw_does_not_overwrite_final_state_established_by_opaque
   -- source here has fog disabled, so the combined gate becomes 0 even though
   -- the opaque destination's gate was 1.
   Assert.near(
-    withTranslucentOnTop[3],
+    withTranslucentOnTop.compact[3],
     0.0,
     1 / 255,
     "a fog-disabled translucent draw ANDs the destination fog gate to 0"
   )
-  -- The last-translucent-ID encoding records the accepted source's polygon id.
+  -- Compact A records the accepted source's polygon ID.
   Assert.near(
-    withTranslucentOnTop[4],
+    withTranslucentOnTop.compact[4],
     6 / 64,
     1 / 255,
-    "the accepted translucent source records its polygon id 5 as (5+1)/64 in state A"
+    "the accepted translucent source records its polygon id 5 as (5+1)/64 in compact A"
   )
 end
 
@@ -3359,7 +3364,7 @@ end
 -- blend, max destination alpha, same-ID rejection, fog-gate AND,
 -- last-translucent-ID state, and depth preservation. Every fixture drives the
 -- real GxRenderer:draw at a 640x480 identity-camera viewport and reads back
--- the real sceneColor/renderState canvases.
+-- the real sceneColor, opaque renderState, and compact translucent state.
 --
 -- Expected integers below are hand-derived from the compositor's equations,
 -- never computed by calling production code:
@@ -3368,7 +3373,7 @@ end
 --    dstA5==0            -> out = src (replace)
 --    else w = srcA5 + 1  -> out = ((src*w) + (dst*(32-w))) >> 5
 --    outA5  = max(srcA5, dstA5)
--- with state A = (id + 1)/64 (0 = none), B = destFogGate AND srcFogEnabled.
+-- with compact A = (id + 1)/64 (0 = none), B = destFogGate AND srcFogEnabled.
 
 local ALPHA5_BYTE = {}
 for a5 = 0, 31 do
@@ -3428,6 +3433,55 @@ local function translucentQuad(scope, alpha5Byte, r6, g6, b6, polygonId, fogEnab
     fogEnabled = fogEnabled == true,
     center = { 0.5, 0.5, 0 },
   }
+end
+
+function T.wireframe_after_translucency_clears_compact_overlay_ownership(scope)
+  local renderer = scope:own(exactRenderer())
+  local wireMesh = scope:own(syntheticMesh({
+    { 0, 0, 0, 0, 0, 0, 0, 1, 1, 1, 1, 1, 0 },
+    { 1, 0, 0, 0, 0, 0, 0, 1, 1, 1, 1, 1, 0 },
+    { 0, 1, 0, 0, 0, 0, 0, 1, 1, 1, 1, 1, 0 },
+  }))
+  local wireframe = {
+    mesh = wireMesh,
+    material = { alphaClass = "wireframe", texMatrix = IDENTITY_NORMAL },
+    transform = IDENTITY,
+    modelNormal = IDENTITY_NORMAL,
+    alphaClass = "wireframe",
+    cullMode = "none",
+    polygonAlpha = 1,
+    polygonMode = "modulation",
+    polygonId = 1,
+    lightMask = 0,
+    alphaCutoff = 0.5 / 255,
+    fogEnabled = false,
+    center = { 0.5, 0.5, 0 },
+  }
+  local translucent = translucentQuad(scope, ALPHA5_BYTE[15], 63, 0, 0, 7, true)
+
+  render(
+    renderer,
+    emptyRuntime(),
+    fixedCamera(),
+    { { translucent, wireframe } },
+    nil,
+    FieldViewport.new(640, 480, { mode = "strict" })
+  )
+
+  local opaque = renderer.renderState:newImageData()
+  local compact = assert(renderer._translucentState, "exact renderer retains compact translucency state"):newImageData()
+  local sawWireframe = false
+  for y = 0, renderer.colorH - 1 do
+    for x = 0, renderer.colorW - 1 do
+      local id = opaque:getPixel(x, y)
+      if math.abs(id - 1 / 63) < 1 / 255 then
+        local _, _, _, lastTranslucentId = compact:getPixel(x, y)
+        Assert.near(lastTranslucentId, 0, 1 / 255, "wireframe ownership clears the compact translucent ID")
+        sawWireframe = true
+      end
+    end
+  end
+  Assert.isTrue(sawWireframe, "the later wireframe pass owns rasterized edge pixels")
 end
 
 local centerReadback
@@ -3593,7 +3647,12 @@ centerReadback = function(_, renderer, camera, runtime, parts)
   local color = scenePixel(renderer, colorImg, 320, 240)
   local sx, sy = statePixel(renderer, 320, 240)
   local state = statePixelAt(renderer, stateImg, sx, sy)
-  return { color = color, state = state }
+  local compact = nil
+  if renderer._translucentState then
+    local compactImg = renderer._translucentState:newImageData()
+    compact = statePixelAt(renderer, compactImg, sx, sy)
+  end
+  return { color = color, state = state, compact = compact }
 end
 
 -- The fixture-specific hard-coded expected integer results for the DS-weight
@@ -3807,19 +3866,21 @@ local function fieldPathReadback(_, fieldRenderer, camera, parts)
   local color = scenePixel(backend, colorImg, 320, 240)
   local sx, sy = statePixel(backend, 320, 240)
   local state = statePixelAt(backend, stateImg, sx, sy)
-  return { color = color, state = state }
+  local compact = backend._translucentState and statePixelAt(backend, backend._translucentState:newImageData(), sx, sy)
+  return { color = color, state = state, compact = compact }
 end
 
 -- The same-ID rejection scenario: two overlapping translucent draws with the
 -- SAME polygon ID must
--- blend only once -- the first accepted fragment -- and the state A channel
--- must encode that ID. Expected color: opaque id-20 (RGB6 31,31,31) blended
--- once with the first (red 51,17,17 at alpha5 8) = RGB6 (21,25,25); state A
+-- blend only once -- the first accepted fragment -- and compact state A must
+-- encode that ID. Expected color: opaque id-20 (RGB6 31,31,31) blended once
+-- with the first (red 51,17,17 at alpha5 8) = RGB6 (21,25,25); compact A
 -- = (7+1)/64.
 function T.same_translucent_id_rejects_the_second_blend(scope)
   local renderer = scope:own(exactRenderer())
   local first6, second6 = { 51, 17, 17 }, { 17, 51, 17 }
   local read = twoTranslucentOverOpaque(scope, renderer, { 7, 7 }, first6, second6)
+  Assert.notNil(read.compact, "exact translucency exposes its private compact state for semantic readback")
 
   local expected6 = {
     dsBlend6(first6[1], 31, 8),
@@ -3851,7 +3912,7 @@ function T.same_translucent_id_rejects_the_second_blend(scope)
   )
 
   -- State A: the accepted source polygon ID, encoded (id + 1)/64.
-  Assert.near(read.state[4], 8 / 64, 1 / 255, "state A must encode the accepted first polygon id 7 as (7+1)/64")
+  Assert.near(read.compact[4], 8 / 64, 1 / 255, "compact A must encode the accepted first polygon id 7 as (7+1)/64")
 end
 
 -- The production field-path regression: the same overlapping same-ID draws
@@ -3866,6 +3927,7 @@ function T.field_path_same_translucent_id_rejects_the_second_blend(scope)
   local first6, second6 = { 51, 17, 17 }, { 17, 51, 17 }
   local parts = translucentPairParts(scope, { 7, 7 }, first6, second6)
   local read = fieldPathReadback(scope, fieldRenderer, camera, parts)
+  Assert.notNil(read.compact, "field exact translucency retains compact state for semantic readback")
 
   local expected6 = {
     dsBlend6(first6[1], 31, 8),
@@ -3896,24 +3958,25 @@ function T.field_path_same_translucent_id_rejects_the_second_blend(scope)
     "field path: the second (green-tinted) fragment must not blend"
   )
   Assert.near(
-    read.state[4],
+    read.compact[4],
     8 / 64,
     1 / 255,
-    "field path state A must encode the accepted first polygon id 7 as (7+1)/64"
+    "field path compact A must encode the accepted first polygon id 7 as (7+1)/64"
   )
 end
 
 -- The different-ID scenario: the self-rejection is keyed to ID equality, not
 -- a blanket
 -- one-translucent-fragment rule: with DIFFERENT polygon IDs both fragments
--- blend, in the deterministic order (second fragment drawn last), and state A
+-- blend, in the deterministic order (second fragment drawn last), and compact A
 -- encodes the second accepted ID. Expected color: bg blended with first
--- (RGB6 51,17,17 at a5 8) then with second (RGB6 17,51,17 at a5 8); state A
+-- (RGB6 51,17,17 at a5 8) then with second (RGB6 17,51,17 at a5 8); compact A
 -- = (9+1)/64.
 function T.different_translucent_ids_both_blend(scope)
   local renderer = scope:own(exactRenderer())
   local first6, second6 = { 51, 17, 17 }, { 17, 51, 17 }
   local read = twoTranslucentOverOpaque(scope, renderer, { 7, 9 }, first6, second6)
+  Assert.notNil(read.compact, "exact translucency exposes its private compact state for semantic readback")
 
   local step1 = {
     dsBlend6(first6[1], 31, 8),
@@ -3945,7 +4008,7 @@ function T.different_translucent_ids_both_blend(scope)
     "different-ID: blue must show both blends in order"
   )
 
-  Assert.near(read.state[4], 10 / 64, 1 / 255, "state A must encode the second accepted polygon id 9 as (9+1)/64")
+  Assert.near(read.compact[4], 10 / 64, 1 / 255, "compact A must encode the second accepted polygon id 9 as (9+1)/64")
 end
 
 -- The non-depth-writing scenario: ordinary (depth-write false) translucency
@@ -4002,10 +4065,14 @@ function T.non_depth_writing_preserves_opaque_id_and_depth_and_ands_fog(scope)
       fogTrue.state[4]
     )
   )
-  Assert.near(fogFalse.state[3], 0.0, 1 / 255, "B must be dest fog (1) AND src fog (0) = 0")
-  Assert.near(fogTrue.state[3], 1.0, 1 / 255, "B must be dest fog (1) AND src fog (1) = 1")
-  Assert.near(fogFalse.state[4], 8 / 64, 1 / 255, "A must encode the source translucent id 7 in the fog-false case")
-  Assert.near(fogTrue.state[4], 8 / 64, 1 / 255, "A must encode the source translucent id 7 in the fog-true case")
+  Assert.notNil(fogFalse.compact, "exact translucency retains compact fog and ID state")
+  Assert.notNil(fogTrue.compact, "exact translucency retains compact fog and ID state")
+  Assert.near(fogFalse.state[3], 1.0, 1 / 255, "opaque B remains the destination fog gate")
+  Assert.near(fogTrue.state[3], 1.0, 1 / 255, "opaque B remains unchanged by translucency")
+  Assert.near(fogFalse.compact[3], 0.0, 1 / 255, "compact B is dest fog (1) AND src fog (0) = 0")
+  Assert.near(fogTrue.compact[3], 1.0, 1 / 255, "compact B is dest fog (1) AND src fog (1) = 1")
+  Assert.near(fogFalse.compact[4], 8 / 64, 1 / 255, "compact A encodes source translucent ID 7 in the fog-false case")
+  Assert.near(fogTrue.compact[4], 8 / 64, 1 / 255, "compact A encodes source translucent ID 7 in the fog-true case")
   Assert.near(fogFalse.state[2], fogTrue.state[2], 1, "the DS Z depth must be preserved identically in both cases")
 end
 
@@ -4030,6 +4097,12 @@ function T.final_resolve_uses_the_state_paired_with_an_odd_composite_result(scop
   local scene = scenePixel(renderer, renderer.sceneColor:newImageData(), 320, 240)
   local sx, sy = statePixel(renderer, 320, 240)
   local state = statePixelAt(renderer, renderer.renderState:newImageData(), sx, sy)
+  local compact = statePixelAt(
+    renderer,
+    assert(renderer._translucentState, "exact renderer retains compact translucency state"):newImageData(),
+    sx,
+    sy
+  )
   harness.restore()
   love.graphics.setCanvas()
 
@@ -4039,7 +4112,8 @@ function T.final_resolve_uses_the_state_paired_with_an_odd_composite_result(scop
   local density = DsFog.density(state[2], runtime.fog.offset, runtime.fog.slope, fogTable)
   local fogged = DsFog.blend(scene6, 0, density) / 63 * scale
 
-  Assert.near(state[3], 0, 1 / 255, "accepted translucency ANDs the destination and source fog gates")
+  Assert.near(state[3], 1, 1 / 255, "opaque fog state remains unchanged by translucency")
+  Assert.near(compact[3], 0, 1 / 255, "accepted translucency ANDs the destination and source fog gates")
   Assert.near(final[1], scene[1], 1 / 255 * scale, "final resolve uses the active post-composite fog state")
   Assert.near(final[2], scene[2], 1 / 255 * scale)
   Assert.near(final[3], scene[3], 1 / 255 * scale)
@@ -4066,7 +4140,8 @@ function T.translucent_geometry_behind_opaque_geometry_is_rejected_by_shared_dep
       "farther translucent geometry must not contribute to the opaque center color"
     )
   end
-  Assert.near(withFarTranslucency.state[4], 0, 1 / 255, "rejected translucency must not record a translucent ID")
+  Assert.notNil(withFarTranslucency.compact, "exact renderer retains compact translucency state")
+  Assert.near(withFarTranslucency.compact[4], 0, 1 / 255, "rejected translucency must not record a compact ID")
   Assert.near(
     withFarTranslucency.state[2],
     opaqueOnly.state[2],
@@ -4077,11 +4152,11 @@ end
 
 -- Mixed-alpha compositor contract: a mixed
 -- material's partial-alpha texels must go through the compositor (they
--- therefore become translucent state: state A records the source ID) while
--- its fully-opaque texels keep the opaque state path (state A stays 0 -- no
+-- therefore become translucent state: compact A records the source ID) while
+-- its fully-opaque texels keep the opaque state path (compact A stays 0 -- no
 -- translucent overlay -- and the opaque ID/depth/fog-gate are stamped). This
 -- extends the existing mixed_modulate_splits_opaque_and_translucent test
--- without weakening it: the partial texels' new state-A encoding is the
+-- without weakening it: the partial texels' compact-A encoding is the
 -- compositor
 -- delta, asserted per column.
 function T.mixed_partial_texels_use_the_compositor_and_opaque_texels_do_not(scope)
@@ -4094,6 +4169,7 @@ function T.mixed_partial_texels_use_the_compositor_and_opaque_texels_do_not(scop
 
   local colorImg = renderer.sceneColor:newImageData()
   local stateImg = renderer.renderState:newImageData()
+  local compactImg = assert(renderer._translucentState, "exact renderer retains compact translucency state"):newImageData()
   local alphas5 = { 0, 1, 15, 30, 31 }
 
   for i, a5 in ipairs(alphas5) do
@@ -4123,26 +4199,29 @@ function T.mixed_partial_texels_use_the_compositor_and_opaque_texels_do_not(scop
     else
       stateValue = a
     end
+    local compactA = { compactImg:getPixel(sx, sy) }
+    local compactB = { compactImg:getPixel(mirrorX, mirrorY) }
+    local compactValue = stateValue == a and compactA or compactB
     local isOpaqueColumn = a5 == 31
 
     if isOpaqueColumn then
       -- Opaque texel: opaque state path only -- the existing contract.
       Assert.near(color[1], 1.0 * colorScale, 0.08 * colorScale, "alpha5=31 texel stays fully opaque")
       Assert.isTrue(stateValue[1] < 0.99, "alpha5=31 texel stamps opaque state (id " .. item.polygonId .. ")")
-      Assert.near(stateValue[4], 0.0, 1 / 255, "an opaque texel's state A must stay 0 (no translucent overlay)")
+      Assert.near(compactValue[4], 0.0, 1 / 255, "an opaque texel's compact A stays 0 (no translucent overlay)")
     elseif a5 == 0 then
       -- Fully transparent texel: discarded by the translucent predicate --
-      -- no color and no state A (it never reaches the compositor).
+      -- no color or compact state (it never reaches the compositor).
       Assert.isTrue(color[1] <= 0.05 * colorScale, "alpha5=0 texel discards (black clear)")
-      Assert.near(stateValue[4], 0.0, 1 / 255, "a discarded texel's state A stays 0 (never accepted)")
+      Assert.near(compactValue[4], 0.0, 1 / 255, "a discarded texel's compact A stays 0 (never accepted)")
     else
-      -- Partial texel: compositor path -- state A must record this source
+      -- Partial texel: compositor path -- compact A must record this source
       -- ID, exactly like any accepted translucent source.
       Assert.near(
-        stateValue[4],
+        compactValue[4],
         (item.polygonId + 1) / 64,
         1 / 255,
-        "a partial-alpha mixed texel must record its translucent id in state A (a5=" .. a5 .. ")"
+        "a partial-alpha mixed texel must record its translucent id in compact A (a5=" .. a5 .. ")"
       )
     end
   end

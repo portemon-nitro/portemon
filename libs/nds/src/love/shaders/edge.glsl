@@ -2,8 +2,8 @@
 // upscale to presentation resolution.
 // sceneColor target (the map shader's color-only output) and the same-resolution
 // renderState target (map.glsl's WORLD_MRT state output: red edge polygon ID, green
-// DS-quantized depth, blue per-polygon fog gate, alpha last-translucent-ID
-// encoding). It resolves each pixel through explicit fogged candidates:
+// DS-quantized depth, and blue per-polygon fog gate; compact translucent
+// ownership is supplied separately in exact mode. It resolves each pixel:
 // scene candidate -> fog(scene) and, when marked, edge candidate
 // vec4(edgeColorFor(id), scene.a) -> fog(edge candidate), then the project's
 // current antialias approximation (50% mix of the two fogged candidates when
@@ -14,7 +14,8 @@
 // exact DS path would fog distinct top and lower buffers with their own depth
 // and fog state before coverage; this pass has only one depth/fog state and
 // cannot model that distinction, so the limitation is documented rather than
-// hidden. State A (last translucent ID) is not consumed by edge or fog.
+// hidden. Exact mode uses compact state A/B to select the effective fog gate;
+// edge ID/depth always remain in the immutable renderState.
 //
 // The color and state targets have identical bounded world-raster dimensions
 // and identical screen-space coverage (see GxRenderer:_ensureTargets). The
@@ -88,6 +89,9 @@
 
 #ifdef PIXEL
 uniform Image u_renderState;
+#ifdef EXACT_FOG_STATE
+uniform Image u_translucentState;
+#endif
 uniform vec2 u_stateSize; // the state target's actual width/height (not its reciprocal)
 uniform int u_edgeRadiusPx; // integer sampling distance: the rounded field logical pixel scale, >= 1
 uniform vec3 u_edgeColors[8];
@@ -121,8 +125,7 @@ vec2 statePixelCenter(vec2 uv)
 // screen edge must behave like the rear plane, not like a clamped copy of the
 // center pixel (which would suppress a silhouette at the screen boundary).
 // Only the RGB channels are read here (the edge/fog pass never samples the
-// last-translucent-ID encoding in A); the clear's alpha 0 is the compositor's
-// "no translucent overlay" value.
+// alpha is zero; compact translucent ownership lives in a separate target.
 vec3 rearPlaneState()
 {
   return vec3(1.0, 16777215.0, 0.0);
@@ -309,7 +312,12 @@ vec4 effect(vec4 color, Image tex, vec2 uv, vec2 screen_coords)
   vec3 center = stateSample(uv);
   float centerId = center.r;
   float centerDepth = center.g;
+#ifdef EXACT_FOG_STATE
+  vec4 translucent = Texel(u_translucentState, statePixelCenter(uv));
+  float centerFogGate = translucent.a > 0.0 ? translucent.b : center.b;
+#else
   float centerFogGate = center.b;
+#endif
   int centerPolygonId = int(floor(centerId * CLEAR_POLYGON_ID + 0.5));
 
   // Every legitimately encoded id (real draws and the clear/rear-plane entry
