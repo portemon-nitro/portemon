@@ -262,14 +262,18 @@ end
 function FieldResidencyCoordinator:updatePrefetch(_)
   assert(not self.disposed and self.initialized, "field residency coordinator is not ready")
   local mapIds = self:_prefetchMapIds()
+  local coverage = self.coverage
   if self._livePrefetchSatisfied then
-    return 0
+    if coverage == nil or not coverage:hasPrefetchWork() then
+      return 0
+    end
+    self._livePrefetchSatisfied = false
   end
   local completed = 0
   local hasPhysicalWork = false
-  if self.coverage then
-    completed = self.coverage:updatePrefetch(1)
-    hasPhysicalWork = self.coverage:hasPrefetchWork()
+  if coverage then
+    completed = coverage:updatePrefetch(1)
+    hasPhysicalWork = coverage:hasPrefetchWork()
   end
   for _, mapId in ipairs(mapIds) do
     if not self.residents[mapId] then
