@@ -184,25 +184,6 @@ local function targetRect(layout, targetId)
   return target and target.rect
 end
 
-local function wrapText(renderer, value, width)
-  local lines, line = {}, ""
-  for word in tostring(value or ""):gmatch("%S+") do
-    local candidate = line == "" and word or (line .. " " .. word)
-    if line ~= "" and renderer.text:textWidth(candidate) > width then
-      lines[#lines + 1] = line
-      line = word
-    elseif line == "" then
-      line = word
-    else
-      line = candidate
-    end
-  end
-  if line ~= "" then
-    lines[#lines + 1] = line
-  end
-  return lines
-end
-
 local drawLocation
 
 local function paintPane(self, view, plan, pane)
@@ -533,63 +514,61 @@ drawLocation = function(self, view, layout)
     end
   end
 
-  local statusY = grid and (grid.clip.y + grid.clip.height + 2) or (layout.content.y + 30)
-  local mapLabel = location.symbol or ("Map " .. tostring(location.mapId or "—"))
-  local status = location.status
-  local statusLabel = status.state == "ready" and "Ready"
-    or status.state == "pending" and "Preparing map data"
-    or status.reason
-    or "Map unavailable"
-  drawText(
-    self,
-    fitText(self, mapLabel .. " · " .. statusLabel, layout.content.width - 8),
-    layout.content.x + 4,
-    statusY,
-    status.state == "ready" and "information" or status.state == "failed" and "error" or "hint"
-  )
-  local function markerLabel(label, marker)
-    if marker == nil then
-      return label .. " —"
-    end
-    local markerMapName = "Map " .. tostring(marker.mapId)
-    for _, candidate in ipairs(view.location.maps) do
-      if candidate.mapId == marker.mapId then
-        markerMapName = candidate.symbol
-        break
-      end
-    end
-    return string.format("%s %s %d,%d", label, markerMapName, marker.fieldX, marker.fieldZ)
-  end
-  local markerText = markerLabel("Saved", view.savedLocation)
-  if view.pendingLocation then
-    markerText = markerText .. " · " .. markerLabel("Pending", view.pendingLocation)
-  end
-  drawText(self, fitText(self, markerText, layout.content.width - 8), layout.content.x + 4, statusY + 28, INK)
-  local cursor = navigation.cursor
-  if cursor then
-    local inspected = tiles[string.format("%d:%d", cursor.fieldX, cursor.fieldZ)]
-    local tileReason = inspected and inspected.reason or ""
+  if grid then
+    local statusLayout = assert(layout.locationStatus, "Location grid needs measured status geometry")
+    local mapLabel = location.symbol or ("Map " .. tostring(location.mapId or "—"))
+    local status = location.status
+    local statusLabel = status.state == "ready" and "Ready"
+      or status.state == "pending" and "Preparing map data"
+      or status.reason
+      or "Map unavailable"
+    local mapLine = statusLayout.mapLine
     drawText(
       self,
-      fitText(
-        self,
-        string.format("Global tile %d, %d %s", cursor.fieldX, cursor.fieldZ, tileReason),
-        layout.content.width - 8
-      ),
-      layout.content.x + 4,
-      statusY + 42,
-      INK
+      fitText(self, mapLabel .. " · " .. statusLabel, mapLine.width),
+      mapLine.x,
+      mapLine.y,
+      status.state == "ready" and "information" or status.state == "failed" and "error" or "hint"
     )
-  end
-  local help = "Physical placement only; story consistency isn't checked."
-  for _, row in ipairs(layout.rows) do
-    if row.targetId == "location:help" then
-      help = row.label
-      break
+    local function markerLabel(label, marker)
+      if marker == nil then
+        return label .. " —"
+      end
+      local markerMapName = "Map " .. tostring(marker.mapId)
+      for _, candidate in ipairs(view.location.maps) do
+        if candidate.mapId == marker.mapId then
+          markerMapName = candidate.symbol
+          break
+        end
+      end
+      return string.format("%s %s %d,%d", label, markerMapName, marker.fieldX, marker.fieldZ)
     end
-  end
-  for lineIndex, line in ipairs(wrapText(self, help, layout.content.width - 8)) do
-    drawText(self, line, layout.content.x + 4, statusY + 56 + (lineIndex - 1) * 14, MUTED)
+    local markerText = view.pendingLocation and markerLabel("Pending", view.pendingLocation) or nil
+    local savedText = markerLabel("Saved", view.savedLocation)
+    markerText = markerText and (markerText .. " · " .. savedText) or savedText
+    local cursor = navigation.cursor
+    if cursor then
+      local inspected = tiles[string.format("%d:%d", cursor.fieldX, cursor.fieldZ)]
+      local tileReason = inspected and inspected.reason or ""
+      markerText = markerText .. " · " .. string.format("Cursor %d,%d %s", cursor.fieldX, cursor.fieldZ, tileReason)
+    end
+    local summaryLine = statusLayout.summaryLine
+    drawText(self, fitText(self, markerText, summaryLine.width), summaryLine.x, summaryLine.y, INK)
+
+    local helpLine = statusLayout.helpLine
+    local help = "Physical only; story state unchecked."
+    local helpWidth = self.text:textWidth(help)
+    if helpWidth > helpLine.width then
+      local scale = math.max(0, (helpLine.width - 1) / helpWidth)
+      graphics.push("transform")
+      graphics.translate(helpLine.x, helpLine.y)
+      graphics.scale(scale, 1)
+      graphics.translate(-helpLine.x, -helpLine.y)
+      drawText(self, help, helpLine.x, helpLine.y, MUTED)
+      graphics.pop()
+    else
+      drawText(self, fitText(self, help, helpLine.width), helpLine.x, helpLine.y, MUTED)
+    end
   end
 end
 

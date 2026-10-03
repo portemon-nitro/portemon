@@ -69,7 +69,7 @@ local ItemAssetSchema = require("libs.assets.src.ItemAssetSchema")
 ---@field dateProvider fun(): table<string, integer>
 ---@field iconStatus string?
 ---@field iconFailure string?
----@field pendingLocationSave { operationId: integer, sessionRevision: integer, location: SaveEditorLocation, leave: boolean, closeReason: ("back"|"quit")?, verifier: SaveEditorLocationService }?
+---@field pendingLocationSave { operationId: integer, sessionRevision: integer, location: SaveEditorLocation, leave: boolean, verifier: SaveEditorLocationService }?
 ---@field locationSaveOperationId integer
 ---@field pendingRemove table<string, unknown>?
 ---@field pendingQuantity table<string, unknown>?
@@ -1002,7 +1002,6 @@ function State:_startPendingLocationSave(snapshot, leave)
       terrainDependencyHash = location.terrainDependencyHash,
     },
     leave = leave,
-    closeReason = self.closeRequest and self.closeRequest.reason or nil,
     verifier = verifier,
   }
   self.errorMessage = nil
@@ -1082,9 +1081,9 @@ function State:_updatePendingLocationSave()
   end
   self.pendingLocationSave = nil
   pending.verifier:dispose()
-  local saved, saveError = self.session:save(false)
+  local saved = self.session:save(false)
   if not saved.ok then
-    self.errorMessage = message(saveError)
+    self.errorMessage = message(assert(saved.error, "failed save result must include its structured error"))
     if self.closeRequest then
       self.closeRequest.phase = "confirm"
     end

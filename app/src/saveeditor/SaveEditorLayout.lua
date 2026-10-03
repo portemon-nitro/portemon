@@ -38,6 +38,7 @@ function Layout.compute(view, width, height, metrics)
   local railWidth = width >= 400 and 88 or 0
   local rows, targets, focusable, disabledTargets, focusPositions = {}, {}, {}, {}, {}
   local locationGrid
+  local locationStatus
   local focusableSet = {}
   local function addFocusable(targetId)
     if not focusableSet[targetId] then
@@ -222,13 +223,13 @@ function Layout.compute(view, width, height, metrics)
       addFocusable("location:zoom-out")
       addFocusable("location:zoom-in")
 
-      local statusHeight = 58
-      local gridClip = rect(
-        gridLeft,
-        controlY + controlHeight + 3,
-        gridWidth,
-        math.max(1, contentBottom - controlY - controlHeight - statusHeight - 5)
-      )
+      local lineGap = 1
+      local statusHeight = metrics.lineHeight * 3 + lineGap * 2
+      local gridY = controlY + controlHeight + 2
+      local statusBoundsY = contentBottom - statusHeight
+      local gridStatusGap = 1
+      local gridClip = rect(gridLeft, gridY, gridWidth, statusBoundsY - gridY - gridStatusGap)
+      assert(gridClip.height > 0, "Location grid needs room above its measured status block")
       local tileSize = locationNav.scale
       assert(tileSize == 16 or tileSize == 24 or tileSize == 32, "location scale must be one of the supported steps")
       local columns = math.max(1, math.floor(gridClip.width / tileSize))
@@ -250,6 +251,18 @@ function Layout.compute(view, width, height, metrics)
         renderedHeight = renderedHeight,
       }
 
+      local statusX, statusWidth = gridLeft, gridWidth
+      local mapLine = rect(statusX, statusBoundsY, statusWidth, metrics.lineHeight)
+      local summaryLine = rect(statusX, mapLine.y + metrics.lineHeight + lineGap, statusWidth, metrics.lineHeight)
+      local helpLine = rect(statusX, summaryLine.y + metrics.lineHeight + lineGap, statusWidth, metrics.lineHeight)
+      locationStatus = {
+        mapLine = mapLine,
+        summaryLine = summaryLine,
+        helpLine = helpLine,
+        bounds = rect(statusX, statusBoundsY, statusWidth, statusHeight),
+      }
+      assert(helpLine.y + helpLine.height == contentBottom, "Location status block ends at the content boundary")
+
       addFocusable("location:grid")
       focusPositions["location:grid"] = gridClip
       local cursor = locationNav.cursor
@@ -257,21 +270,6 @@ function Layout.compute(view, width, height, metrics)
         local id = string.format("location:tile:%d:%d", cursor.fieldX, cursor.fieldZ)
         addFocusable(id)
       end
-      local status = location.status
-      local reason = status.state == "failed" and status.reason
-        or status.state == "pending" and "Preparing map data"
-        or ""
-      rows[#rows + 1] = {
-        role = "read-only value",
-        targetId = "location:status",
-        label = location.symbol or ("Map " .. tostring(location.mapId)),
-        value = reason,
-      }
-      rows[#rows + 1] = {
-        role = "read-only value",
-        targetId = "location:help",
-        label = "Physical placement only; story consistency isn't checked.",
-      }
     end
   elseif section == "Player" then
     local snapshot = assert(view.session)
@@ -948,6 +946,7 @@ function Layout.compute(view, width, height, metrics)
     actions = actions,
     activeSection = section,
     locationGrid = locationGrid,
+    locationStatus = locationStatus,
     scrollOffset = view.scrollOffset or 0,
     viewports = viewports,
     scopeId = scope.id,

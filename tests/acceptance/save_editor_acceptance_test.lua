@@ -461,6 +461,11 @@ function T.tests.one_save_intent_keeps_the_browser_and_publishes_after_destinati
   local baseHost = readyHost()
   local graph, service, state
   local originalGlobal = SaveFs.global
+  local originalQuit = love.event.quit
+  local quitCalls = 0
+  love.event.quit = function()
+    quitCalls = quitCalls + 1
+  end
   SaveFs.global = function(backend)
     Assert.isNil(backend, "the editor uses the isolated acceptance save backend")
     return fixture.saveFs
@@ -551,19 +556,46 @@ function T.tests.one_save_intent_keeps_the_browser_and_publishes_after_destinati
       Assert.isTrue(state.session:setLocation(assert(housePlacement)).ok)
       destinationMapId = housePlacement.mapId
       destinationReady = false
+      state:requestClose("quit")
       activateTarget(state, "save")
       state:update(0)
       Assert.notNil(state:view().locationSave, "the second Save owns one pending verification")
       Assert.equal(recordWrites, 1, "the replacement destination is still waiting")
 
-      Assert.isTrue(state.session:setMoney(fixture.initialMoney + 2).ok, "a later edit changes the session revision")
-      state:update(0)
-      Assert.isNil(state:view().locationSave, "the stale verification is canceled after an edit")
+      local externalRecord = assert(fixture.store:load(fixture.saveId))
+      externalRecord.playerData.profile.money = externalRecord.playerData.profile.money + 2
+      fixture.store:save(externalRecord)
+      Assert.equal(recordWrites, 2, "the canonical save changes through the real store")
+
       destinationReady = true
       for _ = 1, 8 do
         state:update(0)
+        if state:view().locationSave == nil then
+          break
+        end
       end
-      Assert.equal(recordWrites, 1, "readiness cannot publish after the authorized revision changes")
+      local failureView = state:view()
+      Assert.isNil(failureView.locationSave, "the ready verifier is disposed after the final save attempt")
+      Assert.equal(
+        failureView.errorMessage,
+        "This save changed after the editor opened. Reopen it before saving.",
+        "the asynchronous save exposes the structured Session conflict; got "
+          .. tostring(failureView.errorMessage)
+      )
+      Assert.isTrue(failureView.dirty, "the rejected editor transaction remains dirty")
+      Assert.equal(recordWrites, 2, "the rejected editor save does not publish over the external record")
+      Assert.deepEqual(
+        assert(fixture.store:load(fixture.saveId)),
+        externalRecord,
+        "the canonical record remains the external version"
+      )
+      Assert.equal(#results, 0, "a close-save conflict does not return to the main menu")
+      Assert.equal(quitCalls, 0, "a close-save conflict does not request process exit")
+      Assert.equal(state.closeRequest.reason, "quit", "the failed close retains its original intent")
+      Assert.equal(state.closeRequest.phase, "confirm", "the close decision remains available after failure")
+      Assert.equal(state.controller.modal, "leave", "the leave decision is restored after failure")
+      activateTarget(state, "cancel")
+      Assert.isTrue(state:view().dirty, "canceling the leave decision returns to the recoverable editor")
     end)
   end, debug.traceback)
   if state then
@@ -578,6 +610,7 @@ function T.tests.one_save_intent_keeps_the_browser_and_publishes_after_destinati
   end
   fixture.saveFs.backend.write = originalWrite
   SaveFs.global = originalGlobal
+  love.event.quit = originalQuit
   fixture.cleanup()
   if not ok then
     error(err, 0)

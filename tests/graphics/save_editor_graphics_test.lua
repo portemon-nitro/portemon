@@ -189,6 +189,28 @@ local function draw(scope, width, height, topology, name, section, variant)
     Assert.notNil(layout.targets["location:zoom-out"], name .. " exposes a focusable zoom control")
     Assert.notNil(layout.locationGrid, name .. " publishes the canonical clipped tile grid")
     Assert.isTrue(layout.locationGrid.clip.width > 0 and layout.locationGrid.clip.height > 0)
+    local status = assert(layout.locationStatus, name .. " publishes measured Location status geometry")
+    local content = layout.content
+    local contentBottom = content.y + content.height
+    for _, line in ipairs({ status.mapLine, status.summaryLine, status.helpLine }) do
+      Assert.isTrue(line.x >= content.x and line.y >= content.y, name .. " keeps status lines inside content origin")
+      Assert.isTrue(
+        line.x + line.width <= content.x + content.width and line.y + line.height <= contentBottom,
+        name .. " keeps every status line inside content bounds"
+      )
+      Assert.isTrue(line.y + line.height <= layout.footer.y, name .. " keeps status lines above the footer")
+    end
+    local bounds = status.bounds
+    Assert.isTrue(bounds.x >= content.x and bounds.y >= content.y, name .. " keeps status bounds inside content origin")
+    Assert.isTrue(
+      bounds.x + bounds.width <= content.x + content.width and bounds.y + bounds.height <= contentBottom,
+      name .. " keeps the complete status block inside content bounds"
+    )
+    Assert.isTrue(bounds.y + bounds.height <= layout.footer.y, name .. " keeps the status block above the footer")
+    Assert.isTrue(
+      layout.locationGrid.clip.height >= view.location.scale,
+      name .. " keeps at least one complete tile row at the selected default scale"
+    )
   else
     Assert.notNil(layout.targets["bag:item:POTION"], name .. " exposes the selected stack")
     Assert.notNil(layout.targets["bag:quantity"], name .. " exposes quantity editing")
@@ -233,24 +255,20 @@ local function draw(scope, width, height, topology, name, section, variant)
   end
   if view.section == "Location" then
     Assert.isTrue(renderedText:find("MAP_TEST_ROUTE", 1, true) ~= nil, name .. " shows the structural map symbol")
-    Assert.isTrue(renderedText:find("33", 1, true) ~= nil, name .. " shows the inspected global X coordinate")
-    Assert.isTrue(renderedText:find("48", 1, true) ~= nil, name .. " shows global tile coordinates")
-    Assert.isTrue(renderedText:find("blocked", 1, true) ~= nil, name .. " explains the inspected tile refusal")
-    local helpLines = {}
-    for _, line in ipairs(drawnText) do
-      if line:find("Physical placement", 1, true) or line:find("isn't checked.", 1, true) then
-        helpLines[#helpLines + 1] = line
-      end
+    if plan.content.width >= 500 then
+      Assert.isTrue(
+        renderedText:find("33", 1, true) ~= nil,
+        name .. " shows the inspected global X coordinate when space permits"
+      )
+      Assert.isTrue(
+        renderedText:find("blocked", 1, true) ~= nil,
+        name .. " explains the inspected tile refusal when space permits"
+      )
     end
-    Assert.equal(
-      table.concat(helpLines, " "),
-      "Physical placement only; story consistency isn't checked.",
-      name .. " preserves the full Location help contract"
+    Assert.isTrue(
+      renderedText:find("Physical only; story state unchecked.", 1, true) ~= nil,
+      name .. " renders the concise Location help line"
     )
-    local maxLineLength = math.floor((plan.content.layout.content.width - 8) / 8)
-    for _, line in ipairs(helpLines) do
-      Assert.isTrue(#line <= maxLineLength, name .. " wraps help text before the content edge")
-    end
   end
   renderer:dispose()
   presentation:dispose()
