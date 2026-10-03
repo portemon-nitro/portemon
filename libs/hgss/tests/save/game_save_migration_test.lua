@@ -42,10 +42,16 @@ end
 
 local function v4record(overrides)
   local value = v3record(overrides)
-  value.schema = GameSave.SCHEMA
+  value.schema = "g4-game-save-v4"
   value.playerData.profile.badges = 0
   value.fieldTravel = { lastHealSpawn = "SPAWN_NEW_BARK" }
   return value
+end
+
+local function currentRecord(overrides)
+  local value = v4record(overrides)
+  local migrated = GameSave.migrateV4(value)
+  return migrated
 end
 
 local function returnsCode(code, fn)
@@ -81,9 +87,9 @@ function T.migration_preserves_party_bag_leaves_world_and_rng()
 end
 
 function T.current_validation_requires_travel_and_rejects_old_schemas()
-  Assert.notNil(GameSave.validate(v4record()))
+  Assert.notNil(GameSave.validate(currentRecord()))
   returnsCode("GAME_SAVE_BUCKET_INVALID", function()
-    local value = v4record()
+    local value = currentRecord()
     value.fieldTravel = nil
     return GameSave.validate(value)
   end)
@@ -92,8 +98,37 @@ function T.current_validation_requires_travel_and_rejects_old_schemas()
   end)
 end
 
+function T.v4_migration_adds_only_an_empty_fashion_case_copy()
+  local source = v4record()
+  source.schema = "g4-game-save-v4"
+  local migrated = GameSave.migrateV4(source)
+  Assert.equal(migrated.schema, "g4-game-save-v5")
+  Assert.deepEqual(migrated.fashionCase.counts, (function()
+    local counts = {}
+    for id = 1, 100 do
+      counts[id] = 0
+    end
+    return counts
+  end)())
+  Assert.isNil(source.fashionCase)
+  Assert.equal(source.schema, "g4-game-save-v4")
+  Assert.deepEqual(migrated.world, source.world)
+  Assert.deepEqual(migrated.bag, source.bag)
+end
+
+function T.v4_migration_rejects_a_bucket_that_did_not_exist_in_v4()
+  local source = v4record()
+  source.schema = "g4-game-save-v4"
+  source.fashionCase = { unexpected = true }
+  local err = Assert.throws(function()
+    GameSave.migrateV4(source)
+  end)
+  Assert.isTrue(Errors.is(err))
+  Assert.equal(source.schema, "g4-game-save-v4")
+end
+
 function T.migrated_records_validate_with_a_travel_validator()
-  local migrated = GameSave.migrateV3(v3record())
+  local migrated = GameSave.migrateV4(GameSave.migrateV3(v3record()))
   local opts = {
     fieldTravelValidate = function(value)
       Assert.deepEqual(value, { lastHealSpawn = "SPAWN_NEW_BARK" })

@@ -52,7 +52,19 @@ CatalogFixture.CHARMAP = {
   [" "] = 0x1DE,
 }
 
-CatalogFixture.GAMES = { heartgold = 7, soulsilver = 8 }
+CatalogFixture.GAMES = {
+  sapphire = 1,
+  ruby = 2,
+  emerald = 3,
+  firered = 4,
+  leafgreen = 5,
+  heartgold = 7,
+  soulsilver = 8,
+  diamond = 10,
+  pearl = 11,
+  platinum = 12,
+  gamecube = 15,
+}
 CatalogFixture.LANGUAGES = { english = 2 }
 CatalogFixture.ITEMS = { NONE = 0, POKE_BALL = 4, GREAT_BALL = 3, SITRUS_BERRY = 158 }
 CatalogFixture.BALLS = { POKE_BALL = 4, GREAT_BALL = 3 }

@@ -8,11 +8,12 @@ local FakeCache = require("tests.support.FakeCache")
 local LuaWriter = require("libs.codec.src.LuaWriter")
 local MonsSave = require("libs.mons.src.MonsSave")
 local BagSave = require("libs.hgss.src.save.BagSave")
+local FashionCaseState = require("libs.hgss.src.save.FashionCaseState")
 local SaveFs = require("libs.storage.src.SaveFs")
 
 local T = {}
 
-local GAME_SCHEMA = "g4-game-save-v4"
+local GAME_SCHEMA = "g4-game-save-v5"
 
 local function newStore(backend, opts)
   local loaded, GameSaveStore = pcall(require, "libs.hgss.src.save.GameSaveStore")
@@ -41,6 +42,7 @@ local function record(saveId, versionId, overrides)
       options = { textFrame = 0, textSpeed = "mid" },
     },
     fieldTravel = { lastHealSpawn = "SPAWN_NEW_BARK" },
+    fashionCase = FashionCaseState.empty(),
     world = { flags = {}, variables = {}, objects = {}, rng = { state = 1, calls = 0 } },
     scripts = {},
     auxiliaryUi = { requested = "shown", state = "shown" },

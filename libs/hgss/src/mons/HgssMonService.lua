@@ -33,7 +33,19 @@ HgssMonService.__index = HgssMonService
 
 -- Native game identities (pret/pokeheartgold version layout; the domain
 -- tests pin heartgold to 7 and soulsilver to 8).
-HgssMonService.GAMES = { heartgold = 7, soulsilver = 8 }
+HgssMonService.GAMES = {
+  sapphire = 1,
+  ruby = 2,
+  emerald = 3,
+  firered = 4,
+  leafgreen = 5,
+  heartgold = 7,
+  soulsilver = 8,
+  diamond = 10,
+  pearl = 11,
+  platinum = 12,
+  gamecube = 15,
+}
 
 -- Native language identities in the Generation-IV mon data layout.
 HgssMonService.LANGUAGES = {
@@ -832,6 +844,107 @@ end
 ---@return integer
 function HgssMonService:monFriendship(slot0)
   return self:_liveMon(slot0).friendship
+end
+
+---@param slot0 integer
+---@param friendshipDelta integer
+---@param moodDelta integer
+---@return table<string, unknown>
+function HgssMonService:applyFollowerInteractionDeltas(slot0, friendshipDelta, moodDelta)
+  local mon = self:_liveMon(slot0)
+  if
+    type(friendshipDelta) ~= "number"
+    or friendshipDelta % 1 ~= 0
+    or type(moodDelta) ~= "number"
+    or moodDelta % 1 ~= 0
+  then
+    MonsErrors.raise(MonsErrors.RECORD_INVALID, "follower interaction deltas must be integers", {})
+  end
+  if friendshipDelta == 0 and moodDelta == 0 then
+    return mon
+  end
+  local friendship = math.max(0, math.min(255, mon.friendship + friendshipDelta))
+  local mood = math.max(-127, math.min(127, mon.mood + moodDelta))
+  if friendship ~= mon.friendship or mood ~= mon.mood then
+    mon.friendship = friendship
+    mon.mood = mood
+    self:_store(slot0, mon)
+  end
+  return mon
+end
+
+---@param slot0 integer
+---@param leaf integer
+---@return boolean
+function HgssMonService:tryGiveShinyLeaf(slot0, leaf)
+  local mon = self:_liveMon(slot0)
+  if type(leaf) ~= "number" or leaf % 1 ~= 0 or leaf < 1 or leaf > 5 then
+    MonsErrors.raise(MonsErrors.RECORD_INVALID, "Shiny Leaf number must be an integer in 1..5", {})
+  end
+  local bit = 2 ^ (leaf - 1)
+  if math.floor(mon.shinyLeaves / bit) % 2 == 1 then
+    return false
+  end
+  mon.shinyLeaves = mon.shinyLeaves + bit
+  self:_store(slot0, mon)
+  return true
+end
+
+---@param slot0 integer
+---@return integer
+function HgssMonService:shinyLeafCount(slot0)
+  local leaves = self:_liveMon(slot0).shinyLeaves
+  local count = 0
+  for bit = 0, 4 do
+    if math.floor(leaves / (2 ^ bit)) % 2 == 1 then
+      count = count + 1
+    end
+  end
+  if count == 5 and math.floor(leaves / 32) % 2 == 1 then
+    return 6
+  end
+  return count
+end
+
+---@param slot0 integer
+---@return boolean
+function HgssMonService:tryGiveShinyLeafCrown(slot0)
+  local mon = self:_liveMon(slot0)
+  if self:shinyLeafCount(slot0) ~= 5 then
+    return false
+  end
+  mon.shinyLeaves = mon.shinyLeaves + 32
+  self:_store(slot0, mon)
+  return true
+end
+
+---@param event integer
+---@param slot0 integer
+---@return boolean
+function HgssMonService:followerEventTrigger(event, slot0)
+  local mon = self:_liveMon(slot0)
+  if type(event) ~= "number" or event % 1 ~= 0 or event < 0 or event > 3 or mon.isEgg then
+    return false
+  end
+  local species = mon.species
+  if event == 0 then
+    return mon.fatefulEncounter
+      and mon.egg.location == 0
+      and (species == "PICHU" or species == "PIKACHU" or species == "RAICHU")
+      and Personality.shiny(mon.origin.trainerId, mon.personality)
+  end
+  if event == 1 then
+    return species == "ARCEUS"
+      and mon.egg.location == 0
+      and not mon.fatefulEncounter
+      and mon.origin.trainerId ~= self._profile.trainerId
+      and (mon.origin.game == "diamond" or mon.origin.game == "pearl" or mon.origin.game == "platinum")
+      and mon.met.location == 86
+  end
+  if event == 2 then
+    return species == "ARCEUS" and mon.fatefulEncounter and mon.egg.location == 0
+  end
+  return species == "CELEBI" and mon.fatefulEncounter and mon.egg.location == 0
 end
 
 ---@param slot0 integer

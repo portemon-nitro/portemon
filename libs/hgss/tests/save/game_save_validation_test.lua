@@ -121,8 +121,42 @@ function T.full_record_validation_is_shared_and_version_context_is_cached()
   local second = assert(service:validate(record("save-00000002", "heartgold", validPlayerData)))
   Assert.equal(first.saveId, "save-00000001")
   Assert.equal(second.saveId, "save-00000002")
+  Assert.equal(first.schema, "g4-game-save-v5")
+  Assert.equal(first.fashionCase.schema, "hgss-fashion-case-v1")
   Assert.equal(loads, 1)
   local invalid, err = service:validate(record("save-00000003", "heartgold", { options = {} }))
+  Assert.isNil(invalid)
+  Assert.isTrue(Errors.is(err))
+end
+
+function T.v5_fashion_case_is_required_and_strict_while_v4_migrates()
+  local service = GameSaveValidation.new({
+    contextLoader = function()
+      return context()
+    end,
+  })
+  local current = assert(service:validate(record("save-00000031", "heartgold", validPlayerData)))
+  local missing = {}
+  for key, value in pairs(current) do
+    missing[key] = value
+  end
+  missing.fashionCase = nil
+  local invalid, err = service:validate(missing)
+  Assert.isNil(invalid)
+  Assert.isTrue(Errors.is(err))
+
+  local malformed = {}
+  for key, value in pairs(current) do
+    malformed[key] = value
+  end
+  malformed.fashionCase = { schema = "hgss-fashion-case-v1", counts = {} }
+  invalid, err = service:validate(malformed)
+  Assert.isNil(invalid)
+  Assert.isTrue(Errors.is(err))
+
+  local invalidV4 = record("save-00000032", "heartgold", validPlayerData)
+  invalidV4.fashionCase = { schema = "hgss-fashion-case-v1", counts = {} }
+  invalid, err = service:validate(invalidV4)
   Assert.isNil(invalid)
   Assert.isTrue(Errors.is(err))
 end
@@ -223,7 +257,7 @@ function T.complete_validation_canonicalizes_a_missing_avatar_to_walking()
   Assert.isNil(candidate.avatar)
   local valid = assert(service:validate(candidate))
   Assert.deepEqual(valid.avatar, { state = "walking" }, "a legacy record without avatar state loads as walking")
-  Assert.equal(valid.schema, candidate.schema, "canonicalization preserves the validated schema")
+  Assert.equal(valid.schema, "g4-game-save-v5", "legacy records migrate to the current schema")
 end
 
 function T.complete_validation_round_trips_every_durable_avatar_state()
@@ -321,7 +355,8 @@ function T.quiescent_v3_saves_migrate_without_losing_history()
   })
   local candidate = v3record("save-00000015", validPlayerData, quiescentScripts())
   local valid = assert(service:validate(candidate))
-  Assert.equal(valid.schema, "g4-game-save-v4")
+  Assert.equal(valid.schema, "g4-game-save-v5")
+  Assert.equal(valid.fashionCase.schema, "hgss-fashion-case-v1")
   Assert.equal(valid.playerData.profile.badges, 0)
   Assert.deepEqual(valid.fieldTravel, { lastHealSpawn = "SPAWN_NEW_BARK" })
   Assert.equal(valid.scripts.registryFingerprint, "registry")

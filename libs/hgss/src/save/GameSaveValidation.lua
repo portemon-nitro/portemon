@@ -14,6 +14,7 @@ local AudioCache = require("libs.assets.src.audio.AudioCache")
 local GameSave = require("libs.hgss.src.save.GameSave")
 local GameSaveErrors = require("libs.hgss.src.save.GameSaveErrors")
 local FieldTravelState = require("libs.hgss.src.field.FieldTravelState")
+local FashionCaseState = require("libs.hgss.src.save.FashionCaseState")
 local Errors = require("libs.errors.src.Errors")
 local FieldScriptCompatibility = require("libs.hgss.src.script.FieldScriptCompatibility")
 local HgssMonService = require("libs.hgss.src.mons.HgssMonService")
@@ -152,7 +153,7 @@ function GameSaveValidation:validate(record, context)
       return GameSave.validate(record)
     end
     local selected = context or self:_context(record.versionId)
-    -- Explicit v3 -> v4 migration before canonical validation. Quiescent
+    -- Explicit v3 -> v4 -> v5 migration before canonical validation. Quiescent
     -- old script buckets rebind to the current fingerprints (counters and
     -- world/RNG data preserved); an incompatible active graph is rejected
     -- with the save bytes untouched, never cleared or rewritten.
@@ -169,6 +170,9 @@ function GameSaveValidation:validate(record, context)
       end
       effective = GameSave.migrateV3(record)
       effective.scripts = rebindScripts(record.scripts, options)
+    end
+    if type(effective) == "table" and effective.schema == "g4-game-save-v4" then
+      effective = GameSave.migrateV4(effective)
     end
     local function playerDataValidate(value)
       return PlayerData.validate(value, selected)
@@ -237,6 +241,19 @@ function GameSaveValidation:validate(record, context)
       end
       return state:capture()
     end
+    local function fashionCaseValidate(value)
+      local stateOk, state = pcall(FashionCaseState.new, value)
+      if not stateOk then
+        return nil,
+          Errors.new(
+            GameSaveErrors.GAME_SAVE_BUCKET_INVALID,
+            "game save fashionCase bucket is invalid",
+            { bucket = "fashionCase" }
+          )
+      end
+      ---@cast state FashionCaseState
+      return state:capture()
+    end
     return GameSave.validate(effective, {
       playerDataValidate = playerDataValidate,
       scriptsValidate = scriptsValidate,
@@ -246,6 +263,7 @@ function GameSaveValidation:validate(record, context)
       monsValidate = monsValidate,
       bagValidate = bagValidate,
       fieldTravelValidate = fieldTravelValidate,
+      fashionCaseValidate = fashionCaseValidate,
     })
   end)
   if ok then

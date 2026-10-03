@@ -5,6 +5,7 @@ local Assert = require("tests.support.Assert")
 local Errors = require("libs.errors.src.Errors")
 local GameSave = require("libs.hgss.src.save.GameSave")
 local BagSave = require("libs.hgss.src.save.BagSave")
+local FashionCaseState = require("libs.hgss.src.save.FashionCaseState")
 
 local T = {}
 
@@ -23,6 +24,7 @@ local function record(overrides)
     facing = "south",
     playerData = { profile = {}, options = {} },
     fieldTravel = { lastHealSpawn = "SPAWN_NEW_BARK" },
+    fashionCase = FashionCaseState.empty(),
     world = { flags = {}, variables = {}, objects = {}, rng = {} },
     scripts = {},
     auxiliaryUi = {},
@@ -161,7 +163,7 @@ function T.rejects_non_table_and_missing_required_buckets()
     ---@diagnostic disable-next-line: param-type-mismatch -- test deliberately exercises an invalid call
     return GameSave.validate(nil)
   end)
-  for _, key in ipairs({ "playerData", "world", "auxiliaryUi", "audio", "mons", "fieldTravel" }) do
+  for _, key in ipairs({ "playerData", "world", "auxiliaryUi", "audio", "mons", "fieldTravel", "fashionCase" }) do
     returnsCode("GAME_SAVE_BUCKET_INVALID", function()
       local value = record()
       value[key] = nil

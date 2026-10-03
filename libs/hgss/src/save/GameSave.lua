@@ -5,10 +5,11 @@
 local Errors = require("libs.errors.src.Errors")
 local GameSaveErrors = require("libs.hgss.src.save.GameSaveErrors")
 local FieldTravelState = require("libs.hgss.src.field.FieldTravelState")
+local FashionCaseState = require("libs.hgss.src.save.FashionCaseState")
 
 local GameSave = {}
 
-GameSave.SCHEMA = "g4-game-save-v4"
+GameSave.SCHEMA = "g4-game-save-v5"
 GameSave.MAX_PLAY_TIME_SECONDS = 999 * 60 * 60 + 59 * 60 + 59
 
 local FACING = { north = true, south = true, west = true, east = true }
@@ -18,6 +19,7 @@ local TOP_LEVEL_FIELDS = {
   auxiliaryUi = true,
   bag = true,
   facing = true,
+  fashionCase = true,
   fieldTravel = true,
   fieldX = true,
   fieldZ = true,
@@ -212,6 +214,7 @@ local function validate(record, opts)
   local canonicalMons = validateBucket(record, "mons", opts, "monsValidate")
   local canonicalBag = validateBucket(record, "bag", opts, "bagValidate")
   local canonicalFieldTravel = validateBucket(record, "fieldTravel", opts, "fieldTravelValidate")
+  local canonicalFashionCase = validateBucket(record, "fashionCase", opts, "fashionCaseValidate")
   local canonicalAuxiliaryUi = validateBucket(record, "auxiliaryUi", opts, "auxiliaryUiValidate")
   local canonicalAudio = validateBucket(record, "audio", opts, "audioValidate")
   local canonicalAvatar = validateAvatar(record)
@@ -225,6 +228,7 @@ local function validate(record, opts)
   canonical.mons = canonicalMons
   canonical.bag = canonicalBag
   canonical.fieldTravel = canonicalFieldTravel
+  canonical.fashionCase = canonicalFashionCase
   canonical.auxiliaryUi = canonicalAuxiliaryUi
   canonical.audio = canonicalAudio
   canonical.avatar = canonicalAvatar
@@ -258,8 +262,26 @@ function GameSave.migrateV3(record)
   end
   playerData.profile = profile
   migrated.playerData = playerData
-  migrated.schema = GameSave.SCHEMA
+  migrated.schema = "g4-game-save-v4"
   migrated.fieldTravel = { lastHealSpawn = FieldTravelState.DEFAULT_LAST_HEAL_SPAWN }
+  return migrated
+end
+
+-- Pure v4 -> v5 migration adds the new durable bucket without rewriting any
+-- of the existing save values.
+---@param record table<string, unknown> a v4 save record
+---@return table<string, unknown> the migrated v5 record
+function GameSave.migrateV4(record)
+  assert(type(record) == "table" and record.schema == "g4-game-save-v4", "GameSave.migrateV4 requires a v4 record")
+  if record.fashionCase ~= nil then
+    Errors.raise(GameSaveErrors.GAME_SAVE_INVALID, "v4 save cannot already contain Fashion Case state", {})
+  end
+  local migrated = {}
+  for key, value in pairs(record) do
+    migrated[key] = value
+  end
+  migrated.schema = GameSave.SCHEMA
+  migrated.fashionCase = FashionCaseState.empty()
   return migrated
 end
 

@@ -36,6 +36,7 @@ local FieldPlayerVisual = require("libs.hgss.src.actors.FieldPlayerVisual")
 local FieldZoneIdentity = require("libs.hgss.src.world.FieldZoneIdentity")
 local FollowingMonController = require("libs.hgss.src.field.FollowingMonController")
 local GameSave = require("libs.hgss.src.save.GameSave")
+local FashionCaseState = require("libs.hgss.src.save.FashionCaseState")
 local PlayTime = require("libs.hgss.src.save.PlayTime")
 local FieldScriptScreenFade = require("libs.hgss.src.transition.FieldScriptScreenFade")
 local HgssMonService = require("libs.hgss.src.mons.HgssMonService")
@@ -181,6 +182,7 @@ end
 ---@field itemCatalog ItemCatalog the shared item catalog behind mon and later Bag composition
 ---@field monLanguage string the semantic language key the mon catalog was built for
 ---@field monService HgssMonService the live party/creation/script mon service
+---@field fashionCase FashionCaseState live accessory inventory restored from the save
 ---@field bagService HgssBagService the live bag/inventory service
 ---@field bagCursor BagCursor the runtime-only field bag cursor
 ---@field pokemonMenu table<string, unknown>? the owned menu composition (nil before composition / after teardown)
@@ -789,6 +791,8 @@ function FieldRuntime:_load(loadOptions)
       self.playerData = activeGame.playerData
       self.fieldTravel =
         FieldTravelState.new(assert(activeGame.fieldTravel, "field travel state is required to enter the field"))
+      self.fashionCase =
+        FashionCaseState.new(assert(activeGame.fashionCase, "Fashion Case state is required to enter the field"))
       local fieldX, fieldZ = self.entryLocation.fieldX, self.entryLocation.fieldZ
       local surfaceId, facing = self.entryLocation.surfaceId, self.entryLocation.facing
       self.player = FieldPlayer.new({
