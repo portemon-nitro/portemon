@@ -38,6 +38,8 @@ local Matrix3 = require("libs.math.src.Matrix3")
 local AlphaClassifier = require("libs.nds.src.gx.AlphaClassifier")
 local FixedPoint = require("libs.math.src.FixedPoint")
 
+local IDENTITY_TEXTURE_MATRIX = { 1, 0, 0, 0, 1, 0, 0, 0, 1 }
+
 ---@class GxRenderer.Canvas : love.Canvas
 ---@field setFilter fun(self: GxRenderer.Canvas, min: string, mag: string)
 ---@field release fun(self: GxRenderer.Canvas)
@@ -83,7 +85,6 @@ local FixedPoint = require("libs.math.src.FixedPoint")
 ---@field spriteCompositeShader GxRenderer.Shader|love.Shader
 ---@field _spriteCompositeShaderSource string
 ---@field worldShader GxRenderer.Shader|love.Shader
----@field wireframeResetShader (GxRenderer.Shader|love.Shader)?
 ---@field exactSourceShader (GxRenderer.Shader|love.Shader)?
 ---@field edgeShader GxRenderer.Shader|love.Shader
 ---@field _edgeColorsCache number[][]
@@ -92,7 +93,7 @@ local FixedPoint = require("libs.math.src.FixedPoint")
 ---@field _fogTableCache number[][]
 ---@field _fogFinalReference table<string, unknown>?
 ---@field _fogSpriteReference table<string, unknown>?
----@field stats { drawCalls: integer, colorDrawCalls: integer, triangles: integer, meshCount: integer, textureCount: integer }
+---@field stats { geometrySubmissions: integer, worldFullSurfaceDraws: integer, worldFullSurfaceClears: integer, presentationWorldBlits: integer, spriteClearPixels: integer, spriteCompositeArea: number }
 ---@field sceneColor GxRenderer.Canvas?
 ---@field _resolvedColor GxRenderer.Canvas?
 ---@field colorDepth GxRenderer.Canvas?
@@ -123,6 +124,7 @@ local FixedPoint = require("libs.math.src.FixedPoint")
 ---@field _lightingDelivery table<GxRenderer.Shader, { lit: boolean, profile: table<string, unknown>?, record: table<string, unknown>? }>
 ---@field _presentationScale number[]
 ---@field _presentationOffset number[]
+---@field _stateSize integer[]
 ---@field worldRasterScale number?
 ---@field translucencyMode "approximate"|"exact"
 local GxRenderer = {}
@@ -411,7 +413,14 @@ function GxRenderer.new(opts)
     },
     _fogFinalReference = nil,
     _fogSpriteReference = nil,
-    stats = { drawCalls = 0, colorDrawCalls = 0, triangles = 0, meshCount = 0, textureCount = 0 },
+    stats = {
+      geometrySubmissions = 0,
+      worldFullSurfaceDraws = 0,
+      worldFullSurfaceClears = 0,
+      presentationWorldBlits = 0,
+      spriteClearPixels = 0,
+      spriteCompositeArea = 0,
+    },
     _lightMaterialColorCache = {
       diffuse = { 0, 0, 0 },
       ambient = { 0, 0, 0 },
@@ -433,6 +442,7 @@ function GxRenderer.new(opts)
     _lightingDelivery = {},
     _presentationScale = { 1, 1 },
     _presentationOffset = { 0, 0 },
+    _stateSize = { 1, 1 },
   }, GxRenderer)
   -- Shader construction is transactional: a failure while creating a later
   -- shader (or reading its source) releases every one already created before
@@ -565,9 +575,9 @@ function GxRenderer:_ensureSpriteTargets(spriteW, spriteH)
   self._spriteTargets, self._spriteW, self._spriteH = spriteTargets, spriteW, spriteH
 end
 
-local function sendStateUniforms(shader, renderState, stateW, stateH)
+local function sendStateUniforms(shader, renderState, stateSize)
   shader:send("u_renderState", renderState)
-  shader:send("u_stateSize", { stateW, stateH })
+  shader:send("u_stateSize", stateSize)
 end
 
 -- Recreate every render target at new dimensions. All canvases are allocated
@@ -655,6 +665,7 @@ function GxRenderer:_ensureTargets(colorW, colorH)
   self:_releaseTargets()
   self.sceneColor, self._resolvedColor, self.colorDepth, self.renderState =
     sceneColor, resolvedColor, colorDepth, renderState
+  self._stateSize[1], self._stateSize[2] = colorW, colorH
   self._spareColor, self._translucentState, self._spareTranslucentState =
     spareColor, translucentState, spareTranslucentState
   self._sourceColor, self._sourceMeta = sourceColor, sourceMeta
@@ -979,8 +990,7 @@ function GxRenderer:_drawMesh(
   end
   lg.setMeshCullMode(item.cullMode)
   lg.draw(mesh)
-  self.stats.drawCalls = self.stats.drawCalls + 1
-  self.stats.colorDrawCalls = self.stats.colorDrawCalls + 1
+  self.stats.geometrySubmissions = self.stats.geometrySubmissions + 1
 end
 
 -- Draw the edges of a wireframe batch through the same projection path as
@@ -1023,7 +1033,7 @@ function GxRenderer:_drawWireframeMesh(
   shader:send("u_matAmbient", profileColors and profileColors.ambient or ZERO_COLOR)
   shader:send("u_matSpecular", profileColors and profileColors.specular or ZERO_COLOR)
   shader:send("u_matEmission", profileColors and profileColors.emission or ZERO_COLOR)
-  shader:send("u_texMatrix", "column", { 1, 0, 0, 0, 1, 0, 0, 0, 1 })
+  shader:send("u_texMatrix", "column", IDENTITY_TEXTURE_MATRIX)
   shader:send("u_useTexture", false)
   shader:send("u_fragmentPass", FRAGMENT_PASS_OPAQUE)
   shader:send("u_polygonAlpha", 1.0)
@@ -1036,18 +1046,18 @@ function GxRenderer:_drawWireframeMesh(
   mesh:setTexture()
   lg.setMeshCullMode(item.cullMode)
   lg.draw(mesh)
-  self.stats.drawCalls = self.stats.drawCalls + 1
-  self.stats.colorDrawCalls = self.stats.colorDrawCalls + 1
+  self.stats.geometrySubmissions = self.stats.geometrySubmissions + 1
 end
 
 -- Rasterize one blended item's color and metadata through map.glsl's shared
 -- DS combiner path using one geometry pass. Last-ID rejection applies between
 -- ordered render items; this pass does not split overlapping polygons inside
 -- one mesh submission.
-function GxRenderer:_drawSourceItem(item, projection, fragmentPass, viewMatrix, activeTranslucentState, stateW, stateH)
+function GxRenderer:_drawSourceItem(item, projection, fragmentPass, viewMatrix, activeTranslucentState)
   local lg = assert(self._graphics)
   lg.setCanvas(assert(self._sourceMetaTargets))
   lg.clear(0, 0, 0, 0, false, false)
+  self.stats.worldFullSurfaceClears = self.stats.worldFullSurfaceClears + 1
   local sourceShader = assert(self.exactSourceShader)
   lg.setCanvas(assert(self._sourceTargets))
   lg.setShader(sourceShader)
@@ -1055,7 +1065,7 @@ function GxRenderer:_drawSourceItem(item, projection, fragmentPass, viewMatrix, 
   lg.setBlendMode("replace", "premultiplied")
   sourceShader:send("u_view", "column", viewMatrix)
   sourceShader:send("u_activeTranslucentState", activeTranslucentState)
-  sourceShader:send("u_stateSize", { stateW, stateH })
+  sourceShader:send("u_stateSize", self._stateSize)
   self._activeShader = sourceShader
   self:_drawItem(item, projection, fragmentPass)
   self._activeShader = nil
@@ -1065,8 +1075,307 @@ end
 -- neighbour ring, and actors. Its traversal position is the deterministic
 -- tie-breaker already resolved by HGSS presentation. FieldViewport limits the
 -- render-target size and places the result inside the host drawable.
+local function projectionFor(item, frameState)
+  if item.billboardProjection == true or item.fieldEffect ~= nil then
+    return frameState.billboardProjection
+  end
+  return frameState.worldProjection
+end
+
+local function drawFrame(
+  self,
+  frame,
+  presentationCanvas,
+  rectangle,
+  colorW,
+  colorH,
+  viewMatrix,
+  hasPresentationSprites,
+  edgeRadiusPx
+)
+  local lg = assert(self._graphics)
+  local spriteItems = frame.spriteItems
+  local stats = self.stats
+  if presentationCanvas ~= nil and type(presentationCanvas) == "table" and presentationCanvas[1] ~= nil then
+    local presentationColorCanvas = presentationCanvas[1]
+    if type(presentationColorCanvas) == "table" then
+      presentationColorCanvas = presentationColorCanvas[1]
+    end
+    assert(
+      presentationColorCanvas and presentationColorCanvas.getWidth and presentationColorCanvas.getHeight,
+      "GxRenderer requires a color presentation target"
+    )
+  end
+  -- The HGSS presentation owner builds the render queue exactly once per frame.
+  local queue = assert(frame.queue, "GxRenderer requires a normalized render queue")
+
+  -- ---- world MRT pass: color and polygon state ----
+  local stateClearTargets = assert(self._stateClearTargets)
+  lg.setCanvas(stateClearTargets)
+  lg.clear(DS_STATE_CLEAR, false, true)
+  stats.worldFullSurfaceClears = stats.worldFullSurfaceClears + 1
+  local colorClearTargets = assert(self._colorClearTargets)
+  lg.setCanvas(colorClearTargets)
+  local clearColor = frame.clearColor or self.clearColor
+  lg.clear(clearColor, false, false)
+  stats.worldFullSurfaceClears = stats.worldFullSurfaceClears + 1
+  lg.setCanvas(assert(self._colorTargets))
+  lg.setShader(self.worldShader)
+  lg.setDepthMode("less", true)
+  lg.setBlendMode("replace", "premultiplied")
+  self._activeShader = self.worldShader
+  self.worldShader:send("u_view", "column", viewMatrix)
+  self:_sendLighting(frame, self.worldShader)
+
+  for _, d in ipairs(queue.opaque) do
+    self:_drawItem(d, projectionFor(d, frame), FRAGMENT_PASS_OPAQUE)
+  end
+  for _, d in ipairs(queue.cutout) do
+    self:_drawItem(d, projectionFor(d, frame), FRAGMENT_PASS_CUTOUT)
+  end
+  for _, d in ipairs(queue.mixedOpaque) do
+    self:_drawItem(d, projectionFor(d, frame), FRAGMENT_PASS_MIXED_OPAQUE)
+  end
+  self._activeShader = nil
+
+  -- ---- translucent compositor ----
+  -- The DS translucent path needs per-pixel state that fixed-function host
+  -- blending cannot express: same-ID rejection against the pixel's last
+  -- translucent ID, max destination alpha, fog-gate AND, and
+  -- last-translucent-ID state mutation. Exact mode rasterizes each item
+  -- once into source MRTs, then ping-pongs color and compact translucent
+  -- state through the full-world integer compositor. Opaque renderState
+  -- remains fixed throughout this sequence.
+  --
+  -- Opaque color/state are the initial destination. The compact state is
+  -- cleared only when an exact blended entry needs its first source pass.
+  local activeColor, opaqueState = assert(self.sceneColor), assert(self.renderState)
+  local activeTranslucentState = self._translucentState or opaqueState
+  if self.translucencyMode == GxRenderer.TRANSLUCENCY_APPROXIMATE then
+    if #queue.blended > 0 then
+      self:_sendLighting(frame, self.shader)
+      local approximateClearTargets = assert(self._colorClearTargets)
+      lg.setCanvas(approximateClearTargets)
+      lg.setShader(self.shader)
+      lg.setDepthMode("less", false)
+      lg.setBlendMode("alpha", "alphamultiply")
+      self.shader:send("u_view", "column", viewMatrix)
+      for _, entry in ipairs(queue.blended) do
+        local fragmentPass = entry.fragmentPass == AlphaClassifier.MIXED and FRAGMENT_PASS_MIXED_TRANSLUCENT
+          or FRAGMENT_PASS_TRANSLUCENT
+        self:_drawItem(entry.item, projectionFor(entry.item, frame), fragmentPass)
+      end
+    end
+  elseif #queue.blended > 0 then
+    local exactSourceShader = assert(self.exactSourceShader)
+    self:_sendLighting(frame, exactSourceShader)
+    activeTranslucentState = assert(self._translucentState)
+    lg.setCanvas(activeTranslucentState)
+    lg.clear(0, 0, 0, 0)
+    stats.worldFullSurfaceClears = stats.worldFullSurfaceClears + 1
+    local inactiveColor, inactiveTranslucentState = assert(self._spareColor), assert(self._spareTranslucentState)
+    self.compositeShader:send("u_sourceColor", self._sourceColor)
+    self.compositeShader:send("u_sourceMeta", self._sourceMeta)
+    self.compositeShader:send("u_size", self._stateSize)
+    self.compositeShader:send("u_opaqueState", opaqueState)
+    for _, entry in ipairs(queue.blended) do
+      local d = entry.item
+      -- Depth-equal is a corpus-provable-absent DS state (see
+      -- PolygonState.validate's POLYGON_STATE_DEPTH_EQUAL_UNSUPPORTED
+      -- rejection): the renderer never branches on d.depthEqual and always
+      -- compares "less", even if a defensively-constructed item still
+      -- carries the field. Host `lequal` is retired, not merely unused.
+      local fragmentPass = entry.fragmentPass == AlphaClassifier.MIXED and FRAGMENT_PASS_MIXED_TRANSLUCENT
+        or FRAGMENT_PASS_TRANSLUCENT
+      self:_drawSourceItem(d, projectionFor(d, frame), fragmentPass, viewMatrix, activeTranslucentState)
+
+      -- Full-screen composite from the source buffers + active pair into
+      -- the inactive pair, with replace semantics (no second host blend).
+      lg.setCanvas(inactiveColor, inactiveTranslucentState)
+      lg.setDepthMode()
+      lg.setBlendMode("replace", "premultiplied")
+      lg.setColor(1, 1, 1, 1)
+      lg.setShader(self.compositeShader)
+      self.compositeShader:send("u_activeColor", activeColor)
+      self.compositeShader:send("u_activeTranslucentState", activeTranslucentState)
+      lg.draw(self._sourceColor, 0, 0)
+      stats.worldFullSurfaceDraws = stats.worldFullSurfaceDraws + 1
+      lg.setShader()
+      activeColor, activeTranslucentState, inactiveColor, inactiveTranslucentState =
+        inactiveColor, inactiveTranslucentState, activeColor, activeTranslucentState
+    end
+    -- Publish color and compact state roles. Opaque renderState remains the
+    -- owner of edge ID and depth throughout exact translucency.
+    self.sceneColor = activeColor
+    self._translucentState, self._spareTranslucentState = activeTranslucentState, inactiveTranslucentState
+    local publishedTargets = assert(self._colorTargets)
+    publishedTargets[1], publishedTargets[2], publishedTargets[3] = activeColor, opaqueState, activeTranslucentState
+    assert(self._colorClearTargets)[1] = activeColor
+    self._spareColor, self._spareTranslucentState = inactiveColor, inactiveTranslucentState
+  end
+
+  -- Wireframe edges (polygon alpha zero): these count as opaque for edge
+  -- marking; the color pass draws them for their own visible RGB. They
+  -- target the ACTIVE color/state pair so the final resolve sees them
+  -- composited with any translucent overlays.
+  if #queue.wireframe > 0 then
+    local wireframeTargets = assert(self._colorTargets)
+    local wireframeShader = self.worldShader
+    if self.translucencyMode == GxRenderer.TRANSLUCENCY_EXACT and #queue.blended > 0 then
+      wireframeShader = assert(self.wireframeResetShader)
+    end
+    lg.setCanvas(wireframeTargets)
+    lg.setShader(wireframeShader)
+    self._activeShader = wireframeShader
+    if wireframeShader ~= self.worldShader then
+      wireframeShader:send("u_view", "column", viewMatrix)
+      self:_sendLighting(frame, wireframeShader)
+    end
+    lg.setDepthMode("less", true)
+    lg.setBlendMode("replace", "premultiplied")
+    lg.setWireframe(true)
+    for _, d in ipairs(queue.wireframe) do
+      self:_drawWireframe(d, projectionFor(d, frame))
+    end
+    self._activeShader = nil
+    lg.setWireframe(false)
+  end
+
+  -- ---- final resolve: edge marking, fog, then the current AA approximation ----
+  self:_sendEdgeColors(frame)
+  self:_sendFog(frame)
+  self.edgeShader:send("u_antialiasEnabled", true)
+  self.edgeShader:send("u_edgeRadiusPx", edgeRadiusPx)
+  lg.setDepthMode()
+  lg.setBlendMode("replace", "premultiplied")
+  lg.setColor(1, 1, 1, 1)
+  lg.setCanvas(assert(self._resolvedColor))
+  lg.setShader(self.edgeShader)
+  sendStateUniforms(self.edgeShader, opaqueState, self._stateSize)
+  if self.translucencyMode == GxRenderer.TRANSLUCENCY_EXACT then
+    self.edgeShader:send("u_translucentState", #queue.blended > 0 and activeTranslucentState or opaqueState)
+  end
+  lg.draw(activeColor, 0, 0)
+  stats.worldFullSurfaceDraws = stats.worldFullSurfaceDraws + 1
+
+  -- Edge, fog, and the current AA approximation have finished at world
+  -- resolution. Presentation is only a nearest-filtered scale of that result.
+  lg.setCanvas(presentationCanvas)
+  lg.setShader()
+  lg.setDepthMode()
+  lg.setBlendMode("replace", "premultiplied")
+  lg.setColor(1, 1, 1, 1)
+  lg.draw(assert(self._resolvedColor), rectangle.x, rectangle.y, 0, rectangle.width / colorW, rectangle.height / colorH)
+  stats.presentationWorldBlits = stats.presentationWorldBlits + 1
+
+  -- The world is now present at presentation resolution. Ordinary billboards
+  -- rasterize into one presentation-resolution color/coverage/depth layer,
+  -- so host depth is never borrowed for sprite ordering or cleared as part
+  -- of this path.
+  if hasPresentationSprites then
+    -- The sprite raster target is physical/presentation resolution: the
+    -- camera projection determines every billboard vertex, so this
+    -- resolution must not coarsen it. The world state target below supplies
+    -- the shared anchor lattice used to register the actor to world pixels.
+    local visibleW, visibleH = rectangle.width, rectangle.height
+    local spriteW, spriteH = math.ceil(visibleW), math.ceil(visibleH)
+    -- Embed the exact visible physical viewport into the ceil-allocated
+    -- sprite target: any ceil fringe lands only on the right/bottom.
+    local scale = self._presentationScale
+    local offset = self._presentationOffset
+    scale[1] = visibleW / spriteW
+    scale[2] = visibleH / spriteH
+    offset[1] = scale[1] - 1
+    offset[2] = scale[2] - 1
+    local callerScissorX, callerScissorY, callerScissorW, callerScissorH = lg.getScissor()
+    local dirtyX0, dirtyY0, dirtyX1, dirtyY1 = spriteDirtyRectangle(
+      spriteItems,
+      viewMatrix,
+      frame.billboardProjection,
+      self.stateW,
+      self.stateH,
+      spriteW,
+      spriteH,
+      scale,
+      offset
+    )
+    if dirtyX0 ~= nil then
+      self._activeShader = self:_ensureSpriteShader()
+      local spriteShader = assert(self._activeShader)
+      spriteShader:send("u_presentationSprite", true)
+      self:_ensureSpriteTargets(spriteW, spriteH)
+      local spriteTargets = assert(self._spriteTargets)
+      lg.setCanvas(spriteTargets)
+      lg.setScissor(dirtyX0, dirtyY0, dirtyX1 - dirtyX0, dirtyY1 - dirtyY0)
+      lg.clear(0, 0, 0, 0, false, true)
+      stats.spriteClearPixels = stats.spriteClearPixels + (dirtyX1 - dirtyX0) * (dirtyY1 - dirtyY0)
+      lg.setDepthMode("less", true)
+      lg.setBlendMode("replace", "premultiplied")
+      spriteShader:send("u_presentationScale", scale)
+      spriteShader:send("u_presentationOffset", offset)
+      spriteShader:send("u_view", "column", viewMatrix)
+      spriteShader:send("u_renderState", opaqueState)
+      spriteShader:send("u_stateSize", self._stateSize)
+      self:_sendSpriteFog(frame)
+      self:_sendLighting(frame, spriteShader)
+      lg.setShader(spriteShader)
+      lg.setBlendMode("replace", "premultiplied")
+
+      for _, item in ipairs(spriteItems) do
+        local fragmentPass
+        if item.alphaClass == AlphaClassifier.OPAQUE then
+          fragmentPass = FRAGMENT_PASS_OPAQUE
+        elseif item.alphaClass == AlphaClassifier.CUTOUT then
+          fragmentPass = FRAGMENT_PASS_CUTOUT
+        else
+          error("ordinary billboard has unsupported alpha class: " .. tostring(item.alphaClass))
+        end
+        spriteShader:send("u_spriteFogEnabled", item.fogEnabled == true)
+        self:_drawItem(item, frame.billboardProjection, fragmentPass)
+      end
+      self._activeShader = nil
+
+      local clipX, clipY = rectangle.x + dirtyX0, rectangle.y + dirtyY0
+      local clipRight, clipBottom = rectangle.x + dirtyX1, rectangle.y + dirtyY1
+      clipX = math.max(clipX, rectangle.x)
+      clipY = math.max(clipY, rectangle.y)
+      clipRight = math.min(clipRight, rectangle.x + visibleW)
+      clipBottom = math.min(clipBottom, rectangle.y + visibleH)
+      if callerScissorX ~= nil then
+        clipX = math.max(clipX, callerScissorX)
+        clipY = math.max(clipY, callerScissorY)
+        clipRight = math.min(clipRight, callerScissorX + callerScissorW)
+        clipBottom = math.min(clipBottom, callerScissorY + callerScissorH)
+      end
+      if clipRight > clipX and clipBottom > clipY then
+        lg.setScissor(clipX, clipY, clipRight - clipX, clipBottom - clipY)
+        lg.setCanvas(presentationCanvas)
+        lg.setDepthMode()
+        lg.setBlendMode("replace", "premultiplied")
+        lg.setColor(1, 1, 1, 1)
+        local compositeShader = self:_ensureSpriteCompositeShader()
+        compositeShader:send("u_coverage", self._spriteCoverage)
+        lg.setShader(compositeShader)
+        -- The sprite canvas is already physical/presentation resolution, so
+        -- the final composite is 1:1 -- no more magnification by N.
+        lg.draw(assert(self._spriteColor), rectangle.x, rectangle.y)
+        stats.spriteCompositeArea = stats.spriteCompositeArea + (clipRight - clipX) * (clipBottom - clipY)
+        lg.setShader()
+      end
+    end
+  end
+end
+
 ---@param frame table<string, unknown> DS frame
 function GxRenderer:draw(frame)
+  local stats = self.stats
+  stats.geometrySubmissions = 0
+  stats.worldFullSurfaceDraws = 0
+  stats.worldFullSurfaceClears = 0
+  stats.presentationWorldBlits = 0
+  stats.spriteClearPixels = 0
+  stats.spriteCompositeArea = 0
+
   assert(type(frame) == "table", "GxRenderer requires a normalized frame")
   local spriteItems = frame.spriteItems
   local viewport = frame.viewport
@@ -1081,26 +1390,10 @@ function GxRenderer:draw(frame)
   -- The world MRT shader derives its depth from the host fragment's normalized
   -- window depth (map.glsl's dsZbufferDepth, the DS field Z-buffer domain).
   local lg = assert(self._graphics)
-  self.stats.drawCalls = 0
-  self.stats.colorDrawCalls = 0
-
   local rectangle = viewport.worldViewport
   local colorW, colorH = GxRenderer.worldRasterDimensions(rectangle.width, rectangle.height, self.worldRasterScale)
   self:_ensureTargets(colorW, colorH)
 
-  -- The HGSS presentation owner computes these projections once per frame.
-  -- Both the state and color passes select projection identically per item.
-  local function projectionFor(item, frameState)
-    if item.billboardProjection == true or item.fieldEffect ~= nil then
-      return frameState.billboardProjection
-    end
-    return frameState.worldProjection
-  end
-
-  local colorTargets = assert(self._colorTargets)
-
-  -- The final pass samples neighbors in world-raster pixels, so edge width
-  -- remains tied to the DS-relative world rather than host resolution.
   local edgeRadiusPx = 1
   local cameraZoom = frame.cameraZoom
   if cameraZoom == nil then
@@ -1111,308 +1404,32 @@ function GxRenderer:draw(frame)
   end
 
   local presentationCanvas = lg.getCanvas()
-  local function doDraw()
-    ---@type GxRenderer.Canvas?
-    local presentationColorCanvas
-    if presentationCanvas ~= nil and type(presentationCanvas) == "table" and presentationCanvas[1] ~= nil then
-      presentationColorCanvas = presentationCanvas[1]
-      if type(presentationColorCanvas) == "table" then
-        presentationColorCanvas = presentationColorCanvas[1]
-      end
-      assert(
-        presentationColorCanvas and presentationColorCanvas.getWidth and presentationColorCanvas.getHeight,
-        "GxRenderer requires a color presentation target"
-      )
-      ---@cast presentationColorCanvas GxRenderer.Canvas
-    else
-      ---@cast presentationCanvas GxRenderer.Canvas?
-      presentationColorCanvas = presentationCanvas
-    end
-
-    -- The HGSS presentation owner builds the render queue exactly once per frame.
-    local queue = assert(frame.queue, "GxRenderer requires a normalized render queue")
-
-    -- ---- world MRT pass: color and polygon state ----
-    local stateClearTargets = assert(self._stateClearTargets)
-    lg.setCanvas(stateClearTargets)
-    lg.clear(DS_STATE_CLEAR, false, true)
-    local colorClearTargets = assert(self._colorClearTargets)
-    lg.setCanvas(colorClearTargets)
-    local clearColor = frame.clearColor or self.clearColor
-    lg.clear(clearColor, false, false)
-    lg.setCanvas(colorTargets)
-    lg.setShader(self.worldShader)
-    lg.setDepthMode("less", true)
-    lg.setBlendMode("replace", "premultiplied")
-    self._activeShader = self.worldShader
-    self.worldShader:send("u_view", "column", viewMatrix)
-    self:_sendLighting(frame, self.worldShader)
-
-    for _, d in ipairs(queue.opaque) do
-      self:_drawItem(d, projectionFor(d, frame), FRAGMENT_PASS_OPAQUE)
-    end
-    for _, d in ipairs(queue.cutout) do
-      self:_drawItem(d, projectionFor(d, frame), FRAGMENT_PASS_CUTOUT)
-    end
-    for _, d in ipairs(queue.mixedOpaque) do
-      self:_drawItem(d, projectionFor(d, frame), FRAGMENT_PASS_MIXED_OPAQUE)
-    end
-    self._activeShader = nil
-
-    -- ---- translucent compositor ----
-    -- The DS translucent path needs per-pixel state that fixed-function host
-    -- blending cannot express: same-ID rejection against the pixel's last
-    -- translucent ID, max destination alpha, fog-gate AND, and
-    -- last-translucent-ID state mutation. Exact mode rasterizes each item
-    -- once into source MRTs, then ping-pongs color and compact translucent
-    -- state through the full-world integer compositor. Opaque renderState
-    -- remains fixed throughout this sequence.
-    --
-    -- Opaque color/state are the initial destination. The compact state is
-    -- cleared only when an exact blended entry needs its first source pass.
-    local activeColor, opaqueState = assert(self.sceneColor), assert(self.renderState)
-    local activeTranslucentState = self._translucentState or opaqueState
-    if self.translucencyMode == GxRenderer.TRANSLUCENCY_APPROXIMATE then
-      if #queue.blended > 0 then
-        self:_sendLighting(frame, self.shader)
-        local approximateClearTargets = assert(self._colorClearTargets)
-        lg.setCanvas(approximateClearTargets)
-        lg.setShader(self.shader)
-        lg.setDepthMode("less", false)
-        lg.setBlendMode("alpha", "alphamultiply")
-        self.shader:send("u_view", "column", viewMatrix)
-        for _, entry in ipairs(queue.blended) do
-          local fragmentPass = entry.fragmentPass == AlphaClassifier.MIXED and FRAGMENT_PASS_MIXED_TRANSLUCENT
-            or FRAGMENT_PASS_TRANSLUCENT
-          self:_drawItem(entry.item, projectionFor(entry.item, frame), fragmentPass)
-        end
-      end
-    elseif #queue.blended > 0 then
-      local exactSourceShader = assert(self.exactSourceShader)
-      self:_sendLighting(frame, exactSourceShader)
-      activeTranslucentState = assert(self._translucentState)
-      lg.setCanvas(activeTranslucentState)
-      lg.clear(0, 0, 0, 0)
-      local inactiveColor, inactiveTranslucentState = assert(self._spareColor), assert(self._spareTranslucentState)
-      local function swap()
-        activeColor, activeTranslucentState, inactiveColor, inactiveTranslucentState =
-          inactiveColor, inactiveTranslucentState, activeColor, activeTranslucentState
-      end
-      self.compositeShader:send("u_sourceColor", self._sourceColor)
-      self.compositeShader:send("u_sourceMeta", self._sourceMeta)
-      self.compositeShader:send("u_size", { colorW, colorH })
-      self.compositeShader:send("u_opaqueState", opaqueState)
-      for _, entry in ipairs(queue.blended) do
-        local d = entry.item
-        -- Depth-equal is a corpus-provable-absent DS state (see
-        -- PolygonState.validate's POLYGON_STATE_DEPTH_EQUAL_UNSUPPORTED
-        -- rejection): the renderer never branches on d.depthEqual and always
-        -- compares "less", even if a defensively-constructed item still
-        -- carries the field. Host `lequal` is retired, not merely unused.
-        local fragmentPass = entry.fragmentPass == AlphaClassifier.MIXED and FRAGMENT_PASS_MIXED_TRANSLUCENT
-          or FRAGMENT_PASS_TRANSLUCENT
-        self:_drawSourceItem(
-          d,
-          projectionFor(d, frame),
-          fragmentPass,
-          viewMatrix,
-          activeTranslucentState,
-          colorW,
-          colorH
-        )
-
-        -- Full-screen composite from the source buffers + active pair into
-        -- the inactive pair, with replace semantics (no second host blend).
-        lg.setCanvas(inactiveColor, inactiveTranslucentState)
-        lg.setDepthMode()
-        lg.setBlendMode("replace", "premultiplied")
-        lg.setColor(1, 1, 1, 1)
-        lg.setShader(self.compositeShader)
-        self.compositeShader:send("u_activeColor", activeColor)
-        self.compositeShader:send("u_activeTranslucentState", activeTranslucentState)
-        lg.draw(self._sourceColor, 0, 0)
-        lg.setShader()
-        swap()
-      end
-      -- Publish color and compact state roles. Opaque renderState remains the
-      -- owner of edge ID and depth throughout exact translucency.
-      self.sceneColor = activeColor
-      self._translucentState, self._spareTranslucentState = activeTranslucentState, inactiveTranslucentState
-      local publishedTargets = assert(self._colorTargets)
-      publishedTargets[1], publishedTargets[2], publishedTargets[3] = activeColor, opaqueState, activeTranslucentState
-      assert(self._colorClearTargets)[1] = activeColor
-      self._spareColor, self._spareTranslucentState = inactiveColor, inactiveTranslucentState
-    end
-
-    -- Wireframe edges (polygon alpha zero): these count as opaque for edge
-    -- marking; the color pass draws them for their own visible RGB. They
-    -- target the ACTIVE color/state pair so the final resolve sees them
-    -- composited with any translucent overlays.
-    if #queue.wireframe > 0 then
-      local wireframeTargets = assert(self._colorTargets)
-      local wireframeShader = self.worldShader
-      if self.translucencyMode == GxRenderer.TRANSLUCENCY_EXACT and #queue.blended > 0 then
-        wireframeShader = assert(self.wireframeResetShader)
-      end
-      lg.setCanvas(wireframeTargets)
-      lg.setShader(wireframeShader)
-      self._activeShader = wireframeShader
-      if wireframeShader ~= self.worldShader then
-        wireframeShader:send("u_view", "column", viewMatrix)
-        self:_sendLighting(frame, wireframeShader)
-      end
-      lg.setDepthMode("less", true)
-      lg.setBlendMode("replace", "premultiplied")
-      lg.setWireframe(true)
-      for _, d in ipairs(queue.wireframe) do
-        self:_drawWireframe(d, projectionFor(d, frame))
-      end
-      self._activeShader = nil
-      lg.setWireframe(false)
-    end
-
-    -- ---- final resolve: edge marking, fog, then the current AA approximation ----
-    self:_sendEdgeColors(frame)
-    self:_sendFog(frame)
-    self.edgeShader:send("u_antialiasEnabled", true)
-    self.edgeShader:send("u_edgeRadiusPx", edgeRadiusPx)
-    lg.setDepthMode()
-    lg.setBlendMode("replace", "premultiplied")
-    lg.setColor(1, 1, 1, 1)
-    lg.setCanvas(assert(self._resolvedColor))
-    lg.setShader(self.edgeShader)
-    sendStateUniforms(self.edgeShader, opaqueState, self.stateW, self.stateH)
-    if self.translucencyMode == GxRenderer.TRANSLUCENCY_EXACT then
-      self.edgeShader:send("u_translucentState", #queue.blended > 0 and activeTranslucentState or opaqueState)
-    end
-    lg.draw(activeColor, 0, 0)
-
-    -- Edge, fog, and the current AA approximation have finished at world
-    -- resolution. Presentation is only a nearest-filtered scale of that result.
-    lg.setCanvas(presentationCanvas)
-    lg.setShader()
-    lg.setDepthMode()
-    lg.setBlendMode("replace", "premultiplied")
-    lg.setColor(1, 1, 1, 1)
-    lg.draw(
-      assert(self._resolvedColor),
-      rectangle.x,
-      rectangle.y,
-      0,
-      rectangle.width / colorW,
-      rectangle.height / colorH
-    )
-
-    -- The world is now present at presentation resolution. Ordinary billboards
-    -- rasterize into one presentation-resolution color/coverage/depth layer,
-    -- so host depth is never borrowed for sprite ordering or cleared as part
-    -- of this path.
-    if hasPresentationSprites then
-      -- The sprite raster target is physical/presentation resolution: the
-      -- camera projection determines every billboard vertex, so this
-      -- resolution must not coarsen it. The world state target below supplies
-      -- the shared anchor lattice used to register the actor to world pixels.
-      local visibleW, visibleH = rectangle.width, rectangle.height
-      local spriteW, spriteH = math.ceil(visibleW), math.ceil(visibleH)
-      -- Embed the exact visible physical viewport into the ceil-allocated
-      -- sprite target: any ceil fringe lands only on the right/bottom.
-      local scale = self._presentationScale
-      local offset = self._presentationOffset
-      scale[1] = visibleW / spriteW
-      scale[2] = visibleH / spriteH
-      offset[1] = scale[1] - 1
-      offset[2] = scale[2] - 1
-      local callerScissorX, callerScissorY, callerScissorW, callerScissorH = lg.getScissor()
-      local dirtyX0, dirtyY0, dirtyX1, dirtyY1 = spriteDirtyRectangle(
-        spriteItems,
-        viewMatrix,
-        frame.billboardProjection,
-        self.stateW,
-        self.stateH,
-        spriteW,
-        spriteH,
-        scale,
-        offset
-      )
-      if dirtyX0 ~= nil then
-        self._activeShader = self:_ensureSpriteShader()
-        local spriteShader = assert(self._activeShader)
-        spriteShader:send("u_presentationSprite", true)
-        self:_ensureSpriteTargets(spriteW, spriteH)
-        local spriteTargets = assert(self._spriteTargets)
-        lg.setCanvas(spriteTargets)
-        lg.setScissor(dirtyX0, dirtyY0, dirtyX1 - dirtyX0, dirtyY1 - dirtyY0)
-        lg.clear(0, 0, 0, 0, false, true)
-        lg.setDepthMode("less", true)
-        lg.setBlendMode("replace", "premultiplied")
-        spriteShader:send("u_presentationScale", scale)
-        spriteShader:send("u_presentationOffset", offset)
-        spriteShader:send("u_view", "column", viewMatrix)
-        spriteShader:send("u_renderState", opaqueState)
-        spriteShader:send("u_stateSize", { self.stateW, self.stateH })
-        self:_sendSpriteFog(frame)
-        self:_sendLighting(frame, spriteShader)
-        lg.setShader(spriteShader)
-        lg.setBlendMode("replace", "premultiplied")
-
-        for _, item in ipairs(spriteItems) do
-          local fragmentPass
-          if item.alphaClass == AlphaClassifier.OPAQUE then
-            fragmentPass = FRAGMENT_PASS_OPAQUE
-          elseif item.alphaClass == AlphaClassifier.CUTOUT then
-            fragmentPass = FRAGMENT_PASS_CUTOUT
-          else
-            error("ordinary billboard has unsupported alpha class: " .. tostring(item.alphaClass))
-          end
-          spriteShader:send("u_spriteFogEnabled", item.fogEnabled == true)
-          self:_drawItem(item, frame.billboardProjection, fragmentPass)
-        end
-        self._activeShader = nil
-
-        local clipX, clipY = rectangle.x + dirtyX0, rectangle.y + dirtyY0
-        local clipRight, clipBottom = rectangle.x + dirtyX1, rectangle.y + dirtyY1
-        clipX = math.max(clipX, rectangle.x)
-        clipY = math.max(clipY, rectangle.y)
-        clipRight = math.min(clipRight, rectangle.x + visibleW)
-        clipBottom = math.min(clipBottom, rectangle.y + visibleH)
-        if callerScissorX ~= nil then
-          clipX = math.max(clipX, callerScissorX)
-          clipY = math.max(clipY, callerScissorY)
-          clipRight = math.min(clipRight, callerScissorX + callerScissorW)
-          clipBottom = math.min(clipBottom, callerScissorY + callerScissorH)
-        end
-        if clipRight > clipX and clipBottom > clipY then
-          lg.setScissor(clipX, clipY, clipRight - clipX, clipBottom - clipY)
-          lg.setCanvas(presentationCanvas)
-          lg.setDepthMode()
-          lg.setBlendMode("replace", "premultiplied")
-          lg.setColor(1, 1, 1, 1)
-          local compositeShader = self:_ensureSpriteCompositeShader()
-          compositeShader:send("u_coverage", self._spriteCoverage)
-          lg.setShader(compositeShader)
-          -- The sprite canvas is already physical/presentation resolution, so
-          -- the final composite is 1:1 -- no more magnification by N.
-          lg.draw(assert(self._spriteColor), rectangle.x, rectangle.y)
-          lg.setShader()
-        end
-      end
-    end
-  end
 
   -- Capture every caller state the draw modifies, restore the captured values
   -- afterwards -- on success and error alike -- and rethrow the original draw
   -- error. The 2D diagnostic UI after the scene must never inherit the
   -- scene's canvas, shader, depth, cull, blend, wireframe, or color state.
-  local canvas = lg.getCanvas()
+  local canvas = presentationCanvas
   local shader = lg.getShader()
   local blendMode, blendAlpha = lg.getBlendMode()
   local depthMode, depthWrite = lg.getDepthMode()
   local cullMode = lg.getMeshCullMode()
   local wireframe = lg.isWireframe()
-  local color = { lg.getColor() }
-  local scissor = { lg.getScissor() }
+  local colorRed, colorGreen, colorBlue, colorAlpha = lg.getColor()
+  local scissorX, scissorY, scissorWidth, scissorHeight = lg.getScissor()
 
-  local ok, err = pcall(doDraw)
+  local ok, err = pcall(
+    drawFrame,
+    self,
+    frame,
+    presentationCanvas,
+    rectangle,
+    colorW,
+    colorH,
+    viewMatrix,
+    hasPresentationSprites,
+    edgeRadiusPx
+  )
 
   self._activeShader = nil
   lg.setCanvas(canvas)
@@ -1421,8 +1438,12 @@ function GxRenderer:draw(frame)
   lg.setDepthMode(depthMode, depthWrite)
   lg.setWireframe(wireframe)
   lg.setMeshCullMode(cullMode)
-  lg.setColor(color[1], color[2], color[3], color[4])
-  lg.setScissor(scissor[1], scissor[2], scissor[3], scissor[4])
+  lg.setColor(colorRed, colorGreen, colorBlue, colorAlpha)
+  if scissorX == nil then
+    lg.setScissor()
+  else
+    lg.setScissor(scissorX, scissorY, scissorWidth, scissorHeight)
+  end
 
   if not ok then
     error(err)

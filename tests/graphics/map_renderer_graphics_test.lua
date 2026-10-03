@@ -1997,7 +1997,7 @@ function T.opaque_world_geometry_writes_color_and_state_in_one_submission(scope)
 
   render(renderer, emptyRuntime(), fixedCamera(), { { item } }, nil, viewport)
 
-  Assert.equal(renderer.stats.drawCalls, 1, "one opaque triangle produces one mesh draw")
+  Assert.equal(renderer.stats.geometrySubmissions, 1, "one opaque triangle produces one mesh draw")
   local color = decalInteriorSample(renderer)
   local colorScale = color[1] > 1 and 255 or 1
   Assert.isTrue(color[1] > 0.8 * colorScale, "the shared pass writes the current red combiner result")
@@ -4182,7 +4182,8 @@ function T.mixed_partial_texels_use_the_compositor_and_opaque_texels_do_not(scop
 
   local colorImg = renderer.sceneColor:newImageData()
   local stateImg = renderer.renderState:newImageData()
-  local compactImg = assert(renderer._translucentState, "exact renderer retains compact translucency state"):newImageData()
+  local compactImg =
+    assert(renderer._translucentState, "exact renderer retains compact translucency state"):newImageData()
   local alphas5 = { 0, 1, 15, 30, 31 }
 
   for i, a5 in ipairs(alphas5) do

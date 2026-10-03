@@ -224,6 +224,19 @@ function T.blended_entries_stay_the_render_queues_own_wrapper_around_the_origina
   )
 end
 
+function T.stats_borrow_the_backend_diagnostics_table_by_identity()
+  local stats = { geometrySubmissions = 0 }
+  local backend = {
+    stats = stats,
+    draw = function() end,
+    release = function() end,
+  }
+  local renderer = FieldRenderer.new({ gxRenderer = backend })
+
+  Assert.equal(renderer.stats, stats, "field diagnostics directly expose the backend's retained table")
+  renderer:release()
+end
+
 -- The wrapper's own clear color is a frame-level input to GX, so two
 -- FieldRenderer instances sharing one GX backend can each request their own
 -- clear color without mutating shared backend state.

@@ -85,7 +85,7 @@ local function runVersion(scope, versionId)
     love.graphics.setCanvas(target)
     fieldRenderer:draw(sceneRuntime(), camera, { items }, nil, viewport, 0, 3)
     love.graphics.setCanvas()
-    Assert.isTrue(fieldRenderer.stats.drawCalls > 0, phase .. " must reach a real graphics draw")
+    Assert.isTrue(fieldRenderer.stats.geometrySubmissions > 0, phase .. " must reach a real graphics draw")
   end
 end
 

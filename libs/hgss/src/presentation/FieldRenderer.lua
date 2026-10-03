@@ -8,8 +8,6 @@ local RenderQueue = require("libs.hgss.src.presentation.RenderQueue")
 ---@class FieldRenderer
 ---@field gxRenderer GxRenderer
 ---@field stats table<string, unknown>
----@field sceneColor GxRenderer.Canvas?
----@field renderState GxRenderer.Canvas?
 ---@field _ownsRenderer boolean
 ---@field _queueScratch RenderQueueScratch
 ---@field clearColor number[]?
@@ -84,8 +82,6 @@ function FieldRenderer:draw(renderEnvironment, camera, worldParts, spriteItems, 
     spriteItems = spriteItems,
     viewport = viewport,
   })
-  self.sceneColor = self.gxRenderer.sceneColor
-  self.renderState = self.gxRenderer.renderState
 end
 
 function FieldRenderer:release()

@@ -924,6 +924,16 @@ function T.presentation_sprite_work_uses_a_conservative_dirty_union()
   Assert.equal(compositeScissor[2], clearScissor[2] + 30, "composite translates dirty y to presentation coordinates")
   Assert.equal(compositeScissor[3], clearScissor[3])
   Assert.equal(compositeScissor[4], clearScissor[4])
+  Assert.equal(
+    renderer.stats.spriteClearPixels,
+    clearScissor[3] * clearScissor[4],
+    "sprite clear work counts the area of its actual integer scissor"
+  )
+  Assert.equal(
+    renderer.stats.spriteCompositeArea,
+    compositeScissor[3] * compositeScissor[4],
+    "sprite composite work counts the area of its actual integer scissor"
+  )
   renderer:release()
 end
 
@@ -977,7 +987,7 @@ function T.presentation_sprite_dirty_union_clamps_billboards_at_each_viewport_ed
   renderer:release()
 end
 
-function T.unsafe_sprite_projection_uses_the_full_target_but_restores_caller_scissor()
+function T.unsafe_sprite_projection_clears_the_full_target_and_clips_composite_to_caller_scissor()
   local lg = fakeGraphics({ scissor = { 5, 7, 100, 80 } })
   local renderer = GxRenderer.new({ graphics = lg })
   local scene = emptySceneCamera()
@@ -1000,8 +1010,19 @@ function T.unsafe_sprite_projection_uses_the_full_target_but_restores_caller_sci
     3
   )
 
-  local clearScissor = spriteScissor(renderer, lg, item.mesh)
-  Assert.deepEqual(clearScissor, { 0, 0, 640, 480 }, "a bound behind the projection plane falls back to the whole sprite target")
+  local clearScissor, _, compositeScissor = spriteScissor(renderer, lg, item.mesh)
+  Assert.deepEqual(
+    clearScissor,
+    { 0, 0, 640, 480 },
+    "a bound behind the projection plane falls back to the whole sprite target"
+  )
+  Assert.equal(renderer.stats.spriteClearPixels, 640 * 480, "unsafe projection clears the whole target")
+  Assert.deepEqual(
+    compositeScissor,
+    { 20, 30, 85, 57 },
+    "the final composite intersects the caller scissor and world viewport"
+  )
+  Assert.equal(renderer.stats.spriteCompositeArea, 85 * 57, "unsafe projection records only visible composite pixels")
   local sx, sy, sw, sh = lg.getScissor()
   Assert.deepEqual({ sx, sy, sw, sh }, { 5, 7, 100, 80 }, "the caller scissor is restored after success")
   renderer:release()
@@ -1089,6 +1110,8 @@ function T.safe_empty_sprite_projection_skips_the_sprite_stage()
   )
 
   Assert.isNil(renderer._spriteTargets, "a safely empty projection allocates no sprite targets")
+  Assert.equal(renderer.stats.spriteClearPixels, 0, "an empty sprite union performs no clears")
+  Assert.equal(renderer.stats.spriteCompositeArea, 0, "an empty sprite union performs no composite work")
   for _, call in ipairs(lg.calls.draw) do
     Assert.isTrue(call.mesh ~= item.mesh, "an entirely offscreen sprite is not submitted")
   end
@@ -1243,7 +1266,7 @@ function T.logical_sprite_composite_restores_exact_caller_state_and_scissor_on_f
     wireframe = false,
     cullMode = "back",
     color = { 0.2, 0.4, 0.6, 0.8 },
-    scissor = { 17, 19, 200, 150 },
+    scissor = { 55, 40, 10, 10 },
   })
   local renderer = GxRenderer.new({ graphics = lg })
   local scene = emptySceneCamera()
@@ -1253,12 +1276,27 @@ function T.logical_sprite_composite_restores_exact_caller_state_and_scissor_on_f
   render(renderer, scene.runtime, scene.camera, nil, { item }, viewport, 0, nil, 3)
   assertRestoredState(lg, canvas, shader)
   local sx, sy, sw, sh = lg.getScissor()
-  Assert.equal(sx, 17)
-  Assert.equal(sy, 19)
-  Assert.equal(sw, 200)
-  Assert.equal(sh, 150)
-  local localScissor = spriteScissor(renderer, lg, item.mesh)
+  Assert.equal(sx, 55)
+  Assert.equal(sy, 40)
+  Assert.equal(sw, 10)
+  Assert.equal(sh, 10)
+  local localScissor, _, compositeScissor = spriteScissor(renderer, lg, item.mesh)
   Assert.notNil(localScissor, "sprite work installs a target-local dirty scissor")
+  Assert.notNil(compositeScissor, "sprite work composites through presentation clipping")
+  Assert.equal(
+    renderer.stats.spriteClearPixels,
+    localScissor[3] * localScissor[4],
+    "sprite clear work records its actual target-local area"
+  )
+  Assert.equal(
+    renderer.stats.spriteCompositeArea,
+    compositeScissor[3] * compositeScissor[4],
+    "caller clipping reduces the recorded composite area"
+  )
+  Assert.isTrue(
+    renderer.stats.spriteCompositeArea < renderer.stats.spriteClearPixels,
+    "presentation clipping can reduce composite work below clear work"
+  )
   Assert.isTrue(
     localScissor[1] ~= 17 or localScissor[2] ~= 19 or localScissor[3] ~= 200 or localScissor[4] ~= 150,
     "the target-local dirty scissor is not mistaken for the caller's presentation scissor"
@@ -1272,10 +1310,10 @@ function T.logical_sprite_composite_restores_exact_caller_state_and_scissor_on_f
   Assert.isTrue(tostring(failed):find("injected scissor failure", 1, true) ~= nil)
   assertRestoredState(lg, canvas, shader)
   sx, sy, sw, sh = lg.getScissor()
-  Assert.equal(sx, 17)
-  Assert.equal(sy, 19)
-  Assert.equal(sw, 200)
-  Assert.equal(sh, 150)
+  Assert.equal(sx, 55)
+  Assert.equal(sy, 40)
+  Assert.equal(sw, 10)
+  Assert.equal(sh, 10)
   renderer:release()
   for _, releasedShader in ipairs(lg.shaders) do
     Assert.equal(releasedShader.releaseCount, 1, "release disposes every shader exactly once")
@@ -1994,7 +2032,7 @@ function T.draw_renders_only_given_parts_into_persistent_scratch()
   Assert.equal(itemFrame - emptyFrame, 2, "each given world item draws once through the MRT pass")
 
   render(renderer, scene.runtime, scene.camera, { { drawItem("next") } }, nil, viewport, 0)
-  Assert.equal(renderer.stats.drawCalls, 1, "a smaller frame retains no stale draw items")
+  Assert.equal(renderer.stats.geometrySubmissions, 1, "a smaller frame retains no stale draw items")
 
   renderer:release()
 end
@@ -2216,7 +2254,7 @@ function T.wireframe_is_submitted_once_with_edge_only_state()
     0
   )
 
-  Assert.equal(renderer.stats.drawCalls, 1, "one wireframe item produces one mesh submission")
+  Assert.equal(renderer.stats.geometrySubmissions, 1, "one wireframe item produces one mesh submission")
   Assert.equal(#lg.calls.draw, 3, "one mesh submission, world resolve, and presentation blit")
   local meshDraw = lg.calls.draw[1]
   Assert.equal(meshDraw.mesh, item.mesh)
@@ -2973,6 +3011,93 @@ function T.exact_blended_items_submit_one_geometry_draw_and_one_composite_each()
   renderer:release()
 end
 
+function T.geometry_diagnostics_match_successful_mesh_submissions_in_every_draw_path()
+  local cases = {
+    { name = "opaque", items = { passItem("opaque", 0) } },
+    { name = "approximate translucent", items = { passItem("translucent", 0) } },
+    {
+      name = "exact translucent",
+      mode = GxRenderer.TRANSLUCENCY_EXACT,
+      items = { passItem("translucent", 0) },
+    },
+    { name = "wireframe", items = { passItem("wireframe", 0) } },
+    { name = "sprite", sprites = { headlessSpriteItem() } },
+  }
+
+  for _, case in ipairs(cases) do
+    local lg = fakeGraphics()
+    local opts = { graphics = lg }
+    if case.mode ~= nil then
+      opts.translucencyMode = case.mode
+    end
+    local renderer = GxRenderer.new(opts)
+    local scene = emptySceneCamera()
+    render(
+      renderer,
+      scene.runtime,
+      scene.camera,
+      { case.items or {} },
+      case.sprites,
+      FieldViewport.new(640, 480, { mode = "strict" }),
+      0,
+      nil,
+      case.sprites and 3 or nil
+    )
+
+    local itemMeshes = {}
+    for _, item in ipairs(case.items or {}) do
+      itemMeshes[item.mesh] = true
+    end
+    for _, item in ipairs(case.sprites or {}) do
+      itemMeshes[item.mesh] = true
+    end
+    local successfulMeshSubmissions = 0
+    for _, draw in ipairs(lg.calls.draw) do
+      if itemMeshes[draw.mesh] then
+        successfulMeshSubmissions = successfulMeshSubmissions + 1
+      end
+    end
+    Assert.equal(
+      renderer.stats.geometrySubmissions,
+      successfulMeshSubmissions,
+      case.name .. " diagnostics equal recorded mesh submissions"
+    )
+    renderer:release()
+  end
+end
+
+function T.work_diagnostics_track_blended_entry_cost_without_exposing_target_topology()
+  for _, mode in ipairs({ GxRenderer.TRANSLUCENCY_APPROXIMATE, GxRenderer.TRANSLUCENCY_EXACT }) do
+    local lg = fakeGraphics()
+    local renderer = GxRenderer.new({ graphics = lg, translucencyMode = mode })
+    local scene = emptySceneCamera()
+    local stats = renderer.stats
+    Assert.notNil(stats.geometrySubmissions, "the renderer publishes geometry work diagnostics")
+
+    drawTranslucentFrame(renderer, scene, translucentItems(1))
+    local one = {
+      geometrySubmissions = stats.geometrySubmissions,
+      worldFullSurfaceDraws = stats.worldFullSurfaceDraws,
+      worldFullSurfaceClears = stats.worldFullSurfaceClears,
+      presentationWorldBlits = stats.presentationWorldBlits,
+    }
+    drawTranslucentFrame(renderer, scene, translucentItems(5))
+
+    Assert.equal(renderer.stats, stats, "the diagnostics table remains retained across frames")
+    Assert.equal(stats.geometrySubmissions - one.geometrySubmissions, 4)
+    if mode == GxRenderer.TRANSLUCENCY_APPROXIMATE then
+      Assert.equal(stats.worldFullSurfaceDraws - one.worldFullSurfaceDraws, 0)
+      Assert.equal(stats.worldFullSurfaceClears - one.worldFullSurfaceClears, 0)
+    else
+      Assert.equal(stats.worldFullSurfaceDraws - one.worldFullSurfaceDraws, 4)
+      Assert.equal(stats.worldFullSurfaceClears - one.worldFullSurfaceClears, 4)
+    end
+    Assert.equal(stats.presentationWorldBlits, one.presentationWorldBlits)
+    Assert.equal(stats.presentationWorldBlits, 1, "each frame resolves the world once")
+    renderer:release()
+  end
+end
+
 function T.integrated_default_cost_shape_stays_bounded_at_1080p()
   local lg = fakeGraphics()
   local renderer = GxRenderer.new({ graphics = lg, worldRasterScale = 2 })
@@ -2987,7 +3112,7 @@ function T.integrated_default_cost_shape_stays_bounded_at_1080p()
   Assert.equal(renderer.colorH, 384)
   Assert.isNil(renderer._sourceColor)
   Assert.isNil(renderer._sourceMeta)
-  Assert.equal(renderer.stats.drawCalls, 33, "one opaque and one direct translucent submission per item")
+  Assert.equal(renderer.stats.geometrySubmissions, 33, "one opaque and one direct translucent submission per item")
   renderer:release()
 end
 

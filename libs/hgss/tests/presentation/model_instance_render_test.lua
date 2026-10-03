@@ -104,8 +104,8 @@ function T.nitro_animated_fixture_renders_through_field_renderer()
   instance:updateFixed()
   instance:evaluatePose()
   drawInstance(renderer, runtime, instance, 1)
-  local firstDrawCalls = renderer.stats.drawCalls
-  Assert.isTrue(firstDrawCalls >= 1, "the door mesh draws")
+  local firstGeometrySubmissions = renderer.stats.geometrySubmissions
+  Assert.isTrue(firstGeometrySubmissions >= 1, "the door mesh draws")
 
   -- Scrubbing to another frame reuses the same built meshes (no geometry
   -- recompilation per frame) and still draws.
@@ -114,7 +114,7 @@ function T.nitro_animated_fixture_renders_through_field_renderer()
   instance:evaluatePose()
   local rendersBefore = instance.renderMeshesById
   drawInstance(renderer, runtime, instance, 1)
-  Assert.isTrue(renderer.stats.drawCalls >= 1)
+  Assert.isTrue(renderer.stats.geometrySubmissions >= 1)
   Assert.equal(instance.renderMeshesById, rendersBefore, "meshes are built once, not per frame")
 
   -- No render state leaks into the next frame.

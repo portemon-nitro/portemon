@@ -808,7 +808,7 @@ function T.animated_building_loads_advances_and_renders()
     FieldViewport.new(320, 240, { mode = "strict" }),
     1
   )
-  Assert.isTrue(renderer.stats.drawCalls >= 1, "the animated door draws")
+  Assert.isTrue(renderer.stats.geometrySubmissions >= 1, "the animated door draws")
 
   -- The handle surface drives the semantic role on the loader-built
   -- instance: play returns the live attachment, whose player reaches the
