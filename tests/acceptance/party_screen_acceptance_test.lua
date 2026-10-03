@@ -366,8 +366,8 @@ function T.tests.party_grid_static_frame_and_reflow_journey_preserves_semantics(
     end, 120)
 
     local view = partyView(game)
-    -- The fresh screen publishes its plan once icon preparation
-    -- resolves on the first ticks; the open alone carries no plan yet.
+    -- The wait record already carries the resolved plan while icon
+    -- preparation is still pending; the journey still waits for interactive.
     game:advanceUntil("the open party publishes its presentation plan", function()
       return partyView(game).presentation ~= nil
     end, 120)
@@ -531,8 +531,8 @@ function T.tests.opening_reveal_discards_early_input_without_replay()
     game:advanceUntil("party application opens over the retained menu", function()
       return hostPhase(game) == FieldApplicationHost.PHASES.application
     end, 120)
-    game:advanceUntil("the open party publishes its presentation plan", function()
-      return partyView(game).presentation ~= nil
+    game:advanceUntil("the party reveal starts", function()
+      return partyView(game).phase == "opening"
     end, 120)
 
     local leaf = partyView(game)

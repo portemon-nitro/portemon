@@ -298,10 +298,15 @@ function PartyScreenState:resolveLayout()
 end
 
 -- Re-resolves host placement without advancing icon preparation or the Party clock.
+-- A pending/failed wait record is not a semantic view: re-resolve from the
+-- canonical controller snapshot so placement never inherits wait metadata.
 ---@param view table<string, unknown>?
 ---@return table<string, unknown> current presentation plan
 function PartyScreenState:refreshPresentation(view)
   assert(not self._disposed, "a disposed party wrapper refreshes nothing")
+  if type(view) == "table" and view.preparationState ~= nil and view.preparationState ~= "ready" then
+    return self._session:resolve(self:_measured(), self:_view())
+  end
   return self._session:resolve(self:_measured(), view or self:_view())
 end
 
@@ -448,11 +453,11 @@ function PartyScreenState:updateFixed(uiInput)
   session:resolve(measurement, self:_view())
 end
 
--- The presentation snapshot: the preparation wait while icons are not
--- ready, the controller status plus presentation=plan and readiness once
--- they are, presentation=plan remaining the single host-facing layout
--- authority. Read-only: status never advances preparation. Fresh tables
--- per call.
+-- The presentation snapshot: the preparation wait plus its resolved plan
+-- while icons are not ready, the controller status plus presentation=plan
+-- and readiness once they are, presentation=plan remaining the single
+-- host-facing layout authority. Read-only: status never advances
+-- preparation. Fresh tables per call.
 ---@return table<string, unknown>
 function PartyScreenState:status()
   if self._preparationState ~= "ready" then
@@ -461,6 +466,7 @@ function PartyScreenState:status()
       preparationState = self._preparationState,
       preparationError = self._preparationError,
       layout = self:_layout(),
+      presentation = self._session:plan(),
     }
   end
   local status = self:_view()
