@@ -48,6 +48,7 @@ local ItemUse = require("libs.battle.src.gen4.ItemUse")
 local MoveExecution = require("libs.battle.src.gen4.MoveExecution")
 local NativeEffectHandlers = require("libs.battle.src.gen4.behaviors.effects.NativeEffectHandlers")
 local NativeFormats = require("libs.battle.src.gen4.formats.NativeFormats")
+local NativePassives = require("libs.battle.src.gen4.behaviors.NativePassives")
 local OutcomePolicy = require("libs.battle.src.gen4.OutcomePolicy")
 local Personality = require("libs.mons.src.gen4.Personality")
 local Progression = require("libs.battle.src.gen4.Progression")
@@ -73,6 +74,7 @@ local TurnOrder = require("libs.battle.src.gen4.TurnOrder")
 ---@field private _moneyUpItems table<string, boolean>
 ---@field private _ruleset table<string, unknown>?
 ---@field private _commitLearningHandler fun(state: table<string, unknown>)?
+---@field private _decisionLease boolean?
 ---@field private _finalized boolean
 ---@field private _disposed boolean
 local HgssSessionExecutor = {}
@@ -593,6 +595,141 @@ local function combatStages(combatant)
   return record --[[@as table<string, integer>]]
 end
 
+---@param state unknown candidate probe state under validation
+---@return table<string, unknown> the probe state record unchanged
+local function probeState(state)
+  assert(type(state) == "table", "passive probes carry a state record")
+  return state --[[@as table<string, unknown>]]
+end
+
+---@param ability unknown battle ability key carried by the mon record
+---@param stat string combat stat under the checkpoint
+---@param statused boolean whether the holder carries a persistent condition
+---@param split string? physical/special split selecting split-gated boosts
+---@return table<string, integer>? exact boost ratio, when the owned passive applies
+local function passiveStatRatio(ability, stat, statused, split)
+  if type(ability) ~= "string" or ability == "" or ability == "NONE" then
+    return nil
+  end
+  local handlers = {}
+  NativePassives.register(handlers)
+  if type(handlers[ability]) ~= "function" then
+    error(BattleErrors.missingBehavior("no native passive handler is bound for the battle ability", {
+      key = ability,
+    }))
+  end
+  local bag = EffectBag.new()
+  bag:add({
+    key = ability,
+    stateVersion = 1,
+    validateState = probeState,
+    timings = { { timing = "modifyStat", handler = ability, orderClass = "affliction" } },
+    lifecycle = { stacking = "replace", transfer = "clear" },
+  }, { kind = "field" }, { kind = "probe" }, { version = 1 })
+  local context = { stat = stat, statused = statused }
+  if split ~= nil then
+    context.split = split
+  end
+  local outcome = EffectDispatch.new(bag, handlers):invoke("modifyStat", context)
+  assert(outcome.done == true, "passive probes run to completion")
+  for _, event in ipairs(outcome.events) do
+    local record = event --[[@as table<string, unknown>]]
+    if record.key == ability and record.stages == "boosted" then
+      local ratio = record.ratio --[[@as table<string, unknown>?]]
+      if type(ratio) == "table" and type(ratio.numerator) == "number" and type(ratio.denominator) == "number" then
+        return {
+          numerator = ratio.numerator --[[@as integer]],
+          denominator = ratio.denominator --[[@as integer]],
+        }
+      end
+    end
+  end
+  return nil
+end
+
+---@param mon unknown battle-local mon record under inspection
+---@return string? persistent condition key, when one is present
+local function persistentCondition(mon)
+  if type(mon) ~= "table" then
+    return nil
+  end
+  local condition = (mon --[[@as table<string, unknown>]]).condition
+  if type(condition) ~= "table" then
+    return nil
+  end
+  local effects = (condition --[[@as table<string, unknown>]]).effects
+  if type(effects) ~= "table" then
+    return nil
+  end
+  local current = (effects --[[@as table<integer, unknown>]])[1]
+  if type(current) ~= "table" then
+    return nil
+  end
+  local key = (current --[[@as table<string, unknown>]]).key
+  if type(key) ~= "string" then
+    return nil
+  end
+  return key
+end
+
+---@param mon unknown battle-local mon record carrying ability and condition
+---@return string? battle ability key, when one is named
+---@return string? persistent condition key, when one is present
+local function statusFacts(mon)
+  if type(mon) ~= "table" then
+    return nil, nil
+  end
+  local record = mon --[[@as table<string, unknown>]]
+  local ability = nil
+  if type(record.ability) == "string" and record.ability ~= "" then
+    ability = record.ability --[[@as string]]
+  end
+  return ability, persistentCondition(record)
+end
+
+-- Applies the native Speed interaction for persistent conditions: a holder
+-- whose passive answers the Speed checkpoint while statused keeps that
+-- passive ratio, while any other paralyzed holder drops to a quarter
+-- through truncating division. Ability meaning stays in the passive
+-- families; this checkpoint only orders the arithmetic.
+---@param speed integer stage-effective Speed under adjustment
+---@param mon unknown battle-local mon record carrying ability and condition
+---@return integer effective battle Speed
+local function statusAdjustedSpeed(speed, mon)
+  local ability, conditionKey = statusFacts(mon)
+  local boost = passiveStatRatio(ability, "speed", conditionKey ~= nil, nil)
+  if boost ~= nil then
+    return math.floor((speed * boost.numerator) / boost.denominator)
+  end
+  if conditionKey == "paralysis" then
+    return math.floor(speed / 4)
+  end
+  return speed
+end
+
+-- Applies the native physical-attack interaction for burn: a holder whose
+-- passive answers the attack checkpoint while statused keeps that passive
+-- ratio, while any other burned attacker halves through truncating
+-- division. Special strikes never pay the burn penalty, and ability
+-- meaning stays in the passive families.
+---@param attacker table<string, integer> live attacker level and battle stats under adjustment
+---@param mon unknown battle-local mon record carrying ability and condition
+---@param category unknown executing move category selecting the split
+local function statusAdjustedAttack(attacker, mon, category)
+  if category ~= "physical" then
+    return
+  end
+  local ability, conditionKey = statusFacts(mon)
+  local boost = passiveStatRatio(ability, "attack", conditionKey ~= nil, "physical")
+  if boost ~= nil then
+    attacker.attack = math.floor((attacker.attack * boost.numerator) / boost.denominator)
+    return
+  end
+  if conditionKey == "burn" then
+    attacker.attack = math.floor(attacker.attack / 2)
+  end
+end
+
 ---@param combatant table<string, unknown> live combatant under fact sampling
 ---@param speciesFacts table<string, SpeciesFormFacts> static species facts by species and form
 ---@return table<string, integer> live level and stage-effective battle stats for the entry
@@ -638,6 +775,9 @@ local function projectCombatant(combatant, speciesFacts)
   for _, key in ipairs(STAGED_STATS) do
     stats[key] = StatStages.effective(stats[key] --[[@as integer]], stages[key] --[[@as integer]], key)
   end
+  -- Persistent conditions reshape effective Speed at this checkpoint:
+  -- paralysis quarters unless the holder's passive answers instead.
+  stats.speed = statusAdjustedSpeed(stats.speed --[[@as integer]], combatant.mon)
   return stats
 end
 
@@ -1637,12 +1777,11 @@ local function bindTurnHandlers(executor, moveFacts, speciesFacts, chart, moneyS
     local defender = BattleState.combatant(state, defenderId)
     local moveRecord = moveFacts[moveName]
     local category = type(moveRecord) == "table" and (moveRecord --[[@as table<string, unknown>]]).category or nil
-    local facts = combatPair(
-      projectCombatant(combatant, speciesFacts),
-      projectCombatant(defender, speciesFacts),
-      category,
-      moveName
-    )
+    local attackerStats = projectCombatant(combatant, speciesFacts)
+    -- Burn reshapes physical attack at this checkpoint: the penalty
+    -- applies unless the attacker's passive answers instead.
+    statusAdjustedAttack(attackerStats, combatant.mon, category)
+    local facts = combatPair(attackerStats, projectCombatant(defender, speciesFacts), category, moveName)
     local defenderTypes = {} ---@type table<integer, string[]>
     defenderTypes[defenderId] = combatantTypes(defender, speciesFacts)
     local moves = combatant
@@ -3325,6 +3464,78 @@ end
 function HgssSessionExecutor:view(controller)
   self:_live()
   return BattleView.forController(self, controller)
+end
+
+-- Runs one internal opponent decision against the session battle stream.
+-- The request must exactly match an open wild/trainer request of the
+-- current batch; the callback receives an ephemeral stream proxy that
+-- forwards labeled draws to the battle RNG and dies when the callback
+-- returns. The lease is synchronous and non-reentrant: a second lease
+-- while one is active, a stale or external request, a disposed session,
+-- or any proxy use after return raises before drawing. This seam exists
+-- only for the application opponent-controller broker; it is not a
+-- public random API.
+---@param request table<string, unknown> open internal opponent request under verification
+---@param callback fun(stream: table<string, unknown>): table<string, unknown> decision work under the lease
+---@return table<string, unknown> callback result
+function HgssSessionExecutor:withDecisionStream(request, callback)
+  local state = self:_live()
+  assert(type(request) == "table", "decision leases answer a pending request")
+  assert(type(callback) == "function", "decision leases run their callback")
+  assert(type(request.controller) == "string" and request.controller ~= "", "decision leases name their controller")
+  if self._decisionLease == true then
+    error(BattleErrors.invalidState("opponent decision streams never nest", {}))
+  end
+  if state.status ~= "waiting" or state.pending == nil then
+    error(BattleErrors.invalidState("opponent decisions answer an open batch", {}))
+  end
+  local pending = state.pending --[[@as table<string, unknown>]]
+  local batch = pending.batch --[[@as table<string, unknown>]]
+  local wanted = nil
+  for _, candidate in
+    ipairs(batch.requests --[[@as table<integer, table<string, unknown>>]])
+  do
+    if candidate.requestId == request.requestId and candidate.controller == request.controller then
+      wanted = candidate
+    end
+  end
+  if wanted == nil or request.epoch ~= batch.epoch then
+    error(BattleErrors.input("decision leases answer only their open request", {
+      request = tostring(request.requestId),
+    }))
+  end
+  -- Internal opponent controllers are the wild fighter and the generated
+  -- trainer sides; the scenario factory owns those controller names and
+  -- every other controller answers through the external reply path.
+  local controller = request.controller --[[@as string]]
+  local internal = controller == "wild" or controller:sub(1, 8) == "trainer:"
+  if not internal then
+    error(BattleErrors.input("decision leases never serve external controllers", {
+      controller = tostring(request.controller),
+    }))
+  end
+  local rng = state.rng --[[@as table<string, unknown>]]
+  if type(rng) ~= "table" or type(rng.nextU16) ~= "function" then
+    error(BattleErrors.invalidState("decision leases draw from the battle stream", {}))
+  end
+  self._decisionLease = true
+  local alive = true
+  local function leaseNextU16(_, label, cause)
+    if not alive then
+      error(BattleErrors.invalidState("decision streams die with their callback", {}))
+    end
+    assert(type(label) == "string" and label ~= "", "labeled draws name their call site")
+    assert(type(cause) == "table", "labeled draws carry their semantic cause")
+    return (rng --[[@as BattleRng]]):nextU16(label, cause)
+  end
+  local proxy = { nextU16 = leaseNextU16 }
+  local ok, result = pcall(callback, proxy)
+  alive = false
+  self._decisionLease = false
+  if not ok then
+    error(result, 0)
+  end
+  return result --[[@as table<string, unknown>]]
 end
 
 ----@return table<string, unknown> detached plain interruption capture

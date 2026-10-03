@@ -34,7 +34,6 @@ local Battle = require("gen4.battle")
 local HgssBattleContent = require("game.hgss.src.battle.HgssBattleContent")
 local Executor = require("libs.battle.src.gen4.HgssSessionExecutor")
 local BattleErrors = require("libs.battle.src.errors")
-local Lcrng = require("libs.mons.src.gen4.Lcrng")
 local MonStats = require("libs.mons.src.gen4.MonStats")
 local BattleTask = require("libs.hgss.src.script.tasks.BattleTask")
 local HgssBattleCommitter = require("libs.hgss.src.battle.HgssBattleCommitter")
@@ -85,7 +84,6 @@ local HgssTrainerAi = require("libs.hgss.src.battle.HgssTrainerAi")
 ---@field _task table<string, unknown>?
 ---@field _content table<string, unknown>?
 ---@field _session table<string, unknown>?
----@field _selection table<string, unknown>?
 ---@field _controllers table<string, BattleBoundController>
 ---@field _answered table<string, boolean>?
 ---@field _openRequest table<string, unknown>?
@@ -312,7 +310,6 @@ function BattleRuntime.new(args)
     _task = nil,
     _content = nil,
     _session = nil,
-    _selection = nil,
     _controllers = {},
     _openRequest = nil,
     _outcome = nil,
@@ -354,22 +351,6 @@ function BattleRuntime:_executableContent()
   end
   assert(self._content ~= nil, "executable content builds once")
   return self._content
-end
-
--- Opponent selection draws come from a dedicated stream seeded off the
--- launch identity: controller decisions stay deterministic without
--- shifting the combat draw stream the kernel consumes per strike.
----@return table<string, unknown> labeled selection stream over a dedicated generator
-function BattleRuntime:_selectionStream()
-  if self._selection == nil then
-    local generator = Lcrng.new(self._seed)
-    local function drawSelection(_, _, _)
-      return generator:nextU16()
-    end
-    self._selection = { nextU16 = drawSelection }
-  end
-  assert(self._selection ~= nil, "the selection stream builds once")
-  return self._selection
 end
 
 ---@param participant table<string, unknown>
@@ -421,17 +402,25 @@ function BattleRuntime:_controllerFor(controller)
   return bound
 end
 
+-- Owned opponent answers run inside the session decision lease: wild and
+-- trainer controllers draw from the same native battle stream the kernel
+-- consumes per strike, so one deterministic trace spans opponent choice
+-- and combat. The runtime owns no generator; controller memoization keeps
+-- repeated polls of one open request from drawing again.
 ---@param request table<string, unknown> pending kernel request owned internally
 ---@return table<string, unknown> reply in the shared decision shape
 function BattleRuntime:_answerOwned(request)
   local session = assert(self._session, "owned replies answer a live session")
-  local view = session:view(request.controller)
-  local bound = self:_controllerFor(request.controller)
-  if bound.kind == "wild" then
-    return HgssOpponentControllers.wild(request, view, self:_selectionStream())
-  end
-  local ai = assert(bound.ai, "trainer answers carry their controller")
-  return ai:decide(request, ai:observe(self:_trainerKnowledge(request, view)), self:_selectionStream())
+  assert(type(session.withDecisionStream) == "function", "owned replies draw from the session stream")
+  return session:withDecisionStream(request, function(stream)
+    local view = session:view(request.controller)
+    local bound = self:_controllerFor(request.controller)
+    if bound.kind == "wild" then
+      return HgssOpponentControllers.wild(request, view, stream)
+    end
+    local ai = assert(bound.ai, "trainer answers carry their controller")
+    return ai:decide(request, ai:observe(self:_trainerKnowledge(request, view)), stream)
+  end)
 end
 
 ---@param species string species key under fact lookup

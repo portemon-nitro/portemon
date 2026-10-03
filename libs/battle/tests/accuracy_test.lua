@@ -113,6 +113,87 @@ function T.skipped_rolls_never_skip_unrelated_prevention()
   end
 end
 
+-- Combined accuracy law: the signed stages merge into one effective stage
+-- (accuracy minus evasion), clamp to [-6, +6], and reshape the integer
+-- percentage through a single native thirds ratio. +1 accuracy against -1
+-- evasion is effective +2 (5/3): base 30 becomes exactly 50, so roll 52
+-- misses while roll 50 still hits. +6 against -6 clamps at +6 (3/1),
+-- never 9x: base 30 becomes exactly 90, so roll 95 misses while roll 90
+-- hits. -1 against +1 is effective -2 (3/5): base 50 becomes exactly
+-- 30, so roll 31 misses while roll 30 hits. Every rolled check draws
+-- exactly once from the labeled accuracy site.
+---@param draws integer[] canned raw battle-stream draws in consumption order
+---@return table stub stream replaying the canned draws with its label log
+local function cannedStream(draws)
+  local calls = 0
+  local labels = {}
+  local stream = {}
+  function stream:nextU16(label, cause)
+    calls = calls + 1
+    assert(type(label) == "string" and label ~= "", "rolled checks name their draw site")
+    assert(type(cause) == "table", "rolled checks carry their semantic cause")
+    labels[#labels + 1] = label
+    assert(calls <= #draws, "rolled checks draw exactly once")
+    return draws[calls]
+  end
+  function stream:calls()
+    return calls
+  end
+  function stream:drawLabels()
+    local out = {}
+    for index, label in ipairs(labels) do
+      out[index] = label
+    end
+    return out
+  end
+  return stream
+end
+
+function T.combined_stage_vectors_follow_the_native_thirds_law()
+  local Accuracy = accuracyOwner()
+
+  local plusTwo = { accuracy = 30, target = target(1), cause = cause(), accuracyStage = 1, evasionStage = -1 }
+  local miss = Accuracy.resolve(plusTwo, cannedStream({ 151 }))
+  Assert.equal(miss.kind, "miss", "effective +2 turns base 30 into 50, so roll 52 misses")
+  local edge = Accuracy.resolve(plusTwo, cannedStream({ 149 }))
+  Assert.equal(edge.kind, "hit", "roll 50 meets the combined chance exactly")
+
+  local clamped = { accuracy = 30, target = target(1), cause = cause(), accuracyStage = 6, evasionStage = -6 }
+  local capped = Accuracy.resolve(clamped, cannedStream({ 194 }))
+  Assert.equal(capped.kind, "miss", "effective stages clamp at +6, so roll 95 misses a base-30 chance")
+  local capEdge = Accuracy.resolve(clamped, cannedStream({ 189 }))
+  Assert.equal(capEdge.kind, "hit", "roll 90 meets the clamped chance exactly")
+
+  local negative = { accuracy = 50, target = target(1), cause = cause(), accuracyStage = -1, evasionStage = 1 }
+  local low = Accuracy.resolve(negative, cannedStream({ 130 }))
+  Assert.equal(low.kind, "miss", "effective -2 turns base 50 into 30, so roll 31 misses")
+  local lowEdge = Accuracy.resolve(negative, cannedStream({ 129 }))
+  Assert.equal(lowEdge.kind, "hit", "roll 30 meets the reduced chance exactly")
+end
+
+-- Modulo hit law: one raw draw becomes roll (draw % 100) + 1 against the
+-- final percentage. Accuracy 99 with draw 99 rolls 100 and misses, while
+-- draw 98 rolls 99 and hits and draw 0 rolls 1 and always hits. Full
+-- accuracy still rolls its single check but cannot miss: even the maximum
+-- raw draw rolls at most 100.
+function T.modulo_roll_compares_one_to_one_hundred()
+  local Accuracy = accuracyOwner()
+
+  local query = { accuracy = 99, target = target(1), cause = cause() }
+  local miss = Accuracy.resolve(query, cannedStream({ 99 }))
+  Assert.equal(miss.kind, "miss", "draw 99 rolls 100 against a final chance of 99")
+  local edge = Accuracy.resolve(query, cannedStream({ 98 }))
+  Assert.equal(edge.kind, "hit", "draw 98 rolls 99 and meets the chance exactly")
+  local lowest = Accuracy.resolve(query, cannedStream({ 0 }))
+  Assert.equal(lowest.kind, "hit", "draw 0 rolls 1 and always connects")
+
+  local full = cannedStream({ 65535 })
+  local fullHit = Accuracy.resolve({ accuracy = 100, target = target(1), cause = cause() }, full)
+  Assert.equal(fullHit.kind, "hit", "full accuracy survives even the maximum raw draw")
+  Assert.equal(full:calls(), 1, "the ordinary check draws exactly once")
+  Assert.deepEqual(full:drawLabels(), { "accuracy_check" }, "the ordinary check draws at its labeled site")
+end
+
 function T.type_and_ability_immunities_report_distinct_reasons()
   local Effectiveness = SessionFixture.requirePresent(
     "libs.battle.src.gen4.TypeEffectiveness",
