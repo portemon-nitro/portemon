@@ -23,9 +23,9 @@
 -- never commits and never reports a receipt.
 --
 -- Combat executes through the native HGSS lifecycle: ordered actions
--- run the shared move continuation with the combatants' carried facts,
--- knockouts settle through faint ownership, and a battle that reaches the
--- bound with both sides standing settles as a draw. No victory is ever
+-- run the shared move continuation with the combatants' carried facts and
+-- knockouts settle through faint ownership until a terminal outcome. A
+-- capture or escape that leaves both sides standing settles as a draw. No victory is ever
 -- invented: only a fainted enemy side reports a win. Committed party
 -- writeback carries the executed damage and the earned knockout
 -- progression into the live party through the committer's staged batch.

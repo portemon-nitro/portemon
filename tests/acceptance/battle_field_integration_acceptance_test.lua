@@ -1,12 +1,15 @@
--- Field-owned battle integration through production boot: one real HGSS field
--- boots from the prepared cache and composes its encounter and trainer
--- collaborators, prepares a wild encounter from generated tables, then
--- fights a generated two-mon stocked trainer through the field battle face
--- to commit and return. Player decisions answer through the runtime
--- decision seam with the lead's own status and damage moves; the trainer
--- answers through its generated AI passes with its generated party, moves,
--- and inventory. The suite never assigns private collaborators, authors
--- parties, stocks inventory, or forces single-move scaffolds.
+-- Full production battle journey through one real HGSS field boot: a young
+-- opener and a veteran prove voluntary switching there and back, a failed
+-- ball throw, faint-driven replacement, and live Bag healing across two
+-- generated wild battles; then the veteran solos a generated three-mon
+-- stocked singles trainer while a benched Exp Share holder levels into a
+-- move-learning prompt, and a final wild capture lands through a guaranteed
+-- ball. Every battle launches through FieldRuntime, every player decision
+-- answers through the runtime decision seam, the trainer answers through
+-- its generated AI with its generated party, moves, and inventory, and
+-- every consequence publishes through the battle committer. The suite
+-- never assigns private collaborators, authors parties, stocks inventory
+-- by hand, or forces single-move scaffolds.
 
 local Assert = require("tests.support.Assert")
 local AcceptanceHarness = require("tests.acceptance.support.AcceptanceHarness")
@@ -18,12 +21,24 @@ local SCENARIO_FACTORY_MODULE = "libs.hgss.src.battle.HgssBattleScenarioFactory"
 
 local MAP = "MAP_NEW_BARK_ELMS_LAB_1F"
 
--- Representative generated identities selected from the prepared
--- soulsilver cache. Each is re-validated structurally at runtime, so
--- regenerated data fails loudly instead of silently changing the journey.
+-- Generated identities re-validated structurally at runtime, so regenerated
+-- data fails loudly instead of silently changing the journey.
 local WILD_MEMBER = 1
-local TRAINER_KEY = 398
-local LEAD_LEVEL = 28
+-- A generated singles route trainer chosen for journey semantics: it leads
+-- SCYTHER at 17 with KAKUNA and METAPOD at 15 behind it, carries exactly
+-- one SUPER_POTION, and needs no story state to resolve in an isolated
+-- boot. Three opponents force two enemy reserve replacements, the single
+-- healing stock makes use-then-depletion observable, and the mid-teens band
+-- lets a level-28 veteran wound without one-shotting so the stock is used.
+local TRAINER_KEY = 21
+local VETERAN_LEVEL = 28
+local OPENER_LEVEL = 6
+local LEARNER_LEVEL = 11
+
+local WILD_SEED_ONE = 0xD080071
+local WILD_SEED_TWO = 0xD080072
+local TRAINER_SEED = 0xD080030
+local CAPTURE_SEED = 0xD080073
 
 local T = {
   metadata = {
@@ -189,7 +204,7 @@ local function moveSlotByName(moves, key)
       known[#known + 1] = tostring(entry.move)
     end
   end
-  error("the live lead carries no " .. key .. " (moves: " .. table.concat(known, ",") .. ")", 0)
+  error("the live party carries no " .. key .. " (moves: " .. table.concat(known, ",") .. ")", 0)
 end
 
 ---@param evs table<string, integer> effort values under total
@@ -202,48 +217,20 @@ local function evTotal(evs)
   return total
 end
 
----@param battle table running application battle lifetime under test
----@param policy table driving policy carrying its slot choice and counters
-local function answerPlayerDecision(battle, policy)
-  local SessionFixture = require("libs.battle.tests.session_fixture")
-  local current = battle:status()
-  local request = assert(current.request, "an open running battle carries its pending request")
-  assert(type(request.actors) == "table" and #request.actors > 0, "a decision request names its actors")
-  local choices = {}
-  if request.kind == "learn_move" then
-    -- Knockout rewards pause on a full-set learning prompt; the journey
-    -- declines so the reward keeps the proven set and the battle resumes.
-    for _, actor in ipairs(request.actors) do
-      choices[#choices + 1] = { actor = actor, kind = "confirm", payload = { decision = "decline" } }
-    end
-    policy.learnDeclined = (policy.learnDeclined or 0) + 1
-  else
-    policy.attacks = (policy.attacks or 0) + 1
-    local slot = policy.slotFor(policy.attacks)
-    for _, actor in ipairs(request.actors) do
-      choices[#choices + 1] = SessionFixture.attackChoice(actor, slot, SessionFixture.positionTarget(2))
+---@param request table<string, unknown> pending player decision under inspection
+---@param wanted string choice kind under search
+---@return boolean true when the request admits the kind
+local function admits(request, wanted)
+  local legal = request.legalChoices
+  if type(legal) ~= "table" or type(legal.kinds) ~= "table" then
+    return false
+  end
+  for _, kind in ipairs(legal.kinds) do
+    if kind == wanted then
+      return true
     end
   end
-  local accepted, replyErr = battle:submit(SessionFixture.replyFor(request, choices))
-  Assert.isTrue(accepted, "a legal decision is accepted: " .. tostring(replyErr))
-end
-
----@param game table live acceptance game behind the battle
----@param policy table driving policy for player-owned decisions
----@param budget integer|nil tick bound before a stuck battle fails loudly
-local function driveFieldBattle(game, policy, budget)
-  local runtime = game.runtime
-  local ticks = 0
-  while runtime.battleRuntime ~= nil and ticks < (budget or 1200) do
-    local battle = runtime.battleRuntime
-    local current = battle:status()
-    if current.phase == "running" and current.request ~= nil then
-      answerPlayerDecision(battle, policy)
-    end
-    runtime:updateBattle()
-    ticks = ticks + 1
-  end
-  Assert.isNil(runtime.battleRuntime, "answered decisions settle the owned lifetime")
+  return false
 end
 
 ---@param frames table[] presented frames recorded by the headless port
@@ -260,28 +247,68 @@ local function framePositions(frames, kind, predicate)
   return found
 end
 
----@param frame table presented event under inspection
----@return string? move identity carried by the event cause
-local function causeMove(frame)
-  local cause = frame.cause
-  if type(cause) == "table" and type(cause.key) == "string" then
-    return cause.key
+---@param game table live acceptance game behind the battle
+---@param choose fun(request: table, turn: integer): table decision choice for the open request
+---@param budget integer|nil tick bound before a stuck battle fails loudly
+---@return integer answered player turns before the lifetime settled
+local function runLeg(game, choose, budget)
+  local SessionFixture = require("libs.battle.tests.session_fixture")
+  local runtime = game.runtime
+  local turn = 0
+  local ticks = 0
+  while runtime.battleRuntime ~= nil and ticks < (budget or 1200) do
+    local battle = runtime.battleRuntime
+    local current = battle:status()
+    if current.phase == "running" and current.request ~= nil then
+      turn = turn + 1
+      local choice = choose(current.request, turn)
+      local accepted, replyErr = battle:submit(SessionFixture.replyFor(current.request, { choice }))
+      Assert.isTrue(accepted, "a legal decision is accepted: " .. tostring(replyErr))
+    end
+    runtime:updateBattle()
+    ticks = ticks + 1
   end
-  return nil
+  Assert.isNil(runtime.battleRuntime, "answered decisions settle the owned lifetime")
+  return turn
 end
 
--- One amortized production boot proves the composed encounter service, a
--- wild launch from generated tables, and a full stocked-trainer journey:
--- composition witness, refusal of an unknown identity, wild preparation
--- and commit, then a multi-turn trainer battle with reserve replacement,
--- generated AI, status operation, knockout progression, and prize commit.
-function T.tests.production_boot_runs_composed_wild_and_trainer_battles_to_commit()
+---@param game table live acceptance game behind the journey
+---@param firstEvent integer first event identity for the attempt scan
+---@return integer attempt identity holding a prepared wild encounter
+local function prepareWild(game, firstEvent)
+  local runtime = game.runtime
+  for index = firstEvent, firstEvent + 99 do
+    local attempt = runtime:attemptEncounter({
+      eventId = index,
+      mapId = WILD_MEMBER,
+      method = "grass",
+      movement = "step",
+      modifiers = {},
+      environment = {},
+      timeOfDay = "day",
+      playerProfile = runtime.playerData.profile,
+    })
+    Assert.notNil(attempt, "grass attempts answer through the composed service")
+    if attempt.kind == "prepared" then
+      return assert(attempt.attemptId, "a prepared attempt carries its identity")
+    end
+  end
+  error("grass attempts prepare a wild encounter within budget", 0)
+end
+
+-- One amortized production boot proves the composed encounter service, two
+-- wild legs (voluntary switching with a failed ball throw, then faint
+-- replacement with live Bag healing), a full stocked-trainer journey with
+-- trainer item use and benched move learning, and a final guaranteed
+-- capture: every leg commits through the committer exactly once.
+function T.tests.production_boot_runs_wild_trainer_and_capture_legs_to_commit()
   requirePresent(BATTLE_RUNTIME_MODULE, "application battle lifetime from launch to return")
   requirePresent(SCENARIO_FACTORY_MODULE, "field sources mapped to one detached scenario")
   local Committer = requirePresent(
     "libs.hgss.src.battle.HgssBattleCommitter",
     "end-to-end exactly-once result publication"
   )
+  local SessionFixture = require("libs.battle.tests.session_fixture")
 
   local versionId = AcceptanceHarness.defaultVersion()
   local game = harness():boot({
@@ -306,8 +333,8 @@ function T.tests.production_boot_runs_composed_wild_and_trainer_battles_to_commi
     local interior = runtime:attemptEncounter({
       eventId = 1,
       mapId = runtime.runtimeMap.mapId,
-      method = "grass",
       movement = "step",
+      method = "grass",
       modifiers = {},
       environment = {},
       timeOfDay = "day",
@@ -329,118 +356,286 @@ function T.tests.production_boot_runs_composed_wild_and_trainer_battles_to_commi
     Assert.isNil(runtime:lastBattleResult(), "a failed preparation records no outcome words")
     Assert.isNil(runtime.errorText, "a refused launch is not a field fault")
 
-    -- The journey lead arrives through the live script-gift seam. Its
-    -- level keeps knockout rewards below the next level, and the
-    -- machine-teaching seam covers the situational gift move with toxic
-    -- so the status leg runs on a natively modeled major status. Slots
-    -- resolve by name so learnset order never pins the policy.
+    -- The journey party arrives through the live script-gift seam: a young
+    -- opener that switches and falls, a veteran that closes both wild
+    -- battles and solos the trainer, and a young Exp Share holder that
+    -- learns from the bench. The machine-teaching seam covers the
+    -- situational veteran move with toxic. Slots resolve by name so
+    -- learnset order never pins the policy.
     Assert.isTrue(
-      runtime.monService:giveMon({ species = "CHIKORITA", level = LEAD_LEVEL, heldItem = "NONE", form = 0 }),
-      "the journey needs its live party lead"
+      runtime.monService:giveMon({ species = "CHIKORITA", level = OPENER_LEVEL, heldItem = "NONE", form = 0 }),
+      "the journey needs its young opener"
     )
-    runtime.monService:setMove(0, 2, "TOXIC")
-    local leadMoves = runtime.monService:partyMon(0).moves
-    local poisonSlot = moveSlotByName(leadMoves, "TOXIC")
-    local leafSlot = moveSlotByName(leadMoves, "MAGICAL_LEAF")
-
-    -- The wild member carries real generated tables with a walking rate,
-    -- so attempts through the composed service prepare a genuine wild mon.
-    local CacheFs = require("libs.storage.src.CacheFs")
-    local BattleDataCache = require("libs.assets.src.battle.BattleDataCache")
-    local encounters = BattleDataCache.loadEncounters(CacheFs.forVersion(versionId))
-    local wildMember = encounters.tables[WILD_MEMBER]
-    Assert.notNil(wildMember, "the generated tables carry the wild member")
     Assert.isTrue(
-      type(wildMember.rates) == "table" and (wildMember.rates.walking or 0) > 0,
-      "the wild member takes walking encounters"
+      runtime.monService:giveMon({ species = "CHIKORITA", level = VETERAN_LEVEL, heldItem = "NONE", form = 0 }),
+      "the journey needs its veteran"
     )
-    local wildExample = nil
-    for _, entry in ipairs(((wildMember.land or {}).day or {})) do
-      if type(entry) == "table" and type(entry.species) == "string" and entry.species ~= "NONE" then
-        wildExample = entry.species
-        break
-      end
-    end
-    Assert.notNil(wildExample, "the wild member names a real day species")
+    Assert.isTrue(
+      runtime.monService:giveMon(
+        { species = "CHIKORITA", level = LEARNER_LEVEL, heldItem = "EXP__SHARE", form = 0 }
+      ),
+      "the journey needs its benched learner"
+    )
+    Assert.equal(runtime.monService:partyCount(), 3, "all three gifts join the live party")
+    runtime.monService:setMove(1, 2, "TOXIC")
+    local openerGrowl = moveSlotByName(runtime.monService:partyMon(0).moves, "GROWL")
+    local openerRazor = moveSlotByName(runtime.monService:partyMon(0).moves, "RAZOR_LEAF")
+    local veteranLeaf = moveSlotByName(runtime.monService:partyMon(1).moves, "MAGICAL_LEAF")
+    local veteranToxic = moveSlotByName(runtime.monService:partyMon(1).moves, "TOXIC")
+    local learnerMoves = runtime.monService:partyMon(2).moves
+    Assert.equal(#learnerMoves, 4, "the learner carries a full set into the journey")
+    local openerBefore = runtime.monService:partyMon(0)
+    local veteranBefore = runtime.monService:partyMon(1)
+    local learnerBefore = runtime.monService:partyMon(2)
+    local openerExp, openerEvs = openerBefore.experience, evTotal(openerBefore.evs)
+    local veteranExp, veteranEvs = veteranBefore.experience, evTotal(veteranBefore.evs)
+    local learnerExp = learnerBefore.experience
+    local veteranHp = veteranBefore.condition.currentHp
 
-    local preparedId = nil
-    for index = 1, 80 do
-      local attempt = runtime:attemptEncounter({
-        eventId = index,
-        mapId = WILD_MEMBER,
-        method = "grass",
-        movement = "step",
-        modifiers = {},
-        environment = {},
-        timeOfDay = "day",
-        playerProfile = runtime.playerData.profile,
-      })
-      Assert.notNil(attempt, "grass attempts answer through the composed service")
-      if attempt.kind == "prepared" then
-        preparedId = attempt.attemptId
-        break
-      end
-    end
-    Assert.notNil(preparedId, "grass attempts prepare a wild encounter within budget")
+    -- The live Bag stocks through its public add seam: healing for the
+    -- replacement leg, ordinary balls for the failed throw, and one
+    -- guaranteed ball for the closing capture.
+    Assert.isTrue(runtime.bagService:add("POTION", 5), "the journey stocks its healing")
+    Assert.isTrue(runtime.bagService:add("POKE_BALL", 5), "the journey stocks its balls")
+    Assert.isTrue(runtime.bagService:add("MASTER_BALL", 1), "the journey stocks its guaranteed ball")
 
-    -- The wild launch consumes the held preparation exactly once through
-    -- the normal launch path and settles to a committed win. The payload
-    -- names the prepared species and level the way script triggers do;
-    -- the held preparation still supplies the actual battled mon.
-    local pending = assert(runtime.pendingEncounter, "the prepared encounter waits for its launch")
-    local pendingMons = assert(pending.mons, "the prepared encounter carries its mons")
-    local pendingMon = assert(pendingMons[1].mon, "the prepared encounter carries its wild mon")
-    local wildSpecies = assert(pendingMon.species, "the prepared wild mon names its species")
-    local wildRecord = { enters = 0, frames = {}, leaves = 0, disposed = 0 }
+    -- Enemy combatants allocate after the last player combatant, so the
+    -- opening foe identity follows the live roster size through public
+    -- party facts rather than private scenario state.
+    local foeOf = function()
+      return runtime.monService:partyCount() + 1
+    end
+
+    -- First wild leg: the opener voluntarily exchanges to the veteran and
+    -- back, a thrown ball breaks free, and the opener finishes the
+    -- weakened wild mon. Nothing faints on the player side here.
+    local preparedOne = prepareWild(game, 2)
+    local pendingOne = assert(runtime.pendingEncounter, "the prepared encounter waits for its launch")
+    local wildOne = assert(pendingOne.mons[1].mon, "the prepared encounter carries its wild mon")
+    local wildOneSpecies = assert(wildOne.species, "the prepared wild mon names its species")
+    local wildRecordOne = { enters = 0, frames = {}, leaves = 0, disposed = 0 }
     runtime:startBattle({
       request = {
-        id = "launch-production-wild",
+        id = "launch-production-wild-one",
         kind = "wild",
         payload = {
-          species = wildSpecies,
-          level = runtime.monService:derive(pendingMon).level,
-          attemptId = preparedId,
+          species = wildOneSpecies,
+          level = runtime.monService:derive(wildOne).level,
+          attemptId = preparedOne,
         },
       },
-      presentation = headlessPort(wildRecord),
-      seed = 0xD080071,
+      presentation = headlessPort(wildRecordOne),
+      seed = WILD_SEED_ONE,
     })
     Assert.isNil(runtime.pendingEncounterId, "the launch consumes the held preparation exactly once")
-    Assert.notNil(runtime:battleStatus("launch-production-wild"), "the owned wild battle reports its identity")
-    driveFieldBattle(game, {
-      slotFor = function()
-        return leafSlot
-      end,
-    })
-    Assert.isNil(runtime.errorText, "the wild battle settles without faulting the field")
+    Assert.notNil(runtime:battleStatus("launch-production-wild-one"), "the owned wild battle reports its identity")
+    local foeOne = foeOf()
+    local wildOneTurns = runLeg(game, function(request, turn)
+      if request.kind == "learn_move" then
+        error("the opening wild leg asks no learning prompt", 0)
+      end
+      local actor = assert(request.actors[1], "every player decision addresses its combatant")
+      if not admits(request, "attack") then
+        error("the opening leg loses no mon before its ball is thrown", 0)
+      end
+      if turn == 1 then
+        Assert.equal(actor.combatant, 1, "the opener holds the opening field")
+        return SessionFixture.switchChoice(actor, 2)
+      end
+      if turn == 2 then
+        Assert.equal(actor.combatant, 2, "the veteran holds the field after the exchange")
+        return SessionFixture.switchChoice(actor, 1)
+      end
+      if turn == 3 then
+        return { actor = actor, kind = "item", payload = {
+          item = "POKE_BALL",
+          target = { kind = "combatant", combatant = foeOne },
+        } }
+      end
+      return SessionFixture.attackChoice(actor, openerRazor, SessionFixture.positionTarget(2))
+    end)
+    Assert.isTrue(wildOneTurns >= 4, "the opening leg exchanges twice, throws, and finishes")
+    Assert.isNil(runtime.errorText, "the opening wild battle settles without faulting the field")
     Assert.deepEqual(
       runtime:lastBattleResult(),
       { result = "win", sourceResult = 1 },
-      "the committed wild win reports its outcome words"
+      "the committed opening win reports its outcome words"
     )
-    local wildReceipt = Committer.receipt("launch-production-wild")
-    Assert.notNil(wildReceipt, "the wild settlement records its commit receipt")
-    Assert.isTrue(wildReceipt.committed, "the wild receipt proves publication")
-    Assert.equal(wildRecord.disposed, 1, "wild teardown releases presentation exactly once")
+    local receiptOne = Committer.receipt("launch-production-wild-one")
+    Assert.notNil(receiptOne, "the opening settlement records its commit receipt")
+    Assert.isTrue(receiptOne.committed, "the opening receipt proves publication")
+    local framesOne = wildRecordOne.frames
+    local openSwitches = framePositions(framesOne, "switch", function(frame)
+      return type(frame.payload) == "table" and frame.payload.position == 1
+    end)
+    Assert.equal(#openSwitches, 2, "the opener exchanges out and back on the player side")
+    Assert.equal(framesOne[openSwitches[1]].payload.to, 2, "the voluntary exchange reaches the veteran")
+    Assert.equal(framesOne[openSwitches[2]].payload.to, 1, "the return exchange brings the opener back")
+    local throwsOne = framePositions(framesOne, "throw", nil)
+    Assert.equal(#throwsOne, 1, "the opening leg throws exactly one ball")
+    Assert.equal(framesOne[throwsOne[1]].payload.ball, "POKE_BALL", "the thrown ball is the stocked one")
+    Assert.equal(
+      framesOne[throwsOne[1]].payload.target,
+      foeOne,
+      "the thrown ball targets the wild combatant"
+    )
+    Assert.equal(#framePositions(framesOne, "broke_free", nil), 1, "the thrown ball breaks free")
+    Assert.equal(#framePositions(framesOne, "caught", nil), 0, "the failed throw catches nothing")
+    local foeFaintOne = framePositions(framesOne, "faint", function(frame)
+      return type(frame.payload) == "table" and frame.payload.combatant == foeOne
+    end)
+    Assert.equal(#foeFaintOne, 1, "the opening leg knocks out its wild foe")
+    Assert.equal(
+      #framePositions(framesOne, "faint", function(frame)
+        return type(frame.payload) == "table" and frame.payload.combatant ~= foeOne
+      end),
+      0,
+      "no player mon faints in the opening leg"
+    )
+    Assert.equal(runtime.bagService:quantity("POKE_BALL"), 4, "the thrown ball publishes exactly once")
+    Assert.equal(runtime.bagService:quantity("POTION"), 5, "no healing is consumed yet")
+    Assert.equal(wildRecordOne.disposed, 1, "opening teardown releases presentation exactly once")
+    local dex = assert(runtime.dexKnowledge, "the journey needs its live dex knowledge")
+    Assert.isTrue(dex:isSeen(wildOneSpecies), "the opening wild mon registers seen knowledge")
+    local openerAfterOne = runtime.monService:partyMon(0)
+    Assert.isTrue(openerAfterOne.condition.currentHp > 0, "the opener survives its own leg")
+    Assert.isTrue(
+      (openerAfterOne.experience or 0) > openerExp,
+      "the opener carries the opening knockout experience"
+    )
+    Assert.isTrue(evTotal(openerAfterOne.evs) >= openerEvs, "the opener keeps its effort values")
+    Assert.equal(
+      runtime.monService:derive(openerAfterOne).level,
+      OPENER_LEVEL,
+      "the opening reward does not level the opener"
+    )
+    local learnerAfterOne = runtime.monService:partyMon(2)
+    Assert.isTrue(
+      (learnerAfterOne.experience or 0) > learnerExp,
+      "the benched holder shares the opening knockout"
+    )
+    Assert.equal(
+      runtime.monService:derive(learnerAfterOne).level,
+      LEARNER_LEVEL,
+      "the opening share alone does not level the learner"
+    )
 
-    -- The representative trainer is a generated two-mon stocked party with
-    -- native AI passes inside the journey's level band, and every pass it
-    -- carries is one the native evaluator implements, so its decisions can
-    -- run instead of failing closed on an unimplemented pass. The launch
-    -- carries the bare numeric identity only: party, moves, inventory,
-    -- prize, and passes all resolve through the composed catalog and
-    -- materializer, and the generated data carries no program fixture to
-    -- fall back on.
+    -- Second wild leg: the opener weakens nothing and falls to wild
+    -- strikes, the real replacement request arrives, the veteran enters
+    -- through it, heals through the live Bag, and finishes. This is the
+    -- forced-replacement witness.
+    local preparedTwo = prepareWild(game, 101)
+    local pendingTwo = assert(runtime.pendingEncounter, "the second preparation waits for its launch")
+    local wildTwo = assert(pendingTwo.mons[1].mon, "the second preparation carries its wild mon")
+    local wildTwoSpecies = assert(wildTwo.species, "the second wild mon names its species")
+    local wildRecordTwo = { enters = 0, frames = {}, leaves = 0, disposed = 0 }
+    runtime:startBattle({
+      request = {
+        id = "launch-production-wild-two",
+        kind = "wild",
+        payload = {
+          species = wildTwoSpecies,
+          level = runtime.monService:derive(wildTwo).level,
+          attemptId = preparedTwo,
+        },
+      },
+      presentation = headlessPort(wildRecordTwo),
+      seed = WILD_SEED_TWO,
+    })
+    Assert.isNil(runtime.pendingEncounterId, "the second launch consumes its preparation exactly once")
+    local foeTwo = foeOf()
+    local replaced, healedTwo, promptsTwo = false, false, 0
+    runLeg(game, function(request)
+      if request.kind == "learn_move" then
+        promptsTwo = promptsTwo + 1
+        local actor = assert(request.actors[1], "learning prompts address their recipient")
+        return { actor = actor, kind = "confirm", payload = { decision = "decline" } }
+      end
+      local actor = assert(request.actors[1], "every player decision addresses its combatant")
+      if not admits(request, "attack") then
+        replaced = true
+        return SessionFixture.switchChoice(actor, 2)
+      end
+      if actor.combatant == 1 then
+        return SessionFixture.attackChoice(actor, openerGrowl, SessionFixture.positionTarget(2))
+      end
+      if not healedTwo then
+        healedTwo = true
+        return { actor = actor, kind = "item", payload = {
+          item = "POTION",
+          target = { kind = "combatant", combatant = actor.combatant },
+        } }
+      end
+      return SessionFixture.attackChoice(actor, veteranLeaf, SessionFixture.positionTarget(2))
+    end)
+    Assert.isTrue(replaced, "the fallen opener is replaced through the real request")
+    Assert.isTrue(healedTwo, "the veteran heals through the live Bag")
+    Assert.equal(promptsTwo, 0, "the replacement leg asks no learning prompt")
+    Assert.isNil(runtime.errorText, "the replacement battle settles without faulting the field")
+    Assert.deepEqual(
+      runtime:lastBattleResult(),
+      { result = "win", sourceResult = 1 },
+      "the committed replacement win reports its outcome words"
+    )
+    local receiptTwo = Committer.receipt("launch-production-wild-two")
+    Assert.notNil(receiptTwo, "the replacement settlement records its commit receipt")
+    Assert.isTrue(receiptTwo.committed, "the replacement receipt proves publication")
+    local framesTwo = wildRecordTwo.frames
+    local playerFaintAt = framePositions(framesTwo, "faint", function(frame)
+      return type(frame.payload) == "table" and frame.payload.combatant == 1
+    end)[1]
+    Assert.notNil(playerFaintAt, "the opener faints on the field")
+    local forcedSwitchAt = framePositions(framesTwo, "switch", function(frame)
+      local payload = frame.payload
+      return type(payload) == "table" and payload.position == 1 and payload.from == 1 and payload.to == 2
+    end)[1]
+    Assert.notNil(forcedSwitchAt, "the veteran enters through the replacement")
+    Assert.isTrue(forcedSwitchAt > playerFaintAt, "the replacement follows the faint")
+    local healsTwo = framePositions(framesTwo, "item", function(frame)
+      local payload = frame.payload
+      return type(payload) == "table" and payload.item == "POTION" and payload.inventory == "player-bag"
+    end)
+    Assert.equal(#healsTwo, 1, "the live Bag heals exactly once")
+    Assert.isTrue(healsTwo[1] > forcedSwitchAt, "the healing lands after the replacement")
+    Assert.equal(runtime.bagService:quantity("POTION"), 4, "the consumed potion publishes exactly once")
+    Assert.equal(runtime.bagService:quantity("POKE_BALL"), 4, "no further ball leaves the Bag")
+    Assert.equal(wildRecordTwo.disposed, 1, "replacement teardown releases presentation exactly once")
+    Assert.isTrue(dex:isSeen(wildTwoSpecies), "the second wild mon registers seen knowledge")
+    local openerAfterTwo = runtime.monService:partyMon(0)
+    Assert.equal(openerAfterTwo.condition.currentHp, 0, "the fallen opener stays fainted")
+    Assert.equal(
+      runtime.monService:derive(openerAfterTwo).level,
+      OPENER_LEVEL,
+      "the fainted opener gains no level"
+    )
+    local veteranAfterTwo = runtime.monService:partyMon(1)
+    Assert.isTrue(veteranAfterTwo.condition.currentHp > 0, "the veteran survives its leg")
+    Assert.equal(
+      runtime.monService:derive(veteranAfterTwo).level,
+      VETERAN_LEVEL,
+      "the replacement reward does not level the veteran"
+    )
+    local learnerAfterTwo = runtime.monService:partyMon(2)
+    Assert.equal(
+      runtime.monService:derive(learnerAfterTwo).level,
+      LEARNER_LEVEL,
+      "two wild shares still do not level the learner"
+    )
+    local learnerExpTwo = learnerAfterTwo.experience
+
+    -- The fixed generated trainer carries its structural journey facts:
+    -- a singles three-mon party, exactly one healing item, a mid-teens
+    -- band, and its prize rate. Executability rides the generated corpus
+    -- coverage; nothing here screens its passes or moves.
+    local CacheFs = require("libs.storage.src.CacheFs")
+    local BattleDataCache = require("libs.assets.src.battle.BattleDataCache")
     local compiled = BattleDataCache.loadTrainers(CacheFs.forVersion(versionId))
     Assert.isNil(compiled.programs, "generated trainer data carries no program fixture")
     local template = assert(compiled.trainers[TRAINER_KEY], "the generated catalog carries the trainer")
-    Assert.equal(#template.party, 2, "the trainer fields a lead with exactly one reserve")
-    -- No item-carrying trainer in the implemented mechanics envelope can
-    -- provision this journey (the stocked candidates need unimplemented
-    -- passes or moves and fail closed), so inventory stays generated-only
-    -- and empty here: nothing is ever stocked by hand.
-    Assert.isTrue(#(template.aiPasses or {}) > 0, "the trainer carries generated AI passes")
+    Assert.equal(#template.party, 3, "the trainer fields a lead with two reserves")
     Assert.isTrue(template.doubleBattle ~= true, "the journey stays a singles battle")
+    Assert.equal(#(template.items or {}), 1, "the trainer carries exactly one battle item")
+    Assert.equal(template.items[1], "SUPER_POTION", "the carried stock is healing")
     Assert.isTrue(
       type(template.prizeMoney) == "table" and type(template.prizeMoney.classRate) == "number",
       "the trainer carries its prize rate"
@@ -452,13 +647,8 @@ function T.tests.production_boot_runs_composed_wild_and_trainer_battles_to_commi
     end
     local expectedPrize = finalLevel * 4 * template.prizeMoney.classRate
 
-    local leadBefore = runtime.monService:partyMon(0)
-    local experienceBefore = leadBefore.experience
-    local evsBefore = evTotal(leadBefore.evs)
-    local levelBefore = runtime.monService:derive(leadBefore).level
-    local hpBefore = leadBefore.condition.currentHp
     local moneyBefore = runtime.playerData.profile.money
-
+    local veteranHpBeforeTrainer = runtime.monService:partyMon(1).condition.currentHp
     local trainerRecord = { enters = 0, frames = {}, leaves = 0, disposed = 0 }
     local trainerPayload = { trainer = TRAINER_KEY }
     Assert.isNil(trainerPayload.party, "the launch authors no foe party")
@@ -466,71 +656,49 @@ function T.tests.production_boot_runs_composed_wild_and_trainer_battles_to_commi
     runtime:startBattle({
       request = { id = "launch-production-trainer", kind = "trainer", payload = trainerPayload },
       presentation = headlessPort(trainerRecord),
-      seed = 0xD080030,
+      seed = TRAINER_SEED,
     })
     Assert.notNil(runtime:battleStatus("launch-production-trainer"), "the owned trainer battle reports its identity")
 
-    -- Toxic opens, then magical leaf finishes: more than three attack
-    -- turns, a learning decline if the reward pauses, and no other
-    -- player action. The foe answers every owned turn itself.
-    local policy = {
-      slotFor = function(attacks)
-        if attacks == 1 then
-          return poisonSlot
-        end
-        return leafSlot
-      end,
-    }
-    driveFieldBattle(game, policy)
+    -- The veteran opens because the opener fell in the wild: toxic first,
+    -- then the never-missing leaf, while the benched full-set learner
+    -- answers its levelling prompt with a combatant-only replacement.
+    local foeTrainer = foeOf()
+    local toxicUsed, learns, unexpectedReplacement = false, 0, 0
+    local framesAtPrompt = 0
+    runLeg(game, function(request)
+      if request.kind == "learn_move" then
+        learns = learns + 1
+        local actor = assert(request.actors[1], "learning prompts address their recipient")
+        Assert.equal(actor.combatant, 3, "the prompt addresses the benched learner")
+        Assert.isNil(actor.activation, "learning prompts carry no entry token")
+        Assert.equal(request.incomingMove, "SYNTHESIS", "the crossing level prompts the generated move")
+        Assert.equal(#request.currentMoves, 4, "the prompt carries the four current moves")
+        framesAtPrompt = #trainerRecord.frames
+        return { actor = actor, kind = "confirm", payload = { decision = "replace", slot = 3 } }
+      end
+      local actor = assert(request.actors[1], "every player decision addresses its combatant")
+      if not admits(request, "attack") then
+        unexpectedReplacement = unexpectedReplacement + 1
+        return SessionFixture.switchChoice(actor, 2)
+      end
+      Assert.equal(actor.combatant, 2, "the veteran holds the trainer field throughout")
+      if not toxicUsed then
+        toxicUsed = true
+        return SessionFixture.attackChoice(actor, veteranToxic, SessionFixture.positionTarget(2))
+      end
+      return SessionFixture.attackChoice(actor, veteranLeaf, SessionFixture.positionTarget(2))
+    end)
     Assert.isTrue(
       runtime.errorText == nil,
       "the trainer battle settles without faulting the field: " .. tostring(runtime.errorText)
     )
-    Assert.isTrue((policy.attacks or 0) > 3, "the native battle continues beyond three turns")
-
-    -- Reserve replacement: a faint settles first and a reserve send-out
-    -- follows it before the battle can end.
+    Assert.equal(learns, 1, "the benched learner prompts exactly once")
+    Assert.equal(unexpectedReplacement, 0, "the veteran never falls to the trainer")
     local frames = trainerRecord.frames
-    local faintAt = framePositions(frames, "faint", nil)[1] or framePositions(frames, "fainted", nil)[1]
-    Assert.notNil(faintAt, "the journey knocks out a foe")
-    local switchAfter = framePositions(frames, "switch", function(frame)
-      return true
-    end)
-    local replacementSeen = false
-    for _, position in ipairs(switchAfter) do
-      if position > (faintAt or 0) then
-        replacementSeen = true
-        break
-      end
-    end
-    Assert.isTrue(replacementSeen, "the trainer sends its reserve after the lead faint")
 
-    -- Generated AI and moves: strikes carry their executing move in the
-    -- cause, and moves partition cleanly by side here -- the player only
-    -- ever selects toxic and magical leaf, so tackle-struck damage is the
-    -- foe's own retaliation. Members without custom moves resolve to
-    -- their native initial set inside the production materializer; the
-    -- foe's tackle is its AI-selected answer from that generated kit,
-    -- never a test-authored move. The battle cannot advance a single turn
-    -- without the pass-bound controller answering its owned requests.
-    local struckBy = {}
-    for _, frame in ipairs(frames) do
-      if type(frame) == "table" and frame.kind == "struck" then
-        local move = causeMove(frame)
-        if move ~= nil then
-          struckBy[move] = (struckBy[move] or 0) + 1
-        end
-      end
-    end
-    Assert.isTrue((struckBy["TACKLE"] or 0) > 0, "the foe retaliates with its own executed strikes")
-    Assert.isTrue(
-      (struckBy["MAGICAL_LEAF"] or 0) > 0,
-      "the player deals stab damage through move mechanics"
-    )
-
-    -- Status operation: the opening toxic applies (one status event naming
-    -- toxic) and its counter drains growing residuals afterwards through
-    -- the production session.
+    -- Opening toxic and its growing residual: one application naming toxic
+    -- and strictly growing tick amounts afterwards.
     local toxicApplications = framePositions(frames, "status", function(frame)
       local payload = frame.payload
       return type(payload) == "table" and payload.key == "toxic"
@@ -545,13 +713,67 @@ function T.tests.production_boot_runs_composed_wild_and_trainer_battles_to_commi
         end
       end
     end
-    Assert.isTrue(#toxicAmounts >= 2, "the inflicted toxic drains through residual ticks")
+    Assert.isTrue(#toxicAmounts >= 3, "the inflicted toxic drains through residual ticks")
     for index = 2, #toxicAmounts do
       Assert.isTrue(
         toxicAmounts[index] > toxicAmounts[index - 1],
         "the toxic counter grows its residual drain"
       )
     end
+
+    -- Trainer item behavior: exactly one healing choice from battle-local
+    -- trainer stock lands on the opening foe, and the depleted stock never
+    -- answers again while the fight continues.
+    local trainerItems = framePositions(frames, "item", function(frame)
+      local payload = frame.payload
+      return type(payload) == "table" and payload.inventory ~= "player-bag"
+    end)
+    Assert.equal(#trainerItems, 1, "the trainer spends its single stock exactly once")
+    local spent = frames[trainerItems[1]].payload
+    Assert.equal(spent.item, "SUPER_POTION", "the spent stock is the carried healing")
+    Assert.equal(
+      spent.inventory,
+      "trainer-1-items",
+      "the spent stock comes from battle-local trainer inventory"
+    )
+    local firstStruckFoe = framePositions(frames, "struck", function(frame)
+      local payload = frame.payload
+      return type(payload) == "table" and payload.target == foeTrainer
+    end)[1]
+    local faintFoeLead = framePositions(frames, "faint", function(frame)
+      local payload = frame.payload
+      return type(payload) == "table" and payload.combatant == foeTrainer
+    end)[1]
+    Assert.notNil(firstStruckFoe, "the veteran wounds the opening foe")
+    Assert.notNil(faintFoeLead, "the opening foe falls")
+    Assert.isTrue(
+      trainerItems[1] > firstStruckFoe and trainerItems[1] < faintFoeLead,
+      "the trainer heals its wounded opener before it falls"
+    )
+    Assert.equal(
+      #framePositions(frames, "item", function(frame)
+        return type(frame.payload) == "table" and frame.payload.inventory == "player-bag"
+      end),
+      0,
+      "the trainer leg consumes no player Bag stock"
+    )
+
+    -- Knockout chain with the learning interruption in the middle: the
+    -- lead falls, the prompt is answered, and both reserves replace in
+    -- order before the terminal win.
+    local foeReserveOne, foeReserveTwo = foeTrainer + 1, foeTrainer + 2
+    local replaceOneAt = framePositions(frames, "switch", function(frame)
+      local payload = frame.payload
+      return type(payload) == "table" and payload.from == foeTrainer and payload.to == foeReserveOne
+    end)[1]
+    local replaceTwoAt = framePositions(frames, "switch", function(frame)
+      local payload = frame.payload
+      return type(payload) == "table" and payload.from == foeReserveOne and payload.to == foeReserveTwo
+    end)[1]
+    Assert.notNil(replaceOneAt, "the trainer sends its first reserve after the lead faint")
+    Assert.notNil(replaceTwoAt, "the trainer sends its second reserve after the next faint")
+    Assert.isTrue(replaceOneAt > framesAtPrompt, "the battle resumes past learning into replacement")
+    Assert.isTrue(replaceTwoAt > replaceOneAt, "the reserves replace in order")
 
     -- No scaffold strikes: every settled attack runs move mechanics with
     -- real damage instead of fixed one-point strikes.
@@ -574,7 +796,7 @@ function T.tests.production_boot_runs_composed_wild_and_trainer_battles_to_commi
     Assert.isTrue(heavy, "a real strike with nontrivial combatants deals more than one point")
 
     -- Terminal win to field and commit: outcome words, receipt, native
-    -- prize from the generated rate, and the reserve registers seen.
+    -- prize from the generated rate, and every foe seen.
     Assert.deepEqual(
       runtime:lastBattleResult(),
       { result = "win", sourceResult = 1 },
@@ -592,29 +814,115 @@ function T.tests.production_boot_runs_composed_wild_and_trainer_battles_to_commi
       moneyBefore + expectedPrize,
       "the receipt carries the credited money candidate"
     )
-    local dex = assert(runtime.dexKnowledge, "the journey needs its live dex knowledge")
-    Assert.isTrue(dex:isSeen(template.party[2].species), "the sent reserve registers seen knowledge")
+    for _, member in ipairs(template.party) do
+      Assert.isTrue(dex:isSeen(member.species), "every sent foe registers seen knowledge")
+    end
 
-    -- Knockout progression without a level-up: the committed lead carries
-    -- the gained experience and effort values at its surviving health.
-    local leadAfter = runtime.monService:partyMon(0)
+    -- Knockout progression with the learning decision: the benched holder
+    -- crosses two levels on trainer shares, keeps the replaced set, and
+    -- the veteran banks experience and damage without levelling.
+    local learnerAfter = runtime.monService:partyMon(2)
+    Assert.isTrue(
+      (learnerAfter.experience or 0) > (learnerExpTwo or 0),
+      "the committed learner carries the trainer shares"
+    )
     Assert.equal(
-      runtime.monService:derive(leadAfter).level,
-      levelBefore,
-      "the knockout reward does not level the recipient"
+      runtime.monService:derive(learnerAfter).level,
+      LEARNER_LEVEL + 2,
+      "the trainer shares level the benched learner twice"
+    )
+    Assert.equal(
+      learnerAfter.moves[4].move,
+      "SYNTHESIS",
+      "the answered replacement lands in the named slot"
+    )
+    local veteranAfter = runtime.monService:partyMon(1)
+    Assert.equal(
+      runtime.monService:derive(veteranAfter).level,
+      VETERAN_LEVEL,
+      "the trainer reward does not level the veteran"
     )
     Assert.isTrue(
-      (leadAfter.experience or 0) > (experienceBefore or 0),
-      "the committed record carries the gained experience"
+      (veteranAfter.experience or 0) > veteranExp,
+      "the committed veteran carries the gained experience"
     )
-    Assert.isTrue(evTotal(leadAfter.evs) > evsBefore, "the committed record carries the gained effort values")
-    Assert.isTrue(leadAfter.condition.currentHp > 0, "the live lead survives the executed battle")
+    Assert.isTrue(evTotal(veteranAfter.evs) > veteranEvs, "the committed veteran carries effort values")
+    Assert.isTrue(veteranAfter.condition.currentHp > 0, "the veteran survives the executed battle")
     Assert.isTrue(
-      leadAfter.condition.currentHp < hpBefore,
+      veteranAfter.condition.currentHp < veteranHpBeforeTrainer,
       "executed damage writes back through the live party owner"
     )
+    local openerAfterTrainer = runtime.monService:partyMon(0)
+    Assert.equal(openerAfterTrainer.condition.currentHp, 0, "the opener stays fainted past the trainer")
+    Assert.equal(runtime.bagService:quantity("POTION"), 4, "the trainer leg spends no potion")
+    Assert.equal(runtime.bagService:quantity("POKE_BALL"), 4, "the trainer leg spends no ball")
     Assert.equal(trainerRecord.disposed, 1, "trainer teardown releases presentation exactly once")
     Assert.isTrue(trainerRecord.enters >= 1, "entry presents through the port")
+
+    -- Closing capture: the guaranteed ball lands the wild mon in the live
+    -- party and dex while its stock publishes exactly once. No knockout
+    -- means no further progression.
+    local preparedThree = prepareWild(game, 201)
+    local pendingThree = assert(runtime.pendingEncounter, "the capture preparation waits for its launch")
+    local wildThree = assert(pendingThree.mons[1].mon, "the capture preparation carries its wild mon")
+    local wildThreeSpecies = assert(wildThree.species, "the capture mon names its species")
+    local partyBeforeCapture = runtime.monService:partyCount()
+    local captureRecord = { enters = 0, frames = {}, leaves = 0, disposed = 0 }
+    runtime:startBattle({
+      request = {
+        id = "launch-production-capture",
+        kind = "wild",
+        payload = {
+          species = wildThreeSpecies,
+          level = runtime.monService:derive(wildThree).level,
+          attemptId = preparedThree,
+        },
+      },
+      presentation = headlessPort(captureRecord),
+      seed = CAPTURE_SEED,
+    })
+    local foeCapture = foeOf()
+    runLeg(game, function(request)
+      if request.kind == "learn_move" then
+        local actor = assert(request.actors[1], "learning prompts address their recipient")
+        return { actor = actor, kind = "confirm", payload = { decision = "decline" } }
+      end
+      local actor = assert(request.actors[1], "every player decision addresses its combatant")
+      if not admits(request, "attack") then
+        return SessionFixture.switchChoice(actor, 2)
+      end
+      return { actor = actor, kind = "item", payload = {
+        item = "MASTER_BALL",
+        target = { kind = "combatant", combatant = foeCapture },
+      } }
+    end)
+    Assert.isNil(runtime.errorText, "the capture settles without faulting the field")
+    local captureFrames = captureRecord.frames
+    local captureThrows = framePositions(captureFrames, "throw", nil)
+    Assert.equal(#captureThrows, 1, "the capture throws exactly one ball")
+    Assert.equal(captureFrames[captureThrows[1]].payload.ball, "MASTER_BALL", "the capture uses the guaranteed ball")
+    Assert.isTrue(#framePositions(captureFrames, "caught", nil) > 0, "the guaranteed ball lands its capture")
+    Assert.equal(#framePositions(captureFrames, "broke_free", nil), 0, "the guaranteed ball never breaks free")
+    local captureReceipt = Committer.receipt("launch-production-capture")
+    Assert.notNil(captureReceipt, "the capture settlement records its commit receipt")
+    Assert.isTrue(captureReceipt.committed, "the capture receipt proves publication")
+    Assert.equal(#captureReceipt.placements, 1, "the capture reports its placement")
+    Assert.isTrue(captureReceipt.placements[1].retained, "room in the party retains the capture")
+    Assert.equal(
+      runtime.monService:partyCount(),
+      partyBeforeCapture + 1,
+      "the caught mon lands in the live party"
+    )
+    local stored = runtime.monService:partyMon(partyBeforeCapture)
+    Assert.equal(stored.species, wildThreeSpecies, "the appended mon keeps its species")
+    Assert.equal(stored.personality, wildThree.personality, "the appended mon keeps its wild identity")
+    Assert.isTrue(dex:isSeen(wildThreeSpecies), "the captured mon registers seen knowledge")
+    Assert.isTrue(dex:isCaught(wildThreeSpecies), "the capture registers caught knowledge")
+    Assert.equal(runtime.bagService:quantity("MASTER_BALL"), 0, "the thrown guaranteed ball publishes once")
+    Assert.equal(runtime.bagService:quantity("POTION"), 4, "the capture spends no potion")
+    Assert.equal(runtime.bagService:quantity("POKE_BALL"), 4, "the capture spends no ordinary ball")
+    Assert.equal(captureRecord.disposed, 1, "capture teardown releases presentation exactly once")
+
     Assert.equal(game:renderAttempts(), 0, "the journey stops before GPU rendering")
   end, debug.traceback)
   local namespace = game.saveNamespace

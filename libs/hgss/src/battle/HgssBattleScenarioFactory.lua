@@ -21,11 +21,11 @@ local Mon = require("libs.mons.src.Mon")
 ---@class HgssBattleScenarioFactory
 local HgssBattleScenarioFactory = {}
 
--- Entry health for descriptor-sourced combatants: enough to survive the
--- kernel's bounded round budget in a singles fight, so headless descriptor
--- battles settle through the normal round bound instead of underflowing
--- into instant outcomes. Never persisted: only party-sourced combatants
--- carry a writeback source.
+-- Entry health for descriptor-sourced combatants: a survivable fixed value
+-- so headless descriptor battles open on a living combatant instead of
+-- underflowing into instant outcomes. Native battles run until a terminal
+-- outcome; there is no round bound to survive. Never persisted: only
+-- party-sourced combatants carry a writeback source.
 HgssBattleScenarioFactory.DESCRIPTOR_ENTRY_HP = 12
 HgssBattleScenarioFactory.DESCRIPTOR_LEVEL = 5
 
