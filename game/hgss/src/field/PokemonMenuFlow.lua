@@ -152,8 +152,9 @@ local PARTY_FIELD_MOVES = {
 -- The flow-owned party action policy: source menu order (summary, switch,
 -- item-or-mail, quit, then admitted source field moves in move-slot order;
 -- eggs keep summary, switch, quit), the ordinary item submenu always lists
--- give, take, quit with take answering directly, incompatible egg targets
--- explain instead of committing. Private to this leaf; the standalone
+-- give, take, quit with take answering directly. Source-level target
+-- rejection lives in the Party controller; the flow keeps a trivial
+-- compatible verdict. Private to this leaf; the standalone
 -- production and script policies keep their own owners.
 ---@param manifest table<string, unknown>?
 ---@return table<string, unknown>
@@ -213,11 +214,8 @@ local function flowPartyPolicy(manifest)
       { kind = "quit", label = text("quit", "QUIT") },
     }
   end
-  local function evaluateTarget(facts, contextName)
+  local function evaluateTarget(facts, _)
     assert(type(facts) == "table", "target evaluation reads slot facts")
-    if contextName == "item_target" and facts.isEgg == true then
-      return { compatible = false, note = "NO ENTRY" }
-    end
     return { compatible = true }
   end
   return { menuFor = menuFor, submenuFor = submenuFor, evaluateTarget = evaluateTarget }

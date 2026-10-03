@@ -206,6 +206,12 @@ function T.browse_navigation_skips_empty_slots()
   controller:updateFixed({ { type = "navigate", direction = "down" } })
   Assert.equal(status(controller).cursorNode, "cancel", "navigation falls past empty slots to cancel")
   controller:updateFixed({ { type = "confirm" } })
+  Assert.isNil(controller:takeResult(), "touch arms the footer instead of closing at once")
+  for _ = 1, 4 do
+    controller:updateFixed({})
+    Assert.isNil(controller:takeResult(), "the footer press withholds close until its final tick")
+  end
+  controller:updateFixed({})
   Assert.equal(controller:takeResult().kind, "closed")
 end
 
@@ -250,7 +256,16 @@ function T.browse_pointer_cancel_closes()
   local controller = newController({ hitTarget = { kind = "cancel" } })
   controller:updateFixed({ { type = "pointer_down", pointerId = "p", x = 1, y = 1 } })
   controller:updateFixed({ { type = "pointer_up", pointerId = "p", x = 1, y = 1 } })
+  Assert.isNil(controller:takeResult(), "touch arms the footer instead of closing at once")
+  local armed = assert(status(controller).cancelPress, "touch publishes the footer press")
+  Assert.equal(armed.phase, "pressed", "touch restarts the footer from its base state")
+  for _ = 1, 4 do
+    controller:updateFixed({})
+    Assert.isNil(controller:takeResult(), "the footer press withholds close until its final tick")
+  end
+  controller:updateFixed({})
   Assert.equal(controller:takeResult().kind, "closed")
+  Assert.isNil(controller:takeResult(), "the close reports exactly once")
 end
 
 function T.browse_pointer_cancel_clears_the_capture_without_changing_selection()
@@ -866,19 +881,29 @@ function T.give_target_confirm_emits_give_with_bag_identity()
   )
 end
 
-function T.incompatible_target_confirm_explains_instead_of_committing()
+-- Eggs reject at the source input owner: the invalid effect plays and
+-- the target pick stays open with no intent, result, or message.
+function T.item_target_egg_holds_with_invalid_effect_and_no_intent()
+  local sounds = {}
   local controller = nativeController({
     context = "item_target",
     item = { key = "POTION", bagRevision = 7 },
     specs = { [1] = { isEgg = true } },
+    effect = function(sequence)
+      sounds[#sounds + 1] = sequence
+    end,
   })
   controller:updateFixed({ { type = "confirm" } })
-  Assert.equal(nativeStatus(controller).state, "message", "incompatibility explains instead of emitting")
-  Assert.equal(nativeStatus(controller).message, "NO ENTRY")
-  Assert.isNil(controller:takeIntent(), "an explained target emits nothing")
-  controller:updateFixed({ { type = "confirm" } })
-  Assert.isTrue(nativeStatus(controller).open, "acknowledging returns to picking, not out")
-  Assert.isNil(controller:takeResult())
+  Assert.deepEqual(sounds, { "SEQ_SE_DP_CUSTOM06" }, "egg activation requests the invalid effect once")
+  Assert.equal(
+    nativeStatus(controller).state,
+    "choosing_item_target",
+    "egg activation stays in the target pick"
+  )
+  Assert.isNil(controller:takeIntent(), "egg activation emits nothing")
+  Assert.isNil(controller:takeResult(), "egg activation completes nothing")
+  Assert.isNil(nativeStatus(controller).message, "egg activation shows no message")
+  Assert.isTrue(nativeStatus(controller).open, "the pick stays open after the rejection")
 end
 
 function T.held_pointer_across_a_state_change_never_activates()
@@ -1321,8 +1346,14 @@ function T.browse_cancel_focus_leaves_no_menu_state()
   controller:updateFixed({ { type = "navigate", direction = "down" } })
   Assert.equal(nativeStatus(controller).cursorNode, "cancel", "setup focuses Cancel")
   controller:updateFixed({ { type = "cancel" } })
-  Assert.deepEqual(controller:takeResult(), { kind = "closed" })
+  Assert.isNil(controller:takeResult(), "cancelling arms the footer instead of closing at once")
   Assert.isNil(nativeStatus(controller).menu, "focusing Cancel never builds menu state")
+  for _ = 1, 4 do
+    controller:updateFixed({})
+    Assert.isNil(controller:takeResult(), "the footer press withholds close until its final tick")
+  end
+  controller:updateFixed({})
+  Assert.deepEqual(controller:takeResult(), { kind = "closed" })
 end
 
 function T.pointer_down_latches_its_row_across_keyboard_focus_changes()
@@ -1391,21 +1422,74 @@ local function soundingController(opts)
   return controller, calls, control, sounds
 end
 
-function T.root_back_plays_one_source_cancel_effect_and_closes_once()
+-- Root B from a mon focuses the footer and restarts its press at the
+-- base state; close publishes only on the fifth post-arm tick.
+function T.root_back_restarts_the_footer_before_closing_once()
   local rootBack, _, _, rootSounds = soundingController()
   rootBack:updateFixed({ { type = "cancel" } })
-  Assert.deepEqual(rootBack:takeResult(), { kind = "closed" }, "root B closes the Party")
   Assert.deepEqual(rootSounds, { "SEQ_SE_GS_GEARCANCEL" }, "root B requests one cancel sound")
+  Assert.equal(nativeStatus(rootBack).cursorNode, "cancel", "root B focuses the footer")
+  local armed = assert(nativeStatus(rootBack).cancelPress, "root B publishes the footer press")
+  Assert.equal(armed.phase, "pressed", "root B restarts the footer from its base state")
+  Assert.isNil(rootBack:takeResult(), "root B arms the footer instead of closing at once")
+  for step = 1, 2 do
+    rootBack:updateFixed({})
+    Assert.equal(
+      assert(nativeStatus(rootBack).cancelPress, "the press holds through tick " .. step).phase,
+      "pressed",
+      "post-arm tick " .. step .. " holds the base state"
+    )
+    Assert.isNil(rootBack:takeResult(), "post-arm tick " .. step .. " closes nothing")
+  end
+  for step = 3, 4 do
+    rootBack:updateFixed({})
+    Assert.equal(
+      assert(nativeStatus(rootBack).cancelPress, "the press holds through tick " .. step).phase,
+      "selected",
+      "post-arm tick " .. step .. " shows the selected state"
+    )
+    Assert.isNil(rootBack:takeResult(), "post-arm tick " .. step .. " closes nothing")
+  end
+  rootBack:updateFixed({})
+  Assert.deepEqual(rootBack:takeResult(), { kind = "closed" }, "the fifth post-arm tick closes the Party")
+  Assert.isNil(nativeStatus(rootBack).cancelPress, "completion clears the footer press")
   Assert.isNil(rootBack:takeResult(), "root B close is delivered once")
   rootBack:dispose()
   Assert.deepEqual(rootSounds, { "SEQ_SE_GS_GEARCANCEL" }, "draining and disposal do not replay the sound")
 end
 
-function T.main_cancel_plays_one_source_cancel_effect_and_closes()
+-- Confirming the already-focused Cancel keeps the selected arm frame,
+-- then shows base twice, selected twice, and closes on the fifth
+-- post-arm tick.
+function T.focused_footer_cancel_waits_through_the_press_cadence_before_closing()
   local mainCancel, _, _, cancelSounds = soundingController({ initialFocus = "cancel" })
   mainCancel:updateFixed({ { type = "confirm" } })
-  Assert.deepEqual(mainCancel:takeResult(), { kind = "closed" }, "main CANCEL closes the Party")
   Assert.deepEqual(cancelSounds, { "SEQ_SE_GS_GEARCANCEL" }, "main CANCEL requests one cancel sound")
+  local armed = assert(nativeStatus(mainCancel).cancelPress, "main CANCEL publishes the footer press")
+  Assert.equal(armed.phase, "armed", "activation keeps the selected arm frame")
+  Assert.isNil(mainCancel:takeResult(), "activation arms the footer instead of closing at once")
+  for step = 1, 2 do
+    mainCancel:updateFixed({})
+    Assert.equal(
+      assert(nativeStatus(mainCancel).cancelPress, "the press holds through tick " .. step).phase,
+      "pressed",
+      "post-arm tick " .. step .. " holds the base state"
+    )
+    Assert.isNil(mainCancel:takeResult(), "post-arm tick " .. step .. " closes nothing")
+  end
+  for step = 3, 4 do
+    mainCancel:updateFixed({})
+    Assert.equal(
+      assert(nativeStatus(mainCancel).cancelPress, "the press holds through tick " .. step).phase,
+      "selected",
+      "post-arm tick " .. step .. " shows the selected state"
+    )
+    Assert.isNil(mainCancel:takeResult(), "post-arm tick " .. step .. " closes nothing")
+  end
+  mainCancel:updateFixed({})
+  Assert.deepEqual(mainCancel:takeResult(), { kind = "closed" }, "the fifth post-arm tick closes the Party")
+  Assert.isNil(nativeStatus(mainCancel).cancelPress, "completion clears the footer press")
+  Assert.deepEqual(cancelSounds, { "SEQ_SE_GS_GEARCANCEL" }, "the cadence replays no effect")
 end
 
 function T.pointer_quit_returns_to_browse_with_one_cancel_effect()
@@ -1727,7 +1811,7 @@ function T.switch_final_return_commits_once_and_restores_browse()
   Assert.deepEqual(sounds, { SWITCH_SOUND, SWITCH_SOUND }, "post-commit ticks sound nothing more")
 end
 
-function T.switch_arming_is_silent_with_zero_offset_then_sounds_on_first_tick()
+function T.switch_animation_holds_zero_offset_then_sounds_on_first_tick()
   local controller, calls, _, sounds = soundingController()
   local revision = nativeStatus(controller).view.revision
   beginSwap(controller, 1, { "down" })
@@ -1735,7 +1819,7 @@ function T.switch_arming_is_silent_with_zero_offset_then_sounds_on_first_tick()
   local armed = assert(nativeStatus(controller).swap, "arming publishes its swap record")
   Assert.equal(swapClock(armed), 0, "arming holds tile-step zero")
   Assert.isFalse(armed.exchanged == true, "arming exchanges nothing yet")
-  Assert.equal(#sounds, 0, "arming stays silent until the first swap tick")
+  Assert.equal(#sounds, 0, "the drained animation holds silent until its first swap tick")
   Assert.equal(#calls.swaps, 0, "arming publishes nothing")
   controller:updateFixed({})
   local started = assert(nativeStatus(controller).swap, "the first swap tick keeps its swap record")
@@ -1812,16 +1896,33 @@ function T.switch_inward_returns_step_by_step_then_commits_on_its_own_tick()
   Assert.equal(status.view.revision, revision + 1, "exactly one revision publishes")
 end
 
-function T.switch_cancel_at_destination_pick_abandons_quietly()
-  local controller, calls, _, sounds = soundingController()
-  armSwitch(controller)
-  drainSounds(sounds)
-  controller:updateFixed({ { type = "cancel" } })
-  Assert.equal(nativeStatus(controller).state, "browse", "cancelling the pick returns to browse")
-  Assert.isNil(nativeStatus(controller).swap, "cancelling arms no swap")
-  Assert.equal(#calls.swaps, 0, "cancelling publishes nothing")
-  Assert.equal(#sounds, 0, "cancelling sounds nothing")
-  Assert.isNil(controller:takeResult(), "cancelling completes nothing")
+function T.switch_pick_cancellation_requests_one_cancel_effect_and_abandons_without_swap()
+  do
+    local controller, calls, _, sounds = soundingController()
+    armSwitch(controller)
+    drainSounds(sounds)
+    controller:updateFixed({ { type = "cancel" } })
+    Assert.equal(nativeStatus(controller).state, "browse", "cancelling the pick returns to browse")
+    Assert.isNil(nativeStatus(controller).swap, "cancelling arms no swap")
+    Assert.equal(#calls.swaps, 0, "cancelling publishes nothing")
+    Assert.deepEqual(sounds, { "SEQ_SE_GS_GEARCANCEL" }, "cancelling requests one cancel effect")
+    Assert.isNil(controller:takeResult(), "cancelling completes nothing")
+    Assert.isNil(controller:takeIntent(), "cancelling emits nothing")
+  end
+  do
+    local controller, calls, _, sounds = soundingController()
+    armSwitch(controller)
+    controller:updateFixed({ { type = "navigate", direction = "down" } })
+    controller:updateFixed({ { type = "navigate", direction = "down" } })
+    Assert.equal(nativeStatus(controller).cursorNode, "cancel", "setup focuses the Cancel footer")
+    drainSounds(sounds)
+    controller:updateFixed({ { type = "confirm" } })
+    Assert.equal(nativeStatus(controller).state, "browse", "confirming Cancel abandons the pick")
+    Assert.isNil(nativeStatus(controller).swap, "confirming Cancel arms no swap")
+    Assert.equal(#calls.swaps, 0, "confirming Cancel publishes nothing")
+    Assert.deepEqual(sounds, { "SEQ_SE_GS_GEARCANCEL" }, "confirming Cancel requests one cancel effect")
+    Assert.isNil(controller:takeResult(), "confirming Cancel completes nothing")
+  end
 end
 
 function T.switch_ignores_input_while_animating()
@@ -2003,10 +2104,14 @@ function T.outside_pointer_down_closes_before_nested_work_runs()
   Assert.isNil(confirming:takeIntent(), "prompt publishes nothing on dismiss")
   Assert.deepEqual(sounds, {}, "prompt dismiss stays silent")
 
+  local refused = nativePolicy()
+  refused.evaluateTarget = function()
+    return { compatible = false, note = "NO ENTRY" }
+  end
   local messaged = nativeController({
     context = "item_target",
     item = { key = "POTION", bagRevision = 7 },
-    specs = { [1] = { isEgg = true } },
+    actionPolicy = refused,
   })
   messaged:updateFixed({ { type = "confirm" } })
   Assert.equal(nativeStatus(messaged).state, "message", "setup shows the explanation")
@@ -2334,6 +2439,282 @@ function T.affirmative_prompt_cannot_publish_after_a_party_revision_change()
     controller:takeIntent(),
     "the invalidated prompt never publishes against the refreshed revision"
   )
+end
+
+-- Confirming a switch destination requests the source selection effect
+-- at activation; the swap animation keeps its own list sounds on later
+-- ticks and still commits exactly once.
+function T.switch_destination_confirmation_requests_select_before_swap_animation()
+  local controller, calls, _, sounds = soundingController()
+  armSwitch(controller)
+  controller:updateFixed({ { type = "navigate", direction = "down" } })
+  Assert.equal(nativeStatus(controller).cursorNode, 1, "setup focuses the destination slot")
+  drainSounds(sounds)
+  controller:updateFixed({ { type = "confirm" } })
+  Assert.equal(
+    nativeStatus(controller).state,
+    "swapping",
+    "confirming the destination starts the animation"
+  )
+  Assert.deepEqual(sounds, { "SEQ_SE_DP_SELECT" }, "destination confirmation requests select at activation")
+  Assert.equal(#calls.swaps, 0, "confirmation publishes nothing yet")
+  controller:updateFixed({})
+  Assert.deepEqual(
+    sounds,
+    { "SEQ_SE_DP_SELECT", SWITCH_SOUND },
+    "the first animation tick adds the list sound after the confirmation"
+  )
+  Assert.equal(#calls.swaps, 0, "the first animation tick publishes nothing")
+end
+
+-- Confirming the switch source requests select and abandons back to
+-- browse without arming a swap.
+function T.switch_source_confirmation_aborts_with_select_and_no_swap()
+  local controller, calls, _, sounds = soundingController()
+  armSwitch(controller)
+  drainSounds(sounds)
+  controller:updateFixed({ { type = "confirm" } })
+  Assert.equal(nativeStatus(controller).state, "browse", "confirming the source returns to browse")
+  Assert.isNil(nativeStatus(controller).swap, "confirming the source arms no swap")
+  Assert.equal(#calls.swaps, 0, "confirming the source publishes nothing")
+  Assert.deepEqual(sounds, { "SEQ_SE_DP_SELECT" }, "source confirmation requests select")
+  Assert.isNil(controller:takeResult(), "confirming the source completes nothing")
+  Assert.isNil(controller:takeIntent(), "confirming the source emits nothing")
+end
+
+-- Non-egg item/give targets request select and follow the existing
+-- intent path with the pending bag identity.
+function T.item_and_give_target_success_request_select_and_emit()
+  local cases = {
+    { context = "item_target", kind = "use_item" },
+    { context = "give_target", kind = "give" },
+  }
+  for _, case in ipairs(cases) do
+    local sounds = {}
+    local controller = nativeController({
+      context = case.context,
+      item = { key = "SITRUS_BERRY", bagRevision = 7 },
+      effect = function(sequence)
+        sounds[#sounds + 1] = sequence
+      end,
+    })
+    controller:updateFixed({ { type = "confirm" } })
+    Assert.equal(nativeStatus(controller).state, "waiting_action", case.context .. " dispatches its intent")
+    Assert.deepEqual(sounds, { "SEQ_SE_DP_SELECT" }, case.context .. " requests select at activation")
+    Assert.deepEqual(controller:takeIntent(), {
+      kind = case.kind,
+      slot = 0,
+      partyRevision = 11,
+      bagRevision = 7,
+      item = "SITRUS_BERRY",
+    }, case.context .. " keeps its pending bag identity")
+  end
+end
+
+-- Give-target eggs reject like item-target eggs: the invalid effect
+-- plays and the pick stays open with no intent.
+function T.give_target_egg_holds_with_invalid_effect_and_no_intent()
+  local sounds = {}
+  local controller = nativeController({
+    context = "give_target",
+    item = { key = "SITRUS_BERRY", bagRevision = 7 },
+    specs = { [2] = { isEgg = true } },
+    effect = function(sequence)
+      sounds[#sounds + 1] = sequence
+    end,
+  })
+  controller:updateFixed({ { type = "navigate", direction = "down" } })
+  Assert.equal(nativeStatus(controller).cursorNode, 1, "setup focuses the egg")
+  drainSounds(sounds)
+  controller:updateFixed({ { type = "confirm" } })
+  Assert.deepEqual(sounds, { "SEQ_SE_DP_CUSTOM06" }, "egg activation requests the invalid effect once")
+  Assert.equal(
+    nativeStatus(controller).state,
+    "choosing_item_target",
+    "egg activation stays in the target pick"
+  )
+  Assert.isNil(controller:takeIntent(), "egg activation emits nothing")
+  Assert.isNil(controller:takeResult(), "egg activation completes nothing")
+  Assert.isNil(nativeStatus(controller).message, "egg activation shows no message")
+end
+
+-- Target cancellation requests the cancel effect before the existing
+-- unwind back to the caller.
+function T.item_and_give_target_cancel_requests_cancel_before_unwind()
+  for _, context in ipairs({ "item_target", "give_target" }) do
+    local sounds = {}
+    local controller = nativeController({
+      context = context,
+      item = { key = "SITRUS_BERRY", bagRevision = 7 },
+      effect = function(sequence)
+        sounds[#sounds + 1] = sequence
+      end,
+    })
+    controller:updateFixed({ { type = "cancel" } })
+    Assert.deepEqual(sounds, { "SEQ_SE_GS_GEARCANCEL" }, context .. " cancellation requests cancel")
+    Assert.deepEqual(
+      controller:takeResult(),
+      { kind = "cancelled" },
+      context .. " cancellation keeps its unwind result"
+    )
+    Assert.isNil(controller:takeIntent(), context .. " cancellation emits nothing")
+  end
+end
+
+-- Confirming the Cancel footer in a target pick cancels like B: one
+-- cancel effect before the same unwind, so keyboard and pointer
+-- surfaces converge on the same footer control.
+function T.item_and_give_target_footer_confirm_requests_cancel_before_unwind()
+  for _, context in ipairs({ "item_target", "give_target" }) do
+    local sounds = {}
+    local controller = nativeController({
+      context = context,
+      item = { key = "SITRUS_BERRY", bagRevision = 7 },
+      effect = function(sequence)
+        sounds[#sounds + 1] = sequence
+      end,
+    })
+    controller:updateFixed({ { type = "navigate", direction = "down" } })
+    controller:updateFixed({ { type = "navigate", direction = "down" } })
+    Assert.equal(nativeStatus(controller).cursorNode, "cancel", context .. " setup focuses the footer")
+    drainSounds(sounds)
+    controller:updateFixed({ { type = "confirm" } })
+    Assert.deepEqual(sounds, { "SEQ_SE_GS_GEARCANCEL" }, context .. " footer confirm requests cancel")
+    Assert.deepEqual(
+      controller:takeResult(),
+      { kind = "cancelled" },
+      context .. " footer confirm keeps its unwind result"
+    )
+    Assert.isNil(controller:takeIntent(), context .. " footer confirm emits nothing")
+  end
+end
+
+-- A minimal action policy that offers the HP-transfer entry: the donor
+-- opens its menu, picks the transfer row, and lands in the transfer
+-- target pick with the donor remembered.
+local function hpTransferPolicy()
+  return {
+    menuFor = function(_, _)
+      return {
+        { kind = "summary", label = "SUMMARY" },
+        { kind = "transfer_hp", label = "SOFTBOILED", moveSlot = 0 },
+      }
+    end,
+    submenuFor = function(_, _)
+      return {
+        { kind = "quit", label = "QUIT" },
+      }
+    end,
+    evaluateTarget = function(_, _)
+      return { compatible = true }
+    end,
+  }
+end
+
+---@param specs table?
+---@return table controller, string[] sounds
+local function hpTargetController(specs)
+  local sounds = {}
+  local controller = nativeController({
+    specs = specs,
+    actionPolicy = hpTransferPolicy(),
+    effect = function(sequence)
+      sounds[#sounds + 1] = sequence
+    end,
+  })
+  controller:updateFixed({ { type = "confirm" } })
+  Assert.equal(nativeStatus(controller).state, "context", "setup opens the donor menu")
+  controller:updateFixed({ { type = "navigate", direction = "down" } })
+  controller:updateFixed({ { type = "confirm" } })
+  pressThrough(controller)
+  Assert.equal(
+    nativeStatus(controller).state,
+    "choose_hp_target",
+    "setup enters the transfer target pick"
+  )
+  drainSounds(sounds)
+  return controller, sounds
+end
+
+-- A valid transfer recipient requests the recovery effect and still
+-- emits the transfer intent for the domain owner to commit.
+function T.hp_target_valid_recipient_requests_recovery_and_emits_transfer()
+  local controller, sounds = hpTargetController({ [2] = { currentHp = 10, maxHp = 20 } })
+  controller:updateFixed({ { type = "navigate", direction = "down" } })
+  Assert.equal(nativeStatus(controller).cursorNode, 1, "setup focuses the recipient")
+  drainSounds(sounds)
+  controller:updateFixed({ { type = "confirm" } })
+  Assert.deepEqual(sounds, { "SEQ_SE_DP_KAIFUKU" }, "a valid recipient requests recovery")
+  local intent = assert(controller:takeIntent(), "confirmation still emits the transfer intent")
+  Assert.equal(intent.kind, "transfer_hp", "the intent keeps its transfer kind")
+  Assert.equal(intent.slot, 0, "the intent keeps the donor slot")
+  Assert.equal(intent.targetSlot, 1, "the intent keeps the picked recipient")
+end
+
+-- Donor-self, fainted, and full-HP recipients request select while the
+-- transfer intent still routes to the domain owner.
+function T.hp_target_self_fainted_and_full_recipients_request_select()
+  local cases = {
+    { name = "donor-self", specs = nil, moves = {} },
+    { name = "fainted", specs = { [2] = { currentHp = 0, maxHp = 20 } }, moves = { "down" } },
+    { name = "full", specs = nil, moves = { "down" } },
+  }
+  for _, case in ipairs(cases) do
+    local controller, sounds = hpTargetController(case.specs)
+    for _, direction in ipairs(case.moves) do
+      controller:updateFixed({ { type = "navigate", direction = direction } })
+    end
+    drainSounds(sounds)
+    controller:updateFixed({ { type = "confirm" } })
+    Assert.deepEqual(sounds, { "SEQ_SE_DP_SELECT" }, case.name .. " requests select")
+    local intent = assert(controller:takeIntent(), case.name .. " still emits the transfer intent")
+    Assert.equal(intent.kind, "transfer_hp", case.name .. " keeps its transfer kind")
+  end
+end
+
+-- Egg transfer targets reject at input with the invalid effect and no
+-- intent, leaving the target pick open.
+function T.hp_target_egg_holds_with_invalid_effect_and_no_intent()
+  local controller, sounds = hpTargetController({ [2] = { isEgg = true } })
+  controller:updateFixed({ { type = "navigate", direction = "down" } })
+  Assert.equal(nativeStatus(controller).cursorNode, 1, "setup focuses the egg")
+  drainSounds(sounds)
+  controller:updateFixed({ { type = "confirm" } })
+  Assert.deepEqual(sounds, { "SEQ_SE_DP_CUSTOM06" }, "egg activation requests the invalid effect once")
+  Assert.equal(
+    nativeStatus(controller).state,
+    "choose_hp_target",
+    "egg activation stays in the target pick"
+  )
+  Assert.isNil(controller:takeIntent(), "egg activation emits nothing")
+  Assert.isNil(controller:takeResult(), "egg activation completes nothing")
+end
+
+-- Transfer-target cancellation requests the cancel effect before the
+-- existing unwind back to browse.
+function T.hp_target_cancel_requests_cancel_before_unwind()
+  local controller, sounds = hpTargetController(nil)
+  controller:updateFixed({ { type = "cancel" } })
+  Assert.deepEqual(sounds, { "SEQ_SE_GS_GEARCANCEL" }, "transfer cancellation requests cancel")
+  Assert.equal(nativeStatus(controller).state, "browse", "cancellation unwinds to browse")
+  Assert.equal(nativeStatus(controller).cursorNode, 0, "cancellation restores the donor slot")
+  Assert.isNil(controller:takeResult(), "cancellation completes nothing")
+  Assert.isNil(controller:takeIntent(), "cancellation emits nothing")
+end
+
+-- Confirming the Cancel footer in the transfer pick cancels like B:
+-- one cancel effect before the same unwind to browse.
+function T.hp_target_footer_confirm_requests_cancel_before_unwind()
+  local controller, sounds = hpTargetController(nil)
+  controller:updateFixed({ { type = "navigate", direction = "down" } })
+  controller:updateFixed({ { type = "navigate", direction = "down" } })
+  Assert.equal(nativeStatus(controller).cursorNode, "cancel", "setup focuses the footer")
+  drainSounds(sounds)
+  controller:updateFixed({ { type = "confirm" } })
+  Assert.deepEqual(sounds, { "SEQ_SE_GS_GEARCANCEL" }, "footer confirm requests cancel")
+  Assert.equal(nativeStatus(controller).state, "browse", "footer confirm unwinds to browse")
+  Assert.isNil(controller:takeResult(), "footer confirm completes nothing")
+  Assert.isNil(controller:takeIntent(), "footer confirm emits nothing")
 end
 
 return { tests = T }

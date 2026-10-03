@@ -887,6 +887,21 @@ function T.tests.root_close_reports_close_and_releases_once(context)
       end
       rig.flow:updateFixed({ { type = "cancel" } })
       status = rig.flow:status()
+      if root == "party" then
+        -- The footer press withholds the close result: no app exit may
+        -- start before the fifth post-arm tick publishes it.
+        for index = 1, 4 do
+          rig.flow:updateFixed({})
+          status = rig.flow:status()
+          Assert.isNil(
+            status.transition,
+            "the footer press withholds app exit through post-arm tick " .. index
+          )
+          Assert.notNil(status.child, "the party page stays published through the footer press")
+        end
+        rig.flow:updateFixed({})
+        status = rig.flow:status()
+      end
       Assert.isTrue(status.open, "the root child remains published during its outgoing fade")
       Assert.notNil(status.child, "the outgoing root child stays published through app exit")
       Assert.notNil(status.child.presentation, "the outgoing fade retains its presentation plan")

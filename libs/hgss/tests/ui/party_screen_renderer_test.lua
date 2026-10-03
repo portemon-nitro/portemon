@@ -1654,6 +1654,38 @@ function T.cancel_uses_the_generated_label_without_a_slot_cursor()
   end
 end
 
+-- The footer press overrides cursor-based Cancel art with the existing
+-- generated button states: base while pressed, selected while armed or
+-- in the second press half.
+function T.root_footer_press_selects_the_generated_button_state()
+  local cases = {
+    { phase = "pressed", normal = 1, selected = 0 },
+    { phase = "armed", normal = 0, selected = 1 },
+    { phase = "selected", normal = 0, selected = 1 },
+  }
+  for _, case in ipairs(cases) do
+    local manifest = v5Manifest()
+    local normalImage = "asset:" .. manifest.visuals.buttons.sequences[1].frames[1].image
+    local selectedImage = "asset:" .. manifest.visuals.buttons.sequences[2].frames[1].image
+    Assert.isTrue(normalImage ~= selectedImage, "setup carries independent button states")
+    local graphics = fakeGraphics()
+    local renderer = newRenderer(graphics, paletteText({}), manifest)
+    local status = presentation({ cursorNode = "cancel", cancelPress = { phase = case.phase } })
+    status.view.slots[1] = occupiedSlot(0)
+    renderer:draw(status, v5Layout(manifest), frameIcons({}))
+    local normal, selected = 0, 0
+    for _, draw in ipairs(graphics.draws) do
+      if draw.image == renderer._images[normalImage] then
+        normal = normal + 1
+      elseif draw.image == renderer._images[selectedImage] then
+        selected = selected + 1
+      end
+    end
+    Assert.equal(normal, case.normal, case.phase .. " draws the base button state")
+    Assert.equal(selected, case.selected, case.phase .. " draws the selected button state")
+  end
+end
+
 function T.context_frame_images_acquire_once_and_release_idempotently()
   local manifest = v5Manifest()
   local graphics = fakeGraphics()

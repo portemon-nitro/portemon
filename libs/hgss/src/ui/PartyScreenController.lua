@@ -55,6 +55,7 @@ local YesNoPromptController = require("libs.hgss.src.ui.YesNoPromptController")
 ---@field _donorSlot integer?
 ---@field _donorMoveSlot integer?
 ---@field _menuPress { index: integer, timer: integer }? the armed source press gate: an arm frame, two pressed ticks, two selected ticks, then exactly one semantic dispatch
+---@field _cancelPress { timer: integer, restart: boolean }? the armed root footer press: an arm frame, two base ticks, two selected ticks, then the close publishes
 ---@field _swapSource integer?
 ---@field _seq integer[]
 ---@field _seqBase integer[]
@@ -123,6 +124,8 @@ local SWAP_PIXEL_STEP = 8
 local SWAP_SOUND = "SEQ_SE_DP_POKELIST_001"
 local CANCEL_SOUND = "SEQ_SE_GS_GEARCANCEL"
 local SELECT_SOUND = "SEQ_SE_DP_SELECT"
+local INVALID_SOUND = "SEQ_SE_DP_CUSTOM06"
+local RECOVERY_SOUND = "SEQ_SE_DP_KAIFUKU"
 
 -- The top-panel show/hide slide in source pixels.
 local PANEL_SLIDE_STEPS = { 0, 12, 24, 36, 40 }
@@ -263,6 +266,7 @@ function PartyScreenController.new(opts)
     _donorSlot = nil,
     _donorMoveSlot = nil,
     _menuPress = nil,
+    _cancelPress = nil,
     _swapSource = nil,
     _effect = opts.effect,
     _seq = {},
@@ -395,9 +399,9 @@ function PartyScreenController:cancellable()
   return self._cancellable
 end
 
--- State changes dispose prompts, disarm the menu press gate, and
--- invalidate any held pointer press, even when the public state name
--- stays the same.
+-- State changes dispose prompts, disarm the menu and root press gates,
+-- and invalidate any held pointer press, even when the public state
+-- name stays the same.
 ---@param state string
 function PartyScreenController:_transition(state)
   if self._state == "confirm" and state ~= "confirm" then
@@ -413,6 +417,7 @@ function PartyScreenController:_transition(state)
   self._pressCapture = nil
   self._pressEpoch = nil
   self._menuPress = nil
+  self._cancelPress = nil
 end
 
 -- Walks one direction through the compiled FocusGraph, skipping
@@ -720,6 +725,56 @@ function PartyScreenController:_requestCancelSound()
   end
 end
 
+-- Requests the source invalid-target effect through the borrowed effect
+-- boundary for rejected target activations.
+function PartyScreenController:_requestInvalidSound()
+  local effect = self._effect
+  if effect ~= nil then
+    effect(INVALID_SOUND)
+  end
+end
+
+-- Requests the source recovery effect through the borrowed effect
+-- boundary for valid HP-transfer target activations.
+function PartyScreenController:_requestRecoverySound()
+  local effect = self._effect
+  if effect ~= nil then
+    effect(RECOVERY_SOUND)
+  end
+end
+
+-- Arms the root footer press instead of closing: the activation update
+-- sounds once here at initiation, then the visual cadence (an arm frame,
+-- two base ticks, two selected ticks) owns the next five fixed ticks
+-- before the close publishes. Restarting from a mon focuses the footer
+-- first and shows the base state at once; confirming the already-focused
+-- footer keeps the selected arm frame.
+---@param restart boolean
+function PartyScreenController:_armCancelPress(restart)
+  assert(self._menuPress == nil, "root and menu presses never overlap")
+  assert(self._cancelPress == nil, "root presses arm exactly once")
+  assert(self._state == "browse", "root presses arm from browse")
+  self:_requestCancelSound()
+  if restart then
+    self._cursorNode = "cancel"
+  end
+  self:cancelPointerCapture()
+  self._cancelPress = { timer = 0, restart = restart }
+end
+
+-- Advances the armed root press one fixed tick; the step past the second
+-- selected tick publishes the existing close result exactly once.
+function PartyScreenController:_advanceCancelPress()
+  local armed = assert(self._cancelPress, "press ticks require an armed press")
+  armed.timer = armed.timer + 1
+  if armed.timer < 5 then
+    return
+  end
+  self._cancelPress = nil
+  self._result = { kind = "closed" }
+  self:_transition("closing")
+end
+
 -- Abandons an uncommitted swap with no domain mutation.
 function PartyScreenController:_abortSwap()
   self._swapOp = nil
@@ -831,6 +886,9 @@ function PartyScreenController:_confirmSlotTarget()
       end
       return
     end
+    -- Footer confirmation cancels like the B/pointer surfaces: one
+    -- cancel effect before the existing unwind.
+    self:_requestCancelSound()
     if self._targetOrigin == "context" then
       self._result = { kind = "cancelled" }
       self:_transition("closing")
@@ -844,8 +902,20 @@ function PartyScreenController:_confirmSlotTarget()
       return
     end
     assert(isSlotNode(node), "transfer targets resolve to party slots")
-    local donor = assert(self._donorSlot, "transfer targeting remembers its donor")
     ---@cast node integer
+    local target = assert(self._view.slots[node + 1], "transfer targets read visible slots")
+    local donor = assert(self._donorSlot, "transfer targeting remembers its donor")
+    local currentHp = assert(target.currentHp, "transfer targets carry current HP")
+    local maxHp = assert(target.maxHp, "transfer targets carry max HP")
+    if target.isEgg == true then
+      self:_requestInvalidSound()
+      return
+    end
+    if node == donor or currentHp == 0 or currentHp == maxHp then
+      self:_requestSelectSound()
+    else
+      self:_requestRecoverySound()
+    end
     self:_emitIntent({
       kind = "transfer_hp",
       slot = donor,
@@ -866,6 +936,11 @@ function PartyScreenController:_confirmSlotTarget()
     return
   end
   local record = assert(self._view.slots[node + 1], "targeting reads visible slots")
+  if record.isEgg == true then
+    self:_requestInvalidSound()
+    return
+  end
+  self:_requestSelectSound()
   local policy = assert(self._policy, "targeting requires the injected action policy")
   local evaluateTarget = assert(policy.evaluateTarget, "the action policy evaluates targets")
   local verdict = evaluateTarget(record, self._context)
@@ -1031,9 +1106,7 @@ end
 function PartyScreenController:_confirmBrowse()
   local node = self._cursorNode
   if node == "cancel" then
-    self:_requestCancelSound()
-    self._result = { kind = "closed" }
-    self:_transition("closing")
+    self:_armCancelPress(false)
     return
   end
   if self:_selectable(self._view, node) then
@@ -1081,9 +1154,7 @@ function PartyScreenController:_cancel()
       return
     end
     if self._cancellable then
-      self:_requestCancelSound()
-      self._result = { kind = "closed" }
-      self:_transition("closing")
+      self:_armCancelPress(true)
     end
     return
   end
@@ -1101,11 +1172,17 @@ function PartyScreenController:_cancel()
     self:_beginMenuPress()
     return
   end
-  if self._state == "choose_swap" or self._state == "swapping" then
+  if self._state == "choose_swap" then
+    self:_requestCancelSound()
+    self:_abortSwap()
+    return
+  end
+  if self._state == "swapping" then
     self:_abortSwap()
     return
   end
   if self._state == "choosing_item_target" or self._state == "choose_hp_target" then
+    self:_requestCancelSound()
     if self._targetOrigin == "context" then
       self._result = { kind = "cancelled" }
       self:_transition("closing")
@@ -1130,8 +1207,10 @@ function PartyScreenController:_cancel()
   end
 end
 
--- Confirms the swap destination: the source itself or cancel abandons,
--- another occupied slot arms the delayed commit.
+-- Confirms the swap destination: the source itself confirms with the
+-- selection effect and abandons, cancel abandons with the cancel effect,
+-- and another occupied slot confirms with the selection effect before
+-- arming the delayed commit.
 function PartyScreenController:_confirmSwapDestination()
   local node = self._cursorNode
   local source = self._swapSource
@@ -1146,13 +1225,20 @@ function PartyScreenController:_confirmSwapDestination()
     self:_transition("browse")
     return
   end
-  if node == "cancel" or node == source then
+  if node == "cancel" then
+    self:_requestCancelSound()
+    self:_abortSwap()
+    return
+  end
+  if node == source then
+    self:_requestSelectSound()
     self:_abortSwap()
     return
   end
   if self:_selectable(self._view, node) then
     assert(isSlotNode(node), "swap destinations are party slots")
     ---@cast node integer
+    self:_requestSelectSound()
     self:_beginSwap(source, node)
   end
 end
@@ -1586,6 +1672,10 @@ function PartyScreenController:updateFixed(uiInput)
       return
     end
   end
+  if self._cancelPress ~= nil then
+    self:_advanceCancelPress()
+    return
+  end
   if self._menuPress ~= nil then
     local transitionsBefore = self._transitionCount
     self:_advanceMenuPress()
@@ -1624,7 +1714,7 @@ function PartyScreenController:updateFixed(uiInput)
     end
     assert(type(event) == "table" and type(event.type) == "string", "party events need a type")
     local transitionsBefore = self._transitionCount
-    if self._menuPress ~= nil then
+    if self._menuPress ~= nil or self._cancelPress ~= nil then
       -- The armed press owns the tick: further navigation, activation,
       -- cancellation, and pointer presses wait for its single dispatch.
       -- Pointer cancellation still clears a held capture without
@@ -1723,6 +1813,7 @@ end
 ---@field menu PartyScreenController.MenuEntry[]?
 ---@field menuSlot integer?
 ---@field menuPress { index: integer, phase: "armed"|"pressed"|"selected" }? the armed press gate presentation
+---@field cancelPress { phase: "armed"|"pressed"|"selected" }? the armed root footer press presentation
 ---@field message string|{ templateKey: string, displayName: string? }?
 ---@field switchSelect { source: integer, candidate: integer|"cancel" }? the locked switch source and current candidate
 ---@field prompt table<string, unknown>?
@@ -1786,6 +1877,23 @@ function PartyScreenController:status()
       phase = phase,
     }
   end
+  local cancelPress
+  if self._cancelPress ~= nil then
+    local timer = self._cancelPress.timer
+    local phase = "selected"
+    if timer == 0 then
+      if self._cancelPress.restart then
+        phase = "pressed"
+      else
+        phase = "armed"
+      end
+    elseif timer <= 2 then
+      phase = "pressed"
+    end
+    cancelPress = {
+      phase = phase,
+    }
+  end
   local switchSelect
   if self._state == "choose_swap" and self._swapSource ~= nil then
     switchSelect = { source = self._swapSource, candidate = self._cursorNode }
@@ -1801,6 +1909,7 @@ function PartyScreenController:status()
     menu = self._menu,
     menuSlot = self._menuSlot,
     menuPress = menuPress,
+    cancelPress = cancelPress,
     message = self._message,
     switchSelect = switchSelect,
     prompt = self._prompt and self._prompt:status() or nil,

@@ -1261,6 +1261,18 @@ function PartyScreenRenderer:_drawContent(presentation, layout, icons)
     local cancel = assert(self._manifest.controls.cancel, "party controls carry Cancel")
     local anchor = assert(cancel.anchor, "party controls carry the Cancel anchor")
     local buttonSequenceIndex = cursorNode == "cancel" and 2 or 1
+    if presentation.cancelPress ~= nil then
+      local phase = assert(presentation.cancelPress.phase, "footer presses carry a phase")
+      assert(
+        phase == "pressed" or phase == "armed" or phase == "selected",
+        "footer presses use the pressed, armed, or selected phase"
+      )
+      if phase == "pressed" then
+        buttonSequenceIndex = 1
+      else
+        buttonSequenceIndex = 2
+      end
+    end
     local buttonSequence =
       assert(visuals.buttons.sequences[buttonSequenceIndex], "party buttons carry the Cancel state")
     self:_drawSequence(buttonSequence, tick, anchor)

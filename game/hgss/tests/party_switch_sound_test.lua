@@ -18,6 +18,7 @@ local ScreenTopology = require("libs.ui.src.ScreenTopology")
 local T = {}
 
 local SWITCH_SOUND = "SEQ_SE_DP_POKELIST_001"
+local CONFIRM_SOUND = "SEQ_SE_DP_SELECT"
 
 local function stubMeasurement()
   return {
@@ -222,7 +223,10 @@ function T.switch_without_a_sound_boundary_still_reorders_once()
   Assert.equal(service:partyRevision(), revision + 1, "exactly one revision publishes the reorder")
 end
 
-function T.switch_arming_stays_silent_until_the_first_animation_tick()
+-- Confirming the destination requests the source selection effect at
+-- activation; the swap animation keeps its own start/midpoint list
+-- sounds on later ticks.
+function T.switch_destination_confirmation_sounds_select_before_the_first_animation_tick()
   local service, calls = fakeMons()
   local sounds = {}
   local rig = openPartyFlow(service, function(sequence)
@@ -238,12 +242,16 @@ function T.switch_arming_stays_silent_until_the_first_animation_tick()
   Assert.isTrue(armed.swap ~= nil, "arming publishes its swap record")
   Assert.equal(armed.swap.xOffset, 0, "arming holds tile-step zero")
   Assert.isFalse(armed.swap.exchanged == true, "arming exchanges nothing yet")
-  Assert.equal(#sounds, 0, "arming stays silent until the first animation tick")
+  Assert.deepEqual(sounds, { CONFIRM_SOUND }, "destination confirmation requests select at activation")
   Assert.equal(#calls.swaps, 0, "arming publishes nothing")
   rig.flow:updateFixed({})
   local started = childStatus(rig)
   Assert.equal(started.swap.xOffset, 0, "the first animation tick holds offset zero")
-  Assert.deepEqual(sounds, { SWITCH_SOUND }, "the first animation tick sounds once")
+  Assert.deepEqual(
+    sounds,
+    { CONFIRM_SOUND, SWITCH_SOUND },
+    "the first animation tick adds the list sound after the confirmation"
+  )
   Assert.equal(#calls.swaps, 0, "the first animation tick publishes nothing")
 end
 

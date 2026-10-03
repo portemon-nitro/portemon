@@ -980,8 +980,8 @@ function T.opening_discards_navigation_and_activation_until_reveal_completes()
 end
 
 -- Closing keeps its existing meaning once the screen is interactive:
--- confirming Cancel promptly reports the host close with no additional
--- reveal behavior on the way out.
+-- confirming Cancel reports the host close after the footer press with no
+-- additional reveal behavior on the way out.
 function T.closing_after_interactive_uses_the_existing_close_path()
   local calls = { swaps = {} }
   local state, probes = openParty(true, nil, calls)
@@ -1003,6 +1003,10 @@ function T.closing_after_interactive_uses_the_existing_close_path()
   end
   Assert.equal(state:status().cursorNode, "cancel", "navigation reaches cancel before closing")
   state:updateFixed({ { type = "confirm" } })
+  Assert.isNil(state:takeResult(), "the footer press withholds close until its ticks complete")
+  for _ = 1, 5 do
+    state:updateFixed({})
+  end
   local result = state:takeResult()
   Assert.notNil(result, "confirming cancel closes the screen")
   Assert.equal(result.kind, "close", "close keeps its existing host translation")
