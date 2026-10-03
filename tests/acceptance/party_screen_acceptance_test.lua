@@ -458,7 +458,9 @@ function T.tests.party_grid_static_frame_and_reflow_journey_preserves_semantics(
     pressKey(game, state, "s")
     confirm(game)
     -- Menu activation rides the visual press cadence before its single
-    -- dispatch: two pressed ticks, two selected ticks, then dispatch.
+    -- dispatch: activation arms, two pressed ticks, two selected ticks,
+    -- then dispatch on the fifth post-arm tick.
+    game:step()
     game:step()
     game:step()
     game:step()

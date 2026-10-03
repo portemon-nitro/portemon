@@ -175,6 +175,15 @@ local function armSwitch(rig)
   end)
 end
 
+-- Clears recorded setup effects where a later contract intentionally
+-- measures only the sounds from its own stimulus onward.
+---@param sounds string[]
+local function drainSounds(sounds)
+  for index = 1, #sounds do
+    sounds[index] = nil
+  end
+end
+
 function T.switch_animation_sounds_twice_and_reorders_once_through_the_flow()
   local service, calls = fakeMons()
   local sounds = {}
@@ -186,6 +195,7 @@ function T.switch_animation_sounds_twice_and_reorders_once_through_the_flow()
   rig.flow:updateFixed({ { type = "navigate", direction = "right" } })
   Assert.equal(childStatus(rig).cursorNode, 1, "setup focuses the destination slot")
   rig.flow:updateFixed({ { type = "confirm" } })
+  drainSounds(sounds)
   driveUntilChild(rig, "the settled switch", 60, function(child)
     return child.state == "browse" and child.swap == nil
   end)
@@ -221,6 +231,7 @@ function T.switch_arming_stays_silent_until_the_first_animation_tick()
   armSwitch(rig)
   rig.flow:updateFixed({ { type = "navigate", direction = "right" } })
   Assert.equal(childStatus(rig).cursorNode, 1, "setup focuses the destination slot")
+  drainSounds(sounds)
   rig.flow:updateFixed({ { type = "confirm" } })
   local armed = childStatus(rig)
   Assert.equal(armed.state, "swapping", "confirming the destination starts the animation")

@@ -22,7 +22,7 @@ local YesNoPromptController = require("libs.hgss.src.ui.YesNoPromptController")
 ---@field _model PartyScreenController.Model
 ---@field _layout fun(): table<string, unknown>
 ---@field _swap PartyScreenController.SwapPort?
----@field _effect fun(sequence: string)? the borrowed swap sound boundary; swap stays silent without it
+---@field _effect fun(sequence: string)? the borrowed Party semantic sound boundary; screens without it stay silent and still transition
 ---@field _policy table<string, unknown>
 ---@field _promptShape table<string, unknown>?
 ---@field _pendingItem { key: string, bagRevision: integer }?
@@ -54,7 +54,7 @@ local YesNoPromptController = require("libs.hgss.src.ui.YesNoPromptController")
 ---@field _tick integer
 ---@field _donorSlot integer?
 ---@field _donorMoveSlot integer?
----@field _menuPress { index: integer, timer: integer }? the armed source press gate: two pressed ticks, two selected ticks, then exactly one semantic dispatch
+---@field _menuPress { index: integer, timer: integer }? the armed source press gate: an arm frame, two pressed ticks, two selected ticks, then exactly one semantic dispatch
 ---@field _swapSource integer?
 ---@field _seq integer[]
 ---@field _seqBase integer[]
@@ -110,7 +110,7 @@ PartyScreenController.__index = PartyScreenController
 ---@field actionPolicy table<string, unknown>?
 ---@field promptShape table<string, unknown>?
 ---@field item { key: string, bagRevision: integer }?
----@field effect fun(sequence: string)? the borrowed swap sound boundary; swap stays silent without it
+---@field effect fun(sequence: string)? the borrowed Party semantic sound boundary; screens without it stay silent and still transition
 ---@field initialMessage { templateKey: "giveHeldItem", displayName: string, itemNames: string[] }? initial Party-owned held-item result
 
 -- The native switch task slides each travelling slot out from its own
@@ -122,6 +122,7 @@ local SWAP_MAX_OFFSET = 16
 local SWAP_PIXEL_STEP = 8
 local SWAP_SOUND = "SEQ_SE_DP_POKELIST_001"
 local CANCEL_SOUND = "SEQ_SE_GS_GEARCANCEL"
+local SELECT_SOUND = "SEQ_SE_DP_SELECT"
 
 -- The top-panel show/hide slide in source pixels.
 local PANEL_SLIDE_STEPS = { 0, 12, 24, 36, 40 }
@@ -225,7 +226,7 @@ function PartyScreenController.new(opts)
     )
   end
   if opts.effect ~= nil then
-    assert(type(opts.effect) == "function", "the swap sound boundary is a function")
+    assert(type(opts.effect) == "function", "the Party semantic sound boundary is a function")
   end
   local self = setmetatable({
     _context = opts.context,
@@ -426,11 +427,13 @@ function PartyScreenController:_move(direction)
   )
   local layout = assert(self._layout(), "the party layout is required for navigation")
   local graph = compileGraph(assert(layout.neighbors, "the party layout must carry directional neighbors"))
-  local node = self._cursorNode
+  local start = self._cursorNode
+  local node = start
   if node == "cancel" and direction == "up" then
     local remembered = 4 + self._footerColumn
     if self:_selectable(self._view, remembered) then
       self._cursorNode = remembered
+      self:_requestSelectSound()
       return
     end
     node = remembered
@@ -447,6 +450,9 @@ function PartyScreenController:_move(direction)
     end
     if self:_selectable(self._view, next) then
       self._cursorNode = next
+      if next ~= start then
+        self:_requestSelectSound()
+      end
       return
     end
     node = next
@@ -468,7 +474,10 @@ function PartyScreenController:_moveMenu(direction)
   local next = entry[direction]
   if next ~= nil then
     assert(next % 1 == 0 and next >= 1 and next <= #entries, "menu neighbors address real entries")
-    self._menuIndex = next
+    if next ~= index then
+      self._menuIndex = next
+      self:_requestSelectSound()
+    end
   end
 end
 
@@ -494,9 +503,11 @@ end
 
 -- Arms the source press gate over the focused menu entry: the semantic
 -- entry, index, and state freeze now while pointer capture invalidates
--- through the normal epoch rules. A focused quit row requests the single
--- cancel effect here at initiation. Dispatch waits for the visual cadence
--- (two pressed ticks, two selected ticks) owned by the fixed update.
+-- through the normal epoch rules. The activation update sounds once here
+-- at initiation: a focused quit row requests the single cancel effect,
+-- every other row requests the single select effect. Dispatch waits for
+-- the visual cadence (an arm frame, two pressed ticks, two selected
+-- ticks) owned by the fixed update.
 function PartyScreenController:_beginMenuPress()
   assert(self._menuPress == nil, "menu presses arm exactly once")
   local menu = assert(self._menu, "menu activation needs an open menu")
@@ -506,6 +517,8 @@ function PartyScreenController:_beginMenuPress()
   self:_menuLayoutFor()
   if entry.kind == "quit" then
     self:_requestCancelSound()
+  else
+    self:_requestSelectSound()
   end
   self._menuPress = { index = index, timer = 0 }
   self._pressId = nil
@@ -514,13 +527,13 @@ function PartyScreenController:_beginMenuPress()
   self._epoch = self._epoch + 1
 end
 
--- Advances the armed press one fixed tick; the step past the selected
--- half dispatches the captured entry exactly once through the existing
--- semantic path.
+-- Advances the armed press one fixed tick; the step past the second
+-- selected tick dispatches the captured entry exactly once through the
+-- existing semantic path.
 function PartyScreenController:_advanceMenuPress()
   local armed = assert(self._menuPress, "press ticks require an armed press")
   armed.timer = armed.timer + 1
-  if armed.timer < 4 then
+  if armed.timer < 5 then
     return
   end
   local index = armed.index
@@ -679,6 +692,14 @@ function PartyScreenController:_beginSwap(source, destination)
     exchanged = false,
   }
   self:_transition("swapping")
+end
+
+-- Requests the source select sound through the borrowed effect boundary.
+function PartyScreenController:_requestSelectSound()
+  local effect = self._effect
+  if effect ~= nil then
+    effect(SELECT_SOUND)
+  end
 end
 
 -- Requests one list sound through the borrowed effect boundary when the
@@ -1018,6 +1039,7 @@ function PartyScreenController:_confirmBrowse()
   if self:_selectable(self._view, node) then
     assert(isSlotNode(node), "menus open over party slots")
     ---@cast node integer
+    self:_requestSelectSound()
     self:_openMenu(node)
   end
 end
@@ -1426,12 +1448,97 @@ function PartyScreenController:_pointerUp(event)
   end
 end
 
+-- Reconciles staged menu/prompt state after an outside party revision
+-- change. An open menu rebuilds from the live record at its slot with
+-- only a clamped focus index preserved; a lost slot falls back to
+-- browse. A menu-owned prompt disposes before its confirm batch can
+-- resolve, and its return menu rebuilds the same way. A held-item
+-- continuation prompt aborts through the existing held-item completion
+-- path without emitting the old intent. Returns true when staged state
+-- was invalidated or rebuilt, in which case the caller consumes the tick
+-- so the same event batch never acts on the new state. Browse cursor
+-- reconciliation alone never consumes the tick.
+---@param view PartyScreenController.View
+---@return boolean consumed
+function PartyScreenController:_reconcileRevision(view)
+  local consumed = false
+  if self._state == "confirm" then
+    if self._giveDisposition ~= nil then
+      self:_finishGive()
+      return true
+    end
+    local returnState = self._promptReturn
+    self:_closePrompt()
+    local slot = self._menuSlot
+    local record = slot ~= nil and view.slots[slot + 1] or nil
+    if
+      record ~= nil
+      and record.occupied
+      and (returnState == "context" or returnState == "item_context" or returnState == "mail_context")
+    then
+      if returnState == "context" then
+        self._menu = self:_menuFor(record)
+      else
+        self._menu = self:_submenuFor(returnState == "mail_context" and "mail" or "item", record)
+      end
+      local layout = assert(self._layout(), "the party layout is required for menu geometry")
+      local lookup = assert(layout.menuLayout, "the party layout carries generated menu records")
+      lookup(returnState == "context" and "topLevel" or "subcontext", #self._menu)
+      self._menuIndex = math.min(self._menuIndex or 1, #self._menu)
+      self:_transition(returnState)
+    else
+      self._menu = nil
+      self._menuIndex = nil
+      self._menuSlot = nil
+      self._originSlot = nil
+      self:_transition("browse")
+    end
+    consumed = true
+  elseif self._state == "context" or self._state == "item_context" or self._state == "mail_context" then
+    -- A staged press never survives a party change: the captured entry
+    -- is stale, so the gate disarms and the menu rebuilds (or closes
+    -- when its slot no longer qualifies).
+    self._menuPress = nil
+    self._pressId = nil
+    self._pressCapture = nil
+    self._pressEpoch = nil
+    self._epoch = self._epoch + 1
+    local slot = self._menuSlot
+    local record = slot ~= nil and view.slots[slot + 1] or nil
+    if record ~= nil and record.occupied then
+      if self._state == "context" then
+        self._menu = self:_menuFor(record)
+      else
+        self._menu = self:_submenuFor(self._state == "mail_context" and "mail" or "item", record)
+      end
+      self:_menuLayoutFor()
+      self._menuIndex = math.min(self._menuIndex or 1, #self._menu)
+    else
+      self._menu = nil
+      self._menuIndex = nil
+      self._menuSlot = nil
+      self._originSlot = nil
+      self:_transition("browse")
+    end
+    consumed = true
+  end
+  if not self:_selectable(view, self._cursorNode) then
+    local reconciled = self:_nearestSelectable(view, self._cursorNode)
+    if reconciled ~= nil then
+      self._cursorNode = reconciled
+    end
+  end
+  return consumed
+end
+
 -- One fixed tick over the tick's UI events. Clocks advance first: icon
 -- sequence ticks and the panel slide step once per tick while open. A
 -- valid outside dismiss for a normal context then closes terminally
--- before the armed menu press, an armed swap, the owned prompt, the
--- held-item continuation, or ordinary state handling can run for this
--- tick. At most one state consumes an event batch: the batch ends when a
+-- before anything else runs for this tick. A party revision change next
+-- reconciles staged menu/prompt state before the armed menu press, an
+-- armed swap, the owned prompt, the held-item continuation, or ordinary
+-- state handling can run for this tick, and consumes the tick when it
+-- invalidates staged state. At most one state consumes an event batch: the batch ends when a
 -- transition fires, an intent emits, a message acknowledges, or a
 -- terminal result records. A completed controller ignores further input.
 ---@param uiInput table[]
@@ -1470,6 +1577,15 @@ function PartyScreenController:updateFixed(uiInput)
       return
     end
   end
+  if view.revision ~= previousRevision and self._swapOp == nil then
+    -- Staged menu/prompt state derived from the old revision never
+    -- advances against the new one; the reconciled tick ends here so the
+    -- same event batch cannot act on the rebuilt state. The active swap
+    -- keeps its own frozen-revision commit ownership.
+    if self:_reconcileRevision(view) then
+      return
+    end
+  end
   if self._menuPress ~= nil then
     local transitionsBefore = self._transitionCount
     self:_advanceMenuPress()
@@ -1501,42 +1617,6 @@ function PartyScreenController:updateFixed(uiInput)
   if self._state == "give_question" then
     self:_openGiveConfirm()
     return
-  end
-  if view.revision ~= previousRevision and self._swapOp == nil then
-    -- Reconcile a cursor the party change may have invalidated without
-    -- inventing a mon: keep a still-selectable cursor, else the nearest one.
-    -- An armed press never survives a party change: the captured entry is
-    -- stale, so the gate disarms and the menu rebuilds (or closes when its
-    -- slot no longer qualifies).
-    if self._menuPress ~= nil then
-      self._menuPress = nil
-      local slot = self._menuSlot
-      local record = slot ~= nil and view.slots[slot + 1] or nil
-      if record ~= nil and record.occupied then
-        if self._state == "context" then
-          self._menu = self:_menuFor(record)
-        elseif self._state == "item_context" or self._state == "mail_context" then
-          self._menu = self:_submenuFor(self._state == "mail_context" and "mail" or "item", record)
-        end
-        if self._menu ~= nil then
-          self:_menuLayoutFor()
-          self._menuIndex = math.min(self._menuIndex or 1, #self._menu)
-        end
-      end
-      if self._menu == nil then
-        self._menu = nil
-        self._menuIndex = nil
-        self._menuSlot = nil
-        self._originSlot = nil
-        self:_transition("browse")
-      end
-    end
-    if not self:_selectable(view, self._cursorNode) then
-      local reconciled = self:_nearestSelectable(view, self._cursorNode)
-      if reconciled ~= nil then
-        self._cursorNode = reconciled
-      end
-    end
   end
   for _, event in ipairs(uiInput) do
     if self._closed then
@@ -1642,7 +1722,7 @@ end
 ---@field menuIndex integer?
 ---@field menu PartyScreenController.MenuEntry[]?
 ---@field menuSlot integer?
----@field menuPress { index: integer, phase: "pressed"|"selected" }? the armed press gate presentation
+---@field menuPress { index: integer, phase: "armed"|"pressed"|"selected" }? the armed press gate presentation
 ---@field message string|{ templateKey: string, displayName: string? }?
 ---@field switchSelect { source: integer, candidate: integer|"cancel" }? the locked switch source and current candidate
 ---@field prompt table<string, unknown>?
@@ -1694,9 +1774,16 @@ function PartyScreenController:status()
   end
   local menuPress
   if self._menuPress ~= nil then
+    local timer = self._menuPress.timer
+    local phase = "selected"
+    if timer <= 0 then
+      phase = "armed"
+    elseif timer <= 2 then
+      phase = "pressed"
+    end
     menuPress = {
       index = self._menuPress.index,
-      phase = self._menuPress.timer < 2 and "pressed" or "selected",
+      phase = phase,
     }
   end
   local switchSelect
