@@ -411,6 +411,12 @@ function T.tests.party_grid_static_frame_and_reflow_journey_preserves_semantics(
     Assert.equal(partyView(game).cursorNode, 1, "a tap on the second panel selects it")
     Assert.equal(partyView(game).state, "context", "a tap opens the context menu")
     pressCancel(game)
+    -- Cancel arms the press cadence on the quit row before its single
+    -- dispatch: two pressed ticks, two selected ticks, then browse.
+    game:step()
+    game:step()
+    game:step()
+    game:step()
     Assert.equal(partyView(game).state, "browse", "cancel dismisses the context menu")
 
     -- The outer frame never moves between equivalent resolves: rereading

@@ -494,14 +494,19 @@ end
 
 -- Arms the source press gate over the focused menu entry: the semantic
 -- entry, index, and state freeze now while pointer capture invalidates
--- through the normal epoch rules. Dispatch waits for the visual cadence
+-- through the normal epoch rules. A focused quit row requests the single
+-- cancel effect here at initiation. Dispatch waits for the visual cadence
 -- (two pressed ticks, two selected ticks) owned by the fixed update.
 function PartyScreenController:_beginMenuPress()
   assert(self._menuPress == nil, "menu presses arm exactly once")
   local menu = assert(self._menu, "menu activation needs an open menu")
   local index = assert(self._menuIndex, "menu activation needs a focused entry")
-  assert(menu[index] ~= nil, "menu activation focuses a real entry")
+  local entry = assert(menu[index], "menu activation focuses a real entry")
+  assert(type(entry.kind) == "string", "menu entries carry a kind")
   self:_menuLayoutFor()
+  if entry.kind == "quit" then
+    self:_requestCancelSound()
+  end
   self._menuPress = { index = index, timer = 0 }
   self._pressId = nil
   self._pressCapture = nil
@@ -875,14 +880,15 @@ function PartyScreenController:_confirmSlotTarget()
 end
 
 -- Dismisses an open context menu back to browse with no result or
--- intent: one cancel sound, menu state cleared, the origin slot
--- restored when still selectable.
+-- intent: menu state cleared, the origin slot restored when still
+-- selectable. This is the silent semantic completion after the press
+-- gate; the cancel effect was already requested when the quit press
+-- was armed.
 function PartyScreenController:_dismissMenu()
   assert(
     self._state == "context" or self._state == "item_context" or self._state == "mail_context",
     "menu dismissal needs an open context menu"
   )
-  self:_requestCancelSound()
   local slot = self._originSlot
   self._menu = nil
   self._menuIndex = nil
@@ -1060,7 +1066,17 @@ function PartyScreenController:_cancel()
     return
   end
   if self._state == "context" or self._state == "item_context" or self._state == "mail_context" then
-    self:_dismissMenu()
+    local menu = assert(self._menu, "menu cancellation needs its open menu")
+    local quitIndex = nil
+    for index, entry in ipairs(menu) do
+      assert(type(entry.kind) == "string", "menu entries carry a kind")
+      if entry.kind == "quit" then
+        quitIndex = index
+      end
+    end
+    assert(quitIndex ~= nil, "context menus cancel through their quit row")
+    self._menuIndex = assert(quitIndex, "menu cancellation focuses its quit row")
+    self:_beginMenuPress()
     return
   end
   if self._state == "choose_swap" or self._state == "swapping" then
@@ -1202,8 +1218,8 @@ function PartyScreenController:_finishGive()
 end
 
 -- Owns one fixed tick inside the yes/no confirm: unknown events raise
--- in prompt states exactly like ordinary states, dismiss and cancel
--- decline immediately without publishing, and every other event batch
+-- in prompt states exactly like ordinary states, cancel
+-- declines immediately without publishing, and every other event batch
 -- drives the owned prompt exactly once before the tick-owned resolution
 -- consumes a published result. Prompt rows latch on press through the
 -- owned prompt; the release never activates by itself.
@@ -1211,7 +1227,7 @@ end
 function PartyScreenController:_stepPrompt(uiInput)
   for _, event in ipairs(uiInput) do
     assert(type(event) == "table" and type(event.type) == "string", "party events need a type")
-    if event.type == "dismiss" or event.type == "cancel" then
+    if event.type == "cancel" then
       self:_declinePrompt()
       return
     end
@@ -1411,8 +1427,11 @@ function PartyScreenController:_pointerUp(event)
 end
 
 -- One fixed tick over the tick's UI events. Clocks advance first: icon
--- sequence ticks, the panel slide, the armed menu press, and an armed swap
--- all step once per tick while open. At most one state consumes an event batch: the batch ends when a
+-- sequence ticks and the panel slide step once per tick while open. A
+-- valid outside dismiss for a normal context then closes terminally
+-- before the armed menu press, an armed swap, the owned prompt, the
+-- held-item continuation, or ordinary state handling can run for this
+-- tick. At most one state consumes an event batch: the batch ends when a
 -- transition fires, an intent emits, a message acknowledges, or a
 -- terminal result records. A completed controller ignores further input.
 ---@param uiInput table[]
@@ -1426,6 +1445,31 @@ function PartyScreenController:updateFixed(uiInput)
   local view = self:_refresh()
   self:_trackSequences(view)
   self:_advanceSlide()
+  do
+    local foundDismiss = false
+    for _, event in ipairs(uiInput) do
+      assert(type(event) == "table" and type(event.type) == "string", "party events need a type")
+      if event.type == "dismiss" then
+        foundDismiss = true
+      elseif
+        event.type ~= "navigate"
+        and event.type ~= "confirm"
+        and event.type ~= "cancel"
+        and event.type ~= "pointer_down"
+        and event.type ~= "pointer_move"
+        and event.type ~= "pointer_up"
+        and event.type ~= "pointer_cancel"
+        and event.type ~= "menu"
+        and event.type ~= "pointer_scroll"
+      then
+        error("unknown party event type " .. tostring(event.type), 2)
+      end
+    end
+    if foundDismiss then
+      self:_dismiss()
+      return
+    end
+  end
   if self._menuPress ~= nil then
     local transitionsBefore = self._transitionCount
     self:_advanceMenuPress()
@@ -1571,31 +1615,16 @@ function PartyScreenController:_navigate(event)
   end
 end
 
--- Interprets outside dismissal by owning state: normal browse flows
--- close, target and confirmation flows cancel their operation without
--- committing, gated animation and waiting states ignore it.
+-- Interprets an outside pointer-down as a silent terminal close for a
+-- normal context, independent of nested menu, target, swap, prompt,
+-- message, waiting, or continuation state. Script selection never emits
+-- this edge.
 function PartyScreenController:_dismiss()
-  if
-    self._state == "browse"
-    or self._state == "context"
-    or self._state == "item_context"
-    or self._state == "mail_context"
-  then
-    if self._context == "pick" then
-      error("party dismiss is a browse-flow edge; pick context never emits it", 2)
-    end
-    self._result = { kind = "closed" }
-    self:_transition("closing")
-    return
+  if self._context == "pick" then
+    error("party dismiss is a browse-flow edge; pick context never emits it", 2)
   end
-  if self._state == "choose_swap" or self._state == "choosing_item_target" or self._state == "choose_hp_target" then
-    self:_cancel()
-    return
-  end
-  if self._state == "message" then
-    self:_acknowledgeMessage()
-    return
-  end
+  self._result = { kind = "closed" }
+  self:_transition("closing")
 end
 
 -- The presentation snapshot: context, state, cursor, open menu, pending
