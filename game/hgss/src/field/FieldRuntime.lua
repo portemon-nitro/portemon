@@ -595,6 +595,7 @@ function FieldRuntime:_loadRuntimeAssets(boot, loadOptions)
     charmap = boot.fontDef.charmap,
     frameIndexes = frameIndexes,
   }
+  self.playerDataContext = boot.playerDataContext
   boot.world =
     assert(boot.cacheFs:loadLua(MapAssetCache.worldPath()), "world.lua missing -- run `scripts/buildcache.sh` first")
   local profiles = assert(
