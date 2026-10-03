@@ -1,19 +1,19 @@
 -- Exact executable battle replays: one full battle recorded through the
 -- production session kernel, crossing a snapshot restore midway, replays to
 -- identical state, events, and random consumption under any operation
--- budget. Controller decisions come from the real native AI bound to a real
--- labeled draw stream, so reexecuting the AI from the same seed must return
--- the recorded replies with the same draw count. Reading the recorded event
--- log back is presentation only and never simulates, and any changed
--- executable identity or diverged expectation reports its first mismatch
--- instead of silently passing.
+-- budget. Controller decisions come from the wild policy drawing from a
+-- real labeled draw stream, so reexecuting the policy from the same seed
+-- must return the recorded replies with the same draw count. Reading the
+-- recorded event log back is presentation only and never simulates, and
+-- any changed executable identity or diverged expectation reports its
+-- first mismatch instead of silently passing.
 
 local Assert = require("tests.support.Assert")
 local SessionFixture = require("libs.battle.tests.session_fixture")
 
 local T = {}
 
-local AI_MODULE = "libs.hgss.src.battle.HgssTrainerAi"
+local OPPONENTS_MODULE = "libs.hgss.src.battle.HgssOpponentControllers"
 local AI_SEED = 11259375
 
 ---@return table scenario parts with a human side and a native-AI side
@@ -51,14 +51,15 @@ local function strikeEveryone(request)
   return choices
 end
 
----@return table native AI controller bound to its fixed opening program
-local function boundAi()
-  local Ai = SessionFixture.requirePresent(AI_MODULE, "the native controller binds flags and programs to decisions")
-  Assert.isTrue(type(Ai.new) == "function", "the native controller exposes its constructor")
-  return Ai.new({
-    program = { key = "youngster_opening", revision = "native-1", instructions = {}, entryPoints = {} },
-    aiPasses = {},
-  })
+---@param request table pending decision request owned by the wild policy
+---@param view table<string, unknown> controller observation for the request
+---@param stream table<string, unknown> labeled battle stream owned by the caller
+---@return table<string, unknown> wild reply in the shared decision shape
+local function decideWild(request, view, stream)
+  local Opponents =
+    SessionFixture.requirePresent(OPPONENTS_MODULE, "wild and scripted policies answer through the shared reply shape")
+  Assert.isTrue(type(Opponents.wild) == "function", "the wild policy answers owned requests")
+  return Opponents.wild(request, view, stream)
 end
 
 -- Read-only draw observer around the real labeled stream: every delegated
@@ -96,11 +97,10 @@ local function deepCopy(value)
 end
 
 ---@param contracts table session owners under test
----@param controller table native AI answering owned requests
 ---@param drawLog table[] controller draw entries in call order
 ---@param aiStream table real labeled stream behind the observer
 ---@return table recording holding decisions, events, outcome, and RNG facts
-local function recordBattle(contracts, controller, drawLog, aiStream)
+local function recordBattle(contracts, drawLog, aiStream)
   local watched = observing(aiStream, drawLog)
   local session = SessionFixture.newSession(contracts, SessionFixture.buildScenario(duel()))
   local decisions = {}
@@ -147,7 +147,7 @@ local function recordBattle(contracts, controller, drawLog, aiStream)
     for _, request in ipairs(frame.request.requests) do
       local reply
       if request.controller == "ai" then
-        reply = controller:decide(request, session:view("ai"), watched)
+        reply = decideWild(request, session:view("ai"), watched)
       else
         reply = SessionFixture.replyFor(request, strikeEveryone(request))
       end
@@ -190,10 +190,10 @@ function T.exact_replays_reproduce_ai_draws_events_and_state()
   local aiStream =
     SessionFixture.requirePresent("libs.battle.src.gen4.BattleRng", "labeled native draws own the battle stream")
       .new(AI_SEED)
-  local recording = recordBattle(contracts, boundAi(), drawLog, aiStream)
+  local recording = recordBattle(contracts, drawLog, aiStream)
   Assert.isTrue(#recording.decisions > 0, "the recording holds every submitted decision")
   Assert.isTrue(#recording.events > 0, "the recording holds every emitted event")
-  Assert.isTrue(#recording.controllerDraws > 0, "the native AI drew from its stream during the recording")
+  Assert.isTrue(#recording.controllerDraws > 0, "the wild policy drew from its stream during the recording")
   for index, entry in ipairs(recording.controllerDraws) do
     Assert.equal(entry.ordinal, index, "controller draws carry exact call ordinals")
     Assert.isTrue(type(entry.raw) == "number", "controller draws record their raw value")
@@ -270,7 +270,6 @@ function T.exact_replays_reproduce_ai_draws_events_and_state()
   local freshStream =
     SessionFixture.requirePresent("libs.battle.src.gen4.BattleRng", "labeled native draws own the battle stream")
       .new(AI_SEED)
-  local freshAi = boundAi()
   local watched = observing(freshStream, freshLog)
   local humanReplies = {}
   for _, reply in ipairs(recording.decisions) do
@@ -298,7 +297,7 @@ function T.exact_replays_reproduce_ai_draws_events_and_state()
     for _, request in ipairs(frame.request.requests) do
       local reply
       if request.controller == "ai" then
-        reply = freshAi:decide(request, reSession:view("ai"), watched)
+        reply = decideWild(request, reSession:view("ai"), watched)
       else
         humanCursor = humanCursor + 1
         reply = humanReplies[humanCursor]
@@ -314,10 +313,10 @@ function T.exact_replays_reproduce_ai_draws_events_and_state()
   reSession:dispose()
   Assert.notNil(reexecutedOutcome, "reexecuted battles reach their outcome")
   Assert.equal(humanCursor, #humanReplies, "reexecution consumes every recorded human reply")
-  Assert.deepEqual(reexecutedEvents, recording.events, "reexecuted AI reproduces the recorded event stream")
-  Assert.deepEqual(reexecutedOutcome, recording.outcome, "reexecuted AI reproduces the recorded outcome")
-  Assert.deepEqual(freshLog, recording.controllerDraws, "reexecuted AI consumes the identical draw stream")
-  Assert.deepEqual(freshStream:capture(), aiStream:capture(), "reexecuted AI ends on the identical stream state")
+  Assert.deepEqual(reexecutedEvents, recording.events, "reexecuted policy reproduces the recorded event stream")
+  Assert.deepEqual(reexecutedOutcome, recording.outcome, "reexecuted policy reproduces the recorded outcome")
+  Assert.deepEqual(freshLog, recording.controllerDraws, "reexecuted policy consumes the identical draw stream")
+  Assert.deepEqual(freshStream:capture(), aiStream:capture(), "reexecuted policy ends on the identical stream state")
   Assert.deepEqual(reHeld.rng, recording.kernelFinalRng, "reexecution consumes the kernel stream exactly")
 end
 

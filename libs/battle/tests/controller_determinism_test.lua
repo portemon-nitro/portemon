@@ -1,16 +1,15 @@
--- Opponent controller determinism: recorded selection answers each owned
--- request once no matter how often the host polls, human arrival order and
--- idle polls never move the outcome, ordinary views expose no private
--- information, wild fighters pick source attacks without trainer options,
--- scripted fighters replay only their listed actions, and rejected replies
--- never consume the open request. Composition runs through the real
--- session, protocol, view, and native stream owners.
+-- Opponent controller determinism: stateless policies answer repeated
+-- polls identically, human arrival order and idle polls never move the
+-- outcome, ordinary views expose no private information, wild fighters
+-- pick source attacks without trainer options, scripted fighters replay
+-- only their listed actions, and rejected replies never consume the open
+-- request. Composition runs through the real session, protocol, view,
+-- and native stream owners.
 
 local Assert = require("tests.support.Assert")
 local BattleRng = require("libs.battle.src.gen4.BattleRng")
 local SessionFixture = require("libs.battle.tests.session_fixture")
 
-local AI_MODULE = "libs.hgss.src.battle.HgssTrainerAi"
 local OPPONENTS_MODULE = "libs.hgss.src.battle.HgssOpponentControllers"
 
 local T = {}
@@ -74,31 +73,27 @@ local function ownedRequest(requests, controller)
   error("no request for controller " .. controller, 0)
 end
 
----@return table selection controller bound to a fixed program
-local function boundAi()
-  local Ai = requirePresent(AI_MODULE, "the native controller binds flags and programs to decisions")
-  return Ai.new({ program = { key = "youngster_opening", revision = "native-1", instructions = {}, entryPoints = {} }, aiPasses = {} })
+---@param request table pending decision request owned by the wild policy
+---@param session table live headless session under observation
+---@return table<string, unknown> wild reply drawn from a fixed seed
+local function decideWild(request, session)
+  local Opponents = requirePresent(OPPONENTS_MODULE, "wild and scripted policies answer through the shared reply shape")
+  return Opponents.wild(request, session:view("ai"), BattleRng.new(FIXED_SEED))
 end
 
--- A recorded reply survives any amount of polling: repeated decisions over
--- the same owned request return identical choices, and only the first
--- evaluation touches the native stream.
+-- A stateless policy answers any amount of polling identically: repeated
+-- decisions over the same owned request return identical choices without
+-- carrying evaluation state between polls.
 function T.recorded_replies_survive_repeated_polls()
-  local controller = boundAi()
-  local stream = BattleRng.new(FIXED_SEED)
   local session = SessionFixture.newSession(SessionFixture.sessionContracts(), SessionFixture.buildScenario(duel()))
   local waiting = SessionFixture.driveUntilSettled(session, 64)
   Assert.equal(waiting.status, "waiting", "open battles wait for both controllers")
   local request = ownedRequest(waiting.request.requests, "ai")
-  local observation = session:view("ai")
-  local first = controller:decide(request, observation, stream)
-  local afterFirst = stream:capture()
-  Assert.isTrue(afterFirst.calls > 0, "the first evaluation may draw from the native stream")
-  local second = controller:decide(request, observation, stream)
-  local third = controller:decide(request, observation, stream)
-  Assert.deepEqual(second, first, "a second poll returns the recorded reply")
-  Assert.deepEqual(third, first, "a third poll returns the recorded reply")
-  Assert.deepEqual(stream:capture(), afterFirst, "repolls draw nothing more")
+  local first = decideWild(request, session)
+  local second = decideWild(request, session)
+  local third = decideWild(request, session)
+  Assert.deepEqual(second, first, "a second poll returns the identical reply")
+  Assert.deepEqual(third, first, "a third poll returns the identical reply")
   Assert.equal(first.requestId, request.requestId, "the reply stays bound to its request")
   Assert.equal(first.epoch, request.epoch, "the reply stays bound to its batch epoch")
   Assert.equal(first.controller, "ai", "the reply names its controller")
@@ -113,8 +108,6 @@ function T.arrival_order_and_idle_polls_leave_outcomes_identical()
   ---@param polls integer
   ---@return table[] every emitted event in sequence order
   local function runBattle(reversed, polls)
-    local controller = boundAi()
-    local aiStream = BattleRng.new(FIXED_SEED)
     local session = SessionFixture.newSession(contracts, SessionFixture.buildScenario(duel()))
     local waiting = SessionFixture.driveUntilSettled(session, 64)
     local ordered = {}
@@ -134,22 +127,12 @@ function T.arrival_order_and_idle_polls_leave_outcomes_identical()
       Assert.equal(idle.request.epoch, waiting.request.epoch, "idle polls never open a new batch")
     end
     for _, request in ipairs(ordered) do
-      local reply
-      if request.controller == "ai" then
-        reply = controller:decide(request, session:view("ai"), aiStream)
-      else
-        reply = SessionFixture.replyFor(request, strikeEveryone(request))
-      end
+      local reply = SessionFixture.replyFor(request, strikeEveryone(request))
       local ok, err = session:submit(reply)
       Assert.isTrue(ok, "ordered legal replies are accepted")
       Assert.isNil(err, "accepted replies carry no input error")
     end
-    return SessionFixture.driveToEnd(session, 64, function(request)
-      if request.controller == "ai" then
-        return controller:decide(request, session:view("ai"), aiStream).choices
-      end
-      return strikeEveryone(request)
-    end)
+    return SessionFixture.driveToEnd(session, 64, strikeEveryone)
   end
   local forward = runBattle(false, 0)
   local backward = runBattle(true, 5)
@@ -179,10 +162,7 @@ end
 -- carries the validated shape, every choice strikes, and the same seed
 -- replays the same reply.
 function T.wild_fighters_attack_without_trainer_options()
-  local Opponents = requirePresent(
-    OPPONENTS_MODULE,
-    "wild and scripted policies answer through the shared reply shape"
-  )
+  local Opponents = requirePresent(OPPONENTS_MODULE, "wild and scripted policies answer through the shared reply shape")
   Assert.isTrue(type(Opponents.wild) == "function", "the wild policy answers owned requests")
   local contracts = SessionFixture.sessionContracts()
   local session = SessionFixture.newSession(contracts, SessionFixture.buildScenario(duel()))
@@ -207,10 +187,7 @@ end
 -- request consumes the next listed action, while missing script context or
 -- an exhausted list fails instead of guessing.
 function T.scripted_fighters_replay_only_their_listed_actions()
-  local Opponents = requirePresent(
-    OPPONENTS_MODULE,
-    "wild and scripted policies answer through the shared reply shape"
-  )
+  local Opponents = requirePresent(OPPONENTS_MODULE, "wild and scripted policies answer through the shared reply shape")
   Assert.isTrue(type(Opponents.scripted) == "function", "the scripted policy answers owned requests")
   local contracts = SessionFixture.sessionContracts()
   local session = SessionFixture.newSession(contracts, SessionFixture.buildScenario(duel()))
@@ -245,12 +222,10 @@ end
 -- with a typed input error, the batch identity holds, and the recorded
 -- reply still answers afterwards with no extra evaluation.
 function T.rejected_replies_never_consume_the_open_request()
-  local controller = boundAi()
-  local stream = BattleRng.new(FIXED_SEED)
   local session = SessionFixture.newSession(SessionFixture.sessionContracts(), SessionFixture.buildScenario(duel()))
   local waiting = SessionFixture.driveUntilSettled(session, 64)
   local request = ownedRequest(waiting.request.requests, "ai")
-  local recorded = controller:decide(request, session:view("ai"), stream)
+  local recorded = SessionFixture.replyFor(request, strikeEveryone(request))
   local tampered = {
     requestId = recorded.requestId,
     epoch = recorded.epoch + 1,

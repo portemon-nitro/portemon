@@ -13,7 +13,7 @@ local SessionFixture = require("libs.battle.tests.session_fixture")
 
 local T = {}
 
-local AI_MODULE = "libs.hgss.src.battle.HgssTrainerAi"
+local OPPONENTS_MODULE = "libs.hgss.src.battle.HgssOpponentControllers"
 local AI_SEED = 24681357
 local PROBE_SEED = 777
 
@@ -53,12 +53,14 @@ local function strikeEveryone(request)
 end
 
 ---@return table native AI controller bound to its fixed opening program
-local function boundAi()
-  local Ai = SessionFixture.requirePresent(AI_MODULE, "the native controller binds flags and programs to decisions")
-  return Ai.new({
-    program = { key = "youngster_opening", revision = "native-1", instructions = {}, entryPoints = {} },
-    aiPasses = {},
-  })
+---@param request table pending decision request owned by the wild policy
+---@param view table<string, unknown> controller observation for the request
+---@param stream table<string, unknown> labeled battle stream owned by the caller
+---@return table<string, unknown> wild reply in the shared decision shape
+local function decideWild(request, view, stream)
+  local Opponents =
+    SessionFixture.requirePresent(OPPONENTS_MODULE, "wild and scripted policies answer through the shared reply shape")
+  return Opponents.wild(request, view, stream)
 end
 
 ---@param bound integer maximum entries the collector accepts
@@ -70,10 +72,9 @@ end
 -- Runs one full scripted battle to its outcome, returning every emitted
 -- event, the terminal outcome, the final capture, and the AI stream state.
 ---@param contracts table session owners under test
----@param controller table native AI answering owned requests
 ---@param aiStream table real labeled stream owned by this run
 ---@return table run facts for inertness comparison
-local function runBattle(contracts, controller, aiStream)
+local function runBattle(contracts, aiStream)
   local session = SessionFixture.newSession(contracts, SessionFixture.buildScenario(duel()))
   local events = {}
   for _ = 1, 512 do
@@ -94,7 +95,7 @@ local function runBattle(contracts, controller, aiStream)
     for _, request in ipairs(frame.request.requests) do
       local reply
       if request.controller == "ai" then
-        reply = controller:decide(request, session:view("ai"), aiStream)
+        reply = decideWild(request, session:view("ai"), aiStream)
       else
         reply = SessionFixture.replyFor(request, strikeEveryone(request))
       end
@@ -130,7 +131,7 @@ function T.diagnostics_observe_without_changing_mechanics_and_within_bounds()
   local BattleRng =
     SessionFixture.requirePresent("libs.battle.src.gen4.BattleRng", "labeled native draws own the battle stream")
 
-  local plain = runBattle(contracts, boundAi(), BattleRng.new(AI_SEED))
+  local plain = runBattle(contracts, BattleRng.new(AI_SEED))
   Assert.isTrue(#plain.events > 0, "the unobserved battle emits events")
 
   -- Level 50, power 80, attack 120, defense 90, neutral modifiers, maximum
@@ -166,7 +167,6 @@ function T.diagnostics_observe_without_changing_mechanics_and_within_bounds()
   local probeStream = BattleRng.new(PROBE_SEED)
   local probeBefore = probeStream:capture()
   local seen = collectorWithBound(4096)
-  local mirroredController = boundAi()
   local mirroredSession = SessionFixture.newSession(contracts, SessionFixture.buildScenario(duel()))
   local mirroredEvents = {}
   for _ = 1, 512 do
@@ -185,7 +185,7 @@ function T.diagnostics_observe_without_changing_mechanics_and_within_bounds()
     for _, request in ipairs(frame.request.requests) do
       local reply
       if request.controller == "ai" then
-        reply = mirroredController:decide(request, mirroredSession:view("ai"), mirroredStream)
+        reply = decideWild(request, mirroredSession:view("ai"), mirroredStream)
       else
         reply = SessionFixture.replyFor(request, strikeEveryone(request))
       end

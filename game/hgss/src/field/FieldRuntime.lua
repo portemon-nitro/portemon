@@ -2021,10 +2021,9 @@ function FieldRuntime:_trainerPayload(payload)
   assert(type(payload) == "table", "trainer launches carry their payload")
   local source = payload.trainers
   if source == nil then
-    source = { { id = payload.trainer, party = payload.party, program = payload.program } }
+    source = { { id = payload.trainer, party = payload.party } }
   end
   assert(type(source) == "table" and #source > 0, "trainer battles field at least one trainer")
-  local catalog = assert(self._trainerCatalog, "trainer launches require their composed trainer catalog")
   local factory = assert(self._trainerFactory, "trainer launches require their composed trainer materializer")
   local Errors = require("libs.errors.src.Errors")
   local world = self.scripts ~= nil and self.scripts.worldState or nil
@@ -2052,7 +2051,7 @@ function FieldRuntime:_trainerPayload(payload)
     assert(type(entry) == "table", "trainer entries stay records")
     local item = entry --[[@as table<string, unknown>]]
     if type(item.party) == "table" and #item.party > 0 then
-      resolved[#resolved + 1] = { id = item.id, party = item.party, program = item.program }
+      resolved[#resolved + 1] = { id = item.id, party = item.party }
     else
       local id = item.id
       if id == nil then
@@ -2069,10 +2068,6 @@ function FieldRuntime:_trainerPayload(payload)
         storyVariant = item.storyVariant or payload.storyVariant,
         rng = stream,
       })
-      local program = item.program
-      if program == nil and type(catalog.program) == "function" then
-        program = catalog:program(id)
-      end
       resolved[#resolved + 1] = {
         id = id,
         class = bundle.trainerClass,
@@ -2080,7 +2075,6 @@ function FieldRuntime:_trainerPayload(payload)
         party = bundle.mons,
         partyLevels = bundle.partyLevels,
         prizeMoney = bundle.prizeMoney,
-        program = program,
         aiPasses = bundle.aiPasses,
         items = bundle.items,
         doubleBattle = bundle.doubleBattle,

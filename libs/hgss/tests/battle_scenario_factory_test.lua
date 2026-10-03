@@ -20,7 +20,7 @@ local function mixedParty()
   local catalog = CatalogFixture.makeCatalog()
   local service = HgssMonService.new({
     catalog = catalog,
-    bucket = MonsSave.capture(Party.new():capture(), Lcrng.new(0x22222222):capture(), catalog:fingerprint()),
+    bucket = MonsSave.capture(Party.new():capture(), Lcrng.new(0x22222222):capture()),
     profile = CatalogFixture.profile(),
     game = "heartgold",
     language = "english",
@@ -143,11 +143,7 @@ function T.trainer_parties_are_never_invented()
   Assert.equal(scenario.kind, "trainer")
   Assert.equal(#scenario.participants[2].roster, 2)
   party[1].condition.currentHp = 1
-  Assert.equal(
-    scenario.participants[2].roster[1].mon.condition.currentHp,
-    18,
-    "trainer records copy once"
-  )
+  Assert.equal(scenario.participants[2].roster[1].mon.condition.currentHp, 18, "trainer records copy once")
   Assert.equal(scenario.participants[2].controller, "trainer:rival")
 end
 
@@ -248,7 +244,7 @@ function T.production_builds_fail_without_a_conscious_combatant()
   local catalog = CatalogFixture.makeCatalog()
   local service = HgssMonService.new({
     catalog = catalog,
-    bucket = MonsSave.capture(Party.new():capture(), Lcrng.new(0x44444444):capture(), catalog:fingerprint()),
+    bucket = MonsSave.capture(Party.new():capture(), Lcrng.new(0x44444444):capture()),
     profile = CatalogFixture.profile(),
     game = "heartgold",
     language = "english",
@@ -265,10 +261,7 @@ function T.production_builds_fail_without_a_conscious_combatant()
   wiped.condition.currentHp = 0
   Assert.isTrue(service:addMon(wiped), "the wiped lead enters the live party")
   local live = { party = service, bag = stockedBag() }
-  Assert.isTrue(
-    not pcall(ScenarioFactory.fromEncounter, wildPayload(), live),
-    "a wiped party builds no wild scenario"
-  )
+  Assert.isTrue(not pcall(ScenarioFactory.fromEncounter, wildPayload(), live), "a wiped party builds no wild scenario")
   Assert.isTrue(
     not pcall(ScenarioFactory.fromTrainer, { trainer = "rival", party = { fullRecord() } }, live),
     "a wiped party builds no trainer scenario"
@@ -298,10 +291,22 @@ function T.trainer_item_lists_become_finite_per_trainer_stock()
     { POTION = 1 },
     "each trainer stock counts only its own list"
   )
+  Assert.isNil(first.context.items, "carried items never enter the decision context")
+  Assert.isNil(first.context.program, "selection programs never enter the decision context")
+  Assert.isNil(second.context.items, "carried items never enter the decision context")
+end
+
+function T.trainer_pass_facts_ride_the_decision_context()
+  local party = mixedParty()
+  local scenario = ScenarioFactory.fromTrainer({
+    trainers = {
+      { id = "a", party = { fullRecord() }, aiPasses = { "ai_pass_0", "ai_pass_1" } },
+    },
+  }, { party = party, bag = stockedBag() })
   Assert.deepEqual(
-    first.context.items,
-    { "POTION", "POTION", "POKE_BALL" },
-    "the decision context keeps the carried item list"
+    scenario.participants[2].context,
+    { aiPasses = { "ai_pass_0", "ai_pass_1" } },
+    "the decision context keeps only the pass facts"
   )
 end
 
