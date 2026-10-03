@@ -244,7 +244,11 @@ local function paintPane(self, view, plan, pane)
   for _, navigation in ipairs(layout.navigation) do
     local target = targetRect(layout, navigation.targetId)
     if target then
-      drawShadedControl(self, target, navigation.label, navigation.targetId == ("section:" .. view.section), false)
+      local label = navigation.label
+      if navigation.targetId:match("^location:map:") then
+        label = fitText(self, label, target.width - 22)
+      end
+      drawShadedControl(self, target, label, navigation.targetId == ("section:" .. view.section), false)
     end
   end
   if view.section == "Party" and (view.partyPage == "detail" or view.partyPage == "draft") then
@@ -270,7 +274,11 @@ local function paintPane(self, view, plan, pane)
           or row.targetId:match("^party:slot:") ~= nil
           or row.targetId:match("^bag:item:") ~= nil
         if actionable then
-          drawShadedControl(self, rect, row.label, row.targetId == view.focus, row.enabled == false)
+          local label = row.displayName or row.label
+          if row.targetId:match("^location:map:") then
+            label = fitText(self, label, rect.width - 22)
+          end
+          drawShadedControl(self, rect, label, row.targetId == view.focus, row.enabled == false)
         end
         local icon = row.iconKey and self._icons[row.iconKey]
         if icon and graphics.draw then
@@ -279,7 +287,13 @@ local function paintPane(self, view, plan, pane)
         local labelRect = assert(row.labelRect, "layout rows own their label text bounds")
         local textRole = row.role == "warning" and "error" or row.role == "read-only value" and "hint" or "normal"
         if not actionable then
-          drawText(self, fitText(self, row.label, labelRect.width), labelRect.x, rect.y + 3, textRole)
+          drawText(
+            self,
+            fitText(self, row.displayName or row.label, labelRect.width),
+            labelRect.x,
+            rect.y + 3,
+            textRole
+          )
         end
         if row.valueText ~= nil and row.valueRect ~= nil then
           local valueRect = row.valueRect
@@ -290,16 +304,6 @@ local function paintPane(self, view, plan, pane)
   end
   if view.section == "Location" then
     drawLocation(self, view, layout)
-  end
-  if view.section == "Progress" then
-    for _, id in ipairs({ "group-previous", "group-next" }) do
-      local rect = targetRect(layout, id)
-      if rect then
-        setColor(graphics, BORDER)
-        graphics.rectangle("line", rect.x, rect.y, rect.width, rect.height)
-        drawText(self, id == "group-previous" and "<" or ">", rect.x + 4, rect.y + 3, INK)
-      end
-    end
   end
   for _, action in ipairs(layout.actions) do
     local rect = targetRect(layout, action.id)
@@ -438,7 +442,7 @@ drawLocation = function(self, view, layout)
   for _, tile in ipairs(location.tiles or {}) do
     tiles[string.format("%d:%d", tile.fieldX, tile.fieldZ)] = tile
   end
-  for _, targetId in ipairs({ "location:map-picker", "location:zoom-out", "location:zoom-in", "location:map-back" }) do
+  for _, targetId in ipairs({ "location:map-picker", "location:map-back" }) do
     local target = targetRect(layout, targetId)
     if target then
       setColor(graphics, targetId == view.focus and SELECTED or BORDER)
@@ -447,8 +451,6 @@ drawLocation = function(self, view, layout)
           and navigation.page == "map-list"
           and ("Search maps: " .. tostring(view.query or ""))
         or targetId == "location:map-picker" and "Change Map"
-        or targetId == "location:zoom-out" and "−"
-        or targetId == "location:zoom-in" and "+"
         or "Back"
       drawText(self, label, target.x + 4, target.y + 3, INK)
     end
@@ -510,59 +512,25 @@ drawLocation = function(self, view, layout)
 
   if grid then
     local statusLayout = assert(layout.locationStatus, "Location grid needs measured status geometry")
-    local mapLabel = location.symbol or ("Map " .. tostring(location.mapId or "—"))
+    local mapLabel = location.map and location.map.symbol:gsub("^MAP_", "", 1)
+      or ("Map " .. tostring(location.mapId or "—"))
     local status = location.status
-    local statusLabel = status.state == "ready" and "Ready"
+    local statusLabel = status.state == "ready" and ""
       or status.state == "pending" and "Preparing map data"
       or status.reason
       or "Map unavailable"
     local mapLine = statusLayout.mapLine
     drawText(
       self,
-      fitText(self, mapLabel .. " · " .. statusLabel, mapLine.width),
+      fitText(self, mapLabel .. (statusLabel ~= "" and (" · " .. statusLabel) or ""), mapLine.width),
       mapLine.x,
       mapLine.y,
       status.state == "ready" and "information" or status.state == "failed" and "error" or "hint"
     )
-    local function markerLabel(label, marker)
-      if marker == nil then
-        return label .. " —"
-      end
-      local markerMapName = "Map " .. tostring(marker.mapId)
-      for _, candidate in ipairs(view.location.maps) do
-        if candidate.mapId == marker.mapId then
-          markerMapName = candidate.symbol
-          break
-        end
-      end
-      return string.format("%s %s %d,%d", label, markerMapName, marker.fieldX, marker.fieldZ)
-    end
-    local markerText = view.pendingLocation and markerLabel("Pending", view.pendingLocation) or nil
-    local savedText = markerLabel("Saved", view.savedLocation)
-    markerText = markerText and (markerText .. " · " .. savedText) or savedText
-    local cursor = navigation.cursor
-    if cursor then
-      local inspected = tiles[string.format("%d:%d", cursor.fieldX, cursor.fieldZ)]
-      local tileReason = inspected and inspected.reason or ""
-      markerText = markerText .. " · " .. string.format("Cursor %d,%d %s", cursor.fieldX, cursor.fieldZ, tileReason)
-    end
+    local staged = view.pendingLocation or view.savedLocation
+    local markerText = staged and string.format("X %d  Z %d", staged.fieldX, staged.fieldZ) or ""
     local summaryLine = statusLayout.summaryLine
     drawText(self, fitText(self, markerText, summaryLine.width), summaryLine.x, summaryLine.y, INK)
-
-    local helpLine = statusLayout.helpLine
-    local help = "Physical only; story state unchecked."
-    local helpWidth = self.text:textWidth(help)
-    if helpWidth > helpLine.width then
-      local scale = math.max(0, (helpLine.width - 1) / helpWidth)
-      graphics.push("transform")
-      graphics.translate(helpLine.x, helpLine.y)
-      graphics.scale(scale, 1)
-      graphics.translate(-helpLine.x, -helpLine.y)
-      drawText(self, help, helpLine.x, helpLine.y, MUTED)
-      graphics.pop()
-    else
-      drawText(self, fitText(self, help, helpLine.width), helpLine.x, helpLine.y, MUTED)
-    end
   end
 end
 
@@ -576,7 +544,11 @@ local function paintLocationContext(self, view, pane)
   drawText(self, "Location context", 8, 8, INK)
   drawText(
     self,
-    fitText(self, location.symbol or tostring(location.mapId), pane.placement.logicalWidth - 16),
+    fitText(
+      self,
+      location.map and (location.map.symbol:gsub("^MAP_", "", 1)) or tostring(location.mapId),
+      pane.placement.logicalWidth - 16
+    ),
     8,
     28,
     INK

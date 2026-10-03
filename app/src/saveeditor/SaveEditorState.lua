@@ -121,6 +121,7 @@ local function filterLocationMaps(maps, query)
   for _, map in ipairs(maps) do
     if
       map.symbol:lower():find(normalized, 1, true)
+      or map.displayName:lower():find(normalized, 1, true)
       or map.section:lower():find(normalized, 1, true)
       or tostring(map.mapId):find(normalized, 1, true)
     then
@@ -130,13 +131,21 @@ local function filterLocationMaps(maps, query)
   return filtered
 end
 
+local function mapDisplayName(symbol)
+  return (symbol:gsub("^MAP_", "", 1))
+end
+
+local function flagDisplayName(symbol)
+  return (symbol:gsub("^FLAG_", "", 1))
+end
+
 local function scrollPurpose(viewportId, view)
   if viewportId == "party" then
     return "party:" .. view.partyPage .. ":" .. tostring(view.partySubpage or "list")
   elseif viewportId == "bag" then
     return "bag:" .. tostring(view.bagPocket)
   elseif viewportId == "flags" then
-    return "flags:" .. tostring(view.flagGroup or view.flagFilter)
+    return "flags"
   elseif viewportId == "value:choice" then
     return "value:choice"
   end
@@ -369,10 +378,6 @@ function State:_snapshot()
     focus = self.controller.focus,
     scrollOffset = self.controller.scrollOffset,
     query = self.controller.query,
-    flagFilter = self.controller.flagFilter,
-    flagGroup = self.controller.flagGroup,
-    flagGroupLabel = self.controller.flagGroup or self.controller.flagFilter,
-    flagFilterLabel = self.controller.flagGroup or self.controller.flagFilter,
     flagRows = flags,
     valueEditor = self.valueEditor and self.valueEditor:snapshot() or nil,
     editorFeedback = self.editorFeedback,
@@ -384,8 +389,18 @@ function State:_snapshot()
   if self.locationService then
     local location = self.locationService:snapshot()
     local maps = self.locationService:listMaps()
-    location.maps = self.controller.locationPage == "map-list" and filterLocationMaps(maps, self.controller.query)
-      or maps
+    local displayMaps = {}
+    for _, map in ipairs(maps) do
+      local displayMap = {}
+      for key, value in pairs(map) do
+        displayMap[key] = value
+      end
+      displayMap.displayName = mapDisplayName(map.symbol)
+      displayMaps[#displayMaps + 1] = displayMap
+    end
+    location.maps = self.controller.locationPage == "map-list"
+        and filterLocationMaps(displayMaps, self.controller.query)
+      or displayMaps
     location.symbol = location.map and location.map.symbol or nil
     location.actionStatus = self.locationActionStatus
         and {
@@ -435,8 +450,6 @@ function State:_snapshot()
   elseif self.controller.section == "Progress" then
     scopeId = table.concat({
       "section:Progress",
-      self.controller.flagFilter,
-      tostring(self.controller.flagGroup),
       self.controller.query,
     }, ":")
   elseif self.controller.section == "Bag" then
@@ -467,7 +480,6 @@ function State:_snapshot()
   }
   view.preserveChoiceScroll = self.preserveChoiceScroll
   view.scrollOffsets = self.controller.scrollOffsets
-  view.locationGridMode = self.controller.locationGridMode
   return view
 end
 
@@ -475,13 +487,12 @@ function State:_flagRows(values)
   local rows = {}
   local query = self.controller.query:lower()
   for name, flagId in pairs(FieldScriptSymbols.flagsByName) do
-    local named = name:sub(1, 9) ~= "FLAG_UNK_"
-    local inFilter = self.controller.flagFilter == "All" or named
-    if self.controller.flagGroup then
-      inFilter = name:sub(6, 6) == self.controller.flagGroup
-    end
-    if inFilter and (query == "" or name:lower():find(query, 1, true)) then
-      rows[#rows + 1] = { name = name, id = flagId, value = values[flagId] == true }
+    if name:sub(1, 9) ~= "FLAG_UNK_" then
+      local displayName = flagDisplayName(name)
+      local matches = query == "" or name:lower():find(query, 1, true) or displayName:lower():find(query, 1, true)
+      if matches then
+        rows[#rows + 1] = { name = name, displayName = displayName, id = flagId, value = values[flagId] == true }
+      end
     end
   end
   table.sort(rows, function(a, b)
@@ -834,10 +845,32 @@ function State:_reconcileFocus(preferred)
   local layout = self:_resolve(self:_snapshot()).content.layout
   local focus = preferred or self.pendingFocusReturn or self.controller.focus
   if focus == nil or layout.focusGraph[focus] == nil then
-    focus = layout.defaultFocus
+    if
+      self.controller.section == "Progress"
+      and self.session ~= nil
+      and #self:_flagRows(self.session:snapshot().flags) == 0
+    then
+      focus = layout.defaultFocus
+    elseif
+      self.controller.section == "Location"
+      and self.controller.locationPage == "grid"
+      and self.controller.focus == "location:grid"
+      and layout.focusGraph["location:grid"]
+    then
+      focus = "location:grid"
+    else
+      focus = layout.defaultFocus
+    end
   end
   self.controller.focus = assert(focus)
   self.pendingFocusReturn = nil
+end
+
+function State:_resetProgressSearch()
+  self.controller.scrollOffsets.flags = 0
+  local layout = assert(self:_resolve(self:_snapshot()).content.layout)
+  self.controller.focus = layout.defaultFocus
+  self:_reconcileFocus()
 end
 
 ---@param editor SaveEditorValueEditor
@@ -1116,6 +1149,7 @@ function State:_performDeferred(action)
   elseif action.kind == "section" then
     self.controller:setSection(action.section)
     if action.section == "Progress" then
+      self.controller.query = ""
       self.controller.focus = "flag:" .. self:_firstFlagName()
     elseif action.section == "Location" and self.locationService then
       self:_updateLocationService()
@@ -1188,6 +1222,36 @@ function State:_performDeferred(action)
       self.controller:moveFocus(layout.focusGraph, action.direction)
     end
   elseif action.kind == "location-cursor-move" then
+    if action.direction == "left" and self.controller.focus == "location:grid" then
+      local view = self:_snapshot()
+      local layout = self:_resolve(view).content.layout
+      local wideLocation = layout.locationGrid ~= nil and layout.viewports["location:map-list"] ~= nil
+      if wideLocation then
+        local mapId = assert(self.controller.locationMapId, "Location grid focus needs a browsed map")
+        local viewport = assert(layout.viewports["location:map-list"])
+        local currentIndex
+        for index, map in ipairs(assert(view.location).maps) do
+          if map.mapId == mapId then
+            currentIndex = index
+            break
+          end
+        end
+        assert(currentIndex ~= nil, "browsed map must remain in the structural map list")
+        self.controller.locationMapOffset = ScrollViewport.clamp(
+          ScrollViewport.reveal(
+            viewport.offset,
+            viewport.clip.height,
+            (currentIndex - 1) * viewport.rowExtent,
+            viewport.rowExtent
+          ),
+          viewport.contentExtent,
+          viewport.clip.height
+        )
+        self.controller.focus = "location:map:" .. mapId
+        self:_reconcileFocus()
+        return
+      end
+    end
     local width, height = self:_locationGridSize()
     self.controller:moveLocationCursor(action.direction, width, height)
     self:_updateLocationService()
@@ -1199,8 +1263,6 @@ function State:_performDeferred(action)
       local width, height = self:_locationGridSize()
       self.controller:panLocation(action.direction, width, height)
     end
-    self:_updateLocationService()
-  elseif action.kind == "location-zoom" then
     self:_updateLocationService()
   elseif action.kind == "select_tile" then
     self:_selectLocationTile(action.fieldX, action.fieldZ)
@@ -1540,19 +1602,6 @@ function State:_activate(targetId)
     self:_requestDraftResolution({ kind = "section", section = section })
     return
   end
-  if targetId == "group-previous" then
-    self:_cycleFlagFilter(-1)
-    return
-  elseif targetId == "group-next" then
-    self:_cycleFlagFilter(1)
-    return
-  elseif targetId == "filter-named" then
-    self.controller.flagFilter = self.controller.flagFilter == "Named" and "All" or "Named"
-    self.controller.flagGroup = nil
-    self.controller.focus = "flag:" .. self:_firstFlagName()
-    self.controller.scrollOffset = 0
-    return
-  end
   if targetId == "money" then
     self:_cancelPendingLocationSave()
     local money = assert(self.session:snapshot().money)
@@ -1693,48 +1742,6 @@ function State:_firstFlagName()
   return assert(self:_flagRows({})[1], "field flags catalog is empty").name
 end
 
-function State:_cycleFlagFilter(direction)
-  local ordered = { "Named", "All" }
-  local groups = {}
-  for name in pairs(FieldScriptSymbols.flagsByName) do
-    local group = name:sub(6, 6)
-    if group:match("%a") then
-      groups[group] = true
-    end
-  end
-  for group in pairs(groups) do
-    ordered[#ordered + 1] = group
-  end
-  table.sort(ordered, function(a, b)
-    if a == "Named" then
-      return true
-    end
-    if b == "Named" then
-      return false
-    end
-    if a == "All" then
-      return true
-    end
-    if b == "All" then
-      return false
-    end
-    return a < b
-  end)
-  local current = self.controller.flagGroup or self.controller.flagFilter
-  local index = 1
-  for i, group in ipairs(ordered) do
-    if group == current then
-      index = i
-      break
-    end
-  end
-  local nextFilter = ordered[(index - 1 + direction) % #ordered + 1]
-  self.controller.flagFilter = nextFilter == "All" and "All" or "Named"
-  self.controller.flagGroup = nextFilter ~= "All" and nextFilter ~= "Named" and nextFilter or nil
-  self.controller.scrollOffsets["flags:" .. tostring(nextFilter)] = 0
-  self.controller.focus = "flag:" .. self:_firstFlagName()
-end
-
 function State:_dispatchIntent(intent)
   if intent == nil then
     return
@@ -1751,7 +1758,6 @@ function State:_dispatchIntent(intent)
     or intent.kind == "location-map-move"
     or intent.kind == "location-cursor-move"
     or intent.kind == "location-pan"
-    or intent.kind == "location-zoom"
     or intent.kind == "select_tile"
   then
     self:_performDeferred(intent)
@@ -1785,11 +1791,7 @@ function State:_dispatchIntent(intent)
   elseif intent.kind == "move" then
     local plan = self:_resolve(self:_snapshot())
     local layout = assert(plan.content.layout)
-    if
-      layout.targets.section ~= nil
-      and not self.controller.locationGridMode
-      and (intent.direction == "left" or intent.direction == "right")
-    then
+    if layout.targets.section ~= nil and (intent.direction == "left" or intent.direction == "right") then
       local sections = { "Location", "Player", "Party", "Bag", "Progress" }
       local current = 1
       for index, section in ipairs(sections) do
@@ -1801,8 +1803,6 @@ function State:_dispatchIntent(intent)
       local offset = intent.direction == "right" and 1 or -1
       local nextSection = sections[(current - 1 + offset) % #sections + 1]
       self:_requestDraftResolution({ kind = "section", section = nextSection })
-    elseif self.controller.section == "Progress" and intent.direction == "right" then
-      self:_cycleFlagFilter(1)
     else
       if layout.focusGraph[self.controller.focus] == nil then
         self.controller.focus = layout.defaultFocus
@@ -1849,7 +1849,7 @@ function State:_revealFocusedRow(_)
   )
   local purpose = section == "Party" and ("party:" .. view.partyPage .. ":" .. tostring(view.partySubpage or "list"))
     or section == "Bag" and ("bag:" .. tostring(view.bagPocket))
-    or ("flags:" .. tostring(view.flagGroup or view.flagFilter))
+    or "flags"
   self.controller.scrollOffsets[purpose] = ScrollViewport.clamp(offset, viewport.contentExtent, viewport.clip.height)
 end
 
@@ -1934,10 +1934,24 @@ function State:_consumeUiInput(events)
         elseif snapshot.kind == "name" or snapshot.kind == "integer" then
           self.valueEditor:press(event.direction)
         end
-      elseif self.controller.section == "Location" and self.controller.locationGridMode then
-        self:_dispatchIntent(self.controller:press(event.direction))
       else
-        self:_dispatchIntent(self.controller:press(event.direction))
+        local intent = self.controller:press(event.direction)
+        if self.controller.section == "Location" and (event.direction == "left" or event.direction == "right") then
+          local layout = assert(self:_resolve(self:_snapshot()).content.layout)
+          local wideLocation = layout.locationGrid ~= nil and layout.viewports["location:map-list"] ~= nil
+          local leavingGridToMap = wideLocation
+            and event.direction == "left"
+            and self.controller.focus == "location:grid"
+          if
+            wideLocation
+            and not leavingGridToMap
+            and layout.focusGraph[self.controller.focus]
+            and #layout.focusGraph[self.controller.focus][event.direction] > 0
+          then
+            intent = { kind = "move", direction = event.direction }
+          end
+        end
+        self:_dispatchIntent(intent)
       end
     elseif event.type == "confirm" then
       self:_reconcileFocus()
@@ -2028,8 +2042,13 @@ function State:keypressed(key, _, isrepeat)
     if #glyphs > 0 then
       table.remove(glyphs)
       self.controller.query = table.concat(glyphs)
-      self.controller.scrollOffset = 0
+      self:_resetProgressSearch()
     end
+    return
+  end
+  if self.controller.section == "Progress" and key == "delete" then
+    self.controller.query = ""
+    self:_resetProgressSearch()
     return
   end
   if self.controller.section == "Location" and self.controller.locationPage == "map-list" then
@@ -2080,7 +2099,9 @@ function State:textinput(text)
     or (self.controller.section == "Location" and self.controller.locationPage == "map-list")
   then
     self.controller.query = self.controller.query .. text
-    if self.controller.section == "Location" then
+    if self.controller.section == "Progress" then
+      self:_resetProgressSearch()
+    else
       self.controller.locationMapOffset = 0
       if self.controller.locationPage == "map-list" then
         self:_reconcileFocus()
@@ -2165,6 +2186,20 @@ function State:_setScrollOffset(view, layout, viewportId, offset)
   local clamped = ScrollViewport.clamp(offset, viewport.contentExtent, viewport.clip.height)
   if viewportId == "location:map-list" then
     self.controller.locationMapOffset = clamped
+    local wideLocation = layout.locationGrid ~= nil and layout.viewports["location:map-list"] ~= nil
+    if self.controller.section == "Location" and wideLocation then
+      local firstIndex = ScrollViewport.visibleRange(
+        clamped,
+        viewport.clip.height,
+        viewport.rowExtent,
+        viewport.gap,
+        #view.location.maps
+      )
+      local targetId = viewport.rowTargets[firstIndex]
+      if targetId ~= nil then
+        self.controller.focus = targetId
+      end
+    end
     return
   end
   if viewportId == "value:choice" then

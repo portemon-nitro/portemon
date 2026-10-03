@@ -33,7 +33,7 @@ local function locationView()
       mapId = 12,
       symbol = "MAP_TEST_ROUTE",
       section = "TEST_SECTION",
-      maps = { { mapId = 12, symbol = "MAP_TEST_ROUTE", section = "TEST_SECTION" } },
+      maps = { { mapId = 12, symbol = "MAP_TEST_ROUTE", displayName = "TEST_ROUTE", section = "TEST_SECTION" } },
       generation = 1,
       status = { state = "ready" },
       tiles = {
@@ -41,14 +41,12 @@ local function locationView()
         { fieldX = 33, fieldZ = 48, selectable = false, reason = "blocked" },
       },
       cursor = { fieldX = 33, fieldZ = 48 },
-      scale = 24,
     },
     locationNavigation = {
       page = "grid",
       mapId = 12,
       cursor = { fieldX = 33, fieldZ = 48 },
       center = { fieldX = 32, fieldZ = 48 },
-      scale = 24,
       mapOffset = 0,
     },
   }
@@ -108,65 +106,19 @@ function T.tests.naming_keyboard_rows_do_not_overlap_the_footer_cancel_target()
   end
 end
 
-function T.tests.location_navigation_uses_transient_cursor_zoom_and_matched_pointer_activation()
+function T.tests.location_layout_uses_fixed_scale_and_omits_zoom_targets()
   local controller = Controller.new()
   controller:setSection("Location")
-  controller:enterLocation({ mapId = 12, fieldX = 32, fieldZ = 48 })
-  controller:moveLocationCursor("down", 5, 3)
-  local inspected = controller:locationSnapshot()
-  Assert.equal(inspected.cursor.fieldX, 32)
-  Assert.equal(inspected.cursor.fieldZ, 49, "D-pad inspects adjacent tiles without selecting them")
-  Assert.equal(inspected.center.fieldZ, 48, "cursor remains visible without moving the viewport early")
-  controller:zoomLocation(1)
-  Assert.equal(controller:locationSnapshot().scale, 32, "zoom uses the explicit larger scale step")
-  controller:zoomLocation(1)
-  Assert.equal(controller:locationSnapshot().scale, 32, "zoom clamps at the largest supported scale")
-  controller:zoomLocation(-1)
-  Assert.equal(controller:locationSnapshot().scale, 24, "zoom returns to the middle scale step")
-
-  controller:openLocationMaps()
-  local back = controller:press("back")
-  Assert.equal(back.kind, "location-page", "Back returns from map browsing to the current grid")
-  Assert.equal(controller:locationSnapshot().mapId, 12, "map browsing does not change the destination map")
-
-  controller:setFocus("location:tile:35:49")
-  local keyboard = controller:press("confirm")
-  Assert.equal(keyboard.kind, "select_tile")
-  Assert.equal(keyboard.fieldX, 35)
-  Assert.equal(keyboard.fieldZ, 49)
-  controller:setFocus("location:map-picker")
-  local pointerTarget = "location:tile:35:49"
-  controller:pointer({ type = "pointer_down", pointerId = "touch:1", targetId = pointerTarget, x = 100, y = 100 })
-  local pointer = controller:pointer({ type = "pointer_up", pointerId = "touch:1", targetId = pointerTarget, x = 100, y = 100 })
-  Assert.equal(pointer.kind, keyboard.kind, "pointer and controller activation share one tile intent")
-  Assert.equal(pointer.fieldX, keyboard.fieldX)
-  Assert.equal(pointer.fieldZ, keyboard.fieldZ)
-
-  controller:pointer({
-    type = "pointer_down",
-    pointerId = "touch:2",
-    targetId = pointerTarget,
-    x = 100,
-    y = 100,
-    grid = { tileSize = 24 },
-  })
-  controller:pointer({
-    type = "pointer_move",
-    pointerId = "touch:2",
-    x = 148,
-    y = 100,
-    grid = { tileSize = 24 },
-  })
-  local pan = controller:pointer({
-    type = "pointer_up",
-    pointerId = "touch:2",
-    targetId = pointerTarget,
-    x = 148,
-    y = 100,
-    grid = { tileSize = 24 },
-  })
-  Assert.equal(pan.kind, "location-pan", "drag pans the view instead of selecting a trail of tiles")
-  Assert.equal(controller:locationSnapshot().cursor.fieldX, 35, "panning does not replace the inspected tile")
+  for _, viewport in ipairs({ { width = 256, height = 192 }, { width = 800, height = 600 } }) do
+    local layout = computeLayout(locationView(), viewport.width, viewport.height)
+    Assert.equal(layout.locationGrid.tileSize, 16, "Location uses one fixed 16-pixel tile scale")
+    Assert.isNil(layout.targets["location:zoom-in"], "Location does not publish zoom-in")
+    Assert.isNil(layout.targets["location:zoom-out"], "Location does not publish zoom-out")
+  end
+  local wideLayout = computeLayout(locationView(), 800, 600)
+  Assert.notNil(wideLayout.targets["location:map:12"], "logical wide layout publishes its map list")
+  Assert.notNil(wideLayout.viewports["location:map-list"], "logical wide layout owns map-list scrolling")
+  Assert.notNil(wideLayout.locationGrid, "logical wide layout keeps the grid beside the map list")
 end
 
 function T.tests.player_rows_reserve_measured_raw_value_width_in_a_separate_text_cell()

@@ -34,8 +34,14 @@ local function fixture(scope, width, height, topology, section, variant)
     ready = true,
     dirty = variant ~= "clean-status",
     focus = "flag:FLAG_TEST",
-    session = { playerName = "PLAYER", versionId = "HEARTGOLD", flags = {} },
-    flagRows = { { name = "FLAG_TEST", id = 1, value = false } },
+    query = "",
+    session = {
+      playerName = "PLAYER",
+      versionId = "HEARTGOLD",
+      flags = {},
+      location = { fieldX = 32, fieldZ = 48 },
+    },
+    flagRows = { { name = "FLAG_TEST", displayName = "TEST", id = 1, value = false } },
     flagFilter = "Named",
     flagGroupLabel = "Named",
     scope = {
@@ -98,11 +104,22 @@ local function fixture(scope, width, height, topology, section, variant)
   elseif section == "Location" then
     view.location = {
       mapId = 12,
-      symbol = "MAP_TEST_ROUTE",
+      symbol = "MAP_AZALEA_ILEX_FOREST_GATEHOUSE",
+      displayName = "AZALEA_ILEX_FOREST_GATEHOUSE",
       section = "TEST_SECTION",
-      maps = { { mapId = 12, symbol = "MAP_TEST_ROUTE", section = "TEST_SECTION" } },
+      map = { symbol = "MAP_AZALEA_ILEX_FOREST_GATEHOUSE" },
+      maps = {
+        {
+          mapId = 12,
+          symbol = "MAP_AZALEA_ILEX_FOREST_GATEHOUSE",
+          displayName = "AZALEA_ILEX_FOREST_GATEHOUSE",
+          section = "TEST_SECTION",
+        },
+      },
       generation = 1,
       status = { state = "ready" },
+      original = { fieldX = 31, fieldZ = 48 },
+      draft = { fieldX = 32, fieldZ = 48 },
       tiles = {
         { fieldX = 32, fieldZ = 48, selectable = true },
         { fieldX = 33, fieldZ = 48, selectable = false, reason = "blocked" },
@@ -110,16 +127,18 @@ local function fixture(scope, width, height, topology, section, variant)
       cursor = { fieldX = 33, fieldZ = 48 },
       original = { fieldX = 31, fieldZ = 48 },
       draft = { fieldX = 32, fieldZ = 48 },
-      scale = 24,
+      scale = 16,
     }
     view.locationNavigation = {
-      page = "grid",
+      page = variant == "map-list" and "map-list" or "grid",
       mapId = 12,
       cursor = { fieldX = 33, fieldZ = 48 },
       center = { fieldX = 32, fieldZ = 48 },
-      scale = 24,
+      scale = 16,
       mapOffset = 0,
     }
+    view.savedLocation = { mapId = 12, fieldX = 31, fieldZ = 48 }
+    view.pendingLocation = { mapId = 12, fieldX = 32, fieldZ = 48 }
   end
   local context = DisplayContext.new({
     graphics = love.graphics,
@@ -190,32 +209,12 @@ local function draw(scope, width, height, topology, name, section, variant)
     end
   elseif view.section == "Location" then
     Assert.notNil(layout.targets["location:map-picker"], name .. " exposes Change Map")
-    Assert.notNil(layout.targets["location:zoom-in"], name .. " exposes a focusable zoom control")
-    Assert.notNil(layout.targets["location:zoom-out"], name .. " exposes a focusable zoom control")
+    Assert.isNil(layout.targets["location:zoom-in"], name .. " has no zoom-in target")
+    Assert.isNil(layout.targets["location:zoom-out"], name .. " has no zoom-out target")
     Assert.notNil(layout.locationGrid, name .. " publishes the canonical clipped tile grid")
     Assert.isTrue(layout.locationGrid.clip.width > 0 and layout.locationGrid.clip.height > 0)
-    local status = assert(layout.locationStatus, name .. " publishes measured Location status geometry")
-    local content = layout.content
-    local contentBottom = content.y + content.height
-    for _, line in ipairs({ status.mapLine, status.summaryLine, status.helpLine }) do
-      Assert.isTrue(line.x >= content.x and line.y >= content.y, name .. " keeps status lines inside content origin")
-      Assert.isTrue(
-        line.x + line.width <= content.x + content.width and line.y + line.height <= contentBottom,
-        name .. " keeps every status line inside content bounds"
-      )
-      Assert.isTrue(line.y + line.height <= layout.footer.y, name .. " keeps status lines above the footer")
-    end
-    local bounds = status.bounds
-    Assert.isTrue(bounds.x >= content.x and bounds.y >= content.y, name .. " keeps status bounds inside content origin")
-    Assert.isTrue(
-      bounds.x + bounds.width <= content.x + content.width and bounds.y + bounds.height <= contentBottom,
-      name .. " keeps the complete status block inside content bounds"
-    )
-    Assert.isTrue(bounds.y + bounds.height <= layout.footer.y, name .. " keeps the status block above the footer")
-    Assert.isTrue(
-      layout.locationGrid.clip.height >= view.location.scale,
-      name .. " keeps at least one complete tile row at the selected default scale"
-    )
+    Assert.equal(layout.locationGrid.tileSize, 16, name .. " uses the fixed tile scale")
+    Assert.isTrue(layout.locationGrid.clip.height >= 16, name .. " keeps at least one complete tile row")
   elseif view.section == "Bag" then
     Assert.notNil(layout.targets["bag:item:POTION"], name .. " exposes the selected stack")
     Assert.notNil(layout.targets["bag:quantity"], name .. " exposes quantity editing")
@@ -247,32 +246,28 @@ local function draw(scope, width, height, topology, name, section, variant)
     Assert.isTrue(renderedText:find("PLAYER"), name .. " shows the player identity")
   end
   if view.section == "Progress" then
-    for _, targetId in ipairs({ "group-previous", "group-next" }) do
-      local target = assert(layout.targets[targetId], name .. " exposes touch browsing for flag groups")
-      local rect = target.rect
-      Assert.equal(
-        Layout.hitTest(layout, view, rect.x + rect.width / 2, rect.y + rect.height / 2),
-        targetId,
-        name .. " maps group browse touch targets"
-      )
-    end
+    Assert.isNil(layout.targets["group-previous"], name .. " has no flag group controls")
+    Assert.isNil(layout.targets["group-next"], name .. " has no flag group controls")
+    Assert.isFalse(renderedText:find("FLAG_", 1, true), name .. " displays the stripped flag name")
+    Assert.isTrue(renderedText:find("Type to filter flags", 1, true), name .. " shows the visible search hint")
   end
   if view.section == "Location" then
-    Assert.isTrue(renderedText:find("MAP_TEST_ROUTE", 1, true) ~= nil, name .. " shows the structural map symbol")
+    Assert.isFalse(renderedText:find("MAP_", 1, true), name .. " hides the map symbol prefix")
+    Assert.isTrue(
+      renderedText:find("AZALEA_ILEX", 1, true) ~= nil,
+      name .. " shows the prefix-clean map name within the control bounds"
+    )
     if plan.content.width >= 500 then
       Assert.isTrue(
-        renderedText:find("33", 1, true) ~= nil,
-        name .. " shows the inspected global X coordinate when space permits"
-      )
-      Assert.isTrue(
-        renderedText:find("blocked", 1, true) ~= nil,
-        name .. " explains the inspected tile refusal when space permits"
+        renderedText:find("X 32", 1, true) ~= nil and renderedText:find("Z 48", 1, true) ~= nil,
+        name .. " shows staged coordinates when space permits"
       )
     end
-    Assert.isTrue(
-      renderedText:find("Physical only; story state unchecked.", 1, true) ~= nil,
-      name .. " renders the concise Location help line"
-    )
+    Assert.isFalse(renderedText:find("Physical only", 1, true), name .. " omits the disclaimer")
+    Assert.isFalse(renderedText:find("blocked", 1, true), name .. " omits invalid-cell reason prose")
+    Assert.isFalse(renderedText:find("Ready", 1, true), name .. " omits the ready label")
+    Assert.isFalse(renderedText:find("Saved", 1, true), name .. " omits Saved/Pending comparison prose")
+    Assert.isFalse(renderedText:find("Pending", 1, true), name .. " omits Saved/Pending comparison prose")
   end
   renderer:dispose()
   presentation:dispose()
@@ -397,6 +392,26 @@ function T.location_grid_shows_status_and_controls_on_compact_wide_tall_and_dual
     { id = "lower", rect = { x = 0, y = 192, width = 256, height = 192 }, touch = true, role = "auxiliary" }
   )
   draw(scope, 256, 384, dual, "location-dual-touch", "Location")
+end
+
+function T.location_map_list_labels_fit_button_content_without_losing_map_identity(scope)
+  local wide = ScreenTopology.oneDisplay({
+    id = "main",
+    rect = { x = 0, y = 0, width = 1280, height = 720 },
+    touch = false,
+    role = "world",
+  })
+  local _, renderedText, layout = draw(scope, 1280, 720, wide, "location-map-list-labels", "Location", "map-list")
+  local targetId = "location:map:12"
+  local found
+  for _, row in ipairs(layout.navigation) do
+    if row.targetId == targetId then
+      found = row
+      break
+    end
+  end
+  Assert.equal(found and found.label, "AZALEA_ILEX_FOREST_GATEHOUSE", "layout retains the complete map display name")
+  Assert.isTrue(renderedText:find("AZALEA_ILEX", 1, true) ~= nil, "the painted map label remains recognizable")
 end
 
 function T.name_editor_renders_the_real_naming_snapshot_in_a_neutral_dialog(scope)

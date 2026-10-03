@@ -167,12 +167,13 @@ function Layout.compute(view, width, height, metrics)
         local id = "location:map:" .. map.mapId
         rowTargets[index] = id
         local y = contentTop + (index - 1) * rowHeight - mapOffset
+        focusPositions[id] = rect(contentX, contentTop + (index - 1) * rowHeight - mapOffset, listWidth, rowHeight)
         if y >= contentTop and y + rowHeight <= contentBottom then
           targets[id] = rect(contentX, y, listWidth, rowHeight - 2)
           navigation[#navigation + 1] = {
             role = "action",
             targetId = id,
-            label = map.symbol,
+            label = map.displayName,
           }
           addFocusable(id)
         end
@@ -197,7 +198,7 @@ function Layout.compute(view, width, height, metrics)
         local y = rowTop + (index - 1) * rowHeight - mapOffset
         if y + rowHeight <= contentBottom then
           targets[id] = rect(contentX, y, innerWidth, rowHeight - 2)
-          rows[#rows + 1] = { role = "action", targetId = id, label = map.symbol, value = map.section }
+          rows[#rows + 1] = { role = "action", targetId = id, label = map.displayName, value = map.section }
           addFocusable(id)
         end
       end
@@ -221,23 +222,15 @@ function Layout.compute(view, width, height, metrics)
         label = "Change Map",
       }
       addFocusable("location:map-picker")
-      local zoomWidth = math.min(36, math.floor(gridWidth / 4))
-      targets["location:zoom-out"] = rect(controlX + gridWidth - zoomWidth * 2 - 2, controlY, zoomWidth, controlHeight)
-      targets["location:zoom-in"] = rect(controlX + gridWidth - zoomWidth, controlY, zoomWidth, controlHeight)
-      navigation[#navigation + 1] = { role = "action", targetId = "location:zoom-out", label = "−" }
-      navigation[#navigation + 1] = { role = "action", targetId = "location:zoom-in", label = "+" }
-      addFocusable("location:zoom-out")
-      addFocusable("location:zoom-in")
 
       local lineGap = 1
-      local statusHeight = metrics.lineHeight * 3 + lineGap * 2
+      local statusHeight = metrics.lineHeight * 2 + lineGap
       local gridY = controlY + controlHeight + 2
       local statusBoundsY = contentBottom - statusHeight
       local gridStatusGap = 1
       local gridClip = rect(gridLeft, gridY, gridWidth, statusBoundsY - gridY - gridStatusGap)
       assert(gridClip.height > 0, "Location grid needs room above its measured status block")
-      local tileSize = locationNav.scale
-      assert(tileSize == 16 or tileSize == 24 or tileSize == 32, "location scale must be one of the supported steps")
+      local tileSize = 16
       local columns = math.max(1, math.floor(gridClip.width / tileSize))
       local gridRows = math.max(1, math.floor(gridClip.height / tileSize))
       local center = assert(locationNav.center, "Location needs a grid center")
@@ -260,14 +253,12 @@ function Layout.compute(view, width, height, metrics)
       local statusX, statusWidth = gridLeft, gridWidth
       local mapLine = rect(statusX, statusBoundsY, statusWidth, metrics.lineHeight)
       local summaryLine = rect(statusX, mapLine.y + metrics.lineHeight + lineGap, statusWidth, metrics.lineHeight)
-      local helpLine = rect(statusX, summaryLine.y + metrics.lineHeight + lineGap, statusWidth, metrics.lineHeight)
       locationStatus = {
         mapLine = mapLine,
         summaryLine = summaryLine,
-        helpLine = helpLine,
         bounds = rect(statusX, statusBoundsY, statusWidth, statusHeight),
       }
-      assert(helpLine.y + helpLine.height == contentBottom, "Location status block ends at the content boundary")
+      assert(summaryLine.y + summaryLine.height == contentBottom, "Location status block ends at the content boundary")
 
       addFocusable("location:grid")
       focusPositions["location:grid"] = gridClip
@@ -282,21 +273,11 @@ function Layout.compute(view, width, height, metrics)
     addRow("read-only value", "player", "Player", snapshot.playerName)
     addRow("integer value", "money", "Money", snapshot.money)
   elseif section == "Progress" then
-    addRow("action", "filter-named", "Flag filter", view.flagFilterLabel or view.flagFilter or "Named", true)
-    local filterRect = targets["filter-named"]
-    if filterRect then
-      local controlWidth = math.max(1, math.floor(filterRect.width / 4))
-      targets["group-previous"] = rect(filterRect.x, filterRect.y, controlWidth, filterRect.height)
-      targets["filter-named"] =
-        rect(filterRect.x + controlWidth + 1, filterRect.y, filterRect.width - controlWidth * 2 - 2, filterRect.height)
-      targets["group-next"] =
-        rect(filterRect.x + filterRect.width - controlWidth, filterRect.y, controlWidth, filterRect.height)
-    end
-    addRow("warning", "story-warning", "Flags may affect story state.", nil)
+    addRow("read-only value", "flags:search", "Type to filter flags", nil)
+    addFocusable("flags:search")
+    focusPositions["flags:search"] = targets["flags:search"]
     local flags = view.flagRows or {}
-    local flagOffset = view.scrollOffsets
-        and view.scrollOffsets["flags:" .. tostring(view.flagGroup or view.flagFilter)]
-      or 0
+    local flagOffset = view.scrollOffsets and view.scrollOffsets.flags or 0
     local bodyTop = contentTop + #rows * rowHeight
     local bodyHeight = math.max(0, contentBottom - bodyTop)
     local contentExtent = #flags * rowHeight
@@ -323,6 +304,7 @@ function Layout.compute(view, width, height, metrics)
         local y = bodyTop + (index - 1) * rowHeight - flagOffset
         if y >= bodyTop and y + rowHeight <= contentBottom then
           placeRow("toggle", id, flag.name, flag.value, true, y, rowHeight)
+          rows[#rows].displayName = flag.displayName
         end
       end
     end
@@ -848,6 +830,20 @@ function Layout.compute(view, width, height, metrics)
       end
     end
   end
+  if section == "Location" and width >= 640 and focusGraph["location:grid"] then
+    local mapViewport = viewports["location:map-list"]
+    if mapViewport then
+      for _, mapTargetId in ipairs(mapViewport.rowTargets) do
+        if focusGraph[mapTargetId] then
+          focusGraph[mapTargetId].right = { "location:grid" }
+        end
+      end
+      local firstMapId = mapViewport.rowTargets[mapViewport.firstIndex]
+      if firstMapId and focusGraph[firstMapId] then
+        focusGraph["location:grid"].left = { firstMapId }
+      end
+    end
+  end
   local focusOrder = {}
   local targetRecords = {}
   for _, targetId in ipairs(focusable) do
@@ -899,7 +895,7 @@ function Layout.compute(view, width, height, metrics)
   elseif section == "Progress" then
     local flagsViewport = viewports.flags
     local firstVisibleFlag = flagsViewport and flagsViewport.rowTargets[flagsViewport.firstIndex]
-    defaultFocus = firstVisibleFlag or "filter-named"
+    defaultFocus = firstVisibleFlag or "flags:search"
   elseif section == "Bag" then
     defaultFocus = width < 400 and "bag:pocket:choose" or "bag:pocket:" .. tostring(view.bagPocket)
   end

@@ -13,8 +13,6 @@ local FocusGraph = require("libs.ui.src.FocusGraph")
 ---@field pointerId string?
 ---@field scrollOffset number
 ---@field query string
----@field flagFilter string
----@field flagGroup string?
 ---@field partyPage string
 ---@field partySlot0 integer?
 ---@field partySubpage string
@@ -26,12 +24,10 @@ local FocusGraph = require("libs.ui.src.FocusGraph")
 ---@field locationCursorZ integer?
 ---@field locationCenterX integer?
 ---@field locationCenterZ integer?
----@field locationScale integer
 ---@field locationMapOffset number
 ---@field locationPointerStart {x: number, y: number, targetId: string?, centerX: integer?, centerZ: integer?, grid: table<string, unknown>?, scrollViewportId: string?, scrollOffset: number?, scopeId: string?, scopeEpoch: integer?}?
 ---@field locationDragging boolean
 ---@field scrollOffsets table<string, number>
----@field locationGridMode boolean
 ---@field scopeId string
 ---@field scopeEpoch integer
 ---@field pointerScope string?
@@ -49,7 +45,6 @@ local FocusGraph = require("libs.ui.src.FocusGraph")
 ---@field chooseLocationMap fun(self: SaveEditorController, mapId: integer, centerX: integer, centerZ: integer)
 ---@field moveLocationCursor fun(self: SaveEditorController, direction: string, visibleWidth: integer, visibleHeight: integer)
 ---@field panLocation fun(self: SaveEditorController, direction: string, visibleWidth: integer, visibleHeight: integer)
----@field zoomLocation fun(self: SaveEditorController, delta: integer)
 ---@field locationSnapshot fun(self: SaveEditorController): table<string, unknown>
 ---@field snapshot fun(self: SaveEditorController): table<string, unknown>
 ---@field press fun(self: SaveEditorController, action: string): table<string, unknown>?
@@ -68,7 +63,6 @@ function Controller.new()
     pointerId = nil,
     scrollOffset = 0,
     query = "",
-    flagFilter = "Named",
     partyPage = "list",
     partySlot0 = nil,
     partySubpage = "Identity",
@@ -80,12 +74,10 @@ function Controller.new()
     locationCursorZ = nil,
     locationCenterX = nil,
     locationCenterZ = nil,
-    locationScale = 24,
     locationMapOffset = 0,
     locationPointerStart = nil,
     locationDragging = false,
     scrollOffsets = {},
-    locationGridMode = false,
     scopeId = "section:Player",
     scopeEpoch = 0,
   }, Controller)
@@ -98,7 +90,6 @@ function Controller:snapshot()
     focus = self.focus,
     scrollOffset = self.scrollOffset,
     query = self.query,
-    flagFilter = self.flagFilter,
     sections = { "Location", "Player", "Party", "Bag", "Progress" },
     partyPage = self.partyPage,
     partySlot0 = self.partySlot0,
@@ -113,7 +104,6 @@ function Controller:snapshot()
       focusId = self.focus,
     },
     scrollOffsets = self.scrollOffsets,
-    locationGridMode = self.locationGridMode,
   }
 end
 
@@ -138,29 +128,29 @@ function Controller:press(action)
   end
   if self.section == "Location" then
     if action == "back" or action == "cancel" then
-      if self.locationGridMode then
-        self.locationGridMode = false
-        self.focus = "location:grid"
-        return { kind = "location-grid-mode", active = false }
-      elseif self.locationPage == "map-list" then
+      if self.locationPage == "map-list" then
         self.locationPage = "grid"
         self.focus = "location:map-picker"
         self:cancelInteraction()
         return { kind = "location-page", page = "grid" }
       end
+      if self.focus == "location:grid" or self.focus:match("^location:tile:") then
+        self.focus = "location:map-picker"
+        return nil
+      end
       return { kind = "back" }
     elseif action == "up" or action == "down" or action == "left" or action == "right" then
-      if self.locationPage == "map-list" then
+      if self.locationPage == "map-list" or self.focus:match("^location:map:%d+$") then
         return { kind = "location-map-move", direction = action }
       end
-      if self.locationGridMode then
+      if self.focus == "location:grid" or self.focus:match("^location:tile:") then
         return { kind = "location-cursor-move", direction = action }
       end
       return { kind = "move", direction = action }
     elseif action == "confirm" or action == "activate" then
-      if self.locationPage == "map-list" then
-        local mapId = self.focus:match("^location:map:(%d+)$")
-        return mapId and { kind = "location-map-select", mapId = tonumber(mapId) } or nil
+      local mapId = self.focus:match("^location:map:(%d+)$")
+      if mapId ~= nil then
+        return { kind = "location-map-select", mapId = tonumber(mapId) }
       end
       if self.focus == "location:map-picker" then
         self:openLocationMaps()
@@ -170,20 +160,9 @@ function Controller:press(action)
         self.focus = "location:map-picker"
         return { kind = "location-page", page = "grid" }
       elseif self.focus == "location:grid" then
-        self.locationGridMode = true
-        local cursor = self.locationCursorX
-          and string.format("location:tile:%d:%d", self.locationCursorX, self.locationCursorZ)
-        self.focus = cursor or "location:grid"
-        return { kind = "location-grid-mode", active = true }
-      elseif self.locationGridMode and self.focus:match("^location:tile:") then
-        local fieldX, fieldZ = self.focus:match("^location:tile:(%-?%d+):(%-?%d+)$")
-        return { kind = "select_tile", fieldX = tonumber(fieldX), fieldZ = tonumber(fieldZ) }
-      elseif self.focus == "location:zoom-in" then
-        self:zoomLocation(1)
-        return { kind = "location-zoom", scale = self.locationScale }
-      elseif self.focus == "location:zoom-out" then
-        self:zoomLocation(-1)
-        return { kind = "location-zoom", scale = self.locationScale }
+        if self.locationCursorX ~= nil and self.locationCursorZ ~= nil then
+          return { kind = "select_tile", fieldX = self.locationCursorX, fieldZ = self.locationCursorZ }
+        end
       end
       local fieldX, fieldZ = self.focus:match("^location:tile:(%-?%d+):(%-?%d+)$")
       if fieldX ~= nil then
@@ -333,27 +312,12 @@ function Controller:panLocation(direction, visibleWidth, visibleHeight)
     math.max(0, math.min(65535, self.locationCenterZ + dz * math.max(1, math.floor(visibleHeight / 2))))
 end
 
-function Controller:zoomLocation(delta)
-  assert(delta == -1 or delta == 1)
-  local scales = { 16, 24, 32 }
-  local index = 2
-  for candidate, scale in ipairs(scales) do
-    if self.locationScale == scale then
-      index = candidate
-      break
-    end
-  end
-  index = math.max(1, math.min(#scales, index + delta))
-  self.locationScale = scales[index]
-end
-
 function Controller:locationSnapshot()
   return {
     page = self.locationPage,
     mapId = self.locationMapId,
     cursor = self.locationCursorX and { fieldX = self.locationCursorX, fieldZ = self.locationCursorZ } or nil,
     center = self.locationCenterX and { fieldX = self.locationCenterX, fieldZ = self.locationCenterZ } or nil,
-    scale = self.locationScale,
     mapOffset = self.locationMapOffset,
   }
 end
@@ -485,7 +449,7 @@ function Controller:pointer(event)
           scopeEpoch = start.scopeEpoch,
         }
       elseif start.grid ~= nil then
-        local tileSize = start.grid.tileSize or self.locationScale
+        local tileSize = start.grid.tileSize or 16
         local shiftX, shiftZ = math.floor(-dx / tileSize), math.floor(-dy / tileSize)
         self.locationCenterX = math.max(0, math.min(65535, (start.centerX or 0) + shiftX))
         self.locationCenterZ = math.max(0, math.min(65535, (start.centerZ or 0) + shiftZ))
@@ -536,9 +500,6 @@ function Controller:pointer(event)
         self.locationPage = "grid"
         self.focus = "location:map-picker"
         return { kind = "location-page", page = "grid" }
-      elseif target == "location:zoom-in" or target == "location:zoom-out" then
-        self:zoomLocation(target == "location:zoom-in" and 1 or -1)
-        return { kind = "location-zoom", scale = self.locationScale }
       end
       local mapId = target:match("^location:map:(%d+)$")
       if mapId ~= nil then

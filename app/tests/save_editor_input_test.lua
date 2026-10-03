@@ -424,12 +424,10 @@ function T.tests.input_reaches_money_and_toggle_rows_on_compact_and_dual_touch()
     )
     state:keypressed("backspace")
     state:keypressed("backspace")
-    local groupTarget = computeLayout(Layout, progressView, 256, 192).targets["group-next"]
-    click(state, selectedPane(progressView), groupTarget, false)
-    Assert.equal(state:view().flagFilter, "All", "touch can browse all progress flags")
-    local allFlags = state:view()
-    click(state, selectedPane(allFlags), computeLayout(Layout, allFlags, 256, 192).targets["group-next"], false)
-    Assert.notNil(state:view().flagGroup, "touch can browse an initial-letter flag group")
+    Assert.isNil(
+      computeLayout(Layout, state:view(), 256, 192).targets["group-next"],
+      "Progress has no letter-group control"
+    )
     state:gamepadpressed(joystick, "dpdown")
     Assert.isFalse(state:view().focus == progressView.focus, "vertical input must move among flag rows")
     state:gamepadpressed(joystick, "a")
@@ -574,11 +572,11 @@ function T.tests.bag_add_successor_quantity_editor_stages_once_and_cancel_stages
   local _, Layout = stateModule()
   local topology = ScreenTopology.oneDisplay({
     id = "main",
-    rect = { x = 0, y = 0, width = 800, height = 600 },
+    rect = { x = 0, y = 0, width = 800, height = 500 },
     touch = true,
     role = "world",
   })
-  withEditor(800, 600, topology, function(state)
+  withEditor(800, 500, topology, function(state)
     selectSection(state, Layout, "Bag")
     local initialBag = state:view()
     local initialPocket = initialBag.bagPocket
@@ -731,7 +729,7 @@ function T.tests.failed_close_save_keeps_the_state_until_explicit_discard()
   end)
 end
 
-function T.tests.location_cursor_inspection_and_zoom_do_not_stage_a_destination()
+function T.tests.location_grid_keyboard_moves_and_selects_without_zoom_or_grid_mode()
   local _, Layout = stateModule()
   local topology = ScreenTopology.oneDisplay({
     id = "main",
@@ -739,13 +737,23 @@ function T.tests.location_cursor_inspection_and_zoom_do_not_stage_a_destination(
     touch = true,
     role = "world",
   })
-  withEditor(256, 192, topology, function(state, fixture)
+  withEditor(256, 192, topology, function(state, _)
     for _ = 1, 8 do
       if state.locationService:snapshot().status.state == "ready" then
         break
       end
       state:update(0)
     end
+    local houseMapId = assert(state.dependencies.world.bySymbol.MAP_NEW_BARK_PLAYER_HOUSE_1F)
+    state.controller:chooseLocationMap(houseMapId, 4, 5)
+    state:_updateLocationService()
+    for _ = 1, 8 do
+      if state.locationService:snapshot().status.state == "ready" then
+        break
+      end
+      state:update(0)
+    end
+    state.controller:setFocus("location:grid")
     local view = state:view()
     Assert.equal(view.section, "Location", "a successfully opened editor starts on Location")
     Assert.equal(
@@ -758,19 +766,22 @@ function T.tests.location_cursor_inspection_and_zoom_do_not_stage_a_destination(
         .. ", editor "
         .. tostring(state.errorMessage)
     )
-    Assert.equal(view.focus, "location:grid", "Location opens with its grid as the keyboard focus")
+    Assert.equal(view.focus, "location:grid", "Location grid is the keyboard focus")
+    Assert.equal(view.location.mapId, houseMapId, "the test map remains the structural house map")
     local before = copy(view.session.location)
     local revision = view.session.revision
-    local joystick = {} --[[@as love.Joystick]]
-    state:gamepadpressed(joystick, "a")
-    state:gamepadreleased(joystick, "a")
-    Assert.isTrue(state:view().locationGridMode, "Action enters the focused map grid")
-    local layout = computeLayout(Layout, state:view(), 256, 192)
-    local zoom = assert(layout.targets["location:zoom-in"], "Location exposes a reachable zoom control")
-    click(state, selectedPane(state:view()), zoom, false)
-    Assert.deepEqual(state:view().session.location, before, "zooming changes only the view")
-    Assert.equal(state:view().session.revision, revision, "view controls do not revise the save transaction")
-    state:gamepadpressed(joystick, "dpdown")
+    local selectable
+    for _, tile in ipairs(view.location.tiles) do
+      if tile.selectable then
+        selectable = tile
+        break
+      end
+    end
+    selectable = assert(selectable, "the real ready map includes a safe selectable tile")
+    local layout = computeLayout(Layout, view, 256, 192)
+    Assert.isNil(layout.targets["location:zoom-in"], "fixed-scale Location has no zoom-in action")
+    Assert.isNil(layout.targets["location:zoom-out"], "fixed-scale Location has no zoom-out action")
+    pressKey(state, "down")
     local inspected = state:view()
     Assert.isTrue(
       inspected.locationNavigation.cursor.fieldX ~= before.fieldX
@@ -778,8 +789,42 @@ function T.tests.location_cursor_inspection_and_zoom_do_not_stage_a_destination(
       "D-pad moves the inspection cursor independently of the staged destination"
     )
     Assert.deepEqual(inspected.session.location, before, "cursor movement does not stage a location")
-    state:gamepadpressed(joystick, "b")
-    Assert.deepEqual(state:view().session.location, before, "canceling inspection leaves the destination unchanged")
+    Assert.isNil(inspected.locationGridMode, "Location does not require a hidden grid-navigation mode")
+    for _ = 1, 8 do
+      if state.locationService:snapshot().status.state == "ready" then
+        break
+      end
+      state:update(0)
+    end
+    inspected = state:view()
+    Assert.equal(inspected.location.status.state, "ready", "cursor movement waits for its requested viewport data")
+    while state.controller.locationCursorX ~= selectable.fieldX do
+      local direction = state.controller.locationCursorX < selectable.fieldX and "right" or "left"
+      pressKey(state, direction)
+      for _ = 1, 8 do
+        if state.locationService:snapshot().status.state == "ready" then
+          break
+        end
+        state:update(0)
+      end
+    end
+    while state.controller.locationCursorZ ~= selectable.fieldZ do
+      local direction = state.controller.locationCursorZ < selectable.fieldZ and "down" or "up"
+      pressKey(state, direction)
+      for _ = 1, 8 do
+        if state.locationService:snapshot().status.state == "ready" then
+          break
+        end
+        state:update(0)
+      end
+    end
+    Assert.equal(state.controller.focus, "location:grid", "the cursor remains keyboard-focused through map movement")
+    pressKey(state, "return")
+    local selected = state:view().session.location
+    Assert.equal(selected.fieldX, selectable.fieldX, "keyboard Confirm stages the resolved tile X")
+    Assert.equal(selected.fieldZ, selectable.fieldZ, "keyboard Confirm stages the resolved tile Z")
+    Assert.equal(selected.mapId, inspected.location.mapId, "keyboard Confirm keeps the structural map identity")
+    Assert.isTrue(state:view().session.revision > revision, "only valid tile selection revises the save transaction")
   end)
 end
 
@@ -802,6 +847,22 @@ function T.tests.location_view_keeps_saved_and_pending_map_identity_separate()
       end
       local saved = copy(state.session:snapshot().originalLocation)
       local houseMapId = assert(state.dependencies.world.bySymbol.MAP_NEW_BARK_PLAYER_HOUSE_1F)
+      state.controller:openLocationMaps()
+      state:textinput("new_bark_player_house_1f")
+      local searched = state:view()
+      local houseRow
+      for _, map in ipairs(searched.location.maps) do
+        if map.mapId == houseMapId then
+          houseRow = map
+          break
+        end
+      end
+      houseRow = assert(houseRow, "stripped map names find the same structural map record")
+      Assert.equal(houseRow.displayName, "NEW_BARK_PLAYER_HOUSE_1F", "map prefix removal is presentation-only")
+      Assert.equal(houseRow.symbol, "MAP_NEW_BARK_PLAYER_HOUSE_1F", "the raw map symbol remains available for identity")
+      state.controller:setFocus("location:map:" .. houseMapId)
+      pressKey(state, "return")
+      Assert.equal(state:view().location.mapId, houseMapId, "selecting a stripped label preserves numeric map identity")
       state.controller:chooseLocationMap(houseMapId, 4, 5)
       for _ = 1, 8 do
         state:update(0)
@@ -842,6 +903,141 @@ function T.tests.location_view_keeps_saved_and_pending_map_identity_separate()
       Assert.deepEqual(state.session:snapshot().location, saved)
     end
   )
+end
+
+function T.tests.progress_search_reconciles_stale_flag_focus_before_confirm()
+  local _, Layout = stateModule()
+  local topology = ScreenTopology.oneDisplay({
+    id = "main",
+    rect = { x = 0, y = 0, width = 256, height = 192 },
+    touch = true,
+    role = "world",
+  })
+  withEditor(256, 192, topology, function(state)
+    selectSection(state, Layout, "Progress")
+    local initial = state:view()
+    Assert.isTrue(#initial.flagRows > 1, "the real symbolic catalog supplies multiple named flags")
+    local firstName = initial.flagRows[1].name
+    local secondName = initial.flagRows[2].name
+    state.controller:setFocus("flag:" .. firstName)
+
+    state:textinput(secondName:gsub("^FLAG_", "", 1))
+    local filtered = state:view()
+    local secondVisible = false
+    for _, row in ipairs(filtered.flagRows) do
+      secondVisible = secondVisible or row.name == secondName
+    end
+    Assert.isTrue(secondVisible, "raw-name query retains the matching full identity")
+    Assert.isFalse(filtered.focus == "flag:" .. firstName, "filtered-out focus moves away from the hidden row")
+    Assert.notNil(filtered.layout.focusGraph[filtered.focus], "query reconciliation keeps focus in the current graph")
+    Assert.equal(filtered.layout.viewports.flags.offset, 0, "changing the query resets the flags viewport")
+
+    state:keypressed("delete")
+    state:textinput(secondName)
+    local rawFiltered = state:view()
+    Assert.isTrue(#rawFiltered.flagRows > 0, "raw FLAG_ identity remains searchable")
+    Assert.equal(rawFiltered.flagRows[1].name, secondName, "raw query keeps the complete flag identity")
+
+    state:keypressed("delete")
+    local empty = state:view()
+    state:textinput("query-with-no-flag-match-782")
+    empty = state:view()
+    Assert.equal(#empty.flagRows, 0, "an unmatched query leaves no actionable flag rows")
+    Assert.isFalse(empty.focus:sub(1, 5) == "flag:", "zero results reconcile to a safe non-flag target")
+    Assert.notNil(empty.layout.focusGraph[empty.focus], "zero-result focus remains in the active graph")
+    local before = copy(empty.session.flags)
+    pressKey(state, "return")
+    Assert.deepEqual(state:view().session.flags, before, "Confirm cannot toggle an invisible flag")
+
+    state:keypressed("delete")
+    local cleared = state:view()
+    Assert.isTrue(
+      #cleared.flagRows > 0,
+      "clearing search restores the named list"
+    )
+    Assert.notNil(cleared.layout.focusGraph[cleared.focus], "clear leaves focus in the restored graph")
+    Assert.equal(cleared.focus, "flag:" .. cleared.flagRows[1].name, "clear restores a valid named-flag focus")
+  end)
+end
+
+function T.tests.wide_location_map_list_owns_focus_and_scroll_while_grid_stays_visible()
+  local topology = ScreenTopology.oneDisplay({
+    id = "main",
+    rect = { x = 0, y = 0, width = 800, height = 500 },
+    touch = true,
+    role = "world",
+  })
+  withEditor(800, 500, topology, function(state)
+    for _ = 1, 8 do
+      if state.locationService:snapshot().status.state == "ready" then break end
+      state:update(0)
+    end
+    local initial = state:view()
+    local firstMap = assert(initial.location.maps[1], "the real map catalog is populated")
+    local firstTargetId = "location:map:" .. firstMap.mapId
+    Assert.notNil(initial.layout.targets[firstTargetId], "wide Location publishes its persistent map list")
+    Assert.notNil(initial.layout.locationGrid, "the map grid remains visible beside the list")
+    local viewport = assert(initial.layout.viewports["location:map-list"])
+    Assert.isTrue(viewport.contentExtent > viewport.clip.height, "the real structural catalog overflows the map viewport")
+
+    local revision = initial.session.revision
+    local originalLocation = copy(initial.session.location)
+    state.controller:setFocus(firstTargetId)
+    pressKey(state, "down")
+    local movedDown = state:view()
+    Assert.equal(movedDown.focus, "location:map:" .. initial.location.maps[2].mapId, "Down advances one map row")
+    Assert.equal(movedDown.session.revision, revision, "map-row navigation does not stage a destination")
+    pressKey(state, "up")
+    Assert.equal(state:view().focus, firstTargetId, "Up returns to the prior map row")
+    local beforeOffset = state:view().layout.viewports["location:map-list"].offset
+    state:wheelmoved(0, -1)
+    local scrolled = state:view()
+    Assert.isTrue(
+      scrolled.layout.viewports["location:map-list"].offset > beforeOffset,
+      "wide map-list focus owns wheel scrolling"
+    )
+    Assert.notNil(scrolled.layout.focusGraph[scrolled.focus], "scroll keeps focus attached to a rendered map row")
+    Assert.equal(scrolled.session.revision, revision, "scrolling and map-row focus never stages a destination")
+    Assert.notNil(scrolled.layout.locationGrid, "scrolling leaves the grid visible")
+
+    dragViewport(state, scrolled, "location:map-list", -36, "wide-map-list-drag")
+    local dragged = state:view()
+    Assert.isTrue(
+      dragged.layout.viewports["location:map-list"].offset > scrolled.layout.viewports["location:map-list"].offset,
+      "touch drag scrolls the persistent map list"
+    )
+    Assert.notNil(dragged.layout.locationGrid, "touch scrolling leaves the grid visible")
+
+    local draggedViewport = assert(dragged.layout.viewports["location:map-list"])
+    local visibleMapTarget
+    for index = draggedViewport.firstIndex, draggedViewport.lastIndex do
+      local targetId = draggedViewport.rowTargets[index]
+      if dragged.layout.targets[targetId] ~= nil then
+        visibleMapTarget = targetId
+        break
+      end
+    end
+    visibleMapTarget = assert(visibleMapTarget, "the scrolled map viewport exposes a clickable row")
+    local selectedMapId = assert(tonumber(visibleMapTarget:match("^location:map:(%d+)$")))
+    click(state, selectedPane(dragged), dragged.layout.targets[visibleMapTarget], false)
+    local clicked = state:view()
+    Assert.equal(state.controller.locationMapId, selectedMapId, "map click updates the browsed map identity")
+    Assert.equal(clicked.location.mapId, selectedMapId, "clicking a visible map browses that structural map")
+    Assert.notNil(clicked.layout.locationGrid, "map click keeps the wide grid visible")
+    Assert.equal(clicked.session.revision, revision, "browsing by click does not stage a destination")
+    Assert.deepEqual(clicked.session.location, originalLocation, "browsing by click keeps the staged tuple")
+
+    state.controller:setFocus(visibleMapTarget)
+    pressKey(state, "right")
+    Assert.equal(state:view().focus, "location:grid", "Right moves from the map list to the grid")
+    pressKey(state, "left")
+    Assert.equal(
+      state:view().focus,
+      "location:map:" .. selectedMapId,
+      "Left returns to the map row for the currently browsed map"
+    )
+    Assert.equal(state:view().session.revision, revision, "region transitions do not stage a destination")
+  end)
 end
 
 function T.tests.save_blocks_when_destination_revalidation_changes_any_location_field()
@@ -966,6 +1162,8 @@ function T.tests.location_and_all_editor_sections_are_reachable_using_paired_dev
           state:keyreleased(direction)
         else
           local button = ({ up = "dpup", down = "dpdown", left = "dpleft", right = "dpright" })[direction]
+    state:keypressed("escape")
+    state:keyreleased("escape")
           state:gamepadpressed(joystick, button)
           state:gamepadreleased(joystick, button)
         end
@@ -1472,7 +1670,7 @@ function T.tests.filtered_location_map_navigation_uses_the_rendered_matches()
     state:textinput(query)
     local filtered = state:view().location.maps
     Assert.deepEqual(
-      filtered,
+      structuralMatches,
       matches,
       "the map picker renders the same structural sequence used to choose its search query"
     )
@@ -1514,6 +1712,16 @@ function T.tests.filtered_location_map_navigation_uses_the_rendered_matches()
       assert(computeLayout(Layout, beforeSelection, 800, 600).targets[renderedTargetId]),
       true
     )
+    local structuralMatches = {}
+    for _, map in ipairs(filtered) do
+      local structuralMap = {}
+      for key, value in pairs(map) do
+        if key ~= "displayName" then
+          structuralMap[key] = value
+        end
+      end
+      structuralMatches[#structuralMatches + 1] = structuralMap
+    end
     Assert.equal(
       state:view().locationNavigation.mapId,
       selectedMap.mapId,
