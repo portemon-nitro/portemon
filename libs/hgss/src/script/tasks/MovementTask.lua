@@ -34,16 +34,6 @@ local DIRECTION_DELTA = {
   east = { fieldX = 1, fieldZ = 0 },
 }
 
--- Actions applied without tick advancement; each performs a real actor
--- operation (visibility and animation state ride the actor record).
-local IMMEDIATE_ACTIONS = {
-  set_visible = true,
-  lock_facing = true,
-  unlock_facing = true,
-  pause_animation = true,
-  resume_animation = true,
-}
-
 ---@param spec table<string, unknown>
 ---@param ctx table<string, unknown>
 ---@return table<string, unknown> state
@@ -94,6 +84,128 @@ local function actionCount(action)
   return action.count or 1
 end
 
+local function beginLockFacing(state)
+  state.facingLocked = true
+end
+
+local function beginUnlockFacing(state)
+  state.facingLocked = false
+end
+
+local function beginSetVisible(state, action, ctx)
+  if action.visible then
+    ctx.services.actors:show(state.actor)
+  else
+    ctx.services.actors:hide(state.actor)
+  end
+end
+
+local function beginPauseAnimation(state, _, ctx)
+  ctx.services.actors:setAnimationPaused(state.actor, true)
+end
+
+local function beginResumeAnimation(state, _, ctx)
+  ctx.services.actors:setAnimationPaused(state.actor, false)
+end
+
+-- Immediate actions complete in one poll with no tick-advance phase.
+local IMMEDIATE_HANDLERS = {
+  lock_facing = beginLockFacing,
+  unlock_facing = beginUnlockFacing,
+  set_visible = beginSetVisible,
+  pause_animation = beginPauseAnimation,
+  resume_animation = beginResumeAnimation,
+}
+
+local function beginEmote(_, action, ctx)
+  local effectId = EMOTE_SOUND_CATALOG:effectFor(action.name)
+  if effectId ~= nil then
+    assert(ctx.services.audio, "an emote with a proven sound mapping requires the audio service"):play(effectId)
+  end
+end
+
+local function beginRevealTrainer(state, _, ctx)
+  local effects = ctx.services.effects
+  if effects == nil then
+    Errors.raise(
+      ScriptErrors.SCRIPT_SERVICE_MISSING,
+      "missing effects service for reveal_trainer",
+      { scriptId = ctx.instance.scriptId, actor = state.actor }
+    )
+  end
+  assert(effects ~= nil)
+  local pos = ctx.services.actors:getPosition(state.actor)
+  state.revealEffectId = effects:emit({
+    kind = "trainer_reveal",
+    fieldX = pos.fieldX,
+    fieldZ = pos.fieldZ,
+    worldY = pos.worldY or 0,
+  })
+end
+
+local function beginTrajectorySegment(state, _, ctx)
+  if ctx.services.actors:isVisible(state.actor) then
+    assert(ctx.services.audio, "trajectory segment with visible actor requires audio service"):play("SEQ_SE_DP_DANSA")
+  end
+end
+
+-- One-time per-kind setup run on an action's first tick, before tick
+-- advancement; absent kinds have no begin-phase effect.
+local BEGIN_HANDLERS = {
+  emote = beginEmote,
+  reveal_trainer = beginRevealTrainer,
+  trajectory_segment = beginTrajectorySegment,
+}
+
+local function endWalk(state, action)
+  local delta = DIRECTION_DELTA[action.direction]
+  state.destination.fieldX = state.destination.fieldX + delta.fieldX
+  state.destination.fieldZ = state.destination.fieldZ + delta.fieldZ
+end
+
+local function endJump(state, action)
+  if action.distance == "zero" then
+    return
+  end
+  local delta = DIRECTION_DELTA[action.direction]
+  local tiles = MovementCalibration.jumpTiles(action.distance)
+  state.destination.fieldX = state.destination.fieldX + delta.fieldX * tiles
+  state.destination.fieldZ = state.destination.fieldZ + delta.fieldZ * tiles
+end
+
+local function endTrajectorySegment(state, action, ctx)
+  assert(type(action.deltaX) == "number" and action.deltaX % 1 == 0, "trajectory deltaX must be an integer")
+  assert(type(action.deltaZ) == "number" and action.deltaZ % 1 == 0, "trajectory deltaZ must be an integer")
+  assert(
+    type(action.surfaceBandDelta) == "number" and action.surfaceBandDelta % 1 == 0,
+    "trajectory surfaceBandDelta must be an integer"
+  )
+  assert(
+    type(action.ticks) == "number" and action.ticks % 1 == 0 and action.ticks > 0,
+    "trajectory ticks must be a positive integer"
+  )
+  assert(action.direction ~= nil, "trajectory direction is required")
+  state.destination.fieldX = state.destination.fieldX + action.deltaX
+  state.destination.fieldZ = state.destination.fieldZ + action.deltaZ
+  if ctx.services.actors:isVisible(state.actor) then
+    assert(ctx.services.audio, "trajectory segment with visible actor requires audio service"):play("SEQ_SE_DP_SUTYA2")
+  end
+end
+
+local function endRevealTrainer(state)
+  -- pose-only; the renderer consumes the recorded action.
+  state.revealEffectId = nil
+end
+
+-- Destination/state mutation run once an action's duration completes;
+-- absent kinds (walk_in_place, emote, gesture, delay) are pose/countdown-only.
+local END_HANDLERS = {
+  walk = endWalk,
+  jump = endJump,
+  trajectory_segment = endTrajectorySegment,
+  reveal_trainer = endRevealTrainer,
+}
+
 -- Advance one action by one tick. Returns the action's completion flag.
 -- The manager owns occupancy and world interpolation; the task drives it
 -- through begin/advance/commit and keeps the unit destination in sync.
@@ -103,22 +215,9 @@ end
 ---@return boolean completed
 local function advanceAction(state, action, ctx)
   local kind = action.action
-  if IMMEDIATE_ACTIONS[kind] then
-    if kind == "lock_facing" then
-      state.facingLocked = true
-    elseif kind == "unlock_facing" then
-      state.facingLocked = false
-    elseif kind == "set_visible" then
-      if action.visible then
-        ctx.services.actors:show(state.actor)
-      else
-        ctx.services.actors:hide(state.actor)
-      end
-    elseif kind == "pause_animation" then
-      ctx.services.actors:setAnimationPaused(state.actor, true)
-    elseif kind == "resume_animation" then
-      ctx.services.actors:setAnimationPaused(state.actor, false)
-    end
+  local immediate = IMMEDIATE_HANDLERS[kind]
+  if immediate then
+    immediate(state, action, ctx)
     return true
   end
   local isFace = kind == "face"
@@ -145,31 +244,9 @@ local function advanceAction(state, action, ctx)
     if shouldBegin then
       ctx.services.actors:beginScriptedAction(state.actor, action)
     end
-    if kind == "emote" then
-      local effectId = EMOTE_SOUND_CATALOG:effectFor(action.name)
-      if effectId ~= nil then
-        assert(ctx.services.audio, "an emote with a proven sound mapping requires the audio service"):play(effectId)
-      end
-    elseif kind == "reveal_trainer" then
-      local effects = ctx.services.effects
-      if effects == nil then
-        Errors.raise(
-          ScriptErrors.SCRIPT_SERVICE_MISSING,
-          "missing effects service for reveal_trainer",
-          { scriptId = ctx.instance.scriptId, actor = state.actor }
-        )
-      end
-      assert(effects ~= nil)
-      local pos = ctx.services.actors:getPosition(state.actor)
-      state.revealEffectId = effects:emit({
-        kind = "trainer_reveal",
-        fieldX = pos.fieldX,
-        fieldZ = pos.fieldZ,
-        worldY = pos.worldY or 0,
-      })
-    end
-    if kind == "trajectory_segment" and ctx.services.actors:isVisible(state.actor) then
-      assert(ctx.services.audio, "trajectory segment with visible actor requires audio service"):play("SEQ_SE_DP_DANSA")
+    local begin = BEGIN_HANDLERS[kind]
+    if begin then
+      begin(state, action, ctx)
     end
   end
   state.progressTicks = state.progressTicks + 1
@@ -190,45 +267,9 @@ local function advanceAction(state, action, ctx)
   if not state.facingLocked and isFace then
     state.facing = action.direction
   end
-  if kind == "walk" or kind == "walk_in_place" then
-    if kind == "walk" then
-      local delta = DIRECTION_DELTA[action.direction]
-      state.destination.fieldX = state.destination.fieldX + delta.fieldX
-      state.destination.fieldZ = state.destination.fieldZ + delta.fieldZ
-    end
-  elseif kind == "jump" then
-    if action.distance ~= "zero" then
-      local delta = DIRECTION_DELTA[action.direction]
-      local tiles = MovementCalibration.jumpTiles(action.distance)
-      state.destination.fieldX = state.destination.fieldX + delta.fieldX * tiles
-      state.destination.fieldZ = state.destination.fieldZ + delta.fieldZ * tiles
-    end
-  elseif kind == "trajectory_segment" then
-    assert(type(action.deltaX) == "number" and action.deltaX % 1 == 0, "trajectory deltaX must be an integer")
-    assert(type(action.deltaZ) == "number" and action.deltaZ % 1 == 0, "trajectory deltaZ must be an integer")
-    assert(
-      type(action.surfaceBandDelta) == "number" and action.surfaceBandDelta % 1 == 0,
-      "trajectory surfaceBandDelta must be an integer"
-    )
-    assert(
-      type(action.ticks) == "number" and action.ticks % 1 == 0 and action.ticks > 0,
-      "trajectory ticks must be a positive integer"
-    )
-    assert(action.direction ~= nil, "trajectory direction is required")
-    state.destination.fieldX = state.destination.fieldX + action.deltaX
-    state.destination.fieldZ = state.destination.fieldZ + action.deltaZ
-    if ctx.services.actors:isVisible(state.actor) then
-      assert(ctx.services.audio, "trajectory segment with visible actor requires audio service"):play(
-        "SEQ_SE_DP_SUTYA2"
-      )
-    end
-  elseif kind == "emote" or kind == "gesture" or kind == "reveal_trainer" then
-    -- pose-only; the renderer consumes the recorded action.
-    if kind == "reveal_trainer" then
-      state.revealEffectId = nil
-    end
-  elseif kind == "delay" then
-    -- countdown only
+  local finish = END_HANDLERS[kind]
+  if finish then
+    finish(state, action, ctx)
   end
   if shouldBegin then
     ctx.services.actors:commitScriptedAction(state.actor)
@@ -259,7 +300,7 @@ function MovementTask._advancePlan(state, ctx)
         { scriptId = ctx.instance.scriptId, action = action.originalName or tostring(action.code), code = action.code }
       )
     end
-    if state.actionRepeat == 0 and not IMMEDIATE_ACTIONS[kind] then
+    if state.actionRepeat == 0 and not IMMEDIATE_HANDLERS[kind] then
       state.durationTicks = MovementCalibration.actionTicks(action)
     end
     if advanceAction(state, action, ctx) then
@@ -272,7 +313,7 @@ function MovementTask._advancePlan(state, ctx)
       -- A completed timed instance is the scheduler's fixed-tick boundary.
       -- Immediate actions may chain on a later poll, but another repetition
       -- or successor action must not become observable in this poll.
-      if not IMMEDIATE_ACTIONS[kind] and state.sequence[state.actionIndex + 1] ~= nil then
+      if not IMMEDIATE_HANDLERS[kind] and state.sequence[state.actionIndex + 1] ~= nil then
         return false
       end
     else
