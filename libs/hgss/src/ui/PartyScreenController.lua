@@ -874,6 +874,26 @@ function PartyScreenController:_confirmSlotTarget()
   end
 end
 
+-- Dismisses an open context menu back to browse with no result or
+-- intent: one cancel sound, menu state cleared, the origin slot
+-- restored when still selectable.
+function PartyScreenController:_dismissMenu()
+  assert(
+    self._state == "context" or self._state == "item_context" or self._state == "mail_context",
+    "menu dismissal needs an open context menu"
+  )
+  self:_requestCancelSound()
+  local slot = self._originSlot
+  self._menu = nil
+  self._menuIndex = nil
+  self._menuSlot = nil
+  self._originSlot = nil
+  if slot ~= nil and self:_selectable(self._view, slot) then
+    self._cursorNode = slot
+  end
+  self:_transition("browse")
+end
+
 -- Activates the focused context-menu entry through its kind.
 function PartyScreenController:_confirmMenuEntry()
   local menu = assert(self._menu, "menu activation needs an open menu")
@@ -883,9 +903,7 @@ function PartyScreenController:_confirmMenuEntry()
   local slot = assert(self._menuSlot, "menu activation remembers its slot")
   local revision = self._observedRevision
   if entry.kind == "quit" then
-    self:_requestCancelSound()
-    self._result = { kind = "closed" }
-    self:_transition("closing")
+    self:_dismissMenu()
     return
   end
   if entry.kind == "switch" then
@@ -1042,15 +1060,7 @@ function PartyScreenController:_cancel()
     return
   end
   if self._state == "context" or self._state == "item_context" or self._state == "mail_context" then
-    local slot = self._originSlot
-    self._menu = nil
-    self._menuIndex = nil
-    self._menuSlot = nil
-    self._originSlot = nil
-    if slot ~= nil and self:_selectable(self._view, slot) then
-      self._cursorNode = slot
-    end
-    self:_transition("browse")
+    self:_dismissMenu()
     return
   end
   if self._state == "choose_swap" or self._state == "swapping" then
