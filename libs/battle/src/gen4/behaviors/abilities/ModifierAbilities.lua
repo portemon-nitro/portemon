@@ -91,16 +91,22 @@ local WEATHER_SPEED = {
   SWIFT_SWIM = "rain",
 }
 
+-- Native stat-boost ratios applied as exact integer pairs: double-strength
+-- abilities double, every other modifier in this family adds one half.
 local BOOST_STAT = {
-  HUGE_POWER = { stats = { attack = true } },
-  PURE_POWER = { stats = { attack = true } },
-  GUTS = { stats = { attack = true }, needsStatus = true },
-  MARVEL_SCALE = { stats = { defense = true }, needsStatus = true },
-  QUICK_FEET = { stats = { speed = true }, needsStatus = true },
-  PLUS = { stats = { specialAttack = true } },
-  MINUS = { stats = { specialAttack = true } },
-  HUSTLE = { stats = { attack = true }, split = "physical" },
-  FLOWER_GIFT = { stats = { attack = true, specialDefense = true }, weather = "sun" },
+  HUGE_POWER = { stats = { attack = true }, ratio = { numerator = 2, denominator = 1 } },
+  PURE_POWER = { stats = { attack = true }, ratio = { numerator = 2, denominator = 1 } },
+  GUTS = { stats = { attack = true }, needsStatus = true, ratio = { numerator = 3, denominator = 2 } },
+  MARVEL_SCALE = { stats = { defense = true }, needsStatus = true, ratio = { numerator = 3, denominator = 2 } },
+  QUICK_FEET = { stats = { speed = true }, needsStatus = true, ratio = { numerator = 3, denominator = 2 } },
+  PLUS = { stats = { specialAttack = true }, ratio = { numerator = 3, denominator = 2 } },
+  MINUS = { stats = { specialAttack = true }, ratio = { numerator = 3, denominator = 2 } },
+  HUSTLE = { stats = { attack = true }, split = "physical", ratio = { numerator = 3, denominator = 2 } },
+  FLOWER_GIFT = {
+    stats = { attack = true, specialDefense = true },
+    weather = "sun",
+    ratio = { numerator = 3, denominator = 2 },
+  },
 }
 
 local POWER_FLAG = {
@@ -291,12 +297,18 @@ local function boostStat(instance, context)
   if shaped.weather ~= nil and context.weather ~= shaped.weather then
     return nil
   end
+  local ratio = shaped.ratio --[[@as table<string, integer>]]
+  assert(
+    type(ratio) == "table" and type(ratio.numerator) == "number" and type(ratio.denominator) == "number",
+    "stat boosts carry their exact integer ratio"
+  )
   return {
     kind = "trigger",
     key = instance.key,
     combatant = holderOf(instance),
     stat = context.stat,
     stages = "boosted",
+    ratio = { numerator = ratio.numerator, denominator = ratio.denominator },
   }
 end
 

@@ -1,11 +1,12 @@
 -- Accuracy and hit-prevention semantics. Protection and semi-invulnerable
 -- positions are decided before the roll and consume no draws; moves that
--- skip the ordinary accuracy check still respect both. Rolled checks
--- compare one labeled battle-stream draw against floor(accuracy*65536/100),
--- so full accuracy still rolls its check while a missing accuracy simply
--- hits. Battle-local accuracy and evasion stages reshape the percentage
--- through the exact native thirds law before the threshold derives, so a
--- missing stage reads as flat. Every outcome names a distinct reason so callers never conflate a
+-- skip the ordinary accuracy check still respect both. Rolled checks draw
+-- once and compare (draw % 100) + 1 against the final percentage, so
+-- full accuracy still rolls its check while a missing accuracy simply
+-- hits. Battle-local accuracy and evasion stages merge into one effective
+-- stage (accuracy minus evasion), clamp to [-6, +6], and reshape the
+-- percentage through a single native thirds ratio, so a missing stage
+-- reads as flat. Every outcome names a distinct reason so callers never conflate a
 -- rolled miss with protection, an unreachable target, or a skipped check.
 
 ---@class HitTarget
@@ -29,7 +30,7 @@
 ---@field cause table<string, unknown>
 local Accuracy = {}
 
-Accuracy.ROLL_MODULUS = 65536
+Accuracy.ROLL_MODULUS = 100
 
 ---@param query AccuracyQuery hit query under test
 local function requireQuery(query)
@@ -84,19 +85,19 @@ function Accuracy.resolve(query, stream)
   if query.accuracy == nil then
     return { kind = "hit", reason = "no_accuracy_check", target = query.target, cause = query.cause }
   end
-  local threshold = math.floor((query.accuracy * Accuracy.ROLL_MODULUS) / 100)
   local accuracyStage = query.accuracyStage or 0
   local evasionStage = query.evasionStage or 0
-  if accuracyStage ~= 0 or evasionStage ~= 0 then
-    local accuracyNumerator, accuracyDenominator = thirdsRatio(accuracyStage)
-    local evasionNumerator, evasionDenominator = thirdsRatio(evasionStage)
-    threshold = math.floor(
-      (query.accuracy * accuracyNumerator * evasionDenominator * Accuracy.ROLL_MODULUS)
-        / (accuracyDenominator * evasionNumerator * 100)
-    )
+  local effectiveStage = accuracyStage - evasionStage
+  if effectiveStage > 6 then
+    effectiveStage = 6
+  elseif effectiveStage < -6 then
+    effectiveStage = -6
   end
+  local numerator, denominator = thirdsRatio(effectiveStage)
+  local chance = math.floor((query.accuracy * numerator) / denominator)
   local draw = stream:nextU16("accuracy_check", query.cause)
-  if draw < threshold then
+  local roll = (draw % Accuracy.ROLL_MODULUS) + 1
+  if roll <= chance then
     return { kind = "hit", reason = "accuracy_roll", target = query.target, cause = query.cause }
   end
   return { kind = "miss", reason = "accuracy_miss", target = query.target, cause = query.cause }

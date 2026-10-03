@@ -1430,7 +1430,7 @@ function T.combined_and_special_attack_identities_follow_the_composed_chart()
   Assert.isTrue(ghostTypeless > 0, "typeless strikes stay neutral against immunities")
 
   local voidFacts = {
-    AURA_SPHERE = strikeFacts(0, "void", 60),
+    WATER_GUN = strikeFacts(0, "void", 60),
     TACKLE = strikeFacts(0, "normal", 1),
     STRUGGLE = struggleFacts(),
   }
@@ -1438,7 +1438,7 @@ function T.combined_and_special_attack_identities_follow_the_composed_chart()
     { species = "EEVEE", types = { "normal" } },
   })
   local voidStriker = projectionDuel(
-    singleMoveCombatant(1, 11, "EEVEE", "AURA_SPHERE"),
+    singleMoveCombatant(1, 11, "EEVEE", "WATER_GUN"),
     singleMoveCombatant(2, 23, "EEVEE", "TACKLE"),
     voidFacts,
     plainSpecies,
@@ -3116,6 +3116,296 @@ function T.suspended_obligations_with_broken_identities_never_restore()
     Executor.restore(held, content)
   end, "suspended learning with a broken obligation never restores")
   learning:dispose()
+end
+
+-- Paralysis quarters effective Speed while a statused Quick Feet holder
+-- keeps its passive Speed instead of the quarter. The duel pairs a faster
+-- combatant against a slower one, so action order names the effective
+-- speeds: healthy the faster leads, paralyzed the slower leads, and
+-- paralyzed with Quick Feet the faster leads again. The first actor is
+-- read from struck, missed, and status-gate events alike, so a withheld
+-- paralyzed strike still proves its owner acted first.
+---@param events table[] turn events in execution order
+---@return integer? combatant identity that acted first, when one is named
+local function firstActor(events)
+  for _, event in ipairs(events) do
+    if event.kind == "status-gate" then
+      local payload = event.payload --[[@as table<string, unknown>]]
+      if type(payload) == "table" and type(payload.combatant) == "number" then
+        return payload.combatant --[[@as integer]]
+      end
+    elseif event.kind == "struck" or event.kind == "missed" then
+      local payload = event.payload --[[@as table<string, unknown>]]
+      if type(payload) == "table" and payload.target == 2 then
+        return 1
+      end
+      if type(payload) == "table" and payload.target == 1 then
+        return 2
+      end
+    end
+  end
+  return nil
+end
+
+---@param seed integer fixed generator state for the fast combatant
+---@param condition string? persistent condition carried by the fast combatant
+---@param ability string? battle ability carried by the fast combatant
+---@return table fast combatant seed with its status and ability pinned
+local function fastCombatant(seed, condition, ability)
+  local entry = singleMoveCombatant(1, seed, "EEVEE", "TACKLE")
+  if condition ~= nil then
+    entry.mon.condition.effects = { { key = condition, version = 1, state = {} } }
+  end
+  if ability ~= nil then
+    entry.mon.ability = ability
+  end
+  return entry
+end
+
+function T.paralysis_quarters_speed_while_quick_feet_keeps_passive_speed()
+  local facts = {
+    TACKLE = strikeFacts(0, "normal", 1),
+    STRUGGLE = struggleFacts(),
+  }
+  local species = typedSpeciesFacts({
+    { species = "CHIKORITA", types = { "grass" } },
+    { species = "EEVEE", types = { "normal" } },
+  })
+  local healthy = projectionDuel(fastCombatant(11), singleMoveCombatant(2, 23, "CHIKORITA", "TACKLE"), facts, species, PROJECTION_SEED)
+  Assert.equal(firstActor(playOpeningTurn(healthy)), 1, "healthy the faster combatant acts first")
+  healthy:dispose()
+
+  local held = projectionDuel(fastCombatant(11, "paralysis"), singleMoveCombatant(2, 23, "CHIKORITA", "TACKLE"), facts, species, PROJECTION_SEED)
+  Assert.equal(firstActor(playOpeningTurn(held)), 2, "paralyzed the slower combatant acts first")
+  held:dispose()
+
+  local fleet = projectionDuel(fastCombatant(11, "paralysis", "QUICK_FEET"), singleMoveCombatant(2, 23, "CHIKORITA", "TACKLE"), facts, species, PROJECTION_SEED)
+  Assert.equal(
+    firstActor(playOpeningTurn(fleet)),
+    1,
+    "a statused Quick Feet holder keeps its passive Speed instead of the quarter"
+  )
+  fleet:dispose()
+end
+
+-- Burn halves ordinary physical output while a statused Guts holder keeps
+-- its attack boost and skips the burn penalty; special output never pays
+-- the burn penalty. Defender-side damage isolates the strike: the burned
+-- attacker also suffers its own residual tick, which never touches the
+-- defender. Identical seeds hold stats, matchups, and every draw fixed,
+-- so only the status arithmetic moves the amounts.
+---@param power integer compiled strike power carried by the immutable facts
+---@return table<string, unknown> immutable facts for one ordinary special strike
+local function specialFacts(power)
+  return { power = power, accuracy = 0, category = "special", moveType = "normal", priority = 0 }
+end
+
+---@param seed integer fixed generator state for the attacker
+---@param condition string? persistent condition carried by the attacker
+---@param ability string? battle ability carried by the attacker
+---@param move string move identity carried by the single slot
+---@return table attacker seed with its status, ability, and move pinned
+local function statusAttacker(seed, condition, ability, move)
+  local entry = singleMoveCombatant(1, seed, "CHIKORITA", move)
+  if condition ~= nil then
+    entry.mon.condition.effects = { { key = condition, version = 1, state = {} } }
+  end
+  if ability ~= nil then
+    entry.mon.ability = ability
+  end
+  return entry
+end
+
+function T.burn_halves_physical_damage_while_guts_keeps_its_boost()
+  local physical = {
+    TACKLE = strikeFacts(0, "normal", 60),
+    STRUGGLE = struggleFacts(),
+  }
+  local special = {
+    TACKLE = strikeFacts(0, "normal", 60),
+    AURA_SPHERE = specialFacts(60),
+    STRUGGLE = struggleFacts(),
+  }
+  local species = typedSpeciesFacts({
+    { species = "CHIKORITA", types = { "grass" } },
+    { species = "EEVEE", types = { "normal" } },
+  })
+
+  local plain = projectionDuel(statusAttacker(11, nil, nil, "TACKLE"), singleMoveCombatant(2, 23, "EEVEE", "TACKLE"), physical, species, PROJECTION_SEED)
+  playOpeningTurn(plain)
+  local healthyDamage = damageTaken(plain, 2)
+  plain:dispose()
+
+  local burned = projectionDuel(statusAttacker(11, "burn", nil, "TACKLE"), singleMoveCombatant(2, 23, "EEVEE", "TACKLE"), physical, species, PROJECTION_SEED)
+  playOpeningTurn(burned)
+  local burnedDamage = damageTaken(burned, 2)
+  burned:dispose()
+  Assert.isTrue(burnedDamage < healthyDamage, "burn halves ordinary physical output")
+
+  local gutsy = projectionDuel(statusAttacker(11, "burn", "GUTS", "TACKLE"), singleMoveCombatant(2, 23, "EEVEE", "TACKLE"), physical, species, PROJECTION_SEED)
+  playOpeningTurn(gutsy)
+  local gutsDamage = damageTaken(gutsy, 2)
+  gutsy:dispose()
+  Assert.isTrue(gutsDamage > healthyDamage, "a statused Guts holder keeps its attack boost past the burn")
+
+  local castPlain = projectionDuel(statusAttacker(11, nil, nil, "AURA_SPHERE"), singleMoveCombatant(2, 23, "EEVEE", "TACKLE"), special, species, PROJECTION_SEED)
+  playOpeningTurn(castPlain)
+  local healthySpecial = damageTaken(castPlain, 2)
+  castPlain:dispose()
+
+  local castBurned = projectionDuel(statusAttacker(11, "burn", nil, "AURA_SPHERE"), singleMoveCombatant(2, 23, "EEVEE", "TACKLE"), special, species, PROJECTION_SEED)
+  playOpeningTurn(castBurned)
+  local burnedSpecial = damageTaken(castBurned, 2)
+  castBurned:dispose()
+  Assert.equal(burnedSpecial, healthySpecial, "burn never penalizes special output")
+end
+
+-- The session decision lease lends the battle stream to exactly one open
+-- internal request: the wild answer draws from the session stream and
+-- returns its reply, while player, unknown, stale, and disposed requests
+-- raise before drawing. The proxy dies with the callback, a failing
+-- callback still releases the lease, and leases never nest.
+---@return table detached native battle setup with player and wild controllers
+local function leaseScenario()
+  local Executor = executorOwner()
+  local alpha = tackleCombatant(1, 11)
+  local beta = tackleCombatant(2, 23)
+  return {
+    ruleset = Executor.RULESET,
+    format = NATIVE_FORMAT,
+    sides = { SessionFixture.side(1, { 1 }), SessionFixture.side(2, { 2 }) },
+    participants = {
+      SessionFixture.participant(1, 1, "player", { alpha }),
+      SessionFixture.participant(2, 2, "wild", { beta }),
+    },
+    positions = {
+      SessionFixture.position(1, 1, { 1 }, 1),
+      SessionFixture.position(2, 2, { 2 }, 2),
+    },
+    inventories = {},
+    environment = { weather = "none" },
+    random = { seed = NATIVE_SEED },
+    formatState = {},
+    moveFacts = scenarioMoveFacts({ alpha, beta }),
+    speciesFacts = scenarioSpeciesFacts({ alpha, beta }),
+  }
+end
+
+---@return table live native session waiting on its opening decisions
+local function leaseSession()
+  local contracts = SessionFixture.sessionContracts()
+  local session = contracts.Battle.newSession(leaseScenario(), nativeContent())
+  local frame = SessionFixture.driveUntilSettled(session)
+  Assert.equal(frame.status, "waiting", "the lease duel opens its decision batch")
+  return session
+end
+
+---@param session table live native session under inspection
+---@param controller string controller owning the request
+---@return table the open request for the controller
+local function openRequest(session, controller)
+  local frame = SessionFixture.driveUntilSettled(session)
+  Assert.equal(frame.status, "waiting", "the batch stays open while requests wait")
+  for _, request in ipairs(frame.request.requests) do
+    if request.controller == controller then
+      return request
+    end
+  end
+  error("no open request for controller " .. controller)
+end
+
+function T.decision_stream_lease_serves_the_open_wild_request()
+  local session = leaseSession()
+  local wild = openRequest(session, "wild")
+  local callsBefore = session:capture().rng.calls
+  local drawn = nil
+  local reply = session:withDecisionStream(wild, function(stream)
+    drawn = stream:nextU16("wild_strike", { controller = wild.controller, request = wild.requestId })
+    return {
+      requestId = wild.requestId,
+      epoch = wild.epoch,
+      controller = wild.controller,
+      choices = {},
+    }
+  end)
+  Assert.equal(reply.requestId, wild.requestId, "the lease returns its callback result")
+  Assert.isTrue(type(drawn) == "number", "the leased draw resolves through the session stream")
+  Assert.equal(session:capture().rng.calls, callsBefore + 1, "the leased draw advances the session stream")
+  session:dispose()
+end
+
+function T.decision_stream_lease_rejects_foreign_requests_without_drawing()
+  local session = leaseSession()
+  local player = openRequest(session, "wild")
+  local external = openRequest(session, "player")
+  local callsBefore = session:capture().rng.calls
+  Assert.throws(function()
+    session:withDecisionStream(external, function(stream)
+      stream:nextU16("wild_strike", { controller = external.controller, request = external.requestId })
+    end)
+  end, "player requests never borrow the decision stream")
+  Assert.throws(function()
+    session:withDecisionStream(
+      { requestId = 9999, epoch = player.epoch, controller = "wild", actors = player.actors },
+      function(stream)
+        stream:nextU16("wild_strike", { controller = "wild", request = 9999 })
+      end
+    )
+  end, "unknown requests never borrow the decision stream")
+  Assert.throws(function()
+    session:withDecisionStream(
+      {
+        requestId = player.requestId,
+        epoch = player.epoch + 1,
+        controller = "wild",
+        actors = player.actors,
+      },
+      function(stream)
+        stream:nextU16("wild_strike", { controller = "wild", request = player.requestId })
+      end
+    )
+  end, "stale epochs never borrow the decision stream")
+  Assert.equal(session:capture().rng.calls, callsBefore, "rejected leases draw nothing")
+  session:dispose()
+end
+
+function T.decision_stream_proxy_dies_with_its_callback()
+  local session = leaseSession()
+  local wild = openRequest(session, "wild")
+  local held = nil
+  session:withDecisionStream(wild, function(stream)
+    held = stream
+    return { requestId = wild.requestId }
+  end)
+  Assert.notNil(held, "the callback receives its stream proxy")
+  Assert.throws(function()
+    held:nextU16("wild_strike", { controller = wild.controller, request = wild.requestId })
+  end, "retained proxies raise after the callback returns")
+  Assert.throws(function()
+    session:withDecisionStream(wild, function(stream)
+      session:withDecisionStream(wild, function(_)
+        return {}
+      end)
+      return { requestId = wild.requestId }
+    end)
+  end, "decision leases never nest")
+  local callsBefore = session:capture().rng.calls
+  local ok, failure = pcall(session.withDecisionStream, session, wild, function(_)
+    error("controller failure")
+  end)
+  Assert.isFalse(ok, "callback failures propagate")
+  Assert.isTrue(failure ~= nil, "the callback failure carries its cause")
+  Assert.equal(session:capture().rng.calls, callsBefore, "a failed callback draws nothing")
+  local recovered = session:withDecisionStream(wild, function(_)
+    return { requestId = wild.requestId }
+  end)
+  Assert.equal(recovered.requestId, wild.requestId, "a failed callback still releases the lease")
+  session:dispose()
+  Assert.throws(function()
+    session:withDecisionStream(wild, function(_)
+      return {}
+    end)
+  end, "disposed sessions lend no stream")
 end
 
 return { tests = T }

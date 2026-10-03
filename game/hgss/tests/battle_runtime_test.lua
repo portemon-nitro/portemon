@@ -612,4 +612,70 @@ function T.a_stale_live_bag_blocks_every_publication()
   battle:dispose()
 end
 
+-- Opponent decisions share the session battle stream: with a fixed seed
+-- the wild answer consumes the opening draw, so the turn that follows
+-- draws order, accuracy, critical, and damage from the advanced position.
+-- Under that unified order the opening player strike deals exactly 7 and
+-- the answering wild strike misses; a split selection stream would deal 6
+-- and land the answer for 7 instead. The battle runs through production
+-- composition with a live party owner and the generated scenario factory.
+function T.internal_opponent_answers_advance_the_session_stream()
+  local BattleRuntime = requirePresent(RUNTIME_MODULE, "application battle lifetime with readiness waits")
+  local ScenarioFactory = requirePresent(SCENARIO_FACTORY_MODULE, "field sources mapped to one detached scenario")
+  local SessionFixture = require("libs.battle.tests.session_fixture")
+
+  local party = newPartyOwner()
+  local foe = foeRecord("TOTODILE", 20, 0x5EED0001)
+  local launch = { id = "launch-unified-stream", kind = "wild", payload = { species = "TOTODILE", level = 20 } }
+  local scenario = ScenarioFactory.fromEncounter(
+    { attemptId = "attempt-unified-stream", mon = foe },
+    { party = party }
+  )
+  scenario.random.seed = 7
+  local portRecord = { ready = true, enters = 0, frames = {}, leaves = 0, disposed = 0 }
+  local battle = BattleRuntime.new({
+    request = launch,
+    scenario = scenario,
+    party = party,
+    seed = 7,
+    presentation = headlessPort(portRecord),
+  })
+
+  local ticks = 0
+  local playerDamage = nil
+  local foeMissed = false
+  while ticks < 400 and (playerDamage == nil or not foeMissed) do
+    battle:update()
+    local current = battle:status()
+    Assert.isTrue(current.phase ~= "failed", "the unified stream never fails the battle")
+    if current.phase == "running" and current.request ~= nil then
+      local choices = {}
+      for _, actor in ipairs(assert(current.request.actors, "a decision request names its actors")) do
+        choices[#choices + 1] = SessionFixture.attackChoice(actor, 0, SessionFixture.positionTarget(2))
+      end
+      local accepted, replyErr = battle:submit(SessionFixture.replyFor(current.request, choices))
+      Assert.isTrue(accepted, "a legal production decision is accepted: " .. tostring(replyErr))
+    end
+    for _, frame in ipairs(portRecord.frames) do
+      if type(frame) == "table" then
+        local payload = frame.payload --[[@as table<string, unknown>]]
+        if frame.kind == "struck" and type(payload) == "table" and payload.target == 2 then
+          playerDamage = payload.damage
+        end
+        if frame.kind == "missed" and type(payload) == "table" and payload.target == 1 then
+          foeMissed = true
+        end
+      end
+    end
+    if current.phase == "complete" then
+      break
+    end
+    ticks = ticks + 1
+  end
+  Assert.equal(playerDamage, 7, "the wild answer advances the shared stream ahead of the player strike")
+  Assert.isTrue(foeMissed, "the answering wild strike draws from the same advanced stream")
+  battle:dispose()
+end
+
+
 return { tests = T }
