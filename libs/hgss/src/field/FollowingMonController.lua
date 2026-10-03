@@ -767,12 +767,19 @@ function FollowingMonController:_beginOrdinaryFollow(mapId, tx)
   }
   local partnerId = assert(self._actors:partnerId(), "ordinary follow requires the partner actor")
   local position = assert(self._actors:getPosition(partnerId), "partner position is required")
-  if position.fieldX == tx.from.fieldX and position.fieldZ == tx.from.fieldZ then
-    -- The follower already stands on the vacated tile, so the obligation
-    -- is satisfied with no walk, no queue entry, and no repair.
+  if self._action ~= nil or #self._queue > 0 then
+    -- Standing on the vacated tile proves nothing while older work can
+    -- still move the follower away, so retain the new target behind it.
+    self:_enqueueVacatedTarget(tx, speed)
     return
   end
-  if self._paused or self._action ~= nil then
+  if position.fieldX == tx.from.fieldX and position.fieldZ == tx.from.fieldZ then
+    -- With no older work pending, the follower already stands on the
+    -- vacated tile, so the obligation is satisfied with no walk,
+    -- no queue entry, and no repair.
+    return
+  end
+  if self._paused then
     self:_enqueueVacatedTarget(tx, speed)
     return
   end
