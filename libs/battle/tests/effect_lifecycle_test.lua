@@ -29,6 +29,24 @@ local function statusOwner(behavior)
   return SessionFixture.requirePresent("libs.battle.src.gen4.Status", behavior)
 end
 
+---@param behavior string missing owner under test
+---@return table the loaded native handler owner
+local function handlersOwner(behavior)
+  return SessionFixture.requirePresent(
+    "libs.battle.src.gen4.behaviors.effects.NativeEffectHandlers",
+    behavior
+  )
+end
+
+---@return table<string, unknown> base facts shared by the focused timing passes
+local function baseFacts()
+  return {
+    maxHp = { [1] = 30, [2] = 30 },
+    types = { [1] = { "normal" }, [2] = { "normal" } },
+    occupants = { [1] = 1, [2] = 2 },
+  }
+end
+
 ---@return table healthy mon record owned by the mon domain
 local function freshMon()
   return SessionFixture.makeMon(11)
@@ -547,6 +565,137 @@ function T.stored_state_never_aliases_caller_tables()
     reread.scope,
     { kind = "active", combatant = 1, activation = 1 },
     "lookups share no mutable scope"
+  )
+end
+
+-- An entry binding without an executable native handler fails loudly
+-- through the dispatch owner, naming its key instead of passing silently.
+function T.entry_bindings_without_handlers_fail_naming_their_key()
+  local EffectBag = bagOwner("scoped effect instances own their lifetimes")
+  local EffectDispatch = dispatchOwner("finite timing dispatch owns collection and liveness")
+  local Handlers = handlersOwner("one registration owner binds native definitions to their handlers")
+
+  local bag = EffectBag.new()
+  bag:add(
+    Handlers.definitionFor("imprison"),
+    EffectFixture.activeScope(1, 1),
+    EffectFixture.cause(2, 1),
+    { version = 1 }
+  )
+  local facts = baseFacts()
+  facts.sides = { [1] = 1, [2] = 2 }
+  facts.entrant = 1
+  facts.chart = {}
+  local dispatch = EffectDispatch.new(bag, Handlers.handlersFor(facts, "entry"))
+  local err = Assert.throws(function()
+    dispatch:invoke("entry", { speeds = { [1] = 50 }, health = { [1] = 30 } })
+  end, "an unhandled entry binding fails")
+  Assert.isTrue(
+    string.find(tostring(err), "imprison", 1, true) ~= nil,
+    "the failure names the unhandled binding"
+  )
+end
+
+-- A flinch marker inflicted after its owner acted expires silently at
+-- turn end: the countdown reaches zero with no event, leaving removal to
+-- the session sweep.
+function T.flinch_markers_expire_silently_at_turn_end()
+  local EffectBag = bagOwner("scoped effect instances own their lifetimes")
+  local EffectDispatch = dispatchOwner("finite timing dispatch owns collection and liveness")
+  local Handlers = handlersOwner("one registration owner binds native definitions to their handlers")
+
+  local bag = EffectBag.new()
+  local marked = bag:add(
+    Handlers.definitionFor("flinch"),
+    EffectFixture.activeScope(1, 1),
+    EffectFixture.cause(2, 1),
+    { version = 1, turns = 1 }
+  )
+  local dispatch = EffectDispatch.new(bag, Handlers.handlersFor(baseFacts(), "residual"))
+  local outcome = dispatch:invoke("residual", { speeds = { [1] = 50 }, health = { [1] = 30 } })
+  Assert.isTrue(outcome.done, "an unbounded pass runs to completion")
+  Assert.deepEqual(outcome.events, {}, "the silent expiry emits nothing")
+  Assert.deepEqual(
+    bag:get(marked.id).state,
+    { version = 1, turns = 0 },
+    "the expiry spends the one-turn marker"
+  )
+end
+
+-- Confusion counts down once per action-time pass on the session stream:
+-- a failed hit roll acts untouched while a successful one spends health
+-- and denies the action, both after exactly one decrement.
+function T.confusion_branches_share_one_decrement()
+  local EffectBag = bagOwner("scoped effect instances own their lifetimes")
+  local EffectDispatch = dispatchOwner("finite timing dispatch owns collection and liveness")
+  local Handlers = handlersOwner("one registration owner binds native definitions to their handlers")
+  local BattleRng = SessionFixture.requirePresent(
+    "libs.battle.src.gen4.BattleRng",
+    "labeled native draws own the battle stream"
+  )
+
+  ---@param hits boolean whether the probe draw must land the self-hit
+  ---@return integer seed opening with the wanted first draw
+  local function probeSeed(hits)
+    for seed = 1, 4096 do
+      local stream = BattleRng.new(seed)
+      local draw = stream:nextU16("probe", { kind = "probe" })
+      if (draw < 32768) == hits then
+        return seed
+      end
+    end
+    error("the probe found no seed for its branch")
+  end
+
+  ---@param seed integer battle-stream seed opening the pass
+  ---@return table pass outcome with its context and health
+  local function runPass(seed)
+    local bag = EffectBag.new()
+    bag:add(
+      Handlers.definitionFor("confusion"),
+      EffectFixture.activeScope(1, 1),
+      EffectFixture.cause(2, 1),
+      { version = 1, turns = 3 }
+    )
+    local facts = baseFacts()
+    facts.stats = { [1] = { level = 5, attack = 10, defense = 8 } }
+    local dispatch = EffectDispatch.new(bag, Handlers.handlersFor(facts, "beforeAction"))
+    local context = {
+      speeds = { [1] = 50 },
+      health = { [1] = 30 },
+      stream = BattleRng.new(seed),
+    }
+    local outcome = dispatch:invoke("beforeAction", context)
+    return { outcome = outcome, context = context, bag = bag }
+  end
+
+  local through = runPass(probeSeed(false))
+  Assert.isTrue(through.outcome.done, "an unbounded pass runs to completion")
+  Assert.deepEqual(through.outcome.events, {}, "fighting through emits nothing")
+  Assert.isNil(through.context.blockedBy, "fighting through permits the action")
+  Assert.deepEqual(
+    through.bag:capture()[1].state,
+    { version = 1, turns = 2 },
+    "the pass decrements exactly once"
+  )
+
+  local struck = runPass(probeSeed(true))
+  Assert.isTrue(struck.outcome.done, "an unbounded pass runs to completion")
+  Assert.equal(#struck.outcome.events, 1, "the self-hit emits exactly one event")
+  local event = struck.outcome.events[1]
+  Assert.equal(event.kind, "tick", "the self-hit travels as a tick")
+  Assert.equal(event.key, "confusion", "the tick names its finite effect")
+  Assert.isTrue(event.amount > 0, "the self-hit spends health")
+  Assert.equal(
+    struck.context.health[1],
+    30 - event.amount,
+    "the spent health lands in the pass map"
+  )
+  Assert.equal(struck.context.blockedBy, "confusion", "the self-hit denies the action")
+  Assert.deepEqual(
+    struck.bag:capture()[1].state,
+    { version = 1, turns = 2 },
+    "the self-hit still decrements exactly once"
   )
 end
 

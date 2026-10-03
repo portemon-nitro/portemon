@@ -87,9 +87,10 @@ local DEFINITIONS = {
     key = "confusion",
     stateVersion = 1,
     validateState = turnsState(1, 0, 8),
+    -- The countdown ticks when the owner acts, never at turn end: a
+    -- residual binding would spend the same turns twice.
     timings = {
       binding("beforeAction", "confusion", "affliction"),
-      binding("residual", "confusion", "expiration"),
     },
     lifecycle = lifecycle("replace", "clear"),
   },
@@ -103,8 +104,13 @@ local DEFINITIONS = {
   {
     key = "flinch",
     stateVersion = 1,
-    validateState = emptyState(1),
-    timings = { binding("beforeAction", "flinch", "affliction") },
+    validateState = turnsState(1, 0, 1),
+    -- A one-turn marker: the block consumes it, and the turn-end pass
+    -- silently clears markers inflicted after their owner already acted.
+    timings = {
+      binding("beforeAction", "flinch", "affliction"),
+      binding("residual", "flinch", "expiration"),
+    },
     lifecycle = lifecycle("replace", "clear"),
   },
   {

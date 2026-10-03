@@ -14,9 +14,10 @@
 -- stage-adjusted materialized stat, and ordinary damage resolves STAB and
 -- effectiveness through the session chart. Facts the records cannot back
 -- stay absent from the move frames, so executions needing them fail
--- explicitly instead of guessing; residual
--- instances are collected from live effect state once mechanics create that
--- state, so the end-of-turn pass settles empty today. Eligible knockouts pay
+-- explicitly instead of guessing; finite effect instances created by
+-- mechanics run through the shared dispatcher at their entry,
+-- before-action, and residual checkpoints with timing-specific native
+-- semantics. Eligible knockouts pay
 -- experience, effort, levels, and move learning through the resumable reward
 -- owner before replacement or the terminal result: full move sets suspend on
 -- a learning prompt until its reply is consumed, and level gains accumulate
@@ -943,6 +944,103 @@ local function liveEffectBag(state)
   return bag --[[@as table<string, unknown>]]
 end
 
+---@class TimingSample
+---@field health table<integer, integer> battle-local health per active combatant
+---@field speeds table<integer, integer> sampled effective Speed per active combatant
+---@field ceilings table<integer, integer> battle maximum health per active combatant
+---@field typeMap table<integer, string[]> semantic types per active combatant
+---@field occupants table<integer, integer> active combatant per position
+---@field stats table<integer, table<string, integer>> live level and battle stats per active combatant
+---@field sides table<integer, integer> owning side per active combatant
+
+-- Samples the per-entry facts every finite timing pass consumes over the
+-- same projections strikes use: stage-effective stats, semantic types,
+-- battle maximum health, and position occupancy. Fractions scale to battle
+-- maximum health, which sits above the entry value whenever the entry
+-- arrived wounded.
+---@param state table<string, unknown> live battle state under sampling
+---@param speciesFacts table<string, SpeciesFormFacts> static species facts carried by the session
+---@return TimingSample sampled facts for the timing passes
+local function sampleTimingState(state, speciesFacts)
+  local health = {} ---@type table<integer, integer>
+  local speeds = {} ---@type table<integer, integer>
+  local ceilings = {} ---@type table<integer, integer>
+  local typeMap = {} ---@type table<integer, string[]>
+  local occupants = {} ---@type table<integer, integer>
+  local stats = {} ---@type table<integer, table<string, integer>>
+  local sides = {} ---@type table<integer, integer>
+  for _, combatantId in
+    ipairs(state.combatantOrder --[[@as integer[] ]])
+  do
+    local combatant = BattleState.combatant(state, combatantId)
+    if combatant.active ~= nil then
+      local projected = projectCombatant(combatant, speciesFacts)
+      health[combatantId] = combatant.hp --[[@as integer]]
+      speeds[combatantId] = projected.speed
+      local ceiling = combatant.maxHp
+      if type(ceiling) ~= "number" then
+        ceiling = combatant.entryHp
+      end
+      ceilings[combatantId] = ceiling --[[@as integer]]
+      typeMap[combatantId] = combatantTypes(combatant, speciesFacts)
+      stats[combatantId] = { level = projected.level, attack = projected.attack, defense = projected.defense }
+      sides[combatantId] = BattleState.participant(state, combatant.participant --[[@as integer]]).side
+      --[[@as integer]]
+      local active = combatant.active --[[@as table<string, unknown>]]
+      occupants[
+        active.position --[[@as integer]]
+      ] = combatantId
+    end
+  end
+  return {
+    health = health,
+    speeds = speeds,
+    ceilings = ceilings,
+    typeMap = typeMap,
+    occupants = occupants,
+    stats = stats,
+    sides = sides,
+  }
+end
+
+-- Commits battle-local health with the residual ceiling law: the commit
+-- never heals past the ceiling, so recovery earned earlier survives the
+-- pass, and damage floors at zero for faint settlement.
+---@param state table<string, unknown> live battle state under the commit
+---@param health table<integer, integer> battle-local health under the pass
+---@param ceilings table<integer, integer> battle maximum health per combatant
+local function commitTimingHealth(state, health, ceilings)
+  for combatantId, hp in pairs(health) do
+    local combatant = BattleState.combatant(state, combatantId)
+    local settled = hp --[[@as integer]]
+    if settled < 0 then
+      settled = 0
+    end
+    local ceiling = ceilings[combatantId] --[[@as integer]]
+    if settled > ceiling then
+      settled = ceiling
+    end
+    combatant.hp = settled
+  end
+end
+
+-- Expired countdowns leave after their final tick; the zero turn already
+-- fired, so the sweep never drops a pending effect early.
+---@param state table<string, unknown> live battle state under the sweep
+local function sweepExpiredEffects(state)
+  local bag = liveEffectBag(state)
+  for _, record in ipairs(bag:capture()) do
+    local instanceState = record.state --[[@as table<string, unknown>]]
+    if
+      type(instanceState.turns) == "number"
+      and instanceState.turns --[[@as integer]]
+        <= 0
+    then
+      bag:remove(record.id --[[@as integer]])
+    end
+  end
+end
+
 -- Ticks persistent poison, burn, and toxic through the same health map
 -- the dispatch pass consumes, in sampled Speed order with combatant
 -- identity breaking ties. Poison and burn drain one eighth of maximum
@@ -1571,6 +1669,8 @@ end
 ---@field applyResiduals fun()
 ---@field closeTurn fun()
 ---@field commitLearning fun(state: table<string, unknown>)
+---@field settleEntryTiming fun(state: table<string, unknown>, entrant: integer)
+---@field settlePostReplacement fun(state: table<string, unknown>)
 
 ---@param executor HgssSessionExecutor live native session owning the turn
 ---@param moveFacts table<string, table<string, unknown>> immutable move facts carried by the session
@@ -1739,6 +1839,90 @@ local function bindTurnHandlers(executor, moveFacts, speciesFacts, chart, moneyS
     end
   end
 
+  -- Invokes one named finite timing through the shared dispatcher over
+  -- the live bag: entry once an arrival is established, beforeAction for
+  -- a due actor. Handler mutations commit through the residual health
+  -- path, expired countdowns sweep, and faint settlement follows before
+  -- later schedule work assumes the actor remains alive. Before-action
+  -- handlers deny the action through the pass-context flag, and only the
+  -- actor's own instances participate. Entry hazards strike only the
+  -- entrant through their handler-side scoping. Returns the blocking
+  -- effect key, if any.
+  ---@param state table<string, unknown> live battle state under the timing
+  ---@param timing string finite timing under invocation
+  ---@param target integer combatant entering or acting under the timing
+  ---@return string? blocking effect key when a before-action handler denied the action
+  local function invokeTiming(state, timing, target)
+    local bag = liveEffectBag(state)
+    local sample = sampleTimingState(state, speciesFacts)
+    ---@type table<string, unknown>
+    local context = { speeds = sample.speeds, health = sample.health, stream = state.rng }
+    local dispatchOwner ---@type table<string, unknown>
+    if timing == "entry" then
+      dispatchOwner = EffectDispatch.new(
+        bag,
+        NativeEffectHandlers.handlersFor({
+          maxHp = sample.ceilings,
+          types = sample.typeMap,
+          occupants = sample.occupants,
+          sides = sample.sides,
+          entrant = target,
+          chart = chart,
+        }, timing)
+      )
+    elseif timing == "beforeAction" then
+      local entry = BattleState.combatant(state, target).active --[[@as table<string, unknown>?]]
+      local activation = nil
+      if entry ~= nil then
+        activation = entry.activation
+      end
+      local suppressed = {} ---@type table<integer, boolean>
+      for _, record in ipairs(bag:capture()) do
+        local scope = record.scope
+        if
+          type(scope) ~= "table"
+          or scope.combatant ~= target
+          or (scope.activation ~= nil and scope.activation ~= activation)
+        then
+          suppressed[
+            record.id --[[@as integer]]
+          ] = true
+        end
+      end
+      context.suppressedIds = suppressed
+      dispatchOwner = EffectDispatch.new(
+        bag,
+        NativeEffectHandlers.handlersFor({
+          maxHp = sample.ceilings,
+          types = sample.typeMap,
+          occupants = sample.occupants,
+          stats = sample.stats,
+        }, timing)
+      )
+    else
+      error(BattleErrors.invalidState("the native session invokes only entry and before-action timings", {
+        timing = timing,
+      }))
+    end
+    local outcome = dispatchOwner:invoke(timing --[[@as string]], context)
+    local view = BattleContext.wrap(state)
+    for _, event in
+      ipairs(outcome.events --[[@as table<integer, table<string, unknown>>]])
+    do
+      local record = event --[[@as table<string, unknown>]]
+      if
+        record.kind --[[@as string]]
+        ~= "faint"
+      then
+        view:emit(record.kind --[[@as string]], { kind = record.kind }, copyValue(record))
+      end
+    end
+    commitTimingHealth(state, sample.health, sample.ceilings)
+    sweepExpiredEffects(state)
+    sweepFaints(state)
+    return context.blockedBy --[[@as string?]]
+  end
+
   ---@param state table<string, unknown> live battle state under execution
   ---@param action table<string, unknown> queued native action under execution
   ---@param ordinal integer commit order of this action
@@ -1748,10 +1932,18 @@ local function bindTurnHandlers(executor, moveFacts, speciesFacts, chart, moneyS
     assert(type(stream.nextU16) == "function", "native strikes draw from the battle stream")
     local actor = action.actor --[[@as table<string, unknown>]]
     local combatant = BattleState.combatant(state, actor.combatant --[[@as integer]])
+    -- Finite volatile effects gate the strike before persistent status:
+    -- a denied action never starts, spends nothing, and draws nothing
+    -- beyond the timing's own labeled rolls. Switching and item use
+    -- bypass the gate, so only the attack branch funnels here.
+    if
+      invokeTiming(state, "beforeAction", actor.combatant --[[@as integer]]) ~= nil
+    then
+      return
+    end
     -- Persistent status gates every strike at the before-action
     -- checkpoint: blocked actions never start, spend nothing, and draw
-    -- nothing beyond the gate's own labeled roll. Switching and item
-    -- use bypass the gate, so only the attack branch funnels here.
+    -- nothing beyond the gate's own labeled roll.
     local gate = Status.beforeAction(
       combatant.mon --[[@as table<string, unknown>]],
       stream --[[@as table<string, unknown>]],
@@ -1887,6 +2079,9 @@ local function bindTurnHandlers(executor, moveFacts, speciesFacts, chart, moneyS
       to = payload.replacement,
     })
     event.actionId = ordinal
+    -- The arrival runs its entry pass before it may act: a hazard faint
+    -- queues through ordinary faint ownership for the turn-close drain.
+    invokeTiming(state, "entry", payload.replacement --[[@as integer]])
   end
 
   ---@param state table<string, unknown> live battle state under execution
@@ -2098,32 +2293,12 @@ local function bindTurnHandlers(executor, moveFacts, speciesFacts, chart, moneyS
   local function applyResiduals()
     local state = executor:_live()
     local bag = liveEffectBag(state)
-    local health = {} ---@type table<integer, integer>
-    local speeds = {} ---@type table<integer, integer>
-    local ceilings = {} ---@type table<integer, integer>
-    local typeMap = {} ---@type table<integer, string[]>
-    local occupants = {} ---@type table<integer, integer>
-    for _, combatantId in
-      ipairs(state.combatantOrder --[[@as integer[] ]])
-    do
-      local combatant = BattleState.combatant(state, combatantId)
-      if combatant.active ~= nil then
-        health[combatantId] = combatant.hp --[[@as integer]]
-        speeds[combatantId] = projectCombatant(combatant, speciesFacts).speed
-        -- Residual fractions scale to battle maximum health, which sits
-        -- above the entry value whenever the entry arrived wounded.
-        local ceiling = combatant.maxHp
-        if type(ceiling) ~= "number" then
-          ceiling = combatant.entryHp
-        end
-        ceilings[combatantId] = ceiling --[[@as integer]]
-        typeMap[combatantId] = combatantTypes(combatant, speciesFacts)
-        local active = combatant.active --[[@as table<string, unknown>]]
-        occupants[
-          active.position --[[@as integer]]
-        ] = combatantId
-      end
-    end
+    local sample = sampleTimingState(state, speciesFacts)
+    local health = sample.health
+    local speeds = sample.speeds
+    local ceilings = sample.ceilings
+    local typeMap = sample.typeMap
+    local occupants = sample.occupants
     local stream = state.rng --[[@as table<string, unknown>]]
     assert(type(stream.nextU16) == "function", "native residuals draw from the battle stream")
     local context = BattleContext.wrap(state)
@@ -2136,7 +2311,7 @@ local function bindTurnHandlers(executor, moveFacts, speciesFacts, chart, moneyS
     -- the session adapts method calls to plain view functions.
     local dispatchOwner = EffectDispatch.new(
       bag,
-      NativeEffectHandlers.handlersFor({ maxHp = ceilings, types = typeMap, occupants = occupants })
+      NativeEffectHandlers.handlersFor({ maxHp = ceilings, types = typeMap, occupants = occupants }, "residual")
     )
     local function collectResiduals(_, timing, passContext)
       return dispatchOwner:collect(timing --[[@as string]], passContext --[[@as table<string, unknown>]])
@@ -2164,34 +2339,10 @@ local function bindTurnHandlers(executor, moveFacts, speciesFacts, chart, moneyS
     end
     -- Residual faint markers stay internal: committing health first lets
     -- faint settlement emit the single canonical faint per knockout.
-    for combatantId, hp in pairs(health) do
-      local combatant = BattleState.combatant(state, combatantId)
-      local settled = hp --[[@as integer]]
-      if settled < 0 then
-        settled = 0
-      end
-      -- The commit never heals past the residual ceiling, so bag and
-      -- move recovery earned earlier in the turn survives the pass.
-      local ceiling = ceilings[combatantId] --[[@as integer]]
-      if settled > ceiling then
-        settled = ceiling
-      end
-      combatant.hp = settled
-    end
-    -- Expired countdowns leave after their final tick; the zero turn
-    -- already fired, so the sweep never drops a pending effect early.
     -- The pass runs to completion synchronously, so no continuation
     -- survives the turn and capture only ever sees settled state.
-    for _, record in ipairs(bag:capture()) do
-      local instanceState = record.state --[[@as table<string, unknown>]]
-      if
-        type(instanceState.turns) == "number"
-        and instanceState.turns --[[@as integer]]
-          <= 0
-      then
-        bag:remove(record.id --[[@as integer]])
-      end
-    end
+    commitTimingHealth(state, health, ceilings)
+    sweepExpiredEffects(state)
     sweepFaints(state)
   end
 
@@ -2398,28 +2549,65 @@ local function bindTurnHandlers(executor, moveFacts, speciesFacts, chart, moneyS
   ---@param state table<string, unknown> live battle state under turn close
   ---@param obligations table<integer, table<string, unknown>> ordered replacement obligations
   local function finishTurn(state, obligations)
+    local pending = obligations
     local external = 0
-    for _, obligation in ipairs(obligations) do
-      if not obligation.internal then
-        external = external + 1
+    while true do
+      external = 0
+      for _, obligation in ipairs(pending) do
+        if not obligation.internal then
+          external = external + 1
+        end
       end
-    end
-    if external > 0 then
-      -- Mandatory replacement precedes the next ordinary action batch:
-      -- suspend with the replacement batch open instead of sequencing.
-      -- The turn frame above already closed; the replacement batch opens
-      -- its own below.
-      buildReplacementBatch(state, obligations)
-      return
-    end
-    local claimed = {} ---@type table<integer, boolean>
-    for _, obligation in ipairs(obligations) do
-      local reserves = eligibleReserves(state, obligation.participant --[[@as integer]], claimed)
-      assert(#reserves > 0, "internally resolved replacements keep their reserve")
-      claimed[reserves[1]] = true
-      enterReserve(state, moneySet, obligation, reserves[1])
+      if external > 0 then
+        -- Mandatory replacement precedes the next ordinary action batch:
+        -- suspend with the replacement batch open instead of sequencing.
+        -- The turn frame above already closed; the replacement batch opens
+        -- its own below.
+        buildReplacementBatch(state, pending)
+        return
+      end
+      local claimed = {} ---@type table<integer, boolean>
+      for _, obligation in ipairs(pending) do
+        local reserves = eligibleReserves(state, obligation.participant --[[@as integer]], claimed)
+        assert(#reserves > 0, "internally resolved replacements keep their reserve")
+        claimed[reserves[1]] = true
+        enterReserve(state, moneySet, obligation, reserves[1])
+        -- The arrival runs its entry pass before it may act: a hazard
+        -- faint queues through ordinary faint ownership for the drain below.
+        invokeTiming(state, "entry", reserves[1])
+      end
+      local fresh = drainObligations(state)
+      if #fresh == 0 then
+        break
+      end
+      if not drainRewardChildren(state, fresh) then
+        return
+      end
+      state.progressionChildren = {}
+      pending = fresh
     end
     settleOutcome(state)
+  end
+
+  -- Runs one arrival's entry pass with faint settlement for commit-time
+  -- replacement work, which lives outside this turn seam.
+  ---@param state table<string, unknown> live battle state under replacement work
+  ---@param entrant integer arriving combatant under the entry pass
+  local function settleEntryTiming(state, entrant)
+    invokeTiming(state, "entry", entrant)
+  end
+
+  -- Settles replacements after a commit-time entry pass: hazard faints
+  -- queued by the entrant's arrival drain through rewards into mandatory
+  -- replacement or the terminal result, exactly like the turn-close tail.
+  ---@param state table<string, unknown> live battle state under replacement work
+  local function settlePostReplacement(state)
+    local obligations = drainObligations(state)
+    if not drainRewardChildren(state, obligations) then
+      return
+    end
+    state.progressionChildren = {}
+    finishTurn(state, obligations)
   end
 
   local function closeTurn()
@@ -2511,6 +2699,8 @@ local function bindTurnHandlers(executor, moveFacts, speciesFacts, chart, moneyS
     applyResiduals = applyResiduals,
     closeTurn = closeTurn,
     commitLearning = commitLearning,
+    settleEntryTiming = settleEntryTiming,
+    settlePostReplacement = settlePostReplacement,
   }
 end
 
@@ -2570,10 +2760,11 @@ local function wrap(live, content, admitted, moveFacts, speciesFacts, moneyUpIte
   live.participated = live.participated or {}
   live.evolutionEligible = live.evolutionEligible or {}
   -- The live effect owner travels with the state like the running
-  -- generator: fresh sessions start empty while restored sessions
-  -- rebuild their owner from the captured plain records.
+  -- generator: fresh sessions arrive with their empty owner while restored
+  -- sessions carry only the plain captured records, so the owner rebuilds
+  -- from those records.
   if type(live.effectBag) ~= "table" or type(live.effectBag.add) ~= "function" then
-    live.effectBag = EffectBag.new(live.effectBag --[[@as table<integer, unknown>?]])
+    live.effectBag = EffectBag.new(live.effects --[[@as table<integer, unknown>?]])
   end
   live.moneyUpItems = copyValue(moneyUpItems or {})
   if live.escapeAttempts == nil then
@@ -2672,6 +2863,23 @@ function HgssSessionExecutor.new(scenarioRecord, content)
     battleKindFor(validated.format --[[@as string]], validated.kind)
   )
   executor:_bindLifecycle()
+  -- Opening occupants receive their entry pass exactly once through the
+  -- same arrival helper as later reserves. Fresh sessions start with an
+  -- empty bag, so the pass is skipped until mechanics create instances;
+  -- construction never projects combatants it does not dispatch over.
+  local openingBag = liveEffectBag(live)
+  if #openingBag:capture() > 0 then
+    local settleOpening = executor._settleEntryTiming
+    assert(type(settleOpening) == "function", "opening entries run through the bound timing seam")
+    for _, positionId in
+      ipairs(live.positionOrder --[[@as integer[] ]])
+    do
+      local occupant = BattleState.position(live, positionId --[[@as integer]]).occupant
+      if occupant ~= nil then
+        settleOpening(live, occupant --[[@as integer]])
+      end
+    end
+  end
   return executor
 end
 
@@ -2785,6 +2993,10 @@ function HgssSessionExecutor:_bindLifecycle()
   -- The learning continuation closes over the same turn seam but is not
   -- a scheduled lifecycle phase, so the executor holds it directly.
   self._commitLearningHandler = turnHandlers.commitLearning
+  -- Entry timing and post-replacement settlement close over the same
+  -- seam for commit-time replacement work outside the turn handlers.
+  self._settleEntryTiming = turnHandlers.settleEntryTiming
+  self._settlePostReplacement = turnHandlers.settlePostReplacement
   self._ruleset = ruleset
   ruleset:initialize(self)
 end
@@ -2940,6 +3152,9 @@ function HgssSessionExecutor:_commitReplacement(state)
     end
     claimed[reserve] = true
     enterReserve(state, self._moneyUpItems, obligation, reserve)
+    local settleArrival = self._settleEntryTiming
+    assert(type(settleArrival) == "function", "replacement entries run through the bound timing seam")
+    settleArrival(state, reserve)
   end
   local frames = state.frames --[[@as table<integer, table<string, unknown>>]]
   local roundFrame = frames[#frames]
@@ -2947,7 +3162,14 @@ function HgssSessionExecutor:_commitReplacement(state)
   frames[#frames] = nil
   state.pending = nil
   state.queue = {}
-  settleOutcome(state)
+  -- An arrival's entry pass banks hazard faints with the faint owner:
+  -- drain them through rewards into replacement or the terminal result
+  -- instead of settling an outcome over a vacant position. The drain is
+  -- unconditional because it is a no-op without queued faints: empty
+  -- obligations run no rewards and fall through to the same outcome.
+  local settleReplacements = self._settlePostReplacement
+  assert(type(settleReplacements) == "function", "hazard faints drain through the bound turn seam")
+  settleReplacements(state)
 end
 
 ---@param state table<string, unknown>
