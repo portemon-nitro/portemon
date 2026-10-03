@@ -12,7 +12,10 @@ local PartyCache = require("libs.assets.src.PartyCache")
 local PlayTime = require("libs.hgss.src.save.PlayTime")
 local RomImporter = require("romdump.src.source.RomImporter")
 
-local T = { metadata = { capabilities = { "rom_dump", "derived_assets" }, derivedAssets = { "field-runtime", "map:64" } }, tests = {} }
+local T = {
+  metadata = { capabilities = { "rom_dump", "derived_assets" }, derivedAssets = { "field-runtime", "map:64" } },
+  tests = {},
+}
 
 local function readyVersions()
   local versions = {}
@@ -49,6 +52,7 @@ local function validEntry(versionId, withBuckets)
   if withBuckets ~= false then
     entry.mons = require("tests.support.MonBucket").emptyForVersion(versionId)
     entry.bag = require("libs.hgss.src.save.BagSave").empty()
+    entry.fashionCase = require("libs.hgss.src.save.FashionCaseState").empty()
   end
   return entry
 end

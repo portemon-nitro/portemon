@@ -34,6 +34,13 @@ local function formEntry(baseStats, types, abilities)
     evolutions = {},
     icon = "X/f0",
     portrait = "X/f0/male/plain",
+    performance = {
+      power = { base = 3, min = 2, max = 5 },
+      skill = { base = 3, min = 2, max = 5 },
+      speed = { base = 3, min = 2, max = 5 },
+      jump = { base = 3, min = 2, max = 5 },
+      stamina = { base = 3, min = 2, max = 5 },
+    },
   }
 end
 

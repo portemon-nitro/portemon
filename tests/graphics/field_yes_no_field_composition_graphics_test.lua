@@ -9,6 +9,7 @@ local GameVersion = require("romdump.src.source.GameVersion")
 local GraphicsSmoke = require("tests.support.GraphicsSmoke")
 local PixelScale = require("libs.ui.src.PixelScale")
 local PlayTime = require("libs.hgss.src.save.PlayTime")
+local FashionCaseState = require("libs.hgss.src.save.FashionCaseState")
 local AcceptanceScriptFs = require("tests.acceptance.support.AcceptanceScriptFs")
 local AcceptanceScripts = require("tests.acceptance.support.AcceptanceScripts")
 local RepoFs = require("game.src.RepoFs")
@@ -29,6 +30,7 @@ local function freshGame(versionId)
       options = { textSpeed = "fastest", textFrame = 1 },
     },
     fieldTravel = { lastHealSpawn = "SPAWN_NEW_BARK" },
+    fashionCase = FashionCaseState.empty(),
     playTime = PlayTime.new(),
     worldState = FieldEventState.new(),
     mons = require("tests.support.MonBucket").emptyForVersion(versionId),

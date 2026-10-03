@@ -20,6 +20,7 @@ local FieldMessageProvider = require("libs.hgss.src.interaction.FieldMessageProv
 ---@field private _world table<string, unknown>|nil world state { getVar(id) -> unknown }
 ---@field private _mons HgssMonService|nil the live HGSS mon service for party/mon text
 ---@field private _items ItemCatalog|nil the shared item catalog for item/pocket/TM/berry text
+---@field private _locationNames table<integer, string>|(fun(sectionId: integer): string?)|nil generated map-section display names
 ---@field private _frameIndex integer|nil player-selected user-frame index, captured at open
 ---@field private _yesNoController table<string, unknown> semantic field choice owner
 ---@field private _yesNoHost table<string, unknown>|nil live choice presentation host
@@ -238,8 +239,12 @@ end
 ---@param provider FieldMessageProvider
 ---@param mons HgssMonService|nil the live HGSS mon service
 ---@param items ItemCatalog|nil the shared item catalog
+---@param locationNames table<integer, string>|(fun(sectionId: integer): string?)|nil generated map-section display names
 ---@return table<string, unknown>|nil replacementTokens
-local function resolveTextValue(descriptor, player, fontDef, world, provider, mons, items)
+local function resolveTextValue(descriptor, player, fontDef, world, provider, mons, items, locationNames)
+  if type(descriptor) == "string" then
+    return FieldMessageProvider.asciiGlyphTokens(descriptor, fontDef)
+  end
   if type(descriptor) ~= "table" or descriptor.text == nil then
     return nil
   end
@@ -250,6 +255,20 @@ local function resolveTextValue(descriptor, player, fontDef, world, provider, mo
   elseif kind == "friend_name" then
     local gender = player:gender()
     return scopedNameGlyphs(provider, FRIEND_NAME_BANK_ID, gender == 0 and 1 or 0, fontDef)
+  elseif kind == "literal_text" then
+    assert(type(value) == "string", "literal text value must be a string")
+    return FieldMessageProvider.asciiGlyphTokens(value, fontDef)
+  elseif kind == "map_name" then
+    local mapSection = value
+    if type(mapSection) == "table" and mapSection.value == "var" then
+      assert(world and type(world.getVar) == "function", "map name variable requires world state")
+      mapSection = world:getVar(mapSection.id)
+    end
+    assert(type(mapSection) == "number" and mapSection % 1 == 0, "map name section id is invalid")
+    local name = type(locationNames) == "function" and locationNames(mapSection)
+      or locationNames and locationNames[mapSection]
+    assert(type(name) == "string", "map name section has no generated display name")
+    return FieldMessageProvider.asciiGlyphTokens(name, fontDef)
   elseif kind == "integer" then
     if value == nil or type(value) ~= "table" or value.value ~= "var" then
       return nil
@@ -281,7 +300,7 @@ local function resolveTextValue(descriptor, player, fontDef, world, provider, mo
   )
 end
 
----@param opts table<string, unknown> { controller, yesNoController, yesNoHost?, provider, layout, fontDef, player, world, mons?, items?, frameIndex? }
+---@param opts table<string, unknown> { controller, yesNoController, yesNoHost?, provider, layout, fontDef, player, world, mons?, items?, locationNames?, frameIndex? }
 ---@return ScriptDialogueHost
 function ScriptDialogueHost.new(opts)
   assert(
@@ -321,6 +340,7 @@ function ScriptDialogueHost.new(opts)
     _world = opts.world,
     _mons = opts.mons,
     _items = opts.items,
+    _locationNames = opts.locationNames,
     _frameIndex = frameIndex,
     _yesNoController = opts.yesNoController,
     _yesNoHost = yesNoHost,
@@ -444,7 +464,8 @@ function ScriptDialogueHost:resolveMessage(message, bindings, textArgs)
           self._world,
           self._provider,
           self._mons,
-          self._items
+          self._items,
+          self._locationNames
         )
       end
       resolvers[token.control] = resolveSubstitution
@@ -458,7 +479,7 @@ function ScriptDialogueHost:resolveMessage(message, bindings, textArgs)
   if formatted.hadUnresolvedSubstitutions then
     Errors.raise(
       ScriptErrors.SCRIPT_INVALID_REFERENCE,
-      "message " .. message .. " has unresolvable substitutions",
+      string.format("message bank %d id %d has unresolvable substitutions", bankId, messageId),
       { bankId = bankId, messageId = messageId }
     )
   end

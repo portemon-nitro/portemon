@@ -187,6 +187,9 @@ local function syntheticRomFs()
       end
       return allZero(44)
     end),
+    performance = fixedArchive(MonSources.PERFORMANCE_MEMBER_COUNT, function()
+      return allZero(MonSources.PERFORMANCE_MEMBER_SIZE)
+    end),
     growth_tables = fixedArchive(8, function()
       return allZero(404)
     end),

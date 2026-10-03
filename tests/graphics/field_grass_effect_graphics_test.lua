@@ -41,6 +41,10 @@ local function runVersion(scope, versionId)
   for _, kind in ipairs({ "tall_grass", "very_tall_grass", "trainer_reveal" }) do
     assets.effects[kind] = assert(cache:loadLua(index.effects[kind].path))
   end
+  for selector = 1, 14 do
+    local kind = "follower_reaction_" .. selector
+    assets.effects[kind] = assert(cache:loadLua(index.effects[kind].path))
+  end
 
   Assert.equal(Contract.fieldEffects.cacheFormat, "field-effect-cache-v9")
   local pool = scope:own(GpuAssetPool.new(cache))

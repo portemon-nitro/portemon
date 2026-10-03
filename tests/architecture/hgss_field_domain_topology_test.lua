@@ -138,6 +138,7 @@ local function expectedFiles()
       expected[path] = true
     end
   end
+  expected[HGSS_SOURCE_ROOT .. "/field/FollowerInteractionEngine.lua"] = true
   return expected
 end
 

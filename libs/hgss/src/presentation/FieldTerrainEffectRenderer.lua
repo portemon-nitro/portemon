@@ -20,7 +20,11 @@ function FieldTerrainEffectRenderer.new(assets, pool)
   assert(pool and pool.meshFor and pool.imageFor and pool.build, "field effect asset pool is required")
   local resources = {}
   pool:build(function()
-    for _, kind in ipairs({ "tall_grass", "very_tall_grass", "trainer_reveal" }) do
+    local kinds = { "tall_grass", "very_tall_grass", "trainer_reveal" }
+    for selector = 1, 14 do
+      kinds[#kinds + 1] = "follower_reaction_" .. selector
+    end
+    for _, kind in ipairs(kinds) do
       local descriptor = assert(assets.effects[kind].model)
       local definition = ModelDefinition.fromNitroDescriptor(descriptor, { key = "field-effect:" .. kind })
       local renderMeshesById = {}
@@ -31,7 +35,7 @@ function FieldTerrainEffectRenderer.new(assets, pool)
       end
       resources[kind] = {
         definition = definition,
-        placementOffset = assert(assets.effects[kind].placementOffset),
+        placementOffset = assets.effects[kind].placementOffset or { x = 0, y = 0, z = 0 },
         renderMeshesById = renderMeshesById,
         wraps = SceneDescriptor.wrapByMaterial(descriptor.materials),
       }

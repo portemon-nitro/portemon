@@ -19,6 +19,7 @@ local FieldFontLoader = require("libs.hgss.src.ui.FieldFontLoader")
 local FieldScriptSymbols = require("libs.assets.src.field.FieldScriptSymbols")
 local FieldState = require("game.hgss.src.field.FieldState")
 local FieldStatePresentationFixture = require("tests.support.FieldStatePresentationFixture")
+local FashionCaseState = require("libs.hgss.src.save.FashionCaseState")
 local GameVersion = require("romdump.src.source.GameVersion")
 local GraphicsSmoke = require("tests.support.GraphicsSmoke")
 local HgssMonService = require("libs.hgss.src.mons.HgssMonService")
@@ -82,6 +83,7 @@ local function giftedGame(versionId)
       options = { textSpeed = "fastest", textFrame = 0 },
     },
     fieldTravel = { lastHealSpawn = "SPAWN_NEW_BARK" },
+    fashionCase = FashionCaseState.empty(),
     playTime = PlayTime.new(),
     worldState = FieldEventState.new(),
     mons = service:capture(),

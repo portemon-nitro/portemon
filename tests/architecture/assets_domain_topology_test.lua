@@ -109,6 +109,7 @@ local function expectedAssetFiles()
   for _, moduleName in ipairs(SHARED) do
     expected[ASSET_SOURCE_ROOT .. "/" .. moduleName .. ".lua"] = true
   end
+  expected[ASSET_SOURCE_ROOT .. "/field/FollowerInteractionCache.lua"] = true
   return expected
 end
 

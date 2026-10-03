@@ -24,6 +24,8 @@ local ScriptSave = require("libs.script.src.ScriptSave")
 ---@field pokemonNaming table<string, unknown> the script-owned Pokemon Naming Screen host
 ---@field followerTransition table<string, unknown>? the transient follower-transition owner the nonblocking transition command starts
 ---@field starterBalls table<string, unknown>? the Elm starter-ball runtime-prop controller
+---@field followerInteractionCatalog table<string, unknown> validated generated interaction catalog
+---@field clock table<string, unknown> live local clock
 local FieldScriptComposition = {}
 
 ---@param runtime FieldRuntime
@@ -75,6 +77,9 @@ function FieldScriptComposition.compose(runtime, options)
     items = options.items,
     itemCatalog = options.itemCatalog,
     followingMon = options.followingMon,
+    followerInteractionCatalog = options.followerInteractionCatalog,
+    clock = options.clock,
+    fashionCase = runtime.fashionCase,
     starterProvider = options.starterProvider,
     starterChoice = options.starterChoice,
     partySelection = options.partySelection,

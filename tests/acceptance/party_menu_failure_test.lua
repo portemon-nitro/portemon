@@ -488,6 +488,7 @@ local function v3record(saveId)
   local value = validRecord(saveId)
   value.schema = "g4-game-save-v3"
   value.fieldTravel = nil
+  value.fashionCase = nil
   value.playerData = {
     profile = { name = "GOLD", gender = 0, trainerId = 1, money = 3000 },
     options = { textFrame = 0, textSpeed = "mid" },

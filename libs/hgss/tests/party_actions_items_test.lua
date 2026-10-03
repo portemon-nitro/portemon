@@ -54,6 +54,7 @@ local function itemRoot()
     isHm = false,
     canHold = true,
     heldFormEffect = "none",
+    naturalGiftPower = 0,
     partyUse = {
       kind = "medicine",
       cures = cures(true),
@@ -77,6 +78,7 @@ local function itemRoot()
     isHm = false,
     canHold = true,
     heldFormEffect = "none",
+    naturalGiftPower = 0,
     partyUse = {
       kind = "medicine",
       cures = cures(false),
@@ -100,6 +102,7 @@ local function itemRoot()
     isHm = false,
     canHold = true,
     heldFormEffect = "none",
+    naturalGiftPower = 0,
     partyUse = { kind = "revive_all" },
   }
   root.items.ETHER = {
@@ -117,6 +120,7 @@ local function itemRoot()
     isHm = false,
     canHold = true,
     heldFormEffect = "none",
+    naturalGiftPower = 0,
     partyUse = {
       kind = "pp",
       target = "one",
@@ -139,6 +143,7 @@ local function itemRoot()
     isHm = false,
     canHold = true,
     heldFormEffect = "none",
+    naturalGiftPower = 0,
     partyUse = {
       kind = "pp",
       target = "one",
@@ -162,6 +167,7 @@ local function itemRoot()
     isHm = false,
     canHold = true,
     heldFormEffect = "none",
+    naturalGiftPower = 0,
     partyUse = {
       kind = "ev",
       changes = { { stat = "hp", delta = 10 } },

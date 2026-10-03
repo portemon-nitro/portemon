@@ -1,0 +1,532 @@
+-- Owns one serialized retail follower interaction and its transient presentation.
+
+local Errors = require("libs.errors.src.Errors")
+local ScriptErrors = require("libs.script.src.errors")
+local DialogueTask = require("libs.hgss.src.script.tasks.DialogueTask")
+local ContextChoiceTask = require("libs.hgss.src.script.tasks.ContextChoiceTask")
+
+local FollowerInteractionTask = { type = "follower_interaction", version = 1 }
+local STATE_KEYS = {
+  leadSlot = true,
+  programId = true,
+  phase = true,
+  stepIndex = true,
+  savedFacing = true,
+  motionId = true,
+  motionIndex = true,
+  motionTick = true,
+  cumulativeX = true,
+  cumulativeY = true,
+  cumulativeZ = true,
+  dialogueState = true,
+  choiceState = true,
+  effectSelector = true,
+  rewardStarted = true,
+  soundId = true,
+  delayRemaining = true,
+  choiceTargets = true,
+  motionStarted = true,
+}
+local PHASES = {
+  step = true,
+  motion = true,
+  reaction = true,
+  dialogue = true,
+  delay = true,
+  deltas = true,
+  choice = true,
+  reward = true,
+  done = true,
+}
+local FACING = { [1] = "north", [2] = "south", [3] = "west", [4] = "east" }
+local FACING_VALUES = { north = true, south = true, west = true, east = true }
+local EFFECT_HANDLES = setmetatable({}, { __mode = "k" })
+
+local function services(ctx)
+  return assert(ctx.services, "follower interaction task services are required")
+end
+
+local function partnerId(followingMon)
+  local partner = followingMon.partnerActorId
+  if type(partner) == "function" then
+    partner = followingMon:partnerActorId()
+  end
+  return assert(partner, "partner actor is unavailable")
+end
+
+function FollowerInteractionTask.create(_, ctx)
+  local svc = services(ctx)
+  local engine = assert(svc.followerInteraction)
+  local actorId = partnerId(assert(svc.followingMon))
+  if svc.actors:isScriptedMoving(actorId) then
+    Errors.raise(ScriptErrors.SCRIPT_SERVICE_MISSING, "partner actor is busy", { actorId = actorId })
+  end
+  local selected = engine:select()
+  if selected == nil then
+    Errors.raise(ScriptErrors.SCRIPT_SERVICE_MISSING, "no follower interaction rule matched", {})
+  end
+  selected = assert(selected)
+  local facing = assert(svc.actors:getFacing(actorId), "partner actor is unavailable")
+  return {
+    leadSlot = selected.leadSlot,
+    programId = selected.programId,
+    phase = "step",
+    stepIndex = 1,
+    savedFacing = facing,
+    motionId = 0,
+    motionIndex = 1,
+    motionTick = 0,
+    cumulativeX = 0,
+    cumulativeY = 0,
+    cumulativeZ = 0,
+    rewardStarted = false,
+    motionStarted = false,
+  }
+end
+
+local function releaseEffect(state, svc)
+  local effectId = EFFECT_HANDLES[state]
+  if effectId ~= nil then
+    svc.terrainEffects:remove(effectId)
+    EFFECT_HANDLES[state] = nil
+  end
+  state.effectSelector = nil
+end
+
+local function clearMotion(state, svc)
+  local actorId = partnerId(svc.followingMon)
+  if actorId ~= nil and svc.actors:getFacing(actorId) ~= nil then
+    if state.motionStarted then
+      svc.actors:cancelScriptedMovement(actorId)
+    end
+    svc.actors:setFacing(actorId, state.savedFacing)
+  end
+  state.motionId, state.motionIndex, state.motionTick, state.motionStarted = 0, 1, 0, false
+  state.cumulativeX, state.cumulativeY, state.cumulativeZ = 0, 0, 0
+end
+
+local function ensureReaction(state, svc)
+  local selector = state.effectSelector
+  if selector == nil or EFFECT_HANDLES[state] ~= nil then
+    return
+  end
+  local reaction = svc.followerInteraction:reaction(selector)
+  local actorId = partnerId(svc.followingMon)
+  local actor = svc.actors.getById and assert(svc.actors:getById(actorId), "partner actor is unavailable") or nil
+  local numeric = actor and actor.numericState and actor:numericState() or {}
+  local world = actor and actor.getWorldPosition and actor:getWorldPosition() or { y = 0 }
+  EFFECT_HANDLES[state] = svc.terrainEffects:emit({
+    kind = reaction.definition or reaction.kind,
+    fieldX = numeric.fieldX or 0,
+    fieldZ = numeric.fieldZ or 0,
+    worldY = world.y or 0,
+    direction = actor and actor.facing or nil,
+    cellKey = actor and actor.cellKey or nil,
+    sourceSurfaceId = actor and actor.getSourceSurfaceId and actor:getSourceSurfaceId() or nil,
+  })
+end
+
+local function startReaction(state, svc, selector)
+  if selector == nil or selector == 0 then
+    return
+  end
+  state.effectSelector = selector
+  ensureReaction(state, svc)
+end
+
+local function message(ctx, bank, id, bindings)
+  assert(services(ctx).dialogue)
+  local node = { op = "say", message = { message = "external", bank = bank, id = id }, bindings = bindings }
+  return DialogueTask.create({ node = node }, ctx)
+end
+
+local function beginStep(state, ctx)
+  local svc = services(ctx)
+  local engine = svc.followerInteraction
+  local program = engine:program(state.programId)
+  local step = program.steps[state.stepIndex]
+  if step == nil then
+    state.phase = "deltas"
+    return false
+  end
+  state.soundId = step.soundId
+  state.phase = step.motionId and step.motionId ~= 0 and "motion" or "reaction"
+  if step.motionId and step.motionId ~= 0 then
+    state.motionId, state.motionIndex, state.motionTick = step.motionId, 1, 0
+  end
+  return true
+end
+
+function FollowerInteractionTask.poll(state, ctx)
+  local svc = services(ctx)
+  local engine = assert(svc.followerInteraction)
+  if state.phase == "step" then
+    beginStep(state, ctx)
+  end
+  if state.phase == "motion" then
+    local actorId = partnerId(svc.followingMon)
+    assert(svc.actors:getFacing(actorId) ~= nil, "partner actor disappeared during interaction")
+    local motion = engine:motion(state.motionId)
+    while state.phase == "motion" do
+      local record = motion[state.motionIndex]
+      if
+        record == nil
+        or (
+          record.x == 0
+          and record.y == 0
+          and record.z == 0
+          and record.facing == 0
+          and record.ticks == 0
+          and not record.sound
+        )
+      then
+        clearMotion(state, svc)
+        state.phase = "reaction"
+        break
+      end
+      if not state.motionStarted then
+        state.cumulativeX = state.cumulativeX + record.x
+        state.cumulativeZ = state.cumulativeZ + record.z
+        if not engine:ignoresMotionVerticalOffset(state.leadSlot) then
+          state.cumulativeY = state.cumulativeY + record.y
+        end
+        local facing = type(record.facing) == "string" and record.facing or FACING[record.facing]
+        if facing then
+          svc.actors:setFacing(actorId, facing)
+        end
+        svc.actors:beginScriptedAction(actorId, {
+          action = "presentation_offset",
+          x = state.cumulativeX,
+          y = state.cumulativeY,
+          z = state.cumulativeZ,
+          ticks = record.ticks,
+        })
+        local sound = type(record.sound) == "string" and record.sound or state.soundId
+        if record.sound and sound and sound ~= 0 then
+          svc.audio:play(sound)
+        end
+        state.motionStarted = true
+        if record.ticks > 0 then
+          return { complete = false, state = state }
+        end
+      elseif not svc.actors:isScriptedMoving(actorId) then
+        -- The partner actor is derived presentation and is absent after restore.
+        -- Rebuild the current render action without advancing offsets or replaying
+        -- the record's facing and sound side effects.
+        svc.actors:beginScriptedAction(actorId, {
+          action = "presentation_offset",
+          x = state.cumulativeX,
+          y = state.cumulativeY,
+          z = state.cumulativeZ,
+          ticks = record.ticks,
+        })
+      end
+      if record.ticks == 0 then
+        svc.actors:commitScriptedAction(actorId)
+        state.motionIndex, state.motionTick, state.motionStarted = state.motionIndex + 1, 0, false
+      else
+        state.motionTick = state.motionTick + 1
+        svc.actors:advanceScriptedAction(actorId, state.motionTick, record.ticks)
+        if state.motionTick >= record.ticks then
+          svc.actors:commitScriptedAction(actorId)
+          state.motionIndex, state.motionTick, state.motionStarted = state.motionIndex + 1, 0, false
+        else
+          return { complete = false, state = state }
+        end
+      end
+    end
+  end
+  if state.phase == "reaction" then
+    local program = engine:program(state.programId)
+    local step = program.steps[state.stepIndex]
+    local selector = step.reactionId or step.reactionSelector or 0
+    startReaction(state, svc, selector)
+    state.soundId = step.soundId
+    if step.messageId ~= nil then
+      local bindings = engine:bindings(state.leadSlot)
+      state.dialogueState = message(ctx, 265, step.messageId, bindings)
+      state.phase = "dialogue"
+    else
+      state.phase = "delay"
+    end
+  end
+  if state.phase == "dialogue" then
+    ensureReaction(state, svc)
+    local result = DialogueTask.poll(state.dialogueState, ctx)
+    if not result.complete then
+      return { complete = false, state = state }
+    end
+    state.dialogueState = nil
+    releaseEffect(state, svc)
+    state.phase = "delay"
+  end
+  if state.phase == "delay" then
+    ensureReaction(state, svc)
+    local program = engine:program(state.programId)
+    local step = program.steps[state.stepIndex]
+    local delay = step.delayTicks or 0
+    if delay > 0 then
+      state.delayRemaining = (state.delayRemaining or delay) - 1
+      if state.delayRemaining > 0 then
+        return { complete = false, state = state }
+      end
+    end
+    state.delayRemaining = nil
+    releaseEffect(state, svc)
+    state.stepIndex, state.phase = state.stepIndex + 1, "step"
+    return { complete = false, state = state }
+  end
+  if state.phase == "deltas" then
+    local program = engine:program(state.programId)
+    engine:applyDeltas(state.leadSlot, program.friendshipDelta, program.moodDelta)
+    if program.continuation then
+      local continuation = program.continuation
+      state.choiceTargets = {
+        continuation.choice0InteractionId,
+        continuation.choice1InteractionId,
+      }
+      state.choiceState = ContextChoiceTask.create({}, ctx)
+      state.phase = "choice"
+    else
+      state.phase = "reward"
+    end
+  end
+  if state.phase == "choice" then
+    local result = ContextChoiceTask.poll(state.choiceState, ctx)
+    if not result.complete then
+      return { complete = false, state = state }
+    end
+    local target = state.choiceTargets[result.result == 1 and 2 or 1]
+    if target == 0 then
+      state.phase = "reward"
+    else
+      engine:program(target)
+      state.programId, state.stepIndex = target, 1
+      state.cumulativeX, state.cumulativeY, state.cumulativeZ = 0, 0, 0
+      state.choiceState, state.choiceTargets = nil, nil
+      state.phase = "step"
+    end
+    return { complete = false, state = state }
+  end
+  if state.phase == "reward" then
+    local program = engine:program(state.programId)
+    local reward = program.reward
+    if reward == nil and program.fashionAccessoryId ~= nil then
+      reward = { kind = "fashion", selector = program.fashionAccessoryId + 1 }
+    end
+    if reward == nil and program.shinyLeafId ~= nil then
+      reward = { kind = "leaf", selector = program.shinyLeafId }
+    end
+    if reward == nil then
+      state.phase = "done"
+      return { complete = true, state = state }
+    end
+    if not state.rewardStarted then
+      local result = engine:reward(state.leadSlot, reward)
+      state.rewardStarted = true
+      local outcome = type(result) == "table" and result.outcome or result
+      local bank, id, bindings
+      if reward.kind == "fashion" then
+        bank, id = 40, outcome == "added" and 32 or 95
+        local name = type(result) == "table" and (outcome == "added" and result.plain or result.article)
+          or outcome == "added" and "Accessory"
+          or "an Accessory"
+        bindings = { svc.player and svc.player:name() or "Red", name }
+        if outcome == "added" then
+          svc.audio:play("SEQ_ME_ACCE")
+        end
+      else
+        bank, id = 40, outcome == "new" and 97 or 98
+        bindings = { svc.player and svc.player:name() or "Red", engine:bindings(state.leadSlot)[0] }
+        if outcome == "new" then
+          svc.world:setFlag(0x99C)
+          svc.audio:play("SEQ_ME_ACCE")
+        end
+      end
+      state.dialogueState = message(ctx, bank, id, bindings)
+      return { complete = false, state = state }
+    end
+    local result = DialogueTask.poll(state.dialogueState, ctx)
+    if not result.complete then
+      return { complete = false, state = state }
+    end
+    state.dialogueState, state.phase = nil, "done"
+    return { complete = true, state = state }
+  end
+  if state.phase == "done" then
+    return { complete = true, state = state }
+  end
+  return { complete = false, state = state }
+end
+
+function FollowerInteractionTask.cancel(state, reason, ctx)
+  if ctx == nil then
+    return
+  end
+  local svc = services(ctx)
+  if state.dialogueState then
+    DialogueTask.cancel(state.dialogueState, reason, ctx)
+    state.dialogueState = nil
+  end
+  if state.choiceState then
+    ContextChoiceTask.cancel(state.choiceState, reason, ctx)
+    state.choiceState = nil
+  end
+  releaseEffect(state, svc)
+  clearMotion(state, svc)
+end
+
+function FollowerInteractionTask.validate(state)
+  local function invalid()
+    return Errors.new(
+      ScriptErrors.SCRIPT_TASK_UNSERIALIZABLE,
+      "follower interaction task state is invalid",
+      { state = state }
+    )
+  end
+  if type(state) ~= "table" or not PHASES[state.phase] then
+    return invalid()
+  end
+  for key in pairs(state) do
+    if not STATE_KEYS[key] then
+      return invalid()
+    end
+  end
+  local function integer(value, minimum, maximum)
+    return type(value) == "number" and value % 1 == 0 and value >= minimum and value <= maximum
+  end
+  local function finite(value)
+    return type(value) == "number" and value == value and value ~= math.huge and value ~= -math.huge
+  end
+  if
+    not integer(state.leadSlot, 0, 5)
+    or not integer(state.programId, 1, 1023)
+    or not integer(state.stepIndex, 1, 6)
+    or not integer(state.motionId, 0, 108)
+    or not integer(state.motionIndex, 1, 10)
+    or not integer(state.motionTick, 0, 254)
+    or not finite(state.cumulativeX)
+    or not finite(state.cumulativeY)
+    or not finite(state.cumulativeZ)
+    or state.cumulativeX % 1 ~= 0
+    or state.cumulativeY % 1 ~= 0
+    or state.cumulativeZ % 1 ~= 0
+    or state.cumulativeX < -1280
+    or state.cumulativeY < -1280
+    or state.cumulativeZ < -1280
+    or state.cumulativeX > 1270
+    or state.cumulativeY > 1270
+    or state.cumulativeZ > 1270
+    or not FACING_VALUES[state.savedFacing]
+    or type(state.motionStarted) ~= "boolean"
+    or type(state.rewardStarted) ~= "boolean"
+  then
+    return invalid()
+  end
+  if state.soundId ~= nil and not integer(state.soundId, 0, 0xFFFF) then
+    return invalid()
+  end
+  if state.delayRemaining ~= nil and not integer(state.delayRemaining, 1, 0xFF) then
+    return invalid()
+  end
+  if state.effectSelector ~= nil and not integer(state.effectSelector, 1, 14) then
+    return invalid()
+  end
+  if state.choiceTargets ~= nil then
+    local count = 0
+    if
+      type(state.choiceTargets) ~= "table"
+      or not integer(state.choiceTargets[1], 0, 1023)
+      or not integer(state.choiceTargets[2], 0, 1023)
+    then
+      return invalid()
+    end
+    for key in pairs(state.choiceTargets) do
+      if key ~= 1 and key ~= 2 then
+        return invalid()
+      end
+      count = count + 1
+    end
+    if count ~= 2 then
+      return invalid()
+    end
+  end
+  if state.dialogueState ~= nil then
+    local dialogue = state.dialogueState
+    if
+      type(dialogue) ~= "table"
+      or dialogue.mode ~= "say"
+      or type(dialogue.phase) ~= "string"
+      or type(dialogue.message) ~= "table"
+      or dialogue.message.message ~= "external"
+      or not integer(dialogue.message.bank, 0, 0xFFFF)
+      or not integer(dialogue.message.id, 0, 0xFFFF)
+      or type(dialogue.bindings) ~= "table"
+      or not integer(dialogue.phaseReadyInTicks, 0, 1)
+      or state.phase ~= "dialogue" and state.phase ~= "reward"
+    then
+      return invalid()
+    end
+    for key in pairs(dialogue.message) do
+      if key ~= "message" and key ~= "bank" and key ~= "id" then
+        return invalid()
+      end
+    end
+    local bindingCount = 0
+    local bindingMinimum = math.huge
+    local bindingMaximum = -math.huge
+    for key, value in pairs(dialogue.bindings) do
+      if type(key) ~= "number" or key < 0 or key > 4 or key % 1 ~= 0 or type(value) ~= "string" then
+        return invalid()
+      end
+      bindingCount = bindingCount + 1
+      bindingMinimum = math.min(bindingMinimum, key)
+      bindingMaximum = math.max(bindingMaximum, key)
+    end
+    if
+      not (bindingCount == 5 and bindingMinimum == 0 and bindingMaximum == 4)
+      and not (bindingCount == 2 and bindingMinimum == 1 and bindingMaximum == 2)
+    then
+      return invalid()
+    end
+    for key in pairs(dialogue) do
+      if key ~= "message" and key ~= "bindings" and key ~= "mode" and key ~= "phase" and key ~= "phaseReadyInTicks" then
+        return invalid()
+      end
+    end
+    if DialogueTask.validate(dialogue) then
+      return invalid()
+    end
+  end
+  if state.choiceState ~= nil then
+    local choice = state.choiceState
+    if state.phase ~= "choice" or type(choice) ~= "table" then
+      return invalid()
+    end
+    for key in pairs(choice) do
+      if key ~= "active" and key ~= "phase" and key ~= "selected" then
+        return invalid()
+      end
+    end
+    if ContextChoiceTask.validate(choice) then
+      return invalid()
+    end
+  end
+  if
+    (state.phase == "motion") ~= (state.motionId ~= 0)
+    or (state.phase == "choice") ~= (state.choiceState ~= nil)
+    or (state.phase == "choice") ~= (state.choiceTargets ~= nil)
+    or (state.phase == "dialogue" and state.dialogueState == nil)
+    or (state.dialogueState ~= nil and state.phase ~= "dialogue" and state.phase ~= "reward")
+    or (state.phase == "reward" and (not state.rewardStarted or state.dialogueState == nil))
+    or (state.delayRemaining ~= nil and state.phase ~= "delay")
+    or (state.effectSelector ~= nil and state.phase ~= "dialogue" and state.phase ~= "delay")
+    or (state.rewardStarted and state.phase ~= "reward")
+    or (state.motionStarted and state.phase ~= "motion")
+  then
+    return invalid()
+  end
+  return nil
+end
+
+return FollowerInteractionTask

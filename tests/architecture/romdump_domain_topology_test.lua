@@ -202,6 +202,8 @@ local function expectedDigestFiles()
   for _, moduleName in ipairs(ROOT_UTILITIES) do
     expected[DIGEST_SOURCE_ROOT .. "/" .. moduleName .. ".lua"] = true
   end
+  expected[DIGEST_SOURCE_ROOT .. "/field/FollowerInteractionCacheWriter.lua"] = true
+  expected[DIGEST_SOURCE_ROOT .. "/field/FollowerInteractionCompiler.lua"] = true
   return expected
 end
 

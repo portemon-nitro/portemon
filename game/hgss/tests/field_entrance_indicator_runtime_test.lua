@@ -11,6 +11,9 @@ local ModelAsset = require("libs.assets.src.model.ModelAsset")
 local T = { tests = {} }
 
 local KINDS = { "warp_entrance", "tall_grass", "very_tall_grass", "trainer_reveal", "surf_attachment" }
+for selector = 1, 14 do
+  KINDS[#KINDS + 1] = "follower_reaction_" .. selector
+end
 
 local function staticModel(key)
   return {
@@ -70,12 +73,15 @@ local function cacheWithIndexSchema(schema)
       if kind == "warp_entrance" then
         return { model = staticModel("field-effect:warp-entrance"), lifetime = 1 }
       end
+      if kind:match("^follower_reaction_%d+$") then
+        return { definition = kind, model = staticModel("field-effect:follower-reaction-" .. kind:match("(%d+)$")) }
+      end
       return { model = staticModel("field-effect:" .. kind) }
     end,
   }
 end
 
-T.tests["loads all five current definitions including the surf attachment"] = function()
+T.tests["loads current field effects including all follower reactions"] = function()
   local bundle = FieldEntranceIndicatorRuntime.load(cacheWithIndexSchema(Contract.fieldEffects.indexSchema))
   Assert.equal(bundle.schema, Contract.fieldEffects.indexSchema)
   for _, kind in ipairs(KINDS) do

@@ -58,6 +58,7 @@ local NeighborRing = require("libs.hgss.src.presentation.NeighborRing")
 local MapProps = require("libs.hgss.src.world.MapProps")
 local MetatileBehavior = require("libs.hgss.src.world.MetatileBehavior")
 local FieldWeatherCache = require("libs.assets.src.field.FieldWeatherCache")
+local FollowerInteractionCache = require("libs.assets.src.field.FollowerInteractionCache")
 local FieldWeatherResolver = require("libs.hgss.src.world.FieldWeatherResolver")
 local DisplayContext = require("libs.ui.src.DisplayContext")
 local FieldEntranceIndicatorRuntime = require("game.hgss.src.field.FieldEntranceIndicatorRuntime")
@@ -671,6 +672,15 @@ function FieldRuntime:_load(loadOptions)
       ) --[[@as FieldWeatherCache.Catalog]]
       assert(FieldWeatherCache.validateCatalog(weatherCatalog), "field weather catalog is invalid")
       self.weatherCatalog = weatherCatalog
+      local followerInteractionCatalog = assert(
+        cacheFs:loadLua(FollowerInteractionCache.catalogPath()),
+        "follower interaction catalog is missing -- run `scripts/buildcache.sh` first"
+      )
+      assert(
+        FollowerInteractionCache.validateCatalog(followerInteractionCatalog),
+        "follower interaction catalog is invalid"
+      )
+      self.followerInteractionCatalog = followerInteractionCatalog
       -- The mon catalog behind the live party: loaded once per runtime
       -- through the ready cache path, before save validation and service
       -- construction. The shared item catalog loads beside it and is retained
@@ -683,12 +693,17 @@ function FieldRuntime:_load(loadOptions)
       self.fieldEntranceIndicatorAsset, self.fieldEntranceIndicator = FieldEntranceIndicatorRuntime.load(cacheFs)
       self.fieldEmoteModels = FieldActorEmoteRuntime.load(cacheFs)
       self.fieldEffectAssets = self.fieldEntranceIndicatorAsset
+      local terrainEffects = {
+        tall_grass = self.fieldEntranceIndicatorAsset.effects.tall_grass,
+        very_tall_grass = self.fieldEntranceIndicatorAsset.effects.very_tall_grass,
+        trainer_reveal = self.fieldEntranceIndicatorAsset.effects.trainer_reveal,
+      }
+      for selector = 1, 14 do
+        local kind = "follower_reaction_" .. selector
+        terrainEffects[kind] = self.fieldEntranceIndicatorAsset.effects[kind]
+      end
       self.fieldTerrainEffectController = require("libs.hgss.src.world.FieldTerrainEffectController").new({
-        effects = {
-          tall_grass = self.fieldEntranceIndicatorAsset.effects.tall_grass,
-          very_tall_grass = self.fieldEntranceIndicatorAsset.effects.very_tall_grass,
-          trainer_reveal = self.fieldEntranceIndicatorAsset.effects.trainer_reveal,
-        },
+        effects = terrainEffects,
         modelFactory = require("libs.hgss.src.presentation.FieldTerrainEffectModelFactory").new(),
       })
 
@@ -1237,6 +1252,8 @@ function FieldRuntime:_load(loadOptions)
         fieldMoves = self.pokemonMenu.fieldMoves,
         pokemonNaming = self.pokemonNaming,
         followingMon = self.followingMon,
+        followerInteractionCatalog = self.followerInteractionCatalog,
+        clock = self.localClock,
         followerTransition = self.followingMonTransition,
         starterBalls = self.starterBalls,
       })
@@ -1984,6 +2001,7 @@ function FieldRuntime:_releaseAll()
   self.monCatalog, self.monLanguage, self.monService = nil, nil, nil
   self.bagService, self.bagCursor = nil, nil
   self.itemCatalog = nil
+  self.followerInteractionCatalog = nil
   self.starterProvider, self.starterChoice, self.pokemonNaming = nil, nil, nil
   self.partySelection = nil
   self.pokemonMenu, self.menuLaneWarps = nil, nil

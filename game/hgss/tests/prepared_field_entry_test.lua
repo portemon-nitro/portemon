@@ -6,6 +6,7 @@
 local Assert = require("tests.support.Assert")
 local CollisionFixture = require("tests.support.CollisionFixture")
 local MapAssetCache = require("libs.assets.src.MapAssetCache")
+local FieldMapDataCache = require("libs.assets.src.field.FieldMapDataCache")
 local PreparedFieldEntry = require("game.hgss.src.field.PreparedFieldEntry")
 
 local T = {}
@@ -44,7 +45,7 @@ local function bedroomFixture()
   }
   files[scene.collision.file] = CollisionFixture.asset(32, 32)
   files[string.format("data/generated/field/maps/%04d/field.lua", mapId)] = {
-    schema = "g4-field-map-v10",
+    schema = FieldMapDataCache.FIELD_SCHEMA,
     initScripts = {},
     mapId = mapId,
     mapSymbol = symbol,
@@ -201,7 +202,7 @@ local function pollUntilReady(entry, builds, limit)
       builds[1].makeReady()
     end
     local ready, failure = entry:poll()
-    Assert.isNil(failure, "preparation must not fail while polling to ready")
+    Assert.isNil(failure, "preparation must not fail while polling to ready: " .. tostring(failure))
     if ready then
       return true
     end
@@ -214,7 +215,7 @@ function T.staging_advances_the_bedroom_and_reports_readiness_once()
   local entry, builds = stagedEntry(log)
   Assert.isFalse(entry:isReady(), "a fresh entry is not ready")
   local ready, failure = entry:poll()
-  Assert.isNil(failure, "the first poll must not fail")
+  Assert.isNil(failure, "the first poll must not fail: " .. tostring(failure))
   Assert.isFalse(ready, "the staged scene stays pending until it completes")
   Assert.equal(#builds, 1, "the first poll starts exactly one staged scene build")
   Assert.isTrue(pollUntilReady(entry, builds), "repeated polls complete the staged bedroom")

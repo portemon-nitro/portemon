@@ -3,6 +3,7 @@
 
 local Assert = require("tests.support.Assert")
 local BagSave = require("libs.hgss.src.save.BagSave")
+local FashionCaseState = require("libs.hgss.src.save.FashionCaseState")
 local FieldEventState = require("libs.hgss.src.field.FieldEventState")
 local FieldMovement = require("tests.acceptance.support.FieldMovement")
 local FieldScriptSymbols = require("libs.assets.src.field.FieldScriptSymbols")
@@ -42,6 +43,7 @@ local function newGame(versionId)
       options = { textSpeed = "fastest", textFrame = 0 },
     },
     fieldTravel = { lastHealSpawn = "SPAWN_NEW_BARK" },
+    fashionCase = FashionCaseState.empty(),
     playTime = PlayTime.new(),
     worldState = FieldEventState.new(),
     mons = MonBucket.emptyForVersion(versionId),

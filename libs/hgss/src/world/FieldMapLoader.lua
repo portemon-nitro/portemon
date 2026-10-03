@@ -70,6 +70,7 @@ FieldMapLoader.__index = FieldMapLoader
 ---@field mapSection string
 ---@field mapSectionNativeId integer exact numeric MAPSEC_* identity; never the header id
 ---@field followMode string source map-header follow policy: ALLOW, HEIGHT_RESTRICT, or PREVENT
+---@field effectiveWeatherId integer current resolved runtime weather
 ---@field sceneRuntime table<string, unknown>|nil presentation-only visual scene runtime
 ---@field mapProps MapProps? semantic door/prop resolver; present for logical (non-outdoor) maps, which load an eager central collision regardless of presentation
 ---@field scene table<string, unknown>

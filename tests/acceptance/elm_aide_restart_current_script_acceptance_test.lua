@@ -48,6 +48,7 @@ local function harness()
           options = { textSpeed = "fastest", textFrame = 0 },
         },
         fieldTravel = { lastHealSpawn = "SPAWN_NEW_BARK" },
+        fashionCase = require("libs.hgss.src.save.FashionCaseState").empty(),
         playTime = PlayTime.new(),
         worldState = FieldEventState.new({ vars = { [VAR_SCENE_ELMS_LAB] = 1 } }),
         mons = require("tests.support.MonBucket").emptyForVersion(versionId),

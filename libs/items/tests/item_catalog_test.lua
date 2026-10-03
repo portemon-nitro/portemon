@@ -47,7 +47,7 @@ function T.catalog_exposes_the_full_locked_item_definition()
   -- fields are asserted through TM/HM and berry representatives below.
   Assert.keySet(
     potion,
-    "canHold,description,friendshipBoost,heldFormEffect,icon,isBall,isHm,name,nameIndefinite,namePlural,nativeId,partyUse,pocket,preventToss,selectable",
+    "canHold,description,friendshipBoost,heldFormEffect,icon,isBall,isHm,name,nameIndefinite,namePlural,nativeId,naturalGiftPower,partyUse,pocket,preventToss,selectable",
     "item definitions carry exactly the locked always-present fields"
   )
   Assert.equal(potion.name, "Potion")

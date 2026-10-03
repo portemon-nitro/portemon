@@ -79,13 +79,15 @@ local function newRenderer()
       return {}
     end,
   }
-  local renderer = Renderer.new({
-    effects = {
-      tall_grass = { model = MODEL, placementOffset = { x = 0, y = 0, z = 0.625 } },
-      very_tall_grass = { model = MODEL, placementOffset = { x = 0, y = 0, z = 0.625 } },
-      trainer_reveal = { model = MODEL, placementOffset = { x = 0, y = 0, z = 0.5 } },
-    },
-  }, pool)
+  local effects = {
+    tall_grass = { model = MODEL, placementOffset = { x = 0, y = 0, z = 0.625 } },
+    very_tall_grass = { model = MODEL, placementOffset = { x = 0, y = 0, z = 0.625 } },
+    trainer_reveal = { model = MODEL, placementOffset = { x = 0, y = 0, z = 0.5 } },
+  }
+  for selector = 1, 14 do
+    effects["follower_reaction_" .. selector] = { model = MODEL }
+  end
+  local renderer = Renderer.new({ effects = effects }, pool)
   local function cleanup()
     renderer:dispose()
     for _, name in ipairs(moduleNames) do
@@ -308,6 +310,37 @@ T.tests["trainer reveal anchors to the actor coordinate with source placement"] 
   Assert.equal(result[1].transform[14], 3)
   Assert.equal(result[1].transform[15], -10.0)
   Assert.equal(result[1].fieldEffect, "trainer_reveal")
+end
+
+T.tests["follower reaction uses the actor's physical surface projection"] = function()
+  local renderer, cleanup = newRenderer()
+  local runtimeMap = {
+    projectPhysicalPoint = function(_, fieldX, fieldZ, cellKey, sourceSurfaceId)
+      Assert.equal(fieldX, 2)
+      Assert.equal(fieldZ, 5)
+      Assert.equal(cellKey, "1:0")
+      Assert.equal(sourceSurfaceId, 7)
+      return { worldX = 11, worldY = 3, worldZ = -4 }
+    end,
+  }
+  local items = renderer:drawItems({
+    instances = {
+      {
+        kind = "follower_reaction_3",
+        fieldX = 2,
+        fieldZ = 5,
+        cellKey = "1:0",
+        sourceSurfaceId = 7,
+        modelInstance = renderer:newInstance("follower_reaction_3"),
+      },
+    },
+  }, runtimeMap)
+  Assert.equal(#items, 1)
+  Assert.equal(items[1].transform[13], 11)
+  Assert.equal(items[1].transform[14], 3)
+  Assert.equal(items[1].transform[15], -4)
+  Assert.equal(items[1].fieldEffect, "follower_reaction_3")
+  cleanup()
 end
 
 return T

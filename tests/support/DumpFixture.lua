@@ -1,11 +1,10 @@
 -- Test helper: a synthetic HGSS-shaped NDS and a full extraction of it into an
--- in-memory cache. The tree carries the four required NARC paths (personal,
--- moves, messages, map_matrices) plus the readiness sound file, one arm9
+-- in-memory cache. The tree carries the required NARC paths plus the readiness sound file, one arm9
 -- overlay (fileId 0), and one unmapped file (fileId 1), so both the extractor
 -- and RomFs can be exercised end to end without a real ROM.
 --
 -- Resulting FAT layout: 0 overlay9, 1 unmapped, 2 a/0/0/2, 3 a/0/1/1,
--- 4 a/0/2/7, 5 a/0/4/1, 6 data/sound/gs_sound_data.sdat (7 entries total).
+-- map/event archives, generated source-family archives, and the readiness sound.
 
 local NdsBuilder = require("tests.support.NdsBuilder")
 local NarcBuilder = require("tests.support.NarcBuilder")
@@ -59,6 +58,34 @@ function DumpFixture.spec()
                 {
                   name = "4",
                   files = { { name = "1", content = NarcBuilder.build({ DumpFixture.mapMatrixMember() }) } },
+                },
+              },
+            },
+            {
+              name = "1",
+              files = {},
+              dirs = {
+                {
+                  name = "6",
+                  files = { { name = "9", content = NarcBuilder.build({ "PERF" }) } },
+                },
+              },
+            },
+            {
+              name = "2",
+              files = {},
+              dirs = {
+                {
+                  name = "2",
+                  files = {
+                    { name = "0", content = NarcBuilder.build({ "RULE" }) },
+                    { name = "1", content = NarcBuilder.build({ "PROG" }) },
+                    { name = "2", content = NarcBuilder.build({ "MOTN" }) },
+                  },
+                },
+                {
+                  name = "3",
+                  files = { { name = "1", content = NarcBuilder.build({ "SPEC" }) } },
                 },
               },
             },
