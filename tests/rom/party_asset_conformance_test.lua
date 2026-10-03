@@ -79,7 +79,7 @@ function T.every_selected_member_is_attributable_and_frames_resolve(romFs, versi
     end
   end
   local manifest = bundle.manifest
-  Assert.equal(manifest.schema, "g4-party-presentation-v5")
+  Assert.equal(manifest.schema, "g4-party-presentation-v6")
   local referenced = PartyCache.referencedPaths(manifest)
   Assert.isTrue(#referenced > 0, "the manifest references realized images")
   for _, path in ipairs(referenced) do
@@ -954,6 +954,12 @@ function T.switch_selection_chrome_and_empty_take_template_come_from_source(romF
   flush()
   Assert.isTrue(#expected > 0, "the empty-take message carries display segments")
   Assert.deepEqual(template.segments, expected, "empty-take template segments")
+end
+
+function T.generated_party_manifest_declares_the_full_bag_schema(romFs, versionId)
+  local bundle = bundleFor(romFs, versionId)
+  Assert.equal(bundle.manifest.schema, "g4-party-presentation-v6")
+  Assert.notNil(bundle.manifest.text.templates.bagFull, "the full-bag template resolves")
 end
 
 local suite = RomSuite.fromFacts(T)

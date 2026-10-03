@@ -245,6 +245,7 @@ local function partyManifest()
       templates = {
         switchPrompt = { segments = { { kind = "text", value = "Switch?" } } },
         takeNoItem = { segments = { { kind = "text", value = "Nothing held." } } },
+        bagFull = { segments = { { kind = "text", value = "The Bag is full." } } },
       },
       roles = {
         ordinary = {
