@@ -246,13 +246,14 @@ function T.compiled_font_def_matches_the_real_focus_and_color_contract(romFs, _)
   Assert.equal(focus.height, 32)
   local focusW, focusH, _ = PngReader.rgba(bundle.fonts[0].focusIndicators)
   for field = 0, focus.count - 1 do
-    for _, slot in ipairs({ 0x0B, 0x0C, 0x0D, 0x0E }) do
-      local rect = assert(focus.frames[field].layers[slot])
-      Assert.equal(rect.width, 24, "focus slot " .. slot .. " must be 24 wide")
-      Assert.equal(rect.height, 32, "focus slot " .. slot .. " must be 32 tall")
+    for index, layer in ipairs(focus.frames[field].layers) do
+      local rect = assert(layer.rect)
+      Assert.equal(layer.paletteSlot, ({ 0x0B, 0x0C, 0x0D, 0x0E })[index])
+      Assert.equal(rect.width, 24, "focus slot " .. layer.paletteSlot .. " must be 24 wide")
+      Assert.equal(rect.height, 32, "focus slot " .. layer.paletteSlot .. " must be 32 tall")
       Assert.isTrue(
         rect.x + rect.width <= focusW and rect.y + rect.height <= focusH,
-        "focus slot " .. slot .. " must lie inside the focus PNG"
+        "focus slot " .. layer.paletteSlot .. " must lie inside the focus PNG"
       )
     end
   end
@@ -260,12 +261,13 @@ function T.compiled_font_def_matches_the_real_focus_and_color_contract(romFs, _)
   local member6 = assert(assert(romFs:openNarc("font")):readMember(6))
   Assert.equal(bundle.dependencies.focusIndicatorMemberSha1, Hashing.sha1hex(member6))
 
-  Assert.deepEqual(focus.sourcePaletteSlots, { 0x0B, 0x0C, 0x0D, 0x0E })
   for field = 0, focus.count - 1 do
     local layers = focus.frames[field].layers
-    Assert.notNil(layers, "focus frame " .. field .. " must publish its source-slot mask layers")
-    for _, slot in ipairs(focus.sourcePaletteSlots) do
-      local rect = assert(layers[slot], "source slot " .. slot .. " must have a layer rect")
+    Assert.notNil(layers, "focus frame " .. field .. " must publish its ordered mask layers")
+    for index, layer in ipairs(layers) do
+      local slot = layer.paletteSlot
+      Assert.equal(slot, ({ 0x0B, 0x0C, 0x0D, 0x0E })[index])
+      local rect = assert(layer.rect, "source slot " .. slot .. " must have a layer rect")
       Assert.equal(rect.width, 24)
       Assert.equal(rect.height, 32)
       Assert.isTrue(

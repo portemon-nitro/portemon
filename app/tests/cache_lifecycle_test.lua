@@ -11,6 +11,7 @@ local FakeCache = require("tests.support.FakeCache")
 local SaveFs = require("libs.storage.src.SaveFs")
 local GameSave = require("libs.hgss.src.save.GameSave")
 local BagSave = require("libs.hgss.src.save.BagSave")
+local MartSave = require("libs.hgss.src.save.MartSave")
 local GameSaveStore = require("libs.hgss.src.save.GameSaveStore")
 local MainMenuState = require("app.src.mainmenu.MainMenuState")
 local FieldCoverage = require("libs.hgss.src.world.FieldCoverage")
@@ -67,13 +68,14 @@ local function record(saveId, overrides)
     terrainDependencyHash = "terrain-heartgold",
     facing = "south",
     playerData = {
-      profile = { name = "GOLD", gender = 0, trainerId = 0, money = 3000, badges = 0 },
+      profile = { name = "GOLD", gender = 0, trainerId = 0, money = 3000, badges = 0, nationalDex = false },
       options = { textFrame = 0, textSpeed = "mid" },
     },
     fieldTravel = { lastHealSpawn = "SPAWN_NEW_BARK" },
     world = { flags = {}, variables = {}, objects = {}, rng = { state = 1, calls = 0 } },
     scripts = {},
     bag = BagSave.empty(),
+    mart = MartSave.empty(),
     auxiliaryUi = { requested = "shown", state = "shown" },
     audio = {},
     mons = MonsSave.empty("test-catalog-fingerprint", 7),
@@ -396,6 +398,24 @@ function T.menu_reselection_retires_the_old_epoch_on_the_shared_process_service(
   end)
 end
 
+function T.app_and_selected_provisioner_pump_the_shared_service_once_per_frame()
+  withAppStubs(function(App, context)
+    local Provisioner = require("app.src.DerivedAssetProvisioner")
+    App.state = { update = function() end }
+    App.provisioner = Provisioner.new({ versionId = VERSION, service = assert(App.service) })
+    local before = context.updates
+
+    App.update(1 / 60)
+
+    Assert.equal(context.updates - before, 1, "App and its selected provisioner share one service pump")
+    App.provisioner:dispose()
+    App.provisioner = nil
+    before = context.updates
+    App.update(1 / 60)
+    Assert.equal(context.updates - before, 1, "quiescence without a provisioner still pumps the service")
+  end)
+end
+
 function T.replacement_rom_waits_for_source_quiescence_before_raw_mutation()
   withAppStubs(function(App, context)
     local RomImporter = require("romdump.src.source.RomImporter")
@@ -618,8 +638,7 @@ function T.provisioner_wraps_a_selected_service_with_string_urgencies_and_retire
     provisioner:startBackgroundWarmup()
     Assert.equal(seen.warmups, 2, "warmup authorization forwards without cache work")
     Assert.equal(seen.warmupEpoch, 7, "warmup authorization carries the borrowed epoch")
-    provisioner:update()
-    Assert.equal(seen.updates, 1, "provisioner updates pump service observations")
+    Assert.equal(type(provisioner.update), "nil", "the provisioner does not own service pumping")
     provisioner:dispose()
     Assert.equal(seen.retired, 7, "disposal retires the borrowed epoch")
     Assert.equal(seen.shutdowns, 0, "disposal never shuts down the process service")

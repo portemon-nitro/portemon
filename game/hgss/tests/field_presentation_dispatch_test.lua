@@ -15,9 +15,11 @@ local TARGET_MODULE = "game.hgss.src.field.FieldPresentationResources"
 
 local CONSTRUCTOR_MODULES = {
   "libs.assets.src.BagCache",
+  "libs.assets.src.MartCache",
   "libs.assets.src.PartyCache",
   "libs.hgss.src.presentation.BagHeroRenderer",
   "libs.hgss.src.ui.BagRenderer",
+  "libs.hgss.src.ui.MartRenderer",
   "libs.hgss.src.ui.FieldDialogueRenderer",
   "libs.hgss.src.ui.FieldMenuRenderer",
   "libs.hgss.src.ui.FieldSignpostRenderer",
@@ -70,6 +72,11 @@ local function buildDoubles(sink, calls)
   local card = drawReleaser("card", sink, calls, "card")
   local bag = drawReleaser("bag", sink, calls, "bag")
   return {
+    ["libs.assets.src.MartCache"] = {
+      loadManifest = function(_)
+        return { compiled = true }
+      end,
+    },
     ["libs.assets.src.BagCache"] = {
       loadManifest = function(_)
         return { compiled = true }
@@ -88,6 +95,11 @@ local function buildDoubles(sink, calls)
     ["libs.hgss.src.ui.BagRenderer"] = {
       new = function(_)
         return bag
+      end,
+    },
+    ["libs.hgss.src.ui.MartRenderer"] = {
+      new = function(_)
+        return drawReleaser("mart", sink, calls, "mart")
       end,
     },
     ["libs.hgss.src.ui.FieldDialogueRenderer"] = {
@@ -610,30 +622,422 @@ function T.party_binding_installs_and_retires_with_presentation()
   end)
 end
 
+-- Producer-backed party wait coverage: the child status in the tests below
+-- comes from a real PartyScreenState instead of a hand-authored record,
+-- so the transition draw proves the production wait contract. Only the
+-- app-exit envelope (phase, step, brightness) is supplied by the test,
+-- mirroring what the menu flow retains for an outgoing child.
+---@param ready boolean
+---@param failure string?
+---@return table screen
+---@return fun(): integer cancelCount
+local function waitingPartyChild(ready, failure)
+  local PartyScreenState = require("game.hgss.src.field.PartyScreenState")
+  local PartyPresentationFixture = require("tests.support.PartyPresentationFixture")
+  local ScreenTopology = require("libs.ui.src.ScreenTopology")
+  local catalog = {
+    species = function(_)
+      return { name = "Chikorita", genderRatio = 127 }
+    end,
+    item = function(_, item)
+      assert(item == "NONE")
+      return { name = "None" }
+    end,
+    iconSelection = function(_, mon)
+      return mon.species .. "/f" .. mon.form
+    end,
+  }
+  local service = {
+    partyCount = function(_)
+      return 2
+    end,
+    partyRevision = function(_)
+      return 1
+    end,
+    partyMon = function(_)
+      return {
+        species = "CHIKORITA",
+        form = 0,
+        isEgg = false,
+        personality = 0,
+        nickname = "CHIKO",
+        heldItem = "NONE",
+        moves = { { move = "TACKLE", pp = 35, ppUps = 0 } },
+        condition = { currentHp = 20, status = 0 },
+      }
+    end,
+    partyMonDerived = function(_)
+      return { maxHp = 20, level = 5 }
+    end,
+    catalog = function(_)
+      return catalog
+    end,
+    swapPartyMons = function(_, _, _) end,
+  }
+  local cancels = 0
+  local screen = PartyScreenState.new({
+    service = service,
+    manifest = PartyPresentationFixture.manifest(),
+    measureDisplay = function()
+      return {
+        width = 800,
+        height = 600,
+        topology = ScreenTopology.oneDisplay({
+          id = "main",
+          rect = { x = 0, y = 0, width = 800, height = 600 },
+          role = "world",
+          touch = false,
+        }),
+        pixelRatio = 1,
+        signature = "party-wait-transition-test:800x600",
+      }
+    end,
+    prepareIcons = function(_)
+      return ready, failure
+    end,
+    cancelIconPreparation = function()
+      cancels = cancels + 1
+    end,
+  })
+  screen:updateFixed({})
+  return screen, function()
+    return cancels
+  end
+end
+
 function T.party_wait_renders_without_icon_getters()
   local sink, calls = {}, {}
-  withProductionComposition(sink, calls, compositionRuntime(), function(resources)
-    local frame = { x = 0, y = 0, width = 640, height = 480 }
-    resources:drawApplication(
-      FieldApplicationIds.POKEMON,
-      { child = { preparationState = "pending", layout = { frame = frame } } },
-      drawRuntime()
-    )
-    Assert.equal(#sink, 1, "the wait renders exactly one message")
-    Assert.equal(sink[1][1], "text", "pending party icons render as text, never icon getters")
-    resources:drawApplication(
-      FieldApplicationIds.POKEMON,
-      { child = { preparationState = "failed", preparationError = "boom", layout = { frame = frame } } },
-      drawRuntime()
-    )
-    Assert.equal(#sink, 2, "the failure renders exactly one message")
-    Assert.equal(sink[1][1], "text", "failed party icons render as text, never icon getters")
-    Assert.isTrue(
-      tostring(sink[2][2]):find("boom", 1, true) ~= nil,
-      "the failure message carries the preparation cause"
-    )
-    resources:dispose()
+  local savedLove = rawget(_G, "love")
+  local graphics = require("tests.support.FakeGraphics").new({})
+  graphics.getDimensions = function()
+    error("party transition uses its resolved pane placement")
+  end
+  rawset(_G, "love", { graphics = graphics })
+  local ok, err = pcall(function()
+    withProductionComposition(sink, calls, compositionRuntime(), function(resources)
+      local LayoutGeometry = require("libs.ui.src.LayoutGeometry")
+      local frame = { x = 0, y = 0, width = 256, height = 192 }
+      local placement = LayoutGeometry.centeredFit({ x = 48, y = 36, width = 256, height = 192 }, 256, 192)
+      local plan = {
+        inputKey = "party",
+        panes = {
+          { id = "content", placement = placement },
+          {
+            id = "detail",
+            placement = LayoutGeometry.centeredFit({ x = 420, y = 180, width = 256, height = 192 }, 256, 192),
+          },
+        },
+      }
+      resources:drawApplication(
+        FieldApplicationIds.POKEMON,
+        {
+          child = {
+            preparationState = "pending",
+            layout = { frame = frame },
+            presentation = plan,
+          },
+          transition = { phase = "app_exit", step = 3, brightnessCoefficient = 7 },
+        },
+        drawRuntime()
+      )
+      Assert.equal(#sink, 1, "the wait renders exactly one message")
+      Assert.equal(sink[1][1], "text", "pending party icons render as text, never icon getters")
+      Assert.equal(#graphics.rectangles, 3, "the outgoing shutter and sub-pane brightness cover the Party wait")
+      Assert.deepEqual(
+        { graphics.rectangles[1].x, graphics.rectangles[1].y, graphics.rectangles[1].w, graphics.rectangles[1].h },
+        { 0, 0, 256, 48 },
+        "the Party wait uses the same source shutter geometry"
+      )
+      Assert.deepEqual(
+        graphics.scissorIntersections[1].effective,
+        { placement.frame.x, placement.frame.y, placement.frame.width, placement.frame.height },
+        "the Party wait shutter stays inside its resolved content pane"
+      )
+      Assert.equal(graphics.rectangles[3].color[4], 7 / 16, "the detail pane keeps its exit brightness")
+      resources:drawApplication(
+        FieldApplicationIds.POKEMON,
+        {
+          child = {
+            preparationState = "failed",
+            preparationError = "boom",
+            layout = { frame = frame },
+            presentation = plan,
+          },
+        },
+        drawRuntime()
+      )
+      Assert.equal(#sink, 2, "the failure renders exactly one message")
+      Assert.equal(sink[1][1], "text", "failed party icons render as text, never icon getters")
+      Assert.isTrue(
+        tostring(sink[2][2]):find("boom", 1, true) ~= nil,
+        "the failure message carries the preparation cause"
+      )
+      resources:dispose()
+    end)
   end)
+  rawset(_G, "love", savedLove)
+  if not ok then
+    error(err, 0)
+  end
+end
+
+-- A pending producer wait status draws through the app-exit transition:
+-- the wait text renders from the producer layout and the shutter is
+-- clipped to the real resolved party pane, without icon getters.
+function T.pending_producer_wait_draws_through_the_app_exit_transition()
+  local screen, cancelCount = waitingPartyChild(false, nil)
+  local waiting = screen:status()
+  Assert.equal(waiting.preparationState, "pending", "the producer child under test is actually waiting")
+  local sink, calls = {}, {}
+  local savedLove = rawget(_G, "love")
+  local graphics = require("tests.support.FakeGraphics").new({})
+  graphics.getDimensions = function()
+    error("party transition uses its resolved pane placement")
+  end
+  rawset(_G, "love", { graphics = graphics })
+  local ok, err = pcall(function()
+    withProductionComposition(sink, calls, compositionRuntime(), function(resources)
+      resources:drawApplication(
+        FieldApplicationIds.POKEMON,
+        {
+          child = waiting,
+          transition = { phase = "app_exit", step = 3, brightnessCoefficient = 7 },
+        },
+        drawRuntime()
+      )
+      Assert.equal(#sink, 1, "the pending wait renders exactly one message")
+      Assert.equal(sink[1][1], "text", "pending party icons render as text, never icon getters")
+      Assert.equal(#graphics.rectangles, 2, "the outgoing shutter draws its two bars over the pending wait")
+      Assert.deepEqual(
+        { graphics.rectangles[1].color[1], graphics.rectangles[1].color[2], graphics.rectangles[1].color[3] },
+        { 0, 0, 0 },
+        "the pending wait shutter is opaque black"
+      )
+      local contentFrame = assert(waiting.presentation.panes[1].placement.frame, "the wait plan carries its frame")
+      Assert.deepEqual(
+        graphics.scissorIntersections[1].effective,
+        { contentFrame.x, contentFrame.y, contentFrame.width, contentFrame.height },
+        "the pending wait shutter stays inside its resolved content pane"
+      )
+      resources:dispose()
+    end)
+  end)
+  rawset(_G, "love", savedLove)
+  screen:dispose()
+  Assert.equal(cancelCount(), 1, "the waiting screen releases its preparation exactly once")
+  if not ok then
+    error(err, 0)
+  end
+end
+
+-- A failed producer wait status uses the same drawable contract: the
+-- failure text stays visible beneath the same party transition plan and
+-- disposal still releases preparation exactly once.
+function T.failed_producer_wait_draws_through_the_app_exit_transition()
+  local screen, cancelCount = waitingPartyChild(false, "icons unavailable")
+  local waiting = screen:status()
+  Assert.equal(waiting.preparationState, "failed", "the producer child under test actually failed")
+  local sink, calls = {}, {}
+  local savedLove = rawget(_G, "love")
+  local graphics = require("tests.support.FakeGraphics").new({})
+  graphics.getDimensions = function()
+    error("party transition uses its resolved pane placement")
+  end
+  rawset(_G, "love", { graphics = graphics })
+  local ok, err = pcall(function()
+    withProductionComposition(sink, calls, compositionRuntime(), function(resources)
+      resources:drawApplication(
+        FieldApplicationIds.POKEMON,
+        {
+          child = waiting,
+          transition = { phase = "app_exit", step = 3, brightnessCoefficient = 7 },
+        },
+        drawRuntime()
+      )
+      Assert.equal(#sink, 1, "the failed wait renders exactly one message")
+      Assert.equal(sink[1][1], "text", "failed party icons render as text, never icon getters")
+      Assert.isTrue(
+        tostring(sink[1][2]):find("icons unavailable", 1, true) ~= nil,
+        "the failure message carries the preparation cause"
+      )
+      Assert.equal(#graphics.rectangles, 2, "the outgoing shutter draws its two bars over the failed wait")
+      local contentFrame = assert(waiting.presentation.panes[1].placement.frame, "the wait plan carries its frame")
+      Assert.deepEqual(
+        graphics.scissorIntersections[1].effective,
+        { contentFrame.x, contentFrame.y, contentFrame.width, contentFrame.height },
+        "the failed wait shutter stays inside its resolved content pane"
+      )
+      resources:dispose()
+    end)
+  end)
+  rawset(_G, "love", savedLove)
+  screen:dispose()
+  Assert.equal(cancelCount(), 1, "the failed screen releases its preparation exactly once")
+  if not ok then
+    error(err, 0)
+  end
+end
+
+function T.menu_app_exit_uses_pane_local_shutter_and_brightness()
+  local coefficients = { 0, 2, 5, 7, 10, 13, 16 }
+  for step, coefficient in ipairs(coefficients) do
+    local sourceStep = step - 1
+    local sink, calls = {}, {}
+    local savedLove = rawget(_G, "love")
+    local graphics = require("tests.support.FakeGraphics").new({})
+    graphics.getDimensions = function()
+      error("menu transitions do not cover the host window")
+    end
+    rawset(_G, "love", { graphics = graphics })
+    local ok, err = pcall(function()
+      withProductionComposition(sink, calls, compositionRuntime(), function(resources)
+        local LayoutGeometry = require("libs.ui.src.LayoutGeometry")
+        local function placement(x, y)
+          return LayoutGeometry.centeredFit({ x = x, y = y, width = 256, height = 192 }, 256, 192)
+        end
+        local mainPlacement = placement(48, 36)
+        local subPlacement = placement(420, 180)
+        local plan = {
+          panes = {
+            { id = "content", placement = mainPlacement, interactive = true },
+            { id = "detail", placement = subPlacement, interactive = false },
+          },
+          frames = {},
+          content = {},
+          inputKey = "party",
+          render = function(_, _, _) end,
+          mapInput = function(_, _, _) end,
+        }
+        resources:drawApplication(
+          FieldApplicationIds.POKEMON,
+          {
+            child = { open = true, presentation = plan },
+            transition = { phase = "app_exit", step = sourceStep, brightnessCoefficient = coefficient },
+          },
+          drawRuntime()
+        )
+
+        local edge = 16 * sourceStep
+        Assert.equal(#graphics.rectangles, 3, "the exit draws two main shutter bars and one sub overlay")
+        Assert.deepEqual(
+          { graphics.rectangles[1].x, graphics.rectangles[1].y, graphics.rectangles[1].w, graphics.rectangles[1].h },
+          { 0, 0, 256, edge },
+          "the top shutter edge follows the source step"
+        )
+        Assert.deepEqual(
+          {
+            graphics.rectangles[2].x,
+            graphics.rectangles[2].y,
+            graphics.rectangles[2].w,
+            graphics.rectangles[2].h,
+          },
+          { 0, 192 - edge, 256, edge },
+          "the bottom shutter edge follows the source step"
+        )
+        Assert.deepEqual(
+          { graphics.rectangles[1].color[1], graphics.rectangles[1].color[2], graphics.rectangles[1].color[3] },
+          { 0, 0, 0 },
+          "the main shutter is opaque black"
+        )
+        Assert.equal(graphics.rectangles[3].color[4], coefficient / 16, "the sub pane follows source brightness")
+        Assert.equal(
+          graphics.rectangles[1].h + graphics.rectangles[2].h,
+          math.min(192, 32 * sourceStep),
+          "the two shutter bars cover exactly the source distance"
+        )
+
+        local mainClip = graphics.scissorIntersections[1].effective
+        local subClip = graphics.scissorIntersections[2].effective
+        Assert.deepEqual(
+          mainClip,
+          { mainPlacement.frame.x, mainPlacement.frame.y, mainPlacement.frame.width, mainPlacement.frame.height },
+          "the main shutter is clipped to its inset app pane"
+        )
+        Assert.deepEqual(
+          subClip,
+          { subPlacement.frame.x, subPlacement.frame.y, subPlacement.frame.width, subPlacement.frame.height },
+          "the sub brightness is clipped to its separate app pane"
+        )
+        Assert.isTrue(
+          mainClip[1] > 0 and mainClip[2] > 0 and mainClip[1] + mainClip[3] < 800,
+          "the main shutter leaves the host matte outside its pane untouched"
+        )
+        Assert.isTrue(
+          subClip[1] > mainClip[1] + mainClip[3] and subClip[2] > mainClip[2],
+          "the sub overlay remains in its distinct host pane"
+        )
+        if sourceStep == 0 then
+          Assert.equal(graphics.rectangles[1].h + graphics.rectangles[2].h, 0, "step zero leaves the aperture open")
+          Assert.equal(graphics.rectangles[3].color[4], 0, "step zero leaves sub brightness unchanged")
+        elseif sourceStep == 6 then
+          Assert.equal(graphics.rectangles[1].h + graphics.rectangles[2].h, 192, "step six closes the full pane")
+          Assert.equal(graphics.rectangles[1].y + graphics.rectangles[1].h, 96, "the top bar reaches center")
+          Assert.equal(graphics.rectangles[2].y, 96, "the bottom bar meets the top bar at center")
+        end
+        resources:dispose()
+      end)
+    end)
+    rawset(_G, "love", savedLove)
+    if not ok then
+      error(err, 0)
+    end
+  end
+end
+
+function T.menu_return_draws_brightness_inside_retained_panes_without_a_child()
+  local savedLove = rawget(_G, "love")
+  local cases = {
+    { applicationId = FieldApplicationIds.BAG, inputKey = "bag", mainId = "interaction", subId = "hero" },
+    { applicationId = FieldApplicationIds.POKEMON, inputKey = "party", mainId = "content", subId = "detail" },
+  }
+  for _, case in ipairs(cases) do
+    local sink, calls = {}, {}
+    local graphics = require("tests.support.FakeGraphics").new({})
+    graphics.getDimensions = function()
+      error("menu return does not cover the host window")
+    end
+    rawset(_G, "love", { graphics = graphics })
+    local ok, err = pcall(function()
+      withProductionComposition(sink, calls, compositionRuntime(), function(resources)
+        local LayoutGeometry = require("libs.ui.src.LayoutGeometry")
+        local mainPlacement = LayoutGeometry.centeredFit({ x = 48, y = 36, width = 256, height = 192 }, 256, 192)
+        local subPlacement = LayoutGeometry.centeredFit({ x = 420, y = 180, width = 256, height = 192 }, 256, 192)
+        resources:drawApplication(
+          case.applicationId,
+          {
+            transition = {
+              phase = "menu_return",
+              brightnessCoefficient = 9,
+              inputKey = case.inputKey,
+              panes = {
+                { id = case.mainId, placement = mainPlacement },
+                { id = case.subId, placement = subPlacement },
+              },
+            },
+          },
+          drawRuntime()
+        )
+        Assert.equal(#graphics.rectangles, 2, "menu return overlays both retained app panes")
+        Assert.equal(graphics.rectangles[1].color[4], 9 / 16, "the main pane uses the return brightness")
+        Assert.equal(graphics.rectangles[2].color[4], 9 / 16, "the sub pane uses the return brightness")
+        Assert.deepEqual(
+          graphics.scissorIntersections[1].effective,
+          { mainPlacement.frame.x, mainPlacement.frame.y, mainPlacement.frame.width, mainPlacement.frame.height },
+          "main return brightness stays inside its retained placement"
+        )
+        Assert.deepEqual(
+          graphics.scissorIntersections[2].effective,
+          { subPlacement.frame.x, subPlacement.frame.y, subPlacement.frame.width, subPlacement.frame.height },
+          "sub return brightness stays inside its retained placement"
+        )
+        resources:dispose()
+      end)
+    end)
+    rawset(_G, "love", savedLove)
+    if not ok then
+      error(err, 0)
+    end
+  end
 end
 
 function T.bag_flow_party_target_wait_renders_without_icon_getters()

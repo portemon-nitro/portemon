@@ -8,6 +8,7 @@ local GameSaveValidation = require("libs.hgss.src.save.GameSaveValidation")
 local ItemFixture = require("libs.items.tests.item_fixture")
 local BagSave = require("libs.hgss.src.save.BagSave")
 local MonsSave = require("libs.mons.src.MonsSave")
+local MartSave = require("libs.hgss.src.save.MartSave")
 
 local T = {}
 
@@ -22,6 +23,7 @@ local function context()
     audioSequenceIds = { [7] = true },
     monCatalog = CatalogFixture.makeCatalog(),
     itemCatalog = ItemFixture.makeCatalog(),
+    martCatalog = { cards = {}, apricorns = {}, seals = {} },
     scriptCompatibility = {
       validationOptions = function()
         return {
@@ -41,7 +43,7 @@ end
 
 local function record(saveId, versionId, playerData)
   return {
-    schema = "g4-game-save-v4",
+    schema = "g4-game-save-v5",
     saveId = saveId,
     versionId = versionId,
     playTimeSeconds = 0,
@@ -71,6 +73,7 @@ local function record(saveId, versionId, playerData)
     audio = {},
     mons = monsBucket(),
     bag = BagSave.empty(),
+    mart = MartSave.empty(),
   }
 end
 
@@ -104,7 +107,7 @@ local function fieldObjectBucket(actor)
 end
 
 local validPlayerData = {
-  profile = { name = "GOLD", gender = 0, trainerId = 1, money = 3000, badges = 0 },
+  profile = { name = "GOLD", gender = 0, trainerId = 1, money = 3000, badges = 0, nationalDex = false },
   options = { textFrame = 0, textSpeed = "mid" },
 }
 
@@ -321,8 +324,10 @@ function T.quiescent_v3_saves_migrate_without_losing_history()
   })
   local candidate = v3record("save-00000015", validPlayerData, quiescentScripts())
   local valid = assert(service:validate(candidate))
-  Assert.equal(valid.schema, "g4-game-save-v4")
+  Assert.equal(valid.schema, "g4-game-save-v5")
   Assert.equal(valid.playerData.profile.badges, 0)
+  Assert.equal(valid.playerData.profile.nationalDex, false)
+  Assert.deepEqual(valid.mart, MartSave.empty())
   Assert.deepEqual(valid.fieldTravel, { lastHealSpawn = "SPAWN_NEW_BARK" })
   Assert.equal(valid.scripts.registryFingerprint, "registry")
   Assert.equal(valid.scripts.taskFingerprint, "tasks")

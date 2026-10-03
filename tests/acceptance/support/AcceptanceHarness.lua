@@ -16,6 +16,7 @@ local AcceptanceScriptFs = require("tests.acceptance.support.AcceptanceScriptFs"
 local RepoFs = require("libs.storage.src.RepoFs")
 local FieldMovement = require("tests.acceptance.support.FieldMovement")
 local BagSave = require("libs.hgss.src.save.BagSave")
+local MartSave = require("libs.hgss.src.save.MartSave")
 
 ---@class AcceptanceHarness
 ---@field versions string[]
@@ -1065,7 +1066,7 @@ function AcceptanceHarness.new(options)
           facing = "south",
         },
         playerData = {
-          profile = { name = "GOLD", gender = 0, trainerId = 1, money = 3000, badges = 0 },
+          profile = { name = "GOLD", gender = 0, trainerId = 1, money = 3000, badges = 0, nationalDex = false },
           options = { textSpeed = "fastest", textFrame = 0 },
         },
         fieldTravel = { lastHealSpawn = "SPAWN_NEW_BARK" },
@@ -1073,6 +1074,7 @@ function AcceptanceHarness.new(options)
         worldState = FieldEventState.new(),
         mons = mons,
         bag = BagSave.empty(),
+        mart = MartSave.empty(),
       }
     end,
     saveNamespace = options.saveNamespace or defaultNamespace,

@@ -110,6 +110,21 @@ local function openHost(versionId, service, request)
   return host, handle
 end
 
+-- Fresh selections reveal before accepting input: wait out the reveal
+-- plus its handover/settling ticks so driven input acts.
+local function settleSelection(host, handle)
+  for _ = 1, 20 do
+    if host:status().phase == "interactive" then
+      host:step(handle, {})
+      host:step(handle, {})
+      Assert.equal(host:status().phase, "interactive", "the reveal hands over on its fixed recurrence")
+      return
+    end
+    host:step(handle, {})
+  end
+  Assert.equal(host:status().phase, "interactive", "the reveal hands over on its fixed recurrence")
+end
+
 function T.tests.pad_selects_a_slot_exactly_once(context)
   local versions = readyVersions()
   if #versions == 0 then
@@ -127,6 +142,7 @@ function T.tests.pad_selects_a_slot_exactly_once(context)
     Assert.isTrue(host:status().open, "opening shows the native party")
     host:step(handle, {})
     Assert.notNil(host:status().presentation, "the open selection carries a visible plan")
+    settleSelection(host, handle)
     local status = host:step(handle, { { type = "navigate", direction = "down" } })
     Assert.equal(host:focus(handle), status.cursorNode, "host focus tracks the live cursor")
     host:step(handle, { { type = "confirm" } })
@@ -152,6 +168,7 @@ function T.tests.pointer_selects_through_hit_geometry(context)
     give(service, "TOTODILE")
     local host, handle = openHost(versionId, service)
     host:step(handle, {})
+    settleSelection(host, handle)
     local status = assert(host:status(), "an open selection carries its status")
     local plan = assert(status.presentation, "an open selection carries its plan")
     local pane = assert(plan.panes and plan.panes[1], "the native pane is placed")
@@ -186,6 +203,7 @@ function T.tests.cancel_focus_persists(context)
     local service = openService()
     give(service, "CHIKORITA")
     local host, handle = openHost(versionId, service)
+    settleSelection(host, handle)
     for _ = 1, 8 do
       host:step(handle, { { type = "navigate", direction = "down" } })
       if host:focus(handle) == "cancel" then

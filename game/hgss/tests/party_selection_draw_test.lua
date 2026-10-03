@@ -24,9 +24,11 @@ local T = { metadata = { capabilities = { "rom_dump", "derived_assets" }, derive
 
 local CONSTRUCTOR_MODULES = {
   "libs.assets.src.BagCache",
+  "libs.assets.src.MartCache",
   "libs.assets.src.PartyCache",
   "libs.hgss.src.presentation.BagHeroRenderer",
   "libs.hgss.src.ui.BagRenderer",
+  "libs.hgss.src.ui.MartRenderer",
   "libs.hgss.src.ui.FieldDialogueRenderer",
   "libs.hgss.src.ui.FieldMenuRenderer",
   "libs.hgss.src.ui.FieldSignpostRenderer",
@@ -73,6 +75,11 @@ local function buildDoubles(sink, calls)
         return { compiled = true }
       end,
     },
+    ["libs.assets.src.MartCache"] = {
+      loadManifest = function(_)
+        return { compiled = true }
+      end,
+    },
     ["libs.assets.src.PartyCache"] = {
       loadManifest = function(_)
         return { compiled = true }
@@ -86,6 +93,13 @@ local function buildDoubles(sink, calls)
     ["libs.hgss.src.ui.BagRenderer"] = {
       new = function(_)
         return releasable(calls, "bagRenderer")
+      end,
+    },
+    ["libs.hgss.src.ui.MartRenderer"] = {
+      new = function(_)
+        local instance = releasable(calls, "martRenderer")
+        function instance:draw(_, _, _) end
+        return instance
       end,
     },
     ["libs.hgss.src.ui.FieldDialogueRenderer"] = {

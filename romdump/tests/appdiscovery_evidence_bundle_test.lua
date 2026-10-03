@@ -67,11 +67,11 @@ local function buildCollected()
       normalization = "raw",
       rawSha1 = Hashing.sha1hex(OVERLAY_BYTES),
       decodedSha1 = Hashing.sha1hex(OVERLAY_BYTES),
-      source = { fileId = 5, ramAddress = OVERLAY_RAM, isCompressed = false },
+      source = { fileId = 5, ramAddress = OVERLAY_RAM, ramSize = #OVERLAY_BYTES, bssSize = 0, isCompressed = false },
     },
     application = {
-      schema = "g4-app-analysis-1",
-      target = { overlayId = OVERLAY_ID, ramAddress = OVERLAY_RAM, size = #OVERLAY_BYTES },
+      schema = "g4-app-analysis-2",
+      target = { kind = "arm9-overlay", overlayId = OVERLAY_ID, ramAddress = OVERLAY_RAM, size = #OVERLAY_BYTES },
       entrypointCandidates = {},
       -- Intentionally out of address order: the bundle must sort by entry
       -- address, not assume the input already is.
@@ -311,8 +311,8 @@ function T.manifest_schema_and_inventory_match_every_non_manifest_member()
   local built = EvidenceBundle.build(buildCollected())
   local manifest = loadLua(built.files["manifest.lua"], "manifest.lua")
 
-  Assert.equal(manifest.schema, "g4-app-evidence-1")
-  Assert.equal(manifest.applicationSchema, "g4-app-analysis-1")
+  Assert.equal(manifest.schema, "g4-app-evidence-2")
+  Assert.equal(manifest.applicationSchema, "g4-app-analysis-2")
   Assert.equal(manifest.disassemblySchema, "g4-app-disassembly-index-1")
   Assert.equal(manifest.resourceSchema, "g4-resource-evidence-1")
   Assert.equal(manifest.source.sha1, string.rep("a", 40))
@@ -347,7 +347,7 @@ function T.application_analysis_is_a_compact_structural_index_and_excludes_gaps(
   local built = EvidenceBundle.build(buildCollected())
   local analysis = loadLua(built.files["application/analysis.lua"], "application/analysis.lua")
   Assert.isNil(analysis.gaps, "application/analysis.lua must exclude the gaps field")
-  Assert.equal(analysis.schema, "g4-app-analysis-1")
+  Assert.equal(analysis.schema, "g4-app-analysis-2")
   Assert.equal(analysis.target.overlayId, OVERLAY_ID)
   Assert.equal(#analysis.functions, 2)
   for _, fn in ipairs(analysis.functions) do
@@ -525,7 +525,7 @@ end
 function T.summary_reports_the_locked_counters()
   local built = EvidenceBundle.build(buildCollected())
   Assert.equal(built.summary.versionId, "heartgold")
-  Assert.equal(built.summary.overlayId, OVERLAY_ID)
+  Assert.deepEqual(built.summary.target, { kind = "arm9-overlay", overlayId = OVERLAY_ID })
   Assert.equal(built.summary.functionCount, 2)
   Assert.equal(built.summary.resourceFileCount, 1)
   Assert.equal(built.summary.narcCount, 1)
@@ -572,6 +572,147 @@ function T.non_serializable_evidence_is_rejected()
     EvidenceBundle.build(collected)
   end)
   Assert.isTrue(Errors.is(err), "expected a structured bundle error")
+end
+
+--------------------------------------------------------------------------
+-- Target-aware bundles: overlay bundles keep their established hexdump
+-- path while main-ARM9 bundles carry the same evidence under a
+-- target-specific path with no invented overlay identity.
+--------------------------------------------------------------------------
+
+local MAIN_RAM = 0x02000000
+local MAIN_TEMPLATE_ADDRESS = 0x02000000
+local MAIN_BYTES = "ABCDEFGHIJKLMNOPQRST"
+local MAIN_SOURCE_OFFSET = 0x4000
+
+local function buildMainCollected()
+  local collected = buildCollected()
+  collected.targetImage = {
+    kind = "arm9-main",
+    id = "arm9-main",
+    ramAddress = MAIN_RAM,
+    bytes = MAIN_BYTES,
+    rawSize = #MAIN_BYTES,
+    decodedSize = #MAIN_BYTES,
+    normalization = "raw",
+    rawSha1 = Hashing.sha1hex(MAIN_BYTES),
+    decodedSha1 = Hashing.sha1hex(MAIN_BYTES),
+    source = { offset = MAIN_SOURCE_OFFSET, entryAddress = MAIN_RAM },
+  }
+  collected.application.schema = "g4-app-analysis-2"
+  collected.application.target = {
+    kind = "arm9-main",
+    templateAddress = MAIN_TEMPLATE_ADDRESS,
+    ramAddress = MAIN_RAM,
+    size = #MAIN_BYTES,
+  }
+  collected.application.entrypointCandidates = {
+    {
+      sourceRegion = "arm9-main",
+      sourceOffset = 0,
+      ramAddress = MAIN_TEMPLATE_ADDRESS,
+      initTarget = MAIN_RAM + 1,
+      mainTarget = MAIN_RAM + 3,
+      exitTarget = MAIN_RAM + 5,
+      initState = "thumb",
+      mainState = "thumb",
+      exitState = "thumb",
+      overlayIdRaw = 0xFFFFFFFF,
+    },
+  }
+  collected.application.coverage.candidateCount = 1
+  return collected
+end
+
+function T.main_target_bundles_carry_target_specific_metadata_without_overlay_identity()
+  local built = EvidenceBundle.build(buildMainCollected())
+  local manifest = loadLua(built.files["manifest.lua"], "manifest.lua")
+  local analysis = loadLua(built.files["application/analysis.lua"], "application/analysis.lua")
+
+  Assert.equal(manifest.schema, "g4-app-evidence-2")
+  Assert.equal(manifest.applicationSchema, "g4-app-analysis-2")
+  Assert.equal(analysis.schema, "g4-app-analysis-2")
+  Assert.deepEqual(manifest.target, {
+    kind = "arm9-main",
+    cpu = "arm9",
+    templateAddress = MAIN_TEMPLATE_ADDRESS,
+    ramAddress = MAIN_RAM,
+    romOffset = MAIN_SOURCE_OFFSET,
+    entryAddress = MAIN_RAM,
+    normalization = "raw",
+    rawSize = #MAIN_BYTES,
+    decodedSize = #MAIN_BYTES,
+    rawSha1 = Hashing.sha1hex(MAIN_BYTES),
+    decodedSha1 = Hashing.sha1hex(MAIN_BYTES),
+    imageHexPath = "application/arm9-main.hex",
+  })
+  for _, invented in ipairs({ "overlayId", "fileId", "bssSize", "ramSize" }) do
+    Assert.isNil(manifest.target[invented], "main targets must not invent " .. invented)
+  end
+  Assert.deepEqual(analysis.target, {
+    kind = "arm9-main",
+    templateAddress = MAIN_TEMPLATE_ADDRESS,
+    ramAddress = MAIN_RAM,
+    size = #MAIN_BYTES,
+  })
+
+  Assert.notNil(built.files["application/arm9-main.hex"], "main bundles must emit their own hexdump path")
+  Assert.isNil(built.files["application/overlay.hex"], "main bundles must not duplicate the overlay hexdump path")
+  Assert.deepEqual(built.summary.target, { kind = "arm9-main", templateAddress = MAIN_TEMPLATE_ADDRESS })
+  Assert.isNil(built.summary.overlayId, "the summary must not masquerade a main target as an overlay id")
+end
+
+local function assertBundleTargetInconsistent(collected, why)
+  local err = Assert.throws(function()
+    EvidenceBundle.build(collected)
+  end, why)
+  Assert.isTrue(Errors.is(err), "expected a structured bundle error")
+  Assert.equal(err.code, "APPDISCOVERY_BUNDLE_TARGET_INCONSISTENT")
+end
+
+-- MAIN_RAM + 4 starts a 16-byte template exactly at the end of the
+-- 20-byte main fixture, so it is aligned and fully spanned: only the
+-- candidate-address disagreement can reject this aggregate.
+function T.main_bundle_rejects_a_template_address_that_disagrees_with_its_candidate()
+  local collected = buildMainCollected()
+  collected.application.target.templateAddress = MAIN_RAM + 4
+  assertBundleTargetInconsistent(collected, "a main target naming a different template than its candidate must be rejected")
+end
+
+-- Target and candidate agree here, so only the 4-byte alignment bound
+-- can reject this aggregate.
+function T.main_bundle_rejects_a_misaligned_template_address_even_when_the_candidate_agrees()
+  local collected = buildMainCollected()
+  collected.application.target.templateAddress = MAIN_RAM + 1
+  collected.application.entrypointCandidates[1].ramAddress = MAIN_RAM + 1
+  assertBundleTargetInconsistent(collected, "a misaligned main template must be rejected")
+end
+
+-- MAIN_RAM + 8 is aligned and inside the 20-byte main fixture, yet its
+-- 16-byte template would end at byte 24: only the full-span bound can
+-- reject this aggregate.
+function T.main_bundle_rejects_a_truncated_template_span_even_when_the_candidate_agrees()
+  local collected = buildMainCollected()
+  collected.application.target.templateAddress = MAIN_RAM + 8
+  collected.application.entrypointCandidates[1].ramAddress = MAIN_RAM + 8
+  assertBundleTargetInconsistent(collected, "a main template overrunning image end must be rejected")
+end
+
+function T.overlay_and_main_bundles_emit_their_own_executable_hexdump_path()
+  local overlayBuilt = EvidenceBundle.build(buildCollected())
+  local overlayManifest = loadLua(overlayBuilt.files["manifest.lua"], "manifest.lua")
+  Assert.equal(overlayManifest.schema, "g4-app-evidence-2")
+  Assert.equal(overlayManifest.target.imageHexPath, "application/overlay.hex")
+  Assert.equal(overlayManifest.target.overlayId, OVERLAY_ID)
+  Assert.notNil(overlayBuilt.files["application/overlay.hex"])
+  Assert.isNil(overlayBuilt.files["application/arm9-main.hex"])
+  Assert.deepEqual(overlayBuilt.summary.target, { kind = "arm9-overlay", overlayId = OVERLAY_ID })
+
+  local mainBuilt = EvidenceBundle.build(buildMainCollected())
+  local mainManifest = loadLua(mainBuilt.files["manifest.lua"], "manifest.lua")
+  Assert.equal(mainManifest.target.imageHexPath, "application/arm9-main.hex")
+  Assert.notNil(mainBuilt.files["application/arm9-main.hex"])
+  Assert.isNil(mainBuilt.files["application/overlay.hex"])
 end
 
 return { tests = T }

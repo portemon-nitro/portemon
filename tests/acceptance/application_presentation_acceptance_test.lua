@@ -254,8 +254,14 @@ local function openBag(game, state)
   Assert.equal(status.applicationId, BAG_APPLICATION, "the launched application must be the bag")
   -- Production serves destinations through the bounded menu flow: the
   -- live leaf status rides one level down with identical content.
-  local flow = assert(status.application, "the bag application must expose its flow status")
-  return assert(flow.child, "the bag flow must expose its live leaf status")
+  assert(status.application, "the bag application must expose its flow status")
+  game:advanceUntil("the Bag opening settles", function()
+    local current = game.runtime.applicationHost:status().application
+    local leaf = current ~= nil and current.child or nil
+    return leaf ~= nil and leaf.phase == "interactive"
+  end, 120)
+  local readyFlow = assert(game.runtime.applicationHost:status().application, "the bag application stays active")
+  return assert(readyFlow.child, "the bag flow must expose its live leaf status")
 end
 
 local function closeApplication(game)
@@ -584,7 +590,7 @@ local function labHarness()
         versionId = versionId,
         location = { mapSymbol = map or LAB_MAP, fieldX = 4, fieldZ = 13, facing = "north" },
         playerData = {
-          profile = { name = "GOLD", gender = 0, trainerId = 1, money = 3000, badges = 0 },
+          profile = { name = "GOLD", gender = 0, trainerId = 1, money = 3000, badges = 0, nationalDex = false },
           options = { textSpeed = "fastest", textFrame = 0 },
         },
         fieldTravel = { lastHealSpawn = "SPAWN_NEW_BARK" },
@@ -592,6 +598,7 @@ local function labHarness()
         worldState = FieldEventState.new(),
         mons = require("tests.support.MonBucket").emptyForVersion(versionId),
         bag = require("libs.hgss.src.save.BagSave").empty(),
+        mart = require("libs.hgss.src.save.MartSave").empty(),
       }
     end,
   })

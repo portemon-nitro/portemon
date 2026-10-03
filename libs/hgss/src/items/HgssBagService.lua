@@ -163,13 +163,14 @@ end
 -- Stages validated inventory deltas without touching the live inventory.
 -- Deltas apply in order to a private candidate built from the current
 -- capture, preserving exact stack order and capacity semantics. Returns
--- nil and "stale" when the expected revision drifted; otherwise returns
--- a one-use opaque preparation whose publish swaps the candidate and
--- bumps the revision exactly once when the batch changed anything. A
--- repeated publish is a programming error. Callers enforce domain
--- preconditions (capacity, ownership) before preparing; a candidate
--- application failure after those checks is a programming error raised
--- loudly, never a silent partial publication.
+-- nil and "stale" when the expected revision drifted, or nil and
+-- "bag_full" when an ordered candidate add cannot fit at its point in
+-- the sequence; otherwise returns a one-use opaque preparation whose
+-- publish swaps the candidate and bumps the revision exactly once when
+-- the batch changed anything. A repeated publish is a programming error.
+-- A refused preparation leaves the live inventory and revision untouched.
+-- A failed candidate take after caller ownership preconditions remains a
+-- programming error raised loudly, never a silent partial publication.
 ---@class BagPreparation
 ---@field changed boolean
 ---@field isCurrent fun(): boolean
@@ -193,6 +194,9 @@ function HgssBagService:prepareInventoryChanges(expectedRevision, deltas)
       applied = candidate:take(delta.item, delta.quantity)
     else
       error("bag preparation delta carries an unknown operation: " .. tostring(delta.op), 0)
+    end
+    if delta.op == "add" and not applied then
+      return nil, "bag_full"
     end
     assert(applied, "bag preparation delta must apply after caller preconditions")
   end

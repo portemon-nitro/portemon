@@ -5,10 +5,11 @@
 local Errors = require("libs.errors.src.Errors")
 local GameSaveErrors = require("libs.hgss.src.save.GameSaveErrors")
 local FieldTravelState = require("libs.hgss.src.field.FieldTravelState")
+local MartSave = require("libs.hgss.src.save.MartSave")
 
 local GameSave = {}
 
-GameSave.SCHEMA = "g4-game-save-v4"
+GameSave.SCHEMA = "g4-game-save-v5"
 GameSave.MAX_PLAY_TIME_SECONDS = 999 * 60 * 60 + 59 * 60 + 59
 
 local FACING = { north = true, south = true, west = true, east = true }
@@ -22,6 +23,7 @@ local TOP_LEVEL_FIELDS = {
   fieldX = true,
   fieldZ = true,
   mapId = true,
+  mart = true,
   mons = true,
   playTimeSeconds = true,
   playerData = true,
@@ -43,6 +45,17 @@ end
 
 local function integer(value)
   return finite(value) and value % 1 == 0
+end
+
+local function deepCopy(value)
+  if type(value) ~= "table" then
+    return value
+  end
+  local result = {}
+  for key, child in pairs(value) do
+    result[key] = deepCopy(child)
+  end
+  return result
 end
 
 local function safeComponent(value)
@@ -211,6 +224,7 @@ local function validate(record, opts)
   local canonicalScripts = validateBucket(record, "scripts", opts, "scriptsValidate")
   local canonicalMons = validateBucket(record, "mons", opts, "monsValidate")
   local canonicalBag = validateBucket(record, "bag", opts, "bagValidate")
+  local canonicalMart = validateBucket(record, "mart", opts, "martValidate")
   local canonicalFieldTravel = validateBucket(record, "fieldTravel", opts, "fieldTravelValidate")
   local canonicalAuxiliaryUi = validateBucket(record, "auxiliaryUi", opts, "auxiliaryUiValidate")
   local canonicalAudio = validateBucket(record, "audio", opts, "audioValidate")
@@ -224,6 +238,7 @@ local function validate(record, opts)
   canonical.scripts = canonicalScripts
   canonical.mons = canonicalMons
   canonical.bag = canonicalBag
+  canonical.mart = canonicalMart
   canonical.fieldTravel = canonicalFieldTravel
   canonical.auxiliaryUi = canonicalAuxiliaryUi
   canonical.audio = canonicalAudio
@@ -258,8 +273,27 @@ function GameSave.migrateV3(record)
   end
   playerData.profile = profile
   migrated.playerData = playerData
-  migrated.schema = GameSave.SCHEMA
+  migrated.schema = "g4-game-save-v4"
   migrated.fieldTravel = { lastHealSpawn = FieldTravelState.DEFAULT_LAST_HEAL_SPAWN }
+  return migrated
+end
+
+-- Historical save upgrade. The caller validates the v4 record and script
+-- quiescence before this copy becomes the v5 candidate.
+function GameSave.migrateV4(record)
+  assert(type(record) == "table" and record.schema == "g4-game-save-v4", "GameSave.migrateV4 requires v4")
+  assert(
+    type(record.playerData) == "table" and type(record.playerData.profile) == "table",
+    "v4 player data is required"
+  )
+  local migrated = deepCopy(record)
+  local playerData = migrated.playerData
+  local profile = playerData.profile
+  profile.nationalDex = false
+  playerData.profile = profile
+  migrated.playerData = playerData
+  migrated.mart = MartSave.empty()
+  migrated.schema = GameSave.SCHEMA
   return migrated
 end
 
@@ -289,7 +323,11 @@ function GameSave.metadata(record)
       Errors.raise(GameSaveErrors.GAME_SAVE_INVALID, "game save must be a table", {})
     end
     assert(type(record) == "table")
-    if record.schema ~= GameSave.SCHEMA then
+    if
+      record.schema ~= GameSave.SCHEMA
+      and record.schema ~= "g4-game-save-v4"
+      and record.schema ~= "g4-game-save-v3"
+    then
       Errors.raise(
         GameSaveErrors.GAME_SAVE_SCHEMA_UNSUPPORTED,
         "unsupported game save schema",

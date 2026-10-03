@@ -108,6 +108,7 @@ end
 local function presentationResourcesStub(renderer)
   return {
     renderer = renderer,
+    drawMart = function() end,
     fieldEntranceIndicatorRenderer = {
       drawItems = function()
         return {}
@@ -373,6 +374,7 @@ local function drawOrderState(starterActive)
       textRenderer = {},
       windowRenderer = {},
       renderer = { draw = function() end },
+      drawMart = function() end,
     },
   }, FieldState)
   state._worldParts = function()
@@ -436,18 +438,25 @@ end
 
 -- A live presentation runtime always carries the transition, dialogue, and
 -- menu host; draw consults all three unconditionally, and the renderer
--- receives the scene runtime.
-function T.draw_passes_the_scene_runtime_and_queries_the_menu_host()
+-- receives the runtime map's render environment.
+function T.draw_passes_the_render_environment_and_queries_the_menu_host()
   local sceneRuntime = {
     mapDraws = { { kind = "map" } },
     staticBuildingDraws = { { kind = "static-building" } },
     animatedBuildingDraws = { { kind = "animated-building" } },
   }
+  local renderEnvironment = {
+    lighting = { records = {} },
+    edgeColors = { [0] = 0 },
+    baseWeatherId = 0,
+    baseFog = { enabled = false },
+    fog = { enabled = false },
+  }
   local presentations = 0
   local received
   local state = setmetatable({
     runtime = {
-      runtimeMap = { mapId = 61, mapSymbol = "MAP_NEW_BARK", sceneRuntime = sceneRuntime },
+      runtimeMap = { mapId = 61, mapSymbol = "MAP_NEW_BARK", sceneRuntime = sceneRuntime, renderEnvironment = renderEnvironment },
       player = { fieldX = 3, fieldZ = 7, worldY = 1.5, surfaceId = 0, facing = "east", motion = "idle" },
       playerVisual = {
         drawRecord = function()
@@ -528,8 +537,8 @@ function T.draw_passes_the_scene_runtime_and_queries_the_menu_host()
       })
     end,
     presentationResources = presentationResourcesStub({
-      draw = function(_, scene, camera, worldParts)
-        received = { scene = scene, camera = camera, worldParts = worldParts }
+      draw = function(_, environment, camera, worldParts)
+        received = { environment = environment, camera = camera, worldParts = worldParts }
       end,
     }),
     worldParts = {},
@@ -538,7 +547,11 @@ function T.draw_passes_the_scene_runtime_and_queries_the_menu_host()
     actorPresentation = actorPresentationStub(),
   }, FieldState)
   state:draw()
-  Assert.equal(received.scene, sceneRuntime, "the renderer receives the runtime map's scene runtime")
+  Assert.equal(
+    received.environment,
+    renderEnvironment,
+    "the renderer receives the runtime map's render environment"
+  )
   Assert.equal(received.camera, state.runtime.camera, "the draw path forwards the runtime camera")
   Assert.isTrue(received.worldParts == state.worldParts)
   Assert.isTrue(received.worldParts[1] == sceneRuntime.mapDraws)
@@ -547,6 +560,124 @@ function T.draw_passes_the_scene_runtime_and_queries_the_menu_host()
   Assert.deepEqual(received.worldParts[4], {})
   Assert.deepEqual(received.worldParts[5], {})
   Assert.equal(presentations, 1, "draw always queries the menu host presentation")
+end
+
+-- A physical-coverage map whose active logical map has no realized scene
+-- still draws: world parts come from coverage and the renderer receives
+-- exactly the active map's render environment. No scene runtime is
+-- fabricated to satisfy the draw.
+function T.physical_coverage_draws_without_a_realized_scene()
+  local coverageParts = { { kind = "coverage" } }
+  local renderEnvironment = {
+    lighting = { records = {} },
+    edgeColors = { [0] = 0 },
+    baseWeatherId = 0,
+    baseFog = { enabled = false },
+    fog = { enabled = false },
+  }
+  local received
+  local state = setmetatable({
+    runtime = {
+      runtimeMap = {
+        mapId = 60,
+        mapSymbol = "MAP_NEW_BARK",
+        sceneRuntime = nil,
+        renderEnvironment = renderEnvironment,
+        coverage = {
+          worldParts = function()
+            return coverageParts
+          end,
+        },
+      },
+      player = { fieldX = 3, fieldZ = 7, worldY = 1.5, surfaceId = 0, facing = "east", motion = "idle" },
+      playerVisual = {
+        drawRecord = function()
+          return { visible = false }
+        end,
+      },
+      fieldEntranceIndicator = {
+        status = function()
+          return { visible = false }
+        end,
+      },
+      actors = {
+        drawRecords = function()
+          return {}
+        end,
+      },
+      session = {
+        renderAlpha = function()
+          return 0.5
+        end,
+      },
+      destinationWorldPresentable = function()
+        return true
+      end,
+      acknowledgeDestinationPresentation = function() end,
+      viewport = FieldViewport.new(640, 480, { mode = "expanded" }),
+      camera = { zoom = 1 },
+      transition = { fadeAlpha = 0 },
+      fieldPixelScale = {
+        resolvedScale = function()
+          return 3
+        end,
+      },
+      dialogue = {
+        isModal = function()
+          return false
+        end,
+      },
+      scripts = { dialogueHost = {
+        yesNoPresentation = function()
+          return nil
+        end,
+      } },
+      contextChoiceProvider = {
+        status = function()
+          return nil
+        end,
+      },
+      contextChoicePresentation = function()
+        return nil
+      end,
+      signpost = {
+        isModal = function()
+          return false
+        end,
+      },
+      applicationHost = {
+        status = function()
+          return { phase = "closed", fadeAlpha = 0 }
+        end,
+      },
+      menuHost = {
+        presentation = function()
+          return nil
+        end,
+      },
+      yesNoHost = idleChoiceHost(),
+      resizePresentation = function() end,
+    },
+    _pollPresentationTopology = false,
+    presentationResources = presentationResourcesStub({
+      draw = function(_, environment, _, worldParts)
+        received = { environment = environment, worldParts = worldParts }
+      end,
+    }),
+    worldParts = {},
+    worldActorItems = {},
+    spriteItems = {},
+    actorPresentation = actorPresentationStub(),
+  }, FieldState)
+  state:draw()
+  Assert.notNil(received, "the draw reaches the renderer with coverage geometry")
+  Assert.equal(
+    received.environment,
+    renderEnvironment,
+    "the renderer receives the active map's render environment, not a fabricated scene"
+  )
+  Assert.isTrue(received.worldParts[1] == coverageParts, "world parts come from physical coverage")
+  Assert.isNil(state.runtime.runtimeMap.sceneRuntime, "the draw fabricates no scene runtime")
 end
 
 function T.active_starter_presentation_is_drawn_after_the_script_fade()
@@ -576,6 +707,14 @@ function T.draw_sends_static_actor_models_to_world_and_billboards_to_presentatio
   local staticModel = { kind = "actor", billboardProjection = false }
   local sprite = { kind = "actor", billboardProjection = true }
   local received
+  local topologyShifted = false
+  local resizeCalls = {}
+  local dimensionReads = 0
+  local originalGetDimensions = love.graphics.getDimensions
+  love.graphics.getDimensions = function()
+    dimensionReads = dimensionReads + 1
+    return 640, 480
+  end
   local state = setmetatable({
     runtime = {
       runtimeMap = { sceneRuntime = sceneRuntime },
@@ -645,13 +784,15 @@ function T.draw_sends_static_actor_models_to_world_and_billboards_to_presentatio
         end,
       },
       yesNoHost = idleChoiceHost(),
-      resizePresentation = function() end,
+      resizePresentation = function(_, width, height, topology)
+        resizeCalls[#resizeCalls + 1] = { width, height, topology }
+      end,
     },
     _pollPresentationTopology = true,
     topologyProvider = function()
       return ScreenTopology.oneDisplay({
         id = "main",
-        rect = { x = 0, y = 0, width = 640, height = 480 },
+        rect = { x = topologyShifted and 1 or 0, y = 0, width = 640, height = 480 },
         touch = false,
         role = "world",
       })
@@ -670,7 +811,22 @@ function T.draw_sends_static_actor_models_to_world_and_billboards_to_presentatio
     return { staticModel, sprite }
   end
 
-  state:draw()
+  local ok, err = pcall(function()
+    state:draw()
+    Assert.equal(#resizeCalls, 1, "initial custom topology is published once")
+    state:draw()
+    Assert.equal(#resizeCalls, 1, "unchanged topology is not republished")
+    topologyShifted = true
+    state:draw()
+    Assert.equal(#resizeCalls, 2, "same-size custom topology changes remain observable")
+    Assert.equal(resizeCalls[2][1], 640)
+    Assert.equal(resizeCalls[2][2], 480)
+    Assert.equal(dimensionReads, 0, "field draw consumes settled viewport dimensions")
+  end)
+  love.graphics.getDimensions = originalGetDimensions
+  if not ok then
+    error(err, 0)
+  end
   Assert.equal(received.worldParts[6][1], staticModel)
   Assert.equal(received.spriteItems[1], sprite)
   Assert.equal(#received.worldParts[6], 1)
@@ -1417,17 +1573,26 @@ function T.surf_draw_items_adapt_active_state_and_bypass_inactive_surf()
   local drawItems = { { kind = "surf-attachment" } }
   local player = {
     facing = "east",
-    renderPosition = function(_, alpha)
+    renderPosition = function()
+      error("surf draw must use the allocation-free render position", 2)
+    end,
+    renderPositionInto = function(_, out, alpha)
       Assert.equal(alpha, 0.25, "surf uses the frame's interpolated render alpha")
       renderPositionCalls = renderPositionCalls + 1
-      return anchor
+      out.x, out.y, out.z = anchor.x, anchor.y, anchor.z
+      return out
     end,
   }
   local state = setmetatable({
     runtime = {
       playerAvatar = {
         presentationState = function()
-          return { surf = { active = surfActive, attachmentOffsetY = 0.25 } }
+          error("surf draw must use the allocation-free avatar presentation", 2)
+        end,
+        presentationStateInto = function(_, out)
+          out.surf.active = surfActive
+          out.surf.attachmentOffsetY = 0.25
+          return out
         end,
       },
       player = player,
@@ -1443,6 +1608,8 @@ function T.surf_draw_items_adapt_active_state_and_bypass_inactive_surf()
         end,
       },
     },
+    _surfPresentation = { playerOffset = {}, surf = {} },
+    _surfAnchor = { x = 0, y = 0, z = 0 },
   }, FieldState)
 
   local first = state:_surfDrawItems(0.25)

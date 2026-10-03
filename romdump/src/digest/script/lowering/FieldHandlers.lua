@@ -1293,6 +1293,69 @@ local function processSoundplate()
   return { op = "process_soundplate" }
 end
 
+local function martOpen(kind, selector)
+  local step = { op = "mart_open", kind = kind }
+  if selector ~= nil then
+    step.selector = selector
+  end
+  return step
+end
+
+local function martSpecial(ins)
+  return martOpen("special", Operands.varRef(ins.operands[1]))
+end
+
+local function martDecoration(ins)
+  return martOpen("decoration", Operands.varRef(ins.operands[1]))
+end
+
+local function martSeal(ins)
+  return martOpen("seal", Operands.varRef(ins.operands[1]))
+end
+
+local function martAthlete()
+  return martOpen("athlete")
+end
+
+local function martDataCards()
+  return martOpen("data_cards")
+end
+
+local function martSell()
+  return martOpen("sell")
+end
+
+local function martBuy(ins)
+  -- The source halfword is consumed but does not select stock.
+  assert(ins.operands[1] ~= nil, "MartBuy consumes its source operand")
+  return martOpen("standard")
+end
+
+local function martAthleteAvailable(ins)
+  return { op = "mart_query", kind = "athlete_available", result = Operands.varRef(ins.operands[1]) }
+end
+
+local function martCardPrefix(ins)
+  return { op = "mart_query", kind = "card_prefix", result = Operands.varRef(ins.operands[1]) }
+end
+
+-- ScrCmd_815 in src/scrcmd_c.c reads an immediate selector and only sets the
+-- field display-return target. The mart host always restores the default
+-- target, as field_system.c::sub_0203E33C does for selector zero. Other values
+-- are not equivalent and remain explicitly unsupported.
+local function setDefaultFieldReturn(ins)
+  if ins.operands[1].raw == 0 then
+    return nil
+  end
+  return {
+    op = "unsupported",
+    command = 815,
+    arguments = { Operands.operandValue(ins.operands[1]) },
+    sourceOffset = ins.offset,
+    reason = "ScrCmd_815 supports only the immediate default field return selector zero",
+  }
+end
+
 local function actorOscillate(ins)
   local sourceAmplitudeX = Operands.varRef(ins.operands[4])
   local sourceAmplitudeZ = Operands.varRef(ins.operands[5])
@@ -1338,6 +1401,16 @@ return {
   [58] = waitSignpostAction,
   [59] = trainerTipsPrint,
   [60] = waitSignpost,
+  [275] = martBuy,
+  [276] = martSpecial,
+  [277] = martDecoration,
+  [278] = martSeal,
+  [771] = martAthlete,
+  [772] = martDataCards,
+  [782] = martSell,
+  [815] = setDefaultFieldReturn,
+  [834] = martAthleteAvailable,
+  [835] = martCardPrefix,
   [61] = requestStartMenu,
   [63] = askYesNo,
   [94] = applyMovement,

@@ -427,4 +427,137 @@ function T.missing_measurement_fails_without_a_partial_plan()
   end, "a resolver without its display measurement fails")
 end
 
+-- While the reveal runs, every covered pane carries one opaque black cover
+-- above its content that retreats downward as its leg advances: full cover
+-- at step zero, a bottom-anchored remainder mid-leg, and no cover once the
+-- leg is done. The first leg completes for one pane before the remaining
+-- pane starts, and the interactive screen carries no cover at all.
+function T.opening_covers_retreat_downward_in_pane_order()
+  local FakeGraphics = require("tests.support.FakeGraphics")
+  local interfaces = partyInterface()
+  local plan = interfaces.wide(contextFor(singleDisplay(1280, 720), "wide", interfaces), view(true))
+  Assert.equal(#plan.panes, 2, "the paired plan under test carries both panes")
+
+  ---@param opening { subStep: integer, mainStep: integer }? the reveal progress, or nil once interactive
+  ---@return integer[] the sorted cover heights across both panes
+  local function coverHeights(opening)
+    local graphics = FakeGraphics.new({})
+    local draws = 0
+    local resources = {
+      graphics = graphics,
+      partyScreenRenderer = {
+        drawPane = function()
+          draws = draws + 1
+        end,
+      },
+      icons = {},
+    }
+    local revealView = view(true)
+    revealView.opening = opening
+    plan.render(resources, revealView, plan)
+    Assert.equal(draws, 2, "the reveal keeps drawing both panes underneath")
+    Assert.equal(graphics:pushDepth(), 0, "the reveal restores the graphics stack")
+    local heights = {}
+    for _, rectangle in ipairs(graphics.rectangles) do
+      if rectangle.mode == "fill" then
+        local color = rectangle.color
+        Assert.deepEqual(
+          { color[1], color[2], color[3], color[4] },
+          { 0, 0, 0, 1 },
+          "reveal covers are opaque black"
+        )
+        Assert.equal(rectangle.w, 256, "reveal covers span the pane width")
+        Assert.equal(rectangle.x, 0, "reveal covers start at the pane edge")
+        Assert.equal(rectangle.y + rectangle.h, 192, "reveal covers stay bottom-anchored")
+        heights[#heights + 1] = rectangle.h
+      end
+    end
+    table.sort(heights)
+    return heights
+  end
+
+  for subStep = 0, 6 do
+    local expected = { 192 }
+    if subStep < 6 then
+      expected = { 192 - 32 * subStep, 192 }
+    end
+    table.sort(expected)
+    Assert.deepEqual(
+      coverHeights({ subStep = subStep, mainStep = 0 }),
+      expected,
+      "the first leg clears one pane while the other stays covered"
+    )
+  end
+  for mainStep = 1, 6 do
+    local expected = {}
+    if mainStep < 6 then
+      expected = { 192 - 32 * mainStep }
+    end
+    Assert.deepEqual(
+      coverHeights({ subStep = 6, mainStep = mainStep }),
+      expected,
+      "the second leg clears the remaining pane after the first completes"
+    )
+  end
+  Assert.deepEqual(coverHeights(nil), {}, "the interactive screen carries no cover")
+end
+
+-- A lone content pane stays covered through the first leg and clears with
+-- the second, so single-pane topologies keep the twelve-step wipe with no
+-- re-cover and no clear-but-gated window.
+function T.opening_lone_content_pane_clears_with_the_second_leg()
+  local FakeGraphics = require("tests.support.FakeGraphics")
+  local interfaces = partyInterface()
+  local plan = interfaces.nativeLike(contextFor(singleDisplay(640, 480), "nativeLike", interfaces), view(true))
+  Assert.equal(#plan.panes, 1, "the single-pane plan under test carries its content pane")
+  Assert.equal(plan.panes[1].id, "content", "the lone pane is the interaction content")
+
+  ---@param opening { subStep: integer, mainStep: integer }? the reveal progress, or nil once interactive
+  ---@return integer? the lone cover height, or nil when clear
+  local function coverHeight(opening)
+    local graphics = FakeGraphics.new({})
+    local resources = {
+      graphics = graphics,
+      partyScreenRenderer = {
+        drawPane = function() end,
+      },
+      icons = {},
+    }
+    local revealView = view(true)
+    revealView.opening = opening
+    plan.render(resources, revealView, plan)
+    Assert.equal(graphics:pushDepth(), 0, "the reveal restores the graphics stack")
+    local height = nil
+    for _, rectangle in ipairs(graphics.rectangles) do
+      if rectangle.mode == "fill" then
+        local color = rectangle.color
+        Assert.deepEqual(
+          { color[1], color[2], color[3], color[4] },
+          { 0, 0, 0, 1 },
+          "reveal covers are opaque black"
+        )
+        Assert.isNil(height, "the lone pane carries at most one cover")
+        height = rectangle.h
+      end
+    end
+    return height
+  end
+
+  for subStep = 0, 5 do
+    Assert.equal(
+      coverHeight({ subStep = subStep, mainStep = 0 }),
+      192,
+      "the lone pane stays covered while the first leg runs"
+    )
+  end
+  for mainStep = 0, 6 do
+    Assert.equal(
+      coverHeight({ subStep = 6, mainStep = mainStep }),
+      mainStep < 6 and (192 - 32 * mainStep) or nil,
+      "the lone pane clears from the top with the second leg"
+    )
+  end
+  Assert.isNil(coverHeight(nil), "the interactive screen carries no cover")
+end
+
 return { tests = T }

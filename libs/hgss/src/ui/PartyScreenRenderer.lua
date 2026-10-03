@@ -6,12 +6,15 @@
 -- generated glyph images at their fixed fields. Draw never advances
 -- animation clocks.
 
+local FieldTextWindowRenderer = require("libs.hgss.src.ui.FieldTextWindowRenderer")
+local FieldTextRenderer = require("libs.hgss.src.ui.FieldTextRenderer")
 local PartyScreenTheme = require("libs.hgss.src.ui.PartyScreenTheme")
 local YesNoPromptRenderer = require("libs.hgss.src.ui.YesNoPromptRenderer")
 
 ---@class PartyScreenRenderer
 ---@field _graphics love.graphics
 ---@field _text table<string, unknown> the borrowed generated-font collaborator
+---@field _contextText FieldTextRenderer? the owned context-menu font renderer
 ---@field _images table<string, love.Image> owned realized images, released exactly once
 ---@field _manifest table<string, unknown> the validated party presentation manifest
 ---@field _prompt YesNoPromptRenderer the owned source prompt renderer
@@ -90,6 +93,10 @@ function PartyScreenRenderer.new(opts)
     graphics and graphics.rectangle and graphics.draw and graphics.setColor and graphics.newImage,
     "PartyScreenRenderer requires love.graphics"
   )
+  assert(
+    type(graphics.setScissor) == "function" and type(graphics.getScissor) == "function",
+    "PartyScreenRenderer clips travelling slots through the graphics scissor"
+  )
   local text = assert(opts.text, "the party renderer requires the generated font")
   assert(
     type(text.drawText) == "function" and type(text.textWidth) == "function",
@@ -98,10 +105,6 @@ function PartyScreenRenderer.new(opts)
   assert(
     type(text.drawTextWithPalette) == "function" and type(text.drawLineWithPalette) == "function",
     "the party renderer draws source text through palette roles"
-  )
-  assert(
-    type(text.windowBackgroundColor) == "function",
-    "the party renderer fills message windows with the generated window color"
   )
   local renderer = setmetatable({
     _graphics = graphics,
@@ -113,6 +116,7 @@ function PartyScreenRenderer.new(opts)
     _frameIndex = opts.frameIndex,
   }, PartyScreenRenderer)
   local ok, err = pcall(function()
+    renderer._contextText = FieldTextRenderer.new({ cacheFs = cacheFs, fontId = 4, graphics = graphics })
     renderer:_acquire(cacheFs, manifest, opts.uiManifest)
   end)
   if not ok then
@@ -141,7 +145,7 @@ function PartyScreenRenderer:_acquire(cacheFs, manifest, uiManifest)
   for slot0 = 0, 5 do
     local panel = assert(panels[slot0 + 1], "the party manifest carries panel " .. slot0)
     local chrome = assert(panel.chrome, "party panels carry chrome")
-    for _, state in ipairs({ "normal", "selected", "fainted", "selectedFainted" }) do
+    for _, state in ipairs({ "normal", "selected", "fainted", "selectedFainted", "switchSelection" }) do
       acquire(assert(chrome[state], "party panels carry " .. state .. " chrome").image)
     end
   end
@@ -277,6 +281,10 @@ end
 -- Releases every owned image exactly once; draw-after-release is a no-op
 -- through the cleared table.
 function PartyScreenRenderer:release()
+  if self._contextText ~= nil then
+    self._contextText:release()
+    self._contextText = nil
+  end
   local images = self._images
   self._images = {}
   for _, image in pairs(images) do
@@ -336,15 +344,47 @@ local function roleFor(role, what)
   }
 end
 
--- Wraps one flat generated button color into the triple the font
--- collaborator consumes. Every band reuses the generated color; no hue
--- is invented.
----@param color table<string, unknown>
----@param what string
----@return table<string, unknown>
-local function menuInk(color, what)
-  local ink = band(color, what)
-  return { foreground = ink, shadow = ink, background = ink }
+-- Source context menus brighten the already-rendered party content toward
+-- white before the menu layers draw. The coefficient names the source
+-- blend step on the sixteen-step scale.
+local BRIGHTEN_ALPHA = 8 / 16
+
+-- Resolves one swap slot's signed horizontal slide in units from the
+-- controller-published per-slot map. Records without the map are a
+-- programming fault and fail instead of sliding by a guessed offset.
+---@param swap table<string, unknown>?
+---@param slot0 integer
+---@return number signed slide in units
+local function swapSlideOf(swap, slot0)
+  if type(swap) ~= "table" then
+    return 0
+  end
+  local offsets = assert(swap.offsets, "swap records carry their per-slot slide map")
+  assert(type(offsets) == "table", "swap records carry their per-slot slide map")
+  local slide = assert(offsets[slot0], "swap records slide every travelling slot")
+  assert(type(slide) == "number", "swap records slide every travelling slot")
+  return slide
+end
+
+-- The cursor stays hidden while a swap record exists: the native task
+-- hides cursors when the operation arms and restores them only after the
+-- final task clears it.
+---@param swap table<string, unknown>?
+---@return boolean hides
+local function swapHidesCursor(swap)
+  return type(swap) == "table"
+end
+
+-- Returns true when the slot is the locked switch source or the current
+-- switch candidate.
+---@param switchSelect table<string, unknown>?
+---@param slot0 integer
+---@return boolean
+local function switchSelected(switchSelect, slot0)
+  if type(switchSelect) ~= "table" then
+    return false
+  end
+  return slot0 == switchSelect.source or slot0 == switchSelect.candidate
 end
 
 -- Draws one string through its generated palette role.
@@ -599,7 +639,8 @@ end
 -- Draws one occupied slot's text row: the display name in the ordinary
 -- role at the name origin, the gender mark in its role at the fixed
 -- generated origin, the level for healthy non-eggs, and the fixed HP
--- fields with the status sprite for non-egg slots.
+-- fields for non-egg slots. The status sprite travels with the sprite
+-- pass below, never inside this panel-clipped row.
 ---@param record table<string, unknown>
 ---@param panel table<string, unknown>
 ---@param dx number horizontal swap offset applied to every panel coordinate
@@ -643,16 +684,27 @@ function PartyScreenRenderer:_drawSlotTextRow(record, panel, dx)
       assert(record.maxHp, "occupied slots carry max HP")
     )
   end
-  if status ~= "ok" then
-    local visual = assert(self._manifest.visuals.status[status], "party status carries its semantic visual")
-    local statusRect = assert(panel.statusRect, "party panels carry the status rectangle")
-    setColor(self._graphics, WHITE)
-    self._graphics.draw(
-      self:_image(assert(visual.image, "party status visuals carry image paths")),
-      statusRect.x + dx,
-      statusRect.y
-    )
+end
+
+-- Draws the status sprite at its generated rectangle with the same slide
+-- as the travelling slot. Status markers move with the ball, icon, and
+-- held markers under the viewport, outside the home-panel clip.
+---@param record table<string, unknown>
+---@param panel table<string, unknown>
+---@param dx number horizontal swap offset applied to the panel coordinate
+function PartyScreenRenderer:_drawStatusMarker(record, panel, dx)
+  local status = assert(record.status, "occupied slots carry a status")
+  if status == "ok" then
+    return
   end
+  local visual = assert(self._manifest.visuals.status[status], "party status carries its semantic visual")
+  local statusRect = assert(panel.statusRect, "party panels carry the status rectangle")
+  setColor(self._graphics, WHITE)
+  self._graphics.draw(
+    self:_image(assert(visual.image, "party status visuals carry image paths")),
+    statusRect.x + dx,
+    statusRect.y
+  )
 end
 
 -- Draws the open context menu as independent generated buttons: one
@@ -660,11 +712,14 @@ end
 -- treatment; the focused entry uses the depressed treatment; an armed
 -- press shows the pressed frame with the raised treatment through its
 -- first half and the depressed treatment through its second half. The
+-- arm frame keeps the focused selected/depressed presentation. The
 -- generated frame art carries the button chrome, so no enclosing window
--- or highlight rectangle is painted.
+-- or highlight rectangle is painted. Ink and fill follow the generated
+-- semantic role the entry style selects; the fixed cancel entry keeps
+-- command ink through its own role.
 ---@param menu table<string, unknown>[]
 ---@param menuIndex integer
----@param menuPress { index: integer, phase: "pressed"|"selected" }?
+---@param menuPress { index: integer, phase: "armed"|"pressed"|"selected" }?
 ---@param kind "topLevel"|"subcontext"
 ---@param layout table<string, unknown>
 function PartyScreenRenderer:_drawMenu(menu, menuIndex, menuPress, kind, layout)
@@ -674,8 +729,7 @@ function PartyScreenRenderer:_drawMenu(menu, menuIndex, menuPress, kind, layout)
   assert(#entries == #menu, "generated menu records index every entry")
   local contextMenu = assert(self._manifest.contextMenu, "the party manifest carries context menus")
   local frames = assert(contextMenu.frames, "context menus carry button frames")
-  local textPalette = assert(contextMenu.textPalette, "context menus carry text colors")
-  local fillPalette = assert(contextMenu.fillPalette, "context menus carry fill colors")
+  local roles = assert(contextMenu.textRoles, "context menus carry semantic text roles")
   for index, entry in ipairs(menu) do
     local generated = assert(entries[index], "generated menu records index every entry")
     local frameRect = assert(generated.frameRect, "menu entries carry frame rectangles")
@@ -684,6 +738,8 @@ function PartyScreenRenderer:_drawMenu(menu, menuIndex, menuPress, kind, layout)
       frames[assert(generated.frameShape, "menu entries name their frame shape")],
       "context menus carry the entry frame"
     )
+    local style = assert(generated.style, "menu entries carry their semantic style")
+    local role = assert(roles[style], "context menus carry the " .. tostring(style) .. " role")
     local focused = index == menuIndex
     local pressPhase = nil
     if menuPress ~= nil and menuPress.index == index then
@@ -696,22 +752,74 @@ function PartyScreenRenderer:_drawMenu(menu, menuIndex, menuPress, kind, layout)
     elseif pressPhase == "selected" then
       frameState = "selected"
       treatment = "depressed"
+    elseif pressPhase == "armed" then
+      -- The arm frame still shows the pre-press focused row: the
+      -- selected frame with the depressed treatment, never the pressed
+      -- frame.
+      frameState = "selected"
+      treatment = "depressed"
     elseif focused then
       frameState = "selected"
       treatment = "depressed"
     end
-    local fill = assert(fillPalette[treatment], "context fills carry the " .. treatment .. " color")
-    setColor(graphics, { fill.r / 255, fill.g / 255, fill.b / 255, 1 })
-    graphics.rectangle("fill", frameRect.x, frameRect.y, frameRect.width, frameRect.height)
+    local ink = roleFor(
+      assert(role[treatment], "context " .. tostring(style) .. " carries the " .. treatment .. " role"),
+      "context text " .. tostring(style) .. " " .. treatment
+    )
+    local background = assert(ink.background, "context roles carry their background")
+    setColor(graphics, { background.r / 255, background.g / 255, background.b / 255, 1 })
+    graphics.rectangle("fill", textRect.x, textRect.y, textRect.width, textRect.height)
     local visual = assert(group[frameState], "context frames carry the " .. frameState .. " state")
     setColor(graphics, WHITE)
     graphics.draw(self:_image(assert(visual.image, "context frames carry image paths")), frameRect.x, frameRect.y)
-    local ink = menuInk(
-      assert(textPalette[treatment], "context text carries the " .. treatment .. " color"),
-      "context text " .. treatment
-    )
-    self:_paletteText(assert(entry.label, "menu entries carry display labels"), textRect.x, textRect.y, ink)
+    local label = assert(entry.label, "menu entries carry display labels")
+    local labelX, labelY = textRect.x, textRect.y
+    if style == "cancel" then
+      labelX = labelX + math.floor((textRect.width - self._contextText:textWidth(label)) / 2)
+      labelY = labelY + 4
+    end
+    self._contextText:drawTextWithPalette(label, labelX, labelY, ink)
   end
+end
+
+-- Expands one generated message template into window-local text
+-- placements through the ordinary role. Line breaks stack at the source
+-- line height; name segments expand the supplied display name. Later
+-- segments on one line keep their measured horizontal advance.
+---@param segments table[]
+---@param displayName string?
+---@param itemNames string[]?
+---@return { value: string, x: number, y: number }[]
+function PartyScreenRenderer:_templateOps(segments, displayName, itemNames)
+  local text = self._text
+  local ops = {}
+  local cursorX, cursorY = 0, 0
+  local itemIndex = 0
+  for _, segment in ipairs(assert(segments, "templates carry segments")) do
+    assert(type(segment) == "table" and type(segment.kind) == "string", "template segments carry a kind")
+    if segment.kind == "text" then
+      local value = assert(segment.value, "text segments carry display text")
+      ops[#ops + 1] = { value = value, x = cursorX, y = cursorY }
+      cursorX = cursorX + text:textWidth(value)
+    elseif segment.kind == "lineBreak" then
+      cursorX = 0
+      cursorY = cursorY + 16
+    elseif segment.kind == "name" then
+      local name = assert(displayName, "name segments expand the menu slot display name")
+      ops[#ops + 1] = { value = name, x = cursorX, y = cursorY }
+      cursorX = cursorX + text:textWidth(name)
+    elseif segment.kind == "item" then
+      itemIndex = itemIndex + 1
+      local item = assert(itemNames, "held-item templates receive ordered item names")[itemIndex]
+      assert(type(item) == "string", "each item segment has a matching item name")
+      ops[#ops + 1] = { value = item, x = cursorX, y = cursorY }
+      cursorX = cursorX + text:textWidth(item)
+    else
+      error("party message templates render text, line breaks, names, and the held-item result", 0)
+    end
+  end
+  assert(itemNames == nil or itemIndex == #itemNames, "message item names match the template segments")
+  return ops
 end
 
 -- Expands one generated message template at a window origin through the
@@ -722,72 +830,102 @@ end
 ---@param y number
 ---@param displayName string?
 function PartyScreenRenderer:_drawTemplate(segments, x, y, displayName)
-  local text = self._text
   local roles = assert(self._manifest.text, "the party manifest carries text").roles
   local ordinary = roleFor(assert(roles.ordinary, "party text carries the ordinary role"), "ordinary")
-  local cursorX, cursorY = x, y
-  for _, segment in ipairs(assert(segments, "templates carry segments")) do
-    assert(type(segment) == "table" and type(segment.kind) == "string", "template segments carry a kind")
-    if segment.kind == "text" then
-      local value = assert(segment.value, "text segments carry display text")
-      self:_paletteText(value, cursorX, cursorY, ordinary)
-      cursorX = cursorX + text:textWidth(value)
-    elseif segment.kind == "lineBreak" then
-      cursorX = x
-      cursorY = cursorY + 16
-    elseif segment.kind == "name" then
-      local name = assert(displayName, "name segments expand the menu slot display name")
-      self:_paletteText(name, cursorX, cursorY, ordinary)
-      cursorX = cursorX + text:textWidth(name)
-    else
-      error("party message templates render text, line breaks, and names", 0)
-    end
+  for _, op in ipairs(self:_templateOps(segments, displayName)) do
+    self:_paletteText(op.value, x + op.x, y + op.y, ordinary)
   end
 end
 
--- Fills one generated message window with the source window color.
+-- Composes one lower message window through the shared frame/fill/text
+-- order when the borrowed window decoration is available. Without it
+-- only the text draws, still anchored at the source window-local
+-- origins, so decorations never invent geometry the caller did not own.
 ---@param box ScreenTopology.Rectangle
-function PartyScreenRenderer:_fillMessageWindow(box)
-  local fill = self._text:windowBackgroundColor()
-  setColor(self._graphics, fill)
-  self._graphics.rectangle("fill", box.x, box.y, box.width, box.height)
+---@param ops { value: string, x: number, y: number }[]
+function PartyScreenRenderer:_drawLowerWindow(box, ops)
+  local textSection = assert(self._manifest.text, "the party manifest carries text")
+  local message = roleFor(assert(textSection.messageRole, "party text carries the message role"), "message role")
+  local fill = assert(message.background, "message roles carry their background")
+  local background = { fill.r / 255, fill.g / 255, fill.b / 255, 1 }
+  local window = self._window
+  if window ~= nil then
+    local lines = {}
+    for _, op in ipairs(ops) do
+      lines[#lines + 1] = { text = op.value, x = op.x, y = op.y }
+    end
+    FieldTextWindowRenderer.draw({
+      window = window,
+      text = self._text,
+      box = box,
+      frameIndex = self._frameIndex,
+      background = background,
+      palette = message,
+      lines = lines,
+    })
+    return
+  end
+  for _, op in ipairs(ops) do
+    self:_paletteText(op.value, box.x + op.x, box.y + op.y, message)
+  end
 end
 
 -- Draws the browse message through the generated browse window and the
 -- choose-mon template.
 function PartyScreenRenderer:_drawBrowseMessage()
+  self:_drawNamedLowerPrompt("chooseMon")
+end
+
+---@param templateKey string
+function PartyScreenRenderer:_drawNamedLowerPrompt(templateKey)
   local manifest = self._manifest
   local windows = assert(manifest.windows, "the party manifest carries windows")
   local box = assert(windows.browse, "the party manifest carries the browse window")
   local templates = assert(manifest.text.templates, "the party manifest carries templates")
-  local template = assert(templates.chooseMon, "the party manifest carries chooseMon")
-  self:_fillMessageWindow(box)
-  self:_drawTemplate(assert(template.segments, "chooseMon carries segments"), box.x, box.y, nil)
+  local template = assert(templates[templateKey], "the party manifest carries template " .. templateKey)
+  self:_drawLowerWindow(box, self:_templateOps(assert(template.segments, templateKey .. " carries segments"), nil))
 end
 
--- Draws the open-menu message through the generated action window with
+-- Draws the open-menu message through the source context window with
 -- the item-action template expanded from the menu slot's display name.
 ---@param displayName string
 function PartyScreenRenderer:_drawContextMessage(displayName)
   local manifest = self._manifest
   local windows = assert(manifest.windows, "the party manifest carries windows")
-  local box = assert(windows.action, "the party manifest carries the action window")
+  local box = assert(windows.context, "the party manifest carries the context window")
   local templates = assert(manifest.text.templates, "the party manifest carries templates")
   local template = assert(templates.itemAction, "the party manifest carries itemAction")
-  self:_fillMessageWindow(box)
-  self:_drawTemplate(assert(template.segments, "itemAction carries segments"), box.x, box.y, displayName)
+  self:_drawLowerWindow(box, self:_templateOps(assert(template.segments, "itemAction carries segments"), displayName))
+end
+
+-- Resolves a transient action message to window-local text placements:
+-- either existing literal text or a generated-template descriptor
+-- expanded with its display name.
+---@param message string|{ templateKey: string, displayName: string?, itemNames: string[]? }
+---@return { value: string, x: number, y: number }[]
+function PartyScreenRenderer:_actionOps(message)
+  if type(message) == "string" then
+    return { { value = message, x = 0, y = 0 } }
+  end
+  assert(type(message) == "table", "messages carry display text")
+  local key = assert(message.templateKey, "action descriptors name their template")
+  assert(type(key) == "string", "action descriptors name their template")
+  local templates = assert(self._manifest.text.templates, "the party manifest carries templates")
+  local template = assert(templates[key], "the party manifest carries template " .. key)
+  return self:_templateOps(
+    assert(template.segments, key .. " carries segments"),
+    message.displayName,
+    message.itemNames
+  )
 end
 
 -- Draws a transient action message through the generated action window.
----@param message string
+---@param message string|{ templateKey: string, displayName: string?, itemNames: string[]? }
 function PartyScreenRenderer:_drawActionMessage(message)
   local manifest = self._manifest
   local windows = assert(manifest.windows, "the party manifest carries windows")
   local box = assert(windows.action, "the party manifest carries the action window")
-  self:_fillMessageWindow(box)
-  local roles = assert(manifest.text, "the party manifest carries text").roles
-  local ordinary = roleFor(assert(roles.ordinary, "party text carries the ordinary role"), "ordinary")
-  self:_paletteText(message, box.x, box.y, ordinary)
+  self:_drawLowerWindow(box, self:_actionOps(message))
 end
 
 function PartyScreenRenderer:_drawPrompt(promptStatus)
@@ -955,6 +1093,55 @@ function PartyScreenRenderer:draw(presentation, planOrLayout, icons)
   end
 end
 
+-- Source G2_SetBlendBrightness(30, 8) affects BG1/BG2/BG3/OBJ across the main screen.
+-- In the flattened renderer, base Party content is already composed here; BG0-like
+-- context/message/menu layers are drawn afterward and therefore remain unbrightened.
+function PartyScreenRenderer:_brightenContent()
+  local graphics = self._graphics
+  local visuals = assert(self._manifest.visuals, "the party manifest carries visuals")
+  local backdrop = assert(visuals.backdropMain, "party visuals carry the main backdrop")
+  local width = assert(backdrop.width, "the main backdrop carries its width")
+  local height = assert(backdrop.height, "the main backdrop carries its height")
+  assert(type(width) == "number" and width > 0, "the main backdrop width stays positive")
+  assert(type(height) == "number" and height > 0, "the main backdrop height stays positive")
+  setColor(graphics, { 1, 1, 1, BRIGHTEN_ALPHA })
+  graphics.rectangle("fill", 0, 0, width, height)
+end
+
+-- Draws one travelling panel's tilemap content with its swap slide,
+-- clipping to the home panel rectangle while displaced: the native panel
+-- step clears and copies inside the fixed home rectangle while sprites
+-- move freely under the viewport. Stationary slots draw directly so
+-- settled frames match the unclipped browse path exactly. The previous
+-- scissor restores even when the panel callback fails.
+---@param swap table<string, unknown>?
+---@param panel table<string, unknown>
+---@param slot0 integer
+---@param slide number signed slide in units
+---@param drawPanel fun(slide: number)
+function PartyScreenRenderer:_drawClippedPanel(swap, panel, slot0, slide, drawPanel)
+  local involved = swap ~= nil and (slot0 == swap.source or slot0 == swap.destination)
+  if not involved or slide == 0 then
+    drawPanel(slide)
+    return
+  end
+  local graphics = self._graphics
+  local origin = assert(panel.origin, "party panels carry origins")
+  local size = assert(panel.size, "party panels carry sizes")
+  local saveX, saveY, saveWidth, saveHeight = graphics.getScissor()
+  graphics.setScissor(
+    assert(origin.x, "party origins carry x"),
+    assert(origin.y, "party origins carry y"),
+    assert(size.width, "party sizes carry width"),
+    assert(size.height, "party sizes carry height")
+  )
+  local ok, err = pcall(drawPanel, slide)
+  graphics.setScissor(saveX, saveY, saveWidth, saveHeight)
+  if not ok then
+    error(err, 0)
+  end
+end
+
 ---@param presentation table<string, unknown>
 ---@param layout table<string, unknown>
 ---@param icons table<string, unknown>
@@ -975,23 +1162,18 @@ function PartyScreenRenderer:_drawContent(presentation, layout, icons)
   local mainBackdrop = assert(visuals.backdropMain, "party visuals carry the main backdrop")
   setColor(graphics, WHITE)
   graphics.draw(self:_image(assert(mainBackdrop.image, "the main backdrop carries an image path")), 0, 0)
-  -- Per-slot swap geometry resolves once: swap ticks offset the two
-  -- records leftward and exchange their content at the visual midpoint;
-  -- the start tick hides the source.
+  -- Per-slot swap geometry resolves once: each travelling slot slides
+  -- outward from its own column and exchanges its visible record at full
+  -- exit while the domain order holds for the final commit.
   local factsOf = {}
-  local offsetOf = {}
-  local hiddenOf = {}
+  local slideOf = {}
   local selectedOf = {}
   for slot0 = 0, 5 do
     local record = assert(view.slots[slot0 + 1], "the view carries six slots")
     local facts = record
-    local offsetX = 0
-    local hidden = false
+    local slide = 0
     if swap ~= nil and (slot0 == swap.source or slot0 == swap.destination) then
-      offsetX = swap.offsetPx or 0
-      if swap.stage == "start" and slot0 == swap.source then
-        hidden = true
-      end
+      slide = swapSlideOf(swap, slot0)
       if swap.exchanged == true then
         if slot0 == swap.source then
           facts = assert(view.slots[swap.destination + 1], "swap exchanges visible records")
@@ -1001,34 +1183,34 @@ function PartyScreenRenderer:_drawContent(presentation, layout, icons)
       end
     end
     factsOf[slot0 + 1] = facts
-    offsetOf[slot0 + 1] = offsetX
-    hiddenOf[slot0 + 1] = hidden
+    slideOf[slot0 + 1] = slide
     selectedOf[slot0 + 1] = cursorNode == slot0
   end
   -- Source-relative passes across all six slots: panel chrome first, then
   -- the focus cursor under the sprites, then balls under icons, then held
-  -- markers over icons, then text.
+  -- markers over icons, then text, then status markers. Panel passes clip
+  -- to the home rectangle while displaced; sprite passes share the same
+  -- slide under the viewport.
   for slot0 = 0, 5 do
-    if not hiddenOf[slot0 + 1] then
-      local facts = factsOf[slot0 + 1]
-      local panel = assert(panels[slot0 + 1], "the party manifest carries six panels")
-      local chrome = assert(panel.chrome, "party panels carry chrome")
-      local chromeKey = "normal"
-      if selectedOf[slot0 + 1] then
-        chromeKey = facts.status == "faint" and "selectedFainted" or "selected"
-      elseif facts.occupied and facts.status == "faint" then
-        chromeKey = "fainted"
-      end
-      local panelVisual = facts.occupied and assert(chrome[chromeKey], "party panels carry state chrome")
-        or assert(self._manifest.visuals.auxPanel, "party assets carry the empty-slot panel")
-      self:_drawChrome(
-        panelVisual,
-        assert(panel.origin, "party panels carry origins").x + offsetOf[slot0 + 1],
-        panel.origin.y
-      )
+    local facts = factsOf[slot0 + 1]
+    local panel = assert(panels[slot0 + 1], "the party manifest carries six panels")
+    local chrome = assert(panel.chrome, "party panels carry chrome")
+    local chromeKey = "normal"
+    if switchSelected(presentation.switchSelect, slot0) then
+      chromeKey = "switchSelection"
+    elseif selectedOf[slot0 + 1] then
+      chromeKey = facts.status == "faint" and "selectedFainted" or "selected"
+    elseif facts.occupied and facts.status == "faint" then
+      chromeKey = "fainted"
     end
+    local panelVisual = facts.occupied and assert(chrome[chromeKey], "party panels carry state chrome")
+      or assert(self._manifest.visuals.auxPanel, "party assets carry the empty-slot panel")
+    local origin = assert(panel.origin, "party panels carry origins")
+    self:_drawClippedPanel(swap, panel, slot0, slideOf[slot0 + 1], function(slide)
+      self:_drawChrome(panelVisual, origin.x + slide, origin.y)
+    end)
   end
-  if type(cursorNode) == "number" then
+  if type(cursorNode) == "number" and not swapHidesCursor(swap) then
     local panel = assert(panels[cursorNode + 1], "numeric focus addresses a Party panel")
     local cursorSequence = assert(visuals.cursor.sequences[panel.cursorSequence], "panel cursor sequence exists")
     local cursorPosition =
@@ -1036,48 +1218,61 @@ function PartyScreenRenderer:_drawContent(presentation, layout, icons)
     self:_drawSequence(cursorSequence, tick, { x = cursorPosition.left, y = cursorPosition.top })
   end
   for slot0 = 0, 5 do
-    if not hiddenOf[slot0 + 1] then
-      local facts = factsOf[slot0 + 1]
-      if facts.occupied then
-        local panel = assert(panels[slot0 + 1], "the party manifest carries six panels")
-        self:_drawBall(panel, offsetOf[slot0 + 1], selectedOf[slot0 + 1], tick)
-      end
+    local facts = factsOf[slot0 + 1]
+    if facts.occupied then
+      local panel = assert(panels[slot0 + 1], "the party manifest carries six panels")
+      self:_drawBall(panel, slideOf[slot0 + 1], selectedOf[slot0 + 1], tick)
     end
   end
   for slot0 = 0, 5 do
-    if not hiddenOf[slot0 + 1] then
-      local facts = factsOf[slot0 + 1]
-      if facts.occupied then
-        local panel = assert(panels[slot0 + 1], "the party manifest carries six panels")
-        local sequence = assert(sequences[slot0 + 1], "animation clocks sequence every slot")
-        local sequenceTick = assert(sequenceTicks[slot0 + 1], "icon timelines need sequence-local ticks")
-        assert(sequence % 1 == 0 and sequenceTick % 1 == 0, "icon clocks stay integral")
-        self:_drawIcon(facts, panel, offsetOf[slot0 + 1], selectedOf[slot0 + 1], sequenceTick, sequence, icons)
-      end
+    local facts = factsOf[slot0 + 1]
+    if facts.occupied then
+      local panel = assert(panels[slot0 + 1], "the party manifest carries six panels")
+      local sequence = assert(sequences[slot0 + 1], "animation clocks sequence every slot")
+      local sequenceTick = assert(sequenceTicks[slot0 + 1], "icon timelines need sequence-local ticks")
+      assert(sequence % 1 == 0 and sequenceTick % 1 == 0, "icon clocks stay integral")
+      self:_drawIcon(facts, panel, slideOf[slot0 + 1], selectedOf[slot0 + 1], sequenceTick, sequence, icons)
     end
   end
   for slot0 = 0, 5 do
-    if not hiddenOf[slot0 + 1] then
-      local facts = factsOf[slot0 + 1]
-      if facts.occupied then
-        local panel = assert(panels[slot0 + 1], "the party manifest carries six panels")
-        self:_drawHeldMarkers(facts, panel, offsetOf[slot0 + 1], tick)
-      end
+    local facts = factsOf[slot0 + 1]
+    if facts.occupied then
+      local panel = assert(panels[slot0 + 1], "the party manifest carries six panels")
+      self:_drawHeldMarkers(facts, panel, slideOf[slot0 + 1], tick)
     end
   end
   for slot0 = 0, 5 do
-    if not hiddenOf[slot0 + 1] then
-      local facts = factsOf[slot0 + 1]
-      if facts.occupied then
-        local panel = assert(panels[slot0 + 1], "the party manifest carries six panels")
-        self:_drawSlotTextRow(facts, panel, offsetOf[slot0 + 1])
-      end
+    local facts = factsOf[slot0 + 1]
+    if facts.occupied then
+      local panel = assert(panels[slot0 + 1], "the party manifest carries six panels")
+      self:_drawClippedPanel(swap, panel, slot0, slideOf[slot0 + 1], function(slide)
+        self:_drawSlotTextRow(facts, panel, slide)
+      end)
+    end
+  end
+  for slot0 = 0, 5 do
+    local facts = factsOf[slot0 + 1]
+    if facts.occupied then
+      local panel = assert(panels[slot0 + 1], "the party manifest carries six panels")
+      self:_drawStatusMarker(facts, panel, slideOf[slot0 + 1])
     end
   end
   if layout.cancelRect ~= nil then
     local cancel = assert(self._manifest.controls.cancel, "party controls carry Cancel")
     local anchor = assert(cancel.anchor, "party controls carry the Cancel anchor")
     local buttonSequenceIndex = cursorNode == "cancel" and 2 or 1
+    if presentation.cancelPress ~= nil then
+      local phase = assert(presentation.cancelPress.phase, "footer presses carry a phase")
+      assert(
+        phase == "pressed" or phase == "armed" or phase == "selected",
+        "footer presses use the pressed, armed, or selected phase"
+      )
+      if phase == "pressed" then
+        buttonSequenceIndex = 1
+      else
+        buttonSequenceIndex = 2
+      end
+    end
     local buttonSequence =
       assert(visuals.buttons.sequences[buttonSequenceIndex], "party buttons carry the Cancel state")
     self:_drawSequence(buttonSequence, tick, anchor)
@@ -1087,21 +1282,27 @@ function PartyScreenRenderer:_drawContent(presentation, layout, icons)
     local roles = assert(self._manifest.text, "the party manifest carries text").roles
     local ordinary = roleFor(assert(roles.ordinary, "party text carries the ordinary role"), "ordinary")
     local width = self._text:textWidth(label)
-    self:_paletteText(label, textRect.x + (textRect.width - width) / 2, textRect.y, ordinary)
+    self:_paletteText(label, textRect.x + math.floor((textRect.width - width) / 2), textRect.y, ordinary)
   end
   local inMenu = presentation.state == "context"
     or presentation.state == "item_context"
     or presentation.state == "mail_context"
   -- Messages composite first: independent button frames paint over the
   -- message window where source placement overlaps them.
+  if inMenu then
+    self:_brightenContent()
+  end
   if presentation.message ~= nil then
-    assert(type(presentation.message) == "string", "messages carry display text")
     self:_drawActionMessage(presentation.message)
   elseif inMenu then
     local slot = assert(presentation.menuSlot, "menu states remember their slot")
     local record = assert(view.slots[slot + 1], "menu messages address a party slot")
     self:_drawContextMessage(assert(record.displayName, "menu slots carry a display name"))
-  elseif presentation.state == "browse" or presentation.state == "swapping" then
+  elseif presentation.state == "choosing_item_target" then
+    self:_drawNamedLowerPrompt(assert(presentation.targetPromptKey, "item target presentation carries its prompt key"))
+  elseif presentation.state == "choose_swap" or presentation.state == "swapping" then
+    self:_drawNamedLowerPrompt("moveTarget")
+  elseif presentation.state == "browse" then
     self:_drawBrowseMessage()
   end
   if inMenu then

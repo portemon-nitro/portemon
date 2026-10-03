@@ -7,13 +7,13 @@
 -- identities, missing range members, malformed pockets, and malformed
 -- optional TM/berry data fail loudly. Love-free and filesystem-free.
 
-local Errors = require("libs.errors.src.Errors")
 local Validate = require("libs.assets.src.Validate")
+local SchemaCheck = require("libs.assets.src.SchemaCheck")
 
 ---@class ItemAssetSchema
 local ItemAssetSchema = {}
 
-ItemAssetSchema.CATALOG_SCHEMA = "g4-item-catalog-v3"
+ItemAssetSchema.CATALOG_SCHEMA = "g4-item-catalog-v4"
 ItemAssetSchema.ICON_MANIFEST_SCHEMA = "g4-item-icons-v1"
 
 -- The eight source pockets in native order: native id, occupied-slot
@@ -38,6 +38,7 @@ ItemAssetSchema.MAX_MOVE_NATIVE_ID = 467
 
 local ITEM_FIELDS = {
   nativeId = true,
+  price = true,
   name = true,
   nameIndefinite = true,
   namePlural = true,
@@ -57,22 +58,14 @@ local ITEM_FIELDS = {
   partyUse = true,
 }
 
-local function fail(code, message, context)
-  Errors.raise(code, message, context or {})
-end
+local fail = SchemaCheck.fail
 
 local function checkKeys(record, allowed, context, code)
-  for key in pairs(record) do
-    if allowed[key] == nil then
-      fail(code, "unknown field " .. tostring(key), context)
-    end
-  end
+  SchemaCheck.checkKeys(record, allowed, context, code)
 end
 
 local function checkNonEmptyString(value, context, code, field)
-  if type(value) ~= "string" or value == "" then
-    fail(code, field .. " must be a non-empty string", context)
-  end
+  SchemaCheck.checkNonEmptyString(value, context, code, field)
 end
 
 local function checkBoolean(value, context, code, field)
@@ -99,9 +92,7 @@ local DEFERRED_REASONS = {
 }
 
 local function checkInteger(value, context, code, field, low, high)
-  if type(value) ~= "number" or value % 1 ~= 0 or value < low or value > high then
-    fail(code, field .. " must be an integer in " .. low .. ".." .. high, context)
-  end
+  SchemaCheck.checkInteger(value, context, code, field, low, high)
 end
 
 local function assertFriendship(key, value, context)
@@ -267,6 +258,7 @@ local function assertItem(key, record, context)
   checkNonEmptyString(record.name, context, "ITEM_CATALOG_INVALID", "item " .. key .. " name")
   checkNonEmptyString(record.nameIndefinite, context, "ITEM_CATALOG_INVALID", "item " .. key .. " nameIndefinite")
   checkNonEmptyString(record.namePlural, context, "ITEM_CATALOG_INVALID", "item " .. key .. " namePlural")
+  checkInteger(record.price, context, "ITEM_CATALOG_INVALID", "item " .. key .. " price", 0, 65535)
   if type(record.description) ~= "string" then
     fail("ITEM_CATALOG_INVALID", "item " .. key .. " description must be a string", context)
   end
@@ -499,9 +491,7 @@ function ItemAssetSchema.isValidIconManifest(manifest)
 end
 
 local function checkHash(value, context, field)
-  if type(value) ~= "string" or #value ~= 40 or value:match("^[0-9a-f]+$") == nil then
-    fail("ITEM_INDEX_INVALID", field .. " must be a 40-character hex digest", context)
-  end
+  SchemaCheck.checkHash(value, context, "ITEM_INDEX_INVALID", field)
 end
 
 -- Class index validation: schema identity, version, content hashes, and

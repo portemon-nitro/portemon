@@ -15,6 +15,7 @@ local WarpSystem = require("libs.hgss.src.transition.WarpSystem")
 local MapProps = require("libs.hgss.src.world.MapProps")
 local ModelDoorMetadata = require("libs.hgss.src.world.ModelDoorMetadata")
 local FieldCoverage = require("libs.hgss.src.world.FieldCoverage")
+local FieldZoneIdentity = require("libs.hgss.src.world.FieldZoneIdentity")
 local FieldCellCache = require("libs.assets.src.field.FieldCellCache")
 
 ---@class LogicalFieldMap
@@ -29,6 +30,7 @@ local FieldCellCache = require("libs.assets.src.field.FieldCellCache")
 ---@field mapSectionNativeId integer exact numeric MAPSEC_* identity; never the header id
 ---@field followMode string source map-header follow policy: ALLOW, HEIGHT_RESTRICT, or PREVENT
 ---@field fieldData table<string, unknown>
+---@field renderEnvironment table<string, unknown> runtime-owned lighting, edge, and fog state; present even when no scene is realized
 ---@field cameraType integer
 ---@field coordinateOrigin { x: integer, z: integer }
 ---@field released boolean
@@ -74,6 +76,7 @@ FieldMapLoader.__index = FieldMapLoader
 ---@field mapProps MapProps? semantic door/prop resolver; present for logical (non-outdoor) maps, which load an eager central collision regardless of presentation
 ---@field scene table<string, unknown>
 ---@field fieldData table<string, unknown>
+---@field renderEnvironment table<string, unknown> runtime-owned lighting, edge, and fog state; live fog mutates here, never in generated data
 ---@field collision table<string, unknown>?
 ---@field terrain TerrainSurface?
 ---@field terrainDependencyHash string?
@@ -199,8 +202,8 @@ end
 
 -- Shared generated field-record acquisition and validation for both
 -- semantic and full paths: identity, event collections, field-use policy,
--- init scripts, and transition environment. Visual realization never
--- revalidates these.
+-- init scripts, transition environment, and the normalized render
+-- environment. Visual realization never revalidates these.
 ---@param cacheFs CacheFs
 ---@param record table<string, unknown>
 ---@return table<string, unknown>
@@ -242,7 +245,32 @@ local function loadSemanticFieldData(cacheFs, record)
       { mapId = record.id, transitionEnvironment = fieldData.transitionEnvironment }
     )
   end
+  if not FieldMapDataCache.hasRenderEnvironment(fieldData.renderEnvironment) then
+    Errors.raise(
+      FieldErrors.FIELD_MAP_DATA_CACHE_INVALID,
+      "field cache render environment is missing or malformed; rebuild the derived cache",
+      { mapId = record.id }
+    )
+  end
   return fieldData
+end
+
+-- One runtime-owned render environment per runtime map: the outer table is
+-- fresh, while the immutable lighting, edge-color, and base-fog records
+-- are borrowed from validated generated data. Only live fog is ever
+-- replaced; the generated record is never mutated.
+---@param fieldData table<string, unknown>
+---@return table<string, unknown>
+local function materializeRenderEnvironment(fieldData)
+  local generated = assert(fieldData.renderEnvironment, "render environment requires validated field data")
+  local baseFog = assert(generated.fog, "render environment requires its base fog")
+  return {
+    lighting = assert(generated.lighting, "render environment requires lighting"),
+    edgeColors = assert(generated.edgeColors, "render environment requires edge colors"),
+    baseWeatherId = assert(generated.weatherId, "render environment requires its base weather"),
+    baseFog = baseFog,
+    fog = baseFog,
+  }
 end
 
 -- The terrain artifact's source record is part of the map dependency identity
@@ -339,20 +367,17 @@ end
 -- live ModelInstances into the SAME resolver instead of building a second
 -- one (MapSceneLoader:attachInstances).
 ---@param cacheFs CacheFs
----@param scene table<string, unknown>
+---@param buildingInstances table<string, unknown>[]
 ---@param fieldData table<string, unknown>
----@param centralCollision table<string, unknown>
+---@param collision table<string, unknown>
+---@param originX integer
+---@param originZ integer
 ---@return MapProps
-local function buildMapProps(cacheFs, scene, fieldData, centralCollision)
-  local doorTiles = warpBearingDoorTiles(
-    DoorTiles.fromGrid(centralCollision),
-    fieldData.events.warps,
-    scene.matrix.worldOriginX,
-    scene.matrix.worldOriginZ
-  )
+local function buildMapProps(cacheFs, buildingInstances, fieldData, collision, originX, originZ)
+  local doorTiles = warpBearingDoorTiles(DoorTiles.fromGrid(collision), fieldData.events.warps, originX, originZ)
   local doorMetaByModelKey = {}
   local placements = {}
-  for _, inst in ipairs(scene.buildingInstances) do
+  for _, inst in ipairs(buildingInstances) do
     local meta = doorMetaByModelKey[inst.modelKey]
     if meta == nil then
       local desc = assert(cacheFs:loadLua(MapAssetCache.modelPath(inst.modelKey)), "missing model " .. inst.modelKey)
@@ -474,6 +499,7 @@ function FieldMapLoader:loadLogical(idOrSymbol)
     mapSectionNativeId = record.mapSectionNativeId,
     followMode = record.followMode,
     fieldData = fieldData,
+    renderEnvironment = materializeRenderEnvironment(fieldData),
     cameraType = fieldData.cameraType,
     coordinateOrigin = { x = originX, z = originZ },
     released = false,
@@ -579,7 +605,14 @@ local function prepareLoad(loader, record)
       worldOriginX = scene.matrix.worldOriginX,
       worldOriginZ = scene.matrix.worldOriginZ,
     })
-    mapProps = buildMapProps(loader.cacheFs, scene, fieldData, centralCollision)
+    mapProps = buildMapProps(
+      loader.cacheFs,
+      scene.buildingInstances,
+      fieldData,
+      centralCollision,
+      scene.matrix.worldOriginX,
+      scene.matrix.worldOriginZ
+    )
   end
   return {
     record = record,
@@ -662,6 +695,7 @@ local function assembleComplete(loader, ctx, sceneRuntime)
       mapProps = ctx.mapProps,
       scene = scene,
       fieldData = ctx.fieldData,
+      renderEnvironment = materializeRenderEnvironment(ctx.fieldData),
       collision = region and region.collision or nil,
       terrain = region and region.terrain or nil,
       terrainDependencyHash = region and terrainDependencyHash(region) or nil,
@@ -1167,15 +1201,42 @@ function FieldMapLoader:createPhysicalCoverage(runtimeMap, position)
     merged.assetPreparation = self.assetPreparation
     sceneOptions = merged
   end
+  -- The semantic resolver for one newly normalized physical cell. Only the
+  -- physical-only header owns no resolver; every other header resolves
+  -- through the strict logical lookup, so a missing record fails staging.
+  -- A real cell reuses the single generated semantic assembly with its own
+  -- placements, collision, and global origin, so door keys stay cell-local
+  -- while warp records stay global. Failures propagate into the staging
+  -- transaction; only the physical-only case returns nil.
+  local mapLoader = self
+  local function mapPropsFactory(runtime, descriptor)
+    local cell = runtime.descriptor or descriptor
+    if FieldZoneIdentity.isPhysicalOnlyCell(cell.mapHeaderId) then
+      return nil
+    end
+    local cellRecord = worldRecord(mapLoader.world, cell.mapHeaderId)
+    local fieldData = loadSemanticFieldData(mapLoader.cacheFs, cellRecord)
+    local origin = assert(runtime.origin, "physical cell origin is missing")
+    return buildMapProps(mapLoader.cacheFs, cell.buildingInstances, fieldData, runtime.collision, origin.x, origin.z)
+  end
+  local function cellOptions(runtime)
+    local options = {}
+    if sceneOptions then
+      for key, value in pairs(sceneOptions) do
+        options[key] = value
+      end
+    end
+    options.mapProps = runtime.mapProps
+    return options
+  end
   if self.sceneLoader and self.sceneLoader.beginCell then
-    local mapLoader = self
-    local function beginCell(_, cell)
-      return mapLoader.sceneLoader.beginCell(mapLoader.cacheFs, cell, sceneOptions)
+    local function beginCell(runtime, cell)
+      return mapLoader.sceneLoader.beginCell(mapLoader.cacheFs, cell, cellOptions(runtime))
     end
     presentationTaskFactory = beginCell
   elseif self.sceneLoader and self.sceneLoader.loadCell then
-    local function loadCell(_, cell)
-      return self.sceneLoader.loadCell(self.cacheFs, cell, sceneOptions)
+    local function loadCell(runtime, cell)
+      return mapLoader.sceneLoader.loadCell(mapLoader.cacheFs, cell, cellOptions(runtime))
     end
     presentationLoader = loadCell
   end
@@ -1185,6 +1246,7 @@ function FieldMapLoader:createPhysicalCoverage(runtimeMap, position)
     matrixMemberId = matrixMemberId,
     anchorX = math.floor(position.fieldX / 32),
     anchorZ = math.floor(position.fieldZ / 32),
+    mapPropsFactory = mapPropsFactory,
     presentationLoader = presentationLoader,
     presentationTaskFactory = presentationTaskFactory,
     derivedAssets = self.derivedAssets,

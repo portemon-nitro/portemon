@@ -5,5 +5,5 @@ set -euo pipefail
 repo_root="$(git rev-parse --show-toplevel)"
 cd "$repo_root"
 
-"$repo_root/scripts/lib/check-invariants.sh" --cached
+# The lint gate owns both the worktree and the staged-index checks.
 exec "$repo_root/scripts/lint.sh" --check

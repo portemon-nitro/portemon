@@ -257,8 +257,26 @@ function T.tests.resume_rereads_the_live_party(context)
     local h2 = harness(versionId, service)
     h2.registry:installBase(script.id, script, "generated")
     ScriptSave.restore(bucket, h2.scheduler, tick, {})
+    -- The restored selection reopens under the reveal on its fresh
+    -- screen: wait out the reveal plus its handover/settling ticks so
+    -- the driven confirm acts.
+    for _ = 1, 20 do
+      tick = tick + 1
+      h2.scheduler:step(tick, {})
+      local status = h2.services.partySelection:status()
+      if status ~= nil and status.phase == "interactive" then
+        break
+      end
+    end
     tick = tick + 1
     h2.scheduler:step(tick, {})
+    tick = tick + 1
+    h2.scheduler:step(tick, {})
+    Assert.equal(
+      h2.services.partySelection:status().phase,
+      "interactive",
+      "the reveal hands over on its fixed recurrence"
+    )
     Assert.equal(service:partyCount(), 3, "restore publishes nothing early")
     tick = tick + 1
     h2.scheduler:step(tick, { uiEvents = { { type = "confirm" } } })

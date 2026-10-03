@@ -6,6 +6,7 @@
 local Assert = require("tests.support.Assert")
 local CollisionFixture = require("tests.support.CollisionFixture")
 local MapAssetCache = require("libs.assets.src.MapAssetCache")
+local FieldMapDataCache = require("libs.assets.src.field.FieldMapDataCache")
 local PreparedFieldEntry = require("game.hgss.src.field.PreparedFieldEntry")
 
 local T = {}
@@ -13,6 +14,44 @@ local T = {}
 local BEDROOM_SYMBOL = "MAP_NEW_BARK_PLAYER_HOUSE_2F"
 local BEDROOM_ID = 5
 local OPENING = { mapSymbol = BEDROOM_SYMBOL, fieldX = 6, fieldZ = 6, facing = "south" }
+
+-- The synthesized bedroom record carries the current field-map schema with a
+-- minimal valid render environment: the loader validates generated field
+-- records before staging, so a stale or environment-less record never
+-- reaches the scene build.
+local function bedroomField(mapId, symbol)
+  local density = {}
+  for i = 1, 32 do
+    density[i] = 0
+  end
+  return {
+    schema = FieldMapDataCache.FIELD_SCHEMA,
+    initScripts = {},
+    mapId = mapId,
+    mapSymbol = symbol,
+    cameraType = 3,
+    transitionEnvironment = "building",
+    fieldUse = {
+      flyAllowed = false,
+      teleportAllowed = false,
+      escapeAllowed = false,
+      flashUsable = false,
+      alphChamber = false,
+      icePathB2F = false,
+      cave = false,
+      unionOrColosseum = false,
+    },
+    events = { background = {}, objects = {}, warps = {}, coordinates = {} },
+    music = { day = "SEQ_X", night = "SEQ_X", flagOverrides = {}, traversalOverrides = {} },
+    soundplates = {},
+    renderEnvironment = {
+      lighting = { records = { { startHalfSeconds = 0 } } },
+      edgeColors = { [0] = 0, 0, 0, 0, 0, 0, 0, 0 },
+      weatherId = 0,
+      fog = { enabled = false, color = 0, offset = 0, slope = 0, alpha = 0, table = density },
+    },
+  }
+end
 
 local function bedroomFixture()
   local files = {}
@@ -43,27 +82,7 @@ local function bedroomFixture()
     plates = {},
   }
   files[scene.collision.file] = CollisionFixture.asset(32, 32)
-  files[string.format("data/generated/field/maps/%04d/field.lua", mapId)] = {
-    schema = "g4-field-map-v10",
-    initScripts = {},
-    mapId = mapId,
-    mapSymbol = symbol,
-    cameraType = 3,
-    transitionEnvironment = "building",
-    fieldUse = {
-      flyAllowed = false,
-      teleportAllowed = false,
-      escapeAllowed = false,
-      flashUsable = false,
-      alphChamber = false,
-      icePathB2F = false,
-      cave = false,
-      unionOrColosseum = false,
-    },
-    events = { background = {}, objects = {}, warps = {}, coordinates = {} },
-    music = { day = "SEQ_X", night = "SEQ_X", flagOverrides = {}, traversalOverrides = {} },
-    soundplates = {},
-  }
+  files[string.format("data/generated/field/maps/%04d/field.lua", mapId)] = bedroomField(mapId, symbol)
   world.maps[1] = {
     id = mapId,
     symbol = symbol,

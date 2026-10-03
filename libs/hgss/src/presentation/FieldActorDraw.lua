@@ -134,6 +134,7 @@ local function writeItem(record, entry, partIndex, item)
   if isBillboard then
     ---@cast part FieldActorCache.AtlasRender
     ---@cast geometry FieldActorCache.AtlasGeometry
+    item.bounds = assert(geometry.bounds, "resident billboard visual is missing its validated bounds")
     local billboardBase = writeBillboardBase(item, x, y, z, geometry.baseTransform)
     local billboardCenter = item.billboardCenter or {}
     billboardCenter[1] = billboardBase[13]
@@ -145,6 +146,7 @@ local function writeItem(record, entry, partIndex, item)
       "resident billboard visual is missing its precomputed scale"
     )
   else
+    item.bounds = nil
     if not item.transform then
       item.transform = Matrix4.translate(x, y, z)
     else

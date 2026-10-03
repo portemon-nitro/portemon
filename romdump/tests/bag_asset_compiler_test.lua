@@ -15,6 +15,7 @@ local BagCache = require("libs.assets.src.BagCache")
 local ModelAsset = require("libs.assets.src.model.ModelAsset")
 local FieldMessageBank = require("romdump.src.digest.ui.FieldMessageBank")
 local charmap = require("romdump.src.reference.hgss.charmap")
+local BagPresentationFixture = require("tests.support.BagPresentationFixture")
 
 local T = {}
 
@@ -250,6 +251,7 @@ local EOS_UNIT = 0xFFFF
 local ITEM_SUBSTITUTION = { 0xFFFE, 0x0108, 2, 0, 0 }
 local QUANTITY_SUBSTITUTION = { 0xFFFE, 0x0134, 2, 1, 0 }
 local QUANTITY_SUBSTITUTION_ALIAS = { 0xFFFE, 0x0133, 2, 1, 0 }
+local SALE_TOTAL_SUBSTITUTION = { 0xFFFE, 0x0137, 2, 1, 0 }
 
 local codeForGlyph = nil
 local function glyphCode(text)
@@ -298,6 +300,10 @@ local function syntheticMessageBanks()
   bank10[54] = messageUnits({ "Toss ", ITEM_SUBSTITUTION, "?" })
   bank10[55] = messageUnits({ "Threw away ", QUANTITY_SUBSTITUTION, " ", ITEM_SUBSTITUTION, "." })
   bank10[56] = messageUnits({ "Toss ", QUANTITY_SUBSTITUTION, " ", ITEM_SUBSTITUTION, "?" })
+  bank10[77] = messageUnits({ ITEM_SUBSTITUTION, " cannot be sold." })
+  bank10[78] = messageUnits({ ITEM_SUBSTITUTION, "? Quantity?" })
+  bank10[79] = messageUnits({ "Offer: ", SALE_TOTAL_SUBSTITUTION })
+  bank10[80] = messageUnits({ ITEM_SUBSTITUTION, " for ", SALE_TOTAL_SUBSTITUTION })
   bank10[76] = messageUnits({ "MOVE" })
   bank10[102] = messageUnits({ "TYPE" })
   bank10[90] = messageUnits({ "PP" })
@@ -329,6 +335,7 @@ local function fixture(opts)
     BagSources.screens.moveWash,
     BagSources.screens.actionOverlay,
     BagSources.screens.quantityOverlay,
+    BagSources.screens.saleQuantity,
   }) do
     members[memberId + 1] = screenData()
   end
@@ -710,13 +717,15 @@ function T.producer_declares_the_audited_message_selection()
   Assert.deepEqual(BagSources.spriteStates.quantity, {
     increment = { normal = { animation = 25, palette = 8 }, pressed = { animation = 26, palette = 8 } },
     decrement = { normal = { animation = 27, palette = 8 }, pressed = { animation = 28, palette = 8 } },
-    confirm = { animation = 31, palette = 8 },
+    confirm = { animation = 37, palette = 8 },
+    cancel = { animation = 39, palette = 8 },
   })
   Assert.deepEqual(BagSources.spriteStates.cancelFace, { animation = 16, palette = 8 })
   Assert.deepEqual(BagSources.lowerLayers, {
     browse = { variant = 0, wash = "listWash", slots = "listSlots" },
     action = { variant = 2, base = "browse", overlay = "actionOverlay" },
     quantity = { variant = 3, base = "action", overlay = "quantityOverlay" },
+    saleQuantity = { variant = 4, base = "action", overlay = "saleQuantity" },
     move = { variant = 1, wash = "moveWash", slots = "moveSlots" },
   })
   local messages = assert(BagSources.messages, "the producer must declare its message selection")
@@ -735,6 +744,10 @@ function T.producer_declares_the_audited_message_selection()
     tossConfirm = { bank = 10, index = 55 },
     tossResult = { bank = 10, index = 54 },
     selectedItem = { bank = 10, index = 43 },
+    saleNotSellable = { bank = 10, index = 76 },
+    saleQuantity = { bank = 10, index = 77 },
+    saleOffer = { bank = 10, index = 78 },
+    saleResult = { bank = 10, index = 79 },
   })
 end
 
@@ -908,7 +921,7 @@ local function syntheticBundle(marker)
     tabs[#tabs + 1] = { x = i * 32, y = 0, width = 32, height = 32 }
   end
   local manifest = {
-    schema = "g4-bag-assets-v15",
+    schema = "g4-bag-assets-v17",
     logicalSize = { width = 256, height = 192 },
     hero = {
       background = {
@@ -1021,6 +1034,10 @@ local function syntheticBundle(marker)
         quantityConfirm = {
           normal = visualRef("assets/generated/bag/quantity-confirm-frame-1.png"),
           selected = visualRef("assets/generated/bag/quantity-confirm-selected.png"),
+        },
+        quantityCancel = {
+          normal = visualRef("assets/generated/bag/quantity-cancel-frame-1.png"),
+          selected = visualRef("assets/generated/bag/quantity-cancel-selected.png"),
         },
       },
       moveTransition = {
@@ -1305,6 +1322,12 @@ local function syntheticBundle(marker)
             visual = visualRef("assets/generated/bag/quantity-confirm-frame-1.png"),
             center = { x = 136, y = 176 },
             hitRect = { x = 96, y = 168, width = 78, height = 24 },
+            labelAt = { x = 117, y = 168 },
+          },
+          cancel = {
+            visual = visualRef("assets/generated/bag/quantity-cancel-frame-1.png"),
+            center = { x = 224, y = 176 },
+            labelAt = { x = 197, y = 168 },
           },
           cancelHitRect = { x = 178, y = 168, width = 78, height = 24 },
         },
@@ -1342,6 +1365,7 @@ local function syntheticBundle(marker)
   for _, key in ipairs({ "physical", "special", "status" }) do
     manifest.hero.moveSummary.categoryIcons[key] = visualRef("assets/generated/bag/move-category-" .. key .. ".png")
   end
+  manifest.interactive.sale = BagPresentationFixture.manifest().interactive.sale
   for _, path in ipairs(BagCache.referencedPaths(manifest)) do
     assets[path] = "payload:" .. path
   end
@@ -1359,7 +1383,7 @@ function T.writer_publishes_the_class_and_reports_ready()
   Assert.isTrue(BagCacheWriter.write(cacheFs, bundle))
   Assert.isTrue(BagCacheWriter.isReady(cacheFs, bundle.marker))
   local loaded = BagCache.loadManifest(cacheFs)
-  Assert.equal(loaded.schema, "g4-bag-assets-v15")
+  Assert.equal(loaded.schema, "g4-bag-assets-v17")
   Assert.equal(loaded.hero.presentation.lights.count, 4)
   Assert.deepEqual(loaded.hero.presentation.lights.color, { r = 31, g = 31, b = 31 })
   Assert.equal(#loaded.hero.presentation.lights.vectors, 4)

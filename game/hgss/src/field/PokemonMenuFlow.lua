@@ -8,9 +8,11 @@
 -- production admission of a terminal field request belongs to the host.
 
 local BagCursor = require("libs.hgss.src.items.BagCursor")
+local Mon = require("libs.mons.src.Mon")
 local BagScreenState = require("game.hgss.src.field.BagScreenState")
 local PartyScreenState = require("game.hgss.src.field.PartyScreenState")
 local SummaryScreenState = require("game.hgss.src.field.SummaryScreenState")
+local StandardFade = require("libs.hgss.src.presentation.StandardFade")
 
 local TERMINAL_FIELD_ACTION = "pokemon.field_move"
 
@@ -21,13 +23,12 @@ local PAGE = {
   PARTY_BROWSE = "party_browse",
   PARTY_ITEM_TARGET = "party_item_target",
   PARTY_GIVE_TARGET = "party_give_target",
-  PARTY_GIVE_CONFIRM = "party_give_confirm",
   SUMMARY = "summary",
   MOVE_PICK = "move_pick",
 }
 
 ---@class PokemonMenuFlow
----@field private _effect (fun(sequence: string))? the production semantic sound boundary for bag children
+---@field private _effect (fun(sequence: string))? the production semantic sound boundary for menu children
 ---@field private _textPolicy table<string, unknown>? the copied player text-speed cadence for bag children
 ---@field private _root string
 ---@field private _mons table<string, unknown>
@@ -45,9 +46,33 @@ local PAGE = {
 ---@field private _continuation table<string, unknown>?
 ---@field private _picker table<string, unknown>? the live temporary picker cursor
 ---@field private _result table<string, unknown>?
+---@field private _terminalResultPending table<string, unknown>? published after the final transparent return frame
+---@field private _lastChildStatus table<string, unknown>?
+---@field private _transition PokemonMenuFlow.Transition?
+---@field private _terminalChildStatus table<string, unknown>?
 ---@field private _disposed boolean
 local PokemonMenuFlow = {}
 PokemonMenuFlow.__index = PokemonMenuFlow
+
+---@class PokemonMenuFlow.ReplacementTransition
+---@field kind "replacement"
+---@field phase "app_exit"
+---@field fade StandardFade
+---@field page string
+---@field continuation table<string, unknown>?
+---@field child table<string, unknown>
+---@field childStatus table<string, unknown>? the last drawable outgoing child status
+
+---@class PokemonMenuFlow.TerminalTransition
+---@field kind "terminal"
+---@field phase "app_exit"|"menu_return"
+---@field fade StandardFade
+---@field result table<string, unknown>
+---@field childStatus table<string, unknown> the last drawable outgoing child status
+---@field inputKey string? retained app pane role during menu return
+---@field panes table[]? retained pane placements during menu return
+
+---@alias PokemonMenuFlow.Transition PokemonMenuFlow.ReplacementTransition|PokemonMenuFlow.TerminalTransition
 
 local function checkServices(opts)
   local mons = assert(opts.mons, "the menu flow borrows the live mon service")
@@ -126,9 +151,11 @@ local PARTY_FIELD_MOVES = {
 
 -- The flow-owned party action policy: source menu order (summary, switch,
 -- item-or-mail, quit, then admitted source field moves in move-slot order;
--- eggs keep summary, switch, quit), take drives through confirmation,
--- incompatible egg targets explain instead of committing. Private to this
--- leaf; the standalone production and script policies keep their own owners.
+-- eggs keep summary, switch, quit), the ordinary item submenu always lists
+-- give, take, quit with take answering directly. Source-level target
+-- rejection lives in the Party controller; the flow keeps a trivial
+-- compatible verdict. Private to this leaf; the standalone
+-- production and script policies keep their own owners.
 ---@param manifest table<string, unknown>?
 ---@return table<string, unknown>
 local function flowPartyPolicy(manifest)
@@ -178,22 +205,17 @@ local function flowPartyPolicy(manifest)
       }
     end
     assert(menuKind == "item", "party submenus stay in the closed item/mail set")
-    -- The flow always offers Give into the held-item picker (the pick
-    -- confirmation behind it is the exchange confirmation); Take stays
-    -- for holders behind its confirmation.
-    local entries = {}
-    if facts.heldItem ~= nil and facts.heldItem ~= "NONE" then
-      entries[#entries + 1] = { kind = "take", label = text("take", "TAKE"), confirm = true }
-    end
-    entries[#entries + 1] = { kind = "give", label = text("give", "GIVE") }
-    entries[#entries + 1] = { kind = "quit", label = text("quit", "QUIT") }
-    return entries
+    -- The ordinary submenu always offers Give, Take, Quit in that order.
+    -- Take stays direct even for empty holders; the empty result answers
+    -- through the generated template at commit time.
+    return {
+      { kind = "give", label = text("give", "GIVE") },
+      { kind = "take", label = text("take", "TAKE") },
+      { kind = "quit", label = text("quit", "QUIT") },
+    }
   end
-  local function evaluateTarget(facts, contextName)
+  local function evaluateTarget(facts, _)
     assert(type(facts) == "table", "target evaluation reads slot facts")
-    if contextName == "item_target" and facts.isEgg == true then
-      return { compatible = false, note = "NO ENTRY" }
-    end
     return { compatible = true }
   end
   return { menuFor = menuFor, submenuFor = submenuFor, evaluateTarget = evaluateTarget }
@@ -256,9 +278,14 @@ function PokemonMenuFlow.new(opts)
     _child = nil,
     _continuation = nil,
     _result = nil,
+    _terminalResultPending = nil,
+    _lastChildStatus = nil,
+    _transition = nil,
+    _terminalChildStatus = nil,
     _disposed = false,
   }, PokemonMenuFlow)
   self._child = self:_openPage(self._page, nil)
+  self._lastChildStatus = assert(self._child):status()
   return self
 end
 
@@ -305,54 +332,62 @@ function PokemonMenuFlow:_openPage(page, continuation)
   end
   if page == PAGE.PARTY_BROWSE then
     local focusSlot = nil
+    local initialMessage = nil
+    local context = "browse"
+    local item = nil
     if type(continuation) == "table" then
       focusSlot = continuation.focusSlot
+      initialMessage = continuation.initialMessage
+      if continuation.operation == "give_from_party" then
+        context = "give_resume"
+        item = {
+          key = assert(continuation.itemKey, "give continuations carry their item"),
+          bagRevision = assert(continuation.bagRevision, "give continuations carry their bag revision"),
+        }
+      end
     end
     return PartyScreenState.new({
       service = self._mons,
       manifest = assets.partyManifest,
       actionPolicy = flowPartyPolicy(assets.partyManifest),
       uiManifest = assets.uiManifest,
+      context = context,
+      item = item,
       initialFocus = focusSlot,
+      initialMessage = initialMessage,
       measureDisplay = measureDisplay,
       prepareIcons = self._prepareIcons,
       cancelIconPreparation = self._cancelIconPreparation,
+      effect = self._effect,
     })
   end
   if page == PAGE.PARTY_ITEM_TARGET or page == PAGE.PARTY_GIVE_TARGET then
     local cont = assert(continuation, "target pages open for a captured item")
+    local itemKey = assert(cont.itemKey, "target pages carry the item key")
     local context = page == PAGE.PARTY_ITEM_TARGET and "item_target" or "give_target"
+    local targetPromptKey = "giveTarget"
+    if page == PAGE.PARTY_ITEM_TARGET then
+      if self:_useKind(itemKey) == "machine" then
+        targetPromptKey = "teachTarget"
+      else
+        targetPromptKey = "useTarget"
+      end
+    end
     return PartyScreenState.new({
       service = self._mons,
       manifest = assets.partyManifest,
       actionPolicy = flowPartyPolicy(assets.partyManifest),
       uiManifest = assets.uiManifest,
       context = context,
+      targetPromptKey = targetPromptKey,
       item = {
-        key = assert(cont.itemKey, "target pages carry the item key"),
+        key = itemKey,
         bagRevision = assert(cont.bagRevision, "target pages carry the bag revision"),
       },
       measureDisplay = measureDisplay,
       prepareIcons = self._prepareIcons,
       cancelIconPreparation = self._cancelIconPreparation,
-    })
-  end
-  if page == PAGE.PARTY_GIVE_CONFIRM then
-    local cont = assert(continuation, "the replacement question opens for a captured exchange")
-    return PartyScreenState.new({
-      service = self._mons,
-      manifest = assets.partyManifest,
-      actionPolicy = flowPartyPolicy(assets.partyManifest),
-      uiManifest = assets.uiManifest,
-      context = "give_confirm",
-      item = {
-        key = assert(cont.itemKey, "the replacement question carries the item key"),
-        bagRevision = assert(cont.bagRevision, "the replacement question carries the bag revision"),
-      },
-      initialFocus = assert(cont.slot, "the replacement question opens on the target slot"),
-      measureDisplay = measureDisplay,
-      prepareIcons = self._prepareIcons,
-      cancelIconPreparation = self._cancelIconPreparation,
+      effect = self._effect,
     })
   end
   if page == PAGE.SUMMARY then
@@ -377,6 +412,20 @@ function PokemonMenuFlow:_openPage(page, continuation)
     })
   end
   error("unknown menu flow page " .. tostring(page), 0)
+end
+
+---@param slot integer
+---@param itemKey string
+---@return { templateKey: "giveHeldItem", displayName: string, itemNames: string[] }
+function PokemonMenuFlow:_giveHeldItemMessage(slot, itemKey)
+  local mon = self._mons:partyMon(slot)
+  local item = self._assets.itemCatalog:item(itemKey)
+  local itemName = assert(item.name, "the item catalog publishes its display name")
+  return {
+    templateKey = "giveHeldItem",
+    displayName = Mon.displayName(mon, self._mons:catalog()),
+    itemNames = { itemName },
+  }
 end
 
 -- A separate temporary picker cursor seeded from the field cursor: pocket
@@ -405,21 +454,30 @@ function PokemonMenuFlow:_adoptPickerCursor(picker)
   self._bagCursor:setScroll(pocket, picker:scroll(pocket))
 end
 
--- Centralizes the normative replacement: the fully constructed child
--- publishes first, the previous child releases exactly once after, and
--- the replacement never sees the launching batch. A focusSlot-only
--- continuation carries navigation focus without operation identity.
+-- Stages a replacement before the outgoing fade, then publishes it at full
+-- black and releases the outgoing child exactly once. The replacement never
+-- sees the launching batch. A focusSlot-only continuation carries navigation
+-- focus without operation identity.
 ---@param page string
 ---@param continuation table<string, unknown>?
 function PokemonMenuFlow:_replace(page, continuation)
+  assert(self._transition == nil, "menu replacements cannot overlap an app transition")
   local previous = assert(self._child, "replacement retires a live child")
-  previous:cancelPointerCapture()
   local replacement = self:_openPage(page, continuation)
-  -- Publication is a field-menu flow concern, never a renderer concern.
-  self._child = replacement
-  self._page = page
-  self._continuation = continuation
-  previous:dispose()
+  local currentStatus = previous:status()
+  local outgoingStatus = currentStatus.open == true and currentStatus.presentation ~= nil and currentStatus
+    or self._lastChildStatus
+    or currentStatus
+  previous:cancelPointerCapture()
+  self._transition = {
+    kind = "replacement",
+    phase = "app_exit",
+    fade = StandardFade.new({ direction = "out", color = 0 }),
+    page = page,
+    continuation = continuation,
+    child = replacement,
+    childStatus = outgoingStatus,
+  }
 end
 
 -- A continuation stays valid only while both captured revisions still
@@ -445,8 +503,26 @@ function PokemonMenuFlow:_rewind(continuation)
   self:_replace(returnPage, nil)
 end
 
+-- Maps the expected empty-take outcome onto the generated template
+-- descriptor the party message state expands; every other outcome
+-- completes as its own kind. The empty template names the acting mon,
+-- so the descriptor carries the same nickname-or-species name the party
+-- screen shows for that slot.
+---@param outcome table<string, unknown>
+---@param displayName string
+---@return table<string, unknown>
+local function takeCompletion(outcome, displayName)
+  assert(type(outcome) == "table", "take outcomes arrive as records")
+  if outcome.kind == "no_effect" then
+    assert(type(displayName) == "string", "empty takes name the acting mon")
+    return { kind = outcome.kind, message = { templateKey = "takeNoItem", displayName = displayName } }
+  end
+  return { kind = outcome.kind }
+end
+
 -- Completes a parked party intent with a publication outcome; the child
--- shows carried text and otherwise returns silently to its origin.
+-- shows carried text or a template descriptor and otherwise returns
+-- silently to its origin.
 ---@param outcome table<string, unknown>
 function PokemonMenuFlow:_completeParty(outcome)
   local child = assert(self._child, "completion answers the live child")
@@ -494,6 +570,10 @@ end
 function PokemonMenuFlow:_routePick(intent)
   local continuation = assert(self._continuation, "picks resolve a captured mon")
   assert(continuation.operation == "give_from_party", "picks resolve party give operations")
+  if not self:_continuationCurrent(continuation) then
+    self:_rewind(continuation)
+    return
+  end
   local request = {
     kind = "give",
     slot = assert(continuation.slot, "give operations capture their slot"),
@@ -502,34 +582,33 @@ function PokemonMenuFlow:_routePick(intent)
     item = assert(intent.item, "picks snapshot their item"),
   }
   local decision = self._partyActions:preview(request)
-  if decision.kind == "needs_confirmation" then
-    self:_replace(PAGE.PARTY_GIVE_CONFIRM, {
-      root = self._root,
-      returnPage = PAGE.PARTY_BROWSE,
-      operation = "give_from_party",
-      slot = assert(continuation.slot, "give operations capture their slot"),
-      itemKey = assert(intent.item, "picks snapshot their item"),
-      partyRevision = assert(continuation.partyRevision, "give operations capture the party revision"),
-      bagRevision = assert(intent.bagRevision, "picks snapshot the bag revision"),
-    })
-    local picker = assert(self._picker, "the picker holds its temporary cursor")
-    self:_adoptPickerCursor(picker)
-    self._picker = nil
-    return
-  end
-  if decision.kind ~= "ready" then
-    return
-  end
-  local outcome = self._partyActions:commit(request)
-  if outcome.kind ~= "changed" then
+  if decision.kind ~= "ready" and decision.kind ~= "needs_confirmation" then
     return
   end
   local slot = assert(continuation.slot, "give operations capture their slot")
-  self:_replace(PAGE.PARTY_BROWSE, { focusSlot = slot })
+  local staged = {
+    root = self._root,
+    returnPage = PAGE.PARTY_BROWSE,
+    operation = "give_from_party",
+    slot = slot,
+    focusSlot = slot,
+    itemKey = request.item,
+    partyRevision = request.partyRevision,
+    bagRevision = request.bagRevision,
+  }
+  self:_replace(PAGE.PARTY_BROWSE, {
+    root = staged.root,
+    returnPage = staged.returnPage,
+    operation = staged.operation,
+    slot = staged.slot,
+    focusSlot = staged.focusSlot,
+    itemKey = staged.itemKey,
+    partyRevision = staged.partyRevision,
+    bagRevision = staged.bagRevision,
+  })
   local picker = assert(self._picker, "the picker holds its temporary cursor")
   self:_adoptPickerCursor(picker)
   self._picker = nil
-  self._continuation = nil
 end
 
 -- Routes a party target selection for a bag-originated operation: the
@@ -545,6 +624,13 @@ function PokemonMenuFlow:_routeTargetIntent(intent)
   end
   local itemKey = assert(continuation.itemKey, "bag operations capture their item")
   if operation == "give" then
+    if intent.confirmed == true then
+      continuation.slot = assert(intent.slot, "confirmed target requests name their slot")
+      continuation.partyRevision = assert(intent.partyRevision, "confirmed target requests carry their party revision")
+      continuation.bagRevision = assert(intent.bagRevision, "confirmed target requests carry their bag revision")
+      self:_routeGiveIntent(intent)
+      return
+    end
     -- Initial selections never claim confirmation: the preview decides
     -- whether the exchange needs the replacement question.
     local request = {
@@ -555,28 +641,32 @@ function PokemonMenuFlow:_routeTargetIntent(intent)
       item = itemKey,
     }
     local decision = self._partyActions:preview(request)
+    local slot = assert(intent.slot, "target selections name their slot")
+    continuation.slot = slot
+    continuation.partyRevision = assert(intent.partyRevision, "target selections carry the party revision")
+    continuation.bagRevision = assert(intent.bagRevision, "target selections carry the bag revision")
+    local displayName = Mon.displayName(self._mons:partyMon(slot), self._mons:catalog())
     if decision.kind == "needs_confirmation" then
-      self:_replace(PAGE.PARTY_GIVE_CONFIRM, {
-        root = self._root,
-        returnPage = assert(continuation.returnPage, "continuations name their return page"),
-        operation = operation,
-        slot = assert(intent.slot, "target selections name their slot"),
-        itemKey = itemKey,
-        partyRevision = assert(intent.partyRevision, "target selections carry the party revision"),
-        bagRevision = assert(intent.bagRevision, "target selections carry the bag revision"),
+      local heldKey = assert(self._mons:partyMon(slot).heldItem, "the target mon carries its held item")
+      local heldItem = self._assets.itemCatalog:item(heldKey)
+      local heldItemName = assert(heldItem.name, "the item catalog publishes its display name")
+      self:_completeParty({
+        kind = "needs_confirmation",
+        disposition = "bag",
+        message = {
+          templateKey = "switchHeldPrompt",
+          displayName = displayName,
+          itemNames = { heldItemName },
+        },
       })
       return
     end
     if decision.kind ~= "ready" then
-      self:_completeParty({ kind = decision.kind })
+      self:_completeParty({ kind = decision.kind, disposition = "bag" })
       return
     end
     local outcome = self._partyActions:commit(request)
-    if outcome.kind == "changed" then
-      self:_replace(assert(continuation.returnPage, "continuations name their return page"), nil)
-    else
-      self:_completeParty({ kind = outcome.kind })
-    end
+    self:_completeParty(self:_giveCompletion(outcome, slot, itemKey, "bag"))
     return
   end
   if self:_useKind(itemKey) == "machine" then
@@ -586,39 +676,84 @@ function PokemonMenuFlow:_routeTargetIntent(intent)
   self:_routeUse(intent, continuation, itemKey)
 end
 
--- Commits one affirmed replacement with its already-authorized
--- confirmation, then retires the question to its recorded root. A
--- refused Yes publishes nothing partially and unwinds the same way;
--- confirmed exchanges never retry with refreshed revisions.
+-- Resolves a held-item request through PartyActions and sends only
+-- presentation data back to the Party child.
 ---@param intent table<string, unknown>
-function PokemonMenuFlow:_routeConfirmIntent(intent)
-  local continuation = assert(self._continuation, "confirmed exchanges resolve a captured replacement")
-  assert(intent.confirmed == true, "replacements commit only after the affirmative answer")
-  self._partyActions:commit({
+function PokemonMenuFlow:_routeGiveIntent(intent)
+  local continuation = assert(self._continuation, "held-item requests carry their caller")
+  local slot = assert(continuation.slot, "held-item requests capture their slot")
+  if not self:_continuationCurrent(continuation) then
+    if continuation.returnPage == PAGE.BAG_BROWSE then
+      self:_rewind(continuation)
+    else
+      self:_completeParty({ kind = "stale", disposition = "party" })
+    end
+    return
+  end
+  local request = {
     kind = "give",
-    slot = assert(intent.slot, "confirmed exchanges name their slot"),
-    partyRevision = assert(intent.partyRevision, "confirmed exchanges carry the party revision"),
-    bagRevision = assert(intent.bagRevision, "confirmed exchanges carry the bag revision"),
-    item = assert(intent.item, "confirmed exchanges name their item"),
-    confirmed = true,
-  })
-  -- Changed or refused, the question retires to its recorded root.
-  self:_returnGiveConfirm(continuation)
+    slot = assert(intent.slot, "held-item requests name their slot"),
+    partyRevision = assert(intent.partyRevision, "held-item requests carry their party revision"),
+    bagRevision = assert(intent.bagRevision, "held-item requests carry their bag revision"),
+    item = assert(intent.item, "held-item requests name their item"),
+    confirmed = intent.confirmed == true or nil,
+  }
+  assert(request.slot == slot, "held-item continuation keeps its original slot")
+  assert(request.item == continuation.itemKey, "held-item continuation keeps its picked item")
+  local decision = self._partyActions:preview(request)
+  local disposition = continuation.returnPage == PAGE.PARTY_BROWSE and "party" or "bag"
+  if decision.kind == "needs_confirmation" then
+    local oldKey = assert(self._mons:partyMon(slot).heldItem, "the target mon carries its held item")
+    local oldItem = self._assets.itemCatalog:item(oldKey)
+    local oldItemName = assert(oldItem.name, "the item catalog publishes its display name")
+    local displayName = Mon.displayName(self._mons:partyMon(slot), self._mons:catalog())
+    self:_completeParty({
+      kind = "needs_confirmation",
+      disposition = disposition,
+      message = {
+        templateKey = "switchHeldPrompt",
+        displayName = displayName,
+        itemNames = { oldItemName },
+      },
+    })
+    return
+  end
+  if decision.kind ~= "ready" then
+    self:_completeParty({ kind = decision.kind, disposition = disposition })
+    return
+  end
+  local outcome = self._partyActions:commit(request)
+  self:_completeParty(self:_giveCompletion(outcome, slot, request.item, disposition))
 end
 
--- Retires one replacement question to its recorded root: bag-origin
--- exchanges return to the bag, party-origin exchanges refocus the
--- exchanged mon. The continuation carries navigation focus only.
----@param continuation table<string, unknown>
-function PokemonMenuFlow:_returnGiveConfirm(continuation)
-  local returnPage = assert(continuation.returnPage, "replacements record their return page")
-  assert(returnPage == PAGE.BAG_BROWSE or returnPage == PAGE.PARTY_BROWSE, "replacements return to a root browse page")
-  if returnPage == PAGE.PARTY_BROWSE then
-    self:_replace(returnPage, { focusSlot = assert(continuation.slot, "replacements record their slot") })
-  else
-    self:_replace(returnPage, nil)
+---@param outcome table<string, unknown>
+---@param slot integer
+---@param itemKey string
+---@param disposition "party"|"bag"
+---@return table<string, unknown>
+function PokemonMenuFlow:_giveCompletion(outcome, slot, itemKey, disposition)
+  ---@type table<string, unknown>
+  local completion = { kind = outcome.kind, disposition = disposition }
+  if outcome.kind == "changed" then
+    local item = self._assets.itemCatalog:item(itemKey)
+    local message
+    if type(outcome.before) == "table" and outcome.before.heldItem ~= "NONE" then
+      local oldItem = self._assets.itemCatalog:item(outcome.before.heldItem)
+      local oldItemName = assert(oldItem.name, "the item catalog publishes its display name")
+      local newItemName = assert(item.name, "the item catalog publishes its display name")
+      message = {
+        templateKey = "switchHeldResult",
+        displayName = Mon.displayName(self._mons:partyMon(slot), self._mons:catalog()),
+        itemNames = { oldItemName, newItemName },
+      }
+    else
+      message = self:_giveHeldItemMessage(slot, itemKey)
+    end
+    completion.message = message
+  elseif outcome.kind == "bag_full" then
+    completion.message = { templateKey = "bagFull" }
   end
-  self._continuation = nil
+  return completion
 end
 
 -- Routes a medicine/effect use: preview first, commit ready outcomes with
@@ -762,13 +897,14 @@ function PokemonMenuFlow:_routeBrowseIntent(intent)
     return
   end
   if intent.kind == "take" then
+    local slot = assert(intent.slot, "take intents name their slot")
     local outcome = self._partyActions:commit({
       kind = "take",
-      slot = assert(intent.slot, "take intents name their slot"),
+      slot = slot,
       partyRevision = assert(intent.partyRevision, "take intents carry the party revision"),
       bagRevision = self._bag:revision(),
     })
-    self:_completeParty({ kind = outcome.kind })
+    self:_completeParty(takeCompletion(outcome, Mon.displayName(self._mons:partyMon(slot), self._mons:catalog())))
     return
   end
   if intent.kind == "transfer_hp" then
@@ -816,12 +952,7 @@ function PokemonMenuFlow:_routeFieldMove(intent)
     return
   end
   if decision.kind == "ok" then
-    local child = assert(self._child, "terminal handoff retires a live child")
-    child:cancelPointerCapture()
-    child:dispose()
-    self._child = nil
-    self._continuation = nil
-    self._result = {
+    self:_terminate({
       kind = "field_action",
       actionId = TERMINAL_FIELD_ACTION,
       request = {
@@ -829,7 +960,7 @@ function PokemonMenuFlow:_routeFieldMove(intent)
         slot = assert(intent.slot, "field intents name their slot"),
         moveSlot = intent.moveSlot,
       },
-    }
+    })
     return
   end
   self:_completeParty({ kind = decision.kind })
@@ -883,11 +1014,11 @@ function PokemonMenuFlow:_routeIntent(intent)
     self:_routeTargetIntent(intent)
     return
   end
-  if self._page == PAGE.PARTY_GIVE_CONFIRM and intent.kind == "give" then
-    self:_routeConfirmIntent(intent)
-    return
-  end
   if self._page == PAGE.PARTY_BROWSE then
+    if self._continuation ~= nil and self._continuation.operation == "give_from_party" and intent.kind == "give" then
+      self:_routeGiveIntent(intent)
+      return
+    end
     self:_routeBrowseIntent(intent)
     return
   end
@@ -901,6 +1032,12 @@ end
 ---@param result table<string, unknown>
 function PokemonMenuFlow:_routeResult(result)
   assert(type(result) == "table" and type(result.kind) == "string", "results carry their kind")
+  if self._page == PAGE.PARTY_BROWSE and result.kind == "give_complete" then
+    local continuation = assert(self._continuation, "Party completion clears its held-item continuation")
+    assert(continuation.operation == "give_from_party", "Party completion belongs to the held-item operation")
+    self._continuation = nil
+    return
+  end
   if self._page == PAGE.SUMMARY or self._page == PAGE.MOVE_PICK then
     self:_routeSummaryResult(result)
     return
@@ -915,28 +1052,25 @@ function PokemonMenuFlow:_routeResult(result)
     self:_terminate({ kind = "close" })
     return
   end
-  if self._page == PAGE.PARTY_GIVE_CONFIRM then
-    assert(result.kind == "cancelled", "the replacement question declines its exchange")
-    local continuation = assert(self._continuation, "declined replacements unwind a captured exchange")
-    self:_returnGiveConfirm(continuation)
-    return
-  end
   assert(result.kind == "close" or result.kind == "cancelled", "nested children close or decline their selection")
   local continuation = assert(self._continuation, "nested closes unwind a captured caller")
   self:_rewind(continuation)
 end
 
--- Publishes one terminal result and releases the active child exactly
--- once; remaining input clears with the retired batch.
+-- Stages a terminal handoff with the last drawable child status. Root close
+-- returns through the menu reveal; field actions publish at app closure.
 ---@param result table<string, unknown>
 function PokemonMenuFlow:_terminate(result)
+  assert(self._transition == nil, "menu termination cannot overlap an app transition")
   local child = assert(self._child, "termination retires a live child")
   child:cancelPointerCapture()
-  child:dispose()
-  self._child = nil
-  self._continuation = nil
-  self._picker = nil
-  self._result = result
+  self._transition = {
+    kind = "terminal",
+    phase = "app_exit",
+    fade = StandardFade.new({ direction = "out", color = 0 }),
+    result = result,
+    childStatus = self._lastChildStatus or child:status(),
+  }
 end
 
 -- Drains one intent from bag and party children; summaries answer
@@ -950,6 +1084,20 @@ function PokemonMenuFlow:_takeIntent()
   return child:takeIntent()
 end
 
+---@param record table<string, unknown>
+---@return table<string, unknown>
+local function copyPresentationFacts(record)
+  local copy = {}
+  for key, value in pairs(record) do
+    if type(value) == "table" then
+      copy[key] = copyPresentationFacts(value)
+    else
+      copy[key] = value
+    end
+  end
+  return copy
+end
+
 -- One fixed tick: the active child owns the batch, then one drained
 -- intent or result routes exactly once. A replacement never sees the
 -- launching batch; a terminal result ends input ownership.
@@ -959,8 +1107,100 @@ function PokemonMenuFlow:updateFixed(uiInput)
   if self._result ~= nil then
     return
   end
+  assert(type(uiInput) == "table", "the menu flow steps on an event list")
+  if self._terminalResultPending ~= nil then
+    self._result = self._terminalResultPending
+    self._terminalResultPending = nil
+    self._transition = nil
+    return
+  end
+  if self._transition ~= nil then
+    for _, event in ipairs(uiInput) do
+      assert(type(event) == "table" and type(event.type) == "string", "menu events carry their type")
+    end
+    local transition = assert(self._transition, "active transitions remain published until completion")
+    local fade = assert(transition.fade, "outgoing transitions own their standard fade")
+    if transition.phase == "menu_return" then
+      fade:updateSourceFrame()
+      if fade.completed then
+        self._terminalResultPending = transition.result
+      end
+      return
+    end
+    assert(transition.phase == "app_exit", "menu transition phase is recognized")
+    local outgoing = assert(self._child, "app exit keeps its outgoing child alive")
+    local childStatus = assert(transition.childStatus, "app exit retains the outgoing child status")
+    local currentPlan = childStatus.presentation
+    local currentInputKey = type(currentPlan) == "table" and currentPlan.inputKey or nil
+    if
+      currentInputKey == "bag"
+      or currentInputKey == "bag-inactive"
+      or currentInputKey == "party"
+      or currentInputKey == "party-inactive"
+    then
+      local presentation = outgoing:refreshPresentation(childStatus)
+      childStatus = {}
+      for key, value in pairs(transition.childStatus) do
+        childStatus[key] = value
+      end
+      childStatus.presentation = presentation
+      transition.childStatus = childStatus
+    end
+    fade:updateSourceFrame()
+    if fade.completed then
+      local previous = assert(self._child, "transition completion retires the published child")
+      if transition.kind == "replacement" then
+        self._child = transition.child
+        self._page = transition.page
+        self._continuation = transition.continuation
+        self._lastChildStatus = assert(self._child):status()
+        self._transition = nil
+      else
+        assert(transition.kind == "terminal", "active transitions have a replacement or terminal owner")
+        if transition.result.kind == "close" then
+          local plan = assert(transition.childStatus.presentation, "root close retains the outgoing pane plan")
+          local inputKey = assert(plan.inputKey, "the returning application has a pane role")
+          assert(inputKey == "bag" or inputKey == "party", "root close belongs to a Bag or Party plan")
+          local panes = {}
+          for _, pane in ipairs(assert(plan.panes, "the returning app plan carries its panes")) do
+            if pane.id == "interaction" or pane.id == "hero" or pane.id == "content" or pane.id == "detail" then
+              panes[#panes + 1] = { id = pane.id, placement = copyPresentationFacts(pane.placement) }
+            end
+          end
+          assert(#panes > 0, "root close retains at least one app pane placement")
+          transition.phase = "menu_return"
+          transition.fade = StandardFade.new({ direction = "in", color = 0 })
+          transition.inputKey = inputKey
+          transition.panes = panes
+          transition.childStatus = nil
+          self._child = nil
+          self._continuation = nil
+          self._picker = nil
+          self._terminalChildStatus = nil
+        else
+          self._terminalChildStatus = transition.childStatus
+          self._child = nil
+          self._continuation = nil
+          self._picker = nil
+          self._result = assert(transition.result, "terminal transitions publish a result at closure")
+          self._transition = nil
+        end
+      end
+      previous:dispose()
+    end
+    return
+  end
+  self._terminalChildStatus = nil
   local child = assert(self._child, "the flow owns one active child")
-  child:updateFixed(assert(uiInput, "the menu flow steps on an event list"))
+  self._lastChildStatus = child:status()
+  child:updateFixed(uiInput)
+  local currentChildStatus = child:status()
+  if
+    currentChildStatus.open == true
+    and (currentChildStatus.presentation ~= nil or currentChildStatus.preparationState ~= nil)
+  then
+    self._lastChildStatus = currentChildStatus
+  end
   local intent = self:_takeIntent()
   if intent ~= nil then
     self:_routeIntent(intent)
@@ -977,10 +1217,49 @@ end
 -- status. The continuation never leaves the flow.
 ---@return table<string, unknown>
 function PokemonMenuFlow:status()
-  if self._disposed or self._child == nil then
-    return { open = false }
+  if self._disposed then
+    return {
+      open = false,
+    }
   end
-  return { open = true, root = self._root, page = self._page, child = self._child:status() }
+  local transition = self._transition
+  if transition ~= nil and transition.phase == "menu_return" then
+    local fade = assert(transition.fade, "menu return owns its brightness-in fade")
+    local panes = {}
+    for _, pane in ipairs(assert(transition.panes, "menu return retains its pane placements")) do
+      panes[#panes + 1] = { id = pane.id, placement = copyPresentationFacts(pane.placement) }
+    end
+    return {
+      open = true,
+      root = self._root,
+      page = self._page,
+      transition = {
+        phase = "menu_return",
+        brightnessCoefficient = fade.coefficient,
+        inputKey = assert(transition.inputKey),
+        panes = panes,
+      },
+    }
+  end
+  if self._child == nil then
+    return { open = false, child = self._terminalChildStatus }
+  end
+  local childStatus
+  if transition ~= nil then
+    childStatus = transition.childStatus
+  else
+    childStatus = self._child:status()
+  end
+  local status = { open = true, root = self._root, page = self._page, child = childStatus }
+  if transition ~= nil then
+    local fade = assert(transition.fade, "app exit owns its brightness-out fade")
+    status.transition = {
+      phase = "app_exit",
+      step = fade.updates,
+      brightnessCoefficient = fade.coefficient,
+    }
+  end
+  return status
 end
 
 -- The one-shot host result: a root close or a checked field handoff, then
@@ -1009,12 +1288,20 @@ function PokemonMenuFlow:dispose()
   end
   self._disposed = true
   local child = self._child
+  local transition = self._transition
   self._child = nil
   self._continuation = nil
   self._result = nil
+  self._terminalResultPending = nil
+  self._lastChildStatus = nil
   self._picker = nil
+  self._transition = nil
+  self._terminalChildStatus = nil
   if child ~= nil then
     child:dispose()
+  end
+  if transition ~= nil and transition.kind == "replacement" then
+    transition.child:dispose()
   end
 end
 

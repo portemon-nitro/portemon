@@ -267,7 +267,7 @@ function T.compiles_font_zero_and_four_as_one_deterministic_class()
   Assert.equal(bundle.dependencies.glyphMembers[1].memberId, 0)
   Assert.equal(bundle.dependencies.glyphMembers[2].memberId, 4)
   Assert.equal(bundle.dependencies.glyphMembers[2].sha1, "font4-member-sha")
-  Assert.equal(bundle.marker, "field-font-cache-v5:rom-sha:dependency-sha")
+  Assert.equal(bundle.marker, "field-font-cache-v6:rom-sha:dependency-sha")
 end
 
 function T.changing_font_four_source_bytes_changes_the_class_marker()
@@ -307,7 +307,7 @@ function T.compiles_font_def_and_atlas()
   Assert.equal(bundle.dependencies.paletteMemberSha1, "palette-member-sha")
   Assert.equal(bundle.dependencies.glyphMembers[1].memberId, 0)
   Assert.equal(bundle.dependencies.paletteMemberId, 7)
-  Assert.equal(bundle.marker, "field-font-cache-v5:rom-sha:dependency-sha")
+  Assert.equal(bundle.marker, "field-font-cache-v6:rom-sha:dependency-sha")
 
   -- The 8x8 sub-tile is repeated for all four quadrants: each row is
   -- (right=0xAA shadow, left=0x55 fg), so every quadrant's left half is
@@ -437,15 +437,17 @@ function T.font_def_exposes_four_24x32_focus_frames_and_member6_dependencies()
   Assert.equal(focus.width, 24)
   Assert.equal(focus.height, 32)
   local focusW, focusH, _ = PngReader.rgba(bundle.fonts[0].focusIndicators)
+  local sourceSlots = { 11, 12, 13, 14 }
   for field = 0, focus.count - 1 do
-    for _, slot in ipairs({ 11, 12, 13, 14 }) do
-      local rect = assert(focus.frames[field].layers[slot])
-      Assert.equal(rect.width, 24, "focus mask " .. slot .. " must be 24 wide")
-      Assert.equal(rect.height, 32, "focus mask " .. slot .. " must be 32 tall")
+    for index, layer in ipairs(focus.frames[field].layers) do
+      local rect = assert(layer.rect)
+      Assert.equal(layer.paletteSlot, sourceSlots[index])
+      Assert.equal(rect.width, 24, "focus mask " .. layer.paletteSlot .. " must be 24 wide")
+      Assert.equal(rect.height, 32, "focus mask " .. layer.paletteSlot .. " must be 32 tall")
       Assert.isTrue(rect.x >= 0 and rect.y >= 0, "focus mask rects are non-negative")
       Assert.isTrue(
         rect.x + rect.width <= focusW and rect.y + rect.height <= focusH,
-        "focus mask " .. slot .. " must lie inside the focus PNG"
+        "focus mask " .. layer.paletteSlot .. " must lie inside the focus PNG"
       )
     end
   end
@@ -546,15 +548,16 @@ function T.focus_indicator_layers_preserve_source_roles_and_transparency()
   local bundle = assert(FieldFontCompiler.compile(romFs, sha1, hashLua)) --[[@as table]]
   local focus = bundle.fonts[0].font.focusIndicators
   Assert.notNil(focus, "the font definition must expose focusIndicators")
-  Assert.deepEqual(focus.sourcePaletteSlots, { 11, 12, 13, 14 })
   local focusW, _, rgba = PngReader.rgba(bundle.fonts[0].focusIndicators)
   local sourceSlots = { 11, 12, 13, 14 }
   local fillSlots = { 11, 12, 13, 14 }
   local borderSlots = { 14, 13, 11, 12 }
   for field = 0, 3 do
     local layers = assert(focus.frames[field].layers)
-    for _, sourceSlot in ipairs(sourceSlots) do
-      local rect = assert(layers[sourceSlot])
+    for index, layer in ipairs(layers) do
+      local sourceSlot = layer.paletteSlot
+      Assert.equal(sourceSlot, sourceSlots[index], "focus layers preserve source palette order")
+      local rect = assert(layer.rect)
       local fillX = rect.x + 2
       local fillY = rect.y + 2
       local fillR, fillG, fillB, fillA = PngReader.pixel(rgba, focusW, fillX, fillY)
@@ -617,7 +620,7 @@ end
 function T.v4_definition_names_the_mask_atlas_and_the_bundle_carries_its_bytes()
   local romFs, sha1, hashLua = fixture()
   local bundle = assert(FieldFontCompiler.compile(romFs, sha1, hashLua)) --[[@as table]]
-  Assert.equal(bundle.fonts[0].font.schema, "g4-field-font-v4")
+  Assert.equal(bundle.fonts[0].font.schema, "g4-field-font-v5")
   Assert.equal(bundle.fonts[0].font.maskAtlasPath, FieldFontCache.maskAtlasPath(0))
   Assert.isTrue(
     type(bundle.fonts[0].maskAtlas) == "string" and #bundle.fonts[0].maskAtlas > 0,

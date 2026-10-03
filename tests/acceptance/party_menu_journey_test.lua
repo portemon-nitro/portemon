@@ -11,11 +11,12 @@
 local Assert = require("tests.support.Assert")
 local AcceptanceHarness = require("tests.acceptance.support.AcceptanceHarness")
 local FieldApplicationHost = require("libs.hgss.src.field.FieldApplicationHost")
+local GameSave = require("libs.hgss.src.save.GameSave")
 local FieldScriptSymbols = require("libs.assets.src.field.FieldScriptSymbols")
 local FieldState = require("game.hgss.src.field.FieldState")
 
 local T = {
-  metadata = { capabilities = { "rom_dump" }, derivedAssets = { "field-runtime", "map:7" }, tags = { "party", "bag", "journey" } },
+  metadata = { capabilities = { "rom_dump" }, derivedAssets = { "field-runtime", "audio-bank:700", "audio-bank:730", "audio-bank:759", "map-data:7", "map:7" }, tags = { "party", "bag", "journey" } },
   tests = {},
 }
 
@@ -152,6 +153,12 @@ end
 
 local function drive(flow, events)
   flow:updateFixed(events)
+  for _ = 1, 6 do
+    if flow:status().transition == nil then
+      break
+    end
+    flow:updateFixed({})
+  end
   return flowStatus(flow)
 end
 
@@ -170,6 +177,18 @@ local function flowChild(status)
   return assert(status.child, "the active page carries its child status")
 end
 
+-- A fresh party page clears its open before input: wait for the leaf
+-- to turn interactive, then run out the handover ticks that still drop
+-- input so the first navigation acts.
+local function drainOpen(flow)
+  driveUntil(flow, "the open clears before input", 30, function(current)
+    local child = current.child
+    return child ~= nil and child.phase == "interactive"
+  end)
+  drive(flow, {})
+  drive(flow, {})
+end
+
 local BAG_NEIGHBORS = {
   [0] = { up = 2, down = 2, left = 1, right = 1 },
   [1] = { up = 3, down = 3, left = 0, right = 0 },
@@ -182,6 +201,9 @@ local BAG_NEIGHBORS = {
 -- the stable action menu opens: settle the generated transition clock
 -- before callers read the action state or its actions.
 local function chooseBagAction(flow, id)
+  driveUntil(flow, "the Bag opening settles", 30, function(current)
+    return current.child ~= nil and current.child.phase == "interactive"
+  end)
   local status = drive(flow, { { type = "confirm" } })
   status = driveUntil(flow, "the stable action menu", 30, function(current)
     return current.child ~= nil and current.child.state == "action_menu"
@@ -203,7 +225,7 @@ local function chooseBagAction(flow, id)
       -- Confirming latches behind the action feedback before the semantic
       -- transition runs; settle the latch before callers read the next page.
       return driveUntil(flow, "the settled action transition", 30, function(current)
-        return current.child == nil or current.child.feedback == nil
+        return current.page ~= "bag_browse" or current.child == nil
       end)
     end
     local node = assert(child.actionNode, "the action menu exposes its node")
@@ -330,6 +352,11 @@ function T.tests.production_medicine_give_take_round_trip(context)
     game:advanceUntil("the bag destination owns the tick", function()
       return hostPhase(game) == FieldApplicationHost.PHASES.application
     end, 120)
+    game:advanceUntil("the Bag opening settles before cancellation", function()
+      local flow = game.runtime.applicationHost:status().application
+      local leaf = flow ~= nil and flow.child or nil
+      return leaf ~= nil and leaf.phase == "interactive"
+    end, 120)
     cancel(game)
     game:advanceUntil("cancelling the flow returns to the menu", function()
       return hostPhase(game) == FieldApplicationHost.PHASES.menu
@@ -345,11 +372,15 @@ function T.tests.production_medicine_give_take_round_trip(context)
     local cursor = assert(game.runtime.bagCursor, "field runtime owns the live bag cursor")
     cursor:setPocket("medicine")
     cursor:setPosition("medicine", 0)
+    driveUntil(flow, "the Bag opening settles", 30, function(current)
+      return current.child ~= nil and current.child.phase == "interactive"
+    end)
     driveUntil(flow, "the bag browse page", 30, function(current)
       return current.page == "bag_browse"
     end)
     local status = chooseBagAction(flow, "use")
     Assert.equal(status.page, "party_item_target", "choosing Use must open the party target page")
+    drainOpen(flow)
     status = drive(flow, { { type = "confirm" } })
     Assert.equal(
       mons:partyMon(0).condition.currentHp,
@@ -366,6 +397,7 @@ function T.tests.production_medicine_give_take_round_trip(context)
 
     -- Held-item Give through the picker, then Take back.
     local party = composition(game).makePartyFlow()
+    drainOpen(party)
     driveUntil(party, "the party browse page", 30, function(current)
       return current.page == "party_browse"
     end)
@@ -377,21 +409,30 @@ function T.tests.production_medicine_give_take_round_trip(context)
       return current.page == "bag_pick_held"
     end)
     Assert.isTrue(status.open, "party Give must open the held-item picker")
+    driveUntil(party, "the held-item Bag opening settles", 30, function(current)
+      return current.child ~= nil and current.child.phase == "interactive"
+    end)
     status = gotoPocket(party, "medicine")
     status = drive(party, { { type = "confirm" } })
     driveUntil(party, "the party browse page", 30, function(current)
       return current.page == "party_browse"
     end)
+    driveUntil(party, "the Give result message", 30, function(current)
+      return current.page == "party_browse" and current.child ~= nil and current.child.state == "message"
+    end)
+    drainOpen(party)
+    drive(party, { { type = "confirm" } })
+    driveUntil(party, "the acknowledged give result", 30, function(current)
+      return current.page == "party_browse" and current.child ~= nil and current.child.state == "browse"
+    end)
+    drainOpen(party)
     Assert.equal(mons:partyMon(1).heldItem, "POTION", "accepting the pick must hold the potion on slot one")
     Assert.isTrue(mons:partyRevision() == partyRevision + 1, "exactly one revision publishes the give")
     choosePartySlot(party, 1)
     choosePartyMenu(party, "item")
     choosePartyMenu(party, "take")
-    -- Take confirms through a yes/no prompt starting on no: move to
-    -- yes, confirm, then run out the prompt confirmation interval
-    -- (fixed ticks are the behavior under test here) before asserting.
-    drive(party, { { type = "navigate", direction = "up" } })
-    drive(party, { { type = "confirm" } })
+    -- Take answers directly with no confirmation: settle the dispatch
+    -- before asserting the transfer.
     for _ = 1, 15 do
       party:updateFixed({})
     end
@@ -399,6 +440,60 @@ function T.tests.production_medicine_give_take_round_trip(context)
     Assert.equal(bag:quantity("POTION"), 2, "the taken potion returns to the bag exactly once")
     Assert.isNil(party:takeResult(), "returning to the root reports no terminal result")
     party:dispose()
+  end)
+end
+
+local function exerciseBagTargetPrompt(game, item, pocket, action, targetPage, prompt)
+  giftPair(game)
+  local bag = assert(game.runtime.bagService, "field runtime owns the live bag service")
+  Assert.isTrue(bag:add(item, 1), "the target-prompt fixture must stock " .. item)
+  local cursor = assert(game.runtime.bagCursor, "field runtime owns the live bag cursor")
+  cursor:setPocket(pocket)
+  cursor:setPosition(pocket, 0)
+  local flow = composition(game).makeBagFlow()
+  driveUntil(flow, "the bag browse page", 30, function(current)
+    return current.page == "bag_browse"
+  end)
+
+  local status = chooseBagAction(flow, action)
+  Assert.equal(status.page, targetPage, "the Bag operation must enter its matching Party target context")
+  drainOpen(flow)
+  local child = flowChild(flow:status())
+  Assert.equal(child.state, "choosing_item_target", "target operations share Party target navigation")
+  if prompt == nil then
+    Assert.equal(child.context, "give_target", "Bag Give keeps its source Party target context")
+  else
+    Assert.equal(child.targetPromptKey, prompt, "the Party presentation carries the operation's lower prompt")
+  end
+
+  drive(flow, { { type = "navigate", direction = "right" } })
+  child = flowChild(flow:status())
+  if prompt == nil then
+    Assert.equal(child.context, "give_target", "target navigation preserves Bag Give")
+  else
+    Assert.equal(child.targetPromptKey, prompt, "target navigation keeps the operation prompt visible")
+  end
+  flow:dispose()
+end
+
+function T.tests.production_bag_give_keeps_its_party_target_context(context)
+  requireVersions(context)
+  withGame(function(game)
+    exerciseBagTargetPrompt(game, "GREAT_BALL", "balls", "give", "party_give_target", nil)
+  end)
+end
+
+function T.tests.production_ordinary_item_use_shows_its_target_prompt(context)
+  requireVersions(context)
+  withGame(function(game)
+    exerciseBagTargetPrompt(game, "POTION", "medicine", "use", "party_item_target", "useTarget")
+  end)
+end
+
+function T.tests.production_machine_use_shows_its_target_prompt(context)
+  requireVersions(context)
+  withGame(function(game)
+    exerciseBagTargetPrompt(game, "TM28", "tmhm", "use", "party_item_target", "teachTarget")
   end)
 end
 
@@ -413,6 +508,7 @@ function T.tests.production_swap_summary_save_reload_persists(context)
     driveUntil(party, "the party browse page", 30, function(current)
       return current.page == "party_browse"
     end)
+    drainOpen(party)
     -- A UI-driven switch commits once at the end of its animation.
     choosePartySlot(party, 1)
     choosePartyMenu(party, "switch")
@@ -442,7 +538,7 @@ function T.tests.production_swap_summary_save_reload_persists(context)
     party:dispose()
     -- Save, reload, and prove the journey state persists.
     local record = assert(game.runtime:captureGameSave(), "a settled field captures")
-    Assert.equal(record.schema, "g4-game-save-v4", "capture writes the current save schema")
+    Assert.equal(record.schema, GameSave.SCHEMA, "capture writes the current save schema")
     game:restart()
     game:waitForFieldEntry()
     -- The restart boots a fresh runtime: rebind the headless
@@ -463,6 +559,17 @@ function T.tests.production_swap_summary_save_reload_persists(context)
     game:advanceUntil("the pokemon destination owns the tick", function()
       return hostPhase(game) == FieldApplicationHost.PHASES.application
     end, 120)
+    game:advanceUntil("the open clears before the close", function()
+      local hostStatus = game.runtime.applicationHost:status()
+      if hostStatus.phase ~= FieldApplicationHost.PHASES.application then
+        return false
+      end
+      local flow = hostStatus.application
+      local leaf = flow ~= nil and flow.child or nil
+      return leaf ~= nil and leaf.phase == "interactive"
+    end, 120)
+    game:step()
+    game:step()
     local child = game.runtime.applicationHost:status()
     Assert.equal(child.phase, FieldApplicationHost.PHASES.application, "the pokemon destination owns the tick")
     cancel(game)
@@ -539,6 +646,17 @@ function T.tests.production_script_selection_answers_through_the_live_host(conte
       host:open({ focus = 1, allowCancel = true, policy = "occupied" }),
       "opening a script selection on the live party must succeed"
     )
+    -- The open clears before input: run out the covered ticks plus
+    -- the handover ticks so the first navigation acts.
+    for _ = 1, 30 do
+      local status = host:status()
+      if status ~= nil and status.phase == "interactive" then
+        break
+      end
+      host:step(handle, {})
+    end
+    host:step(handle, {})
+    host:step(handle, {})
     local focused = nil
     for _ = 1, 12 do
       host:step(handle, {})
@@ -558,6 +676,131 @@ function T.tests.production_script_selection_answers_through_the_live_host(conte
     Assert.isNil(host:result(handle), "the live answer is one-shot")
     host:close(handle)
     Assert.isNil(host:status(), "closing releases the live selection")
+  end)
+end
+
+function T.tests.production_empty_take_reports_the_generated_template_without_mutation(context)
+  requireVersions(context)
+  withGame(function(game)
+    giftPair(game)
+    local mons = assert(game.runtime.monService, "field runtime owns the live mon service")
+    local bag = assert(game.runtime.bagService, "field runtime owns the live bag service")
+    local partyRevision = mons:partyRevision()
+    local bagRevision = bag:revision()
+    local flow = composition(game).makePartyFlow()
+    driveUntil(flow, "the party browse page", 30, function(current)
+      return current.page == "party_browse"
+    end)
+    drainOpen(flow)
+    choosePartySlot(flow, 0)
+    choosePartyMenu(flow, "item")
+    choosePartyMenu(flow, "take")
+    local status = flowStatus(flow)
+    local child = flowChild(status)
+    Assert.equal(child.state, "message", "an empty Take answers with its message")
+    local message = child.message
+    Assert.equal(type(message), "table", "an empty Take renders the generated template")
+    Assert.equal(message.templateKey, "takeNoItem", "an empty Take shows the empty-take template")
+    Assert.equal(
+      message.displayName,
+      assert(child.view, "the party child carries its view").slots[1].displayName,
+      "an empty Take names the acting mon the party screen shows"
+    )
+    Assert.equal(mons:partyMon(0).heldItem, "NONE", "an empty Take holds nothing new")
+    Assert.equal(mons:partyRevision(), partyRevision, "an empty Take publishes no mon revision")
+    Assert.equal(bag:revision(), bagRevision, "an empty Take publishes no bag revision")
+    Assert.isNil(flow:takeResult(), "an empty Take reports no terminal result")
+    drive(flow, { { type = "confirm" } })
+    driveUntil(flow, "the dismissed message", 30, function(current)
+      return flowChild(current).state == "browse"
+    end)
+    status = flowStatus(flow)
+    Assert.equal(status.page, "party_browse", "dismissal stays on party browse")
+    Assert.equal(flowChild(status).cursorNode, 0, "dismissal refocuses the same slot")
+    Assert.isNil(flow:takeResult(), "dismissal reports no terminal result")
+    flow:dispose()
+  end)
+end
+
+function T.tests.production_held_take_keeps_its_transfer(context)
+  requireVersions(context)
+  withGame(function(game)
+    local mons = assert(game.runtime.monService, "field runtime owns the live mon service")
+    Assert.isTrue(
+      mons:giveMon({ species = "CHIKORITA", level = 5, heldItem = "POTION" }),
+      "setup gift must enter the party holding a potion"
+    )
+    Assert.isTrue(mons:giveMon({ species = "TOTODILE", level = 5 }), "setup gift must enter the party")
+    local bag = assert(game.runtime.bagService, "field runtime owns the live bag service")
+    local bagQuantity = bag:quantity("POTION")
+    local partyRevision = mons:partyRevision()
+    local bagRevision = bag:revision()
+    local flow = composition(game).makePartyFlow()
+    driveUntil(flow, "the party browse page", 30, function(current)
+      return current.page == "party_browse"
+    end)
+    drainOpen(flow)
+    choosePartySlot(flow, 0)
+    choosePartyMenu(flow, "item")
+    choosePartyMenu(flow, "take")
+    -- Answer the confirmation while the composition asks one: a direct
+    -- Take settles without it, so only answer a visibly open prompt.
+    for _ = 1, 10 do
+      local leaf = flowChild(flowStatus(flow))
+      if leaf.prompt == nil and leaf.state ~= "confirm" then
+        break
+      end
+      drive(flow, { { type = "navigate", direction = "up" } })
+      drive(flow, { { type = "confirm" } })
+    end
+    for _ = 1, 15 do
+      flow:updateFixed({})
+    end
+    Assert.equal(mons:partyMon(0).heldItem, "NONE", "taking must clear the held slot")
+    Assert.equal(
+      bag:quantity("POTION"),
+      bagQuantity + 1,
+      "the taken potion returns to the bag exactly once"
+    )
+    Assert.isTrue(mons:partyRevision() == partyRevision + 1, "taking publishes exactly one mon revision")
+    Assert.isTrue(bag:revision() == bagRevision + 1, "taking publishes exactly one bag revision")
+    local status = flowStatus(flow)
+    Assert.equal(status.page, "party_browse", "taking returns to party browse")
+    Assert.equal(flowChild(status).cursorNode, 0, "taking refocuses the taken slot")
+    Assert.isNil(flow:takeResult(), "taking reports no terminal result")
+    flow:dispose()
+  end)
+end
+
+function T.tests.production_switch_reorders_once_and_restores_browse(context)
+  requireVersions(context)
+  withGame(function(game)
+    giftPair(game)
+    local mons = assert(game.runtime.monService, "field runtime owns the live mon service")
+    local partyRevision = mons:partyRevision()
+    local party = composition(game).makePartyFlow()
+    driveUntil(party, "the party browse page", 30, function(current)
+      return current.page == "party_browse"
+    end)
+    drainOpen(party)
+    -- A UI-driven switch commits once at the end of its animation and
+    -- hands focus to the destination with the browse message restored.
+    choosePartySlot(party, 0)
+    choosePartyMenu(party, "switch")
+    choosePartySlot(party, 1)
+    drive(party, { { type = "confirm" } })
+    for _ = 1, 40 do
+      party:updateFixed({})
+    end
+    Assert.equal(mons:partyRevision(), partyRevision + 1, "the switch publishes exactly one revision")
+    Assert.equal(mons:partyMon(0).species, "TOTODILE", "the switch reorders the live party")
+    Assert.equal(mons:partyMon(1).species, "CHIKORITA", "the switch keeps every member")
+    local child = flowChild(flowStatus(party))
+    Assert.equal(child.state, "browse", "completion returns to browse")
+    Assert.equal(child.cursorNode, 1, "focus follows the switch destination")
+    Assert.isNil(child.swap, "completion clears the animation")
+    Assert.isNil(party:takeResult(), "returning to the root reports no terminal result")
+    party:dispose()
   end)
 end
 

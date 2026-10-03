@@ -42,6 +42,7 @@ PartyAssetCompiler.ERROR = {
 -- and the quantity field feeds quantity records. Every other substitution
 -- or control is malformed source, never a runtime marker to interpret.
 local NAME_SUBSTITUTION = FieldMessageText.STRVAR_1 + 1
+local ITEM_SUBSTITUTION = FieldMessageText.STRVAR_1 + 8
 local MOVE_SUBSTITUTION = FieldMessageText.STRVAR_1 + 6
 local QUANTITY_SUBSTITUTION = FieldMessageText.STRVAR_1 + 52
 
@@ -319,6 +320,21 @@ end
 
 local PLAYBACKS = { forward = "once", forward_loop = "loop", reverse = "once", reverse_loop = "loop" }
 
+local function paletteSlice(colors, startColor, count, role)
+  if startColor < 0 or count <= 0 or startColor + count > #colors then
+    sourceError(role .. " palette range is unavailable", {
+      startColor = startColor,
+      count = count,
+      available = #colors,
+    })
+  end
+  local slice = {}
+  for index = 1, count do
+    slice[index] = colors[startColor + index]
+  end
+  return slice
+end
+
 local function writeFrame(rendered, durationTicks, path, assets)
   assets[path] = PngWriter.encode(rendered.width, rendered.height, rendered.pixels)
   local visual = { image = path, width = rendered.width, height = rendered.height, durationTicks = durationTicks }
@@ -361,9 +377,9 @@ local function compileSequence(charData, paletteColors, cellData, animation, seq
 end
 
 -- Realizes one sprite group: every listed sequence keeps all its frames.
--- Palette slots come from the audited sprite templates (cursor 0, status 2,
--- held 6); every group reuses its adjacent palette bank member.
-local function compileSpriteGroup(archive, group, slot, role, dependencies, assets, prefix, archiveLabel)
+-- `paletteBank` is local to the group's decoded palette resource; source OBJ
+-- allocation slots are normalized before they reach rasterization.
+local function compileSpriteGroup(archive, group, paletteBank, role, dependencies, assets, prefix, archiveLabel)
   local charData =
     decode("decodeChar", readMember(archive, group.char, role .. "-char", dependencies, archiveLabel), role .. "-char")
   local paletteData = decode(
@@ -371,6 +387,7 @@ local function compileSpriteGroup(archive, group, slot, role, dependencies, asse
     readMember(archive, group.palette, role .. "-palette", dependencies, archiveLabel),
     role .. "-palette"
   )
+  local localPalette = paletteSlice(paletteData.colors, paletteBank * 16, 16, role)
   local cellData =
     decode("decodeCell", readMember(archive, group.cell, role .. "-cell", dependencies, archiveLabel), role .. "-cell")
   local animation = decode(
@@ -382,14 +399,14 @@ local function compileSpriteGroup(archive, group, slot, role, dependencies, asse
   for _, sequenceNo in ipairs(group.sequences) do
     sequences[#sequences + 1] = compileSequence(
       charData,
-      paletteData.colors,
+      localPalette,
       cellData,
       animation,
       sequenceNo,
       role,
       assets,
       prefix .. "-" .. sequenceNo,
-      slot
+      0
     )
   end
   return { sequences = sequences }
@@ -432,21 +449,6 @@ local function compileScreens(archive, dependencies, assets)
     panelScreen = panelScreen,
     mainPalette = mainPalette.colors,
   }
-end
-
-local function paletteSlice(colors, startColor, count, role)
-  if startColor < 0 or count <= 0 or startColor + count > #colors then
-    sourceError(role .. " palette range is unavailable", {
-      startColor = startColor,
-      count = count,
-      available = #colors,
-    })
-  end
-  local slice = {}
-  for index = 1, count do
-    slice[index] = colors[startColor + index]
-  end
-  return slice
 end
 
 local function templateScreen(screen, tileRow, role)
@@ -721,7 +723,12 @@ local function resolveTextRoles(mainPalette)
         sourceError("party text role slot is unavailable", { role = name, slot = slot })
       end
       assert(color ~= nil, "missing text role entries fail above")
-      colors[position] = { r = color.r, g = color.g, b = color.b, a = 255 }
+      -- Panel text is printed over existing panel chrome. Preserve source
+      -- RGB for the background class, but make that class transparent in
+      -- the flattened runtime compositor. Position 3 is the background of
+      -- the { foreground, shadow, background } triple assembled below.
+      local alpha = position == 3 and 0 or 255
+      colors[position] = { r = color.r, g = color.g, b = color.b, a = alpha }
     end
     return { foreground = colors[1], shadow = colors[2], background = colors[3] }
   end
@@ -732,8 +739,34 @@ local function resolveTextRoles(mainPalette)
   }
 end
 
--- Resolves the context-button text/fill roles against the button-window
--- palette bank.
+-- Resolves the producer lower-message font selection to the opaque runtime
+-- message role. Party lower messages use FontPal1, not the field font
+-- palette: the source is the loaded font palette member named by the
+-- producer selection, never the panel or button-window banks. Records
+-- carry detached byte channels, never palette indices.
+local function resolveMessageRole(fontArchive, dependencies)
+  local selection = PartySources.messageRole --[[@as table<string, integer>]]
+  local member = readMember(fontArchive, selection.paletteMember, "message-role-palette", dependencies, "font")
+  local palette = decode("decodePalette", member, "message-role-palette")
+  local function pick(slot, position)
+    local color = palette.colors[slot + 1]
+    if color == nil then
+      sourceError("party message role slot is unavailable", { slot = slot, position = position })
+    end
+    assert(color ~= nil, "missing message role entries fail above")
+    return { r = color.r, g = color.g, b = color.b, a = 255 }
+  end
+  return {
+    foreground = pick(selection.foreground, "foreground"),
+    shadow = pick(selection.shadow, "shadow"),
+    background = pick(selection.background, "background"),
+  }
+end
+-- Resolves the context-button text roles against the button-window
+-- palette bank. Command and cancel entries share the bright ink pair
+-- while field entries keep their own ink; every role keeps its
+-- raised/depressed foreground/shadow/background triple. Records carry
+-- detached byte channels, never palette indices.
 local function resolveContextPalettes(mainPalette)
   local config = PartySources.contextRoles --[[@as table<string, unknown>]]
   local bank = paletteSlice(mainPalette, config.bank --[[@as integer]] * 16, 16, "context buttons")
@@ -745,21 +778,36 @@ local function resolveContextPalettes(mainPalette)
     assert(color ~= nil, "missing button role entries fail above")
     return { r = color.r, g = color.g, b = color.b, a = 255 }
   end
-  local text = config.text --[[@as table<string, integer>]]
-  local fill = config.fill --[[@as table<string, integer>]]
+  local function role(triples, name)
+    local states = triples --[[@as table<string, integer[]>]]
+    local resolved = {}
+    for _, state in ipairs({ "raised", "depressed" }) do
+      local slots = states[state]
+      if type(slots) ~= "table" or #slots ~= 3 then
+        sourceError("context button role keeps a foreground/shadow/background triple", { role = name, state = state })
+      end
+      resolved[state] = {
+        foreground = pick(slots[1], name .. ".foreground"),
+        shadow = pick(slots[2], name .. ".shadow"),
+        background = pick(slots[3], name .. ".background"),
+      }
+    end
+    return resolved
+  end
   return {
-    textPalette = { raised = pick(text.raised, "textRaised"), depressed = pick(text.depressed, "textDepressed") },
-    fillPalette = { raised = pick(fill.raised, "fillRaised"), depressed = pick(fill.depressed, "fillDepressed") },
+    textRoles = {
+      command = role(config.command, "command"),
+      field = role(config.field, "field"),
+      cancel = role(config.cancel, "cancel"),
+    },
   }
 end
 
 -- Composes one context-frame image from member-26 source tiles: the corner
 -- tiles pin the corners while the edge tiles repeat along each side, so
 -- pixel art never scales. The interior stays transparent for the runtime
--- window fill and text. The source tiles carry transparent outer margins, so
--- the composed border is extended flush to its rect by replicating the
--- nearest content pixel outward (never inward, never interpolated): every
--- source content pixel is preserved one-to-one and no new color appears.
+-- window fill and text. Every decoded source pixel is preserved one-to-one:
+-- transparent source margins stay transparent and no new color appears.
 local function composeContextFrame(tiles, tileIds, bank, width, height, role)
   local cells = {}
   local function setPixel(x, y, value)
@@ -808,54 +856,6 @@ local function composeContextFrame(tiles, tileIds, bank, width, height, role)
             setPixel(tx * 8 + x, ty * 8 + y, tileValue(tile, x, y))
           end
         end
-      end
-    end
-  end
-  local function isOpaque(pixel)
-    return pixel ~= nil and string.byte(pixel, 4) ~= 0
-  end
-  -- Vertical pass: extend each content column outward to the image edges.
-  for x = 0, width - 1 do
-    local top, bottom = nil, nil
-    for y = 0, height - 1 do
-      if isOpaque(cells[y * width + x + 1]) then
-        if top == nil then
-          top = y
-        end
-        bottom = y
-      end
-    end
-    if top ~= nil then
-      local upper = cells[top * width + x + 1]
-      for y = 0, top - 1 do
-        cells[y * width + x + 1] = upper
-      end
-      local lower = cells[bottom * width + x + 1]
-      for y = bottom + 1, height - 1 do
-        cells[y * width + x + 1] = lower
-      end
-    end
-  end
-  -- Horizontal pass: extend each content row outward, covering the columns
-  -- the vertical pass could not reach.
-  for y = 0, height - 1 do
-    local left, right = nil, nil
-    for x = 0, width - 1 do
-      if isOpaque(cells[y * width + x + 1]) then
-        if left == nil then
-          left = x
-        end
-        right = x
-      end
-    end
-    if left ~= nil then
-      local leading = cells[y * width + left + 1]
-      for x = 0, left - 1 do
-        cells[y * width + x + 1] = leading
-      end
-      local trailing = cells[y * width + right + 1]
-      for x = right + 1, width - 1 do
-        cells[y * width + x + 1] = trailing
       end
     end
   end
@@ -1027,6 +1027,13 @@ local function lowerSegments(bank, bankId, index, role, allowFlow)
     elseif token.kind == "substitution" and token.control == NAME_SUBSTITUTION then
       flush()
       segments[#segments + 1] = { kind = "name" }
+    elseif
+      (role == "template:giveHeldItem" or role == "template:switchHeldPrompt" or role == "template:switchHeldResult")
+      and token.kind == "substitution"
+      and token.control == ITEM_SUBSTITUTION
+    then
+      flush()
+      segments[#segments + 1] = { kind = "item" }
     elseif token.kind == "substitution" and token.control == MOVE_SUBSTITUTION then
       flush()
       segments[#segments + 1] = { kind = "move" }
@@ -1171,7 +1178,8 @@ local function _compile(romFs)
   local balls = compileSpriteGroup(archive, ballGroup, 0, "ball", dependencies, assets, "ball")
   local cursor = compileSpriteGroup(archive, cursorGroup, 0, "cursor", dependencies, assets, "cursor")
   local buttons = compileSpriteGroup(archive, buttonGroup, 0, "button", dependencies, assets, "button")
-  local held = compileSpriteGroup(archive, heldGroup, 6, "held", dependencies, assets, "held")
+  local held =
+    compileSpriteGroup(archive, heldGroup, PartySources.heldItemPaletteBank, "held", dependencies, assets, "held")
   local statusChar = decode(
     "decodeChar",
     readMember(statusArchive, PartySources.status.charMember, "status-char", dependencies, "status"),
@@ -1196,19 +1204,20 @@ local function _compile(romFs)
     sourceError("status carries an unexpected sequence census", { sequences = #statusAnimation.anims })
   end
   local statusVisuals = {}
+  local localStatusPalette = paletteSlice(statusPalette.colors, PartySources.status.paletteBank * 16, 16, "status")
   for _, statusRecord in ipairs(PartySources.status.semanticSequences) do
     local semanticKey = statusRecord.key
     local sequenceNo = statusRecord.sequence
     local compiled = compileSequence(
       statusChar,
-      statusPalette.colors,
+      localStatusPalette,
       statusCell,
       statusAnimation,
       sequenceNo,
       "status",
       assets,
       "status-" .. semanticKey,
-      2
+      0
     )
     if #compiled.frames ~= 1 then
       sourceError("status carries an animated sequence", { sequence = sequenceNo })
@@ -1270,6 +1279,7 @@ local function _compile(romFs)
   local shinyLeaves = compileBadges(badgeArchive, dependencies, assets)
   local text = compileText(messageArchive, dependencies)
   text.roles = textRoles
+  text.messageRole = resolveMessageRole(fontArchive, dependencies)
   local decoration = compileDecoration(archive, screens.mainPalette, dependencies, assets)
   local controlsGeometry = geometry.controls --[[@as table<string, unknown>]]
   local cancelGeometry = controlsGeometry.cancel --[[@as table<string, unknown>]]
@@ -1310,8 +1320,7 @@ local function _compile(romFs)
     contextMenu = {
       topLevel = menuGeometry.topLevel,
       subcontext = menuGeometry.subcontext,
-      textPalette = contextPalettes.textPalette,
-      fillPalette = contextPalettes.fillPalette,
+      textRoles = contextPalettes.textRoles,
       frames = contextFrames,
     },
     navigation = { dpad = PartySources.geometry.dpad },

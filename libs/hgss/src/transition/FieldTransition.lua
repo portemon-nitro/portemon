@@ -61,7 +61,7 @@ local SurfaceResolver = require("libs.hgss.src.world.SurfaceResolver")
 ---@field stopSound fun(soundId: string)?
 ---@field onStart fun(sourceMap: table<string, unknown>, trigger: table<string, unknown>, facing: FieldDirection)? -- invoked once per transition start, before ownership changes
 ---@field onProfile fun(profile: integer, phase: "exit"|"enter", family: string)? -- source-specific semantic hook
----@field cameraAdjust fun(...: unknown)?
+---@field cameraAdjust fun(...: unknown)? -- routes transition camera requests to the live camera and hands it back for timed choreography
 ---@field escalatorAt fun(runtimeMap: table<string, unknown>, fieldX: integer, fieldZ: integer): table<string, unknown>?
 ---@field onPanel fun(...: unknown)?
 ---@field player table<string, unknown>|nil -- FieldPlayer, bound by the owner across the swap
@@ -91,6 +91,10 @@ local SurfaceResolver = require("libs.hgss.src.world.SurfaceResolver")
 ---@field sourceMap RuntimeFieldMap?
 ---@field sourceWarp table<string, unknown>?
 ---@field coveredSwap boolean -- true while a covered scripted swap owns the lifecycle: destination resolution/commit run, but no FieldTransitionFade is created or advanced because an external screen cover already owns visibility
+---@field _outdoorCamera table<string, unknown>? -- live camera driving the outdoor white-fade angle choreography, returned by cameraAdjust
+---@field _outdoorExitSteps integer? -- exit source frames stepped so far; nil while the exit choreography is inactive
+---@field _outdoorEnterSteps integer? -- enter source frames stepped so far; nil while the enter choreography is inactive
+---@field _outdoorEnterDestination integer? -- destination raw angle captured at the swap; the enter must restore it exactly
 ---@field escalator table<string, unknown>?
 ---@field destinationWarpX integer?
 ---@field destinationWarpZ integer?
@@ -149,6 +153,10 @@ function FieldTransition.new(options)
     ownsPlayerAnimationPause = false,
     escalator = nil,
     coveredSwap = false,
+    _outdoorCamera = nil,
+    _outdoorExitSteps = nil,
+    _outdoorEnterSteps = nil,
+    _outdoorEnterDestination = nil,
   }, FieldTransition)
 end
 
@@ -298,6 +306,84 @@ local function stopProfileSound(self)
   self.activeProfileSound = nil
 end
 
+-- The outdoor white-fade transition tilts the live camera perspective
+-- while the fade runs. The transition owns the per-frame counters and the
+-- captured destination angle; the camera owns the angle value and its
+-- projection invalidation. The coordinator seam hands back the live camera
+-- it routed to -- a seam without a live camera (nil return) runs the
+-- ordinary white fade with no angle choreography. Covered swaps never
+-- reach this path: they carry no profile and run no fade here.
+local function captureOutdoorCamera(self, family)
+  if not self.cameraAdjust then
+    return nil
+  end
+  return self.cameraAdjust(self.profileId, family.adjustment, self.player)
+end
+
+local function beginOutdoorExit(self, family)
+  self._outdoorCamera = captureOutdoorCamera(self, family)
+  if self._outdoorCamera ~= nil then
+    self._outdoorExitSteps = 0
+  end
+end
+
+local function beginOutdoorEnter(self, camera)
+  if camera == nil then
+    self._outdoorCamera = nil
+    self._outdoorExitSteps = nil
+    return
+  end
+  self._outdoorCamera = camera
+  self._outdoorExitSteps = nil
+  self._outdoorEnterDestination = camera:rawPerspective()
+  camera:adjustRawPerspective(-96)
+  self._outdoorEnterSteps = 0
+end
+
+local function stepOutdoorCamera(self)
+  if self.profileId ~= 5 or self.coveredSwap then
+    return
+  end
+  local camera = self._outdoorCamera
+  if camera == nil then
+    return
+  end
+  if self._outdoorEnterSteps ~= nil then
+    if self._outdoorEnterSteps * 16 < 96 then
+      camera:adjustRawPerspective(16)
+      self._outdoorEnterSteps = self._outdoorEnterSteps + 1
+    end
+    return
+  end
+  if self._outdoorExitSteps ~= nil and self.phase == FieldTransition.PHASES.fade_out then
+    if self._outdoorExitSteps * 12 <= 96 then
+      camera:adjustRawPerspective(-12)
+      self._outdoorExitSteps = self._outdoorExitSteps + 1
+    end
+  end
+end
+
+-- A post-swap failure leaves the transition locked with live destination
+-- state, so an active enter offset must be handed back before the failure
+-- propagates. Pre-swap failures abort through _abort instead and never
+-- reach an enter offset.
+local function restoreOutdoorEnter(self)
+  if self._outdoorEnterSteps == nil then
+    return
+  end
+  local camera, destination = self._outdoorCamera, self._outdoorEnterDestination
+  self._outdoorCamera = nil
+  self._outdoorExitSteps = nil
+  self._outdoorEnterSteps = nil
+  self._outdoorEnterDestination = nil
+  if camera ~= nil and destination ~= nil then
+    local delta = destination - camera:rawPerspective()
+    if delta ~= 0 then
+      camera:adjustRawPerspective(delta)
+    end
+  end
+end
+
 local function resumeOwnedPlayerAnimation(self)
   if not self.ownsPlayerAnimationPause then
     return
@@ -322,6 +408,10 @@ local function resetTransient(self)
   self.escalator = nil
   self.progressTicks = 0
   self.coveredSwap = false
+  self._outdoorCamera = nil
+  self._outdoorExitSteps = nil
+  self._outdoorEnterSteps = nil
+  self._outdoorEnterDestination = nil
 end
 
 -- Keep the destination warp resolution as the logical anchor and retain the
@@ -472,6 +562,9 @@ local function beginSourceChoreography(self)
     then
       startFade(self, "out", family.fadeColor or 0)
     end
+  end
+  if self.profileId == 5 then
+    beginOutdoorExit(self, family)
   end
   if beginProfileMotion(self, "exit") then
     self.sourceChoreo = "profile_motion"
@@ -661,6 +754,8 @@ local function runChoreo(self, fn)
   if not ok then
     if self.phase == FieldTransition.PHASES.fade_out then
       self:_abort(err)
+    else
+      restoreOutdoorEnter(self)
     end
     error(err, 0)
   end
@@ -672,6 +767,12 @@ end
 -- fade). Stair warps require a player (asserted at the source begin), so one
 -- is always bound here.
 local function finish(self)
+  if self._outdoorEnterDestination ~= nil then
+    assert(
+      self._outdoorCamera ~= nil and self._outdoorCamera:rawPerspective() == self._outdoorEnterDestination,
+      "outdoor reveal must restore the destination angle exactly"
+    )
+  end
   resetTransient(self)
   self.phase = FieldTransition.PHASES.idle
   self.locked = false
@@ -947,7 +1048,10 @@ function FieldTransition:updateFixed()
       invokeProfile(self, "enter")
       local family = profileFamily(self)
       if family.adjustment and self.cameraAdjust then
-        self.cameraAdjust(self.profileId, family.adjustment, self.player)
+        local camera = self.cameraAdjust(self.profileId, family.adjustment, self.player)
+        if self.profileId == 5 then
+          beginOutdoorEnter(self, camera)
+        end
       end
       if beginProfileMotion(self, "enter") then
         self.destinationChoreo = "profile_motion"
@@ -994,13 +1098,15 @@ end
 
 -- Advances the transition fade by exactly one source frame. Field simulation
 -- calls updateFixed separately, and FieldRuntime composes the source-frame
--- order after each fixed field tick.
+-- order after each fixed field tick. The outdoor angle choreography steps on
+-- the same clock: one fade-advancing frame carries at most one camera step.
 function FieldTransition:updateSourceFrame()
   if self.phase == FieldTransition.PHASES.idle then
     return false
   end
   if self.fadeStarted and self.fade and not self.fade:status().completed then
     advanceFade(self)
+    stepOutdoorCamera(self)
     return true
   end
   return false

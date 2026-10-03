@@ -43,6 +43,7 @@ local function controller(pages, opts)
     },
     audio = opts.audio,
     continueCursor = opts.continueCursor or CURSOR,
+    onPrinterCallback = opts.onPrinterCallback,
   })
 end
 
@@ -161,6 +162,115 @@ function T.pause_blocks_while_callback_signal_consumes_one_printer_update()
   callback:step({})
   callback:step({})
   Assert.equal(callback:status().revealedGlyphs, 2, "callback signal is not a normal timed wait")
+end
+
+function T.normalized_printer_callback_runs_once_at_its_position()
+  local callbacks = {}
+  local c = controller({
+    page({ line({ glyph("A", 1), { kind = "printer_callback", name = "cue", args = { 17 }, raw = {} }, glyph("B", 2) }) }, "eos"),
+  }, {
+    printerDelay = 1,
+    onPrinterCallback = function(token)
+      callbacks[#callbacks + 1] = { name = token.name, argument = token.args[1] }
+    end,
+  })
+  c:open(request("callback-position", message()))
+  c:step({})
+  Assert.equal(callbacks[1].name, "cue")
+  Assert.equal(callbacks[1].argument, 17)
+  Assert.equal(c:status().revealedGlyphs, 1, "the callback itself does not reveal a glyph")
+  c:status()
+  c:status()
+  c:step({})
+  Assert.equal(#callbacks, 1, "status reads and later steps do not redeliver a consumed callback")
+  Assert.equal(c:status().revealedGlyphs, 2, "printing resumes after the callback's source yield")
+end
+
+function T.trailing_printer_callback_is_consumed_before_print_completion()
+  local calls = 0
+  local c = controller({
+    page({ line({ glyph("A", 1), { kind = "printer_callback", name = "receipt", args = {}, raw = {} } }) }, "eos"),
+  }, {
+    printerDelay = 1,
+    onPrinterCallback = function(token)
+      Assert.equal(token.name, "receipt")
+      calls = calls + 1
+    end,
+  })
+  c:open(request("trailing-callback", message()))
+  c:step({})
+  Assert.equal(calls, 1, "the second printer substep consumes the trailing callback")
+  Assert.equal(c:status().state, "REVEALING", "callback consumption yields before print completion")
+  c:step({})
+  Assert.equal(c:status().state, "WAITING_CLOSE", "print completion follows the trailing control")
+  Assert.equal(calls, 1)
+  c:step({})
+  Assert.equal(calls, 1)
+end
+
+function T.callback_at_line_end_runs_before_the_page_scroll()
+  local events = {}
+  local c = controller({
+    page({ line({ glyph("A", 1), { kind = "printer_callback", name = "between-lines", args = {}, raw = {} } }) }, "line"),
+    page({ line({ glyph("B", 2) }) }, "eos"),
+  }, {
+    printerDelay = 1,
+    onPrinterCallback = function(token)
+      events[#events + 1] = token.name
+    end,
+  })
+  c:open(request("callback-before-scroll", message()))
+  c:step({})
+  Assert.equal(events[1], "between-lines", "the zero-width cue is consumed before automatic page transition")
+  Assert.equal(c:status().pageIndex, 1, "the callback's own printer yield precedes scrolling")
+  for _ = 1, 32 do
+    if c:status().pageIndex == 2 then
+      break
+    end
+    c:step({})
+  end
+  Assert.equal(c:status().pageIndex, 2, "the following printer substep advances the automatic page")
+  Assert.equal(#events, 1)
+end
+
+function T.acceleration_consumes_callback_once_and_disposal_cancels_unreached_callback()
+  local calls = 0
+  local c = controller({
+    page({ line({ glyph("A", 1), { kind = "printer_callback", name = "after-a", args = {}, raw = {} }, glyph("B", 2), glyph("C", 3) }) }, "eos"),
+  }, {
+    printerDelay = 8,
+    onPrinterCallback = function()
+      calls = calls + 1
+    end,
+  })
+  c:open(request("accelerated-callback", message()))
+  c:step({})
+  c:step({ actionPressed = true, actionDown = true })
+  c:step({ actionDown = true })
+  Assert.equal(calls, 1, "acceleration crosses the callback at most once")
+  c:step({ actionDown = true })
+  Assert.equal(calls, 1)
+
+  local cancelledCalls = 0
+  local cancelled = controller({
+    page({
+      line({
+        glyph("A", 1),
+        glyph("B", 2),
+        { kind = "printer_callback", name = "unreached", args = {}, raw = {} },
+      }),
+    }, "eos"),
+  }, {
+    printerDelay = 8,
+    onPrinterCallback = function()
+      cancelledCalls = cancelledCalls + 1
+    end,
+  })
+  cancelled:open(request("cancel-before-callback", message()))
+  cancelled:step({})
+  cancelled:dispose()
+  cancelled:step({ actionDown = true })
+  Assert.equal(cancelledCalls, 0, "disposal before the callback cannot emit it later")
 end
 
 function T.fixed_ticks_reveal_expected_glyph_count()

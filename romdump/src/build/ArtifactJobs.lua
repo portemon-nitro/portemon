@@ -43,6 +43,8 @@ local PRIORITY = {
   sweep = 100,
 }
 
+local MART_AUDIO_SEQUENCES = { "SEQ_SE_DP_SELECT", "SEQ_SE_GS_GEARCANCEL", "SEQ_SE_DP_BAG_004", 1603 }
+
 ---@class ArtifactJobs.Descriptor
 ---@field size string worker lane behind this kind
 ---@field dependencies (fun(key: string, plans: ArtifactJobs.Plans): { kind: string, key: string }[], boolean)|nil currently known prerequisites plus whether planning prerequisites made the list final; nil means no prerequisite
@@ -231,6 +233,7 @@ local FIELD_RUNTIME_JOBS = {
   "items:global",
   "bag:global",
   "party:global",
+  "mart:global",
   "spawns:global",
   "starter-choice:global",
   "message-bank:" .. tostring(MenuProtocol.START_MENU_MESSAGE_BANK),
@@ -535,6 +538,41 @@ local function executeBag(artifact, context)
     return BagAssetCompiler.compile(romFs)
   end, "bag")
   return BagCacheWriter.stage(artifact, bundle)
+end
+
+local function dependenciesMart(key, plans)
+  assert(key == "global", "mart family only has the global job")
+  local jobs = { { kind = "items", key = "global" }, { kind = "audio-catalog", key = "global" } }
+  local audioPlan = plans.audioPlan
+  if audioPlan == nil then
+    return sortedJobs(jobs), false
+  end
+  local index = assert(audioPlan.index, "mart audio closure requires the adopted audio index")
+  local seen = {}
+  for _, reference in ipairs(MART_AUDIO_SEQUENCES) do
+    local sequenceId = reference
+    if type(reference) == "string" then
+      sequenceId = index.sequenceBySymbol[reference]
+      assert(sequenceId ~= nil, "mart audio reference has no adopted sequence: " .. reference)
+    end
+    local sequence = assert(index.sequences[sequenceId], "mart audio reference has no sequence record")
+    local bankId = assert(sequence.bankId, "mart audio sequence has no bank")
+    if not seen[bankId] then
+      seen[bankId] = true
+      jobs[#jobs + 1] = { kind = "audio-bank", key = tostring(bankId) }
+    end
+  end
+  return sortedJobs(jobs), true
+end
+
+local function executeMart(artifact, context)
+  local MartAssetCompiler = require("romdump.src.digest.ui.MartAssetCompiler")
+  local MartCacheWriter = require("romdump.src.digest.ui.MartCacheWriter")
+  local romFs = assert(context.romFs, "mart jobs require a source reader")
+  local bundle = compileOrRaise(function()
+    return MartAssetCompiler.compile(romFs)
+  end, "mart")
+  return MartCacheWriter.stage(artifact, bundle)
 end
 
 local function executeParty(artifact, context)
@@ -1257,6 +1295,11 @@ local function validateBag(check)
   return BagCache.isReady(check.cacheFs, check.marker)
 end
 
+local function validateMart(check)
+  local MartCache = require("libs.assets.src.MartCache")
+  return MartCache.isReady(check.cacheFs, check.marker)
+end
+
 ---@param check ArtifactJobs.ReadinessCheck
 ---@return boolean
 local function validateParty(check)
@@ -1672,6 +1715,12 @@ DESCRIPTORS = {
     execute = executeBag,
     validate = validateBag,
   },
+  mart = {
+    size = "normal",
+    dependencies = dependenciesMart,
+    execute = executeMart,
+    validate = validateMart,
+  },
   party = {
     size = "normal",
     execute = executeParty,
@@ -1889,6 +1938,7 @@ local COMPLETE_STATIC_GLOBALS = {
   "items",
   "bag",
   "party",
+  "mart",
   "spawns",
   "mon-catalog",
   "mon-layout",

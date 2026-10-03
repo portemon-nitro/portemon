@@ -41,8 +41,28 @@ function T.geometry_preserves_the_audited_rectangles()
   Assert.deepEqual(geometry.quantityConfirm, {
     center = { x = 136, y = 176 },
     hitRect = { x = 96, y = 168, width = 78, height = 24 },
+    labelAt = { x = 117, y = 168 },
   })
   Assert.deepEqual(geometry.quantityCancelHitRect, { x = 178, y = 168, width = 78, height = 24 })
+  Assert.deepEqual(
+    geometry.quantityCancelLabelAt,
+    { x = 197, y = 168 },
+    "the quantity cancel label lowers as its own text origin"
+  )
+end
+
+function T.sale_geometry_compiles_two_digits_and_four_source_controls()
+  local geometry = BagPresentationCompiler.compileGeometry(BagSources)
+  local sale = assert(geometry.sale, "compiled geometry includes the source sale context")
+  Assert.equal(#sale.digits, 2, "sale keeps its two digit rectangles")
+  local deltas = {}
+  for index, control in ipairs(sale.controls) do
+    deltas[index] = control.delta
+  end
+  Assert.deepEqual(deltas, { 10, 1, -10, -1 }, "sale controls retain their semantic source order")
+  Assert.deepEqual(sale.confirm, BagSources.saleQuantity.confirm)
+  Assert.deepEqual(sale.cancel, BagSources.saleQuantity.cancel)
+  Assert.deepEqual(sale.selectedItem, BagSources.selectedItem)
 end
 
 function T.states_name_one_pose_and_pattern_per_pocket()
@@ -224,6 +244,7 @@ function T.slot_icon_centers_follow_the_item_icon_record()
       { x = 152, y = 139 },
     },
     geometry = BagSources.geometry,
+    saleQuantity = BagSources.saleQuantity,
   }
   local geometry = BagPresentationCompiler.compileGeometry(edited)
   Assert.deepEqual(geometry.slots[1].iconCenter, { x = 23, y = 59 }, "compiled icons track the icon record")
@@ -358,6 +379,7 @@ function T.geometry_accepts_a_point_on_the_pane_edge()
       actions = BagSources.focusTargets.actions,
     },
     geometry = BagSources.geometry,
+    saleQuantity = BagSources.saleQuantity,
   }
   local geometry = BagPresentationCompiler.compileGeometry(edited)
   Assert.deepEqual(geometry.focus.items[1], { x = 256, y = 192 }, "the inclusive pane edge must stay accepted")

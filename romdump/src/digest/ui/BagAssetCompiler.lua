@@ -128,6 +128,7 @@ local SCREEN_ROLES = {
   { role = "move-wash", member = BagSources.screens.moveWash, upper = false },
   { role = "action-overlay", member = BagSources.screens.actionOverlay, upper = false },
   { role = "quantity-overlay", member = BagSources.screens.quantityOverlay, upper = false },
+  { role = "sale-quantity", member = BagSources.screens.saleQuantity, upper = false },
 }
 
 local function compileScreens(archive, dependencies, assets)
@@ -607,6 +608,7 @@ local function compileSprites(archive, dependencies, assets)
   local focusStates = BagSources.spriteStates.focus
   local actionFace = compileVisual(tabsData, BagSources.spriteStates.actionFace, "action-face", assets)
   local quantityConfirm = compileVisual(tabsData, BagSources.spriteStates.quantity.confirm, "quantity-confirm", assets)
+  local quantityCancel = compileVisual(tabsData, BagSources.spriteStates.quantity.cancel, "quantity-cancel", assets)
   local increment = compilePressedPair(
     tabsData,
     BagSources.spriteStates.quantity.increment.normal,
@@ -642,6 +644,7 @@ local function compileSprites(archive, dependencies, assets)
       decrement = { normal = decrement.normal, pressed = decrement.pressed },
       pressTicks = increment.pressTicks,
       confirm = quantityConfirm,
+      cancel = quantityCancel,
     },
     -- The unselected Cancel face is realized for finalized-background
     -- composition below; it is never written to the bundle as a runtime
@@ -664,6 +667,16 @@ local function compileSprites(archive, dependencies, assets)
           BagSources.spriteStates.quantity.confirm,
           9,
           "quantity-confirm-selected",
+          assets
+        ),
+      },
+      quantityCancel = {
+        normal = quantityCancel,
+        selected = compileFlashVisual(
+          tabsData,
+          BagSources.spriteStates.quantity.cancel,
+          9,
+          "quantity-cancel-selected",
           assets
         ),
       },
@@ -884,8 +897,10 @@ end
 
 -- Quantity backgrounds carry one realized variant per pocket and visible
 -- occupied-item count 0..6 (retail variant 3): the retained action BG5
--- under the quantity overlay on BG6.
-local function compileQuantityBackgrounds(lower, screenRoles, cancelFace, assets)
+-- under the quantity overlay on BG6. The quantity Cancel face is runtime
+-- art owned by the quantity overlay below, so no generic Cancel chrome is
+-- baked here; every other state keeps its finalized chrome.
+local function compileQuantityBackgrounds(lower, screenRoles, assets)
   local washRole = assert(screenRoles.listWash, "audited Bag browse wash has no semantic role")
   local slotsRole = assert(screenRoles.listSlots, "audited Bag browse slots have no semantic role")
   local overlayRole = assert(screenRoles.quantityOverlay, "audited Bag quantity overlay has no semantic role")
@@ -900,7 +915,6 @@ local function compileQuantityBackgrounds(lower, screenRoles, cancelFace, assets
       local slotLayer = rasterizeScreen(lower.charData, palette.colors, slots, slotsRole)
       local image = RgbaImage.compose({ wash, slotLayer, overlay }, "interactive background quantity")
       image = RgbaImage.crop(image, { x = 0, y = 0, width = 256, height = 192 }, "interactive background quantity")
-      image = compositeCancelChrome(image, cancelFace)
       local path = BagCache.assetDir() .. "/background-quantity-" .. pocketState.pocket .. "-count-" .. count .. ".png"
       assets[path] = PngWriter.encode(image.width, image.height, image.pixels)
       variants[count] = { image = path, width = image.width, height = image.height }
@@ -1078,11 +1092,20 @@ local function compileLowerBackgrounds(lower, cancelFace, assets)
     quantityOverlay = "quantity-overlay",
   }
   local backgrounds = {}
+  local saleScreen = rasterizeScreen(
+    lower.charData,
+    effectiveLowerPalette(lower.colors, 0).colors,
+    assert(lower.screens["sale-quantity"]),
+    "sale-quantity"
+  )
+  saleScreen = RgbaImage.crop(saleScreen, { x = 0, y = 0, width = 256, height = 192 }, "interactive sale quantity")
+  local salePath = BagCache.assetDir() .. "/background-sale-quantity.png"
+  assets[salePath] = PngWriter.encode(saleScreen.width, saleScreen.height, saleScreen.pixels)
   backgrounds.action = compileActionBackgrounds(lower, screenRoles, cancelFace, assets)
-  backgrounds.quantity = compileQuantityBackgrounds(lower, screenRoles, cancelFace, assets)
+  backgrounds.quantity = compileQuantityBackgrounds(lower, screenRoles, assets)
   backgrounds.move = compileMoveBackgrounds(lower, screenRoles, cancelFace, assets)
   backgrounds.browse = compileBrowseBackgrounds(lower, screenRoles, cancelFace, assets)
-  return backgrounds
+  return backgrounds, { image = salePath, width = saleScreen.width, height = saleScreen.height }
 end
 
 -- Semantic message lowering. The pinned Bag messages carry two STRVAR
@@ -1100,6 +1123,7 @@ local QUANTITY_SUBSTITUTION = FieldMessageText.STRVAR_1 + 52
 -- the item name to field 0 and the amount to field 1, so field 51 carries
 -- the same buffered quantity as field 52 in the confirmation message.
 local QUANTITY_SUBSTITUTION_ALIAS = FieldMessageText.STRVAR_1 + 51
+local SALE_TOTAL_SUBSTITUTION = FieldMessageText.STRVAR_1 + 55
 
 local function readMessageBank(archive, bankId, role, dependencies)
   local bytes, err = archive:readMember(bankId)
@@ -1188,6 +1212,9 @@ local function lowerTemplate(bank, bankId, index, role)
     then
       flush()
       segments[#segments + 1] = { kind = "quantity" }
+    elseif token.kind == "substitution" and token.control == SALE_TOTAL_SUBSTITUTION then
+      flush()
+      segments[#segments + 1] = { kind = "total" }
     else
       sourceError("bag template carries an unsupported token " .. tostring(token.kind), {
         role = role,
@@ -1223,13 +1250,19 @@ local function compileText(messageArchive, dependencies)
     local selector = BagSources.messages.templates[name]
     templates[name] = lowerTemplate(bankOf(selector.bank), selector.bank, selector.index, "template:" .. name)
   end
+  local saleMessages = {}
+  for _, name in ipairs({ "saleNotSellable", "saleQuantity", "saleOffer", "saleResult" }) do
+    local selector = BagSources.messages.templates[name]
+    saleMessages[name] = lowerTemplate(bankOf(selector.bank), selector.bank, selector.index, "template:" .. name)
+  end
   return {
     actions = labels,
     movePrompt = templates.movePrompt,
     tossConfirm = templates.tossConfirm,
     tossResult = templates.tossResult,
     selectedItem = templates.selectedItem,
-  }
+  },
+    saleMessages
 end
 
 -- Normalizes the audited toss-confirmation prompt template to the runtime
@@ -1635,7 +1668,7 @@ local function _compile(romFs)
     )
   end
   assert(messageArchive ~= nil, "unavailable message archives fail above")
-  local text = compileText(messageArchive, dependencies)
+  local text, saleMessages = compileText(messageArchive, dependencies)
   local moveArchive, moveArchiveErr = romFs:openNarc(BagSources.moveSummary.archive.symbol)
   if moveArchive == nil then
     error(
@@ -1656,7 +1689,7 @@ local function _compile(romFs)
   local moveSummary = compileMoveSummary(moveArchive, messageArchive, dependencies, assets)
   moveSummary.background = screenReferences["upper-alternate"]
   local sprites = compileSprites(archive, dependencies, assets)
-  local backgrounds = compileLowerBackgrounds(lower, sprites.cancelFace, assets)
+  local backgrounds, saleQuantityBackground = compileLowerBackgrounds(lower, sprites.cancelFace, assets)
   local markers = compileRegistrationMarkers(archive, lower.colors, dependencies, assets)
   local textures, meshes = {}, {}
   local male = compileHero(archive, "male", dependencies, textures, meshes)
@@ -1798,6 +1831,34 @@ local function _compile(romFs)
       pageIndicator = geometry.pageIndicator,
       cancel = geometry.cancel,
       text = text,
+      sale = {
+        pressTicks = geometry.sale.pressTicks,
+        quantityBackground = saleQuantityBackground,
+        digits = geometry.sale.digits,
+        controls = geometry.sale.controls,
+        confirm = {
+          visual = sprites.quantity.confirm,
+          center = geometry.sale.confirm.center,
+          hitRect = geometry.sale.confirm.hitRect,
+          labelAt = geometry.sale.confirm.labelAt,
+        },
+        cancel = {
+          visual = sprites.quantity.cancel,
+          center = geometry.sale.cancel.center,
+          hitRect = geometry.sale.cancel.hitRect,
+          labelAt = geometry.sale.cancel.labelAt,
+        },
+        selectedItem = geometry.sale.selectedItem,
+        money = geometry.sale.money,
+        total = geometry.sale.total,
+        compactPrompt = geometry.sale.compactPrompt,
+        messages = {
+          notSellable = saleMessages.saleNotSellable,
+          quantity = saleMessages.saleQuantity,
+          offer = saleMessages.saleOffer,
+          result = saleMessages.saleResult,
+        },
+      },
       selectionEntry = sprites.selectionEntry,
       feedback = sprites.feedback,
       moveTransition = sprites.moveTransition,
@@ -1819,6 +1880,12 @@ local function _compile(romFs)
             visual = sprites.quantity.confirm,
             center = geometry.quantityConfirm.center,
             hitRect = geometry.quantityConfirm.hitRect,
+            labelAt = geometry.quantityConfirm.labelAt,
+          },
+          cancel = {
+            visual = sprites.quantity.cancel,
+            center = geometry.focus.cancel,
+            labelAt = geometry.quantityCancelLabelAt,
           },
           cancelHitRect = geometry.quantityCancelHitRect,
         },

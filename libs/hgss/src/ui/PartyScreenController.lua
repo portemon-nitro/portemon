@@ -1,6 +1,6 @@
 -- The native party-screen controller: one fixed-tick state machine over an
 -- injected immutable view. Named contexts (browse, pick, item_target,
--- give_target, give_confirm) replace the legacy view/select modes. Browse opens
+-- give_target, give_resume) replace the legacy view/select modes. Browse opens
 -- source-ordered context menus (summary, switch, item-or-mail, quit, then
 -- field moves in move-slot order; eggs get summary, switch, quit) with a
 -- separate item/mail submenu mapping; switch reorders through the
@@ -18,10 +18,11 @@ local PartyScreenTheme = require("libs.hgss.src.ui.PartyScreenTheme")
 local YesNoPromptController = require("libs.hgss.src.ui.YesNoPromptController")
 
 ---@class PartyScreenController
----@field _context "browse"|"pick"|"item_target"|"give_target"|"give_confirm"
+---@field _context "browse"|"pick"|"item_target"|"give_target"|"give_resume"
 ---@field _model PartyScreenController.Model
 ---@field _layout fun(): table<string, unknown>
 ---@field _swap PartyScreenController.SwapPort?
+---@field _effect fun(sequence: string)? the borrowed Party semantic sound boundary; screens without it stay silent and still transition
 ---@field _policy table<string, unknown>
 ---@field _promptShape table<string, unknown>?
 ---@field _pendingItem { key: string, bagRevision: integer }?
@@ -40,10 +41,10 @@ local YesNoPromptController = require("libs.hgss.src.ui.YesNoPromptController")
 ---@field _pressId string?
 ---@field _pressCapture PartyScreenController.Capture?
 ---@field _pressEpoch integer?
----@field _swapOp { source: integer, destination: integer, revision: integer, step: integer }?
+---@field _swapOp { source: integer, destination: integer, revision: integer, phase: string, xOffset: integer, exchanged: boolean }?
 ---@field _intent table<string, unknown>?
 ---@field _origin PartyScreenController.Origin?
----@field _message string?
+---@field _message string|{ templateKey: string, displayName: string?, itemNames: string[]? }?
 ---@field _messageReturn string
 ---@field _prompt YesNoPromptController?
 ---@field _promptReturn string
@@ -53,12 +54,14 @@ local YesNoPromptController = require("libs.hgss.src.ui.YesNoPromptController")
 ---@field _tick integer
 ---@field _donorSlot integer?
 ---@field _donorMoveSlot integer?
----@field _menuPress { index: integer, timer: integer }? the armed source press gate: two pressed ticks, two selected ticks, then exactly one semantic dispatch
+---@field _menuPress { index: integer, timer: integer }? the armed source press gate: an arm frame, two pressed ticks, two selected ticks, then exactly one semantic dispatch
+---@field _cancelPress { timer: integer, restart: boolean }? the armed root footer press: an arm frame, two base ticks, two selected ticks, then the close publishes
 ---@field _swapSource integer?
 ---@field _seq integer[]
 ---@field _seqBase integer[]
 ---@field _panelSlide integer
 ---@field _targetOrigin "menu"|"context"?
+---@field _giveDisposition "party"|"bag"?
 local PartyScreenController = {}
 PartyScreenController.__index = PartyScreenController
 
@@ -95,11 +98,11 @@ PartyScreenController.__index = PartyScreenController
 ---@field partyRevision integer
 
 ---@class PartyScreenController.Result
----@field kind "closed"|"selected"|"cancelled"
+---@field kind "closed"|"selected"|"cancelled"|"give_complete"
 ---@field slot integer?
 
 ---@class PartyScreenController.Options
----@field context "browse"|"pick"|"item_target"|"give_target"|"give_confirm"
+---@field context "browse"|"pick"|"item_target"|"give_target"|"give_resume"
 ---@field initialFocus integer|"cancel"?
 ---@field allowCancel boolean?
 ---@field model PartyScreenController.Model
@@ -108,16 +111,21 @@ PartyScreenController.__index = PartyScreenController
 ---@field actionPolicy table<string, unknown>?
 ---@field promptShape table<string, unknown>?
 ---@field item { key: string, bagRevision: integer }?
+---@field effect fun(sequence: string)? the borrowed Party semantic sound boundary; screens without it stay silent and still transition
+---@field initialMessage { templateKey: "giveHeldItem", displayName: string, itemNames: string[] }? initial Party-owned held-item result
 
--- The five swap stages in update invocations after entering the swap
--- subtask: one start tick, sixteen 8px outgoing steps, one midpoint tick
--- exchanging only temporary draw records, sixteen incoming steps, and one
--- final commit tick. Pixel offsets slide the two records leftward out and
--- back in with exchanged content.
-local SWAP_MIDPOINT_STEP = 18
-local SWAP_COMMIT_STEP = 35
+-- The native switch task slides each travelling slot out from its own
+-- column and back: sixteen tile-steps to full exit, eight pixels per
+-- step. Even slots exit left, odd slots exit right. The list sound fires
+-- on the opening task and again when the visible records exchange; only
+-- the final task publishes the authoritative order.
+local SWAP_MAX_OFFSET = 16
 local SWAP_PIXEL_STEP = 8
-local SWAP_FULL_OFFSET = 128
+local SWAP_SOUND = "SEQ_SE_DP_POKELIST_001"
+local CANCEL_SOUND = "SEQ_SE_GS_GEARCANCEL"
+local SELECT_SOUND = "SEQ_SE_DP_SELECT"
+local INVALID_SOUND = "SEQ_SE_DP_CUSTOM06"
+local RECOVERY_SOUND = "SEQ_SE_DP_KAIFUKU"
 
 -- The top-panel show/hide slide in source pixels.
 local PANEL_SLIDE_STEPS = { 0, 12, 24, 36, 40 }
@@ -164,8 +172,8 @@ function PartyScreenController.new(opts)
       or opts.context == "pick"
       or opts.context == "item_target"
       or opts.context == "give_target"
-      or opts.context == "give_confirm",
-    "the party controller requires a named browse, pick, item_target, give_target, or give_confirm context"
+      or opts.context == "give_resume",
+    "the party controller requires a named browse, pick, item_target, give_target, or give_resume context"
   )
   assert(
     type(opts.model) == "table" and type(opts.model.refresh) == "function",
@@ -196,6 +204,18 @@ function PartyScreenController.new(opts)
       "the initial focus must be a party position in 0..5 or cancel"
     )
   end
+  if opts.initialMessage ~= nil then
+    local message = opts.initialMessage
+    assert(opts.context == "browse", "initial result messages enter only the browse context")
+    assert(
+      type(message) == "table" and message.templateKey == "giveHeldItem",
+      "initial result uses the Party held-item template"
+    )
+    assert(
+      type(message.displayName) == "string" and type(message.itemNames) == "table" and #message.itemNames == 1,
+      "held-item result names its mon and item"
+    )
+  end
   local cancellable = opts.allowCancel
   if cancellable == nil then
     cancellable = true
@@ -208,6 +228,9 @@ function PartyScreenController.new(opts)
       "the pending item carries its bag revision"
     )
   end
+  if opts.effect ~= nil then
+    assert(type(opts.effect) == "function", "the Party semantic sound boundary is a function")
+  end
   local self = setmetatable({
     _context = opts.context,
     _model = opts.model,
@@ -217,7 +240,7 @@ function PartyScreenController.new(opts)
     _promptShape = opts.promptShape,
     _pendingItem = opts.item,
     _cancellable = cancellable,
-    _state = "browse",
+    _state = opts.initialMessage ~= nil and "message" or "browse",
     _cursorNode = 0,
     _menu = nil,
     _menuIndex = nil,
@@ -232,7 +255,7 @@ function PartyScreenController.new(opts)
     _swapOp = nil,
     _intent = nil,
     _origin = nil,
-    _message = nil,
+    _message = opts.initialMessage,
     _messageReturn = "browse",
     _prompt = nil,
     _promptReturn = "browse",
@@ -243,30 +266,29 @@ function PartyScreenController.new(opts)
     _donorSlot = nil,
     _donorMoveSlot = nil,
     _menuPress = nil,
+    _cancelPress = nil,
     _swapSource = nil,
+    _effect = opts.effect,
     _seq = {},
     _seqBase = {},
     _panelSlide = 0,
     _targetOrigin = nil,
+    _giveDisposition = opts.context == "give_resume" and "party" or (opts.context == "give_target" and "bag" or nil),
   }, PartyScreenController)
   if opts.context == "item_target" or opts.context == "give_target" then
     assert(opts.item ~= nil, "target contexts require the pending item identity")
     self._state = "choosing_item_target"
     self._targetOrigin = "context"
-  elseif opts.context == "give_confirm" then
-    -- The replacement question records its target now but opens its
-    -- prompt on the first fixed update: presentation layout is not
-    -- resolved during controller construction, and the opening batch
-    -- must never activate the new prompt.
-    assert(opts.item ~= nil, "the replacement question names its pending item")
+  elseif opts.context == "give_resume" then
+    assert(opts.item ~= nil, "the give continuation names its pending item")
     assert(
       type(opts.initialFocus) == "number"
         and opts.initialFocus % 1 == 0
         and opts.initialFocus >= 0
         and opts.initialFocus < 6,
-      "the replacement question targets a party slot"
+      "the give continuation targets a party slot"
     )
-    self._state = "give_confirm"
+    self._state = "give_resume"
   end
   local view = self:_refresh()
   ---@type integer|string?
@@ -281,8 +303,8 @@ function PartyScreenController.new(opts)
     error("the party screen has no selectable slot", 2)
   end
   self._cursorNode = start
-  if opts.context == "give_confirm" then
-    assert(self:_selectable(view, opts.initialFocus), "the replacement question targets an occupied slot")
+  if opts.context == "give_resume" then
+    assert(self:_selectable(view, opts.initialFocus), "the give continuation targets an occupied slot")
     self._cursorNode = opts.initialFocus
   end
   return self
@@ -377,9 +399,9 @@ function PartyScreenController:cancellable()
   return self._cancellable
 end
 
--- State changes dispose prompts, disarm the menu press gate, and
--- invalidate any held pointer press, even when the public state name
--- stays the same.
+-- State changes dispose prompts, disarm the menu and root press gates,
+-- and invalidate any held pointer press, even when the public state
+-- name stays the same.
 ---@param state string
 function PartyScreenController:_transition(state)
   if self._state == "confirm" and state ~= "confirm" then
@@ -395,6 +417,7 @@ function PartyScreenController:_transition(state)
   self._pressCapture = nil
   self._pressEpoch = nil
   self._menuPress = nil
+  self._cancelPress = nil
 end
 
 -- Walks one direction through the compiled FocusGraph, skipping
@@ -409,11 +432,13 @@ function PartyScreenController:_move(direction)
   )
   local layout = assert(self._layout(), "the party layout is required for navigation")
   local graph = compileGraph(assert(layout.neighbors, "the party layout must carry directional neighbors"))
-  local node = self._cursorNode
+  local start = self._cursorNode
+  local node = start
   if node == "cancel" and direction == "up" then
     local remembered = 4 + self._footerColumn
     if self:_selectable(self._view, remembered) then
       self._cursorNode = remembered
+      self:_requestSelectSound()
       return
     end
     node = remembered
@@ -430,6 +455,9 @@ function PartyScreenController:_move(direction)
     end
     if self:_selectable(self._view, next) then
       self._cursorNode = next
+      if next ~= start then
+        self:_requestSelectSound()
+      end
       return
     end
     node = next
@@ -451,7 +479,10 @@ function PartyScreenController:_moveMenu(direction)
   local next = entry[direction]
   if next ~= nil then
     assert(next % 1 == 0 and next >= 1 and next <= #entries, "menu neighbors address real entries")
-    self._menuIndex = next
+    if next ~= index then
+      self._menuIndex = next
+      self:_requestSelectSound()
+    end
   end
 end
 
@@ -477,14 +508,23 @@ end
 
 -- Arms the source press gate over the focused menu entry: the semantic
 -- entry, index, and state freeze now while pointer capture invalidates
--- through the normal epoch rules. Dispatch waits for the visual cadence
--- (two pressed ticks, two selected ticks) owned by the fixed update.
+-- through the normal epoch rules. The activation update sounds once here
+-- at initiation: a focused quit row requests the single cancel effect,
+-- every other row requests the single select effect. Dispatch waits for
+-- the visual cadence (an arm frame, two pressed ticks, two selected
+-- ticks) owned by the fixed update.
 function PartyScreenController:_beginMenuPress()
   assert(self._menuPress == nil, "menu presses arm exactly once")
   local menu = assert(self._menu, "menu activation needs an open menu")
   local index = assert(self._menuIndex, "menu activation needs a focused entry")
-  assert(menu[index] ~= nil, "menu activation focuses a real entry")
+  local entry = assert(menu[index], "menu activation focuses a real entry")
+  assert(type(entry.kind) == "string", "menu entries carry a kind")
   self:_menuLayoutFor()
+  if entry.kind == "quit" then
+    self:_requestCancelSound()
+  else
+    self:_requestSelectSound()
+  end
   self._menuPress = { index = index, timer = 0 }
   self._pressId = nil
   self._pressCapture = nil
@@ -492,13 +532,13 @@ function PartyScreenController:_beginMenuPress()
   self._epoch = self._epoch + 1
 end
 
--- Advances the armed press one fixed tick; the step past the selected
--- half dispatches the captured entry exactly once through the existing
--- semantic path.
+-- Advances the armed press one fixed tick; the step past the second
+-- selected tick dispatches the captured entry exactly once through the
+-- existing semantic path.
 function PartyScreenController:_advanceMenuPress()
   local armed = assert(self._menuPress, "press ticks require an armed press")
   armed.timer = armed.timer + 1
-  if armed.timer < 4 then
+  if armed.timer < 5 then
     return
   end
   local index = armed.index
@@ -614,24 +654,125 @@ function PartyScreenController:_closePrompt()
 end
 
 -- Shows a message over the originating flow state; acknowledgement
--- returns there without replaying anything.
----@param text string
+-- returns there without replaying anything. Either existing literal text
+-- or a generated-template descriptor the renderer expands.
+---@param text string|{ templateKey: string, displayName: string?, itemNames: string[]? }
 ---@param returnState string
 function PartyScreenController:_showMessage(text, returnState)
-  assert(type(text) == "string" and text ~= "", "messages carry display text")
+  if type(text) == "table" then
+    assert(type(text.templateKey) == "string" and text.templateKey ~= "", "descriptors name their template")
+    assert(text.displayName == nil or type(text.displayName) == "string", "descriptors carry an optional display name")
+    if text.itemNames ~= nil then
+      assert(type(text.itemNames) == "table", "descriptors carry ordered item names")
+      for _, itemName in ipairs(text.itemNames) do
+        assert(type(itemName) == "string", "descriptors carry ordered item names")
+      end
+    end
+  else
+    assert(type(text) == "string" and text ~= "", "messages carry display text")
+  end
   self._message = text
   self._messageReturn = returnState
   self:_transition("message")
 end
 
--- Starts the five-stage swap: the source, destination, and live revision
--- freeze now; the final tick revalidates before publishing once.
+-- Private operation semantics, not a public schema.
+-- start: sound/no motion; outward: xOffset 1..16; exchange: swap visible
+-- records + sound; inward: xOffset 15..0; commit: validate and publish
+-- authoritative party order.
+-- Starts the column-parity swap: the source, destination, and live revision
+-- freeze now; arming stays silent and the opening tick carries the sound.
+-- The exchange tick swaps only temporary draw records and the final tick
+-- revalidates before publishing once.
 ---@param source integer
 ---@param destination integer
 function PartyScreenController:_beginSwap(source, destination)
   local port = assert(self._swap, "swapping requires the injected domain port")
-  self._swapOp = { source = source, destination = destination, revision = port.partyRevision(), step = 0 }
+  self._swapOp = {
+    source = source,
+    destination = destination,
+    revision = port.partyRevision(),
+    phase = "start",
+    xOffset = 0,
+    exchanged = false,
+  }
   self:_transition("swapping")
+end
+
+-- Requests the source select sound through the borrowed effect boundary.
+function PartyScreenController:_requestSelectSound()
+  local effect = self._effect
+  if effect ~= nil then
+    effect(SELECT_SOUND)
+  end
+end
+
+-- Requests one list sound through the borrowed effect boundary when the
+-- owning flow supplied one; screens without the boundary stay silent and
+-- still reorder exactly once.
+function PartyScreenController:_requestSwapSound()
+  local effect = self._effect
+  if effect ~= nil then
+    effect(SWAP_SOUND)
+  end
+end
+
+-- Requests the source cancel sound through the borrowed effect boundary.
+function PartyScreenController:_requestCancelSound()
+  local effect = self._effect
+  if effect ~= nil then
+    effect(CANCEL_SOUND)
+  end
+end
+
+-- Requests the source invalid-target effect through the borrowed effect
+-- boundary for rejected target activations.
+function PartyScreenController:_requestInvalidSound()
+  local effect = self._effect
+  if effect ~= nil then
+    effect(INVALID_SOUND)
+  end
+end
+
+-- Requests the source recovery effect through the borrowed effect
+-- boundary for valid HP-transfer target activations.
+function PartyScreenController:_requestRecoverySound()
+  local effect = self._effect
+  if effect ~= nil then
+    effect(RECOVERY_SOUND)
+  end
+end
+
+-- Arms the root footer press instead of closing: the activation update
+-- sounds once here at initiation, then the visual cadence (an arm frame,
+-- two base ticks, two selected ticks) owns the next five fixed ticks
+-- before the close publishes. Restarting from a mon focuses the footer
+-- first and shows the base state at once; confirming the already-focused
+-- footer keeps the selected arm frame.
+---@param restart boolean
+function PartyScreenController:_armCancelPress(restart)
+  assert(self._menuPress == nil, "root and menu presses never overlap")
+  assert(self._cancelPress == nil, "root presses arm exactly once")
+  assert(self._state == "browse", "root presses arm from browse")
+  self:_requestCancelSound()
+  if restart then
+    self._cursorNode = "cancel"
+  end
+  self:cancelPointerCapture()
+  self._cancelPress = { timer = 0, restart = restart }
+end
+
+-- Advances the armed root press one fixed tick; the step past the second
+-- selected tick publishes the existing close result exactly once.
+function PartyScreenController:_advanceCancelPress()
+  local armed = assert(self._cancelPress, "press ticks require an armed press")
+  armed.timer = armed.timer + 1
+  if armed.timer < 5 then
+    return
+  end
+  self._cancelPress = nil
+  self._result = { kind = "closed" }
+  self:_transition("closing")
 end
 
 -- Abandons an uncommitted swap with no domain mutation.
@@ -649,16 +790,43 @@ function PartyScreenController:_abortSwap()
   self:_transition("browse")
 end
 
--- Advances one swap tick. Only the final stage touches the domain: it
--- revalidates the frozen revision, publishes exactly once through the
--- injected port, then re-reads the live party and restores the cursor.
+-- Advances exactly one swap phase per tick. The opening tick sounds with
+-- no motion, outward ticks climb 1..16, the exchange tick swaps only
+-- temporary draw records with the second sound, inward ticks descend
+-- 15..0, and only the final tick touches the domain: it revalidates the
+-- frozen revision, publishes exactly once through the injected port, then
+-- re-reads the live party and restores the cursor.
 function PartyScreenController:_advanceSwap()
   local op = assert(self._swapOp, "swap ticks require an armed operation")
   local port = assert(self._swap, "swapping requires the injected domain port")
-  op.step = op.step + 1
-  if op.step < SWAP_COMMIT_STEP then
+  if op.phase == "start" then
+    self:_requestSwapSound()
+    op.phase = "outward"
     return
   end
+  if op.phase == "outward" then
+    op.xOffset = op.xOffset + 1
+    assert(op.xOffset >= 0 and op.xOffset <= SWAP_MAX_OFFSET, "swap offsets stay within full exit")
+    if op.xOffset >= SWAP_MAX_OFFSET then
+      op.phase = "exchange"
+    end
+    return
+  end
+  if op.phase == "exchange" then
+    op.exchanged = true
+    self:_requestSwapSound()
+    op.phase = "inward"
+    return
+  end
+  if op.phase == "inward" then
+    op.xOffset = op.xOffset - 1
+    assert(op.xOffset >= 0 and op.xOffset <= SWAP_MAX_OFFSET, "swap offsets stay within full exit")
+    if op.xOffset <= 0 then
+      op.phase = "commit"
+    end
+    return
+  end
+  assert(op.phase == "commit", "swap ticks run start, outward, exchange, inward, then commit")
   if port.partyRevision() ~= op.revision then
     self:_abortSwap()
     return
@@ -718,6 +886,9 @@ function PartyScreenController:_confirmSlotTarget()
       end
       return
     end
+    -- Footer confirmation cancels like the B/pointer surfaces: one
+    -- cancel effect before the existing unwind.
+    self:_requestCancelSound()
     if self._targetOrigin == "context" then
       self._result = { kind = "cancelled" }
       self:_transition("closing")
@@ -731,8 +902,20 @@ function PartyScreenController:_confirmSlotTarget()
       return
     end
     assert(isSlotNode(node), "transfer targets resolve to party slots")
-    local donor = assert(self._donorSlot, "transfer targeting remembers its donor")
     ---@cast node integer
+    local target = assert(self._view.slots[node + 1], "transfer targets read visible slots")
+    local donor = assert(self._donorSlot, "transfer targeting remembers its donor")
+    local currentHp = assert(target.currentHp, "transfer targets carry current HP")
+    local maxHp = assert(target.maxHp, "transfer targets carry max HP")
+    if target.isEgg == true then
+      self:_requestInvalidSound()
+      return
+    end
+    if node == donor or currentHp == 0 or currentHp == maxHp then
+      self:_requestSelectSound()
+    else
+      self:_requestRecoverySound()
+    end
     self:_emitIntent({
       kind = "transfer_hp",
       slot = donor,
@@ -753,6 +936,11 @@ function PartyScreenController:_confirmSlotTarget()
     return
   end
   local record = assert(self._view.slots[node + 1], "targeting reads visible slots")
+  if record.isEgg == true then
+    self:_requestInvalidSound()
+    return
+  end
+  self:_requestSelectSound()
   local policy = assert(self._policy, "targeting requires the injected action policy")
   local evaluateTarget = assert(policy.evaluateTarget, "the action policy evaluates targets")
   local verdict = evaluateTarget(record, self._context)
@@ -787,6 +975,27 @@ function PartyScreenController:_confirmSlotTarget()
   end
 end
 
+-- Dismisses an open context menu back to browse with no result or
+-- intent: menu state cleared, the origin slot restored when still
+-- selectable. This is the silent semantic completion after the press
+-- gate; the cancel effect was already requested when the quit press
+-- was armed.
+function PartyScreenController:_dismissMenu()
+  assert(
+    self._state == "context" or self._state == "item_context" or self._state == "mail_context",
+    "menu dismissal needs an open context menu"
+  )
+  local slot = self._originSlot
+  self._menu = nil
+  self._menuIndex = nil
+  self._menuSlot = nil
+  self._originSlot = nil
+  if slot ~= nil and self:_selectable(self._view, slot) then
+    self._cursorNode = slot
+  end
+  self:_transition("browse")
+end
+
 -- Activates the focused context-menu entry through its kind.
 function PartyScreenController:_confirmMenuEntry()
   local menu = assert(self._menu, "menu activation needs an open menu")
@@ -796,8 +1005,7 @@ function PartyScreenController:_confirmMenuEntry()
   local slot = assert(self._menuSlot, "menu activation remembers its slot")
   local revision = self._observedRevision
   if entry.kind == "quit" then
-    self._result = { kind = "closed" }
-    self:_transition("closing")
+    self:_dismissMenu()
     return
   end
   if entry.kind == "switch" then
@@ -898,13 +1106,13 @@ end
 function PartyScreenController:_confirmBrowse()
   local node = self._cursorNode
   if node == "cancel" then
-    self._result = { kind = "closed" }
-    self:_transition("closing")
+    self:_armCancelPress(false)
     return
   end
   if self:_selectable(self._view, node) then
     assert(isSlotNode(node), "menus open over party slots")
     ---@cast node integer
+    self:_requestSelectSound()
     self:_openMenu(node)
   end
 end
@@ -946,28 +1154,35 @@ function PartyScreenController:_cancel()
       return
     end
     if self._cancellable then
-      self._result = { kind = "closed" }
-      self:_transition("closing")
+      self:_armCancelPress(true)
     end
     return
   end
   if self._state == "context" or self._state == "item_context" or self._state == "mail_context" then
-    local slot = self._originSlot
-    self._menu = nil
-    self._menuIndex = nil
-    self._menuSlot = nil
-    self._originSlot = nil
-    if slot ~= nil and self:_selectable(self._view, slot) then
-      self._cursorNode = slot
+    local menu = assert(self._menu, "menu cancellation needs its open menu")
+    local quitIndex = nil
+    for index, entry in ipairs(menu) do
+      assert(type(entry.kind) == "string", "menu entries carry a kind")
+      if entry.kind == "quit" then
+        quitIndex = index
+      end
     end
-    self:_transition("browse")
+    assert(quitIndex ~= nil, "context menus cancel through their quit row")
+    self._menuIndex = assert(quitIndex, "menu cancellation focuses its quit row")
+    self:_beginMenuPress()
     return
   end
-  if self._state == "choose_swap" or self._state == "swapping" then
+  if self._state == "choose_swap" then
+    self:_requestCancelSound()
+    self:_abortSwap()
+    return
+  end
+  if self._state == "swapping" then
     self:_abortSwap()
     return
   end
   if self._state == "choosing_item_target" or self._state == "choose_hp_target" then
+    self:_requestCancelSound()
     if self._targetOrigin == "context" then
       self._result = { kind = "cancelled" }
       self:_transition("closing")
@@ -992,8 +1207,10 @@ function PartyScreenController:_cancel()
   end
 end
 
--- Confirms the swap destination: the source itself or cancel abandons,
--- another occupied slot arms the delayed commit.
+-- Confirms the swap destination: the source itself confirms with the
+-- selection effect and abandons, cancel abandons with the cancel effect,
+-- and another occupied slot confirms with the selection effect before
+-- arming the delayed commit.
 function PartyScreenController:_confirmSwapDestination()
   local node = self._cursorNode
   local source = self._swapSource
@@ -1008,13 +1225,20 @@ function PartyScreenController:_confirmSwapDestination()
     self:_transition("browse")
     return
   end
-  if node == "cancel" or node == source then
+  if node == "cancel" then
+    self:_requestCancelSound()
+    self:_abortSwap()
+    return
+  end
+  if node == source then
+    self:_requestSelectSound()
     self:_abortSwap()
     return
   end
   if self:_selectable(self._view, node) then
     assert(isSlotNode(node), "swap destinations are party slots")
     ---@cast node integer
+    self:_requestSelectSound()
     self:_beginSwap(source, node)
   end
 end
@@ -1058,9 +1282,8 @@ function PartyScreenController:_resolvePrompt()
     return
   end
   assert(result == "no", "prompts resolve yes or no")
-  if self._context == "give_confirm" then
-    self._result = { kind = "cancelled" }
-    self:_transition("closing")
+  if self._giveDisposition ~= nil then
+    self:_finishGive()
     return
   end
   self:_transition(returnState)
@@ -1074,17 +1297,37 @@ end
 function PartyScreenController:_declinePrompt()
   local returnState = self._promptReturn
   self:_closePrompt()
-  if self._context == "give_confirm" then
-    self._result = { kind = "cancelled" }
-    self:_transition("closing")
+  if self._giveDisposition ~= nil then
+    self:_finishGive()
     return
   end
   self:_transition(returnState)
 end
 
+-- Finishes the caller-specific held-item transaction after its question
+-- or result message has been acknowledged.
+function PartyScreenController:_finishGive()
+  local disposition = assert(self._giveDisposition, "held-item feedback records its caller")
+  self._giveDisposition = nil
+  self._pendingItem = nil
+  self._menu = nil
+  self._menuIndex = nil
+  self._menuSlot = nil
+  self._originSlot = nil
+  self._origin = nil
+  if disposition == "party" then
+    self._context = "browse"
+    self._result = { kind = "give_complete" }
+    self:_transition("browse")
+  else
+    self._result = { kind = "cancelled" }
+    self:_transition("closing")
+  end
+end
+
 -- Owns one fixed tick inside the yes/no confirm: unknown events raise
--- in prompt states exactly like ordinary states, dismiss and cancel
--- decline immediately without publishing, and every other event batch
+-- in prompt states exactly like ordinary states, cancel
+-- declines immediately without publishing, and every other event batch
 -- drives the owned prompt exactly once before the tick-owned resolution
 -- consumes a published result. Prompt rows latch on press through the
 -- owned prompt; the release never activates by itself.
@@ -1092,7 +1335,7 @@ end
 function PartyScreenController:_stepPrompt(uiInput)
   for _, event in ipairs(uiInput) do
     assert(type(event) == "table" and type(event.type) == "string", "party events need a type")
-    if event.type == "dismiss" or event.type == "cancel" then
+    if event.type == "cancel" then
       self:_declinePrompt()
       return
     end
@@ -1123,7 +1366,11 @@ function PartyScreenController:_acknowledgeMessage()
     self._origin = nil
     self:_restoreOrigin(origin)
   else
-    self:_transition(self._messageReturn)
+    if self._messageReturn == "give_result" then
+      self:_finishGive()
+    else
+      self:_transition(self._messageReturn)
+    end
   end
 end
 
@@ -1287,9 +1534,97 @@ function PartyScreenController:_pointerUp(event)
   end
 end
 
+-- Reconciles staged menu/prompt state after an outside party revision
+-- change. An open menu rebuilds from the live record at its slot with
+-- only a clamped focus index preserved; a lost slot falls back to
+-- browse. A menu-owned prompt disposes before its confirm batch can
+-- resolve, and its return menu rebuilds the same way. A held-item
+-- continuation prompt aborts through the existing held-item completion
+-- path without emitting the old intent. Returns true when staged state
+-- was invalidated or rebuilt, in which case the caller consumes the tick
+-- so the same event batch never acts on the new state. Browse cursor
+-- reconciliation alone never consumes the tick.
+---@param view PartyScreenController.View
+---@return boolean consumed
+function PartyScreenController:_reconcileRevision(view)
+  local consumed = false
+  if self._state == "confirm" then
+    if self._giveDisposition ~= nil then
+      self:_finishGive()
+      return true
+    end
+    local returnState = self._promptReturn
+    self:_closePrompt()
+    local slot = self._menuSlot
+    local record = slot ~= nil and view.slots[slot + 1] or nil
+    if
+      record ~= nil
+      and record.occupied
+      and (returnState == "context" or returnState == "item_context" or returnState == "mail_context")
+    then
+      if returnState == "context" then
+        self._menu = self:_menuFor(record)
+      else
+        self._menu = self:_submenuFor(returnState == "mail_context" and "mail" or "item", record)
+      end
+      local layout = assert(self._layout(), "the party layout is required for menu geometry")
+      local lookup = assert(layout.menuLayout, "the party layout carries generated menu records")
+      lookup(returnState == "context" and "topLevel" or "subcontext", #self._menu)
+      self._menuIndex = math.min(self._menuIndex or 1, #self._menu)
+      self:_transition(returnState)
+    else
+      self._menu = nil
+      self._menuIndex = nil
+      self._menuSlot = nil
+      self._originSlot = nil
+      self:_transition("browse")
+    end
+    consumed = true
+  elseif self._state == "context" or self._state == "item_context" or self._state == "mail_context" then
+    -- A staged press never survives a party change: the captured entry
+    -- is stale, so the gate disarms and the menu rebuilds (or closes
+    -- when its slot no longer qualifies).
+    self._menuPress = nil
+    self._pressId = nil
+    self._pressCapture = nil
+    self._pressEpoch = nil
+    self._epoch = self._epoch + 1
+    local slot = self._menuSlot
+    local record = slot ~= nil and view.slots[slot + 1] or nil
+    if record ~= nil and record.occupied then
+      if self._state == "context" then
+        self._menu = self:_menuFor(record)
+      else
+        self._menu = self:_submenuFor(self._state == "mail_context" and "mail" or "item", record)
+      end
+      self:_menuLayoutFor()
+      self._menuIndex = math.min(self._menuIndex or 1, #self._menu)
+    else
+      self._menu = nil
+      self._menuIndex = nil
+      self._menuSlot = nil
+      self._originSlot = nil
+      self:_transition("browse")
+    end
+    consumed = true
+  end
+  if not self:_selectable(view, self._cursorNode) then
+    local reconciled = self:_nearestSelectable(view, self._cursorNode)
+    if reconciled ~= nil then
+      self._cursorNode = reconciled
+    end
+  end
+  return consumed
+end
+
 -- One fixed tick over the tick's UI events. Clocks advance first: icon
--- sequence ticks, the panel slide, the armed menu press, and an armed swap
--- all step once per tick while open. At most one state consumes an event batch: the batch ends when a
+-- sequence ticks and the panel slide step once per tick while open. A
+-- valid outside dismiss for a normal context then closes terminally
+-- before anything else runs for this tick. A party revision change next
+-- reconciles staged menu/prompt state before the armed menu press, an
+-- armed swap, the owned prompt, the held-item continuation, or ordinary
+-- state handling can run for this tick, and consumes the tick when it
+-- invalidates staged state. At most one state consumes an event batch: the batch ends when a
 -- transition fires, an intent emits, a message acknowledges, or a
 -- terminal result records. A completed controller ignores further input.
 ---@param uiInput table[]
@@ -1303,6 +1638,44 @@ function PartyScreenController:updateFixed(uiInput)
   local view = self:_refresh()
   self:_trackSequences(view)
   self:_advanceSlide()
+  do
+    local foundDismiss = false
+    for _, event in ipairs(uiInput) do
+      assert(type(event) == "table" and type(event.type) == "string", "party events need a type")
+      if event.type == "dismiss" then
+        foundDismiss = true
+      elseif
+        event.type ~= "navigate"
+        and event.type ~= "confirm"
+        and event.type ~= "cancel"
+        and event.type ~= "pointer_down"
+        and event.type ~= "pointer_move"
+        and event.type ~= "pointer_up"
+        and event.type ~= "pointer_cancel"
+        and event.type ~= "menu"
+        and event.type ~= "pointer_scroll"
+      then
+        error("unknown party event type " .. tostring(event.type), 2)
+      end
+    end
+    if foundDismiss then
+      self:_dismiss()
+      return
+    end
+  end
+  if view.revision ~= previousRevision and self._swapOp == nil then
+    -- Staged menu/prompt state derived from the old revision never
+    -- advances against the new one; the reconciled tick ends here so the
+    -- same event batch cannot act on the rebuilt state. The active swap
+    -- keeps its own frozen-revision commit ownership.
+    if self:_reconcileRevision(view) then
+      return
+    end
+  end
+  if self._cancelPress ~= nil then
+    self:_advanceCancelPress()
+    return
+  end
   if self._menuPress ~= nil then
     local transitionsBefore = self._transitionCount
     self:_advanceMenuPress()
@@ -1318,48 +1691,22 @@ function PartyScreenController:updateFixed(uiInput)
     self:_stepPrompt(uiInput)
     return
   end
-  if self._state == "give_confirm" then
-    -- First fixed update with a resolved layout: open the replacement
-    -- question and ignore this batch, so the transition that opened the
-    -- page can never answer its own prompt.
-    self:_openGiveConfirm()
+  if self._state == "give_resume" then
+    local item = assert(self._pendingItem, "give continuations retain their item")
+    local slot = assert(self._cursorNode, "give continuations retain their original slot")
+    assert(isSlotNode(slot), "give continuations target a party slot")
+    self:_emitIntent({
+      kind = "give",
+      slot = slot,
+      partyRevision = self._observedRevision,
+      bagRevision = item.bagRevision,
+      item = item.key,
+    })
     return
   end
-  if view.revision ~= previousRevision and self._swapOp == nil then
-    -- Reconcile a cursor the party change may have invalidated without
-    -- inventing a mon: keep a still-selectable cursor, else the nearest one.
-    -- An armed press never survives a party change: the captured entry is
-    -- stale, so the gate disarms and the menu rebuilds (or closes when its
-    -- slot no longer qualifies).
-    if self._menuPress ~= nil then
-      self._menuPress = nil
-      local slot = self._menuSlot
-      local record = slot ~= nil and view.slots[slot + 1] or nil
-      if record ~= nil and record.occupied then
-        if self._state == "context" then
-          self._menu = self:_menuFor(record)
-        elseif self._state == "item_context" or self._state == "mail_context" then
-          self._menu = self:_submenuFor(self._state == "mail_context" and "mail" or "item", record)
-        end
-        if self._menu ~= nil then
-          self:_menuLayoutFor()
-          self._menuIndex = math.min(self._menuIndex or 1, #self._menu)
-        end
-      end
-      if self._menu == nil then
-        self._menu = nil
-        self._menuIndex = nil
-        self._menuSlot = nil
-        self._originSlot = nil
-        self:_transition("browse")
-      end
-    end
-    if not self:_selectable(view, self._cursorNode) then
-      local reconciled = self:_nearestSelectable(view, self._cursorNode)
-      if reconciled ~= nil then
-        self._cursorNode = reconciled
-      end
-    end
+  if self._state == "give_question" then
+    self:_openGiveConfirm()
+    return
   end
   for _, event in ipairs(uiInput) do
     if self._closed then
@@ -1367,7 +1714,7 @@ function PartyScreenController:updateFixed(uiInput)
     end
     assert(type(event) == "table" and type(event.type) == "string", "party events need a type")
     local transitionsBefore = self._transitionCount
-    if self._menuPress ~= nil then
+    if self._menuPress ~= nil or self._cancelPress ~= nil then
       -- The armed press owns the tick: further navigation, activation,
       -- cancellation, and pointer presses wait for its single dispatch.
       -- Pointer cancellation still clears a held capture without
@@ -1438,31 +1785,16 @@ function PartyScreenController:_navigate(event)
   end
 end
 
--- Interprets outside dismissal by owning state: normal browse flows
--- close, target and confirmation flows cancel their operation without
--- committing, gated animation and waiting states ignore it.
+-- Interprets an outside pointer-down as a silent terminal close for a
+-- normal context, independent of nested menu, target, swap, prompt,
+-- message, waiting, or continuation state. Script selection never emits
+-- this edge.
 function PartyScreenController:_dismiss()
-  if
-    self._state == "browse"
-    or self._state == "context"
-    or self._state == "item_context"
-    or self._state == "mail_context"
-  then
-    if self._context == "pick" then
-      error("party dismiss is a browse-flow edge; pick context never emits it", 2)
-    end
-    self._result = { kind = "closed" }
-    self:_transition("closing")
-    return
+  if self._context == "pick" then
+    error("party dismiss is a browse-flow edge; pick context never emits it", 2)
   end
-  if self._state == "choose_swap" or self._state == "choosing_item_target" or self._state == "choose_hp_target" then
-    self:_cancel()
-    return
-  end
-  if self._state == "message" then
-    self:_acknowledgeMessage()
-    return
-  end
+  self._result = { kind = "closed" }
+  self:_transition("closing")
 end
 
 -- The presentation snapshot: context, state, cursor, open menu, pending
@@ -1472,16 +1804,18 @@ end
 -- advances them.
 ---@class PartyScreenController.Status
 ---@field open boolean
----@field context "browse"|"pick"|"item_target"|"give_target"|"give_confirm"?
+---@field context "browse"|"pick"|"item_target"|"give_target"|"give_resume"?
 ---@field state string?
----@field mode "browse"|"pick"|"item_target"|"give_target"|"give_confirm"?
+---@field mode "browse"|"pick"|"item_target"|"give_target"|"give_resume"?
 ---@field action string?
 ---@field cursorNode integer|"cancel"?
 ---@field menuIndex integer?
 ---@field menu PartyScreenController.MenuEntry[]?
 ---@field menuSlot integer?
----@field menuPress { index: integer, phase: "pressed"|"selected" }? the armed press gate presentation
----@field message string?
+---@field menuPress { index: integer, phase: "armed"|"pressed"|"selected" }? the armed press gate presentation
+---@field cancelPress { phase: "armed"|"pressed"|"selected" }? the armed root footer press presentation
+---@field message string|{ templateKey: string, displayName: string? }?
+---@field switchSelect { source: integer, candidate: integer|"cancel" }? the locked switch source and current candidate
 ---@field prompt table<string, unknown>?
 ---@field swap table<string, unknown>?
 ---@field anim table<string, unknown>? tick, per-slot icon sequences and sequence-local ticks, panel slide
@@ -1498,23 +1832,24 @@ function PartyScreenController:status()
   local swapStatus
   if self._swapOp ~= nil then
     local op = assert(self._swapOp, "swap status reads an armed operation")
-    local stage = "start"
-    local offsetPx = 0
-    local exchanged = false
-    if op.step >= SWAP_MIDPOINT_STEP then
-      stage = "in"
-      exchanged = true
-      offsetPx = -SWAP_FULL_OFFSET + (op.step - SWAP_MIDPOINT_STEP) * SWAP_PIXEL_STEP
-    elseif op.step >= 2 then
-      stage = "out"
-      offsetPx = -(op.step - 1) * SWAP_PIXEL_STEP
+    assert(op.source >= 0 and op.source < 6 and op.destination >= 0 and op.destination < 6, "swap slots stay in 0..5")
+    local xOffset = op.xOffset
+    assert(xOffset % 1 == 0 and xOffset >= 0 and xOffset <= SWAP_MAX_OFFSET, "swap offsets stay within full exit")
+    local exchanged = op.exchanged
+    local offsets = {}
+    local directions = {}
+    for _, slot0 in ipairs({ op.source, op.destination }) do
+      local direction = (slot0 % 2 == 0) and -1 or 1
+      local pixelOffset = direction * xOffset * SWAP_PIXEL_STEP
+      directions[slot0] = direction
+      offsets[slot0] = pixelOffset
     end
     swapStatus = {
       source = op.source,
       destination = op.destination,
-      step = op.step,
-      stage = stage,
-      offsetPx = offsetPx,
+      xOffset = xOffset,
+      offsets = offsets,
+      directions = directions,
       exchanged = exchanged,
     }
   end
@@ -1530,10 +1865,38 @@ function PartyScreenController:status()
   end
   local menuPress
   if self._menuPress ~= nil then
+    local timer = self._menuPress.timer
+    local phase = "selected"
+    if timer <= 0 then
+      phase = "armed"
+    elseif timer <= 2 then
+      phase = "pressed"
+    end
     menuPress = {
       index = self._menuPress.index,
-      phase = self._menuPress.timer < 2 and "pressed" or "selected",
+      phase = phase,
     }
+  end
+  local cancelPress
+  if self._cancelPress ~= nil then
+    local timer = self._cancelPress.timer
+    local phase = "selected"
+    if timer == 0 then
+      if self._cancelPress.restart then
+        phase = "pressed"
+      else
+        phase = "armed"
+      end
+    elseif timer <= 2 then
+      phase = "pressed"
+    end
+    cancelPress = {
+      phase = phase,
+    }
+  end
+  local switchSelect
+  if self._state == "choose_swap" and self._swapSource ~= nil then
+    switchSelect = { source = self._swapSource, candidate = self._cursorNode }
   end
   return {
     open = true,
@@ -1546,7 +1909,9 @@ function PartyScreenController:status()
     menu = self._menu,
     menuSlot = self._menuSlot,
     menuPress = menuPress,
+    cancelPress = cancelPress,
     message = self._message,
+    switchSelect = switchSelect,
     prompt = self._prompt and self._prompt:status() or nil,
     swap = swapStatus,
     anim = {
@@ -1571,8 +1936,10 @@ end
 
 -- Resolves the pending intent from the flow. The presentation-only no-op
 -- returns to the originating state with no message, mutation, or new
--- intent; any other outcome shows its text when present and otherwise
--- returns silently. Outcomes for another state are a programming error.
+-- intent; a text outcome shows its text over the originating state, a
+-- template-descriptor outcome shows the generated template over browse
+-- refocused on the acting slot, and any other outcome returns silently.
+-- Outcomes for another state are a programming error.
 ---@param outcome table<string, unknown>
 function PartyScreenController:completeAction(outcome)
   assert(type(outcome) == "table", "action completion carries an outcome")
@@ -1581,8 +1948,30 @@ function PartyScreenController:completeAction(outcome)
   local origin = assert(self._origin, "waiting remembers its origin")
   self:_refresh()
   self._origin = nil
+  if self._giveDisposition ~= nil then
+    self._cursorNode = self:_reconciledCursor(self._view, origin.cursorNode)
+    if type(outcome.disposition) == "string" then
+      assert(outcome.disposition == self._giveDisposition, "held-item completion preserves its caller")
+    end
+    if outcome.kind == "needs_confirmation" then
+      assert(type(outcome.message) == "table", "replacement questions carry generated message data")
+      self:_showMessage(outcome.message, "give_question")
+      return
+    end
+    if type(outcome.message) == "table" then
+      self:_showMessage(outcome.message, "give_result")
+      return
+    end
+    self:_finishGive()
+    return
+  end
   if outcome.kind == "no_op" then
     self:_restoreOrigin(origin)
+    return
+  end
+  if type(outcome.message) == "table" then
+    self._cursorNode = origin.cursorNode
+    self:_showMessage(outcome.message, "browse")
     return
   end
   if type(outcome.text) == "string" and outcome.text ~= "" then
@@ -1644,11 +2033,11 @@ end
 
 -- The one-shot result contract: nil until a terminal event, then exactly
 -- one semantic record.
----@return { kind: "closed"|"selected"|"cancelled", slot?: integer }?
+---@return { kind: "closed"|"selected"|"cancelled"|"give_complete", slot?: integer }?
 function PartyScreenController:takeResult()
   local result = self._result
   self._result = nil
-  if result ~= nil then
+  if result ~= nil and result.kind ~= "give_complete" then
     self:_transition("closed")
   end
   return result

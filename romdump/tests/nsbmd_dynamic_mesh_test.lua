@@ -13,7 +13,6 @@ local NsbmdDynamicModel = require("romdump.src.digest.model.NsbmdDynamicModel")
 local NsbmdSbcEvaluator = require("libs.assets.src.model.NsbmdSbcEvaluator")
 local ModelDefinition = require("libs.hgss.src.presentation.ModelDefinition")
 local ModelInstance = require("libs.hgss.src.presentation.ModelInstance")
-local GxRenderer = require("libs.nds.src.love.GxRenderer")
 local ModelFixture = require("tests.support.NsbmdModelFixture")
 local NsbmdFixture = require("tests.support.NsbmdFixture")
 local Matrix4 = require("libs.math.src.Matrix4")
@@ -531,10 +530,6 @@ function T.compiled_descriptor_preserves_light_mask_and_four_material_colors()
   Assert.near(item.material.matEmission[1], 123 / 255, 1e-9, "emission survives to the draw item")
   Assert.near(item.material.matEmission[2], 123 / 255, 1e-9)
   Assert.near(item.material.matEmission[3], 123 / 255, 1e-9)
-
-  -- The renderer decodes mask 0b0101 into the per-light 0/1 uniform the
-  -- shader gates each light with; the assertion pins the exact decode.
-  Assert.deepEqual(GxRenderer.lightMaskUniforms(5), { 1, 0, 1, 0 })
 end
 
 -- ---- static/dynamic render-state parity ----

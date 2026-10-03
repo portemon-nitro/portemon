@@ -40,6 +40,10 @@ local function coverage(name, descriptors, destinationMapId)
     Assert.isFalse(self.released, self.name .. " was used after release")
     return self.footprint
   end
+  function owner:prefetchDescriptorsView()
+    Assert.isFalse(self.released, self.name .. " was used after release")
+    return self.footprint
+  end
   function owner:mapHeaderAt()
     Assert.isFalse(self.released, self.name .. " was used after release")
     return self.destinationMapId
@@ -56,6 +60,10 @@ local function coverage(name, descriptors, destinationMapId)
     Assert.isFalse(self.released, self.name .. " was used after release")
     self.updates = self.updates + 1
     return 0
+  end
+  function owner:hasPrefetchWork()
+    Assert.isFalse(self.released, self.name .. " was used after release")
+    return false
   end
   function owner:status()
     return {

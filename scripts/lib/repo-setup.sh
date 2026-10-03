@@ -16,4 +16,4 @@ else
 fi
 
 git config --local core.hooksPath scripts/hooks
-echo "core.hooksPath -> scripts/hooks (pre-commit checks staged repository invariants and runs full lint)"
+echo "core.hooksPath -> scripts/hooks (pre-commit runs full lint over worktree and staged index)"

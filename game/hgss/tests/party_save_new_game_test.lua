@@ -36,7 +36,7 @@ local function candidate(catalog, seed)
 end
 
 function T.new_game_schema_requires_the_mons_bucket()
-  Assert.equal(GameSave.SCHEMA, "g4-game-save-v4", "the global save schema carries the mons bucket")
+  Assert.equal(GameSave.SCHEMA, "g4-game-save-v5", "the global save schema carries the mart bucket")
 end
 
 function T.unpublished_candidate_carries_empty_validated_mons_state()

@@ -40,7 +40,7 @@ local EvidenceArchive = require("romdump.src.appdiscovery.EvidenceArchive")
 
 ---@class AppDiscovery.Summary
 ---@field versionId string
----@field overlayId integer
+---@field target { kind: string, overlayId: integer?, templateAddress: integer? }
 ---@field entrypointCandidateCount integer
 ---@field functionCount integer
 ---@field resourceFileCount integer
@@ -57,18 +57,17 @@ local EvidenceArchive = require("romdump.src.appdiscovery.EvidenceArchive")
 local AppDiscovery = {}
 
 ---@param rom AppDiscovery.RomSource
----@param overlayId integer
+---@param target ApplicationAnalyzer.DiscoveryTarget
 ---@param resourceDetails { fileId: integer, memberId: integer }[]|nil
 ---@return AppDiscovery.Collected
-function AppDiscovery.collect(rom, overlayId, resourceDetails)
+function AppDiscovery.collect(rom, target, resourceDetails)
   assert(rom, "AppDiscovery.collect requires an NdsRom")
-  assert(type(overlayId) == "number", "AppDiscovery.collect requires a numeric overlayId")
+  assert(type(target) == "table", "AppDiscovery.collect requires a discovery target record")
   resourceDetails = resourceDetails or {}
 
   local romImage = RomImage.new(rom)
-  local application, applicationDisassembly = ApplicationAnalyzer.analyze(romImage, overlayId)
+  local application, applicationDisassembly, targetImage = ApplicationAnalyzer.analyze(romImage, target)
   local resources = ResourceCatalog.scan(rom, romImage, resourceDetails)
-  local targetImage = romImage:overlay("arm9", overlayId)
 
   local versionInfo = rom:versionInfo()
   return {
@@ -93,8 +92,13 @@ function AppDiscovery.build(collected)
   return EvidenceBundle.build(collected)
 end
 
-local function defaultOutputPath(versionId, overlayId)
-  return "app-evidence-" .. versionId .. "-arm9-overlay-" .. overlayId .. ".zip"
+local function defaultOutputPath(versionId, target)
+  if target.kind == "arm9-main" then
+    assert(type(target.templateAddress) == "number", "main targets require a template address for output naming")
+    return string.format("app-evidence-%s-arm9-main-template-%08X.zip", versionId, target.templateAddress)
+  end
+  assert(type(target.overlayId) == "number", "overlay targets require an overlay id for output naming")
+  return "app-evidence-" .. versionId .. "-arm9-overlay-" .. target.overlayId .. ".zip"
 end
 
 local function writeOutput(path, bytes)
@@ -119,11 +123,11 @@ local function writeOutput(path, bytes)
   end
 end
 
----@param request { romPath: string, overlayId: integer, outputPath: string|nil, resourceDetails: { fileId: integer, memberId: integer }[]|nil }
+---@param request { romPath: string, target: ApplicationAnalyzer.DiscoveryTarget, outputPath: string|nil, resourceDetails: { fileId: integer, memberId: integer }[]|nil }
 ---@return { outputPath: string, summary: AppDiscovery.Summary }|nil, Errors.Error|nil
 function AppDiscovery.runPath(request)
   assert(type(request) == "table", "AppDiscovery.runPath requires a request table")
-  local romPath, overlayId, outputPath = request.romPath, request.overlayId, request.outputPath
+  local romPath, target, outputPath = request.romPath, request.target, request.outputPath
   local resourceDetails = request.resourceDetails or {}
 
   local source, sourceErr = RomSource.fromPath(romPath)
@@ -139,11 +143,11 @@ function AppDiscovery.runPath(request)
     end
     rom = opened
 
-    local collected = AppDiscovery.collect(rom, overlayId, resourceDetails)
+    local collected = AppDiscovery.collect(rom, target, resourceDetails)
     local built = AppDiscovery.build(collected)
     local archiveBytes = EvidenceArchive.encode(built.files)
 
-    local finalOutputPath = outputPath or defaultOutputPath(collected.source.versionId, overlayId)
+    local finalOutputPath = outputPath or defaultOutputPath(collected.source.versionId, target)
     writeOutput(finalOutputPath, archiveBytes)
 
     return { outputPath = finalOutputPath, summary = built.summary }

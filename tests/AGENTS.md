@@ -6,7 +6,10 @@ rules for the repository; exact behavior remains in the test runner and its suit
 ## What tests should protect
 
 - Test externally observable behavior, relationships between values, ownership/lifecycle
-  contracts, and architecture boundaries that are intentionally normative.
+  contracts, and architecture boundaries that are intentionally normative. For source-fidelity
+  work, assert the source invariant: preserve meaningful source layer/primitive distinctions
+  and exact task/state boundaries instead of encoding a flattened implementation model or
+  permissive timing.
 - Do not write change-detector tests that fail because expected-to-change catalogs, counts,
   generated lists, version literals, or equivalent data were updated normally.
 - Do not read production source text to prove a deleted symbol/string stays absent. If a

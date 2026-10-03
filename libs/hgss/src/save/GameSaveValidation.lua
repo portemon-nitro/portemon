@@ -24,6 +24,8 @@ local ItemCatalog = require("libs.items.src.ItemCatalog")
 local BagSave = require("libs.hgss.src.save.BagSave")
 local MonsErrors = require("libs.mons.src.errors")
 local MonsSave = require("libs.mons.src.MonsSave")
+local MartCache = require("libs.assets.src.MartCache")
+local MartSave = require("libs.hgss.src.save.MartSave")
 
 ---@class GameSaveValidation
 ---@field contexts table<string, table<string, unknown>>
@@ -64,6 +66,7 @@ local function contextForCache(cacheFs, overrideFs, versionId)
   -- and later Bag validation reuses the same version context.
   local monRoot = MonCache.loadCatalog(cacheFs)
   local itemCatalog = ItemCatalog.new(ItemCache.loadCatalog(cacheFs))
+  local martCatalog = MartCache.loadCatalog(cacheFs)
   local monCatalog = MonCatalog.new(monRoot, itemCatalog)
   local monLanguage = monRoot.version.language
   assert(
@@ -82,6 +85,7 @@ local function contextForCache(cacheFs, overrideFs, versionId)
     scriptCompatibility = FieldScriptCompatibility.new({ cacheFs = cacheFs, overrideFs = overrideFs }),
     monCatalog = monCatalog,
     itemCatalog = itemCatalog,
+    martCatalog = martCatalog,
   }
 end
 
@@ -145,17 +149,26 @@ function GameSaveValidation:validate(record, context)
     -- world/RNG data preserved); an incompatible active graph is rejected
     -- with the save bytes untouched, never cleared or rewritten.
     local effective = record
-    if type(record) == "table" and record.schema == "g4-game-save-v3" then
+    if type(record) == "table" and (record.schema == "g4-game-save-v3" or record.schema == "g4-game-save-v4") then
+      local schema = record.schema
       local options = selected.scriptCompatibility:validationOptions()
       if not ScriptSave.isQuiescent(record.scripts) then
         return nil,
           Errors.new(
             GameSaveErrors.GAME_SAVE_SCHEMA_UNSUPPORTED,
-            "v3 save carries an active script graph that cannot migrate to v4",
-            { schema = record.schema }
+            "historical save carries an active script graph that cannot migrate",
+            { schema = schema }
           )
       end
-      effective = GameSave.migrateV3(record)
+      local oldRecord = schema == "g4-game-save-v3" and GameSave.migrateV3(record) or record
+      if schema == "g4-game-save-v3" then
+        -- Preserve the existing v3 -> v4 script compatibility boundary.
+        oldRecord.scripts = rebindScripts(record.scripts, options)
+        oldRecord = GameSave.migrateV4(oldRecord)
+      else
+        oldRecord = GameSave.migrateV4(oldRecord)
+      end
+      effective = oldRecord
       effective.scripts = rebindScripts(record.scripts, options)
     end
     local function playerDataValidate(value)
@@ -209,6 +222,15 @@ function GameSaveValidation:validate(record, context)
       assert(itemCatalog ~= nil, "bag validation requires an item catalog")
       return BagSave.validate(value, itemCatalog)
     end
+    local function martValidate(value)
+      local martCatalog = selected.martCatalog
+      if martCatalog == nil then
+        Errors.raise(GameSaveErrors.GAME_SAVE_BUCKET_INVALID, "mart validation requires a generated mart catalog", {
+          bucket = "mart",
+        })
+      end
+      return MartSave.validate(value, martCatalog)
+    end
     -- The single application owner of travel validation: the runtime
     -- travel state canonicalizes the record into a copied value record.
     -- Malformed current data fails closed here and is never repaired as
@@ -233,6 +255,7 @@ function GameSaveValidation:validate(record, context)
       audioValidate = audioValidate,
       monsValidate = monsValidate,
       bagValidate = bagValidate,
+      martValidate = martValidate,
       fieldTravelValidate = fieldTravelValidate,
     })
   end)

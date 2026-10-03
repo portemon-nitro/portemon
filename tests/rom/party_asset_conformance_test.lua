@@ -79,7 +79,7 @@ function T.every_selected_member_is_attributable_and_frames_resolve(romFs, versi
     end
   end
   local manifest = bundle.manifest
-  Assert.equal(manifest.schema, "g4-party-presentation-v3")
+  Assert.equal(manifest.schema, "g4-party-presentation-v6")
   local referenced = PartyCache.referencedPaths(manifest)
   Assert.isTrue(#referenced > 0, "the manifest references realized images")
   for _, path in ipairs(referenced) do
@@ -128,7 +128,7 @@ function T.status_visuals_match_the_semantic_source_sequences(romFs, versionId)
       sequence,
       1,
       { role = "party-status-" .. mapping.name, frame = 0 },
-      2
+      0
     )
     local width, height, rgba = PngReader.rgba(assert(bundle.assets[visual.image], mapping.name .. " image resolves"))
     Assert.equal(width, 24, mapping.name .. " generated image width")
@@ -142,6 +142,56 @@ function T.status_visuals_match_the_semantic_source_sequences(romFs, versionId)
   for _, mapping in ipairs(expected) do
     Assert.isTrue(referenced[visuals[mapping.name].image], mapping.name .. " image participates in cache readiness")
   end
+end
+
+function T.held_item_marker_pixels_use_their_resource_palette(romFs, versionId)
+  local PartySources = require("romdump.src.config.PartySources")
+  local bundle = bundleFor(romFs, versionId)
+  local archive = assert(romFs:openNarc(PartySources.archive.symbol), "the party archive resolves")
+  local function decode(kind, memberId, role)
+    local bytes = assert(archive:readMember(memberId), role .. " member resolves")
+    if string.byte(bytes, 1) == 0x10 then
+      bytes = assert(Lz10.decode(bytes), role .. " member decompresses")
+    end
+    return assert(G2dDecoder[kind](bytes, { label = "party " .. role }), role .. " decodes")
+  end
+  local char = decode("decodeChar", 20, "held marker character")
+  local palette = decode("decodePalette", 21, "held marker palette")
+  local cell = decode("decodeCell", 19, "held marker cell")
+  local animation = decode("decodeAnimation", 18, "held marker animation")
+  local source = G2dRasterizer.renderAnimationFrame(
+    char,
+    { colors = palette.colors },
+    cell,
+    animation.anims[2],
+    1,
+    { role = "party-held-item", frame = 0 },
+    0
+  )
+  local held = assert(bundle.manifest.visuals.held, "held marker sequences publish")
+  local itemSequence = assert(held.sequences[2], "the held-item sequence resolves")
+  local frame = assert(itemSequence.frames[1], "the held-item frame resolves")
+  local width, height, pixels = PngReader.rgba(assert(bundle.assets[frame.image], "the held-item pixels resolve"))
+  Assert.equal(width, source.width, "the held-item frame keeps source width")
+  Assert.equal(height, source.height, "the held-item frame keeps source height")
+  Assert.equal(pixels, source.pixels, "held-item pixels use the palette local to their resource")
+  local hasOpaque = false
+  local hasSourceColor = false
+  for offset = 1, #pixels, 4 do
+    local alpha = string.byte(pixels, offset + 3)
+    if alpha ~= 0 then
+      hasOpaque = true
+      if
+        string.byte(pixels, offset) ~= 0
+        or string.byte(pixels, offset + 1) ~= 0
+        or string.byte(pixels, offset + 2) ~= 0
+      then
+        hasSourceColor = true
+      end
+    end
+  end
+  Assert.isTrue(hasOpaque, "the held-item marker has opaque pixels")
+  Assert.isTrue(hasSourceColor, "the held-item marker retains its non-black source color")
 end
 
 function T.panel_palette_states_are_compiled_as_source_images(romFs, versionId)
@@ -455,11 +505,18 @@ function T.panel_text_roles_resolve_from_the_source_window_palette(romFs, versio
   for _, name in ipairs({ "ordinary", "male", "female" }) do
     local role = roles[name]
     Assert.notNil(role, "the " .. name .. " text role resolves")
+    for _, position in ipairs({ "foreground", "shadow", "background" }) do
+      local record = assert(role[position], "the " .. name .. " " .. position .. " resolves")
+      Assert.isTrue(
+        sourceColors[string.char(record.r, record.g, record.b, 255)],
+        "the " .. name .. " " .. position .. " keeps its source window palette color"
+      )
+    end
+    Assert.equal(role.foreground.a, 255, "the " .. name .. " foreground stays opaque")
+    Assert.equal(role.shadow.a, 255, "the " .. name .. " shadow stays opaque")
+    Assert.equal(role.background.a, 0, "the " .. name .. " background stays transparent over panel chrome")
     local colors = collectRgba(role)
     Assert.isTrue(next(colors) ~= nil, "the " .. name .. " role carries resolved colors")
-    for pixel in pairs(colors) do
-      Assert.isTrue(sourceColors[pixel], "the " .. name .. " role derives from the source window palette")
-    end
     roleSets[name] = colors
   end
   local function distinct(first, second)
@@ -627,15 +684,18 @@ function T.menu_layouts_cover_every_supported_entry_count(romFs, versionId)
     (menu.subcontext[6] or menu.subcontext["6"]) == nil,
     "unsupported subcontext counts have no fallback layout"
   )
-  Assert.notNil(menu.textPalette, "context buttons publish their text roles")
-  Assert.notNil(menu.fillPalette, "context buttons publish their fill roles")
-  for _, palette in ipairs({ menu.textPalette, menu.fillPalette }) do
-    local colors = collectRgba(palette)
-    local paletteDistinct = 0
-    for _ in pairs(colors) do
-      paletteDistinct = paletteDistinct + 1
+  local roles = menu.textRoles
+  Assert.notNil(roles, "context buttons publish their semantic text roles")
+  for _, name in ipairs({ "command", "field", "cancel" }) do
+    local role = roles[name]
+    Assert.notNil(role, "the " .. name .. " text role resolves")
+    for _, state in ipairs({ "raised", "depressed" }) do
+      local triple = role[state]
+      Assert.notNil(triple, "the " .. name .. " " .. state .. " triple resolves")
+      Assert.notNil(triple.foreground, "the " .. name .. " " .. state .. " foreground resolves")
+      Assert.notNil(triple.shadow, "the " .. name .. " " .. state .. " shadow resolves")
+      Assert.notNil(triple.background, "the " .. name .. " " .. state .. " background resolves")
     end
-    Assert.isTrue(paletteDistinct >= 2, "button palettes distinguish raised from depressed")
   end
   assertNoSourceKeys(menu, "contextMenu")
 end
@@ -668,23 +728,12 @@ function T.context_frames_use_source_border_pixels(romFs, versionId)
       Assert.equal(width, size.width, where .. " image width")
       Assert.equal(height, size.height, where .. " image height")
       local opaque = 0
-      for x = 0, width - 1 do
-        if string.byte(pixel(rgba, width, x, 0), 4) ~= 0 then
-          opaque = opaque + 1
-        end
-        if string.byte(pixel(rgba, width, x, height - 1), 4) ~= 0 then
+      for offset = 1, #rgba, 4 do
+        if string.byte(rgba, offset + 3) ~= 0 then
           opaque = opaque + 1
         end
       end
-      for y = 0, height - 1 do
-        if string.byte(pixel(rgba, width, 0, y), 4) ~= 0 then
-          opaque = opaque + 1
-        end
-        if string.byte(pixel(rgba, width, width - 1, y), 4) ~= 0 then
-          opaque = opaque + 1
-        end
-      end
-      Assert.isTrue(opaque > 0, where .. " keeps an opaque border")
+      Assert.isTrue(opaque > 0, where .. " keeps opaque border content")
       local center = pixel(rgba, width, math.floor(width / 2), math.floor(height / 2))
       Assert.equal(string.byte(center, 4), 0, where .. " keeps a transparent interior")
       local distinct = 0
@@ -720,6 +769,197 @@ function T.context_frames_use_source_border_pixels(romFs, versionId)
   for _, path in ipairs(seenPaths) do
     Assert.isTrue(referenced[path], path .. " participates in cache readiness")
   end
+end
+
+-- The compiled context frames preserve source transparency exactly: every
+-- pixel whose source tile value is palette index zero stays transparent,
+-- so no border extrusion may fill the source margins with content pixels.
+function T.context_frames_keep_source_transparent_margins(romFs, versionId)
+  local PartySources = require("romdump.src.config.PartySources")
+  local bundle = bundleFor(romFs, versionId)
+  local archive = assert(romFs:openNarc(PartySources.archive.symbol), "the party archive resolves")
+  local charData =
+    decodeArchiveMember(archive, PartySources.contextFrames.member, "decodeChar", "context frame tiles")
+  local offsets = PartySources.contextFrames.tileOffsets
+  local bases = PartySources.contextFrames.tileBases
+  local sizes = {
+    standard = { width = 128, height = 32 },
+    cancel = { width = 56, height = 40 },
+  }
+  for _, shape in ipairs({ "standard", "cancel" }) do
+    local size = sizes[shape]
+    local group = assert(bundle.manifest.contextMenu.frames[shape], "the " .. shape .. " frame group resolves")
+    for _, state in ipairs({ "raised", "selected", "pressed" }) do
+      local where = shape .. " " .. state
+      local tileIds = {}
+      for position, offset in ipairs(offsets) do
+        tileIds[position] = bases[state] + offset
+      end
+      local tilesWide, tilesHigh = size.width / 8, size.height / 8
+      local function sourceValue(x, y)
+        local tx, ty = math.floor(x / 8), math.floor(y / 8)
+        local tile = nil
+        if ty == 0 and tx == 0 then
+          tile = tileIds[1]
+        elseif ty == 0 and tx == tilesWide - 1 then
+          tile = tileIds[2]
+        elseif ty == tilesHigh - 1 and tx == 0 then
+          tile = tileIds[3]
+        elseif ty == tilesHigh - 1 and tx == tilesWide - 1 then
+          tile = tileIds[4]
+        elseif tx == 0 then
+          tile = tileIds[5]
+        elseif tx == tilesWide - 1 then
+          tile = tileIds[6]
+        elseif ty == 0 then
+          tile = tileIds[7]
+        elseif ty == tilesHigh - 1 then
+          tile = tileIds[8]
+        end
+        if tile == nil then
+          return 0
+        end
+        local lx, ly = x - tx * 8, y - ty * 8
+        local byte = string.byte(charData.tiles, tile * 32 + ly * 4 + math.floor(lx / 2) + 1)
+        if lx % 2 == 0 then
+          return byte % 16
+        end
+        return math.floor(byte / 16)
+      end
+      local visual = assert(group[state], "the " .. where .. " frame resolves")
+      local width, height, rgba =
+        PngReader.rgba(assetBytes(assert(bundle.assets[visual.image], where .. " image resolves")))
+      Assert.equal(width, size.width, where .. " image width")
+      Assert.equal(height, size.height, where .. " image height")
+      local opaque, sample = 0, nil
+      for y = 0, height - 1 do
+        for x = 0, width - 1 do
+          local alpha = string.byte(rgba, (y * width + x) * 4 + 4)
+          if sourceValue(x, y) == 0 and alpha ~= 0 then
+            opaque = opaque + 1
+            if sample == nil then
+              sample = "(" .. x .. "," .. y .. ") alpha=" .. alpha
+            end
+          end
+        end
+      end
+      Assert.equal(opaque, 0, where .. " keeps source index-zero pixels transparent"
+        .. (sample == nil and "" or ", first opaque margin pixel " .. sample))
+    end
+  end
+end
+
+-- Context-button text roles resolve the complete button-window palette
+-- triples: command and cancel entries share the bright ink pair while
+-- field entries keep their own ink, each in raised and depressed states.
+function T.context_text_roles_preserve_the_button_window_slots(romFs, versionId)
+  local PartySources = require("romdump.src.config.PartySources")
+  local bundle = bundleFor(romFs, versionId)
+  local archive = assert(romFs:openNarc(PartySources.archive.symbol), "the party archive resolves")
+  local palette = decodeArchiveMember(archive, 16, "decodePalette", "party window palette")
+  local bank = {}
+  for slot = 0, 15 do
+    bank[slot] = palette.colors[PartySources.contextRoles.bank * 16 + slot + 1]
+  end
+  local expectedSlots = {
+    command = { raised = { 14, 15, 4 }, depressed = { 14, 15, 11 } },
+    field = { raised = { 9, 10, 4 }, depressed = { 9, 10, 11 } },
+    cancel = { raised = { 14, 15, 4 }, depressed = { 14, 15, 11 } },
+  }
+  local roles = bundle.manifest.contextMenu.textRoles
+  Assert.notNil(roles, "context buttons publish their semantic text roles")
+  for _, name in ipairs({ "command", "field", "cancel" }) do
+    local role = assert(roles[name], "the " .. name .. " text role resolves")
+    for _, state in ipairs({ "raised", "depressed" }) do
+      local triple = expectedSlots[name][state]
+      local function rgb(slot)
+        local color = bank[slot]
+        return { r = color.r, g = color.g, b = color.b, a = 255 }
+      end
+      Assert.deepEqual(role[state], {
+        foreground = rgb(triple[1]),
+        shadow = rgb(triple[2]),
+        background = rgb(triple[3]),
+      }, name .. " " .. state .. " text role")
+    end
+  end
+  local fieldInk = roles.field.raised.foreground
+  local commandInk = roles.command.raised.foreground
+  Assert.isTrue(
+    fieldInk.r ~= commandInk.r or fieldInk.g ~= commandInk.g or fieldInk.b ~= commandInk.b,
+    "field entries keep their own foreground ink"
+  )
+end
+
+-- The generated panels expose independently compiled switch-selection
+-- chrome and the empty-take message arrives as decoded source segments,
+-- so consumers never invent either presentation fact.
+function T.switch_selection_chrome_and_empty_take_template_come_from_source(romFs, versionId)
+  local bundle = bundleFor(romFs, versionId)
+  local manifest = bundle.manifest
+  local referenced = {}
+  for _, path in ipairs(PartyCache.referencedPaths(manifest)) do
+    referenced[path] = true
+  end
+  Assert.equal(#manifest.panels, 6, "six slot panels resolve")
+  for slot, panel in ipairs(manifest.panels) do
+    local where = "panel " .. slot .. " switch-selection"
+    local visual = panel.chrome.switchSelection
+    Assert.notNil(visual, where .. " chrome resolves")
+    Assert.equal(visual.width, 128, where .. " width")
+    Assert.equal(visual.height, 48, where .. " height")
+    local raw = assetBytes(assert(bundle.assets[visual.image], where .. " image resolves"))
+    local normalRaw = assetBytes(assert(bundle.assets[panel.chrome.normal.image], "panel " .. slot .. " normal resolves"))
+    Assert.isFalse(raw == normalRaw, where .. " is independently compiled")
+    Assert.isTrue(referenced[visual.image], where .. " participates in cache readiness")
+  end
+  local template = manifest.text.templates.takeNoItem
+  Assert.notNil(template, "the empty-take source template resolves")
+  local FieldMessageText = require("libs.assets.src.field.FieldMessageText")
+  local messageArchive = assert(romFs:openNarc("NARC_msgdata_msg"), "the message archive resolves")
+  local bankBytes = assert(messageArchive:readMember(300), "message bank 300 resolves")
+  local bank = assert(FieldMessageBank.decode(bankBytes, { label = "party-message-bank-300" }))
+  local message = bank.messages[82 + 1]
+  Assert.notNil(message, "bank 300 carries the empty-take message")
+  local tokens =
+    assert(FieldMessageTokenizer.tokenize(message.raw, charmap, { bankId = 300, messageId = 82 }))
+  local expected, pending = {}, {}
+  local function flush()
+    if #pending > 0 then
+      expected[#expected + 1] = { kind = "text", value = table.concat(pending) }
+      pending = {}
+    end
+  end
+  for _, token in ipairs(tokens) do
+    if token.kind == "eos" then
+      break
+    elseif token.kind == "glyph" then
+      pending[#pending + 1] = token.text
+    elseif token.kind == "line_break" then
+      flush()
+      expected[#expected + 1] = { kind = "lineBreak" }
+    elseif token.kind == "prompt_break" then
+      flush()
+      expected[#expected + 1] = { kind = "lineBreak", flow = "prompt" }
+    elseif token.kind == "page_break" then
+      flush()
+      expected[#expected + 1] = { kind = "lineBreak", flow = "page" }
+    elseif token.kind == "substitution" and token.control == FieldMessageText.STRVAR_1 + 1 then
+      flush()
+      expected[#expected + 1] = { kind = "name" }
+    else
+      error("the empty-take message carries an unexpected token " .. tostring(token.kind), 0)
+    end
+  end
+  flush()
+  Assert.isTrue(#expected > 0, "the empty-take message carries display segments")
+  Assert.deepEqual(template.segments, expected, "empty-take template segments")
+end
+
+function T.generated_party_manifest_declares_the_full_bag_schema(romFs, versionId)
+  local bundle = bundleFor(romFs, versionId)
+  Assert.equal(bundle.manifest.schema, "g4-party-presentation-v6")
+  Assert.notNil(bundle.manifest.text.templates.bagFull, "the full-bag template resolves")
 end
 
 local suite = RomSuite.fromFacts(T)

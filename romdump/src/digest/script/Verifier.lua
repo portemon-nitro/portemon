@@ -65,6 +65,7 @@ local BLOCKING_OPS = {
   wait_signpost_action = true,
   trainer_tips_print = true,
   wait_signpost = true,
+  mart_open = true,
   follower_wait = true,
 }
 
@@ -121,6 +122,14 @@ local RETURN_OPS = { [27] = true }
 ---@param node unknown
 ---@return boolean
 local function operandMatches(raw, node)
+  if
+    type(node) == "table"
+    and node.value == "var"
+    and type(raw) == "number"
+    and ((raw >= 0x4000 and raw < 0x4400) or (raw >= 0x8000 and raw < 0x8100))
+  then
+    return node.id == raw
+  end
   if type(node) == "table" and type(raw) == "string" then
     if node.value == "var" then
       return node.id == raw
@@ -135,6 +144,28 @@ end
 -- The per-opcode operand-equivalence checkers (item 6): `(ins, step)` ->
 -- problem message or nil. Covering the high-value operand-carrying
 -- instructions; the rest are checked by the generic coverage rule.
+local function checkMartLaunch(ins, step)
+  local kindByOpcode = { [275] = "standard", [276] = "special", [277] = "decoration", [278] = "seal" }
+  local kind = kindByOpcode[ins.opcode]
+  if kind == nil or step.kind ~= kind then
+    return "mart launch kind changed by translation"
+  end
+  if kind == "standard" then
+    if step.selector ~= nil then
+      return "MartBuy's unused selector must not affect stock"
+    end
+  elseif not operandMatches(ins.operands[1].raw, step.selector) then
+    return "mart selector changed by translation"
+  end
+end
+
+local function checkMartQuery(ins, step)
+  local kind = ins.opcode == 834 and "athlete_available" or "card_prefix"
+  if step.op ~= "mart_query" or step.kind ~= kind or not operandMatches(ins.operands[1].raw, step.result) then
+    return "mart query output variable changed by translation"
+  end
+end
+
 local function checkWaitFrames(ins, step)
   if step.op == "unsupported" then
     return nil
@@ -338,6 +369,12 @@ local CHECKERS = {
   [57] = checkSetSignpostAction,
   [59] = checkTrainerTips,
   [60] = checkWaitSignpost,
+  [275] = checkMartLaunch,
+  [276] = checkMartLaunch,
+  [277] = checkMartLaunch,
+  [278] = checkMartLaunch,
+  [834] = checkMartQuery,
+  [835] = checkMartQuery,
 }
 
 -- Walk the lowered items collecting the covering node per source offset.
@@ -394,8 +431,10 @@ end
 local function verifyCoverage(context)
   context.omissionsByOffset = {}
   for _, omission in ipairs(context.omissions or {}) do
-    context.omissionsByOffset[omission.offset] = true
-    if omission.opcode ~= 0 and omission.opcode ~= 1 then
+    context.omissionsByOffset[omission.offset] = omission
+    local validNop = omission.opcode == 0 or omission.opcode == 1
+    local validDefaultReturn = omission.opcode == 815 and omission.operand == 0
+    if not validNop and not validDefaultReturn then
       addProblem(
         context,
         "omission recorded for a non-erasure opcode",
@@ -423,6 +462,13 @@ local function verifyCoverage(context)
         context.unsupportedNodes[#context.unsupportedNodes + 1] = node
       end
     elseif context.omissionsByOffset[ins.offset] then
+      local omission = context.omissionsByOffset[ins.offset]
+      if omission.opcode ~= ins.opcode or (ins.opcode == 815 and ins.operands[1].raw ~= 0) then
+        addProblem(context, "operand-constrained omission does not match source instruction", {
+          offset = ins.offset,
+          opcode = ins.opcode,
+        })
+      end
       if isReachable then
         context.reachableOmitted = context.reachableOmitted + 1
       end

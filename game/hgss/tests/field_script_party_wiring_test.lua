@@ -42,7 +42,7 @@ local function stubRuntime()
   }
 end
 
-local function stubOptions(partySelection)
+local function stubOptions(partySelection, mart)
   return {
     cacheFs = {},
     layoutMessage = function(message)
@@ -53,7 +53,33 @@ local function stubOptions(partySelection)
     loadedGame = nil,
     mons = {},
     partySelection = partySelection,
+    mart = mart,
   }
+end
+
+function T.compose_threads_the_script_mart_host()
+  local seen = {}
+  local double = {
+    new = function(opts)
+      seen.opts = opts
+      return { scheduler = {}, worldState = {} }
+    end,
+  }
+  local savedTarget = package.loaded[TARGET_MODULE]
+  local savedCompose = package.loaded[COMPOSE_MODULE]
+  package.loaded[TARGET_MODULE] = double
+  package.loaded[COMPOSE_MODULE] = nil
+  local ok, err = pcall(function()
+    local compose = require(COMPOSE_MODULE).compose
+    local host = { scriptMartHost = true }
+    compose(stubRuntime(), stubOptions(nil, host))
+    Assert.equal(seen.opts and seen.opts.mart, host, "the scheduler receives the composed mart host")
+  end)
+  package.loaded[TARGET_MODULE] = savedTarget
+  package.loaded[COMPOSE_MODULE] = savedCompose
+  if not ok then
+    error(err, 0)
+  end
 end
 
 function T.compose_threads_the_party_selection_host()

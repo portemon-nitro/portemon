@@ -7,6 +7,7 @@ local Assert = require("tests.support.Assert")
 local Errors = require("libs.errors.src.Errors")
 local GameSave = require("libs.hgss.src.save.GameSave")
 local BagSave = require("libs.hgss.src.save.BagSave")
+local MartSave = require("libs.hgss.src.save.MartSave")
 
 local T = {}
 
@@ -42,9 +43,17 @@ end
 
 local function v4record(overrides)
   local value = v3record(overrides)
-  value.schema = GameSave.SCHEMA
+  value.schema = "g4-game-save-v4"
   value.playerData.profile.badges = 0
   value.fieldTravel = { lastHealSpawn = "SPAWN_NEW_BARK" }
+  return value
+end
+
+local function v5record(overrides)
+  local value = v4record(overrides)
+  value.schema = GameSave.SCHEMA
+  value.playerData.profile.nationalDex = false
+  value.mart = MartSave.empty()
   return value
 end
 
@@ -81,9 +90,9 @@ function T.migration_preserves_party_bag_leaves_world_and_rng()
 end
 
 function T.current_validation_requires_travel_and_rejects_old_schemas()
-  Assert.notNil(GameSave.validate(v4record()))
+  Assert.notNil(GameSave.validate(v5record()))
   returnsCode("GAME_SAVE_BUCKET_INVALID", function()
-    local value = v4record()
+    local value = v5record()
     value.fieldTravel = nil
     return GameSave.validate(value)
   end)
@@ -93,7 +102,7 @@ function T.current_validation_requires_travel_and_rejects_old_schemas()
 end
 
 function T.migrated_records_validate_with_a_travel_validator()
-  local migrated = GameSave.migrateV3(v3record())
+  local migrated = GameSave.migrateV4(GameSave.migrateV3(v3record()))
   local opts = {
     fieldTravelValidate = function(value)
       Assert.deepEqual(value, { lastHealSpawn = "SPAWN_NEW_BARK" })
@@ -102,6 +111,51 @@ function T.migrated_records_validate_with_a_travel_validator()
   }
   local valid = assert(GameSave.validate(migrated, opts))
   Assert.deepEqual(valid.fieldTravel, { lastHealSpawn = "SPAWN_NEW_BARK" })
+end
+
+function T.v4_migration_adds_only_the_declared_state_and_does_not_mutate_input()
+  local input = v4record({
+    world = { flags = { [10] = true }, variables = {}, objects = {}, rng = { seed = 17 } },
+    mons = { fingerprint = "mon-fp", members = { "preserved" } },
+  })
+  input.bag.pockets.medicine[1] = { item = "POTION", quantity = 4 }
+  input.bag.registered = { "BICYCLE" }
+  local beforeWorld, beforeMons, beforeBag = input.world, input.mons, input.bag
+
+  local migrated = GameSave.migrateV4(input)
+  Assert.equal(migrated.schema, "g4-game-save-v5")
+  Assert.equal(migrated.playerData.profile.nationalDex, false)
+  Assert.deepEqual(migrated.mart, MartSave.empty())
+  Assert.deepEqual(migrated.world, beforeWorld)
+  Assert.deepEqual(migrated.mons, beforeMons)
+  Assert.deepEqual(migrated.bag, beforeBag)
+  Assert.equal(input.schema, "g4-game-save-v4")
+  Assert.isNil(input.playerData.profile.nationalDex)
+  Assert.isNil(input.mart)
+end
+
+function T.v3_migrates_through_literal_v4_before_v5_defaults_are_added()
+  local first = GameSave.migrateV3(v3record())
+  Assert.equal(first.schema, "g4-game-save-v4", "v3 migration remains an explicit intermediate step")
+  local current = GameSave.migrateV4(first)
+  Assert.equal(current.schema, GameSave.SCHEMA)
+  Assert.equal(current.playerData.profile.nationalDex, false)
+  Assert.deepEqual(current.mart, MartSave.empty())
+end
+
+function T.malformed_current_economy_and_v4_input_are_not_repaired_in_place()
+  local malformed = v5record()
+  malformed.mart.dailyPurchasedMask = 4096
+  returnsCode("GAME_SAVE_BUCKET_INVALID", function()
+    return GameSave.validate(malformed, { martValidate = function(value)
+      local canonical, err = MartSave.validate(value, {
+        cards = {}, apricorns = {}, seals = {},
+      })
+      return canonical, err
+    end })
+  end)
+  Assert.equal(malformed.schema, GameSave.SCHEMA)
+  Assert.equal(malformed.mart.dailyPurchasedMask, 4096)
 end
 
 return { tests = T }

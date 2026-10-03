@@ -134,7 +134,7 @@ local function selectGameWithMilestone(spies)
     local host = selected:gameHost()
     host.requestMilestone("bootstrap", "required")
     for _ = 1, 20 do
-      selected:update()
+      service:update()
     end
     selected:dispose()
   end)

@@ -20,6 +20,22 @@ local FOCUS_COUNT = FieldMessageText.FOCUS_INDICATOR_COUNT
 local function validDef(fontId)
   fontId = fontId or 0
   local baseHeight = 16
+  local focusFrames = {}
+  for field = 0, FOCUS_COUNT - 1 do
+    local layers = {}
+    for index, slot in ipairs({ 2, 5, 8, 11 }) do
+      layers[index] = {
+        paletteSlot = slot,
+        rect = {
+          x = (index - 1) * FieldFontCache.FOCUS_FRAME_WIDTH,
+          y = field * FieldFontCache.FOCUS_FRAME_HEIGHT,
+          width = FieldFontCache.FOCUS_FRAME_WIDTH,
+          height = FieldFontCache.FOCUS_FRAME_HEIGHT,
+        },
+      }
+    end
+    focusFrames[field] = { layers = layers }
+  end
   return {
     schema = FieldFontCache.SCHEMA,
     fontId = fontId,
@@ -43,41 +59,7 @@ local function validDef(fontId)
       count = FOCUS_COUNT,
       width = 24,
       height = 32,
-      sourcePaletteSlots = { 11, 12, 13, 14 },
-      frames = {
-        [0] = {
-          layers = {
-            [11] = { x = 0, y = 0, width = 24, height = 32 },
-            [12] = { x = 24, y = 0, width = 24, height = 32 },
-            [13] = { x = 48, y = 0, width = 24, height = 32 },
-            [14] = { x = 72, y = 0, width = 24, height = 32 },
-          },
-        },
-        [1] = {
-          layers = {
-            [11] = { x = 0, y = 32, width = 24, height = 32 },
-            [12] = { x = 24, y = 32, width = 24, height = 32 },
-            [13] = { x = 48, y = 32, width = 24, height = 32 },
-            [14] = { x = 72, y = 32, width = 24, height = 32 },
-          },
-        },
-        [2] = {
-          layers = {
-            [11] = { x = 0, y = 64, width = 24, height = 32 },
-            [12] = { x = 24, y = 64, width = 24, height = 32 },
-            [13] = { x = 48, y = 64, width = 24, height = 32 },
-            [14] = { x = 72, y = 64, width = 24, height = 32 },
-          },
-        },
-        [3] = {
-          layers = {
-            [11] = { x = 0, y = 96, width = 24, height = 32 },
-            [12] = { x = 24, y = 96, width = 24, height = 32 },
-            [13] = { x = 48, y = 96, width = 24, height = 32 },
-            [14] = { x = 72, y = 96, width = 24, height = 32 },
-          },
-        },
-      },
+      frames = focusFrames,
     },
     glyphs = {
       [0] = { x = 0, y = 0, w = 16, h = 16, advance = 6, bearingX = 0, bearingY = 0 },
@@ -172,29 +154,31 @@ function T.load_rejects_wrong_focus_count_and_rect_geometry()
   noFrames.focusIndicators.frames = nil
   loadExpectRaised(noFrames, "missing focus frame layers must be rejected")
   local badRect = validDef()
-  badRect.focusIndicators.frames[0].layers[11].width = 23
+  badRect.focusIndicators.frames[0].layers[1].rect.width = 23
   loadExpectRaised(badRect, "a focus rect that is not exactly 24x32 must be rejected")
 end
 
-function T.load_rejects_focus_definitions_without_all_source_layers()
-  local missingSlots = validDef()
-  missingSlots.focusIndicators.sourcePaletteSlots = { 11, 12, 13 }
-  loadExpectRaised(missingSlots, "all four destination palette slots are required")
-
+function T.load_rejects_focus_definitions_without_all_layers()
   local missingLayer = validDef()
-  missingLayer.focusIndicators.sourcePaletteSlots = { 11, 12, 13, 14 }
-  missingLayer.focusIndicators.frames[0].layers = {
-    [11] = { x = 0, y = 0, width = 24, height = 32 },
-    [12] = { x = 24, y = 0, width = 24, height = 32 },
-    [13] = { x = 48, y = 0, width = 24, height = 32 },
-  }
-  loadExpectRaised(missingLayer, "a frame missing source slot 14 must be rejected")
+  missingLayer.focusIndicators.frames[0].layers[4] = nil
+  loadExpectRaised(missingLayer, "a frame missing a layer must be rejected")
+
+  local invalidPaletteSlot = validDef()
+  invalidPaletteSlot.focusIndicators.frames[0].layers[1].paletteSlot = 16
+  loadExpectRaised(invalidPaletteSlot, "a palette slot outside the 16-color range must be rejected")
+
+  local duplicatePaletteSlot = validDef()
+  duplicatePaletteSlot.focusIndicators.frames[0].layers[2].paletteSlot = 2
+  loadExpectRaised(duplicatePaletteSlot, "duplicate palette slots must be rejected")
 end
 
-function T.load_rejects_extra_focus_slots_and_frames()
-  local extraSlot = validDef()
-  extraSlot.focusIndicators.sourcePaletteSlots.extra = 15
-  loadExpectRaised(extraSlot, "an extra source palette slot must be rejected")
+function T.load_rejects_extra_focus_layers_and_frames()
+  local extraLayer = validDef()
+  extraLayer.focusIndicators.frames[0].layers[5] = {
+    paletteSlot = 15,
+    rect = { x = 96, y = 0, width = 24, height = 32 },
+  }
+  loadExpectRaised(extraLayer, "an extra focus layer must be rejected")
 
   local extraFrame = validDef()
   extraFrame.focusIndicators.frames[4] = extraFrame.focusIndicators.frames[3]

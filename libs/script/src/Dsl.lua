@@ -324,6 +324,16 @@ function M.contextChoice(spec)
   return op("context_choice", spec)
 end
 
+function M.mart(spec)
+  assert(type(spec) == "table", "mart spec must be a table")
+  return op("mart_open", spec)
+end
+
+function M.martQuery(spec)
+  assert(type(spec) == "table", "mart query spec must be a table")
+  return op("mart_query", spec)
+end
+
 -- One serializable semantic menu entry. `metadata` is opaque to the core.
 function M.choice(messageRef, choiceValue, opts)
   assert(opts == nil or type(opts) == "table", "choice options must be a table")

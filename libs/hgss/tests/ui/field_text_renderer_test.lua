@@ -16,6 +16,7 @@
 
 local Assert = require("tests.support.Assert")
 local Errors = require("libs.errors.src.Errors")
+local FieldFontCache = require("libs.assets.src.field.FieldFontCache")
 local FieldDialogueFixture = require("tests.support.FieldDialogueFixture")
 local FieldTextRenderer = require("libs.hgss.src.ui.FieldTextRenderer")
 
@@ -167,6 +168,32 @@ function T.focus_indicator_layers_use_the_supplied_window_palette()
         Assert.isTrue(call.color[1] ~= lg.draws[index].color[1], "palette changes recolor the same source layer")
       end
     end
+  end
+  text:release()
+end
+
+function T.focus_indicator_uses_palette_slots_from_the_ordered_asset_layers()
+  local lg = fakeGraphics({ imageSizes = imageSizes() })
+  local cache = FieldDialogueFixture.cacheWithFont()
+  local definition = assert(cache:loadLua(FieldFontCache.defPath(0)))
+  local slots = { 2, 5, 8, 11 }
+  for _, frame in pairs(definition.focusIndicators.frames) do
+    for index, layer in ipairs(frame.layers) do
+      layer.paletteSlot = slots[index]
+    end
+  end
+  cache:writeLua(FieldFontCache.defPath(0), definition)
+  local text = FieldTextRenderer.new({ cacheFs = cache, graphics = lg })
+  local palette = focusPalette()
+
+  text:drawFocusIndicator(0, 200, 152, palette)
+
+  for index, slot in ipairs(slots) do
+    Assert.deepEqual(
+      lg.draws[index].color,
+      { slot / 255, slot * 2 / 255, slot * 3 / 255, 1 },
+      "ordered layer " .. index .. " uses its compiled palette slot"
+    )
   end
   text:release()
 end

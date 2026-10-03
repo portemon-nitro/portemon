@@ -55,7 +55,7 @@ end
 function T.catalogs_reject_malformed_item_records()
   local ItemAssetSchema = schema()
   local variants = {
-    extra_field = { price = 200 },
+    invalid_price = { price = 65536 },
     text_ball = { isBall = "yes" },
     negative_id = { nativeId = -1 },
     past_range_id = { nativeId = 537 },
@@ -73,7 +73,7 @@ function T.catalogs_reject_malformed_item_records()
   end
   -- Nil assignments are not expressible as table patches, so the missing
   -- required fields are dropped explicitly.
-  for _, key in ipairs({ "friendshipBoost", "icon" }) do
+  for _, key in ipairs({ "friendshipBoost", "icon", "price" }) do
     local root = validRoot()
     root.items["ITEM_55"][key] = nil
     Assert.isFalse(ItemAssetSchema.isValidCatalog(root), "missing item field must be rejected: " .. key)
@@ -132,6 +132,12 @@ function T.catalogs_reject_malformed_roots()
   Assert.isFalse(ItemAssetSchema.isValidCatalog(badVersion))
 end
 
+function T.old_v3_catalog_identity_is_rejected()
+  local oldCatalog = validRoot()
+  oldCatalog.schema = "g4-item-catalog-v3"
+  Assert.isFalse(schema().isValidCatalog(oldCatalog), "a catalog without required source prices is stale")
+end
+
 local function validManifest()
   return {
     schema = "g4-item-icons-v1",
@@ -175,7 +181,7 @@ end
 
 function T.catalogs_require_held_item_action_metadata()
   local ItemAssetSchema = schema()
-  Assert.equal(ItemAssetSchema.CATALOG_SCHEMA, "g4-item-catalog-v3")
+  Assert.equal(ItemAssetSchema.CATALOG_SCHEMA, "g4-item-catalog-v4")
   Assert.isTrue(ItemAssetSchema.isValidCatalog(validRoot()))
   for _, key in ipairs({ "isHm", "canHold", "heldFormEffect" }) do
     local root = validRoot()

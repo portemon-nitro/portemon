@@ -816,4 +816,38 @@ function T.plain_end_of_text_completes_without_an_invented_input_wait()
   Assert.isFalse(hostObject:isOpen(), "explicit script closure releases the window")
 end
 
+function T.hold_preserves_the_completed_message_until_script_closure()
+  local hostObject, controller = productionHostWithPages({
+    hostPage({ hostLine({ hostGlyph("A", 1), hostGlyph("B", 2) }) }, "eos"),
+  })
+  openTestMessage(hostObject)
+  local waiting = revealToWait(hostObject, controller)
+  Assert.equal(waiting.state, "WAITING_CLOSE", "the message reaches its printer handoff")
+
+  hostObject:hold()
+
+  Assert.equal(controller:status().state, "WAITING_CLOSE", "hold keeps the completed printer box open")
+  Assert.isTrue(hostObject:isOpen(), "the message remains available to the child UI")
+  hostObject:close(true)
+  Assert.isFalse(hostObject:isOpen(), "script closure releases the held message")
+end
+
+function T.hold_preserves_the_prompt_clear_handoff_until_script_closure()
+  local hostObject, controller = productionHostWithPages({
+    hostPage({ hostLine({ hostGlyph("A", 1), hostGlyph("B", 2) }) }, "prompt"),
+  })
+  openTestMessage(hostObject)
+  local waiting = revealToWait(hostObject, controller)
+  Assert.equal(waiting.state, "WAITING_BOUNDARY", "the message reaches its prompt boundary")
+  hostObject:advance({ pressedAction = true, actionDown = true })
+  Assert.equal(controller:status().state, "CLOSING", "the prompt clear reaches the held handoff")
+
+  hostObject:hold()
+
+  Assert.equal(controller:status().state, "CLOSING", "hold keeps the prompt clear handoff open")
+  Assert.isTrue(hostObject:isOpen(), "the handoff stays modal for the child UI")
+  hostObject:close(true)
+  Assert.isFalse(hostObject:isOpen(), "script closure releases the held prompt")
+end
+
 return { tests = T }

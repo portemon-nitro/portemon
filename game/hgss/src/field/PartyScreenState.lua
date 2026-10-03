@@ -22,7 +22,8 @@ local PartyScreenModel = require("libs.hgss.src.ui.PartyScreenModel")
 ---@field _policy table<string, unknown> the injected action policy
 ---@field _promptShape table<string, unknown> the yes/no prompt shape for confirmations
 ---@field _context string the named party context for this open
----@field _item { key: string, bagRevision: integer }? the pending item for target contexts
+---@field _targetPromptKey ("giveTarget"|"useTarget"|"teachTarget")? the lower prompt for item target contexts
+---@field _item { key: string, bagRevision: integer }? the pending item for give continuation and target contexts
 ---@field _measureDisplay fun(): DisplayMeasurement the live display facts
 ---@field _prepareIcons fun(iconKeys: string[]): boolean, string?
 ---@field _cancelIconPreparation fun()
@@ -30,6 +31,10 @@ local PartyScreenModel = require("libs.hgss.src.ui.PartyScreenModel")
 ---@field _preparationError string?
 ---@field _preparedKeys string?
 ---@field _preparationReleased boolean
+---@field _revealPhase "opening"|"interactive"? the post-preparation lifecycle; nil while icons are not ready
+---@field _revealFirst integer the completed steps of the first-pane leg (0..6)
+---@field _revealSecond integer the completed steps of the second-pane leg (0..6)
+---@field _settleTicks integer gated interactive ticks remaining before input forwards
 ---@field _detailOverlay boolean the wrapper-owned host toggle for the one-display detail overlay; never persisted, never native state
 ---@field _controller PartyScreenController
 ---@field _session ApplicationPresentation the per-open presentation session
@@ -38,7 +43,7 @@ local PartyScreenModel = require("libs.hgss.src.ui.PartyScreenModel")
 local PartyScreenState = {}
 PartyScreenState.__index = PartyScreenState
 
--- The fallback browse policy when a screen injects no action policy: only locally completable branches stay reachable. Switch reorders through the delayed swap; Quit closes. Summary, held-item, mail, and field-move branches arrive with their owning flows, never as silent no-ops.
+-- The fallback browse policy when a screen injects no action policy: only locally completable branches stay reachable. Switch reorders through the delayed swap; Quit dismisses back to browse while root cancel closes. Summary, held-item, mail, and field-move branches arrive with their owning flows, never as silent no-ops.
 ---@param service HgssMonService
 ---@param labels table<string, unknown>?
 ---@return table<string, unknown> the browse action policy
@@ -93,12 +98,15 @@ end
 ---@field actionPolicy table<string, unknown>? the action policy (defaults to the production browse policy)
 ---@field uiManifest table<string, unknown>? the field-UI manifest carrying the yes/no prompt shape
 ---@field context string? the named party context (defaults to browse)
----@field item { key: string, bagRevision: integer }? the pending item for target contexts
+---@field targetPromptKey ("giveTarget"|"useTarget"|"teachTarget")? the lower prompt for item target contexts
+---@field item { key: string, bagRevision: integer }? the pending item for give continuation and target contexts
 ---@field measureDisplay fun(): DisplayMeasurement the current display facts
 ---@field initialFocus integer|"cancel"? the opening cursor (defaults to the nearest selectable node)
+---@field initialMessage { templateKey: "giveHeldItem", displayName: string, itemNames: string[] }? Party-owned held-item result on entry
 ---@field overrides table<string, unknown>? per-case function overrides for this application
 ---@field prepareIcons fun(iconKeys: string[]): boolean, string? required icon preparation collaborator
 ---@field cancelIconPreparation fun() required preparation release collaborator
+---@field effect fun(sequence: string)? the borrowed Party semantic sound boundary forwarded to the native controller
 
 ---@param opts PartyScreenState.Options
 ---@return PartyScreenState
@@ -108,6 +116,9 @@ function PartyScreenState.new(opts)
   assert(type(opts.measureDisplay) == "function", "the party screen requires the display facts")
   assert(type(opts.prepareIcons) == "function", "the party screen requires its icon preparation")
   assert(type(opts.cancelIconPreparation) == "function", "the party screen requires its preparation release")
+  if opts.effect ~= nil then
+    assert(type(opts.effect) == "function", "the party sound boundary is a function")
+  end
   assert(
     type(service.partyCount) == "function" and service:partyCount() > 0,
     "the party screen requires a non-empty party"
@@ -129,15 +140,27 @@ function PartyScreenState.new(opts)
       or context == "pick"
       or context == "item_target"
       or context == "give_target"
-      or context == "give_confirm",
+      or context == "give_resume",
     "the party screen requires a named context"
   )
+  local targetPromptKey = opts.targetPromptKey
+  if context == "give_target" then
+    assert(targetPromptKey == "giveTarget", "give targets require the Give prompt")
+  elseif context == "item_target" then
+    assert(
+      targetPromptKey == "useTarget" or targetPromptKey == "teachTarget",
+      "item targets require the Use or Teach prompt"
+    )
+  else
+    assert(targetPromptKey == nil, "only target contexts carry a target prompt")
+  end
   local self = setmetatable({
     _service = service,
     _manifest = manifest,
     _policy = opts.actionPolicy or productionPolicy(service, manifestLabels(manifest)),
     _promptShape = promptShape,
     _context = context,
+    _targetPromptKey = targetPromptKey,
     _item = opts.item,
     _measureDisplay = opts.measureDisplay,
     _prepareIcons = opts.prepareIcons,
@@ -146,6 +169,10 @@ function PartyScreenState.new(opts)
     _preparationError = nil,
     _preparedKeys = nil,
     _preparationReleased = false,
+    _revealPhase = nil,
+    _revealFirst = 0,
+    _revealSecond = 0,
+    _settleTicks = 0,
     _detailOverlay = false,
     _disposed = false,
   }, PartyScreenState)
@@ -169,6 +196,7 @@ function PartyScreenState.new(opts)
     controller = PartyScreenController.new({
       context = context,
       initialFocus = opts.initialFocus,
+      initialMessage = opts.initialMessage,
       model = {
         refresh = refreshModel,
       },
@@ -180,6 +208,7 @@ function PartyScreenState.new(opts)
       actionPolicy = self._policy,
       promptShape = self._promptShape,
       item = self._item,
+      effect = opts.effect,
     })
   end)
   if not built then
@@ -240,7 +269,7 @@ function PartyScreenState:_layout()
   })
 end
 
----@return table<string, unknown> the controller snapshot plus the wrapper-owned host overlay flag for resolvers and renderers
+---@return table<string, unknown> the controller snapshot plus the wrapper-owned host overlay flag and reveal progress for resolvers and renderers
 function PartyScreenState:_view()
   ---@type table<string, unknown>
   local view = {}
@@ -248,6 +277,15 @@ function PartyScreenState:_view()
     view[key] = value
   end
   view.detailOverlay = self._detailOverlay == true
+  if self._targetPromptKey ~= nil then
+    view.targetPromptKey = self._targetPromptKey
+  end
+  if self._revealPhase ~= nil then
+    view.phase = self._revealPhase
+    if self._revealPhase == "opening" then
+      view.opening = { subStep = self._revealFirst, mainStep = self._revealSecond }
+    end
+  end
   return view
 end
 
@@ -257,6 +295,19 @@ end
 function PartyScreenState:resolveLayout()
   local plan = self._session:plan()
   return assert(plan.content, "the party plan carries its canonical content")
+end
+
+-- Re-resolves host placement without advancing icon preparation or the Party clock.
+-- A pending/failed wait record is not a semantic view: re-resolve from the
+-- canonical controller snapshot so placement never inherits wait metadata.
+---@param view table<string, unknown>?
+---@return table<string, unknown> current presentation plan
+function PartyScreenState:refreshPresentation(view)
+  assert(not self._disposed, "a disposed party wrapper refreshes nothing")
+  if type(view) == "table" and view.preparationState ~= nil and view.preparationState ~= "ready" then
+    return self._session:resolve(self:_measured(), self:_view())
+  end
+  return self._session:resolve(self:_measured(), view or self:_view())
 end
 
 -- The published plan is the native-like one-display shape exactly when
@@ -324,6 +375,47 @@ function PartyScreenState:updateFixed(uiInput)
     end
     return
   end
+  -- The opening reveal runs before any controller input: the ready tick
+  -- publishes fully covered panes, the next twelve fixed ticks clear the
+  -- first pane then the second one step per tick, the following tick
+  -- hands over to the interactive phase, and one settling tick after the
+  -- handover still drops its batch so the batch completing the reveal and
+  -- the batch arriving on the first interactive tick can never act or
+  -- replay. Every gated batch is validated and discarded, never queued.
+  if self._revealPhase == nil then
+    self._revealPhase = "opening"
+    self._revealFirst = 0
+    self._revealSecond = 0
+    self._settleTicks = 0
+  elseif self._revealPhase == "opening" then
+    if self._revealFirst < 6 then
+      self._revealFirst = self._revealFirst + 1
+    elseif self._revealSecond < 6 then
+      self._revealSecond = self._revealSecond + 1
+    else
+      self._revealPhase = "interactive"
+      self._settleTicks = 2
+    end
+  end
+  if self._revealPhase == "opening" or self._settleTicks > 0 then
+    for _, event in ipairs(assert(uiInput, "the party input must be an event list")) do
+      assert(type(event) == "table" and type(event.type) == "string", "party events need a type")
+    end
+    if self._settleTicks > 0 then
+      self._settleTicks = self._settleTicks - 1
+    end
+    local session = self._session
+    local measurement = self:_measured()
+    local signature = measurement.signature
+    if signature ~= nil and signature ~= self._signature then
+      if self._signature ~= nil then
+        self:cancelPointerCapture()
+      end
+      self._signature = signature
+    end
+    session:resolve(measurement, self:_view())
+    return
+  end
   local session = self._session
   local measurement = self:_measured()
   local signature = measurement.signature
@@ -361,11 +453,11 @@ function PartyScreenState:updateFixed(uiInput)
   session:resolve(measurement, self:_view())
 end
 
--- The presentation snapshot: the preparation wait while icons are not
--- ready, the controller status plus presentation=plan and readiness once
--- they are, presentation=plan remaining the single host-facing layout
--- authority. Read-only: status never advances preparation. Fresh tables
--- per call.
+-- The presentation snapshot: the preparation wait plus its resolved plan
+-- while icons are not ready, the controller status plus presentation=plan
+-- and readiness once they are, presentation=plan remaining the single
+-- host-facing layout authority. Read-only: status never advances
+-- preparation. Fresh tables per call.
 ---@return table<string, unknown>
 function PartyScreenState:status()
   if self._preparationState ~= "ready" then
@@ -374,6 +466,7 @@ function PartyScreenState:status()
       preparationState = self._preparationState,
       preparationError = self._preparationError,
       layout = self:_layout(),
+      presentation = self._session:plan(),
     }
   end
   local status = self:_view()

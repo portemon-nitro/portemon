@@ -20,8 +20,10 @@ local FieldErrors = require("libs.hgss.src.field.FieldErrors")
 ---@class FieldPlayerVisual.Source
 ---@field facing string
 ---@field animationPaused boolean
+---@field presentationStateInto fun(self: unknown, out: { locomotionActive: boolean, gesturePose: string?, gestureTick: integer?, gestureOffsetY: number }): { locomotionActive: boolean, gesturePose: string?, gestureTick: integer?, gestureOffsetY: number }
 ---@field presentationState fun(self: unknown): { locomotionActive: boolean, gesturePose: string?, gestureTick: integer?, gestureOffsetY: number }
 ---@field clearGesturePresentation fun(self: unknown)
+---@field renderPositionInto fun(self: unknown, out: { x: number, y: number, z: number }, alpha: number?): { x: number, y: number, z: number }
 ---@field renderPosition fun(self: unknown, alpha: number?): { x: number, y: number, z: number }
 
 ---@class FieldPlayerVisual.SourceInput
@@ -44,6 +46,9 @@ local FieldErrors = require("libs.hgss.src.field.FieldErrors")
 ---@field pose string
 ---@field poseTick integer
 ---@field _drawRecord table<string, unknown>
+---@field _playerPresentation table<string, unknown>
+---@field _renderPosition { x: number, y: number, z: number }
+---@field _avatarPresentation { playerOffset: { x: number, y: number, z: number }, surf: { active: boolean, attachmentOffsetY: number } }
 local FieldPlayerVisual = {}
 FieldPlayerVisual.__index = FieldPlayerVisual
 
@@ -55,10 +60,10 @@ function FieldPlayerVisual.new(opts)
   assert(type(opts) == "table" and type(opts.player) == "table", "FieldPlayerVisual requires a FieldPlayer")
   local player = opts.player
   assert(type(player.facing) == "string", "FieldPlayerVisual requires player facing")
-  assert(type(player.renderPosition) == "function", "FieldPlayerVisual requires renderPosition")
+  assert(type(player.renderPositionInto) == "function", "FieldPlayerVisual requires renderPositionInto")
   assert(
-    type(player.presentationState) == "function" and type(player.clearGesturePresentation) == "function",
-    "FieldPlayerVisual requires presentationState and clearGesturePresentation"
+    type(player.presentationStateInto) == "function" and type(player.clearGesturePresentation) == "function",
+    "FieldPlayerVisual requires presentationStateInto and clearGesturePresentation"
   )
   ---@cast player FieldPlayerVisual.Source
   local self = setmetatable({
@@ -70,6 +75,9 @@ function FieldPlayerVisual.new(opts)
     poseTick = 0,
     lastFacing = opts.player.facing,
     _drawRecord = { world = {} },
+    _playerPresentation = {},
+    _renderPosition = { x = 0, y = 0, z = 0 },
+    _avatarPresentation = { playerOffset = { x = 0, y = 0, z = 0 }, surf = { active = false, attachmentOffsetY = 0 } },
   }, FieldPlayerVisual)
   self:setAvatar(opts.spriteId)
   return self
@@ -99,7 +107,7 @@ end
 -- original timeline: a standing actor holds the first frame of its facing
 -- range, and a turn starts the new range at its first frame.
 function FieldPlayerVisual:updateFixed(locomotionAtTickStart)
-  local snapshot = self.player:presentationState()
+  local snapshot = self.player:presentationStateInto(self._playerPresentation)
   local walking = not self.player.animationPaused
     and (locomotionAtTickStart == true or snapshot.locomotionActive == true)
 
@@ -135,13 +143,17 @@ end
 -- record exactly once alongside the gesture offset and never touches the
 -- player's logical coordinates.
 function FieldPlayerVisual:drawRecord(alpha)
-  local point = self.player:renderPosition(alpha)
-  local snapshot = self.player:presentationState()
+  local point = self.player:renderPositionInto(self._renderPosition, alpha)
+  local snapshot = self.player:presentationStateInto(self._playerPresentation)
   local record = self._drawRecord
   local gestureOffsetY = snapshot.gestureOffsetY or 0
-  local avatarOffset = { x = 0, y = 0, z = 0 }
+  local avatarOffset = self._avatarPresentation.playerOffset
   if self.playerAvatar then
-    avatarOffset = self.playerAvatar:presentationState().playerOffset
+    self.playerAvatar:presentationStateInto(self._avatarPresentation)
+  else
+    avatarOffset.x = 0
+    avatarOffset.y = 0
+    avatarOffset.z = 0
   end
   record.actorId = self.actorId
   record.spriteId = self.spriteId

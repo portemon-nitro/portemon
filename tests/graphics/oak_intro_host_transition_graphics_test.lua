@@ -242,6 +242,15 @@ local function bootCoveredField(scope)
       return identityMatrix
     end,
   }
+  -- The covered entry draws through the real field renderer, which needs the
+  -- runtime render environment; the fake reuses its scene edge/fog tables
+  -- with a minimal lighting profile valid for time-of-day selection.
+  local fakeEdgeColors = { [0] = 0, 0, 0, 0, 0, 0, 0, 0 }
+  local fakeFogTable = {}
+  for index = 1, 32 do
+    fakeFogTable[index] = 0
+  end
+  local fakeFog = { enabled = false, color = 0, offset = 0, slope = 0, alpha = 0, table = fakeFogTable }
   local originalNew = FieldRuntime.new
   FieldRuntime.new = function(_, _)
     return setmetatable({
@@ -288,6 +297,15 @@ local function bootCoveredField(scope)
         end,
       },
       yesNoHost = idleChoiceHost(),
+      martHost = {
+        isActive = function()
+          return false
+        end,
+        status = function()
+          return nil
+        end,
+        cancelPointerCapture = function() end,
+      },
       actors = {
         visualRevision = function()
           return 0
@@ -314,14 +332,26 @@ local function bootCoveredField(scope)
           mapDraws = {},
           staticBuildingDraws = {},
           animatedBuildingDraws = {},
-          edgeColors = { [0] = 0, 0, 0, 0, 0, 0, 0, 0 },
-          fog = (function()
-            local fogTable = {}
-            for index = 1, 32 do
-              fogTable[index] = 0
-            end
-            return { enabled = false, color = 0, offset = 0, slope = 0, alpha = 0, table = fogTable }
-          end)(),
+          edgeColors = fakeEdgeColors,
+          fog = fakeFog,
+        },
+        renderEnvironment = {
+          lighting = {
+            records = {
+              {
+                startHalfSeconds = 0,
+                lights = {},
+                diffuseRgb555 = 0,
+                ambientRgb555 = 0,
+                specularRgb555 = 0,
+                emissionRgb555 = 0,
+              },
+            },
+          },
+          edgeColors = fakeEdgeColors,
+          baseWeatherId = 0,
+          fog = fakeFog,
+          baseFog = fakeFog,
         },
       },
       player = { fieldX = 3, fieldZ = 7, worldY = 1.5, surfaceId = 0, facing = "east", motion = "idle" },

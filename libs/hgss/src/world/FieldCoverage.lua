@@ -25,6 +25,7 @@ local FieldErrors = require("libs.hgss.src.field.FieldErrors")
 ---@field index table<string, unknown>
 ---@field matrixMemberId integer
 ---@field loadCell fun(descriptor: table<string, unknown>): table<string, unknown>
+---@field mapPropsFactory (fun(runtime: table<string, unknown>, descriptor: table<string, unknown>): table<string, unknown>?)?
 ---@field presentationLoader fun(runtime: table<string, unknown>, descriptor: table<string, unknown>): table<string, unknown>?
 ---@field presentationTaskFactory fun(runtime: table<string, unknown>, descriptor: table<string, unknown>): table<string, unknown>?
 ---@field derivedAssets table<string, function>?
@@ -40,6 +41,11 @@ local FieldErrors = require("libs.hgss.src.field.FieldErrors")
 ---@field terrainDependencyHash string
 ---@field released boolean
 ---@field pendingPrefetch table<string, unknown>?
+---@field _cellKeys string[]
+---@field _worldParts table[]
+---@field _cellPresentation { staticParts: table[], dynamicCount: integer, stagedDynamicCount: integer }[]
+---@field _dynamicPartScratch table[]
+---@field _prefetchDescriptors table[]
 local FieldCoverage = {}
 FieldCoverage.__index = FieldCoverage
 
@@ -186,12 +192,20 @@ local function runtimeFromDescriptor(self, descriptor, acquirePresentation)
   return result
 end
 
-local function normalizeRuntime(runtime, descriptor)
+local function normalizeRuntime(runtime, descriptor, mapPropsFactory)
   runtime = assert(runtime, "field cell loader returned no runtime")
   runtime.key = runtime.key or key(descriptor.x, descriptor.z)
   runtime.x, runtime.z = runtime.x or descriptor.x, runtime.z or descriptor.z
   runtime.altitude = runtime.altitude or descriptor.altitude
   runtime.origin = cellOrigin(runtime, descriptor)
+  -- The semantic resolver is built once per cell runtime, before any
+  -- presentation acquisition, so presentation can attach to the same owner.
+  -- Without a factory the runtime keeps whatever resolver it already
+  -- carries; a nil factory result (filler with no logical map) leaves the
+  -- cell valid with no semantic owner.
+  if mapPropsFactory then
+    runtime.mapProps = mapPropsFactory(runtime, descriptor)
+  end
   return runtime
 end
 
@@ -236,7 +250,7 @@ local function advancePending(self, pending, maxWorkUnits)
     if pending.phase == "load" then
       local runtime = self.loadCell(assert(pending.descriptor))
       pending.runtime = runtime
-      pending.runtime = normalizeRuntime(pending.runtime, pending.descriptor)
+      pending.runtime = normalizeRuntime(pending.runtime, pending.descriptor, self.mapPropsFactory)
       if not self.presentationTaskFactory and not self.presentationLoader then
         publishPending(pending, pending.runtime.presentation)
         pending.phase = "complete"
@@ -276,7 +290,7 @@ local function advancePending(self, pending, maxWorkUnits)
         descriptor = cell,
         release = release,
       }
-      pending.runtime = normalizeRuntime(pending.runtime, pending.descriptor)
+      pending.runtime = normalizeRuntime(pending.runtime, pending.descriptor, self.mapPropsFactory)
       if not self.presentationTaskFactory and not self.presentationLoader then
         publishPending(pending, nil)
         pending.phase = "complete"
@@ -385,6 +399,126 @@ local function buildRegion(cells, anchor)
   return FieldRegion.new(central.collision, central.terrain, neighbors, central.key, 1)
 end
 
+local function presentationDraws(presentation, static)
+  if not presentation then
+    return {}
+  end
+  if type(presentation.parts) == "table" then
+    return static and {} or presentation.parts
+  end
+  local result = {}
+  local fields = static and { "mapDraws", "staticBuildingDraws" } or { "animatedBuildingDraws", "draws" }
+  for _, field in ipairs(fields) do
+    local draws = presentation[field]
+    if type(draws) == "table" then
+      for _, draw in ipairs(draws) do
+        result[#result + 1] = draw
+      end
+    end
+  end
+  if not static and #result == 0 and presentation.cellKey then
+    result[1] = presentation
+  end
+  return result
+end
+
+local function translatedPart(part, cell, origin)
+  local result = {}
+  for field, value in pairs(part) do
+    result[field] = value
+  end
+  result.cellKey = cell.key
+  result.translation = {
+    x = cell.origin.x - origin.x,
+    y = cell.origin.y - origin.y,
+    z = cell.origin.z - origin.z,
+  }
+  if part.transform then
+    result.transform = Matrix4.multiply(
+      Matrix4.translate(result.translation.x, result.translation.y, result.translation.z),
+      part.transform
+    )
+  end
+  if part.billboardBase then
+    result.billboardBase = Matrix4.multiply(
+      Matrix4.translate(result.translation.x, result.translation.y, result.translation.z),
+      part.billboardBase
+    )
+    result.billboardCenter, result.billboardScale = BillboardTransform.components(result.billboardBase)
+  end
+  return result
+end
+
+local function appendDynamicParts(presentation, cell, origin, out)
+  if not presentation then
+    return
+  end
+  local parts = presentation.parts
+  if type(parts) == "table" then
+    for _, part in ipairs(parts) do
+      out[#out + 1] = translatedPart(part, cell, origin)
+    end
+    return
+  end
+  local count = #out
+  local draws = presentation.animatedBuildingDraws
+  if type(draws) == "table" then
+    for _, part in ipairs(draws) do
+      out[#out + 1] = translatedPart(part, cell, origin)
+    end
+  end
+  draws = presentation.draws
+  if type(draws) == "table" then
+    for _, part in ipairs(draws) do
+      out[#out + 1] = translatedPart(part, cell, origin)
+    end
+  end
+  if #out == count and presentation.cellKey then
+    out[#out + 1] = translatedPart(presentation, cell, origin)
+  end
+end
+
+local function buildWorldParts(cells, origin)
+  local keys = {}
+  for cellKey in pairs(cells) do
+    keys[#keys + 1] = cellKey
+  end
+  table.sort(keys)
+  local result = {}
+  local cellPresentation = {}
+  for _, cellKey in ipairs(keys) do
+    local cell = assert(cells[cellKey])
+    local staticParts = {}
+    for _, part in ipairs(presentationDraws(cell.presentation, true)) do
+      staticParts[#staticParts + 1] = translatedPart(part, cell, origin)
+    end
+    for _, part in ipairs(staticParts) do
+      result[#result + 1] = part
+    end
+    local dynamicParts = presentationDraws(cell.presentation, false)
+    for _, part in ipairs(dynamicParts) do
+      result[#result + 1] = translatedPart(part, cell, origin)
+    end
+    cellPresentation[#cellPresentation + 1] = {
+      staticParts = staticParts,
+      dynamicCount = #dynamicParts,
+      stagedDynamicCount = #dynamicParts,
+    }
+  end
+  return keys, result, cellPresentation
+end
+
+local function descriptorsAtAnchor(self, anchorX, anchorZ)
+  local result = {}
+  for _, position in ipairs(footprint(anchorX, anchorZ)) do
+    local descriptor = FieldCellCache.find(self.index, self.matrixMemberId, position.x, position.z)
+    if descriptor then
+      result[#result + 1] = descriptor
+    end
+  end
+  return result
+end
+
 function FieldCoverage.new(options)
   assert(type(options) == "table", "FieldCoverage options required")
   assert(type(options.matrixMemberId) == "number", "field cell matrix member required")
@@ -395,6 +529,7 @@ function FieldCoverage.new(options)
     index = options.index or FieldCellCache.loadIndex(options.cacheFs),
     matrixMemberId = options.matrixMemberId,
     loadCell = options.loadCell,
+    mapPropsFactory = options.mapPropsFactory,
     presentationLoader = options.presentationLoader,
     presentationTaskFactory = options.presentationTaskFactory,
     derivedAssets = options.derivedAssets,
@@ -404,6 +539,11 @@ function FieldCoverage.new(options)
     pendingPrefetch = nil,
     prefetchError = nil,
     synchronousPhysicalFallbackLoads = 0,
+    _cellKeys = {},
+    _worldParts = {},
+    _cellPresentation = {},
+    _dynamicPartScratch = {},
+    _prefetchDescriptors = {},
     released = false,
   }, FieldCoverage)
   self:recenter(options.anchorX, options.anchorZ)
@@ -483,6 +623,8 @@ function FieldCoverage:recenter(anchorX, anchorZ)
       origin = assert(staged[key(anchorX, anchorZ)].origin),
       terrainDependencyHash = dependencyIdentity(staged, self.matrixMemberId, anchorX, anchorZ),
     }
+    candidate.cellKeys, candidate.worldParts, candidate.cellPresentation = buildWorldParts(staged, candidate.origin)
+    candidate.prefetchDescriptors = descriptorsAtAnchor(self, anchorX, anchorZ)
   end)
   if not ok then
     for _, cell in ipairs(acquired) do
@@ -506,6 +648,10 @@ function FieldCoverage:recenter(anchorX, anchorZ)
   self.region = candidate.region
   self.origin = candidate.origin
   self.terrainDependencyHash = candidate.terrainDependencyHash
+  self._cellKeys = candidate.cellKeys
+  self._worldParts = candidate.worldParts
+  self._cellPresentation = candidate.cellPresentation
+  self._prefetchDescriptors = candidate.prefetchDescriptors
   local newFootprint = targetFootprint
   for cellKey, cell in pairs(old) do
     if not self.cells[cellKey] and newFootprint[cellKey] then
@@ -586,14 +732,27 @@ end
 ---@return table[]
 function FieldCoverage:prefetchDescriptors(anchorX, anchorZ)
   anchorX, anchorZ = anchorX or self.anchorX, anchorZ or self.anchorZ
+  local descriptors
+  if anchorX == self.anchorX and anchorZ == self.anchorZ then
+    descriptors = self._prefetchDescriptors
+  else
+    descriptors = descriptorsAtAnchor(self, anchorX, anchorZ)
+  end
   local result = {}
-  for _, position in ipairs(footprint(anchorX, anchorZ)) do
-    local descriptor = FieldCellCache.find(self.index, self.matrixMemberId, position.x, position.z)
-    if descriptor then
-      result[#result + 1] = descriptor
-    end
+  for _, descriptor in ipairs(descriptors) do
+    result[#result + 1] = descriptor
   end
   return result
+end
+
+---@return table[]
+function FieldCoverage:prefetchDescriptorsView()
+  return self._prefetchDescriptors
+end
+
+---@return boolean
+function FieldCoverage:hasPrefetchWork()
+  return self.pendingPrefetch ~= nil or #self.prefetchQueue > 0
 end
 
 ---@param anchorX integer?
@@ -610,7 +769,9 @@ function FieldCoverage:queuePrefetch(anchorX, anchorZ)
     releasePending(pending)
   end
   local queued = {}
-  for _, descriptor in ipairs(self:prefetchDescriptors(anchorX, anchorZ)) do
+  local descriptors = anchorX == self.anchorX and anchorZ == self.anchorZ and self._prefetchDescriptors
+    or descriptorsAtAnchor(self, anchorX, anchorZ)
+  for _, descriptor in ipairs(descriptors) do
     local cellKey = key(descriptor.x, descriptor.z)
     if
       not committed[cellKey]
@@ -718,6 +879,63 @@ function FieldCoverage:mapHeaderAt(fieldX, fieldZ)
   return descriptor and descriptor.mapHeaderId or nil
 end
 
+---@param fieldX integer
+---@param fieldZ integer
+---@return table<string, unknown>?
+local function committedCellAt(self, fieldX, fieldZ)
+  return self.cells[key(math.floor(fieldX / 32), math.floor(fieldZ / 32))]
+end
+
+-- The disposable cell-local view a committed cell's semantic resolver
+-- reads: the owning cell's origin and collision with the active logical
+-- map's field data, so global warp records resolve while door keys,
+-- placement transforms, and collision coordinates stay in one cell frame.
+---@param runtimeMap table<string, unknown>
+---@param cell table<string, unknown>
+---@return table<string, unknown>
+local function cellSemanticView(runtimeMap, cell)
+  local origin = assert(cell.origin, "committed cell origin is missing")
+  return {
+    coordinateOrigin = { x = origin.x, z = origin.z },
+    collision = cell.collision,
+    fieldData = runtimeMap.fieldData,
+  }
+end
+
+-- Resolve the door at a global outdoor coordinate through the committed
+-- physical cell that owns it. Returns nil outside committed cells and for
+-- cells with no semantic resolver; it never force-loads a cell.
+---@param runtimeMap table<string, unknown>
+---@param fieldX integer
+---@param fieldZ integer
+---@return table<string, unknown>?
+function FieldCoverage:doorAt(runtimeMap, fieldX, fieldZ)
+  assert(type(fieldX) == "number" and fieldX % 1 == 0, "door fieldX must be an integer")
+  assert(type(fieldZ) == "number" and fieldZ % 1 == 0, "door fieldZ must be an integer")
+  local cell = committedCellAt(self, fieldX, fieldZ)
+  if not cell or not cell.mapProps then
+    return nil
+  end
+  return cell.mapProps:doorAt(cellSemanticView(runtimeMap, cell), fieldX, fieldZ)
+end
+
+-- Resolve the transition prop at a global outdoor coordinate through the
+-- committed physical cell that owns it, following the same ownership and
+-- view contract as doorAt.
+---@param runtimeMap table<string, unknown>
+---@param fieldX integer
+---@param fieldZ integer
+---@return table<string, unknown>?
+function FieldCoverage:propAt(runtimeMap, fieldX, fieldZ)
+  assert(type(fieldX) == "number" and fieldX % 1 == 0, "prop fieldX must be an integer")
+  assert(type(fieldZ) == "number" and fieldZ % 1 == 0, "prop fieldZ must be an integer")
+  local cell = committedCellAt(self, fieldX, fieldZ)
+  if not cell or not cell.mapProps then
+    return nil
+  end
+  return cell.mapProps:propAt(cellSemanticView(runtimeMap, cell), fieldX, fieldZ)
+end
+
 function FieldCoverage:sourceSurface(cellKey, sourceSurfaceId)
   return self.region:sourceSurface(cellKey, sourceSurfaceId)
 end
@@ -756,83 +974,66 @@ function FieldCoverage:project(fieldX, fieldZ, cellKey, sourceSurfaceId)
   }
 end
 
-local function presentationDraws(presentation)
-  if not presentation then
-    return {}
-  end
-  if type(presentation.parts) == "table" then
-    return presentation.parts
-  end
-  local result = {}
-  for _, field in ipairs({ "mapDraws", "staticBuildingDraws", "animatedBuildingDraws", "draws" }) do
-    local draws = presentation[field]
-    if type(draws) == "table" then
-      for _, draw in ipairs(draws) do
-        result[#result + 1] = draw
-      end
-    end
-  end
-  if #result == 0 and presentation.cellKey then
-    result[1] = presentation
-  end
-  return result
-end
-
-local function translatedPart(part, cell, origin)
-  local result = {}
-  for field, value in pairs(part) do
-    result[field] = value
-  end
-  result.cellKey = cell.key
-  result.translation = {
-    x = cell.origin.x - origin.x,
-    y = cell.origin.y - origin.y,
-    z = cell.origin.z - origin.z,
-  }
-  if part.transform then
-    result.transform = Matrix4.multiply(
-      Matrix4.translate(result.translation.x, result.translation.y, result.translation.z),
-      part.transform
-    )
-  end
-  if part.billboardBase then
-    result.billboardBase = Matrix4.multiply(
-      Matrix4.translate(result.translation.x, result.translation.y, result.translation.z),
-      part.billboardBase
-    )
-    result.billboardCenter, result.billboardScale = BillboardTransform.components(result.billboardBase)
-  end
-  return result
-end
-
 function FieldCoverage:worldParts()
-  local result = {}
-  local keys = {}
-  for cellKey in pairs(self.cells) do
-    keys[#keys + 1] = cellKey
-  end
-  table.sort(keys)
-  for _, cellKey in ipairs(keys) do
-    local cell = self.cells[cellKey]
-    for _, part in ipairs(presentationDraws(cell.presentation)) do
-      result[#result + 1] = translatedPart(part, cell, self.origin)
-    end
-  end
-  return result
+  return self._worldParts
 end
 
 function FieldCoverage:updateAnimated()
   assert(not self.released, "coverage is released")
-  local keys = {}
-  for cellKey in pairs(self.cells) do
-    keys[#keys + 1] = cellKey
-  end
-  table.sort(keys)
-  for _, cellKey in ipairs(keys) do
-    local presentation = self.cells[cellKey].presentation
+  for _, cellKey in ipairs(self._cellKeys) do
+    local cell = self.cells[cellKey]
+    local presentation = cell.presentation
     if presentation and presentation.updateAnimated then
       presentation:updateAnimated()
     end
+    -- Committed semantic resolvers advance once per tick, after
+    -- presentation, so live-instance handles move under presentation while
+    -- semantic-only door roles move under their own timer. Prefetched-only
+    -- cells own no live simulation state and never tick here.
+    if cell.mapProps then
+      cell.mapProps:updateFixed()
+    end
+  end
+  local dynamicParts = self._dynamicPartScratch
+  for index = #dynamicParts, 1, -1 do
+    dynamicParts[index] = nil
+  end
+  for index, cellKey in ipairs(self._cellKeys) do
+    local cell = assert(self.cells[cellKey])
+    local firstDynamic = #dynamicParts + 1
+    appendDynamicParts(cell.presentation, cell, self.origin, dynamicParts)
+    self._cellPresentation[index].stagedDynamicCount = #dynamicParts - firstDynamic + 1
+  end
+  local countChanged = false
+  for _, cellPresentation in ipairs(self._cellPresentation) do
+    if cellPresentation.stagedDynamicCount ~= cellPresentation.dynamicCount then
+      countChanged = true
+      break
+    end
+  end
+  local worldParts = self._worldParts
+  local previousLength = #worldParts
+  local slot = 1
+  local dynamicIndex = 1
+  for _, cellPresentation in ipairs(self._cellPresentation) do
+    for _, part in ipairs(cellPresentation.staticParts) do
+      if countChanged then
+        worldParts[slot] = part
+      end
+      slot = slot + 1
+    end
+    for _ = 1, cellPresentation.stagedDynamicCount do
+      worldParts[slot] = dynamicParts[dynamicIndex]
+      dynamicIndex = dynamicIndex + 1
+      slot = slot + 1
+    end
+    cellPresentation.dynamicCount = cellPresentation.stagedDynamicCount
+  end
+  for index = slot, previousLength do
+    worldParts[index] = nil
+  end
+  for index = #dynamicParts, 1, -1 do
+    dynamicParts[index] = nil
   end
 end
 
@@ -1022,6 +1223,11 @@ function FieldCoverage:release()
   self.cells = {}
   self.prefetched = {}
   self.prefetchQueue = {}
+  self._cellKeys = {}
+  self._worldParts = {}
+  self._cellPresentation = {}
+  self._dynamicPartScratch = {}
+  self._prefetchDescriptors = {}
 end
 
 return FieldCoverage

@@ -113,6 +113,7 @@ local function drawState(topologyProvider, pollTopology)
     topologyProvider = topologyProvider,
     _pollPresentationTopology = pollTopology == true,
     presentationResources = {
+      drawMart = function() end,
       renderer = {
         draw = function(_, _, _, _, _, viewport)
           rendererObservations[#rendererObservations + 1] = {
@@ -152,7 +153,7 @@ local function oneDisplay(width, height, safeRect)
   })
 end
 
-function T.missed_resize_is_reconciled_before_renderer_and_restored_once()
+function T.draw_uses_settled_viewport_until_explicit_resize()
   local topologyCalls = 0
   local state, runtime = drawState(function(width, height)
     topologyCalls = topologyCalls + 1
@@ -163,6 +164,9 @@ function T.missed_resize_is_reconciled_before_renderer_and_restored_once()
       role = "world",
     })
   end, true)
+  state:resize(800, 600)
+  runtime.resizeCalls = 0
+  runtime.lastResize = nil
   local originalGetDimensions = love.graphics.getDimensions
   local dimensions = { width = 1600, height = 900 }
   rawset(love.graphics, "getDimensions", function()
@@ -170,18 +174,23 @@ function T.missed_resize_is_reconciled_before_renderer_and_restored_once()
   end)
   local ok, err = pcall(function()
     state:draw()
+    state:resize(1600, 900)
+    state:draw()
   end)
-  Assert.isTrue(ok, "missed grow resize should be repaired: " .. tostring(err))
+  Assert.isTrue(ok, "explicit resize must publish settled geometry: " .. tostring(err))
   Assert.equal(runtime.resizeCalls, 1)
   Assert.equal(runtime.lastResize[1], 1600)
   Assert.equal(runtime.lastResize[2], 900)
   Assert.deepEqual(runtime.rendererObservations, {
+    { width = 800, height = 600, resizeCalls = 0 },
     { width = 1600, height = 900, resizeCalls = 1 },
   })
-  Assert.equal(topologyCalls, 1)
+  Assert.equal(topologyCalls, 4)
 
   dimensions.width, dimensions.height = 800, 600
   ok, err = pcall(function()
+    state:draw()
+    state:resize(800, 600)
     state:draw()
   end)
   love.graphics.getDimensions = originalGetDimensions
@@ -190,11 +199,21 @@ function T.missed_resize_is_reconciled_before_renderer_and_restored_once()
   Assert.equal(runtime.lastResize[1], 800)
   Assert.equal(runtime.lastResize[2], 600)
   Assert.deepEqual(runtime.rendererObservations[2], {
+    width = 1600,
+    height = 900,
+    resizeCalls = 1,
+  })
+  Assert.deepEqual(runtime.rendererObservations[3], {
+    width = 1600,
+    height = 900,
+    resizeCalls = 1,
+  })
+  Assert.deepEqual(runtime.rendererObservations[4], {
     width = 800,
     height = 600,
     resizeCalls = 2,
   })
-  Assert.equal(topologyCalls, 2)
+  Assert.equal(topologyCalls, 7)
 end
 
 function T.resize_event_applies_presentation_geometry_once_before_an_unchanged_draw()
@@ -228,6 +247,9 @@ function T.injected_topology_provider_publishes_one_same_size_structural_change(
   local state, runtime = drawState(function()
     return current
   end, true)
+  state:resize(1280, 720)
+  runtime.resizeCalls = 0
+  runtime.lastResize = nil
   state._lastGeometrySignature = state:_geometrySignature(1280, 720, current)
   current = oneDisplay(1280, 720, { x = 0, y = 20, width = 1280, height = 700 })
 
@@ -366,7 +388,10 @@ local function fieldStateWithCapturedUi(worldViewport, cameraZoom, viewportWidth
         role = "world",
       })
     end,
-    presentationResources = { renderer = { draw = function() end } },
+    presentationResources = {
+      drawMart = function() end,
+      renderer = { draw = function() end },
+    },
     actorPresentation = {
       drawItems = function()
         return {}

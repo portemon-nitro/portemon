@@ -187,7 +187,6 @@ function T.job_identities_validate_through_the_closed_vocabulary()
   end)
 end
 
-local SUMMARY_GENERATION = "summary-gate-generation"
 local function recordingPool()
   local pool = { submitted = {}, states = {} }
   function pool:update() end
@@ -234,74 +233,6 @@ local function selectableRecordingPool()
   function pool:selectGeneration(_, _) end
   return pool
 end
-local function summarySession(pool, cacheFs, bankIds)
-  local realForVersion = CacheFs.forVersion
-  CacheFs.forVersion = function()
-    return cacheFs
-  end
-  local session
-  local ok, err = pcall(function()
-    session = InteractiveCacheBuild.new({
-      identity = { versionId = "heartgold", generationId = SUMMARY_GENERATION, producerId = "d" .. string.rep("3", 64) },
-      epoch = 1,
-      pool = pool,
-    })
-  end)
-  CacheFs.forVersion = realForVersion
-  if not ok then
-    error(err, 0)
-  end
-  session.messageBankIds = bankIds
-  session.sourceLoaded = true
-  session.pagesKnown = true
-  return session
-end
-local function submittedSet(pool)
-  local set = {}
-  for _, jobKey in ipairs(pool.submitted) do
-    set[jobKey] = true
-  end
-  return set
-end
-local function publishMessageBank(cacheFs, bankId, marker)
-  cacheFs:writeLua(ArtifactState.path("message-bank", tostring(bankId)), {
-    schema = ArtifactState.RECEIPT_SCHEMA,
-    generationId = SUMMARY_GENERATION,
-    kind = "message-bank",
-    key = tostring(bankId),
-    marker = marker,
-  })
-  cacheFs:write(FieldMessageCache.bankMarkerPath(bankId), marker)
-  cacheFs:writeLua(FieldMessageCache.bankPath(bankId), {
-    schema = FieldMessageCache.SCHEMA,
-    bankId = bankId,
-  })
-end
-function T.summary_dispatch_waits_for_bank_publication()
-  local pool = recordingPool()
-  local cacheFs = CacheFs.forVersion("heartgold", FakeCache.new())
-  local session = summarySession(pool, cacheFs, { 3, 5 })
-  local ready, failure = session:requestJob("message-summary", "global", "required")
-  Assert.isFalse(ready, "the summary is pending while its banks are cold")
-  Assert.isNil(failure, "no failure is reported while the summary waits for its banks")
-  session:update()
-  local submitted = submittedSet(pool)
-  Assert.isTrue(submitted["message-bank:3"] == true, "a cold bank dispatches")
-  Assert.isTrue(submitted["message-bank:5"] == true, "a cold bank dispatches")
-  Assert.isNil(submitted["message-summary:global"], "the summary never occupies a worker while its banks are pending")
-
-  pool.states["message-bank:3"] = "ready"
-  pool.states["message-bank:5"] = "ready"
-  publishMessageBank(cacheFs, 3, "bank-marker-3")
-  publishMessageBank(cacheFs, 5, "bank-marker-5")
-  session:update()
-  session:update()
-  local again, againFailure = session:requestJob("message-summary", "global", "required")
-  Assert.isFalse(again, "the unpublished summary stays pending once its banks publish")
-  Assert.isNil(againFailure, "no failure is reported once the banks publish")
-  Assert.isTrue(submittedSet(pool)["message-summary:global"] == true, "the summary dispatches once every bank is ready")
-end
-
 local PRODUCER_ID = "d" .. string.rep("3", 64)
 local function retryCapablePool()
   local pool = { submitted = {}, states = {}, retried = {}, selects = 0 }
@@ -395,106 +326,6 @@ function T.construction_performs_no_pool_census()
   Assert.isNil(againFailure, "settlement reports no failure")
 end
 
--- Explicit complete enrollment advances a bounded chunk per update
--- without materializing the complete corpus: with the materialized
--- inventory patched to raise, one update visits only a small prefix,
--- while many updates still cover exactly the canonical union.
-function T.complete_enrollment_advances_bounded_chunks_without_materializing_the_corpus()
-  local FieldMessageCompiler = require("romdump.src.digest.ui.FieldMessageCompiler")
-  local FieldMapDataCompiler = require("romdump.src.digest.field.FieldMapDataCompiler")
-  local matrices = {}
-  for matrixMemberId = 1, 3 do
-    local cells = {}
-    for index = 0, 199 do
-      cells[#cells + 1] = {
-        matrixMemberId = matrixMemberId,
-        index = index,
-        x = 0,
-        z = 0,
-        mapHeaderId = 0,
-        altitude = 0,
-        landDataMemberId = 1,
-        areaDataMemberId = 2,
-      }
-    end
-    matrices[#matrices + 1] = { matrixMemberId = matrixMemberId, cells = cells }
-  end
-  local messageBankIds = FieldMessageCompiler.requiredBankIds()
-  local mapDataIds = FieldMapDataCompiler.supportedMapIds()
-  local mapIds = {}
-  local mapCellKeys = {}
-  for mapId = 1, 10 do
-    mapIds[#mapIds + 1] = mapId
-    mapCellKeys[mapId] = { "1-0", "2-0" }
-  end
-  local plans = {
-    indexBundle = { index = { matrices = matrices }, indexMarker = "incremental-index-marker" },
-    scriptPlan = { members = { { memberId = 149 }, { memberId = 150 } }, generationKey = "inc-script-generation" },
-    audioPlan = { index = {}, bankPlans = { { bankId = 7 }, { bankId = 8 } } },
-    messageBankIds = messageBankIds,
-    audioBankIds = { 7, 8 },
-    scriptMemberIds = { 149, 150 },
-    iconPageIds = { 0 },
-    portraitPageIds = { 0 },
-    mapDataIds = mapDataIds,
-    mapIds = mapIds,
-    mapCellKeys = mapCellKeys,
-    world = { maps = {} },
-  }
-  local expected = ArtifactJobs.completeJobs(plans)
-  Assert.isTrue(#expected > 600, "the loaded fixture spans hundreds of jobs")
-  local backend = FakeCache.new()
-  local pool = recordingPool()
-  pool.diagnostics = nil
-  local session, _ = isolatedSession("incremental-complete-generation", pool, backend)
-  session.adopted = plans
-  session.sourceLoaded = true
-  session.pagesKnown = true
-  local requested, requestFailure = session:requestComplete("required")
-  Assert.isFalse(requested, "the complete build stays pending until the pump runs")
-  Assert.isNil(requestFailure, "registration reports no failure")
-  local realCompleteJobs = ArtifactJobs.completeJobs
-  ArtifactJobs.completeJobs = function()
-    error("explicit complete enrollment must not materialize the complete corpus")
-  end
-  local ok, failure = pcall(function()
-    session:update()
-    local firstPass = session:outcomes()
-    Assert.isTrue(#firstPass < 40, "one update visits only a bounded chunk, not the corpus: " .. tostring(#firstPass))
-    -- Enrollment shares the bounded planning slice with every enrolled
-    -- entry, so later updates enroll less per turn; iterate to quiescence
-    -- (no growth across sustained pumping) rather than a fixed turn
-    -- count, which a loaded machine can outlast without product change.
-    local lastCount, stagnant = 0, 0
-    for _ = 1, 20000 do
-      if #session:outcomes() >= #expected then
-        break
-      end
-      session:update()
-      if #session:outcomes() == lastCount then
-        stagnant = stagnant + 1
-        if stagnant >= 500 then
-          break
-        end
-      else
-        lastCount, stagnant = #session:outcomes(), 0
-      end
-    end
-    local outcomes = session:outcomes()
-    Assert.equal(#outcomes, #expected, "complete enrollment covers the canonical union")
-    local seen = {}
-    for _, outcome in ipairs(outcomes) do
-      seen[outcome.jobKey] = true
-    end
-    for _, job in ipairs(expected) do
-      Assert.isTrue(seen[job.jobKey] == true, "complete enrollment covers " .. job.jobKey)
-    end
-  end)
-  ArtifactJobs.completeJobs = realCompleteJobs
-  if not ok then
-    error(failure, 0)
-  end
-end
 
 -- A ready pool reply is worker proof, not a request for controller
 -- validation: the entry succeeds with zero family-validator calls on

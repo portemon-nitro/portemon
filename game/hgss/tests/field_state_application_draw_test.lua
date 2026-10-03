@@ -218,6 +218,7 @@ local function drawableState(options)
         end
         error("no presenter is registered for application " .. tostring(applicationId))
       end,
+      drawMart = function() end,
       fieldEntranceIndicatorRenderer = {
         drawItems = function()
           return {}

@@ -88,6 +88,11 @@ local function validate(record, context)
       money = money,
     })
   end
+  if type(profile.nationalDex) ~= "boolean" then
+    Errors.raise(FieldErrors.PLAYER_DATA_INVALID, "player nationalDex must be a boolean", {
+      nationalDex = profile.nationalDex,
+    })
+  end
   -- Badge state stays in the canonical profile: validation delegates the
   -- 16-bit mask discipline to the durable progression owner.
   if not PlayerProgression.isMask(profile.badges) then
@@ -125,6 +130,7 @@ local function validate(record, context)
       trainerId = trainerId,
       money = money,
       badges = profile.badges,
+      nationalDex = profile.nationalDex,
     },
     options = { textFrame = textFrame, textSpeed = options.textSpeed },
   }

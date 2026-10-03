@@ -323,6 +323,72 @@ function BagPresentationFixture.manifest()
     },
     interactive = {
       backgrounds = backgrounds,
+      sale = {
+        pressTicks = 2,
+        quantityBackground = bagImageRef("assets/generated/bag/background-sale-quantity.png"),
+        digits = { bagRect(160, 112, 16, 24), bagRect(192, 112, 16, 24) },
+        controls = {
+          { delta = 10, role = "increment", center = { x = 136, y = 104 }, hitRect = bagRect(120, 88, 32, 24) },
+          { delta = 1, role = "increment", center = { x = 168, y = 104 }, hitRect = bagRect(152, 88, 32, 24) },
+          { delta = -10, role = "decrement", center = { x = 136, y = 152 }, hitRect = bagRect(120, 136, 32, 24) },
+          { delta = -1, role = "decrement", center = { x = 168, y = 152 }, hitRect = bagRect(152, 136, 32, 24) },
+        },
+        confirm = {
+          visual = bagImageRef("assets/generated/bag/quantity-confirm.png"),
+          center = { x = 136, y = 176 },
+          hitRect = bagRect(96, 168, 78, 24),
+          labelAt = { x = 117, y = 168 },
+        },
+        cancel = {
+          visual = bagImageRef("assets/generated/bag/quantity-cancel.png"),
+          center = { x = 224, y = 176 },
+          hitRect = bagRect(178, 168, 78, 24),
+          labelAt = { x = 197, y = 168 },
+        },
+        selectedItem = {
+          iconCenter = { x = 86, y = 76 },
+          textRect = bagRect(96, 56, 88, 32),
+          nameAt = { x = 0, y = 0 },
+          quantityAt = { x = 48, y = 16 },
+        },
+        money = {
+          x = 168,
+          y = 8,
+          width = 80,
+          height = 16,
+          fontId = 0,
+          textX = 0,
+          textY = 0,
+          alignment = "right",
+          paletteRole = "foreground",
+        },
+        total = {
+          x = 168,
+          y = 24,
+          width = 80,
+          height = 16,
+          fontId = 0,
+          textX = 0,
+          textY = 0,
+          alignment = "right",
+          paletteRole = "foreground",
+        },
+        compactPrompt = { x = 200, y = 48, shape = "compact", initialSelection = "yes" },
+        messages = {
+          notSellable = { segments = { { kind = "item" }, { kind = "text", value = " cannot be sold." } } },
+          quantity = { segments = { { kind = "item" }, { kind = "text", value = "? Quantity?" } } },
+          offer = { segments = { { kind = "text", value = "Offer: " }, { kind = "total" } } },
+          result = {
+            segments = {
+              { kind = "quantity" },
+              { kind = "text", value = " " },
+              { kind = "item" },
+              { kind = "text", value = " sold for " },
+              { kind = "total" },
+            },
+          },
+        },
+      },
       pocketTabs = {
         rects = tabs,
         strips = tabStrips,
@@ -473,6 +539,12 @@ function BagPresentationFixture.manifest()
             visual = bagImageRef("assets/generated/bag/quantity-confirm.png"),
             center = { x = 136, y = 176 },
             hitRect = bagRect(96, 168, 78, 24),
+            labelAt = { x = 117, y = 168 },
+          },
+          cancel = {
+            visual = bagImageRef("assets/generated/bag/quantity-cancel.png"),
+            center = { x = 224, y = 176 },
+            labelAt = { x = 197, y = 168 },
           },
           cancelHitRect = bagRect(178, 168, 78, 24),
         },
@@ -502,6 +574,10 @@ function BagPresentationFixture.manifest()
         quantityConfirm = {
           normal = bagImageRef("assets/generated/bag/quantity-confirm.png"),
           selected = bagImageRef("assets/generated/bag/quantity-confirm-selected.png"),
+        },
+        quantityCancel = {
+          normal = bagImageRef("assets/generated/bag/quantity-cancel.png"),
+          selected = bagImageRef("assets/generated/bag/quantity-cancel-selected.png"),
         },
       },
       moveTransition = {

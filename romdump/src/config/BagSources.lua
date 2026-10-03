@@ -197,9 +197,8 @@ BagSources.moveSummary = {
 -- Screen (NSCR) members by semantic role. The lower-pane roles follow the
 -- ov15_021FD574 variant call sites: 44+42 is the move surface (variant 1),
 -- 45 is the action overlay applied over the retained browse BG5 (variant
--- 2), and 52 is the quantity overlay applied over the retained action BG5
--- (variant 3). Member 53 is the unused alternate quantity screen and stays
--- outside the implemented flow.
+-- 2), 52 is the Toss quantity overlay on variant 3, and 53 is the sale
+-- quantity screen on variant 4.
 BagSources.screens = {
   upperBase = 54,
   upperAlternate = 9,
@@ -211,6 +210,7 @@ BagSources.screens = {
   moveWash = 42,
   actionOverlay = 45,
   quantityOverlay = 52,
+  saleQuantity = 53,
 }
 
 -- Character (NCGR) members by semantic role. The registration marker source
@@ -295,7 +295,11 @@ BagSources.spriteStates = {
   quantity = {
     increment = { normal = { animation = 25, palette = 8 }, pressed = { animation = 26, palette = 8 } },
     decrement = { normal = { animation = 27, palette = 8 }, pressed = { animation = 28, palette = 8 } },
-    confirm = { animation = 31, palette = 8 },
+    -- The quantity picker confirms through its own TOSS/A face and cancels
+    -- through its own Cancel/B face; the label origins below are text
+    -- placement, never touch geometry.
+    confirm = { animation = 37, palette = 8 },
+    cancel = { animation = 39, palette = 8 },
   },
   cancelFace = { animation = 16, palette = 8 },
   cursor = { animations = { 0, 1, 2, 3 } },
@@ -308,14 +312,14 @@ BagSources.spriteStates = {
 -- BG6; quantity (variant 3) retains the action BG5 and applies the
 -- quantity overlay on BG6; move (variant 1) composes its wash under its
 -- slots with the ov15_021FD4C0 count/origin mutation. There is no
--- standalone confirmation background: toss confirmation retains its
--- action/quantity base. Runtime receives only realized pixels, never
--- these roles.
+-- sale (variant 4) retains the selected-item pane and loads its screen on
+-- BG6. Runtime receives only realized pixels, never these roles.
 BagSources.lowerLayers = {
   browse = { variant = 0, wash = "listWash", slots = "listSlots" },
   action = { variant = 2, base = "browse", overlay = "actionOverlay" },
   quantity = { variant = 3, base = "action", overlay = "quantityOverlay" },
   move = { variant = 1, wash = "moveWash", slots = "moveSlots" },
+  saleQuantity = { variant = 4, base = "action", overlay = "saleQuantity" },
 }
 
 -- Retained selected-item panel: the action-derived states redraw the
@@ -469,9 +473,8 @@ BagSources.unboundAnimations = { 21 }
 -- selectors. Pinned facts: msg_0010 carries USE (0), TRASH (1), REGISTER (2),
 -- GIVE (3), CONFIRM (5), CANCEL (8), DESELECT (18), the move prompt (46),
 -- the post-choice result text (54), the MOVE label
--- (75), and the toss confirmation prompt (55). Message 53 (the alternate
--- quantity prompt) has no call-site consumer in the implemented flow and
--- stays out of the generated contract.
+-- (75), and the toss confirmation prompt (55). Sale states consume messages
+-- 76..79; message 4 is blank and is never used as a SELL label.
 BagSources.messages = {
   actionLabels = {
     toss = { bank = 10, index = 1 },
@@ -488,6 +491,10 @@ BagSources.messages = {
     tossConfirm = { bank = 10, index = 55 },
     tossResult = { bank = 10, index = 54 },
     selectedItem = { bank = 10, index = 43 },
+    saleNotSellable = { bank = 10, index = 76 },
+    saleQuantity = { bank = 10, index = 77 },
+    saleOffer = { bank = 10, index = 78 },
+    saleResult = { bank = 10, index = 79 },
   },
 }
 
@@ -631,8 +638,62 @@ BagSources.geometry = {
   quantityConfirm = {
     center = { x = 136, y = 176 },
     hitRect = rect(96, 168, 78, 24),
+    labelAt = { x = 117, y = 168 },
   },
   quantityCancelHitRect = rect(178, 168, 78, 24),
+  quantityCancelLabelAt = { x = 197, y = 168 },
+}
+
+-- Sale mode 2 in ov15_02200300 activates a two-digit amount and the four
+-- controls in ov15_021FCDE4: +10, +1, -10, and -1. The same increment and
+-- decrement face animations serve both quantity modes; sale has distinct
+-- hit targets and amount placement. Its item, wallet, and total windows are
+-- written by ov15_021FF7FC, ov15_021FF29C, and ov15_021FFFDC.
+BagSources.saleQuantity = {
+  digits = { rect(160, 112, 16, 24), rect(192, 112, 16, 24) },
+  controls = {
+    { delta = 10, role = "increment", center = { x = 136, y = 104 }, hitRect = rect(120, 88, 32, 24) },
+    { delta = 1, role = "increment", center = { x = 168, y = 104 }, hitRect = rect(152, 88, 32, 24) },
+    { delta = -10, role = "decrement", center = { x = 136, y = 152 }, hitRect = rect(120, 136, 32, 24) },
+    { delta = -1, role = "decrement", center = { x = 168, y = 152 }, hitRect = rect(152, 136, 32, 24) },
+  },
+  confirm = {
+    visualState = "confirm",
+    center = { x = 136, y = 176 },
+    hitRect = rect(96, 168, 78, 24),
+    labelAt = { x = 117, y = 168 },
+  },
+  cancel = {
+    visualState = "cancel",
+    center = { x = 224, y = 176 },
+    hitRect = rect(178, 168, 78, 24),
+    labelAt = { x = 197, y = 168 },
+  },
+  selectedItem = BagSources.selectedItem,
+  money = {
+    x = 168,
+    y = 8,
+    width = 80,
+    height = 16,
+    fontId = 0,
+    textX = 0,
+    textY = 0,
+    alignment = "right",
+    paletteRole = "foreground",
+  },
+  total = {
+    x = 168,
+    y = 24,
+    width = 80,
+    height = 16,
+    fontId = 0,
+    textX = 0,
+    textY = 0,
+    alignment = "right",
+    paletteRole = "foreground",
+  },
+  compactPrompt = BagSources.tossPrompt,
+  pressTicks = 2,
 }
 
 -- Movable focus targets in canonical pane pixels: the position records the

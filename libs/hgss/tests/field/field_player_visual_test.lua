@@ -85,6 +85,14 @@ local function player()
     _gesturePose = nil,
     _gestureTick = nil,
     _gestureOffsetY = 0,
+    renderPositionInto = function(self, out, alpha)
+      ---@cast self TestPlayerStub
+      alpha = alpha == nil and 1 or alpha
+      out.x = self.previousWorldX + (self.worldX - self.previousWorldX) * alpha
+      out.y = self.previousWorldY + (self.worldY - self.previousWorldY) * alpha
+      out.z = self.previousWorldZ + (self.worldZ - self.previousWorldZ) * alpha
+      return out
+    end,
     renderPosition = function(self, alpha)
       ---@cast self TestPlayerStub
       alpha = alpha == nil and 1 or alpha
@@ -99,6 +107,14 @@ local function player()
       self._gesturePose = nil
       self._gestureTick = nil
       self._gestureOffsetY = 0
+    end,
+    presentationStateInto = function(self, out)
+      local locomotionActive = self.motion == "walking" or self.motion == "turning" or self.motion == "jumping"
+      out.locomotionActive = locomotionActive
+      out.gesturePose = self._gesturePose
+      out.gestureTick = self._gestureTick
+      out.gestureOffsetY = self._gestureOffsetY
+      return out
     end,
     presentationState = function(self)
       local locomotionActive = self.motion == "walking" or self.motion == "turning" or self.motion == "jumping"
@@ -618,6 +634,44 @@ function T.avatar_offset_combines_with_gesture_offset_exactly_once()
   subject._gestureOffsetY = 5
   local withGesture = presentation:drawRecord(1)
   Assert.near(withGesture.world.y, 0.5 + 0.328125 + 5, 1e-9, "avatar and gesture offsets compose additively")
+end
+
+function T.visual_hot_reads_use_caller_owned_player_outputs()
+  local subject = player()
+  subject.presentationState = function()
+    error("visual hot reads must not allocate a player presentation snapshot", 2)
+  end
+  subject.presentationStateInto = function(_, out)
+    out.locomotionActive = true
+    out.gesturePose = nil
+    out.gestureTick = nil
+    out.gestureOffsetY = 2
+    return out
+  end
+  subject.renderPosition = function()
+    error("visual hot reads must not allocate a render position", 2)
+  end
+  subject.renderPositionInto = function(_, out, alpha)
+    Assert.equal(alpha, 0.5)
+    out.x, out.y, out.z = 8, 9, 10
+    return out
+  end
+  local avatar = {
+    presentationState = function()
+      error("visual hot reads must not allocate an avatar presentation snapshot", 2)
+    end,
+    presentationStateInto = function(_, out)
+      out.playerOffset.x, out.playerOffset.y, out.playerOffset.z = 1, 3, 4
+      out.surf.active = true
+      out.surf.attachmentOffsetY = 0
+      return out
+    end,
+  }
+  local visual = FieldPlayerVisual.new({ player = subject, spriteId = 77, playerAvatar = avatar })
+  visual:updateFixed(true)
+  local record = visual:drawRecord(0.5)
+  Assert.deepEqual(record.world, { x = 9, y = 14, z = 14 })
+  Assert.equal(record.pose, "walk")
 end
 
 return { tests = T }

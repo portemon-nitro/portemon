@@ -1,5 +1,5 @@
 -- Pure inventory-local action menu projection: toss follows the source
--- toss metadata, move follows manual ordering plus occupancy, registration
+-- toss metadata, move follows manual ordering, registration
 -- follows the two-slot state machine, the menu never leaves the
 -- inventory-local set, and an empty selection offers only the way out.
 -- Literal semantic facts only; no service, no catalog, no love.
@@ -61,13 +61,20 @@ function T.toss_follows_the_source_toss_metadata()
   )
 end
 
-function T.move_needs_a_manual_pocket_with_room_to_reorder()
+function T.move_follows_manual_ordering_regardless_of_occupancy()
   Assert.isTrue(has(BagActionPolicy.actionsFor(facts()), "move"), "a manual pocket with two items offers to move")
+  Assert.isTrue(
+    has(BagActionPolicy.actionsFor(facts({ pocketCount = 1 })), "move"),
+    "a lone item in a manual pocket still offers to move"
+  )
   Assert.isFalse(
     has(BagActionPolicy.actionsFor(facts({ pocketOrdering = "native_id" })), "move"),
     "a canonical-order pocket never offers to move"
   )
-  Assert.isFalse(has(BagActionPolicy.actionsFor(facts({ pocketCount = 1 })), "move"), "a lone item has nowhere to move")
+  Assert.isFalse(
+    has(BagActionPolicy.actionsFor(facts({ pocketOrdering = "native_id", pocketCount = 1 })), "move"),
+    "a lone item in a canonical-order pocket never offers to move"
+  )
 end
 
 function T.registration_offers_exactly_one_direction()

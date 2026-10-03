@@ -14,6 +14,7 @@
 local ApplicationLayout = require("libs.ui.src.ApplicationLayout")
 local BagLayout = require("libs.hgss.src.ui.BagLayout")
 local NativeDisplay = require("libs.ui.src.NativeDisplay")
+local LogicalSurface = require("libs.ui.src.LogicalSurface")
 
 ---@class BagInterface
 local BagInterface = {}
@@ -22,6 +23,44 @@ local HERO_NATIVE = { id = "hero", width = NativeDisplay.WIDTH, height = NativeD
 local INTERACTION_NATIVE = { id = "interaction", width = NativeDisplay.WIDTH, height = NativeDisplay.HEIGHT }
 local INPUT_KEY = "bag"
 local ZERO_CROP = { left = 0, right = 0, top = 0, bottom = 0 }
+local REVEAL_STEPS = 6
+local REVEAL_WIDTH = 256
+local REVEAL_HEIGHT = 192
+
+---@param graphics table<string, unknown>
+---@param opening table<string, unknown>?
+---@param paneId string
+local function drawRevealCover(graphics, opening, paneId)
+  if opening == nil then
+    return
+  end
+  assert(type(opening) == "table", "the opening progress stays a table while covered")
+  local step
+  if paneId == "hero" then
+    step = assert(opening.subStep, "the opening progress carries its sub step")
+  elseif paneId == "interaction" then
+    step = assert(opening.mainStep, "the opening progress carries its main step")
+  else
+    return
+  end
+  assert(
+    type(step) == "number" and step % 1 == 0 and step >= 0 and step <= REVEAL_STEPS,
+    "the opening step stays within its leg"
+  )
+  if step == REVEAL_STEPS then
+    return
+  end
+  local height = REVEAL_HEIGHT - (REVEAL_HEIGHT / REVEAL_STEPS) * step
+  local red, green, blue, alpha = graphics.getColor()
+  local ok, err = pcall(function()
+    graphics.setColor(0, 0, 0, 1)
+    graphics.rectangle("fill", 0, REVEAL_HEIGHT - height, REVEAL_WIDTH, height)
+  end)
+  graphics.setColor(red, green, blue, alpha)
+  if not ok then
+    error(err, 0)
+  end
+end
 
 ---@param resources table<string, unknown> borrowed application collaborators
 ---@param view table<string, unknown> the wrapper semantic snapshot
@@ -35,6 +74,15 @@ local function renderBag(resources, view, plan)
     plan,
     { icons = icons }
   )
+  local graphics = assert(resources.graphics, "the bag render borrows its host graphics")
+  for _, pane in ipairs(assert(plan.panes, "the bag plan carries its panes")) do
+    local id = assert(pane.id, "bag panes carry identities")
+    if id == "hero" or id == "interaction" then
+      LogicalSurface.draw(graphics, assert(pane.placement), function()
+        drawRevealCover(graphics, view.opening, id)
+      end)
+    end
+  end
 end
 
 ---@param event table<string, unknown> session-inverted logical input

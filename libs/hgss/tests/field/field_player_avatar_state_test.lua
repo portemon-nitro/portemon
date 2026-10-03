@@ -75,6 +75,27 @@ function T.boots_walking_stable_with_no_pending()
   Assert.deepEqual(result.sounds, {})
 end
 
+function T.presentation_state_into_overwrites_reused_output_for_surf_then_walking()
+  local state = walkingState()
+  local output = { surf = { active = false, attachmentOffsetY = 99 }, playerOffset = { x = 99, y = 99, z = 99 } }
+  state:queueTransition("surfing")
+  state:applyTransitions()
+  state:presentationStateInto(output)
+  Assert.isTrue(output.surf.active)
+  Assert.isTrue(output.playerOffset.y ~= 0)
+
+  state:queueTransition("rocket")
+  state:applyTransitions()
+  state:presentationStateInto(output)
+  Assert.isFalse(output.surf.active, "reused output clears stale surf activity")
+  Assert.deepEqual(output.playerOffset, { x = 0, y = 0, z = 0 }, "reused output clears the surf offset")
+
+  local first = state:presentationState()
+  local second = state:presentationState()
+  first.playerOffset.y = 99
+  Assert.equal(second.playerOffset.y, 0, "normal presentation snapshots remain independent")
+end
+
 function T.scrambled_batch_applies_in_source_order()
   local state = walkingState()
   state:queueTransition("rocket_heal")

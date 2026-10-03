@@ -21,6 +21,7 @@
 -- grid to classify the warp tile.
 
 local Assert = require("tests.support.Assert")
+local FieldCamera = require("libs.hgss.src.field.FieldCamera")
 local FieldTransition = require("libs.hgss.src.transition.FieldTransition")
 local FieldTransitionFade = require("libs.hgss.src.transition.FieldTransitionFade")
 local FieldTransitionProfile = require("libs.hgss.src.transition.FieldTransitionProfile")
@@ -1595,6 +1596,410 @@ function T.absent_door_resolver_is_a_data_contract_failure_not_a_synthetic_succe
   Assert.equal(type(err) == "table" and err.code or err, "MAP_TRANSITION_UNRESOLVED_SOURCE_DOOR")
   Assert.equal(#sounds, 0, "no synthetic door-open sound may be emitted when door data cannot resolve")
   Assert.equal(#swaps, 0, "no map swap may occur when door data cannot resolve")
+end
+
+-- ---- outdoor white-fade camera recurrence ----
+
+-- Outdoor exits tilt the live camera while the white fade runs. These tests
+-- drive a real camera through production-shaped transition routing, so only
+-- the observed projection, fade, and sound behavior is frozen here.
+
+local function cameraProfile()
+  return {
+    projectionType = "perspective",
+    distanceTiles = 10,
+    angleXRaw = -8192,
+    angleYRaw = 0,
+    halfFovRadians = math.rad(15),
+    fullVerticalFovRadians = math.rad(30),
+    nearTiles = 1,
+    farTiles = 100,
+    targetOffsetTiles = { x = 0, y = 0, z = 0 },
+  }
+end
+
+local function copyMatrix(values)
+  local copy = {}
+  for index = 1, 16 do
+    copy[index] = values[index]
+  end
+  return copy
+end
+
+local function sameProjection(a, b)
+  for index = 1, 16 do
+    if a[index] ~= b[index] then
+      return false
+    end
+  end
+  return true
+end
+
+---@param camera table
+local function requireRawPort(camera)
+  Assert.equal(
+    type(camera.rawPerspective),
+    "function",
+    "the outdoor white fade needs the live raw perspective angle reader"
+  )
+  Assert.equal(
+    type(camera.adjustRawPerspective),
+    "function",
+    "the outdoor white fade needs the live raw perspective angle stepper"
+  )
+end
+
+---@param camera table
+---@return integer|nil
+local function rawOrNil(camera)
+  if type(camera.rawPerspective) == "function" then
+    local raw = camera:rawPerspective()
+    Assert.equal(raw % 1, 0, "the live angle stays in whole raw units")
+    return raw
+  end
+  return nil
+end
+
+local OUTDOOR_WARP = { index = 0, x = 4, z = 14, destinationMapId = 60, destinationWarpId = 0 }
+local OUTDOOR_WHITE = 0x7FFF
+
+---@return table
+local function outdoorFixture(opts)
+  opts = opts or {}
+  local camera = FieldCamera.new(cameraProfile(), { initialTarget = { x = 0, y = 0, z = 0 } })
+  local swaps = {}
+  local sounds = {}
+  local transition = FieldTransition.new({
+    loader = opts.loader or {
+      requestWarp = function()
+        return true
+      end,
+    },
+    resolveDestination = opts.resolveDestination or function()
+      return {
+        destinationMap = { mapId = 60 },
+        destinationWarp = { x = 4, z = 14 },
+        fieldX = 684,
+        fieldZ = 393,
+        surfaceId = 0,
+        worldY = 0,
+        suppression = { mapId = 60, fieldX = 684, fieldZ = 393 },
+      }
+    end,
+    prepare = function()
+      return {}
+    end,
+    commit = function(result, facing, prepared)
+      swaps[#swaps + 1] = { result = result, facing = facing, prepared = prepared }
+    end,
+    playSound = function(soundId)
+      sounds[#sounds + 1] = soundId
+    end,
+    cameraAdjust = function(profileId, adjustment, player)
+      -- Production-shaped camera routing: the transition reanchors the live
+      -- camera through its own adjustment entry point and gets the handle
+      -- back for its source-frame angle choreography.
+      if player and type(camera.setTransitionPlayer) == "function" then
+        camera:setTransitionPlayer(player)
+      end
+      camera:adjustTransition(profileId, adjustment)
+      return camera
+    end,
+    doorAt = opts.doorAt,
+  })
+  if opts.player then
+    transition.player = opts.player
+  end
+  return {
+    camera = camera,
+    transition = transition,
+    swaps = swaps,
+    sounds = sounds,
+    source = { mapId = 61 },
+  }
+end
+
+---@param fixture table
+---@param kind string|nil
+---@param profileId integer
+local function startFixedProfile(fixture, kind, profileId)
+  fixture.transition:start(fixture.source, {
+    kind = kind or "generic",
+    warp = OUTDOOR_WARP,
+    transition = { mode = "fixed", profile = profileId },
+  }, "south")
+end
+
+-- Outdoor exits tilt the live camera on the source-frame clock while the
+-- white fade runs: every frame that advances the fade steps the angle down,
+-- and fixed updates or read-only queries alone move nothing.
+function T.outdoor_exit_tilts_the_live_camera_on_the_source_frame_clock()
+  local fixture = outdoorFixture()
+  local camera = fixture.camera
+  local transition = fixture.transition
+  startFixedProfile(fixture, "generic", 5)
+  Assert.equal(transition.phase, "fade_out", "the outdoor transition starts in its exit fade")
+  Assert.equal(transition:presentationStatus().color, OUTDOOR_WHITE, "the outdoor exit fade stays white")
+  Assert.deepEqual(
+    fixture.sounds,
+    { FieldTransitionProfile.ROUTINE_FAMILIES[5].exitSound },
+    "the outdoor exit keeps its stair sound"
+  )
+
+  local settled = copyMatrix(camera:projection())
+  for _ = 1, 3 do
+    transition:updateFixed()
+  end
+  Assert.isTrue(sameProjection(copyMatrix(camera:projection()), settled), "fixed updates alone never tilt the camera")
+  Assert.equal(transition:presentationStatus().coefficient, 0, "fixed updates alone never advance the fade")
+  camera:projection()
+  camera:billboardProjection()
+  transition:presentationStatus()
+  Assert.isTrue(sameProjection(copyMatrix(camera:projection()), settled), "read-only queries never tilt the camera")
+
+  local frames = {}
+  for _ = 1, 16 do
+    if transition.phase ~= "fade_out" then
+      break
+    end
+    local beforeCoefficient = transition:presentationStatus().coefficient
+    local beforeProjection = copyMatrix(camera:projection())
+    frames[#frames + 1] = { raw = rawOrNil(camera) }
+    transition:updateFixed()
+    transition:updateSourceFrame()
+    frames[#frames].advanced = transition:presentationStatus().coefficient ~= beforeCoefficient
+    if frames[#frames].advanced then
+      Assert.isFalse(
+        sameProjection(copyMatrix(camera:projection()), beforeProjection),
+        "every fade-advancing exit frame must tilt the live projection"
+      )
+    end
+  end
+  Assert.equal(transition.phase, "load_destination", "the exit fade runs to full cover")
+  local advancedFrames = 0
+  for _, frame in ipairs(frames) do
+    if frame.advanced then
+      advancedFrames = advancedFrames + 1
+    end
+  end
+  Assert.equal(advancedFrames, 6, "the white exit fade runs six source frames")
+  requireRawPort(camera)
+  for index = 1, #frames - 1 do
+    local before = frames[index].raw
+    local after = frames[index + 1].raw
+    Assert.notNil(before, "the live angle stays observable across the exit")
+    Assert.notNil(after, "the live angle stays observable across the exit")
+    assert(before ~= nil and after ~= nil)
+    if frames[index].advanced then
+      Assert.equal(after - before, -12, "an advancing exit frame subtracts twelve raw units")
+    else
+      Assert.equal(after - before, 0, "an idle exit frame steps nothing")
+    end
+  end
+  local first = frames[1].raw
+  local last = frames[#frames].raw
+  Assert.notNil(first, "the live angle stays observable across the exit")
+  Assert.notNil(last, "the live angle stays observable across the exit")
+  assert(first ~= nil and last ~= nil)
+  Assert.equal(last - first, -12 * advancedFrames, "the exit total matches its stepped frames")
+end
+
+-- Outdoor enters reveal from below the destination angle: the swap applies
+-- the below-start offset, every reveal frame restores part of it, and the
+-- finished transition leaves the destination angle exact.
+function T.outdoor_enter_starts_below_destination_and_restores_it_exactly()
+  local fixture = outdoorFixture()
+  local camera = fixture.camera
+  local transition = fixture.transition
+  startFixedProfile(fixture, "generic", 5)
+  advanceTo(transition, "swap_map", 64)
+  local destination = rawOrNil(camera)
+  local coveredProjection = copyMatrix(camera:projection())
+  -- Swap on the fixed tick only: the scenario observes the reveal start
+  -- before any source-frame advance consumes a fade/camera step.
+  transition:updateFixed()
+  Assert.equal(transition.phase, "fade_in", "the swap reveals through the enter fade")
+  Assert.equal(transition:presentationStatus().color, OUTDOOR_WHITE, "the outdoor reveal stays white")
+  Assert.equal(#fixture.swaps, 1, "the covered swap commits exactly once")
+  Assert.isFalse(
+    sameProjection(copyMatrix(camera:projection()), coveredProjection),
+    "the outdoor reveal must start from a moved live projection"
+  )
+  Assert.notNil(destination, "the destination angle is observable at the swap")
+  requireRawPort(camera)
+  assert(destination ~= nil)
+  Assert.equal(camera:rawPerspective(), destination - 96, "the reveal starts 96 raw units below destination")
+  local frames = {}
+  for _ = 1, 16 do
+    if transition.phase ~= "fade_in" then
+      break
+    end
+    local beforeCoefficient = transition:presentationStatus().coefficient
+    local before = camera:rawPerspective()
+    transition:updateFixed()
+    transition:updateSourceFrame()
+    frames[#frames + 1] = {
+      delta = camera:rawPerspective() - before,
+      advanced = transition:presentationStatus().coefficient ~= beforeCoefficient,
+    }
+  end
+  local advancedFrames = 0
+  for _, frame in ipairs(frames) do
+    if frame.advanced then
+      advancedFrames = advancedFrames + 1
+      Assert.equal(frame.delta, 16, "an advancing reveal frame restores sixteen raw units")
+    else
+      Assert.equal(frame.delta, 0, "an idle reveal frame steps nothing")
+    end
+  end
+  Assert.equal(advancedFrames, 6, "the white reveal runs six source frames")
+  Assert.equal(camera:rawPerspective(), destination, "the reveal restores the destination angle exactly")
+  advanceTo(transition, "idle", 64)
+  Assert.equal(camera:rawPerspective(), destination, "completion never leaves a reveal offset")
+  Assert.isTrue(
+    sameProjection(copyMatrix(camera:projection()), coveredProjection),
+    "the restored angle restores the projection"
+  )
+end
+
+-- Ordinary, cave, and covered swaps never move the live camera: the outdoor
+-- recurrence belongs to profile 5 alone.
+function T.ordinary_cave_and_covered_swaps_leave_the_live_camera_untouched()
+  for _, profileId in ipairs({ 0, 4 }) do
+    local fixture = outdoorFixture()
+    local camera = fixture.camera
+    local transition = fixture.transition
+    startFixedProfile(fixture, "generic", profileId)
+    local settled = copyMatrix(camera:projection())
+    for _ = 1, 64 do
+      if transition.phase == "idle" then
+        break
+      end
+      step(transition)
+      Assert.isTrue(
+        sameProjection(copyMatrix(camera:projection()), settled),
+        "profile " .. profileId .. " must not move the live camera"
+      )
+    end
+    Assert.equal(transition.phase, "idle", "profile " .. profileId .. " still completes")
+  end
+  local covered = outdoorFixture()
+  local settledCovered = copyMatrix(covered.camera:projection())
+  covered.transition:startCoveredSwap(
+    covered.source,
+    { warp = { index = 0, destinationMapId = 60, destinationWarpId = 0 } },
+    "south"
+  )
+  for _ = 1, 32 do
+    if covered.transition.phase == "idle" then
+      break
+    end
+    step(covered.transition)
+    Assert.isTrue(
+      sameProjection(copyMatrix(covered.camera:projection()), settledCovered),
+      "covered swaps bypass the camera recurrence"
+    )
+  end
+  Assert.equal(covered.transition.phase, "idle", "the covered swap still completes")
+  Assert.notNil(covered.transition:consumeCompleted(), "the covered swap still reports completion")
+end
+
+-- A failing outdoor enter keeps no reveal offset: the destination angle
+-- captured at the swap is restored before the failure leaves the transition.
+function T.aborted_outdoor_enter_restores_the_captured_destination_angle()
+  local door = {
+    instance = {},
+    role = nil,
+    remaining = 0,
+    open = function(self)
+      self.role = "open"
+      self.remaining = 4
+    end,
+    close = function(_)
+      error("injected destination door close failure", 0)
+    end,
+    isFinished = function(self)
+      if self.role == nil then
+        return nil
+      end
+      return self.remaining == 0
+    end,
+    advance = function(self)
+      if self.remaining > 0 then
+        self.remaining = self.remaining - 1
+      end
+    end,
+  }
+  local player = {
+    motion = "idle",
+    remaining = 0,
+    renderPosition = function()
+      return { x = 0, y = 0, z = 0 }
+    end,
+    scriptedStep = function(self)
+      self.motion = "walking"
+      self.remaining = 8
+      return true
+    end,
+    updateFixed = function(self)
+      self.remaining = self.remaining - 1
+      if self.remaining <= 0 then
+        self.motion = "idle"
+      end
+      return true
+    end,
+  }
+  local fixture = outdoorFixture({
+    player = player,
+    doorAt = function(runtimeMap)
+      if runtimeMap.mapId == 60 then
+        return door
+      end
+      return nil
+    end,
+  })
+  local camera = fixture.camera
+  local transition = fixture.transition
+  startFixedProfile(fixture, "generic", 5)
+  advanceTo(transition, "swap_map", 64)
+  local destination = rawOrNil(camera)
+  local coveredProjection = copyMatrix(camera:projection())
+  step(transition)
+  Assert.equal(transition.phase, "fade_in", "the swap reveals through the enter fade")
+  Assert.isFalse(
+    sameProjection(copyMatrix(camera:projection()), coveredProjection),
+    "the outdoor reveal must start from a moved live projection"
+  )
+  Assert.notNil(destination, "the destination angle is observable at the swap")
+  requireRawPort(camera)
+  assert(destination ~= nil)
+  local raised = nil
+  for _ = 1, 200 do
+    local ok, err = pcall(function()
+      transition:updateFixed()
+    end)
+    if not ok then
+      raised = err
+      break
+    end
+    transition:updateSourceFrame()
+    door:advance()
+    if transition.phase == "idle" then
+      break
+    end
+  end
+  Assert.notNil(raised, "the failing destination close must surface")
+  Assert.isTrue(
+    string.find(tostring(raised), "injected destination door close failure", 1, true) ~= nil,
+    "the close cause is preserved"
+  )
+  Assert.equal(camera:rawPerspective(), destination, "the aborted reveal restores the captured destination angle")
+  Assert.isTrue(
+    sameProjection(copyMatrix(camera:projection()), coveredProjection),
+    "the restored angle restores the projection"
+  )
+  Assert.isTrue(transition.locked, "a post-swap failure keeps the field locked")
+  Assert.isNil(transition.error, "a post-swap failure is not a coherent abort")
 end
 
 return { tests = T }

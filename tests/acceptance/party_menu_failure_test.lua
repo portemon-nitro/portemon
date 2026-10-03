@@ -18,6 +18,7 @@ local BagSave = require("libs.hgss.src.save.BagSave")
 local CatalogFixture = require("libs.mons.tests.catalog_fixture")
 local Errors = require("libs.errors.src.Errors")
 local FakeCache = require("tests.support.FakeCache")
+local GameSave = require("libs.hgss.src.save.GameSave")
 local GameSaveValidation = require("libs.hgss.src.save.GameSaveValidation")
 local ItemFixture = require("libs.items.tests.item_fixture")
 local MonsSave = require("libs.mons.src.MonsSave")
@@ -146,6 +147,12 @@ end
 
 local function drive(flow, events)
   flow:updateFixed(events)
+  for _ = 1, 6 do
+    if flow:status().transition == nil then
+      break
+    end
+    flow:updateFixed({})
+  end
   return flowStatus(flow)
 end
 
@@ -164,6 +171,18 @@ local function bagChild(status)
   return assert(status.child, "the active page carries its child status")
 end
 
+-- A fresh party page clears its open before input: wait for the leaf
+-- to turn interactive, then run out the handover ticks that still drop
+-- input so the first navigation acts.
+local function drainOpen(flow)
+  driveUntil(flow, "the open clears before input", 30, function(current)
+    local child = current.child
+    return child ~= nil and child.phase == "interactive"
+  end)
+  drive(flow, {})
+  drive(flow, {})
+end
+
 local BAG_NEIGHBORS = {
   [0] = { up = 2, down = 2, left = 1, right = 1 },
   [1] = { up = 3, down = 3, left = 0, right = 0 },
@@ -176,6 +195,9 @@ local BAG_NEIGHBORS = {
 -- the stable action menu opens: settle the generated transition clock
 -- before callers read the action state or its actions.
 local function chooseBagAction(flow, id)
+  driveUntil(flow, "the Bag opening settles", 30, function(current)
+    return current.child ~= nil and current.child.phase == "interactive"
+  end)
   local status = drive(flow, { { type = "confirm" } })
   status = driveUntil(flow, "the stable action menu", 30, function(current)
     return current.child ~= nil and current.child.state == "action_menu"
@@ -197,9 +219,7 @@ local function chooseBagAction(flow, id)
       -- Activation latches behind feedback before the semantic transition
       -- runs, so settle until the menu leaves or the flow changes pages.
       return driveUntil(flow, "the chosen action", 30, function(current)
-        return current.page ~= "bag_browse"
-          or current.child == nil
-          or current.child.state ~= "action_menu"
+        return current.page ~= "bag_browse" or current.child == nil
       end)
     end
     local node = assert(child.actionNode, "the action menu exposes its node")
@@ -347,13 +367,12 @@ function T.tests.take_into_full_bag_refuses_without_touching_the_mon(context)
     driveUntil(flow, "the party browse page", 30, function(current)
       return current.page == "party_browse"
     end)
+    drainOpen(flow)
     choosePartySlot(flow, 0)
     choosePartyMenu(flow, "item")
     choosePartyMenu(flow, "take")
-    -- Complete the yes/no prompt and run out its confirmation
-    -- interval: only a published refusal proves the conservation below.
-    drive(flow, { { type = "navigate", direction = "up" } })
-    drive(flow, { { type = "confirm" } })
+    -- Take answers directly with no confirmation: settle the dispatch,
+    -- then only a published refusal proves the conservation below.
     for _ = 1, 15 do
       flow:updateFixed({})
     end
@@ -379,6 +398,7 @@ function T.tests.flow_dispose_with_uncommitted_swap_abandons_safely(context)
     driveUntil(flow, "the party browse page", 30, function(current)
       return current.page == "party_browse"
     end)
+    drainOpen(flow)
     choosePartySlot(flow, 0)
     choosePartyMenu(flow, "switch")
     -- Confirm the target but never tick the animation to commit.
@@ -404,6 +424,7 @@ local function fixtureContext()
     audioSequenceIds = { [7] = true },
     monCatalog = CatalogFixture.makeCatalog(),
     itemCatalog = ItemFixture.makeCatalog(),
+    martCatalog = { cards = {}, apricorns = {}, seals = {} },
     scriptCompatibility = {
       validationOptions = function()
         return {
@@ -570,7 +591,7 @@ function T.tests.v3_record_migrates_through_store_load()
   local saveId = assert(store:reserve(), "reservation must succeed")
   Assert.isTrue(store:publishFirst(v3record(saveId)), "a quiescent v3 record must publish as migrated")
   local loaded = assert(store:load(saveId), "the migrated record must load")
-  Assert.equal(loaded.schema, "g4-game-save-v4", "load exposes the migrated schema")
+  Assert.equal(loaded.schema, GameSave.SCHEMA, "load exposes the current migrated schema")
   Assert.equal(loaded.playerData.profile.badges, 0, "migration starts with zero badges")
   Assert.deepEqual(loaded.fieldTravel, { lastHealSpawn = "SPAWN_NEW_BARK" }, "migration seeds the mother spawn")
   Assert.equal(loaded.playerData.profile.name, "GOLD", "migration preserves the profile")

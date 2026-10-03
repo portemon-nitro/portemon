@@ -16,7 +16,7 @@ local ScreenTopology = require("libs.ui.src.ScreenTopology")
 local T = {
   metadata = {
     capabilities = { "rom_dump" },
-    derivedAssets = { "field-runtime", "audio-bank:700", "audio-bank:730", "map-data:7", "map:7" },
+    derivedAssets = { "field-runtime", "audio-bank:700", "audio-bank:730", "audio-bank:759", "map-data:7", "map:7" },
     tags = { "field", "menu", "party" },
   },
   tests = {},
@@ -200,6 +200,19 @@ function T.tests.party_launch_and_inert_close_leave_party_untouched()
     local status = game.runtime.applicationHost:status()
     Assert.equal(status.phase, FieldApplicationHost.PHASES.application, "confirming party must launch its application")
     Assert.equal(status.applicationId, PARTY_APPLICATION, "the launched application must be the party screen")
+    game:advanceUntil("the party reveal completes before the inert close", function()
+      local hostStatus = game.runtime.applicationHost:status()
+      if hostStatus.phase ~= FieldApplicationHost.PHASES.application then
+        return false
+      end
+      local flow = hostStatus.application
+      local leaf = flow ~= nil and flow.child or nil
+      return leaf ~= nil and leaf.phase == "interactive"
+    end, 120)
+    -- The handover and its settling tick still drop input; the close
+    -- presses only once the screen forwards.
+    game:step()
+    game:step()
 
     game.runtime:pressCancel()
     game:step()
@@ -353,11 +366,18 @@ function T.tests.party_grid_static_frame_and_reflow_journey_preserves_semantics(
     end, 120)
 
     local view = partyView(game)
-    -- The fresh screen publishes its plan once icon preparation
-    -- resolves on the first ticks; the open alone carries no plan yet.
+    -- The wait record already carries the resolved plan while icon
+    -- preparation is still pending; the journey still waits for interactive.
     game:advanceUntil("the open party publishes its presentation plan", function()
       return partyView(game).presentation ~= nil
     end, 120)
+    game:advanceUntil("the party reveal completes before the journey drives selection", function()
+      return partyView(game).phase == "interactive"
+    end, 120)
+    -- The handover and its settling tick still drop input; the journey
+    -- drives only once the screen forwards.
+    game:step()
+    game:step()
     view = partyView(game)
     local plan = assert(view.presentation, "the open party must publish its presentation plan")
     Assert.equal(#plan.panes, 2, "the wide party pairs detail with interaction")
@@ -391,6 +411,12 @@ function T.tests.party_grid_static_frame_and_reflow_journey_preserves_semantics(
     Assert.equal(partyView(game).cursorNode, 1, "a tap on the second panel selects it")
     Assert.equal(partyView(game).state, "context", "a tap opens the context menu")
     pressCancel(game)
+    -- Cancel arms the press cadence on the quit row before its single
+    -- dispatch: two pressed ticks, two selected ticks, then browse.
+    game:step()
+    game:step()
+    game:step()
+    game:step()
     Assert.equal(partyView(game).state, "browse", "cancel dismisses the context menu")
 
     -- The outer frame never moves between equivalent resolves: rereading
@@ -432,7 +458,9 @@ function T.tests.party_grid_static_frame_and_reflow_journey_preserves_semantics(
     pressKey(game, state, "s")
     confirm(game)
     -- Menu activation rides the visual press cadence before its single
-    -- dispatch: two pressed ticks, two selected ticks, then dispatch.
+    -- dispatch: activation arms, two pressed ticks, two selected ticks,
+    -- then dispatch on the fifth post-arm tick.
+    game:step()
     game:step()
     game:step()
     game:step()
@@ -491,6 +519,66 @@ function T.tests.party_grid_static_frame_and_reflow_journey_preserves_semantics(
     Assert.equal(hostPhase(game), FieldApplicationHost.PHASES.closed, "the journey ends back on the field")
     Assert.equal(service:partyRevision(), revisionBeforeClose, "closing from cancel does not mutate the party")
     Assert.deepEqual(partyOrder(game), { "CYNDAQUIL", "CHIKORITA" }, "closing preserves the switched order")
+  end)
+end
+
+-- The reveal gates interaction through production composition: input sent
+-- while the panes are still covered never moves selection, never opens
+-- menus, and never replays once the screen turns interactive; only input
+-- sent after the reveal acts.
+function T.tests.opening_reveal_discards_early_input_without_replay()
+  withGame(function(game)
+    local state = hostCallbacks(game)
+    giveStarterPair(game)
+    local service = assert(game.runtime.monService, "field runtime owns the live mon service")
+    local revision = service:partyRevision()
+
+    openStartMenu(game)
+    navigateTo(game, state, POKEMON_ACTION)
+    confirm(game)
+    game:advanceUntil("party application opens over the retained menu", function()
+      return hostPhase(game) == FieldApplicationHost.PHASES.application
+    end, 120)
+    game:advanceUntil("the party reveal starts", function()
+      return partyView(game).phase == "opening"
+    end, 120)
+
+    local leaf = partyView(game)
+    Assert.equal(leaf.phase, "opening", "the party reveals before accepting input")
+    local cursorBefore = leaf.cursorNode
+
+    local keys = { "s", "d", "w", "a" }
+    for index = 1, 20 do
+      pressKey(game, state, keys[(index - 1) % #keys + 1])
+      if index % 3 == 0 then
+        confirm(game)
+      end
+      if index % 5 == 0 then
+        pressCancel(game)
+      end
+      if partyView(game).phase == "interactive" then
+        break
+      end
+    end
+    local settled = partyView(game)
+    Assert.equal(settled.phase, "interactive", "the reveal completes on its fixed recurrence")
+    Assert.equal(settled.cursorNode, cursorBefore, "reveal input never moves selection")
+    Assert.equal(settled.state, "browse", "reveal activation never leaves browse")
+    Assert.equal(service:partyRevision(), revision, "reveal input swaps nothing")
+    Assert.equal(
+      hostPhase(game),
+      FieldApplicationHost.PHASES.application,
+      "reveal dismissal never closes the screen"
+    )
+
+    game:step()
+    Assert.equal(
+      partyView(game).state,
+      "browse",
+      "discarded input never replays on the first interactive tick"
+    )
+    pressKey(game, state, "s")
+    Assert.equal(partyView(game).cursorNode, "cancel", "only post-reveal input moves selection")
   end)
 end
 

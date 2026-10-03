@@ -497,18 +497,19 @@ function FieldTextRenderer:drawFocusIndicator(field, x, y, palette)
   local fieldQuads = quads[field]
   if fieldQuads == nil then
     fieldQuads = {}
-    for _, slot in ipairs({ 11, 12, 13, 14 }) do
-      local rect = assert(layers[slot], "focus source-slot layer is missing")
-      fieldQuads[slot] =
+    for index, layer in ipairs(layers) do
+      local rect = assert(layer.rect, "focus layer rect is missing")
+      fieldQuads[index] =
         lg.newQuad(rect.x, rect.y, rect.width, rect.height, focusImage:getWidth(), focusImage:getHeight())
     end
     quads[field] = fieldQuads
     self._focusQuads = quads
   end
-  for _, slot in ipairs({ 11, 12, 13, 14 }) do
+  for index, layer in ipairs(layers) do
+    local slot = layer.paletteSlot
     local color = assert(palette[slot], "focus indicator palette slot is missing")
     lg.setColor(color.r / 255, color.g / 255, color.b / 255, 1)
-    lg.draw(focusImage, fieldQuads[slot], x, y)
+    lg.draw(focusImage, fieldQuads[index], x, y)
   end
 end
 

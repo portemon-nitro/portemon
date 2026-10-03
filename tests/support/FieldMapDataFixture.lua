@@ -29,6 +29,10 @@ end
 --   zoneEventsMember  raw zone-event member bytes (default an empty events record)
 --   landBgsPayload    the land member's BGS/soundplate payload (default "")
 --   landMemberId / matrixMemberId / eventMemberId
+--   areaDataMember    raw 8-byte area-data member bytes served for any requested
+--                       area member (default an outdoor record with light type 0)
+--   fieldLightProfile source text of the field-light profile served for any
+--                       field-light source path (default one valid record)
 --   members           extra { alias = { memberId = bytes } } merged in
 ---@param opts table|nil
 ---@return table romFs
@@ -38,6 +42,34 @@ function FieldMapDataFixture.build(opts)
   local matrixMemberId = opts.matrixMemberId or FieldMapDataFixture.MATRIX_MEMBER_ID
   local eventMemberId = opts.eventMemberId or FieldMapDataFixture.EVENT_MEMBER_ID
 
+  -- The default area record selects no texture packs, no dynamic-texture
+  -- animation, the outdoor area type, and light type 0. Every catalog map
+  -- names its own area member; the shared 1x1 fixture serves the same bytes
+  -- for any requested id so any map compiles, exactly like the zone-event
+  -- and matrix members above.
+  local defaultArea = NB.u16(0)
+    .. NB.u16(0)
+    .. NB.u16(0xFFFF)
+    .. NB.u8(1)
+    .. NB.u8(0)
+  local areaBytes = opts.areaDataMember or defaultArea
+  -- One valid field-light record block (CRLF): threshold, 4 light slots,
+  -- 4 colours, then EOF. Served for any field-light source path the area
+  -- record's light type resolves to.
+  local defaultLight = table.concat({
+    "0,",
+    "1,11,11,11,-296,-296,-296,",
+    "0,0,0,0,0,0,0,",
+    "0,0,0,0,0,0,0,",
+    "0,0,0,0,0,0,0,",
+    "14,14,16,",
+    "10,10,10,",
+    "14,14,16,",
+    "8,8,11,",
+    "",
+  }, "\r\n") .. "\r\nEOF\r\n"
+  local lightText = opts.fieldLightProfile or defaultLight
+
   local members = {
     map_matrices = { [matrixMemberId] = FieldMapDataFixture.matrixMember(landMemberId) },
     land_data = {
@@ -45,6 +77,7 @@ function FieldMapDataFixture.build(opts)
     },
     zone_events = { [eventMemberId] = opts.zoneEventsMember or ZoneEventsBuilder.build() },
     field_script_headers = { [opts.scriptHeaderMemberId or 618] = opts.scriptHeaderMember or "" },
+    area_data = {},
   }
   for alias, byId in pairs(opts.members or {}) do
     for memberId, bytes in pairs(byId) do
@@ -86,6 +119,9 @@ function FieldMapDataFixture.build(opts)
           if alias == "field_script_headers" then
             return assert(members.field_script_headers[opts.scriptHeaderMemberId or 618])
           end
+          if alias == "area_data" then
+            return assert(byId[memberId] or areaBytes)
+          end
           local bytes = byId[memberId]
           assert(bytes, string.format("fixture %s has no member %d", alias, memberId))
           return bytes
@@ -94,6 +130,13 @@ function FieldMapDataFixture.build(opts)
     end,
     read = function(_, fileId)
       return "synthetic-" .. tostring(fileId)
+    end,
+    readSourcePath = function(_, path)
+      assert(
+        path:sub(1, 9) == "data/area" or path:sub(1, 9) == "data/dun2",
+        "fixture only serves field-light profiles, got " .. path
+      )
+      return lightText
     end,
     metadata = function()
       return { sha1 = "rom-sha" }

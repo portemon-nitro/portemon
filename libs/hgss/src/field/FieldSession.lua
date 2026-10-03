@@ -56,6 +56,7 @@ local MetatileBehavior = require("libs.hgss.src.world.MetatileBehavior")
 ---@field contextChoicePresentation (fun(): { active: boolean, selectedIndex: integer, yesText: string, noText: string, frameIndex: integer? }|nil)? contextual presentation record shared by draw and pointer translation; required with a choice host
 ---@field starterChoice table<string, unknown>? the modal starter-choice surface; while active the tick's UI events route to the script scheduler
 ---@field partySelection table<string, unknown>? the modal script-party surface; while active the tick's UI events route to the script scheduler
+---@field martHost table<string, unknown>? the modal script-mart surface; while active the tick's UI events route to the script scheduler
 ---@field pokemonNaming table<string, unknown>? the script-owned Pokemon Naming Screen surface
 ---@field signpost FieldSignpostController
 ---@field applicationHost FieldApplicationHost the one application modal owner (Start Menu and its destinations)
@@ -98,6 +99,7 @@ local MetatileBehavior = require("libs.hgss.src.world.MetatileBehavior")
 ---@field contextChoicePresentation (fun(): { active: boolean, selectedIndex: integer, yesText: string, noText: string, frameIndex: integer? }|nil)? contextual presentation record shared by draw and pointer translation; required with a choice host
 ---@field starterChoice table<string, unknown>? the modal starter-choice surface; while active the tick's UI events route to the script scheduler
 ---@field partySelection table<string, unknown>? the modal script-party surface; while active the tick's UI events route to the script scheduler
+---@field martHost table<string, unknown>? the modal script-mart surface; while active the tick's UI events route to the script scheduler
 ---@field pokemonNaming table<string, unknown>? the script-owned Pokemon Naming Screen surface
 ---@field signpost FieldSignpostController the fixed-tick signpost controller (save-gate interrogation only; the scheduler steps it)
 ---@field applicationHost FieldApplicationHost the one application modal owner (Start Menu and its destinations)
@@ -365,6 +367,7 @@ function FieldSession.new(options)
     contextChoicePresentation = options.contextChoicePresentation,
     starterChoice = options.starterChoice,
     partySelection = options.partySelection,
+    martHost = options.martHost,
     pokemonNaming = options.pokemonNaming,
     signpost = options.signpost,
     applicationHost = options.applicationHost,
@@ -703,9 +706,15 @@ local function runScriptPhase(self, inputSnapshot)
   local starterChoiceModal = starterChoice ~= nil and starterChoice:isActive()
   local partySelection = self.partySelection
   local partySelectionModal = partySelection ~= nil and partySelection:isActive()
+  local martHost = self.martHost
+  local martModal = martHost ~= nil and martHost:isActive()
   local pokemonNaming = self.pokemonNaming
   local pokemonNamingModal = pokemonNaming ~= nil and pokemonNaming:isActive()
   assert(not (starterChoiceModal and pokemonNamingModal), "script-owned field modals are mutually exclusive")
+  assert(
+    not (martModal and (starterChoiceModal or pokemonNamingModal or partySelectionModal)),
+    "script-owned field modals are mutually exclusive"
+  )
   local scriptModal = starterChoiceModal or pokemonNamingModal
   -- A borrowed gesture is valid only while its choice stays open: every
   -- tick without an active contextual choice drops stale capture so a
@@ -714,7 +723,7 @@ local function runScriptPhase(self, inputSnapshot)
   if not contextChoiceModal and yesNoHost ~= nil then
     yesNoHost:clearBorrowedChoice()
   end
-  if menuModal or contextChoiceModal or scriptModal or partySelectionModal or yesNoModal then
+  if menuModal or contextChoiceModal or scriptModal or partySelectionModal or martModal or yesNoModal then
     local uiEvents = self.input:uiSnapshot(self.tick + 1)
     if menuModal then
       schedulerInput.menuEvents = self.menuHost:inputEvents(uiEvents)
@@ -758,9 +767,23 @@ local function runScriptPhase(self, inputSnapshot)
     self.input:clearUi()
   end
   local partySelectionNowModal = partySelection ~= nil and partySelection:isActive()
+  assert(
+    not (
+        martHost ~= nil
+        and martHost:isActive()
+        and (starterChoiceNowModal or pokemonNamingNowModal or partySelectionNowModal)
+      ),
+    "script-owned field modals are mutually exclusive"
+  )
   if not partySelectionModal and partySelectionNowModal then
     self.input:beginUi(self.tick + 1)
   elseif partySelectionModal and not partySelectionNowModal then
+    self.input:clearUi()
+  end
+  local martNowModal = martHost ~= nil and martHost:isActive()
+  if not martModal and martNowModal then
+    self.input:beginUi(self.tick + 1)
+  elseif martModal and not martNowModal then
     self.input:clearUi()
   end
   return playerInputOwnedAtTickStart
@@ -832,11 +855,9 @@ function FieldSession:updateFixed(inputSnapshot)
     if inputSnapshot.menuPressed then
       uiEvents[#uiEvents + 1] = { type = "menu" }
     end
-    local status = self.applicationHost.status and self.applicationHost:status() or nil
-    local wasApplication = status and status.phase == "application"
+    local wasApplication = self.applicationHost:phase() == "application"
     self.applicationHost:updateFixed(uiEvents)
-    local afterStatus = self.applicationHost.status and self.applicationHost:status() or nil
-    local afterPhase = afterStatus and afterStatus.phase
+    local afterPhase = self.applicationHost:phase()
     -- A completed child returns to a refreshed menu or to the field on the
     -- same tick; either successful return resumes field obligations, while
     -- the terminal failure state queues nothing.
@@ -1082,7 +1103,7 @@ function FieldSession:updateFixed(inputSnapshot)
   -- owner. Cycling, rocket, and every other durable state mean walking
   -- physics; only surfing surfs.
   if self.playerAvatar ~= nil and self.player.motion == "idle" then
-    local durable = self.playerAvatar:status().durableState
+    local durable = self.playerAvatar:durableState()
     self.player:setTraversalMode(durable == "surfing" and "surfing" or "walking")
   end
   -- Strength-push arbitration: an idle player's step into an enabled

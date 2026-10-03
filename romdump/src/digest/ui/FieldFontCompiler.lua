@@ -1,6 +1,6 @@
 -- Compiles the HGSS field fonts (font IDs 0 and 4) into private glyph atlas PNGs, a
 -- semantic glyph mask atlas PNG, a focus-indicator mask PNG, and the
--- g4-field-font-v4 definition. The mask atlas repeats the composited atlas's
+-- g4-field-font-v5 definition. The mask atlas repeats the composited atlas's
 -- base-band glyph geometry once, encoding each glyph pixel's raw 0..3 class
 -- categorically (0 transparent, 1 red foreground, 2 green shadow, 3 blue
 -- background) instead of a baked color, so a palette-driven draw path can
@@ -296,17 +296,19 @@ local function buildFocusIndicators(focusChars, fontId)
     count = FieldMessageText.FOCUS_INDICATOR_COUNT,
     width = FOCUS_FRAME_WIDTH,
     height = FOCUS_FRAME_HEIGHT,
-    sourcePaletteSlots = FOCUS_PALETTE_SLOTS,
     frames = {},
   }
   for field = 0, FieldMessageText.FOCUS_INDICATOR_COUNT - 1 do
     local layers = {}
-    for index, slot in ipairs(FOCUS_PALETTE_SLOTS) do
-      layers[slot] = {
-        x = (index - 1) * FOCUS_FRAME_WIDTH,
-        y = field * FOCUS_FRAME_HEIGHT,
-        width = FOCUS_FRAME_WIDTH,
-        height = FOCUS_FRAME_HEIGHT,
+    for index, paletteSlot in ipairs(FOCUS_PALETTE_SLOTS) do
+      layers[index] = {
+        paletteSlot = paletteSlot,
+        rect = {
+          x = (index - 1) * FOCUS_FRAME_WIDTH,
+          y = field * FOCUS_FRAME_HEIGHT,
+          width = FOCUS_FRAME_WIDTH,
+          height = FOCUS_FRAME_HEIGHT,
+        },
       }
     end
     indicators.frames[field] = { layers = layers }
@@ -487,7 +489,7 @@ function FieldFontCompiler.compile(romFs, sha1hex, hashLua)
   error(result)
 end
 
--- The compiled font class: the g4-field-font-v4 definition, the glyph atlas
+-- The compiled font class: the g4-field-font-v5 definition, the glyph atlas
 -- PNG, the semantic glyph mask atlas PNG, the focus-indicator PNG, and the
 -- cache marker derived from every source dependency.
 
@@ -495,29 +497,5 @@ end
 ---@field marker string
 ---@field fonts table<integer, { fontId: integer, font: FieldFontDef, atlas: string, maskAtlas: string, focusIndicators: string }>
 ---@field dependencies table<string, unknown>
-
--- The g4-field-font-v4 runtime definition consumed by the dialogue layout and
--- renderer: geometry, per-code glyph quads/advances, the stacked color-band
--- metadata, the semantic glyph mask atlas path, the focus-indicator frame
--- rects, the text-to-code charmap, the 16-color palette, and source
--- provenance.
-
----@class FieldFontDef
----@field schema string
----@field fontId integer
----@field lineHeight integer
----@field maxLetterHeight integer
----@field letterSpacing integer
----@field glyphCount integer
----@field fallbackCode integer
----@field atlasPath string
----@field maskAtlasPath string
----@field atlas { width: integer, height: integer, baseHeight: integer, glyphsPerRow: integer, glyphWidth: integer, glyphHeight: integer }
----@field colorVariants { count: integer, strideY: integer }
----@field focusIndicators { imagePath: string, count: integer, width: integer, height: integer, sourcePaletteSlots: integer[], frames: table<integer, { layers: table<integer, { x: integer, y: integer, width: integer, height: integer }> }> }
----@field glyphs table<integer, { x: integer, y: integer, w: integer, h: integer, advance: integer, bearingX: integer, bearingY: integer }>
----@field charmap table<string, integer>
----@field palette { r: integer, g: integer, b: integer }[]
----@field source table<string, unknown>
 
 return FieldFontCompiler

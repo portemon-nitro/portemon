@@ -24,6 +24,69 @@ local CONTENT_NATIVE = { id = "content", width = NativeDisplay.WIDTH, height = N
 local INPUT_KEY = "party"
 local ZERO_CROP = { left = 0, right = 0, top = 0, bottom = 0 }
 
+-- The native pane extent the reveal covers: each covered pane carries one
+-- opaque black rectangle in pane-local coordinates, bottom-anchored so
+-- the covered region retreats downward as its leg advances.
+local REVEAL_WIDTH = 256
+local REVEAL_HEIGHT = 192
+local REVEAL_STEPS = 6
+
+-- Names the completed step driving one pane's cover: interaction content
+-- clears with the second leg while any leading detail pane clears with the
+-- first. A lone content pane therefore stays covered through the first leg
+-- and clears with the second, so the wipe keeps its twelve-step recurrence
+-- on single-pane topologies with no re-cover and no clear-but-gated window.
+---@param opening table<string, unknown> the wrapper reveal progress
+---@param paneId string the plan pane identity
+---@return integer the completed steps for this pane
+local function revealStep(opening, paneId)
+  local first = assert(opening.subStep, "the reveal progress carries its first-leg step")
+  local second = assert(opening.mainStep, "the reveal progress carries its second-leg step")
+  assert(type(first) == "number", "the reveal progress carries its first-leg step")
+  assert(type(second) == "number", "the reveal progress carries its second-leg step")
+  if paneId == "content" then
+    return second
+  end
+  return first
+end
+
+-- Draws one pane's reveal cover above its content: full cover at step
+-- zero shrinking bottom-anchored to nothing at the final step, which
+-- draws nothing. Restores the borrowed graphics color afterwards.
+---@param graphics table<string, unknown> the injected host graphics
+---@param opening table<string, unknown>? the reveal progress, or nil once interactive
+---@param paneId string the plan pane identity
+local function drawRevealCover(graphics, opening, paneId)
+  if opening == nil then
+    return
+  end
+  assert(type(opening) == "table", "the reveal progress stays a table while covered")
+  local step = assert(revealStep(opening, paneId), "every pane maps to a reveal step")
+  if step >= REVEAL_STEPS then
+    return
+  end
+  assert(step >= 0 and step == math.floor(step), "the reveal step stays within its leg")
+  local height = REVEAL_HEIGHT - (REVEAL_HEIGHT / REVEAL_STEPS) * step
+  if height <= 0 then
+    return
+  end
+  local setColor = assert(graphics.setColor, "the reveal cover borrows its host color")
+  local red, green, blue, alpha = 1, 1, 1, 1
+  if graphics.getColor then
+    red, green, blue, alpha = graphics.getColor()
+  end
+  local ok, err = pcall(function()
+    setColor(0, 0, 0, 1)
+    graphics.rectangle("fill", 0, REVEAL_HEIGHT - height, REVEAL_WIDTH, height)
+  end)
+  if graphics.setColor then
+    graphics.setColor(red, green, blue, alpha)
+  end
+  if not ok then
+    error(err, 0)
+  end
+end
+
 ---@param resources table<string, unknown> borrowed application collaborators
 ---@param view table<string, unknown> the wrapper semantic snapshot
 ---@param plan ApplicationPlan
@@ -32,10 +95,12 @@ local function renderParty(resources, view, plan)
   local icons = assert(resources.icons, "the party render borrows its icon provider")
   local graphics = assert(resources.graphics, "the party render borrows its host graphics")
   local LogicalSurface = require("libs.ui.src.LogicalSurface")
-  for _, pane in ipairs(assert(plan.panes, "the party plan carries its panes")) do
+  local panes = assert(plan.panes, "the party plan carries its panes")
+  for _, pane in ipairs(panes) do
     local placement = assert(pane.placement, "party panes carry placements")
     LogicalSurface.draw(graphics, placement, function()
       renderer.drawPane(renderer, view, pane, plan.content, icons)
+      drawRevealCover(graphics, view.opening, assert(pane.id, "party panes carry identities"))
     end)
   end
 end

@@ -76,6 +76,7 @@ local function fresh()
   App.epoch = 0
   App.drawableWidth = nil
   App.drawableHeight = nil
+  App.pixelRatio = nil
 end
 
 -- One harness for every App-level seam a test can touch: fresh module state,
@@ -109,6 +110,7 @@ local function withAppHarness(opts, ready, fn)
   local graphics = love.graphics
   local originalPrint = graphics.print
   local originalGetDimensions = graphics.getDimensions
+  local originalGetDPIScale = graphics.getDPIScale
   local originalQuit = love.event.quit
   local harnessAppBackend = ProducerFingerprint.appBackend
   local harnessCheckoutBackend = ProducerFingerprint.checkoutBackend
@@ -208,6 +210,9 @@ local function withAppHarness(opts, ready, fn)
   graphics.getDimensions = function()
     return 800, 600
   end
+  graphics.getDPIScale = function()
+    return 1
+  end
   love.event.quit = function(code)
     result.quitCodes[#result.quitCodes + 1] = code
   end
@@ -221,6 +226,7 @@ local function withAppHarness(opts, ready, fn)
   MainMenuComposition.new = originalMenuNew
   graphics.print = originalPrint
   graphics.getDimensions = originalGetDimensions
+  graphics.getDPIScale = originalGetDPIScale
   love.event.quit = originalQuit
   ProducerFingerprint.appBackend = harnessAppBackend
   ProducerFingerprint.checkoutBackend = harnessCheckoutBackend
@@ -349,6 +355,109 @@ function T.app_draw_keeps_the_emergency_brand_text_only_in_dev_mode()
     end
     Assert.equal(result.prints, expected, "brand text on an empty frame tracks dev mode")
   end
+end
+
+function T.ratio_only_display_change_invalidates_once_before_update()
+  withAppHarness({ dev = false }, function()
+    return false
+  end, function()
+    local graphics = love.graphics
+    local originalGetDimensions = graphics.getDimensions
+    local originalGetDPIScale = graphics.getDPIScale
+    local dimensions = { 800, 600 }
+    local pixelRatio = 1
+    local reads, dpiReads, events = 0, 0, {}
+    graphics.getDimensions = function()
+      reads = reads + 1
+      return dimensions[1], dimensions[2]
+    end
+    graphics.getDPIScale = function()
+      dpiReads = dpiReads + 1
+      return pixelRatio
+    end
+    App.drawableWidth, App.drawableHeight = 800, 600
+    App.pixelRatio = 1
+    App.state = {
+      resize = function(_, width, height)
+        events[#events + 1] = { "resize", width, height }
+      end,
+      update = function()
+        events[#events + 1] = { "update" }
+      end,
+      draw = function()
+        events[#events + 1] = { "draw" }
+      end,
+    }
+    pixelRatio = 2
+    App.update(1 / 60)
+    App.update(1 / 60)
+    graphics.getDimensions = originalGetDimensions
+    graphics.getDPIScale = originalGetDPIScale
+    Assert.equal(reads, 2, "each update samples dimensions once")
+    Assert.equal(dpiReads, 2, "each update samples DPI once")
+    Assert.deepEqual(events, {
+      { "resize", 800, 600 },
+      { "update" },
+      { "update" },
+    })
+  end)
+end
+
+function T.display_sync_reads_once_and_draw_and_explicit_resize_do_not_duplicate_invalidation()
+  withAppHarness({ dev = false }, function()
+    return false
+  end, function()
+    local graphics = love.graphics
+    local originalGetDimensions = graphics.getDimensions
+    local originalGetDPIScale = graphics.getDPIScale
+    local width, height, pixelRatio = 800, 600, 1
+    local dimensionReads, dpiReads, events = 0, 0, {}
+    graphics.getDimensions = function()
+      dimensionReads = dimensionReads + 1
+      return width, height
+    end
+    graphics.getDPIScale = function()
+      dpiReads = dpiReads + 1
+      return pixelRatio
+    end
+    App.drawableWidth, App.drawableHeight, App.pixelRatio = 640, 480, 1
+    App.state = {
+      resize = function(_, resizeWidth, resizeHeight)
+        events[#events + 1] = { "resize", resizeWidth, resizeHeight }
+      end,
+      update = function()
+        events[#events + 1] = { "update" }
+      end,
+      draw = function()
+        events[#events + 1] = { "draw" }
+      end,
+    }
+
+    App.update(1 / 60)
+    Assert.equal(dimensionReads, 1)
+    Assert.equal(dpiReads, 1)
+    App.draw()
+    Assert.equal(dimensionReads, 1, "draw does not sample dimensions")
+    Assert.equal(dpiReads, 1, "draw does not sample DPI")
+
+    pixelRatio = 2
+    App.resize(width, height)
+    local dpiReadsAfterResize = dpiReads
+    App.update(1 / 60)
+    graphics.getDimensions = originalGetDimensions
+    graphics.getDPIScale = originalGetDPIScale
+
+    Assert.equal(dpiReadsAfterResize, 2, "explicit resize refreshes the retained DPI")
+    Assert.equal(dimensionReads, 2, "each sync samples dimensions once")
+    Assert.equal(dpiReads, 3, "each sync samples DPI once")
+    Assert.deepEqual(events, {
+      { "resize", width, height },
+      { "update" },
+      { "draw" },
+      { "resize", width, height },
+      { "update" },
+    })
+  end)
 end
 
 -- An import session is single-use. A file drop during gameplay after a

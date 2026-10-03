@@ -3,6 +3,7 @@ local FieldEventState = require("libs.hgss.src.field.FieldEventState")
 local FieldScriptSymbols = require("libs.assets.src.field.FieldScriptSymbols")
 local MonsSave = require("libs.mons.src.MonsSave")
 local BagSave = require("libs.hgss.src.save.BagSave")
+local MartSave = require("libs.hgss.src.save.MartSave")
 local PlayerData = require("libs.hgss.src.save.PlayerData")
 local PlayTime = require("libs.hgss.src.save.PlayTime")
 local WorldState = require("libs.hgss.src.script.WorldState")
@@ -61,7 +62,7 @@ local function finalizedCandidate()
   local eventState = FieldEventState.new()
   eventState:setFlag(flags.FLAG_UNK_960)
   local playerData = assert(PlayerData.validate({
-    profile = { name = "GOLD", gender = 0, trainerId = 1234, money = 3000, badges = 0 },
+    profile = { name = "GOLD", gender = 0, trainerId = 1234, money = 3000, badges = 0, nationalDex = false },
     options = PlayerData.defaultOptions(),
   }, { charmap = { G = 1, O = 2, L = 3, D = 4 }, frameIndexes = { [0] = true } }))
   return {
@@ -270,6 +271,7 @@ function T.lottery_persists_through_world_capture_and_game_save()
     audio = {},
     mons = MonsSave.empty("test-catalog-fingerprint", 7),
     bag = BagSave.empty(),
+    mart = MartSave.empty(),
   }
   local validated = assert(GameSave.validate(record))
   Assert.equal(validated.world.variables[vars.VAR_LOTO_NUMBER_LO], 0x5678)

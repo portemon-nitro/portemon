@@ -71,21 +71,29 @@ local function matrixMember(landMemberId)
 end
 
 -- A width x height map-matrix member with optional explicit per-cell map-header
--- ids and land members, in the MapMatrix row-major cell order. `headers` and
--- `modelIds` are flat arrays of width * height entries; a cell without an
+-- ids, matrix altitudes, and land members, in the MapMatrix row-major cell order.
+-- `headers` and `modelIds` are flat arrays of width * height entries; a cell without an
 -- explicit header defaults to the compiled map's own header id, and a cell
--- without an explicit model id defaults to `landMemberId`.
+-- without an explicit model id defaults to `landMemberId`. `altitudes` is an
+-- optional flat array of width * height raw matrix-altitude bytes; without it
+-- the member carries no altitude section and every cell defaults to zero.
 function MapRomFixture.gridMatrix(opts)
   local width = assert(opts.width, "gridMatrix requires a width")
   local height = assert(opts.height, "gridMatrix requires a height")
   local landMemberId = opts.landMemberId or MapRomFixture.LAND_DATA_MEMBER_ID
   assert(not opts.headers or #opts.headers == width * height, "gridMatrix headers cover every cell")
+  assert(not opts.altitudes or #opts.altitudes == width * height, "gridMatrix altitudes cover every cell")
   assert(not opts.modelIds or #opts.modelIds == width * height, "gridMatrix model ids cover every cell")
   local name = "m_labo01_"
-  local out = { NB.u8(width), NB.u8(height), NB.u8(opts.headers and 1 or 0), NB.u8(0), NB.u8(#name), name }
+  local out = { NB.u8(width), NB.u8(height), NB.u8(opts.headers and 1 or 0), NB.u8(opts.altitudes and 1 or 0), NB.u8(#name), name }
   if opts.headers then
     for _, header in ipairs(opts.headers) do
       out[#out + 1] = NB.u16(header)
+    end
+  end
+  if opts.altitudes then
+    for _, altitude in ipairs(opts.altitudes) do
+      out[#out + 1] = NB.u8(altitude)
     end
   end
   for i = 1, width * height do

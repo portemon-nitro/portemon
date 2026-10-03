@@ -76,6 +76,9 @@ function BagCache.referencedPaths(manifest)
     end
   end
   local interactive = manifest.interactive
+  addImage(interactive.sale.quantityBackground)
+  addVisual(interactive.sale.confirm.visual)
+  addVisual(interactive.sale.cancel.visual)
   for _, state in ipairs({ "action", "quantity" }) do
     for _, pocket in ipairs(BagAssetSchema.POCKETS) do
       for count = 0, 6 do
@@ -126,6 +129,9 @@ function BagCache.referencedPaths(manifest)
   addVisual(interactive.overlays.quantity.visuals.decrement.normal)
   addVisual(interactive.overlays.quantity.visuals.decrement.pressed)
   addVisual(interactive.overlays.quantity.confirm.visual)
+  addVisual(interactive.overlays.quantity.cancel.visual)
+  addVisual(interactive.feedback.quantityCancel.normal)
+  addVisual(interactive.feedback.quantityCancel.selected)
   addImage(interactive.itemSlots.registration.slot1)
   addImage(interactive.itemSlots.registration.slot2)
   return paths

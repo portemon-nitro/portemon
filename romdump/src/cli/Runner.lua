@@ -65,7 +65,7 @@ function Runner._runDiscoverApp()
   local AppDiscovery = require("romdump.src.appdiscovery.AppDiscovery")
   local result, err = AppDiscovery.runPath({
     romPath = opts.romPath,
-    overlayId = opts.overlayId,
+    target = opts.discoveryTarget,
     outputPath = opts.outputPath,
     resourceDetails = opts.resourceDetails,
   })
@@ -74,10 +74,16 @@ function Runner._runDiscoverApp()
     return love.event.quit(1)
   end
   local s = result.summary
+  local targetLabel
+  if s.target.kind == "arm9-main" then
+    targetLabel = string.format("arm9-main template 0x%08X", s.target.templateAddress)
+  else
+    targetLabel = "overlay " .. s.target.overlayId
+  end
   print("app discovery complete: " .. result.outputPath)
   print(
-    "  overlay "
-      .. s.overlayId
+    "  "
+      .. targetLabel
       .. " ("
       .. s.versionId
       .. "): "

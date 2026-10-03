@@ -21,6 +21,8 @@ local MonCache = require("libs.assets.src.MonCache")
 local ItemCache = require("libs.assets.src.ItemCache")
 local AudioCache = require("libs.assets.src.audio.AudioCache")
 local PreparedArtifact = require("romdump.src.build.PreparedArtifact")
+local HgssFieldEdgeColors = require("romdump.src.digest.field.HgssFieldEdgeColors")
+local HgssFieldFog = require("romdump.src.digest.field.HgssFieldFog")
 local ScriptCacheWriter = require("romdump.src.digest.script.ScriptCacheWriter")
 local DerivedCacheState = require("romdump.src.DerivedCacheState")
 
@@ -475,6 +477,29 @@ local function publishMonFamily(cache, marker)
   }
 end
 
+-- The generated render-environment record every current field record
+-- carries: parsed lighting, the area edge-color table, the map weather id,
+-- and the helper-derived fog preset.
+local function validRenderEnvironment()
+  return {
+    lighting = {
+      records = {
+        {
+          startHalfSeconds = 0,
+          lights = {},
+          diffuseRgb555 = 0,
+          ambientRgb555 = 0,
+          specularRgb555 = 0,
+          emissionRgb555 = 0,
+        },
+      },
+    },
+    edgeColors = HgssFieldEdgeColors.tableForAreaLightPattern(0),
+    weatherId = 0,
+    fog = HgssFieldFog.runtimePreset(HgssFieldFog.resolve(0)),
+  }
+end
+
 local function publishMapDataRecord(cache, mapId, marker)
   local FieldMapData = FieldMapDataCache
   cache:writeLua(FieldMapData.fieldPath(mapId), {
@@ -485,6 +510,7 @@ local function publishMapDataRecord(cache, mapId, marker)
     soundplates = {},
     initScripts = {},
     transitionEnvironment = "outdoors",
+    renderEnvironment = validRenderEnvironment(),
     fieldUse = {
       flyAllowed = true,
       teleportAllowed = true,
