@@ -6,6 +6,8 @@
 
 local Assert = require("tests.support.Assert")
 local CatalogFixture = require("libs.mons.tests.catalog_fixture")
+local HgssBagService = require("libs.hgss.src.items.HgssBagService")
+local ItemFixture = require("libs.items.tests.item_fixture")
 local Lcrng = require("libs.mons.src.gen4.Lcrng")
 local MonsSave = require("libs.mons.src.MonsSave")
 local Party = require("libs.mons.src.Party")
@@ -77,6 +79,86 @@ local function foeRecord(species, level, seed)
   local catalog = CatalogFixture.makeCatalog()
   local factory = CatalogFixture.makeFactory(seed, catalog)
   return tackleOnly(factory:createNormal(CatalogFixture.normalRequest({ species = species, level = level })))
+end
+
+---@param battle table<string, unknown> live application battle under test driving
+---@param budget integer maximum update ticks before the driver gives up
+---@return table<string, unknown> status once a player decision is open or the lifetime settled
+local function driveToDecision(battle, budget)
+  for _ = 1, budget do
+    battle:update()
+    local current = battle:status()
+    if current.phase == "running" and current.request ~= nil then
+      return current
+    end
+    if current.phase == "complete" or current.phase == "failed" then
+      return current
+    end
+  end
+  error("the battle never opened its player decision")
+end
+
+---@param battle table<string, unknown> live application battle under test driving
+---@param requestId string open request identity already answered under test driving
+---@param budget integer maximum update ticks before the driver gives up
+local function drivePastRequest(battle, requestId, budget)
+  for _ = 1, budget do
+    battle:update()
+    local current = battle:status()
+    if current.phase ~= "running" then
+      return
+    end
+    local pending = current.request
+    if pending ~= nil and pending.requestId ~= requestId then
+      return
+    end
+  end
+  error("the battle never moved past its answered decision")
+end
+
+---@param request table<string, unknown> pending player decision request under inspection
+---@return string[] admitted choice kinds for the request
+local function admittedKinds(request)
+  local legal = assert(request.legalChoices, "player decisions carry their admitted vocabulary")
+  return assert(legal.kinds, "player decisions carry their admitted kinds")
+end
+
+---@param kinds string[] admitted choice kinds under inspection
+---@param wanted string choice kind under search
+---@return boolean
+local function admits(kinds, wanted)
+  for _, kind in ipairs(kinds) do
+    if kind == wanted then
+      return true
+    end
+  end
+  return false
+end
+
+---@param scenario table<string, unknown> detached production scenario under inspection
+---@param occupant integer combatant holding the opening position
+---@return integer combatant identity of the living reserve
+local function reserveOf(scenario, occupant)
+  for _, seed in ipairs(scenario.participants[1].roster) do
+    if seed.id ~= occupant then
+      return seed.id
+    end
+  end
+  error("the production roster carries no reserve")
+end
+
+---@param service table<string, unknown> live party owner under test preparation
+---@param species string catalog species key under test preparation
+---@param level integer battle level under test preparation
+---@param seed integer fixed generator state under test preparation
+---@param currentHp integer|nil wounded health under test preparation, full health when absent
+local function addPartyMon(service, species, level, seed, currentHp)
+  local factory = CatalogFixture.makeFactory(seed, service:catalog())
+  local record = tackleOnly(factory:createNormal(CatalogFixture.normalRequest({ species = species, level = level })))
+  if currentHp ~= nil then
+    record.condition.currentHp = currentHp
+  end
+  Assert.isTrue(service:addMon(record), "the production path needs its live party member")
 end
 
 ---@return table party owner holding one fixed lead
@@ -279,6 +361,254 @@ function T.production_attacks_settle_through_move_mechanics_not_a_fixed_strike()
   Assert.equal(fixed, 0, "production attacks never settle as fixed one-point strikes")
   Assert.isTrue(mechanic > 0, "production attacks settle through move mechanics")
   Assert.isTrue(heavy, "a real strike with nontrivial combatants deals more than one point")
+  battle:dispose()
+end
+
+function T.production_reserves_enter_through_voluntary_switch()
+  local BattleRuntime = requirePresent(RUNTIME_MODULE, "application battle lifetime with exactly-once completion")
+  local ScenarioFactory = requirePresent(SCENARIO_FACTORY_MODULE, "field sources mapped to one detached scenario")
+  local SessionFixture = require("libs.battle.tests.session_fixture")
+
+  local party = newPartyOwner()
+  addPartyMon(party, "EEVEE", 20, 0x44444444)
+  local foe = foeRecord("TOTODILE", 4, 0x5EED0004)
+  local scenario = ScenarioFactory.fromEncounter({ attemptId = "attempt-reserve-switch", mon = foe }, { party = party })
+  local portRecord = { ready = true, enters = 0, frames = {}, leaves = 0, disposed = 0 }
+  local battle = BattleRuntime.new({
+    request = { id = "launch-reserve-switch", kind = "wild", payload = preparedWild() },
+    scenario = scenario,
+    party = party,
+    presentation = headlessPort(portRecord),
+  })
+  local opening = driveToDecision(battle, 400)
+  Assert.equal(opening.phase, "running", "the production battle asks for its opening decision")
+  local request = assert(opening.request, "the opening decision is exposed")
+  Assert.isTrue(admits(admittedKinds(request), "switch"), "the opening decision admits exchanges")
+  local actor = assert(request.actors[1], "the opening decision addresses its lead")
+  local reserve = reserveOf(scenario, actor.combatant)
+  local accepted, replyErr = battle:submit(SessionFixture.replyFor(request, { SessionFixture.switchChoice(actor, reserve) }))
+  Assert.isTrue(accepted, "the exchange into the production reserve is accepted")
+  Assert.isNil(replyErr, "the accepted exchange carries no input error")
+  local entered = false
+  for _ = 1, 400 do
+    battle:update()
+    local current = battle:status()
+    Assert.isTrue(current.phase ~= "failed", "the exchanged battle never fails")
+    if current.phase ~= "running" then
+      break
+    end
+    local pending = current.request
+    if pending ~= nil and pending.requestId ~= request.requestId then
+      local addressed = assert(pending.actors[1], "the following decision addresses its occupant")
+      Assert.equal(addressed.combatant, reserve, "the reserve holds the field after the exchange")
+      entered = true
+      break
+    end
+  end
+  Assert.isTrue(entered, "the production reserve enters through the voluntary exchange")
+  battle:dispose()
+end
+
+function T.production_reserves_enter_through_faint_replacement()
+  local BattleRuntime = requirePresent(RUNTIME_MODULE, "application battle lifetime with exactly-once completion")
+  local ScenarioFactory = requirePresent(SCENARIO_FACTORY_MODULE, "field sources mapped to one detached scenario")
+  local SessionFixture = require("libs.battle.tests.session_fixture")
+
+  local party = newPartyOwner()
+  addPartyMon(party, "EEVEE", 20, 0x44444444)
+  local foe = foeRecord("TOTODILE", 30, 0x5EED0005)
+  local scenario = ScenarioFactory.fromEncounter({ attemptId = "attempt-reserve-faint", mon = foe }, { party = party })
+  local portRecord = { ready = true, enters = 0, frames = {}, leaves = 0, disposed = 0 }
+  local battle = BattleRuntime.new({
+    request = { id = "launch-reserve-faint", kind = "wild", payload = preparedWild() },
+    scenario = scenario,
+    party = party,
+    presentation = headlessPort(portRecord),
+  })
+  -- The overpowering foe knocks the opener out and the bereaved side must
+  -- be asked for its reserve before the next turn.
+  local opening = driveToDecision(battle, 400)
+  Assert.equal(opening.phase, "running", "the replacement battle asks for its opening decision")
+  local first = assert(opening.request, "the opening decision is exposed")
+  local opener = assert(first.actors[1], "the opening decision addresses its lead")
+  local firstOk, firstErr = battle:submit(
+    SessionFixture.replyFor(first, { SessionFixture.attackChoice(opener, 0, SessionFixture.positionTarget(2)) })
+  )
+  Assert.isTrue(firstOk, "the opening strike is accepted")
+  Assert.isNil(firstErr, "the accepted opening strike carries no input error")
+  local reserve = nil
+  local replaced = false
+  local seenReplacement = false
+  local answeredId = first.requestId
+  for _ = 1, 1200 do
+    battle:update()
+    local current = battle:status()
+    Assert.isTrue(current.phase ~= "failed", "the replacement battle never fails")
+    if current.phase ~= "running" then
+      break
+    end
+    local pending = current.request
+    if pending ~= nil and pending.requestId ~= answeredId then
+      local kinds = admittedKinds(pending)
+      local actor = assert(pending.actors[1], "every player decision addresses its combatant")
+      if not admits(kinds, "attack") and admits(kinds, "switch") then
+        seenReplacement = true
+        reserve = reserve or reserveOf(scenario, actor.combatant)
+        local accepted, replyErr =
+          battle:submit(SessionFixture.replyFor(pending, { SessionFixture.switchChoice(actor, reserve) }))
+        Assert.isTrue(accepted, "the faint replacement is accepted")
+        Assert.isNil(replyErr, "the accepted replacement carries no input error")
+        answeredId = pending.requestId
+        replaced = true
+      elseif replaced then
+        Assert.equal(actor.combatant, reserve, "the following turn addresses the replacement")
+        battle:dispose()
+        Assert.isTrue(seenReplacement, "the reserve arrived through a replacement obligation")
+        return
+      else
+        local accepted, replyErr = battle:submit(
+          SessionFixture.replyFor(
+            pending,
+            { SessionFixture.attackChoice(actor, 0, SessionFixture.positionTarget(2)) }
+          )
+        )
+        Assert.isTrue(accepted, "opening strikes are accepted while the lead stands")
+        Assert.isNil(replyErr, "accepted strikes carry no input error")
+        answeredId = pending.requestId
+      end
+    end
+  end
+  battle:dispose()
+  Assert.isTrue(false, "the knocked-out lead is replaced before the next turn")
+end
+
+---@param species string catalog species key for the wild foe
+---@param level integer foe battle level
+---@param seed integer fixed generator state for the foe record
+---@return table battle, table live party, table live bag, table port record
+local function healingBattle(species, level, seed)
+  local BattleRuntime = require("game.hgss.src.battle.BattleRuntime")
+  local ScenarioFactory = require("libs.hgss.src.battle.HgssBattleScenarioFactory")
+  local party = newPartyOwner()
+  local bag = HgssBagService.new({ catalog = ItemFixture.makeCatalog() })
+  Assert.isTrue(bag:add("POTION", 3), "setup potion stock enters the live bag")
+  Assert.isTrue(bag:add("POKE_BALL", 2), "setup ball stock enters the live bag")
+  -- Wound the live lead without touching the live bag: the session must
+  -- heal from its detached stock and publish back exactly once.
+  local wounded = party:partyMon(0)
+  wounded.condition.currentHp = 1
+  local foe = foeRecord(species, level, seed)
+  local scenario = ScenarioFactory.fromEncounter(
+    { attemptId = "attempt-item-" .. seed, mon = foe },
+    { party = party, bag = bag }
+  )
+  local portRecord = { ready = true, enters = 0, frames = {}, leaves = 0, disposed = 0 }
+  local battle = BattleRuntime.new({
+    request = { id = "launch-item-" .. seed, kind = "wild", payload = preparedWild() },
+    scenario = scenario,
+    party = party,
+    bag = bag,
+    presentation = headlessPort(portRecord),
+  })
+  return battle, party, bag, portRecord
+end
+
+---@param battle table<string, unknown> live application battle under test driving
+---@param budget integer maximum update ticks before the driver gives up
+local function finishBattle(battle, budget)
+  local SessionFixture = require("libs.battle.tests.session_fixture")
+  local answeredId = nil
+  for _ = 1, budget do
+    battle:update()
+    local current = battle:status()
+    if current.phase == "complete" or current.phase == "failed" then
+      return
+    end
+    if current.phase == "running" and current.request ~= nil and current.request.requestId ~= answeredId then
+      answeredId = current.request.requestId
+      local kinds = admittedKinds(current.request)
+      local actor = assert(current.request.actors[1], "every player decision addresses its combatant")
+      local choices = nil
+      if admits(kinds, "attack") then
+        choices = { SessionFixture.attackChoice(actor, 0, SessionFixture.positionTarget(2)) }
+      else
+        choices = { SessionFixture.confirmChoice(actor) }
+      end
+      local accepted, replyErr = battle:submit(SessionFixture.replyFor(current.request, choices))
+      Assert.isTrue(accepted, "the finishing driver answers every player decision")
+      Assert.isNil(replyErr, "accepted finishing replies carry no input error")
+    end
+  end
+  error("the battle never settled")
+end
+
+function T.session_healing_publishes_one_live_bag_decrement()
+  local SessionFixture = require("libs.battle.tests.session_fixture")
+  local battle, party, bag, _ = healingBattle("TOTODILE", 4, 0x5EED0006)
+  local bagRevision = bag:revision()
+  local opening = driveToDecision(battle, 400)
+  Assert.equal(opening.phase, "running", "the healing battle asks for its opening decision")
+  local request = assert(opening.request, "the opening decision is exposed")
+  local actor = assert(request.actors[1], "the opening decision addresses its lead")
+  local accepted, replyErr = battle:submit(SessionFixture.replyFor(request, {
+    { actor = actor, kind = "item", payload = { item = "POTION", target = { kind = "combatant", combatant = actor.combatant } } },
+  }))
+  Assert.isTrue(accepted, "the healing choice is accepted")
+  Assert.isNil(replyErr, "the accepted healing choice carries no input error")
+  finishBattle(battle, 1200)
+  Assert.equal(battle:status().phase, "complete", "the healed battle finishes")
+  Assert.equal(bag:quantity("POTION"), 2, "the consumed potion publishes exactly once")
+  Assert.equal(bag:quantity("POKE_BALL"), 2, "untouched stock never publishes")
+  Assert.equal(bag:revision(), bagRevision + 1, "one committed preparation advances the revision once")
+  battle:update()
+  Assert.equal(bag:quantity("POTION"), 2, "repeated settlement never consumes again")
+  Assert.equal(bag:revision(), bagRevision + 1, "repeated settlement never republishes")
+  Assert.isTrue(party:partyMon(0).condition.currentHp > 1, "the healed lead keeps its recovered health")
+  battle:dispose()
+end
+
+function T.thrown_balls_consume_stock_whether_the_capture_lands_or_not()
+  local SessionFixture = require("libs.battle.tests.session_fixture")
+  local battle, _party, bag, _port = healingBattle("TOTODILE", 4, 0x5EED0007)
+  local bagRevision = bag:revision()
+  local opening = driveToDecision(battle, 400)
+  local request = assert(opening.request, "the opening decision is exposed")
+  local actor = assert(request.actors[1], "the opening decision addresses its lead")
+  local accepted, replyErr = battle:submit(SessionFixture.replyFor(request, {
+    { actor = actor, kind = "item", payload = { item = "POKE_BALL", target = { kind = "combatant", combatant = 2 } } },
+  }))
+  Assert.isTrue(accepted, "the thrown ball is accepted")
+  Assert.isNil(replyErr, "the accepted throw carries no input error")
+  finishBattle(battle, 1200)
+  Assert.equal(battle:status().phase, "complete", "the throwing battle settles either way")
+  Assert.equal(bag:quantity("POKE_BALL"), 1, "the thrown ball publishes exactly once")
+  Assert.equal(bag:revision(), bagRevision + 1, "one committed preparation advances the revision once")
+  battle:update()
+  Assert.equal(bag:quantity("POKE_BALL"), 1, "repeated settlement never consumes again")
+  battle:dispose()
+end
+
+function T.a_stale_live_bag_blocks_every_publication()
+  local SessionFixture = require("libs.battle.tests.session_fixture")
+  local battle, party, bag, _ = healingBattle("TOTODILE", 4, 0x5EED0008)
+  local partyRevision = party:partyRevision()
+  local bagRevision = bag:revision()
+  local opening = driveToDecision(battle, 400)
+  local request = assert(opening.request, "the opening decision is exposed")
+  local actor = assert(request.actors[1], "the opening decision addresses its lead")
+  local accepted, replyErr = battle:submit(SessionFixture.replyFor(request, {
+    { actor = actor, kind = "item", payload = { item = "POTION", target = { kind = "combatant", combatant = actor.combatant } } },
+  }))
+  Assert.isTrue(accepted, "the healing choice is accepted")
+  Assert.isNil(replyErr, "the accepted healing choice carries no input error")
+  -- Let the healing turn execute, then move the live bag under the battle.
+  drivePastRequest(battle, request.requestId, 400)
+  Assert.isTrue(bag:add("POTION", 5), "a concurrent restock moves the live bag")
+  finishBattle(battle, 1200)
+  Assert.equal(battle:status().phase, "failed", "the stale bag fails the resolution")
+  Assert.equal(bag:quantity("POTION"), 8, "only the live restock lands")
+  Assert.equal(bag:revision(), bagRevision + 1, "no battle preparation publishes")
+  Assert.equal(party:partyRevision(), partyRevision, "no party consequence publishes either")
   battle:dispose()
 end
 

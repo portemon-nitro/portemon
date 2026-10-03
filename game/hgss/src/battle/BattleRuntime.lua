@@ -97,6 +97,7 @@ local HgssTrainerAi = require("libs.hgss.src.battle.HgssTrainerAi")
 ---@field _postTicks integer
 ---@field _runTicks integer
 ---@field _partyRevision integer?
+---@field _bagRevision integer?
 ---@field _error string?
 ---@field _disposed boolean
 local BattleRuntime = {}
@@ -328,6 +329,15 @@ function BattleRuntime.new(args)
   if args.party ~= nil then
     local party = args.party --[[@as BattlePartyOwner]]
     self._partyRevision = party:partyRevision()
+  end
+  if args.bag ~= nil then
+    -- Exactly-once currency for the live bag mirrors the party guard: the
+    -- construction-time revision is the only expected revision at
+    -- resolution, so a concurrent live mutation fails preparation instead
+    -- of publishing over it.
+    local bag = args.bag --[[@as table<string, unknown>]]
+    local revisionOf = bag.revision --[[@as fun(self: table<string, unknown>): integer]]
+    self._bagRevision = revisionOf(bag)
   end
   self._task = BattleTask.start(
     { launchId = self._request.id, kind = self._request.kind, details = self._request.payload },
@@ -1338,6 +1348,86 @@ local function moneyDeltaFor(result, rewards)
   return 0
 end
 
+-- Translates native session consumption into live bag deltas. Only ledger
+-- entries owned by the player participant inventory publish: each negative
+-- delta becomes one take of the positive quantity, identical items
+-- combine, and trainer-owned entries are battle-local evidence only. An
+-- unknown inventory or an unsupported player delta fails before
+-- publication instead of guessing ownership.
+---@return table<integer, table<string, unknown>> live take deltas for the staged bag preparation
+function BattleRuntime:_sessionBagDeltas()
+  local deltas = {} ---@type table<integer, table<string, unknown>>
+  if self._session == nil or self._scenario == nil then
+    return deltas
+  end
+  local scenario = self._scenario --[[@as table<string, unknown>]]
+  local declared = {} ---@type table<string, boolean>
+  for _, entry in ipairs(scenario.inventories or {}) do
+    if type(entry) == "table" and type(entry.id) == "string" then
+      declared[
+        entry.id --[[@as string]]
+      ] = true
+    end
+  end
+  local playerInventories = {} ---@type table<string, boolean>
+  for _, entry in ipairs(scenario.participants or {}) do
+    if type(entry) == "table" then
+      local participant = entry --[[@as table<string, unknown>]]
+      if participant.controller == BattleRuntime.PLAYER_CONTROLLER and type(participant.inventoryId) == "string" then
+        playerInventories[
+          participant.inventoryId --[[@as string]]
+        ] = true
+      end
+    end
+  end
+  if next(playerInventories) == nil then
+    return deltas
+  end
+  local session = self._session --[[@as table<string, unknown>]]
+  local snapshot = session:capture()
+  local ledger = snapshot.ledger
+  assert(type(ledger) == "table", "session snapshots carry their consumption ledger")
+  local takes = {} ---@type table<string, integer>
+  for _, record in
+    ipairs(ledger --[[@as table<integer, unknown>]])
+  do
+    if type(record) ~= "table" then
+      error("session consumption carries ledger records", 0)
+    end
+    local entry = record --[[@as table<string, unknown>]]
+    if
+      type(entry.inventoryId) ~= "string"
+      or type(entry.item) ~= "string"
+      or entry.item == ""
+      or type(entry.delta) ~= "number"
+    then
+      error("session consumption carries identified deltas", 0)
+    end
+    local inventoryId = entry.inventoryId --[[@as string]]
+    local item = entry.item --[[@as string]]
+    local delta = entry.delta --[[@as integer]]
+    if playerInventories[inventoryId] then
+      if delta >= 0 then
+        error("player session consumption only takes: " .. item, 0)
+      end
+      takes[item] = (takes[item] or 0) + -delta
+    elseif declared[inventoryId] then
+      -- Trainer-owned battle-local stock never reaches the live bag.
+    else
+      error("session consumption names an unknown inventory: " .. inventoryId, 0)
+    end
+  end
+  local keys = {} ---@type string[]
+  for key in pairs(takes) do
+    keys[#keys + 1] = key
+  end
+  table.sort(keys)
+  for _, key in ipairs(keys) do
+    deltas[#deltas + 1] = { op = "take", item = key, quantity = takes[key] }
+  end
+  return deltas
+end
+
 ---@return table<string, unknown> staged committer preparation
 function BattleRuntime:_prepareCommit()
   local result = self:_mapOutcome()
@@ -1385,19 +1475,25 @@ function BattleRuntime:_prepareCommit()
       args.dex = stage(dex, { seen = seen, caught = caught })
     end
   end
-  if self._bag ~= nil and self._bagDeltas ~= nil and #self._bagDeltas > 0 then
-    local bag = self._bag --[[@as table<string, unknown>]]
-    local deltas = {} ---@type table<integer, table<string, unknown>>
+  -- Native session consumption reaches the live bag exactly once: player
+  -- inventory ledger entries become take deltas staged against the
+  -- construction-time revision, trainer stock stays battle-local, and any
+  -- still-supported explicit driver delta rides the same preparation.
+  local bagDeltas = self:_sessionBagDeltas()
+  if self._bagDeltas ~= nil then
     for _, delta in ipairs(self._bagDeltas) do
       if type(delta) ~= "table" then
         error("planned bag consumption carries delta records", 0)
       end
       local record = delta --[[@as table<string, unknown>]]
-      deltas[#deltas + 1] = { op = record.op, item = record.item, quantity = record.quantity }
+      bagDeltas[#bagDeltas + 1] = { op = record.op, item = record.item, quantity = record.quantity }
     end
+  end
+  if self._bag ~= nil and #bagDeltas > 0 then
+    local bag = self._bag --[[@as table<string, unknown>]]
     local prepare = bag.prepareInventoryChanges --[[@as fun(self: table<string, unknown>, revision: integer, deltas: table<integer, table<string, unknown>>): table<string, unknown>?]]
-    local revisionOf = bag.revision --[[@as fun(self: table<string, unknown>): integer]]
-    local prep = prepare(bag, revisionOf(bag), deltas)
+    local expected = assert(self._bagRevision, "bag staging keeps its construction revision")
+    local prep = prepare(bag, expected, bagDeltas)
     if prep == nil then
       error("battle bag staging went stale", 0)
     end
