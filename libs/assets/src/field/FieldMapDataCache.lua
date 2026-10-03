@@ -163,6 +163,61 @@ function FieldMapDataCache.hasRequiredEvents(events)
   return true
 end
 
+-- The normalized renderer environment the current field-map schema always
+-- carries: parsed lighting records, the eight-entry edge-color table at
+-- logical indices 0..7, the catalog weather id, and the renderer-ready fog
+-- preset with its 32-entry density table. A record without it is malformed
+-- generated data, never an empty feature.
+---@param environment unknown
+---@return boolean
+function FieldMapDataCache.hasRenderEnvironment(environment)
+  if type(environment) ~= "table" then
+    return false
+  end
+  if
+    type(environment.lighting) ~= "table"
+    or not Validate.isArray(environment.lighting.records)
+    or #environment.lighting.records < 1
+  then
+    return false
+  end
+  if type(environment.edgeColors) ~= "table" then
+    return false
+  end
+  for index = 0, 7 do
+    local entry = environment.edgeColors[index]
+    if type(entry) ~= "number" or entry % 1 ~= 0 or entry < 0 or entry > 0x7FFF then
+      return false
+    end
+  end
+  if
+    type(environment.weatherId) ~= "number"
+    or environment.weatherId % 1 ~= 0
+    or environment.weatherId < 0
+    or environment.weatherId > 13
+  then
+    return false
+  end
+  local fog = environment.fog
+  if type(fog) ~= "table" or type(fog.enabled) ~= "boolean" then
+    return false
+  end
+  for _, key in ipairs({ "color", "offset", "slope", "alpha" }) do
+    if not Validate.isNonNegativeInteger(fog[key]) then
+      return false
+    end
+  end
+  if not Validate.isArray(fog.table) or #fog.table ~= 32 then
+    return false
+  end
+  for _, density in ipairs(fog.table) do
+    if type(density) ~= "number" or density % 1 ~= 0 or density < 0 or density > 255 then
+      return false
+    end
+  end
+  return true
+end
+
 function FieldMapDataCache.mapDir(mapId)
   assert(type(mapId) == "number" and mapId >= 0, "mapId must be non-negative")
   return string.format("data/generated/field/maps/%04d", mapId)
@@ -281,8 +336,9 @@ function FieldMapDataCache.marker(romSha1, mapId, dependencyHash)
 end
 
 -- True only if the marker is exact, the record carries the current identity
--- (schema and mapId), dependencies load, and every required event collection
--- and the audio policy (music record, soundplates array) are present.
+-- (schema and mapId), dependencies load, and every required event collection,
+-- the audio policy (music record, soundplates array), and the normalized
+-- render environment are present.
 function FieldMapDataCache.isReady(cacheFs, mapId, expectedMarker)
   if cacheFs:read(FieldMapDataCache.markerPath(mapId)) ~= expectedMarker then
     return false
@@ -304,6 +360,7 @@ function FieldMapDataCache.isReady(cacheFs, mapId, expectedMarker)
     or not hasInitScripts(field)
     or not FieldMapDataCache.hasFieldUsePolicy(field.fieldUse)
     or not FieldMapDataCache.isTransitionEnvironment(field.transitionEnvironment)
+    or not FieldMapDataCache.hasRenderEnvironment(field.renderEnvironment)
   then
     return false
   end

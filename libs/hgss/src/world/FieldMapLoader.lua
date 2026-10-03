@@ -30,6 +30,7 @@ local FieldCellCache = require("libs.assets.src.field.FieldCellCache")
 ---@field mapSectionNativeId integer exact numeric MAPSEC_* identity; never the header id
 ---@field followMode string source map-header follow policy: ALLOW, HEIGHT_RESTRICT, or PREVENT
 ---@field fieldData table<string, unknown>
+---@field renderEnvironment table<string, unknown> runtime-owned lighting, edge, and fog state; present even when no scene is realized
 ---@field cameraType integer
 ---@field coordinateOrigin { x: integer, z: integer }
 ---@field released boolean
@@ -75,6 +76,7 @@ FieldMapLoader.__index = FieldMapLoader
 ---@field mapProps MapProps? semantic door/prop resolver; present for logical (non-outdoor) maps, which load an eager central collision regardless of presentation
 ---@field scene table<string, unknown>
 ---@field fieldData table<string, unknown>
+---@field renderEnvironment table<string, unknown> runtime-owned lighting, edge, and fog state; live fog mutates here, never in generated data
 ---@field collision table<string, unknown>?
 ---@field terrain TerrainSurface?
 ---@field terrainDependencyHash string?
@@ -200,8 +202,8 @@ end
 
 -- Shared generated field-record acquisition and validation for both
 -- semantic and full paths: identity, event collections, field-use policy,
--- init scripts, and transition environment. Visual realization never
--- revalidates these.
+-- init scripts, transition environment, and the normalized render
+-- environment. Visual realization never revalidates these.
 ---@param cacheFs CacheFs
 ---@param record table<string, unknown>
 ---@return table<string, unknown>
@@ -243,7 +245,32 @@ local function loadSemanticFieldData(cacheFs, record)
       { mapId = record.id, transitionEnvironment = fieldData.transitionEnvironment }
     )
   end
+  if not FieldMapDataCache.hasRenderEnvironment(fieldData.renderEnvironment) then
+    Errors.raise(
+      FieldErrors.FIELD_MAP_DATA_CACHE_INVALID,
+      "field cache render environment is missing or malformed; rebuild the derived cache",
+      { mapId = record.id }
+    )
+  end
   return fieldData
+end
+
+-- One runtime-owned render environment per runtime map: the outer table is
+-- fresh, while the immutable lighting, edge-color, and base-fog records
+-- are borrowed from validated generated data. Only live fog is ever
+-- replaced; the generated record is never mutated.
+---@param fieldData table<string, unknown>
+---@return table<string, unknown>
+local function materializeRenderEnvironment(fieldData)
+  local generated = assert(fieldData.renderEnvironment, "render environment requires validated field data")
+  local baseFog = assert(generated.fog, "render environment requires its base fog")
+  return {
+    lighting = assert(generated.lighting, "render environment requires lighting"),
+    edgeColors = assert(generated.edgeColors, "render environment requires edge colors"),
+    baseWeatherId = assert(generated.weatherId, "render environment requires its base weather"),
+    baseFog = baseFog,
+    fog = baseFog,
+  }
 end
 
 -- The terrain artifact's source record is part of the map dependency identity
@@ -472,6 +499,7 @@ function FieldMapLoader:loadLogical(idOrSymbol)
     mapSectionNativeId = record.mapSectionNativeId,
     followMode = record.followMode,
     fieldData = fieldData,
+    renderEnvironment = materializeRenderEnvironment(fieldData),
     cameraType = fieldData.cameraType,
     coordinateOrigin = { x = originX, z = originZ },
     released = false,
@@ -667,6 +695,7 @@ local function assembleComplete(loader, ctx, sceneRuntime)
       mapProps = ctx.mapProps,
       scene = scene,
       fieldData = ctx.fieldData,
+      renderEnvironment = materializeRenderEnvironment(ctx.fieldData),
       collision = region and region.collision or nil,
       terrain = region and region.terrain or nil,
       terrainDependencyHash = region and terrainDependencyHash(region) or nil,

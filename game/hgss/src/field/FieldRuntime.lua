@@ -1153,15 +1153,11 @@ function FieldRuntime:_startFieldSession(boot)
     self.scripts:onZoneChange(runtimeMap)
   end
   local function applyWeather(runtimeMap)
-    -- A scene-less logical halo carries no visuals to fog: carry the
-    -- live weather across the seam and leave presentation application
-    -- to the map's visual entry, which resolves against its own scene.
+    -- The runtime render environment is always available, even on a
+    -- scene-less logical halo, so destination weather resolves against
+    -- the destination map itself instead of carrying the source weather.
     self.weatherRuntime = { mapId = runtimeMap.mapId }
-    if runtimeMap.scene ~= nil then
-      self:_applyEffectiveWeather(runtimeMap)
-    else
-      runtimeMap.effectiveWeatherId = self.lastEffectiveWeatherId
-    end
+    self:_applyEffectiveWeather(runtimeMap)
   end
   local function enterAudio(runtimeMap)
     if self.audio and self.audio.enterZone then
@@ -1662,9 +1658,9 @@ end
 -- Apply effective weather to a runtime map: resolve the catalog rules
 -- against the injected date/penalty and event state, store
 -- effectiveWeatherId for headless inspection, and select the fog preset
--- (base scene fog when unchanged, catalog preset otherwise).
+-- (the generated base fog when unchanged, catalog preset otherwise).
 function FieldRuntime:_applyEffectiveWeather(runtimeMap)
-  local base = runtimeMap.scene.weatherId
+  local base = runtimeMap.renderEnvironment.baseWeatherId
   local date = self.weatherClock:today()
   local hasPenalty = self.weatherClock:hasPenalty()
   local effective = FieldWeatherResolver.resolve(self.weatherCatalog, {
@@ -1680,13 +1676,12 @@ end
 function FieldRuntime:_setLiveWeather(runtimeMap, weatherId)
   assert(type(runtimeMap) == "table", "live weather requires a runtime map")
   assert(type(weatherId) == "number" and weatherId % 1 == 0, "live weather id must be an integer")
+  local environment = assert(runtimeMap.renderEnvironment, "live weather requires the runtime render environment")
   local catalogPreset = assert(self.weatherCatalog.presets[weatherId], "live weather id has no catalog preset")
-  local preset = weatherId == runtimeMap.scene.weatherId and runtimeMap.scene.fog or catalogPreset
+  local preset = weatherId == environment.baseWeatherId and environment.baseFog or catalogPreset
   runtimeMap.effectiveWeatherId = weatherId
   self.lastEffectiveWeatherId = weatherId
-  if runtimeMap.sceneRuntime then
-    runtimeMap.sceneRuntime.fog = preset
-  end
+  environment.fog = preset
 end
 
 -- Select the physical owner for a discontinuous outdoor destination. A

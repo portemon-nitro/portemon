@@ -436,18 +436,25 @@ end
 
 -- A live presentation runtime always carries the transition, dialogue, and
 -- menu host; draw consults all three unconditionally, and the renderer
--- receives the scene runtime.
-function T.draw_passes_the_scene_runtime_and_queries_the_menu_host()
+-- receives the runtime map's render environment.
+function T.draw_passes_the_render_environment_and_queries_the_menu_host()
   local sceneRuntime = {
     mapDraws = { { kind = "map" } },
     staticBuildingDraws = { { kind = "static-building" } },
     animatedBuildingDraws = { { kind = "animated-building" } },
   }
+  local renderEnvironment = {
+    lighting = { records = {} },
+    edgeColors = { [0] = 0 },
+    baseWeatherId = 0,
+    baseFog = { enabled = false },
+    fog = { enabled = false },
+  }
   local presentations = 0
   local received
   local state = setmetatable({
     runtime = {
-      runtimeMap = { mapId = 61, mapSymbol = "MAP_NEW_BARK", sceneRuntime = sceneRuntime },
+      runtimeMap = { mapId = 61, mapSymbol = "MAP_NEW_BARK", sceneRuntime = sceneRuntime, renderEnvironment = renderEnvironment },
       player = { fieldX = 3, fieldZ = 7, worldY = 1.5, surfaceId = 0, facing = "east", motion = "idle" },
       playerVisual = {
         drawRecord = function()
@@ -528,8 +535,8 @@ function T.draw_passes_the_scene_runtime_and_queries_the_menu_host()
       })
     end,
     presentationResources = presentationResourcesStub({
-      draw = function(_, scene, camera, worldParts)
-        received = { scene = scene, camera = camera, worldParts = worldParts }
+      draw = function(_, environment, camera, worldParts)
+        received = { environment = environment, camera = camera, worldParts = worldParts }
       end,
     }),
     worldParts = {},
@@ -538,7 +545,11 @@ function T.draw_passes_the_scene_runtime_and_queries_the_menu_host()
     actorPresentation = actorPresentationStub(),
   }, FieldState)
   state:draw()
-  Assert.equal(received.scene, sceneRuntime, "the renderer receives the runtime map's scene runtime")
+  Assert.equal(
+    received.environment,
+    renderEnvironment,
+    "the renderer receives the runtime map's render environment"
+  )
   Assert.equal(received.camera, state.runtime.camera, "the draw path forwards the runtime camera")
   Assert.isTrue(received.worldParts == state.worldParts)
   Assert.isTrue(received.worldParts[1] == sceneRuntime.mapDraws)
@@ -547,6 +558,124 @@ function T.draw_passes_the_scene_runtime_and_queries_the_menu_host()
   Assert.deepEqual(received.worldParts[4], {})
   Assert.deepEqual(received.worldParts[5], {})
   Assert.equal(presentations, 1, "draw always queries the menu host presentation")
+end
+
+-- A physical-coverage map whose active logical map has no realized scene
+-- still draws: world parts come from coverage and the renderer receives
+-- exactly the active map's render environment. No scene runtime is
+-- fabricated to satisfy the draw.
+function T.physical_coverage_draws_without_a_realized_scene()
+  local coverageParts = { { kind = "coverage" } }
+  local renderEnvironment = {
+    lighting = { records = {} },
+    edgeColors = { [0] = 0 },
+    baseWeatherId = 0,
+    baseFog = { enabled = false },
+    fog = { enabled = false },
+  }
+  local received
+  local state = setmetatable({
+    runtime = {
+      runtimeMap = {
+        mapId = 60,
+        mapSymbol = "MAP_NEW_BARK",
+        sceneRuntime = nil,
+        renderEnvironment = renderEnvironment,
+        coverage = {
+          worldParts = function()
+            return coverageParts
+          end,
+        },
+      },
+      player = { fieldX = 3, fieldZ = 7, worldY = 1.5, surfaceId = 0, facing = "east", motion = "idle" },
+      playerVisual = {
+        drawRecord = function()
+          return { visible = false }
+        end,
+      },
+      fieldEntranceIndicator = {
+        status = function()
+          return { visible = false }
+        end,
+      },
+      actors = {
+        drawRecords = function()
+          return {}
+        end,
+      },
+      session = {
+        renderAlpha = function()
+          return 0.5
+        end,
+      },
+      destinationWorldPresentable = function()
+        return true
+      end,
+      acknowledgeDestinationPresentation = function() end,
+      viewport = FieldViewport.new(640, 480, { mode = "expanded" }),
+      camera = { zoom = 1 },
+      transition = { fadeAlpha = 0 },
+      fieldPixelScale = {
+        resolvedScale = function()
+          return 3
+        end,
+      },
+      dialogue = {
+        isModal = function()
+          return false
+        end,
+      },
+      scripts = { dialogueHost = {
+        yesNoPresentation = function()
+          return nil
+        end,
+      } },
+      contextChoiceProvider = {
+        status = function()
+          return nil
+        end,
+      },
+      contextChoicePresentation = function()
+        return nil
+      end,
+      signpost = {
+        isModal = function()
+          return false
+        end,
+      },
+      applicationHost = {
+        status = function()
+          return { phase = "closed", fadeAlpha = 0 }
+        end,
+      },
+      menuHost = {
+        presentation = function()
+          return nil
+        end,
+      },
+      yesNoHost = idleChoiceHost(),
+      resizePresentation = function() end,
+    },
+    _pollPresentationTopology = false,
+    presentationResources = presentationResourcesStub({
+      draw = function(_, environment, _, worldParts)
+        received = { environment = environment, worldParts = worldParts }
+      end,
+    }),
+    worldParts = {},
+    worldActorItems = {},
+    spriteItems = {},
+    actorPresentation = actorPresentationStub(),
+  }, FieldState)
+  state:draw()
+  Assert.notNil(received, "the draw reaches the renderer with coverage geometry")
+  Assert.equal(
+    received.environment,
+    renderEnvironment,
+    "the renderer receives the active map's render environment, not a fabricated scene"
+  )
+  Assert.isTrue(received.worldParts[1] == coverageParts, "world parts come from physical coverage")
+  Assert.isNil(state.runtime.runtimeMap.sceneRuntime, "the draw fabricates no scene runtime")
 end
 
 function T.active_starter_presentation_is_drawn_after_the_script_fade()

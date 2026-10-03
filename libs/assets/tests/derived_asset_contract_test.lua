@@ -47,7 +47,7 @@ function T.contract_pins_the_current_asset_identities()
     fieldCells = {
       cacheFormat = "field-cell-cache-v3",
       indexSchema = "g4-field-cell-index-v3",
-      cellSchema = "g4-field-cell-v3",
+      cellSchema = "g4-field-cell-v4",
     },
     fieldActors = {
       cacheFormat = "field-actor-cache-v2",
@@ -60,7 +60,7 @@ function T.contract_pins_the_current_asset_identities()
     },
     fieldMapData = {
       cacheFormat = "g4-field-map-cache-v1",
-      fieldSchema = "g4-field-map-v10",
+      fieldSchema = "g4-field-map-v11",
       spawnIndexSchema = "g4-field-spawn-index-v1",
     },
     messages = {

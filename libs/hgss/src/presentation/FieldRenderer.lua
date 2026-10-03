@@ -16,12 +16,18 @@ local RenderQueue = require("libs.hgss.src.presentation.RenderQueue")
 local FieldRenderer = {}
 FieldRenderer.__index = FieldRenderer
 
-local function selectedLighting(sceneRuntime)
-  local profile = sceneRuntime.lighting
+-- Selects the active time-of-day lighting record from a runtime render
+-- environment: the normalized lighting profile plus the optional
+-- presentation time override. Needs only environment state, never scene
+-- geometry or map identity.
+---@param renderEnvironment table<string, unknown>
+---@return table<string, unknown>?
+local function selectedLighting(renderEnvironment)
+  local profile = renderEnvironment.lighting
   if profile == nil or profile.records == nil then
     return nil
   end
-  return FieldLightProfile.select(profile, sceneRuntime.fieldTimeSeconds or FieldLightProfile.DEFAULT_TIME_SECONDS)
+  return FieldLightProfile.select(profile, renderEnvironment.fieldTimeSeconds or FieldLightProfile.DEFAULT_TIME_SECONDS)
 end
 
 ---@param opts table<string, unknown>?
@@ -49,15 +55,15 @@ function FieldRenderer.new(opts)
   }, FieldRenderer)
 end
 
----@param sceneRuntime table<string, unknown>
+---@param renderEnvironment table<string, unknown> runtime lighting, edge-color, and fog state; a full scene runtime stays structurally valid here
 ---@param camera table<string, unknown>
 ---@param worldParts table[][]?
 ---@param spriteItems table[]?
 ---@param viewport table<string, unknown>
 ---@param alpha number
 ---@param presentationPixelScale integer?
-function FieldRenderer:draw(sceneRuntime, camera, worldParts, spriteItems, viewport, alpha, presentationPixelScale)
-  assert(type(sceneRuntime) == "table", "field scene presentation is required")
+function FieldRenderer:draw(renderEnvironment, camera, worldParts, spriteItems, viewport, alpha, presentationPixelScale)
+  assert(type(renderEnvironment) == "table", "field render environment is required")
   assert(type(camera) == "table", "field presentation camera is required")
   assert(type(camera.far) == "number" and camera.far > 0, "FieldRenderer requires camera.far to be a positive number")
   local viewMatrix = camera:view(alpha)
@@ -65,9 +71,9 @@ function FieldRenderer:draw(sceneRuntime, camera, worldParts, spriteItems, viewp
   local billboardProjection = camera:billboardProjection()
   local queue = RenderQueue.buildInto(worldParts or {}, viewMatrix, self._queueScratch)
   self.gxRenderer:draw({
-    lighting = selectedLighting(sceneRuntime),
-    edgeColors = sceneRuntime.edgeColors,
-    fog = sceneRuntime.fog,
+    lighting = selectedLighting(renderEnvironment),
+    edgeColors = renderEnvironment.edgeColors,
+    fog = renderEnvironment.fog,
     viewMatrix = viewMatrix,
     cameraZoom = camera.zoom,
     presentationPixelScale = presentationPixelScale,

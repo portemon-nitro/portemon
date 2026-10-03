@@ -175,9 +175,12 @@ DerivedAssetContract.world = {
 DerivedAssetContract.fieldCells = {
   -- v3 adds independently published cell roots, dependency attestations, and
   -- the calibration needed by both physical and logical scene consumers.
+  -- v4 keeps the v3 payload shape but serializes the physical-cell Y
+  -- origin through the canonical matrix-altitude conversion, so a stale
+  -- v3 cell with the old origin scale must rebuild.
   cacheFormat = "field-cell-cache-v3",
   indexSchema = "g4-field-cell-index-v3",
-  cellSchema = "g4-field-cell-v3",
+  cellSchema = "g4-field-cell-v4",
 }
 
 DerivedAssetContract.fieldActors = {
@@ -210,7 +213,10 @@ DerivedAssetContract.fieldMapData = {
   -- permissions, Flash/dark facts, cave environment, Union/Colosseum
   -- exclusion, and the Ice Path/Alph source exceptions) plus proven
   -- facing-actor obstacle kinds on object events.
-  fieldSchema = "g4-field-map-v10",
+  -- v11 carries the normalized renderer environment (parsed field-light
+  -- records, the area edge-color table, the catalog weather id, and its
+  -- fog preset) so logical maps stay drawable without a visual scene.
+  fieldSchema = "g4-field-map-v11",
   -- The teleport landing index is a separate family-level record carrying
   -- cited spawn-keyed outdoor arrival destinations (never source numeric
   -- identities); the runtime return planner reads it, never producer data.

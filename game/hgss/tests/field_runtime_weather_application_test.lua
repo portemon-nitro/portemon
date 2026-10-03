@@ -92,6 +92,39 @@ local function destinationMap(mapId, weatherId, fog)
     terrain = terrain(),
     scene = { weatherId = weatherId, fog = fog },
     sceneRuntime = {},
+    renderEnvironment = {
+      lighting = { records = {} },
+      edgeColors = { [0] = 0 },
+      baseWeatherId = weatherId,
+      baseFog = fog,
+      fog = fog,
+    },
+  }
+end
+
+-- A semantic-only logical map: no scene record and no realized scene, only
+-- the runtime render environment with its immutable base weather/fog and
+-- the mutable live fog.
+local function semanticMap(mapId, baseWeatherId, baseFog)
+  return {
+    mapId = mapId,
+    cameraType = "field",
+    coordinateOrigin = { x = 0, z = 0 },
+    collision = {
+      containsLocal = function()
+        return true
+      end,
+    },
+    terrain = terrain(),
+    scene = nil,
+    sceneRuntime = nil,
+    renderEnvironment = {
+      lighting = { records = {} },
+      edgeColors = { [0] = 0 },
+      baseWeatherId = baseWeatherId,
+      baseFog = baseFog,
+      fog = baseFog,
+    },
   }
 end
 
@@ -183,7 +216,7 @@ function T.runtime_samples_weather_on_activation_and_selects_the_matching_fog()
   Assert.equal(calls.today, 1)
   Assert.equal(calls.penalty, 1)
   Assert.equal(overrideMap.effectiveWeatherId, 8)
-  Assert.equal(overrideMap.sceneRuntime.fog, catalog.presets[8])
+  Assert.equal(overrideMap.renderEnvironment.fog, catalog.presets[8])
   Assert.equal(calls.prepareTransition, 1)
   runtime:update(1 / 30)
   runtime:update(1 / 30)
@@ -196,7 +229,7 @@ function T.runtime_samples_weather_on_activation_and_selects_the_matching_fog()
   Assert.equal(calls.today, 2)
   Assert.equal(calls.penalty, 2)
   Assert.equal(baseMap.effectiveWeatherId, 5)
-  Assert.equal(baseMap.sceneRuntime.fog, baseFog, "unchanged weather must preserve compiled base fog")
+  Assert.equal(baseMap.renderEnvironment.fog, baseFog, "unchanged weather must preserve compiled base fog")
   Assert.equal(calls.prepareTransition, 2)
 end
 
@@ -206,7 +239,7 @@ function T.live_assignment_updates_id_and_fog_without_activation_resolution()
   local field = runtimeWithClock(catalog, calls, destinationMap(1, 11, {}))
   field:_setLiveWeather(field.runtimeMap, 12)
   Assert.equal(field.runtimeMap.effectiveWeatherId, 12)
-  Assert.equal(field.runtimeMap.sceneRuntime.fog, catalog.presets[12])
+  Assert.equal(field.runtimeMap.renderEnvironment.fog, catalog.presets[12])
   Assert.equal(calls.today, 0)
   Assert.equal(calls.penalty, 0)
 end
@@ -215,14 +248,54 @@ function T.live_assignment_rejects_missing_catalog_entries_before_mutation()
   local catalog = validCatalog()
   local calls = { today = 0, penalty = 0, prepareTransition = 0 }
   local field = runtimeWithClock(catalog, calls, destinationMap(1, 11, {}))
-  local previousFog = field.runtimeMap.sceneRuntime.fog
+  local previousFog = field.runtimeMap.renderEnvironment.fog
   field.runtimeMap.effectiveWeatherId = 11
   local ok = pcall(function()
     field:_setLiveWeather(field.runtimeMap, 14)
   end)
   Assert.isFalse(ok)
   Assert.equal(field.runtimeMap.effectiveWeatherId, 11)
-  Assert.equal(field.runtimeMap.sceneRuntime.fog, previousFog)
+  Assert.equal(field.runtimeMap.renderEnvironment.fog, previousFog)
+end
+
+-- A scene-less destination resolves its own effective weather from its
+-- render environment: the calendar override for the destination map fires
+-- without acquiring any visual scene.
+function T.scene_less_destination_resolves_its_own_effective_weather()
+  local catalog = validCatalog()
+  local calls = { today = 0, penalty = 0, prepareTransition = 0 }
+  local baseFog = { name = "destination base fog" }
+  local map = semanticMap(WEATHER_MAP, 5, baseFog)
+  local field = runtimeWithClock(catalog, calls, map)
+  field:_applyEffectiveWeather(map)
+  Assert.equal(calls.today, 1, "activation samples the weather date once")
+  Assert.equal(calls.penalty, 1, "activation samples the penalty state once")
+  Assert.equal(map.effectiveWeatherId, 8, "the destination calendar override resolves")
+  Assert.equal(field.lastEffectiveWeatherId, 8)
+  Assert.equal(map.renderEnvironment.fog, catalog.presets[8], "an override uses the catalog preset")
+  Assert.isNil(map.sceneRuntime, "weather resolution acquires no visual scene")
+end
+
+-- Live assignment on a scene-less map mutates only the runtime environment:
+-- an override takes the catalog preset, and returning to the base weather
+-- restores the immutable generated base fog.
+function T.scene_less_live_override_restores_the_base_fog()
+  local catalog = validCatalog()
+  local calls = { today = 0, penalty = 0, prepareTransition = 0 }
+  local baseFog = { name = "destination base fog" }
+  local map = semanticMap(1, 5, baseFog)
+  local field = runtimeWithClock(catalog, calls, map)
+  field:_setLiveWeather(map, 12)
+  Assert.equal(map.effectiveWeatherId, 12)
+  Assert.equal(map.renderEnvironment.fog, catalog.presets[12])
+  Assert.equal(calls.today, 0, "live assignment never resamples the weather date")
+  Assert.equal(calls.penalty, 0, "live assignment never resamples the penalty state")
+  field:_setLiveWeather(map, 5)
+  Assert.equal(map.effectiveWeatherId, 5)
+  Assert.isTrue(map.renderEnvironment.fog == baseFog, "the base weather restores the generated base fog")
+  Assert.isTrue(map.renderEnvironment.baseFog == baseFog, "the immutable base fog survives overrides")
+  Assert.isNil(map.scene, "live weather never materializes a scene record")
+  Assert.isNil(map.sceneRuntime, "live weather never materializes a scene runtime")
 end
 
 return { tests = T, metadata = { tags = { "field", "weather" } } }

@@ -534,8 +534,11 @@ function FieldState:draw()
   end
   self:_drawBackdrop(width, height)
   local alpha = self.runtime.session:renderAlpha()
+  -- Rendering consumes the active logical map's render environment
+  -- independently from geometry: physical coverage owns outdoor world
+  -- parts while the environment carries lighting, edge, and fog state.
   resources.renderer:draw(
-    self.runtime.runtimeMap.sceneRuntime,
+    self.runtime.runtimeMap.renderEnvironment,
     self.runtime.camera,
     self:_worldParts(alpha),
     self.spriteItems,

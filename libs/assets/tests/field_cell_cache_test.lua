@@ -324,6 +324,16 @@ function T.rejects_missing_presentation_references()
   end
 end
 
+-- A cell payload carrying the previous payload schema is stale generated
+-- data: it must not read as ready once the current payload identity moves on.
+function T.rejects_cells_carrying_the_previous_payload_schema()
+  local cache = presentationCache({ geometry = true, texture = true, model = true })
+  local cell = assert(cache:loadLua(FieldCellCache.cellPath(4, 1)))
+  Assert.equal(cell.schema, FieldCellCache.CELL_SCHEMA, "the published cell carries the current payload schema")
+  cell.schema = "g4-field-cell-v3"
+  Assert.isFalse(FieldCellCache.isReady(cache, "marker"), "a previous-schema cell must rebuild")
+end
+
 function T.accepts_finite_half_tile_origin_and_rejects_non_finite_origin()
   local finite = presentationCache({ geometry = true, texture = true, model = true })
   local cell = assert(finite:loadLua(FieldCellCache.cellPath(4, 1)))
