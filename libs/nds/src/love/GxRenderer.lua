@@ -93,6 +93,7 @@ local FixedPoint = require("libs.math.src.FixedPoint")
 ---@field _fogSpriteReference table<string, unknown>?
 ---@field stats { drawCalls: integer, colorDrawCalls: integer, triangles: integer, meshCount: integer, textureCount: integer }
 ---@field sceneColor GxRenderer.Canvas?
+---@field _resolvedColor GxRenderer.Canvas?
 ---@field colorDepth GxRenderer.Canvas?
 ---@field renderState GxRenderer.Canvas?
 ---@field _spareColor GxRenderer.Canvas?
@@ -359,6 +360,9 @@ function GxRenderer:_releaseTargets()
   if self.sceneColor then
     self.sceneColor:release()
   end
+  if self._resolvedColor then
+    self._resolvedColor:release()
+  end
   if self.colorDepth then
     self.colorDepth:release()
   end
@@ -377,7 +381,7 @@ function GxRenderer:_releaseTargets()
   if self._sourceMeta then
     self._sourceMeta:release()
   end
-  self.sceneColor, self.colorDepth, self.renderState = nil, nil, nil
+  self.sceneColor, self._resolvedColor, self.colorDepth, self.renderState = nil, nil, nil, nil
   self._spareColor, self._spareState = nil, nil
   self._sourceColor, self._sourceMeta = nil, nil
   self.colorW, self.colorH, self.stateW, self.stateH = nil, nil, nil, nil
@@ -448,6 +452,7 @@ end
 function GxRenderer:_ensureTargets(colorW, colorH)
   if
     self.sceneColor
+    and self._resolvedColor
     and self.colorW == colorW
     and self.colorH == colorH
     and self.stateW == colorW
@@ -456,15 +461,17 @@ function GxRenderer:_ensureTargets(colorW, colorH)
     return
   end
   local lg = assert(self._graphics)
-  local sceneColor, colorDepth, renderState
+  local sceneColor, resolvedColor, colorDepth, renderState
   local spareColor, spareState, sourceColor, sourceMeta
   local colorTargets, stateClearTargets, colorClearTargets
   local sourceColorTargets, sourceMetaTargets
   local ok, err = pcall(function()
     sceneColor = lg.newCanvas(colorW, colorH)
-    -- Nearest sampling keeps the final composite draw (a 1:1 blit at
-    -- presentation resolution) from introducing interpolation of its own.
     sceneColor:setFilter("nearest", "nearest")
+    -- Edge, fog, and antialias resolve are world-raster semantics. Keep their
+    -- output at this resolution and use nearest sampling only when presenting.
+    resolvedColor = lg.newCanvas(colorW, colorH)
+    resolvedColor:setFilter("nearest", "nearest")
     colorDepth = lg.newCanvas(colorW, colorH, { format = "depth24stencil8", readable = false })
 
     -- renderState: red the normalized opaque edge polygon ID, green the
@@ -502,6 +509,7 @@ function GxRenderer:_ensureTargets(colorW, colorH)
   if not ok then
     for _, canvas in ipairs({
       sceneColor,
+      resolvedColor,
       colorDepth,
       renderState,
       spareColor,
@@ -516,7 +524,8 @@ function GxRenderer:_ensureTargets(colorW, colorH)
     error(err)
   end
   self:_releaseTargets()
-  self.sceneColor, self.colorDepth, self.renderState = sceneColor, colorDepth, renderState
+  self.sceneColor, self._resolvedColor, self.colorDepth, self.renderState =
+    sceneColor, resolvedColor, colorDepth, renderState
   self._spareColor, self._spareState = spareColor, spareState
   self._sourceColor, self._sourceMeta = sourceColor, sourceMeta
   self.colorW, self.colorH, self.stateW, self.stateH = colorW, colorH, colorW, colorH
@@ -1165,14 +1174,29 @@ function GxRenderer:draw(frame)
     self:_sendFog(frame)
     self.edgeShader:send("u_antialiasEnabled", true)
     self.edgeShader:send("u_edgeRadiusPx", edgeRadiusPx)
-    lg.setCanvas(presentationCanvas)
     lg.setDepthMode()
     lg.setBlendMode("replace", "premultiplied")
     lg.setColor(1, 1, 1, 1)
+    lg.setCanvas(assert(self._resolvedColor))
     lg.setShader(self.edgeShader)
     sendStateUniforms(self.edgeShader, activeState, self.stateW, self.stateH)
-    lg.draw(activeColor, rectangle.x, rectangle.y, 0, rectangle.width / colorW, rectangle.height / colorH)
+    lg.draw(activeColor, 0, 0)
+
+    -- Edge, fog, and the current AA approximation have finished at world
+    -- resolution. Presentation is only a nearest-filtered scale of that result.
+    lg.setCanvas(presentationCanvas)
     lg.setShader()
+    lg.setDepthMode()
+    lg.setBlendMode("replace", "premultiplied")
+    lg.setColor(1, 1, 1, 1)
+    lg.draw(
+      assert(self._resolvedColor),
+      rectangle.x,
+      rectangle.y,
+      0,
+      rectangle.width / colorW,
+      rectangle.height / colorH
+    )
 
     -- The world is now present at presentation resolution. Ordinary billboards
     -- rasterize into one presentation-resolution color/coverage/depth layer,

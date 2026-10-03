@@ -83,7 +83,7 @@
 // (u_fogAlpha against the source alpha quantized to 5 bits) -- this draw's
 // output alpha is real data consumed verbatim by GxRenderer's "replace"/
 // "premultiplied" composite blend, not by the host's default alpha
-// compositing (see GxRenderer.lua's doDraw for why that blend mode is
+// compositing (see GxRenderer.lua's draw path for why that blend mode is
 // required once this alpha is meaningful).
 
 #ifdef PIXEL

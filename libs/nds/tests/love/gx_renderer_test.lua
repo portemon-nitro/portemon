@@ -312,6 +312,8 @@ local function fakeGraphics(opts)
       calls.draw[#calls.draw + 1] = {
         mesh = mesh,
         args = { ... },
+        canvas = state.canvas,
+        shader = state.shader,
         wireframe = state.wireframe,
         depthMode = state.depthMode,
         depthWrite = state.depthWrite,
@@ -460,51 +462,10 @@ local function assertResourcesReleased(lg, renderer, extraShaderCount)
   Assert.equal(#lg.shaders, expectedShaderCount, "shader ownership matches the renderer translucency mode")
 end
 
----@param renderer GxRenderer
----@return table<string, GxRendererTest.Canvas?>
-local function rendererCanvasRoles(renderer)
-  local roles = {
-    sceneColor = renderer.sceneColor --[[@as GxRendererTest.Canvas?]],
-    colorDepth = renderer.colorDepth --[[@as GxRendererTest.Canvas?]],
-    renderState = renderer.renderState --[[@as GxRendererTest.Canvas?]],
-    spareColor = renderer._spareColor --[[@as GxRendererTest.Canvas?]],
-    spareState = renderer._spareState --[[@as GxRendererTest.Canvas?]],
-    sourceColor = renderer._sourceColor --[[@as GxRendererTest.Canvas?]],
-    sourceMeta = renderer._sourceMeta --[[@as GxRendererTest.Canvas?]],
-  } --[[@as table<string, GxRendererTest.Canvas?>]]
-  return roles
-end
-
 ---@param value table
 ---@return GxRendererTest.TargetDescriptor
 local function targetDescriptor(value)
   return value --[[@as GxRendererTest.TargetDescriptor]]
-end
-
----@param renderer GxRenderer
----@param lg GxRendererTest.Graphics
----@return table<string, GxRendererTest.Canvas?>, integer
-local function assertPublishedCanvasRoles(renderer, lg)
-  local roles = rendererCanvasRoles(renderer)
-  local roleNames = {
-    "sceneColor",
-    "colorDepth",
-    "renderState",
-    "spareColor",
-    "spareState",
-    "sourceColor",
-    "sourceMeta",
-  }
-  local seen = {}
-  for _, role in ipairs(roleNames) do
-    local canvas = roles[role]
-    Assert.notNil(canvas, "renderer publishes the " .. role .. " canvas role")
-    Assert.isNil(seen[canvas], "each published canvas has exactly one renderer role")
-    seen[assert(canvas)] = role
-  end
-  local roleCount = #roleNames
-  Assert.equal(#lg.canvases, roleCount, "every created canvas belongs to one live renderer role")
-  return roles, roleCount
 end
 
 function T.rejects_stale_scene_schema()
@@ -563,6 +524,61 @@ function T.world_raster_scale_bounds_only_the_world_targets()
   renderer:release()
 end
 
+-- Edge/fog resolves at the bounded world raster before a shader-free nearest
+-- blit maps the result into the caller's presentation rectangle.
+function T.final_resolve_runs_at_world_raster_before_presentation_blit()
+  local presentationCanvas = {
+    getWidth = function()
+      return 1920
+    end,
+    getHeight = function()
+      return 1080
+    end,
+  }
+  local lg = fakeGraphics({ canvas = presentationCanvas })
+  local renderer = GxRenderer.new({ graphics = lg, worldRasterScale = 3 })
+  local scene = emptySceneCamera()
+  local rectangles = {
+    { x = 0, y = 0, width = 768, height = 576 },
+    { x = 17.25, y = 23.5, width = 1280.5, height = 720.25 },
+  }
+  for _, rectangle in ipairs(rectangles) do
+    local firstDraw = #lg.calls.draw + 1
+    render(renderer, scene.runtime, scene.camera, nil, nil, { worldViewport = rectangle }, 0)
+
+    local resolveCall
+    local presentationCall
+    for index = firstDraw, #lg.calls.draw do
+      local call = lg.calls.draw[index]
+      if call.shader == renderer.edgeShader then
+        Assert.isNil(resolveCall, "the final shader runs in one resolve draw")
+        resolveCall = call
+      end
+    end
+    Assert.notNil(resolveCall, "the final resolve executes")
+    local resolvedCanvas = resolveCall.canvas --[[@as GxRendererTest.Canvas]]
+    Assert.equal(resolvedCanvas.w, renderer.colorW, "resolve target width is world raster width")
+    Assert.equal(resolvedCanvas.h, renderer.colorH, "resolve target height is world raster height")
+    Assert.equal(resolveCall.args[1], 0, "world resolve starts at its first pixel")
+    Assert.equal(resolveCall.args[2], 0, "world resolve starts at its first pixel")
+    Assert.deepEqual(resolvedCanvas.filter, { "nearest", "nearest" }, "resolved color is nearest-filtered")
+
+    for index = firstDraw, #lg.calls.draw do
+      local call = lg.calls.draw[index]
+      if call.mesh == resolvedCanvas and call.shader == nil then
+        presentationCall = call
+      end
+    end
+    Assert.notNil(presentationCall, "resolved world is presented without the edge shader")
+    Assert.equal(presentationCall.canvas, presentationCanvas, "resolved world draws to caller presentation target")
+    Assert.equal(presentationCall.args[1], rectangle.x)
+    Assert.equal(presentationCall.args[2], rectangle.y)
+    Assert.near(presentationCall.args[4], rectangle.width / renderer.colorW, 1e-6)
+    Assert.near(presentationCall.args[5], rectangle.height / renderer.colorH, 1e-6)
+  end
+  renderer:release()
+end
+
 function T.world_raster_scale_rejects_non_positive_and_non_finite_values()
   local lg = fakeGraphics()
   for _, scale in ipairs({ 0, -1, math.huge, -math.huge, 0 / 0 }) do
@@ -582,7 +598,7 @@ function T.state_target_recreation_failure_releases_partials_and_keeps_previous_
   local probeRenderer = GxRenderer.new({ graphics = probeGraphics, translucencyMode = GxRenderer.TRANSLUCENCY_EXACT })
   local scene = emptySceneCamera()
   render(probeRenderer, scene.runtime, scene.camera, nil, nil, FieldViewport.new(640, 480, { mode = "strict" }), 0)
-  local _, generationSize = assertPublishedCanvasRoles(probeRenderer, probeGraphics)
+  local generationSize = #probeGraphics.canvases
   probeRenderer:release()
 
   for failureOffset = 1, generationSize do
@@ -592,9 +608,11 @@ function T.state_target_recreation_failure_releases_partials_and_keeps_previous_
     local oldColorW, oldColorH, oldStateW, oldStateH =
       renderer.colorW, renderer.colorH, renderer.stateW, renderer.stateH
     local oldColorTargets = renderer._colorTargets
-    local oldRoles = rendererCanvasRoles(renderer)
-    local _, oldGenerationSize = assertPublishedCanvasRoles(renderer, lg)
-    Assert.equal(oldGenerationSize, generationSize, "target generations use the same renderer roles")
+    Assert.equal(#lg.canvases, generationSize, "the first target generation is complete")
+    local oldCanvases = {}
+    for _, canvas in ipairs(lg.canvases) do
+      oldCanvases[canvas] = true
+    end
     lg.setFailOnNewCanvas(generationSize + failureOffset)
 
     local err = Assert.throws(function()
@@ -605,16 +623,13 @@ function T.state_target_recreation_failure_releases_partials_and_keeps_previous_
     for i = generationSize + 1, #lg.canvases do
       Assert.equal(lg.canvases[i].releaseCount, 1, "partial canvas " .. i .. " was released")
     end
-    for role, canvas in pairs(oldRoles) do
-      Assert.equal(rendererCanvasRoles(renderer)[role], canvas, "the previous " .. role .. " remains published")
-    end
     Assert.equal(renderer.colorW, oldColorW, "the recorded color size survives")
     Assert.equal(renderer.colorH, oldColorH, "the recorded color size survives")
     Assert.equal(renderer.stateW, oldStateW, "the recorded state width survives")
     Assert.equal(renderer.stateH, oldStateH, "the recorded state height survives")
     Assert.equal(renderer._colorTargets, oldColorTargets, "the previous color target descriptor survives")
-    for role, canvas in pairs(oldRoles) do
-      Assert.equal(canvas.releaseCount, 0, "the previous " .. role .. " remains owned")
+    for canvas in pairs(oldCanvases) do
+      Assert.equal(canvas.releaseCount, 0, "the previous generation remains owned")
     end
 
     renderer:release()
@@ -1339,15 +1354,18 @@ function T.canvas_recreation_failure_releases_partial_new_canvases()
   local probeRenderer = GxRenderer.new({ graphics = probeGraphics, translucencyMode = GxRenderer.TRANSLUCENCY_EXACT })
   local scene = emptySceneCamera()
   render(probeRenderer, scene.runtime, scene.camera, nil, nil, FieldViewport.new(640, 480, { mode = "strict" }), 0)
-  local _, generationSize = assertPublishedCanvasRoles(probeRenderer, probeGraphics)
+  local generationSize = #probeGraphics.canvases
   probeRenderer:release()
 
   for failureOffset = 1, generationSize do
     local lg = fakeGraphics()
     local renderer = GxRenderer.new({ graphics = lg, translucencyMode = GxRenderer.TRANSLUCENCY_EXACT })
     render(renderer, scene.runtime, scene.camera, nil, nil, FieldViewport.new(640, 480, { mode = "strict" }), 0)
-    local oldRoles = rendererCanvasRoles(renderer)
-    Assert.equal(#lg.canvases, generationSize, "the first target set was created")
+    Assert.equal(#lg.canvases, generationSize, "the first target generation is complete")
+    local oldCanvases = {}
+    for _, canvas in ipairs(lg.canvases) do
+      oldCanvases[canvas] = true
+    end
     lg.setFailOnNewCanvas(generationSize + failureOffset)
     local oldColorW, oldColorH, oldStateW, oldStateH =
       renderer.colorW, renderer.colorH, renderer.stateW, renderer.stateH
@@ -1362,16 +1380,13 @@ function T.canvas_recreation_failure_releases_partial_new_canvases()
       Assert.equal(lg.canvases[i].releaseCount, 1, "partial canvas " .. i .. " was released")
     end
     -- The previous target set survives untouched, at its recorded size.
-    for role, canvas in pairs(oldRoles) do
-      Assert.equal(rendererCanvasRoles(renderer)[role], canvas, "the previous " .. role .. " survives")
-    end
     Assert.equal(renderer.colorW, oldColorW, "the recorded color size survives")
     Assert.equal(renderer.colorH, oldColorH, "the recorded color size survives")
     Assert.equal(renderer.stateW, oldStateW, "the recorded state size survives")
     Assert.equal(renderer.stateH, oldStateH, "the recorded state size survives")
     Assert.equal(renderer._colorTargets, oldColorTargets, "the previous color target descriptor survives")
-    for role, canvas in pairs(oldRoles) do
-      Assert.equal(canvas.releaseCount, 0, "the previous " .. role .. " is still owned")
+    for canvas in pairs(oldCanvases) do
+      Assert.equal(canvas.releaseCount, 0, "the previous generation is still owned")
     end
 
     renderer:release()
@@ -2031,7 +2046,7 @@ function T.wireframe_is_submitted_once_with_edge_only_state()
   )
 
   Assert.equal(renderer.stats.drawCalls, 1, "one wireframe item produces one mesh submission")
-  Assert.equal(#lg.calls.draw, 2, "one mesh submission plus the final resolve")
+  Assert.equal(#lg.calls.draw, 3, "one mesh submission, world resolve, and presentation blit")
   local meshDraw = lg.calls.draw[1]
   Assert.equal(meshDraw.mesh, item.mesh)
   Assert.isTrue(meshDraw.wireframe, "wireframe rasterization is enabled for the mesh")
@@ -2039,6 +2054,8 @@ function T.wireframe_is_submitted_once_with_edge_only_state()
   Assert.equal(meshDraw.depthWrite, true)
   Assert.equal(meshDraw.blendMode, "replace")
   Assert.equal(meshDraw.blendAlpha, "premultiplied")
+  Assert.equal(lg.calls.draw[2].shader, renderer.edgeShader, "edge resolve runs after world geometry")
+  Assert.isNil(lg.calls.draw[3].shader, "presentation blit has no custom shader")
   renderer:release()
 end
 
@@ -2729,9 +2746,7 @@ function T.default_translucency_uses_direct_alpha_and_no_exact_resources()
 end
 
 -- The approximate blended pass must bind the renderer-owned single-color and
--- depth descriptor, not an equivalent frame-local setup table. The third-from-
--- last canvas bind is the blended pass; the final two binds restore the
--- presentation target and the caller's canvas.
+-- depth descriptor, not an equivalent frame-local setup table.
 function T.approximate_blended_pass_binds_the_renderer_owned_descriptor()
   local lg = fakeGraphics()
   local renderer = GxRenderer.new({ graphics = lg, worldRasterScale = 2 })
@@ -2739,7 +2754,13 @@ function T.approximate_blended_pass_binds_the_renderer_owned_descriptor()
 
   drawTranslucentFrame(renderer, scene, translucentItems(1))
 
-  local approximateTargets = lg.calls.canvas[#lg.calls.canvas - 2]
+  local approximateTargets
+  for index = #lg.calls.canvas, 1, -1 do
+    if lg.calls.canvas[index] == renderer._colorClearTargets then
+      approximateTargets = lg.calls.canvas[index]
+      break
+    end
+  end
   Assert.equal(approximateTargets, renderer._colorClearTargets, "approximate pass uses the persistent descriptor")
   Assert.equal(approximateTargets[1], renderer.sceneColor, "descriptor color follows the active scene color")
   Assert.equal(
@@ -2759,7 +2780,12 @@ function T.approximate_blended_frames_reuse_descriptor_until_resize()
   local viewport = FieldViewport.new(1920, 1080, { mode = "expanded" })
   local function drawAndRecord()
     render(renderer, scene.runtime, scene.camera, { translucentItems(1) }, nil, viewport, 0)
-    return lg.calls.canvas[#lg.calls.canvas - 2]
+    for index = #lg.calls.canvas, 1, -1 do
+      if lg.calls.canvas[index] == renderer._colorClearTargets then
+        return lg.calls.canvas[index]
+      end
+    end
+    return nil
   end
 
   local firstDescriptor = drawAndRecord()
@@ -2772,7 +2798,12 @@ function T.approximate_blended_frames_reuse_descriptor_until_resize()
   local resizedViewport = FieldViewport.new(1280, 800, { mode = "expanded" })
   local function drawResizedAndRecord()
     render(renderer, scene.runtime, scene.camera, { translucentItems(1) }, nil, resizedViewport, 0)
-    return lg.calls.canvas[#lg.calls.canvas - 2]
+    for index = #lg.calls.canvas, 1, -1 do
+      if lg.calls.canvas[index] == renderer._colorClearTargets then
+        return lg.calls.canvas[index]
+      end
+    end
+    return nil
   end
   local resizedDescriptor = drawResizedAndRecord()
   Assert.isTrue(resizedDescriptor ~= firstDescriptor, "resize publishes a new generation descriptor")
