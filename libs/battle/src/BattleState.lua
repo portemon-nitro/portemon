@@ -276,11 +276,10 @@ function BattleState.enter(state, combatantId, positionId)
   end
   local counter = state.activationCounter --[[@as integer]] + 1
   state.activationCounter = counter
-  local mon = combatant.mon --[[@as table<string, unknown>]]
-  local condition = mon.condition --[[@as table<string, unknown>]]
-  local hp = checkEntryHp(condition.currentHp, combatantId)
-  combatant.hp = hp
-  combatant.entryHp = hp
+  -- Health is roster-local: entering seats the combatant with its
+  -- current battle health and original baseline untouched, so damage
+  -- taken before leaving is still there when it returns. Only the
+  -- activation-local entry token and stages reset here.
   combatant.active = { position = positionId, activation = counter }
   combatant.stages = zeroStages()
   position.occupant = combatantId

@@ -1444,9 +1444,16 @@ local function bindTurnHandlers(executor, moveFacts, speciesFacts, chart, moneyS
   -- and yields through the immutable session facts on every faint,
   -- rebuilt here from the same tables the snapshots carry.
   local rewardCatalog = rewardCatalogFor(speciesFacts, moveFacts)
+  -- Ordered replacement obligations settled by the faint owner during
+  -- the open turn, enriched with live topology facts as each knockout
+  -- leaves the field. Reset when a turn opens and drained once when it
+  -- closes; reward suspension carries the drained list, never a
+  -- rebuild of it.
+  local pendingFaintObligations = {} ---@type table<integer, table<string, unknown>>
   ---@param choices table<integer, table<string, unknown>> committed choices in commit order
   local function openTurn(choices)
     local state = executor:_live()
+    pendingFaintObligations = {}
     local stream = state.rng --[[@as table<string, unknown>]]
     assert(type(stream.nextU16) == "function", "native turns draw ties from the battle stream")
     local candidates = {} ---@type table<integer, table<string, unknown>>
@@ -1517,8 +1524,8 @@ local function bindTurnHandlers(executor, moveFacts, speciesFacts, chart, moneyS
   end
 
   --- Settles newly zero-HP actives in detection order: each knockout
-  --- emits once, leaves its position, and records its fainted identity
-  --- with its vacated position for turn-end replacement work.
+  --- emits once, leaves its position, and banks its enriched replacement
+  --- obligation for turn-end replacement work.
   ---@param state table<string, unknown> live battle state under faint settlement
   local function sweepFaints(state)
     local detected = false
@@ -1551,21 +1558,44 @@ local function bindTurnHandlers(executor, moveFacts, speciesFacts, chart, moneyS
       reserves = pooledReserves(state),
       progression = spawnRewardChild,
     }, { kind = "faint", cursor = "settle" })
-    local settled = state.turnSettled
-    if settled == nil then
-      settled = {}
-      state.turnSettled = settled
-    end
-    local settledList = settled --[[@as table<integer, table<string, unknown>>]]
+    -- The faint owner names every ordered replacement obligation; the
+    -- session only attaches the live topology facts each knockout needs
+    -- at replacement time. Vacated positions come from the emitted
+    -- faint payloads, keyed by fainted entry, so enrichment can never
+    -- create, drop, or reorder obligations.
+    local vacated = {} ---@type table<string, integer>
     for _, event in ipairs(outcome.events) do
       local record = event --[[@as table<string, unknown>]]
       local emitted = emitFaint(state, record)
       local payload = emitted.payload --[[@as table<string, unknown>]]
-      settledList[#settledList + 1] = {
-        combatant = record.combatant,
-        activation = payload.activation,
-        position = payload.position,
+      vacated[
+        record.combatant --[[@as integer]] .. ":" .. payload.activation --[[@as integer]]
+      ] =
+        payload.position --[[@as integer]]
+    end
+    for _, minimal in ipairs(outcome.replacements) do
+      local entry = minimal --[[@as table<string, unknown>]]
+      local combatantId = entry.combatant --[[@as integer]]
+      local entryToken = entry.activation --[[@as integer]]
+      local position = vacated[combatantId .. ":" .. entryToken]
+      if position == nil then
+        error(BattleErrors.invalidState("faint obligations bind a vacated position", {
+          combatant = combatantId,
+        }))
+      end
+      local combatant = BattleState.combatant(state, combatantId)
+      local participant = BattleState.participant(state, combatant.participant --[[@as integer]])
+      local obligation = {
+        combatant = combatantId,
+        activation = entryToken,
+        position = position,
+        participant = participant.id,
+        controller = participant.controller,
+        side = participant.side,
+        internal = false,
       }
+      obligation.internal = not isExternalObligation(obligation)
+      pendingFaintObligations[#pendingFaintObligations + 1] = obligation
     end
   end
 
@@ -2026,37 +2056,23 @@ local function bindTurnHandlers(executor, moveFacts, speciesFacts, chart, moneyS
     sweepFaints(state)
   end
 
-  -- Derives ordered replacement obligations from this turn's settled
-  -- knockouts: each fainted entry with a living benched reserve owes one,
-  -- in settlement order; faints with no reserve contribute to defeat.
+  -- Drains this turn's enriched faint obligations in settlement order:
+  -- each fainted entry with a living benched reserve owes one
+  -- replacement while faints with no reserve contribute to defeat.
   -- Reserves promise once across same-roster obligations.
   ---@param state table<string, unknown> live battle state under replacement work
   ---@return table<integer, table<string, unknown>> ordered replacement obligations
   local function drainObligations(state)
+    local settled = pendingFaintObligations
+    pendingFaintObligations = {}
     local obligations = {} ---@type table<integer, table<string, unknown>>
-    local settled = state.turnSettled --[[@as table<integer, table<string, unknown>>?]]
-    state.turnSettled = nil
-    if settled == nil then
-      return obligations
-    end
     local claimed = {} ---@type table<integer, boolean>
-    for _, settledFaint in ipairs(settled) do
-      local combatant = BattleState.combatant(state, settledFaint.combatant --[[@as integer]])
-      local participant = BattleState.participant(state, combatant.participant --[[@as integer]])
-      local reserves = eligibleReserves(state, participant.id --[[@as integer]], claimed)
+    for _, fainted in ipairs(settled) do
+      local entry = fainted --[[@as table<string, unknown>]]
+      local reserves = eligibleReserves(state, entry.participant --[[@as integer]], claimed)
       if #reserves > 0 then
         claimed[reserves[1]] = true
-        local obligation = {
-          combatant = settledFaint.combatant,
-          activation = settledFaint.activation,
-          position = settledFaint.position,
-          participant = participant.id,
-          controller = participant.controller,
-          side = participant.side,
-          internal = false,
-        }
-        obligation.internal = not isExternalObligation(obligation)
-        obligations[#obligations + 1] = obligation
+        obligations[#obligations + 1] = fainted
       end
     end
     return obligations
@@ -2339,7 +2355,15 @@ local function bindTurnHandlers(executor, moveFacts, speciesFacts, chart, moneyS
       return
     end
     state.progressionChildren = {}
+    local spent = state.pending
     finishTurn(state, obligations)
+    if state.pending == spent and state.status == "running" then
+      -- Resolving the carried obligations opened no replacement batch
+      -- and the battle runs on: drop the spent learning batch so the
+      -- advance loop builds the next action batch instead of committing
+      -- this one a second time.
+      state.pending = nil
+    end
   end
 
   return {
@@ -2666,7 +2690,6 @@ end
 function HgssSessionExecutor:_commitBatch(state, allowance)
   local pending = state.pending --[[@as table<string, unknown>]]
   assert(pending.replacement == nil, "replacement batches commit through their own path")
-  state.turnSettled = {}
   local submitted = pending.submitted --[[@as table<integer, table<string, unknown>>]]
   local ordered = {}
   for _, request in ipairs(batchRequests(state)) do

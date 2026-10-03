@@ -2717,4 +2717,405 @@ function T.escape_attempts_and_capture_ledgers_survive_restore_without_duplicati
   kept:dispose()
 end
 
+-- Battle-local health survives activation changes and interruption: a
+-- damaged lead switched out keeps its wounded value while benched,
+-- capturing and restoring mid-bench preserves it, and switching back in
+-- resumes exactly the wounded value under the original baseline with a
+-- fresh entry token and zeroed stages.
+function T.switched_reserves_keep_their_wounded_health_across_restore()
+  local contracts = SessionFixture.sessionContracts()
+  local Executor = executorOwner()
+  local content = actionContent()
+  local session = contracts.Battle.newSession(
+    actionScenario(
+      TRAINER_FORMAT,
+      { leveledCombatant(1, 11, "EEVEE", 20), leveledCombatant(3, 31, "EEVEE", 20) },
+      { leveledCombatant(2, 23, "EEVEE", 15) },
+      nil
+    ),
+    content
+  )
+  local opening = SessionFixture.driveUntilSettled(session)
+  Assert.equal(opening.status, "waiting", "the opening turn asks for decisions")
+  local entered = session:capture()
+  local fullHp = entered.combatants[1].hp
+  Assert.isTrue(fullHp > 0, "the lead enters standing")
+  Assert.equal(entered.combatants[1].entryHp, fullHp, "the baseline starts at full health")
+  local leadActivation = entered.combatants[1].active.activation
+  local reserveFullHp = entered.combatants[3].hp
+  local alpha = requestFor(opening, "alpha")
+  local beta = requestFor(opening, "beta")
+  local actor = assert(alpha.actors[1], "the owning request addresses its lead")
+  local foe = assert(beta.actors[1], "the opposing request addresses its lead")
+  local ok, replyErr = session:submit(
+    SessionFixture.replyFor(alpha, { SessionFixture.attackChoice(actor, 0, SessionFixture.positionTarget(2)) })
+  )
+  Assert.isTrue(ok, "the opening strike is accepted")
+  Assert.isNil(replyErr, "accepted strikes carry no input error")
+  local answered, answerErr = session:submit(
+    SessionFixture.replyFor(beta, { SessionFixture.attackChoice(foe, 0, SessionFixture.positionTarget(1)) })
+  )
+  Assert.isTrue(answered, "the opposing strike is accepted")
+  Assert.isNil(answerErr, "accepted strikes carry no input error")
+  session:advance(64)
+  local wounded = session:capture()
+  local hurtHp = wounded.combatants[1].hp
+  Assert.isTrue(hurtHp > 0, "the opening exchange leaves the lead standing")
+  Assert.isTrue(hurtHp < fullHp, "the opening exchange wounds the lead")
+  Assert.equal(wounded.combatants[1].entryHp, fullHp, "damage never moves the writeback baseline")
+  Assert.isTrue(wounded.combatants[2].hp > 0, "the foe survives the opening exchange")
+  local following = SessionFixture.driveUntilSettled(session)
+  Assert.equal(following.status, "waiting", "the following turn asks for decisions")
+  local alphaAgain = requestFor(following, "alpha")
+  local betaAgain = requestFor(following, "beta")
+  local lead = assert(alphaAgain.actors[1], "the following request addresses the lead")
+  local foeAgain = assert(betaAgain.actors[1], "the opposing request addresses its lead")
+  local switched, switchErr = session:submit(
+    SessionFixture.replyFor(alphaAgain, { SessionFixture.switchChoice(lead, 3) })
+  )
+  Assert.isTrue(switched, "the exchange is accepted")
+  Assert.isNil(switchErr, "accepted exchanges carry no input error")
+  local struck, struckErr = session:submit(
+    SessionFixture.replyFor(betaAgain, { SessionFixture.attackChoice(foeAgain, 0, SessionFixture.positionTarget(1)) })
+  )
+  Assert.isTrue(struck, "the opposing strike is accepted")
+  Assert.isNil(struckErr, "accepted strikes carry no input error")
+  session:advance(64)
+  local benched = session:capture()
+  Assert.equal(benched.positions[1].occupant, 3, "the reserve takes the vacated position")
+  Assert.isNil(benched.combatants[1].active, "the outgoing lead leaves the field")
+  Assert.equal(benched.combatants[1].hp, hurtHp, "the benched lead keeps its wounded value")
+  Assert.equal(benched.combatants[1].entryHp, fullHp, "the benched lead keeps its baseline")
+  local reserveHp = benched.combatants[3].hp
+  Assert.isTrue(reserveHp > 0, "the reserve survives the exchange turn")
+  SessionFixture.assertPlainData(benched, "benched interruption")
+  local revived = Executor.restore(benched, content)
+  local first = SessionFixture.driveUntilSettled(session)
+  local second = SessionFixture.driveUntilSettled(revived)
+  Assert.deepEqual(second.request, first.request, "restored sessions reopen the identical turn request")
+  local revivedAlpha = requestFor(second, "alpha")
+  local revivedBeta = requestFor(second, "beta")
+  local reserve = assert(revivedAlpha.actors[1], "the restored request addresses the reserve")
+  Assert.equal(reserve.combatant, 3, "the restored turn addresses the reserve")
+  local revivedFoe = assert(revivedBeta.actors[1], "the restored opposing request addresses its lead")
+  local returned, returnErr = revived:submit(
+    SessionFixture.replyFor(revivedAlpha, { SessionFixture.switchChoice(reserve, 1) })
+  )
+  Assert.isTrue(returned, "the return exchange is accepted")
+  Assert.isNil(returnErr, "accepted exchanges carry no input error")
+  local revivedAnswered, revivedAnswerErr = revived:submit(
+    SessionFixture.replyFor(
+      revivedBeta,
+      { SessionFixture.attackChoice(revivedFoe, 0, SessionFixture.positionTarget(1)) }
+    )
+  )
+  Assert.isTrue(revivedAnswered, "the restored opposing strike is accepted")
+  Assert.isNil(revivedAnswerErr, "accepted strikes carry no input error")
+  local reseatedBoundary, reseatedEvents = advanceCollecting(revived, 64)
+  Assert.isTrue(reseatedBoundary.status ~= "ended", "the exchange turn never ends the battle")
+  local homeDamage = nil
+  for _, event in ipairs(reseatedEvents) do
+    if event.kind == "struck" then
+      local payload = event.payload --[[@as table<string, unknown>]]
+      if payload.target == 1 then
+        homeDamage = payload.damage
+      end
+    end
+  end
+  Assert.isTrue(
+    type(homeDamage) == "number" and homeDamage --[[@as integer]] > 0,
+    "the opposing strike lands on the returning lead"
+  )
+  local reseated = revived:capture()
+  Assert.equal(reseated.positions[1].occupant, 1, "the wounded lead retakes its position")
+  Assert.equal(
+    reseated.combatants[1].hp,
+    hurtHp - homeDamage --[[@as integer]],
+    "the returning lead resumes its wounded value before the new strike"
+  )
+  Assert.equal(reseated.combatants[1].entryHp, fullHp, "the returning lead keeps its original baseline")
+  Assert.isTrue(
+    reseated.combatants[1].active.activation ~= leadActivation,
+    "the returning lead enters with a fresh entry"
+  )
+  Assert.deepEqual(reseated.combatants[1].stages, {
+    attack = 0,
+    defense = 0,
+    speed = 0,
+    specialAttack = 0,
+    specialDefense = 0,
+    accuracy = 0,
+    evasion = 0,
+  }, "the returning lead resets only its activation-local stages")
+  Assert.isNil(reseated.combatants[3].active, "the reserve leaves the field")
+  Assert.equal(reseated.combatants[3].hp, reserveHp, "the benched reserve keeps its own wounded value")
+  Assert.equal(
+    reseated.combatants[3].entryHp,
+    reserveFullHp,
+    "the benched reserve keeps its own baseline"
+  )
+  Assert.isNil(reseated.outcome, "no terminal result is named across the round trip")
+  session:dispose()
+  revived:dispose()
+end
+
+---@return table detached double battle setup with two one-point foes beside foe reserves
+local function doubleKnockoutLearningScenario()
+  local Executor = executorOwner()
+  local first = rewardRecipient(1, 11)
+  local second = tackleCombatant(6, 61)
+  local foeLead = tackleCombatant(2, 23)
+  foeLead.mon.condition.currentHp = 1
+  local foeMate = tackleCombatant(5, 51)
+  foeMate.mon.condition.currentHp = 1
+  local foeReserveA = tackleCombatant(4, 41)
+  local foeReserveB = tackleCombatant(7, 71)
+  local seeds = { first, second, foeLead, foeMate, foeReserveA, foeReserveB }
+  return {
+    ruleset = Executor.RULESET,
+    format = NATIVE_FORMAT,
+    sides = { SessionFixture.side(1, { 1 }), SessionFixture.side(2, { 2 }) },
+    participants = {
+      SessionFixture.participant(1, 1, "alpha", { first, second }),
+      SessionFixture.participant(2, 2, "beta", { foeLead, foeMate, foeReserveA, foeReserveB }),
+    },
+    positions = {
+      SessionFixture.position(1, 1, { 1 }, 1),
+      SessionFixture.position(2, 1, { 1 }, 6),
+      SessionFixture.position(3, 2, { 2 }, 2),
+      SessionFixture.position(4, 2, { 2 }, 5),
+    },
+    inventories = {},
+    environment = { weather = "none" },
+    random = { seed = NATIVE_SEED },
+    formatState = {},
+    moveFacts = scenarioMoveFacts(seeds),
+    speciesFacts = scenarioSpeciesFacts(seeds),
+  }
+end
+
+---@param request table pending decision request under test
+---@return table[] one strike per addressed actor against the paired opposing slot
+local function doubleAnswer(request)
+  local choices = {}
+  for _, actor in ipairs(request.actors) do
+    local target = 3
+    if actor.combatant == 6 then
+      target = 4
+    elseif actor.combatant == 2 then
+      target = 1
+    elseif actor.combatant == 5 then
+      target = 2
+    end
+    choices[#choices + 1] = SessionFixture.attackChoice(actor, 0, SessionFixture.positionTarget(target))
+  end
+  return choices
+end
+
+-- Faint settlement owns one ordered replacement obligation per knocked-out
+-- entry, and reward suspension never recreates or reorders them: a double
+-- knockout suspends on move learning with both obligations held aside in
+-- detection order, every prompt resumes the identical obligations, and
+-- each reserve then enters its own vacated position exactly once with no
+-- repeated award.
+function T.replacement_obligations_survive_learning_suspension_in_order()
+  local contracts = SessionFixture.sessionContracts()
+  local content = nativeContent()
+  local session = contracts.Battle.newSession(doubleKnockoutLearningScenario(), content)
+  local opening = SessionFixture.driveUntilSettled(session)
+  Assert.equal(opening.status, "waiting", "the opening turn asks for decisions")
+  for _, request in ipairs(opening.request.requests) do
+    local ok, replyErr = session:submit(SessionFixture.replyFor(request, doubleAnswer(request)))
+    Assert.isTrue(ok, "opening replies are accepted")
+    Assert.isNil(replyErr, "accepted replies carry no input error")
+  end
+  local collected = {}
+  local boundary, knockoutEvents = advanceCollecting(session, 64)
+  for _, event in ipairs(knockoutEvents) do
+    collected[#collected + 1] = event
+  end
+  Assert.isTrue(announcesFaint(collected, 2), "the first strike knocks out its foe")
+  Assert.isTrue(announcesFaint(collected, 5), "the second strike knocks out its foe")
+  Assert.equal(session:capture().combatants[2].hp, 0, "the first foe stays knocked out")
+  Assert.equal(session:capture().combatants[5].hp, 0, "the second foe stays knocked out")
+  Assert.equal(
+    boundary.status,
+    "waiting",
+    "the double knockout suspends on its learning prompt instead of replacing"
+  )
+  local prompt = findLearnPrompt(boundary)
+  Assert.notNil(prompt, "the suspension names the pending learning prompt")
+  Assert.equal(prompt.controller, "alpha", "the owning side answers its own learning prompt")
+  local recipient = assert(prompt.actors[1], "the prompt addresses its recipient")
+  Assert.equal(recipient.combatant, 1, "the prompt addresses the battle recipient")
+  Assert.equal(prompt.incomingMove, "SYNTHESIS", "crossing to level twelve prompts synthesis")
+  local activations = {}
+  for _, event in ipairs(collected) do
+    if event.kind == "faint" then
+      local payload = event.payload --[[@as table<string, unknown>]]
+      activations[payload.combatant --[[@as integer]]] = payload.activation
+    end
+  end
+  Assert.notNil(activations[2], "the first faint binds its entry token")
+  Assert.notNil(activations[5], "the second faint binds its entry token")
+  local suspended = session:capture()
+  Assert.isNil(suspended.outcome, "no terminal result is named while learning waits")
+  local held = assert(suspended.pending.learning, "learning suspensions hold their obligations aside")
+  local heldObligations = held --[[@as table<string, unknown>]]
+  local wanted = {
+    {
+      combatant = 2,
+      activation = activations[2],
+      position = 3,
+      participant = 2,
+      controller = "beta",
+      side = 2,
+      internal = true,
+    },
+    {
+      combatant = 5,
+      activation = activations[5],
+      position = 4,
+      participant = 2,
+      controller = "beta",
+      side = 2,
+      internal = true,
+    },
+  }
+  Assert.deepEqual(
+    heldObligations.obligations,
+    wanted,
+    "the suspension holds one ordered obligation per fainted entry"
+  )
+  local suspensions = 0
+  local answeredSynthesis = false
+  while findLearnPrompt(boundary) ~= nil and suspensions < 6 do
+    suspensions = suspensions + 1
+    local waiting = session:capture()
+    local waitingHeld = assert(waiting.pending.learning, "every prompt holds its obligations aside")
+    Assert.deepEqual(
+      (waitingHeld --[[@as table<string, unknown>]]).obligations,
+      wanted,
+      "later prompts resume the identical obligations in order"
+    )
+    local open = assert(findLearnPrompt(boundary), "the suspension names its prompt")
+    local addressed = assert(open.actors[1], "the prompt addresses its recipient")
+    local choice
+    if not answeredSynthesis and open.incomingMove == "SYNTHESIS" and addressed.combatant == 1 then
+      choice = learnChoice(addressed, "replace", 3)
+      answeredSynthesis = true
+    else
+      choice = learnChoice(addressed, "decline")
+    end
+    local ok, replyErr = session:submit(SessionFixture.replyFor(open, { choice }))
+    Assert.isTrue(ok, "the learning reply is accepted")
+    Assert.isNil(replyErr, "accepted replies carry no input error")
+    boundary, knockoutEvents = advanceCollecting(session, 64)
+    for _, event in ipairs(knockoutEvents) do
+      collected[#collected + 1] = event
+    end
+  end
+  Assert.isTrue(answeredSynthesis, "the suspended run answers its synthesis prompt")
+  Assert.isNil(findLearnPrompt(boundary), "learning drains fully before replacement")
+  Assert.equal(boundary.status, "waiting", "internally resolved replacements ask for no decision")
+  local following = boundary
+  Assert.isNil(findLearnPrompt(following), "the following turn carries no prompt")
+  local addresses = {}
+  for _, request in ipairs(following.request.requests) do
+    for _, actor in ipairs(request.actors) do
+      addresses[#addresses + 1] = actor.combatant
+    end
+  end
+  table.sort(addresses)
+  Assert.deepEqual(addresses, { 1, 4, 6, 7 }, "the following turn addresses the standing leads")
+  local settled = session:capture()
+  Assert.equal(settled.positions[3].occupant, 4, "the first reserve takes the first vacated position")
+  Assert.equal(settled.positions[4].occupant, 7, "the second reserve takes the second vacated position")
+  Assert.isNil(settled.combatants[2].active, "the first fainted foe stays out of the field")
+  Assert.isNil(settled.combatants[5].active, "the second fainted foe stays out of the field")
+  local entered = { [4] = 0, [7] = 0 }
+  local gained = 0
+  local awards = 0
+  local learned = 0
+  for _, event in ipairs(collected) do
+    if event.kind == "switch" then
+      local payload = event.payload --[[@as table<string, unknown>]]
+      if entered[payload.to --[[@as integer]]] ~= nil then
+        entered[payload.to --[[@as integer]]] = entered[payload.to --[[@as integer]]] + 1
+      end
+    elseif event.kind == "exp" then
+      awards = awards + 1
+      if event.combatant == 1 then
+        gained = gained + (event.gained --[[@as integer]] or 0)
+      end
+    elseif event.kind == "learn" then
+      if event.combatant == 1 and event.move == "SYNTHESIS" then
+        learned = learned + 1
+      end
+    end
+  end
+  Assert.equal(entered[4], 1, "the first reserve enters exactly once")
+  Assert.equal(entered[7], 1, "the second reserve enters exactly once")
+  Assert.equal(awards, 4, "both knockouts award both recipients exactly once")
+  Assert.equal(
+    settled.combatants[1].mon.experience,
+    972 + gained,
+    "the recipient keeps exactly its awarded experience"
+  )
+  Assert.equal(learned, 1, "the answered prompt learns its move exactly once")
+  Assert.isNil(settled.outcome, "no terminal result is named while reserves stand")
+  session:dispose()
+end
+
+-- Suspended obligations validate their carried identities on restore: a
+-- snapshot whose held obligations lose their entry binding or stop
+-- being records is rejected instead of resuming the continuation.
+function T.suspended_obligations_with_broken_identities_never_restore()
+  local contracts = SessionFixture.sessionContracts()
+  local Executor = executorOwner()
+  local content = nativeContent()
+  local session = contracts.Battle.newSession(woundedLeadScenario(1), content)
+  local opening = SessionFixture.driveUntilSettled(session)
+  Assert.equal(opening.status, "waiting", "the opening turn asks for decisions")
+  for _, request in ipairs(opening.request.requests) do
+    local ok, replyErr = session:submit(SessionFixture.replyFor(request, answer(request)))
+    Assert.isTrue(ok, "opening replies are accepted")
+    Assert.isNil(replyErr, "accepted replies carry no input error")
+  end
+  session:advance(64)
+  local waiting = SessionFixture.driveUntilSettled(session)
+  Assert.equal(waiting.status, "waiting", "the knockout suspends on its replacement")
+  local unbound = session:capture()
+  Assert.notNil(unbound.pending.replacement, "the suspension carries its obligations")
+  unbound.pending.replacement.obligations[1].activation = nil
+  Assert.throws(function()
+    Executor.restore(unbound, content)
+  end, "obligations without their entry token never restore")
+  local foreign = session:capture()
+  foreign.pending.replacement.obligations[1] = "not-a-record"
+  Assert.throws(function()
+    Executor.restore(foreign, content)
+  end, "obligations that stop being records never restore")
+  session:dispose()
+
+  local learning = contracts.Battle.newSession(rewardScenario(), content)
+  local learningOpening = SessionFixture.driveUntilSettled(learning)
+  Assert.equal(learningOpening.status, "waiting", "the learning run asks for decisions")
+  for _, request in ipairs(learningOpening.request.requests) do
+    local ok, replyErr = learning:submit(SessionFixture.replyFor(request, answer(request)))
+    Assert.isTrue(ok, "learning opening replies are accepted")
+    Assert.isNil(replyErr, "accepted replies carry no input error")
+  end
+  local suspended = SessionFixture.driveUntilSettled(learning)
+  Assert.equal(suspended.status, "waiting", "the knockout suspends on its learning prompt")
+  Assert.notNil(findLearnPrompt(suspended), "the suspension names its prompt")
+  local held = learning:capture()
+  Assert.notNil(held.pending.learning, "learning suspensions hold their obligations aside")
+  held.pending.learning.obligations = { "not-a-record" }
+  Assert.throws(function()
+    Executor.restore(held, content)
+  end, "suspended learning with a broken obligation never restores")
+  learning:dispose()
+end
+
 return { tests = T }
