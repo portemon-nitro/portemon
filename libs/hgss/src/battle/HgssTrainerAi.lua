@@ -182,12 +182,19 @@ end
 ---@param stream table<string, unknown> battle stream owned by the caller
 ---@return table<string, unknown>? bag choice with its carried item, nil when no healing applies
 function HgssTrainerAi:_itemChoice(active, foe, stream)
+  -- Healing choices name the active holder the session validation
+  -- binds to the trainer inventory, and spend one carried unit: the
+  -- next decision observes the reduced battle-local stock, so a
+  -- duplicate-carried cure heals exactly as often as it was carried.
   if #self._items == 0 then
+    return nil
+  end
+  if type(active.combatant) ~= "number" then
     return nil
   end
   local bag = {}
   for _, item in ipairs(self._items) do
-    bag[item] = 1
+    bag[item] = (bag[item] or 0) + 1
   end
   local choice = NativeAiEvaluator.chooseItem(
     self._program,
@@ -198,7 +205,16 @@ function HgssTrainerAi:_itemChoice(active, foe, stream)
   if choice.item == nil then
     return nil
   end
-  return { kind = "item", payload = { item = choice.item } }
+  for index, item in ipairs(self._items) do
+    if item == choice.item then
+      table.remove(self._items, index)
+      break
+    end
+  end
+  return {
+    kind = "item",
+    payload = { item = choice.item, target = { kind = "combatant", combatant = active.combatant } },
+  }
 end
 
 ---@param active table<string, unknown> acting combatant entry under choice

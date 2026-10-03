@@ -230,6 +230,7 @@ function MoveExecution.start(inputs)
     userMoves = plan.userMoves,
     gravity = plan.gravity,
     healBlock = plan.healBlock,
+    userAsleep = plan.userAsleep,
   })
   local executing = plan.executingMove --[[@as string]]
   local failed = nil
@@ -292,6 +293,9 @@ function MoveExecution.start(inputs)
     "userMoves",
     "gravity",
     "healBlock",
+    "recentMoves",
+    "genders",
+    "userAsleep",
   }) do
     if plan[key] ~= nil then
       locals[key] = plan[key]

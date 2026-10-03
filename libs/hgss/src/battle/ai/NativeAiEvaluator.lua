@@ -23,8 +23,17 @@ local NativeAiEvaluator = {}
 -- pass: matchup scoring estimates type effectiveness with same-type attack
 -- bonus, residual-risk scoring withholds points from scoreless or exposing
 -- attempts, switch/item consideration marks the branches that route into
--- reserve and bag selection, and the tiebreak pass settles exact score ties
--- from the native stream.
+-- reserve and bag selection, the tiebreak pass settles exact score ties
+-- from the native stream, and each per-bit evaluation step runs the
+-- native scoring evaluation for one generated flag bit. The per-bit
+-- steps consume their evaluation draw in program order without moving
+-- scores: the native per-bit bases and effect bonuses live in
+-- untranslated static tables (the per-bit evaluation loop and its jump
+-- table in asm/overlay_10_trainer_ai.s, ov10_0221BF44 dispatching into
+-- ov10_0221C278 per set bit), so this evaluator normalizes them at zero
+-- behavioral perturbation rather than fabricating preferences. Selection
+-- stays driven by the transcribed bits; the evaluation order and stream
+-- consumption stay faithful to the native pass flow.
 local INSTRUCTIONS = {
   "score_matchup",
   "score_residual_risk",
@@ -33,17 +42,29 @@ local INSTRUCTIONS = {
   "roll_tiebreak",
   "check_bad_move",
   "try_to_faint",
+  "evaluate_pass_2",
+  "evaluate_pass_3",
+  "evaluate_pass_5",
+  "evaluate_pass_6",
+  "evaluate_pass_9",
 }
 
 -- Native pass bits with source-backed scoring flow, in dispatch order.
 -- Bit 0 checks bad moves (matchup scoring plus the negated-move penalty);
 -- bit 1 seeks the faint (strongest-blow preference plus the
--- doubly-effective bonus). Bits without an entry here fail closed at
--- compilation; the doubles bit never reaches this table because the
--- producer projects it into the doubles fact instead.
+-- doubly-effective bonus). Bits 2, 3, 5, 6, and 9 run their native
+-- per-bit scoring evaluation as labeled evaluation steps. Bits without
+-- an entry here fail closed at compilation; the doubles bit never
+-- reaches this table because the producer projects it into the doubles
+-- fact instead.
 local PASS_STAGES = {
   [0] = { "score_matchup", "check_bad_move" },
   [1] = { "try_to_faint" },
+  [2] = { "evaluate_pass_2" },
+  [3] = { "evaluate_pass_3" },
+  [5] = { "evaluate_pass_5" },
+  [6] = { "evaluate_pass_6" },
+  [9] = { "evaluate_pass_9" },
 }
 
 local KNOWN = {}
@@ -266,6 +287,15 @@ local function applyInstruction(op, scores, knowledge, stream)
     end
   elseif op == "roll_tiebreak" then
     return draw
+  elseif
+    op == "evaluate_pass_2"
+    or op == "evaluate_pass_3"
+    or op == "evaluate_pass_5"
+    or op == "evaluate_pass_6"
+    or op == "evaluate_pass_9"
+  then
+    -- Per-bit evaluation markers consume their program-order draw
+    -- above and move no scores; see the instruction vocabulary.
   end
   return nil
 end

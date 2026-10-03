@@ -281,6 +281,7 @@ function T.sleep_talk_calls_only_usable_moves_through_the_calling_slot()
     local inputs = calledInputs("SLEEP_TALK", seed)
     inputs.usable = usable
     inputs.status = { sleep = true }
+    inputs.userAsleep = true
     local plan = Selection.resolveExecution(inputs)
     Assert.equal(plan.requestedMove, "SLEEP_TALK", "the requested move stays on the calling slot")
     Assert.equal(plan.ppOwnerSlot, 0, "the power-point owner stays on the calling slot")
@@ -322,6 +323,27 @@ function T.mirror_move_copies_the_last_move_targeting_the_caller()
   local settled = Execution.step(ctx, failed)
   Assert.equal(settled.kind, "complete", "mirror move with nothing to copy settles")
   Assert.equal(settled.result, "failed", "mirror move with nothing to copy fails instead of striking")
+end
+
+-- Sleep Talk only speaks while its user sleeps: the waking call fails
+-- through the shared failed selection without spending, drawing, or
+-- striking, while the sleeping call draws from its usable moves.
+function T.sleep_talk_only_speaks_while_its_user_sleeps()
+  local Execution = executionOwner("the shared move continuation owns hit progression")
+  local state = liveState()
+  local ctx = liveContext(state)
+  local waking = calledInputs("SLEEP_TALK", FIXED_SEED)
+  waking.usable = { "TACKLE", "SPLASH" }
+  waking.userAsleep = false
+  local refused = Execution.validateFrame(Execution.start(waking))
+  local settled = Execution.step(ctx, refused)
+  Assert.equal(settled.kind, "complete", "the waking call settles")
+  Assert.equal(settled.result, "failed", "the waking call fails instead of speaking")
+  local dreaming = calledInputs("SLEEP_TALK", FIXED_SEED)
+  dreaming.usable = { "TACKLE", "SPLASH" }
+  dreaming.userAsleep = true
+  local frame = Execution.validateFrame(Execution.start(dreaming))
+  Assert.isTrue(frame.executingMove ~= "SLEEP_TALK", "the sleeping call draws a usable move")
 end
 
 -- Empty eligible sets fail without side effects: no power points leave,

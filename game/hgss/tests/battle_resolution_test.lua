@@ -201,7 +201,7 @@ function T.trainer_win_pays_the_native_prize_once_without_injected_inputs()
       aiPasses = {},
     },
   }
-  local scenario = trainerScenario(trainers, { party = party })
+  local scenario = trainerScenario(trainers, { party = party, player = { trainerId = 99, trainerName = "MINT", language = "french" } })
   local battle = BattleRuntime.new({
     request = { id = "launch-native-prize", kind = "trainer", payload = { trainer = "rival-early" } },
     scenario = scenario,
@@ -219,7 +219,7 @@ function T.trainer_win_pays_the_native_prize_once_without_injected_inputs()
   battle:dispose()
   -- Replaying the same terminal outcome under its launch identity reuses
   -- the recorded receipt instead of crediting the prize a second time.
-  local replayScenario = trainerScenario(trainers, { party = party })
+  local replayScenario = trainerScenario(trainers, { party = party, player = { trainerId = 99, trainerName = "MINT", language = "french" } })
   local replay = BattleRuntime.new({
     request = { id = "launch-native-prize", kind = "trainer", payload = { trainer = "rival-early" } },
     scenario = replayScenario,
@@ -253,7 +253,7 @@ function T.trainer_win_doubles_the_prize_while_a_money_up_holder_stands()
       program = { key = "rival_opening", revision = "native-1", instructions = {}, entryPoints = {} },
       aiPasses = {},
     },
-  }, { party = party })
+  }, { party = party, player = { trainerId = 99, trainerName = "MINT", language = "french" } })
   local battle = BattleRuntime.new({
     request = { id = "launch-coin-prize", kind = "trainer", payload = { trainer = "rival-coin" } },
     scenario = scenario,
@@ -306,7 +306,7 @@ function T.capture_stages_party_dex_and_bag_through_the_committer()
   local foe = tackleOnly(foeRecord("TOTODILE", 4, 0xC0FFEE02))
   local launch =
     { id = "launch-capture-wire", kind = "wild", payload = { species = "TOTODILE", level = 4, mon = foe } }
-  local scenario = ScenarioFactory.fromEncounter(launch.payload, { party = party })
+  local scenario = ScenarioFactory.fromEncounter(launch.payload, { party = party, player = { trainerId = 99, trainerName = "MINT", language = "french" } })
   local battle = BattleRuntime.new({
     request = launch,
     scenario = scenario,
@@ -350,7 +350,7 @@ function T.full_party_capture_stays_an_honest_noop_while_consuming_the_ball()
   local foe = tackleOnly(foeRecord("EEVEE", 4, 0xAAAA0004))
   local launch =
     { id = "launch-full-party-wire", kind = "wild", payload = { species = "EEVEE", level = 4, mon = foe } }
-  local scenario = ScenarioFactory.fromEncounter(launch.payload, { party = party })
+  local scenario = ScenarioFactory.fromEncounter(launch.payload, { party = party, player = { trainerId = 99, trainerName = "MINT", language = "french" } })
   local caught = foeRecord("EEVEE", 4, 0xAAAA0002)
   local battle = BattleRuntime.new({
     request = launch,
@@ -384,7 +384,7 @@ function T.roamer_battle_advances_the_roamer_revision()
   local standin = foeRecord("EEVEE", 14, 0x90A4E001, 1)
   local launch =
     { id = "launch-roamer-wire", kind = "wild", payload = { species = "EEVEE", level = 14, mon = standin } }
-  local scenario = ScenarioFactory.fromEncounter(launch.payload, { party = party })
+  local scenario = ScenarioFactory.fromEncounter(launch.payload, { party = party, player = { trainerId = 99, trainerName = "MINT", language = "french" } })
   -- The roaming record tracks its own battle health; the scenario foe is a
   -- 1-HP stand-in so the executed battle settles the standing. The stand-in
   -- races at level 14 so the level-5 lead still answers under exact STAB.
@@ -414,7 +414,7 @@ function T.unknown_capture_species_fails_the_resolution()
   local foe = tackleOnly(foeRecord("TOTODILE", 4, 0xAAAA0005))
   local launch =
     { id = "launch-unknown-capture", kind = "wild", payload = { species = "TOTODILE", level = 4, mon = foe } }
-  local scenario = ScenarioFactory.fromEncounter(launch.payload, { party = party })
+  local scenario = ScenarioFactory.fromEncounter(launch.payload, { party = party, player = { trainerId = 99, trainerName = "MINT", language = "french" } })
   local bogus = foeRecord("EEVEE", 4, 0xAAAA0003)
   bogus.species = "MISSINGNO"
   local battle = BattleRuntime.new({
@@ -442,7 +442,7 @@ function T.unstaged_dex_reference_fails_the_resolution()
   local foe = tackleOnly(foeRecord("TOTODILE", 4, 0xAAAA0006))
   local launch =
     { id = "launch-unstaged-dex", kind = "wild", payload = { species = "TOTODILE", level = 4, mon = foe } }
-  local scenario = ScenarioFactory.fromEncounter(launch.payload, { party = party })
+  local scenario = ScenarioFactory.fromEncounter(launch.payload, { party = party, player = { trainerId = 99, trainerName = "MINT", language = "french" } })
   local battle = BattleRuntime.new({
     request = launch,
     scenario = scenario,
@@ -585,7 +585,7 @@ function T.thrown_captures_commit_through_the_runtime_without_reconstruction()
   local foe = tackleOnly(foeRecord("TOTODILE", 4, 0xC0FFEE12))
   local launch =
     { id = "launch-thrown-capture", kind = "wild", payload = { species = "TOTODILE", level = 4, mon = foe } }
-  local scenario = ScenarioFactory.fromEncounter(launch.payload, { party = party })
+  local scenario = ScenarioFactory.fromEncounter(launch.payload, { party = party, player = { trainerId = 99, trainerName = "MINT", language = "french" } })
   local battle = BattleRuntime.new({
     request = launch,
     scenario = scenario,
@@ -626,7 +626,7 @@ function T.thrown_captures_commit_through_the_runtime_without_reconstruction()
   local fullFoe = tackleOnly(foeRecord("TOTODILE", 4, 0xBBBB0004))
   local fullLaunch =
     { id = "launch-thrown-capture-full", kind = "wild", payload = { species = "TOTODILE", level = 4, mon = fullFoe } }
-  local fullScenario = ScenarioFactory.fromEncounter(fullLaunch.payload, { party = fullParty })
+  local fullScenario = ScenarioFactory.fromEncounter(fullLaunch.payload, { party = fullParty, player = { trainerId = 99, trainerName = "MINT", language = "french" } })
   local fullBattle = BattleRuntime.new({
     request = fullLaunch,
     scenario = fullScenario,

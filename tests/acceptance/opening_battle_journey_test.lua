@@ -141,6 +141,7 @@ function T.tests.field_battle_returns_to_the_live_field_after_commit()
       party = game.runtime.monService,
       bag = game.runtime.bagService,
       world = game.runtime.scripts.worldState,
+      player = { trainerId = 99, trainerName = "MINT", language = "french" },
     })
     local battle = BattleRuntime.new({
       request = launch,

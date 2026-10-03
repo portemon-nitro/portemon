@@ -3408,4 +3408,291 @@ function T.decision_stream_proxy_dies_with_its_callback()
   end, "disposed sessions lend no stream")
 end
 
+-- Threaded move-frame facts reach the shared continuation from live
+-- battle state: bound entries cannot flee or voluntarily switch,
+-- friendship strikes execute without missing facts, pay day strikes
+-- accumulate scattered coins, trick room reverses speed order, and
+-- mirror move copies the recorded incoming strike. Hand-written move
+-- facts stand in for the synthetic catalog where it carries no such
+-- move; production facts arrive compiled.
+---@param scenario table detached native battle setup record under facts
+---@param extra table<string, table<string, unknown>> hand-written move facts under the union
+local function withMoveFacts(scenario, extra)
+  for key, facts in pairs(extra) do
+    scenario.moveFacts[key] = facts
+  end
+  return scenario
+end
+
+---@param power integer compiled strike power under the hand facts
+---@param accuracy integer compiled strike accuracy under the hand facts
+---@param category string compiled strike category under the hand facts
+---@param moveType string compiled strike type under the hand facts
+---@param chance integer compiled secondary chance under the hand facts
+---@return table<string, unknown> hand-written compiled-shaped move facts
+local function handFacts(power, accuracy, category, moveType, chance)
+  return {
+    power = power,
+    accuracy = accuracy,
+    category = category,
+    moveType = moveType,
+    effectChance = chance,
+    priority = 0,
+  }
+end
+
+-- A bound entry can neither flee nor voluntarily switch: the escape
+-- attempt reports its trap and the exchange reply is refused, while
+-- the binding countdown keeps ticking underneath.
+function T.bound_entries_cannot_flee_or_voluntarily_switch()
+  local contracts = SessionFixture.sessionContracts()
+  local content = actionContent()
+  local alphaLead = leveledCombatant(1, 11, "CHIKORITA", 20)
+  local betaLead = leveledCombatant(2, 23, "EEVEE", 20)
+  betaLead.mon.moves = { { move = "WRAP", pp = 10, ppUps = 0 } }
+  local scenario = withMoveFacts(actionScenario(WILD_FORMAT, { alphaLead }, { betaLead }, nil), {
+    WRAP = handFacts(15, 100, "physical", "normal", 0),
+  })
+  local session = contracts.Battle.newSession(scenario, content)
+  local opening = SessionFixture.driveUntilSettled(session)
+  Assert.equal(opening.status, "waiting", "the opening turn asks for decisions")
+  local alpha = requestFor(opening, "alpha")
+  local beta = requestFor(opening, "beta")
+  local striker = assert(alpha.actors[1], "the opening request addresses its lead")
+  local binder = assert(beta.actors[1], "the opposing request addresses its lead")
+  local ok, replyErr = session:submit(
+    SessionFixture.replyFor(alpha, { SessionFixture.attackChoice(striker, 0, SessionFixture.positionTarget(2)) })
+  )
+  Assert.isTrue(ok, "the opening strike is accepted")
+  Assert.isNil(replyErr, "accepted strikes carry no input error")
+  local answered, answerErr = session:submit(
+    SessionFixture.replyFor(beta, { SessionFixture.attackChoice(binder, 0, SessionFixture.positionTarget(1)) })
+  )
+  Assert.isTrue(answered, "the binding strike is accepted")
+  Assert.isNil(answerErr, "accepted strikes carry no input error")
+  session:advance(64)
+  local held = SessionFixture.driveUntilSettled(session)
+  Assert.equal(held.status, "waiting", "the bound turn asks for decisions")
+  local runner = assert(requestFor(held, "alpha").actors[1], "the bound request addresses its lead")
+  local chaser = assert(requestFor(held, "beta").actors[1], "the chasing request addresses its lead")
+  local fled, fledErr = session:submit(SessionFixture.replyFor(requestFor(held, "alpha"), { runChoice(runner) }))
+  Assert.isTrue(fled, "the bound run is accepted as an attempt")
+  Assert.isNil(fledErr, "accepted runs carry no input error")
+  local chased, chasedErr = session:submit(
+    SessionFixture.replyFor(requestFor(held, "beta"), { SessionFixture.attackChoice(chaser, 0, SessionFixture.positionTarget(1)) })
+  )
+  Assert.isTrue(chased, "the chasing strike is accepted")
+  Assert.isNil(chasedErr, "accepted strikes carry no input error")
+  local flight = session:advance(64)
+  local trapped = false
+  for _, event in ipairs(flight.events or {}) do
+    if event.kind == "flee" then
+      local payload = event.payload --[[@as table<string, unknown>]]
+      if payload.escaped == false and payload.reason == "trapped" then
+        trapped = true
+      end
+    end
+  end
+  Assert.isTrue(trapped, "the bound run reports its trap")
+  session:dispose()
+end
+
+-- Friendship strikes execute through threaded facts instead of
+-- missing-behavior failures.
+function T.threaded_friendship_strikes_execute()
+  local contracts = SessionFixture.sessionContracts()
+  local content = actionContent()
+  local alphaLead = leveledCombatant(1, 11, "CHIKORITA", 5)
+  alphaLead.mon.moves = { { move = "RETURN", pp = 10, ppUps = 0 } }
+  local betaLead = leveledCombatant(2, 23, "EEVEE", 5)
+  local scenario = withMoveFacts(actionScenario(WILD_FORMAT, { alphaLead }, { betaLead }, nil), {
+    RETURN = handFacts(102, 100, "physical", "normal", 0),
+  })
+  local session = contracts.Battle.newSession(scenario, content)
+  local opening = SessionFixture.driveUntilSettled(session)
+  Assert.equal(opening.status, "waiting", "the opening turn asks for decisions")
+  local before = session:capture().combatants[2].hp
+  local alpha = requestFor(opening, "alpha")
+  local beta = requestFor(opening, "beta")
+  local striker = assert(alpha.actors[1], "the opening request addresses its lead")
+  local foe = assert(beta.actors[1], "the opposing request addresses its lead")
+  local ok, replyErr = session:submit(
+    SessionFixture.replyFor(alpha, { SessionFixture.attackChoice(striker, 0, SessionFixture.positionTarget(2)) })
+  )
+  Assert.isTrue(ok, "the friendship strike is accepted")
+  Assert.isNil(replyErr, "accepted strikes carry no input error")
+  local answered, answerErr = session:submit(
+    SessionFixture.replyFor(beta, { SessionFixture.attackChoice(foe, 0, SessionFixture.positionTarget(1)) })
+  )
+  Assert.isTrue(answered, "the opposing strike is accepted")
+  Assert.isNil(answerErr, "accepted strikes carry no input error")
+  local turn = session:advance(64)
+  Assert.isTrue(countKind(turn.events, "struck") >= 1, "friendship strikes land")
+  Assert.isTrue(session:capture().combatants[2].hp < before, "the friendship strike deals damage")
+  session:dispose()
+end
+
+-- Pay day strikes accumulate five coins per level into the snapshot
+-- scatter.
+function T.pay_day_strikes_accumulate_scattered_coins()
+  local contracts = SessionFixture.sessionContracts()
+  local content = actionContent()
+  local alphaLead = leveledCombatant(1, 11, "CHIKORITA", 5)
+  alphaLead.mon.moves = { { move = "PAY_DAY", pp = 10, ppUps = 0 } }
+  local betaLead = leveledCombatant(2, 23, "EEVEE", 5)
+  local scenario = withMoveFacts(actionScenario(WILD_FORMAT, { alphaLead }, { betaLead }, nil), {
+    PAY_DAY = handFacts(40, 100, "physical", "normal", 0),
+  })
+  local session = contracts.Battle.newSession(scenario, content)
+  local opening = SessionFixture.driveUntilSettled(session)
+  Assert.equal(opening.status, "waiting", "the opening turn asks for decisions")
+  local alpha = requestFor(opening, "alpha")
+  local beta = requestFor(opening, "beta")
+  local striker = assert(alpha.actors[1], "the opening request addresses its lead")
+  local foe = assert(beta.actors[1], "the opposing request addresses its lead")
+  local ok, replyErr = session:submit(
+    SessionFixture.replyFor(alpha, { SessionFixture.attackChoice(striker, 0, SessionFixture.positionTarget(2)) })
+  )
+  Assert.isTrue(ok, "pay day is accepted")
+  Assert.isNil(replyErr, "accepted strikes carry no input error")
+  local answered, answerErr = session:submit(
+    SessionFixture.replyFor(beta, { SessionFixture.attackChoice(foe, 0, SessionFixture.positionTarget(1)) })
+  )
+  Assert.isTrue(answered, "the opposing strike is accepted")
+  Assert.isNil(answerErr, "accepted strikes carry no input error")
+  session:advance(64)
+  Assert.equal(session:capture().paydayScattered, 25, "pay day scatters five coins per level")
+  session:dispose()
+end
+
+-- Trick room reverses speed order while its field instance stands.
+function T.trick_room_reverses_speed_order()
+  local contracts = SessionFixture.sessionContracts()
+  local content = actionContent()
+  local alphaLead = leveledCombatant(1, 11, "CHIKORITA", 8)
+  alphaLead.mon.moves = {
+    { move = "TRICK_ROOM", pp = 10, ppUps = 0 },
+    { move = "TACKLE", pp = 35, ppUps = 0 },
+  }
+  local betaLead = leveledCombatant(2, 23, "EEVEE", 12)
+  local scenario = withMoveFacts(actionScenario(WILD_FORMAT, { alphaLead }, { betaLead }, nil), {
+    TRICK_ROOM = {
+      power = 0,
+      accuracy = 0,
+      category = "other",
+      moveType = "psychic",
+      effectChance = 0,
+      priority = -7,
+    },
+  })
+  local session = contracts.Battle.newSession(scenario, content)
+  local opening = SessionFixture.driveUntilSettled(session)
+  Assert.equal(opening.status, "waiting", "the opening turn asks for decisions")
+  local alpha = requestFor(opening, "alpha")
+  local beta = requestFor(opening, "beta")
+  local twister = assert(alpha.actors[1], "the opening request addresses its lead")
+  local foe = assert(beta.actors[1], "the opposing request addresses its lead")
+  local ok, replyErr = session:submit(
+    SessionFixture.replyFor(alpha, { SessionFixture.attackChoice(twister, 0, SessionFixture.positionTarget(2)) })
+  )
+  Assert.isTrue(ok, "trick room is accepted")
+  Assert.isNil(replyErr, "accepted twists carry no input error")
+  local answered, answerErr = session:submit(
+    SessionFixture.replyFor(beta, { SessionFixture.attackChoice(foe, 0, SessionFixture.positionTarget(1)) })
+  )
+  Assert.isTrue(answered, "the opposing strike is accepted")
+  Assert.isNil(answerErr, "accepted strikes carry no input error")
+  session:advance(64)
+  local twisted = SessionFixture.driveUntilSettled(session)
+  Assert.equal(twisted.status, "waiting", "the twisted turn asks for decisions")
+  local secondAlpha = requestFor(twisted, "alpha")
+  local secondBeta = requestFor(twisted, "beta")
+  local slow = assert(secondAlpha.actors[1], "the twisted request addresses its lead")
+  local fast = assert(secondBeta.actors[1], "the chasing request addresses its lead")
+  local first, firstErr = session:submit(
+    SessionFixture.replyFor(secondAlpha, { SessionFixture.attackChoice(slow, 1, SessionFixture.positionTarget(2)) })
+  )
+  Assert.isTrue(first, "the slow strike is accepted")
+  Assert.isNil(firstErr, "accepted strikes carry no input error")
+  local second, secondErr = session:submit(
+    SessionFixture.replyFor(secondBeta, { SessionFixture.attackChoice(fast, 0, SessionFixture.positionTarget(1)) })
+  )
+  Assert.isTrue(second, "the fast strike is accepted")
+  Assert.isNil(secondErr, "accepted strikes carry no input error")
+  local turn = session:advance(64)
+  local slowIndex, fastIndex = nil, nil
+  for index, event in ipairs(turn.events or {}) do
+    if event.kind == "struck" then
+      local payload = event.payload --[[@as table<string, unknown>]]
+      if payload.target == 2 and slowIndex == nil then
+        slowIndex = index
+      end
+      if payload.target == 1 and fastIndex == nil then
+        fastIndex = index
+      end
+    end
+  end
+  Assert.notNil(slowIndex, "the slow strike lands")
+  Assert.notNil(fastIndex, "the fast strike lands")
+  Assert.isTrue(
+    (slowIndex --[[@as integer]]) < (fastIndex --[[@as integer]]),
+    "trick room orders the slow strike first"
+  )
+  session:dispose()
+end
+
+-- Mirror move copies the recorded incoming strike through the
+-- threaded recent-move record.
+function T.mirror_move_copies_the_recorded_incoming_strike()
+  local contracts = SessionFixture.sessionContracts()
+  local content = actionContent()
+  local alphaLead = leveledCombatant(1, 11, "CHIKORITA", 20)
+  alphaLead.mon.moves = {
+    { move = "TACKLE", pp = 35, ppUps = 0 },
+    { move = "MIRROR_MOVE", pp = 10, ppUps = 0 },
+  }
+  local betaLead = leveledCombatant(2, 23, "EEVEE", 5)
+  local scenario = withMoveFacts(actionScenario(WILD_FORMAT, { alphaLead }, { betaLead }, nil), {
+    MIRROR_MOVE = handFacts(0, 0, "other", "flying", 0),
+  })
+  local session = contracts.Battle.newSession(scenario, content)
+  local opening = SessionFixture.driveUntilSettled(session)
+  Assert.equal(opening.status, "waiting", "the opening turn asks for decisions")
+  local alpha = requestFor(opening, "alpha")
+  local beta = requestFor(opening, "beta")
+  local striker = assert(alpha.actors[1], "the opening request addresses its lead")
+  local foe = assert(beta.actors[1], "the opposing request addresses its lead")
+  local ok, replyErr = session:submit(
+    SessionFixture.replyFor(alpha, { SessionFixture.attackChoice(striker, 0, SessionFixture.positionTarget(2)) })
+  )
+  Assert.isTrue(ok, "the opening strike is accepted")
+  Assert.isNil(replyErr, "accepted strikes carry no input error")
+  local answered, answerErr = session:submit(
+    SessionFixture.replyFor(beta, { SessionFixture.attackChoice(foe, 0, SessionFixture.positionTarget(1)) })
+  )
+  Assert.isTrue(answered, "the opposing strike is accepted")
+  Assert.isNil(answerErr, "accepted strikes carry no input error")
+  session:advance(64)
+  local copied = SessionFixture.driveUntilSettled(session)
+  Assert.equal(copied.status, "waiting", "the copying turn asks for decisions")
+  local before = session:capture().combatants[2].hp
+  local secondAlpha = requestFor(copied, "alpha")
+  local secondBeta = requestFor(copied, "beta")
+  local mirror = assert(secondAlpha.actors[1], "the copying request addresses its lead")
+  local target = assert(secondBeta.actors[1], "the targeted request addresses its lead")
+  local first, firstErr = session:submit(
+    SessionFixture.replyFor(secondAlpha, { SessionFixture.attackChoice(mirror, 1, SessionFixture.positionTarget(2)) })
+  )
+  Assert.isTrue(first, "mirror move is accepted")
+  Assert.isNil(firstErr, "accepted copies carry no input error")
+  local second, secondErr = session:submit(
+    SessionFixture.replyFor(secondBeta, { SessionFixture.attackChoice(target, 0, SessionFixture.positionTarget(1)) })
+  )
+  Assert.isTrue(second, "the targeted strike is accepted")
+  Assert.isNil(secondErr, "accepted strikes carry no input error")
+  session:advance(64)
+  Assert.isTrue(session:capture().combatants[2].hp < before, "mirror move strikes with the recorded move")
+  session:dispose()
+end
+
 return { tests = T }

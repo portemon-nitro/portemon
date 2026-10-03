@@ -243,16 +243,20 @@ function MoveSelection.resolveExecution(inputs)
     plan.executingMove = plan.requestedMove
   end
   if record.requestedMove == "SLEEP_TALK" and plan.executingMove == "SLEEP_TALK" then
+    -- Failed draws stay on the calling slot: the shared continuation
+    -- settles them as failed selections without spending, drawing, or
+    -- emitting, so waking callers fail closed instead of crashing
+    -- selection.
     local decision = CalledMoves.choose({
       requestedMove = plan.requestedMove,
       executingMove = plan.executingMove,
       stream = plan.stream,
       usable = plan.usable,
+      userAsleep = plan.userAsleep,
     })
-    if decision == nil or decision.failed ~= nil then
-      error(BattleErrors.input("sleep talk needs a usable move to call", {}))
+    if decision ~= nil and decision.failed == nil then
+      plan.executingMove = decision.executingMove
     end
-    plan.executingMove = decision.executingMove
     if plan.calledBy == nil then
       plan.calledBy = "SLEEP_TALK"
     end

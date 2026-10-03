@@ -101,6 +101,9 @@ local DEFINITIONS = {
     timings = { binding("beforeAction", "infatuation", "affliction") },
     lifecycle = lifecycle("replace", "clear"),
   },
+  -- Flinch carries a one-turn clock so an unspent mark expires at the
+  -- residual pass instead of blocking a later turn: the native mark only
+  -- ever gates the current turn.
   {
     key = "flinch",
     stateVersion = 1,
@@ -163,17 +166,56 @@ local DEFINITIONS = {
     timings = { binding("residual", "perishsong", "expiration") },
     lifecycle = lifecycle("replace", "clear"),
   },
+  -- Encore and disable name the forced move beside their countdown so
+  -- the before-action timing can redirect or refuse the pending
+  -- selection.
   {
     key = "encore",
     stateVersion = 1,
-    validateState = turnsState(1, 0, 8),
+    validateState = (function()
+      local function validateEncore(state)
+        local checked = checkVersioned(1, state)
+        local turns = checked.turns
+        if type(turns) ~= "number" or turns % 1 ~= 0 or turns < 0 or turns > 8 then
+          error("the encore countdown stays inside its declared bounds")
+        end
+        if type(checked.move) ~= "string" or checked.move == "" then
+          error("encore names its forced move")
+        end
+        for name in pairs(checked) do
+          if name ~= "version" and name ~= "turns" and name ~= "move" then
+            error("the condition carries no further state")
+          end
+        end
+        return { version = 1, turns = turns, move = checked.move }
+      end
+      return validateEncore
+    end)(),
     timings = { binding("beforeAction", "encore", "affliction") },
     lifecycle = lifecycle("replace", "clear"),
   },
   {
     key = "disable",
     stateVersion = 1,
-    validateState = turnsState(1, 0, 8),
+    validateState = (function()
+      local function validateDisable(state)
+        local checked = checkVersioned(1, state)
+        local turns = checked.turns
+        if type(turns) ~= "number" or turns % 1 ~= 0 or turns < 0 or turns > 8 then
+          error("the disable countdown stays inside its declared bounds")
+        end
+        if type(checked.move) ~= "string" or checked.move == "" then
+          error("disable names its refused move")
+        end
+        for name in pairs(checked) do
+          if name ~= "version" and name ~= "turns" and name ~= "move" then
+            error("the condition carries no further state")
+          end
+        end
+        return { version = 1, turns = turns, move = checked.move }
+      end
+      return validateDisable
+    end)(),
     timings = { binding("beforeAction", "disable", "affliction") },
     lifecycle = lifecycle("replace", "clear"),
   },
@@ -210,6 +252,102 @@ local DEFINITIONS = {
     stateVersion = 1,
     validateState = emptyState(1),
     timings = { binding("entry", "imprison", "affliction") },
+    lifecycle = lifecycle("replace", "clear"),
+  },
+  -- Nightmare roots a sleeping defender for quarter-maximum residual
+  -- damage until it wakes; the countdown survives while the victim
+  -- sleeps and zeroes out on waking so the sweep drops it.
+  {
+    key = "nightmare",
+    stateVersion = 1,
+    validateState = turnsState(1, 0, 8),
+    timings = { binding("residual", "nightmare", "affliction") },
+    lifecycle = lifecycle("replace", "clear"),
+  },
+  -- Drowsiness counts the victim actions down to sleep through the
+  -- before-action timing.
+  {
+    key = "yawn",
+    stateVersion = 1,
+    validateState = turnsState(1, 0, 8),
+    timings = { binding("beforeAction", "yawn", "affliction") },
+    lifecycle = lifecycle("replace", "clear"),
+  },
+  -- Binding traps for its countdown while dealing gradual damage
+  -- through the residual pass.
+  {
+    key = "bind",
+    stateVersion = 1,
+    validateState = turnsState(1, 0, 8),
+    timings = { binding("residual", "bind", "affliction") },
+    lifecycle = lifecycle("replace", "clear"),
+  },
+  -- Pure trapping marker: escape and switch eligibility read it
+  -- alongside the binding countdown. It binds the never-dispatched leave
+  -- timing like the inert identity markers, so no pass collects it.
+  {
+    key = "trapped",
+    stateVersion = 1,
+    validateState = emptyState(1),
+    timings = { binding("leave", "trapped", "affliction") },
+    lifecycle = lifecycle("replace", "clear"),
+  },
+  -- Lock-on names the attacker whose next strike cannot miss; the
+  -- accuracy checkpoint consumes it.
+  {
+    key = "lockon",
+    stateVersion = 1,
+    validateState = (function()
+      local function validateLockon(state)
+        local checked = checkVersioned(1, state)
+        if type(checked.attacker) ~= "number" or checked.attacker % 1 ~= 0 or checked.attacker < 1 then
+          error("lock-on names its aiming combatant")
+        end
+        for name in pairs(checked) do
+          if name ~= "version" and name ~= "attacker" then
+            error("the condition carries no further state")
+          end
+        end
+        return { version = 1, attacker = checked.attacker }
+      end
+      return validateLockon
+    end)(),
+    timings = { binding("leave", "lockon", "affliction") },
+    lifecycle = lifecycle("replace", "clear"),
+  },
+  -- Identification drops ghost immunity for normal and fighting
+  -- strikes and pins negative evasion at zero until the entry leaves.
+  {
+    key = "foresight",
+    stateVersion = 1,
+    validateState = emptyState(1),
+    timings = { binding("leave", "foresight", "affliction") },
+    lifecycle = lifecycle("replace", "clear"),
+  },
+  -- Magnetic levitation grounds nothing for five turns.
+  {
+    key = "magnetrise",
+    stateVersion = 1,
+    validateState = turnsState(1, 0, 8),
+    timings = { binding("residual", "magnetrise", "expiration") },
+    lifecycle = lifecycle("replace", "clear"),
+  },
+  -- Ingrain roots one sixteenth of maximum health every residual pass
+  -- until the entry leaves.
+  {
+    key = "ingrain",
+    stateVersion = 1,
+    validateState = emptyState(1),
+    timings = { binding("residual", "ingrain", "recovery") },
+    lifecycle = lifecycle("replace", "clear"),
+  },
+  -- Focus energy sharpens later strikes by two critical stages until
+  -- the entry leaves; the strike checkpoint reads it.
+  {
+    key = "focusenergy",
+    stateVersion = 1,
+    validateState = emptyState(1),
+    timings = { binding("leave", "focusenergy", "affliction") },
     lifecycle = lifecycle("replace", "clear"),
   },
 }

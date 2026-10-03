@@ -481,8 +481,8 @@ function T.unimplemented_native_moves_fail_explicitly()
     )
   end
 
-  attempt("EMBER")
-  attempt("ATTRACT")
+  attempt("AEROBLAST")
+  attempt("BLOCK")
 end
 
 -- Frames without resolved move facts never validate: the transition
