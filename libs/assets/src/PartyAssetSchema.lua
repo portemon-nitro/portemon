@@ -49,6 +49,20 @@ local SEGMENT_KINDS = {
   lineBreak = true,
 }
 
+local REQUIRED_RUNTIME_TEMPLATES = {
+  "chooseMon",
+  "moveTarget",
+  "giveTarget",
+  "useTarget",
+  "teachTarget",
+  "itemAction",
+  "takeNoItem",
+  "bagFull",
+  "switchHeldPrompt",
+  "switchHeldResult",
+  "giveHeldItem",
+}
+
 local function fail(message, context)
   SchemaCheck.fail("PARTY_MANIFEST_INVALID", message, context)
 end
@@ -769,11 +783,10 @@ function PartyAssetSchema.assertManifest(manifest)
       checkSegment(segment, {}, "manifest.text.templates." .. tostring(name) .. ".segments[" .. index .. "]")
     end
   end
-  if text.templates.takeNoItem == nil then
-    fail("manifest.text.templates.takeNoItem is required", {})
-  end
-  if text.templates.bagFull == nil then
-    fail("manifest.text.templates.bagFull is required", {})
+  for _, name in ipairs(REQUIRED_RUNTIME_TEMPLATES) do
+    if text.templates[name] == nil then
+      fail("manifest.text.templates." .. name .. " is required", {})
+    end
   end
   if type(root.numberGlyphs) ~= "table" then
     fail("manifest.numberGlyphs must be a record", {})
