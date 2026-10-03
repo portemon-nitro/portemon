@@ -11,8 +11,8 @@
 -- frame counts, sizes, and palettes stay valid. Love-free and
 -- filesystem-free.
 
-local Errors = require("libs.errors.src.Errors")
 local Validate = require("libs.assets.src.Validate")
+local SchemaCheck = require("libs.assets.src.SchemaCheck")
 
 ---@class PartyAssetSchema
 local PartyAssetSchema = {}
@@ -50,14 +50,12 @@ local SEGMENT_KINDS = {
 }
 
 local function fail(message, context)
-  Errors.raise("PARTY_MANIFEST_INVALID", message, context or {})
+  SchemaCheck.fail("PARTY_MANIFEST_INVALID", message, context)
 end
 
 local function checkKeys(record, allowed, context, what)
+  SchemaCheck.checkKeys(record, allowed, context, "PARTY_MANIFEST_INVALID", what)
   for key in pairs(record) do
-    if allowed[key] == nil then
-      fail(what .. " carries an unknown field " .. tostring(key), context)
-    end
     if SOURCE_KEYS[key] == true then
       fail(what .. " leaks source identity " .. tostring(key), context)
     end
@@ -65,9 +63,7 @@ local function checkKeys(record, allowed, context, what)
 end
 
 local function checkInt(value, context, what)
-  if type(value) ~= "number" or value % 1 ~= 0 then
-    fail(what .. " must be an integer", context)
-  end
+  SchemaCheck.checkInteger(value, context, "PARTY_MANIFEST_INVALID", what)
 end
 
 local function checkPoint(value, context, what)

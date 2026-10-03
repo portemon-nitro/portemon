@@ -9,8 +9,8 @@
 -- species/move/ability reference against the catalog's own keys. Love-free
 -- and filesystem-free.
 
-local Errors = require("libs.errors.src.Errors")
 local Validate = require("libs.assets.src.Validate")
+local SchemaCheck = require("libs.assets.src.SchemaCheck")
 
 ---@class MonAssetSchema
 local MonAssetSchema = {}
@@ -126,35 +126,18 @@ local FORM_FIELDS = {
   follower = true,
 }
 
-local function fail(code, message, context)
-  Errors.raise(code, message, context or {})
-end
+local fail = SchemaCheck.fail
 
 local function checkKeys(record, allowed, context, code)
-  for key in pairs(record) do
-    if allowed[key] == nil then
-      fail(code, "unknown field " .. tostring(key), context)
-    end
-  end
+  SchemaCheck.checkKeys(record, allowed, context, code)
 end
 
 local function checkRecord(record, allowed, context, code, field)
-  if type(record) ~= "table" then
-    fail(code, field .. " must be a record", context)
-  end
-  if allowed ~= nil then
-    checkKeys(record, allowed, context, code)
-  end
+  SchemaCheck.checkRecord(record, allowed, context, code, field)
 end
 
 local function checkInt(value, lower, upper, context, code, field)
-  if type(value) ~= "number" or value % 1 ~= 0 or value < lower or (upper ~= nil and value > upper) then
-    if upper == nil then
-      fail(code, field .. " must be an integer at least " .. tostring(lower), context)
-    else
-      fail(code, field .. " must be an integer in " .. tostring(lower) .. ".." .. tostring(upper), context)
-    end
-  end
+  SchemaCheck.checkInteger(value, context, code, field, lower, upper)
 end
 
 local function checkU8(value, context, code, field)
@@ -162,9 +145,7 @@ local function checkU8(value, context, code, field)
 end
 
 local function checkNonEmptyString(value, context, code, field)
-  if type(value) ~= "string" or value == "" then
-    fail(code, field .. " must be a non-empty string", context)
-  end
+  SchemaCheck.checkNonEmptyString(value, context, code, field)
 end
 
 local function checkEvValue(value, context, code, field)
@@ -563,9 +544,7 @@ function MonAssetSchema.isValidCatalog(catalog)
 end
 
 local function checkHash(value, context, code, field)
-  if type(value) ~= "string" or #value ~= 40 or value:match("^[0-9a-f]+$") == nil then
-    fail(code, field .. " must be a 40-character hex digest", context)
-  end
+  SchemaCheck.checkHash(value, context, code, field)
 end
 
 -- Class index validation: schema identity, version, the catalog content
