@@ -4,14 +4,15 @@
 Invokes the repository invariant script in explicit-path mode against
 minimal temporary fixtures. Production scope is any explicit ``.lua``
 path; test scope is an explicit path containing a ``/tests/`` segment.
-Hook cases run the real pre-commit entrypoint in temporary Git
-repositories with a ``scripts/lint.sh`` double standing in for the fast
-lint gate, so they stay independent of formatter/type binaries while
-still proving the hook requires lint.
+Hook cases run the real pre-commit entrypoint with a ``scripts/lint.sh``
+double, proving the hook defers to the lint gate. Staged-index cases run
+the real lint gate with formatter/type doubles, so they stay independent
+of those binaries while proving lint sees the staged index.
 """
 
 from __future__ import annotations
 
+import os
 import subprocess
 from pathlib import Path
 import tempfile
@@ -22,6 +23,9 @@ SCRIPT = Path(__file__).resolve().parents[2] / "scripts" / "lib" / "check-invari
 REPO_ROOT = SCRIPT.parents[2]
 HOOK_SOURCE = REPO_ROOT / "scripts" / "hooks" / "pre-commit"
 LUARC_SOURCE = REPO_ROOT / ".luarc.json"
+LINT_SOURCE = REPO_ROOT / "scripts" / "lint.sh"
+SCOPE_SOURCE = REPO_ROOT / "scripts" / "lib" / "scope.sh"
+REPO_CHECK_SOURCE = REPO_ROOT / "scripts" / "lib" / "check-repository.sh"
 
 # Fixed core modules the invariant gate must always account for.
 REQUIRED_CORE_FILES = (
@@ -393,37 +397,8 @@ def _stage(repo: Path, relative: str, body: str) -> None:
     _run_git(repo, "add", "--", relative)
 
 
-class StagedIndexGateTest(unittest.TestCase):
-    """Pre-commit hook behavior against staged index snapshots."""
-
-    def test_staged_violation_survives_worktree_repair(self) -> None:
-        with tempfile.TemporaryDirectory() as directory:
-            repo = _init_repo(
-                Path(directory), {"app/src/sample.lua": CLEAN_PRODUCTION_BODY}
-            )
-            _stage(repo, "app/src/sample.lua", PRODUCTION_ANY_BODY)
-            (repo / "app/src/sample.lua").write_text(
-                CLEAN_PRODUCTION_BODY, encoding="utf-8"
-            )
-            result = _run_hook(repo)
-            self.assertNotEqual(result.returncode, 0, result.stderr)
-            self.assertIn("app/src/sample.lua", result.stderr)
-
-    def test_clean_staged_change_passes_with_dirty_worktree(self) -> None:
-        with tempfile.TemporaryDirectory() as directory:
-            repo = _init_repo(
-                Path(directory), {"app/src/sample.lua": CLEAN_PRODUCTION_BODY}
-            )
-            _stage(
-                repo,
-                "app/src/sample.lua",
-                CLEAN_PRODUCTION_BODY + "--- Staged note.\n",
-            )
-            (repo / "app/src/sample.lua").write_text(
-                PRODUCTION_ANY_BODY, encoding="utf-8"
-            )
-            result = _run_hook(repo)
-            self.assertEqual(result.returncode, 0, result.stderr)
+class HookDelegationTest(unittest.TestCase):
+    """The pre-commit hook defers to the lint gate."""
 
     def test_hook_fails_without_lint_present(self) -> None:
         with tempfile.TemporaryDirectory() as directory:
@@ -441,7 +416,7 @@ class StagedIndexGateTest(unittest.TestCase):
             result = _run_hook(repo)
             self.assertNotEqual(result.returncode, 0, result.stderr)
 
-    def test_failing_lint_blocks_clean_staged_change(self) -> None:
+    def test_failing_lint_blocks_commit(self) -> None:
         with tempfile.TemporaryDirectory() as directory:
             repo = _init_repo(
                 Path(directory), {"app/src/sample.lua": CLEAN_PRODUCTION_BODY}
@@ -460,18 +435,121 @@ class StagedIndexGateTest(unittest.TestCase):
             result = _run_hook(repo)
             self.assertNotEqual(result.returncode, 0, result.stderr)
 
-    def test_reference_annotation_debt_without_directive_passes(self) -> None:
+    def test_passing_lint_allows_commit(self) -> None:
         with tempfile.TemporaryDirectory() as directory:
             repo = _init_repo(
-                Path(directory), {"data/scripts/example.lua": CLEAN_LUA_STUB}
+                Path(directory), {"app/src/sample.lua": CLEAN_PRODUCTION_BODY}
             )
-            _stage(repo, "data/scripts/example.lua", REFERENCE_ANY_BODY)
+            _stage(
+                repo,
+                "app/src/sample.lua",
+                CLEAN_PRODUCTION_BODY + "--- Staged note.\n",
+            )
             result = _run_hook(repo)
             self.assertEqual(result.returncode, 0, result.stderr)
 
+
+def _init_lint_repo(root: Path, fixtures: dict[str, str]) -> tuple[Path, Path]:
+    """Isolated repo wiring the real lint gate with stubbed binaries.
+
+    Installs the repository's current ``lint.sh`` and its ``scripts/lib``
+    collaborators into a fresh repo, then provides ``stylua`` and
+    ``lua-language-server`` doubles that always succeed, so the lint
+    outcome is decided by the invariant checks alone.
+    """
+    _init_repo(root, fixtures, with_lint_stub=False)
+    lint_target = root / "scripts" / "lint.sh"
+    lint_target.write_bytes(LINT_SOURCE.read_bytes())
+    lint_target.chmod(0o755)
+    lib = root / "scripts" / "lib"
+    for source in (SCOPE_SOURCE, REPO_CHECK_SOURCE):
+        target = lib / source.name
+        target.write_bytes(source.read_bytes())
+        target.chmod(0o755)
+    bin_dir = root / "test-bin"
+    bin_dir.mkdir(parents=True, exist_ok=True)
+    for name in ("stylua", "lua-language-server"):
+        stub = bin_dir / name
+        stub.write_text("#!/usr/bin/env bash\nexit 0\n", encoding="utf-8")
+        stub.chmod(0o755)
+    return root, bin_dir
+
+
+def _run_lint(repo: Path, bin_dir: Path) -> subprocess.CompletedProcess[str]:
+    env = dict(os.environ)
+    env["PATH"] = str(bin_dir) + os.pathsep + env.get("PATH", "")
+    return subprocess.run(
+        ["bash", "scripts/lint.sh", "--check"],
+        cwd=repo,
+        check=False,
+        capture_output=True,
+        text=True,
+        env=env,
+    )
+
+
+class LintStagedGateTest(unittest.TestCase):
+    """lint.sh must see the staged index, not just the worktree."""
+
+    def test_lint_rejects_staged_violation_with_clean_worktree(self) -> None:
+        with tempfile.TemporaryDirectory() as directory:
+            repo, bin_dir = _init_lint_repo(
+                Path(directory), {"app/src/sample.lua": CLEAN_PRODUCTION_BODY}
+            )
+            _stage(repo, "app/src/sample.lua", PRODUCTION_ANY_BODY)
+            (repo / "app/src/sample.lua").write_text(
+                CLEAN_PRODUCTION_BODY, encoding="utf-8"
+            )
+            result = _run_lint(repo, bin_dir)
+            combined = result.stderr + result.stdout
+            self.assertNotEqual(result.returncode, 0, combined)
+            self.assertIn("app/src/sample.lua", combined)
+
+    def test_lint_passes_clean_staged_change(self) -> None:
+        with tempfile.TemporaryDirectory() as directory:
+            repo, bin_dir = _init_lint_repo(
+                Path(directory), {"app/src/sample.lua": CLEAN_PRODUCTION_BODY}
+            )
+            _stage(
+                repo,
+                "app/src/sample.lua",
+                CLEAN_PRODUCTION_BODY + "--- Staged note.\n",
+            )
+            result = _run_lint(repo, bin_dir)
+            combined = result.stderr + result.stdout
+            self.assertEqual(result.returncode, 0, combined)
+
+    def test_lint_rejects_dirty_worktree_with_clean_index(self) -> None:
+        with tempfile.TemporaryDirectory() as directory:
+            repo, bin_dir = _init_lint_repo(
+                Path(directory), {"app/src/sample.lua": CLEAN_PRODUCTION_BODY}
+            )
+            _stage(
+                repo,
+                "app/src/sample.lua",
+                CLEAN_PRODUCTION_BODY + "--- Staged note.\n",
+            )
+            (repo / "app/src/sample.lua").write_text(
+                PRODUCTION_ANY_BODY, encoding="utf-8"
+            )
+            result = _run_lint(repo, bin_dir)
+            combined = result.stderr + result.stdout
+            self.assertNotEqual(result.returncode, 0, combined)
+            self.assertIn("app/src/sample.lua", combined)
+
+    def test_reference_annotation_debt_without_directive_passes(self) -> None:
+        with tempfile.TemporaryDirectory() as directory:
+            repo, bin_dir = _init_lint_repo(
+                Path(directory), {"data/scripts/example.lua": CLEAN_LUA_STUB}
+            )
+            _stage(repo, "data/scripts/example.lua", REFERENCE_ANY_BODY)
+            result = _run_lint(repo, bin_dir)
+            combined = result.stderr + result.stdout
+            self.assertEqual(result.returncode, 0, combined)
+
     def test_reference_and_tooling_directives_fail(self) -> None:
         with tempfile.TemporaryDirectory() as directory:
-            repo = _init_repo(
+            repo, bin_dir = _init_lint_repo(
                 Path(directory),
                 {
                     "data/scripts/example.lua": CLEAN_LUA_STUB,
@@ -480,32 +558,37 @@ class StagedIndexGateTest(unittest.TestCase):
             )
             _stage(repo, "data/scripts/example.lua", REFERENCE_DIRECTIVE_BODY)
             _stage(repo, "tools/example.lua", REFERENCE_DIRECTIVE_BODY)
-            result = _run_hook(repo)
-            self.assertNotEqual(result.returncode, 0, result.stderr)
-            self.assertIn("data/scripts/example.lua", result.stderr)
-            self.assertIn("tools/example.lua", result.stderr)
+            result = _run_lint(repo, bin_dir)
+            combined = result.stderr + result.stdout
+            self.assertNotEqual(result.returncode, 0, combined)
+            self.assertIn("data/scripts/example.lua", combined)
+            self.assertIn("tools/example.lua", combined)
 
-    def test_staged_config_violation_survives_worktree_repair(self) -> None:
+    def test_lint_rejects_staged_luarc_violation_with_clean_worktree(
+        self,
+    ) -> None:
         with tempfile.TemporaryDirectory() as directory:
-            repo = _init_repo(
+            repo, bin_dir = _init_lint_repo(
                 Path(directory), {"app/src/sample.lua": CLEAN_PRODUCTION_BODY}
             )
             valid_luarc = (repo / ".luarc.json").read_bytes()
             _stage(repo, ".luarc.json", INVALID_LUARC_BODY)
             (repo / ".luarc.json").write_bytes(valid_luarc)
-            result = _run_hook(repo)
-            self.assertNotEqual(result.returncode, 0, result.stderr)
-            self.assertIn(".luarc.json", result.stderr)
+            result = _run_lint(repo, bin_dir)
+            combined = result.stderr + result.stdout
+            self.assertNotEqual(result.returncode, 0, combined)
+            self.assertIn(".luarc.json", combined)
 
-    def test_missing_required_config_blocks_commit(self) -> None:
+    def test_lint_rejects_missing_luarc(self) -> None:
         with tempfile.TemporaryDirectory() as directory:
-            repo = _init_repo(
+            repo, bin_dir = _init_lint_repo(
                 Path(directory), {"app/src/sample.lua": CLEAN_PRODUCTION_BODY}
             )
             _run_git(repo, "rm", "-q", ".luarc.json")
-            result = _run_hook(repo)
-            self.assertNotEqual(result.returncode, 0, result.stderr)
-            self.assertIn(".luarc.json", result.stderr)
+            result = _run_lint(repo, bin_dir)
+            combined = result.stderr + result.stdout
+            self.assertNotEqual(result.returncode, 0, combined)
+            self.assertIn(".luarc.json", combined)
 
 
 if __name__ == "__main__":
