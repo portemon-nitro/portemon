@@ -410,15 +410,85 @@ function T.answers_switch_and_item_branches_from_live_roster_and_stock()
   Assert.isTrue(healthy.choices[1].kind ~= "item", "healthy attackers decline the bag")
 end
 
+-- Generated per-bit evaluations compile in native bit order and consume
+-- their program-order draws without moving scores: each generated bit
+-- resolves to its evaluation step plus the tiebreak settler, and a
+-- multi-bit program preserves ascending bit order through evaluation.
+function T.generated_pass_evaluations_compile_in_bit_order()
+  local Evaluator = requirePresent(
+    EVALUATOR_MODULE,
+    "the typed instruction evaluator executes every reachable selection branch"
+  )
+  local cases = {
+    { bit = 2, op = "evaluate_pass_2" },
+    { bit = 3, op = "evaluate_pass_3" },
+    { bit = 5, op = "evaluate_pass_5" },
+    { bit = 6, op = "evaluate_pass_6" },
+    { bit = 9, op = "evaluate_pass_9" },
+  }
+  for _, case in ipairs(cases) do
+    local entry = case --[[@as table<string, unknown>]]
+    local program = Evaluator.compilePassProgram({ "ai_pass_" .. entry.bit })
+    local ops = {}
+    for _, instruction in ipairs(program.instructions --[[@as table<integer, table<string, unknown>>]]) do
+      ops[#ops + 1] = instruction.op
+    end
+    Assert.deepEqual(ops, { entry.op, "roll_tiebreak" }, "bit " .. entry.bit .. " evaluates then tiebreaks")
+  end
+  local combined = Evaluator.compilePassProgram({ "ai_pass_9", "ai_pass_2", "ai_pass_0" })
+  local ordered = {}
+  for _, instruction in ipairs(combined.instructions --[[@as table<integer, table<string, unknown>>]]) do
+    ordered[#ordered + 1] = instruction.op
+  end
+  Assert.deepEqual(
+    ordered,
+    { "score_matchup", "check_bad_move", "evaluate_pass_2", "evaluate_pass_9", "roll_tiebreak" },
+    "multi-bit programs evaluate in ascending bit order"
+  )
+  local knowledge = {
+    active = {
+      combatant = 1,
+      species = "CHIKORITA",
+      level = 5,
+      hp = 20,
+      maxHp = 20,
+      types = { "grass" },
+      moves = {
+        { key = "SPLASH", moveType = "normal", power = 0 },
+        { key = "GROWL", moveType = "normal", power = 0 },
+      },
+    },
+    foe = {
+      combatant = 2,
+      species = "GEODUDE",
+      level = 5,
+      hp = 14,
+      maxHp = 20,
+      types = { "rock", "ground" },
+    },
+    reserves = {},
+  }
+  local stream = spyStream(FIXED_SEED)
+  local scored = Evaluator.scoreMoves(combined, knowledge, stream)
+  for _, entry in ipairs(scored) do
+    Assert.equal(entry.score, 0, "evaluation steps move no scoreless scores")
+  end
+  Assert.deepEqual(
+    stream:drawLabels(),
+    { "score_matchup", "check_bad_move", "evaluate_pass_2", "evaluate_pass_9", "roll_tiebreak" },
+    "evaluation draws follow program order"
+  )
+end
+
 -- Pass names outside the closed native set fail closed: an unknown bit
 -- and a malformed name both raise naming the offending pass instead of
 -- answering a fallback move.
 function T.unknown_pass_names_fail_closed()
   local Ai = requirePresent(AI_MODULE, "the native controller answers owned requests from its pass facts")
   local errBit = Assert.throws(function()
-    Ai.new({ aiPasses = { "ai_pass_9" }, trainerItems = {} })
+    Ai.new({ aiPasses = { "ai_pass_4" }, trainerItems = {} })
   end, "passes outside the closed set fail instead of falling back")
-  Assert.isTrue(string.find(tostring(errBit), "ai_pass_9", 1, true) ~= nil, "the failure names the unknown pass")
+  Assert.isTrue(string.find(tostring(errBit), "ai_pass_4", 1, true) ~= nil, "the failure names the unknown pass")
   local errMalformed = Assert.throws(function()
     Ai.new({ aiPasses = { "bogus" }, trainerItems = {} })
   end, "malformed pass names fail instead of falling back")
@@ -608,6 +678,77 @@ function T.raw_views_answer_legally_without_scoring()
   local repeated = controller:decide(request, view, stream)
   Assert.deepEqual(repeated, reply, "repeating the open request returns the recorded reply")
   Assert.equal(#stream:drawLabels(), draws, "repeated polls draw nothing further")
+end
+
+-- Healing choices name their holder and spend finite stock: a wounded
+-- attacker with one cure answers with a holder-targeted bag choice that
+-- session validation can bind to its inventory, and the next decision
+-- after that unit leaves cannot reuse the spent stock. A double-carried
+-- cure answers twice before running dry.
+function T.healing_choices_target_the_holder_and_spend_finite_stock()
+  local Ai = requirePresent(AI_MODULE, "the native controller answers owned requests from its pass facts")
+  ---@param hp integer current health of the wounded attacker
+  ---@return table knowledge projection with no reserves
+  local function woundedKnowledge(hp)
+    return {
+      active = {
+        combatant = 1,
+        species = "CHIKORITA",
+        level = 5,
+        hp = hp,
+        maxHp = 20,
+        types = { "grass" },
+        moves = {
+          { key = "TACKLE", moveType = "normal", power = 35 },
+        },
+      },
+      foe = {
+        combatant = 2,
+        species = "GEODUDE",
+        level = 5,
+        hp = 14,
+        maxHp = 20,
+        types = { "rock", "ground" },
+      },
+      reserves = {},
+    }
+  end
+  local single = Ai.new({ aiPasses = { "ai_pass_0", "ai_pass_1" }, trainerItems = { "POTION" } })
+  local firstRequest =
+    { requestId = 61, epoch = 0, controller = "ai", kind = "action", actors = { { combatant = 1 } } }
+  local first = single:decide(firstRequest, single:observe(woundedKnowledge(4)), spyStream(FIXED_SEED))
+  Assert.isTrue(type(first.choices) == "table" and #first.choices == 1, "one owned actor draws one choice")
+  Assert.equal(first.choices[1].kind, "item", "the wounded attacker with stock answers with its bag")
+  Assert.isTrue(type(first.choices[1].payload) == "table", "bag choices carry their payload")
+  Assert.equal(first.choices[1].payload.item, "POTION", "the stocked cure is the one actually carried")
+  local target = first.choices[1].payload.target
+  Assert.isTrue(type(target) == "table", "healing choices name their holder")
+  Assert.equal(target.kind, "combatant", "healing targets its holder as a combatant")
+  Assert.equal(target.combatant, 1, "healing targets the active holder")
+  local secondRequest =
+    { requestId = 62, epoch = 0, controller = "ai", kind = "action", actors = { { combatant = 1 } } }
+  local second = single:decide(secondRequest, single:observe(woundedKnowledge(4)), spyStream(FIXED_SEED))
+  Assert.isTrue(second.choices[1].kind ~= "item", "the spent stock cannot be reused")
+  local double = Ai.new({ aiPasses = { "ai_pass_0", "ai_pass_1" }, trainerItems = { "POTION", "POTION" } })
+  local doubleFirst = double:decide(
+    { requestId = 63, epoch = 0, controller = "ai", kind = "action", actors = { { combatant = 1 } } },
+    double:observe(woundedKnowledge(4)),
+    spyStream(FIXED_SEED)
+  )
+  Assert.equal(doubleFirst.choices[1].kind, "item", "the first of two carried cures still heals")
+  Assert.equal(doubleFirst.choices[1].payload.target.combatant, 1, "the first cure names the active holder")
+  local doubleSecond = double:decide(
+    { requestId = 64, epoch = 0, controller = "ai", kind = "action", actors = { { combatant = 1 } } },
+    double:observe(woundedKnowledge(4)),
+    spyStream(FIXED_SEED)
+  )
+  Assert.equal(doubleSecond.choices[1].kind, "item", "the second of two carried cures still heals")
+  local doubleThird = double:decide(
+    { requestId = 65, epoch = 0, controller = "ai", kind = "action", actors = { { combatant = 1 } } },
+    double:observe(woundedKnowledge(4)),
+    spyStream(FIXED_SEED)
+  )
+  Assert.isTrue(doubleThird.choices[1].kind ~= "item", "two cures heal exactly twice")
 end
 
 return { tests = T }

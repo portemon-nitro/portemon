@@ -86,8 +86,8 @@ end
 -- Trainer-defeat flags and story rewards stay script-owned: anything the
 -- caller declares under scriptRewards is echoed back for the owning
 -- script to apply, never applied here.
----@param args { trainers: table<integer, table<string, unknown>>, battleFormat: string, moneyMultiplier: integer, scriptRewards: table<string, unknown>? }
----@return { kind: string, battleFormat: string, multiplier: integer, trainers: table<integer, table<string, unknown>>, amount: integer, scriptRewards: table<string, unknown> }
+---@param args { trainers: table<integer, table<string, unknown>>, battleFormat: string, moneyMultiplier: integer, scriptRewards: table<string, unknown>?, paydayScattered: integer? }
+---@return { kind: string, battleFormat: string, multiplier: integer, trainers: table<integer, table<string, unknown>>, amount: integer, payday: integer, scriptRewards: table<string, unknown> }
 function HgssBattleRewards.planMoney(args)
   if type(args) ~= "table" then
     error("prize planning requires an argument record", 0)
@@ -100,6 +100,12 @@ function HgssBattleRewards.planMoney(args)
   end
   if args.moneyMultiplier ~= 1 and args.moneyMultiplier ~= 2 then
     error("prize planning scales through a money multiplier of 1 or 2", 0)
+  end
+  -- Scattered pay day coins pay out scaled and capped beside the
+  -- trainer shares, following the native pay day accumulation.
+  local scattered = args.paydayScattered or 0
+  if type(scattered) ~= "number" or scattered % 1 ~= 0 or scattered < 0 then
+    error("prize planning counts scattered coins", 0)
   end
   local scriptRewards = args.scriptRewards or {}
   if type(scriptRewards) ~= "table" then
@@ -124,12 +130,17 @@ function HgssBattleRewards.planMoney(args)
     trainers[#trainers + 1] = facts
     amount = amount + share
   end
+  local payday = scattered * args.moneyMultiplier --[[@as integer]]
+  if payday > 65535 then
+    payday = 65535
+  end
   return {
     kind = "money",
     battleFormat = args.battleFormat,
     multiplier = args.moneyMultiplier,
     trainers = trainers,
-    amount = math.min(PlayerData.MAX_MONEY, amount),
+    amount = math.min(PlayerData.MAX_MONEY, amount + payday),
+    payday = payday,
     scriptRewards = scriptRewards,
   }
 end

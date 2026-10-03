@@ -289,6 +289,29 @@ function BattleContext:addBattleEffect(definition, scope, source, state)
   return add(bag, definition, scope, source, state)
 end
 
+-- Side-scoped instances belong to the combatant through its side: a
+-- side screen or chant answers for every combatant standing on that
+-- side, so removal and queries match side scopes through the entry
+-- projection alongside the direct combatant scopes.
+---@param state table<string, unknown> live battle state under the scope match
+---@param combatantId integer combatant identity owning the instance scope
+---@param scope table<string, unknown> candidate instance scope under matching
+---@return boolean true when the scope answers for the combatant
+local function scopeAnswersFor(state, combatantId, scope)
+  if type(scope) ~= "table" then
+    return false
+  end
+  if scope.combatant == combatantId then
+    return true
+  end
+  if scope.kind == "side" then
+    local combatant = BattleState.combatant(state, combatantId)
+    local participant = BattleState.participant(state, combatant.participant --[[@as integer]])
+    return scope.side == participant.side
+  end
+  return false
+end
+
 ---@param combatantId integer combatant identity owning the instance scope
 ---@param key string definition identity under removal
 ---@return boolean true when a held instance was removed
@@ -299,7 +322,7 @@ function BattleContext:removeBattleEffect(combatantId, key)
   local capture = bag.capture --[[@as fun(self: table<string, unknown>): table<integer, table<string, unknown>>]]
   for _, record in ipairs(capture(bag)) do
     local scope = record.scope --[[@as table<string, unknown>]]
-    if record.key == key and type(scope) == "table" and scope.combatant == combatantId then
+    if record.key == key and scopeAnswersFor(self._state, combatantId, scope) then
       local remove = bag.remove --[[@as fun(self: table<string, unknown>, id: integer): boolean]]
       return remove(bag, record.id --[[@as integer]])
     end
@@ -317,11 +340,114 @@ function BattleContext:hasBattleEffect(combatantId, key)
   local capture = bag.capture --[[@as fun(self: table<string, unknown>): table<integer, table<string, unknown>>]]
   for _, record in ipairs(capture(bag)) do
     local scope = record.scope --[[@as table<string, unknown>]]
-    if record.key == key and type(scope) == "table" and scope.combatant == combatantId then
+    if record.key == key and scopeAnswersFor(self._state, combatantId, scope) then
       return true
     end
   end
   return false
+end
+
+---@param side integer side identity owning the instance scope
+---@param key string definition identity under the query
+---@return table<string, unknown>? detached first matching side instance, nil when absent
+function BattleContext:sideEffect(side, key)
+  assert(type(side) == "number", "side reads require their side")
+  assert(type(key) == "string" and key ~= "", "side reads name their definition")
+  local bag = liveBag(self._state)
+  local capture = bag.capture --[[@as fun(self: table<string, unknown>): table<integer, table<string, unknown>>]]
+  for _, record in ipairs(capture(bag)) do
+    local scope = record.scope --[[@as table<string, unknown>]]
+    if record.key == key and type(scope) == "table" and scope.kind == "side" and scope.side == side then
+      local get = bag.get --[[@as fun(self: table<string, unknown>, id: integer): table<string, unknown>?]]
+      return get(bag, record.id --[[@as integer]])
+    end
+  end
+  return nil
+end
+
+---@param key string definition identity under removal
+---@return boolean true when a live field instance was removed
+function BattleContext:removeFieldEffect(key)
+  assert(type(key) == "string" and key ~= "", "field removal names its definition")
+  local bag = liveBag(self._state)
+  local capture = bag.capture --[[@as fun(self: table<string, unknown>): table<integer, table<string, unknown>>]]
+  for _, record in ipairs(capture(bag)) do
+    local scope = record.scope --[[@as table<string, unknown>]]
+    if record.key == key and type(scope) == "table" and scope.kind == "field" then
+      local remove = bag.remove --[[@as fun(self: table<string, unknown>, id: integer): boolean]]
+      return remove(bag, record.id --[[@as integer]])
+    end
+  end
+  return false
+end
+
+---@param key string definition identity under the query
+---@return table<string, unknown>? detached first matching field instance, nil when absent
+function BattleContext:fieldEffect(key)
+  assert(type(key) == "string" and key ~= "", "field reads name their definition")
+  local bag = liveBag(self._state)
+  local capture = bag.capture --[[@as fun(self: table<string, unknown>): table<integer, table<string, unknown>>]]
+  for _, record in ipairs(capture(bag)) do
+    local scope = record.scope --[[@as table<string, unknown>]]
+    if record.key == key and type(scope) == "table" and scope.kind == "field" then
+      local get = bag.get --[[@as fun(self: table<string, unknown>, id: integer): table<string, unknown>?]]
+      return get(bag, record.id --[[@as integer]])
+    end
+  end
+  return nil
+end
+
+---@param combatantId integer combatant identity under the read
+---@return string? major condition key on the canonical mon, nil when healthy
+function BattleContext:statusOf(combatantId)
+  assert(type(combatantId) == "number", "condition reads require their combatant")
+  local combatant = BattleState.combatant(self._state, combatantId)
+  local mon = combatant.mon --[[@as table<string, unknown>]]
+  if type(mon) ~= "table" then
+    return nil
+  end
+  local condition = (mon --[[@as table<string, unknown>]]).condition --[[@as table<string, unknown>?]]
+  if type(condition) ~= "table" then
+    return nil
+  end
+  local effects = (condition --[[@as table<string, unknown>]]).effects --[[@as table<integer, unknown>?]]
+  if type(effects) ~= "table" then
+    return nil
+  end
+  local current = (effects --[[@as table<integer, unknown>]])[1] --[[@as table<string, unknown>?]]
+  if type(current) ~= "table" or type(current.key) ~= "string" then
+    return nil
+  end
+  return current.key --[[@as string]]
+end
+
+---@param combatantId integer combatant identity owning the power-point store
+---@param moveKey string move identity losing power points
+---@param amount integer power points to remove before the floor
+---@return integer power points actually removed
+function BattleContext:cutPp(combatantId, moveKey, amount)
+  assert(type(combatantId) == "number", "power-point cuts name their combatant")
+  assert(type(moveKey) == "string" and moveKey ~= "", "power-point cuts name their move")
+  assert(type(amount) == "number" and amount % 1 == 0 and amount >= 0, "power-point cuts carry a count")
+  local combatant = BattleState.combatant(self._state, combatantId)
+  local mon = combatant.mon --[[@as table<string, unknown>]]
+  assert(type(mon) == "table", "power-point cuts read the battle mon")
+  local moves = (mon --[[@as table<string, unknown>]]).moves --[[@as table<integer, unknown>]]
+  assert(type(moves) == "table", "power-point cuts read the move store")
+  for _, entry in ipairs(moves) do
+    local record = entry --[[@as table<string, unknown>]]
+    if type(record) == "table" and record.move == moveKey then
+      local left = record.pp --[[@as integer]]
+      assert(type(left) == "number" and left % 1 == 0 and left >= 0, "power-point stores stay integral")
+      local cut = amount --[[@as integer]]
+      if cut > left then
+        cut = left
+      end
+      record.pp = left - cut
+      return cut
+    end
+  end
+  return 0
 end
 
 ---@param combatantId integer

@@ -733,99 +733,6 @@ end
 
 ---@param combatant table<string, unknown> live combatant under fact sampling
 ---@param speciesFacts table<string, SpeciesFormFacts> static species facts by species and form
----@return table<string, integer> live level and stage-effective battle stats for the entry
-local function projectCombatant(combatant, speciesFacts)
-  local mon = combatant.mon
-  if type(mon) ~= "table" then
-    error(BattleErrors.missingBehavior("damage reads its real combat facts", { fact = "mon" }))
-  end
-  local facts = staticFacts(mon, speciesFacts)
-  local record = mon --[[@as table<string, unknown>]]
-  local experience = record.experience
-  if type(experience) ~= "number" or experience % 1 ~= 0 or experience < 0 then
-    error(BattleErrors.missingBehavior("damage reads its real combat facts", { fact = "experience" }))
-  end
-  local personality = record.personality
-  if type(personality) ~= "number" or personality % 1 ~= 0 or personality < 0 then
-    error(BattleErrors.missingBehavior("damage reads its real combat facts", { fact = "personality" }))
-  end
-  for _, field in ipairs({ "ivs", "evs" }) do
-    if type(record[field]) ~= "table" then
-      error(BattleErrors.missingBehavior("damage reads its real combat facts", { fact = field }))
-    end
-  end
-  local level = Experience.level(facts.growthCurve --[[@as integer[] ]], experience --[[@as integer]])
-  local nature = Personality.nature(personality --[[@as integer]])
-  local stats = Stats.calculate(
-    facts.baseStats --[[@as table<string, integer>]],
-    record.ivs --[[@as table<string, integer>]],
-    record.evs --[[@as table<string, integer>]],
-    level,
-    nature
-  )
-  stats.level = level
-  -- Battle maximum health travels with the projection so recovery
-  -- handlers heal fractions of the true ceiling instead of guessing;
-  -- it sits above the entry value whenever the entry arrived wounded.
-  local ceiling = combatant.maxHp
-  if type(ceiling) ~= "number" then
-    ceiling = combatant.entryHp
-  end
-  stats.maxHp = ceiling --[[@as integer]]
-  local stages = combatStages(combatant)
-  for _, key in ipairs(STAGED_STATS) do
-    stats[key] = StatStages.effective(stats[key] --[[@as integer]], stages[key] --[[@as integer]], key)
-  end
-  -- Persistent conditions reshape effective Speed at this checkpoint:
-  -- paralysis quarters unless the holder's passive answers instead.
-  stats.speed = statusAdjustedSpeed(stats.speed --[[@as integer]], combatant.mon)
-  return stats
-end
-
--- Backfills each combatant's battle maximum health from the same
--- effective projection strikes sample. Facts the records cannot back
--- stay absent: sessions that cannot project keep the missing maximum
--- and fail explicitly where bag or capture law reads it.
----@param live table<string, unknown> live battle state under maximum-health backfill
----@param speciesFacts table<string, SpeciesFormFacts> static species facts carried by the session
-local function ensureEntryHealth(live, speciesFacts)
-  for _, combatantId in
-    ipairs(live.combatantOrder --[[@as integer[] ]])
-  do
-    local combatant = BattleState.combatant(live, combatantId)
-    if combatant.maxHp == nil and type(speciesFacts) == "table" then
-      local ok, stats = pcall(projectCombatant, combatant, speciesFacts)
-      if ok and type(stats) == "table" then
-        combatant.maxHp = stats.hp
-      end
-    end
-  end
-end
-
----@param state table<string, unknown> live battle state under speed sampling
----@param combatant table<string, unknown> running combatant under speed sampling
----@param speciesFacts table<string, SpeciesFormFacts> static species facts carried by the session
----@return integer runner effective speed
----@return integer opposing entry effective speed
-local function stagedEscapeSpeeds(state, combatant, speciesFacts)
-  local runner = projectCombatant(combatant, speciesFacts).speed
-  local runnerOwner = BattleState.participant(state, combatant.participant --[[@as integer]])
-  for _, combatantId in
-    ipairs(state.combatantOrder --[[@as integer[] ]])
-  do
-    local other = BattleState.combatant(state, combatantId)
-    if other.active ~= nil then
-      local owner = BattleState.participant(state, other.participant --[[@as integer]])
-      if owner.side ~= runnerOwner.side then
-        return runner, projectCombatant(other, speciesFacts).speed
-      end
-    end
-  end
-  error(BattleErrors.invalidState("flight reads its opposing entry", {}))
-end
-
----@param combatant table<string, unknown> live combatant under fact sampling
----@param speciesFacts table<string, SpeciesFormFacts> static species facts by species and form
 ---@return string[] detached semantic types for the entry
 local function combatantTypes(combatant, speciesFacts)
   local mon = combatant.mon
@@ -862,6 +769,21 @@ local function movePriority(moveFacts, moveName)
     error(BattleErrors.missingBehavior("ordering reads its compiled move priority", { key = moveName }))
   end
   return priority --[[@as integer]]
+end
+
+---@param moveFacts table<string, table<string, unknown>> immutable move facts carried by the session
+---@param moveName string pending move identity under gating
+---@return integer compiled move power for the gate, zero for status moves
+local function movePower(moveFacts, moveName)
+  local record = moveFacts[moveName]
+  if type(record) ~= "table" then
+    error(BattleErrors.missingBehavior("gating reads its compiled move power", { key = moveName }))
+  end
+  local power = (record --[[@as table<string, unknown>]]).power
+  if type(power) ~= "number" or power % 1 ~= 0 or power < 0 then
+    error(BattleErrors.missingBehavior("gating reads its compiled move power", { key = moveName }))
+  end
+  return power --[[@as integer]]
 end
 
 ---@param attacker table<string, integer> live attacker level and battle stats
@@ -1018,6 +940,99 @@ local function liveEffectBag(state)
   return bag --[[@as table<string, unknown>]]
 end
 
+---@param combatant table<string, unknown> live combatant under fact sampling
+---@param speciesFacts table<string, SpeciesFormFacts> static species facts by species and form
+---@return table<string, integer> live level and stage-effective battle stats for the entry
+local function projectCombatant(combatant, speciesFacts)
+  local mon = combatant.mon
+  if type(mon) ~= "table" then
+    error(BattleErrors.missingBehavior("damage reads its real combat facts", { fact = "mon" }))
+  end
+  local facts = staticFacts(mon, speciesFacts)
+  local record = mon --[[@as table<string, unknown>]]
+  local experience = record.experience
+  if type(experience) ~= "number" or experience % 1 ~= 0 or experience < 0 then
+    error(BattleErrors.missingBehavior("damage reads its real combat facts", { fact = "experience" }))
+  end
+  local personality = record.personality
+  if type(personality) ~= "number" or personality % 1 ~= 0 or personality < 0 then
+    error(BattleErrors.missingBehavior("damage reads its real combat facts", { fact = "personality" }))
+  end
+  for _, field in ipairs({ "ivs", "evs" }) do
+    if type(record[field]) ~= "table" then
+      error(BattleErrors.missingBehavior("damage reads its real combat facts", { fact = field }))
+    end
+  end
+  local level = Experience.level(facts.growthCurve --[[@as integer[] ]], experience --[[@as integer]])
+  local nature = Personality.nature(personality --[[@as integer]])
+  local stats = Stats.calculate(
+    facts.baseStats --[[@as table<string, integer>]],
+    record.ivs --[[@as table<string, integer>]],
+    record.evs --[[@as table<string, integer>]],
+    level,
+    nature
+  )
+  stats.level = level
+  -- Battle maximum health travels with the projection so recovery
+  -- handlers heal fractions of the true ceiling instead of guessing;
+  -- it sits above the entry value whenever the entry arrived wounded.
+  local ceiling = combatant.maxHp
+  if type(ceiling) ~= "number" then
+    ceiling = combatant.entryHp
+  end
+  stats.maxHp = ceiling --[[@as integer]]
+  local stages = combatStages(combatant)
+  for _, key in ipairs(STAGED_STATS) do
+    stats[key] = StatStages.effective(stats[key] --[[@as integer]], stages[key] --[[@as integer]], key)
+  end
+  -- Persistent conditions reshape effective Speed at this checkpoint:
+  -- paralysis quarters unless the holder's passive answers instead.
+  stats.speed = statusAdjustedSpeed(stats.speed --[[@as integer]], combatant.mon)
+  return stats
+end
+
+-- Backfills each combatant's battle maximum health from the same
+-- effective projection strikes sample. Facts the records cannot back
+-- stay absent: sessions that cannot project keep the missing maximum
+-- and fail explicitly where bag or capture law reads it.
+---@param live table<string, unknown> live battle state under maximum-health backfill
+---@param speciesFacts table<string, SpeciesFormFacts> static species facts carried by the session
+local function ensureEntryHealth(live, speciesFacts)
+  for _, combatantId in
+    ipairs(live.combatantOrder --[[@as integer[] ]])
+  do
+    local combatant = BattleState.combatant(live, combatantId)
+    if combatant.maxHp == nil and type(speciesFacts) == "table" then
+      local ok, stats = pcall(projectCombatant, combatant, speciesFacts)
+      if ok and type(stats) == "table" then
+        combatant.maxHp = stats.hp
+      end
+    end
+  end
+end
+
+---@param state table<string, unknown> live battle state under speed sampling
+---@param combatant table<string, unknown> running combatant under speed sampling
+---@param speciesFacts table<string, SpeciesFormFacts> static species facts carried by the session
+---@return integer runner effective speed
+---@return integer opposing entry effective speed
+local function stagedEscapeSpeeds(state, combatant, speciesFacts)
+  local runner = projectCombatant(combatant, speciesFacts).speed
+  local runnerOwner = BattleState.participant(state, combatant.participant --[[@as integer]])
+  for _, combatantId in
+    ipairs(state.combatantOrder --[[@as integer[] ]])
+  do
+    local other = BattleState.combatant(state, combatantId)
+    if other.active ~= nil then
+      local owner = BattleState.participant(state, other.participant --[[@as integer]])
+      if owner.side ~= runnerOwner.side then
+        return runner, projectCombatant(other, speciesFacts).speed
+      end
+    end
+  end
+  error(BattleErrors.invalidState("flight reads its opposing entry", {}))
+end
+
 ---@class TimingSample
 ---@field health table<integer, integer> battle-local health per active combatant
 ---@field speeds table<integer, integer> sampled effective Speed per active combatant
@@ -1113,6 +1128,188 @@ local function sweepExpiredEffects(state)
       bag:remove(record.id --[[@as integer]])
     end
   end
+end
+
+-- Per-action move-frame facts threaded from live battle state so the
+-- shared continuation resolves called moves, friendship strikes, and
+-- history and gender law from the same facts production battles carry:
+-- usable and party move keys, the copied incoming strike, the recent
+-- move record, battle genders, the sleeping flag, and friendship.
+-- Histories record requested moves (the slot spent power points), and
+-- gender facts stay absent when the static facts carry no ratio.
+---@param mon table<string, unknown> battle mon record under the move list
+---@return string[] move keys in store order
+local function moveKeysOf(mon)
+  local moves = mon.moves
+  if type(moves) ~= "table" then
+    return {}
+  end
+  local keys = {} ---@type string[]
+  for _, entry in
+    ipairs(moves --[[@as table<integer, unknown>]])
+  do
+    local record = entry --[[@as table<string, unknown>]]
+    if type(record) == "table" and type(record.move) == "string" and record.move ~= "" then
+      keys[#keys + 1] = record.move --[[@as string]]
+    end
+  end
+  return keys
+end
+
+---@param mon table<string, unknown> battle mon record under the usable list
+---@return string[] move keys with remaining power points
+local function usableKeysOf(mon)
+  local moves = mon.moves
+  if type(moves) ~= "table" then
+    return {}
+  end
+  local keys = {} ---@type string[]
+  for _, entry in
+    ipairs(moves --[[@as table<integer, unknown>]])
+  do
+    local record = entry --[[@as table<string, unknown>]]
+    if type(record) == "table" and type(record.move) == "string" and type(record.pp) == "number" and record.pp > 0 then
+      keys[#keys + 1] = record.move --[[@as string]]
+    end
+  end
+  return keys
+end
+
+---@param state table<string, unknown> live battle state under the party read
+---@param combatant table<string, unknown> acting combatant under the party read
+---@return string[] benched roster-mate move keys for assist draws
+local function benchKeysOf(state, combatant)
+  local participant = BattleState.participant(state, combatant.participant --[[@as integer]])
+  local keys = {} ---@type string[]
+  for _, combatantId in
+    ipairs(participant.roster --[[@as table<integer, integer>]])
+  do
+    if combatantId ~= combatant.id then
+      local mate = BattleState.combatant(state, combatantId --[[@as integer]])
+      local mon = mate.mon
+      if type(mon) == "table" then
+        for _, key in
+          ipairs(moveKeysOf(mon --[[@as table<string, unknown>]]))
+        do
+          keys[#keys + 1] = key
+        end
+      end
+    end
+  end
+  return keys
+end
+
+---@param mon table<string, unknown> battle mon record under the gender read
+---@param speciesFacts table<string, SpeciesFormFacts> static species facts by species and form
+---@return string? battle gender, or nil without a ratio
+local function genderOf(mon, speciesFacts)
+  local ok, facts = pcall(staticFacts, mon, speciesFacts)
+  if not ok or type(facts) ~= "table" then
+    return nil
+  end
+  local ratio = (facts --[[@as table<string, unknown>]]).genderRatio
+  if type(ratio) ~= "number" or type(mon.personality) ~= "number" then
+    return nil
+  end
+  return Personality.gender(ratio --[[@as integer]], mon.personality --[[@as integer]])
+end
+
+---@param mon table<string, unknown> battle mon record under the sleep read
+---@return boolean true when the canonical mon sleeps
+local function asleepOf(mon)
+  local condition = mon.condition
+  if type(condition) ~= "table" then
+    return false
+  end
+  local effects = (condition --[[@as table<string, unknown>]]).effects
+  if type(effects) ~= "table" then
+    return false
+  end
+  local current = (effects --[[@as table<integer, unknown>]])[1]
+  return type(current) == "table" and (current --[[@as table<string, unknown>]]).key == "sleep"
+end
+
+---@param state table<string, unknown> live battle state under the effect read
+---@param key string field definition identity under the query
+---@return boolean true when a live field instance names the key
+local function fieldActive(state, key)
+  local bag = liveEffectBag(state)
+  for _, record in ipairs(bag:capture()) do
+    local entry = record --[[@as table<string, unknown>]]
+    local scope = entry.scope --[[@as table<string, unknown>]]
+    if entry.key == key and type(scope) == "table" and scope.kind == "field" then
+      return true
+    end
+  end
+  return false
+end
+
+---@param state table<string, unknown> live battle state under the effect read
+---@param side integer side identity under the query
+---@param key string side definition identity under the query
+---@return boolean true when a live side instance names the key
+local function sideActive(state, side, key)
+  local bag = liveEffectBag(state)
+  for _, record in ipairs(bag:capture()) do
+    local entry = record --[[@as table<string, unknown>]]
+    local scope = entry.scope --[[@as table<string, unknown>]]
+    if entry.key == key and type(scope) == "table" and scope.kind == "side" and scope.side == side then
+      return true
+    end
+  end
+  return false
+end
+
+-- Hazard entries strike only grounded arrivals: flying types and
+-- magnet-rise levitation avoid spikes-family layers while gravity holds
+-- every arrival down. The check mirrors the strike immunity inputs
+-- without borrowing strike semantics: hazards price the arrival, not a
+-- directed strike.
+---@param state table<string, unknown> live battle state under the entry read
+---@param entrant integer arriving combatant identity
+---@param types string[] entrant semantic types under the arrival
+---@return boolean true when layers price the arrival
+local function entrantGrounded(state, entrant, types)
+  assert(type(types) == "table", "hazard entries read their entrant types")
+  local airborne = false
+  for _, key in ipairs(types) do
+    if key == "flying" then
+      airborne = true
+    end
+  end
+  if airborne ~= true then
+    local bag = liveEffectBag(state)
+    for _, record in ipairs(bag:capture()) do
+      local entry = record --[[@as table<string, unknown>]]
+      local scope = entry.scope --[[@as table<string, unknown>]]
+      if entry.key == "magnetrise" and type(scope) == "table" and scope.combatant == entrant then
+        airborne = true
+      end
+    end
+  end
+  if airborne ~= true then
+    return true
+  end
+  return fieldActive(state, "gravity")
+end
+
+---@param state table<string, unknown> live battle state under the trap read
+---@param combatantId integer combatant identity under the trap read
+---@return table<string, unknown>? held trap query when a volatile binds the entry
+local function volatileTrapOf(state, combatantId)
+  local bag = liveEffectBag(state)
+  for _, record in ipairs(bag:capture()) do
+    local entry = record --[[@as table<string, unknown>]]
+    local scope = entry.scope --[[@as table<string, unknown>]]
+    if
+      (entry.key == "bind" or entry.key == "trapped")
+      and type(scope) == "table"
+      and scope.combatant == combatantId
+    then
+      return { held = true }
+    end
+  end
+  return nil
 end
 
 -- Ticks persistent poison, burn, and toxic through the same health map
@@ -1872,6 +2069,14 @@ local function bindTurnHandlers(executor, moveFacts, speciesFacts, chart, moneyS
         local moveName = resolveMove(combatant.mon, payload.moveSlot)
         priority = movePriority(moveFacts, moveName)
       end
+      local speed = projectCombatant(combatant, speciesFacts).speed
+      -- Tailwind doubles its side sampled speed at order time.
+      local participant = BattleState.participant(state, combatant.participant --[[@as integer]])
+      if
+        sideActive(state, participant.side --[[@as integer]], "tailwind")
+      then
+        speed = speed * 2
+      end
       candidates[#candidates + 1] = {
         id = ordinal,
         actor = { combatant = actor.combatant, activation = actor.activation },
@@ -1879,11 +2084,13 @@ local function bindTurnHandlers(executor, moveFacts, speciesFacts, chart, moneyS
         payload = copyValue(choice.payload),
         selectedOrdinal = ordinal,
         priority = priority,
-        speed = projectCombatant(combatant, speciesFacts).speed,
+        speed = speed,
       }
       entry.ordinal = ordinal
     end
-    local ordered = TurnOrder.buildActions(candidates, { trickRoom = false }, stream)
+    -- Trick Room reverses only the speed dimension while its field
+    -- instance stands.
+    local ordered = TurnOrder.buildActions(candidates, { trickRoom = fieldActive(state, "trickroom") }, stream)
     local queue = state.queue --[[@as table<integer, table<string, unknown>>]]
     for _, action in ipairs(ordered) do
       local staged = action --[[@as table<string, unknown>]]
@@ -2009,20 +2216,47 @@ local function bindTurnHandlers(executor, moveFacts, speciesFacts, chart, moneyS
   -- path, expired countdowns sweep, and faint settlement follows before
   -- later schedule work assumes the actor remains alive. Before-action
   -- handlers deny the action through the pass-context flag, and only the
-  -- actor's own instances participate. Entry hazards strike only the
-  -- entrant through their handler-side scoping. Returns the blocking
+  -- actor's own instances participate; the pending strike identity and
+  -- power gate the selection constraints, and drowsy arrivals sleep
+  -- through the status owner. Entry hazards strike only the entrant
+  -- through their handler-side scoping, price grounding through the
+  -- entry facts, write toxic arrivals through the status owner, and
+  -- absorb through the hazard clearer. Returns the blocking
   -- effect key, if any.
   ---@param state table<string, unknown> live battle state under the timing
   ---@param timing string finite timing under invocation
   ---@param target integer combatant entering or acting under the timing
+  ---@param pending table<string, unknown>? pending strike identity and power for before-action gates
   ---@return string? blocking effect key when a before-action handler denied the action
-  local function invokeTiming(state, timing, target)
+  local function invokeTiming(state, timing, target, pending)
     local bag = liveEffectBag(state)
     local sample = sampleTimingState(state, speciesFacts)
+    local view = BattleContext.wrap(state)
     ---@type table<string, unknown>
     local context = { speeds = sample.speeds, health = sample.health, stream = state.rng }
+    -- Major-condition writes go through the status owner so exclusivity,
+    -- activity, and health guards hold exactly as on the move path; the
+    -- resulting status event joins the pass events below.
+    local function writeStatus(combatant, key, conditionState)
+      return view:applyStatus(combatant, key, conditionState, { kind = timing })
+    end
     local dispatchOwner ---@type table<string, unknown>
     if timing == "entry" then
+      context.applyStatus = writeStatus
+      -- Poison arrivals absorb their own side layers: the clearer drops
+      -- the side instance mid-pass so later entries face clean ground.
+      local function clearHazard()
+        local side = sample.sides[target]
+        for _, record in ipairs(bag:capture()) do
+          local entry = record --[[@as table<string, unknown>]]
+          local scope = entry.scope --[[@as table<string, unknown>]]
+          if entry.key == "toxicspikes" and type(scope) == "table" and scope.kind == "side" and scope.side == side then
+            return bag:remove(record.id --[[@as integer]])
+          end
+        end
+        return false
+      end
+      context.clearHazard = clearHazard
       dispatchOwner = EffectDispatch.new(
         bag,
         NativeEffectHandlers.handlersFor({
@@ -2031,10 +2265,15 @@ local function bindTurnHandlers(executor, moveFacts, speciesFacts, chart, moneyS
           occupants = sample.occupants,
           sides = sample.sides,
           entrant = target,
+          grounded = entrantGrounded(state, target, sample.typeMap[target]),
           chart = chart,
         }, timing)
       )
     elseif timing == "beforeAction" then
+      assert(type(pending) == "table", "before-action passes carry their pending strike")
+      context.move = (pending --[[@as table<string, unknown>]]).move
+      context.power = (pending --[[@as table<string, unknown>]]).power
+      context.applyStatus = writeStatus
       local entry = BattleState.combatant(state, target).active --[[@as table<string, unknown>?]]
       local activation = nil
       if entry ~= nil then
@@ -2069,7 +2308,6 @@ local function bindTurnHandlers(executor, moveFacts, speciesFacts, chart, moneyS
       }))
     end
     local outcome = dispatchOwner:invoke(timing --[[@as string]], context)
-    local view = BattleContext.wrap(state)
     for _, event in
       ipairs(outcome.events --[[@as table<integer, table<string, unknown>>]])
     do
@@ -2099,9 +2337,15 @@ local function bindTurnHandlers(executor, moveFacts, speciesFacts, chart, moneyS
     -- Finite volatile effects gate the strike before persistent status:
     -- a denied action never starts, spends nothing, and draws nothing
     -- beyond the timing's own labeled rolls. Switching and item use
-    -- bypass the gate, so only the attack branch funnels here.
+    -- bypass the gate, so only the attack branch funnels here. The
+    -- pending strike identity and power are resolved first so the
+    -- selection constraints gate the same strike the path would execute.
+    local payload = action.payload --[[@as table<string, unknown>]]
+    local moveName, ownerSlot = resolveMove(combatant.mon, payload.moveSlot)
+    local pendingPower = movePower(moveFacts, moveName)
     if
-      invokeTiming(state, "beforeAction", actor.combatant --[[@as integer]]) ~= nil
+      invokeTiming(state, "beforeAction", actor.combatant --[[@as integer]], { move = moveName, power = pendingPower })
+      ~= nil
     then
       return
     end
@@ -2123,8 +2367,6 @@ local function bindTurnHandlers(executor, moveFacts, speciesFacts, chart, moneyS
     if not gate.acts then
       return
     end
-    local payload = action.payload --[[@as table<string, unknown>]]
-    local moveName, ownerSlot = resolveMove(combatant.mon, payload.moveSlot)
     local defenderId =
       resolveTarget(state, actor.combatant --[[@as integer]], payload.target --[[@as table<string, unknown>]])
     if defenderId == nil then
@@ -2146,6 +2388,23 @@ local function bindTurnHandlers(executor, moveFacts, speciesFacts, chart, moneyS
     if type(moves) ~= "table" then
       moves = {}
     end
+    local userMon = combatant.mon --[[@as table<string, unknown>]]
+    local foeMon = defender.mon --[[@as table<string, unknown>]]
+    local recentMoves = state.lastMoves
+    if type(recentMoves) ~= "table" then
+      recentMoves = {}
+    end
+    local genders = {}
+    local userGender = genderOf(userMon, speciesFacts)
+    if userGender ~= nil then
+      genders[
+        actor.combatant --[[@as integer]]
+      ] = userGender
+    end
+    local foeGender = genderOf(foeMon, speciesFacts)
+    if foeGender ~= nil then
+      genders[defenderId] = foeGender
+    end
     local inputs = {
       actionId = action.id,
       actor = { combatant = actor.combatant, activation = actor.activation },
@@ -2162,14 +2421,42 @@ local function bindTurnHandlers(executor, moveFacts, speciesFacts, chart, moneyS
       defenderTypes = defenderTypes,
       typeChart = chart,
       stream = stream,
+      friendship = userMon.friendship,
+      usable = usableKeysOf(userMon),
+      party = benchKeysOf(state, combatant),
+      userMoves = moveKeysOf(userMon),
+      copiedMove = recentMoves[defenderId],
+      recentMoves = copyValue(recentMoves),
+      genders = genders,
+      userAsleep = asleepOf(userMon),
     }
     local node = MoveExecution.start(inputs)
+    if type(node) == "table" and node.locals ~= nil then
+      local started = node.locals --[[@as table<string, unknown>]]
+      if started.failed == nil and type(node.requestedMove) == "string" then
+        if type(state.lastMoves) ~= "table" then
+          state.lastMoves = {}
+        end
+        (state.lastMoves --[[@as table<integer, string>]])[
+          actor.combatant --[[@as integer]]
+        ] =
+          node.requestedMove --[[@as string]]
+      end
+    end
     local emittedThrough = #state.outbox --[[@as table<integer, table<string, unknown>>]]
     while true do
       node = MoveExecution.step(context, node)
       if type(node) == "table" and node.kind == "complete" and node.frame == nil then
         break
       end
+    end
+    -- Scattered pay day coins total into the battle payout through the
+    -- move outcome; the committer scales and caps the scatter.
+    if type(node) == "table" and type(node.payday) == "number" then
+      state.paydayScattered = (
+        state.paydayScattered --[[@as integer?]]
+        or 0
+      ) + node.payday --[[@as integer]]
     end
     -- Tag this action's move events with its commit ordinal so shared
     -- presentation keeps one stable per-action order.
@@ -2197,6 +2484,10 @@ local function bindTurnHandlers(executor, moveFacts, speciesFacts, chart, moneyS
     local reserves = eligibleReserves(state, combatant.participant --[[@as integer]], {})
     local reserved = siblingReserves(state, payload.replacement --[[@as integer]])
     local fainted = faintedIds(state)
+    local held = combatant.trap
+    if held == nil then
+      held = volatileTrapOf(state, actor.combatant --[[@as integer]])
+    end
     local verdict = Switching.eligible({
       position = slot,
       incoming = payload.replacement,
@@ -2204,7 +2495,7 @@ local function bindTurnHandlers(executor, moveFacts, speciesFacts, chart, moneyS
       reserves = reserves,
       reserved = reserved,
       fainted = fainted,
-      trap = combatant.trap,
+      trap = held,
     })
     if not verdict.ok then
       error(BattleErrors.invalidState("committed exchanges stay eligible", { reason = verdict.reason }))
@@ -2217,7 +2508,7 @@ local function bindTurnHandlers(executor, moveFacts, speciesFacts, chart, moneyS
       reserves = reserves,
       reserved = reserved,
       fainted = fainted,
-      trap = combatant.trap,
+      trap = held,
     })
     local stepped = Switching.step({}, frame)
     assert(stepped.done == true, "voluntary exchanges settle without interception")
@@ -2362,9 +2653,14 @@ local function bindTurnHandlers(executor, moveFacts, speciesFacts, chart, moneyS
       error(BattleErrors.invalidState("flight carries its staged speeds", {}))
     end
     local combatant = BattleState.combatant(state, actor.combatant --[[@as integer]])
+    -- Binding and trapping volatiles hold like scenario-seeded traps.
+    local trap = combatant.trap
+    if trap == nil then
+      trap = volatileTrapOf(state, actor.combatant --[[@as integer]])
+    end
     local result = Escape.attempt({
       battleKind = battleKind,
-      trapped = combatant.trap,
+      trapped = trap,
       speeds = { player = staged.player, enemy = staged.enemy },
       attempts = state.escapeAttempts,
       stream = state.rng,
@@ -2459,6 +2755,19 @@ local function bindTurnHandlers(executor, moveFacts, speciesFacts, chart, moneyS
     local ceilings = sample.ceilings
     local typeMap = sample.typeMap
     local occupants = sample.occupants
+    -- Nightmare watches sleep through these per-pass facts because the
+    -- residual context carries no mon records.
+    local slept = {} ---@type table<integer, boolean>
+    for _, combatantId in
+      ipairs(state.combatantOrder --[[@as integer[] ]])
+    do
+      local combatant = BattleState.combatant(state, combatantId)
+      if
+        combatant.active ~= nil and asleepOf(combatant.mon --[[@as table<string, unknown>]])
+      then
+        slept[combatantId] = true
+      end
+    end
     local stream = state.rng --[[@as table<string, unknown>]]
     assert(type(stream.nextU16) == "function", "native residuals draw from the battle stream")
     local context = BattleContext.wrap(state)
@@ -2471,7 +2780,10 @@ local function bindTurnHandlers(executor, moveFacts, speciesFacts, chart, moneyS
     -- the session adapts method calls to plain view functions.
     local dispatchOwner = EffectDispatch.new(
       bag,
-      NativeEffectHandlers.handlersFor({ maxHp = ceilings, types = typeMap, occupants = occupants }, "residual")
+      NativeEffectHandlers.handlersFor(
+        { maxHp = ceilings, types = typeMap, occupants = occupants, slept = slept },
+        "residual"
+      )
     )
     local function collectResiduals(_, timing, passContext)
       return dispatchOwner:collect(timing --[[@as string]], passContext --[[@as table<string, unknown>]])
@@ -2905,8 +3217,9 @@ end
 ---@param speciesFacts table<string, SpeciesFormFacts> static species facts carried by the session
 ---@param moneyUpItems string[] held-item keys carrying the money-up effect, in stable order
 ---@param battleKind string wild-or-trainer encounter policy selecting flight and capture law
+---@param seedParticipation boolean true for fresh sessions whose opening field seeds reward records; restored sessions keep their snapshot records untouched
 ---@return HgssSessionExecutor
-local function wrap(live, content, admitted, moveFacts, speciesFacts, moneyUpItems, battleKind)
+local function wrap(live, content, admitted, moveFacts, speciesFacts, moneyUpItems, battleKind, seedParticipation)
   live.queue = live.queue or {}
   live.schedule = live.schedule or freshSchedule()
   live.faints = live.faints or {}
@@ -2981,7 +3294,12 @@ local function wrap(live, content, admitted, moveFacts, speciesFacts, moneyUpIte
     local occupant = BattleState.position(live, positionId).occupant
     if occupant ~= nil then
       noteEntry(live, moneySet, occupant --[[@as integer]])
-      noteBattleEntry(live, occupant --[[@as integer]])
+      -- Restored sessions keep their snapshot participation records:
+      -- reseeding from the mid-battle field would drop credit earned by
+      -- entries that already fainted or left, which leaving never erases.
+      if seedParticipation then
+        noteBattleEntry(live, occupant --[[@as integer]])
+      end
     end
   end
   return executor
@@ -3014,7 +3332,8 @@ function HgssSessionExecutor.new(scenarioRecord, content)
     moveFacts,
     speciesFacts,
     moneyUpItems,
-    battleKindFor(validated.format --[[@as string]], validated.kind)
+    battleKindFor(validated.format --[[@as string]], validated.kind),
+    true
   )
   executor:_bindLifecycle()
   -- Opening occupants receive their entry pass exactly once through the
@@ -3154,7 +3473,8 @@ function HgssSessionExecutor.restore(snapshotData, content)
     live.moveFacts --[[@as table<string, table<string, unknown>>]],
     live.speciesFacts --[[@as table<string, SpeciesFormFacts>]],
     moneyUpItems,
-    battleKindFor(live.format --[[@as string]], live.kind)
+    battleKindFor(live.format --[[@as string]], live.kind),
+    false
   )
   executor:_bindLifecycle()
   return executor
@@ -3643,6 +3963,10 @@ local function checkChoiceBinding(state, choice, admitted, battleKind)
     -- Voluntary exchanges bind through the exchange owner: trapping and
     -- reserves that cannot fight refuse here, before anything moves.
     local reserves = eligibleReserves(state, combatant.participant --[[@as integer]], {})
+    local heldChoice = combatant.trap
+    if heldChoice == nil then
+      heldChoice = volatileTrapOf(state, combatant.id --[[@as integer]])
+    end
     local verdict = Switching.eligible({
       position = active.position,
       incoming = payload.replacement,
@@ -3650,7 +3974,7 @@ local function checkChoiceBinding(state, choice, admitted, battleKind)
       reserves = reserves,
       reserved = siblingReserves(state, payload.replacement --[[@as integer]]),
       fainted = faintedIds(state),
-      trap = combatant.trap,
+      trap = heldChoice,
     })
     if not verdict.ok then
       return BattleErrors.input("the exchange is not eligible", { reason = verdict.reason })
@@ -3972,6 +4296,11 @@ function HgssSessionExecutor:capture()
     error(BattleErrors.invalidState("prize multipliers stay 1 or 2", {}))
   end
   snapshot.prizeMoneyValue = prizeMoneyValue
+  -- Scattered pay day coins ride the snapshot like the prize
+  -- multiplier so interruption never loses the running total.
+  local scattered = state.paydayScattered or 0
+  assert(type(scattered) == "number" and scattered % 1 == 0 and scattered >= 0, "scattered coins stay counted")
+  snapshot.paydayScattered = scattered
   BattleSnapshot.validate(snapshot)
   return snapshot
 end

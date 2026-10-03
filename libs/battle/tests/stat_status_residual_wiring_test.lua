@@ -978,6 +978,65 @@ function T.switching_into_stealth_rock_pays_the_entry_fraction()
   restored:dispose()
 end
 
+-- A side-scoped spikes layer strikes the replacement on entry through
+-- the entry dispatch: one layer costs one eighth of battle maximum
+-- health before the entrant can act, and the layers persist for later
+-- entries.
+function T.seeded_spikes_price_the_switch_in()
+  local contracts = SessionFixture.sessionContracts()
+  local content = nativeContent()
+  local alpha = movesetCombatant(1, 11, { moveSlot("SPLASH", 40) })
+  local beta = movesetCombatant(2, 31, { moveSlot("SPLASH", 40) })
+  local reserve = movesetCombatant(4, 41, { moveSlot("SPLASH", 40) })
+  local session = contracts.Battle.newSession(duelScenario({ alpha, beta }, {}, { reserve }), content)
+  local restored = restoreWithEffects(session, content, {
+    effectRecord(
+      "spikes",
+      821,
+      { kind = "side", side = 2 },
+      { kind = "move", combatant = 1 },
+      { version = 1, layers = 1 }
+    ),
+  })
+  local ceiling = combatantOf(restored:capture(), 4).maxHp --[[@as integer]]
+  Assert.isTrue(type(ceiling) == "number" and ceiling > 0, "the reserve carries its battle maximum")
+  local expected = math.floor(ceiling / 8)
+
+  local frame, events = playTurn(restored, function(request)
+    if request.controller == "alpha" then
+      local choices = {}
+      for _, actor in ipairs(request.actors) do
+        choices[#choices + 1] = SessionFixture.attackChoice(actor, 0, SessionFixture.positionTarget(2))
+      end
+      return choices
+    end
+    local choices = {}
+    for _, actor in ipairs(request.actors) do
+      choices[#choices + 1] = SessionFixture.switchChoice(actor, 4)
+    end
+    return choices
+  end)
+  Assert.equal(frame.status, "waiting", "the battle continues after the layered entry")
+  local priced = nil
+  for _, event in ipairs(events) do
+    if event.kind == "hazard" then
+      local payload = event.payload --[[@as table<string, unknown>]]
+      if payload.key == "spikes" then
+        Assert.equal(payload.combatant, 4, "the layers strike the entrant")
+        priced = payload.amount
+      end
+    end
+  end
+  Assert.equal(priced, expected, "the entry pays its exact layer fraction")
+  Assert.equal(
+    combatantOf(restored:capture(), 4).hp,
+    ceiling - expected,
+    "the derived layer damage lands in battle state"
+  )
+  Assert.equal(#recordsWithKey(restored:capture(), "spikes"), 1, "the layers persist for later entries")
+  restored:dispose()
+end
+
 -- A confused attacker snaps out on its last counted turn through the
 -- before-action pass: the expiry fires, the strike still executes, and
 -- the instance leaves with the pass.
@@ -1165,6 +1224,64 @@ function T.only_the_flinched_actor_is_blocked()
     Assert.isTrue(event.kind ~= "move-used", "the denied attacker never starts its splash")
   end
   Assert.isTrue(blocked, "the flinched attacker is still denied")
+  restored:dispose()
+end
+
+-- A taunted attacker refuses status strikes but lands damage through
+-- the before-action pass: the dance is denied with its countdown spent
+-- while the following damaging strike executes untouched.
+function T.taunted_attacker_refuses_status_strikes_but_lands_damage()
+  local contracts = SessionFixture.sessionContracts()
+  local content = nativeContent()
+  local alpha = movesetCombatant(1, 11, { moveSlot("TACKLE", 35) })
+  local beta = movesetCombatant(2, 31, { moveSlot("TACKLE", 35), moveSlot("SWORDS_DANCE", 20) })
+  local session = contracts.Battle.newSession(duelScenario({ alpha, beta }, {}, {}), content)
+  local activation = combatantOf(session:capture(), 2).active.activation --[[@as integer]]
+  local restored = restoreWithEffects(session, content, {
+    effectRecord(
+      "taunt",
+      811,
+      { kind = "active", combatant = 2, activation = activation },
+      { kind = "move", combatant = 1 },
+      { version = 1, turns = 3 }
+    ),
+  })
+
+  local denied, deniedEvents = playTurn(restored, strikeAnswer({
+    alpha = { slot = 0, target = SessionFixture.positionTarget(2) },
+    beta = { slot = 1, target = SessionFixture.positionTarget(1) },
+  }))
+  Assert.equal(denied.status, "waiting", "the denied turn continues the battle")
+  Assert.deepEqual(strikeKeys(deniedEvents), { "TACKLE" }, "only the clean attacker strikes")
+  local refused = false
+  for _, event in ipairs(deniedEvents) do
+    if event.kind == "blocked" then
+      local payload = event.payload --[[@as table<string, unknown>]]
+      Assert.equal(payload.key, "taunt", "the block names its finite effect")
+      Assert.equal(payload.combatant, 2, "the block names only the taunted combatant")
+      refused = true
+    end
+    Assert.isTrue(event.kind ~= "stage", "the refused dance raises nothing")
+  end
+  Assert.isTrue(refused, "the taunted status strike is still denied")
+  local stages = combatantOf(restored:capture(), 2).stages --[[@as table<string, integer>]]
+  Assert.equal(stages.attack, 0, "the refused dance raises no stage in battle state")
+  Assert.equal(
+    recordsWithKey(restored:capture(), "taunt")[1].state.turns,
+    2,
+    "the denied action spends the taunt countdown"
+  )
+
+  local landed, landedEvents = playTurn(restored, strikeAnswer({
+    alpha = { slot = 0, target = SessionFixture.positionTarget(2) },
+    beta = { slot = 0, target = SessionFixture.positionTarget(1) },
+  }))
+  Assert.equal(landed.status, "waiting", "the battle continues past the gated turn")
+  Assert.deepEqual(
+    strikeKeys(landedEvents),
+    { "TACKLE", "TACKLE" },
+    "the damaging strike lands through taunt"
+  )
   restored:dispose()
 end
 

@@ -272,6 +272,7 @@ local STAGE_MOVES = {
   DOUBLE_TEAM = { target = "user", changes = { { "evasion", 1 } } },
   MINIMIZE = { target = "user", changes = { { "evasion", 1 } } },
   SWEET_SCENT = { target = "foe", changes = { { "evasion", -1 } } },
+  GROWTH = { target = "user", changes = { { "specialAttack", 1 } } },
 }
 
 ---@param spec StageSpec stage family under the move
@@ -856,6 +857,910 @@ local function stepHaze(ctx, frame)
   return { kind = "complete", result = "hit" }
 end
 
+-- Side-state gates shared by the volatile-setting family: safeguard
+-- blocks confusion, yawn, and major conditions on the defender side,
+-- while mist blocks foe-targeted stage drops. Abilities stay with the
+-- passive owners, matching the stage and status families. Source
+-- references: the condition subscripts in
+-- files/battledata/script/subscript and BtlCmd_ChangeStatStage in
+-- src/battle/battle_command.c.
+---@param ctx BattleContext mechanics context under execution
+---@param defender integer defender combatant under the gate
+---@return boolean true when safeguard covers the defender side
+local function safeguarded(ctx, defender)
+  return ctx:sideEffect(ctx:entryOf(defender).side, "safeguard") ~= nil
+end
+
+---@param ctx BattleContext mechanics context under execution
+---@param defender integer defender combatant under the gate
+---@return boolean true when mist covers the defender side
+local function misted(ctx, defender)
+  return ctx:sideEffect(ctx:entryOf(defender).side, "mist") ~= nil
+end
+
+-- Foe-targeted accuracy that compiled-zero accuracy skips: self and
+-- field moves never roll.
+---@param ctx BattleContext mechanics context under execution
+---@param frame table<string, unknown> move frame under execution
+---@param defender integer defender combatant under the roll
+---@return boolean true when the condition connects
+local function connects(ctx, frame, defender)
+  local record = frame --[[@as table<string, unknown>]]
+  local locals = record.locals --[[@as table<string, unknown>]]
+  local move = locals.move --[[@as table<string, unknown>?]]
+  local accuracy = type(move) == "table" and move.accuracy or nil
+  if accuracy == 0 then
+    return true
+  end
+  return foeAccuracy(ctx, record, defender)
+end
+
+-- Optional battle facts read without failing: gendered and history
+-- moves refuse gracefully when their facts never arrive, matching the
+-- no-recorded-move failure instead of crashing the session.
+---@param frame table<string, unknown> move frame under execution
+---@return table<integer, string>? battle gender facts by combatant identity
+local function gendersIn(frame)
+  local record = frame --[[@as table<string, unknown>]]
+  local locals = record.locals --[[@as table<string, unknown>]]
+  local genders = locals.genders
+  if type(genders) ~= "table" then
+    return nil
+  end
+  return genders --[[@as table<integer, string>]]
+end
+
+---@param frame table<string, unknown> move frame under execution
+---@return table<integer, string>? recently executed moves by combatant identity
+local function recentMovesIn(frame)
+  local record = frame --[[@as table<string, unknown>]]
+  local locals = record.locals --[[@as table<string, unknown>]]
+  local recent = locals.recentMoves
+  if type(recent) ~= "table" then
+    return nil
+  end
+  return recent --[[@as table<integer, string>]]
+end
+
+-- Confusion application shared by setters and swaggering moves:
+-- already-confused defenders refuse, dolls and safeguard absorb.
+---@param ctx BattleContext mechanics context under execution
+---@param frame table<string, unknown> move frame under execution
+---@param defender integer defender combatant under the volatile
+---@return boolean true when confusion landed
+local function applyConfusion(ctx, frame, defender)
+  if ctx:hasBattleEffect(defender, "confusion") then
+    return false
+  end
+  if ctx:hasBattleEffect(defender, "substitute") then
+    return false
+  end
+  if safeguarded(ctx, defender) then
+    return false
+  end
+  local record = frame --[[@as table<string, unknown>]]
+  local stream = checkStream(record.stream)
+  local turns = 2 + (stream:nextU16("confusion_turns", causeFor(record)) % 4)
+  ctx:addBattleEffect(
+    NativeEffectHandlers.definitionFor("confusion"),
+    activeScope(ctx, defender),
+    moveSource(userOf(record)),
+    { version = 1, turns = turns }
+  )
+  return true
+end
+
+-- Confusion-setting strikes root a two-to-five-turn volatile on a
+-- connecting hit and refuse the already confused.
+local function stepConfuse(ctx, frame)
+  assert(type(ctx) == "table", "conditions step through the battle context")
+  assert(type(frame) == "table", "conditions step from their move frame")
+  local record = frame --[[@as table<string, unknown>]]
+  local defender = targetOf((record.targets --[[@as table<integer, unknown>]])[1])
+  if not connects(ctx, record, defender) then
+    return { kind = "complete", result = "missed" }
+  end
+  if not applyConfusion(ctx, record, defender) then
+    return { kind = "complete", result = "failed" }
+  end
+  emitUsed(ctx, record)
+  return { kind = "complete", result = "hit" }
+end
+
+-- Attract infatuates across genders and refuses same genders, the
+-- genderless, and the already infatuated. Substitute never blocks it.
+-- Source reference: BtlCmd_TryAttract in src/battle/battle_command.c.
+local function stepAttract(ctx, frame)
+  assert(type(ctx) == "table", "conditions step through the battle context")
+  assert(type(frame) == "table", "conditions step from their move frame")
+  local record = frame --[[@as table<string, unknown>]]
+  local defender = targetOf((record.targets --[[@as table<integer, unknown>]])[1])
+  if not connects(ctx, record, defender) then
+    return { kind = "complete", result = "missed" }
+  end
+  local genders = gendersIn(record)
+  local userGender = type(genders) == "table" and genders[userOf(record)] or nil
+  local foeGender = type(genders) == "table" and genders[defender] or nil
+  if
+    userGender == nil
+    or foeGender == nil
+    or userGender == foeGender
+    or userGender == "genderless"
+    or foeGender == "genderless"
+  then
+    return { kind = "complete", result = "failed" }
+  end
+  if ctx:hasBattleEffect(defender, "infatuation") then
+    return { kind = "complete", result = "failed" }
+  end
+  ctx:addBattleEffect(
+    NativeEffectHandlers.definitionFor("infatuation"),
+    activeScope(ctx, defender),
+    moveSource(userOf(record)),
+    { version = 1 }
+  )
+  emitUsed(ctx, record)
+  return { kind = "complete", result = "hit" }
+end
+
+-- Taunt roots a two-to-four-turn volatile and refuses the already
+-- taunted. Source reference: the taunt subscript in
+-- files/battledata/script/subscript/subscript_0132_TauntStart.s.
+local function stepTaunt(ctx, frame)
+  assert(type(ctx) == "table", "conditions step through the battle context")
+  assert(type(frame) == "table", "conditions step from their move frame")
+  local record = frame --[[@as table<string, unknown>]]
+  local defender = targetOf((record.targets --[[@as table<integer, unknown>]])[1])
+  if not connects(ctx, record, defender) then
+    return { kind = "complete", result = "missed" }
+  end
+  if ctx:hasBattleEffect(defender, "taunt") then
+    return { kind = "complete", result = "failed" }
+  end
+  local stream = checkStream(record.stream)
+  local turns = 2 + (stream:nextU16("taunt_turns", causeFor(record)) % 3)
+  ctx:addBattleEffect(
+    NativeEffectHandlers.definitionFor("taunt"),
+    activeScope(ctx, defender),
+    moveSource(userOf(record)),
+    { version = 1, turns = turns }
+  )
+  emitUsed(ctx, record)
+  return { kind = "complete", result = "hit" }
+end
+
+-- Torment marks until the entry leaves and refuses the already
+-- tormented. Source reference: the torment subscript in
+-- files/battledata/script/subscript/subscript_0127_TormentStart.s.
+local function stepTorment(ctx, frame)
+  assert(type(ctx) == "table", "conditions step through the battle context")
+  assert(type(frame) == "table", "conditions step from their move frame")
+  local record = frame --[[@as table<string, unknown>]]
+  local defender = targetOf((record.targets --[[@as table<integer, unknown>]])[1])
+  if not connects(ctx, record, defender) then
+    return { kind = "complete", result = "missed" }
+  end
+  if ctx:hasBattleEffect(defender, "torment") then
+    return { kind = "complete", result = "failed" }
+  end
+  ctx:addBattleEffect(
+    NativeEffectHandlers.definitionFor("torment"),
+    activeScope(ctx, defender),
+    moveSource(userOf(record)),
+    { version = 1 }
+  )
+  emitUsed(ctx, record)
+  return { kind = "complete", result = "hit" }
+end
+
+-- Moves encore can never force, transcribed from IsMoveEncored in
+-- src/battle/overlay_12_0224E4FC.c.
+local ENCORE_BANNED = {
+  TRANSFORM = true,
+  MIMIC = true,
+  SKETCH = true,
+  MIRROR_MOVE = true,
+  ENCORE = true,
+  STRUGGLE = true,
+}
+
+-- Encore forces the recorded last move for three-to-seven turns.
+-- Source reference: BtlCmd_TryEncore in src/battle/battle_command.c.
+local function stepEncore(ctx, frame)
+  assert(type(ctx) == "table", "conditions step through the battle context")
+  assert(type(frame) == "table", "conditions step from their move frame")
+  local record = frame --[[@as table<string, unknown>]]
+  local defender = targetOf((record.targets --[[@as table<integer, unknown>]])[1])
+  if not connects(ctx, record, defender) then
+    return { kind = "complete", result = "missed" }
+  end
+  local recentMoves = recentMovesIn(record)
+  local recent = type(recentMoves) == "table" and recentMoves[defender] or nil
+  if type(recent) ~= "string" or recent == "" or ENCORE_BANNED[recent] == true then
+    return { kind = "complete", result = "failed" }
+  end
+  if ctx:hasBattleEffect(defender, "encore") then
+    return { kind = "complete", result = "failed" }
+  end
+  local stream = checkStream(record.stream)
+  local turns = 3 + (stream:nextU16("encore_turns", causeFor(record)) % 5)
+  ctx:addBattleEffect(
+    NativeEffectHandlers.definitionFor("encore"),
+    activeScope(ctx, defender),
+    moveSource(userOf(record)),
+    { version = 1, turns = turns, move = recent }
+  )
+  emitUsed(ctx, record)
+  return { kind = "complete", result = "hit" }
+end
+
+-- Disable refuses the recorded last move for three-to-six turns.
+-- Source reference: BtlCmd_TryDisable in src/battle/battle_command.c.
+local function stepDisable(ctx, frame)
+  assert(type(ctx) == "table", "conditions step through the battle context")
+  assert(type(frame) == "table", "conditions step from their move frame")
+  local record = frame --[[@as table<string, unknown>]]
+  local defender = targetOf((record.targets --[[@as table<integer, unknown>]])[1])
+  if not connects(ctx, record, defender) then
+    return { kind = "complete", result = "missed" }
+  end
+  local recentMoves = recentMovesIn(record)
+  local recent = type(recentMoves) == "table" and recentMoves[defender] or nil
+  if type(recent) ~= "string" or recent == "" then
+    return { kind = "complete", result = "failed" }
+  end
+  if ctx:hasBattleEffect(defender, "disable") then
+    return { kind = "complete", result = "failed" }
+  end
+  local stream = checkStream(record.stream)
+  local turns = 3 + (stream:nextU16("disable_turns", causeFor(record)) % 4)
+  ctx:addBattleEffect(
+    NativeEffectHandlers.definitionFor("disable"),
+    activeScope(ctx, defender),
+    moveSource(userOf(record)),
+    { version = 1, turns = turns, move = recent }
+  )
+  emitUsed(ctx, record)
+  return { kind = "complete", result = "hit" }
+end
+
+-- Rest cures into a two-turn sleep with full recovery and refuses at
+-- full health or while already asleep. Source reference: the rest
+-- subscript in files/battledata/script/subscript/subscript_0055_Rest.s.
+local function stepRest(ctx, frame)
+  assert(type(ctx) == "table", "conditions step through the battle context")
+  assert(type(frame) == "table", "conditions step from their move frame")
+  local record = frame --[[@as table<string, unknown>]]
+  local user = userOf(record)
+  local entry = ctx:entryOf(user)
+  if
+    entry.hp --[[@as integer]]
+    >= entry.maxHp --[[@as integer]]
+  then
+    return { kind = "complete", result = "failed" }
+  end
+  if ctx:statusOf(user) == "sleep" then
+    return { kind = "complete", result = "failed" }
+  end
+  local prior = ctx:statusOf(user)
+  if prior ~= nil then
+    ctx:cureStatus(user, prior, causeFor(record))
+  end
+  ctx:applyStatus(user, "sleep", { turns = 2 }, causeFor(record))
+  local outcome = ctx:heal(user, entry.maxHp --[[@as integer]], causeFor(record))
+  ctx:emit("healed", causeFor(record), { target = user, restored = outcome.after - outcome.before })
+  emitUsed(ctx, record)
+  return { kind = "complete", result = "hit" }
+end
+
+-- Dawn healing scales with the field sky: half with no weather, two
+-- thirds under harsh sun, one quarter otherwise. Source reference:
+-- BtlCmd_WeatherHPRecovery in src/battle/battle_command.c.
+local function stepDawnHeal(ctx, frame)
+  assert(type(ctx) == "table", "conditions step through the battle context")
+  assert(type(frame) == "table", "conditions step from their move frame")
+  local record = frame --[[@as table<string, unknown>]]
+  local user = userOf(record)
+  local entry = ctx:entryOf(user)
+  local ceiling = entry.maxHp --[[@as integer]]
+  if
+    entry.hp --[[@as integer]]
+    >= ceiling
+  then
+    return { kind = "complete", result = "failed" }
+  end
+  local amount = math.floor(ceiling / 2)
+  if ctx:fieldEffect("sunnyday") ~= nil then
+    amount = math.floor(ceiling * 20 / 30)
+  elseif
+    ctx:fieldEffect("raindance") ~= nil
+    or ctx:fieldEffect("sandstorm") ~= nil
+    or ctx:fieldEffect("hail") ~= nil
+  then
+    amount = math.floor(ceiling / 4)
+  end
+  local outcome = ctx:heal(user, amount, causeFor(record))
+  ctx:emit("healed", causeFor(record), { target = user, restored = outcome.after - outcome.before })
+  emitUsed(ctx, record)
+  return { kind = "complete", result = "hit" }
+end
+
+-- Belly Drum maximizes attack for half its maximum health and refuses
+-- at maximum attack or at half health and below. Source reference: the
+-- belly drum subscript in
+-- files/battledata/script/subscript/subscript_0120_BellyDrum.s.
+local function stepBellyDrum(ctx, frame)
+  assert(type(ctx) == "table", "conditions step through the battle context")
+  assert(type(frame) == "table", "conditions step from their move frame")
+  local record = frame --[[@as table<string, unknown>]]
+  local user = userOf(record)
+  local entry = ctx:entryOf(user)
+  local ceiling = entry.maxHp --[[@as integer]]
+  if entry.stages.attack == StatStages.MAX then
+    return { kind = "complete", result = "failed" }
+  end
+  if
+    entry.hp --[[@as integer]]
+    <= math.floor(ceiling / 2)
+  then
+    return { kind = "complete", result = "failed" }
+  end
+  ctx:changeStage(user, "attack", StatStages.MAX, causeFor(record))
+  ctx:damage(user, math.floor(ceiling / 2), causeFor(record))
+  emitUsed(ctx, record)
+  return { kind = "complete", result = "hit" }
+end
+
+-- Acupressure raises a random raisable stat by two and refuses the
+-- fully maximized entry. Source reference: BtlCmd_BoostRandomStatBy2
+-- in src/battle/battle_command.c.
+local STAT_WHEEL = { "attack", "defense", "speed", "specialAttack", "specialDefense", "accuracy", "evasion" }
+
+local function stepAcupressure(ctx, frame)
+  assert(type(ctx) == "table", "conditions step through the battle context")
+  assert(type(frame) == "table", "conditions step from their move frame")
+  local record = frame --[[@as table<string, unknown>]]
+  local user = userOf(record)
+  local current = ctx:entryOf(user).stages --[[@as table<string, integer>]]
+  local raisable = {}
+  for _, stat in ipairs(STAT_WHEEL) do
+    if
+      current[stat] --[[@as integer]]
+      < StatStages.MAX
+    then
+      raisable[#raisable + 1] = stat
+    end
+  end
+  if #raisable == 0 then
+    return { kind = "complete", result = "failed" }
+  end
+  local stream = checkStream(record.stream)
+  local picked = raisable[(stream:nextU16("acupressure_stat", causeFor(record)) % #raisable) + 1]
+  local next = StatStages.change(
+    current[
+      picked --[[@as string]]
+    ] --[[@as integer]],
+    2
+  )
+  ctx:changeStage(user, picked --[[@as string]], next, causeFor(record))
+  emitUsed(ctx, record)
+  return { kind = "complete", result = "hit" }
+end
+
+-- Lock-On and Mind Reader promise the next strike past accuracy; a
+-- marked doll absorbs the aim. Source reference: the lock-on subscript
+-- in files/battledata/script/subscript/subscript_0079_LockOn.s.
+local function stepLockOn(ctx, frame)
+  assert(type(ctx) == "table", "conditions step through the battle context")
+  assert(type(frame) == "table", "conditions step from their move frame")
+  local record = frame --[[@as table<string, unknown>]]
+  local defender = targetOf((record.targets --[[@as table<integer, unknown>]])[1])
+  if not connects(ctx, record, defender) then
+    return { kind = "complete", result = "missed" }
+  end
+  if ctx:hasBattleEffect(defender, "substitute") then
+    return { kind = "complete", result = "failed" }
+  end
+  ctx:addBattleEffect(
+    NativeEffectHandlers.definitionFor("lockon"),
+    activeScope(ctx, defender),
+    moveSource(userOf(record)),
+    { version = 1, attacker = userOf(record) }
+  )
+  emitUsed(ctx, record)
+  return { kind = "complete", result = "hit" }
+end
+
+-- Foresight and Odor Sleuth identify the defender unconditionally,
+-- dropping ghost immunity for normal and fighting strikes and pinning
+-- negative evasion at zero. Source reference: the foresight subscript
+-- in files/battledata/script/subscript/subscript_0100_Foresight.s.
+local function stepForesight(ctx, frame)
+  assert(type(ctx) == "table", "conditions step through the battle context")
+  assert(type(frame) == "table", "conditions step from their move frame")
+  local record = frame --[[@as table<string, unknown>]]
+  local defender = targetOf((record.targets --[[@as table<integer, unknown>]])[1])
+  ctx:addBattleEffect(
+    NativeEffectHandlers.definitionFor("foresight"),
+    activeScope(ctx, defender),
+    moveSource(userOf(record)),
+    { version = 1 }
+  )
+  emitUsed(ctx, record)
+  return { kind = "complete", result = "hit" }
+end
+
+-- Magnet Rise levitates for five turns and refuses the already rising
+-- and the rooted.
+local function stepMagnetRise(ctx, frame)
+  assert(type(ctx) == "table", "conditions step through the battle context")
+  assert(type(frame) == "table", "conditions step from their move frame")
+  local record = frame --[[@as table<string, unknown>]]
+  local user = userOf(record)
+  if ctx:hasBattleEffect(user, "magnetrise") or ctx:hasBattleEffect(user, "ingrain") then
+    return { kind = "complete", result = "failed" }
+  end
+  ctx:addBattleEffect(
+    NativeEffectHandlers.definitionFor("magnetrise"),
+    activeScope(ctx, user),
+    moveSource(user),
+    { version = 1, turns = 5 }
+  )
+  emitUsed(ctx, record)
+  return { kind = "complete", result = "hit" }
+end
+
+-- Tailwind doubles its side speed window for three turns and refuses
+-- the duplicate; lucky chant shields its side for five turns and
+-- refuses the duplicate.
+local function stepTailwind(ctx, frame)
+  assert(type(ctx) == "table", "conditions step through the battle context")
+  assert(type(frame) == "table", "conditions step from their move frame")
+  local record = frame --[[@as table<string, unknown>]]
+  local side = ctx:entryOf(userOf(record)).side
+  if ctx:sideEffect(side, "tailwind") ~= nil then
+    return { kind = "complete", result = "failed" }
+  end
+  ctx:addBattleEffect(
+    NativeEffectHandlers.definitionFor("tailwind"),
+    { kind = "side", side = side },
+    moveSource(userOf(record)),
+    { version = 1, turns = 3 }
+  )
+  emitUsed(ctx, record)
+  return { kind = "complete", result = "hit" }
+end
+
+local function stepLuckyChant(ctx, frame)
+  assert(type(ctx) == "table", "conditions step through the battle context")
+  assert(type(frame) == "table", "conditions step from their move frame")
+  local record = frame --[[@as table<string, unknown>]]
+  local side = ctx:entryOf(userOf(record)).side
+  if ctx:sideEffect(side, "luckychant") ~= nil then
+    return { kind = "complete", result = "failed" }
+  end
+  ctx:addBattleEffect(
+    NativeEffectHandlers.definitionFor("luckychant"),
+    { kind = "side", side = side },
+    moveSource(userOf(record)),
+    { version = 1, turns = 5 }
+  )
+  emitUsed(ctx, record)
+  return { kind = "complete", result = "hit" }
+end
+
+-- Gravity grounds the field for five turns, dropping rising entries
+-- back down, and refuses the duplicate.
+local function stepGravity(ctx, frame)
+  assert(type(ctx) == "table", "conditions step through the battle context")
+  assert(type(frame) == "table", "conditions step from their move frame")
+  local record = frame --[[@as table<string, unknown>]]
+  if ctx:fieldEffect("gravity") ~= nil then
+    return { kind = "complete", result = "failed" }
+  end
+  ctx:addBattleEffect(
+    NativeEffectHandlers.definitionFor("gravity"),
+    { kind = "field" },
+    moveSource(userOf(record)),
+    { version = 1, turns = 5 }
+  )
+  for _, combatant in ipairs(ctx:activeCombatants()) do
+    ctx:removeBattleEffect(combatant, "magnetrise")
+  end
+  emitUsed(ctx, record)
+  return { kind = "complete", result = "hit" }
+end
+
+-- Trick Room twists the dimensions for five turns and untwists on
+-- reuse. Source reference: the trick room effect script in
+-- files/battledata/script/effect_script/effect_script_0259.s.
+local function stepTrickRoom(ctx, frame)
+  assert(type(ctx) == "table", "conditions step through the battle context")
+  assert(type(frame) == "table", "conditions step from their move frame")
+  local record = frame --[[@as table<string, unknown>]]
+  if ctx:fieldEffect("trickroom") ~= nil then
+    ctx:removeFieldEffect("trickroom")
+    emitUsed(ctx, record)
+    return { kind = "complete", result = "hit" }
+  end
+  ctx:addBattleEffect(
+    NativeEffectHandlers.definitionFor("trickroom"),
+    { kind = "field" },
+    moveSource(userOf(record)),
+    { version = 1, turns = 5 }
+  )
+  emitUsed(ctx, record)
+  return { kind = "complete", result = "hit" }
+end
+
+-- Sports weaken their type while the user stands and refuse the
+-- duplicate.
+local function stepSport(key)
+  local function stepSported(ctx, frame)
+    assert(type(ctx) == "table", "conditions step through the battle context")
+    assert(type(frame) == "table", "conditions step from their move frame")
+    local record = frame --[[@as table<string, unknown>]]
+    local user = userOf(record)
+    if ctx:hasBattleEffect(user, key) then
+      return { kind = "complete", result = "failed" }
+    end
+    local entry = ctx:entryOf(user)
+    if entry.activation == nil then
+      error(BattleErrors.invalidState("battle-local sports scope to a live entry", {}))
+    end
+    ctx:addBattleEffect(
+      NativeEffectHandlers.definitionFor(key),
+      { kind = "active", combatant = user, activation = entry.activation },
+      moveSource(user),
+      { version = 1 }
+    )
+    emitUsed(ctx, record)
+    return { kind = "complete", result = "hit" }
+  end
+  return stepSported
+end
+
+-- Spite cuts four power points from the recorded last move and refuses
+-- without one. Source reference: BtlCmd_TrySpite in
+-- src/battle/battle_command.c.
+local function stepSpite(ctx, frame)
+  assert(type(ctx) == "table", "conditions step through the battle context")
+  assert(type(frame) == "table", "conditions step from their move frame")
+  local record = frame --[[@as table<string, unknown>]]
+  local defender = targetOf((record.targets --[[@as table<integer, unknown>]])[1])
+  if not connects(ctx, record, defender) then
+    return { kind = "complete", result = "missed" }
+  end
+  local recentMoves = recentMovesIn(record)
+  local recent = type(recentMoves) == "table" and recentMoves[defender] or nil
+  if type(recent) ~= "string" or recent == "" then
+    return { kind = "complete", result = "failed" }
+  end
+  if
+    ctx:cutPp(defender, recent --[[@as string]], 4) == 0
+  then
+    return { kind = "complete", result = "failed" }
+  end
+  emitUsed(ctx, record)
+  return { kind = "complete", result = "hit" }
+end
+
+-- Teleport fails trainer battles through its battle-kind fact; without
+-- a battle-ending surface wild flight stays a documented follow-up.
+-- Source reference: the teleport subscript in
+-- files/battledata/script/subscript/subscript_0122_Teleport.s.
+local function stepTeleport(ctx, frame)
+  assert(type(ctx) == "table", "conditions step through the battle context")
+  assert(type(frame) == "table", "conditions step from their move frame")
+  -- Teleport refuses trainer battles through the battle-kind law, and
+  -- wild flight stays refused until a battle-ending surface exists: the
+  -- move layer cannot end battles, so refusal is the safe closed
+  -- answer in both scopes for now.
+  return { kind = "complete", result = "failed" }
+end
+
+-- Captivate drops special attack by two for opposite genders and
+-- refuses same genders, the genderless, and dolls.
+local function stepCaptivate(ctx, frame)
+  assert(type(ctx) == "table", "conditions step through the battle context")
+  assert(type(frame) == "table", "conditions step from their move frame")
+  local record = frame --[[@as table<string, unknown>]]
+  local defender = targetOf((record.targets --[[@as table<integer, unknown>]])[1])
+  if not connects(ctx, record, defender) then
+    return { kind = "complete", result = "missed" }
+  end
+  local genders = gendersIn(record)
+  local userGender = type(genders) == "table" and genders[userOf(record)] or nil
+  local foeGender = type(genders) == "table" and genders[defender] or nil
+  if
+    userGender == nil
+    or foeGender == nil
+    or userGender == foeGender
+    or userGender == "genderless"
+    or foeGender == "genderless"
+  then
+    return { kind = "complete", result = "failed" }
+  end
+  if ctx:hasBattleEffect(defender, "substitute") then
+    return { kind = "complete", result = "failed" }
+  end
+  if misted(ctx, defender) then
+    return { kind = "complete", result = "failed" }
+  end
+  local current = ctx:entryOf(defender).stages --[[@as table<string, integer>]]
+  local next = StatStages.change(current.specialAttack --[[@as integer]], -2)
+  if next == current.specialAttack then
+    return { kind = "complete", result = "failed" }
+  end
+  ctx:changeStage(defender, "specialAttack", next, causeFor(record))
+  emitUsed(ctx, record)
+  return { kind = "complete", result = "hit" }
+end
+
+-- Swagger sharpens attack by two while confusing, flatter sharpens
+-- special attack by one while confusing, and teeter dance confuses.
+-- Already-maxed attackers skip the climb but still dance; already
+-- confused defenders skip the dance but still climb. Source references:
+-- the swagger and flatter subscripts in
+-- files/battledata/script/subscript.
+local function swaggerLike(spec)
+  local function stepSwaggerLike(ctx, frame)
+    assert(type(ctx) == "table", "conditions step through the battle context")
+    assert(type(frame) == "table", "conditions step from their move frame")
+    local record = frame --[[@as table<string, unknown>]]
+    local defender = targetOf((record.targets --[[@as table<integer, unknown>]])[1])
+    if not connects(ctx, record, defender) then
+      return { kind = "complete", result = "missed" }
+    end
+    if ctx:hasBattleEffect(defender, "substitute") then
+      return { kind = "complete", result = "failed" }
+    end
+    if misted(ctx, defender) then
+      return { kind = "complete", result = "failed" }
+    end
+    local climbed = false
+    if spec.stat ~= nil then
+      local current = ctx:entryOf(defender).stages --[[@as table<string, integer>]]
+      local stat = spec.stat --[[@as string]]
+      local next = StatStages.change(current[stat] --[[@as integer]], spec.delta --[[@as integer]])
+      if next ~= current[stat] then
+        ctx:changeStage(defender, stat, next, causeFor(record))
+        climbed = true
+      end
+    end
+    local danced = applyConfusion(ctx, record, defender)
+    if not climbed and not danced then
+      return { kind = "complete", result = "failed" }
+    end
+    emitUsed(ctx, record)
+    return { kind = "complete", result = "hit" }
+  end
+  return stepSwaggerLike
+end
+
+-- Focus energy sharpens later strikes until the entry leaves and
+-- refuses the already focused.
+local function stepFocusEnergy(ctx, frame)
+  assert(type(ctx) == "table", "conditions step through the battle context")
+  assert(type(frame) == "table", "conditions step from their move frame")
+  local record = frame --[[@as table<string, unknown>]]
+  local user = userOf(record)
+  if ctx:hasBattleEffect(user, "focusenergy") then
+    return { kind = "complete", result = "failed" }
+  end
+  ctx:addBattleEffect(
+    NativeEffectHandlers.definitionFor("focusenergy"),
+    activeScope(ctx, user),
+    moveSource(user),
+    { version = 1 }
+  )
+  emitUsed(ctx, record)
+  return { kind = "complete", result = "hit" }
+end
+
+-- Ingrain roots healing on the user while holding it down.
+local function stepIngrain(ctx, frame)
+  assert(type(ctx) == "table", "conditions step through the battle context")
+  assert(type(frame) == "table", "conditions step from their move frame")
+  local record = frame --[[@as table<string, unknown>]]
+  local user = userOf(record)
+  if ctx:hasBattleEffect(user, "ingrain") or ctx:hasBattleEffect(user, "trapped") then
+    return { kind = "complete", result = "failed" }
+  end
+  ctx:addBattleEffect(
+    NativeEffectHandlers.definitionFor("ingrain"),
+    activeScope(ctx, user),
+    moveSource(user),
+    { version = 1 }
+  )
+  ctx:addBattleEffect(
+    NativeEffectHandlers.definitionFor("trapped"),
+    activeScope(ctx, user),
+    moveSource(user),
+    { version = 1 }
+  )
+  emitUsed(ctx, record)
+  return { kind = "complete", result = "hit" }
+end
+
+-- Yawn drowses healthy, unshielded defenders; the drowsiness counts
+-- the defender actions down to sleep through the before-action timing.
+local function stepYawn(ctx, frame)
+  assert(type(ctx) == "table", "conditions step through the battle context")
+  assert(type(frame) == "table", "conditions step from their move frame")
+  local record = frame --[[@as table<string, unknown>]]
+  local defender = targetOf((record.targets --[[@as table<integer, unknown>]])[1])
+  if not connects(ctx, record, defender) then
+    return { kind = "complete", result = "missed" }
+  end
+  if ctx:statusOf(defender) ~= nil then
+    return { kind = "complete", result = "failed" }
+  end
+  if ctx:hasBattleEffect(defender, "substitute") then
+    return { kind = "complete", result = "failed" }
+  end
+  if safeguarded(ctx, defender) then
+    return { kind = "complete", result = "failed" }
+  end
+  if ctx:hasBattleEffect(defender, "yawn") then
+    return { kind = "complete", result = "failed" }
+  end
+  ctx:addBattleEffect(
+    NativeEffectHandlers.definitionFor("yawn"),
+    activeScope(ctx, defender),
+    moveSource(userOf(record)),
+    { version = 1, turns = 2 }
+  )
+  emitUsed(ctx, record)
+  return { kind = "complete", result = "hit" }
+end
+
+-- Hazard layers settle on the foe side: spikes stack to three,
+-- toxic spikes stack to two, and stealth rock settles once. Duplicates
+-- refuse. Source references: BtlCmd_TrySpikes, BtlCmd_TryToxicSpikes,
+-- and BtlCmd_CheckStealthRock in src/battle/battle_command.c.
+---@param ctx BattleContext mechanics context under execution
+---@param frame table<string, unknown> move frame under execution
+---@param defender integer defender combatant addressing the foe side
+---@param key string hazard definition identity under the layers
+---@param limit integer maximum layers on the side
+---@return boolean true when another layer settled
+local function layHazard(ctx, frame, defender, key, limit)
+  local record = frame --[[@as table<string, unknown>]]
+  local user = userOf(record)
+  local side = ctx:entryOf(defender).side
+  if side == ctx:entryOf(user).side then
+    error(BattleErrors.invalidState("hazards settle on the foe side", {}))
+  end
+  local standing = ctx:sideEffect(side, key)
+  local layers = 0
+  if standing ~= nil then
+    layers = (standing --[[@as table<string, unknown>]])
+      .state --[[@as table<string, unknown>]]
+      .layers --[[@as integer]]
+  end
+  if layers >= limit then
+    return false
+  end
+  if standing ~= nil then
+    ctx:removeBattleEffect(defender, key)
+  end
+  ctx:addBattleEffect(
+    NativeEffectHandlers.definitionFor(key),
+    { kind = "side", side = side },
+    moveSource(user),
+    { version = 1, layers = layers + 1 }
+  )
+  return true
+end
+
+local function stepSpikes(ctx, frame)
+  assert(type(ctx) == "table", "conditions step through the battle context")
+  assert(type(frame) == "table", "conditions step from their move frame")
+  local record = frame --[[@as table<string, unknown>]]
+  local defender = targetOf((record.targets --[[@as table<integer, unknown>]])[1])
+  if not layHazard(ctx, record, defender, "spikes", 3) then
+    return { kind = "complete", result = "failed" }
+  end
+  emitUsed(ctx, record)
+  return { kind = "complete", result = "hit" }
+end
+
+local function stepToxicSpikes(ctx, frame)
+  assert(type(ctx) == "table", "conditions step through the battle context")
+  assert(type(frame) == "table", "conditions step from their move frame")
+  local record = frame --[[@as table<string, unknown>]]
+  local defender = targetOf((record.targets --[[@as table<integer, unknown>]])[1])
+  if not layHazard(ctx, record, defender, "toxicspikes", 2) then
+    return { kind = "complete", result = "failed" }
+  end
+  emitUsed(ctx, record)
+  return { kind = "complete", result = "hit" }
+end
+
+local function stepStealthRock(ctx, frame)
+  assert(type(ctx) == "table", "conditions step through the battle context")
+  assert(type(frame) == "table", "conditions step from their move frame")
+  local record = frame --[[@as table<string, unknown>]]
+  local user = userOf(record)
+  local defender = targetOf((record.targets --[[@as table<integer, unknown>]])[1])
+  local side = ctx:entryOf(defender).side
+  if side == ctx:entryOf(user).side then
+    error(BattleErrors.invalidState("hazards settle on the foe side", {}))
+  end
+  if ctx:sideEffect(side, "stealthrock") ~= nil then
+    return { kind = "complete", result = "failed" }
+  end
+  ctx:addBattleEffect(
+    NativeEffectHandlers.definitionFor("stealthrock"),
+    { kind = "side", side = side },
+    moveSource(user),
+    { version = 1 }
+  )
+  emitUsed(ctx, record)
+  return { kind = "complete", result = "hit" }
+end
+
+-- Trapping moves hold the defender while refusing ghosts through the
+-- chart, dolls, and the already trapped. Source reference: the mean
+-- look subscript in
+-- files/battledata/script/subscript/subscript_0086_MeanLook.s.
+local function stepTrapHold(ctx, frame)
+  assert(type(ctx) == "table", "conditions step through the battle context")
+  assert(type(frame) == "table", "conditions step from their move frame")
+  local record = frame --[[@as table<string, unknown>]]
+  local defender = targetOf((record.targets --[[@as table<integer, unknown>]])[1])
+  if not connects(ctx, record, defender) then
+    return { kind = "complete", result = "missed" }
+  end
+  if statusImmune(record, defender) then
+    return { kind = "complete", result = "failed" }
+  end
+  if ctx:hasBattleEffect(defender, "substitute") then
+    return { kind = "complete", result = "failed" }
+  end
+  if ctx:hasBattleEffect(defender, "trapped") or ctx:hasBattleEffect(defender, "bind") then
+    return { kind = "complete", result = "failed" }
+  end
+  ctx:addBattleEffect(
+    NativeEffectHandlers.definitionFor("trapped"),
+    activeScope(ctx, defender),
+    moveSource(userOf(record)),
+    { version = 1 }
+  )
+  emitUsed(ctx, record)
+  return { kind = "complete", result = "hit" }
+end
+
+-- Nightmare roots quarter-maximum residual damage on sleeping
+-- defenders behind a doll check.
+local function stepNightmare(ctx, frame)
+  assert(type(ctx) == "table", "conditions step through the battle context")
+  assert(type(frame) == "table", "conditions step from their move frame")
+  local record = frame --[[@as table<string, unknown>]]
+  local defender = targetOf((record.targets --[[@as table<integer, unknown>]])[1])
+  if not connects(ctx, record, defender) then
+    return { kind = "complete", result = "missed" }
+  end
+  if ctx:statusOf(defender) ~= "sleep" then
+    return { kind = "complete", result = "failed" }
+  end
+  if ctx:hasBattleEffect(defender, "substitute") then
+    return { kind = "complete", result = "failed" }
+  end
+  if ctx:hasBattleEffect(defender, "nightmare") then
+    return { kind = "complete", result = "failed" }
+  end
+  ctx:addBattleEffect(
+    NativeEffectHandlers.definitionFor("nightmare"),
+    activeScope(ctx, defender),
+    moveSource(userOf(record)),
+    { version = 1, turns = 1 }
+  )
+  emitUsed(ctx, record)
+  return { kind = "complete", result = "hit" }
+end
+
 ---@param key string condition move identity under binding
 ---@return fun(ctx: BattleContext, frame: table<string, unknown>): table<string, unknown> distinct per-move handler for the registry
 local function bodyFor(key)
@@ -942,6 +1847,105 @@ local function bodyFor(key)
   end
   if key == "WILL_O_WISP" then
     return bind(makeStatus("burn"))
+  end
+  if key == "CONFUSE_RAY" or key == "SUPERSONIC" or key == "SWEET_KISS" then
+    return bind(stepConfuse)
+  end
+  if key == "ATTRACT" then
+    return bind(stepAttract)
+  end
+  if key == "TAUNT" then
+    return bind(stepTaunt)
+  end
+  if key == "TORMENT" then
+    return bind(stepTorment)
+  end
+  if key == "ENCORE" then
+    return bind(stepEncore)
+  end
+  if key == "DISABLE" then
+    return bind(stepDisable)
+  end
+  if key == "YAWN" then
+    return bind(stepYawn)
+  end
+  if key == "NIGHTMARE" then
+    return bind(stepNightmare)
+  end
+  if key == "SPIKES" then
+    return bind(stepSpikes)
+  end
+  if key == "TOXIC_SPIKES" then
+    return bind(stepToxicSpikes)
+  end
+  if key == "STEALTH_ROCK" then
+    return bind(stepStealthRock)
+  end
+  if key == "MEAN_LOOK" or key == "SPIDER_WEB" then
+    return bind(stepTrapHold)
+  end
+  if key == "REST" then
+    return bind(stepRest)
+  end
+  if key == "MOONLIGHT" or key == "SYNTHESIS" then
+    return bind(stepDawnHeal)
+  end
+  if key == "BELLY_DRUM" then
+    return bind(stepBellyDrum)
+  end
+  if key == "ACUPRESSURE" then
+    return bind(stepAcupressure)
+  end
+  if key == "LOCK_ON" or key == "MIND_READER" then
+    return bind(stepLockOn)
+  end
+  if key == "FORESIGHT" or key == "ODOR_SLEUTH" then
+    return bind(stepForesight)
+  end
+  if key == "MAGNET_RISE" then
+    return bind(stepMagnetRise)
+  end
+  if key == "TAILWIND" then
+    return bind(stepTailwind)
+  end
+  if key == "LUCKY_CHANT" then
+    return bind(stepLuckyChant)
+  end
+  if key == "GRAVITY" then
+    return bind(stepGravity)
+  end
+  if key == "TRICK_ROOM" then
+    return bind(stepTrickRoom)
+  end
+  if key == "MUD_SPORT" then
+    return bind(stepSport("mudsport"))
+  end
+  if key == "WATER_SPORT" then
+    return bind(stepSport("watersport"))
+  end
+  if key == "SPITE" then
+    return bind(stepSpite)
+  end
+  if key == "TELEPORT" then
+    return bind(stepTeleport)
+  end
+  if key == "CAPTIVATE" then
+    return bind(stepCaptivate)
+  end
+  if key == "SWAGGER" then
+    return bind(swaggerLike({ stat = "attack", delta = 2 }))
+  end
+  if key == "FLATTER" then
+    return bind(swaggerLike({ stat = "specialAttack", delta = 1 }))
+  end
+  if key == "TEETER_DANCE" then
+    return bind(swaggerLike({}))
+  end
+  if key == "FOCUS_ENERGY" then
+    return bind(stepFocusEnergy)
+  end
+  if key == "INGRAIN" then
+    return bind(stepIngrain)
   end
   return bind(stepCanonical)
 end

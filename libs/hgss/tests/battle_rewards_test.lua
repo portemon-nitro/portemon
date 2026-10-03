@@ -248,4 +248,38 @@ function T.dex_knowledge_round_trips_through_its_save_bucket()
   Assert.isFalse(pcall(dex.capture, dex, "MISSINGNO"), "unknown species never stage")
 end
 
+-- Scattered pay day coins pay out scaled and capped beside the trainer
+-- shares: five coins per level accumulate per connecting strike, scale
+-- once under money-up, and cap at the native scatter ceiling.
+function T.scattered_pay_day_coins_pay_out_scaled_and_capped()
+  local Rewards = requirePresent(REWARDS_MODULE, "native prize and loss planning")
+  local function single(scattered, moneyMultiplier)
+    return Rewards.planMoney({
+      trainers = { { trainerClass = 2, partyLevels = { 9 }, classRate = 4 } },
+      battleFormat = "single",
+      moneyMultiplier = moneyMultiplier,
+      paydayScattered = scattered,
+    })
+  end
+  -- Class 2 pays rate 4 at level 9 for 144; sixty scattered coins
+  -- ride alongside unscaled.
+  local plain = single(60, 1)
+  Assert.equal(plain.amount, 204, "scattered coins ride beside the trainer share")
+  Assert.equal(plain.payday, 60, "the plan records its scattered payout")
+  -- Money-up scales the scatter exactly once.
+  local boosted = single(60, 2)
+  Assert.equal(boosted.amount, 144 * 2 + 120, "money-up scales the scatter once")
+  -- The scatter caps at the native ceiling before joining the prize.
+  local capped = single(100000, 2)
+  Assert.equal(capped.payday, 65535, "the scatter caps at its native ceiling")
+  -- Absent scatter plans exactly the trainer share.
+  local bare = Rewards.planMoney({
+    trainers = { { trainerClass = 2, partyLevels = { 9 }, classRate = 4 } },
+    battleFormat = "single",
+    moneyMultiplier = 1,
+  })
+  Assert.equal(bare.amount, 144, "absent scatter plans the share alone")
+  Assert.equal(bare.payday, 0, "absent scatter records zero payout")
+end
+
 return { tests = T }

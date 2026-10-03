@@ -266,6 +266,12 @@ function CalledMoves.choose(select)
     return { executingMove = drawFrom(select, pool, "assist") }
   end
   if calling == "SLEEP_TALK" then
+    -- Sleep Talk only speaks while its user sleeps; the waking fail
+    -- closes loudly through the shared failed selection instead of
+    -- redrawing or crashing on the missing precondition.
+    if select.userAsleep ~= true then
+      return { failed = "wide-awake" }
+    end
     local pool = eligible(checkRoster(select.usable, "sleep talk"), SLEEP_TALK_BANNED)
     if #pool == 0 then
       return { failed = "no-eligible-moves" }
@@ -299,6 +305,7 @@ local function selectFromFrame(frame)
     userMoves = locals.userMoves,
     gravity = locals.gravity,
     healBlock = locals.healBlock,
+    userAsleep = locals.userAsleep,
   }
 end
 

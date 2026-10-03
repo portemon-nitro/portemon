@@ -14,11 +14,16 @@
 -- pass context, mutates `context.health` in place, persists countdowns
 -- through `instance.state`, and returns its events. Facts the pass cannot
 -- derive (maximum health, semantic types, position occupancy, combat
--- stats, entry sides, the session chart) arrive through the per-pass facts
--- the executor builds, so handlers close over them instead of reading
--- battle state. Before-action handlers that deny the action record the
--- denial on `context.blockedBy`; the executor reads that flag after the
--- pass instead of inferring it from event presence. Countdown ticks that
+-- stats, entry sides, the session chart, entrant grounding) arrive
+-- through the per-pass facts the executor builds, so handlers close over
+-- them instead of reading battle state. The pass context carries what
+-- only the invocation knows: the pending strike identity and power for
+-- before-action gates, a major-condition writer for drowsy and toxic
+-- arrivals, and a hazard clearer for poison absorption. Before-action
+-- handlers that deny the action record the denial on `context.blockedBy`;
+-- the executor reads that flag after the pass instead of inferring it
+-- from event presence, and handlers stay silent once an earlier verdict
+-- denied the action so one pass emits at most one gate verdict. Countdown ticks that
 -- change nothing emit no event; removal of the expired instance belongs
 -- to the session sweep after a completed pass. Source references:
 -- src/battle/battle_command.c action-gate, switch-in, and end-of-turn
@@ -47,7 +52,9 @@ local NativeEffectHandlers = {}
 ---@field stats table<integer, table<string, integer>>? live level and battle stats per combatant
 ---@field sides table<integer, integer>? owning side per combatant
 ---@field entrant integer? combatant entering the field under an entry pass
+---@field grounded boolean? true when spikes-family layers price the entrant
 ---@field chart table<string, unknown>? session chart view resolving effectiveness
+---@field slept table<integer, boolean>? sleeping combatants under nightmare watch
 
 ---@type table<string, table<string, unknown>>? native definitions by key, captured once
 local cachedDefinitions = nil
@@ -339,14 +346,6 @@ local function buildResidualHandlers(facts)
   checkBaseFacts(facts)
   local handlers = {}
 
-  ---@param instance table<string, unknown> live flinch marker under expiry
-  ---@return nil the silent turn-end expiry emits no event
-  local function flinchExpiry(instance, _)
-    countDown(instance)
-    return nil
-  end
-  handlers.flinch = flinchExpiry
-
   ---@param instance table<string, unknown> live leech-seed instance under the tick
   ---@param context table<string, unknown> residual pass context under mutation
   ---@return unknown tick event, or nil when the victim holds no live entry
@@ -459,6 +458,95 @@ local function buildResidualHandlers(facts)
   handlers.sandstorm = makeWeather(facts, { rock = true, ground = true, steel = true }, "sandstorm")
   handlers.hail = makeWeather(facts, { ice = true }, "hail")
 
+  -- Ingrain restores one sixteenth of maximum health like aqua ring.
+  ---@param instance table<string, unknown> live ingrain instance under the tick
+  ---@param context table<string, unknown> residual pass context under mutation
+  ---@return unknown healing event, or nil when nothing is restored
+  local function ingrain(instance, context)
+    local health = context.health --[[@as table<integer, integer>]]
+    local combatant = instance
+      .scope --[[@as table<string, unknown>]]
+      .combatant --[[@as integer]]
+    if not anchored(health, combatant) then
+      return nil
+    end
+    local restored = healFraction(facts, health, combatant, 16)
+    if restored < 1 then
+      return nil
+    end
+    return { kind = "healed", key = "ingrain", combatant = combatant, restored = restored }
+  end
+  handlers.ingrain = ingrain
+
+  -- Nightmare drains one quarter of maximum health from sleeping
+  -- victims; waking zeroes the countdown so the sweep drops it. Sleep
+  -- facts arrive per pass beside the health map because the residual
+  -- context carries no mon records.
+  local slept = facts.slept
+  if type(slept) ~= "table" then
+    slept = {}
+  end
+  ---@param instance table<string, unknown> live nightmare instance under the tick
+  ---@param context table<string, unknown> residual pass context under mutation
+  ---@return unknown tick event, expiry event, or nil when the victim holds no live entry
+  local function nightmare(instance, context)
+    local health = context.health --[[@as table<integer, integer>]]
+    local victim = instance
+      .scope --[[@as table<string, unknown>]]
+      .combatant --[[@as integer]]
+    if not anchored(health, victim) then
+      return nil
+    end
+    if
+      (slept --[[@as table<integer, boolean>]])[victim] ~= true
+    then
+      instance
+        .state --[[@as table<string, unknown>]]
+        .turns = 0
+      return expireEvent(instance)
+    end
+    local damage = math.floor(maxHpOf(facts, victim) / 4)
+    health[victim] = healthOf(health, victim) - damage
+    instance
+      .state --[[@as table<string, unknown>]]
+      .turns = 1
+    return { kind = "tick", key = "nightmare", combatant = victim, amount = damage }
+  end
+  handlers.nightmare = nightmare
+
+  -- Binding counts down first: bound turns drain one sixteenth of
+  -- maximum health, and the zeroed countdown releases silently through
+  -- the session sweep after its expiry event.
+  ---@param instance table<string, unknown> live binding instance under the tick
+  ---@param context table<string, unknown> residual pass context under mutation
+  ---@return unknown tick event, expiry event, or nil when the victim holds no live entry
+  local function bind(instance, context)
+    local health = context.health --[[@as table<integer, integer>]]
+    local victim = instance
+      .scope --[[@as table<string, unknown>]]
+      .combatant --[[@as integer]]
+    if not anchored(health, victim) then
+      return nil
+    end
+    if countDown(instance) <= 0 then
+      return expireEvent(instance)
+    end
+    local damage = math.floor(maxHpOf(facts, victim) / 16)
+    health[victim] = healthOf(health, victim) - damage
+    return { kind = "tick", key = "bind", combatant = victim, amount = damage }
+  end
+  handlers.bind = bind
+
+  -- Flinch marks expire silently: the native mark only ever gates the
+  -- current turn, so the countdown drops it without an event.
+  ---@param instance table<string, unknown> live flinch mark under the tick
+  ---@return unknown silence; the countdown drops the mark
+  local function flinch(instance, _)
+    countDown(instance)
+    return nil
+  end
+  handlers.flinch = flinch
+
   for _, key in ipairs({
     "raindance",
     "sunnyday",
@@ -468,6 +556,9 @@ local function buildResidualHandlers(facts)
     "mist",
     "gravity",
     "trickroom",
+    "magnetrise",
+    "tailwind",
+    "luckychant",
   }) do
     handlers[key] = makeExpiry()
   end
@@ -489,6 +580,26 @@ local function affirmEntry()
     return nil
   end
   return affirm
+end
+
+--- Reads the standing hazard layer count from the side instance itself:
+--- layers settle onto the side record when the hazard is laid, so the
+--- entry pass prices its own instance without a second projected count.
+---@param instance table<string, unknown> live hazard instance under the entry
+---@return integer standing layers on the side
+local function hazardLayers(instance)
+  local state = instance.state --[[@as table<string, unknown>]]
+  if
+    type(state) ~= "table"
+    or type(state.layers) ~= "number"
+    or state.layers --[[@as integer]]
+      % 1 ~= 0
+    or state.layers --[[@as integer]]
+      < 1
+  then
+    error(BattleErrors.invalidState("hazard handlers read their standing layer count", { key = instance.key }))
+  end
+  return state.layers --[[@as integer]]
 end
 
 --- Builds the executable native handlers for one entry pass. Hazards
@@ -533,6 +644,91 @@ local function buildEntryHandlers(facts)
   end
   handlers.stealthrock = stealthrock
 
+  -- Spikes price grounded arrivals by standing layers: one layer costs
+  -- one eighth of battle maximum health, two cost one sixth, and three
+  -- cost one fourth. Levitation (flying types, magnet rise) avoids the
+  -- layers while gravity holds every arrival down. Source references:
+  -- BtlCmd_CheckSpikes in src/battle/battle_command.c and the hazards
+  -- check subscript in files/battledata/script/subscript.
+  ---@param instance table<string, unknown> live spikes instance under the entry
+  ---@param context table<string, unknown> entry pass context under mutation
+  ---@return unknown hazard event, or nil when the layers spare the entrant
+  local function spikes(instance, context)
+    local entrant = facts.entrant --[[@as integer]]
+    local sides = facts.sides --[[@as table<integer, integer>]]
+    if sides[entrant] ~= scopeSide(instance) then
+      return nil
+    end
+    if facts.grounded ~= true then
+      return nil
+    end
+    local health = context.health --[[@as table<integer, integer>]]
+    if healthOf(health, entrant) <= 0 then
+      return nil
+    end
+    local layers = hazardLayers(instance)
+    local divisor = 8
+    if layers >= 3 then
+      divisor = 4
+    elseif layers >= 2 then
+      divisor = 6
+    end
+    local damage = math.floor(maxHpOf(facts, entrant) / divisor)
+    health[entrant] = healthOf(health, entrant) - damage
+    if
+      health[entrant] --[[@as integer]]
+      < 0
+    then
+      health[entrant] = 0
+    end
+    return { kind = "hazard", key = "spikes", combatant = entrant, amount = damage }
+  end
+  handlers.spikes = spikes
+
+  -- Toxic spikes poison grounded arrivals (badly at two layers) instead
+  -- of dealing damage: a grounded poison arrival absorbs the layers
+  -- through the hazard clearer, and steel arrivals shrug them off.
+  -- Source references: BtlCmd_CheckToxicSpikes in
+  -- src/battle/battle_command.c and the hazards check subscript in
+  -- files/battledata/script/subscript.
+  ---@param instance table<string, unknown> live toxic spikes instance under the arrival
+  ---@param context table<string, unknown> entry pass context under mutation
+  ---@return unknown hazard or absorb event, or nil when the layers spare the entrant
+  local function toxicspikes(instance, context)
+    local entrant = facts.entrant --[[@as integer]]
+    local sides = facts.sides --[[@as table<integer, integer>]]
+    if sides[entrant] ~= scopeSide(instance) then
+      return nil
+    end
+    if facts.grounded ~= true then
+      return nil
+    end
+    for _, defenderType in ipairs(typesOf(facts, entrant)) do
+      if defenderType == "poison" then
+        local clearHazard = context.clearHazard --[[@as fun(): boolean?]]
+        assert(type(clearHazard) == "function", "poison arrivals absorb their toxic layers")
+        clearHazard()
+        return { kind = "absorb", key = "toxicspikes", combatant = entrant }
+      end
+      if defenderType == "steel" then
+        return nil
+      end
+    end
+    local health = context.health --[[@as table<integer, integer>]]
+    if healthOf(health, entrant) <= 0 then
+      return nil
+    end
+    local applyStatus = context.applyStatus --[[@as fun(combatant: integer, key: string, state: table<string, unknown>): boolean]]
+    assert(type(applyStatus) == "function", "toxic layers write through the status owner")
+    if hazardLayers(instance) >= 2 then
+      applyStatus(entrant, "toxic", { counter = 0 })
+    else
+      applyStatus(entrant, "poison", {})
+    end
+    return { kind = "hazard", key = "toxicspikes", combatant = entrant }
+  end
+  handlers.toxicspikes = toxicspikes
+
   for _, key in ipairs({
     "reflect",
     "lightscreen",
@@ -553,7 +749,10 @@ end
 
 --- Builds the executable native handlers for one before-action pass.
 --- Flinch denies the action outright; confusion counts down when its
---- owner acts, snaps out at zero, and otherwise risks the self-hit.
+--- owner acts, snaps out at zero, and otherwise risks the self-hit;
+--- infatuation gates on a fair draw; encore, disable, and taunt count
+--- down around their selection constraints; torment preserves silently
+--- for the selection owner; drowsiness counts down to sleep.
 ---@param facts NativeTimingFacts per-pass battle facts under the handlers
 ---@return table<string, fun(instance: table<string, unknown>, context: table<string, unknown>): unknown> handlers by definition key
 local function buildBeforeActionHandlers(facts)
@@ -610,6 +809,154 @@ local function buildBeforeActionHandlers(facts)
     return { kind = "tick", key = instance.key, combatant = combatant, amount = result.amount }
   end
   handlers.confusion = confusion
+
+  -- Infatuation immobilizes on a fair battle-stream draw and acts
+  -- through otherwise; it carries no countdown. Source references: the
+  -- move-fail state machine in src/battle/battle_controller_player.c
+  -- and the infatuation subscript in files/battledata/script/subscript.
+  ---@param instance table<string, unknown> live infatuation instance under the gate
+  ---@param context table<string, unknown> before-action pass context under mutation
+  ---@return unknown block event, or nil when the entry acts through
+  local function infatuation(instance, context)
+    if context.blockedBy ~= nil then
+      return nil
+    end
+    local combatant = scopeCombatant(instance)
+    local health = context.health --[[@as table<integer, integer>]]
+    if not anchored(health, combatant) then
+      return nil
+    end
+    local stream = checkBattleStream(context)
+    local cause = { kind = "infatuation", combatant = combatant }
+    if stream.nextU16(stream, "infatuation_gate", cause) % 2 == 0 then
+      return nil
+    end
+    context.blockedBy = instance.key
+    return { kind = "blocked", key = instance.key, combatant = combatant }
+  end
+  handlers.infatuation = infatuation
+
+  -- Encore counts down and names its forced move while it runs; the
+  -- zeroed countdown expires through the session sweep. Move selection
+  -- restriction at pick time stays with the selection owner: this
+  -- timing only records the redirect verdict. Source reference:
+  -- BtlCmd_TryEncore in src/battle/battle_command.c.
+  ---@param instance table<string, unknown> live encore instance under the gate
+  ---@param context table<string, unknown> before-action pass context under mutation
+  ---@return unknown redirect or expiry event
+  local function encore(instance, context)
+    if context.blockedBy ~= nil then
+      return nil
+    end
+    local combatant = scopeCombatant(instance)
+    local health = context.health --[[@as table<integer, integer>]]
+    if not anchored(health, combatant) then
+      return nil
+    end
+    if countDown(instance) <= 0 then
+      return expireEvent(instance)
+    end
+    local state = instance.state --[[@as table<string, unknown>]]
+    if type(state.move) ~= "string" or state.move == "" then
+      error(BattleErrors.invalidState("encore names its forced move", { key = instance.key }))
+    end
+    return { kind = "redirected", key = instance.key, combatant = combatant, move = state.move }
+  end
+  handlers.encore = encore
+
+  -- Disable counts down and refuses only its named move; the zeroed
+  -- countdown expires silently through the session sweep. Source
+  -- reference: BtlCmd_TryDisable in src/battle/battle_command.c.
+  ---@param instance table<string, unknown> live disable instance under the gate
+  ---@param context table<string, unknown> before-action pass context under mutation
+  ---@return unknown block event, or nil when the entry acts through
+  local function disable(instance, context)
+    if context.blockedBy ~= nil then
+      return nil
+    end
+    local combatant = scopeCombatant(instance)
+    local health = context.health --[[@as table<integer, integer>]]
+    if not anchored(health, combatant) then
+      return nil
+    end
+    if countDown(instance) <= 0 then
+      return nil
+    end
+    local state = instance.state --[[@as table<string, unknown>]]
+    if context.move == state.move then
+      context.blockedBy = instance.key
+      return { kind = "blocked", key = instance.key, combatant = combatant }
+    end
+    return nil
+  end
+  handlers.disable = disable
+
+  -- Taunt counts down and refuses powerless (status) pending strikes;
+  -- damaging strikes pass through, and the zeroed countdown expires
+  -- silently through the session sweep. Source reference: the taunt
+  -- subscript in files/battledata/script/subscript.
+  ---@param instance table<string, unknown> live taunt instance under the gate
+  ---@param context table<string, unknown> before-action pass context under mutation
+  ---@return unknown block event, or nil when the entry acts through
+  local function taunt(instance, context)
+    if context.blockedBy ~= nil then
+      return nil
+    end
+    local combatant = scopeCombatant(instance)
+    local health = context.health --[[@as table<integer, integer>]]
+    if not anchored(health, combatant) then
+      return nil
+    end
+    if countDown(instance) <= 0 then
+      return nil
+    end
+    if context.power == 0 then
+      context.blockedBy = instance.key
+      return { kind = "blocked", key = instance.key, combatant = combatant }
+    end
+    return nil
+  end
+  handlers.taunt = taunt
+
+  -- Torment restricts move selection, never actions: no per-action
+  -- native check exists, so this timing preserves the mark silently for
+  -- the selection owner. Source reference: the torment subscript in
+  -- files/battledata/script/subscript.
+  ---@param instance table<string, unknown> live torment instance under the gate
+  ---@return unknown silence; restriction lives at selection
+  local function torment(instance, _)
+    if type(instance.state) ~= "table" then
+      error(BattleErrors.invalidState("timing handlers keep typed state a record", { key = instance.key }))
+    end
+    return nil
+  end
+  handlers.torment = torment
+
+  -- Drowsiness counts the victim actions down to sleep: the second
+  -- counted action sleeps through the status owner while earlier ones
+  -- act untouched. Source reference: the yawn subscript in
+  -- files/battledata/script/subscript.
+  ---@param instance table<string, unknown> live drowsiness instance under the gate
+  ---@param context table<string, unknown> before-action pass context under mutation
+  ---@return unknown sleep event, or nil while drowsy
+  local function yawn(instance, context)
+    if context.blockedBy ~= nil then
+      return nil
+    end
+    local combatant = scopeCombatant(instance)
+    local health = context.health --[[@as table<integer, integer>]]
+    if not anchored(health, combatant) then
+      return nil
+    end
+    if countDown(instance) > 0 then
+      return nil
+    end
+    local applyStatus = context.applyStatus --[[@as fun(combatant: integer, key: string, state: table<string, unknown>): boolean]]
+    assert(type(applyStatus) == "function", "drowsy sleep writes through the status owner")
+    applyStatus(combatant, "sleep", { turns = 2 })
+    return { kind = "slept", key = instance.key, combatant = combatant }
+  end
+  handlers.yawn = yawn
 
   return handlers
 end

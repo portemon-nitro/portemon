@@ -118,14 +118,57 @@ local function effectivenessOf(chart, moveType, defenderTypes, immunityContext)
   return { numerator = resolved.numerator, denominator = resolved.denominator }
 end
 
+-- Strike immunity modifiers beside the chart: magnet rise grounds
+-- nothing, identified ghosts lose their normal/fighting immunity, and
+-- gravity grounds flying targets and rising ones alike. Source
+-- references: the grounded hazard checks and BattleSystem_CheckMoveHit
+-- in the native battle sources (flying, magnet rise, and foresight
+-- handling).
+---@param moveType string executing move type under the strike
+---@param defenderTypes string[] semantic defender types under filtering
+---@param immunities table<string, unknown>|nil airborne, foresight, and gravity facts for the strike
+---@return string[] defender types with identification applied
+---@return table<string, unknown> immunity context for the resolution
+local function immunityFor(moveType, defenderTypes, immunities)
+  local facts = immunities or {}
+  local filtered = {}
+  for _, defenderType in ipairs(defenderTypes) do
+    filtered[#filtered + 1] = defenderType
+  end
+  if facts.foresight == true and (moveType == "normal" or moveType == "fighting") then
+    local identified = {}
+    for _, defenderType in ipairs(filtered) do
+      if defenderType ~= "ghost" then
+        identified[#identified + 1] = defenderType
+      end
+    end
+    filtered = identified
+  end
+  if facts.gravity == true and moveType == "ground" then
+    local grounded = {}
+    for _, defenderType in ipairs(filtered) do
+      if defenderType ~= "flying" then
+        grounded[#grounded + 1] = defenderType
+      end
+    end
+    return grounded, {}
+  end
+  if facts.airborne == true and moveType == "ground" then
+    return filtered, { airborne = true }
+  end
+  return filtered, {}
+end
+
 ---@param frame table<string, unknown> move frame under execution
 ---@param defender integer defender combatant under the strike
+---@param immunities table<string, unknown>|nil airborne, foresight, and gravity facts for the strike
 ---@return table<string, integer> exact STAB rational for the staged arithmetic
 ---@return table<string, integer> exact effectiveness rational for the staged arithmetic
-function StagedTypeModifiers.forStrike(frame, defender)
+function StagedTypeModifiers.forStrike(frame, defender, immunities)
   local moveType = moveTypeOf(frame)
   local attackerTypes, defenderTypes, chart = battleFactsOf(frame, defender)
-  return stabOf(moveType, attackerTypes), effectivenessOf(chart, moveType, defenderTypes, {})
+  local types, context = immunityFor(moveType, defenderTypes, immunities)
+  return stabOf(moveType, attackerTypes), effectivenessOf(chart, moveType, types, context)
 end
 
 ---@param frame table<string, unknown> move frame under execution

@@ -279,6 +279,7 @@ function T.tests.invalid_replies_return_typed_errors_and_the_battle_still_comple
         party = game.runtime.monService,
         bag = game.runtime.bagService,
         world = game.runtime.scripts.worldState,
+        player = { trainerId = 99, trainerName = "MINT", language = "french" },
       }),
       presentation = headlessPort(record),
       party = game.runtime.monService,

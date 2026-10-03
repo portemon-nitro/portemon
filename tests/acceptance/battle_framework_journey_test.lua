@@ -163,6 +163,7 @@ function T.tests.wild_and_trainer_battles_run_the_production_path_and_return()
       party = game.runtime.monService,
       bag = game.runtime.bagService,
       world = game.runtime.scripts.worldState,
+      player = { trainerId = 99, trainerName = "MINT", language = "french" },
     })
     local wild = BattleRuntime.new({
       request = wildLaunch,
@@ -246,6 +247,7 @@ function T.tests.wild_and_trainer_battles_run_the_production_path_and_return()
       party = game.runtime.monService,
       bag = game.runtime.bagService,
       world = game.runtime.scripts.worldState,
+      player = { trainerId = 99, trainerName = "MINT", language = "french" },
     })
     local rival = BattleRuntime.new({
       request = trainerLaunch,

@@ -16,15 +16,32 @@ local BattleErrors = require("libs.battle.src.errors")
 local BattleRng = require("libs.battle.src.gen4.BattleRng")
 local Critical = require("libs.battle.src.gen4.Critical")
 local Damage = require("libs.battle.src.gen4.Damage")
+local NativeEffectHandlers = require("libs.battle.src.gen4.behaviors.effects.NativeEffectHandlers")
+local StatStages = require("libs.battle.src.gen4.StatStages")
 local StagedTypeModifiers = require("libs.battle.src.gen4.behaviors.moves.StagedTypeModifiers")
+local TypeEffectiveness = require("libs.battle.src.gen4.TypeEffectiveness")
 
 ---@class DamageMoves
 local DamageMoves = {}
 
 -- Per-move strike controls beside their bodies: recoil names its
--- fraction, crash marks the miss backlash, and selfKo marks the user
--- faint. Strike power and accuracy always arrive in the frame move facts,
--- so nothing here duplicates them.
+-- fraction, crash marks the miss backlash, selfKo marks the user faint,
+-- drain restores half the damage dealt, critStage raises the native
+-- critical stage, hits fixes the hit count, and leaveOne caps damage so
+-- the target survives with at least one health point. Chance-based
+-- secondaries roll the compiled effect chance unless the entry names its
+-- own chance: status applies a major condition, volatile marks
+-- flinch/confusion/binding presence, foeStages and selfStages move
+-- stages, randomStatus draws one condition from its list, and thawSelf
+-- cures the user freeze. Strike power, accuracy, and effect chance
+-- always arrive in the frame move facts, so nothing here duplicates
+-- them. Source references: the move effect scripts in
+-- files/battledata/script/effect_script (secondary flags, hit counts,
+-- and thaw rules), the secondary subscripts in
+-- files/battledata/script/subscript (gating, durations, and fractions),
+-- BtlCmd_CheckEffectActivation in src/battle/battle_command.c (the
+-- percent roll), BtlCmd_ChangeStatStage (secondary stage gating), and
+-- TryCriticalHit in src/battle/overlay_12_0224E4FC.c (critical stages).
 local STRIKERS = {
   TACKLE = {},
   JUMP_KICK = { crash = true },
@@ -60,6 +77,199 @@ local STRIKERS = {
   RAPID_SPIN = {},
   FOCUS_PUNCH = {},
   DREAM_EATER = {},
+  -- Ordinary trainer strikes with a plain damage secondary identity.
+  AQUA_TAIL = {},
+  CUT = {},
+  DRAGON_CLAW = {},
+  DRILL_PECK = {},
+  EGG_BOMB = {},
+  HORN_ATTACK = {},
+  MEGAHORN = {},
+  MEGA_KICK = {},
+  MEGA_PUNCH = {},
+  PECK = {},
+  POUND = {},
+  POWER_WHIP = {},
+  ROCK_THROW = {},
+  SCRATCH = {},
+  SEED_BOMB = {},
+  SLAM = {},
+  STRENGTH = {},
+  VICE_GRIP = {},
+  VINE_WHIP = {},
+  WING_ATTACK = {},
+  X_SCISSOR = {},
+  DRAGON_PULSE = {},
+  HYDRO_PUMP = {},
+  POWER_GEM = {},
+  WATER_GUN = {},
+  -- Semi-invulnerable doubling has no state to key on: charge strikes
+  -- resolve in one step, so these land their plain base.
+  GUST = {},
+  EARTHQUAKE = {},
+  SURF = {},
+  -- Draining trainer strikes.
+  ABSORB = { drain = true },
+  GIGA_DRAIN = { drain = true },
+  MEGA_DRAIN = { drain = true },
+  DRAIN_PUNCH = { drain = true },
+  LEECH_LIFE = { drain = true },
+  -- Raised critical strikes roll one native stage above the base.
+  ATTACK_ORDER = { critStage = 1 },
+  CRABHAMMER = { critStage = 1 },
+  CROSS_CHOP = { critStage = 1 },
+  KARATE_CHOP = { critStage = 1 },
+  LEAF_BLADE = { critStage = 1 },
+  NIGHT_SLASH = { critStage = 1 },
+  PSYCHO_CUT = { critStage = 1 },
+  RAZOR_LEAF = { critStage = 1 },
+  SHADOW_CLAW = { critStage = 1 },
+  SLASH = { critStage = 1 },
+  STONE_EDGE = { critStage = 1 },
+  AIR_CUTTER = { critStage = 1 },
+  BLAZE_KICK = { critStage = 1, secondaries = { { status = "burn" } } },
+  CROSS_POISON = { critStage = 1, secondaries = { { status = "poison" } } },
+  -- Burn secondaries.
+  EMBER = { secondaries = { { status = "burn" } } },
+  FIRE_BLAST = { secondaries = { { status = "burn" } } },
+  FLAMETHROWER = { secondaries = { { status = "burn" } } },
+  HEAT_WAVE = { secondaries = { { status = "burn" } } },
+  FIRE_PUNCH = { secondaries = { { status = "burn" } } },
+  LAVA_PLUME = { secondaries = { { status = "burn" } } },
+  FLAME_WHEEL = { secondaries = { { thawSelf = true, chance = 100 }, { status = "burn" } } },
+  -- Freeze secondaries.
+  ICE_BEAM = { secondaries = { { status = "freeze" } } },
+  ICE_PUNCH = { secondaries = { { status = "freeze" } } },
+  -- Paralysis secondaries.
+  BODY_SLAM = { secondaries = { { status = "paralysis" } } },
+  FORCE_PALM = { secondaries = { { status = "paralysis" } } },
+  LICK = { secondaries = { { status = "paralysis" } } },
+  SPARK = { secondaries = { { status = "paralysis" } } },
+  THUNDERBOLT = { secondaries = { { status = "paralysis" } } },
+  THUNDER_SHOCK = { secondaries = { { status = "paralysis" } } },
+  THUNDER_PUNCH = { secondaries = { { status = "paralysis" } } },
+  DISCHARGE = { secondaries = { { status = "paralysis" } } },
+  DRAGON_BREATH = { secondaries = { { status = "paralysis" } } },
+  ZAP_CANNON = { secondaries = { { status = "paralysis" } } },
+  -- Poison secondaries, including the badly-poisoning fang.
+  GUNK_SHOT = { secondaries = { { status = "poison" } } },
+  POISON_JAB = { secondaries = { { status = "poison" } } },
+  POISON_STING = { secondaries = { { status = "poison" } } },
+  SLUDGE = { secondaries = { { status = "poison" } } },
+  SLUDGE_BOMB = { secondaries = { { status = "poison" } } },
+  SMOG = { secondaries = { { status = "poison" } } },
+  POISON_FANG = { secondaries = { { status = "toxic" } } },
+  -- Flinch secondaries mark before-action presence.
+  ASTONISH = { secondaries = { { volatile = "flinch" } } },
+  BITE = { secondaries = { { volatile = "flinch" } } },
+  HEADBUTT = { secondaries = { { volatile = "flinch" } } },
+  ROCK_SLIDE = { secondaries = { { volatile = "flinch" } } },
+  DRAGON_RUSH = { secondaries = { { volatile = "flinch" } } },
+  WATERFALL = { secondaries = { { volatile = "flinch" } } },
+  ZEN_HEADBUTT = { secondaries = { { volatile = "flinch" } } },
+  BONE_CLUB = { secondaries = { { volatile = "flinch" } } },
+  HYPER_FANG = { secondaries = { { volatile = "flinch" } } },
+  EXTRASENSORY = { secondaries = { { volatile = "flinch" } } },
+  AIR_SLASH = { secondaries = { { volatile = "flinch" } } },
+  DARK_PULSE = { secondaries = { { volatile = "flinch" } } },
+  TWISTER = { secondaries = { { volatile = "flinch" } } },
+  -- Confusion secondaries root a two-to-five-turn volatile.
+  CONFUSION = { secondaries = { { volatile = "confusion" } } },
+  PSYBEAM = { secondaries = { { volatile = "confusion" } } },
+  SIGNAL_BEAM = { secondaries = { { volatile = "confusion" } } },
+  DIZZY_PUNCH = { secondaries = { { volatile = "confusion" } } },
+  WATER_PULSE = { secondaries = { { volatile = "confusion" } } },
+  DYNAMIC_PUNCH = { secondaries = { { volatile = "confusion" } } },
+  -- Fanged strikes roll their condition and their flinch independently.
+  FIRE_FANG = { secondaries = { { status = "burn" }, { volatile = "flinch" } } },
+  ICE_FANG = { secondaries = { { status = "freeze" }, { volatile = "flinch" } } },
+  THUNDER_FANG = { secondaries = { { status = "paralysis" }, { volatile = "flinch" } } },
+  -- Binding strikes trap for three plus zero-to-three turns.
+  BIND = { secondaries = { { volatile = "trap", chance = 100 } } },
+  CLAMP = { secondaries = { { volatile = "trap", chance = 100 } } },
+  SAND_TOMB = { secondaries = { { volatile = "trap", chance = 100 } } },
+  WRAP = { secondaries = { { volatile = "trap", chance = 100 } } },
+  FIRE_SPIN = { secondaries = { { volatile = "trap", chance = 100 } } },
+  WHIRLPOOL = { secondaries = { { volatile = "trap", chance = 100 } } },
+  -- Fixed two-hit strikes.
+  BONEMERANG = { hits = 2 },
+  DOUBLE_KICK = { hits = 2 },
+  -- Foe-hindering stage secondaries.
+  ACID = { secondaries = { { foeStages = { { "specialDefense", -1 } } } } },
+  BUG_BUZZ = { secondaries = { { foeStages = { { "specialDefense", -1 } } } } },
+  EARTH_POWER = { secondaries = { { foeStages = { { "specialDefense", -1 } } } } },
+  ENERGY_BALL = { secondaries = { { foeStages = { { "specialDefense", -1 } } } } },
+  FLASH_CANNON = { secondaries = { { foeStages = { { "specialDefense", -1 } } } } },
+  FOCUS_BLAST = { secondaries = { { foeStages = { { "specialDefense", -1 } } } } },
+  PSYCHIC = { secondaries = { { foeStages = { { "specialDefense", -1 } } } } },
+  SHADOW_BALL = { secondaries = { { foeStages = { { "specialDefense", -1 } } } } },
+  AURORA_BEAM = { secondaries = { { foeStages = { { "attack", -1 } } } } },
+  CRUNCH = { secondaries = { { foeStages = { { "defense", -1 } } } } },
+  CRUSH_CLAW = { secondaries = { { foeStages = { { "defense", -1 } } } } },
+  IRON_TAIL = { secondaries = { { foeStages = { { "defense", -1 } } } } },
+  MIRROR_SHOT = { secondaries = { { foeStages = { { "accuracy", -1 } } } } },
+  MUDDY_WATER = { secondaries = { { foeStages = { { "accuracy", -1 } } } } },
+  MUD_BOMB = { secondaries = { { foeStages = { { "accuracy", -1 } } } } },
+  OCTAZOOKA = { secondaries = { { foeStages = { { "accuracy", -1 } } } } },
+  MUD_SLAP = { secondaries = { { foeStages = { { "accuracy", -1 } } } } },
+  BUBBLE = { secondaries = { { foeStages = { { "speed", -1 } } } } },
+  BUBBLE_BEAM = { secondaries = { { foeStages = { { "speed", -1 } } } } },
+  CONSTRICT = { secondaries = { { foeStages = { { "speed", -1 } } } } },
+  ICY_WIND = { secondaries = { { foeStages = { { "speed", -1 } } } } },
+  MUD_SHOT = { secondaries = { { foeStages = { { "speed", -1 } } } } },
+  ROCK_TOMB = { secondaries = { { foeStages = { { "speed", -1 } } } } },
+  -- Self-raising stage secondaries.
+  CHARGE_BEAM = { secondaries = { { selfStages = { { "specialAttack", 1 } } } } },
+  ANCIENT_POWER = {
+    secondaries = {
+      {
+        selfStages = {
+          { "attack", 1 },
+          { "defense", 1 },
+          { "speed", 1 },
+          { "specialAttack", 1 },
+          { "specialDefense", 1 },
+        },
+      },
+    },
+  },
+  OMINOUS_WIND = {
+    secondaries = {
+      {
+        selfStages = {
+          { "attack", 1 },
+          { "defense", 1 },
+          { "speed", 1 },
+          { "specialAttack", 1 },
+          { "specialDefense", 1 },
+        },
+      },
+    },
+  },
+  SILVER_WIND = {
+    secondaries = {
+      {
+        selfStages = {
+          { "attack", 1 },
+          { "defense", 1 },
+          { "speed", 1 },
+          { "specialAttack", 1 },
+          { "specialDefense", 1 },
+        },
+      },
+    },
+  },
+  METAL_CLAW = { secondaries = { { selfStages = { { "attack", 1 } } } } },
+  METEOR_MASH = { secondaries = { { selfStages = { { "attack", 1 } } } } },
+  STEEL_WING = { secondaries = { { selfStages = { { "defense", 1 } } } } },
+  -- Self-hindering strikes land their drop unconditionally on a hit:
+  -- the native script applies it without a chance roll.
+  HAMMER_ARM = { secondaries = { { selfStages = { { "speed", -1 } }, chance = 100 } } },
+  -- Tri Attack draws one of burn, freeze, or paralysis on its chance.
+  TRI_ATTACK = { secondaries = { { randomStatus = { "burn", "freeze", "paralysis" } } } },
+  -- Secret Power has no terrain facts in this engine, so its secondary
+  -- settles as the standard-battle paralysis outcome.
+  SECRET_POWER = { secondaries = { { status = "paralysis" } } },
 }
 
 -- Members dealing a fixed amount without staged arithmetic.
@@ -535,6 +745,279 @@ local function emitStruck(ctx, frame, defender, hitIndex, amount)
   ctx:emit("struck", causeFor(frame), { target = defender, hitIndex = hitIndex, damage = amount })
 end
 
+-- Secondary effect gating shared by every chance-based strike
+-- follow-up: fainted targets take no follow-up, chart-immune targets
+-- never trigger, and a marked substitute absorbs the follow-up. Fire,
+-- freeze, and poison immunities read defender types directly because
+-- the battle chart models them as resistances rather than immunities.
+-- Source references: the secondary subscripts in
+-- files/battledata/script/subscript (burn, freeze, paralyze, poison,
+-- confuse gating) and BtlCmd_ChangeStatStage in
+-- src/battle/battle_command.c (substitute blocking secondary drops).
+---@param ctx BattleContext mechanics context under execution
+---@param frame table<string, unknown> move frame under execution
+---@param defender integer defender combatant under the follow-up
+---@return boolean true when secondaries may apply to the defender
+local function secondariesAllowed(ctx, frame, defender)
+  local record = frame --[[@as table<string, unknown>]]
+  local health = ctx:damage(defender, 0, causeFor(record))
+  if health.after <= 0 then
+    return false
+  end
+  local locals = record.locals --[[@as table<string, unknown>]]
+  local move = locals.move --[[@as table<string, unknown>]]
+  local moveType = move.moveType --[[@as string]]
+  local defenders = locals.defenderTypes --[[@as table<integer, unknown>]]
+  local defenderTypes = defenders[defender] --[[@as string[] ]]
+  local resolved = TypeEffectiveness.resolve(
+    locals.typeChart --[[@as table<string, unknown>]],
+    moveType --[[@as string]],
+    defenderTypes,
+    {}
+  )
+  if resolved.immune then
+    return false
+  end
+  if ctx:hasBattleEffect(defender, "substitute") then
+    return false
+  end
+  return true
+end
+
+---@param defenderTypes string[] semantic defender types under the immunity check
+---@param status string major condition under the immunity check
+---@return boolean true when the defender type blocks the condition
+local function statusTypeImmune(defenderTypes, status)
+  for _, defenderType in ipairs(defenderTypes) do
+    if status == "burn" and defenderType == "fire" then
+      return true
+    end
+    if status == "freeze" and defenderType == "ice" then
+      return true
+    end
+    if (status == "poison" or status == "toxic") and (defenderType == "poison" or defenderType == "steel") then
+      return true
+    end
+  end
+  return false
+end
+
+---@param frame table<string, unknown> move frame under execution
+---@return integer compiled effect chance for the secondary roll
+local function secondaryChanceOf(frame)
+  local record = frame --[[@as table<string, unknown>]]
+  local locals = record.locals --[[@as table<string, unknown>]]
+  local move = locals.move --[[@as table<string, unknown>]]
+  local chance = move.effectChance
+  if type(chance) ~= "number" or chance % 1 ~= 0 or chance < 0 then
+    error(BattleErrors.missingBehavior("secondaries read their compiled effect chance", {
+      key = record.executingMove --[[@as string]],
+    }))
+  end
+  return chance --[[@as integer]]
+end
+
+---@param stream unknown battle stream under the secondary roll
+---@return BattleRng the stream once it proves its draw contract
+local function checkSecondaryStream(stream)
+  assert(type(stream) == "table", "secondaries draw from the battle stream")
+  local candidate = stream --[[@as table<string, unknown>]]
+  assert(type(candidate.nextU16) == "function", "secondaries draw from the battle stream")
+  assert(BattleRng.ALGORITHM == "gen4-lcrng", "secondaries draw from the native battle stream")
+  return stream --[[@as BattleRng]]
+end
+
+-- Safeguard and mist gates for secondaries: safeguard absorbs
+-- conditions and confusion on the defender side, while mist absorbs
+-- foe-targeted stage drops. Source references: the condition
+-- subscripts in files/battledata/script/subscript and
+-- BtlCmd_ChangeStatStage in src/battle/battle_command.c.
+---@param ctx BattleContext mechanics context under execution
+---@param defender integer defender combatant under the gate
+---@return boolean true when safeguard covers the defender side
+local function safeguarded(ctx, defender)
+  return ctx:sideEffect(ctx:entryOf(defender).side, "safeguard") ~= nil
+end
+
+---@param ctx BattleContext mechanics context under execution
+---@param defender integer defender combatant under the gate
+---@return boolean true when mist covers the defender side
+local function misted(ctx, defender)
+  return ctx:sideEffect(ctx:entryOf(defender).side, "mist") ~= nil
+end
+
+---@param ctx BattleContext mechanics context under execution
+---@param frame table<string, unknown> move frame under execution
+---@param defender integer defender combatant under the condition
+---@param status string native major condition under application
+local function applySecondaryStatus(ctx, frame, defender, status)
+  if safeguarded(ctx, defender) then
+    return
+  end
+  local record = frame --[[@as table<string, unknown>]]
+  local state = {}
+  if status == "toxic" then
+    state = { counter = 0 }
+  end
+  ctx:applyStatus(defender, status, state, causeFor(record))
+end
+
+---@param ctx BattleContext mechanics context under execution
+---@param combatant integer combatant owning the entry under the scope
+---@return table<string, unknown> active owner scope pinned to the live entry
+local function secondaryScope(ctx, combatant)
+  local entry = ctx:entryOf(combatant)
+  if entry.activation == nil then
+    error(BattleErrors.invalidState("battle-local secondaries scope to a live entry", { combatant = combatant }))
+  end
+  return { kind = "active", combatant = combatant, activation = entry.activation }
+end
+
+---@param ctx BattleContext mechanics context under execution
+---@param defender integer defender combatant under the volatile
+local function markSecondaryFlinch(ctx, defender)
+  ctx:addBattleEffect(
+    NativeEffectHandlers.definitionFor("flinch"),
+    secondaryScope(ctx, defender),
+    { kind = "move", combatant = defender },
+    { version = 1, turns = 1 }
+  )
+end
+
+---@param ctx BattleContext mechanics context under execution
+---@param frame table<string, unknown> move frame under execution
+---@param defender integer defender combatant under the volatile
+local function markSecondaryConfusion(ctx, frame, defender)
+  if ctx:hasBattleEffect(defender, "confusion") then
+    return
+  end
+  if safeguarded(ctx, defender) then
+    return
+  end
+  local stream = checkSecondaryStream(frame.stream)
+  local turns = 2 + (stream:nextU16("confusion_turns", causeFor(frame)) % 4)
+  ctx:addBattleEffect(
+    NativeEffectHandlers.definitionFor("confusion"),
+    secondaryScope(ctx, defender),
+    { kind = "move", combatant = userOf(frame) },
+    { version = 1, turns = turns }
+  )
+end
+
+---@param ctx BattleContext mechanics context under execution
+---@param frame table<string, unknown> move frame under execution
+---@param defender integer defender combatant under the volatile
+local function markSecondaryTrap(ctx, frame, defender)
+  if ctx:hasBattleEffect(defender, "bind") then
+    return
+  end
+  local stream = checkSecondaryStream(frame.stream)
+  local turns = 3 + (stream:nextU16("bind_turns", causeFor(frame)) % 4)
+  ctx:addBattleEffect(
+    NativeEffectHandlers.definitionFor("bind"),
+    secondaryScope(ctx, defender),
+    { kind = "move", combatant = userOf(frame) },
+    { version = 1, turns = turns }
+  )
+end
+
+---@param ctx BattleContext mechanics context under execution
+---@param frame table<string, unknown> move frame under execution
+---@param target integer combatant owning the stages under the change
+---@param changes table<integer, table<integer, unknown>> stat/delta pairs under the change
+local function applySecondaryStages(ctx, frame, target, changes)
+  local current = ctx:entryOf(target).stages --[[@as table<string, integer>]]
+  for _, change in ipairs(changes) do
+    local stat = change[1] --[[@as string]]
+    local delta = change[2] --[[@as integer]]
+    local next = StatStages.change(current[stat] --[[@as integer]], delta)
+    if next ~= current[stat] then
+      ctx:changeStage(target, stat, next, causeFor(frame))
+      current[stat] = next
+    end
+  end
+end
+
+---@param ctx BattleContext mechanics context under execution
+---@param frame table<string, unknown> move frame under execution
+---@param defender integer defender combatant under the follow-up
+---@param spec table<string, unknown> single secondary specification under the roll
+local function applySecondary(ctx, frame, defender, spec)
+  local record = frame --[[@as table<string, unknown>]]
+  local locals = record.locals --[[@as table<string, unknown>]]
+  local chance = spec.chance
+  if type(chance) ~= "number" then
+    chance = secondaryChanceOf(frame)
+  end
+  local stream = checkSecondaryStream(frame.stream)
+  if
+    (stream:nextU16("secondary_effect", causeFor(frame)) % 100) >= chance --[[@as integer]]
+  then
+    return
+  end
+  if spec.thawSelf == true then
+    ctx:cureStatus(userOf(frame), "freeze", causeFor(frame))
+    return
+  end
+  if type(spec.randomStatus) == "table" then
+    local options = spec.randomStatus --[[@as table<integer, string>]]
+    local picked = options[(stream:nextU16("secondary_effect", causeFor(frame)) % #options) + 1]
+    applySecondaryStatus(ctx, frame, defender, picked --[[@as string]])
+    return
+  end
+  if type(spec.status) == "string" then
+    local defenders = locals.defenderTypes --[[@as table<integer, unknown>]]
+    local defenderTypes = defenders[defender] --[[@as string[] ]]
+    if
+      not statusTypeImmune(defenderTypes, spec.status --[[@as string]])
+    then
+      applySecondaryStatus(ctx, frame, defender, spec.status --[[@as string]])
+    end
+    return
+  end
+  if type(spec.foeStages) == "table" then
+    if not misted(ctx, defender) then
+      applySecondaryStages(ctx, frame, defender, spec.foeStages --[[@as table<integer, table<integer, unknown>>]])
+    end
+    return
+  end
+  if type(spec.selfStages) == "table" then
+    applySecondaryStages(ctx, frame, userOf(frame), spec.selfStages --[[@as table<integer, table<integer, unknown>>]])
+    return
+  end
+  if spec.volatile == "flinch" then
+    markSecondaryFlinch(ctx, defender)
+    return
+  end
+  if spec.volatile == "confusion" then
+    markSecondaryConfusion(ctx, frame, defender)
+    return
+  end
+  if spec.volatile == "trap" then
+    markSecondaryTrap(ctx, frame, defender)
+    return
+  end
+  error(BattleErrors.missingBehavior("secondaries name a modeled follow-up", {
+    key = record.executingMove --[[@as string]],
+  }))
+end
+
+---@param ctx BattleContext mechanics context under execution
+---@param frame table<string, unknown> move frame under execution
+---@param defender integer defender combatant under the follow-ups
+---@param secondaries table<integer, table<string, unknown>>|nil secondary specifications under the rolls
+local function applySecondaries(ctx, frame, defender, secondaries)
+  if type(secondaries) ~= "table" then
+    return
+  end
+  if not secondariesAllowed(ctx, frame, defender) then
+    return
+  end
+  for _, spec in ipairs(secondaries) do
+    applySecondary(ctx, frame, defender, spec --[[@as table<string, unknown>]])
+  end
+end
+
 ---@param ctx BattleContext mechanics context under execution
 ---@param frame table<string, unknown> move frame under execution
 ---@param defender integer defender combatant under the protection
@@ -549,18 +1032,50 @@ local function emitMissed(ctx, frame, defender)
   ctx:emit("missed", causeFor(frame), { target = defender })
 end
 
+-- Native critical stages for one strike: the curated move bonus plus two
+-- for a focused user, suppressed entirely under a lucky chant. Stages
+-- follow TryCriticalHit in src/battle/overlay_12_0224E4FC.c, where focus
+-- energy contributes two, raised moves contribute one, and the chant
+-- blocks the roll on the defender side.
+---@param ctx BattleContext mechanics context under execution
+---@param frame table<string, unknown> move frame under execution
+---@param user integer user combatant owning the strike
+---@param defender integer defender combatant under the strike
+---@param params table<string, unknown>? curated strike controls owning the hit
+---@param stream BattleRng battle stream owned by the caller
+---@return CriticalResult staged critical outcome for the strike
+local function strikeCritical(ctx, frame, user, defender, params, stream)
+  local controls = params or {}
+  if ctx:hasBattleEffect(defender, "luckychant") then
+    return { critical = false, stage = 0, threshold = Critical.THRESHOLDS[0] }
+  end
+  local stage = controls.critStage or 0
+  if ctx:hasBattleEffect(user, "focusenergy") then
+    stage = stage --[[@as integer]] + 2
+  end
+  return Critical.resolve(stage --[[@as integer]], stream, causeFor(frame))
+end
+
 ---@param ctx BattleContext mechanics context under execution
 ---@param frame table<string, unknown> move frame under execution
 ---@param defender integer defender combatant under the strike
 ---@param power integer curated move power under the staged arithmetic
 ---@param hitIndex integer ordinal of the hit in the sequence
 ---@param targetCount integer sampled target count scaling the spread stage
+---@param params table<string, unknown>? curated strike controls owning the hit
 ---@return integer damage dealt by this hit
-local function stagedHit(ctx, frame, defender, power, hitIndex, targetCount)
+local function stagedHit(ctx, frame, defender, power, hitIndex, targetCount, params)
+  local controls = params or {}
   local combat = combatOf(frame)
   local stream = checkStream(frame.stream)
-  local critical = Critical.resolve(0, stream, causeFor(frame))
-  local stab, effectiveness = StagedTypeModifiers.forStrike(frame, defender)
+  local critical = strikeCritical(ctx, frame, userOf(frame), defender, params, stream)
+  local record = frame --[[@as table<string, unknown>]]
+  local locals = record.locals --[[@as table<string, unknown>]]
+  local stab, effectiveness = StagedTypeModifiers.forStrike(frame, defender, {
+    airborne = ctx:hasBattleEffect(defender, "magnetrise"),
+    foresight = ctx:hasBattleEffect(defender, "foresight"),
+    gravity = locals.gravity == true,
+  })
   local result = Damage.calculate({
     level = combat.level,
     power = power,
@@ -571,7 +1086,17 @@ local function stagedHit(ctx, frame, defender, power, hitIndex, targetCount)
     targetCount = targetCount,
     critical = critical.critical,
   }, stream)
-  local dealt = applyHit(ctx, frame, defender, result.amount)
+  local amount = result.amount
+  if controls.leaveOne == true then
+    local remaining = ctx:damage(defender, 0, causeFor(frame)).before
+    if amount >= remaining then
+      amount = remaining - 1
+      if amount < 0 then
+        amount = 0
+      end
+    end
+  end
+  local dealt = applyHit(ctx, frame, defender, amount)
   emitStruck(ctx, frame, defender, hitIndex, dealt)
   return dealt
 end
@@ -581,14 +1106,32 @@ end
 ---@param defender integer defender combatant under the strike
 ---@param accuracy integer native accuracy percentage, 0 skips the roll
 ---@return boolean true when the strike connects
+-- Strike accuracy through the native checkpoints: a locked-on target
+-- is always struck, identified targets ignore negative evasion, and
+-- gravity scales every accuracy by five thirds. Source references:
+-- BattleSystem_CheckMoveHit in
+-- src/battle/battle_controller_player.c (lock-on bypass, foresight
+-- evasion clamp, gravity scaling).
 local function accuracyGate(ctx, frame, defender, accuracy)
   local stream = checkStream(frame.stream)
   local userStages = ctx:entryOf(userOf(frame)).stages --[[@as table<string, integer>]]
   local targetStages = ctx:entryOf(defender).stages --[[@as table<string, integer>]]
+  local evasionStage = targetStages.evasion
+  if evasionStage < 0 and ctx:hasBattleEffect(defender, "foresight") then
+    evasionStage = 0
+  end
   local stages = {
     accuracyStage = userStages.accuracy,
-    evasionStage = targetStages.evasion,
+    evasionStage = evasionStage,
   }
+  if ctx:hasBattleEffect(defender, "lockon") then
+    accuracy = 0
+  end
+  local record = frame --[[@as table<string, unknown>]]
+  local locals = record.locals --[[@as table<string, unknown>]]
+  if locals.gravity == true and type(accuracy) == "number" and accuracy > 0 then
+    accuracy = math.floor(accuracy --[[@as integer]] * 10 / 6)
+  end
   local resolution
   if accuracy == nil or accuracy == 0 then
     resolution = Accuracy.resolve({
@@ -649,6 +1192,33 @@ local function applyDrain(ctx, frame, dealt)
   ctx:emit("drained", causeFor(frame), { target = userOf(frame), restored = restored })
 end
 
+-- Sport-weakened power follows the native damage calculation: halved
+-- base power for the weakened type while any entry holds the marker.
+-- Source reference: the sport power halving in
+-- src/battle/overlay_12_0224E4FC.c.
+---@param ctx BattleContext mechanics context under execution
+---@param frame table<string, unknown> move frame under execution
+---@param power integer curated strike power under the weakening
+---@return integer weakened strike power for the staged arithmetic
+local function sportWeakenedPower(ctx, frame, power)
+  local record = frame --[[@as table<string, unknown>]]
+  local locals = record.locals --[[@as table<string, unknown>]]
+  local move = locals.move --[[@as table<string, unknown>]]
+  local moveType = move.moveType --[[@as string]]
+  if moveType ~= "electric" and moveType ~= "fire" then
+    return power
+  end
+  for _, combatant in ipairs(ctx:activeCombatants()) do
+    if moveType == "electric" and ctx:hasBattleEffect(combatant, "mudsport") then
+      return math.floor(power / 2)
+    end
+    if moveType == "fire" and ctx:hasBattleEffect(combatant, "watersport") then
+      return math.floor(power / 2)
+    end
+  end
+  return power
+end
+
 ---@param ctx BattleContext mechanics context under execution
 ---@param frame table<string, unknown> move frame under execution
 ---@param params table<string, unknown> curated strike controls owning the hit; power stays
@@ -661,7 +1231,16 @@ local function runStriker(ctx, frame, params)
   if params.power ~= nil then
     power = params.power --[[@as integer]]
   end
+  power = sportWeakenedPower(ctx, frame, power)
   local accuracy = strike.accuracy
+  if params.accuracyOverride ~= nil then
+    accuracy = params.accuracyOverride --[[@as integer]]
+  end
+  if params.skipAccuracy == true then
+    accuracy = 0
+  end
+  local hits = params.hits or 1
+  assert(type(hits) == "number" and hits % 1 == 0 and hits >= 1, "fixed hit counts stay positive integers")
   local connected, dealtTotal = false, 0
   for hitIndex = 1, #targets do
     local defender = targetOf(targets[hitIndex])
@@ -669,7 +1248,14 @@ local function runStriker(ctx, frame, params)
       ctx:emit("substitute-broke", causeFor(frame), { target = defender, hitIndex = hitIndex })
       connected = true
     elseif accuracyGate(ctx, frame, defender, accuracy) then
-      dealtTotal = dealtTotal + stagedHit(ctx, frame, defender, power, hitIndex, #targets)
+      for _ = 1, hits --[[@as integer]] do
+        dealtTotal = dealtTotal + stagedHit(ctx, frame, defender, power, hitIndex, #targets, params)
+        applySecondaries(ctx, frame, defender, params.secondaries --[[@as table<integer, table<string, unknown>>?]])
+        local health = ctx:damage(defender, 0, causeFor(frame))
+        if health.after == 0 then
+          break
+        end
+      end
       connected = true
       if params.drain == true then
         applyDrain(ctx, frame, dealtTotal)
@@ -971,6 +1557,104 @@ local function stepWeight(ctx, frame)
   return runStriker(ctx, record, { power = power })
 end
 
+-- Pay Day scatters five coins per user level on a connecting strike;
+-- the session totals the scatter into the battle payout. Source
+-- reference: the pay day subscript in
+-- files/battledata/script/subscript/subscript_0048_PayDay.s.
+local function stepPayday(ctx, frame)
+  assert(type(ctx) == "table", "damage steps through the battle context")
+  assert(type(frame) == "table", "damage steps from its move frame")
+  local record = frame --[[@as table<string, unknown>]]
+  local outcome = runStriker(ctx, record, {})
+  if outcome.result == "hit" then
+    local combat = combatOf(record)
+    outcome.payday = 5 * combat.level --[[@as integer]]
+  end
+  return outcome
+end
+
+-- Brick Break lands its strike, then drops the defender side screens
+-- whether or not they softened this blow.
+local function stepBrickBreak(ctx, frame)
+  assert(type(ctx) == "table", "damage steps through the battle context")
+  assert(type(frame) == "table", "damage steps from its move frame")
+  local record = frame --[[@as table<string, unknown>]]
+  local outcome = runStriker(ctx, record, {})
+  if outcome.result == "hit" then
+    local defender = targetOf((record.targets --[[@as table<integer, unknown>]])[1])
+    ctx:removeBattleEffect(defender, "reflect")
+    ctx:removeBattleEffect(defender, "lightscreen")
+  end
+  return outcome
+end
+
+-- Item-taking strikes deal their damage, then record the ordered item
+-- intent for the inventory owners: stealing, knocking off, and
+-- berry-eating settle downstream, never in the live Bag. This follows
+-- the identity item-intent contract beside the shared striker.
+---@param mode string item operation under the intent
+---@return fun(ctx: BattleContext, frame: table<string, unknown>): table<string, unknown> step handler striking then recording
+local function makeStealIntent(mode)
+  local function stepStealIntent(ctx, frame)
+    assert(type(ctx) == "table", "damage steps through the battle context")
+    assert(type(frame) == "table", "damage steps from its move frame")
+    local record = frame --[[@as table<string, unknown>]]
+    local outcome = runStriker(ctx, record, {})
+    if outcome.result == "hit" then
+      ctx:emit("item-intent", causeFor(record), {
+        target = targetOf((record.targets --[[@as table<integer, unknown>]])[1]),
+        mode = mode,
+      })
+    end
+    return outcome
+  end
+  return stepStealIntent
+end
+
+-- Feint only strikes a protecting target: without the protection
+-- bracket the whole move fails, and with it the bracket breaks first.
+-- Source reference: BtlCmd_TryFeint in src/battle/battle_command.c.
+local function stepFeint(ctx, frame)
+  assert(type(ctx) == "table", "damage steps through the battle context")
+  assert(type(frame) == "table", "damage steps from its move frame")
+  local record = frame --[[@as table<string, unknown>]]
+  local defender = targetOf((record.targets --[[@as table<integer, unknown>]])[1])
+  if not ctx:hasBattleEffect(defender, "PROTECT") and not ctx:hasBattleEffect(defender, "DETECT") then
+    return { kind = "complete", result = "failed" }
+  end
+  ctx:removeBattleEffect(defender, "PROTECT")
+  ctx:removeBattleEffect(defender, "DETECT")
+  return runStriker(ctx, record, {})
+end
+
+-- Thunder and Blizzard share one weather-accuracy rule beside their own
+-- condition secondary: rain always lands thunder and hail always lands
+-- blizzard, while harsh sun halves thunder accuracy. Source references:
+-- BattleSystem_CheckMoveHit and BattleSystem_CheckMoveEffect in
+-- src/battle/battle_controller_player.c.
+---@param params table<string, unknown> curated strike controls owning the hit
+---@param rainy string field definition identity always landing the strike
+---@param sunny string|nil field definition identity halving the strike
+---@return fun(ctx: BattleContext, frame: table<string, unknown>): table<string, unknown> step handler striking under weather law
+local function makeWeatherStrike(params, rainy, sunny)
+  local function stepWeatherStrike(ctx, frame)
+    assert(type(ctx) == "table", "damage steps through the battle context")
+    assert(type(frame) == "table", "damage steps from its move frame")
+    local record = frame --[[@as table<string, unknown>]]
+    local controls = {}
+    for key, value in pairs(params) do
+      controls[key] = value
+    end
+    if ctx:fieldEffect(rainy) ~= nil then
+      controls.skipAccuracy = true
+    elseif sunny ~= nil and ctx:fieldEffect(sunny) ~= nil then
+      controls.accuracyOverride = 50
+    end
+    return runStriker(ctx, record, controls)
+  end
+  return stepWeatherStrike
+end
+
 ---@param key string damage move identity under binding
 ---@return fun(ctx: BattleContext, frame: table<string, unknown>): table<string, unknown> distinct per-move handler for the registry
 local function bodyFor(key)
@@ -1000,6 +1684,33 @@ local function bodyFor(key)
   end
   if WEIGHT[key] == true then
     return bind(stepWeight)
+  end
+  if key == "PAY_DAY" then
+    return bind(stepPayday)
+  end
+  if key == "BRICK_BREAK" then
+    return bind(stepBrickBreak)
+  end
+  if key == "KNOCK_OFF" then
+    return bind(makeStealIntent("remove"))
+  end
+  if key == "COVET" then
+    return bind(makeStealIntent("steal"))
+  end
+  if key == "PLUCK" or key == "BUG_BITE" then
+    return bind(makeStealIntent("eat"))
+  end
+  if key == "FALSE_SWIPE" then
+    return bind(makeStriker({ leaveOne = true }))
+  end
+  if key == "FEINT" then
+    return bind(stepFeint)
+  end
+  if key == "THUNDER" then
+    return bind(makeWeatherStrike({ secondaries = { { status = "paralysis" } } }, "raindance", "sunnyday"))
+  end
+  if key == "BLIZZARD" then
+    return bind(makeWeatherStrike({ secondaries = { { status = "freeze" } } }, "hail", nil))
   end
   if OHKO[key] == true or GATED[key] == true then
     return bind(stepGated)

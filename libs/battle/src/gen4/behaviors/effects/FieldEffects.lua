@@ -239,6 +239,39 @@ local DEFINITIONS = {
     timings = { binding("residual", "wish", "recovery") },
     lifecycle = lifecycle("replace", "position"),
   },
+  -- Tailwind doubles its side speed for three turns.
+  {
+    key = "tailwind",
+    stateVersion = 1,
+    validateState = turnsState(1, 0, 8),
+    timings = { binding("residual", "tailwind", "expiration") },
+    lifecycle = lifecycle("replace", "clear"),
+  },
+  -- Lucky chant shields its side from critical strikes for five turns.
+  {
+    key = "luckychant",
+    stateVersion = 1,
+    validateState = turnsState(1, 0, 8),
+    timings = { binding("residual", "luckychant", "expiration") },
+    lifecycle = lifecycle("replace", "clear"),
+  },
+  -- Sport markers halve the weakened type power while their user stands:
+  -- the native flags live on the battler and clear on switch, so these
+  -- entries carry no countdown and never dispatch.
+  {
+    key = "mudsport",
+    stateVersion = 1,
+    validateState = emptyState(1),
+    timings = { binding("leave", "mudsport", "affliction") },
+    lifecycle = lifecycle("replace", "clear"),
+  },
+  {
+    key = "watersport",
+    stateVersion = 1,
+    validateState = emptyState(1),
+    timings = { binding("leave", "watersport", "affliction") },
+    lifecycle = lifecycle("replace", "clear"),
+  },
 }
 
 --- Publishes every native field, side, and delayed slot definition

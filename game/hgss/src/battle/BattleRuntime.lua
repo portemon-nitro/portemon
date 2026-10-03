@@ -777,6 +777,9 @@ function BattleRuntime:_sessionSpeciesFacts(record)
     assert(type(formRecord.levelUpMoves) == "table", "species forms carry their learnsets")
     assert(type(speciesRecord.baseExpYield) == "number", "species records carry their base experience yield")
     assert(type(speciesRecord.evYield) == "table", "species records carry their effort yield")
+    -- Gender ratios travel for attract and captivate law; the executor
+    -- resolves battle genders without reaching back into the catalog.
+    assert(type(speciesRecord.genderRatio) == "number", "species records carry their gender ratio")
     local bucket = facts[entry.species]
     if bucket == nil then
       bucket = {}
@@ -789,6 +792,7 @@ function BattleRuntime:_sessionSpeciesFacts(record)
       levelUpMoves = copyValue(formRecord.levelUpMoves),
       baseExpYield = speciesRecord.baseExpYield,
       evYield = copyValue(speciesRecord.evYield),
+      genderRatio = speciesRecord.genderRatio,
     }
   end
   return facts
@@ -1298,11 +1302,14 @@ function BattleRuntime:_commitRewards(result)
     -- Native trainer wins derive their own reward inputs from the
     -- materialized trainer entries and the live battle state: no
     -- caller-injected prize is required, and incomplete reward facts
-    -- fail planning before anything publishes.
+    -- fail planning before anything publishes. Scattered pay day coins
+    -- ride the session snapshot into the same plan.
+    local snapshot = self._session:capture()
     return HgssBattleRewards.planMoney({
       trainers = self:_trainerRewardFacts(),
       battleFormat = self:_rewardFormat(),
       moneyMultiplier = self:_rewardMultiplier(),
+      paydayScattered = snapshot.paydayScattered or 0,
     })
   end
   if result == "loss" and self._player ~= nil then

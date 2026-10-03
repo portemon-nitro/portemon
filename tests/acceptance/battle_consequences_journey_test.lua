@@ -243,7 +243,7 @@ function T.tests.post_battle_consequences_commit_through_the_live_owners()
         kind = "wild",
         payload = { species = "TOTODILE", level = 4, mon = lossFoe },
       }
-      local lossScenario = ScenarioFactory.fromEncounter(lossLaunch.payload, { party = game.runtime.monService })
+      local lossScenario = ScenarioFactory.fromEncounter(lossLaunch.payload, { party = game.runtime.monService, player = { trainerId = 99, trainerName = "MINT", language = "french" } })
       local loss = BattleRuntime.new({
         request = lossLaunch,
         scenario = lossScenario,
@@ -305,7 +305,7 @@ function T.tests.post_battle_consequences_commit_through_the_live_owners()
     local catchLaunch =
       { id = "launch-consequence-catch", kind = "wild", payload = { species = "TOTODILE", level = 4, mon = wildFoe } }
     local catchScenario =
-      ScenarioFactory.fromEncounter(catchLaunch.payload, { party = game.runtime.monService })
+      ScenarioFactory.fromEncounter(catchLaunch.payload, { party = game.runtime.monService, player = { trainerId = 99, trainerName = "MINT", language = "french" } })
     local wildMon = catchScenario.participants[2].roster[1].mon
     local capture = BattleRuntime.new({
       request = catchLaunch,
@@ -358,7 +358,7 @@ function T.tests.post_battle_consequences_commit_through_the_live_owners()
           aiPasses = {},
         },
       },
-    }, { party = game.runtime.monService })
+    }, { party = game.runtime.monService, player = { trainerId = 99, trainerName = "MINT", language = "french" } })
     -- Derived independently from the pinned class rate and the final
     -- member level, never through the production reward planner.
     local expectedPrize = trainer.level * 4 * trainer.classRate
@@ -409,7 +409,7 @@ function T.tests.post_battle_consequences_commit_through_the_live_owners()
     -- stand-in settles the standing only when the party can land one hit.
     game.runtime.monService:healParty()
     local roamerScenario =
-      ScenarioFactory.fromEncounter(roamerLaunch.payload, { party = game.runtime.monService })
+      ScenarioFactory.fromEncounter(roamerLaunch.payload, { party = game.runtime.monService, player = { trainerId = 99, trainerName = "MINT", language = "french" } })
     local roamerBattle = BattleRuntime.new({
       request = roamerLaunch,
       scenario = roamerScenario,
