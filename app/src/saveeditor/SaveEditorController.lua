@@ -128,23 +128,6 @@ function Controller:press(action)
         self.focus = returnFocus
       end
       return { kind = "cancel", modal = modal, returnFocus = returnFocus }
-    elseif action == "up" or action == "down" or action == "left" or action == "right" then
-      local choices = self.modal == "leave" and { "save", "discard", "cancel" }
-        or self.modal == "draft" and { "apply", "discard", "cancel" }
-        or { "remove", "cancel" }
-      local index = 1
-      for choiceIndex, choice in ipairs(choices) do
-        if self.focus == choice then
-          index = choiceIndex
-          break
-        end
-      end
-      local delta = 1
-      if action == "left" or action == "up" then
-        delta = -1
-      end
-      self.focus = choices[(index - 1 + delta) % #choices + 1]
-      return nil
     elseif action == "confirm" or action == "activate" then
       return { kind = "action", action = self.focus }
     end

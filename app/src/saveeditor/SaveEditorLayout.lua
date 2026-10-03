@@ -33,8 +33,7 @@ function Layout.compute(view, width, height, metrics)
     }
   assert(type(metrics) == "table" and type(metrics.measure) == "function" and metrics.lineHeight > 0)
   local margin = width <= 280 and 4 or 12
-  local footerHeight = height <= 200 and 38 or 40
-  local headerHeight = height <= 200 and 32 or 48
+  local footerHeight = math.max(40, metrics.lineHeight + 24)
   local railWidth = width >= 400 and 88 or 0
   local rows, targets, focusable, disabledTargets, focusPositions = {}, {}, {}, {}, {}
   local locationGrid
@@ -48,21 +47,21 @@ function Layout.compute(view, width, height, metrics)
   end
   local innerWidth = math.max(1, width - margin * 2 - (railWidth > 0 and railWidth + 6 or 0))
   local contentX = margin + (railWidth > 0 and railWidth + 6 or 0)
-  local contentTop = headerHeight + (railWidth > 0 and 0 or 2)
+  local contentTop = margin
   local contentBottom = math.max(contentTop + 1, height - footerHeight - 2)
   local section = view.section or "Player"
-  local rowHeight = math.max(16, metrics.lineHeight + 5)
+  local rowHeight = math.max(30, metrics.lineHeight + 16)
   local enabledSections = { "Location", "Player", "Party", "Bag", "Progress" }
   local navigation = {}
   if railWidth > 0 then
     for index, name in ipairs(enabledSections) do
       local id = "section:" .. name
-      targets[id] = rect(margin, headerHeight + (index - 1) * 30, railWidth, 26)
+      targets[id] = rect(margin, margin + (index - 1) * 34, railWidth, 30)
       navigation[#navigation + 1] = { role = "action", targetId = id, id = id, label = name }
       addFocusable(id)
     end
   else
-    targets.section = rect(margin, headerHeight + 1, innerWidth, 18)
+    targets.section = rect(margin, 0, innerWidth, math.max(30, metrics.lineHeight + 16))
     navigation[#navigation + 1] = {
       role = "action",
       targetId = "section",
@@ -70,7 +69,7 @@ function Layout.compute(view, width, height, metrics)
       label = "Section: " .. section,
     }
     addFocusable("section")
-    contentTop = headerHeight + 22
+    contentTop = targets.section.y + targets.section.height
   end
   local function addRow(role, id, label, value, enabled)
     local y = contentTop + (#rows * rowHeight)
@@ -120,14 +119,21 @@ function Layout.compute(view, width, height, metrics)
 
   if section == "Party" and (view.partyPage == "detail" or view.partyPage == "draft") and view.partySubpages ~= nil then
     local labels = view.partySubpages
-    local tabWidth = math.max(1, math.floor(innerWidth / #labels))
-    for index, label in ipairs(labels) do
+    local tabX, tabY = contentX, contentTop
+    for _, label in ipairs(labels) do
       local id = "party:subpage:" .. label
-      local tab = rect(contentX + (index - 1) * tabWidth, contentTop, tabWidth - 1, rowHeight - 2)
+      local tabWidth = math.ceil(metrics.measure(label) + 22)
+      assert(tabWidth <= innerWidth, "party subpage label must fit within the available layout width")
+      if tabX > contentX and tabX + tabWidth > contentX + innerWidth then
+        tabX = contentX
+        tabY = tabY + rowHeight + 2
+      end
+      local tab = rect(tabX, tabY, tabWidth, rowHeight)
       targets[id] = tab
       addFocusable(id)
+      tabX = tabX + tabWidth
     end
-    contentTop = contentTop + rowHeight
+    contentTop = tabY + rowHeight + 2
   end
 
   if view.notice then
@@ -417,7 +423,7 @@ function Layout.compute(view, width, height, metrics)
       local x = contentX + columnIndex * (cellWidth + 3)
       local y = contentBottom - actionHeight + rowIndex * rowHeight
       local id = action[1]
-      targets[id] = rect(x, y, cellWidth, rowHeight - 2)
+      targets[id] = rect(x, y, cellWidth, rowHeight)
       rows[#rows + 1] = { role = "action", targetId = id, id = id, label = action[2], enabled = action[3] ~= false }
       addFocusable(id)
       if action[3] == false then
@@ -512,10 +518,28 @@ function Layout.compute(view, width, height, metrics)
     { id = "discard", label = "Discard", enabled = view.ready == true and view.dirty == true },
     { id = "back", label = "Back", enabled = true },
   }
-  local actionWidth = math.max(1, math.floor((innerWidth - 8) / 3))
+  local actionWidths = {
+    math.max(40, metrics.measure("Save") + 24),
+    math.max(40, metrics.measure("Discard") + 24),
+    math.max(40, metrics.measure(view.locationSave and "Cancel check" or "Back") + 24),
+  }
+  local widthTotal = actionWidths[1] + actionWidths[2] + actionWidths[3]
+  if widthTotal > innerWidth - 8 then
+    local actionWidth = math.floor((innerWidth - 8) / 3)
+    actionWidths = { actionWidth, actionWidth, actionWidth }
+    widthTotal = actionWidth * 3
+  end
+  local actionGap = 4
+  local actionX = contentX + math.floor((innerWidth - widthTotal - actionGap * 2) / 2)
+  local actionHeight = math.max(30, metrics.lineHeight + 16)
   for index, action in ipairs(actions) do
-    local x = contentX + (index - 1) * (actionWidth + 4)
-    targets[action.id] = rect(x, height - footerHeight + 14, actionWidth, footerHeight - 16)
+    targets[action.id] = rect(
+      actionX,
+      height - footerHeight + math.floor((footerHeight - actionHeight) / 2),
+      actionWidths[index],
+      actionHeight
+    )
+    actionX = actionX + actionWidths[index] + actionGap
     action.role, action.targetId, action.value = "action", action.id, action.label
     addFocusable(action.id)
     if not action.enabled then
@@ -527,11 +551,8 @@ function Layout.compute(view, width, height, metrics)
     local dialog = view.valueEditor
     local dialogTop = contentTop + 4
     if dialog.kind == "choice" then
-      local controlWidth = math.max(1, math.floor(innerWidth / 3))
-      targets["group-previous"] = rect(contentX, dialogTop, controlWidth - 2, rowHeight)
-      targets["clear-search"] = rect(contentX + controlWidth, dialogTop, controlWidth - 2, rowHeight)
-      targets["group-next"] = rect(contentX + controlWidth * 2, dialogTop, innerWidth - controlWidth * 2, rowHeight)
-      local bodyTop = dialogTop + rowHeight + 2
+      local searchHeight = math.max(metrics.lineHeight + 8, 24)
+      local bodyTop = dialogTop + searchHeight + 2
       local bodyBottom = contentBottom - rowHeight - 2
       local bodyHeight = math.max(0, bodyBottom - bodyTop)
       local offset = view.scrollOffsets and view.scrollOffsets["value:choice"] or 0
@@ -568,6 +589,9 @@ function Layout.compute(view, width, height, metrics)
       targets.cancel = rect(contentX + footerWidth, contentBottom - rowHeight, innerWidth - footerWidth, rowHeight - 1)
       addFocusable("confirm")
       addFocusable("cancel")
+      if #dialog.options == 0 then
+        disabledTargets.confirm = true
+      end
     elseif dialog.kind == "name" then
       local naming = assert(dialog.naming)
       local cellWidth = math.max(1, math.floor(innerWidth / 13))
@@ -620,7 +644,7 @@ function Layout.compute(view, width, height, metrics)
     end
   end
   if view.modal ~= nil then
-    local y = math.max(headerHeight, math.floor(height / 2) - 16)
+    local y = math.max(margin, math.floor(height / 2) - 16)
     local choices = view.modal == "draft" and { "apply", "discard", "cancel" }
       or view.modal == "remove" and { "remove", "cancel" }
       or { "save", "discard", "cancel" }
@@ -645,9 +669,6 @@ function Layout.compute(view, width, height, metrics)
     local editor = assert(view.valueEditor, "value scope needs its active editor")
     scopeAllowed = { confirm = true, cancel = true }
     if editor.kind == "choice" then
-      scopeAllowed["group-previous"] = true
-      scopeAllowed["group-next"] = true
-      scopeAllowed["clear-search"] = true
       for _, option in ipairs(editor.options) do
         scopeAllowed["choice:" .. option.key] = true
       end
@@ -889,6 +910,22 @@ function Layout.compute(view, width, height, metrics)
     )
   end
   assert(focusGraph[defaultFocus], "layout default focus must be present in its graph")
+  local scrollOwner
+  if scope.kind ~= "decision" then
+    if scope.kind == "value" then
+      if view.valueEditor.kind == "choice" and viewports["value:choice"] ~= nil then
+        scrollOwner = "value:choice"
+      end
+    elseif section == "Location" and viewports["location:map-list"] ~= nil then
+      scrollOwner = "location:map-list"
+    elseif section == "Party" and viewports.party ~= nil then
+      scrollOwner = "party"
+    elseif section == "Bag" and viewports.bag ~= nil then
+      scrollOwner = "bag"
+    elseif section == "Progress" and viewports.flags ~= nil then
+      scrollOwner = "flags"
+    end
+  end
   for targetId, targetRect in pairs(targets) do
     local viewportId = viewportByTarget[targetId]
     local list = viewportId and viewports[viewportId]
@@ -933,7 +970,6 @@ function Layout.compute(view, width, height, metrics)
   end
   return {
     viewport = rect(0, 0, width, height),
-    header = rect(margin, 2, innerWidth, headerHeight - 2),
     content = rect(contentX, contentTop, innerWidth, contentBottom - contentTop),
     footer = rect(margin, height - footerHeight, innerWidth, footerHeight),
     rows = rows,
@@ -949,6 +985,7 @@ function Layout.compute(view, width, height, metrics)
     locationStatus = locationStatus,
     scrollOffset = view.scrollOffset or 0,
     viewports = viewports,
+    scrollOwner = scrollOwner,
     scopeId = scope.id,
     scopeEpoch = scope.epoch,
     metrics = metrics,
@@ -1002,9 +1039,6 @@ function Layout.hitTest(layout, view, x, y)
       allowed = {
         cancel = true,
         confirm = true,
-        ["group-previous"] = true,
-        ["group-next"] = true,
-        ["clear-search"] = true,
       }
       for _, option in ipairs(view.valueEditor.options) do
         allowed["choice:" .. option.key] = true

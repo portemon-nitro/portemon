@@ -157,11 +157,23 @@ function T.choice_browsing_uses_the_full_filtered_sequence()
     options[index] = { key = string.format("K%02d", index), label = "Choice " .. index }
   end
   local editor = SaveEditorValueEditor.new({ kind = "choice", value = "K01", options = options })
-  Assert.equal(#editor:snapshot().options, 20)
+  local opening = editor:snapshot()
+  Assert.equal(#opening.options, 20)
+  local layout = SaveEditorLayout.compute({
+    section = "Bag",
+    status = "ready",
+    ready = true,
+    dirty = false,
+    bagRows = {},
+    valueEditor = opening,
+    scope = { id = "value:choice", epoch = 1 },
+    scrollOffsets = {},
+  }, 256, 192, { lineHeight = 14, measure = function(text) return #text * 7 end })
+  Assert.isNil(layout.targets["group-previous"], "flat choice view has no group control")
+  Assert.isNil(layout.targets["group-next"], "flat choice view has no group control")
+  Assert.isNil(layout.targets["clear-search"], "flat choice view has no visible Clear control")
   Assert.isTrue(editor:press("down"))
   Assert.equal(editor:snapshot().selectedKey, "K02")
-  Assert.isTrue(editor:press("group_next"))
-  Assert.equal(editor:snapshot().group, "K")
   Assert.isTrue(editor:textinput("Choice 1"))
   Assert.equal(editor:snapshot().options[1].key, "K01")
   Assert.isTrue(editor:press("backspace"), "search backspace removes one UTF-8 glyph")

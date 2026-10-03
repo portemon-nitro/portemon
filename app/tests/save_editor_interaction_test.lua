@@ -185,7 +185,7 @@ function T.tests.choice_layout_publishes_active_scope_records_and_clips_row_hits
 
   local viewport = assert(layout.viewports["value:choice"])
   Assert.notNil(viewport.clip)
-  Assert.equal(viewport.rowExtent, 19)
+  Assert.equal(viewport.rowExtent, 30)
   Assert.equal(viewport.gap, 0)
   Assert.equal(viewport.firstIndex, 1)
   Assert.isTrue(viewport.lastIndex < #options, "the short viewport must expose a strict row range")

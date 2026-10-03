@@ -32,7 +32,7 @@ local function fixture(scope, width, height, topology, section, variant)
     saveId = "TEST-SAVE-42",
     section = section,
     ready = true,
-    dirty = true,
+    dirty = variant ~= "clean-status",
     focus = "flag:FLAG_TEST",
     session = { playerName = "PLAYER", versionId = "HEARTGOLD", flags = {} },
     flagRows = { { name = "FLAG_TEST", id = 1, value = false } },
@@ -46,6 +46,10 @@ local function fixture(scope, width, height, topology, section, variant)
     },
     textMetrics = realTextMetrics(scope),
   }
+  if section == "Player" and variant == "leave" then
+    view.modal = "leave"
+    view.scope = { id = "modal:leave", epoch = 2, kind = "decision", focusId = "cancel" }
+  end
   if section == "Party" then
     view.partyPage = variant or "list"
     if view.partyPage == "list" then
@@ -136,7 +140,7 @@ local function draw(scope, width, height, topology, name, section, variant)
   local drawnText = {}
   local text = {
     textWidth = function(_, value)
-      return #value * 8
+      return view.textMetrics.measure(value)
     end,
     drawTextWithPalette = function(_, value, x, y)
       drawnText[#drawnText + 1] = value
@@ -162,7 +166,8 @@ local function draw(scope, width, height, topology, name, section, variant)
   end
 
   local layout = Layout.compute(view, plan.content.width, plan.content.height, view.textMetrics)
-  for _, targetId in ipairs({ "save", "discard", "back" }) do
+  local visibleActions = view.modal and { "save", "discard", "cancel" } or { "save", "discard", "back" }
+  for _, targetId in ipairs(visibleActions) do
     local target = assert(layout.targets[targetId], name .. " must publish " .. targetId)
     local rect = target.rect
     Assert.isTrue(rect.x >= 0 and rect.y >= 0)
@@ -211,7 +216,7 @@ local function draw(scope, width, height, topology, name, section, variant)
       layout.locationGrid.clip.height >= view.location.scale,
       name .. " keeps at least one complete tile row at the selected default scale"
     )
-  else
+  elseif view.section == "Bag" then
     Assert.notNil(layout.targets["bag:item:POTION"], name .. " exposes the selected stack")
     Assert.notNil(layout.targets["bag:quantity"], name .. " exposes quantity editing")
     Assert.notNil(layout.targets["bag:add"], name .. " exposes Add item")
@@ -238,10 +243,9 @@ local function draw(scope, width, height, topology, name, section, variant)
   end
   Assert.isTrue(changed > 20, name .. " must render visible editor chrome")
   local renderedText = table.concat(drawnText, " ")
-  Assert.isTrue(renderedText:find("TEST%-SAVE%-42"), name .. " shows the selected save identity")
-  Assert.isTrue(renderedText:find("PLAYER"), name .. " shows the player identity")
-  Assert.isTrue(renderedText:find("HEARTGOLD"), name .. " shows the game version")
-  Assert.isTrue(renderedText:find("Unsaved changes"), name .. " shows the current dirty state in the footer")
+  if section == "Player" and variant ~= "leave" then
+    Assert.isTrue(renderedText:find("PLAYER"), name .. " shows the player identity")
+  end
   if view.section == "Progress" then
     for _, targetId in ipairs({ "group-previous", "group-next" }) do
       local target = assert(layout.targets[targetId], name .. " exposes touch browsing for flag groups")
@@ -272,7 +276,49 @@ local function draw(scope, width, height, topology, name, section, variant)
   end
   renderer:dispose()
   presentation:dispose()
-  return data
+  return data, renderedText, layout
+end
+
+function T.player_shell_renders_headerless_controls_and_a_dirty_leave_decision(scope)
+  for _, size in ipairs({ { 256, 192 }, { 640, 480 } }) do
+    local topology = ScreenTopology.oneDisplay({
+      id = "main",
+      rect = { x = 0, y = 0, width = size[1], height = size[2] },
+      touch = true,
+      role = "world",
+    })
+    local _, renderedText, layout = draw(scope, size[1], size[2], topology, "player-shell", "Player", "leave")
+    Assert.isFalse(renderedText:find("Save Editor", 1, true) ~= nil, "shell has no editor title header")
+    Assert.isFalse(renderedText:find("TEST-SAVE-42", 1, true) ~= nil, "shell has no save identity header")
+    Assert.isFalse(renderedText:find("HEARTGOLD", 1, true) ~= nil, "shell has no version identity header")
+    for _, label in ipairs({ "Save", "Discard", "Cancel", "Save changes before leaving?" }) do
+      Assert.isTrue(renderedText:find(label, 1, true) ~= nil, "leave decision renders " .. label)
+    end
+    Assert.isNil(layout.header, "shell publishes no header geometry")
+  end
+end
+
+function T.dirty_shell_has_no_persistent_status_prose(scope)
+  local topology = ScreenTopology.oneDisplay({
+    id = "main",
+    rect = { x = 0, y = 0, width = 640, height = 480 },
+    touch = true,
+    role = "world",
+  })
+  local dualDisplay = ScreenTopology.dualDisplay(
+    { id = "upper", rect = { x = 0, y = 0, width = 256, height = 192 }, touch = false, role = "world" },
+    { id = "lower", rect = { x = 0, y = 192, width = 256, height = 192 }, touch = true, role = "auxiliary" }
+  )
+  for _, case in ipairs({
+    { topology = singleDisplay, width = 640, height = 480, name = "dirty-status-single", variant = "dirty-status" },
+    { topology = dualDisplay, width = 256, height = 384, name = "dirty-status-dual", variant = "dirty-status" },
+    { topology = singleDisplay, width = 640, height = 480, name = "clean-status-single", variant = "clean-status" },
+    { topology = dualDisplay, width = 256, height = 384, name = "clean-status-dual", variant = "clean-status" },
+  }) do
+    local _, renderedText = draw(scope, case.width, case.height, case.topology, case.name, "Player", case.variant)
+    Assert.isFalse(renderedText:find("Saved", 1, true) ~= nil, case.name .. " has no persistent saved status")
+    Assert.isFalse(renderedText:find("Unsaved changes", 1, true) ~= nil, case.name .. " has no persistent dirty status")
+  end
 end
 
 function T.layouts_render_reachable_actions_on_compact_wide_tall_and_dual_surfaces(scope)

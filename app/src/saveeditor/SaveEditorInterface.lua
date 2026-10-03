@@ -44,7 +44,7 @@ local function mapInput(event, view, plan)
   end
   local content = assert(plan.content)
   local targetId = Layout.hitTest(content.layout, view, event.x, event.y)
-  local scrollViewportId = view.scrollOwner
+  local scrollViewportId = content.layout.scrollOwner
   local scrollViewport
   if scrollViewportId ~= nil then
     scrollViewport = assert(content.layout.viewports[scrollViewportId], "active scroll owner needs a viewport")

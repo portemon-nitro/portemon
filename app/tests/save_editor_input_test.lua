@@ -167,6 +167,15 @@ local function dragViewport(state, view, viewportId, deltaY, pointerId)
   state:touchreleased(pointerId, hostX, endY)
 end
 
+local function dragRect(state, view, rect, deltaY, pointerId)
+  local pane = selectedPane(view)
+  local x, y = LayoutGeometry.logicalToHost(pane.placement, rect.x + rect.width / 2, rect.y + rect.height / 2)
+  local _, endY = LayoutGeometry.logicalToHost(pane.placement, rect.x + rect.width / 2, rect.y + rect.height / 2 + deltaY)
+  state:touchpressed(pointerId, x, y)
+  state:touchmoved(pointerId, x, endY)
+  state:touchreleased(pointerId, x, endY)
+end
+
 local function filteredMapMatches(map, query)
   query = query:lower()
   return map.symbol:lower():find(query, 1, true) ~= nil
@@ -276,7 +285,7 @@ local function copy(value)
   return result
 end
 
-local function withEditor(width, height, topology, fn)
+local function withEditor(width, height, topology, fn, pixelRatio)
   local State = stateModule()
   local fixture = Fixture.new()
   local originalGlobal = SaveFs.global
@@ -310,7 +319,10 @@ local function withEditor(width, height, topology, fn)
     end,
   }
   local context = DisplayContext.new({
-    graphics = love.graphics,
+    graphics = pixelRatio and {
+      getDimensions = function() return width, height end,
+      getDPIScale = function() return pixelRatio end,
+    } or love.graphics,
     topologyProvider = function()
       return topology
     end,
@@ -1522,11 +1534,28 @@ function T.tests.wheel_input_belongs_to_the_active_choice_or_decision_scope()
   withEditor(256, 192, topology, function(state)
     selectSection(state, Layout, "Bag")
     fillBagPocket(state, 8)
-    local bag = state:view()
     state:wheelmoved(0, -1)
     local scrolledBag = state:view()
     local bagOffset = scrolledBag.layout.viewports.bag.offset
-    click(state, selectedPane(scrolledBag), scrolledBag.layout.targets["bag:add"], true)
+    local selectedItemTarget = assert(scrolledBag.layout.viewports.bag.rowTargets[
+      scrolledBag.layout.viewports.bag.firstIndex
+    ])
+    click(state, selectedPane(scrolledBag), scrolledBag.layout.targets[selectedItemTarget], true)
+    local selectedBag = state:view()
+    click(state, selectedPane(selectedBag), selectedBag.layout.targets["bag:quantity"], true)
+    local integer = state:view()
+    Assert.equal(integer.valueEditor.kind, "integer", "Quantity opens the nested integer editor")
+    local integerBagOffset = integer.layout.viewports.bag.offset
+    local integerDraft = assert(integer.layout.targets["value-draft"]).rect
+    state:wheelmoved(0, -1)
+    local afterIntegerWheel = state:view()
+    local integerWheelStable = afterIntegerWheel.layout.viewports.bag.offset == integerBagOffset
+    dragRect(state, afterIntegerWheel, integerDraft, -32, "integer-scroll")
+    local afterIntegerDrag = state:view()
+    local integerDragStable = afterIntegerDrag.layout.viewports.bag.offset == integerBagOffset
+    state:keypressed("escape")
+    local resumedBag = state:view()
+    click(state, selectedPane(resumedBag), resumedBag.layout.targets["bag:add"], true)
 
     local choice = state:view()
     local choiceOffset = choice.layout.viewports["value:choice"].offset
@@ -1534,6 +1563,27 @@ function T.tests.wheel_input_belongs_to_the_active_choice_or_decision_scope()
       choice.layout.viewports["value:choice"].contentExtent > choice.layout.viewports["value:choice"].clip.height,
       "the real item catalog makes the Add picker scrollable"
     )
+    local options = choice.valueEditor.options
+    local selectedIndex = 1
+    for index, option in ipairs(options) do
+      if option.key == choice.valueEditor.selectedKey then
+        selectedIndex = index
+        break
+      end
+    end
+    local choiceViewport = choice.layout.viewports["value:choice"]
+    local visibleRows = math.max(1, choiceViewport.lastIndex - choiceViewport.firstIndex + 1)
+    state:keypressed("right")
+    local pageChoice = state:view()
+    local expectedPageKey = options[math.min(#options, selectedIndex + visibleRows)].key
+    local choicePaged = pageChoice.valueEditor.selectedKey == expectedPageKey
+    state:textinput("no matching item")
+    local noResults = state:view()
+    local confirmDisabled = noResults.layout.targets.confirm.activationEnabled == false
+    state:keypressed("backspace")
+    local backspaceFiltered = state:view().valueEditor.query == "no matching ite"
+    state:keypressed("delete")
+    local deleteCleared = state:view().valueEditor.query == ""
     state:wheelmoved(0, -1)
     local scrolledChoice = state:view()
     local choiceScrolled = scrolledChoice.layout.viewports["value:choice"].offset > choiceOffset
@@ -1549,15 +1599,119 @@ function T.tests.wheel_input_belongs_to_the_active_choice_or_decision_scope()
     state:wheelmoved(0, -1)
     local modalListStable = state:view().layout.viewports.bag.offset == modalBagOffset
     Assert.isTrue(
-      choiceScrolled and choiceBagStable and modalListStable,
+      integerWheelStable and integerDragStable and choicePaged and confirmDisabled and backspaceFiltered and deleteCleared
+        and choiceScrolled and choiceBagStable and modalListStable,
       string.format(
-        "choice wheel scrolls only its picker and modal wheel changes no hidden offset (choice=%s, bag=%s->%s, modal=%s)",
+        "integer wheel/drag=%s/%s choice page=%s empty confirm=%s backspace/delete=%s/%s choice=%s bag=%s->%s modal=%s",
+        tostring(integerWheelStable),
+        tostring(integerDragStable),
+        tostring(choicePaged),
+        tostring(confirmDisabled),
+        tostring(backspaceFiltered),
+        tostring(deleteCleared),
         tostring(choiceScrolled),
         tostring(bagOffset),
         tostring(choiceBagOffset),
         tostring(modalListStable)
       )
     )
+  end)
+end
+
+function T.tests.compact_section_cycling_uses_the_resolved_logical_layout()
+  local _ = stateModule()
+  local topology = ScreenTopology.oneDisplay({
+    id = "main",
+    rect = { x = 0, y = 0, width = 500, height = 480 },
+    touch = false,
+    role = "world",
+  })
+  withEditor(500, 480, topology, function(state)
+    state.controller:setSection("Player")
+    local before = state:view()
+    Assert.isTrue(before.layout.viewport.width < 400, "high-density presentation resolves a compact logical canvas")
+    Assert.notNil(before.layout.targets.section, "compact layout publishes the section chooser target")
+    state.controller:setFocus("money")
+    state:keypressed("right")
+    Assert.equal(state.controller.section, "Party", "logical compact layout cycles right to the next section")
+    Assert.notNil(state:view().layout.targets.section, "the resulting section stays in compact navigation")
+  end, 2)
+end
+
+function T.tests.item_choice_is_flat_filtered_and_uses_clamped_page_navigation()
+  local _, Layout = stateModule()
+  local topology = ScreenTopology.oneDisplay({
+    id = "main",
+    rect = { x = 0, y = 0, width = 256, height = 192 },
+    touch = true,
+    role = "world",
+  })
+  withEditor(256, 192, topology, function(state)
+    selectSection(state, Layout, "Bag")
+    fillBagPocket(state, 8)
+    local bag = state:view()
+    click(state, selectedPane(bag), bag.layout.targets["bag:add"], true)
+    local choice = state:view()
+    local editor = choice.valueEditor
+    local viewport = assert(choice.layout.viewports["value:choice"])
+    local visibleRows = math.max(1, viewport.lastIndex - viewport.firstIndex + 1)
+    Assert.isTrue(#editor.options > visibleRows * 2, "the real item catalog fills multiple visible choice pages")
+    Assert.isNil(choice.layout.targets["group-previous"], "choice has no group navigation target")
+    Assert.isNil(choice.layout.targets["group-next"], "choice has no group navigation target")
+    Assert.isNil(choice.layout.targets["clear-search"], "choice has no visible Clear target")
+
+    state:keypressed("up")
+    local clamped = state:view().valueEditor.selectedKey == editor.options[1].key
+    state:keypressed("right")
+    local expectedIndex = math.min(#editor.options, 1 + visibleRows)
+    local paged = state:view().valueEditor.selectedKey == editor.options[expectedIndex].key
+
+    state:textinput("no matching item")
+    local noResults = state:view()
+    local confirmDisabled = noResults.layout.targets.confirm.activationEnabled == false
+    state:keypressed("backspace")
+    local backspace = state:view().valueEditor.query == "no matching ite"
+    state:keypressed("delete")
+    local delete = state:view().valueEditor.query == ""
+    Assert.isTrue(
+      clamped and paged and confirmDisabled and backspace and delete,
+      string.format(
+        "choice clamps=%s pages=%s empty-confirm-disabled=%s backspace=%s delete=%s",
+        tostring(clamped),
+        tostring(paged),
+        tostring(confirmDisabled),
+        tostring(backspace),
+        tostring(delete)
+      )
+    )
+  end)
+end
+
+function T.tests.dirty_state_uses_action_enablement_and_the_existing_leave_decision()
+  local _, Layout = stateModule()
+  local topology = ScreenTopology.oneDisplay({
+    id = "main",
+    rect = { x = 0, y = 0, width = 640, height = 480 },
+    touch = true,
+    role = "world",
+  })
+  withEditor(640, 480, topology, function(state)
+    local clean = state:view()
+    Assert.isFalse(clean.layout.targets.save.activationEnabled, "Save is disabled while the staged record is clean")
+    Assert.isFalse(clean.layout.targets.discard.activationEnabled, "Discard is disabled while the staged record is clean")
+
+    Assert.isTrue(state.session:setMoney(state.session:snapshot().money + 1).ok, "money can be staged")
+    local dirty = state:view()
+    Assert.isTrue(dirty.layout.targets.save.activationEnabled, "Save becomes enabled after staging a change")
+    Assert.isTrue(dirty.layout.targets.discard.activationEnabled, "Discard becomes enabled after staging a change")
+    Assert.isTrue(state:requestClose("back"), "Back preserves the existing dirty leave decision")
+
+    local leave = state:view()
+    Assert.equal(leave.modal, "leave")
+    for _, targetId in ipairs({ "save", "discard", "cancel" }) do
+      Assert.notNil(Layout.hitTest(leave.layout, leave, leave.layout.targets[targetId].rect.x + 1,
+        leave.layout.targets[targetId].rect.y + 1), "leave decision retains the " .. targetId .. " action")
+    end
   end)
 end
 

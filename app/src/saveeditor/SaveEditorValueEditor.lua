@@ -17,7 +17,6 @@ local Utf8Glyphs = require("libs.assets.src.Utf8Glyphs")
 ---@field _index number?
 ---@field _selectedKey string?
 ---@field _query string?
----@field _group string?
 ---@field _name NamingScreenController?
 ---@field _nameKind "player"|"pokemon"|nil
 ---@field _nameMaxLength integer?
@@ -78,7 +77,6 @@ function SaveEditorValueEditor.new(options)
     end
     self._selectedKey = self._selectedKey or self._options[1].key
     self._query = ""
-    self._group = nil
   elseif options.kind == "name" then
     self._nameKind = options.nameKind
     self._nameMaxLength = options.maxLength
@@ -177,28 +175,12 @@ function SaveEditorValueEditor:press(action)
       self._query = ""
       self:_reconcileSelection()
       return true
-    elseif action == "group_next" or action == "group_previous" then
-      local groups = self:_groups()
-      local current = 1
-      for index, group in ipairs(groups) do
-        if group == self._group then
-          current = index
-          break
-        end
-      end
-      local delta = action == "group_next" and 1 or -1
-      self._group = groups[(current - 1 + delta) % #groups + 1]
-      self:_reconcileSelection()
-      return true
     end
     if #filtered == 0 then
       return false
     end
-    if action == "up" or action == "down" or action == "left" or action == "right" then
-      local delta = (action == "up" or action == "left") and -1 or 1
-      self._index = (self._index - 1 + delta) % #filtered + 1
-      self._selectedKey = filtered[self._index].key
-      return true
+    if action == "up" or action == "down" then
+      return self:moveChoice(action == "up" and -1 or 1)
     elseif action == "confirm" or action == "a" then
       return self:submit()
     end
@@ -218,6 +200,20 @@ function SaveEditorValueEditor:press(action)
     return self._name:press(action)
   end
   return false
+end
+
+function SaveEditorValueEditor:moveChoice(delta)
+  assert(type(delta) == "number" and delta % 1 == 0 and delta ~= 0, "choice movement must be a non-zero integer")
+  local filtered = self:_filteredOptions()
+  if #filtered == 0 then
+    self._index = 0
+    self._selectedKey = nil
+    return false
+  end
+  self:_reconcileSelection()
+  self._index = math.max(1, math.min(#filtered, self._index + delta))
+  self._selectedKey = filtered[self._index].key
+  return true
 end
 
 function SaveEditorValueEditor:activateTarget(targetId)
@@ -240,14 +236,6 @@ function SaveEditorValueEditor:activateTarget(targetId)
         self._result = { kind = "confirm", value = option.key }
         return true
       end
-    end
-    if targetId == "clear-search" then
-      return self:press("clear_search")
-    elseif targetId == "group-next" then
-      return self:press("group_next")
-    end
-    if targetId == "group-previous" then
-      return self:press("group_previous")
     end
   elseif self._kind == "name" then
     local row, column = targetId:match("^(%d+):(%d+)$")
@@ -337,11 +325,7 @@ function SaveEditorValueEditor:_filteredOptions()
   local filtered = {}
   local query = self._query:lower()
   for _, option in ipairs(self._options) do
-    local groupMatches = self._group == nil or option.key:sub(1, 1):upper() == self._group
-    if
-      groupMatches
-      and (query == "" or option.label:lower():find(query, 1, true) or option.key:lower():find(query, 1, true))
-    then
+    if query == "" or option.label:lower():find(query, 1, true) or option.key:lower():find(query, 1, true) then
       filtered[#filtered + 1] = option
     end
   end
@@ -369,22 +353,6 @@ function SaveEditorValueEditor:_collectNameResult()
   if result and result.kind == "submit" then
     self._result = { kind = "confirm", value = result.text }
   end
-end
-
-function SaveEditorValueEditor:_groups()
-  local groups = {}
-  for _, option in ipairs(self._options) do
-    groups[option.key:sub(1, 1):upper()] = true
-  end
-  local result = {}
-  for group in pairs(groups) do
-    result[#result + 1] = group
-  end
-  table.sort(result)
-  if #result == 0 then
-    result[1] = ""
-  end
-  return result
 end
 
 function SaveEditorValueEditor:result()
@@ -423,10 +391,7 @@ function SaveEditorValueEditor:snapshot()
       options = options,
       index = selected or 0,
       selectedKey = self._selectedKey,
-      page = 1,
-      pageCount = 1,
       query = self._query,
-      group = self._group,
       empty = #options == 0,
       result = self:result(),
     }

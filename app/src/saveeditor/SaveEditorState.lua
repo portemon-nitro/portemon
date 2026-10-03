@@ -130,28 +130,6 @@ local function filterLocationMaps(maps, query)
   return filtered
 end
 
-local function scrollOwner(controller, valueEditor)
-  if controller.modal ~= nil then
-    return nil
-  end
-  if valueEditor ~= nil and valueEditor:snapshot().kind == "choice" then
-    return "value:choice"
-  end
-  if controller.section == "Location" and controller.locationPage == "map-list" then
-    return "location:map-list"
-  end
-  if controller.section == "Party" then
-    return "party"
-  end
-  if controller.section == "Bag" then
-    return "bag"
-  end
-  if controller.section == "Progress" then
-    return "flags"
-  end
-  return nil
-end
-
 local function scrollPurpose(viewportId, view)
   if viewportId == "party" then
     return "party:" .. view.partyPage .. ":" .. tostring(view.partySubpage or "list")
@@ -487,8 +465,7 @@ function State:_snapshot()
     kind = scopeKind,
     focusId = self.controller.focus,
   }
-  view.scrollOwner = scrollOwner(self.controller, self.valueEditor)
-  view.preserveChoiceScroll = self.preserveChoiceScroll and view.scrollOwner == "value:choice"
+  view.preserveChoiceScroll = self.preserveChoiceScroll
   view.scrollOffsets = self.controller.scrollOffsets
   view.locationGridMode = self.controller.locationGridMode
   return view
@@ -1497,8 +1474,6 @@ function State:_activate(targetId)
       self.valueEditor:press("page_previous")
     elseif targetId:sub(1, 7) == "choice:" then
       self.valueEditor:activateTarget(targetId:sub(8))
-    elseif targetId == "clear-search" then
-      self.valueEditor:press("clear_search")
     elseif valueKind == "name" then
       local controlId = targetId:match("^name%-control:(.+)$")
       self.valueEditor:activateTarget(controlId or targetId)
@@ -1808,8 +1783,10 @@ function State:_dispatchIntent(intent)
     local layout = assert(self:_resolve(view).content.layout)
     self:_setScrollOffset(view, layout, intent.viewportId, intent.offset)
   elseif intent.kind == "move" then
+    local plan = self:_resolve(self:_snapshot())
+    local layout = assert(plan.content.layout)
     if
-      self.width < 400
+      layout.targets.section ~= nil
       and not self.controller.locationGridMode
       and (intent.direction == "left" or intent.direction == "right")
     then
@@ -1827,8 +1804,6 @@ function State:_dispatchIntent(intent)
     elseif self.controller.section == "Progress" and intent.direction == "right" then
       self:_cycleFlagFilter(1)
     else
-      local plan = self:_resolve(self:_snapshot())
-      local layout = assert(plan.content.layout)
       if layout.focusGraph[self.controller.focus] == nil then
         self.controller.focus = layout.defaultFocus
       end
@@ -1938,18 +1913,25 @@ end
 function State:_consumeUiInput(events)
   for _, event in ipairs(events) do
     if event.type == "navigate" then
+      self:_reconcileFocus()
       if self.controller.modal then
-        self:_dispatchIntent(self.controller:press(event.direction))
+        local layout = assert(self:_resolve(self:_snapshot()).content.layout)
+        self.controller:moveFocus(layout.focusGraph, event.direction)
       elseif self.valueEditor then
         local snapshot = self.valueEditor:snapshot()
         if snapshot.kind == "choice" then
           self.preserveChoiceScroll = false
-        end
-        if snapshot.kind == "choice" and (event.direction == "up" or event.direction == "down") then
-          self.valueEditor:press(event.direction)
+          if event.direction == "up" or event.direction == "down" then
+            self.valueEditor:moveChoice(event.direction == "up" and -1 or 1)
+          else
+            local layout = assert(self:_resolve(self:_snapshot()).content.layout)
+            local viewport = assert(layout.viewports["value:choice"])
+            local visibleCount = math.max(1, viewport.lastIndex - viewport.firstIndex + 1)
+            self.valueEditor:moveChoice((event.direction == "left" and -1 or 1) * visibleCount)
+          end
+          local selected = self.valueEditor:snapshot().selectedKey
+          self.controller.focus = selected and ("choice:" .. selected) or "cancel"
         elseif snapshot.kind == "name" or snapshot.kind == "integer" then
-          self.valueEditor:press(event.direction)
-        elseif snapshot.kind == "choice" then
           self.valueEditor:press(event.direction)
         end
       elseif self.controller.section == "Location" and self.controller.locationGridMode then
@@ -1958,10 +1940,18 @@ function State:_consumeUiInput(events)
         self:_dispatchIntent(self.controller:press(event.direction))
       end
     elseif event.type == "confirm" then
+      self:_reconcileFocus()
+      local currentLayout = assert(self:_resolve(self:_snapshot()).content.layout)
       if self.controller.modal then
-        self:_dispatchIntent(self.controller:press("confirm"))
+        local target = currentLayout.targets[self.controller.focus]
+        if target and target.activationEnabled and currentLayout.focusGraph[self.controller.focus] then
+          self:_dispatchIntent(self.controller:press("confirm"))
+        end
       elseif self.valueEditor then
-        if self.valueEditor:snapshot().kind == "name" then
+        local confirmTarget = currentLayout.targets.confirm
+        if self.valueEditor:snapshot().kind == "choice" and confirmTarget and not confirmTarget.activationEnabled then
+          self.editorFeedback = "Choose an available option."
+        elseif self.valueEditor:snapshot().kind == "name" then
           self.valueEditor:press("confirm")
           self:_finishValueEditor()
         else
@@ -2006,11 +1996,7 @@ function State:keypressed(key, _, isrepeat)
   end
   if self.valueEditor then
     self.preserveChoiceScroll = false
-    if key == "home" then
-      self.valueEditor:press("group_previous")
-    elseif key == "end" then
-      self.valueEditor:press("group_next")
-    elseif key == "return" or key == "kpenter" then
+    if key == "return" or key == "kpenter" then
       local submitted, reason = self.valueEditor:submit()
       self.editorFeedback = submitted and nil or reason
       self:_finishValueEditor()
@@ -2022,7 +2008,14 @@ function State:keypressed(key, _, isrepeat)
     elseif key == "delete" then
       self.valueEditor:press("clear_search")
     elseif key == "left" or key == "right" or key == "up" or key == "down" then
-      self.valueEditor:press(key)
+      if self.valueEditor:snapshot().kind == "choice" and (key == "left" or key == "right") then
+        local layout = assert(self:_resolve(self:_snapshot()).content.layout)
+        local viewport = assert(layout.viewports["value:choice"])
+        local visibleCount = math.max(1, viewport.lastIndex - viewport.firstIndex + 1)
+        self.valueEditor:moveChoice((key == "left" and -1 or 1) * visibleCount)
+      else
+        self.valueEditor:press(key)
+      end
     end
     self:_reconcileFocus()
     return
@@ -2167,7 +2160,7 @@ function State:touchreleased(id, x, y)
 end
 
 function State:_setScrollOffset(view, layout, viewportId, offset)
-  assert(view.scrollOwner == viewportId, "scroll intent must belong to the active owner")
+  assert(layout.scrollOwner == viewportId, "scroll intent must belong to the active owner")
   local viewport = assert(layout.viewports[viewportId], "active scroll owner needs a published viewport")
   local clamped = ScrollViewport.clamp(offset, viewport.contentExtent, viewport.clip.height)
   if viewportId == "location:map-list" then
@@ -2184,7 +2177,7 @@ end
 function State:wheelmoved(_, y)
   local view = self:_snapshot()
   local layout = assert(self:_resolve(view).content.layout)
-  local viewportId = view.scrollOwner
+  local viewportId = layout.scrollOwner
   if viewportId == nil then
     return
   end

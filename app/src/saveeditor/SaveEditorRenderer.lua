@@ -7,7 +7,7 @@ local AssetPreparationQueue = require("libs.hgss.src.presentation.AssetPreparati
 local Errors = require("libs.errors.src.Errors")
 local MonIconAssetProvider = require("libs.hgss.src.presentation.MonIconAssetProvider")
 local LogicalSurface = require("libs.ui.src.LogicalSurface")
-local ProductMenuSkin = require("app.src.ui.ProductMenuSkin")
+local Button = require("libs.ui.src.Button")
 local FieldMessageText = require("libs.assets.src.field.FieldMessageText")
 
 ---@class SaveEditorRenderer
@@ -24,6 +24,36 @@ local FieldMessageText = require("libs.assets.src.field.FieldMessageText")
 ---@field prepareVisibleIcons fun(self: SaveEditorRenderer, view: table<string, unknown>, plan: table<string, unknown>, cacheFs: table<string, unknown>, derivedAssets: table<string, unknown>)
 
 local Utf8Glyphs = require("libs.assets.src.Utf8Glyphs")
+local PALETTE = {
+  background = { 0.91, 0.93, 0.91, 1 },
+  ink = { 0.12, 0.16, 0.19, 1 },
+  muted = { 0.34, 0.4, 0.43, 1 },
+  error = { 0.68, 0.12, 0.12, 1 },
+  border = { 0.2, 0.25, 0.28, 1 },
+  rim = { 0.87, 0.9, 0.88, 1 },
+  normal = {
+    innerBorder = { 0.1, 0.34, 0.38, 1 },
+    faceTop = { 0.48, 0.78, 0.78, 1 },
+    faceBottom = { 0.29, 0.62, 0.64, 1 },
+  },
+  focused = {
+    innerBorder = { 0.08, 0.29, 0.58, 1 },
+    faceTop = { 0.69, 0.83, 0.98, 1 },
+    faceBottom = { 0.39, 0.61, 0.84, 1 },
+  },
+  disabled = {
+    innerBorder = { 0.48, 0.51, 0.5, 1 },
+    faceTop = { 0.78, 0.8, 0.78, 1 },
+    faceBottom = { 0.65, 0.68, 0.65, 1 },
+  },
+  destructive = {
+    innerBorder = { 0.51, 0.2, 0.17, 1 },
+    faceTop = { 0.91, 0.62, 0.54, 1 },
+    faceBottom = { 0.76, 0.39, 0.32, 1 },
+  },
+  text = { normal = { foreground = { 0.12, 0.16, 0.19, 1 } }, hint = { foreground = { 0.34, 0.4, 0.43, 1 } } },
+  cards = { normal = { border = { 0.2, 0.25, 0.28, 1 }, selectedRim = { 0.08, 0.29, 0.58, 1 } } },
+}
 
 ---@param cacheFs table<string, unknown>
 ---@param options table<string, unknown>
@@ -42,12 +72,9 @@ end
 
 function Renderer.new(options)
   assert(type(options) == "table" and options.text, "save editor renderer needs field text")
-  local versionId = options.versionId
-  assert(type(versionId) == "string" and versionId ~= "", "save editor needs a game version")
-  ---@cast versionId string
   return setmetatable({
     text = options.text,
-    skin = ProductMenuSkin.forVersion(versionId),
+    skin = PALETTE,
     graphics = options.graphics or love.graphics,
     _disposed = false,
     _iconQueue = nil,
@@ -142,23 +169,40 @@ local function visibleText(renderer, value)
 end
 
 local function drawText(renderer, value, x, y, role)
-  local textRole = type(role) == "string" and role or "normal"
-  if role == renderer.skin.text.hint.foreground then
-    textRole = "hint"
-  elseif role == renderer.skin.text.information.foreground then
-    textRole = "information"
-  elseif role == renderer.skin.text.error.foreground then
-    textRole = "error"
-  end
-  ProductMenuSkin.drawText(
-    renderer.graphics,
-    renderer.text,
-    renderer.skin,
-    textRole,
-    visibleText(renderer, value),
-    x,
-    y
-  )
+  local color = role == "error" and renderer.skin.error
+    or (role == "hint" or role == "information") and renderer.skin.muted
+    or type(role) == "table" and role
+    or renderer.skin.ink
+  setColor(renderer.graphics, color)
+  renderer.text:drawText(visibleText(renderer, value), x, y)
+end
+
+local function drawShadedControl(renderer, rect, label, selected, disabled, destructive)
+  local state = disabled and renderer.skin.disabled
+    or destructive and renderer.skin.destructive
+    or selected and renderer.skin.focused
+    or renderer.skin.normal
+  local button = Button.resolve({
+    rect = rect,
+    borderWidth = 1,
+    rimWidth = 1,
+    innerBorderWidth = 1,
+    cornerRadius = 3,
+    faceSplit = 0.45,
+    contentInsetX = 8,
+    contentInsetY = 2,
+  })
+  Button.draw(renderer.graphics, button, {
+    border = renderer.skin.border,
+    rim = renderer.skin.rim,
+    innerBorder = state.innerBorder,
+    faceTop = state.faceTop,
+    faceBottom = state.faceBottom,
+  })
+  local content = button.contentRect
+  local textWidth = renderer.text:textWidth(label)
+  assert(textWidth <= content.width, label .. " does not fit its shaded control")
+  drawText(renderer, label, content.x + (content.width - textWidth) / 2, content.y + 2, disabled and "hint" or "normal")
 end
 
 local function fitText(renderer, value, width)
@@ -197,31 +241,10 @@ local function paintPane(self, view, plan, pane)
   local MUTED = self.skin.text.hint.foreground
   setColor(graphics, self.skin.background)
   graphics.rectangle("fill", 0, 0, placement.logicalWidth, placement.logicalHeight)
-  ProductMenuSkin.drawCard(graphics, self.skin, layout.header, "normal", false, false)
-  drawText(self, "Save Editor", layout.header.x + 5, layout.header.y + 3)
-  if view.valueEditor and view.valueEditor.kind == "choice" then
-    drawText(
-      self,
-      fitText(self, "Search: " .. (view.valueEditor.query or ""), layout.header.width - 10),
-      layout.header.x + 5,
-      layout.header.y + 17
-    )
-  elseif view.session then
-    local identity = view.session.playerName .. " " .. view.session.versionId .. " " .. tostring(view.saveId or "")
-    drawText(self, fitText(self, identity, layout.header.width - 10), layout.header.x + 5, layout.header.y + 17)
-  end
   for _, navigation in ipairs(layout.navigation) do
     local target = targetRect(layout, navigation.targetId)
     if target then
-      ProductMenuSkin.drawCard(
-        graphics,
-        self.skin,
-        target,
-        "inset",
-        navigation.targetId == ("section:" .. view.section),
-        false
-      )
-      drawText(self, navigation.label, target.x + 4, target.y + 3)
+      drawShadedControl(self, target, navigation.label, navigation.targetId == ("section:" .. view.section), false)
     end
   end
   if view.section == "Party" and (view.partyPage == "detail" or view.partyPage == "draft") then
@@ -229,8 +252,7 @@ local function paintPane(self, view, plan, pane)
       local id = "party:subpage:" .. subpage
       local target = targetRect(layout, id)
       if target then
-        ProductMenuSkin.drawCard(graphics, self.skin, target, "inset", view.partySubpage == subpage, false)
-        drawText(self, fitText(self, subpage, target.width - 6), target.x + 3, target.y + 3)
+        drawShadedControl(self, target, subpage, view.partySubpage == subpage, false)
       end
     end
   end
@@ -239,21 +261,26 @@ local function paintPane(self, view, plan, pane)
     if rect then
       local target = assert(layout.targets[row.targetId])
       LogicalSurface.clip(graphics, target.clip or rect, function()
-        ProductMenuSkin.drawCard(
-          graphics,
-          self.skin,
-          rect,
-          row.value == nil and "normal" or "inset",
-          row.targetId == view.focus,
-          row.enabled == false
-        )
+        local actionable = row.role == "action"
+          or row.role == "toggle"
+          or row.role == "integer value"
+          or row.role == "named choice"
+          or row.role == "party slot"
+          or row.role == "bag item"
+          or row.targetId:match("^party:slot:") ~= nil
+          or row.targetId:match("^bag:item:") ~= nil
+        if actionable then
+          drawShadedControl(self, rect, row.label, row.targetId == view.focus, row.enabled == false)
+        end
         local icon = row.iconKey and self._icons[row.iconKey]
         if icon and graphics.draw then
           graphics.draw(icon.image, icon.quad, rect.x + 3, rect.y + 2)
         end
         local labelRect = assert(row.labelRect, "layout rows own their label text bounds")
         local textRole = row.role == "warning" and "error" or row.role == "read-only value" and "hint" or "normal"
-        drawText(self, fitText(self, row.label, labelRect.width), labelRect.x, rect.y + 3, textRole)
+        if not actionable then
+          drawText(self, fitText(self, row.label, labelRect.width), labelRect.x, rect.y + 3, textRole)
+        end
         if row.valueText ~= nil and row.valueRect ~= nil then
           local valueRect = row.valueRect
           drawText(self, fitText(self, row.valueText, valueRect.width), valueRect.x, rect.y + 3)
@@ -277,63 +304,31 @@ local function paintPane(self, view, plan, pane)
   for _, action in ipairs(layout.actions) do
     local rect = targetRect(layout, action.id)
     if rect then
-      ProductMenuSkin.drawCard(graphics, self.skin, rect, "normal", action.id == view.focus, not action.enabled)
       local label = action.id == "save" and view.locationSave and "Cancel check" or action.label
-      drawText(self, label, rect.x + 4, rect.y + 4, action.enabled and "normal" or "hint")
+      drawShadedControl(self, rect, label, action.id == view.focus, not action.enabled)
     end
   end
-  local footerMessage = view.locationSave and "Checking destination · Save cancels"
-    or (view.dirty and "Unsaved changes" or "Saved")
-  local footerRole = "normal"
-  if layout.focusedValueHelp then
-    footerMessage = "Full value · " .. layout.focusedValueHelp
-    footerRole = "hint"
-  end
-  drawText(
-    self,
-    fitText(self, footerMessage, layout.footer.width - 8),
-    layout.footer.x + 4,
-    layout.footer.y + 2,
-    footerRole
-  )
   if view.valueEditor then
     local dialog = view.valueEditor
-    ProductMenuSkin.drawCard(graphics, self.skin, layout.content, "normal", false, false)
     if dialog.kind == "choice" then
-      local groupPrevious = assert(targetRect(layout, "group-previous"))
-      local clearSearch = assert(targetRect(layout, "clear-search"))
-      local groupNext = assert(targetRect(layout, "group-next"))
-      ProductMenuSkin.drawCard(graphics, self.skin, groupPrevious, "inset", false, false)
-      ProductMenuSkin.drawCard(graphics, self.skin, clearSearch, "inset", false, false)
-      ProductMenuSkin.drawCard(graphics, self.skin, groupNext, "inset", false, false)
-      drawText(self, "Group " .. (dialog.group or "All"), groupPrevious.x + 3, groupPrevious.y + 3, INK)
-      drawText(self, "Clear", clearSearch.x + 3, clearSearch.y + 3, INK)
-      drawText(self, "Next group", groupNext.x + 3, groupNext.y + 3, INK)
+      drawText(self, "Search: " .. dialog.query, layout.content.x + 4, layout.content.y + 4, MUTED)
       local viewport = assert(layout.viewports["value:choice"])
       LogicalSurface.clip(graphics, viewport.clip, function()
         for _, option in ipairs(dialog.options) do
           local rect = targetRect(layout, "choice:" .. option.key)
           if rect then
-            ProductMenuSkin.drawCard(graphics, self.skin, rect, "normal", option.key == dialog.selectedKey, false)
-            drawText(self, fitText(self, option.label, rect.width - 8), rect.x + 4, rect.y + 3, INK)
+            drawShadedControl(self, rect, option.label, option.key == dialog.selectedKey, false)
           end
         end
       end)
       if dialog.empty then
-        drawText(
-          self,
-          "No matching choices. Clear search or change group.",
-          viewport.clip.x + 3,
-          viewport.clip.y + 3,
-          "hint"
-        )
+        drawText(self, "No matching choices. Change search.", viewport.clip.x + 3, viewport.clip.y + 3, "hint")
       end
       for _, id in ipairs({ "confirm", "cancel" }) do
         local rect = targetRect(layout, id)
         assert(rect)
         local disabled = id == "confirm" and dialog.empty == true
-        ProductMenuSkin.drawCard(graphics, self.skin, rect, "normal", id == view.focus, disabled)
-        drawText(self, id == "cancel" and "Cancel" or "Choose", rect.x + 3, rect.y + 3, disabled and "hint" or "normal")
+        drawShadedControl(self, rect, id == "cancel" and "Cancel" or "Choose", id == view.focus, disabled)
       end
     elseif dialog.kind == "name" then
       local naming = dialog.naming
@@ -411,7 +406,6 @@ local function paintPane(self, view, plan, pane)
     drawText(self, "Icons unavailable", layout.content.x + 4, layout.content.y + layout.content.height - 16, "error")
   end
   if view.modal then
-    ProductMenuSkin.drawCard(graphics, self.skin, layout.content, "normal", false, false)
     local choices, prompt
     if view.modal == "draft" then
       choices, prompt = { "apply", "discard", "cancel" }, "Apply party changes?"
@@ -424,8 +418,8 @@ local function paintPane(self, view, plan, pane)
     for _, id in ipairs(choices) do
       local rect = targetRect(layout, id)
       if rect then
-        ProductMenuSkin.drawCard(graphics, self.skin, rect, "normal", id == view.focus, false)
-        drawText(self, id:sub(1, 1):upper() .. id:sub(2), rect.x + 4, rect.y + 6)
+        local disabled = id == "apply" and view.partyValid ~= true
+        drawShadedControl(self, rect, id:sub(1, 1):upper() .. id:sub(2), id == view.focus, disabled, id == "remove")
       end
     end
   end
@@ -627,7 +621,6 @@ function Renderer:draw(view, plan)
             8,
             8
           )
-          drawText(self, view.dirty and "Unsaved changes" or "Saved", 8, 26, view.dirty and "information" or "hint")
         end
       end)
     end

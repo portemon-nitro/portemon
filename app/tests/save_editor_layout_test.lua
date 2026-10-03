@@ -216,4 +216,91 @@ function T.tests.player_rows_reserve_measured_raw_value_width_in_a_separate_text
   Assert.equal(layout.focusedValueHelp, "Money: 4294967295", "the full value stays visible when the row must truncate it")
 end
 
+function T.tests.shell_content_starts_at_the_application_margin_without_a_header_reservation()
+  for _, size in ipairs({ { 256, 192 }, { 640, 480 } }) do
+    local view = {
+      status = "ready",
+      ready = true,
+      section = "Player",
+      scope = { id = "section:Player", epoch = 0 },
+      session = { playerName = "PLAYER", money = 3000 },
+    }
+    local layout = computeLayout(view, size[1], size[2])
+    Assert.isNil(layout.header, "the shell does not reserve header geometry")
+    if size[1] < 400 then
+      Assert.isTrue(layout.targets.section.rect.y <= 8, "compact section navigation begins at the application margin")
+      Assert.isTrue(layout.content.y <= 30, "compact player content follows its section control")
+    else
+      Assert.isTrue(layout.targets["section:Location"].rect.y <= 12, "wide section navigation begins at the top margin")
+      Assert.isTrue(layout.content.y <= 16, "wide player content begins at the top margin")
+    end
+  end
+end
+
+function T.tests.action_control_geometry_fits_labels_with_padding_on_compact_and_wide_layouts()
+  for _, size in ipairs({ { 256, 192 }, { 640, 480 } }) do
+    local view = {
+      status = "ready",
+      ready = true,
+      dirty = true,
+      section = "Party",
+      scope = { id = "section:Party", epoch = 0 },
+      session = { playerName = "PLAYER", money = 3000 },
+      partyPage = "draft",
+      partyValid = true,
+      partySubpages = { "Identity", "Training", "Stats", "Moves", "Origin" },
+      partyRows = {},
+    }
+    local metrics = { lineHeight = 14, measure = function(text) return #text * 7 end }
+    local layout = Layout.compute(view, size[1], size[2], metrics)
+    for _, action in ipairs(layout.actions) do
+      local rect = assert(layout.targets[action.id]).rect
+      Assert.isTrue(rect.height >= metrics.lineHeight + 16, action.label .. " has vertical text padding")
+      Assert.isTrue(rect.width >= metrics.measure(action.label) + 16, action.label .. " has horizontal text padding")
+    end
+    for _, id in ipairs({ "party:apply", "party:discard", "party:cancel" }) do
+      local row = assert(layout.targets[id], "draft action is visible: " .. id)
+      Assert.isTrue(row.rect.height >= metrics.lineHeight + 16, id .. " has vertical text padding")
+    end
+  end
+end
+
+function T.tests.party_subpage_controls_wrap_without_truncating_their_labels()
+  local metrics = { lineHeight = 14, measure = function(text) return #text * 7 end }
+  local view = {
+    status = "ready",
+    ready = true,
+    section = "Party",
+    scope = { id = "section:Party", epoch = 0 },
+    partyPage = "detail",
+    partySubpages = { "Identity", "Training", "Stats", "Moves", "Origin" },
+  }
+
+  for _, size in ipairs({ { 256, 192 }, { 720, 1280 } }) do
+    local layout = Layout.compute(view, size[1], size[2], metrics)
+    local tabs = {}
+    local firstRowY
+    local wrapped = false
+    for _, label in ipairs(view.partySubpages) do
+      local tab = assert(layout.targets["party:subpage:" .. label]).rect
+      Assert.isTrue(tab.width >= metrics.measure(label) + 22, label .. " fits inside its shaded control")
+      firstRowY = firstRowY or tab.y
+      wrapped = wrapped or firstRowY ~= tab.y
+      tabs[#tabs + 1] = tab
+    end
+    if size[1] == 256 then
+      Assert.isTrue(wrapped, "compact available width wraps subpage controls into multiple rows")
+    end
+    for firstIndex, first in ipairs(tabs) do
+      for laterIndex = firstIndex + 1, #tabs do
+        local later = tabs[laterIndex]
+        Assert.isTrue(
+          first.y ~= later.y or first.x + first.width <= later.x or later.x + later.width <= first.x,
+          "subpage controls do not overlap"
+        )
+      end
+    end
+  end
+end
+
 return T

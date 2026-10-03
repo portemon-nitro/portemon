@@ -174,6 +174,61 @@ function T.party_draft_and_remove_modals_publish_their_own_actions()
   Assert.isNil(removeLayout.targets.save, "removal confirmation excludes the underlying Save action")
 end
 
+function T.invalid_draft_modal_filters_disabled_apply_before_focus_and_confirmation()
+  local State = require("app.src.saveeditor.SaveEditorState")
+  local controller = Controller.new()
+  controller:setSection("Party")
+  controller:openModal("draft")
+  local view = {
+    section = "Party",
+    status = "ready",
+    ready = true,
+    dirty = true,
+    partyPage = "draft",
+    partyValid = false,
+    modal = "draft",
+    scope = { id = "modal:draft", epoch = 1, kind = "decision", focusId = "cancel" },
+    partyRows = {},
+  }
+  local layout = computeLayout(view, 640, 480)
+  Assert.isFalse(layout.targets.apply.activationEnabled, "invalid Apply remains visible and disabled")
+  Assert.isNil(layout.focusGraph.apply, "disabled Apply is excluded from the active focus graph")
+
+  local validationCalls = 0
+  local state = setmetatable({
+    status = "ready",
+    controller = controller,
+    monDraft = {
+      validate = function()
+        validationCalls = validationCalls + 1
+        return nil, "invalid draft"
+      end,
+    },
+    pendingDraftAction = nil,
+    errorMessage = nil,
+    _snapshot = function() return view end,
+    _resolve = function() return { content = { layout = layout } } end,
+  }, State)
+
+  local directions = { "left", "up", "right", "down", "left", "right" }
+  local focusAlwaysEnabled = true
+  for _, direction in ipairs(directions) do
+    state:_consumeUiInput({ { type = "navigate", direction = direction } })
+    focusAlwaysEnabled = focusAlwaysEnabled and layout.focusGraph[state.controller.focus] ~= nil
+  end
+  controller:setFocus("apply")
+  state:_consumeUiInput({ { type = "confirm" } })
+  Assert.isTrue(
+    focusAlwaysEnabled and validationCalls == 0 and controller.focus ~= "apply",
+    string.format(
+      "directional and stale focus cannot activate disabled Apply (enabled focus=%s validation=%d focus=%s)",
+      tostring(focusAlwaysEnabled),
+      validationCalls,
+      tostring(controller.focus)
+    )
+  )
+end
+
 function T.party_draft_actions_remain_visible_beside_a_long_raw_page()
   local view = {
     section = "Party",

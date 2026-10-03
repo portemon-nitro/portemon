@@ -3,7 +3,6 @@
 local Assert = require("tests.support.Assert")
 local GraphicsSmoke = require("tests.support.GraphicsSmoke")
 local AcceptanceFixture = require("app.tests.support.SaveEditorAcceptanceFixture")
-local MainMenuRenderer = require("app.src.mainmenu.MainMenuRenderer")
 local State = require("app.src.saveeditor.SaveEditorState")
 local DisplayContext = require("libs.ui.src.DisplayContext")
 local LayoutGeometry = require("libs.ui.src.LayoutGeometry")
@@ -67,7 +66,7 @@ local function clickTarget(state, targetId)
   return state:view()
 end
 
-function T.tests.real_state_uses_the_selected_main_menu_skin_and_saves_a_capture(scope)
+function T.tests.real_state_uses_the_editor_palette_and_saves_a_capture(scope)
   local fixture = AcceptanceFixture.new()
   local originalGlobal = SaveFs.global
   local state
@@ -107,7 +106,6 @@ function T.tests.real_state_uses_the_selected_main_menu_skin_and_saves_a_capture
     Assert.notNil(view.session, "the rendered view comes from a production Session")
     Assert.notNil(state.renderer.text.fontDef, "the renderer uses the selected ROM's generated field font")
 
-    local menu = MainMenuRenderer.new({ text = state.renderer.text, versionId = fixture.versionId })
     local function capture(name, captureWidth, captureHeight)
       state:resize(captureWidth, captureHeight)
       local view = state:view()
@@ -130,9 +128,9 @@ function T.tests.real_state_uses_the_selected_main_menu_skin_and_saves_a_capture
       local pane = assert(view.presentation.panes[1], name .. " publishes the interactive pane")
       local x, y = LayoutGeometry.logicalToHost(assert(pane.placement), 1, 1)
       local red, green, blue = actual:getPixel(x, y)
-      Assert.near(red, menu.background[1], 1 / 255, name .. " follows the selected Main Menu skin red")
-      Assert.near(green, menu.background[2], 1 / 255, name .. " follows the selected Main Menu skin green")
-      Assert.near(blue, menu.background[3], 1 / 255, name .. " follows the selected Main Menu skin blue")
+      Assert.near(red, state.renderer.skin.background[1], 1 / 255, name .. " uses the editor palette red")
+      Assert.near(green, state.renderer.skin.background[2], 1 / 255, name .. " uses the editor palette green")
+      Assert.near(blue, state.renderer.skin.background[3], 1 / 255, name .. " uses the editor palette blue")
       return view
     end
     local cases = {
