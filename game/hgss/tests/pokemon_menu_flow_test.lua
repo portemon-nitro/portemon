@@ -1471,4 +1471,187 @@ function T.tests.raced_give_unwinds_without_a_partial_change(context)
   end
 end
 
+-- Finds a spare medicine item to serve as the exchange replacement: the
+-- displaced potion stays absent from the bag while the replacement keeps
+-- a stack of two, so its staged removal cannot free a medicine slot.
+local function spareMedicineKey(bag, excluded)
+  local catalog = bag:catalog()
+  for nativeId = 0, 536 do
+    local key = catalog:itemKeyByNativeId(nativeId)
+    if key ~= excluded and catalog:item(key).pocket == "medicine" then
+      return key
+    end
+  end
+  error("the catalog carries no spare medicine item", 0)
+end
+
+-- Occupies every medicine slot while keeping the displaced item out, so
+-- only a staged removal inside the same pocket could make room for it.
+local function fillMedicinePocket(rig, excluded)
+  local catalog = rig.bag:catalog()
+  for nativeId = 0, 536 do
+    if #rig.bag:pocketItems("medicine") >= catalog:pocket("medicine").capacity then
+      break
+    end
+    local key = catalog:itemKeyByNativeId(nativeId)
+    if key ~= excluded and catalog:item(key).pocket == "medicine" and rig.bag:quantity(key) == 0 then
+      Assert.isTrue(rig.bag:add(key, 1), "the fixture must occupy the return pocket")
+    end
+  end
+  Assert.equal(
+    #rig.bag:pocketItems("medicine"),
+    catalog:pocket("medicine").capacity,
+    "the return pocket starts full"
+  )
+end
+
+local function stockFullPocketExchange(rig)
+  occupyHolder(rig, 0, "POTION")
+  local replacement = spareMedicineKey(rig.bag, "POTION")
+  Assert.isTrue(rig.bag:add(replacement, 2), "the fixture must stock a replacement that keeps its stack")
+  fillMedicinePocket(rig, "POTION")
+  Assert.equal(rig.bag:quantity("POTION"), 0, "the held potion starts absent from the bag")
+  Assert.isFalse(rig.bag:hasSpace("POTION", 1), "the return pocket starts full")
+  rig.cursor:setPocket("medicine")
+  rig.cursor:setPosition("medicine", 0)
+  return replacement
+end
+
+-- Answers the held-item replacement question with Yes and settles until
+-- the exchange resolves to visible feedback or a silent return.
+local function answerYesAndSettle(rig)
+  settleParty(rig)
+  drive(rig, { { type = "confirm" } }) -- acknowledge the generated replacement question
+  drive(rig, {}) -- arm the prompt after the message handoff
+  drive(rig, { { type = "navigate", direction = "down" } })
+  drive(rig, { { type = "confirm" } })
+end
+
+function T.tests.party_give_full_pocket_failure_shows_feedback_and_stays(context)
+  local versions = readyVersions()
+  if #versions == 0 then
+    if context ~= nil and type(context.hasCapability) == "function" then
+      context:skip("requires rom_dump and prepared assets")
+    end
+    error("menu flow needs a ready versioned cache", 0)
+  end
+  for _, versionId in ipairs(versions) do
+    local rig = liveComposition(versionId, "party")
+    local replacement = stockFullPocketExchange(rig)
+    local partyRevision = rig.mons:partyRevision()
+    local bagRevision = rig.bag:revision()
+
+    local status = drive(rig, {})
+    Assert.equal(status.page, "party_browse", "a party root opens the party browse page")
+    status = settleParty(rig)
+    status = drive(rig, { { type = "confirm" } })
+    status = drivePartyMenu(rig, "item")
+    status = drivePartyMenu(rig, "give")
+    Assert.equal(status.page, "bag_pick_held", "party Give opens the held-item picker")
+    Assert.equal(
+      partyChild(status).selected and partyChild(status).selected.item,
+      replacement,
+      "the picker opens on the stocked replacement"
+    )
+    status = drive(rig, { { type = "confirm" } })
+    Assert.equal(status.page, "party_browse", "the continuation Party child owns the replacement question")
+    status = settleParty(rig)
+    Assert.equal(status.child.state, "message", "the replacement question appears before Yes/No")
+    Assert.equal(
+      status.child.message.templateKey,
+      "switchHeldPrompt",
+      "the held-item question uses its generated template"
+    )
+
+    answerYesAndSettle(rig)
+    status = driveUntil(rig, "the held-item result", 30, function(current)
+      return current.child ~= nil and (current.child.state == "message" or current.child.state == "browse")
+    end)
+    Assert.equal(
+      status.child.state,
+      "message",
+      "a genuine capacity failure shows feedback instead of finishing silently"
+    )
+    Assert.equal(status.child.message.templateKey, "bagFull", "the failure uses its generated full-bag template")
+    Assert.equal(rig.mons:partyMon(0).heldItem, "POTION", "the failure moves no held item")
+    Assert.equal(rig.bag:quantity(replacement), 2, "the failure consumes no replacement")
+    Assert.equal(rig.bag:quantity("POTION"), 0, "the failure returns nothing")
+    Assert.equal(rig.mons:partyRevision(), partyRevision, "the failure publishes no party revision")
+    Assert.equal(rig.bag:revision(), bagRevision, "the failure publishes no bag revision")
+
+    status = drive(rig, { { type = "confirm" } })
+    Assert.equal(status.page, "party_browse", "acknowledging returns to the originating party")
+    status = driveUntil(rig, "ordinary Party browse", 10, function(current)
+      return current.child ~= nil and current.child.state == "browse"
+    end)
+    Assert.equal(partyChild(status).cursorNode, 0, "acknowledging resumes on the original mon")
+    Assert.equal(rig.mons:partyMon(0).heldItem, "POTION", "acknowledging retries nothing")
+    Assert.isNil(rig.flow:takeResult(), "the failure reports no terminal result")
+    rig.flow:dispose()
+  end
+end
+
+function T.tests.bag_give_full_pocket_failure_shows_feedback_then_rewinds(context)
+  local versions = readyVersions()
+  if #versions == 0 then
+    if context ~= nil and type(context.hasCapability) == "function" then
+      context:skip("requires rom_dump and prepared assets")
+    end
+    error("menu flow needs a ready versioned cache", 0)
+  end
+  for _, versionId in ipairs(versions) do
+    local rig = liveComposition(versionId, "bag")
+    local replacement = stockFullPocketExchange(rig)
+    local partyRevision = rig.mons:partyRevision()
+    local bagRevision = rig.bag:revision()
+
+    local status = drive(rig, {})
+    Assert.equal(
+      status.child.selected and status.child.selected.item,
+      replacement,
+      "the borrowed position selects the replacement"
+    )
+    status = drive(rig, { { type = "confirm" } })
+    status = driveToActionMenu(rig)
+    Assert.equal(status.child.state, "action_menu", "confirming opens the action menu")
+    status = driveToAction(rig, "give")
+    Assert.equal(status.page, "party_give_target", "choosing Give opens the party target page")
+    status = settleParty(rig)
+    status = drive(rig, { { type = "confirm" } })
+    Assert.equal(status.page, "party_give_target", "the target child owns the replacement question")
+    Assert.equal(status.child.state, "message", "the replacement question appears before Yes/No")
+    Assert.equal(
+      status.child.message.templateKey,
+      "switchHeldPrompt",
+      "the held-item question uses its generated template"
+    )
+
+    answerYesAndSettle(rig)
+    status = driveUntil(rig, "the held-item result", 30, function(current)
+      return (current.child ~= nil and current.child.state == "message") or current.page == "bag_browse"
+    end)
+    Assert.equal(
+      status.page,
+      "party_give_target",
+      "a genuine capacity failure holds its feedback instead of rewinding silently"
+    )
+    Assert.equal(status.child.state, "message", "the failure shows feedback over the target page")
+    Assert.equal(status.child.message.templateKey, "bagFull", "the failure uses its generated full-bag template")
+    Assert.equal(rig.mons:partyMon(0).heldItem, "POTION", "the failure moves no held item")
+    Assert.equal(rig.bag:quantity(replacement), 2, "the failure consumes no replacement")
+    Assert.equal(rig.bag:quantity("POTION"), 0, "the failure returns nothing")
+    Assert.equal(rig.mons:partyRevision(), partyRevision, "the failure publishes no party revision")
+    Assert.equal(rig.bag:revision(), bagRevision, "the failure publishes no bag revision")
+
+    status = drive(rig, { { type = "confirm" } })
+    status = driveUntil(rig, "the originating Bag", 30, function(current)
+      return current.page == "bag_browse"
+    end)
+    Assert.equal(rig.mons:partyMon(0).heldItem, "POTION", "acknowledging retries nothing")
+    Assert.equal(rig.bag:quantity(replacement), 2, "acknowledging consumes nothing")
+    Assert.isNil(rig.flow:takeResult(), "the failure reports no terminal result")
+    rig.flow:dispose()
+  end
+end
+
 return T
