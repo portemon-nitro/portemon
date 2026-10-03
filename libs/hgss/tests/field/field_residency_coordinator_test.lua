@@ -397,9 +397,6 @@ local function satisfied_live_prefetch_is_idle_until_the_anchor_changes()
     descriptorViewCalls = descriptorViewCalls + 1
     return coverage.footprint
   end
-  coverage.hasPrefetchWork = function()
-    return false
-  end
 
   coordinator:initialize()
   coordinator:updatePrefetch(1)
@@ -411,6 +408,17 @@ local function satisfied_live_prefetch_is_idle_until_the_anchor_changes()
   Assert.equal(coverage.prefetchCalls, physicalCallsAtSatisfied, "a satisfied plan skips physical work")
   Assert.equal(descriptorViewCalls, 1, "an unchanged satisfied plan is not rebuilt")
 
+  coverage:queuePrefetch()
+  Assert.isTrue(coverage:hasPrefetchWork(), "same-anchor requeue adds physical work")
+  Assert.equal(coordinator:updatePrefetch(1), 0, "same-anchor physical work does not acquire another map")
+  Assert.equal(coverage.prefetchCalls, physicalCallsAtSatisfied + 1, "same-anchor requeue resumes one physical step")
+  Assert.isFalse(coverage:hasPrefetchWork(), "the bounded step drains the requeued work")
+  Assert.equal(descriptorViewCalls, 1, "same-anchor physical work reuses the descriptor view")
+  Assert.equal(loader.logicalLoadCounts[30], 1, "same-anchor physical work does not reacquire the halo map")
+
+  Assert.equal(coordinator:updatePrefetch(1), 0)
+  Assert.equal(coverage.prefetchCalls, physicalCallsAtSatisfied + 1, "the drained plan returns to the idle fast path")
+
   coverage.anchorX = 1
   coverage.footprint = {
     { cellKey = "1:0", mapHeaderId = 10 },
@@ -419,7 +427,7 @@ local function satisfied_live_prefetch_is_idle_until_the_anchor_changes()
   }
   Assert.equal(coordinator:updatePrefetch(1), 1, "the changed plan resumes one logical acquisition")
   Assert.equal(descriptorViewCalls, 2, "a new anchor derives a new descriptor view")
-  Assert.equal(coverage.prefetchCalls, physicalCallsAtSatisfied + 1, "the changed plan receives physical work")
+  Assert.equal(coverage.prefetchCalls, physicalCallsAtSatisfied + 2, "the changed plan receives physical work")
   Assert.equal(loader.logicalLoadCounts[40], 1, "the new halo map joins residency once")
   coordinator:dispose()
 end
