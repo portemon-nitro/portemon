@@ -50,6 +50,34 @@ local function mixedParty()
   return service
 end
 
+---@return HgssMonService live party holding a lone conscious member behind a fainted lead
+local function singleConsciousParty()
+  local catalog = CatalogFixture.makeCatalog()
+  local service = HgssMonService.new({
+    catalog = catalog,
+    bucket = MonsSave.capture(Party.new():capture(), Lcrng.new(0x66666666):capture(), catalog:fingerprint()),
+    profile = CatalogFixture.profile(),
+    game = "heartgold",
+    language = "english",
+    charmap = CatalogFixture.CHARMAP,
+    games = CatalogFixture.GAMES,
+    languages = CatalogFixture.LANGUAGES,
+    items = CatalogFixture.ITEMS,
+    balls = CatalogFixture.BALLS,
+    mapSection = 7,
+    date = CatalogFixture.metDate(),
+  })
+  local factory = CatalogFixture.makeFactory(0x77777777, catalog)
+  local fainted = factory:createNormal(CatalogFixture.normalRequest({ species = "CHIKORITA", level = 5 }))
+  fainted.condition.currentHp = 0
+  Assert.isTrue(service:addMon(fainted), "the fainted lead enters the live party")
+  Assert.isTrue(
+    service:addMon(factory:createNormal(CatalogFixture.normalRequest({ species = "TOTODILE", level = 5 }))),
+    "the lone conscious mon enters the live party"
+  )
+  return service
+end
+
 ---@return HgssBagService live bag holding potion and ball stock
 local function stockedBag()
   local bag = HgssBagService.new({ catalog = ItemFixture.makeCatalog() })
@@ -98,6 +126,12 @@ local function fullRecord()
     level = 4,
     condition = { currentHp = 18 },
   }
+end
+
+local function faintedRecord()
+  local record = fullRecord()
+  record.condition.currentHp = 0
+  return record
 end
 
 function T.wild_descriptors_copy_once_without_rerolling()
@@ -155,10 +189,18 @@ function T.simultaneous_trainers_keep_their_double_engagement()
     },
   }, {})
   Assert.equal(#scenario.participants, 3)
-  Assert.equal(#scenario.positions, 3)
+  Assert.equal(#scenario.positions, 4)
   Assert.equal(scenario.format, "double")
   Assert.equal(scenario.participants[2].controller, "trainer:a")
   Assert.equal(scenario.participants[3].controller, "trainer:b")
+  Assert.equal(scenario.positions[1].side, 1)
+  Assert.equal(scenario.positions[2].side, 1)
+  Assert.equal(scenario.positions[3].side, 2)
+  Assert.equal(scenario.positions[4].side, 2)
+  Assert.deepEqual(scenario.positions[1].eligibleParticipants, { 1 })
+  Assert.deepEqual(scenario.positions[2].eligibleParticipants, { 1 })
+  Assert.deepEqual(scenario.positions[3].eligibleParticipants, { 2 })
+  Assert.deepEqual(scenario.positions[4].eligibleParticipants, { 3 })
 end
 
 function T.production_scenarios_carry_the_full_eligible_roster_with_a_conscious_lead()
@@ -318,6 +360,232 @@ function T.an_empty_live_bag_still_yields_a_valid_player_stock()
   local stock = inventoryOf(scenario, assert(player.inventoryId, "the player keeps its stock identity"))
   Assert.deepEqual(stock.quantities, {}, "no positive stock yields no battle units")
   Assert.deepEqual(stock.owners, { 1 })
+end
+
+-- One source-marked double trainer fields two slots per side: the lone
+-- enemy participant stays eligible in both enemy slots and each side
+-- opens with its first two conscious members in roster order.
+function T.single_double_marked_trainer_opens_with_both_sides_doubled()
+  local party = mixedParty()
+  local live = { party = party, bag = stockedBag() }
+  local scenario = ScenarioFactory.fromTrainer({
+    trainers = {
+      {
+        id = "rival-double",
+        party = { fullRecord(), fullRecord() },
+        aiPasses = { "ai_pass_0" },
+        doubleBattle = true,
+      },
+    },
+  }, live)
+  Assert.equal(scenario.format, "double")
+  Assert.equal(#scenario.positions, 4)
+  Assert.equal(#scenario.participants, 2)
+  local player = playerOf(scenario)
+  local foe = scenario.participants[2]
+  Assert.equal(foe.controller, "trainer:rival-double")
+  Assert.equal(scenario.positions[1].side, 1)
+  Assert.equal(scenario.positions[2].side, 1)
+  Assert.equal(scenario.positions[3].side, 2)
+  Assert.equal(scenario.positions[4].side, 2)
+  Assert.deepEqual(scenario.positions[1].eligibleParticipants, { 1 })
+  Assert.deepEqual(scenario.positions[2].eligibleParticipants, { 1 })
+  Assert.deepEqual(scenario.positions[3].eligibleParticipants, { 2 })
+  Assert.deepEqual(scenario.positions[4].eligibleParticipants, { 2 })
+  Assert.equal(scenario.positions[1].occupant, player.roster[2].id)
+  Assert.equal(scenario.positions[2].occupant, player.roster[3].id)
+  Assert.equal(scenario.positions[3].occupant, foe.roster[1].id)
+  Assert.equal(scenario.positions[4].occupant, foe.roster[2].id)
+  local seen = {}
+  for _, position in ipairs(scenario.positions) do
+    Assert.isTrue(seen[position.occupant] == nil, "each opening slot fields its own combatant")
+    seen[position.occupant] = true
+  end
+  Assert.isTrue(player.roster[2].mon.condition.currentHp > 0, "the first opener stands conscious")
+  Assert.isTrue(player.roster[3].mon.condition.currentHp > 0, "the second opener stands conscious")
+  Assert.isTrue(foe.roster[1].mon.condition.currentHp > 0, "the first enemy opener stands conscious")
+  Assert.isTrue(foe.roster[2].mon.condition.currentHp > 0, "the second enemy opener stands conscious")
+end
+
+-- Two simultaneous trainers still field two slots per side: the player
+-- keeps both of its slots while each enemy slot answers to exactly one
+-- of the two trainer participants.
+function T.two_trainers_each_hold_one_enemy_slot_while_the_player_holds_two()
+  local party = mixedParty()
+  local live = { party = party, bag = stockedBag() }
+  local scenario = ScenarioFactory.fromTrainer({
+    trainers = {
+      { id = "a", party = { fullRecord(), fullRecord() } },
+      { id = "b", party = { fullRecord(), fullRecord() } },
+    },
+  }, live)
+  Assert.equal(scenario.format, "double")
+  Assert.equal(#scenario.positions, 4)
+  Assert.equal(#scenario.participants, 3)
+  Assert.equal(scenario.participants[2].controller, "trainer:a")
+  Assert.equal(scenario.participants[3].controller, "trainer:b")
+  local player = playerOf(scenario)
+  local first = scenario.participants[2]
+  local second = scenario.participants[3]
+  Assert.equal(scenario.positions[1].side, 1)
+  Assert.equal(scenario.positions[2].side, 1)
+  Assert.equal(scenario.positions[3].side, 2)
+  Assert.equal(scenario.positions[4].side, 2)
+  Assert.deepEqual(scenario.positions[1].eligibleParticipants, { 1 })
+  Assert.deepEqual(scenario.positions[2].eligibleParticipants, { 1 })
+  Assert.deepEqual(scenario.positions[3].eligibleParticipants, { 2 })
+  Assert.deepEqual(scenario.positions[4].eligibleParticipants, { 3 })
+  Assert.equal(scenario.positions[1].occupant, player.roster[2].id)
+  Assert.equal(scenario.positions[2].occupant, player.roster[3].id)
+  Assert.equal(scenario.positions[3].occupant, first.roster[1].id)
+  Assert.equal(scenario.positions[4].occupant, second.roster[1].id)
+end
+
+-- A source-marked double never fields a lone opener and never lets an
+-- explicit single downgrade it: both builds fail before any session
+-- exists.
+function T.source_doubles_fail_without_two_conscious_player_openers()
+  local live = { party = singleConsciousParty(), bag = stockedBag() }
+  local doubled = {
+    trainers = {
+      { id = "rival-double", party = { fullRecord(), fullRecord() }, doubleBattle = true },
+    },
+  }
+  Assert.isTrue(
+    not pcall(ScenarioFactory.fromTrainer, doubled, live),
+    "a source-marked double never fields a lone opener"
+  )
+  local downgraded = {
+    trainers = {
+      { id = "rival-double", party = { fullRecord(), fullRecord() }, doubleBattle = true },
+    },
+    format = "single",
+  }
+  Assert.isTrue(
+    not pcall(ScenarioFactory.fromTrainer, downgraded, live),
+    "an explicit single never downgrades a source-marked double"
+  )
+end
+
+-- A lone trainer without the source double mark stays a single: one
+-- slot per side, opening with the first conscious non-egg while the
+-- fainted lead keeps its roster seat.
+function T.single_trainers_keep_their_single_opening()
+  local party = mixedParty()
+  local scenario =
+    ScenarioFactory.fromTrainer({ trainer = "rival", party = { fullRecord(), fullRecord() } }, {
+      party = party,
+      bag = stockedBag(),
+    })
+  Assert.equal(scenario.format, "single")
+  Assert.equal(#scenario.positions, 2)
+  local player = playerOf(scenario)
+  Assert.equal(#player.roster, 3, "fainted non-eggs stay rostered past the egg")
+  Assert.equal(player.roster[1].mon.condition.currentHp, 0, "the fainted lead keeps its roster seat")
+  Assert.equal(scenario.positions[1].occupant, player.roster[2].id, "the first conscious member opens")
+  Assert.deepEqual(scenario.positions[1].eligibleParticipants, { 1 })
+  Assert.deepEqual(scenario.positions[2].eligibleParticipants, { 2 })
+end
+
+-- A marked trainer with only one conscious member fields no double:
+-- composition fails instead of opening a short side.
+function T.marked_doubles_need_two_conscious_enemies()
+  local live = { party = mixedParty(), bag = stockedBag() }
+  Assert.isTrue(
+    not pcall(ScenarioFactory.fromTrainer, {
+      trainers = {
+        { id = "rival-double", party = { fullRecord(), faintedRecord() }, doubleBattle = true },
+      },
+    }, live),
+    "a marked trainer with one conscious member fields no battle"
+  )
+end
+
+-- Paired trainers open with their first conscious member each: a
+-- fainted lead yields its slot to the living reserve behind it.
+function T.paired_trainers_open_with_their_first_conscious_member()
+  local live = { party = mixedParty(), bag = stockedBag() }
+  local scenario = ScenarioFactory.fromTrainer({
+    trainers = {
+      { id = "a", party = { faintedRecord(), fullRecord() } },
+      { id = "b", party = { fullRecord() } },
+    },
+  }, live)
+  Assert.equal(scenario.format, "double")
+  Assert.equal(#scenario.positions, 4)
+  local first = scenario.participants[2]
+  local second = scenario.participants[3]
+  Assert.equal(scenario.positions[3].occupant, first.roster[2].id, "the living reserve opens past its fainted lead")
+  Assert.equal(scenario.positions[4].occupant, second.roster[1].id)
+end
+
+-- A mark on one of two paired trainers never widens the field: the
+-- pair still holds exactly two enemy slots, one per participant.
+function T.paired_trainers_share_two_enemy_slots_even_when_marked()
+  local live = { party = mixedParty(), bag = stockedBag() }
+  local scenario = ScenarioFactory.fromTrainer({
+    trainers = {
+      { id = "a", party = { fullRecord(), fullRecord() }, doubleBattle = true },
+      { id = "b", party = { fullRecord() } },
+    },
+  }, live)
+  Assert.equal(scenario.format, "double")
+  Assert.equal(#scenario.positions, 4)
+  Assert.equal(#scenario.participants, 3)
+  Assert.deepEqual(scenario.positions[3].eligibleParticipants, { 2 })
+  Assert.deepEqual(scenario.positions[4].eligibleParticipants, { 3 })
+end
+
+-- Paired trainers each need a conscious lead: a trainer whose whole
+-- party is fainted fails the pair instead of opening short.
+function T.paired_trainers_need_a_conscious_lead_each()
+  local live = { party = mixedParty(), bag = stockedBag() }
+  Assert.isTrue(
+    not pcall(ScenarioFactory.fromTrainer, {
+      trainers = {
+        { id = "a", party = { fullRecord() } },
+        { id = "b", party = { faintedRecord() } },
+      },
+    }, live),
+    "a wholly fainted partner fails the pair"
+  )
+end
+
+-- A third simultaneous trainer has no native topology here: explicit
+-- staged fights own larger fields.
+function T.a_third_trainer_has_no_native_topology()
+  local live = { party = mixedParty(), bag = stockedBag() }
+  Assert.isTrue(
+    not pcall(ScenarioFactory.fromTrainer, {
+      trainers = {
+        { id = "a", party = { fullRecord() } },
+        { id = "b", party = { fullRecord() } },
+        { id = "c", party = { fullRecord() } },
+      },
+    }, live),
+    "three trainers fail instead of guessing a field"
+  )
+end
+
+-- An explicit doubles request with full rosters on both sides fields
+-- both slots even without a source mark; the mark is only required to
+-- forbid the opposite downgrade.
+function T.staged_double_format_fields_both_slots_when_rosters_allow()
+  local live = { party = mixedParty(), bag = stockedBag() }
+  local scenario = ScenarioFactory.fromTrainer({
+    format = "double",
+    trainers = {
+      { id = "rival", party = { fullRecord(), fullRecord() } },
+    },
+  }, live)
+  Assert.equal(scenario.format, "double")
+  Assert.equal(#scenario.positions, 4)
+  local player = playerOf(scenario)
+  local foe = scenario.participants[2]
+  Assert.equal(scenario.positions[1].occupant, player.roster[2].id)
+  Assert.equal(scenario.positions[2].occupant, player.roster[3].id)
+  Assert.equal(scenario.positions[3].occupant, foe.roster[1].id)
+  Assert.equal(scenario.positions[4].occupant, foe.roster[2].id)
 end
 
 function T.scripted_fights_pass_through_verbatim()

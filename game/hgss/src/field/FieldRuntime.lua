@@ -2347,7 +2347,11 @@ function FieldRuntime:_trainerPayload(payload)
     assert(type(entry) == "table", "trainer entries stay records")
     local item = entry --[[@as table<string, unknown>]]
     if type(item.party) == "table" and #item.party > 0 then
-      resolved[#resolved + 1] = { id = item.id, party = item.party }
+      local staged = { id = item.id, party = item.party }
+      if item.doubleBattle ~= nil then
+        staged.doubleBattle = item.doubleBattle
+      end
+      resolved[#resolved + 1] = staged
     else
       local id = item.id
       if id == nil then

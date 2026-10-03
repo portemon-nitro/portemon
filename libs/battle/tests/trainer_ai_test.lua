@@ -914,6 +914,72 @@ function T.doubles_targeting_draws_from_topology()
   replayed:dispose()
 end
 
+-- Separate trainer controllers answer their own doubles slot from
+-- topology: each trainer holds one enemy position and decides its lone
+-- actor without any doubles mark in its pass facts.
+function T.separate_trainer_controllers_answer_their_own_doubles_slot()
+  local Executor = sessionOwner()
+  local contracts = SessionFixture.sessionContracts()
+  local lead = leveledCombatant(3, 23, "EEVEE", 20)
+  local mate = leveledCombatant(4, 24, "EEVEE", 20)
+  local foeA = leveledCombatant(1, 41, "TOTODILE", 5)
+  local foeB = leveledCombatant(2, 42, "TOTODILE", 5)
+  local seeds = { lead, mate, foeA, foeB }
+  local first = SessionFixture.participant(2, 2, "trainer:1", { lead })
+  first.context = { aiPasses = {} }
+  local second = SessionFixture.participant(3, 2, "trainer:2", { mate })
+  second.context = { aiPasses = {} }
+  local scenario = {
+    ruleset = Executor.RULESET,
+    format = "double",
+    sides = { SessionFixture.side(1, { 1 }), SessionFixture.side(2, { 2, 3 }) },
+    participants = {
+      SessionFixture.participant(1, 1, "player", { foeA, foeB }),
+      first,
+      second,
+    },
+    positions = {
+      SessionFixture.position(1, 1, { 1 }, foeA.id),
+      SessionFixture.position(2, 1, { 1 }, foeB.id),
+      SessionFixture.position(3, 2, { 2 }, lead.id),
+      SessionFixture.position(4, 2, { 3 }, mate.id),
+    },
+    inventories = {},
+    environment = { weather = "none" },
+    random = { seed = NATIVE_SEED },
+    formatState = {},
+    moveFacts = scenarioMoveFacts(),
+    speciesFacts = scenarioSpeciesFacts(seeds),
+    itemFacts = {},
+  }
+  Assert.deepEqual(first.context, { aiPasses = {} }, "the first trainer carries no doubles mark")
+  Assert.deepEqual(second.context, { aiPasses = {} }, "the second trainer carries no doubles mark")
+  local session = waitingSession(contracts, scenario)
+  local held = session:capture()
+  local firstReply = session:answerTrainer(openRequest(session, "trainer:1"))
+  local secondReply = session:answerTrainer(openRequest(session, "trainer:2"))
+  Assert.equal(#firstReply.choices, 1, "the first trainer answers only its own actor")
+  Assert.equal(#secondReply.choices, 1, "the second trainer answers only its own actor")
+  for _, reply in ipairs({ firstReply, secondReply }) do
+    Assert.equal(reply.choices[1].kind, "attack", "the flagless doubles line strikes")
+    local position = reply.choices[1].payload.target.position
+    Assert.isTrue(position == 1 or position == 2, "strikes address a live opposing position")
+  end
+  session:dispose()
+  local replayed = Executor.restore(held, trainerContent())
+  Assert.deepEqual(
+    replayed:answerTrainer(openRequest(replayed, "trainer:1")),
+    firstReply,
+    "a fixed seed replays the first trainer"
+  )
+  Assert.deepEqual(
+    replayed:answerTrainer(openRequest(replayed, "trainer:2")),
+    secondReply,
+    "a fixed seed replays the second trainer"
+  )
+  replayed:dispose()
+end
+
 -- Switch answers ride the seam when a reserve strictly outranks the
 -- holder: the harmless lead yields to its damaging reserve through an
 -- ordinary reply the kernel accepts.

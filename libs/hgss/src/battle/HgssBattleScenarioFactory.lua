@@ -183,10 +183,48 @@ local function snapshotParty(party)
   return { seeds = seeds, opening = opening }
 end
 
+-- Collects the first `required` conscious combatant seeds in roster order.
+-- Fainted non-eggs stay roster members but never open; eggs never reach the
+-- roster at all. Fewer conscious members than required fail the build
+-- instead of fielding a short side.
+---@param seeds table<integer, table<string, unknown>> ordered combatant seeds
+---@param required integer opening slots the side must fill
+---@param complaint string build failure naming the short side
+---@return integer[] one-based seed indices of the opening combatants in roster order
+local function consciousOpenerIndices(seeds, required, complaint)
+  assert(type(seeds) == "table", "opener selection reads its combatant seeds")
+  assert(
+    type(required) == "number" and required % 1 == 0 and required >= 1,
+    "opener selection fills a positive slot count"
+  )
+  local found = {} ---@type integer[]
+  for index, seed in ipairs(seeds) do
+    if #found >= required then
+      break
+    end
+    local mon = (seed --[[@as table<string, unknown>]]).mon
+    if type(mon) == "table" then
+      local condition = (mon --[[@as table<string, unknown>]]).condition
+      if type(condition) == "table" and condition.currentHp > 0 then
+        found[#found + 1] = index
+      end
+    end
+  end
+  if #found < required then
+    error(complaint, 0)
+  end
+  return found
+end
+
 ---@param snapshot table<string, unknown>? ordered party seeds plus the opening roster index
+---@param required integer opening slots the player side must fill
 ---@return table<string, unknown>[] ordered kernel combatant seeds for the player side
----@return integer opening combatant identity holding the first position
-local function playerRoster(snapshot)
+---@return integer[] opening combatant identities in roster order
+local function playerRoster(snapshot, required)
+  assert(
+    type(required) == "number" and (required == 1 or required == 2),
+    "player sides open one singles slot or two doubles slots"
+  )
   if snapshot ~= nil then
     local roster = {} ---@type table<string, unknown>[]
     for index, seed in
@@ -205,11 +243,30 @@ local function playerRoster(snapshot)
         },
       }
     end
-    return roster, snapshot.opening --[[@as integer]]
+    if required == 1 then
+      return roster, {
+        snapshot.opening --[[@as integer]],
+      }
+    end
+    local openers = {} ---@type integer[]
+    for _, index in
+      ipairs(
+        consciousOpenerIndices(
+          snapshot.seeds --[[@as table<integer, table<string, unknown>>]],
+          required,
+          "production double battles require two conscious player combatants"
+        )
+      )
+    do
+      openers[#openers + 1] = (roster[index] --[[@as table<string, unknown>]]).id --[[@as integer]]
+    end
+    return roster, openers
   end
-  return {
-    {
-      id = 1,
+  local roster = {} ---@type table<string, unknown>[]
+  local openers = {} ---@type integer[]
+  for slot = 1, required do
+    roster[#roster + 1] = {
+      id = slot,
       mon = {
         schema = Mon.SCHEMA,
         species = "UNKNOWN",
@@ -218,9 +275,10 @@ local function playerRoster(snapshot)
         condition = { currentHp = HgssBattleScenarioFactory.DESCRIPTOR_ENTRY_HP },
       },
       source = { kind = "placeholder", owner = "field", key = "placeholder" },
-    },
-  },
-    1
+    }
+    openers[#openers + 1] = slot
+  end
+  return roster, openers
 end
 
 -- Flattens one detached bag capture into battle stock: every pocket stack
@@ -414,6 +472,10 @@ local function assemble(payload, heart)
   assert(type(payload) == "table", "scenario sources arrive as records")
   local players = heart.players --[[@as table<integer, table<string, unknown>>]]
   assert(type(players) == "table" and #players > 0, "production scenarios field their player roster")
+  local playerOpeners = heart.playerOpeners --[[@as table<integer, integer>]]
+  assert(type(playerOpeners) == "table" and #playerOpeners > 0, "production scenarios field their player openers")
+  local enemySlots = heart.enemySlots --[[@as table<integer, table<string, unknown>>]]
+  assert(type(enemySlots) == "table" and #enemySlots > 0, "production scenarios field their enemy openers")
   local sides = {
     { id = 1, participants = { 1 } },
     { id = 2, participants = heart.enemyIds },
@@ -438,17 +500,25 @@ local function assemble(payload, heart)
       "enemy membership follows participant order"
     )
   end
-  local positions = {
-    { id = 1, side = 1, eligibleParticipants = { 1 }, occupant = heart.openingId },
-  }
-  for index, enemy in ipairs(heart.enemies) do
-    local lead = enemy.roster[1]
-    assert(type(lead) == "table" and type(lead.id) == "number", "enemy participants declare their lead")
+  -- Player positions open first, then enemy positions, each in
+  -- deterministic order with exactly one occupant from an eligible
+  -- participant roster.
+  local positions = {} ---@type table<integer, table<string, unknown>>
+  for _, occupant in ipairs(playerOpeners) do
+    assert(type(occupant) == "number", "player openers name their combatant")
+    positions[#positions + 1] = { id = #positions + 1, side = 1, eligibleParticipants = { 1 }, occupant = occupant }
+  end
+  for _, slot in ipairs(enemySlots) do
+    local entry = slot --[[@as table<string, unknown>]]
+    assert(
+      type(entry.participant) == "number" and type(entry.occupant) == "number",
+      "enemy openers name their participant and combatant"
+    )
     positions[#positions + 1] = {
-      id = 1 + index,
+      id = #positions + 1,
       side = 2,
-      eligibleParticipants = { enemy.id },
-      occupant = lead.id,
+      eligibleParticipants = { entry.participant },
+      occupant = entry.occupant,
     }
   end
   return kernelShape({
@@ -512,7 +582,7 @@ function HgssBattleScenarioFactory.fromEncounter(payload, ctx)
   end
   local attemptId = payload.attemptId or payload.id
   local snapshot = snapshotParty(context.party)
-  local players, openingId = playerRoster(snapshot)
+  local players, openers = playerRoster(snapshot, 1)
   local key = attemptId or enemy.species or "wild"
   local foeId = #players + 1
   local foe = enemySeed(copyValue(enemy), foeId, {
@@ -536,7 +606,8 @@ function HgssBattleScenarioFactory.fromEncounter(payload, ctx)
     format = payload.format or "wild-single",
     enemyIds = { foeId },
     players = players,
-    openingId = openingId,
+    playerOpeners = openers,
+    enemySlots = { { participant = foeId, occupant = foeId } },
     playerContext = playerRewardContext(context, snapshot ~= nil),
     playerInventoryId = playerInventoryId,
     inventories = inventories,
@@ -556,7 +627,10 @@ end
 -- participant context when supplied and stay absent otherwise; carried
 -- items build only the trainer inventory stock beside the context, and
 -- the native session refuses to decide for a trainer side without its
--- pass facts.
+-- pass facts. Native doubles need no new schema: two trainers, or one
+-- trainer carrying the source double mark, open two positions per side
+-- with the first conscious members, while an explicit single that would
+-- downgrade source doubles fails instead of overriding it.
 ---@param payload table<string, unknown>
 ---@param ctx table<string, unknown>?
 ---@return table<string, unknown> detached trainer scenario fragment
@@ -575,8 +649,22 @@ function HgssBattleScenarioFactory.fromTrainer(payload, ctx)
     trainers = { { id = payload.trainer, party = payload.party } }
   end
   assert(type(trainers) == "table" and #trainers > 0, "trainer battles field at least one trainer")
+  if #trainers > 2 then
+    error("trainer battles field at most two simultaneous trainers; stage larger fights as scripted battles", 0)
+  end
+  local nativeDouble = #trainers == 2
+  for _, trainer in ipairs(trainers) do
+    local entry = trainer --[[@as table<string, unknown>]]
+    if entry.doubleBattle == true then
+      nativeDouble = true
+    end
+  end
+  if payload.format == "single" and nativeDouble then
+    error("trainer battles never downgrade a native double battle to a single", 0)
+  end
+  local doubles = nativeDouble or payload.format == "double"
   local snapshot = snapshotParty(context.party)
-  local players, openingId = playerRoster(snapshot)
+  local players, playerOpeners = playerRoster(snapshot, doubles and 2 or 1)
   local inventories = {}
   local playerInventoryId = nil ---@type string?
   if snapshot ~= nil then
@@ -641,13 +729,47 @@ function HgssBattleScenarioFactory.fromTrainer(payload, ctx)
     enemies[#enemies + 1] = enemy
   end
   local attemptId = payload.attemptId or payload.id
+  -- Enemy openings follow the doubles shape: one marked trainer stays
+  -- eligible in both enemy slots with its first two conscious members,
+  -- while paired trainers each hold exactly one slot with their first
+  -- conscious member. Singles keep the roster lead untouched.
+  local enemySlots = {} ---@type table<integer, table<string, unknown>>
+  if doubles and #enemies == 1 then
+    local lone = enemies[1] --[[@as table<string, unknown>]]
+    local roster = lone.roster --[[@as table<integer, table<string, unknown>>]]
+    for _, index in
+      ipairs(consciousOpenerIndices(roster, 2, "production double battles require two conscious enemy combatants"))
+    do
+      enemySlots[#enemySlots + 1] = {
+        participant = lone.id,
+        occupant = (roster[index] --[[@as table<string, unknown>]]).id,
+      }
+    end
+  elseif #enemies == 2 then
+    for _, enemy in ipairs(enemies) do
+      local peer = enemy --[[@as table<string, unknown>]]
+      local roster = peer.roster --[[@as table<integer, table<string, unknown>>]]
+      local lead = consciousOpenerIndices(roster, 1, "trainer battles require a conscious lead for every trainer")[1]
+      enemySlots[#enemySlots + 1] = {
+        participant = peer.id,
+        occupant = (roster[lead] --[[@as table<string, unknown>]]).id,
+      }
+    end
+  else
+    local lone = enemies[1] --[[@as table<string, unknown>]]
+    local roster = lone.roster --[[@as table<integer, table<string, unknown>>]]
+    local lead = roster[1] --[[@as table<string, unknown>]]
+    assert(type(lead) == "table" and type(lead.id) == "number", "enemy participants declare their lead")
+    enemySlots[#enemySlots + 1] = { participant = lone.id, occupant = lead.id }
+  end
   return assemble(payload, {
     attemptId = attemptId,
     kind = "trainer",
-    format = payload.format or (#trainers > 1 and "double" or "single"),
+    format = payload.format or (doubles and "double" or "single"),
     enemyIds = enemyIds,
     players = players,
-    openingId = openingId,
+    playerOpeners = playerOpeners,
+    enemySlots = enemySlots,
     playerContext = playerRewardContext(context, snapshot ~= nil),
     playerInventoryId = playerInventoryId,
     inventories = inventories,
