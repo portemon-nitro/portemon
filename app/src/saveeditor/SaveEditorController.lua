@@ -7,6 +7,7 @@ local FocusGraph = require("libs.ui.src.FocusGraph")
 ---@class SaveEditorController
 ---@field section string
 ---@field modal string?
+---@field modalReturnFocus string?
 ---@field focus string
 ---@field capturedTarget string?
 ---@field pointerId string?
@@ -16,7 +17,6 @@ local FocusGraph = require("libs.ui.src.FocusGraph")
 ---@field flagGroup string?
 ---@field partyPage string
 ---@field partySlot0 integer?
----@field partyReturnFocus string?
 ---@field partySubpage string
 ---@field bagPocket string
 ---@field bagItemKey string?
@@ -54,6 +54,7 @@ local FocusGraph = require("libs.ui.src.FocusGraph")
 ---@field snapshot fun(self: SaveEditorController): table<string, unknown>
 ---@field press fun(self: SaveEditorController, action: string): table<string, unknown>?
 ---@field openModal fun(self: SaveEditorController, kind: string)
+---@field closeModal fun(self: SaveEditorController): string?
 ---@field pointer fun(self: SaveEditorController, event: table<string, unknown>): table<string, unknown>?
 ---@field cancelInteraction fun(self: SaveEditorController)
 
@@ -61,6 +62,7 @@ function Controller.new()
   return setmetatable({
     section = "Player",
     modal = nil,
+    modalReturnFocus = nil,
     focus = "money",
     capturedTarget = nil,
     pointerId = nil,
@@ -69,7 +71,6 @@ function Controller.new()
     flagFilter = "Named",
     partyPage = "list",
     partySlot0 = nil,
-    partyReturnFocus = nil,
     partySubpage = "Identity",
     bagPocket = "items",
     bagItemKey = nil,
@@ -121,7 +122,12 @@ function Controller:press(action)
     if action == "cancel" or action == "back" then
       local modal = self.modal
       self.modal = nil
-      return { kind = "cancel", modal = modal }
+      local returnFocus = self.modalReturnFocus
+      self.modalReturnFocus = nil
+      if returnFocus ~= nil then
+        self.focus = returnFocus
+      end
+      return { kind = "cancel", modal = modal, returnFocus = returnFocus }
     elseif action == "up" or action == "down" or action == "left" or action == "right" then
       local choices = self.modal == "leave" and { "save", "discard", "cancel" }
         or self.modal == "draft" and { "apply", "discard", "cancel" }
@@ -221,8 +227,18 @@ function Controller:press(action)
 end
 
 function Controller:openModal(kind)
+  self.modalReturnFocus = self.focus
   self.modal = kind
   self.focus = "cancel"
+end
+
+function Controller:closeModal()
+  local returnFocus = self.modalReturnFocus
+  self.modal, self.modalReturnFocus = nil, nil
+  if returnFocus ~= nil then
+    self.focus = returnFocus
+  end
+  return returnFocus
 end
 
 function Controller:setSection(section)
@@ -230,7 +246,7 @@ function Controller:setSection(section)
     section == "Location" or section == "Player" or section == "Progress" or section == "Party" or section == "Bag"
   )
   self.section = section
-  self.modal = nil
+  self:closeModal()
   self.capturedTarget, self.pointerId = nil, nil
   if section == "Party" then
     self.partyPage = "list"

@@ -32,6 +32,8 @@ local ItemAssetSchema = require("libs.assets.src.ItemAssetSchema")
 
 ---@class SaveEditorState
 ---@field valueEditor SaveEditorValueEditor?
+---@field valueReturnFocus string?
+---@field pendingFocusReturn string?
 ---@field versionId string
 ---@field saveId string
 ---@field width number
@@ -56,7 +58,7 @@ local ItemAssetSchema = require("libs.assets.src.ItemAssetSchema")
 ---@field disposed boolean
 ---@field resultSent boolean
 ---@field approvedExit boolean
----@field closeRequest { reason: "back"|"quit", phase: "confirm"|"saving", previousModal: string?, previousFocus: string }?
+---@field closeRequest { reason: "back"|"quit", phase: "confirm"|"saving", previousModal: string?, previousModalReturnFocus: string?, previousFocus: string }?
 ---@field monDraft SaveEditorMonDraft?
 ---@field partyView SaveEditorPartyView?
 ---@field partyProjectionCache { partyRevision: integer, slot0: integer, value: SaveEditorMonProjection }?
@@ -168,6 +170,8 @@ function State.new(options)
     pendingLocationSave = nil,
     locationSaveOperationId = 0,
     valueEditor = nil,
+    valueReturnFocus = nil,
+    pendingFocusReturn = nil,
     errorMessage = nil,
     notice = nil,
     generation = 1,
@@ -304,17 +308,6 @@ function State:_openingFailed(err)
 end
 
 function State:_snapshot()
-  if self.valueEditor and self.controller.modal == nil then
-    local value = self.valueEditor:snapshot()
-    if value.kind == "choice" and value.selectedKey then
-      self.controller.focus = "choice:" .. value.selectedKey
-    elseif value.kind == "name" then
-      local cursor = assert(value.naming.cursor)
-      self.controller.focus = tostring(cursor.row) .. ":" .. tostring(cursor.column)
-    else
-      self.controller.focus = "value:buffer"
-    end
-  end
   local session = self.session and self.session:snapshot() or nil
   local section = self.controller.section
   local flags = session and section == "Progress" and self:_flagRows(session.flags) or {}
@@ -639,7 +632,7 @@ function State:_openEditor(descriptor)
     options.charmap = assert(self.dependencies.context.charmap)
     options.subject = descriptor.subject
   end
-  self.valueEditor = ValueEditor.new(options)
+  self:_installValueEditor(ValueEditor.new(options), "party_field")
   self.activeDraftField = descriptor
 end
 
@@ -686,11 +679,11 @@ function State:_finishValueEditor()
   local purpose = self.valuePurpose
   local descriptor = self.activeDraftField
   if result.kind == "cancel" then
+    self.pendingFocusReturn = self.valueReturnFocus
     self.valueEditor, self.valuePurpose, self.activeDraftField = nil, nil, nil
-    self.pendingQuantity = nil
-    if purpose == "party_add_species" then
-      self.controller.focus = self.controller.partyReturnFocus or "party:add"
-      self.controller.partyReturnFocus = nil
+    self.valueReturnFocus = nil
+    if purpose == "bag_quantity" then
+      self.pendingQuantity = nil
     end
     return true
   end
@@ -717,12 +710,18 @@ function State:_finishValueEditor()
   elseif purpose == "bag_pocket" then
     self.controller:selectBagPocket(result.value)
   elseif purpose == "bag_add_item" then
+    local returnFocus = "bag:item:" .. result.value
+    self.valueEditor, self.valuePurpose, self.activeDraftField = nil, nil, nil
     self.controller:selectBagItem(result.value)
+    self.valueReturnFocus = returnFocus
     self:_openBagQuantity("add")
+    return true
   elseif purpose == "bag_quantity" then
     local pending = assert(self.pendingQuantity)
     if pending.mode == "add" and result.value == 0 then
       self.errorMessage = "Add item must set a quantity above zero."
+      editor:retry()
+      return false
     elseif result.value == 0 then
       self.pendingRemove = { kind = "bag", itemKey = pending.itemKey }
       self.controller:openModal("remove")
@@ -744,7 +743,9 @@ function State:_finishValueEditor()
       return false
     end
   end
+  self.pendingFocusReturn = self.valueReturnFocus
   self.valueEditor, self.valuePurpose, self.activeDraftField = nil, nil, nil
+  self.valueReturnFocus = nil
   return true
 end
 
@@ -780,8 +781,7 @@ function State:_beginBagAdd()
     self.errorMessage = "This pocket has no items to add."
     return
   end
-  self.valuePurpose = "bag_add_item"
-  self.valueEditor = ValueEditor.new({ kind = "choice", options = options })
+  self:_installValueEditor(ValueEditor.new({ kind = "choice", options = options }), "bag_add_item")
 end
 
 function State:_openBagQuantity(mode)
@@ -791,14 +791,17 @@ function State:_openBagQuantity(mode)
   local pocket = catalog:pocket(item.pocket)
   local current = self:_bagView().bagSelectedQuantity or 0
   self.pendingQuantity = { itemKey = itemKey, mode = mode }
-  self.valuePurpose = "bag_quantity"
-  self.valueEditor = ValueEditor.new({
-    kind = "integer",
-    value = mode == "add" and current + 1 or current,
-    min = 0,
-    max = pocket.maxQuantity,
-    base = "decimal",
-  })
+  self:_installValueEditor(
+    ValueEditor.new({
+      kind = "integer",
+      value = mode == "add" and current + 1 or current,
+      min = 0,
+      max = pocket.maxQuantity,
+      base = "decimal",
+    }),
+    "bag_quantity",
+    self.valueReturnFocus
+  )
 end
 
 function State:_publishBagQuantity(itemKey, quantity)
@@ -815,6 +818,27 @@ end
 function State:_resolve(view)
   view.textMetrics = assert(self.renderer):metrics()
   return self.presentation:resolve(self.displayContext:measure(self.width, self.height), view)
+end
+
+---@param preferred string?
+function State:_reconcileFocus(preferred)
+  local layout = self:_resolve(self:_snapshot()).content.layout
+  local focus = preferred or self.pendingFocusReturn or self.controller.focus
+  if focus == nil or layout.focusGraph[focus] == nil then
+    focus = layout.defaultFocus
+  end
+  self.controller.focus = assert(focus)
+  self.pendingFocusReturn = nil
+end
+
+---@param editor SaveEditorValueEditor
+---@param purpose string
+---@param returnFocus string?
+function State:_installValueEditor(editor, purpose, returnFocus)
+  assert(self.valueEditor == nil, "a value editor must be retired before its successor is installed")
+  self.valueReturnFocus = returnFocus or self.controller.focus
+  self.valueEditor = editor
+  self.valuePurpose = purpose
 end
 
 function State:_updateLocationService()
@@ -1172,7 +1196,7 @@ end
 function State:_resolveDraftChoice(action)
   local draft = assert(self.monDraft)
   if action == "cancel" then
-    self.controller.modal = nil
+    self.controller:closeModal()
     self.pendingDraftAction = nil
     return
   elseif action == "apply" then
@@ -1206,7 +1230,7 @@ function State:_resolveDraftChoice(action)
     self.controller.partyPage = "detail"
     self.controller.focus = "party:edit"
   end
-  self.controller.modal = nil
+  self.controller:closeModal()
   local pending = self.pendingDraftAction
   self.pendingDraftAction = nil
   self:_performDeferred(pending)
@@ -1215,7 +1239,7 @@ end
 function State:_confirmRemoval()
   local pending = assert(self.pendingRemove)
   self.pendingRemove = nil
-  self.controller.modal = nil
+  self.controller:closeModal()
   if pending.kind == "party" then
     local result = self.session:removePartyMon(pending.slot0)
     if not result.ok then
@@ -1279,6 +1303,7 @@ function State:_discard(leave)
     self.valueEditor = nil
   end
   self.valuePurpose, self.activeDraftField = nil, nil
+  self.valueReturnFocus, self.pendingFocusReturn = nil, nil
   if self.session then
     self.session:discard()
   end
@@ -1295,7 +1320,6 @@ function State:_discard(leave)
   self.controller.partySubpage = "Identity"
   self.controller.partySlot0 = nil
   self.controller.bagItemKey = nil
-  self.controller.partyReturnFocus = nil
   if self.controller.section == "Party" then
     self.controller.focus = "party:add"
   elseif self.controller.section == "Bag" then
@@ -1315,9 +1339,11 @@ end
 function State:_requestBack()
   if self.valueEditor then
     self.valueEditor:cancel()
+    self.pendingFocusReturn = self.valueReturnFocus
     self.valueEditor = nil
     self.valuePurpose = nil
     self.activeDraftField = nil
+    self.valueReturnFocus = nil
     self.controller:cancelInteraction()
   elseif self.monDraft ~= nil then
     self:_requestDraftResolution({ kind = "back" })
@@ -1354,6 +1380,7 @@ function State:requestClose(reason)
       reason = reason,
       phase = "confirm",
       previousModal = self.controller.modal,
+      previousModalReturnFocus = self.controller.modalReturnFocus,
       previousFocus = self.controller.focus,
     }
     self.controller:openModal("leave")
@@ -1454,7 +1481,7 @@ function State:_activate(targetId)
         self:_confirmRemoval()
       elseif targetId == "cancel" then
         self.pendingRemove = nil
-        self.controller.modal = nil
+        self.controller:closeModal()
       end
     elseif targetId == "cancel" then
       if self.controller.modal == "leave" and self.closeRequest ~= nil then
@@ -1462,9 +1489,10 @@ function State:_activate(targetId)
         local request = assert(self.closeRequest)
         self.closeRequest = nil
         self.controller.modal = request.previousModal
+        self.controller.modalReturnFocus = request.previousModalReturnFocus
         self.controller.focus = request.previousFocus
       else
-        self.controller.modal = nil
+        self.controller:closeModal()
       end
     elseif targetId == "discard" then
       if self.closeRequest ~= nil then
@@ -1516,9 +1544,10 @@ function State:_activate(targetId)
   if targetId == "money" then
     self:_cancelPendingLocationSave()
     local money = assert(self.session:snapshot().money)
-    self.valueEditor =
-      ValueEditor.new({ kind = "integer", value = money, min = 0, max = PlayerData.MAX_MONEY, base = "decimal" })
-    self.valuePurpose = "money"
+    self:_installValueEditor(
+      ValueEditor.new({ kind = "integer", value = money, min = 0, max = PlayerData.MAX_MONEY, base = "decimal" }),
+      "money"
+    )
   elseif targetId:sub(1, 5) == "flag:" then
     local name = targetId:sub(6)
     local current = self.session:snapshot().flags[FieldScriptSymbols.flagsByName[name]] == true
@@ -1548,9 +1577,7 @@ function State:_activate(targetId)
     end, function(key)
       return catalog:species(key).name or key
     end)
-    self.controller.partyReturnFocus = self.controller.focus
-    self.valuePurpose = "party_add_species"
-    self.valueEditor = ValueEditor.new({ kind = "choice", options = options })
+    self:_installValueEditor(ValueEditor.new({ kind = "choice", options = options }), "party_add_species")
   elseif targetId == "party:edit" then
     self:_cancelPendingLocationSave()
     local slot0 = assert(self.controller.partySlot0)
@@ -1611,23 +1638,27 @@ function State:_activate(targetId)
   elseif targetId == "party:move:add" then
     self:_cancelPendingLocationSave()
     local catalog = assert(self.dependencies.context.monCatalog)
-    self.valuePurpose = "party_add_move"
-    self.valueEditor = ValueEditor.new({
-      kind = "choice",
-      options = PartyView.options(assert(self.partyView), "moves", function()
-        return catalog:moveKeys()
-      end, function(key)
-        return catalog:move(key).name or key
-      end),
-    })
+    self:_installValueEditor(
+      ValueEditor.new({
+        kind = "choice",
+        options = PartyView.options(assert(self.partyView), "moves", function()
+          return catalog:moveKeys()
+        end, function(key)
+          return catalog:move(key).name or key
+        end),
+      }),
+      "party_add_move"
+    )
   elseif targetId == "bag:pocket:choose" then
     self:_cancelPendingLocationSave()
     local options = {}
     for _, pocket in ipairs(self:_bagView().bagPockets) do
       options[#options + 1] = { key = pocket.key, label = pocket.label }
     end
-    self.valuePurpose = "bag_pocket"
-    self.valueEditor = ValueEditor.new({ kind = "choice", options = options, value = self.controller.bagPocket })
+    self:_installValueEditor(
+      ValueEditor.new({ kind = "choice", options = options, value = self.controller.bagPocket }),
+      "bag_pocket"
+    )
   elseif targetId:match("^bag:pocket:") then
     local pocket = assert(targetId:match("^bag:pocket:(.+)$"))
     self.controller:selectBagPocket(pocket)
@@ -1648,29 +1679,6 @@ end
 
 function State:_firstFlagName()
   return assert(self:_flagRows({})[1], "field flags catalog is empty").name
-end
-
-function State:_moveFlagFocus(direction)
-  local rows = self:_flagRows(self.session:snapshot().flags)
-  if #rows == 0 then
-    return
-  end
-  local current = 1
-  for index, row in ipairs(rows) do
-    if self.controller.focus == "flag:" .. row.name then
-      current = index
-      break
-    end
-  end
-  current = math.max(1, math.min(#rows, current + direction))
-  self.controller.focus = "flag:" .. rows[current].name
-  local plan = self:_resolve(self:_snapshot())
-  local layout = assert(plan.content.layout)
-  local viewport = assert(layout.viewports.flags)
-  local offset =
-    ScrollViewport.reveal(viewport.offset, viewport.clip.height, (current - 1) * viewport.rowExtent, viewport.rowExtent)
-  self.controller.scrollOffsets["flags:" .. tostring(self.controller.flagGroup or self.controller.flagFilter)] =
-    ScrollViewport.clamp(offset, viewport.contentExtent, viewport.clip.height)
 end
 
 function State:_cycleFlagFilter(direction)
@@ -1741,6 +1749,7 @@ function State:_dispatchIntent(intent)
       local request = assert(self.closeRequest)
       self.closeRequest = nil
       self.controller.modal = request.previousModal
+      self.controller.modalReturnFocus = request.previousModalReturnFocus
       self.controller.focus = request.previousFocus
     elseif self.valueEditor then
       self.valueEditor:cancel()
@@ -1749,8 +1758,9 @@ function State:_dispatchIntent(intent)
       self:_resolveDraftChoice("cancel")
     elseif intent.modal == "remove" then
       self.pendingRemove = nil
+      self.controller.modalReturnFocus = nil
     else
-      self.controller.modal = nil
+      self.controller:closeModal()
       self.pendingDraftAction = nil
     end
   elseif intent.kind == "move" then
@@ -1770,21 +1780,14 @@ function State:_dispatchIntent(intent)
       local offset = intent.direction == "right" and 1 or -1
       local nextSection = sections[(current - 1 + offset) % #sections + 1]
       self:_requestDraftResolution({ kind = "section", section = nextSection })
-    elseif
-      self.controller.section == "Progress"
-      and (
-        intent.direction == "right"
-        or (self.controller.focus:sub(1, 5) == "flag:" and (intent.direction == "up" or intent.direction == "down"))
-      )
-    then
-      if intent.direction == "right" then
-        self:_cycleFlagFilter(1)
-      else
-        self:_moveFlagFocus(intent.direction == "down" and 1 or -1)
-      end
+    elseif self.controller.section == "Progress" and intent.direction == "right" then
+      self:_cycleFlagFilter(1)
     else
       local plan = self:_resolve(self:_snapshot())
       local layout = assert(plan.content.layout)
+      if layout.focusGraph[self.controller.focus] == nil then
+        self.controller.focus = layout.defaultFocus
+      end
       self.controller:moveFocus(layout.focusGraph, intent.direction)
       if
         self.controller.section == "Party"
@@ -1846,6 +1849,7 @@ function State:_pointer(events)
   if self.disposed then
     return plan
   end
+  self:_reconcileFocus()
   self:_resolve(self:_snapshot())
   return plan
 end
@@ -1932,6 +1936,7 @@ function State:_consumeUiInput(events)
       end
     end
   end
+  self:_reconcileFocus()
 end
 
 function State:keypressed(key, _, isrepeat)
@@ -1971,6 +1976,7 @@ function State:keypressed(key, _, isrepeat)
     elseif key == "left" or key == "right" or key == "up" or key == "down" then
       self.valueEditor:press(key)
     end
+    self:_reconcileFocus()
     return
   end
   if self.controller.section == "Progress" and key == "backspace" then

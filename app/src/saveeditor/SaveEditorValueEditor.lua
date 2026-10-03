@@ -18,7 +18,6 @@ local Utf8Glyphs = require("libs.assets.src.Utf8Glyphs")
 ---@field _selectedKey string?
 ---@field _query string?
 ---@field _group string?
----@field _page number?
 ---@field _name NamingScreenController?
 ---@field _nameKind "player"|"pokemon"|nil
 ---@field _nameMaxLength integer?
@@ -80,7 +79,6 @@ function SaveEditorValueEditor.new(options)
     self._selectedKey = self._selectedKey or self._options[1].key
     self._query = ""
     self._group = nil
-    self._page = 1
   elseif options.kind == "name" then
     self._nameKind = options.nameKind
     self._nameMaxLength = options.maxLength

@@ -71,6 +71,10 @@ local function withAppMenu(fn)
   end
   FieldTextRenderer.new = function()
     return {
+      fontDef = { lineHeight = 12 },
+      textWidth = function(_, value)
+        return #value * 6
+      end,
       drawText = function() end,
       release = function() end,
     }

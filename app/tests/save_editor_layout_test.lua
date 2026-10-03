@@ -85,7 +85,10 @@ function T.tests.naming_keyboard_rows_do_not_overlap_the_footer_cancel_target()
     local view = locationView()
     view.valueEditor = {
       kind = "name",
-      naming = { controls = { { id = "lower", firstColumn = 1, lastColumn = 1 } } },
+      naming = {
+        cursor = { row = 1, column = 1 },
+        controls = { { id = "lower", firstColumn = 1, lastColumn = 1 } },
+      },
     }
     local layout = computeLayout(view, viewport.width, viewport.height)
     local cancel = assert(layout.targets.cancel)

@@ -243,9 +243,6 @@ local PACKAGE_RULES = {
       hgss = true,
       ui = true,
       storage = true,
-      assets = true,
-      mons = true,
-      script = true,
     },
   },
 }

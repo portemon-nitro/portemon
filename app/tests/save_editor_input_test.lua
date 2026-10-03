@@ -21,7 +21,12 @@ local function computeLayout(Layout, view, width, height)
   if view.layout ~= nil then
     return view.layout
   end
-  return Layout.compute(view, width, height, assert(view.textMetrics, "input journey uses the editor's borrowed text metrics"))
+  return Layout.compute(
+    view,
+    width,
+    height,
+    assert(view.textMetrics, "input journey uses the editor's borrowed text metrics")
+  )
 end
 
 local function stateModule()
@@ -148,6 +153,15 @@ end
 local function selectSection(state, Layout, section)
   local _ = Layout
   state.controller:setSection(section)
+end
+
+local function assertFocusCanMove(state, interaction)
+  local before = state:view()
+  Assert.notNil(before.layout.focusGraph[before.focus], interaction .. " leaves focus in the active graph")
+  state:keypressed("down")
+  state:keyreleased("down")
+  local after = state:view()
+  Assert.notNil(after.layout.focusGraph[after.focus], interaction .. " keeps focus valid after directional input")
 end
 
 local function focusPath(graph, start, target)
@@ -382,6 +396,199 @@ function T.tests.input_reaches_money_and_toggle_rows_on_compact_and_dual_touch()
   end)
 end
 
+function T.tests.value_editor_success_and_cancel_return_to_live_caller_focus()
+  local _, Layout = stateModule()
+  local topology = ScreenTopology.oneDisplay({
+    id = "main",
+    rect = { x = 0, y = 0, width = 256, height = 192 },
+    touch = true,
+    role = "world",
+  })
+  withEditor(256, 192, topology, function(state)
+    selectSection(state, Layout, "Player")
+    local player = state:view()
+    click(state, selectedPane(player), computeLayout(Layout, player, 256, 192).targets.money, true)
+    state:textinput("4200")
+    state:keypressed("return")
+    Assert.equal(state.session:snapshot().money, 4200, "successful Money confirmation stages the value")
+    assertFocusCanMove(state, "successful Money edit")
+
+    local afterSuccess = state:view()
+    click(state, selectedPane(afterSuccess), computeLayout(Layout, afterSuccess, 256, 192).targets.money, true)
+    state:keypressed("escape")
+    Assert.equal(state.session:snapshot().money, 4200, "cancel leaves the staged Money value unchanged")
+    assertFocusCanMove(state, "canceled Money edit")
+
+    selectSection(state, Layout, "Bag")
+    local bag = state:view()
+    click(state, selectedPane(bag), computeLayout(Layout, bag, 256, 192).targets["bag:pocket:choose"], true)
+    local pocketChoice = state:view()
+    Assert.equal(pocketChoice.valueEditor and pocketChoice.valueEditor.kind, "choice")
+    click(state, selectedPane(pocketChoice), computeLayout(Layout, pocketChoice, 256, 192).targets.cancel, true)
+    assertFocusCanMove(state, "canceled section choice")
+  end)
+end
+
+function T.tests.compact_and_wide_bag_entry_and_leave_modal_cancel_keep_focus_valid()
+  local _, Layout = stateModule()
+  for _, dimensions in ipairs({ { width = 256, height = 192 }, { width = 1200, height = 600 } }) do
+    local topology = ScreenTopology.oneDisplay({
+      id = "main",
+      rect = { x = 0, y = 0, width = dimensions.width, height = dimensions.height },
+      touch = true,
+      role = "world",
+    })
+    withEditor(dimensions.width, dimensions.height, topology, function(state)
+      local view = state:view()
+      if dimensions.width >= 400 then
+        local layout = computeLayout(Layout, view, dimensions.width, dimensions.height)
+        Assert.isTrue(layout.viewport.width >= 400, "the wide topology resolves to a wide logical layout")
+        click(state, selectedPane(view), layout.targets["section:Bag"], true)
+      else
+        local reachedBag = false
+        for _ = 1, 5 do
+          local compactView = state:view()
+          if compactView.section == "Bag" then
+            reachedBag = true
+            break
+          end
+          click(
+            state,
+            selectedPane(compactView),
+            computeLayout(Layout, compactView, dimensions.width, dimensions.height).targets.section,
+            true
+          )
+        end
+        if not reachedBag then
+          Assert.equal(state:view().section, "Bag", "compact section selection reaches Bag")
+        end
+      end
+      Assert.equal(state:view().section, "Bag", "the selected topology enters Bag through its visible section control")
+      assertFocusCanMove(state, "Bag section entry")
+
+      selectSection(state, Layout, "Player")
+      local player = state:view()
+      click(
+        state,
+        selectedPane(player),
+        computeLayout(Layout, player, dimensions.width, dimensions.height).targets.money,
+        true
+      )
+      state:textinput("4200")
+      state:keypressed("return")
+      Assert.isTrue(state:requestClose("back"), "a dirty save opens the leave decision")
+      state:keypressed("escape")
+      Assert.isNil(state:view().modal, "Escape cancels the leave decision")
+      assertFocusCanMove(state, "leave modal cancellation")
+    end)
+  end
+end
+
+function T.tests.bag_add_successor_quantity_editor_stages_once_and_cancel_stages_nothing()
+  local _, Layout = stateModule()
+  local topology = ScreenTopology.oneDisplay({
+    id = "main",
+    rect = { x = 0, y = 0, width = 800, height = 600 },
+    touch = true,
+    role = "world",
+  })
+  withEditor(800, 600, topology, function(state)
+    selectSection(state, Layout, "Bag")
+    local initialBag = state:view()
+    local initialPocket = initialBag.bagPocket
+    local initialItems = state.session:bagSnapshot(initialPocket)
+    local addTarget = computeLayout(Layout, initialBag, 800, 600).targets["bag:add"]
+    click(state, selectedPane(initialBag), addTarget, true)
+
+    local itemPicker = state:view()
+    local item = assert(itemPicker.valueEditor.options[1], "the real item catalog has addable items")
+    local choiceTarget = computeLayout(Layout, itemPicker, 800, 600).targets["choice:" .. item.key]
+    click(state, selectedPane(itemPicker), assert(choiceTarget), true)
+
+    local quantityEditor = state:view()
+    Assert.equal(
+      quantityEditor.valueEditor and quantityEditor.valueEditor.kind,
+      "integer",
+      "choosing an item installs its quantity successor"
+    )
+    local revisionBeforeAdd = state.session:revision()
+    while state:view().valueEditor.buffer ~= "" do
+      state:keypressed("backspace")
+    end
+    state:textinput("0")
+    state:keypressed("return")
+    local zeroQuantity = state:view()
+    Assert.equal(
+      zeroQuantity.valueEditor and zeroQuantity.valueEditor.kind,
+      "integer",
+      "a zero Add quantity keeps the correction editor active"
+    )
+    Assert.equal(state.session:revision(), revisionBeforeAdd, "a zero Add quantity stages no mutation")
+    Assert.equal(
+      zeroQuantity.errorMessage,
+      "Add item must set a quantity above zero.",
+      "a zero Add quantity explains why confirmation did not close"
+    )
+    while state:view().valueEditor.buffer ~= "" do
+      state:keypressed("backspace")
+    end
+    state:textinput("3")
+    state:keypressed("return")
+    local addedItems = state.session:bagSnapshot(initialPocket)
+    local addedQuantity
+    for _, row in ipairs(addedItems) do
+      if row.item == item.key then
+        addedQuantity = row.quantity
+      end
+    end
+    local originalItemQuantity = 0
+    for _, row in ipairs(initialItems) do
+      if row.item == item.key then
+        originalItemQuantity = row.quantity
+      end
+    end
+    Assert.equal(
+      addedQuantity,
+      originalItemQuantity + 3,
+      "quantity confirmation stages the selected item's requested amount"
+    )
+    Assert.equal(
+      state.session:revision(),
+      revisionBeforeAdd + 1,
+      "one quantity confirmation stages exactly one Session mutation"
+    )
+    assertFocusCanMove(state, "completed Bag Add")
+
+    local beforeCancel = state.session:revision()
+    local currentBag = state:view()
+    click(state, selectedPane(currentBag), computeLayout(Layout, currentBag, 800, 600).targets["bag:add"], false)
+    local secondPicker = state:view()
+    local secondItem = assert(secondPicker.valueEditor.options[1])
+    local joystick = {} --[[@as love.Joystick]]
+    state:gamepadpressed(joystick, "a")
+    state:gamepadreleased(joystick, "a")
+    local secondQuantity = state:view()
+    Assert.equal(
+      secondQuantity.valueEditor and secondQuantity.valueEditor.kind,
+      "integer",
+      "controller confirmation reaches quantity entry"
+    )
+    state:keypressed("escape")
+    Assert.equal(
+      state.session:revision(),
+      beforeCancel,
+      "canceling the quantity successor stages no inventory mutation"
+    )
+    Assert.deepEqual(
+      state.session:bagSnapshot(initialPocket),
+      addedItems,
+      "canceled Add preserves the staged inventory snapshot"
+    )
+    Assert.equal(secondItem.key, item.key, "both chains select the same deterministic catalog entry")
+    assertFocusCanMove(state, "canceled Bag Add")
+  end)
+end
+
 function T.tests.failed_close_save_keeps_the_state_until_explicit_discard()
   local _, Layout = stateModule()
   local compact = ScreenTopology.oneDisplay({
@@ -491,108 +698,117 @@ function T.tests.location_cursor_inspection_and_zoom_do_not_stage_a_destination(
 end
 
 function T.tests.location_view_keeps_saved_and_pending_map_identity_separate()
-  withEditor(640, 480, ScreenTopology.oneDisplay({
-    id = "main",
-    rect = { x = 0, y = 0, width = 640, height = 480 },
-    touch = false,
-    role = "world",
-  }), function(state)
-    for _ = 1, 8 do
-      if state.locationService:snapshot().status.state == "ready" then
-        break
+  withEditor(
+    640,
+    480,
+    ScreenTopology.oneDisplay({
+      id = "main",
+      rect = { x = 0, y = 0, width = 640, height = 480 },
+      touch = false,
+      role = "world",
+    }),
+    function(state)
+      for _ = 1, 8 do
+        if state.locationService:snapshot().status.state == "ready" then
+          break
+        end
+        state:update(0)
       end
-      state:update(0)
-    end
-    local saved = copy(state.session:snapshot().originalLocation)
-    local houseMapId = assert(state.dependencies.world.bySymbol.MAP_NEW_BARK_PLAYER_HOUSE_1F)
-    state.controller:chooseLocationMap(houseMapId, 4, 5)
-    for _ = 1, 8 do
-      state:update(0)
-      if state.locationService:snapshot().status.state == "ready" then
-        break
+      local saved = copy(state.session:snapshot().originalLocation)
+      local houseMapId = assert(state.dependencies.world.bySymbol.MAP_NEW_BARK_PLAYER_HOUSE_1F)
+      state.controller:chooseLocationMap(houseMapId, 4, 5)
+      for _ = 1, 8 do
+        state:update(0)
+        if state.locationService:snapshot().status.state == "ready" then
+          break
+        end
       end
+      local readyView = state.locationService:snapshot()
+      Assert.equal(readyView.status.state, "ready", "the real Player House map data is ready")
+      local pending, resolveStatus = state.locationService:resolve(houseMapId, 4, 5, readyView.generation)
+      Assert.notNil(pending, "the real Player House ground resolves to a destination")
+      Assert.equal(resolveStatus.state, "ready")
+      Assert.isTrue(state.session:setLocation(assert(pending)).ok, "the resolved tuple stages through Session")
+
+      local stagedView = state:view()
+      Assert.equal(stagedView.savedLocation.mapId, saved.mapId, "Saved stays tied to the opening baseline map")
+      Assert.equal(stagedView.pendingLocation.mapId, houseMapId, "Pending follows the staged Session destination")
+      Assert.deepEqual(stagedView.savedLocation, saved, "Saved retains the full baseline location tuple")
+      Assert.deepEqual(stagedView.pendingLocation, pending, "Pending retains the full staged location tuple")
+
+      local unrelatedMapId = assert(state.dependencies.world.bySymbol.MAP_NEW_BARK_PLAYER_HOUSE_2F)
+      state.controller:chooseLocationMap(unrelatedMapId, 4, 5)
+      state:update(0)
+      local unrelatedView = state:view()
+      Assert.equal(unrelatedView.location.mapId, unrelatedMapId)
+      Assert.equal(unrelatedView.savedLocation.mapId, saved.mapId)
+      Assert.equal(unrelatedView.pendingLocation.mapId, houseMapId)
+      Assert.equal(state.session:revision(), stagedView.session.revision, "passive browsing does not revise the save")
+
+      state.controller:openLocationMaps()
+      state:textinput("no-map-matches-this-query")
+      Assert.equal(#state:view().location.maps, 0, "the map search can produce a recoverable empty result")
+      state:keypressed("delete")
+      Assert.isTrue(#state:view().location.maps > 0, "Clear restores the searchable structural map list")
+      state:keypressed("escape")
+      Assert.equal(state.controller.locationPage, "grid", "Back returns from the map list")
+      Assert.isTrue(state.session:discard(), "Discard restores the original location tuple")
+      Assert.deepEqual(state.session:snapshot().location, saved)
     end
-    local readyView = state.locationService:snapshot()
-    Assert.equal(readyView.status.state, "ready", "the real Player House map data is ready")
-    local pending, resolveStatus = state.locationService:resolve(
-      houseMapId,
-      4,
-      5,
-      readyView.generation
-    )
-    Assert.notNil(pending, "the real Player House ground resolves to a destination")
-    Assert.equal(resolveStatus.state, "ready")
-    Assert.isTrue(state.session:setLocation(assert(pending)).ok, "the resolved tuple stages through Session")
-
-    local stagedView = state:view()
-    Assert.equal(stagedView.savedLocation.mapId, saved.mapId, "Saved stays tied to the opening baseline map")
-    Assert.equal(stagedView.pendingLocation.mapId, houseMapId, "Pending follows the staged Session destination")
-    Assert.deepEqual(stagedView.savedLocation, saved, "Saved retains the full baseline location tuple")
-    Assert.deepEqual(stagedView.pendingLocation, pending, "Pending retains the full staged location tuple")
-
-    local unrelatedMapId = assert(state.dependencies.world.bySymbol.MAP_NEW_BARK_PLAYER_HOUSE_2F)
-    state.controller:chooseLocationMap(unrelatedMapId, 4, 5)
-    state:update(0)
-    local unrelatedView = state:view()
-    Assert.equal(unrelatedView.location.mapId, unrelatedMapId)
-    Assert.equal(unrelatedView.savedLocation.mapId, saved.mapId)
-    Assert.equal(unrelatedView.pendingLocation.mapId, houseMapId)
-    Assert.equal(state.session:revision(), stagedView.session.revision, "passive browsing does not revise the save")
-
-    state.controller:openLocationMaps()
-    state:textinput("no-map-matches-this-query")
-    Assert.equal(#state:view().location.maps, 0, "the map search can produce a recoverable empty result")
-    state:keypressed("delete")
-    Assert.isTrue(#state:view().location.maps > 0, "Clear restores the searchable structural map list")
-    state:keypressed("escape")
-    Assert.equal(state.controller.locationPage, "grid", "Back returns from the map list")
-    Assert.isTrue(state.session:discard(), "Discard restores the original location tuple")
-    Assert.deepEqual(state.session:snapshot().location, saved)
-  end)
+  )
 end
 
 function T.tests.save_blocks_when_destination_revalidation_changes_any_location_field()
-  withEditor(640, 480, ScreenTopology.oneDisplay({
-    id = "main",
-    rect = { x = 0, y = 0, width = 640, height = 480 },
-    touch = false,
-    role = "world",
-  }), function(state, fixture)
-    local fields = { "mapId", "fieldX", "fieldZ", "surfaceId", "worldY", "terrainDependencyHash" }
-    for _, field in ipairs(fields) do
-      local staged = copy(state.session:snapshot().location)
-      staged.fieldX = staged.fieldX + 1
-      Assert.isTrue(state.session:setLocation(staged).ok, "a valid tuple can be staged for save-gate verification")
-      local resolved = copy(staged)
-      if field == "mapId" then
-        for _, map in ipairs(state.dependencies.world.maps) do
-          if map.id ~= staged.mapId then
-            resolved.mapId = map.id
-            break
+  withEditor(
+    640,
+    480,
+    ScreenTopology.oneDisplay({
+      id = "main",
+      rect = { x = 0, y = 0, width = 640, height = 480 },
+      touch = false,
+      role = "world",
+    }),
+    function(state, fixture)
+      local fields = { "mapId", "fieldX", "fieldZ", "surfaceId", "worldY", "terrainDependencyHash" }
+      for _, field in ipairs(fields) do
+        local staged = copy(state.session:snapshot().location)
+        staged.fieldX = staged.fieldX + 1
+        Assert.isTrue(state.session:setLocation(staged).ok, "a valid tuple can be staged for save-gate verification")
+        local resolved = copy(staged)
+        if field == "mapId" then
+          for _, map in ipairs(state.dependencies.world.maps) do
+            if map.id ~= staged.mapId then
+              resolved.mapId = map.id
+              break
+            end
           end
+        elseif field == "fieldX" then
+          resolved.fieldX = resolved.fieldX + 1
+        elseif field == "fieldZ" then
+          resolved.fieldZ = resolved.fieldZ + 1
+        elseif field == "surfaceId" then
+          resolved.surfaceId = resolved.surfaceId + 1
+        elseif field == "worldY" then
+          resolved.worldY = resolved.worldY + 1
+        else
+          resolved.terrainDependencyHash = resolved.terrainDependencyHash .. "-changed"
         end
-      elseif field == "fieldX" then
-        resolved.fieldX = resolved.fieldX + 1
-      elseif field == "fieldZ" then
-        resolved.fieldZ = resolved.fieldZ + 1
-      elseif field == "surfaceId" then
-        resolved.surfaceId = resolved.surfaceId + 1
-      elseif field == "worldY" then
-        resolved.worldY = resolved.worldY + 1
-      else
-        resolved.terrainDependencyHash = resolved.terrainDependencyHash .. "-changed"
-      end
-      state.locationService.resolve = function()
-        return resolved, { state = "ready" }
-      end
+        state.locationService.resolve = function()
+          return resolved, { state = "ready" }
+        end
 
-      Assert.isFalse(state:_save(false), "revalidation changing " .. field .. " must block the write")
-      Assert.deepEqual(state.session:snapshot().location, staged, "the staged destination remains available to correct")
-      Assert.deepEqual(fixture.store:load(fixture.saveId), fixture.initial, "the canonical save remains untouched")
-      Assert.isTrue(state.session:isDirty(), "blocking a stale resolve preserves the full edit transaction")
-      state:_discard(false)
+        Assert.isFalse(state:_save(false), "revalidation changing " .. field .. " must block the write")
+        Assert.deepEqual(
+          state.session:snapshot().location,
+          staged,
+          "the staged destination remains available to correct"
+        )
+        Assert.deepEqual(fixture.store:load(fixture.saveId), fixture.initial, "the canonical save remains untouched")
+        Assert.isTrue(state.session:isDirty(), "blocking a stale resolve preserves the full edit transaction")
+        state:_discard(false)
+      end
     end
-  end)
+  )
 end
 
 function T.tests.quit_with_an_unapplied_value_draft_opens_the_leave_choice()
@@ -708,7 +924,13 @@ function T.tests.location_and_all_editor_sections_are_reachable_using_paired_dev
       Assert.equal(
         selectedView.section,
         section,
-        string.format("Action at %s selected %s; current=%s focus=%s", target, section, selectedView.section, tostring(selectedView.focus))
+        string.format(
+          "Action at %s selected %s; current=%s focus=%s",
+          target,
+          section,
+          selectedView.section,
+          tostring(selectedView.focus)
+        )
       )
       seen[state:view().section] = true
     end
@@ -727,20 +949,37 @@ function T.tests.location_and_all_editor_sections_are_reachable_using_paired_dev
     end
     local view = state:view()
     Assert.isTrue(view.focus ~= nil, "focus remains defined after held repeat and focus loss")
-    local beforeAxis = view.focus
+    Assert.isTrue(state.session:setMoney(state.session:snapshot().money + 1).ok, "a valid draft enables footer actions")
+    local axisView = state:view()
+    local axisTarget = assert(axisView.layout.focusGraph.save.right[1])
+    Assert.equal(axisTarget, "discard", "analog setup has an enabled right-hand neighbor")
+    Assert.isTrue(axisView.layout.targets.save.activationEnabled)
+    Assert.isTrue(axisView.layout.targets.discard.activationEnabled)
+    state.controller:setFocus("save")
+    local beforeAxis = state:view().focus
     state:gamepadaxis(joystick, "leftx", 0.8)
     state:update(0.5)
     local analogMoved = state:view().focus ~= beforeAxis
     local visitedSections = {}
     for section, visited in pairs(seen) do
-      if visited then visitedSections[#visitedSections + 1] = section end
+      if visited then
+        visitedSections[#visitedSections + 1] = section
+      end
     end
     table.sort(visitedSections)
     Assert.isTrue(
       reachedAllSections,
       "paired keyboard and D-pad input reaches all editor sections; visited " .. table.concat(visitedSections, ", ")
     )
-    Assert.isTrue(analogMoved, "an analog threshold moves the focused control")
+    Assert.isTrue(
+      analogMoved,
+      "an analog threshold moves the focused control from "
+        .. tostring(beforeAxis)
+        .. " to "
+        .. tostring(state:view().focus)
+        .. " in "
+        .. tostring(state:view().section)
+    )
   end)
 end
 
@@ -783,7 +1022,10 @@ function T.tests.added_pokemon_nickname_uses_public_naming_controls()
     Assert.equal(
       nameView.valueEditor and nameView.valueEditor.kind,
       "name",
-      "nickname target click opens naming editor; focus " .. tostring(nameView.focus) .. ", captured " .. tostring(state.controller.capturedTarget)
+      "nickname target click opens naming editor; focus "
+        .. tostring(nameView.focus)
+        .. ", captured "
+        .. tostring(state.controller.capturedTarget)
     )
     Assert.equal(nameView.scope.kind, "value", "the naming keyboard becomes the active nested value scope")
     local initialName = nameView.valueEditor.naming.text
@@ -825,7 +1067,8 @@ function T.tests.added_pokemon_nickname_uses_public_naming_controls()
     end
     local withUnicode = state:view().valueEditor
     local symbolsPage = symbolsView ~= nil and symbolsView.naming.page == "symbols"
-    local unicodeIncluded = unicodeGlyph ~= nil and withUnicode ~= nil
+    local unicodeIncluded = unicodeGlyph ~= nil
+      and withUnicode ~= nil
       and withUnicode.naming.text:find(unicodeGlyph, 1, true) ~= nil
     local beforeDelete = withUnicode and withUnicode.naming.text
     state:keypressed("backspace")
@@ -838,6 +1081,10 @@ function T.tests.added_pokemon_nickname_uses_public_naming_controls()
       click(state, selectedPane(state:view()), okTarget, true)
     end
     local afterOk = state:view()
+    Assert.notNil(
+      afterOk.layout.focusGraph[afterOk.focus],
+      "successful name editing returns focus to an active Party control"
+    )
     local nicknameValue
     for _, row in ipairs(afterOk.partyRows) do
       if row.targetId == "party:field:nickname" then
@@ -915,7 +1162,11 @@ function T.tests.added_pokemon_nickname_uses_public_naming_controls()
     Assert.notNil(touchReopenTarget, "the draft nickname field remains visible after Button Cancel")
     click(state, selectedPane(afterButtonCleanup), assert(touchReopenTarget), true)
     local touchNameView = state:view()
-    Assert.equal(touchNameView.valueEditor and touchNameView.valueEditor.kind, "name", "touch reopens the naming editor")
+    Assert.equal(
+      touchNameView.valueEditor and touchNameView.valueEditor.kind,
+      "name",
+      "touch reopens the naming editor"
+    )
     local touchCancelTarget = touchNameView.valueEditor
       and computeLayout(Layout, touchNameView, 256, 192).targets.cancel
     Assert.notNil(touchCancelTarget, "the naming editor publishes its touch Cancel target")
@@ -937,6 +1188,7 @@ function T.tests.added_pokemon_nickname_uses_public_naming_controls()
     local pendingCancel = afterTouchCancel.valueEditor and afterTouchCancel.valueEditor.result
     local touchCanceled = afterTouchCancel.valueEditor == nil
     local draftUnapplied = #state.session:partySnapshot().members == 0
+    assertFocusCanMove(state, "canceled nickname editor")
     Assert.isTrue(
       type(nativeSpecies) == "number"
         and activatedGlyph

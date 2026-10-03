@@ -592,11 +592,22 @@ function Layout.compute(view, width, height, metrics)
       targets.confirm = rect(contentX, keyboardBottom, math.floor(innerWidth / 2) - 2, 24)
       targets.cancel =
         rect(contentX + math.floor(innerWidth / 2) + 2, keyboardBottom, math.floor(innerWidth / 2) - 2, 24)
+      addFocusable("confirm")
+      addFocusable("cancel")
+      for row = 1, 6 do
+        for column = 1, 13 do
+          addFocusable(row .. ":" .. column)
+        end
+      end
+      for _, control in ipairs(naming.controls) do
+        addFocusable("name-control:" .. control.id)
+      end
     else
       local quarter = math.floor(innerWidth / 4)
       for index, action in ipairs({ "digit-left", "digit-right", "digit-down", "digit-up" }) do
         targets[action] =
           rect(contentX + (index - 1) * quarter, contentBottom - rowHeight * 2, quarter - 2, rowHeight - 2)
+        addFocusable(action)
       end
       targets.confirm = rect(contentX, contentBottom - rowHeight, math.floor(innerWidth / 2) - 2, rowHeight - 2)
       targets.cancel = rect(
@@ -605,6 +616,8 @@ function Layout.compute(view, width, height, metrics)
         math.floor(innerWidth / 2) - 2,
         rowHeight - 2
       )
+      addFocusable("confirm")
+      addFocusable("cancel")
       addRow("integer value", "value-draft", "Enter value", dialog.buffer or "")
     end
   end
@@ -686,6 +699,16 @@ function Layout.compute(view, width, height, metrics)
     rows = activeRows
   end
 
+  local enabledFocusable = {}
+  focusableSet = {}
+  for _, targetId in ipairs(focusable) do
+    if not disabledTargets[targetId] then
+      enabledFocusable[#enabledFocusable + 1] = targetId
+      focusableSet[targetId] = true
+    end
+  end
+  focusable = enabledFocusable
+
   local roleById = {}
   local focusedValueHelp
   for _, row in ipairs(rows) do
@@ -698,6 +721,7 @@ function Layout.compute(view, width, height, metrics)
     roleById[action.id] = "action"
   end
   local viewportByTarget = {}
+  local listTargets = {}
   for viewportId, list in pairs(viewports) do
     assert(
       list.clip and list.rowExtent and list.firstIndex and list.lastIndex and list.rowTargets,
@@ -705,26 +729,35 @@ function Layout.compute(view, width, height, metrics)
     )
     for _, targetId in ipairs(list.rowTargets) do
       viewportByTarget[targetId] = viewportId
+      listTargets[targetId] = true
     end
   end
   local focusGraph = {}
   for _, targetId in ipairs(focusable) do
     focusGraph[targetId] = { up = {}, down = {}, left = {}, right = {} }
   end
+  local fixedFocusable = {}
   for _, targetId in ipairs(focusable) do
+    if not listTargets[targetId] then
+      fixedFocusable[#fixedFocusable + 1] = targetId
+    end
+  end
+  for _, targetId in ipairs(fixedFocusable) do
     local source = focusPositions[targetId] or targets[targetId]
     if source then
       local sourceX, sourceY = source.x + source.width / 2, source.y + source.height / 2
       local candidates = { up = {}, down = {}, left = {}, right = {} }
-      for _, candidateId in ipairs(focusable) do
+      for _, candidateId in ipairs(fixedFocusable) do
         local candidate = focusPositions[candidateId] or targets[candidateId]
         if candidate and candidateId ~= targetId then
           local dx = candidate.x + candidate.width / 2 - sourceX
           local dy = candidate.y + candidate.height / 2 - sourceY
           local direction = math.abs(dx) > math.abs(dy) and (dx < 0 and "left" or "right")
             or (dy < 0 and "up" or "down")
-          local distance = dx * dx + dy * dy
-          candidates[direction][#candidates[direction] + 1] = { id = candidateId, distance = distance }
+          candidates[direction][#candidates[direction] + 1] = {
+            id = candidateId,
+            distance = dx * dx + dy * dy,
+          }
         end
       end
       for direction, ordered in pairs(candidates) do
@@ -733,6 +766,39 @@ function Layout.compute(view, width, height, metrics)
         end)
         for _, candidate in ipairs(ordered) do
           focusGraph[targetId][direction][#focusGraph[targetId][direction] + 1] = candidate.id
+        end
+      end
+    end
+  end
+  for _, list in pairs(viewports) do
+    local ordered = {}
+    for _, targetId in ipairs(list.rowTargets) do
+      if focusableSet[targetId] then
+        ordered[#ordered + 1] = targetId
+      end
+    end
+    for index, targetId in ipairs(ordered) do
+      local node = focusGraph[targetId]
+      if index > 1 then
+        node.up = { ordered[index - 1] }
+      end
+      if index < #ordered then
+        node.down = { ordered[index + 1] }
+      end
+    end
+    if #ordered > 0 then
+      local first, last = ordered[1], ordered[#ordered]
+      local firstPosition = focusPositions[first] or targets[first]
+      local lastPosition = focusPositions[last] or targets[last]
+      for _, targetId in ipairs(fixedFocusable) do
+        local position = focusPositions[targetId] or targets[targetId]
+        if position and firstPosition and position.y + position.height / 2 < firstPosition.y then
+          table.insert(focusGraph[first].up, targetId)
+          table.insert(focusGraph[targetId].down, first)
+        end
+        if position and lastPosition and position.y + position.height / 2 > lastPosition.y then
+          table.insert(focusGraph[last].down, targetId)
+          table.insert(focusGraph[targetId].up, last)
         end
       end
     end
@@ -768,6 +834,63 @@ function Layout.compute(view, width, height, metrics)
   for _, targetId in ipairs(focusable) do
     focusOrder[#focusOrder + 1] = targetId
   end
+  local defaultFocus
+  if scope.kind == "decision" then
+    defaultFocus = "cancel"
+  elseif scope.kind == "value" then
+    local editor = assert(view.valueEditor)
+    if editor.kind == "choice" and editor.selectedKey ~= nil then
+      defaultFocus = "choice:" .. editor.selectedKey
+    elseif editor.kind == "name" then
+      local cursor = assert(editor.naming.cursor)
+      defaultFocus = tostring(cursor.row) .. ":" .. tostring(cursor.column)
+    else
+      defaultFocus = focusGraph["value-draft"] and "value-draft" or "digit-left"
+    end
+  elseif section == "Player" then
+    defaultFocus = "money"
+  elseif section == "Location" then
+    defaultFocus = "location:"
+      .. ((view.locationNavigation and view.locationNavigation.page == "map-list") and "map-picker" or "grid")
+  elseif section == "Party" and view.partyPage == "list" then
+    defaultFocus = view.partyCanAdd and "party:add" or nil
+    if defaultFocus == nil then
+      for _, targetId in ipairs(focusOrder) do
+        if targetId:match("^party:slot:") then
+          defaultFocus = targetId
+          break
+        end
+      end
+    end
+  elseif section == "Party" then
+    for _, targetId in ipairs(focusOrder) do
+      if targetId:match("^party:subpage:") then
+        defaultFocus = targetId
+        break
+      end
+    end
+    if defaultFocus == nil then
+      for _, targetId in ipairs(focusOrder) do
+        if targetId:match("^party:") then
+          defaultFocus = targetId
+          break
+        end
+      end
+    end
+  elseif section == "Progress" then
+    local flagsViewport = viewports.flags
+    local firstVisibleFlag = flagsViewport and flagsViewport.rowTargets[flagsViewport.firstIndex]
+    defaultFocus = firstVisibleFlag or "filter-named"
+  elseif section == "Bag" then
+    defaultFocus = width < 400 and "bag:pocket:choose" or "bag:pocket:" .. tostring(view.bagPocket)
+  end
+  if defaultFocus == nil or not focusGraph[defaultFocus] then
+    defaultFocus = assert(
+      focusOrder[1],
+      "active focus graph has no nodes: scope=" .. tostring(scope.kind) .. " modal=" .. tostring(view.modal)
+    )
+  end
+  assert(focusGraph[defaultFocus], "layout default focus must be present in its graph")
   for targetId, targetRect in pairs(targets) do
     local viewportId = viewportByTarget[targetId]
     local list = viewportId and viewports[viewportId]
@@ -820,6 +943,7 @@ function Layout.compute(view, width, height, metrics)
     navigation = navigation,
     focusOrder = focusOrder,
     focusGraph = focusGraph,
+    defaultFocus = defaultFocus,
     targets = targetRecords,
     actions = actions,
     activeSection = section,

@@ -10,7 +10,12 @@ local CatalogFixture = require("libs.mons.tests.catalog_fixture")
 
 local T = {}
 local function computeLayout(view, width, height)
-  return Layout.compute(view, width, height, { lineHeight = 14, measure = function(text) return #text * 7 end })
+  return Layout.compute(view, width, height, {
+    lineHeight = 14,
+    measure = function(text)
+      return #text * 7
+    end,
+  })
 end
 
 local function targetCenter(layout, targetId)
@@ -160,17 +165,13 @@ function T.party_draft_and_remove_modals_publish_their_own_actions()
   }) do
     Assert.notNil(draftLayout.targets[targetId], "draft action must be reachable: " .. targetId)
   end
-  Assert.isNil(
-    draftLayout.targets.save,
-    "the nested draft decision excludes the underlying Save action"
-  )
+  Assert.isNil(draftLayout.targets.save, "the nested draft decision excludes the underlying Save action")
 
   draft.modal = "remove"
   local removeLayout = computeLayout(draft, 800, 600)
   Assert.notNil(removeLayout.targets.remove)
   Assert.notNil(removeLayout.targets.cancel)
   Assert.isNil(removeLayout.targets.save, "removal confirmation excludes the underlying Save action")
-
 end
 
 function T.party_draft_actions_remain_visible_beside_a_long_raw_page()
@@ -294,10 +295,7 @@ function T.compact_bag_keeps_fixed_actions_reachable_beside_a_long_scrolling_lis
         if action ~= nil then
           action = action.rect
           noBodyActionOverlap = noBodyActionOverlap
-            and (
-              row.y + row.height <= action.y
-                or action.y + action.height <= row.y
-            )
+            and (row.y + row.height <= action.y or action.y + action.height <= row.y)
         end
       end
     end
@@ -325,7 +323,12 @@ function T.compact_bag_keeps_fixed_actions_reachable_beside_a_long_scrolling_lis
     partySlot0 = 0,
     partyLastSlot0 = 0,
     partyRows = {
-      { role = "read-only value", targetId = "party:readonly:help", label = "Derived values cannot be edited.", value = nil },
+      {
+        role = "read-only value",
+        targetId = "party:readonly:help",
+        label = "Derived values cannot be edited.",
+        value = nil,
+      },
     },
   }
   local helpLayout = computeLayout(readonlyHelp, 256, 192)
@@ -523,10 +526,18 @@ function T.close_cancel_restores_an_open_removal_decision_without_resolving_it()
   local controller = Controller.new()
   controller:openModal("remove")
   local pendingRemove = { kind = "party", slot0 = 0 }
-  local draft = { mode = function() return "add" end }
+  local draft = {
+    mode = function()
+      return "add"
+    end,
+  }
   local valueEditor = ValueEditor.new({ kind = "integer", value = 12, min = 0, max = 999, base = "decimal" })
   Assert.isTrue(valueEditor:textinput("x"))
-  local session = { isDirty = function() return true end }
+  local session = {
+    isDirty = function()
+      return true
+    end,
+  }
   local state = setmetatable({
     controller = controller,
     session = session,
@@ -551,8 +562,12 @@ end
 function T.clean_edit_draft_does_not_veto_quit()
   local controller = Controller.new()
   local draft = {
-    mode = function() return "edit" end,
-    isDirty = function() return false end,
+    mode = function()
+      return "edit"
+    end,
+    isDirty = function()
+      return false
+    end,
   }
   local state = setmetatable({
     approvedExit = false,
@@ -561,7 +576,11 @@ function T.clean_edit_draft_does_not_veto_quit()
     closeRequest = nil,
     valueEditor = nil,
     monDraft = draft,
-    session = { isDirty = function() return false end },
+    session = {
+      isDirty = function()
+        return false
+      end,
+    },
     controller = controller,
   }, SaveEditorState)
 
@@ -573,9 +592,17 @@ end
 function T.canceling_a_raw_draft_does_not_discard_the_session()
   local controller = Controller.new()
   controller:openModal("draft")
-  local draft = { mode = function() return "add" end }
+  local draft = {
+    mode = function()
+      return "add"
+    end,
+  }
   local discarded = 0
-  local session = { discard = function() discarded = discarded + 1 end }
+  local session = {
+    discard = function()
+      discarded = discarded + 1
+    end,
+  }
   local state = setmetatable({
     controller = controller,
     session = session,
@@ -594,7 +621,11 @@ function T.rejected_raw_field_publication_keeps_its_value_editor_recoverable()
   local editor = ValueEditor.new({ kind = "integer", value = 12, min = 0, max = 999, base = "decimal" })
   Assert.isTrue(editor:textinput("73"))
   Assert.isTrue(editor:submit())
-  local draft = { setScalar = function() return false end }
+  local draft = {
+    setScalar = function()
+      return false
+    end,
+  }
   local state = setmetatable({
     valueEditor = editor,
     valuePurpose = "party_field",
@@ -607,6 +638,101 @@ function T.rejected_raw_field_publication_keeps_its_value_editor_recoverable()
   Assert.equal(state.valuePurpose, "party_field", "the editor purpose remains attached to the buffer")
   Assert.isNil(editor:result(), "the refused confirmation becomes editable again")
   Assert.equal(editor:snapshot().buffer, "73", "the exact entered value remains available for correction")
+end
+
+function T.progress_focus_keeps_offscreen_flag_rows_reachable_with_sparse_neighbors()
+  local view = {
+    section = "Progress",
+    status = "ready",
+    ready = true,
+    dirty = false,
+    flagFilter = "All",
+    flagRows = {},
+  }
+  for index = 1, 1200 do
+    view.flagRows[index] = { name = "SYNTHETIC_FLAG_" .. index, value = index % 2 == 0 }
+  end
+
+  local layout = computeLayout(view, 800, 600)
+  local middleIndex = 600
+  local previous = "flag:" .. view.flagRows[middleIndex - 1].name
+  local middle = "flag:" .. view.flagRows[middleIndex].name
+  local following = "flag:" .. view.flagRows[middleIndex + 1].name
+  local middleNode = assert(layout.focusGraph[middle], "every semantic flag row has a focus node")
+
+  Assert.deepEqual(middleNode.up, { previous }, "a flag row links to its immediate semantic predecessor")
+  Assert.deepEqual(middleNode.down, { following }, "a flag row links to its immediate semantic successor")
+  Assert.isNil(layout.targets[middle], "the middle synthetic row starts offscreen")
+  Assert.isTrue(table.concat(layout.viewports.flags.rowTargets, "\n"):find(middle, 1, true) ~= nil)
+
+  local scrolledView = {
+    section = view.section,
+    status = view.status,
+    ready = view.ready,
+    dirty = view.dirty,
+    flagFilter = view.flagFilter,
+    flagRows = view.flagRows,
+    scrollOffsets = { ["flags:All"] = (middleIndex - 1) * layout.viewports.flags.rowExtent },
+  }
+  Assert.notNil(
+    computeLayout(scrolledView, 800, 600).targets[middle],
+    "the same semantic row can be revealed by its viewport"
+  )
+
+  local controller = Controller.new()
+  controller:setFocus("flag:" .. view.flagRows[1].name)
+  for _ = 1, middleIndex - 1 do
+    controller:moveFocus(layout.focusGraph, "down")
+  end
+  Assert.equal(controller.focus, middle, "controller movement reaches an offscreen semantic row")
+  Assert.equal(layout.viewports.flags.rowTargets[middleIndex], middle, "the viewport can reveal the focused row")
+end
+
+function T.disabled_bag_party_and_footer_actions_are_not_focusable_or_pointer_targets()
+  local function assertDisabled(layout, view, targetId)
+    local target = assert(layout.targets[targetId], "disabled actions remain rendered: " .. targetId)
+    Assert.isFalse(target.focusable, targetId .. " is absent from keyboard/controller focus")
+    Assert.isFalse(target.activationEnabled, targetId .. " remains visibly disabled")
+    Assert.isNil(
+      Layout.hitTest(layout, view, target.rect.x + target.rect.width / 2, target.rect.y + target.rect.height / 2),
+      targetId .. " is not an activatable pointer target"
+    )
+    Assert.isFalse(layout.focusGraph[targetId] ~= nil, targetId .. " is absent from the active focus graph")
+    for _, focusId in ipairs(layout.focusOrder) do
+      Assert.isFalse(focusId == targetId, targetId .. " is absent from focus order")
+    end
+  end
+
+  local bag = {
+    section = "Bag",
+    status = "ready",
+    ready = true,
+    dirty = false,
+    bagPocket = "items",
+    bagPocketLabel = "Items",
+    bagRows = {},
+  }
+  local bagLayout = computeLayout(bag, 800, 600)
+  assertDisabled(bagLayout, bag, "bag:quantity")
+  assertDisabled(bagLayout, bag, "bag:remove")
+  assertDisabled(bagLayout, bag, "save")
+
+  local party = {
+    section = "Party",
+    status = "ready",
+    ready = true,
+    dirty = true,
+    partyPage = "draft",
+    partyRows = {},
+    partyValid = false,
+  }
+  assertDisabled(computeLayout(party, 800, 600), party, "party:apply")
+
+  party.partyPage = "detail"
+  party.partySlot0 = 0
+  party.partyLastSlot0 = 0
+  assertDisabled(computeLayout(party, 800, 600), party, "party:move-up")
+  assertDisabled(computeLayout(party, 800, 600), party, "party:move-down")
 end
 
 return { tests = T }
