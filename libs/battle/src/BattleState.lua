@@ -19,12 +19,12 @@ local BattleState = {}
 
 -- Interruption captures carrying an older version reject as incompatible:
 -- pre-release battle snapshots never migrate, they fail before publication.
--- Version 5 carries the knockout-reward continuation (reward children,
--- battle participation, and evolution eligibility) alongside the version-2
--- replacement lifecycle, the session-owned action ledger (escape
+-- Version 6 carries the knockout-reward continuation (reward children,
+-- per-opponent participation records, and evolution eligibility) alongside
+-- the version-2 replacement lifecycle, the session-owned action ledger (escape
 -- attempts, capture identities, capture records, and item consumption),
 -- and the live battle-local effect records owned by the effect bag.
-BattleState.VERSION = 5
+BattleState.VERSION = 6
 
 ---@param value unknown
 ---@return unknown

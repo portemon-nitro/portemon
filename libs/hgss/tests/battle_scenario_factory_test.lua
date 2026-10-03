@@ -200,6 +200,50 @@ function T.production_scenarios_carry_the_full_eligible_roster_with_a_conscious_
   )
 end
 
+function T.production_player_context_carries_reward_identity()
+  local party = mixedParty()
+  local live = {
+    party = party,
+    bag = stockedBag(),
+    player = { trainerId = 99, trainerName = "MINT", language = "french" },
+  }
+  local wild = ScenarioFactory.fromEncounter(wildPayload(), live)
+  local trainer = ScenarioFactory.fromTrainer({ trainer = "rival", party = { fullRecord(), fullRecord() } }, live)
+  for _, scenario in ipairs({ wild, trainer }) do
+    Assert.deepEqual(
+      playerOf(scenario).context,
+      { productionPlayer = true, trainerId = 99, trainerName = "MINT", language = "french" },
+      "the player participant carries its detached reward identity"
+    )
+  end
+  local bare = ScenarioFactory.fromEncounter(wildPayload(), { party = party, bag = stockedBag() })
+  Assert.deepEqual(
+    playerOf(bare).context,
+    { productionPlayer = true },
+    "production builds without player facts still mark their composition"
+  )
+  local headless = ScenarioFactory.fromEncounter(wildPayload(), {})
+  Assert.deepEqual(playerOf(headless).context, {}, "scenarios without a live party keep an empty context")
+end
+
+function T.production_half_wired_facts_keep_only_the_production_marker()
+  local party = mixedParty()
+  local live = {
+    party = party,
+    bag = stockedBag(),
+    player = { trainerId = 99, trainerName = "MINT" },
+  }
+  local wild = ScenarioFactory.fromEncounter(wildPayload(), live)
+  local trainer = ScenarioFactory.fromTrainer({ trainer = "rival", party = { fullRecord(), fullRecord() } }, live)
+  for _, scenario in ipairs({ wild, trainer }) do
+    Assert.deepEqual(
+      playerOf(scenario).context,
+      { productionPlayer = true },
+      "half-wired facts never guess an identity"
+    )
+  end
+end
+
 function T.production_builds_fail_without_a_conscious_combatant()
   local catalog = CatalogFixture.makeCatalog()
   local service = HgssMonService.new({

@@ -386,7 +386,13 @@ function BattleContext:requestDecision(spec)
       error(BattleErrors.invalidState("decision requests must address combatant records", {}))
     end
     local record = actor --[[@as table<string, unknown>]]
-    if type(record.combatant) ~= "number" or type(record.activation) ~= "number" then
+    if type(record.combatant) ~= "number" then
+      error(BattleErrors.invalidState("decision actors must carry combatant and token", {}))
+    end
+    -- Roster-scoped prompts omit the entry token and bind by combatant
+    -- alone; every other batch addresses live entries and keeps its
+    -- token. A present token must still be a number.
+    if record.activation ~= nil and type(record.activation) ~= "number" then
       error(BattleErrors.invalidState("decision actors must carry combatant and token", {}))
     end
     BattleState.combatant(self._state, record.combatant --[[@as integer]])

@@ -1969,6 +1969,15 @@ function FieldRuntime:_scenarioForRequest(request)
   local HgssBattleScenarioFactory = require("libs.hgss.src.battle.HgssBattleScenarioFactory")
   assert(type(request) == "table" and type(request.kind) == "string", "scenario builds need their request")
   local live = { party = self.monService, bag = self.bagService, world = self.scripts.worldState }
+  -- The current player reward identity rides the scenario context for
+  -- traded and foreign award classification: the validated profile owns
+  -- the trainer facts and the composed mon language owns the language key.
+  if self.playerData ~= nil and self.playerData.profile ~= nil and self.monLanguage ~= nil then
+    local profile = self.playerData.profile --[[@as table<string, unknown>]]
+    if type(profile.trainerId) == "number" and type(profile.name) == "string" then
+      live.player = { trainerId = profile.trainerId, trainerName = profile.name, language = self.monLanguage }
+    end
+  end
   if request.kind == "wild" then
     local payload = request.payload
     assert(type(payload) == "table", "wild launches carry their payload")
