@@ -202,7 +202,7 @@ function T.capacity_failure_leaves_both_owners_untouched()
   local actions = PartyActions.new({ mons = mons, bag = bag })
 
   local preview = actions:preview(giveRequest(mons, bag, 0, "SITRUS_BERRY", true))
-  Assert.equal(preview.kind, "bag_full")
+  Assert.equal(preview.kind, "ready", "capacity is decided after the staged removal")
   local outcome = actions:commit(giveRequest(mons, bag, 0, "SITRUS_BERRY", true))
   Assert.equal(outcome.kind, "bag_full")
   local takeOutcome = actions:commit(takeRequest(mons, bag, 0))
@@ -299,6 +299,84 @@ function T.held_item_changes_update_form_and_preserve_fields()
   Assert.equal(takeOutcome.kind, "changed")
   Assert.equal(mons:partyMon(1).form, 0, "removing the orb restores the altered form")
   Assert.equal(mons:partyMon(1).heldItem, "NONE")
+end
+
+local function firstMedicineKeyExcept(bag, excluded)
+  local catalog = bag:catalog()
+  for nativeId = 0, 536 do
+    local key = catalog:itemKeyByNativeId(nativeId)
+    if key ~= excluded and catalog:item(key).pocket == "medicine" then
+      return key
+    end
+  end
+  error("the catalog carries no spare medicine item", 0)
+end
+
+-- Occupies every medicine slot while keeping the held item out, so the
+-- displaced item can only return if a staged removal frees its slot.
+local function fillMedicineExcept(bag, excluded)
+  local catalog = bag:catalog()
+  for nativeId = 0, 536 do
+    if #bag:pocketItems("medicine") >= catalog:pocket("medicine").capacity then
+      break
+    end
+    local key = catalog:itemKeyByNativeId(nativeId)
+    if key ~= excluded and catalog:item(key).pocket == "medicine" and bag:quantity(key) == 0 then
+      Assert.isTrue(bag:add(key, 1), "setup must occupy the held item return pocket")
+    end
+  end
+  Assert.equal(
+    #bag:pocketItems("medicine"),
+    catalog:pocket("medicine").capacity,
+    "setup must leave the return pocket full"
+  )
+end
+
+function T.confirmed_exchange_reuses_the_replacement_slot_in_a_full_pocket()
+  local mons, bag, factory = openServices()
+  addGifted(mons, factory, "CHIKORITA", 0, "POTION")
+  local replacement = firstMedicineKeyExcept(bag, "POTION")
+  Assert.isTrue(bag:add(replacement, 1), "setup must stock the replacement as a lone stack")
+  fillMedicineExcept(bag, "POTION")
+  Assert.equal(bag:quantity("POTION"), 0, "the held potion starts absent from the bag")
+  Assert.isFalse(bag:hasSpace("POTION", 1), "setup must leave the return pocket full")
+
+  local monRevision = mons:partyRevision()
+  local bagRevision = bag:revision()
+  local actions = PartyActions.new({ mons = mons, bag = bag })
+
+  local preview = actions:preview(giveRequest(mons, bag, 0, replacement, true))
+  Assert.equal(preview.kind, "ready", "removing the lone replacement stack frees its slot")
+  local outcome = actions:commit(giveRequest(mons, bag, 0, replacement, true))
+  Assert.equal(outcome.kind, "changed")
+  Assert.equal(mons:partyMon(0).heldItem, replacement, "the holder keeps the replacement")
+  Assert.equal(bag:quantity(replacement), 0, "exactly one replacement leaves the bag")
+  Assert.equal(bag:quantity("POTION"), 1, "the displaced potion returns to the freed slot")
+  Assert.equal(mons:partyRevision(), monRevision + 1, "the party publishes exactly once")
+  Assert.equal(bag:revision(), bagRevision + 1, "the bag publishes exactly once")
+end
+
+function T.confirmed_exchange_without_a_freed_slot_refuses_atomically()
+  local mons, bag, factory = openServices()
+  addGifted(mons, factory, "CHIKORITA", 0, "POTION")
+  Assert.isTrue(bag:add("SITRUS_BERRY", 1), "setup must stock the cross-pocket replacement")
+  fillMedicineExcept(bag, "POTION")
+  Assert.isFalse(bag:hasSpace("POTION", 1), "setup must leave the return pocket full")
+
+  local monBefore = mons:partyMon(0)
+  local bagBefore = bag:capture()
+  local monRevision = mons:partyRevision()
+  local bagRevision = bag:revision()
+  local actions = PartyActions.new({ mons = mons, bag = bag })
+
+  local preview = actions:preview(giveRequest(mons, bag, 0, "SITRUS_BERRY", true))
+  Assert.equal(preview.kind, "ready", "capacity is decided after the staged removal")
+  local outcome = actions:commit(giveRequest(mons, bag, 0, "SITRUS_BERRY", true))
+  Assert.equal(outcome.kind, "bag_full")
+  Assert.deepEqual(mons:partyMon(0), monBefore, "a refused exchange preserves the mon")
+  Assert.deepEqual(bag:capture(), bagBefore, "a refused exchange preserves the bag")
+  Assert.equal(mons:partyRevision(), monRevision, "a refused exchange publishes no mon revision")
+  Assert.equal(bag:revision(), bagRevision, "a refused exchange publishes no bag revision")
 end
 
 return { tests = T }

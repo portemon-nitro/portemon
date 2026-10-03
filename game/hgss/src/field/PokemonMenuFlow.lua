@@ -731,6 +731,7 @@ end
 ---@param disposition "party"|"bag"
 ---@return table<string, unknown>
 function PokemonMenuFlow:_giveCompletion(outcome, slot, itemKey, disposition)
+  ---@type table<string, unknown>
   local completion = { kind = outcome.kind, disposition = disposition }
   if outcome.kind == "changed" then
     local item = self._assets.itemCatalog:item(itemKey)
@@ -749,6 +750,8 @@ function PokemonMenuFlow:_giveCompletion(outcome, slot, itemKey, disposition)
       message = self:_giveHeldItemMessage(slot, itemKey)
     end
     completion.message = message
+  elseif outcome.kind == "bag_full" then
+    completion.message = { templateKey = "bagFull" }
   end
   return completion
 end

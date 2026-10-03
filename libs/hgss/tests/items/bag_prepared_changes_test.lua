@@ -9,6 +9,38 @@ local function service()
   return HgssBagService.new({ catalog = ItemFixture.makeCatalog() })
 end
 
+-- Occupies every medicine slot while keeping one chosen item out, so a
+-- later staged addition of that item can only fit if an earlier delta
+-- frees its slot first.
+local function fillMedicineExcept(bag, excluded)
+  local catalog = bag:catalog()
+  for nativeId = 0, 536 do
+    if #bag:pocketItems("medicine") >= catalog:pocket("medicine").capacity then
+      break
+    end
+    local key = catalog:itemKeyByNativeId(nativeId)
+    if key ~= excluded and catalog:item(key).pocket == "medicine" and bag:quantity(key) == 0 then
+      Assert.isTrue(bag:add(key, 1), "setup must occupy the medicine pocket")
+    end
+  end
+  Assert.equal(
+    #bag:pocketItems("medicine"),
+    catalog:pocket("medicine").capacity,
+    "setup fills every medicine slot"
+  )
+end
+
+local function firstMedicineKeyExcept(bag, excluded)
+  local catalog = bag:catalog()
+  for nativeId = 0, 536 do
+    local key = catalog:itemKeyByNativeId(nativeId)
+    if key ~= excluded and catalog:item(key).pocket == "medicine" then
+      return key
+    end
+  end
+  error("the catalog carries no spare medicine item", 0)
+end
+
 local T = {}
 
 function T.prepare_rejects_a_stale_revision_without_touching_state()
@@ -59,6 +91,45 @@ function T.prepare_preserves_pocket_ordering_through_exchange_deltas()
   Assert.equal(bag:quantity("LUXURY_BALL"), 1)
   Assert.equal(bag:quantity("GREAT_BALL"), 1, "untouched stacks survive the swap")
   Assert.equal(bag:revision(), revision + 1)
+end
+
+function T.prepare_applies_ordered_deltas_through_a_freed_slot()
+  local bag = service()
+  local freed = firstMedicineKeyExcept(bag, "POTION")
+  Assert.isTrue(bag:add(freed, 1), "setup must stock the freed stack as a lone unit")
+  fillMedicineExcept(bag, "POTION")
+  Assert.equal(bag:quantity("POTION"), 0, "the added item starts absent from the bag")
+  Assert.isFalse(bag:hasSpace("POTION", 1), "setup must leave the medicine pocket full")
+  local revision = bag:revision()
+  local preparation, reason = bag:prepareInventoryChanges(revision, {
+    { op = "take", item = freed, quantity = 1 },
+    { op = "add", item = "POTION", quantity = 1 },
+  })
+  assert(preparation ~= nil, "ordered deltas prepare through the freed slot: " .. tostring(reason))
+  Assert.equal(bag:quantity(freed), 1, "preparation leaves the live inventory alone")
+  Assert.equal(bag:quantity("POTION"), 0, "preparation stages nothing live before publish")
+  Assert.equal(bag:revision(), revision, "preparation publishes no revision before publish")
+  preparation.publish()
+  Assert.equal(bag:quantity(freed), 0, "publishing removes the taken stack")
+  Assert.equal(bag:quantity("POTION"), 1, "publishing installs the addition into the freed slot")
+  Assert.equal(bag:revision(), revision + 1, "publication bumps exactly once for the batch")
+end
+
+function T.prepare_reports_an_unfreeable_add_as_a_recoverable_refusal()
+  local bag = service()
+  Assert.isTrue(bag:add("SITRUS_BERRY", 1), "setup stocks an unrelated berries stack")
+  fillMedicineExcept(bag, "POTION")
+  Assert.isFalse(bag:hasSpace("POTION", 1), "setup must leave the medicine pocket full")
+  local revision = bag:revision()
+  local before = bag:capture()
+  local preparation, reason = bag:prepareInventoryChanges(revision, {
+    { op = "take", item = "SITRUS_BERRY", quantity = 1 },
+    { op = "add", item = "POTION", quantity = 1 },
+  })
+  Assert.isNil(preparation, "a full-pocket add refuses instead of publishing")
+  Assert.equal(reason, "bag_full")
+  Assert.deepEqual(bag:capture(), before, "a refused preparation mutates nothing live")
+  Assert.equal(bag:revision(), revision, "a refused preparation publishes no revision")
 end
 
 return { tests = T }

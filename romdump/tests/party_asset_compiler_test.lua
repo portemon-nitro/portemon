@@ -322,6 +322,27 @@ function T.lower_message_role_resolves_the_font_palette(romFs, _)
   Assert.deepEqual(role.background, expected(15, "background"), "the lower-message background keeps font slot 15")
 end
 
+function T.compiled_presentation_carries_the_full_bag_template(romFs, _)
+  local PartyAssetCompiler = require("romdump.src.digest.ui.PartyAssetCompiler")
+  local bundle = assert(PartyAssetCompiler.compile(romFs))
+  Assert.equal(bundle.manifest.schema, "g4-party-presentation-v5")
+  local template = bundle.manifest.text.templates.bagFull
+  Assert.notNil(template, "the full-bag template resolves")
+  local words = {}
+  for _, segment in ipairs(template.segments) do
+    Assert.isTrue(
+      segment.kind == "text" or segment.kind == "lineBreak",
+      "the full-bag template stays plain display text"
+    )
+    if segment.kind == "text" then
+      words[#words + 1] = segment.value
+    end
+  end
+  Assert.equal(table.concat(words), "The Bag is full.", "the full-bag template keeps its source wording")
+  Assert.isNil(template.bank, "runtime templates omit source bank identity")
+  Assert.isNil(template.index, "runtime templates omit source message identity")
+end
+
 local suite = RomSuite.fromFacts(T)
 suite.metadata.capabilities = { "rom_dump" }
 return suite

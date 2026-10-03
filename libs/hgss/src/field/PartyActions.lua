@@ -133,12 +133,6 @@ function PartyActions:_resolve(request)
     if not request.confirmed then
       return { kind = "needs_confirmation" }
     end
-    -- Source capacity order: the old item's destination is decided before
-    -- the new stack is removed, so a full pocket rejects instead of
-    -- exploiting a transient free slot.
-    if not self._bag:hasSpace(mon.heldItem, 1) then
-      return { kind = "bag_full" }
-    end
     local heldItem = mon.heldItem
     assert(type(heldItem) == "string", "an exchanged item resolves to its key")
     local staged = HeldItemFormPolicy.apply(mon, definition, self._mons)

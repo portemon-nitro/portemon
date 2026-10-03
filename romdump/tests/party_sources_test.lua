@@ -339,6 +339,13 @@ function T.message_templates_select_source_held_item_question_and_swap_result()
   Assert.equal(result.index, 85, "the swap result uses its source message")
 end
 
+function T.message_templates_select_the_full_bag_message()
+  local template = PartySources.messages.templates.bagFull
+  Assert.notNil(template, "the producer selects the full-bag message")
+  Assert.equal(template.bank, 300, "the full-bag message comes from the party message bank")
+  Assert.equal(template.index, 84, "the full-bag message is the dedicated source message")
+end
+
 function T.lower_message_role_selects_the_loaded_font_palette()
   local role = PartySources.messageRole
   Assert.notNil(role, "the producer selects the lower-message font palette")
