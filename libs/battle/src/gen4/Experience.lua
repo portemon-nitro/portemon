@@ -65,8 +65,10 @@ end
 --- Names exactly the conscious non-egg participants and share holders
 --- below the level cap, in selection order. Fainted battlers, eggs,
 --- level-capped mons, and idle battlers without a share earn nothing.
+--- Participation and shareholding are independent facts: a participating
+--- holder carries both flags and later earns both portions.
 ---@param query table<string, unknown>
----@return { combatant: integer, kind: string }[]
+---@return { combatant: integer, participated: boolean, share: boolean }[]
 function Experience.recipients(query)
   assert(type(query) == "table", "recipient selection reads a query record")
   assert(type(query.battlers) == "table", "recipient selection reads the battler array")
@@ -74,11 +76,11 @@ function Experience.recipients(query)
   for _, battler in ipairs(query.battlers) do
     checkBattler(battler)
     if isEligible(battler) then
-      local kind = "share"
-      if battler.participated == true then
-        kind = "battler"
-      end
-      selected[#selected + 1] = { combatant = battler.combatant, kind = kind }
+      selected[#selected + 1] = {
+        combatant = battler.combatant,
+        participated = battler.participated == true,
+        share = battler.expShare == true,
+      }
     end
   end
   return selected
@@ -94,42 +96,47 @@ local function checkShareCount(recipient, what)
 end
 
 --- Stages one recipient award in native order: the base stage floors
---- yield times fainted level over seven, shares halve the staged total
---- with minimum-one floors, then each per-recipient multiplier floors in
---- turn (Lucky Egg, trainer, traded). A foreign original takes seventeen
---- tenths instead of the same-language three halves; the two trade bonuses
---- never stack.
+--- yield times fainted level over seven, then each earned portion splits
+--- the staged total with its own minimum-one floor. Holders halve the
+--- staged total first: the participant portion divides that half across
+--- the participants and the share portion across the holders, so one
+--- recipient earning both keeps their sum. Without holders the
+--- participant portion divides the whole staged total. Each per-recipient
+--- multiplier floors in turn (Lucky Egg, trainer, traded). A foreign
+--- original takes seventeen tenths instead of the same-language three
+--- halves; the two trade bonuses never stack.
 ---@param knockout table<string, unknown>
 ---@param recipient table<string, unknown>
 ---@return integer
 function Experience.calculate(knockout, recipient)
   checkKnockout(knockout)
   assert(type(recipient) == "table", "experience awards read the recipient record")
-  assert(recipient.kind == "battler" or recipient.kind == "share", "experience awards name a battler or share kind")
+  assert(type(recipient.participated) == "boolean", "experience awards read the participation fact")
+  assert(type(recipient.share) == "boolean", "experience awards read the share fact")
   checkShareCount(recipient, "battlers")
   checkShareCount(recipient, "holders")
   local staged = math.floor((knockout.baseYield * knockout.level) / 7)
-  local award
-  if recipient.holders > 0 then
-    local half = math.floor(staged / 2)
-    if recipient.kind == "battler" then
-      assert(recipient.battlers >= 1, "a battler share splits across at least one battler")
-      award = math.floor(half / recipient.battlers)
+  local award = 0
+  if recipient.participated == true then
+    assert(recipient.battlers >= 1, "a participant portion splits across at least one battler")
+    local portion
+    if recipient.holders > 0 then
+      portion = math.floor(math.floor(staged / 2) / recipient.battlers)
     else
-      assert(recipient.holders >= 1, "a share portion splits across at least one holder")
-      award = math.floor(half / recipient.holders)
+      portion = math.floor(staged / recipient.battlers)
     end
-    if award == 0 then
-      award = 1
+    if portion == 0 then
+      portion = 1
     end
-  elseif recipient.kind == "battler" then
-    assert(recipient.battlers >= 1, "a battler share splits across at least one battler")
-    award = math.floor(staged / recipient.battlers)
-    if award == 0 then
-      award = 1
+    award = award + portion
+  end
+  if recipient.share == true then
+    assert(recipient.holders >= 1, "a share portion splits across at least one holder")
+    local portion = math.floor(math.floor(staged / 2) / recipient.holders)
+    if portion == 0 then
+      portion = 1
     end
-  else
-    award = 0
+    award = award + portion
   end
   if recipient.luckyEgg == true then
     award = math.floor((award * 150) / 100)

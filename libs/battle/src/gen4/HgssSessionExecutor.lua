@@ -934,6 +934,80 @@ local function noteEntry(live, moneySet, combatantId)
   end
 end
 
+-- Knockout-reward participation belongs to one opposing entry: each enemy
+-- combatant keys its own record by roster identity, pinning the entry
+-- token it entered on and the player-side combatants sent out against it.
+-- Leaving never erases a record; a later entry with a fresh token
+-- replaces it, and opening the reward for the pinned entry consumes it.
+---@param state table<string, unknown> live battle state under entry settlement
+---@param enemyId integer entering enemy combatant identity
+local function noteEnemyEntry(state, enemyId)
+  local combatant = BattleState.combatant(state, enemyId)
+  local active = combatant.active --[[@as table<string, unknown>]]
+  assert(active ~= nil, "reward participation tracks entered opponents")
+  local records = state.rewardParticipation --[[@as table<integer, table<string, unknown>>]]
+  assert(type(state.rewardParticipation) == "table", "reward participation travels as enemy-keyed records")
+  local participants = {} ---@type table<integer, boolean>
+  for _, combatantId in
+    ipairs(state.combatantOrder --[[@as integer[] ]])
+  do
+    local candidate = BattleState.combatant(state, combatantId)
+    local owner = BattleState.participant(state, candidate.participant --[[@as integer]])
+    if
+      owner.side == 1
+      and candidate.active ~= nil
+      and candidate.hp --[[@as integer]]
+        > 0
+    then
+      participants[combatantId] = true
+    end
+  end
+  records[enemyId] = { activation = active.activation, combatants = participants }
+end
+
+-- A player-side arrival joins every currently active enemy entry: the
+-- entering combatant counts against each foe it now faces, while records
+-- whose token no longer matches the field are reseeded from the current
+-- occupants instead of inheriting stale credit.
+---@param state table<string, unknown> live battle state under entry settlement
+---@param playerId integer entering player combatant identity
+local function notePlayerEntry(state, playerId)
+  local records = state.rewardParticipation --[[@as table<integer, table<string, unknown>>]]
+  assert(type(state.rewardParticipation) == "table", "reward participation travels as enemy-keyed records")
+  for _, combatantId in
+    ipairs(state.combatantOrder --[[@as integer[] ]])
+  do
+    local candidate = BattleState.combatant(state, combatantId)
+    local owner = BattleState.participant(state, candidate.participant --[[@as integer]])
+    if owner.side ~= 1 and candidate.active ~= nil then
+      local entry = candidate.active --[[@as table<string, unknown>]]
+      local record = records[combatantId]
+      if type(record) ~= "table" or record.activation ~= entry.activation then
+        noteEnemyEntry(state, combatantId)
+        record = records[combatantId]
+      end
+      assert(type(record) == "table", "active opponents carry their participation record")
+      local members = record.combatants --[[@as table<integer, boolean>]]
+      members[playerId] = true
+    end
+  end
+end
+
+-- Every field arrival feeds the per-opponent participation records on its
+-- own side: opponents open a fresh record seeded from the active
+-- player side, while player arrivals join each active enemy record.
+---@param state table<string, unknown> live battle state under entry settlement
+---@param combatantId integer entering combatant identity
+local function noteBattleEntry(state, combatantId)
+  local combatant = BattleState.combatant(state, combatantId)
+  local owner = BattleState.participant(state, combatant.participant --[[@as integer]])
+  if owner.side == 1 then
+    notePlayerEntry(state, combatantId)
+  else
+    noteEnemyEntry(state, combatantId)
+  end
+end
+
 ---@param state table<string, unknown> live battle state under the pass
 ---@return table<string, unknown> live scoped-instance owner held by the state
 local function liveEffectBag(state)
@@ -1267,12 +1341,10 @@ local function enterReserve(state, moneySet, obligation, reserveId)
   -- Replacements send out under the money-up scan: the latch only ever
   -- moves 1 -> 2 and never resets when the holder leaves.
   noteEntry(state, moneySet, reserveId)
-  -- Taking the field marks knockout-reward participation: switched-in
-  -- reserves earn even when they never strike.
-  local arrivals = state.participated --[[@as table<integer, boolean>]]
-  if type(state.participated) == "table" then
-    arrivals[reserveId] = true
-  end
+  -- Taking the field marks knockout-reward participation against every
+  -- foe the arrival now faces, or opens a fresh record for an arriving
+  -- foe seeded from the active player side.
+  noteBattleEntry(state, reserveId)
   local context = BattleContext.wrap(state)
   context:emit("switch", {
     kind = "faint",
@@ -1503,6 +1575,73 @@ local function trainerBattleFor(state)
   return false
 end
 
+--- Reads the current player reward identity from the recipient roster
+--- context: the trainer facts the production scenario copies at
+--- construction for traded and foreign award classification. A
+--- production-marked context must carry complete facts and fails when
+--- they are missing or half-wired; an unmarked context without facts
+--- belongs to a self-contained synthetic session and classifies as
+--- locally owned, while an unmarked context with complete facts still
+--- classifies from them. Half-wired facts fail instead of guessing, so
+--- only complete or empty unmarked identities flow into arithmetic.
+---@param state table<string, unknown> live battle state under reward work
+---@param combatantId integer recipient identity under reward
+---@return table<string, unknown>? detached current player reward identity, or nil when the session carries none
+local function playerRewardIdentity(state, combatantId)
+  local combatant = BattleState.combatant(state, combatantId)
+  local owner = BattleState.participant(state, combatant.participant --[[@as integer]])
+  local context = owner.context --[[@as table<string, unknown>]]
+  assert(type(owner.context) == "table", "reward work reads the recipient roster context")
+  local marked = context.productionPlayer == true
+  local trainerId = context.trainerId
+  local trainerName = context.trainerName
+  local language = context.language
+  if trainerId == nil and trainerName == nil and language == nil then
+    if marked then
+      error(BattleErrors.missingBehavior("reward work needs the current player identity", {
+        combatant = combatantId,
+      }))
+    end
+    return nil
+  end
+  if
+    type(trainerId) ~= "number"
+    or trainerId --[[@as integer]]
+      % 1 ~= 0
+    or trainerId --[[@as integer]]
+      < 0
+    or type(trainerName) ~= "string"
+    or trainerName == ""
+    or type(language) ~= "string"
+    or language == ""
+  then
+    error(BattleErrors.missingBehavior("reward work needs the current player identity", {
+      combatant = combatantId,
+    }))
+  end
+  return { trainerId = trainerId, trainerName = trainerName, language = language }
+end
+
+--- Classifies one recipient award from its battle-owned origin against
+--- the current player identity: a mismatched trainer identity trades,
+--- and a traded mon from another language earns the foreign rate instead
+--- of the same-language trade lift. Sessions without player facts keep
+--- every award local.
+---@param identity table<string, unknown>? current player reward identity, or nil for self-contained sessions
+---@param mon table<string, unknown> recipient battle-owned mon carrying its origin
+---@return boolean traded
+---@return boolean foreign
+local function tradeFlags(identity, mon)
+  if identity == nil then
+    return false, false
+  end
+  local origin = mon.origin --[[@as table<string, unknown>]]
+  assert(type(mon.origin) == "table", "reward work reads the recipient origin")
+  assert(type(origin.language) == "string" and origin.language ~= "", "reward work reads the recipient language")
+  local traded = origin.trainerId ~= identity.trainerId or origin.trainerName ~= identity.trainerName
+  return traded, traded and origin.language ~= identity.language
+end
+
 ---@param state table<string, unknown> live battle state under reward work
 ---@param catalog RewardCatalog reward catalog over session facts
 ---@param defeatedId integer knocked-out roster identity under reward
@@ -1527,6 +1666,16 @@ local function buildRewardInput(state, catalog, defeatedId, defeatedActivation)
   local foeSpecies = catalog:species(foeMon.species --[[@as string]])
   local foeLevel =
     Experience.level(catalog:growthCurve(foeSpecies.growthCurve --[[@as string]]), foeMon.experience --[[@as integer]])
+  -- Rewards read the defeated entry's own participant set: a stale token
+  -- or a missing record never falls back to battle-global credit.
+  local records = state.rewardParticipation --[[@as table<integer, table<string, unknown>>]]
+  assert(type(state.rewardParticipation) == "table", "reward work reads per-opponent participation")
+  local record = records[defeatedId]
+  if type(record) ~= "table" or record.activation ~= defeatedActivation then
+    error(BattleErrors.invalidState("reward work pins the defeated entry", { combatant = defeatedId }))
+  end
+  local participants = record.combatants --[[@as table<integer, boolean>]]
+  assert(type(record.combatants) == "table", "reward work reads the defeated participant set")
   local battlers = {}
   for _, combatantId in
     ipairs(state.combatantOrder --[[@as integer[] ]])
@@ -1541,10 +1690,9 @@ local function buildRewardInput(state, catalog, defeatedId, defeatedActivation)
         catalog:growthCurve(recipientSpecies.growthCurve --[[@as string]]),
         source.experience --[[@as integer]]
       )
-      local seen = state.participated --[[@as table<integer, boolean>]]
       battlers[#battlers + 1] = {
         combatant = combatantId,
-        participated = type(seen) == "table" and seen[combatantId] == true,
+        participated = participants[combatantId] == true,
         expShare = source.heldItem == "EXP__SHARE",
         fainted = combatant.hp --[[@as integer]] <= 0,
         isEgg = source.isEgg == true,
@@ -1556,11 +1704,14 @@ local function buildRewardInput(state, catalog, defeatedId, defeatedActivation)
   if #selected == 0 then
     return nil
   end
+  -- Participant and holder counts stay independent: a participating
+  -- holder feeds both denominators and later earns both portions.
   local battlerCount, holderCount = 0, 0
   for _, recipient in ipairs(selected) do
-    if recipient.kind == "battler" then
+    if recipient.participated == true then
       battlerCount = battlerCount + 1
-    else
+    end
+    if recipient.share == true then
       holderCount = holderCount + 1
     end
   end
@@ -1573,14 +1724,18 @@ local function buildRewardInput(state, catalog, defeatedId, defeatedActivation)
     if chained == nil then
       entryMon.hp = combatant.hp
     end
+    local traded, foreign = tradeFlags(playerRewardIdentity(state, recipient.combatant), entryMon)
     entries[#entries + 1] = {
       combatant = recipient.combatant,
       mon = entryMon,
       expAward = RewardExperience.calculate(knockout, {
-        kind = recipient.kind,
         battlers = battlerCount,
         holders = holderCount,
+        participated = recipient.participated,
+        share = recipient.share,
         luckyEgg = entryMon.heldItem == "LUCKY_EGG",
+        traded = traded,
+        foreign = foreign,
       }),
       evAward = RewardEffort.calculate(evYield, {}),
     }
@@ -1601,6 +1756,15 @@ local function startRewardChild(state, catalog, record)
   local summary = { combatant = target.combatant, rewarded = false }
   local input =
     buildRewardInput(state, catalog, target.combatant --[[@as integer]], target.activation --[[@as integer]])
+  -- The defeated entry's participant set is spent once its reward opens:
+  -- the opened child carries fixed entries, so later entries of the same
+  -- identity start fresh and snapshots never retain spent credit.
+  local records = state.rewardParticipation --[[@as table<integer, table<string, unknown>>]]
+  if type(state.rewardParticipation) == "table" then
+    records[
+      target.combatant --[[@as integer]]
+    ] = nil
+  end
   if input == nil then
     return summary
   end
@@ -2065,14 +2229,10 @@ local function bindTurnHandlers(executor, moveFacts, speciesFacts, chart, moneyS
     -- Replacements send out under the money-up scan: the latch only
     -- ever moves 1 -> 2 and never resets when the holder leaves.
     noteEntry(state, moneySet, payload.replacement --[[@as integer]])
-    -- Voluntary arrivals join the reward participation set, so a reserve
-    -- taking the field before the knockout still counts as a recipient.
-    local volunteers = state.participated --[[@as table<integer, boolean>]]
-    if type(state.participated) == "table" then
-      volunteers[
-        payload.replacement --[[@as integer]]
-      ] = true
-    end
+    -- Voluntary arrivals join the reward participation of every foe they
+    -- now face, so a reserve taking the field before the knockout still
+    -- counts as a recipient; arriving foes open their own fresh record.
+    noteBattleEntry(state, payload.replacement --[[@as integer]])
     local event = context:emit("switch", cause, {
       position = slot,
       from = actor.combatant,
@@ -2477,13 +2637,10 @@ local function bindTurnHandlers(executor, moveFacts, speciesFacts, chart, moneyS
     end
     local combatant = BattleState.combatant(state, recipientId)
     local owner = BattleState.participant(state, combatant.participant --[[@as integer]])
-    -- Address the live entry token; benched earners carry no token, so
-    -- the stored zero still binds their reply exactly once.
-    local token = 0
-    if combatant.active ~= nil then
-      local active = combatant.active --[[@as table<string, unknown>]]
-      token = active.activation --[[@as integer]]
-    end
+    -- Learning addresses the roster record, never the live entry: the
+    -- actor carries its combatant alone with no entry token, whether the
+    -- recipient is active or benched, and the reply must match it back
+    -- without one.
     local counter = state.batchCounter --[[@as integer]] + 1
     state.batchCounter = counter
     state.pending = {
@@ -2501,7 +2658,7 @@ local function bindTurnHandlers(executor, moveFacts, speciesFacts, chart, moneyS
     local issued = context:requestDecision({
       controller = owner.controller,
       kind = HgssSessionExecutor.LEARN_DECISION_KIND,
-      actors = { { combatant = recipientId, activation = token } },
+      actors = { { combatant = recipientId } },
       legalChoices = { kinds = { "confirm" } },
     })
     -- The protocol envelope carries only the decision identity; the
@@ -2754,10 +2911,11 @@ local function wrap(live, content, admitted, moveFacts, speciesFacts, moneyUpIte
   live.schedule = live.schedule or freshSchedule()
   live.faints = live.faints or {}
   -- Knockout-reward continuations travel beside the faint queue: open
-  -- reward children with their battle-owned copies, the send-out set
-  -- backing participation, and the accumulated evolution eligibility.
+  -- reward children with their battle-owned copies, the per-opponent
+  -- participation records keyed by enemy entry, and the accumulated
+  -- evolution eligibility.
   live.progressionChildren = live.progressionChildren or {}
-  live.participated = live.participated or {}
+  live.rewardParticipation = live.rewardParticipation or {}
   live.evolutionEligible = live.evolutionEligible or {}
   -- The live effect owner travels with the state like the running
   -- generator: fresh sessions arrive with their empty owner while restored
@@ -2815,19 +2973,15 @@ local function wrap(live, content, admitted, moveFacts, speciesFacts, moneyUpIte
     _disposed = false,
   }, HgssSessionExecutor)
   -- Opening occupants send out with the battle: scan them before the
-  -- first turn so a holder in the starting lineup latches immediately.
+  -- first turn so a holder in the starting lineup latches immediately
+  -- and every opening foe seeds its participant set from the field.
   for _, positionId in
     ipairs(live.positionOrder --[[@as integer[] ]])
   do
     local occupant = BattleState.position(live, positionId).occupant
     if occupant ~= nil then
       noteEntry(live, moneySet, occupant --[[@as integer]])
-      local arrivals = live.participated --[[@as table<integer, boolean>]]
-      if type(live.participated) == "table" then
-        arrivals[
-          occupant --[[@as integer]]
-        ] = true
-      end
+      noteBattleEntry(live, occupant --[[@as integer]])
     end
   end
   return executor
@@ -2948,8 +3102,31 @@ function HgssSessionExecutor.restore(snapshotData, content)
       end
     end
   end
-  if live.participated ~= nil and type(live.participated) ~= "table" then
-    error(BattleErrors.incompatibleSnapshot("native snapshots carry their participation set", {}))
+  if live.participated ~= nil then
+    error(BattleErrors.incompatibleSnapshot("native snapshots carry per-opponent reward participation", {}))
+  end
+  if live.rewardParticipation ~= nil then
+    if type(live.rewardParticipation) ~= "table" then
+      error(BattleErrors.incompatibleSnapshot("native snapshots carry their reward participation", {}))
+    end
+    for enemyId, entry in
+      pairs(live.rewardParticipation --[[@as table<integer, unknown>]])
+    do
+      if not isPositiveInt(enemyId) or type(entry) ~= "table" then
+        error(BattleErrors.incompatibleSnapshot("reward participation names enemy records", {}))
+      end
+      local entryRecord = entry --[[@as table<string, unknown>]]
+      if not isPositiveInt(entryRecord.activation) or type(entryRecord.combatants) ~= "table" then
+        error(BattleErrors.incompatibleSnapshot("reward participation pins the defeated entry", {}))
+      end
+      for battlerId, marked in
+        pairs(entryRecord.combatants --[[@as table<integer, unknown>]])
+      do
+        if not isPositiveInt(battlerId) or marked ~= true then
+          error(BattleErrors.incompatibleSnapshot("reward participation marks sent-out battlers", {}))
+        end
+      end
+    end
   end
   if live.evolutionEligible ~= nil then
     if type(live.evolutionEligible) ~= "table" then
@@ -3172,6 +3349,17 @@ function HgssSessionExecutor:_commitReplacement(state)
   settleReplacements(state)
 end
 
+--- Canonicalizes one reply actor for equality bookkeeping: roster-scoped
+--- prompts omit the entry token, so absence matches absence on both
+--- sides of the comparison without ever writing a zero into protocol
+--- data. Live-entry batches always carry tokens on both sides.
+---@param combatant integer addressed roster identity
+---@param activation integer? addressed entry token, when the prompt is entry-scoped
+---@return string
+local function actorKey(combatant, activation)
+  return combatant .. ":" .. (activation or "")
+end
+
 ---@param state table<string, unknown>
 ---@param request table<string, unknown>
 ---@param reply table<string, unknown>
@@ -3205,18 +3393,13 @@ local function checkReplyContext(state, request, reply)
   local expected = {}
   for _, actor in ipairs(actors) do
     expected[
-      actor.combatant --[[@as integer]] .. ":" .. actor.activation --[[@as integer]]
+      actorKey(actor.combatant --[[@as integer]], actor.activation --[[@as integer?]])
     ] = actor
   end
   local seen = {}
   for _, choice in ipairs(choices) do
     local actor = choice.actor --[[@as table<string, unknown>]]
-    local key = actor.combatant --[[@as integer]]
-      .. ":"
-      .. (
-        actor.activation --[[@as integer]]
-        or 0
-      )
+    local key = actorKey(actor.combatant --[[@as integer]], actor.activation --[[@as integer?]])
     if expected[key] == nil or seen[key] ~= nil then
       return BattleErrors.input("replies must address exactly the requested entries", {
         request = request.requestId,
@@ -3330,8 +3513,14 @@ local function checkLearningBinding(state, choice)
   end
   local actor = choice.actor --[[@as table<string, unknown>]]
   local expected = addressed[1]
-  if actor.combatant ~= expected.combatant or actor.activation ~= expected.activation then
+  if actor.combatant ~= expected.combatant then
     return BattleErrors.input("replies must address exactly the requested entries", {})
+  end
+  -- Learning binds the roster record: the reply carries its combatant
+  -- alone, and any supplied entry token fails instead of locking the
+  -- decision to a live entry that may come and go.
+  if actor.activation ~= nil or expected.activation ~= nil then
+    return BattleErrors.input("learning replies carry no entry token", {})
   end
   if choice.kind ~= "confirm" then
     return BattleErrors.input("learning replies confirm the prompt", {})
@@ -3769,11 +3958,11 @@ function HgssSessionExecutor:capture()
   snapshot.faints = copyValue(state.faints)
   -- Reward continuations ride as plain frame plus semantic facts: the
   -- detached battle-owned copies with their resumable frames, the
-  -- send-out participation set, and the accumulated eligibility. The
+  -- per-opponent participation records, and the accumulated eligibility. The
   -- reward catalog itself is rebuilt from the facts above on restore and
   -- never serialized.
   snapshot.progressionChildren = copyValue(state.progressionChildren)
-  snapshot.participated = copyValue(state.participated)
+  snapshot.rewardParticipation = copyValue(state.rewardParticipation)
   snapshot.evolutionEligible = copyValue(state.evolutionEligible)
   snapshot.moveFacts = copyValue(self._moveFacts)
   snapshot.speciesFacts = copyValue(self._speciesFacts)

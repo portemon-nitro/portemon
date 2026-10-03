@@ -360,6 +360,34 @@ local function enemySeed(mon, combatantId, source)
   return { id = combatantId, mon = combatant, source = source }
 end
 
+---@param ctx table<string, unknown> scenario context carrying live field sources
+---@param isProduction boolean true when a live party snapshot fields the player side
+---@return table<string, unknown> detached player reward identity with its production marker, or the marker alone when facts are unavailable; headless sessions keep an empty context
+local function playerRewardContext(ctx, isProduction)
+  local base = {} ---@type table<string, unknown>
+  if isProduction then
+    base.productionPlayer = true
+  end
+  local player = ctx.player
+  if type(player) ~= "table" then
+    return base
+  end
+  local record = player --[[@as table<string, unknown>]]
+  if
+    type(record.trainerId) ~= "number"
+    or type(record.trainerName) ~= "string"
+    or record.trainerName == ""
+    or type(record.language) ~= "string"
+    or record.language == ""
+  then
+    return base
+  end
+  base.trainerId = record.trainerId
+  base.trainerName = record.trainerName
+  base.language = record.language
+  return base
+end
+
 ---@param fragment table<string, unknown>
 ---@return table<string, unknown> kernel-scenario-shaped record (ruleset stamped by the consumer)
 local function kernelShape(fragment)
@@ -395,7 +423,7 @@ local function assemble(payload, heart)
     side = 1,
     controller = HgssBattleScenarioFactory.PLAYER_CONTROLLER,
     roster = players,
-    context = {},
+    context = copyValue(heart.playerContext or {}),
   }
   if heart.playerInventoryId ~= nil then
     playerParticipant.inventoryId = heart.playerInventoryId
@@ -509,6 +537,7 @@ function HgssBattleScenarioFactory.fromEncounter(payload, ctx)
     enemyIds = { foeId },
     players = players,
     openingId = openingId,
+    playerContext = playerRewardContext(context, snapshot ~= nil),
     playerInventoryId = playerInventoryId,
     inventories = inventories,
     enemies = {
@@ -625,6 +654,7 @@ function HgssBattleScenarioFactory.fromTrainer(payload, ctx)
     enemyIds = enemyIds,
     players = players,
     openingId = openingId,
+    playerContext = playerRewardContext(context, snapshot ~= nil),
     playerInventoryId = playerInventoryId,
     inventories = inventories,
     enemies = enemies,
