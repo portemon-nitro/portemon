@@ -59,8 +59,9 @@
 -- duration and no live instance is immediate/nothing-to-wait-for (nil),
 -- matching HGSS's genuinely unanimated interior doors.
 --
--- Production constructs exactly one MapProps per runtime map (FieldMapLoader
--- builds it before the scene loader runs); a presentation load attaches its
+-- Production owns one canonical MapProps per indoor logical runtime map and
+-- one canonical MapProps per outdoor physical-cell runtime (FieldMapLoader
+-- builds each before presentation runs); a presentation load attaches its
 -- live ModelInstances into that SAME instance (MapProps:attachInstances)
 -- rather than constructing a second one, so headless and presentation always
 -- read the one retained per-tile playback slot -- there is no cross-instance

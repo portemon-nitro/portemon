@@ -769,8 +769,9 @@ function FieldRuntime:_loadInitialWorld(boot)
   -- Door identity is semantic: the owning physical cell (outdoor) or the
   -- map's canonical resolver (indoor) answers with generated sound and
   -- role state whether or not presentation instances are attached.
-  -- A simulation-only runtime has no resolver and therefore runs
-  -- door-kind warps through the ordinary fade lifecycle.
+  -- Headless and presentation production resolve semantic doors through
+  -- that same owner; a live instance never falls back to semantic-only
+  -- timing when generated roles exist.
 end
 
 -- Install the transition boundary while the runtime still owns boot rollback.

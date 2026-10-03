@@ -4,8 +4,6 @@
 local Assert = require("tests.support.Assert")
 local AcceptanceHarness = require("tests.acceptance.support.AcceptanceHarness")
 local OpeningLifecycle = require("tests.acceptance.support.OpeningLifecycle")
-local FieldEventState = require("libs.hgss.src.field.FieldEventState")
-local PlayTime = require("libs.hgss.src.save.PlayTime")
 
 local T = {
   metadata = {
@@ -106,29 +104,18 @@ end
 -- the indoor shop map instead of rejecting the door as uncovered. The
 -- boot spawns directly south of the door warp so the journey is one step.
 function T.tests.outdoor_shop_door_enters_through_its_owning_cell()
-  local harness = AcceptanceHarness.new({
-    gameFactory = function(versionId, map)
-      return {
-        saveId = "save-00000001",
-        versionId = versionId,
-        location = {
-          mapSymbol = map or "MAP_CHERRYGROVE",
-          fieldX = FACTS.shopApproachLocal.fieldX,
-          fieldZ = FACTS.shopApproachLocal.fieldZ,
-          facing = "north",
-        },
-        playerData = {
-          profile = { name = "GOLD", gender = 0, trainerId = 1, money = 3000, badges = 0 },
-          options = { textSpeed = "fastest", textFrame = 0 },
-        },
-        fieldTravel = { lastHealSpawn = "SPAWN_NEW_BARK" },
-        playTime = PlayTime.new(),
-        worldState = FieldEventState.new(),
-        mons = require("tests.support.MonBucket").emptyForVersion(versionId),
-        bag = require("libs.hgss.src.save.BagSave").empty(),
-      }
-    end,
-  })
+  local harness = AcceptanceHarness.new()
+  local defaultFactory = harness.gameFactory
+  harness.gameFactory = function(vId, map)
+    local game = defaultFactory(vId, map)
+    if map == "MAP_CHERRYGROVE" then
+      game.location.mapSymbol = "MAP_CHERRYGROVE"
+      game.location.fieldX = FACTS.shopApproachLocal.fieldX
+      game.location.fieldZ = FACTS.shopApproachLocal.fieldZ
+      game.location.facing = "north"
+    end
+    return game
+  end
   local versionId = AcceptanceHarness.defaultVersion()
   local game = harness:boot({ versionId = versionId, map = "MAP_CHERRYGROVE", save = "fresh" })
   local ok, err = xpcall(function()

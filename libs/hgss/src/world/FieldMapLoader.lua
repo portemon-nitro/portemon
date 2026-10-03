@@ -15,6 +15,7 @@ local WarpSystem = require("libs.hgss.src.transition.WarpSystem")
 local MapProps = require("libs.hgss.src.world.MapProps")
 local ModelDoorMetadata = require("libs.hgss.src.world.ModelDoorMetadata")
 local FieldCoverage = require("libs.hgss.src.world.FieldCoverage")
+local FieldZoneIdentity = require("libs.hgss.src.world.FieldZoneIdentity")
 local FieldCellCache = require("libs.assets.src.field.FieldCellCache")
 
 ---@class LogicalFieldMap
@@ -1171,19 +1172,20 @@ function FieldMapLoader:createPhysicalCoverage(runtimeMap, position)
     merged.assetPreparation = self.assetPreparation
     sceneOptions = merged
   end
-  -- The semantic resolver for one newly normalized physical cell. A header
-  -- with no logical world record is filler and owns no resolver; a real
-  -- cell reuses the single generated semantic assembly with its own
+  -- The semantic resolver for one newly normalized physical cell. Only the
+  -- physical-only header owns no resolver; every other header resolves
+  -- through the strict logical lookup, so a missing record fails staging.
+  -- A real cell reuses the single generated semantic assembly with its own
   -- placements, collision, and global origin, so door keys stay cell-local
   -- while warp records stay global. Failures propagate into the staging
-  -- transaction; only the filler absence returns nil.
+  -- transaction; only the physical-only case returns nil.
   local mapLoader = self
   local function mapPropsFactory(runtime, descriptor)
     local cell = runtime.descriptor or descriptor
-    local cellRecord = cell and findRecord(mapLoader.world, cell.mapHeaderId)
-    if not cellRecord then
+    if FieldZoneIdentity.isPhysicalOnlyCell(cell.mapHeaderId) then
       return nil
     end
+    local cellRecord = worldRecord(mapLoader.world, cell.mapHeaderId)
     local fieldData = loadSemanticFieldData(mapLoader.cacheFs, cellRecord)
     local origin = assert(runtime.origin, "physical cell origin is missing")
     return buildMapProps(mapLoader.cacheFs, cell.buildingInstances, fieldData, runtime.collision, origin.x, origin.z)
