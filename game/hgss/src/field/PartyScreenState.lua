@@ -43,7 +43,7 @@ local PartyScreenModel = require("libs.hgss.src.ui.PartyScreenModel")
 local PartyScreenState = {}
 PartyScreenState.__index = PartyScreenState
 
--- The fallback browse policy when a screen injects no action policy: only locally completable branches stay reachable. Switch reorders through the delayed swap; Quit closes. Summary, held-item, mail, and field-move branches arrive with their owning flows, never as silent no-ops.
+-- The fallback browse policy when a screen injects no action policy: only locally completable branches stay reachable. Switch reorders through the delayed swap; Quit dismisses back to browse while root cancel closes. Summary, held-item, mail, and field-move branches arrive with their owning flows, never as silent no-ops.
 ---@param service HgssMonService
 ---@param labels table<string, unknown>?
 ---@return table<string, unknown> the browse action policy
