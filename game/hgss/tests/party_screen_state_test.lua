@@ -242,6 +242,99 @@ function T.opening_waits_for_icon_preparation_before_accepting_selection()
   state:dispose()
 end
 
+-- A waiting screen publishes its resolved application plan alongside the
+-- wait metadata: pending and failed preparation both carry the session
+-- plan with its party input role and pane placement, emit no controller
+-- action or result, and repeated status reads advance nothing.
+function T.waiting_screens_publish_their_resolved_application_plan()
+  for _, case in ipairs({
+    { ready = false, failure = nil, state = "pending" },
+    { ready = false, failure = "icons unavailable", state = "failed" },
+  }) do
+    local calls = { swaps = {} }
+    local screen, probes = openParty(case.ready, case.failure, calls)
+    screen:updateFixed({})
+    local preparationsBefore = probes.preparations()
+    local status = screen:status()
+    Assert.equal(
+      status.preparationState,
+      case.state,
+      "a waiting screen reports its " .. case.state .. " preparation"
+    )
+    Assert.isTrue(status.open, "a waiting screen stays open while " .. case.state)
+    Assert.notNil(status.layout, "a waiting screen keeps its wait layout while " .. case.state)
+    Assert.notNil(status.presentation, "a waiting screen carries its resolved plan while " .. case.state)
+    local plan = assert(status.presentation, "a waiting screen carries its resolved plan")
+    Assert.isTrue(
+      plan.inputKey == "party" or plan.inputKey == "party-inactive",
+      "the wait plan keeps its party input role while " .. case.state
+    )
+    local panes = assert(plan.panes, "the wait plan carries its resolved panes")
+    Assert.isTrue(#panes >= 1, "the wait plan carries its resolved panes while " .. case.state)
+    for _, pane in ipairs(panes) do
+      local placement = assert(pane.placement, "every wait pane carries its placement")
+      Assert.notNil(placement.frame, "every wait pane carries its host frame while " .. case.state)
+    end
+    if case.state == "failed" then
+      Assert.equal(status.preparationError, case.failure, "a failed screen keeps its preparation cause")
+    end
+    Assert.isNil(status.action, "a waiting screen starts no controller action while " .. case.state)
+    Assert.isNil(screen:takeResult(), "a waiting screen completes nothing while " .. case.state)
+    screen:status()
+    Assert.equal(
+      probes.preparations(),
+      preparationsBefore,
+      "repeated status reads advance no preparation while " .. case.state
+    )
+    screen:dispose()
+  end
+end
+
+-- Placement refresh during the wait re-resolves from the canonical
+-- controller snapshot instead of the lightweight wait record: the
+-- returned plan keeps its party input role and pane placement for both
+-- pending and failed preparation, and neither preparation nor controller
+-- state advances.
+function T.wait_refresh_keeps_canonical_placement_without_advancing_preparation()
+  for _, case in ipairs({
+    { ready = false, failure = nil, state = "pending" },
+    { ready = false, failure = "icons unavailable", state = "failed" },
+  }) do
+    local calls = { swaps = {} }
+    local screen, probes = openParty(case.ready, case.failure, calls)
+    screen:updateFixed({})
+    local waiting = screen:status()
+    local preparationsBefore = probes.preparations()
+    local plan = screen:refreshPresentation(waiting)
+    Assert.notNil(plan, "wait refresh returns the current plan while " .. case.state)
+    Assert.isTrue(
+      plan.inputKey == "party" or plan.inputKey == "party-inactive",
+      "wait refresh keeps the party input role while " .. case.state
+    )
+    local panes = assert(plan.panes, "the refreshed plan carries its panes")
+    Assert.isTrue(#panes >= 1, "the refreshed plan carries its panes while " .. case.state)
+    for _, pane in ipairs(panes) do
+      local placement = assert(pane.placement, "every refreshed pane carries its placement")
+      Assert.notNil(placement.frame, "every refreshed pane carries its host frame while " .. case.state)
+    end
+    Assert.equal(
+      probes.preparations(),
+      preparationsBefore,
+      "wait refresh advances no preparation while " .. case.state
+    )
+    local reread = screen:status()
+    Assert.equal(
+      reread.preparationState,
+      case.state,
+      "wait refresh keeps the " .. case.state .. " preparation"
+    )
+    Assert.isNil(reread.action, "wait refresh starts no controller action while " .. case.state)
+    Assert.isNil(screen:takeResult(), "wait refresh completes nothing while " .. case.state)
+    Assert.equal(#calls.swaps, 0, "wait refresh swaps nothing while " .. case.state)
+    screen:dispose()
+  end
+end
+
 -- Closing or disposing a waiting screen drops its preparation interest
 -- exactly once; a late readiness arrival cannot reopen or draw it. The
 -- same exactly-once release holds for a screen disposed after readiness.
@@ -710,7 +803,8 @@ function T.detail_toggle_waits_for_icon_readiness()
   pending:updateFixed({ { type = "menu" } })
   local waiting = pending:status()
   Assert.equal(waiting.preparationState, "pending", "a pending screen reports its wait")
-  Assert.isNil(waiting.presentation, "a pending screen publishes no overlay plan")
+  Assert.notNil(waiting.presentation, "a pending screen keeps its resolved plan while waiting")
+  Assert.equal(paneSignature(waiting), "content+", "a menu press during the wait arms no overlay")
   ready = true
   pending:updateFixed({})
   local clean = pending:status()
@@ -736,7 +830,8 @@ function T.detail_toggle_waits_for_icon_readiness()
   failed:updateFixed({ { type = "menu" } })
   local failedStatus = failed:status()
   Assert.equal(failedStatus.preparationState, "failed", "a failed screen reports its failure")
-  Assert.isNil(failedStatus.presentation, "a failed screen publishes no overlay plan")
+  Assert.notNil(failedStatus.presentation, "a failed screen keeps its resolved plan")
+  Assert.equal(paneSignature(failedStatus), "content+", "a menu press during failure arms no overlay")
   failed:dispose()
 end
 

@@ -610,6 +610,89 @@ function T.party_binding_installs_and_retires_with_presentation()
   end)
 end
 
+-- Producer-backed party wait coverage: the child status in the tests below
+-- comes from a real PartyScreenState instead of a hand-authored record,
+-- so the transition draw proves the production wait contract. Only the
+-- app-exit envelope (phase, step, brightness) is supplied by the test,
+-- mirroring what the menu flow retains for an outgoing child.
+---@param ready boolean
+---@param failure string?
+---@return table screen
+---@return fun(): integer cancelCount
+local function waitingPartyChild(ready, failure)
+  local PartyScreenState = require("game.hgss.src.field.PartyScreenState")
+  local PartyPresentationFixture = require("tests.support.PartyPresentationFixture")
+  local ScreenTopology = require("libs.ui.src.ScreenTopology")
+  local catalog = {
+    species = function(_)
+      return { name = "Chikorita", genderRatio = 127 }
+    end,
+    item = function(_, item)
+      assert(item == "NONE")
+      return { name = "None" }
+    end,
+    iconSelection = function(_, mon)
+      return mon.species .. "/f" .. mon.form
+    end,
+  }
+  local service = {
+    partyCount = function(_)
+      return 2
+    end,
+    partyRevision = function(_)
+      return 1
+    end,
+    partyMon = function(_)
+      return {
+        species = "CHIKORITA",
+        form = 0,
+        isEgg = false,
+        personality = 0,
+        nickname = "CHIKO",
+        heldItem = "NONE",
+        moves = { { move = "TACKLE", pp = 35, ppUps = 0 } },
+        condition = { currentHp = 20, status = 0 },
+      }
+    end,
+    partyMonDerived = function(_)
+      return { maxHp = 20, level = 5 }
+    end,
+    catalog = function(_)
+      return catalog
+    end,
+    swapPartyMons = function(_, _, _) end,
+  }
+  local cancels = 0
+  local screen = PartyScreenState.new({
+    service = service,
+    manifest = PartyPresentationFixture.manifest(),
+    measureDisplay = function()
+      return {
+        width = 800,
+        height = 600,
+        topology = ScreenTopology.oneDisplay({
+          id = "main",
+          rect = { x = 0, y = 0, width = 800, height = 600 },
+          role = "world",
+          touch = false,
+        }),
+        pixelRatio = 1,
+        signature = "party-wait-transition-test:800x600",
+      }
+    end,
+    prepareIcons = function(_)
+      return ready, failure
+    end,
+    cancelIconPreparation = function()
+      cancels = cancels + 1
+    end,
+  })
+  screen:updateFixed({})
+  return screen, function()
+    return cancels
+  end
+end
+
 function T.party_wait_renders_without_icon_getters()
   local sink, calls = {}, {}
   local savedLove = rawget(_G, "love")
@@ -681,6 +764,103 @@ function T.party_wait_renders_without_icon_getters()
     end)
   end)
   rawset(_G, "love", savedLove)
+  if not ok then
+    error(err, 0)
+  end
+end
+
+-- A pending producer wait status draws through the app-exit transition:
+-- the wait text renders from the producer layout and the shutter is
+-- clipped to the real resolved party pane, without icon getters.
+function T.pending_producer_wait_draws_through_the_app_exit_transition()
+  local screen, cancelCount = waitingPartyChild(false, nil)
+  local waiting = screen:status()
+  Assert.equal(waiting.preparationState, "pending", "the producer child under test is actually waiting")
+  local sink, calls = {}, {}
+  local savedLove = rawget(_G, "love")
+  local graphics = require("tests.support.FakeGraphics").new({})
+  graphics.getDimensions = function()
+    error("party transition uses its resolved pane placement")
+  end
+  rawset(_G, "love", { graphics = graphics })
+  local ok, err = pcall(function()
+    withProductionComposition(sink, calls, compositionRuntime(), function(resources)
+      resources:drawApplication(
+        FieldApplicationIds.POKEMON,
+        {
+          child = waiting,
+          transition = { phase = "app_exit", step = 3, brightnessCoefficient = 7 },
+        },
+        drawRuntime()
+      )
+      Assert.equal(#sink, 1, "the pending wait renders exactly one message")
+      Assert.equal(sink[1][1], "text", "pending party icons render as text, never icon getters")
+      Assert.equal(#graphics.rectangles, 2, "the outgoing shutter draws its two bars over the pending wait")
+      Assert.deepEqual(
+        { graphics.rectangles[1].color[1], graphics.rectangles[1].color[2], graphics.rectangles[1].color[3] },
+        { 0, 0, 0 },
+        "the pending wait shutter is opaque black"
+      )
+      local contentFrame = assert(waiting.presentation.panes[1].placement.frame, "the wait plan carries its frame")
+      Assert.deepEqual(
+        graphics.scissorIntersections[1].effective,
+        { contentFrame.x, contentFrame.y, contentFrame.width, contentFrame.height },
+        "the pending wait shutter stays inside its resolved content pane"
+      )
+      resources:dispose()
+    end)
+  end)
+  rawset(_G, "love", savedLove)
+  screen:dispose()
+  Assert.equal(cancelCount(), 1, "the waiting screen releases its preparation exactly once")
+  if not ok then
+    error(err, 0)
+  end
+end
+
+-- A failed producer wait status uses the same drawable contract: the
+-- failure text stays visible beneath the same party transition plan and
+-- disposal still releases preparation exactly once.
+function T.failed_producer_wait_draws_through_the_app_exit_transition()
+  local screen, cancelCount = waitingPartyChild(false, "icons unavailable")
+  local waiting = screen:status()
+  Assert.equal(waiting.preparationState, "failed", "the producer child under test actually failed")
+  local sink, calls = {}, {}
+  local savedLove = rawget(_G, "love")
+  local graphics = require("tests.support.FakeGraphics").new({})
+  graphics.getDimensions = function()
+    error("party transition uses its resolved pane placement")
+  end
+  rawset(_G, "love", { graphics = graphics })
+  local ok, err = pcall(function()
+    withProductionComposition(sink, calls, compositionRuntime(), function(resources)
+      resources:drawApplication(
+        FieldApplicationIds.POKEMON,
+        {
+          child = waiting,
+          transition = { phase = "app_exit", step = 3, brightnessCoefficient = 7 },
+        },
+        drawRuntime()
+      )
+      Assert.equal(#sink, 1, "the failed wait renders exactly one message")
+      Assert.equal(sink[1][1], "text", "failed party icons render as text, never icon getters")
+      Assert.isTrue(
+        tostring(sink[1][2]):find("icons unavailable", 1, true) ~= nil,
+        "the failure message carries the preparation cause"
+      )
+      Assert.equal(#graphics.rectangles, 2, "the outgoing shutter draws its two bars over the failed wait")
+      local contentFrame = assert(waiting.presentation.panes[1].placement.frame, "the wait plan carries its frame")
+      Assert.deepEqual(
+        graphics.scissorIntersections[1].effective,
+        { contentFrame.x, contentFrame.y, contentFrame.width, contentFrame.height },
+        "the failed wait shutter stays inside its resolved content pane"
+      )
+      resources:dispose()
+    end)
+  end)
+  rawset(_G, "love", savedLove)
+  screen:dispose()
+  Assert.equal(cancelCount(), 1, "the failed screen releases its preparation exactly once")
   if not ok then
     error(err, 0)
   end
