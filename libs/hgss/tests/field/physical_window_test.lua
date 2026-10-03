@@ -186,7 +186,10 @@ function T.repeated_world_parts_reads_reuse_translated_static_items()
   coverage:release()
 end
 
-function T.fixed_animation_refresh_preserves_order_and_replaces_dynamic_records()
+local assertAnimationPublication
+function T.fixed_animation_refresh_preserves_order_and_repacks_dynamic_output()
+  local expectedKeys = { "0:0", "0:1", "0:2", "1:0", "1:1", "1:2", "2:0", "2:1", "2:2" }
+  local centerKey = "1:1"
   local updates = 0
   local coverage = newCoverage({
     loadCell = function(descriptor)
@@ -195,13 +198,24 @@ function T.fixed_animation_refresh_preserves_order_and_replaces_dynamic_records(
       runtime.presentation = {
         mapDraws = { { cellKey = runtime.key, kind = "static", lane = "map" } },
         staticBuildingDraws = { { cellKey = runtime.key, kind = "static", lane = "building" } },
-        animatedBuildingDraws = { { cellKey = runtime.key, kind = "animated", frame = animation } },
+        animatedBuildingDraws = {
+          { cellKey = runtime.key, kind = "animated", lane = "animated", frame = animation },
+        },
         updateAnimated = function(presentation)
           updates = updates + 1
           animation = animation + 1
-          presentation.animatedBuildingDraws = {
-            { cellKey = runtime.key, kind = "animated", frame = animation },
-          }
+          if runtime.key == centerKey and animation == 1 then
+            presentation.animatedBuildingDraws = {}
+          elseif runtime.key == centerKey then
+            presentation.animatedBuildingDraws = {
+              { cellKey = runtime.key, kind = "animated", lane = "animated-1", frame = animation },
+              { cellKey = runtime.key, kind = "animated", lane = "animated-2", frame = animation },
+            }
+          else
+            presentation.animatedBuildingDraws = {
+              { cellKey = runtime.key, kind = "animated", lane = "animated", frame = animation },
+            }
+          end
         end,
       }
       return runtime
@@ -209,46 +223,67 @@ function T.fixed_animation_refresh_preserves_order_and_replaces_dynamic_records(
   })
 
   local parts = worldParts(coverage)
-  local before = {}
-  for index, part in ipairs(parts) do
-    before[index] = part
-  end
   local staticByCell = {}
-  for index, part in ipairs(parts) do
+  for _, part in ipairs(parts) do
     if part.kind == "static" then
       staticByCell[part.cellKey] = staticByCell[part.cellKey] or {}
       staticByCell[part.cellKey][#staticByCell[part.cellKey] + 1] = part
     end
-    local laneIndex = (index - 1) % 3
-    Assert.equal(
-      part.cellKey,
-      ({ "0:0", "0:1", "0:2", "1:0", "1:1", "1:2", "2:0", "2:1", "2:2" })[math.floor((index - 1) / 3) + 1]
-    )
-    Assert.equal(part.kind, laneIndex < 2 and "static" or "animated")
   end
+  Assert.equal(#parts, 27, "initial presentation has two static and one animated record per cell")
 
   coverage:updateAnimated()
 
   Assert.equal(updates, 9, "each resident presentation advances once")
   Assert.equal(worldParts(coverage), parts, "animation refresh updates the retained outer array")
-  local animatedCount = 0
-  local expectedKeys = { "0:0", "0:1", "0:2", "1:0", "1:1", "1:2", "2:0", "2:1", "2:2" }
-  for index, part in ipairs(parts) do
-    local cellIndex = math.floor((index - 1) / 3) + 1
-    local laneIndex = (index - 1) % 3
-    Assert.equal(part.cellKey, expectedKeys[cellIndex], "animation keeps sorted cell order")
-    Assert.equal(part.kind, laneIndex < 2 and "static" or "animated", "animation keeps source lane order")
-    if part.kind == "static" then
-      local cellStatics = assert(staticByCell[part.cellKey])
-      Assert.equal(part, cellStatics[part.lane == "map" and 1 or 2], "static records keep their identities")
-    else
-      animatedCount = animatedCount + 1
-      Assert.isFalse(part == before[index], "dynamic records are replaced after the animation")
-      Assert.equal(part.frame, 1, "dynamic output reflects the updated presentation")
+  local shrunkDynamicCounts = {}
+  for _, key in ipairs(expectedKeys) do
+    shrunkDynamicCounts[key] = key == centerKey and 0 or 1
+  end
+  Assert.equal(#parts, 26, "shrinking removes the center cell's stale dynamic record")
+  assertAnimationPublication(parts, expectedKeys, shrunkDynamicCounts, 1, staticByCell)
+
+  coverage:updateAnimated()
+
+  Assert.equal(updates, 18, "each resident presentation advances once per refresh")
+  Assert.equal(worldParts(coverage), parts, "growth updates the same retained outer array")
+  local grownDynamicCounts = {}
+  for _, key in ipairs(expectedKeys) do
+    grownDynamicCounts[key] = key == centerKey and 2 or 1
+  end
+  Assert.equal(#parts, 28, "growth inserts both center dynamic records")
+  assertAnimationPublication(parts, expectedKeys, grownDynamicCounts, 2, staticByCell)
+  coverage:release()
+end
+
+assertAnimationPublication = function(parts, expectedKeys, dynamicCounts, frame, staticByCell)
+  local index = 0
+  for _, key in ipairs(expectedKeys) do
+    index = index + 1
+    local mapPart = parts[index]
+    Assert.equal(mapPart.cellKey, key, "animation keeps sorted cell order")
+    Assert.equal(mapPart.kind, "static", "map records stay in the first lane")
+    Assert.equal(mapPart.lane, "map")
+    Assert.equal(mapPart, assert(staticByCell[key])[1], "map records keep their identities")
+
+    index = index + 1
+    local buildingPart = parts[index]
+    Assert.equal(buildingPart.cellKey, key, "static building stays with its cell")
+    Assert.equal(buildingPart.kind, "static", "static buildings stay in the second lane")
+    Assert.equal(buildingPart.lane, "building")
+    Assert.equal(buildingPart, assert(staticByCell[key])[2], "building records keep their identities")
+
+    local dynamicCount = dynamicCounts[key]
+    for dynamicIndex = 1, dynamicCount do
+      index = index + 1
+      local dynamicPart = parts[index]
+      Assert.equal(dynamicPart.cellKey, key, "animated records stay with their cell")
+      Assert.equal(dynamicPart.kind, "animated", "animated records follow static lanes")
+      Assert.equal(dynamicPart.lane, dynamicCount == 2 and ("animated-" .. dynamicIndex) or "animated")
+      Assert.equal(dynamicPart.frame, frame, "dynamic output reflects the current presentation")
     end
   end
-  Assert.equal(animatedCount, 9, "the refreshed order has no stale dynamic entries")
-  coverage:release()
+  Assert.equal(index, #parts, "published output has no stale or extra records")
 end
 
 function T.failed_dynamic_translation_preserves_the_live_ordered_array()
