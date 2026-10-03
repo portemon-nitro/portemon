@@ -11,12 +11,14 @@
 -- or live side effects.
 
 local Errors = require("libs.errors.src.Errors")
+local BattleErrors = require("libs.battle.src.errors")
 local CaptureContext = require("libs.battle.src.gen4.CaptureContext")
+local PartyUse = require("libs.items.src.PartyUse")
+local Status = require("libs.battle.src.gen4.Status")
 
 local ItemUse = {}
 
 ItemUse.CONSUMPTION_CHECKPOINT = "item_use"
-ItemUse.HEAL_AMOUNT = 20
 
 ---@class BattleItemTarget
 ---@field kind string target vocabulary, combatant for holder use
@@ -29,8 +31,9 @@ ItemUse.HEAL_AMOUNT = 20
 ---@field moveSlot integer? zero-based move slot for PP use
 
 ---@class BattleItemEffectOperation
----@field kind string operation vocabulary, heal for restorative use and capture for thrown balls
----@field amount integer? fixed restoration of heal operations, nil for capture work
+---@field kind string operation vocabulary, restore and cure for servings and capture for thrown balls
+---@field amount integer? computed restoration of restore operations, nil otherwise
+---@field key string? persistent condition removed by cure operations, nil otherwise
 ---@field target BattleItemTarget holder the operation applies to
 
 ---@class ItemUsePlan
@@ -144,6 +147,7 @@ local function refusal(code)
     unknown_item = "the battle inventory carries no such item",
     empty = "the shared stack has no plannable unit left",
     invalid_target = "the chosen holder is not on the field",
+    no_effect = "the serving would change neither health nor condition",
     invalid_plan = "battle item plans carry their declared choice",
     already_executed = "battle item plans execute exactly once",
   }
@@ -164,13 +168,204 @@ function ItemUse.validateChoice(choice, view)
   return true
 end
 
+--- Resolves the generated semantic record for a serving: absent fact
+--- maps, absent entries, and malformed records raise missing behavior
+--- before anything is consumed.
+---@param item string non-ball item key under classification
+---@param itemFacts unknown immutable semantic facts by item key under inspection
+---@return table<string, unknown> generated party-use record for the serving
+local function semanticPartyUse(item, itemFacts)
+  if type(itemFacts) ~= "table" then
+    error(BattleErrors.missingBehavior("battle servings read their immutable item facts", { item = item }))
+  end
+  local entry = (itemFacts --[[@as table<string, unknown>]])[item]
+  if type(entry) ~= "table" then
+    error(BattleErrors.missingBehavior("battle servings read their immutable item facts", { item = item }))
+  end
+  local partyUse = (entry --[[@as table<string, unknown>]]).partyUse
+  if type(partyUse) ~= "table" then
+    error(BattleErrors.missingBehavior("battle servings carry their generated party use", { item = item }))
+  end
+  for key in
+    pairs(entry --[[@as table<string, unknown>]])
+  do
+    if key ~= "partyUse" then
+      error(BattleErrors.missingBehavior("battle item facts carry only their party use", { item = item }))
+    end
+  end
+  return partyUse --[[@as table<string, unknown>]]
+end
+
+---@param restore unknown generated restore record under validation
+---@param item string non-ball item key under the error context
+local function checkRestoreShape(restore, item)
+  if restore == nil then
+    return
+  end
+  if type(restore) ~= "table" then
+    error(BattleErrors.missingBehavior("battle servings carry their generated restore shape", { item = item }))
+  end
+  local record = restore --[[@as table<string, unknown>]]
+  if record.kind == "full" or record.kind == "half" or record.kind == "quarter" then
+    return
+  end
+  if record.kind == "fixed" then
+    local amount = record.amount
+    if type(amount) == "number" and amount % 1 == 0 and amount >= 1 then
+      return
+    end
+  end
+  error(BattleErrors.missingBehavior("battle servings carry their generated restore shape", { item = item }))
+end
+
+---@param partyUse table<string, unknown> generated party-use record under validation
+---@param item string non-ball item key under the error context
+local function checkMedicineShape(partyUse, item)
+  if partyUse.kind ~= "medicine" then
+    error(BattleErrors.missingBehavior("the battle models only ordinary living medicine", { item = item }))
+  end
+  if partyUse.revive ~= "none" then
+    error(BattleErrors.missingBehavior("the battle models no revival servings", { item = item }))
+  end
+  local cures = partyUse.cures
+  if cures ~= nil then
+    if type(cures) ~= "table" then
+      error(BattleErrors.missingBehavior("battle servings carry their generated cure flags", { item = item }))
+    end
+    for flag, enabled in
+      pairs(cures --[[@as table<string, unknown>]])
+    do
+      if type(flag) ~= "string" or (enabled ~= true and enabled ~= false) then
+        error(BattleErrors.missingBehavior("battle servings carry their generated cure flags", { item = item }))
+      end
+    end
+  end
+  checkRestoreShape(partyUse.restore, item)
+end
+
+-- The shared poison cure clears either persistent record: the generated
+-- poison flag names the cure family while the holder carries the
+-- concrete record. Every other cure flag maps one-to-one to its holder
+-- record.
+---@param flag string generated cure flag under expansion
+---@return string[] holder condition keys the flag may clear
+local function cureTargets(flag)
+  if flag == "poison" then
+    return { "poison", "toxic" }
+  end
+  return { flag }
+end
+
+---@param holder unknown holder combatant under inspection
+---@return table<string, boolean> persistent condition keys carried by the holder mon
+local function holderConditions(holder)
+  local present = {} ---@type table<string, boolean>
+  if type(holder) ~= "table" then
+    return present
+  end
+  local mon = (holder --[[@as table<string, unknown>]]).mon
+  if type(mon) ~= "table" then
+    return present
+  end
+  local condition = (mon --[[@as table<string, unknown>]]).condition
+  if type(condition) ~= "table" then
+    return present
+  end
+  local effects = (condition --[[@as table<string, unknown>]]).effects
+  if type(effects) ~= "table" then
+    return present
+  end
+  for _, effect in
+    ipairs(effects --[[@as table<integer, unknown>]])
+  do
+    if type(effect) == "table" then
+      local key = (effect --[[@as table<string, unknown>]]).key
+      if type(key) == "string" then
+        present[
+          key --[[@as string]]
+        ] = true
+      end
+    end
+  end
+  return present
+end
+
+---@param holder unknown holder combatant under inspection
+---@return integer? current health, absent without a numeric record
+---@return integer? maximum health, absent without a numeric record
+local function holderHealth(holder)
+  if type(holder) ~= "table" then
+    return nil, nil
+  end
+  local record = holder --[[@as table<string, unknown>]]
+  if type(record.hp) ~= "number" or type(record.maxHp) ~= "number" then
+    return nil, nil
+  end
+  return record.hp, --[[@as integer]]
+    record.maxHp --[[@as integer]]
+end
+
+--- Plans one serving from its generated semantics without mutating: cure
+--- operations name the concrete holder record each true cure flag
+--- clears, and restoration carries the exact generated amount. Empty
+--- operations report a serving with no effect.
+---@param item string non-ball item key under planning
+---@param target BattleItemTarget detached holder target under planning
+---@param view table<string, unknown> declared battle state under planning
+---@param itemFacts table<string, unknown>? immutable semantic facts by item key under planning
+---@return BattleItemEffectOperation[] planned serving operations, empty without effect
+local function planServing(item, target, view, itemFacts)
+  local partyUse = semanticPartyUse(item, itemFacts)
+  checkMedicineShape(partyUse, item)
+  local operations = {} ---@type BattleItemEffectOperation[]
+  local combatants = (view --[[@as table<string, unknown>]]).combatants --[[@as table<integer, unknown>]]
+  local holder = type(combatants) == "table" and combatants[
+    target.combatant --[[@as integer]]
+  ] or nil
+  local conditions = holderConditions(holder)
+  local cures = partyUse.cures
+  if type(cures) == "table" then
+    local flags = {} ---@type string[]
+    for flag, enabled in
+      pairs(cures --[[@as table<string, unknown>]])
+    do
+      if enabled == true then
+        flags[#flags + 1] = flag --[[@as string]]
+      end
+    end
+    table.sort(flags)
+    for _, flag in ipairs(flags) do
+      for _, key in ipairs(cureTargets(flag)) do
+        if conditions[key] == true then
+          operations[#operations + 1] = { kind = "cure", key = key, target = copyTarget(target) }
+          break
+        end
+      end
+    end
+  end
+  local hp, maxHp = holderHealth(holder)
+  if partyUse.restore ~= nil and hp ~= nil and maxHp ~= nil and hp > 0 and hp < maxHp then
+    operations[#operations + 1] = {
+      kind = "restore",
+      amount = PartyUse.restoreAmount(maxHp, partyUse.restore --[[@as table<string, unknown>]]),
+      target = copyTarget(target),
+    }
+  end
+  return operations
+end
+
 --- Plans a choice without consuming: executable plans carry the
 --- deterministic checkpoint and their effect operations, refused plans
---- carry the refusal code with no operations. Neither touches live state.
+--- carry the refusal code with no operations. Servings classify from the
+--- immutable semantic facts: balls keep their capture plan while medicine
+--- plans its generated restoration and persistent cures, servings without
+--- effect refuse, and absent or unmodeled semantics raise missing
+--- behavior. Neither touches live state.
 ---@param choice BattleItemChoice candidate item choice under planning
 ---@param view table<string, unknown> declared battle state under planning
+---@param itemFacts table<string, unknown>? immutable semantic facts by item key for servings
 ---@return ItemUsePlan detached plan for the choice
-function ItemUse.plan(choice, view)
+function ItemUse.plan(choice, view, itemFacts)
   local named = choice
   local item = nil
   local inventoryId = nil
@@ -200,7 +395,17 @@ function ItemUse.plan(choice, view)
   if CaptureContext.isBall(item) then
     operations[#operations + 1] = { kind = "capture", target = copyTarget(target) }
   else
-    operations[#operations + 1] = { kind = "heal", amount = ItemUse.HEAL_AMOUNT, target = copyTarget(target) }
+    operations = planServing(item --[[@as string]], target --[[@as BattleItemTarget]], view, itemFacts)
+    if #operations == 0 then
+      return {
+        item = item,
+        inventoryId = inventoryId,
+        target = target,
+        effectOperations = {},
+        consumptionCheckpoint = ItemUse.CONSUMPTION_CHECKPOINT,
+        failureReason = "no_effect",
+      }
+    end
   end
   return {
     item = item,
@@ -230,9 +435,54 @@ local function checkStock(plan, battle)
   return stock --[[@as table<string, unknown>]]
 end
 
+--- Applies one serving plan to its live holder: restoration heals toward
+--- the ceiling while cures remove their named persistent condition
+--- through the status owner. Both live health mirrors agree afterwards.
+--- Unknown operation kinds never execute.
+---@param executable ItemUsePlan executable serving plan under execution
+---@param holder table<string, unknown> live holder combatant under mutation
+---@return integer actual health gained after ceiling capping
+local function applyServing(executable, holder)
+  local hp = holder.hp
+  local maxHp = holder.maxHp
+  assert(type(hp) == "number" and type(maxHp) == "number", "servings apply to a recorded holder")
+  local gained = 0
+  for _, operation in
+    ipairs(executable.effectOperations --[[@as BattleItemEffectOperation[] ]])
+  do
+    local effect = operation --[[@as BattleItemEffectOperation]]
+    if effect.kind == "restore" then
+      local amount = effect.amount
+      assert(type(amount) == "number", "restore operations carry their computed amount")
+      local capped = math.min(maxHp --[[@as integer]], hp --[[@as integer]] + amount --[[@as integer]])
+      gained = gained + (
+          capped - hp --[[@as integer]]
+        )
+      hp = capped
+    elseif effect.kind == "cure" then
+      local mon = holder.mon
+      if type(mon) ~= "table" then
+        error(BattleErrors.invalidState("battle servings cure their holder record", {}))
+      end
+      Status.cure(mon --[[@as table<string, unknown>]], effect.key --[[@as string]])
+    else
+      error(refusal("invalid_plan"))
+    end
+  end
+  holder.hp = hp
+  local mon = holder.mon
+  if type(mon) == "table" then
+    local condition = (mon --[[@as table<string, unknown>]]).condition
+    if type(condition) == "table" then
+      (condition --[[@as table<string, unknown>]]).currentHp = hp
+    end
+  end
+  return gained
+end
+
 --- Executes a plan exactly once at its checkpoint: one unit leaves battle
---- stock, one delta enters the battle ledger, the holder recovers for heal
---- plans, and the plan is stamped. Ball plans spend the same owned unit
+--- stock, one delta enters the battle ledger, servings apply their planned
+--- restoration and cures to the holder, and the plan is stamped. Ball plans spend the same owned unit
 --- and return the capture outcome shape for the capture owner to settle:
 --- the session routes ball plans to the capture path with full battle and
 --- stream context, which this planner never fabricates. Refused, stale,
@@ -241,7 +491,7 @@ end
 ---@param plan ItemUsePlan executable plan under execution
 ---@param battle table<string, unknown> battle-owned execution state being consumed
 ---@param rng table<string, unknown>? accepted battle stream, never drawn by deterministic use
----@return table<string, unknown> execution outcome marking the consumption and, for balls, the capture outcome
+---@return table<string, unknown> execution outcome marking the consumption, the actual restoration, and the holder
 function ItemUse.execute(plan, battle, rng)
   assert(rng == nil or type(rng) == "table", "battle item execution accepts the battle stream")
   if type(plan) ~= "table" then
@@ -282,7 +532,7 @@ function ItemUse.execute(plan, battle, rng)
   if type(owned.combatants) ~= "table" then
     error(refusal("invalid_target"))
   end
-  local combatants = owned.combatants --[[@as table<integer, table<string, integer>>]]
+  local combatants = owned.combatants --[[@as table<integer, table<string, unknown>>]]
   local holder = combatants[
     target.combatant --[[@as integer]]
   ]
@@ -307,9 +557,9 @@ function ItemUse.execute(plan, battle, rng)
     executable.executed = true
     return { consumed = true, result = { ball = executable.item, target = target.combatant } }
   end
-  holder.hp = math.min(holder.maxHp, holder.hp + ItemUse.HEAL_AMOUNT)
+  local restored = applyServing(executable, holder)
   executable.executed = true
-  return { consumed = true }
+  return { consumed = true, restored = restored, target = copyTarget(target) }
 end
 
 return ItemUse

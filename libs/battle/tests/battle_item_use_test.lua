@@ -35,6 +35,21 @@ local function declaredView()
   }
 end
 
+---@return table<string, table<string, unknown>> generated semantic facts for the shared potion stock
+local function potionFacts()
+  return {
+    POTION = {
+      partyUse = {
+        kind = "medicine",
+        restore = { kind = "fixed", amount = 20 },
+        cures = { sleep = false, poison = false, burn = false, freeze = false, paralysis = false },
+        revive = "none",
+        mood = 0,
+      },
+    },
+  }
+end
+
 ---@param combatant integer holder receiving the item under test
 ---@return table item choice over the shared stack
 local function potionChoice(combatant)
@@ -62,7 +77,7 @@ function T.planning_leaves_live_state_and_declared_state_untouched()
   local choice = potionChoice(1)
 
   Assert.isTrue(ItemUse.validateChoice(choice, view), "the legal choice validates")
-  local plan = ItemUse.plan(choice, view)
+  local plan = ItemUse.plan(choice, view, potionFacts())
   Assert.isNil(plan.failureReason, "the legal plan carries no failure")
   Assert.equal(plan.item, "POTION", "the plan names its item")
   Assert.equal(plan.inventoryId, "party", "the plan names its inventory owner")
@@ -74,7 +89,7 @@ function T.planning_leaves_live_state_and_declared_state_untouched()
   )
   Assert.isTrue(type(plan.effectOperations) == "table" and #plan.effectOperations >= 1, "the plan lists its effects")
 
-  local again = ItemUse.plan(choice, view)
+  local again = ItemUse.plan(choice, view, potionFacts())
   Assert.equal(again.consumptionCheckpoint, plan.consumptionCheckpoint, "planning is deterministic per checkpoint")
   Assert.deepEqual(again.effectOperations, plan.effectOperations, "planning is deterministic per effect")
 
@@ -98,20 +113,20 @@ function T.canceled_plans_release_the_shared_stack()
   local view = declaredView()
   local choice = potionChoice(1)
 
-  local first = ItemUse.plan(choice, view)
+  local first = ItemUse.plan(choice, view, potionFacts())
   Assert.isNil(first.failureReason, "the first plan for the last unit succeeds")
   view.outstanding = { first }
 
   local ok, err = ItemUse.validateChoice(choice, view)
   Assert.isNil(ok, "the shared last unit validates only once")
   Assert.equal((err --[[@as table]]).code, "empty", "the second attempt reports the empty stack")
-  local blocked = ItemUse.plan(choice, view)
+  local blocked = ItemUse.plan(choice, view, potionFacts())
   Assert.equal(blocked.failureReason, "empty", "the second plan carries its failure")
   Assert.deepEqual(blocked.effectOperations, {}, "a failed plan lists no effects")
 
   view.outstanding = {}
   Assert.isTrue(ItemUse.validateChoice(choice, view), "dropping the canceled plan restores legality")
-  local revived = ItemUse.plan(choice, view)
+  local revived = ItemUse.plan(choice, view, potionFacts())
   Assert.isNil(revived.failureReason, "the replanned choice succeeds after the cancel")
 
   Assert.equal(live:revision(), revisionBefore, "reservation bookkeeping never touches the live Bag")
@@ -159,7 +174,7 @@ function T.stale_and_illegal_choices_fail_without_side_effects()
   Assert.equal((refusedErr --[[@as table]]).code, "empty", "executing a refused plan raises its typed failure")
 
   battle.combatants[1].hp = 0
-  local doomed = ItemUse.plan(potionChoice(1), view)
+  local doomed = ItemUse.plan(potionChoice(1), view, potionFacts())
   Assert.isNil(doomed.failureReason, "planning precedes the faint")
   local staleErr = Assert.throws(function()
     ItemUse.execute(doomed, battle, rng)
@@ -187,7 +202,7 @@ function T.execution_consumes_exactly_once_at_its_checkpoint()
   local rng = BattleRng.new(NATIVE_SEED)
   local callsBefore = rng:capture().calls
 
-  local plan = ItemUse.plan(potionChoice(1), view)
+  local plan = ItemUse.plan(potionChoice(1), view, potionFacts())
   local outcome = ItemUse.execute(plan, battle, rng)
 
   Assert.isTrue(outcome.consumed, "the legal execution consumes")
@@ -215,6 +230,22 @@ function T.execution_consumes_exactly_once_at_its_checkpoint()
   Assert.equal(rng:capture().calls, callsBefore, "deterministic use draws nothing")
   Assert.equal(live:revision(), revisionBefore, "execution never mutates the live Bag")
   Assert.equal(live:quantity("POTION"), 1, "the live stack waits for the later commit")
+end
+
+-- Fixed restoration larger than the wound caps at the maximum: the
+-- holder keeps the ceiling while the event reports only the actual gain.
+function T.over_large_fixed_restoration_caps_at_maximum()
+  local ItemUse = itemUse("battle servings cap restoration at the maximum")
+  local view = declaredView()
+  view.combatants[1] = { hp = 25, maxHp = 30 }
+  local plan = ItemUse.plan(potionChoice(1), view, potionFacts())
+  Assert.isNil(plan.failureReason, "the capped serving plans its restoration")
+  local battle = executionState(view)
+  local outcome = ItemUse.execute(plan, battle, nil)
+  Assert.isTrue(outcome.consumed, "the capped serving consumes")
+  Assert.equal(battle.combatants[1].hp, 30, "the capped serving keeps the ceiling")
+  Assert.equal(outcome.restored, 5, "the outcome reports only the actual gain")
+  Assert.equal(battle.inventories.party.quantities.POTION, 0, "the capped serving consumes once")
 end
 
 -- Malformed and unknown choices fail with their typed codes and plan
@@ -249,6 +280,236 @@ function T.malformed_choices_fail_typed_without_side_effects()
   Assert.equal(battle.inventories.party.quantities.POTION, 1, "malformed executions consume nothing")
   Assert.equal(rng:capture().calls, callsBefore, "malformed executions draw nothing")
   Assert.equal(live:revision(), revisionBefore, "malformed choices never touch the live Bag")
+end
+
+---@param hp integer holder health under test preparation
+---@param maxHp integer holder maximum under test preparation
+---@param effectKey string? persistent condition carried by the holder, healthy when absent
+---@return table holder combatant carrying its mon condition mirror
+local function ailingHolder(hp, maxHp, effectKey)
+  local effects = {}
+  if effectKey ~= nil then
+    effects[1] = { key = effectKey }
+  end
+  return { hp = hp, maxHp = maxHp, mon = { condition = { currentHp = hp, effects = effects } } }
+end
+
+---@param flag string cure flag enabled on the serving under test preparation
+---@param restore table<string, unknown>? generated restore record, cure-only when absent
+---@return table<string, table<string, unknown>> semantic facts for one cure serving
+local function cureFacts(flag, restore)
+  local cures = { sleep = false, poison = false, burn = false, freeze = false, paralysis = false }
+  cures[flag] = true
+  return {
+    REMEDY = {
+      partyUse = { kind = "medicine", restore = restore, cures = cures, revive = "none", mood = 0 },
+    },
+  }
+end
+
+---@param holder table holder combatant under test preparation
+---@return table item choice serving the shared remedy to the holder
+local function remedyChoice(holder)
+  return {
+    inventoryId = "party",
+    item = "REMEDY",
+    target = { kind = "combatant", combatant = holder },
+  }
+end
+
+---@param holder table holder combatant under test preparation
+---@return table declared battle state carrying one remedy and the holder
+local function remedyView(holder)
+  return {
+    inventories = { party = { quantities = { REMEDY = 1 }, revision = 0 } },
+    outstanding = {},
+    combatants = { [1] = holder },
+  }
+end
+
+---@param holder table holder combatant under test preparation
+---@return table battle-owned execution state carrying one remedy and the holder
+local function remedyBattle(holder)
+  return {
+    inventories = { party = { quantities = { REMEDY = 1 }, revision = 0 } },
+    ledger = {},
+    combatants = { [1] = holder },
+  }
+end
+
+-- The shared poison cure clears the toxic record: a toxic holder served a
+-- poison-cure serving recovers its condition with health untouched and
+-- exactly one unit consumed.
+function T.poison_cure_clears_toxic_without_healing()
+  local ItemUse = itemUse("battle servings clear persistent conditions through their facts")
+  local BattleRng =
+    SessionFixture.requirePresent("libs.battle.src.gen4.BattleRng", "labeled native draws own the battle stream")
+  local holder = ailingHolder(30, 30, "toxic")
+  local view = remedyView(holder)
+  local facts = cureFacts("poison", nil)
+  local rng = BattleRng.new(NATIVE_SEED)
+  local callsBefore = rng:capture().calls
+
+  local plan = ItemUse.plan(remedyChoice(1), view, facts)
+  Assert.isNil(plan.failureReason, "the matching cure plans its serving")
+
+  local battle = remedyBattle(ailingHolder(30, 30, "toxic"))
+  local outcome = ItemUse.execute(plan, battle, rng)
+  Assert.isTrue(outcome.consumed, "the cure consumes")
+  Assert.equal(outcome.restored, 0, "cure-only servings restore nothing")
+  Assert.equal(outcome.target.combatant, 1, "the outcome names its holder")
+  Assert.deepEqual(battle.combatants[1].mon.condition.effects, {}, "the toxic record clears")
+  Assert.equal(battle.combatants[1].hp, 30, "cure-only servings heal nothing")
+  Assert.equal(battle.inventories.party.quantities.REMEDY, 0, "the serving consumes exactly one unit")
+  Assert.equal(#battle.ledger, 1, "the serving writes exactly one ledger delta")
+  Assert.equal(rng:capture().calls, callsBefore, "deterministic cures draw nothing")
+end
+
+-- Every standard cure flag clears its matching condition on a healthy
+-- holder without touching health or drawing.
+function T.every_standard_cure_flag_clears_its_matching_condition()
+  local ItemUse = itemUse("battle servings clear persistent conditions through their facts")
+  local BattleRng =
+    SessionFixture.requirePresent("libs.battle.src.gen4.BattleRng", "labeled native draws own the battle stream")
+  local cases = { { "sleep", "sleep" }, { "poison", "poison" }, { "burn", "burn" }, { "freeze", "freeze" }, {
+    "paralysis",
+    "paralysis",
+  } }
+  for _, case in ipairs(cases) do
+    local flag, condition = case[1], case[2]
+    local view = remedyView(ailingHolder(30, 30, condition))
+    local facts = cureFacts(flag, nil)
+    local rng = BattleRng.new(NATIVE_SEED)
+    local callsBefore = rng:capture().calls
+    local plan = ItemUse.plan(remedyChoice(1), view, facts)
+    Assert.isNil(plan.failureReason, "the " .. flag .. " cure plans its serving")
+    local battle = remedyBattle(ailingHolder(30, 30, condition))
+    local outcome = ItemUse.execute(plan, battle, rng)
+    Assert.isTrue(outcome.consumed, "the " .. flag .. " cure consumes")
+    Assert.equal(outcome.restored, 0, "the " .. flag .. " cure restores nothing")
+    Assert.deepEqual(battle.combatants[1].mon.condition.effects, {}, "the " .. flag .. " record clears")
+    Assert.equal(battle.combatants[1].hp, 30, "the " .. flag .. " cure heals nothing")
+    Assert.equal(battle.inventories.party.quantities.REMEDY, 0, "the " .. flag .. " cure consumes once")
+    Assert.equal(#battle.ledger, 1, "the " .. flag .. " cure writes one delta")
+    Assert.equal(rng:capture().calls, callsBefore, "the " .. flag .. " cure draws nothing")
+  end
+end
+
+-- Mixed servings apply both effects before one consumption: an injured
+-- burned holder recovers health and condition together.
+function T.mixed_restoration_and_cure_apply_together_before_single_consumption()
+  local ItemUse = itemUse("battle servings combine generated restoration with their cures")
+  local BattleRng =
+    SessionFixture.requirePresent("libs.battle.src.gen4.BattleRng", "labeled native draws own the battle stream")
+  local view = remedyView(ailingHolder(10, 30, "burn"))
+  local facts = cureFacts("burn", { kind = "fixed", amount = 20 })
+  local plan = ItemUse.plan(remedyChoice(1), view, facts)
+  Assert.isNil(plan.failureReason, "the mixed serving plans its effects")
+  local battle = remedyBattle(ailingHolder(10, 30, "burn"))
+  local rng = BattleRng.new(NATIVE_SEED)
+  local outcome = ItemUse.execute(plan, battle, rng)
+  Assert.isTrue(outcome.consumed, "the mixed serving consumes")
+  Assert.equal(outcome.restored, 20, "the mixed serving reports its actual restoration")
+  Assert.equal(battle.combatants[1].hp, 30, "the mixed serving heals its holder")
+  Assert.equal(
+    battle.combatants[1].mon.condition.currentHp,
+    30,
+    "the mixed serving synchronizes the condition mirror"
+  )
+  Assert.deepEqual(battle.combatants[1].mon.condition.effects, {}, "the mixed serving clears the burn")
+  Assert.equal(battle.inventories.party.quantities.REMEDY, 0, "the mixed serving consumes exactly once")
+  Assert.equal(#battle.ledger, 1, "the mixed serving writes exactly one ledger delta")
+end
+
+-- Cure-only servings refuse without effect when no cure applies: neither
+-- full health alone nor an injury without a matching condition qualifies.
+function T.unmatched_cures_refuse_without_consumption()
+  local ItemUse = itemUse("battle servings refuse servings without effect")
+  local BattleRng =
+    SessionFixture.requirePresent("libs.battle.src.gen4.BattleRng", "labeled native draws own the battle stream")
+  local facts = cureFacts("paralysis", nil)
+  local holders = { ailingHolder(30, 30, nil), ailingHolder(10, 30, nil), ailingHolder(10, 30, "burn") }
+  for index, holder in ipairs(holders) do
+    local view = remedyView(holder)
+    local plan = ItemUse.plan(remedyChoice(1), view, facts)
+    Assert.equal(plan.failureReason, "no_effect", "unmatched cure " .. index .. " plans its refusal")
+    Assert.deepEqual(plan.effectOperations, {}, "unmatched cure " .. index .. " lists no effects")
+    local battle = remedyBattle(holder)
+    local rng = BattleRng.new(NATIVE_SEED)
+    local callsBefore = rng:capture().calls
+    local refusal = Assert.throws(function()
+      ItemUse.execute(plan, battle, rng)
+    end)
+    Assert.equal((refusal --[[@as table]]).code, "no_effect", "unmatched cure " .. index .. " names its reason")
+    Assert.deepEqual(battle.ledger, {}, "unmatched cure " .. index .. " writes no ledger")
+    Assert.equal(battle.inventories.party.quantities.REMEDY, 1, "unmatched cure " .. index .. " consumes nothing")
+    Assert.equal(battle.combatants[1].hp, holder.hp, "unmatched cure " .. index .. " heals nothing")
+    Assert.equal(rng:capture().calls, callsBefore, "unmatched cure " .. index .. " draws nothing")
+  end
+end
+
+-- Servings without usable facts fail as missing behavior before any
+-- consumption: absent maps, absent entries, records without party use,
+-- and records carrying foreign fields never plan.
+function T.servings_without_facts_fail_before_consumption()
+  local ItemUse = itemUse("battle servings read their immutable item facts")
+  local BattleRng =
+    SessionFixture.requirePresent("libs.battle.src.gen4.BattleRng", "labeled native draws own the battle stream")
+  local view = remedyView(ailingHolder(10, 30, nil))
+  local choice = remedyChoice(1)
+  local candidates = {
+    { facts = nil, reason = "absent fact map" },
+    { facts = {}, reason = "absent fact entry" },
+    { facts = { REMEDY = {} }, reason = "entry without party use" },
+    {
+      facts = {
+        REMEDY = {
+          partyUse = { kind = "medicine", revive = "none", mood = 0 },
+          price = 300,
+        },
+      },
+      reason = "entry carrying foreign fields",
+    },
+  }
+  for _, candidate in ipairs(candidates) do
+    local rng = BattleRng.new(NATIVE_SEED)
+    local callsBefore = rng:capture().calls
+    local ok, failure = pcall(ItemUse.plan, choice, view, candidate.facts)
+    Assert.isFalse(ok, "the serving with " .. candidate.reason .. " never plans")
+    Assert.equal(
+      (failure --[[@as table]]).code,
+      "BATTLE_MISSING_BEHAVIOR",
+      "the serving with " .. candidate.reason .. " reports its missing behavior"
+    )
+    Assert.deepEqual(view.inventories.party.quantities, { REMEDY = 1 }, "missing facts consume no stock")
+    Assert.equal(rng:capture().calls, callsBefore, "missing facts draw nothing")
+  end
+end
+
+-- Revival servings stay unmodeled: a revival-flagged serving fails as
+-- missing behavior even for a living holder instead of healing.
+function T.revival_servings_fail_as_unmodeled()
+  local ItemUse = itemUse("battle servings leave revival unmodeled")
+  local view = remedyView(ailingHolder(10, 30, nil))
+  local facts = {
+    REMEDY = {
+      partyUse = {
+        kind = "medicine",
+        restore = { kind = "fixed", amount = 20 },
+        cures = { sleep = false, poison = false, burn = false, freeze = false, paralysis = false },
+        revive = "single",
+        mood = 0,
+      },
+    },
+  }
+  local ok, failure = pcall(ItemUse.plan, remedyChoice(1), view, facts)
+  Assert.isFalse(ok, "the revival serving never plans")
+  Assert.equal(
+    (failure --[[@as table]]).code,
+    "BATTLE_MISSING_BEHAVIOR",
+    "the revival serving reports its missing behavior"
+  )
+  Assert.deepEqual(view.inventories.party.quantities, { REMEDY = 1 }, "revival failures consume no stock")
 end
 
 return { tests = T }

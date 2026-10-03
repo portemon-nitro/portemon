@@ -31,6 +31,7 @@
 -- progression into the live party through the committer's staged batch.
 
 local Battle = require("gen4.battle")
+local CaptureContext = require("libs.battle.src.gen4.CaptureContext")
 local HgssBattleContent = require("game.hgss.src.battle.HgssBattleContent")
 local Executor = require("libs.battle.src.gen4.HgssSessionExecutor")
 local BattleErrors = require("libs.battle.src.errors")
@@ -853,6 +854,50 @@ function BattleRuntime:_sessionMoneyUpItems(record)
   return keys
 end
 
+-- Resolves the detached semantic item facts the detached scenario
+-- references through the live party catalog: every distinct non-ball
+-- inventory key contributes exactly its generated party-use record, and
+-- nothing else crosses into the session. Balls serve through the capture
+-- owner and need no facts; unknown keys stay absent so their selection
+-- fails explicitly at the battle boundary. Battles without a fact source
+-- carry no facts and fail the same way on their first serving.
+---@param record table<string, unknown> detached scenario under session construction
+---@return table<string, table<string, unknown>> immutable item facts for the referenced items
+function BattleRuntime:_sessionItemFacts(record)
+  local facts = {} ---@type table<string, table<string, unknown>>
+  local catalog = self:_factCatalog()
+  if catalog == nil then
+    return facts
+  end
+  local source = catalog --[[@as table<string, unknown>]]
+  local itemByKey = source.item --[[@as fun(self: table<string, unknown>, key: string): table<string, unknown>]]
+  assert(type(itemByKey) == "function", "item facts resolve through the mon catalog")
+  local inventories = record.inventories
+  if type(inventories) ~= "table" then
+    return facts
+  end
+  for _, entry in
+    ipairs(inventories --[[@as table<integer, unknown>]])
+  do
+    if type(entry) == "table" then
+      local quantities = (entry --[[@as table<string, unknown>]]).quantities
+      if type(quantities) == "table" then
+        for key in
+          pairs(quantities --[[@as table<string, unknown>]])
+        do
+          if type(key) == "string" and key ~= "" and facts[key] == nil and not CaptureContext.isBall(key) then
+            local ok, definition = pcall(itemByKey, source, key)
+            if ok and type(definition) == "table" and type(definition.partyUse) == "table" then
+              facts[key] = { partyUse = copyValue(definition.partyUse) }
+            end
+          end
+        end
+      end
+    end
+  end
+  return facts
+end
+
 -- Builds the live session from the detached scenario. The stamped ruleset
 -- is the native HGSS contract, and the common battle entrypoint selects
 -- the native executor from it; everything else rides the detached
@@ -864,6 +909,7 @@ function BattleRuntime:_buildSession()
   record.moveFacts = self:_sessionMoveFacts(record --[[@as table<string, unknown>]])
   record.speciesFacts = self:_sessionSpeciesFacts(record --[[@as table<string, unknown>]])
   record.moneyUpItems = self:_sessionMoneyUpItems(record --[[@as table<string, unknown>]])
+  record.itemFacts = self:_sessionItemFacts(record --[[@as table<string, unknown>]])
   self._session = Battle.newSession(record, self:_executableContent())
 end
 
