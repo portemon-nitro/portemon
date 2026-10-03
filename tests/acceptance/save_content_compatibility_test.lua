@@ -220,11 +220,7 @@ function T.tests.unrelated_profile_options_location_and_world_edits_keep_loading
   Assert.equal(valid.audio.fieldMusicOverride, 8, "the known audio override survives the load")
   Assert.equal(valid.pokedex.seen[1], "CHIKORITA", "known dex sightings survive the load")
   Assert.equal(valid.encounters.steps, 12, "advanced encounter counters survive the load")
-  Assert.equal(
-    valid.encounters.roamers["roamer-eevee"].lifecycle,
-    "roaming",
-    "a referenced roamer survives the load"
-  )
+  Assert.equal(valid.encounters.roamers["roamer-eevee"].lifecycle, "roaming", "a referenced roamer survives the load")
 end
 
 function T.tests.grown_registries_and_rebuilt_terrain_keep_geometry_loading()
@@ -286,10 +282,7 @@ function T.tests.missing_selected_references_reject_naming_owner_and_key()
   local roamerService = serviceFor({ current = contextWith(roamerSetup) })
   invalid, err = roamerService:validate(roamerCandidate)
   Assert.isNil(invalid, "a roamer naming a missing species must not load")
-  Assert.isTrue(
-    failureNamesKey(err, "encounters", "NOT_A_SPECIES"),
-    "the failure must name the missing species"
-  )
+  Assert.isTrue(failureNamesKey(err, "encounters", "NOT_A_SPECIES"), "the failure must name the missing species")
   Assert.equal(
     roamerCandidate.encounters.roamers["roamer-stray"].mon.species,
     "NOT_A_SPECIES",
@@ -314,11 +307,7 @@ function T.tests.out_of_range_state_rejects_and_failed_saves_keep_published_byte
   local invalid, err = healthService:validate(healthCandidate)
   Assert.isNil(invalid, "a mon above its valid health maximum must not load")
   Assert.isTrue(failureNamesKey(err, "mons", "77777"), "the failure must name the offending value")
-  Assert.equal(
-    healthCandidate.mons.party.mons[1].condition.currentHp,
-    77777,
-    "the rejected record is left untouched"
-  )
+  Assert.equal(healthCandidate.mons.party.mons[1].condition.currentHp, 77777, "the rejected record is left untouched")
 
   local counterSetup = CompatibilityFixture.rig()
   local counterCandidate = baseRecord("save-00000122", quietScripts(counterSetup))
@@ -326,10 +315,7 @@ function T.tests.out_of_range_state_rejects_and_failed_saves_keep_published_byte
   local counterService = serviceFor({ current = contextWith(counterSetup) })
   invalid, err = counterService:validate(counterCandidate)
   Assert.isNil(invalid, "a negative encounter counter must not load")
-  Assert.isTrue(
-    failureNamesKey(err, "encounters", "repel"),
-    "the failure must name the offending counter"
-  )
+  Assert.isTrue(failureNamesKey(err, "encounters", "repel"), "the failure must name the offending counter")
   Assert.equal(counterCandidate.encounters.repelSteps, -1, "the rejected record is left untouched")
 
   local storeSetup = CompatibilityFixture.rig()
@@ -433,10 +419,8 @@ function T.tests.recorded_battles_keep_exact_identity_while_saves_soften()
     "libs.battle.src.BattleReplay",
     "strict executable envelopes own deterministic battle replays"
   )
-  local BattleRng = SessionFixture.requirePresent(
-    "libs.battle.src.gen4.BattleRng",
-    "labeled native draws own the battle stream"
-  )
+  local BattleRng =
+    SessionFixture.requirePresent("libs.battle.src.gen4.BattleRng", "labeled native draws own the battle stream")
   local contracts = SessionFixture.sessionContracts()
   local aiStream = BattleRng.new(11259375)
   local drawLog = {}
@@ -450,14 +434,10 @@ function T.tests.recorded_battles_keep_exact_identity_while_saves_soften()
       return aiStream:capture()
     end,
   }
-  local Ai = SessionFixture.requirePresent(
-    "libs.hgss.src.battle.HgssTrainerAi",
-    "the native controller binds flags and programs to decisions"
+  local Opponents = SessionFixture.requirePresent(
+    "libs.hgss.src.battle.HgssOpponentControllers",
+    "wild and scripted policies answer through the shared reply shape"
   )
-  local controller = Ai.new({
-    program = { key = "youngster_opening", revision = "native-1", instructions = {}, entryPoints = {} },
-    aiPasses = {},
-  })
   local session = SessionFixture.newSession(contracts, SessionFixture.buildScenario(duel()))
   local decisions, events = {}, {}
   local boundaryRng = nil
@@ -487,7 +467,7 @@ function T.tests.recorded_battles_keep_exact_identity_while_saves_soften()
     for _, request in ipairs(frame.request.requests) do
       local reply
       if request.controller == "ai" then
-        reply = controller:decide(request, session:view("ai"), watched)
+        reply = Opponents.wild(request, session:view("ai"), watched)
       else
         reply = SessionFixture.replyFor(request, strikeEveryone(request))
       end
@@ -568,11 +548,7 @@ function T.tests.saved_field_progress_continues_after_restart()
     game:waitForFieldReady()
     Assert.equal(game:snapshot().mapSymbol, MAP, "continuing restores the saved map")
     Assert.equal(game.runtime.monService:partyCount(), 2, "continuing restores the saved party")
-    Assert.equal(
-      game.runtime.monService:partyMon(0).species,
-      "CHIKORITA",
-      "continuing restores the saved lead"
-    )
+    Assert.equal(game.runtime.monService:partyMon(0).species, "CHIKORITA", "continuing restores the saved lead")
     Assert.isNil(game.runtime.errorText, "the round trip runs without a runtime fault")
     Assert.equal(game:renderAttempts(), 0, "the round trip must stop before GPU rendering")
   end, debug.traceback)

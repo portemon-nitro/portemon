@@ -35,12 +35,10 @@ local CaptureContext = require("libs.battle.src.gen4.CaptureContext")
 local HgssBattleContent = require("game.hgss.src.battle.HgssBattleContent")
 local Executor = require("libs.battle.src.gen4.HgssSessionExecutor")
 local BattleErrors = require("libs.battle.src.errors")
-local MonStats = require("libs.mons.src.gen4.MonStats")
 local BattleTask = require("libs.hgss.src.script.tasks.BattleTask")
 local HgssBattleCommitter = require("libs.hgss.src.battle.HgssBattleCommitter")
 local HgssBattleRewards = require("libs.hgss.src.battle.HgssBattleRewards")
 local HgssOpponentControllers = require("libs.hgss.src.battle.HgssOpponentControllers")
-local HgssTrainerAi = require("libs.hgss.src.battle.HgssTrainerAi")
 
 ---@class BattlePresentationPort
 ---@field enter fun(plan: table<string, unknown>): boolean
@@ -51,10 +49,6 @@ local HgssTrainerAi = require("libs.hgss.src.battle.HgssTrainerAi")
 ---@class BattlePartyOwner
 ---@field partyRevision fun(self: BattlePartyOwner): integer
 ---@field partyMon (fun(self: BattlePartyOwner, slot0: integer): table<string, unknown>)? reads the current live party slot record
-
----@class BattleBoundController
----@field kind string
----@field ai HgssTrainerAi?
 
 ---@class BattleRuntimeArgs
 ---@field request table<string, unknown> launch request carrying its identity and kind
@@ -85,7 +79,6 @@ local HgssTrainerAi = require("libs.hgss.src.battle.HgssTrainerAi")
 ---@field _task table<string, unknown>?
 ---@field _content table<string, unknown>?
 ---@field _session table<string, unknown>?
----@field _controllers table<string, BattleBoundController>
 ---@field _answered table<string, boolean>?
 ---@field _openRequest table<string, unknown>?
 ---@field _outcome table<string, unknown>?
@@ -311,7 +304,6 @@ function BattleRuntime.new(args)
     _task = nil,
     _content = nil,
     _session = nil,
-    _controllers = {},
     _openRequest = nil,
     _outcome = nil,
     _prepared = nil,
@@ -354,222 +346,26 @@ function BattleRuntime:_executableContent()
   return self._content
 end
 
----@param participant table<string, unknown>
----@return table<string, unknown> pass facts and carried items for trainer controllers
-function BattleRuntime:_trainerFactsFor(participant)
-  local context = participant.context
-  if type(context) == "table" and type(context.aiPasses) == "table" then
-    local items = {}
-    if context.items ~= nil then
-      if type(context.items) ~= "table" then
-        error("trainer side " .. tostring(participant.controller) .. " carries its items as a list", 0)
-      end
-      items = context.items --[[@as table<string, unknown>]]
-    end
-    return { aiPasses = context.aiPasses, items = items }
-  end
-  error("trainer side " .. tostring(participant.controller) .. " names no AI passes", 0)
-end
-
----@param controller string
----@return BattleBoundController answering controller for an owned request
-function BattleRuntime:_controllerFor(controller)
-  local cached = self._controllers[controller]
-  if cached ~= nil then
-    return cached
-  end
-  local bound
-  if controller == BattleRuntime.WILD_CONTROLLER then
-    bound = { kind = "wild" }
-  elseif controller:sub(1, #BattleRuntime.TRAINER_PREFIX) == BattleRuntime.TRAINER_PREFIX then
-    local scenario = assert(self._scenario, "trainer answers read the detached scenario")
-    local facts = nil
-    for _, participant in
-      ipairs(scenario.participants --[[@as table<integer, unknown>]])
-    do
-      local entry = participant --[[@as table<string, unknown>]]
-      if entry.controller == controller then
-        facts = self:_trainerFactsFor(entry)
-      end
-    end
-    if facts == nil then
-      error("trainer side " .. controller .. " names no AI passes", 0)
-    end
-    bound = { kind = "trainer", ai = HgssTrainerAi.new({ aiPasses = facts.aiPasses, trainerItems = facts.items }) }
-  else
-    error("controller " .. controller .. " is answered externally", 0)
-  end
-  self._controllers[controller] = bound
-  return bound
-end
-
--- Owned opponent answers run inside the session decision lease: wild and
--- trainer controllers draw from the same native battle stream the kernel
--- consumes per strike, so one deterministic trace spans opponent choice
--- and combat. The runtime owns no generator; controller memoization keeps
+-- Owned opponent answers draw from the same native battle stream the
+-- kernel consumes per strike, so one deterministic trace spans opponent
+-- choice and combat. Wild fighters answer through their bound policy
+-- inside the session decision lease; trainer sides answer through the
+-- native session seam, which decides from session state, facts, stock,
+-- and topology. The runtime owns no generator and keeps no decision
+-- state: generic answered-request bookkeeping in the request pump keeps
 -- repeated polls of one open request from drawing again.
 ---@param request table<string, unknown> pending kernel request owned internally
 ---@return table<string, unknown> reply in the shared decision shape
 function BattleRuntime:_answerOwned(request)
   local session = assert(self._session, "owned replies answer a live session")
-  assert(type(session.withDecisionStream) == "function", "owned replies draw from the session stream")
-  return session:withDecisionStream(request, function(stream)
-    local view = session:view(request.controller)
-    local bound = self:_controllerFor(request.controller)
-    if bound.kind == "wild" then
-      return HgssOpponentControllers.wild(request, view, stream)
-    end
-    local ai = assert(bound.ai, "trainer answers carry their controller")
-    return ai:decide(request, ai:observe(self:_trainerKnowledge(request, view)), stream)
-  end)
-end
-
----@param species string species key under fact lookup
----@param form unknown form identity under fact lookup
----@return table<integer, string> battle-visible type keys for the species and form
-local function battleTypes(self, species, form)
-  local catalog = self:_factCatalog()
-  assert(catalog ~= nil, "trainer answers read the live mon catalog")
-  local source = catalog --[[@as table<string, unknown>]]
-  local formByKey = source.form --[[@as fun(self: table<string, unknown>, speciesKey: string, form: integer): table<string, unknown>]]
-  assert(type(formByKey) == "function", "trainer types resolve through the mon catalog")
-  local formRecord = formByKey(source, species, form --[[@as integer]])
-  local types = formRecord.types
-  assert(type(types) == "table" and #types >= 1, "trainer combatants carry their battle types")
-  return types --[[@as table<integer, string>]]
-end
-
----@param mon table<string, unknown> battle-owned mon record under projection
----@return table[] move entries carrying their key, battle type, power, and power points
-local function battleMoves(self, mon)
-  local catalog = self:_factCatalog()
-  assert(catalog ~= nil, "trainer answers read the live mon catalog")
-  local source = catalog --[[@as table<string, unknown>]]
-  local moveByName = source.move --[[@as fun(self: table<string, unknown>, key: string): table<string, unknown>]]
-  assert(type(moveByName) == "function", "trainer move facts resolve through the mon catalog")
-  local moves = {}
-  for _, entry in
-    ipairs(mon.moves --[[@as table<integer, unknown>]])
-  do
-    local record = entry --[[@as table<string, unknown>]]
-    local key = record.move
-    assert(type(key) == "string" and key ~= "", "trainer move entries name their move")
-    local definition = moveByName(source, key --[[@as string]])
-    local projected = {
-      key = key,
-      moveType = definition.moveType,
-      power = definition.power,
-    }
-    if type(record.pp) == "number" then
-      projected.pp = record.pp
-    end
-    moves[#moves + 1] = projected
+  if request.controller == BattleRuntime.WILD_CONTROLLER then
+    assert(type(session.withDecisionStream) == "function", "owned replies draw from the session stream")
+    return session:withDecisionStream(request, function(stream)
+      return HgssOpponentControllers.wild(request, session:view(request.controller), stream)
+    end)
   end
-  return moves
-end
-
--- Projects the public battle facts behind one owned trainer decision into
--- the controller observation shape: the acting combatants with their
--- species, health, types, and catalog move facts, the opposing combatant
--- with its visible species, health, types, and position, and the benched
--- reserves with their identities, health, and types. Opposing moves and
--- items never cross this projection even though the trusted session read
--- carries them.
----@param request table<string, unknown> pending decision request owned by a trainer controller
----@param view table<string, unknown> perspective view for the requesting controller
----@return table<string, unknown> semantic knowledge carrying public facts only
-function BattleRuntime:_trainerKnowledge(request, view)
-  if self:_factCatalog() == nil then
-    error("trainer answers read the live mon catalog", 0)
-  end
-  local session = assert(self._session, "trainer knowledge reads the live session")
-  local snapshot = session:capture()
-  local combatants = snapshot.combatants --[[@as table<integer, table<string, unknown>>]]
-  local actors = request.actors --[[@as table<integer, unknown>]]
-  assert(type(actors) == "table" and #actors > 0, "trainer answers address at least one actor")
-  local byCombatant = {}
-  for _, entry in
-    ipairs(view.combatants --[[@as table<integer, unknown>]])
-  do
-    local record = entry --[[@as table<string, unknown>]]
-    byCombatant[
-      record.combatant --[[@as integer]]
-    ] = record
-  end
-  local actives = {}
-  for _, item in ipairs(actors) do
-    local actor = item --[[@as table<string, unknown>]]
-    local entry = byCombatant[
-      actor.combatant --[[@as integer]]
-    ]
-    if type(entry) ~= "table" then
-      error("trainer actor " .. tostring(actor.combatant) .. " fields no combatant", 0)
-    end
-    local mon = entry.mon --[[@as table<string, unknown>]]
-    if type(mon) ~= "table" or type(mon.species) ~= "string" then
-      error("trainer actor " .. tostring(actor.combatant) .. " fields no mon record", 0)
-    end
-    local hp = entry.hp
-    if type(hp) ~= "number" then
-      error("trainer actor " .. tostring(actor.combatant) .. " carries its health", 0)
-    end
-    actives[#actives + 1] = {
-      combatant = actor.combatant,
-      species = mon.species,
-      hp = hp,
-      maxHp = MonStats.derive(mon, self:_factCatalog() --[[@as table<string, unknown>]]).maxHp,
-      types = battleTypes(self, mon.species --[[@as string]], mon.form),
-      moves = battleMoves(self, mon),
-    }
-  end
-  local opponents = view.opponents --[[@as table<integer, unknown>]]
-  if type(opponents) ~= "table" or #opponents == 0 then
-    error("trainer answers read their opposing combatant", 0)
-  end
-  local opposed = opponents[1] --[[@as table<string, unknown>]]
-  local foeState = combatants[
-    opposed.combatant --[[@as integer]]
-  ]
-  if type(foeState) ~= "table" then
-    error("trainer answers read their opposing combatant", 0)
-  end
-  local foeMon = foeState.mon --[[@as table<string, unknown>]]
-  if type(foeMon) ~= "table" or type(foeMon.species) ~= "string" then
-    error("trainer answers read their opposing species", 0)
-  end
-  if type(foeState.hp) ~= "number" then
-    error("trainer answers read their opposing health", 0)
-  end
-  local reserves = {}
-  for _, entry in
-    ipairs(view.combatants --[[@as table<integer, unknown>]])
-  do
-    local record = entry --[[@as table<string, unknown>]]
-    if record.active ~= true then
-      local mon = record.mon --[[@as table<string, unknown>]]
-      if type(mon) == "table" and type(mon.species) == "string" and type(record.hp) == "number" then
-        reserves[#reserves + 1] = {
-          combatant = record.combatant,
-          species = mon.species,
-          hp = record.hp,
-          types = battleTypes(self, mon.species --[[@as string]], mon.form),
-        }
-      end
-    end
-  end
-  return {
-    active = actives[1],
-    actives = actives,
-    foe = {
-      combatant = opposed.combatant,
-      species = foeMon.species,
-      hp = foeState.hp,
-      types = battleTypes(self, foeMon.species --[[@as string]], foeMon.form),
-      position = opposed.position,
-    },
-    reserves = reserves,
-    opponents = view.opponents,
-  }
+  assert(type(session.answerTrainer) == "function", "trainer replies answer through the native session seam")
+  return session:answerTrainer(request)
 end
 
 ---@param frame table<string, unknown> kernel frame at an atomic boundary

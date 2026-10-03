@@ -60,6 +60,7 @@ local RewardExperience = require("libs.battle.src.gen4.Experience")
 local Stats = require("libs.mons.src.gen4.Stats")
 local Status = require("libs.battle.src.gen4.Status")
 local Switching = require("libs.battle.src.gen4.Switching")
+local TrainerAi = require("libs.battle.src.gen4.TrainerAi")
 local TurnOrder = require("libs.battle.src.gen4.TurnOrder")
 
 ---@alias SpeciesFormFacts table<integer, table<string, unknown>>
@@ -4350,6 +4351,36 @@ function HgssSessionExecutor:withDecisionStream(request, callback)
     error(result, 0)
   end
   return result --[[@as table<string, unknown>]]
+end
+
+-- Answers the exact open trainer request from native session state.
+-- The request must name a trainer controller and match the current
+-- batch exactly like the decision-lease path requires; the native
+-- trainer policy then decides synchronously from session state, facts,
+-- chart, inventory, topology, and the battle stream, returning an
+-- ordinary reply for submission. The lease ends on success and on
+-- error before anything propagates. This seam exists only for the
+-- application trainer broker; wild opponents keep their own path.
+---@param request table<string, unknown> open internal trainer request under verification
+---@return table<string, unknown> reply in the shared decision shape
+function HgssSessionExecutor:answerTrainer(request)
+  assert(type(request) == "table", "trainer answers address a pending request")
+  local controller = request.controller
+  if type(controller) ~= "string" or controller:sub(1, 8) ~= "trainer:" then
+    error(BattleErrors.input("trainer answers address only trainer requests", {
+      controller = tostring(request.controller),
+    }))
+  end
+  local state = self:_live()
+  local authorities = {
+    chart = self._chart,
+    moveFacts = self._moveFacts,
+    speciesFacts = self._speciesFacts,
+    itemFacts = self._itemFacts,
+  }
+  return self:withDecisionStream(request, function(stream)
+    return TrainerAi.answer(state, authorities, request, stream)
+  end)
 end
 
 ----@return table<string, unknown> detached plain interruption capture

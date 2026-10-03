@@ -552,10 +552,11 @@ end
 -- trainers, for simultaneous native pairs) and carries each trainer's full
 -- party records; trainer parties are never invented here. Each trainer
 -- fields its own participant (and controller) so simultaneous pairs keep
--- their native double engagement. The compiled AI passes and carried
--- items ride the participant context when supplied and stay absent
--- otherwise; the application battle owner refuses to run a trainer side
--- without its pass facts.
+-- their native double engagement. The compiled AI passes ride the
+-- participant context when supplied and stay absent otherwise; carried
+-- items build only the trainer inventory stock beside the context, and
+-- the native session refuses to decide for a trainer side without its
+-- pass facts.
 ---@param payload table<string, unknown>
 ---@param ctx table<string, unknown>?
 ---@return table<string, unknown> detached trainer scenario fragment
@@ -571,7 +572,7 @@ function HgssBattleScenarioFactory.fromTrainer(payload, ctx)
     if payload.trainer == "" then
       error("trainer battles require their trainer identity", 0)
     end
-    trainers = { { id = payload.trainer, party = payload.party, program = payload.program } }
+    trainers = { { id = payload.trainer, party = payload.party } }
   end
   assert(type(trainers) == "table" and #trainers > 0, "trainer battles field at least one trainer")
   local snapshot = snapshotParty(context.party)
@@ -618,15 +619,8 @@ function HgssBattleScenarioFactory.fromTrainer(payload, ctx)
     local participantId = 1 + index
     enemyIds[#enemyIds + 1] = participantId
     local enemyContext = {}
-    local program = entry.program or (index == 1 and context.trainerProgram or nil)
-    if program ~= nil then
-      enemyContext.program = copyValue(program)
-    end
     if entry.aiPasses ~= nil then
       enemyContext.aiPasses = copyValue(entry.aiPasses)
-    end
-    if entry.items ~= nil then
-      enemyContext.items = copyValue(entry.items)
     end
     local enemy = {
       id = participantId,

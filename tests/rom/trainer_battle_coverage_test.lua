@@ -90,20 +90,22 @@ local function describePasses(passes)
     return tostring(passes)
   end
   local names = {}
-  for _, pass in ipairs(passes --[[@as table<integer, unknown>]]) do
+  for _, pass in
+    ipairs(passes --[[@as table<integer, unknown>]])
+  do
     names[#names + 1] = tostring(pass)
   end
   return table.concat(names, ",")
 end
 
-function T.generated_trainer_ai_passes_compile_through_the_runtime_evaluator(romFs, versionId)
+function T.generated_trainer_ai_passes_parse_through_the_native_session(romFs, versionId)
   local TrainerCatalogCompiler = require("romdump.src.digest.battle.TrainerCatalogCompiler")
   Assert.isTrue(
     type(TrainerCatalogCompiler.compileFromDump) == "function",
     "the trainer compiler publishes the generated catalog"
   )
-  local Evaluator = require("libs.hgss.src.battle.ai.NativeAiEvaluator")
-  Assert.isTrue(type(Evaluator.compilePassProgram) == "function", "the runtime evaluator compiles pass programs")
+  local TrainerAi = require("libs.battle.src.gen4.TrainerAi")
+  Assert.isTrue(type(TrainerAi.parsePasses) == "function", "the native session parses trainer pass facts")
   local compiled = compileTrainers(romFs, versionId)
   local ids = sortedTrainerIds(compiled)
   Assert.isTrue(#ids > 0, "the dump must yield at least one trainer record")
@@ -113,15 +115,12 @@ function T.generated_trainer_ai_passes_compile_through_the_runtime_evaluator(rom
     local passes = record.aiPasses --[[@as table<integer, unknown>]]
     Assert.isTrue(type(passes) == "table", "trainer " .. trainerIndex .. " keeps its named AI passes")
     for _, pass in ipairs(passes) do
-      Assert.isTrue(
-        pass ~= "ai_pass_7",
-        "trainer " .. trainerIndex .. " keeps the doubles fact out of the pass list"
-      )
+      Assert.isTrue(pass ~= "ai_pass_7", "trainer " .. trainerIndex .. " keeps the doubles fact out of the pass list")
     end
-    local ok, err = pcall(Evaluator.compilePassProgram, passes)
+    local ok, err = pcall(TrainerAi.parsePasses, passes)
     Assert.isTrue(
       ok,
-      "trainer " .. trainerIndex .. " passes [" .. describePasses(passes) .. "] compile: " .. tostring(err)
+      "trainer " .. trainerIndex .. " passes [" .. describePasses(passes) .. "] parse: " .. tostring(err)
     )
   end
 end
