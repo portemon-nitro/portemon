@@ -8,11 +8,12 @@ local FakeCache = require("tests.support.FakeCache")
 local LuaWriter = require("libs.codec.src.LuaWriter")
 local MonsSave = require("libs.mons.src.MonsSave")
 local BagSave = require("libs.hgss.src.save.BagSave")
+local MartSave = require("libs.hgss.src.save.MartSave")
 local SaveFs = require("libs.storage.src.SaveFs")
 
 local T = {}
 
-local GAME_SCHEMA = "g4-game-save-v4"
+local GAME_SCHEMA = "g4-game-save-v5"
 
 local function newStore(backend, opts)
   local loaded, GameSaveStore = pcall(require, "libs.hgss.src.save.GameSaveStore")
@@ -37,7 +38,7 @@ local function record(saveId, versionId, overrides)
     terrainDependencyHash = "terrain-" .. versionId,
     facing = "south",
     playerData = {
-      profile = { name = "GOLD", gender = 0, trainerId = 0, money = 3000, badges = 0 },
+      profile = { name = "GOLD", gender = 0, trainerId = 0, money = 3000, badges = 0, nationalDex = false },
       options = { textFrame = 0, textSpeed = "mid" },
     },
     fieldTravel = { lastHealSpawn = "SPAWN_NEW_BARK" },
@@ -47,6 +48,7 @@ local function record(saveId, versionId, overrides)
     audio = {},
     mons = MonsSave.empty("test-catalog-fingerprint", 7),
     bag = BagSave.empty(),
+    mart = MartSave.empty(),
   }
   for key, valueOverride in pairs(overrides or {}) do
     value[key] = valueOverride

@@ -18,6 +18,7 @@ local SaveFs = require("libs.storage.src.SaveFs")
 local GameSave = require("libs.hgss.src.save.GameSave")
 local GameSaveStore = require("libs.hgss.src.save.GameSaveStore")
 local BagSave = require("libs.hgss.src.save.BagSave")
+local MartSave = require("libs.hgss.src.save.MartSave")
 local HgssGame = require("game.hgss.src.HgssGame")
 local FieldMapLoader = require("libs.hgss.src.world.FieldMapLoader")
 local FieldState = require("game.hgss.src.field.FieldState")
@@ -74,7 +75,7 @@ local function seedRecord(saveId, versionId)
     terrainDependencyHash = "terrain-" .. versionId,
     facing = "south",
     playerData = {
-      profile = { name = "GOLD", gender = 0, trainerId = 0, money = 3000, badges = 0 },
+      profile = { name = "GOLD", gender = 0, trainerId = 0, money = 3000, badges = 0, nationalDex = false },
       options = { textFrame = 0, textSpeed = "mid" },
     },
     fieldTravel = { lastHealSpawn = "SPAWN_NEW_BARK" },
@@ -84,6 +85,7 @@ local function seedRecord(saveId, versionId)
     audio = {},
     mons = MonsSave.empty("test-catalog-fingerprint", 7),
     bag = BagSave.empty(),
+    mart = MartSave.empty(),
   }
 end
 
@@ -562,7 +564,7 @@ local function labHarness()
         versionId = versionId,
         location = location,
         playerData = {
-          profile = { name = "GOLD", gender = 0, trainerId = 1, money = 3000, badges = 0 },
+          profile = { name = "GOLD", gender = 0, trainerId = 1, money = 3000, badges = 0, nationalDex = false },
           options = { textSpeed = "fastest", textFrame = 0 },
         },
         fieldTravel = { lastHealSpawn = "SPAWN_NEW_BARK" },
@@ -570,6 +572,7 @@ local function labHarness()
         worldState = FieldEventState.new(),
         mons = require("tests.support.MonBucket").emptyForVersion(versionId),
         bag = BagSave.empty(),
+        mart = require("libs.hgss.src.save.MartSave").empty(),
       }
     end,
   })

@@ -39,7 +39,7 @@ local function freshGame(versionId)
       facing = "south",
     },
     playerData = {
-      profile = { name = "GOLD", gender = 0, trainerId = 1, money = 3000, badges = 0 },
+      profile = { name = "GOLD", gender = 0, trainerId = 1, money = 3000, badges = 0, nationalDex = false },
       options = { textSpeed = "fastest", textFrame = 0 },
     },
     fieldTravel = { lastHealSpawn = "SPAWN_NEW_BARK" },
@@ -47,6 +47,7 @@ local function freshGame(versionId)
     worldState = FieldEventState.new(),
     mons = require("tests.support.MonBucket").emptyForVersion(versionId),
     bag = BagSave.empty(),
+    mart = require("libs.hgss.src.save.MartSave").empty(),
   }
 end
 

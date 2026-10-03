@@ -114,6 +114,99 @@ function T.vanilla_stock_and_animation_timelines_retain_source_identity(romFs)
   Assert.equal(manifest.feedback.dispatchTicks, 1)
 end
 
+function T.vanilla_provider_uses_the_compiled_source_catalog_without_rendering(romFs, versionId)
+  local bundle = compile(romFs)
+  local ItemCatalogCompiler = require("romdump.src.digest.items.ItemCatalogCompiler")
+  local ItemCatalog = require("libs.items.src.ItemCatalog")
+  local VanillaMartStock = require("game.hgss.src.mart.VanillaMartStock")
+  local items = ItemCatalog.new(assert(ItemCatalogCompiler.compileCatalog(romFs, { versionId = versionId })))
+  local runtimeCatalog = { mart = bundle.catalog, items = items }
+  local function resolve(descriptor, facts)
+    return VanillaMartStock.resolve(descriptor, facts, runtimeCatalog)
+  end
+
+  local vanilla = resolve({ kind = "standard" }, {
+    badges = 0,
+    nationalDex = false,
+    weekday = 0,
+    dayOrdinal = 1,
+    cardPrefix = 0,
+    readFlag = function() return false end,
+    readVariable = function() return 0 end,
+  })
+  local sourceTier = {}
+  for _, row in ipairs(bundle.catalog.normalTiers) do
+    if row.minimumTier == 1 then sourceTier[#sourceTier + 1] = row.itemKey end
+  end
+  Assert.equal(#vanilla.entries, #sourceTier, "the provider emits the source's first badge tier")
+  for index, key in ipairs(sourceTier) do
+    Assert.equal(vanilla.entries[index].displayItemKey, key, "standard items retain source order")
+    Assert.equal(vanilla.entries[index].unitPrice, items:item(key).price, "standard prices resolve from the compiled item catalog")
+  end
+
+  for selector = 0, 29 do
+    for _, tutorialComplete in ipairs({ false, true }) do
+      local special = resolve({ kind = "special", selector = selector }, {
+        badges = 0,
+        nationalDex = false,
+        weekday = 0,
+        dayOrdinal = 1,
+        cardPrefix = 0,
+        readFlag = function(flag) return flag == 0x09A and tutorialComplete end,
+        readVariable = function() return 0 end,
+      })
+      local expected = {}
+      for _, row in ipairs(bundle.catalog.specialStocks[selector + 1]) do
+        if not (tutorialComplete and row.subjectKey == "POKE_BALL") then expected[#expected + 1] = row.subjectKey end
+      end
+      Assert.equal(#special.entries, #expected, "special stock keeps the source list and tutorial filter")
+      for index, key in ipairs(expected) do
+        Assert.equal(special.entries[index].displayItemKey, key, "special entries retain source order")
+      end
+    end
+  end
+
+  for weekday = 0, 6 do
+    for _, nationalDex in ipairs({ false, true }) do
+      local stockIndex = weekday + (nationalDex and 7 or 0)
+      local athlete = resolve({ kind = "athlete" }, {
+        badges = 0,
+        nationalDex = nationalDex,
+        weekday = weekday,
+        dayOrdinal = 1,
+        cardPrefix = 0,
+        readFlag = function() return false end,
+        readVariable = function() return 0 end,
+      })
+      local expected = bundle.catalog.athleteStocks[stockIndex + 1]
+      Assert.equal(#athlete.entries, #expected, "the AP weekday/Dex pair chooses its compiled source list")
+      for index, row in ipairs(expected) do
+        Assert.equal(athlete.entries[index].displayItemKey, row.subjectKey, "AP entries retain source order")
+        Assert.equal(athlete.entries[index].unitPrice, row.price.value, "AP price is fixed by source data")
+      end
+    end
+  end
+
+  for _, prefix in ipairs({ 0, 5, 6, 11, 12, 23, 24, 26, 27 }) do
+    local group = math.min(math.floor(prefix / 6), 4)
+    local cards = resolve({ kind = "data_cards" }, {
+      badges = 0,
+      nationalDex = false,
+      weekday = 0,
+      dayOrdinal = 1,
+      cardPrefix = prefix,
+      readFlag = function() return false end,
+      readVariable = function() return 0 end,
+    })
+    local expected = bundle.catalog.dataCardStocks[group + 1]
+    Assert.equal(#cards.entries, #expected, "the first-missing card index chooses its source group")
+    for index, row in ipairs(expected) do
+      Assert.equal(cards.entries[index].displayItemKey, row.subjectKey, "Data Cards retain source order")
+      Assert.equal(cards.entries[index].unitPrice, row.price.value, "Data Card price comes from the source table")
+    end
+  end
+end
+
 function T.failed_rebuild_and_truncated_manifest_leave_no_usable_partial_family(romFs)
   local bundle = compile(romFs)
   local MartCache = feature("libs.assets.src.MartCache", "the mart family must validate readiness")

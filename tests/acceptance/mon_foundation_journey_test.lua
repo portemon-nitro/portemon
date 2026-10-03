@@ -77,7 +77,7 @@ local function harness()
         versionId = versionId,
         location = { mapSymbol = map or MAP, fieldX = 4, fieldZ = 13, facing = "north" },
         playerData = {
-          profile = { name = "GOLD", gender = 0, trainerId = 1, money = 3000, badges = 0 },
+          profile = { name = "GOLD", gender = 0, trainerId = 1, money = 3000, badges = 0, nationalDex = false },
           options = { textSpeed = "fastest", textFrame = 0 },
         },
         fieldTravel = { lastHealSpawn = "SPAWN_NEW_BARK" },
@@ -85,6 +85,7 @@ local function harness()
         worldState = FieldEventState.new(),
         mons = require("tests.support.MonBucket").emptyForVersion(versionId, SEED),
         bag = require("libs.hgss.src.save.BagSave").empty(),
+        mart = require("libs.hgss.src.save.MartSave").empty(),
       }
     end,
   })

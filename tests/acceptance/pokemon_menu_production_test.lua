@@ -527,7 +527,9 @@ function T.tests.save_round_trip_preserves_domain_badges_travel_and_leaves(conte
     Assert.isTrue(bag:add("POTION", 3), "setup must stock potions")
     local potionBefore = bag:quantity("POTION")
     local record = assert(runtime:captureGameSave(), "a settled field captures")
-    Assert.equal(record.schema, "g4-game-save-v4", "production capture writes the current save schema")
+    Assert.equal(type(record.mart), "table", "production capture carries the canonical mart bucket")
+    Assert.equal(record.mart.schema, "g4-mart-save-v1", "production capture uses the supported mart schema")
+    Assert.equal(record.playerData.profile.nationalDex, false, "new-game profiles start without the National Dex")
     Assert.isTrue(record.playerData.profile.badges > 0, "awarded badges persist in the record")
     Assert.isTrue(type(record.fieldTravel) == "table", "the record carries travel facts")
     Assert.equal(record.fieldTravel.lastHealSpawn, "SPAWN_NEW_BARK", "the mother spawn survives capture")
@@ -555,6 +557,7 @@ function T.tests.save_round_trip_preserves_domain_badges_travel_and_leaves(conte
     )
     Assert.equal(fresh.fieldTravel:capture().lastHealSpawn, "SPAWN_NEW_BARK", "reload preserves the travel facts")
     Assert.equal(fresh.monService:partyMon(0).species, "GEODUDE", "reload preserves the switched order")
+    Assert.deepEqual(fresh.martService:capture(), record.mart, "reload preserves the canonical mart state")
   end)
 end
 
@@ -594,7 +597,7 @@ function T.tests.busy_save_is_denied_then_recovers_without_data_loss(context)
     Assert.isTrue(type(reason) == "string" and reason ~= "", "the denial explains itself")
     composition.fieldMoves:discardPending()
     local record = assert(runtime:captureGameSave(), "capture recovers after the queue clears")
-    Assert.equal(record.schema, "g4-game-save-v4", "recovered capture writes the current schema")
+    Assert.equal(record.schema, "g4-game-save-v5", "recovered capture writes the current schema")
   end)
 end
 

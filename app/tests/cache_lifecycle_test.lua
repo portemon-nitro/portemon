@@ -11,6 +11,7 @@ local FakeCache = require("tests.support.FakeCache")
 local SaveFs = require("libs.storage.src.SaveFs")
 local GameSave = require("libs.hgss.src.save.GameSave")
 local BagSave = require("libs.hgss.src.save.BagSave")
+local MartSave = require("libs.hgss.src.save.MartSave")
 local GameSaveStore = require("libs.hgss.src.save.GameSaveStore")
 local MainMenuState = require("app.src.mainmenu.MainMenuState")
 local FieldCoverage = require("libs.hgss.src.world.FieldCoverage")
@@ -67,13 +68,14 @@ local function record(saveId, overrides)
     terrainDependencyHash = "terrain-heartgold",
     facing = "south",
     playerData = {
-      profile = { name = "GOLD", gender = 0, trainerId = 0, money = 3000, badges = 0 },
+      profile = { name = "GOLD", gender = 0, trainerId = 0, money = 3000, badges = 0, nationalDex = false },
       options = { textFrame = 0, textSpeed = "mid" },
     },
     fieldTravel = { lastHealSpawn = "SPAWN_NEW_BARK" },
     world = { flags = {}, variables = {}, objects = {}, rng = { state = 1, calls = 0 } },
     scripts = {},
     bag = BagSave.empty(),
+    mart = MartSave.empty(),
     auxiliaryUi = { requested = "shown", state = "shown" },
     audio = {},
     mons = MonsSave.empty("test-catalog-fingerprint", 7),

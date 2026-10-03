@@ -43,6 +43,9 @@ local MonCache = require("libs.assets.src.MonCache")
 local MonCatalog = require("libs.mons.src.MonCatalog")
 local ItemCache = require("libs.assets.src.ItemCache")
 local ItemCatalog = require("libs.items.src.ItemCatalog")
+local MartCache = require("libs.assets.src.MartCache")
+local MartService = require("libs.hgss.src.items.MartService")
+local VanillaMartStock = require("game.hgss.src.mart.VanillaMartStock")
 local FieldScriptSymbols = require("libs.assets.src.field.FieldScriptSymbols")
 local FieldSession = require("libs.hgss.src.field.FieldSession")
 local FieldSignpostController = require("libs.hgss.src.interaction.FieldSignpostController")
@@ -180,6 +183,7 @@ end
 ---@field monLanguage string the semantic language key the mon catalog was built for
 ---@field monService HgssMonService the live party/creation/script mon service
 ---@field bagService HgssBagService the live bag/inventory service
+---@field martService MartService the live mart inventory/session service
 ---@field bagCursor BagCursor the runtime-only field bag cursor
 ---@field pokemonMenu table<string, unknown>? the owned menu composition (nil before composition / after teardown)
 ---@field menuLaneWarps table<string, unknown>? the long-lived menu-origin warp service (nil before composition / after teardown)
@@ -591,6 +595,7 @@ function FieldRuntime:_loadRuntimeAssets(boot, loadOptions)
   -- never the catalogs directly.
   local monRoot = MonCache.loadCatalog(boot.cacheFs)
   self.itemCatalog = ItemCatalog.new(ItemCache.loadCatalog(boot.cacheFs))
+  self.martCatalog = MartCache.loadCatalog(boot.cacheFs)
   self.monCatalog = MonCatalog.new(monRoot, self.itemCatalog)
   self.monLanguage = monRoot.version.language
   self.fieldEntranceIndicatorAsset, self.fieldEntranceIndicator = FieldEntranceIndicatorRuntime.load(boot.cacheFs)
@@ -687,7 +692,11 @@ end
 ---@param boot table<string, unknown>
 function FieldRuntime:_loadInitialWorld(boot)
   local entryGame
-  if self.game.schema == GameSave.SCHEMA then
+  if
+    self.game.schema == GameSave.SCHEMA
+    or self.game.schema == "g4-game-save-v3"
+    or self.game.schema == "g4-game-save-v4"
+  then
     entryGame = assert(boot.saveValidation:validate(self.game))
     assert(entryGame.versionId == self.versionId, "loaded game belongs to another version")
   else
@@ -1083,6 +1092,16 @@ function FieldRuntime:_composeFieldServices(boot)
     date = monMetDate,
   })
   self:_composeBag(boot.activeGame, boot.loadedGame)
+  local martBucket = boot.loadedGame and boot.loadedGame.mart
+    or assert(self.game.mart, "finalized game mart bucket is required")
+  self.martService = MartService.new({
+    profile = self.playerData.profile,
+    bag = self.bagService,
+    itemCatalog = self.itemCatalog,
+    catalog = self.martCatalog,
+    bucket = martBucket,
+  })
+  self.martStockResolver = VanillaMartStock.resolve
   -- The one following-mon controller: derived follower presentation over
   -- the live party, driven once per fixed tick after the session update.
   -- The player accessor tracks warp rebinds, so the controller never holds
