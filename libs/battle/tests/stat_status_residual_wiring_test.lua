@@ -52,6 +52,8 @@ local function scenarioMoveFacts(seeds)
     TOXIC = catalog:move("TOXIC"),
     GROWL = catalog:move("GROWL"),
     AGILITY = { power = 0, accuracy = 100, category = "other", moveType = "normal", priority = 0 },
+    FAKE_OUT = { power = 40, accuracy = 100, category = "physical", moveType = "normal", priority = 1 },
+    REFLECT = { power = 0, accuracy = 100, category = "other", moveType = "psychic", priority = 0 },
     SPORE = { power = 0, accuracy = 100, category = "other", moveType = "grass", priority = 0 },
     POISON_POWDER = { power = 0, accuracy = 100, category = "other", moveType = "poison", priority = 0 },
     SPLASH = { power = 0, accuracy = 100, category = "other", moveType = "normal", priority = 0 },
@@ -178,6 +180,58 @@ local function duelScenario(leads, alphaReserves, betaReserves)
     moveFacts = scenarioMoveFacts(seeds),
     speciesFacts = scenarioSpeciesFacts(seeds),
   }
+end
+
+---@param key string native definition identity under seeding
+---@param id integer stable instance identity for the seeded record
+---@param scope table owner scope for the seeded instance
+---@param source table causal source for the seeded instance
+---@param state table typed state for the seeded instance
+---@return table effect record for the interruption capture
+local function effectRecord(key, id, scope, source, state)
+  local Handlers = SessionFixture.requirePresent(
+    "libs.battle.src.gen4.behaviors.effects.NativeEffectHandlers",
+    "one registration owner binds native definitions to their handlers"
+  )
+  local definition = Handlers.definitionFor(key)
+  return {
+    id = id,
+    key = key,
+    version = definition.stateVersion,
+    scope = scope,
+    source = source,
+    state = definition.validateState(state),
+    createdOrdinal = id,
+    timings = definition.timings,
+    lifecycle = definition.lifecycle,
+  }
+end
+
+---@param session table live headless session under seeding
+---@param content table frozen battle content for the restored session
+---@param records table[] effect records to install through the capture
+---@return table restored session carrying the seeded records
+local function restoreWithEffects(session, content, records)
+  local Executor = executorOwner()
+  local snapshot = session:capture()
+  session:dispose()
+  for _, record in ipairs(records) do
+    snapshot.effects[#snapshot.effects + 1] = record
+  end
+  return Executor.restore(snapshot, content)
+end
+
+---@param snapshot table<string, unknown> interruption capture under inspection
+---@param key string definition identity under inspection
+---@return table[] live records carrying the key
+local function recordsWithKey(snapshot, key)
+  local found = {}
+  for _, record in ipairs(snapshot.effects --[[@as table<integer, table<string, unknown>>]]) do
+    if record.key == key then
+      found[#found + 1] = record
+    end
+  end
+  return found
 end
 
 ---@param plans table<string, table<string, unknown>> per-controller strike plans keyed by controller
@@ -799,6 +853,483 @@ function T.roost_restores_half_maximum_through_the_move_path()
     "the restored health lands in battle state"
   )
   session:dispose()
+end
+
+-- A Fake Out flinch blocks the victim's later strike through the
+-- before-action dispatch: the faster strike records the flinch on the
+-- defender, the victim's attack never executes, the block is announced
+-- before persistent status and move execution, and the flinch instance
+-- is consumed exactly once.
+function T.fake_out_flinch_blocks_the_later_strike_through_dispatch()
+  local contracts = SessionFixture.sessionContracts()
+  local content = nativeContent()
+  local alpha = movesetCombatant(1, 11, { moveSlot("FAKE_OUT", 10), moveSlot("TACKLE", 35) })
+  local beta = movesetCombatant(2, 31, { moveSlot("TACKLE", 35) })
+  local session = contracts.Battle.newSession(duelScenario({ alpha, beta }, {}, {}), content)
+
+  local frame, events = playTurn(session, strikeAnswer({
+    alpha = { slot = 0, target = SessionFixture.positionTarget(2) },
+    beta = { slot = 0, target = SessionFixture.positionTarget(1) },
+  }))
+  Assert.equal(frame.status, "waiting", "the flinch turn continues the battle")
+  Assert.deepEqual(strikeKeys(events), { "FAKE_OUT" }, "the flinched strike never executes")
+  local blocked = false
+  for _, event in ipairs(events) do
+    if event.kind == "blocked" then
+      local payload = event.payload --[[@as table<string, unknown>]]
+      Assert.equal(payload.key, "flinch", "the block names its finite effect")
+      Assert.equal(payload.combatant, 2, "the block names the flinched combatant")
+      blocked = true
+    end
+  end
+  Assert.isTrue(blocked, "the flinch announces its block before move execution")
+  for _, record in ipairs(session:capture().effects --[[@as table<integer, table<string, unknown>>]]) do
+    Assert.isTrue(record.key ~= "flinch", "the flinch is consumed by its block")
+  end
+  session:dispose()
+end
+
+-- A side-scoped hazard strikes the replacement on entry through the
+-- entry dispatch: switching into Stealth Rock deals the exact
+-- type-derived fraction before the entrant can act, carries no duration
+-- side effect, and persists for later entries.
+function T.switching_into_stealth_rock_pays_the_entry_fraction()
+  local contracts = SessionFixture.sessionContracts()
+  local Executor = executorOwner()
+  local Handlers = SessionFixture.requirePresent(
+    "libs.battle.src.gen4.behaviors.effects.NativeEffectHandlers",
+    "one registration owner binds native definitions to their handlers"
+  )
+  local content = nativeContent()
+  local alpha = movesetCombatant(1, 11, { moveSlot("SPLASH", 40) })
+  local beta = movesetCombatant(2, 31, { moveSlot("SPLASH", 40) })
+  local reserve = movesetCombatant(4, 41, { moveSlot("SPLASH", 40) })
+  local session = contracts.Battle.newSession(duelScenario({ alpha, beta }, {}, { reserve }), content)
+
+  -- No reachable fixture strike lays the hazard yet, so the interruption
+  -- capture carries it: the record is built from the registered native
+  -- definition and restored through the production snapshot seam.
+  local snapshot = session:capture()
+  session:dispose()
+  local definition = Handlers.definitionFor("stealthrock")
+  snapshot.effects[#snapshot.effects + 1] = {
+    id = 501,
+    key = "stealthrock",
+    version = definition.stateVersion,
+    scope = { kind = "side", side = 2 },
+    source = { kind = "move", combatant = 1 },
+    state = definition.validateState({ version = 1 }),
+    createdOrdinal = 501,
+    timings = definition.timings,
+    lifecycle = definition.lifecycle,
+  }
+  local restored = Executor.restore(snapshot, content)
+  local ceiling = combatantOf(restored:capture(), 4).maxHp --[[@as integer]]
+  Assert.isTrue(type(ceiling) == "number" and ceiling > 0, "the reserve carries its battle maximum")
+  -- Rock meets the grass reserve neutrally: one eighth of maximum
+  -- health, floored, with a minimum of one.
+  local expected = math.floor(ceiling / 8)
+  if expected < 1 then
+    expected = 1
+  end
+
+  local frame, events = playTurn(restored, function(request)
+    if request.controller == "alpha" then
+      local choices = {}
+      for _, actor in ipairs(request.actors) do
+        choices[#choices + 1] = SessionFixture.attackChoice(actor, 0, SessionFixture.positionTarget(2))
+      end
+      return choices
+    end
+    local choices = {}
+    for _, actor in ipairs(request.actors) do
+      choices[#choices + 1] = SessionFixture.switchChoice(actor, 4)
+    end
+    return choices
+  end)
+  Assert.equal(frame.status, "waiting", "the battle continues after the hazardous entry")
+  local ticked = nil
+  for _, event in ipairs(events) do
+    if event.kind == "tick" then
+      local payload = event.payload --[[@as table<string, unknown>]]
+      if payload.key == "stealthrock" then
+        Assert.equal(payload.combatant, 4, "the hazard strikes the entrant")
+        ticked = payload.amount
+      end
+    end
+  end
+  Assert.equal(ticked, expected, "the entry hazard deals its exact derived fraction")
+  Assert.equal(
+    combatantOf(restored:capture(), 4).hp,
+    ceiling - expected,
+    "the derived hazard damage lands in battle state"
+  )
+  local settled = restored:capture()
+  local hazards = 0
+  for _, record in ipairs(settled.effects --[[@as table<integer, table<string, unknown>>]]) do
+    if record.key == "stealthrock" then
+      hazards = hazards + 1
+      Assert.isNil(record.state.turns, "the entry pass leaves no residual duration")
+    end
+  end
+  Assert.equal(hazards, 1, "the hazard persists for later entries")
+  local positions = settled.positions --[[@as table<integer, table<string, unknown>>]]
+  Assert.equal(positions[2].occupant, 4, "the reserve holds the entered position")
+  restored:dispose()
+end
+
+-- A confused attacker snaps out on its last counted turn through the
+-- before-action pass: the expiry fires, the strike still executes, and
+-- the instance leaves with the pass.
+function T.confused_attacker_snaps_out_and_acts_on_its_last_turn()
+  local contracts = SessionFixture.sessionContracts()
+  local content = nativeContent()
+  local alpha = movesetCombatant(1, 11, { moveSlot("TACKLE", 35) })
+  local beta = movesetCombatant(2, 31, { moveSlot("SPLASH", 40) })
+  local session = contracts.Battle.newSession(duelScenario({ alpha, beta }, {}, {}), content)
+  local activation = combatantOf(session:capture(), 1).active.activation --[[@as integer]]
+  local restored = restoreWithEffects(session, content, {
+    effectRecord(
+      "confusion",
+      601,
+      { kind = "active", combatant = 1, activation = activation },
+      { kind = "move", combatant = 2 },
+      { version = 1, turns = 1 }
+    ),
+  })
+
+  local frame, events = playTurn(restored, strikeAnswer({
+    alpha = { slot = 0, target = SessionFixture.positionTarget(2) },
+    beta = { slot = 0, target = SessionFixture.positionTarget(1) },
+  }))
+  Assert.equal(frame.status, "waiting", "the snap-out turn continues the battle")
+  Assert.deepEqual(strikeKeys(events), { "TACKLE" }, "the cleared attacker still strikes")
+  local expired = false
+  for _, event in ipairs(events) do
+    if event.kind == "expire" then
+      local payload = event.payload --[[@as table<string, unknown>]]
+      Assert.equal(payload.key, "confusion", "the expiry names its finite effect")
+      Assert.equal(payload.combatant, 1, "the expiry names the cleared combatant")
+      expired = true
+    end
+  end
+  Assert.isTrue(expired, "the last counted turn announces its expiry")
+  Assert.deepEqual(
+    recordsWithKey(restored:capture(), "confusion"),
+    {},
+    "the snapped-out confusion leaves with the pass"
+  )
+  restored:dispose()
+end
+
+-- A side screen survives entries at full duration: raising Reflect then
+-- switching costs only the legitimate turn-end tick, never an entry tick.
+function T.raised_screen_keeps_its_duration_across_entries()
+  local contracts = SessionFixture.sessionContracts()
+  local content = nativeContent()
+  local alpha = movesetCombatant(1, 11, { moveSlot("REFLECT", 20), moveSlot("SPLASH", 40) })
+  local beta = movesetCombatant(2, 31, { moveSlot("SPLASH", 40) })
+  local reserve = movesetCombatant(3, 41, { moveSlot("SPLASH", 40) })
+  local session = contracts.Battle.newSession(duelScenario({ alpha, beta }, { reserve }, {}), content)
+
+  local frame, _ = playTurn(session, strikeAnswer({
+    alpha = { slot = 0, target = SessionFixture.positionTarget(1) },
+    beta = { slot = 0, target = SessionFixture.positionTarget(1) },
+  }))
+  Assert.equal(frame.status, "waiting", "the screen turn continues the battle")
+  local raised = recordsWithKey(session:capture(), "reflect")
+  Assert.equal(#raised, 1, "the screen lands in live effect state")
+  Assert.equal(raised[1].state.turns, 4, "the screen ticks once at turn end")
+
+  local switched, _ = playTurn(session, function(request)
+    if request.controller == "alpha" then
+      local choices = {}
+      for _, actor in ipairs(request.actors) do
+        choices[#choices + 1] = SessionFixture.switchChoice(actor, 3)
+      end
+      return choices
+    end
+    local choices = {}
+    for _, actor in ipairs(request.actors) do
+      choices[#choices + 1] = SessionFixture.attackChoice(actor, 0, SessionFixture.positionTarget(1))
+    end
+    return choices
+  end)
+  Assert.equal(switched.status, "waiting", "the battle continues after the replacement")
+  local kept = recordsWithKey(session:capture(), "reflect")
+  Assert.equal(#kept, 1, "the entry pass keeps the side screen")
+  Assert.equal(kept[1].state.turns, 3, "the entry costs no duration beyond the turn-end tick")
+  session:dispose()
+end
+
+-- Re-entry pays the hazard again on the new activation: switching out
+-- and back through Stealth Rock ticks once per entry with the same
+-- derived fraction.
+function T.reentered_reserve_pays_the_hazard_again()
+  local contracts = SessionFixture.sessionContracts()
+  local content = nativeContent()
+  local alpha = movesetCombatant(1, 11, { moveSlot("SPLASH", 40) })
+  local beta = movesetCombatant(2, 31, { moveSlot("SPLASH", 40) })
+  local reserve = movesetCombatant(4, 41, { moveSlot("SPLASH", 40) })
+  local session = contracts.Battle.newSession(duelScenario({ alpha, beta }, {}, { reserve }), content)
+  local restored = restoreWithEffects(session, content, {
+    effectRecord("stealthrock", 701, { kind = "side", side = 2 }, { kind = "move", combatant = 1 }, { version = 1 }),
+  })
+  local ceiling = combatantOf(restored:capture(), 4).maxHp --[[@as integer]]
+  local expected = math.floor(ceiling / 8)
+  if expected < 1 then
+    expected = 1
+  end
+  local leadCeiling = combatantOf(restored:capture(), 2).maxHp --[[@as integer]]
+  local leadExpected = math.floor(leadCeiling / 8)
+  if leadExpected < 1 then
+    leadExpected = 1
+  end
+
+  ---@param replacement integer arriving combatant for the beta controller
+  ---@return fun(request: table): table[] scripted switch turn for the replacement
+  local function switchAnswer(replacement)
+    return function(request)
+      if request.controller == "alpha" then
+        local choices = {}
+        for _, actor in ipairs(request.actors) do
+          choices[#choices + 1] = SessionFixture.attackChoice(actor, 0, SessionFixture.positionTarget(2))
+        end
+        return choices
+      end
+      local choices = {}
+      for _, actor in ipairs(request.actors) do
+        choices[#choices + 1] = SessionFixture.switchChoice(actor, replacement)
+      end
+      return choices
+    end
+  end
+
+  local first, firstEvents = playTurn(restored, switchAnswer(4))
+  Assert.equal(first.status, "waiting", "the battle continues after the first entry")
+  local second, secondEvents = playTurn(restored, switchAnswer(2))
+  Assert.equal(second.status, "waiting", "the battle continues after the re-entry")
+  local ticks = {}
+  for _, events in ipairs({ firstEvents, secondEvents }) do
+    for _, event in ipairs(events) do
+      if event.kind == "tick" then
+        local payload = event.payload --[[@as table<string, unknown>]]
+        if payload.key == "stealthrock" then
+          ticks[#ticks + 1] = payload
+        end
+      end
+    end
+  end
+  Assert.equal(#ticks, 2, "each entry ticks exactly once")
+  Assert.equal(ticks[1].combatant, 4, "the first entry strikes the reserve")
+  Assert.equal(ticks[1].amount, expected, "the first entry pays the derived fraction")
+  Assert.equal(ticks[2].combatant, 2, "the re-entry strikes the returning lead")
+  Assert.equal(ticks[2].amount, leadExpected, "the re-entry pays the derived fraction again")
+  Assert.equal(#recordsWithKey(restored:capture(), "stealthrock"), 1, "the hazard outlives both entries")
+  restored:dispose()
+end
+
+-- Before-action denial scopes to the denied actor: a flinch seeded only
+-- on the foe never touches the clean attacker's strike.
+function T.only_the_flinched_actor_is_blocked()
+  local contracts = SessionFixture.sessionContracts()
+  local content = nativeContent()
+  local alpha = movesetCombatant(1, 11, { moveSlot("TACKLE", 35) })
+  local beta = movesetCombatant(2, 31, { moveSlot("SPLASH", 40) })
+  local session = contracts.Battle.newSession(duelScenario({ alpha, beta }, {}, {}), content)
+  local activation = combatantOf(session:capture(), 2).active.activation --[[@as integer]]
+  local restored = restoreWithEffects(session, content, {
+    effectRecord(
+      "flinch",
+      801,
+      { kind = "active", combatant = 2, activation = activation },
+      { kind = "move", combatant = 1 },
+      { version = 1, turns = 1 }
+    ),
+  })
+
+  local frame, events = playTurn(restored, strikeAnswer({
+    alpha = { slot = 0, target = SessionFixture.positionTarget(2) },
+    beta = { slot = 0, target = SessionFixture.positionTarget(1) },
+  }))
+  Assert.equal(frame.status, "waiting", "the scoped turn continues the battle")
+  Assert.deepEqual(strikeKeys(events), { "TACKLE" }, "the clean attacker strikes untouched")
+  local blocked = false
+  for _, event in ipairs(events) do
+    if event.kind == "blocked" then
+      local payload = event.payload --[[@as table<string, unknown>]]
+      Assert.equal(payload.key, "flinch", "the block names its finite effect")
+      Assert.equal(payload.combatant, 2, "the block names only the flinched combatant")
+      blocked = true
+    end
+    Assert.isTrue(event.kind ~= "move-used", "the denied attacker never starts its splash")
+  end
+  Assert.isTrue(blocked, "the flinched attacker is still denied")
+  restored:dispose()
+end
+
+-- Seeded finite records survive the interruption round-trip exactly:
+-- capture, restore, and capture again reproduce every timing binding
+-- and counter.
+function T.seeded_effect_records_survive_capture_restore_exactly()
+  local contracts = SessionFixture.sessionContracts()
+  local content = nativeContent()
+  local alpha = movesetCombatant(1, 11, { moveSlot("SPLASH", 40) })
+  local beta = movesetCombatant(2, 31, { moveSlot("SPLASH", 40) })
+  local session = contracts.Battle.newSession(duelScenario({ alpha, beta }, {}, {}), content)
+  local activation = combatantOf(session:capture(), 1).active.activation --[[@as integer]]
+  local restored = restoreWithEffects(session, content, {
+    effectRecord("stealthrock", 901, { kind = "side", side = 2 }, { kind = "move", combatant = 1 }, { version = 1 }),
+    effectRecord(
+      "confusion",
+      902,
+      { kind = "active", combatant = 1, activation = activation },
+      { kind = "move", combatant = 2 },
+      { version = 1, turns = 2 }
+    ),
+  })
+  local before = restored:capture()
+  SessionFixture.assertPlainData(before)
+  local revived = restoreWithEffects(restored, content, {})
+  local after = revived:capture()
+  SessionFixture.assertPlainData(after)
+  Assert.deepEqual(
+    recordsWithKey(after, "stealthrock"),
+    recordsWithKey(before, "stealthrock"),
+    "the hazard survives the round-trip"
+  )
+  Assert.deepEqual(
+    recordsWithKey(after, "confusion"),
+    recordsWithKey(before, "confusion"),
+    "the countdown survives the round-trip with its turns"
+  )
+  revived:dispose()
+end
+
+-- An arrival fainted by its own entry hazard still owes its replacement:
+-- the answered replacement sends a one-health reserve into rock, the
+-- hazard kill drains through faint ownership into a second replacement,
+-- and only the healthy reserve holds the position.
+function T.hazard_faint_on_arrival_owes_a_second_replacement()
+  local contracts = SessionFixture.sessionContracts()
+  local content = nativeContent()
+  local lead = movesetCombatant(1, 11, { moveSlot("SPLASH", 40) })
+  lead.mon.condition.currentHp = 1
+  local frail = movesetCombatant(3, 41, { moveSlot("SPLASH", 40) })
+  frail.mon.condition.currentHp = 1
+  local healthy = movesetCombatant(5, 51, { moveSlot("SPLASH", 40) })
+  local foe = movesetCombatant(2, 31, { moveSlot("TOXIC", 10), moveSlot("SPLASH", 40) })
+  local session = contracts.Battle.newSession(duelScenario({ lead, foe }, { frail, healthy }, {}), content)
+  local restored = restoreWithEffects(session, content, {
+    effectRecord("stealthrock", 701, { kind = "side", side = 1 }, { kind = "move", combatant = 2 }, { version = 1 }),
+  })
+
+  local replacements = { [1] = 3, [3] = 5 }
+  local function answer(request)
+    local kinds = {}
+    if request.legalChoices ~= nil then
+      kinds = request.legalChoices.kinds --[[@as table<integer, string>]]
+    end
+    local admitsSwitch = false
+    local admitsAttack = false
+    for _, kind in ipairs(kinds) do
+      if kind == "switch" then
+        admitsSwitch = true
+      end
+      if kind == "attack" then
+        admitsAttack = true
+      end
+    end
+    local choices = {}
+    for _, actor in ipairs(request.actors) do
+      if admitsSwitch and not admitsAttack then
+        local reserve = replacements[actor.combatant --[[@as integer]]]
+        Assert.notNil(reserve, "every replacement names its planned reserve")
+        choices[#choices + 1] = SessionFixture.switchChoice(actor, reserve --[[@as integer]])
+      elseif request.controller == "beta" then
+        local effects = conditionOf(restored:capture(), 1).effects --[[@as table<integer, table<string, unknown>>]]
+        if #effects > 0 then
+          choices[#choices + 1] = SessionFixture.attackChoice(actor, 1, SessionFixture.positionTarget(1))
+        else
+          choices[#choices + 1] = SessionFixture.attackChoice(actor, 0, SessionFixture.positionTarget(1))
+        end
+      else
+        choices[#choices + 1] = SessionFixture.attackChoice(actor, 0, SessionFixture.positionTarget(2))
+      end
+    end
+    return choices
+  end
+
+  local landed = false
+  local frame = nil
+  local firstEvents = {}
+  for _ = 1, 8 do
+    local settled
+    settled, firstEvents = playTurn(restored, answer)
+    frame = settled
+    local effects = conditionOf(restored:capture(), 1).effects --[[@as table<integer, table<string, unknown>>]]
+    if #effects == 1 and effects[1].key == "toxic" then
+      landed = true
+      break
+    end
+    Assert.equal(settled.status, "waiting", "the battle continues while the powder misses")
+  end
+  Assert.isTrue(landed, "the foe poisons the one-health lead through the ordinary move path")
+  Assert.isTrue(hasEventKind(firstEvents, "faint"), "the first lethal tick announces the lead faint")
+  Assert.notNil(frame, "the fainting turn settles its frame")
+
+  local second, secondEvents = playTurn(restored, answer)
+  Assert.equal(second.status, "waiting", "the hazard faint suspends on its own replacement")
+  Assert.notNil(second.request, "the arrival kill waits instead of settling an outcome")
+  local again = nil
+  for _, request in ipairs(second.request.requests) do
+    local kinds = request.legalChoices.kinds --[[@as table<integer, string>]]
+    if #kinds == 1 and kinds[1] == "switch" then
+      again = request
+    end
+  end
+  Assert.notNil(again, "the arrival kill waits for a replacement instead of settling an outcome")
+  local reasserted = assert(again, "the second replacement is addressed")
+  Assert.equal(
+    reasserted.actors[1].combatant,
+    3,
+    "the second obligation names the hazard-fainted arrival"
+  )
+  Assert.isTrue(hasEventKind(secondEvents, "faint"), "the hazard kill announces its faint")
+
+  local third, thirdEvents = playTurn(restored, answer)
+  Assert.equal(third.status, "waiting", "the healthy arrival continues the battle")
+  local ceiling = combatantOf(restored:capture(), 5).maxHp --[[@as integer]]
+  local expected = math.floor(ceiling / 8)
+  if expected < 1 then
+    expected = 1
+  end
+  Assert.equal(
+    combatantOf(restored:capture(), 5).hp,
+    ceiling - expected,
+    "the healthy arrival pays exactly the entry fraction"
+  )
+  Assert.equal(
+    restored:capture().positions[1].occupant,
+    5,
+    "the healthy reserve holds the vacated position"
+  )
+  local struck = {}
+  for _, events in ipairs({ secondEvents, thirdEvents }) do
+    for _, event in ipairs(events) do
+      if event.kind == "tick" then
+        local payload = event.payload --[[@as table<string, unknown>]]
+        if payload.key == "stealthrock" then
+          struck[#struck + 1] = payload
+        end
+      end
+    end
+  end
+  Assert.equal(#struck, 2, "each arrival pays the hazard exactly once")
+  Assert.equal(struck[1].combatant, 3, "the first arrival tick strikes the frail reserve")
+  Assert.equal(struck[2].combatant, 5, "the second arrival tick strikes the healthy reserve")
+  Assert.equal(struck[2].amount, expected, "the second arrival pays the derived fraction")
+  restored:dispose()
 end
 
 return { tests = T }

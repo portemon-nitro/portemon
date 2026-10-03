@@ -239,9 +239,10 @@ end
 ---@param ctx BattleContext mechanics context under execution
 ---@param defender integer defender combatant receiving the live flinch
 local function markFlinch(ctx, defender)
-  -- Flinch resolves through its real native definition: the before-action
-  -- timing is never dispatched yet, so the instance records presence
-  -- today and gates correctly once interception lands.
+  -- Flinch resolves through its real native definition as a one-turn
+  -- marker: the before-action pass consumes it on the block, and the
+  -- turn-end pass silently clears markers inflicted after their owner
+  -- already acted.
   local entry = ctx:entryOf(defender)
   if entry.activation == nil then
     error("flinch scopes to a live entry")
@@ -250,7 +251,7 @@ local function markFlinch(ctx, defender)
     NativeEffectHandlers.definitionFor("flinch"),
     { kind = "active", combatant = defender, activation = entry.activation },
     { kind = "move", combatant = defender },
-    { version = 1 }
+    { version = 1, turns = 1 }
   )
 end
 

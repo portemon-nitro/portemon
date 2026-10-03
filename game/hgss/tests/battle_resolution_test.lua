@@ -117,16 +117,52 @@ local function playerFacts(money)
 end
 
 ---@param battle table running application battle lifetime
-local function driveToSettlement(battle)
+---@param scenario table detached battle setup carrying the player roster
+local function driveToSettlement(battle, scenario)
   local SessionFixture = require("libs.battle.tests.session_fixture")
+  local claimed = {} ---@type table<integer, boolean>
+  -- A full player roster turns a mid-battle faint into a mandatory
+  -- switch-only replacement, so the driver answers those requests with
+  -- an unclaimed benched roster member and strikes everywhere else.
+  ---@param actor table fainted entry owed a reserve
+  ---@return integer unclaimed roster member sharing the player side
+  local function reserveFor(actor)
+    local roster = scenario.participants[1].roster
+    for _, seed in ipairs(roster) do
+      local id = (seed --[[@as table<string, unknown>]]).id --[[@as integer]]
+      if id ~= actor.combatant and not claimed[id] then
+        claimed[id] = true
+        return id
+      end
+    end
+    error("the replacement needs an unclaimed reserve")
+  end
   local ticks = 0
   while battle:status().phase ~= "complete" and battle:status().phase ~= "failed" and ticks < 1200 do
     battle:update()
     local current = battle:status()
     if current.phase == "running" and current.request ~= nil then
+      local kinds = {}
+      if current.request.legalChoices ~= nil then
+        kinds = current.request.legalChoices.kinds
+      end
+      local admitsSwitch = false
+      local admitsAttack = false
+      for _, kind in ipairs(kinds) do
+        if kind == "switch" then
+          admitsSwitch = true
+        end
+        if kind == "attack" then
+          admitsAttack = true
+        end
+      end
       local choices = {}
       for _, actor in ipairs(assert(current.request.actors, "a decision request names its actors")) do
-        choices[#choices + 1] = SessionFixture.attackChoice(actor, 0, SessionFixture.positionTarget(2))
+        if admitsSwitch and not admitsAttack then
+          choices[#choices + 1] = SessionFixture.switchChoice(actor, reserveFor(actor))
+        else
+          choices[#choices + 1] = SessionFixture.attackChoice(actor, 0, SessionFixture.positionTarget(2))
+        end
       end
       local accepted, replyErr = battle:submit(SessionFixture.replyFor(current.request, choices))
       Assert.isTrue(accepted, "a legal decision is accepted: " .. tostring(replyErr))
@@ -172,7 +208,7 @@ function T.trainer_win_pays_the_native_prize_once_without_injected_inputs()
     party = party,
     player = facts,
   })
-  driveToSettlement(battle)
+  driveToSettlement(battle, scenario)
   Assert.equal(battle:status().phase, "complete", "answered decisions finish the trainer battle")
   Assert.equal(battle:status().result, "win", "a fainted enemy side reports the win")
   local receipt = assert(battle:status().outcomeReceipt, "completion carries its commit receipt")
@@ -183,13 +219,14 @@ function T.trainer_win_pays_the_native_prize_once_without_injected_inputs()
   battle:dispose()
   -- Replaying the same terminal outcome under its launch identity reuses
   -- the recorded receipt instead of crediting the prize a second time.
+  local replayScenario = trainerScenario(trainers, { party = party })
   local replay = BattleRuntime.new({
     request = { id = "launch-native-prize", kind = "trainer", payload = { trainer = "rival-early" } },
-    scenario = trainerScenario(trainers, { party = party }),
+    scenario = replayScenario,
     party = party,
     player = facts,
   })
-  driveToSettlement(replay)
+  driveToSettlement(replay, replayScenario)
   Assert.equal(replay:status().phase, "complete", "the replayed battle still settles")
   local second = assert(replay:status().outcomeReceipt, "the replay carries its commit receipt")
   Assert.equal(second.rewards.amount, 64, "the replayed prize matches the recorded amount")
@@ -223,7 +260,7 @@ function T.trainer_win_doubles_the_prize_while_a_money_up_holder_stands()
     party = party,
     player = facts,
   })
-  driveToSettlement(battle)
+  driveToSettlement(battle, scenario)
   Assert.equal(battle:status().phase, "complete", "answered decisions finish the trainer battle")
   Assert.equal(battle:status().result, "win", "a fainted enemy side reports the win")
   local receipt = assert(battle:status().outcomeReceipt, "completion carries its commit receipt")
@@ -248,7 +285,7 @@ function T.loss_stages_blackout_debit_through_the_committer()
     party = party,
     player = facts,
   })
-  driveToSettlement(battle)
+  driveToSettlement(battle, scenario)
   Assert.equal(battle:status().phase, "complete", "answered decisions finish the lost battle")
   Assert.equal(battle:status().result, "loss", "a fainted player side reports the loss")
   local receipt = assert(battle:status().outcomeReceipt, "completion carries its commit receipt")
@@ -279,7 +316,7 @@ function T.capture_stages_party_dex_and_bag_through_the_committer()
     dex = dex,
     captures = { { captureId = 21, ball = "POKE_BALL", success = true, mon = caught } },
   })
-  driveToSettlement(battle)
+  driveToSettlement(battle, scenario)
   Assert.equal(battle:status().phase, "complete", "answered decisions finish the capture battle")
   local receipt = assert(battle:status().outcomeReceipt, "completion carries its commit receipt")
   Assert.isTrue(receipt.committed, "the capture batch commits")
@@ -324,7 +361,7 @@ function T.full_party_capture_stays_an_honest_noop_while_consuming_the_ball()
     dex = dex,
     captures = { { captureId = 22, ball = "POKE_BALL", success = true, mon = caught } },
   })
-  driveToSettlement(battle)
+  driveToSettlement(battle, scenario)
   Assert.equal(battle:status().phase, "complete", "answered decisions finish the full-party battle")
   local receipt = assert(battle:status().outcomeReceipt, "completion carries its commit receipt")
   Assert.isTrue(receipt.committed, "the full-party batch commits")
@@ -357,7 +394,7 @@ function T.roamer_battle_advances_the_roamer_revision()
     party = party,
     roamer = { owner = roamer, key = "roamer-eevee", expectedRevision = 0, details = {} },
   })
-  driveToSettlement(battle)
+  driveToSettlement(battle, scenario)
   Assert.equal(battle:status().phase, "complete", "answered decisions finish the roamer battle")
   local receipt = assert(battle:status().outcomeReceipt, "completion carries its commit receipt")
   Assert.isTrue(receipt.committed, "the roamer batch commits")
@@ -386,7 +423,7 @@ function T.unknown_capture_species_fails_the_resolution()
     party = party,
     captures = { { captureId = 23, ball = "POKE_BALL", success = true, mon = bogus } },
   })
-  driveToSettlement(battle)
+  driveToSettlement(battle, scenario)
   Assert.equal(battle:status().phase, "failed", "an unknown capture never stages")
   Assert.isNil(battle:status().outcomeReceipt, "a failed resolution records no receipt")
   Assert.isNil(Committer.receipt(launch.id), "a failed resolution records no success receipt")
@@ -412,7 +449,7 @@ function T.unstaged_dex_reference_fails_the_resolution()
     party = party,
     dex = dex,
   })
-  driveToSettlement(battle)
+  driveToSettlement(battle, scenario)
   Assert.equal(battle:status().phase, "failed", "an unstaged dex reference never publishes silently")
   Assert.isNil(battle:status().outcomeReceipt, "a failed resolution records no receipt")
   Assert.isNil(Committer.receipt(launch.id), "a failed resolution records no success receipt")
@@ -558,7 +595,7 @@ function T.thrown_captures_commit_through_the_runtime_without_reconstruction()
     dex = dex,
     captures = { generated },
   })
-  driveToSettlement(battle)
+  driveToSettlement(battle, scenario)
   Assert.equal(battle:status().phase, "complete", "answered decisions finish the capture battle")
   local receipt = assert(battle:status().outcomeReceipt, "completion carries its commit receipt")
   Assert.isTrue(receipt.committed, "the capture batch commits")
@@ -578,7 +615,10 @@ function T.thrown_captures_commit_through_the_runtime_without_reconstruction()
   local factory = CatalogFixture.makeFactory(0xBBBB0001, catalog)
   for _, key in ipairs({ "TOTODILE", "EEVEE", "CHIKORITA", "TOTODILE", "EEVEE" }) do
     local record = factory:createNormal(CatalogFixture.normalRequest({ species = key }))
-    Assert.isTrue(fullParty:addMon(record), "the no-op case needs a full party")
+    -- Reserves now reach the field through faint replacement, so the
+    -- filler movesets stay inside the modeled strike subset exactly like
+    -- every other record in this suite.
+    Assert.isTrue(fullParty:addMon(tackleOnly(record)), "the no-op case needs a full party")
   end
   Assert.equal(fullParty:partyCount(), 6, "the party starts full")
   local fullBag = newThrowBag()
@@ -596,7 +636,7 @@ function T.thrown_captures_commit_through_the_runtime_without_reconstruction()
     dex = fullDex,
     captures = { thrownCapture() },
   })
-  driveToSettlement(fullBattle)
+  driveToSettlement(fullBattle, fullScenario)
   Assert.equal(fullBattle:status().phase, "complete", "answered decisions finish the full-party battle")
   local fullReceipt = assert(fullBattle:status().outcomeReceipt, "completion carries its commit receipt")
   Assert.isTrue(fullReceipt.committed, "the full-party batch commits")

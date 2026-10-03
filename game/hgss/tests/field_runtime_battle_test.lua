@@ -384,6 +384,14 @@ function T.boot_resolves_a_generated_trainer_identity(context)
     local ok, err = xpcall(function()
       Assert.notNil(runtime._trainerCatalog, "production boot composes the trainer catalog")
       Assert.notNil(runtime._trainerFactory, "production boot composes the trainer materializer")
+      -- Production scenarios fail loudly without a conscious non-egg party
+      -- member, so the boot witness stocks one through the live mon service
+      -- before asking for the trainer scenario. Trainer resolution itself
+      -- still runs untouched through the composed catalog and materializer.
+      Assert.isTrue(
+        runtime.monService:giveMon({ species = "CHIKORITA", level = 5 }),
+        "the boot battle needs its battle-eligible party member"
+      )
       local compiled = BattleDataCache.loadTrainers(CacheFs.forVersion(versionId))
       local key = firstTrainerKey(compiled)
       -- The smallest generated identity is a rival template, which resolves

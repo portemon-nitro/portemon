@@ -1,23 +1,28 @@
 -- Native battle-local effect handlers for the HGSS session lifecycle.
 -- This module is the single registration owner binding the native volatile
--- and field definitions to their executable residual handlers. It exists
--- because the session dispatches end-of-turn work through the shared
--- finite dispatch, which resolves handlers per definition key: without
--- one cohesive table the executor would scatter native HP math across
--- move modules. Definitions stay owned by their declaring modules; only
--- the handler implementations live here. Nearest analogue:
--- `libs/battle/src/gen4/behaviors/NativePassives.lua`, which groups the
--- native ability/item handlers into one executable table. No new effect
--- class, dispatcher, timing, or mod-facing surface is added.
+-- and field definitions to their executable timing-specific handlers. It
+-- exists because the session dispatches residual, entry, and before-action
+-- work through the shared finite dispatch, which resolves handlers per
+-- definition key: without one cohesive table the executor would scatter
+-- native HP math across move modules. Definitions stay owned by their
+-- declaring modules; only the handler implementations live here. Nearest
+-- analogue: `libs/battle/src/gen4/behaviors/NativePassives.lua`, which
+-- groups the native ability/item handlers into one executable table. No new
+-- effect class, dispatcher, timing, or mod-facing surface is added.
 --
 -- Handler contract: every handler receives its live instance and the
--- residual pass context, mutates `context.health` in place, persists
--- countdowns through `instance.state`, and returns its events. Facts the
--- pass cannot derive (maximum health, semantic types, position
--- occupancy) arrive through the per-pass facts the executor builds, so
--- handlers close over them instead of reading battle state. Source
--- references: src/battle/battle_command.c end-of-turn effect order and
--- the overlay countdown semantics the definitions pin.
+-- pass context, mutates `context.health` in place, persists countdowns
+-- through `instance.state`, and returns its events. Facts the pass cannot
+-- derive (maximum health, semantic types, position occupancy, combat
+-- stats, entry sides, the session chart) arrive through the per-pass facts
+-- the executor builds, so handlers close over them instead of reading
+-- battle state. Before-action handlers that deny the action record the
+-- denial on `context.blockedBy`; the executor reads that flag after the
+-- pass instead of inferring it from event presence. Countdown ticks that
+-- change nothing emit no event; removal of the expired instance belongs
+-- to the session sweep after a completed pass. Source references:
+-- src/battle/battle_command.c action-gate, switch-in, and end-of-turn
+-- effect order and the overlay countdown semantics the definitions pin.
 --
 -- Event vocabulary, all deterministic in handler order:
 --   tick   { key, combatant, amount }      positive damage dealt
@@ -26,17 +31,23 @@
 -- Countdown ticks that change nothing emit no event; removal of the
 -- expired instance belongs to the session sweep after a completed pass.
 
+local Damage = require("libs.battle.src.gen4.Damage")
 local FieldEffects = require("libs.battle.src.gen4.behaviors.effects.FieldEffects")
 local VolatileEffects = require("libs.battle.src.gen4.behaviors.effects.VolatileEffects")
 local BattleErrors = require("libs.battle.src.errors")
+local TypeEffectiveness = require("libs.battle.src.gen4.TypeEffectiveness")
 
 ---@class NativeEffectHandlers
 local NativeEffectHandlers = {}
 
----@class NativeResidualFacts
+---@class NativeTimingFacts
 ---@field maxHp table<integer, integer> battle maximum health per combatant
 ---@field types table<integer, string[]> semantic types per combatant
 ---@field occupants table<integer, integer> active combatant per position
+---@field stats table<integer, table<string, integer>>? live level and battle stats per combatant
+---@field sides table<integer, integer>? owning side per combatant
+---@field entrant integer? combatant entering the field under an entry pass
+---@field chart table<string, unknown>? session chart view resolving effectiveness
 
 ---@type table<string, table<string, unknown>>? native definitions by key, captured once
 local cachedDefinitions = nil
@@ -77,7 +88,7 @@ function NativeEffectHandlers.definitionFor(key)
   return definition
 end
 
----@param facts NativeResidualFacts per-pass battle facts under the handlers
+---@param facts NativeTimingFacts per-pass battle facts under the handlers
 ---@param combatant integer combatant identity under the tick
 ---@return integer battle maximum health for the combatant
 local function maxHpOf(facts, combatant)
@@ -88,7 +99,7 @@ local function maxHpOf(facts, combatant)
   return ceiling --[[@as integer]]
 end
 
----@param facts NativeResidualFacts per-pass battle facts under the handlers
+---@param facts NativeTimingFacts per-pass battle facts under the handlers
 ---@param combatant integer combatant identity under the tick
 ---@return string[] semantic types for the combatant
 local function typesOf(facts, combatant)
@@ -141,7 +152,7 @@ local function expireEvent(instance)
   return event
 end
 
----@param facts NativeResidualFacts per-pass battle facts under the handlers
+---@param facts NativeTimingFacts per-pass battle facts under the handlers
 ---@param health table<integer, integer> battle-local health under the pass
 ---@param combatant integer combatant identity receiving damage
 ---@param divisor integer maximum-health divisor for the tick
@@ -155,7 +166,7 @@ local function dealFraction(facts, health, combatant, divisor)
   return damage
 end
 
----@param facts NativeResidualFacts per-pass battle facts under the handlers
+---@param facts NativeTimingFacts per-pass battle facts under the handlers
 ---@param health table<integer, integer> battle-local health under the pass
 ---@param combatant integer combatant identity receiving recovery
 ---@param divisor integer maximum-health divisor for the recovery
@@ -198,7 +209,7 @@ local function anchored(health, combatant)
   return type(health[combatant]) == "number" and health[combatant] --[[@as integer]] > 0
 end
 
----@param facts NativeResidualFacts per-pass battle facts under the handlers
+---@param facts NativeTimingFacts per-pass battle facts under the handlers
 ---@param immune table<string, boolean> types unaffected by the weather
 ---@param key string weather identity under the damage
 ---@return fun(instance: table<string, unknown>, context: table<string, unknown>): table<string, unknown>[] handler damaging every exposed combatant in speed order
@@ -251,18 +262,90 @@ local function makeExpiry()
   return tickExpiry
 end
 
+---@param facts NativeTimingFacts per-pass battle facts under the handlers
+local function checkBaseFacts(facts)
+  assert(type(facts) == "table", "native handlers read their per-pass facts")
+  assert(type(facts.maxHp) == "table", "native handlers read battle maximum health")
+  assert(type(facts.types) == "table", "native handlers read semantic type facts")
+  assert(type(facts.occupants) == "table", "native handlers read position occupancy")
+end
+
+---@param instance table<string, unknown> live instance under inspection
+---@return integer combatant identity owning the instance scope
+local function scopeCombatant(instance)
+  local scope = instance.scope --[[@as table<string, unknown>]]
+  if type(scope) ~= "table" or type(scope.combatant) ~= "number" then
+    error(BattleErrors.invalidState("combatant-scoped handlers read their owner", { key = instance.key }))
+  end
+  return scope.combatant --[[@as integer]]
+end
+
+---@param instance table<string, unknown> live instance under inspection
+---@return integer side identity owning the instance scope
+local function scopeSide(instance)
+  local scope = instance.scope --[[@as table<string, unknown>]]
+  if type(scope) ~= "table" or type(scope.side) ~= "number" then
+    error(BattleErrors.invalidState("side-scoped handlers read their owner", { key = instance.key }))
+  end
+  return scope.side --[[@as integer]]
+end
+
+---@param facts NativeTimingFacts per-pass battle facts under the handlers
+---@param combatant integer combatant identity under inspection
+---@return table<string, integer> live level and battle stats for the combatant
+local function statsOf(facts, combatant)
+  local stats = facts.stats --[[@as table<integer, table<string, integer>>?]]
+  if type(stats) ~= "table" then
+    error(BattleErrors.invalidState("action handlers read live battle stats", { combatant = combatant }))
+  end
+  local owned = stats[combatant]
+  if type(owned) ~= "table" then
+    error(BattleErrors.invalidState("action handlers read live battle stats", { combatant = combatant }))
+  end
+  for _, field in ipairs({ "level", "attack", "defense" }) do
+    if
+      type(owned[field]) ~= "number" or owned[field] --[[@as integer]]
+        % 1 ~= 0
+    then
+      error(BattleErrors.invalidState("action handlers read live battle stats", { combatant = combatant }))
+    end
+  end
+  return owned --[[@as table<string, integer>]]
+end
+
+---@param context table<string, unknown> pass context carrying the battle stream
+---@return table<string, unknown> labeled battle stream for rolled ticks
+local function checkBattleStream(context)
+  local stream = context.stream --[[@as table<string, unknown>?]]
+  if type(stream) ~= "table" or type(stream.nextU16) ~= "function" then
+    error(BattleErrors.invalidState("rolled handlers draw from the battle stream", {}))
+  end
+  return stream --[[@as table<string, unknown>]]
+end
+
+-- Confusion strikes itself half the time as a 40-power typeless physical
+-- hit of its own Attack against its own Defense. The 50% check draws one
+-- labeled battle-stream draw before any damage roll, in source order.
+local CONFUSION_POWER = 40
+local CONFUSION_HIT_THRESHOLD = 32768
+
 --- Builds the executable native handlers for one residual pass. Only keys
 --- with reachable native setters are bound; a collected instance without
 --- a handler fails loudly through the dispatch owner instead of ticking
 --- silently.
----@param facts NativeResidualFacts per-pass battle facts under the handlers
+---@param facts NativeTimingFacts per-pass battle facts under the handlers
 ---@return table<string, fun(instance: table<string, unknown>, context: table<string, unknown>): unknown> handlers by definition key
-function NativeEffectHandlers.handlersFor(facts)
-  assert(type(facts) == "table", "residual handlers read their per-pass facts")
-  assert(type(facts.maxHp) == "table", "residual handlers read battle maximum health")
-  assert(type(facts.types) == "table", "residual handlers read semantic type facts")
-  assert(type(facts.occupants) == "table", "residual handlers read position occupancy")
+local function buildResidualHandlers(facts)
+  checkBaseFacts(facts)
   local handlers = {}
+
+  ---@param instance table<string, unknown> live flinch marker under expiry
+  ---@return nil the silent turn-end expiry emits no event
+  local function flinchExpiry(instance, _)
+    countDown(instance)
+    return nil
+  end
+  handlers.flinch = flinchExpiry
 
   ---@param instance table<string, unknown> live leech-seed instance under the tick
   ---@param context table<string, unknown> residual pass context under mutation
@@ -395,6 +478,165 @@ function NativeEffectHandlers.handlersFor(facts)
   handlers.futuresight = makeExpiry()
 
   return handlers
+end
+
+-- Field and side conditions outlive every entry, so the entry pass only
+-- affirms their presence: durations keep ticking at turn end and never
+-- lose a turn to a switch-in.
+---@return fun(instance: table<string, unknown>, context: table<string, unknown>): unknown handler affirming presence
+local function affirmEntry()
+  local function affirm(_, _)
+    return nil
+  end
+  return affirm
+end
+
+--- Builds the executable native handlers for one entry pass. Hazards
+--- strike only the entrant on their own side with source-derived
+--- fractions; every other supported entry binding affirms presence.
+---@param facts NativeTimingFacts per-pass battle facts under the handlers
+---@return table<string, fun(instance: table<string, unknown>, context: table<string, unknown>): unknown> handlers by definition key
+local function buildEntryHandlers(facts)
+  checkBaseFacts(facts)
+  assert(type(facts.sides) == "table", "entry handlers read the owning side per combatant")
+  assert(type(facts.entrant) == "number", "entry handlers name their entrant")
+  if type(facts.chart) ~= "table" then
+    error(BattleErrors.invalidState("entry hazards read the session chart", {}))
+  end
+  local handlers = {}
+
+  ---@param instance table<string, unknown> live hazard instance under the entry
+  ---@param context table<string, unknown> entry pass context under mutation
+  ---@return unknown tick event, or nil when the hazard spares the entrant
+  local function stealthrock(instance, context)
+    local entrant = facts.entrant --[[@as integer]]
+    local sides = facts.sides --[[@as table<integer, integer>]]
+    if sides[entrant] ~= scopeSide(instance) then
+      return nil
+    end
+    local resolved =
+      TypeEffectiveness.resolve(facts.chart --[[@as table<string, unknown>]], "rock", typesOf(facts, entrant), {})
+    if resolved.immune then
+      return nil
+    end
+    local health = context.health --[[@as table<integer, integer>]]
+    local hp = healthOf(health, entrant)
+    if hp <= 0 then
+      return nil
+    end
+    local damage = math.floor(maxHpOf(facts, entrant) * resolved.numerator / (8 * resolved.denominator))
+    if damage < 1 then
+      damage = 1
+    end
+    health[entrant] = hp - damage
+    return { kind = "tick", key = instance.key, combatant = entrant, amount = damage }
+  end
+  handlers.stealthrock = stealthrock
+
+  for _, key in ipairs({
+    "reflect",
+    "lightscreen",
+    "safeguard",
+    "mist",
+    "raindance",
+    "sunnyday",
+    "sandstorm",
+    "hail",
+    "gravity",
+    "trickroom",
+  }) do
+    handlers[key] = affirmEntry()
+  end
+
+  return handlers
+end
+
+--- Builds the executable native handlers for one before-action pass.
+--- Flinch denies the action outright; confusion counts down when its
+--- owner acts, snaps out at zero, and otherwise risks the self-hit.
+---@param facts NativeTimingFacts per-pass battle facts under the handlers
+---@return table<string, fun(instance: table<string, unknown>, context: table<string, unknown>): unknown> handlers by definition key
+local function buildBeforeActionHandlers(facts)
+  checkBaseFacts(facts)
+  local handlers = {}
+
+  ---@param instance table<string, unknown> live flinch marker under the gate
+  ---@param context table<string, unknown> before-action pass context under mutation
+  ---@return unknown block event consuming the one-turn marker
+  local function flinch(instance, context)
+    local combatant = scopeCombatant(instance)
+    local health = context.health --[[@as table<integer, integer>]]
+    if not anchored(health, combatant) then
+      return nil
+    end
+    countDown(instance)
+    context.blockedBy = instance.key
+    return { kind = "blocked", key = instance.key, combatant = combatant }
+  end
+  handlers.flinch = flinch
+
+  ---@param instance table<string, unknown> live confusion instance under the gate
+  ---@param context table<string, unknown> before-action pass context under mutation
+  ---@return unknown emitted event records for the pass
+  local function confusion(instance, context)
+    if context.blockedBy ~= nil then
+      return nil
+    end
+    local combatant = scopeCombatant(instance)
+    local health = context.health --[[@as table<integer, integer>]]
+    if not anchored(health, combatant) then
+      return nil
+    end
+    if countDown(instance) <= 0 then
+      return expireEvent(instance)
+    end
+    local stream = checkBattleStream(context)
+    local cause = { kind = "confusion", combatant = combatant }
+    local draw = stream.nextU16(stream, "confusion_hit", cause)
+    if draw >= CONFUSION_HIT_THRESHOLD then
+      return nil
+    end
+    local stats = statsOf(facts, combatant)
+    local result = Damage.calculate({
+      level = stats.level,
+      power = CONFUSION_POWER,
+      attack = stats.attack,
+      defense = stats.defense,
+      stab = { numerator = 1, denominator = 1 },
+      effectiveness = { numerator = 1, denominator = 1 },
+    }, stream)
+    health[combatant] = healthOf(health, combatant) - result.amount
+    context.blockedBy = instance.key
+    return { kind = "tick", key = instance.key, combatant = combatant, amount = result.amount }
+  end
+  handlers.confusion = confusion
+
+  return handlers
+end
+
+--- Builds the executable native handlers for one named finite timing.
+--- Only keys with timing-valid native semantics are bound; a collected
+--- instance without a handler fails loudly through the dispatch owner
+--- instead of running another timing's semantics.
+---@param facts NativeTimingFacts per-pass battle facts under the handlers
+---@param timing string? finite timing under invocation, defaulting to the residual pass
+---@return table<string, fun(instance: table<string, unknown>, context: table<string, unknown>): unknown> handlers by definition key
+function NativeEffectHandlers.handlersFor(facts, timing)
+  local selected = timing
+  if selected == nil then
+    selected = "residual"
+  end
+  assert(type(selected) == "string", "native handlers dispatch one named timing")
+  if selected == "residual" then
+    return buildResidualHandlers(facts)
+  end
+  if selected == "entry" then
+    return buildEntryHandlers(facts)
+  end
+  if selected == "beforeAction" then
+    return buildBeforeActionHandlers(facts)
+  end
+  error(BattleErrors.invalidState("native handlers dispatch only finite known timings", { timing = selected }))
 end
 
 return NativeEffectHandlers
