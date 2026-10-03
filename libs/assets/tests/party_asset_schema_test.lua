@@ -331,6 +331,20 @@ local function v6manifest()
   end
   data.text.templates.takeNoItem = { segments = { { kind = "text", value = "Nothing held." } } }
   data.text.templates.bagFull = { segments = { { kind = "text", value = "The Bag is full." } } }
+  local runtimeMessages = {
+    { "chooseMon", "Choose a POKEMON." },
+    { "moveTarget", "Move to where?" },
+    { "giveTarget", "Give to which POKEMON?" },
+    { "useTarget", "Use on which POKEMON?" },
+    { "teachTarget", "Teach which POKEMON?" },
+    { "itemAction", "What to do with the item?" },
+    { "switchHeldPrompt", "Switch the held items?" },
+    { "switchHeldResult", "Switched the held items." },
+    { "giveHeldItem", "Gave the item to hold." },
+  }
+  for _, entry in ipairs(runtimeMessages) do
+    data.text.templates[entry[1]] = { segments = { { kind = "text", value = entry[2] } } }
+  end
   data.text.messageRole = textRoleTriple(colorRef(250, 246, 217), colorRef(144, 128, 96), colorRef(48, 40, 32))
   return data
 end
@@ -660,20 +674,60 @@ function T.context_text_roles_cover_command_field_and_cancel_states()
   )
 end
 
-function T.switch_selection_chrome_and_empty_take_template_are_required()
+function T.switch_selection_chrome_is_required()
   Assert.isTrue(PartyAssetSchema.isValidManifest(v6manifest()), "the extended presentation family is valid")
   local missingChrome = v6manifest()
   missingChrome.panels[1].chrome.switchSelection = nil
   Assert.isFalse(PartyAssetSchema.isValidManifest(missingChrome), "switch-selection chrome is required")
-  local missingTemplate = v6manifest()
-  missingTemplate.text.templates.takeNoItem = nil
-  Assert.isFalse(PartyAssetSchema.isValidManifest(missingTemplate), "the empty-take template is required")
-  local emptyTemplate = v6manifest()
-  emptyTemplate.text.templates.takeNoItem = { segments = {} }
-  Assert.isFalse(PartyAssetSchema.isValidManifest(emptyTemplate), "the empty-take template carries segments")
   Assert.equal(PartyAssetSchema.SCHEMA, "g4-party-presentation-v6")
   Assert.equal(PartyAssetSchema.SCHEMA, DerivedAssetContract.party.schema)
   Assert.isFalse(PartyAssetSchema.isValidManifest(v3manifest()), "the previous presentation contract is stale")
+end
+
+function T.runtime_messages_are_required_at_the_schema_boundary()
+  local required = {
+    "chooseMon",
+    "moveTarget",
+    "giveTarget",
+    "useTarget",
+    "teachTarget",
+    "itemAction",
+    "takeNoItem",
+    "bagFull",
+    "switchHeldPrompt",
+    "switchHeldResult",
+    "giveHeldItem",
+  }
+  Assert.isTrue(PartyAssetSchema.isValidManifest(v6manifest()), "the complete family is valid")
+  local accepted = {}
+  for _, name in ipairs(required) do
+    local bad = v6manifest()
+    bad.text.templates[name] = nil
+    if PartyAssetSchema.isValidManifest(bad) then
+      accepted[#accepted + 1] = name
+    else
+      local err = Assert.throws(function()
+        PartyAssetSchema.assertManifest(bad)
+      end)
+      Assert.notNil(
+        tostring(err):find("PARTY_MANIFEST_INVALID"),
+        name .. " rejection uses the manifest error family"
+      )
+    end
+  end
+  Assert.isTrue(#accepted == 0, "incomplete families passed: " .. table.concat(accepted, ", "))
+  local hollow = v6manifest()
+  hollow.text.templates.takeNoItem = { segments = {} }
+  Assert.isFalse(
+    PartyAssetSchema.isValidManifest(hollow),
+    "a required template without segments stays invalid"
+  )
+end
+
+function T.unlisted_message_templates_remain_valid()
+  local complete = v6manifest()
+  Assert.notNil(complete.text.templates.switchPrompt, "the fixture carries an unlisted template")
+  Assert.isTrue(PartyAssetSchema.isValidManifest(complete), "unlisted valid templates stay accepted")
 end
 
 function T.lower_message_role_is_required()
@@ -683,21 +737,6 @@ function T.lower_message_role_is_required()
   local malformed = v6manifest()
   malformed.text.messageRole = { foreground = colorRef(248, 248, 248) }
   Assert.isFalse(PartyAssetSchema.isValidManifest(malformed), "the lower-message role keeps its triple")
-end
-
-function T.full_bag_template_is_required_at_the_schema_boundary()
-  local complete = v6manifest()
-  complete.schema = PartyAssetSchema.SCHEMA
-  complete.text.templates.bagFull = { segments = { { kind = "text", value = "The Bag is full." } } }
-  Assert.isTrue(PartyAssetSchema.isValidManifest(complete), "the complete family with the full-bag template is valid")
-  local missing = v6manifest()
-  missing.schema = PartyAssetSchema.SCHEMA
-  missing.text.templates.bagFull = nil
-  Assert.isFalse(PartyAssetSchema.isValidManifest(missing), "the full-bag template is required")
-  local err = Assert.throws(function()
-    PartyAssetSchema.assertManifest(missing)
-  end)
-  Assert.notNil(tostring(err):find("PARTY_MANIFEST_INVALID"), "rejections carry the protocol code")
 end
 
 function T.party_contract_identity_is_v6_and_previous_schema_is_stale()
