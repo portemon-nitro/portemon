@@ -106,7 +106,7 @@ end
 ---@field overrides table<string, unknown>? per-case function overrides for this application
 ---@field prepareIcons fun(iconKeys: string[]): boolean, string? required icon preparation collaborator
 ---@field cancelIconPreparation fun() required preparation release collaborator
----@field effect fun(sequence: string)? the borrowed swap sound boundary forwarded to the native controller
+---@field effect fun(sequence: string)? the borrowed Party semantic sound boundary forwarded to the native controller
 
 ---@param opts PartyScreenState.Options
 ---@return PartyScreenState

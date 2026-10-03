@@ -712,13 +712,14 @@ end
 -- treatment; the focused entry uses the depressed treatment; an armed
 -- press shows the pressed frame with the raised treatment through its
 -- first half and the depressed treatment through its second half. The
+-- arm frame keeps the focused selected/depressed presentation. The
 -- generated frame art carries the button chrome, so no enclosing window
 -- or highlight rectangle is painted. Ink and fill follow the generated
 -- semantic role the entry style selects; the fixed cancel entry keeps
 -- command ink through its own role.
 ---@param menu table<string, unknown>[]
 ---@param menuIndex integer
----@param menuPress { index: integer, phase: "pressed"|"selected" }?
+---@param menuPress { index: integer, phase: "armed"|"pressed"|"selected" }?
 ---@param kind "topLevel"|"subcontext"
 ---@param layout table<string, unknown>
 function PartyScreenRenderer:_drawMenu(menu, menuIndex, menuPress, kind, layout)
@@ -749,6 +750,12 @@ function PartyScreenRenderer:_drawMenu(menu, menuIndex, menuPress, kind, layout)
     if pressPhase == "pressed" then
       frameState = "pressed"
     elseif pressPhase == "selected" then
+      frameState = "selected"
+      treatment = "depressed"
+    elseif pressPhase == "armed" then
+      -- The arm frame still shows the pre-press focused row: the
+      -- selected frame with the depressed treatment, never the pressed
+      -- frame.
       frameState = "selected"
       treatment = "depressed"
     elseif focused then

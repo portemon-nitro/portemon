@@ -1493,6 +1493,27 @@ function T.press_phases_drive_pressed_then_selected_button_frames()
   Assert.equal(selected2, 1, "the second press half draws the selected button frame")
 end
 
+function T.armed_press_keeps_the_pre_press_selected_presentation()
+  local manifest = v5Manifest()
+  local selectedImage = manifest.contextMenu.frames.standard.selected.image
+  local pressedImage = manifest.contextMenu.frames.standard.pressed.image
+  local graphics = fakeGraphics()
+  local renderer = newRenderer(graphics, paletteText({}), manifest)
+  local status = contextStatus({ menuPress = { index = 1, phase = "armed" } })
+  status.view.slots[1] = occupiedSlot(0)
+  renderer:draw(status, v5Layout(manifest), frameIcons({}))
+  local pressed, selected = 0, 0
+  for _, draw in ipairs(graphics.draws) do
+    if draw.image == renderer._images["asset:" .. pressedImage] then
+      pressed = pressed + 1
+    elseif draw.image == renderer._images["asset:" .. selectedImage] then
+      selected = selected + 1
+    end
+  end
+  Assert.equal(pressed, 0, "the arm frame draws no pressed button frame")
+  Assert.equal(selected, 1, "the arm frame keeps the selected button frame")
+end
+
 function T.open_context_message_uses_the_context_window()
   local manifest = v5Manifest()
   local graphics = fakeGraphics()
