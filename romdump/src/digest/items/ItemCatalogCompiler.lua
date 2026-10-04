@@ -716,6 +716,14 @@ function ItemCatalogCompiler.compileCatalog(romFs, opts)
         heldFormEffect = heldFormEffect,
         partyUse = normalizePartyUse(nativeId, key, pocketKey, isMachine, decoded),
       }
+      -- The native trainer selector serves the full restore only for a
+      -- living holder below quarter health instead of following ordinary
+      -- cure/restore applicability. The projection marks that identity
+      -- here so runtime selection branches on semantic data, never on the
+      -- item key or the native identity.
+      if nativeId == ItemSources.FULL_RESTORE_ID then
+        record.lowHpOnly = true
+      end
       if type(record.description) ~= "string" then
         error(Errors.new("ITEM_TEXT_MISSING", "item " .. nativeId .. " has no description", { nativeId = nativeId }), 0)
       end

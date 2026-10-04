@@ -3503,6 +3503,7 @@ local function checkItemEntries(facts, raise)
         and field ~= "naturalGift"
         and field ~= "fling"
         and field ~= "heldBehavior"
+        and field ~= "lowHpOnly"
       then
         error(raise("session item facts carry only their generated facts", { item = tostring(key) }))
       end

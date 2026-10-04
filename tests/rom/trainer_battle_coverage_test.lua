@@ -999,7 +999,8 @@ function T.carried_trainer_items_execute_from_session_stock(romFs, versionId)
     for _, key in
       ipairs(built.items --[[@as table<integer, unknown>]])
     do
-      if representative[key --[[@as string]]] == nil then
+      -- Gap positions are not servings and never probe.
+      if key ~= "NONE" and representative[key --[[@as string]]] == nil then
         representative[key --[[@as string]]] = trainerIndex
       end
     end
@@ -1046,8 +1047,9 @@ function T.carried_trainer_items_execute_from_session_stock(romFs, versionId)
     local trainer = SessionFixture.participant(2, 2, "trainer:" .. trainerIndex, { second }, TRAINER_STOCK_ID)
     withPasses(trainer, built.aiPasses --[[@as table<integer, unknown>]])
     -- The probe stock holds two units of the single probed identity, so
-    -- the ordered slots carry that identity twice in source multiplicity.
-    trainer.context.trainerItems = { itemKey, itemKey }
+    -- the ordered slots carry that identity twice in source multiplicity
+    -- with two gaps behind them.
+    trainer.context.trainerItems = { itemKey, itemKey, "NONE", "NONE" }
     local session = Battle.newSession({
       ruleset = Executor.RULESET,
       format = "singles",

@@ -338,6 +338,26 @@ function T.trainer_item_lists_become_finite_per_trainer_stock()
   Assert.isNil(second.context.items, "carried items never enter the decision context")
 end
 
+function T.trainer_gap_positions_carry_no_stock()
+  local party = mixedParty()
+  local scenario = ScenarioFactory.fromTrainer({
+    trainers = {
+      { id = "a", party = { fullRecord() }, items = { "POTION", "NONE", "NONE", "NONE" } },
+    },
+  }, { party = party, bag = stockedBag() })
+  local foe = scenario.participants[2]
+  Assert.deepEqual(
+    foe.context.trainerItems,
+    { "POTION", "NONE", "NONE", "NONE" },
+    "gap positions ride the decision context unchanged"
+  )
+  Assert.deepEqual(
+    inventoryOf(scenario, assert(foe.inventoryId, "the trainer keeps its stock identity")).quantities,
+    { POTION = 1 },
+    "gap positions count no stock"
+  )
+end
+
 function T.trainer_pass_facts_ride_the_decision_context()
   local party = mixedParty()
   local scenario = ScenarioFactory.fromTrainer({

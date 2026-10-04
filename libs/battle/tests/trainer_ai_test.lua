@@ -441,7 +441,7 @@ function T.a_wounded_lead_without_a_native_trigger_takes_the_stocked_cure()
       { lead, reserve },
       { foe },
       { "TACKLE", "GROWL", "TAIL_WHIP", "WATER_GUN" },
-      { trainerItems = { "POTION" } }
+      { trainerItems = { "POTION", "NONE", "NONE", "NONE" } }
     )
   )
   local held = session:capture().inventories["trainer-stock"].quantities
@@ -473,7 +473,7 @@ function T.without_a_reserve_the_same_wound_takes_the_stocked_cure()
       { loneLead },
       { loneFoe },
       { "TACKLE", "GROWL", "TAIL_WHIP" },
-      { trainerItems = { "POTION" } }
+      { trainerItems = { "POTION", "NONE", "NONE", "NONE" } }
     )
   )
   local loneReply = loneSession:answerTrainer(openRequest(loneSession, "trainer:1"))
@@ -500,7 +500,7 @@ function T.full_health_status_ailments_consider_the_bag_before_striking()
       {
         passes = {},
         itemFacts = { REMEDY = { partyUse = sleepCureFacts() }, POTION = { partyUse = potionFacts() } },
-        trainerItems = { "REMEDY", "POTION" },
+        trainerItems = { "REMEDY", "POTION", "NONE", "NONE" },
       }
     )
   )
@@ -527,7 +527,7 @@ function T.selected_item_slots_stay_consumed_until_the_serving_executes()
       { lead },
       { foe },
       nil,
-      { trainerItems = { "POTION" } }
+      { trainerItems = { "POTION", "NONE", "NONE", "NONE" } }
     )
   )
   local first = session:answerTrainer(openRequest(session, "trainer:1"))
@@ -561,7 +561,7 @@ function T.ai_memory_rides_the_native_snapshot_and_restores_exactly()
       { lead },
       { foe },
       nil,
-      { trainerItems = { "POTION" } }
+      { trainerItems = { "POTION", "NONE", "NONE", "NONE" } }
     )
   )
   local function slotsOf(captured)
@@ -575,7 +575,11 @@ function T.ai_memory_rides_the_native_snapshot_and_restores_exactly()
   Assert.equal(first.choices[1].kind, "item", "the stocked cure answers first")
   Assert.equal(first.choices[1].payload.item, "POTION", "the serving names the stocked cure")
   Assert.equal(session:capture().rng.calls, callsBefore, "selection moves no stream draws")
-  Assert.deepEqual(slotsOf(session:capture()), {}, "selection clears the served source slot")
+  Assert.deepEqual(
+    slotsOf(session:capture()),
+    { "NONE", "NONE", "NONE", "NONE" },
+    "selection clears the served source slot in place"
+  )
   SessionFixture.assertPlainData(session:capture().trainerAi, "captured trainer memory")
   Assert.equal(
     session:capture().inventories["trainer-stock"].quantities.POTION,
@@ -660,7 +664,7 @@ function T.sibling_item_records_pass_through_trainer_consideration()
         { lead },
         { foe },
         nil,
-        { itemFacts = { POTION = facts }, trainerItems = { "POTION" } }
+        { itemFacts = { POTION = facts }, trainerItems = { "POTION", "NONE", "NONE", "NONE" } }
       )
     )
     local reply = session:answerTrainer(openRequest(session, "trainer:1"))
@@ -692,7 +696,7 @@ function T.answering_never_mutates_battle_state()
       { lead },
       { foe },
       nil,
-      { trainerItems = { "POTION" } }
+      { trainerItems = { "POTION", "NONE", "NONE", "NONE" } }
     )
   )
   local before = session:capture()
@@ -1350,7 +1354,7 @@ function T.fresh_trainer_memory_opens_zeroed_beside_the_session()
       { lead },
       { foe },
       nil,
-      { trainerItems = { "POTION" } }
+      { trainerItems = { "POTION", "NONE", "NONE", "NONE" } }
     )
   )
   local held = session:capture()
@@ -1359,7 +1363,11 @@ function T.fresh_trainer_memory_opens_zeroed_beside_the_session()
   Assert.equal(memory.version, 1, "the record carries its schema mark")
   local controllers = memory.controllers --[[@as table<string, unknown>]]
   local owned = controllers["trainer:1"] --[[@as table<string, unknown>]]
-  Assert.deepEqual(owned.slots, { "POTION" }, "ordered slots mirror the stocked list")
+  Assert.deepEqual(
+    owned.slots,
+    { "POTION", "NONE", "NONE", "NONE" },
+    "ordered slots mirror the stocked list with explicit gaps"
+  )
   Assert.deepEqual(owned.knownMoves, {}, "learned knowledge starts empty")
   SessionFixture.assertPlainData(memory, "fresh trainer memory")
   session:dispose()
@@ -1390,12 +1398,15 @@ function T.stocked_trainers_without_ordered_slots_fail_closed()
 end
 
 -- Malformed trainer records never restore: a missing record, a foreign
--- schema mark, and a misshapen slot list all fail incompatible instead
--- of seeding fresh guesses.
+-- schema mark, a misshapen slot list, and compact or overlong slot
+-- lists all fail incompatible instead of seeding fresh guesses.
 function T.malformed_trainer_records_fail_restore_as_incompatible()
   local TrainerAi = trainerPolicy()
   Assert.isTrue(
-    TrainerAi.validateMemory({ version = 1, controllers = { ["trainer:1"] = { slots = {}, knownMoves = {} } } }),
+    TrainerAi.validateMemory({
+      version = 1,
+      controllers = { ["trainer:1"] = { slots = { "POTION", "NONE", "NONE", "NONE" }, knownMoves = {} } },
+    }),
     "a well-formed record validates"
   )
   for _, broken in
@@ -1403,6 +1414,11 @@ function T.malformed_trainer_records_fail_restore_as_incompatible()
       { version = 2, controllers = {} },
       { version = 1, controllers = { ["trainer:1"] = { slots = { "" }, knownMoves = {} } } },
       { version = 1, controllers = { ["trainer:1"] = { slots = {}, knownMoves = { [0] = {} } } } },
+      { version = 1, controllers = { ["trainer:1"] = { slots = { "POTION" }, knownMoves = {} } } },
+      {
+        version = 1,
+        controllers = { ["trainer:1"] = { slots = { "POTION", "NONE", "NONE", "NONE", "POTION" }, knownMoves = {} } },
+      },
     })
   do
     local failure = Assert.throws(function()
@@ -1448,7 +1464,7 @@ function T.ordered_slots_win_over_alphabetical_stock()
       {
         passes = {},
         itemFacts = { SUPER_POTION = { partyUse = superFacts }, POTION = { partyUse = potionFacts() } },
-        trainerItems = { "SUPER_POTION", "POTION" },
+        trainerItems = { "SUPER_POTION", "POTION", "NONE", "NONE" },
       }
     )
   )
@@ -1457,8 +1473,8 @@ function T.ordered_slots_win_over_alphabetical_stock()
   local owned = controllers["trainer:1"] --[[@as table<string, unknown>]]
   Assert.deepEqual(
     owned.slots,
-    { "SUPER_POTION", "POTION" },
-    "memory slots mirror the source order"
+    { "SUPER_POTION", "POTION", "NONE", "NONE" },
+    "memory slots mirror the source order with explicit gaps"
   )
   local first = session:answerTrainer(openRequest(session, "trainer:1"))
   Assert.equal(first.choices[1].kind, "item", "an eligible serving answers")
@@ -1503,7 +1519,7 @@ function T.duplicate_item_slots_serve_in_source_order_across_turns()
       {
         passes = {},
         itemFacts = { POTION = { partyUse = potionFacts() }, SUPER_POTION = { partyUse = superFacts } },
-        trainerItems = { "POTION", "SUPER_POTION", "POTION" },
+        trainerItems = { "POTION", "SUPER_POTION", "POTION", "NONE" },
       }
     )
   )
@@ -1520,8 +1536,8 @@ function T.duplicate_item_slots_serve_in_source_order_across_turns()
   Assert.equal(session:capture().rng.calls, callsBefore, "the opening selection moves no stream draws")
   Assert.deepEqual(
     slotsOf(session:capture()),
-    { "SUPER_POTION", "POTION" },
-    "selection clears only the first matching slot"
+    { "NONE", "SUPER_POTION", "POTION", "NONE" },
+    "selection clears only the first matching slot in place"
   )
   local foeRequest = openRequest(session, "player")
   local foeActor = assert(foeRequest.actors[1], "the opposing request addresses its lead")
@@ -1541,7 +1557,11 @@ function T.duplicate_item_slots_serve_in_source_order_across_turns()
   Assert.equal(second.choices[1].kind, "item", "the next turn still serves")
   Assert.equal(second.choices[1].payload.item, "SUPER_POTION", "the middle slot answers next")
   Assert.equal(session:capture().rng.calls, nextCallsBefore, "the next selection moves no stream draws")
-  Assert.deepEqual(slotsOf(session:capture()), { "POTION" }, "the middle slot clears in turn")
+  Assert.deepEqual(
+    slotsOf(session:capture()),
+    { "NONE", "NONE", "POTION", "NONE" },
+    "the middle slot clears in turn without shifting"
+  )
   session:dispose()
 end
 
@@ -2605,6 +2625,249 @@ function T.membership_draws_fire_per_listed_effect()
   Assert.equal(#nineEffectStream:drawLabels(), 5, "a listed unpredictability effect draws once")
 end
 
+---@return table<string, unknown> detached generated-style full-serving facts
+local function fullRestoreFacts()
+  return {
+    kind = "medicine",
+    restore = { kind = "full" },
+    cures = { sleep = true, poison = true, burn = true, freeze = true, paralysis = true },
+    revive = "none",
+    mood = 0,
+  }
+end
+
+---@param captured table detached battle capture under inspection
+---@return string[] ordered trainer item slots for the single trainer
+local function memorySlotsOf(captured)
+  local memory = captured.trainerAi --[[@as table<string, unknown>]]
+  local controllers = memory.controllers --[[@as table<string, unknown>]]
+  local owned = controllers["trainer:1"] --[[@as table<string, unknown>]]
+  return owned.slots --[[@as string[] ]]
+end
+
+-- Consumed item slots clear in place: with a gap between servings the
+-- opening answer takes the first slot, the committed turn leaves later
+-- source positions untouched, and the next answer serves the original
+-- third slot while stock moves exactly once.
+function T.consumed_item_slots_clear_in_place_without_shifting_later_slots()
+  local contracts = SessionFixture.sessionContracts()
+  local lead = leveledCombatant(1, 23, "EEVEE", 100);
+  (lead.mon --[[@as table<string, unknown>]]).condition.currentHp = 4
+  local foe = leveledCombatant(2, 41, "EEVEE", 5)
+  local superFacts = {
+    kind = "medicine",
+    restore = { kind = "fixed", amount = 50 },
+    cures = { sleep = false, poison = false, burn = false, freeze = false, paralysis = false },
+    revive = "none",
+    mood = 0,
+  }
+  local session = waitingSession(
+    contracts,
+    trainerStockScenario(
+      SessionFixture.inventory("trainer-stock", { 2 }, { POTION = 1, SUPER_POTION = 1 }),
+      { lead },
+      { foe },
+      nil,
+      {
+        passes = {},
+        itemFacts = { POTION = { partyUse = potionFacts() }, SUPER_POTION = { partyUse = superFacts } },
+        trainerItems = { "POTION", "NONE", "SUPER_POTION", "POTION" },
+      }
+    )
+  )
+  local first = session:answerTrainer(openRequest(session, "trainer:1"))
+  Assert.equal(first.choices[1].kind, "item", "the opening answer serves")
+  Assert.equal(first.choices[1].payload.item, "POTION", "the first source slot answers first")
+  Assert.deepEqual(
+    memorySlotsOf(session:capture()),
+    { "NONE", "NONE", "SUPER_POTION", "POTION" },
+    "the consumed slot clears in place without shifting later slots"
+  )
+  local foeRequest = openRequest(session, "player")
+  local foeActor = assert(foeRequest.actors[1], "the opposing request addresses its lead")
+  Assert.isTrue(session:submit(first), "the opening serving binds")
+  local bound, bindErr = session:submit(SessionFixture.replyFor(foeRequest, {
+    SessionFixture.attackChoice(foeActor, 0, SessionFixture.positionTarget(2)),
+  }))
+  Assert.isTrue(bound, "the opposing strike binds: " .. tostring(bindErr))
+  session:advance(1024)
+  local held = session:capture().inventories["trainer-stock"].quantities
+  Assert.equal(held.SUPER_POTION, 1, "the unserved stock stays untouched")
+  Assert.equal(held.POTION or 0, 0, "execution consumes the served stock exactly once")
+  Assert.deepEqual(
+    memorySlotsOf(session:capture()),
+    { "NONE", "NONE", "SUPER_POTION", "POTION" },
+    "the committed turn keeps the cleared positions"
+  )
+  local second = session:answerTrainer(openRequest(session, "trainer:1"))
+  Assert.equal(second.choices[1].kind, "item", "the next turn still serves")
+  Assert.equal(second.choices[1].payload.item, "SUPER_POTION", "the original third slot answers next")
+  Assert.deepEqual(
+    memorySlotsOf(session:capture()),
+    { "NONE", "NONE", "NONE", "POTION" },
+    "only the newly served slot clears"
+  )
+  session:dispose()
+end
+
+-- Duplicate servings clear independently at their source positions: the
+-- opening answer takes the first matching slot, the committed turn keeps
+-- the twin slot, and the later turn serves the twin from its original
+-- position.
+function T.duplicate_item_slots_clear_independently_at_their_source_positions()
+  local contracts = SessionFixture.sessionContracts()
+  local lead = leveledCombatant(1, 23, "EEVEE", 100);
+  (lead.mon --[[@as table<string, unknown>]]).condition.currentHp = 4
+  local foe = leveledCombatant(2, 41, "EEVEE", 5)
+  local session = waitingSession(
+    contracts,
+    trainerStockScenario(
+      SessionFixture.inventory("trainer-stock", { 2 }, { POTION = 2 }),
+      { lead },
+      { foe },
+      nil,
+      {
+        passes = {},
+        itemFacts = { POTION = { partyUse = potionFacts() } },
+        trainerItems = { "POTION", "POTION", "NONE", "NONE" },
+      }
+    )
+  )
+  local first = session:answerTrainer(openRequest(session, "trainer:1"))
+  Assert.equal(first.choices[1].kind, "item", "the opening answer serves")
+  Assert.equal(first.choices[1].payload.item, "POTION", "the first matching slot answers first")
+  Assert.deepEqual(
+    memorySlotsOf(session:capture()),
+    { "NONE", "POTION", "NONE", "NONE" },
+    "only the first matching position clears"
+  )
+  local foeRequest = openRequest(session, "player")
+  local foeActor = assert(foeRequest.actors[1], "the opposing request addresses its lead")
+  Assert.isTrue(session:submit(first), "the opening serving binds")
+  local bound, bindErr = session:submit(SessionFixture.replyFor(foeRequest, {
+    SessionFixture.attackChoice(foeActor, 0, SessionFixture.positionTarget(2)),
+  }))
+  Assert.isTrue(bound, "the opposing strike binds: " .. tostring(bindErr))
+  session:advance(1024)
+  local held = session:capture().inventories["trainer-stock"].quantities
+  Assert.equal(held.POTION or 0, 1, "execution consumes exactly one twin serving")
+  local second = session:answerTrainer(openRequest(session, "trainer:1"))
+  Assert.equal(second.choices[1].kind, "item", "the later turn still serves")
+  Assert.equal(second.choices[1].payload.item, "POTION", "the twin slot answers from its position")
+  Assert.deepEqual(
+    memorySlotsOf(session:capture()),
+    { "NONE", "NONE", "NONE", "NONE" },
+    "the twin position clears on its own turn"
+  )
+  session:dispose()
+end
+
+-- The full low-health serving answers below quarter health: a living
+-- holder under the bound takes its source slot, the committed turn
+-- restores and cures through the ordinary item path, and a fainted
+-- holder never serves it.
+function T.full_low_health_servings_answer_below_quarter_health()
+  local contracts = SessionFixture.sessionContracts()
+  local lead = leveledCombatant(1, 23, "EEVEE", 20);
+  (lead.mon --[[@as table<string, unknown>]]).condition.currentHp = 4;
+  (lead.mon --[[@as table<string, unknown>]]).condition.effects = { { key = "poison" } }
+  local foe = leveledCombatant(2, 41, "EEVEE", 5)
+  local session = waitingSession(
+    contracts,
+    trainerStockScenario(
+      SessionFixture.inventory("trainer-stock", { 2 }, { FULL_RESTORE = 1 }),
+      { lead },
+      { foe },
+      nil,
+      {
+        passes = {},
+        itemFacts = { FULL_RESTORE = { partyUse = fullRestoreFacts(), lowHpOnly = true } },
+        trainerItems = { "FULL_RESTORE", "NONE", "NONE", "NONE" },
+      }
+    )
+  )
+  local maxHp = session:capture().combatants[1].maxHp
+  Assert.isTrue(type(maxHp) == "number", "the holder carries its health ceiling")
+  Assert.isTrue(4 * 4 < maxHp, "the wound sits below quarter health")
+  local first = session:answerTrainer(openRequest(session, "trainer:1"))
+  Assert.equal(first.choices[1].kind, "item", "the low holder serves")
+  Assert.equal(first.choices[1].payload.item, "FULL_RESTORE", "the low-health slot answers")
+  Assert.deepEqual(
+    memorySlotsOf(session:capture()),
+    { "NONE", "NONE", "NONE", "NONE" },
+    "the served slot clears in place"
+  )
+  local foeRequest = openRequest(session, "player")
+  local foeActor = assert(foeRequest.actors[1], "the opposing request addresses its lead")
+  Assert.isTrue(session:submit(first), "the serving binds")
+  local bound, bindErr = session:submit(SessionFixture.replyFor(foeRequest, {
+    SessionFixture.attackChoice(foeActor, 0, SessionFixture.positionTarget(2)),
+  }))
+  Assert.isTrue(bound, "the opposing strike binds: " .. tostring(bindErr))
+  session:advance(1024)
+  local after = session:capture()
+  Assert.equal((after.inventories["trainer-stock"].quantities.FULL_RESTORE or 0), 0, "execution consumes the serving")
+  Assert.isTrue(after.combatants[1].hp > 4, "the serving restores through the ordinary item path")
+  Assert.deepEqual(after.combatants[1].mon.condition.effects, {}, "the serving cures through the ordinary item path")
+  session:dispose()
+  local fainted = leveledCombatant(1, 23, "EEVEE", 20);
+  (fainted.mon --[[@as table<string, unknown>]]).condition.currentHp = 0
+  local faintedSession = waitingSession(
+    contracts,
+    trainerStockScenario(
+      SessionFixture.inventory("trainer-stock", { 2 }, { FULL_RESTORE = 1 }),
+      { fainted },
+      { leveledCombatant(2, 41, "EEVEE", 5) },
+      nil,
+      {
+        passes = {},
+        itemFacts = { FULL_RESTORE = { partyUse = fullRestoreFacts(), lowHpOnly = true } },
+        trainerItems = { "FULL_RESTORE", "NONE", "NONE", "NONE" },
+      }
+    )
+  )
+  local faintedAnswer = faintedSession:answerTrainer(openRequest(faintedSession, "trainer:1"))
+  Assert.equal(faintedAnswer.choices[1].kind, "attack", "a fainted holder never serves")
+  faintedSession:dispose()
+end
+
+-- High-health ailments alone never serve the low-health serving: a
+-- poisoned holder at full health skips its low-health slot and strikes,
+-- leaving slots and stock untouched.
+function T.high_health_ailments_alone_never_serve_the_low_health_serving()
+  local contracts = SessionFixture.sessionContracts()
+  local lead = leveledCombatant(1, 23, "EEVEE", 20);
+  (lead.mon --[[@as table<string, unknown>]]).condition.effects = { { key = "poison" } }
+  local foe = leveledCombatant(2, 41, "EEVEE", 5)
+  local session = waitingSession(
+    contracts,
+    trainerStockScenario(
+      SessionFixture.inventory("trainer-stock", { 2 }, { FULL_RESTORE = 1 }),
+      { lead },
+      { foe },
+      nil,
+      {
+        passes = {},
+        itemFacts = { FULL_RESTORE = { partyUse = fullRestoreFacts(), lowHpOnly = true } },
+        trainerItems = { "FULL_RESTORE", "NONE", "NONE", "NONE" },
+      }
+    )
+  )
+  local answer = session:answerTrainer(openRequest(session, "trainer:1"))
+  Assert.equal(answer.choices[1].kind, "attack", "the healthy holder strikes instead of serving")
+  Assert.deepEqual(
+    memorySlotsOf(session:capture()),
+    { "FULL_RESTORE", "NONE", "NONE", "NONE" },
+    "no slot clears without a serving"
+  )
+  Assert.equal(
+    session:capture().inventories["trainer-stock"].quantities.FULL_RESTORE,
+    1,
+    "consideration alone consumes no stock"
+  )
+  session:dispose()
+end
+
 -- Missing move effects fail closed before any draw: scoring names the
 -- offending move instead of guessing membership.
 function T.missing_effects_fail_closed_before_any_draw()
@@ -2788,7 +3051,7 @@ function T.early_exchange_preempts_the_stocked_cure()
       { holder, reserve },
       { foe },
       { "TACKLE", "RAZOR_LEAF", "CUT" },
-      { passes = {}, seed = seed, trainerItems = { "POTION" } }
+      { passes = {}, seed = seed, trainerItems = { "POTION", "NONE", "NONE", "NONE" } }
     )
   end
   local session, held = sessionWithPredictedExchange(contracts, EXCHANGE_SEEDS, build, function(first)

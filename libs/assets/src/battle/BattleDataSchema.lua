@@ -245,6 +245,9 @@ local function assertNameReference(reference, context)
   end
 end
 
+--- Projected trainer record: one trainer class, its ordered party, its
+--- named passes, and exactly four source-ordered item slots where
+--- "NONE" marks empty and consumed positions.
 local function assertTrainerRecord(trainerIndex, record)
   local context = { trainer = trainerIndex }
   checkRecord(record, {
@@ -274,8 +277,11 @@ local function assertTrainerRecord(trainerIndex, record)
   if type(record.doubleBattle) ~= "boolean" then
     fail("BATTLE_DATA_INVALID", "trainer doubleBattle must be a boolean", context)
   end
-  if not Validate.isArray(record.items) then
-    fail("BATTLE_DATA_INVALID", "trainer items must be an array", context)
+  -- Slot position drives native item selection, so the four slots travel
+  -- intact: "NONE" marks empty and consumed positions, never a nil hole
+  -- or a compacted list.
+  if not Validate.isArray(record.items) or #record.items ~= 4 then
+    fail("BATTLE_DATA_INVALID", "trainer items must carry exactly four ordered slots", context)
   end
   for _, itemKey in ipairs(record.items) do
     checkNonEmptyString(itemKey, context, "BATTLE_DATA_INVALID", "trainer item")

@@ -249,9 +249,15 @@ function TrainerCatalogCompiler.compile(nativeInput)
         local bytes = record.members:sub(slot * memberSize + 1, (slot + 1) * memberSize)
         party[#party + 1] = must(TrainerCatalogCompiler.decodeMember(trainerIndex, header.trainerType, bytes))
       end
+      -- All four native slots survive in source order: zero decodes to
+      -- the explicit gap sentinel while nonzero identities resolve to
+      -- item keys. Positions never compact; the battle consumer clears
+      -- servings in place.
       local items = {}
       for _, itemId in ipairs(header.items) do
-        if itemId ~= 0 then
+        if itemId == 0 then
+          items[#items + 1] = "NONE"
+        else
           items[#items + 1] = must(resolveItem(trainerIndex, itemId))
         end
       end

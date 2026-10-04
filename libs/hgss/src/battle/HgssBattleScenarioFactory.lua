@@ -328,8 +328,8 @@ local function flattenBag(bag)
 end
 
 -- Counts one trainer's finite carried list into battle stock, preserving
--- multiplicity. A missing list yields no stock; a malformed entry fails
--- instead of guessing.
+-- multiplicity. A missing list yields no stock; gap positions carry no
+-- stock; a malformed entry fails instead of guessing.
 ---@param items unknown carried trainer item list under projection
 ---@return table<string, integer>? finite battle stock, nil when the trainer carries no list
 local function trainerStock(items)
@@ -344,13 +344,15 @@ local function trainerStock(items)
     if type(item) ~= "string" or item == "" then
       error("trainer item " .. index .. " names its item", 0)
     end
-    stock[
-      item --[[@as string]]
-    ] = (
+    if item ~= "NONE" then
       stock[
         item --[[@as string]]
-      ] or 0
-    ) + 1
+      ] = (
+        stock[
+          item --[[@as string]]
+        ] or 0
+      ) + 1
+    end
   end
   return stock
 end

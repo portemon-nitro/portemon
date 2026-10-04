@@ -57,6 +57,7 @@ local ITEM_FIELDS = {
   heldFormEffect = true,
   partyUse = true,
   battleUse = true,
+  lowHpOnly = true,
   heldBehavior = true,
   fling = true,
   naturalGift = true,
@@ -366,6 +367,11 @@ local function assertItem(key, record, context)
   end
   assertPartyUse(key, record.partyUse, context)
   local partyUse = record.partyUse
+  -- Serving gate for trainer selection: set only on items the native
+  -- selector serves below quarter health, absent everywhere else.
+  if record.lowHpOnly ~= nil and type(record.lowHpOnly) ~= "boolean" then
+    fail("ITEM_CATALOG_INVALID", "item " .. key .. " lowHpOnly must be a boolean", context)
+  end
   local battleOnly = partyUse.kind == "deferred" and partyUse.reason == "battle_only"
   if battleOnly then
     if record.battleUse == nil then
