@@ -2,6 +2,7 @@
 
 local Layout = {}
 local ScrollViewport = require("libs.ui.src.ScrollViewport")
+local SaveEditorList = require("app.src.saveeditor.SaveEditorList")
 
 local function makeViewport(clip, offset, contentExtent, rowExtent, gap, count, rowTargets)
   local firstIndex, lastIndex = ScrollViewport.visibleRange(offset, clip.height, rowExtent, gap, count)
@@ -97,8 +98,12 @@ function Layout.compute(view, width, height, metrics)
   local railWidth = width >= 400 and 88 or 0
   local rows, targets, focusable, disabledTargets, focusPositions = {}, {}, {}, {}, {}
   local locationGrid
+  local locationFocusCue
+  local valueModal
+  local decisionList
   local locationStatus
   local bagGrid, bagTabs, bagStripTarget, bagPageTextRect
+  local listSurfaces = {}
   local focusableSet = {}
   local function addFocusable(targetId)
     if not focusableSet[targetId] then
@@ -277,18 +282,28 @@ function Layout.compute(view, width, height, metrics)
     if wide then
       gridLeft = contentX + listWidth + 8
       local mapOffset = locationNav.mapOffset or 0
-      local mapViewport = rect(contentX, contentTop, listWidth, contentBottom - contentTop)
-      mapOffset = ScrollViewport.clamp(mapOffset, #maps * rowHeight, mapViewport.height)
+      local mapBounds = rect(contentX, contentTop, listWidth, contentBottom - contentTop)
+      local mapList = SaveEditorList.resolve({
+        bounds = mapBounds,
+        rowCount = #maps,
+        rowHeight = rowHeight,
+        gap = 0,
+        maxWidth = listWidth,
+      })
+      local mapViewport = mapList.content
+      listSurfaces[#listSurfaces + 1] = mapList.surface
+      mapOffset = ScrollViewport.clamp(mapOffset, mapList.contentHeight, mapViewport.height)
       local rowTargets = {}
       for index, map in ipairs(maps) do
         local id = "location:map:" .. map.mapId
         rowTargets[index] = id
-        local y = contentTop + (index - 1) * rowHeight - mapOffset
-        focusPositions[id] = rect(contentX, contentTop + (index - 1) * rowHeight - mapOffset, listWidth, rowHeight)
-        if y >= contentTop and y + rowHeight <= contentBottom then
-          targets[id] = rect(contentX, y, listWidth, rowHeight - 2)
+        local row = mapList.rows[index].rect
+        local y = row.y - mapOffset
+        focusPositions[id] = rect(row.x, y, row.width, row.height)
+        if y >= mapViewport.y and y + rowHeight <= mapViewport.y + mapViewport.height then
+          targets[id] = rect(row.x, y, row.width, rowHeight - 2)
           navigation[#navigation + 1] = {
-            role = "action",
+            role = "list",
             targetId = id,
             label = map.displayName,
           }
@@ -296,11 +311,20 @@ function Layout.compute(view, width, height, metrics)
         end
       end
       viewports["location:map-list"] =
-        makeViewport(mapViewport, mapOffset, #maps * rowHeight, rowHeight, 0, #maps, rowTargets)
+        makeViewport(mapViewport, mapOffset, mapList.contentHeight, rowHeight, 0, #maps, rowTargets)
     elseif page == "map-list" then
       local rowTop = contentTop + rowHeight
-      local mapViewport = rect(contentX, rowTop, innerWidth, math.max(0, contentBottom - rowTop - rowHeight))
-      local mapOffset = ScrollViewport.clamp(locationNav.mapOffset or 0, #maps * rowHeight, mapViewport.height)
+      local mapBounds = rect(contentX, rowTop, innerWidth, math.max(1, contentBottom - rowTop - rowHeight))
+      local mapList = SaveEditorList.resolve({
+        bounds = mapBounds,
+        rowCount = #maps,
+        rowHeight = rowHeight,
+        gap = 0,
+        maxWidth = innerWidth,
+      })
+      local mapViewport = mapList.content
+      listSurfaces[#listSurfaces + 1] = mapList.surface
+      local mapOffset = ScrollViewport.clamp(locationNav.mapOffset or 0, mapList.contentHeight, mapViewport.height)
       local rowTargets = {}
       targets["location:map-picker"] = rect(contentX, contentTop, innerWidth, rowHeight - 2)
       navigation[#navigation + 1] = {
@@ -312,15 +336,24 @@ function Layout.compute(view, width, height, metrics)
       for index, map in ipairs(maps) do
         local id = "location:map:" .. map.mapId
         rowTargets[index] = id
-        local y = rowTop + (index - 1) * rowHeight - mapOffset
-        if y + rowHeight <= contentBottom then
-          targets[id] = rect(contentX, y, innerWidth, rowHeight - 2)
-          rows[#rows + 1] = { role = "action", targetId = id, label = map.displayName, value = map.section }
+        local row = mapList.rows[index].rect
+        local y = row.y - mapOffset
+        if y + rowHeight <= mapViewport.y + mapViewport.height then
+          targets[id] = rect(row.x, y, row.width, rowHeight - 2)
+          rows[#rows + 1] = {
+            role = "list",
+            listSurface = true,
+            targetId = id,
+            label = map.displayName,
+            value = map.section,
+            labelRect = rect(row.x + 6, y + 3, row.width * 0.58, rowHeight - 6),
+            valueRect = rect(row.x + row.width * 0.62, y + 3, row.width * 0.34, rowHeight - 6),
+          }
           addFocusable(id)
         end
       end
       viewports["location:map-list"] =
-        makeViewport(mapViewport, mapOffset, #maps * rowHeight, rowHeight, 0, #maps, rowTargets)
+        makeViewport(mapViewport, mapOffset, mapList.contentHeight, rowHeight, 0, #maps, rowTargets)
       targets["location:map-back"] = rect(contentX, contentBottom - rowHeight, innerWidth, rowHeight - 2)
       navigation[#navigation + 1] = { role = "action", targetId = "location:map-back", label = "Back" }
       addFocusable("location:map-back")
@@ -385,6 +418,12 @@ function Layout.compute(view, width, height, metrics)
         addFocusable(id)
       end
     end
+    if locationNav.contentFocus == "map-list" then
+      local viewport = viewports["location:map-list"]
+      locationFocusCue = viewport and viewport.clip or nil
+    elseif locationNav.contentFocus == "grid" then
+      locationFocusCue = locationGrid and locationGrid.clip or nil
+    end
   elseif section == "Player" then
     local snapshot = assert(view.session)
     addRow("read-only value", "player", "Player", snapshot.playerName)
@@ -398,30 +437,33 @@ function Layout.compute(view, width, height, metrics)
     local flagOffset = view.scrollOffsets and view.scrollOffsets.flags or 0
     local bodyTop = contentTop + #rows * rowHeight
     local bodyHeight = math.max(0, contentBottom - bodyTop)
-    local contentExtent = #flags * rowHeight
-    flagOffset = ScrollViewport.clamp(flagOffset, contentExtent, bodyHeight)
+    local flagList = SaveEditorList.resolve({
+      bounds = rect(contentX, bodyTop, innerWidth, bodyHeight),
+      rowCount = #flags,
+      rowHeight = rowHeight,
+      gap = 0,
+      maxWidth = innerWidth,
+    })
+    local contentExtent = flagList.contentHeight
+    local flagViewport = flagList.content
+    listSurfaces[#listSurfaces + 1] = flagList.surface
+    flagOffset = ScrollViewport.clamp(flagOffset, contentExtent, flagViewport.height)
     local rowTargets = {}
     for index, flag in ipairs(flags) do
       rowTargets[index] = "flag:" .. flag.name
     end
-    viewports.flags = makeViewport(
-      rect(contentX, bodyTop, innerWidth, bodyHeight),
-      flagOffset,
-      contentExtent,
-      rowHeight,
-      0,
-      #flags,
-      rowTargets
-    )
-    local first, last = ScrollViewport.visibleRange(flagOffset, bodyHeight, rowHeight, 0, #flags)
+    viewports.flags = makeViewport(flagViewport, flagOffset, contentExtent, rowHeight, 0, #flags, rowTargets)
+    local first, last = ScrollViewport.visibleRange(flagOffset, flagViewport.height, rowHeight, 0, #flags)
     for index, flag in ipairs(flags) do
       local id = "flag:" .. flag.name
       addFocusable(id)
-      focusPositions[id] = rect(contentX, bodyTop + (index - 1) * rowHeight - flagOffset, innerWidth, rowHeight - 2)
+      local flagRow = flagList.rows[index].rect
+      local y = flagRow.y - flagOffset
+      focusPositions[id] = rect(flagRow.x, y, flagRow.width, rowHeight - 2)
       if index >= first and index <= last then
-        local y = bodyTop + (index - 1) * rowHeight - flagOffset
-        if y >= bodyTop and y + rowHeight <= contentBottom then
+        if y >= flagViewport.y and y + rowHeight <= flagViewport.y + flagViewport.height then
           placeRow("toggle", id, flag.name, flag.value, true, y, rowHeight)
+          rows[#rows].listSurface = true
           rows[#rows].displayName = flag.displayName
         end
       end
@@ -680,9 +722,16 @@ function Layout.compute(view, width, height, metrics)
       local searchHeight = math.max(metrics.lineHeight + 8, 24)
       local bodyTop = dialogTop + searchHeight + 2
       local bodyBottom = contentBottom - rowHeight - 2
-      local bodyHeight = math.max(0, bodyBottom - bodyTop)
+      local bodyHeight = math.max(1, bodyBottom - bodyTop)
       local offset = view.scrollOffsets and view.scrollOffsets["value:choice"] or 0
-      local contentExtent = #dialog.options * rowHeight
+      local choiceList = SaveEditorList.resolve({
+        bounds = rect(contentX, bodyTop, innerWidth, bodyHeight),
+        rowCount = #dialog.options,
+        rowHeight = rowHeight,
+        gap = 0,
+        maxWidth = innerWidth,
+      })
+      local contentExtent = choiceList.contentHeight
       local selectedIndex
       for index, option in ipairs(dialog.options) do
         if option.key == dialog.selectedKey then
@@ -691,23 +740,25 @@ function Layout.compute(view, width, height, metrics)
         end
       end
       if selectedIndex and not view.preserveChoiceScroll then
-        offset = ScrollViewport.reveal(offset, bodyHeight, (selectedIndex - 1) * rowHeight, rowHeight)
+        offset = ScrollViewport.reveal(offset, choiceList.content.height, (selectedIndex - 1) * rowHeight, rowHeight)
       end
-      offset = ScrollViewport.clamp(offset, contentExtent, bodyHeight)
-      local viewport = rect(contentX, bodyTop, innerWidth, bodyHeight)
+      offset = ScrollViewport.clamp(offset, contentExtent, choiceList.content.height)
+      local viewport = choiceList.content
+      listSurfaces[#listSurfaces + 1] = choiceList.surface
       local rowTargets = {}
       for index, option in ipairs(dialog.options) do
         rowTargets[index] = "choice:" .. option.key
       end
       viewports["value:choice"] =
         makeViewport(viewport, offset, contentExtent, rowHeight, 0, #dialog.options, rowTargets)
-      local first, last = ScrollViewport.visibleRange(offset, bodyHeight, rowHeight, 0, #dialog.options)
+      local first, last = ScrollViewport.visibleRange(offset, viewport.height, rowHeight, 0, #dialog.options)
       for index, option in ipairs(dialog.options) do
         local id = "choice:" .. option.key
         addFocusable(id)
-        focusPositions[id] = rect(contentX, bodyTop + (index - 1) * rowHeight - offset, innerWidth, rowHeight - 1)
+        local row = choiceList.rows[index].rect
+        focusPositions[id] = rect(row.x, row.y - offset, row.width, row.height - 1)
         if index >= first and index <= last then
-          targets[id] = rect(contentX, bodyTop + (index - 1) * rowHeight - offset, innerWidth, rowHeight - 1)
+          targets[id] = rect(row.x, row.y - offset, row.width, row.height - 1)
         end
       end
       local footerWidth = math.max(1, math.floor(innerWidth / 2))
@@ -750,47 +801,77 @@ function Layout.compute(view, width, height, metrics)
       for _, control in ipairs(naming.controls) do
         addFocusable("name-control:" .. control.id)
       end
-    elseif dialog.kind == "quantity" then
-      local controlSize = math.min(48, math.max(32, math.floor(innerWidth / 4)))
-      local centerX = contentX + math.floor(innerWidth / 2)
-      local controlY = contentTop + math.max(12, math.floor((contentBottom - contentTop - 94) / 2))
-      targets["bag:quantity:decrement"] = rect(centerX - controlSize - 42, controlY, controlSize, controlSize)
-      targets["bag:quantity:increment"] = rect(centerX + 42, controlY, controlSize, controlSize)
-      targets["value-draft"] = rect(centerX - 32, controlY, 64, controlSize)
-      targets.confirm = rect(contentX + 4, contentBottom - 34, math.floor(innerWidth / 2) - 6, 30)
-      targets.cancel =
-        rect(contentX + math.floor(innerWidth / 2) + 2, contentBottom - 34, math.floor(innerWidth / 2) - 6, 30)
-      for _, id in ipairs({ "bag:quantity:decrement", "bag:quantity:increment", "confirm", "cancel" }) do
-        addFocusable(id)
+    elseif dialog.kind == "number" then
+      local modalWidth = math.floor(math.min(innerWidth, 384) / 8) * 8
+      local modalHeight = math.floor(math.min(contentBottom - contentTop, 192) / 8) * 8
+      valueModal = rect(
+        contentX + math.floor((innerWidth - modalWidth) / 2),
+        contentTop + math.floor((contentBottom - contentTop - modalHeight) / 2),
+        modalWidth,
+        modalHeight
+      )
+      local scaleX, scaleY = modalWidth / 256, modalHeight / 192
+      for _, control in ipairs(assert(view.numberControls, "number controls come from the Bag manifest")) do
+        local hit = assert(control.hitRect)
+        local targetId = "number:delta:" .. tostring(control.delta)
+        targets[targetId] = rect(
+          valueModal.x + valueModal.width / 2 + (hit.x + hit.width / 2 - 168) * scaleX - hit.width * scaleX / 2,
+          valueModal.y + modalHeight * 0.45 + (hit.y - 88) * scaleY,
+          hit.width * scaleX,
+          hit.height * scaleY
+        )
+        addFocusable(targetId)
       end
-    else
-      local quarter = math.floor(innerWidth / 4)
-      for index, action in ipairs({ "digit-left", "digit-right", "digit-down", "digit-up" }) do
-        targets[action] =
-          rect(contentX + (index - 1) * quarter, contentBottom - rowHeight * 2, quarter - 2, rowHeight - 2)
-        addFocusable(action)
-      end
-      targets.confirm = rect(contentX, contentBottom - rowHeight, math.floor(innerWidth / 2) - 2, rowHeight - 2)
+      targets["value-draft"] = rect(valueModal.x + 12, valueModal.y + 10, valueModal.width - 24, 40)
+      targets.confirm =
+        rect(valueModal.x + 8, valueModal.y + valueModal.height - 28, math.floor(valueModal.width / 2) - 12, 22)
       targets.cancel = rect(
-        contentX + math.floor(innerWidth / 2) + 2,
-        contentBottom - rowHeight,
-        math.floor(innerWidth / 2) - 2,
-        rowHeight - 2
+        valueModal.x + math.floor(valueModal.width / 2) + 4,
+        valueModal.y + valueModal.height - 28,
+        math.floor(valueModal.width / 2) - 12,
+        22
       )
       addFocusable("confirm")
       addFocusable("cancel")
-      addRow("integer value", "value-draft", "Enter value", dialog.buffer or "")
     end
   end
   if view.modal ~= nil then
-    local y = math.max(margin, math.floor(height / 2) - 16)
     local choices = view.modal == "bag-item" and { "bag:quantity", "bag:remove", "cancel" }
       or view.modal == "draft" and { "apply", "discard", "cancel" }
       or view.modal == "remove" and { "remove", "cancel" }
       or { "save", "discard", "cancel" }
-    local modalActionWidth = math.floor((innerWidth - 8) / #choices)
+    local modalHeight = math.floor(math.min(contentBottom - contentTop, #choices * 30 + 48) / 8) * 8
+    local surface = SaveEditorList.resolve({
+      bounds = rect(
+        contentX,
+        contentTop + math.floor((contentBottom - contentTop - modalHeight) / 2),
+        innerWidth,
+        modalHeight
+      ),
+      rowCount = #choices,
+      rowHeight = 26,
+      gap = 2,
+      maxWidth = 360,
+    })
+    decisionList = {
+      surface = surface.surface,
+      prompt = rect(surface.content.x, surface.content.y, surface.content.width, math.max(1, metrics.lineHeight)),
+      rows = {},
+    }
     for index, id in ipairs(choices) do
-      targets[id] = rect(contentX + (index - 1) * (modalActionWidth + 4), y, modalActionWidth, 28)
+      local row = surface.rows[index]
+      local rowRect = rect(row.rect.x, row.rect.y + metrics.lineHeight + 2, row.rect.width, row.rect.height)
+      targets[id] = rowRect
+      decisionList.rows[index] = {
+        targetId = id,
+        label = id == "bag:quantity" and "Quantity"
+          or id == "bag:remove" and "Remove"
+          or id:sub(1, 1):upper() .. id:sub(2),
+        semantic = (id == "save" or id == "apply") and "primary"
+          or (id == "discard" or id == "remove" or id == "bag:remove") and "destructive"
+          or "secondary",
+        rect = rowRect,
+      }
       addFocusable(id)
       if id == "apply" and view.partyValid ~= true then
         disabledTargets[id] = true
@@ -822,16 +903,10 @@ function Layout.compute(view, width, height, metrics)
       for _, control in ipairs(editor.naming.controls) do
         scopeAllowed["name-control:" .. control.id] = true
       end
-    else
-      for _, id in ipairs({ "digit-left", "digit-right", "digit-up", "digit-down", "value-draft" }) do
-        scopeAllowed[id] = true
-      end
-      if editor.kind == "quantity" then
-        scopeAllowed["digit-left"], scopeAllowed["digit-right"] = true, true
-        scopeAllowed["digit-up"], scopeAllowed["digit-down"] = true, true
-        for _, id in ipairs({ "bag:quantity:decrement", "bag:quantity:increment" }) do
-          scopeAllowed[id] = true
-        end
+    elseif editor.kind == "number" then
+      scopeAllowed["value-draft"] = true
+      for _, control in ipairs(assert(view.numberControls)) do
+        scopeAllowed["number:delta:" .. tostring(control.delta)] = true
       end
     end
   end
@@ -996,20 +1071,6 @@ function Layout.compute(view, width, height, metrics)
       end
     end
   end
-  if section == "Location" and width >= 640 and focusGraph["location:grid"] then
-    local mapViewport = viewports["location:map-list"]
-    if mapViewport then
-      for _, mapTargetId in ipairs(mapViewport.rowTargets) do
-        if focusGraph[mapTargetId] then
-          focusGraph[mapTargetId].right = { "location:grid" }
-        end
-      end
-      local firstMapId = mapViewport.rowTargets[mapViewport.firstIndex]
-      if firstMapId and focusGraph[firstMapId] then
-        focusGraph["location:grid"].left = { firstMapId }
-      end
-    end
-  end
   local focusOrder = {}
   local targetRecords = {}
   for _, targetId in ipairs(focusable) do
@@ -1025,6 +1086,8 @@ function Layout.compute(view, width, height, metrics)
     elseif editor.kind == "name" then
       local cursor = assert(editor.naming.cursor)
       defaultFocus = tostring(cursor.row) .. ":" .. tostring(cursor.column)
+    elseif editor.kind == "number" then
+      defaultFocus = "number:delta:1"
     else
       defaultFocus = focusGraph["value-draft"] and "value-draft" or "digit-left"
     end
@@ -1149,7 +1212,11 @@ function Layout.compute(view, width, height, metrics)
     actions = actions,
     activeSection = section,
     locationGrid = locationGrid,
+    locationFocusCue = locationFocusCue,
+    valueModal = valueModal,
+    decisionList = decisionList,
     partyGrid = partyGrid,
+    listSurfaces = listSurfaces,
     partySummary = layoutPartySummary,
     partyHelp = layoutPartyHelp,
     locationStatus = locationStatus,
@@ -1233,14 +1300,11 @@ function Layout.hitTest(layout, view, x, y)
       allowed = {
         confirm = true,
         cancel = true,
-        ["digit-left"] = true,
-        ["digit-right"] = true,
-        ["digit-up"] = true,
-        ["digit-down"] = true,
       }
-      if view.valueEditor.kind == "quantity" then
-        allowed["bag:quantity:decrement"] = true
-        allowed["bag:quantity:increment"] = true
+      if view.valueEditor.kind == "number" then
+        for _, control in ipairs(assert(view.numberControls)) do
+          allowed["number:delta:" .. tostring(control.delta)] = true
+        end
       end
     end
   end

@@ -12,6 +12,31 @@ local ScreenTopology = require("libs.ui.src.ScreenTopology")
 
 local T = { tests = {} }
 
+function T.tests.location_content_focus_is_restored_when_reentering_the_section()
+  local controller = Controller.new()
+  controller:setSection("Location")
+  controller:enterLocation({ mapId = 7, fieldX = 10, fieldZ = 12 })
+  controller:setFocus("section")
+  Assert.equal(controller:snapshot().location.contentFocus, "navigation")
+  controller:setFocus("section:Location")
+  Assert.equal(controller:snapshot().location.contentFocus, "navigation")
+
+  controller:setSection("Player")
+  controller:setSection("Location")
+  Assert.equal(controller:snapshot().location.contentFocus, "grid")
+end
+
+function T.tests.location_back_target_returns_focus_to_the_grid()
+  local controller = Controller.new()
+  controller:setSection("Location")
+  controller:enterLocation({ mapId = 7, fieldX = 10, fieldZ = 12 })
+  controller:openLocationMaps()
+  controller:setFocus("location:map-back")
+
+  Assert.equal(controller:press("confirm").kind, "location-page")
+  Assert.equal(controller:snapshot().location.contentFocus, "grid")
+end
+
 function T.tests.modal_scope_rejects_background_grid_and_sparse_drag_gestures()
   local controller = Controller.new()
   controller:setSection("Location")
@@ -151,10 +176,10 @@ function T.tests.scope_replacement_drops_a_pressed_target_before_release()
   )
 end
 
-function T.tests.bag_quantity_repeat_stops_on_pointer_cancel_and_focus_loss()
+function T.tests.number_repeat_stops_on_pointer_cancel_and_focus_loss()
   local function stateWithHold(pointerId)
     local controller = Controller.new()
-    controller:pointer({ type = "pointer_down", pointerId = pointerId, targetId = "bag:quantity:increment" })
+    controller:pointer({ type = "pointer_down", pointerId = pointerId, targetId = "number:delta:1" })
     local adjustments = 0
     local state = setmetatable({
       disposed = false,
@@ -175,9 +200,9 @@ function T.tests.bag_quantity_repeat_stops_on_pointer_cancel_and_focus_loss()
         end,
         cancelPointers = function() end,
       },
-      quantityHold = {
+      numberHold = {
         pointerId = pointerId,
-        targetId = "bag:quantity:increment",
+        targetId = "number:delta:1",
         delta = 1,
         scopeEpoch = controller.scopeEpoch,
         nextTick = 1,
@@ -190,7 +215,7 @@ function T.tests.bag_quantity_repeat_stops_on_pointer_cancel_and_focus_loss()
       end,
       _reconcileFocus = function() end,
       _dispatchIntent = function() end,
-      _adjustBagQuantity = function()
+      _adjustNumber = function()
         adjustments = adjustments + 1
       end,
     }, State)
@@ -202,14 +227,14 @@ function T.tests.bag_quantity_repeat_stops_on_pointer_cancel_and_focus_loss()
   local canceled, canceledAdjustments = stateWithHold("touch:cancel")
   canceled:_pointer({ { type = "pointer_cancel", pointerId = "touch:cancel" } })
   canceled:update(1 / 60)
-  Assert.isNil(canceled.quantityHold, "pointer cancel clears the quantity hold")
-  Assert.equal(canceledAdjustments(), 0, "pointer cancel prevents held quantity repeats")
+  Assert.isNil(canceled.numberHold, "pointer cancel clears the number hold")
+  Assert.equal(canceledAdjustments(), 0, "pointer cancel prevents held number repeats")
 
   local blurred, blurredAdjustments = stateWithHold("touch:blur")
   blurred:focus(false)
   blurred:update(1 / 60)
-  Assert.isNil(blurred.quantityHold, "focus loss clears the quantity hold")
-  Assert.equal(blurredAdjustments(), 0, "focus loss prevents held quantity repeats")
+  Assert.isNil(blurred.numberHold, "focus loss clears the number hold")
+  Assert.equal(blurredAdjustments(), 0, "focus loss prevents held number repeats")
 end
 
 function T.tests.choice_layout_publishes_active_scope_records_and_clips_row_hits()
@@ -223,7 +248,7 @@ function T.tests.choice_layout_publishes_active_scope_records_and_clips_row_hits
     ready = true,
     dirty = false,
     scope = { id = "value:choice:species", epoch = 4, kind = "value", focusId = "choice:choice-01" },
-    session = { playerName = "Player", money = 0 },
+    session = { playerName = "Player", money = 0, frameIndex = 0 },
     valueEditor = {
       kind = "choice",
       purpose = "species",

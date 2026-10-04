@@ -10,7 +10,6 @@ local Utf8Glyphs = require("libs.assets.src.Utf8Glyphs")
 ---@field _min number?
 ---@field _max number?
 ---@field _base string?
----@field _navigation string?
 ---@field _buffer string?
 ---@field _cursor number?
 ---@field _hasInput boolean?
@@ -56,8 +55,6 @@ function SaveEditorValueEditor.new(options)
     self._min = options.min
     self._max = options.max
     self._base = options.base
-    self._navigation = options.navigation or "digits"
-    assert(self._navigation == "digits" or self._navigation == "quantity", "integer navigation is explicit")
     self._buffer = options.base == "hex" and string.format("%X", options.value) or tostring(options.value)
     self._cursor = #self._buffer
     self._hasInput = false
@@ -139,32 +136,9 @@ function SaveEditorValueEditor:press(action)
       self._cursor = #self._buffer
       self._hasInput = true
       return true
-    elseif
-      self._navigation == "quantity" and (action == "up" or action == "down" or action == "left" or action == "right")
-    then
+    elseif action == "up" or action == "down" or action == "left" or action == "right" then
       local delta = action == "up" and 1 or action == "down" and -1 or action == "right" and 10 or -10
       return self:adjustInteger(delta)
-    elseif action == "left" then
-      self._cursor = math.max(0, self._cursor - 1)
-      return true
-    elseif action == "right" then
-      self._cursor = math.min(#self._buffer, self._cursor + 1)
-      return true
-    elseif action == "up" or action == "down" then
-      local value = parseInteger(self._buffer, self._base)
-      if value == nil then
-        return false
-      end
-      local place = self._base == "hex" and 16 ^ math.max(0, #self._buffer - self._cursor)
-        or 10 ^ math.max(0, #self._buffer - self._cursor)
-      local candidate = value + (action == "up" and place or -place)
-      if candidate < self._min or candidate > self._max then
-        return false
-      end
-      local significance = math.max(0, #self._buffer - self._cursor)
-      self._buffer = self._base == "hex" and string.format("%X", candidate) or tostring(candidate)
-      self._cursor = math.max(0, #self._buffer - significance)
-      return true
     elseif action == "confirm" or action == "a" or action == "return" then
       return self:submit()
     end
@@ -391,13 +365,12 @@ function SaveEditorValueEditor:snapshot()
   if self._kind == "integer" then
     local parsedValue = parseInteger(self._buffer, self._base)
     return {
-      kind = self._navigation == "quantity" and "quantity" or "integer",
+      kind = "number",
       value = self._value,
       buffer = self._buffer,
       base = self._base,
       minimum = self._min,
       maximum = self._max,
-      navigation = self._navigation,
       parsedValue = parsedValue,
       valid = parsedValue ~= nil and parsedValue >= self._min and parsedValue <= self._max,
       cursor = self._cursor,

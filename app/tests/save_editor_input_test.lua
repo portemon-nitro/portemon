@@ -4,6 +4,7 @@ local Assert = require("tests.support.Assert")
 local Fixture = require("app.tests.support.SaveEditorAcceptanceFixture")
 local DisplayContext = require("libs.ui.src.DisplayContext")
 local LayoutGeometry = require("libs.ui.src.LayoutGeometry")
+local FieldInput = require("libs.hgss.src.field.FieldInput")
 local SaveFs = require("libs.storage.src.SaveFs")
 local ScreenTopology = require("libs.ui.src.ScreenTopology")
 local App = require("app.src.App")
@@ -542,6 +543,70 @@ function T.tests.player_dialogue_frame_choice_cancels_and_stages_an_allowed_fram
   end)
 end
 
+function T.tests.money_number_controls_click_hold_and_stop_after_release_or_cancel()
+  local _, Layout = stateModule()
+  local topology = ScreenTopology.oneDisplay({
+    id = "main",
+    rect = { x = 0, y = 0, width = 800, height = 500 },
+    touch = true,
+    role = "world",
+  })
+  withEditor(800, 500, topology, function(state)
+    selectSection(state, Layout, "Player")
+    local player = state:view()
+    click(state, selectedPane(player), targetFor(player.layout, player, "money"), true)
+    local number = state:view()
+    Assert.equal(number.valueEditor.kind, "number", "Money opens the shared number modal")
+    local deltas = { -100, -10, -1, 1, 10, 100 }
+    for index, delta in ipairs(deltas) do
+      local targetId = "number:delta:" .. tostring(delta)
+      local target = assert(number.layout.targets[targetId], "the retail control exposes delta " .. delta)
+      click(state, selectedPane(number), target, true)
+      number = state:view()
+      if index == 1 then
+        Assert.equal(number.numberHoldTarget, targetId, "the retail press feedback survives pointer release")
+        Assert.isTrue(number.numberPressTicks > 0, "the Bag manifest supplies press feedback timing")
+        state:update(number.numberPressTicks / 60)
+        number = state:view()
+        Assert.isNil(number.numberHoldTarget, "retail press feedback clears after its source duration")
+      end
+    end
+    local original = number.valueEditor.parsedValue
+    local increment = assert(number.layout.targets["number:delta:1"]).rect
+    local x, y = LayoutGeometry.logicalToHost(
+      selectedPane(number).placement,
+      increment.x + increment.width / 2,
+      increment.y + increment.height / 2
+    )
+    state:touchpressed("number-repeat", x, y)
+    local pressed = state:view().valueEditor.parsedValue
+    Assert.equal(pressed, original + 1, "touch-down applies the selected adjustment once")
+    state:update((FieldInput.UI_REPEAT_DELAY_TICKS - 1) / 60)
+    Assert.equal(state:view().valueEditor.parsedValue, pressed, "hold waits for the source repeat delay")
+    state:update(1 / 60)
+    Assert.equal(state:view().valueEditor.parsedValue, pressed + 1, "hold repeats at the source repeat delay")
+    state:touchreleased("number-repeat", x, y)
+    state:update(1)
+    local released = state:view().valueEditor.parsedValue
+    Assert.equal(released, pressed + 1, "release stops further adjustments")
+
+    number = state:view()
+    increment = assert(number.layout.targets["number:delta:1"]).rect
+    x, y = LayoutGeometry.logicalToHost(
+      selectedPane(number).placement,
+      increment.x + increment.width / 2,
+      increment.y + increment.height / 2
+    )
+    state:touchpressed("number-cancel", x, y)
+    local beforeCancel = state:view().valueEditor.parsedValue
+    state:keypressed("escape")
+    state:update(1)
+    Assert.isNil(state:view().valueEditor, "cancel closes the active number modal")
+    Assert.equal(state.session:snapshot().money, 3000, "cancel leaves the staged Money value unchanged")
+    Assert.isTrue(beforeCancel > released, "the active hold started before scope cancellation")
+  end)
+end
+
 function T.tests.value_editor_success_and_cancel_return_to_live_caller_focus()
   local _, Layout = stateModule()
   local topology = ScreenTopology.oneDisplay({
@@ -653,7 +718,7 @@ function T.tests.bag_add_successor_quantity_editor_stages_once_and_cancel_stages
     local quantityEditor = state:view()
     Assert.equal(
       quantityEditor.valueEditor and quantityEditor.valueEditor.kind,
-      "quantity",
+      "number",
       "choosing an item installs its quantity successor"
     )
     local revisionBeforeAdd = state.session:revision()
@@ -698,7 +763,7 @@ function T.tests.bag_add_successor_quantity_editor_stages_once_and_cancel_stages
     local secondQuantity = state:view()
     Assert.equal(
       secondQuantity.valueEditor and secondQuantity.valueEditor.kind,
-      "quantity",
+      "number",
       "controller confirmation reaches quantity entry"
     )
     state:keypressed("escape")
@@ -737,7 +802,7 @@ function T.tests.canceling_bag_quantity_and_parent_modal_restores_selected_item_
     state:_activate(itemTarget)
     Assert.equal(state:view().modal, "bag-item", "selecting a stack opens its item actions")
     state:_activate("bag:quantity")
-    Assert.equal(state:view().valueEditor.kind, "quantity", "Quantity opens its nested editor")
+    Assert.equal(state:view().valueEditor.kind, "number", "Quantity opens the shared number editor")
     state:keypressed("escape")
     Assert.equal(state:view().modal, "bag-item", "the first cancel restores the parent item modal")
 
@@ -771,11 +836,11 @@ function T.tests.bag_quantity_pointer_hold_repeats_on_fixed_ticks_and_resize_sto
     local quantity = state:view()
     local original = quantity.valueEditor.value
     local pane = selectedPane(quantity)
-    local target = quantity.layout.targets["bag:quantity:increment"].rect
+    local target = quantity.layout.targets["number:delta:1"].rect
     local x, y = LayoutGeometry.logicalToHost(pane.placement, target.x + target.width / 2, target.y + target.height / 2)
     Assert.equal(
       Layout.hitTest(quantity.layout, quantity, target.x + target.width / 2, target.y + target.height / 2),
-      "bag:quantity:increment",
+      "number:delta:1",
       "the published quantity layout identifies its increment hitbox"
     )
     state:mousepressed(x, y, 1)
@@ -792,7 +857,7 @@ function T.tests.bag_quantity_pointer_hold_repeats_on_fixed_ticks_and_resize_sto
 
     local current = state:view()
     pane = selectedPane(current)
-    target = current.layout.targets["bag:quantity:increment"].rect
+    target = current.layout.targets["number:delta:1"].rect
     x, y = LayoutGeometry.logicalToHost(pane.placement, target.x + target.width / 2, target.y + target.height / 2)
     state:mousepressed(x, y, 1)
     local afterPress = state:view().valueEditor.value
@@ -1159,15 +1224,29 @@ function T.tests.wide_location_map_list_owns_focus_and_scroll_while_grid_stays_v
     Assert.deepEqual(clicked.session.location, originalLocation, "browsing by click keeps the staged tuple")
 
     state.controller:setFocus(visibleMapTarget)
-    pressKey(state, "right")
-    Assert.equal(state:view().focus, "location:grid", "Right moves from the map list to the grid")
-    pressKey(state, "left")
+    pressKey(state, "return")
+    Assert.equal(state:view().focus, "location:grid", "confirm enters the browsed map grid")
+    pressKey(state, "escape")
     Assert.equal(
       state:view().focus,
       "location:map:" .. selectedMapId,
-      "Left returns to the map row for the currently browsed map"
+      "Back returns to the map row for the currently browsed map"
     )
-    Assert.equal(state:view().session.revision, revision, "region transitions do not stage a destination")
+    Assert.equal(state:view().session.revision, revision, "scope transitions do not stage a destination")
+
+    state.controller:setFocus("location:grid")
+    local beforeGridDirections = state:view()
+    for _, direction in ipairs({ "left", "right", "up", "down" }) do
+      pressKey(state, direction)
+      local moved = state:view()
+      Assert.equal(moved.focus, "location:grid", direction .. " keeps content focus on the grid")
+      Assert.isTrue(
+        moved.locationNavigation.cursor.fieldX ~= beforeGridDirections.locationNavigation.cursor.fieldX
+          or moved.locationNavigation.cursor.fieldZ ~= beforeGridDirections.locationNavigation.cursor.fieldZ,
+        direction .. " moves the Location cursor instead of the focus rail"
+      )
+      beforeGridDirections = moved
+    end
   end)
 end
 
@@ -1912,7 +1991,7 @@ function T.tests.wheel_input_belongs_to_the_active_choice_or_decision_scope()
     Assert.equal(selectedBag.modal, "bag-item", "selecting a Bag card opens its item actions")
     click(state, selectedPane(selectedBag), selectedBag.layout.targets["bag:quantity"], true)
     local quantity = state:view()
-    Assert.equal(quantity.valueEditor.kind, "quantity", "Quantity opens the nested quantity editor")
+    Assert.equal(quantity.valueEditor.kind, "number", "Quantity opens the shared number editor")
     local quantityBagPage = quantity.bagPage0
     local quantityDraft = assert(quantity.layout.targets["value-draft"]).rect
     state:wheelmoved(0, -1)

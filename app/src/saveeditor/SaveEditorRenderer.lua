@@ -111,6 +111,19 @@ function Renderer:preparePresentationAssets(cacheFs, manifest)
 end
 
 function Renderer:prepareVisibleIcons(view, plan, cacheFs, derivedAssets)
+  if view.valueEditor and view.valueEditor.kind == "number" then
+    for _, role in ipairs({ "increment", "decrement" }) do
+      for _, state in ipairs({ "normal", "pressed" }) do
+        local visual = assert(view.numberControlVisuals[role][state])
+        if self._bagImages[visual.image] == nil then
+          local bytes = assert(cacheFs:read(visual.image), "retail quantity visual bytes are required")
+          local image = self.graphics.newImage(love.filesystem.newFileData(bytes, visual.image))
+          image:setFilter("nearest", "nearest")
+          self._bagImages[visual.image] = image
+        end
+      end
+    end
+  end
   if view.section == "Bag" then
     if self._itemIconProvider == nil then
       self._itemIconProvider = ItemIconAssetProvider.new(cacheFs, { graphics = self.graphics })
@@ -285,7 +298,35 @@ local function drawShadedControl(renderer, rect, label, selected, disabled, dest
   return button.contentRect
 end
 
-local function fitText(renderer, value, width)
+local fitText
+
+local function drawListRow(renderer, rect, label, selected, value, semantic, labelRect, valueRect)
+  local graphics = renderer.graphics
+  graphics.setColor(1, 1, 1, 1)
+  graphics.rectangle("fill", rect.x, rect.y, rect.width, rect.height)
+  setColor(graphics, renderer.skin.cards.normal.border)
+  graphics.rectangle("line", rect.x, rect.y, rect.width, rect.height)
+  if selected then
+    setColor(graphics, { 0.86, 0.16, 0.18, 1 })
+    graphics.rectangle("line", rect.x + 1, rect.y + 1, rect.width - 2, rect.height - 2)
+  end
+  if semantic then
+    local colors = assert(BUTTON_COLORS[semantic])
+    setColor(graphics, colors.border)
+    graphics.rectangle("fill", rect.x + 2, rect.y + 2, 3, rect.height - 4)
+  end
+  local labelBounds = labelRect or { x = rect.x + 6, y = rect.y + 3, width = rect.width - 12 }
+  drawText(renderer, fitText(renderer, label, labelBounds.width), labelBounds.x, labelBounds.y or rect.y + 3)
+  if value ~= nil then
+    local valueText = tostring(value)
+    local bounds = valueRect or { x = rect.x, y = rect.y + 3, width = rect.width * 0.35 }
+    local fitted = fitText(renderer, valueText, bounds.width)
+    local x = valueRect and bounds.x or rect.x + rect.width - renderer.text:textWidth(fitted) - 6
+    drawText(renderer, fitted, x, bounds.y or rect.y + 3, "hint")
+  end
+end
+
+fitText = function(renderer, value, width)
   local text = visibleText(renderer, value)
   local textRenderer = assert(renderer.text)
   if textRenderer:textWidth(text) <= width then
@@ -389,7 +430,6 @@ local function paintPane(self, view, plan, pane)
   local layout = assert(plan.content.layout)
   local placement = pane.placement
   local INK = self.skin.text.normal.foreground
-  local CARD = { 1, 1, 1, 1 }
   local BORDER = self.skin.cards.normal.border
   local SELECTED = self.skin.cards.normal.selectedRim
   local MUTED = self.skin.text.hint.foreground
@@ -398,6 +438,22 @@ local function paintPane(self, view, plan, pane)
   graphics.rectangle("fill", 0, 0, placement.logicalWidth, placement.logicalHeight)
   setColor(graphics, { 1, 1, 1, 1 })
   graphics.rectangle("fill", framedContent.x, framedContent.y, framedContent.width, framedContent.height)
+  if layout.decisionList then
+    local surface = layout.decisionList.surface
+    graphics.setColor(1, 1, 1, 1)
+    graphics.rectangle("fill", surface.x, surface.y, surface.width, surface.height)
+  end
+  local frameIndex = view.framePreviewIndex or view.session and view.session.frameIndex
+  if frameIndex ~= nil then
+    assert(self._windowRenderer, "field frame renderer is prepared before Save Editor drawing")
+    if layout.valueModal then
+      self._windowRenderer:drawApplicationFrame(layout.valueModal, frameIndex)
+    end
+    if layout.decisionList then
+      self._windowRenderer:drawApplicationFrame(layout.decisionList.surface, frameIndex)
+    end
+    self._windowRenderer:drawApplicationFrame(framedContent, frameIndex)
+  end
   for _, navigation in ipairs(layout.navigation) do
     local target = targetRect(layout, navigation.targetId)
     if target then
@@ -405,7 +461,11 @@ local function paintPane(self, view, plan, pane)
       if navigation.targetId:match("^location:map:") then
         label = fitText(self, label, target.width - 22)
       end
-      drawShadedControl(self, target, label, navigation.targetId == ("section:" .. view.section), false)
+      if navigation.role == "list" then
+        drawListRow(self, target, label, navigation.targetId == view.focus)
+      else
+        drawShadedControl(self, target, label, navigation.targetId == ("section:" .. view.section), false)
+      end
     end
   end
   if view.section == "Party" and (view.partyPage == "detail" or view.partyPage == "draft") then
@@ -422,6 +482,19 @@ local function paintPane(self, view, plan, pane)
     if rect and not row.gridCard and not row.partyField then
       local target = assert(layout.targets[row.targetId])
       LogicalSurface.clip(graphics, target.clip or rect, function()
+        if row.listSurface then
+          drawListRow(
+            self,
+            rect,
+            row.displayName or row.label,
+            row.targetId == view.focus,
+            row.valueText or row.value,
+            nil,
+            row.labelRect,
+            row.valueRect
+          )
+          return
+        end
         local actionable = row.role == "action"
           or row.role == "toggle"
           or row.role == "integer value"
@@ -596,14 +669,64 @@ local function paintPane(self, view, plan, pane)
   end
   if view.valueEditor then
     local dialog = view.valueEditor
-    if dialog.kind == "choice" then
+    if dialog.kind == "number" then
+      local modal = assert(layout.valueModal)
+      graphics.setColor(1, 1, 1, 1)
+      graphics.rectangle("fill", modal.x, modal.y, modal.width, modal.height)
+      drawText(self, tostring(dialog.parsedValue or dialog.buffer), modal.x + 10, modal.y + 8, INK)
+      drawText(
+        self,
+        "Range " .. tostring(dialog.minimum) .. "-" .. tostring(dialog.maximum),
+        modal.x + 10,
+        modal.y + 28,
+        MUTED
+      )
+      if view.editorFeedback or dialog.valid == false then
+        drawText(
+          self,
+          view.editorFeedback or "Enter a whole number within the allowed range.",
+          modal.x + 10,
+          modal.y + 48,
+          "error"
+        )
+      end
+      for _, control in ipairs(assert(view.numberControls)) do
+        local id = "number:delta:" .. tostring(control.delta)
+        local target = assert(targetRect(layout, id))
+        local state = view.numberHoldTarget == id and "pressed" or "normal"
+        local visual = assert(view.numberControlVisuals[control.role][state])
+        local image = assert(self._bagImages[visual.image], "retail number controls are prepared before drawing")
+        graphics.setColor(1, 1, 1, 1)
+        graphics.draw(
+          image,
+          target.x + (target.width - image:getWidth()) / 2,
+          target.y + (target.height - image:getHeight()) / 2
+        )
+        if id == view.focus then
+          setColor(graphics, { 0.86, 0.16, 0.18, 1 })
+          graphics.rectangle("line", target.x, target.y, target.width, target.height)
+        end
+        local label = (control.delta > 0 and "+" or "") .. tostring(control.delta)
+        drawText(self, label, target.x + 2, target.y + target.height - self.text.fontDef.lineHeight, INK)
+      end
+      drawShadedControl(
+        self,
+        targetRect(layout, "confirm"),
+        "Confirm",
+        view.focus == "confirm",
+        false,
+        false,
+        "primary"
+      )
+      drawShadedControl(self, targetRect(layout, "cancel"), "Cancel", view.focus == "cancel", false)
+    elseif dialog.kind == "choice" then
       drawText(self, "Search: " .. dialog.query, layout.content.x + 4, layout.content.y + 4, MUTED)
       local viewport = assert(layout.viewports["value:choice"])
       LogicalSurface.clip(graphics, viewport.clip, function()
         for _, option in ipairs(dialog.options) do
           local rect = targetRect(layout, "choice:" .. option.key)
           if rect then
-            drawShadedControl(self, rect, option.label, option.key == dialog.selectedKey, false)
+            drawListRow(self, rect, option.label, option.key == dialog.selectedKey)
           end
         end
       end)
@@ -642,76 +765,6 @@ local function paintPane(self, view, plan, pane)
         graphics.rectangle("line", rect.x, rect.y, rect.width, rect.height)
         drawText(self, id == "confirm" and "OK" or "Cancel", rect.x + 3, rect.y + 3, INK)
       end
-    elseif dialog.kind == "quantity" then
-      drawText(
-        self,
-        tostring(dialog.parsedValue or dialog.buffer),
-        layout.content.x + 6,
-        layout.content.y + layout.content.height / 2 - self.text.fontDef.lineHeight / 2,
-        INK
-      )
-      for _, direction in ipairs({ "decrement", "increment" }) do
-        local id = direction == "decrement" and "bag:quantity:decrement" or "bag:quantity:increment"
-        local state = view.quantityHoldTarget == id and "pressed" or "normal"
-        local visual = assert(view.bagQuantityVisuals[direction][state])
-        local image = assert(self._bagImages[visual.image], "quantity visual is prepared before drawing")
-        local target = assert(targetRect(layout, id))
-        graphics.setColor(1, 1, 1, 1)
-        graphics.draw(
-          image,
-          target.x + (target.width - image:getWidth()) / 2,
-          target.y + (target.height - image:getHeight()) / 2
-        )
-        if view.focus == id then
-          setColor(graphics, SELECTED)
-          graphics.rectangle("line", target.x, target.y, target.width, target.height)
-        end
-      end
-      for _, id in ipairs({ "confirm", "cancel" }) do
-        drawShadedControl(
-          self,
-          targetRect(layout, id),
-          id == "confirm" and "Confirm" or "Cancel",
-          id == view.focus,
-          false
-        )
-      end
-    else
-      local validity = dialog.parsedValue
-      local inRange = type(validity) == "number" and validity >= dialog.minimum and validity <= dialog.maximum
-      drawText(self, dialog.buffer or "", layout.content.x + 5, layout.content.y + 30, INK)
-      drawText(
-        self,
-        "Range " .. tostring(dialog.minimum) .. "-" .. tostring(dialog.maximum),
-        layout.content.x + 5,
-        layout.content.y + 46,
-        MUTED
-      )
-      if view.editorFeedback or not inRange then
-        drawText(
-          self,
-          view.editorFeedback or "Enter a whole number within the allowed range.",
-          layout.content.x + 5,
-          layout.content.y + 60,
-          "error"
-        )
-      end
-      for _, id in ipairs({ "digit-left", "digit-right", "digit-down", "digit-up", "confirm", "cancel" }) do
-        local rect = targetRect(layout, id)
-        if rect then
-          setColor(graphics, BORDER)
-          graphics.rectangle("line", rect.x, rect.y, rect.width, rect.height)
-          local labels = {
-            ["digit-left"] = "Left",
-            ["digit-right"] = "Right",
-            ["digit-down"] = "-",
-            ["digit-up"] = "+",
-            confirm = "OK",
-            cancel = "Cancel",
-          }
-          drawText(self, labels[id], rect.x + 3, rect.y + 3, INK)
-        end
-      end
     end
   end
   if view.iconStatus == "pending" then
@@ -726,36 +779,21 @@ local function paintPane(self, view, plan, pane)
     drawText(self, "Icons unavailable", layout.content.x + 4, layout.content.y + layout.content.height - 16, "error")
   end
   if view.modal then
-    local choices, prompt
+    local prompt
     if view.modal == "bag-item" then
-      choices, prompt =
-        { "bag:quantity", "bag:remove", "cancel" },
-        tostring(view.bagSelectedLabel or view.bagSelectedItem) .. "  × " .. tostring(view.bagSelectedQuantity)
+      prompt = tostring(view.bagSelectedLabel or view.bagSelectedItem) .. "  × " .. tostring(view.bagSelectedQuantity)
     elseif view.modal == "draft" then
-      choices, prompt = { "apply", "discard", "cancel" }, "Apply party changes?"
+      prompt = "Apply party changes?"
     elseif view.modal == "remove" then
-      choices, prompt = { "remove", "cancel" }, "Remove this entry?"
+      prompt = "Remove this entry?"
     else
-      choices, prompt = { "save", "discard", "cancel" }, "Save changes before leaving?"
+      prompt = "Save changes before leaving?"
     end
-    drawText(self, prompt, layout.content.x + 8, layout.content.y + 18, CARD)
-    for _, id in ipairs(choices) do
-      local rect = targetRect(layout, id)
-      if rect then
-        local disabled = id == "apply" and view.partyValid ~= true
-        local label = id == "bag:quantity" and "Quantity"
-          or id == "bag:remove" and "Remove"
-          or id:sub(1, 1):upper() .. id:sub(2)
-        local destructive = id == "remove" or id == "bag:remove" or id == "discard"
-        local role = (id == "apply" or id == "save") and "primary" or "secondary"
-        drawShadedControl(self, rect, label, id == view.focus, disabled, destructive, role)
-      end
+    local decisionList = assert(layout.decisionList)
+    drawText(self, prompt, decisionList.prompt.x, decisionList.prompt.y, INK)
+    for _, row in ipairs(decisionList.rows) do
+      drawListRow(self, row.rect, row.label, row.targetId == view.focus, nil, row.semantic)
     end
-  end
-  local frameIndex = view.framePreviewIndex or view.session and view.session.frameIndex
-  if frameIndex ~= nil then
-    assert(self._windowRenderer, "field frame renderer is prepared before Save Editor drawing")
-    self._windowRenderer:drawApplicationFrame(framedContent, frameIndex)
   end
 end
 
@@ -864,6 +902,11 @@ drawLocation = function(self, view, layout)
     local markerText = staged and string.format("X %d  Z %d", staged.fieldX, staged.fieldZ) or ""
     local summaryLine = statusLayout.summaryLine
     drawText(self, fitText(self, markerText, summaryLine.width), summaryLine.x, summaryLine.y, INK)
+  end
+  if layout.locationFocusCue then
+    local cue = layout.locationFocusCue
+    setColor(graphics, { 0.86, 0.16, 0.18, 1 })
+    graphics.rectangle("line", cue.x, cue.y, cue.width, cue.height)
   end
 end
 

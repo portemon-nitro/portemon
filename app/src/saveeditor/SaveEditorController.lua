@@ -20,6 +20,7 @@ local FocusGraph = require("libs.ui.src.FocusGraph")
 ---@field bagItemKey string?
 ---@field bagPage0 integer
 ---@field locationPage "grid"|"map-list"
+---@field locationFocus "grid"|"map-list"|"navigation"
 ---@field locationMapId integer?
 ---@field locationCursorX integer?
 ---@field locationCursorZ integer?
@@ -72,6 +73,7 @@ function Controller.new()
     bagItemKey = nil,
     bagPage0 = 0,
     locationPage = "grid",
+    locationFocus = "grid",
     locationMapId = nil,
     locationCursorX = nil,
     locationCursorZ = nil,
@@ -132,22 +134,23 @@ function Controller:press(action)
   end
   if self.section == "Location" then
     if action == "back" or action == "cancel" then
-      if self.locationPage == "map-list" then
-        self.locationPage = "grid"
-        self.focus = "location:map-picker"
+      if self.locationFocus == "grid" then
+        self.locationFocus = "map-list"
+        self.locationPage = "map-list"
+        self:setFocus(self.locationMapId and ("location:map:" .. self.locationMapId) or "location:map-picker")
         self:cancelInteraction()
-        return { kind = "location-page", page = "grid" }
-      end
-      if self.focus == "location:grid" or self.focus:match("^location:tile:") then
-        self.focus = "location:map-picker"
-        return nil
+        return { kind = "location-page", page = "map-list" }
       end
       return { kind = "back" }
     elseif action == "up" or action == "down" or action == "left" or action == "right" then
-      if self.locationPage == "map-list" or self.focus:match("^location:map:%d+$") then
+      local mapListTarget = self.focus:match("^location:map:") ~= nil
+        or self.focus == "location:map-picker"
+        or self.focus == "location:map-back"
+      local gridTarget = self.focus == "location:grid" or self.focus:match("^location:tile:") ~= nil
+      if self.locationFocus == "map-list" and mapListTarget and (action == "up" or action == "down") then
         return { kind = "location-map-move", direction = action }
       end
-      if self.focus == "location:grid" or self.focus:match("^location:tile:") then
+      if self.locationFocus == "grid" and gridTarget then
         return { kind = "location-cursor-move", direction = action }
       end
       return { kind = "move", direction = action }
@@ -161,7 +164,7 @@ function Controller:press(action)
         return { kind = "location-page", page = "map-list" }
       elseif self.focus == "location:map-back" then
         self.locationPage = "grid"
-        self.focus = "location:map-picker"
+        self:setFocus("location:grid")
         return { kind = "location-page", page = "grid" }
       elseif self.focus == "location:grid" then
         if self.locationCursorX ~= nil and self.locationCursorZ ~= nil then
@@ -223,7 +226,7 @@ function Controller:setSection(section)
   elseif section == "Player" then
     self.focus = "money"
   elseif section == "Location" then
-    self.focus = self.locationPage == "map-list" and "location:map-picker" or "location:grid"
+    self:setFocus(self.locationPage == "map-list" and "location:map-picker" or "location:grid")
   else
     self.focus = "flag:" .. (self.focus:match("^flag:(.+)$") or "")
   end
@@ -239,12 +242,14 @@ function Controller:enterLocation(location)
   if self.locationMapId ~= mapId then
     self.locationMapId = mapId
     self.locationPage = "grid"
+    self.locationFocus = "grid"
     self.locationMapOffset = 0
   end
   self.locationCursorX, self.locationCursorZ = fieldX, fieldZ
   self.locationCenterX, self.locationCenterZ = fieldX, fieldZ
   if self.section == "Location" then
-    self.focus = "location:grid"
+    self.locationPage = "grid"
+    self:setFocus("location:grid")
   end
 end
 
@@ -252,7 +257,7 @@ function Controller:openLocationMaps()
   assert(self.section == "Location")
   self.locationPage = "map-list"
   self.locationMapOffset = 0
-  self.focus = "location:map-picker"
+  self:setFocus("location:map-picker")
   self:cancelInteraction()
 end
 
@@ -265,7 +270,7 @@ function Controller:chooseLocationMap(mapId, centerX, centerZ)
   self.locationCursorX, self.locationCursorZ = centerX, centerZ
   self.locationCenterX, self.locationCenterZ = centerX, centerZ
   self.locationMapOffset = 0
-  self.focus = "location:map-picker"
+  self:setFocus("location:grid")
   self:cancelInteraction()
 end
 
@@ -319,6 +324,7 @@ end
 function Controller:locationSnapshot()
   return {
     page = self.locationPage,
+    contentFocus = self.locationFocus,
     mapId = self.locationMapId,
     cursor = self.locationCursorX and { fieldX = self.locationCursorX, fieldZ = self.locationCursorZ } or nil,
     center = self.locationCenterX and { fieldX = self.locationCenterX, fieldZ = self.locationCenterZ } or nil,
@@ -329,12 +335,23 @@ end
 function Controller:setFocus(targetId)
   assert(type(targetId) == "string" and targetId ~= "")
   self.focus = targetId
+  if self.section == "Location" then
+    if targetId == "location:grid" or targetId:match("^location:tile:") then
+      self.locationFocus = "grid"
+      self.locationPage = "grid"
+    elseif targetId:match("^location:map:") or targetId == "location:map-picker" or targetId == "location:map-back" then
+      self.locationFocus = "map-list"
+      self.locationPage = "map-list"
+    elseif targetId == "section" or targetId:match("^section:") then
+      self.locationFocus = "navigation"
+    end
+  end
 end
 
 ---@param focusGraph table<string, { up: string[], down: string[], left: string[], right: string[] }>
 ---@param direction "up"|"down"|"left"|"right"
 function Controller:moveFocus(focusGraph, direction)
-  self.focus = FocusGraph.move(focusGraph, self.focus, direction)
+  self:setFocus(FocusGraph.move(focusGraph, self.focus, direction))
 end
 
 function Controller:selectPartySlot(slot0)
@@ -419,6 +436,15 @@ function Controller:pointer(event)
     self.pointerScope = table.concat({ self.modal or "", self.section, self.partyPage, self.locationPage }, ":")
     if event.targetId ~= nil then
       self.focus = event.targetId
+      if event.targetId == "location:grid" or event.targetId:match("^location:tile:") then
+        self:setFocus(event.targetId)
+      elseif
+        event.targetId:match("^location:map:")
+        or event.targetId == "location:map-picker"
+        or event.targetId == "location:map-back"
+      then
+        self:setFocus(event.targetId)
+      end
     end
     self.locationPointerStart = {
       x = event.x,
@@ -501,6 +527,7 @@ function Controller:pointer(event)
     if start ~= nil and self.section == "Location" then
       local fieldX, fieldZ = target:match("^location:tile:(%-?%d+):(%-?%d+)$")
       if fieldX ~= nil then
+        self:setFocus("location:grid")
         self.locationCursorX, self.locationCursorZ = tonumber(fieldX), tonumber(fieldZ)
         return { kind = "select_tile", fieldX = self.locationCursorX, fieldZ = self.locationCursorZ }
       end
@@ -509,7 +536,7 @@ function Controller:pointer(event)
         return { kind = "location-page", page = "map-list" }
       elseif target == "location:map-back" then
         self.locationPage = "grid"
-        self.focus = "location:map-picker"
+        self:setFocus("location:grid")
         return { kind = "location-page", page = "grid" }
       end
       local mapId = target:match("^location:map:(%d+)$")

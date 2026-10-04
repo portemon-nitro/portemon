@@ -73,7 +73,9 @@ local ItemAssetSchema = require("libs.assets.src.ItemAssetSchema")
 ---@field locationSaveOperationId integer
 ---@field pendingRemove table<string, unknown>?
 ---@field pendingQuantity table<string, unknown>?
----@field quantityHold { pointerId: string, targetId: string, delta: integer, scopeEpoch: integer, nextTick: integer }?
+---@field numberHold { pointerId: string, targetId: string, delta: integer, scopeEpoch: integer, nextTick: integer }?
+---@field numberPressTarget string?
+---@field numberPressUntilTick integer
 ---@field fieldInput FieldInput
 ---@field inputTick integer
 ---@field tickRemainder number
@@ -234,7 +236,9 @@ function State.new(options)
     iconFailure = nil,
     pendingRemove = nil,
     pendingQuantity = nil,
-    quantityHold = nil,
+    numberHold = nil,
+    numberPressTarget = nil,
+    numberPressUntilTick = 0,
     fieldInput = FieldInput.new(),
     inputTick = 0,
     tickRemainder = 0,
@@ -279,13 +283,13 @@ function State:update(dt)
     self.tickRemainder = self.tickRemainder % 1
     self:_consumeUiInput(self.fieldInput:uiSnapshot(self.inputTick))
   end
-  local hold = self.quantityHold
+  local hold = self.numberHold
   if hold ~= nil then
     if self.controller.pointerId ~= hold.pointerId or self.controller.scopeEpoch ~= hold.scopeEpoch then
-      self.quantityHold = nil
+      self.numberHold = nil
     else
       while self.inputTick >= hold.nextTick do
-        self:_adjustBagQuantity(hold.delta)
+        self:_adjustNumber(hold.delta)
         hold.nextTick = hold.nextTick + FieldInput.UI_REPEAT_INTERVAL_TICKS
       end
     end
@@ -376,6 +380,14 @@ function State:_snapshot()
   local flags = session and section == "Progress" and self:_flagRows(session.flags) or {}
   local party = session and section == "Party" and self:_partyView() or {}
   local bag = session and section == "Bag" and self:_bagView() or {}
+  local numberControls, numberControlVisuals, numberPressTicks
+  if self.valueEditor ~= nil and self.valueEditor:snapshot().kind == "number" then
+    local dependencies = assert(self.dependencies, "number editor requires its presentation manifest")
+    local numberPresentation = assert(dependencies.bagManifest).interactive.overlays.quantity
+    numberControls = numberPresentation.controls
+    numberControlVisuals = numberPresentation.visuals
+    numberPressTicks = numberPresentation.pressTicks
+  end
   local view = {
     kind = "save_editor",
     status = self.status,
@@ -404,7 +416,9 @@ function State:_snapshot()
     flagRows = flags,
     valueEditor = self.valueEditor and self.valueEditor:snapshot() or nil,
     editorFeedback = self.editorFeedback,
-    quantityHoldTarget = self.quantityHold and self.quantityHold.targetId or nil,
+    numberControls = numberControls,
+    numberControlVisuals = numberControlVisuals,
+    numberPressTicks = numberPressTicks,
     unappliedDraft = self.monDraft ~= nil,
     iconStatus = self.iconStatus,
     iconFailure = self.iconFailure,
@@ -489,7 +503,8 @@ function State:_snapshot()
     self.scopeEpoch = self.scopeEpoch + 1
     self.fieldInput:beginUi(self.inputTick)
     self.controller:cancelInteraction()
-    self.quantityHold = nil
+    self.numberHold = nil
+    self.numberPressTarget = nil
   end
   self.controller.scopeId, self.controller.scopeEpoch = scopeId, self.scopeEpoch
   local scopeKind = self.controller.modal and "decision"
@@ -503,6 +518,9 @@ function State:_snapshot()
     kind = scopeKind,
     focusId = self.controller.focus,
   }
+  view.numberHoldTarget = self.numberHold and self.numberHold.targetId
+    or self.inputTick < self.numberPressUntilTick and self.numberPressTarget
+    or nil
   view.preserveChoiceScroll = self.preserveChoiceScroll
   view.scrollOffsets = self.controller.scrollOffsets
   return view
@@ -767,6 +785,8 @@ function State:_finishValueEditor()
   local purpose = self.valuePurpose
   local descriptor = self.activeDraftField
   if result.kind == "cancel" then
+    self.numberHold = nil
+    self.numberPressTarget = nil
     self.pendingFocusReturn = self.valueReturnFocus
     self.valueEditor, self.valuePurpose, self.activeDraftField = nil, nil, nil
     self.valueReturnFocus = nil
@@ -808,6 +828,8 @@ function State:_finishValueEditor()
       self.errorMessage = nil
     end
   elseif purpose == "bag_add_item" then
+    self.numberHold = nil
+    self.numberPressTarget = nil
     self.valueEditor, self.valuePurpose, self.activeDraftField = nil, nil, nil
     self.controller:selectBagItem(result.value)
     self.valueReturnFocus = "bag:add"
@@ -832,6 +854,8 @@ function State:_finishValueEditor()
     end
   end
   self.pendingFocusReturn = self.valueReturnFocus
+  self.numberHold = nil
+  self.numberPressTarget = nil
   self.valueEditor, self.valuePurpose, self.activeDraftField = nil, nil, nil
   self.valueReturnFocus = nil
   return true
@@ -888,15 +912,14 @@ function State:_openBagQuantity(mode)
       min = 1,
       max = pocket.maxQuantity,
       base = "decimal",
-      navigation = "quantity",
     }),
     "bag_quantity",
     mode == "add" and "bag:add" or "bag:item:" .. itemKey
   )
 end
 
-function State:_adjustBagQuantity(delta)
-  if self.valueEditor ~= nil and self.valuePurpose == "bag_quantity" then
+function State:_adjustNumber(delta)
+  if self.valueEditor ~= nil then
     self.valueEditor:adjustInteger(delta)
   end
 end
@@ -950,7 +973,7 @@ function State:_reconcileFocus(preferred)
       focus = layout.defaultFocus
     end
   end
-  self.controller.focus = assert(focus)
+  self.controller:setFocus(assert(focus))
   self.pendingFocusReturn = nil
 end
 
@@ -1278,7 +1301,7 @@ function State:_performDeferred(action)
     local layout = plan.content.layout
     local maps = assert(view.location).maps
     if #maps == 0 then
-      self.controller.focus = "location:map-picker"
+      self.controller:setFocus("location:map-picker")
       return
     end
     if action.direction == "up" or action.direction == "down" then
@@ -1294,7 +1317,7 @@ function State:_performDeferred(action)
         currentIndex = delta > 0 and 0 or (#maps + 1)
       end
       currentIndex = math.max(1, math.min(#maps, currentIndex + delta))
-      self.controller.focus = "location:map:" .. maps[currentIndex].mapId
+      self.controller:setFocus("location:map:" .. maps[currentIndex].mapId)
       local viewport = assert(layout.viewports["location:map-list"])
       self.controller.locationMapOffset = ScrollViewport.clamp(
         ScrollViewport.reveal(
@@ -1306,40 +1329,8 @@ function State:_performDeferred(action)
         viewport.contentExtent,
         viewport.clip.height
       )
-    else
-      self.controller:moveFocus(layout.focusGraph, action.direction)
     end
   elseif action.kind == "location-cursor-move" then
-    if action.direction == "left" and self.controller.focus == "location:grid" then
-      local view = self:_snapshot()
-      local layout = self:_resolve(view).content.layout
-      local wideLocation = layout.locationGrid ~= nil and layout.viewports["location:map-list"] ~= nil
-      if wideLocation then
-        local mapId = assert(self.controller.locationMapId, "Location grid focus needs a browsed map")
-        local viewport = assert(layout.viewports["location:map-list"])
-        local currentIndex
-        for index, map in ipairs(assert(view.location).maps) do
-          if map.mapId == mapId then
-            currentIndex = index
-            break
-          end
-        end
-        assert(currentIndex ~= nil, "browsed map must remain in the structural map list")
-        self.controller.locationMapOffset = ScrollViewport.clamp(
-          ScrollViewport.reveal(
-            viewport.offset,
-            viewport.clip.height,
-            (currentIndex - 1) * viewport.rowExtent,
-            viewport.rowExtent
-          ),
-          viewport.contentExtent,
-          viewport.clip.height
-        )
-        self.controller.focus = "location:map:" .. mapId
-        self:_reconcileFocus()
-        return
-      end
-    end
     local width, height = self:_locationGridSize()
     self.controller:moveLocationCursor(action.direction, width, height)
     self:_updateLocationService()
@@ -1641,10 +1632,8 @@ function State:_activate(targetId)
       self.valueEditor:activateTarget(controlId or targetId)
     elseif targetId == "confirm" then
       self.valueEditor:press("confirm")
-    elseif valueKind == "quantity" and targetId == "bag:quantity:decrement" then
-      self.valueEditor:adjustInteger(-1)
-    elseif valueKind == "quantity" and targetId == "bag:quantity:increment" then
-      self.valueEditor:adjustInteger(1)
+    elseif valueKind == "number" and targetId:match("^number:delta:(%-?%d+)$") then
+      self:_adjustNumber(assert(tonumber(targetId:match("^number:delta:(%-?%d+)$"))))
     else
       self.valueEditor:activateTarget(targetId)
     end
@@ -1988,25 +1977,33 @@ function State:_pointer(events)
   local mapped = self.presentation:mapInput(events, view)
   for _, event in ipairs(mapped) do
     self._pointerDispatching = event.pointerId == "mouse:1"
-    local heldQuantityTarget = self.quantityHold ~= nil and self.quantityHold.targetId or nil
+    local heldNumberTarget = self.numberHold ~= nil and self.numberHold.targetId or nil
     if event.type == "pointer_up" or event.type == "pointer_cancel" then
-      if self.quantityHold == nil or event.pointerId == nil or event.pointerId == self.quantityHold.pointerId then
-        self.quantityHold = nil
+      if self.numberHold == nil or event.pointerId == nil or event.pointerId == self.numberHold.pointerId then
+        self.numberHold = nil
+      end
+      if event.type == "pointer_cancel" then
+        self.numberPressTarget = nil
       end
     end
     local intent = self.controller:pointer(event)
-    if not (event.type == "pointer_up" and heldQuantityTarget ~= nil) then
+    if not (event.type == "pointer_up" and heldNumberTarget ~= nil) then
       self:_dispatchIntent(intent)
     end
     if
       event.type == "pointer_down"
       and self.valueEditor ~= nil
-      and self.valuePurpose == "bag_quantity"
-      and (event.targetId == "bag:quantity:decrement" or event.targetId == "bag:quantity:increment")
+      and self.valueEditor:snapshot().kind == "number"
+      and event.targetId ~= nil
+      and event.targetId:match("^number:delta:(%-?%d+)$")
     then
-      local delta = event.targetId == "bag:quantity:increment" and 1 or -1
-      self:_adjustBagQuantity(delta)
-      self.quantityHold = {
+      local delta = math.floor(assert(tonumber(event.targetId:match("^number:delta:(%-?%d+)$"))))
+      self:_adjustNumber(delta)
+      local pressTicks = assert(view.numberPressTicks, "number controls carry source press timing")
+      assert(pressTicks > 0 and pressTicks % 1 == 0, "number control press timing is a positive integer")
+      self.numberPressTarget = event.targetId
+      self.numberPressUntilTick = self.inputTick + pressTicks
+      self.numberHold = {
         pointerId = event.pointerId,
         targetId = event.targetId,
         delta = delta,
@@ -2049,7 +2046,8 @@ function State:resize(width, height)
   self.width, self.height = width, height
   self.presentation:cancelPointers()
   self.controller:cancelInteraction()
-  self.quantityHold = nil
+  self.numberHold = nil
+  self.numberPressTarget = nil
   self.locationViewport = nil
 end
 
@@ -2057,7 +2055,8 @@ function State:focus(focused)
   if not focused then
     self.presentation:cancelPointers()
     self.controller:cancelInteraction()
-    self.quantityHold = nil
+    self.numberHold = nil
+    self.numberPressTarget = nil
     self.fieldInput:clearAll()
     self.fieldInput:beginUi(self.inputTick)
   end
@@ -2084,27 +2083,11 @@ function State:_consumeUiInput(events)
           end
           local selected = self.valueEditor:snapshot().selectedKey
           self.controller.focus = selected and ("choice:" .. selected) or "cancel"
-        elseif snapshot.kind == "name" or snapshot.kind == "integer" or snapshot.kind == "quantity" then
+        elseif snapshot.kind == "name" or snapshot.kind == "number" then
           self.valueEditor:press(event.direction)
         end
       else
-        local intent = self.controller:press(event.direction)
-        if self.controller.section == "Location" and (event.direction == "left" or event.direction == "right") then
-          local layout = assert(self:_resolve(self:_snapshot()).content.layout)
-          local wideLocation = layout.locationGrid ~= nil and layout.viewports["location:map-list"] ~= nil
-          local leavingGridToMap = wideLocation
-            and event.direction == "left"
-            and self.controller.focus == "location:grid"
-          if
-            wideLocation
-            and not leavingGridToMap
-            and layout.focusGraph[self.controller.focus]
-            and #layout.focusGraph[self.controller.focus][event.direction] > 0
-          then
-            intent = { kind = "move", direction = event.direction }
-          end
-        end
-        self:_dispatchIntent(intent)
+        self:_dispatchIntent(self.controller:press(event.direction))
       end
     elseif event.type == "confirm" then
       self:_reconcileFocus()
@@ -2350,7 +2333,7 @@ function State:_setScrollOffset(view, layout, viewportId, offset)
       )
       local targetId = viewport.rowTargets[firstIndex]
       if targetId ~= nil then
-        self.controller.focus = targetId
+        self.controller:setFocus(targetId)
       end
     end
     return
@@ -2378,7 +2361,8 @@ function State:dispose()
     return
   end
   self.disposed = true
-  self.quantityHold = nil
+  self.numberHold = nil
+  self.numberPressTarget = nil
   self.generation = self.generation + 1
   self:_cancelPendingLocationSave()
   if self.locationService then

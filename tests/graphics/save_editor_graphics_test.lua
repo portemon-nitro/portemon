@@ -10,6 +10,7 @@ local FieldUiAssetCache = require("libs.assets.src.field.FieldUiAssetCache")
 local FieldScriptSymbols = require("libs.assets.src.field.FieldScriptSymbols")
 local Interface = require("app.src.saveeditor.SaveEditorInterface")
 local Layout = require("app.src.saveeditor.SaveEditorLayout")
+local LayoutGeometry = require("libs.ui.src.LayoutGeometry")
 local Renderer = require("app.src.saveeditor.SaveEditorRenderer")
 local ValueEditor = require("app.src.saveeditor.SaveEditorValueEditor")
 local ScreenTopology = require("libs.ui.src.ScreenTopology")
@@ -132,10 +133,19 @@ local function fixture(scope, width, height, topology, section, variant, version
       decrement = { normal = { image = "bag/dec-normal" }, pressed = { image = "bag/dec-pressed" } },
       increment = { normal = { image = "bag/inc-normal" }, pressed = { image = "bag/inc-pressed" } },
     }
+    view.numberControlVisuals = view.bagQuantityVisuals
+    view.numberControls = {
+      { delta = 100, role = "increment", hitRect = { x = 120, y = 88, width = 32, height = 24 } },
+      { delta = 10, role = "increment", hitRect = { x = 152, y = 88, width = 32, height = 24 } },
+      { delta = 1, role = "increment", hitRect = { x = 184, y = 88, width = 32, height = 24 } },
+      { delta = -100, role = "decrement", hitRect = { x = 120, y = 136, width = 32, height = 24 } },
+      { delta = -10, role = "decrement", hitRect = { x = 152, y = 136, width = 32, height = 24 } },
+      { delta = -1, role = "decrement", hitRect = { x = 184, y = 136, width = 32, height = 24 } },
+    }
     if variant == "quantity-normal" or variant == "quantity-pressed" then
-      view.valueEditor = { kind = "quantity", buffer = "2", parsedValue = 2, minimum = 1, maximum = 999 }
-      view.focus = "bag:quantity:increment"
-      view.quantityHoldTarget = variant == "quantity-pressed" and "bag:quantity:increment" or nil
+      view.valueEditor = { kind = "number", buffer = "2", parsedValue = 2, minimum = 1, maximum = 999 }
+      view.focus = "number:delta:1"
+      view.numberHoldTarget = variant == "quantity-pressed" and "number:delta:1" or nil
       view.scope = { id = "value:bag_quantity", epoch = 2, kind = "value", focusId = view.focus }
     end
   elseif section == "Location" then
@@ -169,6 +179,8 @@ local function fixture(scope, width, height, topology, section, variant, version
     view.locationNavigation = {
       page = (variant == "map-list" or (variant or ""):match("^map%-list%-long%-query") ~= nil) and "map-list"
         or "grid",
+      contentFocus = (variant == "map-list" or (variant or ""):match("^map%-list%-long%-query") ~= nil) and "map-list"
+        or "grid",
       mapId = 12,
       cursor = { fieldX = 33, fieldZ = 48 },
       center = { fieldX = 32, fieldZ = 48 },
@@ -183,6 +195,44 @@ local function fixture(scope, width, height, topology, section, variant, version
     end
     view.savedLocation = { mapId = 12, fieldX = 31, fieldZ = 48 }
     view.pendingLocation = { mapId = 12, fieldX = 32, fieldZ = 48 }
+  end
+  if variant == "choice-list" then
+    local options = {}
+    for index = 1, 12 do
+      options[index] = { key = string.format("choice-%02d", index), label = "Choice " .. index }
+    end
+    view.focus = "choice:choice-01"
+    view.valueEditor = {
+      kind = "choice",
+      purpose = "species",
+      options = options,
+      selectedKey = "choice-01",
+      query = "",
+    }
+    view.scope = { id = "value:choice:species", epoch = 2, kind = "value", focusId = view.focus }
+  elseif variant == "number-modal" then
+    view.focus = "confirm"
+    view.numberControls = {
+      { delta = 100, role = "increment", hitRect = { x = 120, y = 88, width = 32, height = 24 } },
+      { delta = 10, role = "increment", hitRect = { x = 152, y = 88, width = 32, height = 24 } },
+      { delta = 1, role = "increment", hitRect = { x = 184, y = 88, width = 32, height = 24 } },
+      { delta = -100, role = "decrement", hitRect = { x = 120, y = 136, width = 32, height = 24 } },
+      { delta = -10, role = "decrement", hitRect = { x = 152, y = 136, width = 32, height = 24 } },
+      { delta = -1, role = "decrement", hitRect = { x = 184, y = 136, width = 32, height = 24 } },
+    }
+    view.numberControlVisuals = {
+      increment = { normal = { image = "bag/inc-normal" }, pressed = { image = "bag/inc-pressed" } },
+      decrement = { normal = { image = "bag/dec-normal" }, pressed = { image = "bag/dec-pressed" } },
+    }
+    view.valueEditor = {
+      kind = "number",
+      buffer = "123",
+      parsedValue = 123,
+      minimum = 0,
+      maximum = 999,
+      base = "decimal",
+    }
+    view.scope = { id = "value:integer:money", epoch = 2, kind = "value", focusId = view.focus }
   end
   local context = DisplayContext.new({
     graphics = love.graphics,
@@ -231,6 +281,17 @@ local function draw(scope, width, height, topology, name, section, variant, vers
       local imageData = love.image.newImageData(index == 1 and 256 or 12, index == 1 and 32 or 12)
       local image = graphics.newImage(imageData)
       renderer._bagImages[path] = image
+    end
+  end
+  if view.valueEditor and view.valueEditor.kind == "number" and view.section ~= "Bag" then
+    renderer._bagImages = {}
+    local index = 0
+    for _, role in ipairs({ "increment", "decrement" }) do
+      for _, state in ipairs({ "normal", "pressed" }) do
+        index = index + 1
+        local visual = view.numberControlVisuals[role][state]
+        renderer._bagImages[visual.image] = graphics.newImage(love.image.newImageData(12 + index, 12))
+      end
     end
   end
   local canvas = scope:own(graphics.newCanvas(width, height))
@@ -302,8 +363,8 @@ local function draw(scope, width, height, topology, name, section, variant, vers
     end
   elseif view.section == "Bag" then
     if view.valueEditor then
-      Assert.notNil(layout.targets["bag:quantity:decrement"], name .. " exposes the quantity decrement visual")
-      Assert.notNil(layout.targets["bag:quantity:increment"], name .. " exposes the quantity increment visual")
+      Assert.notNil(layout.targets["number:delta:-1"], name .. " exposes the number decrement visual")
+      Assert.notNil(layout.targets["number:delta:1"], name .. " exposes the number increment visual")
     else
       Assert.notNil(layout.targets["bag:item:POTION"], name .. " exposes the selected stack")
       Assert.isNil(layout.targets["bag:quantity"], name .. " keeps quantity in the item modal")
@@ -353,7 +414,7 @@ local function draw(scope, width, height, topology, name, section, variant, vers
   end
   Assert.isTrue(changed > 20, name .. " must render visible editor chrome")
   local renderedText = table.concat(drawnText, " ")
-  if section == "Player" and variant ~= "leave" then
+  if section == "Player" and variant ~= "leave" and variant ~= "choice-list" and variant ~= "number-modal" then
     Assert.isTrue(renderedText:find("PLAYER"), name .. " shows the player identity")
   end
   if view.section == "Progress" then
@@ -404,6 +465,108 @@ function T.player_shell_renders_headerless_controls_and_a_dirty_leave_decision(s
   end
 end
 
+function T.choice_and_decision_lists_render_as_white_framed_surfaces(scope)
+  local topology = ScreenTopology.oneDisplay({
+    id = "main",
+    rect = { x = 0, y = 0, width = 640, height = 480 },
+    touch = true,
+    role = "world",
+  })
+  for _, scenario in ipairs({
+    { section = "Player", variant = "leave", targetId = "save" },
+    { section = "Player", variant = "choice-list", targetId = "choice:choice-01" },
+  }) do
+    local frames = {}
+    local data, _, layout, _, _, view = draw(
+      scope,
+      640,
+      480,
+      topology,
+      "framed-list-" .. scenario.variant,
+      scenario.section,
+      scenario.variant,
+      nil,
+      function(renderer)
+        local windowRenderer = assert(renderer._windowRenderer)
+        local drawApplicationFrame = windowRenderer.drawApplicationFrame
+        windowRenderer.drawApplicationFrame = function(self, box, frameIndex)
+          frames[#frames + 1] = frameIndex
+          return drawApplicationFrame(self, box, frameIndex)
+        end
+      end
+    )
+    local row = assert(layout.targets[scenario.targetId], "the active list row is laid out")
+    local rect = row.rect
+    local pane = assert(view.presentation.panes[1])
+    local x, y = LayoutGeometry.logicalToHost(pane.placement, rect.x + rect.width * 0.8, rect.y + rect.height / 2)
+    local red, green, blue = data:getPixel(math.floor(x), math.floor(y))
+    Assert.near(red, 1, 0.05, "list content has a white surface")
+    Assert.near(green, 1, 0.05, "list content has a white surface")
+    Assert.near(blue, 1, 0.05, "list content has a white surface")
+    if scenario.variant == "choice-list" then
+      local outlineX, outlineY = LayoutGeometry.logicalToHost(pane.placement, rect.x + rect.width * 0.8, rect.y + 1)
+      local outlineRed, outlineGreen, outlineBlue = data:getPixel(math.floor(outlineX), math.floor(outlineY))
+      Assert.isTrue(
+        outlineRed > 0.7 and outlineGreen < 0.4 and outlineBlue < 0.4,
+        "the selected list row has a thin red outline"
+      )
+    end
+    Assert.isTrue(#frames > 0, "the list draws its application frame")
+    for _, frameIndex in ipairs(frames) do
+      Assert.equal(frameIndex, 0, "the framed list uses the selected staged frame")
+    end
+  end
+end
+
+function T.integer_editor_renders_as_a_white_staged_frame_modal(scope)
+  local topology = ScreenTopology.oneDisplay({
+    id = "main",
+    rect = { x = 0, y = 0, width = 640, height = 480 },
+    touch = true,
+    role = "world",
+  })
+  local frames = {}
+  local data, _, layout, _, _, view = draw(
+    scope,
+    640,
+    480,
+    topology,
+    "number-modal",
+    "Player",
+    "number-modal",
+    nil,
+    function(renderer)
+      local windowRenderer = assert(renderer._windowRenderer)
+      local drawApplicationFrame = windowRenderer.drawApplicationFrame
+      windowRenderer.drawApplicationFrame = function(self, box, frameIndex)
+        frames[#frames + 1] = frameIndex
+        return drawApplicationFrame(self, box, frameIndex)
+      end
+    end
+  )
+  Assert.isTrue(#frames > 0, "the number modal draws its application frame")
+  for _, frameIndex in ipairs(frames) do
+    Assert.equal(frameIndex, 0, "the number modal uses the selected staged frame")
+  end
+  local modal = assert(layout.valueModal, "the number modal has framed content geometry")
+  for _, targetId in ipairs({
+    "number:delta:100",
+    "number:delta:10",
+    "number:delta:1",
+    "number:delta:-100",
+    "number:delta:-10",
+    "number:delta:-1",
+  }) do
+    Assert.notNil(layout.targets[targetId], "the number modal exposes " .. targetId)
+  end
+  local pane = assert(view.presentation.panes[1])
+  local x, y = LayoutGeometry.logicalToHost(pane.placement, modal.x + modal.width - 10, modal.y + modal.height / 2)
+  local red, green, blue = data:getPixel(math.floor(x), math.floor(y))
+  Assert.near(red, 1, 0.05, "number modal body is white")
+  Assert.near(green, 1, 0.05, "number modal body is white")
+  Assert.near(blue, 1, 0.05, "number modal body is white")
+end
+
 function T.game_skin_and_staged_frame_drive_the_framed_player_surface(scope)
   local topology = ScreenTopology.oneDisplay({
     id = "main",
@@ -412,7 +575,7 @@ function T.game_skin_and_staged_frame_drive_the_framed_player_surface(scope)
     role = "world",
   })
   local frameIndex
-  local data, _, layout, _, _, _, heartGoldBackground = draw(
+  local data, _, layout, _, _, view, heartGoldBackground = draw(
     scope,
     640,
     480,
@@ -434,8 +597,11 @@ function T.game_skin_and_staged_frame_drive_the_framed_player_surface(scope)
   Assert.equal(frameIndex, 1, "the frame renderer receives the staged choice preview")
   local save = assert(layout.targets.save).rect
   local cancel = assert(layout.targets.cancel).rect
-  local saveRed, saveGreen, saveBlue = data:getPixel(math.floor(save.x + 3), math.floor(save.y + 3))
-  local cancelRed, cancelGreen, cancelBlue = data:getPixel(math.floor(cancel.x + 3), math.floor(cancel.y + 3))
+  local pane = assert(view.presentation.panes[1])
+  local saveX, saveY = LayoutGeometry.logicalToHost(pane.placement, save.x + 3, save.y + 3)
+  local cancelX, cancelY = LayoutGeometry.logicalToHost(pane.placement, cancel.x + 3, cancel.y + 3)
+  local saveRed, saveGreen, saveBlue = data:getPixel(math.floor(saveX), math.floor(saveY))
+  local cancelRed, cancelGreen, cancelBlue = data:getPixel(math.floor(cancelX), math.floor(cancelY))
   Assert.isTrue(
     saveRed ~= cancelRed or saveGreen ~= cancelGreen or saveBlue ~= cancelBlue,
     "primary Save and secondary Cancel use different semantic button colors"
@@ -539,7 +705,7 @@ function T.bag_quantity_uses_normal_and_pressed_generated_controls(scope)
   local _, _, _, pressed = draw(scope, 640, 480, topology, "bag-quantity-pressed", "Bag", "quantity-pressed")
   Assert.isTrue(pressed["bag/inc-pressed"], "held increment uses its pressed generated image")
   Assert.isTrue(pressed["bag/dec-normal"], "unheld decrement keeps its normal generated image")
-  Assert.isFalse(pressed["bag/inc-normal"] == true, "held increment does not use its normal image")
+  Assert.isTrue(pressed["bag/inc-normal"], "the other retail increments keep their normal image")
 end
 
 function T.party_icons_center_from_distinct_provider_dimensions(scope)
@@ -742,6 +908,21 @@ function T.location_grid_shows_status_and_controls_on_compact_wide_tall_and_dual
     { id = "lower", rect = { x = 0, y = 192, width = 256, height = 192 }, touch = true, role = "auxiliary" }
   )
   draw(scope, 256, 384, dual, "location-dual-touch", "Location")
+end
+
+function T.location_grid_focus_cue_remains_visible_over_grid_tiles(scope)
+  local topology = ScreenTopology.oneDisplay({
+    id = "main",
+    rect = { x = 0, y = 0, width = 1280, height = 720 },
+    touch = false,
+    role = "world",
+  })
+  local data, _, layout, _, _, view = draw(scope, 1280, 720, topology, "location-grid-cue", "Location")
+  local cue = assert(layout.locationFocusCue, "the active grid publishes its surface cue")
+  local pane = assert(view.presentation.panes[1])
+  local x, y = LayoutGeometry.logicalToHost(pane.placement, cue.x + cue.width / 2, cue.y)
+  local red, green, blue = data:getPixel(math.floor(x), math.floor(y))
+  Assert.isTrue(red > 0.7 and green < 0.4 and blue < 0.4, "the grid surface cue stays visible over its tiles")
 end
 
 function T.location_map_list_labels_fit_button_content_without_losing_map_identity(scope)

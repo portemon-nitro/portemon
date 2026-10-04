@@ -29,38 +29,43 @@ function T.direct_decimal_entry_confirms_the_exact_value()
   Assert.deepEqual(editor:result(), { kind = "confirm", value = 73125 })
 end
 
-function T.directional_digit_selection_and_increment_confirm_without_typing()
+function T.directional_adjustment_confirms_without_typing()
   local editor = integerEditor(128, 0, 999)
 
-  Assert.isTrue(editor:press("left"), "focus should move from the units digit to the tens digit")
-  Assert.isTrue(editor:press("up"), "the selected digit should increment")
+  Assert.isTrue(editor:press("up"), "Up adjusts an integer by one")
   Assert.isTrue(editor:press("confirm"), "the adjusted value should confirm")
-  Assert.deepEqual(editor:result(), { kind = "confirm", value = 138 })
+  Assert.deepEqual(editor:result(), { kind = "confirm", value = 129 })
 end
 
-function T.quantity_navigation_uses_one_and_ten_step_clamps_without_changing_digit_mode()
-  local quantity = SaveEditorValueEditor.new({
+function T.integer_editors_share_retail_adjustment_steps_and_preserve_display_base()
+  local decimal = SaveEditorValueEditor.new({
     kind = "integer",
     value = 20,
-    min = 1,
+    min = 0,
     max = 25,
     base = "decimal",
-    navigation = "quantity",
   })
-  Assert.isTrue(quantity:press("up"))
-  Assert.equal(quantity:snapshot().parsedValue, 21)
-  Assert.isTrue(quantity:press("right"))
-  Assert.equal(quantity:snapshot().parsedValue, 25, "ten-step changes clamp at the maximum")
-  Assert.isTrue(quantity:press("down"))
-  Assert.equal(quantity:snapshot().parsedValue, 24)
-  Assert.isTrue(quantity:press("left"))
-  Assert.equal(quantity:snapshot().parsedValue, 14)
-  Assert.isTrue(quantity:adjustInteger(-100))
-  Assert.equal(quantity:snapshot().parsedValue, 1, "adjustment clamps at the non-removal minimum")
-  Assert.equal(quantity:snapshot().kind, "quantity")
-  local digits = integerEditor(128, 0, 999)
-  Assert.isTrue(digits:press("up"))
-  Assert.equal(digits:snapshot().parsedValue, 129, "ordinary integer editors keep units-digit adjustment")
+  Assert.equal(decimal:snapshot().kind, "number", "ordinary integers use the shared number modal")
+  Assert.isTrue(decimal:press("up"))
+  Assert.equal(decimal:snapshot().parsedValue, 21)
+  Assert.isTrue(decimal:press("left"))
+  Assert.equal(decimal:snapshot().parsedValue, 11, "Left subtracts ten")
+  Assert.isTrue(decimal:press("right"))
+  Assert.equal(decimal:snapshot().parsedValue, 21, "Right adds ten")
+
+  local hexadecimal = SaveEditorValueEditor.new({
+    kind = "integer",
+    value = 0x1A2,
+    min = 0,
+    max = 0xFFF,
+    base = "hex",
+  })
+  Assert.equal(hexadecimal:snapshot().kind, "number", "raw values use the same modal kind")
+  Assert.isTrue(hexadecimal:press("right"))
+  Assert.equal(hexadecimal:snapshot().parsedValue, 0x1AC, "hex-backed fields also add ten")
+  Assert.equal(hexadecimal:snapshot().buffer, "1AC", "hexadecimal presentation remains hexadecimal")
+  Assert.isTrue(hexadecimal:adjustInteger(-0x100))
+  Assert.equal(hexadecimal:snapshot().buffer, "AC", "direct adjustments preserve the display base")
 end
 
 function T.cancel_discards_partial_numeric_input()
@@ -316,12 +321,11 @@ function T.name_action_key_activates_the_selected_glyph_without_submitting()
   Assert.isTrue(editor:snapshot().naming.text ~= beforeAction, "the selected glyph is inserted into the active name")
 end
 
-function T.repeated_digit_adjustment_preserves_decimal_and_hexadecimal_significance()
+function T.repeated_adjustment_preserves_decimal_and_hexadecimal_display()
   local decimal = integerEditor(128, 0, 999)
-  Assert.isTrue(decimal:press("left"))
   Assert.isTrue(decimal:press("up"))
   Assert.isTrue(decimal:press("up"))
-  Assert.equal(decimal:snapshot().buffer, "148", "both adjustments continue to target tens")
+  Assert.equal(decimal:snapshot().buffer, "130", "repeated Up presses add one each time")
 
   local hexadecimal = SaveEditorValueEditor.new({
     kind = "integer",
@@ -330,10 +334,9 @@ function T.repeated_digit_adjustment_preserves_decimal_and_hexadecimal_significa
     max = 0xFFF,
     base = "hex",
   })
-  Assert.isTrue(hexadecimal:press("left"))
-  Assert.isTrue(hexadecimal:press("up"))
-  Assert.isTrue(hexadecimal:press("up"))
-  Assert.equal(hexadecimal:snapshot().buffer, "1C2", "both adjustments continue to target the middle hex digit")
+  Assert.isTrue(hexadecimal:press("right"))
+  Assert.isTrue(hexadecimal:press("right"))
+  Assert.equal(hexadecimal:snapshot().buffer, "1B6", "ten-step adjustments preserve hexadecimal display")
 end
 
 function T.name_variant_uses_naming_snapshot_and_submits_real_text()
