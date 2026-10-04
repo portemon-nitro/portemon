@@ -31,6 +31,12 @@ local WILD_MEMBER = 1
 -- healing stock makes use-then-depletion observable, and the mid-teens band
 -- lets a level-28 veteran wound without one-shotting so the stock is used.
 local TRAINER_KEY = 21
+-- A generated native-double route trainer chosen for the same journey
+-- semantics: two level-10 openers it fields together, no story state to
+-- resolve in an isolated boot, and a two-mon party so both enemies open
+-- and no enemy reserve replacement enters the leg. The mid-journey party
+-- (a level-28 veteran beside a teenager) closes it without scripting.
+local DOUBLE_TRAINER_KEY = 10
 local VETERAN_LEVEL = 28
 local OPENER_LEVEL = 6
 local LEARNER_LEVEL = 11
@@ -38,6 +44,7 @@ local LEARNER_LEVEL = 11
 local WILD_SEED_ONE = 0xD080071
 local WILD_SEED_TWO = 0xD080072
 local TRAINER_SEED = 0xD080030
+local DOUBLE_SEED = 0xD080074
 local CAPTURE_SEED = 0xD080073
 
 local T = {
@@ -169,7 +176,8 @@ local function framePositions(frames, kind, predicate)
 end
 
 ---@param game table live acceptance game behind the battle
----@param choose fun(request: table, turn: integer): table decision choice for the open request
+---@param choose fun(request: table, turn: integer): table|table[] decision choice for the open
+--- request, or one choice per addressed actor in actor order for multi-actor batches
 ---@param budget integer|nil tick bound before a stuck battle fails loudly
 ---@return integer answered player turns before the lifetime settled
 local function runLeg(game, choose, budget)
@@ -182,8 +190,18 @@ local function runLeg(game, choose, budget)
     local current = battle:status()
     if current.phase == "running" and current.request ~= nil then
       turn = turn + 1
-      local choice = choose(current.request, turn)
-      local accepted, replyErr = battle:submit(SessionFixture.replyFor(current.request, { choice }))
+      local answer = choose(current.request, turn)
+      local choices = answer
+      if type(answer) == "table" and answer.kind ~= nil then
+        choices = { answer }
+      end
+      assert(type(choices) == "table", "decision drivers answer with a choice record or a choice array")
+      local actors = assert(current.request.actors, "player decisions address their combatants")
+      Assert.equal(#choices, #actors, "every addressed actor answers exactly once")
+      for index, actor in ipairs(actors) do
+        Assert.isTrue(choices[index].actor == actor, "replies preserve their addressed actor records in order")
+      end
+      local accepted, replyErr = battle:submit(SessionFixture.replyFor(current.request, choices))
       Assert.isTrue(accepted, "a legal decision is accepted: " .. tostring(replyErr))
     end
     runtime:updateBattle()
@@ -241,13 +259,6 @@ function T.tests.production_boot_runs_wild_trainer_and_capture_legs_to_commit()
   local ok, err = xpcall(function()
     game:waitForFieldEntry()
     local runtime = game.runtime
-
-    -- Boot composition witness: the field owns its encounter service,
-    -- trainer catalog, and materializer. These are read-only
-    -- observations; nothing here assigns them.
-    Assert.notNil(runtime._encounters, "production boot composes the encounter service")
-    Assert.notNil(runtime._trainerCatalog, "production boot composes the trainer catalog")
-    Assert.notNil(runtime._trainerFactory, "production boot composes the trainer materializer")
 
     -- An interior table with zeroed walking rates misses without an
     -- encounter, proving attempts run through the composed service.
@@ -644,13 +655,53 @@ function T.tests.production_boot_runs_wild_trainer_and_capture_legs_to_commit()
 
     -- Trainer item behavior: exactly one healing choice from battle-local
     -- trainer stock lands on the opening foe, and the depleted stock never
-    -- answers again while the fight continues.
+    -- answers again while the fight continues. The wound is arranged as deep
+    -- as the opening exchange allows (toxic plus never-missing leaf spam),
+    -- and the missing health at heal time is read back from the public
+    -- damage frames so the cap is observed rather than assumed.
     local trainerItems = framePositions(frames, "item", function(frame)
       local payload = frame.payload
       return type(payload) == "table" and payload.inventory ~= "player-bag"
     end)
     Assert.equal(#trainerItems, 1, "the trainer spends its single stock exactly once")
     local spent = frames[trainerItems[1]].payload
+    local missingAtHeal = 0
+    for index, frame in ipairs(frames) do
+      if index < trainerItems[1] and type(frame) == "table" then
+        local payload = frame.payload
+        if type(payload) == "table" then
+          if frame.kind == "struck" and payload.target == foeTrainer and type(payload.damage) == "number" then
+            missingAtHeal = missingAtHeal + payload.damage
+          elseif frame.kind == "tick" and payload.combatant == foeTrainer and type(payload.amount) == "number" then
+            missingAtHeal = missingAtHeal + payload.amount
+          end
+        end
+      end
+    end
+    Assert.isTrue(missingAtHeal > 20, "the arranged wound exceeds the old universal heal")
+    local generatedPotion = runtime.itemCatalog:item("SUPER_POTION")
+    local generatedPartyUse = assert(
+      generatedPotion.partyUse,
+      "the generated Super Potion carries its source party use"
+    )
+    local generatedRestore = assert(
+      generatedPartyUse.restore,
+      "the generated Super Potion carries its source restoration"
+    )
+    Assert.equal(generatedRestore.kind, "fixed", "the generated Super Potion restores a fixed amount")
+    Assert.equal(generatedRestore.amount, 50, "the generated Super Potion restores its source-derived amount")
+    Assert.isTrue(
+      generatedRestore.amount ~= 20,
+      "the generated restoration amount is not the old universal heal"
+    )
+    Assert.isTrue(spent.restored ~= 20, "the reported restoration is not the old universal heal")
+    Assert.equal(
+      spent.restored,
+      math.min(generatedRestore.amount, missingAtHeal),
+      "the trainer healing restores the generated amount, capped only by missing health"
+    )
+    Assert.equal(spent.target.kind, "combatant", "the healing names its target kind")
+    Assert.equal(spent.target.combatant, foeTrainer, "the healing lands on the wounded opener")
     Assert.equal(spent.item, "SUPER_POTION", "the spent stock is the carried healing")
     Assert.equal(
       spent.inventory,
@@ -844,6 +895,170 @@ function T.tests.production_boot_runs_wild_trainer_and_capture_legs_to_commit()
     Assert.equal(runtime.bagService:quantity("POKE_BALL"), 4, "the capture spends no ordinary ball")
     Assert.equal(captureRecord.disposed, 1, "capture teardown releases presentation exactly once")
 
+    -- Generated native-double leg: the same boot launches a source-marked
+    -- double trainer through the public battle seam with no authored
+    -- scenario, answers every player actor, and proves 2v2 topology through
+    -- public semantic frames before committing back to the same field.
+    local doubleTemplate = assert(
+      compiled.trainers[DOUBLE_TRAINER_KEY],
+      "the generated catalog carries the double trainer"
+    )
+    Assert.isTrue(
+      doubleTemplate.doubleBattle == true,
+      "the double leg fields a native source-marked double trainer"
+    )
+    Assert.isTrue(
+      type(doubleTemplate.party) == "table" and #doubleTemplate.party >= 2,
+      "the double trainer opens two party members"
+    )
+    local doublePayload = { trainer = DOUBLE_TRAINER_KEY }
+    Assert.isNil(doublePayload.party, "the double launch authors no foe party")
+    Assert.isNil(doublePayload.program, "the double launch supplies no AI program")
+
+    -- Both double combatants arrive through live mon-service behavior: a
+    -- full heal revives the fallen opener, and a party swap fields the
+    -- veteran beside the teenager so the arranged openers are conscious.
+    runtime.monService:healParty()
+    runtime.monService:swapPartyMons(0, 2)
+    Assert.isTrue(
+      runtime.monService:partyMon(0).condition.currentHp > 0,
+      "the arranged double opener stands"
+    )
+    Assert.isTrue(
+      runtime.monService:partyMon(1).condition.currentHp > 0,
+      "the arranged double veteran stands"
+    )
+    local foeDoubleA = runtime.monService:partyCount() + 1
+    local foeDoubleB = runtime.monService:partyCount() + 2
+    local doubleRecord = { enters = 0, frames = {}, leaves = 0, disposed = 0 }
+    runtime:startBattle({
+      request = { id = "launch-production-double", kind = "trainer", payload = doublePayload },
+      presentation = headlessPort(doubleRecord),
+      seed = DOUBLE_SEED,
+    })
+    Assert.notNil(runtime:battleStatus("launch-production-double"), "the owned double battle reports its identity")
+
+    -- Ordinary strikes resolve by name from each combatant's live set so
+    -- learnset order never pins the policy.
+    local function doubleStrikeSlot(moves)
+      for _, key in ipairs({ "MAGICAL_LEAF", "RAZOR_LEAF" }) do
+        for index, entry in ipairs(moves) do
+          if type(entry) == "table" and entry.move == key then
+            return index - 1
+          end
+        end
+      end
+      local known = {}
+      for _, entry in ipairs(moves) do
+        if type(entry) == "table" then
+          known[#known + 1] = tostring(entry.move)
+        end
+      end
+      error("the double combatant carries no ordinary strike (moves: " .. table.concat(known, ",") .. ")", 0)
+    end
+    local function doubleFoeAlive(foe)
+      for _, frame in ipairs(doubleRecord.frames) do
+        if type(frame) == "table" and frame.kind == "faint" then
+          local payload = frame.payload
+          if type(payload) == "table" and payload.combatant == foe then
+            return false
+          end
+        end
+      end
+      return true
+    end
+    local firstDoubleActors, firstDoubleTargets = nil, nil
+    runLeg(game, function(request, turn)
+      if request.kind == "learn_move" then
+        local actor = assert(request.actors[1], "learning prompts address their recipient")
+        return { actor = actor, kind = "confirm", payload = { decision = "decline" } }
+      end
+      local actors = assert(request.actors, "every double decision addresses its combatants")
+      if not admits(request, "attack") then
+        local fielded = {}
+        for _, actor in ipairs(actors) do
+          fielded[actor.combatant] = true
+        end
+        local answers = {}
+        for _, actor in ipairs(actors) do
+          local reserve = nil
+          for slot = 1, runtime.monService:partyCount() do
+            if not fielded[slot] and runtime.monService:partyMon(slot - 1).condition.currentHp > 0 then
+              reserve = slot
+              break
+            end
+          end
+          assert(reserve ~= nil, "a replaceable double faint keeps a conscious reserve")
+          fielded[reserve] = true
+          answers[#answers + 1] = SessionFixture.switchChoice(actor, reserve)
+        end
+        return answers
+      end
+      local spots = {
+        { foe = foeDoubleA, position = 3 },
+        { foe = foeDoubleB, position = 4 },
+      }
+      local answers = {}
+      local targets = {}
+      for index, actor in ipairs(actors) do
+        local spot = spots[index] or spots[1]
+        local other = spots[3 - index] or spots[2]
+        local chosen = spot
+        if not doubleFoeAlive(spot.foe) and other ~= nil and doubleFoeAlive(other.foe) then
+          chosen = other
+        end
+        local mon = runtime.monService:partyMon(actor.combatant - 1)
+        answers[#answers + 1] =
+          SessionFixture.attackChoice(actor, doubleStrikeSlot(mon.moves), SessionFixture.positionTarget(chosen.position))
+        targets[#targets + 1] = chosen.position
+      end
+      if turn == 1 then
+        firstDoubleActors = {}
+        for _, actor in ipairs(actors) do
+          firstDoubleActors[#firstDoubleActors + 1] = actor.combatant
+        end
+        firstDoubleTargets = targets
+      end
+      return answers
+    end)
+    Assert.isNil(runtime.errorText, "the double battle settles without faulting the field")
+    Assert.deepEqual(
+      runtime:lastBattleResult(),
+      { result = "win", sourceResult = 1 },
+      "the committed double win reports its outcome words"
+    )
+    local doubleReceipt = Committer.receipt("launch-production-double")
+    Assert.notNil(doubleReceipt, "the double settlement records its commit receipt")
+    Assert.isTrue(doubleReceipt.committed, "the double receipt proves publication")
+    Assert.notNil(firstDoubleActors, "the double battle asks its opening decision")
+    Assert.equal(#firstDoubleActors, 2, "the first double batch addresses two player actors")
+    Assert.isTrue(
+      firstDoubleActors[1] ~= firstDoubleActors[2],
+      "each double slot fields its own combatant"
+    )
+    local orderedActors = { firstDoubleActors[1], firstDoubleActors[2] }
+    table.sort(orderedActors)
+    Assert.deepEqual(orderedActors, { 1, 2 }, "the arranged openers hold the double field")
+    Assert.deepEqual(firstDoubleTargets, { 3, 4 }, "the opening strikes target both enemy positions")
+    local doubleFrames = doubleRecord.frames
+    Assert.isTrue(
+      #framePositions(doubleFrames, "struck", function(frame)
+        return type(frame.payload) == "table" and frame.payload.target == foeDoubleA
+      end) > 0,
+      "the first enemy occupant takes damage"
+    )
+    Assert.isTrue(
+      #framePositions(doubleFrames, "struck", function(frame)
+        return type(frame.payload) == "table" and frame.payload.target == foeDoubleB
+      end) > 0,
+      "the second enemy occupant takes damage"
+    )
+    Assert.equal(doubleRecord.disposed, 1, "double teardown releases presentation exactly once")
+    Assert.isTrue(doubleRecord.enters >= 1, "double entry presents through the port")
+    for _, member in ipairs(doubleTemplate.party) do
+      Assert.isTrue(dex:isSeen(member.species), "every double foe registers seen knowledge")
+    end
+
     Assert.equal(game:renderAttempts(), 0, "the journey stops before GPU rendering")
   end, debug.traceback)
   local namespace = game.saveNamespace
@@ -892,7 +1107,6 @@ function T.tests.acceptance_fixtures_never_select_the_scripted_scaffold()
       {
         id = 8,
         party = { record },
-        program = { key = "field", revision = "native-1", instructions = {}, entryPoints = {} },
       },
     },
   }, {})

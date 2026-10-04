@@ -3,8 +3,8 @@
 -- resuming the story, prepared encounters are consumed exactly once, and
 -- only one battle runs at a time. Most of the suite drives the runtime
 -- through a focused composition fake; the two boot witnesses below
--- construct the real cache-backed runtime and prove field boot composes
--- the live encounter service and the trainer catalog/materializer before
+-- construct the real cache-backed runtime and prove field boot serves live
+-- encounters and launches generated trainers through public behavior before
 -- any field step or launch can ask for battle work.
 
 local Assert = require("tests.support.Assert")
@@ -366,43 +366,60 @@ function T.boot_composes_the_live_encounter_service(context)
   end
 end
 
--- A production boot resolves a generated trainer identity through the
--- composed catalog and materializer: the numeric payload shapes a
--- trainer scenario carrying the materialized party under its native
--- identity, with no caller-assigned collaborators.
+-- A production boot launches a generated trainer identity through the
+-- public battle seam: the numeric payload resolves through the composed
+-- catalog and materializer into an owned battle lifetime that reports its
+-- launch identity, with no caller-side scenario assembly. Production
+-- scenarios fail loudly without conscious party members (and a native
+-- double needs two openers), so the boot witness stocks two battle-eligible
+-- members through the live mon service before the public launch; the
+-- witness needs successful materialization and lifetime start, not a win.
 function T.boot_resolves_a_generated_trainer_identity(context)
   local versions = requireVersions(context)
   for _, versionId in ipairs(versions) do
     local runtime = FieldRuntime.new(validEntry(versionId), { presentation = false })
+    local battle = nil
     local ok, err = xpcall(function()
-      Assert.notNil(runtime._trainerCatalog, "production boot composes the trainer catalog")
-      Assert.notNil(runtime._trainerFactory, "production boot composes the trainer materializer")
-      -- Production scenarios fail loudly without a conscious non-egg party
-      -- member, so the boot witness stocks one through the live mon service
-      -- before asking for the trainer scenario. Trainer resolution itself
-      -- still runs untouched through the composed catalog and materializer.
       Assert.isTrue(
         runtime.monService:giveMon({ species = "CHIKORITA", level = 5 }),
-        "the boot battle needs its battle-eligible party member"
+        "the boot battle needs its first battle-eligible party member"
+      )
+      Assert.isTrue(
+        runtime.monService:giveMon({ species = "CHIKORITA", level = 6 }),
+        "the boot battle needs its second battle-eligible party member"
       )
       local compiled = BattleDataCache.loadTrainers(CacheFs.forVersion(versionId))
       local key = firstTrainerKey(compiled)
       -- The smallest generated identity is a rival template, which resolves
       -- its display name from the saved rival name (non-rival templates
       -- ignore it); the suite supplies the canonical default.
-      local scenario =
-        runtime:_scenarioForRequest({ kind = "trainer", payload = { trainer = key, rivalName = "SILVER" } })
-      Assert.equal(scenario.kind, "trainer", "the generated identity shapes a trainer scenario")
-      local foe = assert(scenario.participants[2], "the enemy side fields its trainer")
-      local lead = assert(foe.roster[1], "the enemy roster carries its lead")
-      Assert.notNil(lead.mon, "the lead slot carries its materialized record")
-      Assert.equal(foe.controller, "trainer:" .. tostring(key), "the native identity survives resolution")
+      battle = runtime:startBattle({
+        request = {
+          id = "launch-boot-trainer",
+          kind = "trainer",
+          payload = { trainer = key, rivalName = "SILVER" },
+        },
+      })
+      Assert.notNil(battle, "the public launch owns its battle lifetime")
+      Assert.isTrue(runtime.battleRuntime == battle, "the launch publishes the owned lifetime")
+      local launched = battle:status()
+      Assert.isTrue(
+        launched.phase == "preparing" or launched.phase == "entering" or launched.phase == "running",
+        "the generated identity reaches a valid battle lifecycle"
+      )
+      Assert.notNil(
+        runtime:battleStatus("launch-boot-trainer"),
+        "the owned battle reports its launch identity"
+      )
     end, debug.traceback)
     local closeOk, closeErr = pcall(function()
       runtime:dispose()
     end)
     if ok and not closeOk then
       ok, err = false, closeErr
+    end
+    if ok and battle ~= nil and not battle:isReleased() then
+      ok, err = false, "teardown releases the owned battle lifetime"
     end
     if not ok then
       error(err, 0)
