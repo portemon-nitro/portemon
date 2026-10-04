@@ -233,6 +233,7 @@ local FIELD_RUNTIME_JOBS = {
   "items:global",
   "bag:global",
   "party:global",
+  "pc:global",
   "mart:global",
   "spawns:global",
   "starter-choice:global",
@@ -583,6 +584,26 @@ local function executeParty(artifact, context)
     return PartyAssetCompiler.compile(romFs)
   end, "party")
   return PartyCacheWriter.stage(artifact, bundle)
+end
+
+local function executePc(artifact, context)
+  local PcAssetCompiler = require("romdump.src.digest.ui.PcAssetCompiler")
+  local PcCacheWriter = require("romdump.src.digest.ui.PcCacheWriter")
+  local romFs = assert(context.romFs, "PC jobs require a source reader")
+  local bundle = compileOrRaise(function()
+    return PcAssetCompiler.compile(romFs)
+  end, "PC")
+  return PcCacheWriter.stage(artifact, bundle)
+end
+
+local function dependenciesPc(key)
+  assert(key == "global", "PC family only has the global job")
+  return sortedJobs({
+    { kind = "field-font", key = "global" },
+    { kind = "items", key = "global" },
+    { kind = "mon-catalog", key = "global" },
+  }),
+    true
 end
 
 local function executeSpawnDestinations(artifact, context)
@@ -1309,6 +1330,13 @@ end
 
 ---@param check ArtifactJobs.ReadinessCheck
 ---@return boolean
+local function validatePc(check)
+  local PcCache = require("libs.assets.src.PcCache")
+  return PcCache.isReady(check.cacheFs, check.marker)
+end
+
+---@param check ArtifactJobs.ReadinessCheck
+---@return boolean
 local function validateSpawnDestinations(check)
   local FieldMapDataCache = require("libs.assets.src.field.FieldMapDataCache")
   return FieldMapDataCache.isSpawnIndexReady(check.cacheFs, check.marker)
@@ -1726,6 +1754,12 @@ DESCRIPTORS = {
     execute = executeParty,
     validate = validateParty,
   },
+  pc = {
+    size = "normal",
+    dependencies = dependenciesPc,
+    execute = executePc,
+    validate = validatePc,
+  },
   -- Teleport landing index: one family-level record, no prerequisite.
   spawns = {
     size = "normal",
@@ -1938,6 +1972,7 @@ local COMPLETE_STATIC_GLOBALS = {
   "items",
   "bag",
   "party",
+  "pc",
   "mart",
   "spawns",
   "mon-catalog",
