@@ -662,8 +662,9 @@ end
 -- Resolves the detached semantic item facts the detached scenario
 -- references through the live party catalog: every distinct non-ball
 -- inventory key contributes exactly its generated party-use record plus
--- its battle-use riders when present, and every held item contributes
--- its throw facts for fling and natural gift. Balls serve through the
+-- its battle-use and held-behavior riders when present, and every held
+-- item contributes its throw facts for fling and natural gift alongside
+-- its held behavior. Balls serve through the
 -- capture owner and need no facts; unknown keys stay absent so their
 -- selection fails explicitly at the battle boundary. Battles without a
 -- fact source carry no facts and fail the same way on their first
@@ -697,6 +698,12 @@ function BattleRuntime:_sessionItemFacts(record)
                 if type(definition.battleUse) == "table" then
                   projected.battleUse = copyValue(definition.battleUse)
                 end
+                -- Canonical held behavior rides beside the use facts so
+                -- trainer switch and item checks can inspect held effects
+                -- through this same map instead of a second catalog.
+                if type(definition.heldBehavior) == "table" then
+                  projected.heldBehavior = copyValue(definition.heldBehavior)
+                end
                 facts[key] = projected
               end
             end
@@ -727,8 +734,14 @@ function BattleRuntime:_sessionItemFacts(record)
                     -- Held-only entries exist for throw facts alone: keys
                     -- without generated throw facts project nothing, so
                     -- synthetic catalogs stay valid while ROM records keep
-                    -- their fling and natural-gift facts.
-                    if type(resolved.naturalGift) == "table" or type(resolved.fling) == "table" then
+                    -- their fling and natural-gift facts. Canonical held
+                    -- behavior projects beside them through the same
+                    -- record for trainer checks.
+                    if
+                      type(resolved.naturalGift) == "table"
+                      or type(resolved.fling) == "table"
+                      or type(resolved.heldBehavior) == "table"
+                    then
                       local projected = facts[held]
                       if projected == nil then
                         projected = {}
@@ -739,6 +752,9 @@ function BattleRuntime:_sessionItemFacts(record)
                       end
                       if type(resolved.fling) == "table" and projected.fling == nil then
                         projected.fling = copyValue(resolved.fling)
+                      end
+                      if type(resolved.heldBehavior) == "table" and projected.heldBehavior == nil then
+                        projected.heldBehavior = copyValue(resolved.heldBehavior)
                       end
                     end
                   end

@@ -78,6 +78,7 @@ local TurnOrder = require("libs.battle.src.gen4.TurnOrder")
 ---@field private _ruleset table<string, unknown>?
 ---@field private _commitLearningHandler fun(state: table<string, unknown>)?
 ---@field private _decisionLease boolean?
+---@field private _trainerProvisional table<integer, table<string, integer>>
 ---@field private _finalized boolean
 ---@field private _disposed boolean
 local HgssSessionExecutor = {}
@@ -1661,6 +1662,7 @@ local function settleEntry(state, outgoing, incoming, activation)
   -- dormant, restarts the outgoing toxic counter, and re-anchors the
   -- incoming entry's own carried state. Persistent conditions otherwise
   -- survive untouched and stages already reset at entry.
+  TrainerAi.noteArrival(state, incoming)
   local bag = liveEffectBag(state)
   local departed = BattleState.combatant(state, outgoing).mon --[[@as table<string, unknown>]]
   Status.switchReset(departed, bag, outgoing, activation)
@@ -2537,6 +2539,11 @@ local function bindTurnHandlers(executor, moveFacts, speciesFacts, itemFacts, ch
     if not gate.acts then
       return
     end
+    -- Executed strikes reveal their move to every opposing trainer
+    -- memory; a fresh entry clears that knowledge again at arrival.
+    -- Routed through the executor so the turn closure keeps its
+    -- upvalue budget.
+    executor:_observeTrainerMove(state, actor.combatant --[[@as integer]], moveName)
     local defenderId =
       resolveTarget(state, actor.combatant --[[@as integer]], payload.target --[[@as table<string, unknown>]])
     if defenderId == nil then
@@ -3434,13 +3441,27 @@ local function checkItemEntries(facts, raise)
     end
     local record = entry --[[@as table<string, unknown>]]
     -- Served items plan from their party use; held-only entries carry
-    -- throw facts without one and never plan. Either shape carries at
-    -- least one generated fact family.
-    if type(record.partyUse) ~= "table" and type(record.naturalGift) ~= "table" and type(record.fling) ~= "table" then
+    -- throw facts without one and never plan. Held items without throw
+    -- facts still project their canonical held behavior for trainer
+    -- checks, so a held-behavior record alone is a complete generated
+    -- fact family. Either shape carries at least one generated fact
+    -- family, and held behavior is never interpreted by planning.
+    if
+      type(record.partyUse) ~= "table"
+      and type(record.naturalGift) ~= "table"
+      and type(record.fling) ~= "table"
+      and type(record.heldBehavior) ~= "table"
+    then
       error(raise("session item facts carry their generated facts", { item = tostring(key) }))
     end
     for field in pairs(record) do
-      if field ~= "partyUse" and field ~= "battleUse" and field ~= "naturalGift" and field ~= "fling" then
+      if
+        field ~= "partyUse"
+        and field ~= "battleUse"
+        and field ~= "naturalGift"
+        and field ~= "fling"
+        and field ~= "heldBehavior"
+      then
         error(raise("session item facts carry only their generated facts", { item = tostring(key) }))
       end
     end
@@ -3584,6 +3605,7 @@ local function wrap(
     _chart = sessionChart(content, HgssSessionExecutor.RULESET),
     _moneyUpItems = moneySet,
     _ruleset = nil,
+    _trainerProvisional = {},
     _finalized = false,
     _disposed = false,
   }, HgssSessionExecutor)
@@ -3640,6 +3662,9 @@ function HgssSessionExecutor.new(scenarioRecord, content)
     true
   )
   executor:_bindLifecycle()
+  -- Fresh sessions open with zeroed trainer memory beside the generic
+  -- state before the first decision.
+  TrainerAi.initializeMemory(live)
   -- Opening occupants receive their entry pass exactly once through the
   -- same arrival helper as later reserves. Fresh sessions start with an
   -- empty bag, so the pass is skipped until mechanics create instances;
@@ -3791,6 +3816,14 @@ function HgssSessionExecutor.restore(snapshotData, content)
     false
   )
   executor:_bindLifecycle()
+  -- Restored sessions require the persisted trainer record and reuse
+  -- it untouched; snapshots missing or corrupting it are incompatible
+  -- with no migration path.
+  if live.trainerAi == nil then
+    error(BattleErrors.incompatibleSnapshot("native snapshots carry their trainer record", {}))
+  else
+    TrainerAi.validateMemory(live.trainerAi --[[@as table<string, unknown>]])
+  end
   return executor
 end
 
@@ -4512,6 +4545,11 @@ function HgssSessionExecutor:submit(reply)
   submitted[
     wanted.requestId --[[@as integer]]
   ] = copyValue(stored) --[[@as table<string, unknown>]]
+  -- Committed replies retire their pending trainer servings: later
+  -- answers decide against executed stock instead of the proposal.
+  self._trainerProvisional[
+    wanted.requestId --[[@as integer]]
+  ] = nil
   return true, nil
 end
 
@@ -4594,6 +4632,16 @@ function HgssSessionExecutor:withDecisionStream(request, callback)
   return result --[[@as table<string, unknown>]]
 end
 
+--- Records an executed strike in opposing trainer memories. Private
+--- lifecycle plumbing keeping the turn closure inside its upvalue
+--- budget; behavior lives in the trainer policy owner.
+---@param state table<string, unknown> live battle state under observation
+---@param userId integer striking combatant under observation
+---@param moveKey string executed move identity under observation
+function HgssSessionExecutor:_observeTrainerMove(state, userId, moveKey)
+  TrainerAi.observeMove(state, userId, moveKey)
+end
+
 -- Answers the exact open trainer request from native session state.
 -- The request must name a trainer controller and match the current
 -- batch exactly like the decision-lease path requires; the native
@@ -4619,8 +4667,22 @@ function HgssSessionExecutor:answerTrainer(request)
     speciesFacts = self._speciesFacts,
     itemFacts = self._itemFacts,
   }
+  -- Same-request servings accumulate in executor-owned pending-reply
+  -- state: answering twice without submitting never serves one slot
+  -- twice, while capture and restore observe only committed memory.
+  -- The map is entered inside the lease so rejected requests fail
+  -- before any bookkeeping exists.
   return self:withDecisionStream(request, function(stream)
-    return TrainerAi.answer(state, authorities, request, stream)
+    local taken = self._trainerProvisional[
+      request.requestId --[[@as integer]]
+    ]
+    if type(taken) ~= "table" then
+      taken = {}
+      self._trainerProvisional[
+        request.requestId --[[@as integer]]
+      ] = taken
+    end
+    return TrainerAi.answer(state, authorities, request, stream, taken)
   end)
 end
 
@@ -4643,6 +4705,10 @@ function HgssSessionExecutor:capture()
   snapshot.speciesFacts = copyValue(self._speciesFacts)
   snapshot.itemFacts = copyValue(self._itemFacts)
   snapshot.moneyUpItems = copyValue(state.moneyUpItems or {})
+  -- Trainer knowledge and slot order ride as a detached plain record
+  -- beside the other native extensions; generic snapshot code never
+  -- interprets it.
+  snapshot.trainerAi = copyValue(state.trainerAi)
   local prizeMoneyValue = state.prizeMoneyValue
   if prizeMoneyValue ~= 1 and prizeMoneyValue ~= 2 then
     error(BattleErrors.invalidState("prize multipliers stay 1 or 2", {}))

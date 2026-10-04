@@ -710,6 +710,14 @@ function HgssBattleScenarioFactory.fromTrainer(payload, ctx)
     if entry.aiPasses ~= nil then
       enemyContext.aiPasses = copyValue(entry.aiPasses)
     end
+    -- Ordered trainer item identities ride the decision context in
+    -- source-relative order with multiplicity: the native item selector
+    -- scans slots in order while quantities stay in the battle
+    -- inventory, so the context carries identities only, never stock.
+    if entry.items ~= nil then
+      assert(type(entry.items) == "table", "trainer items arrive as a list")
+      enemyContext.trainerItems = copyValue(entry.items)
+    end
     local enemy = {
       id = participantId,
       side = 2,
