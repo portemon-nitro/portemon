@@ -51,6 +51,11 @@ local SOURCE_NAVIGATION = {
 }
 
 local DIRECTION_INDEX = { up = 1, down = 2, left = 3, right = 4 }
+local SOURCE_CUES = {
+  select = "SEQ_SE_DP_SELECT",
+  cancel = "SEQ_SE_GS_GEARCANCEL",
+  quantity = "SEQ_SE_DP_BAG_004",
+}
 local PRINTER_STATES =
   { quantity_prompt = true, confirm_prompt = true, success_print = true, bonus_print = true, error_print = true }
 local ERROR_ROLES = {
@@ -272,31 +277,21 @@ function MartController:_openMessage(role, bindings, target)
   end)
 end
 
-local function itemMessageBindings(bindings)
-  local result = copyTerms(bindings or {})
-  if result.item == nil then
-    result.item = assert(result.itemName, "mart item messages use the service item name")
-  end
-  if result.pocket == nil and result.pocketName ~= nil then
-    result.pocket = result.pocketName
-  end
-  return result
+local function namedItemBindings(bindings)
+  return {
+    item = assert(bindings.itemName, "mart item messages use the service item name"),
+    pocket = assert(bindings.pocketName, "mart item messages use the service pocket name"),
+  }
 end
 
 function MartController:_beginError(reason)
   self._failureReason = reason
   self._state = "error_print"
-  local entry = self:_entry()
-  local bindings = itemMessageBindings(entry and entry.bindings or (self._terms and self._terms.bindings))
-  self:_openMessage(
-    assert(ERROR_ROLES[reason], "mart business reason has a source message family"),
-    bindings,
-    "error_ack"
-  )
+  self:_openMessage(assert(ERROR_ROLES[reason], "mart business reason has a source message family"), {}, "error_ack")
 end
 
 function MartController:_itemBindings(entry)
-  return itemMessageBindings(entry.bindings)
+  return namedItemBindings(entry.bindings)
 end
 
 function MartController:_formatRole(role, bindings)
@@ -322,9 +317,11 @@ function MartController:_quote(quantity)
   self._terms = termsOrReason
   local view = self:_view()
   local role = view.currency == "athlete_points" and "pointsConfirm" or "moneyConfirm"
-  local bindings = itemMessageBindings(termsOrReason.bindings)
-  bindings.quantity = tostring(quantity)
-  bindings.price = tostring(termsOrReason.total)
+  local bindings = role == "pointsConfirm" and { item = self:_itemBindings(entry).item }
+    or {
+      quantity = tostring(quantity),
+      total = tostring(termsOrReason.total),
+    }
   self._state = "confirm_prompt"
   self:_openMessage(role, bindings, "confirm")
   return true
@@ -408,7 +405,7 @@ function MartController:_changePage(direction, controlKey)
   if pages == 0 or nextPage < 0 or nextPage >= pages then
     return
   end
-  self:_play("SEQ_SE_DP_SELECT")
+  self:_play(SOURCE_CUES.select)
   self:_setPressed(controlKey)
   self._page = nextPage
 end
@@ -418,14 +415,15 @@ function MartController:_focus(target)
     return
   end
   self._selection = target
-  self:_play("SEQ_SE_DP_SELECT")
+  self:_play(SOURCE_CUES.select)
 end
 
 function MartController:_activateBrowse()
   if self._selection == 8 then
+    self:_play(SOURCE_CUES.cancel)
     self:_closeNormally()
   elseif self:_entry() ~= nil then
-    self:_play("SEQ_SE_DP_BUTTON9")
+    self:_play(SOURCE_CUES.select)
     self._state = "selection_feedback"
     self._animationRemaining = self._manifest.animations.selectionEntry.totalTicks
     self._animationFrame = 1
@@ -481,7 +479,7 @@ function MartController:_quantityAdjust(direction, touch)
   end
   if nextValue ~= quantity then
     self._quantity = nextValue
-    self:_play("SEQ_SE_DP_SELECT")
+    self:_play(SOURCE_CUES.quantity)
     local control = (direction == "up" and "increment1")
       or (direction == "down" and "decrement1")
       or (direction == "left" and "decrement10")
@@ -529,9 +527,6 @@ function MartController:_pointerDown(event)
       return
     end
     self._pointer = { id = event.pointerId, target = tostring(target), x = event.x, y = event.y }
-    if target <= 5 or target == 8 then
-      self:_focus(target)
-    end
   elseif self._state == "quantity" then
     local target = self:_hitQuantity(event.x, event.y)
     if target ~= nil then
@@ -564,8 +559,10 @@ function MartController:_pointerUp(event)
     local target = self:_hitQuantity(event.x, event.y)
     if target == capture.target then
       if target == "confirm" then
+        self:_play(SOURCE_CUES.select)
         self:_quote(self._quantity)
       elseif target == "cancel" then
+        self:_play(SOURCE_CUES.cancel)
         self._state = "browse"
         self._messageRole, self._messagePages = nil, nil
       else
@@ -598,8 +595,9 @@ function MartController:_startSuccess()
   local role = view.presentationKind == "seals" and "sealReceived"
     or view.currency == "athlete_points" and "pointsReceived"
     or "itemReceived"
-  local bindings = itemMessageBindings(assert(self._terms).bindings)
-  bindings.quantity = tostring(self._terms.quantity)
+  local bindings = role == "sealReceived" and { item = assert(self._terms).bindings.itemName }
+    or role == "itemReceived" and namedItemBindings(assert(self._terms).bindings)
+    or {}
   self._state = "success_print"
   self:_openMessage(role, bindings, "commit")
 end
@@ -722,9 +720,11 @@ function MartController:step(events)
       elseif event.type == "pointer_cancel" then
         self:cancelPointerCapture()
       elseif event.type == "confirm" then
+        self:_play(SOURCE_CUES.select)
         self:_quote(self._quantity)
         return
       elseif event.type == "cancel" then
+        self:_play(SOURCE_CUES.cancel)
         self._state = "browse"
         self._messageRole, self._messagePages = nil, nil
         return
@@ -749,6 +749,7 @@ function MartController:step(events)
       acted = true
       break
     elseif event.type == "cancel" then
+      self:_play(SOURCE_CUES.cancel)
       self:_closeNormally()
       return
     elseif event.type == "pointer_down" then
@@ -782,7 +783,7 @@ function MartController:status()
           price = entry.unitPrice,
           priceTokens = entry.priceVisible and self:_formatRole(
             view.currency == "athlete_points" and "pointsPrice" or "moneyPrice",
-            { item = tostring(entry.unitPrice) }
+            { price = tostring(entry.unitPrice) }
           ) or {},
           priceVisible = entry.priceVisible,
           ownedQuantity = entry.ownedQuantity,
@@ -815,8 +816,8 @@ function MartController:status()
   end
   local balanceRole = view.currency == "athlete_points" and "pointsBalance" or "moneyBalance"
   local pageTokens = self:_formatRole("pageNumber", {
-    item = tostring(self._page + 1),
-    quantity = tostring(pageCount),
+    currentPage = tostring(self._page + 1),
+    pageCount = tostring(pageCount),
   })
   local total = self._terms and self._terms.total or (selected and selected.unitPrice * self._quantity)
   local ownedQuantity = selected and selected.ownedQuantity or 0
@@ -837,9 +838,9 @@ function MartController:status()
     quantity = self._quantity,
     maxQuantity = self._maximum,
     total = total,
-    totalTokens = self:_formatRole("quantityTotal", { item = tostring(total or 0) }),
-    ownedTokens = self:_formatRole("ownedCount", { item = tostring(ownedQuantity) }),
-    balanceTokens = self:_formatRole(balanceRole, { item = tostring(view.balance) }),
+    totalTokens = self:_formatRole("quantityTotal", { total = tostring(total or 0) }),
+    ownedTokens = self:_formatRole("ownedCount", { owned = tostring(ownedQuantity) }),
+    balanceTokens = self:_formatRole(balanceRole, { balance = tostring(view.balance) }),
     pageTokens = pageTokens,
     lowerMode = lowerMode,
     activeControl = self._activeControl,

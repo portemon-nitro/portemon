@@ -7,10 +7,12 @@ local T = {}
 
 local function fixture()
   local token = { id = 1, owner = "owner-1" }
+  local active
   local calls = { opens = {}, steps = 0, results = 0, closes = {} }
   local host = {
     open = function(_, ownerKey, descriptor)
       token.owner = ownerKey
+      active = token
       calls.opens[#calls.opens + 1] = { ownerKey = ownerKey, descriptor = descriptor }
       return token
     end,
@@ -26,6 +28,10 @@ local function fixture()
     end,
     close = function(_, handle)
       calls.closes[#calls.closes + 1] = handle
+      active = nil
+    end,
+    activeHandle = function()
+      return active
     end,
   }
   local ctx = {
@@ -35,6 +41,17 @@ local function fixture()
     services = { mart = host },
   }
   return host, token, calls, ctx
+end
+
+local function copy(value)
+  if type(value) ~= "table" then
+    return value
+  end
+  local result = {}
+  for key, child in pairs(value) do
+    result[key] = copy(child)
+  end
+  return result
 end
 
 function T.mart_task_opens_once_steps_once_per_poll_and_closes_after_terminal_result()
@@ -74,6 +91,20 @@ function T.mart_task_rejects_foreign_instance_and_cancels_only_its_handle()
 
   MartTask.cancel(state, "cancelled", ctx)
   Assert.equal(#calls.closes, 1)
+  Assert.isTrue(calls.closes[1] == token)
+end
+
+function T.mart_task_recovers_its_host_owned_handle_after_state_restore()
+  local _, token, calls, ctx = fixture()
+  local state = MartTask.create({ kind = "standard" }, ctx)
+  state = MartTask.poll(state, ctx).state
+  local restoredState = copy(state)
+
+  local complete = MartTask.poll(restoredState, ctx)
+
+  Assert.isTrue(complete.complete)
+  Assert.equal(#calls.opens, 1, "restoring task data reuses the live host child")
+  Assert.equal(calls.steps, 2)
   Assert.isTrue(calls.closes[1] == token)
 end
 

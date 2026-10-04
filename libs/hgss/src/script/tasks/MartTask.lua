@@ -26,6 +26,7 @@ local SELECTOR_KINDS = { special = true, seal = true, decoration = true }
 ---@field step fun(self: MartTaskHost, handle: table<string, unknown>, events: table[])
 ---@field result fun(self: MartTaskHost, handle: table<string, unknown>): { kind: string }?
 ---@field close fun(self: MartTaskHost, handle: table<string, unknown>)
+---@field activeHandle fun(self: MartTaskHost): table<string, unknown>?
 
 ---@class MartTaskContext
 ---@field services { mart: MartTaskHost? }?
@@ -166,21 +167,23 @@ function MartTask.poll(state, ctx)
   end
 
   local host = service(ctx)
-  if state.handle == nil then
-    state.handle = host:open(state.ownerKey, state.descriptor)
+  local handle = host:activeHandle()
+  if handle == nil then
+    handle = host:open(state.ownerKey, state.descriptor)
+  else
+    assert(handle.owner == state.ownerKey, "mart task cannot adopt another task's child")
   end
-  assert(state.handle ~= nil, "mart host must return an owned handle")
+  assert(handle ~= nil, "mart host must return an owned handle")
   local input = ctx.input or {}
   local events = input.uiEvents or {}
   assert(type(events) == "table", "mart task consumes the scheduler UI event list")
-  host:step(state.handle, events)
-  local result = host:result(state.handle)
+  host:step(handle, events)
+  local result = host:result(handle)
   if result == nil then
     return { complete = false, state = state }
   end
   assert(result.kind == "close", "mart host returned an unsupported terminal result")
-  host:close(state.handle)
-  state.handle = nil
+  host:close(handle)
   state.descriptor = nil
   state.completed = true
   return { complete = true, state = state }
@@ -191,14 +194,19 @@ end
 ---@param ctx MartTaskContext?
 function MartTask.cancel(state, reason, ctx)
   state.cancelled = reason
-  if ctx == nil or state.handle == nil then
+  if ctx == nil then
     return
   end
   local ownerInstanceId = instanceId(ctx)
   assert(ownerInstanceId == state.ownerInstanceId, "mart task cancellation belongs to another script instance")
   assert(ctx.taskId == state.taskId, "mart task cancellation belongs to another scheduler task")
-  service(ctx):close(state.handle)
-  state.handle = nil
+  local host = service(ctx)
+  local handle = host:activeHandle()
+  if handle == nil then
+    return
+  end
+  assert(handle.owner == state.ownerKey, "mart task cancellation cannot close another task's child")
+  host:close(handle)
   state.descriptor = nil
   state.completed = true
 end
@@ -218,7 +226,6 @@ function MartTask.validate(state)
     completed = true,
     taskId = true,
     ownerKey = true,
-    handle = true,
     cancelled = true,
   }
   for key in pairs(state) do
@@ -252,9 +259,6 @@ function MartTask.validate(state)
     if type(state.taskId) ~= "string" or state.ownerKey ~= state.ownerInstanceId .. ":" .. state.taskId then
       return invalid("mart task owner key does not match its identities")
     end
-  end
-  if state.handle ~= nil and (state.taskId == nil or state.ownerKey == nil) then
-    return invalid("mart host handle needs its task owner identity")
   end
   return nil
 end

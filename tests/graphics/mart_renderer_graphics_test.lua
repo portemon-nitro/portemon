@@ -381,6 +381,50 @@ function T.real_generated_backgrounds_and_focus_layers_reach_the_production_rend
       pixelDiff(withEntry, descriptionOnly, 0, 0, 256, 192) > 0,
       versionId .. " selected item painting adds its source icon beside the description"
     )
+
+    local sealStatus = {
+      open = true,
+      state = "browse",
+      lowerMode = "browse",
+      presentationKind = "seals",
+      page = 0,
+      pageCount = 1,
+      entryCount = 1,
+      entries = occupied.entries,
+      selection = 0,
+      currentEntry = entry,
+      balance = 0,
+      currency = "money",
+      balanceTokens = glyph,
+      pageTokens = glyph,
+    }
+    local sealsWithEntry = draw(scope, renderer, icons, sealStatus)
+    local legacyWithoutEntry = {
+      open = true,
+      state = "browse",
+      lowerMode = "browse",
+      presentationKind = "legacy_decorations",
+      page = 0,
+      pageCount = 1,
+      entryCount = 0,
+      entries = { {}, {}, {}, {}, {}, {} },
+      selection = -1,
+      currentEntry = { descriptionText = "A" },
+      balance = 0,
+      currency = "money",
+      balanceTokens = glyph,
+      pageTokens = glyph,
+    }
+    local legacyWithoutPreview = draw(scope, renderer, icons, legacyWithoutEntry)
+    Assert.equal(
+      pixelDiff(sealsWithEntry, legacyWithoutPreview, 0, 0, 256, 192),
+      0,
+      versionId .. " Seal upper presentation uses legacy art and suppresses its selected preview"
+    )
+    Assert.isTrue(
+      pixelDiff(sealsWithEntry, legacyWithoutPreview, 256, 0, 256, 192) > 0,
+      versionId .. " Seal stock keeps its lower list icon"
+    )
     local itemBounds = manifest.lower.slots[1].labelBox
     local stockForeground = expectedPaletteColor(text.fontDef, 1)
     Assert.isTrue(
@@ -389,7 +433,7 @@ function T.real_generated_backgrounds_and_focus_layers_reach_the_production_rend
     )
     local price = manifest.lower.slots[1].priceAt
     Assert.isTrue(
-      countPalette(withEntry, { x = price.x + 256, y = price.y - 8, width = 88, height = 16 }, stockForeground) > 0,
+      countPalette(withEntry, { x = price.x + 256, y = price.y, width = 88, height = 16 }, stockForeground) > 0,
       versionId .. " compiled prices use the generated stock foreground palette slot"
     )
     local descriptionBox = manifest.upper.description.items
@@ -401,10 +445,15 @@ function T.real_generated_backgrounds_and_focus_layers_reach_the_production_rend
     local cancelLabel = assert(manifest.text.labels.cancelLabel)
     Assert.isTrue(cancelLabel ~= "", versionId .. " carries the sourced cancel label")
     local cancelWidth = text:textWidth(cancelLabel)
-    local cancelX = 192 + math.floor((56 - cancelWidth) / 2) + 8
+    local cancelBox = manifest.lower.cancelLabelBox
     Assert.isTrue(
-      countPalette(withEntry, { x = cancelX + 256, y = 168, width = cancelWidth, height = 16 }, systemForeground) > 0,
-      versionId .. " cancel label uses its compiled text and system palette"
+      countPalette(withEntry, {
+        x = cancelBox.x + 256,
+        y = cancelBox.y,
+        width = math.min(cancelWidth, cancelBox.width),
+        height = cancelBox.height,
+      }, systemForeground) > 0,
+      versionId .. " cancel label uses its generated text box and system palette"
     )
 
     local cancelControl = manifest.lower.cancel

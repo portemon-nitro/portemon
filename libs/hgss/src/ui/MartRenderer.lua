@@ -165,21 +165,6 @@ function MartRenderer:_drawTokens(tokens, box, role)
   self._text:drawLineWithPalette(tokens, x, box.y + box.textY, self:_palette(role))
 end
 
-function MartRenderer:_drawBoxLabel(value, box)
-  if value == nil or value == "" then
-    return
-  end
-  self:_drawText(value, {
-    x = box.x,
-    y = box.y,
-    width = box.width,
-    height = box.height,
-    textX = box.textX,
-    textY = box.textY,
-    alignment = "left",
-  }, "system")
-end
-
 function MartRenderer:_drawIcon(icons, itemKey, anchor)
   if itemKey == nil then
     return
@@ -192,12 +177,15 @@ end
 
 function MartRenderer:_drawUpper(status, icons)
   local manifest, graphics = self._manifest, self._graphics
-  local family = status.presentationKind == "legacy_decorations" and "legacy" or "items"
+  local legacyFamily = status.presentationKind == "seals" or status.presentationKind == "legacy_decorations"
+  local family = legacyFamily and "legacy" or "items"
   local upper = manifest.upper
   self:_drawVisual(upper.backgrounds[family], 0, 0)
   local selected = status.currentEntry
   if selected ~= nil then
-    self:_drawIcon(icons, selected.displayItemKey, upper.itemAnchor)
+    if not legacyFamily then
+      self:_drawIcon(icons, selected.displayItemKey, upper.itemAnchor)
+    end
     local box = upper.description[family]
     self._window:drawWindow(box, self._frameIndex, { 0, 0, 0, 0 })
     self:_drawText(selected.descriptionText, box, "system")
@@ -217,15 +205,7 @@ function MartRenderer:_drawBrowse(status, icons)
       self:_drawIcon(icons, slot.displayItemKey, geometry.iconAnchor)
       self:_drawText(slot.bindings.itemName, geometry.labelBox, "stock")
       if slot.priceVisible then
-        self:_drawTokens(slot.priceTokens, {
-          x = geometry.priceAt.x,
-          y = geometry.priceAt.y - 8,
-          width = 88,
-          height = 16,
-          textX = 0,
-          textY = 0,
-          alignment = "left",
-        }, "stock")
+        self._text:drawLineWithPalette(slot.priceTokens, geometry.priceAt.x, geometry.priceAt.y, self:_palette("stock"))
       end
     end
   end
@@ -258,20 +238,12 @@ function MartRenderer:_drawBrowse(status, icons)
     self:_drawControl(pageNext, status, "pageNext")
   end
   self:_drawControl(lower.cancel, status, "cancel")
-  self:_drawText(self._manifest.text.labels.cancelLabel or "", {
-    x = 192,
-    y = 168,
-    width = 56,
-    height = 16,
-    textX = 8,
-    textY = 0,
-    alignment = "center",
-  }, "system")
+  self:_drawText(self._manifest.text.labels.cancelLabel or "", lower.cancelLabelBox, "system")
   self:_drawTokens(status.pageTokens, lower.pageBox, "system")
   local balanceLabel = status.currency == "athlete_points" and self._manifest.text.labels.pointsLabel
     or self._manifest.text.labels.moneyLabel
-  self:_drawBoxLabel(balanceLabel, lower.balanceBox)
-  self:_drawTokens(status.balanceTokens, lower.balanceBox, "system")
+  self:_drawText(balanceLabel, lower.balance.labelBox, "system")
+  self:_drawTokens(status.balanceTokens, lower.balance.valueBox, "system")
 end
 
 function MartRenderer:_drawControl(control, status, key)
@@ -289,8 +261,8 @@ function MartRenderer:_drawQuantity(status, icons)
   local entry = assert(status.currentEntry, "quantity states carry their selected entry")
   self:_drawIcon(icons, entry.displayItemKey, quantity.selectedItemAnchor)
   self:_drawText(entry.bindings.itemName, quantity.itemBox, "stock")
-  self:_drawBoxLabel(self._manifest.text.labels.ownedLabel, quantity.ownedBox)
-  self:_drawTokens(status.ownedTokens, quantity.ownedBox, "system")
+  self:_drawText(self._manifest.text.labels.ownedLabel, quantity.owned.labelBox, "system")
+  self:_drawTokens(status.ownedTokens, quantity.owned.valueBox, "system")
   self:_drawTokens(status.totalTokens, quantity.totalBox, "system")
   local digits = string.format("%02d", status.quantity)
   self:_drawText(digits:sub(1, 1), quantity.digitBoxes[1], "system")
@@ -298,15 +270,7 @@ function MartRenderer:_drawQuantity(status, icons)
   for _, name in ipairs({ "increment10", "increment1", "decrement10", "decrement1", "confirm", "cancel" }) do
     self:_drawControl(quantity[name], status, name)
   end
-  self:_drawText(self._manifest.text.labels.buyLabel or "", {
-    x = 112,
-    y = 168,
-    width = 56,
-    height = 16,
-    textX = 4,
-    textY = 0,
-    alignment = "left",
-  }, "system")
+  self:_drawText(self._manifest.text.labels.buyLabel or "", quantity.buyLabelBox, "system")
 end
 
 function MartRenderer:_drawPrinter(status)

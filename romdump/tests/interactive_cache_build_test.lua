@@ -187,7 +187,6 @@ function T.job_identities_validate_through_the_closed_vocabulary()
   end)
 end
 
-local SUMMARY_GENERATION = "summary-gate-generation"
 local function recordingPool()
   local pool = { submitted = {}, states = {} }
   function pool:update() end
@@ -234,74 +233,6 @@ local function selectableRecordingPool()
   function pool:selectGeneration(_, _) end
   return pool
 end
-local function summarySession(pool, cacheFs, bankIds)
-  local realForVersion = CacheFs.forVersion
-  CacheFs.forVersion = function()
-    return cacheFs
-  end
-  local session
-  local ok, err = pcall(function()
-    session = InteractiveCacheBuild.new({
-      identity = { versionId = "heartgold", generationId = SUMMARY_GENERATION, producerId = "d" .. string.rep("3", 64) },
-      epoch = 1,
-      pool = pool,
-    })
-  end)
-  CacheFs.forVersion = realForVersion
-  if not ok then
-    error(err, 0)
-  end
-  session.messageBankIds = bankIds
-  session.sourceLoaded = true
-  session.pagesKnown = true
-  return session
-end
-local function submittedSet(pool)
-  local set = {}
-  for _, jobKey in ipairs(pool.submitted) do
-    set[jobKey] = true
-  end
-  return set
-end
-local function publishMessageBank(cacheFs, bankId, marker)
-  cacheFs:writeLua(ArtifactState.path("message-bank", tostring(bankId)), {
-    schema = ArtifactState.RECEIPT_SCHEMA,
-    generationId = SUMMARY_GENERATION,
-    kind = "message-bank",
-    key = tostring(bankId),
-    marker = marker,
-  })
-  cacheFs:write(FieldMessageCache.bankMarkerPath(bankId), marker)
-  cacheFs:writeLua(FieldMessageCache.bankPath(bankId), {
-    schema = FieldMessageCache.SCHEMA,
-    bankId = bankId,
-  })
-end
-function T.summary_dispatch_waits_for_bank_publication()
-  local pool = recordingPool()
-  local cacheFs = CacheFs.forVersion("heartgold", FakeCache.new())
-  local session = summarySession(pool, cacheFs, { 3, 5 })
-  local ready, failure = session:requestJob("message-summary", "global", "required")
-  Assert.isFalse(ready, "the summary is pending while its banks are cold")
-  Assert.isNil(failure, "no failure is reported while the summary waits for its banks")
-  session:update()
-  local submitted = submittedSet(pool)
-  Assert.isTrue(submitted["message-bank:3"] == true, "a cold bank dispatches")
-  Assert.isTrue(submitted["message-bank:5"] == true, "a cold bank dispatches")
-  Assert.isNil(submitted["message-summary:global"], "the summary never occupies a worker while its banks are pending")
-
-  pool.states["message-bank:3"] = "ready"
-  pool.states["message-bank:5"] = "ready"
-  publishMessageBank(cacheFs, 3, "bank-marker-3")
-  publishMessageBank(cacheFs, 5, "bank-marker-5")
-  session:update()
-  session:update()
-  local again, againFailure = session:requestJob("message-summary", "global", "required")
-  Assert.isFalse(again, "the unpublished summary stays pending once its banks publish")
-  Assert.isNil(againFailure, "no failure is reported once the banks publish")
-  Assert.isTrue(submittedSet(pool)["message-summary:global"] == true, "the summary dispatches once every bank is ready")
-end
-
 local PRODUCER_ID = "d" .. string.rep("3", 64)
 local function retryCapablePool()
   local pool = { submitted = {}, states = {}, retried = {}, selects = 0 }

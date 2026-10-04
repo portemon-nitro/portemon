@@ -137,12 +137,14 @@ local function manifest()
       pagePrevious = control("pagePrevious"),
       pageNext = control("pageNext"),
       cancel = control("cancel"),
+      cancelLabelBox = textBox(),
       quantity = {
         selectedItemAnchor = { x = 0, y = 0 },
         itemBox = textBox(),
-        ownedBox = textBox(),
+        owned = { labelBox = textBox(), valueBox = textBox() },
         totalBox = textBox(),
         digitBoxes = { textBox(), textBox() },
+        buyLabelBox = textBox(),
         increment10 = control("increment10"),
         increment1 = control("increment1"),
         decrement10 = control("decrement10"),
@@ -150,7 +152,7 @@ local function manifest()
         confirm = control("confirm"),
         cancel = control("quantityCancel"),
       },
-      balanceBox = textBox(),
+      balance = { labelBox = textBox(), valueBox = textBox() },
       pageBox = textBox(),
       messages = { short = textBox(), tall = textBox(), confirm = textBox() },
       yesNo = { anchor = { x = 0, y = 0 }, shape = "compact", initialChoice = "yes" },
@@ -158,7 +160,7 @@ local function manifest()
     controls = controls,
     animations = { selectionEntry = clip("selection"), increment = clip("increment"), decrement = clip("decrement") },
     feedback = { selectedTicks = 1, restoredTicks = 1, dispatchTicks = 1 },
-    text = { palettes = { foreground = { 0, 0, 0, 255 } }, labels = { buy = "Buy" }, templates = templates },
+    text = { palettes = { foreground = { 0, 0, 0, 255 } }, labels = { buyLabel = "Buy" }, templates = templates },
   }
   for count = 0, 6 do
     result.lower.backgrounds.browse[count] = visual("browse-" .. count)
