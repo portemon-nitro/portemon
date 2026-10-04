@@ -4,6 +4,7 @@
 -- validators.
 
 local Assert = require("tests.support.Assert")
+local Errors = require("libs.errors.src.Errors")
 local ItemFixture = require("libs.items.tests.item_fixture")
 
 local T = {}
@@ -308,10 +309,10 @@ function T.catalogs_require_party_use_metadata()
   Assert.isFalse(ItemAssetSchema.isValidCatalog(badReason), "an unknown deferral reason must be rejected")
 end
 
-function T.catalogs_accept_enriched_battle_use()
-  local ItemAssetSchema = schema()
-  local enriched = validRoot()
-  enriched.items["POTION"].battleUse = {
+-- A complete in-battle rider record: no cures, no screen, one attack
+-- stage. Mirrors what the item compiler emits for stage-only items.
+local function completeBattleUse()
+  return {
     cures = { confusion = false, infatuation = false },
     guardSpec = false,
     stages = {
@@ -324,9 +325,36 @@ function T.catalogs_accept_enriched_battle_use()
       critical = 0,
     },
   }
-  enriched.items["SITRUS_BERRY"].battleUse = {
+end
+
+-- Reclassify a placeholder record as usable only inside battle, so
+-- battle-use riders attach to the parent they belong to.
+local function makeBattleOnly(record)
+  record.partyUse = { kind = "deferred", reason = "battle_only" }
+  return record
+end
+
+local function assertRejectsNamingItem(ItemAssetSchema, root, key, why)
+  Assert.isFalse(ItemAssetSchema.isValidCatalog(root), why)
+  local err = Assert.throws(function()
+    ItemAssetSchema.assertCatalog(root)
+  end, why)
+  Assert.isTrue(Errors.is(err), "expected a structured catalog error, got " .. tostring(err))
+  Assert.equal(err.code, "ITEM_CATALOG_INVALID")
+  Assert.isTrue(
+    string.find(err.message, key, 1, true) ~= nil,
+    "rejection must name the offending item: " .. why
+  )
+end
+
+function T.catalogs_accept_battle_only_records_with_complete_battle_use()
+  local ItemAssetSchema = schema()
+  local root = validRoot()
+  makeBattleOnly(root.items["ITEM_55"]).battleUse = completeBattleUse()
+  local guard = makeBattleOnly(root.items["ITEM_56"])
+  guard.battleUse = {
     cures = { confusion = true, infatuation = true },
-    guardSpec = false,
+    guardSpec = true,
     stages = {
       attack = 0,
       defense = 0,
@@ -337,9 +365,59 @@ function T.catalogs_accept_enriched_battle_use()
       critical = 0,
     },
   }
-  Assert.isTrue(ItemAssetSchema.isValidCatalog(enriched))
-  Assert.isTrue(ItemAssetSchema.assertCatalog(enriched))
+  Assert.isTrue(ItemAssetSchema.isValidCatalog(root))
+  Assert.isTrue(ItemAssetSchema.assertCatalog(root))
   Assert.isTrue(ItemAssetSchema.isValidCatalog(validRoot()), "records without battle use stay valid")
+end
+
+function T.catalogs_reject_battle_only_records_missing_battle_use()
+  local ItemAssetSchema = schema()
+  local root = validRoot()
+  makeBattleOnly(root.items["ITEM_55"])
+  assertRejectsNamingItem(
+    ItemAssetSchema,
+    root,
+    "ITEM_55",
+    "battle-only records without battle use must be rejected"
+  )
+end
+
+function T.catalogs_reject_battle_use_outside_battle_only_records()
+  local ItemAssetSchema = schema()
+  local medicine = validRoot()
+  medicine.items["POTION"].battleUse = completeBattleUse()
+  assertRejectsNamingItem(
+    ItemAssetSchema,
+    medicine,
+    "POTION",
+    "ordinary medicine must not carry battle use"
+  )
+  local berry = validRoot()
+  berry.items["SITRUS_BERRY"].battleUse = completeBattleUse()
+  assertRejectsNamingItem(
+    ItemAssetSchema,
+    berry,
+    "SITRUS_BERRY",
+    "berry medicine must not carry battle use"
+  )
+  local mail = validRoot()
+  mail.items["ITEM_55"].partyUse = { kind = "deferred", reason = "mail" }
+  mail.items["ITEM_55"].battleUse = completeBattleUse()
+  assertRejectsNamingItem(
+    ItemAssetSchema,
+    mail,
+    "ITEM_55",
+    "deferred mail must not carry battle use"
+  )
+  local evolution = validRoot()
+  evolution.items["ITEM_55"].partyUse = { kind = "deferred", reason = "evolution" }
+  evolution.items["ITEM_55"].battleUse = completeBattleUse()
+  assertRejectsNamingItem(
+    ItemAssetSchema,
+    evolution,
+    "ITEM_55",
+    "deferred evolution must not carry battle use"
+  )
 end
 
 function T.catalogs_reject_malformed_battle_use()
@@ -405,7 +483,10 @@ function T.catalogs_reject_malformed_battle_use()
   cases.missing_guard = missingGuard
   for name, battleUse in pairs(cases) do
     local root = validRoot()
-    root.items["POTION"].battleUse = battleUse
+    -- Malformed riders attach to a battle-only parent so the failure
+    -- exercises the battle-use shape check rather than a cross-field
+    -- rejection for carrying riders on ordinary medicine.
+    makeBattleOnly(root.items["ITEM_55"]).battleUse = battleUse
     Assert.isFalse(ItemAssetSchema.isValidCatalog(root), "malformed battle use must be rejected: " .. name)
   end
 end

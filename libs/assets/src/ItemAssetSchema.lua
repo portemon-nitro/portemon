@@ -358,11 +358,15 @@ local function assertItem(key, record, context)
     )
   end
   assertPartyUse(key, record.partyUse, context)
-  -- Battle-use riders are optional: catalogs produced before the
-  -- battle-only enrichment stay valid, while enriched records validate
-  -- their closed in-battle shape above.
-  if record.battleUse ~= nil then
+  local partyUse = record.partyUse
+  local battleOnly = partyUse.kind == "deferred" and partyUse.reason == "battle_only"
+  if battleOnly then
+    if record.battleUse == nil then
+      fail("ITEM_CATALOG_INVALID", "item " .. key .. " battle-only use requires battleUse", context)
+    end
     assertBattleUse(key, record.battleUse, context)
+  elseif record.battleUse ~= nil then
+    fail("ITEM_CATALOG_INVALID", "item " .. key .. " carries battleUse outside battle-only party use", context)
   end
   -- Semantic held behavior is optional: catalogs produced before the
   -- battle import pipeline stay valid, while enriched records validate
