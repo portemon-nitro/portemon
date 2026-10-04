@@ -236,6 +236,7 @@ local FIELD_RUNTIME_JOBS = {
   "party:global",
   "pc:global",
   "mart:global",
+  "summary:global",
   "spawns:global",
   "starter-choice:global",
   "message-bank:" .. tostring(MenuProtocol.START_MENU_MESSAGE_BANK),
@@ -617,6 +618,25 @@ local function dependenciesPc(key)
     { kind = "mon-catalog", key = "global" },
   }),
     true
+end
+
+---@return { kind: string, key: string }[], boolean
+local function dependenciesSummary()
+  return { { kind = "mon-catalog", key = "global" }, { kind = "mon-layout", key = "global" } }, true
+end
+
+local function executeSummary(artifact, context)
+  local MonCache = require("libs.assets.src.MonCache")
+  local SummaryAssetCompiler = require("romdump.src.digest.ui.SummaryAssetCompiler")
+  local SummaryCacheWriter = require("romdump.src.digest.ui.SummaryCacheWriter")
+  local romFs = assert(context.romFs, "coarse jobs require a source reader")
+  local cacheFs = assert(context.cacheFs, "summary jobs require a cache filesystem")
+  local catalog = MonCache.loadCatalog(cacheFs)
+  local portraits = cacheFs:loadLua(MonCache.portraitManifestPath())
+  local bundle = compileOrRaise(function()
+    return SummaryAssetCompiler.compile(romFs, catalog, portraits)
+  end, "summary")
+  return SummaryCacheWriter.stage(artifact, bundle)
 end
 
 local function executeSpawnDestinations(artifact, context)
@@ -1357,6 +1377,13 @@ end
 
 ---@param check ArtifactJobs.ReadinessCheck
 ---@return boolean
+local function validateSummary(check)
+  local SummaryCache = require("libs.assets.src.SummaryCache")
+  return SummaryCache.isReady(check.cacheFs, check.marker)
+end
+
+---@param check ArtifactJobs.ReadinessCheck
+---@return boolean
 local function validateSpawnDestinations(check)
   local FieldMapDataCache = require("libs.assets.src.field.FieldMapDataCache")
   return FieldMapDataCache.isSpawnIndexReady(check.cacheFs, check.marker)
@@ -1785,6 +1812,14 @@ DESCRIPTORS = {
     execute = executePc,
     validate = validatePc,
   },
+  -- Summary presentation: builds over the current mon catalog and
+  -- layout families, never over paged portrait pixels.
+  summary = {
+    size = "normal",
+    dependencies = dependenciesSummary,
+    execute = executeSummary,
+    validate = validateSummary,
+  },
   -- Teleport landing index: one family-level record, no prerequisite.
   spawns = {
     size = "normal",
@@ -2000,6 +2035,7 @@ local COMPLETE_STATIC_GLOBALS = {
   "party",
   "pc",
   "mart",
+  "summary",
   "spawns",
   "mon-catalog",
   "mon-layout",

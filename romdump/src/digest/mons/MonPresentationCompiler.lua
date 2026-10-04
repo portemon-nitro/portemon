@@ -739,6 +739,49 @@ function MonPresentationCompiler.portraitVariants(romFs, speciesId, form)
   return result
 end
 
+-- Compile one front-picture visual through the existing selector and
+-- raster path: the two owned 80x80 RGBA frames for the requested
+-- species/form/gender/shiny tuple, byte-identical to the frames the page
+-- compiler packs for the matching portrait selector. The summary picture
+-- closure reuses front decoding through this entrypoint only; it never
+-- pages portraits itself.
+---@param romFs RomFs
+---@param speciesId integer
+---@param form integer
+---@param gender string
+---@param shiny boolean
+---@return table<string, unknown>|nil frames
+---@return Errors.Error|nil
+function MonPresentationCompiler.compileFrontFrames(romFs, speciesId, form, gender, shiny)
+  local baseArchive, err = openArchive(romFs, "pokemon_graphics")
+  if not baseArchive then
+    return nil, err
+  end
+  local otherArchive
+  otherArchive, err = openArchive(romFs, "pokemon_graphics_other")
+  if not otherArchive then
+    return nil, err
+  end
+  local archives = { pokemon_graphics = baseArchive, pokemon_graphics_other = otherArchive }
+  local ok, result = pcall(function()
+    local ids = MonSources.portraitIds(speciesId, gender, FRONT_FACING, shiny, form)
+    local frames = must(rasterPortraitCombo(archives, {
+      narc = ids.narc,
+      charMemberId = ids.charMemberId,
+      palMemberId = ids.palMemberId,
+    }))
+    assert(#frames == PORTRAIT_FRAMES, "front compilation keeps both frames")
+    return { frames = frames, width = PORTRAIT_CELL, height = PORTRAIT_CELL }
+  end)
+  if not ok then
+    if Errors.is(result) then
+      return nil, result
+    end
+    error(result, 0)
+  end
+  return result
+end
+
 -- Compile every reachable front portrait: one atlas entry per unique
 -- (archive, character, palette) triple, one manifest entry per semantic
 -- selector, with gender/shiny aliases sharing entries exactly where the

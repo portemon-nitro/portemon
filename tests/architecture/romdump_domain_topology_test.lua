@@ -122,6 +122,9 @@ local DOMAINS = {
     "PcAssetCompiler",
     "PcCacheWriter",
     "RgbaImage",
+    "SummaryAssetCompiler",
+    "SummaryCacheWriter",
+    "SummaryPictureCompiler",
   },
   newgame = {
     "IntroAssetCacheWriter",

@@ -55,6 +55,7 @@ ArtifactState.KINDS = {
   bag = true,
   party = true,
   pc = true,
+  summary = true,
   -- One staged message bank (or the family summary) per job: each bank owns
   -- its payload and marker, the summary owns only the index and completion.
   ["message-bank"] = true,

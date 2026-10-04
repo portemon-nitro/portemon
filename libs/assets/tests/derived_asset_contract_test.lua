@@ -25,6 +25,7 @@ local MonCache = require("libs.assets.src.MonCache")
 local ItemCache = require("libs.assets.src.ItemCache")
 local BagCache = require("libs.assets.src.BagCache")
 local PartyCache = require("libs.assets.src.PartyCache")
+local SummaryCache = require("libs.assets.src.SummaryCache")
 local StarterChoiceAssetCache = require("libs.assets.src.StarterChoiceAssetCache")
 
 local T = {}
@@ -141,6 +142,10 @@ function T.contract_pins_the_current_asset_identities()
       cacheFormat = "pc-cache-v1",
       schema = "g4-pc-v2",
     },
+    summary = {
+      cacheFormat = "g4-summary-cache-v1",
+      schema = "g4-summary-manifest-v1",
+    },
     audio = {
       cacheFormat = "g4-audio-cache-v1",
       -- The sequence vocabulary and initial-volume domain are strict current
@@ -207,6 +212,8 @@ function T.cache_modules_consume_the_contract_constants()
   Assert.equal(BagCache.SCHEMA, DerivedAssetContract.bag.schema)
   Assert.equal(PartyCache.FORMAT, DerivedAssetContract.party.cacheFormat)
   Assert.equal(PartyCache.SCHEMA, DerivedAssetContract.party.schema)
+  Assert.equal(SummaryCache.FORMAT, DerivedAssetContract.summary.cacheFormat)
+  Assert.equal(SummaryCache.SCHEMA, DerivedAssetContract.summary.schema)
   Assert.equal(StarterChoiceAssetCache.FORMAT, DerivedAssetContract.starterChoice.cacheFormat)
   Assert.equal(StarterChoiceAssetCache.SCHEMA, DerivedAssetContract.starterChoice.schema)
 end

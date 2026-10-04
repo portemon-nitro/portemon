@@ -398,6 +398,17 @@ DerivedAssetContract.pc = {
   schema = "g4-pc-v2",
 }
 
+-- The summary class carries the source-independent native summary
+-- presentation: the canonical panes, group background variants, semantic
+-- windows, background/stamp/picture visuals, lowered text, palette roles,
+-- bar rules, picture timelines, ribbon definitions, performance tables,
+-- dex mapping, and memo records. Species portraits stay in the mon class;
+-- the summary manifest references no portrait pixels.
+DerivedAssetContract.summary = {
+  cacheFormat = "g4-summary-cache-v1",
+  schema = "g4-summary-manifest-v1",
+}
+
 DerivedAssetContract.audio = {
   cacheFormat = "g4-audio-cache-v1",
   -- The index carries the per-class symbol maps sequenceBySymbol and
