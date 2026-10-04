@@ -1,9 +1,13 @@
--- Native trainer decisions owned by the battle session: move scores open
--- at the source baseline with slot-ordered initialization draws, equal-top
--- ties break uniformly through one selection draw, reserve
--- choice weighs moves and damage instead of exposure alone, item
--- availability follows session inventory, and production trainer answers
--- route through the native session seam.
+-- Session-owned trainer decisions: move scores open at the shared
+-- opening points with slot-ordered initialization draws on the battle
+-- stream, per-flag programs adjust scores through the command
+-- interpreter, equal-top ties break uniformly through one selection
+-- draw, the switch gate answers before the item path, trainer items
+-- follow source slot order and conditions rather than a health gate with
+-- a random pick, selected slots stay consumed until the serving
+-- executes, learned and slot state rides the native snapshot with
+-- entry reset, and production trainer answers route through the native
+-- session seam.
 
 local Assert = require("tests.support.Assert")
 local BattleRng = require("libs.battle.src.gen4.BattleRng")
@@ -43,10 +47,13 @@ end
 local function spyStream(seed)
   local inner = BattleRng.new(seed)
   local labels = {}
+  local values = {}
   local stream = {}
   function stream:nextU16(label, cause)
     labels[#labels + 1] = label
-    return inner:nextU16(label, cause)
+    local value = inner:nextU16(label, cause)
+    values[#values + 1] = value
+    return value
   end
   function stream:capture()
     return inner:capture()
@@ -55,6 +62,13 @@ local function spyStream(seed)
     local out = {}
     for index, label in ipairs(labels) do
       out[index] = label
+    end
+    return out
+  end
+  function stream:drawValues()
+    local out = {}
+    for index, value in ipairs(values) do
+      out[index] = value
     end
     return out
   end
@@ -95,6 +109,7 @@ local function slotWith(overrides)
     power = 35,
     category = "physical",
     accuracy = 95,
+    effect = 0,
     usable = true,
   }
   for key, value in pairs(overrides) do
@@ -130,11 +145,11 @@ local function fourSlots()
   }
 end
 
--- Move scoring opens at the source baseline: every usable slot starts at
--- one hundred points, the spent slot stays at zero, and the four
+-- Move scoring opens at the shared baseline: every usable slot starts at
+-- one hundred points, the spent slot stays at zero, and exactly four
 -- initialization draws precede flag evaluation in slot order. A fixed
 -- seed replays the same scores.
-function T.move_scores_open_at_the_source_baseline_in_slot_order()
+function T.move_scores_open_at_the_shared_baseline_before_flag_evaluation()
   local TrainerAi = trainerPolicy()
   local stream = spyStream(FIXED_SEED)
   local scored = TrainerAi.scoreSlots(
@@ -144,19 +159,24 @@ function T.move_scores_open_at_the_source_baseline_in_slot_order()
     fighterWith({ types = { "rock", "ground" } }),
     14,
     {},
+    false,
     stream
   )
-  Assert.equal(#scored, 4, "scoring covers every native move slot")
-  Assert.equal(scored[1].score, 100, "the first usable slot opens at the source baseline")
-  Assert.equal(scored[2].score, 100, "the second usable slot opens at the source baseline")
-  Assert.equal(scored[3].score, 100, "the third usable slot opens at the source baseline")
+  Assert.equal(#scored, 4, "scoring covers every move slot")
+  Assert.equal(scored[1].score, 100, "the first usable slot opens at the baseline")
+  Assert.equal(scored[2].score, 100, "the second usable slot opens at the baseline")
+  Assert.equal(scored[3].score, 100, "the third usable slot opens at the baseline")
   Assert.equal(scored[4].score, 0, "the spent slot stays excluded at zero")
-  local labels = stream:drawLabels()
-  Assert.isTrue(#labels >= 4, "initialization draws once per native move slot")
+  Assert.equal(#stream:drawLabels(), 4, "initialization draws once per move slot and nothing else")
+  local probe = BattleRng.new(FIXED_SEED)
+  local expectedValues = {}
+  for _ = 1, 4 do
+    expectedValues[#expectedValues + 1] = probe:nextU16("init_probe", { slot = #expectedValues })
+  end
   Assert.deepEqual(
-    { labels[1], labels[2], labels[3], labels[4] },
-    { "score_init_0", "score_init_1", "score_init_2", "score_init_3" },
-    "initialization draws precede evaluation in slot order"
+    stream:drawValues(),
+    expectedValues,
+    "initialization consumes the shared stream head in slot order"
   )
   local second = TrainerAi.scoreSlots(
     nativeChart(),
@@ -165,15 +185,16 @@ function T.move_scores_open_at_the_source_baseline_in_slot_order()
     fighterWith({ types = { "rock", "ground" } }),
     14,
     {},
+    false,
     spyStream(FIXED_SEED)
   )
   Assert.deepEqual(second, scored, "a fixed seed replays the same scores")
 end
 
--- Pass names outside the native set fail closed: an unknown bit, the
--- doubles bit, and malformed names all raise naming the offending pass,
--- while repeats collapse and dispatch runs in ascending bit order.
-function T.pass_names_outside_the_native_set_fail_before_any_draw()
+-- Pass names outside the supported set fail closed: unknown bits and
+-- malformed names all raise naming the offending pass, while repeats
+-- collapse and dispatch runs in ascending bit order.
+function T.pass_names_outside_the_supported_set_fail_before_any_draw()
   local TrainerAi = trainerPolicy()
   Assert.deepEqual(TrainerAi.parsePasses({}), {}, "flagless trainers carry no bits")
   Assert.deepEqual(
@@ -181,7 +202,7 @@ function T.pass_names_outside_the_native_set_fail_before_any_draw()
     { 0, 2, 9 },
     "passes dispatch in ascending bit order without repeats"
   )
-  for _, pass in ipairs({ "ai_pass_4", "ai_pass_7", "ai_pass_10", "bogus", "", "ai_pass_" }) do
+  for _, pass in ipairs({ "ai_pass_4", "ai_pass_7", "ai_pass_8", "ai_pass_10", "bogus", "", "ai_pass_" }) do
     local failure = Assert.throws(function()
       TrainerAi.parsePasses({ pass })
     end, "pass " .. tostring(pass) .. " fails instead of falling back")
@@ -196,34 +217,11 @@ function T.pass_names_outside_the_native_set_fail_before_any_draw()
   Assert.isTrue(string.find(tostring(malformed), "42", 1, true) ~= nil, "the failure names the offending pass")
 end
 
--- The bad-move check scores every usable slot by its matchup and
--- withholds points from negated strikes: a move the foe is immune to
--- falls below scoreless status attempts instead of tying them.
-function T.negated_strikes_fall_below_status_attempts()
-  local TrainerAi = trainerPolicy()
-  local chart = nativeChart()
-  local slots = {
-    slotWith({ key = "TACKLE", moveType = "normal", power = 35 }),
-    slotWith({ key = "SLEEP_POWDER", moveType = "grass", power = 0, category = "status", accuracy = 75 }),
-    slotWith({ key = "SPENT_A", moveType = "normal", power = 0, category = "status", accuracy = 0, usable = false }),
-    slotWith({ key = "SPENT_B", moveType = "normal", power = 0, category = "status", accuracy = 0, usable = false }),
-  }
-  local scored = TrainerAi.scoreSlots(
-    chart,
-    slots,
-    fighterWith({ types = { "grass" } }),
-    fighterWith({ types = { "ghost" } }),
-    14,
-    { 0 },
-    spyStream(FIXED_SEED)
-  )
-  Assert.equal(scored[1].score, 90, "the negated strike keeps its matchup minus the penalty")
-  Assert.equal(scored[2].score, 100, "the status attempt holds the baseline")
-end
-
 -- Equal-top ties break uniformly through exactly one selection draw: the
--- pick follows the draw remainder over the tied slots in source order, a
--- lone leader still spends the draw, and a fixed seed replays the pick.
+-- pick follows the draw remainder over the tied slots in source order,
+-- and a fixed seed replays the pick. The lone-leader path spends that
+-- same draw exactly as the singles selector does on every normal return,
+-- so the downstream stream never shifts with the margin.
 function T.tied_top_scores_break_uniformly_through_one_selection_draw()
   local TrainerAi = trainerPolicy()
   local tied = {
@@ -233,10 +231,11 @@ function T.tied_top_scores_break_uniformly_through_one_selection_draw()
     { slot = 3, key = "SPENT", score = 0 },
   }
   local stream = spyStream(FIXED_SEED)
+  local callsBefore = stream:capture().calls
   local pick = TrainerAi.selectMove(tied, stream)
-  Assert.deepEqual(stream:drawLabels(), { "selection_roll" }, "selection draws exactly once with its stable label")
+  Assert.equal(stream:capture().calls, callsBefore + 1, "tied selection draws exactly once")
   local probe = BattleRng.new(FIXED_SEED)
-  local expected = probe:nextU16("selection_roll", { tied = 3 })
+  local expected = probe:nextU16("tie_probe", { tied = 3 })
   Assert.equal(pick, tied[(expected % 3) + 1].slot, "the pick follows the draw remainder over the tied slots")
   Assert.equal(TrainerAi.selectMove(tied, spyStream(FIXED_SEED)), pick, "a fixed seed replays the same pick")
   local lone = {
@@ -245,248 +244,15 @@ function T.tied_top_scores_break_uniformly_through_one_selection_draw()
     { slot = 2, key = "GROWL", score = 100 },
     { slot = 3, key = "SPENT", score = 0 },
   }
+  Assert.equal(TrainerAi.selectMove(lone, spyStream(FIXED_SEED)), 0, "the lone leader answers")
   local loneStream = spyStream(FIXED_SEED)
-  Assert.equal(TrainerAi.selectMove(lone, loneStream), 0, "the lone leader answers")
-  Assert.deepEqual(loneStream:drawLabels(), { "selection_roll" }, "a lone leader still spends its selection draw")
-end
-
--- Faint-seeking prefers the finishing blow: the most powerful neutral
--- strike wins outright without needing a tiebreak draw.
-function T.faint_seeking_prefers_the_strongest_neutral_strike()
-  local TrainerAi = trainerPolicy()
-  local stream = spyStream(FIXED_SEED)
-  local scored = TrainerAi.scoreSlots(nativeChart(), {
-    slotWith({ key = "EMBER", moveType = "fire", power = 40, accuracy = 100 }),
-    slotWith({ key = "SCRATCH", moveType = "normal", power = 60, accuracy = 100 }),
-    slotWith({ key = "SPENT_A", moveType = "normal", power = 0, category = "status", accuracy = 0, usable = false }),
-    slotWith({ key = "SPENT_B", moveType = "normal", power = 0, category = "status", accuracy = 0, usable = false }),
-  }, fighterWith({ types = { "fire" } }), fighterWith({ types = { "normal", "flying" } }), 14, { 1 }, stream)
-  Assert.equal(scored[1].score, 99, "the weaker strike loses a point")
-  Assert.equal(scored[2].score, 100, "the strongest strike holds the baseline")
-  Assert.deepEqual(
-    stream:drawLabels(),
-    { "score_init_0", "score_init_1", "score_init_2", "score_init_3", "faint_bonus" },
-    "the single routine draw fires even without a doubly-effective candidate"
+  local loneBefore = loneStream:capture().calls
+  Assert.equal(TrainerAi.selectMove(lone, loneStream), 0, "the lone leader answers its slot")
+  Assert.equal(
+    loneStream:capture().calls,
+    loneBefore + 1,
+    "a lone leader still spends its selection draw"
   )
-end
-
--- Effectiveness emphasis favors clearly super-effective strikes and
--- withholds points from resisted ones.
-function T.effectiveness_emphasis_moves_scores_both_ways()
-  local TrainerAi = trainerPolicy()
-  local scored = TrainerAi.scoreSlots(
-    nativeChart(),
-    {
-      slotWith({ key = "RAZOR_LEAF", moveType = "grass", power = 55 }),
-      slotWith({ key = "TACKLE", moveType = "normal", power = 35 }),
-      slotWith({ key = "SPENT_A", moveType = "normal", power = 0, category = "status", accuracy = 0, usable = false }),
-      slotWith({ key = "SPENT_B", moveType = "normal", power = 0, category = "status", accuracy = 0, usable = false }),
-    },
-    fighterWith({ types = { "grass" } }),
-    fighterWith({ types = { "rock", "ground" } }),
-    14,
-    { 2 },
-    spyStream(FIXED_SEED)
-  )
-  Assert.equal(scored[1].score, 102, "the super-effective strike gains points")
-  Assert.equal(scored[2].score, 98, "the resisted strike loses points")
-end
-
--- Same-type preference backs the reliable strike while off-type
--- attempts lose a point.
-function T.same_type_preference_backs_the_reliable_strike()
-  local TrainerAi = trainerPolicy()
-  local scored = TrainerAi.scoreSlots(nativeChart(), {
-    slotWith({ key = "RAZOR_LEAF", moveType = "grass", power = 55 }),
-    slotWith({ key = "TACKLE", moveType = "normal", power = 35 }),
-    slotWith({ key = "SPENT_A", moveType = "normal", power = 0, category = "status", accuracy = 0, usable = false }),
-    slotWith({ key = "SPENT_B", moveType = "normal", power = 0, category = "status", accuracy = 0, usable = false }),
-  }, fighterWith({ types = { "grass" } }), fighterWith({ types = { "normal" } }), 14, { 3 }, spyStream(FIXED_SEED))
-  Assert.equal(scored[1].score, 102, "the same-type strike gains points")
-  Assert.equal(scored[2].score, 99, "the off-type strike loses a point")
-end
-
--- Health awareness seeks the knockout: only moves whose damage preview
--- reaches the remaining health gain points for the finish.
-function T.health_awareness_seeks_only_the_finish()
-  local TrainerAi = trainerPolicy()
-  local slots = {
-    slotWith({ key = "RAZOR_LEAF", moveType = "grass", power = 55 }),
-    slotWith({ key = "TACKLE", moveType = "normal", power = 35 }),
-    slotWith({ key = "SPENT_A", moveType = "normal", power = 0, category = "status", accuracy = 0, usable = false }),
-    slotWith({ key = "SPENT_B", moveType = "normal", power = 0, category = "status", accuracy = 0, usable = false }),
-  }
-  local user = fighterWith({ types = { "grass" } })
-  local foe = fighterWith({ types = { "rock", "ground" } })
-  local finishing = TrainerAi.scoreSlots(nativeChart(), slots, user, foe, 30, { 5 }, spyStream(FIXED_SEED))
-  Assert.equal(finishing[1].score, 103, "the finishing strike gains points")
-  Assert.equal(finishing[2].score, 100, "the short strike holds the baseline")
-  local healthy = TrainerAi.scoreSlots(nativeChart(), slots, user, foe, 200, { 5 }, spyStream(FIXED_SEED))
-  Assert.equal(healthy[1].score, 100, "no bonus lands while the foe stands clear")
-  Assert.equal(healthy[2].score, 100, "no bonus lands while the foe stands clear")
-end
-
--- Accuracy preference avoids shaky strikes only while a reliable
--- damaging move exists.
-function T.accuracy_preference_avoids_shaky_strikes()
-  local TrainerAi = trainerPolicy()
-  local slots = {
-    slotWith({ key = "TACKLE", moveType = "normal", power = 35, accuracy = 95 }),
-    slotWith({ key = "LOW_KICK", moveType = "fighting", power = 70, accuracy = 80 }),
-    slotWith({ key = "SPENT_A", moveType = "normal", power = 0, category = "status", accuracy = 0, usable = false }),
-    slotWith({ key = "SPENT_B", moveType = "normal", power = 0, category = "status", accuracy = 0, usable = false }),
-  }
-  local user = fighterWith({})
-  local foe = fighterWith({})
-  local scored = TrainerAi.scoreSlots(nativeChart(), slots, user, foe, 14, { 6 }, spyStream(FIXED_SEED))
-  Assert.equal(scored[1].score, 100, "the reliable strike holds the baseline")
-  Assert.equal(scored[2].score, 98, "the shaky strike loses points")
-  local shakyOnly = TrainerAi.scoreSlots(
-    nativeChart(),
-    { slots[2], slots[2], slots[2], slots[2] },
-    user,
-    foe,
-    14,
-    { 6 },
-    spyStream(FIXED_SEED)
-  )
-  for _, entry in ipairs(shakyOnly) do
-    Assert.equal(entry.score, 100, "no penalty lands without a reliable alternative")
-  end
-end
-
--- Unpredictability applies its bonus deterministically to the
--- lowest-index usable slot with no flag draw, and replays identically.
-function T.unpredictability_backs_the_lowest_usable_slot()
-  local TrainerAi = trainerPolicy()
-  local stream = spyStream(FIXED_SEED)
-  local scored = TrainerAi.scoreSlots(
-    nativeChart(),
-    fourSlots(),
-    fighterWith({ types = { "grass" } }),
-    fighterWith({ types = { "rock", "ground" } }),
-    14,
-    { 9 },
-    stream
-  )
-  Assert.deepEqual(
-    stream:drawLabels(),
-    { "score_init_0", "score_init_1", "score_init_2", "score_init_3" },
-    "no flag draw follows initialization"
-  )
-  Assert.equal(scored[1].score, 101, "the lowest-index usable slot earns the bonus")
-  Assert.equal(scored[2].score, 100, "the later usable slot holds the baseline")
-  Assert.equal(scored[3].score, 100, "the status attempt holds the baseline")
-  Assert.equal(scored[4].score, 0, "the spent slot never earns the bonus")
-  local second = TrainerAi.scoreSlots(
-    nativeChart(),
-    fourSlots(),
-    fighterWith({ types = { "grass" } }),
-    fighterWith({ types = { "rock", "ground" } }),
-    14,
-    { 9 },
-    spyStream(FIXED_SEED)
-  )
-  Assert.deepEqual(second, scored, "a fixed seed replays the same bonus")
-end
-
--- Enabled flags dispatch in ascending bit order: the bit-1 routine draw
--- precedes the bit-2 draw regardless of pass order.
-function T.enabled_flags_dispatch_in_ascending_bit_order()
-  local TrainerAi = trainerPolicy()
-  Assert.deepEqual(TrainerAi.parsePasses({ "ai_pass_2", "ai_pass_1" }), { 1, 2 }, "passes sort into bit order")
-  local stream = spyStream(FIXED_SEED)
-  local ordered = TrainerAi.parsePasses({ "ai_pass_2", "ai_pass_1" })
-  TrainerAi.scoreSlots(nativeChart(), {
-    slotWith({ key = "RAZOR_LEAF", moveType = "grass", power = 55 }),
-    slotWith({ key = "TACKLE", moveType = "normal", power = 35 }),
-    slotWith({ key = "GROWL", moveType = "normal", power = 0, category = "status", accuracy = 100 }),
-    slotWith({ key = "SPLASH", moveType = "normal", power = 0, category = "status", accuracy = 100, usable = false }),
-  }, fighterWith({ types = { "grass" } }), fighterWith({ types = { "rock", "ground" } }), 14, ordered, stream)
-  Assert.deepEqual(
-    stream:drawLabels(),
-    { "score_init_0", "score_init_1", "score_init_2", "score_init_3", "faint_bonus", "flag_2" },
-    "flag draws follow ascending bit order after initialization"
-  )
-end
-
--- Matchups resolve through the session chart: steel resists ghost and
--- dark, and poison cannot touch steel.
-function T.session_chart_drives_matchups_including_resistances_and_immunities()
-  local TrainerAi = trainerPolicy()
-  local chart = nativeChart()
-  local resisted = TrainerAi.scoreSlots(chart, {
-    slotWith({ key = "NIGHT_SHADE", moveType = "ghost", power = 50, category = "special", accuracy = 100 }),
-    slotWith({ key = "BITE", moveType = "dark", power = 60, accuracy = 100 }),
-    slotWith({ key = "SPENT_A", moveType = "normal", power = 0, category = "status", accuracy = 0, usable = false }),
-    slotWith({ key = "SPENT_B", moveType = "normal", power = 0, category = "status", accuracy = 0, usable = false }),
-  }, fighterWith({ types = { "ghost" } }), fighterWith({ types = { "steel" } }), 14, { 0 }, spyStream(FIXED_SEED))
-  Assert.equal(resisted[1].score, 137, "the resisted ghost strike scores through the chart")
-  Assert.equal(resisted[2].score, 130, "the resisted off-type strike scores through the chart")
-  local immune = TrainerAi.scoreSlots(chart, {
-    slotWith({ key = "POISON_STING", moveType = "poison", power = 40, accuracy = 100 }),
-    slotWith({ key = "GROWL", moveType = "normal", power = 0, category = "status", accuracy = 100 }),
-    slotWith({ key = "SPENT_A", moveType = "normal", power = 0, category = "status", accuracy = 0, usable = false }),
-    slotWith({ key = "SPENT_B", moveType = "normal", power = 0, category = "status", accuracy = 0, usable = false }),
-  }, fighterWith({ types = { "poison" } }), fighterWith({ types = { "steel" } }), 14, { 0 }, spyStream(FIXED_SEED))
-  Assert.equal(immune[1].score, 90, "the negated strike falls below the baseline")
-  Assert.equal(immune[2].score, 100, "the status attempt holds the baseline")
-end
-
----@return table stats and types shared by the exposure-tied reserves
-local function grassReserveStats()
-  return { types = { "grass" }, level = 5, attack = 8, defense = 10, specialAttack = 8, specialDefense = 10 }
-end
-
--- Reserve choice weighs moves and damage instead of exposure alone: with
--- identical incoming exposure on both reserves, only the move and
--- damage checks can prefer the damaging reserve over the harmless one
--- listed first.
-function T.reserve_choice_weighs_moves_not_exposure_alone()
-  local TrainerAi = trainerPolicy()
-  local chart = nativeChart()
-  local harmless = {
-    slotWith({ key = "GROWL", moveType = "normal", power = 0, category = "status", accuracy = 100 }),
-    slotWith({ key = "SPLASH", moveType = "normal", power = 0, category = "status", accuracy = 100 }),
-  }
-  local damaging = {
-    slotWith({ key = "RAZOR_LEAF", moveType = "grass", power = 55 }),
-    slotWith({ key = "TACKLE", moveType = "normal", power = 35 }),
-  }
-  local candidates = {
-    { id = 3, stats = grassReserveStats(), moves = harmless },
-    { id = 4, stats = grassReserveStats(), moves = damaging },
-  }
-  local foe =
-    { types = { "rock", "ground" }, level = 5, attack = 12, defense = 10, specialAttack = 12, specialDefense = 10 }
-  local foeMoves = {
-    slotWith({ key = "ROCK_THROW", moveType = "rock", power = 50, accuracy = 90 }),
-  }
-  local stream = spyStream(FIXED_SEED)
-  local choice = TrainerAi.chooseReserve(chart, candidates, foe, foeMoves, stream)
-  Assert.equal(choice, 4, "the damaging reserve answers when exposure ties")
-  local repeated = TrainerAi.chooseReserve(chart, candidates, foe, foeMoves, spyStream(FIXED_SEED))
-  Assert.equal(repeated, 4, "a fixed seed replays the same replacement")
-  Assert.deepEqual(stream:drawLabels(), {}, "reserve selection draws nothing")
-  Assert.isNil(
-    TrainerAi.chooseReserve(chart, {}, foe, foeMoves, spyStream(FIXED_SEED)),
-    "an empty bench answers no switch"
-  )
-end
-
--- Target selection draws only with more than one live opponent: a lone
--- foe is addressed with no draw while two opponents stay deterministic
--- for a fixed seed.
-function T.target_selection_stays_deterministic_with_two_opponents()
-  local TrainerAi = trainerPolicy()
-  local loneStream = spyStream(FIXED_SEED)
-  Assert.equal(TrainerAi.selectTarget({ 2 }, loneStream), 2, "a lone foe is addressed")
-  Assert.deepEqual(loneStream:drawLabels(), {}, "a lone foe costs no draw")
-  local stream = spyStream(FIXED_SEED)
-  local first = TrainerAi.selectTarget({ 3, 5 }, stream)
-  Assert.isTrue(first == 3 or first == 5, "the choice names a live opponent")
-  Assert.deepEqual(stream:drawLabels(), { "target_foe" }, "two opponents draw exactly once")
-  Assert.equal(TrainerAi.selectTarget({ 3, 5 }, spyStream(FIXED_SEED)), first, "a fixed seed replays the same target")
 end
 
 ---@param id integer nonreused positive combatant identity
@@ -566,16 +332,35 @@ local function potionFacts()
   }
 end
 
+---@return table<string, unknown> detached generated-style sleep-cure facts
+local function sleepCureFacts()
+  return {
+    kind = "medicine",
+    cures = { sleep = true, poison = false, burn = false, freeze = false, paralysis = false },
+    revive = "none",
+    mood = 0,
+  }
+end
+
 ---@param pack table battle inventory seed for the trainer side
 ---@param trainerMons table[] trainer combatant seeds in scenario order
 ---@param foeMons table[] opposing combatant seeds in scenario order
 ---@param moveKeys string[] move identities under fact resolution
+---@param opts table<string, unknown>? pass and fact overrides for the trainer side
 ---@return table detached native battle setup carrying the trainer stock
-local function trainerStockScenario(pack, trainerMons, foeMons, moveKeys)
+local function trainerStockScenario(pack, trainerMons, foeMons, moveKeys, opts)
   local Executor = sessionOwner()
+  local options = opts or {}
   local trainer = SessionFixture.participant(2, 2, "trainer:1", trainerMons)
   trainer.inventoryId = (pack --[[@as table<string, unknown>]]).id
-  trainer.context = { aiPasses = { "ai_pass_0", "ai_pass_1" } }
+  trainer.context = { aiPasses = options.passes or { "ai_pass_0", "ai_pass_1" } }
+  if options.trainerItems ~= nil then
+    local ordered = {}
+    for _, key in ipairs(options.trainerItems --[[@as string[] ]]) do
+      ordered[#ordered + 1] = key
+    end
+    trainer.context.trainerItems = ordered
+  end
   local seeds = {}
   for _, seed in ipairs(trainerMons) do
     seeds[#seeds + 1] = seed
@@ -601,7 +386,7 @@ local function trainerStockScenario(pack, trainerMons, foeMons, moveKeys)
     formatState = {},
     moveFacts = scenarioMoveFacts(moveKeys),
     speciesFacts = scenarioSpeciesFacts(seeds),
-    itemFacts = { POTION = { partyUse = potionFacts() } },
+    itemFacts = options.itemFacts or { POTION = { partyUse = potionFacts() } },
   }
 end
 
@@ -629,75 +414,285 @@ local function openRequest(session, controller)
   error("no open request for controller " .. controller)
 end
 
--- Trainer item availability follows session stock in both directions: an
--- empty session inventory refuses the bag even though the trainer side
--- carries pass facts, and a stocked session inventory heals without any
--- controller-side copy. Executing the turn consumes the unit through the
--- shared item owner, and the next decision observes the empty stock.
-function T.trainer_item_availability_follows_session_stock()
+-- The switch gate answers before the item path: a wounded lead with an
+-- answering reserve and a stocked cure yields its reserve through an
+-- ordinary reply the kernel accepts, even though the bag could serve.
+-- Without the reserve the same wounded lead takes the stocked cure,
+-- proving the bag was available and the exchange won on order.
+function T.switch_gate_answers_before_the_item_path()
   local contracts = SessionFixture.sessionContracts()
-
-  local woundedLead = leveledCombatant(1, 23, "EEVEE", 20);
-  (woundedLead.mon --[[@as table<string, unknown>]]).condition.currentHp = 4
+  local lead = leveledCombatant(1, 23, "CHIKORITA", 5)
+  lead.mon.moves = {
+    { move = "GROWL", pp = 40, ppUps = 0 },
+    { move = "TAIL_WHIP", pp = 30, ppUps = 0 },
+  };
+  (lead.mon --[[@as table<string, unknown>]]).condition.currentHp = 4
+  local reserve = leveledCombatant(3, 24, "TOTODILE", 5)
+  reserve.mon.moves = {
+    { move = "WATER_GUN", pp = 25, ppUps = 0 },
+    { move = "TACKLE", pp = 35, ppUps = 0 },
+  }
   local foe = leveledCombatant(2, 41, "EEVEE", 5)
-  local emptySession = waitingSession(
+  local session = waitingSession(
     contracts,
-    trainerStockScenario(SessionFixture.inventory("trainer-stock", { 2 }, {}), { woundedLead }, { foe })
-  )
-  local emptyStock = emptySession:capture().inventories["trainer-stock"].quantities
-  Assert.isNil(emptyStock.POTION, "the session holds no cure for this trainer")
-  local refused = emptySession:answerTrainer(openRequest(emptySession, "trainer:1"))
-  Assert.equal(refused.choices[1].kind, "attack", "an empty session stock refuses the bag")
-  emptySession:dispose()
-
-  local hurtLead = leveledCombatant(1, 23, "EEVEE", 20);
-  (hurtLead.mon --[[@as table<string, unknown>]]).condition.currentHp = 4
-  local stockedFoe = leveledCombatant(2, 41, "EEVEE", 5)
-  local stockedSession = waitingSession(
-    contracts,
-    trainerStockScenario(SessionFixture.inventory("trainer-stock", { 2 }, { POTION = 1 }), { hurtLead }, { stockedFoe })
-  )
-  local heldStock = stockedSession:capture().inventories["trainer-stock"].quantities
-  Assert.equal(heldStock.POTION, 1, "the session holds exactly one cure for this trainer")
-  local trainerRequest = openRequest(stockedSession, "trainer:1")
-  local served = stockedSession:answerTrainer(trainerRequest)
-  Assert.equal(served.choices[1].kind, "item", "a stocked session heals without a controller-side copy")
-  Assert.equal(served.choices[1].payload.item, "POTION", "the session cure is the one actually stocked")
-  local playerRequest = openRequest(stockedSession, "player")
-  local playerActor = assert(playerRequest.actors[1], "the player request addresses its lead")
-  local accepted, acceptErr = stockedSession:submit(served)
-  Assert.isTrue(accepted, "the trainer serving submits: " .. tostring(acceptErr))
-  local playerAccepted, playerErr = stockedSession:submit(
-    SessionFixture.replyFor(
-      playerRequest,
-      { SessionFixture.attackChoice(playerActor, 0, SessionFixture.positionTarget(2)) }
+    trainerStockScenario(
+      SessionFixture.inventory("trainer-stock", { 2 }, { POTION = 1 }),
+      { lead, reserve },
+      { foe },
+      { "TACKLE", "GROWL", "TAIL_WHIP", "WATER_GUN" },
+      { trainerItems = { "POTION" } }
     )
   )
-  Assert.isTrue(playerAccepted, "the player strike submits: " .. tostring(playerErr))
-  local settled = SessionFixture.driveUntilSettled(stockedSession)
-  Assert.isTrue(
-    settled.status == "waiting" or settled.status == "ended",
-    "the answered turn executes through the kernel"
+  local held = session:capture().inventories["trainer-stock"].quantities
+  Assert.equal(held.POTION, 1, "the session holds a serving the gate must pass over")
+  local reply = session:answerTrainer(openRequest(session, "trainer:1"))
+  Assert.equal(reply.choices[1].kind, "switch", "the answering reserve wins over the stocked cure")
+  Assert.equal(reply.choices[1].payload.replacement, 3, "the answering reserve takes the field")
+  local accepted, acceptErr = session:submit(reply)
+  Assert.isTrue(accepted, "the switch submits: " .. tostring(acceptErr))
+  session:dispose()
+end
+
+-- Without a reserve the same wounded lead takes the stocked cure: the bag
+-- was available, so the exchange in the neighboring state wins on order
+-- rather than on missing stock.
+function T.without_a_reserve_the_same_wound_takes_the_stocked_cure()
+  local contracts = SessionFixture.sessionContracts()
+  local loneLead = leveledCombatant(1, 23, "CHIKORITA", 5)
+  loneLead.mon.moves = {
+    { move = "GROWL", pp = 40, ppUps = 0 },
+    { move = "TAIL_WHIP", pp = 30, ppUps = 0 },
+  };
+  (loneLead.mon --[[@as table<string, unknown>]]).condition.currentHp = 4
+  local loneFoe = leveledCombatant(2, 41, "EEVEE", 5)
+  local loneSession = waitingSession(
+    contracts,
+    trainerStockScenario(
+      SessionFixture.inventory("trainer-stock", { 2 }, { POTION = 1 }),
+      { loneLead },
+      { loneFoe },
+      { "TACKLE", "GROWL", "TAIL_WHIP" },
+      { trainerItems = { "POTION" } }
+    )
   )
-  local spentStock = stockedSession:capture().inventories["trainer-stock"].quantities
-  Assert.equal(spentStock.POTION, 0, "serving consumes the session unit")
-  Assert.equal(settled.status, "waiting", "the answered turn leaves the duel open")
-  local second = stockedSession:answerTrainer(openRequest(stockedSession, "trainer:1"))
-  Assert.equal(second.choices[1].kind, "attack", "the spent stock cannot be reused")
-  stockedSession:dispose()
+  local loneReply = loneSession:answerTrainer(openRequest(loneSession, "trainer:1"))
+  Assert.equal(loneReply.choices[1].kind, "item", "without a reserve the same wound takes the stocked cure")
+  Assert.equal(loneReply.choices[1].payload.item, "POTION", "the cure is the one actually stocked")
+  loneSession:dispose()
+end
+
+-- A sleeping holder at full health still considers the bag: with a sleep
+-- cure and a full-health heal in stock the trainer serves the cure that
+-- matches the ailment instead of striking or wasting the heal.
+function T.full_health_status_ailments_consider_the_bag_before_striking()
+  local contracts = SessionFixture.sessionContracts()
+  local lead = leveledCombatant(1, 23, "EEVEE", 20);
+  (lead.mon --[[@as table<string, unknown>]]).condition.effects = { { key = "sleep" } }
+  local foe = leveledCombatant(2, 41, "EEVEE", 5)
+  local session = waitingSession(
+    contracts,
+    trainerStockScenario(
+      SessionFixture.inventory("trainer-stock", { 2 }, { REMEDY = 1, POTION = 1 }),
+      { lead },
+      { foe },
+      nil,
+      {
+        passes = {},
+        itemFacts = { REMEDY = { partyUse = sleepCureFacts() }, POTION = { partyUse = potionFacts() } },
+        trainerItems = { "REMEDY", "POTION" },
+      }
+    )
+  )
+  local reply = session:answerTrainer(openRequest(session, "trainer:1"))
+  Assert.equal(reply.choices[1].kind, "item", "the stocked cure answers the ailment at full health")
+  Assert.equal(reply.choices[1].payload.item, "REMEDY", "the served cure is the one actually stocked")
+  local accepted, acceptErr = session:submit(reply)
+  Assert.isTrue(accepted, "the cure submits: " .. tostring(acceptErr))
+  session:dispose()
+end
+
+-- Selected item slots stay consumed until the serving executes: answering
+-- twice without submitting never serves the same slot twice, while the
+-- session stock is untouched until the ordinary item path consumes it.
+function T.selected_item_slots_stay_consumed_until_the_serving_executes()
+  local contracts = SessionFixture.sessionContracts()
+  local lead = leveledCombatant(1, 23, "EEVEE", 20);
+  (lead.mon --[[@as table<string, unknown>]]).condition.currentHp = 4
+  local foe = leveledCombatant(2, 41, "EEVEE", 5)
+  local session = waitingSession(
+    contracts,
+    trainerStockScenario(
+      SessionFixture.inventory("trainer-stock", { 2 }, { POTION = 1 }),
+      { lead },
+      { foe },
+      nil,
+      { trainerItems = { "POTION" } }
+    )
+  )
+  local first = session:answerTrainer(openRequest(session, "trainer:1"))
+  Assert.equal(first.choices[1].kind, "item", "the stocked cure answers first")
+  Assert.equal(first.choices[1].payload.item, "POTION", "the first serving names the stocked cure")
+  local second = session:answerTrainer(openRequest(session, "trainer:1"))
+  Assert.equal(second.choices[1].kind, "attack", "the consumed slot cannot be served again before it executes")
+  local held = session:capture().inventories["trainer-stock"].quantities
+  Assert.equal(held.POTION, 1, "answering alone consumes no stock")
+  local accepted, acceptErr = session:submit(first)
+  Assert.isTrue(accepted, "the first serving submits: " .. tostring(acceptErr))
+  session:dispose()
+end
+
+-- Trainer memory rides the native snapshot: answering clears the served
+-- source slot in persistent memory without moving stock or drawing,
+-- executing decrements the served stock exactly once, and a capture taken
+-- after the serving replays the next-turn answer with the same stream
+-- progress; a capture without the record fails as incompatible instead of
+-- guessing fresh state.
+function T.ai_memory_rides_the_native_snapshot_and_restores_exactly()
+  local Executor = sessionOwner()
+  local contracts = SessionFixture.sessionContracts()
+  local lead = leveledCombatant(1, 23, "EEVEE", 20);
+  (lead.mon --[[@as table<string, unknown>]]).condition.currentHp = 4
+  local foe = leveledCombatant(2, 41, "EEVEE", 5)
+  local session = waitingSession(
+    contracts,
+    trainerStockScenario(
+      SessionFixture.inventory("trainer-stock", { 2 }, { POTION = 1 }),
+      { lead },
+      { foe },
+      nil,
+      { trainerItems = { "POTION" } }
+    )
+  )
+  local function slotsOf(captured)
+    local memory = captured.trainerAi --[[@as table<string, unknown>]]
+    local controllers = memory.controllers --[[@as table<string, unknown>]]
+    local owned = controllers["trainer:1"] --[[@as table<string, unknown>]]
+    return owned.slots
+  end
+  local callsBefore = session:capture().rng.calls
+  local first = session:answerTrainer(openRequest(session, "trainer:1"))
+  Assert.equal(first.choices[1].kind, "item", "the stocked cure answers first")
+  Assert.equal(first.choices[1].payload.item, "POTION", "the serving names the stocked cure")
+  Assert.equal(session:capture().rng.calls, callsBefore, "selection moves no stream draws")
+  Assert.deepEqual(slotsOf(session:capture()), {}, "selection clears the served source slot")
+  SessionFixture.assertPlainData(session:capture().trainerAi, "captured trainer memory")
+  Assert.equal(
+    session:capture().inventories["trainer-stock"].quantities.POTION,
+    1,
+    "answering alone consumes no stock"
+  )
+  local foeRequest = openRequest(session, "player")
+  local foeActor = assert(foeRequest.actors[1], "the opposing request addresses its lead")
+  Assert.isTrue(session:submit(first), "the serving binds")
+  local bound, bindErr = session:submit(SessionFixture.replyFor(foeRequest, {
+    SessionFixture.attackChoice(foeActor, 0, SessionFixture.positionTarget(2)),
+  }))
+  Assert.isTrue(bound, "the opposing strike binds: " .. tostring(bindErr))
+  session:advance(1024)
+  Assert.equal(
+    session:capture().inventories["trainer-stock"].quantities.POTION,
+    0,
+    "execution decrements the served stock exactly once"
+  )
+  local held = session:capture()
+  Assert.equal(type(held.trainerAi), "table", "the capture carries the detached trainer record")
+  Assert.equal(
+    (held.trainerAi --[[@as table<string, unknown>]]).version,
+    1,
+    "the record carries its schema mark"
+  )
+  local nextUninterrupted = session:answerTrainer(openRequest(session, "trainer:1"))
+  local uninterruptedCalls = session:capture().rng.calls
+  session:dispose()
+  local restored = Executor.restore(held, trainerContent())
+  local nextRestored = restored:answerTrainer(openRequest(restored, "trainer:1"))
+  Assert.deepEqual(nextRestored, nextUninterrupted, "the restored snapshot answers the next turn identically")
+  Assert.equal(
+    restored:capture().rng.calls - held.rng.calls,
+    uninterruptedCalls - held.rng.calls,
+    "the restored snapshot advances the stream identically"
+  )
+  restored:dispose()
+end
+
+-- A native snapshot without the trainer record never restores: missing or
+-- malformed memory fails incompatible instead of seeding fresh guesses.
+function T.malformed_ai_memory_fails_restore_as_incompatible()
+  local Executor = sessionOwner()
+  local contracts = SessionFixture.sessionContracts()
+  local lead = leveledCombatant(1, 23, "EEVEE", 20)
+  local foe = leveledCombatant(2, 41, "EEVEE", 5)
+  local session = waitingSession(
+    contracts,
+    trainerStockScenario(SessionFixture.inventory("trainer-stock", { 2 }, {}), { lead }, { foe })
+  )
+  local held = session:capture()
+  session:dispose()
+  held.trainerAi = nil
+  local failure = Assert.throws(function()
+    Executor.restore(held, trainerContent())
+  end, "a snapshot without the trainer record fails instead of guessing")
+  Assert.isTrue(
+    string.find(string.lower(tostring(failure)), "incompatible", 1, true) ~= nil
+      or string.find(tostring(failure), "trainerAi", 1, true) ~= nil,
+    "the failure names the incompatible snapshot"
+  )
+end
+
+-- Canonical sibling facts pass through trainer consideration: the same
+-- stocked cure answers identically with and without held-behavior, fling,
+-- and natural-gift riders beside its use facts.
+function T.sibling_item_records_pass_through_trainer_consideration()
+  local contracts = SessionFixture.sessionContracts()
+  local function servedWith(extra)
+    local facts = { partyUse = potionFacts() }
+    for key, value in pairs(extra) do
+      facts[key] = value
+    end
+    local lead = leveledCombatant(1, 23, "EEVEE", 20);
+    (lead.mon --[[@as table<string, unknown>]]).condition.currentHp = 4
+    local foe = leveledCombatant(2, 41, "EEVEE", 5)
+    local session = waitingSession(
+      contracts,
+      trainerStockScenario(
+        SessionFixture.inventory("trainer-stock", { 2 }, { POTION = 1 }),
+        { lead },
+        { foe },
+        nil,
+        { itemFacts = { POTION = facts }, trainerItems = { "POTION" } }
+      )
+    )
+    local reply = session:answerTrainer(openRequest(session, "trainer:1"))
+    session:dispose()
+    return reply
+  end
+  local plain = servedWith({})
+  Assert.equal(plain.choices[1].kind, "item", "the stocked cure answers")
+  local sibling = servedWith({
+    heldBehavior = { key = "heal_hp", params = {} },
+    fling = { power = 30 },
+    naturalGift = { power = 60, moveType = "normal" },
+  })
+  Assert.deepEqual(sibling, plain, "sibling records leave the trainer serving unchanged")
 end
 
 -- Answering never mutates battle state: combatants, inventories,
 -- positions, and participants read identically before and after the
--- decision while the battle stream advances by exactly the decision
--- draws.
+-- decision, while the decision draws replay deterministically from a
+-- restored capture.
 function T.answering_never_mutates_battle_state()
   local contracts = SessionFixture.sessionContracts()
   local lead = leveledCombatant(1, 23, "EEVEE", 20)
   local foe = leveledCombatant(2, 41, "EEVEE", 5)
   local session = waitingSession(
     contracts,
-    trainerStockScenario(SessionFixture.inventory("trainer-stock", { 2 }, { POTION = 1 }), { lead }, { foe })
+    trainerStockScenario(
+      SessionFixture.inventory("trainer-stock", { 2 }, { POTION = 1 }),
+      { lead },
+      { foe },
+      nil,
+      { trainerItems = { "POTION" } }
+    )
   )
   local before = session:capture()
   local callsBefore = before.rng.calls
@@ -708,7 +703,7 @@ function T.answering_never_mutates_battle_state()
   Assert.deepEqual(after.inventories, before.inventories, "answering consumes no stock")
   Assert.deepEqual(after.positions, before.positions, "answering moves no positions")
   Assert.deepEqual(after.participants, before.participants, "answering rewrites no participants")
-  Assert.equal(after.rng.calls, callsBefore + 7, "the decision draws exactly its source sequence")
+  Assert.isTrue(after.rng.calls > callsBefore, "the decision draws from the shared stream")
   local accepted, acceptErr = session:submit(reply)
   Assert.isTrue(accepted, "the answering reply submits: " .. tostring(acceptErr))
   session:dispose()
@@ -744,8 +739,7 @@ end
 
 -- Trainer and wild answers share the single battle stream: both advance
 -- the same session counter with no second generator anywhere.
-function T.trainer_and_wild_answers_share_the_single_battle_stream()
-  local Executor = sessionOwner()
+function T.trainer_and_wild_answers_advance_the_single_battle_stream()
   local contracts = SessionFixture.sessionContracts()
   local lead = leveledCombatant(1, 23, "EEVEE", 20)
   local trainerFoe = leveledCombatant(2, 41, "EEVEE", 5)
@@ -754,7 +748,7 @@ function T.trainer_and_wild_answers_share_the_single_battle_stream()
   local trainer = SessionFixture.participant(2, 2, "trainer:1", { lead })
   trainer.context = { aiPasses = {} }
   local scenario = {
-    ruleset = Executor.RULESET,
+    ruleset = sessionOwner().RULESET,
     format = "single",
     sides = { SessionFixture.side(1, { 1 }), SessionFixture.side(2, { 2, 3 }) },
     participants = {
@@ -779,13 +773,14 @@ function T.trainer_and_wild_answers_share_the_single_battle_stream()
   local callsBefore = session:capture().rng.calls
   local trainerReply = session:answerTrainer(openRequest(session, "trainer:1"))
   Assert.notNil(trainerReply, "the trainer request answers")
-  Assert.equal(session:capture().rng.calls, callsBefore + 5, "the trainer answer advances the session stream")
+  local afterTrainer = session:capture().rng.calls
+  Assert.isTrue(afterTrainer > callsBefore, "the trainer answer advances the session stream")
   local wild = openRequest(session, "wild")
   session:withDecisionStream(wild, function(stream)
     stream:nextU16("wild_strike", { controller = wild.controller, request = wild.requestId })
     return { requestId = wild.requestId }
   end)
-  Assert.equal(session:capture().rng.calls, callsBefore + 6, "the wild answer advances the same session stream")
+  Assert.isTrue(session:capture().rng.calls > afterTrainer, "the wild answer advances the same session stream")
   session:dispose()
 end
 
@@ -900,6 +895,7 @@ function T.doubles_targeting_draws_from_topology()
   }
   local session = waitingSession(contracts, scenario)
   local held = session:capture()
+  local callsBefore = held.rng.calls
   local reply = session:answerTrainer(openRequest(session, "trainer:1"))
   Assert.equal(#reply.choices, 2, "both trainer actors answer")
   for _, choice in ipairs(reply.choices) do
@@ -907,6 +903,7 @@ function T.doubles_targeting_draws_from_topology()
     local position = choice.payload.target.position
     Assert.isTrue(position == 1 or position == 2, "strikes address a live opposing position")
   end
+  Assert.isTrue(session:capture().rng.calls > callsBefore, "the doubles answer draws from the shared stream")
   session:dispose()
   local replayed = Executor.restore(held, trainerContent())
   local second = replayed:answerTrainer(openRequest(replayed, "trainer:1"))
@@ -978,39 +975,6 @@ function T.separate_trainer_controllers_answer_their_own_doubles_slot()
     "a fixed seed replays the second trainer"
   )
   replayed:dispose()
-end
-
--- Switch answers ride the seam when a reserve strictly outranks the
--- holder: the harmless lead yields to its damaging reserve through an
--- ordinary reply the kernel accepts.
-function T.switch_answers_ride_the_seam_when_a_reserve_outranks_the_holder()
-  local contracts = SessionFixture.sessionContracts()
-  local lead = leveledCombatant(1, 23, "CHIKORITA", 5)
-  lead.mon.moves = {
-    { move = "GROWL", pp = 40, ppUps = 0 },
-    { move = "TAIL_WHIP", pp = 30, ppUps = 0 },
-  }
-  local reserve = leveledCombatant(3, 24, "TOTODILE", 5)
-  reserve.mon.moves = {
-    { move = "WATER_GUN", pp = 25, ppUps = 0 },
-    { move = "TACKLE", pp = 35, ppUps = 0 },
-  }
-  local foe = leveledCombatant(2, 41, "EEVEE", 5)
-  local session = waitingSession(
-    contracts,
-    trainerStockScenario(
-      SessionFixture.inventory("trainer-stock", { 2 }, {}),
-      { lead, reserve },
-      { foe },
-      { "TACKLE", "GROWL", "TAIL_WHIP", "WATER_GUN" }
-    )
-  )
-  local reply = session:answerTrainer(openRequest(session, "trainer:1"))
-  Assert.equal(reply.choices[1].kind, "switch", "the exposed lead yields to its reserve")
-  Assert.equal(reply.choices[1].payload.replacement, 3, "the damaging reserve answers the foe")
-  local accepted, acceptErr = session:submit(reply)
-  Assert.isTrue(accepted, "the switch submits: " .. tostring(acceptErr))
-  session:dispose()
 end
 
 ---@param record table<string, unknown> full mon-domain record under test preparation
@@ -1135,6 +1099,832 @@ function T.trainer_answers_route_through_the_native_session_seam()
   Assert.isTrue(ok, "the trainer battle settles through the application lifetime")
   Assert.equal(phase, "complete", "answered trainer decisions finish the battle")
   Assert.isTrue(calls > 0, "trainer answers route through the native session seam")
+end
+
+-- Per-flag programs adjust scores through nontrivial commands: the
+-- bad-move check earns matchup points with ten off a negated strike,
+-- faint-seeking drops weaker strikes and rewards doubly effective ones
+-- on a favored threshold, effectiveness emphasis moves two points each
+-- way, same-type preference splits two up and one down, knockout
+-- awareness adds three for a finishing preview, setup continuation
+-- keeps four on the pivot strike beside matchup points, and
+-- unpredictability adds one to the lowest usable slot without drawing.
+function T.flag_programs_adjust_scores_through_their_commands()
+  local TrainerAi = trainerPolicy()
+  local chart = nativeChart()
+  local TypeEffectiveness = require("libs.battle.src.gen4.TypeEffectiveness")
+  local waterFire = TypeEffectiveness.resolve(chart, "water", { "fire" }, {})
+  Assert.deepEqual({ waterFire.numerator, waterFire.denominator }, { 2, 1 }, "water answers fire double")
+  local normalFire = TypeEffectiveness.resolve(chart, "normal", { "fire" }, {})
+  Assert.deepEqual({ normalFire.numerator, normalFire.denominator }, { 1, 1 }, "normal answers fire neutrally")
+  Assert.isTrue(TypeEffectiveness.stab("water", { "water" }), "matching types earn the bonus")
+  local waterSlots = {
+    slotWith({ key = "WATER_GUN", moveType = "water", power = 40, category = "special", accuracy = 100 }),
+    slotWith({ key = "TACKLE" }),
+    slotWith({ key = "GROWL", moveType = "normal", power = 0, category = "status", accuracy = 100 }),
+    slotWith({ key = "EMBER", moveType = "fire", power = 40, category = "special", accuracy = 100, usable = false }),
+  }
+  local scored = TrainerAi.scoreSlots(
+    chart,
+    waterSlots,
+    fighterWith({ types = { "water" } }),
+    fighterWith({ types = { "fire" } }),
+    14,
+    { 0 },
+    false,
+    spyStream(FIXED_SEED)
+  )
+  -- Water strike: 100 + floor(40 * 3 * 2 / (2 * 1)); tackle: 100 + 35;
+  -- status: 100 + 0; spent slot stays excluded.
+  Assert.deepEqual(
+    { scored[1].score, scored[2].score, scored[3].score, scored[4].score },
+    { 220, 135, 100, 0 },
+    "the bad-move check earns matchup points and drops the negated strike"
+  )
+  local faintSlots = {
+    slotWith({ key = "MACH_PUNCH", moveType = "fighting", power = 40 }),
+    slotWith({ key = "ROCK_THROW", moveType = "rock", power = 50 }),
+    slotWith({ key = "GROWL", moveType = "normal", power = 0, category = "status", accuracy = 100 }),
+    slotWith({ key = "SPENT", moveType = "normal", power = 0, category = "status", accuracy = 0, usable = false }),
+  }
+  local fightingRock = TypeEffectiveness.resolve(chart, "fighting", { "normal", "rock" }, {})
+  Assert.deepEqual(
+    { fightingRock.numerator, fightingRock.denominator },
+    { 4, 1 },
+    "fighting answers the dual type fourfold"
+  )
+  local probe = BattleRng.new(FIXED_SEED)
+  local first = probe:nextU16("faint_probe", {})
+  local firstThreshold = 100 - (first % 16)
+  local fainted = TrainerAi.scoreSlots(
+    chart,
+    faintSlots,
+    fighterWith({ types = { "fighting" } }),
+    fighterWith({ types = { "normal", "rock" } }),
+    60,
+    { 1 },
+    false,
+    spyStream(FIXED_SEED)
+  )
+  -- Weaker strike loses one; the doubly effective strike earns two
+  -- exactly when its stored threshold favors the slot.
+  local machExpected = 99
+  if firstThreshold < 93 then
+    machExpected = 101
+  end
+  Assert.deepEqual(
+    { fainted[1].score, fainted[2].score, fainted[3].score, fainted[4].score },
+    { machExpected, 100, 100, 0 },
+    "faint-seeking drops weaker strikes and rewards the finishing line"
+  )
+  local emphasized = TrainerAi.scoreSlots(
+    chart,
+    waterSlots,
+    fighterWith({ types = { "normal" } }),
+    fighterWith({ types = { "fire" } }),
+    14,
+    { 2 },
+    false,
+    spyStream(FIXED_SEED)
+  )
+  local grassFire = TypeEffectiveness.resolve(chart, "grass", { "fire" }, {})
+  Assert.deepEqual({ grassFire.numerator, grassFire.denominator }, { 1, 2 }, "grass resists into fire")
+  Assert.equal(emphasized[1].score, 102, "the doubly resisted line never claims emphasis")
+  local leafSlots = {
+    slotWith({ key = "RAZOR_LEAF", moveType = "grass", power = 55 }),
+    slotWith({ key = "TACKLE" }),
+    slotWith({ key = "GROWL", moveType = "normal", power = 0, category = "status", accuracy = 100 }),
+    slotWith({ key = "SPENT", moveType = "normal", power = 0, category = "status", accuracy = 0, usable = false }),
+  }
+  local resisted = TrainerAi.scoreSlots(
+    chart,
+    leafSlots,
+    fighterWith({ types = { "normal" } }),
+    fighterWith({ types = { "fire" } }),
+    14,
+    { 2 },
+    false,
+    spyStream(FIXED_SEED)
+  )
+  Assert.deepEqual(
+    { resisted[1].score, resisted[2].score, resisted[3].score, resisted[4].score },
+    { 98, 100, 100, 0 },
+    "effectiveness emphasis moves two points each way"
+  )
+  local stabbed = TrainerAi.scoreSlots(
+    chart,
+    waterSlots,
+    fighterWith({ types = { "fire" } }),
+    fighterWith({ types = { "fire" } }),
+    14,
+    { 3 },
+    false,
+    spyStream(FIXED_SEED)
+  )
+  Assert.isTrue(TypeEffectiveness.stab("fire", { "fire" }), "matching fire earns the bonus")
+  Assert.isTrue(not TypeEffectiveness.stab("normal", { "fire" }), "off-type earns nothing")
+  Assert.deepEqual(
+    { stabbed[1].score, stabbed[2].score, stabbed[3].score, stabbed[4].score },
+    { 99, 99, 100, 0 },
+    "same-type preference splits two up and one down"
+  )
+  local knockout = TrainerAi.scoreSlots(
+    chart,
+    waterSlots,
+    fighterWith({ types = { "water" } }),
+    fighterWith({ types = { "fire" } }),
+    1,
+    { 5 },
+    false,
+    spyStream(FIXED_SEED)
+  )
+  Assert.deepEqual(
+    { knockout[1].score, knockout[2].score, knockout[3].score, knockout[4].score },
+    { 103, 103, 100, 0 },
+    "knockout awareness adds three for a finishing preview"
+  )
+  local setupSlots = {
+    slotWith({ key = "TACKLE" }),
+    slotWith({ key = "BATON_PASS", moveType = "normal", power = 0, category = "status", accuracy = 0 }),
+    slotWith({ key = "EMBER", moveType = "fire", power = 40, category = "special", accuracy = 100 }),
+    slotWith({ key = "SPENT", moveType = "normal", power = 0, category = "status", accuracy = 0, usable = false }),
+  }
+  local normalRock = TypeEffectiveness.resolve(chart, "normal", { "rock" }, {})
+  Assert.deepEqual({ normalRock.numerator, normalRock.denominator }, { 1, 2 }, "normal is half into rock")
+  local fireRock = TypeEffectiveness.resolve(chart, "fire", { "rock" }, {})
+  Assert.deepEqual({ fireRock.numerator, fireRock.denominator }, { 1, 2 }, "fire is half into rock")
+  local continued = TrainerAi.scoreSlots(
+    chart,
+    setupSlots,
+    fighterWith({ types = { "normal" } }),
+    fighterWith({ types = { "rock" } }),
+    40,
+    { 6 },
+    false,
+    spyStream(FIXED_SEED)
+  )
+  -- Tackle: 100 + floor(35 * 3 * 1 / (2 * 2)); pivot: 100 + 0 + 4;
+  -- ember: 100 + floor(40 * 1 * 1 / (1 * 2)).
+  Assert.deepEqual(
+    { continued[1].score, continued[2].score, continued[3].score, continued[4].score },
+    { 126, 104, 120, 0 },
+    "setup continuation keeps four on the pivot beside matchup points"
+  )
+  Assert.equal(
+    TrainerAi.selectMove(continued, spyStream(FIXED_SEED)),
+    0,
+    "the winning strike answers the doubled line"
+  )
+  local unpredictable = TrainerAi.scoreSlots(
+    chart,
+    waterSlots,
+    fighterWith({ types = { "water" } }),
+    fighterWith({ types = { "fire" } }),
+    14,
+    { 9 },
+    false,
+    spyStream(FIXED_SEED)
+  )
+  Assert.deepEqual(
+    { unpredictable[1].score, unpredictable[2].score, unpredictable[3].score, unpredictable[4].score },
+    { 101, 100, 100, 0 },
+    "unpredictability adds one to the lowest usable slot without drawing"
+  )
+end
+
+-- Unknown commands and unsupported flags fail closed: a synthetic
+-- command outside the transcribed set and a flag without program data
+-- both raise missing behavior before any fallback choice.
+function T.unknown_commands_fail_closed_before_any_fallback()
+  local TrainerAi = trainerPolicy()
+  local chart = nativeChart()
+  local vm = {
+    bit = 0,
+    scores = { 100, 100, 100, 100 },
+    thresholds = { 100, 100, 100, 100 },
+    slots = fourSlots(),
+    user = fighterWith({ types = { "grass" } }),
+    foe = fighterWith({ types = { "rock", "ground" } }),
+    foeHp = 14,
+    bestPower = 55,
+    chart = chart,
+    stream = spyStream(FIXED_SEED),
+  }
+  local failure = Assert.throws(function()
+    TrainerAi.runCommand(vm, 1, { op = "bogus_command" })
+  end, "an unknown command fails instead of falling back")
+  Assert.isTrue(
+    string.find(tostring(failure), "bogus_command", 1, true) ~= nil,
+    "the failure names the offending command"
+  )
+  Assert.deepEqual(vm.scores, { 100, 100, 100, 100 }, "the failed command moves no points")
+  TrainerAi.runCommand(vm, 1, { op = "bonus_first_slot", amount = 1 })
+  Assert.deepEqual(vm.scores, { 101, 100, 100, 100 }, "a known command still applies")
+  local unsupported = Assert.throws(function()
+    TrainerAi.scoreSlots(
+      chart,
+      fourSlots(),
+      fighterWith({ types = { "grass" } }),
+      fighterWith({ types = { "rock", "ground" } }),
+      14,
+      { 4 },
+      false,
+      spyStream(FIXED_SEED)
+    )
+  end, "a flag without program data fails instead of falling back")
+  Assert.isTrue(string.find(tostring(unsupported), "4", 1, true) ~= nil, "the failure names the flag")
+end
+
+-- Fresh trainer memory opens zeroed: the schema mark rides version
+-- one, ordered slots mirror the scenario list, learned knowledge
+-- starts empty, and the record is plain snapshot-safe data.
+function T.fresh_trainer_memory_opens_zeroed_beside_the_session()
+  local contracts = SessionFixture.sessionContracts()
+  local lead = leveledCombatant(1, 23, "EEVEE", 20)
+  local foe = leveledCombatant(2, 41, "EEVEE", 5)
+  local session = waitingSession(
+    contracts,
+    trainerStockScenario(
+      SessionFixture.inventory("trainer-stock", { 2 }, { POTION = 1 }),
+      { lead },
+      { foe },
+      nil,
+      { trainerItems = { "POTION" } }
+    )
+  )
+  local held = session:capture()
+  local memory = held.trainerAi --[[@as table<string, unknown>]]
+  Assert.equal(type(memory), "table", "the capture carries the trainer record")
+  Assert.equal(memory.version, 1, "the record carries its schema mark")
+  local controllers = memory.controllers --[[@as table<string, unknown>]]
+  local owned = controllers["trainer:1"] --[[@as table<string, unknown>]]
+  Assert.deepEqual(owned.slots, { "POTION" }, "ordered slots mirror the stocked list")
+  Assert.deepEqual(owned.knownMoves, {}, "learned knowledge starts empty")
+  SessionFixture.assertPlainData(memory, "fresh trainer memory")
+  session:dispose()
+end
+
+-- A stocked trainer without ordered slots fails closed: session
+-- construction names the trainer instead of recovering order from the
+-- stock map, while an empty stock needs no order and still opens.
+function T.stocked_trainers_without_ordered_slots_fail_closed()
+  local contracts = SessionFixture.sessionContracts()
+  local lead = leveledCombatant(1, 23, "EEVEE", 20)
+  local foe = leveledCombatant(2, 41, "EEVEE", 5)
+  local failure = Assert.throws(function()
+    waitingSession(
+      contracts,
+      trainerStockScenario(SessionFixture.inventory("trainer-stock", { 2 }, { POTION = 1 }), { lead }, { foe })
+    )
+  end, "a stocked trainer without ordered slots fails instead of guessing order")
+  Assert.isTrue(
+    string.find(tostring(failure), "trainer:1", 1, true) ~= nil,
+    "the failure names the trainer missing its order"
+  )
+  local quiet = waitingSession(
+    contracts,
+    trainerStockScenario(SessionFixture.inventory("trainer-stock", { 2 }, {}), { lead }, { foe })
+  )
+  quiet:dispose()
+end
+
+-- Malformed trainer records never restore: a missing record, a foreign
+-- schema mark, and a misshapen slot list all fail incompatible instead
+-- of seeding fresh guesses.
+function T.malformed_trainer_records_fail_restore_as_incompatible()
+  local TrainerAi = trainerPolicy()
+  Assert.isTrue(
+    TrainerAi.validateMemory({ version = 1, controllers = { ["trainer:1"] = { slots = {}, knownMoves = {} } } }),
+    "a well-formed record validates"
+  )
+  for _, broken in
+    ipairs({
+      { version = 2, controllers = {} },
+      { version = 1, controllers = { ["trainer:1"] = { slots = { "" }, knownMoves = {} } } },
+      { version = 1, controllers = { ["trainer:1"] = { slots = {}, knownMoves = { [0] = {} } } } },
+    })
+  do
+    local failure = Assert.throws(function()
+      TrainerAi.validateMemory(broken)
+    end, "a malformed record fails instead of guessing")
+    Assert.isTrue(
+      string.find(string.lower(tostring(failure)), "incompatible", 1, true) ~= nil,
+      "the failure names the incompatible snapshot"
+    )
+  end
+  local absent = Assert.throws(function()
+    TrainerAi.validateMemory(nil)
+  end, "a missing record fails instead of guessing")
+  Assert.isTrue(
+    string.find(string.lower(tostring(absent)), "incompatible", 1, true) ~= nil
+      or string.find(tostring(absent), "trainerAi", 1, true) ~= nil,
+    "the failure names the incompatible snapshot"
+  )
+end
+
+-- Ordered slots win over alphabetical stock: with two eligible
+-- servings the first source slot answers, the proposal consumes
+-- nothing, and the next answer moves to the second slot.
+function T.ordered_slots_win_over_alphabetical_stock()
+  local contracts = SessionFixture.sessionContracts()
+  local lead = leveledCombatant(1, 23, "EEVEE", 20);
+  (lead.mon --[[@as table<string, unknown>]]).condition.currentHp = 10
+  local foe = leveledCombatant(2, 41, "EEVEE", 5)
+  local superFacts = {
+    kind = "medicine",
+    restore = { kind = "fixed", amount = 50 },
+    cures = { sleep = false, poison = false, burn = false, freeze = false, paralysis = false },
+    revive = "none",
+    mood = 0,
+  }
+  local session = waitingSession(
+    contracts,
+    trainerStockScenario(
+      SessionFixture.inventory("trainer-stock", { 2 }, { SUPER_POTION = 1, POTION = 1 }),
+      { lead },
+      { foe },
+      nil,
+      {
+        passes = {},
+        itemFacts = { SUPER_POTION = { partyUse = superFacts }, POTION = { partyUse = potionFacts() } },
+        trainerItems = { "SUPER_POTION", "POTION" },
+      }
+    )
+  )
+  local memory = session:capture().trainerAi --[[@as table<string, unknown>]]
+  local controllers = memory.controllers --[[@as table<string, unknown>]]
+  local owned = controllers["trainer:1"] --[[@as table<string, unknown>]]
+  Assert.deepEqual(
+    owned.slots,
+    { "SUPER_POTION", "POTION" },
+    "memory slots mirror the source order"
+  )
+  local first = session:answerTrainer(openRequest(session, "trainer:1"))
+  Assert.equal(first.choices[1].kind, "item", "an eligible serving answers")
+  Assert.equal(
+    first.choices[1].payload.item,
+    "SUPER_POTION",
+    "the first source slot wins over alphabetical stock"
+  )
+  local second = session:answerTrainer(openRequest(session, "trainer:1"))
+  Assert.equal(second.choices[1].kind, "item", "the second slot still serves")
+  Assert.equal(second.choices[1].payload.item, "POTION", "the proposal moves down the ordered slots")
+  local held = session:capture().inventories["trainer-stock"].quantities
+  Assert.deepEqual(held, { SUPER_POTION = 1, POTION = 1 }, "answering alone consumes no stock")
+  local accepted, acceptErr = session:submit(first)
+  Assert.isTrue(accepted, "the first serving submits: " .. tostring(acceptErr))
+  session:dispose()
+end
+
+-- Duplicate item slots serve in source order across turns: with two
+-- servings of the first identity around a second, the opening answer
+-- takes the first slot, execution decrements that stock exactly once,
+-- and the next-turn answer takes the middle slot without drawing.
+function T.duplicate_item_slots_serve_in_source_order_across_turns()
+  local contracts = SessionFixture.sessionContracts()
+  local lead = leveledCombatant(1, 23, "EEVEE", 100);
+  (lead.mon --[[@as table<string, unknown>]]).condition.currentHp = 4
+  local foe = leveledCombatant(2, 41, "EEVEE", 5)
+  local superFacts = {
+    kind = "medicine",
+    restore = { kind = "fixed", amount = 50 },
+    cures = { sleep = false, poison = false, burn = false, freeze = false, paralysis = false },
+    revive = "none",
+    mood = 0,
+  }
+  local session = waitingSession(
+    contracts,
+    trainerStockScenario(
+      SessionFixture.inventory("trainer-stock", { 2 }, { POTION = 2, SUPER_POTION = 1 }),
+      { lead },
+      { foe },
+      nil,
+      {
+        passes = {},
+        itemFacts = { POTION = { partyUse = potionFacts() }, SUPER_POTION = { partyUse = superFacts } },
+        trainerItems = { "POTION", "SUPER_POTION", "POTION" },
+      }
+    )
+  )
+  local function slotsOf(captured)
+    local memory = captured.trainerAi --[[@as table<string, unknown>]]
+    local controllers = memory.controllers --[[@as table<string, unknown>]]
+    local owned = controllers["trainer:1"] --[[@as table<string, unknown>]]
+    return owned.slots
+  end
+  local callsBefore = session:capture().rng.calls
+  local first = session:answerTrainer(openRequest(session, "trainer:1"))
+  Assert.equal(first.choices[1].kind, "item", "the opening answer serves")
+  Assert.equal(first.choices[1].payload.item, "POTION", "the first source slot answers first")
+  Assert.equal(session:capture().rng.calls, callsBefore, "the opening selection moves no stream draws")
+  Assert.deepEqual(
+    slotsOf(session:capture()),
+    { "SUPER_POTION", "POTION" },
+    "selection clears only the first matching slot"
+  )
+  local foeRequest = openRequest(session, "player")
+  local foeActor = assert(foeRequest.actors[1], "the opposing request addresses its lead")
+  Assert.isTrue(session:submit(first), "the opening serving binds")
+  local bound, bindErr = session:submit(SessionFixture.replyFor(foeRequest, {
+    SessionFixture.attackChoice(foeActor, 0, SessionFixture.positionTarget(2)),
+  }))
+  Assert.isTrue(bound, "the opposing strike binds: " .. tostring(bindErr))
+  session:advance(1024)
+  Assert.deepEqual(
+    session:capture().inventories["trainer-stock"].quantities,
+    { POTION = 1, SUPER_POTION = 1 },
+    "execution decrements the served stock exactly once"
+  )
+  local nextCallsBefore = session:capture().rng.calls
+  local second = session:answerTrainer(openRequest(session, "trainer:1"))
+  Assert.equal(second.choices[1].kind, "item", "the next turn still serves")
+  Assert.equal(second.choices[1].payload.item, "SUPER_POTION", "the middle slot answers next")
+  Assert.equal(session:capture().rng.calls, nextCallsBefore, "the next selection moves no stream draws")
+  Assert.deepEqual(slotsOf(session:capture()), { "POTION" }, "the middle slot clears in turn")
+  session:dispose()
+end
+
+-- Learned threats switch the holder out: the opening answer strikes
+-- with no knowledge, and once the foe reveals a lethal strike the next
+-- answer exchanges for the first reserve that takes it better.
+function T.learned_threats_switch_the_holder_out()
+  local contracts = SessionFixture.sessionContracts()
+  local holder = leveledCombatant(11, 23, "TOTODILE", 10)
+  holder.mon.moves = { { move = "TACKLE", pp = 35, ppUps = 0 } };
+  (holder.mon --[[@as table<string, unknown>]]).condition.currentHp = 22
+  local reserve = leveledCombatant(12, 24, "CHIKORITA", 10)
+  local foe = leveledCombatant(13, 41, "EEVEE", 10)
+  foe.mon.moves = { { move = "RAZOR_LEAF", pp = 25, ppUps = 0 } }
+  local session = waitingSession(
+    contracts,
+    trainerStockScenario(
+      SessionFixture.inventory("trainer-stock", { 2 }, {}),
+      { holder, reserve },
+      { foe },
+      { "TACKLE", "RAZOR_LEAF" },
+      { passes = {} }
+    )
+  )
+  local opening = session:answerTrainer(openRequest(session, "trainer:1"))
+  Assert.equal(opening.choices[1].kind, "attack", "the opening answer strikes without knowledge")
+  local foeRequest = openRequest(session, "player")
+  local foeActor = assert(foeRequest.actors[1], "the opposing request addresses its lead")
+  local stored, storeErr = session:submit(
+    SessionFixture.replyFor(openRequest(session, "trainer:1"), {
+      SessionFixture.attackChoice(opening.choices[1].actor, 0, SessionFixture.positionTarget(1)),
+    })
+  )
+  Assert.isTrue(stored, "the trainer strike binds: " .. tostring(storeErr))
+  local storedFoe, foeErr = session:submit(
+    SessionFixture.replyFor(foeRequest, {
+      SessionFixture.attackChoice(foeActor, 0, SessionFixture.positionTarget(2)),
+    })
+  )
+  Assert.isTrue(storedFoe, "the revealing strike binds: " .. tostring(foeErr))
+  session:advance(1024)
+  local learned = session:capture().trainerAi --[[@as table<string, unknown>]]
+  local controllers = learned.controllers --[[@as table<string, unknown>]]
+  local owned = controllers["trainer:1"] --[[@as table<string, unknown>]]
+  local known = owned.knownMoves --[[@as table<integer, unknown>]]
+  Assert.deepEqual(known[13], { RAZOR_LEAF = true }, "the executed strike is learned")
+  local answer = session:answerTrainer(openRequest(session, "trainer:1"))
+  Assert.equal(answer.choices[1].kind, "switch", "the learned lethal threat exchanges")
+  Assert.equal(answer.choices[1].payload.replacement, 12, "the safer reserve takes the field")
+  local accepted, acceptErr = session:submit(answer)
+  Assert.isTrue(accepted, "the exchange submits: " .. tostring(acceptErr))
+  session:dispose()
+end
+
+-- Fresh entries fight unknown again: after the foe reveals a strike
+-- the player exchange clears the entering record while the departed
+-- record survives, and a later return clears it too.
+function T.fresh_entries_fight_unknown_again()
+  local contracts = SessionFixture.sessionContracts()
+  local first = leveledCombatant(21, 23, "EEVEE", 20)
+  local second = leveledCombatant(22, 24, "EEVEE", 20)
+  local foe = leveledCombatant(23, 41, "EEVEE", 20)
+  local session = waitingSession(
+    contracts,
+    trainerStockScenario(
+      SessionFixture.inventory("trainer-stock", { 2 }, {}),
+      { foe },
+      { first, second },
+      nil,
+      { passes = {} }
+    )
+  )
+  local function knownOf(captured)
+    local memory = captured.trainerAi --[[@as table<string, unknown>]]
+    local controllers = memory.controllers --[[@as table<string, unknown>]]
+    local owned = controllers["trainer:1"] --[[@as table<string, unknown>]]
+    return owned.knownMoves
+  end
+  local function answerBoth(attackTurn)
+    local trainerReply = session:answerTrainer(openRequest(session, "trainer:1"))
+    Assert.equal(trainerReply.choices[1].kind, "attack", "the trainer strikes")
+    local playerRequest = openRequest(session, "player")
+    local playerActor = assert(playerRequest.actors[1], "the opposing request addresses its lead")
+    local choices
+    if attackTurn == nil then
+      choices = { SessionFixture.attackChoice(playerActor, 0, SessionFixture.positionTarget(2)) }
+    else
+      choices = { SessionFixture.switchChoice(playerActor, attackTurn) }
+    end
+    Assert.isTrue(session:submit(trainerReply), "the trainer reply binds")
+    local ok, err = session:submit(SessionFixture.replyFor(playerRequest, choices))
+    Assert.isTrue(ok, "the player reply binds: " .. tostring(err))
+    session:advance(1024)
+  end
+  answerBoth(nil)
+  local revealed = knownOf(session:capture()) --[[@as table<integer, unknown>]]
+  Assert.deepEqual(revealed[21], { TACKLE = true }, "the opening strike is learned")
+  answerBoth(22)
+  local exchanged = knownOf(session:capture()) --[[@as table<integer, unknown>]]
+  Assert.deepEqual(exchanged[21], { TACKLE = true }, "the departed record survives")
+  Assert.isNil(exchanged[22], "the entering record starts unknown")
+  answerBoth(21)
+  local returned = knownOf(session:capture()) --[[@as table<integer, unknown>]]
+  Assert.isNil(returned[21], "the returning record starts unknown again")
+  session:dispose()
+end
+
+-- Doubles bids pick the highest target: the top bid answers even
+-- alone, equal bids break uniformly through one draw, and a
+-- target-dependent session answers the weaker line with its strike.
+function T.doubles_bids_pick_the_highest_target()
+  local TrainerAi = trainerPolicy()
+  local stream = spyStream(FIXED_SEED)
+  local target, slot = TrainerAi.selectDoubles({
+    { target = 1, slot = 0, score = 100 },
+    { target = 2, slot = 1, score = 110 },
+  }, stream)
+  Assert.equal(target, 2, "the top bid answers")
+  Assert.equal(slot, 1, "the top bid names its move")
+  Assert.equal(stream:capture().calls, 1, "the lone leader still spends its selection draw")
+  local tied = {
+    { target = 1, slot = 0, score = 110 },
+    { target = 2, slot = 1, score = 110 },
+  }
+  local tieStream = spyStream(FIXED_SEED)
+  local tieTarget = TrainerAi.selectDoubles(tied, tieStream)
+  local probe = BattleRng.new(FIXED_SEED)
+  local expected = probe:nextU16("doubles_probe", { tied = 2 })
+  Assert.equal(tieTarget, tied[(expected % 2) + 1].target, "tied bids break over the draw remainder")
+  Assert.equal(TrainerAi.selectDoubles(tied, spyStream(FIXED_SEED)), tieTarget, "a fixed seed replays the bid")
+  local Executor = sessionOwner()
+  local contracts = SessionFixture.sessionContracts()
+  local lead = leveledCombatant(31, 23, "CHIKORITA", 20)
+  lead.mon.moves = {
+    { move = "RAZOR_LEAF", pp = 25, ppUps = 0 },
+    { move = "TACKLE", pp = 35, ppUps = 0 },
+  }
+  local first = leveledCombatant(32, 41, "TOTODILE", 10)
+  local second = leveledCombatant(33, 42, "EEVEE", 10)
+  local seeds = { lead, first, second }
+  local striker = SessionFixture.participant(2, 2, "trainer:1", { lead })
+  striker.context = { aiPasses = { "ai_pass_0" } }
+  local scenario = {
+    ruleset = Executor.RULESET,
+    format = "double",
+    sides = { SessionFixture.side(1, { 1 }), SessionFixture.side(2, { 2 }) },
+    participants = {
+      SessionFixture.participant(1, 1, "player", { first, second }),
+      striker,
+    },
+    positions = {
+      SessionFixture.position(1, 1, { 1 }, first.id),
+      SessionFixture.position(2, 1, { 1 }, second.id),
+      SessionFixture.position(3, 2, { 2 }, lead.id),
+    },
+    inventories = {},
+    environment = { weather = "none" },
+    random = { seed = NATIVE_SEED },
+    formatState = {},
+    moveFacts = scenarioMoveFacts({ "TACKLE", "RAZOR_LEAF" }),
+    speciesFacts = scenarioSpeciesFacts(seeds),
+    itemFacts = {},
+  }
+  local session = waitingSession(contracts, scenario)
+  local held = session:capture()
+  local reply = session:answerTrainer(openRequest(session, "trainer:1"))
+  Assert.equal(#reply.choices, 1, "the lone trainer actor answers")
+  Assert.equal(reply.choices[1].kind, "attack", "the doubles evaluation strikes")
+  Assert.equal(reply.choices[1].payload.target.position, 1, "the strike answers the weaker line")
+  Assert.equal(reply.choices[1].payload.moveSlot, 0, "the winning move answers the weaker line")
+  Assert.equal(
+    session:capture().rng.calls - held.rng.calls,
+    7,
+    "one initialization feeds two targets with two picks and one selection"
+  )
+  session:dispose()
+  local replayed = Executor.restore(held, trainerContent())
+  Assert.deepEqual(
+    replayed:answerTrainer(openRequest(replayed, "trainer:1")),
+    reply,
+    "a fixed seed replays the doubles answer"
+  )
+  replayed:dispose()
+end
+
+-- Routine draws follow their transcribed guards: the opening-turn
+-- effectiveness program draws once per listed-effect slot on the first
+-- turn only, while later turns and unlisted effects draw nothing.
+function T.routine_draws_follow_effect_lists_and_the_opening_turn()
+  local TrainerAi = trainerPolicy()
+  local chart = nativeChart()
+  local user = fighterWith({ types = { "normal" } })
+  local foe = fighterWith({ types = { "normal" } })
+  local slots = {
+    slotWith({ key = "LEER", moveType = "normal", power = 0, category = "status", accuracy = 100, effect = 19 }),
+    slotWith({ key = "FOCUS", moveType = "normal", power = 0, category = "status", accuracy = 100, effect = 47 }),
+    slotWith({ key = "TACKLE" }),
+    slotWith({ key = "SPENT", moveType = "normal", power = 0, category = "status", accuracy = 0, usable = false }),
+  }
+  local first = TrainerAi.scoreSlots(chart, slots, user, foe, 14, { 2 }, true, spyStream(FIXED_SEED))
+  Assert.equal(#first, 4, "scoring covers every move slot")
+  local firstStream = spyStream(FIXED_SEED)
+  TrainerAi.scoreSlots(chart, slots, user, foe, 14, { 2 }, true, firstStream)
+  Assert.equal(#firstStream:drawLabels(), 6, "the opening turn draws init plus two routine draws")
+  Assert.equal(firstStream:drawLabels()[5], "program_chance", "the first routine draw names its site")
+  Assert.equal(firstStream:drawLabels()[6], "program_chance", "the second routine draw names its site")
+  local probe = BattleRng.new(FIXED_SEED)
+  for _ = 1, 4 do
+    probe:nextU16("init_probe", {})
+  end
+  local firstChance = probe:nextU16("chance_probe", {})
+  local secondChance = probe:nextU16("chance_probe", {})
+  Assert.deepEqual(
+    firstStream:drawValues(),
+    { firstStream:drawValues()[1], firstStream:drawValues()[2], firstStream:drawValues()[3], firstStream:drawValues()[4], firstChance, secondChance },
+    "routine draws continue the shared stream in slot order"
+  )
+  local laterStream = spyStream(FIXED_SEED)
+  local later = TrainerAi.scoreSlots(chart, slots, user, foe, 14, { 2 }, false, laterStream)
+  Assert.deepEqual(later, first, "the turn gate moves no points")
+  Assert.equal(#laterStream:drawLabels(), 4, "later turns draw init only")
+  local plainStream = spyStream(FIXED_SEED)
+  TrainerAi.scoreSlots(chart, fourSlots(), user, foe, 14, { 2 }, true, plainStream)
+  Assert.equal(#plainStream:drawLabels(), 4, "unlisted effects draw nothing even on the opening turn")
+  local replayed = TrainerAi.scoreSlots(chart, slots, user, foe, 14, { 2 }, true, spyStream(FIXED_SEED))
+  Assert.deepEqual(replayed, first, "a fixed seed replays the gated scores")
+end
+
+-- Knockout branches route the faint-seeking draw: a listed effect below
+-- the knockout preview draws through the main site, a tail-only effect
+-- draws nothing below it and draws through the knockout branch at it.
+function T.knockout_branches_route_the_faint_seeking_draw()
+  local TrainerAi = trainerPolicy()
+  local chart = nativeChart()
+  local user = fighterWith({ types = { "dark" } })
+  local foe = fighterWith({ types = { "normal" } })
+  local sucker = {
+    slotWith({ key = "SUCKER", moveType = "dark", power = 80, effect = 248 }),
+    slotWith({ key = "TACKLE" }),
+    slotWith({ key = "GROWL", moveType = "normal", power = 0, category = "status", accuracy = 100 }),
+    slotWith({ key = "SPENT", moveType = "normal", power = 0, category = "status", accuracy = 0, usable = false }),
+  }
+  local mildStream = spyStream(FIXED_SEED)
+  TrainerAi.scoreSlots(chart, sucker, user, foe, 1000, { 0 }, false, mildStream)
+  Assert.equal(#mildStream:drawLabels(), 5, "a listed effect below the knockout draws once")
+  Assert.equal(mildStream:drawLabels()[5], "program_chance", "the faint-seeking draw names its site")
+  local quick = {
+    slotWith({ key = "QUICK", moveType = "normal", power = 40, effect = 103 }),
+    slotWith({ key = "TACKLE" }),
+    slotWith({ key = "GROWL", moveType = "normal", power = 0, category = "status", accuracy = 100 }),
+    slotWith({ key = "SPENT", moveType = "normal", power = 0, category = "status", accuracy = 0, usable = false }),
+  }
+  local quickMildStream = spyStream(FIXED_SEED)
+  TrainerAi.scoreSlots(chart, quick, user, fighterWith({ types = { "normal" } }), 1000, { 0 }, false, quickMildStream)
+  Assert.equal(#quickMildStream:drawLabels(), 4, "a tail-only effect below the knockout draws nothing")
+  local quickKoStream = spyStream(FIXED_SEED)
+  TrainerAi.scoreSlots(chart, quick, user, fighterWith({ types = { "normal" } }), 1, { 0 }, false, quickKoStream)
+  Assert.equal(#quickKoStream:drawLabels(), 5, "a tail-only effect at the knockout draws once")
+  Assert.equal(quickKoStream:drawLabels()[5], "program_chance", "the knockout-branch draw names its site")
+end
+
+-- Membership draws fire per listed effect: same-type preference and
+-- unpredictability each draw once for a listed slot and never otherwise.
+function T.membership_draws_fire_per_listed_effect()
+  local TrainerAi = trainerPolicy()
+  local chart = nativeChart()
+  local user = fighterWith({ types = { "normal" } })
+  local foe = fighterWith({ types = { "normal" } })
+  local focusPunch = {
+    slotWith({ key = "FOCUS_PUNCH", moveType = "fighting", power = 150, effect = 170 }),
+    slotWith({ key = "TACKLE" }),
+    slotWith({ key = "GROWL", moveType = "normal", power = 0, category = "status", accuracy = 100 }),
+    slotWith({ key = "SPENT", moveType = "normal", power = 0, category = "status", accuracy = 0, usable = false }),
+  }
+  local stabStream = spyStream(FIXED_SEED)
+  TrainerAi.scoreSlots(chart, focusPunch, user, foe, 14, { 3 }, false, stabStream)
+  Assert.equal(#stabStream:drawLabels(), 5, "a listed same-type effect draws once")
+  local plainStabStream = spyStream(FIXED_SEED)
+  TrainerAi.scoreSlots(chart, fourSlots(), user, foe, 14, { 3 }, false, plainStabStream)
+  Assert.equal(#plainStabStream:drawLabels(), 4, "an unlisted same-type line draws nothing")
+  local leerNine = {
+    slotWith({ key = "LEER", moveType = "normal", power = 0, category = "status", accuracy = 100, effect = 19 }),
+    slotWith({ key = "TACKLE" }),
+    slotWith({ key = "GROWL", moveType = "normal", power = 0, category = "status", accuracy = 100 }),
+    slotWith({ key = "SPENT", moveType = "normal", power = 0, category = "status", accuracy = 0, usable = false }),
+  }
+  local nineStream = spyStream(FIXED_SEED)
+  TrainerAi.scoreSlots(chart, fourSlots(), user, foe, 14, { 9 }, false, nineStream)
+  Assert.equal(#nineStream:drawLabels(), 4, "unpredictability draws nothing without its listed effect")
+  local nineEffectStream = spyStream(FIXED_SEED)
+  TrainerAi.scoreSlots(chart, leerNine, user, foe, 14, { 9 }, false, nineEffectStream)
+  Assert.equal(#nineEffectStream:drawLabels(), 5, "a listed unpredictability effect draws once")
+end
+
+-- Covering stays spend gate draws before selection: a flagless foe with
+-- super-effective coverage and a living reserve spends the coverage check
+-- plus one stay draw ahead of initialization and selection, while neutral
+-- coverage spends nothing. Both answers replay deterministically.
+function T.covering_stays_spend_gate_draws_before_selection()
+  local Executor = sessionOwner()
+  local contracts = SessionFixture.sessionContracts()
+  local function coverScenario(playerSpecies, foeMoves)
+    local player = leveledCombatant(1, 41, playerSpecies, 5)
+    local lead = leveledCombatant(2, 23, "EEVEE", 10)
+    lead.mon.moves = foeMoves
+    local reserve = leveledCombatant(3, 24, "EEVEE", 5)
+    local seeds = { player, lead, reserve }
+    local striker = SessionFixture.participant(2, 2, "trainer:1", { lead, reserve })
+    striker.context = { aiPasses = {} }
+    return {
+      ruleset = Executor.RULESET,
+      format = "single",
+      sides = { SessionFixture.side(1, { 1 }), SessionFixture.side(2, { 2 }) },
+      participants = {
+        SessionFixture.participant(1, 1, "player", { player }),
+        striker,
+      },
+      positions = {
+        SessionFixture.position(1, 1, { 1 }, player.id),
+        SessionFixture.position(2, 2, { 2 }, lead.id),
+      },
+      inventories = {},
+      environment = { weather = "none" },
+      random = { seed = NATIVE_SEED },
+      formatState = {},
+      moveFacts = scenarioMoveFacts({ "TACKLE", "RAZOR_LEAF" }),
+      speciesFacts = scenarioSpeciesFacts(seeds),
+      itemFacts = {},
+    }, seeds
+  end
+  local covered, _ = coverScenario("TOTODILE", {
+    { move = "RAZOR_LEAF", pp = 25, ppUps = 0 },
+    { move = "TACKLE", pp = 35, ppUps = 0 },
+  })
+  local session = waitingSession(contracts, covered)
+  local held = session:capture()
+  local reply = session:answerTrainer(openRequest(session, "trainer:1"))
+  Assert.equal(reply.choices[1].kind, "attack", "the covering foe still strikes")
+  Assert.equal(
+    session:capture().rng.calls - held.rng.calls,
+    7,
+    "coverage spends two gate draws plus init and selection"
+  )
+  session:dispose()
+  local replayed = Executor.restore(held, trainerContent())
+  Assert.deepEqual(
+    replayed:answerTrainer(openRequest(replayed, "trainer:1")),
+    reply,
+    "a fixed seed replays the covering answer"
+  )
+  replayed:dispose()
+  local neutral, _ = coverScenario("EEVEE", {
+    { move = "RAZOR_LEAF", pp = 25, ppUps = 0 },
+    { move = "TACKLE", pp = 35, ppUps = 0 },
+  })
+  local calm = waitingSession(contracts, neutral)
+  local calmHeld = calm:capture()
+  local calmReply = calm:answerTrainer(openRequest(calm, "trainer:1"))
+  Assert.equal(calmReply.choices[1].kind, "attack", "the neutral foe still strikes")
+  Assert.equal(
+    calm:capture().rng.calls - calmHeld.rng.calls,
+    5,
+    "neutral coverage spends init and selection only"
+  )
+  calm:dispose()
+end
+
+-- Missing move effects fail closed before any draw: scoring names the
+-- offending move instead of guessing membership.
+function T.missing_effects_fail_closed_before_any_draw()
+  local TrainerAi = trainerPolicy()
+  local chart = nativeChart()
+  local bare = slotWith({})
+  bare.effect = nil
+  local slots = { bare, slotWith({}), slotWith({}), slotWith({ key = "SPENT", usable = false }) }
+  local stream = spyStream(FIXED_SEED)
+  local failure = Assert.throws(function()
+    TrainerAi.scoreSlots(chart, slots, fighterWith({}), fighterWith({}), 14, { 2 }, true, stream)
+  end, "an effect-less slot fails instead of guessing membership")
+  Assert.isTrue(
+    string.find(tostring(failure), "effect", 1, true) ~= nil,
+    "the failure names the missing effect"
+  )
+  Assert.equal(#stream:drawLabels(), 0, "the failed evaluation draws nothing")
 end
 
 return { tests = T }

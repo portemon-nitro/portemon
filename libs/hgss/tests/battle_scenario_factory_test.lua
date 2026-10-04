@@ -352,6 +352,40 @@ function T.trainer_pass_facts_ride_the_decision_context()
   )
 end
 
+-- Trainer item identities keep their source-relative order beside finite
+-- stock: duplicates preserve multiplicity in the decision context while
+-- the battle inventory counts quantities, and later caller mutations
+-- never reach either record.
+function T.trainer_item_lists_keep_source_order_beside_finite_stock()
+  local party = mixedParty()
+  local items = { "POTION", "POKE_BALL", "POTION" }
+  local scenario = ScenarioFactory.fromTrainer({
+    trainers = {
+      { id = "a", party = { fullRecord() }, items = items },
+    },
+  }, { party = party, bag = stockedBag() })
+  local foe = scenario.participants[2]
+  Assert.deepEqual(
+    foe.context.trainerItems,
+    { "POTION", "POKE_BALL", "POTION" },
+    "the decision context preserves source-relative order and multiplicity"
+  )
+  local stock = inventoryOf(scenario, assert(foe.inventoryId, "the trainer keeps its stock identity"))
+  Assert.deepEqual(
+    stock.quantities,
+    { POTION = 2, POKE_BALL = 1 },
+    "the battle inventory counts quantities separately"
+  )
+  Assert.isNil(foe.context.quantities, "no mutable quantity field rides the decision context")
+  items[1] = "FULL_RESTORE"
+  items[3] = "FULL_RESTORE"
+  Assert.deepEqual(
+    foe.context.trainerItems,
+    { "POTION", "POKE_BALL", "POTION" },
+    "later caller mutations never reach the ordered context"
+  )
+end
+
 function T.an_empty_live_bag_still_yields_a_valid_player_stock()
   local party = mixedParty()
   local empty = HgssBagService.new({ catalog = ItemFixture.makeCatalog() })
