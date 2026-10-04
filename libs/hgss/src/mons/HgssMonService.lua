@@ -545,10 +545,16 @@ function HgssMonService:preparePcChanges(expected, changes)
   local boxUpdates = {}
   for _, update in ipairs(changes.boxUpdates or {}) do
     assert(type(update) == "table", "PC box updates must be records")
+    local mon
+    if update.mon == false then
+      mon = false
+    else
+      mon = self:_checked(update.mon)
+    end
     boxUpdates[#boxUpdates + 1] = {
       box = update.box,
       slot = update.slot,
-      mon = update.mon == false and false or self:_checked(update.mon),
+      mon = mon,
     }
   end
   for _, update in ipairs(changes.metadata or {}) do
