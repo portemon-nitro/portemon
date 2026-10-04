@@ -129,6 +129,10 @@ function Renderer:prepareVisibleIcons(view, plan, cacheFs, derivedAssets)
       self._itemIconProvider = ItemIconAssetProvider.new(cacheFs, { graphics = self.graphics })
     end
     local paths = { assert(view.bagPocketStrip).image }
+    paths[#paths + 1] = assert(view.bagItemFocusVisual).image
+    if view.bagTabFocusVisual ~= nil then
+      paths[#paths + 1] = view.bagTabFocusVisual.image
+    end
     local visuals = assert(view.bagQuantityVisuals)
     for _, direction in ipairs({ "decrement", "increment" }) do
       for _, state in ipairs({ "normal", "pressed" }) do
@@ -344,6 +348,102 @@ fitText = function(renderer, value, width)
   return textRenderer:textWidth(fitted) <= width and fitted or ""
 end
 
+local drawCenteredIcon
+
+local function descriptionLines(renderer, description, width)
+  local lines, current = {}, ""
+  for word in description:gmatch("%S+") do
+    local candidate = current == "" and word or (current .. " " .. word)
+    if renderer.text:textWidth(candidate) <= width then
+      current = candidate
+    elseif current == "" then
+      current = fitText(renderer, word, width)
+      lines[#lines + 1], current = current, ""
+      if #lines == 2 then
+        return lines
+      end
+    else
+      lines[#lines + 1] = current
+      current = word
+      if #lines == 2 then
+        lines[2] = fitText(renderer, lines[2], width)
+        return lines
+      end
+    end
+  end
+  if current ~= "" and #lines < 2 then
+    lines[#lines + 1] = current
+  end
+  if #lines == 2 and current ~= "" then
+    lines[2] = fitText(renderer, lines[2], width)
+  end
+  return lines
+end
+
+local function drawBagCard(renderer, card, focused, focusVisual)
+  local graphics = renderer.graphics
+  local bounds = card.rect
+  graphics.setColor(0.97, 0.98, 1, 1)
+  graphics.rectangle("fill", bounds.x, bounds.y, bounds.width, bounds.height)
+  setColor(graphics, renderer.skin.cards.normal.border)
+  graphics.rectangle("line", bounds.x, bounds.y, bounds.width, bounds.height)
+  if focused then
+    local descriptor = assert(focusVisual)
+    local visual = assert(renderer._bagImages[descriptor.image])
+    local offset = descriptor.offset or { x = 0, y = 0 }
+    graphics.setColor(1, 1, 1, 1)
+    graphics.draw(visual, bounds.x + bounds.width / 2 + offset.x, bounds.y + bounds.height / 2 + offset.y)
+  end
+  local icon = card.iconKey and renderer._icons[card.iconKey]
+  if icon then
+    drawCenteredIcon(renderer, icon, card.iconRect)
+  end
+  local text = card.textRect
+  local scale = card.textScale or 1
+  local lineHeight = renderer.text.fontDef.lineHeight
+  graphics.push("all")
+  graphics.translate(bounds.x, bounds.y)
+  graphics.scale(scale, scale)
+  local textX, textY = (text.x - bounds.x) / scale, (text.y - bounds.y) / scale
+  local textWidth = text.width / scale
+  drawText(renderer, fitText(renderer, card.label, textWidth), textX, textY)
+  local lines = descriptionLines(renderer, card.description or "", textWidth)
+  for lineIndex, line in ipairs(lines) do
+    drawText(renderer, line, textX, textY + lineHeight * lineIndex, "hint")
+  end
+  local quantity = "x" .. tostring(card.value)
+  local quantityWidth = renderer.text:textWidth(quantity)
+  drawText(
+    renderer,
+    quantity,
+    textX + math.max(0, textWidth - quantityWidth),
+    bounds.height / scale - lineHeight - 3,
+    "hint"
+  )
+  graphics.pop()
+end
+
+local function drawBagPageArrow(renderer, target, visual, angle, disabled, _)
+  local image = assert(renderer._bagImages[assert(visual.image)])
+  local width, height = image:getDimensions()
+  local scale = math.min(1, (target.width - 4) / width, (target.height - 4) / height)
+  renderer.graphics.setColor(1, 1, 1, 1)
+  renderer.graphics.draw(
+    image,
+    target.x + target.width / 2,
+    target.y + target.height / 2,
+    angle,
+    scale,
+    scale,
+    width / 2,
+    height / 2
+  )
+  if disabled then
+    setColor(renderer.graphics, { 0.52, 0.54, 0.55, 1 })
+    renderer.graphics.rectangle("line", target.x, target.y, target.width, target.height)
+  end
+end
+
 local function targetRect(layout, targetId)
   local target = layout.targets[targetId]
   return target and target.rect
@@ -361,20 +461,31 @@ local function framedContentRect(content)
   }
 end
 
-local function drawCenteredIcon(renderer, icon, bounds)
+drawCenteredIcon = function(renderer, icon, bounds)
   local dimensions = icon.dimensions
   local scale = math.min(1, bounds.width / dimensions.width, bounds.height / dimensions.height)
   local width, height = dimensions.width * scale, dimensions.height * scale
   renderer.graphics.setColor(1, 1, 1, 1)
-  renderer.graphics.draw(
-    icon.image,
-    icon.quad,
-    bounds.x + (bounds.width - width) / 2,
-    bounds.y + (bounds.height - height) / 2,
-    0,
-    scale,
-    scale
-  )
+  if icon.quad ~= nil then
+    renderer.graphics.draw(
+      icon.image,
+      icon.quad,
+      bounds.x + (bounds.width - width) / 2,
+      bounds.y + (bounds.height - height) / 2,
+      0,
+      scale,
+      scale
+    )
+  else
+    renderer.graphics.draw(
+      icon.image,
+      bounds.x + (bounds.width - width) / 2,
+      bounds.y + (bounds.height - height) / 2,
+      0,
+      scale,
+      scale
+    )
+  end
 end
 
 local function drawGridCard(renderer, card, focused)
@@ -438,6 +549,10 @@ local function paintPane(self, view, plan, pane)
   graphics.rectangle("fill", 0, 0, placement.logicalWidth, placement.logicalHeight)
   setColor(graphics, { 1, 1, 1, 1 })
   graphics.rectangle("fill", framedContent.x, framedContent.y, framedContent.width, framedContent.height)
+  for _, surface in ipairs(layout.listSurfaces or {}) do
+    graphics.setColor(1, 1, 1, 1)
+    graphics.rectangle("fill", surface.x, surface.y, surface.width, surface.height)
+  end
   if layout.decisionList then
     local surface = layout.decisionList.surface
     graphics.setColor(1, 1, 1, 1)
@@ -447,10 +562,13 @@ local function paintPane(self, view, plan, pane)
   if frameIndex ~= nil then
     assert(self._windowRenderer, "field frame renderer is prepared before Save Editor drawing")
     if layout.valueModal then
-      self._windowRenderer:drawApplicationFrame(layout.valueModal, frameIndex)
+      self._windowRenderer:drawApplicationFrame(framedContentRect(layout.valueModal), frameIndex)
     end
     if layout.decisionList then
-      self._windowRenderer:drawApplicationFrame(layout.decisionList.surface, frameIndex)
+      self._windowRenderer:drawApplicationFrame(framedContentRect(layout.decisionList.surface), frameIndex)
+    end
+    for _, surface in ipairs(layout.listSurfaces or {}) do
+      self._windowRenderer:drawApplicationFrame(framedContentRect(surface), frameIndex)
     end
     self._windowRenderer:drawApplicationFrame(framedContent, frameIndex)
   end
@@ -556,22 +674,34 @@ local function paintPane(self, view, plan, pane)
     graphics.setColor(1, 1, 1, 1)
     graphics.draw(stripImage, strip.x, strip.y)
     for _, targetId in ipairs(layout.bagTabs or {}) do
-      if targetId == view.focus then
-        local target = targetRect(layout, targetId)
-        setColor(graphics, SELECTED)
-        graphics.rectangle("line", target.x, target.y, target.width, target.height)
+      if targetId == view.focus and view.bagTabFocusVisual ~= nil then
+        local tabIndex = tonumber(targetId:match("bag:pocket:(%d+)$"))
+        local pocketKey = targetId:match("bag:pocket:(.+)$")
+        for index, pocket in ipairs(view.bagPockets) do
+          if pocket.key == pocketKey then
+            tabIndex = index
+            break
+          end
+        end
+        local point = assert(view.bagTabFocusTargets[assert(tabIndex)])
+        local descriptor = assert(view.bagTabFocusVisual)
+        local image = assert(self._bagImages[descriptor.image])
+        local offset = descriptor.offset or { x = 0, y = 0 }
+        graphics.setColor(1, 1, 1, 1)
+        graphics.draw(image, strip.x + point.x + offset.x, strip.y + point.y + offset.y)
       end
     end
     for _, card in ipairs(layout.bagGrid or {}) do
-      drawGridCard(self, card, card.targetId == view.focus or view.bagSelectedItem == card.targetId:sub(10))
+      drawBagCard(self, card, card.targetId == view.focus, view.bagItemFocusVisual)
     end
     if targetRect(layout, "bag:add") then
-      drawShadedControl(
+      drawBagPageArrow(
         self,
         targetRect(layout, "bag:page:previous"),
-        "Previous",
-        view.focus == "bag:page:previous",
-        view.bagPage0 == 0
+        view.bagQuantityVisuals.decrement[view.capturedTarget == "bag:page:previous" and "pressed" or "normal"],
+        math.pi / 2,
+        view.bagPage0 == 0,
+        view.capturedTarget == "bag:page:previous"
       )
       local pageText = tostring(layout.bagPage.index) .. " / " .. tostring(layout.bagPage.count)
       drawText(
@@ -581,12 +711,13 @@ local function paintPane(self, view, plan, pane)
         layout.bagPageText.y,
         MUTED
       )
-      drawShadedControl(
+      drawBagPageArrow(
         self,
         targetRect(layout, "bag:page:next"),
-        "Next",
-        view.focus == "bag:page:next",
-        view.bagPage0 + 1 >= view.bagPageCount
+        view.bagQuantityVisuals.increment[view.capturedTarget == "bag:page:next" and "pressed" or "normal"],
+        -math.pi / 2,
+        view.bagPage0 + 1 >= view.bagPageCount,
+        view.capturedTarget == "bag:page:next"
       )
       drawShadedControl(
         self,

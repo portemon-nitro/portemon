@@ -411,6 +411,7 @@ function State:_snapshot()
     },
     modal = self.controller.modal,
     focus = self.controller.focus,
+    capturedTarget = self.controller.capturedTarget,
     scrollOffset = self.controller.scrollOffset,
     query = self.controller.query,
     flagRows = flags,
@@ -676,6 +677,7 @@ function State:_bagView()
     rows[#rows + 1] = {
       item = entry.item,
       label = item.name or entry.item,
+      description = item.description,
       iconKey = item.icon,
       quantity = entry.quantity,
     }
@@ -711,6 +713,10 @@ function State:_bagView()
     bagAddEnabled = canAdd,
     bagPocketTabRects = manifest.interactive.pocketTabs.rects,
     bagPocketStrip = manifest.interactive.pocketTabs.strips[self.controller.bagPocket],
+    bagFocusVisuals = manifest.interactive.focus,
+    bagItemFocusVisual = manifest.interactive.focus.items.visual,
+    bagTabFocusVisual = manifest.interactive.focus.tabs.visual,
+    bagTabFocusTargets = manifest.interactive.focus.tabs.targets,
     bagQuantityVisuals = manifest.interactive.overlays.quantity.visuals,
     bagSelectedItem = self.controller.bagItemKey,
     bagSelectedQuantity = selectedQuantity,

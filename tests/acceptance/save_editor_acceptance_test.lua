@@ -704,7 +704,7 @@ function T.tests.bag_item_actions_and_quantity_commit_are_staged_until_outer_sav
 
       activateTarget(state, itemTarget)
       activateTarget(state, "bag:quantity")
-      Assert.equal(state:view().valueEditor.kind, "quantity", "Quantity opens its dedicated transient editor")
+      Assert.equal(state:view().valueEditor.kind, "number", "Quantity opens the shared number editor")
       local expected = math.max(1, originalQuantity)
       state:keypressed("up")
       state:keyreleased("up")

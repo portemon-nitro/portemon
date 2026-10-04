@@ -117,6 +117,7 @@ local function fixture(scope, width, height, topology, section, variant, version
       end
     end
   elseif section == "Bag" then
+    view.focus = variant == "bag-cards" and "bag:item:POTION" or "bag:pocket:items"
     view.bagPocket = "items"
     view.bagSelectedItem = "POTION"
     view.bagSelectedQuantity = 2
@@ -127,8 +128,31 @@ local function fixture(scope, width, height, topology, section, variant, version
       view.bagPocketTabRects[index] = { x = (index - 1) * 32, y = 0, width = 32, height = 32 }
     end
     view.bagPocketStrip = { image = "bag/items-strip" }
-    view.bagRows = { { item = "POTION", label = "Potion", quantity = 2 } }
-    view.bagPageRows, view.bagPage0, view.bagPageCount, view.bagAddEnabled = view.bagRows, 0, 1, true
+    view.bagRows = {
+      {
+        item = "POTION",
+        iconKey = "POTION",
+        label = variant == "bag-cards" and "Potion with an intentionally long display name" or "Potion",
+        description = variant == "bag-cards"
+            and "Restores a small amount of HP and remains useful for a much longer description OVERFLOW_SENTINEL"
+          or "Restores a small amount of HP.",
+        quantity = 2,
+      },
+    }
+    if variant == "bag-cards" then
+      view.bagRows[2] = { item = "ANTIDOTE", label = "Antidote", description = "Cures poison.", quantity = 1 }
+    end
+    if variant == "bag-pages" then
+      for index = 2, 7 do
+        view.bagRows[index] = { item = "ITEM_" .. index, label = "Item " .. index, description = "Item description.", quantity = 1 }
+      end
+    end
+    view.bagPageRows = {}
+    for index = 1, math.min(6, #view.bagRows) do
+      view.bagPageRows[index] = view.bagRows[index]
+    end
+    view.bagPage0, view.bagPageCount, view.bagAddEnabled = 0, variant == "bag-pages" and 2 or 1, true
+    view.bagItemFocusVisual = { image = "bag/item-focus", offset = { x = -9, y = -6 } }
     view.bagQuantityVisuals = {
       decrement = { normal = { image = "bag/dec-normal" }, pressed = { image = "bag/dec-pressed" } },
       increment = { normal = { image = "bag/inc-normal" }, pressed = { image = "bag/inc-pressed" } },
@@ -269,6 +293,7 @@ local function draw(scope, width, height, topology, name, section, variant, vers
   local frameCache = FieldUiFixture.cacheWithFontAndFrames()
   renderer:preparePresentationAssets(frameCache, assert(frameCache:loadLua(FieldUiAssetCache.manifestPath())))
   local bagDrawn = {}
+  local bagDrawOrder = {}
   if view.section == "Bag" then
     renderer._bagImages = {}
     for index, path in ipairs({
@@ -277,6 +302,7 @@ local function draw(scope, width, height, topology, name, section, variant, vers
       "bag/dec-pressed",
       "bag/inc-normal",
       "bag/inc-pressed",
+      "bag/item-focus",
     }) do
       local imageData = love.image.newImageData(index == 1 and 256 or 12, index == 1 and 32 or 12)
       local image = graphics.newImage(imageData)
@@ -305,6 +331,12 @@ local function draw(scope, width, height, topology, name, section, variant, vers
     for path, image in pairs(renderer._bagImages) do
       if drawable == image then
         bagDrawn[path] = true
+        bagDrawOrder[#bagDrawOrder + 1] = { path = path, args = { ... } }
+      end
+    end
+    for iconKey, icon in pairs(renderer._icons) do
+      if drawable == icon.image then
+        bagDrawOrder[#bagDrawOrder + 1] = { path = "icon:" .. iconKey, args = { ... } }
       end
     end
     return originalDraw(drawable, ...)
@@ -443,7 +475,7 @@ local function draw(scope, width, height, topology, name, section, variant, vers
   end
   renderer:dispose()
   presentation:dispose()
-  return data, renderedText, layout, bagDrawn, drawnText, view, renderer.skin.background
+  return data, renderedText, layout, bagDrawn, drawnText, view, renderer.skin.background, bagDrawOrder
 end
 
 function T.player_shell_renders_headerless_controls_and_a_dirty_leave_decision(scope)
@@ -706,6 +738,95 @@ function T.bag_quantity_uses_normal_and_pressed_generated_controls(scope)
   Assert.isTrue(pressed["bag/inc-pressed"], "held increment uses its pressed generated image")
   Assert.isTrue(pressed["bag/dec-normal"], "unheld decrement keeps its normal generated image")
   Assert.isTrue(pressed["bag/inc-normal"], "the other retail increments keep their normal image")
+end
+
+function T.bag_cards_use_bounded_description_and_wide_centered_geometry(scope)
+  local width, height = 1280, 720
+  local topology = ScreenTopology.oneDisplay({
+    id = "main",
+    rect = { x = 0, y = 0, width = width, height = height },
+    touch = true,
+    role = "world",
+  })
+  local _, renderedText, layout = draw(
+    scope,
+    width,
+    height,
+    topology,
+    "bag-cards",
+    "Bag",
+    "bag-cards"
+  )
+  local card = assert(layout.bagGrid[1])
+  Assert.isTrue(
+    (layout.bagGrid[2].rect.x + layout.bagGrid[2].rect.width) - card.rect.x < layout.content.width,
+    "wide Bag cards keep a maximum width"
+  )
+  local gridLeft = card.rect.x
+  local rightmost = card.rect.x + card.rect.width
+  for _, candidate in ipairs(layout.bagGrid) do
+    gridLeft = math.min(gridLeft, candidate.rect.x)
+    rightmost = math.max(rightmost, candidate.rect.x + candidate.rect.width)
+  end
+  Assert.isTrue(
+    math.abs((gridLeft - layout.content.x) - (layout.content.x + layout.content.width - rightmost)) < 1,
+    "the bounded wide Bag grid has symmetric side padding"
+  )
+  Assert.isTrue(renderedText:find("Restores a small amount of HP", 1, true) ~= nil, "cards show item descriptions")
+  Assert.isFalse(renderedText:find("OVERFLOW_SENTINEL", 1, true) ~= nil, "descriptions stop at the card's two-line limit")
+end
+
+function T.bag_item_focus_uses_generated_visual_under_the_card_contents(scope)
+  local width, height = 640, 480
+  local topology = ScreenTopology.oneDisplay({
+    id = "main",
+    rect = { x = 0, y = 0, width = width, height = height },
+    touch = true,
+    role = "world",
+  })
+  local _, _, layout, drawn, _, _, _, drawOrder = draw(
+    scope,
+    width,
+    height,
+    topology,
+    "bag-focus",
+    "Bag",
+    "bag-cards",
+    nil,
+    function(renderer)
+      local iconImage = love.graphics.newImage(love.image.newImageData(16, 16))
+      renderer._icons.POTION = { image = iconImage, dimensions = { width = 16, height = 16 } }
+    end
+  )
+  local card = assert(layout.bagGrid[1])
+  Assert.isTrue(drawn["bag/item-focus"], "the selected item draws the generated Bag focus visual")
+  local focusIndex, iconIndex, focusArgs
+  for index, entry in ipairs(drawOrder) do
+    if entry.path == "bag/item-focus" then
+      focusIndex, focusArgs = index, entry.args
+    elseif entry.path == "icon:POTION" then
+      iconIndex = index
+    end
+  end
+  Assert.isTrue(focusIndex ~= nil and iconIndex ~= nil and focusIndex < iconIndex, "Bag focus art draws beneath the item icon")
+  local focusX, focusY = focusArgs[1], focusArgs[2]
+  Assert.equal(focusX, card.rect.x + card.rect.width / 2 - 9, "focus preserves its generated horizontal offset")
+  Assert.equal(focusY, card.rect.y + card.rect.height / 2 - 6, "focus preserves its generated vertical offset")
+end
+
+function T.bag_page_controls_draw_generated_arrow_art_without_text_labels(scope)
+  local width, height = 640, 480
+  local topology = ScreenTopology.oneDisplay({
+    id = "main",
+    rect = { x = 0, y = 0, width = width, height = height },
+    touch = true,
+    role = "world",
+  })
+  local _, renderedText, _, drawn = draw(scope, width, height, topology, "bag-pages", "Bag", "bag-pages")
+  Assert.isTrue(drawn["bag/dec-normal"], "Previous uses the generated decrement arrow")
+  Assert.isTrue(drawn["bag/inc-normal"], "Next uses the generated increment arrow")
+  Assert.isFalse(renderedText:find("Previous", 1, true) ~= nil, "Previous is represented by arrow art")
+  Assert.isFalse(renderedText:find("Next", 1, true) ~= nil, "Next is represented by arrow art")
 end
 
 function T.party_icons_center_from_distinct_provider_dimensions(scope)

@@ -3,6 +3,7 @@
 local Layout = {}
 local ScrollViewport = require("libs.ui.src.ScrollViewport")
 local SaveEditorList = require("app.src.saveeditor.SaveEditorList")
+local SaveEditorCard = require("app.src.saveeditor.SaveEditorCard")
 
 local function makeViewport(clip, offset, contentExtent, rowExtent, gap, count, rowTargets)
   local firstIndex, lastIndex = ScrollViewport.visibleRange(offset, clip.height, rowExtent, gap, count)
@@ -631,10 +632,28 @@ function Layout.compute(view, width, height, metrics)
     local pageHeight = compactBag and 20 or 28
     local pageY = contentBottom - pageHeight - 2
     local gridBody = rect(contentX, gridY, innerWidth, math.max(3, pageY - gridY - 4))
-    local cells = sixCellGrid(gridBody, compactBag and 2 or 6, compactBag)
+    local cells = SaveEditorCard.resolveGrid({
+      bounds = gridBody,
+      count = math.min(6, #(view.bagPageRows or {})),
+      columns = 2,
+      rows = 3,
+      gap = compactBag and 2 or 6,
+      maxWidth = compactBag and 240 or 400,
+    })
     local cards = {}
     for index, item in ipairs(view.bagPageRows or {}) do
       local cell = cells[index]
+      local iconRect, textRect = cell.iconRect, cell.textRect
+      if compactBag then
+        iconRect =
+          rect(cell.rect.x + 2, cell.rect.y + 1, math.min(16, cell.rect.width - 26), math.min(16, cell.rect.height - 2))
+        textRect = rect(
+          iconRect.x + iconRect.width + 4,
+          cell.rect.y + 2,
+          cell.rect.x + cell.rect.width - iconRect.x - iconRect.width - 8,
+          cell.rect.height - 4
+        )
+      end
       local id = "bag:item:" .. item.item
       targets[id], focusPositions[id] = cell.rect, cell.rect
       addFocusable(id)
@@ -644,28 +663,33 @@ function Layout.compute(view, width, height, metrics)
         label = item.label,
         value = tostring(item.quantity),
         iconKey = item.iconKey,
+        description = item.description,
         rect = cell.rect,
-        iconRect = cell.iconRect,
-        textRect = cell.textRect,
+        iconRect = iconRect,
+        textRect = textRect,
         textScale = compactBag and 0.5 or nil,
       }
     end
-    local buttonWidth = math.max(34, math.floor((innerWidth - 96) / 2))
-    targets["bag:page:previous"] = rect(contentX, pageY, buttonWidth, pageHeight)
-    targets["bag:page:next"] = rect(contentX + innerWidth - buttonWidth, pageY, buttonWidth, pageHeight)
-    for _, id in ipairs({ "bag:page:previous", "bag:page:next" }) do
-      addFocusable(id)
-    end
+    local arrowWidth = math.min(pageHeight, 32)
+    local pageWidth = math.min(56, math.max(32, innerWidth - arrowWidth * 2 - 12))
+    local pageGroupWidth = arrowWidth * 2 + pageWidth + 8
+    local pageGroupX = contentX + math.max(0, (innerWidth - pageGroupWidth) / 2)
+    targets["bag:page:previous"] = rect(pageGroupX, pageY, arrowWidth, pageHeight)
+    bagPageTextRect = rect(pageGroupX + arrowWidth + 4, pageY + (pageHeight - 16) / 2, pageWidth, 16)
+    targets["bag:page:next"] = rect(pageGroupX + arrowWidth + 4 + pageWidth + 4, pageY, arrowWidth, pageHeight)
     if view.bagPage0 == 0 then
       disabledTargets["bag:page:previous"] = true
+    else
+      addFocusable("bag:page:previous")
     end
     if view.bagPage0 + 1 >= view.bagPageCount then
       disabledTargets["bag:page:next"] = true
+    else
+      addFocusable("bag:page:next")
     end
-    local addX = contentX + buttonWidth + 4
-    targets["bag:add"] = rect(addX, pageY, 60, pageHeight)
-    bagPageTextRect =
-      rect(addX + 64, pageY + (compactBag and 2 or 7), math.max(1, innerWidth - buttonWidth * 2 - 72), 16)
+    local addWidth = math.min(60, math.max(40, innerWidth - pageGroupWidth - 8))
+    local addX = contentX + innerWidth - addWidth
+    targets["bag:add"] = rect(addX, pageY, addWidth, pageHeight)
     addFocusable("bag:add")
     if view.bagAddEnabled == false then
       disabledTargets["bag:add"] = true
@@ -1067,6 +1091,44 @@ function Layout.compute(view, width, height, metrics)
           if node and focusGraph[sectionTarget] then
             table.insert(node.left, 1, sectionTarget)
           end
+        end
+      end
+    end
+  end
+  if section == "Bag" then
+    local occupied = view.bagPageRows or {}
+    local gridTargets = {}
+    for index, item in ipairs(occupied) do
+      gridTargets[index] = "bag:item:" .. item.item
+    end
+    local pocketTargets = bagTabs or {}
+    local function nearestInRow(index, rowOffset)
+      local row = math.floor((index - 1) / 2) + rowOffset
+      if row < 0 or row > 2 then
+        return nil
+      end
+      local column = (index - 1) % 2
+      local preferred = row * 2 + column + 1
+      if gridTargets[preferred] then
+        return gridTargets[preferred]
+      end
+      local other = row * 2 + (1 - column) + 1
+      return gridTargets[other]
+    end
+    for index, targetId in ipairs(gridTargets) do
+      local node = focusGraph[targetId]
+      if node ~= nil then
+        local column = (index - 1) % 2
+        local rowStart = math.floor((index - 1) / 2) * 2 + 1
+        local rowEnd = math.min(rowStart + 1, #gridTargets)
+        node.left = { column == 1 and gridTargets[index - 1] or targetId }
+        node.right = { column == 0 and rowEnd > index and gridTargets[index + 1] or targetId }
+        node.up = { nearestInRow(index, -1) or pocketTargets[math.min(#pocketTargets, column + 1)] or targetId }
+        local below = nearestInRow(index, 1)
+        if below then
+          node.down = { below }
+        else
+          node.down = { view.bagPage0 + 1 < view.bagPageCount and "bag:page:next" or "bag:add" }
         end
       end
     end

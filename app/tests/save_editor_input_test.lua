@@ -867,6 +867,36 @@ function T.tests.bag_quantity_pointer_hold_repeats_on_fixed_ticks_and_resize_sto
   end)
 end
 
+function T.tests.bag_grid_horizontal_edges_keep_focus_inside_the_item_grid()
+  local _, Layout = stateModule()
+  local topology = ScreenTopology.oneDisplay({
+    id = "main",
+    rect = { x = 0, y = 0, width = 800, height = 500 },
+    touch = false,
+    role = "world",
+  })
+  withEditor(800, 500, topology, function(state)
+    selectSection(state, Layout, "Bag")
+    fillBagPocket(state, 2)
+    local bag = state:view()
+    local first = assert(bag.bagPageRows[1], "the real Bag catalog supplies a first stack")
+    local second = assert(bag.bagPageRows[2], "the real Bag catalog supplies an adjacent stack")
+    local firstTarget = "bag:item:" .. first.item
+    local secondTarget = "bag:item:" .. second.item
+
+    state.controller.focus = firstTarget
+    pressKey(state, "left")
+    Assert.equal(state:view().focus, firstTarget, "Left clamps at the first grid column")
+    Assert.equal(state:view().section, "Bag", "horizontal grid input cannot enter the section rail")
+
+    pressKey(state, "right")
+    Assert.equal(state:view().focus, secondTarget, "Right moves to the adjacent item card")
+    pressKey(state, "right")
+    Assert.equal(state:view().focus, secondTarget, "Right clamps at the last occupied card")
+    Assert.equal(state:view().section, "Bag", "horizontal grid input remains in Bag content")
+  end)
+end
+
 function T.tests.failed_close_save_keeps_the_state_until_explicit_discard()
   local _, Layout = stateModule()
   local compact = ScreenTopology.oneDisplay({
