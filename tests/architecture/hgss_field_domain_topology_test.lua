@@ -93,6 +93,8 @@ local FIELD_COORDINATION = {
   "FieldMapEntryController",
   "FieldMovePolicy",
   "FieldMoveRuntime",
+  "FieldOverworldLifecycle",
+  "FieldScriptPropAnimations",
   "FieldSession",
   "FieldTravelState",
   "FieldWindowStyles",
@@ -224,6 +226,8 @@ end
 
 function T.representative_mechanisms_load_from_owner_domains()
   requireFromNewPath("libs.hgss.src.field.FieldSession", "field coordination")
+  requireFromNewPath("libs.hgss.src.field.FieldOverworldLifecycle", "field coordination")
+  requireFromNewPath("libs.hgss.src.field.FieldScriptPropAnimations", "field coordination")
   requireFromNewPath("libs.hgss.src.actors.FieldActorManager", "actor mechanisms")
   requireFromNewPath("libs.hgss.src.world.FieldCoverage", "world mechanisms")
   requireFromNewPath("libs.hgss.src.interaction.FieldInteractionResolver", "interaction mechanisms")

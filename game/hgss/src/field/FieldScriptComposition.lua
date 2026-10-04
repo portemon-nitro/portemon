@@ -85,6 +85,8 @@ function FieldScriptComposition.compose(runtime, options)
     followerTransition = options.followerTransition,
     starterBalls = options.starterBalls,
     battle = options.battle,
+    overworld = runtime.overworld,
+    propAnimations = runtime.propAnimations,
   })
   local function restore()
     if options.loadedGame then

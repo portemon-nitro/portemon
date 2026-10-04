@@ -316,6 +316,11 @@ local function drawOrderState(starterActive)
         end,
       },
       camera = { zoom = 1 },
+      overworld = {
+        isPresent = function()
+          return true
+        end,
+      },
       destinationWorldPresentable = function()
         return true
       end,
@@ -469,6 +474,11 @@ function T.draw_passes_the_scene_runtime_and_queries_the_menu_host()
           return 0.5
         end,
       },
+      overworld = {
+        isPresent = function()
+          return true
+        end,
+      },
       destinationWorldPresentable = function()
         return true
       end,
@@ -599,6 +609,11 @@ function T.draw_sends_static_actor_models_to_world_and_billboards_to_presentatio
           return 0.5
         end,
       },
+      overworld = {
+        isPresent = function()
+          return true
+        end,
+      },
       destinationWorldPresentable = function()
         return true
       end,
@@ -710,6 +725,11 @@ function T.draw_without_a_menu_host_is_a_programming_error()
       session = {
         renderAlpha = function()
           return 0.5
+        end,
+      },
+      overworld = {
+        isPresent = function()
+          return true
         end,
       },
       destinationWorldPresentable = function()
@@ -995,6 +1015,11 @@ function T.destination_world_is_not_drawn_before_entry_presentation_is_ready()
           return 0.5
         end,
       },
+      overworld = {
+        isPresent = function()
+          return true
+        end,
+      },
       destinationWorldPresentable = function()
         return false
       end,
@@ -1244,6 +1269,11 @@ function T.destination_frames_draw_and_acknowledge_only_after_successful_present
         end,
       },
       session = session,
+      overworld = {
+        isPresent = function()
+          return true
+        end,
+      },
       destinationWorldPresentable = function(self)
         return self.session:destinationWorldPresentable()
       end,

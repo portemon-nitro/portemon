@@ -1089,6 +1089,7 @@ return {
       },
     },
     [150] = {
+      classification = "native_wait",
       name = "ScrCmd_RestoreOverworld",
       widths = {},
     },
@@ -2184,6 +2185,7 @@ return {
       widths = {},
     },
     [307] = {
+      classification = "continue_same_tick",
       name = "ScrCmd_307",
       widths = {
         [1] = 2,
@@ -2194,24 +2196,28 @@ return {
       },
     },
     [308] = {
+      classification = "native_wait",
       name = "ScrCmd_308",
       widths = {
         [1] = 1,
       },
     },
     [309] = {
+      classification = "continue_same_tick",
       name = "ScrCmd_309",
       widths = {
         [1] = 1,
       },
     },
     [310] = {
+      classification = "continue_same_tick",
       name = "ScrCmd_310",
       widths = {
         [1] = 1,
       },
     },
     [311] = {
+      classification = "continue_same_tick",
       name = "ScrCmd_311",
       widths = {
         [1] = 1,
@@ -3202,6 +3208,7 @@ return {
       },
     },
     [436] = {
+      classification = "native_wait",
       name = "ScrCmd_436",
       widths = {},
     },
@@ -3275,6 +3282,7 @@ return {
       },
     },
     [446] = {
+      classification = "continue_same_tick",
       name = "ScrCmd_446",
       widths = {
         [1] = 2,

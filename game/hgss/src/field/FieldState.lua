@@ -553,22 +553,27 @@ function FieldState:draw()
     self:_drawScriptScreenFadeIfNeeded()
     return
   end
-  self:_drawBackdrop(width, height)
+  local overworldPresent = self.runtime.overworld:isPresent()
+  if overworldPresent then
+    self:_drawBackdrop(width, height)
+  end
   local alpha = self.runtime.session:renderAlpha()
-  resources.renderer:draw(
-    self.runtime.runtimeMap.sceneRuntime,
-    self.runtime.camera,
-    self:_worldParts(alpha),
-    self.spriteItems,
-    self.runtime.viewport,
-    alpha,
-    self.runtime.fieldPixelScale:resolvedScale()
-  )
-  assert(
-    type(self.runtime.acknowledgeDestinationPresentation) == "function",
-    "field runtime destination presentation acknowledgement required"
-  )
-  self.runtime:acknowledgeDestinationPresentation()
+  if overworldPresent then
+    resources.renderer:draw(
+      self.runtime.runtimeMap.sceneRuntime,
+      self.runtime.camera,
+      self:_worldParts(alpha),
+      self.spriteItems,
+      self.runtime.viewport,
+      alpha,
+      self.runtime.fieldPixelScale:resolvedScale()
+    )
+    assert(
+      type(self.runtime.acknowledgeDestinationPresentation) == "function",
+      "field runtime destination presentation acknowledgement required"
+    )
+    self.runtime:acknowledgeDestinationPresentation()
+  end
   -- The retained Start Menu draws first and the foreground child second,
   -- with the paused world beneath both; no application transition overlay
   -- is painted. The unrelated warp fade over the world viewport follows.
@@ -594,7 +599,9 @@ function FieldState:draw()
   end
   -- Attached dialogue and signposts share the field scale and yield to modal
   -- application surfaces.
-  self:_drawFieldAttachedUi(resources, hostStatus, alpha)
+  if overworldPresent then
+    self:_drawFieldAttachedUi(resources, hostStatus, alpha)
+  end
   -- Each present application surface draws in order: the retained Start
   -- Menu through its resolved presentation plan, then the foreground
   -- field application owned by the presentation dispatch. The retained

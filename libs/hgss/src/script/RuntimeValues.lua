@@ -104,6 +104,8 @@ function RuntimeValues.evaluateValue(v, run)
       )
     end
     return value
+  elseif kind == "scaled_coordinate" then
+    return RuntimeValues.evaluateValue(v.coordinate, run) + 32 * v.chunkOffset
   elseif kind == "flag_value" then
     local flagId = RuntimeValues.resolveIdOperand(v.flag, run)
     return run.services.world:isFlagSet(flagId) and 1 or 0

@@ -699,6 +699,52 @@ local function chooseStarter(_)
   return { op = "choose_starter" }
 end
 
+local function overworldLeave(_)
+  return { op = "overworld_leave" }
+end
+
+local function overworldRestore(_)
+  return { op = "overworld_restore" }
+end
+
+local function currentMapId(ins)
+  return { op = "current_map_id", result = Operands.varRef(ins.operands[1]) }
+end
+
+local function propAnimationLoad(ins)
+  local chunkX = Operands.operandValue(ins.operands[1])
+  local chunkZ = Operands.operandValue(ins.operands[2])
+  local localX = Operands.varRef(ins.operands[3])
+  local localZ = Operands.varRef(ins.operands[4])
+  assert(type(chunkX) == "number" and type(chunkZ) == "number", "prop animation chunks must be numeric")
+  return {
+    op = "prop_animation_load",
+    fieldX = { value = "scaled_coordinate", coordinate = localX, chunkOffset = chunkX },
+    fieldZ = { value = "scaled_coordinate", coordinate = localZ, chunkOffset = chunkZ },
+    slot = Operands.operandValue(ins.operands[5]),
+  }
+end
+
+local function propAnimationPlay(ins, direction)
+  return { op = "prop_animation_play", slot = Operands.varRef(ins.operands[1]), direction = direction }
+end
+
+local function propAnimationPlayForward(ins)
+  return propAnimationPlay(ins, "forward")
+end
+
+local function propAnimationPlayReverse(ins)
+  return propAnimationPlay(ins, "reverse")
+end
+
+local function propAnimationWait(ins)
+  return { op = "prop_animation_wait", slot = Operands.varRef(ins.operands[1]) }
+end
+
+local function propAnimationUnload(ins)
+  return { op = "prop_animation_unload", slot = Operands.varRef(ins.operands[1]) }
+end
+
 local function nicknameInput(ins)
   local slot = Operands.operandValue(ins.operands[1])
   if slot == 255 then
@@ -1511,4 +1557,12 @@ return {
   [178] = explicitFieldMove("surf"),
   [179] = explicitFieldMove("waterfall"),
   [182] = explicitFieldMove("whirlpool"),
+  [150] = overworldRestore,
+  [307] = propAnimationLoad,
+  [308] = propAnimationWait,
+  [309] = propAnimationUnload,
+  [310] = propAnimationPlayForward,
+  [311] = propAnimationPlayReverse,
+  [436] = overworldLeave,
+  [446] = currentMapId,
 }
