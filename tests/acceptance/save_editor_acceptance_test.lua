@@ -9,6 +9,7 @@ local FieldEventResolver = require("libs.hgss.src.interaction.FieldEventResolver
 local DisplayContext = require("libs.ui.src.DisplayContext")
 local LayoutGeometry = require("libs.ui.src.LayoutGeometry")
 local SaveFs = require("libs.storage.src.SaveFs")
+local Experience = require("libs.mons.src.gen4.Experience")
 
 local T = {
   metadata = {
@@ -805,6 +806,115 @@ function T.tests.bag_add_uses_search_then_quantity_and_returns_without_cancel_mu
       state:dispose()
     end)
   end
+  fixture.cleanup()
+  if not ok then
+    error(err, 0)
+  end
+end
+
+function T.tests.party_stats_edit_uses_number_modal_and_keeps_draft_staged()
+  local fixture = Fixture.new()
+  local host = readyHost()
+  local state
+  local originalGlobal = SaveFs.global
+  SaveFs.global = function(backend)
+    Assert.isNil(backend, "the editor uses the isolated acceptance save backend")
+    return fixture.saveFs
+  end
+  local ok, err = xpcall(function()
+    local State = require("app.src.saveeditor.SaveEditorState")
+    state = State.new({
+      versionId = fixture.versionId,
+      saveId = fixture.saveId,
+      width = 800,
+      height = 600,
+      derivedAssets = host,
+      repositoryRoot = love.filesystem.getSourceBaseDirectory(),
+      displayContext = DisplayContext.new({}),
+      onResult = function() end,
+    })
+    state:update(0)
+    Assert.equal(state:view().status, "ready", "the production editor opens the isolated save")
+
+    local members = state.session:partySnapshot().members
+    if #members == 0 then
+      local draft, draftError = state.session:beginMonAdd("CHIKORITA", {
+        location = 7,
+        date = { year = 2000, month = 1, day = 1 },
+      })
+      Assert.isNil(draftError, "the production Mon service creates a valid Party fixture")
+      local monCatalog = state.dependencies.context.monCatalog
+      local species = monCatalog:species("CHIKORITA")
+      local curve = monCatalog:growthCurve(species.growthCurve)
+      Assert.isTrue(assert(draft):setScalar("experience", Experience.expFor(curve, 100)))
+      Assert.isTrue(assert(draft):setMet("level", 100))
+      local result = state.session:applyMonDraft(assert(draft))
+      Assert.isTrue(result.ok, result.error and result.error.message)
+      Assert.isTrue(state.session:save().ok, "the editor opens a published production Party record")
+    end
+
+    withoutRendering(function()
+      state.controller:setSection("Party")
+      activateTarget(state, "party:slot:0")
+      local detail = state:view()
+      Assert.isNil(detail.layout.targets["party:move-up"], "the simplified detail has no reorder-up action")
+      Assert.isNil(detail.layout.targets["party:move-down"], "the simplified detail has no reorder-down action")
+      for _, target in pairs(detail.layout.targets) do
+        Assert.isFalse(target.label == "Party list", "the redundant Party list action is removed")
+      end
+      activateTarget(state, "party:edit")
+      activateTarget(state, "party:subpage:Stats")
+
+      local view = state:view()
+      Assert.notNil(view.statsTable, "Stats exposes one structured Stat / IV / EV / Derived table")
+      Assert.equal(#view.statsTable.rows, 6, "the table has exactly one row per stat")
+
+      local initialPublished = assert(fixture.store:load(fixture.saveId))
+      local row = assert(view.statsTable.rows[2], "Attack is the second Stats row")
+      local originalAttack = row.derived
+      local originalIv = row.iv
+
+      activateTarget(state, "party:field:iv:attack")
+      Assert.equal(state:view().valueEditor.kind, "number", "an IV cell opens the shared number modal")
+      for _ = 1, 31 do
+        state:keypressed(originalIv < 31 and "up" or "down")
+        state:keyreleased(originalIv < 31 and "up" or "down")
+      end
+      state:keypressed("return")
+
+      view = state:view()
+      local editedAttack = assert(view.statsTable.rows[2]).derived
+      Assert.isTrue(editedAttack ~= originalAttack, "the derived Attack preview updates immediately")
+      Assert.equal(
+        state.session:partySnapshot().members[1].mon.ivs.attack,
+        originalIv,
+        "the live Party remains unchanged while the Mon draft is open"
+      )
+      Assert.equal(assert(view.statsTable.rows[2]).iv, originalIv < 31 and 31 or 0, "the table shows the edited raw IV")
+      activateTarget(state, "party:apply")
+      local staged = state.session:captureCandidate()
+      Assert.equal(
+        staged.mons.party.mons[1].ivs.attack,
+        originalIv < 31 and 31 or 0,
+        "Apply stages the raw IV through the Mon draft"
+      )
+      Assert.deepEqual(
+        assert(fixture.store:load(fixture.saveId)),
+        initialPublished,
+        "the canonical save remains unchanged before the outer Save"
+      )
+
+      activateTarget(state, "party:back")
+      Assert.equal(state:view().partyPage, "list", "Back returns to the Party grid")
+      Assert.deepEqual(state.session:captureCandidate(), staged, "Back preserves the staged draft without applying it")
+    end)
+  end, debug.traceback)
+  if state then
+    pcall(function()
+      state:dispose()
+    end)
+  end
+  SaveFs.global = originalGlobal
   fixture.cleanup()
   if not ok then
     error(err, 0)

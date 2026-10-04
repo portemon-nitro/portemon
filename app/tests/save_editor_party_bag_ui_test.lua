@@ -297,6 +297,7 @@ function T.compact_party_keeps_occupied_member_and_add_cards_reachable()
       kind = "member",
       slot0 = slot0,
       label = "Member " .. (slot0 + 1),
+      species = "Species " .. (slot0 + 1),
       level = 5,
     }
   end
@@ -316,7 +317,13 @@ function T.party_grid_places_members_and_add_in_occupied_six_cell_positions()
   for _, count in ipairs({ 0, 1, 5, 6 }) do
     local cards = {}
     for slot0 = 0, count - 1 do
-      cards[#cards + 1] = { kind = "member", slot0 = slot0, label = "Member " .. (slot0 + 1), level = 5 }
+      cards[#cards + 1] = {
+        kind = "member",
+        slot0 = slot0,
+        label = "Member " .. (slot0 + 1),
+        species = "Species " .. (slot0 + 1),
+        level = 5,
+      }
     end
     if count < 6 then
       cards[#cards + 1] = { kind = "add", slot0 = count, label = "Add Pokemon" }
@@ -358,6 +365,129 @@ function T.party_grid_places_members_and_add_in_occupied_six_cell_positions()
       Assert.equal(occupied[3].x, occupied[1].x, "the third cell returns to the first column")
     end
   end
+end
+
+function T.party_cards_use_bounded_icon_left_geometry_and_keep_grid_edges()
+  local cards = {}
+  for slot0 = 0, 4 do
+    cards[#cards + 1] = {
+      kind = "member",
+      slot0 = slot0,
+      label = "Member " .. (slot0 + 1),
+      species = "Species " .. (slot0 + 1),
+      level = 5,
+      iconKey = "party/species-" .. (slot0 + 1),
+    }
+  end
+  cards[#cards + 1] = { kind = "add", slot0 = 5, label = "Add Pokemon" }
+  local view = {
+    section = "Party",
+    status = "ready",
+    ready = true,
+    dirty = false,
+    partyPage = "list",
+    partyCanAdd = true,
+    partyMemberCount = 5,
+    partyCards = cards,
+    partyRows = {},
+  }
+  for _, width in ipairs({ 256, 1280 }) do
+    local layout = computeLayout(view, width, width == 256 and 192 or 720)
+    local first = assert(layout.partyGrid[1])
+    Assert.isTrue(first.rect.width <= (width <= 280 and 240 or 400), "the centered card grid stays bounded")
+    Assert.isTrue(
+      first.iconRect.x + first.iconRect.width <= first.textRect.x,
+      "icon and text use C02 side-by-side regions"
+    )
+    Assert.isTrue(first.rect.x >= layout.content.x, "cards stay within the content bounds")
+    if width > 280 then
+      local last = assert(layout.partyGrid[6])
+      local gridWidth = last.rect.x + last.rect.width - first.rect.x
+      Assert.isTrue(gridWidth <= 400, "wide cards do not grow across the window")
+      Assert.isTrue(
+        math.abs((first.rect.x + last.rect.x + last.rect.width) / 2 - (layout.content.x + layout.content.width / 2)) < 1
+      )
+    end
+    Assert.deepEqual(layout.focusGraph["party:slot:0"].left, { "party:slot:0" }, "Left stays inside the Party grid")
+    Assert.deepEqual(layout.focusGraph["party:add"].right, { "party:add" }, "Right stays inside the Party grid")
+  end
+end
+
+function T.party_stats_layout_targets_only_raw_cells_and_aligns_four_columns()
+  local statsTable = { rows = {}, facts = {} }
+  for index, key in ipairs({ "hp", "attack", "defense", "speed", "specialAttack", "specialDefense" }) do
+    local label = key == "specialAttack" and "Sp. Atk" or key == "specialDefense" and "Sp. Def" or key
+    statsTable.rows[index] = {
+      key = key,
+      label = label,
+      iv = index,
+      ivEditor = { targetId = "party:field:iv:" .. key, editor = { kind = "integer" } },
+      ev = index * 2,
+      evEditor = { targetId = "party:field:ev:" .. key, editor = { kind = "integer" } },
+      derived = index * 10,
+    }
+  end
+  statsTable.facts = {
+    { id = "currentHp", label = "Current HP", value = 12, editor = { kind = "integer" } },
+    { id = "status", label = "Status", value = 0, editor = { kind = "integer" } },
+    { id = "ev-total", label = "EV total", value = 42 },
+    { id = "ev-limit", label = "EV limit", value = "510" },
+  }
+  local view = {
+    section = "Party",
+    status = "ready",
+    ready = true,
+    dirty = false,
+    partyPage = "draft",
+    partySubpage = "Stats",
+    partySubpages = { "Identity", "Training", "Stats", "Moves", "Origin" },
+    partyRows = {},
+    statsTable = statsTable,
+    partyDirty = true,
+    partyValid = true,
+  }
+  local layout = computeLayout(view, 800, 600)
+  Assert.equal(#layout.partyStatsTable.rows, 6)
+  Assert.deepEqual({
+    layout.partyStatsTable.headers[1].label,
+    layout.partyStatsTable.headers[2].label,
+    layout.partyStatsTable.headers[3].label,
+    layout.partyStatsTable.headers[4].label,
+  }, { "Stat", "IV", "EV", "Derived" })
+  for index, row in ipairs(layout.partyStatsTable.rows) do
+    Assert.notNil(layout.targets["party:field:iv:" .. row.key])
+    Assert.notNil(layout.targets["party:field:ev:" .. row.key])
+    Assert.isNil(layout.targets["party:field:derived:" .. row.key], "derived cells never have action targets")
+    Assert.equal(row.cells[2].rect.x, layout.partyStatsTable.headers[2].rect.x, "IV cells align to their header")
+    Assert.equal(row.cells[3].rect.x, layout.partyStatsTable.headers[3].rect.x, "EV cells align to their header")
+    Assert.equal(row.cells[4].rect.x, layout.partyStatsTable.headers[4].rect.x, "derived cells align to their header")
+    Assert.isTrue(index > 0)
+  end
+  Assert.notNil(layout.targets["party:field:currentHp"])
+  Assert.notNil(layout.targets["party:field:status"])
+  Assert.isNil(layout.targets["party:field:ev-total"])
+  local compact = computeLayout(view, 256, 192)
+  Assert.deepEqual({
+    compact.partyStatsTable.headers[1].label,
+    compact.partyStatsTable.headers[2].label,
+    compact.partyStatsTable.headers[3].label,
+    compact.partyStatsTable.headers[4].label,
+  }, { "Stat", "IV", "EV", "Derived" }, "compact Stats retains four distinct semantic columns")
+  Assert.equal(#compact.partyStatsTable.facts, 3, "compact EV total and limit share one clear usage ratio")
+  Assert.equal(compact.partyStatsTable.facts[3].label, "EV")
+  Assert.equal(compact.partyStatsTable.facts[3].value, "42/510")
+  local lastFact = compact.partyStatsTable.facts[3].rect
+  Assert.isTrue(
+    lastFact.y + lastFact.height <= compact.targets["party:apply"].rect.y,
+    "compact Stats facts stay above the draft actions"
+  )
+  for _, header in ipairs(compact.partyStatsTable.headers) do
+    Assert.isTrue(header.rect.width > 0, "compact Stats keeps every column visible")
+    Assert.isTrue(header.rect.x + header.rect.width <= compact.content.x + compact.content.width + 0.01)
+  end
+  statsTable.rows[1].ivEditor.editor = nil
+  local readonly = computeLayout(view, 800, 600)
+  Assert.isNil(readonly.targets["party:field:iv:hp"], "read-only IV values do not enter the focus graph")
 end
 
 function T.party_detail_targets_distinguish_readonly_fields_from_draft_actions()
@@ -769,7 +899,7 @@ function T.progress_focus_keeps_offscreen_flag_rows_reachable_with_sparse_neighb
   Assert.equal(layout.viewports.flags.rowTargets[middleIndex], middle, "the viewport can reveal the focused row")
 end
 
-function T.disabled_bag_party_and_footer_actions_are_not_focusable_or_pointer_targets()
+function T.disabled_bag_and_footer_actions_are_not_focusable_or_pointer_targets()
   local function assertDisabled(layout, view, targetId)
     local target = assert(layout.targets[targetId], "disabled actions remain rendered: " .. targetId)
     Assert.isFalse(target.focusable, targetId .. " is absent from keyboard/controller focus")
@@ -806,8 +936,10 @@ function T.disabled_bag_party_and_footer_actions_are_not_focusable_or_pointer_ta
   party.partyPage = "detail"
   party.partySlot0 = 0
   party.partyLastSlot0 = 0
-  assertDisabled(computeLayout(party, 800, 600), party, "party:move-up")
-  assertDisabled(computeLayout(party, 800, 600), party, "party:move-down")
+  local detailLayout = computeLayout(party, 800, 600)
+  Assert.isNil(detailLayout.targets["party:move-up"], "reorder controls are removed")
+  Assert.isNil(detailLayout.targets["party:move-down"], "reorder controls are removed")
+  Assert.notNil(detailLayout.targets["party:back"], "the normal Back affordance remains available")
 end
 
 return { tests = T }

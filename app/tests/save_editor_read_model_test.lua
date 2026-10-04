@@ -121,6 +121,7 @@ local function stateFor(session, fixture, slot0)
     displayContext = displayContext,
     fieldInput = FieldInput.new(),
     inputTick = 0,
+    numberPressUntilTick = 0,
     scopeEpoch = 0,
     activeScopeId = nil,
     scrollOffsets = {},
@@ -146,7 +147,7 @@ function T.readonly_and_raw_draft_rows_share_live_partial_projection()
   Assert.isTrue(type(rowById(readonly.partyRows, "level").value) == "number")
   state.controller:selectPartySubpage("Stats")
   readonly = state:_partyView()
-  Assert.isTrue(type(rowById(readonly.partyRows, "max-hp").value) == "number")
+  Assert.isTrue(type(readonly.statsTable.rows[1].derived) == "number")
 
   local projectRecord = Draft.projectRecord
   Assert.isTrue(type(projectRecord) == "function", "readonly and draft views share the projection owner")
@@ -154,8 +155,8 @@ function T.readonly_and_raw_draft_rows_share_live_partial_projection()
   local editableTraining = rowById(PartyView.rows(state.partyView, original, expected, "Training", true), "experience")
   Assert.equal(editableTraining.editor.fieldId, editableTraining.id, "editable row identifies its raw field")
   Assert.equal(editableTraining.editor.setter, "scalar", "editable row carries its owning raw setter")
-  local initialIdentity = state:_partyView().partyRows
-  Assert.equal(rowById(initialIdentity, "max-hp").value, expected.stats.hp)
+  local initialStats = state:_partyView().statsTable
+  Assert.equal(initialStats.rows[1].derived, expected.stats.hp)
   local speciesOptions =
     rowById(PartyView.rows(state.partyView, original, expected, "Identity", true), "species").editor.options
   local cachedLabel = speciesOptions[1].label
@@ -180,7 +181,7 @@ function T.readonly_and_raw_draft_rows_share_live_partial_projection()
   Assert.equal(rowById(updated.partyRows, "level").value, editableProjection.level)
   state.controller:selectPartySubpage("Stats")
   updated = state:_partyView()
-  Assert.equal(rowById(updated.partyRows, "stat:attack").value, editableProjection.stats.attack)
+  Assert.equal(updated.statsTable.rows[2].derived, editableProjection.stats.attack)
   Assert.deepEqual(draft:record(), rawBefore, "reading projections does not rewrite raw fields")
   Assert.isNil(draft:record().level, "derived values never become raw fields")
 end
@@ -225,15 +226,23 @@ function T.party_detail_keeps_five_categories_and_raw_derived_roles()
   for _, category in ipairs(readonlyIds) do
     state.controller:selectPartySubpage(category.page)
     local view = state:_partyView()
-    Assert.isTrue(#view.partyRows > 0, category.page .. " retains its existing field coverage")
+    Assert.isTrue(
+      category.page == "Stats" and #view.statsTable.rows == 6 or #view.partyRows > 0,
+      category.page .. " retains its existing field coverage"
+    )
     local hasHelpRow = false
     for _, row in ipairs(view.partyRows) do
       hasHelpRow = hasHelpRow or row.id == "help"
     end
     hasHelpRowAnywhere = hasHelpRowAnywhere or hasHelpRow
-    local raw = rowById(view.partyRows, category.raw)
-    Assert.isTrue(raw.editor == nil, "read-only detail does not expose an editor")
-    if category.derived ~= nil then
+    if category.page == "Stats" then
+      Assert.isNil(view.statsTable.rows[1].ivEditor.editor, "read-only Stats does not expose an editor")
+      Assert.isTrue(type(view.statsTable.rows[1].derived) == "number", "Stats exposes the derived projection")
+    else
+      local raw = rowById(view.partyRows, category.raw)
+      Assert.isTrue(raw.editor == nil, "read-only detail does not expose an editor")
+    end
+    if category.derived ~= nil and category.page ~= "Stats" then
       local derived = rowById(view.partyRows, category.derived)
       Assert.isTrue(derived.editor == nil, "derived detail remains read-only")
     end
@@ -244,9 +253,14 @@ function T.party_detail_keeps_five_categories_and_raw_derived_roles()
   for _, category in ipairs(readonlyIds) do
     state.controller:selectPartySubpage(category.page)
     local view = state:_partyView()
-    local raw = rowById(view.partyRows, category.raw)
-    Assert.notNil(raw.editor, category.page .. " preserves the raw draft field")
-    if category.derived ~= nil then
+    if category.page == "Stats" then
+      Assert.notNil(view.statsTable.rows[1].ivEditor.editor, "Stats preserves raw IV draft edits")
+      Assert.isTrue(type(view.statsTable.rows[1].derived) == "number", "Stats keeps derived values read-only")
+    else
+      local raw = rowById(view.partyRows, category.raw)
+      Assert.notNil(raw.editor, category.page .. " preserves the raw draft field")
+    end
+    if category.derived ~= nil and category.page ~= "Stats" then
       Assert.isNil(rowById(view.partyRows, category.derived).editor, category.page .. " keeps derivations read-only")
     end
   end
@@ -256,6 +270,34 @@ function T.party_detail_keeps_five_categories_and_raw_derived_roles()
   end
   hasHelpRowAnywhere = hasHelpRowAnywhere or hasHelpRow
   Assert.isFalse(hasHelpRowAnywhere, "contextual help is not a separate data category")
+  state.presentation:dispose()
+end
+
+function T.party_stats_publish_aligned_raw_and_derived_rows()
+  local fixture, session = withParty(1)
+  local state = stateFor(session, fixture, 0)
+  state.controller:selectPartySubpage("Stats")
+  local readonly = assert(state:_partyView().statsTable)
+  Assert.deepEqual({
+    readonly.rows[1].key,
+    readonly.rows[2].key,
+    readonly.rows[3].key,
+    readonly.rows[4].key,
+    readonly.rows[5].key,
+    readonly.rows[6].key,
+  }, { "hp", "attack", "defense", "speed", "specialAttack", "specialDefense" })
+  Assert.equal(readonly.rows[2].iv, session:partySnapshot().members[1].mon.ivs.attack)
+  Assert.isNil(readonly.rows[2].ivEditor.editor, "read-only Stats has no editable IV target")
+
+  local draft = assert(session:beginMonEdit(0))
+  state.monDraft = draft
+  state.controller:openPartyDraft("edit", 0)
+  state.controller:selectPartySubpage("Stats")
+  local editable = assert(state:_partyView().statsTable)
+  Assert.equal(editable.rows[2].ivEditor.editor.kind, "integer")
+  Assert.equal(editable.rows[2].ivEditor.editor.min, 0)
+  Assert.equal(editable.rows[2].ivEditor.editor.max, 31)
+  Assert.equal(editable.rows[2].evEditor.editor.max, 255)
   state.presentation:dispose()
 end
 
@@ -418,9 +460,19 @@ function T.focused_raw_field_help_is_plain_metadata_not_a_focusable_row()
   local mon = session:partySnapshot().members[1].mon
   local projection = Draft.projectRecord(mon, { catalog = fixture.context.monCatalog })
   local function helpFor(focusId, subpage)
-    for _, row in ipairs(PartyView.rows(state.partyView, mon, projection, subpage, true)) do
+    local rows = PartyView.rows(state.partyView, mon, projection, subpage, true)
+    for _, row in ipairs(rows) do
       if row.targetId == focusId then
         return row.help
+      end
+    end
+    if rows.statsTable ~= nil then
+      for _, stat in ipairs(rows.statsTable.rows) do
+        for _, cell in ipairs({ stat.ivEditor, stat.evEditor }) do
+          if cell.targetId == focusId then
+            return cell.help
+          end
+        end
       end
     end
     error("missing focused raw Party field " .. focusId, 2)

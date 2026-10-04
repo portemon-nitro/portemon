@@ -38,7 +38,9 @@ local function fixture(scope, width, height, topology, section, variant, version
     section = section,
     ready = true,
     dirty = variant ~= "clean-status",
-    focus = variant == "long-flag" and ("flag:" .. LONG_FLAG_NAME) or "flag:FLAG_TEST",
+    focus = variant == "list-selected" and "party:slot:0"
+      or variant == "long-flag" and ("flag:" .. LONG_FLAG_NAME)
+      or "flag:FLAG_TEST",
     query = "",
     session = {
       playerName = "PLAYER",
@@ -70,7 +72,14 @@ local function fixture(scope, width, height, topology, section, variant, version
     view.scope = { id = "modal:leave", epoch = 2, kind = "decision", focusId = "cancel" }
   end
   if section == "Party" then
-    view.partyPage = variant == "draft-summary" and "draft" or variant or "list"
+    view.partyPage = variant
+    if variant == "draft-summary" or variant == "stats-table" then
+      view.partyPage = "draft"
+    elseif variant == "list-selected" then
+      view.partyPage = "list"
+    elseif variant == nil then
+      view.partyPage = "list"
+    end
     if view.partyPage == "list" then
       view.partyCanAdd = true
       view.partyMemberCount = 1
@@ -81,7 +90,7 @@ local function fixture(scope, width, height, topology, section, variant, version
     else
       view.partyDirty = true
       view.partyValid = false
-      view.partySubpage = "Identity"
+      view.partySubpage = variant == "stats-table" and "Stats" or "Identity"
       view.partySubpages = { "Identity", "Training", "Stats", "Moves", "Origin" }
       view.partyRows = {
         {
@@ -115,6 +124,35 @@ local function fixture(scope, width, height, topology, section, variant, version
           iconKey = "party/chikorita",
         }
       end
+      if variant == "stats-table" then
+        view.focus = "party:field:iv:attack"
+        view.statsTable = { rows = {}, facts = {} }
+        for index, pair in ipairs({
+          { "hp", "HP" },
+          { "attack", "Attack" },
+          { "defense", "Defense" },
+          { "speed", "Speed" },
+          { "specialAttack", "Sp. Atk" },
+          { "specialDefense", "Sp. Def" },
+        }) do
+          local key, label = pair[1], pair[2]
+          view.statsTable.rows[index] = {
+            key = key,
+            label = label,
+            iv = index,
+            ivEditor = { targetId = "party:field:iv:" .. key, editor = { kind = "integer" } },
+            ev = index * 2,
+            evEditor = { targetId = "party:field:ev:" .. key, editor = { kind = "integer" } },
+            derived = index * 10,
+          }
+        end
+        view.statsTable.facts = {
+          { id = "currentHp", label = "Current HP", value = 12, editor = { kind = "integer" } },
+          { id = "status", label = "Status", value = 0, editor = { kind = "integer" } },
+          { id = "ev-total", label = "EV total", value = 42 },
+          { id = "ev-limit", label = "EV limit", value = "510" },
+        }
+      end
     end
   elseif section == "Bag" then
     view.focus = variant == "bag-cards" and "bag:item:POTION" or "bag:pocket:items"
@@ -144,7 +182,8 @@ local function fixture(scope, width, height, topology, section, variant, version
     end
     if variant == "bag-pages" then
       for index = 2, 7 do
-        view.bagRows[index] = { item = "ITEM_" .. index, label = "Item " .. index, description = "Item description.", quantity = 1 }
+        view.bagRows[index] =
+          { item = "ITEM_" .. index, label = "Item " .. index, description = "Item description.", quantity = 1 }
       end
     end
     view.bagPageRows = {}
@@ -371,6 +410,12 @@ local function draw(scope, width, height, topology, name, section, variant, vers
     if view.partyPage == "list" then
       Assert.notNil(layout.targets["party:add"], name .. " keeps Add visible")
       Assert.notNil(layout.targets["party:slot:0"], name .. " exposes the occupied slot")
+    elseif variant == "stats-table" then
+      Assert.notNil(layout.partyStatsTable, name .. " paints the structured Stats table")
+      Assert.equal(#layout.partyStatsTable.rows, 6)
+      Assert.notNil(layout.targets["party:field:iv:attack"])
+      Assert.notNil(layout.targets["party:field:ev:attack"])
+      Assert.isNil(layout.targets["party:readonly:stat:attack"])
     elseif variant ~= "draft-summary" then
       Assert.notNil(layout.targets["party:field:personality"], name .. " exposes raw identity")
       local nature = false
@@ -721,6 +766,74 @@ function T.party_and_bag_render_on_compact_and_wide_surfaces(scope)
   draw(scope, 1280, 720, wide, "bag-wide", "Bag")
 end
 
+function T.party_member_card_uses_light_face_and_selected_border(scope)
+  local width, height = 800, 600
+  local topology = ScreenTopology.oneDisplay({
+    id = "main",
+    rect = { x = 0, y = 0, width = width, height = height },
+    touch = true,
+    role = "world",
+  })
+  local rectangleCalls, currentColor = {}, nil
+  local oldSetColor, oldRectangle = love.graphics.setColor, love.graphics.rectangle
+  love.graphics.setColor = function(r, g, b, a)
+    currentColor = { r, g, b, a }
+    return oldSetColor(r, g, b, a)
+  end
+  love.graphics.rectangle = function(mode, x, y, rectWidth, rectHeight, ...)
+    rectangleCalls[#rectangleCalls + 1] = {
+      mode = mode,
+      x = x,
+      y = y,
+      width = rectWidth,
+      height = rectHeight,
+      color = currentColor,
+    }
+    return oldRectangle(mode, x, y, rectWidth, rectHeight, ...)
+  end
+  local ok, layout = xpcall(function()
+    local _, _, renderedLayout = draw(
+      scope,
+      width,
+      height,
+      topology,
+      "party-selected-card",
+      "Party",
+      "list-selected"
+    )
+    return renderedLayout
+  end, debug.traceback)
+  love.graphics.setColor, love.graphics.rectangle = oldSetColor, oldRectangle
+  if not ok then
+    error(layout, 0)
+  end
+
+  local memberRect = assert(layout.targets["party:slot:0"]).rect
+  local addRect = assert(layout.targets["party:add"]).rect
+  local face, selectedBorder, primaryAddFace = false, false, false
+  local skin = require("app.src.ui.ProductMenuSkin").forVersion("heartgold")
+  for _, call in ipairs(rectangleCalls) do
+    local exactMember = call.x == memberRect.x and call.y == memberRect.y
+      and call.width == memberRect.width and call.height == memberRect.height
+    if exactMember and call.mode == "fill" then
+      face = call.color[1] == 1 and call.color[2] == 1 and call.color[3] == 1
+    elseif exactMember and call.mode == "line" then
+      local rim = skin.cards.normal.selectedRim
+      selectedBorder = call.color[1] == rim[1] and call.color[2] == rim[2] and call.color[3] == rim[3]
+    end
+    local withinAdd = call.x >= addRect.x and call.y >= addRect.y
+      and call.x + call.width <= addRect.x + addRect.width
+      and call.y + call.height <= addRect.y + addRect.height
+    if withinAdd and call.mode == "fill" and call.color[1] == 0.56 and call.color[2] == 0.82
+      and call.color[3] == 0.48 then
+      primaryAddFace = true
+    end
+  end
+  Assert.isTrue(face, "member card has a light face")
+  Assert.isTrue(selectedBorder, "focused member card has the selected border")
+  Assert.isTrue(primaryAddFace, "Add card retains the primary action face")
+end
+
 function T.bag_quantity_uses_normal_and_pressed_generated_controls(scope)
   local topology = ScreenTopology.oneDisplay({
     id = "main",
@@ -748,15 +861,7 @@ function T.bag_cards_use_bounded_description_and_wide_centered_geometry(scope)
     touch = true,
     role = "world",
   })
-  local _, renderedText, layout = draw(
-    scope,
-    width,
-    height,
-    topology,
-    "bag-cards",
-    "Bag",
-    "bag-cards"
-  )
+  local _, renderedText, layout = draw(scope, width, height, topology, "bag-cards", "Bag", "bag-cards")
   local card = assert(layout.bagGrid[1])
   Assert.isTrue(
     (layout.bagGrid[2].rect.x + layout.bagGrid[2].rect.width) - card.rect.x < layout.content.width,
@@ -773,7 +878,10 @@ function T.bag_cards_use_bounded_description_and_wide_centered_geometry(scope)
     "the bounded wide Bag grid has symmetric side padding"
   )
   Assert.isTrue(renderedText:find("Restores a small amount of HP", 1, true) ~= nil, "cards show item descriptions")
-  Assert.isFalse(renderedText:find("OVERFLOW_SENTINEL", 1, true) ~= nil, "descriptions stop at the card's two-line limit")
+  Assert.isFalse(
+    renderedText:find("OVERFLOW_SENTINEL", 1, true) ~= nil,
+    "descriptions stop at the card's two-line limit"
+  )
 end
 
 function T.bag_item_focus_uses_generated_visual_under_the_card_contents(scope)
@@ -808,7 +916,10 @@ function T.bag_item_focus_uses_generated_visual_under_the_card_contents(scope)
       iconIndex = index
     end
   end
-  Assert.isTrue(focusIndex ~= nil and iconIndex ~= nil and focusIndex < iconIndex, "Bag focus art draws beneath the item icon")
+  Assert.isTrue(
+    focusIndex ~= nil and iconIndex ~= nil and focusIndex < iconIndex,
+    "Bag focus art draws beneath the item icon"
+  )
   local focusX, focusY = focusArgs[1], focusArgs[2]
   Assert.equal(focusX, card.rect.x + card.rect.width / 2 - 9, "focus preserves its generated horizontal offset")
   Assert.equal(focusY, card.rect.y + card.rect.height / 2 - 6, "focus preserves its generated vertical offset")
@@ -897,7 +1008,7 @@ function T.party_icons_center_from_distinct_provider_dimensions(scope)
     for _, row in ipairs(plan.content.layout.rows) do
       rowsById[row.targetId] = row
     end
-    plan.content.layout.partyGrid[1].value = "Neutral card value"
+    plan.content.layout.partyGrid[1].value = "Neutral"
     local iconSpecs = {
       { targetId = "party:slot:0", key = "small", rect = { x = 20, y = 72, width = 28, height = 24 } },
       { targetId = "party:slot:0", key = "large", rect = { x = 86, y = 72, width = 32, height = 28 } },
@@ -983,7 +1094,7 @@ function T.party_icons_center_from_distinct_provider_dimensions(scope)
     Assert.near(draws[index].y, point.y, 0.01, "icon y uses provider-reported height and layout icon bounds")
   end
   Assert.isTrue(
-    table.concat(drawnText, " "):find("Neutral card value", 1, true) ~= nil,
+    table.concat(drawnText, " "):find("Neutral", 1, true) ~= nil,
     "grid-card painter renders the projected value string without domain formatting"
   )
   local compactDraw = assert(draws.oversized, "compact Party card draws its prepared icon")
@@ -997,8 +1108,8 @@ function T.party_icons_center_from_distinct_provider_dimensions(scope)
     "scaled icon stays inside its compact icon rectangle"
   )
   Assert.isTrue(
-    compactDraw.y + dimensions.oversized.height * compactDraw.scaleY <= iconRects.text.y,
-    "scaled icon stays above the card label"
+    compactDraw.x + dimensions.oversized.width * compactDraw.scaleX <= iconRects.text.x,
+    "scaled icon stays beside the card label"
   )
 end
 
@@ -1111,6 +1222,44 @@ function T.add_draft_summary_is_rendered_in_its_reserved_party_region(scope)
   Assert.notNil(layout.partySummary, "Party draft layout reserves a summary region")
   Assert.isTrue(renderedText:find("Chikorita", 1, true) ~= nil, "the draft summary renders its identity")
   Assert.isTrue(renderedText:find("Lv. 5", 1, true) ~= nil, "the draft summary renders its level")
+end
+
+function T.party_stats_table_renders_distinct_aligned_columns(scope)
+  local width, height = 800, 600
+  local topology = ScreenTopology.oneDisplay({
+    id = "main",
+    rect = { x = 0, y = 0, width = width, height = height },
+    touch = true,
+    role = "world",
+  })
+  local _, renderedText, layout, _, _, view =
+    draw(scope, width, height, topology, "party-stats-table", "Party", "stats-table")
+  Assert.isTrue(renderedText:find("Stat", 1, true) ~= nil, "the table names the stat column")
+  Assert.isTrue(renderedText:find("IV", 1, true) ~= nil, "the table names the IV column")
+  Assert.isTrue(renderedText:find("EV", 1, true) ~= nil, "the table names the EV column")
+  Assert.isTrue(renderedText:find("Derived", 1, true) ~= nil, "the table distinguishes derived values")
+  Assert.isTrue(renderedText:find("Attack", 1, true) ~= nil, "the stat label is rendered")
+  Assert.isTrue(renderedText:find("HP", 1, true) ~= nil, "the compact editable HP fact remains visible")
+  Assert.isTrue(renderedText:find("12", 1, true) ~= nil, "the editable HP value remains visible")
+  Assert.notNil(layout.partyStatsTable)
+  Assert.equal(view.focus, "party:field:iv:attack")
+
+  local compactTopology = ScreenTopology.oneDisplay({
+    id = "main",
+    rect = { x = 0, y = 0, width = 256, height = 192 },
+    touch = true,
+    role = "world",
+  })
+  local _, compactText, compactLayout =
+    draw(scope, 256, 192, compactTopology, "party-stats-table-compact", "Party", "stats-table")
+  for _, header in ipairs({ "Stat", "IV", "EV", "Derived" }) do
+    Assert.isTrue(compactText:find(header, 1, true) ~= nil, "compact Stats retains " .. header)
+  end
+  local lastFact = compactLayout.partyStatsTable.facts[3].rect
+  Assert.isTrue(
+    lastFact.y + lastFact.height <= compactLayout.targets["party:apply"].rect.y,
+    "compact facts do not overlap the draft actions"
+  )
 end
 
 function T.location_map_search_uses_shaded_controls_and_bounds_long_queries(scope)

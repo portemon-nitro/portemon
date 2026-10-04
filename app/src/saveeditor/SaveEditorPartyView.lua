@@ -10,11 +10,51 @@ PartyView.__index = PartyView
 
 ---@alias SaveEditorPartyOptionKey string|integer
 ---@alias SaveEditorPartyOptionKeys table<integer|string, SaveEditorPartyOptionKey|boolean>
+---@class SaveEditorPartyEditorDescriptor
+---@field kind string
+---@field value unknown?
+---@field min number?
+---@field max number?
+---@field base string?
+---@field setter string?
+---@field fieldId string?
+---@class SaveEditorPartyStatsCellEditor
+---@field targetId string
+---@field editor SaveEditorPartyEditorDescriptor?
+---@field help string
+---@class SaveEditorPartyRow
+---@field role string
+---@field targetId string
+---@field id string?
+---@field label string?
+---@field value unknown?
+---@field editor SaveEditorPartyEditorDescriptor?
+---@field enabled boolean?
+---@field help string?
+---@class SaveEditorPartyStatsFact
+---@field id string
+---@field label string
+---@field value unknown
+---@field editor SaveEditorPartyEditorDescriptor?
+---@class SaveEditorPartyStatsRow
+---@field key string
+---@field label string
+---@field iv number
+---@field ivEditor SaveEditorPartyStatsCellEditor
+---@field ev number
+---@field evEditor SaveEditorPartyStatsCellEditor
+---@field derived number|string
+---@class SaveEditorPartyStatsTable
+---@field rows SaveEditorPartyStatsRow[]
+---@field facts SaveEditorPartyStatsFact[]
+---@class SaveEditorPartyRows
+---@field [integer] SaveEditorPartyRow
+---@field statsTable SaveEditorPartyStatsTable?
 ---@class SaveEditorPartyView
 ---@field private context table<string, unknown>
 ---@field private optionCache table<string, { key: string, label: string }[]>
 ---@field options fun(self: SaveEditorPartyView, key: string, keysFor: fun(): SaveEditorPartyOptionKeys, labelFor: fun(key: string): string, numericKeys: boolean?): { key: string, label: string }[]
----@field rows fun(self: SaveEditorPartyView, mon: table<string, unknown>, projection: SaveEditorMonProjection, subpage: string, editable: boolean, focusId: string?): table[]
+---@field rows fun(self: SaveEditorPartyView, mon: table<string, unknown>, projection: SaveEditorMonProjection, subpage: string, editable: boolean, focusId: string?): SaveEditorPartyRows
 
 local function catalogOptions(keys, labelFor, numericKeys)
   local options = {}
@@ -79,7 +119,7 @@ end
 ---@param projection SaveEditorMonProjection
 ---@param subpage string
 ---@param editable boolean
----@return table[]
+---@return SaveEditorPartyRows
 function PartyView:rows(mon, projection, subpage, editable)
   assert(
     subpage == "Identity" or subpage == "Training" or subpage == "Stats" or subpage == "Moves" or subpage == "Origin",
@@ -110,6 +150,19 @@ function PartyView:rows(mon, projection, subpage, editable)
       setter = setter or "scalar",
       fieldId = fieldId,
     })
+  end
+  local function integerEditor(fieldId, value, minimum, maximum, base, setter)
+    return editable
+        and {
+          kind = "integer",
+          value = value,
+          min = minimum,
+          max = maximum,
+          base = base or "decimal",
+          setter = setter or "scalar",
+          fieldId = fieldId,
+        }
+      or nil
   end
   local function choice(fieldId, label, value, options, setter, convert)
     add(fieldId, label, value, "named choice", {
@@ -219,28 +272,62 @@ function PartyView:rows(mon, projection, subpage, editable)
     add("growth-curve", "Growth curve", species.growthCurve)
     add("exp-interval", "Current level EXP interval", expRange)
   elseif subpage == "Stats" then
-    local names = {
+    local statsTable = { rows = {}, facts = {} }
+    local stats = {
       { "hp", "HP" },
       { "attack", "Attack" },
       { "defense", "Defense" },
       { "speed", "Speed" },
-      { "specialAttack", "Special Attack" },
-      { "specialDefense", "Special Defense" },
+      { "specialAttack", "Sp. Atk" },
+      { "specialDefense", "Sp. Def" },
     }
-    for _, stat in ipairs(names) do
-      integer("iv:" .. stat[1], stat[2] .. " IV", mon.ivs[stat[1]], 0, 31, nil, "iv")
-      integer("ev:" .. stat[1], stat[2] .. " EV", mon.evs[stat[1]], 0, 255, nil, "ev")
-      add("stat:" .. stat[1], stat[2] .. " (derived)", projection.stats and projection.stats[stat[1]] or "Unavailable")
+    for _, stat in ipairs(stats) do
+      local key, label = stat[1], stat[2]
+      local ivId, evId = "iv:" .. key, "ev:" .. key
+      statsTable.rows[#statsTable.rows + 1] = {
+        key = key,
+        label = label,
+        iv = mon.ivs[key],
+        ivEditor = {
+          targetId = "party:field:" .. ivId,
+          editor = integerEditor(ivId, mon.ivs[key], 0, 31, nil, "iv"),
+          help = dependencyHelp("party:field:" .. ivId, subpage),
+        },
+        ev = mon.evs[key],
+        evEditor = {
+          targetId = "party:field:" .. evId,
+          editor = integerEditor(evId, mon.evs[key], 0, 255, nil, "ev"),
+          help = dependencyHelp("party:field:" .. evId, subpage),
+        },
+        derived = projection.stats and projection.stats[key] or "Unavailable",
+      }
     end
-    add("max-hp", "Maximum HP (derived)", projection.stats and projection.stats.hp or "Unavailable")
-    integer("currentHp", "Current HP", mon.condition.currentHp, 0, 4294967295)
-    integer("status", "Status", mon.condition.status, 0, 4294967295, "hex")
     local evTotal = 0
     for _, value in pairs(mon.evs) do
       evTotal = evTotal + value
     end
-    add("ev-total", "EV total", evTotal)
-    add("ev-limit", "EV limit", "510")
+    statsTable.facts = {
+      {
+        id = "currentHp",
+        label = "Current HP",
+        value = mon.condition.currentHp,
+        editor = integerEditor("currentHp", mon.condition.currentHp, 0, 4294967295),
+      },
+      {
+        id = "status",
+        label = "Status",
+        value = mon.condition.status,
+        editor = integerEditor("status", mon.condition.status, 0, 4294967295, "hex"),
+      },
+      { id = "ev-total", label = "EV total", value = evTotal },
+      { id = "ev-limit", label = "EV limit", value = "510" },
+    }
+    for _, fact in ipairs(statsTable.facts) do
+      if fact.editor ~= nil then
+        add(fact.id, fact.label, fact.value, "integer value", fact.editor)
+      end
+    end
+    rows.statsTable = statsTable
   elseif subpage == "Moves" then
     for slot0, move in ipairs(mon.moves) do
       local index0 = slot0 - 1

@@ -489,7 +489,14 @@ drawCenteredIcon = function(renderer, icon, bounds)
 end
 
 local function drawGridCard(renderer, card, focused)
-  drawShadedControl(renderer, card.rect, "", focused, false, false, card.kind == "add" and "primary" or "navigation")
+  if card.kind == "member" then
+    setColor(renderer.graphics, { 1, 1, 1, 1 })
+    renderer.graphics.rectangle("fill", card.rect.x, card.rect.y, card.rect.width, card.rect.height, 3, 3)
+    setColor(renderer.graphics, focused and renderer.skin.cards.normal.selectedRim or renderer.skin.cards.normal.border)
+    renderer.graphics.rectangle("line", card.rect.x, card.rect.y, card.rect.width, card.rect.height, 3, 3)
+  else
+    drawShadedControl(renderer, card.rect, "", focused, false, false, "primary")
+  end
   local icon = card.iconKey and renderer._icons[card.iconKey]
   if icon then
     drawCenteredIcon(renderer, icon, card.iconRect)
@@ -664,6 +671,7 @@ local function paintPane(self, view, plan, pane)
         rect = card.rect,
         iconRect = cardRow and cardRow.iconRect or card.iconRect,
         textRect = cardRow and cardRow.labelRect or card.textRect,
+        textScale = card.textScale,
       }, card.targetId == view.focus)
     end
   end
@@ -785,6 +793,41 @@ local function paintPane(self, view, plan, pane)
         layout.partyHelp.rect.y,
         "hint"
       )
+    end
+    if layout.partyStatsTable ~= nil then
+      local stats = layout.partyStatsTable
+      local headerColor = self.skin.cards.normal.border
+      local function drawCellText(text, target, role)
+        local lineHeight = self.text.fontDef.lineHeight
+        local scale = math.min(1, target.height / lineHeight)
+        graphics.push("all")
+        graphics.translate(target.x + 4, target.y + math.max(0, (target.height - lineHeight * scale) / 2))
+        graphics.scale(scale, scale)
+        drawText(self, fitText(self, text, (target.width - 8) / scale), 0, 0, role)
+        graphics.pop()
+      end
+      for _, header in ipairs(stats.headers) do
+        setColor(graphics, headerColor)
+        graphics.rectangle("fill", header.rect.x, header.rect.y, header.rect.width, header.rect.height)
+        drawCellText(header.label, header.rect)
+      end
+      for _, row in ipairs(stats.rows) do
+        for index, cell in ipairs(row.cells) do
+          local cellRect = cell.rect
+          if cell.targetId == view.focus then
+            setColor(graphics, SELECTED)
+            graphics.rectangle("line", cellRect.x + 1, cellRect.y + 1, cellRect.width - 2, cellRect.height - 2)
+          end
+          drawCellText(cell.label, cellRect, index == 4 and "hint" or "normal")
+        end
+      end
+      for _, fact in ipairs(stats.facts) do
+        if fact.targetId == view.focus then
+          setColor(graphics, SELECTED)
+          graphics.rectangle("line", fact.rect.x + 1, fact.rect.y + 1, fact.rect.width - 2, fact.rect.height - 2)
+        end
+        drawCellText(fact.label .. " " .. fact.value, fact.rect, fact.editable and "normal" or "hint")
+      end
     end
   end
   if view.section == "Location" then

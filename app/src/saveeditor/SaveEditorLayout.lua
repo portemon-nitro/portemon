@@ -23,60 +23,6 @@ local function rect(x, y, width, height)
   return { x = x, y = y, width = math.max(1, width), height = math.max(1, height) }
 end
 
-local function sixCellGrid(body, gap, compact)
-  local cellWidth = (body.width - gap) / 2
-  local cellHeight = (body.height - gap * 2) / 3
-  assert(cellWidth > 0 and cellHeight > 0, "six-cell grid needs positive cells")
-  local cells = {}
-  for index = 1, 6 do
-    local column, row = (index - 1) % 2, math.floor((index - 1) / 2)
-    local x = body.x + column * (cellWidth + gap)
-    local y = body.y + row * (cellHeight + gap)
-    local cell = rect(x, y, cellWidth, cellHeight)
-    local inset = math.min(5, cell.width / 8)
-    local iconRect, textRect
-    if compact then
-      iconRect = rect(cell.x + 2, cell.y + 2, math.min(16, cell.width - 26), math.min(16, cell.height - 4))
-      textRect = rect(
-        iconRect.x + iconRect.width + 4,
-        cell.y + 2,
-        cell.x + cell.width - iconRect.x - iconRect.width - 8,
-        cell.height - 4
-      )
-    else
-      local iconHeight = math.max(1, (cell.height - gap) * 0.62)
-      iconRect = rect(cell.x + inset, cell.y + 2, cell.width - inset * 2, iconHeight - 2)
-      textRect = rect(
-        cell.x + inset,
-        iconRect.y + iconRect.height + 2,
-        cell.width - inset * 2,
-        cell.y + cell.height - iconRect.y - iconRect.height - 5
-      )
-    end
-    assert(
-      cell.x >= body.x
-        and cell.y >= body.y
-        and cell.x + cell.width <= body.x + body.width + 0.01
-        and cell.y + cell.height <= body.y + body.height + 0.01,
-      "six-cell geometry stays inside its body"
-    )
-    if compact then
-      assert(iconRect.x + iconRect.width <= textRect.x, "compact six-cell content regions remain side by side")
-    else
-      assert(iconRect.y + iconRect.height <= textRect.y, "six-cell content regions remain stacked")
-    end
-    assert(
-      textRect.x >= cell.x
-        and textRect.y >= cell.y
-        and textRect.x + textRect.width <= cell.x + cell.width
-        and textRect.y + textRect.height <= cell.y + cell.height,
-      "six-cell text remains inside its cell"
-    )
-    cells[index] = { rect = cell, iconRect = iconRect, textRect = textRect }
-  end
-  return cells
-end
-
 function Layout.compute(view, width, height, metrics)
   assert(type(view) == "table" and width > 0 and height > 0)
   local scope = view.scope
@@ -105,6 +51,7 @@ function Layout.compute(view, width, height, metrics)
   local locationStatus
   local bagGrid, bagTabs, bagStripTarget, bagPageTextRect
   local listSurfaces = {}
+  local partyStatsTable
   local focusableSet = {}
   local function addFocusable(targetId)
     if not focusableSet[targetId] then
@@ -477,12 +424,20 @@ function Layout.compute(view, width, height, metrics)
     if page == "list" then
       local cards = assert(view.partyCards, "Party list provides occupied cards")
       local gridBody = rect(contentX, contentTop, innerWidth, contentBottom - contentTop)
-      local cells = sixCellGrid(gridBody, 6)
+      local compact = width <= 280
+      local cells = SaveEditorCard.resolveGrid({
+        bounds = gridBody,
+        count = math.min(6, #cards),
+        columns = 2,
+        rows = 3,
+        gap = compact and 2 or 6,
+        maxWidth = compact and 240 or 400,
+      })
       for index, card in ipairs(cards) do
         assert(index <= 6, "Party publishes no more than six cards")
         local cell = cells[index]
         local id = card.kind == "member" and ("party:slot:" .. card.slot0) or "party:add"
-        local value = card.kind == "member" and ("Lv. " .. tostring(card.level)) or nil
+        local value = card.kind == "member" and (card.species .. "  Lv. " .. tostring(card.level)) or nil
         targets[id] = cell.rect
         focusPositions[id] = cell.rect
         addFocusable(id)
@@ -495,6 +450,7 @@ function Layout.compute(view, width, height, metrics)
           rect = cell.rect,
           iconRect = cell.iconRect,
           textRect = cell.textRect,
+          textScale = compact and math.min(1, cell.textRect.height / (2 * metrics.lineHeight)) or nil,
         }
         rows[#rows + 1] = {
           role = card.kind == "member" and "party slot" or "action",
@@ -520,12 +476,10 @@ function Layout.compute(view, width, height, metrics)
     if page == "detail" then
       actions = {
         { "party:edit", "Edit" },
-        { "party:move-up", "Move up", view.partySlot0 ~= 0 },
-        { "party:move-down", "Move down", view.partySlot0 ~= view.partyLastSlot0 },
         { "party:remove", "Remove" },
-        { "party:back", "Party list" },
+        { "party:back", "Back" },
       }
-      actionRows = width < 400 and 2 or 1
+      actionRows = 1
     elseif page == "draft" then
       actions = {
         { "party:apply", "Apply", view.partyValid == true },
@@ -535,11 +489,91 @@ function Layout.compute(view, width, height, metrics)
       actionRows = 1
     end
     local actionHeight = actionRows * rowHeight
-    local helpHeight = page == "draft" and metrics.lineHeight + 4 or 0
+    local helpHeight = page == "draft" and view.partySubpage ~= "Stats" and metrics.lineHeight + 4 or 0
     local bodyTop = contentTop
     local bodyBottom = contentBottom - actionHeight - helpHeight
     local bodyHeight = math.max(1, bodyBottom - bodyTop)
-    if page ~= "list" then
+    if page == "draft" and view.partySubpage ~= "Stats" and view.partyFieldHelp then
+      partyHelp = view.partyFieldHelp
+    end
+    if page ~= "list" and view.statsTable ~= nil then
+      local tableView = view.statsTable
+      local compactStats = width <= 280
+      assert(#tableView.rows == 6 and #tableView.facts == 4, "Party Stats has six rows and four secondary facts")
+      local tableRowHeight = math.min(metrics.lineHeight + 4, math.floor(bodyHeight / (#tableView.rows + 2)))
+      assert(tableRowHeight > 0, "Party Stats table fits its detail body")
+      local tableTop = bodyTop
+      local columnWidths = { innerWidth * 0.37, innerWidth * 0.13, innerWidth * 0.13, innerWidth * 0.37 }
+      local headers, x = {}, contentX + 0.0
+      for index, label in ipairs({ "Stat", "IV", "EV", "Derived" }) do
+        headers[index] = { label = label, rect = rect(x, tableTop, columnWidths[index], tableRowHeight) }
+        x = x + columnWidths[index]
+      end
+      local tableRows = {}
+      for index, stat in ipairs(tableView.rows) do
+        local y = tableTop + index * tableRowHeight
+        local cells, cellX = {}, contentX + 0.0
+        local values = { stat.label, tostring(stat.iv), tostring(stat.ev), tostring(stat.derived) }
+        local descriptors = { nil, stat.ivEditor, stat.evEditor, nil }
+        for column = 1, 4 do
+          local cellRect = rect(cellX, y, columnWidths[column], tableRowHeight)
+          local descriptor = descriptors[column]
+          cells[column] = {
+            label = values[column],
+            rect = cellRect,
+            targetId = descriptor and descriptor.targetId or nil,
+            editable = descriptor ~= nil and descriptor.editor ~= nil,
+          }
+          if descriptor ~= nil and descriptor.editor ~= nil then
+            targets[descriptor.targetId] = cellRect
+            focusPositions[descriptor.targetId] = cellRect
+            addFocusable(descriptor.targetId)
+          end
+          cellX = cellX + columnWidths[column]
+        end
+        tableRows[index] = { key = stat.key, cells = cells }
+      end
+      local factY = tableTop + (#tableView.rows + 1) * tableRowHeight
+      local factGroups = {}
+      if compactStats then
+        factGroups = {
+          { tableView.facts[1] },
+          { tableView.facts[2] },
+          { tableView.facts[3], tableView.facts[4] },
+        }
+      else
+        for _, fact in ipairs(tableView.facts) do
+          factGroups[#factGroups + 1] = { fact }
+        end
+      end
+      local factWidth = innerWidth / #factGroups
+      local factRects = {}
+      for index, group in ipairs(factGroups) do
+        local fact = group[1]
+        local factRect = rect(contentX + (index - 1) * factWidth, factY, factWidth, tableRowHeight)
+        local label = compactStats and fact.id == "currentHp" and "HP" or fact.label
+        local value = tostring(fact.value)
+        if #group == 2 then
+          label = "EV"
+          value = tostring(group[1].value) .. "/" .. tostring(group[2].value)
+        end
+        local valueTarget = #group == 1 and fact.editor and ("party:field:" .. fact.id) or nil
+        if valueTarget ~= nil then
+          targets[valueTarget] = factRect
+          focusPositions[valueTarget] = factRect
+          addFocusable(valueTarget)
+        end
+        factRects[index] = {
+          id = fact.id,
+          label = label,
+          value = value,
+          rect = factRect,
+          targetId = valueTarget,
+          editable = valueTarget ~= nil,
+        }
+      end
+      partyStatsTable = { headers = headers, rows = tableRows, facts = factRects }
+    elseif page ~= "list" then
       local scrollId = "party:" .. page .. ":" .. tostring(view.partySubpage or "Identity")
       ---@type number
       local offset = view.scrollOffsets and view.scrollOffsets[scrollId] or (view.scrollOffset or 0) * rowHeight
@@ -592,7 +626,7 @@ function Layout.compute(view, width, height, metrics)
         partyHelp = view.partyFieldHelp
       end
     end
-    if page == "draft" and partyHelp ~= nil then
+    if page == "draft" and view.partySubpage ~= "Stats" and partyHelp ~= nil then
       layoutPartyHelp = {
         rect = rect(contentX, bodyBottom + 2, innerWidth, metrics.lineHeight),
         text = partyHelp,
@@ -1133,6 +1167,28 @@ function Layout.compute(view, width, height, metrics)
       end
     end
   end
+  if section == "Party" and view.partyPage == "list" then
+    local cards = view.partyCards or {}
+    local cardTargets = {}
+    for index, card in ipairs(cards) do
+      cardTargets[index] = card.kind == "member" and ("party:slot:" .. card.slot0) or "party:add"
+    end
+    for index, targetId in ipairs(cardTargets) do
+      local node = focusGraph[targetId]
+      if node ~= nil then
+        local column = (index - 1) % 2
+        local row = math.floor((index - 1) / 2)
+        local left = column == 1 and cardTargets[index - 1] or nil
+        local right = column == 0 and cardTargets[index + 1] or nil
+        local above = row > 0 and cardTargets[index - 2] or nil
+        local below = cardTargets[index + 2]
+        node.left = { left or targetId }
+        node.right = { right or targetId }
+        node.up = { above or targetId }
+        node.down = { below or targetId }
+      end
+    end
+  end
   local focusOrder = {}
   local targetRecords = {}
   for _, targetId in ipairs(focusable) do
@@ -1279,6 +1335,7 @@ function Layout.compute(view, width, height, metrics)
     decisionList = decisionList,
     partyGrid = partyGrid,
     listSurfaces = listSurfaces,
+    partyStatsTable = partyStatsTable,
     partySummary = layoutPartySummary,
     partyHelp = layoutPartyHelp,
     locationStatus = locationStatus,

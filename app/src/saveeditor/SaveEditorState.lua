@@ -627,6 +627,19 @@ function State:_partyView()
         break
       end
     end
+    if partyFieldHelp == nil and rows.statsTable ~= nil then
+      for _, stat in ipairs(rows.statsTable.rows) do
+        for _, cell in ipairs({ stat.ivEditor, stat.evEditor }) do
+          if cell.targetId == controller.focus then
+            partyFieldHelp = cell.help
+            break
+          end
+        end
+        if partyFieldHelp ~= nil then
+          break
+        end
+      end
+    end
   end
   return {
     partyPage = controller.partyPage,
@@ -635,6 +648,7 @@ function State:_partyView()
     partySubpage = controller.partySubpage,
     partySubpages = { "Identity", "Training", "Stats", "Moves", "Origin" },
     partyRows = rows,
+    statsTable = rows.statsTable,
     partyCards = cards,
     partySummary = partySummary,
     partyFieldHelp = partyFieldHelp,
@@ -749,6 +763,16 @@ end
 
 function State:_partyField(targetId)
   local view = self:_snapshot()
+  local statsTable = view.statsTable
+  if statsTable ~= nil then
+    for _, stat in ipairs(statsTable.rows) do
+      for _, cell in ipairs({ stat.ivEditor, stat.evEditor }) do
+        if cell.targetId == targetId then
+          return cell.editor
+        end
+      end
+    end
+  end
   for _, row in ipairs(view.partyRows) do
     if row.targetId == targetId then
       return row.editor
@@ -1807,15 +1831,6 @@ function State:_activate(targetId)
   elseif targetId == "party:remove" then
     self.pendingRemove = { kind = "party", slot0 = assert(self.controller.partySlot0) }
     self.controller:openModal("remove")
-  elseif targetId == "party:move-up" or targetId == "party:move-down" then
-    local slot0 = assert(self.controller.partySlot0)
-    local other = targetId == "party:move-up" and slot0 - 1 or slot0 + 1
-    local result = self.session:swapPartyMons(slot0, other)
-    if not result.ok then
-      self.errorMessage = message(result.error)
-    else
-      self.controller.partySlot0 = other
-    end
   elseif targetId:match("^party:move:remove:") then
     local slot0 = assert(tonumber(targetId:match("^party:move:remove:(%d+)$")))
     if self.monDraft then
@@ -1941,6 +1956,9 @@ end
 function State:_revealFocusedRow(_)
   local view = self:_snapshot()
   local section = self.controller.section
+  if section == "Party" and view.statsTable ~= nil then
+    return
+  end
   if section == "Bag" then
     return
   end
