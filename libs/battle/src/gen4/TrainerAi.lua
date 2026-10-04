@@ -22,7 +22,6 @@ local BattleContext = require("libs.battle.src.BattleContext")
 local BattleErrors = require("libs.battle.src.errors")
 local BattleState = require("libs.battle.src.BattleState")
 local CaptureContext = require("libs.battle.src.gen4.CaptureContext")
-local Damage = require("libs.battle.src.gen4.Damage")
 local Experience = require("libs.mons.src.gen4.Experience")
 local ItemUse = require("libs.battle.src.gen4.ItemUse")
 local Personality = require("libs.mons.src.gen4.Personality")
@@ -42,14 +41,15 @@ TrainerAi.OPENING_SCORE = 100
 -- Forward declarations: scoring can run from its pinned boundary before
 -- the shared evaluation helpers below are defined.
 local initThresholds
-local scoreWithThresholds
+local executePrograms
+local buildEvaluationFacts
 
 -- Schema mark for the persisted native record.
 TrainerAi.MEMORY_VERSION = 1
 
 -- Native flag bits with program data, in dispatch order. The doubles bit
--- never appears here: doubles behavior derives from the live battle
--- format instead of a stored pass.
+-- is forced by the live battle format in doubles rather than stored passes,
+-- but its program is transcribed here like every other supported pass.
 local SUPPORTED_BITS = {
   [0] = true,
   [1] = true,
@@ -57,6 +57,7 @@ local SUPPORTED_BITS = {
   [3] = true,
   [5] = true,
   [6] = true,
+  [7] = true,
   [9] = true,
 }
 
@@ -78,11 +79,14 @@ local BATTLE_CURE_FLAGS = { "confusion", "infatuation" }
 
 ---@class TrainerAiMove
 ---@field key string executing move identity, empty for vacant slots
+---@field id integer numeric move identity, zero for vacant slots
 ---@field moveType string semantic move type
 ---@field power integer compiled move power, zero for status moves
 ---@field category string physical, special, or status
 ---@field accuracy integer compiled hit chance
 ---@field effect integer compiled move effect identity gating routine draws
+---@field pp integer? remaining power points, absent when unscouted
+---@field basePp integer? compiled maximum power points, absent when unscouted
 ---@field usable boolean false for vacant and power-point-exhausted slots
 
 ---@class TrainerAiStats
@@ -148,27 +152,6 @@ end
 local function combineMultiplier(chart, moveType, defenderTypes)
   local resolved = TypeEffectiveness.resolve(chart, moveType, defenderTypes, {})
   return resolved.numerator, resolved.denominator
-end
-
----@param moveType string attacking type under evaluation
----@param userTypes string[] attacker types in declared order
----@return integer numerator
----@return integer denominator same-type attack bonus
-local function stabPair(moveType, userTypes)
-  if TypeEffectiveness.stab(moveType, userTypes) then
-    return 3, 2
-  end
-  return 1, 1
-end
-
----@param power integer compiled move power
----@param stabNumerator integer same-type attack bonus numerator
----@param stabDenominator integer same-type attack bonus denominator
----@param effectNumerator integer combined effectiveness numerator
----@param effectDenominator integer combined effectiveness denominator
----@return integer native score points for the matchup
-local function matchupPoints(power, stabNumerator, stabDenominator, effectNumerator, effectDenominator)
-  return math.floor((power * stabNumerator * effectNumerator) / (stabDenominator * effectDenominator))
 end
 
 ---@param value unknown candidate battle stat under evaluation
@@ -237,164 +220,39 @@ local function checkScoringMove(move)
   if type(record.effect) ~= "number" or record.effect % 1 ~= 0 or record.effect < 0 then
     error(BattleErrors.missingBehavior("trainer evaluation reads its compiled move effect", { key = record.key }))
   end
+  local id = record.id
+  if id == nil then
+    id = 0
+  end
+  if type(id) ~= "number" or id % 1 ~= 0 or id < 0 then
+    error(BattleErrors.missingBehavior("trainer evaluation reads its numeric move identity", { key = record.key }))
+  end
+  if record.key ~= "" and id == 0 then
+    error(BattleErrors.missingBehavior("trainer evaluation reads its numeric move identity", { key = record.key }))
+  end
+  if record.key == "" and id ~= 0 then
+    error(BattleErrors.missingBehavior("trainer evaluation reads its numeric move identity", { key = record.key }))
+  end
+  local pp = record.pp
+  if pp ~= nil and (type(pp) ~= "number" or pp % 1 ~= 0 or pp < 0) then
+    error(BattleErrors.missingBehavior("trainer evaluation reads its remaining power points", { key = record.key }))
+  end
+  local basePp = record.basePp
+  if basePp ~= nil and (type(basePp) ~= "number" or basePp % 1 ~= 0 or basePp < 0) then
+    error(BattleErrors.missingBehavior("trainer evaluation reads its maximum power points", { key = record.key }))
+  end
   return {
     key = record.key --[[@as string]],
+    id = id --[[@as integer]],
     moveType = record.moveType --[[@as string]],
     power = record.power --[[@as integer]],
     category = record.category --[[@as string]],
     accuracy = record.accuracy --[[@as integer]],
     effect = record.effect --[[@as integer]],
+    pp = pp --[[@as integer?]],
+    basePp = basePp --[[@as integer?]],
     usable = record.usable == true,
   }
-end
-
--- Estimates one strike through the shared staged arithmetic with an
--- explicit maximum roll, so previews draw nothing from the decision
--- stream. Only damaging moves preview; callers skip status moves.
----@param chart table<string, unknown> session chart resolving directed pairs
----@param attacker TrainerAiStats attacker stats and types under evaluation
----@param move TrainerAiMove damaging move under evaluation
----@param defender TrainerAiStats defender stats and types under evaluation
----@param stream table<string, unknown> caller-owned battle stream, never drawn by previews
----@return integer estimated damage amount
-local function previewDamage(chart, attacker, move, defender, stream)
-  assert(move.power > 0, "damage previews evaluate damaging moves")
-  local effectNumerator, effectDenominator = combineMultiplier(chart, move.moveType, defender.types)
-  local stabNumerator, stabDenominator = stabPair(move.moveType, attacker.types)
-  local attack = attacker.attack
-  local defense = defender.defense
-  if move.category == "special" then
-    attack = attacker.specialAttack
-    defense = defender.specialDefense
-  end
-  local result = Damage.calculate({
-    level = attacker.level,
-    power = move.power,
-    attack = attack,
-    defense = defense,
-    stab = { numerator = stabNumerator, denominator = stabDenominator },
-    effectiveness = { numerator = effectNumerator, denominator = effectDenominator },
-    randomPercent = 100,
-  }, stream)
-  return result.amount
-end
-
----@param move TrainerAiMove candidate move under the damaging check
----@return boolean true for usable moves with compiled power
-local function isDamaging(move)
-  return move.usable and move.power > 0
-end
-
---- Executes one semantic program command for the addressed slot. This is
---- the interpreter dispatch behind the source jump table: every
---- supported opcode implements its exact branch and score adjustment,
---- and anything outside the transcribed set fails closed before any
---- fallback choice.
----@param vm TrainerAiCommandVm command state under execution
----@param slot integer one-based native move slot under execution
----@param command table<string, unknown> semantic command under execution
-local function dispatchCommand(vm, slot, command)
-  assert(type(command) == "table", "program commands stay records")
-  local record = command --[[@as table<string, unknown>]]
-  local move = vm.slots[slot]
-  assert(move ~= nil, "program commands address their move slot")
-  if record.op == "add_matchup" then
-    local effectNumerator, effectDenominator = combineMultiplier(vm.chart, move.moveType, vm.foe.types)
-    local stabNumerator, stabDenominator = stabPair(move.moveType, vm.user.types)
-    vm.scores[slot] = vm.scores[slot]
-      + matchupPoints(move.power, stabNumerator, stabDenominator, effectNumerator, effectDenominator)
-  elseif record.op == "punish_immune" then
-    assert(type(record.amount) == "number", "punishments carry their amount")
-    local effectNumerator, _ = combineMultiplier(vm.chart, move.moveType, vm.foe.types)
-    if effectNumerator == 0 then
-      vm.scores[slot] = vm.scores[slot] - record.amount --[[@as integer]]
-    end
-  elseif record.op == "punish_weaker" then
-    assert(type(record.amount) == "number", "punishments carry their amount")
-    if isDamaging(move) and move.power < vm.bestPower then
-      vm.scores[slot] = vm.scores[slot] - record.amount --[[@as integer]]
-    end
-  elseif record.op == "bonus_if_doubly_effective" then
-    assert(type(record.amount) == "number", "bonuses carry their amount")
-    if isDamaging(move) then
-      local effectNumerator, effectDenominator = combineMultiplier(vm.chart, move.moveType, vm.foe.types)
-      if effectNumerator == 4 * effectDenominator and vm.thresholds[slot] < TrainerAiProgram.CHANCE_MARK then
-        vm.scores[slot] = vm.scores[slot] + record.amount --[[@as integer]]
-      end
-    end
-  elseif record.op == "bonus_if_effective" then
-    assert(type(record.amount) == "number", "bonuses carry their amount")
-    if isDamaging(move) then
-      local effectNumerator, effectDenominator = combineMultiplier(vm.chart, move.moveType, vm.foe.types)
-      if effectNumerator >= 2 * effectDenominator then
-        vm.scores[slot] = vm.scores[slot] + record.amount --[[@as integer]]
-      end
-    end
-  elseif record.op == "punish_if_resisted" then
-    assert(type(record.amount) == "number", "punishments carry their amount")
-    if isDamaging(move) then
-      local effectNumerator, effectDenominator = combineMultiplier(vm.chart, move.moveType, vm.foe.types)
-      if effectNumerator > 0 and effectNumerator < effectDenominator then
-        vm.scores[slot] = vm.scores[slot] - record.amount --[[@as integer]]
-      end
-    end
-  elseif record.op == "prefer_stab" then
-    assert(type(record.bonus) == "number", "preferences carry their bonus")
-    assert(type(record.penalty) == "number", "preferences carry their penalty")
-    if isDamaging(move) then
-      if TypeEffectiveness.stab(move.moveType, vm.user.types) then
-        vm.scores[slot] = vm.scores[slot] + record.bonus --[[@as integer]]
-      else
-        vm.scores[slot] = vm.scores[slot] - record.penalty --[[@as integer]]
-      end
-    end
-  elseif record.op == "bonus_if_knockout" then
-    assert(type(record.amount) == "number", "bonuses carry their amount")
-    if isDamaging(move) and previewDamage(vm.chart, vm.user, move, vm.foe, vm.stream) >= vm.foeHp then
-      vm.scores[slot] = vm.scores[slot] + record.amount --[[@as integer]]
-    end
-  elseif record.op == "bonus_if_baton_pass" then
-    assert(type(record.amount) == "number", "bonuses carry their amount")
-    if move.key == "BATON_PASS" then
-      vm.scores[slot] = vm.scores[slot] + record.amount --[[@as integer]]
-    end
-  elseif record.op == "bonus_first_slot" then
-    assert(type(record.amount) == "number", "bonuses carry their amount")
-    for index, candidate in ipairs(vm.slots) do
-      if candidate.usable then
-        vm.scores[index] = vm.scores[index] + record.amount --[[@as integer]]
-        break
-      end
-    end
-  else
-    error(BattleErrors.missingBehavior("trainer programs dispatch their transcribed commands", {
-      bit = vm.bit,
-      op = tostring(record.op),
-    }))
-  end
-end
-
---- Executes one semantic program command for the addressed slot through
---- the production interpreter. Production scoring calls this per
---- slot; tests may invoke it with a synthetic command to prove unknown
---- opcodes fail closed before any fallback choice.
----@param vm TrainerAiCommandVm command state under execution
----@param slot integer one-based native move slot under execution
----@param command table<string, unknown> semantic command under execution
-function TrainerAi.runCommand(vm, slot, command)
-  assert(type(vm) == "table", "program commands execute against command state")
-  assert(type(slot) == "number" and slot % 1 == 0 and slot >= 1 and slot <= 4, "commands address a move slot")
-  dispatchCommand(vm, slot, command)
-end
-
----@param bit integer enabled native flag bit under lookup
----@return table<string, table<integer, table<string, unknown>>> semantic program for the bit
-local function programFor(bit)
-  local program = TrainerAiProgram.PROGRAMS[bit]
-  if type(program) ~= "table" then
-    error(BattleErrors.missingBehavior("trainer scoring names a transcribed native flag", { flag = bit }))
-  end
-  return program --[[@as table<string, table<integer, table<string, unknown>>>]]
 end
 
 ---@class TrainerAiScoredSlot
@@ -402,14 +260,250 @@ end
 ---@field key string executing move identity, empty for vacant slots
 ---@field score integer native score points after flag evaluation
 
+--- Builds the source-visible battle facts for program execution from
+--- scored slots, staged fighter stats, and explicit evaluation context.
+--- The context carries every fact the programs can read (battler
+--- health, abilities, items, statuses, stages, parties, history, field);
+--- absent facts fail closed when a reached command requires them.
+---@param chart table<string, unknown> session chart resolving directed pairs
+---@param slots TrainerAiMove[] four native move slots in source order
+---@param user TrainerAiStats acting stats and types under scoring
+---@param foe TrainerAiStats opposing stats and types under scoring
+---@param foeHp integer opposing health bounding the knockout check
+---@param firstTurn boolean true while the opening turn gates routine draws
+---@param extra table<string, unknown>? explicit evaluation context under test control
+---@return table<string, unknown> source-visible battle facts for the executor
+function buildEvaluationFacts(chart, slots, user, foe, foeHp, firstTurn, extra)
+  local context = extra or {}
+  local typeIds = {}
+  for key, id in pairs(TrainerAiProgram.TYPE_IDS) do
+    typeIds[key] = id
+  end
+  local function typeId(key, what)
+    local id = typeIds[key]
+    if id == nil then
+      error(BattleErrors.missingBehavior("trainer evaluation reads its semantic types", { fact = what }))
+    end
+    return id
+  end
+  local function abilityId(key)
+    if key == nil or key == "NONE" or key == "" then
+      return 0
+    end
+    local ids = TrainerAiProgram.ABILITY_IDS --[[@as table<string, integer>]]
+    local id = ids[key]
+    if id == nil then
+      error(BattleErrors.missingBehavior("trainer evaluation reads its ability identity", {}))
+    end
+    return id
+  end
+  local moveById = {}
+  local moveIdByKey = {}
+  for _, slot in ipairs(slots) do
+    local checked = checkScoringMove(slot)
+    if checked.id ~= 0 then
+      moveById[checked.id] = {
+        effect = checked.effect,
+        power = checked.power,
+        moveType = checked.moveType,
+        category = checked.category,
+        accuracy = checked.accuracy,
+        basePp = checked.basePp,
+      }
+      moveIdByKey[checked.key] = checked.id
+    end
+  end
+  if type(context.moveById) == "table" then
+    for id, detail in
+      pairs(context.moveById --[[@as table<integer, table<string, unknown>>]])
+    do
+      if moveById[id] == nil then
+        moveById[id] = detail
+      end
+    end
+  end
+  if type(context.fullMoveById) == "table" then
+    for id, detail in
+      pairs(context.fullMoveById --[[@as table<integer, table<string, unknown>>]])
+    do
+      moveById[id] = detail
+    end
+  end
+  if type(context.fullMoveIdByKey) == "table" then
+    for key, id in
+      pairs(context.fullMoveIdByKey --[[@as table<string, integer>]])
+    do
+      moveIdByKey[key] = id
+    end
+  end
+  local function battlerStats(stats, hp, maxHp, extraBattler)
+    extraBattler = extraBattler or {}
+    local stages = extraBattler.stages or { 6, 6, 6, 6, 6, 6, 6, 6 }
+    local neutral = true
+    for _, stage in ipairs(stages) do
+      if stage ~= 6 then
+        neutral = false
+        break
+      end
+    end
+    local base = extraBattler.base
+    if base == nil then
+      if not neutral then
+        error(BattleErrors.missingBehavior("trainer evaluation reads its unstaged battle stats", {}))
+      end
+      base = {
+        attack = stats.attack,
+        defense = stats.defense,
+        specialAttack = stats.specialAttack,
+        specialDefense = stats.specialDefense,
+      }
+    end
+    return {
+      hp = hp,
+      maxHp = maxHp,
+      level = stats.level,
+      t1 = typeId(stats.types[1], "attacker"),
+      t2 = typeId(stats.types[#stats.types], "attacker"),
+      ability = abilityId(extraBattler.ability),
+      item = extraBattler.item or 0,
+      status = extraBattler.status or 0,
+      status2 = extraBattler.status2 or 0,
+      moveFlags = extraBattler.moveFlags or 0,
+      atk = base.attack,
+      def = base.defense,
+      spa = base.specialAttack,
+      spd = base.specialDefense,
+      spe = base.speed or 0,
+      stages = stages,
+      moves = extraBattler.moves or { 0, 0, 0, 0 },
+      pp = extraBattler.pp or {},
+      gender = extraBattler.gender,
+      weightHg = extraBattler.weightHg,
+      friendship = extraBattler.friendship,
+      ivs = extraBattler.ivs,
+      lastMove = extraBattler.lastMove or 0,
+      entryMoves = extraBattler.entryMoves,
+      entryAbility = extraBattler.entryAbility,
+      suppressed = extraBattler.suppressed or false,
+      magnetRise = extraBattler.magnetRise or false,
+      roosted = extraBattler.roosted or false,
+      miracleEye = extraBattler.miracleEye or false,
+      foresight = extraBattler.foresight or false,
+      flingPower = extraBattler.flingPower,
+      w88b1 = extraBattler.w88b1 or 0,
+      w88neg = extraBattler.w88neg or false,
+    }
+  end
+  local atkMoves = {}
+  local atkPp = {}
+  for index, slot in ipairs(slots) do
+    local checked = checkScoringMove(slot)
+    atkMoves[index] = checked.id
+    if checked.pp ~= nil then
+      atkPp[index] = checked.pp
+    end
+  end
+  local userBattler = battlerStats(user, context.atkHp or 1, context.atkMaxHp or 1, context.attacker)
+  userBattler.moves = atkMoves
+  userBattler.pp = atkPp
+  local foeBattler = battlerStats(foe, foeHp, context.foeMaxHp or foeHp, context.defender)
+  foeBattler.moves = context.foeMoves or { 0, 0, 0, 0 }
+  foeBattler.pp = context.foePp or {}
+  if type(context.liveAttacker) == "table" then
+    userBattler = context.liveAttacker --[[@as table<string, unknown>]]
+    userBattler.moves = atkMoves
+    if context.liveAttackerPp ~= nil then
+      userBattler.pp = context.liveAttackerPp --[[@as table<integer, integer>]]
+    else
+      userBattler.pp = atkPp
+    end
+  end
+  if type(context.liveTarget) == "table" then
+    foeBattler = context.liveTarget --[[@as table<string, unknown>]]
+  end
+  local round = 1
+  if firstTurn ~= true then
+    round = 2
+  end
+  if type(context.round) == "number" then
+    round = context.round --[[@as integer]]
+  end
+  local reverseTypes = {}
+  for key, id in pairs(typeIds) do
+    reverseTypes[id] = key
+  end
+  local function pairEffectiveness(moveType, defense)
+    local attackKey = reverseTypes[moveType]
+    local defendKey = reverseTypes[defense]
+    if attackKey == nil or defendKey == nil then
+      error(BattleErrors.missingBehavior("trainer evaluation reads its semantic types", {}))
+    end
+    local resolved = TypeEffectiveness.resolve(chart, attackKey, { defendKey }, {})
+    return resolved.numerator, resolved.denominator
+  end
+  -- Doubles evaluations address all four battler slots with per-candidate
+  -- attacker/target identities; every other shape keeps the singles pair.
+  local atk = 1
+  local tgt = 0
+  local battlers = { [0] = foeBattler, [1] = userBattler }
+  if type(context.doublesBattlers) == "table" then
+    local configured = context.doublesBattlers --[[@as table<string, unknown>]]
+    assert(type(configured.atk) == "number", "doubles evaluations name their attacker")
+    assert(type(configured.tgt) == "number", "doubles evaluations name their target")
+    assert(type(configured.records) == "table", "doubles evaluations carry every battler")
+    atk = configured.atk --[[@as integer]]
+    tgt = configured.tgt --[[@as integer]]
+    battlers = configured.records --[[@as table<integer, table<string, unknown>>]]
+  end
+  return {
+    atk = atk,
+    tgt = tgt,
+    battlers = battlers,
+    moveById = moveById,
+    moveIdByKey = moveIdByKey,
+    chart = chart,
+    pairEffectiveness = pairEffectiveness,
+    round = round,
+    battleType = context.battleType or 1,
+    weatherClass = context.weatherClass or 0,
+    airLock = context.airLock or false,
+    trickRoom = context.trickRoom or false,
+    gravity = context.gravity or false,
+    mudSport = context.mudSport or false,
+    waterSport = context.waterSport or false,
+    reflect = context.reflect or false,
+    lightScreen = context.lightScreen or false,
+    flowerGiftAtk = context.flowerGiftAtk or false,
+    flowerGiftDef = context.flowerGiftDef or false,
+    chargeHit = context.chargeHit or false,
+    fieldWord = context.fieldWord or 0,
+    sideWords = context.sideWords or { [0] = 0, [1] = 0 },
+    lastMove = context.lastMove or { [0] = 0, [1] = 0 },
+    usedIds = context.usedIds or {},
+    parties = context.parties or {},
+    partyIndex = context.partyIndex or {},
+    partyPartner = context.partyPartner or {},
+    liveBattlers = context.liveBattlers or { [0] = true, [1] = true },
+    switchIn = context.switchIn or {},
+    battlerCount = context.battlerCount or 2,
+    lockedMoves = context.lockedMoves or { encore = 0, disable = 0 },
+    encoreSlot = context.encoreSlot or {},
+    protectMove = context.protectMove or {},
+    heldEffects = context.heldEffects or {},
+    heldMods = context.heldMods or {},
+    naturalGifts = context.naturalGifts or {},
+    recycle = context.recycle or {},
+  }
+end
+
 --- Scores the four native move slots exactly as the source
 --- initialization does: usable slots open at the native baseline,
 --- unavailable slots stay excluded at zero, and the four initialization
 --- draws occur in source slot order with their stored 100-(draw%16)
 --- thresholds before enabled flag evaluation. Enabled flags dispatch in
 --- ascending bit order with each program evaluating every usable slot;
---- score commands draw nothing, routine-draw sites draw per reached
---- slot, and selection draws separately below.
+--- score commands draw nothing, routine draws happen per reached slot,
+--- and selection draws separately below.
 ---@param chart table<string, unknown> session chart resolving directed pairs
 ---@param slots TrainerAiMove[] four native move slots in source order
 ---@param user TrainerAiStats acting stats and types under scoring
@@ -418,8 +512,9 @@ end
 ---@param bits integer[] enabled native flag bits in ascending order
 ---@param firstTurn boolean true while the opening turn gates routine draws
 ---@param stream table<string, unknown> caller-owned battle stream for decision draws
+---@param extra table<string, unknown>? explicit evaluation context under test control
 ---@return TrainerAiScoredSlot[] scored slots in source slot order
-function TrainerAi.scoreSlots(chart, slots, user, foe, foeHp, bits, firstTurn, stream)
+function TrainerAi.scoreSlots(chart, slots, user, foe, foeHp, bits, firstTurn, stream, extra)
   assert(type(chart) == "table", "scoring resolves effectiveness through the session chart")
   assert(type(slots) == "table" and #slots == 4, "scoring covers the four native move slots")
   assert(type(stream) == "table" and type(stream.nextU16) == "function", "scoring draws from the battle stream")
@@ -438,10 +533,13 @@ function TrainerAi.scoreSlots(chart, slots, user, foe, foeHp, bits, firstTurn, s
   end
   table.sort(ordered)
   for _, bit in ipairs(ordered) do
-    programFor(bit --[[@as integer]])
+    if TrainerAiProgram.ENTRY[bit] == nil then
+      error(BattleErrors.missingBehavior("trainer scoring names a transcribed native flag", { flag = bit }))
+    end
   end
   local thresholds = initThresholds(stream)
-  return scoreWithThresholds(chart, slots, user, foe, foeHp, ordered, thresholds, firstTurn, stream)
+  local facts = buildEvaluationFacts(chart, slots, user, foe, foeHp, firstTurn, extra)
+  return executePrograms(facts, slots, ordered, thresholds, stream)
 end
 
 --- Selects the executing move from scored slots after the source singles
@@ -552,6 +650,11 @@ local function checkMemorySlots(slots)
       error(BattleErrors.incompatibleSnapshot("trainer item slots name their item", { slot = index }))
     end
   end
+  -- Slot positions drive selection, so memory always carries all four:
+  -- compact survivor lists from older snapshots are incompatible.
+  if count ~= 4 then
+    error(BattleErrors.incompatibleSnapshot("trainer memory carries four ordered item slots", { slots = count }))
+  end
 end
 
 ---@param known unknown candidate learned-move record under validation
@@ -617,38 +720,48 @@ function TrainerAi.validateMemory(memory)
   return true
 end
 
+---@return string[] fresh gap positions for a trainer without servings
+local function emptySlots()
+  return { "NONE", "NONE", "NONE", "NONE" }
+end
+
 ---@param participant table<string, unknown> acting participant owning the roster and stock
 ---@param state table<string, unknown> live battle state under inspection
 ---@return string[] ordered trainer item identities for the controller
 local function orderedItemSlots(participant, state)
   local context = participant.context
   if type(context) == "table" and type(context.trainerItems) == "table" then
+    local ordered = context.trainerItems --[[@as table<integer, unknown>]]
+    if #ordered ~= 4 then
+      error(BattleErrors.missingBehavior("trainer item order arrives as four source-ordered slots", {
+        controller = tostring(participant.controller),
+      }))
+    end
     local slots = {}
-    for index, item in
-      ipairs(context.trainerItems --[[@as table<integer, unknown>]])
-    do
+    for index = 1, 4 do
+      local item = ordered[index]
       if type(item) ~= "string" or item == "" then
         error(BattleErrors.missingBehavior("trainer item slots name their item", { slot = index }))
       end
-      slots[#slots + 1] = item --[[@as string]]
+      slots[index] = item --[[@as string]]
     end
     return slots
   end
   -- Without source-ordered slots the scan order is unrecoverable:
   -- quantity maps carry no order, so a stocked trainer without
   -- metadata fails closed instead of answering alphabetical stock.
-  -- Trainers with no live stock need no order and stay empty.
+  -- Trainers with no live stock carry four gaps and stay quiet.
   local inventoryId = participant.inventoryId
   if type(inventoryId) ~= "string" then
-    return {}
+    return emptySlots()
   end
   local inventories = state.inventories
   if type(inventories) ~= "table" then
-    return {}
+    return emptySlots()
   end
   local stock = inventories[inventoryId]
   if type(stock) ~= "table" or type(stock.quantities) ~= "table" then
-    return {}
+    return emptySlots()
   end
   for key, units in
     pairs(stock.quantities --[[@as table<string, unknown>]])
@@ -659,7 +772,7 @@ local function orderedItemSlots(participant, state)
       }))
     end
   end
-  return {}
+  return emptySlots()
 end
 
 --- Creates the fresh native trainer record once per native session after
@@ -900,16 +1013,24 @@ local function resolveSlots(mon, moveFacts)
     if type(entry) ~= "table" then
       slots[index] = {
         key = "",
+        id = 0,
         moveType = "typeless",
         power = 0,
         category = "status",
         accuracy = 0,
         effect = 0,
+        pp = 0,
         usable = false,
       }
     else
       local record = entry --[[@as table<string, unknown>]]
       local facts = factsFor(moveFacts, record.move)
+      local nativeId = facts.nativeId
+      if type(nativeId) ~= "number" or nativeId % 1 ~= 0 or nativeId <= 0 then
+        error(BattleErrors.missingBehavior("trainer evaluation reads its numeric move identity", {
+          key = record.move,
+        }))
+      end
       local power = facts.power
       local moveType = facts.moveType
       local category = facts.category
@@ -933,11 +1054,13 @@ local function resolveSlots(mon, moveFacts)
       local pp = record.pp
       slots[index] = {
         key = record.move,
+        id = nativeId --[[@as integer]],
         moveType = moveType,
         power = power,
         category = category,
         accuracy = accuracy,
         effect = effect --[[@as integer]],
+        pp = record.pp,
         usable = type(pp) ~= "number" or pp > 0,
       }
     end
@@ -1005,25 +1128,35 @@ local function battleAbility(mon)
 end
 
 ---@param state table<string, unknown> live battle state under inspection
----@param combatant table<string, unknown> acting combatant under the trap check
+---@param holderId integer acting combatant under the trap check
 ---@param holderTypes string[] acting semantic types in declared order
 ---@param opponents table<integer, table<string, unknown>> live opposing entries in position order
----@return boolean true while abilities or effects hold the exchange
-local function switchHeld(state, combatant, holderTypes, opponents)
-  if
-    isTrapped(state, combatant.id --[[@as integer]])
-  then
+---@return boolean true while effects or opposing abilities hold the exchange
+local function switchHeld(state, holderId, holderTypes, opponents)
+  if isTrapped(state, holderId) then
     return true
   end
+  if BattleContext.wrap(state):hasBattleEffect(holderId, "ingrain") then
+    return true
+  end
+  local steel = false
   for _, key in ipairs(holderTypes) do
-    if key == "ghost" then
-      return false
+    if key == "steel" then
+      steel = true
     end
   end
   for _, opposed in ipairs(opponents) do
     local foe = BattleState.combatant(state, opposed.combatant)
     local ability = battleAbility(foe.mon)
-    if ability ~= nil and TRAPPING_ABILITIES[ability] == true then
+    if ability == nil then
+      error(BattleErrors.missingBehavior("trainer switch reads its opposing ability", {
+        combatant = opposed.combatant,
+      }))
+    end
+    if TRAPPING_ABILITIES[ability] == true then
+      return true
+    end
+    if ability == "MAGNET_PULL" and steel then
       return true
     end
   end
@@ -1064,17 +1197,6 @@ end
 ---@field hp integer opposing health bounding the knockout check
 
 ---@param slots TrainerAiMove[] candidate moves in slot order
----@return boolean true with at least one usable damaging move
-local function hasDamaging(slots)
-  for _, move in ipairs(slots) do
-    if isDamaging(move) then
-      return true
-    end
-  end
-  return false
-end
-
----@param slots TrainerAiMove[] candidate moves in slot order
 ---@return boolean true with at least one usable slot
 local function hasUsable(slots)
   for _, move in ipairs(slots) do
@@ -1085,84 +1207,550 @@ local function hasUsable(slots)
   return false
 end
 
----@param moveFacts table<string, table<string, unknown>> immutable move facts carried by the session
----@param key string learned move identity under resolution
----@return TrainerAiMove damaging-capable move facts for preview
-local function previewMove(moveFacts, key)
-  local facts = factsFor(moveFacts, key)
-  local power = facts.power
-  local moveType = facts.moveType
-  local category = facts.category
-  local accuracy = facts.accuracy
-  if type(power) ~= "number" or power % 1 ~= 0 or power < 0 then
-    error(BattleErrors.missingBehavior("trainer evaluation reads its compiled move power", { key = key }))
+-- Answers the native switch gate (ov10_022203A4) in source order: the
+-- perish-song countdown exchanges through post-KO order, then the
+-- wonder-guard, ineffective-moves, absorb-ability, and relief helpers
+-- exchange on their own branches until the selective-move and stat
+-- holds keep the field and the immunity tails close the chain. Branch
+-- draws fire only where the source draws, later helpers never run
+-- after an exchange, and only a history table predating the session
+-- record fails closed at its read instead of guessing stay or switch.
+---@param chart table<string, unknown> session chart resolving directed pairs
+---@param moveType string attacking type under evaluation
+---@param defenderTypes string[] defending types in declared order
+---@return boolean true while the matchup is at least doubly effective
+local function selectiveAgainst(chart, moveType, defenderTypes)
+  local numerator, denominator = combineMultiplier(chart, moveType, defenderTypes)
+  return numerator >= 2 * denominator
+end
+
+---@param chart table<string, unknown> session chart resolving directed pairs
+---@param moveType string attacking type under evaluation
+---@param defenderTypes string[] defending types in declared order
+---@return boolean true while the matchup is fully immune
+local function immuneAgainst(chart, moveType, defenderTypes)
+  local numerator, _ = combineMultiplier(chart, moveType, defenderTypes)
+  return numerator == 0
+end
+
+---@param chart table<string, unknown> session chart resolving directed pairs
+---@param moveType string attacking type under evaluation
+---@param defenderTypes string[] defending types in declared order
+---@return boolean true while the matchup is exactly neutral
+local function neutralAgainst(chart, moveType, defenderTypes)
+  local numerator, denominator = combineMultiplier(chart, moveType, defenderTypes)
+  return numerator == denominator
+end
+
+--- Reads whether the perish-song countdown ends the holder this turn.
+--- An absent song holds the field; a present song needs its remaining
+--- count, which fails closed when the record carries none.
+---@param state table<string, unknown> live battle state under inspection
+---@param holderId integer acting combatant under the perish check
+---@return boolean true while the song ends the holder this turn
+local function perishEndsNow(state, holderId)
+  local bag = state.effectBag
+  if type(bag) ~= "table" or type(bag.capture) ~= "function" then
+    error(BattleErrors.missingBehavior("trainer switch reads its perish-song countdown", {
+      combatant = holderId,
+    }))
   end
-  if type(moveType) ~= "string" or moveType == "" then
-    error(BattleErrors.missingBehavior("trainer evaluation reads its move type", { key = key }))
+  local capture = bag.capture --[[@as fun(self: table<string, unknown>): table<integer, table<string, unknown>>]]
+  for _, record in ipairs(capture(bag)) do
+    if record.key == "perishsong" then
+      local scope = record.scope
+      if type(scope) == "table" and scope.combatant == holderId then
+        local countdown = record.state
+        local turns = type(countdown) == "table" and (countdown --[[@as table<string, unknown>]]).turns or nil
+        if type(turns) ~= "number" or turns % 1 ~= 0 then
+          error(BattleErrors.missingBehavior("trainer switch reads its perish-song countdown", {
+            combatant = holderId,
+          }))
+        end
+        if turns == 0 then
+          return true
+        end
+      end
+    end
   end
-  if type(category) ~= "string" or category == "" then
-    error(BattleErrors.missingBehavior("trainer evaluation reads its move category", { key = key }))
+  return false
+end
+
+---@class TrainerAiReceivedHit
+---@field move string striking move identity
+---@field user integer striking combatant identity
+
+---@class TrainerAiResolvedHit
+---@field move string striking move identity
+---@field user integer striking combatant identity
+---@field moveType string striking move type under the tail probes
+---@field power integer striking move power bounding the powerless-coin path
+---@field userTypes string[] striking combatant types in declared order
+
+-- Absorb replies keyed by the striking type: only damaging fire, water,
+-- and electric strikes open the bench scan, answered by the matching
+-- guard ability.
+local ABSORB_ABILITY = {
+  fire = "FLASH_FIRE",
+  water = "WATER_ABSORB",
+  electric = "VOLT_ABSORB",
+}
+
+--- Reads the last strike received by the holder from the session-owned
+--- history. An absent entry means no strike has reached the holder since
+--- its arrival or latest action; only a table predating the history
+--- fails closed instead of guessing.
+---@param state table<string, unknown> live battle state under inspection
+---@param holderId integer acting combatant under the history read
+---@return TrainerAiReceivedHit? the striking move and its user, nil when never struck
+local function receivedHit(state, holderId)
+  local ledger = state.lastHits
+  if type(ledger) ~= "table" then
+    error(BattleErrors.missingBehavior("trainer switch reads its received-hit history", {}))
   end
-  if type(accuracy) ~= "number" or accuracy % 1 ~= 0 or accuracy < 0 then
-    error(BattleErrors.missingBehavior("trainer evaluation reads its compiled accuracy", { key = key }))
+  local entry = (ledger --[[@as table<integer, unknown>]])[holderId]
+  if entry == nil then
+    return nil
+  end
+  if type(entry) ~= "table" then
+    error(BattleErrors.missingBehavior("trainer switch reads its received-hit history", {}))
+  end
+  local record = entry --[[@as table<string, unknown>]]
+  if type(record.move) ~= "string" or record.move == "" or type(record.user) ~= "number" then
+    error(BattleErrors.missingBehavior("trainer switch reads its received-hit history", {}))
   end
   return {
-    key = key,
-    moveType = moveType --[[@as string]],
-    power = power --[[@as integer]],
-    category = category --[[@as string]],
-    accuracy = accuracy --[[@as integer]],
-    usable = true,
+    move = record.move --[[@as string]],
+    user = record.user --[[@as integer]],
   }
 end
 
--- Selects the replacement after the source switch gate (ov10_022203A4)
--- with first-fit roster order from the opponent-controller selection
--- (ov12_02258800): a holder with no damaging answer leaves for the
--- first armed reserve, and a lethal learned threat leaves for the first
--- reserve that takes it better. Trapping holds every exchange and an
--- empty bench holds the field. Selection draws nothing.
----@param chart table<string, unknown> session chart resolving directed pairs
----@param holderSlots TrainerAiMove[] holder moves in slot order
----@param holder TrainerAiStats holder stats and types under evaluation
----@param holderHp integer holder health bounding the lethal check
----@param reserves TrainerAiReserveFacts[] living benched reserves in roster order
----@param foes TrainerAiFoeFacts[] live opposing entries in position order
----@param knownMoves table<integer, table<string, boolean>> learned foe moves by combatant
 ---@param moveFacts table<string, table<string, unknown>> immutable move facts carried by the session
----@param stream table<string, unknown> caller-owned battle stream, never drawn by selection
----@return integer? benched combatant answering the threat, nil when the holder stays
-local function selectReplacement(chart, holderSlots, holder, holderHp, reserves, foes, knownMoves, moveFacts, stream)
-  if #reserves == 0 then
+---@param key string striking move identity under resolution
+---@return string striking move type under the tail probes
+---@return integer striking move power bounding the powerless-coin path
+local function hitMoveFacts(moveFacts, key)
+  if key == "STRUGGLE" then
+    return "normal", 50
+  end
+  local record = moveFacts[key]
+  if type(record) ~= "table" then
+    error(BattleErrors.missingBehavior("trainer evaluation reads its compiled move facts", { key = key }))
+  end
+  local facts = record --[[@as table<string, unknown>]]
+  local moveType = facts.moveType
+  local power = facts.power
+  if type(moveType) ~= "string" or moveType == "" then
+    error(BattleErrors.missingBehavior("trainer evaluation reads its move type", { key = key }))
+  end
+  if
+    type(power) ~= "number"
+    or power --[[@as integer]]
+      % 1 ~= 0
+    or power --[[@as integer]]
+      < 0
+  then
+    error(BattleErrors.missingBehavior("trainer evaluation reads its compiled move power", { key = key }))
+  end
+  return moveType, --[[@as string]]
+    power --[[@as integer]]
+end
+
+--- Resolves the holder's received hit into the facts the tails read:
+--- the striking type and power plus the striking combatant's live
+--- types. A never-struck holder resolves to nil without drawing.
+---@param state table<string, unknown> live battle state under inspection
+---@param authorities TrainerAiAuthorities session-owned read authorities
+---@param holderId integer acting combatant under the history read
+---@return TrainerAiResolvedHit? resolved striking facts, nil when never struck
+local function resolveReceivedHit(state, authorities, holderId)
+  local hit = receivedHit(state, holderId)
+  if hit == nil then
     return nil
   end
-  if not hasDamaging(holderSlots) then
-    for _, reserve in ipairs(reserves) do
-      if hasDamaging(reserve.slots) then
+  local moveType, power = hitMoveFacts(authorities.moveFacts, hit.move --[[@as string]])
+  local userCombatant = BattleState.combatant(state, hit.user --[[@as integer]])
+  local userTypes = estimateFighter(
+    userCombatant.mon --[[@as table<string, unknown>]],
+    userCombatant.stages,
+    authorities.speciesFacts
+  ).types
+  return {
+    move = hit.move --[[@as string]],
+    user = hit.user --[[@as integer]],
+    moveType = moveType,
+    power = power,
+    userTypes = userTypes,
+  }
+end
+
+-- Answers the absorb-ability tail (ov10_0221FE8C past its head): a guard
+-- reply to the striking type exchanges for the first benched guard on
+-- an odd branch draw per guard reach. A guard holder, a guardless line,
+-- and a miss on every reach all hold the field.
+---@param state table<string, unknown> live battle state under inspection
+---@param holderAbility string? battle ability carried by the holder
+---@param hitMoveType string striking move type under the guard scan
+---@param reserves TrainerAiReserveFacts[] living benched reserves in roster order
+---@param stream table<string, unknown> caller-owned battle stream for the branch draw
+---@return integer? benched combatant answering the threat, nil when the holder stays
+local function absorbSwitch(state, holderAbility, hitMoveType, reserves, stream)
+  local guard = ABSORB_ABILITY[hitMoveType]
+  if guard == nil or holderAbility == guard then
+    return nil
+  end
+  for _, reserve in ipairs(reserves) do
+    local ability = battleAbility(BattleState.combatant(state, reserve.id).mon)
+    if ability == guard then
+      if stream:nextU16("switch_absorb_roll", { reserve = reserve.id }) % 2 == 1 then
         return reserve.id
       end
     end
   end
-  for _, foe in ipairs(foes) do
-    local learned = knownMoves[foe.id]
-    if type(learned) == "table" then
-      local keys = {}
-      for key in pairs(learned) do
-        keys[#keys + 1] = key
+  return nil
+end
+
+-- Answers one immunity/resist tail (ov10_02220010): the last-hit move
+-- tests each benched cover for the masked matchup, and each covered
+-- reach tests its selective reply against the last-hit user, exchanging
+-- on a zero branch-draw remainder. Covers scan in roster order and later
+-- reaches never run after an exchange.
+---@param chart table<string, unknown> session chart resolving directed pairs
+---@param hitMoveType string striking move type under the cover scan
+---@param userTypes string[] last-hit user types in declared order
+---@param reserves TrainerAiReserveFacts[] living benched reserves in roster order
+---@param stream table<string, unknown> caller-owned battle stream for the branch draw
+---@param immune boolean true while the tail answers immunity, false for resistance
+---@param divisor integer branch-draw divisor closing the exchange
+---@return integer? benched combatant answering the threat, nil when the holder stays
+local function effectTail(chart, hitMoveType, userTypes, reserves, stream, immune, divisor)
+  local label = "switch_immune_roll"
+  if not immune then
+    label = "switch_resist_roll"
+  end
+  for _, reserve in ipairs(reserves) do
+    local numerator, denominator = combineMultiplier(chart, hitMoveType, reserve.stats.types)
+    local covered = numerator == 0
+    if not immune then
+      covered = numerator > 0 and numerator < denominator
+    end
+    if covered then
+      for _, move in ipairs(reserve.slots) do
+        if move.key ~= "" and selectiveAgainst(chart, move.moveType, userTypes) then
+          if stream:nextU16(label, { reserve = reserve.id }) % divisor == 0 then
+            return reserve.id
+          end
+        end
       end
-      table.sort(keys)
-      for _, key in ipairs(keys) do
-        local move = previewMove(moveFacts, key)
-        if move.power > 0 and previewDamage(chart, foe.stats, move, holder, stream) >= holderHp then
-          local holderNumerator, holderDenominator = combineMultiplier(chart, move.moveType, holder.types)
-          for _, reserve in ipairs(reserves) do
-            local reserveNumerator, reserveDenominator = combineMultiplier(chart, move.moveType, reserve.stats.types)
-            if reserveNumerator * holderDenominator < holderNumerator * reserveDenominator then
+    end
+  end
+  return nil
+end
+
+--- Resolves one entry-token history into native move identities in
+--- first-use order. An absent entry reads fresh; a present entry must
+--- be the ordered sequence the session records, so ledgers predating
+--- the order fail closed instead of guessing fresh.
+---@param moveIdByKey table<string, integer> native move identities by key
+---@param entry unknown distinct-move history under ordered resolution
+---@return integer[] native move identities in first-use order
+local function orderedUsedIds(moveIdByKey, entry)
+  local out = {}
+  if entry == nil then
+    return out
+  end
+  if type(entry) ~= "table" then
+    error(BattleErrors.missingBehavior("trainer evaluation reads its ordered move history", {}))
+  end
+  local record = entry --[[@as table<integer, unknown>]]
+  local count = 0
+  for _, key in ipairs(record) do
+    count = count + 1
+    if key == "STRUGGLE" then
+      out[#out + 1] = 165
+    else
+      local id = moveIdByKey[key]
+      if id == nil then
+        error(BattleErrors.missingBehavior("trainer evaluation reads its used move identity", {}))
+      end
+      out[#out + 1] = id
+    end
+  end
+  for key in pairs(record) do
+    if
+      type(key) ~= "number"
+      or key --[[@as integer]]
+        % 1 ~= 0
+      or key --[[@as integer]]
+        < 1
+      or key --[[@as integer]]
+        > count
+    then
+      error(BattleErrors.missingBehavior("trainer evaluation reads its ordered move history", {}))
+    end
+  end
+  return out
+end
+
+-- Answers the wonder-guard branch (ov10_0221F62C): outside doubles, a
+-- wonder-guard foe no holder strike answers selectively opens the
+-- bench scan, and the first selective reserve strike exchanges on a
+-- two-in-three branch draw. Scans read move identities, so exhausted
+-- slots still count.
+---@param chart table<string, unknown> session chart resolving directed pairs
+---@param holderSlots TrainerAiMove[] holder moves in slot order
+---@param foeTypes string[] opposing battler types in declared order
+---@param reserves TrainerAiReserveFacts[] living benched reserves in roster order
+---@param stream table<string, unknown> caller-owned battle stream for the branch draw
+---@return integer? benched combatant answering the threat, nil when the holder stays
+local function wonderGuardSwitch(chart, holderSlots, foeTypes, reserves, stream)
+  for _, move in ipairs(holderSlots) do
+    if move.key ~= "" and selectiveAgainst(chart, move.moveType, foeTypes) then
+      return nil
+    end
+  end
+  for _, reserve in ipairs(reserves) do
+    for _, move in ipairs(reserve.slots) do
+      if move.key ~= "" and selectiveAgainst(chart, move.moveType, foeTypes) then
+        if stream:nextU16("switch_wonder_roll", { reserve = reserve.id }) % 3 < 2 then
+          return reserve.id
+        end
+      end
+    end
+  end
+  return nil
+end
+
+-- Answers the ineffective-moves branch (ov10_0221F7F0): at least two
+-- damaging holder strikes, every one immune against every scanned foe,
+-- open the bench scans. The selective scan exchanges on a
+-- two-in-three branch draw per selective reach; the neutral scan
+-- exchanges on an even branch draw per neutral reach. Singles scans
+-- the lone foe twice, matching the source defender pair.
+---@param chart table<string, unknown> session chart resolving directed pairs
+---@param holderSlots TrainerAiMove[] holder moves in slot order
+---@param foeTypesList string[][] scanned foe types in source defender order
+---@param reserves TrainerAiReserveFacts[] living benched reserves in roster order
+---@param stream table<string, unknown> caller-owned battle stream for branch draws
+---@return integer? benched combatant answering the threat, nil when the holder stays
+local function ineffectiveSwitch(chart, holderSlots, foeTypesList, reserves, stream)
+  local damaging = 0
+  for _, move in ipairs(holderSlots) do
+    if move.key ~= "" and move.power > 0 then
+      damaging = damaging + 1
+      for _, foeTypes in ipairs(foeTypesList) do
+        if not immuneAgainst(chart, move.moveType, foeTypes) then
+          return nil
+        end
+      end
+    end
+  end
+  if damaging < 2 then
+    return nil
+  end
+  for _, reserve in ipairs(reserves) do
+    for _, move in ipairs(reserve.slots) do
+      if move.key ~= "" and move.power > 0 then
+        for _, foeTypes in ipairs(foeTypesList) do
+          if selectiveAgainst(chart, move.moveType, foeTypes) then
+            if stream:nextU16("switch_ineffective_roll", { reserve = reserve.id }) % 3 < 2 then
               return reserve.id
             end
           end
         end
       end
+    end
+  end
+  for _, reserve in ipairs(reserves) do
+    for _, move in ipairs(reserve.slots) do
+      if move.key ~= "" and move.power > 0 then
+        for _, foeTypes in ipairs(foeTypesList) do
+          if neutralAgainst(chart, move.moveType, foeTypes) then
+            if stream:nextU16("switch_ineffective_roll", { reserve = reserve.id }) % 2 == 0 then
+              return reserve.id
+            end
+          end
+        end
+      end
+    end
+  end
+  return nil
+end
+
+---@param chart table<string, unknown> session chart resolving directed pairs
+---@param holderSlots TrainerAiMove[] holder moves in slot order
+---@param foeTypesList string[][] scanned foe types in source defender order
+---@return boolean true while a holder strike answers a scanned foe selectively
+local function hasSelectiveMove(chart, holderSlots, foeTypesList)
+  for _, foeTypes in ipairs(foeTypesList) do
+    for _, move in ipairs(holderSlots) do
+      if move.key ~= "" and selectiveAgainst(chart, move.moveType, foeTypes) then
+        return true
+      end
+    end
+  end
+  return false
+end
+
+-- Answers the selective-move hold (ov10_0221FD34 with a clear stay
+-- flag): every selective holder strike holds the field nine times in
+-- ten through its own branch draw. Doubles scans the partner after the
+-- across slot; singles scans once.
+---@param chart table<string, unknown> session chart resolving directed pairs
+---@param holderSlots TrainerAiMove[] holder moves in slot order
+---@param foeTypesList string[][] scanned foe types in source defender order
+---@param stream table<string, unknown> caller-owned battle stream for branch draws
+---@return boolean true while the holder keeps the field on coverage
+local function selectiveHold(chart, holderSlots, foeTypesList, stream)
+  for _, foeTypes in ipairs(foeTypesList) do
+    for _, move in ipairs(holderSlots) do
+      if move.key ~= "" and selectiveAgainst(chart, move.moveType, foeTypes) then
+        if stream:nextU16("switch_stay_roll", {}) % 10 ~= 0 then
+          return true
+        end
+      end
+    end
+  end
+  return false
+end
+
+---@param stages table<string, integer> battle-local stages for the entry
+---@return boolean true while positive stages sum to four or more
+local function heavilyBoosted(stages)
+  assert(type(stages) == "table", "the stat hold reads its battle-local stages")
+  local boosts = 0
+  for _, stat in ipairs({ "attack", "defense", "specialAttack", "specialDefense", "speed", "accuracy", "evasion" }) do
+    local stage = (stages --[[@as table<string, unknown>]])[stat] or 0
+    if type(stage) ~= "number" or stage % 1 ~= 0 then
+      error(BattleErrors.missingBehavior("trainer switch reads its battle-local stages", {}))
+    end
+    if stage > 0 then
+      boosts = boosts + stage
+    end
+  end
+  return boosts >= 4
+end
+
+---@class TrainerAiSwitchFacts
+---@field holderId integer acting combatant identity
+---@field holderSlots TrainerAiMove[] holder moves in slot order
+---@field holderHp integer holder health bounding the relief check
+---@field holderCeiling integer holder health ceiling bounding the relief check
+---@field holderAbility string? holder battle ability, when one is named
+---@field holderAsleep boolean true while the holder carries sleep
+---@field holderStages table<string, integer> battle-local stages for the entry
+---@field doubles boolean true while the live format routes through doubles
+---@field reserves TrainerAiReserveFacts[] living benched reserves in roster order
+---@field foeTypes string[] primary opposing types in declared order
+---@field foeTypesPair string[][] selective-scan defender types in source order
+---@field foeTypesDoubled string[][] ineffective-scan defender types in source order
+---@field foeWonderGuard boolean true while the primary foe carries wonder guard
+---@field foesScanned integer live opposing entries behind the scans
+---@field foesHealthy boolean true while every scanned foe still stands
+
+--- Answers the native switch gate from evaluated facts. An empty bench
+--- holds the field; every reached branch consumes its own draws in
+--- source order and later branches never run after an exchange or a
+--- hold.
+---@param state table<string, unknown> live battle state under inspection
+---@param authorities TrainerAiAuthorities session-owned read authorities
+---@param facts TrainerAiSwitchFacts evaluated switch facts for the holder
+---@param stream table<string, unknown> caller-owned battle stream for branch draws
+---@return integer? benched combatant answering the threat, nil when the holder stays
+local function selectReplacement(state, authorities, facts, stream)
+  local chart = authorities.chart
+  if #facts.reserves == 0 then
+    return nil
+  end
+  if perishEndsNow(state, facts.holderId) then
+    return facts.reserves[1].id
+  end
+  if not facts.doubles and facts.foeWonderGuard then
+    local exchange = wonderGuardSwitch(chart, facts.holderSlots, facts.foeTypes, facts.reserves, stream)
+    if exchange ~= nil then
+      return exchange
+    end
+  end
+  if facts.foesHealthy and (not facts.doubles or facts.foesScanned >= 2) then
+    local exchange = ineffectiveSwitch(chart, facts.holderSlots, facts.foeTypesDoubled, facts.reserves, stream)
+    if exchange ~= nil then
+      return exchange
+    end
+  end
+  local absorbGate = hasSelectiveMove(chart, facts.holderSlots, facts.foeTypesPair)
+  if not absorbGate or stream:nextU16("switch_absorb_roll", {}) % 3 == 0 then
+    -- Absorb-ability tail (ov10_0221FE8C past its head): a never-struck
+    -- holder stays without drawing while a recorded last hit scans the
+    -- bench for its guard reply.
+    local hit = resolveReceivedHit(state, authorities, facts.holderId)
+    if hit ~= nil and hit.power > 0 then
+      local exchange = absorbSwitch(state, facts.holderAbility, hit.moveType, facts.reserves, stream)
+      if exchange ~= nil then
+        return exchange
+      end
+    end
+  end
+  if facts.holderAsleep then
+    if facts.holderAbility == nil then
+      error(BattleErrors.missingBehavior("trainer switch reads its holder ability", {
+        combatant = facts.holderId,
+      }))
+    end
+    if facts.holderAbility == "NATURAL_CURE" and facts.holderHp * 2 >= facts.holderCeiling then
+      -- Relief branch (ov10_02220270): with never-struck history the
+      -- opening and status-move coins decide first, the immunity and
+      -- resist tails stay without drawing, and the open coin closes. A
+      -- powerless last hit spends only its status-move coin before the
+      -- tails; a damaging one probes first and closes on the final coin.
+      local hit = resolveReceivedHit(state, authorities, facts.holderId)
+      if hit == nil then
+        if stream:nextU16("switch_relief_roll", {}) % 2 == 1 then
+          return facts.reserves[1].id
+        end
+        if stream:nextU16("switch_relief_roll", {}) % 2 == 1 then
+          return facts.reserves[1].id
+        end
+        if stream:nextU16("switch_relief_roll", {}) % 2 == 1 then
+          return facts.reserves[1].id
+        end
+      else
+        if hit.power == 0 then
+          if stream:nextU16("switch_relief_roll", {}) % 2 == 1 then
+            return facts.reserves[1].id
+          end
+        end
+        local exchange = effectTail(chart, hit.moveType, hit.userTypes, facts.reserves, stream, true, 1)
+        if exchange ~= nil then
+          return exchange
+        end
+        exchange = effectTail(chart, hit.moveType, hit.userTypes, facts.reserves, stream, false, 1)
+        if exchange ~= nil then
+          return exchange
+        end
+        if stream:nextU16("switch_relief_roll", {}) % 2 == 1 then
+          return facts.reserves[1].id
+        end
+      end
+    end
+  end
+  if selectiveHold(chart, facts.holderSlots, facts.foeTypesPair, stream) then
+    return nil
+  end
+  if heavilyBoosted(facts.holderStages) then
+    return nil
+  end
+  -- Immunity and resist tails (ov10_02220010 with stay odds 2 and 3):
+  -- both key on the last-hit move and its user, staying without drawing
+  -- while the holder stands never struck.
+  local tail = resolveReceivedHit(state, authorities, facts.holderId)
+  if tail ~= nil then
+    local exchange = effectTail(chart, tail.moveType, tail.userTypes, facts.reserves, stream, true, 2)
+    if exchange ~= nil then
+      return exchange
+    end
+    exchange = effectTail(chart, tail.moveType, tail.userTypes, facts.reserves, stream, false, 3)
+    if exchange ~= nil then
+      return exchange
     end
   end
   return nil
@@ -1194,39 +1782,6 @@ local function holderConditions(mon)
     end
   end
   return present
-end
-
---- Spends the switch-gate coverage draws when a holder move is
---- super-effective against the opposing battler. The coverage helper
---- (ov10_0221FE8C) spends one draw on super-effective coverage, then the
---- stay helper (ov10_0221FD34) spends one draw per covered move until it
---- stays; both scan move identities, so power-point-exhausted slots still
---- count. Only the first opposing battler is checked, matching the
---- source single-target coverage scan in singles.
----@param chart table<string, unknown> session chart resolving directed pairs
----@param slots TrainerAiMove[] holder move slots in source order
----@param foeTypes string[] opposing battler types in declared order
----@param stream table<string, unknown> caller-owned battle stream for gate draws
-local function coverStayDraws(chart, slots, foeTypes, stream)
-  local covered = 0
-  for _, move in ipairs(slots) do
-    if move.key ~= "" then
-      local numerator, denominator = combineMultiplier(chart, move.moveType, foeTypes)
-      if numerator >= 2 * denominator then
-        covered = covered + 1
-      end
-    end
-  end
-  if covered == 0 then
-    return
-  end
-  stream:nextU16("switch_cover", { slots = covered })
-  for _ = 1, covered do
-    local roll = stream:nextU16("switch_stay", { slots = covered })
-    if roll % 10 ~= 0 then
-      break
-    end
-  end
 end
 
 ---@param combatant table<string, unknown> live combatant under health sampling
@@ -1368,6 +1923,20 @@ end
 ---@param view table<string, unknown> declared battle state under the policy check
 ---@return boolean true while the source policy considers the slot
 local function itemPolicyApplies(item, facts, holderId, hp, ceiling, conditions, stages, view)
+  -- Servings gated below quarter health precede generic policy: a living
+  -- holder under the bound answers regardless of ailments, while a
+  -- fainted holder or a holder at or above the bound never does. The
+  -- comparison stays in integers with no float threshold. An unknown
+  -- gate fails closed instead of answering generically.
+  local gate = facts.lowHpOnly
+  if gate ~= nil then
+    if gate ~= true and gate ~= false then
+      error(BattleErrors.missingBehavior("trainer items carry their serving gate", { item = item }))
+    end
+    if gate then
+      return hp > 0 and hp * 4 < ceiling
+    end
+  end
   local partyUse = facts.partyUse
   if partyUse == nil then
     return false
@@ -1458,10 +2027,15 @@ local function selectItemSlot(state, authorities, participant, holderId, taken, 
   local hp, ceiling = holderHealth(combatant)
   local conditions = holderConditions(combatant.mon)
   local stages = holderStages(combatant.stages)
-  for _, item in
-    ipairs(slots --[[@as string[] ]])
-  do
-    if not CaptureContext.isBall(item) then
+  -- Scans the four source positions in order: gap positions never
+  -- answer. The source policy clears the selected source slot at
+  -- selection (ov10_022206B0): the position becomes the gap sentinel in
+  -- persistent memory so later answers never reselect it while later
+  -- positions keep their source indices; the taken count keeps reserving
+  -- against stock that only moves when the serving executes.
+  for index = 1, 4 do
+    local item = slots[index]
+    if type(item) == "string" and item ~= "NONE" and not CaptureContext.isBall(item) then
       local units = stock[item] or 0
       if (taken[item] or 0) < units then
         local facts = authorities.itemFacts[item]
@@ -1476,19 +2050,7 @@ local function selectItemSlot(state, authorities, participant, holderId, taken, 
           }, view, authorities.itemFacts)
           if plan.failureReason == nil then
             taken[item] = (taken[item] or 0) + 1
-            -- The source policy clears the selected source slot at
-            -- selection (ov10_022206B0): drop the first surviving
-            -- occurrence from persistent memory so later answers never
-            -- reselect it, while the taken count keeps reserving against
-            -- stock that only moves when the serving executes.
-            for index, slotItem in
-              ipairs(slots --[[@as string[] ]])
-            do
-              if slotItem == item then
-                table.remove(slots, index)
-                break
-              end
-            end
+            slots[index] = "NONE"
             return item
           end
         end
@@ -1498,130 +2060,56 @@ local function selectItemSlot(state, authorities, participant, holderId, taken, 
   return nil
 end
 
---- Spends one shared-stream draw per usable slot reaching a routine-draw
---- site of the enabled flag bit. Sites transcribe the source
---- random-conditional commands (ov10_0221C384 and its table siblings)
---- with their branch guards: numeric move-effect membership and, where
---- the source program gates on it, the opening turn and the knockout
---- preview. Score commands draw nothing, so evaluating sites after them
---- matches the source stream position.
----@param sites table<integer, table<string, unknown>> routine-draw sites in program order
----@param firstTurn boolean true while the opening turn gates sites open
----@param chart table<string, unknown> session chart resolving directed pairs
----@param checked TrainerAiMove[] validated move slots in source order
----@param attacker TrainerAiStats acting stats and types under scoring
----@param defender TrainerAiStats opposing stats and types under scoring
----@param foeHp integer opposing health bounding the knockout check
----@param bit integer enabled native flag bit under evaluation
----@param stream table<string, unknown> caller-owned battle stream for routine draws
-local function runDrawSites(sites, firstTurn, chart, checked, attacker, defender, foeHp, bit, stream)
-  for index, move in ipairs(checked) do
-    if move.usable then
-      for _, site in ipairs(sites) do
-        local record = site --[[@as table<string, unknown>]]
-        local effects = record.effects --[[@as table<integer, boolean>]]
-        assert(type(effects) == "table", "routine-draw sites name their effect set")
-        if effects[move.effect] == true then
-          if record.turn0 ~= true or firstTurn then
-            local gated = record.ko
-            if gated == nil then
-              stream:nextU16("program_chance", { flag = bit, slot = index - 1 })
-            else
-              local knockout = false
-              if isDamaging(move) then
-                knockout = previewDamage(chart, attacker, move, defender, stream) >= foeHp
-              end
-              if (gated == true) == knockout then
-                stream:nextU16("program_chance", { flag = bit, slot = index - 1 })
-              end
-            end
-          end
-        end
-      end
-    end
-  end
-end
-
----@param chart table<string, unknown> session chart resolving directed pairs
+--- Executes enabled flag programs in ascending bit order through the
+--- literal native program executor. Each usable slot runs its bit program
+--- with slot-ordered points, stored thresholds, and the caller-owned
+--- stream; random commands draw at execution, score changes flow only
+--- through translated commands, and unknown behavior fails closed.
+---@param facts table<string, unknown> source-visible battle facts under execution
 ---@param slots TrainerAiMove[] four native move slots in source order
----@param user TrainerAiStats acting stats and types under scoring
----@param foe TrainerAiStats opposing stats and types under scoring
----@param foeHp integer opposing health bounding the knockout check
 ---@param bits integer[] enabled native flag bits in ascending order
 ---@param thresholds table<integer, integer> stored initialization thresholds in slot order
----@param firstTurn boolean true while the opening turn gates routine draws
 ---@param stream table<string, unknown> caller-owned battle stream for decision draws
 ---@return TrainerAiScoredSlot[] scored slots in source slot order
-function scoreWithThresholds(chart, slots, user, foe, foeHp, bits, thresholds, firstTurn, stream)
-  assert(type(firstTurn) == "boolean", "scoring names its opening turn for routine draws")
-  local checked = {}
-  for _, slot in ipairs(slots) do
-    checked[#checked + 1] = checkScoringMove(slot)
-  end
-  local attacker = checkFighterStats(user)
-  local defender = checkFighterStats(foe)
-  local bestPower = 0
-  for _, move in ipairs(checked) do
-    if isDamaging(move) and move.power > bestPower then
-      bestPower = move.power
-    end
-  end
-  local scores = {}
-  for index, move in ipairs(checked) do
+function executePrograms(facts, slots, bits, thresholds, stream)
+  local points = {}
+  for index, move in ipairs(slots) do
     if move.usable then
-      scores[index] = TrainerAi.OPENING_SCORE
+      points[index] = TrainerAi.OPENING_SCORE
     else
-      scores[index] = 0
+      points[index] = 0
     end
   end
-  local vm = {
-    bit = -1,
-    scores = scores,
-    thresholds = thresholds,
-    slots = checked,
-    user = attacker,
-    foe = defender,
-    foeHp = foeHp,
-    bestPower = bestPower,
-    chart = chart,
-    stream = stream,
-  }
+  local scratch = 0
+  local aborted = false
   for _, bit in ipairs(bits) do
-    local program = programFor(bit --[[@as integer]])
-    vm.bit = bit
-    local perSlot = program.perSlot --[[@as table<integer, table<string, unknown>>]]
-    for _, command in ipairs(perSlot) do
-      for index, move in ipairs(checked) do
-        if move.usable then
-          TrainerAi.runCommand(vm, index, command)
+    if aborted then
+      break
+    end
+    for index, move in ipairs(slots) do
+      if move.usable then
+        local vm = {
+          points = points,
+          thresholds = thresholds,
+          slot = index - 1,
+          cur = move.id,
+          scratch = scratch,
+          bit = bit,
+          facts = facts,
+          rng = stream,
+        }
+        local outcome = TrainerAiProgram.run(vm)
+        scratch = vm.scratch
+        if outcome == "abort" then
+          aborted = true
+          break
         end
       end
     end
-    local perProgram = program.perProgram --[[@as table<integer, table<string, unknown>>]]
-    for _, command in ipairs(perProgram) do
-      TrainerAi.runCommand(vm, 1, command)
-    end
-    local sites = TrainerAiProgram.DRAW_SITES[
-      bit --[[@as integer]]
-    ]
-    if type(sites) ~= "table" then
-      error(BattleErrors.missingBehavior("trainer scoring names transcribed routine draws", { flag = bit }))
-    end
-    runDrawSites(
-      sites --[[@as table<integer, table<string, unknown>>]],
-      firstTurn,
-      chart,
-      checked,
-      attacker,
-      defender,
-      foeHp,
-      bit,
-      stream
-    )
   end
   local scored = {}
-  for index, move in ipairs(checked) do
-    scored[index] = { slot = index - 1, key = move.key, score = scores[index] }
+  for index, move in ipairs(slots) do
+    scored[index] = { slot = index - 1, key = move.key, score = points[index] }
   end
   return scored
 end
@@ -1669,13 +2157,591 @@ local function firstTurnOf(state)
   return round == 1
 end
 
+-- Persistent condition bits for the status word: sleep presence sets
+-- the counter bit, poison/burn/freeze/paralysis set their bits, and
+-- toxic sets the bad-poison bit. Only presence feeds boolean branches.
+---@param conditions table<string, boolean> persistent holder conditions
+---@return integer status word under the bit tests
+local function statusWordOf(conditions)
+  local word = 0
+  if conditions.sleep == true then
+    word = word + 1
+  end
+  if conditions.poison == true then
+    word = word + 8
+  end
+  if conditions.burn == true then
+    word = word + 16
+  end
+  if conditions.freeze == true then
+    word = word + 32
+  end
+  if conditions.paralysis == true then
+    word = word + 64
+  end
+  if conditions.toxic == true then
+    word = word + 128
+  end
+  return word
+end
+
+--- Resolves a held item key to its native identity and hold-effect byte
+--- through the compiled item facts. Anything less than the full
+--- compiled shape answers nil so the caller can fail closed at the
+--- reached site instead of guessing here.
+---@param authorities TrainerAiAuthorities session-owned read authorities
+---@param heldKey string held item key under resolution
+---@return integer? native item identity under evaluation, nil without full compiled facts
+---@return integer? hold-effect byte under evaluation, nil without full compiled facts
+local function heldIdentityOrNil(authorities, heldKey)
+  local facts = authorities.itemFacts[heldKey]
+  if type(facts) ~= "table" then
+    return nil
+  end
+  local held = (facts --[[@as table<string, unknown>]]).heldBehavior
+  if type(held) ~= "table" then
+    return nil
+  end
+  local params = (held --[[@as table<string, unknown>]]).params --[[@as table<string, unknown>]]
+  if type(params.nativeId) ~= "number" then
+    return nil
+  end
+  if type(params.holdEffect) ~= "number" then
+    return nil
+  end
+  local nativeId = params.nativeId --[[@as integer]]
+  local holdEffect = params.holdEffect --[[@as integer]]
+  return nativeId, holdEffect
+end
+
+--- Resolves a held item key to its native identity and hold-effect byte
+--- through the compiled item facts. A held item without compiled
+--- hold-effect facts fails closed instead of guessing.
+---@param authorities TrainerAiAuthorities session-owned read authorities
+---@param heldKey string held item key under resolution
+---@return integer native item identity under evaluation
+---@return integer hold-effect byte under evaluation
+local function heldIdentity(authorities, heldKey)
+  local nativeId, holdEffect = heldIdentityOrNil(authorities, heldKey)
+  if nativeId == nil then
+    error(BattleErrors.missingBehavior("trainer decisions read their compiled item facts", { item = heldKey }))
+  end
+  return nativeId, holdEffect --[[@as integer]]
+end
+
+--- Builds live program facts for one attack evaluation from battle
+--- state: battler health, abilities, items, statuses, stages, parties,
+--- history, and field state resolve through the session authorities.
+--- Anything the live state does not model fails closed when reached.
 ---@param state table<string, unknown> live battle state under inspection
 ---@param authorities TrainerAiAuthorities session-owned read authorities
----@param facts TrainerAiActorFacts acting facts under evaluation
----@param opponents table<integer, table<string, unknown>> live opposing entries in position order
----@param bits integer[] enabled native flag bits in ascending order
----@param stream table<string, unknown> caller-owned battle stream for decision draws
----@return table<string, unknown> attack choice in the shared decision shape
+---@param combatant table<string, unknown> acting combatant under evaluation
+---@param moveIdByKey table<string, integer> native move identities by move key
+---@param heldEffects table<integer, integer> native hold-effect bytes by native item identity under evaluation
+---@return table<string, unknown> live evaluation context for scoring
+local function battlerProgramFacts(state, authorities, combatant, moveIdByKey, heldEffects)
+  local combatantId = combatant.id --[[@as integer]]
+  local function hasVolatile(key)
+    local bag = state.effectBag
+    if type(bag) ~= "table" or type(bag.capture) ~= "function" then
+      return false
+    end
+    local capture = bag.capture --[[@as fun(self: table<string, unknown>): table<integer, table<string, unknown>>]]
+    for _, record in ipairs(capture(bag)) do
+      if record.key == key then
+        local scope = record.scope
+        if type(scope) == "table" and scope.combatant == combatantId then
+          return true
+        end
+      end
+    end
+    return false
+  end
+  local mon = combatant.mon --[[@as table<string, unknown>]]
+  local speciesFacts = authorities.speciesFacts
+  local static = staticFacts(speciesFacts, mon)
+  local experience = mon.experience --[[@as integer]]
+  local personality = mon.personality --[[@as integer]]
+  local level = Experience.level(static.growthCurve --[[@as integer[] ]], experience)
+  local nature = Personality.nature(personality)
+  local base = Stats.calculate(
+    static.baseStats --[[@as table<string, integer>]],
+    mon.ivs --[[@as table<string, integer>]],
+    mon.evs --[[@as table<string, integer>]],
+    level,
+    nature
+  )
+  local stages = combatant.stages
+  if type(stages) ~= "table" then
+    error(BattleErrors.missingBehavior("trainer evaluation reads its battle-local stages", {}))
+  end
+  -- The evaluation stage array follows the battle order with its unused
+  -- health slot pinned neutral: attack, defense, speed, special attack,
+  -- special defense, accuracy, evasion.
+  local nativeStages = { 6 }
+  for _, key in ipairs({ "attack", "defense", "speed", "specialAttack", "specialDefense", "accuracy", "evasion" }) do
+    local stage = (stages --[[@as table<string, integer>]])[key] or 0
+    if type(stage) ~= "number" or stage % 1 ~= 0 or stage < StatStages.MIN or stage > StatStages.MAX then
+      error(BattleErrors.missingBehavior("trainer evaluation reads its battle-local stages", {}))
+    end
+    nativeStages[#nativeStages + 1] = stage + 6
+  end
+  local hp, ceiling = holderHealth(combatant)
+  local abilityKey = battleAbility(mon)
+  local ability = 0
+  if abilityKey ~= nil then
+    local ids = TrainerAiProgram.ABILITY_IDS --[[@as table<string, integer>]]
+    ability = ids[abilityKey] or -1
+    if ability == -1 then
+      error(BattleErrors.missingBehavior("trainer evaluation reads its ability identity", {}))
+    end
+  end
+  local item = 0
+  local heldKey = mon.heldItem
+  if type(heldKey) == "string" and heldKey ~= "" and heldKey ~= "NONE" then
+    local nativeId, holdEffect = heldIdentity(authorities, heldKey)
+    item = nativeId
+    if nativeId ~= 0 then
+      heldEffects[nativeId] = holdEffect
+    end
+  end
+  local conditions = holderConditions(mon)
+  local status = statusWordOf(conditions)
+  local moveIds = {}
+  local pps = {}
+  local entries = mon.moves
+  if type(entries) ~= "table" then
+    error(BattleErrors.missingBehavior("trainer evaluation reads its move entries", {}))
+  end
+  for index = 1, 4 do
+    local entry = entries[index]
+    if type(entry) == "table" then
+      local key = (entry --[[@as table<string, unknown>]]).move --[[@as string]]
+      local id = moveIdByKey[key] or 0
+      moveIds[index] = id
+      local pp = (entry --[[@as table<string, unknown>]]).pp
+      if type(pp) == "number" then
+        pps[index] = pp
+      end
+    else
+      moveIds[index] = 0
+    end
+  end
+  local t1 = 0
+  local t2 = 0
+  local typeIds = TrainerAiProgram.TYPE_IDS --[[@as table<string, integer>]]
+  local formTypes = static.types --[[@as string[] ]]
+  if type(formTypes[1]) == "string" then
+    t1 = typeIds[formTypes[1]] or -1
+  end
+  if type(formTypes[2]) == "string" then
+    t2 = typeIds[formTypes[2]] or -1
+  else
+    t2 = t1
+  end
+  if t1 == -1 or t2 == -1 then
+    error(BattleErrors.missingBehavior("trainer evaluation reads its semantic types", {}))
+  end
+  local gender = 2
+  local ratio = static.genderRatio
+  if type(ratio) == "number" then
+    local genders = Personality.gender(ratio, personality)
+    if genders == "male" then
+      gender = 0
+    elseif genders == "female" then
+      gender = 1
+    end
+  end
+  local weightHg = static.weightHg
+  local record = {
+    hp = hp,
+    maxHp = ceiling,
+    level = level,
+    t1 = t1,
+    t2 = t2,
+    ability = ability,
+    item = item,
+    status = status,
+    status2 = 0,
+    moveFlags = 0,
+    atk = base.attack,
+    def = base.defense,
+    spa = base.specialAttack,
+    spd = base.specialDefense,
+    spe = base.speed,
+    stages = {
+      nativeStages[1],
+      nativeStages[2],
+      nativeStages[3],
+      nativeStages[4],
+      nativeStages[5],
+      nativeStages[6],
+      nativeStages[7],
+      nativeStages[8],
+    },
+    moves = moveIds,
+    pp = pps,
+    gender = gender,
+    weightHg = weightHg,
+    friendship = mon.friendship,
+    ivs = mon.ivs,
+    lastMove = 0,
+    entryMoves = { moveIds[1], moveIds[2], moveIds[3], moveIds[4] },
+    entryAbility = ability,
+    suppressed = hasVolatile("GASTRO_ACID"),
+    magnetRise = false,
+    roosted = false,
+    miracleEye = false,
+    foresight = hasVolatile("foresight"),
+    flingPower = 0,
+    w88b1 = 0,
+    w88neg = false,
+  }
+  -- Move-effect flags from modeled volatiles; unmodeled mechanics never
+  -- set them in these battles.
+  local flags = 0
+  if hasVolatile("GASTRO_ACID") then
+    flags = flags + 2097152
+  end
+  if hasVolatile("charged") then
+    flags = flags + 512
+  end
+  if hasVolatile("leechseed") then
+    flags = flags + 4
+  end
+  if hasVolatile("lockon") then
+    flags = flags + 24
+  end
+  if hasVolatile("perishsong") then
+    flags = flags + 32
+  end
+  if hasVolatile("yawn") then
+    flags = flags + 6144
+  end
+  if hasVolatile("aquaring") then
+    flags = flags + 16777216
+  end
+  -- Magnet Rise, Ingrain, and semi-invulnerable turns are not modeled
+  -- here; their bits read clear exactly while the engine never sets
+  -- them. Revisit if those mechanics land.
+  record.moveFlags = flags
+  return record
+end
+
+local function moveIdMap(authorities)
+  local map = {}
+  for key, record in pairs(authorities.moveFacts) do
+    local facts = record --[[@as table<string, unknown>]]
+    if type(facts.nativeId) == "number" then
+      map[key] = facts.nativeId
+    end
+  end
+  map["STRUGGLE"] = 165
+  return map
+end
+
+local function fullMoveMap(authorities)
+  local map = {}
+  for _, record in pairs(authorities.moveFacts) do
+    local facts = record --[[@as table<string, unknown>]]
+    if type(facts.nativeId) == "number" then
+      map[
+        facts.nativeId --[[@as integer]]
+      ] = facts
+    end
+  end
+  return map
+end
+
+local function volatilePresent(state, combatantId, key)
+  local bag = state.effectBag
+  if type(bag) ~= "table" or type(bag.capture) ~= "function" then
+    return false
+  end
+  local capture = bag.capture --[[@as fun(self: table<string, unknown>): table<integer, table<string, unknown>>]]
+  for _, record in ipairs(capture(bag)) do
+    if record.key == key then
+      local scope = record.scope
+      if type(scope) == "table" and scope.combatant == combatantId then
+        return true
+      end
+    end
+  end
+  return false
+end
+
+local function volatileMove(state, combatantId, keys)
+  local bag = state.effectBag
+  if type(bag) ~= "table" or type(bag.capture) ~= "function" then
+    return nil
+  end
+  local capture = bag.capture --[[@as fun(self: table<string, unknown>): table<integer, table<string, unknown>>]]
+  for _, record in ipairs(capture(bag)) do
+    for _, key in ipairs(keys) do
+      if record.key == key then
+        local scope = record.scope
+        if type(scope) == "table" and scope.combatant == combatantId then
+          local instance = record --[[@as table<string, unknown>]]
+          local stated = instance.state
+          if type(stated) == "table" then
+            return (stated --[[@as table<string, unknown>]]).move
+          end
+          return ""
+        end
+      end
+    end
+  end
+  return nil
+end
+
+--- Projects one party member into its program preview record: health,
+--- species, status, and moves resolve as before, while the ability key,
+--- individual values, and held identity ride along for the party
+--- matchup preview. A held item without full compiled facts keeps its
+--- key for the reached-site failure instead of failing the evaluation.
+---@param authorities TrainerAiAuthorities session-owned read authorities
+---@param member table<string, unknown> live party combatant under projection
+---@param heldEffects table<integer, integer> native hold-effect bytes by native item identity under evaluation
+---@return table<string, unknown> party member preview record
+local function partyMemberFacts(authorities, member, heldEffects)
+  local mon = member.mon --[[@as table<string, unknown>]]
+  local species = mon.species --[[@as string]]
+  local hp = member.hp --[[@as integer]]
+  local maxHp = member.maxHp
+  if type(maxHp) ~= "number" then
+    maxHp = member.entryHp
+  end
+  local conditions = {}
+  if type(mon.condition) == "table" then
+    local effects = (mon.condition --[[@as table<string, unknown>]]).effects
+    if type(effects) == "table" then
+      for _, entry in
+        ipairs(effects --[[@as table<integer, unknown>]])
+      do
+        if
+          type(entry) == "table" and type((entry --[[@as table<string, unknown>]]).key) == "string"
+        then
+          conditions[
+            (entry --[[@as table<string, unknown>]]).key --[[@as string]]
+          ] = true
+        end
+      end
+    end
+  end
+  local record = {
+    hp = hp,
+    maxHp = maxHp,
+    species = species,
+    status = statusWordOf(conditions),
+    moves = mon.moves,
+    ability = battleAbility(mon),
+    ivs = mon.ivs,
+  }
+  local heldKey = mon.heldItem
+  if type(heldKey) == "string" and heldKey ~= "" and heldKey ~= "NONE" then
+    local nativeId, holdEffect = heldIdentityOrNil(authorities, heldKey)
+    if nativeId == nil then
+      record.heldKey = heldKey
+    elseif nativeId ~= 0 then
+      record.item = nativeId
+      heldEffects[nativeId] = holdEffect --[[@as integer]]
+    end
+  end
+  return record
+end
+
+local function buildLiveExtra(state, authorities, combatant, foeCombatant)
+  local extra = {} ---@type table<string, unknown>
+  extra.round = state.round
+  local formatDoubles = DOUBLE_FORMATS[
+    state.format --[[@as string]]
+  ] == true
+  extra.battleType = 1
+  if formatDoubles then
+    extra.battleType = 3
+  end
+  extra.battlerCount = 2
+  if formatDoubles then
+    extra.battlerCount = 4
+  end
+  extra.liveBattlers = { [0] = true, [1] = true }
+  extra.moveIdByKey = moveIdMap(authorities)
+  extra.fullMoveById = fullMoveMap(authorities)
+  extra.fullMoveIdByKey = extra.moveIdByKey
+  extra.heldEffects = {}
+  local atkId = combatant.id --[[@as integer]]
+  local foeId = foeCombatant.id --[[@as integer]]
+  local atkRecord = battlerProgramFacts(state, authorities, combatant, extra.moveIdByKey, extra.heldEffects)
+  local foeRecord = battlerProgramFacts(state, authorities, foeCombatant, extra.moveIdByKey, extra.heldEffects)
+  atkRecord.suppressed = volatilePresent(state, atkId, "GASTRO_ACID")
+  foeRecord.suppressed = volatilePresent(state, foeId, "GASTRO_ACID")
+  atkRecord.magnetRise = volatilePresent(state, atkId, "magnetrise")
+  foeRecord.magnetRise = volatilePresent(state, foeId, "magnetrise")
+  atkRecord.miracleEye = volatilePresent(state, atkId, "miracleeye")
+  foeRecord.miracleEye = volatilePresent(state, foeId, "miracleeye")
+  atkRecord.foresight = volatilePresent(state, atkId, "foresight")
+  foeRecord.foresight = volatilePresent(state, foeId, "foresight")
+  atkRecord.moveFlags = 0
+  foeRecord.moveFlags = 0
+  local function flagFor(combatantId, record)
+    local word = 0
+    if volatilePresent(state, combatantId, "GASTRO_ACID") then
+      word = word + 2097152
+    end
+    if volatilePresent(state, combatantId, "ingrain") then
+      word = word + 1024
+    end
+    if volatilePresent(state, combatantId, "aquaring") then
+      word = word + 16777216
+    end
+    if volatilePresent(state, combatantId, "magnetrise") then
+      word = word + 134217728
+    end
+    if volatilePresent(state, combatantId, "charged") then
+      word = word + 512
+    end
+    if volatilePresent(state, combatantId, "leechseed") then
+      word = word + 4
+    end
+    if volatilePresent(state, combatantId, "lockon") then
+      word = word + 24
+    end
+    if volatilePresent(state, combatantId, "perishsong") then
+      word = word + 32
+    end
+    if volatilePresent(state, combatantId, "yawn") then
+      word = word + 6144
+    end
+    record.moveFlags = word
+  end
+  flagFor(atkId, atkRecord)
+  flagFor(foeId, foeRecord)
+  local function lastMoveId(combatantId)
+    local lasts = state.lastMoves
+    if type(lasts) ~= "table" then
+      return 0
+    end
+    local key = (lasts --[[@as table<integer, string>]])[combatantId]
+    if type(key) ~= "string" then
+      return 0
+    end
+    if key == "STRUGGLE" then
+      return 165
+    end
+    return extra.moveIdByKey[key] or 0
+  end
+  atkRecord.lastMove = lastMoveId(atkId)
+  foeRecord.lastMove = lastMoveId(foeId)
+  local function usedList(combatantRef)
+    local ledger = state.usedMoves
+    if type(ledger) ~= "table" then
+      return {}
+    end
+    local active = combatantRef.active
+    local token = nil
+    if type(active) == "table" then
+      token = active.activation
+    end
+    if token == nil then
+      return {}
+    end
+    local entry = (ledger --[[@as table<integer, unknown>]])[token]
+    return orderedUsedIds(extra.moveIdByKey, entry)
+  end
+  extra.liveAttacker = atkRecord
+  extra.liveTarget = foeRecord
+  extra.usedIds = { [0] = usedList(foeCombatant), [1] = usedList(combatant) }
+  extra.lastMove = { [0] = foeRecord.lastMove, [1] = atkRecord.lastMove }
+  extra.parties = { [0] = {}, [1] = {} }
+  extra.partyIndex = {}
+  extra.partyPartner = {}
+  local function partyFor(battler, combatantRef)
+    local participant = BattleState.participant(state, combatantRef.participant --[[@as integer]])
+    local members = {}
+    local own = 0
+    for index, combatantId in
+      ipairs(participant.roster --[[@as integer[] ]])
+    do
+      local member = BattleState.combatant(state, combatantId --[[@as integer]])
+      if combatantId == combatantRef.id then
+        own = index - 1
+      end
+      members[#members + 1] = partyMemberFacts(authorities, member, extra.heldEffects)
+    end
+    extra.parties[battler] = members
+    extra.partyIndex[battler] = own
+    extra.partyPartner[battler] = 0
+  end
+  partyFor(1, combatant)
+  partyFor(0, foeCombatant)
+  local function lockId(combatantId, keys)
+    local move = volatileMove(state, combatantId, keys)
+    if type(move) ~= "string" or move == "" then
+      return 0
+    end
+    if move == "STRUGGLE" then
+      return 165
+    end
+    local id = extra.moveIdByKey[move]
+    if id == nil then
+      error(BattleErrors.missingBehavior("trainer evaluation reads its locked move", {}))
+    end
+    return id
+  end
+  local atkEncore = volatileMove(state, atkId, { "ENCORE" })
+  local atkEncoreSlot = 0
+  if type(atkEncore) == "string" and atkEncore ~= "" then
+    local entries = combatant.mon --[[@as table<string, unknown>]]
+    local moves = entries.moves --[[@as table<integer, unknown>]]
+    if type(moves) == "table" then
+      for index, entry in ipairs(moves) do
+        if
+          type(entry) == "table" and (entry --[[@as table<string, unknown>]]).move == atkEncore
+        then
+          atkEncoreSlot = index - 1
+          break
+        end
+      end
+    end
+  end
+  local foeEncore = volatileMove(state, foeId, { "ENCORE" })
+  local foeEncoreSlot = 0
+  if type(foeEncore) == "string" and foeEncore ~= "" then
+    local entries = foeCombatant.mon --[[@as table<string, unknown>]]
+    local moves = entries.moves --[[@as table<integer, unknown>]]
+    if type(moves) == "table" then
+      for index, entry in ipairs(moves) do
+        if
+          type(entry) == "table" and (entry --[[@as table<string, unknown>]]).move == foeEncore
+        then
+          foeEncoreSlot = index - 1
+          break
+        end
+      end
+    end
+  end
+  extra.encoreSlot = { [0] = foeEncoreSlot, [1] = atkEncoreSlot }
+  local function protectId(combatantId)
+    if volatilePresent(state, combatantId, "PROTECT") then
+      return 182
+    end
+    if volatilePresent(state, combatantId, "DETECT") then
+      return 197
+    end
+    if volatilePresent(state, combatantId, "ENDURE") then
+      return 203
+    end
+    return 0
+  end
+  extra.protectMove = { [0] = protectId(foeId), [1] = protectId(atkId) }
+  extra.lockedMoves = {
+    encore = lockId(atkId, { "ENCORE" }),
+    disable = lockId(atkId, { "DISABLE" }),
+  }
+  extra.recycle = {}
+  return extra
+end
+
 local function evaluateSingles(state, authorities, facts, opponents, bits, stream)
   local foeIds = {}
   for _, opposed in ipairs(opponents) do
@@ -1695,17 +2761,17 @@ local function evaluateSingles(state, authorities, facts, opponents, bits, strea
   if type(foeHp) ~= "number" or foeHp % 1 ~= 0 or foeHp < 0 then
     error(BattleErrors.missingBehavior("trainer evaluation reads its opposing health", {}))
   end
-  local thresholds = initThresholds(stream)
-  local scored = scoreWithThresholds(
+  local live = buildLiveExtra(state, authorities, facts.combatant, foe)
+  local scored = TrainerAi.scoreSlots(
     authorities.chart,
     facts.slots,
     facts.user,
     foeStats,
     foeHp,
     bits,
-    thresholds,
     firstTurnOf(state),
-    stream
+    stream,
+    live
   )
   local moveSlot = 0
   if hasUsable(facts.slots) then
@@ -1717,56 +2783,356 @@ local function evaluateSingles(state, authorities, facts, opponents, bits, strea
   }
 end
 
+--- Builds live program facts for one doubles candidate evaluation: every
+--- battler slot carries its live record (absent slots stay absent and read
+--- zeroed), parties and histories resolve per battler, and the entry-bit map
+--- marks battlers with no live mon available for the switch-in jumps.
+---@param state table<string, unknown> live battle state under inspection
+---@param authorities TrainerAiAuthorities session-owned read authorities
+---@param attacker table<string, unknown> acting combatant under evaluation
+---@param byId table<integer, table<string, unknown>> live combatants by battler identity
+---@param attackerId integer acting battler identity under evaluation
+---@param targetId integer candidate battler identity under evaluation
+---@return table<string, unknown> live evaluation context for scoring
+local function buildDoublesExtra(state, authorities, attacker, byId, attackerId, targetId)
+  local extra = {} ---@type table<string, unknown>
+  extra.round = state.round
+  extra.battleType = 3
+  extra.battlerCount = 4
+  extra.moveIdByKey = moveIdMap(authorities)
+  extra.fullMoveById = fullMoveMap(authorities)
+  extra.fullMoveIdByKey = extra.moveIdByKey
+  extra.heldEffects = {}
+  local records = {}
+  local live = {}
+  local switchIn = {}
+  local usedIds = {}
+  local lasts = {}
+  local encoreSlot = {}
+  local protectMove = {}
+  local parties = {}
+  local partyIndex = {}
+  local partyPartner = {}
+  local function lastMoveId(combatantId)
+    local recent = state.lastMoves
+    if type(recent) ~= "table" then
+      return 0
+    end
+    local key = (recent --[[@as table<integer, string>]])[combatantId]
+    if type(key) ~= "string" then
+      return 0
+    end
+    if key == "STRUGGLE" then
+      return 165
+    end
+    return extra.moveIdByKey[key] or 0
+  end
+  local function usedList(combatantRef)
+    local ledger = state.usedMoves
+    if type(ledger) ~= "table" then
+      return {}
+    end
+    local active = combatantRef.active
+    local token = nil
+    if type(active) == "table" then
+      token = active.activation
+    end
+    if token == nil then
+      return {}
+    end
+    local entry = (ledger --[[@as table<integer, unknown>]])[token]
+    return orderedUsedIds(extra.moveIdByKey, entry)
+  end
+  local function lockId(combatantId, keys)
+    local move = volatileMove(state, combatantId, keys)
+    if type(move) ~= "string" or move == "" then
+      return 0
+    end
+    if move == "STRUGGLE" then
+      return 165
+    end
+    local id = extra.moveIdByKey[move]
+    if id == nil then
+      error(BattleErrors.missingBehavior("trainer evaluation reads its locked move", {}))
+    end
+    return id
+  end
+  local function protectId(combatantId)
+    if volatilePresent(state, combatantId, "PROTECT") then
+      return 182
+    end
+    if volatilePresent(state, combatantId, "DETECT") then
+      return 197
+    end
+    if volatilePresent(state, combatantId, "ENDURE") then
+      return 203
+    end
+    return 0
+  end
+  local function encoreSlotFor(combatantRef)
+    local combatantId = combatantRef.id --[[@as integer]]
+    local move = volatileMove(state, combatantId, { "ENCORE" })
+    if type(move) ~= "string" or move == "" then
+      return 0
+    end
+    local entries = combatantRef.mon --[[@as table<string, unknown>]]
+    local moves = entries.moves --[[@as table<integer, unknown>]]
+    if type(moves) == "table" then
+      for index, entry in ipairs(moves) do
+        if
+          type(entry) == "table" and (entry --[[@as table<string, unknown>]]).move == move
+        then
+          return index - 1
+        end
+      end
+    end
+    return 0
+  end
+  local function partyFor(battler, combatantRef)
+    local participant = BattleState.participant(state, combatantRef.participant --[[@as integer]])
+    local members = {}
+    local own = 0
+    for index, combatantId in
+      ipairs(participant.roster --[[@as integer[] ]])
+    do
+      local member = BattleState.combatant(state, combatantId --[[@as integer]])
+      if combatantId == combatantRef.id then
+        own = index - 1
+      end
+      members[#members + 1] = partyMemberFacts(authorities, member, extra.heldEffects)
+    end
+    parties[battler] = members
+    partyIndex[battler] = own
+    partyPartner[battler] = 0
+  end
+  for battler = 0, 3 do
+    local combatant = byId[battler]
+    if combatant ~= nil then
+      local combatantId = combatant.id --[[@as integer]]
+      local record = battlerProgramFacts(state, authorities, combatant, extra.moveIdByKey, extra.heldEffects)
+      record.suppressed = volatilePresent(state, combatantId, "GASTRO_ACID")
+      record.magnetRise = volatilePresent(state, combatantId, "magnetrise")
+      record.miracleEye = volatilePresent(state, combatantId, "miracleeye")
+      record.foresight = volatilePresent(state, combatantId, "foresight")
+      local word = 0
+      if volatilePresent(state, combatantId, "GASTRO_ACID") then
+        word = word + 2097152
+      end
+      if volatilePresent(state, combatantId, "ingrain") then
+        word = word + 1024
+      end
+      if volatilePresent(state, combatantId, "aquaring") then
+        word = word + 16777216
+      end
+      if volatilePresent(state, combatantId, "magnetrise") then
+        word = word + 134217728
+      end
+      if volatilePresent(state, combatantId, "charged") then
+        word = word + 512
+      end
+      if volatilePresent(state, combatantId, "leechseed") then
+        word = word + 4
+      end
+      if volatilePresent(state, combatantId, "lockon") then
+        word = word + 24
+      end
+      if volatilePresent(state, combatantId, "perishsong") then
+        word = word + 32
+      end
+      if volatilePresent(state, combatantId, "yawn") then
+        word = word + 6144
+      end
+      record.moveFlags = word
+      record.lastMove = lastMoveId(combatantId)
+      records[battler] = record
+      live[battler] = true
+      lasts[battler] = record.lastMove
+      usedIds[battler] = usedList(combatant)
+      encoreSlot[battler] = encoreSlotFor(combatant)
+      protectMove[battler] = protectId(combatantId)
+      partyFor(battler, combatant)
+      local hp = combatant.hp
+      if type(hp) == "number" and hp > 0 then
+        switchIn[battler] = false
+      else
+        local participant = BattleState.participant(state, combatant.participant --[[@as integer]])
+        switchIn[battler] = #livingReserves(state, participant, {}) == 0
+      end
+    else
+      parties[battler] = {}
+      partyIndex[battler] = 0
+      partyPartner[battler] = 0
+    end
+  end
+  extra.parties = parties
+  extra.partyIndex = partyIndex
+  extra.partyPartner = partyPartner
+  extra.doublesBattlers = { atk = attackerId, tgt = targetId, records = records }
+  extra.liveBattlers = live
+  extra.switchIn = switchIn
+  extra.usedIds = usedIds
+  extra.lastMove = lasts
+  extra.encoreSlot = encoreSlot
+  extra.protectMove = protectMove
+  local attackerIdNumber = attacker.id --[[@as integer]]
+  extra.lockedMoves = {
+    encore = lockId(attackerIdNumber, { "ENCORE" }),
+    disable = lockId(attackerIdNumber, { "DISABLE" }),
+  }
+  extra.recycle = {}
+  return extra
+end
+
 -- Evaluates one doubles actor through the doubles selector
--- (ov10_0221C038): one initialization feeds every candidate target,
--- each target evaluates its own scores and winning move, and the
--- highest bid answers with ties broken through one selection draw.
--- Candidate targets enumerate live opposing positions in order; ally
--- support targeting stays unmodeled and such moves score against the
--- foe line instead.
+-- (ov10_0221C038): the doubles pass joins the enabled flags, battler
+-- slots evaluate in source order with dead and self slots excluded, every
+-- candidate receives a fresh scratch initialization through the shared
+-- scoring path, each candidate bids its winning move, and the highest bid
+-- answers with ties broken through one selection draw. Ally slots bid
+-- where the source admits them; self-aimed winners retarget to the holder.
 ---@param authorities TrainerAiAuthorities session-owned read authorities
 ---@param facts TrainerAiActorFacts acting facts under evaluation
----@param opponents table<integer, table<string, unknown>> live opposing entries in position order
 ---@param state table<string, unknown> live battle state under inspection
 ---@param bits integer[] enabled native flag bits in ascending order
 ---@param stream table<string, unknown> caller-owned battle stream for decision draws
 ---@return table<string, unknown> attack choice in the shared decision shape
-local function evaluateDoubles(authorities, facts, opponents, state, bits, stream)
+local function evaluateDoubles(authorities, facts, state, bits, stream)
   local firstTurn = firstTurnOf(state)
-  local thresholds = initThresholds(stream)
-  local bids = {}
-  for _, opposed in ipairs(opponents) do
-    local foe = BattleState.combatant(state, opposed.combatant)
-    local foeStats = estimateFighter(foe.mon --[[@as table<string, unknown>]], foe.stages, authorities.speciesFacts)
-    local foeHp = foe.hp
-    if type(foeHp) ~= "number" or foeHp % 1 ~= 0 or foeHp < 0 then
-      error(BattleErrors.missingBehavior("trainer evaluation reads its opposing health", {}))
-    end
-    local scored = scoreWithThresholds(
-      authorities.chart,
-      facts.slots,
-      facts.user,
-      foeStats,
-      foeHp,
-      bits,
-      thresholds,
-      firstTurn,
-      stream
-    )
-    local moveSlot = 0
-    local top = nil
-    if hasUsable(facts.slots) then
-      moveSlot = TrainerAi.selectMove(scored, stream)
-      for _, entry in ipairs(scored) do
-        if entry.slot == moveSlot then
-          top = entry.score
+  local evenIds = {}
+  local oddIds = {}
+  for _, positionId in
+    ipairs(state.positionOrder --[[@as integer[] ]])
+  do
+    local position = BattleState.position(state, positionId)
+    local occupant = position.occupant
+    if occupant ~= nil then
+      local combatant = BattleState.combatant(state, occupant --[[@as integer]])
+      if combatant.active ~= nil then
+        local side = BattleState.participant(state, combatant.participant --[[@as integer]]).side
+        local entry = { position = positionId, combatant = combatant }
+        if side == 1 then
+          evenIds[#evenIds + 1] = entry
+        else
+          oddIds[#oddIds + 1] = entry
         end
       end
     end
-    assert(top ~= nil or not hasUsable(facts.slots), "winning bids carry their native points")
-    bids[#bids + 1] = { target = opposed.position, slot = moveSlot, score = top or 0 }
   end
+  assert(#evenIds <= 2 and #oddIds <= 2, "doubles fields at most two battlers per side")
+  local byId = {}
+  local positionOf = {}
+  local sideOf = {}
+  for index, entry in ipairs(evenIds) do
+    local id = (index - 1) * 2
+    byId[id] = entry.combatant
+    positionOf[id] = entry.position
+    sideOf[id] = 1
+  end
+  for index, entry in ipairs(oddIds) do
+    local id = (index - 1) * 2 + 1
+    byId[id] = entry.combatant
+    positionOf[id] = entry.position
+    sideOf[id] = 2
+  end
+  local attacker = nil ---@type integer?
+  for id, combatant in pairs(byId) do
+    if combatant.id == facts.combatant.id then
+      attacker = id
+    end
+  end
+  assert(attacker ~= nil, "doubles attackers hold their battler identity")
+  local forced = {}
+  local doubles = false
+  for _, bit in ipairs(bits) do
+    forced[#forced + 1] = bit
+    if bit == 7 then
+      doubles = true
+    end
+  end
+  if not doubles then
+    forced[#forced + 1] = 7
+  end
+  table.sort(forced)
+  local bids = {}
+  for candidate = 0, 3 do
+    local target = byId[candidate]
+    if candidate ~= attacker and target ~= nil then
+      local targetHp = target.hp
+      if type(targetHp) ~= "number" or targetHp % 1 ~= 0 or targetHp < 0 then
+        error(BattleErrors.missingBehavior("trainer evaluation reads its opposing health", {}))
+      end
+      local candidateHp = targetHp --[[@as integer]]
+      if candidateHp > 0 then
+        local targetStats =
+          estimateFighter(target.mon --[[@as table<string, unknown>]], target.stages, authorities.speciesFacts)
+        local live = buildDoublesExtra(state, authorities, facts.combatant, byId, attacker, candidate)
+        local scored = TrainerAi.scoreSlots(
+          authorities.chart,
+          facts.slots,
+          facts.user,
+          targetStats,
+          candidateHp,
+          forced,
+          firstTurn,
+          stream,
+          live
+        )
+        local moveSlot = 0
+        local top = nil
+        if hasUsable(facts.slots) then
+          moveSlot = TrainerAi.selectMove(scored, stream)
+          for _, entry in ipairs(scored) do
+            if entry.slot == moveSlot then
+              top = entry.score
+            end
+          end
+        end
+        assert(top ~= nil or not hasUsable(facts.slots), "winning bids carry their native points")
+        bids[#bids + 1] = { target = positionOf[candidate], slot = moveSlot, score = top or 0 }
+      end
+    end
+  end
+  assert(#bids > 0, "doubles selection reads its live candidates")
   local target, slot = TrainerAi.selectDoubles(bids, stream)
+  local chosen = facts.slots[slot + 1]
+  if chosen ~= nil and chosen.usable then
+    local active = facts.combatant.active
+    assert(type(active) == "table", "doubles holders keep their entry")
+    local ownPosition = active.position --[[@as integer]]
+    assert(type(ownPosition) == "number", "doubles holders keep their position")
+    local detail = authorities.moveFacts[chosen.key]
+    if type(detail) ~= "table" then
+      error(BattleErrors.missingBehavior("trainer evaluation reads its compiled move facts", {
+        key = chosen.key,
+      }))
+    end
+    local range = (detail --[[@as table<string, unknown>]]).range
+    if type(range) ~= "number" then
+      error(BattleErrors.missingBehavior("trainer evaluation reads its compiled move range", {
+        key = chosen.key,
+      }))
+    end
+    -- Single-target user-side winners aimed across the field retarget to
+    -- the holder, as do non-ghost Curse winners.
+    if range == 512 then
+      for id, position in pairs(positionOf) do
+        if position == target and sideOf[id] == 1 then
+          target = ownPosition --[[@as integer]]
+        end
+      end
+    end
+    if chosen.id == 174 then
+      local ghost = false
+      for _, key in ipairs(facts.user.types) do
+        if key == "ghost" then
+          ghost = true
+        end
+      end
+      if not ghost then
+        target = ownPosition --[[@as integer]]
+      end
+    end
+  end
   return {
     kind = "attack",
     payload = { moveSlot = slot, target = { kind = "position", position = target } },
@@ -1797,12 +3163,10 @@ local function answerActor(state, authorities, participant, actor, opponents, cl
     error(BattleErrors.input("locked references die with their entry", { combatant = actor.combatant }))
   end
   local facts = actorFacts(authorities, combatant)
-  local holderHp = combatant.hp
-  if type(holderHp) ~= "number" or holderHp % 1 ~= 0 or holderHp < 0 then
-    error(BattleErrors.missingBehavior("trainer decisions read their holder health", {}))
-  end
-  local userStats = facts.user
-  if not switchHeld(state, combatant, userStats.types, opponents) then
+  local holderHp, holderCeiling = holderHealth(combatant)
+  if
+    not switchHeld(state, actor.combatant --[[@as integer]], facts.user.types, opponents)
+  then
     local reserveIds = livingReserves(state, participant, claimed)
     if #reserveIds > 0 then
       local reserves = {}
@@ -1832,22 +3196,40 @@ local function answerActor(state, authorities, participant, actor, opponents, cl
           hp = foeHp,
         }
       end
-      local memory = controllerMemory(state, participant.controller --[[@as string]])
-      local known = {}
-      if memory ~= nil and type(memory.knownMoves) == "table" then
-        known = memory.knownMoves --[[@as table<integer, table<string, boolean>>]]
+      local conditions = holderConditions(combatant.mon --[[@as table<string, unknown>]])
+      local foeTypes = foes[1].stats.types
+      local foeTypesPair = { foeTypes }
+      if doubles and #foes >= 2 then
+        foeTypesPair[#foeTypesPair + 1] = foes[2].stats.types
       end
-      local exchange = selectReplacement(
-        authorities.chart,
-        facts.slots,
-        userStats,
-        holderHp --[[@as integer]],
-        reserves,
-        foes,
-        known,
-        authorities.moveFacts,
-        stream
-      )
+      local foeTypesDoubled = { foeTypes, foeTypes }
+      if doubles and #foes >= 2 then
+        foeTypesDoubled = { foeTypes, foes[2].stats.types }
+      end
+      local foesHealthy = true
+      for _, foe in ipairs(foes) do
+        if foe.hp <= 0 then
+          foesHealthy = false
+        end
+      end
+      local foeMon = BattleState.combatant(state, foes[1].id).mon
+      local exchange = selectReplacement(state, authorities, {
+        holderId = actor.combatant --[[@as integer]],
+        holderSlots = facts.slots,
+        holderHp = holderHp,
+        holderCeiling = holderCeiling,
+        holderAbility = battleAbility(combatant.mon),
+        holderAsleep = conditions.sleep == true,
+        holderStages = combatant.stages,
+        doubles = doubles,
+        reserves = reserves,
+        foeTypes = foeTypes,
+        foeTypesPair = foeTypesPair,
+        foeTypesDoubled = foeTypesDoubled,
+        foeWonderGuard = battleAbility(foeMon) == "WONDER_GUARD",
+        foesScanned = #foes,
+        foesHealthy = foesHealthy,
+      }, stream)
       if exchange ~= nil then
         local verdict = Switching.eligible({
           reason = "voluntary",
@@ -1864,9 +3246,6 @@ local function answerActor(state, authorities, participant, actor, opponents, cl
         claimed[exchange] = true
         return { actor = actor, kind = "switch", payload = { replacement = exchange } }
       end
-      if #foes > 0 then
-        coverStayDraws(authorities.chart, facts.slots, foes[1].stats.types, stream)
-      end
     end
   end
   local serving = selectItemSlot(state, authorities, participant, actor.combatant --[[@as integer]], taken, state)
@@ -1879,7 +3258,7 @@ local function answerActor(state, authorities, participant, actor, opponents, cl
   end
   local attack
   if doubles then
-    attack = evaluateDoubles(authorities, facts, opponents, state, bits, stream)
+    attack = evaluateDoubles(authorities, facts, state, bits, stream)
   else
     attack = evaluateSingles(state, authorities, facts, opponents, bits, stream)
   end

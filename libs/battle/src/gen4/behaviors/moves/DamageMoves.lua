@@ -952,8 +952,20 @@ local function userIvsOf(frame)
   return values --[[@as table<string, integer>]]
 end
 
+---@param used table<integer, string> distinct moves used by this entry in first-use order
+---@param move string known move identity under the membership check
+---@return boolean true when the entry already used the move
+local function usedMove(used, move)
+  for _, key in ipairs(used) do
+    if key == move then
+      return true
+    end
+  end
+  return false
+end
+
 ---@param frame table<string, unknown> move frame under execution
----@return table<string, boolean> distinct moves used by this entry under the strike
+---@return table<integer, string> distinct moves used by this entry in first-use order
 local function usedMovesOf(frame)
   local record = frame --[[@as table<string, unknown>]]
   local key = record.executingMove --[[@as string]]
@@ -962,7 +974,7 @@ local function usedMovesOf(frame)
   if type(used) ~= "table" then
     error(BattleErrors.missingBehavior("last resort reads its distinct-move history", { key = key }))
   end
-  return used --[[@as table<string, boolean>]]
+  return used --[[@as table<integer, string>]]
 end
 
 ---@param frame table<string, unknown> move frame under execution
@@ -2379,9 +2391,7 @@ local function stepLastResort(ctx, frame)
       }))
     end
     if
-      move ~= "LAST_RESORT" and used[
-        move --[[@as string]]
-      ] ~= true
+      move ~= "LAST_RESORT" and not usedMove(used, move --[[@as string]])
     then
       return { kind = "complete", result = "failed" }
     end

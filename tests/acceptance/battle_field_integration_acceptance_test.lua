@@ -630,7 +630,11 @@ function T.tests.production_boot_runs_wild_trainer_and_capture_legs_to_commit()
     local frames = trainerRecord.frames
 
     -- Opening toxic and its growing residual: one application naming toxic
-    -- and strictly growing tick amounts afterwards.
+    -- and strictly growing tick amounts within every uninterrupted stint.
+    -- Working switch intelligence may exchange the toxiced lead, which
+    -- restarts the residual counter on return exactly like the native
+    -- switch reset, so growth is asserted per stint instead of across
+    -- the exchange.
     local toxicApplications = framePositions(frames, "status", function(frame)
       local payload = frame.payload
       return type(payload) == "table" and payload.key == "toxic"
@@ -646,33 +650,82 @@ function T.tests.production_boot_runs_wild_trainer_and_capture_legs_to_commit()
       end
     end
     Assert.isTrue(#toxicAmounts >= 3, "the inflicted toxic drains through residual ticks")
-    for index = 2, #toxicAmounts do
-      Assert.isTrue(
-        toxicAmounts[index] > toxicAmounts[index - 1],
-        "the toxic counter grows its residual drain"
-      )
+    local stints = {}
+    local openStint = nil
+    local function closeStint()
+      if openStint ~= nil then
+        stints[#stints + 1] = openStint
+        openStint = nil
+      end
     end
+    for _, frame in ipairs(frames) do
+      if type(frame) == "table" then
+        local payload = frame.payload
+        if type(payload) == "table" then
+          if frame.kind == "switch" or frame.kind == "faint" then
+            if openStint ~= nil and payload.from == openStint.combatant then
+              closeStint()
+            end
+            if frame.kind == "faint" and openStint ~= nil and payload.combatant == openStint.combatant then
+              closeStint()
+            end
+          elseif frame.kind == "tick" and payload.key == "toxic" and type(payload.amount) == "number" then
+            if openStint == nil or openStint.combatant ~= payload.combatant then
+              closeStint()
+              openStint = { combatant = payload.combatant, amounts = {} }
+            end
+            openStint.amounts[#openStint.amounts + 1] = payload.amount
+          end
+        end
+      end
+    end
+    closeStint()
+    Assert.isTrue(#stints >= 1, "toxic ticks segment into exchange-bounded stints")
+    local longest = 0
+    for _, stint in ipairs(stints) do
+      for index = 2, #stint.amounts do
+        Assert.isTrue(
+          stint.amounts[index] > stint.amounts[index - 1],
+          "the toxic counter grows its residual drain within every stint"
+        )
+      end
+      if #stint.amounts > longest then
+        longest = #stint.amounts
+      end
+    end
+    Assert.isTrue(longest >= 3, "an uninterrupted stint proves multi-tick counter growth")
 
     -- Trainer item behavior: exactly one healing choice from battle-local
-    -- trainer stock lands on the opening foe, and the depleted stock never
-    -- answers again while the fight continues. The wound is arranged as deep
-    -- as the opening exchange allows (toxic plus never-missing leaf spam),
-    -- and the missing health at heal time is read back from the public
-    -- damage frames so the cap is observed rather than assumed.
+    -- trainer stock lands on a wounded trainer mon, and the depleted stock
+    -- never answers again while the fight continues. Voluntary exchanges
+    -- may move the wound across the party, so the healed holder is read
+    -- back from the serving itself instead of assuming the opener. The
+    -- wound is arranged as deep as the opening exchange allows (toxic plus
+    -- never-missing leaf spam), and the missing health at heal time is
+    -- read back from the public damage frames so the cap is observed
+    -- rather than assumed.
+    local foeReserveOne, foeReserveTwo = foeTrainer + 1, foeTrainer + 2
+    local trainerParty = { [foeTrainer] = true, [foeReserveOne] = true, [foeReserveTwo] = true }
     local trainerItems = framePositions(frames, "item", function(frame)
       local payload = frame.payload
       return type(payload) == "table" and payload.inventory ~= "player-bag"
     end)
     Assert.equal(#trainerItems, 1, "the trainer spends its single stock exactly once")
     local spent = frames[trainerItems[1]].payload
+    Assert.equal(spent.target.kind, "combatant", "the healing names its target kind")
+    Assert.isTrue(
+      trainerParty[spent.target.combatant] == true,
+      "the healing lands on a wounded trainer mon"
+    )
+    local healTarget = spent.target.combatant
     local missingAtHeal = 0
     for index, frame in ipairs(frames) do
       if index < trainerItems[1] and type(frame) == "table" then
         local payload = frame.payload
         if type(payload) == "table" then
-          if frame.kind == "struck" and payload.target == foeTrainer and type(payload.damage) == "number" then
+          if frame.kind == "struck" and payload.target == healTarget and type(payload.damage) == "number" then
             missingAtHeal = missingAtHeal + payload.damage
-          elseif frame.kind == "tick" and payload.combatant == foeTrainer and type(payload.amount) == "number" then
+          elseif frame.kind == "tick" and payload.combatant == healTarget and type(payload.amount) == "number" then
             missingAtHeal = missingAtHeal + payload.amount
           end
         end
@@ -700,8 +753,6 @@ function T.tests.production_boot_runs_wild_trainer_and_capture_legs_to_commit()
       math.min(generatedRestore.amount, missingAtHeal),
       "the trainer healing restores the generated amount, capped only by missing health"
     )
-    Assert.equal(spent.target.kind, "combatant", "the healing names its target kind")
-    Assert.equal(spent.target.combatant, foeTrainer, "the healing lands on the wounded opener")
     Assert.equal(spent.item, "SUPER_POTION", "the spent stock is the carried healing")
     Assert.equal(
       spent.inventory,
@@ -718,9 +769,19 @@ function T.tests.production_boot_runs_wild_trainer_and_capture_legs_to_commit()
     end)[1]
     Assert.notNil(firstStruckFoe, "the veteran wounds the opening foe")
     Assert.notNil(faintFoeLead, "the opening foe falls")
+    local firstStruckHealed = framePositions(frames, "struck", function(frame)
+      local payload = frame.payload
+      return type(payload) == "table" and payload.target == healTarget
+    end)[1]
+    local faintHealed = framePositions(frames, "faint", function(frame)
+      local payload = frame.payload
+      return type(payload) == "table" and payload.combatant == healTarget
+    end)[1]
+    Assert.notNil(firstStruckHealed, "the healed holder takes its wound in the open")
+    Assert.notNil(faintHealed, "the healed holder falls before the terminal win")
     Assert.isTrue(
-      trainerItems[1] > firstStruckFoe and trainerItems[1] < faintFoeLead,
-      "the trainer heals its wounded opener before it falls"
+      trainerItems[1] > firstStruckHealed and trainerItems[1] < faintHealed,
+      "the trainer heals its wounded holder before it falls"
     )
     Assert.equal(
       #framePositions(frames, "item", function(frame)
@@ -730,22 +791,53 @@ function T.tests.production_boot_runs_wild_trainer_and_capture_legs_to_commit()
       "the trainer leg consumes no player Bag stock"
     )
 
-    -- Knockout chain with the learning interruption in the middle: the
-    -- lead falls, the prompt is answered, and both reserves replace in
-    -- order before the terminal win.
-    local foeReserveOne, foeReserveTwo = foeTrainer + 1, foeTrainer + 2
-    local replaceOneAt = framePositions(frames, "switch", function(frame)
-      local payload = frame.payload
-      return type(payload) == "table" and payload.from == foeTrainer and payload.to == foeReserveOne
-    end)[1]
-    local replaceTwoAt = framePositions(frames, "switch", function(frame)
-      local payload = frame.payload
-      return type(payload) == "table" and payload.from == foeReserveOne and payload.to == foeReserveTwo
-    end)[1]
-    Assert.notNil(replaceOneAt, "the trainer sends its first reserve after the lead faint")
-    Assert.notNil(replaceTwoAt, "the trainer sends its second reserve after the next faint")
-    Assert.isTrue(replaceOneAt > framesAtPrompt, "the battle resumes past learning into replacement")
-    Assert.isTrue(replaceTwoAt > replaceOneAt, "the reserves replace in order")
+    -- Knockout chain with the learning interruption in the middle: every
+    -- fall pulls its replacement next, voluntary exchanges never
+    -- impersonate a replacement, and the battle resumes past learning
+    -- into the terminal win. Rigid lead-to-reserve pairing is gone on
+    -- purpose: a voluntary exchange may reorder who falls first, so the
+    -- pairing is asserted causally per faint instead of by roster slot.
+    local faintOrder = {}
+    for index, frame in ipairs(frames) do
+      if type(frame) == "table" and frame.kind == "faint" then
+        local payload = frame.payload
+        if type(payload) == "table" and trainerParty[payload.combatant] == true then
+          faintOrder[#faintOrder + 1] = { combatant = payload.combatant, index = index }
+        end
+      end
+    end
+    Assert.equal(#faintOrder, 3, "all three trainer mons fall")
+    local fallen = {}
+    for position, entry in ipairs(faintOrder) do
+      Assert.isTrue(fallen[entry.combatant] == nil, "no trainer mon falls twice")
+      fallen[entry.combatant] = true
+      if position < #faintOrder then
+        local replacement = nil
+        for index = entry.index + 1, #frames do
+          local frame = frames[index]
+          if type(frame) == "table" and frame.kind == "switch" then
+            replacement = { index = index, payload = frame.payload }
+            break
+          end
+        end
+        Assert.notNil(replacement, "each fall pulls its replacement next")
+        local detail = replacement.payload
+        Assert.isTrue(type(detail) == "table", "replacements carry their exchange detail")
+        Assert.equal(
+          detail.from,
+          entry.combatant,
+          "the replacement answers the fall that pulled it"
+        )
+        Assert.isTrue(
+          trainerParty[detail.to] == true and detail.to ~= entry.combatant and fallen[detail.to] == nil,
+          "the replacement sends a living benched reserve"
+        )
+      end
+    end
+    Assert.isTrue(
+      framesAtPrompt < faintOrder[#faintOrder].index,
+      "the battle resumes past learning into the terminal fall"
+    )
 
     -- No scaffold strikes: every settled attack runs move mechanics with
     -- real damage instead of fixed one-point strikes.

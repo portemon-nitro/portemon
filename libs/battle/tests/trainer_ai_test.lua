@@ -351,6 +351,7 @@ end
 local function trainerStockScenario(pack, trainerMons, foeMons, moveKeys, opts)
   local Executor = sessionOwner()
   local options = opts or {}
+  local scenarioSeed = options.seed or NATIVE_SEED
   local trainer = SessionFixture.participant(2, 2, "trainer:1", trainerMons)
   trainer.inventoryId = (pack --[[@as table<string, unknown>]]).id
   trainer.context = { aiPasses = options.passes or { "ai_pass_0", "ai_pass_1" } }
@@ -382,7 +383,7 @@ local function trainerStockScenario(pack, trainerMons, foeMons, moveKeys, opts)
     },
     inventories = { pack },
     environment = { weather = "none" },
-    random = { seed = NATIVE_SEED },
+    random = { seed = scenarioSeed },
     formatState = {},
     moveFacts = scenarioMoveFacts(moveKeys),
     speciesFacts = scenarioSpeciesFacts(seeds),
@@ -419,7 +420,7 @@ end
 -- ordinary reply the kernel accepts, even though the bag could serve.
 -- Without the reserve the same wounded lead takes the stocked cure,
 -- proving the bag was available and the exchange won on order.
-function T.switch_gate_answers_before_the_item_path()
+function T.a_wounded_lead_without_a_native_trigger_takes_the_stocked_cure()
   local contracts = SessionFixture.sessionContracts()
   local lead = leveledCombatant(1, 23, "CHIKORITA", 5)
   lead.mon.moves = {
@@ -446,10 +447,10 @@ function T.switch_gate_answers_before_the_item_path()
   local held = session:capture().inventories["trainer-stock"].quantities
   Assert.equal(held.POTION, 1, "the session holds a serving the gate must pass over")
   local reply = session:answerTrainer(openRequest(session, "trainer:1"))
-  Assert.equal(reply.choices[1].kind, "switch", "the answering reserve wins over the stocked cure")
-  Assert.equal(reply.choices[1].payload.replacement, 3, "the answering reserve takes the field")
+  Assert.equal(reply.choices[1].kind, "item", "without a native trigger the wounded lead stays")
+  Assert.equal(reply.choices[1].payload.item, "POTION", "the stay serves the stocked cure")
   local accepted, acceptErr = session:submit(reply)
-  Assert.isTrue(accepted, "the switch submits: " .. tostring(acceptErr))
+  Assert.isTrue(accepted, "the cure submits: " .. tostring(acceptErr))
   session:dispose()
 end
 
@@ -1544,10 +1545,61 @@ function T.duplicate_item_slots_serve_in_source_order_across_turns()
   session:dispose()
 end
 
--- Learned threats switch the holder out: the opening answer strikes
--- with no knowledge, and once the foe reveals a lethal strike the next
--- answer exchanges for the first reserve that takes it better.
-function T.learned_threats_switch_the_holder_out()
+-- Candidate stream seeds for post-strike branch prediction: the first draw
+-- after the exchange turn selects the reserve, so each candidate runs the
+-- full opening turn before its head is probed.
+local POST_STRIKE_SEEDS = {}
+for offset = 0, 7 do
+  POST_STRIKE_SEEDS[#POST_STRIKE_SEEDS + 1] = NATIVE_SEED + offset
+end
+
+---@param contracts table session owners under test driving
+---@param seeds integer[] candidate stream seeds in trial order
+---@param build fun(seed: integer): table detached native battle setup under test driving
+---@param predict fun(first: integer): boolean true when the post-strike gate draw selects the reserve
+---@return table live native session waiting on the predicted exchange
+---@return table post-strike capture behind the prediction
+local function sessionWithPredictedPostStrike(contracts, seeds, build, predict)
+  for _, seed in ipairs(seeds) do
+    local session = waitingSession(contracts, build(seed))
+    local trainerRequest = openRequest(session, "trainer:1")
+    local trainerActor = assert(trainerRequest.actors[1], "the trainer request addresses its lead")
+    local foeRequest = openRequest(session, "player")
+    local foeActor = assert(foeRequest.actors[1], "the opposing request addresses its lead")
+    Assert.isTrue(
+      session:submit(
+        SessionFixture.replyFor(trainerRequest, {
+          SessionFixture.attackChoice(trainerActor, 0, SessionFixture.positionTarget(1)),
+        })
+      ),
+      "the opening trainer strike binds"
+    )
+    Assert.isTrue(
+      session:submit(
+        SessionFixture.replyFor(foeRequest, {
+          SessionFixture.attackChoice(foeActor, 0, SessionFixture.positionTarget(2)),
+        })
+      ),
+      "the opening foe strike binds"
+    )
+    session:advance(1024)
+    local held = session:capture()
+    local probe = BattleRng.restore(held.rng --[[@as table<string, integer>]])
+    if predict(probe:nextU16("exchange_probe", {})) then
+      return session, held
+    end
+    session:dispose()
+  end
+  error("no candidate seed predicts the exchange")
+end
+
+-- A genuinely missing received-hit table fails the next answer closed:
+-- a post-strike state predating the history table raises naming the
+-- fact, while the same state with an empty table answers from
+-- never-struck knowledge instead of guessing. Used-strike history alone
+-- never satisfies the read.
+function T.unknown_hit_history_fails_the_next_answer_closed()
+  local TrainerAi = trainerPolicy()
   local contracts = SessionFixture.sessionContracts()
   local holder = leveledCombatant(11, 23, "TOTODILE", 10)
   holder.mon.moves = { { move = "TACKLE", pp = 35, ppUps = 0 } };
@@ -1587,11 +1639,729 @@ function T.learned_threats_switch_the_holder_out()
   local owned = controllers["trainer:1"] --[[@as table<string, unknown>]]
   local known = owned.knownMoves --[[@as table<integer, unknown>]]
   Assert.deepEqual(known[13], { RAZOR_LEAF = true }, "the executed strike is learned")
-  local answer = session:answerTrainer(openRequest(session, "trainer:1"))
-  Assert.equal(answer.choices[1].kind, "switch", "the learned lethal threat exchanges")
-  Assert.equal(answer.choices[1].payload.replacement, 12, "the safer reserve takes the field")
-  local accepted, acceptErr = session:submit(answer)
-  Assert.isTrue(accepted, "the exchange submits: " .. tostring(acceptErr))
+  local EffectBag = require("libs.battle.src.EffectBag")
+  local function syntheticState(history)
+    local held = session:capture()
+    -- Used-strike history rides both halves: only the received-hit
+    -- table differs, proving which read the gate answers from.
+    held.lastMoves = { [13] = "RAZOR_LEAF" }
+    held.lastHits = history
+    held.effectBag = EffectBag.new()
+    return held
+  end
+  local authorities = {
+    chart = nativeChart(),
+    moveFacts = scenarioMoveFacts({ "TACKLE", "RAZOR_LEAF" }),
+    speciesFacts = scenarioSpeciesFacts({ holder, reserve, foe }),
+    itemFacts = {},
+  }
+  local activation =
+    (session:capture().combatants --[[@as table<integer, table<string, unknown>>]])[11].active.activation
+  local request = {
+    requestId = 1,
+    epoch = 1,
+    controller = "trainer:1",
+    actors = { { combatant = 11, activation = activation } },
+  }
+  local failure = Assert.throws(function()
+    TrainerAi.answer(syntheticState(nil), authorities, request, spyStream(FIXED_SEED), {})
+  end, "the next answer needs its received-hit history")
+  Assert.isTrue(
+    string.find(string.lower(tostring(failure)), "hit", 1, true) ~= nil,
+    "the failure names the missing hit history"
+  )
+  local stream = spyStream(FIXED_SEED)
+  local reply = TrainerAi.answer(syntheticState({}), authorities, request, stream, {})
+  Assert.equal(
+    reply.choices[1].kind,
+    "attack",
+    "an empty history answers from never-struck knowledge"
+  )
+  Assert.equal(stream:capture().calls, 5, "the never-struck answer spends only its strike draws")
+  session:dispose()
+end
+
+-- A recorded last hit no longer fails the next answer: after the
+-- trainer withdraws into a strike the foe reveals, the holder answers
+-- with a strike instead of faulting.
+function T.recorded_last_hits_answer_instead_of_faulting()
+  local contracts = SessionFixture.sessionContracts()
+  local holder = leveledCombatant(11, 23, "TOTODILE", 10)
+  holder.mon.moves = { { move = "TACKLE", pp = 35, ppUps = 0 } };
+  (holder.mon --[[@as table<string, unknown>]]).condition.currentHp = 22
+  local reserve = leveledCombatant(12, 24, "CHIKORITA", 10)
+  local foe = leveledCombatant(13, 41, "EEVEE", 10)
+  foe.mon.moves = { { move = "RAZOR_LEAF", pp = 25, ppUps = 0 } }
+  local session = waitingSession(
+    contracts,
+    trainerStockScenario(
+      SessionFixture.inventory("trainer-stock", { 2 }, {}),
+      { holder, reserve },
+      { foe },
+      { "TACKLE", "RAZOR_LEAF" },
+      { passes = {} }
+    )
+  )
+  local trainerRequest = openRequest(session, "trainer:1")
+  local trainerActor = assert(trainerRequest.actors[1], "the trainer request addresses its lead")
+  local foeRequest = openRequest(session, "player")
+  local foeActor = assert(foeRequest.actors[1], "the opposing request addresses its lead")
+  Assert.isTrue(
+    session:submit(
+      SessionFixture.replyFor(trainerRequest, { SessionFixture.switchChoice(trainerActor, 12) })
+    ),
+    "the withdrawal binds"
+  )
+  Assert.isTrue(
+    session:submit(
+      SessionFixture.replyFor(foeRequest, {
+        SessionFixture.attackChoice(foeActor, 0, SessionFixture.positionTarget(2)),
+      })
+    ),
+    "the revealing strike binds"
+  )
+  session:advance(1024)
+  Assert.deepEqual(
+    (session:capture().lastHits --[[@as table<integer, unknown>]])[12],
+    { move = "RAZOR_LEAF", user = 13 },
+    "the struck arrival carries its received hit"
+  )
+  local held = session:capture()
+  local reply = session:answerTrainer(openRequest(session, "trainer:1"))
+  Assert.equal(reply.choices[1].kind, "attack", "the recorded last hit answers with a strike")
+  Assert.equal(
+    session:capture().rng.calls - held.rng.calls,
+    5,
+    "the strike spends only its selection draws"
+  )
+  session:dispose()
+end
+
+-- The absorb tail exchanges for a covering reserve: after a damaging
+-- water strike lands on a holder without the guard, the first benched
+-- water-guard answers on an odd branch draw.
+function T.absorb_tail_exchanges_for_a_covering_reserve()
+  local contracts = SessionFixture.sessionContracts()
+  local function build(seed)
+    local holder = leveledCombatant(11, 23, "EEVEE", 20)
+    holder.mon.moves = { { move = "GROWL", pp = 40, ppUps = 0 } }
+    local guard = leveledCombatant(12, 24, "TOTODILE", 10);
+    (guard.mon --[[@as table<string, unknown>]]).ability = "WATER_ABSORB"
+    local foe = leveledCombatant(13, 41, "TOTODILE", 5)
+    foe.mon.moves = { { move = "WATER_GUN", pp = 25, ppUps = 0 } };
+    (foe.mon --[[@as table<string, unknown>]]).ability = "RUN_AWAY"
+    return trainerStockScenario(
+      SessionFixture.inventory("trainer-stock", { 2 }, {}),
+      { holder, guard },
+      { foe },
+      { "TACKLE", "GROWL", "WATER_GUN" },
+      { passes = {}, seed = seed }
+    )
+  end
+  local session, held = sessionWithPredictedPostStrike(contracts, POST_STRIKE_SEEDS, build, function(first)
+    return first % 2 == 1
+  end)
+  Assert.deepEqual(
+    (session:capture().lastHits --[[@as table<integer, unknown>]])[11],
+    { move = "WATER_GUN", user = 13 },
+    "the struck holder carries its received hit"
+  )
+  local reply = session:answerTrainer(openRequest(session, "trainer:1"))
+  Assert.equal(reply.choices[1].kind, "switch", "the guard reserve answers the water strike")
+  Assert.equal(reply.choices[1].payload.replacement, 12, "the water guard takes the field")
+  Assert.equal(
+    session:capture().rng.calls - held.rng.calls,
+    1,
+    "the exchange spends only its branch draw"
+  )
+  session:dispose()
+end
+
+-- A holder carrying the guard stays: the same water strike answered by
+-- a guard holder falls through the tails to a strike with no gate
+-- draws.
+function T.absorb_tail_holds_when_the_holder_carries_the_guard()
+  local contracts = SessionFixture.sessionContracts()
+  local holder = leveledCombatant(11, 23, "EEVEE", 20)
+  holder.mon.moves = { { move = "GROWL", pp = 40, ppUps = 0 } };
+  (holder.mon --[[@as table<string, unknown>]]).ability = "WATER_ABSORB"
+  local guard = leveledCombatant(12, 24, "TOTODILE", 10);
+  (guard.mon --[[@as table<string, unknown>]]).ability = "WATER_ABSORB"
+  local foe = leveledCombatant(13, 41, "TOTODILE", 5)
+  foe.mon.moves = { { move = "WATER_GUN", pp = 25, ppUps = 0 } };
+  (foe.mon --[[@as table<string, unknown>]]).ability = "RUN_AWAY"
+  local session = waitingSession(
+    contracts,
+    trainerStockScenario(
+      SessionFixture.inventory("trainer-stock", { 2 }, {}),
+      { holder, guard },
+      { foe },
+      { "TACKLE", "GROWL", "WATER_GUN" },
+      { passes = {} }
+    )
+  )
+  local trainerRequest = openRequest(session, "trainer:1")
+  local trainerActor = assert(trainerRequest.actors[1], "the trainer request addresses its lead")
+  local foeRequest = openRequest(session, "player")
+  local foeActor = assert(foeRequest.actors[1], "the opposing request addresses its lead")
+  Assert.isTrue(
+    session:submit(
+      SessionFixture.replyFor(trainerRequest, {
+        SessionFixture.attackChoice(trainerActor, 0, SessionFixture.positionTarget(1)),
+      })
+    ),
+    "the holder status strike binds"
+  )
+  Assert.isTrue(
+    session:submit(
+      SessionFixture.replyFor(foeRequest, {
+        SessionFixture.attackChoice(foeActor, 0, SessionFixture.positionTarget(2)),
+      })
+    ),
+    "the water strike binds"
+  )
+  session:advance(1024)
+  local held = session:capture()
+  local reply = session:answerTrainer(openRequest(session, "trainer:1"))
+  Assert.equal(reply.choices[1].kind, "attack", "the guard holder stays and strikes")
+  Assert.equal(
+    session:capture().rng.calls - held.rng.calls,
+    5,
+    "the stay spends only its strike draws"
+  )
+  session:dispose()
+end
+
+-- The immunity tail exchanges for a covering reserve: a normal last hit
+-- immune into the benched ghost answers through its selective reach on
+-- an even branch draw.
+function T.immunity_tail_exchanges_for_a_covering_reserve()
+  local contracts = SessionFixture.sessionContracts()
+  local function build(seed)
+    local holder = leveledCombatant(11, 23, "EEVEE", 20)
+    holder.mon.moves = { { move = "GROWL", pp = 40, ppUps = 0 } }
+    local cover = leveledCombatant(12, 24, "SHEDINJA", 5)
+    cover.mon.moves = {
+      { move = "RAZOR_LEAF", pp = 25, ppUps = 0 },
+      { move = "SCRATCH", pp = 35, ppUps = 0 },
+    }
+    local foe = leveledCombatant(13, 41, "TOTODILE", 5)
+    foe.mon.moves = { { move = "TACKLE", pp = 35, ppUps = 0 } };
+    (foe.mon --[[@as table<string, unknown>]]).ability = "RUN_AWAY"
+    return trainerStockScenario(
+      SessionFixture.inventory("trainer-stock", { 2 }, {}),
+      { holder, cover },
+      { foe },
+      { "TACKLE", "GROWL", "RAZOR_LEAF", "SCRATCH" },
+      { passes = {}, seed = seed }
+    )
+  end
+  local session, held = sessionWithPredictedPostStrike(contracts, POST_STRIKE_SEEDS, build, function(first)
+    return first % 2 == 0
+  end)
+  Assert.deepEqual(
+    (session:capture().lastHits --[[@as table<integer, unknown>]])[11],
+    { move = "TACKLE", user = 13 },
+    "the struck holder carries its received hit"
+  )
+  local reply = session:answerTrainer(openRequest(session, "trainer:1"))
+  Assert.equal(reply.choices[1].kind, "switch", "the covering reserve answers the immune strike")
+  Assert.equal(reply.choices[1].payload.replacement, 12, "the immune reserve takes the field")
+  Assert.equal(
+    session:capture().rng.calls - held.rng.calls,
+    1,
+    "the exchange spends only its branch draw"
+  )
+  session:dispose()
+end
+
+-- The resist tail exchanges for a covering reserve: a water last hit
+-- resisted by the benched water answers through its selective reach
+-- when the branch draw falls on three.
+function T.resist_tail_exchanges_for_a_covering_reserve()
+  local contracts = SessionFixture.sessionContracts()
+  local function build(seed)
+    local holder = leveledCombatant(11, 23, "EEVEE", 20)
+    holder.mon.moves = { { move = "GROWL", pp = 40, ppUps = 0 } }
+    local cover = leveledCombatant(12, 24, "TOTODILE", 10)
+    cover.mon.moves = {
+      { move = "RAZOR_LEAF", pp = 25, ppUps = 0 },
+      { move = "SCRATCH", pp = 35, ppUps = 0 },
+    }
+    local foe = leveledCombatant(13, 41, "TOTODILE", 5)
+    foe.mon.moves = { { move = "WATER_GUN", pp = 25, ppUps = 0 } };
+    (foe.mon --[[@as table<string, unknown>]]).ability = "RUN_AWAY"
+    return trainerStockScenario(
+      SessionFixture.inventory("trainer-stock", { 2 }, {}),
+      { holder, cover },
+      { foe },
+      { "TACKLE", "GROWL", "WATER_GUN", "RAZOR_LEAF", "SCRATCH" },
+      { passes = {}, seed = seed }
+    )
+  end
+  local session, held = sessionWithPredictedPostStrike(contracts, POST_STRIKE_SEEDS, build, function(first)
+    return first % 3 == 0
+  end)
+  Assert.deepEqual(
+    (session:capture().lastHits --[[@as table<integer, unknown>]])[11],
+    { move = "WATER_GUN", user = 13 },
+    "the struck holder carries its received hit"
+  )
+  local reply = session:answerTrainer(openRequest(session, "trainer:1"))
+  Assert.equal(reply.choices[1].kind, "switch", "the covering reserve answers the resisted strike")
+  Assert.equal(reply.choices[1].payload.replacement, 12, "the resisting reserve takes the field")
+  Assert.equal(
+    session:capture().rng.calls - held.rng.calls,
+    1,
+    "the exchange spends only its branch draw"
+  )
+  session:dispose()
+end
+
+-- Relief with a damaging last hit probes before its final coin: the
+-- sleeping cure holder finds no immune or resisting cover, so the
+-- closing coin alone decides.
+function T.relief_with_a_damaging_last_hit_probes_before_its_final_coin()
+  local contracts = SessionFixture.sessionContracts()
+  local function build(seed)
+    local holder = leveledCombatant(31, 23, "EEVEE", 20);
+    (holder.mon --[[@as table<string, unknown>]]).ability = "NATURAL_CURE"
+    ;(holder.mon --[[@as table<string, unknown>]]).condition.effects =
+      { { key = "sleep", state = { turns = 5 } } }
+    holder.mon.moves = { { move = "TACKLE", pp = 35, ppUps = 0 } }
+    local reserve = leveledCombatant(32, 24, "TOTODILE", 10)
+    local foe = leveledCombatant(33, 41, "TOTODILE", 5)
+    foe.mon.moves = { { move = "TACKLE", pp = 35, ppUps = 0 } };
+    (foe.mon --[[@as table<string, unknown>]]).ability = "RUN_AWAY"
+    return trainerStockScenario(
+      SessionFixture.inventory("trainer-stock", { 2 }, {}),
+      { holder, reserve },
+      { foe },
+      { "TACKLE" },
+      { passes = {}, seed = seed }
+    )
+  end
+  local session, held = sessionWithPredictedPostStrike(contracts, POST_STRIKE_SEEDS, build, function(first)
+    return first % 2 == 1
+  end)
+  Assert.deepEqual(
+    (session:capture().lastHits --[[@as table<integer, unknown>]])[31],
+    { move = "TACKLE", user = 33 },
+    "the struck sleeper carries its received hit"
+  )
+  local reply = session:answerTrainer(openRequest(session, "trainer:1"))
+  Assert.equal(reply.choices[1].kind, "switch", "the relief coin answers with the first reserve")
+  Assert.equal(reply.choices[1].payload.replacement, 32, "the first living reserve takes the field")
+  Assert.equal(
+    session:capture().rng.calls - held.rng.calls,
+    1,
+    "the exchange spends only its branch draw"
+  )
+  session:dispose()
+end
+
+-- Relief with a powerless last hit still exchanges: the sleeping cure
+-- holder spends its status-move coin, and the immune probe behind it
+-- answers through the covering reach, so either path names the same
+-- reserve with no fault.
+function T.relief_with_a_powerless_last_hit_still_exchanges()
+  local contracts = SessionFixture.sessionContracts()
+  local function build(seed)
+    local holder = leveledCombatant(31, 23, "EEVEE", 20);
+    (holder.mon --[[@as table<string, unknown>]]).ability = "NATURAL_CURE"
+    ;(holder.mon --[[@as table<string, unknown>]]).condition.effects =
+      { { key = "sleep", state = { turns = 5 } } }
+    holder.mon.moves = { { move = "TACKLE", pp = 35, ppUps = 0 } }
+    local reserve = leveledCombatant(32, 24, "SHEDINJA", 5)
+    reserve.mon.moves = {
+      { move = "RAZOR_LEAF", pp = 25, ppUps = 0 },
+      { move = "SCRATCH", pp = 35, ppUps = 0 },
+    }
+    local foe = leveledCombatant(33, 41, "TOTODILE", 5)
+    foe.mon.moves = { { move = "GROWL", pp = 40, ppUps = 0 } };
+    (foe.mon --[[@as table<string, unknown>]]).ability = "RUN_AWAY"
+    return trainerStockScenario(
+      SessionFixture.inventory("trainer-stock", { 2 }, {}),
+      { holder, reserve },
+      { foe },
+      { "TACKLE", "GROWL", "RAZOR_LEAF", "SCRATCH" },
+      { passes = {}, seed = seed }
+    )
+  end
+  local session = waitingSession(contracts, build(NATIVE_SEED))
+  local trainerRequest = openRequest(session, "trainer:1")
+  local trainerActor = assert(trainerRequest.actors[1], "the trainer request addresses its lead")
+  local foeRequest = openRequest(session, "player")
+  local foeActor = assert(foeRequest.actors[1], "the opposing request addresses its lead")
+  Assert.isTrue(
+    session:submit(
+      SessionFixture.replyFor(trainerRequest, {
+        SessionFixture.attackChoice(trainerActor, 0, SessionFixture.positionTarget(1)),
+      })
+    ),
+    "the sleeper strike binds"
+  )
+  Assert.isTrue(
+    session:submit(
+      SessionFixture.replyFor(foeRequest, {
+        SessionFixture.attackChoice(foeActor, 0, SessionFixture.positionTarget(2)),
+      })
+    ),
+    "the status strike binds"
+  )
+  session:advance(1024)
+  Assert.deepEqual(
+    (session:capture().lastHits --[[@as table<integer, unknown>]])[31],
+    { move = "GROWL", user = 33 },
+    "the struck sleeper carries its received hit"
+  )
+  local reply = session:answerTrainer(openRequest(session, "trainer:1"))
+  Assert.equal(reply.choices[1].kind, "switch", "the powerless last hit still exchanges")
+  Assert.equal(reply.choices[1].payload.replacement, 32, "the covering reserve takes the field")
+  session:dispose()
+end
+
+-- Distinct used moves record in first-use order: three strikes across
+-- three turns with a repeated opener ledger exactly the two distinct
+-- identities in the order they first executed.
+function T.used_move_history_records_first_use_order()
+  local contracts = SessionFixture.sessionContracts()
+  local holder = leveledCombatant(11, 23, "EEVEE", 10)
+  holder.mon.moves = {
+    { move = "TACKLE", pp = 35, ppUps = 0 },
+    { move = "GROWL", pp = 40, ppUps = 0 },
+  }
+  local foe = leveledCombatant(13, 41, "EEVEE", 10)
+  foe.mon.moves = { { move = "TACKLE", pp = 35, ppUps = 0 } }
+  local session = waitingSession(
+    contracts,
+    trainerStockScenario(
+      SessionFixture.inventory("trainer-stock", { 2 }, {}),
+      { holder },
+      { foe },
+      { "TACKLE", "GROWL" },
+      { passes = {} }
+    )
+  )
+  for turn, moveSlot in ipairs({ 0, 1, 0 }) do
+    local trainerRequest = openRequest(session, "trainer:1")
+    local trainerActor = assert(trainerRequest.actors[1], "the trainer request addresses its lead")
+    local foeRequest = openRequest(session, "player")
+    local foeActor = assert(foeRequest.actors[1], "the opposing request addresses its lead")
+    Assert.isTrue(
+      session:submit(
+        SessionFixture.replyFor(trainerRequest, {
+          SessionFixture.attackChoice(trainerActor, moveSlot, SessionFixture.positionTarget(1)),
+        })
+      ),
+      "the turn " .. turn .. " trainer strike binds"
+    )
+    Assert.isTrue(
+      session:submit(
+        SessionFixture.replyFor(foeRequest, {
+          SessionFixture.attackChoice(foeActor, 0, SessionFixture.positionTarget(2)),
+        })
+      ),
+      "the turn " .. turn .. " foe strike binds"
+    )
+    session:advance(1024)
+  end
+  local combatants = session:capture().combatants --[[@as table<integer, table<string, unknown>>]]
+  local activation = combatants[11].active.activation
+  Assert.deepEqual(
+    (session:capture().usedMoves --[[@as table<integer, unknown>]])[activation],
+    { "TACKLE", "GROWL" },
+    "the ledger carries distinct moves in first-use order without repeats"
+  )
+  session:dispose()
+end
+
+-- The third used move drives matchup scaling: with three distinct
+-- mixed-band strikes behind it, the bad-move program scores the next
+-- answer instead of faulting on the unordered ledger.
+function T.third_used_move_drives_matchup_scaling()
+  local contracts = SessionFixture.sessionContracts()
+  local holder = leveledCombatant(11, 23, "CHIKORITA", 10)
+  holder.mon.moves = {
+    { move = "TACKLE", pp = 35, ppUps = 0 },
+    { move = "GROWL", pp = 40, ppUps = 0 },
+    { move = "LEER", pp = 30, ppUps = 0 },
+  }
+  local foe = leveledCombatant(13, 41, "TOTODILE", 5)
+  foe.mon.moves = { { move = "TACKLE", pp = 35, ppUps = 0 } }
+  local session = waitingSession(
+    contracts,
+    trainerStockScenario(
+      SessionFixture.inventory("trainer-stock", { 2 }, {}),
+      { holder },
+      { foe },
+      { "TACKLE", "GROWL", "LEER" },
+      { passes = { "ai_pass_0" } }
+    )
+  )
+  for turn, moveSlot in ipairs({ 0, 1, 2 }) do
+    local trainerRequest = openRequest(session, "trainer:1")
+    local trainerActor = assert(trainerRequest.actors[1], "the trainer request addresses its lead")
+    local foeRequest = openRequest(session, "player")
+    local foeActor = assert(foeRequest.actors[1], "the opposing request addresses its lead")
+    Assert.isTrue(
+      session:submit(
+        SessionFixture.replyFor(trainerRequest, {
+          SessionFixture.attackChoice(trainerActor, moveSlot, SessionFixture.positionTarget(1)),
+        })
+      ),
+      "the turn " .. turn .. " trainer strike binds"
+    )
+    Assert.isTrue(
+      session:submit(
+        SessionFixture.replyFor(foeRequest, {
+          SessionFixture.attackChoice(foeActor, 0, SessionFixture.positionTarget(2)),
+        })
+      ),
+      "the turn " .. turn .. " foe strike binds"
+    )
+    session:advance(1024)
+  end
+  local reply = session:answerTrainer(openRequest(session, "trainer:1"))
+  Assert.equal(
+    reply.choices[1].kind,
+    "attack",
+    "the ordered history scores instead of faulting"
+  )
+  session:dispose()
+end
+
+-- First-use order selects the scaling band: the same three distinct
+-- moves score the second slot differently depending on which identity
+-- the order puts third.
+function T.first_use_order_selects_the_scaling_band()
+  local TrainerAi = trainerPolicy()
+  local chart = nativeChart()
+  local slots = {
+    slotWith({ key = "PROBE", id = 264, moveType = "fighting", power = 150, effect = 0, accuracy = 100 }),
+    slotWith({}),
+    slotWith({ key = "GROWL", id = 45, moveType = "normal", power = 0, category = "status", accuracy = 100 }),
+    slotWith({ key = "TACKLE", id = 33, pp = 0, usable = false }),
+  }
+  local user = fighterWith({ types = { "grass" } })
+  local foe = fighterWith({ types = { "water" } })
+  local members = { { hp = 10, maxHp = 10, species = "EEVEE", status = 0, moves = {} } }
+  local function scoredWith(order)
+    local extra = {
+      parties = { [0] = members, [1] = members },
+      partyIndex = { [0] = 0, [1] = 0 },
+      partyPartner = { [0] = 0, [1] = 0 },
+      usedIds = { [0] = order, [1] = order },
+      lastMove = { [0] = 0, [1] = 0 },
+    }
+    return TrainerAi.scoreSlots(chart, slots, user, foe, 14, { 0 }, false, spyStream(FIXED_SEED), extra)
+  end
+  Assert.equal(
+    scoredWith({ 33, 45, 64 })[2].score,
+    100,
+    "a band-zero third move zeroes the matchup scaling"
+  )
+  Assert.equal(
+    scoredWith({ 33, 45, 43 })[2].score,
+    99,
+    "a band-five third move scales the matchup fully"
+  )
+end
+
+-- Ledgers predating the order fail the history read closed: a restored
+-- snapshot carrying the old presence-set shape raises naming the
+-- ordered history instead of guessing fresh.
+function T.predated_unordered_ledgers_fail_the_history_read_closed()
+  local Executor = sessionOwner()
+  local contracts = SessionFixture.sessionContracts()
+  local holder = leveledCombatant(11, 23, "CHIKORITA", 10)
+  holder.mon.moves = {
+    { move = "TACKLE", pp = 35, ppUps = 0 },
+    { move = "GROWL", pp = 40, ppUps = 0 },
+    { move = "LEER", pp = 30, ppUps = 0 },
+  }
+  local foe = leveledCombatant(13, 41, "TOTODILE", 5)
+  foe.mon.moves = { { move = "TACKLE", pp = 35, ppUps = 0 } }
+  local session = waitingSession(
+    contracts,
+    trainerStockScenario(
+      SessionFixture.inventory("trainer-stock", { 2 }, {}),
+      { holder },
+      { foe },
+      { "TACKLE", "GROWL", "LEER" },
+      { passes = { "ai_pass_0" } }
+    )
+  )
+  for turn, moveSlot in ipairs({ 0, 1, 2 }) do
+    local trainerRequest = openRequest(session, "trainer:1")
+    local trainerActor = assert(trainerRequest.actors[1], "the trainer request addresses its lead")
+    local foeRequest = openRequest(session, "player")
+    local foeActor = assert(foeRequest.actors[1], "the opposing request addresses its lead")
+    Assert.isTrue(
+      session:submit(
+        SessionFixture.replyFor(trainerRequest, {
+          SessionFixture.attackChoice(trainerActor, moveSlot, SessionFixture.positionTarget(1)),
+        })
+      ),
+      "the turn " .. turn .. " trainer strike binds"
+    )
+    Assert.isTrue(
+      session:submit(
+        SessionFixture.replyFor(foeRequest, {
+          SessionFixture.attackChoice(foeActor, 0, SessionFixture.positionTarget(2)),
+        })
+      ),
+      "the turn " .. turn .. " foe strike binds"
+    )
+    session:advance(1024)
+  end
+  local held = session:capture()
+  session:dispose()
+  local combatants = held.combatants --[[@as table<integer, table<string, unknown>>]]
+  local activation = combatants[11].active.activation
+  held.usedMoves[activation] = { TACKLE = true, GROWL = true, LEER = true }
+  local restored = Executor.restore(held, trainerContent())
+  local failure = Assert.throws(function()
+    restored:answerTrainer(openRequest(restored, "trainer:1"))
+  end, "the predated ledger fails instead of guessing fresh")
+  Assert.isTrue(
+    string.find(string.lower(tostring(failure)), "ordered", 1, true) ~= nil,
+    "the failure names the ordered history"
+  )
+  restored:dispose()
+end
+
+-- Executed strikes record their received hit per struck combatant: after
+-- both leads exchange strikes, the session carries the striking move and
+-- its user under each taker, and a restored snapshot replays the same
+-- record.
+function T.executed_strikes_record_their_received_hit_per_struck_combatant()
+  local Executor = sessionOwner()
+  local contracts = SessionFixture.sessionContracts()
+  local holder = leveledCombatant(11, 23, "TOTODILE", 10)
+  holder.mon.moves = { { move = "TACKLE", pp = 35, ppUps = 0 } };
+  (holder.mon --[[@as table<string, unknown>]]).condition.currentHp = 22
+  local reserve = leveledCombatant(12, 24, "CHIKORITA", 10)
+  local foe = leveledCombatant(13, 41, "EEVEE", 10)
+  foe.mon.moves = { { move = "RAZOR_LEAF", pp = 25, ppUps = 0 } }
+  local session = waitingSession(
+    contracts,
+    trainerStockScenario(
+      SessionFixture.inventory("trainer-stock", { 2 }, {}),
+      { holder, reserve },
+      { foe },
+      { "TACKLE", "RAZOR_LEAF" },
+      { passes = {} }
+    )
+  )
+  local opening = session:answerTrainer(openRequest(session, "trainer:1"))
+  Assert.equal(opening.choices[1].kind, "attack", "the opening answer strikes without knowledge")
+  local foeRequest = openRequest(session, "player")
+  local foeActor = assert(foeRequest.actors[1], "the opposing request addresses its lead")
+  local stored, storeErr = session:submit(
+    SessionFixture.replyFor(openRequest(session, "trainer:1"), {
+      SessionFixture.attackChoice(opening.choices[1].actor, 0, SessionFixture.positionTarget(1)),
+    })
+  )
+  Assert.isTrue(stored, "the trainer strike binds: " .. tostring(storeErr))
+  local storedFoe, foeErr = session:submit(
+    SessionFixture.replyFor(foeRequest, {
+      SessionFixture.attackChoice(foeActor, 0, SessionFixture.positionTarget(2)),
+    })
+  )
+  Assert.isTrue(storedFoe, "the revealing strike binds: " .. tostring(foeErr))
+  session:advance(1024)
+  -- The foe outruns the holder, so the holder acts after being struck:
+  -- its own record clears at its action while the foe's record survives.
+  Assert.deepEqual(
+    session:capture().lastHits,
+    { [13] = { move = "TACKLE", user = 11 } },
+    "each struck combatant carries the striking move and its user"
+  )
+  local held = session:capture()
+  session:dispose()
+  local restored = Executor.restore(held, trainerContent())
+  Assert.deepEqual(
+    restored:capture().lastHits,
+    { [13] = { move = "TACKLE", user = 11 } },
+    "the restored snapshot replays the received-hit record"
+  )
+  restored:dispose()
+end
+
+-- Received hits clear when their holder acts unstruck: after the
+-- exchange turn both leads carry a record, then the trainer strikes
+-- while the foe withdraws, leaving neither the acting holder nor the
+-- departing foe with a record.
+function T.received_hit_clears_when_its_holder_acts_unstruck()
+  local contracts = SessionFixture.sessionContracts()
+  local holder = leveledCombatant(11, 23, "TOTODILE", 10)
+  holder.mon.moves = { { move = "TACKLE", pp = 35, ppUps = 0 } };
+  (holder.mon --[[@as table<string, unknown>]]).condition.currentHp = 22
+  local reserve = leveledCombatant(12, 24, "CHIKORITA", 10)
+  local foe = leveledCombatant(13, 41, "EEVEE", 10)
+  foe.mon.moves = { { move = "RAZOR_LEAF", pp = 25, ppUps = 0 } }
+  local foeReserve = leveledCombatant(14, 42, "TOTODILE", 10)
+  local session = waitingSession(
+    contracts,
+    trainerStockScenario(
+      SessionFixture.inventory("trainer-stock", { 2 }, {}),
+      { holder, reserve },
+      { foe, foeReserve },
+      { "TACKLE", "RAZOR_LEAF" },
+      { passes = {} }
+    )
+  )
+  local opening = session:answerTrainer(openRequest(session, "trainer:1"))
+  Assert.equal(opening.choices[1].kind, "attack", "the opening answer strikes without knowledge")
+  local foeRequest = openRequest(session, "player")
+  local foeActor = assert(foeRequest.actors[1], "the opposing request addresses its lead")
+  Assert.isTrue(
+    session:submit(
+      SessionFixture.replyFor(openRequest(session, "trainer:1"), {
+        SessionFixture.attackChoice(opening.choices[1].actor, 0, SessionFixture.positionTarget(1)),
+      })
+    ),
+    "the trainer strike binds"
+  )
+  Assert.isTrue(
+    session:submit(
+      SessionFixture.replyFor(foeRequest, {
+        SessionFixture.attackChoice(foeActor, 0, SessionFixture.positionTarget(2)),
+      })
+    ),
+    "the revealing strike binds"
+  )
+  session:advance(1024)
+  -- The foe outruns the holder, so only the foe carries a record here.
+  Assert.deepEqual(
+    (session:capture().lastHits --[[@as table<integer, unknown>]])[13],
+    { move = "TACKLE", user = 11 },
+    "the struck foe carries its received hit"
+  )
+  local trainerRequest = openRequest(session, "trainer:1")
+  local trainerActor = assert(trainerRequest.actors[1], "the trainer request addresses its lead")
+  local nextFoeRequest = openRequest(session, "player")
+  local nextFoeActor = assert(nextFoeRequest.actors[1], "the opposing request addresses its lead")
+  Assert.isTrue(
+    session:submit(
+      SessionFixture.replyFor(trainerRequest, {
+        SessionFixture.attackChoice(trainerActor, 0, SessionFixture.positionTarget(1)),
+      })
+    ),
+    "the holder strike binds"
+  )
+  Assert.isTrue(
+    session:submit(
+      SessionFixture.replyFor(nextFoeRequest, { SessionFixture.switchChoice(nextFoeActor, 14) })
+    ),
+    "the foe withdrawal binds"
+  )
+  session:advance(1024)
+  local received = session:capture().lastHits --[[@as table<integer, unknown>]]
+  Assert.isTrue(type(received) == "table", "the session carries a received-hit table")
+  Assert.isNil(received[11], "acting without being restruck clears the holder record")
+  Assert.isNil(received[13], "withdrawing clears the departed record")
   session:dispose()
 end
 
@@ -1835,79 +2605,6 @@ function T.membership_draws_fire_per_listed_effect()
   Assert.equal(#nineEffectStream:drawLabels(), 5, "a listed unpredictability effect draws once")
 end
 
--- Covering stays spend gate draws before selection: a flagless foe with
--- super-effective coverage and a living reserve spends the coverage check
--- plus one stay draw ahead of initialization and selection, while neutral
--- coverage spends nothing. Both answers replay deterministically.
-function T.covering_stays_spend_gate_draws_before_selection()
-  local Executor = sessionOwner()
-  local contracts = SessionFixture.sessionContracts()
-  local function coverScenario(playerSpecies, foeMoves)
-    local player = leveledCombatant(1, 41, playerSpecies, 5)
-    local lead = leveledCombatant(2, 23, "EEVEE", 10)
-    lead.mon.moves = foeMoves
-    local reserve = leveledCombatant(3, 24, "EEVEE", 5)
-    local seeds = { player, lead, reserve }
-    local striker = SessionFixture.participant(2, 2, "trainer:1", { lead, reserve })
-    striker.context = { aiPasses = {} }
-    return {
-      ruleset = Executor.RULESET,
-      format = "single",
-      sides = { SessionFixture.side(1, { 1 }), SessionFixture.side(2, { 2 }) },
-      participants = {
-        SessionFixture.participant(1, 1, "player", { player }),
-        striker,
-      },
-      positions = {
-        SessionFixture.position(1, 1, { 1 }, player.id),
-        SessionFixture.position(2, 2, { 2 }, lead.id),
-      },
-      inventories = {},
-      environment = { weather = "none" },
-      random = { seed = NATIVE_SEED },
-      formatState = {},
-      moveFacts = scenarioMoveFacts({ "TACKLE", "RAZOR_LEAF" }),
-      speciesFacts = scenarioSpeciesFacts(seeds),
-      itemFacts = {},
-    }, seeds
-  end
-  local covered, _ = coverScenario("TOTODILE", {
-    { move = "RAZOR_LEAF", pp = 25, ppUps = 0 },
-    { move = "TACKLE", pp = 35, ppUps = 0 },
-  })
-  local session = waitingSession(contracts, covered)
-  local held = session:capture()
-  local reply = session:answerTrainer(openRequest(session, "trainer:1"))
-  Assert.equal(reply.choices[1].kind, "attack", "the covering foe still strikes")
-  Assert.equal(
-    session:capture().rng.calls - held.rng.calls,
-    7,
-    "coverage spends two gate draws plus init and selection"
-  )
-  session:dispose()
-  local replayed = Executor.restore(held, trainerContent())
-  Assert.deepEqual(
-    replayed:answerTrainer(openRequest(replayed, "trainer:1")),
-    reply,
-    "a fixed seed replays the covering answer"
-  )
-  replayed:dispose()
-  local neutral, _ = coverScenario("EEVEE", {
-    { move = "RAZOR_LEAF", pp = 25, ppUps = 0 },
-    { move = "TACKLE", pp = 35, ppUps = 0 },
-  })
-  local calm = waitingSession(contracts, neutral)
-  local calmHeld = calm:capture()
-  local calmReply = calm:answerTrainer(openRequest(calm, "trainer:1"))
-  Assert.equal(calmReply.choices[1].kind, "attack", "the neutral foe still strikes")
-  Assert.equal(
-    calm:capture().rng.calls - calmHeld.rng.calls,
-    5,
-    "neutral coverage spends init and selection only"
-  )
-  calm:dispose()
-end
-
 -- Missing move effects fail closed before any draw: scoring names the
 -- offending move instead of guessing membership.
 function T.missing_effects_fail_closed_before_any_draw()
@@ -1925,6 +2622,253 @@ function T.missing_effects_fail_closed_before_any_draw()
     "the failure names the missing effect"
   )
   Assert.equal(#stream:drawLabels(), 0, "the failed evaluation draws nothing")
+end
+
+-- Wonder-guard pressure exchanges for a covering reserve: with the foe
+-- ability marking wonder guard, a neutral holder, and a reserve whose
+-- opening strike is selective, the branch spends exactly one draw and
+-- exchanges iff that draw falls in the selective two thirds.
+local EXCHANGE_SEEDS = {}
+for offset = 0, 7 do
+  EXCHANGE_SEEDS[#EXCHANGE_SEEDS + 1] = NATIVE_SEED + offset
+end
+
+---@param seed integer stream seed for the scenario under test driving
+---@param foeAbility string battle ability carried by the opposing lead
+---@return table detached native battle setup with a wonder-guard-shaped gate
+local function wonderExchangeScenario(seed, foeAbility)
+  local holder = leveledCombatant(11, 23, "EEVEE", 10)
+  local reserve = leveledCombatant(12, 24, "CHIKORITA", 10)
+  reserve.mon.moves = {
+    { move = "RAZOR_LEAF", pp = 25, ppUps = 0 },
+    { move = "CUT", pp = 30, ppUps = 0 },
+  }
+  local foe = leveledCombatant(13, 41, "TOTODILE", 10);
+  (foe.mon --[[@as table<string, unknown>]]).ability = foeAbility
+  return trainerStockScenario(
+    SessionFixture.inventory("trainer-stock", { 2 }, {}),
+    { holder, reserve },
+    { foe },
+    { "TACKLE", "RAZOR_LEAF", "CUT" },
+    { passes = {}, seed = seed }
+  )
+end
+
+---@param contracts table session owners under test driving
+---@param seeds integer[] candidate stream seeds in trial order
+---@param build fun(seed: integer): table detached native battle setup under test driving
+---@param predict fun(first: integer): boolean true when the opening gate draw selects the reserve
+---@return table live native session waiting on the predicted exchange
+---@return table pre-answer capture behind the prediction
+local function sessionWithPredictedExchange(contracts, seeds, build, predict)
+  for _, seed in ipairs(seeds) do
+    local session = waitingSession(contracts, build(seed))
+    local held = session:capture()
+    local probe = BattleRng.restore(held.rng --[[@as table<string, integer>]])
+    if predict(probe:nextU16("exchange_probe", {})) then
+      return session, held
+    end
+    session:dispose()
+  end
+  error("no candidate seed predicts the exchange")
+end
+
+function T.wonder_guard_exchange_answers_a_covering_reserve()
+  local contracts = SessionFixture.sessionContracts()
+  local function build(seed)
+    return wonderExchangeScenario(seed, "WONDER_GUARD")
+  end
+  local session, held = sessionWithPredictedExchange(contracts, EXCHANGE_SEEDS, build, function(first)
+    return first % 3 < 2
+  end)
+  local reply = session:answerTrainer(openRequest(session, "trainer:1"))
+  Assert.equal(reply.choices[1].kind, "switch", "the covering reserve answers the wonder-guard foe")
+  Assert.equal(reply.choices[1].payload.replacement, 12, "the selective reserve takes the field")
+  Assert.equal(
+    session:capture().rng.calls - held.rng.calls,
+    1,
+    "the exchange spends only its branch draw"
+  )
+  session:dispose()
+end
+
+---@param seed integer stream seed for the scenario under test driving
+---@return table detached native battle setup with an all-immune holder line
+local function ineffectiveExchangeScenario(seed)
+  local holder = leveledCombatant(21, 23, "EEVEE", 10)
+  holder.mon.moves = {
+    { move = "TACKLE", pp = 35, ppUps = 0 },
+    { move = "QUICK_ATTACK", pp = 30, ppUps = 0 },
+  }
+  local reserve = leveledCombatant(22, 24, "TOTODILE", 10)
+  reserve.mon.moves = {
+    { move = "WATER_GUN", pp = 25, ppUps = 0 },
+    { move = "SCRATCH", pp = 35, ppUps = 0 },
+  }
+  local foe = leveledCombatant(23, 41, "SHEDINJA", 5);
+  (foe.mon --[[@as table<string, unknown>]]).ability = "RUN_AWAY"
+  return trainerStockScenario(
+    SessionFixture.inventory("trainer-stock", { 2 }, {}),
+    { holder, reserve },
+    { foe },
+    { "TACKLE", "QUICK_ATTACK", "WATER_GUN", "SCRATCH" },
+    { passes = {}, seed = seed }
+  )
+end
+
+-- Immune-only coverage exchanges for a neutral reserve: with both holder
+-- strikes immune and no selective reserve strike, the neutral scan draws
+-- once and exchanges on an even draw while the holder strikes otherwise.
+function T.ineffective_coverage_exchanges_for_a_neutral_reserve()
+  local contracts = SessionFixture.sessionContracts()
+  local session, held =
+    sessionWithPredictedExchange(contracts, EXCHANGE_SEEDS, ineffectiveExchangeScenario, function(first)
+      return first % 2 == 0
+    end)
+  local reply = session:answerTrainer(openRequest(session, "trainer:1"))
+  Assert.equal(reply.choices[1].kind, "switch", "the neutral reserve answers the immune holder line")
+  Assert.equal(reply.choices[1].payload.replacement, 22, "the neutral reserve takes the field")
+  Assert.equal(
+    session:capture().rng.calls - held.rng.calls,
+    1,
+    "the exchange spends only its branch draw"
+  )
+  session:dispose()
+end
+
+-- Branch draws follow their predicate: the wonder-guard vector always
+-- spends its gate draw before continuing, while the same line against an
+-- ordinary ability spends none and strikes with selection draws only.
+function T.wonder_branch_draws_only_where_the_predicate_holds()
+  local contracts = SessionFixture.sessionContracts()
+  local session = waitingSession(contracts, wonderExchangeScenario(NATIVE_SEED, "WONDER_GUARD"))
+  local held = session:capture()
+  local probe = BattleRng.restore(held.rng --[[@as table<string, integer>]])
+  local first = probe:nextU16("exchange_probe", {})
+  local reply = session:answerTrainer(openRequest(session, "trainer:1"))
+  local delta = session:capture().rng.calls - held.rng.calls
+  if first % 3 < 2 then
+    Assert.equal(reply.choices[1].kind, "switch", "the predicted exchange answers")
+    Assert.equal(delta, 1, "the exchange spends only its branch draw")
+  else
+    Assert.equal(reply.choices[1].kind, "attack", "the missed branch falls through to the strike")
+    Assert.equal(delta, 6, "the missed branch spends its draw plus the strike draws")
+  end
+  session:dispose()
+  local calm = waitingSession(contracts, wonderExchangeScenario(NATIVE_SEED, "RUN_AWAY"))
+  local calmHeld = calm:capture()
+  local calmReply = calm:answerTrainer(openRequest(calm, "trainer:1"))
+  Assert.equal(calmReply.choices[1].kind, "attack", "without the predicate the holder strikes")
+  Assert.equal(
+    calm:capture().rng.calls - calmHeld.rng.calls,
+    5,
+    "without the predicate no gate draw fires"
+  )
+  Assert.isTrue(delta ~= 5, "the predicate vector costs its branch draw either way")
+  calm:dispose()
+end
+
+-- Early exchanges preempt the stocked cure: a wounded holder with an
+-- eligible serving still exchanges when the wonder-guard branch fires,
+-- spending exactly one draw with no item or attack selection after it.
+function T.early_exchange_preempts_the_stocked_cure()
+  local contracts = SessionFixture.sessionContracts()
+  local function build(seed)
+    local holder = leveledCombatant(11, 23, "EEVEE", 10);
+    (holder.mon --[[@as table<string, unknown>]]).condition.currentHp = 4
+    local reserve = leveledCombatant(12, 24, "CHIKORITA", 10)
+    reserve.mon.moves = {
+      { move = "RAZOR_LEAF", pp = 25, ppUps = 0 },
+      { move = "CUT", pp = 30, ppUps = 0 },
+    }
+    local foe = leveledCombatant(13, 41, "TOTODILE", 10);
+    (foe.mon --[[@as table<string, unknown>]]).ability = "WONDER_GUARD"
+    return trainerStockScenario(
+      SessionFixture.inventory("trainer-stock", { 2 }, { POTION = 1 }),
+      { holder, reserve },
+      { foe },
+      { "TACKLE", "RAZOR_LEAF", "CUT" },
+      { passes = {}, seed = seed, trainerItems = { "POTION" } }
+    )
+  end
+  local session, held = sessionWithPredictedExchange(contracts, EXCHANGE_SEEDS, build, function(first)
+    return first % 3 < 2
+  end)
+  local heldStock = held.inventories["trainer-stock"].quantities
+  Assert.equal(heldStock.POTION, 1, "the session holds a serving the exchange must pass over")
+  local reply = session:answerTrainer(openRequest(session, "trainer:1"))
+  Assert.equal(reply.choices[1].kind, "switch", "the early exchange wins over the stocked cure")
+  Assert.equal(reply.choices[1].payload.replacement, 12, "the selective reserve takes the field")
+  Assert.equal(
+    session:capture().rng.calls - held.rng.calls,
+    1,
+    "no later helper, item, or attack draws after the exchange"
+  )
+  local accepted, acceptErr = session:submit(reply)
+  Assert.isTrue(accepted, "the exchange submits: " .. tostring(acceptErr))
+  session:dispose()
+end
+
+-- Missing ability facts fail the exchange closed: with the opposing
+-- ability erased the trap scan cannot evaluate and the answer raises
+-- naming the fact instead of guessing stay or switch.
+function T.unknown_opposing_ability_fails_the_exchange_closed()
+  local contracts = SessionFixture.sessionContracts()
+  local holder = leveledCombatant(11, 23, "EEVEE", 10)
+  local reserve = leveledCombatant(12, 24, "CHIKORITA", 10)
+  local foe = leveledCombatant(13, 41, "TOTODILE", 10);
+  (foe.mon --[[@as table<string, unknown>]]).ability = nil
+  local session = waitingSession(
+    contracts,
+    trainerStockScenario(
+      SessionFixture.inventory("trainer-stock", { 2 }, {}),
+      { holder, reserve },
+      { foe },
+      { "TACKLE" },
+      { passes = {} }
+    )
+  )
+  local failure = Assert.throws(function()
+    session:answerTrainer(openRequest(session, "trainer:1"))
+  end, "the exchange needs its opposing ability")
+  Assert.isTrue(
+    string.find(string.lower(tostring(failure)), "ability", 1, true) ~= nil,
+    "the failure names the missing ability fact"
+  )
+  session:dispose()
+end
+
+-- Relief exchanges wake a sleeping holder: asleep at full health with
+-- natural cure and no hit history, the opening coin exchanges for the
+-- first living reserve while tails falls through to the strike.
+function T.relief_coin_exchanges_a_sleeping_holder()
+  local contracts = SessionFixture.sessionContracts()
+  local function build(seed)
+    local holder = leveledCombatant(31, 23, "EEVEE", 20);
+    (holder.mon --[[@as table<string, unknown>]]).ability = "NATURAL_CURE"
+    ;(holder.mon --[[@as table<string, unknown>]]).condition.effects = { { key = "sleep" } }
+    local reserve = leveledCombatant(32, 24, "TOTODILE", 10)
+    local foe = leveledCombatant(33, 41, "EEVEE", 10)
+    return trainerStockScenario(
+      SessionFixture.inventory("trainer-stock", { 2 }, {}),
+      { holder, reserve },
+      { foe },
+      { "TACKLE" },
+      { passes = {}, seed = seed }
+    )
+  end
+  local session, held = sessionWithPredictedExchange(contracts, EXCHANGE_SEEDS, build, function(first)
+    return first % 2 == 1
+  end)
+  local reply = session:answerTrainer(openRequest(session, "trainer:1"))
+  Assert.equal(reply.choices[1].kind, "switch", "the relief coin answers with the first reserve")
+  Assert.equal(reply.choices[1].payload.replacement, 32, "the first living reserve takes the field")
+  Assert.equal(
+    session:capture().rng.calls - held.rng.calls,
+    1,
+    "the exchange spends only its branch draw"
+  )
+  session:dispose()
 end
 
 return { tests = T }

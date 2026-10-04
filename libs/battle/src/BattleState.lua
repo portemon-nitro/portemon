@@ -503,7 +503,7 @@ function BattleState.validateSnapshot(snapshot)
   -- Turn interaction ledgers travel with the capture: revenge damage and
   -- acted marks reset every turn while distinct-move history accumulates
   -- per entry, so replayed and restored sessions keep the same strike law.
-  for _, field in ipairs({ "turnStrikes", "turnActed", "usedMoves" }) do
+  for _, field in ipairs({ "turnStrikes", "turnActed", "usedMoves", "lastHits" }) do
     if type(snapshot[field]) ~= "table" then
       error(BattleErrors.incompatibleSnapshot("battle snapshots must carry their turn ledgers", { field = field }))
     end
