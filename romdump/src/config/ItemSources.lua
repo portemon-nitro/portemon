@@ -24,6 +24,13 @@ ItemSources.provenance = {
   },
 }
 
+-- Native identity of the full restore (ITEM_FULL_RESTORE in
+-- include/constants/items.h). The native trainer selector serves it only
+-- for a living holder below quarter health, so the item projection marks
+-- exactly this identity for that serving gate; runtime never sees the
+-- number.
+ItemSources.FULL_RESTORE_ID = 23
+
 --- Item identities 0..536 (ITEM_* minus prefix; mechanic aliases omitted).
 ItemSources.itemKeys = {
   [0] = "NONE",

@@ -174,8 +174,8 @@ end
 --- Resolves the generated semantic entry for a serving: absent fact
 --- maps and absent entries raise missing behavior before anything is
 --- consumed. Entries may carry the serving party use beside battle-use
---- riders and held-throw facts; each consumer reads its own facts while
---- genuinely foreign fields still fail.
+--- riders, held-throw facts, and the trainer serving gate; each consumer
+--- reads its own facts while genuinely foreign fields still fail.
 ---@param item string non-ball item key under classification
 ---@param itemFacts unknown immutable semantic facts by item key under inspection
 ---@return table<string, unknown> generated fact entry for the serving
@@ -196,6 +196,7 @@ local function semanticEntry(item, itemFacts)
       and key ~= "heldBehavior"
       and key ~= "naturalGift"
       and key ~= "fling"
+      and key ~= "lowHpOnly"
     then
       error(BattleErrors.missingBehavior("battle item facts carry only their generated facts", { item = item }))
     end

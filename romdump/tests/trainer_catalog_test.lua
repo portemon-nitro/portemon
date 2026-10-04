@@ -206,6 +206,70 @@ function T.ai_flags_project_to_named_passes_without_inventing_policy()
   Assert.isTrue(quiet.doubleBattle == false, "a singles trainer must not gain doubles play")
 end
 
+function T.trainer_item_slots_keep_all_four_source_positions()
+  local TrainerCatalogCompiler = require("romdump.src.digest.battle.TrainerCatalogCompiler")
+  local records = {
+    [8] = {
+      data = trdata(TRTYPE_MON, CLASS_YOUNGSTER, 1, { 17, 0, 26, 0 }, 0, 0),
+      members = plainMember(30, 5, 19),
+    },
+  }
+  local compiled = assert(TrainerCatalogCompiler.compile(nativeInput(records)))
+  local trainer = assert(compiled.trainers[8], "trainer 8 must survive projection")
+  Assert.deepEqual(
+    trainer.items,
+    { "POTION", "NONE", "SUPER_POTION", "NONE" },
+    "empty source positions stay as explicit gaps in source order"
+  )
+end
+
+function T.trainer_catalogs_require_exactly_four_item_slots()
+  local BattleDataSchema = require("libs.assets.src.battle.BattleDataSchema")
+  local TrainerCatalogCompiler = require("romdump.src.digest.battle.TrainerCatalogCompiler")
+  local function catalogWith(items)
+    return {
+      schema = "trainer-schema-fixture",
+      version = { id = "heartgold" },
+      trainers = {
+        [8] = {
+          trainerClass = CLASS_YOUNGSTER,
+          nameReference = { trainerIndex = 8 },
+          party = {},
+          aiPasses = {},
+          doubleBattle = false,
+          items = items,
+          prizeMoney = { trainerClass = CLASS_YOUNGSTER, classRate = 4 },
+          messageSelectors = { intro = 0, lose = 1, after = 2 },
+        },
+      },
+    }
+  end
+  Assert.isTrue(
+    BattleDataSchema.assertTrainerCatalog(catalogWith({ "POTION", "NONE", "SUPER_POTION", "NONE" })),
+    "four source-ordered slots pass the semantic schema"
+  )
+  local compiled = assert(TrainerCatalogCompiler.compile(nativeInput({
+    [8] = {
+      data = trdata(TRTYPE_MON, CLASS_YOUNGSTER, 1, {}, 0, 0),
+      members = plainMember(30, 5, 19),
+    },
+  })))
+  Assert.deepEqual(
+    assert(compiled.trainers[8], "trainer 8 must survive projection").items,
+    { "NONE", "NONE", "NONE", "NONE" },
+    "an itemless trainer still carries four explicit gaps"
+  )
+  for _, items in ipairs({
+    { "POTION", "NONE", "SUPER_POTION" },
+    { "POTION", "NONE", "SUPER_POTION", "NONE", "POTION" },
+  }) do
+    local failure = Assert.throws(function()
+      BattleDataSchema.assertTrainerCatalog(catalogWith(items))
+    end, "a trainer item list with " .. #items .. " slots must fail")
+    Assert.equal(failure.code, "BATTLE_DATA_INVALID", "the failure names the data contract")
+  end
+end
+
 function T.trainer_prize_and_message_selectors_survive_projection()
   local TrainerCatalogCompiler = require("romdump.src.digest.battle.TrainerCatalogCompiler")
   local records = {
@@ -221,7 +285,11 @@ function T.trainer_prize_and_message_selectors_survive_projection()
   Assert.equal(trainer.prizeMoney.trainerClass, CLASS_YOUNGSTER, "the prize record keeps its class")
   Assert.equal(trainer.prizeMoney.classRate, 4, "the prize record carries the pinned class rate")
   Assert.isTrue(type(trainer.messageSelectors) == "table", "message selectors survive projection")
-  Assert.deepEqual(trainer.items, { "POTION" }, "held trainer items resolve to item keys in order")
+  Assert.deepEqual(
+    trainer.items,
+    { "POTION", "NONE", "NONE", "NONE" },
+    "held trainer items resolve to item keys in source order with explicit gaps"
+  )
 end
 
 function T.trainer_class_rates_cover_every_native_class_without_fallback()

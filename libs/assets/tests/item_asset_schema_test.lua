@@ -347,6 +347,19 @@ local function assertRejectsNamingItem(ItemAssetSchema, root, key, why)
   )
 end
 
+function T.catalogs_accept_the_optional_low_health_serving_gate()
+  local ItemAssetSchema = schema()
+  local gated = validRoot()
+  gated.items.POTION.lowHpOnly = true
+  Assert.isTrue(ItemAssetSchema.isValidCatalog(gated), "a boolean serving gate must be accepted")
+  local ungated = validRoot()
+  Assert.isNil(ungated.items.POTION.lowHpOnly, "ordinary items carry no serving gate")
+  Assert.isTrue(ItemAssetSchema.isValidCatalog(ungated), "an absent serving gate must be accepted")
+  local bad = validRoot()
+  bad.items.POTION.lowHpOnly = "below-quarter"
+  Assert.isFalse(ItemAssetSchema.isValidCatalog(bad), "a non-boolean serving gate must be rejected")
+end
+
 function T.catalogs_accept_battle_only_records_with_complete_battle_use()
   local ItemAssetSchema = schema()
   local root = validRoot()
