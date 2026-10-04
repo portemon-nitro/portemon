@@ -27,6 +27,7 @@ function T.defaults_are_all_off()
   Assert.isFalse(o.allowCompileExclusions)
   Assert.isFalse(o.dev)
   Assert.isNil(o.overlayId)
+  Assert.isNil(o.discoveryTarget)
   Assert.isNil(o.outputPath)
   Assert.deepEqual(o.resourceDetails, {})
 end
@@ -168,7 +169,7 @@ end
 function T.discover_app_parses_overlay_id_and_rom_source_in_either_order()
   local o = Cli.parse({ "--discover-app", "15", "--rom-source", "/tmp/hg.nds" })
   Assert.equal(o.command, "discover-app")
-  Assert.equal(o.overlayId, 15)
+  Assert.deepEqual(o.discoveryTarget, { kind = "arm9-overlay", overlayId = 15 })
   Assert.equal(o.romPath, "/tmp/hg.nds")
   Assert.isNil(o.outputPath)
   Assert.isFalse(o.forceDump)
@@ -176,7 +177,7 @@ function T.discover_app_parses_overlay_id_and_rom_source_in_either_order()
 
   local reordered = Cli.parse({ "--rom-source", "/tmp/hg.nds", "--discover-app", "15" })
   Assert.equal(reordered.command, "discover-app")
-  Assert.equal(reordered.overlayId, 15)
+  Assert.deepEqual(reordered.discoveryTarget, { kind = "arm9-overlay", overlayId = 15 })
   Assert.equal(reordered.romPath, "/tmp/hg.nds")
 end
 
@@ -187,14 +188,14 @@ function T.discover_app_parses_an_optional_output_path_in_any_position()
 
   local leading = Cli.parse({ "--output", "/tmp/out.zip", "--rom-source", "/tmp/hg.nds", "--discover-app", "15" })
   Assert.equal(leading.command, "discover-app")
-  Assert.equal(leading.overlayId, 15)
+  Assert.deepEqual(leading.discoveryTarget, { kind = "arm9-overlay", overlayId = 15 })
   Assert.equal(leading.romPath, "/tmp/hg.nds")
   Assert.equal(leading.outputPath, "/tmp/out.zip")
 end
 
 function T.discover_app_accepts_overlay_id_zero()
   local o = Cli.parse({ "--discover-app", "0", "--rom-source", "/tmp/hg.nds" })
-  Assert.equal(o.overlayId, 0)
+  Assert.deepEqual(o.discoveryTarget, { kind = "arm9-overlay", overlayId = 0 })
 end
 
 function T.discover_app_requires_an_overlay_id_value()
@@ -274,7 +275,7 @@ function T.discover_app_parses_repeatable_resource_details_in_sorted_order()
   })
 
   Assert.equal(o.command, "discover-app")
-  Assert.equal(o.overlayId, 15)
+  Assert.deepEqual(o.discoveryTarget, { kind = "arm9-overlay", overlayId = 15 })
   Assert.equal(o.romPath, "/tmp/hg.nds")
   Assert.equal(o.outputPath, "/tmp/out.zip")
   Assert.deepEqual(o.resourceDetails, {
@@ -616,6 +617,98 @@ function T.resource_detail_alias_forms_share_one_duplicate_identity()
     string.find(err, "duplicate --resource-detail", 1, true) ~= nil,
     "zero-padded aliases must share one duplicate identity, got: " .. tostring(err)
   )
+end
+
+--------------------------------------------------------------------------
+-- --discover-app targets: a numeric token selects an ARM9 overlay target
+-- while the literal arm9-main token plus a mandatory aligned hex
+-- --template-address selects one exact main-ARM9 manager template. Both
+-- normalize to a tagged discovery target; no bare overlay id remains.
+--------------------------------------------------------------------------
+
+function T.discover_app_parses_numeric_overlay_into_a_tagged_overlay_target()
+  local o = Cli.parse({ "--discover-app", "15", "--rom-source", "/tmp/hg.nds" })
+  Assert.equal(o.command, "discover-app")
+  Assert.deepEqual(o.discoveryTarget, { kind = "arm9-overlay", overlayId = 15 })
+  Assert.equal(o.romPath, "/tmp/hg.nds")
+  Assert.isNil(o.outputPath)
+  Assert.deepEqual(o.resourceDetails, {})
+  Assert.isNil(o.overlayId, "the bare overlay id field must be gone")
+end
+
+function T.discover_app_parses_main_target_with_hex_template_address_in_either_order()
+  local first = Cli.parse({
+    "--discover-app",
+    "arm9-main",
+    "--template-address",
+    "0x02104000",
+    "--rom-source",
+    "/tmp/hg.nds",
+  })
+  Assert.equal(first.command, "discover-app")
+  Assert.deepEqual(first.discoveryTarget, { kind = "arm9-main", templateAddress = 0x02104000 })
+  Assert.equal(first.romPath, "/tmp/hg.nds")
+
+  local second = Cli.parse({
+    "--template-address",
+    "0x02104000",
+    "--rom-source",
+    "/tmp/hg.nds",
+    "--discover-app",
+    "arm9-main",
+  })
+  Assert.equal(second.command, "discover-app")
+  Assert.deepEqual(second.discoveryTarget, { kind = "arm9-main", templateAddress = 0x02104000 })
+  Assert.equal(second.romPath, "/tmp/hg.nds")
+end
+
+function T.discover_app_rejects_ambiguous_or_malformed_template_address_combinations()
+  Assert.throws(function()
+    Cli.parse({ "--discover-app", "arm9-main", "--rom-source", "/tmp/hg.nds" })
+  end, "a main target without --template-address must be rejected")
+  Assert.throws(function()
+    Cli.parse({
+      "--discover-app",
+      "15",
+      "--template-address",
+      "0x02104000",
+      "--rom-source",
+      "/tmp/hg.nds",
+    })
+  end, "an overlay target with --template-address must be rejected")
+  Assert.throws(function()
+    Cli.parse({ "--template-address", "0x02104000", "--rom-source", "/tmp/hg.nds" })
+  end, "--template-address without --discover-app must be rejected")
+  Assert.throws(function()
+    Cli.parse({
+      "--discover-app",
+      "arm9-main",
+      "--template-address",
+      "0x02104000",
+      "--template-address",
+      "0x02104000",
+      "--rom-source",
+      "/tmp/hg.nds",
+    })
+  end, "a duplicate --template-address must be rejected")
+  for _, bad in ipairs({ "02104000", "0xZZZZ", "0x100000000", "0x02104001", "Summary", "0x2103a1c:0" }) do
+    Assert.throws(function()
+      Cli.parse({ "--discover-app", "arm9-main", "--template-address", bad, "--rom-source", "/tmp/hg.nds" })
+    end, "template address " .. bad .. " must be rejected")
+  end
+
+  local zero = Cli.parse({ "--discover-app", "0", "--rom-source", "/tmp/hg.nds" })
+  Assert.deepEqual(zero.discoveryTarget, { kind = "arm9-overlay", overlayId = 0 })
+
+  local upper = Cli.parse({
+    "--discover-app",
+    "arm9-main",
+    "--template-address",
+    "0X02104000",
+    "--rom-source",
+    "/tmp/hg.nds",
+  })
+  Assert.deepEqual(upper.discoveryTarget, { kind = "arm9-main", templateAddress = 0x02104000 })
 end
 
 return { tests = T }

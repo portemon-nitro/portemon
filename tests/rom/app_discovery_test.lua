@@ -11,6 +11,8 @@
 local Assert = require("tests.support.Assert")
 local RomSource = require("romdump.src.source.RomSource")
 local NdsRom = require("romdump.src.source.NdsRom")
+local RomImage = require("romdump.src.appdiscovery.RomImage")
+local ApplicationAnalyzer = require("romdump.src.appdiscovery.ApplicationAnalyzer")
 local AppDiscovery = require("romdump.src.appdiscovery.AppDiscovery")
 local EvidenceArchive = require("romdump.src.appdiscovery.EvidenceArchive")
 local RomSourcePath = require("tests.rom.support.RomSourcePath")
@@ -38,6 +40,22 @@ local DETAIL_SELECTIONS = {
   { fileId = 144, memberId = 50 },
   { fileId = 144, memberId = 55 },
 }
+
+-- Test-only main-ARM9 calibration pinned to the external decomp revision
+-- pret/pokeheartgold@9d8b7591f09b65804da2fb2dfd56f320633e0d36: the Pokemon
+-- Summary manager template lives at 0x02103A1C with Thumb callbacks
+-- PokemonSummary_Init at 0x02088298, PokemonSummary_Main at 0x02088424,
+-- and PokemonSummary_Exit at 0x0208856C. These facts never enter
+-- production app-discovery code; the caller supplies the generic address.
+local SUMMARY_TEMPLATE_ADDRESS = 0x02103A1C
+local SUMMARY_INIT_CALLBACK = 0x02088298
+local SUMMARY_MAIN_CALLBACK = 0x02088424
+local SUMMARY_EXIT_CALLBACK = 0x0208856C
+local SUMMARY_DISPATCH_CASE_COUNT = 23
+
+local function maskThumbForCalibration(value)
+  return value - (value % 2)
+end
 
 local MOUNT_POINT = "g4-app-evidence-calibration"
 local MAX_ARCHIVE_BYTES = 32 * 1024 * 1024
@@ -322,9 +340,35 @@ function T.selected_bag_resources_expose_structural_detail_and_exact_payloads()
   end
 end
 
+function T.main_arm9_selection_recovers_the_summary_template_callbacks_and_dispatch()
+  local image = RomImage.new(assert(rom))
+  local evidence = ApplicationAnalyzer.analyze(image, {
+    kind = "arm9-main",
+    templateAddress = SUMMARY_TEMPLATE_ADDRESS,
+  })
+
+  Assert.equal(#evidence.entrypointCandidates, 1)
+  local candidate = evidence.entrypointCandidates[1]
+  Assert.equal(candidate.ramAddress, SUMMARY_TEMPLATE_ADDRESS)
+  Assert.equal(maskThumbForCalibration(candidate.initTarget), SUMMARY_INIT_CALLBACK)
+  Assert.equal(maskThumbForCalibration(candidate.mainTarget), SUMMARY_MAIN_CALLBACK)
+  Assert.equal(maskThumbForCalibration(candidate.exitTarget), SUMMARY_EXIT_CALLBACK)
+  Assert.equal(candidate.initState, "thumb")
+  Assert.equal(candidate.mainState, "thumb")
+  Assert.equal(candidate.exitState, "thumb")
+
+  local found = nil
+  for _, switch in ipairs(evidence.switches) do
+    if switch.caseCount == SUMMARY_DISPATCH_CASE_COUNT then
+      found = switch
+    end
+  end
+  Assert.notNil(found, "expected the 23-case Summary main state dispatch")
+end
+
 local function beforeAll()
   rom = openRom()
-  collected = AppDiscovery.collect(rom, OVERLAY_ID, DETAIL_SELECTIONS)
+  collected = AppDiscovery.collect(rom, { kind = "arm9-overlay", overlayId = OVERLAY_ID }, DETAIL_SELECTIONS)
   built = AppDiscovery.build(collected)
   archiveBytes = assert(EvidenceArchive.encode(built.files))
 end

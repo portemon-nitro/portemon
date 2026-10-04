@@ -695,7 +695,7 @@ function T.parsed_discover_command_reaches_discovery_with_its_values()
       return {
         outputPath = "/tmp/out.zip",
         summary = {
-          overlayId = 15,
+          target = { kind = "arm9-overlay", overlayId = 15 },
           versionId = "heartgold",
           entrypointCandidateCount = 1,
           functionCount = 2,
@@ -723,7 +723,8 @@ function T.parsed_discover_command_reaches_discovery_with_its_values()
   end
 
   Assert.equal(exitCode, 0)
-  Assert.equal(received.overlayId, 15)
+  Assert.deepEqual(received.target, { kind = "arm9-overlay", overlayId = 15 })
+  Assert.isNil(received.overlayId, "the bare overlay id must not be forwarded alongside the tagged target")
   Assert.equal(received.romPath, "/tmp/hg.nds")
   Assert.equal(received.outputPath, "/tmp/out.zip")
 end

@@ -5,6 +5,7 @@
 -- particular game's addresses or constants.
 
 local Assert = require("tests.support.Assert")
+local Errors = require("libs.errors.src.Errors")
 local NdsRom = require("romdump.src.source.NdsRom")
 local RomSource = require("romdump.src.source.RomSource")
 local NdsBuilder = require("tests.support.NdsBuilder")
@@ -15,6 +16,8 @@ local T = {}
 
 local OVERLAY_ID = 0
 local OVERLAY_RAM = 0x02100000
+local MAIN_RAM = 0x02000000
+local NO_OVERLAY_TAG = 0xFFFFFFFF
 
 local function u16le(v)
   return string.char(v % 256, math.floor(v / 256) % 256)
@@ -53,7 +56,7 @@ local function matchingVersions(data, gameCode)
 end
 
 -- Builds a single-overlay ROM (overlayId 0) from raw overlay bytes and
--- returns its RomImage plus the overlay id to analyze.
+-- returns its RomImage plus the tagged overlay discovery target to analyze.
 local function buildImage(overlayId, content)
   local spec = {
     gameCode = "IPKE",
@@ -62,7 +65,7 @@ local function buildImage(overlayId, content)
   }
   local data = NdsBuilder.build(spec)
   local rom = assert(NdsRom.open(RomSource.fromString(data), matchingVersions(data, "IPKE")))
-  return RomImage.new(rom), overlayId
+  return RomImage.new(rom), { kind = "arm9-overlay", overlayId = overlayId }
 end
 
 local function buildMultiOverlayImage(overlays, overlayId)
@@ -72,7 +75,7 @@ local function buildMultiOverlayImage(overlays, overlayId)
     overlays9 = overlays,
   })
   local rom = assert(NdsRom.open(RomSource.fromString(data), matchingVersions(data, "IPKE")))
-  return RomImage.new(rom), overlayId
+  return RomImage.new(rom), { kind = "arm9-overlay", overlayId = overlayId }
 end
 
 local function template(initAddr, mainAddr, exitAddr, overlayId)
@@ -132,11 +135,11 @@ function T.discovers_a_launcher_template_in_a_sibling_arm9_overlay()
   local targetRam = 0x02200000
   local targetContent = padTo(hw(0x4770, 0x4770, 0x4770), 4)
   local sourceContent = template(targetRam + 0 + 1, targetRam + 2 + 1, targetRam + 4 + 1, targetOverlayId)
-  local image, overlayId = buildMultiOverlayImage({
+  local image, target = buildMultiOverlayImage({
     { content = sourceContent, ramAddress = 0x02100000, ramSize = #sourceContent, flags = 0 },
     { content = targetContent, ramAddress = targetRam, ramSize = #targetContent, flags = 0 },
   }, targetOverlayId)
-  local evidence, _ = ApplicationAnalyzer.analyze(image, overlayId)
+  local evidence, _ = ApplicationAnalyzer.analyze(image, target)
 
   Assert.equal(#evidence.entrypointCandidates, 1)
   local candidate = evidence.entrypointCandidates[1]
@@ -153,8 +156,8 @@ function T.mixed_state_template_decodes_only_thumb_roots_and_reports_arm_root_ga
   local content = padTo(hw(0x4770, 0x4770, 0x4770), 4)
   content = content .. template(OVERLAY_RAM + 0 + 1, OVERLAY_RAM + 2, OVERLAY_RAM + 4 + 1, OVERLAY_ID)
 
-  local image, overlayId = buildImage(OVERLAY_ID, content)
-  local evidence, _ = ApplicationAnalyzer.analyze(image, overlayId)
+  local image, target = buildImage(OVERLAY_ID, content)
+  local evidence, _ = ApplicationAnalyzer.analyze(image, target)
 
   Assert.equal(#evidence.entrypointCandidates, 1)
   local candidate = evidence.entrypointCandidates[1]
@@ -180,8 +183,8 @@ end
 
 function T.reports_no_entrypoint_candidate_gap_when_none_is_structurally_valid()
   local content = string.rep("\0", 16)
-  local image, overlayId = buildImage(OVERLAY_ID, content)
-  local evidence, _ = ApplicationAnalyzer.analyze(image, overlayId)
+  local image, target = buildImage(OVERLAY_ID, content)
+  local evidence, _ = ApplicationAnalyzer.analyze(image, target)
 
   Assert.equal(#evidence.entrypointCandidates, 0)
   Assert.equal(#evidence.functions, 0)
@@ -248,8 +251,8 @@ function T.recovers_direct_calls_stack_argument_and_conservative_joins()
   content = content
     .. template(OVERLAY_RAM + initOffset + 1, OVERLAY_RAM + 0 + 1, OVERLAY_RAM + exitOffset + 1, OVERLAY_ID)
 
-  local image, overlayId = buildImage(OVERLAY_ID, content)
-  local evidence, _ = ApplicationAnalyzer.analyze(image, overlayId)
+  local image, target = buildImage(OVERLAY_ID, content)
+  local evidence, _ = ApplicationAnalyzer.analyze(image, target)
 
   local mainFn = nil
   for _, fn in ipairs(evidence.functions) do
@@ -284,8 +287,8 @@ function T.immediate_blx_records_arm_target_without_decoding_it_as_thumb()
   content = padTo(content, 4)
   content = content .. template(OVERLAY_RAM + 1, OVERLAY_RAM + 1, OVERLAY_RAM + 1, OVERLAY_ID)
 
-  local image, overlayId = buildImage(OVERLAY_ID, content)
-  local evidence, disassembly = ApplicationAnalyzer.analyze(image, overlayId)
+  local image, target = buildImage(OVERLAY_ID, content)
+  local evidence, disassembly = ApplicationAnalyzer.analyze(image, target)
   disassembly = assert(disassembly, "analyzer must return transient disassembly as its second value")
   local call = assert(findCallBySite(evidence.calls, OVERLAY_RAM), "missing immediate BLX call")
   Assert.equal(call.target, OVERLAY_RAM + 16)
@@ -327,8 +330,8 @@ function T.sub_sp_rebases_exact_stack_argument_offsets()
   local callee = OVERLAY_RAM + 12
   content = content .. template(OVERLAY_RAM + 1, OVERLAY_RAM + 1, OVERLAY_RAM + 1, OVERLAY_ID)
 
-  local image, overlayId = buildImage(OVERLAY_ID, content)
-  local evidence = ApplicationAnalyzer.analyze(image, overlayId)
+  local image, target = buildImage(OVERLAY_ID, content)
+  local evidence = ApplicationAnalyzer.analyze(image, target)
   local call = assert(findCallBySite(evidence.calls, callSite), "missing call after SUB SP")
   Assert.equal(call.target, callee)
   local stack = assert(call.knownArgs.stack)
@@ -353,8 +356,8 @@ function T.push_pop_preserves_provable_values_without_leaking_unknown_words()
   content = padTo(content, 4)
   content = content .. template(OVERLAY_RAM + 1, OVERLAY_RAM + 1, OVERLAY_RAM + 1, OVERLAY_ID)
 
-  local image, overlayId = buildImage(OVERLAY_ID, content)
-  local evidence = ApplicationAnalyzer.analyze(image, overlayId)
+  local image, target = buildImage(OVERLAY_ID, content)
+  local evidence = ApplicationAnalyzer.analyze(image, target)
   local call1 = assert(findCallBySite(evidence.calls, OVERLAY_RAM + 4), "missing call while pushed values are live")
   local call1Stack = assert(call1.knownArgs.stack)
   Assert.equal(call1Stack[0], 7)
@@ -372,8 +375,8 @@ function T.ldmia_with_r7_reaches_the_sequential_fallthrough()
   local content = hw(0xC880, 0x4770) -- LDMIA R0!, {R7}; BX LR
   content = content .. template(OVERLAY_RAM + 1, OVERLAY_RAM + 1, OVERLAY_RAM + 1, OVERLAY_ID)
 
-  local image, overlayId = buildImage(OVERLAY_ID, content)
-  local evidence, disassembly = ApplicationAnalyzer.analyze(image, overlayId)
+  local image, target = buildImage(OVERLAY_ID, content)
+  local evidence, disassembly = ApplicationAnalyzer.analyze(image, target)
   assert(findFunctionByEntry(evidence, OVERLAY_RAM), "expected LDMIA root function")
   local disassemblyFn = assert(findDisassemblyFunctionByEntry(disassembly, OVERLAY_RAM))
   Assert.equal(#disassemblyFn.instructions, 2)
@@ -394,8 +397,8 @@ function T.late_state_widening_does_not_duplicate_function_membership()
   content = padTo(content, 4)
   content = content .. template(OVERLAY_RAM + 1, OVERLAY_RAM + 1, OVERLAY_RAM + 1, OVERLAY_ID)
 
-  local image, overlayId = buildImage(OVERLAY_ID, content)
-  local evidence, disassembly = ApplicationAnalyzer.analyze(image, overlayId)
+  local image, target = buildImage(OVERLAY_ID, content)
+  local evidence, disassembly = ApplicationAnalyzer.analyze(image, target)
   local fn = assert(findFunctionByEntry(evidence, OVERLAY_RAM), "expected widened merge function")
   local disassemblyFn = assert(findDisassemblyFunctionByEntry(disassembly, OVERLAY_RAM))
   Assert.keySet(fn, "blocks,entry,instructionCount", "compact function evidence must be structural")
@@ -431,8 +434,8 @@ function T.compact_function_and_block_evidence_has_one_matching_disassembly_owne
   content = padTo(content, 4)
   content = content .. template(OVERLAY_RAM + 1, OVERLAY_RAM + 1, OVERLAY_RAM + 1, OVERLAY_ID)
 
-  local image, overlayId = buildImage(OVERLAY_ID, content)
-  local evidence, disassembly = ApplicationAnalyzer.analyze(image, overlayId)
+  local image, target = buildImage(OVERLAY_ID, content)
+  local evidence, disassembly = ApplicationAnalyzer.analyze(image, target)
   disassembly = assert(disassembly, "analyzer must return transient disassembly as its second value")
 
   Assert.equal(#evidence.functions, #disassembly.functions)
@@ -473,8 +476,8 @@ function T.direct_branch_outside_known_images_retains_absolute_target()
   content = content
     .. template(OVERLAY_RAM + initOffset + 1, OVERLAY_RAM + 0 + 1, OVERLAY_RAM + exitOffset + 1, OVERLAY_ID)
 
-  local image, overlayId = buildImage(OVERLAY_ID, content)
-  local evidence, _ = ApplicationAnalyzer.analyze(image, overlayId)
+  local image, target = buildImage(OVERLAY_ID, content)
+  local evidence, _ = ApplicationAnalyzer.analyze(image, target)
 
   local gap = findByAddress(evidence.gaps, OVERLAY_RAM + 0)
   Assert.notNil(gap, "expected a gap at the out-of-region branch")
@@ -579,8 +582,8 @@ end
 
 function T.recognizes_generic_bounded_switch_with_ordered_cases()
   local content = buildSwitchOverlay(nil)
-  local image, overlayId = buildImage(OVERLAY_ID, content)
-  local evidence, disassembly = ApplicationAnalyzer.analyze(image, overlayId)
+  local image, target = buildImage(OVERLAY_ID, content)
+  local evidence, disassembly = ApplicationAnalyzer.analyze(image, target)
   disassembly = assert(disassembly, "analyzer must return transient disassembly as its second value")
 
   Assert.equal(#evidence.switches, 1)
@@ -607,8 +610,8 @@ end
 
 function T.recognizes_generic_bounded_switch_with_pc_folded_immediate_ldrh_sign_extend()
   local content = buildSwitchOverlay(nil, "pcfold")
-  local image, overlayId = buildImage(OVERLAY_ID, content)
-  local evidence, disassembly = ApplicationAnalyzer.analyze(image, overlayId)
+  local image, target = buildImage(OVERLAY_ID, content)
+  local evidence, disassembly = ApplicationAnalyzer.analyze(image, target)
   disassembly = assert(disassembly, "analyzer must return transient disassembly as its second value")
 
   Assert.equal(#evidence.switches, 1)
@@ -635,8 +638,8 @@ end
 
 function T.rejects_switch_with_corrupted_table_target()
   local content = buildSwitchOverlay(0)
-  local image, overlayId = buildImage(OVERLAY_ID, content)
-  local evidence = ApplicationAnalyzer.analyze(image, overlayId)
+  local image, target = buildImage(OVERLAY_ID, content)
+  local evidence = ApplicationAnalyzer.analyze(image, target)
 
   Assert.equal(#evidence.switches, 0)
   local dispatcherOffset = 32
@@ -645,16 +648,271 @@ function T.rejects_switch_with_corrupted_table_target()
   Assert.notNil(gap, "an invalidated switch must retain computed-flow evidence instead")
 end
 
+-- Builds a small dispatcher with the inverted bounds-check prologue the
+-- compiler emits for some switches: `CMP sel, #N; BLS body; B default`
+-- immediately before the same doubled-selector PC-relative table load the
+-- pcfold idiom uses. Case count and addresses stay generic; only the
+-- prologue shape is under test.
+local function buildInvertedPrologueSwitch(caseCount)
+  local dispatcherOffset = 32
+  assert(dispatcherOffset % 4 == 0)
+
+  local defaultOffset = dispatcherOffset + 18 + caseCount * 2 + caseCount * 4
+  local bodyOffset = dispatcherOffset + 6
+  local blsOffset = (bodyOffset - (dispatcherOffset + 2) - 4) / 2
+  local defaultBranchOffset = (defaultOffset - (dispatcherOffset + 4) - 4) / 2
+  local preamble = hw(
+    0x2800 + (caseCount - 1), -- CMP R0, #(caseCount - 1)
+    0xD900 + blsOffset, -- BLS dispatch body
+    0xE000 + defaultBranchOffset, -- B default
+    0x1800, -- ADD R0, R0, R0 (double selector via self-add)
+    0x4478, -- ADD R0, R0, PC (fold doubled selector into PC-relative base)
+    0x88C0, -- LDRH R0, [R0, #6] (immediate-offset load, R0 as base and dest)
+    0x0400, -- LSL R0, R0, #16
+    0x1400, -- ASR R0, R0, #16
+    0x4487 -- ADD PC, PC, R0
+  )
+  Assert.equal(#preamble, 18)
+  local addPcOffset = dispatcherOffset + 16
+
+  local tableOffset = dispatcherOffset + 18
+  local casesOffset = tableOffset + caseCount * 2
+  local tableEntries = {}
+  for i = 0, caseCount - 1 do
+    local caseAddress = OVERLAY_RAM + casesOffset + i * 4
+    local addPcAddress = OVERLAY_RAM + addPcOffset
+    tableEntries[#tableEntries + 1] = caseAddress - (addPcAddress + 4)
+  end
+  local table_ = hw(unpack(tableEntries))
+
+  local cases = {}
+  for i = 0, caseCount - 1 do
+    cases[#cases + 1] = hw(0x2200 + i, 0x4770) -- MOVS R2, #i ; BX LR
+  end
+  local defaultBytes = hw(0x4770) -- BX LR
+
+  local content = string.rep("\0", dispatcherOffset) .. preamble .. table_ .. table.concat(cases) .. defaultBytes
+  content = padTo(content, 4)
+  local exitOffset = #content
+  content = content .. hw(0x4770) -- trivial Exit stub
+  content = padTo(content, 4)
+  content = content
+    .. template(
+      OVERLAY_RAM + exitOffset + 1,
+      OVERLAY_RAM + dispatcherOffset + 1,
+      OVERLAY_RAM + exitOffset + 1,
+      OVERLAY_ID
+    )
+  return content, dispatcherOffset
+end
+
+function T.recognizes_bounded_switch_with_an_inverted_ls_prologue_over_an_explicit_default()
+  local caseCount = 4
+  local content = buildInvertedPrologueSwitch(caseCount)
+  local image, target = buildImage(OVERLAY_ID, content)
+  local evidence, disassembly = ApplicationAnalyzer.analyze(image, target)
+  disassembly = assert(disassembly, "analyzer must return transient disassembly as its second value")
+
+  Assert.equal(#evidence.switches, 1)
+  local switch = evidence.switches[1]
+  Assert.equal(switch.caseCount, caseCount)
+  Assert.equal(#switch.cases, caseCount)
+  for i, case in ipairs(switch.cases) do
+    Assert.equal(case.value, i - 1)
+  end
+
+  -- The table bytes are claimed as data: no instruction may be decoded at
+  -- any table address.
+  local dispatcherOffset = 32
+  local tableStart = OVERLAY_RAM + dispatcherOffset + 18
+  local tableEnd = tableStart + caseCount * 2
+  for _, fn in ipairs(disassembly.functions) do
+    for _, instr in ipairs(fn.instructions) do
+      Assert.isTrue(
+        instr.address < tableStart or instr.address >= tableEnd,
+        "table bytes must never be decoded as instructions"
+      )
+    end
+  end
+end
+
+--------------------------------------------------------------------------
+-- Exact main-ARM9 template selection: one explicit RAM address roots one
+-- application; sibling no-overlay templates never aggregate. All main
+-- fixtures use generic synthetic addresses; nothing here encodes any
+-- particular game's calibration.
+--------------------------------------------------------------------------
+
+local function buildMainImage(mainBytes)
+  local data = NdsBuilder.build({
+    gameCode = "IPKE",
+    title = "TESTHG",
+    arm9 = mainBytes,
+    arm9Ram = MAIN_RAM,
+    overlays9 = { { content = "\0\0\0\0", ramAddress = OVERLAY_RAM, ramSize = 4, flags = 0 } },
+  })
+  local rom = assert(NdsRom.open(RomSource.fromString(data), matchingVersions(data, "IPKE")))
+  return RomImage.new(rom)
+end
+
+-- Triple A callbacks at offsets 0/2/4 with template A at offset 8; triple B
+-- callbacks at offsets 24/26/28 with template B at offset 32. Returns the
+-- main bytes plus the selected (second) template address.
+local function buildTwoTemplateMain()
+  local bytes = padTo(hw(0x4770, 0x4770, 0x4770), 4)
+  bytes = bytes .. template(MAIN_RAM + 0 + 1, MAIN_RAM + 2 + 1, MAIN_RAM + 4 + 1, NO_OVERLAY_TAG)
+  bytes = bytes .. padTo(hw(0x4770, 0x4770, 0x4770), 4)
+  local selectedOffset = #bytes
+  bytes = bytes .. template(MAIN_RAM + 24 + 1, MAIN_RAM + 26 + 1, MAIN_RAM + 28 + 1, NO_OVERLAY_TAG)
+  return bytes, MAIN_RAM + selectedOffset
+end
+
+function T.selecting_one_main_template_ignores_a_sibling_no_overlay_template()
+  local mainBytes, selectedAddress = buildTwoTemplateMain()
+  local image = buildMainImage(mainBytes)
+  local evidence, disassembly, targetImage =
+    ApplicationAnalyzer.analyze(image, { kind = "arm9-main", templateAddress = selectedAddress })
+  disassembly = assert(disassembly, "analyzer must return transient disassembly as its second value")
+  targetImage = assert(targetImage, "analyzer must return the selected target image as its third value")
+
+  Assert.equal(evidence.schema, "g4-app-analysis-2")
+  Assert.deepEqual(evidence.target, {
+    kind = "arm9-main",
+    templateAddress = selectedAddress,
+    ramAddress = MAIN_RAM,
+    size = #mainBytes,
+  })
+  Assert.equal(targetImage.kind, "arm9-main")
+  Assert.equal(targetImage.ramAddress, MAIN_RAM)
+
+  Assert.equal(#evidence.entrypointCandidates, 1)
+  local candidate = evidence.entrypointCandidates[1]
+  Assert.equal(candidate.sourceRegion, "arm9-main")
+  Assert.equal(candidate.sourceOffset, selectedAddress - MAIN_RAM)
+  Assert.equal(candidate.ramAddress, selectedAddress)
+  Assert.equal(candidate.initTarget, MAIN_RAM + 24 + 1)
+  Assert.equal(candidate.mainTarget, MAIN_RAM + 26 + 1)
+  Assert.equal(candidate.exitTarget, MAIN_RAM + 28 + 1)
+  Assert.equal(candidate.overlayId, NO_OVERLAY_TAG)
+  Assert.equal(candidate.initState, "thumb")
+  Assert.equal(candidate.mainState, "thumb")
+  Assert.equal(candidate.exitState, "thumb")
+
+  local selectedRoots = 0
+  for _, fn in ipairs(evidence.functions) do
+    if fn.entry == MAIN_RAM + 24 or fn.entry == MAIN_RAM + 26 or fn.entry == MAIN_RAM + 28 then
+      selectedRoots = selectedRoots + 1
+    end
+    Assert.isFalse(
+      fn.entry >= MAIN_RAM and fn.entry < MAIN_RAM + 8,
+      "the unselected template's callbacks must not become roots"
+    )
+  end
+  Assert.equal(selectedRoots, 3)
+end
+
+-- A main image with one Thumb stub triple at offset 64 plus one template at
+-- `templateOffset` whose words are supplied by the caller.
+local function buildMainWithTemplateAt(templateOffset, initWord, mainWord, exitWord, tagWord)
+  local bytes = string.rep("\0", templateOffset)
+    .. u32le(initWord)
+    .. u32le(mainWord)
+    .. u32le(exitWord)
+    .. u32le(tagWord)
+  while #bytes < 64 do
+    bytes = bytes .. "\0"
+  end
+  return bytes .. hw(0x4770, 0x4770, 0x4770)
+end
+
+local function analyzeMainTarget(mainBytes, templateAddress)
+  local image = buildMainImage(mainBytes)
+  return pcall(ApplicationAnalyzer.analyze, image, { kind = "arm9-main", templateAddress = templateAddress })
+end
+
+local function assertTemplateInvalid(mainBytes, templateAddress, reason)
+  local ok, err = analyzeMainTarget(mainBytes, templateAddress)
+  Assert.isFalse(ok, "an invalid selected template must raise, not produce evidence")
+  Assert.isTrue(Errors.is(err), "expected a structured template error")
+  Assert.equal(err.code, "APPDISCOVERY_TEMPLATE_INVALID")
+  Assert.equal(err.context.reason, reason)
+  Assert.equal(err.context.templateAddress, templateAddress)
+  return err
+end
+
+function T.invalid_selected_main_templates_raise_structured_template_errors()
+  local stubBase = MAIN_RAM + 64
+  local validInit, validMain, validExit = stubBase + 1, stubBase + 3, stubBase + 5
+
+  local tagBytes = buildMainWithTemplateAt(16, validInit, validMain, validExit, OVERLAY_ID)
+  local tagErr = assertTemplateInvalid(tagBytes, MAIN_RAM + 16, "tag_mismatch")
+  Assert.equal(tagErr.context.actualTag, OVERLAY_ID)
+
+  local nullBytes = buildMainWithTemplateAt(16, 0, validMain, validExit, NO_OVERLAY_TAG)
+  assertTemplateInvalid(nullBytes, MAIN_RAM + 16, "null_callback")
+
+  local outside = MAIN_RAM + 4096 + 1
+  local rangeBytes = buildMainWithTemplateAt(16, outside, validMain, validExit, NO_OVERLAY_TAG)
+  local rangeErr = assertTemplateInvalid(rangeBytes, MAIN_RAM + 16, "callback_out_of_range")
+  Assert.equal(rangeErr.context.role, "init")
+  Assert.equal(rangeErr.context.target, outside)
+
+  local shortBytes = buildMainWithTemplateAt(16, validInit, validMain, validExit, NO_OVERLAY_TAG)
+  assertTemplateInvalid(shortBytes, MAIN_RAM + #shortBytes - 8, "out_of_range")
+end
+
+function T.overlay_targets_keep_the_established_cross_image_template_search()
+  local sourceOverlayId = 0
+  local targetOverlayId = 1
+  local targetRam = 0x02200000
+  local targetContent = padTo(hw(0x4770, 0x4770, 0x4770), 4)
+  local sourceContent = template(targetRam + 0 + 1, targetRam + 2 + 1, targetRam + 4 + 1, targetOverlayId)
+  local image, _ = buildMultiOverlayImage({
+    { content = sourceContent, ramAddress = 0x02100000, ramSize = #sourceContent, flags = 0 },
+    { content = targetContent, ramAddress = targetRam, ramSize = #targetContent, flags = 0 },
+  }, targetOverlayId)
+  local evidence, _ = ApplicationAnalyzer.analyze(image, { kind = "arm9-overlay", overlayId = targetOverlayId })
+
+  Assert.equal(evidence.schema, "g4-app-analysis-2")
+  Assert.deepEqual(evidence.target, {
+    kind = "arm9-overlay",
+    overlayId = targetOverlayId,
+    ramAddress = targetRam,
+    size = #targetContent,
+  })
+  Assert.equal(#evidence.entrypointCandidates, 1)
+  local candidate = evidence.entrypointCandidates[1]
+  Assert.equal(candidate.sourceRegion, "arm9-overlay:" .. tostring(sourceOverlayId))
+  Assert.equal(candidate.initTarget, targetRam + 1)
+  Assert.equal(candidate.mainTarget, targetRam + 3)
+  Assert.equal(candidate.exitTarget, targetRam + 5)
+  for _, fn in ipairs(evidence.functions) do
+    Assert.isTrue(fn.entry >= targetRam and fn.entry < targetRam + #targetContent)
+  end
+
+  local emptyImage, _ = buildImage(OVERLAY_ID, string.rep("\0", 16))
+  local emptyEvidence, _ =
+    ApplicationAnalyzer.analyze(emptyImage, { kind = "arm9-overlay", overlayId = OVERLAY_ID })
+  Assert.equal(#emptyEvidence.entrypointCandidates, 0)
+  local gap = nil
+  for _, g in ipairs(emptyEvidence.gaps) do
+    if g.kind == "no_entrypoint_candidate" then
+      gap = g
+    end
+  end
+  Assert.notNil(gap, "overlay targets keep the no_entrypoint_candidate gap")
+end
+
 --------------------------------------------------------------------------
 -- Determinism
 --------------------------------------------------------------------------
 
 function T.analysis_is_deterministic_for_identical_input()
   local content = buildSwitchOverlay(nil)
-  local image1, overlayId1 = buildImage(OVERLAY_ID, content)
-  local evidence1, disassembly1 = ApplicationAnalyzer.analyze(image1, overlayId1)
-  local image2, overlayId2 = buildImage(OVERLAY_ID, content)
-  local evidence2, disassembly2 = ApplicationAnalyzer.analyze(image2, overlayId2)
+  local image1, target1 = buildImage(OVERLAY_ID, content)
+  local evidence1, disassembly1 = ApplicationAnalyzer.analyze(image1, target1)
+  local image2, target2 = buildImage(OVERLAY_ID, content)
+  local evidence2, disassembly2 = ApplicationAnalyzer.analyze(image2, target2)
   Assert.deepEqual(evidence1, evidence2)
   Assert.deepEqual(disassembly1, disassembly2)
 end

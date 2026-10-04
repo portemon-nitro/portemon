@@ -82,7 +82,7 @@ function T.discover_app_dispatches_to_app_discovery_with_exactly_the_parsed_requ
           outputPath = "fake-out/app-evidence-heartgold-arm9-overlay-15.zip",
           summary = {
             versionId = "heartgold",
-            overlayId = 15,
+            target = { kind = "arm9-overlay", overlayId = 15 },
             entrypointCandidateCount = 1,
             functionCount = 5,
             resourceFileCount = 3,
@@ -97,7 +97,7 @@ function T.discover_app_dispatches_to_app_discovery_with_exactly_the_parsed_requ
     Runner.load({
       command = "discover-app",
       romPath = "fake-rom/hg.nds",
-      overlayId = 15,
+      discoveryTarget = { kind = "arm9-overlay", overlayId = 15 },
       outputPath = nil,
       resourceDetails = {},
     })
@@ -105,7 +105,8 @@ function T.discover_app_dispatches_to_app_discovery_with_exactly_the_parsed_requ
 
   Assert.notNil(received, "AppDiscovery.runPath was never called")
   Assert.equal(received.romPath, "fake-rom/hg.nds")
-  Assert.equal(received.overlayId, 15)
+  Assert.deepEqual(received.target, { kind = "arm9-overlay", overlayId = 15 })
+  Assert.isNil(received.overlayId, "the bare overlay id must not be forwarded alongside the tagged target")
   Assert.isNil(received.outputPath)
   Assert.deepEqual(received.resourceDetails, {})
   Assert.equal(state.exitCode, 0)
@@ -121,7 +122,7 @@ function T.discover_app_forwards_sorted_resource_details_without_interpretation(
           outputPath = "fake-out/app-evidence.zip",
           summary = {
             versionId = "heartgold",
-            overlayId = 15,
+            target = { kind = "arm9-overlay", overlayId = 15 },
             entrypointCandidateCount = 0,
             functionCount = 0,
             resourceFileCount = 0,
@@ -136,7 +137,7 @@ function T.discover_app_forwards_sorted_resource_details_without_interpretation(
     Runner.load({
       command = "discover-app",
       romPath = "fake-rom/hg.nds",
-      overlayId = 15,
+      discoveryTarget = { kind = "arm9-overlay", overlayId = 15 },
       resourceDetails = {
         { fileId = 12, memberId = 3 },
         { fileId = 144, memberId = 49 },
@@ -160,7 +161,7 @@ function T.discover_app_forwards_an_explicit_output_path()
           outputPath = "fake-out/bag-evidence.zip",
           summary = {
             versionId = "heartgold",
-            overlayId = 15,
+            target = { kind = "arm9-overlay", overlayId = 15 },
             entrypointCandidateCount = 0,
             functionCount = 0,
             resourceFileCount = 0,
@@ -175,7 +176,7 @@ function T.discover_app_forwards_an_explicit_output_path()
     Runner.load({
       command = "discover-app",
       romPath = "fake-rom/hg.nds",
-      overlayId = 15,
+      discoveryTarget = { kind = "arm9-overlay", overlayId = 15 },
       outputPath = "fake-out/bag-evidence.zip",
     })
   end)
@@ -192,7 +193,7 @@ function T.discover_app_prints_the_output_path_on_success()
           outputPath = "fake-out/app-evidence-heartgold-arm9-overlay-15.zip",
           summary = {
             versionId = "heartgold",
-            overlayId = 15,
+            target = { kind = "arm9-overlay", overlayId = 15 },
             entrypointCandidateCount = 1,
             functionCount = 5,
             resourceFileCount = 3,
@@ -204,7 +205,7 @@ function T.discover_app_prints_the_output_path_on_success()
         }
       end,
     }
-    Runner.load({ command = "discover-app", romPath = "fake-rom/hg.nds", overlayId = 15 })
+    Runner.load({ command = "discover-app", romPath = "fake-rom/hg.nds", discoveryTarget = { kind = "arm9-overlay", overlayId = 15 } })
   end)
   restore()
   if not ok then
@@ -226,7 +227,11 @@ function T.discover_app_maps_a_structured_failure_to_exit_one_and_a_locked_messa
         return nil, { code = "APPDISCOVERY_OUTPUT_WRITE_FAILED", message = "disk full", context = {} }
       end,
     }
-    Runner.load({ command = "discover-app", romPath = "fake-rom/hg.nds", overlayId = 15 })
+    Runner.load({
+      command = "discover-app",
+      romPath = "fake-rom/hg.nds",
+      discoveryTarget = { kind = "arm9-overlay", overlayId = 15 },
+    })
     Assert.equal(state.exitCode, 1)
   end)
   restore()
@@ -239,6 +244,101 @@ function T.discover_app_maps_a_structured_failure_to_exit_one_and_a_locked_messa
   Assert.isTrue(
     joined:find("APPDISCOVERY_OUTPUT_WRITE_FAILED", 1, true) ~= nil,
     "failure output must include the error code"
+  )
+end
+
+function T.discover_app_forwards_a_tagged_overlay_target_and_reports_the_overlay_label()
+  local received
+  local lines, restore = captureOutput()
+  local ok, err = pcall(withDiscoveryHarness, function(state)
+    package.loaded[APP_DISCOVERY_MODULE] = {
+      runPath = function(request)
+        received = request
+        return {
+          outputPath = "fake-out/app-evidence-heartgold-arm9-overlay-15.zip",
+          summary = {
+            versionId = "heartgold",
+            target = { kind = "arm9-overlay", overlayId = 15 },
+            entrypointCandidateCount = 1,
+            functionCount = 5,
+            resourceFileCount = 3,
+            narcCount = 1,
+            narcMemberCount = 4,
+            applicationGapCount = 0,
+            resourceGapCount = 0,
+          },
+        }
+      end,
+    }
+    Runner.load({
+      command = "discover-app",
+      romPath = "fake-rom/hg.nds",
+      discoveryTarget = { kind = "arm9-overlay", overlayId = 15 },
+      outputPath = nil,
+      resourceDetails = {},
+    })
+    Assert.equal(state.exitCode, 0)
+  end)
+  restore()
+  if not ok then
+    error(err, 0)
+  end
+
+  Assert.notNil(received, "AppDiscovery.runPath was never called")
+  Assert.equal(received.romPath, "fake-rom/hg.nds")
+  Assert.deepEqual(received.target, { kind = "arm9-overlay", overlayId = 15 })
+  Assert.isNil(received.overlayId, "the bare overlay id must not be forwarded alongside the tagged target")
+  local joined = table.concat(lines, "\n")
+  Assert.isTrue(joined:find("overlay 15", 1, true) ~= nil, "overlay reports must keep the established wording")
+end
+
+function T.discover_app_forwards_a_main_target_and_reports_the_template_label()
+  local received
+  local lines, restore = captureOutput()
+  local ok, err = pcall(withDiscoveryHarness, function(state)
+    package.loaded[APP_DISCOVERY_MODULE] = {
+      runPath = function(request)
+        received = request
+        return {
+          outputPath = "fake-out/app-evidence-heartgold-arm9-main-template-02104000.zip",
+          summary = {
+            versionId = "heartgold",
+            target = { kind = "arm9-main", templateAddress = 0x02104000 },
+            entrypointCandidateCount = 1,
+            functionCount = 5,
+            resourceFileCount = 3,
+            narcCount = 1,
+            narcMemberCount = 4,
+            applicationGapCount = 0,
+            resourceGapCount = 0,
+          },
+        }
+      end,
+    }
+    Runner.load({
+      command = "discover-app",
+      romPath = "fake-rom/hg.nds",
+      discoveryTarget = { kind = "arm9-main", templateAddress = 0x02104000 },
+      outputPath = nil,
+      resourceDetails = {},
+    })
+    Assert.equal(state.exitCode, 0)
+  end)
+  restore()
+  if not ok then
+    error(err, 0)
+  end
+
+  Assert.notNil(received, "AppDiscovery.runPath was never called")
+  Assert.deepEqual(received.target, { kind = "arm9-main", templateAddress = 0x02104000 })
+  local joined = table.concat(lines, "\n")
+  Assert.isTrue(
+    joined:find("arm9-main template 0x02104000", 1, true) ~= nil,
+    "main reports must name the selected template address"
+  )
+  Assert.isTrue(
+    joined:find("fake-out/app-evidence-heartgold-arm9-main-template-02104000.zip", 1, true) ~= nil,
+    "main default output names must disambiguate the template address"
   )
 end
 

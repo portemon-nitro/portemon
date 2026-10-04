@@ -35,7 +35,7 @@ local ApplicationAnalyzer = {}
 ---@field knownArgs { registers: table<string, integer>, stack: table<integer, integer> }
 
 ---@class ApplicationAnalyzer.Evidence
----@field schema "g4-app-analysis-1"
+---@field schema "g4-app-analysis-2"
 ---@field target table<string, unknown>
 ---@field entrypointCandidates table[]
 ---@field functions ApplicationAnalyzer.FunctionEvidence[]
@@ -46,8 +46,18 @@ local ApplicationAnalyzer = {}
 ---@field gaps table[]
 ---@field coverage table<string, integer>
 
+---@class ApplicationAnalyzer.DiscoveryTarget
+---@field kind "arm9-overlay"|"arm9-main"
+---@field overlayId integer?
+---@field templateAddress integer?
+
 local CALL_CLOBBER_REGISTERS = { 0, 1, 2, 3, 12 }
 local BLOCK_TERMINAL_FLOW = { branch = true, ["return"] = true, unknown = true, indirect = true }
+
+-- The fourth word of a manager template for an application with no
+-- overlay identity: main-binary applications share this sentinel, so it
+-- describes the selected template, never the discovery target itself.
+local NO_OVERLAY_TAG = 0xFFFFFFFF
 
 local function maskThumb(value)
   return value - (value % 2)
@@ -55,6 +65,10 @@ end
 
 local function isThumbPointer(value)
   return value % 2 == 1
+end
+
+local function callbackState(rawPointer)
+  return isThumbPointer(rawPointer) and "thumb" or "arm"
 end
 
 local function cloneState(state)
@@ -491,10 +505,30 @@ function Context:tryRecognizeSwitch(addPcAddress, addPcInstr)
     return nil
   end
   local branch = self.decoded[load.startAddress - 6]
-  if not (branch and branch.flow.kind == "branch" and branch.flow.conditional and branch.flow.condition == "hi") then
-    return nil
+  local cmp
+  if branch and branch.flow.kind == "branch" and branch.flow.conditional and branch.flow.condition == "hi" then
+    cmp = self.decoded[load.startAddress - 8]
+  else
+    -- Inverted bounds-check variant the compiler emits for some dispatchers:
+    -- `CMP sel, #N; BLS body; B default` immediately before the doubling
+    -- instruction, where the in-range branch targets the doubling
+    -- instruction itself and the out-of-range branch falls through to an
+    -- explicit default. Table and case recovery below is identical.
+    local skipDefault = branch
+    local inRange = self.decoded[load.startAddress - 8]
+    local validInverted = skipDefault
+      and skipDefault.flow.kind == "branch"
+      and not skipDefault.flow.conditional
+      and inRange
+      and inRange.flow.kind == "branch"
+      and inRange.flow.conditional
+      and inRange.flow.condition == "ls"
+      and inRange.flow.target == load.startAddress - 4
+    if not validInverted then
+      return nil
+    end
+    cmp = self.decoded[load.startAddress - 10]
   end
-  local cmp = self.decoded[load.startAddress - 8]
   if not (cmp and cmp.mnemonic == "cmp" and cmp.operands.rd == selectorReg) then
     return nil
   end
@@ -720,6 +754,37 @@ function Context:buildBlocks(addrs)
   return blocks
 end
 
+-- Shared 16-byte manager-template word rule: nonzero callbacks whose
+-- Thumb-bit-masked addresses all lie inside the target image. Returns the
+-- candidate, or nil when the words fail the structural rule. Tag matching
+-- stays with the caller: overlay scans match their overlay id while exact
+-- main selection requires the no-overlay sentinel before calling here.
+function Context:candidateFromWords(image, byteOffset, initWord, mainWord, exitWord, tagWord)
+  if initWord == 0 or mainWord == 0 or exitWord == 0 then
+    return nil
+  end
+  local maskedInit, maskedMain, maskedExit = maskThumb(initWord), maskThumb(mainWord), maskThumb(exitWord)
+  if
+    not self:withinImage(self.targetImage, maskedInit)
+    or not self:withinImage(self.targetImage, maskedMain)
+    or not self:withinImage(self.targetImage, maskedExit)
+  then
+    return nil
+  end
+  return {
+    sourceRegion = image.id,
+    sourceOffset = byteOffset,
+    ramAddress = image.ramAddress + byteOffset,
+    initTarget = initWord,
+    mainTarget = mainWord,
+    exitTarget = exitWord,
+    overlayId = tagWord,
+    initState = callbackState(initWord),
+    mainState = callbackState(mainWord),
+    exitState = callbackState(exitWord),
+  }
+end
+
 function Context:scanCandidates(image, overlayId)
   local reader = self:imageReader(image)
   local len = #image.bytes
@@ -730,25 +795,10 @@ function Context:scanCandidates(image, overlayId)
     local w2 = reader:u32le(offset + 4)
     local w3 = reader:u32le(offset + 8)
     local w4 = reader:u32le(offset + 12)
-    if w4 == overlayId and w1 ~= 0 and w2 ~= 0 and w3 ~= 0 then
-      local m1, m2, m3 = maskThumb(w1), maskThumb(w2), maskThumb(w3)
-      if
-        self:withinImage(self.targetImage, m1)
-        and self:withinImage(self.targetImage, m2)
-        and self:withinImage(self.targetImage, m3)
-      then
-        found[#found + 1] = {
-          sourceRegion = image.id,
-          sourceOffset = offset,
-          ramAddress = image.ramAddress + offset,
-          initTarget = w1,
-          mainTarget = w2,
-          exitTarget = w3,
-          overlayId = w4,
-          initState = isThumbPointer(w1) and "thumb" or "arm",
-          mainState = isThumbPointer(w2) and "thumb" or "arm",
-          exitState = isThumbPointer(w3) and "thumb" or "arm",
-        }
+    if w4 == overlayId then
+      local candidate = self:candidateFromWords(image, offset, w1, w2, w3, w4)
+      if candidate then
+        found[#found + 1] = candidate
       end
     end
     offset = offset + 4
@@ -756,7 +806,71 @@ function Context:scanCandidates(image, overlayId)
   return found
 end
 
-function Context:discoverEntrypointCandidates(romImage, overlayId)
+-- Validates exactly the caller-selected 16-byte main-ARM9 manager template
+-- at `templateAddress` and builds its single entrypoint candidate. Sibling
+-- no-overlay templates elsewhere in main ARM9 never enter the candidate
+-- set. A syntactically valid target whose ROM bytes are structurally
+-- invalid raises a structured template error instead of producing
+-- zero-candidate evidence, because exact selection leaves no search
+-- ambiguity to report as a gap.
+function Context:selectMainTemplate(templateAddress)
+  local mainImage = self.mainImage
+  assert(templateAddress, "main targets require a template address")
+  if
+    type(templateAddress) ~= "number"
+    or templateAddress % 4 ~= 0
+    or templateAddress < mainImage.ramAddress
+    or templateAddress + 16 > mainImage.ramAddress + #mainImage.bytes
+  then
+    Errors.raise("APPDISCOVERY_TEMPLATE_INVALID", "selected main template address is outside main ARM9", {
+      templateAddress = templateAddress,
+      reason = "out_of_range",
+    })
+  end
+  local byteOffset = templateAddress - mainImage.ramAddress
+  local reader = self:imageReader(mainImage)
+  local initWord = reader:u32le(byteOffset)
+  local mainWord = reader:u32le(byteOffset + 4)
+  local exitWord = reader:u32le(byteOffset + 8)
+  local tagWord = reader:u32le(byteOffset + 12)
+  if tagWord ~= NO_OVERLAY_TAG then
+    Errors.raise("APPDISCOVERY_TEMPLATE_INVALID", "selected main template tag is not the no-overlay sentinel", {
+      templateAddress = templateAddress,
+      reason = "tag_mismatch",
+      actualTag = tagWord,
+    })
+  end
+  if initWord == 0 or mainWord == 0 or exitWord == 0 then
+    Errors.raise("APPDISCOVERY_TEMPLATE_INVALID", "selected main template has a null callback", {
+      templateAddress = templateAddress,
+      reason = "null_callback",
+    })
+  end
+  local callbacks = {
+    { role = "init", target = initWord },
+    { role = "main", target = mainWord },
+    { role = "exit", target = exitWord },
+  }
+  for _, callback in ipairs(callbacks) do
+    if not self:withinImage(self.targetImage, maskThumb(callback.target)) then
+      Errors.raise("APPDISCOVERY_TEMPLATE_INVALID", "selected main template callback is outside main ARM9", {
+        templateAddress = templateAddress,
+        reason = "callback_out_of_range",
+        role = callback.role,
+        target = callback.target,
+      })
+    end
+  end
+  local candidate = self:candidateFromWords(mainImage, byteOffset, initWord, mainWord, exitWord, tagWord)
+  assert(candidate, "a validated main template must decode to exactly one candidate")
+  return candidate
+end
+
+function Context:discoverEntrypointCandidates(romImage, target)
+  if target.kind == "arm9-main" then
+    return { self:selectMainTemplate(target.templateAddress) }
+  end
+  local overlayId = assert(target.overlayId, "overlay targets require an overlay id")
   local entrypointCandidates = {}
   for _, candidate in ipairs(self:scanCandidates(self.mainImage, overlayId)) do
     entrypointCandidates[#entrypointCandidates + 1] = candidate
@@ -864,17 +978,27 @@ function Context:sortedCalls()
 end
 
 ---@param romImage RomImage
----@param overlayId integer
+---@param target ApplicationAnalyzer.DiscoveryTarget
 ---@return ApplicationAnalyzer.Evidence
 ---@return ApplicationAnalyzer.Disassembly
-function ApplicationAnalyzer.analyze(romImage, overlayId)
-  assert(type(overlayId) == "number", "overlayId must be a number")
+---@return RomImage.Record targetImage the selected executable image
+function ApplicationAnalyzer.analyze(romImage, target)
+  assert(type(target) == "table", "target must be a discovery target record")
 
-  local targetImage = romImage:overlay("arm9", overlayId)
+  local targetImage
+  if target.kind == "arm9-overlay" then
+    assert(type(target.overlayId) == "number", "overlay targets require a numeric overlayId")
+    targetImage = romImage:overlay("arm9", target.overlayId)
+  elseif target.kind == "arm9-main" then
+    assert(type(target.templateAddress) == "number", "main targets require a numeric templateAddress")
+    targetImage = romImage:mainArm9()
+  else
+    error("unknown discovery target kind: " .. tostring(target.kind))
+  end
   local mainImage = romImage:mainArm9()
   local ctx = Context.new(targetImage, mainImage)
 
-  local entrypointCandidates = ctx:discoverEntrypointCandidates(romImage, overlayId)
+  local entrypointCandidates = ctx:discoverEntrypointCandidates(romImage, target)
   local armRootCount, thumbRootCount = ctx:enqueueRoots(entrypointCandidates)
   local functions, disassemblyFunctions = ctx:drainFunctionQueue()
   local pointers = ctx:censusPointers()
@@ -905,9 +1029,28 @@ function ApplicationAnalyzer.analyze(romImage, overlayId)
     blockCount = blockCount + #fn.blocks
   end
 
+  local applicationTarget
+  if target.kind == "arm9-main" then
+    -- The sentinel stays template evidence on the candidate; the target
+    -- itself never masquerades as an overlay id.
+    applicationTarget = {
+      kind = "arm9-main",
+      templateAddress = target.templateAddress,
+      ramAddress = targetImage.ramAddress,
+      size = #targetImage.bytes,
+    }
+  else
+    applicationTarget = {
+      kind = "arm9-overlay",
+      overlayId = target.overlayId,
+      ramAddress = targetImage.ramAddress,
+      size = #targetImage.bytes,
+    }
+  end
+
   local evidence = {
-    schema = "g4-app-analysis-1",
-    target = { overlayId = overlayId, ramAddress = targetImage.ramAddress, size = #targetImage.bytes },
+    schema = "g4-app-analysis-2",
+    target = applicationTarget,
     entrypointCandidates = entrypointCandidates,
     functions = functions,
     switches = ctx.switches,
@@ -926,7 +1069,7 @@ function ApplicationAnalyzer.analyze(romImage, overlayId)
       computedFlowGapCount = computedFlowGapCount,
     },
   }
-  return evidence, { functions = disassemblyFunctions }
+  return evidence, { functions = disassemblyFunctions }, targetImage
 end
 
 return ApplicationAnalyzer
