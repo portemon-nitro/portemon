@@ -585,16 +585,6 @@ local MAIN_TEMPLATE_ADDRESS = 0x02000000
 local MAIN_BYTES = "ABCDEFGHIJKLMNOPQRST"
 local MAIN_SOURCE_OFFSET = 0x4000
 
-local function buildOverlayCollectedV2()
-  local collected = buildCollected()
-  collected.application.schema = "g4-app-analysis-2"
-  collected.application.target =
-    { kind = "arm9-overlay", overlayId = OVERLAY_ID, ramAddress = OVERLAY_RAM, size = #OVERLAY_BYTES }
-  collected.targetImage.source =
-    { fileId = 5, ramAddress = OVERLAY_RAM, ramSize = #OVERLAY_BYTES, bssSize = 0, isCompressed = false }
-  return collected
-end
-
 local function buildMainCollected()
   local collected = buildCollected()
   collected.targetImage = {
@@ -616,6 +606,21 @@ local function buildMainCollected()
     ramAddress = MAIN_RAM,
     size = #MAIN_BYTES,
   }
+  collected.application.entrypointCandidates = {
+    {
+      sourceRegion = "arm9-main",
+      sourceOffset = 0,
+      ramAddress = MAIN_TEMPLATE_ADDRESS,
+      initTarget = MAIN_RAM + 1,
+      mainTarget = MAIN_RAM + 3,
+      exitTarget = MAIN_RAM + 5,
+      initState = "thumb",
+      mainState = "thumb",
+      exitState = "thumb",
+      overlayIdRaw = 0xFFFFFFFF,
+    },
+  }
+  collected.application.coverage.candidateCount = 1
   return collected
 end
 
@@ -657,8 +662,44 @@ function T.main_target_bundles_carry_target_specific_metadata_without_overlay_id
   Assert.isNil(built.summary.overlayId, "the summary must not masquerade a main target as an overlay id")
 end
 
+local function assertBundleTargetInconsistent(collected, why)
+  local err = Assert.throws(function()
+    EvidenceBundle.build(collected)
+  end, why)
+  Assert.isTrue(Errors.is(err), "expected a structured bundle error")
+  Assert.equal(err.code, "APPDISCOVERY_BUNDLE_TARGET_INCONSISTENT")
+end
+
+-- MAIN_RAM + 4 starts a 16-byte template exactly at the end of the
+-- 20-byte main fixture, so it is aligned and fully spanned: only the
+-- candidate-address disagreement can reject this aggregate.
+function T.main_bundle_rejects_a_template_address_that_disagrees_with_its_candidate()
+  local collected = buildMainCollected()
+  collected.application.target.templateAddress = MAIN_RAM + 4
+  assertBundleTargetInconsistent(collected, "a main target naming a different template than its candidate must be rejected")
+end
+
+-- Target and candidate agree here, so only the 4-byte alignment bound
+-- can reject this aggregate.
+function T.main_bundle_rejects_a_misaligned_template_address_even_when_the_candidate_agrees()
+  local collected = buildMainCollected()
+  collected.application.target.templateAddress = MAIN_RAM + 1
+  collected.application.entrypointCandidates[1].ramAddress = MAIN_RAM + 1
+  assertBundleTargetInconsistent(collected, "a misaligned main template must be rejected")
+end
+
+-- MAIN_RAM + 8 is aligned and inside the 20-byte main fixture, yet its
+-- 16-byte template would end at byte 24: only the full-span bound can
+-- reject this aggregate.
+function T.main_bundle_rejects_a_truncated_template_span_even_when_the_candidate_agrees()
+  local collected = buildMainCollected()
+  collected.application.target.templateAddress = MAIN_RAM + 8
+  collected.application.entrypointCandidates[1].ramAddress = MAIN_RAM + 8
+  assertBundleTargetInconsistent(collected, "a main template overrunning image end must be rejected")
+end
+
 function T.overlay_and_main_bundles_emit_their_own_executable_hexdump_path()
-  local overlayBuilt = EvidenceBundle.build(buildOverlayCollectedV2())
+  local overlayBuilt = EvidenceBundle.build(buildCollected())
   local overlayManifest = loadLua(overlayBuilt.files["manifest.lua"], "manifest.lua")
   Assert.equal(overlayManifest.schema, "g4-app-evidence-2")
   Assert.equal(overlayManifest.target.imageHexPath, "application/overlay.hex")

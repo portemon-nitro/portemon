@@ -217,6 +217,7 @@ function T.discover_app_prints_the_output_path_on_success()
     joined:find("fake-out/app-evidence-heartgold-arm9-overlay-15.zip", 1, true) ~= nil,
     "success output must include the output path"
   )
+  Assert.isTrue(joined:find("overlay 15", 1, true) ~= nil, "overlay reports must keep the established wording")
 end
 
 function T.discover_app_maps_a_structured_failure_to_exit_one_and_a_locked_message()
@@ -245,51 +246,6 @@ function T.discover_app_maps_a_structured_failure_to_exit_one_and_a_locked_messa
     joined:find("APPDISCOVERY_OUTPUT_WRITE_FAILED", 1, true) ~= nil,
     "failure output must include the error code"
   )
-end
-
-function T.discover_app_forwards_a_tagged_overlay_target_and_reports_the_overlay_label()
-  local received
-  local lines, restore = captureOutput()
-  local ok, err = pcall(withDiscoveryHarness, function(state)
-    package.loaded[APP_DISCOVERY_MODULE] = {
-      runPath = function(request)
-        received = request
-        return {
-          outputPath = "fake-out/app-evidence-heartgold-arm9-overlay-15.zip",
-          summary = {
-            versionId = "heartgold",
-            target = { kind = "arm9-overlay", overlayId = 15 },
-            entrypointCandidateCount = 1,
-            functionCount = 5,
-            resourceFileCount = 3,
-            narcCount = 1,
-            narcMemberCount = 4,
-            applicationGapCount = 0,
-            resourceGapCount = 0,
-          },
-        }
-      end,
-    }
-    Runner.load({
-      command = "discover-app",
-      romPath = "fake-rom/hg.nds",
-      discoveryTarget = { kind = "arm9-overlay", overlayId = 15 },
-      outputPath = nil,
-      resourceDetails = {},
-    })
-    Assert.equal(state.exitCode, 0)
-  end)
-  restore()
-  if not ok then
-    error(err, 0)
-  end
-
-  Assert.notNil(received, "AppDiscovery.runPath was never called")
-  Assert.equal(received.romPath, "fake-rom/hg.nds")
-  Assert.deepEqual(received.target, { kind = "arm9-overlay", overlayId = 15 })
-  Assert.isNil(received.overlayId, "the bare overlay id must not be forwarded alongside the tagged target")
-  local joined = table.concat(lines, "\n")
-  Assert.isTrue(joined:find("overlay 15", 1, true) ~= nil, "overlay reports must keep the established wording")
 end
 
 function T.discover_app_forwards_a_main_target_and_reports_the_template_label()

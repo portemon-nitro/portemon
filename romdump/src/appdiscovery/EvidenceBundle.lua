@@ -91,7 +91,8 @@ end
 -- its overlay identity while a main target carries its selected template
 -- address. The main template sentinel (0xFFFFFFFF) is template evidence
 -- on the candidate and must never be serialized as an overlay id.
-local function checkTargetConsistency(applicationTarget, targetImage)
+local function checkTargetConsistency(application, targetImage)
+  local applicationTarget = application.target
   local kind = applicationTarget.kind
   if kind ~= "arm9-overlay" and kind ~= "arm9-main" then
     Errors.raise(
@@ -132,14 +133,28 @@ local function checkTargetConsistency(applicationTarget, targetImage)
     end
   else
     local templateAddress = applicationTarget.templateAddress
+    if type(templateAddress) ~= "number" or templateAddress % 4 ~= 0 then
+      Errors.raise(
+        "APPDISCOVERY_BUNDLE_TARGET_INCONSISTENT",
+        "main template address is not an aligned template address",
+        { templateAddress = templateAddress }
+      )
+    end
     if
-      type(templateAddress) ~= "number"
-      or templateAddress < targetImage.ramAddress
-      or templateAddress >= targetImage.ramAddress + #targetImage.bytes
+      templateAddress < targetImage.ramAddress
+      or templateAddress + 16 > targetImage.ramAddress + #targetImage.bytes
     then
       Errors.raise(
         "APPDISCOVERY_BUNDLE_TARGET_INCONSISTENT",
         "main template address is outside the target image",
+        { templateAddress = templateAddress }
+      )
+    end
+    local candidates = application.entrypointCandidates
+    if type(candidates) ~= "table" or #candidates ~= 1 or candidates[1].ramAddress ~= templateAddress then
+      Errors.raise(
+        "APPDISCOVERY_BUNDLE_TARGET_INCONSISTENT",
+        "main template address disagrees with the selected entrypoint candidate",
         { templateAddress = templateAddress }
       )
     end
@@ -386,7 +401,7 @@ function EvidenceBundle.build(collected)
     )
   end
 
-  checkTargetConsistency(application.target, targetImage)
+  checkTargetConsistency(application, targetImage)
 
   local files = {}
   local function addFile(path, content)

@@ -778,7 +778,7 @@ function Context:candidateFromWords(image, byteOffset, initWord, mainWord, exitW
     initTarget = initWord,
     mainTarget = mainWord,
     exitTarget = exitWord,
-    overlayId = tagWord,
+    overlayIdRaw = tagWord,
     initState = callbackState(initWord),
     mainState = callbackState(mainWord),
     exitState = callbackState(exitWord),

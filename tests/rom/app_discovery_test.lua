@@ -51,6 +51,8 @@ local SUMMARY_TEMPLATE_ADDRESS = 0x02103A1C
 local SUMMARY_INIT_CALLBACK = 0x02088298
 local SUMMARY_MAIN_CALLBACK = 0x02088424
 local SUMMARY_EXIT_CALLBACK = 0x0208856C
+local SUMMARY_SWITCH_ADDRESS = 0x02088440
+local SUMMARY_SWITCH_TABLE_ADDRESS = 0x02088442
 local SUMMARY_DISPATCH_CASE_COUNT = 23
 
 local function maskThumbForCalibration(value)
@@ -359,11 +361,14 @@ function T.main_arm9_selection_recovers_the_summary_template_callbacks_and_dispa
 
   local found = nil
   for _, switch in ipairs(evidence.switches) do
-    if switch.caseCount == SUMMARY_DISPATCH_CASE_COUNT then
+    if switch.address == SUMMARY_SWITCH_ADDRESS then
       found = switch
     end
   end
-  Assert.notNil(found, "expected the 23-case Summary main state dispatch")
+  Assert.notNil(found, "expected the Summary dispatcher at 0x02088440")
+  Assert.equal(found.tableAddress, SUMMARY_SWITCH_TABLE_ADDRESS)
+  Assert.equal(found.caseCount, SUMMARY_DISPATCH_CASE_COUNT)
+  Assert.equal(#found.cases, SUMMARY_DISPATCH_CASE_COUNT)
 end
 
 local function beforeAll()

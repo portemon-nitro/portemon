@@ -172,6 +172,7 @@ function T.discover_app_parses_overlay_id_and_rom_source_in_either_order()
   Assert.deepEqual(o.discoveryTarget, { kind = "arm9-overlay", overlayId = 15 })
   Assert.equal(o.romPath, "/tmp/hg.nds")
   Assert.isNil(o.outputPath)
+  Assert.isNil(o.overlayId, "the bare overlay id field must be gone")
   Assert.isFalse(o.forceDump)
   Assert.isFalse(o.allowCompileExclusions)
 
@@ -625,16 +626,6 @@ end
 -- --template-address selects one exact main-ARM9 manager template. Both
 -- normalize to a tagged discovery target; no bare overlay id remains.
 --------------------------------------------------------------------------
-
-function T.discover_app_parses_numeric_overlay_into_a_tagged_overlay_target()
-  local o = Cli.parse({ "--discover-app", "15", "--rom-source", "/tmp/hg.nds" })
-  Assert.equal(o.command, "discover-app")
-  Assert.deepEqual(o.discoveryTarget, { kind = "arm9-overlay", overlayId = 15 })
-  Assert.equal(o.romPath, "/tmp/hg.nds")
-  Assert.isNil(o.outputPath)
-  Assert.deepEqual(o.resourceDetails, {})
-  Assert.isNil(o.overlayId, "the bare overlay id field must be gone")
-end
 
 function T.discover_app_parses_main_target_with_hex_template_address_in_either_order()
   local first = Cli.parse({

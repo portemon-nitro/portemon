@@ -144,6 +144,8 @@ function T.discovers_a_launcher_template_in_a_sibling_arm9_overlay()
   Assert.equal(#evidence.entrypointCandidates, 1)
   local candidate = evidence.entrypointCandidates[1]
   Assert.equal(candidate.sourceRegion, "arm9-overlay:" .. tostring(sourceOverlayId))
+  Assert.equal(candidate.overlayIdRaw, targetOverlayId)
+  Assert.isNil(candidate.overlayId, "the template word is raw evidence; overlay identity lives on the target")
   Assert.equal(candidate.initTarget, targetRam + 1)
   Assert.equal(candidate.mainTarget, targetRam + 3)
   Assert.equal(candidate.exitTarget, targetRam + 5)
@@ -793,7 +795,8 @@ function T.selecting_one_main_template_ignores_a_sibling_no_overlay_template()
   Assert.equal(candidate.initTarget, MAIN_RAM + 24 + 1)
   Assert.equal(candidate.mainTarget, MAIN_RAM + 26 + 1)
   Assert.equal(candidate.exitTarget, MAIN_RAM + 28 + 1)
-  Assert.equal(candidate.overlayId, NO_OVERLAY_TAG)
+  Assert.equal(candidate.overlayIdRaw, NO_OVERLAY_TAG)
+  Assert.isNil(candidate.overlayId, "the no-overlay sentinel is raw template evidence, not a semantic target identity")
   Assert.equal(candidate.initState, "thumb")
   Assert.equal(candidate.mainState, "thumb")
   Assert.equal(candidate.exitState, "thumb")
@@ -857,8 +860,11 @@ function T.invalid_selected_main_templates_raise_structured_template_errors()
   Assert.equal(rangeErr.context.role, "init")
   Assert.equal(rangeErr.context.target, outside)
 
+  -- Offset 60 into the 70-byte fixture is 4-byte aligned yet its 16-byte
+  -- template overruns image end, so this isolates the full-span bound.
   local shortBytes = buildMainWithTemplateAt(16, validInit, validMain, validExit, NO_OVERLAY_TAG)
-  assertTemplateInvalid(shortBytes, MAIN_RAM + #shortBytes - 8, "out_of_range")
+  Assert.equal(#shortBytes, 70)
+  assertTemplateInvalid(shortBytes, MAIN_RAM + 60, "out_of_range")
 end
 
 function T.overlay_targets_keep_the_established_cross_image_template_search()
