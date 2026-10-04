@@ -363,17 +363,28 @@ end
 local function sessionView(session)
   local service = session.service
   local balance = session.currency == "money" and service._profile.money or service._bucket.athletePoints
-  local view = { key = session.stock.key, currency = session.currency, balance = balance, entries = {} }
+  local view = {
+    key = session.stock.key,
+    currency = session.currency,
+    presentationKind = session.stock.presentationKind,
+    quantityMode = session.stock.quantityMode,
+    balance = balance,
+    entries = {},
+  }
   for index, entry in ipairs(session.stock.entries) do
     local owned = ownedCount(service, entry)
     local selectionFailure = failure(service, entry, session.currency, balance)
+    local item = service._items:item(entry.displayItemKey)
+    local descriptionText = entry.description.kind == "literal" and entry.description.value or item.description
     local maximum = session.stock.quantityMode == "single" and 1
       or (entry.unitPrice == 0 and 99 or math.min(99, math.floor(balance / entry.unitPrice)))
     view.entries[index] = {
       entryKey = entry.key,
       displayItemKey = entry.displayItemKey,
+      bindings = { itemName = item.name, pocketName = service._items:pocketName(item.pocket) },
       unitPrice = entry.unitPrice,
       description = copy(entry.description),
+      descriptionText = descriptionText,
       priceVisible = selectionFailure ~= "bought_today" and selectionFailure ~= "already_owned",
       ownedQuantity = owned,
       maxQuantity = maximum,
@@ -401,7 +412,14 @@ end
 function sessionMethods:view()
   assert(not self.closed, "mart session is closed")
   if self.stock.key == "sell" then
-    return { key = "sell", currency = "money", balance = self.service._profile.money, entries = {} }
+    return {
+      key = "sell",
+      currency = "money",
+      presentationKind = self.stock.presentationKind,
+      quantityMode = self.stock.quantityMode,
+      balance = self.service._profile.money,
+      entries = {},
+    }
   end
   return sessionView(self)
 end

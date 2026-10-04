@@ -34,9 +34,17 @@ function T.provenance_and_resources_use_semantic_aliases()
   Assert.equal(MartSources.messages.archive.alias, "messages")
   Assert.equal(MartSources.messages.archive.symbol, "NARC_msgdata_msg")
   Assert.equal(MartSources.messages.bank, 435)
-  Assert.deepEqual(MartSources.messages.retainedDescriptions, {
-    legacy = { bank = 435, index = 434 },
-    safety = { bank = 435, index = 737 },
+  Assert.deepEqual(MartSources.messages.descriptionSources, {
+    seals = {
+      bank = 434,
+      indexOffset = -1,
+      source = "src/unk_02091054.c::sub_020910B8",
+    },
+    decorations = {
+      bank = 737,
+      indexOffset = 138,
+      source = "src/overlay_03/shop_menu.c::ov03_022573D4",
+    },
   })
 
   local main, lower, controls = MartSources.archive.resources.main, MartSources.archive.resources.lower,

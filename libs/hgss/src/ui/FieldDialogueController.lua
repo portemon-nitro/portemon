@@ -14,6 +14,7 @@ local TextSpeedPolicy = require("libs.hgss.src.ui.TextSpeedPolicy")
 ---@field _layout fun(message: FieldMessageProvider.FormattedMessage): DialogueLayout.Result
 ---@field _policy table<string, unknown>
 ---@field _audio table<string, unknown>?
+---@field _onPrinterCallback (fun(token: MessageToken))?
 ---@field _state "CLOSED"|"OPENING"|"REVEALING"|"WAITING_BOUNDARY"|"WAITING_CLOSE"|"SCROLLING"|"CLOSING"
 ---@field _request FieldDialogueController.Request?
 ---@field _handle FieldDialogueController.Handle?
@@ -128,6 +129,7 @@ end
 ---@field printerDelay integer?
 ---@field audio table<string, unknown>? { play: function(self: table<string, unknown>, soundRef: string) }
 ---@field continueCursor { cycle: integer[], framePrinterTicks: integer }?
+---@field onPrinterCallback fun(token: MessageToken)?
 
 ---@param opts FieldDialogueControllerOptions
 ---@return FieldDialogueController
@@ -148,10 +150,15 @@ function FieldDialogueController.new(opts)
     type(cursorTicks) == "number" and cursorTicks >= 1 and cursorTicks % 1 == 0,
     "continuation cursor timing must be a positive integer"
   )
+  assert(
+    opts.onPrinterCallback == nil or type(opts.onPrinterCallback) == "function",
+    "onPrinterCallback must be a function when supplied"
+  )
   return setmetatable({
     _layout = opts.layout,
     _policy = policy,
     _audio = opts.audio,
+    _onPrinterCallback = opts.onPrinterCallback,
     _state = "CLOSED",
     _request = nil,
     _handle = nil,
@@ -569,7 +576,7 @@ function FieldDialogueController:_printerSubstep(sourceNew, sourceHeld)
       self._tokenIndex = self._tokenIndex + 1
       self._revealed = math.min(total, self._revealed + 1)
       self._delayCounter = self._policy.interGlyphDelay
-      if self._revealed >= total then
+      if self._revealed >= total and self._tokenIndex > #tokens then
         self:_atPageEnd()
       end
       visible = visible + 1
@@ -585,6 +592,9 @@ function FieldDialogueController:_printerSubstep(sourceNew, sourceHeld)
       self._pauseRemaining = assert(token.args and token.args[1], "pause control requires an argument")
       return false
     elseif token.kind == "printer_callback" then
+      if self._onPrinterCallback then
+        self._onPrinterCallback(token)
+      end
       return false
     end
   end

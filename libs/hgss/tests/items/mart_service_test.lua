@@ -97,6 +97,27 @@ function T.open_stock_is_copied_and_free_quotes_do_not_divide_by_zero()
   Assert.equal(state.bag:quantity("POTION"), 0, "quote staging never changes Bag")
 end
 
+function T.buy_view_exposes_detached_presentation_and_display_bindings()
+  local state = resources({ money = 1000 })
+  local session = state.service:openBuy(stock({ bagEntry("potion-offer", 100) }))
+  local view = session:view()
+  Assert.equal(view.presentationKind, "items")
+  Assert.equal(view.quantityMode, "multiple")
+  Assert.equal(view.entries[1].entryKey, "potion-offer")
+  Assert.deepEqual(view.entries[1].description, { kind = "item" }, "the semantic description remains available")
+  Assert.equal(view.entries[1].descriptionText, "Potion description")
+  Assert.equal(view.entries[1].bindings.itemName, "Potion")
+  Assert.equal(view.entries[1].bindings.pocketName, "Medicine")
+  view.presentationKind = "legacy_decorations"
+  view.entries[1].bindings.itemName = "changed"
+  view.entries[1].descriptionText = "changed"
+  local fresh = session:view()
+  Assert.equal(fresh.presentationKind, "items", "the returned presentation record is detached")
+  Assert.equal(fresh.entries[1].bindings.itemName, "Potion", "display bindings are detached")
+  Assert.equal(fresh.entries[1].descriptionText, "Potion description", "description text is detached")
+  session:close()
+end
+
 function T.commit_is_atomic_idempotent_and_old_or_foreign_tokens_reject()
   local first = resources({ money = 1000 })
   local second = resources({ money = 1000 })

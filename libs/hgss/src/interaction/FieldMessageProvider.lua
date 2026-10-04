@@ -36,8 +36,8 @@ FieldMessageProvider.MESSAGE_CONTROL_ARGUMENT_INVALID = "MESSAGE_CONTROL_ARGUMEN
 ---@field colorIndex integer? runtime-prepared presentation metadata on glyph tokens; not part of the raw ROM message format
 
 ---@class FieldMessageProvider.FormattedMessage
----@field bankId integer
----@field messageId integer
+---@field bankId integer?
+---@field messageId integer?
 ---@field text string
 ---@field tokens MessageToken[]
 ---@field hadUnresolvedSubstitutions boolean
