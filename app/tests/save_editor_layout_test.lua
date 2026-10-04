@@ -217,7 +217,7 @@ function T.tests.action_control_geometry_fits_labels_with_padding_on_compact_and
   end
 end
 
-function T.tests.party_subpage_controls_wrap_without_truncating_their_labels()
+function T.tests.party_subpage_controls_remain_reachable_without_truncating_their_labels()
   local metrics = { lineHeight = 14, measure = function(text) return #text * 7 end }
   local view = {
     status = "ready",
@@ -231,25 +231,26 @@ function T.tests.party_subpage_controls_wrap_without_truncating_their_labels()
   for _, size in ipairs({ { 256, 192 }, { 720, 1280 } }) do
     local layout = Layout.compute(view, size[1], size[2], metrics)
     local tabs = {}
-    local firstRowY
-    local wrapped = false
     for _, label in ipairs(view.partySubpages) do
-      local tab = assert(layout.targets["party:subpage:" .. label]).rect
-      Assert.isTrue(tab.width >= metrics.measure(label) + 22, label .. " fits inside its shaded control")
-      firstRowY = firstRowY or tab.y
-      wrapped = wrapped or firstRowY ~= tab.y
-      tabs[#tabs + 1] = tab
+      local id = "party:subpage:" .. label
+      Assert.isTrue(layout.focusGraph[id] ~= nil, label .. " remains reachable by directional focus")
+      if size[1] == 256 then
+        view.focus = id
+        layout = Layout.compute(view, size[1], size[2], metrics)
+      end
+      local tab = assert(layout.targets[id], label .. " is revealed as a complete control")
+      Assert.isTrue(tab.rect.width >= metrics.measure(label) + 22, label .. " fits inside its shaded control")
+      tabs[#tabs + 1] = tab.rect
     end
-    if size[1] == 256 then
-      Assert.isTrue(wrapped, "compact available width wraps subpage controls into multiple rows")
-    end
-    for firstIndex, first in ipairs(tabs) do
-      for laterIndex = firstIndex + 1, #tabs do
-        local later = tabs[laterIndex]
-        Assert.isTrue(
-          first.y ~= later.y or first.x + first.width <= later.x or later.x + later.width <= first.x,
-          "subpage controls do not overlap"
-        )
+    if size[1] ~= 256 then
+      for firstIndex, first in ipairs(tabs) do
+        for laterIndex = firstIndex + 1, #tabs do
+          local later = tabs[laterIndex]
+          Assert.isTrue(
+            first.y ~= later.y or first.x + first.width <= later.x or later.x + later.width <= first.x,
+            "subpage controls do not overlap"
+          )
+        end
       end
     end
   end

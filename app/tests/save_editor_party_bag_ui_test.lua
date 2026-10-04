@@ -260,7 +260,7 @@ function T.party_draft_actions_remain_visible_beside_a_long_raw_page()
   Assert.isNil(layout.targets["party:field:24"], "later raw rows scroll without displacing the decisions")
 end
 
-function T.compact_party_keeps_add_visible_and_hidden_members_in_keyboard_focus_order()
+function T.compact_party_keeps_occupied_member_and_add_cards_reachable()
   local view = {
     section = "Party",
     status = "ready",
@@ -269,36 +269,108 @@ function T.compact_party_keeps_add_visible_and_hidden_members_in_keyboard_focus_
     partyPage = "list",
     partyCanAdd = true,
     partyMemberCount = 5,
-    partyRows = {},
+    partyCards = {},
   }
   for slot0 = 0, 4 do
-    view.partyRows[#view.partyRows + 1] = {
-      role = "action",
-      targetId = "party:slot:" .. slot0,
+    view.partyCards[#view.partyCards + 1] = {
+      kind = "member",
+      slot0 = slot0,
       label = "Member " .. (slot0 + 1),
+      level = 5,
     }
   end
-  view.partyRows[#view.partyRows + 1] = {
-    role = "read-only value",
-    targetId = "party:empty-slot:5",
-    label = "Empty slot 6",
-  }
+  view.partyCards[#view.partyCards + 1] = { kind = "add", slot0 = 5, label = "Add Pokemon" }
   local compact = computeLayout(view, 256, 192)
   Assert.notNil(compact.targets["party:add"], "the compact Party list must keep Add visible")
   local focusable = {}
   for _, targetId in ipairs(compact.focusOrder) do
     focusable[targetId] = true
   end
-  Assert.isTrue(focusable["party:slot:4"], "keyboard and controller focus must include clipped member rows")
-  Assert.isFalse(focusable["party:empty-slot:5"], "empty slots are informational, not focusable")
-  view.scrollOffset = 4
-  local scrolled = computeLayout(view, 256, 192)
-  Assert.notNil(scrolled.targets["party:slot:4"], "scrolling must reveal the focused member row")
-  view.scrollOffset = 5
-  local emptySlot = computeLayout(view, 256, 192)
-  Assert.notNil(emptySlot.targets["party:empty-slot:5"], "scrolling must reveal an informational empty slot")
-  local emptySlotX, emptySlotY = targetCenter(emptySlot, "party:empty-slot:5")
-  Assert.isNil(Layout.hitTest(emptySlot, view, emptySlotX, emptySlotY))
+  Assert.isTrue(focusable["party:slot:4"], "keyboard and controller focus must include all occupied member cards")
+  local addX, addY = targetCenter(compact, "party:add")
+  Assert.equal(Layout.hitTest(compact, view, addX, addY), "party:add")
+end
+
+function T.party_grid_places_members_and_add_in_occupied_six_cell_positions()
+  for _, count in ipairs({ 0, 1, 5, 6 }) do
+    local cards = {}
+    for slot0 = 0, count - 1 do
+      cards[#cards + 1] = { kind = "member", slot0 = slot0, label = "Member " .. (slot0 + 1), level = 5 }
+    end
+    if count < 6 then
+      cards[#cards + 1] = { kind = "add", slot0 = count, label = "Add Pokemon" }
+    end
+    local view = {
+      section = "Party",
+      status = "ready",
+      ready = true,
+      dirty = false,
+      partyPage = "list",
+      partyMemberCount = count,
+      partyCards = cards,
+      partyRows = {},
+    }
+    local layout = computeLayout(view, 800, 600)
+    local occupied = {}
+    for index = 0, count - 1 do
+      occupied[#occupied + 1] = assert(layout.targets["party:slot:" .. index], "every member has a grid target").rect
+    end
+    if count < 6 then
+      occupied[#occupied + 1] = assert(layout.targets["party:add"], "Add is the first empty grid cell").rect
+    else
+      Assert.isNil(layout.targets["party:add"], "a full party has no Add action")
+    end
+    Assert.equal(#occupied, count + (count < 6 and 1 or 0))
+    for left = 1, #occupied do
+      for right = left + 1, #occupied do
+        local a, b = occupied[left], occupied[right]
+        local overlap = a.x < b.x + b.width and b.x < a.x + a.width
+          and a.y < b.y + b.height and b.y < a.y + a.height
+        Assert.isFalse(overlap, "six-cell cards have distinct bounded positions")
+      end
+    end
+    if #occupied >= 2 then
+      Assert.equal(occupied[1].y, occupied[2].y, "the first two occupied cells share the first row")
+      Assert.isTrue(occupied[2].x > occupied[1].x, "the second cell is in the second column")
+    end
+    if #occupied >= 3 then
+      Assert.isTrue(occupied[3].y > occupied[1].y, "the third cell starts the second row")
+      Assert.equal(occupied[3].x, occupied[1].x, "the third cell returns to the first column")
+    end
+  end
+end
+
+function T.party_detail_targets_distinguish_readonly_fields_from_draft_actions()
+  local view = {
+    section = "Party",
+    status = "ready",
+    ready = true,
+    dirty = false,
+    partyPage = "detail",
+    partySlot0 = 0,
+    partySubpage = "Training",
+    partySubpages = { "Identity", "Training", "Stats", "Moves", "Origin" },
+    partyRows = {
+      { role = "read-only value", targetId = "party:readonly:experience", id = "experience", label = "Experience", value = 10 },
+      { role = "read-only value", targetId = "party:readonly:level", id = "level", label = "Level", value = 5 },
+    },
+  }
+  local readonly = computeLayout(view, 800, 600)
+  Assert.isNil(readonly.targets["party:readonly:experience"], "read-only raw fields are plain values")
+  Assert.isNil(readonly.targets["party:readonly:level"], "derived values are plain and non-actionable")
+  Assert.isNil(readonly.targets["party:readonly:help"], "there is no focusable Field help row")
+
+  view.partyPage = "draft"
+  view.partyDirty = true
+  view.partyValid = true
+  view.partyRows = {
+    { role = "integer value", targetId = "party:field:experience", id = "experience", label = "Experience", value = 10 },
+    { role = "read-only value", targetId = "party:readonly:level", id = "level", label = "Level", value = 5 },
+  }
+  local draft = computeLayout(view, 800, 600)
+  Assert.notNil(draft.targets["party:field:experience"], "raw values remain actionable in the draft")
+  Assert.isNil(draft.targets["party:readonly:level"], "derived projections remain read-only in the draft")
+  Assert.isNil(draft.targets["party:readonly:help"], "contextual help is outside the focus graph")
 end
 
 function T.compact_bag_keeps_fixed_actions_reachable_beside_a_long_scrolling_list()
@@ -391,7 +463,7 @@ function T.compact_bag_keeps_fixed_actions_reachable_beside_a_long_scrolling_lis
     and firstRowsReachable
     and noBodyActionOverlap
     and shortLayout.targets["bag:item:BICYCLE"] ~= nil
-    and helpLayout.targets["party:readonly:help"] ~= nil
+    and helpLayout.targets["party:readonly:help"] == nil
     and layout.targets["bag:item:ITEM_1"] ~= nil
     and layout.targets["bag:item:ITEM_40"] == nil
   Assert.isTrue(
@@ -402,7 +474,7 @@ function T.compact_bag_keeps_fixed_actions_reachable_beside_a_long_scrolling_lis
       tostring(firstRowsReachable),
       tostring(noBodyActionOverlap),
       tostring(shortLayout.targets["bag:item:BICYCLE"] ~= nil),
-      tostring(helpLayout.targets["party:readonly:help"] ~= nil),
+      tostring(helpLayout.targets["party:readonly:help"] == nil),
       tostring(layout.targets["bag:item:ITEM_1"] ~= nil),
       tostring(layout.targets["bag:item:ITEM_40"] == nil)
     )
@@ -525,6 +597,9 @@ function T.visible_party_rows_prepare_only_their_icon_keys()
       end,
       quadFor = function()
         return {}
+      end,
+      dimensions = function()
+        return { width = 32, height = 32 }
       end,
       release = function()
         released = released + 1

@@ -21,6 +21,41 @@ local function rect(x, y, width, height)
   return { x = x, y = y, width = math.max(1, width), height = math.max(1, height) }
 end
 
+local function sixCellGrid(body, gap)
+  local cellWidth = (body.width - gap) / 2
+  local cellHeight = (body.height - gap * 2) / 3
+  assert(cellWidth > 0 and cellHeight > 0, "six-cell grid needs positive cells")
+  local cells = {}
+  for index = 1, 6 do
+    local column, row = (index - 1) % 2, math.floor((index - 1) / 2)
+    local x = body.x + column * (cellWidth + gap)
+    local y = body.y + row * (cellHeight + gap)
+    local cell = rect(x, y, cellWidth, cellHeight)
+    local inset = math.min(5, cell.width / 8)
+    local iconHeight = math.max(1, (cell.height - gap) * 0.62)
+    local iconRect = rect(cell.x + inset, cell.y + 2, cell.width - inset * 2, iconHeight - 2)
+    local textRect = rect(
+      cell.x + inset,
+      iconRect.y + iconRect.height + 2,
+      cell.width - inset * 2,
+      cell.y + cell.height - iconRect.y - iconRect.height - 5
+    )
+    assert(
+      cell.x >= body.x
+        and cell.y >= body.y
+        and cell.x + cell.width <= body.x + body.width + 0.01
+        and cell.y + cell.height <= body.y + body.height + 0.01,
+      "six-cell geometry stays inside its body"
+    )
+    assert(
+      iconRect.y + iconRect.height <= textRect.y and textRect.x >= cell.x and textRect.y >= cell.y,
+      "six-cell content regions remain disjoint and inside their cell"
+    )
+    cells[index] = { rect = cell, iconRect = iconRect, textRect = textRect }
+  end
+  return cells
+end
+
 function Layout.compute(view, width, height, metrics)
   assert(type(view) == "table" and width > 0 and height > 0)
   local scope = view.scope
@@ -33,7 +68,10 @@ function Layout.compute(view, width, height, metrics)
     }
   assert(type(metrics) == "table" and type(metrics.measure) == "function" and metrics.lineHeight > 0)
   local margin = width <= 280 and 4 or 12
-  local footerHeight = math.max(40, metrics.lineHeight + 24)
+  local compactPartyDetails = width < 400
+    and view.section == "Party"
+    and (view.partyPage == "detail" or view.partyPage == "draft")
+  local footerHeight = compactPartyDetails and width <= 280 and 34 or math.max(40, metrics.lineHeight + 24)
   local railWidth = width >= 400 and 88 or 0
   local rows, targets, focusable, disabledTargets, focusPositions = {}, {}, {}, {}, {}
   local locationGrid
@@ -61,12 +99,13 @@ function Layout.compute(view, width, height, metrics)
       addFocusable(id)
     end
   else
-    targets.section = rect(margin, 0, innerWidth, math.max(30, metrics.lineHeight + 16))
+    local sectionWidth = compactPartyDetails and math.min(72, innerWidth) or innerWidth
+    targets.section = rect(margin, 0, sectionWidth, compactPartyDetails and 34 or math.max(30, metrics.lineHeight + 16))
     navigation[#navigation + 1] = {
       role = "action",
       targetId = "section",
       id = "section",
-      label = "Section: " .. section,
+      label = compactPartyDetails and section or ("Section: " .. section),
     }
     addFocusable("section")
     contentTop = targets.section.y + targets.section.height
@@ -116,20 +155,75 @@ function Layout.compute(view, width, height, metrics)
     end
   end
   local viewports = {}
+  local partyGrid
+  local layoutPartySummary
+  local layoutPartyHelp
 
+  local partySummary
+  if section == "Party" and (view.partyPage == "detail" or view.partyPage == "draft") then
+    if compactPartyDetails then
+      local summaryX = targets.section.x + targets.section.width + 4
+      local summaryWidth = contentX + innerWidth - summaryX
+      partySummary = {
+        inline = true,
+        rect = rect(summaryX, targets.section.y, summaryWidth, targets.section.height),
+        iconRect = rect(summaryX, targets.section.y + 1, 32, targets.section.height - 2),
+        textRect = rect(summaryX + 36, targets.section.y + 2, summaryWidth - 38, targets.section.height - 4),
+      }
+    else
+      local summaryHeight = math.min(54, math.max(42, contentBottom - contentTop - rowHeight * 2))
+      partySummary = {
+        rect = rect(contentX, contentTop, innerWidth, summaryHeight),
+        iconRect = rect(contentX + 4, contentTop + 3, summaryHeight - 6, summaryHeight - 6),
+        textRect = rect(
+          contentX + summaryHeight + 2,
+          contentTop + 4,
+          innerWidth - summaryHeight - 6,
+          summaryHeight - 8
+        ),
+      }
+      contentTop = contentTop + summaryHeight + 3
+    end
+  end
   if section == "Party" and (view.partyPage == "detail" or view.partyPage == "draft") and view.partySubpages ~= nil then
     local labels = view.partySubpages
     local tabX, tabY = contentX, contentTop
+    local tabOffset = 0
+    if compactPartyDetails then
+      local revealedSubpage = view.partySubpage
+      local focusedSubpage = view.focus and view.focus:match("^party:subpage:(.+)$")
+      if focusedSubpage ~= nil then
+        revealedSubpage = focusedSubpage
+      end
+      local selectedIndex, totalWidth = 1, 0
+      for index, label in ipairs(labels) do
+        local tabWidth = math.ceil(metrics.measure(label) + 22)
+        if label == revealedSubpage then
+          selectedIndex = index
+        end
+        totalWidth = totalWidth + tabWidth
+      end
+      local precedingWidth = 0
+      for index = 1, selectedIndex - 1 do
+        precedingWidth = precedingWidth + math.ceil(metrics.measure(labels[index]) + 22)
+      end
+      local selectedWidth = math.ceil(metrics.measure(labels[selectedIndex]) + 22)
+      tabOffset =
+        math.min(math.max(0, precedingWidth + selectedWidth - innerWidth), math.max(0, totalWidth - innerWidth))
+    end
     for _, label in ipairs(labels) do
       local id = "party:subpage:" .. label
       local tabWidth = math.ceil(metrics.measure(label) + 22)
       assert(tabWidth <= innerWidth, "party subpage label must fit within the available layout width")
-      if tabX > contentX and tabX + tabWidth > contentX + innerWidth then
+      if not compactPartyDetails and tabX > contentX and tabX + tabWidth > contentX + innerWidth then
         tabX = contentX
         tabY = tabY + rowHeight + 2
       end
-      local tab = rect(tabX, tabY, tabWidth, rowHeight)
-      targets[id] = tab
+      local tab = rect(tabX - tabOffset, tabY, tabWidth, rowHeight)
+      if not compactPartyDetails or tab.x >= contentX and tab.x + tab.width <= contentX + innerWidth then
+        targets[id] = tab
+      end
+      focusPositions[id] = tab
       addFocusable(id)
       tabX = tabX + tabWidth
     end
@@ -311,33 +405,47 @@ function Layout.compute(view, width, height, metrics)
   elseif section == "Party" then
     local partyRows = view.partyRows or {}
     local page = view.partyPage or "list"
-    if view.partyPage == "list" then
-      local id = view.partyCanAdd and "party:add" or "party:capacity"
-      local label = view.partyCanAdd and ("Add Pokémon (" .. tostring(view.partyMemberCount) .. "/6)")
-        or "Party full (6/6)"
-      placeRow(
-        view.partyCanAdd and "action" or "read-only value",
-        id,
-        label,
-        nil,
-        view.partyCanAdd,
-        contentTop,
-        rowHeight
-      )
-      if not view.partyCanAdd then
-        disabledTargets[id] = true
+    local gridCards = {}
+    local partyHelp
+    if page == "list" then
+      local cards = assert(view.partyCards, "Party list provides occupied cards")
+      local gridBody = rect(contentX, contentTop, innerWidth, contentBottom - contentTop)
+      local cells = sixCellGrid(gridBody, 6)
+      for index, card in ipairs(cards) do
+        assert(index <= 6, "Party publishes no more than six cards")
+        local cell = cells[index]
+        local id = card.kind == "member" and ("party:slot:" .. card.slot0) or "party:add"
+        local value = card.kind == "member" and ("Lv. " .. tostring(card.level)) or nil
+        targets[id] = cell.rect
+        focusPositions[id] = cell.rect
+        addFocusable(id)
+        gridCards[#gridCards + 1] = {
+          kind = card.kind,
+          targetId = id,
+          label = card.label,
+          value = value,
+          iconKey = card.iconKey,
+          rect = cell.rect,
+          iconRect = cell.iconRect,
+          textRect = cell.textRect,
+        }
+        rows[#rows + 1] = {
+          role = card.kind == "member" and "party slot" or "action",
+          targetId = id,
+          label = card.label,
+          value = value,
+          iconKey = card.iconKey,
+          iconRect = cell.iconRect,
+          labelRect = cell.textRect,
+          gridCard = true,
+        }
       end
-      contentTop = contentTop + rowHeight
-    end
-    for _, row in ipairs(partyRows) do
-      if
-        row.role == "action"
-        or row.role == "toggle"
-        or row.role == "integer value"
-        or row.role == "named choice"
-        or row.targetId:match("^party:slot:")
-      then
-        addFocusable(row.targetId)
+      partyGrid = gridCards
+    else
+      for _, row in ipairs(partyRows) do
+        if row.help ~= nil and row.targetId == view.focus then
+          partyHelp = row.help
+        end
       end
     end
     local actions = {}
@@ -360,41 +468,71 @@ function Layout.compute(view, width, height, metrics)
       actionRows = 1
     end
     local actionHeight = actionRows * rowHeight
-    local bodyTop = contentTop + #rows * rowHeight
-    local bodyBottom = contentBottom - actionHeight
-    local bodyHeight = math.max(0, bodyBottom - bodyTop)
-    local scrollId = "party:" .. page .. ":" .. tostring(view.partySubpage or "list")
-    ---@type number
-    local offset = view.scrollOffsets and view.scrollOffsets[scrollId] or (view.scrollOffset or 0) * rowHeight
-    local contentExtent = #partyRows * rowHeight
-    offset = ScrollViewport.clamp(offset, contentExtent, bodyHeight)
-    local rowTargets = {}
-    for index, row in ipairs(partyRows) do
-      rowTargets[index] = row.targetId
-    end
-    viewports.party = makeViewport(
-      rect(contentX, bodyTop, innerWidth, bodyHeight),
-      offset,
-      contentExtent,
-      rowHeight,
-      0,
-      #partyRows,
-      rowTargets
-    )
-    local first, last = ScrollViewport.visibleRange(offset, bodyHeight, rowHeight, 0, #partyRows)
-    for index, row in ipairs(partyRows) do
-      if not row.targetId:match("^party:empty%-slot:") then
-        addFocusable(row.targetId)
+    local helpHeight = page == "draft" and metrics.lineHeight + 4 or 0
+    local bodyTop = contentTop
+    local bodyBottom = contentBottom - actionHeight - helpHeight
+    local bodyHeight = math.max(1, bodyBottom - bodyTop)
+    if page ~= "list" then
+      local scrollId = "party:" .. page .. ":" .. tostring(view.partySubpage or "Identity")
+      ---@type number
+      local offset = view.scrollOffsets and view.scrollOffsets[scrollId] or (view.scrollOffset or 0) * rowHeight
+      local contentExtent = #partyRows * rowHeight
+      offset = ScrollViewport.clamp(offset, contentExtent, bodyHeight)
+      local rowTargets = {}
+      for index, row in ipairs(partyRows) do
+        rowTargets[index] = row.targetId
       end
-      focusPositions[row.targetId] =
-        rect(contentX, bodyTop + (index - 1) * rowHeight - offset, innerWidth, rowHeight - 2)
-      if index >= first and index <= last then
+      viewports.party = makeViewport(
+        rect(contentX, bodyTop, innerWidth, bodyHeight),
+        offset,
+        contentExtent,
+        rowHeight,
+        0,
+        #partyRows,
+        rowTargets
+      )
+      local first, last = ScrollViewport.visibleRange(offset, bodyHeight, rowHeight, 0, #partyRows)
+      for index, row in ipairs(partyRows) do
         local y = bodyTop + (index - 1) * rowHeight - offset
-        if y >= bodyTop and y + rowHeight <= bodyBottom then
-          placeRow(row.role, row.targetId, row.label, row.value, row.enabled, y, rowHeight)
-          rows[#rows].iconKey = row.iconKey
+        local fieldRect = rect(contentX, y, innerWidth, rowHeight - 2)
+        local actionable = row.role == "action" or row.role == "integer value" or row.role == "named choice"
+        if actionable then
+          addFocusable(row.targetId)
+          focusPositions[row.targetId] = fieldRect
+        end
+        if index >= first and index <= last and y >= bodyTop and y + rowHeight <= bodyBottom then
+          local layoutRow = {
+            role = row.role,
+            targetId = row.targetId,
+            label = row.label,
+            value = row.value,
+            enabled = row.enabled,
+            iconKey = nil,
+            partyField = true,
+            labelRect = rect(contentX + 4, y + 2, innerWidth * 0.43, rowHeight - 5),
+            valueRect = rect(contentX + innerWidth * 0.48, y + 2, innerWidth * 0.5, rowHeight - 5),
+            valueText = row.value == nil and nil or tostring(row.value),
+            layoutRect = fieldRect,
+            editable = row.editor ~= nil,
+          }
+          if actionable then
+            targets[row.targetId] = fieldRect
+          end
+          rows[#rows + 1] = layoutRow
         end
       end
+      if page == "draft" and view.partyFieldHelp then
+        partyHelp = view.partyFieldHelp
+      end
+    end
+    if page == "draft" and partyHelp ~= nil then
+      layoutPartyHelp = {
+        rect = rect(contentX, bodyBottom + 2, innerWidth, metrics.lineHeight),
+        text = partyHelp,
+      }
+    end
+    if page == "detail" or page == "draft" then
+      layoutPartySummary = partySummary
     end
     for index, action in ipairs(actions) do
       local columns = actionRows > 1 and 3 or #actions
@@ -868,15 +1006,13 @@ function Layout.compute(view, width, height, metrics)
     defaultFocus = "location:"
       .. ((view.locationNavigation and view.locationNavigation.page == "map-list") and "map-picker" or "grid")
   elseif section == "Party" and view.partyPage == "list" then
-    defaultFocus = view.partyCanAdd and "party:add" or nil
-    if defaultFocus == nil then
-      for _, targetId in ipairs(focusOrder) do
-        if targetId:match("^party:slot:") then
-          defaultFocus = targetId
-          break
-        end
+    for _, targetId in ipairs(focusOrder) do
+      if targetId:match("^party:slot:") then
+        defaultFocus = targetId
+        break
       end
     end
+    defaultFocus = defaultFocus or (view.partyCanAdd and "party:add")
   elseif section == "Party" then
     for _, targetId in ipairs(focusOrder) do
       if targetId:match("^party:subpage:") then
@@ -944,7 +1080,14 @@ function Layout.compute(view, width, height, metrics)
   end
   for _, row in ipairs(rows) do
     local target = targetRecords[row.targetId]
-    if target then
+    if target and row.gridCard then
+      row.valueText = row.value == nil and nil or tostring(row.value)
+    elseif target and row.partyField then
+      row.valueTruncated = row.valueText ~= nil and metrics.measure(row.valueText) > row.valueRect.width
+      if row.valueTruncated and row.targetId == view.focus then
+        focusedValueHelp = row.label .. ": " .. row.valueText
+      end
+    elseif target then
       local rowRect = target.rect
       local inset = row.iconKey and 22 or 4
       row.labelRect = rect(rowRect.x + inset, rowRect.y + 2, rowRect.width - inset - 4, rowRect.height - 4)
@@ -978,6 +1121,9 @@ function Layout.compute(view, width, height, metrics)
     actions = actions,
     activeSection = section,
     locationGrid = locationGrid,
+    partyGrid = partyGrid,
+    partySummary = layoutPartySummary,
+    partyHelp = layoutPartyHelp,
     locationStatus = locationStatus,
     scrollOffset = view.scrollOffset or 0,
     viewports = viewports,

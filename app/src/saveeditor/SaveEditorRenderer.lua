@@ -16,7 +16,7 @@ local FieldMessageText = require("libs.assets.src.field.FieldMessageText")
 ---@field _disposed boolean
 ---@field _iconQueue table<string, unknown>?
 ---@field _iconProvider MonIconAssetProvider?
----@field _icons table<string, { image: love.Image, quad: love.Quad }>
+---@field _icons table<string, { image: love.Image, quad: love.Quad, dimensions: { width: number, height: number } }>
 ---@field iconStatus string?
 ---@field iconFailure string?
 ---@field metrics fun(self: SaveEditorRenderer): { lineHeight: number, measure: fun(value: string): number }
@@ -96,6 +96,15 @@ function Renderer:prepareVisibleIcons(view, plan, cacheFs, derivedAssets)
       iconKeys[#iconKeys + 1] = row.iconKey
     end
   end
+  for _, card in ipairs(assert(plan.content.layout).partyGrid or {}) do
+    if card.iconKey ~= nil then
+      iconKeys[#iconKeys + 1] = card.iconKey
+    end
+  end
+  local summary = plan.content.layout.partySummary
+  if summary ~= nil and view.partySummary and view.partySummary.iconKey ~= nil then
+    iconKeys[#iconKeys + 1] = view.partySummary.iconKey
+  end
   if #iconKeys == 0 then
     self.iconStatus, self.iconFailure = nil, nil
     return
@@ -132,6 +141,7 @@ function Renderer:prepareVisibleIcons(view, plan, cacheFs, derivedAssets)
       self._icons[iconKey] = {
         image = self._iconProvider:image(iconKey),
         quad = self._iconProvider:quadFor(iconKey, 1),
+        dimensions = self._iconProvider:dimensions(iconKey),
       }
     end
   end
@@ -228,6 +238,49 @@ local function targetRect(layout, targetId)
   return target and target.rect
 end
 
+local function drawCenteredIcon(renderer, icon, bounds)
+  local dimensions = icon.dimensions
+  local scale = math.min(1, bounds.width / dimensions.width, bounds.height / dimensions.height)
+  local width, height = dimensions.width * scale, dimensions.height * scale
+  renderer.graphics.draw(
+    icon.image,
+    icon.quad,
+    bounds.x + (bounds.width - width) / 2,
+    bounds.y + (bounds.height - height) / 2,
+    0,
+    scale,
+    scale
+  )
+end
+
+local function drawGridCard(renderer, card, focused)
+  drawShadedControl(renderer, card.rect, "", focused, false)
+  local icon = card.iconKey and renderer._icons[card.iconKey]
+  if icon then
+    drawCenteredIcon(renderer, icon, card.iconRect)
+  end
+  if card.kind == "add" then
+    local plus = "+"
+    local plusWidth = renderer.text:textWidth(plus)
+    drawText(
+      renderer,
+      plus,
+      card.iconRect.x + (card.iconRect.width - plusWidth) / 2,
+      card.iconRect.y + math.max(0, (card.iconRect.height - renderer.text.fontDef.lineHeight) / 2)
+    )
+  end
+  drawText(renderer, fitText(renderer, card.label, card.textRect.width), card.textRect.x, card.textRect.y)
+  if card.value ~= nil then
+    drawText(
+      renderer,
+      fitText(renderer, card.value, card.textRect.width),
+      card.textRect.x,
+      card.textRect.y + renderer.text.fontDef.lineHeight,
+      "hint"
+    )
+  end
+end
+
 local drawLocation
 
 local function paintPane(self, view, plan, pane)
@@ -262,7 +315,7 @@ local function paintPane(self, view, plan, pane)
   end
   for _, row in ipairs(layout.rows) do
     local rect = targetRect(layout, row.targetId)
-    if rect then
+    if rect and not row.gridCard and not row.partyField then
       local target = assert(layout.targets[row.targetId])
       LogicalSurface.clip(graphics, target.clip or rect, function()
         local actionable = row.role == "action"
@@ -300,6 +353,84 @@ local function paintPane(self, view, plan, pane)
           drawText(self, fitText(self, row.valueText, valueRect.width), valueRect.x, rect.y + 3)
         end
       end)
+    end
+  end
+  if view.section == "Party" and layout.partyGrid ~= nil then
+    for _, card in ipairs(layout.partyGrid) do
+      local cardRow
+      for _, row in ipairs(layout.rows) do
+        if row.targetId == card.targetId then
+          cardRow = row
+          break
+        end
+      end
+      drawGridCard(self, {
+        kind = card.kind,
+        targetId = card.targetId,
+        label = card.label,
+        value = card.value,
+        iconKey = cardRow and cardRow.iconKey or card.iconKey,
+        rect = card.rect,
+        iconRect = cardRow and cardRow.iconRect or card.iconRect,
+        textRect = cardRow and cardRow.labelRect or card.textRect,
+      }, card.targetId == view.focus)
+    end
+  end
+  if view.section == "Party" and layout.partySummary ~= nil and view.partySummary ~= nil then
+    local summary = assert(view.partySummary)
+    local icon = summary.iconKey and self._icons[summary.iconKey]
+    if icon then
+      drawCenteredIcon(self, icon, layout.partySummary.iconRect)
+    end
+    local textRect = layout.partySummary.textRect
+    if layout.partySummary.inline then
+      local identity = summary.species .. "  Lv. " .. tostring(summary.level)
+      drawText(self, fitText(self, identity, textRect.width), textRect.x, textRect.y + 1, "hint")
+    else
+      drawText(self, fitText(self, summary.label, textRect.width), textRect.x, textRect.y)
+      drawText(
+        self,
+        fitText(self, summary.species .. "  Lv. " .. tostring(summary.level), textRect.width),
+        textRect.x,
+        textRect.y + self.text.fontDef.lineHeight,
+        "hint"
+      )
+    end
+  end
+  if view.section == "Party" then
+    for _, row in ipairs(layout.rows) do
+      if row.partyField then
+        local y = row.layoutRect.y + 3
+        drawText(
+          self,
+          fitText(self, row.label, row.labelRect.width),
+          row.labelRect.x,
+          y,
+          row.role == "warning" and "error" or "normal"
+        )
+        if row.editable then
+          drawShadedControl(
+            self,
+            row.valueRect,
+            fitText(self, row.valueText, row.valueRect.width - 20),
+            row.targetId == view.focus,
+            false
+          )
+        elseif row.role == "action" then
+          drawShadedControl(self, row.layoutRect, row.label, row.targetId == view.focus, row.enabled == false)
+        elseif row.valueText ~= nil then
+          drawText(self, fitText(self, row.valueText, row.valueRect.width), row.valueRect.x, y, "hint")
+        end
+      end
+    end
+    if layout.partyHelp then
+      drawText(
+        self,
+        fitText(self, layout.partyHelp.text, layout.partyHelp.rect.width),
+        layout.partyHelp.rect.x,
+        layout.partyHelp.rect.y,
+        "hint"
+      )
     end
   end
   if view.section == "Location" then

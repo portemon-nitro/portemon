@@ -61,8 +61,9 @@ local function fixture(scope, width, height, topology, section, variant)
     if view.partyPage == "list" then
       view.partyCanAdd = true
       view.partyMemberCount = 1
-      view.partyRows = {
-        { role = "action", targetId = "party:slot:0", label = "Pikachu", value = "Lv. 25" },
+      view.partyCards = {
+        { kind = "member", slot0 = 0, label = "Pikachu", species = "Pikachu", level = 25 },
+        { kind = "add", slot0 = 1, label = "Add Pokemon" },
       }
     else
       view.partyDirty = true
@@ -363,6 +364,169 @@ function T.party_and_bag_render_on_compact_and_wide_surfaces(scope)
   draw(scope, 1280, 720, wide, "party-wide", "Party")
   draw(scope, 1280, 720, wide, "party-raw-wide", "Party", "draft")
   draw(scope, 1280, 720, wide, "bag-wide", "Bag")
+end
+
+function T.party_icons_center_from_distinct_provider_dimensions(scope)
+  local size, height = 800, 600
+  local topology = ScreenTopology.oneDisplay({
+    id = "main",
+    rect = { x = 0, y = 0, width = size, height = height },
+    touch = true,
+    role = "world",
+  })
+  local view, presentation, plan = fixture(scope, size, height, topology, "Party", "list")
+  local RendererModule = require("app.src.saveeditor.SaveEditorRenderer")
+  local MonIconAssetProvider = require("libs.hgss.src.presentation.MonIconAssetProvider")
+  local AssetPreparationQueue = require("libs.hgss.src.presentation.AssetPreparationQueue")
+  local image = scope:own(love.graphics.newImage(love.image.newImageData(64, 64)))
+  local quad = scope:own(love.graphics.newQuad(0, 0, 1, 1, 64, 64))
+  local dimensions = {
+    small = { width = 14, height = 9 },
+    large = { width = 23, height = 17 },
+    oversized = { width = 32, height = 32 },
+  }
+  local provider = {
+    prepareKeys = function()
+      return true
+    end,
+    image = function()
+      return image
+    end,
+    quadFor = function()
+      return quad
+    end,
+    dimensions = function(_, key)
+      return dimensions[key]
+    end,
+    release = function() end,
+  }
+  local oldProviderNew, oldQueueNew = MonIconAssetProvider.new, AssetPreparationQueue.new
+  local oldDraw = love.graphics.draw
+  local drawnText = {}
+  local renderer = RendererModule.new({
+    text = {
+      fontDef = { lineHeight = view.textMetrics.lineHeight },
+      textWidth = function(_, text)
+        return view.textMetrics.measure(text)
+      end,
+      drawText = function(_, text, x, y)
+        drawnText[#drawnText + 1] = text
+        love.graphics.print(text, x, y)
+      end,
+      drawTextWithPalette = function(_, text, x, y)
+        drawnText[#drawnText + 1] = text
+        love.graphics.print(text, x, y)
+      end,
+    },
+  })
+  local iconRects, draws = {}, {}
+  local ok, failure = xpcall(function()
+    MonIconAssetProvider.new = function()
+      return provider
+    end
+    AssetPreparationQueue.new = function()
+      return { release = function() end }
+    end
+    local rowsById = {}
+    for _, row in ipairs(plan.content.layout.rows) do
+      rowsById[row.targetId] = row
+    end
+    plan.content.layout.partyGrid[1].value = "Neutral card value"
+    local iconSpecs = {
+      { targetId = "party:slot:0", key = "small", rect = { x = 20, y = 72, width = 28, height = 24 } },
+      { targetId = "party:slot:0", key = "large", rect = { x = 86, y = 72, width = 32, height = 28 } },
+    }
+    for _, spec in ipairs(iconSpecs) do
+      local row = assert(rowsById[spec.targetId], "Party layout exposes the card icon target " .. spec.targetId)
+      row.iconKey = spec.key
+      row.iconRect = spec.rect
+      iconRects[spec.key] = spec.rect
+      view.partyRows = { { role = "action", targetId = spec.targetId, label = spec.key } }
+      renderer:prepareVisibleIcons(view, plan, {}, {})
+      love.graphics.draw = function(drawable, drawQuad, x, y, ...)
+        if drawable == image then
+          draws[#draws + 1] = { x = x, y = y }
+        end
+        return oldDraw(drawable, drawQuad, x, y, ...)
+      end
+      local canvas = scope:own(love.graphics.newCanvas(size, height))
+      love.graphics.setCanvas(canvas)
+      love.graphics.clear(1, 1, 1, 1)
+      renderer:draw(view, plan)
+      love.graphics.setCanvas()
+    end
+    local compact = ScreenTopology.oneDisplay({
+      id = "main",
+      rect = { x = 0, y = 0, width = 256, height = 192 },
+      touch = false,
+      role = "world",
+    })
+    local compactView, compactPresentation, compactPlan = fixture(scope, 256, 192, compact, "Party", "list")
+    local compactRow
+    for _, row in ipairs(compactPlan.content.layout.rows) do
+      if row.targetId == "party:slot:0" then
+        compactRow = row
+        row.iconKey = "oversized"
+      end
+    end
+    compactRow = assert(compactRow, "compact Party layout exposes its occupied card")
+    renderer:prepareVisibleIcons(compactView, compactPlan, {}, {})
+    local compactDraw
+    love.graphics.draw = function(drawable, drawQuad, x, y, _, scaleX, scaleY, ...)
+      if drawable == image then
+        compactDraw = { x = x, y = y, scaleX = scaleX, scaleY = scaleY }
+      end
+      return oldDraw(drawable, drawQuad, x, y, _, scaleX, scaleY, ...)
+    end
+    local compactCanvas = scope:own(love.graphics.newCanvas(256, 192))
+    love.graphics.setCanvas(compactCanvas)
+    love.graphics.clear(1, 1, 1, 1)
+    renderer:draw(compactView, compactPlan)
+    love.graphics.setCanvas()
+    compactPresentation:dispose()
+    iconRects.oversized = compactRow.iconRect
+    iconRects.text = compactRow.labelRect
+    draws.oversized = compactDraw
+  end, debug.traceback)
+  love.graphics.draw = oldDraw
+  MonIconAssetProvider.new, AssetPreparationQueue.new = oldProviderNew, oldQueueNew
+  renderer:dispose()
+  presentation:dispose()
+  if not ok then
+    error(failure, 0)
+  end
+
+  Assert.equal(#draws, 2, "both occupied and Add cards draw their prepared icons")
+  local expected = {}
+  for _, key in ipairs({ "small", "large" }) do
+    local rect, dimensionsForKey = iconRects[key], dimensions[key]
+    expected[#expected + 1] = {
+      x = rect.x + (rect.width - dimensionsForKey.width) / 2,
+      y = rect.y + (rect.height - dimensionsForKey.height) / 2,
+    }
+  end
+  for index, point in ipairs(expected) do
+    Assert.near(draws[index].x, point.x, 0.01, "icon x uses provider-reported width and layout icon bounds")
+    Assert.near(draws[index].y, point.y, 0.01, "icon y uses provider-reported height and layout icon bounds")
+  end
+  Assert.isTrue(
+    table.concat(drawnText, " "):find("Neutral card value", 1, true) ~= nil,
+    "grid-card painter renders the projected value string without domain formatting"
+  )
+  local compactDraw = assert(draws.oversized, "compact Party card draws its prepared icon")
+  local compactBounds = iconRects.oversized
+  Assert.isTrue(compactDraw.scaleX < 1 and compactDraw.scaleY < 1, "compact cards scale a full-size icon to fit")
+  Assert.isTrue(
+    compactDraw.x >= compactBounds.x
+      and compactDraw.y >= compactBounds.y
+      and compactDraw.x + dimensions.oversized.width * compactDraw.scaleX <= compactBounds.x + compactBounds.width
+      and compactDraw.y + dimensions.oversized.height * compactDraw.scaleY <= compactBounds.y + compactBounds.height,
+    "scaled icon stays inside its compact icon rectangle"
+  )
+  Assert.isTrue(
+    compactDraw.y + dimensions.oversized.height * compactDraw.scaleY <= iconRects.text.y,
+    "scaled icon stays above the card label"
+  )
 end
 
 function T.location_grid_shows_status_and_controls_on_compact_wide_tall_and_dual_touch(scope)

@@ -29,6 +29,7 @@ local T = {
       "map:33",
       "map:63",
       "audio-bank:730",
+      "mon-icon-page:0",
     },
     tags = { "save-editor", "product", "visual" },
   },
@@ -44,6 +45,7 @@ local function readyHost()
     requestField = ready,
     requestLogicalField = ready,
     requestCell = ready,
+    requestIconPage = ready,
     ensureField = ready,
     ensureLogicalField = ready,
     ensureCell = ready,
@@ -108,12 +110,22 @@ function T.tests.real_state_uses_the_editor_palette_and_saves_a_capture(scope)
 
     local function capture(name, captureWidth, captureHeight)
       state:resize(captureWidth, captureHeight)
+      state:update(0)
+      if state.controller.section == "Party" then
+        for _ = 1, 240 do
+          if state.renderer.iconStatus == "ready" then
+            break
+          end
+          state:update(0)
+        end
+      end
       local view = state:view()
       Assert.equal(view.status, "ready", name .. " uses the production editor state")
       local canvas = scope:own(love.graphics.newCanvas(captureWidth, captureHeight))
       love.graphics.setCanvas(canvas)
       love.graphics.clear(0, 0, 0, 0)
-      state:draw()
+      local drawOk, drawFailure = xpcall(function() state:draw() end, debug.traceback)
+      if not drawOk then error(drawFailure, 0) end
       love.graphics.setCanvas()
 
       local actual = scope:own(canvas:newImageData())
@@ -263,7 +275,29 @@ function T.tests.real_state_uses_the_editor_palette_and_saves_a_capture(scope)
       clickTarget(state, "party:back")
     end
     local crowdedParty = capture("crowded-party", width, height)
-    Assert.equal(#crowdedParty.partyRows, 6, "the production Party view contains six applied members")
+    Assert.equal(#crowdedParty.partyCards, 6, "the production Party view contains six applied members")
+    Assert.equal(#crowdedParty.layout.partyGrid, 6, "the production renderer receives all six Party card layouts")
+    local iconProvider = assert(state.renderer._iconProvider, "the selected ROM supplied the real Mon icon provider")
+    local centeredIcons = 0
+    for _, row in ipairs(crowdedParty.layout.rows) do
+      if row.iconKey ~= nil then
+        local rect = assert(row.iconRect, "Party geometry publishes each icon's content rectangle")
+        local iconDimensions = iconProvider:dimensions(row.iconKey)
+        local icon = assert(
+          state.renderer._icons[row.iconKey],
+          "the real provider prepared " .. row.iconKey .. " with status " .. tostring(state.renderer.iconStatus)
+            .. " and failure " .. tostring(state.renderer.iconFailure)
+        )
+        Assert.notNil(icon.image, "the selected ROM supplies the Party icon image")
+        Assert.notNil(icon.quad, "the selected ROM supplies the Party icon frame")
+        Assert.equal(icon.dimensions.width, iconDimensions.width, "the renderer retains provider width")
+        Assert.equal(icon.dimensions.height, iconDimensions.height, "the renderer retains provider height")
+        Assert.isTrue(rect.width >= iconDimensions.width, "Party icon bounds fit the real icon width")
+        Assert.isTrue(rect.height >= iconDimensions.height, "Party icon bounds fit the real icon height")
+        centeredIcons = centeredIcons + 1
+      end
+    end
+    Assert.equal(centeredIcons, 6, "all six real Party icons have prepared provider assets and bounded layout")
 
     state.controller:setSection("Player")
     clickTarget(state, "money")

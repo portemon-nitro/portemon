@@ -1621,8 +1621,37 @@ function T.tests.add_species_uses_draft_identity_independent_of_choice_focus()
     Assert.isTrue(draft.unappliedDraft, "choosing a species opens a local mon draft")
     Assert.equal(#state.session:partySnapshot().members, 0, "Add does not publish a member before Apply")
     Assert.notNil(computeLayout(Layout, draft, 800, 600).targets["party:apply"], "the new member draft exposes Apply")
+    local originalPersonality = assert(state.monDraft):record().personality
+    local originalNature = assert(state.monDraft):projection().nature
+    local updatedPersonality
+    for offset = 1, 25 do
+      local candidate = (originalPersonality + offset) % 4294967296
+      if require("libs.mons.src.gen4.Personality").nature(candidate) ~= originalNature then
+        updatedPersonality = candidate
+        break
+      end
+    end
+    Assert.notNil(updatedPersonality, "a raw personality value can change its derived nature")
+    Assert.isTrue(state.monDraft:setScalar("personality", assert(updatedPersonality)))
+    local projected = state:view()
+    local updatedNature
+    for _, row in ipairs(projected.partyRows) do
+      if row.id == "nature" then updatedNature = row.value end
+    end
+    Assert.equal(updatedNature, state.monDraft:projection().nature, "derived detail follows the local raw draft")
+    Assert.equal(#state.session:partySnapshot().members, 0, "raw draft edits remain unpublished until Apply")
     state:_activate("party:apply")
     Assert.equal(#state.session:partySnapshot().members, 1, "Apply publishes exactly one selected member")
+
+    local appliedRecord = state.session:partySnapshot().members[1].mon
+    state:_activate("party:edit")
+    Assert.isTrue(state.monDraft:setScalar("friendship", appliedRecord.friendship + 1))
+    state:_activate("party:discard")
+    Assert.deepEqual(
+      state.session:partySnapshot().members[1].mon,
+      appliedRecord,
+      "Discard closes a later draft without changing the already-applied session member"
+    )
   end)
 end
 

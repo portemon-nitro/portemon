@@ -79,9 +79,8 @@ end
 ---@param projection SaveEditorMonProjection
 ---@param subpage string
 ---@param editable boolean
----@param focusId string?
 ---@return table[]
-function PartyView:rows(mon, projection, subpage, editable, focusId)
+function PartyView:rows(mon, projection, subpage, editable)
   assert(
     subpage == "Identity" or subpage == "Training" or subpage == "Stats" or subpage == "Moves" or subpage == "Origin",
     "unsupported Party subpage"
@@ -98,6 +97,7 @@ function PartyView:rows(mon, projection, subpage, editable, focusId)
       value = value,
       editor = editable and editor or nil,
       enabled = editable and editor ~= nil,
+      help = editor and dependencyHelp("party:field:" .. fieldId, subpage) or nil,
     }
   end
   local function integer(fieldId, label, value, minimum, maximum, base, setter)
@@ -320,13 +320,6 @@ function PartyView:rows(mon, projection, subpage, editable, focusId)
     integer("level", "Met level", met.level, 1, 100, nil, "met")
     integer("terrain", "Met terrain", met.terrain, 0, 255, nil, "met")
   end
-  rows[#rows + 1] = {
-    role = "read-only value",
-    targetId = "party:readonly:help",
-    id = "help",
-    label = "Field help",
-    value = dependencyHelp(focusId, subpage),
-  }
   return rows
 end
 

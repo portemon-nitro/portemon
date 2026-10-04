@@ -509,33 +509,27 @@ function State:_partyView()
   local snapshot = self.session:partySnapshot()
   local members = snapshot.members
   local controller = self.controller:snapshot()
-  local rows = {}
+  local rows, cards = {}, {}
+  local selectedProjection
   if controller.partyPage == "list" then
-    local bySlot = {}
     for _, member in ipairs(members) do
-      bySlot[member.slot0] = member.mon
+      local mon = member.mon
+      local species = catalog:species(mon.species)
+      local projection = Draft.projectRecord(mon, { catalog = catalog })
+      cards[#cards + 1] = {
+        kind = "member",
+        slot0 = member.slot0,
+        label = mon.nickname ~= nil and mon.nickname ~= "" and mon.nickname or species.name or mon.species,
+        species = species.name or mon.species,
+        level = projection.level or "Unavailable",
+        iconKey = catalog:iconSelection(mon),
+      }
     end
-    for slot0 = 0, 5 do
-      local mon = bySlot[slot0]
-      if mon ~= nil then
-        local species = catalog:species(mon.species)
-        rows[#rows + 1] = {
-          role = "action",
-          targetId = "party:slot:" .. slot0,
-          label = mon.nickname ~= nil and mon.nickname ~= "" and mon.nickname or species.name or mon.species,
-          value = mon.species,
-          iconKey = catalog:iconSelection(mon),
-          slot0 = slot0,
-        }
-      else
-        rows[#rows + 1] = {
-          role = "read-only value",
-          targetId = "party:empty-slot:" .. slot0,
-          label = "Empty slot " .. (slot0 + 1),
-        }
-      end
+    if #members < 6 then
+      cards[#cards + 1] = { kind = "add", slot0 = #members, label = "Add Pokemon" }
     end
-  elseif controller.partySlot0 ~= nil or self.monDraft ~= nil then
+  end
+  if controller.partyPage ~= "list" and (controller.partySlot0 ~= nil or self.monDraft ~= nil) then
     local mon = self.monDraft and self.monDraft:record() or self:_selectedPartyMon(members)
     local projection
     if self.monDraft then
@@ -553,11 +547,12 @@ function State:_partyView()
         }
       end
     end
+    selectedProjection = projection
     local valid, validationError = mon, nil
     if self.monDraft then
       valid, validationError = self.monDraft:validate()
     end
-    rows = PartyView.rows(partyView, mon, projection, controller.partySubpage, self.monDraft ~= nil, controller.focus)
+    rows = PartyView.rows(partyView, mon, projection, controller.partySubpage, self.monDraft ~= nil)
     if validationError ~= nil then
       rows[#rows + 1] = { role = "warning", targetId = "party:validation", label = message(validationError) }
     elseif self.monDraft and valid == nil then
@@ -567,6 +562,28 @@ function State:_partyView()
   end
   local selected = controller.partySlot0
   local draftDirty = self.monDraft ~= nil and (self.monDraft:mode() == "add" or self.monDraft:isDirty())
+  local partySummary
+  local partyFieldHelp
+  if controller.partyPage ~= "list" and controller.partySlot0 ~= nil then
+    local mon = self.monDraft and self.monDraft:record() or self:_selectedPartyMon(members)
+    local projection = selectedProjection
+      or (self.monDraft and self.monDraft:projection())
+      or Draft.projectRecord(mon, { catalog = catalog })
+    local species = catalog:species(mon.species)
+    partySummary = {
+      slot0 = controller.partySlot0,
+      label = mon.nickname ~= nil and mon.nickname ~= "" and mon.nickname or species.name or mon.species,
+      species = species.name or mon.species,
+      level = projection.level or "Unavailable",
+      iconKey = catalog:iconSelection(mon),
+    }
+    for _, row in ipairs(rows) do
+      if row.targetId == controller.focus then
+        partyFieldHelp = row.help
+        break
+      end
+    end
+  end
   return {
     partyPage = controller.partyPage,
     partySlot0 = selected,
@@ -574,6 +591,9 @@ function State:_partyView()
     partySubpage = controller.partySubpage,
     partySubpages = { "Identity", "Training", "Stats", "Moves", "Origin" },
     partyRows = rows,
+    partyCards = cards,
+    partySummary = partySummary,
+    partyFieldHelp = partyFieldHelp,
     partyCanAdd = #members < 6,
     partyDirty = draftDirty,
     partyValid = self.monDraft ~= nil and self.monDraft:validate() ~= nil,
