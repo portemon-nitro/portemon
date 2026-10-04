@@ -33,6 +33,7 @@
 ---@field uiConfirmPressed boolean
 ---@field uiCancelPressed boolean
 ---@field uiPointerEvents table[]
+---@field lastUiSample table<string, unknown>? most recent uiSnapshot navigation observation (read-only copy source)
 ---@field uiPointers table<string, { x: number, y: number, startX: number, startY: number, dragged: boolean }>
 ---@field stickDirections table<string, string?>
 ---@field stickAxes table<string, { x: number, y: number }>
@@ -142,6 +143,7 @@ function FieldInput.new(options)
     uiStickPressThreshold = uiStickPressThreshold,
     uiStickReleaseThreshold = uiStickReleaseThreshold,
     uiTouchDragThreshold = uiTouchDragThreshold,
+    lastUiSample = nil,
   }, FieldInput)
 end
 
@@ -480,6 +482,44 @@ end
 -- activation edge. The held direction is eligible to repeat after its normal
 -- delay, so an opening menu neither jumps nor leaves a stuck control inert.
 
+-- Read-only navigation observation for feature-local repeat policy. Returns
+-- a copy of the most recent uiSnapshot sample: {tick, active} plus
+-- heldDirection/pressedDirection when a UI direction is held or was freshly
+-- pressed. Observing never consumes an edge and never retimes the shared
+-- event stream; modal and focus resets invalidate the sample.
+---@return table<string, unknown>?
+function FieldInput:lastUiNavigation()
+  local sample = self.lastUiSample
+  if sample == nil then
+    return nil
+  end
+  local copy = {}
+  for key, value in pairs(sample) do
+    copy[key] = value
+  end
+  return copy
+end
+
+-- Records the read-only navigation observation before fresh edges clear.
+---@param input FieldInput
+---@param tick integer
+---@param active boolean
+local function observeUiNavigation(input, tick, active)
+  if not active then
+    input.lastUiSample = { tick = tick, active = false }
+    return
+  end
+  local sample = { tick = tick, active = true }
+  local held = input:heldUiDirection()
+  if held ~= nil then
+    sample.heldDirection = held
+  end
+  if input.uiPressedDirection ~= nil then
+    sample.pressedDirection = input.uiPressedDirection
+  end
+  input.lastUiSample = sample
+end
+
 ---@param tick integer
 function FieldInput:beginUi(tick)
   requireNonNegativeInteger(tick, "UI tick")
@@ -489,6 +529,7 @@ function FieldInput:beginUi(tick)
   self.menuPressed = nil
   self.uiPointerEvents = {}
   self.uiPointers = {}
+  self.lastUiSample = nil
   self.uiActive = true
   self.uiRepeatStartedAt = tick
   self.uiRepeatLastAt = nil
@@ -503,6 +544,7 @@ function FieldInput:uiSnapshot(tick)
     -- An inactive modal owns no semantic input: hidden edges queued while
     -- suspended are discarded here so they can never replay, while held
     -- physical sources and repeat timing are left for the next lifetime.
+    observeUiNavigation(self, tick, false)
     self.uiPressedDirection = nil
     self.uiConfirmPressed = nil
     self.uiCancelPressed = nil
@@ -538,6 +580,7 @@ function FieldInput:uiSnapshot(tick)
   for index = 1, #self.uiPointerEvents do
     events[#events + 1] = self.uiPointerEvents[index]
   end
+  observeUiNavigation(self, tick, true)
   self.uiPressedDirection = nil
   self.uiConfirmPressed = nil
   self.uiCancelPressed = nil
@@ -555,6 +598,7 @@ local function clearTransientUi(input)
   input.uiCancelPressed = nil
   input.uiPointerEvents = {}
   input.uiPointers = {}
+  input.lastUiSample = nil
 end
 
 function FieldInput:clearUi()
