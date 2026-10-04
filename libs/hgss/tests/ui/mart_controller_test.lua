@@ -16,6 +16,7 @@ local T = {}
 
 local MartFixture = require("tests.support.MartFixture")
 local manifest = MartFixture.manifest
+local quantityController
 
 local function resources(balance, potionName, medicinePocketName)
   local root = ItemFixture.buildAssetRoot()
@@ -90,6 +91,17 @@ local function tap(control, x, y)
   control:step({ { type = "pointer_up", pointerId = "touch:0", x = x, y = y } })
 end
 
+local function finishControlFeedback(controller, martManifest)
+  local ticks = martManifest.feedback.dispatchTicks + martManifest.feedback.selectedTicks + martManifest.feedback.restoredTicks
+  for _ = 1, ticks do
+    if controller:status().controlFeedback == nil then
+      return
+    end
+    controller:step({})
+  end
+  Assert.isNil(controller:status().controlFeedback, "generic control feedback releases its pending action")
+end
+
 function T.partial_pages_keep_source_focus_and_empty_activation_is_inert()
   local service = resources()
   local session = service:openBuy(stock(10, 7))
@@ -97,6 +109,7 @@ function T.partial_pages_keep_source_focus_and_empty_activation_is_inert()
   Assert.equal(controller:status().page, 0)
   Assert.equal(controller:status().pageCount, 2)
   tap(controller, 52, 176)
+  finishControlFeedback(controller, manifest())
   Assert.equal(controller:status().page, 1)
   Assert.equal(controller:status().selection, 0, "page navigation retains the selected logical cell")
   tap(controller, 132, 55)
@@ -232,10 +245,13 @@ function T.touch_targets_use_inclusive_origins_and_exclusive_ends()
   Assert.equal(controller:status().selection, 0, "browse bottom edge is excluded from the source slot")
 
   tap(controller, 40, 168)
+  Assert.equal(controller:status().page, 0, "page next hit starts feedback without publishing the page")
+  finishControlFeedback(controller, manifest())
   Assert.equal(controller:status().page, 1, "page next includes its left/top origin")
   tap(controller, 80, 192)
   Assert.equal(controller:status().page, 1, "page next excludes its right/bottom end")
   tap(controller, 0, 168)
+  finishControlFeedback(controller, manifest())
   Assert.equal(controller:status().page, 0, "page previous includes its left/top origin")
 
   controller:step({ { type = "navigate", direction = "right" } })
@@ -298,6 +314,9 @@ function T.touch_page_activation_emits_one_selection_cue()
   end)
   tap(controller, 52, 176)
   Assert.deepEqual(effects, { "SEQ_SE_DP_SELECT" }, "a valid touch page action emits one selection cue")
+  Assert.equal(controller:status().page, 0, "page publication waits after the initiating cue")
+  finishControlFeedback(controller, manifest())
+  Assert.equal(controller:status().page, 1)
   controller:dispose()
   session:close()
 end
@@ -312,8 +331,10 @@ function T.keyboard_page_previous_and_next_each_emit_one_selection_cue()
   controller:step({ { type = "navigate", direction = "right" } })
   clearEffects(effects)
   controller:step({ { type = "navigate", direction = "right" } })
-  Assert.equal(controller:status().page, 1)
+  Assert.equal(controller:status().page, 0, "keyboard page next remains pending during feedback")
   Assert.deepEqual(effects, { "SEQ_SE_DP_SELECT" }, "keyboard page next emits exactly one selection cue")
+  finishControlFeedback(controller, manifest())
+  Assert.equal(controller:status().page, 1)
   controller:dispose()
   session:close()
 
@@ -324,10 +345,93 @@ function T.keyboard_page_previous_and_next_each_emit_one_selection_cue()
     effects[#effects + 1] = sequence
   end)
   tap(controller, 52, 176)
+  finishControlFeedback(controller, manifest())
   clearEffects(effects)
   controller:step({ { type = "navigate", direction = "left" } })
-  Assert.equal(controller:status().page, 0)
+  Assert.equal(controller:status().page, 1, "keyboard page previous remains pending during feedback")
   Assert.deepEqual(effects, { "SEQ_SE_DP_SELECT" }, "keyboard page previous emits exactly one selection cue")
+  finishControlFeedback(controller, manifest())
+  Assert.equal(controller:status().page, 0)
+  controller:dispose()
+  session:close()
+end
+
+function T.page_publication_waits_for_dispatch_selected_and_restored_feedback()
+  local service = resources()
+  local session = service:openBuy(stock(10, 7))
+  local martManifest = manifest()
+  local effects = {}
+  local controller = newController(session, martManifest, function(sequence)
+    effects[#effects + 1] = sequence
+  end)
+
+  controller:step({ { type = "navigate", direction = "right" } })
+  clearEffects(effects)
+  controller:step({ { type = "navigate", direction = "right" } })
+  Assert.equal(controller:status().page, 0, "page next stays pending after its source cue")
+  Assert.deepEqual(effects, { "SEQ_SE_DP_SELECT" })
+  local feedback = controller:status().controlFeedback
+  Assert.equal(feedback.key, "pageNext")
+  Assert.equal(feedback.phase, "dispatch")
+
+  controller:step({ { type = "navigate", direction = "left" } })
+  Assert.equal(controller:status().controlFeedback.phase, "selected", "the first gate step exposes selected feedback")
+  for _ = 2, martManifest.feedback.selectedTicks do
+    controller:step({ { type = "confirm" } })
+    Assert.equal(controller:status().page, 0, "ordinary input cannot publish another action during selection")
+    Assert.equal(controller:status().controlFeedback.phase, "selected")
+  end
+  controller:step({ { type = "cancel" } })
+  Assert.equal(controller:status().controlFeedback.phase, "restored", "selected duration comes from the manifest")
+  for _ = 2, martManifest.feedback.restoredTicks do
+    controller:step({ { type = "navigate", direction = "right" } })
+    Assert.equal(controller:status().controlFeedback.phase, "restored")
+  end
+  Assert.equal(controller:status().page, 0, "the pending page action remains unpublished through restored feedback")
+  controller:step({})
+  Assert.isNil(controller:status().controlFeedback)
+  Assert.equal(controller:status().page, 1, "the pending page action publishes exactly after the gate")
+  Assert.deepEqual(effects, { "SEQ_SE_DP_SELECT" }, "ignored input produces no extra cues")
+
+  controller:dispose()
+  session:close()
+end
+
+function T.browse_close_and_quantity_decisions_share_the_deferred_feedback_gate()
+  local service = resources()
+  local session = service:openBuy(stock(10, 7))
+  local effects = {}
+  local controller = newController(session, nil, function(sequence)
+    effects[#effects + 1] = sequence
+  end)
+  tap(controller, 224, 176)
+  Assert.isTrue(controller:status().open, "browse Cancel keeps the mart open until feedback completes")
+  Assert.isNil(controller:takeResult(), "browse close is not released early")
+  Assert.deepEqual(effects, { "SEQ_SE_GS_GEARCANCEL" })
+  finishControlFeedback(controller, manifest())
+  Assert.isFalse(controller:status().open)
+  Assert.equal(controller:takeResult().kind, "close")
+  controller:dispose()
+  session:close()
+
+  effects = {}
+  controller, session = quantityController(effects)
+  controller:step({ { type = "confirm" } })
+  Assert.equal(controller:status().state, "quantity", "quantity confirmation waits before opening the quote prompt")
+  Assert.deepEqual(effects, { "SEQ_SE_DP_SELECT" })
+  finishControlFeedback(controller, manifest())
+  Assert.isFalse(controller:status().state == "quantity", "quantity confirmation releases after feedback")
+  controller:dispose()
+  session:close()
+
+  effects = {}
+  controller, session = quantityController(effects)
+  controller:step({ { type = "cancel" } })
+  Assert.equal(controller:status().state, "quantity", "quantity Cancel waits before returning to browse")
+  Assert.deepEqual(effects, { "SEQ_SE_GS_GEARCANCEL" })
+  finishControlFeedback(controller, manifest())
+  Assert.equal(controller:status().state, "browse")
+  Assert.equal(controller:status().lowerMode, "browse", "quantity message presentation is cleared on release")
   controller:dispose()
   session:close()
 end
@@ -345,7 +449,7 @@ function T.touch_browse_cancel_emits_one_cancel_cue_without_a_focus_cue()
   session:close()
 end
 
-local function quantityController(effects)
+quantityController = function(effects)
   local service = resources(3700)
   local session = service:openBuy(stock(37, 1))
   local controller = newController(session, nil, function(sequence)
@@ -372,9 +476,11 @@ function T.keyboard_quantity_actions_emit_only_their_source_cues()
   local controller, session = quantityController(effects)
   controller:step({ { type = "navigate", direction = "up" } })
   Assert.deepEqual(effects, { "SEQ_SE_DP_BAG_004" }, "an actual quantity change emits one bag-amount cue")
+  Assert.deepEqual(controller:status().amountAnimations, {}, "keyboard unit changes do not animate touch controls")
   clearEffects(effects)
   controller:step({ { type = "navigate", direction = "right" } })
   Assert.deepEqual(effects, { "SEQ_SE_DP_BAG_004" }, "a ten-item keyboard change emits one bag-amount cue")
+  Assert.deepEqual(controller:status().amountAnimations, {}, "keyboard ten changes do not animate touch controls")
   controller:dispose()
   session:close()
 end
@@ -384,6 +490,16 @@ function T.touch_quantity_actions_emit_only_their_source_cues()
   local controller, session = quantityController(effects)
   tap(controller, 136, 100)
   Assert.deepEqual(effects, { "SEQ_SE_DP_BAG_004" }, "an actual touch quantity change emits one bag-amount cue")
+  Assert.equal(controller:status().quantity, 11, "touch amount state changes immediately")
+  Assert.equal(controller:status().amountAnimations.increment10.family, "increment")
+  Assert.equal(controller:status().amountAnimations.increment10.frame, 1)
+  Assert.isNil(controller:status().controlFeedback, "amount animation does not start the generic gate")
+  controller:step({})
+  Assert.equal(controller:status().amountAnimations.increment10.frame, 1, "the generated pressed frame lasts its source duration")
+  controller:step({})
+  Assert.equal(controller:status().amountAnimations.increment10.frame, 2, "the generated clip advances to its idle frame")
+  controller:step({})
+  Assert.isNil(controller:status().amountAnimations.increment10, "the amount clip disappears at totalTicks")
   controller:dispose()
   session:close()
 end
@@ -483,6 +599,7 @@ function T.inert_quantity_controls_and_status_reads_emit_no_cues()
   Assert.deepEqual(effects, {}, "status reads do not emit effects")
   tap(controller, 136, 100)
   Assert.deepEqual(effects, {}, "a disabled touch amount control is inert")
+  Assert.deepEqual(controller:status().amountAnimations, {}, "an inert touch control starts no amount clip")
   controller:dispose()
   session:close()
 end

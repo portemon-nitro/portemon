@@ -339,6 +339,7 @@ function MartAssetSchema.assertManifest(manifest)
   local lower = manifest.lower
   keys(lower, {
     backgrounds = true,
+    focus = true,
     slots = true,
     pagePrevious = true,
     pageNext = true,
@@ -364,6 +365,10 @@ function MartAssetSchema.assertManifest(manifest)
   end
   checkVisual(lower.backgrounds.quantity, MANIFEST_ERROR, "lower.backgrounds.quantity")
   checkVisual(lower.backgrounds.confirm, MANIFEST_ERROR, "lower.backgrounds.confirm")
+  keys(lower.focus, { item = true, page = true, cancel = true }, MANIFEST_ERROR, "lower.focus")
+  for _, name in ipairs({ "item", "page", "cancel" }) do
+    checkVisual(lower.focus[name], MANIFEST_ERROR, "lower.focus." .. name)
+  end
   if type(lower.slots) ~= "table" then
     fail(MANIFEST_ERROR, "lower.slots must be a record", context)
   end

@@ -173,6 +173,11 @@ local function manifest()
         quantity = visual("quantity"),
         confirm = visual("confirm"),
       },
+      focus = {
+        item = visual("focus-item"),
+        page = visual("focus-page"),
+        cancel = visual("focus-cancel"),
+      },
       slots = slots,
       pagePrevious = control(0, 168, 40, 24, "previous", 24, 176),
       pageNext = control(40, 168, 40, 24, "next", 64, 176),
@@ -190,8 +195,16 @@ local function manifest()
     controls = controls,
     animations = {
       selectionEntry = clip("selection-entry", 24),
-      increment = clip("increment", 1),
-      decrement = clip("decrement", 1),
+      increment = {
+        playback = "once",
+        frames = { { visual = visual("increment-pressed"), ticks = 2 }, { visual = visual("increment-idle"), ticks = 1 } },
+        totalTicks = 3,
+      },
+      decrement = {
+        playback = "once",
+        frames = { { visual = visual("decrement-pressed"), ticks = 2 }, { visual = visual("decrement-idle"), ticks = 1 } },
+        totalTicks = 3,
+      },
     },
     feedback = { selectedTicks = 4, restoredTicks = 2, dispatchTicks = 1 },
     text = { palettes = palettes, labels = { currency = "Money" }, templates = templates },

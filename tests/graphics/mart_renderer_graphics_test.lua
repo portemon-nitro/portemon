@@ -270,6 +270,7 @@ function T.real_generated_backgrounds_and_focus_layers_reach_the_production_rend
   for _, versionId in ipairs(versions) do
     local cacheFs = CacheFs.forVersion(versionId)
     local manifest = MartCache.loadManifest(cacheFs)
+    Assert.isTrue(type(manifest.lower.focus) == "table", versionId .. " generated mart manifest exposes the independent focus family")
     local uiManifest = assert(cacheFs:loadLua(FieldUiAssetCache.manifestPath()))
     local text = scope:own(FieldTextRenderer.new({ cacheFs = cacheFs }))
     local icons = scope:own(ItemIconAssetProvider.new(cacheFs))
@@ -477,6 +478,81 @@ function T.real_generated_backgrounds_and_focus_layers_reach_the_production_rend
       versionId .. " browse cancel control uses its generated normal art"
     )
 
+    local cancelFocus = manifest.lower.focus.cancel
+    local focusStatus = {}
+    for keyName, value in pairs(occupied) do
+      focusStatus[keyName] = value
+    end
+    focusStatus.selection = 8
+    local focusedCancel = draw(scope, renderer, icons, focusStatus)
+    local withoutBrowseFocus = draw(scope, renderer, icons, occupied)
+    Assert.isTrue(
+      pixelDiff(focusedCancel, withoutBrowseFocus, 256 + cancelControl.anchor.x - 64, cancelControl.anchor.y - 32, 96, 48) > 0,
+      versionId .. " logical Cancel selection draws its independent focus layer"
+    )
+    local focusData, focusX, focusY = imageEntry(
+      scope,
+      cacheFs,
+      cancelFocus.image,
+      0,
+      0,
+      cancelFocus.width,
+      cancelFocus.height
+    )
+    assertCompositePixel(
+      focusedCancel,
+      withoutBrowseFocus,
+      focusData,
+      256 + cancelControl.anchor.x + cancelFocus.offsetX + focusX,
+      cancelControl.anchor.y + cancelFocus.offsetY + focusY,
+      focusX,
+      focusY,
+      versionId .. " Cancel focus overlays the existing normal control"
+    )
+
+    local pageControl = manifest.lower.pageNext
+    local pageStatus = browseStatus(13, 0, 3, key, glyph)
+    local normalPage = draw(scope, renderer, icons, pageStatus)
+    local selectedStatus = {}
+    for keyName, value in pairs(pageStatus) do
+      selectedStatus[keyName] = value
+    end
+    selectedStatus.controlFeedback = { key = "pageNext", phase = "selected" }
+    local selectedPage = draw(scope, renderer, icons, selectedStatus)
+    local restoredStatus = {}
+    for keyName, value in pairs(pageStatus) do
+      restoredStatus[keyName] = value
+    end
+    restoredStatus.controlFeedback = { key = "pageNext", phase = "restored" }
+    local restoredPage = draw(scope, renderer, icons, restoredStatus)
+    local pageSelectedVisual = manifest.controls[pageControl.selectedVisualKey].selected
+    local selectedData, selectedX, selectedY = imageEntry(
+      scope,
+      cacheFs,
+      pageSelectedVisual.image,
+      0,
+      0,
+      pageSelectedVisual.width,
+      pageSelectedVisual.height
+    )
+    assertCompositePixel(
+      selectedPage,
+      decode(scope, cacheFs, manifest.lower.backgrounds.browse[0].image),
+      selectedData,
+      256 + pageControl.anchor.x + pageSelectedVisual.offsetX + selectedX,
+      pageControl.anchor.y + pageSelectedVisual.offsetY + selectedY,
+      selectedX,
+      selectedY,
+      versionId .. " selected generic feedback uses its generated control variant",
+      pageControl.anchor.x + pageSelectedVisual.offsetX + selectedX,
+      pageControl.anchor.y + pageSelectedVisual.offsetY + selectedY
+    )
+    Assert.equal(
+      pixelDiff(restoredPage, normalPage, 256 + pageControl.anchor.x - 8, pageControl.anchor.y - 8, 56, 24),
+      0,
+      versionId .. " restored generic feedback returns exactly to the normal control"
+    )
+
     local errorPrint = {
       open = true,
       state = "error_print",
@@ -551,6 +627,7 @@ function T.real_generated_backgrounds_and_focus_layers_reach_the_production_rend
       currency = "money",
       quantity = 2,
       total = 50,
+      amountAnimations = {},
       ownedTokens = glyph,
       totalTokens = glyph,
     }
@@ -579,6 +656,27 @@ function T.real_generated_backgrounds_and_focus_layers_reach_the_production_rend
       versionId .. " quantity control uses its generated source asset",
       increment.anchor.x + incrementVisual.offsetX + incrementX,
       increment.anchor.y + incrementVisual.offsetY + incrementY
+    )
+
+    local animatedQuantity = {}
+    for keyName, value in pairs(quantity) do
+      animatedQuantity[keyName] = value
+    end
+    animatedQuantity.amountAnimations = { increment1 = { family = "increment", frame = 1 } }
+    local amountPaint = draw(scope, renderer, icons, animatedQuantity)
+    local amountFrame = manifest.animations.increment.frames[1].visual
+    local amountData, amountX, amountY = imageEntry(scope, cacheFs, amountFrame.image, 0, 0, amountFrame.width, amountFrame.height)
+    assertCompositePixel(
+      amountPaint,
+      quantityBackground,
+      amountData,
+      256 + increment.anchor.x + amountFrame.offsetX + amountX,
+      increment.anchor.y + amountFrame.offsetY + amountY,
+      amountX,
+      amountY,
+      versionId .. " touch amount feedback uses its generated animation frame",
+      increment.anchor.x + amountFrame.offsetX + amountX,
+      increment.anchor.y + amountFrame.offsetY + amountY
     )
 
     local confirming = {

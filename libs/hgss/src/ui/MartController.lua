@@ -22,8 +22,8 @@ local YesNoPromptController = require("libs.hgss.src.ui.YesNoPromptController")
 ---@field private _maximum integer
 ---@field private _animationRemaining integer
 ---@field private _animationFrame integer
----@field private _activeControl string?
----@field private _pressed { key: string, remaining: integer }?
+---@field private _controlFeedback { key: string, phase: string, remaining: integer, pending: table<string, unknown> }?
+---@field private _amountAnimations table<string, { family: string, elapsed: integer }>
 ---@field private _pointer { id: string, target: string, x: number, y: number }?
 ---@field private _quote unknown
 ---@field private _terms table<string, unknown>?
@@ -72,6 +72,17 @@ local ERROR_ROLES = {
 
 local function contains(rect, x, y)
   return x >= rect.x and y >= rect.y and x < rect.x + rect.width and y < rect.y + rect.height
+end
+
+local function clipFrame(clip, elapsed)
+  local ticks = 0
+  for index, frame in ipairs(clip.frames) do
+    ticks = ticks + frame.ticks
+    if elapsed < ticks then
+      return index
+    end
+  end
+  return #clip.frames
 end
 
 local function copyTerms(value)
@@ -140,8 +151,8 @@ function MartController.new(opts)
     _maximum = 1,
     _animationRemaining = 0,
     _animationFrame = 0,
-    _activeControl = nil,
-    _pressed = nil,
+    _controlFeedback = nil,
+    _amountAnimations = {},
     _pointer = nil,
     _quote = nil,
     _terms = nil,
@@ -390,11 +401,14 @@ function MartController:_finishPrinter()
   end
 end
 
-function MartController:_setPressed(controlKey)
-  local ticks = assert(self._manifest.feedback.dispatchTicks)
-    + assert(self._manifest.feedback.selectedTicks)
-    + assert(self._manifest.feedback.restoredTicks)
-  self._pressed = { key = controlKey, remaining = ticks }
+function MartController:_beginControlFeedback(controlKey, pending)
+  assert(self._controlFeedback == nil, "mart control feedback has one pending action")
+  self._controlFeedback = {
+    key = controlKey,
+    phase = "dispatch",
+    remaining = assert(self._manifest.feedback.dispatchTicks),
+    pending = pending,
+  }
 end
 
 function MartController:_changePage(direction, controlKey)
@@ -406,8 +420,7 @@ function MartController:_changePage(direction, controlKey)
     return
   end
   self:_play(SOURCE_CUES.select)
-  self:_setPressed(controlKey)
-  self._page = nextPage
+  self:_beginControlFeedback(controlKey, { kind = "page", page = nextPage })
 end
 
 function MartController:_focus(target)
@@ -421,7 +434,7 @@ end
 function MartController:_activateBrowse()
   if self._selection == 8 then
     self:_play(SOURCE_CUES.cancel)
-    self:_closeNormally()
+    self:_beginControlFeedback("cancel", { kind = "close" })
   elseif self:_entry() ~= nil then
     self:_play(SOURCE_CUES.select)
     self._state = "selection_feedback"
@@ -431,9 +444,55 @@ function MartController:_activateBrowse()
 end
 
 function MartController:_closeNormally()
+  self._controlFeedback = nil
+  self._amountAnimations = {}
   self._state = "closed"
   self._result = { kind = "close" }
   self._quote = nil
+end
+
+function MartController:_applyPendingAction(action)
+  if action.kind == "page" then
+    self._page = assert(action.page)
+  elseif action.kind == "close" then
+    self:_closeNormally()
+  elseif action.kind == "quote" then
+    self:_quote(assert(action.quantity))
+  elseif action.kind == "browse" then
+    self._state = "browse"
+    self._messageRole, self._messagePages = nil, nil
+  else
+    error("unknown mart control action " .. tostring(action.kind), 0)
+  end
+end
+
+function MartController:_stepControlFeedback()
+  local feedback = assert(self._controlFeedback)
+  feedback.remaining = feedback.remaining - 1
+  if feedback.remaining > 0 then
+    return
+  end
+  if feedback.phase == "dispatch" then
+    feedback.phase = "selected"
+    feedback.remaining = self._manifest.feedback.selectedTicks
+  elseif feedback.phase == "selected" then
+    feedback.phase = "restored"
+    feedback.remaining = self._manifest.feedback.restoredTicks
+  else
+    local pending = feedback.pending
+    self._controlFeedback = nil
+    self:_applyPendingAction(pending)
+  end
+end
+
+function MartController:_stepAmountAnimations()
+  for key, animation in pairs(self._amountAnimations) do
+    animation.elapsed = animation.elapsed + 1
+    local clip = self._manifest.animations[animation.family]
+    if animation.elapsed >= clip.totalTicks then
+      self._amountAnimations[key] = nil
+    end
+  end
 end
 
 function MartController:_navigateBrowse(direction)
@@ -484,7 +543,10 @@ function MartController:_quantityAdjust(direction, touch)
       or (direction == "down" and "decrement1")
       or (direction == "left" and "decrement10")
       or "increment10"
-    self._pressed = { key = control, remaining = 2 }
+    if touch then
+      local family = delta > 0 and "increment" or "decrement"
+      self._amountAnimations[control] = { family = family, elapsed = 0 }
+    end
   end
 end
 
@@ -560,11 +622,10 @@ function MartController:_pointerUp(event)
     if target == capture.target then
       if target == "confirm" then
         self:_play(SOURCE_CUES.select)
-        self:_quote(self._quantity)
+        self:_beginControlFeedback("confirm", { kind = "quote", quantity = self._quantity })
       elseif target == "cancel" then
         self:_play(SOURCE_CUES.cancel)
-        self._state = "browse"
-        self._messageRole, self._messagePages = nil, nil
+        self:_beginControlFeedback("cancel", { kind = "browse" })
       else
         local direction = target == "increment10" and "right"
           or target == "increment1" and "up"
@@ -623,12 +684,6 @@ function MartController:step(events)
   if self._state == "closed" then
     return
   end
-  if self._pressed ~= nil then
-    self._pressed.remaining = self._pressed.remaining - 1
-    if self._pressed.remaining <= 0 then
-      self._pressed = nil
-    end
-  end
   for _, event in ipairs(events) do
     assert(type(event) == "table" and type(event.type) == "string", "mart input events need a type")
     if event.type == "pointer_cancel" then
@@ -641,18 +696,16 @@ function MartController:step(events)
       return
     end
   end
+  self:_stepAmountAnimations()
+  if self._controlFeedback ~= nil then
+    self:_stepControlFeedback()
+    return
+  end
   if self._state == "selection_feedback" then
     self._animationRemaining = self._animationRemaining - 1
     local clip = self._manifest.animations.selectionEntry
     local elapsed = clip.totalTicks - self._animationRemaining
-    local ticks = 0
-    for index, frame in ipairs(clip.frames) do
-      ticks = ticks + frame.ticks
-      if elapsed <= ticks then
-        self._animationFrame = index
-        break
-      end
-    end
+    self._animationFrame = clipFrame(clip, elapsed - 1)
     if self._animationRemaining <= 0 then
       self._animationRemaining = 0
       self:_afterSelection()
@@ -717,16 +770,18 @@ function MartController:step(events)
         self:_pointerDown(event)
       elseif event.type == "pointer_up" then
         self:_pointerUp(event)
+        if self._controlFeedback ~= nil then
+          return
+        end
       elseif event.type == "pointer_cancel" then
         self:cancelPointerCapture()
       elseif event.type == "confirm" then
         self:_play(SOURCE_CUES.select)
-        self:_quote(self._quantity)
+        self:_beginControlFeedback("confirm", { kind = "quote", quantity = self._quantity })
         return
       elseif event.type == "cancel" then
         self:_play(SOURCE_CUES.cancel)
-        self._state = "browse"
-        self._messageRole, self._messagePages = nil, nil
+        self:_beginControlFeedback("cancel", { kind = "browse" })
         return
       end
     end
@@ -750,16 +805,22 @@ function MartController:step(events)
       break
     elseif event.type == "cancel" then
       self:_play(SOURCE_CUES.cancel)
-      self:_closeNormally()
+      self:_beginControlFeedback("cancel", { kind = "close" })
       return
     elseif event.type == "pointer_down" then
       self:_pointerDown(event)
     elseif event.type == "pointer_up" then
       self:_pointerUp(event)
+      if self._controlFeedback ~= nil then
+        return
+      end
       acted = true
     end
     if acted then
       break
+    end
+    if self._controlFeedback ~= nil then
+      return
     end
   end
 end
@@ -821,6 +882,19 @@ function MartController:status()
   })
   local total = self._terms and self._terms.total or (selected and selected.unitPrice * self._quantity)
   local ownedQuantity = selected and selected.ownedQuantity or 0
+  local controlFeedback = self._controlFeedback
+      and {
+        key = self._controlFeedback.key,
+        phase = self._controlFeedback.phase,
+      }
+    or nil
+  local amountAnimations = {}
+  for key, animation in pairs(self._amountAnimations) do
+    amountAnimations[key] = {
+      family = animation.family,
+      frame = clipFrame(self._manifest.animations[animation.family], animation.elapsed),
+    }
+  end
   return {
     state = state,
     open = state ~= "closed",
@@ -843,10 +917,10 @@ function MartController:status()
     balanceTokens = self:_formatRole(balanceRole, { balance = tostring(view.balance) }),
     pageTokens = pageTokens,
     lowerMode = lowerMode,
-    activeControl = self._activeControl,
     animationFrame = self._animationFrame,
     animationRemaining = self._animationRemaining,
-    pressed = self._pressed and copyTerms(self._pressed) or nil,
+    controlFeedback = controlFeedback,
+    amountAnimations = amountAnimations,
     printer = PRINTER_STATES[state] and printer or nil,
     messageRole = self._messageRole,
     messageLines = copyTerms(messageLines),
@@ -881,6 +955,8 @@ function MartController:dispose()
   self._messageRole = nil
   self._messagePages = nil
   self._result = nil
+  self._controlFeedback = nil
+  self._amountAnimations = {}
   self._state = "closed"
 end
 

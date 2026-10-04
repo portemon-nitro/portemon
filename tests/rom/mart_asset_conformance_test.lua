@@ -254,6 +254,41 @@ function T.vanilla_stock_and_animation_timelines_retain_source_identity(romFs)
   Assert.equal(manifest.feedback.dispatchTicks, 1)
 end
 
+function T.compiled_focus_and_control_variants_preserve_their_source_roles(romFs)
+  local manifest = compile(romFs).manifest
+  Assert.isTrue(type(manifest.lower.focus) == "table", "compiled mart manifest exposes the independent lower focus family")
+  local focus = manifest.lower.focus
+  Assert.deepEqual({ focus.item.width, focus.item.height }, { 128, 48 }, "item focus retains its source cell dimensions")
+  Assert.deepEqual({ focus.page.width, focus.page.height }, { 40, 32 }, "page focus retains its source cell dimensions")
+  Assert.deepEqual({ focus.cancel.width, focus.cancel.height }, { 64, 32 }, "Cancel focus retains its source cell dimensions")
+
+  for _, control in ipairs({
+    manifest.lower.pagePrevious,
+    manifest.lower.pageNext,
+    manifest.lower.cancel,
+    manifest.lower.quantity.confirm,
+    manifest.lower.quantity.cancel,
+  }) do
+    local variants = assert(manifest.controls[control.normalVisualKey], "control variants are present")
+    local normal, selected = variants.normal, variants.selected
+    Assert.deepEqual(
+      { selected.width, selected.height, selected.offsetX, selected.offsetY },
+      { normal.width, normal.height, normal.offsetX, normal.offsetY },
+      control.normalVisualKey .. " palette variants retain identical geometry"
+    )
+    Assert.isFalse(normal.image == selected.image, control.normalVisualKey .. " variants retain distinct rendered palette assets")
+  end
+
+  Assert.isFalse(
+    focus.page.image == manifest.controls[manifest.lower.pageNext.normalVisualKey].selected.image,
+    "page focus remains separate from page control feedback art"
+  )
+  Assert.isFalse(
+    focus.cancel.image == manifest.controls[manifest.lower.cancel.normalVisualKey].selected.image,
+    "Cancel focus remains separate from Cancel control feedback art"
+  )
+end
+
 function T.vanilla_provider_uses_the_compiled_source_catalog_without_rendering(romFs, versionId)
   local bundle = compile(romFs)
   local ItemCatalogCompiler = require("romdump.src.digest.items.ItemCatalogCompiler")

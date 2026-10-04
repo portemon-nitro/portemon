@@ -104,6 +104,11 @@ local function childStatus(game)
 end
 
 local function acknowledgePrinter(game, from, to, maximum)
+  if from == "confirm_prompt" and childStatus(game).state == "quantity" then
+    game:advanceUntil("quantity control feedback releases", function()
+      return childStatus(game).state ~= "quantity"
+    end, 20)
+  end
   for _ = 1, maximum do
     local state = childStatus(game).state
     if state == to then

@@ -108,6 +108,11 @@ local function pressMenu(game)
 end
 
 local function acknowledgeMartPrinter(game, label, printerState, targetState, maxEdges)
+  if printerState == "confirm_prompt" and childStatus(game).state == "quantity" then
+    game:advanceUntil(label .. " control feedback finishes", function()
+      return childStatus(game).state ~= "quantity"
+    end, 20)
+  end
   for _ = 1, maxEdges do
     local state = childStatus(game).state
     if state == targetState then

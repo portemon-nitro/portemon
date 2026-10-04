@@ -198,6 +198,35 @@ function MartRenderer:_drawBrowse(status, icons)
   local first = status.page * 6 + 1
   local visibleCount = math.min(6, math.max(0, status.entryCount - first + 1))
   self:_drawVisual(lower.backgrounds.browse[visibleCount], 0, 0)
+  local pagePrevious = lower.pagePrevious
+  local pageNext = lower.pageNext
+  if status.page > 0 then
+    self:_drawControl(pagePrevious, status, "pagePrevious")
+  end
+  if status.page + 1 < status.pageCount then
+    self:_drawControl(pageNext, status, "pageNext")
+  end
+  self:_drawControl(lower.cancel, status, "cancel")
+  local focusVisual, focusAnchor
+  if status.selection >= 0 and status.selection < 6 then
+    local animation = self._manifest.animations.selectionEntry
+    local active = status.state == "selection_feedback" and animation.frames[status.animationFrame] or nil
+    if active ~= nil then
+      focusVisual = active.visual
+    elseif status.state == "browse" then
+      focusVisual = lower.focus.item
+    end
+    focusAnchor = lower.slots[status.selection + 1].focusAnchor
+  elseif status.selection == 6 then
+    focusVisual, focusAnchor = lower.focus.page, pagePrevious.anchor
+  elseif status.selection == 7 then
+    focusVisual, focusAnchor = lower.focus.page, pageNext.anchor
+  elseif status.selection == 8 then
+    focusVisual, focusAnchor = lower.focus.cancel, lower.cancel.anchor
+  end
+  if focusVisual ~= nil and focusAnchor ~= nil then
+    self:_drawVisual(focusVisual, focusAnchor.x, focusAnchor.y)
+  end
   for index = 1, 6 do
     local slot = status.entries[index]
     if slot.entryKey ~= nil then
@@ -209,35 +238,6 @@ function MartRenderer:_drawBrowse(status, icons)
       end
     end
   end
-  if status.selection >= 0 and status.selection < 6 then
-    local animation = self._manifest.animations.selectionEntry
-    local active = status.state == "selection_feedback" and animation.frames[status.animationFrame] or nil
-    if active ~= nil then
-      self:_drawVisual(
-        active.visual,
-        lower.slots[status.selection + 1].focusAnchor.x,
-        lower.slots[status.selection + 1].focusAnchor.y
-      )
-    elseif status.state == "browse" then
-      local focus = self._manifest.controls.focus
-      if focus ~= nil then
-        self:_drawVisual(
-          focus.selected,
-          lower.slots[status.selection + 1].focusAnchor.x,
-          lower.slots[status.selection + 1].focusAnchor.y
-        )
-      end
-    end
-  end
-  local pagePrevious = lower.pagePrevious
-  local pageNext = lower.pageNext
-  if status.page > 0 then
-    self:_drawControl(pagePrevious, status, "pagePrevious")
-  end
-  if status.page + 1 < status.pageCount then
-    self:_drawControl(pageNext, status, "pageNext")
-  end
-  self:_drawControl(lower.cancel, status, "cancel")
   self:_drawText(self._manifest.text.labels.cancelLabel or "", lower.cancelLabelBox, "system")
   self:_drawTokens(status.pageTokens, lower.pageBox, "system")
   local balanceLabel = status.currency == "athlete_points" and self._manifest.text.labels.pointsLabel
@@ -250,8 +250,22 @@ function MartRenderer:_drawControl(control, status, key)
   local normal = assert(self._manifest.controls[control.normalVisualKey], "mart control normal visual is generated")
   local selected =
     assert(self._manifest.controls[control.selectedVisualKey], "mart control selected visual is generated")
-  local pressed = status.pressed and status.pressed.key == key
+  local feedback = status.controlFeedback
+  local pressed = feedback ~= nil and feedback.key == key and feedback.phase == "selected"
   local visual = pressed and selected.selected or normal.normal
+  self:_drawVisual(visual, control.anchor.x, control.anchor.y)
+end
+
+function MartRenderer:_drawAmountControl(control, status, key)
+  local animation = status.amountAnimations[key]
+  local visual
+  if animation ~= nil then
+    local clip = assert(self._manifest.animations[animation.family], "mart amount animation family is generated")
+    visual = assert(clip.frames[animation.frame], "mart amount animation frame is generated").visual
+  else
+    local pair = assert(self._manifest.controls[control.normalVisualKey], "mart amount idle visual is generated")
+    visual = pair.normal
+  end
   self:_drawVisual(visual, control.anchor.x, control.anchor.y)
 end
 
@@ -268,7 +282,11 @@ function MartRenderer:_drawQuantity(status, icons)
   self:_drawText(digits:sub(1, 1), quantity.digitBoxes[1], "system")
   self:_drawText(digits:sub(2, 2), quantity.digitBoxes[2], "system")
   for _, name in ipairs({ "increment10", "increment1", "decrement10", "decrement1", "confirm", "cancel" }) do
-    self:_drawControl(quantity[name], status, name)
+    if name == "confirm" or name == "cancel" then
+      self:_drawControl(quantity[name], status, name)
+    else
+      self:_drawAmountControl(quantity[name], status, name)
+    end
   end
   self:_drawText(self._manifest.text.labels.buyLabel or "", quantity.buyLabelBox, "system")
 end

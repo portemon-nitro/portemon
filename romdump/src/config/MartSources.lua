@@ -868,7 +868,7 @@ MartSources.controls = {
   pageNext = { cell = 3 },
   pageFocus = { cell = 4 },
   cancel = { cell = 6 },
-  cancelSelected = { cell = 7 },
+  cancelFocus = { cell = 7 },
   increment = { cell = 12 },
   incrementSelected = { cell = 13 },
   decrement = { cell = 14 },
@@ -876,6 +876,7 @@ MartSources.controls = {
   invisible = { cell = 19 },
   confirm = { cell = 20 },
   quantityCancel = { cell = 22 },
+  paletteOverrides = { focus = 7, selected = 7, restored = 6 },
   animations = {
     selectionEntry = 19,
     restore = 7,

@@ -135,6 +135,7 @@ local function manifest()
     },
     lower = {
       backgrounds = { browse = browse, quantity = visual("quantity"), confirm = visual("confirm") },
+      focus = { item = visual("focus-item"), page = visual("focus-page"), cancel = visual("focus-cancel") },
       slots = slots,
       pagePrevious = control("pagePrevious"),
       pageNext = control("pageNext"),
@@ -247,6 +248,18 @@ function T.manifest_requires_separate_source_text_boxes()
   local missingBuyLabel = manifest()
   missingBuyLabel.lower.quantity.buyLabelBox = nil
   Assert.isFalse(MartAssetSchema.isValidManifest(missingBuyLabel), "quantity BUY text has its own box")
+end
+
+function T.manifest_requires_each_independent_browse_focus_visual()
+  local missingFocus = manifest()
+  missingFocus.lower.focus = nil
+  Assert.isFalse(MartAssetSchema.isValidManifest(missingFocus), "lower focus family is mandatory")
+
+  for _, key in ipairs({ "item", "page", "cancel" }) do
+    local missingVisual = manifest()
+    missingVisual.lower.focus[key] = nil
+    Assert.isFalse(MartAssetSchema.isValidManifest(missingVisual), key .. " focus visual is mandatory")
+  end
 end
 
 function T.cache_readiness_requires_matching_provenance_and_every_referenced_image()

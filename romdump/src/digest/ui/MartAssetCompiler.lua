@@ -516,7 +516,7 @@ local function _compile(romFs)
     end
     return RgbaImage.compose({ base, overlay }, "lower browse count " .. count)
   end
-  manifest.lower = { backgrounds = { browse = {}, quantity = nil, confirm = nil } }
+  manifest.lower = { backgrounds = { browse = {}, quantity = nil, confirm = nil }, focus = {} }
   for count = 0, 6 do
     manifest.lower.backgrounds.browse[count] = imageAsset(countVariant(count), "browse-" .. count, assets)
   end
@@ -541,33 +541,48 @@ local function _compile(romFs)
     assets
   )
 
-  local function controlVisual(cellId, name)
+  local function controlVisual(cellId, name, paletteOverride)
     local cell = assert(cellData.cells[cellId + 1], "control cell exists")
     if #cell.objs == 0 then
       local path = MartCache.assetDir() .. "/" .. name .. ".png"
       assets[path] = PngWriter.encode(1, 1, string.char(0, 0, 0, 0))
       return { image = path, width = 1, height = 1, offsetX = 0, offsetY = 0 }
     end
-    local rendered = G2dRasterizer.renderCell(controlChar, controlPalette, cell, { role = name })
+    local source = { role = name }
+    local options = {}
+    if paletteOverride ~= nil then
+      options.paletteOverride = paletteOverride
+    end
+    local rendered = G2dRasterizer.renderCell(controlChar, controlPalette, cell, source, options)
     local visual = imageAsset(rendered, name, assets)
     visual.offsetX, visual.offsetY = rendered.origin.x, rendered.origin.y
     return visual
   end
+  local controls = MartSources.controls
+  local palettes = controls.paletteOverrides
+  manifest.lower.focus = {
+    item = controlVisual(controls.browseFocus.cell, "focus-item", palettes.focus),
+    page = controlVisual(controls.pageFocus.cell, "focus-page", palettes.focus),
+    cancel = controlVisual(controls.cancelFocus.cell, "focus-cancel", palettes.focus),
+  }
   local pairSpecs = {
-    pagePrevious = { 2, 4 },
-    pageNext = { 3, 4 },
-    cancel = { 6, 7 },
-    increment = { 12, 13 },
-    decrement = { 14, 15 },
-    confirm = { 20, 20 },
-    quantityCancel = { 22, 22 },
-    focus = { 0, 0 },
+    pagePrevious = { normal = controls.pagePrevious.cell, selected = controls.pagePrevious.cell, feedback = true },
+    pageNext = { normal = controls.pageNext.cell, selected = controls.pageNext.cell, feedback = true },
+    cancel = { normal = controls.cancel.cell, selected = controls.cancel.cell, feedback = true },
+    increment = { normal = controls.increment.cell, selected = controls.incrementSelected.cell },
+    decrement = { normal = controls.decrement.cell, selected = controls.decrementSelected.cell },
+    confirm = { normal = controls.confirm.cell, selected = controls.confirm.cell, feedback = true },
+    quantityCancel = {
+      normal = controls.quantityCancel.cell,
+      selected = controls.quantityCancel.cell,
+      feedback = true,
+    },
   }
   manifest.controls = {}
   for name, cells in pairs(pairSpecs) do
     manifest.controls[name] = {
-      normal = controlVisual(cells[1], name .. "-normal"),
-      selected = controlVisual(cells[2], name .. "-selected"),
+      normal = controlVisual(cells.normal, name .. "-normal", cells.feedback and palettes.restored or nil),
+      selected = controlVisual(cells.selected, name .. "-selected", cells.feedback and palettes.selected or nil),
     }
   end
   local function animationClip(selector, name)
@@ -642,7 +657,11 @@ local function _compile(romFs)
     background = rgba(controlPalette, 15),
   }
   manifest.text = { palettes = textColors, labels = labels, templates = templates }
-  manifest.feedback = MartSources.controls.feedback
+  manifest.feedback = {
+    dispatchTicks = controls.feedback.dispatchTicks,
+    selectedTicks = controls.feedback.selectedTicks,
+    restoredTicks = controls.feedback.restoredTicks,
+  }
 
   local catalog = catalogFromSources(descriptionBanks)
   local ok, schemaErr = pcall(MartAssetSchema.assertCatalog, catalog)

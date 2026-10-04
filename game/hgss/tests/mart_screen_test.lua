@@ -133,6 +133,7 @@ local function manifest()
         quantity = visual("quantity"),
         confirm = visual("confirm"),
       },
+      focus = { item = visual("focus-item"), page = visual("focus-page"), cancel = visual("focus-cancel") },
       slots = slots,
       pagePrevious = control("pagePrevious"),
       pageNext = control("pageNext"),
