@@ -315,7 +315,7 @@ local function fakeGraphics(opts)
         depthWrite = state.depthWrite,
         blendMode = state.blendMode,
         blendAlpha = state.blendAlpha,
-        scissor = state.scissor and { table.unpack(state.scissor) } or nil,
+        scissor = state.scissor and { state.scissor[1], state.scissor[2], state.scissor[3], state.scissor[4] } or nil,
       }
       if opts.failOnDrawCall == drawCalls then
         error("injected draw failure")
@@ -324,7 +324,7 @@ local function fakeGraphics(opts)
     clear = function(...)
       local clearCall = { ... }
       clearCall.canvas = state.canvas
-      clearCall.scissor = state.scissor and { table.unpack(state.scissor) } or nil
+      clearCall.scissor = state.scissor and { state.scissor[1], state.scissor[2], state.scissor[3], state.scissor[4] } or nil
       calls.clear[#calls.clear + 1] = clearCall
     end,
     getScissor = function()
