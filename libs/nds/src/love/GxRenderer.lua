@@ -116,6 +116,7 @@ local IDENTITY_TEXTURE_MATRIX = { 1, 0, 0, 0, 1, 0, 0, 0, 1 }
 ---@field _sourceMetaTargets GxRenderer.TargetDescriptor?
 ---@field _sourceTargets GxRenderer.TargetDescriptor?
 ---@field _spriteTargets GxRenderer.TargetDescriptor?
+---@field _spriteWorkItems table[]
 ---@field _spriteW integer?
 ---@field _spriteH integer?
 ---@field _lightMaterialColorCache { diffuse: number[], ambient: number[], specular: number[], emission: number[] }
@@ -331,25 +332,51 @@ local function projectSpriteBounds(item, viewMatrix, projection, stateW, stateH,
   return minX, minY, maxX, maxY
 end
 
-local function spriteDirtyRectangle(items, viewMatrix, projection, stateW, stateH, spriteW, spriteH, scale, offset)
+local function collectSpriteWork(
+  workItems,
+  items,
+  viewMatrix,
+  projection,
+  stateW,
+  stateH,
+  spriteW,
+  spriteH,
+  scale,
+  offset
+)
+  for i = #workItems, 1, -1 do
+    workItems[i] = nil
+  end
   local minX, minY, maxX, maxY = math.huge, math.huge, -math.huge, -math.huge
+  local hasUnsafeProjection = false
   for _, item in ipairs(items) do
     local itemMinX, itemMinY, itemMaxX, itemMaxY =
       projectSpriteBounds(item, viewMatrix, projection, stateW, stateH, spriteW, spriteH, scale, offset)
     if itemMinX == nil then
-      return 0, 0, spriteW, spriteH
+      workItems[#workItems + 1] = item
+      hasUnsafeProjection = true
+    else
+      local safeMinY = assert(itemMinY)
+      local safeMaxX = assert(itemMaxX)
+      local safeMaxY = assert(itemMaxY)
+      local x0 = math.max(0, math.floor(itemMinX) - 1)
+      local y0 = math.max(0, math.floor(safeMinY) - 1)
+      local x1 = math.min(spriteW, math.ceil(safeMaxX) + 1)
+      local y1 = math.min(spriteH, math.ceil(safeMaxY) + 1)
+      if x1 > x0 and y1 > y0 then
+        workItems[#workItems + 1] = item
+        minX, minY = math.min(minX, x0), math.min(minY, y0)
+        maxX, maxY = math.max(maxX, x1), math.max(maxY, y1)
+      end
     end
-    minX, minY = math.min(minX, itemMinX), math.min(minY, itemMinY)
-    maxX, maxY = math.max(maxX, itemMaxX), math.max(maxY, itemMaxY)
   end
-  local x0 = math.max(0, math.floor(minX) - 1)
-  local y0 = math.max(0, math.floor(minY) - 1)
-  local x1 = math.min(spriteW, math.ceil(maxX) + 1)
-  local y1 = math.min(spriteH, math.ceil(maxY) + 1)
-  if x1 <= x0 or y1 <= y0 then
+  if #workItems == 0 then
     return nil
   end
-  return x0, y0, x1, y1
+  if hasUnsafeProjection then
+    return 0, 0, spriteW, spriteH
+  end
+  return minX, minY, maxX, maxY
 end
 
 ---@param displayWidth number
@@ -443,6 +470,7 @@ function GxRenderer.new(opts)
     _presentationScale = { 1, 1 },
     _presentationOffset = { 0, 0 },
     _stateSize = { 1, 1 },
+    _spriteWorkItems = {},
   }, GxRenderer)
   -- Shader construction is transactional: a failure while creating a later
   -- shader (or reading its source) releases every one already created before
@@ -1288,7 +1316,8 @@ local function drawFrame(
     offset[1] = scale[1] - 1
     offset[2] = scale[2] - 1
     local callerScissorX, callerScissorY, callerScissorW, callerScissorH = lg.getScissor()
-    local dirtyX0, dirtyY0, dirtyX1, dirtyY1 = spriteDirtyRectangle(
+    local dirtyX0, dirtyY0, dirtyX1, dirtyY1 = collectSpriteWork(
+      self._spriteWorkItems,
       spriteItems,
       viewMatrix,
       frame.billboardProjection,
@@ -1321,7 +1350,7 @@ local function drawFrame(
       lg.setShader(spriteShader)
       lg.setBlendMode("replace", "premultiplied")
 
-      for _, item in ipairs(spriteItems) do
+      for _, item in ipairs(self._spriteWorkItems) do
         local fragmentPass
         if item.alphaClass == AlphaClassifier.OPAQUE then
           fragmentPass = FRAGMENT_PASS_OPAQUE

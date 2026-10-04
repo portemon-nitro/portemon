@@ -937,6 +937,54 @@ function T.presentation_sprite_work_uses_a_conservative_dirty_union()
   renderer:release()
 end
 
+function T.safely_offscreen_sprites_do_not_inflate_visible_work_or_submit_geometry()
+  local viewport = { worldViewport = { x = 20, y = 30, width = 640, height = 480 } }
+  local scene = emptySceneCamera()
+  local visible = boundedSpriteItem(0, 0)
+  local baselineGraphics = fakeGraphics()
+  local baselineRenderer = GxRenderer.new({ graphics = baselineGraphics })
+
+  render(baselineRenderer, scene.runtime, scene.camera, nil, { visible }, viewport, 0, nil, 3)
+
+  local baselineClear, _, baselineComposite = spriteScissor(baselineRenderer, baselineGraphics, visible.mesh)
+  local baselineSubmissions = baselineRenderer.stats.geometrySubmissions
+  Assert.notNil(baselineClear, "the visible baseline clears its sprite dirty region")
+  Assert.notNil(baselineComposite, "the visible baseline composites its sprite region")
+  baselineRenderer:release()
+
+  local mixedGraphics = fakeGraphics()
+  local mixedRenderer = GxRenderer.new({ graphics = mixedGraphics })
+  local mixedVisible = boundedSpriteItem(0, 0)
+  local farLeft = boundedSpriteItem(-100, 0)
+  local farRight = boundedSpriteItem(100, 0)
+
+  render(
+    mixedRenderer,
+    scene.runtime,
+    scene.camera,
+    nil,
+    { mixedVisible, farLeft, farRight },
+    viewport,
+    0,
+    nil,
+    3
+  )
+
+  local mixedClear, _, mixedComposite = spriteScissor(mixedRenderer, mixedGraphics, mixedVisible.mesh)
+  Assert.deepEqual(mixedClear, baselineClear, "safely offscreen bounds do not enlarge the target-local dirty region")
+  Assert.deepEqual(mixedComposite, baselineComposite, "safely offscreen bounds do not enlarge presentation composite work")
+  for _, call in ipairs(mixedGraphics.calls.draw) do
+    Assert.isTrue(call.mesh ~= farLeft.mesh, "the far-left sprite is omitted from geometry submissions")
+    Assert.isTrue(call.mesh ~= farRight.mesh, "the far-right sprite is omitted from geometry submissions")
+  end
+  Assert.equal(
+    mixedRenderer.stats.geometrySubmissions,
+    baselineSubmissions,
+    "safely offscreen sprites do not increase geometry submissions"
+  )
+  mixedRenderer:release()
+end
+
 function T.presentation_sprite_dirty_union_clamps_billboards_at_each_viewport_edge()
   local lg = fakeGraphics()
   local renderer = GxRenderer.new({ graphics = lg })
@@ -1025,6 +1073,44 @@ function T.unsafe_sprite_projection_clears_the_full_target_and_clips_composite_t
   Assert.equal(renderer.stats.spriteCompositeArea, 85 * 57, "unsafe projection records only visible composite pixels")
   local sx, sy, sw, sh = lg.getScissor()
   Assert.deepEqual({ sx, sy, sw, sh }, { 5, 7, 100, 80 }, "the caller scissor is restored after success")
+  renderer:release()
+end
+
+function T.unsafe_sprite_projection_keeps_safe_offscreen_sprites_culled()
+  local lg = fakeGraphics()
+  local renderer = GxRenderer.new({ graphics = lg })
+  local scene = emptySceneCamera()
+  local unsafe = boundedSpriteItem(-100, 0)
+  local safelyOffscreen = boundedSpriteItem(100, 0)
+  scene.camera.billboardProjection = function()
+    local projection = Matrix4.identity()
+    projection[4] = 0.02
+    return projection
+  end
+
+  render(
+    renderer,
+    scene.runtime,
+    scene.camera,
+    nil,
+    { unsafe, safelyOffscreen },
+    { worldViewport = { x = 0, y = 0, width = 640, height = 480 } },
+    0,
+    nil,
+    3
+  )
+
+  local clearScissor = spriteScissor(renderer, lg, unsafe.mesh)
+  Assert.deepEqual(clearScissor, { 0, 0, 640, 480 }, "unsafe projection retains conservative full-target coverage")
+  local unsafeSubmitted = false
+  for _, call in ipairs(lg.calls.draw) do
+    unsafeSubmitted = unsafeSubmitted or call.mesh == unsafe.mesh
+    Assert.isTrue(
+      call.mesh ~= safelyOffscreen.mesh,
+      "the finite safely offscreen sprite stays omitted during unsafe fallback"
+    )
+  end
+  Assert.isTrue(unsafeSubmitted, "the item with unsafe projected bounds remains submitted")
   renderer:release()
 end
 
