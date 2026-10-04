@@ -115,6 +115,12 @@ end
 
 ---@param behavior integer?
 ---@return boolean
+function MetatileBehavior.suppressesFollowerReaction(behavior)
+  return behavior == 46 or behavior == 113 or behavior == 114
+end
+
+---@param behavior integer?
+---@return boolean
 function MetatileBehavior.canGenerateWalkingEncounters(behavior)
   return WALKING_ENCOUNTER_BEHAVIORS[behavior] == true
 end

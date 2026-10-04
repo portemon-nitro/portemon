@@ -18,6 +18,13 @@ local MetatileBehavior = require("libs.hgss.src.world.MetatileBehavior")
 local FollowerInteractionEngine = {}
 FollowerInteractionEngine.__index = FollowerInteractionEngine
 
+---@class FollowerEffectAnchor
+---@field fieldX integer
+---@field fieldZ integer
+---@field worldY number
+---@field cellKey string
+---@field sourceSurfaceId integer
+
 ---@class FollowerInteractionRng
 ---@field chance fun(self: FollowerInteractionRng, numerator: integer, denominator: integer): boolean
 
@@ -28,8 +35,9 @@ FollowerInteractionEngine.__index = FollowerInteractionEngine
 local NATURE_CLASS = { 4, 5, 4, 4, 1, 4, 3, 2, 1, 2, 5, 6, 3, 1, 1, 3, 6, 3, 5, 6, 2, 2, 1, 3, 6 }
 local TYPE_CLASS = { 1, 7, 10, 8, 9, 13, 12, 14, 17, 0, 2, 3, 5, 4, 11, 6, 15, 16 }
 local POCK_CLASS = { items = 4, medicine = 2, balls = 1, tmhm = 7, berries = 6, mail = 5, battle_items = 3 }
-local CLASS_BY_STAT = { power = 1, skill = 2, speed = 4, jump = 3, stamina = 5 }
-local SOURCE_STAT_ORDER = { "power", "stamina", "jump", "skill", "speed" }
+local CLASS_BY_STAT = { power = 1, skill = 3, speed = 5, jump = 4, stamina = 2 }
+local PERFORMANCE_ORDER = { "power", "skill", "speed", "jump", "stamina" }
+local FOLLOWER_SCAN_ORDER = { "power", "stamina", "jump", "skill", "speed" }
 local NATURE_MODIFIERS = {
   { 10, 0, 0, 0, -10 },
   { 35, -35, 0, 0, 0 },
@@ -132,14 +140,17 @@ local function selectorMatches(kind, expected, actual, context)
   elseif kind == "hiddenItemClass" then
     return expected == 4 and actual >= 4 or actual == expected
   elseif kind == "specialSpriteClass" then
-    if expected == 2 then
-      return false
-    end
-    return expected == actual
+    return false
   elseif kind == "leafClass" then
     return math.floor((context.shinyLeaves or 0) / (2 ^ (expected - 1))) % 2 == 0
   end
   return expected == actual
+end
+
+local function partnerCell(runtimeMap, partnerState)
+  local localX, localZ =
+    partnerState.fieldX - runtimeMap.coordinateOrigin.x, partnerState.fieldZ - runtimeMap.coordinateOrigin.z
+  return runtimeMap.collision:getLocal(localX, localZ)
 end
 
 function FollowerInteractionEngine.new(opts)
@@ -172,11 +183,12 @@ function FollowerInteractionEngine:_pokeathlonClass(mon, civilDate)
   local nature = (mon.personality or 0) % 25
   local modifiers = assert(NATURE_MODIFIERS[nature + 1])
   local stats = {}
-  for index, stat in ipairs(SOURCE_STAT_ORDER) do
+  for arrayIndex, stat in ipairs(PERFORMANCE_ORDER) do
+    local performanceIndex = arrayIndex - 1
     local data = assert(performance[stat], "Pokéathlon performance stat is missing")
-    local digit = math.floor((mon.personality or 0) / (10 ^ (index - 1))) % 10
-    local dateDigit = (digit + (civilDate.day + (8 - index)) * (civilDate.day + (index + 2))) % 10
-    local dailyMod = modifiers[index] + 2 * dateDigit - 9
+    local digit = math.floor((mon.personality or 0) / (10 ^ performanceIndex)) % 10
+    local dateDigit = (digit + (civilDate.day + (8 - performanceIndex)) * (civilDate.day + (performanceIndex + 2))) % 10
+    local dailyMod = modifiers[arrayIndex] + 2 * dateDigit - 9
     local deltaStars = dailyMod <= -120 and -4
       or dailyMod <= -80 and -3
       or dailyMod <= -40 and -2
@@ -189,7 +201,7 @@ function FollowerInteractionEngine:_pokeathlonClass(mon, civilDate)
     stats[stat] = math.max(data.min, math.min(data.max, data.base + deltaStars))
   end
   local bestStars, bestStat = -math.huge, nil
-  for _, stat in ipairs({ "power", "stamina", "jump", "skill", "speed" }) do
+  for _, stat in ipairs(FOLLOWER_SCAN_ORDER) do
     if stats[stat] > bestStars then
       bestStars, bestStat = stats[stat], stat
     end
@@ -207,17 +219,15 @@ function FollowerInteractionEngine:_context(leadSlot)
   local partnerState = partner.numericState and partner:numericState() or {}
   local playerPosition = self.player:position()
   local playerX, playerZ = playerPosition.fieldX, playerPosition.fieldZ
-  local nearby, rock, breakrock = 0, false, false
+  local nearby = 0
   for _, actor in ipairs(self.actors:actorsOf(self.runtimeMap.mapId)) do
     local id = actor.objectEventId
     local state = actor.numericState and actor:numericState() or {}
     if id ~= 0xFD and id ~= 0xFF then
-      if actor.spriteId == 0x54 then
-        rock = true
-      elseif actor.spriteId == 0x55 then
-        breakrock = true
-      elseif
-        actor.spriteId ~= 0x56
+      if
+        actor.spriteId ~= 0x54
+        and actor.spriteId ~= 0x55
+        and actor.spriteId ~= 0x56
         and math.abs(state.fieldX - playerX) <= 1
         and math.abs(state.fieldZ - playerZ) <= 1
       then
@@ -232,9 +242,7 @@ function FollowerInteractionEngine:_context(leadSlot)
       hidden = hidden + 1
     end
   end
-  local localX, localZ =
-    partnerState.fieldX - self.runtimeMap.coordinateOrigin.x, partnerState.fieldZ - self.runtimeMap.coordinateOrigin.z
-  local cell = self.runtimeMap.collision:getLocal(localX, localZ)
+  local cell = partnerCell(self.runtimeMap, partnerState)
   local friendship = self.mons:monFriendship(leadSlot)
   local mood = mon.mood or 0
   local nature = self.mons:monNature(leadSlot)
@@ -263,9 +271,7 @@ function FollowerInteractionEngine:_context(leadSlot)
     leafClass = mon.shinyLeaves or 0,
     shinyLeaves = mon.shinyLeaves or 0,
     mapClass = mapClass,
-    specialSpriteClass = rock and 1 or breakrock and 3 or 0,
-    rock = rock,
-    breakrock = breakrock,
+    specialSpriteClass = 0,
     nearbyObjectClass = nearby,
     hiddenItemClass = hidden,
     hiddenItemCount = hidden,
@@ -324,7 +330,7 @@ function FollowerInteractionEngine:select()
               break
             end
           elseif kind == "specialSpriteClass" then
-            if expected == 1 and context.rock or expected == 3 and context.breakrock or expected == 2 then
+            if expected ~= 0 then
               matches = false
               break
             end
@@ -345,6 +351,28 @@ function FollowerInteractionEngine:select()
     end
   end
   return nil
+end
+
+function FollowerInteractionEngine:partnerMetatileBehavior()
+  local actorId = assert(self.followingMon:partnerActorId(), "partner actor is unavailable")
+  local partner = assert(self.actors:getById(actorId), "partner actor is unavailable")
+  local partnerState = assert(partner:numericState(), "partner actor state is unavailable")
+  return partnerCell(self.runtimeMap, partnerState).behavior
+end
+
+---@return FollowerEffectAnchor
+function FollowerInteractionEngine:partnerEffectAnchor()
+  local actorId = assert(self.followingMon:partnerActorId(), "partner actor is unavailable")
+  local partner = assert(self.actors:getById(actorId), "partner actor is unavailable")
+  local state = assert(partner:numericState(), "partner actor state is unavailable")
+  assert(state.hasWorldPosition == 1, "partner actor world position is unavailable")
+  return {
+    fieldX = state.fieldX,
+    fieldZ = state.fieldZ,
+    worldY = state.worldY,
+    cellKey = assert(partner.cellKey, "partner actor cell identity is unavailable"),
+    sourceSurfaceId = assert(partner:getSourceSurfaceId(), "partner actor surface identity is unavailable"),
+  }
 end
 
 function FollowerInteractionEngine:program(programId)

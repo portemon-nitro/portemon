@@ -191,13 +191,27 @@ local function engine(ruleSpecs, formPerformance, options)
   }
   local followerPosition = options.followerPosition or { fieldX = 0, fieldZ = 0 }
   local followerActor = options.followingActor
-    or {
+    or setmetatable({
       objectEventId = 0xFD,
       facing = options.followerFacing or "south",
-      numericState = function()
-        return { fieldX = followerPosition.fieldX, fieldZ = followerPosition.fieldZ }
+      numericState = function(_)
+        return {
+          fieldX = followerPosition.fieldX,
+          fieldZ = followerPosition.fieldZ,
+          worldY = followerPosition.worldY,
+          hasWorldPosition = followerPosition.worldY ~= nil and 1 or 0,
+        }
       end,
-    }
+      getSourceSurfaceId = function()
+        return followerPosition.sourceSurfaceId
+      end,
+    }, {
+      __index = function(_, key)
+        if key == "cellKey" then
+          return followerPosition.cellKey
+        end
+      end,
+    })
   local fieldActors = {}
   for _, actor in ipairs(options.actors or {}) do
     fieldActors[#fieldActors + 1] = actor
@@ -323,6 +337,32 @@ T["earliest passing flattened row wins and stops later RNG draws"] = function()
   Assert.deepEqual(rng:serialize(), expectedRng:serialize(), "selection persists exactly the reached RNG state")
 end
 
+T["partner effect anchor exposes the committed stacked surface"] = function()
+  local position = { fieldX = 12, fieldZ = 8, worldY = 2.5, cellKey = "upper", sourceSurfaceId = 9 }
+  local subject = engine({}, nil, {
+    followerPosition = position,
+  })
+
+  local first = subject:partnerEffectAnchor()
+  Assert.deepEqual(first, {
+    fieldX = 12,
+    fieldZ = 8,
+    worldY = 2.5,
+    cellKey = "upper",
+    sourceSurfaceId = 9,
+  })
+  position.fieldX, position.fieldZ, position.worldY = 13, 9, 3.5
+  position.cellKey, position.sourceSurfaceId = "lower", 10
+  Assert.deepEqual(subject:partnerEffectAnchor(), {
+    fieldX = 13,
+    fieldZ = 9,
+    worldY = 3.5,
+    cellKey = "lower",
+    sourceSurfaceId = 10,
+  })
+  Assert.equal(first.fieldX, 12, "an earlier anchor remains a snapshot")
+end
+
 T["each reached percentage row consumes one persisted script RNG draw"] = function()
   Assert.notNil(FollowerInteractionEngine, "percentage-gated retail rows must be selectable")
   local subject, rng = engine({
@@ -345,15 +385,26 @@ T["Pokéathlon scoring preserves reachable threshold transitions and tie order"]
   local subject = engine({}, basePerformance)
   local classify = subject._pokeathlonClass
   Assert.equal(type(classify), "function", "Pokéathlon rules need their owned classifier")
+  local runtimeOrderRecords = performance(1, 1, 1)
+  runtimeOrderRecords.skill = { base = 3, min = 1, max = 5 }
+  local runtimeOrderClass = engine({}, runtimeOrderRecords):_pokeathlonClass(
+    { species = "EEVEE", form = 0, personality = 1 },
+    { year = 2024, month = 1, day = 1 }
+  )
+  Assert.equal(
+    runtimeOrderClass,
+    1,
+    "runtime-order discriminator expected Power class 1, got " .. tostring(runtimeOrderClass)
+  )
   local vectors = {
-    { raw = -40, personality = 2, day = 1, stat = "speed", other = { power = 1 }, expected = 1 },
-    { raw = -38, personality = 86, day = 1, stat = "stamina", other = { power = 1 }, expected = 5 },
-    { raw = -15, personality = 0, day = 1, stat = "speed", other = { power = 1 }, expected = 4 },
-    { raw = -13, personality = 712, day = 1, stat = "jump", other = { power = 1 }, expected = 3 },
-    { raw = 13, personality = 24, day = 1, stat = "jump", other = { power = 2 }, expected = 3 },
+    { raw = -40, personality = 4, day = 4, stat = "speed", other = { power = 1 }, expected = 1 },
+    { raw = -38, personality = 86, day = 1, stat = "stamina", other = { power = 1 }, expected = 2 },
+    { raw = -15, personality = 0, day = 1, stat = "speed", other = { power = 1 }, expected = 5 },
+    { raw = -13, personality = 712, day = 1, stat = "jump", other = { power = 1 }, expected = 4 },
+    { raw = 13, personality = 24, day = 1, stat = "jump", other = { power = 2 }, expected = 4 },
     { raw = 15, personality = 25, day = 1, stat = "power", other = { stamina = 3 }, expected = 1 },
     { raw = 38, personality = 4, day = 1, stat = "power", other = { stamina = 3 }, expected = 1 },
-    { raw = 40, personality = 120, day = 1, stat = "jump", other = { stamina = 3 }, expected = 3 },
+    { raw = 40, personality = 120, day = 1, stat = "jump", other = { stamina = 1 }, expected = 4 },
   }
   for _, vector in ipairs(vectors) do
     local records = performance(1, 1, 1)
@@ -367,7 +418,16 @@ T["Pokéathlon scoring preserves reachable threshold transitions and tie order"]
     Assert.equal(
       actual,
       vector.expected,
-      "Pokéathlon winner at raw score " .. vector.raw .. " for " .. vector.stat .. " on day " .. vector.day
+      "Pokéathlon winner at raw score "
+        .. vector.raw
+        .. " for "
+        .. vector.stat
+        .. " on day "
+        .. vector.day
+        .. ": expected "
+        .. vector.expected
+        .. ", got "
+        .. tostring(actual)
     )
   end
 
@@ -378,7 +438,28 @@ T["Pokéathlon scoring preserves reachable threshold transitions and tie order"]
     { species = "EEVEE", form = 0, personality = 2 },
     { year = 2024, month = 1, day = 1 }
   )
-  Assert.equal(tieClass, 5, "equal Stamina/Jump stars keep earlier source-order Stamina (class 5)")
+  Assert.equal(tieClass, 2, "equal Stamina/Jump stars keep earlier follower-scan Stamina (class 2)")
+
+  local classWinners = {
+    { stat = "power", class = 1 },
+    { stat = "stamina", class = 2 },
+    { stat = "jump", class = 4 },
+    { stat = "skill", class = 3 },
+    { stat = "speed", class = 5 },
+  }
+  for _, vector in ipairs(classWinners) do
+    local records = performance(1, 1, 1)
+    records[vector.stat] = { base = 5, min = 5, max = 5 }
+    Assert.equal(
+      engine({}, records):_pokeathlonClass({ species = "EEVEE", form = 0, personality = 0 }, {
+        year = 2024,
+        month = 1,
+        day = 1,
+      }),
+      vector.class,
+      "winner class for " .. vector.stat
+    )
+  end
 end
 
 T["mon context classifiers preserve retail boundary buckets"] = function()
@@ -773,47 +854,28 @@ T["nearby-object selection counts local actors and recognizes special sprites"] 
     "nearby-object selector 5 rejects fewer than five"
   )
 
-  Assert.deepEqual(
-    selectOne({}, { specialSpriteClass = 1 }),
-    { leadSlot = 0, programId = 1 },
-    "class 1 requires no Rock sprite"
-  )
-  Assert.equal(
-    selectOne({}, { specialSpriteClass = 1 }, { actors = { actor(1, 0x54, 40, 40) } }),
-    nil,
-    "class 1 rejects Rock"
-  )
-  Assert.deepEqual(
-    selectOne({}, { specialSpriteClass = 3 }, { actors = { actor(1, 0x54, 40, 40) } }),
-    { leadSlot = 0, programId = 1 },
-    "class 3 requires no Breakrock sprite"
-  )
-  Assert.equal(
-    selectOne({}, { specialSpriteClass = 3 }, { actors = { actor(1, 0x55, 40, 40) } }),
-    nil,
-    "class 3 rejects Breakrock"
-  )
-  Assert.deepEqual(
-    selectOne({}, { specialSpriteClass = 1 }, {
-      actors = { actor(1, 0x56, 40, 40) },
-    }),
-    { leadSlot = 0, programId = 1 },
-    "class 1 only tests for Rock absence"
-  )
-  Assert.equal(
-    selectOne({}, { specialSpriteClass = 2 }, {
-      actors = { actor(1, 0x54, 0, 0) },
-    }),
-    nil,
-    "special selector 2 rejects even when a special sprite is present"
-  )
-  Assert.equal(
-    selectOne({}, { nearbyObjectClass = 1 }, {
-      actors = { actor(1, 0x54, 0, 0) },
-    }),
-    nil,
-    "special sprites do not count as nearby normal objects"
-  )
+  for selector = 1, 3 do
+    for _, spriteId in ipairs({ 0x54, 0x55, 0x56 }) do
+      Assert.equal(
+        selectOne({}, { specialSpriteClass = selector }, { actors = { actor(1, spriteId, 0, 0) } }),
+        nil,
+        "nonzero special selector " .. selector .. " rejects sprite " .. spriteId
+      )
+    end
+    Assert.equal(
+      selectOne({}, { specialSpriteClass = selector }),
+      nil,
+      "nonzero special selector " .. selector .. " rejects without a matching live sprite"
+    )
+  end
+  Assert.deepEqual(selectOne({}, { specialSpriteClass = 0 }), { leadSlot = 0, programId = 1 })
+  for _, spriteId in ipairs({ 0x54, 0x55, 0x56 }) do
+    Assert.equal(
+      selectOne({}, { nearbyObjectClass = 1 }, { actors = { actor(1, spriteId, 0, 0) } }),
+      nil,
+      "special sprite " .. spriteId .. " does not count as an ordinary nearby object"
+    )
+  end
 end
 
 return { tests = T }

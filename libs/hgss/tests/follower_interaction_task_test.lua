@@ -33,10 +33,20 @@ end
 
 -- Test fixture seam: the task receives its deterministic engine and borrowed field
 -- collaborators through ctx.services. This is only a task test harness contract.
-local function fixture(programs)
+local function fixture(programs, options)
+  options = options or {}
   local events = {}
   local selected = { leadSlot = 0, programId = 10 }
-  local actor = { x = 12, z = 8, facing = "west", offset = { x = 0, y = 0, z = 0 } }
+  local actor = {
+    x = 12,
+    z = 8,
+    worldY = 2.5,
+    cellKey = "upper",
+    sourceSurfaceId = 9,
+    facing = "west",
+    offset = { x = 0, y = 0, z = 0 },
+  }
+  local anchorReads = 0
   local engine = {
     select = function()
       events[#events + 1] = "select"
@@ -50,6 +60,19 @@ local function fixture(programs)
     end,
     reaction = function(_, selector)
       return { selector = selector, kind = "test-follower-reaction" }
+    end,
+    partnerMetatileBehavior = function()
+      return options.metatileBehavior or 0
+    end,
+    partnerEffectAnchor = function()
+      anchorReads = anchorReads + 1
+      return {
+        fieldX = actor.x,
+        fieldZ = actor.z,
+        worldY = actor.worldY,
+        cellKey = "upper-" .. anchorReads,
+        sourceSurfaceId = actor.sourceSurfaceId + anchorReads - 1,
+      }
     end,
     bindings = function(_, _leadSlot)
       return { [0] = "Sparky", [1] = "EEVEE", [2] = "Red", [3] = "New Bark Town", [4] = "" }
@@ -159,10 +182,12 @@ local function fixture(programs)
     Assert.equal(effect, "SEQ_ME_ACCE")
     return self.effectWaitComplete
   end
-  local terrainEffects = { active = {}, removed = {} }
+  local terrainEffects = { active = {}, removed = {}, emitted = {} }
   function terrainEffects:emit(response)
-    self.active[1] = response
-    return 1
+    local handle = #self.emitted + 1
+    self.emitted[handle] = response
+    self.active[handle] = response
+    return handle
   end
   function terrainEffects:remove(handle)
     self.removed[#self.removed + 1] = handle
@@ -209,6 +234,9 @@ local function fixture(programs)
       mons = mons,
       terrainEffects = terrainEffects,
       world = world,
+      anchorReads = function()
+        return anchorReads
+      end,
     }
 end
 
@@ -356,7 +384,7 @@ T["tagged motion sounds dispatch effects and cries through their existing servic
   Assert.deepEqual(patternCry.audio.cries, { { 25, 11 } }, "the alternate cry pattern is preserved")
 end
 
-T["reward task waits for the acquisition effect after dialogue completes"] = function()
+T["reward dialogue stays open until acquisition fanfare and needs a fresh edge"] = function()
   local programs = {
     motions = {},
     [10] = {
@@ -378,23 +406,93 @@ T["reward task waits for the acquisition effect after dialogue completes"] = fun
   Assert.deepEqual(seen.audio.played, { "SEQ_ME_ACCE" }, "the reward effect starts once")
   Assert.notNil(state.dialogueState, "the reward dialogue is active before completion")
   seen.dialogue.finished = true
-  local result
-  for _ = 1, 8 do
+  for _ = 1, 4 do
     ctx.input.pressedAction = true
-    result = FollowerInteractionTask.poll(state, ctx)
-    ctx.input.pressedAction = false
-    if state.dialogueState == nil then
-      break
-    end
+    FollowerInteractionTask.poll(state, ctx)
   end
-  Assert.isNil(state.dialogueState, "dialogue and fresh input have completed")
-  Assert.equal(state.phase, "reward_finalize", "the effect barrier is serialized as its own phase")
-  Assert.isNil(FollowerInteractionTask.validate(state), "the pending effect barrier is valid task state")
+  ctx.input.pressedAction = false
+  Assert.notNil(state.dialogueState, "action presses cannot close reward dialogue before fanfare completion")
+  Assert.isTrue(seen.dialogue.open, "the reward dialogue remains open through the fanfare")
+  Assert.equal(seen.dialogue.closes, 0, "the dialogue host has not been closed")
+  Assert.isNil(FollowerInteractionTask.validate(state), "the pending reward dialogue remains valid task state")
   state = copy(state)
-  Assert.isFalse(result.complete, "the active acquisition effect keeps the interaction blocked")
+  Assert.isFalse(FollowerInteractionTask.poll(state, ctx).complete, "the active acquisition effect keeps input gated")
   seen.audio.effectWaitComplete = true
-  Assert.isTrue(FollowerInteractionTask.poll(state, ctx).complete, "the interaction completes after effect completion")
+  Assert.isFalse(FollowerInteractionTask.poll(state, ctx).complete, "fanfare completion alone does not reuse an old press")
+  Assert.notNil(state.dialogueState, "the dialogue still awaits a fresh input edge")
+  ctx.input.pressedAction = true
+  Assert.isFalse(FollowerInteractionTask.poll(state, ctx).complete, "a fresh edge starts the ordinary close delay")
+  ctx.input.pressedAction = false
+  Assert.isTrue(FollowerInteractionTask.poll(state, ctx).complete, "the fresh edge closes dialogue through its task")
+  Assert.equal(seen.dialogue.closes, 1, "the dialogue host closes once")
   Assert.deepEqual(seen.audio.played, { "SEQ_ME_ACCE" }, "repeated polls do not replay the reward effect")
+end
+
+T["reaction effect startup is suppressed only on retail reaction-blocking tiles"] = function()
+  for _, behavior in ipairs({ 46, 113, 114, 0, 2, 3 }) do
+    local programs = {
+      motions = {},
+      [10] = { steps = { { messageId = 1, reactionSelector = 3 } }, friendshipDelta = 0, moodDelta = 0 },
+    }
+    local ctx, seen = fixture(programs, { metatileBehavior = behavior })
+    local state = FollowerInteractionTask.create({}, ctx)
+    FollowerInteractionTask.poll(state, ctx)
+    local emitted = #seen.terrainEffects.emitted
+    Assert.equal(
+      emitted,
+      (behavior == 46 or behavior == 113 or behavior == 114) and 0 or 1,
+      "reaction emission count for metatile behavior " .. behavior
+    )
+    Assert.equal(state.phase, "dialogue", "reaction suppression preserves message progression")
+    Assert.notNil(seen.dialogue.open, "the interaction message continues on behavior " .. behavior)
+  end
+end
+
+T["interaction turns emit grass effects only for actual facing changes"] = function()
+  local function emissions(behavior)
+    local programs = {
+      motions = {
+        [4] = {
+          { x = 0, y = 0, z = 0, facing = "north", ticks = 0 },
+          { x = 0, y = 0, z = 0, facing = "north", ticks = 0 },
+          { x = 0, y = 0, z = 0, facing = 0, ticks = 0 },
+        },
+      },
+      [10] = { steps = { { motionId = 4, messageId = 1 } }, friendshipDelta = 0, moodDelta = 0 },
+    }
+    local ctx, seen = fixture(programs, { metatileBehavior = behavior })
+    local state = FollowerInteractionTask.create({}, ctx)
+    for _ = 1, 8 do
+      FollowerInteractionTask.poll(state, ctx)
+      if state.phase == "dialogue" then
+        break
+      end
+    end
+    return seen.terrainEffects.emitted, seen.actor.facing, seen.anchorReads()
+  end
+
+  for _, vector in ipairs({
+    { behavior = 2, kind = "tall_grass" },
+    { behavior = 3, kind = "very_tall_grass" },
+  }) do
+    local emitted, facing, reads = emissions(vector.behavior)
+    Assert.equal(#emitted, 2, "one motion turn and normal facing restoration emit two effects")
+    Assert.equal(emitted[1].kind, vector.kind)
+    Assert.equal(emitted[1].direction, "north", "effect direction follows the new motion facing")
+    Assert.equal(emitted[1].fieldX, 12)
+    Assert.equal(emitted[1].fieldZ, 8)
+    Assert.equal(emitted[1].worldY, 2.5)
+    Assert.equal(emitted[1].cellKey, "upper-1")
+    Assert.equal(emitted[1].sourceSurfaceId, 9)
+    Assert.equal(emitted[2].kind, vector.kind, "normal facing restoration disturbs the same grass")
+    Assert.equal(emitted[2].direction, "west", "restoration effect uses the restored facing")
+    Assert.equal(emitted[2].cellKey, "upper-2", "each emission reacquires the current committed anchor")
+    Assert.equal(emitted[2].sourceSurfaceId, 10)
+    Assert.equal(reads, 2, "the task requests one engine anchor per terrain effect")
+    Assert.equal(facing, "west")
+  end
+  local ordinary, _facing = emissions(0)
+  Assert.equal(#ordinary, 0, "ordinary terrain emits no turn-grass effects")
 end
 
 T["continuation uses the selected target without selecting or rolling again"] = function()
@@ -526,14 +624,16 @@ T["cancellation during motion clears the offset and restores facing"] = function
     motions = { [4] = { { x = 1, y = 1, z = 0, facing = "north", ticks = 5 } } },
     [10] = { steps = { { motionId = 4, messageId = 1 } }, friendshipDelta = 0, moodDelta = 0 },
   }
-  local ctx, seen = fixture(programs)
+  local ctx, seen = fixture(programs, { metatileBehavior = 2 })
   local task = FollowerInteractionTask
   local state = task.create({}, ctx)
   task.poll(state, ctx)
   Assert.deepEqual(seen.actor.offset, { x = 1, y = 1, z = 0 })
+  Assert.equal(#seen.terrainEffects.emitted, 1, "the actual interaction turn disturbs the grass once")
   task.cancel(state, "test cancellation", ctx)
   Assert.deepEqual(seen.actor.offset, { x = 0, y = 0, z = 0 }, "cancel releases transient actor offset")
   Assert.equal(seen.actor.facing, "west", "cancel restores the saved facing")
+  Assert.equal(#seen.terrainEffects.emitted, 1, "cancellation does not synthesize a restoration grass turn")
   Assert.isFalse(seen.dialogue.open, "cancel closes an open task-owned message")
   Assert.isFalse(seen.choice.active, "cancel closes an open continuation")
 end
@@ -554,6 +654,8 @@ T["cancellation during dialogue closes dialogue and removes reaction effect"] = 
   task.poll(state, ctx)
   Assert.isTrue(seen.dialogue.open, "the task owns an open dialogue while printing")
   Assert.notNil(seen.terrainEffects.active[1], "the reaction effect is active before cancellation")
+  Assert.equal(seen.terrainEffects.active[1].cellKey, "upper-1")
+  Assert.equal(seen.terrainEffects.active[1].sourceSurfaceId, 9)
   task.cancel(state, "test cancellation", ctx)
   Assert.isFalse(seen.dialogue.open, "cancel closes the active task-owned dialogue")
   Assert.deepEqual(seen.terrainEffects.removed, { 1 }, "cancel removes its task-owned reaction effect")
@@ -721,7 +823,7 @@ T["mid-motion task restore rebuilds the derived partner action without replaying
     local ctx, seen = fixture({
       motions = { [4] = { { x = 2, y = 3, z = -1, facing = "north", ticks = 4, sound = true } } },
       [10] = { steps = { { motionId = 4, sound = { kind = "effect", id = 43 } } }, friendshipDelta = 0, moodDelta = 0 },
-    })
+    }, { metatileBehavior = 2 })
     local registry = Registry.new()
     local composition = ScriptComposition.new(registry)
     registry:installBase(resource.id, resource, "generated")
@@ -748,6 +850,7 @@ T["mid-motion task restore rebuilds the derived partner action without replaying
   Assert.equal(runningTask.state.motionTick, 1, "one motion tick has elapsed before capture")
   Assert.deepEqual(original.seen.actor.offset, { x = 2, y = 3, z = -1 })
   Assert.deepEqual(original.seen.audio.played, { 43 }, "motion sound has played once")
+  Assert.equal(#original.seen.terrainEffects.emitted, 1, "the interaction turn emits grass presentation once")
   local bucket = ScriptSave.capture(original.scheduler, 102, { registryFingerprint = original.registry:fingerprint() })
   Assert.equal(#bucket.tasks, 1, "the blocked interaction task is captured")
   Assert.equal(bucket.tasks[1].taskType, "follower_interaction")
@@ -772,6 +875,7 @@ T["mid-motion task restore rebuilds the derived partner action without replaying
   Assert.deepEqual(resumed.seen.actor.offset, { x = 2, y = 3, z = -1 }, "resume restores the current cumulative offset")
   Assert.equal(resumed.seen.actor.begins, 1, "resume begins the presentation action exactly once")
   Assert.deepEqual(resumed.seen.audio.played, {}, "resume does not replay the motion sound")
+  Assert.equal(#resumed.seen.terrainEffects.emitted, 0, "resume does not replay the grass turn effect")
   Assert.equal(task.state.motionTick, 2, "resume continues from the saved elapsed tick")
   for tick = 104, 110 do
     if task.status == "completed" then

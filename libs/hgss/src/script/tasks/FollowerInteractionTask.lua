@@ -4,6 +4,7 @@ local Errors = require("libs.errors.src.Errors")
 local ScriptErrors = require("libs.script.src.errors")
 local DialogueTask = require("libs.hgss.src.script.tasks.DialogueTask")
 local ContextChoiceTask = require("libs.hgss.src.script.tasks.ContextChoiceTask")
+local MetatileBehavior = require("libs.hgss.src.world.MetatileBehavior")
 
 local FollowerInteractionTask = { type = "follower_interaction", version = 1 }
 local STATE_KEYS = {
@@ -36,7 +37,6 @@ local PHASES = {
   deltas = true,
   choice = true,
   reward = true,
-  reward_finalize = true,
   done = true,
 }
 local FACING = { [1] = "north", [2] = "south", [3] = "west", [4] = "east" }
@@ -95,13 +95,37 @@ local function releaseEffect(state, svc)
   state.effectSelector = nil
 end
 
-local function clearMotion(state, svc)
+local function effectAnchor(svc, actorId, direction)
+  local anchor = svc.followerInteraction:partnerEffectAnchor()
+  anchor.direction = direction or svc.actors:getFacing(actorId)
+  return anchor
+end
+
+local function emitGrassTurn(svc, engine, actorId, previousFacing, facing)
+  if previousFacing == facing then
+    return
+  end
+  local behavior = engine:partnerMetatileBehavior()
+  local kind = MetatileBehavior.isTallGrass(behavior) and "tall_grass"
+    or MetatileBehavior.isVeryTallGrass(behavior) and "very_tall_grass"
+  if kind then
+    local anchor = effectAnchor(svc, actorId, facing)
+    anchor.kind = kind
+    svc.terrainEffects:emit(anchor)
+  end
+end
+
+local function clearMotion(state, svc, normalCompletion)
   local actorId = partnerId(svc.followingMon)
   if actorId ~= nil and svc.actors:getFacing(actorId) ~= nil then
     if state.motionStarted then
       svc.actors:cancelScriptedMovement(actorId)
     end
+    local previousFacing = svc.actors:getFacing(actorId)
     svc.actors:setFacing(actorId, state.savedFacing)
+    if normalCompletion then
+      emitGrassTurn(svc, svc.followerInteraction, actorId, previousFacing, state.savedFacing)
+    end
   end
   state.motionId, state.motionIndex, state.motionTick, state.motionStarted = 0, 1, 0, false
   state.cumulativeX, state.cumulativeY, state.cumulativeZ = 0, 0, 0
@@ -114,22 +138,16 @@ local function ensureReaction(state, svc)
   end
   local reaction = svc.followerInteraction:reaction(selector)
   local actorId = partnerId(svc.followingMon)
-  local actor = svc.actors.getById and assert(svc.actors:getById(actorId), "partner actor is unavailable") or nil
-  local numeric = actor and actor.numericState and actor:numericState() or {}
-  local world = actor and actor.getWorldPosition and actor:getWorldPosition() or { y = 0 }
-  EFFECT_HANDLES[state] = svc.terrainEffects:emit({
-    kind = reaction.definition or reaction.kind,
-    fieldX = numeric.fieldX or 0,
-    fieldZ = numeric.fieldZ or 0,
-    worldY = world.y or 0,
-    direction = actor and actor.facing or nil,
-    cellKey = actor and actor.cellKey or nil,
-    sourceSurfaceId = actor and actor.getSourceSurfaceId and actor:getSourceSurfaceId() or nil,
-  })
+  local anchor = effectAnchor(svc, actorId)
+  anchor.kind = reaction.definition or reaction.kind
+  EFFECT_HANDLES[state] = svc.terrainEffects:emit(anchor)
 end
 
 local function startReaction(state, svc, selector)
   if selector == nil or selector == 0 then
+    return
+  end
+  if MetatileBehavior.suppressesFollowerReaction(svc.followerInteraction:partnerMetatileBehavior()) then
     return
   end
   state.effectSelector = selector
@@ -182,7 +200,7 @@ function FollowerInteractionTask.poll(state, ctx)
           and not record.sound
         )
       then
-        clearMotion(state, svc)
+        clearMotion(state, svc, true)
         state.phase = "reaction"
         break
       end
@@ -194,7 +212,9 @@ function FollowerInteractionTask.poll(state, ctx)
         end
         local facing = type(record.facing) == "string" and record.facing or FACING[record.facing]
         if facing then
+          local previousFacing = svc.actors:getFacing(actorId)
           svc.actors:setFacing(actorId, facing)
+          emitGrassTurn(svc, engine, actorId, previousFacing, facing)
         end
         svc.actors:beginScriptedAction(actorId, {
           action = "presentation_offset",
@@ -357,22 +377,24 @@ function FollowerInteractionTask.poll(state, ctx)
       state.dialogueState = message(ctx, bank, id, bindings)
       return { complete = false, state = state }
     end
-    local result = DialogueTask.poll(state.dialogueState, ctx)
+    local dialogueCtx = ctx
+    if state.rewardWaitForEffect and not svc.audio:isEffectWaitComplete("SEQ_ME_ACCE") then
+      dialogueCtx = {}
+      for key, value in pairs(ctx) do
+        dialogueCtx[key] = value
+      end
+      dialogueCtx.input = {}
+      for key, value in pairs(ctx.input or {}) do
+        dialogueCtx.input[key] = value
+      end
+      dialogueCtx.input.pressedAction = nil
+      dialogueCtx.input.pressedCancel = nil
+    end
+    local result = DialogueTask.poll(state.dialogueState, dialogueCtx)
     if not result.complete then
       return { complete = false, state = state }
     end
     state.dialogueState = nil
-    if state.rewardWaitForEffect then
-      state.phase = "reward_finalize"
-    else
-      state.phase = "done"
-      return { complete = true, state = state }
-    end
-  end
-  if state.phase == "reward_finalize" then
-    if not svc.audio:isEffectWaitComplete("SEQ_ME_ACCE") then
-      return { complete = false, state = state }
-    end
     state.phase = "done"
     return { complete = true, state = state }
   end
@@ -396,7 +418,7 @@ function FollowerInteractionTask.cancel(state, reason, ctx)
     state.choiceState = nil
   end
   releaseEffect(state, svc)
-  clearMotion(state, svc)
+  clearMotion(state, svc, false)
 end
 
 function FollowerInteractionTask.validate(state)
@@ -540,11 +562,10 @@ function FollowerInteractionTask.validate(state)
     or (state.phase == "dialogue" and state.dialogueState == nil)
     or (state.dialogueState ~= nil and state.phase ~= "dialogue" and state.phase ~= "reward")
     or (state.phase == "reward" and (not state.rewardStarted or state.dialogueState == nil))
-    or (state.phase == "reward_finalize" and (not state.rewardStarted or state.dialogueState ~= nil or not state.rewardWaitForEffect))
     or (not state.rewardStarted and state.rewardWaitForEffect)
     or (state.delayRemaining ~= nil and state.phase ~= "delay")
     or (state.effectSelector ~= nil and state.phase ~= "dialogue" and state.phase ~= "delay")
-    or (state.rewardStarted and state.phase ~= "reward" and state.phase ~= "reward_finalize" and state.phase ~= "done")
+    or (state.rewardStarted and state.phase ~= "reward" and state.phase ~= "done")
     or (state.motionStarted and state.phase ~= "motion")
   then
     return invalid()
