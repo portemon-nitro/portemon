@@ -54,6 +54,7 @@ ArtifactState.KINDS = {
   mart = true,
   bag = true,
   party = true,
+  pc = true,
   -- One staged message bank (or the family summary) per job: each bank owns
   -- its payload and marker, the summary owns only the index and completion.
   ["message-bank"] = true,
@@ -107,6 +108,10 @@ end
 -- integer never addresses a cell.
 local function checkKey(kind, key)
   assert(type(key) == "string" and key ~= "", "artifact key must be a non-empty string")
+  if kind == "pc" then
+    assert(key == "global", "pc artifacts require the global key")
+    return
+  end
   if key == "global" or isCanonicalInteger(key) then
     assert(kind ~= "field-cell" or key:find("-", 1, true) ~= nil, "invalid artifact key for field-cell: " .. key)
     return

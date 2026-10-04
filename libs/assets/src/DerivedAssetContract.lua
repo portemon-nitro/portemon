@@ -388,6 +388,13 @@ DerivedAssetContract.party = {
   schema = "g4-party-presentation-v6",
 }
 
+-- The PC family retains its source-independent Storage, Mailbox, Mail and
+-- Photo Album presentation records as one independently published family.
+DerivedAssetContract.pc = {
+  cacheFormat = "pc-cache-v1",
+  schema = "g4-pc-v1",
+}
+
 DerivedAssetContract.audio = {
   cacheFormat = "g4-audio-cache-v1",
   -- The index carries the per-class symbol maps sequenceBySymbol and
