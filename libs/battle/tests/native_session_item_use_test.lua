@@ -426,4 +426,190 @@ function T.generated_battle_use_raises_its_stage_through_the_session()
   session:dispose()
 end
 
+---@return table<string, table<string, unknown>> immutable battle-use facts for a focusing serving
+local function focusServingFacts()
+  return {
+    DIRE_HIT = {
+      partyUse = { kind = "deferred", reason = "battle_only" },
+      battleUse = {
+        cures = { confusion = false, infatuation = false },
+        guardSpec = false,
+        stages = {
+          attack = 0,
+          defense = 0,
+          specialAttack = 0,
+          specialDefense = 0,
+          speed = 0,
+          accuracy = 0,
+          critical = 1,
+        },
+      },
+    },
+  }
+end
+
+---@return table<string, table<string, unknown>> immutable battle-use facts for a screening serving
+local function guardServingFacts()
+  return {
+    GUARD_SPEC = {
+      partyUse = { kind = "deferred", reason = "battle_only" },
+      battleUse = {
+        cures = { confusion = false, infatuation = false },
+        guardSpec = true,
+        stages = {
+          attack = 0,
+          defense = 0,
+          specialAttack = 0,
+          specialDefense = 0,
+          speed = 0,
+          accuracy = 0,
+          critical = 0,
+        },
+      },
+    },
+  }
+end
+
+---@param events table[] emitted turn events under inspection
+---@return table the served bag-use event
+local function servedItemEvent(events)
+  for _, event in ipairs(events) do
+    if event.kind == "item" then
+      return event
+    end
+  end
+  error("the bag use announces itself")
+end
+
+-- A second focusing serving in the same stay refuses at commit: the first
+-- use consumes once and focuses, the repeat announces its refusal while
+-- stock, ledger, and the battle stream stay exactly as they were.
+function T.repeated_focusing_servings_refuse_at_commit()
+  local contracts = SessionFixture.sessionContracts()
+  local content = actionContent()
+  local lead = leveledCombatant(1, 23, "EEVEE", 20)
+  local pack = SessionFixture.inventory("party", { 1 }, { DIRE_HIT = 2 })
+  local session = contracts.Battle.newSession(
+    itemScenario(
+      { lead },
+      { leveledCombatant(2, 41, "EEVEE", 5), leveledCombatant(4, 43, "EEVEE", 5) },
+      pack,
+      focusServingFacts()
+    ),
+    content
+  )
+  local opening = SessionFixture.driveUntilSettled(session)
+  Assert.equal(opening.status, "waiting", "the opening turn asks for decisions")
+  local alpha = requestFor(opening, "alpha")
+  local beta = requestFor(opening, "beta")
+  local actor = assert(alpha.actors[1], "the owning request addresses its lead")
+  local foe = assert(beta.actors[1], "the opposing request addresses its lead")
+  local ok, replyErr = session:submit(SessionFixture.replyFor(alpha, { bagChoice(actor, "DIRE_HIT", 1) }))
+  Assert.isTrue(ok, "the first focusing choice is accepted")
+  Assert.isNil(replyErr, "accepted bag use carries no input error")
+  local answered, answerErr =
+    session:submit(SessionFixture.replyFor(beta, { SessionFixture.switchChoice(foe, 4) }))
+  Assert.isTrue(answered, "the opposing exchange is accepted")
+  Assert.isNil(answerErr, "accepted exchanges carry no input error")
+  local first = session:advance(64)
+  local served = servedItemEvent(first.events or {})
+  local servedPayload = served.payload --[[@as table<string, unknown>]]
+  Assert.equal(servedPayload.item, "DIRE_HIT", "the event names the served item")
+  Assert.isNil(servedPayload.refused, "the first focusing serving is not refused")
+  local afterFirst = session:capture()
+  Assert.equal(afterFirst.inventories.party.quantities.DIRE_HIT, 1, "the first serving spends one unit")
+  Assert.equal(#afterFirst.ledger, 1, "the first serving writes one ledger delta")
+
+  local repeat_turn = SessionFixture.driveUntilSettled(session)
+  Assert.equal(repeat_turn.status, "waiting", "the next turn asks for decisions")
+  local alphaAgain = requestFor(repeat_turn, "alpha")
+  local betaAgain = requestFor(repeat_turn, "beta")
+  local actorAgain = assert(alphaAgain.actors[1], "the owning request addresses its lead again")
+  local foeAgain = assert(betaAgain.actors[1], "the opposing request addresses its lead again")
+  local okAgain, replyErrAgain =
+    session:submit(SessionFixture.replyFor(alphaAgain, { bagChoice(actorAgain, "DIRE_HIT", 1) }))
+  Assert.isTrue(okAgain, "the repeated focusing choice is accepted")
+  Assert.isNil(replyErrAgain, "accepted bag use carries no input error")
+  local answeredAgain, answerErrAgain =
+    session:submit(SessionFixture.replyFor(betaAgain, { SessionFixture.switchChoice(foeAgain, 2) }))
+  Assert.isTrue(answeredAgain, "the opposing exchange back is accepted")
+  Assert.isNil(answerErrAgain, "accepted exchanges carry no input error")
+  local beforeRepeat = session:capture()
+  local second = session:advance(64)
+  local refused = servedItemEvent(second.events or {})
+  local refusedPayload = refused.payload --[[@as table<string, unknown>]]
+  Assert.equal(refusedPayload.item, "DIRE_HIT", "the refusal names the served item")
+  Assert.equal(refusedPayload.refused, "no_effect", "the repeat announces it had no effect")
+  local settled = session:capture()
+  Assert.equal(settled.inventories.party.quantities.DIRE_HIT, 1, "the refused repeat consumes nothing")
+  Assert.equal(#settled.ledger, 1, "the refused repeat writes no ledger delta")
+  Assert.equal(settled.rng.calls, beforeRepeat.rng.calls, "the refused repeat draws nothing")
+  session:dispose()
+end
+
+-- A second screening serving while mist stands refuses at commit with the
+-- same no-mutation guarantees as the focusing repeat.
+function T.repeated_screening_servings_refuse_at_commit()
+  local contracts = SessionFixture.sessionContracts()
+  local content = actionContent()
+  local lead = leveledCombatant(1, 23, "EEVEE", 20)
+  local pack = SessionFixture.inventory("party", { 1 }, { GUARD_SPEC = 2 })
+  local session = contracts.Battle.newSession(
+    itemScenario(
+      { lead },
+      { leveledCombatant(2, 41, "EEVEE", 5), leveledCombatant(4, 43, "EEVEE", 5) },
+      pack,
+      guardServingFacts()
+    ),
+    content
+  )
+  local opening = SessionFixture.driveUntilSettled(session)
+  Assert.equal(opening.status, "waiting", "the opening turn asks for decisions")
+  local alpha = requestFor(opening, "alpha")
+  local beta = requestFor(opening, "beta")
+  local actor = assert(alpha.actors[1], "the owning request addresses its lead")
+  local foe = assert(beta.actors[1], "the opposing request addresses its lead")
+  local ok, replyErr = session:submit(SessionFixture.replyFor(alpha, { bagChoice(actor, "GUARD_SPEC", 1) }))
+  Assert.isTrue(ok, "the first screening choice is accepted")
+  Assert.isNil(replyErr, "accepted bag use carries no input error")
+  local answered, answerErr =
+    session:submit(SessionFixture.replyFor(beta, { SessionFixture.switchChoice(foe, 4) }))
+  Assert.isTrue(answered, "the opposing exchange is accepted")
+  Assert.isNil(answerErr, "accepted exchanges carry no input error")
+  local first = session:advance(64)
+  local served = servedItemEvent(first.events or {})
+  local servedPayload = served.payload --[[@as table<string, unknown>]]
+  Assert.equal(servedPayload.item, "GUARD_SPEC", "the event names the served item")
+  Assert.isNil(servedPayload.refused, "the first screening serving is not refused")
+  local afterFirst = session:capture()
+  Assert.equal(afterFirst.inventories.party.quantities.GUARD_SPEC, 1, "the first serving spends one unit")
+  Assert.equal(#afterFirst.ledger, 1, "the first serving writes one ledger delta")
+
+  local repeat_turn = SessionFixture.driveUntilSettled(session)
+  Assert.equal(repeat_turn.status, "waiting", "the next turn asks for decisions")
+  local alphaAgain = requestFor(repeat_turn, "alpha")
+  local betaAgain = requestFor(repeat_turn, "beta")
+  local actorAgain = assert(alphaAgain.actors[1], "the owning request addresses its lead again")
+  local foeAgain = assert(betaAgain.actors[1], "the opposing request addresses its lead again")
+  local okAgain, replyErrAgain =
+    session:submit(SessionFixture.replyFor(alphaAgain, { bagChoice(actorAgain, "GUARD_SPEC", 1) }))
+  Assert.isTrue(okAgain, "the repeated screening choice is accepted")
+  Assert.isNil(replyErrAgain, "accepted bag use carries no input error")
+  local answeredAgain, answerErrAgain =
+    session:submit(SessionFixture.replyFor(betaAgain, { SessionFixture.switchChoice(foeAgain, 2) }))
+  Assert.isTrue(answeredAgain, "the opposing exchange back is accepted")
+  Assert.isNil(answerErrAgain, "accepted exchanges carry no input error")
+  local beforeRepeat = session:capture()
+  local second = session:advance(64)
+  local refused = servedItemEvent(second.events or {})
+  local refusedPayload = refused.payload --[[@as table<string, unknown>]]
+  Assert.equal(refusedPayload.item, "GUARD_SPEC", "the refusal names the served item")
+  Assert.equal(refusedPayload.refused, "no_effect", "the repeat announces it had no effect")
+  local settled = session:capture()
+  Assert.equal(settled.inventories.party.quantities.GUARD_SPEC, 1, "the refused repeat consumes nothing")
+  Assert.equal(#settled.ledger, 1, "the refused repeat writes no ledger delta")
+  Assert.equal(settled.rng.calls, beforeRepeat.rng.calls, "the refused repeat draws nothing")
+  session:dispose()
+end
+
 return { tests = T }

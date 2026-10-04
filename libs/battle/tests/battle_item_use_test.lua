@@ -659,7 +659,7 @@ function T.dire_hits_focus_through_battle_use()
   }
   local holder = battleHolder()
   local battle = battleState("X_ITEM", holder)
-  local plan = ItemUse.plan(battleChoice("X_ITEM"), battleView("X_ITEM", holder), battleFacts(stages))
+  local plan = ItemUse.plan(battleChoice("X_ITEM"), battle, battleFacts(stages))
   Assert.isNil(plan.failureReason, "the focus serving plans")
   ItemUse.execute(plan, battle)
   local BattleContext = SessionFixture.requirePresent(
@@ -676,7 +676,7 @@ function T.guard_specs_screen_the_side_through_battle_use()
   local holder = battleHolder()
   local battle = battleState("X_ITEM", holder)
   local plan =
-    ItemUse.plan(battleChoice("X_ITEM"), battleView("X_ITEM", holder), battleFacts(attackStage(), nil, true))
+    ItemUse.plan(battleChoice("X_ITEM"), battle, battleFacts(attackStage(), nil, true))
   Assert.isNil(plan.failureReason, "the guard serving plans")
   ItemUse.execute(plan, battle)
   local BattleContext = SessionFixture.requirePresent(
@@ -709,10 +709,301 @@ function T.battle_cures_clear_volatiles_through_battle_use()
   Assert.isTrue(context:hasBattleEffect(1, "confusion"), "setup confuses the holder")
   local cures = { confusion = true, infatuation = false }
   local plan =
-    ItemUse.plan(battleChoice("X_ITEM"), battleView("X_ITEM", holder), battleFacts(attackStage(), cures, false))
+    ItemUse.plan(battleChoice("X_ITEM"), battle, battleFacts(attackStage(), cures, false))
   Assert.isNil(plan.failureReason, "the cure serving plans")
   ItemUse.execute(plan, battle)
   Assert.isFalse(context:hasBattleEffect(1, "confusion"), "execution clears the volatile")
+end
+
+---@return table<string, integer> decoded native stage flags carrying only the critical rider
+local function criticalOnlyStages()
+  return {
+    attack = 0,
+    defense = 0,
+    specialAttack = 0,
+    specialDefense = 0,
+    speed = 0,
+    accuracy = 0,
+    critical = 1,
+  }
+end
+
+---@return table<string, integer> decoded native stage flags carrying no rider
+local function quietStages()
+  return {
+    attack = 0,
+    defense = 0,
+    specialAttack = 0,
+    specialDefense = 0,
+    speed = 0,
+    accuracy = 0,
+    critical = 0,
+  }
+end
+
+---@param battle table battle-owned execution state receiving focus on its holder
+local function seedFocus(battle)
+  local BattleContext = SessionFixture.requirePresent(
+    "libs.battle.src.BattleContext",
+    "the validated mutation surface owns mechanics writes"
+  )
+  local NativeEffects = SessionFixture.requirePresent(
+    "libs.battle.src.gen4.behaviors.effects.NativeEffectHandlers",
+    "typed battle-local writes own volatile definitions"
+  )
+  BattleContext.wrap(battle):addBattleEffect(
+    NativeEffects.definitionFor("focusenergy"),
+    { kind = "active", combatant = 1, activation = 7 },
+    { kind = "item", combatant = 1 },
+    { version = 1 }
+  )
+end
+
+---@param battle table battle-owned execution state receiving mist on the holder side
+local function seedMist(battle)
+  local BattleContext = SessionFixture.requirePresent(
+    "libs.battle.src.BattleContext",
+    "the validated mutation surface owns mechanics writes"
+  )
+  local NativeEffects = SessionFixture.requirePresent(
+    "libs.battle.src.gen4.behaviors.effects.NativeEffectHandlers",
+    "typed battle-local writes own volatile definitions"
+  )
+  BattleContext.wrap(battle):addBattleEffect(
+    NativeEffects.definitionFor("mist"),
+    { kind = "side", side = 1 },
+    { kind = "item", combatant = 1 },
+    { version = 1, turns = 5 }
+  )
+end
+
+---@return table<string, table<string, unknown>> semantic facts for one focusing serving
+local function focusFacts()
+  return {
+    DIRE_HIT = {
+      partyUse = { kind = "deferred", reason = "battle_only" },
+      battleUse = {
+        cures = { confusion = false, infatuation = false },
+        guardSpec = false,
+        stages = criticalOnlyStages(),
+      },
+    },
+  }
+end
+
+---@return table<string, table<string, unknown>> semantic facts for one screening serving
+local function guardFacts()
+  return {
+    GUARD_SPEC = {
+      partyUse = { kind = "deferred", reason = "battle_only" },
+      battleUse = {
+        cures = { confusion = false, infatuation = false },
+        guardSpec = true,
+        stages = quietStages(),
+      },
+    },
+  }
+end
+
+---@param flag string battle cure flag enabled on the serving under test preparation
+---@return table<string, table<string, unknown>> semantic facts for one volatile-cure serving
+local function volatileCureFacts(flag)
+  local cures = { confusion = false, infatuation = false }
+  cures[flag] = true
+  return {
+    CURE_CHARM = {
+      partyUse = { kind = "deferred", reason = "battle_only" },
+      battleUse = { cures = cures, guardSpec = false, stages = quietStages() },
+    },
+  }
+end
+
+---@param key string item key choosing under test preparation
+---@return table item choice serving the shared battle item to the holder
+local function servingChoice(key)
+  return { inventoryId = "pack", item = key, target = { kind = "combatant", combatant = 1 } }
+end
+
+-- A holder already under focus gains nothing from another focusing
+-- serving: planning refuses, and the refusal consumes no stock, writes no
+-- ledger, draws nothing, and leaves the existing focus in place.
+function T.focused_holders_refuse_another_focusing_serving()
+  local ItemUse = itemUse("battle servings gate focus on the live holder")
+  local BattleRng =
+    SessionFixture.requirePresent("libs.battle.src.gen4.BattleRng", "labeled native draws own the battle stream")
+  local BattleContext = SessionFixture.requirePresent(
+    "libs.battle.src.BattleContext",
+    "the validated mutation surface owns mechanics reads"
+  )
+  local holder = battleHolder()
+  local battle = battleState("DIRE_HIT", holder)
+  seedFocus(battle)
+  local context = BattleContext.wrap(battle)
+  Assert.isTrue(context:hasBattleEffect(1, "focusenergy"), "setup focuses the holder")
+
+  local rng = BattleRng.new(NATIVE_SEED)
+  local callsBefore = rng:capture().calls
+  local plan = ItemUse.plan(servingChoice("DIRE_HIT"), battle, focusFacts())
+  Assert.equal(plan.failureReason, "no_effect", "the repeated focus plans its refusal")
+  Assert.deepEqual(plan.effectOperations, {}, "a refused plan lists no effects")
+  Assert.isTrue(plan.executed ~= true, "refused plans carry no execution stamp")
+  local refusal = Assert.throws(function()
+    ItemUse.execute(plan, battle, rng)
+  end)
+  Assert.equal((refusal --[[@as table]]).code, "no_effect", "executing a refused plan raises its typed failure")
+  Assert.equal(battle.inventories.pack.quantities.DIRE_HIT, 1, "refusals consume nothing")
+  Assert.deepEqual(battle.ledger, {}, "refusals write no ledger")
+  Assert.equal(rng:capture().calls, callsBefore, "refusals draw nothing")
+  Assert.isTrue(context:hasBattleEffect(1, "focusenergy"), "the existing focus remains")
+end
+
+-- A side already behind mist gains nothing from another screening
+-- serving: planning refuses with the screened side left exactly as it was.
+function T.screened_sides_refuse_another_screening_serving()
+  local ItemUse = itemUse("battle servings gate screens on the live side")
+  local BattleRng =
+    SessionFixture.requirePresent("libs.battle.src.gen4.BattleRng", "labeled native draws own the battle stream")
+  local BattleContext = SessionFixture.requirePresent(
+    "libs.battle.src.BattleContext",
+    "the validated mutation surface owns mechanics reads"
+  )
+  local holder = battleHolder()
+  local battle = battleState("GUARD_SPEC", holder)
+  seedMist(battle)
+  local context = BattleContext.wrap(battle)
+  Assert.isTrue(context:sideEffect(1, "mist") ~= nil, "setup screens the holder side")
+
+  local rng = BattleRng.new(NATIVE_SEED)
+  local callsBefore = rng:capture().calls
+  local plan = ItemUse.plan(servingChoice("GUARD_SPEC"), battle, guardFacts())
+  Assert.equal(plan.failureReason, "no_effect", "the repeated screen plans its refusal")
+  Assert.deepEqual(plan.effectOperations, {}, "a refused plan lists no effects")
+  Assert.isTrue(plan.executed ~= true, "refused plans carry no execution stamp")
+  local refusal = Assert.throws(function()
+    ItemUse.execute(plan, battle, rng)
+  end)
+  Assert.equal((refusal --[[@as table]]).code, "no_effect", "executing a refused plan raises its typed failure")
+  Assert.equal(battle.inventories.pack.quantities.GUARD_SPEC, 1, "refusals consume nothing")
+  Assert.deepEqual(battle.ledger, {}, "refusals write no ledger")
+  Assert.equal(rng:capture().calls, callsBefore, "refusals draw nothing")
+  Assert.isTrue(context:sideEffect(1, "mist") ~= nil, "the existing screen remains")
+end
+
+-- Volatile cures need their volatile: without confusion or infatuation on
+-- the holder, a cure-only serving refuses instead of consuming.
+function T.volatile_cures_without_their_volatile_refuse()
+  local ItemUse = itemUse("battle servings gate volatile cures on the live holder")
+  local BattleRng =
+    SessionFixture.requirePresent("libs.battle.src.gen4.BattleRng", "labeled native draws own the battle stream")
+  for _, flag in ipairs({ "confusion", "infatuation" }) do
+    local holder = battleHolder()
+    local battle = battleState("CURE_CHARM", holder)
+    local rng = BattleRng.new(NATIVE_SEED)
+    local callsBefore = rng:capture().calls
+    local plan = ItemUse.plan(servingChoice("CURE_CHARM"), battle, volatileCureFacts(flag))
+    Assert.equal(plan.failureReason, "no_effect", "the cure without " .. flag .. " plans its refusal")
+    Assert.deepEqual(plan.effectOperations, {}, "a refused plan lists no effects")
+    local refusal = Assert.throws(function()
+      ItemUse.execute(plan, battle, rng)
+    end)
+    Assert.equal(
+      (refusal --[[@as table]]).code,
+      "no_effect",
+      "the cure without " .. flag .. " names its reason"
+    )
+    Assert.equal(
+      battle.inventories.pack.quantities.CURE_CHARM,
+      1,
+      "the cure without " .. flag .. " consumes nothing"
+    )
+    Assert.deepEqual(battle.ledger, {}, "the cure without " .. flag .. " writes no ledger")
+    Assert.equal(rng:capture().calls, callsBefore, "the cure without " .. flag .. " draws nothing")
+  end
+end
+
+-- An unrelated applicable rider still makes the serving effectful: with no
+-- volatile present, the stage climbs once for one unit while the
+-- already-satisfied cure is left out of the plan.
+function T.mixed_cure_and_stage_serves_only_the_applicable_stage()
+  local ItemUse = itemUse("battle servings keep only the applicable riders")
+  local holder = battleHolder()
+  local battle = battleState("X_ITEM", holder)
+  local cures = { confusion = true, infatuation = false }
+  local plan =
+    ItemUse.plan(battleChoice("X_ITEM"), battle, battleFacts(attackStage(), cures, false))
+  Assert.isNil(plan.failureReason, "the mixed serving plans its applicable rider")
+  Assert.equal(#plan.effectOperations, 1, "the mixed serving carries one operation")
+  local operation = plan.effectOperations[1] --[[@as table<string, unknown>]]
+  Assert.equal(operation.kind, "stage", "the carried operation raises a stage")
+  Assert.equal(operation.stat, "attack", "the carried operation names its stat")
+  local outcome = ItemUse.execute(plan, battle)
+  Assert.isTrue(outcome.consumed, "the mixed serving consumes")
+  Assert.equal(battle.inventories.pack.quantities.X_ITEM, 0, "the mixed serving spends exactly one unit")
+  Assert.equal(#battle.ledger, 1, "the mixed serving writes exactly one ledger delta")
+  Assert.equal(holder.stages.attack, 1, "the mixed serving raises attack by one stage")
+end
+
+-- Item facts may travel beside held, fling, and gift records without
+-- changing serving semantics; genuinely foreign fields still fail closed.
+function T.sibling_item_records_leave_serving_semantics_unchanged()
+  local ItemUse = itemUse("battle servings read only their serving facts")
+  local view = declaredView()
+  local plain = ItemUse.plan(potionChoice(1), view, potionFacts())
+  Assert.isNil(plain.failureReason, "the plain serving plans")
+  local travelingFacts = {
+    POTION = {
+      partyUse = potionFacts().POTION.partyUse,
+      heldBehavior = {},
+      fling = {},
+      naturalGift = {},
+    },
+  }
+  local traveling = ItemUse.plan(potionChoice(1), view, travelingFacts)
+  Assert.isNil(traveling.failureReason, "the serving beside sibling records plans")
+  Assert.deepEqual(
+    traveling.effectOperations,
+    plain.effectOperations,
+    "sibling records change no serving operation"
+  )
+  local battle = executionState(view)
+  local outcome = ItemUse.execute(traveling, battle, nil)
+  Assert.isTrue(outcome.consumed, "the serving beside sibling records consumes")
+  Assert.equal(battle.inventories.party.quantities.POTION, 0, "the serving spends exactly one unit")
+
+  local holder = battleHolder()
+  local staged = battleState("X_ITEM", holder)
+  local stagedEntry = battleFacts(attackStage()).X_ITEM
+  local stagedTraveling = {
+    X_ITEM = {
+      partyUse = stagedEntry.partyUse,
+      battleUse = stagedEntry.battleUse,
+      heldBehavior = {},
+      fling = {},
+      naturalGift = {},
+    },
+  }
+  local stagedPlan = ItemUse.plan(battleChoice("X_ITEM"), staged, stagedTraveling)
+  Assert.isNil(stagedPlan.failureReason, "the battle serving beside sibling records plans")
+  Assert.equal(#stagedPlan.effectOperations, 1, "the battle serving keeps its operation")
+
+  local foreignFacts = {
+    POTION = {
+      partyUse = potionFacts().POTION.partyUse,
+      lore = { tale = "shiny" },
+    },
+  }
+  local ok, failure = pcall(ItemUse.plan, potionChoice(1), view, foreignFacts)
+  Assert.isFalse(ok, "the serving carrying a foreign field never plans")
+  Assert.equal(
+    (failure --[[@as table]]).code,
+    "BATTLE_MISSING_BEHAVIOR",
+    "the foreign field reports its missing behavior"
+  )
+  Assert.deepEqual(
+    view.inventories.party.quantities,
+    { POTION = 1, REVIVE = 0 },
+    "foreign fields consume no stock"
+  )
 end
 
 return { tests = T }

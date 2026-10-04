@@ -190,7 +190,13 @@ local function semanticEntry(item, itemFacts)
   for key in
     pairs(entry --[[@as table<string, unknown>]])
   do
-    if key ~= "partyUse" and key ~= "battleUse" and key ~= "naturalGift" and key ~= "fling" then
+    if
+      key ~= "partyUse"
+      and key ~= "battleUse"
+      and key ~= "heldBehavior"
+      and key ~= "naturalGift"
+      and key ~= "fling"
+    then
       error(BattleErrors.missingBehavior("battle item facts carry only their generated facts", { item = item }))
     end
   end
@@ -333,12 +339,15 @@ end
 
 --- Plans one battle-only serving from its generated battle use without
 --- mutating: nonzero stage flags plan one stage each while headroom
---- lasts, the critical flag plans focus, the guard flag plans the side
---- screen, and true cure flags plan volatile clearing. Battle volatiles
---- and screens stay invisible to planning, so focus, guard, and cures
---- plan optimistically while stages gate on visible headroom. Servings
---- whose party use is not deferred battle-only, or that carry no battle
---- use, raise missing behavior instead of guessing.
+--- lasts, the critical flag plans focus only while the holder carries
+--- no focus, the guard flag plans the side screen only while the
+--- holder side carries no screen, and true cure flags plan volatile
+--- clearing only while the holder carries the volatile. Stages gate on
+--- visible headroom while focus, guard, and cures read the same live
+--- battle-local effects execution uses, so servings without any
+--- applicable effect plan nothing. Servings whose party use is not
+--- deferred battle-only, or that carry no battle use, raise missing
+--- behavior instead of guessing.
 ---@param item string non-ball item key under planning
 ---@param target BattleItemTarget detached holder target under planning
 ---@param view table<string, unknown> declared battle state under planning
@@ -360,6 +369,8 @@ local function planBattleServing(item, target, view, entry)
     target.combatant --[[@as integer]]
   ] or nil
   local active = type(holder) == "table" and (holder --[[@as table<string, unknown>]]).active ~= nil
+  local holderId = target.combatant --[[@as integer]]
+  local context = BattleContext.wrap(view)
   local stages = holderStages(holder)
   local flags = riders.stages
   if type(flags) == "table" then
@@ -373,17 +384,22 @@ local function planBattleServing(item, target, view, entry)
       end
     end
     if type(decoded.critical) == "number" and decoded.critical ~= 0 and active then
-      operations[#operations + 1] = { kind = "focus", target = copyTarget(target) }
+      if not context:hasBattleEffect(holderId, "focusenergy") then
+        operations[#operations + 1] = { kind = "focus", target = copyTarget(target) }
+      end
     end
   end
   if riders.guardSpec == true and active then
-    operations[#operations + 1] = { kind = "guard", target = copyTarget(target) }
+    local side = context:entryOf(holderId).side --[[@as integer]]
+    if context:sideEffect(side, "mist") == nil then
+      operations[#operations + 1] = { kind = "guard", target = copyTarget(target) }
+    end
   end
   local cures = riders.cures
   if type(cures) == "table" and active then
     for _, flag in ipairs({ "confusion", "infatuation" }) do
       if
-        (cures --[[@as table<string, unknown>]])[flag] == true
+        (cures --[[@as table<string, unknown>]])[flag] == true and context:hasBattleEffect(holderId, flag)
       then
         operations[#operations + 1] = { kind = "cure", key = flag, target = copyTarget(target) }
       end
