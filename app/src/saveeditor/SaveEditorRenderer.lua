@@ -247,6 +247,7 @@ local function drawShadedControl(renderer, rect, label, selected, disabled, dest
   local textWidth = renderer.text:textWidth(label)
   assert(textWidth <= content.width, label .. " does not fit its shaded control")
   drawText(renderer, label, content.x + (content.width - textWidth) / 2, content.y + 2, disabled and "hint" or "normal")
+  return content
 end
 
 local function fitText(renderer, value, width)
@@ -379,11 +380,7 @@ local function paintPane(self, view, plan, pane)
           or row.targetId:match("^party:slot:") ~= nil
           or row.targetId:match("^bag:item:") ~= nil
         if actionable then
-          local label = row.displayName or row.label
-          if row.targetId:match("^location:map:") then
-            label = fitText(self, label, rect.width - 22)
-          end
-          drawShadedControl(self, rect, label, row.targetId == view.focus, row.enabled == false)
+          drawShadedControl(self, rect, "", row.targetId == view.focus, row.enabled == false)
         end
         local icon = row.iconKey and self._icons[row.iconKey]
         if icon and graphics.draw then
@@ -391,15 +388,13 @@ local function paintPane(self, view, plan, pane)
         end
         local labelRect = assert(row.labelRect, "layout rows own their label text bounds")
         local textRole = row.role == "warning" and "error" or row.role == "read-only value" and "hint" or "normal"
-        if not actionable then
-          drawText(
-            self,
-            fitText(self, row.displayName or row.label, labelRect.width),
-            labelRect.x,
-            rect.y + 3,
-            textRole
-          )
-        end
+        drawText(
+          self,
+          fitText(self, row.displayName or row.label, labelRect.width),
+          labelRect.x,
+          rect.y + 3,
+          actionable and row.enabled == false and "hint" or textRole
+        )
         if row.valueText ~= nil and row.valueRect ~= nil then
           local valueRect = row.valueRect
           drawText(self, fitText(self, row.valueText, valueRect.width), valueRect.x, rect.y + 3)
@@ -705,7 +700,6 @@ drawLocation = function(self, view, layout)
   local graphics = self.graphics
   local INK = self.skin.text.normal.foreground
   local BORDER = self.skin.cards.normal.border
-  local SELECTED = self.skin.cards.normal.selectedRim
   local MUTED = self.skin.text.hint.foreground
   local location = assert(view.location)
   local navigation = assert(view.locationNavigation)
@@ -717,14 +711,15 @@ drawLocation = function(self, view, layout)
   for _, targetId in ipairs({ "location:map-picker", "location:map-back" }) do
     local target = targetRect(layout, targetId)
     if target then
-      setColor(graphics, targetId == view.focus and SELECTED or BORDER)
-      graphics.rectangle("line", target.x, target.y, target.width, target.height)
+      local content = drawShadedControl(self, target, "", targetId == view.focus, false)
       local label = targetId == "location:map-picker"
           and navigation.page == "map-list"
           and ("Search maps: " .. tostring(view.query or ""))
         or targetId == "location:map-picker" and "Change Map"
         or "Back"
-      drawText(self, label, target.x + 4, target.y + 3, INK)
+      local fitted = fitText(self, label, content.width)
+      local textWidth = self.text:textWidth(fitted)
+      drawText(self, fitted, content.x + (content.width - textWidth) / 2, content.y + 2, INK)
     end
   end
 

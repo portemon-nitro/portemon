@@ -579,7 +579,7 @@ function State:_partyView()
   local draftDirty = self.monDraft ~= nil and (self.monDraft:mode() == "add" or self.monDraft:isDirty())
   local partySummary
   local partyFieldHelp
-  if controller.partyPage ~= "list" and controller.partySlot0 ~= nil then
+  if controller.partyPage ~= "list" and (controller.partySlot0 ~= nil or self.monDraft ~= nil) then
     local mon = self.monDraft and self.monDraft:record() or self:_selectedPartyMon(members)
     local projection = selectedProjection
       or (self.monDraft and self.monDraft:projection())
@@ -639,7 +639,7 @@ function State:_bagView()
   end)
   local pockets = {}
   for _, key in ipairs(pocketKeys) do
-    pockets[#pockets + 1] = { key = key, label = itemCatalog:pocketName(key) }
+    pockets[#pockets + 1] = { key = key }
   end
   local snapshot = self.session:bagSnapshot(self.controller.bagPocket)
   local rows = {}
@@ -675,7 +675,6 @@ function State:_bagView()
   end
   return {
     bagPocket = self.controller.bagPocket,
-    bagPocketLabel = itemCatalog:pocketName(self.controller.bagPocket),
     bagPockets = pockets,
     bagRows = rows,
     bagPageRows = pageRows,
@@ -765,6 +764,7 @@ function State:_finishValueEditor()
       local pending = assert(self.pendingQuantity)
       self.pendingQuantity = nil
       if pending.returnModal then
+        self.controller.focus = "bag:item:" .. pending.itemKey
         self.controller:openModal(pending.returnModal)
       end
     end

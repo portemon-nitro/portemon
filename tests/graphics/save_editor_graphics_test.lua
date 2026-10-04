@@ -6,6 +6,7 @@ local ApplicationPresentation = require("libs.ui.src.ApplicationPresentation")
 local DisplayContext = require("libs.ui.src.DisplayContext")
 local FieldTextRenderer = require("libs.hgss.src.ui.FieldTextRenderer")
 local FieldUiFixture = require("tests.support.FieldUiFixture")
+local FieldScriptSymbols = require("libs.assets.src.field.FieldScriptSymbols")
 local Interface = require("app.src.saveeditor.SaveEditorInterface")
 local Layout = require("app.src.saveeditor.SaveEditorLayout")
 local Renderer = require("app.src.saveeditor.SaveEditorRenderer")
@@ -13,6 +14,8 @@ local ValueEditor = require("app.src.saveeditor.SaveEditorValueEditor")
 local ScreenTopology = require("libs.ui.src.ScreenTopology")
 
 local T = {}
+local LONG_FLAG_NAME = "FLAG_HIDE_GOLDENROD_DEPT_STORE_5F_RETURN_FRUSTRATION_LADY"
+local LONG_FLAG_DISPLAY_NAME = LONG_FLAG_NAME:gsub("^FLAG_", "")
 
 local function realTextMetrics(scope)
   local fieldText = scope:own(FieldTextRenderer.new({ cacheFs = FieldUiFixture.cacheWithFontAndFrames() }))
@@ -33,7 +36,8 @@ local function fixture(scope, width, height, topology, section, variant)
     section = section,
     ready = true,
     dirty = variant ~= "clean-status",
-    focus = "flag:FLAG_TEST",
+    focus = variant == "long-flag" and ("flag:" .. LONG_FLAG_NAME)
+      or "flag:FLAG_TEST",
     query = "",
     session = {
       playerName = "PLAYER",
@@ -41,14 +45,23 @@ local function fixture(scope, width, height, topology, section, variant)
       flags = {},
       location = { fieldX = 32, fieldZ = 48 },
     },
-    flagRows = { { name = "FLAG_TEST", displayName = "TEST", id = 1, value = false } },
+    flagRows = {
+      variant == "long-flag" and {
+        name = LONG_FLAG_NAME,
+        displayName = LONG_FLAG_DISPLAY_NAME,
+        id = FieldScriptSymbols.flagsByName[LONG_FLAG_NAME],
+        value = false,
+      } or { name = "FLAG_TEST", displayName = "TEST", id = 1, value = false },
+    },
     flagFilter = "Named",
     flagGroupLabel = "Named",
     scope = {
       id = "section:" .. section,
       epoch = 1,
       kind = "section",
-      focusId = "flag:FLAG_TEST",
+      focusId = variant == "long-flag"
+          and ("flag:" .. LONG_FLAG_NAME)
+        or "flag:FLAG_TEST",
     },
     textMetrics = realTextMetrics(scope),
   }
@@ -57,7 +70,7 @@ local function fixture(scope, width, height, topology, section, variant)
     view.scope = { id = "modal:leave", epoch = 2, kind = "decision", focusId = "cancel" }
   end
   if section == "Party" then
-    view.partyPage = variant or "list"
+    view.partyPage = variant == "draft-summary" and "draft" or variant or "list"
     if view.partyPage == "list" then
       view.partyCanAdd = true
       view.partyMemberCount = 1
@@ -94,6 +107,14 @@ local function fixture(scope, width, height, topology, section, variant)
         },
         { role = "warning", targetId = "party:validation", label = "HP exceeds calculated maximum" },
       }
+      if variant == "draft-summary" then
+        view.partySummary = {
+          label = "Chikorita",
+          species = "Chikorita",
+          level = 5,
+          iconKey = "party/chikorita",
+        }
+      end
     end
   elseif section == "Bag" then
     view.bagPocket = "items"
@@ -102,7 +123,7 @@ local function fixture(scope, width, height, topology, section, variant)
     local keys = { "items", "medicine", "balls", "battle_items", "berries", "mail", "key_items", "machines" }
     view.bagPockets, view.bagPocketTabRects = {}, {}
     for index, key in ipairs(keys) do
-      view.bagPockets[index] = { key = key, label = key }
+      view.bagPockets[index] = { key = key }
       view.bagPocketTabRects[index] = { x = (index - 1) * 32, y = 0, width = 32, height = 32 }
     end
     view.bagPocketStrip = { image = "bag/items-strip" }
@@ -147,13 +168,20 @@ local function fixture(scope, width, height, topology, section, variant)
       scale = 16,
     }
     view.locationNavigation = {
-      page = variant == "map-list" and "map-list" or "grid",
+      page =
+        (variant == "map-list" or (variant or ""):match("^map%-list%-long%-query") ~= nil) and "map-list" or "grid",
       mapId = 12,
       cursor = { fieldX = 33, fieldZ = 48 },
       center = { fieldX = 32, fieldZ = 48 },
       scale = 16,
       mapOffset = 0,
     }
+    if (variant or ""):match("^map%-list%-long%-query") ~= nil then
+      view.query = string.rep("very-long-search-query", 12)
+      view.focus = variant == "map-list-long-query" and "location:map-picker"
+        or variant == "map-list-long-query-back-focused" and "location:map-back"
+        or "location:grid"
+    end
     view.savedLocation = { mapId = 12, fieldX = 31, fieldZ = 48 }
     view.pendingLocation = { mapId = 12, fieldX = 32, fieldZ = 48 }
   end
@@ -238,14 +266,15 @@ local function draw(scope, width, height, topology, name, section, variant)
     Assert.isTrue(rect.y + rect.height <= plan.content.height + 0.01, name .. " " .. targetId .. " fits height")
   end
   if view.section == "Progress" then
-    local row = assert(layout.targets["flag:FLAG_TEST"], name .. " must expose its flag target")
+    local flagTargetId = "flag:" .. view.flagRows[1].name
+    local row = assert(layout.targets[flagTargetId], name .. " must expose its flag target")
     local rect = row.rect
     Assert.isTrue(rect.y >= layout.content.y and rect.y + rect.height <= layout.content.y + layout.content.height)
   elseif view.section == "Party" then
     if view.partyPage == "list" then
       Assert.notNil(layout.targets["party:add"], name .. " keeps Add visible")
       Assert.notNil(layout.targets["party:slot:0"], name .. " exposes the occupied slot")
-    else
+    elseif variant ~= "draft-summary" then
       Assert.notNil(layout.targets["party:field:personality"], name .. " exposes raw identity")
       local nature = false
       for _, row in ipairs(layout.rows) do
@@ -261,10 +290,12 @@ local function draw(scope, width, height, topology, name, section, variant)
     Assert.notNil(layout.targets["location:map-picker"], name .. " exposes Change Map")
     Assert.isNil(layout.targets["location:zoom-in"], name .. " has no zoom-in target")
     Assert.isNil(layout.targets["location:zoom-out"], name .. " has no zoom-out target")
-    Assert.notNil(layout.locationGrid, name .. " publishes the canonical clipped tile grid")
-    Assert.isTrue(layout.locationGrid.clip.width > 0 and layout.locationGrid.clip.height > 0)
-    Assert.equal(layout.locationGrid.tileSize, 16, name .. " uses the fixed tile scale")
-    Assert.isTrue(layout.locationGrid.clip.height >= 16, name .. " keeps at least one complete tile row")
+    if view.locationNavigation.page == "grid" then
+      Assert.notNil(layout.locationGrid, name .. " publishes the canonical clipped tile grid")
+      Assert.isTrue(layout.locationGrid.clip.width > 0 and layout.locationGrid.clip.height > 0)
+      Assert.equal(layout.locationGrid.tileSize, 16, name .. " uses the fixed tile scale")
+      Assert.isTrue(layout.locationGrid.clip.height >= 16, name .. " keeps at least one complete tile row")
+    end
   elseif view.section == "Bag" then
     if view.valueEditor then
       Assert.notNil(layout.targets["bag:quantity:decrement"], name .. " exposes the quantity decrement visual")
@@ -347,7 +378,7 @@ local function draw(scope, width, height, topology, name, section, variant)
   end
   renderer:dispose()
   presentation:dispose()
-  return data, renderedText, layout, bagDrawn
+  return data, renderedText, layout, bagDrawn, drawnText, view
 end
 
 function T.player_shell_renders_headerless_controls_and_a_dirty_leave_decision(scope)
@@ -670,6 +701,139 @@ function T.location_map_list_labels_fit_button_content_without_losing_map_identi
   end
   Assert.equal(found and found.label, "AZALEA_ILEX_FOREST_GATEHOUSE", "layout retains the complete map display name")
   Assert.isTrue(renderedText:find("AZALEA_ILEX", 1, true) ~= nil, "the painted map label remains recognizable")
+end
+
+function T.compact_progress_fits_a_real_long_flag_inside_separate_row_cells(scope)
+  local width, height = 256, 192
+  local compact = ScreenTopology.oneDisplay({
+    id = "main",
+    rect = { x = 0, y = 0, width = width, height = height },
+    touch = false,
+    role = "world",
+  })
+  local _, renderedText, layout, _, drawnText, view =
+    draw(scope, width, height, compact, "progress-long-flag", "Progress", "long-flag")
+  local targetId = "flag:" .. LONG_FLAG_NAME
+  local row
+  for _, candidate in ipairs(layout.rows) do
+    if candidate.targetId == targetId then
+      row = candidate
+      break
+    end
+  end
+  row = assert(row, "the real flag row is present in compact layout")
+  local label = LONG_FLAG_DISPLAY_NAME
+  Assert.isTrue(renderedText:find(label, 1, true) == nil, "the unbounded dynamic label is not drawn")
+  Assert.isTrue(renderedText:find("OFF", 1, true) ~= nil, "the flag value remains visible")
+  Assert.isTrue(row.labelRect.width > 0 and row.valueRect.width > 0, "layout reserves separate text cells")
+  local fittedLabel
+  for _, value in ipairs(drawnText) do
+    if value:find("HIDE_GOLDENROD", 1, true) == 1 then
+      fittedLabel = value
+    end
+  end
+  Assert.notNil(fittedLabel, "the stripped flag label is still rendered")
+  Assert.isTrue(view.textMetrics.measure(fittedLabel) <= row.labelRect.width, "the label fits its measured cell")
+end
+
+function T.add_draft_summary_is_rendered_in_its_reserved_party_region(scope)
+  local width, height = 800, 600
+  local wide = ScreenTopology.oneDisplay({
+    id = "main",
+    rect = { x = 0, y = 0, width = width, height = height },
+    touch = false,
+    role = "world",
+  })
+  local _, renderedText, layout = draw(scope, width, height, wide, "party-draft-summary", "Party", "draft-summary")
+  Assert.notNil(layout.partySummary, "Party draft layout reserves a summary region")
+  Assert.isTrue(renderedText:find("Chikorita", 1, true) ~= nil, "the draft summary renders its identity")
+  Assert.isTrue(renderedText:find("Lv. 5", 1, true) ~= nil, "the draft summary renders its level")
+end
+
+function T.location_map_search_uses_shaded_controls_and_bounds_long_queries(scope)
+  local width, height = 256, 192
+  local compact = ScreenTopology.oneDisplay({
+    id = "main",
+    rect = { x = 0, y = 0, width = width, height = height },
+    touch = false,
+    role = "world",
+  })
+  local normalImage, normalText, normalLayout, _, normalDrawnText, normalView = draw(
+    scope,
+    width,
+    height,
+    compact,
+    "location-map-search-unfocused",
+    "Location",
+    "map-list-long-query-unfocused"
+  )
+  local focusedImage, focusedText, focusedLayout, _, focusedDrawnText, focusedView = draw(
+    scope,
+    width,
+    height,
+    compact,
+    "location-map-search-focused",
+    "Location",
+    "map-list-long-query"
+  )
+  local backFocusedImage, _, backFocusedLayout = draw(
+    scope,
+    width,
+    height,
+    compact,
+    "location-map-back-focused",
+    "Location",
+    "map-list-long-query-back-focused"
+  )
+  local picker = assert(focusedLayout.targets["location:map-picker"]).rect
+  local back = assert(focusedLayout.targets["location:map-back"]).rect
+  local backSelected = assert(backFocusedLayout.targets["location:map-back"]).rect
+  local unfocusedTarget = assert(normalLayout.targets["location:map-picker"]).rect
+  Assert.equal(picker.x, unfocusedTarget.x, "focused and unfocused controls share geometry")
+  Assert.equal(back.x, assert(normalLayout.targets["location:map-back"]).rect.x, "Back shares stable geometry")
+  Assert.equal(back.x, backSelected.x, "focused Back shares geometry")
+  local function assertShadedAndFocused(target, focusImage, id)
+    local sampleX, sampleY = math.floor(target.x + 3), math.floor(target.y + target.height - 3)
+    local outsideX = math.floor(target.x + target.width + 2)
+    local backgroundR, backgroundG, backgroundB = normalImage:getPixel(outsideX, sampleY)
+    local interiorR, interiorG, interiorB = normalImage:getPixel(sampleX, sampleY)
+    Assert.isTrue(
+      interiorR ~= backgroundR or interiorG ~= backgroundG or interiorB ~= backgroundB,
+      id .. " fills its interior with shaded chrome rather than page background"
+    )
+    local differs = false
+    for y = math.floor(target.y), math.floor(target.y + target.height - 1) do
+      for x = math.floor(target.x), math.floor(target.x + target.width - 1) do
+        local normalR, normalG, normalB = normalImage:getPixel(x, y)
+        local focusR, focusG, focusB = focusImage:getPixel(x, y)
+        differs = differs or normalR ~= focusR or normalG ~= focusG or normalB ~= focusB
+      end
+    end
+    Assert.isTrue(differs, id .. " has a visibly distinct focused state")
+  end
+  assertShadedAndFocused(picker, focusedImage, "location:map-picker")
+  assertShadedAndFocused(backSelected, backFocusedImage, "location:map-back")
+  Assert.notNil(back, "Back remains a reachable target")
+  Assert.isTrue(focusedText:find("Search maps:", 1, true) ~= nil, "the search control retains its label")
+  Assert.isTrue(normalText:find("Search maps:", 1, true) ~= nil, "the unfocused search control retains its label")
+  local longQuery = focusedView.query
+  local fittedLabel
+  for _, value in ipairs(focusedDrawnText) do
+    if value:find("Search maps:", 1, true) then
+      fittedLabel = value
+    end
+  end
+  Assert.notNil(fittedLabel, "the focused map search label is emitted")
+  Assert.isTrue(focusedView.textMetrics.measure(fittedLabel) <= picker.width - 16, "search text fits control content")
+  Assert.isNil(focusedText:find(longQuery, 1, true), "the full query is not emitted")
+  local unfocusedLabel
+  for _, value in ipairs(normalDrawnText) do
+    if value:find("Search maps:", 1, true) then
+      unfocusedLabel = value
+    end
+  end
+  Assert.notNil(unfocusedLabel, "the unfocused map search label is emitted")
+  Assert.isTrue(normalView.textMetrics.measure(unfocusedLabel) <= picker.width - 16, "unfocused search text also fits")
 end
 
 function T.name_editor_renders_the_real_naming_snapshot_in_a_neutral_dialog(scope)

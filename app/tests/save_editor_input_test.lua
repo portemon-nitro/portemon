@@ -660,6 +660,39 @@ function T.tests.bag_add_successor_quantity_editor_stages_once_and_cancel_stages
   end)
 end
 
+function T.tests.canceling_bag_quantity_and_parent_modal_restores_selected_item_focus()
+  local _, Layout = stateModule()
+  local topology = ScreenTopology.oneDisplay({
+    id = "main",
+    rect = { x = 0, y = 0, width = 800, height = 500 },
+    touch = true,
+    role = "world",
+  })
+  withEditor(800, 500, topology, function(state)
+    selectSection(state, Layout, "Bag")
+    fillBagPocket(state, 1)
+    local bag = state:view()
+    local item = assert(bag.bagRows[1], "the fixture Bag contains an occupied item")
+    local itemTarget = "bag:item:" .. item.item
+    local revision = state.session:revision()
+    local inventory = copy(state.session:bagSnapshot(bag.bagPocket))
+
+    state:_activate(itemTarget)
+    Assert.equal(state:view().modal, "bag-item", "selecting a stack opens its item actions")
+    state:_activate("bag:quantity")
+    Assert.equal(state:view().valueEditor.kind, "quantity", "Quantity opens its nested editor")
+    state:keypressed("escape")
+    Assert.equal(state:view().modal, "bag-item", "the first cancel restores the parent item modal")
+
+    state:keypressed("escape")
+    local returned = state:view()
+    Assert.isNil(returned.modal, "the second cancel closes the parent item modal")
+    Assert.equal(returned.focus, itemTarget, "focus returns to the exact selected item card")
+    Assert.equal(state.session:revision(), revision, "cancellation does not mutate the save session")
+    Assert.deepEqual(state.session:bagSnapshot(bag.bagPocket), inventory, "cancellation preserves the Bag")
+  end)
+end
+
 function T.tests.bag_quantity_pointer_hold_repeats_on_fixed_ticks_and_resize_stops_it()
   local _, Layout = stateModule()
   local topology = ScreenTopology.oneDisplay({

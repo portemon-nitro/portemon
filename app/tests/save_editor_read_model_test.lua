@@ -185,6 +185,30 @@ function T.readonly_and_raw_draft_rows_share_live_partial_projection()
   Assert.isNil(draft:record().level, "derived values never become raw fields")
 end
 
+function T.add_draft_publishes_summary_from_its_current_projection()
+  local fixture, session = withParty(0)
+  local state = stateFor(session, fixture)
+  state.monDraft = assert(session:beginMonAdd("CHIKORITA", { location = 7, date = CatalogFixture.metDate() }))
+  state.controller:openPartyDraft("add", nil)
+
+  local view = state:_partyView()
+  local draft = assert(state.monDraft)
+  local record = draft:record()
+  local projection = draft:projection()
+  local species = fixture.context.monCatalog:species(record.species)
+  local summary = assert(view.partySummary, "an Add draft publishes the reserved Party summary")
+  Assert.isNil(summary.slot0, "an unapplied Add draft has no party slot identity")
+  Assert.equal(summary.label, record.nickname or species.name or record.species)
+  Assert.equal(summary.species, species.name or record.species)
+  Assert.equal(summary.level, projection.level, "summary level follows the derived draft projection")
+  Assert.equal(
+    summary.iconKey,
+    fixture.context.monCatalog:iconSelection(record),
+    "summary icon follows the current draft record"
+  )
+  Assert.equal(#session:partySnapshot().members, 0, "reading the summary does not publish the draft")
+end
+
 function T.party_detail_keeps_five_categories_and_raw_derived_roles()
   local fixture, session = withParty(1)
   local state = stateFor(session, fixture, 0)

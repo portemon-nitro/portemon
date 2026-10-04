@@ -23,7 +23,7 @@ local function bagView(rows, page0)
   local tabs, pockets = {}, {}
   for index, key in ipairs(keys) do
     tabs[index] = { x = (index - 1) * 32, y = 0, width = 32, height = 32 }
-    pockets[index] = { key = key, label = key }
+    pockets[index] = { key = key }
   end
   local pageCount = math.max(1, math.ceil(#rows / 6))
   page0 = math.min(pageCount - 1, page0 or 0)
