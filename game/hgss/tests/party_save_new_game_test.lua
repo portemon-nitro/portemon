@@ -36,7 +36,7 @@ local function candidate(catalog, seed)
 end
 
 function T.new_game_schema_requires_the_mons_bucket()
-  Assert.equal(GameSave.SCHEMA, "g4-game-save-v5", "the global save schema carries the mart bucket")
+  Assert.equal(GameSave.SCHEMA, "g4-game-save-v6", "the global save schema carries the mart and PC buckets")
 end
 
 function T.unpublished_candidate_carries_empty_validated_mons_state()
@@ -44,7 +44,7 @@ function T.unpublished_candidate_carries_empty_validated_mons_state()
   local fresh = candidate(catalog, 0x12345678)
   Assert.notNil(fresh.mons, "the unpublished new game carries the required mons bucket")
   local bucket = assert(fresh.mons)
-  Assert.equal(bucket.schema, "g4-mons-save-v1", "the bucket carries the mons save schema")
+  Assert.equal(bucket.schema, "g4-mons-save-v2", "the bucket carries the mons save schema")
   Assert.equal(
     bucket.catalogFingerprint,
     catalog:fingerprint(),

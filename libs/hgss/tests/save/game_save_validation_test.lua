@@ -9,6 +9,8 @@ local ItemFixture = require("libs.items.tests.item_fixture")
 local BagSave = require("libs.hgss.src.save.BagSave")
 local MonsSave = require("libs.mons.src.MonsSave")
 local MartSave = require("libs.hgss.src.save.MartSave")
+local Mailbox = require("libs.hgss.src.save.Mailbox")
+local PhotoAlbum = require("libs.hgss.src.save.PhotoAlbum")
 
 local T = {}
 
@@ -43,7 +45,7 @@ end
 
 local function record(saveId, versionId, playerData)
   return {
-    schema = "g4-game-save-v5",
+    schema = "g4-game-save-v6",
     saveId = saveId,
     versionId = versionId,
     playTimeSeconds = 0,
@@ -74,6 +76,8 @@ local function record(saveId, versionId, playerData)
     mons = monsBucket(),
     bag = BagSave.empty(),
     mart = MartSave.empty(),
+    mailbox = Mailbox.new():capture(),
+    photoAlbum = PhotoAlbum.new():capture(),
   }
 end
 
@@ -293,6 +297,11 @@ local function v3record(saveId, playerData, scripts)
   local value = record(saveId, "heartgold", playerData)
   value.schema = "g4-game-save-v3"
   value.fieldTravel = nil
+  value.mailbox = nil
+  value.photoAlbum = nil
+  value.mart = nil
+  value.mons.schema = "g4-mons-save-v1"
+  value.mons.boxes = nil
   value.playerData = {
     profile = { name = "GOLD", gender = 0, trainerId = 1, money = 3000 },
     options = { textFrame = 0, textSpeed = "mid" },
@@ -324,7 +333,7 @@ function T.quiescent_v3_saves_migrate_without_losing_history()
   })
   local candidate = v3record("save-00000015", validPlayerData, quiescentScripts())
   local valid = assert(service:validate(candidate))
-  Assert.equal(valid.schema, "g4-game-save-v5")
+  Assert.equal(valid.schema, "g4-game-save-v6")
   Assert.equal(valid.playerData.profile.badges, 0)
   Assert.equal(valid.playerData.profile.nationalDex, false)
   Assert.deepEqual(valid.mart, MartSave.empty())

@@ -86,6 +86,8 @@ local function seedRecord(saveId, versionId)
     mons = MonsSave.empty("test-catalog-fingerprint", 7),
     bag = BagSave.empty(),
     mart = MartSave.empty(),
+    mailbox = require("libs.hgss.src.save.Mailbox").new():capture(),
+    photoAlbum = require("libs.hgss.src.save.PhotoAlbum").new():capture(),
   }
 end
 

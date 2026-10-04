@@ -221,6 +221,13 @@ function GameSaveValidation:validate(record, context)
       })
       return value
     end
+    local function legacyMonsValidate(value)
+      if type(value) ~= "table" or value.schema ~= MonsSave.LEGACY_SCHEMA then
+        MonsErrors.raise(MonsErrors.SAVE_INVALID, "v5 mons bucket must use its v1 schema", {})
+      end
+      monsValidate(MonsSave.migrateV1(value))
+      return value
+    end
     -- The single application owner of bag validation context: the version
     -- item catalog the bag bucket validates against. A context without an
     -- item catalog fails closed: no bucket is ever accepted unvalidated.
@@ -243,6 +250,16 @@ function GameSaveValidation:validate(record, context)
       end
       return MartSave.validate(value, martCatalog)
     end
+    local function mailboxValidate(value)
+      local Mailbox = require("libs.hgss.src.save.Mailbox")
+      Mailbox.validate(value, { catalog = selected.monCatalog, charmap = selected.charmap })
+      return value
+    end
+    local function photoAlbumValidate(value)
+      local PhotoAlbum = require("libs.hgss.src.save.PhotoAlbum")
+      PhotoAlbum.validate(value, { monCatalog = selected.monCatalog })
+      return value
+    end
     -- The single application owner of travel validation: the runtime
     -- travel state canonicalizes the record into a copied value record.
     -- Malformed current data fails closed here and is never repaired as
@@ -259,7 +276,7 @@ function GameSaveValidation:validate(record, context)
       end
       return state:capture()
     end
-    return GameSave.validate(effective, {
+    local validationOptions = {
       playerDataValidate = playerDataValidate,
       scriptsValidate = scriptsValidate,
       worldValidate = worldValidate,
@@ -268,8 +285,23 @@ function GameSaveValidation:validate(record, context)
       monsValidate = monsValidate,
       bagValidate = bagValidate,
       martValidate = martValidate,
+      mailboxValidate = mailboxValidate,
+      photoAlbumValidate = photoAlbumValidate,
       fieldTravelValidate = fieldTravelValidate,
-    })
+    }
+    if type(effective) == "table" and effective.schema == GameSave.LEGACY_V5_SCHEMA then
+      local oldOptions = {}
+      for key, value in pairs(validationOptions) do
+        oldOptions[key] = value
+      end
+      oldOptions.monsValidate = legacyMonsValidate
+      local validatedV5, validationError = GameSave.validateV5(effective, oldOptions)
+      if not validatedV5 then
+        return nil, validationError
+      end
+      effective = GameSave.migrateV5(validatedV5)
+    end
+    return GameSave.validate(effective, validationOptions)
   end)
   if ok then
     return result, err

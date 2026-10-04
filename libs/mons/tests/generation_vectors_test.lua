@@ -69,7 +69,7 @@ function T.normal_creation_follows_source_draw_order()
   local factory = MonFactory.new(args)
   local mon = factory:createNormal(CatalogFixture.normalRequest())
 
-  Assert.equal(mon.schema, "g4-mon-v1")
+  Assert.equal(mon.schema, "g4-mon-v2")
   Assert.equal(mon.species, "CHIKORITA")
   Assert.equal(mon.form, 0)
   Assert.equal(mon.personality, 2229930865)
