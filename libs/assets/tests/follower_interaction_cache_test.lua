@@ -92,6 +92,14 @@ function T.rejects_old_schema_and_unknown_catalog_fields()
   Assert.isFalse(Cache.validateCatalog(unknown))
 end
 
+function T.rejects_a_non_table_program_catalog()
+  local malformed = catalog()
+  malformed.programs = 3
+  local ok, valid = pcall(Cache.validateCatalog, malformed)
+  Assert.isTrue(ok, "invalid generated catalogs must be rejected without throwing")
+  Assert.isFalse(valid)
+end
+
 function T.rejects_missing_or_out_of_range_map_sections()
   local missing = catalog()
   missing.rulesByMapSection[235] = nil

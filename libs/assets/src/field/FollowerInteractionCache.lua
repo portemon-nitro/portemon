@@ -240,6 +240,9 @@ function FollowerInteractionCache.validateCatalog(catalog)
   if not exactKeys(catalog, fields) or catalog.schema ~= FollowerInteractionCache.SCHEMA then
     return invalid("has an unknown shape or schema")
   end
+  if type(catalog.programs) ~= "table" then
+    return invalid("has invalid programs")
+  end
   if catalog.version ~= "heartgold" and catalog.version ~= "soulsilver" then
     return invalid("has an unsupported game version")
   end
