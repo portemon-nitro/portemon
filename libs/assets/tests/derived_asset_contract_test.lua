@@ -123,7 +123,7 @@ function T.contract_pins_the_current_asset_identities()
     mart = {
       cacheFormat = "mart-cache-v1",
       catalogSchema = "g4-mart-catalog-v1",
-      schema = "g4-mart-presentation-v1",
+      schema = "g4-mart-presentation-v2",
     },
     bag = {
       cacheFormat = "bag-cache-v2",

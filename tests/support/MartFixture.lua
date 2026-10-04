@@ -175,7 +175,6 @@ local function manifest()
       },
       focus = {
         item = visual("focus-item"),
-        page = visual("focus-page"),
         cancel = visual("focus-cancel"),
       },
       slots = slots,

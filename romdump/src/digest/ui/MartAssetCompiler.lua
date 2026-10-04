@@ -562,7 +562,6 @@ local function _compile(romFs)
   local palettes = controls.paletteOverrides
   manifest.lower.focus = {
     item = controlVisual(controls.browseFocus.cell, "focus-item", palettes.focus),
-    page = controlVisual(controls.pageFocus.cell, "focus-page", palettes.focus),
     cancel = controlVisual(controls.cancelFocus.cell, "focus-cancel", palettes.focus),
   }
   local pairSpecs = {

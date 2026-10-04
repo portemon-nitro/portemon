@@ -91,12 +91,17 @@ local function tap(control, x, y)
   control:step({ { type = "pointer_up", pointerId = "touch:0", x = x, y = y } })
 end
 
-local function finishControlFeedback(controller, martManifest)
+local function advanceControlFeedbackToRelease(controller, martManifest)
   local ticks = martManifest.feedback.dispatchTicks + martManifest.feedback.selectedTicks + martManifest.feedback.restoredTicks
   for _ = 1, ticks do
-    if controller:status().controlFeedback == nil then
-      return
-    end
+    controller:step({})
+  end
+  Assert.equal(controller:status().controlFeedback.phase, "release", "generic feedback retains its final dispatch boundary")
+end
+
+local function finishControlFeedback(controller, martManifest)
+  advanceControlFeedbackToRelease(controller, martManifest)
+  for _ = 1, martManifest.feedback.dispatchTicks do
     controller:step({})
   end
   Assert.isNil(controller:status().controlFeedback, "generic control feedback releases its pending action")
@@ -356,7 +361,7 @@ function T.keyboard_page_previous_and_next_each_emit_one_selection_cue()
   session:close()
 end
 
-function T.page_publication_waits_for_dispatch_selected_and_restored_feedback()
+function T.page_publication_waits_for_both_dispatch_boundaries()
   local service = resources()
   local session = service:openBuy(stock(10, 7))
   local martManifest = manifest()
@@ -388,7 +393,11 @@ function T.page_publication_waits_for_dispatch_selected_and_restored_feedback()
     Assert.equal(controller:status().controlFeedback.phase, "restored")
   end
   Assert.equal(controller:status().page, 0, "the pending page action remains unpublished through restored feedback")
-  controller:step({})
+  controller:step({ { type = "confirm" } })
+  Assert.equal(controller:status().controlFeedback.phase, "release", "restored feedback enters the final task-state dispatch boundary")
+  Assert.equal(controller:status().page, 0, "the pending action remains unpublished during release")
+  Assert.deepEqual(effects, { "SEQ_SE_DP_SELECT" }, "ignored input produces no extra cues during release")
+  controller:step({ { type = "cancel" } })
   Assert.isNil(controller:status().controlFeedback)
   Assert.equal(controller:status().page, 1, "the pending page action publishes exactly after the gate")
   Assert.deepEqual(effects, { "SEQ_SE_DP_SELECT" }, "ignored input produces no extra cues")
@@ -408,7 +417,10 @@ function T.browse_close_and_quantity_decisions_share_the_deferred_feedback_gate(
   Assert.isTrue(controller:status().open, "browse Cancel keeps the mart open until feedback completes")
   Assert.isNil(controller:takeResult(), "browse close is not released early")
   Assert.deepEqual(effects, { "SEQ_SE_GS_GEARCANCEL" })
-  finishControlFeedback(controller, manifest())
+  advanceControlFeedbackToRelease(controller, manifest())
+  Assert.isTrue(controller:status().open, "browse Cancel remains pending through release")
+  Assert.isNil(controller:takeResult(), "browse close has no result during release")
+  controller:step({})
   Assert.isFalse(controller:status().open)
   Assert.equal(controller:takeResult().kind, "close")
   controller:dispose()
@@ -419,7 +431,9 @@ function T.browse_close_and_quantity_decisions_share_the_deferred_feedback_gate(
   controller:step({ { type = "confirm" } })
   Assert.equal(controller:status().state, "quantity", "quantity confirmation waits before opening the quote prompt")
   Assert.deepEqual(effects, { "SEQ_SE_DP_SELECT" })
-  finishControlFeedback(controller, manifest())
+  advanceControlFeedbackToRelease(controller, manifest())
+  Assert.equal(controller:status().state, "quantity", "quantity quote remains pending through release")
+  controller:step({})
   Assert.isFalse(controller:status().state == "quantity", "quantity confirmation releases after feedback")
   controller:dispose()
   session:close()
@@ -429,7 +443,9 @@ function T.browse_close_and_quantity_decisions_share_the_deferred_feedback_gate(
   controller:step({ { type = "cancel" } })
   Assert.equal(controller:status().state, "quantity", "quantity Cancel waits before returning to browse")
   Assert.deepEqual(effects, { "SEQ_SE_GS_GEARCANCEL" })
-  finishControlFeedback(controller, manifest())
+  advanceControlFeedbackToRelease(controller, manifest())
+  Assert.equal(controller:status().state, "quantity", "quantity Cancel remains pending through release")
+  controller:step({})
   Assert.equal(controller:status().state, "browse")
   Assert.equal(controller:status().lowerMode, "browse", "quantity message presentation is cleared on release")
   controller:dispose()

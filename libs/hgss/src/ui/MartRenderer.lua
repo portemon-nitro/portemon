@@ -217,10 +217,6 @@ function MartRenderer:_drawBrowse(status, icons)
       focusVisual = lower.focus.item
     end
     focusAnchor = lower.slots[status.selection + 1].focusAnchor
-  elseif status.selection == 6 then
-    focusVisual, focusAnchor = lower.focus.page, pagePrevious.anchor
-  elseif status.selection == 7 then
-    focusVisual, focusAnchor = lower.focus.page, pageNext.anchor
   elseif status.selection == 8 then
     focusVisual, focusAnchor = lower.focus.cancel, lower.cancel.anchor
   end

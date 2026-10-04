@@ -525,6 +525,12 @@ function T.real_generated_backgrounds_and_focus_layers_reach_the_production_rend
     end
     restoredStatus.controlFeedback = { key = "pageNext", phase = "restored" }
     local restoredPage = draw(scope, renderer, icons, restoredStatus)
+    local releaseStatus = {}
+    for keyName, value in pairs(pageStatus) do
+      releaseStatus[keyName] = value
+    end
+    releaseStatus.controlFeedback = { key = "pageNext", phase = "release" }
+    local releasePage = draw(scope, renderer, icons, releaseStatus)
     local pageSelectedVisual = manifest.controls[pageControl.selectedVisualKey].selected
     local selectedData, selectedX, selectedY = imageEntry(
       scope,
@@ -551,6 +557,11 @@ function T.real_generated_backgrounds_and_focus_layers_reach_the_production_rend
       pixelDiff(restoredPage, normalPage, 256 + pageControl.anchor.x - 8, pageControl.anchor.y - 8, 56, 24),
       0,
       versionId .. " restored generic feedback returns exactly to the normal control"
+    )
+    Assert.equal(
+      pixelDiff(releasePage, normalPage, 256 + pageControl.anchor.x - 8, pageControl.anchor.y - 8, 56, 24),
+      0,
+      versionId .. " release dispatch retains normal page control art"
     )
 
     local errorPrint = {

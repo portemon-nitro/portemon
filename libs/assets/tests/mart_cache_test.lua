@@ -135,7 +135,7 @@ local function manifest()
     },
     lower = {
       backgrounds = { browse = browse, quantity = visual("quantity"), confirm = visual("confirm") },
-      focus = { item = visual("focus-item"), page = visual("focus-page"), cancel = visual("focus-cancel") },
+      focus = { item = visual("focus-item"), cancel = visual("focus-cancel") },
       slots = slots,
       pagePrevious = control("pagePrevious"),
       pageNext = control("pageNext"),
@@ -250,16 +250,24 @@ function T.manifest_requires_separate_source_text_boxes()
   Assert.isFalse(MartAssetSchema.isValidManifest(missingBuyLabel), "quantity BUY text has its own box")
 end
 
-function T.manifest_requires_each_independent_browse_focus_visual()
+function T.manifest_requires_only_reachable_independent_focus_visuals()
   local missingFocus = manifest()
   missingFocus.lower.focus = nil
   Assert.isFalse(MartAssetSchema.isValidManifest(missingFocus), "lower focus family is mandatory")
 
-  for _, key in ipairs({ "item", "page", "cancel" }) do
+  for _, key in ipairs({ "item", "cancel" }) do
     local missingVisual = manifest()
     missingVisual.lower.focus[key] = nil
     Assert.isFalse(MartAssetSchema.isValidManifest(missingVisual), key .. " focus visual is mandatory")
   end
+
+  local pageFocus = manifest()
+  pageFocus.lower.focus.page = visual("focus-page")
+  Assert.isFalse(MartAssetSchema.isValidManifest(pageFocus), "v2 rejects unreachable page focus")
+
+  local stalePresentation = manifest()
+  stalePresentation.schema = "g4-mart-presentation-v1"
+  Assert.isFalse(MartAssetSchema.isValidManifest(stalePresentation), "v1 presentation is stale")
 end
 
 function T.cache_readiness_requires_matching_provenance_and_every_referenced_image()

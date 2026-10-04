@@ -866,7 +866,6 @@ MartSources.controls = {
   browseFocus = { cell = 0 },
   pagePrevious = { cell = 2 },
   pageNext = { cell = 3 },
-  pageFocus = { cell = 4 },
   cancel = { cell = 6 },
   cancelFocus = { cell = 7 },
   increment = { cell = 12 },
@@ -886,6 +885,7 @@ MartSources.controls = {
     pageNext = 26,
   },
   selectionEntryTicks = { 6, 6, 6, 6 },
+  -- dispatchTicks is the task-state boundary entering feedback and releasing its target state.
   feedback = { selectedTicks = 4, restoredTicks = 2, dispatchTicks = 1 },
 }
 

@@ -343,7 +343,9 @@ DerivedAssetContract.items = {
 DerivedAssetContract.mart = {
   cacheFormat = "mart-cache-v1",
   catalogSchema = "g4-mart-catalog-v1",
-  schema = "g4-mart-presentation-v1",
+  -- v2 removes unreachable page focus; page controls use feedback while
+  -- independent focus remains on items and Cancel.
+  schema = "g4-mart-presentation-v2",
 }
 
 -- The bag class carries the source-independent field-bag presentation: the

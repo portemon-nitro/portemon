@@ -478,10 +478,15 @@ function MartController:_stepControlFeedback()
   elseif feedback.phase == "selected" then
     feedback.phase = "restored"
     feedback.remaining = self._manifest.feedback.restoredTicks
-  else
+  elseif feedback.phase == "restored" then
+    feedback.phase = "release"
+    feedback.remaining = self._manifest.feedback.dispatchTicks
+  elseif feedback.phase == "release" then
     local pending = feedback.pending
     self._controlFeedback = nil
     self:_applyPendingAction(pending)
+  else
+    error("unknown mart control feedback phase " .. tostring(feedback.phase), 0)
   end
 end
 
