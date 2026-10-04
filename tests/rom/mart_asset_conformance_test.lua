@@ -280,7 +280,7 @@ function T.vanilla_provider_uses_the_compiled_source_catalog_without_rendering(r
   })
   local sourceTier = {}
   for _, row in ipairs(bundle.catalog.normalTiers) do
-    if row.minimumTier == 1 then
+    if row.minimumTier == 1 and row.itemKey ~= "POKE_BALL" then
       sourceTier[#sourceTier + 1] = row.itemKey
     end
   end
@@ -295,30 +295,42 @@ function T.vanilla_provider_uses_the_compiled_source_catalog_without_rendering(r
   end
 
   for selector = 0, 29 do
-    for _, tutorialComplete in ipairs({ false, true }) do
+    for _, flag09A in ipairs({ false, true }) do
       local special = resolve({ kind = "special", selector = selector }, {
         badges = 0,
         nationalDex = false,
         weekday = 0,
         dayOrdinal = 1,
         cardPrefix = 0,
-        readFlag = function(flag)
-          return flag == 0x09A and tutorialComplete
-        end,
-        readVariable = function()
-          return 0
-        end,
+        readFlag = function(flag) return flag == 0x09A and flag09A end,
+        readVariable = function() return 0 end,
       })
       local expected = {}
       for _, row in ipairs(bundle.catalog.specialStocks[selector + 1]) do
-        if not (tutorialComplete and row.subjectKey == "POKE_BALL") then
+        if flag09A or row.subjectKey ~= "POKE_BALL" then
           expected[#expected + 1] = row.subjectKey
         end
       end
-      Assert.equal(#special.entries, #expected, "special stock keeps the source list and tutorial filter")
+      Assert.equal(#special.entries, #expected, "special stock applies the source Poké Ball flag")
       for index, key in ipairs(expected) do
         Assert.equal(special.entries[index].displayItemKey, key, "special entries retain source order")
       end
+    end
+  end
+
+  for selector, rows in ipairs(bundle.catalog.sealStocks) do
+    local seals = resolve({ kind = "seal", selector = selector - 1 }, {
+      badges = 0,
+      nationalDex = false,
+      weekday = 0,
+      dayOrdinal = 1,
+      cardPrefix = 0,
+      readFlag = function() return false end,
+      readVariable = function() return 0 end,
+    })
+    Assert.equal(#seals.entries, #rows, "Seal stock preserves its compiled source list")
+    for index, _ in ipairs(rows) do
+      Assert.equal(seals.entries[index].unitPrice, 100, "all Seal entries use the fixed retail price")
     end
   end
 

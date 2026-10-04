@@ -3,17 +3,6 @@
 
 local VanillaMartStock = {}
 
-local function copy(value)
-  if type(value) ~= "table" then
-    return value
-  end
-  local result = {}
-  for key, child in pairs(value) do
-    result[key] = copy(child)
-  end
-  return result
-end
-
 local function requireSelector(value, maximum, what)
   assert(
     type(value) == "number" and value % 1 == 0 and value >= 0 and value <= maximum,
@@ -73,7 +62,7 @@ local function resolveStandard(context, catalog)
     if row.minimumTier <= tier then
       local filtered = row.itemKey == "POKE_BALL"
         and type(context.readFlag) == "function"
-        and context.readFlag(0x09A) == true
+        and context.readFlag(0x09A) == false
       if not filtered then
         entries[#entries + 1] = itemEntry(catalog.items, row.itemKey, nil, #entries)
       end
@@ -88,7 +77,7 @@ local function resolveSpecial(descriptor, context, catalog)
   for _, row in ipairs(catalog.mart.specialStocks[descriptor.selector + 1]) do
     local filtered = row.subjectKey == "POKE_BALL"
       and type(context.readFlag) == "function"
-      and context.readFlag(0x09A) == true
+      and context.readFlag(0x09A) == false
     if not filtered then
       entries[#entries + 1] = itemEntry(catalog.items, row.subjectKey, nil, #entries)
     end
@@ -105,7 +94,7 @@ local function resolveSeals(descriptor, catalog)
       key = "seal:" .. index .. ":" .. row.subjectKey,
       displayItemKey = seal.displayItemKey,
       description = { kind = "literal", value = seal.description },
-      unitPrice = itemPrice(catalog.items, seal.displayItemKey),
+      unitPrice = 100,
       destination = { kind = "seal", key = row.subjectKey },
       restriction = { kind = "none" },
     }
@@ -178,75 +167,6 @@ local function resolveCards(context, catalog)
   return base("data_cards:" .. group, "athlete_points", "athlete_cards", "single", "none", entries)
 end
 
-local function validateCustom(stock, items)
-  assert(type(stock) == "table", "custom mart stock is required")
-  local modes = {
-    items = { currency = "money", quantity = "multiple", destinations = { bag = true } },
-    seals = { currency = "money", quantity = "multiple", destinations = { seal = true } },
-    legacy_decorations = { currency = "money", quantity = "single", destinations = { unavailable = true } },
-    athlete_items = { currency = "athlete_points", quantity = "single", destinations = { bag = true, apricorn = true } },
-    athlete_cards = { currency = "athlete_points", quantity = "single", destinations = { card = true } },
-  }
-  local mode = modes[stock.presentationKind]
-  assert(
-    mode and stock.currency == mode.currency and stock.quantityMode == mode.quantity,
-    "custom mart stock presentation, currency and quantity mode do not match"
-  )
-  assert(stock.bonusPolicy == "none" or stock.bonusPolicy == "premier_ball", "invalid custom mart bonus policy")
-  assert(type(stock.entries) == "table" and #stock.entries <= 254, "custom mart entries must contain 0..254 entries")
-  local result, seen = {}, {}
-  for index, source in ipairs(stock.entries) do
-    assert(
-      type(source.key) == "string" and source.key ~= "" and not seen[source.key],
-      "custom mart entry keys must be unique"
-    )
-    seen[source.key] = true
-    assert(type(source.displayItemKey) == "string", "custom mart display item key is required")
-    items:item(source.displayItemKey)
-    assert(
-      type(source.unitPrice) == "number"
-        and source.unitPrice % 1 == 0
-        and source.unitPrice >= 0
-        and source.unitPrice <= 999999,
-      "custom mart price must be in 0..999999"
-    )
-    assert(
-      type(source.destination) == "table" and mode.destinations[source.destination.kind],
-      "custom mart target does not match its presentation"
-    )
-    local restriction = source.restriction or { kind = "none" }
-    assert(
-      restriction.kind == "none" or restriction.kind == "daily_slot" or restriction.kind == "owned_card",
-      "unsupported custom mart restriction"
-    )
-    if restriction.kind == "daily_slot" then
-      assert(
-        type(restriction.slot) == "number"
-          and restriction.slot % 1 == 0
-          and restriction.slot >= 0
-          and restriction.slot <= 11,
-        "custom daily slot must be in 0..11"
-      )
-    elseif restriction.kind == "owned_card" then
-      assert(
-        source.destination.kind == "card" and restriction.key == source.destination.key,
-        "card ownership restriction must match its destination"
-      )
-    end
-    if source.destination.kind == "unavailable" then
-      assert(restriction.kind == "none", "unavailable entries cannot be restricted")
-    end
-    assert(
-      source.description.kind == "item"
-        or (source.description.kind == "literal" and type(source.description.value) == "string"),
-      "custom mart description is invalid"
-    )
-    result[index] = copy(source)
-    result[index].restriction = copy(restriction)
-  end
-  return base(stock.key, stock.currency, stock.presentationKind, stock.quantityMode, stock.bonusPolicy, result)
-end
-
 function VanillaMartStock.resolve(descriptor, context, catalog)
   assert(type(descriptor) == "table" and type(descriptor.kind) == "string", "mart launch descriptor is required")
   assert(type(context) == "table", "mart resolver context is required")
@@ -268,9 +188,6 @@ function VanillaMartStock.resolve(descriptor, context, catalog)
   end
   if descriptor.kind == "data_cards" then
     return resolveCards(context, catalog)
-  end
-  if descriptor.kind == "custom" then
-    return validateCustom(descriptor.stock, catalog.items)
   end
   if descriptor.kind == "sell" then
     return base("sell", "money", "items", "multiple", "none", {})

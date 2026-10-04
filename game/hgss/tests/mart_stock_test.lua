@@ -1,4 +1,4 @@
--- Default HGSS stock policy and custom policy replacement tests.
+-- HGSS vanilla stock selection and source policy tests.
 
 local Assert = require("tests.support.Assert")
 local ItemFixture = require("libs.items.tests.item_fixture")
@@ -29,18 +29,26 @@ local function catalog()
     local itemKey = "ITEM_" .. (ownershipIndex + 30)
     cards[itemKey] = { itemKey = itemKey, ownershipIndex = ownershipIndex }
   end
-  return {
+  local result = {
     normalTiers = normalTiers,
     specialStocks = specialStocks,
     athleteStocks = athleteStocks,
     dataCardStocks = dataCardStocks,
-    sealStocks = { {}, {}, {}, {}, {}, {}, {} },
+    sealStocks = {},
     decorationStocks = { {}, {} },
     cards = cards,
     apricorns = { RED_APRICORN = "red" },
     seals = {},
     decorations = {},
   }
+  for selector = 0, 6 do
+    local sealKey = "SEAL_" .. selector
+    result.sealStocks[selector + 1] = {
+      { subjectKey = sealKey, price = { kind = "catalog" } },
+    }
+    result.seals[sealKey] = { displayItemKey = "POTION", description = sealKey }
+  end
+  return result
 end
 
 local function context(overrides)
@@ -73,45 +81,53 @@ function T.standard_stock_uses_all_six_badge_tiers_and_filters_only_pokeball()
     local mask = badgeCount == 0 and 0 or (0x8000 + 2 ^ (badgeCount - 1) - 1)
     local tier = badgeCount == 0 and 1 or badgeCount <= 2 and 2 or badgeCount <= 4 and 3
       or badgeCount <= 6 and 4 or badgeCount == 7 and 5 or 6
-    local expectedCounts = { [1] = 3, [2] = 7, [3] = 11, [4] = 15, [5] = 17, [6] = 18 }
-    local stock = resolve({ kind = "standard" }, context({ badges = mask, nationalDex = false }))
-    Assert.equal(#stock.entries, expectedCounts[tier], "badge count " .. badgeCount .. " selects tier " .. tier)
-    for _, entry in ipairs(stock.entries) do
-      Assert.isFalse(entry.displayItemKey == "POKE_BALL", "standard stock omits the tutorial Pokeball")
+    local expectedCounts = { [1] = 4, [2] = 8, [3] = 12, [4] = 16, [5] = 18, [6] = 19 }
+    local hidden = resolve({ kind = "standard" }, context({
+      badges = mask,
+      nationalDex = false,
+      readFlag = function() return false end,
+    }))
+    local shown = resolve({ kind = "standard" }, context({
+      badges = mask,
+      nationalDex = false,
+      readFlag = function() return true end,
+    }))
+    Assert.equal(#hidden.entries, expectedCounts[tier] - 1, "false flag excludes Poké Ball")
+    Assert.equal(#shown.entries, expectedCounts[tier], "true flag retains the source tier size")
+    Assert.equal(hidden.entries[1].displayItemKey, "POTION", "false flag removes the leading Poké Ball")
+    Assert.equal(shown.entries[1].displayItemKey, "POKE_BALL", "true flag includes the leading Poké Ball")
+    local hiddenNonBalls, shownNonBalls = {}, {}
+    for _, entry in ipairs(hidden.entries) do
+      if entry.displayItemKey ~= "POKE_BALL" then hiddenNonBalls[#hiddenNonBalls + 1] = entry.displayItemKey end
     end
+    for _, entry in ipairs(shown.entries) do
+      if entry.displayItemKey ~= "POKE_BALL" then shownNonBalls[#shownNonBalls + 1] = entry.displayItemKey end
+    end
+    Assert.deepEqual(hiddenNonBalls, shownNonBalls, "flag preserves all other entries and their order")
   end
-  local noFilter = resolve({ kind = "standard" }, context({
-    badges = 0,
-    nationalDex = false,
-    readFlag = function() return false end,
-  }))
-  Assert.equal(noFilter.entries[1].displayItemKey, "POKE_BALL")
 end
 
-function T.special_filter_does_not_change_other_selectors_or_custom_stock()
+function T.special_filter_follows_flag_and_leaves_lists_without_pokeballs_unchanged()
   local source = catalog()
-  local specialFiltered = resolve({ kind = "special", selector = 4 }, context(), source)
-  Assert.equal(#specialFiltered.entries, 0)
-  local specialOther = resolve({ kind = "special", selector = 3 }, context(), source)
-  Assert.equal(#specialOther.entries, 1)
-  local customInput = {
-    key = "addon-stock",
-    currency = "money",
-    presentationKind = "items",
-    quantityMode = "multiple",
-    bonusPolicy = "none",
-    entries = {
-      { key = "first", displayItemKey = "POKE_BALL", description = { kind = "item" }, unitPrice = 0, destination = { kind = "bag", key = "POKE_BALL" }, restriction = { kind = "none" } },
-      { key = "second", displayItemKey = "POKE_BALL", description = { kind = "literal", value = "offer" }, unitPrice = 7, destination = { kind = "bag", key = "POKE_BALL" }, restriction = { kind = "none" } },
-    },
-  }
-  local stock = resolve({ kind = "custom", stock = customInput }, context(), source)
-  customInput.entries[1].unitPrice = 999
-  Assert.equal(#stock.entries, 2)
-  Assert.equal(stock.entries[1].key, "first")
-  Assert.equal(stock.entries[1].unitPrice, 0)
-  Assert.equal(stock.entries[2].unitPrice, 7)
-  Assert.equal(stock.entries[1].destination.key, "POKE_BALL")
+  local hiddenBall = resolve({ kind = "special", selector = 4 }, context({ readFlag = function() return false end }), source)
+  local shownBall = resolve({ kind = "special", selector = 4 }, context({ readFlag = function() return true end }), source)
+  local hiddenPlain = resolve({ kind = "special", selector = 3 }, context({ readFlag = function() return false end }), source)
+  local shownPlain = resolve({ kind = "special", selector = 3 }, context({ readFlag = function() return true end }), source)
+  Assert.equal(#hiddenBall.entries, 0, "false flag excludes the special Poké Ball")
+  Assert.equal(shownBall.entries[1].displayItemKey, "POKE_BALL", "true flag includes the special Poké Ball")
+  Assert.deepEqual(shownPlain, hiddenPlain, "flag does not affect a special list without Poké Ball")
+end
+
+function T.every_seal_entry_uses_the_fixed_retail_price()
+  local source = catalog()
+  local aliasPrice = ItemFixture.makeCatalog():item("POTION").price
+  Assert.isFalse(aliasPrice == 100, "the fixture alias price differs from the retail Seal price")
+  for selector = 0, 6 do
+    local seals = resolve({ kind = "seal", selector = selector }, nil, source)
+    Assert.equal(#seals.entries, 1)
+    Assert.equal(seals.entries[1].displayItemKey, "POTION")
+    Assert.equal(seals.entries[1].unitPrice, 100, "Seal selector " .. selector .. " uses the fixed price")
+  end
 end
 
 function T.athlete_and_card_selection_use_weekday_dex_and_first_gap()

@@ -83,6 +83,7 @@ end
 function T.tests.script_queries_and_standard_mart_share_the_live_field_host()
   withGame(function(game)
     game:waitForFieldEntry()
+    game.runtime.scripts.worldState:setFlag(0x09A)
     game:startScript(SCRIPT_ID)
     game:advanceUntil("the standard mart child opens", function()
       return game.runtime.martHost ~= nil and game.runtime.martHost:isActive()

@@ -14,7 +14,22 @@ local LocalClock = require("game.src.LocalClock")
 local T = {
   metadata = {
     capabilities = { "rom_dump" },
-    derivedAssets = { "field-runtime", "map:7", "map:281", "mart:global", "message-bank:138", "script-member:123" },
+    derivedAssets = {
+      "field-runtime",
+      "audio-bank:702",
+      "audio-bank:709",
+      "map-data:31",
+      "map-data:33",
+      "map-data:47",
+      "map-data:48",
+      "map-data:60",
+      "map:7",
+      "map:60",
+      "map:281",
+      "mart:global",
+      "message-bank:138",
+      "script-member:123",
+    },
     tags = { "field", "mart", "acceptance" },
   },
   tests = {},
@@ -341,8 +356,13 @@ end
 function T.tests.standard_stock_sells_ten_poke_balls_and_grants_one_acknowledged_bonus()
   withGame(function(game)
     game:waitForFieldEntry()
+    game.runtime.scripts.worldState:setFlag(0x09A)
     local status = openScriptMart(game, BALLS_SCRIPT)
-    Assert.equal(status.currentEntry.displayItemKey, "POKE_BALL", "the real zero-badge stock begins with Poké Balls")
+    Assert.equal(
+      status.currentEntry.displayItemKey,
+      "POKE_BALL",
+      "flag 0x09A allows zero-badge stock to begin with Poké Balls"
+    )
     local startingMoney = game.runtime.playerData.profile.money
     purchaseSelected(game, 10)
 
@@ -458,7 +478,7 @@ function T.tests.seal_shop_grants_a_seal_while_legacy_decoration_stays_non_grant
     selectEntry(game, sealSlot)
     seals = hostStatus(game)
     local sealItem = seals.currentEntry.displayItemKey
-    local sealPrice = seals.currentEntry.unitPrice
+    Assert.equal(seals.currentEntry.unitPrice, 100, "the source Seal Mart charges its fixed retail price")
     local moneyBeforeSeal = game.runtime.playerData.profile.money
     purchaseSelected(game, 1)
     acknowledgePurchase(game)
@@ -468,7 +488,7 @@ function T.tests.seal_shop_grants_a_seal_while_legacy_decoration_stays_non_grant
       granted = granted + count - (beforeSeals[key] or 0)
     end
     Assert.equal(granted, 1, "the confirmed Seal purchase grants exactly one seal to the seal case")
-    Assert.equal(game.runtime.playerData.profile.money, moneyBeforeSeal - sealPrice, "the Seal purchase charges its selected source price")
+    Assert.equal(game.runtime.playerData.profile.money, moneyBeforeSeal - 100, "the Seal purchase deducts exactly 100 from player money")
     closeScriptMart(game)
 
     local moneyBeforeDecoration = game.runtime.playerData.profile.money
