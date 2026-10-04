@@ -142,9 +142,10 @@ local function manifest()
       quantity = {
         selectedItemAnchor = { x = 0, y = 0 },
         itemBox = textBox(),
-        ownedBox = textBox(),
+        owned = { labelBox = textBox(), valueBox = textBox() },
         totalBox = textBox(),
         digitBoxes = { textBox(), textBox() },
+        buyLabelBox = textBox(),
         increment10 = control("increment"),
         increment1 = control("increment"),
         decrement10 = control("decrement"),
@@ -152,7 +153,8 @@ local function manifest()
         confirm = control("confirm"),
         cancel = control("quantityCancel"),
       },
-      balanceBox = textBox(),
+      balance = { labelBox = textBox(), valueBox = textBox() },
+      cancelLabelBox = textBox(),
       pageBox = textBox(),
       messages = { short = textBox(), tall = textBox(), confirm = textBox() },
       yesNo = { anchor = { x = 0, y = 0 }, shape = "compact", initialChoice = "yes" },
@@ -220,6 +222,31 @@ function T.manifest_requires_zero_based_browse_counts_and_rejects_unknown_counts
   local extraCount = clone(valid)
   extraCount.lower.backgrounds.browse[7] = visual("unknown-count")
   Assert.isFalse(MartAssetSchema.isValidManifest(extraCount), "browse variants reject counts outside 0 through 6")
+end
+
+function T.manifest_requires_separate_source_text_boxes()
+  local oldShape = manifest()
+  oldShape.lower.balanceBox = oldShape.lower.balance.valueBox
+  oldShape.lower.balance = nil
+  oldShape.lower.quantity.ownedBox = textBox()
+  oldShape.lower.quantity.owned = nil
+  Assert.isFalse(MartAssetSchema.isValidManifest(oldShape), "the superseded single-box shape is rejected")
+
+  local missingBalanceLabel = manifest()
+  missingBalanceLabel.lower.balance.labelBox = nil
+  Assert.isFalse(MartAssetSchema.isValidManifest(missingBalanceLabel), "balance requires its label baseline")
+
+  local missingOwnedValue = manifest()
+  missingOwnedValue.lower.quantity.owned.valueBox = nil
+  Assert.isFalse(MartAssetSchema.isValidManifest(missingOwnedValue), "owned count requires its value baseline")
+
+  local missingCancelLabel = manifest()
+  missingCancelLabel.lower.cancelLabelBox = nil
+  Assert.isFalse(MartAssetSchema.isValidManifest(missingCancelLabel), "browse Cancel text has its own box")
+
+  local missingBuyLabel = manifest()
+  missingBuyLabel.lower.quantity.buyLabelBox = nil
+  Assert.isFalse(MartAssetSchema.isValidManifest(missingBuyLabel), "quantity BUY text has its own box")
 end
 
 function T.cache_readiness_requires_matching_provenance_and_every_referenced_image()

@@ -343,8 +343,9 @@ function MartAssetSchema.assertManifest(manifest)
     pagePrevious = true,
     pageNext = true,
     cancel = true,
+    cancelLabelBox = true,
     quantity = true,
-    balanceBox = true,
+    balance = true,
     pageBox = true,
     messages = true,
     yesNo = true,
@@ -394,12 +395,17 @@ function MartAssetSchema.assertManifest(manifest)
   checkControl(lower.pagePrevious, MANIFEST_ERROR, "lower.pagePrevious")
   checkControl(lower.pageNext, MANIFEST_ERROR, "lower.pageNext")
   checkControl(lower.cancel, MANIFEST_ERROR, "lower.cancel")
+  checkTextBox(lower.cancelLabelBox, MANIFEST_ERROR, "lower.cancelLabelBox")
+  keys(lower.balance, { labelBox = true, valueBox = true }, MANIFEST_ERROR, "lower.balance")
+  checkTextBox(lower.balance.labelBox, MANIFEST_ERROR, "lower.balance.labelBox")
+  checkTextBox(lower.balance.valueBox, MANIFEST_ERROR, "lower.balance.valueBox")
   keys(lower.quantity, {
     selectedItemAnchor = true,
     itemBox = true,
-    ownedBox = true,
+    owned = true,
     totalBox = true,
     digitBoxes = true,
+    buyLabelBox = true,
     increment10 = true,
     increment1 = true,
     decrement10 = true,
@@ -408,9 +414,12 @@ function MartAssetSchema.assertManifest(manifest)
     cancel = true,
   }, MANIFEST_ERROR, "lower.quantity")
   checkPoint(lower.quantity.selectedItemAnchor, MANIFEST_ERROR, "lower.quantity.selectedItemAnchor")
-  for _, field in ipairs({ "itemBox", "ownedBox", "totalBox" }) do
+  for _, field in ipairs({ "itemBox", "totalBox", "buyLabelBox" }) do
     checkTextBox(lower.quantity[field], MANIFEST_ERROR, "lower.quantity." .. field)
   end
+  keys(lower.quantity.owned, { labelBox = true, valueBox = true }, MANIFEST_ERROR, "lower.quantity.owned")
+  checkTextBox(lower.quantity.owned.labelBox, MANIFEST_ERROR, "lower.quantity.owned.labelBox")
+  checkTextBox(lower.quantity.owned.valueBox, MANIFEST_ERROR, "lower.quantity.owned.valueBox")
   array(lower.quantity.digitBoxes, MANIFEST_ERROR, "lower.quantity.digitBoxes", 2)
   for index, box in ipairs(lower.quantity.digitBoxes) do
     checkTextBox(box, MANIFEST_ERROR, "lower.quantity.digitBoxes[" .. index .. "]")
@@ -418,7 +427,6 @@ function MartAssetSchema.assertManifest(manifest)
   for _, field in ipairs({ "increment10", "increment1", "decrement10", "decrement1", "confirm", "cancel" }) do
     checkControl(lower.quantity[field], MANIFEST_ERROR, "lower.quantity." .. field)
   end
-  checkTextBox(lower.balanceBox, MANIFEST_ERROR, "lower.balanceBox")
   checkTextBox(lower.pageBox, MANIFEST_ERROR, "lower.pageBox")
   keys(lower.messages, { short = true, tall = true, confirm = true }, MANIFEST_ERROR, "lower.messages")
   for _, field in ipairs({ "short", "tall", "confirm" }) do

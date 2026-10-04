@@ -37,10 +37,150 @@ local function dependency(bundle, name)
   error("mart provenance is missing dependency " .. name, 2)
 end
 
+local function bindingNames(program)
+  local names = {}
+  for _, part in ipairs(program.parts) do
+    if part.kind == "binding" then
+      names[#names + 1] = part.name
+    end
+  end
+  return names
+end
+
+local function point(x, y)
+  return { x = x, y = y }
+end
+
+local function rect(x, y, width, height)
+  return { x = x, y = y, width = width, height = height }
+end
+
+local function boxCoordinates(box)
+  return { x = box.x, y = box.y, width = box.width, height = box.height }
+end
+
+local function assertPoint(actual, expected, label)
+  Assert.deepEqual({ x = actual.x, y = actual.y }, expected, label)
+end
+
+local function assertBox(actual, expected, label)
+  Assert.deepEqual(boxCoordinates(actual), expected, label)
+end
+
+local function assertTextBox(actual, expected, label)
+  Assert.deepEqual({
+    textX = actual.textX,
+    textY = actual.textY,
+    alignment = actual.alignment,
+  }, expected, label)
+end
+
+function T.compiled_messages_preserve_each_source_substitution_role(romFs)
+  local templates = compile(romFs).manifest.text.templates
+  local expected = {
+    quantityPrompt = { "item" },
+    moneyConfirm = { "quantity", "total" },
+    itemReceived = { "item", "pocket" },
+    moneyPrice = { "price" },
+    pointsPrice = { "price" },
+    sealReceived = { "item" },
+    moneyBalance = { "balance" },
+    pointsBalance = { "balance" },
+    ownedCount = { "owned" },
+    quantityTotal = { "total" },
+    pageNumber = { "currentPage", "pageCount" },
+    tensDigit = { "digit" },
+    unitsDigit = { "digit" },
+    pointsConfirm = { "item" },
+    premierBonus = {},
+  }
+  for role, names in pairs(expected) do
+    Assert.deepEqual(bindingNames(templates[role]), names, role .. " bindings preserve source meaning")
+  end
+end
+
+function T.compiled_geometry_matches_audited_logical_coordinates(romFs)
+  local manifest = compile(romFs).manifest
+  local upper, lower = manifest.upper, manifest.lower
+
+  assertBox(upper.description.items, rect(40, 144, 216, 48), "item description box")
+  assertBox(upper.description.legacy, rect(8, 144, 216, 48), "legacy description box")
+  assertPoint(upper.itemAnchor, point(22, 172), "upper item preview")
+
+  local slotExpected = {
+    { rect(0, 32, 128, 42), point(22, 59), rect(32, 40, 88, 32), point(68, 56), point(48, 56) },
+    { rect(128, 32, 128, 42), point(152, 59), rect(160, 40, 88, 32), point(196, 56), point(176, 56) },
+    { rect(0, 74, 128, 44), point(22, 100), rect(32, 80, 88, 32), point(68, 96), point(48, 96) },
+    { rect(128, 74, 128, 44), point(152, 100), rect(160, 80, 88, 32), point(196, 96), point(176, 96) },
+    { rect(0, 118, 128, 36), point(22, 139), rect(32, 120, 88, 32), point(68, 136), point(48, 136) },
+    { rect(128, 118, 128, 36), point(152, 139), rect(160, 120, 88, 32), point(196, 136), point(176, 136) },
+  }
+  for index, expected in ipairs(slotExpected) do
+    local slot = lower.slots[index]
+    assertBox(slot.hitbox, expected[1], "slot " .. index .. " hitbox")
+    assertPoint(slot.iconAnchor, expected[2], "slot " .. index .. " item icon")
+    assertBox(slot.labelBox, expected[3], "slot " .. index .. " label")
+    assertPoint(slot.priceAt, expected[4], "slot " .. index .. " price")
+    assertPoint(slot.focusAnchor, expected[5], "slot " .. index .. " focus")
+  end
+
+  local browseControls = {
+    { lower.pagePrevious, point(24, 176), rect(0, 168, 40, 24), "previous page" },
+    { lower.pageNext, point(64, 176), rect(40, 168, 40, 24), "next page" },
+    { lower.cancel, point(224, 176), rect(192, 168, 64, 24), "browse cancel" },
+  }
+  for _, expected in ipairs(browseControls) do
+    assertPoint(expected[1].anchor, expected[2], expected[4] .. " anchor")
+    assertBox(expected[1].hitbox, expected[3], expected[4] .. " hitbox")
+  end
+
+  local quantity = lower.quantity
+  assertPoint(quantity.selectedItemAnchor, point(86, 76), "quantity selected item")
+  assertBox(quantity.itemBox, rect(96, 56, 88, 32), "quantity item label")
+  assertBox(quantity.owned.labelBox, rect(8, 104, 64, 40), "owned label")
+  assertBox(quantity.owned.valueBox, rect(8, 104, 64, 40), "owned value")
+  assertBox(quantity.totalBox, rect(184, 112, 64, 24), "quantity total")
+  local quantityControls = {
+    { quantity.increment10, point(136, 104), rect(120, 88, 32, 24), "+10" },
+    { quantity.increment1, point(168, 104), rect(152, 88, 32, 24), "+1" },
+    { quantity.decrement10, point(136, 152), rect(120, 136, 32, 24), "-10" },
+    { quantity.decrement1, point(168, 152), rect(152, 136, 32, 24), "-1" },
+    { quantity.confirm, point(136, 176), rect(96, 168, 78, 24), "quantity confirm" },
+    { quantity.cancel, point(224, 176), rect(178, 168, 78, 24), "quantity cancel" },
+  }
+  for _, expected in ipairs(quantityControls) do
+    assertPoint(expected[1].anchor, expected[2], expected[4] .. " anchor")
+    assertBox(expected[1].hitbox, expected[3], expected[4] .. " hitbox")
+  end
+  assertBox(quantity.digitBoxes[1], rect(128, 112, 16, 24), "tens digit box")
+  assertBox(quantity.digitBoxes[2], rect(160, 112, 16, 24), "units digit box")
+  assertTextBox(quantity.digitBoxes[1], { textX = 0, textY = 4, alignment = "right" }, "tens digit baseline")
+  assertTextBox(quantity.digitBoxes[2], { textX = 0, textY = 4, alignment = "right" }, "units digit baseline")
+
+  assertBox(lower.balance.labelBox, rect(8, 0, 72, 32), "balance label")
+  assertBox(lower.balance.valueBox, rect(8, 0, 72, 32), "balance value")
+  assertTextBox(lower.balance.labelBox, { textX = 0, textY = 0, alignment = "left" }, "balance label baseline")
+  assertTextBox(lower.balance.valueBox, { textX = 0, textY = 16, alignment = "right" }, "balance value baseline")
+  assertBox(lower.pageBox, rect(80, 168, 56, 16), "page indicator")
+  assertTextBox(lower.pageBox, { textX = 0, textY = 0, alignment = "right" }, "page indicator baseline")
+  assertBox(lower.cancelLabelBox, rect(200, 168, 48, 16), "browse cancel label")
+  assertTextBox(lower.cancelLabelBox, { textX = 0, textY = 0, alignment = "center" }, "browse cancel label baseline")
+  assertTextBox(quantity.owned.labelBox, { textX = 0, textY = 4, alignment = "left" }, "owned label baseline")
+  assertTextBox(quantity.owned.valueBox, { textX = 0, textY = 20, alignment = "right" }, "owned value baseline")
+  assertTextBox(quantity.totalBox, { textX = 0, textY = 4, alignment = "right" }, "quantity total baseline")
+  assertBox(quantity.buyLabelBox, rect(112, 168, 56, 16), "quantity BUY label")
+  assertTextBox(quantity.buyLabelBox, { textX = 4, textY = 0, alignment = "left" }, "quantity BUY label baseline")
+  assertBox(lower.messages.short, rect(16, 8, 216, 16), "short message")
+  assertBox(lower.messages.tall, rect(16, 8, 216, 32), "tall message")
+  assertBox(lower.messages.confirm, rect(96, 8, 136, 32), "quantity message")
+  assertPoint(lower.yesNo.anchor, point(208, 48), "compact Yes/No")
+end
+
 function T.source_configuration_changes_the_mart_family_identity(romFs)
   local original = compile(romFs)
   local MartSources = feature("romdump.src.config.MartSources", "mart source configuration is fingerprinted")
-  local Compiler = feature("romdump.src.digest.ui.MartAssetCompiler", "mart source configuration recompiles through its owner")
+  local Compiler =
+    feature("romdump.src.digest.ui.MartAssetCompiler", "mart source configuration recompiles through its owner")
   local originalSourceHash = dependency(original, "martSources").sha1
   Assert.equal(originalSourceHash, Hashing.hashLua(MartSources), "provenance records the current source configuration")
 
@@ -131,17 +271,27 @@ function T.vanilla_provider_uses_the_compiled_source_catalog_without_rendering(r
     weekday = 0,
     dayOrdinal = 1,
     cardPrefix = 0,
-    readFlag = function() return false end,
-    readVariable = function() return 0 end,
+    readFlag = function()
+      return false
+    end,
+    readVariable = function()
+      return 0
+    end,
   })
   local sourceTier = {}
   for _, row in ipairs(bundle.catalog.normalTiers) do
-    if row.minimumTier == 1 then sourceTier[#sourceTier + 1] = row.itemKey end
+    if row.minimumTier == 1 then
+      sourceTier[#sourceTier + 1] = row.itemKey
+    end
   end
   Assert.equal(#vanilla.entries, #sourceTier, "the provider emits the source's first badge tier")
   for index, key in ipairs(sourceTier) do
     Assert.equal(vanilla.entries[index].displayItemKey, key, "standard items retain source order")
-    Assert.equal(vanilla.entries[index].unitPrice, items:item(key).price, "standard prices resolve from the compiled item catalog")
+    Assert.equal(
+      vanilla.entries[index].unitPrice,
+      items:item(key).price,
+      "standard prices resolve from the compiled item catalog"
+    )
   end
 
   for selector = 0, 29 do
@@ -152,12 +302,18 @@ function T.vanilla_provider_uses_the_compiled_source_catalog_without_rendering(r
         weekday = 0,
         dayOrdinal = 1,
         cardPrefix = 0,
-        readFlag = function(flag) return flag == 0x09A and tutorialComplete end,
-        readVariable = function() return 0 end,
+        readFlag = function(flag)
+          return flag == 0x09A and tutorialComplete
+        end,
+        readVariable = function()
+          return 0
+        end,
       })
       local expected = {}
       for _, row in ipairs(bundle.catalog.specialStocks[selector + 1]) do
-        if not (tutorialComplete and row.subjectKey == "POKE_BALL") then expected[#expected + 1] = row.subjectKey end
+        if not (tutorialComplete and row.subjectKey == "POKE_BALL") then
+          expected[#expected + 1] = row.subjectKey
+        end
       end
       Assert.equal(#special.entries, #expected, "special stock keeps the source list and tutorial filter")
       for index, key in ipairs(expected) do
@@ -175,8 +331,12 @@ function T.vanilla_provider_uses_the_compiled_source_catalog_without_rendering(r
         weekday = weekday,
         dayOrdinal = 1,
         cardPrefix = 0,
-        readFlag = function() return false end,
-        readVariable = function() return 0 end,
+        readFlag = function()
+          return false
+        end,
+        readVariable = function()
+          return 0
+        end,
       })
       local expected = bundle.catalog.athleteStocks[stockIndex + 1]
       Assert.equal(#athlete.entries, #expected, "the AP weekday/Dex pair chooses its compiled source list")
@@ -195,8 +355,12 @@ function T.vanilla_provider_uses_the_compiled_source_catalog_without_rendering(r
       weekday = 0,
       dayOrdinal = 1,
       cardPrefix = prefix,
-      readFlag = function() return false end,
-      readVariable = function() return 0 end,
+      readFlag = function()
+        return false
+      end,
+      readVariable = function()
+        return 0
+      end,
     })
     local expected = bundle.catalog.dataCardStocks[group + 1]
     Assert.equal(#cards.entries, #expected, "the first-missing card index chooses its source group")
@@ -254,7 +418,11 @@ function T.failed_rebuild_and_truncated_manifest_leave_no_usable_partial_family(
   Assert.isTrue(MartCache.isReady(cache, bundle.marker), "the prior family stays ready after failure")
   Assert.equal(cache:read(BagCache.markerPath()), "bag-marker", "failed mart publication preserves the bag marker")
   Assert.equal(cache:read(BagCache.assetDir() .. "/family-sentinel"), "bag-bytes")
-  Assert.equal(cache:read(PartyCache.markerPath()), "party-marker", "failed mart publication preserves the party marker")
+  Assert.equal(
+    cache:read(PartyCache.markerPath()),
+    "party-marker",
+    "failed mart publication preserves the party marker"
+  )
   Assert.equal(cache:read(PartyCache.assetDir() .. "/family-sentinel"), "party-bytes")
 
   local truncated = {}

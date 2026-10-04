@@ -4,8 +4,56 @@
 
 local Assert = require("tests.support.Assert")
 local Errors = require("libs.errors.src.Errors")
+local FieldMessageText = require("libs.assets.src.field.FieldMessageText")
 
 local T = {}
+
+---@param fn function
+---@param wanted string
+---@return function
+local function upvalue(fn, wanted)
+  for index = 1, math.huge do
+    local name, value = debug.getupvalue(fn, index)
+    if name == nil then
+      break
+    end
+    if name == wanted then
+      return value
+    end
+  end
+  error("compiler closure has no upvalue " .. wanted)
+end
+
+local function substitution(variable, args)
+  return {
+    kind = "substitution",
+    name = "STRVAR_1",
+    control = FieldMessageText.STRVAR_1 + variable,
+    args = args,
+  }
+end
+
+local function assertRoleError(lower, tokens, role)
+  local ok, err = pcall(lower, tokens, role)
+  Assert.isFalse(ok, "invalid source substitutions must fail compiler lowering")
+  Assert.isTrue(Errors.is(err), "substitution failures remain structured source errors")
+  Assert.equal(err.code, "MART_SOURCE_INVALID")
+  Assert.equal(err.context.role, role, "substitution failures identify their source role")
+end
+
+function T.message_substitutions_reject_wrong_identity_arguments_and_counts()
+  local compiler = require("romdump.src.digest.ui.MartAssetCompiler")
+  local compileMessageProgram =
+    upvalue(upvalue(upvalue(compiler.compile, "_compile"), "compileMessages"), "compileMessageProgram")
+  local role = "moneyConfirm"
+  local validQuantity = substitution(51, { 0, 0 })
+  local validTotal = substitution(55, { 1, 0 })
+
+  assertRoleError(compileMessageProgram, { substitution(50, { 0, 0 }) }, role)
+  assertRoleError(compileMessageProgram, { substitution(51, { 0, 1 }) }, role)
+  assertRoleError(compileMessageProgram, { validQuantity, validTotal, substitution(50, { 0, 0 }) }, role)
+  assertRoleError(compileMessageProgram, { validQuantity }, role)
+end
 
 function T.missing_required_source_member_returns_a_structured_mart_error()
   local compiler = require("romdump.src.digest.ui.MartAssetCompiler")

@@ -203,8 +203,22 @@ local function catalogFromSources(descriptionBanks)
   return catalog
 end
 
+local function sameArguments(actual, expected)
+  if type(actual) ~= "table" or #actual ~= #expected then
+    return false
+  end
+  for index, value in ipairs(expected) do
+    if actual[index] ~= value then
+      return false
+    end
+  end
+  return true
+end
+
 local function compileMessageProgram(tokens, role)
   local parts, literal = {}, {}
+  local bindings = MartSources.messages.bindings[role] or {}
+  local substitutionIndex = 0
   local function flush()
     if #literal > 0 then
       parts[#parts + 1] = { kind = "literal", value = table.concat(literal) }
@@ -225,7 +239,24 @@ local function compileMessageProgram(tokens, role)
       parts[#parts + 1] = { kind = "scroll" }
     elseif token.kind == "substitution" then
       flush()
-      parts[#parts + 1] = { kind = "binding", name = role == "premierBonus" and "quantity" or "item" }
+      substitutionIndex = substitutionIndex + 1
+      local expected = bindings[substitutionIndex]
+      local actualVariable = token.control - FieldMessageText.STRVAR_1
+      if
+        expected == nil
+        or token.name ~= "STRVAR_1"
+        or actualVariable ~= expected.variable
+        or not sameArguments(token.args, expected.args)
+      then
+        sourceError("message substitution does not match its role specification", {
+          role = role,
+          substitutionIndex = substitutionIndex,
+          expected = expected,
+          actual = { name = token.name, variable = actualVariable, args = token.args },
+        })
+      end
+      local binding = assert(expected, "validated source binding exists")
+      parts[#parts + 1] = { kind = "binding", name = binding.name }
     elseif token.kind == "wait" then
       flush()
       parts[#parts + 1] = { kind = "callback", name = "transaction_received" }
@@ -244,6 +275,14 @@ local function compileMessageProgram(tokens, role)
     end
   end
   flush()
+  if substitutionIndex ~= #bindings then
+    sourceError("message is missing a role substitution", {
+      role = role,
+      expectedCount = #bindings,
+      actualCount = substitutionIndex,
+      nextExpected = bindings[substitutionIndex + 1],
+    })
+  end
   return { parts = parts }
 end
 
@@ -283,24 +322,20 @@ local function compileMessages(archive, dependencies)
   return templates, labels, descriptionBanks
 end
 
+local function copyRecord(value)
+  if type(value) ~= "table" then
+    return value
+  end
+  local result = {}
+  for key, entry in pairs(value) do
+    result[key] = copyRecord(entry)
+  end
+  return result
+end
+
 local function rgba(palette, index)
   local color = assert(palette.colors[index + 1], "source text color is present")
   return { color.r, color.g, color.b, 255 }
-end
-
-local function box(rect, fontId, paletteRole, alignment)
-  local scale = MartSources.windows.tileSize
-  return {
-    x = rect.x * scale,
-    y = rect.y * scale,
-    width = rect.width * scale,
-    height = rect.height * scale,
-    fontId = fontId,
-    textX = 0,
-    textY = 0,
-    alignment = alignment or "left",
-    paletteRole = paletteRole,
-  }
 end
 
 local function _compile(romFs)
@@ -419,8 +454,8 @@ local function _compile(romFs)
         items = imageAsset(upperItems, "upper-items", assets),
         legacy = imageAsset(upperLegacy, "upper-legacy", assets),
       },
-      description = {},
-      itemAnchor = { x = 128, y = 88 },
+      description = copyRecord(MartSources.geometry.upper.description),
+      itemAnchor = copyRecord(MartSources.geometry.upper.itemAnchor),
     },
   }
 
@@ -582,98 +617,25 @@ local function _compile(romFs)
     sourceError("message archive is unavailable", { cause = messageErr and messageErr.code })
   end
   local templates, labels, descriptionBanks = compileMessages(messageArchive, dependencies)
-  local windows = MartSources.windows
-  local scale = windows.tileSize
-  local function pxBox(rect, paletteRole, alignment)
-    return box(rect, 0, paletteRole, alignment)
-  end
-  local slotBoxes = {}
-  for index, rect in ipairs(windows.lowerSlots) do
-    local pixelRect = { x = rect.x, y = rect.y, width = rect.width, height = rect.height }
-    local hitbox = { x = rect.x * scale, y = rect.y * scale, width = rect.width * scale, height = rect.height * scale }
-    slotBoxes[index] = {
-      hitbox = hitbox,
-      iconAnchor = { x = hitbox.x + hitbox.width - 12, y = hitbox.y + 16 },
-      labelBox = pxBox(pixelRect, "foreground"),
-      priceAt = { x = hitbox.x + 2, y = hitbox.y + 22 },
-      focusAnchor = { x = hitbox.x + hitbox.width / 2, y = hitbox.y + hitbox.height / 2 },
-    }
-  end
-  manifest.upper.description = {
-    items = pxBox(windows.standard[1], "foreground"),
-    legacy = pxBox(windows.standard[1], "foreground"),
-  }
-  manifest.lower.slots = slotBoxes
-  manifest.lower.pagePrevious = {
-    anchor = { x = 8, y = 176 },
-    hitbox = { x = 0, y = 160, width = 32, height = 32 },
-    normalVisualKey = "pagePrevious",
-    selectedVisualKey = "pagePrevious",
-  }
-  manifest.lower.pageNext = {
-    anchor = { x = 248, y = 176 },
-    hitbox = { x = 224, y = 160, width = 32, height = 32 },
-    normalVisualKey = "pageNext",
-    selectedVisualKey = "pageNext",
-  }
-  manifest.lower.cancel = {
-    anchor = { x = 224, y = 176 },
-    hitbox = { x = 208, y = 160, width = 48, height = 32 },
-    normalVisualKey = "cancel",
-    selectedVisualKey = "cancel",
-  }
-  local quantityBox = { x = 0, y = 0, width = 4, height = 2 }
-  manifest.lower.quantity = {
-    selectedItemAnchor = { x = 8, y = 48 },
-    itemBox = pxBox(windows.auxiliary[2], "foreground"),
-    ownedBox = pxBox(windows.auxiliary[3], "foreground", "right"),
-    totalBox = pxBox(windows.auxiliary[4], "foreground", "right"),
-    digitBoxes = { pxBox(quantityBox, "foreground", "right"), pxBox(quantityBox, "foreground", "right") },
-    increment10 = {
-      anchor = { x = 208, y = 64 },
-      hitbox = { x = 192, y = 48, width = 32, height = 32 },
-      normalVisualKey = "increment",
-      selectedVisualKey = "increment",
-    },
-    increment1 = {
-      anchor = { x = 240, y = 64 },
-      hitbox = { x = 224, y = 48, width = 32, height = 32 },
-      normalVisualKey = "increment",
-      selectedVisualKey = "increment",
-    },
-    decrement10 = {
-      anchor = { x = 208, y = 128 },
-      hitbox = { x = 192, y = 112, width = 32, height = 32 },
-      normalVisualKey = "decrement",
-      selectedVisualKey = "decrement",
-    },
-    decrement1 = {
-      anchor = { x = 240, y = 128 },
-      hitbox = { x = 224, y = 112, width = 32, height = 32 },
-      normalVisualKey = "decrement",
-      selectedVisualKey = "decrement",
-    },
-    confirm = {
-      anchor = { x = 224, y = 176 },
-      hitbox = { x = 192, y = 160, width = 64, height = 32 },
-      normalVisualKey = "confirm",
-      selectedVisualKey = "confirm",
-    },
-    cancel = {
-      anchor = { x = 32, y = 176 },
-      hitbox = { x = 0, y = 160, width = 64, height = 32 },
-      normalVisualKey = "quantityCancel",
-      selectedVisualKey = "quantityCancel",
-    },
-  }
-  manifest.lower.balanceBox = pxBox(windows.auxiliary[1], "foreground", "right")
-  manifest.lower.pageBox = pxBox(windows.auxiliary[3], "foreground", "right")
+  local geometry = MartSources.geometry
+  manifest.upper.description = copyRecord(geometry.upper.description)
+  manifest.upper.itemAnchor = copyRecord(geometry.upper.itemAnchor)
+  manifest.lower.slots = copyRecord(geometry.browse.slots)
+  manifest.lower.pagePrevious = copyRecord(geometry.browse.pagePrevious)
+  manifest.lower.pageNext = copyRecord(geometry.browse.pageNext)
+  manifest.lower.cancel = copyRecord(geometry.browse.cancel)
+  manifest.lower.balance = copyRecord(geometry.browse.balance)
+  manifest.lower.cancelLabelBox = copyRecord(geometry.browse.cancelLabelBox)
+  manifest.lower.pageBox = copyRecord(geometry.browse.pageBox)
   manifest.lower.messages = {
-    short = pxBox(windows.standard[6], "foreground"),
-    tall = pxBox(windows.standard[6], "foreground"),
-    confirm = pxBox(windows.standard[6], "foreground"),
+    short = copyRecord(geometry.browse.messages.short),
+    tall = copyRecord(geometry.browse.messages.tall),
+    confirm = copyRecord(geometry.quantity.messages.confirm),
   }
-  manifest.lower.yesNo = { anchor = { x = 88, y = 96 }, shape = "compact", initialChoice = "yes" }
+  manifest.lower.yesNo = copyRecord(geometry.browse.yesNo)
+  manifest.lower.quantity = copyRecord(geometry.quantity)
+  manifest.lower.quantity.source = nil
+  manifest.lower.quantity.messages = nil
   local textColors = {
     foreground = rgba(controlPalette, 13),
     shadow = rgba(controlPalette, 12),
