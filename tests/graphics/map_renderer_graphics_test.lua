@@ -4528,6 +4528,66 @@ function T.presentation_world_depth_rejects_behind_sprite(scope)
   Assert.isTrue(g < 0.2 and b < 0.2, "the behind sprite does not leak through world depth")
 end
 
+function T.caller_scissor_clips_only_the_presentation_world_blit(scope)
+  local width, height = 640, 480
+  local clearColor = { 0.11, 0.17, 0.23, 1 }
+  local referenceRenderer = scope:own(GxRenderer.new({ worldRasterScale = 2, clearColor = clearColor }))
+  local clippedRenderer = scope:own(GxRenderer.new({ worldRasterScale = 2, clearColor = clearColor }))
+  local mesh = scope:own(syntheticMesh({
+    { -0.9, -0.9, 0, 0, 0, 0, 0, 1, 0, 1, 0, 1, 0 },
+    { 0.9, -0.9, 0, 1, 0, 0, 0, 1, 0, 1, 0, 1, 0 },
+    { 0.9, 0.9, 0, 1, 1, 0, 0, 1, 0, 1, 0, 1, 0 },
+    { -0.9, -0.9, 0, 0, 0, 0, 0, 1, 0, 1, 0, 1, 0 },
+    { 0.9, 0.9, 0, 1, 1, 0, 0, 1, 0, 1, 0, 1, 0 },
+    { -0.9, 0.9, 0, 0, 1, 0, 0, 1, 0, 1, 0, 1, 0 },
+  }))
+  local item = opaqueItem(mesh, 1)
+  local viewport = FieldViewport.new(width, height, { mode = "strict" })
+  local referenceTarget, referenceColor = presentationTarget(scope, width, height)
+  local clippedTarget, clippedColor = presentationTarget(scope, width, height)
+  local scissor = { 213, 117, 257, 191 }
+
+  lg.setCanvas(referenceTarget)
+  lg.clear(clearColor[1], clearColor[2], clearColor[3], clearColor[4])
+  render(referenceRenderer, emptyRuntime(), fixedCamera(), { { item } }, nil, viewport)
+  lg.setCanvas()
+  local reference = referenceColor:newImageData()
+
+  lg.setCanvas(clippedTarget)
+  lg.clear(clearColor[1], clearColor[2], clearColor[3], clearColor[4])
+  lg.setScissor(scissor[1], scissor[2], scissor[3], scissor[4])
+  render(clippedRenderer, emptyRuntime(), fixedCamera(), { { item } }, nil, viewport)
+  local sx, sy, sw, sh = lg.getScissor()
+  Assert.equal(sx, scissor[1], "the caller scissor x is restored")
+  Assert.equal(sy, scissor[2], "the caller scissor y is restored")
+  Assert.equal(sw, scissor[3], "the caller scissor width is restored")
+  Assert.equal(sh, scissor[4], "the caller scissor height is restored")
+  lg.setScissor()
+  lg.setCanvas()
+  local clipped = clippedColor:newImageData()
+
+  for y = scissor[2], scissor[2] + scissor[4] - 1 do
+    for x = scissor[1], scissor[1] + scissor[3] - 1 do
+      local rr, rg, rb, ra = reference:getPixel(x, y)
+      local cr, cg, cb, ca = clipped:getPixel(x, y)
+      Assert.near(cr, rr, 1 / 255, "clipped presentation red matches the reference")
+      Assert.near(cg, rg, 1 / 255, "clipped presentation green matches the reference")
+      Assert.near(cb, rb, 1 / 255, "clipped presentation blue matches the reference")
+      Assert.near(ca, ra, 1 / 255, "clipped presentation alpha matches the reference")
+    end
+  end
+
+  local clear = { clipped:getPixel(20, 20) }
+  local scale = clear[1] > 1 and 255 or 1
+  for _, point in ipairs({ { 20, 20 }, { 600, 460 } }) do
+    local r, g, b, a = clipped:getPixel(point[1], point[2])
+    Assert.near(r, clearColor[1] * scale, 0.01 * scale, "outside-scissor red retains the target clear color")
+    Assert.near(g, clearColor[2] * scale, 0.01 * scale, "outside-scissor green retains the target clear color")
+    Assert.near(b, clearColor[3] * scale, 0.01 * scale, "outside-scissor blue retains the target clear color")
+    Assert.near(a, clearColor[4] * scale, 0.01 * scale, "outside-scissor alpha retains the target clear color")
+  end
+end
+
 function T.presentation_host_depth_keeps_near_sprite_when_far_submitted_later(scope)
   local renderer = scope:own(GxRenderer.new({ worldRasterScale = 2 }))
   local near = asPresentationSprite(depthOpaqueQuad(scope, -0.25, 20, 20, 220, 5, false), -0.25)

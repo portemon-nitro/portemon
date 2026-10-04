@@ -1108,9 +1108,14 @@ local function drawFrame(
   colorH,
   viewMatrix,
   hasPresentationSprites,
-  edgeRadiusPx
+  edgeRadiusPx,
+  callerScissorX,
+  callerScissorY,
+  callerScissorW,
+  callerScissorH
 )
   local lg = assert(self._graphics)
+  lg.setScissor()
   local spriteItems = frame.spriteItems
   local stats = self.stats
   if presentationCanvas ~= nil and type(presentationCanvas) == "table" and presentationCanvas[1] ~= nil then
@@ -1278,6 +1283,11 @@ local function drawFrame(
   -- Edge, fog, and the current AA approximation have finished at world
   -- resolution. Presentation is only a nearest-filtered scale of that result.
   lg.setCanvas(presentationCanvas)
+  if callerScissorX == nil then
+    lg.setScissor()
+  else
+    lg.setScissor(callerScissorX, callerScissorY, callerScissorW, callerScissorH)
+  end
   lg.setShader()
   lg.setDepthMode()
   lg.setBlendMode("replace", "premultiplied")
@@ -1304,7 +1314,6 @@ local function drawFrame(
     scale[2] = visibleH / spriteH
     offset[1] = scale[1] - 1
     offset[2] = scale[2] - 1
-    local callerScissorX, callerScissorY, callerScissorW, callerScissorH = lg.getScissor()
     local dirtyX0, dirtyY0, dirtyX1, dirtyY1 = collectSpriteWork(
       self._spriteWorkItems,
       spriteItems,
@@ -1446,7 +1455,11 @@ function GxRenderer:draw(frame)
     colorH,
     viewMatrix,
     hasPresentationSprites,
-    edgeRadiusPx
+    edgeRadiusPx,
+    scissorX,
+    scissorY,
+    scissorWidth,
+    scissorHeight
   )
 
   self._activeShader = nil
