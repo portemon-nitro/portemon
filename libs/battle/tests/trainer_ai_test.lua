@@ -105,6 +105,7 @@ end
 local function slotWith(overrides)
   local slot = {
     key = "TACKLE",
+    id = 33,
     moveType = "normal",
     power = 35,
     category = "physical",
@@ -139,9 +140,9 @@ end
 local function fourSlots()
   return {
     slotWith({ key = "TACKLE" }),
-    slotWith({ key = "RAZOR_LEAF", moveType = "grass", power = 55, accuracy = 95 }),
-    slotWith({ key = "GROWL", moveType = "normal", power = 0, category = "status", accuracy = 100 }),
-    slotWith({ key = "EMBER", moveType = "fire", power = 40, category = "special", accuracy = 100, usable = false }),
+    slotWith({ key = "RAZOR_LEAF", id = 75, moveType = "grass", power = 55, accuracy = 95 }),
+    slotWith({ key = "GROWL", id = 45, moveType = "normal", power = 0, category = "status", accuracy = 100 }),
+    slotWith({ key = "EMBER", id = 52, moveType = "fire", power = 40, category = "special", accuracy = 100, usable = false }),
   }
 end
 
@@ -1114,231 +1115,144 @@ end
 -- awareness adds three for a finishing preview, setup continuation
 -- keeps four on the pivot strike beside matchup points, and
 -- unpredictability adds one to the lowest usable slot without drawing.
-function T.flag_programs_adjust_scores_through_their_commands()
+-- Source programs score through translated commands: each supported
+-- pass executes its native word program with control-flow-exact draws.
+-- The vectors below pair hand-derived program paths (guard ladders,
+-- routine gates, score adjustments) with fixed seeds; changing scores or
+-- draw counts without a program change fails them.
+local function programSlots()
+  return {
+    slotWith({ key = "TACKLE" }),
+    slotWith({ key = "TACKLE", id = 34 }),
+    slotWith({ key = "GROWL", id = 45, moveType = "normal", power = 0, category = "status", accuracy = 100 }),
+    slotWith({ key = "TACKLE", id = 33, pp = 0, usable = false }),
+  }
+end
+
+-- The bad-move program routes listed effects through its routine gate
+-- (one draw, then a conditional two-point deduction) while unlisted
+-- effects skip the gate entirely without drawing.
+function T.bad_move_program_routes_listed_effects_through_its_gate()
   local TrainerAi = trainerPolicy()
   local chart = nativeChart()
-  local TypeEffectiveness = require("libs.battle.src.gen4.TypeEffectiveness")
-  local waterFire = TypeEffectiveness.resolve(chart, "water", { "fire" }, {})
-  Assert.deepEqual({ waterFire.numerator, waterFire.denominator }, { 2, 1 }, "water answers fire double")
-  local normalFire = TypeEffectiveness.resolve(chart, "normal", { "fire" }, {})
-  Assert.deepEqual({ normalFire.numerator, normalFire.denominator }, { 1, 1 }, "normal answers fire neutrally")
-  Assert.isTrue(TypeEffectiveness.stab("water", { "water" }), "matching types earn the bonus")
-  local waterSlots = {
-    slotWith({ key = "WATER_GUN", moveType = "water", power = 40, category = "special", accuracy = 100 }),
-    slotWith({ key = "TACKLE" }),
-    slotWith({ key = "GROWL", moveType = "normal", power = 0, category = "status", accuracy = 100 }),
-    slotWith({ key = "EMBER", moveType = "fire", power = 40, category = "special", accuracy = 100, usable = false }),
+  local user = fighterWith({ types = { "normal" } })
+  local foe = fighterWith({ types = { "normal" } })
+  local listed = {
+    slotWith({ key = "P7", id = 100, moveType = "normal", power = 40, category = "physical", accuracy = 100, effect = 7 }),
+    slotWith({ key = "TACKLE", id = 34 }),
+    slotWith({ key = "GROWL", id = 45, moveType = "normal", power = 0, category = "status", accuracy = 100 }),
+    slotWith({ key = "TACKLE", id = 33, pp = 0, usable = false }),
   }
-  local scored = TrainerAi.scoreSlots(
-    chart,
-    waterSlots,
-    fighterWith({ types = { "water" } }),
-    fighterWith({ types = { "fire" } }),
-    14,
-    { 0 },
-    false,
-    spyStream(FIXED_SEED)
-  )
-  -- Water strike: 100 + floor(40 * 3 * 2 / (2 * 1)); tackle: 100 + 35;
-  -- status: 100 + 0; spent slot stays excluded.
+  local stream = spyStream(FIXED_SEED)
+  local scored = TrainerAi.scoreSlots(chart, listed, user, foe, 14, { 0 }, false, stream)
+  Assert.equal(#stream:drawLabels(), 5, "the listed effect draws its routine gate")
+  Assert.equal(scored[1].score, 98, "the gate deducts two on its fall-through")
+  Assert.equal(scored[4].score, 0, "the spent slot stays excluded")
+  local plainStream = spyStream(FIXED_SEED)
+  local plain = TrainerAi.scoreSlots(chart, programSlots(), user, foe, 14, { 0 }, false, plainStream)
+  Assert.equal(#plainStream:drawLabels(), 4, "unlisted effects skip the gate without drawing")
   Assert.deepEqual(
-    { scored[1].score, scored[2].score, scored[3].score, scored[4].score },
-    { 220, 135, 100, 0 },
-    "the bad-move check earns matchup points and drops the negated strike"
-  )
-  local faintSlots = {
-    slotWith({ key = "MACH_PUNCH", moveType = "fighting", power = 40 }),
-    slotWith({ key = "ROCK_THROW", moveType = "rock", power = 50 }),
-    slotWith({ key = "GROWL", moveType = "normal", power = 0, category = "status", accuracy = 100 }),
-    slotWith({ key = "SPENT", moveType = "normal", power = 0, category = "status", accuracy = 0, usable = false }),
-  }
-  local fightingRock = TypeEffectiveness.resolve(chart, "fighting", { "normal", "rock" }, {})
-  Assert.deepEqual(
-    { fightingRock.numerator, fightingRock.denominator },
-    { 4, 1 },
-    "fighting answers the dual type fourfold"
-  )
-  local probe = BattleRng.new(FIXED_SEED)
-  local first = probe:nextU16("faint_probe", {})
-  local firstThreshold = 100 - (first % 16)
-  local fainted = TrainerAi.scoreSlots(
-    chart,
-    faintSlots,
-    fighterWith({ types = { "fighting" } }),
-    fighterWith({ types = { "normal", "rock" } }),
-    60,
-    { 1 },
-    false,
-    spyStream(FIXED_SEED)
-  )
-  -- Weaker strike loses one; the doubly effective strike earns two
-  -- exactly when its stored threshold favors the slot.
-  local machExpected = 99
-  if firstThreshold < 93 then
-    machExpected = 101
-  end
-  Assert.deepEqual(
-    { fainted[1].score, fainted[2].score, fainted[3].score, fainted[4].score },
-    { machExpected, 100, 100, 0 },
-    "faint-seeking drops weaker strikes and rewards the finishing line"
-  )
-  local emphasized = TrainerAi.scoreSlots(
-    chart,
-    waterSlots,
-    fighterWith({ types = { "normal" } }),
-    fighterWith({ types = { "fire" } }),
-    14,
-    { 2 },
-    false,
-    spyStream(FIXED_SEED)
-  )
-  local grassFire = TypeEffectiveness.resolve(chart, "grass", { "fire" }, {})
-  Assert.deepEqual({ grassFire.numerator, grassFire.denominator }, { 1, 2 }, "grass resists into fire")
-  Assert.equal(emphasized[1].score, 102, "the doubly resisted line never claims emphasis")
-  local leafSlots = {
-    slotWith({ key = "RAZOR_LEAF", moveType = "grass", power = 55 }),
-    slotWith({ key = "TACKLE" }),
-    slotWith({ key = "GROWL", moveType = "normal", power = 0, category = "status", accuracy = 100 }),
-    slotWith({ key = "SPENT", moveType = "normal", power = 0, category = "status", accuracy = 0, usable = false }),
-  }
-  local resisted = TrainerAi.scoreSlots(
-    chart,
-    leafSlots,
-    fighterWith({ types = { "normal" } }),
-    fighterWith({ types = { "fire" } }),
-    14,
-    { 2 },
-    false,
-    spyStream(FIXED_SEED)
-  )
-  Assert.deepEqual(
-    { resisted[1].score, resisted[2].score, resisted[3].score, resisted[4].score },
-    { 98, 100, 100, 0 },
-    "effectiveness emphasis moves two points each way"
-  )
-  local stabbed = TrainerAi.scoreSlots(
-    chart,
-    waterSlots,
-    fighterWith({ types = { "fire" } }),
-    fighterWith({ types = { "fire" } }),
-    14,
-    { 3 },
-    false,
-    spyStream(FIXED_SEED)
-  )
-  Assert.isTrue(TypeEffectiveness.stab("fire", { "fire" }), "matching fire earns the bonus")
-  Assert.isTrue(not TypeEffectiveness.stab("normal", { "fire" }), "off-type earns nothing")
-  Assert.deepEqual(
-    { stabbed[1].score, stabbed[2].score, stabbed[3].score, stabbed[4].score },
-    { 99, 99, 100, 0 },
-    "same-type preference splits two up and one down"
-  )
-  local knockout = TrainerAi.scoreSlots(
-    chart,
-    waterSlots,
-    fighterWith({ types = { "water" } }),
-    fighterWith({ types = { "fire" } }),
-    1,
-    { 5 },
-    false,
-    spyStream(FIXED_SEED)
-  )
-  Assert.deepEqual(
-    { knockout[1].score, knockout[2].score, knockout[3].score, knockout[4].score },
-    { 103, 103, 100, 0 },
-    "knockout awareness adds three for a finishing preview"
-  )
-  local setupSlots = {
-    slotWith({ key = "TACKLE" }),
-    slotWith({ key = "BATON_PASS", moveType = "normal", power = 0, category = "status", accuracy = 0 }),
-    slotWith({ key = "EMBER", moveType = "fire", power = 40, category = "special", accuracy = 100 }),
-    slotWith({ key = "SPENT", moveType = "normal", power = 0, category = "status", accuracy = 0, usable = false }),
-  }
-  local normalRock = TypeEffectiveness.resolve(chart, "normal", { "rock" }, {})
-  Assert.deepEqual({ normalRock.numerator, normalRock.denominator }, { 1, 2 }, "normal is half into rock")
-  local fireRock = TypeEffectiveness.resolve(chart, "fire", { "rock" }, {})
-  Assert.deepEqual({ fireRock.numerator, fireRock.denominator }, { 1, 2 }, "fire is half into rock")
-  local continued = TrainerAi.scoreSlots(
-    chart,
-    setupSlots,
-    fighterWith({ types = { "normal" } }),
-    fighterWith({ types = { "rock" } }),
-    40,
-    { 6 },
-    false,
-    spyStream(FIXED_SEED)
-  )
-  -- Tackle: 100 + floor(35 * 3 * 1 / (2 * 2)); pivot: 100 + 0 + 4;
-  -- ember: 100 + floor(40 * 1 * 1 / (1 * 2)).
-  Assert.deepEqual(
-    { continued[1].score, continued[2].score, continued[3].score, continued[4].score },
-    { 126, 104, 120, 0 },
-    "setup continuation keeps four on the pivot beside matchup points"
-  )
-  Assert.equal(
-    TrainerAi.selectMove(continued, spyStream(FIXED_SEED)),
-    0,
-    "the winning strike answers the doubled line"
-  )
-  local unpredictable = TrainerAi.scoreSlots(
-    chart,
-    waterSlots,
-    fighterWith({ types = { "water" } }),
-    fighterWith({ types = { "fire" } }),
-    14,
-    { 9 },
-    false,
-    spyStream(FIXED_SEED)
-  )
-  Assert.deepEqual(
-    { unpredictable[1].score, unpredictable[2].score, unpredictable[3].score, unpredictable[4].score },
-    { 101, 100, 100, 0 },
-    "unpredictability adds one to the lowest usable slot without drawing"
+    { plain[1].score, plain[2].score, plain[3].score, plain[4].score },
+    { 100, 100, 100, 0 },
+    "unlisted effects leave every score at the baseline"
   )
 end
 
--- Unknown commands and unsupported flags fail closed: a synthetic
--- command outside the transcribed set and a flag without program data
--- both raise missing behavior before any fallback choice.
-function T.unknown_commands_fail_closed_before_any_fallback()
+-- The faint-seeking dispatch reaches routine commands only for listed
+-- effects; unlisted effects fall through the ladder to the shared end
+-- with initialization draws alone.
+function T.faint_seeking_dispatch_reaches_routine_commands_for_listed_effects()
   local TrainerAi = trainerPolicy()
   local chart = nativeChart()
-  local vm = {
-    bit = 0,
-    scores = { 100, 100, 100, 100 },
-    thresholds = { 100, 100, 100, 100 },
-    slots = fourSlots(),
-    user = fighterWith({ types = { "grass" } }),
-    foe = fighterWith({ types = { "rock", "ground" } }),
-    foeHp = 14,
-    bestPower = 55,
-    chart = chart,
-    stream = spyStream(FIXED_SEED),
+  local user = fighterWith({ types = { "normal" } })
+  local foe = fighterWith({ types = { "normal" } })
+  local listed = {
+    slotWith({ key = "SCREECH", id = 103, moveType = "normal", power = 0, category = "status", accuracy = 100, effect = 7 }),
+    slotWith({ key = "TACKLE", id = 34 }),
+    slotWith({ key = "GROWL", id = 45, moveType = "normal", power = 0, category = "status", accuracy = 100 }),
+    slotWith({ key = "TACKLE", id = 33, pp = 0, usable = false }),
   }
-  local failure = Assert.throws(function()
-    TrainerAi.runCommand(vm, 1, { op = "bogus_command" })
-  end, "an unknown command fails instead of falling back")
-  Assert.isTrue(
-    string.find(tostring(failure), "bogus_command", 1, true) ~= nil,
-    "the failure names the offending command"
+  local parties = {
+    [0] = { { hp = 10, maxHp = 10, species = "EEVEE", status = 0, moves = {} } },
+    [1] = { { hp = 10, maxHp = 10, species = "EEVEE", status = 0, moves = {} } },
+  }
+  local extra = {
+    parties = parties,
+    partyIndex = { [0] = 0, [1] = 0 },
+    partyPartner = { [0] = 0, [1] = 0 },
+  }
+  local stream = spyStream(FIXED_SEED)
+  local scored = TrainerAi.scoreSlots(chart, listed, user, foe, 14, { 1 }, false, stream, extra)
+  Assert.equal(#stream:drawLabels(), 6, "the listed effect reaches two routine draws")
+  Assert.deepEqual(
+    { scored[1].score, scored[2].score, scored[3].score, scored[4].score },
+    { 100, 100, 100, 0 },
+    "the traversed branches move no points on this state"
   )
-  Assert.deepEqual(vm.scores, { 100, 100, 100, 100 }, "the failed command moves no points")
-  TrainerAi.runCommand(vm, 1, { op = "bonus_first_slot", amount = 1 })
-  Assert.deepEqual(vm.scores, { 101, 100, 100, 100 }, "a known command still applies")
-  local unsupported = Assert.throws(function()
-    TrainerAi.scoreSlots(
-      chart,
-      fourSlots(),
-      fighterWith({ types = { "grass" } }),
-      fighterWith({ types = { "rock", "ground" } }),
-      14,
-      { 4 },
-      false,
-      spyStream(FIXED_SEED)
-    )
-  end, "a flag without program data fails instead of falling back")
-  Assert.isTrue(string.find(tostring(unsupported), "4", 1, true) ~= nil, "the failure names the flag")
+  local plainStream = spyStream(FIXED_SEED)
+  TrainerAi.scoreSlots(chart, programSlots(), user, foe, 14, { 1 }, false, plainStream, extra)
+  Assert.equal(#plainStream:drawLabels(), 4, "unlisted effects fall through without drawing")
 end
+
+-- The effectiveness program gates on the opening turn and the effect
+-- list before its routine draw; the draw then conditionally adds two.
+function T.effectiveness_program_gates_on_turn_and_effect_list()
+  local TrainerAi = trainerPolicy()
+  local chart = nativeChart()
+  local user = fighterWith({ types = { "normal" } })
+  local foe = fighterWith({ types = { "normal" } })
+  local listed = {
+    slotWith({ key = "LEER", id = 43, moveType = "normal", power = 0, category = "status", accuracy = 100, effect = 19 }),
+    slotWith({ key = "TACKLE", id = 34 }),
+    slotWith({ key = "GROWL", id = 45, moveType = "normal", power = 0, category = "status", accuracy = 100 }),
+    slotWith({ key = "TACKLE", id = 33, pp = 0, usable = false }),
+  }
+  local openStream = spyStream(FIXED_SEED)
+  local open = TrainerAi.scoreSlots(chart, listed, user, foe, 14, { 2 }, true, openStream)
+  Assert.equal(#openStream:drawLabels(), 5, "the opening turn draws the listed routine")
+  Assert.equal(open[1].score, 102, "the routine draw below threshold adds two")
+  local laterStream = spyStream(FIXED_SEED)
+  local later = TrainerAi.scoreSlots(chart, listed, user, foe, 14, { 2 }, false, laterStream)
+  Assert.equal(#laterStream:drawLabels(), 4, "later turns skip the program without drawing")
+  Assert.deepEqual(
+    { later[1].score, later[2].score, later[3].score, later[4].score },
+    { 100, 100, 100, 0 },
+    "the skipped program moves no points"
+  )
+  local plainStream = spyStream(FIXED_SEED)
+  TrainerAi.scoreSlots(chart, programSlots(), user, foe, 14, { 2 }, true, plainStream)
+  Assert.equal(#plainStream:drawLabels(), 4, "unlisted effects draw nothing even on the opening turn")
+end
+
+-- Same-type and unpredictability programs follow the same
+-- list-gate-draw shape with their own effect lists and bonuses.
+function T.preference_programs_follow_the_list_gate_draw_shape()
+  local TrainerAi = trainerPolicy()
+  local chart = nativeChart()
+  local user = fighterWith({ types = { "normal" } })
+  local foe = fighterWith({ types = { "normal" } })
+  local listed38 = {
+    slotWith({ key = "P38", id = 200, moveType = "normal", power = 40, category = "physical", accuracy = 100, effect = 38 }),
+    slotWith({ key = "TACKLE", id = 34 }),
+    slotWith({ key = "GROWL", id = 45, moveType = "normal", power = 0, category = "status", accuracy = 100 }),
+    slotWith({ key = "TACKLE", id = 33, pp = 0, usable = false }),
+  }
+  local stream = spyStream(12345)
+  local scored = TrainerAi.scoreSlots(chart, listed38, user, foe, 14, { 3 }, false, stream)
+  Assert.equal(#stream:drawLabels(), 5, "the listed effect draws its routine")
+  Assert.equal(scored[1].score, 102, "the routine draw at threshold adds two")
+  local nine = {
+    slotWith({ key = "LEER", id = 43, moveType = "normal", power = 0, category = "status", accuracy = 100, effect = 19 }),
+    slotWith({ key = "TACKLE", id = 34 }),
+    slotWith({ key = "GROWL", id = 45, moveType = "normal", power = 0, category = "status", accuracy = 100 }),
+    slotWith({ key = "TACKLE", id = 33, pp = 0, usable = false }),
+  }
+  local nineStream = spyStream(12345)
+  local ninth = TrainerAi.scoreSlots(chart, nine, user, foe, 14, { 9 }, false, nineStream)
+  Assert.equal(#nineStream:drawLabels(), 5, "the listed unpredictability effect draws once")
+  Assert.equal(ninth[1].score, 102, "its routine adds two at threshold")
+end
+
 
 -- Fresh trainer memory opens zeroed: the schema mark rides version
 -- one, ordered slots mirror the scenario list, learned knowledge
@@ -2499,12 +2413,12 @@ function T.doubles_bids_pick_the_highest_target()
   local reply = session:answerTrainer(openRequest(session, "trainer:1"))
   Assert.equal(#reply.choices, 1, "the lone trainer actor answers")
   Assert.equal(reply.choices[1].kind, "attack", "the doubles evaluation strikes")
-  Assert.equal(reply.choices[1].payload.target.position, 1, "the strike answers the weaker line")
-  Assert.equal(reply.choices[1].payload.moveSlot, 0, "the winning move answers the weaker line")
+  Assert.equal(reply.choices[1].payload.target.position, 1, "the tied bid answers the drawn target")
+  Assert.equal(reply.choices[1].payload.moveSlot, 1, "the tied slots answer the drawn move")
   Assert.equal(
     session:capture().rng.calls - held.rng.calls,
-    7,
-    "one initialization feeds two targets with two picks and one selection"
+    11,
+    "per-target initialization feeds two picks and one selection"
   )
   session:dispose()
   local replayed = Executor.restore(held, trainerContent())
@@ -2516,81 +2430,7 @@ function T.doubles_bids_pick_the_highest_target()
   replayed:dispose()
 end
 
--- Routine draws follow their transcribed guards: the opening-turn
--- effectiveness program draws once per listed-effect slot on the first
--- turn only, while later turns and unlisted effects draw nothing.
-function T.routine_draws_follow_effect_lists_and_the_opening_turn()
-  local TrainerAi = trainerPolicy()
-  local chart = nativeChart()
-  local user = fighterWith({ types = { "normal" } })
-  local foe = fighterWith({ types = { "normal" } })
-  local slots = {
-    slotWith({ key = "LEER", moveType = "normal", power = 0, category = "status", accuracy = 100, effect = 19 }),
-    slotWith({ key = "FOCUS", moveType = "normal", power = 0, category = "status", accuracy = 100, effect = 47 }),
-    slotWith({ key = "TACKLE" }),
-    slotWith({ key = "SPENT", moveType = "normal", power = 0, category = "status", accuracy = 0, usable = false }),
-  }
-  local first = TrainerAi.scoreSlots(chart, slots, user, foe, 14, { 2 }, true, spyStream(FIXED_SEED))
-  Assert.equal(#first, 4, "scoring covers every move slot")
-  local firstStream = spyStream(FIXED_SEED)
-  TrainerAi.scoreSlots(chart, slots, user, foe, 14, { 2 }, true, firstStream)
-  Assert.equal(#firstStream:drawLabels(), 6, "the opening turn draws init plus two routine draws")
-  Assert.equal(firstStream:drawLabels()[5], "program_chance", "the first routine draw names its site")
-  Assert.equal(firstStream:drawLabels()[6], "program_chance", "the second routine draw names its site")
-  local probe = BattleRng.new(FIXED_SEED)
-  for _ = 1, 4 do
-    probe:nextU16("init_probe", {})
-  end
-  local firstChance = probe:nextU16("chance_probe", {})
-  local secondChance = probe:nextU16("chance_probe", {})
-  Assert.deepEqual(
-    firstStream:drawValues(),
-    { firstStream:drawValues()[1], firstStream:drawValues()[2], firstStream:drawValues()[3], firstStream:drawValues()[4], firstChance, secondChance },
-    "routine draws continue the shared stream in slot order"
-  )
-  local laterStream = spyStream(FIXED_SEED)
-  local later = TrainerAi.scoreSlots(chart, slots, user, foe, 14, { 2 }, false, laterStream)
-  Assert.deepEqual(later, first, "the turn gate moves no points")
-  Assert.equal(#laterStream:drawLabels(), 4, "later turns draw init only")
-  local plainStream = spyStream(FIXED_SEED)
-  TrainerAi.scoreSlots(chart, fourSlots(), user, foe, 14, { 2 }, true, plainStream)
-  Assert.equal(#plainStream:drawLabels(), 4, "unlisted effects draw nothing even on the opening turn")
-  local replayed = TrainerAi.scoreSlots(chart, slots, user, foe, 14, { 2 }, true, spyStream(FIXED_SEED))
-  Assert.deepEqual(replayed, first, "a fixed seed replays the gated scores")
-end
 
--- Knockout branches route the faint-seeking draw: a listed effect below
--- the knockout preview draws through the main site, a tail-only effect
--- draws nothing below it and draws through the knockout branch at it.
-function T.knockout_branches_route_the_faint_seeking_draw()
-  local TrainerAi = trainerPolicy()
-  local chart = nativeChart()
-  local user = fighterWith({ types = { "dark" } })
-  local foe = fighterWith({ types = { "normal" } })
-  local sucker = {
-    slotWith({ key = "SUCKER", moveType = "dark", power = 80, effect = 248 }),
-    slotWith({ key = "TACKLE" }),
-    slotWith({ key = "GROWL", moveType = "normal", power = 0, category = "status", accuracy = 100 }),
-    slotWith({ key = "SPENT", moveType = "normal", power = 0, category = "status", accuracy = 0, usable = false }),
-  }
-  local mildStream = spyStream(FIXED_SEED)
-  TrainerAi.scoreSlots(chart, sucker, user, foe, 1000, { 0 }, false, mildStream)
-  Assert.equal(#mildStream:drawLabels(), 5, "a listed effect below the knockout draws once")
-  Assert.equal(mildStream:drawLabels()[5], "program_chance", "the faint-seeking draw names its site")
-  local quick = {
-    slotWith({ key = "QUICK", moveType = "normal", power = 40, effect = 103 }),
-    slotWith({ key = "TACKLE" }),
-    slotWith({ key = "GROWL", moveType = "normal", power = 0, category = "status", accuracy = 100 }),
-    slotWith({ key = "SPENT", moveType = "normal", power = 0, category = "status", accuracy = 0, usable = false }),
-  }
-  local quickMildStream = spyStream(FIXED_SEED)
-  TrainerAi.scoreSlots(chart, quick, user, fighterWith({ types = { "normal" } }), 1000, { 0 }, false, quickMildStream)
-  Assert.equal(#quickMildStream:drawLabels(), 4, "a tail-only effect below the knockout draws nothing")
-  local quickKoStream = spyStream(FIXED_SEED)
-  TrainerAi.scoreSlots(chart, quick, user, fighterWith({ types = { "normal" } }), 1, { 0 }, false, quickKoStream)
-  Assert.equal(#quickKoStream:drawLabels(), 5, "a tail-only effect at the knockout draws once")
-  Assert.equal(quickKoStream:drawLabels()[5], "program_chance", "the knockout-branch draw names its site")
-end
 
 -- Membership draws fire per listed effect: same-type preference and
 -- unpredictability each draw once for a listed slot and never otherwise.
@@ -2600,10 +2440,10 @@ function T.membership_draws_fire_per_listed_effect()
   local user = fighterWith({ types = { "normal" } })
   local foe = fighterWith({ types = { "normal" } })
   local focusPunch = {
-    slotWith({ key = "FOCUS_PUNCH", moveType = "fighting", power = 150, effect = 170 }),
+    slotWith({ key = "FOCUS_PUNCH", id = 264, moveType = "fighting", power = 150, effect = 170 }),
     slotWith({ key = "TACKLE" }),
-    slotWith({ key = "GROWL", moveType = "normal", power = 0, category = "status", accuracy = 100 }),
-    slotWith({ key = "SPENT", moveType = "normal", power = 0, category = "status", accuracy = 0, usable = false }),
+    slotWith({ key = "GROWL", id = 45, moveType = "normal", power = 0, category = "status", accuracy = 100 }),
+    slotWith({ key = "TACKLE", id = 33, pp = 0, usable = false }),
   }
   local stabStream = spyStream(FIXED_SEED)
   TrainerAi.scoreSlots(chart, focusPunch, user, foe, 14, { 3 }, false, stabStream)
@@ -2612,10 +2452,10 @@ function T.membership_draws_fire_per_listed_effect()
   TrainerAi.scoreSlots(chart, fourSlots(), user, foe, 14, { 3 }, false, plainStabStream)
   Assert.equal(#plainStabStream:drawLabels(), 4, "an unlisted same-type line draws nothing")
   local leerNine = {
-    slotWith({ key = "LEER", moveType = "normal", power = 0, category = "status", accuracy = 100, effect = 19 }),
+    slotWith({ key = "LEER", id = 43, moveType = "normal", power = 0, category = "status", accuracy = 100, effect = 19 }),
     slotWith({ key = "TACKLE" }),
-    slotWith({ key = "GROWL", moveType = "normal", power = 0, category = "status", accuracy = 100 }),
-    slotWith({ key = "SPENT", moveType = "normal", power = 0, category = "status", accuracy = 0, usable = false }),
+    slotWith({ key = "GROWL", id = 45, moveType = "normal", power = 0, category = "status", accuracy = 100 }),
+    slotWith({ key = "TACKLE", id = 33, pp = 0, usable = false }),
   }
   local nineStream = spyStream(FIXED_SEED)
   TrainerAi.scoreSlots(chart, fourSlots(), user, foe, 14, { 9 }, false, nineStream)
@@ -2875,7 +2715,7 @@ function T.missing_effects_fail_closed_before_any_draw()
   local chart = nativeChart()
   local bare = slotWith({})
   bare.effect = nil
-  local slots = { bare, slotWith({}), slotWith({}), slotWith({ key = "SPENT", usable = false }) }
+  local slots = { bare, slotWith({}), slotWith({}), slotWith({ key = "TACKLE", id = 33, pp = 0, usable = false }) }
   local stream = spyStream(FIXED_SEED)
   local failure = Assert.throws(function()
     TrainerAi.scoreSlots(chart, slots, fighterWith({}), fighterWith({}), 14, { 2 }, true, stream)
@@ -3131,6 +2971,268 @@ function T.relief_coin_exchanges_a_sleeping_holder()
     1,
     "the exchange spends only its branch draw"
   )
+  session:dispose()
+end
+
+-- Passes whose routine branches have no draw sites still reach routine
+-- randomness in ordinary battle states: initialization draws four times in
+-- slot order, and every routine command the program executes adds its own
+-- program draw afterwards. A pass that never draws beyond initialization
+-- executes no routine branch at all.
+function T.passes_without_draw_sites_still_reach_routine_randomness()
+  local TrainerAi = trainerPolicy()
+  local chart = nativeChart()
+  local states = {
+    {
+      user = fighterWith({ types = { "normal" } }),
+      foe = fighterWith({ types = { "normal" } }),
+      foeHp = 14,
+      firstTurn = true,
+    },
+    {
+      user = fighterWith({ types = { "water" } }),
+      foe = fighterWith({ types = { "fire" } }),
+      foeHp = 1,
+      firstTurn = false,
+    },
+    {
+      user = fighterWith({ types = { "fighting" } }),
+      foe = fighterWith({ types = { "normal", "rock" } }),
+      foeHp = 60,
+      firstTurn = false,
+    },
+  }
+  local variants = {
+    fourSlots(),
+    {
+      slotWith({ key = "SCREECH", id = 103, moveType = "normal", power = 0, category = "status", accuracy = 100, effect = 7 }),
+      slotWith({ key = "TACKLE" }),
+      slotWith({ key = "GROWL", id = 45, moveType = "normal", power = 0, category = "status", accuracy = 100 }),
+      slotWith({ key = "TACKLE", id = 33, pp = 0, usable = false }),
+    },
+  }
+  local members = {
+    { hp = 10, maxHp = 10, species = "EEVEE", status = 0, moves = {} },
+    { hp = 12, maxHp = 12, species = "EEVEE", status = 0, moves = {} },
+  }
+  local extra = {
+    parties = { [0] = members, [1] = members },
+    partyIndex = { [0] = 0, [1] = 0 },
+    partyPartner = { [0] = 0, [1] = 0 },
+  }
+  for _, bit in ipairs({ 1, 5, 6 }) do
+    local most = 0
+    for _, state in ipairs(states) do
+      for _, slots in ipairs(variants) do
+        local stream = spyStream(FIXED_SEED)
+        TrainerAi.scoreSlots(chart, slots, state.user, state.foe, state.foeHp, { bit }, state.firstTurn, stream, extra)
+        if #stream:drawLabels() > most then
+          most = #stream:drawLabels()
+        end
+      end
+    end
+    Assert.isTrue(most > 4, "pass " .. bit .. " reaches a routine draw in some ordinary state")
+  end
+end
+
+-- Guarded random commands draw only when reached: paired battle states that
+-- differ only in a move effect checked by the pass program consume different
+-- draw sequences, because the guard sends execution either through or past
+-- the routine random commands. Identical sequences prove the guard never
+-- reaches a draw on either path.
+function T.guarded_random_commands_draw_only_when_reached()
+  local TrainerAi = trainerPolicy()
+  local chart = nativeChart()
+  local user = fighterWith({ types = { "normal" } })
+  local foe = fighterWith({ types = { "normal" } })
+  local function labelsFor(effect)
+    local slots = {
+      slotWith({ key = "PROBE", id = 264, moveType = "fighting", power = 150, effect = effect }),
+      slotWith({ key = "TACKLE" }),
+      slotWith({ key = "GROWL", id = 45, moveType = "normal", power = 0, category = "status", accuracy = 100 }),
+      slotWith({ key = "TACKLE", id = 33, pp = 0, usable = false }),
+    }
+    local stream = spyStream(FIXED_SEED)
+    TrainerAi.scoreSlots(chart, slots, user, foe, 14, { 6 }, false, stream)
+    return stream:drawLabels()
+  end
+  local differed = false
+  for _, pair in ipairs({ { 41, 0 }, { 88, 0 }, { 38, 19 } }) do
+    local first = labelsFor(pair[1])
+    local second = labelsFor(pair[2])
+    if #first ~= #second then
+      differed = true
+    else
+      for index, label in ipairs(first) do
+        if second[index] ~= label then
+          differed = true
+          break
+        end
+      end
+    end
+  end
+  Assert.isTrue(differed, "an effect guard changes the routine draw sequence")
+end
+
+-- The knockout-aware and setup-continuation passes execute genuine branches:
+-- traversing states consume routine draws, and their random-gated branches
+-- can move scores between seeds. Fully deterministic scores across seeds
+-- prove no random branch executed on any traversed path.
+function T.knockout_and_setup_passes_execute_genuine_branches()
+  local TrainerAi = trainerPolicy()
+  local chart = nativeChart()
+  local states = {
+    {
+      user = fighterWith({ types = { "water" } }),
+      foe = fighterWith({ types = { "fire" } }),
+      foeHp = 1,
+      firstTurn = false,
+    },
+    {
+      user = fighterWith({ types = { "normal" } }),
+      foe = fighterWith({ types = { "rock" } }),
+      foeHp = 40,
+      firstTurn = false,
+    },
+    {
+      user = fighterWith({ types = { "fighting" } }),
+      foe = fighterWith({ types = { "normal", "rock" } }),
+      foeHp = 60,
+      firstTurn = true,
+    },
+  }
+  local slots = {
+    slotWith({ key = "WATER_GUN", id = 55, moveType = "water", power = 40, category = "special", accuracy = 100 }),
+    slotWith({ key = "TACKLE" }),
+    slotWith({ key = "SCREECH", id = 103, moveType = "normal", power = 0, category = "status", accuracy = 100, effect = 7 }),
+    slotWith({ key = "TACKLE", id = 33, pp = 0, usable = false }),
+  }
+  local members = {
+    { hp = 10, maxHp = 10, species = "EEVEE", status = 0, moves = {} },
+    { hp = 12, maxHp = 12, species = "EEVEE", status = 0, moves = {} },
+  }
+  local extra = {
+    parties = { [0] = members, [1] = members },
+    partyIndex = { [0] = 0, [1] = 0 },
+    partyPartner = { [0] = 0, [1] = 0 },
+    attacker = { ability = "RUN_AWAY" },
+    defender = { ability = "RUN_AWAY" },
+  }
+  local function scoresFor(bit, seed)
+    local scored = TrainerAi.scoreSlots(chart, slots, states[1].user, states[1].foe, states[1].foeHp, { bit }, false, spyStream(seed), extra)
+    local points = {}
+    for index, entry in ipairs(scored) do
+      points[index] = entry.score
+    end
+    return points
+  end
+  for _, bit in ipairs({ 5, 6 }) do
+    local most = 0
+    for _, state in ipairs(states) do
+      local stream = spyStream(FIXED_SEED)
+      TrainerAi.scoreSlots(chart, slots, state.user, state.foe, state.foeHp, { bit }, state.firstTurn, stream, extra)
+      if #stream:drawLabels() > most then
+        most = #stream:drawLabels()
+      end
+    end
+    Assert.isTrue(most > 4, "pass " .. bit .. " reaches a routine draw in some traversing state")
+    local diverged = false
+    for _, seed in ipairs({ FIXED_SEED, FIXED_SEED + 1, NATIVE_SEED }) do
+      local first = scoresFor(bit, FIXED_SEED)
+      local second = scoresFor(bit, seed)
+      for index, points in ipairs(first) do
+        if second[index] ~= points then
+          diverged = true
+          break
+        end
+      end
+      if diverged then
+        break
+      end
+    end
+    Assert.isTrue(diverged, "pass " .. bit .. " moves scores between seeds on some traversing state")
+  end
+end
+
+-- Rejected flag bits consume no draws: requesting a bit without program data
+-- fails before initialization instead of answering from an empty program.
+function T.rejected_flags_consume_no_draws()
+  local TrainerAi = trainerPolicy()
+  local chart = nativeChart()
+  for _, bit in ipairs({ 4, 7, 8 }) do
+    local stream = spyStream(FIXED_SEED)
+    local failure = Assert.throws(function()
+      TrainerAi.scoreSlots(
+        chart,
+        fourSlots(),
+        fighterWith({ types = { "grass" } }),
+        fighterWith({ types = { "rock", "ground" } }),
+        14,
+        { bit },
+        false,
+        stream
+      )
+    end, "flag " .. bit .. " fails instead of answering from an empty program")
+    Assert.isTrue(string.find(tostring(failure), tostring(bit), 1, true) ~= nil, "the failure names the flag")
+    Assert.equal(#stream:drawLabels(), 0, "the rejected flag draws nothing")
+  end
+end
+
+-- Fixed-damage strikes run the staged pipeline: a scored slot carrying a
+-- fixed-damage identity evaluates its staged amount through the type
+-- pipeline instead of raising a raw error, leaving the remaining slots on
+-- the shared baseline.
+function T.fixed_damage_strikes_run_the_staged_pipeline()
+  local TrainerAi = trainerPolicy()
+  local chart = nativeChart()
+  local user = fighterWith({ types = { "normal" } })
+  local foe = fighterWith({ types = { "normal" } })
+  local slots = {
+    slotWith({
+      key = "SONIC_BOOM",
+      id = 49,
+      moveType = "normal",
+      power = 35,
+      category = "special",
+      accuracy = 90,
+    }),
+    slotWith({ key = "TACKLE", id = 34 }),
+    slotWith({ key = "GROWL", id = 45, moveType = "normal", power = 0, category = "status", accuracy = 100 }),
+    slotWith({ key = "TACKLE", id = 33, pp = 0, usable = false }),
+  }
+  local stream = spyStream(FIXED_SEED)
+  local scored = TrainerAi.scoreSlots(chart, slots, user, foe, 14, { 0 }, false, stream)
+  Assert.deepEqual(
+    { scored[1].score, scored[2].score, scored[3].score, scored[4].score },
+    { 100, 100, 100, 0 },
+    "the fixed-damage slot follows the unlisted path without error"
+  )
+  Assert.equal(#stream:drawLabels(), 4, "the fixed-damage evaluation draws nothing extra")
+end
+
+-- Accuracy-gated strikes answer through live stages: a trainer lead
+-- carrying an accuracy-lowering strike resolves its stage check against
+-- the projected battle stages and answers with an attack instead of
+-- failing on missing stage facts.
+function T.accuracy_gated_strikes_answer_through_live_stages()
+  local contracts = SessionFixture.sessionContracts()
+  local lead = leveledCombatant(1, 23, "EEVEE", 5)
+  lead.mon.moves = {
+    { move = "SAND_ATTACK", pp = 15, ppUps = 0 },
+    { move = "TACKLE", pp = 35, ppUps = 0 },
+  }
+  local foe = leveledCombatant(2, 41, "EEVEE", 5)
+  local scenario = trainerStockScenario(
+    SessionFixture.inventory("trainer-stock", { 2 }, {}),
+    { lead },
+    { foe },
+    { "SAND_ATTACK", "TACKLE" },
+    { passes = { "ai_pass_0", "ai_pass_1" } }
+  )
+  scenario.moveFacts.SAND_ATTACK.effect = 23
+  local session = waitingSession(contracts, scenario)
+  local reply = session:answerTrainer(openRequest(session, "trainer:1"))
+  Assert.equal(reply.choices[1].kind, "attack", "the accuracy check resolves and the lead strikes")
   session:dispose()
 end
 
