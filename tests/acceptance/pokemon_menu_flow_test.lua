@@ -446,6 +446,16 @@ function T.tests.party_give_round_trip_preserves_target_identity()
       return current.child ~= nil and current.child.state == "message"
     end)
     Assert.equal(status.child.message.templateKey, "switchHeldPrompt", "the generated replacement text precedes Yes/No")
+    local heldItemName = assert(
+      game.runtime.itemCatalog:item("GREAT_BALL").name,
+      "the item catalog publishes its display name"
+    )
+    Assert.equal(#status.child.message.itemNames, 1, "the replacement question names exactly the held item")
+    Assert.deepEqual(
+      status.child.message.itemNames,
+      { heldItemName },
+      "the replacement question names the held item in order"
+    )
     Assert.equal(
       status.page,
       "party_browse",
@@ -496,6 +506,25 @@ function T.tests.party_give_round_trip_preserves_target_identity()
     status = driveUntil(flow, "the held-item exchange message", 30, function(current)
       return current.page == "party_browse" and current.child ~= nil and current.child.state == "message"
     end)
+    Assert.equal(
+      status.child.message.templateKey,
+      "switchHeldResult",
+      "the exchange result uses its generated template"
+    )
+    local oldItemName = assert(
+      game.runtime.itemCatalog:item("GREAT_BALL").name,
+      "the item catalog publishes its display name"
+    )
+    local newItemName = assert(
+      game.runtime.itemCatalog:item("POTION").name,
+      "the item catalog publishes its display name"
+    )
+    Assert.equal(#status.child.message.itemNames, 2, "the exchange result names exactly the old and new items")
+    Assert.deepEqual(
+      status.child.message.itemNames,
+      { oldItemName, newItemName },
+      "the exchange result names the displaced item before the replacement"
+    )
     Assert.equal(flow._child, questionChild, "accepting stays in the same Party child")
     Assert.equal(cursor:currentPocket(), "medicine", "the pick writes picker navigation back")
     Assert.equal(mons:partyMon(0).heldItem, "POTION", "accepting exchanges onto slot zero")
@@ -550,6 +579,21 @@ function T.tests.party_give_from_an_empty_holder_resumes_its_result()
     status = driveUntil(flow, "the resumed party result", 30, function(current)
       return current.page == "party_browse" and current.child ~= nil and current.child.state == "message"
     end)
+    Assert.equal(
+      status.child.message.templateKey,
+      "giveHeldItem",
+      "the empty-holder result uses its generated template"
+    )
+    local givenItemName = assert(
+      game.runtime.itemCatalog:item("GREAT_BALL").name,
+      "the item catalog publishes its display name"
+    )
+    Assert.equal(#status.child.message.itemNames, 1, "the give result names exactly the given item")
+    Assert.deepEqual(
+      status.child.message.itemNames,
+      { givenItemName },
+      "the give result names the given item in order"
+    )
 
     local continuationChild = flow._child
     Assert.equal(mons:partyMon(0).heldItem, "GREAT_BALL", "the selected item applies to the originating slot")

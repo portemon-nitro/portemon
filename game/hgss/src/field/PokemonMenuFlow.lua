@@ -420,10 +420,11 @@ end
 function PokemonMenuFlow:_giveHeldItemMessage(slot, itemKey)
   local mon = self._mons:partyMon(slot)
   local item = self._assets.itemCatalog:item(itemKey)
+  local itemName = assert(item.name, "the item catalog publishes its display name")
   return {
     templateKey = "giveHeldItem",
     displayName = Mon.displayName(mon, self._mons:catalog()),
-    itemNames = { assert(item.name, "the item catalog publishes its display name") },
+    itemNames = { itemName },
   }
 end
 
@@ -648,13 +649,14 @@ function PokemonMenuFlow:_routeTargetIntent(intent)
     if decision.kind == "needs_confirmation" then
       local heldKey = assert(self._mons:partyMon(slot).heldItem, "the target mon carries its held item")
       local heldItem = self._assets.itemCatalog:item(heldKey)
+      local heldItemName = assert(heldItem.name, "the item catalog publishes its display name")
       self:_completeParty({
         kind = "needs_confirmation",
         disposition = "bag",
         message = {
           templateKey = "switchHeldPrompt",
           displayName = displayName,
-          itemNames = { assert(heldItem.name, "the item catalog publishes its display name") },
+          itemNames = { heldItemName },
         },
       })
       return
@@ -703,6 +705,7 @@ function PokemonMenuFlow:_routeGiveIntent(intent)
   if decision.kind == "needs_confirmation" then
     local oldKey = assert(self._mons:partyMon(slot).heldItem, "the target mon carries its held item")
     local oldItem = self._assets.itemCatalog:item(oldKey)
+    local oldItemName = assert(oldItem.name, "the item catalog publishes its display name")
     local displayName = Mon.displayName(self._mons:partyMon(slot), self._mons:catalog())
     self:_completeParty({
       kind = "needs_confirmation",
@@ -710,7 +713,7 @@ function PokemonMenuFlow:_routeGiveIntent(intent)
       message = {
         templateKey = "switchHeldPrompt",
         displayName = displayName,
-        itemNames = { assert(oldItem.name, "the item catalog publishes its display name") },
+        itemNames = { oldItemName },
       },
     })
     return
@@ -736,13 +739,12 @@ function PokemonMenuFlow:_giveCompletion(outcome, slot, itemKey, disposition)
     local message
     if type(outcome.before) == "table" and outcome.before.heldItem ~= "NONE" then
       local oldItem = self._assets.itemCatalog:item(outcome.before.heldItem)
+      local oldItemName = assert(oldItem.name, "the item catalog publishes its display name")
+      local newItemName = assert(item.name, "the item catalog publishes its display name")
       message = {
         templateKey = "switchHeldResult",
         displayName = Mon.displayName(self._mons:partyMon(slot), self._mons:catalog()),
-        itemNames = {
-          assert(oldItem.name, "the item catalog publishes its display name"),
-          assert(item.name, "the item catalog publishes its display name"),
-        },
+        itemNames = { oldItemName, newItemName },
       }
     else
       message = self:_giveHeldItemMessage(slot, itemKey)
