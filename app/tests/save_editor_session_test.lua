@@ -134,6 +134,47 @@ function T.edit_discard_and_save_preserve_unowned_canonical_state()
   Assert.deepEqual(session:captureCandidate(), published, "Discard restores the latest saved baseline")
 end
 
+function T.dialogue_frame_stages_discards_and_saves_with_player_options()
+  local fixture = Fixture.new()
+  local session = sessionFor(fixture)
+  local baselineOptions = fixture.copy(fixture.initial.playerData.options)
+
+  Assert.equal(session:snapshot().frameIndex, fixture.initial.playerData.options.textFrame)
+  local changed = ok(session:setFrameIndex(2))
+  Assert.isTrue(changed.changed)
+  Assert.equal(session:snapshot().frameIndex, 2)
+  Assert.isTrue(session:isDirty())
+  local candidate = session:captureCandidate()
+  Assert.equal(candidate.playerData.options.textFrame, 2)
+  Assert.equal(candidate.playerData.options.textSpeed, baselineOptions.textSpeed)
+  Assert.deepEqual(candidate.playerData.profile, fixture.initial.playerData.profile)
+
+  ok(session:setFrameIndex(baselineOptions.textFrame))
+  Assert.isFalse(session:isDirty(), "reverting to the baseline frame clears dirtiness")
+  ok(session:setFrameIndex(2))
+
+  session:discard()
+  Assert.equal(session:snapshot().frameIndex, baselineOptions.textFrame)
+  Assert.isFalse(session:isDirty())
+  Assert.deepEqual(session:captureCandidate(), fixture.initial)
+
+  ok(session:setFrameIndex(2))
+  ok(session:save())
+  local published = assert(fixture.store:load(fixture.saveId))
+  Assert.equal(published.playerData.options.textFrame, 2)
+  Assert.equal(published.playerData.options.textSpeed, baselineOptions.textSpeed)
+  Assert.deepEqual(published.playerData.profile, fixture.initial.playerData.profile)
+
+  Assert.isFalse(session:isDirty(), "reverting the staged frame to the saved baseline clears dirtiness")
+  local revision = session:revision()
+  local invalid = session:setFrameIndex(99)
+  Assert.isFalse(invalid.ok, "unsupported frame indices are rejected")
+  Assert.equal(session:snapshot().frameIndex, 2)
+  local fractional = session:setFrameIndex(2.5)
+  Assert.isFalse(fractional.ok, "fractional frame indexes are rejected")
+  Assert.equal(session:revision(), revision, "invalid selections do not advance the session revision")
+end
+
 local function installFailure(backend, method, predicate)
   local original = assert(backend[method])
   local armed = true

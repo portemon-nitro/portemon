@@ -389,6 +389,7 @@ function Layout.compute(view, width, height, metrics)
     local snapshot = assert(view.session)
     addRow("read-only value", "player", "Player", snapshot.playerName)
     addRow("integer value", "money", "Money", snapshot.money)
+    addRow("named choice", "dialogue-frame", "Dialogue frame", "Frame " .. tostring(snapshot.frameIndex + 1))
   elseif section == "Progress" then
     addRow("read-only value", "flags:search", "Type to filter flags", nil)
     addFocusable("flags:search")

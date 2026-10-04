@@ -8,6 +8,7 @@ local GameSaveStore = require("libs.hgss.src.save.GameSaveStore")
 local GameSaveValidation = require("libs.hgss.src.save.GameSaveValidation")
 local FieldScriptSymbols = require("libs.assets.src.field.FieldScriptSymbols")
 local MapAssetCache = require("libs.assets.src.MapAssetCache")
+local FieldUiAssetCache = require("libs.assets.src.field.FieldUiAssetCache")
 local BagCache = require("libs.assets.src.BagCache")
 local ScriptSave = require("libs.script.src.ScriptSave")
 local SaveEditorSession = require("app.src.saveeditor.SaveEditorSession")
@@ -33,6 +34,14 @@ function SaveEditorComposition.open(options)
   local saveId = assert(options.saveId)
   local repoFs = RepoFs.new(assert(options.repositoryRoot))
   local cacheFs = CacheFs.forVersion(versionId)
+  local fieldUiManifest, fieldUiError = cacheFs:loadLua(FieldUiAssetCache.manifestPath())
+  if type(fieldUiManifest) ~= "table" then
+    error(assert(fieldUiError, "field UI manifest is missing"), 0)
+  end
+  local manifestValid, manifestError = FieldUiAssetCache.validateManifest(fieldUiManifest)
+  if not manifestValid then
+    error(assert(manifestError, "field UI manifest is invalid"), 0)
+  end
   local saveFs = SaveFs.global()
   local validation = GameSaveValidation.new({ overrideFs = repoFs })
   local context = validation:contextForVersion(versionId)
@@ -73,6 +82,7 @@ function SaveEditorComposition.open(options)
     session = session,
     context = context,
     cacheFs = cacheFs,
+    fieldUiManifest = fieldUiManifest,
     bagManifest = BagCache.loadManifest(cacheFs),
     saveFs = saveFs,
     world = world,

@@ -6,7 +6,12 @@ local Layout = require("app.src.saveeditor.SaveEditorLayout")
 
 local T = { tests = {} }
 local function computeLayout(view, width, height)
-  return Layout.compute(view, width, height, { lineHeight = 14, measure = function(text) return #text * 7 end })
+  return Layout.compute(view, width, height, {
+    lineHeight = 14,
+    measure = function(text)
+      return #text * 7
+    end,
+  })
 end
 
 local function locationView()
@@ -20,6 +25,7 @@ local function locationView()
       versionId = "heartgold",
       playerName = "PLAYER",
       money = 3000,
+      frameIndex = 0,
       location = {
         mapId = 12,
         fieldX = 32,
@@ -95,8 +101,7 @@ function T.tests.naming_keyboard_rows_do_not_overlap_the_footer_cancel_target()
       for column = 1, 13 do
         local key = assert(layout.targets[row .. ":" .. column])
         key = key.rect
-        local overlaps =
-          key.x < cancel.x + cancel.width
+        local overlaps = key.x < cancel.x + cancel.width
           and cancel.x < key.x + key.width
           and key.y < cancel.y + cancel.height
           and cancel.y < key.y + key.height
@@ -127,7 +132,7 @@ function T.tests.player_rows_reserve_measured_raw_value_width_in_a_separate_text
     ready = true,
     section = "Player",
     scope = { id = "section:Player", epoch = 0 },
-    session = { playerName = "PLAYER", money = 4294967295 },
+    session = { playerName = "PLAYER", money = 4294967295, frameIndex = 0 },
   }
   local metrics = {
     lineHeight = 12,
@@ -165,7 +170,11 @@ function T.tests.player_rows_reserve_measured_raw_value_width_in_a_separate_text
     return digits
   end
   layout = Layout.compute(view, 256, 192, metrics)
-  Assert.equal(layout.focusedValueHelp, "Money: 4294967295", "the full value stays visible when the row must truncate it")
+  Assert.equal(
+    layout.focusedValueHelp,
+    "Money: 4294967295",
+    "the full value stays visible when the row must truncate it"
+  )
 end
 
 function T.tests.shell_content_starts_at_the_application_margin_without_a_header_reservation()
@@ -175,7 +184,7 @@ function T.tests.shell_content_starts_at_the_application_margin_without_a_header
       ready = true,
       section = "Player",
       scope = { id = "section:Player", epoch = 0 },
-      session = { playerName = "PLAYER", money = 3000 },
+      session = { playerName = "PLAYER", money = 3000, frameIndex = 0 },
     }
     local layout = computeLayout(view, size[1], size[2])
     Assert.isNil(layout.header, "the shell does not reserve header geometry")
@@ -197,13 +206,18 @@ function T.tests.action_control_geometry_fits_labels_with_padding_on_compact_and
       dirty = true,
       section = "Party",
       scope = { id = "section:Party", epoch = 0 },
-      session = { playerName = "PLAYER", money = 3000 },
+      session = { playerName = "PLAYER", money = 3000, frameIndex = 0 },
       partyPage = "draft",
       partyValid = true,
       partySubpages = { "Identity", "Training", "Stats", "Moves", "Origin" },
       partyRows = {},
     }
-    local metrics = { lineHeight = 14, measure = function(text) return #text * 7 end }
+    local metrics = {
+      lineHeight = 14,
+      measure = function(text)
+        return #text * 7
+      end,
+    }
     local layout = Layout.compute(view, size[1], size[2], metrics)
     for _, action in ipairs(layout.actions) do
       local rect = assert(layout.targets[action.id]).rect
@@ -218,7 +232,12 @@ function T.tests.action_control_geometry_fits_labels_with_padding_on_compact_and
 end
 
 function T.tests.party_subpage_controls_remain_reachable_without_truncating_their_labels()
-  local metrics = { lineHeight = 14, measure = function(text) return #text * 7 end }
+  local metrics = {
+    lineHeight = 14,
+    measure = function(text)
+      return #text * 7
+    end,
+  }
   local view = {
     status = "ready",
     ready = true,
@@ -254,6 +273,111 @@ function T.tests.party_subpage_controls_remain_reachable_without_truncating_thei
       end
     end
   end
+end
+
+function T.tests.save_editor_list_and_card_geometry_is_bounded_and_row_major()
+  local loadedList, List = pcall(require, "app.src.saveeditor.SaveEditorList")
+  Assert.isTrue(loadedList, "the editor owns pure framed-list geometry")
+  local loadedCard, Card = pcall(require, "app.src.saveeditor.SaveEditorCard")
+  Assert.isTrue(loadedCard, "the editor owns pure card-grid geometry")
+
+  for _, bounds in ipairs({
+    { x = 0, y = 0, width = 256, height = 192 },
+    { x = 0, y = 0, width = 800, height = 600 },
+  }) do
+    local list = List.resolve({
+      bounds = bounds,
+      rowCount = 12,
+      rowHeight = 24,
+      gap = 2,
+      maxWidth = 480,
+    })
+    Assert.isTrue(list.surface.x >= bounds.x)
+    Assert.isTrue(list.surface.x + list.surface.width <= bounds.x + bounds.width)
+    Assert.equal(list.surface.width, math.min(bounds.width, 480), "the list width clamps to its maximum")
+    Assert.equal(
+      list.surface.x,
+      bounds.x + (bounds.width - list.surface.width) / 2,
+      "the list is horizontally centered"
+    )
+    Assert.isTrue(
+      list.content.x >= list.surface.x and list.content.x + list.content.width <= list.surface.x + list.surface.width
+    )
+    Assert.isTrue(list.contentHeight >= 12 * 24)
+    if list.contentHeight > list.content.height then
+      Assert.isTrue(
+        list.rows[#list.rows].rect.y + list.rows[#list.rows].rect.height > list.content.y + list.content.height,
+        "the logical row geometry extends beyond the viewport for ScrollViewport clipping"
+      )
+    end
+    Assert.equal(#list.rows, 12)
+    for index, row in ipairs(list.rows) do
+      Assert.equal(row.index, index)
+      Assert.isTrue(row.hitRect.width > 0 and row.hitRect.height > 0)
+      Assert.isTrue(row.rect.y >= list.content.y)
+      if index > 1 then
+        Assert.isTrue(row.rect.y >= list.rows[index - 1].rect.y + list.rows[index - 1].rect.height + 2)
+      end
+    end
+
+    local cards = Card.resolveGrid({
+      bounds = bounds,
+      count = 6,
+      columns = 2,
+      rows = 3,
+      gap = 12,
+      maxWidth = 720,
+    })
+    Assert.equal(#cards, 6)
+    local gridWidth = math.min(bounds.width, 720)
+    Assert.equal(
+      cards[1].rect.x,
+      bounds.x + (bounds.width - gridWidth) / 2,
+      "the card grid is centered within its maximum width"
+    )
+    for index, card in ipairs(cards) do
+      Assert.equal(card.index, index)
+      Assert.isTrue(card.rect.width > 0 and card.rect.height > 0)
+      Assert.isTrue(card.hitRect.width > 0 and card.hitRect.height > 0)
+      Assert.equal(card.hitRect.x, card.rect.x, "card pointer target spans the complete cell")
+      Assert.equal(card.hitRect.width, card.rect.width, "card pointer target spans the complete cell")
+      Assert.isTrue(card.iconRect.x < card.textRect.x, "card text follows its icon")
+      Assert.isTrue(
+        card.iconRect.x >= card.rect.x and card.iconRect.x + card.iconRect.width <= card.rect.x + card.rect.width
+      )
+      Assert.isTrue(
+        card.textRect.x >= card.rect.x and card.textRect.x + card.textRect.width <= card.rect.x + card.rect.width
+      )
+      if index > 1 then
+        local previous = cards[index - 1]
+        if index % 2 == 0 then
+          Assert.isTrue(card.rect.x >= previous.rect.x + previous.rect.width + 12)
+        else
+          Assert.isTrue(card.rect.y >= previous.rect.y + previous.rect.height + 12)
+        end
+      end
+    end
+  end
+
+  Assert.throws(function()
+    List.resolve({
+      bounds = { x = 0, y = 0, width = 0, height = 192 },
+      rowCount = 1,
+      rowHeight = 24,
+      gap = 0,
+      maxWidth = 300,
+    })
+  end, "invalid list bounds fail loudly")
+  Assert.throws(function()
+    Card.resolveGrid({
+      bounds = { x = 0, y = 0, width = 256, height = 192 },
+      count = 7,
+      columns = 2,
+      rows = 3,
+      gap = 8,
+      maxWidth = 720,
+    })
+  end, "card count cannot exceed the six visible cells")
 end
 
 return T

@@ -62,11 +62,7 @@ local function clickTarget(state, targetId)
   local layout = assert(view.layout)
   local target = assert(layout.targets[targetId], "the visible editor publishes " .. targetId)
   local rect = target.rect or target.hitRect or target
-  local x, y = LayoutGeometry.logicalToHost(
-    assert(pane.placement),
-    rect.x + rect.width / 2,
-    rect.y + rect.height / 2
-  )
+  local x, y = LayoutGeometry.logicalToHost(assert(pane.placement), rect.x + rect.width / 2, rect.y + rect.height / 2)
   state:mousepressed(x, y, 1, false)
   state:mousereleased(x, y, 1, false)
   return state:view()
@@ -114,6 +110,14 @@ function T.tests.real_state_uses_the_editor_palette_and_saves_a_capture(scope)
     Assert.equal(view.status, "ready", "the actual editor State opens the selected save")
     Assert.notNil(view.session, "the rendered view comes from a production Session")
     Assert.notNil(state.renderer.text.fontDef, "the renderer uses the selected ROM's generated field font")
+    local frameRenderer =
+      assert(state.renderer._windowRenderer, "ready composition owns one application-frame renderer")
+    local frameDraws = {}
+    local drawApplicationFrame = frameRenderer.drawApplicationFrame
+    frameRenderer.drawApplicationFrame = function(self, box, frameIndex)
+      frameDraws[#frameDraws + 1] = frameIndex
+      return drawApplicationFrame(self, box, frameIndex)
+    end
 
     local function capture(name, captureWidth, captureHeight)
       state:resize(captureWidth, captureHeight)
@@ -128,11 +132,16 @@ function T.tests.real_state_uses_the_editor_palette_and_saves_a_capture(scope)
       end
       local view = state:view()
       Assert.equal(view.status, "ready", name .. " uses the production editor state")
+      local frameCount = #frameDraws
       local canvas = scope:own(love.graphics.newCanvas(captureWidth, captureHeight))
       love.graphics.setCanvas(canvas)
       love.graphics.clear(0, 0, 0, 0)
-      local drawOk, drawFailure = xpcall(function() state:draw() end, debug.traceback)
-      if not drawOk then error(drawFailure, 0) end
+      local drawOk, drawFailure = xpcall(function()
+        state:draw()
+      end, debug.traceback)
+      if not drawOk then
+        error(drawFailure, 0)
+      end
       love.graphics.setCanvas()
 
       local actual = scope:own(canvas:newImageData())
@@ -150,6 +159,8 @@ function T.tests.real_state_uses_the_editor_palette_and_saves_a_capture(scope)
       Assert.near(red, state.renderer.skin.background[1], 1 / 255, name .. " uses the editor palette red")
       Assert.near(green, state.renderer.skin.background[2], 1 / 255, name .. " uses the editor palette green")
       Assert.near(blue, state.renderer.skin.background[3], 1 / 255, name .. " uses the editor palette blue")
+      Assert.isTrue(#frameDraws > frameCount, name .. " draws its framed surface")
+      Assert.equal(frameDraws[#frameDraws], view.session.frameIndex, name .. " uses the staged dialogue frame")
       return view
     end
     local cases = {
@@ -233,7 +244,11 @@ function T.tests.real_state_uses_the_editor_palette_and_saves_a_capture(scope)
     Assert.isTrue(crowdedBag.layout.bagPage.count > 1, "the crowded pocket has multiple Bag pages")
     clickTarget(state, "bag:page:next")
     local nextPage = capture("crowded-bag-next-page", width, height)
-    Assert.equal(nextPage.layout.bagPage.index, crowdedBag.layout.bagPage.index + 1, "Next opens the following Bag page")
+    Assert.equal(
+      nextPage.layout.bagPage.index,
+      crowdedBag.layout.bagPage.index + 1,
+      "Next opens the following Bag page"
+    )
     Assert.isTrue(
       assert(nextPage.bagPageRows[1]).item ~= assert(crowdedBag.bagPageRows[1]).item,
       "the next Bag page exposes different item rows"
@@ -297,8 +312,12 @@ function T.tests.real_state_uses_the_editor_palette_and_saves_a_capture(scope)
         local iconDimensions = iconProvider:dimensions(row.iconKey)
         local icon = assert(
           state.renderer._icons[row.iconKey],
-          "the real provider prepared " .. row.iconKey .. " with status " .. tostring(state.renderer.iconStatus)
-            .. " and failure " .. tostring(state.renderer.iconFailure)
+          "the real provider prepared "
+            .. row.iconKey
+            .. " with status "
+            .. tostring(state.renderer.iconStatus)
+            .. " and failure "
+            .. tostring(state.renderer.iconFailure)
         )
         Assert.notNil(icon.image, "the selected ROM supplies the Party icon image")
         Assert.notNil(icon.quad, "the selected ROM supplies the Party icon frame")

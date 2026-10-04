@@ -319,6 +319,13 @@ function State:update(dt)
       return
     end
     self.dependencies = graphOrError
+    local prepared, presentationError = pcall(function()
+      self.renderer:preparePresentationAssets(assert(graphOrError.cacheFs), assert(graphOrError.fieldUiManifest))
+    end)
+    if not prepared then
+      self:_openingFailed(Errors.new("SAVE_EDITOR_PRESENTATION_ASSET_FAILED", tostring(presentationError)))
+      return
+    end
     self.partyView = PartyView.new(assert(graphOrError.context))
     self.session = assert(graphOrError.session)
     self.locationService = LocationService.new({
@@ -378,6 +385,9 @@ function State:_snapshot()
     versionId = self.versionId,
     saveId = self.saveId,
     session = session,
+    framePreviewIndex = self.valuePurpose == "dialogue_frame" and self.valueEditor ~= nil and tonumber(
+      self.valueEditor:snapshot().selectedKey
+    ) or nil,
     ready = session ~= nil,
     dirty = self.session ~= nil and self.session:isDirty() or self.monDraft ~= nil,
     dirtySections = session and session.dirtySections or { money = false, flags = false },
@@ -772,6 +782,13 @@ function State:_finishValueEditor()
   end
   if purpose == "money" then
     local changed = self.session:setMoney(result.value)
+    if not changed.ok then
+      self.errorMessage = message(changed.error)
+      editor:retry()
+      return false
+    end
+  elseif purpose == "dialogue_frame" then
+    local changed = self.session:setFrameIndex(tonumber(result.value))
     if not changed.ok then
       self.errorMessage = message(changed.error)
       editor:retry()
@@ -1707,6 +1724,22 @@ function State:_activate(targetId)
     self:_installValueEditor(
       ValueEditor.new({ kind = "integer", value = money, min = 0, max = PlayerData.MAX_MONEY, base = "decimal" }),
       "money"
+    )
+  elseif targetId == "dialogue-frame" then
+    self:_cancelPendingLocationSave()
+    local frameIndexes = assert(self.dependencies.context.frameIndexes)
+    local choices = {}
+    for frameIndex in pairs(frameIndexes) do
+      choices[#choices + 1] = frameIndex
+    end
+    table.sort(choices)
+    local options = {}
+    for _, frameIndex in ipairs(choices) do
+      options[#options + 1] = { key = tostring(frameIndex), label = "Frame " .. tostring(frameIndex + 1) }
+    end
+    self:_installValueEditor(
+      ValueEditor.new({ kind = "choice", options = options, value = tostring(self.session:snapshot().frameIndex) }),
+      "dialogue_frame"
     )
   elseif targetId:sub(1, 5) == "flag:" then
     local name = targetId:sub(6)

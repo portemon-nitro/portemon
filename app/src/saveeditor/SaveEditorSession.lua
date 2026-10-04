@@ -34,6 +34,7 @@ local STALE_DRAFT = "SAVE_EDITOR_STALE_DRAFT"
 ---@field party boolean
 ---@field bag boolean
 ---@field location boolean
+---@field frame boolean
 
 ---@class SaveEditorLocation
 ---@field mapId integer
@@ -48,6 +49,7 @@ local STALE_DRAFT = "SAVE_EDITOR_STALE_DRAFT"
 ---@field versionId string
 ---@field playerName string
 ---@field money integer
+---@field frameIndex integer
 ---@field flags table<integer, boolean>
 ---@field location SaveEditorLocation
 ---@field originalLocation SaveEditorLocation
@@ -68,6 +70,7 @@ local STALE_DRAFT = "SAVE_EDITOR_STALE_DRAFT"
 ---@field swapPartyMons fun(self: SaveEditorSession, left0: integer, right0: integer): table<string, unknown>
 ---@field setBagQuantity fun(self: SaveEditorSession, itemKey: string, quantity: integer): table<string, unknown>
 ---@field setMoney fun(self: SaveEditorSession, value: unknown): table<string, unknown>
+---@field setFrameIndex fun(self: SaveEditorSession, value: unknown): table<string, unknown>
 ---@field setFlag fun(self: SaveEditorSession, name: unknown, value: unknown): table<string, unknown>
 ---@field setLocation fun(self: SaveEditorSession, placement: SaveEditorLocation): table<string, unknown>
 ---@field save fun(self: SaveEditorSession, hasUnappliedDraft: boolean?): table<string, unknown>
@@ -75,6 +78,8 @@ local STALE_DRAFT = "SAVE_EDITOR_STALE_DRAFT"
 ---@field private _baseline table<string, unknown>
 ---@field private _entryCheckpoint table<string, unknown>
 ---@field private _money integer
+---@field private _frameIndex integer
+---@field private _frameIndexes table<integer, boolean>
 ---@field private _location SaveEditorLocation
 ---@field private _events FieldEventState
 ---@field private _symbols table<string, unknown>
@@ -306,6 +311,15 @@ function SaveEditorSession.new(options)
   end
 
   local baseline = copy(record)
+  local frameIndexes = options.context.frameIndexes
+  assert(type(frameIndexes) == "table", "the borrowed version context requires validated dialogue-frame indexes")
+  local playerOptions = baseline.playerData.options
+  assert(type(playerOptions) == "table", "canonical player options are required")
+  local frameIndex = playerOptions.textFrame
+  assert(
+    finiteInteger(frameIndex) and frameIndexes[frameIndex] == true,
+    "the canonical dialogue frame must be valid for this version"
+  )
   local events = FieldEventState.new(eventSnapshot(baseline))
   local monCatalog = options.context.monCatalog
   local itemCatalog = options.context.itemCatalog
@@ -336,6 +350,8 @@ function SaveEditorSession.new(options)
     _baseline = baseline,
     _entryCheckpoint = copy(baseline),
     _money = profile.money,
+    _frameIndex = frameIndex,
+    _frameIndexes = frameIndexes,
     _location = locationSnapshot(baseline),
     _events = events,
     _symbols = options.symbols or FieldScriptSymbols,
@@ -374,12 +390,14 @@ function SaveEditorSession:snapshot()
     versionId = self._baseline.versionId --[[@as string]],
     playerName = profile.name --[[@as string]],
     money = self._money,
+    frameIndex = self._frameIndex,
     flags = flagsFrom(self._events),
     location = stagedLocation,
     originalLocation = copy(baselineLocation),
     locationChanged = locationChanged,
     dirtySections = {
       money = dirtyMoney,
+      frame = self._frameIndex ~= (self._baseline.playerData --[[@as table<string, unknown>]]).options.textFrame,
       flags = dirtyFlags,
       party = partyDirty,
       bag = bagDirty,
@@ -641,7 +659,7 @@ end
 ---@return boolean
 function SaveEditorSession:isDirty()
   local dirty = self:snapshot().dirtySections
-  return dirty.money or dirty.flags or dirty.party or dirty.bag or dirty.location
+  return dirty.money or dirty.frame or dirty.flags or dirty.party or dirty.bag or dirty.location
 end
 
 ---@param value unknown
@@ -657,6 +675,23 @@ function SaveEditorSession:setMoney(value)
     return success(false)
   end
   self._money = value
+  self._revision = self._revision + 1
+  return success(true)
+end
+
+---@param value unknown
+---@return table<string, unknown>
+function SaveEditorSession:setFrameIndex(value)
+  if self._busy then
+    return failure(BUSY, "A save operation is already in progress.", {})
+  end
+  if not finiteInteger(value) or self._frameIndexes[value] ~= true then
+    return failure(VALUE_INVALID, "Choose a dialogue frame supported by this game version.", { value = value })
+  end
+  if value == self._frameIndex then
+    return success(false)
+  end
+  self._frameIndex = value
   self._revision = self._revision + 1
   return success(true)
 end
@@ -739,7 +774,9 @@ function SaveEditorSession:captureCandidate()
   local candidate = copy(self._baseline)
   local playerData = candidate.playerData --[[@as table<string, unknown>]]
   local profile = playerData.profile --[[@as table<string, unknown>]]
+  local playerOptions = playerData.options --[[@as table<string, unknown>]]
   profile.money = self._money
+  playerOptions.textFrame = self._frameIndex
   local world = candidate.world --[[@as table<string, unknown>]]
   world.flags = flagsFrom(self._events)
   candidate.mons = self._monService:capture()
@@ -832,6 +869,8 @@ function SaveEditorSession:discard()
   local playerData = self._baseline.playerData --[[@as table<string, unknown>]]
   local profile = playerData.profile --[[@as table<string, unknown>]]
   self._money = profile.money --[[@as integer]]
+  local playerOptions = playerData.options --[[@as table<string, unknown>]]
+  self._frameIndex = playerOptions.textFrame --[[@as integer]]
   self._location = locationSnapshot(self._baseline)
   self._events = FieldEventState.new(eventSnapshot(self._baseline))
   if not equal(self._monService:capture(), self._baseline.mons) then

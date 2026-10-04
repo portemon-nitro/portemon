@@ -485,6 +485,63 @@ function T.tests.input_reaches_money_and_toggle_rows_on_compact_and_dual_touch()
   end)
 end
 
+function T.tests.player_dialogue_frame_choice_cancels_and_stages_an_allowed_frame()
+  local _, Layout = stateModule()
+  local topology = ScreenTopology.oneDisplay({
+    id = "main",
+    rect = { x = 0, y = 0, width = 256, height = 192 },
+    touch = true,
+    role = "world",
+  })
+  withEditor(256, 192, topology, function(state)
+    selectSection(state, Layout, "Player")
+    local before = state:view()
+    local frameRow
+    for _, row in ipairs(semanticRows(before, "named choice")) do
+      if semanticText(row):find("dialogue frame", 1, true) then
+        frameRow = row
+        break
+      end
+    end
+    Assert.notNil(frameRow, "Player exposes the Dialogue frame choice")
+    local targetId = assert(frameRow.targetId)
+    local baseline = state.session:snapshot().frameIndex
+    local allowed = {}
+    for index in pairs(assert(state.dependencies.context.frameIndexes)) do
+      allowed[#allowed + 1] = index
+    end
+    table.sort(allowed)
+    Assert.isTrue(#allowed > 1, "the ready field UI manifest provides multiple selectable frames")
+
+    local playerLayout = computeLayout(Layout, before, 256, 192)
+    click(state, selectedPane(before), playerLayout.targets[targetId], true)
+    local chooser = state:view()
+    Assert.equal(chooser.valueEditor.kind, "choice")
+    Assert.equal(#chooser.valueEditor.options, #allowed, "chooser lists the manifest's complete frame set")
+    for index, option in ipairs(chooser.valueEditor.options) do
+      Assert.equal(tonumber(option.key), allowed[index], "frame choices are sorted by allowed zero-based index")
+      Assert.equal(option.label, "Frame " .. (allowed[index] + 1), "frame labels are one-based for the player")
+    end
+
+    state:keypressed("escape")
+    Assert.equal(state.session:snapshot().frameIndex, baseline, "cancel does not stage the previewed frame")
+
+    local reopened = state:view()
+    click(state, selectedPane(reopened), computeLayout(Layout, reopened, 256, 192).targets[targetId], true)
+    state:keypressed("down")
+    local highlighted = state:view()
+    Assert.notNil(highlighted.valueEditor, "the frame choice remains open while moving its highlight")
+    state:keypressed("return")
+    local selected = state.session:snapshot().frameIndex
+    Assert.isTrue(selected ~= baseline, "confirm stages the highlighted frame")
+    local isAllowed = false
+    for _, frameIndex in ipairs(allowed) do
+      isAllowed = isAllowed or selected == frameIndex
+    end
+    Assert.isTrue(isAllowed, "confirmed frame belongs to the manifest's allowed set")
+  end)
+end
+
 function T.tests.value_editor_success_and_cancel_return_to_live_caller_focus()
   local _, Layout = stateModule()
   local topology = ScreenTopology.oneDisplay({

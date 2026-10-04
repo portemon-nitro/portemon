@@ -8,52 +8,64 @@ local Errors = require("libs.errors.src.Errors")
 local MonIconAssetProvider = require("libs.hgss.src.presentation.MonIconAssetProvider")
 local ItemIconAssetProvider = require("libs.hgss.src.presentation.ItemIconAssetProvider")
 local LogicalSurface = require("libs.ui.src.LogicalSurface")
-local Button = require("libs.ui.src.Button")
+local TextButton = require("libs.ui.src.TextButton")
+local FieldWindowRenderer = require("libs.hgss.src.ui.FieldWindowRenderer")
+local ProductMenuSkin = require("app.src.ui.ProductMenuSkin")
 local FieldMessageText = require("libs.assets.src.field.FieldMessageText")
 
 ---@class SaveEditorRenderer
 ---@field text table<string, unknown>
+---@field skin ProductMenuSkin
 ---@field graphics table<string, unknown>
 ---@field _disposed boolean
 ---@field _iconQueue table<string, unknown>?
 ---@field _iconProvider MonIconAssetProvider?
 ---@field _icons table<string, { image: love.Image, quad: love.Quad, dimensions: { width: number, height: number } }>
+---@field _windowRenderer FieldWindowRenderer?
 ---@field iconStatus string?
 ---@field iconFailure string?
 ---@field metrics fun(self: SaveEditorRenderer): { lineHeight: number, measure: fun(value: string): number }
 ---@field dispose fun(self: SaveEditorRenderer)
+---@field preparePresentationAssets fun(self: SaveEditorRenderer, cacheFs: table<string, unknown>, manifest: table<string, unknown>)
 ---@field prepareVisibleIcons fun(self: SaveEditorRenderer, view: table<string, unknown>, plan: table<string, unknown>, cacheFs: table<string, unknown>, derivedAssets: table<string, unknown>)
 
 local Utf8Glyphs = require("libs.assets.src.Utf8Glyphs")
-local PALETTE = {
-  background = { 0.91, 0.93, 0.91, 1 },
-  ink = { 0.12, 0.16, 0.19, 1 },
-  muted = { 0.34, 0.4, 0.43, 1 },
-  error = { 0.68, 0.12, 0.12, 1 },
-  border = { 0.2, 0.25, 0.28, 1 },
-  rim = { 0.87, 0.9, 0.88, 1 },
-  normal = {
-    innerBorder = { 0.1, 0.34, 0.38, 1 },
-    faceTop = { 0.48, 0.78, 0.78, 1 },
-    faceBottom = { 0.29, 0.62, 0.64, 1 },
+local BUTTON_COLORS = {
+  navigation = {
+    border = { 0.12, 0.22, 0.42, 1 },
+    rim = { 0.72, 0.82, 0.96, 1 },
+    innerBorder = { 0.18, 0.35, 0.62, 1 },
+    faceTop = { 0.48, 0.67, 0.91, 1 },
+    faceBottom = { 0.28, 0.48, 0.76, 1 },
   },
-  focused = {
-    innerBorder = { 0.08, 0.29, 0.58, 1 },
-    faceTop = { 0.69, 0.83, 0.98, 1 },
-    faceBottom = { 0.39, 0.61, 0.84, 1 },
+  primary = {
+    border = { 0.12, 0.34, 0.18, 1 },
+    rim = { 0.77, 0.92, 0.75, 1 },
+    innerBorder = { 0.2, 0.48, 0.22, 1 },
+    faceTop = { 0.56, 0.82, 0.48, 1 },
+    faceBottom = { 0.34, 0.66, 0.3, 1 },
   },
-  disabled = {
-    innerBorder = { 0.48, 0.51, 0.5, 1 },
-    faceTop = { 0.78, 0.8, 0.78, 1 },
-    faceBottom = { 0.65, 0.68, 0.65, 1 },
+  secondary = {
+    border = { 0.28, 0.18, 0.42, 1 },
+    rim = { 0.88, 0.78, 0.95, 1 },
+    innerBorder = { 0.42, 0.3, 0.62, 1 },
+    faceTop = { 0.73, 0.6, 0.87, 1 },
+    faceBottom = { 0.54, 0.39, 0.72, 1 },
   },
   destructive = {
-    innerBorder = { 0.51, 0.2, 0.17, 1 },
-    faceTop = { 0.91, 0.62, 0.54, 1 },
-    faceBottom = { 0.76, 0.39, 0.32, 1 },
+    border = { 0.46, 0.12, 0.12, 1 },
+    rim = { 0.96, 0.77, 0.75, 1 },
+    innerBorder = { 0.62, 0.2, 0.19, 1 },
+    faceTop = { 0.92, 0.58, 0.53, 1 },
+    faceBottom = { 0.76, 0.34, 0.3, 1 },
   },
-  text = { normal = { foreground = { 0.12, 0.16, 0.19, 1 } }, hint = { foreground = { 0.34, 0.4, 0.43, 1 } } },
-  cards = { normal = { border = { 0.2, 0.25, 0.28, 1 }, selectedRim = { 0.08, 0.29, 0.58, 1 } } },
+  disabled = {
+    border = { 0.38, 0.4, 0.41, 1 },
+    rim = { 0.83, 0.84, 0.84, 1 },
+    innerBorder = { 0.52, 0.54, 0.55, 1 },
+    faceTop = { 0.76, 0.78, 0.79, 1 },
+    faceBottom = { 0.62, 0.65, 0.66, 1 },
+  },
 }
 
 ---@param cacheFs table<string, unknown>
@@ -73,19 +85,29 @@ end
 
 function Renderer.new(options)
   assert(type(options) == "table" and options.text, "save editor renderer needs field text")
+  assert(type(options.versionId) == "string" and options.versionId ~= "", "save editor renderer needs a game version")
   return setmetatable({
     text = options.text,
-    skin = PALETTE,
+    skin = ProductMenuSkin.forVersion(options.versionId),
     graphics = options.graphics or love.graphics,
     _disposed = false,
     _iconQueue = nil,
     _iconProvider = nil,
     _icons = {},
+    _windowRenderer = nil,
     _itemIconProvider = nil,
     _bagImages = {},
     iconStatus = nil,
     iconFailure = nil,
   }, Renderer)
+end
+
+function Renderer:preparePresentationAssets(cacheFs, manifest)
+  assert(not self._disposed, "disposed save editor renderer cannot prepare assets")
+  if self._windowRenderer ~= nil then
+    return
+  end
+  self._windowRenderer = FieldWindowRenderer.new({ cacheFs = cacheFs, manifest = manifest, graphics = self.graphics })
 end
 
 function Renderer:prepareVisibleIcons(view, plan, cacheFs, derivedAssets)
@@ -213,41 +235,54 @@ local function visibleText(renderer, value)
 end
 
 local function drawText(renderer, value, x, y, role)
-  local color = role == "error" and renderer.skin.error
-    or (role == "hint" or role == "information") and renderer.skin.muted
-    or type(role) == "table" and role
-    or renderer.skin.ink
-  setColor(renderer.graphics, color)
-  renderer.text:drawText(visibleText(renderer, value), x, y)
+  local textRole = role == "error" and "error"
+    or role == "information" and "information"
+    or role == "hint" and "hint"
+    or "normal"
+  local skin = renderer.skin
+  if type(role) == "table" then
+    local foreground
+    if role.foreground ~= nil then
+      foreground = role.foreground
+    elseif role.r ~= nil then
+      foreground = role
+    else
+      foreground = { r = role[1] * 255, g = role[2] * 255, b = role[3] * 255 }
+    end
+    local base = skin.text.normal
+    local palette = {
+      foreground = { r = foreground.r, g = foreground.g, b = foreground.b },
+      shadow = base.shadow,
+      background = base.background,
+    }
+    renderer.graphics.setColor(1, 1, 1, 1)
+    renderer.text:drawTextWithPalette(visibleText(renderer, value), x, y, palette)
+    renderer.graphics.setColor(1, 1, 1, 1)
+    return
+  end
+  ProductMenuSkin.drawText(renderer.graphics, renderer.text, skin, textRole, visibleText(renderer, value), x, y)
 end
 
-local function drawShadedControl(renderer, rect, label, selected, disabled, destructive)
-  local state = disabled and renderer.skin.disabled
-    or destructive and renderer.skin.destructive
-    or selected and renderer.skin.focused
-    or renderer.skin.normal
-  local button = Button.resolve({
-    rect = rect,
-    borderWidth = 1,
-    rimWidth = 1,
-    innerBorderWidth = 1,
-    cornerRadius = 3,
-    faceSplit = 0.45,
-    contentInsetX = 8,
-    contentInsetY = 2,
+local function drawShadedControl(renderer, rect, label, selected, disabled, destructive, semantic)
+  local role = disabled and "disabled" or destructive and "destructive" or semantic or "navigation"
+  local colors = assert(BUTTON_COLORS[role], "unknown save editor button role: " .. tostring(role))
+  local scale = math.min(1, rect.width / TextButton.REFERENCE_WIDTH, rect.height / TextButton.REFERENCE_HEIGHT)
+  local button = TextButton.resolve({ rect = rect, scale = scale })
+  TextButton.draw(renderer.graphics, button, {
+    label = label,
+    selected = selected,
+    colors = colors,
+    text = {
+      lineHeight = renderer.text.fontDef.lineHeight,
+      measure = function(value)
+        return renderer.text:textWidth(value)
+      end,
+      draw = function(value, x, y)
+        drawText(renderer, value, x, y, "normal")
+      end,
+    },
   })
-  Button.draw(renderer.graphics, button, {
-    border = renderer.skin.border,
-    rim = renderer.skin.rim,
-    innerBorder = state.innerBorder,
-    faceTop = state.faceTop,
-    faceBottom = state.faceBottom,
-  })
-  local content = button.contentRect
-  local textWidth = renderer.text:textWidth(label)
-  assert(textWidth <= content.width, label .. " does not fit its shaded control")
-  drawText(renderer, label, content.x + (content.width - textWidth) / 2, content.y + 2, disabled and "hint" or "normal")
-  return content
+  return button.contentRect
 end
 
 local function fitText(renderer, value, width)
@@ -273,10 +308,23 @@ local function targetRect(layout, targetId)
   return target and target.rect
 end
 
+local function framedContentRect(content)
+  local width = math.floor(content.width / 8) * 8
+  local height = math.floor(content.height / 8) * 8
+  assert(width >= 8 and height >= 8, "Save Editor framed content must fit at least one dialogue-frame tile")
+  return {
+    x = content.x + (content.width - width) / 2,
+    y = content.y + (content.height - height) / 2,
+    width = width,
+    height = height,
+  }
+end
+
 local function drawCenteredIcon(renderer, icon, bounds)
   local dimensions = icon.dimensions
   local scale = math.min(1, bounds.width / dimensions.width, bounds.height / dimensions.height)
   local width, height = dimensions.width * scale, dimensions.height * scale
+  renderer.graphics.setColor(1, 1, 1, 1)
   renderer.graphics.draw(
     icon.image,
     icon.quad,
@@ -289,7 +337,7 @@ local function drawCenteredIcon(renderer, icon, bounds)
 end
 
 local function drawGridCard(renderer, card, focused)
-  drawShadedControl(renderer, card.rect, "", focused, false)
+  drawShadedControl(renderer, card.rect, "", focused, false, false, card.kind == "add" and "primary" or "navigation")
   local icon = card.iconKey and renderer._icons[card.iconKey]
   if icon then
     drawCenteredIcon(renderer, icon, card.iconRect)
@@ -345,8 +393,11 @@ local function paintPane(self, view, plan, pane)
   local BORDER = self.skin.cards.normal.border
   local SELECTED = self.skin.cards.normal.selectedRim
   local MUTED = self.skin.text.hint.foreground
+  local framedContent = framedContentRect(layout.content)
   setColor(graphics, self.skin.background)
   graphics.rectangle("fill", 0, 0, placement.logicalWidth, placement.logicalHeight)
+  setColor(graphics, { 1, 1, 1, 1 })
+  graphics.rectangle("fill", framedContent.x, framedContent.y, framedContent.width, framedContent.height)
   for _, navigation in ipairs(layout.navigation) do
     local target = targetRect(layout, navigation.targetId)
     if target then
@@ -379,11 +430,13 @@ local function paintPane(self, view, plan, pane)
           or row.role == "bag item"
           or row.targetId:match("^party:slot:") ~= nil
           or row.targetId:match("^bag:item:") ~= nil
-        if actionable then
-          drawShadedControl(self, rect, "", row.targetId == view.focus, row.enabled == false)
+        if actionable and row.targetId == view.focus then
+          setColor(graphics, SELECTED)
+          graphics.rectangle("line", rect.x, rect.y, rect.width, rect.height)
         end
         local icon = row.iconKey and self._icons[row.iconKey]
         if icon and graphics.draw then
+          graphics.setColor(1, 1, 1, 1)
           graphics.draw(icon.image, icon.quad, rect.x + 3, rect.y + 2)
         end
         local labelRect = assert(row.labelRect, "layout rows own their label text bounds")
@@ -467,7 +520,9 @@ local function paintPane(self, view, plan, pane)
         targetRect(layout, "bag:add"),
         "Add",
         view.focus == "bag:add",
-        view.bagAddEnabled == false
+        view.bagAddEnabled == false,
+        false,
+        "primary"
       )
     end
   end
@@ -535,7 +590,8 @@ local function paintPane(self, view, plan, pane)
     local rect = targetRect(layout, action.id)
     if rect then
       local label = action.id == "save" and view.locationSave and "Cancel check" or action.label
-      drawShadedControl(self, rect, label, action.id == view.focus, not action.enabled)
+      local role = action.id == "save" and "primary" or action.id == "discard" and "destructive" or "secondary"
+      drawShadedControl(self, rect, label, action.id == view.focus, not action.enabled, false, role)
     end
   end
   if view.valueEditor then
@@ -690,9 +746,16 @@ local function paintPane(self, view, plan, pane)
         local label = id == "bag:quantity" and "Quantity"
           or id == "bag:remove" and "Remove"
           or id:sub(1, 1):upper() .. id:sub(2)
-        drawShadedControl(self, rect, label, id == view.focus, disabled, id == "remove" or id == "bag:remove")
+        local destructive = id == "remove" or id == "bag:remove" or id == "discard"
+        local role = (id == "apply" or id == "save") and "primary" or "secondary"
+        drawShadedControl(self, rect, label, id == view.focus, disabled, destructive, role)
       end
     end
+  end
+  local frameIndex = view.framePreviewIndex or view.session and view.session.frameIndex
+  if frameIndex ~= nil then
+    assert(self._windowRenderer, "field frame renderer is prepared before Save Editor drawing")
+    self._windowRenderer:drawApplicationFrame(framedContent, frameIndex)
   end
 end
 
@@ -718,6 +781,9 @@ drawLocation = function(self, view, layout)
         or targetId == "location:map-picker" and "Change Map"
         or "Back"
       local fitted = fitText(self, label, content.width)
+      if targetId == "location:map-picker" and navigation.page == "map-list" then
+        fitted = fitText(self, label, target.width - 16)
+      end
       local textWidth = self.text:textWidth(fitted)
       drawText(self, fitted, content.x + (content.width - textWidth) / 2, content.y + 2, INK)
     end
@@ -871,6 +937,10 @@ function Renderer:dispose()
     return
   end
   self._disposed = true
+  if self._windowRenderer then
+    self._windowRenderer:release()
+    self._windowRenderer = nil
+  end
   if self._iconProvider then
     self._iconProvider:release()
     self._iconProvider = nil

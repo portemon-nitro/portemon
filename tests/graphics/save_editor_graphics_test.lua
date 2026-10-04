@@ -6,6 +6,7 @@ local ApplicationPresentation = require("libs.ui.src.ApplicationPresentation")
 local DisplayContext = require("libs.ui.src.DisplayContext")
 local FieldTextRenderer = require("libs.hgss.src.ui.FieldTextRenderer")
 local FieldUiFixture = require("tests.support.FieldUiFixture")
+local FieldUiAssetCache = require("libs.assets.src.field.FieldUiAssetCache")
 local FieldScriptSymbols = require("libs.assets.src.field.FieldScriptSymbols")
 local Interface = require("app.src.saveeditor.SaveEditorInterface")
 local Layout = require("app.src.saveeditor.SaveEditorLayout")
@@ -27,21 +28,21 @@ local function realTextMetrics(scope)
   }
 end
 
-local function fixture(scope, width, height, topology, section, variant)
+local function fixture(scope, width, height, topology, section, variant, versionId)
   section = section or "Progress"
   local view = {
     status = "ready",
-    versionId = "heartgold",
+    versionId = versionId or "heartgold",
     saveId = "TEST-SAVE-42",
     section = section,
     ready = true,
     dirty = variant ~= "clean-status",
-    focus = variant == "long-flag" and ("flag:" .. LONG_FLAG_NAME)
-      or "flag:FLAG_TEST",
+    focus = variant == "long-flag" and ("flag:" .. LONG_FLAG_NAME) or "flag:FLAG_TEST",
     query = "",
     session = {
       playerName = "PLAYER",
       versionId = "HEARTGOLD",
+      frameIndex = 0,
       flags = {},
       location = { fieldX = 32, fieldZ = 48 },
     },
@@ -59,9 +60,7 @@ local function fixture(scope, width, height, topology, section, variant)
       id = "section:" .. section,
       epoch = 1,
       kind = "section",
-      focusId = variant == "long-flag"
-          and ("flag:" .. LONG_FLAG_NAME)
-        or "flag:FLAG_TEST",
+      focusId = variant == "long-flag" and ("flag:" .. LONG_FLAG_NAME) or "flag:FLAG_TEST",
     },
     textMetrics = realTextMetrics(scope),
   }
@@ -168,8 +167,8 @@ local function fixture(scope, width, height, topology, section, variant)
       scale = 16,
     }
     view.locationNavigation = {
-      page =
-        (variant == "map-list" or (variant or ""):match("^map%-list%-long%-query") ~= nil) and "map-list" or "grid",
+      page = (variant == "map-list" or (variant or ""):match("^map%-list%-long%-query") ~= nil) and "map-list"
+        or "grid",
       mapId = 12,
       cursor = { fieldX = 33, fieldZ = 48 },
       center = { fieldX = 32, fieldZ = 48 },
@@ -198,9 +197,9 @@ local function fixture(scope, width, height, topology, section, variant)
   return view, presentation, plan
 end
 
-local function draw(scope, width, height, topology, name, section, variant)
+local function draw(scope, width, height, topology, name, section, variant, versionId, beforeDraw)
   local graphics = love.graphics
-  local view, presentation, plan = fixture(scope, width, height, topology, section, variant)
+  local view, presentation, plan = fixture(scope, width, height, topology, section, variant, versionId)
   local drawnText = {}
   local text = {
     fontDef = { lineHeight = 14 },
@@ -216,7 +215,9 @@ local function draw(scope, width, height, topology, name, section, variant)
       graphics.print(value, x, y)
     end,
   }
-  local renderer = Renderer.new({ text = text, versionId = "heartgold" })
+  local renderer = Renderer.new({ text = text, versionId = view.versionId })
+  local frameCache = FieldUiFixture.cacheWithFontAndFrames()
+  renderer:preparePresentationAssets(frameCache, assert(frameCache:loadLua(FieldUiAssetCache.manifestPath())))
   local bagDrawn = {}
   if view.section == "Bag" then
     renderer._bagImages = {}
@@ -235,6 +236,9 @@ local function draw(scope, width, height, topology, name, section, variant)
   local canvas = scope:own(graphics.newCanvas(width, height))
   graphics.setCanvas(canvas)
   graphics.clear(0.94, 0.94, 0.94, 1)
+  if beforeDraw then
+    beforeDraw(renderer, view, plan)
+  end
   local originalDraw = graphics.draw
   graphics.draw = function(drawable, ...)
     for path, image in pairs(renderer._bagImages) do
@@ -378,7 +382,7 @@ local function draw(scope, width, height, topology, name, section, variant)
   end
   renderer:dispose()
   presentation:dispose()
-  return data, renderedText, layout, bagDrawn, drawnText, view
+  return data, renderedText, layout, bagDrawn, drawnText, view, renderer.skin.background
 end
 
 function T.player_shell_renders_headerless_controls_and_a_dirty_leave_decision(scope)
@@ -398,6 +402,53 @@ function T.player_shell_renders_headerless_controls_and_a_dirty_leave_decision(s
     end
     Assert.isNil(layout.header, "shell publishes no header geometry")
   end
+end
+
+function T.game_skin_and_staged_frame_drive_the_framed_player_surface(scope)
+  local topology = ScreenTopology.oneDisplay({
+    id = "main",
+    rect = { x = 0, y = 0, width = 640, height = 480 },
+    touch = true,
+    role = "world",
+  })
+  local frameIndex
+  local data, _, layout, _, _, _, heartGoldBackground = draw(
+    scope,
+    640,
+    480,
+    topology,
+    "save-editor-frame-preview",
+    "Player",
+    "leave",
+    "heartgold",
+    function(renderer, view)
+      view.framePreviewIndex = 1
+      local windowRenderer = assert(renderer._windowRenderer)
+      local drawApplicationFrame = windowRenderer.drawApplicationFrame
+      windowRenderer.drawApplicationFrame = function(self, box, selectedFrame)
+        frameIndex = selectedFrame
+        return drawApplicationFrame(self, box, selectedFrame)
+      end
+    end
+  )
+  Assert.equal(frameIndex, 1, "the frame renderer receives the staged choice preview")
+  local save = assert(layout.targets.save).rect
+  local cancel = assert(layout.targets.cancel).rect
+  local saveRed, saveGreen, saveBlue = data:getPixel(math.floor(save.x + 3), math.floor(save.y + 3))
+  local cancelRed, cancelGreen, cancelBlue = data:getPixel(math.floor(cancel.x + 3), math.floor(cancel.y + 3))
+  Assert.isTrue(
+    saveRed ~= cancelRed or saveGreen ~= cancelGreen or saveBlue ~= cancelBlue,
+    "primary Save and secondary Cancel use different semantic button colors"
+  )
+
+  local _, _, _, _, _, _, soulSilverBackground =
+    draw(scope, 640, 480, topology, "save-editor-soul-silver-skin", "Player", "leave", "soulsilver")
+  Assert.isTrue(
+    heartGoldBackground[1] ~= soulSilverBackground[1]
+      or heartGoldBackground[2] ~= soulSilverBackground[2]
+      or heartGoldBackground[3] ~= soulSilverBackground[3],
+    "the two game versions select different application backgrounds"
+  )
 end
 
 function T.dirty_shell_has_no_persistent_status_prose(scope)
@@ -529,6 +580,7 @@ function T.party_icons_center_from_distinct_provider_dimensions(scope)
   local oldDraw = love.graphics.draw
   local drawnText = {}
   local renderer = RendererModule.new({
+    versionId = "heartgold",
     text = {
       fontDef = { lineHeight = view.textMetrics.lineHeight },
       textWidth = function(_, text)
@@ -544,7 +596,9 @@ function T.party_icons_center_from_distinct_provider_dimensions(scope)
       end,
     },
   })
-  local iconRects, draws = {}, {}
+  local frameCache = FieldUiFixture.cacheWithFontAndFrames()
+  renderer:preparePresentationAssets(frameCache, assert(frameCache:loadLua(FieldUiAssetCache.manifestPath())))
+  local iconRects, draws, iconColors = {}, {}, {}
   local ok, failure = xpcall(function()
     MonIconAssetProvider.new = function()
       return provider
@@ -571,6 +625,7 @@ function T.party_icons_center_from_distinct_provider_dimensions(scope)
       love.graphics.draw = function(drawable, drawQuad, x, y, ...)
         if drawable == image then
           draws[#draws + 1] = { x = x, y = y }
+          iconColors[#iconColors + 1] = { love.graphics.getColor() }
         end
         return oldDraw(drawable, drawQuad, x, y, ...)
       end
@@ -622,6 +677,12 @@ function T.party_icons_center_from_distinct_provider_dimensions(scope)
   end
 
   Assert.equal(#draws, 2, "both occupied and Add cards draw their prepared icons")
+  for _, color in ipairs(iconColors) do
+    Assert.near(color[1], 1, 0.001, "party icon red tint is reset")
+    Assert.near(color[2], 1, 0.001, "party icon green tint is reset")
+    Assert.near(color[3], 1, 0.001, "party icon blue tint is reset")
+    Assert.near(color[4], 1, 0.001, "party icon alpha tint is reset")
+  end
   local expected = {}
   for _, key in ipairs({ "small", "large" }) do
     local rect, dimensionsForKey = iconRects[key], dimensions[key]
@@ -758,33 +819,12 @@ function T.location_map_search_uses_shaded_controls_and_bounds_long_queries(scop
     touch = false,
     role = "world",
   })
-  local normalImage, normalText, normalLayout, _, normalDrawnText, normalView = draw(
-    scope,
-    width,
-    height,
-    compact,
-    "location-map-search-unfocused",
-    "Location",
-    "map-list-long-query-unfocused"
-  )
-  local focusedImage, focusedText, focusedLayout, _, focusedDrawnText, focusedView = draw(
-    scope,
-    width,
-    height,
-    compact,
-    "location-map-search-focused",
-    "Location",
-    "map-list-long-query"
-  )
-  local backFocusedImage, _, backFocusedLayout = draw(
-    scope,
-    width,
-    height,
-    compact,
-    "location-map-back-focused",
-    "Location",
-    "map-list-long-query-back-focused"
-  )
+  local normalImage, normalText, normalLayout, _, normalDrawnText, normalView =
+    draw(scope, width, height, compact, "location-map-search-unfocused", "Location", "map-list-long-query-unfocused")
+  local focusedImage, focusedText, focusedLayout, _, focusedDrawnText, focusedView =
+    draw(scope, width, height, compact, "location-map-search-focused", "Location", "map-list-long-query")
+  local backFocusedImage, _, backFocusedLayout =
+    draw(scope, width, height, compact, "location-map-back-focused", "Location", "map-list-long-query-back-focused")
   local picker = assert(focusedLayout.targets["location:map-picker"]).rect
   local back = assert(focusedLayout.targets["location:map-back"]).rect
   local backSelected = assert(backFocusedLayout.targets["location:map-back"]).rect
@@ -851,7 +891,7 @@ function T.name_editor_renders_the_real_naming_snapshot_in_a_neutral_dialog(scop
     section = "Player",
     ready = true,
     dirty = false,
-    session = { playerName = "PLAYER", versionId = "HEARTGOLD" },
+    session = { playerName = "PLAYER", versionId = "HEARTGOLD", frameIndex = 0 },
     scope = { id = "value:player-name:", epoch = 1, kind = "value", focusId = "2:1" },
     textMetrics = realTextMetrics(scope),
     valueEditor = ValueEditor.new({
@@ -887,6 +927,8 @@ function T.name_editor_renders_the_real_naming_snapshot_in_a_neutral_dialog(scop
     end,
   }
   local renderer = Renderer.new({ text = text, versionId = "heartgold" })
+  local frameCache = FieldUiFixture.cacheWithFontAndFrames()
+  renderer:preparePresentationAssets(frameCache, assert(frameCache:loadLua(FieldUiAssetCache.manifestPath())))
   local canvas = scope:own(love.graphics.newCanvas(width, height))
   love.graphics.setCanvas(canvas)
   love.graphics.clear(0.94, 0.94, 0.94, 1)
