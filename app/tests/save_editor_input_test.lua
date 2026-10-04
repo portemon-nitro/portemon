@@ -170,7 +170,8 @@ end
 local function dragRect(state, view, rect, deltaY, pointerId)
   local pane = selectedPane(view)
   local x, y = LayoutGeometry.logicalToHost(pane.placement, rect.x + rect.width / 2, rect.y + rect.height / 2)
-  local _, endY = LayoutGeometry.logicalToHost(pane.placement, rect.x + rect.width / 2, rect.y + rect.height / 2 + deltaY)
+  local _, endY =
+    LayoutGeometry.logicalToHost(pane.placement, rect.x + rect.width / 2, rect.y + rect.height / 2 + deltaY)
   state:touchpressed(pointerId, x, y)
   state:touchmoved(pointerId, x, endY)
   state:touchreleased(pointerId, x, endY)
@@ -320,8 +321,12 @@ local function withEditor(width, height, topology, fn, pixelRatio)
   }
   local context = DisplayContext.new({
     graphics = pixelRatio and {
-      getDimensions = function() return width, height end,
-      getDPIScale = function() return pixelRatio end,
+      getDimensions = function()
+        return width, height
+      end,
+      getDPIScale = function()
+        return pixelRatio
+      end,
     } or love.graphics,
     topologyProvider = function()
       return topology
@@ -505,11 +510,10 @@ function T.tests.value_editor_success_and_cancel_return_to_live_caller_focus()
 
     selectSection(state, Layout, "Bag")
     local bag = state:view()
-    click(state, selectedPane(bag), computeLayout(Layout, bag, 256, 192).targets["bag:pocket:choose"], true)
-    local pocketChoice = state:view()
-    Assert.equal(pocketChoice.valueEditor and pocketChoice.valueEditor.kind, "choice")
-    click(state, selectedPane(pocketChoice), computeLayout(Layout, pocketChoice, 256, 192).targets.cancel, true)
-    assertFocusCanMove(state, "canceled section choice")
+    local bagLayout = computeLayout(Layout, bag, 256, 192)
+    click(state, selectedPane(bag), bagLayout.targets["bag:pocket:medicine"], true)
+    Assert.equal(state:view().bagPocket, "medicine", "pocket icons select the semantic pocket directly")
+    assertFocusCanMove(state, "selected Bag pocket")
   end)
 end
 
@@ -592,31 +596,14 @@ function T.tests.bag_add_successor_quantity_editor_stages_once_and_cancel_stages
     local quantityEditor = state:view()
     Assert.equal(
       quantityEditor.valueEditor and quantityEditor.valueEditor.kind,
-      "integer",
+      "quantity",
       "choosing an item installs its quantity successor"
     )
     local revisionBeforeAdd = state.session:revision()
-    while state:view().valueEditor.buffer ~= "" do
-      state:keypressed("backspace")
-    end
-    state:textinput("0")
-    state:keypressed("return")
-    local zeroQuantity = state:view()
-    Assert.equal(
-      zeroQuantity.valueEditor and zeroQuantity.valueEditor.kind,
-      "integer",
-      "a zero Add quantity keeps the correction editor active"
-    )
-    Assert.equal(state.session:revision(), revisionBeforeAdd, "a zero Add quantity stages no mutation")
-    Assert.equal(
-      zeroQuantity.errorMessage,
-      "Add item must set a quantity above zero.",
-      "a zero Add quantity explains why confirmation did not close"
-    )
-    while state:view().valueEditor.buffer ~= "" do
-      state:keypressed("backspace")
-    end
-    state:textinput("3")
+    state:keypressed("up")
+    state:keyreleased("up")
+    state:keypressed("up")
+    state:keyreleased("up")
     state:keypressed("return")
     local addedItems = state.session:bagSnapshot(initialPocket)
     local addedQuantity
@@ -654,7 +641,7 @@ function T.tests.bag_add_successor_quantity_editor_stages_once_and_cancel_stages
     local secondQuantity = state:view()
     Assert.equal(
       secondQuantity.valueEditor and secondQuantity.valueEditor.kind,
-      "integer",
+      "quantity",
       "controller confirmation reaches quantity entry"
     )
     state:keypressed("escape")
@@ -670,6 +657,58 @@ function T.tests.bag_add_successor_quantity_editor_stages_once_and_cancel_stages
     )
     Assert.equal(secondItem.key, item.key, "both chains select the same deterministic catalog entry")
     assertFocusCanMove(state, "canceled Bag Add")
+  end)
+end
+
+function T.tests.bag_quantity_pointer_hold_repeats_on_fixed_ticks_and_resize_stops_it()
+  local _, Layout = stateModule()
+  local topology = ScreenTopology.oneDisplay({
+    id = "main",
+    rect = { x = 0, y = 0, width = 800, height = 500 },
+    touch = true,
+    role = "world",
+  })
+  withEditor(800, 500, topology, function(state)
+    selectSection(state, Layout, "Bag")
+    state.controller:selectBagPocket("medicine")
+    local potion = state.session:setBagQuantity("POTION", 1)
+    Assert.isTrue(potion.ok, "the real item catalog accepts Potion in the medicine pocket")
+    local bag = state:view()
+    local row = assert(bag.bagRows[1], "the selected save has an item to edit")
+    click(state, selectedPane(bag), bag.layout.targets["bag:item:" .. row.item], true)
+    local itemModal = state:view()
+    click(state, selectedPane(itemModal), itemModal.layout.targets["bag:quantity"], true)
+    local quantity = state:view()
+    local original = quantity.valueEditor.value
+    local pane = selectedPane(quantity)
+    local target = quantity.layout.targets["bag:quantity:increment"].rect
+    local x, y = LayoutGeometry.logicalToHost(pane.placement, target.x + target.width / 2, target.y + target.height / 2)
+    Assert.equal(
+      Layout.hitTest(quantity.layout, quantity, target.x + target.width / 2, target.y + target.height / 2),
+      "bag:quantity:increment",
+      "the published quantity layout identifies its increment hitbox"
+    )
+    state:mousepressed(x, y, 1)
+    Assert.equal(state:view().valueEditor.value, original + 1, "pointer-down increments immediately")
+    state:update((18 - 1) / 60)
+    Assert.equal(state:view().valueEditor.value, original + 1, "hold does not repeat before the fixed delay")
+    state:update(1 / 60)
+    Assert.equal(state:view().valueEditor.value, original + 2, "hold repeats at the fixed delay")
+    state:update(4 / 60)
+    Assert.equal(state:view().valueEditor.value, original + 3, "hold repeats at the fixed interval")
+    state:mousereleased(x, y, 1)
+    state:update(8 / 60)
+    Assert.equal(state:view().valueEditor.value, original + 3, "release stops every later repeat")
+
+    local current = state:view()
+    pane = selectedPane(current)
+    target = current.layout.targets["bag:quantity:increment"].rect
+    x, y = LayoutGeometry.logicalToHost(pane.placement, target.x + target.width / 2, target.y + target.height / 2)
+    state:mousepressed(x, y, 1)
+    local afterPress = state:view().valueEditor.value
+    state:resize(800, 500)
+    state:update(1)
+    Assert.equal(state:view().valueEditor.value, afterPress, "resize cancels the captured hold")
   end)
 end
 
@@ -951,10 +990,7 @@ function T.tests.progress_search_reconciles_stale_flag_focus_before_confirm()
 
     state:keypressed("delete")
     local cleared = state:view()
-    Assert.isTrue(
-      #cleared.flagRows > 0,
-      "clearing search restores the named list"
-    )
+    Assert.isTrue(#cleared.flagRows > 0, "clearing search restores the named list")
     Assert.notNil(cleared.layout.focusGraph[cleared.focus], "clear leaves focus in the restored graph")
     Assert.equal(cleared.focus, "flag:" .. cleared.flagRows[1].name, "clear restores a valid named-flag focus")
   end)
@@ -969,7 +1005,9 @@ function T.tests.wide_location_map_list_owns_focus_and_scroll_while_grid_stays_v
   })
   withEditor(800, 500, topology, function(state)
     for _ = 1, 8 do
-      if state.locationService:snapshot().status.state == "ready" then break end
+      if state.locationService:snapshot().status.state == "ready" then
+        break
+      end
       state:update(0)
     end
     local initial = state:view()
@@ -978,7 +1016,10 @@ function T.tests.wide_location_map_list_owns_focus_and_scroll_while_grid_stays_v
     Assert.notNil(initial.layout.targets[firstTargetId], "wide Location publishes its persistent map list")
     Assert.notNil(initial.layout.locationGrid, "the map grid remains visible beside the list")
     local viewport = assert(initial.layout.viewports["location:map-list"])
-    Assert.isTrue(viewport.contentExtent > viewport.clip.height, "the real structural catalog overflows the map viewport")
+    Assert.isTrue(
+      viewport.contentExtent > viewport.clip.height,
+      "the real structural catalog overflows the map viewport"
+    )
 
     local revision = initial.session.revision
     local originalLocation = copy(initial.session.location)
@@ -1121,6 +1162,8 @@ function T.tests.location_and_all_editor_sections_are_reachable_using_paired_dev
   })
   withEditor(800, 450, topology, function(state)
     local seen = { Location = true }
+    state:keypressed("escape")
+    state:keyreleased("escape")
     local joystick = {} --[[@as love.Joystick]]
     local sectionIndex = 0
     for _, section in ipairs({ "Player", "Party", "Bag", "Progress", "Location" }) do
@@ -1162,8 +1205,6 @@ function T.tests.location_and_all_editor_sections_are_reachable_using_paired_dev
           state:keyreleased(direction)
         else
           local button = ({ up = "dpup", down = "dpdown", left = "dpleft", right = "dpright" })[direction]
-    state:keypressed("escape")
-    state:keyreleased("escape")
           state:gamepadpressed(joystick, button)
           state:gamepadreleased(joystick, button)
         end
@@ -1636,7 +1677,9 @@ function T.tests.add_species_uses_draft_identity_independent_of_choice_focus()
     local projected = state:view()
     local updatedNature
     for _, row in ipairs(projected.partyRows) do
-      if row.id == "nature" then updatedNature = row.value end
+      if row.id == "nature" then
+        updatedNature = row.value
+      end
     end
     Assert.equal(updatedNature, state.monDraft:projection().nature, "derived detail follows the local raw draft")
     Assert.equal(#state.session:partySnapshot().members, 0, "raw draft edits remain unpublished until Apply")
@@ -1698,6 +1741,16 @@ function T.tests.filtered_location_map_navigation_uses_the_rendered_matches()
     local query, matches = repeatedMapQuery(catalog)
     state:textinput(query)
     local filtered = state:view().location.maps
+    local structuralMatches = {}
+    for _, map in ipairs(filtered) do
+      local structuralMap = {}
+      for key, value in pairs(map) do
+        if key ~= "displayName" then
+          structuralMap[key] = value
+        end
+      end
+      structuralMatches[#structuralMatches + 1] = structuralMap
+    end
     Assert.deepEqual(
       structuralMatches,
       matches,
@@ -1741,16 +1794,6 @@ function T.tests.filtered_location_map_navigation_uses_the_rendered_matches()
       assert(computeLayout(Layout, beforeSelection, 800, 600).targets[renderedTargetId]),
       true
     )
-    local structuralMatches = {}
-    for _, map in ipairs(filtered) do
-      local structuralMap = {}
-      for key, value in pairs(map) do
-        if key ~= "displayName" then
-          structuralMap[key] = value
-        end
-      end
-      structuralMatches[#structuralMatches + 1] = structuralMap
-    end
     Assert.equal(
       state:view().locationNavigation.mapId,
       selectedMap.mapId,
@@ -1771,27 +1814,27 @@ function T.tests.wheel_input_belongs_to_the_active_choice_or_decision_scope()
   withEditor(256, 192, topology, function(state)
     selectSection(state, Layout, "Bag")
     fillBagPocket(state, 8)
-    state:wheelmoved(0, -1)
-    local scrolledBag = state:view()
-    local bagOffset = scrolledBag.layout.viewports.bag.offset
-    local selectedItemTarget = assert(scrolledBag.layout.viewports.bag.rowTargets[
-      scrolledBag.layout.viewports.bag.firstIndex
-    ])
-    click(state, selectedPane(scrolledBag), scrolledBag.layout.targets[selectedItemTarget], true)
+    local bag = state:view()
+    local bagPage = bag.bagPage0
+    local selectedItemTarget = "bag:item:" .. assert(bag.bagPageRows[1]).item
+    click(state, selectedPane(bag), bag.layout.targets[selectedItemTarget], true)
     local selectedBag = state:view()
+    Assert.equal(selectedBag.modal, "bag-item", "selecting a Bag card opens its item actions")
     click(state, selectedPane(selectedBag), selectedBag.layout.targets["bag:quantity"], true)
-    local integer = state:view()
-    Assert.equal(integer.valueEditor.kind, "integer", "Quantity opens the nested integer editor")
-    local integerBagOffset = integer.layout.viewports.bag.offset
-    local integerDraft = assert(integer.layout.targets["value-draft"]).rect
+    local quantity = state:view()
+    Assert.equal(quantity.valueEditor.kind, "quantity", "Quantity opens the nested quantity editor")
+    local quantityBagPage = quantity.bagPage0
+    local quantityDraft = assert(quantity.layout.targets["value-draft"]).rect
     state:wheelmoved(0, -1)
-    local afterIntegerWheel = state:view()
-    local integerWheelStable = afterIntegerWheel.layout.viewports.bag.offset == integerBagOffset
-    dragRect(state, afterIntegerWheel, integerDraft, -32, "integer-scroll")
-    local afterIntegerDrag = state:view()
-    local integerDragStable = afterIntegerDrag.layout.viewports.bag.offset == integerBagOffset
+    local afterQuantityWheel = state:view()
+    local quantityWheelStable = afterQuantityWheel.bagPage0 == quantityBagPage
+    dragRect(state, afterQuantityWheel, quantityDraft, -32, "quantity-scroll")
+    local afterQuantityDrag = state:view()
+    local quantityDragStable = afterQuantityDrag.bagPage0 == quantityBagPage
+    state:keypressed("escape")
     state:keypressed("escape")
     local resumedBag = state:view()
+    Assert.isNil(resumedBag.modal, "leaving Bag quantity and item actions returns to the grid")
     click(state, selectedPane(resumedBag), resumedBag.layout.targets["bag:add"], true)
 
     local choice = state:view()
@@ -1824,31 +1867,38 @@ function T.tests.wheel_input_belongs_to_the_active_choice_or_decision_scope()
     state:wheelmoved(0, -1)
     local scrolledChoice = state:view()
     local choiceScrolled = scrolledChoice.layout.viewports["value:choice"].offset > choiceOffset
-    local choiceBagStable = scrolledChoice.layout.viewports.bag.offset == bagOffset
-    local choiceBagOffset = scrolledChoice.layout.viewports.bag.offset
+    local choiceBagStable = scrolledChoice.bagPage0 == bagPage
+    local choiceBagPage = scrolledChoice.bagPage0
 
     state:keypressed("escape")
     state.session:setMoney(state.session:snapshot().money + 1)
     Assert.isTrue(state:requestClose("back"), "a dirty session opens its leave decision")
     local modal = state:view()
     Assert.notNil(modal.modal, "the leave decision owns the current interaction scope")
-    local modalBagOffset = modal.layout.viewports.bag.offset
+    local modalBagPage = modal.bagPage0
     state:wheelmoved(0, -1)
-    local modalListStable = state:view().layout.viewports.bag.offset == modalBagOffset
+    local modalListStable = state:view().bagPage0 == modalBagPage
     Assert.isTrue(
-      integerWheelStable and integerDragStable and choicePaged and confirmDisabled and backspaceFiltered and deleteCleared
-        and choiceScrolled and choiceBagStable and modalListStable,
+      quantityWheelStable
+        and quantityDragStable
+        and choicePaged
+        and confirmDisabled
+        and backspaceFiltered
+        and deleteCleared
+        and choiceScrolled
+        and choiceBagStable
+        and modalListStable,
       string.format(
-        "integer wheel/drag=%s/%s choice page=%s empty confirm=%s backspace/delete=%s/%s choice=%s bag=%s->%s modal=%s",
-        tostring(integerWheelStable),
-        tostring(integerDragStable),
+        "quantity wheel/drag=%s/%s choice page=%s empty confirm=%s backspace/delete=%s/%s choice=%s bag page=%s->%s modal=%s",
+        tostring(quantityWheelStable),
+        tostring(quantityDragStable),
         tostring(choicePaged),
         tostring(confirmDisabled),
         tostring(backspaceFiltered),
         tostring(deleteCleared),
         tostring(choiceScrolled),
-        tostring(bagOffset),
-        tostring(choiceBagOffset),
+        tostring(bagPage),
+        tostring(choiceBagPage),
         tostring(modalListStable)
       )
     )
@@ -1913,9 +1963,12 @@ function T.tests.item_choice_is_flat_filtered_and_uses_clamped_page_navigation()
     Assert.isTrue(
       clamped and paged and confirmDisabled and backspace and delete,
       string.format(
-        "choice clamps=%s pages=%s empty-confirm-disabled=%s backspace=%s delete=%s",
+        "choice clamps=%s pages=%s (%s expected %s; visible=%d) empty-confirm-disabled=%s backspace=%s delete=%s",
         tostring(clamped),
         tostring(paged),
+        tostring(state:view().valueEditor.selectedKey),
+        tostring(editor.options[expectedIndex].key),
+        visibleRows,
         tostring(confirmDisabled),
         tostring(backspace),
         tostring(delete)
@@ -1935,7 +1988,10 @@ function T.tests.dirty_state_uses_action_enablement_and_the_existing_leave_decis
   withEditor(640, 480, topology, function(state)
     local clean = state:view()
     Assert.isFalse(clean.layout.targets.save.activationEnabled, "Save is disabled while the staged record is clean")
-    Assert.isFalse(clean.layout.targets.discard.activationEnabled, "Discard is disabled while the staged record is clean")
+    Assert.isFalse(
+      clean.layout.targets.discard.activationEnabled,
+      "Discard is disabled while the staged record is clean"
+    )
 
     Assert.isTrue(state.session:setMoney(state.session:snapshot().money + 1).ok, "money can be staged")
     local dirty = state:view()
@@ -1946,8 +2002,15 @@ function T.tests.dirty_state_uses_action_enablement_and_the_existing_leave_decis
     local leave = state:view()
     Assert.equal(leave.modal, "leave")
     for _, targetId in ipairs({ "save", "discard", "cancel" }) do
-      Assert.notNil(Layout.hitTest(leave.layout, leave, leave.layout.targets[targetId].rect.x + 1,
-        leave.layout.targets[targetId].rect.y + 1), "leave decision retains the " .. targetId .. " action")
+      Assert.notNil(
+        Layout.hitTest(
+          leave.layout,
+          leave,
+          leave.layout.targets[targetId].rect.x + 1,
+          leave.layout.targets[targetId].rect.y + 1
+        ),
+        "leave decision retains the " .. targetId .. " action"
+      )
     end
   end)
 end
@@ -1962,7 +2025,7 @@ function T.tests.touch_drag_scrolls_each_existing_long_list_viewport()
   })
   withEditor(256, 192, topology, function(state)
     local partyScrolled = false
-    local bagScrolled = false
+    local bagPaged = false
     local flagsScrolled = false
     local choiceScrolled = false
     local mapListScrolled = false
@@ -1984,11 +2047,9 @@ function T.tests.touch_drag_scrolls_each_existing_long_list_viewport()
     selectSection(state, Layout, "Bag")
     fillBagPocket(state, 8)
     local bag = state:view()
-    local bagViewport = assert(bag.layout.viewports.bag)
-    Assert.isTrue(bagViewport.contentExtent > bagViewport.clip.height, "Bag exposes its long real item list")
-    local bagBefore = bagViewport.offset
-    dragViewport(state, bag, "bag", -36, "bag-scroll")
-    bagScrolled = state:view().layout.viewports.bag.offset > bagBefore
+    Assert.isNil(bag.layout.viewports.bag, "Bag uses its six-item paged grid instead of a scrolling list")
+    click(state, selectedPane(bag), bag.layout.targets["bag:page:next"], true)
+    bagPaged = state:view().bagPage0 == 1
 
     selectSection(state, Layout, "Progress")
     state.controller.flagFilter = "All"
@@ -2019,11 +2080,11 @@ function T.tests.touch_drag_scrolls_each_existing_long_list_viewport()
     dragViewport(state, maps, "location:map-list", -36, "map-list-scroll")
     mapListScrolled = state:view().layout.viewports["location:map-list"].offset > mapBefore
     Assert.isTrue(
-      partyScrolled and bagScrolled and flagsScrolled and choiceScrolled and mapListScrolled,
+      partyScrolled and bagPaged and flagsScrolled and choiceScrolled and mapListScrolled,
       string.format(
-        "touch drag changes each active list offset (Party=%s, Bag=%s, Progress=%s, choice=%s, maps=%s)",
+        "touch drag changes each active list offset; Bag pages by touch (Party=%s, Bag=%s, Progress=%s, choice=%s, maps=%s)",
         tostring(partyScrolled),
-        tostring(bagScrolled),
+        tostring(bagPaged),
         tostring(flagsScrolled),
         tostring(choiceScrolled),
         tostring(mapListScrolled)
@@ -2051,11 +2112,8 @@ function T.tests.location_grid_drag_pans_while_map_list_and_decision_drags_do_no
     local grid = assert(view.layout.locationGrid, "the ready Location page publishes its grid clip")
     local gridClip = grid.clip
     local pane = selectedPane(view)
-    local x, y = LayoutGeometry.logicalToHost(
-      pane.placement,
-      gridClip.x + gridClip.width / 2,
-      gridClip.y + gridClip.height / 2
-    )
+    local x, y =
+      LayoutGeometry.logicalToHost(pane.placement, gridClip.x + gridClip.width / 2, gridClip.y + gridClip.height / 2)
     local _, movedY = LayoutGeometry.logicalToHost(
       pane.placement,
       gridClip.x + gridClip.width / 2,

@@ -6,6 +6,7 @@ Renderer.__index = Renderer
 local AssetPreparationQueue = require("libs.hgss.src.presentation.AssetPreparationQueue")
 local Errors = require("libs.errors.src.Errors")
 local MonIconAssetProvider = require("libs.hgss.src.presentation.MonIconAssetProvider")
+local ItemIconAssetProvider = require("libs.hgss.src.presentation.ItemIconAssetProvider")
 local LogicalSurface = require("libs.ui.src.LogicalSurface")
 local Button = require("libs.ui.src.Button")
 local FieldMessageText = require("libs.assets.src.field.FieldMessageText")
@@ -80,12 +81,45 @@ function Renderer.new(options)
     _iconQueue = nil,
     _iconProvider = nil,
     _icons = {},
+    _itemIconProvider = nil,
+    _bagImages = {},
     iconStatus = nil,
     iconFailure = nil,
   }, Renderer)
 end
 
 function Renderer:prepareVisibleIcons(view, plan, cacheFs, derivedAssets)
+  if view.section == "Bag" then
+    if self._itemIconProvider == nil then
+      self._itemIconProvider = ItemIconAssetProvider.new(cacheFs, { graphics = self.graphics })
+    end
+    local paths = { assert(view.bagPocketStrip).image }
+    local visuals = assert(view.bagQuantityVisuals)
+    for _, direction in ipairs({ "decrement", "increment" }) do
+      for _, state in ipairs({ "normal", "pressed" }) do
+        paths[#paths + 1] = visuals[direction][state].image
+      end
+    end
+    for _, path in ipairs(paths) do
+      if self._bagImages[path] == nil then
+        local bytes = assert(cacheFs:read(path), "Bag visual bytes are required")
+        local image = self.graphics.newImage(love.filesystem.newFileData(bytes, path))
+        image:setFilter("nearest", "nearest")
+        self._bagImages[path] = image
+      end
+    end
+    for _, card in ipairs(assert(plan.content.layout).bagGrid or {}) do
+      if card.iconKey and self._icons[card.iconKey] == nil then
+        self._icons[card.iconKey] = {
+          image = self._itemIconProvider:image(),
+          quad = self._itemIconProvider:quadFor(card.iconKey),
+          dimensions = self._itemIconProvider:dimensions(card.iconKey),
+        }
+      end
+    end
+    self.iconStatus, self.iconFailure = "ready", nil
+    return
+  end
   if view.section ~= "Party" then
     self.iconStatus, self.iconFailure = nil, nil
     return
@@ -269,15 +303,33 @@ local function drawGridCard(renderer, card, focused)
       card.iconRect.y + math.max(0, (card.iconRect.height - renderer.text.fontDef.lineHeight) / 2)
     )
   end
-  drawText(renderer, fitText(renderer, card.label, card.textRect.width), card.textRect.x, card.textRect.y)
-  if card.value ~= nil then
-    drawText(
-      renderer,
-      fitText(renderer, card.value, card.textRect.width),
-      card.textRect.x,
-      card.textRect.y + renderer.text.fontDef.lineHeight,
-      "hint"
-    )
+  if card.textScale ~= nil then
+    local scale = card.textScale
+    renderer.graphics.push("all")
+    renderer.graphics.translate(card.textRect.x, card.textRect.y)
+    renderer.graphics.scale(scale, scale)
+    drawText(renderer, fitText(renderer, card.label, card.textRect.width / scale), 0, 0)
+    if card.value ~= nil then
+      drawText(
+        renderer,
+        fitText(renderer, card.value, card.textRect.width / scale),
+        0,
+        renderer.text.fontDef.lineHeight,
+        "hint"
+      )
+    end
+    renderer.graphics.pop()
+  else
+    drawText(renderer, fitText(renderer, card.label, card.textRect.width), card.textRect.x, card.textRect.y)
+    if card.value ~= nil then
+      drawText(
+        renderer,
+        fitText(renderer, card.value, card.textRect.width),
+        card.textRect.x,
+        card.textRect.y + renderer.text.fontDef.lineHeight,
+        "hint"
+      )
+    end
   end
 end
 
@@ -374,6 +426,54 @@ local function paintPane(self, view, plan, pane)
         iconRect = cardRow and cardRow.iconRect or card.iconRect,
         textRect = cardRow and cardRow.labelRect or card.textRect,
       }, card.targetId == view.focus)
+    end
+  end
+  if view.section == "Bag" then
+    local strip = assert(layout.bagStripTarget)
+    local stripImage = self._bagImages[assert(view.bagPocketStrip).image]
+    assert(stripImage, "selected Bag pocket strip was prepared before drawing")
+    graphics.setColor(1, 1, 1, 1)
+    graphics.draw(stripImage, strip.x, strip.y)
+    for _, targetId in ipairs(layout.bagTabs or {}) do
+      if targetId == view.focus then
+        local target = targetRect(layout, targetId)
+        setColor(graphics, SELECTED)
+        graphics.rectangle("line", target.x, target.y, target.width, target.height)
+      end
+    end
+    for _, card in ipairs(layout.bagGrid or {}) do
+      drawGridCard(self, card, card.targetId == view.focus or view.bagSelectedItem == card.targetId:sub(10))
+    end
+    if targetRect(layout, "bag:add") then
+      drawShadedControl(
+        self,
+        targetRect(layout, "bag:page:previous"),
+        "Previous",
+        view.focus == "bag:page:previous",
+        view.bagPage0 == 0
+      )
+      local pageText = tostring(layout.bagPage.index) .. " / " .. tostring(layout.bagPage.count)
+      drawText(
+        self,
+        pageText,
+        layout.bagPageText.x + math.max(0, (layout.bagPageText.width - self.text:textWidth(pageText)) / 2),
+        layout.bagPageText.y,
+        MUTED
+      )
+      drawShadedControl(
+        self,
+        targetRect(layout, "bag:page:next"),
+        "Next",
+        view.focus == "bag:page:next",
+        view.bagPage0 + 1 >= view.bagPageCount
+      )
+      drawShadedControl(
+        self,
+        targetRect(layout, "bag:add"),
+        "Add",
+        view.focus == "bag:add",
+        view.bagAddEnabled == false
+      )
     end
   end
   if view.section == "Party" and layout.partySummary ~= nil and view.partySummary ~= nil then
@@ -491,6 +591,40 @@ local function paintPane(self, view, plan, pane)
         graphics.rectangle("line", rect.x, rect.y, rect.width, rect.height)
         drawText(self, id == "confirm" and "OK" or "Cancel", rect.x + 3, rect.y + 3, INK)
       end
+    elseif dialog.kind == "quantity" then
+      drawText(
+        self,
+        tostring(dialog.parsedValue or dialog.buffer),
+        layout.content.x + 6,
+        layout.content.y + layout.content.height / 2 - self.text.fontDef.lineHeight / 2,
+        INK
+      )
+      for _, direction in ipairs({ "decrement", "increment" }) do
+        local id = direction == "decrement" and "bag:quantity:decrement" or "bag:quantity:increment"
+        local state = view.quantityHoldTarget == id and "pressed" or "normal"
+        local visual = assert(view.bagQuantityVisuals[direction][state])
+        local image = assert(self._bagImages[visual.image], "quantity visual is prepared before drawing")
+        local target = assert(targetRect(layout, id))
+        graphics.setColor(1, 1, 1, 1)
+        graphics.draw(
+          image,
+          target.x + (target.width - image:getWidth()) / 2,
+          target.y + (target.height - image:getHeight()) / 2
+        )
+        if view.focus == id then
+          setColor(graphics, SELECTED)
+          graphics.rectangle("line", target.x, target.y, target.width, target.height)
+        end
+      end
+      for _, id in ipairs({ "confirm", "cancel" }) do
+        drawShadedControl(
+          self,
+          targetRect(layout, id),
+          id == "confirm" and "Confirm" or "Cancel",
+          id == view.focus,
+          false
+        )
+      end
     else
       local validity = dialog.parsedValue
       local inRange = type(validity) == "number" and validity >= dialog.minimum and validity <= dialog.maximum
@@ -542,7 +676,11 @@ local function paintPane(self, view, plan, pane)
   end
   if view.modal then
     local choices, prompt
-    if view.modal == "draft" then
+    if view.modal == "bag-item" then
+      choices, prompt =
+        { "bag:quantity", "bag:remove", "cancel" },
+        tostring(view.bagSelectedLabel or view.bagSelectedItem) .. "  × " .. tostring(view.bagSelectedQuantity)
+    elseif view.modal == "draft" then
       choices, prompt = { "apply", "discard", "cancel" }, "Apply party changes?"
     elseif view.modal == "remove" then
       choices, prompt = { "remove", "cancel" }, "Remove this entry?"
@@ -554,7 +692,10 @@ local function paintPane(self, view, plan, pane)
       local rect = targetRect(layout, id)
       if rect then
         local disabled = id == "apply" and view.partyValid ~= true
-        drawShadedControl(self, rect, id:sub(1, 1):upper() .. id:sub(2), id == view.focus, disabled, id == "remove")
+        local label = id == "bag:quantity" and "Quantity"
+          or id == "bag:remove" and "Remove"
+          or id:sub(1, 1):upper() .. id:sub(2)
+        drawShadedControl(self, rect, label, id == view.focus, disabled, id == "remove" or id == "bag:remove")
       end
     end
   end
@@ -739,6 +880,16 @@ function Renderer:dispose()
     self._iconProvider:release()
     self._iconProvider = nil
   end
+  if self._itemIconProvider then
+    self._itemIconProvider:release()
+    self._itemIconProvider = nil
+  end
+  for _, image in pairs(self._bagImages) do
+    if image.release then
+      image:release()
+    end
+  end
+  self._bagImages = {}
   if self._iconQueue then
     self._iconQueue:release()
     self._iconQueue = nil

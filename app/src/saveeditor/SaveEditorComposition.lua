@@ -8,6 +8,7 @@ local GameSaveStore = require("libs.hgss.src.save.GameSaveStore")
 local GameSaveValidation = require("libs.hgss.src.save.GameSaveValidation")
 local FieldScriptSymbols = require("libs.assets.src.field.FieldScriptSymbols")
 local MapAssetCache = require("libs.assets.src.MapAssetCache")
+local BagCache = require("libs.assets.src.BagCache")
 local ScriptSave = require("libs.script.src.ScriptSave")
 local SaveEditorSession = require("app.src.saveeditor.SaveEditorSession")
 
@@ -72,6 +73,7 @@ function SaveEditorComposition.open(options)
     session = session,
     context = context,
     cacheFs = cacheFs,
+    bagManifest = BagCache.loadManifest(cacheFs),
     saveFs = saveFs,
     world = world,
     derivedAssets = options.derivedAssets,

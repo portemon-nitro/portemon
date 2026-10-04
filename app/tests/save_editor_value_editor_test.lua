@@ -38,6 +38,31 @@ function T.directional_digit_selection_and_increment_confirm_without_typing()
   Assert.deepEqual(editor:result(), { kind = "confirm", value = 138 })
 end
 
+function T.quantity_navigation_uses_one_and_ten_step_clamps_without_changing_digit_mode()
+  local quantity = SaveEditorValueEditor.new({
+    kind = "integer",
+    value = 20,
+    min = 1,
+    max = 25,
+    base = "decimal",
+    navigation = "quantity",
+  })
+  Assert.isTrue(quantity:press("up"))
+  Assert.equal(quantity:snapshot().parsedValue, 21)
+  Assert.isTrue(quantity:press("right"))
+  Assert.equal(quantity:snapshot().parsedValue, 25, "ten-step changes clamp at the maximum")
+  Assert.isTrue(quantity:press("down"))
+  Assert.equal(quantity:snapshot().parsedValue, 24)
+  Assert.isTrue(quantity:press("left"))
+  Assert.equal(quantity:snapshot().parsedValue, 14)
+  Assert.isTrue(quantity:adjustInteger(-100))
+  Assert.equal(quantity:snapshot().parsedValue, 1, "adjustment clamps at the non-removal minimum")
+  Assert.equal(quantity:snapshot().kind, "quantity")
+  local digits = integerEditor(128, 0, 999)
+  Assert.isTrue(digits:press("up"))
+  Assert.equal(digits:snapshot().parsedValue, 129, "ordinary integer editors keep units-digit adjustment")
+end
+
 function T.cancel_discards_partial_numeric_input()
   local editor = integerEditor(420, 0, 9999)
 
@@ -131,7 +156,8 @@ end
 
 function T.hexadecimal_high_bit_values_and_digit_edits_remain_unsigned()
   Assert.isTrue(loaded)
-  local editor = SaveEditorValueEditor.new({ kind = "integer", value = 0x80000000, min = 0, max = 0xFFFFFFFF, base = "hex" })
+  local editor =
+    SaveEditorValueEditor.new({ kind = "integer", value = 0x80000000, min = 0, max = 0xFFFFFFFF, base = "hex" })
   Assert.deepEqual(editor:result(), nil)
   Assert.equal(editor:snapshot().buffer, "80000000")
   Assert.isTrue(editor:press("confirm"))
@@ -159,16 +185,26 @@ function T.choice_browsing_uses_the_full_filtered_sequence()
   local editor = SaveEditorValueEditor.new({ kind = "choice", value = "K01", options = options })
   local opening = editor:snapshot()
   Assert.equal(#opening.options, 20)
-  local layout = SaveEditorLayout.compute({
-    section = "Bag",
-    status = "ready",
-    ready = true,
-    dirty = false,
-    bagRows = {},
-    valueEditor = opening,
-    scope = { id = "value:choice", epoch = 1 },
-    scrollOffsets = {},
-  }, 256, 192, { lineHeight = 14, measure = function(text) return #text * 7 end })
+  local layout = SaveEditorLayout.compute(
+    {
+      section = "Bag",
+      status = "ready",
+      ready = true,
+      dirty = false,
+      bagRows = {},
+      valueEditor = opening,
+      scope = { id = "value:choice", epoch = 1 },
+      scrollOffsets = {},
+    },
+    256,
+    192,
+    {
+      lineHeight = 14,
+      measure = function(text)
+        return #text * 7
+      end,
+    }
+  )
   Assert.isNil(layout.targets["group-previous"], "flat choice view has no group control")
   Assert.isNil(layout.targets["group-next"], "flat choice view has no group control")
   Assert.isNil(layout.targets["clear-search"], "flat choice view has no visible Clear control")
@@ -187,10 +223,26 @@ function T.choice_filter_keeps_the_opening_identity_visible_and_recovers_from_no
   end
   local editor = SaveEditorValueEditor.new({ kind = "choice", value = "K18", options = options })
   local opening = editor:snapshot()
-  local layout = SaveEditorLayout.compute({
-    section = "Bag", status = "ready", ready = true, dirty = false, bagRows = {}, valueEditor = opening,
-    scope = { id = "value:choice", epoch = 1 }, scrollOffsets = {},
-  }, 256, 192, { lineHeight = 14, measure = function(text) return #text * 7 end })
+  local layout = SaveEditorLayout.compute(
+    {
+      section = "Bag",
+      status = "ready",
+      ready = true,
+      dirty = false,
+      bagRows = {},
+      valueEditor = opening,
+      scope = { id = "value:choice", epoch = 1 },
+      scrollOffsets = {},
+    },
+    256,
+    192,
+    {
+      lineHeight = 14,
+      measure = function(text)
+        return #text * 7
+      end,
+    }
+  )
   local selectedVisible = layout.targets["choice:K18"] ~= nil and layout.viewports["value:choice"].offset > 0
   editor:textinput("no matching choice")
   local backspaceRecovered = editor:press("backspace")

@@ -52,6 +52,10 @@ local function readyHost()
   }
 end
 
+local function shellQuote(value)
+  return "'" .. value:gsub("'", "'\\''") .. "'"
+end
+
 local function clickTarget(state, targetId)
   local view = state:view()
   local pane = assert(view.presentation.panes[1], "the editor publishes a pointer pane")
@@ -73,6 +77,9 @@ function T.tests.real_state_uses_the_editor_palette_and_saves_a_capture(scope)
   local originalGlobal = SaveFs.global
   local state
   local repositoryRoot = love.filesystem.getSourceBaseDirectory()
+  local captureDirectory = repositoryRoot .. "/tmp/agents/captures"
+  local mkdirStatus = os.execute("mkdir -p -- " .. shellQuote(captureDirectory))
+  Assert.isTrue(mkdirStatus == true or mkdirStatus == 0, "the graphics capture directory is available")
   local ok, failure = xpcall(function()
     SaveFs.global = function(backend)
       Assert.isNil(backend, "production editor composition uses the isolated acceptance backend")
@@ -131,7 +138,7 @@ function T.tests.real_state_uses_the_editor_palette_and_saves_a_capture(scope)
       local actual = scope:own(canvas:newImageData())
       local imageData = actual:encode("png")
       local file = assert(
-        io.open(repositoryRoot .. "/tmp/agents/captures/save-editor-production-" .. name .. ".png", "wb"),
+        io.open(captureDirectory .. "/save-editor-production-" .. name .. ".png", "wb"),
         "capture directory must exist for " .. name
       )
       assert(file:write(imageData:getString()))
@@ -223,11 +230,16 @@ function T.tests.real_state_uses_the_editor_palette_and_saves_a_capture(scope)
     clickTarget(state, "bag:pocket:items")
     local crowdedBag = capture("crowded-bag", width, height)
     Assert.isTrue(#crowdedBag.bagRows >= 10, "the production Bag view contains a long item list")
-    state:wheelmoved(0, -5)
-    local scrolledBag = capture("crowded-bag-scrolled", width, height)
-    Assert.isTrue(scrolledBag.layout.viewports.bag.offset > 0, "the Bag list scrolls independently of fixed actions")
+    Assert.isTrue(crowdedBag.layout.bagPage.count > 1, "the crowded pocket has multiple Bag pages")
+    clickTarget(state, "bag:page:next")
+    local nextPage = capture("crowded-bag-next-page", width, height)
+    Assert.equal(nextPage.layout.bagPage.index, crowdedBag.layout.bagPage.index + 1, "Next opens the following Bag page")
+    Assert.isTrue(
+      assert(nextPage.bagPageRows[1]).item ~= assert(crowdedBag.bagPageRows[1]).item,
+      "the next Bag page exposes different item rows"
+    )
     for _, targetId in ipairs({ "save", "discard", "back" }) do
-      Assert.notNil(scrolledBag.layout.targets[targetId], "the fixed Bag action remains visible after scrolling")
+      Assert.notNil(nextPage.layout.targets[targetId], "the fixed Bag action remains visible after page navigation")
     end
 
     state.controller:setSection("Party")

@@ -18,6 +18,7 @@ local FocusGraph = require("libs.ui.src.FocusGraph")
 ---@field partySubpage string
 ---@field bagPocket string
 ---@field bagItemKey string?
+---@field bagPage0 integer
 ---@field locationPage "grid"|"map-list"
 ---@field locationMapId integer?
 ---@field locationCursorX integer?
@@ -39,6 +40,7 @@ local FocusGraph = require("libs.ui.src.FocusGraph")
 ---@field closePartyDetail fun(self: SaveEditorController)
 ---@field selectPartySubpage fun(self: SaveEditorController, subpage: string)
 ---@field selectBagPocket fun(self: SaveEditorController, pocket: string)
+---@field setBagPage fun(self: SaveEditorController, page0: integer)
 ---@field selectBagItem fun(self: SaveEditorController, itemKey: string)
 ---@field enterLocation fun(self: SaveEditorController, location: table<string, unknown>)
 ---@field openLocationMaps fun(self: SaveEditorController)
@@ -68,6 +70,7 @@ function Controller.new()
     partySubpage = "Identity",
     bagPocket = "items",
     bagItemKey = nil,
+    bagPage0 = 0,
     locationPage = "grid",
     locationMapId = nil,
     locationCursorX = nil,
@@ -96,6 +99,7 @@ function Controller:snapshot()
     partySubpage = self.partySubpage,
     bagPocket = self.bagPocket,
     bagItemKey = self.bagItemKey,
+    bagPage0 = self.bagPage0,
     location = self:locationSnapshot(),
     scope = {
       id = self.scopeId,
@@ -375,7 +379,14 @@ function Controller:selectBagPocket(pocket)
   assert(type(pocket) == "string" and pocket ~= "")
   self.bagPocket = pocket
   self.bagItemKey = nil
+  self.bagPage0 = 0
   self.focus = "bag:pocket:" .. pocket
+  self:cancelInteraction()
+end
+
+function Controller:setBagPage(page0)
+  assert(type(page0) == "number" and page0 % 1 == 0 and page0 >= 0)
+  self.bagPage0 = page0
   self:cancelInteraction()
 end
 

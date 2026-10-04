@@ -16,6 +16,9 @@ local T = {
     derivedAssets = {
       "field-planning",
       "field-runtime",
+      "items:global",
+      "bag:global",
+      "party:global",
       "audio-bank:702",
       "audio-bank:709",
       "map-data:7",
@@ -49,6 +52,9 @@ end
 
 local function readyHost()
   return {
+    requestMilestone = function()
+      return true
+    end,
     requestField = function()
       return true
     end,
@@ -215,12 +221,7 @@ local function resolvedHousePlacement(graph, fixture, host)
     )
     Assert.notNil(oracleIntent, "the retail field resolver recognizes the exact generated coordinate event")
     Assert.equal(oracleIntent.coordinate.event, coordinate, "the oracle identifies the source event directly")
-    unavailableAtSourceEvent(
-      coordinateMapId,
-      coordinate,
-      "coordinate_trigger",
-      "source coordinate rectangle"
-    )
+    unavailableAtSourceEvent(coordinateMapId, coordinate, "coordinate_trigger", "source coordinate rectangle")
     local actorMapId = assert(graph.world.bySymbol.MAP_ROUTE_29)
     local actorMapRecord = assert(graph.world.maps[assert(graph.world.byId[actorMapId])])
     Assert.isTrue(
@@ -228,10 +229,8 @@ local function resolvedHousePlacement(graph, fixture, host)
       "the ROM hazard is checked on a map with a nonzero world origin"
     )
     local actorFieldData = assert(graph.cacheFs:loadLua(FieldMapDataCache.fieldPath(actorMapId)))
-    local object = assert(
-      actorFieldData.events.objects[1],
-      "Route 29 generated field data contains a source actor event"
-    )
+    local object =
+      assert(actorFieldData.events.objects[1], "Route 29 generated field data contains a source actor event")
     unavailableAtSourceEvent(actorMapId, object, "possible_actor", "source actor")
   end
 
@@ -323,7 +322,10 @@ function T.tests.combined_editor_save_reloads_and_resumes_at_the_resolved_destin
 
     local locationBeforeBrowse = session:captureCandidate()
     Assert.deepEqual(locationBeforeBrowse, original, "loading and browsing a destination make no save edits")
-    Assert.isTrue(type(session.setLocation) == "function", "a fully resolved tuple reaches the existing save transaction")
+    Assert.isTrue(
+      type(session.setLocation) == "function",
+      "a fully resolved tuple reaches the existing save transaction"
+    )
 
     local money = original.playerData.profile.money + 1
     Assert.isTrue(session:setMoney(money).ok)
@@ -340,7 +342,10 @@ function T.tests.combined_editor_save_reloads_and_resumes_at_the_resolved_destin
         break
       end
     end
-    Assert.isTrue(session:setBagQuantity("POKE_BALL", quantity).ok, "the authoritative bag owner accepts the staged quantity")
+    Assert.isTrue(
+      session:setBagQuantity("POKE_BALL", quantity).ok,
+      "the authoritative bag owner accepts the staged quantity"
+    )
     Assert.isTrue(session:setLocation(placement).ok, "the resolved location tuple stages atomically")
 
     local expected = session:captureCandidate()
@@ -368,12 +373,24 @@ function T.tests.combined_editor_save_reloads_and_resumes_at_the_resolved_destin
     end
     local failed = session:save()
     Assert.isFalse(failed.ok, "a failed atomic write reports failure")
-    Assert.deepEqual(assert(fixture.store:load(fixture.saveId)), original, "failed publication preserves the original save")
+    Assert.deepEqual(
+      assert(fixture.store:load(fixture.saveId)),
+      original,
+      "failed publication preserves the original save"
+    )
     Assert.deepEqual(session:captureCandidate(), expected, "failed publication retains the full staged transaction")
     backend.write = originalWrite
     Assert.isTrue(session:discard(), "Discard restores the complete published baseline after a failed combined save")
-    Assert.deepEqual(session:captureCandidate(), original, "combined Discard restores every edited domain and location field")
-    Assert.deepEqual(assert(fixture.store:load(fixture.saveId)), original, "Discard leaves the published canonical save unchanged")
+    Assert.deepEqual(
+      session:captureCandidate(),
+      original,
+      "combined Discard restores every edited domain and location field"
+    )
+    Assert.deepEqual(
+      assert(fixture.store:load(fixture.saveId)),
+      original,
+      "Discard leaves the published canonical save unchanged"
+    )
 
     Assert.isTrue(session:setMoney(money).ok)
     Assert.isTrue(session:setFlag(flagName, flagValue).ok)
@@ -422,7 +439,11 @@ function T.tests.combined_editor_save_reloads_and_resumes_at_the_resolved_destin
     local runtimeVariables = copy(resumed.world.variables)
     savedVariables[objectSpriteVariable] = nil
     runtimeVariables[objectSpriteVariable] = nil
-    Assert.deepEqual(runtimeVariables, savedVariables, "resume preserves every variable outside the runtime sprite default")
+    Assert.deepEqual(
+      runtimeVariables,
+      savedVariables,
+      "resume preserves every variable outside the runtime sprite default"
+    )
     Assert.deepEqual(resumed.world.rng, original.world.rng)
     Assert.isNil(
       runtime:_playerOccupantAt({
@@ -579,8 +600,7 @@ function T.tests.one_save_intent_keeps_the_browser_and_publishes_after_destinati
       Assert.equal(
         failureView.errorMessage,
         "This save changed after the editor opened. Reopen it before saving.",
-        "the asynchronous save exposes the structured Session conflict; got "
-          .. tostring(failureView.errorMessage)
+        "the asynchronous save exposes the structured Session conflict; got " .. tostring(failureView.errorMessage)
       )
       Assert.isTrue(failureView.dirty, "the rejected editor transaction remains dirty")
       Assert.equal(recordWrites, 2, "the rejected editor save does not publish over the external record")
@@ -611,6 +631,180 @@ function T.tests.one_save_intent_keeps_the_browser_and_publishes_after_destinati
   fixture.saveFs.backend.write = originalWrite
   SaveFs.global = originalGlobal
   love.event.quit = originalQuit
+  fixture.cleanup()
+  if not ok then
+    error(err, 0)
+  end
+end
+
+local function openBagEditor(fixture, host)
+  local originalGlobal = SaveFs.global
+  SaveFs.global = function(backend)
+    Assert.isNil(backend, "the editor uses the isolated acceptance save backend")
+    return fixture.saveFs
+  end
+  local State = require("app.src.saveeditor.SaveEditorState")
+  local state
+  local ok, stateError = xpcall(function()
+    state = State.new({
+      versionId = fixture.versionId,
+      saveId = fixture.saveId,
+      width = 800,
+      height = 600,
+      derivedAssets = host,
+      repositoryRoot = love.filesystem.getSourceBaseDirectory(),
+      displayContext = DisplayContext.new({}),
+      onResult = function() end,
+    })
+    state:update(0)
+    Assert.equal(state:view().status, "ready", "the production editor opens the real save")
+  end, debug.traceback)
+  SaveFs.global = originalGlobal
+  if not ok then
+    if state then
+      pcall(function()
+        state:dispose()
+      end)
+    end
+    error(stateError, 0)
+  end
+  assert(state).controller:setSection("Bag")
+  local potionPocket = assert(state.dependencies.context.itemCatalog:item("POTION")).pocket
+  assert(state).controller:selectBagPocket(potionPocket)
+  local seeded = assert(state).session:setBagQuantity("POTION", 20)
+  Assert.isTrue(seeded.ok, "the production Bag service seeds the acceptance item")
+  Assert.isTrue(state.session:save().ok, "the fixture begins from a published save containing that item")
+  return state
+end
+
+function T.tests.bag_item_actions_and_quantity_commit_are_staged_until_outer_save()
+  local fixture = Fixture.new()
+  local host = readyHost()
+  local state
+  local ok, err = xpcall(function()
+    state = openBagEditor(fixture, host)
+    withoutRendering(function()
+      local initial = state.session:captureCandidate()
+      local view = state:view()
+      local row = assert(view.bagRows[1], "the production save contains a Bag item to edit")
+      local originalQuantity = row.quantity
+      local itemTarget = "bag:item:" .. row.item
+
+      activateTarget(state, itemTarget)
+      view = state:view()
+      Assert.equal(view.modal, "bag-item", "activating a Bag card opens its item action modal")
+      Assert.notNil(view.layout.targets["bag:quantity"], "the item modal offers Quantity")
+      Assert.notNil(view.layout.targets["bag:remove"], "the item modal offers Remove")
+      Assert.notNil(view.layout.targets.cancel, "the item modal offers Cancel")
+      Assert.isNil(view.layout.targets.save, "the item modal owns focus without exposing the shell")
+
+      activateTarget(state, "cancel")
+      Assert.isNil(state:view().modal, "Cancel returns to the selected item")
+      Assert.deepEqual(state.session:captureCandidate(), initial, "Cancel leaves the staged Bag unchanged")
+
+      activateTarget(state, itemTarget)
+      activateTarget(state, "bag:quantity")
+      Assert.equal(state:view().valueEditor.kind, "quantity", "Quantity opens its dedicated transient editor")
+      local expected = math.max(1, originalQuantity)
+      state:keypressed("up")
+      state:keyreleased("up")
+      expected = math.min(expected + 1, row.maxQuantity or 999)
+      Assert.equal(state:view().valueEditor.value, expected, "Up changes transient quantity by one")
+      state:keypressed("right")
+      state:keyreleased("right")
+      expected = math.min(expected + 10, row.maxQuantity or 999)
+      Assert.equal(state:view().valueEditor.value, expected, "Right changes transient quantity by ten")
+      state:keypressed("escape")
+      Assert.equal(
+        state.session:bagSnapshot(view.bagPocket)[1].quantity,
+        originalQuantity,
+        "Cancel publishes no quantity"
+      )
+
+      activateTarget(state, "bag:quantity")
+      state:keypressed("up")
+      state:keyreleased("up")
+      state:keypressed("return")
+      Assert.equal(
+        state.session:bagSnapshot(state.controller.bagPocket)[1].quantity,
+        originalQuantity + 1,
+        "Confirm stages the quantity in the editor session"
+      )
+      Assert.equal(
+        assert(fixture.store:load(fixture.saveId)).bag.pockets[view.bagPocket][1].quantity,
+        initial.bag.pockets[view.bagPocket][1].quantity,
+        "the canonical save remains unchanged before outer Save"
+      )
+      Assert.isTrue(state.session:save().ok, "the existing outer Save publishes the staged Bag quantity")
+      Assert.equal(
+        assert(fixture.store:load(fixture.saveId)).bag.pockets[state.controller.bagPocket][1].quantity,
+        originalQuantity + 1
+      )
+    end)
+  end, debug.traceback)
+  if state then
+    pcall(function()
+      state:dispose()
+    end)
+  end
+  fixture.cleanup()
+  if not ok then
+    error(err, 0)
+  end
+end
+
+function T.tests.bag_add_uses_search_then_quantity_and_returns_without_cancel_mutation()
+  local fixture = Fixture.new()
+  local host = readyHost()
+  local state
+  local ok, err = xpcall(function()
+    state = openBagEditor(fixture, host)
+    withoutRendering(function()
+      local initial = state.session:captureCandidate()
+      activateTarget(state, "bag:add")
+      local choice = assert(state:view().valueEditor, "Add opens the searchable item picker")
+      Assert.equal(choice.kind, "choice")
+      Assert.isNil(choice.groups, "the Add picker has no groups")
+      Assert.isNil(choice.clearTarget, "the Add picker has no visible Clear action")
+      state:textinput("POTION")
+      choice = state:view().valueEditor
+      Assert.equal(choice.query, "POTION", "typing filters the Add catalog")
+      state:keypressed("return")
+      local quantity = assert(state:view().valueEditor, "choosing an item opens quantity entry")
+      local expected = assert(quantity.parsedValue or quantity.value) + 1
+      state:keypressed("up")
+      state:keyreleased("up")
+      quantity = state:view().valueEditor
+      Assert.equal(quantity.parsedValue or quantity.value, expected, "Up changes transient quantity by one")
+      state:keypressed("right")
+      state:keyreleased("right")
+      quantity = state:view().valueEditor
+      Assert.equal(quantity.parsedValue or quantity.value, expected + 10, "Right changes transient quantity by ten")
+      state:keypressed("escape")
+      Assert.deepEqual(state.session:captureCandidate(), initial, "canceling Add quantity leaves inventory unchanged")
+      Assert.equal(state:view().focus, "bag:add", "cancel returns to the separate Add control")
+
+      activateTarget(state, "bag:add")
+      state:textinput("POTION")
+      state:keypressed("return")
+      state:keypressed("return")
+      Assert.equal(
+        state.session:bagSnapshot(state.controller.bagPocket)[1].quantity,
+        21,
+        "confirming Add stages the new quantity in the session"
+      )
+      Assert.equal(
+        assert(fixture.store:load(fixture.saveId)).bag.pockets[state.controller.bagPocket][1].quantity,
+        initial.bag.pockets[state.controller.bagPocket][1].quantity,
+        "the canonical save remains unchanged before outer Save"
+      )
+    end)
+  end, debug.traceback)
+  if state then
+    pcall(function()
+      state:dispose()
+    end)
+  end
   fixture.cleanup()
   if not ok then
     error(err, 0)

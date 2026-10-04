@@ -18,6 +18,38 @@ local function computeLayout(view, width, height)
   })
 end
 
+local function bagView(rows, page0)
+  local keys = { "items", "medicine", "balls", "battle_items", "berries", "mail", "key_items", "machines" }
+  local tabs, pockets = {}, {}
+  for index, key in ipairs(keys) do
+    tabs[index] = { x = (index - 1) * 32, y = 0, width = 32, height = 32 }
+    pockets[index] = { key = key, label = key }
+  end
+  local pageCount = math.max(1, math.ceil(#rows / 6))
+  page0 = math.min(pageCount - 1, page0 or 0)
+  local pageRows = {}
+  for index = page0 * 6 + 1, math.min(#rows, page0 * 6 + 6) do
+    pageRows[#pageRows + 1] = rows[index]
+  end
+  return {
+    section = "Bag",
+    status = "ready",
+    ready = true,
+    dirty = false,
+    bagPocket = "balls",
+    bagPocketTabRects = tabs,
+    bagPocketStrip = { image = "bag/balls.png" },
+    bagQuantityVisuals = {},
+    bagPockets = pockets,
+    bagRows = rows,
+    bagPageRows = pageRows,
+    bagPage0 = page0,
+    bagPageCount = pageCount,
+    bagSelectedItem = nil,
+    bagSelectedQuantity = nil,
+  }
+end
+
 local function targetCenter(layout, targetId)
   local target = assert(layout.targets[targetId], "the active page must publish " .. targetId)
   local rect = target.rect
@@ -78,17 +110,15 @@ function T.party_layout_exposes_raw_and_readonly_fields_and_keeps_u32_edit_reach
       Assert.isTrue(sectionTargets.section, "compact screens must expose a touchable section chooser")
     end
 
-    local requiredTargets = dimensions[1] >= 400
-        and {
-          "party:field:personality",
-          "party:readonly:level",
-          "party:readonly:nature",
-          "party:readonly:max-hp",
-        }
-      or { "party:field:personality" }
+    local requiredTargets = { "party:field:personality" }
     for _, targetId in ipairs(requiredTargets) do
       local x, y = targetCenter(layout, targetId)
       Assert.equal(Layout.hitTest(layout, navView, x, y), targetId)
+    end
+    if dimensions[1] >= 400 then
+      for _, targetId in ipairs({ "party:readonly:level", "party:readonly:nature", "party:readonly:max-hp" }) do
+        Assert.isNil(layout.targets[targetId], "derived Party data remains plain and non-focusable")
+      end
     end
   end
 
@@ -104,33 +134,20 @@ function T.party_layout_exposes_raw_and_readonly_fields_and_keeps_u32_edit_reach
   Assert.deepEqual(editor:result(), { kind = "confirm", value = 4294967295 })
 end
 
-function T.bag_layout_exposes_catalog_pockets_and_quantity_targets()
-  local view = {
-    section = "Bag",
-    status = "ready",
-    ready = true,
-    dirty = false,
-    bagPocket = "balls",
-    bagPocketLabel = "Balls",
-    bagSelectedItem = "POKE_BALL",
-    bagSelectedQuantity = 3,
-    bagPockets = {
-      { key = "items", label = "Items" },
-      { key = "balls", label = "Balls" },
-      { key = "key_items", label = "Key Items" },
-    },
-    bagRows = {
-      { item = "POKE_BALL", label = "Poké Ball", quantity = 3 },
-    },
-  }
+function T.bag_layout_publishes_native_tabs_six_cells_and_separate_add()
+  local view = bagView({ { item = "POKE_BALL", label = "Poké Ball", quantity = 3 } })
   local layout = computeLayout(view, 800, 600)
   local pocketX, pocketY = targetCenter(layout, "bag:pocket:balls")
   local itemX, itemY = targetCenter(layout, "bag:item:POKE_BALL")
   Assert.equal(Layout.hitTest(layout, view, pocketX, pocketY), "bag:pocket:balls")
   Assert.equal(Layout.hitTest(layout, view, itemX, itemY), "bag:item:POKE_BALL")
+  Assert.equal(#layout.bagGrid, 1, "only occupied cells are published")
+  Assert.notNil(layout.targets["bag:add"], "Add remains outside the grid")
+  Assert.isNil(layout.targets["bag:pocket:choose"], "pocket names are removed")
+  Assert.isNil(layout.targets["bag:quantity"], "item actions are modal-owned")
   local compact = computeLayout(view, 256, 192)
-  Assert.notNil(compact.targets["bag:pocket:choose"], "compact screens must offer a touchable pocket chooser")
-  Assert.notNil(compact.targets["bag:quantity"], "quantity editing must remain reachable on compact screens")
+  Assert.notNil(compact.targets["bag:pocket:balls"], "compact screens retain icon tabs")
+  Assert.notNil(compact.targets["bag:add"], "compact screens retain separate Add")
 end
 
 function T.party_draft_and_remove_modals_publish_their_own_actions()
@@ -206,8 +223,12 @@ function T.invalid_draft_modal_filters_disabled_apply_before_focus_and_confirmat
     },
     pendingDraftAction = nil,
     errorMessage = nil,
-    _snapshot = function() return view end,
-    _resolve = function() return { content = { layout = layout } } end,
+    _snapshot = function()
+      return view
+    end,
+    _resolve = function()
+      return { content = { layout = layout } }
+    end,
   }, State)
 
   local directions = { "left", "up", "right", "down", "left", "right" }
@@ -324,8 +345,7 @@ function T.party_grid_places_members_and_add_in_occupied_six_cell_positions()
     for left = 1, #occupied do
       for right = left + 1, #occupied do
         local a, b = occupied[left], occupied[right]
-        local overlap = a.x < b.x + b.width and b.x < a.x + a.width
-          and a.y < b.y + b.height and b.y < a.y + a.height
+        local overlap = a.x < b.x + b.width and b.x < a.x + a.width and a.y < b.y + b.height and b.y < a.y + a.height
         Assert.isFalse(overlap, "six-cell cards have distinct bounded positions")
       end
     end
@@ -351,7 +371,13 @@ function T.party_detail_targets_distinguish_readonly_fields_from_draft_actions()
     partySubpage = "Training",
     partySubpages = { "Identity", "Training", "Stats", "Moves", "Origin" },
     partyRows = {
-      { role = "read-only value", targetId = "party:readonly:experience", id = "experience", label = "Experience", value = 10 },
+      {
+        role = "read-only value",
+        targetId = "party:readonly:experience",
+        id = "experience",
+        label = "Experience",
+        value = 10,
+      },
       { role = "read-only value", targetId = "party:readonly:level", id = "level", label = "Level", value = 5 },
     },
   }
@@ -364,7 +390,13 @@ function T.party_detail_targets_distinguish_readonly_fields_from_draft_actions()
   view.partyDirty = true
   view.partyValid = true
   view.partyRows = {
-    { role = "integer value", targetId = "party:field:experience", id = "experience", label = "Experience", value = 10 },
+    {
+      role = "integer value",
+      targetId = "party:field:experience",
+      id = "experience",
+      label = "Experience",
+      value = 10,
+    },
     { role = "read-only value", targetId = "party:readonly:level", id = "level", label = "Level", value = 5 },
   }
   local draft = computeLayout(view, 800, 600)
@@ -373,112 +405,31 @@ function T.party_detail_targets_distinguish_readonly_fields_from_draft_actions()
   Assert.isNil(draft.targets["party:readonly:help"], "contextual help is outside the focus graph")
 end
 
-function T.compact_bag_keeps_fixed_actions_reachable_beside_a_long_scrolling_list()
-  local view = {
-    section = "Bag",
-    status = "ready",
-    ready = true,
-    dirty = false,
-    bagPocket = "items",
-    bagPocketLabel = "Items",
-    bagSelectedItem = "POTION",
-    bagSelectedQuantity = 3,
-    bagRows = {},
-  }
-  for index = 1, 40 do
-    view.bagRows[index] = {
-      item = "ITEM_" .. index,
-      label = "Item " .. index,
-      quantity = index,
-    }
+function T.bag_pages_six_items_and_keeps_add_outside_grid()
+  local rows = {}
+  for index = 1, 7 do
+    rows[index] = { item = "ITEM_" .. index, label = "Item " .. index, quantity = index }
   end
-
-  local layout = computeLayout(view, 256, 192)
-  local missingActions = {}
-  for _, targetId in ipairs({ "bag:pocket:choose", "bag:quantity", "bag:remove", "bag:add", "save", "back" }) do
-    if layout.targets[targetId] == nil then
-      missingActions[#missingActions + 1] = targetId
-    end
-  end
-  local firstRowsReachable = true
-  for _, firstIndex in ipairs({ 1, 9, 25, 37 }) do
-    view.scrollOffset = firstIndex - 1
-    local scrolled = computeLayout(view, 256, 192)
-    firstRowsReachable = firstRowsReachable and scrolled.targets["bag:item:ITEM_" .. firstIndex] ~= nil
-  end
-  view.scrollOffset = 0
-  layout = computeLayout(view, 256, 192)
-  local noBodyActionOverlap = true
-  local actionRects = {
-    layout.targets["bag:quantity"],
-    layout.targets["bag:remove"],
-    layout.targets["bag:add"],
-  }
-  for index = 1, 40 do
-    local row = layout.targets["bag:item:ITEM_" .. index]
-    if row ~= nil then
-      row = row.rect
-      for _, action in ipairs(actionRects) do
-        if action ~= nil then
-          action = action.rect
-          noBodyActionOverlap = noBodyActionOverlap
-            and (row.y + row.height <= action.y or action.y + action.height <= row.y)
-        end
-      end
-    end
-  end
-  local shortPocket = {
-    section = "Bag",
-    status = "ready",
-    ready = true,
-    dirty = false,
-    bagPocket = "key_items",
-    bagPocketLabel = "Key Items",
-    bagRows = {
-      { item = "BICYCLE", label = "Bicycle", quantity = 1 },
-      { item = "CARD_KEY", label = "Card Key", quantity = 1 },
-    },
-    scrollOffset = 0,
-  }
-  local shortLayout = computeLayout(shortPocket, 256, 192)
-  local readonlyHelp = {
-    section = "Party",
-    status = "ready",
-    ready = true,
-    dirty = false,
-    partyPage = "detail",
-    partySlot0 = 0,
-    partyLastSlot0 = 0,
-    partyRows = {
-      {
-        role = "read-only value",
-        targetId = "party:readonly:help",
-        label = "Derived values cannot be edited.",
-        value = nil,
-      },
-    },
-  }
-  local helpLayout = computeLayout(readonlyHelp, 256, 192)
-  local compactLayoutComplete = missingActions[#missingActions] == nil
-    and firstRowsReachable
-    and noBodyActionOverlap
-    and shortLayout.targets["bag:item:BICYCLE"] ~= nil
-    and helpLayout.targets["party:readonly:help"] == nil
-    and layout.targets["bag:item:ITEM_1"] ~= nil
-    and layout.targets["bag:item:ITEM_40"] == nil
-  Assert.isTrue(
-    compactLayoutComplete,
-    string.format(
-      "missing=%s rows=%s overlap=%s short=%s help=%s first=%s lastOffscreen=%s",
-      table.concat(missingActions, ","),
-      tostring(firstRowsReachable),
-      tostring(noBodyActionOverlap),
-      tostring(shortLayout.targets["bag:item:BICYCLE"] ~= nil),
-      tostring(helpLayout.targets["party:readonly:help"] == nil),
-      tostring(layout.targets["bag:item:ITEM_1"] ~= nil),
-      tostring(layout.targets["bag:item:ITEM_40"] == nil)
-    )
-  )
+  local first = bagView(rows, 0)
+  local firstLayout = computeLayout(first, 256, 192)
+  Assert.equal(#firstLayout.bagGrid, 6, "the first page publishes six occupied cells")
+  Assert.isNil(firstLayout.targets["bag:item:ITEM_7"], "later page cards are not hit targets")
+  Assert.isFalse(firstLayout.focusGraph["bag:page:previous"] ~= nil, "Previous is not focusable on the first page")
+  Assert.notNil(firstLayout.targets["bag:add"], "Add remains a separate control")
+  local second = bagView(rows, 1)
+  local secondLayout = computeLayout(second, 256, 192)
+  Assert.equal(#secondLayout.bagGrid, 1, "the last page has no empty cards")
+  Assert.notNil(secondLayout.targets["bag:item:ITEM_7"], "Next page exposes its first occupied item")
+  Assert.isFalse(secondLayout.focusGraph["bag:page:next"] ~= nil, "Next is not focusable on the last page")
+  local actionModal = bagView(rows, 1)
+  actionModal.modal = "bag-item"
+  actionModal.bagSelectedItem, actionModal.bagSelectedLabel, actionModal.bagSelectedQuantity = "ITEM_7", "Item 7", 7
+  actionModal.scope = { id = "decision:bag-item", epoch = 1, kind = "decision" }
+  local modalLayout = computeLayout(actionModal, 256, 192)
+  Assert.notNil(modalLayout.targets["bag:quantity"], "item modal offers Quantity")
+  Assert.notNil(modalLayout.targets["bag:remove"], "item modal offers Remove")
+  Assert.notNil(modalLayout.targets.cancel, "item modal offers Cancel")
+  Assert.isNil(modalLayout.targets["bag:item:ITEM_7"], "modal scope hides background cards")
 end
 
 function T.nickname_blank_and_clear_have_distinct_raw_results()
@@ -802,7 +753,7 @@ function T.progress_focus_keeps_offscreen_flag_rows_reachable_with_sparse_neighb
     dirty = view.dirty,
     flagFilter = view.flagFilter,
     flagRows = view.flagRows,
-    scrollOffsets = { ["flags:All"] = (middleIndex - 1) * layout.viewports.flags.rowExtent },
+    scrollOffsets = { flags = (middleIndex - 1) * layout.viewports.flags.rowExtent },
   }
   Assert.notNil(
     computeLayout(scrolledView, 800, 600).targets[middle],
@@ -833,18 +784,12 @@ function T.disabled_bag_party_and_footer_actions_are_not_focusable_or_pointer_ta
     end
   end
 
-  local bag = {
-    section = "Bag",
-    status = "ready",
-    ready = true,
-    dirty = false,
-    bagPocket = "items",
-    bagPocketLabel = "Items",
-    bagRows = {},
-  }
+  local bag = bagView({})
   local bagLayout = computeLayout(bag, 800, 600)
-  assertDisabled(bagLayout, bag, "bag:quantity")
-  assertDisabled(bagLayout, bag, "bag:remove")
+  Assert.isNil(bagLayout.targets["bag:quantity"], "normal Bag has no inline quantity action")
+  Assert.isNil(bagLayout.targets["bag:remove"], "normal Bag has no inline remove action")
+  assertDisabled(bagLayout, bag, "bag:page:previous")
+  assertDisabled(bagLayout, bag, "bag:page:next")
   assertDisabled(bagLayout, bag, "save")
 
   local party = {

@@ -97,11 +97,27 @@ local function fixture(scope, width, height, topology, section, variant)
     end
   elseif section == "Bag" then
     view.bagPocket = "items"
-    view.bagPocketLabel = "Items"
     view.bagSelectedItem = "POTION"
     view.bagSelectedQuantity = 2
-    view.bagPockets = { { key = "items", label = "Items" } }
+    local keys = { "items", "medicine", "balls", "battle_items", "berries", "mail", "key_items", "machines" }
+    view.bagPockets, view.bagPocketTabRects = {}, {}
+    for index, key in ipairs(keys) do
+      view.bagPockets[index] = { key = key, label = key }
+      view.bagPocketTabRects[index] = { x = (index - 1) * 32, y = 0, width = 32, height = 32 }
+    end
+    view.bagPocketStrip = { image = "bag/items-strip" }
     view.bagRows = { { item = "POTION", label = "Potion", quantity = 2 } }
+    view.bagPageRows, view.bagPage0, view.bagPageCount, view.bagAddEnabled = view.bagRows, 0, 1, true
+    view.bagQuantityVisuals = {
+      decrement = { normal = { image = "bag/dec-normal" }, pressed = { image = "bag/dec-pressed" } },
+      increment = { normal = { image = "bag/inc-normal" }, pressed = { image = "bag/inc-pressed" } },
+    }
+    if variant == "quantity-normal" or variant == "quantity-pressed" then
+      view.valueEditor = { kind = "quantity", buffer = "2", parsedValue = 2, minimum = 1, maximum = 999 }
+      view.focus = "bag:quantity:increment"
+      view.quantityHoldTarget = variant == "quantity-pressed" and "bag:quantity:increment" or nil
+      view.scope = { id = "value:bag_quantity", epoch = 2, kind = "value", focusId = view.focus }
+    end
   elseif section == "Location" then
     view.location = {
       mapId = 12,
@@ -159,6 +175,7 @@ local function draw(scope, width, height, topology, name, section, variant)
   local view, presentation, plan = fixture(scope, width, height, topology, section, variant)
   local drawnText = {}
   local text = {
+    fontDef = { lineHeight = 14 },
     textWidth = function(_, value)
       return view.textMetrics.measure(value)
     end,
@@ -172,10 +189,35 @@ local function draw(scope, width, height, topology, name, section, variant)
     end,
   }
   local renderer = Renderer.new({ text = text, versionId = "heartgold" })
+  local bagDrawn = {}
+  if view.section == "Bag" then
+    renderer._bagImages = {}
+    for index, path in ipairs({
+      "bag/items-strip",
+      "bag/dec-normal",
+      "bag/dec-pressed",
+      "bag/inc-normal",
+      "bag/inc-pressed",
+    }) do
+      local imageData = love.image.newImageData(index == 1 and 256 or 12, index == 1 and 32 or 12)
+      local image = graphics.newImage(imageData)
+      renderer._bagImages[path] = image
+    end
+  end
   local canvas = scope:own(graphics.newCanvas(width, height))
   graphics.setCanvas(canvas)
   graphics.clear(0.94, 0.94, 0.94, 1)
+  local originalDraw = graphics.draw
+  graphics.draw = function(drawable, ...)
+    for path, image in pairs(renderer._bagImages) do
+      if drawable == image then
+        bagDrawn[path] = true
+      end
+    end
+    return originalDraw(drawable, ...)
+  end
   ApplicationPresentation.draw(graphics, { renderer = renderer }, view, plan)
+  graphics.draw = originalDraw
   graphics.setCanvas()
   local data = scope:own(canvas:newImageData())
   local output =
@@ -186,7 +228,8 @@ local function draw(scope, width, height, topology, name, section, variant)
   end
 
   local layout = Layout.compute(view, plan.content.width, plan.content.height, view.textMetrics)
-  local visibleActions = view.modal and { "save", "discard", "cancel" } or { "save", "discard", "back" }
+  local visibleActions = view.valueEditor and {}
+    or (view.modal and { "save", "discard", "cancel" } or { "save", "discard", "back" })
   for _, targetId in ipairs(visibleActions) do
     local target = assert(layout.targets[targetId], name .. " must publish " .. targetId)
     local rect = target.rect
@@ -204,7 +247,13 @@ local function draw(scope, width, height, topology, name, section, variant)
       Assert.notNil(layout.targets["party:slot:0"], name .. " exposes the occupied slot")
     else
       Assert.notNil(layout.targets["party:field:personality"], name .. " exposes raw identity")
-      Assert.notNil(layout.targets["party:readonly:nature"], name .. " explains derived nature")
+      local nature = false
+      for _, row in ipairs(layout.rows) do
+        if row.targetId == "party:readonly:nature" and row.role == "read-only value" then
+          nature = true
+        end
+      end
+      Assert.isTrue(nature, name .. " explains derived nature without making it focusable")
       Assert.notNil(layout.targets["party:apply"], name .. " exposes the nested Apply decision")
       Assert.notNil(layout.targets["party:cancel"], name .. " exposes the nested Cancel decision")
     end
@@ -217,9 +266,35 @@ local function draw(scope, width, height, topology, name, section, variant)
     Assert.equal(layout.locationGrid.tileSize, 16, name .. " uses the fixed tile scale")
     Assert.isTrue(layout.locationGrid.clip.height >= 16, name .. " keeps at least one complete tile row")
   elseif view.section == "Bag" then
-    Assert.notNil(layout.targets["bag:item:POTION"], name .. " exposes the selected stack")
-    Assert.notNil(layout.targets["bag:quantity"], name .. " exposes quantity editing")
-    Assert.notNil(layout.targets["bag:add"], name .. " exposes Add item")
+    if view.valueEditor then
+      Assert.notNil(layout.targets["bag:quantity:decrement"], name .. " exposes the quantity decrement visual")
+      Assert.notNil(layout.targets["bag:quantity:increment"], name .. " exposes the quantity increment visual")
+    else
+      Assert.notNil(layout.targets["bag:item:POTION"], name .. " exposes the selected stack")
+      Assert.isNil(layout.targets["bag:quantity"], name .. " keeps quantity in the item modal")
+      Assert.notNil(layout.targets["bag:add"], name .. " exposes Add item")
+      if width <= 280 then
+        local card = assert(layout.bagGrid[1], name .. " exposes a compact item card")
+        Assert.equal(card.textScale, 0.5, name .. " uses compact text that fits the card")
+        Assert.isTrue(
+          card.rect.height >= 2 * view.textMetrics.lineHeight * card.textScale,
+          name .. " fits two readable compact text lines"
+        )
+        Assert.isTrue(card.iconRect.width >= 16 and card.iconRect.height >= 16, name .. " fits the provider icon")
+        Assert.isTrue(
+          card.textRect.height >= 2 * view.textMetrics.lineHeight * card.textScale,
+          name .. " reserves two lines beside the icon"
+        )
+        Assert.isTrue(card.iconRect.x + card.iconRect.width <= card.rect.x + card.rect.width)
+        Assert.isTrue(card.textRect.x + card.textRect.width <= card.rect.x + card.rect.width)
+        Assert.isTrue(
+          card.iconRect.y >= card.rect.y and card.iconRect.y + card.iconRect.height <= card.rect.y + card.rect.height
+        )
+        Assert.isTrue(
+          card.textRect.y >= card.rect.y and card.textRect.y + card.textRect.height <= card.rect.y + card.rect.height
+        )
+      end
+    end
   end
   local pane
   for _, candidate in ipairs(plan.panes) do
@@ -272,7 +347,7 @@ local function draw(scope, width, height, topology, name, section, variant)
   end
   renderer:dispose()
   presentation:dispose()
-  return data, renderedText, layout
+  return data, renderedText, layout, bagDrawn
 end
 
 function T.player_shell_renders_headerless_controls_and_a_dirty_leave_decision(scope)
@@ -295,7 +370,7 @@ function T.player_shell_renders_headerless_controls_and_a_dirty_leave_decision(s
 end
 
 function T.dirty_shell_has_no_persistent_status_prose(scope)
-  local topology = ScreenTopology.oneDisplay({
+  local singleDisplay = ScreenTopology.oneDisplay({
     id = "main",
     rect = { x = 0, y = 0, width = 640, height = 480 },
     touch = true,
@@ -364,6 +439,25 @@ function T.party_and_bag_render_on_compact_and_wide_surfaces(scope)
   draw(scope, 1280, 720, wide, "party-wide", "Party")
   draw(scope, 1280, 720, wide, "party-raw-wide", "Party", "draft")
   draw(scope, 1280, 720, wide, "bag-wide", "Bag")
+end
+
+function T.bag_quantity_uses_normal_and_pressed_generated_controls(scope)
+  local topology = ScreenTopology.oneDisplay({
+    id = "main",
+    rect = { x = 0, y = 0, width = 640, height = 480 },
+    touch = true,
+    role = "world",
+  })
+  local _, _, _, normal = draw(scope, 640, 480, topology, "bag-quantity-normal", "Bag", "quantity-normal")
+  Assert.isTrue(normal["bag/dec-normal"], "unpressed decrement uses its normal generated image")
+  Assert.isTrue(normal["bag/inc-normal"], "unpressed increment uses its normal generated image")
+  Assert.isFalse(normal["bag/dec-pressed"] == true, "unpressed decrement does not use its pressed image")
+  Assert.isFalse(normal["bag/inc-pressed"] == true, "unpressed increment does not use its pressed image")
+
+  local _, _, _, pressed = draw(scope, 640, 480, topology, "bag-quantity-pressed", "Bag", "quantity-pressed")
+  Assert.isTrue(pressed["bag/inc-pressed"], "held increment uses its pressed generated image")
+  Assert.isTrue(pressed["bag/dec-normal"], "unheld decrement keeps its normal generated image")
+  Assert.isFalse(pressed["bag/inc-normal"] == true, "held increment does not use its normal image")
 end
 
 function T.party_icons_center_from_distinct_provider_dimensions(scope)

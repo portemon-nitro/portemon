@@ -21,7 +21,7 @@ local function rect(x, y, width, height)
   return { x = x, y = y, width = math.max(1, width), height = math.max(1, height) }
 end
 
-local function sixCellGrid(body, gap)
+local function sixCellGrid(body, gap, compact)
   local cellWidth = (body.width - gap) / 2
   local cellHeight = (body.height - gap * 2) / 3
   assert(cellWidth > 0 and cellHeight > 0, "six-cell grid needs positive cells")
@@ -32,14 +32,25 @@ local function sixCellGrid(body, gap)
     local y = body.y + row * (cellHeight + gap)
     local cell = rect(x, y, cellWidth, cellHeight)
     local inset = math.min(5, cell.width / 8)
-    local iconHeight = math.max(1, (cell.height - gap) * 0.62)
-    local iconRect = rect(cell.x + inset, cell.y + 2, cell.width - inset * 2, iconHeight - 2)
-    local textRect = rect(
-      cell.x + inset,
-      iconRect.y + iconRect.height + 2,
-      cell.width - inset * 2,
-      cell.y + cell.height - iconRect.y - iconRect.height - 5
-    )
+    local iconRect, textRect
+    if compact then
+      iconRect = rect(cell.x + 2, cell.y + 2, math.min(16, cell.width - 26), math.min(16, cell.height - 4))
+      textRect = rect(
+        iconRect.x + iconRect.width + 4,
+        cell.y + 2,
+        cell.x + cell.width - iconRect.x - iconRect.width - 8,
+        cell.height - 4
+      )
+    else
+      local iconHeight = math.max(1, (cell.height - gap) * 0.62)
+      iconRect = rect(cell.x + inset, cell.y + 2, cell.width - inset * 2, iconHeight - 2)
+      textRect = rect(
+        cell.x + inset,
+        iconRect.y + iconRect.height + 2,
+        cell.width - inset * 2,
+        cell.y + cell.height - iconRect.y - iconRect.height - 5
+      )
+    end
     assert(
       cell.x >= body.x
         and cell.y >= body.y
@@ -47,9 +58,17 @@ local function sixCellGrid(body, gap)
         and cell.y + cell.height <= body.y + body.height + 0.01,
       "six-cell geometry stays inside its body"
     )
+    if compact then
+      assert(iconRect.x + iconRect.width <= textRect.x, "compact six-cell content regions remain side by side")
+    else
+      assert(iconRect.y + iconRect.height <= textRect.y, "six-cell content regions remain stacked")
+    end
     assert(
-      iconRect.y + iconRect.height <= textRect.y and textRect.x >= cell.x and textRect.y >= cell.y,
-      "six-cell content regions remain disjoint and inside their cell"
+      textRect.x >= cell.x
+        and textRect.y >= cell.y
+        and textRect.x + textRect.width <= cell.x + cell.width
+        and textRect.y + textRect.height <= cell.y + cell.height,
+      "six-cell text remains inside its cell"
     )
     cells[index] = { rect = cell, iconRect = iconRect, textRect = textRect }
   end
@@ -71,11 +90,15 @@ function Layout.compute(view, width, height, metrics)
   local compactPartyDetails = width < 400
     and view.section == "Party"
     and (view.partyPage == "detail" or view.partyPage == "draft")
-  local footerHeight = compactPartyDetails and width <= 280 and 34 or math.max(40, metrics.lineHeight + 24)
+  local compactBag = width <= 280 and view.section == "Bag"
+  local footerHeight = compactPartyDetails and width <= 280 and 34
+    or compactBag and 32
+    or math.max(40, metrics.lineHeight + 24)
   local railWidth = width >= 400 and 88 or 0
   local rows, targets, focusable, disabledTargets, focusPositions = {}, {}, {}, {}, {}
   local locationGrid
   local locationStatus
+  local bagGrid, bagTabs, bagStripTarget, bagPageTextRect
   local focusableSet = {}
   local function addFocusable(targetId)
     if not focusableSet[targetId] then
@@ -550,81 +573,63 @@ function Layout.compute(view, width, height, metrics)
         disabledTargets[id] = true
       end
     end
-  elseif section == "Bag" then
-    local bagRows = view.bagRows or {}
-    local compact = width < 400
-    if compact then
-      local top = contentTop + #rows * rowHeight
-      targets["bag:pocket:choose"] = rect(contentX, top, innerWidth, rowHeight - 2)
-      navigation[#navigation + 1] =
-        { role = "action", targetId = "bag:pocket:choose", label = view.bagPocketLabel or "Pocket" }
-      addFocusable("bag:pocket:choose")
-      contentTop = top + rowHeight
-    else
-      for _, pocket in ipairs(view.bagPockets or {}) do
-        local id = "bag:pocket:" .. pocket.key
-        addRow("action", id, pocket.label, nil, true)
-      end
-    end
-    local actionY = contentBottom - rowHeight
-    local bodyTop = contentTop + #rows * rowHeight
-    local bodyBottom = actionY - 2
-    local bodyHeight = math.max(0, bodyBottom - bodyTop)
-    ---@type number
-    local offset = view.scrollOffsets and view.scrollOffsets["bag:" .. tostring(view.bagPocket)]
-      or (view.scrollOffset or 0) * rowHeight
-    local contentExtent = #bagRows * rowHeight
-    offset = ScrollViewport.clamp(offset, contentExtent, bodyHeight)
-    local rowTargets = {}
-    for index, item in ipairs(bagRows) do
-      rowTargets[index] = "bag:item:" .. item.item
-    end
-    viewports.bag = makeViewport(
-      rect(contentX, bodyTop, innerWidth, bodyHeight),
-      offset,
-      contentExtent,
-      rowHeight,
-      0,
-      #bagRows,
-      rowTargets
-    )
-    local first, last = ScrollViewport.visibleRange(offset, bodyHeight, rowHeight, 0, #bagRows)
-    for index, item in ipairs(bagRows) do
-      local id = "bag:item:" .. item.item
+  elseif section == "Bag" and view.bagPocketTabRects ~= nil then
+    local stripX = contentX + math.floor((innerWidth - 256) / 2)
+    local stripY = contentTop
+    local tabTargets = {}
+    for index, native in ipairs(view.bagPocketTabRects) do
+      local id = "bag:pocket:" .. view.bagPockets[index].key
+      local target = rect(stripX + native.x, stripY + native.y, native.width, native.height)
+      targets[id], focusPositions[id] = target, target
+      tabTargets[#tabTargets + 1] = id
       addFocusable(id)
-      focusPositions[id] = rect(contentX, bodyTop + (index - 1) * rowHeight - offset, innerWidth, rowHeight - 2)
-      if index >= first and index <= last then
-        local y = bodyTop + (index - 1) * rowHeight - offset
-        local target = rect(contentX, y, innerWidth, rowHeight - 2)
-        if y >= bodyTop and y + rowHeight <= bodyBottom then
-          targets[id] = target
-          rows[#rows + 1] = {
-            role = "read-only value",
-            targetId = id,
-            id = id,
-            label = item.label or item.item,
-            value = item.quantity,
-            enabled = true,
-          }
-        end
-      end
     end
-    local actionWidth = math.max(1, math.floor((innerWidth - 8) / 3))
-    local bagActions = {
-      { id = "bag:quantity", label = "Quantity", enabled = view.bagSelectedItem ~= nil },
-      { id = "bag:remove", label = "Remove", enabled = view.bagSelectedItem ~= nil },
-      { id = "bag:add", label = "Add", enabled = true },
-    }
-    for index, action in ipairs(bagActions) do
-      local x = contentX + (index - 1) * (actionWidth + 4)
-      targets[action.id] = rect(x, actionY, actionWidth, rowHeight - 2)
-      action.targetId, action.role = action.id, "action"
-      navigation[#navigation + 1] = action
-      addFocusable(action.id)
-      if not action.enabled then
-        disabledTargets[action.id] = true
-      end
+    local gridY = stripY + (compactBag and 34 or 38)
+    local pageHeight = compactBag and 20 or 28
+    local pageY = contentBottom - pageHeight - 2
+    local gridBody = rect(contentX, gridY, innerWidth, math.max(3, pageY - gridY - 4))
+    local cells = sixCellGrid(gridBody, compactBag and 2 or 6, compactBag)
+    local cards = {}
+    for index, item in ipairs(view.bagPageRows or {}) do
+      local cell = cells[index]
+      local id = "bag:item:" .. item.item
+      targets[id], focusPositions[id] = cell.rect, cell.rect
+      addFocusable(id)
+      cards[#cards + 1] = {
+        kind = "item",
+        targetId = id,
+        label = item.label,
+        value = tostring(item.quantity),
+        iconKey = item.iconKey,
+        rect = cell.rect,
+        iconRect = cell.iconRect,
+        textRect = cell.textRect,
+        textScale = compactBag and 0.5 or nil,
+      }
     end
+    local buttonWidth = math.max(34, math.floor((innerWidth - 96) / 2))
+    targets["bag:page:previous"] = rect(contentX, pageY, buttonWidth, pageHeight)
+    targets["bag:page:next"] = rect(contentX + innerWidth - buttonWidth, pageY, buttonWidth, pageHeight)
+    for _, id in ipairs({ "bag:page:previous", "bag:page:next" }) do
+      addFocusable(id)
+    end
+    if view.bagPage0 == 0 then
+      disabledTargets["bag:page:previous"] = true
+    end
+    if view.bagPage0 + 1 >= view.bagPageCount then
+      disabledTargets["bag:page:next"] = true
+    end
+    local addX = contentX + buttonWidth + 4
+    targets["bag:add"] = rect(addX, pageY, 60, pageHeight)
+    bagPageTextRect =
+      rect(addX + 64, pageY + (compactBag and 2 or 7), math.max(1, innerWidth - buttonWidth * 2 - 72), 16)
+    addFocusable("bag:add")
+    if view.bagAddEnabled == false then
+      disabledTargets["bag:add"] = true
+    end
+    bagGrid = cards
+    bagTabs = tabTargets
+    bagStripTarget = rect(stripX, stripY, 256, 32)
   else
     addRow("read-only value", "section", section, "Available in a later update")
   end
@@ -744,6 +749,19 @@ function Layout.compute(view, width, height, metrics)
       for _, control in ipairs(naming.controls) do
         addFocusable("name-control:" .. control.id)
       end
+    elseif dialog.kind == "quantity" then
+      local controlSize = math.min(48, math.max(32, math.floor(innerWidth / 4)))
+      local centerX = contentX + math.floor(innerWidth / 2)
+      local controlY = contentTop + math.max(12, math.floor((contentBottom - contentTop - 94) / 2))
+      targets["bag:quantity:decrement"] = rect(centerX - controlSize - 42, controlY, controlSize, controlSize)
+      targets["bag:quantity:increment"] = rect(centerX + 42, controlY, controlSize, controlSize)
+      targets["value-draft"] = rect(centerX - 32, controlY, 64, controlSize)
+      targets.confirm = rect(contentX + 4, contentBottom - 34, math.floor(innerWidth / 2) - 6, 30)
+      targets.cancel =
+        rect(contentX + math.floor(innerWidth / 2) + 2, contentBottom - 34, math.floor(innerWidth / 2) - 6, 30)
+      for _, id in ipairs({ "bag:quantity:decrement", "bag:quantity:increment", "confirm", "cancel" }) do
+        addFocusable(id)
+      end
     else
       local quarter = math.floor(innerWidth / 4)
       for index, action in ipairs({ "digit-left", "digit-right", "digit-down", "digit-up" }) do
@@ -765,7 +783,8 @@ function Layout.compute(view, width, height, metrics)
   end
   if view.modal ~= nil then
     local y = math.max(margin, math.floor(height / 2) - 16)
-    local choices = view.modal == "draft" and { "apply", "discard", "cancel" }
+    local choices = view.modal == "bag-item" and { "bag:quantity", "bag:remove", "cancel" }
+      or view.modal == "draft" and { "apply", "discard", "cancel" }
       or view.modal == "remove" and { "remove", "cancel" }
       or { "save", "discard", "cancel" }
     local modalActionWidth = math.floor((innerWidth - 8) / #choices)
@@ -782,7 +801,8 @@ function Layout.compute(view, width, height, metrics)
   end
   local scopeAllowed
   if scope.kind == "decision" then
-    scopeAllowed = view.modal == "draft" and { apply = true, discard = true, cancel = true }
+    scopeAllowed = view.modal == "bag-item" and { ["bag:quantity"] = true, ["bag:remove"] = true, cancel = true }
+      or view.modal == "draft" and { apply = true, discard = true, cancel = true }
       or view.modal == "remove" and { remove = true, cancel = true }
       or { save = true, discard = true, cancel = true }
   elseif scope.kind == "value" then
@@ -804,6 +824,13 @@ function Layout.compute(view, width, height, metrics)
     else
       for _, id in ipairs({ "digit-left", "digit-right", "digit-up", "digit-down", "value-draft" }) do
         scopeAllowed[id] = true
+      end
+      if editor.kind == "quantity" then
+        scopeAllowed["digit-left"], scopeAllowed["digit-right"] = true, true
+        scopeAllowed["digit-up"], scopeAllowed["digit-down"] = true, true
+        for _, id in ipairs({ "bag:quantity:decrement", "bag:quantity:increment" }) do
+          scopeAllowed[id] = true
+        end
       end
     end
   end
@@ -1033,7 +1060,7 @@ function Layout.compute(view, width, height, metrics)
     local firstVisibleFlag = flagsViewport and flagsViewport.rowTargets[flagsViewport.firstIndex]
     defaultFocus = firstVisibleFlag or "flags:search"
   elseif section == "Bag" then
-    defaultFocus = width < 400 and "bag:pocket:choose" or "bag:pocket:" .. tostring(view.bagPocket)
+    defaultFocus = "bag:pocket:" .. tostring(view.bagPocket)
   end
   if defaultFocus == nil or not focusGraph[defaultFocus] then
     defaultFocus = assert(
@@ -1125,6 +1152,11 @@ function Layout.compute(view, width, height, metrics)
     partySummary = layoutPartySummary,
     partyHelp = layoutPartyHelp,
     locationStatus = locationStatus,
+    bagGrid = bagGrid,
+    bagTabs = bagTabs,
+    bagStripTarget = bagStripTarget,
+    bagPageText = bagPageTextRect,
+    bagPage = { index = (view.bagPage0 or 0) + 1, count = view.bagPageCount or 1 },
     scrollOffset = view.scrollOffset or 0,
     viewports = viewports,
     scrollOwner = scrollOwner,
@@ -1173,7 +1205,8 @@ function Layout.hitTest(layout, view, x, y)
   end
   local allowed
   if view.modal ~= nil then
-    allowed = view.modal == "draft" and { apply = true, discard = true, cancel = true }
+    allowed = view.modal == "bag-item" and { ["bag:quantity"] = true, ["bag:remove"] = true, cancel = true }
+      or view.modal == "draft" and { apply = true, discard = true, cancel = true }
       or view.modal == "remove" and { remove = true, cancel = true }
       or { save = true, discard = true, cancel = true }
   elseif view.valueEditor ~= nil then
@@ -1204,6 +1237,10 @@ function Layout.hitTest(layout, view, x, y)
         ["digit-up"] = true,
         ["digit-down"] = true,
       }
+      if view.valueEditor.kind == "quantity" then
+        allowed["bag:quantity:decrement"] = true
+        allowed["bag:quantity:increment"] = true
+      end
     end
   end
   for targetId, target in pairs(layout.targets) do

@@ -73,6 +73,7 @@ local ItemAssetSchema = require("libs.assets.src.ItemAssetSchema")
 ---@field locationSaveOperationId integer
 ---@field pendingRemove table<string, unknown>?
 ---@field pendingQuantity table<string, unknown>?
+---@field quantityHold { pointerId: string, targetId: string, delta: integer, scopeEpoch: integer, nextTick: integer }?
 ---@field fieldInput FieldInput
 ---@field inputTick integer
 ---@field tickRemainder number
@@ -233,6 +234,7 @@ function State.new(options)
     iconFailure = nil,
     pendingRemove = nil,
     pendingQuantity = nil,
+    quantityHold = nil,
     fieldInput = FieldInput.new(),
     inputTick = 0,
     tickRemainder = 0,
@@ -276,6 +278,17 @@ function State:update(dt)
     self.inputTick = self.inputTick + math.floor(self.tickRemainder)
     self.tickRemainder = self.tickRemainder % 1
     self:_consumeUiInput(self.fieldInput:uiSnapshot(self.inputTick))
+  end
+  local hold = self.quantityHold
+  if hold ~= nil then
+    if self.controller.pointerId ~= hold.pointerId or self.controller.scopeEpoch ~= hold.scopeEpoch then
+      self.quantityHold = nil
+    else
+      while self.inputTick >= hold.nextTick do
+        self:_adjustBagQuantity(hold.delta)
+        hold.nextTick = hold.nextTick + FieldInput.UI_REPEAT_INTERVAL_TICKS
+      end
+    end
   end
   if self.status == "opening" then
     local generation = self.generation
@@ -381,6 +394,7 @@ function State:_snapshot()
     flagRows = flags,
     valueEditor = self.valueEditor and self.valueEditor:snapshot() or nil,
     editorFeedback = self.editorFeedback,
+    quantityHoldTarget = self.quantityHold and self.quantityHold.targetId or nil,
     unappliedDraft = self.monDraft ~= nil,
     iconStatus = self.iconStatus,
     iconFailure = self.iconFailure,
@@ -465,6 +479,7 @@ function State:_snapshot()
     self.scopeEpoch = self.scopeEpoch + 1
     self.fieldInput:beginUi(self.inputTick)
     self.controller:cancelInteraction()
+    self.quantityHold = nil
   end
   self.controller.scopeId, self.controller.scopeEpoch = scopeId, self.scopeEpoch
   local scopeKind = self.controller.modal and "decision"
@@ -629,9 +644,11 @@ function State:_bagView()
   local snapshot = self.session:bagSnapshot(self.controller.bagPocket)
   local rows = {}
   for _, entry in ipairs(snapshot) do
+    local item = itemCatalog:item(entry.item)
     rows[#rows + 1] = {
       item = entry.item,
-      label = itemCatalog:item(entry.item).name or entry.item,
+      label = item.name or entry.item,
+      iconKey = item.icon,
       quantity = entry.quantity,
     }
   end
@@ -642,13 +659,35 @@ function State:_bagView()
       break
     end
   end
+  local pageCount = math.max(1, math.ceil(#rows / 6))
+  self.controller.bagPage0 = math.max(0, math.min(pageCount - 1, self.controller.bagPage0))
+  local pageRows = {}
+  for index = self.controller.bagPage0 * 6 + 1, math.min(#rows, self.controller.bagPage0 * 6 + 6) do
+    pageRows[#pageRows + 1] = rows[index]
+  end
+  local manifest = assert(self.dependencies.bagManifest, "Bag presentation manifest is required")
+  local canAdd = false
+  for _, key in ipairs(itemCatalog:itemKeys()) do
+    if key ~= "NONE" and itemCatalog:item(key).pocket == self.controller.bagPocket then
+      canAdd = true
+      break
+    end
+  end
   return {
     bagPocket = self.controller.bagPocket,
     bagPocketLabel = itemCatalog:pocketName(self.controller.bagPocket),
     bagPockets = pockets,
     bagRows = rows,
+    bagPageRows = pageRows,
+    bagPage0 = self.controller.bagPage0,
+    bagPageCount = pageCount,
+    bagAddEnabled = canAdd,
+    bagPocketTabRects = manifest.interactive.pocketTabs.rects,
+    bagPocketStrip = manifest.interactive.pocketTabs.strips[self.controller.bagPocket],
+    bagQuantityVisuals = manifest.interactive.overlays.quantity.visuals,
     bagSelectedItem = self.controller.bagItemKey,
     bagSelectedQuantity = selectedQuantity,
+    bagSelectedLabel = self.controller.bagItemKey and itemCatalog:item(self.controller.bagItemKey).name or nil,
   }
 end
 
@@ -723,7 +762,11 @@ function State:_finishValueEditor()
     self.valueEditor, self.valuePurpose, self.activeDraftField = nil, nil, nil
     self.valueReturnFocus = nil
     if purpose == "bag_quantity" then
+      local pending = assert(self.pendingQuantity)
       self.pendingQuantity = nil
+      if pending.returnModal then
+        self.controller:openModal(pending.returnModal)
+      end
     end
     return true
   end
@@ -747,29 +790,17 @@ function State:_finishValueEditor()
     else
       self.errorMessage = nil
     end
-  elseif purpose == "bag_pocket" then
-    self.controller:selectBagPocket(result.value)
   elseif purpose == "bag_add_item" then
-    local returnFocus = "bag:item:" .. result.value
     self.valueEditor, self.valuePurpose, self.activeDraftField = nil, nil, nil
     self.controller:selectBagItem(result.value)
-    self.valueReturnFocus = returnFocus
+    self.valueReturnFocus = "bag:add"
     self:_openBagQuantity("add")
     return true
   elseif purpose == "bag_quantity" then
     local pending = assert(self.pendingQuantity)
-    if pending.mode == "add" and result.value == 0 then
-      self.errorMessage = "Add item must set a quantity above zero."
+    if not self:_publishBagQuantity(pending.itemKey, result.value) then
       editor:retry()
       return false
-    elseif result.value == 0 then
-      self.pendingRemove = { kind = "bag", itemKey = pending.itemKey }
-      self.controller:openModal("remove")
-    else
-      if not self:_publishBagQuantity(pending.itemKey, result.value) then
-        editor:retry()
-        return false
-      end
     end
     self.pendingQuantity = nil
   elseif descriptor ~= nil and self.monDraft ~= nil then
@@ -830,18 +861,27 @@ function State:_openBagQuantity(mode)
   local item = catalog:item(itemKey)
   local pocket = catalog:pocket(item.pocket)
   local current = self:_bagView().bagSelectedQuantity or 0
-  self.pendingQuantity = { itemKey = itemKey, mode = mode }
+  self.pendingQuantity =
+    { itemKey = itemKey, mode = mode, returnModal = mode == "set" and self.controller.modal or nil }
+  self.controller.modal = nil
   self:_installValueEditor(
     ValueEditor.new({
       kind = "integer",
-      value = mode == "add" and current + 1 or current,
-      min = 0,
+      value = mode == "add" and math.min(pocket.maxQuantity, current + 1) or current,
+      min = 1,
       max = pocket.maxQuantity,
       base = "decimal",
+      navigation = "quantity",
     }),
     "bag_quantity",
-    self.valueReturnFocus
+    mode == "add" and "bag:add" or "bag:item:" .. itemKey
   )
+end
+
+function State:_adjustBagQuantity(delta)
+  if self.valueEditor ~= nil and self.valuePurpose == "bag_quantity" then
+    self.valueEditor:adjustInteger(delta)
+  end
 end
 
 function State:_publishBagQuantity(itemKey, quantity)
@@ -851,6 +891,17 @@ function State:_publishBagQuantity(itemKey, quantity)
     return false
   else
     self.errorMessage = nil
+    if quantity > 0 then
+      local rows = self.session:bagSnapshot(self.controller.bagPocket)
+      for index, row in ipairs(rows) do
+        if row.item == itemKey then
+          self.controller.bagPage0 = math.floor((index - 1) / 6)
+          self.controller.bagItemKey = itemKey
+          self.controller.focus = "bag:item:" .. itemKey
+          break
+        end
+      end
+    end
     return true
   end
 end
@@ -1346,8 +1397,20 @@ function State:_confirmRemoval()
     self.controller.partySlot0 = nil
     self.controller.focus = "party:add"
   else
+    local oldRows = self.session:bagSnapshot(self.controller.bagPocket)
+    local oldIndex = 1
+    for index, row in ipairs(oldRows) do
+      if row.item == pending.itemKey then
+        oldIndex = index
+        break
+      end
+    end
     self:_publishBagQuantity(pending.itemKey, 0)
     self.controller.bagItemKey = nil
+    local rows = self.session:bagSnapshot(self.controller.bagPocket)
+    self.controller.bagPage0 = math.min(self.controller.bagPage0, math.max(0, math.ceil(#rows / 6) - 1))
+    local focusRow = rows[math.min(oldIndex, #rows)]
+    self.controller.focus = focusRow and "bag:item:" .. focusRow.item or "bag:add"
   end
 end
 
@@ -1561,6 +1624,10 @@ function State:_activate(targetId)
       self.valueEditor:activateTarget(controlId or targetId)
     elseif targetId == "confirm" then
       self.valueEditor:press("confirm")
+    elseif valueKind == "quantity" and targetId == "bag:quantity:decrement" then
+      self.valueEditor:adjustInteger(-1)
+    elseif valueKind == "quantity" and targetId == "bag:quantity:increment" then
+      self.valueEditor:adjustInteger(1)
     else
       self.valueEditor:activateTarget(targetId)
     end
@@ -1568,7 +1635,16 @@ function State:_activate(targetId)
     return
   end
   if self.controller.modal then
-    if self.controller.modal == "draft" then
+    if self.controller.modal == "bag-item" then
+      if targetId == "bag:quantity" then
+        self:_openBagQuantity("set")
+      elseif targetId == "bag:remove" then
+        self.pendingRemove = { kind = "bag", itemKey = assert(self.controller.bagItemKey) }
+        self.controller:openModal("remove")
+      elseif targetId == "cancel" then
+        self.controller:closeModal()
+      end
+    elseif self.controller.modal == "draft" then
       self:_resolveDraftChoice(targetId)
     elseif self.controller.modal == "remove" then
       if targetId == "remove" then
@@ -1576,6 +1652,9 @@ function State:_activate(targetId)
       elseif targetId == "cancel" then
         self.pendingRemove = nil
         self.controller:closeModal()
+        if self.controller.section == "Bag" and self.controller.bagItemKey then
+          self.controller.focus = "bag:item:" .. self.controller.bagItemKey
+        end
       end
     elseif targetId == "cancel" then
       if self.controller.modal == "leave" and self.closeRequest ~= nil then
@@ -1730,29 +1809,20 @@ function State:_activate(targetId)
       }),
       "party_add_move"
     )
-  elseif targetId == "bag:pocket:choose" then
-    self:_cancelPendingLocationSave()
-    local options = {}
-    for _, pocket in ipairs(self:_bagView().bagPockets) do
-      options[#options + 1] = { key = pocket.key, label = pocket.label }
-    end
-    self:_installValueEditor(
-      ValueEditor.new({ kind = "choice", options = options, value = self.controller.bagPocket }),
-      "bag_pocket"
-    )
   elseif targetId:match("^bag:pocket:") then
     local pocket = assert(targetId:match("^bag:pocket:(.+)$"))
     self.controller:selectBagPocket(pocket)
   elseif targetId:match("^bag:item:") then
     self.controller:selectBagItem(assert(targetId:match("^bag:item:(.+)$")))
+    self.controller:openModal("bag-item")
+  elseif targetId == "bag:page:previous" or targetId == "bag:page:next" then
+    self.controller:setBagPage(math.max(0, self.controller.bagPage0 + (targetId == "bag:page:next" and 1 or -1)))
   elseif targetId == "bag:add" then
     self:_cancelPendingLocationSave()
     self:_beginBagAdd()
   elseif targetId == "bag:quantity" then
-    self:_cancelPendingLocationSave()
     self:_openBagQuantity("set")
   elseif targetId == "bag:remove" then
-    self:_cancelPendingLocationSave()
     self.pendingRemove = { kind = "bag", itemKey = assert(self.controller.bagItemKey) }
     self.controller:openModal("remove")
   end
@@ -1843,6 +1913,9 @@ end
 function State:_revealFocusedRow(_)
   local view = self:_snapshot()
   local section = self.controller.section
+  if section == "Bag" then
+    return
+  end
   local rows = section == "Party" and view.partyRows
     or section == "Bag" and view.bagRows
     or section == "Progress" and view.flagRows
@@ -1882,7 +1955,32 @@ function State:_pointer(events)
   local mapped = self.presentation:mapInput(events, view)
   for _, event in ipairs(mapped) do
     self._pointerDispatching = event.pointerId == "mouse:1"
-    self:_dispatchIntent(self.controller:pointer(event))
+    local heldQuantityTarget = self.quantityHold ~= nil and self.quantityHold.targetId or nil
+    if event.type == "pointer_up" or event.type == "pointer_cancel" then
+      if self.quantityHold == nil or event.pointerId == nil or event.pointerId == self.quantityHold.pointerId then
+        self.quantityHold = nil
+      end
+    end
+    local intent = self.controller:pointer(event)
+    if not (event.type == "pointer_up" and heldQuantityTarget ~= nil) then
+      self:_dispatchIntent(intent)
+    end
+    if
+      event.type == "pointer_down"
+      and self.valueEditor ~= nil
+      and self.valuePurpose == "bag_quantity"
+      and (event.targetId == "bag:quantity:decrement" or event.targetId == "bag:quantity:increment")
+    then
+      local delta = event.targetId == "bag:quantity:increment" and 1 or -1
+      self:_adjustBagQuantity(delta)
+      self.quantityHold = {
+        pointerId = event.pointerId,
+        targetId = event.targetId,
+        delta = delta,
+        scopeEpoch = self.controller.scopeEpoch,
+        nextTick = self.inputTick + FieldInput.UI_REPEAT_DELAY_TICKS,
+      }
+    end
     self._pointerDispatching = false
   end
   if self.disposed then
@@ -1918,6 +2016,7 @@ function State:resize(width, height)
   self.width, self.height = width, height
   self.presentation:cancelPointers()
   self.controller:cancelInteraction()
+  self.quantityHold = nil
   self.locationViewport = nil
 end
 
@@ -1925,6 +2024,7 @@ function State:focus(focused)
   if not focused then
     self.presentation:cancelPointers()
     self.controller:cancelInteraction()
+    self.quantityHold = nil
     self.fieldInput:clearAll()
     self.fieldInput:beginUi(self.inputTick)
   end
@@ -1951,7 +2051,7 @@ function State:_consumeUiInput(events)
           end
           local selected = self.valueEditor:snapshot().selectedKey
           self.controller.focus = selected and ("choice:" .. selected) or "cancel"
-        elseif snapshot.kind == "name" or snapshot.kind == "integer" then
+        elseif snapshot.kind == "name" or snapshot.kind == "integer" or snapshot.kind == "quantity" then
           self.valueEditor:press(event.direction)
         end
       else
@@ -2245,6 +2345,7 @@ function State:dispose()
     return
   end
   self.disposed = true
+  self.quantityHold = nil
   self.generation = self.generation + 1
   self:_cancelPendingLocationSave()
   if self.locationService then

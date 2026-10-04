@@ -7,6 +7,7 @@ local DisplayContext = require("libs.ui.src.DisplayContext")
 local Interface = require("app.src.saveeditor.SaveEditorInterface")
 local LayoutGeometry = require("libs.ui.src.LayoutGeometry")
 local Layout = require("app.src.saveeditor.SaveEditorLayout")
+local State = require("app.src.saveeditor.SaveEditorState")
 local ScreenTopology = require("libs.ui.src.ScreenTopology")
 
 local T = { tests = {} }
@@ -25,7 +26,12 @@ function T.tests.modal_scope_rejects_background_grid_and_sparse_drag_gestures()
     modal = "leave",
     focus = "cancel",
     scope = { id = "modal:leave", epoch = 1 },
-    textMetrics = { lineHeight = 14, measure = function(text) return #text * 7 end },
+    textMetrics = {
+      lineHeight = 14,
+      measure = function(text)
+        return #text * 7
+      end,
+    },
     location = { status = { state = "ready" }, maps = {}, mapId = 7 },
     locationNavigation = {
       page = "grid",
@@ -58,11 +64,8 @@ function T.tests.modal_scope_rejects_background_grid_and_sparse_drag_gestures()
   local presentation = ApplicationPresentation.new(Interface.defaults())
   local plan = presentation:resolve(context:measure(256, 192), view)
   local pane = assert(plan.panes[1])
-  local insideX, insideY = LayoutGeometry.logicalToHost(
-    pane.placement,
-    grid.originX + grid.tileSize / 2,
-    grid.originY + grid.tileSize / 2
-  )
+  local insideX, insideY =
+    LayoutGeometry.logicalToHost(pane.placement, grid.originX + grid.tileSize / 2, grid.originY + grid.tileSize / 2)
   local mappedTile = presentation:mapInput({
     { type = "pointer_down", pointerId = "touch:modal-grid", x = insideX, y = insideY },
   }, view)
@@ -79,12 +82,16 @@ function T.tests.modal_scope_rejects_background_grid_and_sparse_drag_gestures()
     { type = "pointer_down", pointerId = "touch:outside-drag", x = outsideX, y = outsideY },
   }, view)
   Assert.isTrue(#outsideDown == 0 or (outsideDown[1].targetId == nil and outsideDown[1].x == nil))
-  if outsideDown[1] then sparseController:pointer(outsideDown[1]) end
+  if outsideDown[1] then
+    sparseController:pointer(outsideDown[1])
+  end
   local insideMove = presentation:mapInput({
     { type = "pointer_move", pointerId = "touch:outside-drag", x = insideX, y = insideY },
   }, view)
   local mappedMoveOk = pcall(function()
-    if insideMove[1] then sparseController:pointer(insideMove[1]) end
+    if insideMove[1] then
+      sparseController:pointer(insideMove[1])
+    end
   end)
   Assert.isTrue(mappedMoveOk, "the shared presentation path safely ignores an outside drag into the pane")
   presentation:dispose()
@@ -144,6 +151,67 @@ function T.tests.scope_replacement_drops_a_pressed_target_before_release()
   )
 end
 
+function T.tests.bag_quantity_repeat_stops_on_pointer_cancel_and_focus_loss()
+  local function stateWithHold(pointerId)
+    local controller = Controller.new()
+    controller:pointer({ type = "pointer_down", pointerId = pointerId, targetId = "bag:quantity:increment" })
+    local adjustments = 0
+    local state = setmetatable({
+      disposed = false,
+      status = "ready",
+      tickRemainder = 0,
+      inputTick = 0,
+      controller = controller,
+      fieldInput = {
+        uiSnapshot = function()
+          return {}
+        end,
+        clearAll = function() end,
+        beginUi = function() end,
+      },
+      presentation = {
+        mapInput = function(_, events)
+          return events
+        end,
+        cancelPointers = function() end,
+      },
+      quantityHold = {
+        pointerId = pointerId,
+        targetId = "bag:quantity:increment",
+        delta = 1,
+        scopeEpoch = controller.scopeEpoch,
+        nextTick = 1,
+      },
+      _snapshot = function()
+        return {}
+      end,
+      _resolve = function()
+        return {}
+      end,
+      _reconcileFocus = function() end,
+      _dispatchIntent = function() end,
+      _adjustBagQuantity = function()
+        adjustments = adjustments + 1
+      end,
+    }, State)
+    return state, function()
+      return adjustments
+    end
+  end
+
+  local canceled, canceledAdjustments = stateWithHold("touch:cancel")
+  canceled:_pointer({ { type = "pointer_cancel", pointerId = "touch:cancel" } })
+  canceled:update(1 / 60)
+  Assert.isNil(canceled.quantityHold, "pointer cancel clears the quantity hold")
+  Assert.equal(canceledAdjustments(), 0, "pointer cancel prevents held quantity repeats")
+
+  local blurred, blurredAdjustments = stateWithHold("touch:blur")
+  blurred:focus(false)
+  blurred:update(1 / 60)
+  Assert.isNil(blurred.quantityHold, "focus loss clears the quantity hold")
+  Assert.equal(blurredAdjustments(), 0, "focus loss prevents held quantity repeats")
+end
+
 function T.tests.choice_layout_publishes_active_scope_records_and_clips_row_hits()
   local options = {}
   for index = 1, 12 do
@@ -163,7 +231,12 @@ function T.tests.choice_layout_publishes_active_scope_records_and_clips_row_hits
       selectedKey = nil,
     },
     scrollOffsets = { ["value:choice"] = 4 },
-    textMetrics = { lineHeight = 14, measure = function(text) return #text * 7 end },
+    textMetrics = {
+      lineHeight = 14,
+      measure = function(text)
+        return #text * 7
+      end,
+    },
   }
   local layout = Layout.compute(view, 256, 192, view.textMetrics)
 
@@ -176,7 +249,9 @@ function T.tests.choice_layout_publishes_active_scope_records_and_clips_row_hits
     local targetId = "choice:" .. option.key
     local found = false
     for _, focusId in ipairs(layout.focusOrder) do
-      if focusId == targetId then found = true end
+      if focusId == targetId then
+        found = true
+      end
     end
     Assert.isTrue(found, "offscreen choice remains in focus order: " .. targetId)
   end

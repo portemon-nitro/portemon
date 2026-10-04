@@ -10,6 +10,7 @@ local Utf8Glyphs = require("libs.assets.src.Utf8Glyphs")
 ---@field _min number?
 ---@field _max number?
 ---@field _base string?
+---@field _navigation string?
 ---@field _buffer string?
 ---@field _cursor number?
 ---@field _hasInput boolean?
@@ -55,6 +56,8 @@ function SaveEditorValueEditor.new(options)
     self._min = options.min
     self._max = options.max
     self._base = options.base
+    self._navigation = options.navigation or "digits"
+    assert(self._navigation == "digits" or self._navigation == "quantity", "integer navigation is explicit")
     self._buffer = options.base == "hex" and string.format("%X", options.value) or tostring(options.value)
     self._cursor = #self._buffer
     self._hasInput = false
@@ -136,6 +139,11 @@ function SaveEditorValueEditor:press(action)
       self._cursor = #self._buffer
       self._hasInput = true
       return true
+    elseif
+      self._navigation == "quantity" and (action == "up" or action == "down" or action == "left" or action == "right")
+    then
+      local delta = action == "up" and 1 or action == "down" and -1 or action == "right" and 10 or -10
+      return self:adjustInteger(delta)
     elseif action == "left" then
       self._cursor = math.max(0, self._cursor - 1)
       return true
@@ -200,6 +208,23 @@ function SaveEditorValueEditor:press(action)
     return self._name:press(action)
   end
   return false
+end
+
+---@param delta integer
+---@return boolean changed
+function SaveEditorValueEditor:adjustInteger(delta)
+  assert(self._kind == "integer" and delta % 1 == 0, "integer adjustment needs an integer editor and delta")
+  local current = parseInteger(self._buffer, self._base)
+  if current == nil then
+    return false
+  end
+  local nextValue = math.max(self._min, math.min(self._max, current + delta))
+  local changed = nextValue ~= current
+  self._value = nextValue
+  self._buffer = self._base == "hex" and string.format("%X", nextValue) or tostring(nextValue)
+  self._cursor = #self._buffer
+  self._hasInput = true
+  return changed
 end
 
 function SaveEditorValueEditor:moveChoice(delta)
@@ -366,12 +391,13 @@ function SaveEditorValueEditor:snapshot()
   if self._kind == "integer" then
     local parsedValue = parseInteger(self._buffer, self._base)
     return {
-      kind = "integer",
+      kind = self._navigation == "quantity" and "quantity" or "integer",
       value = self._value,
       buffer = self._buffer,
       base = self._base,
       minimum = self._min,
       maximum = self._max,
+      navigation = self._navigation,
       parsedValue = parsedValue,
       valid = parsedValue ~= nil and parsedValue >= self._min and parsedValue <= self._max,
       cursor = self._cursor,
