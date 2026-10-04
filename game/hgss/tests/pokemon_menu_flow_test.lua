@@ -18,13 +18,16 @@ local Lcrng = require("libs.mons.src.gen4.Lcrng")
 local MonsSave = require("libs.mons.src.MonsSave")
 local Party = require("libs.mons.src.Party")
 local PartyActions = require("libs.hgss.src.field.PartyActions")
+local MailActions = require("libs.hgss.src.field.MailActions")
+local Mailbox = require("libs.hgss.src.save.Mailbox")
 local PartyCache = require("libs.assets.src.PartyCache")
 local RomImporter = require("romdump.src.source.RomImporter")
 local ScreenTopology = require("libs.ui.src.ScreenTopology")
 
 local FLOW_MODULE = "game.hgss.src.field.PokemonMenuFlow"
 
-local T = { metadata = { capabilities = { "rom_dump", "derived_assets" }, derivedAssets = { "party:global" } }, tests = {} }
+local T =
+  { metadata = { capabilities = { "rom_dump", "derived_assets" }, derivedAssets = { "party:global" } }, tests = {} }
 
 local POCKETS = { "items", "medicine", "balls", "tmhm", "berries", "mail", "battle_items", "key_items" }
 
@@ -267,12 +270,22 @@ local function recordingIcons()
 end
 
 local function openFlow(Flow, opts)
+  local mailbox = Mailbox.new()
+  local pcManifest = { mail = { stationery = {} } }
   return Flow.new({
     root = opts.root or "bag",
     mons = assert(opts.mons, "the flow borrows the mon service"),
     bag = assert(opts.bag, "the flow borrows the bag service"),
     bagCursor = assert(opts.bagCursor, "the flow borrows the bag cursor"),
     partyActions = assert(opts.partyActions, "the flow borrows the action coordinator"),
+    mailActions = MailActions.new({
+      mons = opts.mons,
+      mailbox = mailbox,
+      bag = opts.bag,
+      manifest = pcManifest,
+    }),
+    mailbox = mailbox,
+    pcManifest = pcManifest,
     fieldMoves = opts.fieldMoves or {
       check = function(_)
         return { kind = "ok" }
@@ -388,8 +401,12 @@ local function driveUntil(rig, label, maxSteps, predicate)
   end
   local status = rig.flow:status()
   error(
-    "the flow never reaches " .. label .. "; page=" .. tostring(status.page)
-      .. "; child state=" .. tostring(status.child and status.child.state),
+    "the flow never reaches "
+      .. label
+      .. "; page="
+      .. tostring(status.page)
+      .. "; child state="
+      .. tostring(status.child and status.child.state),
     0
   )
 end
@@ -893,10 +910,7 @@ function T.tests.root_close_reports_close_and_releases_once(context)
         for index = 1, 4 do
           rig.flow:updateFixed({})
           status = rig.flow:status()
-          Assert.isNil(
-            status.transition,
-            "the footer press withholds app exit through post-arm tick " .. index
-          )
+          Assert.isNil(status.transition, "the footer press withholds app exit through post-arm tick " .. index)
           Assert.notNil(status.child, "the party page stays published through the footer press")
         end
         rig.flow:updateFixed({})
@@ -916,7 +930,10 @@ function T.tests.root_close_reports_close_and_releases_once(context)
         if index == 1 then
           local pane = assert(status.child.presentation.panes[1], "the closing app keeps its current pane")
           Assert.equal(pane.placement.frame.width, 512, "terminal app exit re-resolves after resize")
-          Assert.isFalse(status.child == outgoingSnapshot, "resolving an exit does not mutate its prior status snapshot")
+          Assert.isFalse(
+            status.child == outgoingSnapshot,
+            "resolving an exit does not mutate its prior status snapshot"
+          )
           Assert.isTrue(outgoingSnapshot.presentation == originalPlan, "the prior snapshot keeps its original plan")
         elseif index < 6 then
           Assert.notNil(status.child.presentation, "the closing child remains drawable through app exit")
@@ -1166,7 +1183,11 @@ function T.tests.bag_give_to_an_occupied_holder_asks_before_any_change(context)
     Assert.equal(status.page, "party_give_target", "the target child owns the replacement question")
     Assert.isNil(status.transition, "the occupied-item question does not create an app transition")
     Assert.equal(status.child.state, "message", "source msg79 appears before Yes/No")
-    Assert.equal(status.child.message.templateKey, "switchHeldPrompt", "the held-item question uses its generated template")
+    Assert.equal(
+      status.child.message.templateKey,
+      "switchHeldPrompt",
+      "the held-item question uses its generated template"
+    )
     status = drive(rig, { { type = "confirm" } })
     Assert.isNil(status.transition, "entering Yes/No stays inside the existing Party app")
     status = drive(rig, {})
@@ -1475,7 +1496,11 @@ function T.tests.raced_give_unwinds_without_a_partial_change(context)
     for _, coefficient in ipairs({ 14, 11, 9, 6, 3, 0 }) do
       rig.flow:updateFixed({})
       status = rig.flow:status()
-      Assert.equal(status.transition.brightnessCoefficient, coefficient, "menu return reveals through source brightness steps")
+      Assert.equal(
+        status.transition.brightnessCoefficient,
+        coefficient,
+        "menu return reveals through source brightness steps"
+      )
       Assert.isNil(rig.flow:takeResult(), "root close waits through the transparent presentation frame")
     end
     rig.flow:updateFixed({})
@@ -1513,11 +1538,7 @@ local function fillMedicinePocket(rig, excluded)
       Assert.isTrue(rig.bag:add(key, 1), "the fixture must occupy the return pocket")
     end
   end
-  Assert.equal(
-    #rig.bag:pocketItems("medicine"),
-    catalog:pocket("medicine").capacity,
-    "the return pocket starts full"
-  )
+  Assert.equal(#rig.bag:pocketItems("medicine"), catalog:pocket("medicine").capacity, "the return pocket starts full")
 end
 
 local function stockFullPocketExchange(rig)

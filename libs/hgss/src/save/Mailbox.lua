@@ -137,7 +137,12 @@ function Mailbox:prepareChanges(expectedRevision, updates)
       invalid("mailbox slot is written twice")
     end
     seen[update.slot] = true
-    local value = update.value == false and false or Mail.validate(update.value)
+    local value
+    if update.value == false then
+      value = false
+    else
+      value = Mail.validate(update.value)
+    end
     if value ~= false and not Mail.isWritten(value) then
       invalid("mailbox slots require authored Mail")
     end
