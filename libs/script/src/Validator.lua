@@ -202,6 +202,19 @@ local function checkVarRef(context, v, path, field)
   end
 end
 
+local function checkWritableValue(context, v, path, field)
+  checkValueRef(context, v, path, field)
+  if v.value ~= "var" and v.value ~= "local" then
+    fail(
+      context,
+      ScriptErrors.SCRIPT_INVALID_REFERENCE,
+      path,
+      "expected a writable variable or local reference",
+      { field = field, kind = v.value }
+    )
+  end
+end
+
 local function checkTextValue(context, v, path, field)
   if type(v) ~= "table" then
     fail(context, ScriptErrors.SCRIPT_SCHEMA_INVALID, path, "expected a text value", { field = field })
@@ -393,6 +406,26 @@ local function checkStep(context, step, path)
   checkFields(context, name, spec.fields, step, path, { op = true })
   if name == "choose" then
     checkMenuStep(context, step, path)
+  elseif name == "mart_open" then
+    local needsSelector = step.kind == "special" or step.kind == "seal" or step.kind == "decoration"
+    if needsSelector ~= (step.selector ~= nil) then
+      fail(
+        context,
+        ScriptErrors.SCRIPT_SCHEMA_INVALID,
+        path,
+        "mart selector does not match its kind",
+        { kind = step.kind }
+      )
+    end
+    if (step.kind == "custom") ~= (step.stock ~= nil) then
+      fail(
+        context,
+        ScriptErrors.SCRIPT_SCHEMA_INVALID,
+        path,
+        "mart stock does not match its kind",
+        { kind = step.kind }
+      )
+    end
   elseif name == "goto_compared" or name == "call_compared" then
     checkCompareBranchStep(context, step, path, name)
   end
@@ -504,6 +537,7 @@ local function checkScalarOrValue(context, v, path, field)
   checkValueRef(context, v, path, field)
 end
 CHECKERS.value = checkValueRef
+CHECKERS.writable_value = checkWritableValue
 CHECKERS.text_value = checkTextValue
 -- A world id or a variable reference. World ids are the U16 keys of the
 -- world store (catalog symbols resolve to them at runtime), so a numeric id

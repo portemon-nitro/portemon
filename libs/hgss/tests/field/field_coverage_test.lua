@@ -1157,4 +1157,119 @@ function T.synchronous_boot_finishes_a_presentation_task_that_starts_pending()
   coverage:release()
 end
 
+function T.door_and_prop_lookup_use_the_owning_cell_frame_not_the_coverage_anchor()
+  local calls = {}
+  local runtimes = {}
+  local coverage = FieldCoverage.new({
+    matrixMemberId = 1,
+    index = makeIndex(2, 1),
+    anchorX = 0,
+    anchorZ = 0,
+    loadCell = function(descriptor)
+      local cellKey = string.format("%d:%d", descriptor.x, descriptor.z)
+      local runtime = runtimeFactory({})(descriptor)
+      runtime.descriptor = descriptor
+      runtime.mapProps = {
+        doorAt = function(_, view, fieldX, fieldZ)
+          calls[#calls + 1] =
+            { operation = "door", cellKey = cellKey, view = view, fieldX = fieldX, fieldZ = fieldZ }
+          return "door:" .. cellKey
+        end,
+        propAt = function(_, view, fieldX, fieldZ)
+          calls[#calls + 1] =
+            { operation = "prop", cellKey = cellKey, view = view, fieldX = fieldX, fieldZ = fieldZ }
+          return "prop:" .. cellKey
+        end,
+      }
+      runtimes[cellKey] = runtime
+      return runtime
+    end,
+  })
+  Assert.deepEqual(
+    { x = coverage.origin.x, z = coverage.origin.z },
+    { x = 0, z = 0 },
+    "the anchor cell owns the coverage origin"
+  )
+  local fieldData = { events = { warps = {} } }
+  local logicalMap = { mapId = 60, fieldData = fieldData }
+  -- Global (37, 9) sits in neighbor cell (1, 0), whose origin differs from
+  -- the coverage anchor by exactly one 32-tile cell.
+  Assert.equal(coverage:doorAt(logicalMap, 37, 9), "door:1:0")
+  Assert.equal(coverage:propAt(logicalMap, 37, 9), "prop:1:0")
+  Assert.equal(#calls, 2, "only the owning cell resolver answers")
+  Assert.equal(calls[1].operation, "door")
+  Assert.equal(calls[2].operation, "prop")
+  for _, call in ipairs(calls) do
+    Assert.equal(call.cellKey, "1:0", "the non-anchor owning cell answers")
+    Assert.equal(call.fieldX, 37)
+    Assert.equal(call.fieldZ, 9)
+    Assert.deepEqual(call.view.coordinateOrigin, { x = 32, z = 0 }, "the view uses the owning cell origin")
+    Assert.isTrue(call.view.collision == runtimes["1:0"].collision, "the view uses the owning cell collision")
+    Assert.isTrue(call.view.fieldData == fieldData, "the view keeps the logical map field data")
+  end
+  coverage:release()
+end
+
+function T.committed_semantic_resolvers_tick_once_after_presentation_each_tick()
+  local events = {}
+  local fixedCounts = {}
+  local coverage = FieldCoverage.new({
+    matrixMemberId = 1,
+    index = makeIndex(5, 5),
+    anchorX = 2,
+    anchorZ = 2,
+    loadCell = function(descriptor)
+      local cellKey = string.format("%d:%d", descriptor.x, descriptor.z)
+      fixedCounts[cellKey] = 0
+      local runtime = runtimeFactory({})(descriptor)
+      runtime.presentation = {
+        updateAnimated = function()
+          events[#events + 1] = "presentation:" .. cellKey
+        end,
+      }
+      runtime.mapProps = {
+        updateFixed = function()
+          fixedCounts[cellKey] = fixedCounts[cellKey] + 1
+          events[#events + 1] = "semantic:" .. cellKey
+        end,
+      }
+      return runtime
+    end,
+  })
+  coverage:queuePrefetch(2, 2)
+  coverage:updatePrefetch(1)
+  local status = coverage:status()
+  Assert.equal(#status.residentCellKeys, 9)
+  Assert.equal(#status.prefetchedCellKeys, 1, "one halo cell stages outside the committed window")
+  local haloKey = status.prefetchedCellKeys[1]
+  local committed = {}
+  for _, cellKey in ipairs(status.residentCellKeys) do
+    committed[cellKey] = true
+  end
+  Assert.isNil(committed[haloKey], "the staged halo cell is not committed")
+  for cellKey in pairs(fixedCounts) do
+    fixedCounts[cellKey] = 0
+  end
+  local base = #events
+  coverage:updateAnimated()
+  coverage:updateAnimated()
+  for _, cellKey in ipairs(status.residentCellKeys) do
+    Assert.equal(fixedCounts[cellKey], 2, "committed cell " .. cellKey .. " ticks once per animated update")
+  end
+  Assert.equal(fixedCounts[haloKey], 0, "a prefetched-only cell never advances its semantic resolver")
+  Assert.equal(#events - base, 36, "nine committed cells tick presentation then semantic, twice")
+  local presentationIndex, semanticIndex
+  for index = base + 1, #events do
+    if events[index] == "presentation:2:2" then
+      presentationIndex = presentationIndex or index
+    elseif events[index] == "semantic:2:2" then
+      semanticIndex = semanticIndex or index
+    end
+  end
+  Assert.notNil(presentationIndex)
+  Assert.notNil(semanticIndex)
+  Assert.isTrue(presentationIndex < semanticIndex, "presentation advances before semantic state on the same tick")
+  coverage:release()
+end
+
 return { metadata = { capabilities = {} }, tests = T }

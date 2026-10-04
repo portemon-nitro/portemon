@@ -3,6 +3,7 @@
 
 local Assert = require("tests.support.Assert")
 local Errors = require("libs.errors.src.Errors")
+local FieldErrors = require("libs.hgss.src.field.FieldErrors")
 local CollisionFixture = require("tests.support.CollisionFixture")
 local CollisionGridAsset = require("libs.assets.src.field.CollisionGridAsset")
 local MapAssetCache = require("libs.assets.src.MapAssetCache")
@@ -10,8 +11,33 @@ local FieldGrid = require("libs.hgss.src.world.FieldGrid")
 local FieldCellCache = require("libs.assets.src.field.FieldCellCache")
 local FieldMapDataCache = require("libs.assets.src.field.FieldMapDataCache")
 local FieldMapLoader = require("libs.hgss.src.world.FieldMapLoader")
+local HgssFieldEdgeColors = require("romdump.src.digest.field.HgssFieldEdgeColors")
+local HgssFieldFog = require("romdump.src.digest.field.HgssFieldFog")
 
 local T = {}
+
+-- The generated render-environment record every current field record
+-- carries: parsed lighting, the area edge-color table, the map weather id,
+-- and the helper-derived fog preset.
+local function validRenderEnvironment()
+  return {
+    lighting = {
+      records = {
+        {
+          startHalfSeconds = 0,
+          lights = {},
+          diffuseRgb555 = 0,
+          ambientRgb555 = 0,
+          specularRgb555 = 0,
+          emissionRgb555 = 0,
+        },
+      },
+    },
+    edgeColors = HgssFieldEdgeColors.tableForAreaLightPattern(0),
+    weatherId = 0,
+    fog = HgssFieldFog.runtimePreset(HgssFieldFog.resolve(0)),
+  }
+end
 
 -- A structurally valid G4CL header for a 32x32 grid with a truncated cell
 -- payload: decodes as COLLISION_BAD_SIZE, proving the artifact class parses
@@ -50,7 +76,7 @@ local function fixture(mapCount)
     }
     files[scene.collision.file] = CollisionFixture.asset(32, 32)
     files[string.format("data/generated/field/maps/%04d/field.lua", mapId)] = {
-      schema = "g4-field-map-v11",
+      schema = FieldMapDataCache.FIELD_SCHEMA,
       initScripts = {},
       mapId = mapId,
       mapSymbol = symbol,
@@ -69,6 +95,7 @@ local function fixture(mapCount)
       events = { background = {}, objects = {}, warps = {}, coordinates = {} },
       music = { day = "SEQ_X", night = "SEQ_X", flagOverrides = {}, traversalOverrides = {} },
       soundplates = {},
+      renderEnvironment = validRenderEnvironment(),
     }
     world.maps[#world.maps + 1] = {
       id = mapId,
@@ -186,7 +213,14 @@ function T.loads_visual_field_collision_and_terrain_into_one_aggregate()
   local map = loader:load("MAP_0")
   Assert.equal(map.mapId, 0)
   Assert.equal(map.sceneRuntime.scene.mapSymbol, "MAP_0")
-  Assert.equal(map.fieldData.schema, "g4-field-map-v11")
+  Assert.equal(map.fieldData.schema, FieldMapDataCache.FIELD_SCHEMA)
+  local environment = assert(map.renderEnvironment, "a full runtime map owns its render environment")
+  Assert.isTrue(
+    type(environment.lighting) == "table" and #environment.lighting.records >= 1,
+    "the full runtime environment carries lighting records"
+  )
+  Assert.equal(environment.baseWeatherId, 0, "the full runtime environment keeps the generated base weather")
+  Assert.isTrue(environment.fog == environment.baseFog, "full-map live fog starts at the generated base fog")
   Assert.equal(map.fieldRegion.collision, map.collision)
   Assert.isTrue(map.fieldRegion.cells[1].collision:containsLocal(4, 4))
   Assert.isTrue(map.collision:containsLocal(4, 4))
@@ -965,7 +999,7 @@ function T.logical_load_publishes_semantic_fields_without_visual_assets()
   Assert.equal(map.mapSection, "TEST_SECTION")
   Assert.equal(map.mapSectionNativeId, 7)
   Assert.equal(map.followMode, "ALLOW")
-  Assert.equal(map.fieldData.schema, "g4-field-map-v11")
+  Assert.equal(map.fieldData.schema, FieldMapDataCache.FIELD_SCHEMA)
   Assert.equal(map.cameraType, map.fieldData.cameraType)
   Assert.deepEqual(map.coordinateOrigin, { x = 96, z = 64 })
   Assert.isNil(map.scene)
@@ -990,6 +1024,63 @@ function T.logical_load_publishes_semantic_fields_without_visual_assets()
   end
   map:release()
   map:release()
+  loader:release()
+end
+
+-- A logical-only load owns a renderer-ready environment while staying
+-- scene-free: no visual loader runs, scene state stays absent, and each load
+-- owns a fresh mutable environment that never aliases generated data.
+function T.logical_load_owns_a_fresh_environment_without_visual_assets()
+  local cache, world = fixture(1)
+  local sceneLoader = {
+    load = function()
+      error("logical acquisition must not acquire representative scene geometry", 0)
+    end,
+    loadEnvironment = function()
+      error("logical acquisition must not acquire an environment shell", 0)
+    end,
+  }
+  local calls = {}
+  local loader = FieldMapLoader.new(cache, world, {
+    sceneLoader = sceneLoader,
+    derivedAssets = readinessHost(calls, {}),
+  })
+  requireSemanticAcquisition(loader)
+
+  local first = loader:loadLogical(0)
+  local second = loader:loadLogical(0)
+  for _, map in ipairs({ first, second }) do
+    Assert.isNil(map.scene, "a logical map carries no scene")
+    Assert.isNil(map.sceneRuntime, "a logical map carries no realized scene")
+    local environment = map.renderEnvironment
+    Assert.notNil(environment, "a logical map owns its render environment")
+    environment = assert(environment)
+    Assert.isTrue(
+      type(environment.lighting) == "table" and type(environment.lighting.records) == "table"
+        and #environment.lighting.records >= 1,
+      "the runtime environment carries lighting records"
+    )
+    Assert.equal(environment.baseWeatherId, 0, "the runtime environment keeps the generated base weather")
+    Assert.notNil(environment.baseFog, "the runtime environment keeps the generated base fog")
+    Assert.isTrue(environment.fog == environment.baseFog, "live fog starts at the generated base fog")
+  end
+  Assert.isTrue(
+    first.renderEnvironment ~= second.renderEnvironment,
+    "each logical load owns a fresh environment table"
+  )
+  first.renderEnvironment.fog = { name = "live override" }
+  Assert.isTrue(
+    second.renderEnvironment.fog == second.renderEnvironment.baseFog,
+    "a live override never leaks into another runtime map"
+  )
+  Assert.isTrue(
+    first.fieldData.renderEnvironment.fog == second.fieldData.renderEnvironment.fog
+      and type(first.fieldData.renderEnvironment.fog) == "table"
+      and first.fieldData.renderEnvironment.fog.name == nil,
+    "a live override never mutates generated field data"
+  )
+  first:release()
+  second:release()
   loader:release()
 end
 
@@ -1055,6 +1146,18 @@ function T.logical_load_rejects_unknown_and_malformed_records()
         record.transitionEnvironment = "unknown"
       end,
       label = "unknown transition environment",
+    },
+    {
+      mutate = function(record)
+        record.renderEnvironment = nil
+      end,
+      label = "missing render environment",
+    },
+    {
+      mutate = function(record)
+        record.renderEnvironment = { lighting = { records = {} }, edgeColors = {}, weatherId = 0, fog = {} }
+      end,
+      label = "malformed render environment",
     },
   }
   for _, case in ipairs(fieldCases) do
@@ -1344,7 +1447,7 @@ function T.request_warp_plans_indexed_and_direct_destinations_as_required()
   local cache, world = outdoorPlanningFixture()
   local fieldPath = "data/generated/field/maps/0000/field.lua"
   local fieldData = {
-    schema = "g4-field-map-v11",
+    schema = FieldMapDataCache.FIELD_SCHEMA,
     mapId = 0,
     mapSymbol = "MAP_0",
     transitionEnvironment = "outdoors",
@@ -1367,6 +1470,7 @@ function T.request_warp_plans_indexed_and_direct_destinations_as_required()
     music = { day = "SEQ_X", night = "SEQ_X", flagOverrides = {}, traversalOverrides = {} },
     soundplates = {},
     initScripts = {},
+    renderEnvironment = validRenderEnvironment(),
   }
   local realLoadLua = cache.loadLua
   cache.loadLua = function(_, path)
@@ -1903,6 +2007,185 @@ function T.begin_load_on_a_resident_entry_returns_it_ready()
   task:release()
   Assert.isTrue(loader:get(0) == map, "releasing the ready task keeps the resident entry")
   Assert.equal(#builds, 1, "no second scene is built for the resident entry")
+  loader:release()
+end
+
+-- An outdoor physical cell owns the same generated semantic door state a
+-- headless composition would build: the cell collision supplies the door
+-- tiles, the cell building placements supply the pivots, and the model
+-- descriptor supplies the sound identity and role durations. Presentation
+-- attaches to that same resolver instead of building a second census, and
+-- the physical-only header-0 neighbor stays a valid resident cell with no
+-- semantic owner.
+function T.physical_cell_doors_share_one_semantic_owner_between_timing_and_presentation()
+  local cache, world, _, _, files = fixture(2)
+  world.maps[2].matrix = { memberId = 0 }
+  local scene = files["data/generated/maps/0001/scene.lua"]
+  scene.type = "outdoor"
+  local doorLocal = { x = 5, z = 7 }
+  local doorGlobal = { x = 69, z = 39 }
+  files["data/generated/field/maps/0001/field.lua"].events.warps = {
+    { index = 0, x = doorGlobal.x, z = doorGlobal.z, destinationMapId = 1, destinationWarpId = 0 },
+  }
+  local pivotX, pivotZ = FieldGrid.tileCenterToWorld(doorLocal.x, doorLocal.z)
+  local function physicalCell(cellIndex, cellX, cellZ, mapHeaderId, placements)
+    return {
+      schema = FieldCellCache.CELL_SCHEMA,
+      matrixMemberId = 0,
+      index = cellIndex,
+      x = cellX,
+      z = cellZ,
+      mapHeaderId = mapHeaderId,
+      altitude = 0,
+      origin = { x = cellX * 32, y = 0, z = cellZ * 32 },
+      landDataMemberId = 0,
+      areaDataMemberId = 0,
+      file = FieldCellCache.cellPath(0, cellIndex),
+      collision = { file = FieldCellCache.collisionPath(0, cellIndex) },
+      terrain = { file = FieldCellCache.terrainPath(0, cellIndex), schema = "g4-terrain-surfaces-v1" },
+      batches = {},
+      materials = {},
+      buildingInstances = placements,
+      terrainAnimations = { textureSrt = false },
+    }
+  end
+  local realCell = physicalCell(0, 2, 1, 1, {
+    {
+      placementIndex = 0,
+      modelKey = "fixture:outdoor-door",
+      transform = { 1, 0, 0, 0, 0, 1, 0, 0, 0, 0, 1, 0, pivotX, 0, pivotZ, 1 },
+    },
+  })
+  local fillerCell = physicalCell(1, 3, 1, 0, {})
+  files[FieldCellCache.indexPath()] = {
+    schema = FieldCellCache.INDEX_SCHEMA,
+    matrices = { { matrixMemberId = 0, width = 4, height = 2, cells = { realCell, fillerCell } } },
+  }
+  files[realCell.file] = realCell
+  files[realCell.collision.file] = doorCollisionAsset(32, 32, doorLocal)
+  files[realCell.terrain.file] = {
+    schema = "g4-terrain-surfaces-v1",
+    source = { bdhcSha1 = "door-cell" },
+    plates = {},
+  }
+  files[fillerCell.file] = fillerCell
+  files[fillerCell.collision.file] = CollisionFixture.asset(32, 32)
+  files[fillerCell.terrain.file] = {
+    schema = "g4-terrain-surfaces-v1",
+    source = { bdhcSha1 = "filler-cell" },
+    plates = {},
+  }
+  files[MapAssetCache.modelPath("fixture:outdoor-door")] = {
+    doorSoundType = 1,
+    animations = {
+      { semanticNames = { "door.open" }, frameCount = 4 },
+      { semanticNames = { "door.close" }, frameCount = 4 },
+    },
+  }
+  cache.exists = function(_, path)
+    return path == FieldCellCache.indexPath()
+  end
+  local presented = {}
+  local sceneLoader = {
+    load = function()
+      error("representative scene geometry must not be acquired", 0)
+    end,
+    loadEnvironment = function(_, environmentScene)
+      return { scene = environmentScene, release = function() end }
+    end,
+    beginCell = function(_, cell, opts)
+      presented[#presented + 1] = { x = cell.x, z = cell.z, mapProps = opts and opts.mapProps }
+      local task = {}
+      function task:advance(_)
+        return 0
+      end
+      function task:isReady()
+        return true
+      end
+      function task:takeResult()
+        return { cellKey = cell.x .. ":" .. cell.z, release = function() end }
+      end
+      function task:finish()
+        return task:takeResult()
+      end
+      function task:release() end
+      return task
+    end,
+  }
+  local loader = FieldMapLoader.new(cache, world, { sceneLoader = sceneLoader })
+  local map = loader:load(1)
+  local coverage = loader:createPhysicalCoverage(map, { fieldX = doorGlobal.x, fieldZ = doorGlobal.z })
+
+  local realRuntime = assert(coverage.cells["2:1"], "the door cell is committed")
+  Assert.notNil(realRuntime.mapProps, "a real logical cell owns a semantic door resolver")
+  local door =
+    assert(coverage:doorAt(map, doorGlobal.x, doorGlobal.z), "the cell door resolves at its global coordinate")
+  Assert.equal(door:open(), "SEQ_SE_DP_DOOR_OPEN", "the generated sound identity needs no live instance")
+  Assert.isFalse(door:isFinished(), "the semantic open role starts unfinished")
+  for _ = 1, 4 do
+    coverage:updateAnimated()
+  end
+  Assert.isTrue(door:isFinished(), "four fixed ticks complete the four-frame generated open role")
+  local handoff
+  for _, entry in ipairs(presented) do
+    if entry.x == 2 and entry.z == 1 then
+      handoff = entry
+    end
+  end
+  Assert.notNil(handoff, "the door cell built presentation")
+  Assert.isTrue(handoff.mapProps == realRuntime.mapProps, "presentation attaches to the same semantic owner")
+
+  local fillerRuntime = assert(coverage.cells["3:1"], "the physical-only cell stays resident")
+  Assert.isNil(fillerRuntime.mapProps, "the physical-only cell owns no semantic resolver")
+  coverage:release()
+  loader:release()
+end
+
+-- A physical cell whose non-zero header has no logical world record cannot
+-- stage: semantic acquisition fails with the structured map-unknown error
+-- instead of publishing a resolver-less logical cell.
+function T.unknown_nonzero_physical_header_fails_semantic_acquisition()
+  local cache, world, _, _, files = fixture(2)
+  world.maps[2].matrix = { memberId = 0 }
+  files["data/generated/maps/0001/scene.lua"].type = "outdoor"
+  local cell = {
+    schema = FieldCellCache.CELL_SCHEMA,
+    matrixMemberId = 0,
+    index = 0,
+    x = 2,
+    z = 1,
+    mapHeaderId = 9,
+    altitude = 0,
+    origin = { x = 64, y = 0, z = 32 },
+    landDataMemberId = 0,
+    areaDataMemberId = 0,
+    file = FieldCellCache.cellPath(0, 0),
+    collision = { file = FieldCellCache.collisionPath(0, 0) },
+    terrain = { file = FieldCellCache.terrainPath(0, 0), schema = "g4-terrain-surfaces-v1" },
+    batches = {},
+    materials = {},
+    buildingInstances = {},
+    terrainAnimations = { textureSrt = false },
+  }
+  files[FieldCellCache.indexPath()] = {
+    schema = FieldCellCache.INDEX_SCHEMA,
+    matrices = { { matrixMemberId = 0, width = 4, height = 2, cells = { cell } } },
+  }
+  files[cell.file] = cell
+  files[cell.collision.file] = CollisionFixture.asset(32, 32)
+  files[cell.terrain.file] = {
+    schema = "g4-terrain-surfaces-v1",
+    source = { bdhcSha1 = "unknown-header-cell" },
+    plates = {},
+  }
+  cache.exists = function(_, path)
+    return path == FieldCellCache.indexPath()
+  end
+  local loader = FieldMapLoader.new(cache, world)
+  local map = loader:load(1)
+  local ok, err = pcall(loader.createPhysicalCoverage, loader, map, { fieldX = 80, fieldZ = 48 })
+  Assert.isFalse(ok, "an unknown non-zero header must not stage a resolver-less logical cell")
+  Assert.isTrue(Errors.is(err) and err.code == FieldErrors.FIELD_MAP_UNKNOWN, "the missing logical record stays loud")
   loader:release()
 end
 

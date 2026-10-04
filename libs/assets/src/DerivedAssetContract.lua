@@ -175,9 +175,12 @@ DerivedAssetContract.world = {
 DerivedAssetContract.fieldCells = {
   -- v3 adds independently published cell roots, dependency attestations, and
   -- the calibration needed by both physical and logical scene consumers.
+  -- v4 keeps the v3 payload shape but serializes the physical-cell Y
+  -- origin through the canonical matrix-altitude conversion, so a stale
+  -- v3 cell with the old origin scale must rebuild.
   cacheFormat = "field-cell-cache-v3",
   indexSchema = "g4-field-cell-index-v3",
-  cellSchema = "g4-field-cell-v3",
+  cellSchema = "g4-field-cell-v4",
 }
 
 DerivedAssetContract.fieldActors = {
@@ -210,6 +213,9 @@ DerivedAssetContract.fieldMapData = {
   -- permissions, Flash/dark facts, cave environment, Union/Colosseum
   -- exclusion, and the Ice Path/Alph source exceptions) plus proven
   -- facing-actor obstacle kinds on object events.
+  -- v11 carries the normalized renderer environment (parsed field-light
+  -- records, the area edge-color table, the catalog weather id, and its
+  -- fog preset) so logical maps stay drawable without a visual scene.
   fieldSchema = "g4-field-map-v11",
   -- The teleport landing index is a separate family-level record carrying
   -- cited spawn-keyed outdoor arrival destinations (never source numeric
@@ -325,10 +331,10 @@ DerivedAssetContract.mons = {
 -- mon package and the Bag runtime resolve item identity through this class.
 -- v2 adds held-item action metadata (isHm, canHold, heldFormEffect), so a
 -- stale v1 cache without those facts must fail readiness. v3 adds semantic
--- party-use metadata (partyUse), so a stale v2 cache without those facts
--- must fail readiness.
+-- party-use metadata (partyUse), and v4 adds source item prices, so older
+-- catalogs must fail readiness.
 DerivedAssetContract.items = {
-  cacheFormat = "item-cache-v3",
+  cacheFormat = "item-cache-v4",
   catalogSchema = "g4-item-catalog-v4",
   indexSchema = "g4-item-index-v1",
   iconManifestSchema = "g4-item-icons-v1",
@@ -337,6 +343,14 @@ DerivedAssetContract.items = {
 DerivedAssetContract.followerInteractions = {
   cacheFormat = "follower-interaction-cache-v1",
   schema = "g4-follower-interactions-v2",
+}
+
+DerivedAssetContract.mart = {
+  cacheFormat = "mart-cache-v1",
+  catalogSchema = "g4-mart-catalog-v1",
+  -- v2 removes unreachable page focus; page controls use feedback while
+  -- independent focus remains on items and Cancel.
+  schema = "g4-mart-presentation-v2",
 }
 
 -- The bag class carries the source-independent field-bag presentation: the
@@ -357,7 +371,7 @@ DerivedAssetContract.followerInteractions = {
 -- class; the bag manifest references no icon pixels.
 DerivedAssetContract.bag = {
   cacheFormat = "bag-cache-v2",
-  schema = "g4-bag-assets-v15",
+  schema = "g4-bag-assets-v17",
 }
 
 -- The party class carries the source-independent native party
@@ -371,7 +385,7 @@ DerivedAssetContract.bag = {
 -- the party manifest references no icon pixels.
 DerivedAssetContract.party = {
   cacheFormat = "party-cache-v1",
-  schema = "g4-party-presentation-v3",
+  schema = "g4-party-presentation-v6",
 }
 
 DerivedAssetContract.audio = {

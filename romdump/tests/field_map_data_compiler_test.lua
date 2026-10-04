@@ -9,6 +9,8 @@ local FieldMapDataCache = require("libs.assets.src.field.FieldMapDataCache")
 local FieldMapDataInspector = require("romdump.src.digest.field.FieldMapDataInspector")
 local FieldMapDataFixture = require("tests.support.FieldMapDataFixture")
 local MapCatalog = require("romdump.src.digest.map.MapCatalog")
+local HgssFieldEdgeColors = require("romdump.src.digest.field.HgssFieldEdgeColors")
+local HgssFieldFog = require("romdump.src.digest.field.HgssFieldFog")
 local CacheFs = require("libs.storage.src.CacheFs")
 local FakeCache = require("tests.support.FakeCache")
 local LuaWriter = require("libs.codec.src.LuaWriter")
@@ -100,6 +102,51 @@ function T.emits_strict_init_script_array_for_every_map()
   local bundle = assert(FieldMapDataCompiler.compile(romFs, 60, sha1, hashLua))
   Assert.equal(bundle.field.schema, "g4-field-map-v11")
   Assert.deepEqual(bundle.field.initScripts, {})
+end
+
+-- The lightweight field record carries the normalized renderer environment
+-- without compiling a full visual scene: parsed lighting records, the
+-- helper-derived edge-color table, the catalog weather id with its
+-- helper-derived fog preset, plus area/light source provenance.
+function T.emits_normalized_render_environment_without_a_visual_scene()
+  local romFs, sha1, hashLua = fixture()
+  local bundle = assert(FieldMapDataCompiler.compile(romFs, 60, sha1, hashLua))
+  Assert.equal(bundle.field.schema, "g4-field-map-v11")
+  local environment = bundle.field.renderEnvironment
+  Assert.notNil(environment, "the field record carries its render environment")
+  environment = assert(environment)
+  Assert.isTrue(
+    type(environment.lighting) == "table" and type(environment.lighting.records) == "table"
+      and #environment.lighting.records >= 1,
+    "the environment carries parsed lighting records"
+  )
+  Assert.deepEqual(
+    environment.edgeColors,
+    HgssFieldEdgeColors.tableForAreaLightPattern(0),
+    "edge colors derive from the area light pattern"
+  )
+  Assert.equal(environment.weatherId, MapCatalog.require(60).weather, "the environment carries the map weather")
+  Assert.deepEqual(
+    environment.fog,
+    HgssFieldFog.runtimePreset(HgssFieldFog.resolve(MapCatalog.require(60).weather)),
+    "fog is the helper-derived preset for the map weather"
+  )
+  Assert.equal(bundle.dependencies.areaDataMemberId, 2, "the area source member is provenanced")
+  Assert.isTrue(
+    type(bundle.dependencies.areaDataMemberSha1) == "string"
+      and #bundle.dependencies.areaDataMemberSha1 > 0,
+    "the area source hash is provenanced"
+  )
+  Assert.isTrue(
+    type(bundle.dependencies.fieldLightSourcePath) == "string"
+      and #bundle.dependencies.fieldLightSourcePath > 0,
+    "the field-light source path is provenanced"
+  )
+  Assert.isTrue(
+    type(bundle.dependencies.fieldLightSourceSha1) == "string"
+      and #bundle.dependencies.fieldLightSourceSha1 > 0,
+    "the field-light source hash is provenanced"
+  )
 end
 
 function T.player_house_header_618_resolves_scripts_in_body_bank_845()

@@ -1685,6 +1685,15 @@ HANDLERS.request_start_menu = handleRequestStartMenu
 HANDLERS.yield_tick = handleYieldTick
 HANDLERS.set_auxiliary_ui_visible = handleSetAuxiliaryUiVisible
 HANDLERS.context_choice = handleContextChoice
+function HANDLERS.mart_open(node, run)
+  requireForeground(run, "mart_open")
+  return blockOnTask(run, "mart", semanticsFor(run).martTaskSpec(node, run))
+end
+function HANDLERS.mart_query(node, run)
+  local semantics = semanticsFor(run)
+  semantics.writeRef(node.result, semantics.martQuery(node.kind, run), run)
+  return Runtime.OUTCOME_CONTINUE
+end
 HANDLERS["if"] = handleIf
 HANDLERS.switch = handleSwitch
 HANDLERS["goto"] = handleGoto

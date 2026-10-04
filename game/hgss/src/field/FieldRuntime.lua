@@ -44,6 +44,9 @@ local MonCache = require("libs.assets.src.MonCache")
 local MonCatalog = require("libs.mons.src.MonCatalog")
 local ItemCache = require("libs.assets.src.ItemCache")
 local ItemCatalog = require("libs.items.src.ItemCatalog")
+local MartCache = require("libs.assets.src.MartCache")
+local MartService = require("libs.hgss.src.items.MartService")
+local VanillaMartStock = require("game.hgss.src.mart.VanillaMartStock")
 local FieldScriptSymbols = require("libs.assets.src.field.FieldScriptSymbols")
 local FieldSession = require("libs.hgss.src.field.FieldSession")
 local FieldSignpostController = require("libs.hgss.src.interaction.FieldSignpostController")
@@ -55,8 +58,6 @@ local MapAssetCache = require("libs.assets.src.MapAssetCache")
 local MapSceneLoader = require("libs.hgss.src.presentation.MapSceneLoader")
 local AssetPreparationQueue = require("libs.hgss.src.presentation.AssetPreparationQueue")
 local NeighborRing = require("libs.hgss.src.presentation.NeighborRing")
-local MapProps = require("libs.hgss.src.world.MapProps")
-local MetatileBehavior = require("libs.hgss.src.world.MetatileBehavior")
 local FieldWeatherCache = require("libs.assets.src.field.FieldWeatherCache")
 local FollowerInteractionCache = require("libs.assets.src.field.FollowerInteractionCache")
 local FieldWeatherResolver = require("libs.hgss.src.world.FieldWeatherResolver")
@@ -70,7 +71,7 @@ local FieldWorldSwapCoordinator = require("game.hgss.src.field.FieldWorldSwapCoo
 local FieldSaveCoordinator = require("game.hgss.src.field.FieldSaveCoordinator")
 local GameSaveValidation = require("libs.hgss.src.save.GameSaveValidation")
 local LocalClock = require("game.src.LocalClock")
-local RepoFs = require("game.src.RepoFs")
+local RepoFs = require("libs.storage.src.RepoFs")
 local WindowConfig = require("game.src.WindowConfig")
 
 local function composeStarterBalls(runtime)
@@ -137,6 +138,7 @@ end
 ---@field displayContext DisplayContext? shared actual-display measurement owner (defaults to a runtime-owned context)
 ---@field displayGraphics table<string, unknown>? graphics namespace for the default display context
 ---@field presentationOverrides table<string, table<string, unknown>>? product-root per-case function overrides by application
+---@field martStockResolver (fun(descriptor: table<string, unknown>, context: table<string, unknown>, catalog: table<string, unknown>): table<string, unknown>)? game-root mart stock policy
 ---@field overrideFs table<string, unknown>? read-shaped repository filesystem override
 ---@field presentation boolean?
 ---@field preparedEntry table<string, unknown>? one-shot staged New Game transfer; the runtime claims its loader and queue
@@ -184,7 +186,11 @@ end
 ---@field monLanguage string the semantic language key the mon catalog was built for
 ---@field monService HgssMonService the live party/creation/script mon service
 ---@field fashionCase FashionCaseState live accessory inventory restored from the save
+---@field followerInteractionCatalog table<string, unknown> generated follower interaction rules
 ---@field bagService HgssBagService the live bag/inventory service
+---@field martService MartService the live mart inventory/session service
+---@field martHost table<string, unknown> the one script-owned mart child host
+---@field martStockResolver function the selected mart stock provider
 ---@field bagCursor BagCursor the runtime-only field bag cursor
 ---@field pokemonMenu table<string, unknown>? the owned menu composition (nil before composition / after teardown)
 ---@field menuLaneWarps table<string, unknown>? the long-lived menu-origin warp service (nil before composition / after teardown)
@@ -486,39 +492,6 @@ local function loadGameLocation(game, mapLoader, composeMap)
     }
 end
 
--- Build the non-GPU door facade used by simulation and acceptance runtimes.
--- It reads the generated scene/model contracts only to recover the source
--- door's semantic sound selector; no presentation instance is acquired.
-local function headlessMapProps(runtimeMap, cacheFs)
-  local scene = runtimeMap.scene
-  local placements = {}
-  for _, placement in ipairs(scene.buildingInstances) do
-    local descriptor = assert(cacheFs:loadLua(MapAssetCache.modelPath(placement.modelKey)))
-    placements[#placements + 1] = {
-      placementIndex = placement.placementIndex,
-      modelKey = placement.modelKey,
-      transform = placement.transform,
-      doorSoundType = descriptor.doorSoundType,
-    }
-  end
-  local doorTiles = {}
-  local origin = runtimeMap.coordinateOrigin
-  for _, warp in ipairs(runtimeMap.fieldData.events.warps) do
-    local localX, localZ = warp.x - origin.x, warp.z - origin.z
-    if
-      runtimeMap.collision:containsLocal(localX, localZ)
-      and MetatileBehavior.isDoor(runtimeMap.collision:getLocal(localX, localZ).behavior)
-    then
-      doorTiles[#doorTiles + 1] = { x = localX, z = localZ }
-    end
-  end
-  return MapProps.new({
-    placements = placements,
-    instances = {},
-    doorTiles = doorTiles,
-  })
-end
-
 -- Acquires the runtime map loader and its preparation worker. A prepared
 -- New Game entry moves its already-staged loader and queue in before the
 -- initial map acquisition, so the first load hits the resident bedroom
@@ -554,10 +527,885 @@ local function acquireMapLoader(runtime, cacheFs, world, loadOptions)
   return loader, queue
 end
 
+-- The six `_load` boot phases below are ordinary FieldRuntime methods rather
+-- than nested closures inside one function: nesting them once pushed the
+-- shared boot-scoped locals (cacheFs, fontDef, composeCurrentMap, ...) close
+-- to LuaJIT's 60-upvalue-per-function limit. Each phase instead takes a
+-- `boot` table holding those boot-scoped values explicitly.
+
+-- Cache and generated-runtime inputs are validated before any field owner is published.
+---@param boot table<string, unknown>
+---@param loadOptions FieldRuntimeOptions?
+function FieldRuntime:_loadRuntimeAssets(boot, loadOptions)
+  boot.cacheFs = CacheFs.forVersion(self.versionId)
+  self.cacheFs = boot.cacheFs
+  -- The compiled actor index carries the runtime-facing actor configuration
+  -- (avatars + variable-sprite policy); a missing runtime block is a stale
+  -- or foreign cache and fails the boot loudly.
+  local actorIndex = assert(
+    boot.cacheFs:loadLua(FieldActorCache.indexPath()),
+    "field actor index missing -- run `scripts/buildcache.sh` first"
+  )
+  assert(
+    actorIndex.runtime and actorIndex.runtime.avatars and actorIndex.runtime.variableSprites,
+    "field actor index has no runtime configuration"
+  )
+  self.actorConfig = actorIndex.runtime
+  validateAvatarConfig(self.actorConfig.avatars)
+  -- The player-data validation context: the generated field font charmap
+  -- and the imported dialogue frame-index set, loaded once and injected
+  -- into fresh-session construction and the save store (the same pattern
+  -- as the compiled avatar set). The field-UI class is a required runtime
+  -- asset: its manifest is the authority for which frame indexes resolve.
+  boot.fontDef = FieldFontLoader.load(boot.cacheFs)
+  boot.uiManifest = assert(
+    boot.cacheFs:loadLua(FieldUiAssetCache.manifestPath()),
+    "field UI cache is cold -- run `scripts/buildcache.sh` first"
+  )
+  assert(
+    type(boot.uiManifest) == "table" and boot.uiManifest.schema == FieldUiAssetCache.SCHEMA,
+    "field UI manifest is invalid"
+  )
+  -- The window-style catalogue is composed per runtime from the generated
+  -- manifest: the production-owned built-in styles, immutable from then on.
+  self.windowStyles = FieldWindowStyles.new(boot.uiManifest)
+  self.uiManifest = boot.uiManifest
+  local frameIndexes = {}
+  for frame = 0, boot.uiManifest.dialogueFrames.count - 1 do
+    frameIndexes[frame] = true
+  end
+  boot.playerDataContext = {
+    charmap = boot.fontDef.charmap,
+    frameIndexes = frameIndexes,
+  }
+  boot.saveValidation = assert(self.saveValidation)
+  boot.world =
+    assert(boot.cacheFs:loadLua(MapAssetCache.worldPath()), "world.lua missing -- run `scripts/buildcache.sh` first")
+  local profiles = assert(
+    boot.cacheFs:loadLua(CAMERA_PROFILES_PATH),
+    "field camera cache is cold -- run `scripts/buildcache.sh` first"
+  )
+  assert(profiles.schema == FieldCameraCache.SCHEMA, "unsupported field camera cache")
+  self.cameraProfiles = profiles.profiles
+
+  -- The weather catalog: fourteen fog presets and ordered override rules.
+  local weatherCatalog = assert(
+    boot.cacheFs:loadLua(FieldWeatherCache.catalogPath()),
+    "field weather cache is cold -- run `scripts/buildcache.sh` first"
+  ) --[[@as FieldWeatherCache.Catalog]]
+  assert(FieldWeatherCache.validateCatalog(weatherCatalog), "field weather catalog is invalid")
+  self.weatherCatalog = weatherCatalog
+  local followerInteractionCatalog = assert(
+    boot.cacheFs:loadLua(FollowerInteractionCache.catalogPath()),
+    "follower interaction catalog is missing -- run `scripts/buildcache.sh` first"
+  )
+  assert(
+    FollowerInteractionCache.validateCatalog(followerInteractionCatalog),
+    "follower interaction catalog is invalid"
+  )
+  self.followerInteractionCatalog = followerInteractionCatalog
+  -- The mon catalog behind the live party: loaded once per runtime
+  -- through the ready cache path, before save validation and service
+  -- construction. The shared item catalog loads beside it and is retained
+  -- for later Bag composition. Screens and scripts borrow the service,
+  -- never the catalogs directly.
+  local monRoot = MonCache.loadCatalog(boot.cacheFs)
+  self.itemCatalog = ItemCatalog.new(ItemCache.loadCatalog(boot.cacheFs))
+  self.martCatalog = MartCache.loadCatalog(boot.cacheFs)
+  self.monCatalog = MonCatalog.new(monRoot, self.itemCatalog)
+  self.monLanguage = monRoot.version.language
+  self.fieldEntranceIndicatorAsset, self.fieldEntranceIndicator = FieldEntranceIndicatorRuntime.load(boot.cacheFs)
+  self.fieldEmoteModels = FieldActorEmoteRuntime.load(boot.cacheFs)
+  self.fieldEffectAssets = self.fieldEntranceIndicatorAsset
+  local terrainEffects = {
+    tall_grass = self.fieldEntranceIndicatorAsset.effects.tall_grass,
+    very_tall_grass = self.fieldEntranceIndicatorAsset.effects.very_tall_grass,
+    trainer_reveal = self.fieldEntranceIndicatorAsset.effects.trainer_reveal,
+  }
+  for selector = 1, 14 do
+    local kind = "follower_reaction_" .. selector
+    terrainEffects[kind] = self.fieldEntranceIndicatorAsset.effects[kind]
+  end
+  self.fieldTerrainEffectController = require("libs.hgss.src.world.FieldTerrainEffectController").new({
+    effects = terrainEffects,
+    modelFactory = require("libs.hgss.src.presentation.FieldTerrainEffectModelFactory").new(),
+  })
+
+  -- A prepared New Game entry moves its already-staged loader and queue
+  -- in before the initial map acquisition, so the first load hits the
+  -- resident bedroom instead of rebuilding it. Without one, presentation
+  -- mode owns one asset-preparation worker for the runtime lifetime (a
+  -- headless runtime leaves it nil and starts no thread); it is
+  -- constructed before the map loader so scene loading can route
+  -- mesh/image CPU work through it.
+  self.mapLoader, self.assetPreparation = acquireMapLoader(self, boot.cacheFs, boot.world, loadOptions)
+  local function mapMatrixMemberId(logicalMap)
+    local mapIndex = assert(self.mapLoader.world.byId[logicalMap.mapId], "outdoor map catalog record is required")
+    local mapRecord = assert(self.mapLoader.world.maps[mapIndex], "outdoor map catalog record is missing")
+    return assert(mapRecord.matrix.memberId, "outdoor map matrix member is required")
+  end
+
+  -- Structural outdoor check: matrix membership comes from the world
+  -- catalog and holds before (and without) visual realization.
+  local function hasMatrixMembership(mapId)
+    local byId = self.mapLoader.world.byId
+    local maps = self.mapLoader.world.maps
+    if type(byId) ~= "table" or type(maps) ~= "table" then
+      return false
+    end
+    local mapIndex = byId[mapId]
+    local mapRecord = type(mapIndex) == "number" and maps[mapIndex] or nil
+    return type(mapRecord) == "table" and type(mapRecord.matrix) == "table"
+  end
+
+  -- Initial boot has no live source owner to protect. It is the only path
+  -- allowed to publish a newly created initial coverage.
+  local function initialMap(logicalMap, position)
+    if logicalMap.scene.type ~= "outdoor" then
+      return logicalMap
+    end
+    assert(not self.physicalCoverage, "initial physical coverage already exists")
+    self.physicalCoverage = self.mapLoader:createPhysicalCoverage(logicalMap, position)
+    return composePhysicalMap(logicalMap, self.physicalCoverage)
+  end
+  boot.composeInitialMap = initialMap
+
+  -- Logical zone changes reuse the committed owner. A matrix mismatch here
+  -- indicates that a logical seam was routed through the wrong boundary.
+  -- Outdoor-ness is structural matrix membership, not visual readiness:
+  -- a scene-less outdoor halo still gets the shared physical window so
+  -- permission, projection, and camera math keep working.
+  local function currentMap(logicalMap, coverage)
+    if not hasMatrixMembership(logicalMap.mapId) then
+      return logicalMap
+    end
+    coverage = coverage or assert(self.physicalCoverage, "current outdoor coverage is required")
+    assert(
+      mapMatrixMemberId(logicalMap) == coverage.matrixMemberId,
+      "logical outdoor map does not belong to the current physical matrix"
+    )
+    return composePhysicalMap(logicalMap, coverage)
+  end
+  boot.composeCurrentMap = currentMap
+
+  -- A live warp receives an explicit ownership record. The replacement is
+  -- transition-owned until commit and never mutates physicalCoverage here.
+  local function preparedMap(logicalMap, position)
+    if logicalMap.scene.type ~= "outdoor" then
+      return logicalMap, nil
+    end
+    local matrixMemberId = mapMatrixMemberId(logicalMap)
+    local physical = self:_stagePhysicalCoverage(logicalMap, position, matrixMemberId)
+    local ok, runtimeMap = pcall(composePhysicalMap, logicalMap, physical.coverage)
+    if not ok then
+      if physical.replacement then
+        physical.coverage:release()
+        physical.state = "released"
+      end
+      error(runtimeMap, 0)
+    end
+    return runtimeMap, physical
+  end
+  boot.composePreparedMap = preparedMap
+end
+
+-- Restore the entry record and establish the initial map, player, and actor owners.
+---@param boot table<string, unknown>
+function FieldRuntime:_loadInitialWorld(boot)
+  local entryGame
+  if
+    self.game.schema == GameSave.SCHEMA
+    or self.game.schema == "g4-game-save-v3"
+    or self.game.schema == "g4-game-save-v4"
+  then
+    entryGame = assert(boot.saveValidation:validate(self.game))
+    assert(entryGame.versionId == self.versionId, "loaded game belongs to another version")
+  else
+    assert(self.game.playerData, "finalized game player data is required")
+    local validPlayerData, playerDataErr =
+      boot.saveValidation:validatePlayerData(self.game.playerData, boot.playerDataContext)
+    assert(validPlayerData, "finalized game player data is invalid: " .. tostring(playerDataErr))
+    self.game.playerData = validPlayerData
+  end
+  boot.loadedGame = entryGame
+  boot.activeGame = entryGame or self.game
+  self.savePublished = entryGame ~= nil
+  self.runtimeMap, self.entryLocation = loadGameLocation(boot.activeGame, self.mapLoader, boot.composeInitialMap)
+  self.mapLoader:protectMap(self.runtimeMap.mapId, true)
+
+  self.playerData = boot.activeGame.playerData
+  self.fieldTravel =
+    FieldTravelState.new(assert(boot.activeGame.fieldTravel, "field travel state is required to enter the field"))
+  self.fashionCase =
+    FashionCaseState.new(assert(boot.activeGame.fashionCase, "Fashion Case state is required to enter the field"))
+  local fieldX, fieldZ = self.entryLocation.fieldX, self.entryLocation.fieldZ
+  local surfaceId, facing = self.entryLocation.surfaceId, self.entryLocation.facing
+  self.player = FieldPlayer.new({
+    currentMap = self.runtimeMap,
+    fieldX = fieldX,
+    fieldZ = fieldZ,
+    surfaceId = surfaceId,
+    facing = facing,
+    occupancy = playerOccupancy(self),
+  })
+  self.input = FieldInput.new()
+  local worldPoint = self.player:renderPosition()
+
+  local profile = assert(
+    self.cameraProfiles[self.runtimeMap.cameraType],
+    "field camera cache has no camera type " .. self.runtimeMap.cameraType
+  )
+  self.camera = FieldCamera.new(profile, { initialTarget = worldPoint })
+  local width, height = self.viewportWidth, self.viewportHeight
+  self.viewport = FieldViewport.new(width, height, { mode = "expanded" })
+  self:_updateCameraProjection()
+  local restoredWorld = entryGame and entryGame.world
+  boot.restoredAudio = entryGame and entryGame.audio
+  self.restoredAudio = boot.restoredAudio
+  self.eventState = entryGame and FieldEventState.new({ flags = restoredWorld.flags, vars = restoredWorld.variables })
+    or self.game.worldState
+  assert(self.eventState and self.eventState.serialize, "finalized game event state is required")
+  boot.initialActorRestore = entryGame and restoredWorld.objects or nil
+  boot.initialActorRestoreMapId = entryGame and entryGame.mapId or nil
+  self.actorAssets = FieldActorDefinitionProvider.new(boot.cacheFs)
+  self.actors = FieldActorManager.new({
+    assets = self.actorAssets,
+    policy = { variableSprites = self.actorConfig.variableSprites },
+  })
+
+  -- The player's graphic is one more compiled actor visual: FieldPlayer
+  -- keeps every bit of movement authority while the avatar transition owner
+  -- selects which compiled visual presents it. Dynamic residency stays with
+  -- FieldState; the simulation side holds no fixed avatar asset.
+  self.avatar = avatarForGender(self.actorConfig.avatars, self.playerData.profile.gender)
+  local initialAvatarState = "walking"
+  if entryGame and entryGame.avatar then
+    initialAvatarState = entryGame.avatar.state
+  end
+  self.playerAvatar = FieldPlayerAvatarState.new({
+    capability = self.avatar,
+    surfPresentation = self.fieldEffectAssets.effects.surf_attachment.presentation,
+    initialState = initialAvatarState,
+  })
+  self.playerVisual = FieldPlayerVisual.new({
+    player = self.player,
+    spriteId = self.playerAvatar:currentSpriteId(),
+    playerAvatar = self.playerAvatar,
+  })
+
+  -- Warp resolution is owned by WarpSystem through FieldTransition's
+  -- default resolver: ordinary records follow the indexed path; scripted
+  -- `direct` records carry global destination coordinates and resolve
+  -- through their own branch. Fallible destination preparation runs before
+  -- the commit, so a failed warp never touches current-map ownership.
+  -- Door identity is semantic: the owning physical cell (outdoor) or the
+  -- map's canonical resolver (indoor) answers with generated sound and
+  -- role state whether or not presentation instances are attached.
+  -- Headless and presentation production resolve semantic doors through
+  -- that same owner; a live instance never falls back to semantic-only
+  -- timing when generated roles exist.
+end
+
+-- Install the transition boundary while the runtime still owns boot rollback.
+---@param boot table<string, unknown>
+function FieldRuntime:_composeTransitions(boot)
+  local doorAt
+  local escalatorAt
+  if self.presentation or self.runtimeMap.sceneRuntime or self.runtimeMap.scene then
+    local function resolveDoorAt(runtimeMap, doorFieldX, doorFieldZ)
+      -- A scene-less logical map carries no placements or collision:
+      -- door identity is unknowable, so the warp resolves no door and
+      -- the transition raises its unresolved-door failure rather than
+      -- degrading to a plain fade or a synthetic open sound. Door-kind
+      -- warps gate on source visual readiness before choreography, so
+      -- this backstop only fires for hostless loaders.
+      if runtimeMap.scene == nil and runtimeMap.sceneRuntime == nil then
+        return nil
+      end
+      -- Outdoor maps resolve through the committed physical cell that
+      -- owns the trigger coordinate; the cell's semantic resolver
+      -- carries the generated sound and role state with or without
+      -- live presentation instances.
+      if runtimeMap.coverage then
+        return runtimeMap.coverage:doorAt(runtimeMap, doorFieldX, doorFieldZ)
+      end
+      -- A bare outdoor load (the realized source visual a scene-less
+      -- resident is replaced with before choreography) carries its
+      -- scene but no composed coverage. It still resolves through the
+      -- runtime-owned committed coverage, which owns the same canonical
+      -- cells the composed path would have used; no semantic census is
+      -- built here, the owning cell answers. Indoor maps never take
+      -- this branch: without coverage they keep their map/scene owner.
+      local scene = runtimeMap.scene
+      if scene and scene.type == "outdoor" and self.physicalCoverage then
+        return self.physicalCoverage:doorAt(runtimeMap, doorFieldX, doorFieldZ)
+      end
+      if runtimeMap.mapProps then
+        return runtimeMap.mapProps:doorAt(runtimeMap, doorFieldX, doorFieldZ)
+      end
+      local sceneRuntime = runtimeMap.sceneRuntime
+      if sceneRuntime and sceneRuntime.mapProps then
+        return sceneRuntime.mapProps:doorAt(runtimeMap, doorFieldX, doorFieldZ)
+      end
+      return nil
+    end
+    local function resolveEscalatorAt(runtimeMap, escalatorFieldX, escalatorFieldZ)
+      if runtimeMap.scene == nil and runtimeMap.sceneRuntime == nil then
+        return nil
+      end
+      if runtimeMap.coverage then
+        return runtimeMap.coverage:propAt(runtimeMap, escalatorFieldX, escalatorFieldZ)
+      end
+      -- Same bare-outdoor-load ownership as door lookup: the
+      -- runtime-owned committed coverage answers through the owning
+      -- cell's semantic resolver.
+      local scene = runtimeMap.scene
+      if scene and scene.type == "outdoor" and self.physicalCoverage then
+        return self.physicalCoverage:propAt(runtimeMap, escalatorFieldX, escalatorFieldZ)
+      end
+      if runtimeMap.mapProps then
+        return runtimeMap.mapProps:propAt(runtimeMap, escalatorFieldX, escalatorFieldZ)
+      end
+      local sceneRuntime = runtimeMap.sceneRuntime
+      if sceneRuntime and sceneRuntime.mapProps then
+        return sceneRuntime.mapProps:propAt(runtimeMap, escalatorFieldX, escalatorFieldZ)
+      end
+      return nil
+    end
+    doorAt = resolveDoorAt
+    escalatorAt = resolveEscalatorAt
+  end
+  self.transition = self.worldSwapCoordinator:createTransition(self, doorAt, escalatorAt, function(_, sourceMap, warp)
+    local physical
+    local ok, result = pcall(function()
+      local function loadDestination(_, mapId)
+        assert(mapId == warp.destinationMapId, "transition destination map mismatch")
+        local logicalMap = self.mapLoader:load(mapId)
+        local destinationPosition
+        if warp.direct then
+          destinationPosition = { fieldX = warp.x, fieldZ = warp.z }
+        else
+          local destinationWarp = logicalMap.fieldData.events.warps[warp.destinationWarpId + 1]
+          assert(destinationWarp, "transition destination warp is missing")
+          destinationPosition = { fieldX = destinationWarp.x, fieldZ = destinationWarp.z }
+        end
+        local composed, ownership = boot.composePreparedMap(logicalMap, destinationPosition)
+        physical = ownership
+        return composed
+      end
+      return require("libs.hgss.src.transition.WarpSystem").resolveDestination({
+        load = loadDestination,
+      }, sourceMap, warp)
+    end)
+    if not ok then
+      if physical and physical.replacement and physical.state == "prepared" then
+        physical.coverage:release()
+        physical.state = "released"
+      end
+      error(result, 0)
+    end
+    result.physical = physical
+    return result
+  end)
+  self.transition.player = self.player
+  self.transition.suppression = nil
+
+  -- The production script screen-fade controller (fade_screen/wait_fade):
+  -- composed unconditionally so every supported field script has it,
+  -- regardless of presentation mode or scriptHosts injection. Rendering
+  -- only reads its status().
+  self.screenFade = FieldScriptScreenFade.new()
+
+  -- Modal dialogue is pure and fixed-tick. Runtime layout needs only the
+  -- compiled font definition; presentation later owns the atlas and drawing.
+  -- The text-speed cadence is captured from the player options at
+  -- construction, so an open request never queries options afterwards.
+end
+
+-- Compose the fixed-tick presentation and application hosts.
+---@param boot table<string, unknown>
+function FieldRuntime:_composeFieldUi(boot)
+  local fontMetrics = FieldDialogueTheme.fontMetrics(boot.fontDef)
+  self.menuHost = FieldMenuHost.new({
+    width = self.viewportWidth,
+    height = self.viewportHeight,
+    input = self.input,
+    screenTopology = self.screenTopology,
+    measureText = FieldDialogueTheme.measureText(boot.fontDef),
+  })
+  -- The live choice host shares the menu host's measurement and topology
+  -- so draw and pointer mapping resolve one geometry. Its dialogue anchor
+  -- reads the live runtime below; resolution only runs while a choice or
+  -- a contextual prompt is presented.
+  local function yesNoPresentationContext()
+    return self:yesNoPresentationContext()
+  end
+  self.yesNoHost = FieldYesNoHost.new({
+    width = self.viewportWidth,
+    height = self.viewportHeight,
+    input = self.input,
+    screenTopology = self.screenTopology,
+    measureText = FieldDialogueTheme.measureText(boot.fontDef),
+    presentation = yesNoPresentationContext,
+  })
+  local function formatLayout(formatted)
+    return DialogueLayout.layout(
+      formatted.tokens,
+      fontMetrics,
+      { width = FieldDialogueTheme.textWidth, maxLines = FieldDialogueTheme.maxLines }
+    )
+  end
+  boot.layoutMessage = formatLayout
+  -- The signpost window presents one 27x4-tile window: the single-window
+  -- lines shape the signpost controller captures is the first page of the
+  -- same paginated dialogue layout. Overflow beyond the window is the
+  -- signpost text path's concern, not this adapter's.
+  local function signpostLayout(formatted)
+    local result = boot.layoutMessage(formatted)
+    return { lines = (result.pages[1] or { lines = {} }).lines }
+  end
+  boot.audioService = self:_composeAudio(boot.cacheFs, boot.restoredAudio)
+  self.dialogue = FieldDialogueController.new({
+    layout = boot.layoutMessage,
+    policy = TextSpeedPolicy.forSpeed(self.playerData.options.textSpeed),
+    audio = boot.audioService,
+    continueCursor = boot.uiManifest.dialogueFrames.continueCursor,
+  })
+  -- The signpost controller is fixed-tick and pure; the script platform
+  -- advances it once per scheduler tick through the signpost host. The
+  -- text-speed cadence is captured from the player options at construction,
+  -- the same single authority as the dialogue controller.
+  self.signpost = FieldSignpostController.new({
+    layout = signpostLayout,
+    policy = TextSpeedPolicy.forSpeed(self.playerData.options.textSpeed),
+  })
+  self.auxiliaryFieldUi = boot.loadedGame and AuxiliaryFieldUi.restore(boot.loadedGame.auxiliaryUi)
+    or AuxiliaryFieldUi.new()
+  self.contextChoiceProvider = ContextChoiceProvider.new()
+  -- The initial display measurement: the runtime measures from the boot
+  -- topology (or the actual default) so pointer input works before any
+  -- resize; the menu wrapper consumes this exact record through its
+  -- measurement closure. The script-owned starter host below borrows the
+  -- same record. This precedes the starter composition because the choice
+  -- surface is built eagerly.
+  self.presentationDisplay = self.displayContext:measure(self.viewportWidth, self.viewportHeight)
+  -- The starter composition: the hand-editable default roster provider
+  -- and the modal choice surface. The blocking starter task receives both
+  -- through scheduler services; no starter code requires the concrete
+  -- provider module after this composition step.
+  self.starterProvider = require("game.hgss.src.starters.VanillaStarterProvider")
+  local starterOverrides = self.presentationOverrides ~= nil and self.presentationOverrides.starter_choice or nil
+  local function starterMeasureDisplay()
+    return self.presentationDisplay
+  end
+  self.starterChoice = require("game.hgss.src.starters.StarterChoiceState").new({
+    catalog = self.monCatalog,
+    cacheFs = boot.cacheFs,
+    frameIndex = self.playerData.options.textFrame,
+    measureDisplay = starterMeasureDisplay,
+    overrides = starterOverrides,
+  })
+  local namingOverrides = self.presentationOverrides ~= nil and self.presentationOverrides.naming_screen or nil
+  self.pokemonNaming = require("game.hgss.src.field.PokemonNamingState").new({
+    charmap = boot.fontDef.charmap,
+    measureDisplay = starterMeasureDisplay,
+    overrides = namingOverrides,
+  })
+  self.actionKeys = HgssInputBindings.actionKeys()
+  self.cancelKeys = HgssInputBindings.cancelKeys()
+  self.menuKeys = HgssInputBindings.menuKeys()
+
+  local function playSequence(sequence)
+    if self.audio then
+      self.audio:play(sequence)
+    end
+  end
+  local applicationDescriptors = self:_applicationDescriptors()
+  local function menuFactory(rememberedActionId)
+    return self:_composeStartMenu(rememberedActionId)
+  end
+  local function fieldAction(actionId, request)
+    return self:_admitFieldAction(actionId, request)
+  end
+  self.applications = FieldApplicationRegistry.new(applicationDescriptors)
+  self.applicationHost = FieldApplicationHost.new({
+    registry = self.applications,
+    menuFactory = menuFactory,
+    input = self.input,
+    fieldAction = fieldAction,
+    effect = playSequence,
+  })
+  -- Interaction discovery: the resolver is pure and consults the same
+  -- live-or-probe actor lookup movement collision uses, so both agree about
+  -- objects on a logical map that is not the active actor map; bound
+  -- interactions run through the script client and the binding audit
+  -- guarantees every interactable event is bound.
+  self.messageProvider = FieldMessageProvider.new(boot.cacheFs)
+  -- Pin the Start Menu label bank for the field-runtime lifetime so menu
+  -- composition stays deterministic and I/O-free after a successful boot.
+  -- A missing bank fails the boot with the provider's typed error.
+  local startMenuBank = require("libs.assets.src.MenuProtocol").START_MENU_MESSAGE_BANK
+  local _, startMenuBankErr = self.messageProvider:acquireBank(startMenuBank)
+  if startMenuBankErr ~= nil then
+    error(startMenuBankErr, 0)
+  end
+  local function actorAt(mapId, candidate)
+    return self:_actorAt(mapId, candidate)
+  end
+  local function targetMapAt(x, z, currentMap)
+    local coverage = currentMap.coverage
+    if not coverage then
+      return currentMap
+    end
+    local targetMapId = FieldZoneIdentity.logicalZoneAt(coverage, x, z, currentMap.mapId) or currentMap.mapId
+    if targetMapId == currentMap.mapId then
+      return currentMap
+    end
+    local targetMap = assert(self.residency):mapForId(targetMapId)
+    return assert(targetMap, "reachable interaction target is not resident")
+  end
+  self.interactionResolver = FieldInteractionResolver.new({
+    actorAt = actorAt,
+    targetMapAt = targetMapAt,
+  })
+
+  -- The production audio composition lives in _composeAudio, keeping its
+  -- module collaborators out of this already large UI-composition phase
+  -- near LuaJIT's 60-upvalue-per-function limit.
+  -- The field-script platform (the script override system): registry over
+  -- the compiled cache + data/scripts/overrides, composition, mechanical
+  -- bindings, scheduler, and interaction client. A resumed save reattaches
+  -- its script bucket.
+  -- The override files live in the repo tree outside the LÖVE source dir,
+  -- so the loader reads them through the io-backed repo filesystem.
+  -- The live mon service: constructed once per runtime from the
+  -- canonical bucket (the validated continue record, or the unpublished
+  -- new-game bucket) and the HGSS player/version policy. A failed
+  -- restore propagates before any field state publishes. The met
+  -- location resolves from the active map and the met date from the
+  -- host clock at creation time.
+end
+
+-- Bind the live mon, Bag, follower, and script services.
+---@param boot table<string, unknown>
+function FieldRuntime:_composeFieldServices(boot)
+  local monBucket = boot.loadedGame and boot.loadedGame.mons
+    or assert(self.game.mons, "finalized game mons bucket is required")
+  local function monMetMapSection()
+    local currentMap = self.session and self.session.currentMap or self.runtimeMap
+    local nativeId = currentMap and currentMap.mapSectionNativeId or nil
+    assert(
+      type(nativeId) == "number" and nativeId % 1 == 0 and nativeId >= 0,
+      "mon met location requires the active native map section"
+    )
+    return nativeId
+  end
+  local function monMetDate()
+    local now = self.localClock:nowLocal()
+    return { year = now.year, month = now.month, day = now.day }
+  end
+  self.monService = HgssMonService.new({
+    catalog = self.monCatalog,
+    bucket = monBucket,
+    profile = self.playerData.profile,
+    game = self.versionId,
+    language = self.monLanguage,
+    charmap = boot.fontDef.charmap,
+    mapSection = monMetMapSection,
+    date = monMetDate,
+  })
+  self:_composeBag(boot.activeGame, boot.loadedGame)
+  local martBucket = boot.loadedGame and boot.loadedGame.mart
+    or assert(self.game.mart, "finalized game mart bucket is required")
+  self.martService = MartService.new({
+    profile = self.playerData.profile,
+    bag = self.bagService,
+    itemCatalog = self.itemCatalog,
+    catalog = self.martCatalog,
+    bucket = martBucket,
+  })
+  self:_composeMart(boot)
+  -- The one following-mon controller: derived follower presentation over
+  -- the live party, driven once per fixed tick after the session update.
+  -- The player accessor tracks warp rebinds, so the controller never holds
+  -- a stale player across map swaps. The map accessor reads the live
+  -- session map first (the exact metadata behind the actor/player map)
+  -- and falls back to the loader's resident logical maps; it never
+  -- reaches producer data.
+  local function currentPlayer()
+    return self.player
+  end
+  local function currentMap(mapId)
+    local current = self.session and self.session.currentMap or self.runtimeMap
+    if current and current.mapId == mapId then
+      return current
+    end
+    return self.mapLoader:get(mapId)
+  end
+  self.followingMon = FollowingMonController.new({
+    service = self.monService,
+    catalog = self.monCatalog,
+    actors = self.actors,
+    playerOf = currentPlayer,
+    mapOf = currentMap,
+  })
+  self.starterBalls = composeStarterBalls(self)
+  self.partySelection = buildPartySelectionHost(self, boot.cacheFs)
+  self:_composePokemonMenu(boot.cacheFs)
+  -- The one follower-transition owner: the transient visual the
+  -- nonblocking transition command starts, advanced once per fixed tick
+  -- after the follower reconciles. A missing or malformed generated
+  -- definition fails the boot loudly instead of silently dropping the
+  -- visual. The headless factory keeps deterministic timing without GPU
+  -- state; presentation replaces it with renderer-backed instances.
+  self:_composeFollowerTransition(boot.cacheFs)
+  local scriptComposition = require("game.hgss.src.field.FieldScriptComposition").compose(self, {
+    cacheFs = boot.cacheFs,
+    layoutMessage = boot.layoutMessage,
+    fontDef = boot.fontDef,
+    audioService = boot.audioService,
+    loadedGame = boot.loadedGame,
+    mons = self.monService,
+    items = self.bagService,
+    itemCatalog = self.itemCatalog,
+    starterProvider = self.starterProvider,
+    starterChoice = self.starterChoice,
+    partySelection = self.partySelection,
+    mart = self.martHost,
+    travel = self.fieldTravel,
+    fieldMoves = self.pokemonMenu.fieldMoves,
+    pokemonNaming = self.pokemonNaming,
+    followingMon = self.followingMon,
+    followerInteractionCatalog = self.followerInteractionCatalog,
+    clock = self.localClock,
+    followerTransition = self.followingMonTransition,
+    starterBalls = self.starterBalls,
+  })
+  self.scripts = scriptComposition.scripts
+  scriptComposition.restore()
+end
+
+-- Composes the one script-owned mart child host over the real inventory and
+-- presentation owners. Children borrow the shared field display and complete
+-- Bag contracts; the scheduler remains their only fixed-tick driver.
+---@param boot table<string, unknown>
+function FieldRuntime:_composeMart(boot)
+  local MartHost = require("game.hgss.src.mart.MartHost")
+  local MartScreenState = require("game.hgss.src.mart.MartScreenState")
+  local BagScreenState = require("game.hgss.src.field.BagScreenState")
+  local BagCache = require("libs.assets.src.BagCache")
+  local BagOverrides = self.presentationOverrides ~= nil and self.presentationOverrides.bag or nil
+  local MartOverrides = self.presentationOverrides ~= nil and self.presentationOverrides.mart or nil
+  local function measureDisplay()
+    return assert(self.presentationDisplay, "mart children require measured field display")
+  end
+  local function playSequence(sequence)
+    local audio = self.audio or boot.audioService
+    if audio ~= nil then
+      audio:play(sequence)
+    end
+  end
+  local textPolicy = TextSpeedPolicy.forSpeed(self.playerData.options.textSpeed)
+  local function createBuy(session)
+    return MartScreenState.new({
+      session = session,
+      manifest = MartCache.loadManifest(boot.cacheFs),
+      uiManifest = self.uiManifest,
+      fontDef = boot.fontDef,
+      textPolicy = textPolicy,
+      effect = playSequence,
+      measureDisplay = measureDisplay,
+      frameIndex = self.playerData.options.textFrame,
+      overrides = MartOverrides,
+    })
+  end
+  local function createSell(session)
+    return BagScreenState.new({
+      effect = playSequence,
+      textPolicy = textPolicy,
+      service = self.bagService,
+      cursor = self.bagCursor,
+      manifest = BagCache.loadManifest(boot.cacheFs),
+      uiManifest = self.uiManifest,
+      monCatalog = self.monCatalog,
+      heroGender = self.playerData.profile.gender == 0 and "male" or "female",
+      context = "sell",
+      saleSession = session,
+      partyEmpty = self.monService:partyCount() == 0,
+      measureDisplay = measureDisplay,
+      overrides = BagOverrides,
+    })
+  end
+  local function readFlag(flagId)
+    return self.eventState:isFlagSet(flagId)
+  end
+  local function readVariable(varId)
+    return self.eventState:getVar(varId)
+  end
+  local function currentMartDate()
+    return self.localClock:nowLocal()
+  end
+  local function clearMartUi()
+    self.input:clearUi()
+  end
+  local resolver = self.martStockResolver
+  if resolver == nil then
+    resolver = VanillaMartStock.resolve
+  end
+  self.martHost = MartHost.new({
+    service = self.martService,
+    catalog = { mart = self.martCatalog, items = self.itemCatalog },
+    profile = self.playerData.profile,
+    localDate = currentMartDate,
+    stockResolver = resolver,
+    getFlag = readFlag,
+    getVar = readVariable,
+    createBuy = createBuy,
+    createSell = createSell,
+    clearUi = clearMartUi,
+  })
+end
+
+-- Publish residency and the live session only after its collaborators are ready.
+---@param boot table<string, unknown>
+function FieldRuntime:_startFieldSession(boot)
+  local FieldZoneController = require("libs.hgss.src.world.FieldZoneController")
+  local function mapForId(mapId)
+    return assert(self.residency):mapForId(mapId)
+  end
+  local function rebindScripts(runtimeMap, player)
+    self.runtimeMap = runtimeMap
+    player.currentMap = runtimeMap
+    self.scripts:onZoneChange(runtimeMap)
+  end
+  local function applyWeather(runtimeMap)
+    -- The runtime render environment is always available, even on a
+    -- scene-less logical halo, so destination weather resolves against
+    -- the destination map itself instead of carrying the source weather.
+    self.weatherRuntime = { mapId = runtimeMap.mapId }
+    self:_applyEffectiveWeather(runtimeMap)
+  end
+  local function enterAudio(runtimeMap)
+    if self.audio and self.audio.enterZone then
+      self.audio:enterZone(runtimeMap)
+    end
+  end
+  local function onZoneChange(change)
+    self.lastZoneChange = change
+  end
+  self.zoneController = FieldZoneController.new({
+    currentMap = self.runtimeMap,
+    mapForId = mapForId,
+    rebindScripts = rebindScripts,
+    applyWeather = applyWeather,
+    enterAudio = enterAudio,
+    onChange = onZoneChange,
+  })
+
+  local FieldResidencyCoordinator = require("libs.hgss.src.world.FieldResidencyCoordinator")
+  local function coverageProvider()
+    return self.physicalCoverage
+  end
+  local function resolveInteraction(_, snapshot)
+    return self.interactionResolver:resolve(snapshot)
+  end
+  local function enterMapActors()
+    local restore = boot.initialActorRestore
+    if restore ~= nil then
+      assert(self.runtimeMap.mapId == boot.initialActorRestoreMapId, "loaded actor snapshot map mismatch")
+    end
+    self.actors:enterMap(self.runtimeMap, self.eventState, restore)
+    if restore ~= nil then
+      boot.initialActorRestore = nil
+      boot.initialActorRestoreMapId = nil
+    end
+  end
+  local onPreparedMap
+  if self.audio then
+    local function prewarmMapMusic(runtimeMap)
+      self.audio:prewarmMapMusic(runtimeMap)
+    end
+    onPreparedMap = prewarmMapMusic
+  end
+  self.residency = FieldResidencyCoordinator.new({
+    coverage = self.physicalCoverage,
+    mapLoader = self.mapLoader,
+    actors = self.actors,
+    zoneController = self.zoneController,
+    composeMap = boot.composeCurrentMap,
+    onPreparedMap = onPreparedMap,
+  })
+  self.residency:initialize()
+
+  local function sessionContextChoicePresentation()
+    return self:contextChoicePresentation()
+  end
+  self.session = FieldSession.new({
+    versionId = self.versionId,
+    currentMap = self.runtimeMap,
+    player = self.player,
+    camera = self.camera,
+    transition = self.transition,
+    actors = self.actors,
+    playerVisual = self.playerVisual,
+    dialogue = self.dialogue,
+    input = self.input,
+    scriptScheduler = self.scripts.scheduler,
+    scriptClient = self.scripts.client,
+    initController = self.scripts.initController,
+    menuHost = self.menuHost,
+    yesNoHost = self.yesNoHost,
+    contextChoice = self.contextChoiceProvider,
+    contextChoicePresentation = sessionContextChoicePresentation,
+    starterChoice = self.starterChoice,
+    partySelection = self.partySelection,
+    martHost = self.martHost,
+    fieldMoves = self.pokemonMenu.fieldMoves,
+    pokemonNaming = self.pokemonNaming,
+    signpost = self.signpost,
+    applicationHost = self.applicationHost,
+    -- The session's fixed-tick audio collaborator is the production
+    -- GameSound only; a recording script adapter is a script service, not
+    -- a session collaborator.
+    audio = self.audio,
+    navigationBoundary = require("libs.hgss.src.world.FieldNavigationBoundary").new({
+      zoneController = self.zoneController,
+      residencyCoordinator = self.residency,
+      coverageProvider = coverageProvider,
+    }),
+    interactions = {
+      resolve = resolveInteraction,
+    },
+    eventResolver = FieldEventResolver,
+    eventState = self.eventState,
+    fieldEntranceIndicator = self.fieldEntranceIndicator,
+    enterMapActors = enterMapActors,
+    autoAcknowledgePresentation = not self.presentation,
+    terrainEffects = self.fieldTerrainEffectController,
+    playerAvatar = self.playerAvatar,
+  })
+
+  if boot.loadedGame and boot.loadedGame.weatherId ~= nil then
+    self:_setLiveWeather(self.runtimeMap, boot.loadedGame.weatherId)
+  else
+    self:_applyEffectiveWeather(self.runtimeMap)
+  end
+  self.session:beginMapEntry()
+  self.playTime = boot.loadedGame and PlayTime.new(boot.loadedGame.playTimeSeconds) or self.game.playTime
+  assert(self.playTime and self.playTime.start and self.playTime.advance, "game play time is required")
+  self.playTime:start()
+
+  self.weatherRuntime = { mapId = self.runtimeMap.mapId }
+end
+
 function FieldRuntime.new(game, options)
   assert(type(game) == "table", "field runtime requires a finalized or loaded game")
   assert(type(game.versionId) == "string" and game.versionId ~= "", "field runtime game version is required")
   options = options or {}
+  assert(
+    options.martStockResolver == nil or type(options.martStockResolver) == "function",
+    "martStockResolver must be a function"
+  )
   local effectiveOverrideFs = options.overrideFs or RepoFs.new(love.filesystem.getSourceBaseDirectory())
   local self = setmetatable({
     game = game,
@@ -578,6 +1426,7 @@ function FieldRuntime.new(game, options)
     localClock = options.localClock or LocalClock.system(),
     weatherClock = options.weatherClock,
     presentationOverrides = options.presentationOverrides,
+    martStockResolver = options.martStockResolver,
     errorText = nil,
     fieldPixelScale = FieldPixelScale.new(options.fieldScaleConfig or FieldPresentation.fieldScale),
   }, FieldRuntime)
@@ -607,799 +1456,14 @@ function FieldRuntime.new(game, options)
 end
 
 function FieldRuntime:_load(loadOptions)
+  local boot = {}
   local ok, err = pcall(function()
-    local cacheFs, fontDef, playerDataContext, saveValidation, world, uiManifest
-    local loadedGame, activeGame, restoredAudio
-    local initialActorRestore, initialActorRestoreMapId
-    local layoutMessage, audioService
-    local composeInitialMap, composeCurrentMap, composePreparedMap
-
-    -- Cache and generated-runtime inputs are validated before any field owner is published.
-    local function loadRuntimeAssets()
-      cacheFs = CacheFs.forVersion(self.versionId)
-      self.cacheFs = cacheFs
-      -- The compiled actor index carries the runtime-facing actor configuration
-      -- (avatars + variable-sprite policy); a missing runtime block is a stale
-      -- or foreign cache and fails the boot loudly.
-      local actorIndex = assert(
-        cacheFs:loadLua(FieldActorCache.indexPath()),
-        "field actor index missing -- run `scripts/buildcache.sh` first"
-      )
-      assert(
-        actorIndex.runtime and actorIndex.runtime.avatars and actorIndex.runtime.variableSprites,
-        "field actor index has no runtime configuration"
-      )
-      self.actorConfig = actorIndex.runtime
-      validateAvatarConfig(self.actorConfig.avatars)
-      -- The player-data validation context: the generated field font charmap
-      -- and the imported dialogue frame-index set, loaded once and injected
-      -- into fresh-session construction and the save store (the same pattern
-      -- as the compiled avatar set). The field-UI class is a required runtime
-      -- asset: its manifest is the authority for which frame indexes resolve.
-      fontDef = FieldFontLoader.load(cacheFs)
-      uiManifest = assert(
-        cacheFs:loadLua(FieldUiAssetCache.manifestPath()),
-        "field UI cache is cold -- run `scripts/buildcache.sh` first"
-      )
-      assert(
-        type(uiManifest) == "table" and uiManifest.schema == FieldUiAssetCache.SCHEMA,
-        "field UI manifest is invalid"
-      )
-      -- The window-style catalogue is composed per runtime from the generated
-      -- manifest: the production-owned built-in styles, immutable from then on.
-      self.windowStyles = FieldWindowStyles.new(uiManifest)
-      self.uiManifest = uiManifest
-      local frameIndexes = {}
-      for frame = 0, uiManifest.dialogueFrames.count - 1 do
-        frameIndexes[frame] = true
-      end
-      playerDataContext = {
-        charmap = fontDef.charmap,
-        frameIndexes = frameIndexes,
-      }
-      saveValidation = assert(self.saveValidation)
-      world =
-        assert(cacheFs:loadLua(MapAssetCache.worldPath()), "world.lua missing -- run `scripts/buildcache.sh` first")
-      local profiles =
-        assert(cacheFs:loadLua(CAMERA_PROFILES_PATH), "field camera cache is cold -- run `scripts/buildcache.sh` first")
-      assert(profiles.schema == FieldCameraCache.SCHEMA, "unsupported field camera cache")
-      self.cameraProfiles = profiles.profiles
-
-      -- The weather catalog: fourteen fog presets and ordered override rules.
-      local weatherCatalog = assert(
-        cacheFs:loadLua(FieldWeatherCache.catalogPath()),
-        "field weather cache is cold -- run `scripts/buildcache.sh` first"
-      ) --[[@as FieldWeatherCache.Catalog]]
-      assert(FieldWeatherCache.validateCatalog(weatherCatalog), "field weather catalog is invalid")
-      self.weatherCatalog = weatherCatalog
-      local followerInteractionCatalog = assert(
-        cacheFs:loadLua(FollowerInteractionCache.catalogPath()),
-        "follower interaction catalog is missing -- run `scripts/buildcache.sh` first"
-      )
-      assert(
-        FollowerInteractionCache.validateCatalog(followerInteractionCatalog),
-        "follower interaction catalog is invalid"
-      )
-      self.followerInteractionCatalog = followerInteractionCatalog
-      -- The mon catalog behind the live party: loaded once per runtime
-      -- through the ready cache path, before save validation and service
-      -- construction. The shared item catalog loads beside it and is retained
-      -- for later Bag composition. Screens and scripts borrow the service,
-      -- never the catalogs directly.
-      local monRoot = MonCache.loadCatalog(cacheFs)
-      self.itemCatalog = ItemCatalog.new(ItemCache.loadCatalog(cacheFs))
-      self.monCatalog = MonCatalog.new(monRoot, self.itemCatalog)
-      self.monLanguage = monRoot.version.language
-      self.fieldEntranceIndicatorAsset, self.fieldEntranceIndicator = FieldEntranceIndicatorRuntime.load(cacheFs)
-      self.fieldEmoteModels = FieldActorEmoteRuntime.load(cacheFs)
-      self.fieldEffectAssets = self.fieldEntranceIndicatorAsset
-      local terrainEffects = {
-        tall_grass = self.fieldEntranceIndicatorAsset.effects.tall_grass,
-        very_tall_grass = self.fieldEntranceIndicatorAsset.effects.very_tall_grass,
-        trainer_reveal = self.fieldEntranceIndicatorAsset.effects.trainer_reveal,
-      }
-      for selector = 1, 14 do
-        local kind = "follower_reaction_" .. selector
-        terrainEffects[kind] = self.fieldEntranceIndicatorAsset.effects[kind]
-      end
-      self.fieldTerrainEffectController = require("libs.hgss.src.world.FieldTerrainEffectController").new({
-        effects = terrainEffects,
-        modelFactory = require("libs.hgss.src.presentation.FieldTerrainEffectModelFactory").new(),
-      })
-
-      -- A prepared New Game entry moves its already-staged loader and queue
-      -- in before the initial map acquisition, so the first load hits the
-      -- resident bedroom instead of rebuilding it. Without one, presentation
-      -- mode owns one asset-preparation worker for the runtime lifetime (a
-      -- headless runtime leaves it nil and starts no thread); it is
-      -- constructed before the map loader so scene loading can route
-      -- mesh/image CPU work through it.
-      self.mapLoader, self.assetPreparation = acquireMapLoader(self, cacheFs, world, loadOptions)
-      local function mapMatrixMemberId(logicalMap)
-        local mapIndex = assert(self.mapLoader.world.byId[logicalMap.mapId], "outdoor map catalog record is required")
-        local mapRecord = assert(self.mapLoader.world.maps[mapIndex], "outdoor map catalog record is missing")
-        return assert(mapRecord.matrix.memberId, "outdoor map matrix member is required")
-      end
-
-      -- Structural outdoor check: matrix membership comes from the world
-      -- catalog and holds before (and without) visual realization.
-      local function hasMatrixMembership(mapId)
-        local byId = self.mapLoader.world.byId
-        local maps = self.mapLoader.world.maps
-        if type(byId) ~= "table" or type(maps) ~= "table" then
-          return false
-        end
-        local mapIndex = byId[mapId]
-        local mapRecord = type(mapIndex) == "number" and maps[mapIndex] or nil
-        return type(mapRecord) == "table" and type(mapRecord.matrix) == "table"
-      end
-
-      -- Initial boot has no live source owner to protect. It is the only path
-      -- allowed to publish a newly created initial coverage.
-      local function initialMap(logicalMap, position)
-        if logicalMap.scene.type ~= "outdoor" then
-          return logicalMap
-        end
-        assert(not self.physicalCoverage, "initial physical coverage already exists")
-        self.physicalCoverage = self.mapLoader:createPhysicalCoverage(logicalMap, position)
-        return composePhysicalMap(logicalMap, self.physicalCoverage)
-      end
-      composeInitialMap = initialMap
-
-      -- Logical zone changes reuse the committed owner. A matrix mismatch here
-      -- indicates that a logical seam was routed through the wrong boundary.
-      -- Outdoor-ness is structural matrix membership, not visual readiness:
-      -- a scene-less outdoor halo still gets the shared physical window so
-      -- permission, projection, and camera math keep working.
-      local function currentMap(logicalMap, coverage)
-        if not hasMatrixMembership(logicalMap.mapId) then
-          return logicalMap
-        end
-        coverage = coverage or assert(self.physicalCoverage, "current outdoor coverage is required")
-        assert(
-          mapMatrixMemberId(logicalMap) == coverage.matrixMemberId,
-          "logical outdoor map does not belong to the current physical matrix"
-        )
-        return composePhysicalMap(logicalMap, coverage)
-      end
-      composeCurrentMap = currentMap
-
-      -- A live warp receives an explicit ownership record. The replacement is
-      -- transition-owned until commit and never mutates physicalCoverage here.
-      local function preparedMap(logicalMap, position)
-        if logicalMap.scene.type ~= "outdoor" then
-          return logicalMap, nil
-        end
-        local matrixMemberId = mapMatrixMemberId(logicalMap)
-        local physical = self:_stagePhysicalCoverage(logicalMap, position, matrixMemberId)
-        local ok, runtimeMap = pcall(composePhysicalMap, logicalMap, physical.coverage)
-        if not ok then
-          if physical.replacement then
-            physical.coverage:release()
-            physical.state = "released"
-          end
-          error(runtimeMap, 0)
-        end
-        return runtimeMap, physical
-      end
-      composePreparedMap = preparedMap
-    end
-    -- Restore the entry record and establish the initial map, player, and actor owners.
-    local function loadInitialWorld()
-      local entryGame
-      if self.game.schema == GameSave.SCHEMA then
-        entryGame = assert(saveValidation:validate(self.game))
-        assert(entryGame.versionId == self.versionId, "loaded game belongs to another version")
-      else
-        assert(self.game.playerData, "finalized game player data is required")
-        local validPlayerData, playerDataErr =
-          saveValidation:validatePlayerData(self.game.playerData, playerDataContext)
-        assert(validPlayerData, "finalized game player data is invalid: " .. tostring(playerDataErr))
-        self.game.playerData = validPlayerData
-      end
-      loadedGame = entryGame
-      activeGame = entryGame or self.game
-      self.savePublished = entryGame ~= nil
-      self.runtimeMap, self.entryLocation = loadGameLocation(activeGame, self.mapLoader, composeInitialMap)
-      self.mapLoader:protectMap(self.runtimeMap.mapId, true)
-
-      self.playerData = activeGame.playerData
-      self.fieldTravel =
-        FieldTravelState.new(assert(activeGame.fieldTravel, "field travel state is required to enter the field"))
-      self.fashionCase =
-        FashionCaseState.new(assert(activeGame.fashionCase, "Fashion Case state is required to enter the field"))
-      local fieldX, fieldZ = self.entryLocation.fieldX, self.entryLocation.fieldZ
-      local surfaceId, facing = self.entryLocation.surfaceId, self.entryLocation.facing
-      self.player = FieldPlayer.new({
-        currentMap = self.runtimeMap,
-        fieldX = fieldX,
-        fieldZ = fieldZ,
-        surfaceId = surfaceId,
-        facing = facing,
-        occupancy = playerOccupancy(self),
-      })
-      self.input = FieldInput.new()
-      local worldPoint = self.player:renderPosition()
-
-      local profile = assert(
-        self.cameraProfiles[self.runtimeMap.cameraType],
-        "field camera cache has no camera type " .. self.runtimeMap.cameraType
-      )
-      self.camera = FieldCamera.new(profile, { initialTarget = worldPoint })
-      local width, height = self.viewportWidth, self.viewportHeight
-      self.viewport = FieldViewport.new(width, height, { mode = "expanded" })
-      self:_updateCameraProjection()
-      local restoredWorld = entryGame and entryGame.world
-      restoredAudio = entryGame and entryGame.audio
-      self.restoredAudio = restoredAudio
-      self.eventState = entryGame
-          and FieldEventState.new({ flags = restoredWorld.flags, vars = restoredWorld.variables })
-        or self.game.worldState
-      assert(self.eventState and self.eventState.serialize, "finalized game event state is required")
-      initialActorRestore = entryGame and restoredWorld.objects or nil
-      initialActorRestoreMapId = entryGame and entryGame.mapId or nil
-      self.actorAssets = FieldActorDefinitionProvider.new(cacheFs)
-      self.actors = FieldActorManager.new({
-        assets = self.actorAssets,
-        policy = { variableSprites = self.actorConfig.variableSprites },
-      })
-
-      -- The player's graphic is one more compiled actor visual: FieldPlayer
-      -- keeps every bit of movement authority while the avatar transition owner
-      -- selects which compiled visual presents it. Dynamic residency stays with
-      -- FieldState; the simulation side holds no fixed avatar asset.
-      self.avatar = avatarForGender(self.actorConfig.avatars, self.playerData.profile.gender)
-      local initialAvatarState = "walking"
-      if entryGame and entryGame.avatar then
-        initialAvatarState = entryGame.avatar.state
-      end
-      self.playerAvatar = FieldPlayerAvatarState.new({
-        capability = self.avatar,
-        surfPresentation = self.fieldEffectAssets.effects.surf_attachment.presentation,
-        initialState = initialAvatarState,
-      })
-      self.playerVisual = FieldPlayerVisual.new({
-        player = self.player,
-        spriteId = self.playerAvatar:currentSpriteId(),
-        playerAvatar = self.playerAvatar,
-      })
-
-      -- Warp resolution is owned by WarpSystem through FieldTransition's
-      -- default resolver: ordinary records follow the indexed path; scripted
-      -- `direct` records carry global destination coordinates and resolve
-      -- through their own branch. Fallible destination preparation runs before
-      -- the commit, so a failed warp never touches current-map ownership.
-      -- Door choreography is a presentation capability. A simulation-only
-      -- runtime has no resolver and therefore runs door-kind warps through the
-      -- ordinary fade lifecycle.
-    end
-    -- Install the transition boundary while the runtime still owns boot rollback.
-    local function composeTransitions()
-      local headlessProps = {}
-      local doorAt
-      local escalatorAt
-      if self.presentation or self.runtimeMap.sceneRuntime or self.runtimeMap.scene then
-        -- Outdoor realized maps carry no central collision by design (tiles
-        -- stream through the shared window): graft the window fields onto a
-        -- disposable view mirroring syncPhysicalFields so the facade and its
-        -- queries share one coordinate space. Window-relative facades are
-        -- never cached: the window recenters under them.
-        local function windowView(runtimeMap)
-          local coverage = assert(self.physicalCoverage, "window grafting requires shared physical coverage")
-          local region = assert(coverage.region, "window grafting requires the coverage region")
-          assert(region.collision ~= nil, "window grafting requires region collision")
-          local origin = assert(coverage.origin, "window grafting requires the coverage origin")
-          local view = {}
-          for key, value in pairs(runtimeMap) do
-            view[key] = value
-          end
-          view.fieldRegion = region
-          view.collision = region.collision
-          view.terrain = region.terrain
-          view.terrainDependencyHash = coverage.terrainDependencyHash
-          view.coordinateOrigin = { x = origin.x, z = origin.z }
-          view.physicalOrigin = origin
-          return view
-        end
-        local function resolveDoorAt(runtimeMap, doorFieldX, doorFieldZ)
-          -- A scene-less logical map carries no placements or collision:
-          -- door identity is unknowable, so the warp resolves no door and
-          -- the transition raises its unresolved-door failure rather than
-          -- degrading to a plain fade or a synthetic open sound. Door-kind
-          -- warps gate on source visual readiness before choreography, so
-          -- this backstop only fires for hostless loaders.
-          if runtimeMap.scene == nil and runtimeMap.sceneRuntime == nil then
-            return nil
-          end
-          local sceneRuntime = runtimeMap.sceneRuntime
-          if sceneRuntime and sceneRuntime.mapProps then
-            return sceneRuntime.mapProps:doorAt(runtimeMap, doorFieldX, doorFieldZ)
-          end
-          local target, cacheable = runtimeMap, true
-          if runtimeMap.collision == nil then
-            local view = windowView(runtimeMap)
-            if view == nil then
-              return nil
-            end
-            target, cacheable = view, false
-          end
-          local props = cacheable and headlessProps[target.mapId] or nil
-          if not props then
-            props = headlessMapProps(target, cacheFs)
-            if cacheable then
-              headlessProps[target.mapId] = props
-            end
-          end
-          return props:doorAt(target, doorFieldX, doorFieldZ)
-        end
-        local function resolveEscalatorAt(runtimeMap, escalatorFieldX, escalatorFieldZ)
-          if runtimeMap.scene == nil and runtimeMap.sceneRuntime == nil then
-            return nil
-          end
-          local sceneRuntime = runtimeMap.sceneRuntime
-          if sceneRuntime and sceneRuntime.mapProps then
-            return sceneRuntime.mapProps:propAt(runtimeMap, escalatorFieldX, escalatorFieldZ)
-          end
-          local target, cacheable = runtimeMap, true
-          if runtimeMap.collision == nil then
-            local view = windowView(runtimeMap)
-            if view == nil then
-              return nil
-            end
-            target, cacheable = view, false
-          end
-          local props = cacheable and headlessProps[target.mapId] or nil
-          if not props then
-            props = headlessMapProps(target, cacheFs)
-            if cacheable then
-              headlessProps[target.mapId] = props
-            end
-          end
-          return props:propAt(target, escalatorFieldX, escalatorFieldZ)
-        end
-        doorAt = resolveDoorAt
-        escalatorAt = resolveEscalatorAt
-      end
-      self.transition = self.worldSwapCoordinator:createTransition(
-        self,
-        doorAt,
-        escalatorAt,
-        function(_, sourceMap, warp)
-          local physical
-          local ok, result = pcall(function()
-            local function loadDestination(_, mapId)
-              assert(mapId == warp.destinationMapId, "transition destination map mismatch")
-              local logicalMap = self.mapLoader:load(mapId)
-              local destinationPosition
-              if warp.direct then
-                destinationPosition = { fieldX = warp.x, fieldZ = warp.z }
-              else
-                local destinationWarp = logicalMap.fieldData.events.warps[warp.destinationWarpId + 1]
-                assert(destinationWarp, "transition destination warp is missing")
-                destinationPosition = { fieldX = destinationWarp.x, fieldZ = destinationWarp.z }
-              end
-              local composed, ownership = composePreparedMap(logicalMap, destinationPosition)
-              physical = ownership
-              return composed
-            end
-            return require("libs.hgss.src.transition.WarpSystem").resolveDestination({
-              load = loadDestination,
-            }, sourceMap, warp)
-          end)
-          if not ok then
-            if physical and physical.replacement and physical.state == "prepared" then
-              physical.coverage:release()
-              physical.state = "released"
-            end
-            error(result, 0)
-          end
-          result.physical = physical
-          return result
-        end
-      )
-      self.transition.player = self.player
-      self.transition.suppression = nil
-
-      -- The production script screen-fade controller (fade_screen/wait_fade):
-      -- composed unconditionally so every supported field script has it,
-      -- regardless of presentation mode or scriptHosts injection. Rendering
-      -- only reads its status().
-      self.screenFade = FieldScriptScreenFade.new()
-
-      -- Modal dialogue is pure and fixed-tick. Runtime layout needs only the
-      -- compiled font definition; presentation later owns the atlas and drawing.
-      -- The text-speed cadence is captured from the player options at
-      -- construction, so an open request never queries options afterwards.
-    end
-    -- Compose the fixed-tick presentation and application hosts.
-    local function composeFieldUi()
-      local fontMetrics = FieldDialogueTheme.fontMetrics(fontDef)
-      self.menuHost = FieldMenuHost.new({
-        width = self.viewportWidth,
-        height = self.viewportHeight,
-        input = self.input,
-        screenTopology = self.screenTopology,
-        measureText = FieldDialogueTheme.measureText(fontDef),
-      })
-      -- The live choice host shares the menu host's measurement and topology
-      -- so draw and pointer mapping resolve one geometry. Its dialogue anchor
-      -- reads the live runtime below; resolution only runs while a choice or
-      -- a contextual prompt is presented.
-      local function yesNoPresentationContext()
-        return self:yesNoPresentationContext()
-      end
-      self.yesNoHost = FieldYesNoHost.new({
-        width = self.viewportWidth,
-        height = self.viewportHeight,
-        input = self.input,
-        screenTopology = self.screenTopology,
-        measureText = FieldDialogueTheme.measureText(fontDef),
-        presentation = yesNoPresentationContext,
-      })
-      local function formatLayout(formatted)
-        return DialogueLayout.layout(
-          formatted.tokens,
-          fontMetrics,
-          { width = FieldDialogueTheme.textWidth, maxLines = FieldDialogueTheme.maxLines }
-        )
-      end
-      layoutMessage = formatLayout
-      -- The signpost window presents one 27x4-tile window: the single-window
-      -- lines shape the signpost controller captures is the first page of the
-      -- same paginated dialogue layout. Overflow beyond the window is the
-      -- signpost text path's concern, not this adapter's.
-      local function signpostLayout(formatted)
-        local result = layoutMessage(formatted)
-        return { lines = (result.pages[1] or { lines = {} }).lines }
-      end
-      audioService = self:_composeAudio(cacheFs, restoredAudio)
-      self.dialogue = FieldDialogueController.new({
-        layout = layoutMessage,
-        policy = TextSpeedPolicy.forSpeed(self.playerData.options.textSpeed),
-        audio = audioService,
-        continueCursor = uiManifest.dialogueFrames.continueCursor,
-      })
-      -- The signpost controller is fixed-tick and pure; the script platform
-      -- advances it once per scheduler tick through the signpost host. The
-      -- text-speed cadence is captured from the player options at construction,
-      -- the same single authority as the dialogue controller.
-      self.signpost = FieldSignpostController.new({
-        layout = signpostLayout,
-        policy = TextSpeedPolicy.forSpeed(self.playerData.options.textSpeed),
-      })
-      self.auxiliaryFieldUi = loadedGame and AuxiliaryFieldUi.restore(loadedGame.auxiliaryUi) or AuxiliaryFieldUi.new()
-      self.contextChoiceProvider = ContextChoiceProvider.new()
-      -- The initial display measurement: the runtime measures from the boot
-      -- topology (or the actual default) so pointer input works before any
-      -- resize; the menu wrapper consumes this exact record through its
-      -- measurement closure. The script-owned starter host below borrows the
-      -- same record. This precedes the starter composition because the choice
-      -- surface is built eagerly.
-      self.presentationDisplay = self.displayContext:measure(self.viewportWidth, self.viewportHeight)
-      -- The starter composition: the hand-editable default roster provider
-      -- and the modal choice surface. The blocking starter task receives both
-      -- through scheduler services; no starter code requires the concrete
-      -- provider module after this composition step.
-      self.starterProvider = require("game.hgss.src.starters.VanillaStarterProvider")
-      local starterOverrides = self.presentationOverrides ~= nil and self.presentationOverrides.starter_choice or nil
-      local function starterMeasureDisplay()
-        return self.presentationDisplay
-      end
-      self.starterChoice = require("game.hgss.src.starters.StarterChoiceState").new({
-        catalog = self.monCatalog,
-        cacheFs = cacheFs,
-        frameIndex = self.playerData.options.textFrame,
-        measureDisplay = starterMeasureDisplay,
-        overrides = starterOverrides,
-      })
-      local namingOverrides = self.presentationOverrides ~= nil and self.presentationOverrides.naming_screen or nil
-      self.pokemonNaming = require("game.hgss.src.field.PokemonNamingState").new({
-        charmap = fontDef.charmap,
-        measureDisplay = starterMeasureDisplay,
-        overrides = namingOverrides,
-      })
-      self.actionKeys = HgssInputBindings.actionKeys()
-      self.cancelKeys = HgssInputBindings.cancelKeys()
-      self.menuKeys = HgssInputBindings.menuKeys()
-
-      local function playSequence(sequence)
-        if self.audio then
-          self.audio:play(sequence)
-        end
-      end
-      local applicationDescriptors = self:_applicationDescriptors()
-      local function menuFactory(rememberedActionId)
-        return self:_composeStartMenu(rememberedActionId)
-      end
-      local function fieldAction(actionId, request)
-        return self:_admitFieldAction(actionId, request)
-      end
-      self.applications = FieldApplicationRegistry.new(applicationDescriptors)
-      self.applicationHost = FieldApplicationHost.new({
-        registry = self.applications,
-        menuFactory = menuFactory,
-        input = self.input,
-        fieldAction = fieldAction,
-        effect = playSequence,
-      })
-      -- Interaction discovery: the resolver is pure and consults the same
-      -- live-or-probe actor lookup movement collision uses, so both agree about
-      -- objects on a logical map that is not the active actor map; bound
-      -- interactions run through the script client and the binding audit
-      -- guarantees every interactable event is bound.
-      self.messageProvider = FieldMessageProvider.new(cacheFs)
-      -- Pin the Start Menu label bank for the field-runtime lifetime so menu
-      -- composition stays deterministic and I/O-free after a successful boot.
-      -- A missing bank fails the boot with the provider's typed error.
-      -- (Required at function scope: this phase sits near LuaJIT's upvalue
-      -- limit, so module-level requires must not grow here.)
-      local startMenuBank = require("libs.assets.src.MenuProtocol").START_MENU_MESSAGE_BANK
-      local _, startMenuBankErr = self.messageProvider:acquireBank(startMenuBank)
-      if startMenuBankErr ~= nil then
-        error(startMenuBankErr, 0)
-      end
-      local function actorAt(mapId, candidate)
-        return self:_actorAt(mapId, candidate)
-      end
-      local function targetMapAt(x, z, currentMap)
-        local coverage = currentMap.coverage
-        if not coverage then
-          return currentMap
-        end
-        local targetMapId = FieldZoneIdentity.logicalZoneAt(coverage, x, z, currentMap.mapId) or currentMap.mapId
-        if targetMapId == currentMap.mapId then
-          return currentMap
-        end
-        local targetMap = assert(self.residency):mapForId(targetMapId)
-        return assert(targetMap, "reachable interaction target is not resident")
-      end
-      self.interactionResolver = FieldInteractionResolver.new({
-        actorAt = actorAt,
-        targetMapAt = targetMapAt,
-      })
-
-      -- The production audio composition lives in _composeAudio, keeping its
-      -- module collaborators out of this already large UI-composition phase
-      -- near LuaJIT's 60-upvalue-per-function limit.
-      -- The field-script platform (the script override system): registry over
-      -- the compiled cache + data/scripts/overrides, composition, mechanical
-      -- bindings, scheduler, and interaction client. A resumed save reattaches
-      -- its script bucket.
-      -- The override files live in the repo tree outside the LÖVE source dir,
-      -- so the loader reads them through the io-backed repo filesystem.
-      -- The live mon service: constructed once per runtime from the
-      -- canonical bucket (the validated continue record, or the unpublished
-      -- new-game bucket) and the HGSS player/version policy. A failed
-      -- restore propagates before any field state publishes. The met
-      -- location resolves from the active map and the met date from the
-      -- host clock at creation time.
-    end
-    -- Bind the live mon, Bag, follower, and script services.
-    local function composeFieldServices()
-      local monBucket = loadedGame and loadedGame.mons
-        or assert(self.game.mons, "finalized game mons bucket is required")
-      local function monMetMapSection()
-        local currentMap = self.session and self.session.currentMap or self.runtimeMap
-        local nativeId = currentMap and currentMap.mapSectionNativeId or nil
-        assert(
-          type(nativeId) == "number" and nativeId % 1 == 0 and nativeId >= 0,
-          "mon met location requires the active native map section"
-        )
-        return nativeId
-      end
-      local function monMetDate()
-        local now = self.localClock:nowLocal()
-        return { year = now.year, month = now.month, day = now.day }
-      end
-      self.monService = HgssMonService.new({
-        catalog = self.monCatalog,
-        bucket = monBucket,
-        profile = self.playerData.profile,
-        game = self.versionId,
-        language = self.monLanguage,
-        charmap = fontDef.charmap,
-        mapSection = monMetMapSection,
-        date = monMetDate,
-      })
-      self:_composeBag(activeGame, loadedGame)
-      -- The one following-mon controller: derived follower presentation over
-      -- the live party, driven once per fixed tick after the session update.
-      -- The player accessor tracks warp rebinds, so the controller never holds
-      -- a stale player across map swaps. The map accessor reads the live
-      -- session map first (the exact metadata behind the actor/player map)
-      -- and falls back to the loader's resident logical maps; it never
-      -- reaches producer data.
-      local function currentPlayer()
-        return self.player
-      end
-      local function currentMap(mapId)
-        local current = self.session and self.session.currentMap or self.runtimeMap
-        if current and current.mapId == mapId then
-          return current
-        end
-        return self.mapLoader:get(mapId)
-      end
-      self.followingMon = FollowingMonController.new({
-        service = self.monService,
-        catalog = self.monCatalog,
-        actors = self.actors,
-        playerOf = currentPlayer,
-        mapOf = currentMap,
-      })
-      self.starterBalls = composeStarterBalls(self)
-      self.partySelection = buildPartySelectionHost(self, cacheFs)
-      self:_composePokemonMenu(cacheFs)
-      -- The one follower-transition owner: the transient visual the
-      -- nonblocking transition command starts, advanced once per fixed tick
-      -- after the follower reconciles. A missing or malformed generated
-      -- definition fails the boot loudly instead of silently dropping the
-      -- visual. The headless factory keeps deterministic timing without GPU
-      -- state; presentation replaces it with renderer-backed instances.
-      self:_composeFollowerTransition(cacheFs)
-      local scriptComposition = require("game.hgss.src.field.FieldScriptComposition").compose(self, {
-        cacheFs = cacheFs,
-        layoutMessage = layoutMessage,
-        fontDef = fontDef,
-        audioService = audioService,
-        loadedGame = loadedGame,
-        mons = self.monService,
-        items = self.bagService,
-        itemCatalog = self.itemCatalog,
-        starterProvider = self.starterProvider,
-        starterChoice = self.starterChoice,
-        partySelection = self.partySelection,
-        travel = self.fieldTravel,
-        fieldMoves = self.pokemonMenu.fieldMoves,
-        pokemonNaming = self.pokemonNaming,
-        followingMon = self.followingMon,
-        followerInteractionCatalog = self.followerInteractionCatalog,
-        clock = self.localClock,
-        followerTransition = self.followingMonTransition,
-        starterBalls = self.starterBalls,
-      })
-      self.scripts = scriptComposition.scripts
-      scriptComposition.restore()
-    end
-    -- Publish residency and the live session only after its collaborators are ready.
-    local function startFieldSession()
-      local FieldZoneController = require("libs.hgss.src.world.FieldZoneController")
-      local function mapForId(mapId)
-        return assert(self.residency):mapForId(mapId)
-      end
-      local function rebindScripts(runtimeMap, player)
-        self.runtimeMap = runtimeMap
-        player.currentMap = runtimeMap
-        self.scripts:onZoneChange(runtimeMap)
-      end
-      local function applyWeather(runtimeMap)
-        -- A scene-less logical halo carries no visuals to fog: carry the
-        -- live weather across the seam and leave presentation application
-        -- to the map's visual entry, which resolves against its own scene.
-        self.weatherRuntime = { mapId = runtimeMap.mapId }
-        if runtimeMap.scene ~= nil then
-          self:_applyEffectiveWeather(runtimeMap)
-        else
-          runtimeMap.effectiveWeatherId = self.lastEffectiveWeatherId
-        end
-      end
-      local function enterAudio(runtimeMap)
-        if self.audio and self.audio.enterZone then
-          self.audio:enterZone(runtimeMap)
-        end
-      end
-      local function onZoneChange(change)
-        self.lastZoneChange = change
-      end
-      self.zoneController = FieldZoneController.new({
-        currentMap = self.runtimeMap,
-        mapForId = mapForId,
-        rebindScripts = rebindScripts,
-        applyWeather = applyWeather,
-        enterAudio = enterAudio,
-        onChange = onZoneChange,
-      })
-
-      local FieldResidencyCoordinator = require("libs.hgss.src.world.FieldResidencyCoordinator")
-      local function coverageProvider()
-        return self.physicalCoverage
-      end
-      local function resolveInteraction(_, snapshot)
-        return self.interactionResolver:resolve(snapshot)
-      end
-      local function enterMapActors()
-        local restore = initialActorRestore
-        if restore ~= nil then
-          assert(self.runtimeMap.mapId == initialActorRestoreMapId, "loaded actor snapshot map mismatch")
-        end
-        self.actors:enterMap(self.runtimeMap, self.eventState, restore)
-        if restore ~= nil then
-          initialActorRestore = nil
-          initialActorRestoreMapId = nil
-        end
-      end
-      local onPreparedMap
-      if self.audio then
-        local function prewarmMapMusic(runtimeMap)
-          self.audio:prewarmMapMusic(runtimeMap)
-        end
-        onPreparedMap = prewarmMapMusic
-      end
-      self.residency = FieldResidencyCoordinator.new({
-        coverage = self.physicalCoverage,
-        mapLoader = self.mapLoader,
-        actors = self.actors,
-        zoneController = self.zoneController,
-        composeMap = composeCurrentMap,
-        onPreparedMap = onPreparedMap,
-      })
-      self.residency:initialize()
-
-      local function sessionContextChoicePresentation()
-        return self:contextChoicePresentation()
-      end
-      self.session = FieldSession.new({
-        versionId = self.versionId,
-        currentMap = self.runtimeMap,
-        player = self.player,
-        camera = self.camera,
-        transition = self.transition,
-        actors = self.actors,
-        playerVisual = self.playerVisual,
-        dialogue = self.dialogue,
-        input = self.input,
-        scriptScheduler = self.scripts.scheduler,
-        scriptClient = self.scripts.client,
-        initController = self.scripts.initController,
-        menuHost = self.menuHost,
-        yesNoHost = self.yesNoHost,
-        contextChoice = self.contextChoiceProvider,
-        contextChoicePresentation = sessionContextChoicePresentation,
-        starterChoice = self.starterChoice,
-        partySelection = self.partySelection,
-        fieldMoves = self.pokemonMenu.fieldMoves,
-        pokemonNaming = self.pokemonNaming,
-        signpost = self.signpost,
-        applicationHost = self.applicationHost,
-        -- The session's fixed-tick audio collaborator is the production
-        -- GameSound only; a recording script adapter is a script service, not
-        -- a session collaborator.
-        audio = self.audio,
-        navigationBoundary = require("libs.hgss.src.world.FieldNavigationBoundary").new({
-          zoneController = self.zoneController,
-          residencyCoordinator = self.residency,
-          coverageProvider = coverageProvider,
-        }),
-        interactions = {
-          resolve = resolveInteraction,
-        },
-        eventResolver = FieldEventResolver,
-        eventState = self.eventState,
-        fieldEntranceIndicator = self.fieldEntranceIndicator,
-        enterMapActors = enterMapActors,
-        autoAcknowledgePresentation = not self.presentation,
-        terrainEffects = self.fieldTerrainEffectController,
-        playerAvatar = self.playerAvatar,
-      })
-
-      if loadedGame and loadedGame.weatherId ~= nil then
-        self:_setLiveWeather(self.runtimeMap, loadedGame.weatherId)
-      else
-        self:_applyEffectiveWeather(self.runtimeMap)
-      end
-      self.session:beginMapEntry()
-      self.playTime = loadedGame and PlayTime.new(loadedGame.playTimeSeconds) or self.game.playTime
-      assert(self.playTime and self.playTime.start and self.playTime.advance, "game play time is required")
-      self.playTime:start()
-
-      self.weatherRuntime = { mapId = self.runtimeMap.mapId }
-    end
-
-    loadRuntimeAssets()
-    loadInitialWorld()
-    composeTransitions()
-    composeFieldUi()
-    composeFieldServices()
-    startFieldSession()
+    self:_loadRuntimeAssets(boot, loadOptions)
+    self:_loadInitialWorld(boot)
+    self:_composeTransitions(boot)
+    self:_composeFieldUi(boot)
+    self:_composeFieldServices(boot)
+    self:_startFieldSession(boot)
   end)
   -- Construction is binary: a failed boot releases everything acquired so
   -- far exactly once, then the original failure propagates to the caller.
@@ -1726,9 +1790,9 @@ end
 -- Apply effective weather to a runtime map: resolve the catalog rules
 -- against the injected date/penalty and event state, store
 -- effectiveWeatherId for headless inspection, and select the fog preset
--- (base scene fog when unchanged, catalog preset otherwise).
+-- (the generated base fog when unchanged, catalog preset otherwise).
 function FieldRuntime:_applyEffectiveWeather(runtimeMap)
-  local base = runtimeMap.scene.weatherId
+  local base = runtimeMap.renderEnvironment.baseWeatherId
   local date = self.weatherClock:today()
   local hasPenalty = self.weatherClock:hasPenalty()
   local effective = FieldWeatherResolver.resolve(self.weatherCatalog, {
@@ -1744,13 +1808,12 @@ end
 function FieldRuntime:_setLiveWeather(runtimeMap, weatherId)
   assert(type(runtimeMap) == "table", "live weather requires a runtime map")
   assert(type(weatherId) == "number" and weatherId % 1 == 0, "live weather id must be an integer")
+  local environment = assert(runtimeMap.renderEnvironment, "live weather requires the runtime render environment")
   local catalogPreset = assert(self.weatherCatalog.presets[weatherId], "live weather id has no catalog preset")
-  local preset = weatherId == runtimeMap.scene.weatherId and runtimeMap.scene.fog or catalogPreset
+  local preset = weatherId == environment.baseWeatherId and environment.baseFog or catalogPreset
   runtimeMap.effectiveWeatherId = weatherId
   self.lastEffectiveWeatherId = weatherId
-  if runtimeMap.sceneRuntime then
-    runtimeMap.sceneRuntime.fog = preset
-  end
+  environment.fog = preset
 end
 
 -- Select the physical owner for a discontinuous outdoor destination. A
@@ -1913,6 +1976,9 @@ function FieldRuntime:resizePresentation(width, height, screenTopology)
   self:_updateCameraProjection()
   self._displayTopology = screenTopology
   self.presentationDisplay = self.displayContext:measure(width, height)
+  if self.martHost then
+    self.martHost:refreshPresentation()
+  end
 end
 
 -- The one teardown path shared by reset and dispose: release every owned
@@ -1939,6 +2005,10 @@ function FieldRuntime:_releaseAll()
   if self.applicationHost then
     self.applicationHost:dispose()
   end
+  if self.martHost then
+    self.martHost:dispose()
+  end
+  self.martHost = nil
   self.applicationHost, self.applications = nil, nil
   self.displayContext, self.presentationDisplay, self.presentationOverrides = nil, nil, nil
   self._displayTopology = nil
@@ -2000,6 +2070,8 @@ function FieldRuntime:_releaseAll()
   self.windowStyles, self.uiManifest, self.weatherCatalog = nil, nil, nil
   self.monCatalog, self.monLanguage, self.monService = nil, nil, nil
   self.bagService, self.bagCursor = nil, nil
+  self.martService = nil
+  self.martStockResolver = nil
   self.itemCatalog = nil
   self.followerInteractionCatalog = nil
   self.starterProvider, self.starterChoice, self.pokemonNaming = nil, nil, nil

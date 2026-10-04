@@ -35,7 +35,7 @@ end
 local function manifestFor(versionId)
   local cacheFs = CacheFs.forVersion(versionId)
   local manifest = PartyCache.loadManifest(cacheFs)
-  Assert.equal(manifest.schema, "g4-party-presentation-v3", versionId .. " renders the current party manifest")
+  Assert.equal(manifest.schema, "g4-party-presentation-v6", versionId .. " renders the current party manifest")
   return cacheFs, manifest
 end
 
@@ -402,6 +402,11 @@ function T.cancel_focus_uses_the_generated_button_without_a_slot_cursor(scope)
     -- the frame-pixel proof covers the rows above and below that band;
     -- the label itself is proved through the unit suite.
     local labelRect = assert(manifest.controls.cancel.textRect, versionId .. " carries the Cancel text rectangle")
+    Assert.deepEqual(
+      labelRect,
+      { x = 208, y = 168, width = 40, height = 16 },
+      versionId .. " generates the Party Cancel text window from its source geometry"
+    )
     local topH = math.max(labelRect.y - drawY, 0)
     local bottomY = math.max(labelRect.y + labelRect.height - drawY, 0)
     local totalMatches, totalOpaque = 0, 0
@@ -720,6 +725,58 @@ function T.context_menu_covers_its_window_with_highlighted_focus(scope)
   end
 end
 
+function T.context_menu_labels_match_the_source_font(scope)
+  for _, versionId in ipairs(readyVersions()) do
+    local cacheFs, manifest = manifestFor(versionId)
+    local menu = {
+      { kind = "summary", label = "SUMMARY" },
+      { kind = "switch", label = "SWITCH" },
+      { kind = "quit", label = "QUIT" },
+    }
+    local status = presentation({ state = "context", menu = menu, menuIndex = 2, menuSlot = 0 })
+    local image, layout = renderPane(scope, cacheFs, manifest, status)
+    local generated = assert(layout.menuLayout("topLevel", #menu)[2], "the switch row has generated geometry")
+    local textRect = generated.textRect
+    local role = assert(manifest.contextMenu.textRoles[generated.style], "the switch row has a text role")
+    local sourceInk = assert(role.depressed, "the focused switch row uses depressed ink")
+    local function normalized(color)
+      return { r = color.r, g = color.g, b = color.b, a = color.a and color.a / 255 or nil }
+    end
+    local ink = {
+      foreground = normalized(sourceInk.foreground),
+      shadow = normalized(sourceInk.shadow),
+      background = normalized(sourceInk.background),
+    }
+    local font = scope:own(FieldTextRenderer.new({ cacheFs = cacheFs, fontId = 4 }))
+    local expectedCanvas = scope:own(love.graphics.newCanvas(256, 192))
+    love.graphics.setCanvas(expectedCanvas)
+    love.graphics.clear(0, 0, 0, 0)
+    font:drawTextWithPalette("SWITCH", textRect.x, textRect.y, ink)
+    love.graphics.setCanvas()
+    local expected = scope:own(expectedCanvas:newImageData())
+    local compared, matched = 0, 0
+    for y = textRect.y, textRect.y + textRect.height - 1 do
+      for x = textRect.x, textRect.x + textRect.width - 1 do
+        local er, eg, eb, ea = expected:getPixel(x, y)
+        if quantize(ea) > 0 then
+          compared = compared + 1
+          local ar, ag, ab, aa = image:getPixel(x, y)
+          if
+            quantize(aa) == quantize(ea)
+            and quantize(ar) == quantize(er)
+            and quantize(ag) == quantize(eg)
+            and quantize(ab) == quantize(eb)
+          then
+            matched = matched + 1
+          end
+        end
+      end
+    end
+    Assert.isTrue(compared > 10, versionId .. " provides font-4 source glyph pixels")
+    Assert.equal(matched, compared, versionId .. " renders context labels with the font-4 glyph mask")
+  end
+end
+
 -- The native browse message band paints through the generated font and
 -- magnifies uniformly at an integral scale.
 function T.browse_message_paints_and_magnifies_uniformly(scope)
@@ -760,6 +817,50 @@ function T.browse_message_paints_and_magnifies_uniformly(scope)
   end
 end
 
+function T.target_and_swap_states_keep_their_lower_prompts(scope)
+  for _, versionId in ipairs(readyVersions()) do
+    local cacheFs, manifest = manifestFor(versionId)
+    local empty, _ = renderPane(scope, cacheFs, manifest, presentation({ state = "message" }))
+    local browse, _ = renderPane(scope, cacheFs, manifest, presentation({ state = "browse" }))
+    local giveTarget, _ = renderPane(
+      scope,
+      cacheFs,
+      manifest,
+      presentation({ state = "choosing_item_target", targetPromptKey = "giveTarget" })
+    )
+    local chooseSwap, _ = renderPane(scope, cacheFs, manifest, presentation({ state = "choose_swap" }))
+    local swappingStatus = presentation({ state = "swapping" })
+    swappingStatus.swap = {
+      source = 0,
+      destination = 1,
+      xOffset = 0,
+      offsets = { [0] = 0, [1] = 0 },
+      directions = { [0] = -1, [1] = 1 },
+      exchanged = false,
+    }
+    local swapping, _ = renderPane(scope, cacheFs, manifest, swappingStatus)
+    local window = assert(manifest.windows.browse, "Party prompt text uses the lower window")
+    local area = { window.x, window.y, window.width, window.height }
+    Assert.isTrue(
+      differingPixels(giveTarget, empty, area[1], area[2], area[3], area[4]) > 10,
+      versionId .. " paints the Give-target prompt in the lower window"
+    )
+    Assert.isTrue(
+      differingPixels(chooseSwap, empty, area[1], area[2], area[3], area[4]) > 10,
+      versionId .. " paints the switch prompt before the swap"
+    )
+    Assert.equal(
+      differingPixels(chooseSwap, swapping, area[1], area[2], area[3], area[4]),
+      0,
+      versionId .. " keeps the switch prompt visible for the full swap animation"
+    )
+    Assert.isTrue(
+      differingPixels(swapping, browse, area[1], area[2], area[3], area[4]) > 10,
+      versionId .. " returns to the browse prompt after the swap completes"
+    )
+  end
+end
+
 -- Source-faithful native behavior through the real v3 bundle: timeline
 -- icon frames with selected bob, gender marks in source roles, fixed HP
 -- fields, the generated Cancel label, action-window context copy, and no
@@ -785,12 +886,16 @@ local function contextPresentation(overrides)
   return presentation(base)
 end
 
+-- Top icon row through the brightened content: the fixture icon red
+-- keeps its red dominance under the white step while brightened
+-- chrome, cursor, and trough rows do not. Every pixel the old pure
+-- channel test accepted still passes; only washed reds are added.
 local function iconTopRow(image, x0, y0, width, height)
   for y = y0, y0 + height - 1 do
     local red = 0
     for x = x0, x0 + width - 1 do
       local ir, ig, ib = image:getPixel(x, y)
-      if ir > 0.7 and ig < 0.3 and ib < 0.3 then
+      if ir > 0.7 and (ir - ig) > 0.2 and (ir - ib) > 0.2 then
         red = red + 1
       end
     end
@@ -878,22 +983,35 @@ function T.hp_fields_hold_slash_and_max_steady_across_current_values(scope)
   end
 end
 
-function T.context_message_names_its_slot_in_the_action_window(scope)
+function T.context_message_names_its_slot_in_the_context_window(scope)
   for _, versionId in ipairs(readyVersions()) do
     local cacheFs, manifest = manifestFor(versionId)
-    local window = assert(manifest.windows.action, versionId .. " carries the action window")
+    local window = assert(manifest.windows.context, versionId .. " carries the context window")
+    local action = assert(manifest.windows.action, versionId .. " carries the action window")
     local function renderNamed(name)
       local status = contextPresentation({ cursorNode = 5 })
       status.view.slots[1] = slot(0, { displayName = name })
       local image, _ = renderPane(scope, cacheFs, manifest, status)
       return image
     end
-    -- Same-length names keep panel numerals identical, so any action-
-    -- window difference is the context message naming its slot.
-    local first = renderNamed("LEADMONA")
-    local second = renderNamed("LEADMONB")
+    -- Same-length names differing in the first glyph keep panel layout
+    -- identical, so any context-window difference is the open-menu
+    -- message naming its slot at the name start inside its window.
+    local first = renderNamed("AEADMONA")
+    local second = renderNamed("BEADMONA")
     local delta = differingPixels(first, second, window.x, window.y, window.width, window.height)
     Assert.isTrue(delta > 4, versionId .. " paints the context message naming its slot")
+    -- The transient action window carries no open-menu copy: past the
+    -- context window its pixels stay identical across slot names.
+    local acted = differingPixels(
+      first,
+      second,
+      window.x + window.width,
+      action.y,
+      action.x + action.width - window.x - window.width,
+      action.height
+    )
+    Assert.equal(acted, 0, versionId .. " keeps the action window clear of the open-menu message")
   end
 end
 
@@ -912,6 +1030,204 @@ function T.native_content_ignores_the_host_overlay_flag(scope)
   end
 end
 
+-- Opening the context menu brightens the underlying panel content while
+-- the menu button frames keep their exact source pixels: the same
+-- slots render different panel pixels than browse, but every opaque
+-- frame pixel still matches the generated art.
+function T.context_brightens_content_below_unbrightened_menu_buttons(scope)
+  for _, versionId in ipairs(readyVersions()) do
+    local cacheFs, manifest = manifestFor(versionId)
+    local browsingImage, _ = renderPane(scope, cacheFs, manifest, presentation({ cursorNode = 0 }))
+    local menu = {
+      { kind = "summary", label = "SUMMARY" },
+      { kind = "switch", label = "SWITCH" },
+      { kind = "quit", label = "QUIT" },
+    }
+    local opened = presentation({ cursorNode = 0, state = "context", menu = menu, menuIndex = 1, menuSlot = 0 })
+    local openedImage, _ = renderPane(scope, cacheFs, manifest, opened)
+    local panel = manifest.panels[1]
+    local brightened = differingPixels(browsingImage, openedImage, panel.origin.x, panel.origin.y, 128, 48)
+    Assert.isTrue(brightened > 100, versionId .. " brightens the underlying panel content with the menu open")
+    local generated = assert(manifest.contextMenu.topLevel[3], versionId .. " carries the three-entry layout")
+    local first = assert(generated[1], versionId .. " carries its first entry")
+    local rect = assert(first.frameRect, versionId .. " carries entry frame rectangles")
+    local frames = assert(manifest.contextMenu.frames, versionId .. " carries menu frames")
+    local group = assert(frames[first.frameShape], versionId .. " carries the entry frame")
+    local selected =
+      visualPixels(scope, cacheFs, assert(group.selected, versionId .. " carries the selected frame"))
+    local matches, opaque = matchingOpaquePixels(openedImage, selected, 0, 0, rect.x, rect.y, rect.width, rect.height)
+    Assert.isTrue(opaque > 100, versionId .. " compiles visible selected-frame pixels")
+    Assert.equal(matches, opaque, versionId .. " keeps menu button pixels at source ink under brightness")
+  end
+end
+
+-- Switch selection paints the generated bank-7 chrome on both the
+-- locked source and the current candidate with no runtime tint, even
+-- when the source is fainted.
+function T.switch_selection_paints_generated_bank_seven_chrome(scope)
+  for _, versionId in ipairs(readyVersions()) do
+    local cacheFs, manifest = manifestFor(versionId)
+    -- Cancel focus parks the slot cursor away from both panels, so the
+    -- proven top strip isolates the chrome under test.
+    local status = presentation({
+      cursorNode = "cancel",
+      state = "choose_swap",
+      switchSelect = { source = 0, candidate = 3 },
+    })
+    status.view.slots[1] = slot(0, { status = "faint", currentHp = 0, maxHp = 20, hpFraction = 0 })
+    status.view.slots[4] = slot(3, {})
+    local image, _ = renderPane(scope, cacheFs, manifest, status)
+    for _, slot0 in ipairs({ 0, 3 }) do
+      local panel = manifest.panels[slot0 + 1]
+      local chrome = assert(panel.chrome.switchSelection, versionId .. " carries switch-selection chrome")
+      local source = visualPixels(scope, cacheFs, chrome)
+      -- The proven top strip stays clear of icons, balls, and text, so
+      -- every opaque chrome pixel there must match exactly.
+      local matches, opaque =
+        matchingOpaquePixels(image, source, 64, 0, panel.origin.x + 64, panel.origin.y, 40, 8)
+      Assert.isTrue(opaque > 50, versionId .. " compiles visible switch-selection pixels")
+      Assert.equal(matches, opaque, versionId .. " paints generated switch chrome without tint")
+    end
+  end
+end
+
+-- Switch motion exits each slot outward from its own column and
+-- empties both home panels at full exit: the even slot shifts left
+-- while the odd slot shifts right, with the whole composition leaving
+-- the home rectangles instead of lingering unmoved.
+function T.switch_animation_exits_outward_and_empties_panels_at_full_exit(scope)
+  for _, versionId in ipairs(readyVersions()) do
+    local cacheFs, manifest = manifestFor(versionId)
+    local browsing, layout = renderPane(scope, cacheFs, manifest, presentation({ cursorNode = "cancel" }))
+    local directions = { [0] = -1, [1] = 1 }
+    local moving = presentation({
+      cursorNode = "cancel",
+      state = "swapping",
+      swap = {
+        source = 0,
+        destination = 1,
+        xOffset = 4,
+        offsets = { [0] = -32, [1] = 32 },
+        directions = directions,
+        exchanged = false,
+      },
+    })
+    local moved, _ = renderPane(scope, cacheFs, manifest, moving)
+    for _, slot0 in ipairs({ 0, 1 }) do
+      local rect = layout.slotRects[slot0 + 1]
+      local changed = differingPixels(browsing, moved, rect.x, rect.y, rect.width, rect.height)
+      Assert.isTrue(changed > 100, versionId .. " slot " .. slot0 .. " visibly leaves its home panel")
+      local panel = manifest.panels[slot0 + 1]
+      local chrome = assert(panel.chrome.normal, versionId .. " carries normal panel chrome")
+      local source = visualPixels(scope, cacheFs, chrome)
+      local direction = directions[slot0]
+      -- Right-exiting slots compare the outer third: the travelling icon
+      -- covers the middle third under whole-slot motion, while the outer
+      -- band still proves chrome identity (it differs fully between normal
+      -- and switch-selection art at this band).
+      local matches, opaque =
+        matchingOpaquePixels(moved, source, 64 - direction * 32, 0, panel.origin.x + 64 + (direction == 1 and 32 or 0), panel.origin.y, 32, 8)
+      Assert.isTrue(opaque > 0, versionId .. " compiles chrome pixels for slot " .. slot0)
+      Assert.equal(
+        matches,
+        opaque,
+        versionId .. " slot " .. slot0 .. " shifts its chrome outward by column"
+      )
+    end
+    local emptied = presentation({
+      cursorNode = "cancel",
+      state = "swapping",
+      swap = {
+        source = 0,
+        destination = 1,
+        xOffset = 16,
+        offsets = { [0] = -128, [1] = 128 },
+        directions = directions,
+        exchanged = true,
+      },
+    })
+    local empty, _ = renderPane(scope, cacheFs, manifest, emptied)
+    for _, slot0 in ipairs({ 0, 1 }) do
+      local rect = layout.slotRects[slot0 + 1]
+      local iconRed = 0
+      for y = rect.y, rect.y + rect.height - 1 do
+        for x = rect.x, rect.x + rect.width - 1 do
+          local ir, ig, ib = empty:getPixel(x, y)
+          if ir > 0.7 and ig < 0.3 and ib < 0.3 then
+            iconRed = iconRed + 1
+          end
+        end
+      end
+      Assert.equal(iconRed, 0, versionId .. " full exit clears slot " .. slot0 .. " of its icon")
+    end
+  end
+end
+
+-- Opening the context menu brightens the backdrop strip below the slot
+-- panels while the menu button frames keep their exact source pixels:
+-- a left-margin probe below the panel union and clear of later window
+-- and menu chrome changes with the menu open, but every opaque frame
+-- pixel still matches the generated art.
+function T.context_brightness_reaches_below_panels_without_touching_menu_frames(scope)
+  for _, versionId in ipairs(readyVersions()) do
+    local cacheFs, manifest = manifestFor(versionId)
+    local browsingImage, layout = renderPane(scope, cacheFs, manifest, presentation({ cursorNode = 0 }))
+    local menu = {
+      { kind = "summary", label = "SUMMARY" },
+      { kind = "switch", label = "SWITCH" },
+      { kind = "quit", label = "QUIT" },
+    }
+    local opened = presentation({ cursorNode = 0, state = "context", menu = menu, menuIndex = 1, menuSlot = 0 })
+    local openedImage, _ = renderPane(scope, cacheFs, manifest, opened)
+    local panelBottom = 0
+    for _, panel in ipairs(assert(manifest.panels, versionId .. " carries panels")) do
+      local origin = assert(panel.origin, versionId .. " carries panel origins")
+      local size = assert(panel.size, versionId .. " carries panel sizes")
+      panelBottom = math.max(panelBottom, origin.y + size.height)
+    end
+    Assert.isTrue(panelBottom < 192, versionId .. " leaves a backdrop strip below the panels")
+    local probeX, probeY, probeW, probeH = 4, panelBottom + 6, 8, 8
+    local function intersects(ax, ay, aw, ah, box)
+      return ax < box.x + box.width and box.x < ax + aw and ay < box.y + box.height and box.y < ay + ah
+    end
+    for _, box in ipairs({ manifest.windows.browse, manifest.windows.context, manifest.windows.action }) do
+      Assert.isFalse(
+        intersects(probeX, probeY, probeW, probeH, box),
+        versionId .. " keeps the lower probe clear of message windows"
+      )
+    end
+    local generated = assert(manifest.contextMenu.topLevel[3], versionId .. " carries the three-entry layout")
+    for _, entry in ipairs(generated) do
+      local rect = assert(entry.frameRect, versionId .. " carries entry frame rectangles")
+      local box = { x = rect.x, y = rect.y, width = rect.width, height = rect.height }
+      Assert.isFalse(
+        intersects(probeX, probeY, probeW, probeH, box),
+        versionId .. " keeps the lower probe clear of menu frames"
+      )
+    end
+    local cancelRect = assert(layout.cancelRect, versionId .. " exposes the Cancel hit target")
+    local cancelBox = { x = cancelRect.x, y = cancelRect.y, width = cancelRect.width, height = cancelRect.height }
+    Assert.isFalse(
+      intersects(probeX, probeY, probeW, probeH, cancelBox),
+      versionId .. " keeps the lower probe clear of Cancel"
+    )
+    local brightened = differingPixels(browsingImage, openedImage, probeX, probeY, probeW, probeH)
+    Assert.isTrue(
+      brightened > 10,
+      versionId .. " brightens the backdrop strip below the panels with the menu open"
+    )
+    local first = assert(generated[1], versionId .. " carries its first entry")
+    local rect = assert(first.frameRect, versionId .. " carries entry frame rectangles")
+    local frames = assert(manifest.contextMenu.frames, versionId .. " carries menu frames")
+    local group = assert(frames[first.frameShape], versionId .. " carries the entry frame")
+    local selected =
+      visualPixels(scope, cacheFs, assert(group.selected, versionId .. " carries the selected frame"))
+    local matches, opaque = matchingOpaquePixels(openedImage, selected, 0, 0, rect.x, rect.y, rect.width, rect.height)
+    Assert.isTrue(opaque > 100, versionId .. " compiles visible selected-frame pixels")
+    Assert.equal(matches, opaque, versionId .. " keeps menu button pixels at source ink under brightness")
+  end
+end
+
 local suite = GraphicsSmoke.suite(T, { capabilities = { "graphics", "rom_dump" } })
-suite.metadata.derivedAssets = { "party:global" }
+suite.metadata.derivedAssets = { "party:global", "field-font:global" }
 return suite

@@ -217,7 +217,7 @@ function PartyPresentationFixture.manifest()
       cancel = {
         anchor = { x = 232, y = 176 },
         label = "CANCEL",
-        textRect = { x = 200, y = 168, width = 48, height = 16 },
+        textRect = { x = 208, y = 168, width = 40, height = 16 },
         align = "center",
       },
     },
@@ -355,6 +355,7 @@ function PartyPresentationFixture.manifest()
         male = textRole(80, 144, 248, 32, 48, 120, 40, 40, 48),
         female = textRole(248, 144, 160, 120, 48, 64, 40, 40, 48),
       },
+      messageRole = textRole(250, 246, 217, 144, 128, 96, 48, 40, 32),
     },
     numberGlyphs = {
       advance = 8,

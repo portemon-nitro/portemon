@@ -340,6 +340,33 @@ function T.render_collision_and_terrain_report_the_same_cell_owner()
   coverage:release()
 end
 
+-- Coverage composes already-normalized cell origins without correction: the
+-- neighbor presentation offset and the neighbor terrain offset both equal the
+-- neighbor origin Y minus the anchor origin Y.
+function T.adjacent_vertical_placement_matches_the_cell_origin_difference()
+  local loads, releaseCounts = {}, {}
+  local origins = {}
+  local factory = makeRuntimeFactory(loads, releaseCounts)
+  local coverage = FieldCoverage.new({
+    matrixMemberId = 1,
+    index = makeIndex(6, 3),
+    anchorX = 1,
+    anchorZ = 1,
+    loadCell = function(descriptor)
+      origins[cellKey(descriptor.x, descriptor.z)] = descriptor.origin.y
+      return factory(descriptor)
+    end,
+  })
+  local expected = assert(origins[cellKey(2, 1)]) - assert(origins[cellKey(1, 1)])
+  local parts = worldParts(coverage)
+  local part = assert(partByCell(parts, cellKey(2, 1)), "the neighbor cell has presentation parts")
+  Assert.near(part.translation.y, expected, 1e-9, "presentation Y is the cell-origin difference")
+  local regionCell = assert(regionCellByKey(coverage.region, cellKey(2, 1)), "the neighbor cell has terrain")
+  Assert.near(regionCell.offsetTilesY, expected, 1e-9, "terrain Y is the cell-origin difference")
+  Assert.near(regionCell.offsetTilesY, part.translation.y, 1e-9, "terrain and presentation agree on Y")
+  coverage:release()
+end
+
 function T.recentering_preserves_overlap_and_shared_origin_offsets()
   local coverage, loads, releases = newCoverage({})
   coverage:recenter(2, 1)

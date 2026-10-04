@@ -3,6 +3,7 @@
 -- at the outer draw/input boundary, never inside these metrics.
 
 local PixelScale = require("libs.ui.src.PixelScale")
+local ScrollViewport = require("libs.ui.src.ScrollViewport")
 
 local MainMenuLayout = {}
 
@@ -20,6 +21,7 @@ local BASE_CONTENT_WIDTH = 320
 local BASE_POPUP_WIDTH = 144
 local BASE_POPUP_HEIGHT = 56
 local BASE_POPUP_INSET = 8
+local BASE_POPUP_ACTION_GAP = 4
 local BASE_POPUP_ANCHOR_GAP = 4
 local BASE_CONFIRM_WIDTH = 420
 local BASE_CONFIRM_HEIGHT = 136
@@ -59,8 +61,8 @@ local function focusIndex(saves, focus)
   return 1
 end
 
-local function popupRect(anchor, width, height, margin)
-  local boxWidth, boxHeight = BASE_POPUP_WIDTH, BASE_POPUP_HEIGHT
+local function popupRect(anchor, width, height, margin, popupHeight)
+  local boxWidth, boxHeight = BASE_POPUP_WIDTH, popupHeight
   local x = anchor.x + anchor.width - boxWidth
   local y = anchor.y + anchor.height + BASE_POPUP_ANCHOR_GAP
   x = clamp(x, margin, math.max(margin, width - margin - boxWidth))
@@ -133,11 +135,7 @@ function MainMenuLayout.compute(
   local focusedIndex = focusIndex(saves, focus)
   local focusedTop = errorHeight + errorGap + (focusedIndex - 1) * (cardHeight + cardGap)
   if focus.region == "saves" then
-    if focusedTop < offset then
-      offset = focusedTop
-    elseif focusedTop + cardHeight > offset + saveViewport.height then
-      offset = focusedTop + cardHeight - saveViewport.height
-    end
+    offset = ScrollViewport.reveal(offset, saveViewport.height, focusedTop, cardHeight)
   end
   offset = math.max(0, offset)
 
@@ -205,18 +203,34 @@ function MainMenuLayout.compute(
   end
   if popup then
     local card = assert(cards[popup.saveId], "popup save must have layout geometry")
-    local box = popupRect(card.overflow or card.frame, width, height, margin)
+    local item
+    for _, candidate in ipairs(saves) do
+      if saveId(candidate) == popup.saveId then
+        item = candidate
+        break
+      end
+    end
+    local hasEdit = item ~= nil and item.canEdit == true
+    local hasDelete = item ~= nil and item.canDelete == true
+    local actionCount = (hasEdit and 1 or 0) + (hasDelete and 1 or 0)
+    local popupHeight = actionCount > 1 and BASE_POPUP_HEIGHT + 32 or BASE_POPUP_HEIGHT
+    local box = popupRect(card.overflow or card.frame, width, height, margin, popupHeight)
     local inset = BASE_POPUP_INSET
+    local actions = {}
+    local actionGap = actionCount > 1 and BASE_POPUP_ACTION_GAP or 0
+    local actionHeight = math.max(1, math.floor((box.height - inset * 2 - actionGap) / math.max(1, actionCount)))
+    local actionWidth = math.max(1, box.width - inset * 2)
+    local y = box.y + inset
+    if hasEdit then
+      actions.edit = { x = box.x + inset, y = y, width = actionWidth, height = actionHeight }
+      y = y + actionHeight + actionGap
+    end
+    if hasDelete then
+      actions.delete = { x = box.x + inset, y = y, width = actionWidth, height = actionHeight }
+    end
     result.popup = {
       box = box,
-      actions = {
-        delete = {
-          x = box.x + inset,
-          y = box.y + inset,
-          width = math.max(1, box.width - inset * 2),
-          height = math.max(1, box.height - inset * 2),
-        },
-      },
+      actions = actions,
     }
   end
   if confirmation then
@@ -274,9 +288,12 @@ function MainMenuLayout.hitTest(layout, view, x, y)
   end
   local popup = layout.popup
   if popup ~= nil then
-    local shaped = popup --[[@as { box: table<string, number>, actions: { delete: table<string, number> } }]]
+    local shaped = popup --[[@as { box: table<string, number>, actions: { edit: table<string, number>|nil, delete: table<string, number>|nil } }]]
     local popupSaveId = view.popup ~= nil and view.popup.saveId or nil
-    if MainMenuLayout.contains(shaped.actions.delete, x, y) then
+    if shaped.actions.edit ~= nil and MainMenuLayout.contains(shaped.actions.edit, x, y) then
+      return { region = "popup", actionId = nil, saveId = popupSaveId, lane = "edit" }
+    end
+    if shaped.actions.delete ~= nil and MainMenuLayout.contains(shaped.actions.delete, x, y) then
       return { region = "popup", actionId = nil, saveId = popupSaveId, lane = "delete" }
     end
     if not MainMenuLayout.contains(shaped.box, x, y) then

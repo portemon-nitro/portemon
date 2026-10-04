@@ -92,6 +92,19 @@ function T.failed_rebuild_preserves_the_previous_artifact()
   Assert.isNil(backend:getInfo("staging/heartgold/items"), "the stage is cleaned on failure")
 end
 
+function T.v3_item_marker_is_not_ready_under_the_current_item_identity()
+  local ItemCache = require("libs.assets.src.ItemCache")
+  local ItemCacheWriter = require("romdump.src.digest.items.ItemCacheWriter")
+  local cache = CacheFs.forVersion("heartgold", FakeCache.new())
+  local previousMarker = "item-cache-v3:abc:dep"
+  ItemCacheWriter.write(cache, bundle(previousMarker))
+
+  Assert.isFalse(
+    ItemCache.isReady(cache, ItemCache.marker("abc", "dep")),
+    "a v3 item catalog must rebuild under the current item identity"
+  )
+end
+
 -- The session worker path stages through a caller-owned prepared artifact:
 -- staging alone never reads ready, and publication makes the class ready
 -- with the marker last.

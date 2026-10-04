@@ -116,6 +116,7 @@ local function foundationManifest()
         selected = { image = "test/panel.png", width = 128, height = 48 },
         fainted = { image = "test/panel.png", width = 128, height = 48 },
         selectedFainted = { image = "test/panel.png", width = 128, height = 48 },
+        switchSelection = { image = "test/panel-switch-selection.png", width = 128, height = 48 },
       },
       text = {
         name = { x = ox + 48, y = oy + 8, width = 72, height = 16 },
@@ -301,6 +302,7 @@ end
 
 local function foundationCache()
   local cache = CacheFs.forVersion("heartgold", FakeCache.new())
+  FieldUiFixture.writeFont(cache, 4)
   local function stub(path, width, height, r, g, b, a)
     local pixels = {}
     for _ = 1, width * height do
@@ -309,6 +311,7 @@ local function foundationCache()
     cache:write(path, PngWriter.encode(width, height, table.concat(pixels)))
   end
   stub("test/panel.png", 128, 48, 40, 40, 56)
+  stub("test/panel-switch-selection.png", 128, 48, 32, 48, 64)
   stub("test/ball.png", 32, 32, 60, 60, 80)
   stub("test/held.png", 8, 8, 200, 200, 80)
   stub("test/cursor.png", 128, 48, 0, 0, 0, 0)

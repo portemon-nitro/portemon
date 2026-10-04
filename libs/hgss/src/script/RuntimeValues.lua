@@ -166,6 +166,88 @@ function RuntimeValues.resolveIdOperand(v, run)
   return RuntimeValues.evaluateValue(v, run)
 end
 
+local function copySerializable(value)
+  if type(value) ~= "table" then
+    return value
+  end
+  local copy = {}
+  for key, child in pairs(value) do
+    copy[key] = copySerializable(child)
+  end
+  return copy
+end
+
+-- Resolve a mart graph operation into the serializable descriptor consumed by
+-- the registered task. Dynamic selectors are read once at launch.
+---@param node table<string, unknown>
+---@param run table<string, unknown>
+---@return table<string, unknown>
+function RuntimeValues.martTaskSpec(node, run)
+  local descriptor = { kind = node.kind }
+  if node.selector ~= nil then
+    local selector = RuntimeValues.evaluateValue(node.selector, run)
+    if
+      type(selector) ~= "number"
+      or selector ~= selector
+      or selector == math.huge
+      or selector == -math.huge
+      or selector % 1 ~= 0
+      or selector < 0
+      or selector > 0xFFFF
+    then
+      Errors.raise(
+        ScriptErrors.SCRIPT_INVALID_REFERENCE,
+        "mart selector must resolve to an unsigned 16-bit integer",
+        { scriptId = run.instance.scriptId, selector = selector }
+      )
+    end
+    descriptor.selector = selector
+  end
+  if node.stock ~= nil then
+    descriptor.stock = copySerializable(node.stock)
+  end
+  return descriptor
+end
+
+-- Queries use the same active host as launch tasks and normalize domain
+-- values to the integer conventions of HGSS script variables.
+---@param kind string
+---@param run table<string, unknown>
+---@return integer
+function RuntimeValues.martQuery(kind, run)
+  local host = run.services.mart
+  if host == nil then
+    Errors.raise(
+      ScriptErrors.SCRIPT_SERVICE_MISSING,
+      "mart service is unavailable",
+      { scriptId = run.instance.scriptId }
+    )
+  end
+  host = assert(host, "mart service is present after the missing-service error")
+  local value = host:query(kind)
+  if kind == "athlete_available" and type(value) == "boolean" then
+    return value and 1 or 0
+  end
+  local maximum = kind == "athlete_available" and 1 or kind == "card_prefix" and 27 or nil
+  if
+    maximum == nil
+    or type(value) ~= "number"
+    or value ~= value
+    or value == math.huge
+    or value == -math.huge
+    or value % 1 ~= 0
+    or value < 0
+    or value > maximum
+  then
+    Errors.raise(
+      ScriptErrors.SCRIPT_INVALID_REFERENCE,
+      "mart query returned an invalid value",
+      { scriptId = run.instance.scriptId, kind = kind, value = value }
+    )
+  end
+  return value
+end
+
 -- Resolve a semantic message descriptor before it crosses into a host. This
 -- keeps dynamic operands and gender selection in the runtime, while the
 -- dialogue/menu hosts retain one concrete-message resolution contract.

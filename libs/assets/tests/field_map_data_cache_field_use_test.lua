@@ -54,7 +54,7 @@ end
 
 function T.old_schema_fails_readiness()
   local bundle = compile(60)
-  bundle.field.schema = "g4-field-map-v9"
+  bundle.field.schema = "g4-field-map-v10"
   local cache = CacheFs.forVersion("heartgold", FakeCache.new())
   cache:write(FieldMapDataCache.fieldPath(60), LuaWriter.encode(bundle.field))
   cache:write(FieldMapDataCache.dependenciesPath(60), LuaWriter.encode(bundle.dependencies))

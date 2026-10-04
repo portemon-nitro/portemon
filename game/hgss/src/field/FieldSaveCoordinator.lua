@@ -35,6 +35,14 @@ local function canCapture(session, allowMenu)
     )
 end
 
+-- The composed mart host plugs its modal lifecycle into this owner. No host
+-- is manufactured here; until one is composed, ordinary capture rules
+-- decide whether the field is stable.
+local function hostIsActive(runtime)
+  local host = runtime.martHost
+  return host ~= nil and host:isActive()
+end
+
 ---@param self FieldSaveCoordinator
 ---@param allowMenu boolean
 ---@return table<string, unknown>?, string|table<string, unknown>?
@@ -55,6 +63,9 @@ function FieldSaveCoordinator:capture(allowMenu)
   end
   if not canCapture(runtime.session, allowMenu == true) then
     return nil, "Save deferred: movement, transition, map entry, or modal state is active"
+  end
+  if hostIsActive(runtime) then
+    return nil, "Save deferred: a mart transaction is active"
   end
   if runtime.playerAvatar and not runtime.playerAvatar:isStableForSave() then
     return nil, "Save deferred: avatar transition state is not stable"
@@ -91,6 +102,7 @@ function FieldSaveCoordinator:capture(allowMenu)
     audio = FieldAudioSave.capture(runtime.audio),
     mons = runtime.monService:capture(),
     bag = runtime.bagService:capture(),
+    mart = assert(runtime.martService, "field runtime has no mart service"):capture(),
   }
   if runtime.playerAvatar then
     snapshot.avatar = runtime.playerAvatar:capture()

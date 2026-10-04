@@ -2,6 +2,7 @@
 
 local MapCatalog = require("romdump.src.digest.map.MapCatalog")
 local MapMatrix = require("romdump.src.digest.map.MapMatrix")
+local MapUnits = require("romdump.src.digest.map.MapUnits")
 local AreaData = require("romdump.src.digest.map.AreaData")
 local BuildingModelCompiler = require("romdump.src.digest.map.BuildingModelCompiler")
 local NeighborChunkCompiler = require("romdump.src.digest.map.NeighborChunkCompiler")
@@ -138,7 +139,7 @@ local function compileCell(romFs, descriptor, scratch, producerFingerprint)
       x = descriptor.x,
       z = descriptor.z,
       mapHeaderId = descriptor.mapHeaderId,
-      origin = { x = descriptor.x * 32, y = source.altitude / 16, z = descriptor.z * 32 },
+      origin = { x = descriptor.x * 32, y = MapUnits.altitudeDeltaToTiles(source.altitude), z = descriptor.z * 32 },
       altitude = descriptor.altitude,
       landDataMemberId = descriptor.landDataMemberId,
       areaDataMemberId = descriptor.areaDataMemberId,

@@ -51,6 +51,7 @@ ArtifactState.KINDS = {
   -- field-bag/party presentations each own their payload and marker.
   items = true,
   ["follower-interactions"] = true,
+  mart = true,
   bag = true,
   party = true,
   -- One staged message bank (or the family summary) per job: each bank owns

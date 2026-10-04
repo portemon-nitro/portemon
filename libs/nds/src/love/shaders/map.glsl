@@ -287,9 +287,15 @@ uniform float u_polygonAlpha;  // normalized 5-bit polygon alpha
 uniform int u_polygonMode;     // 0 modulation/toon, 1 decal
 uniform mat3 u_texMatrix;      // normalized-UV transform (NSBTA texture SRT)
 uniform sampler2D MainTex;
-#ifdef WORLD_MRT
+#if defined(WORLD_MRT) || defined(EXACT_SOURCE)
 uniform float u_polygonId;
 uniform bool u_polygonFogEnabled;
+#endif
+#ifdef EXACT_SOURCE
+uniform Image u_activeTranslucentState;
+uniform vec2 u_stateSize;
+#endif
+#ifdef WORLD_MRT
 const float DS_DEPTH_MAX = 16777215.0;
 
 float dsZbufferDepth(float windowDepth)
@@ -428,9 +434,9 @@ vec3 decalRgb6(vec3 texture6, vec3 vertex6, float textureAlpha5)
   return floor((texture6 * textureAlpha5 + vertex6 * (31.0 - textureAlpha5)) / 32.0);
 }
 
-// WORLD_MRT writes active world color plus renderState: R is polygon ID, G is
-// DS-quantized depth, B is the polygon fog gate, and A is the cleared or
-// compositor-maintained translucent ID state.
+// WORLD_MRT writes active world color plus opaque renderState. The dedicated
+// WORLD_MRT_EXACT_RESET variant is used only for exact wireframe draws, where
+// it also clears compact translucent ownership wherever wireframe wins.
 
 void effect()
 {
@@ -504,9 +510,19 @@ void effect()
 #ifdef PRESENTATION_SPRITE_LAYER
   love_Canvases[0] = vec4(outRgb, alpha);
   love_Canvases[1] = vec4(1.0);
+#elif defined(EXACT_SOURCE)
+  vec2 stateUv = (floor(gl_FragCoord.xy) + vec2(0.5)) / u_stateSize;
+  float previousId = Texel(u_activeTranslucentState, stateUv).a;
+  float sourceId = floor(u_polygonId * 63.0 + 0.5);
+  if (previousId > 0.0 && int(floor(previousId * 64.0 + 0.5)) - 1 == int(sourceId)) discard;
+  love_Canvases[0] = vec4(outRgb, alpha);
+  love_Canvases[1] = vec4(1.0, 0.0, u_polygonFogEnabled ? 1.0 : 0.0, (sourceId + 1.0) / 64.0);
 #elif defined(WORLD_MRT)
   love_Canvases[0] = vec4(outRgb, alpha);
   love_Canvases[1] = vec4(u_polygonId, dsZbufferDepth(gl_FragCoord.z), u_polygonFogEnabled ? 1.0 : 0.0, 0.0);
+#ifdef WORLD_MRT_EXACT_RESET
+  love_Canvases[2] = vec4(0.0);
+#endif
 #else
   love_Canvases[0] = vec4(outRgb, alpha);
 #endif

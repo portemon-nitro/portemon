@@ -47,7 +47,7 @@ function T.contract_pins_the_current_asset_identities()
     fieldCells = {
       cacheFormat = "field-cell-cache-v3",
       indexSchema = "g4-field-cell-index-v3",
-      cellSchema = "g4-field-cell-v3",
+      cellSchema = "g4-field-cell-v4",
     },
     fieldActors = {
       cacheFormat = "field-actor-cache-v2",
@@ -119,18 +119,23 @@ function T.contract_pins_the_current_asset_identities()
       portraitManifestSchema = "g4-mon-portrait-manifest-v2",
     },
     items = {
-      cacheFormat = "item-cache-v3",
+      cacheFormat = "item-cache-v4",
       catalogSchema = "g4-item-catalog-v4",
       indexSchema = "g4-item-index-v1",
       iconManifestSchema = "g4-item-icons-v1",
     },
+    mart = {
+      cacheFormat = "mart-cache-v1",
+      catalogSchema = "g4-mart-catalog-v1",
+      schema = "g4-mart-presentation-v2",
+    },
     bag = {
       cacheFormat = "bag-cache-v2",
-      schema = "g4-bag-assets-v15",
+      schema = "g4-bag-assets-v17",
     },
     party = {
       cacheFormat = "party-cache-v1",
-      schema = "g4-party-presentation-v3",
+      schema = "g4-party-presentation-v6",
     },
     audio = {
       cacheFormat = "g4-audio-cache-v1",
@@ -202,9 +207,9 @@ function T.cache_modules_consume_the_contract_constants()
   Assert.equal(StarterChoiceAssetCache.SCHEMA, DerivedAssetContract.starterChoice.schema)
 end
 
-function T.party_contract_advertises_the_v3_presentation_schema()
+function T.party_contract_advertises_the_v6_presentation_schema()
   Assert.equal(DerivedAssetContract.party.cacheFormat, "party-cache-v1")
-  Assert.equal(DerivedAssetContract.party.schema, "g4-party-presentation-v3")
+  Assert.equal(DerivedAssetContract.party.schema, "g4-party-presentation-v6")
 end
 
 return { tests = T }

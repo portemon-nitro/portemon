@@ -31,7 +31,7 @@ local function withGame(fn)
         versionId = versionId,
         location = { mapSymbol = map or "MAP_NEW_BARK", fieldX = 4, fieldZ = 10, facing = "south" },
         playerData = {
-          profile = { name = "GOLD", gender = 0, trainerId = 1, money = 3000, badges = 0 },
+          profile = { name = "GOLD", gender = 0, trainerId = 1, money = 3000, badges = 0, nationalDex = false },
           options = { textSpeed = "fastest", textFrame = 0 },
         },
         fieldTravel = { lastHealSpawn = "SPAWN_NEW_BARK" },
@@ -40,6 +40,7 @@ local function withGame(fn)
         worldState = FieldEventState.new(),
         mons = require("tests.support.MonBucket").emptyForVersion(versionId),
         bag = require("libs.hgss.src.save.BagSave").empty(),
+        mart = require("libs.hgss.src.save.MartSave").empty(),
       }
     end,
   })

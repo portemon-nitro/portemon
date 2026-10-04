@@ -130,7 +130,7 @@ local function sourceManifest()
   }
 end
 
-local function openParty(ready, failure, calls)
+local function openParty(ready, failure, calls, screenOptions)
   local preparations = 0
   local cancels = 0
   local service = fakeService(calls)
@@ -149,6 +149,10 @@ local function openParty(ready, failure, calls)
   local state = PartyScreenState.new({
     service = service,
     manifest = sourceManifest(),
+    context = screenOptions and screenOptions.context,
+    item = screenOptions and screenOptions.item,
+    targetPromptKey = screenOptions and screenOptions.targetPromptKey,
+    initialFocus = screenOptions and screenOptions.initialFocus,
     measureDisplay = function()
       return measurement
     end,
@@ -171,6 +175,60 @@ local function openParty(ready, failure, calls)
     }
 end
 
+function T.give_resume_intent_waits_for_party_opening_handoff()
+  local calls = { swaps = {} }
+  local state = openParty(true, nil, calls, {
+    context = "give_resume",
+    item = { key = "SITRUS_BERRY", bagRevision = 3 },
+    initialFocus = 0,
+  })
+  Assert.isNil(state:takeIntent(), "construction emits no continuation intent")
+  for _ = 1, 15 do
+    state:updateFixed({})
+    state:status()
+    Assert.isNil(state:takeIntent(), "opening and settling never emit the continuation")
+  end
+  state:updateFixed({})
+  Assert.deepEqual(
+    state:takeIntent(),
+    { kind = "give", slot = 0, partyRevision = 1, bagRevision = 3, item = "SITRUS_BERRY" },
+    "the first interactive controller update emits the pending operation"
+  )
+  Assert.isNil(state:takeIntent(), "the wrapper forwards the intent once")
+  state:dispose()
+end
+
+function T.target_context_exposes_its_required_prompt_key()
+  local item = { key = "POTION", bagRevision = 1 }
+  for _, case in ipairs({
+    { context = "give_target", targetPromptKey = "giveTarget", item = item },
+    { context = "item_target", targetPromptKey = "useTarget", item = item },
+    { context = "item_target", targetPromptKey = "teachTarget", item = item },
+  }) do
+    local calls = { swaps = {} }
+    local state = openParty(true, nil, calls, case)
+    state:updateFixed({})
+    Assert.equal(state:status().targetPromptKey, case.targetPromptKey, "target status carries its source prompt identity")
+    state:dispose()
+  end
+end
+
+function T.target_context_rejects_missing_or_mismatched_prompt_keys()
+  local item = { key = "POTION", bagRevision = 1 }
+  for _, case in ipairs({
+    { context = "give_target", item = item },
+    { context = "give_target", targetPromptKey = "useTarget", item = item },
+    { context = "item_target", item = item },
+    { context = "item_target", targetPromptKey = "giveTarget", item = item },
+    { context = "item_target", targetPromptKey = "unknown", item = item },
+  }) do
+    local ok = pcall(function()
+      openParty(true, nil, { swaps = {} }, case)
+    end)
+    Assert.isFalse(ok, "target contexts reject missing or invalid prompt identities")
+  end
+end
+
 -- Activation held while icons prepare must not select anything: the screen
 -- reports pending preparation and stays there until readiness arrives.
 function T.opening_waits_for_icon_preparation_before_accepting_selection()
@@ -182,6 +240,99 @@ function T.opening_waits_for_icon_preparation_before_accepting_selection()
   Assert.isNil(status.action, "held activation never selects while preparation is pending")
   Assert.equal(#calls.swaps, 0, "no swap fires before readiness")
   state:dispose()
+end
+
+-- A waiting screen publishes its resolved application plan alongside the
+-- wait metadata: pending and failed preparation both carry the session
+-- plan with its party input role and pane placement, emit no controller
+-- action or result, and repeated status reads advance nothing.
+function T.waiting_screens_publish_their_resolved_application_plan()
+  for _, case in ipairs({
+    { ready = false, failure = nil, state = "pending" },
+    { ready = false, failure = "icons unavailable", state = "failed" },
+  }) do
+    local calls = { swaps = {} }
+    local screen, probes = openParty(case.ready, case.failure, calls)
+    screen:updateFixed({})
+    local preparationsBefore = probes.preparations()
+    local status = screen:status()
+    Assert.equal(
+      status.preparationState,
+      case.state,
+      "a waiting screen reports its " .. case.state .. " preparation"
+    )
+    Assert.isTrue(status.open, "a waiting screen stays open while " .. case.state)
+    Assert.notNil(status.layout, "a waiting screen keeps its wait layout while " .. case.state)
+    Assert.notNil(status.presentation, "a waiting screen carries its resolved plan while " .. case.state)
+    local plan = assert(status.presentation, "a waiting screen carries its resolved plan")
+    Assert.isTrue(
+      plan.inputKey == "party" or plan.inputKey == "party-inactive",
+      "the wait plan keeps its party input role while " .. case.state
+    )
+    local panes = assert(plan.panes, "the wait plan carries its resolved panes")
+    Assert.isTrue(#panes >= 1, "the wait plan carries its resolved panes while " .. case.state)
+    for _, pane in ipairs(panes) do
+      local placement = assert(pane.placement, "every wait pane carries its placement")
+      Assert.notNil(placement.frame, "every wait pane carries its host frame while " .. case.state)
+    end
+    if case.state == "failed" then
+      Assert.equal(status.preparationError, case.failure, "a failed screen keeps its preparation cause")
+    end
+    Assert.isNil(status.action, "a waiting screen starts no controller action while " .. case.state)
+    Assert.isNil(screen:takeResult(), "a waiting screen completes nothing while " .. case.state)
+    screen:status()
+    Assert.equal(
+      probes.preparations(),
+      preparationsBefore,
+      "repeated status reads advance no preparation while " .. case.state
+    )
+    screen:dispose()
+  end
+end
+
+-- Placement refresh during the wait re-resolves from the canonical
+-- controller snapshot instead of the lightweight wait record: the
+-- returned plan keeps its party input role and pane placement for both
+-- pending and failed preparation, and neither preparation nor controller
+-- state advances.
+function T.wait_refresh_keeps_canonical_placement_without_advancing_preparation()
+  for _, case in ipairs({
+    { ready = false, failure = nil, state = "pending" },
+    { ready = false, failure = "icons unavailable", state = "failed" },
+  }) do
+    local calls = { swaps = {} }
+    local screen, probes = openParty(case.ready, case.failure, calls)
+    screen:updateFixed({})
+    local waiting = screen:status()
+    local preparationsBefore = probes.preparations()
+    local plan = screen:refreshPresentation(waiting)
+    Assert.notNil(plan, "wait refresh returns the current plan while " .. case.state)
+    Assert.isTrue(
+      plan.inputKey == "party" or plan.inputKey == "party-inactive",
+      "wait refresh keeps the party input role while " .. case.state
+    )
+    local panes = assert(plan.panes, "the refreshed plan carries its panes")
+    Assert.isTrue(#panes >= 1, "the refreshed plan carries its panes while " .. case.state)
+    for _, pane in ipairs(panes) do
+      local placement = assert(pane.placement, "every refreshed pane carries its placement")
+      Assert.notNil(placement.frame, "every refreshed pane carries its host frame while " .. case.state)
+    end
+    Assert.equal(
+      probes.preparations(),
+      preparationsBefore,
+      "wait refresh advances no preparation while " .. case.state
+    )
+    local reread = screen:status()
+    Assert.equal(
+      reread.preparationState,
+      case.state,
+      "wait refresh keeps the " .. case.state .. " preparation"
+    )
+    Assert.isNil(reread.action, "wait refresh starts no controller action while " .. case.state)
+    Assert.isNil(screen:takeResult(), "wait refresh completes nothing while " .. case.state)
+    Assert.equal(#calls.swaps, 0, "wait refresh swaps nothing while " .. case.state)
+    screen:dispose()
+  end
 end
 
 -- Closing or disposing a waiting screen drops its preparation interest
@@ -325,12 +476,29 @@ local function tapGesture(x, y, pointerId)
   }
 end
 
+---@param state PartyScreenState
+local function drainReveal(state)
+  for _ = 1, 20 do
+    if state:status().phase == "interactive" then
+      -- The handover and its settling tick still drop input; drive only
+      -- once the screen forwards.
+      state:updateFixed({})
+      state:updateFixed({})
+      Assert.equal(state:status().phase, "interactive", "the reveal hands over on its fixed recurrence")
+      return
+    end
+    state:updateFixed({})
+  end
+  Assert.equal(state:status().phase, "interactive", "the reveal hands over on its fixed recurrence")
+end
+
 -- Once preparation is ready the existing selection, swap, and close
 -- behavior is unchanged. This guards current behavior through the new
 -- required collaborators: it passes before and after the wait lands.
 function T.ready_preparation_preserves_selection_and_close()
   local calls = { swaps = {} }
   local state, probes = openParty(true, nil, calls)
+  drainReveal(state)
   state:updateFixed({ { type = "confirm" } })
   local status = state:status()
   Assert.equal(status.action, "context", "selection input works after readiness")
@@ -350,6 +518,7 @@ function T.single_display_host_menu_toggles_the_detail_overlay_without_touching_
   end
   local state, _ = openOnDisplay(calls, measure)
   state:updateFixed({})
+  drainReveal(state)
   local before = state:status()
   Assert.equal(paneSignature(before), "content+", "a single-display party starts content-only")
   state:updateFixed({ { type = "menu" } })
@@ -390,9 +559,11 @@ function T.toggle_consumes_only_the_menu_event_and_keeps_batch_order()
   end
   local first, _ = openNative()
   first:updateFixed({})
+  drainReveal(first)
   first:updateFixed({ { type = "navigate", direction = "down" }, { type = "menu" } })
   local reference, _ = openNative()
   reference:updateFixed({})
+  drainReveal(reference)
   reference:updateFixed({ { type = "navigate", direction = "down" } })
   Assert.equal(
     first:status().cursorNode,
@@ -406,6 +577,7 @@ function T.toggle_consumes_only_the_menu_event_and_keeps_batch_order()
   )
   local leading, _ = openNative()
   leading:updateFixed({})
+  drainReveal(leading)
   leading:updateFixed({ { type = "menu" }, { type = "navigate", direction = "down" } })
   Assert.equal(
     leading:status().cursorNode,
@@ -431,6 +603,7 @@ function T.host_menu_during_an_open_context_menu_changes_only_visibility()
   end
   local state, _ = openOnDisplay(calls, measure)
   state:updateFixed({})
+  drainReveal(state)
   state:updateFixed({ { type = "confirm" } })
   local opened = state:status()
   Assert.equal(opened.action, "context", "confirming a slot opens the context menu")
@@ -468,6 +641,7 @@ function T.visible_overlay_keeps_pointer_input_on_native_content()
   end
   local shown, _ = openNative()
   shown:updateFixed({})
+  drainReveal(shown)
   shown:updateFixed({ { type = "menu" } })
   Assert.equal(
     paneSignature(shown:status()),
@@ -483,6 +657,7 @@ function T.visible_overlay_keeps_pointer_input_on_native_content()
   end
   local plain, _ = openNative()
   plain:updateFixed({})
+  drainReveal(plain)
   local frame = contentPaneFrame(plain:status())
   local x = frame.x + frame.width / 2
   local y = frame.y + frame.height / 2
@@ -628,7 +803,8 @@ function T.detail_toggle_waits_for_icon_readiness()
   pending:updateFixed({ { type = "menu" } })
   local waiting = pending:status()
   Assert.equal(waiting.preparationState, "pending", "a pending screen reports its wait")
-  Assert.isNil(waiting.presentation, "a pending screen publishes no overlay plan")
+  Assert.notNil(waiting.presentation, "a pending screen keeps its resolved plan while waiting")
+  Assert.equal(paneSignature(waiting), "content+", "a menu press during the wait arms no overlay")
   ready = true
   pending:updateFixed({})
   local clean = pending:status()
@@ -638,6 +814,7 @@ function T.detail_toggle_waits_for_icon_readiness()
     "content+",
     "a menu press during the wait arms no overlay"
   )
+  drainReveal(pending)
   pending:updateFixed({ { type = "menu" } })
   Assert.equal(
     paneSignature(pending:status()),
@@ -653,7 +830,8 @@ function T.detail_toggle_waits_for_icon_readiness()
   failed:updateFixed({ { type = "menu" } })
   local failedStatus = failed:status()
   Assert.equal(failedStatus.preparationState, "failed", "a failed screen reports its failure")
-  Assert.isNil(failedStatus.presentation, "a failed screen publishes no overlay plan")
+  Assert.notNil(failedStatus.presentation, "a failed screen keeps its resolved plan")
+  Assert.equal(paneSignature(failedStatus), "content+", "a menu press during failure arms no overlay")
   failed:dispose()
 end
 
@@ -667,6 +845,7 @@ function T.reflow_and_disposal_drop_only_host_state()
     return current
   end)
   state:updateFixed({})
+  drainReveal(state)
   state:updateFixed({ { type = "menu" } })
   Assert.equal(
     paneSignature(state:status()),
@@ -705,6 +884,140 @@ function T.reflow_and_disposal_drop_only_host_state()
   state:dispose()
   Assert.equal(probes.cancels(), 1, "double disposal releases preparation exactly once")
   Assert.isNil(state:takeResult(), "disposal reports no close after cancelling")
+end
+
+-- After icon readiness the screen reveals through a fixed wipe before
+-- accepting input: the first pane advances six steps while the second
+-- stays covered, then the second advances six steps while the first stays
+-- clear. Status publishes the integer progress both panes render from,
+-- and the recurrence is identical on single and paired topologies.
+function T.opening_reveals_first_pane_before_second_over_six_steps_each()
+  local cases = {
+    { name = "single", width = 800, height = 600, topology = oneDisplayTopo(800, 600) },
+    { name = "dual", width = 800, height = 600, topology = dualTopo() },
+  }
+  for _, case in ipairs(cases) do
+    local calls = { swaps = {} }
+    local measure = function()
+      return displayMeasurement(case.width, case.height, case.topology, "opening-order:" .. case.name)
+    end
+    local state, _ = openOnDisplay(calls, measure)
+    state:updateFixed({})
+    local ready = state:status()
+    Assert.equal(ready.phase, "opening", "the " .. case.name .. " party reveals before accepting input")
+    Assert.notNil(ready.opening, "the " .. case.name .. " party publishes its reveal progress")
+    local opening = assert(ready.opening, "the " .. case.name .. " party publishes its reveal progress")
+    Assert.equal(opening.subStep, 0, "the " .. case.name .. " reveal starts fully covered")
+    Assert.equal(opening.mainStep, 0, "the " .. case.name .. " reveal starts fully covered")
+    local trajectory = {}
+    for _ = 1, 12 do
+      state:updateFixed({})
+      local now = state:status()
+      Assert.equal(now.phase, "opening", "the " .. case.name .. " reveal holds until both panes clear")
+      local progress = assert(now.opening, "the " .. case.name .. " reveal keeps publishing progress")
+      trajectory[#trajectory + 1] = { sub = progress.subStep, main = progress.mainStep }
+    end
+    local expected = {}
+    for step = 1, 6 do
+      expected[#expected + 1] = { sub = step, main = 0 }
+    end
+    for step = 1, 6 do
+      expected[#expected + 1] = { sub = 6, main = step }
+    end
+    Assert.deepEqual(trajectory, expected, "the " .. case.name .. " reveal covers the first pane before the second")
+    state:updateFixed({})
+    local interactive = state:status()
+    Assert.equal(interactive.phase, "interactive", "the " .. case.name .. " reveal hands over after twelve steps")
+    Assert.isNil(interactive.opening, "the handover carries no residual cover")
+    state:dispose()
+  end
+end
+
+-- Navigation, activation, and dismissal sent while the panes are still
+-- covered have no effect and are never replayed: the cursor, menu state,
+-- and result stay untouched until the reveal completes, and only input
+-- sent after the handover acts.
+function T.opening_discards_navigation_and_activation_until_reveal_completes()
+  local calls = { swaps = {} }
+  local state, _ = openParty(true, nil, calls)
+  state:updateFixed({})
+  Assert.equal(state:status().phase, "opening", "the party reveals before accepting input")
+  local cursorBefore = state:status().cursorNode
+  local batches = {
+    { { type = "navigate", direction = "down" } },
+    { { type = "confirm" } },
+    { { type = "navigate", direction = "right" } },
+    { { type = "cancel" } },
+    { { type = "navigate", direction = "up" } },
+    { { type = "confirm" } },
+    { { type = "navigate", direction = "left" } },
+    { { type = "cancel" } },
+    { { type = "navigate", direction = "down" } },
+    { { type = "confirm" } },
+    { { type = "navigate", direction = "down" } },
+    { { type = "cancel" } },
+    {},
+  }
+  for _, batch in ipairs(batches) do
+    state:updateFixed(batch)
+  end
+  local settled = state:status()
+  Assert.equal(settled.phase, "interactive", "the reveal completes on its fixed recurrence")
+  Assert.equal(settled.cursorNode, cursorBefore, "reveal navigation never moves the cursor")
+  Assert.equal(settled.action, "browse", "reveal activation never leaves browse")
+  Assert.isNil(state:takeResult(), "reveal dismissal completes nothing")
+  Assert.equal(#calls.swaps, 0, "reveal input swaps nothing")
+  state:updateFixed({})
+  Assert.equal(
+    state:status().action,
+    "browse",
+    "discarded input is never replayed on the first interactive tick"
+  )
+  state:updateFixed({ { type = "confirm" } })
+  Assert.equal(state:status().action, "context", "only post-reveal input acts")
+  Assert.isNil(state:takeResult(), "opening the context menu completes nothing")
+  state:dispose()
+end
+
+-- Closing keeps its existing meaning once the screen is interactive:
+-- confirming Cancel reports the host close after the footer press with no
+-- additional reveal behavior on the way out.
+function T.closing_after_interactive_uses_the_existing_close_path()
+  local calls = { swaps = {} }
+  local state, probes = openParty(true, nil, calls)
+  for _ = 1, 20 do
+    local status = state:status()
+    if status.phase == "interactive" then
+      break
+    end
+    if status.phase == nil and status.preparationState == "ready" then
+      break
+    end
+    state:updateFixed({})
+  end
+  for _ = 1, 8 do
+    if state:status().cursorNode == "cancel" then
+      break
+    end
+    state:updateFixed({ { type = "navigate", direction = "up" } })
+  end
+  Assert.equal(state:status().cursorNode, "cancel", "navigation reaches cancel before closing")
+  state:updateFixed({ { type = "confirm" } })
+  Assert.isNil(state:takeResult(), "the footer press withholds close until its ticks complete")
+  for _ = 1, 5 do
+    state:updateFixed({})
+  end
+  local result = state:takeResult()
+  Assert.notNil(result, "confirming cancel closes the screen")
+  Assert.equal(result.kind, "close", "close keeps its existing host translation")
+  local closed = state:status()
+  Assert.isTrue(
+    closed.phase == nil or closed.phase ~= "closing",
+    "closing adds no reveal behavior on the way out"
+  )
+  Assert.isNil(state:takeResult(), "a second take reports nothing further")
+  Assert.equal(probes.cancels(), 1, "closing releases the preparation interest exactly once")
+  state:dispose()
 end
 
 return { tests = T }

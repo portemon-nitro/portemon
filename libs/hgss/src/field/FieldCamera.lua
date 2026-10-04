@@ -44,6 +44,8 @@ local FIELD_BILLBOARD_DEPTH_OFFSET_TILES = 0.5
 ---@field historyEnabled boolean
 ---@field canonicalAspect number
 ---@field projectionAspect number
+---@field _rawPerspective integer -- live perspective half angle in Nintendo raw units (65536 per turn)
+---@field _rawPerspectiveBase integer -- raw angle matching the profile half angle exactly
 ---@field _billboardDepthOffset number
 ---@field _projectionDirty boolean
 ---@field _projectionCache number[]
@@ -79,6 +81,20 @@ end
 
 local function angleIndexToRadians(raw)
   return raw * TAU / 65536
+end
+
+local function halfFovToRaw(halfFovRadians)
+  return math.floor(halfFovRadians * 65536 / TAU + 0.5)
+end
+
+-- The live perspective half angle tracks the profile value exactly until a
+-- whole-raw-unit step moves it: the base float is kept alongside the integer
+-- so an untouched camera derives its projection from the exact profile
+-- value, while any stepped angle derives deterministically from the same
+-- base plus its integer offset. Restoring the offset restores the exact
+-- projection bits.
+local function liveHalfFovRadians(camera)
+  return camera.profile.halfFovRadians + (camera._rawPerspective - camera._rawPerspectiveBase) * (TAU / 65536)
 end
 
 local function writeEyeFromTarget(target, profile, out)
@@ -158,6 +174,8 @@ function FieldCamera.new(profile, options)
     canonicalAspect = canonicalAspect,
     projectionAspect = canonicalAspect,
     zoom = 1,
+    _rawPerspective = halfFovToRaw(profile.halfFovRadians),
+    _rawPerspectiveBase = halfFovToRaw(profile.halfFovRadians),
     _billboardDepthOffset = FIELD_BILLBOARD_DEPTH_OFFSET_TILES * math.cos(angleIndexToRadians(profile.angleXRaw)),
     _projectionDirty = true,
     _projectionCache = projectionArray,
@@ -229,7 +247,9 @@ end
 
 -- Applies the camera-side part of a non-ordinary field transition. The
 -- transition family remains observable after the swap, while the camera
--- keeps ownership of its own adjustment state.
+-- keeps ownership of its own adjustment state. This only reanchors the
+-- camera to the transition player; timed angle choreography belongs to the
+-- transition and reaches the camera through the raw perspective port below.
 function FieldCamera:adjustTransition(profile, adjustment)
   assert(type(profile) == "number", "transition camera profile required")
   assert(type(adjustment) == "string", "transition camera adjustment required")
@@ -251,11 +271,29 @@ function FieldCamera:adjustTransition(profile, adjustment)
   copyComponents(self.previousEye, self.eye)
   self.cameraSourceY = anchorY
   self.cameraAppliedY = target.y - offset.y
-  if adjustment == "cave" then
-    self.perspectiveMode = "environment_0x10"
-  elseif adjustment == "outdoor" then
-    self.perspectiveMode = "white_fade"
-  end
+end
+
+-- Observes the live perspective half angle in whole Nintendo raw units
+-- (65536 per turn). Field transitions capture and restore this value
+-- around their white-fade angle choreography.
+---@return integer
+function FieldCamera:rawPerspective()
+  return self._rawPerspective
+end
+
+-- Steps the live perspective half angle by whole Nintendo raw units and
+-- invalidates the world and billboard projections. Fractional,
+-- non-finite, or non-numeric deltas are programming faults and raise
+-- before moving anything.
+---@param delta integer
+function FieldCamera:adjustRawPerspective(delta)
+  assert(
+    type(delta) == "number" and delta == delta and delta ~= math.huge and delta ~= -math.huge,
+    "raw perspective step must be a finite number"
+  )
+  assert(delta % 1 == 0, "raw perspective step must stay in whole raw units")
+  self._rawPerspective = self._rawPerspective + delta
+  self._projectionDirty = true
 end
 
 function FieldCamera:setTransitionPlayer(player)
@@ -290,10 +328,14 @@ function FieldCamera:view(alpha)
 end
 
 local function fillProjectionBuffer(out, camera, aspect, zoom)
+  -- The perspective derives from the live half angle so transition angle
+  -- choreography moves the real projection; an unstepped camera keeps the
+  -- exact profile value (see liveHalfFovRadians).
+  local liveHalfFov = liveHalfFovRadians(camera)
   if camera.projectionType == "perspective" then
-    Matrix4.perspectiveInto(out, camera.profile.fullVerticalFovRadians, aspect, camera.near, camera.far)
+    Matrix4.perspectiveInto(out, liveHalfFov * 2, aspect, camera.near, camera.far)
   else
-    local halfY = math.tan(camera.profile.halfFovRadians) * camera.distance
+    local halfY = math.tan(liveHalfFov) * camera.distance
     local halfX = halfY * aspect
     Matrix4.orthographicInto(out, -halfX, halfX, -halfY, halfY, camera.near, camera.far)
   end

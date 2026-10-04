@@ -6,6 +6,7 @@ local Errors = require("libs.errors.src.Errors")
 local GameSaveErrors = require("libs.hgss.src.save.GameSaveErrors")
 local FieldTravelState = require("libs.hgss.src.field.FieldTravelState")
 local FashionCaseState = require("libs.hgss.src.save.FashionCaseState")
+local MartSave = require("libs.hgss.src.save.MartSave")
 
 local GameSave = {}
 
@@ -24,6 +25,7 @@ local TOP_LEVEL_FIELDS = {
   fieldX = true,
   fieldZ = true,
   mapId = true,
+  mart = true,
   mons = true,
   playTimeSeconds = true,
   playerData = true,
@@ -45,6 +47,17 @@ end
 
 local function integer(value)
   return finite(value) and value % 1 == 0
+end
+
+local function deepCopy(value)
+  if type(value) ~= "table" then
+    return value
+  end
+  local result = {}
+  for key, child in pairs(value) do
+    result[key] = deepCopy(child)
+  end
+  return result
 end
 
 local function safeComponent(value)
@@ -213,6 +226,7 @@ local function validate(record, opts)
   local canonicalScripts = validateBucket(record, "scripts", opts, "scriptsValidate")
   local canonicalMons = validateBucket(record, "mons", opts, "monsValidate")
   local canonicalBag = validateBucket(record, "bag", opts, "bagValidate")
+  local canonicalMart = validateBucket(record, "mart", opts, "martValidate")
   local canonicalFieldTravel = validateBucket(record, "fieldTravel", opts, "fieldTravelValidate")
   local canonicalFashionCase = validateBucket(record, "fashionCase", opts, "fashionCaseValidate")
   local canonicalAuxiliaryUi = validateBucket(record, "auxiliaryUi", opts, "auxiliaryUiValidate")
@@ -227,6 +241,7 @@ local function validate(record, opts)
   canonical.scripts = canonicalScripts
   canonical.mons = canonicalMons
   canonical.bag = canonicalBag
+  canonical.mart = canonicalMart
   canonical.fieldTravel = canonicalFieldTravel
   canonical.fashionCase = canonicalFashionCase
   canonical.auxiliaryUi = canonicalAuxiliaryUi
@@ -267,21 +282,31 @@ function GameSave.migrateV3(record)
   return migrated
 end
 
--- Pure v4 -> v5 migration adds the new durable bucket without rewriting any
+-- Pure v4 -> v5 migration adds the new durable buckets without rewriting any
 -- of the existing save values.
 ---@param record table<string, unknown> a v4 save record
 ---@return table<string, unknown> the migrated v5 record
 function GameSave.migrateV4(record)
   assert(type(record) == "table" and record.schema == "g4-game-save-v4", "GameSave.migrateV4 requires a v4 record")
+  assert(
+    type(record.playerData) == "table" and type(record.playerData.profile) == "table",
+    "v4 player data is required"
+  )
   if record.fashionCase ~= nil then
     Errors.raise(GameSaveErrors.GAME_SAVE_INVALID, "v4 save cannot already contain Fashion Case state", {})
   end
-  local migrated = {}
-  for key, value in pairs(record) do
-    migrated[key] = value
+  if record.mart ~= nil then
+    Errors.raise(GameSaveErrors.GAME_SAVE_INVALID, "v4 save cannot already contain mart state", {})
   end
+  local migrated = deepCopy(record)
+  local playerData = migrated.playerData
+  local profile = playerData.profile
+  profile.nationalDex = false
+  playerData.profile = profile
+  migrated.playerData = playerData
   migrated.schema = GameSave.SCHEMA
   migrated.fashionCase = FashionCaseState.empty()
+  migrated.mart = MartSave.empty()
   return migrated
 end
 
@@ -311,7 +336,11 @@ function GameSave.metadata(record)
       Errors.raise(GameSaveErrors.GAME_SAVE_INVALID, "game save must be a table", {})
     end
     assert(type(record) == "table")
-    if record.schema ~= "g4-game-save-v4" and record.schema ~= GameSave.SCHEMA then
+    if
+      record.schema ~= GameSave.SCHEMA
+      and record.schema ~= "g4-game-save-v4"
+      and record.schema ~= "g4-game-save-v3"
+    then
       Errors.raise(
         GameSaveErrors.GAME_SAVE_SCHEMA_UNSUPPORTED,
         "unsupported game save schema",

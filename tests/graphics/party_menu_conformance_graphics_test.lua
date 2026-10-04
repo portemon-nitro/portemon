@@ -42,7 +42,7 @@ end
 local function manifestFor(versionId)
   local cacheFs = CacheFs.forVersion(versionId)
   local manifest = PartyCache.loadManifest(cacheFs)
-  Assert.equal(manifest.schema, "g4-party-presentation-v3", versionId .. " renders the current party manifest")
+  Assert.equal(manifest.schema, "g4-party-presentation-v6", versionId .. " renders the current party manifest")
   return cacheFs, manifest
 end
 
@@ -311,7 +311,9 @@ end
 
 -- Mid-swap frames differ from steady state while the exchanged frame
 -- matches the swapped records: the visual commit follows the domain
--- commit instead of anticipating it.
+-- commit instead of anticipating it. The cursor stays hidden while a
+-- swap record exists, so both compared frames suppress it to assert
+-- panel and sprite content rather than cursor state.
 function T.swap_midpoint_differs_from_committed(scope)
   for _, versionId in ipairs(readyVersions()) do
     local cacheFs, manifest = manifestFor(versionId)
@@ -321,7 +323,14 @@ function T.swap_midpoint_differs_from_committed(scope)
       cacheFs,
       manifest,
       presentation({
-        swap = { source = 0, destination = 1, step = 2, stage = "out", offsetPx = -8, exchanged = false },
+        swap = {
+          source = 0,
+          destination = 1,
+          xOffset = 2,
+          offsets = { [0] = -16, [1] = 16 },
+          directions = { [0] = -1, [1] = 1 },
+          exchanged = false,
+        },
       })
     )
     local function difference(a, b)
@@ -340,15 +349,20 @@ function T.swap_midpoint_differs_from_committed(scope)
     Assert.isTrue(difference(steady, mid) > 100, versionId .. " offsets panels mid-swap")
     local swapped = presentation()
     swapped.view.slots[1], swapped.view.slots[2] = swapped.view.slots[2], swapped.view.slots[1]
+    swapped.cursorNode = nil
     local committed, _ = renderPane(scope, cacheFs, manifest, swapped)
-    local exchanged, _ = renderPane(
-      scope,
-      cacheFs,
-      manifest,
-      presentation({
-        swap = { source = 0, destination = 1, step = 35, stage = "in", offsetPx = 0, exchanged = true },
-      })
-    )
+    local exchangedStatus = presentation({
+      swap = {
+        source = 0,
+        destination = 1,
+        xOffset = 0,
+        offsets = { [0] = 0, [1] = 0 },
+        directions = { [0] = -1, [1] = 1 },
+        exchanged = true,
+      },
+    })
+    exchangedStatus.cursorNode = nil
+    local exchanged, _ = renderPane(scope, cacheFs, manifest, exchangedStatus)
     Assert.isTrue(difference(steady, exchanged) > 100, versionId .. " shows swapped records after commit")
     Assert.equal(
       difference(committed, exchanged),
@@ -496,5 +510,5 @@ end
 
 local suite = GraphicsSmoke.suite(T)
 suite.metadata.capabilities = { "graphics", "rom_dump" }
-suite.metadata.derivedAssets = { "party:global" }
+suite.metadata.derivedAssets = { "field-font:global", "party:global" }
 return suite

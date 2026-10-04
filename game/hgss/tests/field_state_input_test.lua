@@ -425,7 +425,13 @@ function T.open_bag_stays_controllable_across_window_blur()
       }
     end,
   })
-  screen:updateFixed({})
+  for _ = 1, 20 do
+    if screen:status().phase == "interactive" then
+      break
+    end
+    screen:updateFixed({})
+  end
+  Assert.equal(screen:status().phase, "interactive", "the Bag opening gate settles before the blur journey")
   Assert.equal(screen:status().selected.item, "POKE_BALL", "setup browses the stocked pocket")
 
   input:beginUi(0)

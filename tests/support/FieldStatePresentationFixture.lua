@@ -1,7 +1,7 @@
 -- Complete presentation cache for real FieldState construction tests: the
 -- base field-UI font/frames plus the Trainer Card front, one minimal mon
--- icon class, the minimal item icon manifest/atlas and bag manifest/images
--- the eager bag presentation resources require, the minimal party manifest
+-- icon class, the minimal item icon/atlas and Bag/Mart manifests/images
+-- the eager child presentation resources require, the minimal party manifest
 -- and images the eager party presentation resources require, and the
 -- minimal field-actor
 -- index/visual/atlas FieldState presentation loaders currently require.
@@ -11,10 +11,12 @@ local MeshWriter = require("libs.assets.src.model.MeshWriter")
 local PngWriter = require("libs.assets.src.PngWriter")
 local PartyCache = require("libs.assets.src.PartyCache")
 local BagCache = require("libs.assets.src.BagCache")
+local MartCache = require("libs.assets.src.MartCache")
 local ItemCache = require("libs.assets.src.ItemCache")
 local MonCache = require("libs.assets.src.MonCache")
 local FieldActorCache = require("libs.assets.src.field.FieldActorCache")
 local BagPresentationFixture = require("tests.support.BagPresentationFixture")
+local MartFixture = require("tests.support.MartFixture")
 local FieldActorFixture = require("tests.support.FieldActorFixture")
 local FieldDialogueFixture = require("tests.support.FieldDialogueFixture")
 local FieldUiFixture = require("tests.support.FieldUiFixture")
@@ -68,6 +70,7 @@ local function partyManifest()
         selected = imageRef("assets/generated/party/fixture-panel.png", 128, 48),
         fainted = imageRef("assets/generated/party/fixture-panel.png", 128, 48),
         selectedFainted = imageRef("assets/generated/party/fixture-panel.png", 128, 48),
+        switchSelection = imageRef("assets/generated/party/fixture-panel-switch-selection.png", 128, 48),
       },
       text = {
         name = rect(origin[1] + 48, origin[2] + 8, 72, 16),
@@ -106,8 +109,12 @@ local function partyManifest()
     end
     return { sequences = result }
   end
-  local function menuRole()
-    return { r = 248, g = 248, b = 248, a = 255 }
+  local function textRole()
+    return {
+      foreground = { r = 248, g = 248, b = 248, a = 255 },
+      shadow = { r = 88, g = 88, b = 88, a = 255 },
+      background = { r = 0, g = 0, b = 0, a = 255 },
+    }
   end
   local function menuLayout(count, lateral)
     local entries = {}
@@ -209,8 +216,11 @@ local function partyManifest()
     contextMenu = {
       topLevel = menuTopLevel,
       subcontext = menuSubcontext,
-      textPalette = { raised = menuRole(), depressed = menuRole() },
-      fillPalette = { raised = menuRole(), depressed = menuRole() },
+      textRoles = {
+        command = { raised = textRole(), depressed = textRole() },
+        field = { raised = textRole(), depressed = textRole() },
+        cancel = { raised = textRole(), depressed = textRole() },
+      },
       frames = {
         standard = {
           raised = imageRef("assets/generated/party/fixture-context-standard-raised.png", 128, 32),
@@ -234,7 +244,20 @@ local function partyManifest()
     },
     text = {
       labels = { cancel = "Cancel", male = "M", female = "F" },
-      templates = { switchPrompt = { segments = { { kind = "text", value = "Switch?" } } } },
+      templates = {
+        switchPrompt = { segments = { { kind = "text", value = "Switch?" } } },
+        chooseMon = { segments = { { kind = "text", value = "Choose a POKEMON." } } },
+        moveTarget = { segments = { { kind = "text", value = "Move to where?" } } },
+        giveTarget = { segments = { { kind = "text", value = "Give to which POKEMON?" } } },
+        useTarget = { segments = { { kind = "text", value = "Use on which POKEMON?" } } },
+        teachTarget = { segments = { { kind = "text", value = "Teach which POKEMON?" } } },
+        itemAction = { segments = { { kind = "text", value = "What to do with the item?" } } },
+        takeNoItem = { segments = { { kind = "text", value = "Nothing held." } } },
+        bagFull = { segments = { { kind = "text", value = "The Bag is full." } } },
+        switchHeldPrompt = { segments = { { kind = "text", value = "Switch the held items?" } } },
+        switchHeldResult = { segments = { { kind = "text", value = "Switched the held items." } } },
+        giveHeldItem = { segments = { { kind = "text", value = "Gave the item to hold." } } },
+      },
       roles = {
         ordinary = {
           foreground = { r = 248, g = 248, b = 248, a = 255 },
@@ -252,6 +275,7 @@ local function partyManifest()
           background = { r = 0, g = 0, b = 0, a = 255 },
         },
       },
+      messageRole = textRole(),
     },
     numberGlyphs = {
       advance = 8,
@@ -331,6 +355,11 @@ function FieldStatePresentationFixture.cache()
   -- Every image the validated manifest references, so the eager bag
   -- presentation resources resolve during FieldState construction.
   for _, path in ipairs(BagCache.referencedPaths(bagManifest)) do
+    cache:write(path, solidPng(32, 32))
+  end
+  local martManifest = MartFixture.manifest()
+  cache:writeLua(MartCache.manifestPath(), martManifest)
+  for _, path in ipairs(MartCache.referencedPaths(martManifest)) do
     cache:write(path, solidPng(32, 32))
   end
   -- Minimal party manifest and every image it references so the eager

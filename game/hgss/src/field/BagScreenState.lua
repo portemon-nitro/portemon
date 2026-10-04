@@ -18,7 +18,7 @@ local BagModel = require("libs.hgss.src.ui.BagModel")
 ---@class BagScreenState
 ---@field _service HgssBagService
 ---@field _cursor BagCursor
----@field _context "inventory"|"field"|"pick_held" the selection context for intent emission
+---@field _context "inventory"|"field"|"pick_held"|"sell" the selection context for intent emission
 ---@field _manifest table<string, unknown>
 ---@field _heroGender "male"|"female"
 ---@field _measureDisplay fun(): DisplayMeasurement the live display facts
@@ -26,6 +26,11 @@ local BagModel = require("libs.hgss.src.ui.BagModel")
 ---@field _session ApplicationPresentation the per-open presentation session
 ---@field _hero BagHeroPresenter
 ---@field _heroPocket string?
+---@field _openingPhase "opening"|"interactive"?
+---@field _openingSubStep integer
+---@field _openingMainStep integer
+---@field _openingInitialTick boolean
+---@field _settleTicks integer
 ---@field _disposed boolean
 local BagScreenState = {}
 BagScreenState.__index = BagScreenState
@@ -39,7 +44,8 @@ BagScreenState.__index = BagScreenState
 ---@field uiManifest table<string, unknown> the validated field-UI manifest carrying the prompt section
 ---@field monCatalog table<string, unknown> the borrowed compiled mon catalog
 ---@field heroGender "male"|"female" the profile-selected hero backdrop
----@field context "inventory"|"field"|"pick_held"? the selection context (defaults to inventory)
+---@field context "inventory"|"field"|"pick_held"|"sell"? the selection context (defaults to inventory)
+---@field saleSession table<string, unknown>? required for sell context
 ---@field partyEmpty boolean? true when no party member exists to target (field contexts hide Use/Give)
 ---@field measureDisplay fun(): DisplayMeasurement the current display facts
 ---@field overrides table<string, unknown>? per-case function overrides for this application
@@ -69,10 +75,23 @@ function BagScreenState.new(opts)
   assert(type(overlays) == "table", "the bag manifest carries its interactive pane")
   local bagOverlays = assert(overlays.overlays, "the bag manifest carries its overlay geometry")
   local tossPrompt = assert(bagOverlays.tossPrompt, "the bag manifest carries its toss prompt placement")
+  local context = opts.context or "inventory"
+  assert(
+    context == "inventory" or context == "field" or context == "pick_held" or context == "sell",
+    "the bag screen needs a named inventory, field, pick_held, or sell context"
+  )
   -- Post-selection timing and text ride the validated manifest: a bundle
   -- missing them fails the open instead of animating with silent fallbacks.
   local text = assert(overlays.text, "the bag manifest carries its semantic text")
   assert(type(text) == "table", "the bag manifest carries its semantic text")
+  local controllerMessages = text
+  if context == "sell" then
+    controllerMessages = {}
+    for key, value in pairs(text) do
+      controllerMessages[key] = value
+    end
+    controllerMessages.sale = assert(overlays.sale.messages, "sale messages are complete")
+  end
   local feedback = assert(overlays.feedback, "the bag manifest carries its activation feedback")
   assert(type(feedback) == "table", "the bag manifest carries its activation feedback")
   local feedbackTicks = assert(feedback.totalTicks, "activation feedback carries its generated total")
@@ -106,11 +125,17 @@ function BagScreenState.new(opts)
   )
   local heroGender = assert(opts.heroGender, "the bag screen requires the hero gender")
   assert(heroGender == "male" or heroGender == "female", "the hero gender selects its backdrop")
-  local context = opts.context or "inventory"
-  assert(
-    context == "inventory" or context == "field" or context == "pick_held",
-    "the bag screen needs a named inventory, field, or pick_held context"
-  )
+  local saleSession = opts.saleSession
+  if context == "sell" then
+    assert(type(saleSession) == "table", "the selling bag requires its sale session")
+    assert(type(saleSession.view) == "function", "the selling bag requires sale balance reads")
+    assert(type(saleSession.quoteSell) == "function", "the selling bag requires sale quotes")
+    assert(type(saleSession.commit) == "function", "the selling bag requires sale commits")
+    local sale = assert(overlays.sale, "the bag manifest carries its sale presentation")
+    assert(type(sale) == "table" and type(sale.messages) == "table", "sale presentation carries all messages")
+  else
+    assert(saleSession == nil, "only the selling bag accepts a sale session")
+  end
   assert(type(opts.measureDisplay) == "function", "the bag screen requires the display facts")
   local self = setmetatable({
     _service = service,
@@ -120,6 +145,11 @@ function BagScreenState.new(opts)
     _heroGender = heroGender,
     _measureDisplay = opts.measureDisplay,
     _heroPocket = nil,
+    _openingPhase = "opening",
+    _openingSubStep = 0,
+    _openingMainStep = 0,
+    _openingInitialTick = true,
+    _settleTicks = 0,
     _disposed = false,
   }, BagScreenState)
   self._hero = BagHeroPresenter.new({ manifest = manifest, gender = heroGender })
@@ -171,7 +201,9 @@ function BagScreenState.new(opts)
       itemSelectTicks = itemSelectTicks,
       effect = opts.effect,
       textPolicy = textPolicy,
-      messages = text,
+      messages = controllerMessages,
+      saleSession = saleSession,
+      salePrompt = context == "sell" and assert(overlays.sale.compactPrompt) or nil,
       feedbackTicks = feedbackTicks,
       moveTransition = moveTransition,
       isPickable = isPickable,
@@ -214,7 +246,17 @@ end
 
 ---@return table<string, unknown> the controller snapshot for resolvers and renderers
 function BagScreenState:_view()
-  return self._controller:status()
+  local view = {}
+  for key, value in pairs(self._controller:status()) do
+    view[key] = value
+  end
+  if self._openingPhase ~= nil then
+    view.phase = self._openingPhase
+    if self._openingPhase == "opening" then
+      view.opening = { subStep = self._openingSubStep, mainStep = self._openingMainStep }
+    end
+  end
+  return view
 end
 
 -- The canonical logical content the controller hits against: the current
@@ -223,6 +265,14 @@ end
 function BagScreenState:resolveLayout()
   local plan = self._session:plan()
   return assert(plan.content, "the bag plan carries its canonical content")
+end
+
+-- Re-resolves host placement without advancing the Bag or hero clocks.
+---@param view table<string, unknown>?
+---@return table<string, unknown> current presentation plan
+function BagScreenState:refreshPresentation(view)
+  assert(not self._disposed, "a disposed bag wrapper refreshes nothing")
+  return self._session:resolve(self:_measured(), view or self:_view())
 end
 
 -- One fixed tick: resolve, map once, advance the controller once, sync
@@ -235,7 +285,42 @@ function BagScreenState:updateFixed(uiInput)
   local session = self._session
   local measurement = self:_measured()
   session:resolve(measurement, self:_view())
-  local mapped = session:mapInput(assert(uiInput, "the bag input must be an event list"), self:_view())
+  local gated = false
+  if self._openingPhase == "opening" then
+    if self._openingInitialTick then
+      self._openingInitialTick = false
+    elseif self._openingSubStep < 6 then
+      self._openingSubStep = self._openingSubStep + 1
+    elseif self._openingMainStep < 6 then
+      self._openingMainStep = self._openingMainStep + 1
+    elseif self._settleTicks == 0 then
+      self._settleTicks = 2
+    else
+      self._settleTicks = self._settleTicks - 1
+      if self._settleTicks == 0 then
+        self._openingPhase = "interactive"
+      end
+    end
+    gated = true
+  end
+  local input = assert(uiInput, "the bag input must be an event list")
+  if gated then
+    for _, event in ipairs(input) do
+      assert(type(event) == "table" and type(event.type) == "string", "bag events need their type")
+    end
+    self._controller:updateFixed({})
+    local status = self._controller:status()
+    if status.open then
+      if status.pocket ~= self._heroPocket then
+        self._hero:selectPocket(status.pocket)
+        self._heroPocket = status.pocket
+      end
+      self._hero:updateFixed()
+    end
+    session:resolve(measurement, self:_view())
+    return
+  end
+  local mapped = session:mapInput(input, self:_view())
   self._controller:updateFixed(mapped)
   local status = self._controller:status()
   if status.open then

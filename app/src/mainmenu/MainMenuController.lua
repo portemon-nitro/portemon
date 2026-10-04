@@ -51,6 +51,10 @@ local function canDelete(item)
   return item ~= nil and item.canDelete == true and item.saveId ~= nil
 end
 
+local function canEdit(item)
+  return item ~= nil and item.canEdit == true and item.saveId ~= nil
+end
+
 local function focusForSave(saveId, lane)
   assert(lane == "body" or lane == "overflow", "unknown Main Menu save lane")
   return { region = "saves", saveId = saveId, lane = lane }
@@ -250,6 +254,12 @@ function MainMenuController:move(direction)
     return
   end
   if self.popup then
+    if direction == "up" or direction == "down" then
+      local item = itemAt(self.saves, self.popup.saveId)
+      if canEdit(item) and canDelete(item) then
+        self.popup.focusedAction = self.popup.focusedAction == "edit" and "delete" or "edit"
+      end
+    end
     return
   end
   local graph, targets = buildFocusGraph(self.saves, self.rememberedSaveId, self.rememberedLane)
@@ -284,11 +294,28 @@ function MainMenuController:focusConfirmation(action)
 end
 
 function MainMenuController:openOverflow(saveId)
-  if not canDelete(itemAt(self.saves, saveId)) then
+  local item = itemAt(self.saves, saveId)
+  if not canEdit(item) and not canDelete(item) then
     return false
   end
   self:focusSave(saveId, "overflow")
-  self.popup = { saveId = saveId, focusedAction = "delete" }
+  self.popup = { saveId = saveId, focusedAction = canEdit(item) and "edit" or "delete" }
+  return true
+end
+
+function MainMenuController:focusPopupAction(action)
+  assert(action == "edit" or action == "delete", "unknown Main Menu popup action")
+  if not self.popup then
+    return false
+  end
+  local item = itemAt(self.saves, self.popup.saveId)
+  if action == "edit" and not canEdit(item) then
+    return false
+  end
+  if action == "delete" and not canDelete(item) then
+    return false
+  end
+  self.popup.focusedAction = action
   return true
 end
 
@@ -321,7 +348,14 @@ function MainMenuController:activate()
     return nil
   end
   if self.popup then
-    self.confirmation = { saveId = self.popup.saveId, focusedAction = "cancel" }
+    local saveId = self.popup.saveId
+    local action = self.popup.focusedAction
+    if action == "edit" and canEdit(itemAt(self.saves, saveId)) then
+      self.popup = nil
+      return { kind = "edit", saveId = saveId }
+    end
+    assert(action == "delete" and canDelete(itemAt(self.saves, saveId)), "popup action is unavailable")
+    self.confirmation = { saveId = saveId, focusedAction = "cancel" }
     return nil
   end
   if self.focus.region == "global" then
@@ -329,7 +363,8 @@ function MainMenuController:activate()
   end
   if self.focus.lane == "overflow" then
     if canDelete(self:focusedItem()) then
-      self.popup = { saveId = self.focus.saveId, focusedAction = "delete" }
+      local item = self:focusedItem()
+      self.popup = { saveId = self.focus.saveId, focusedAction = canEdit(item) and "edit" or "delete" }
       return nil
     end
     self.focus = focusForSave(self.focus.saveId, "body")

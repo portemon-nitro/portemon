@@ -41,6 +41,7 @@ local function itemRoot()
   }
   root.items.FULL_RESTORE = {
     nativeId = 23,
+    price = 3000,
     pocket = "medicine",
     name = "Full Restore",
     nameIndefinite = "a Full Restore",
@@ -65,6 +66,7 @@ local function itemRoot()
   }
   root.items.REVIVE = {
     nativeId = 28,
+    price = 1500,
     pocket = "medicine",
     name = "Revive",
     nameIndefinite = "a Revive",
@@ -89,6 +91,7 @@ local function itemRoot()
   }
   root.items.SACRED_ASH = {
     nativeId = 44,
+    price = 200,
     pocket = "medicine",
     name = "Sacred Ash",
     nameIndefinite = "some Sacred Ash",
@@ -107,6 +110,7 @@ local function itemRoot()
   }
   root.items.ETHER = {
     nativeId = 38,
+    price = 1200,
     pocket = "medicine",
     name = "Ether",
     nameIndefinite = "an Ether",
@@ -130,6 +134,7 @@ local function itemRoot()
   }
   root.items.PP_UP = {
     nativeId = 51,
+    price = 9800,
     pocket = "medicine",
     name = "PP Up",
     nameIndefinite = "a PP Up",
@@ -154,6 +159,7 @@ local function itemRoot()
   }
   root.items.HP_UP = {
     nativeId = 45,
+    price = 9800,
     pocket = "medicine",
     name = "HP Up",
     nameIndefinite = "an HP Up",

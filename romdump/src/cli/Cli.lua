@@ -22,7 +22,7 @@ Cli.USAGE = "usage: love romdump/ [--import-rom <path>] [--forcedump <path>] [--
   .. " [--check-dump] [--check-derived-cache] [--probe-rom <path>]"
   .. " [--prepare-cache --version <version> --require <request> [--require <request> ...] [--dev] [--rebuild <job> ...]]"
   .. " [--allow-compile-exclusions] [--dev]"
-  .. " [--discover-app <overlay-id> --rom-source <path> [--output <path>]"
+  .. " [--discover-app <overlay-id|arm9-main> [--template-address <hex-address>] --rom-source <path> [--output <path>]"
   .. " [--resource-detail <fileId>:<memberId>]...]"
 
 -- Every command flag maps to the command it selects; --import-rom,
@@ -82,15 +82,39 @@ local function takeValue(argv, i, flag)
   return value
 end
 
-local function parseOverlayId(argv, i, flag)
+-- Parses one discover-app target token: a non-negative decimal overlay id
+-- selects an ARM9 overlay target, while the exact literal `arm9-main`
+-- selects the main ARM9 image (its manager template is attached later from
+-- --template-address once all argument ordering is resolved).
+local function parseDiscoverTarget(argv, i, flag)
   local raw = argv[i + 1]
   if not raw or raw:sub(1, 2) == "--" then
-    error(flag .. " requires an overlay id\n" .. Cli.USAGE)
+    error(flag .. " requires a target <overlay-id|arm9-main>\n" .. Cli.USAGE)
+  end
+  if raw == "arm9-main" then
+    return { kind = "arm9-main" }
   end
   if not raw:match("^%d+$") then
-    error(flag .. " requires a non-negative decimal overlay id, got '" .. raw .. "'\n" .. Cli.USAGE)
+    error(flag .. " requires a non-negative decimal overlay id or 'arm9-main', got '" .. raw .. "'\n" .. Cli.USAGE)
   end
-  return tonumber(raw)
+  return { kind = "arm9-overlay", overlayId = tonumber(raw) }
+end
+
+-- Parses a canonical absolute RAM address: a 32-bit `0x`/`0X`-prefixed
+-- hexadecimal value that is 4-byte aligned. Decimal addresses and symbol
+-- names are rejected so template selection stays an explicit ROM address.
+local function parseTemplateAddress(argv, i, flag)
+  local raw = takeValue(argv, i, flag)
+  local digits = raw:match("^0[xX](%x+)$")
+  if not digits or #digits > 8 then
+    error(flag .. " requires a 32-bit 0x-prefixed hexadecimal address, got '" .. raw .. "'\n" .. Cli.USAGE)
+  end
+  local address = tonumber(digits, 16)
+  assert(address, "hexadecimal template address must be numeric")
+  if address % 4 ~= 0 then
+    error(flag .. " requires a 4-byte aligned address, got '" .. raw .. "'\n" .. Cli.USAGE)
+  end
+  return address
 end
 
 -- Strict closed requirement grammar: a fixed scope word or a canonical
@@ -121,8 +145,12 @@ local function checkRebuild(text)
 end
 
 -- argv: the array LÖVE passes to love.load.
+---@class Cli.DiscoveryTarget
+---@field kind "arm9-overlay"|"arm9-main"
+---@field overlayId integer?
+---@field templateAddress integer?
 ---@param argv string[]|nil
----@return { command: string|nil, romPath: string|nil, forceDump: boolean, allowCompileExclusions: boolean, dev: boolean, overlayId: integer|nil, outputPath: string|nil, resourceDetails: { fileId: integer, memberId: integer }[], version: string|nil, requirements: string[], rebuild: string[] }
+---@return { command: string|nil, romPath: string|nil, forceDump: boolean, allowCompileExclusions: boolean, dev: boolean, discoveryTarget: Cli.DiscoveryTarget|nil, outputPath: string|nil, resourceDetails: { fileId: integer, memberId: integer }[], version: string|nil, requirements: string[], rebuild: string[] }
 function Cli.parse(argv)
   argv = argv or {}
 
@@ -132,7 +160,7 @@ function Cli.parse(argv)
     forceDump = false,
     allowCompileExclusions = false,
     dev = false,
-    overlayId = nil,
+    discoveryTarget = nil,
     outputPath = nil,
     resourceDetails = {},
     version = nil,
@@ -143,6 +171,10 @@ function Cli.parse(argv)
   local sawRomSourceFlag = false
   local sawOutputFlag = false
   local seenResourceDetails = {}
+  -- Parser-local until discover-app applicability is resolved, so
+  -- --template-address may appear before or after --discover-app.
+  local templateAddress = nil
+  local sawTemplateAddressFlag = false
 
   local function setCommand(flag)
     if commandFlag then
@@ -208,7 +240,14 @@ function Cli.parse(argv)
       end
     elseif token == "--discover-app" then
       setCommand(token)
-      opts.overlayId = parseOverlayId(argv, i, token)
+      opts.discoveryTarget = parseDiscoverTarget(argv, i, token)
+      i = i + 1
+    elseif token == "--template-address" then
+      if sawTemplateAddressFlag then
+        error("duplicate --template-address\n" .. Cli.USAGE)
+      end
+      sawTemplateAddressFlag = true
+      templateAddress = parseTemplateAddress(argv, i, token)
       i = i + 1
     elseif token == "--rom-source" then
       setPath(takePath(argv, i, token))
@@ -253,11 +292,20 @@ function Cli.parse(argv)
     if opts.allowCompileExclusions then
       error("--discover-app does not accept --allow-compile-exclusions\n" .. Cli.USAGE)
     end
+    local target = assert(opts.discoveryTarget, "--discover-app requires a target")
+    if target.kind == "arm9-main" then
+      if templateAddress == nil then
+        error("--discover-app arm9-main requires --template-address <hex-address>\n" .. Cli.USAGE)
+      end
+      target.templateAddress = templateAddress
+    elseif sawTemplateAddressFlag then
+      error("--template-address only applies to --discover-app arm9-main\n" .. Cli.USAGE)
+    end
     table.sort(opts.resourceDetails, function(a, b)
       return a.fileId < b.fileId or (a.fileId == b.fileId and a.memberId < b.memberId)
     end)
-  elseif sawRomSourceFlag or sawOutputFlag or #opts.resourceDetails > 0 then
-    error("--rom-source/--output/--resource-detail require --discover-app\n" .. Cli.USAGE)
+  elseif sawRomSourceFlag or sawOutputFlag or #opts.resourceDetails > 0 or sawTemplateAddressFlag then
+    error("--rom-source/--output/--resource-detail/--template-address require --discover-app\n" .. Cli.USAGE)
   end
 
   if opts.command == "prepare-cache" then

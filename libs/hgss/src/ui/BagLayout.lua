@@ -120,6 +120,7 @@ end
 ---@class BagLayout.ControllerState
 ---@field state string?
 ---@field visibleSlots table<integer, BagLayout.VisibleSlot>?
+---@field quantityMax integer?
 
 ---@class BagLayout.Hit
 ---@field kind "description"|"pocket"|"item"|"cancel"|"action"|"quantity_delta"|"confirm"
@@ -211,6 +212,30 @@ function BagLayout.resolve(spec)
         return { kind = "cancel" }
       end
       return nil
+    elseif buttonState == "sale_quantity" then
+      local sale = assert(interactive.sale, "the sale state carries its presentation")
+      for index, control in ipairs(assert(sale.controls, "sale has four quantity controls")) do
+        local quantityMax = type(controllerState) == "table" and controllerState.quantityMax or nil
+        local tensDisabled = (control.delta == 10 or control.delta == -10)
+          and (type(quantityMax) ~= "number" or quantityMax < 10)
+        if not tensDisabled and LayoutGeometry.containsPoint(control.hitRect, logicalX, logicalY) then
+          return { kind = "quantity_delta", quantityControlIndex = index - 1, delta = control.delta }
+        end
+      end
+      if LayoutGeometry.containsPoint(sale.confirm.hitRect, logicalX, logicalY) then
+        return { kind = "confirm" }
+      end
+      if LayoutGeometry.containsPoint(sale.cancel.hitRect, logicalX, logicalY) then
+        return { kind = "cancel" }
+      end
+      return nil
+    elseif
+      buttonState == "sale_offer"
+      or buttonState == "sale_result"
+      or buttonState == "sale_refusal"
+      or buttonState == "sale_ack"
+    then
+      return nil
     elseif buttonState == "toss_confirm" or buttonState == "toss_ack" then
       -- The modal Yes/No prompt owns toss confirmation input through its
       -- own source geometry, so neither modal state exposes a Bag-owned
@@ -260,6 +285,7 @@ function BagLayout.resolve(spec)
       descriptionTextRect = nil,
       hitTest = hitTest,
       quantityPressTicks = quantityPressTicks,
+      salePressTicks = interactive.sale and interactive.sale.pressTicks,
     }
   end
   return {
@@ -278,6 +304,7 @@ function BagLayout.resolve(spec)
     },
     hitTest = hitTest,
     quantityPressTicks = quantityPressTicks,
+    salePressTicks = interactive.sale and interactive.sale.pressTicks,
   }
 end
 

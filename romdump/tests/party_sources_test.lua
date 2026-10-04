@@ -82,6 +82,11 @@ function T.compiled_geometry_publishes_source_independent_runtime_anchors()
   Assert.deepEqual(compiled.panels[6].heldAnchor, { x = 166, y = 128 })
   Assert.deepEqual(compiled.panels[6].capsuleAnchor, { x = 174, y = 128 })
   Assert.deepEqual(compiled.controls.cancel.anchor, { x = 232, y = 176 })
+  -- party_menu.c window 31 is the main-screen Cancel text window.
+  Assert.deepEqual(PartySources.geometry.controls.cancel.textRect, { x = 208, y = 168, width = 40, height = 16 })
+  Assert.equal(PartySources.geometry.controls.cancel.align, "center")
+  Assert.deepEqual(compiled.controls.cancel.textRect, PartySources.geometry.controls.cancel.textRect)
+  Assert.equal(compiled.controls.cancel.align, "center")
   Assert.isNil(compiled.controls.cancel.memberId, "runtime control geometry omits source identities")
   Assert.deepEqual(compiled.detail, {
     iconAnchor = { x = 30, y = 200 },
@@ -280,6 +285,74 @@ function T.text_palette_roles_name_the_source_printer_slots()
   Assert.deepEqual(roles.ordinary, { 15, 14, 0 }, "ordinary text uses the panel printer slots")
   Assert.deepEqual(roles.male, { 3, 4, 0 }, "male text uses the source gender slots")
   Assert.deepEqual(roles.female, { 5, 6, 0 }, "female text uses the source gender slots")
+end
+
+function T.context_roles_carry_complete_triples_for_every_entry_family()
+  local roles = PartySources.contextRoles
+  Assert.notNil(roles, "the producer transcribes the context-button presentation roles")
+  Assert.equal(roles.bank, 2, "context-button roles resolve against the button-window bank")
+  Assert.deepEqual(
+    roles.command,
+    { raised = { 14, 15, 4 }, depressed = { 14, 15, 11 } },
+    "command entries keep the bright ink triple"
+  )
+  Assert.deepEqual(
+    roles.field,
+    { raised = { 9, 10, 4 }, depressed = { 9, 10, 11 } },
+    "field entries keep their own ink triple"
+  )
+  Assert.deepEqual(
+    roles.cancel,
+    { raised = { 14, 15, 4 }, depressed = { 14, 15, 11 } },
+    "the cancel entry keeps the command ink triple"
+  )
+end
+
+function T.panel_palette_names_the_switch_selection_bank()
+  local banks = PartySources.panelPalette.stateBanks
+  Assert.equal(banks.switchSelection, 7, "the switch-selection state resolves bank 7")
+  Assert.equal(banks.normal, 0, "the ordinary state still resolves bank 0")
+end
+
+function T.message_templates_select_the_empty_take_message()
+  local template = PartySources.messages.templates.takeNoItem
+  Assert.notNil(template, "the producer selects the empty-take message")
+  Assert.equal(template.bank, 300, "the empty-take message comes from the party message bank")
+  Assert.equal(template.index, 82, "the empty-take message is the dedicated source message")
+end
+
+function T.message_templates_select_the_source_held_item_result()
+  local template = PartySources.messages.templates.giveHeldItem
+  Assert.notNil(template, "the producer selects the held-item result message")
+  Assert.equal(template.bank, 300, "the held-item result comes from the party message bank")
+  Assert.equal(template.index, 107, "the held-item result uses its source message")
+end
+
+function T.message_templates_select_source_held_item_question_and_swap_result()
+  local prompt = PartySources.messages.templates.switchHeldPrompt
+  local result = PartySources.messages.templates.switchHeldResult
+  Assert.notNil(prompt, "the producer selects the held-item replacement question")
+  Assert.equal(prompt.bank, 300, "the replacement question comes from the party message bank")
+  Assert.equal(prompt.index, 79, "the replacement question uses its source message")
+  Assert.notNil(result, "the producer selects the held-item swap result")
+  Assert.equal(result.bank, 300, "the swap result comes from the party message bank")
+  Assert.equal(result.index, 85, "the swap result uses its source message")
+end
+
+function T.message_templates_select_the_full_bag_message()
+  local template = PartySources.messages.templates.bagFull
+  Assert.notNil(template, "the producer selects the full-bag message")
+  Assert.equal(template.bank, 300, "the full-bag message comes from the party message bank")
+  Assert.equal(template.index, 84, "the full-bag message is the dedicated source message")
+end
+
+function T.lower_message_role_selects_the_loaded_font_palette()
+  local role = PartySources.messageRole
+  Assert.notNil(role, "the producer selects the lower-message font palette")
+  Assert.equal(role.paletteMember, 8, "lower messages resolve the loaded font palette member")
+  Assert.equal(role.foreground, 1, "the lower-message foreground keeps its font slot")
+  Assert.equal(role.shadow, 2, "the lower-message shadow keeps its font slot")
+  Assert.equal(role.background, 15, "the lower-message background keeps its font fill slot")
 end
 
 return { tests = T }

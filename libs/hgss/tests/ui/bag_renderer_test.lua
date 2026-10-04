@@ -13,6 +13,7 @@ local BagLayout = require("libs.hgss.src.ui.BagLayout")
 local BagRenderer = require("libs.hgss.src.ui.BagRenderer")
 local CacheFs = require("libs.storage.src.CacheFs")
 local FakeCache = require("tests.support.FakeCache")
+local BagPresentationFixture = require("tests.support.BagPresentationFixture")
 local FieldUiFixture = require("tests.support.FieldUiFixture")
 local PromptController = require("libs.hgss.src.ui.YesNoPromptController")
 
@@ -118,6 +119,9 @@ local function manifest()
       quantityAt = { x = 48, y = 16 },
     }
   end
+  local sale = BagPresentationFixture.manifest().interactive.sale
+  sale.confirm.visual.image = "bag/quantity-confirm.png"
+  sale.cancel.visual.image = "bag/quantity-cancel.png"
   return {
     hero = {
       background = {
@@ -131,6 +135,7 @@ local function manifest()
     },
     interactive = {
       backgrounds = backgrounds,
+      sale = sale,
       pocketTabs = {
         rects = tabs,
         strips = normals,
@@ -252,6 +257,10 @@ local function manifest()
           normal = { image = "bag/quantity-confirm.png", width = 64, height = 24 },
           selected = { image = "bag/quantity-confirm-selected.png", width = 64, height = 24 },
         },
+        quantityCancel = {
+          normal = { image = "bag/quantity-cancel.png", width = 64, height = 24 },
+          selected = { image = "bag/quantity-cancel-selected.png", width = 64, height = 24 },
+        },
       },
       moveTransition = {
         unchanged = {
@@ -369,6 +378,12 @@ local function manifest()
             visual = { image = "bag/quantity-confirm.png", width = 64, height = 24 },
             center = { x = 144, y = 176 },
             hitRect = { x = 112, y = 160, width = 64, height = 32 },
+            labelAt = { x = 117, y = 168 },
+          },
+          cancel = {
+            visual = { image = "bag/quantity-cancel.png", width = 64, height = 24 },
+            center = { x = 224, y = 176 },
+            labelAt = { x = 197, y = 168 },
           },
           cancelHitRect = { x = 178, y = 168, width = 78, height = 24 },
         },
@@ -416,6 +431,8 @@ local function seedCache()
   paths[#paths + 1] = "bag/cancel-face.png"
   paths[#paths + 1] = "bag/cancel-face-selected.png"
   paths[#paths + 1] = "bag/quantity-confirm-selected.png"
+  paths[#paths + 1] = "bag/quantity-cancel.png"
+  paths[#paths + 1] = "bag/quantity-cancel-selected.png"
   paths[#paths + 1] = "bag/move-unchanged-0.png"
   paths[#paths + 1] = "bag/move-changed-0.png"
   paths[#paths + 1] = "bag/move-cursor-original.png"
@@ -429,6 +446,13 @@ local function seedCache()
     "bag/quantity-decrement.png",
     "bag/quantity-decrement-pressed.png",
     "bag/quantity-confirm.png",
+  }) do
+    paths[#paths + 1] = path
+  end
+  for _, path in ipairs({
+    "assets/generated/bag/background-sale-quantity.png",
+    "assets/generated/bag/quantity-confirm.png",
+    "assets/generated/bag/quantity-cancel.png",
   }) do
     paths[#paths + 1] = path
   end
@@ -515,6 +539,16 @@ local function text()
     end,
     textWidth = function(_, content)
       return #content * 8
+    end,
+    windowBackgroundColor = function(_)
+      local slot = palette[16]
+      local function unit(component)
+        if component > 1 then
+          return component / 255
+        end
+        return component
+      end
+      return { unit(slot.r), unit(slot.g), unit(slot.b), 1 }
     end,
   }
 end
@@ -1516,6 +1550,125 @@ function T.quantity_state_acquires_six_controls_and_no_text_surrogates()
   draw:release()
 end
 
+-- Quantity picker with source-authored faces and text origins: the
+-- confirm face and its own cancel face carry generated label origins that
+-- are independent of the touch rectangles, and cancel activation flashes
+-- the quantity-specific face rather than the generic cancel face.
+local function quantityManifest()
+  local manifested = manifest()
+  local quantity = manifested.interactive.overlays.quantity
+  quantity.confirm = {
+    visual = { image = "bag/quantity-confirm.png", width = 64, height = 24 },
+    center = { x = 136, y = 176 },
+    hitRect = { x = 96, y = 168, width = 78, height = 24 },
+    labelAt = { x = 117, y = 168 },
+  }
+  quantity.cancel = {
+    visual = { image = "bag/quantity-cancel.png", width = 64, height = 24 },
+    center = { x = 224, y = 176 },
+    labelAt = { x = 197, y = 168 },
+  }
+  quantity.cancelHitRect = { x = 178, y = 168, width = 78, height = 24 }
+  manifested.interactive.feedback.quantityCancel = {
+    normal = { image = "bag/quantity-cancel.png", width = 64, height = 24 },
+    selected = { image = "bag/quantity-cancel-selected.png", width = 64, height = 24 },
+  }
+  return manifested
+end
+
+local function quantityCache(reads)
+  local cache = trackingCache(reads)
+  cache:write("bag/quantity-cancel.png", "png-bytes")
+  cache:write("bag/quantity-cancel-selected.png", "png-bytes")
+  return cache
+end
+
+function T.action_and_move_states_keep_the_fixed_cancel_label()
+  for _, state in ipairs({ "action_menu", "move_select" }) do
+    local graphics = FakeGraphics({ imageSizes = IMAGE_SIZES })
+    local content = text()
+    local draw = BagRenderer.new({
+      cacheFs = seedCache(),
+      manifest = manifest(),
+      promptManifest = promptManifest(),
+      text = content,
+      graphics = graphics,
+      heroRenderer = heroSpy(nil),
+      window = windowSpy(),
+      frameIndex = 3,
+    })
+    local record = status({ state = state, quantity = 2, quantityMax = 5, moveTarget = 1, moveOrigin = 0 })
+    if state == "action_menu" then
+      record.actions = { { id = "toss", slot = 1 } }
+      record.actionNode = 0
+    end
+    record.lowerMessage = { visibleText = "The POTION is selected.", fullText = "The POTION is selected." }
+    draw:draw(record, plan(true), { icons = icons() })
+    Assert.isTrue(printedText(content, "BACK OUT"), state .. " keeps the fixed cancel label")
+    Assert.equal(graphics.pushDepth(), 0, "the transform stack stays balanced in " .. state)
+    draw:release()
+  end
+end
+
+function T.quantity_labels_draw_at_their_generated_origins()
+  local graphics = FakeGraphics({ imageSizes = IMAGE_SIZES })
+  local content = text()
+  local draw = BagRenderer.new({
+    cacheFs = quantityCache({}),
+    manifest = quantityManifest(),
+    promptManifest = promptManifest(),
+    text = content,
+    graphics = graphics,
+    heroRenderer = heroSpy(nil),
+  })
+  draw:draw(status({ state = "toss_quantity", quantity = 2, quantityMax = 5 }), plan(true), {
+    icons = icons(),
+  })
+  local toss = assert(printedAt(content, "TRASH"), "the quantity confirm prints its generated toss label")
+  Assert.deepEqual({ x = toss.x, y = toss.y }, { x = 117, y = 168 }, "the toss label keeps its generated origin")
+  local cancel = assert(printedAt(content, "BACK OUT"), "the quantity cancel prints its generated cancel label")
+  Assert.deepEqual({ x = cancel.x, y = cancel.y }, { x = 197, y = 168 }, "the cancel label keeps its generated origin")
+  Assert.equal(graphics.pushDepth(), 0, "the transform stack stays balanced")
+  draw:release()
+end
+
+function T.quantity_cancel_feedback_uses_its_own_face()
+  local reads = {}
+  local graphics = FakeGraphics({ imageSizes = IMAGE_SIZES })
+  local content = text()
+  local draw = BagRenderer.new({
+    cacheFs = quantityCache(reads),
+    manifest = quantityManifest(),
+    promptManifest = promptManifest(),
+    text = content,
+    graphics = graphics,
+    heroRenderer = heroSpy(nil),
+  })
+  Assert.equal(
+    #readPathsContaining(reads, "bag/quantity-cancel.png"),
+    2,
+    "the quantity cancel visual backs the control and the feedback latch"
+  )
+  Assert.equal(
+    #readPathsContaining(reads, "bag/quantity-cancel-selected.png"),
+    1,
+    "the quantity cancel flash is acquired"
+  )
+  draw:draw(
+    status({ state = "toss_quantity", quantity = 2, quantityMax = 5, feedback = { kind = "quantityCancel" } }),
+    plan(true),
+    { icons = icons() }
+  )
+  local manifested = quantityManifest()
+  local cancelCenter = manifested.interactive.overlays.quantity.cancel.center
+  Assert.isTrue(
+    staticDrawnAt(graphics, cancelCenter.x, cancelCenter.y),
+    "cancel activation draws the quantity-specific face"
+  )
+  Assert.equal(graphics.pushDepth(), 0, "the transform stack stays balanced")
+  draw:release()
+end
+
 function T.confirmation_state_draws_its_own_screen_and_prompt()
   local graphics = FakeGraphics({ imageSizes = IMAGE_SIZES })
   local content = text()
@@ -1760,7 +1913,7 @@ end
 function T.release_frees_images_exactly_once()
   local graphics = FakeGraphics({ imageSizes = IMAGE_SIZES })
   local draw = renderer(graphics)
-  Assert.equal(#graphics.images, 598, "the renderer acquires bag and prompt button images")
+  Assert.equal(#graphics.images, 602, "the renderer acquires bag and prompt button images")
   draw:release()
   for _, image in ipairs(graphics.images) do
     Assert.equal(image.releaseCount, 1, "every image releases exactly once")
@@ -1881,7 +2034,7 @@ function T.acquisition_failure_releases_every_image_acquired_before_it()
   local bound = renderer(probe)
   local total = #probe.images
   bound:release()
-  Assert.equal(total, 598, "setup binds every generated state, tab, focus, control, and prompt image")
+  Assert.equal(total, 602, "setup binds every generated state, tab, focus, control, and prompt image")
   for _, failCall in ipairs({ 1, total }) do
     local graphics = FakeGraphics({ imageSizes = IMAGE_SIZES, failOnImageCall = failCall })
     Assert.throws(function()
@@ -2001,6 +2154,16 @@ local function paletteText()
   end
   function fake:textWidth(content)
     return #content * 8
+  end
+  function fake:windowBackgroundColor()
+    local slot = palette[16]
+    local function unit(component)
+      if component > 1 then
+        return component / 255
+      end
+      return component
+    end
+    return { unit(slot.r), unit(slot.g), unit(slot.b), 1 }
   end
   return fake
 end
@@ -3008,10 +3171,10 @@ function T.toss_ack_keeps_the_singular_name_for_one_copy()
 end
 
 -- Move selection keeps the item cells that identify the target while
--- hiding the surrounding list chrome: names print, the page and cancel
--- labels stay off, tab and cancel focus never paint, browse item focus
--- never follows the browse cursor, and the move target carries the focus
--- with its confirm affordance.
+-- hiding the surrounding list chrome: names print, the page stays off
+-- while the fixed cancel label prints, tab and cancel focus never paint,
+-- browse item focus never follows the browse cursor, and the move target
+-- carries the focus with its confirm affordance.
 function T.move_select_keeps_cells_but_hides_browse_chrome()
   local graphics = FakeGraphics({ imageSizes = IMAGE_SIZES })
   local content = text()
@@ -3043,7 +3206,7 @@ function T.move_select_keeps_cells_but_hides_browse_chrome()
     "move selection keeps the registration marker with its cell"
   )
   Assert.isFalse(printedText(content, "1/1"), "move selection hides the browse page indicator")
-  Assert.isFalse(printedText(content, "BACK OUT"), "move selection hides the generic cancel label")
+  Assert.isTrue(printedText(content, "BACK OUT"), "move selection keeps the fixed cancel label")
   local itemFocus = manifested.interactive.focus.items
   local browseX, browseY = focusOrigin(itemFocus, itemFocus.targets[2])
   Assert.isFalse(staticDrawnAt(graphics, browseX, browseY), "move selection never follows the browse cursor")
@@ -3164,6 +3327,135 @@ function T.toss_ack_hides_interactive_widgets_but_keeps_its_result()
   )
   Assert.equal(graphics.pushDepth(), 0, "the transform stack stays balanced")
   draw:release()
+end
+
+-- The selected-item message fills its generated short window with the
+-- source field-window fill and prints through the source list roles with
+-- its first glyph at the content-box origin: no invented dark fill and no
+-- helper-invented inset may survive.
+function T.selected_message_uses_the_source_fill_role_and_origin()
+  local graphics = FakeGraphics({ imageSizes = IMAGE_SIZES })
+  local content = paletteText()
+  local manifested = manifest()
+  local window = windowSpy()
+  local draw = BagRenderer.new({
+    cacheFs = seedCache(),
+    manifest = manifested,
+    promptManifest = promptManifest(),
+    text = content,
+    graphics = graphics,
+    heroRenderer = heroSpy(nil),
+    window = window,
+    frameIndex = 3,
+  })
+  draw:draw(actionStatus(), plan(true), { icons = icons() })
+  local framed = assert(window.calls[1], "the selected message borrows the shared frame")
+  local box = assert(manifested.interactive.overlays.messages.selected.contentRect, "the message owns its content rect")
+  Assert.deepEqual(
+    framed.box,
+    { x = box.x, y = box.y, width = box.width, height = box.height },
+    "the selected message uses the generated short content rect"
+  )
+  Assert.equal(framed.frameIndex, 3, "the selected message keeps the player-selected frame")
+  local slot15 = assert(content.fontDef.palette[16], "the font carries its field-window slot")
+  local function unit(component)
+    if component > 1 then
+      return component / 255
+    end
+    return component
+  end
+  Assert.deepEqual(
+    framed.background,
+    { unit(slot15.r), unit(slot15.g), unit(slot15.b), 1 },
+    "the selected message fills with the source field-window slot"
+  )
+  local message =
+    assert(palettedAt(content, "The POTION is selected."), "the selected message prints through the palette path")
+  Assert.equal(message.x, box.x, "the first glyph starts at the content-box origin")
+  Assert.equal(message.y, box.y, "the first glyph keeps the content-box top")
+  local entries = content.fontDef.palette
+  local foreground = assert(entries[2], "the font carries its first list slot")
+  local shadow = assert(entries[3], "the font carries its second list slot")
+  Assert.deepEqual(
+    message.palette.foreground,
+    { r = foreground.r, g = foreground.g, b = foreground.b },
+    "the selected message uses the source foreground slot"
+  )
+  Assert.deepEqual(
+    message.palette.shadow,
+    { r = shadow.r, g = shadow.g, b = shadow.b },
+    "the selected message uses the source shadow slot"
+  )
+  Assert.equal(message.palette.background.r, slot15.r, "the selected message text shares the source fill red")
+  Assert.equal(message.palette.background.g, slot15.g, "the selected message text shares the source fill green")
+  Assert.equal(message.palette.background.b, slot15.b, "the selected message text shares the source fill blue")
+  Assert.equal(graphics.pushDepth(), 0, "the transform stack stays balanced")
+  draw:release()
+end
+
+-- Cancel feedback flashes at the generated target plus exactly the
+-- descriptor-owned offset: the caller passes the raw anchor and the visual
+-- path applies its offset once, in both the action menu and the quantity
+-- picker. A doubled offset drifts the flash off its source target.
+function T.cancel_feedback_applies_the_generated_offset_exactly_once()
+  local manifested = manifest()
+  manifested.interactive.feedback.cancelFace.selected.offset = { x = 5, y = -3 }
+  manifested.interactive.feedback.quantityCancel.selected.offset = { x = 5, y = -3 }
+  local cancelFocus = manifested.interactive.focus.cancel
+  local target = assert(cancelFocus.target, "the cancel focus carries its target")
+  local quantityCancel = assert(
+    manifested.interactive.overlays.quantity.cancel,
+    "the quantity overlay carries its cancel face"
+  )
+  local quantityTarget = assert(quantityCancel.center, "the quantity cancel carries its center")
+  local function flashDraws(record, visualKey)
+    local graphics = FakeGraphics({ imageSizes = IMAGE_SIZES })
+    local draw = BagRenderer.new({
+      cacheFs = seedCache(),
+      manifest = manifested,
+      promptManifest = promptManifest(),
+      text = text(),
+      graphics = graphics,
+      heroRenderer = heroSpy(nil),
+    })
+    draw:draw(record, plan(true), { icons = icons() })
+    local flash = assert(draw._visuals[visualKey], "the cancel flash is bound")
+    local found = {}
+    for _, entry in ipairs(graphics.draws) do
+      if entry.image == flash.image then
+        found[#found + 1] = entry
+      end
+    end
+    draw:release()
+    return found
+  end
+  do
+    local record = actionStatus({ feedback = { kind = "cancel" } })
+    local found = flashDraws(record, "feedback:cancel:selected")
+    Assert.equal(#found, 1, "the action menu flashes Cancel exactly once")
+    Assert.equal(found[1].x, target.x + 5, "the action flash applies the generated horizontal offset once")
+    Assert.equal(found[1].y, target.y - 3, "the action flash applies the generated vertical offset once")
+  end
+  do
+    local record = status({
+      state = "toss_quantity",
+      quantity = 2,
+      quantityMax = 5,
+      feedback = { kind = "quantityCancel" },
+    })
+    local found = flashDraws(record, "feedback:quantityCancel:selected")
+    Assert.equal(#found, 1, "the quantity picker flashes Cancel exactly once")
+    Assert.equal(
+      found[1].x,
+      quantityTarget.x + 5,
+      "the quantity flash applies the generated horizontal offset once"
+    )
+    Assert.equal(
+      found[1].y,
+      quantityTarget.y - 3,
+      "the quantity flash applies the generated vertical offset once"
+    )
+  end
 end
 
 -- An unknown lower-pane state is a composition error, never an empty or

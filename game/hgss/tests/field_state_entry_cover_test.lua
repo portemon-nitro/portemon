@@ -95,6 +95,15 @@ local function boot(withCover)
         end,
       },
       yesNoHost = idleChoiceHost(),
+      martHost = {
+        isActive = function()
+          return false
+        end,
+        status = function()
+          return nil
+        end,
+        cancelPointerCapture = function() end,
+      },
       actors = {
         visualRevision = function()
           return 0

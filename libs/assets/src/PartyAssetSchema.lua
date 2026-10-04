@@ -17,7 +17,7 @@ local SchemaCheck = require("libs.assets.src.SchemaCheck")
 ---@class PartyAssetSchema
 local PartyAssetSchema = {}
 
-PartyAssetSchema.SCHEMA = "g4-party-presentation-v3"
+PartyAssetSchema.SCHEMA = "g4-party-presentation-v6"
 PartyAssetSchema.PANE_WIDTH = 256
 PartyAssetSchema.PANE_HEIGHT = 192
 PartyAssetSchema.SLOT_COUNT = 6
@@ -47,6 +47,20 @@ local SEGMENT_KINDS = {
   move = true,
   color = true,
   lineBreak = true,
+}
+
+local REQUIRED_RUNTIME_TEMPLATES = {
+  "chooseMon",
+  "moveTarget",
+  "giveTarget",
+  "useTarget",
+  "teachTarget",
+  "itemAction",
+  "takeNoItem",
+  "bagFull",
+  "switchHeldPrompt",
+  "switchHeldResult",
+  "giveHeldItem",
 }
 
 local function fail(message, context)
@@ -302,8 +316,8 @@ local function checkPanel(value, context, what, cursorSequenceCount)
     fail(what .. ".chrome must be a record", context)
   end
   local chrome = value.chrome --[[@as table<string, unknown>]]
-  local chromeNames = { "normal", "selected", "fainted", "selectedFainted" }
-  local chromeKeys = { normal = true, selected = true, fainted = true, selectedFainted = true }
+  local chromeNames = { "normal", "selected", "fainted", "selectedFainted", "switchSelection" }
+  local chromeKeys = { normal = true, selected = true, fainted = true, selectedFainted = true, switchSelection = true }
   checkKeys(chrome, chromeKeys, context, what .. ".chrome")
   for _, name in ipairs(chromeNames) do
     local visual = chrome[name]
@@ -636,26 +650,26 @@ function PartyAssetSchema.assertManifest(manifest)
   checkKeys(contextMenu, {
     topLevel = true,
     subcontext = true,
-    textPalette = true,
-    fillPalette = true,
+    textRoles = true,
     frames = true,
   }, {}, "manifest.contextMenu")
   checkMenuSection(contextMenu.topLevel, {}, "manifest.contextMenu.topLevel", 2, 8, true)
   checkMenuSection(contextMenu.subcontext, {}, "manifest.contextMenu.subcontext", 2, 5, false)
-  if type(contextMenu.textPalette) ~= "table" then
-    fail("manifest.contextMenu.textPalette must be a record", {})
+  if type(contextMenu.textRoles) ~= "table" then
+    fail("manifest.contextMenu.textRoles must be a record", {})
   end
-  local textPalette = contextMenu.textPalette --[[@as table<string, unknown>]]
-  checkKeys(textPalette, { raised = true, depressed = true }, {}, "manifest.contextMenu.textPalette")
-  checkColor(textPalette.raised, {}, "manifest.contextMenu.textPalette.raised")
-  checkColor(textPalette.depressed, {}, "manifest.contextMenu.textPalette.depressed")
-  if type(contextMenu.fillPalette) ~= "table" then
-    fail("manifest.contextMenu.fillPalette must be a record", {})
+  local textRoles = contextMenu.textRoles --[[@as table<string, unknown>]]
+  checkKeys(textRoles, { command = true, field = true, cancel = true }, {}, "manifest.contextMenu.textRoles")
+  for _, name in ipairs({ "command", "field", "cancel" }) do
+    local roleValue = textRoles[name]
+    if type(roleValue) ~= "table" then
+      fail("manifest.contextMenu.textRoles." .. name .. " must be a record", {})
+    end
+    local typed = roleValue --[[@as table<string, unknown>]]
+    checkKeys(typed, { raised = true, depressed = true }, {}, "manifest.contextMenu.textRoles." .. name)
+    checkTextRole(typed.raised, {}, "manifest.contextMenu.textRoles." .. name .. ".raised")
+    checkTextRole(typed.depressed, {}, "manifest.contextMenu.textRoles." .. name .. ".depressed")
   end
-  local fillPalette = contextMenu.fillPalette --[[@as table<string, unknown>]]
-  checkKeys(fillPalette, { raised = true, depressed = true }, {}, "manifest.contextMenu.fillPalette")
-  checkColor(fillPalette.raised, {}, "manifest.contextMenu.fillPalette.raised")
-  checkColor(fillPalette.depressed, {}, "manifest.contextMenu.fillPalette.depressed")
   if type(contextMenu.frames) ~= "table" then
     fail("manifest.contextMenu.frames must be a record", {})
   end
@@ -730,7 +744,7 @@ function PartyAssetSchema.assertManifest(manifest)
     fail("manifest.text must be a record", {})
   end
   local text = root.text --[[@as table<string, unknown>]]
-  checkKeys(text, { labels = true, templates = true, roles = true }, {}, "manifest.text")
+  checkKeys(text, { labels = true, templates = true, roles = true, messageRole = true }, {}, "manifest.text")
   if type(text.labels) ~= "table" or type(text.templates) ~= "table" then
     fail("manifest.text carries no label/template records", {})
   end
@@ -756,6 +770,7 @@ function PartyAssetSchema.assertManifest(manifest)
   checkTextRole(roles.ordinary, {}, "manifest.text.roles.ordinary")
   checkTextRole(roles.male, {}, "manifest.text.roles.male")
   checkTextRole(roles.female, {}, "manifest.text.roles.female")
+  checkTextRole(text.messageRole, {}, "manifest.text.messageRole")
   for name, template in
     pairs(text.templates --[[@as table<string, unknown>]])
   do
@@ -766,6 +781,11 @@ function PartyAssetSchema.assertManifest(manifest)
       ipairs(template.segments --[[@as table[] ]])
     do
       checkSegment(segment, {}, "manifest.text.templates." .. tostring(name) .. ".segments[" .. index .. "]")
+    end
+  end
+  for _, name in ipairs(REQUIRED_RUNTIME_TEMPLATES) do
+    if text.templates[name] == nil then
+      fail("manifest.text.templates." .. name .. " is required", {})
     end
   end
   if type(root.numberGlyphs) ~= "table" then

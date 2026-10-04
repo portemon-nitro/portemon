@@ -56,6 +56,8 @@ Schema.ENUMS = {
   -- The five MAPSIGNCOMMAND_* values as the semantic command enum; numeric
   -- source codes never appear at runtime (lowering converts them).
   signpost_command = { "nop", "show", "wipe_out", "wipe_in", "hide" },
+  mart_kind = { "standard", "special", "seal", "decoration", "athlete", "data_cards", "custom", "sell" },
+  mart_query = { "athlete_available", "card_prefix" },
   -- The three persistent follower map-object movement modes opcode 604 may
   -- select; raw source selectors never appear past the generated boundary.
   follower_movement_type = { "follow_player", "follow_transition_a", "follow_transition_b" },
@@ -259,6 +261,19 @@ Schema.OPERATIONS = {
   context_choice = {
     fields = {
       result = { type = "value", required = true },
+    },
+  },
+  mart_open = {
+    fields = {
+      kind = { type = "enum:mart_kind", required = true },
+      selector = { type = "scalar_or_value" },
+      stock = { type = "serializable" },
+    },
+  },
+  mart_query = {
+    fields = {
+      kind = { type = "enum:mart_query", required = true },
+      result = { type = "writable_value", required = true },
     },
   },
   wait_ticks = {

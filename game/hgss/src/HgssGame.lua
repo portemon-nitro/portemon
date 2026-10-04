@@ -14,7 +14,7 @@ local FieldState = require("game.hgss.src.field.FieldState")
 local FieldPreparationState = require("game.hgss.src.field.FieldPreparationState")
 local GameSaveValidation = require("libs.hgss.src.save.GameSaveValidation")
 local OakIntroComposition = require("game.hgss.src.newgame.OakIntroComposition")
-local RepoFs = require("game.src.RepoFs")
+local RepoFs = require("libs.storage.src.RepoFs")
 local CacheFs = require("libs.storage.src.CacheFs")
 local DisplayContext = require("libs.ui.src.DisplayContext")
 local FieldMapLoader = require("libs.hgss.src.world.FieldMapLoader")
@@ -33,6 +33,7 @@ local ItemCatalog = require("libs.items.src.ItemCatalog")
 ---@field fieldMapLoader table<string, unknown>? borrowed metadata-only loader for entry planning
 ---@field topologyProvider (fun(width: number, height: number): ScreenTopology)? actual host surfaces for every entry route
 ---@field presentationOverrides table<string, table<string, unknown>>? per-case function overrides by application
+---@field martStockResolver (fun(descriptor: table<string, unknown>, context: table<string, unknown>, catalog: table<string, unknown>): table<string, unknown>)? optional game-root mart stock provider
 
 ---@class HgssGameNewGameEntry
 ---@field kind "new_game"
@@ -51,6 +52,7 @@ local function fieldStateOptions(options, saveStore, saveValidation, extra, shar
     saveStore = saveStore,
     saveValidation = saveValidation,
     derivedAssets = options.derivedAssets,
+    martStockResolver = options.martStockResolver,
   }
   if extra then
     for key, value in pairs(extra) do

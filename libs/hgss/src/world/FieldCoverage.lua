@@ -25,6 +25,7 @@ local FieldErrors = require("libs.hgss.src.field.FieldErrors")
 ---@field index table<string, unknown>
 ---@field matrixMemberId integer
 ---@field loadCell fun(descriptor: table<string, unknown>): table<string, unknown>
+---@field mapPropsFactory (fun(runtime: table<string, unknown>, descriptor: table<string, unknown>): table<string, unknown>?)?
 ---@field presentationLoader fun(runtime: table<string, unknown>, descriptor: table<string, unknown>): table<string, unknown>?
 ---@field presentationTaskFactory fun(runtime: table<string, unknown>, descriptor: table<string, unknown>): table<string, unknown>?
 ---@field derivedAssets table<string, function>?
@@ -191,12 +192,20 @@ local function runtimeFromDescriptor(self, descriptor, acquirePresentation)
   return result
 end
 
-local function normalizeRuntime(runtime, descriptor)
+local function normalizeRuntime(runtime, descriptor, mapPropsFactory)
   runtime = assert(runtime, "field cell loader returned no runtime")
   runtime.key = runtime.key or key(descriptor.x, descriptor.z)
   runtime.x, runtime.z = runtime.x or descriptor.x, runtime.z or descriptor.z
   runtime.altitude = runtime.altitude or descriptor.altitude
   runtime.origin = cellOrigin(runtime, descriptor)
+  -- The semantic resolver is built once per cell runtime, before any
+  -- presentation acquisition, so presentation can attach to the same owner.
+  -- Without a factory the runtime keeps whatever resolver it already
+  -- carries; a nil factory result (filler with no logical map) leaves the
+  -- cell valid with no semantic owner.
+  if mapPropsFactory then
+    runtime.mapProps = mapPropsFactory(runtime, descriptor)
+  end
   return runtime
 end
 
@@ -241,7 +250,7 @@ local function advancePending(self, pending, maxWorkUnits)
     if pending.phase == "load" then
       local runtime = self.loadCell(assert(pending.descriptor))
       pending.runtime = runtime
-      pending.runtime = normalizeRuntime(pending.runtime, pending.descriptor)
+      pending.runtime = normalizeRuntime(pending.runtime, pending.descriptor, self.mapPropsFactory)
       if not self.presentationTaskFactory and not self.presentationLoader then
         publishPending(pending, pending.runtime.presentation)
         pending.phase = "complete"
@@ -281,7 +290,7 @@ local function advancePending(self, pending, maxWorkUnits)
         descriptor = cell,
         release = release,
       }
-      pending.runtime = normalizeRuntime(pending.runtime, pending.descriptor)
+      pending.runtime = normalizeRuntime(pending.runtime, pending.descriptor, self.mapPropsFactory)
       if not self.presentationTaskFactory and not self.presentationLoader then
         publishPending(pending, nil)
         pending.phase = "complete"
@@ -520,6 +529,7 @@ function FieldCoverage.new(options)
     index = options.index or FieldCellCache.loadIndex(options.cacheFs),
     matrixMemberId = options.matrixMemberId,
     loadCell = options.loadCell,
+    mapPropsFactory = options.mapPropsFactory,
     presentationLoader = options.presentationLoader,
     presentationTaskFactory = options.presentationTaskFactory,
     derivedAssets = options.derivedAssets,
@@ -869,6 +879,63 @@ function FieldCoverage:mapHeaderAt(fieldX, fieldZ)
   return descriptor and descriptor.mapHeaderId or nil
 end
 
+---@param fieldX integer
+---@param fieldZ integer
+---@return table<string, unknown>?
+local function committedCellAt(self, fieldX, fieldZ)
+  return self.cells[key(math.floor(fieldX / 32), math.floor(fieldZ / 32))]
+end
+
+-- The disposable cell-local view a committed cell's semantic resolver
+-- reads: the owning cell's origin and collision with the active logical
+-- map's field data, so global warp records resolve while door keys,
+-- placement transforms, and collision coordinates stay in one cell frame.
+---@param runtimeMap table<string, unknown>
+---@param cell table<string, unknown>
+---@return table<string, unknown>
+local function cellSemanticView(runtimeMap, cell)
+  local origin = assert(cell.origin, "committed cell origin is missing")
+  return {
+    coordinateOrigin = { x = origin.x, z = origin.z },
+    collision = cell.collision,
+    fieldData = runtimeMap.fieldData,
+  }
+end
+
+-- Resolve the door at a global outdoor coordinate through the committed
+-- physical cell that owns it. Returns nil outside committed cells and for
+-- cells with no semantic resolver; it never force-loads a cell.
+---@param runtimeMap table<string, unknown>
+---@param fieldX integer
+---@param fieldZ integer
+---@return table<string, unknown>?
+function FieldCoverage:doorAt(runtimeMap, fieldX, fieldZ)
+  assert(type(fieldX) == "number" and fieldX % 1 == 0, "door fieldX must be an integer")
+  assert(type(fieldZ) == "number" and fieldZ % 1 == 0, "door fieldZ must be an integer")
+  local cell = committedCellAt(self, fieldX, fieldZ)
+  if not cell or not cell.mapProps then
+    return nil
+  end
+  return cell.mapProps:doorAt(cellSemanticView(runtimeMap, cell), fieldX, fieldZ)
+end
+
+-- Resolve the transition prop at a global outdoor coordinate through the
+-- committed physical cell that owns it, following the same ownership and
+-- view contract as doorAt.
+---@param runtimeMap table<string, unknown>
+---@param fieldX integer
+---@param fieldZ integer
+---@return table<string, unknown>?
+function FieldCoverage:propAt(runtimeMap, fieldX, fieldZ)
+  assert(type(fieldX) == "number" and fieldX % 1 == 0, "prop fieldX must be an integer")
+  assert(type(fieldZ) == "number" and fieldZ % 1 == 0, "prop fieldZ must be an integer")
+  local cell = committedCellAt(self, fieldX, fieldZ)
+  if not cell or not cell.mapProps then
+    return nil
+  end
+  return cell.mapProps:propAt(cellSemanticView(runtimeMap, cell), fieldX, fieldZ)
+end
+
 function FieldCoverage:sourceSurface(cellKey, sourceSurfaceId)
   return self.region:sourceSurface(cellKey, sourceSurfaceId)
 end
@@ -914,9 +981,17 @@ end
 function FieldCoverage:updateAnimated()
   assert(not self.released, "coverage is released")
   for _, cellKey in ipairs(self._cellKeys) do
-    local presentation = self.cells[cellKey].presentation
+    local cell = self.cells[cellKey]
+    local presentation = cell.presentation
     if presentation and presentation.updateAnimated then
       presentation:updateAnimated()
+    end
+    -- Committed semantic resolvers advance once per tick, after
+    -- presentation, so live-instance handles move under presentation while
+    -- semantic-only door roles move under their own timer. Prefetched-only
+    -- cells own no live simulation state and never tick here.
+    if cell.mapProps then
+      cell.mapProps:updateFixed()
     end
   end
   local dynamicParts = self._dynamicPartScratch

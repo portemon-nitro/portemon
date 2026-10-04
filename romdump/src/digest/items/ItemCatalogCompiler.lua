@@ -116,6 +116,7 @@ function ItemCatalogCompiler.decodeItemData(member, context)
   end
   local b1, b2, b3, b4 = flag(1), flag(2), flag(3), flag(4)
   return {
+    price = reader:u16le(0),
     holdEffect = string.byte(member, ItemSources.ITEM_DATA_HOLD_EFFECT_OFFSET + 1),
     naturalGiftPower = reader:u8(7),
     preventToss = math.floor(word / tossBit) % 2 == 1,
@@ -605,6 +606,7 @@ function ItemCatalogCompiler.compileCatalog(romFs, opts)
       end
       local record = {
         nativeId = nativeId,
+        price = decoded.price,
         name = must(requireText(names, nativeId, "item name", context)),
         nameIndefinite = must(requireText(indefinites, nativeId, "item indefinite name", context)),
         namePlural = must(requireText(plurals, nativeId, "item plural name", context)),

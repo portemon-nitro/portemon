@@ -44,7 +44,7 @@ local function harness()
         -- (4,12) starts one tile south of the scene-1 trigger at (4,11).
         location = { mapSymbol = map or MAP, fieldX = 4, fieldZ = 12, facing = "north" },
         playerData = {
-          profile = { name = "GOLD", gender = 0, trainerId = 1, money = 3000, badges = 0 },
+          profile = { name = "GOLD", gender = 0, trainerId = 1, money = 3000, badges = 0, nationalDex = false },
           options = { textSpeed = "fastest", textFrame = 0 },
         },
         fieldTravel = { lastHealSpawn = "SPAWN_NEW_BARK" },
@@ -53,6 +53,7 @@ local function harness()
         worldState = FieldEventState.new({ vars = { [VAR_SCENE_ELMS_LAB] = 1 } }),
         mons = require("tests.support.MonBucket").emptyForVersion(versionId),
         bag = BagSave.empty(),
+        mart = require("libs.hgss.src.save.MartSave").empty(),
       }
     end,
   })

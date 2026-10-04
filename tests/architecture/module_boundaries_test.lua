@@ -292,6 +292,17 @@ local ROOT_FILE_ALLOWED = {
   romdump = PACKAGE_RULES.romdump.allowed,
 }
 
+local SAVEEDITOR_ALLOWED = {
+  app = true,
+  errors = true,
+  hgss = true,
+  ui = true,
+  storage = true,
+  assets = true,
+  mons = true,
+  script = true,
+}
+
 local function sourcePackageFor(file)
   local rootPackage = ROOT_FILE_PACKAGES[file]
   if rootPackage ~= nil then
@@ -345,9 +356,19 @@ local function packageViolationsFor(files, packageName)
   for _, file in ipairs(sortedFiles(files)) do
     if sourcePackageFor(file) == packageName then
       local allowed = ROOT_FILE_ALLOWED[ROOT_FILE_PACKAGES[file]] or rule.allowed
+      if packageName == "app" and file:sub(1, #"app/src/saveeditor/") == "app/src/saveeditor/" then
+        allowed = SAVEEDITOR_ALLOWED
+      end
       for _, module in ipairs(files[file]) do
         local targetPackage, reason = targetPackageFor(module)
-        if reason ~= nil then
+        local editorAppViolation = packageName == "app"
+          and file:sub(1, #"app/src/saveeditor/") == "app/src/saveeditor/"
+          and targetPackage == "app"
+          and module:sub(1, #"app.src.saveeditor.") ~= "app.src.saveeditor."
+          and module ~= "app.src.ui.ProductMenuSkin"
+        if editorAppViolation then
+          violations[#violations + 1] = file .. " requires " .. module .. " (saveeditor may import only its own subtree)"
+        elseif reason ~= nil then
           violations[#violations + 1] = file .. " requires " .. module .. " (" .. packageName .. " -> " .. reason .. ")"
         elseif targetPackage ~= nil and allowed[targetPackage] ~= true then
           violations[#violations + 1] = file
@@ -458,6 +479,66 @@ function T.app_cross_package_imports_match_exact_semantic_seams()
     end
   end
   Assert.isTrue(#mismatches == 0, violationMessage("app seam policy mismatches:\n", mismatches))
+end
+
+function T.saveeditor_imports_stay_inside_the_declared_neutral_boundary()
+  local fixtures = {
+    { module = "app.src.saveeditor.SaveEditorComposition", allowed = true },
+    { module = "app.src.ui.ProductMenuSkin", allowed = true },
+    { module = "app.src.ui.UnrelatedWidget", allowed = false },
+    { module = "libs.ui.src.LayoutGeometry", allowed = true },
+    { module = "libs.hgss.src.save.GameSaveValidation", allowed = true },
+    { module = "libs.storage.src.RepoFs", allowed = true },
+    { module = "libs.errors.src.Errors", allowed = true },
+    { module = "libs.assets.src.MonCache", allowed = true },
+    { module = "libs.mons.src.MonCatalog", allowed = true },
+    { module = "libs.script.src.ScriptSave", allowed = true },
+    { module = "app.src.App", allowed = false },
+    { module = "game.src.Game", allowed = false },
+    { module = "game.hgss.src.HgssGame", allowed = false },
+    { module = "romdump.src.source.GameVersion", allowed = false },
+    { module = "libs.items.src.ItemCatalog", allowed = false },
+    { module = "libs.codec.src.BinaryReader", allowed = false },
+    { module = "libs.math.src.FixedPoint", allowed = false },
+  }
+  local mismatches = {}
+  for _, fixture in ipairs(fixtures) do
+    local violations = packageViolationsFor({
+      ["app/src/saveeditor/Fixture.lua"] = { fixture.module },
+    }, "app")
+    local actualAllowed = #violations == 0
+    if actualAllowed ~= fixture.allowed then
+      mismatches[#mismatches + 1] = fixture.module .. " expected allowed=" .. tostring(fixture.allowed)
+    end
+  end
+  Assert.isTrue(
+    #mismatches == 0,
+    violationMessage("saveeditor import policy mismatches:\n", mismatches)
+  )
+end
+
+function T.neutral_modules_resolve_without_loading_retail_code()
+  local searchers = assert(package.searchers or package.loaders, "Lua package loaders are required")
+  local attempted = {}
+  local function gameLoadTrap(module)
+    if module:sub(1, 5) == "game." then
+      attempted[#attempted + 1] = module
+      return function()
+        error("neutral dependency attempted to load " .. module)
+      end
+    end
+  end
+  table.insert(searchers, 1, gameLoadTrap)
+  local ok, err = pcall(function()
+    require("libs.storage.src.RepoFs")
+    require("libs.hgss.src.save.GameSaveValidation")
+    require("libs.mons.src.MonCatalog")
+    require("libs.items.src.ItemCatalog")
+    require("libs.script.src.ScriptSave")
+  end)
+  table.remove(searchers, 1)
+  Assert.isTrue(ok, tostring(err))
+  Assert.equal(0, #attempted, "neutral dependencies must not load game modules")
 end
 
 function T.forbidden_edges_are_rejected_while_documented_seams_hold()

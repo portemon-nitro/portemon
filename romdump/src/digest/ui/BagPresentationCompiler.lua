@@ -56,6 +56,56 @@ local function checkPoint(value, what)
   return { x = value.x, y = value.y }
 end
 
+local function checkTextBox(value, what)
+  local fields = {
+    x = true,
+    y = true,
+    width = true,
+    height = true,
+    fontId = true,
+    textX = true,
+    textY = true,
+    alignment = true,
+    paletteRole = true,
+  }
+  if type(value) ~= "table" then
+    Errors.raise(BagPresentationCompiler.ERROR.GEOMETRY_INVALID, what .. " is malformed", {})
+  end
+  for key in pairs(value) do
+    if not fields[key] then
+      Errors.raise(BagPresentationCompiler.ERROR.GEOMETRY_INVALID, what .. " has an unknown field", {})
+    end
+  end
+  for key in pairs(fields) do
+    if value[key] == nil then
+      Errors.raise(BagPresentationCompiler.ERROR.GEOMETRY_INVALID, what .. " is incomplete", {})
+    end
+  end
+  local rect = checkRect(value, what)
+  for _, key in ipairs({ "fontId", "textX", "textY" }) do
+    if not isIntegral(value[key]) or value[key] < 0 then
+      Errors.raise(BagPresentationCompiler.ERROR.GEOMETRY_INVALID, what .. "." .. key .. " is invalid", {})
+    end
+  end
+  if value.alignment ~= "left" and value.alignment ~= "center" and value.alignment ~= "right" then
+    Errors.raise(BagPresentationCompiler.ERROR.GEOMETRY_INVALID, what .. ".alignment is invalid", {})
+  end
+  if type(value.paletteRole) ~= "string" or value.paletteRole == "" then
+    Errors.raise(BagPresentationCompiler.ERROR.GEOMETRY_INVALID, what .. ".paletteRole is invalid", {})
+  end
+  return {
+    x = rect.x,
+    y = rect.y,
+    width = rect.width,
+    height = rect.height,
+    fontId = value.fontId,
+    textX = value.textX,
+    textY = value.textY,
+    alignment = value.alignment,
+    paletteRole = value.paletteRole,
+  }
+end
+
 -- Fixed-count source collections carry the audited control cardinalities
 -- (eight tabs, six slots, ...). Every repeated table-plus-count guard goes
 -- through this single check so the counts stay at this producer boundary.
@@ -197,8 +247,10 @@ function BagPresentationCompiler.compileGeometry(config)
   local quantityConfirm = {
     center = checkPoint(geometry.quantityConfirm.center, "quantity confirm center"),
     hitRect = checkRect(geometry.quantityConfirm.hitRect, "quantity confirm hit rect"),
+    labelAt = checkPoint(geometry.quantityConfirm.labelAt, "quantity confirm label"),
   }
   local quantityCancelHitRect = checkRect(geometry.quantityCancelHitRect, "quantity cancel hit rect")
+  local quantityCancelLabelAt = checkPoint(geometry.quantityCancelLabelAt, "quantity cancel label")
   local cancelSource = geometry.cancel
   if type(cancelSource) ~= "table" then
     Errors.raise(BagPresentationCompiler.ERROR.GEOMETRY_INVALID, "bag geometry carries no cancel affordance", {})
@@ -233,6 +285,81 @@ function BagPresentationCompiler.compileGeometry(config)
     cancel = checkPoint(focusSource.cancel, "cancel focus target"),
     actions = focusActions,
   }
+  local saleSource = config.saleQuantity
+  if type(saleSource) ~= "table" then
+    Errors.raise(BagPresentationCompiler.ERROR.GEOMETRY_INVALID, "bag source config carries no sale geometry", {})
+  end
+  local saleDigits = mapList(
+    checkCollection(saleSource.digits, 2, "sale must carry exactly two digits"),
+    function(digit, index)
+      return checkRect(digit, "sale digit " .. index)
+    end
+  )
+  local saleExpectedControls = {
+    { delta = 10, role = "increment" },
+    { delta = 1, role = "increment" },
+    { delta = -10, role = "decrement" },
+    { delta = -1, role = "decrement" },
+  }
+  local saleControls = {}
+  for index, control in ipairs(checkCollection(saleSource.controls, 4, "sale must carry exactly four controls")) do
+    local expected = saleExpectedControls[index]
+    if type(control) ~= "table" or control.delta ~= expected.delta or control.role ~= expected.role then
+      Errors.raise(
+        BagPresentationCompiler.ERROR.GEOMETRY_INVALID,
+        "sale control " .. index .. " has the wrong role",
+        {}
+      )
+    end
+    saleControls[index] = {
+      delta = control.delta,
+      role = control.role,
+      center = checkPoint(control.center, "sale control " .. index .. " center"),
+      hitRect = checkRect(control.hitRect, "sale control " .. index .. " hit rect"),
+    }
+  end
+  local function saleButton(button, what)
+    if type(button) ~= "table" or (button.visualState ~= "confirm" and button.visualState ~= "cancel") then
+      Errors.raise(BagPresentationCompiler.ERROR.GEOMETRY_INVALID, what .. " has no source visual state", {})
+    end
+    return {
+      visualState = button.visualState,
+      center = checkPoint(button.center, what .. " center"),
+      hitRect = checkRect(button.hitRect, what .. " hit rect"),
+      labelAt = checkPoint(button.labelAt, what .. " label"),
+    }
+  end
+  local prompt = saleSource.compactPrompt
+  if type(prompt) ~= "table" or prompt.shapeParam ~= 0 or prompt.initialCursorPos ~= 0 then
+    Errors.raise(BagPresentationCompiler.ERROR.GEOMETRY_INVALID, "sale prompt must be the compact YES prompt", {})
+  end
+  if not isIntegral(prompt.x) or not isIntegral(prompt.y) or prompt.x < 0 or prompt.y < 0 then
+    Errors.raise(BagPresentationCompiler.ERROR.GEOMETRY_INVALID, "sale prompt position is invalid", {})
+  end
+  if not isIntegral(saleSource.pressTicks) or saleSource.pressTicks <= 0 then
+    Errors.raise(BagPresentationCompiler.ERROR.GEOMETRY_INVALID, "sale press ticks must be positive", {})
+  end
+  local sale = {
+    pressTicks = saleSource.pressTicks,
+    digits = saleDigits,
+    controls = saleControls,
+    confirm = saleButton(saleSource.confirm, "sale confirm"),
+    cancel = saleButton(saleSource.cancel, "sale cancel"),
+    selectedItem = {
+      iconCenter = checkPoint(saleSource.selectedItem.iconCenter, "sale selected-item icon center"),
+      textRect = checkRect(saleSource.selectedItem.textRect, "sale selected-item text window"),
+      nameAt = checkPoint(saleSource.selectedItem.nameAt, "sale selected-item name anchor"),
+      quantityAt = checkPoint(saleSource.selectedItem.quantityAt, "sale selected-item quantity anchor"),
+    },
+    money = checkTextBox(saleSource.money, "sale money text box"),
+    total = checkTextBox(saleSource.total, "sale total text box"),
+    compactPrompt = {
+      x = prompt.x * 8,
+      y = prompt.y * 8,
+      shape = "compact",
+      initialSelection = "yes",
+    },
+  }
   return {
     tabs = tabs,
     slots = slots,
@@ -257,6 +384,8 @@ function BagPresentationCompiler.compileGeometry(config)
     quantityControls = quantityControls,
     quantityConfirm = quantityConfirm,
     quantityCancelHitRect = quantityCancelHitRect,
+    quantityCancelLabelAt = quantityCancelLabelAt,
+    sale = sale,
   }
 end
 

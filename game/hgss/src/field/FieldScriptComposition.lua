@@ -19,6 +19,7 @@ local ScriptSave = require("libs.script.src.ScriptSave")
 ---@field starterProvider table<string, unknown>? the default starter roster for the blocking starter task
 ---@field starterChoice table<string, unknown>? the modal starter-choice surface the blocking task opens and closes
 ---@field partySelection table<string, unknown>? the modal script-party surface the blocking selection task opens and closes
+---@field mart table<string, unknown>? the script-owned mart child host
 ---@field travel table<string, unknown>? the durable travel owner for spawn updates
 ---@field fieldMoves table<string, unknown>? the field-move runtime for task execution
 ---@field pokemonNaming table<string, unknown> the script-owned Pokemon Naming Screen host
@@ -89,6 +90,7 @@ function FieldScriptComposition.compose(runtime, options)
     starterProvider = options.starterProvider,
     starterChoice = options.starterChoice,
     partySelection = options.partySelection,
+    mart = options.mart,
     travel = options.travel,
     fieldMoves = options.fieldMoves,
     pokemonNaming = options.pokemonNaming,

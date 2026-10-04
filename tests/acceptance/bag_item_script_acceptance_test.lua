@@ -34,6 +34,7 @@
 local Assert = require("tests.support.Assert")
 local AcceptanceHarness = require("tests.acceptance.support.AcceptanceHarness")
 local BagSave = require("libs.hgss.src.save.BagSave")
+local MartSave = require("libs.hgss.src.save.MartSave")
 local FieldEventState = require("libs.hgss.src.field.FieldEventState")
 local PlayTime = require("libs.hgss.src.save.PlayTime")
 
@@ -73,7 +74,7 @@ local function harness()
         -- directly east of the item ball at (541,47).
         location = { mapSymbol = MAP, fieldX = 30, fieldZ = 15, facing = "west" },
         playerData = {
-          profile = { name = "GOLD", gender = 0, trainerId = 1, money = 3000, badges = 0 },
+          profile = { name = "GOLD", gender = 0, trainerId = 1, money = 3000, badges = 0, nationalDex = false },
           options = { textSpeed = "fastest", textFrame = 0 },
         },
         fieldTravel = { lastHealSpawn = "SPAWN_NEW_BARK" },
@@ -82,6 +83,7 @@ local function harness()
         worldState = FieldEventState.new(),
         mons = require("tests.support.MonBucket").emptyForVersion(versionId),
         bag = BagSave.empty(),
+        mart = MartSave.empty(),
       }
     end,
   })

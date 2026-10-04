@@ -93,6 +93,30 @@ function T.billboard_actors_select_the_field_billboard_projection()
   Assert.isTrue(item.billboardProjection)
 end
 
+function T.billboards_forward_and_reuse_the_geometry_bounds_reference()
+  local asset = entry(99)
+  local storage = { items = {}, actorSlots = {}, generation = 0 } --[[@as FieldActorDrawStorage]]
+  local records = { record() }
+  local items = FieldActorDraw.itemsInto(records, function()
+    return asset
+  end, storage)
+  local item, bounds = items[1], asset.visual.render.geometry.bounds
+
+  Assert.equal(item.bounds, bounds, "dirty projection reads the validated geometry bounds directly")
+  records[1].world.x = 7
+  local reused = FieldActorDraw.itemsInto(records, function()
+    return asset
+  end, storage)
+  Assert.isTrue(reused[1] == item, "the actor keeps its retained item skeleton")
+  Assert.equal(reused[1].bounds, bounds, "reuse keeps the immutable geometry bounds reference")
+
+  local static = staticModelEntry(99)
+  local staticItems = FieldActorDraw.itemsInto(records, function()
+    return static
+  end, storage)
+  Assert.isNil(staticItems[1].bounds, "a static-model item does not carry billboard bounds")
+end
+
 function T.static_model_actors_keep_the_world_projection()
   local item = FieldActorDraw.item(record({ spriteId = 183, facing = "north" }), staticModelEntry(183))
   Assert.isFalse(item.billboardProjection)

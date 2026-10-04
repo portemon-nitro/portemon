@@ -11,8 +11,8 @@ local Hashing = require("romdump.src.digest.Hashing")
 
 local EvidenceBundle = {}
 
-local MANIFEST_SCHEMA = "g4-app-evidence-1"
-local APPLICATION_SCHEMA = "g4-app-analysis-1"
+local MANIFEST_SCHEMA = "g4-app-evidence-2"
+local APPLICATION_SCHEMA = "g4-app-analysis-2"
 local DISASSEMBLY_INDEX_SCHEMA = "g4-app-disassembly-index-1"
 local RESOURCE_SCHEMA = "g4-resource-evidence-1"
 local RESOURCE_DETAIL_INDEX_SCHEMA = "g4-resource-detail-index-1"
@@ -44,6 +44,10 @@ implementation prescription.
   evidence in `application/analysis.lua`: reachable functions, blocks, direct
   calls, and validated switch tables. Use `application/disassembly-index.lua`
   to locate verbose instruction evidence for one function at a time.
+- The executable image hexdump lives at the manifest target's
+  `imageHexPath`: `application/overlay.hex` for ARM9 overlay targets and
+  `application/arm9-main.hex` for main-ARM9 targets. Each bundle emits
+  exactly the path matching its target.
 - For resources, first inspect `resources/narc-id-candidates.lua` for structural
   zero-based NARC-index/path candidates. Resolve path and file identity through
   `resources/catalog.lua` and its NARC index, then open only the selected
@@ -83,22 +87,88 @@ local function mediaTypeFor(path)
   return (ext and MEDIA_TYPES[ext]) or "application/octet-stream"
 end
 
-local function targetOverlayIdFromImage(image)
-  if image.kind ~= "arm9-overlay" then
+-- Every application target is a tagged variant: an overlay target carries
+-- its overlay identity while a main target carries its selected template
+-- address. The main template sentinel (0xFFFFFFFF) is template evidence
+-- on the candidate and must never be serialized as an overlay id.
+local function checkTargetConsistency(application, targetImage)
+  local applicationTarget = application.target
+  local kind = applicationTarget.kind
+  if kind ~= "arm9-overlay" and kind ~= "arm9-main" then
     Errors.raise(
       "APPDISCOVERY_BUNDLE_TARGET_INVALID",
-      "target image is not an arm9 overlay image",
-      { kind = image.kind }
+      "unknown application target kind: " .. tostring(kind),
+      { kind = kind }
     )
   end
-  local overlayId = image.id:match("^arm9%-overlay:(%d+)$")
-  if not overlayId then
-    Errors.raise("APPDISCOVERY_BUNDLE_TARGET_INVALID", "unrecognized target image id: " .. tostring(image.id), {})
+  if targetImage.kind ~= kind then
+    Errors.raise(
+      "APPDISCOVERY_BUNDLE_TARGET_INCONSISTENT",
+      "target kind mismatch between target image and application evidence",
+      { imageKind = targetImage.kind, applicationKind = kind }
+    )
   end
-  return tonumber(overlayId)
+  if applicationTarget.ramAddress ~= targetImage.ramAddress or applicationTarget.size ~= #targetImage.bytes then
+    Errors.raise(
+      "APPDISCOVERY_BUNDLE_TARGET_INCONSISTENT",
+      "target base/size mismatch between target image and application evidence",
+      { imageRamAddress = targetImage.ramAddress, applicationRamAddress = applicationTarget.ramAddress }
+    )
+  end
+  if kind == "arm9-overlay" then
+    local overlayId = targetImage.id:match("^arm9%-overlay:(%d+)$")
+    if not overlayId then
+      Errors.raise(
+        "APPDISCOVERY_BUNDLE_TARGET_INVALID",
+        "unrecognized target image id: " .. tostring(targetImage.id),
+        {}
+      )
+    end
+    if tonumber(overlayId) ~= applicationTarget.overlayId then
+      Errors.raise(
+        "APPDISCOVERY_BUNDLE_TARGET_INCONSISTENT",
+        "target overlay id mismatch between target image and application evidence",
+        { imageOverlayId = tonumber(overlayId), applicationOverlayId = applicationTarget.overlayId }
+      )
+    end
+  else
+    local templateAddress = applicationTarget.templateAddress
+    if type(templateAddress) ~= "number" or templateAddress % 4 ~= 0 then
+      Errors.raise(
+        "APPDISCOVERY_BUNDLE_TARGET_INCONSISTENT",
+        "main template address is not an aligned template address",
+        { templateAddress = templateAddress }
+      )
+    end
+    if
+      templateAddress < targetImage.ramAddress
+      or templateAddress + 16 > targetImage.ramAddress + #targetImage.bytes
+    then
+      Errors.raise(
+        "APPDISCOVERY_BUNDLE_TARGET_INCONSISTENT",
+        "main template address is outside the target image",
+        { templateAddress = templateAddress }
+      )
+    end
+    local candidates = application.entrypointCandidates
+    if type(candidates) ~= "table" or #candidates ~= 1 or candidates[1].ramAddress ~= templateAddress then
+      Errors.raise(
+        "APPDISCOVERY_BUNDLE_TARGET_INCONSISTENT",
+        "main template address disagrees with the selected entrypoint candidate",
+        { templateAddress = templateAddress }
+      )
+    end
+  end
 end
 
-local function buildOverlayHex(image)
+local function targetImageHexPath(kind)
+  if kind == "arm9-main" then
+    return "application/arm9-main.hex"
+  end
+  return "application/overlay.hex"
+end
+
+local function buildImageHex(image)
   local bytes = image.bytes
   local length = #bytes
   local lines = {}
@@ -274,7 +344,7 @@ local function buildFiles(collected, addFile)
   addFile("application/analysis.lua", encodeLua(shallowCopyExcluding(application, "gaps"), "application/analysis.lua"))
   addFile("application/gaps.lua", encodeLua(application.gaps, "application/gaps.lua"))
   buildDisassemblyFiles(disassembly, addFile)
-  addFile("application/overlay.hex", buildOverlayHex(targetImage))
+  addFile(targetImageHexPath(application.target.kind), buildImageHex(targetImage))
 
   local narcIndex = {}
   for _, narc in ipairs(resources.narcs) do
@@ -331,14 +401,7 @@ function EvidenceBundle.build(collected)
     )
   end
 
-  local imageOverlayId = targetOverlayIdFromImage(targetImage)
-  if imageOverlayId ~= application.target.overlayId then
-    Errors.raise(
-      "APPDISCOVERY_BUNDLE_TARGET_INCONSISTENT",
-      "target overlay id mismatch between target image and application evidence",
-      { imageOverlayId = imageOverlayId, applicationOverlayId = application.target.overlayId }
-    )
-  end
+  checkTargetConsistency(application, targetImage)
 
   local files = {}
   local function addFile(path, content)
@@ -362,24 +425,36 @@ function EvidenceBundle.build(collected)
       { path = path, size = #content, sha1 = Hashing.sha1hex(content), mediaType = mediaTypeFor(path) }
   end
 
-  local overlaySource = targetImage.source
-  --[[@as { fileId: integer, ramAddress: integer, ramSize: integer, bssSize: integer, isCompressed: boolean }]]
+  local targetKind = assert(application.target.kind, "application target requires a kind")
+  local manifestTarget = {
+    kind = targetKind,
+    cpu = "arm9",
+    ramAddress = targetImage.ramAddress,
+    normalization = targetImage.normalization,
+    rawSize = targetImage.rawSize,
+    decodedSize = targetImage.decodedSize,
+    rawSha1 = targetImage.rawSha1,
+    decodedSha1 = targetImage.decodedSha1,
+    imageHexPath = targetImageHexPath(targetKind),
+  }
+  if targetKind == "arm9-overlay" then
+    local overlaySource = targetImage.source
+    --[[@as { fileId: integer, ramAddress: integer, ramSize: integer, bssSize: integer, isCompressed: boolean }]]
+    manifestTarget.overlayId = application.target.overlayId
+    manifestTarget.fileId = overlaySource.fileId
+    manifestTarget.ramSize = overlaySource.ramSize
+    manifestTarget.bssSize = overlaySource.bssSize
+  else
+    local mainSource = targetImage.source
+    --[[@as { offset: integer, entryAddress: integer }]]
+    manifestTarget.templateAddress = application.target.templateAddress
+    manifestTarget.romOffset = mainSource.offset
+    manifestTarget.entryAddress = mainSource.entryAddress
+  end
   local manifest = {
     schema = MANIFEST_SCHEMA,
     source = source,
-    target = {
-      cpu = "arm9",
-      overlayId = application.target.overlayId,
-      fileId = overlaySource.fileId,
-      ramAddress = targetImage.ramAddress,
-      ramSize = overlaySource.ramSize,
-      bssSize = overlaySource.bssSize,
-      normalization = targetImage.normalization,
-      rawSize = targetImage.rawSize,
-      decodedSize = targetImage.decodedSize,
-      rawSha1 = targetImage.rawSha1,
-      decodedSha1 = targetImage.decodedSha1,
-    },
+    target = manifestTarget,
     applicationSchema = application.schema,
     disassemblySchema = DISASSEMBLY_INDEX_SCHEMA,
     resourceSchema = resources.schema,
@@ -391,9 +466,15 @@ function EvidenceBundle.build(collected)
 
   files["manifest.lua"] = encodeLua(manifest, "manifest.lua")
 
+  local summaryTarget
+  if targetKind == "arm9-main" then
+    summaryTarget = { kind = "arm9-main", templateAddress = application.target.templateAddress }
+  else
+    summaryTarget = { kind = "arm9-overlay", overlayId = application.target.overlayId }
+  end
   local summary = {
     versionId = source.versionId,
-    overlayId = application.target.overlayId,
+    target = summaryTarget,
     entrypointCandidateCount = application.coverage.candidateCount,
     functionCount = application.coverage.functionCount,
     resourceFileCount = resources.coverage.namedFileCount,

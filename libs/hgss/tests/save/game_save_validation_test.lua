@@ -7,7 +7,9 @@ local Errors = require("libs.errors.src.Errors")
 local GameSaveValidation = require("libs.hgss.src.save.GameSaveValidation")
 local ItemFixture = require("libs.items.tests.item_fixture")
 local BagSave = require("libs.hgss.src.save.BagSave")
+local FashionCaseState = require("libs.hgss.src.save.FashionCaseState")
 local MonsSave = require("libs.mons.src.MonsSave")
+local MartSave = require("libs.hgss.src.save.MartSave")
 
 local T = {}
 
@@ -22,6 +24,7 @@ local function context()
     audioSequenceIds = { [7] = true },
     monCatalog = CatalogFixture.makeCatalog(),
     itemCatalog = ItemFixture.makeCatalog(),
+    martCatalog = { cards = {}, apricorns = {}, seals = {} },
     scriptCompatibility = {
       validationOptions = function()
         return {
@@ -41,7 +44,7 @@ end
 
 local function record(saveId, versionId, playerData)
   return {
-    schema = "g4-game-save-v4",
+    schema = "g4-game-save-v5",
     saveId = saveId,
     versionId = versionId,
     playTimeSeconds = 0,
@@ -71,7 +74,17 @@ local function record(saveId, versionId, playerData)
     audio = {},
     mons = monsBucket(),
     bag = BagSave.empty(),
+    mart = MartSave.empty(),
+    fashionCase = FashionCaseState.empty(),
   }
+end
+
+local function v4record(saveId, versionId, playerData)
+  local value = record(saveId, versionId, playerData)
+  value.schema = "g4-game-save-v4"
+  value.mart = nil
+  value.fashionCase = nil
+  return value
 end
 
 local function copy(value)
@@ -120,7 +133,7 @@ local function fieldObjectBucket(actor)
 end
 
 local validPlayerData = {
-  profile = { name = "GOLD", gender = 0, trainerId = 1, money = 3000, badges = 0 },
+  profile = { name = "GOLD", gender = 0, trainerId = 1, money = 3000, badges = 0, nationalDex = false },
   options = { textFrame = 0, textSpeed = "mid" },
 }
 
@@ -233,7 +246,7 @@ function T.quiescent_v4_saves_rebind_stale_fingerprints_and_preserve_state()
       return context()
     end,
   })
-  local candidate = record("save-00000018", "heartgold", validPlayerData)
+  local candidate = v4record("save-00000018", "heartgold", validPlayerData)
   markPreUpdateFingerprints(candidate)
   candidate.world.flags = { [12] = true }
   candidate.world.rng = { state = 91, calls = 37 }
@@ -272,7 +285,7 @@ function T.active_v4_graphs_reject_without_mutating_the_source()
       return context()
     end,
   })
-  local candidate = record("save-00000019", "heartgold", validPlayerData)
+  local candidate = v4record("save-00000019", "heartgold", validPlayerData)
   markPreUpdateFingerprints(candidate)
   candidate.scripts.environments = { { environmentId = 1 } }
   candidate.scripts.instances = { { instanceId = 1 } }
@@ -409,6 +422,8 @@ local function v3record(saveId, playerData, scripts)
   local value = record(saveId, "heartgold", playerData)
   value.schema = "g4-game-save-v3"
   value.fieldTravel = nil
+  value.mart = nil
+  value.fashionCase = nil
   value.playerData = {
     profile = { name = "GOLD", gender = 0, trainerId = 1, money = 3000 },
     options = { textFrame = 0, textSpeed = "mid" },
@@ -443,6 +458,8 @@ function T.quiescent_v3_saves_migrate_without_losing_history()
   Assert.equal(valid.schema, "g4-game-save-v5")
   Assert.equal(valid.fashionCase.schema, "hgss-fashion-case-v1")
   Assert.equal(valid.playerData.profile.badges, 0)
+  Assert.equal(valid.playerData.profile.nationalDex, false)
+  Assert.deepEqual(valid.mart, MartSave.empty())
   Assert.deepEqual(valid.fieldTravel, { lastHealSpawn = "SPAWN_NEW_BARK" })
   Assert.equal(valid.scripts.registryFingerprint, "registry")
   Assert.equal(valid.scripts.taskFingerprint, "tasks")

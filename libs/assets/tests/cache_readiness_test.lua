@@ -9,6 +9,8 @@ local FakeCache = require("tests.support.FakeCache")
 local FieldActorCache = require("libs.assets.src.field.FieldActorCache")
 local FieldMessageCache = require("libs.assets.src.field.FieldMessageCache")
 local FieldMapDataCache = require("libs.assets.src.field.FieldMapDataCache")
+local HgssFieldEdgeColors = require("romdump.src.digest.field.HgssFieldEdgeColors")
+local HgssFieldFog = require("romdump.src.digest.field.HgssFieldFog")
 local CollisionFixture = require("tests.support.CollisionFixture")
 local MapAssetCache = require("libs.assets.src.MapAssetCache")
 local ScriptCache = require("libs.assets.src.ScriptCache")
@@ -278,6 +280,29 @@ local function writeMapScene(c, mapId, scene)
   c:write(MapAssetCache.mapDir(mapId) .. "/complete", "m")
 end
 
+-- The generated render-environment record every current field record
+-- carries: parsed lighting, the area edge-color table, the map weather id,
+-- and the helper-derived fog preset.
+local function validRenderEnvironment()
+  return {
+    lighting = {
+      records = {
+        {
+          startHalfSeconds = 0,
+          lights = {},
+          diffuseRgb555 = 0,
+          ambientRgb555 = 0,
+          specularRgb555 = 0,
+          emissionRgb555 = 0,
+        },
+      },
+    },
+    edgeColors = HgssFieldEdgeColors.tableForAreaLightPattern(0),
+    weatherId = 0,
+    fog = HgssFieldFog.runtimePreset(HgssFieldFog.resolve(0)),
+  }
+end
+
 local function writeFieldRecord(c, mapId, events, audioPolicy, schema)
   audioPolicy = audioPolicy
     or {
@@ -289,6 +314,7 @@ local function writeFieldRecord(c, mapId, events, audioPolicy, schema)
     mapId = mapId,
     mapSymbol = "test",
     transitionEnvironment = "outdoors",
+    renderEnvironment = validRenderEnvironment(),
     fieldUse = {
       flyAllowed = true,
       teleportAllowed = true,

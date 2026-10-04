@@ -2,8 +2,10 @@
 
 local Errors = require("libs.errors.src.Errors")
 local BagCache = require("libs.assets.src.BagCache")
+local MartCache = require("libs.assets.src.MartCache")
 local BagHeroRenderer = require("libs.hgss.src.presentation.BagHeroRenderer")
 local BagRenderer = require("libs.hgss.src.ui.BagRenderer")
+local MartRenderer = require("libs.hgss.src.ui.MartRenderer")
 local FieldApplicationIds = require("libs.hgss.src.field.FieldApplicationIds")
 local FieldErrors = require("libs.hgss.src.field.FieldErrors")
 local AssetPreparationQueue = require("libs.hgss.src.presentation.AssetPreparationQueue")
@@ -70,6 +72,7 @@ local NamingScreenRenderer = require("libs.hgss.src.ui.NamingScreenRenderer")
 ---@field itemIconProvider ItemIconAssetProvider the one shared bag item-icon atlas
 ---@field heroRenderer BagHeroRenderer the one bag hero model renderer borrowed by the bag renderer
 ---@field bagRenderer BagRenderer the one field-bag pane renderer
+---@field martRenderer MartRenderer? owned source-layered mart background and prompt images
 ---@field followingMonTransitionRenderer FollowingMonTransitionRenderer? transient follower-transition presentation (nil without the generated definition)
 ---@field textRenderer FieldTextRenderer?
 ---@field fieldEntranceIndicatorPool GpuAssetPool?
@@ -157,7 +160,6 @@ local function buildPresenters(owner)
       icons = assert(owner.monIconProvider, "party icon provider is unavailable"),
       text = assert(owner.textRenderer, "party text renderer is unavailable"),
     }, status, plan)
-    drawApplicationFrames(hostGraphics, owner, plan)
   end
   ---@param hostGraphics table<string, unknown>
   ---@param status table<string, unknown>
@@ -170,7 +172,83 @@ local function buildPresenters(owner)
       icons = assert(owner.itemIconProvider, "bag icon provider is unavailable"),
       text = assert(owner.textRenderer, "bag text renderer is unavailable"),
     }, status, plan)
-    drawApplicationFrames(hostGraphics, owner, plan)
+  end
+  ---@param hostGraphics table<string, unknown>
+  ---@param transition table<string, unknown>?
+  ---@param plan table<string, unknown>?
+  local function drawMenuFlowTransition(hostGraphics, transition, plan)
+    if transition == nil then
+      return
+    end
+    local phase = assert(transition.phase, "menu transitions carry a semantic phase")
+    local coefficient = assert(transition.brightnessCoefficient, "menu transitions carry their brightness coefficient")
+    assert(
+      type(coefficient) == "number" and coefficient % 1 == 0 and coefficient >= 0 and coefficient <= 16,
+      "menu brightness coefficients stay in 0..16"
+    )
+    local inputKey
+    local panes
+    if phase == "app_exit" then
+      if transition.panes ~= nil then
+        inputKey = assert(transition.inputKey, "the completed app exit retains its app role")
+        panes = transition.panes
+      else
+        local activePlan = assert(plan, "an app exit draws over the outgoing child plan")
+        inputKey = assert(activePlan.inputKey, "the outgoing plan names its app")
+        panes = assert(activePlan.panes, "the outgoing plan carries its panes")
+      end
+    else
+      assert(phase == "menu_return", "menu transitions use an app exit or menu return phase")
+      inputKey = assert(transition.inputKey, "menu return retains its plan role")
+      panes = assert(transition.panes, "menu return retains pane placements")
+    end
+    if inputKey == "bag-inactive" or inputKey == "party-inactive" then
+      return
+    end
+    local mainId, subId
+    if inputKey == "bag" then
+      mainId, subId = "interaction", "hero"
+    elseif inputKey == "party" then
+      mainId, subId = "content", "detail"
+    else
+      error("menu transitions cannot present plan " .. tostring(inputKey), 0)
+    end
+    local mainPane, subPane
+    for _, pane in ipairs(panes) do
+      if pane.id == mainId then
+        assert(mainPane == nil, "a menu plan has one main pane")
+        mainPane = pane
+      elseif pane.id == subId then
+        assert(subPane == nil, "a menu plan has one sub pane")
+        subPane = pane
+      end
+    end
+    assert(mainPane ~= nil or #panes == 0, "an active menu plan carries its main pane")
+    local function drawBrightness(pane)
+      if pane == nil then
+        return
+      end
+      LogicalSurface.draw(hostGraphics, assert(pane.placement, "menu panes carry placements"), function()
+        hostGraphics.setColor(0, 0, 0, coefficient / 16)
+        hostGraphics.rectangle("fill", 0, 0, 256, 192)
+      end)
+    end
+    if phase == "app_exit" then
+      local step = assert(transition.step, "app exit carries its source shutter step")
+      assert(type(step) == "number" and step % 1 == 0 and step >= 0 and step <= 6, "shutter steps stay in 0..6")
+      if mainPane ~= nil then
+        LogicalSurface.draw(hostGraphics, assert(mainPane.placement, "menu main pane carries its placement"), function()
+          local edge = 16 * step
+          hostGraphics.setColor(0, 0, 0, 1)
+          hostGraphics.rectangle("fill", 0, 0, 256, edge)
+          hostGraphics.rectangle("fill", 0, 192 - edge, 256, edge)
+        end)
+      end
+      drawBrightness(subPane)
+    else
+      drawBrightness(mainPane)
+      drawBrightness(subPane)
+    end
   end
   -- Both menu applications run the shared Bag/Party flow, whose single
   -- live child follows the active page: the bag hosts party targets for
@@ -182,7 +260,21 @@ local function buildPresenters(owner)
   ---@param presentation table<string, unknown>?
   ---@param applicationId string
   local function drawMenuFlow(presentation, applicationId)
+    local transition = presentation and presentation.transition
+    if transition ~= nil and transition.phase == "menu_return" then
+      local hostGraphics = love and love.graphics
+      assert(type(hostGraphics) == "table", applicationId .. " drawing requires its host graphics namespace")
+      drawMenuFlowTransition(hostGraphics, transition, nil)
+      return
+    end
     if drawPartyWait(presentation) then
+      if transition ~= nil then
+        local hostGraphics = love and love.graphics
+        assert(type(hostGraphics) == "table", applicationId .. " drawing requires its host graphics namespace")
+        local status = assert(presentation, "the party wait screen carries its presentation status")
+        local plan = assert(status.presentation, "the party wait carries its resolved pane plan")
+        drawMenuFlowTransition(hostGraphics, transition, plan)
+      end
       return
     end
     local status = assert(presentation, "the " .. applicationId .. " application presents its status")
@@ -197,6 +289,8 @@ local function buildPresenters(owner)
     else
       error("the " .. applicationId .. " application cannot present plan " .. tostring(inputKey), 0)
     end
+    drawMenuFlowTransition(hostGraphics, status.transition, plan)
+    drawApplicationFrames(hostGraphics, owner, plan)
   end
   local function drawPokemon(presentation, _)
     drawMenuFlow(presentation, FieldApplicationIds.POKEMON)
@@ -312,6 +406,14 @@ function FieldPresentationResources.new(runtime)
       promptManifest = runtime.uiManifest,
       text = textRenderer,
       heroRenderer = self.heroRenderer,
+      window = self.windowRenderer,
+      frameIndex = self.applicationFrameIndex,
+    })
+    self.martRenderer = MartRenderer.new({
+      cacheFs = runtime.cacheFs,
+      manifest = MartCache.loadManifest(runtime.cacheFs),
+      uiManifest = runtime.uiManifest,
+      text = textRenderer,
       window = self.windowRenderer,
       frameIndex = self.applicationFrameIndex,
     })
@@ -459,7 +561,18 @@ function FieldPresentationResources:drawApplication(applicationId, presentation,
   -- statuses carry their own plan and pass through untouched; a plan-less
   -- flow status reaches the presenter, which fails loudly by contract.
   if type(presentation) == "table" and presentation.presentation == nil then
-    presentation = presentation.child
+    local flowStatus = presentation
+    presentation = flowStatus.child
+    if presentation ~= nil and flowStatus.transition ~= nil then
+      local childStatus = {}
+      for key, value in pairs(presentation) do
+        childStatus[key] = value
+      end
+      childStatus.transition = flowStatus.transition
+      presentation = childStatus
+    elseif flowStatus.transition ~= nil and flowStatus.transition.phase == "menu_return" then
+      presentation = { transition = flowStatus.transition }
+    end
   end
   draw(presentation, runtime)
 end
@@ -495,6 +608,27 @@ function FieldPresentationResources:drawScriptParty(host)
   self:drawApplication(FieldApplicationIds.POKEMON, status)
 end
 
+-- Draws the active script mart over the retained field. Buy uses its
+-- source-layered renderer; sale borrows the ordinary Bag presenter and its
+-- already-owned hero and item resources.
+---@param host table<string, unknown> the script-owned mart host
+function FieldPresentationResources:drawMart(host)
+  local status = host:status()
+  if status == nil then
+    return
+  end
+  if status.martKind == "sell" then
+    self:drawApplication(FieldApplicationIds.BAG, status)
+    return
+  end
+  assert(status.presentation, "active purchase child exposes a resolved mart plan")
+  assert(self.martRenderer, "field presentation owns no mart renderer"):draw(
+    status,
+    status.presentation,
+    { icons = assert(self.itemIconProvider, "mart rendering requires the shared item icons") }
+  )
+end
+
 function FieldPresentationResources:dispose()
   self.presenters = nil
   if self.dialogueRenderer then
@@ -508,6 +642,10 @@ function FieldPresentationResources:dispose()
   if self.bagRenderer then
     self.bagRenderer:release()
     self.bagRenderer = nil
+  end
+  if self.martRenderer then
+    self.martRenderer:release()
+    self.martRenderer = nil
   end
   if self.windowRenderer then
     self.windowRenderer:release()

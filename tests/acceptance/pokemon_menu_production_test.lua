@@ -7,6 +7,7 @@
 
 local Assert = require("tests.support.Assert")
 local AcceptanceHarness = require("tests.acceptance.support.AcceptanceHarness")
+local GameSave = require("libs.hgss.src.save.GameSave")
 local CacheFs = require("libs.storage.src.CacheFs")
 local FieldApplicationHost = require("libs.hgss.src.field.FieldApplicationHost")
 local FieldScriptSymbols = require("libs.assets.src.field.FieldScriptSymbols")
@@ -19,7 +20,7 @@ local RomFs = require("romdump.src.source.RomFs")
 
 local T = {
   metadata = { capabilities = { "rom_dump" },
-    derivedAssets = { "field-runtime", "audio-bank:700", "audio-bank:702", "audio-bank:709", "audio-bank:758", "map-data:31", "map-data:33", "map-data:47", "map-data:48", "map-data:60", "map:33", "map:60" }, tags = { "menu", "production" } },
+    derivedAssets = { "field-runtime", "audio-bank:700", "audio-bank:702", "audio-bank:709", "audio-bank:758", "audio-bank:759", "map-data:31", "map-data:33", "map-data:47", "map-data:48", "map-data:60", "map:33", "map:60" }, tags = { "menu", "production" } },
   tests = {},
 }
 
@@ -177,6 +178,35 @@ local function childView(flow)
   return assert(status.child, "the party flow holds a live child")
 end
 
+local function settleTransition(flow)
+  for _ = 1, 6 do
+    if flow:status().transition == nil then
+      break
+    end
+    flow:updateFixed({})
+  end
+  if not flow:status().open then
+    -- The host consumes a terminal result after presenting the opaque frame.
+    flow:updateFixed({})
+  end
+end
+
+-- A fresh party page clears its open before input: wait for the leaf
+-- to turn interactive, then run out the handover ticks that still drop
+-- input so the first navigation acts.
+local function drainOpen(flow)
+  for _ = 1, 30 do
+    local status = flow:status()
+    local child = status.child
+    if child ~= nil and child.phase == "interactive" then
+      break
+    end
+    flow:updateFixed({})
+  end
+  flow:updateFixed({})
+  flow:updateFixed({})
+end
+
 local function focusSlot(flow, slot, direction)
   -- Party slots run left to right; down from a slot reaches cancel.
   -- A fresh screen reports no cursor while icon preparation pends:
@@ -220,10 +250,12 @@ local function activateMenuRow(flow, match, what)
       for _ = 1, 10 do
         local status = flow:status()
         if not status.open then
+          settleTransition(flow)
           return
         end
         local settled = assert(status.child, "the party flow holds a live child")
         if settled.menuPress == nil then
+          settleTransition(flow)
           return
         end
         flow:updateFixed({})
@@ -254,6 +286,19 @@ function T.tests.production_pokemon_destination_opens_the_native_flow(context)
     game:advanceUntil("the pokemon destination owns the tick", function()
       return hostPhase(game) == FieldApplicationHost.PHASES.application
     end, 120)
+    game:advanceUntil("the party reveal completes before the close", function()
+      local hostStatus = game.runtime.applicationHost:status()
+      if hostStatus.phase ~= FieldApplicationHost.PHASES.application then
+        return false
+      end
+      local flow = hostStatus.application
+      local leaf = flow ~= nil and flow.child or nil
+      return leaf ~= nil and leaf.phase == "interactive"
+    end, 120)
+    -- The handover and its settling tick still drop input; the close
+    -- presses only once the screen forwards.
+    game:step()
+    game:step()
     local child = applicationStatus(game)
     Assert.equal(child.page, "party_browse", "the pokemon destination opens the native party flow")
     Assert.equal(child.root, "party", "the pokemon destination roots the flow at party")
@@ -282,8 +327,68 @@ function T.tests.production_bag_destination_opens_the_native_flow(context)
     local child = applicationStatus(game)
     Assert.equal(child.page, "bag_browse", "the bag destination opens the native bag flow")
     Assert.equal(child.root, "bag", "the bag destination roots the flow at bag")
+
+    -- Opening batches are consumed while the Bag performs its source
+    -- sub-then-main reveal. The first cancel must not close the new app.
+    cancel(game)
+    game:advanceUntil("the Bag resolves its opening batch", function()
+      if hostPhase(game) ~= FieldApplicationHost.PHASES.application then
+        return true
+      end
+      local flow = game.runtime.applicationHost:status().application
+      local leaf = flow ~= nil and flow.child or nil
+      return leaf ~= nil and leaf.phase == "interactive"
+    end, 120)
+    Assert.equal(hostPhase(game), FieldApplicationHost.PHASES.application, "opening cancel input is discarded")
+    child = applicationStatus(game)
+    Assert.equal(child.page, "bag_browse", "the Bag stays active after opening input is discarded")
     cancel(game)
     game:advanceUntil("cancelling the flow returns to the menu", function()
+      return hostPhase(game) == FieldApplicationHost.PHASES.menu
+    end, 120)
+    cancel(game)
+    game:advanceUntil("cancelling the menu returns to the field", function()
+      return hostPhase(game) == FieldApplicationHost.PHASES.closed
+    end, 120)
+  end)
+end
+
+function T.tests.production_bag_return_reveals_the_retained_menu(context)
+  requireVersions(context)
+  withGame(function(game)
+    local state = hostCallbacks(game)
+    game:setWorldState({ flag = FLAG_GOT_BAG })
+    openStartMenu(game)
+    navigateTo(game, state, "vanilla.bag")
+    confirm(game)
+    game:advanceUntil("the bag destination owns the tick", function()
+      return hostPhase(game) == FieldApplicationHost.PHASES.application
+    end, 120)
+
+    -- Let Bag's source opening finish before testing the root close.
+    game:advanceUntil("the Bag is ready for root close", function()
+      if hostPhase(game) ~= FieldApplicationHost.PHASES.application then
+        return false
+      end
+      local flow = game.runtime.applicationHost:status().application
+      local leaf = flow ~= nil and flow.child or nil
+      return leaf ~= nil and (leaf.phase == nil or leaf.phase == "interactive")
+    end, 120)
+    game:step()
+    game:step()
+    cancel(game)
+
+    -- Six app-exit steps finish the outgoing Bag. The next tick starts
+    -- brightness-in over the retained menu, before close is published.
+    for _ = 1, 7 do
+      game:step()
+    end
+    Assert.equal(
+      hostPhase(game),
+      FieldApplicationHost.PHASES.application,
+      "the Bag flow stays published while the retained Start Menu is revealed"
+    )
+    game:advanceUntil("the completed reveal returns to the retained menu", function()
       return hostPhase(game) == FieldApplicationHost.PHASES.menu
     end, 120)
     cancel(game)
@@ -302,6 +407,7 @@ function T.tests.flow_behaviors_persist_through_production_composition(context)
     local composition = assert(runtime.pokemonMenu, "the production runtime owns the menu composition")
     local flow = composition.makePartyFlow()
     Assert.isTrue(flow:status().open, "the composed party flow opens")
+    drainOpen(flow)
     -- Summary returns to the displayed member.
     focusSlot(flow, aron)
     activateMenuRow(flow, function(row)
@@ -318,6 +424,9 @@ function T.tests.flow_behaviors_persist_through_production_composition(context)
       flow:updateFixed({})
     end
     Assert.equal(returned, aron, "summary returns to the displayed member")
+    -- The summary return reopens the party page on a fresh leaf, so its
+    -- open clears again before the switch leg drives.
+    drainOpen(flow)
     -- Switch persists through the live service after its animation.
     local mons = assert(runtime.monService, "live mon service required")
     local before = mons:partyRevision()
@@ -369,6 +478,7 @@ function T.tests.field_handoff_executes_once_on_the_live_scheduler(context)
     local runtime = game.runtime
     local composition = assert(runtime.pokemonMenu, "the production runtime owns the menu composition")
     local flow = composition.makePartyFlow()
+    drainOpen(flow)
     focusSlot(flow, swimmer)
     activateMenuRow(flow, function(row)
       return row.move == "SURF"
@@ -418,7 +528,10 @@ function T.tests.save_round_trip_preserves_domain_badges_travel_and_leaves(conte
     Assert.isTrue(bag:add("POTION", 3), "setup must stock potions")
     local potionBefore = bag:quantity("POTION")
     local record = assert(runtime:captureGameSave(), "a settled field captures")
-    Assert.equal(record.schema, "g4-game-save-v5", "production capture writes the current save schema")
+    Assert.equal(record.schema, GameSave.SCHEMA, "production capture writes the current save schema")
+    Assert.equal(type(record.mart), "table", "production capture carries the canonical mart bucket")
+    Assert.equal(record.mart.schema, "g4-mart-save-v1", "production capture uses the supported mart schema")
+    Assert.equal(record.playerData.profile.nationalDex, false, "new-game profiles start without the National Dex")
     Assert.isTrue(record.playerData.profile.badges > 0, "awarded badges persist in the record")
     Assert.isTrue(type(record.fieldTravel) == "table", "the record carries travel facts")
     Assert.equal(record.fieldTravel.lastHealSpawn, "SPAWN_NEW_BARK", "the mother spawn survives capture")
@@ -446,6 +559,7 @@ function T.tests.save_round_trip_preserves_domain_badges_travel_and_leaves(conte
     )
     Assert.equal(fresh.fieldTravel:capture().lastHealSpawn, "SPAWN_NEW_BARK", "reload preserves the travel facts")
     Assert.equal(fresh.monService:partyMon(0).species, "GEODUDE", "reload preserves the switched order")
+    Assert.deepEqual(fresh.martService:capture(), record.mart, "reload preserves the canonical mart state")
   end)
 end
 

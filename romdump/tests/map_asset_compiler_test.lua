@@ -137,7 +137,7 @@ local function publishPlannedCells(cacheFs, index, plan)
       x = descriptor.x,
       z = descriptor.z,
       mapHeaderId = descriptor.mapHeaderId,
-      origin = { x = descriptor.x * 32, y = descriptor.altitude / 16, z = descriptor.z * 32 },
+      origin = { x = descriptor.x * 32, y = MapUnits.altitudeDeltaToTiles(descriptor.altitude), z = descriptor.z * 32 },
       altitude = descriptor.altitude,
       landDataMemberId = descriptor.landDataMemberId,
       areaDataMemberId = descriptor.areaDataMemberId,

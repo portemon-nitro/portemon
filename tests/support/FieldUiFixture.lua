@@ -35,6 +35,21 @@ FieldUiFixture.START_MENU_BACKGROUND_PATH = "assets/generated/field/ui/start-men
 FieldUiFixture.START_MENU_CURSOR_PATH = "assets/generated/field/ui/start-menu-cursor.png"
 FieldUiFixture.TRAINER_CARD_PATH = "assets/generated/field/ui/trainer-card.png"
 
+---@param cache CacheFs
+---@param fontId integer
+function FieldUiFixture.writeFont(cache, fontId)
+  local source = FieldDialogueFixture.cacheWithFontId(fontId)
+  local definitionPath = FieldFontCache.defPath(fontId)
+  cache:writeLua(definitionPath, source:loadLua(definitionPath))
+  for _, path in ipairs({
+    FieldFontCache.atlasPath(fontId),
+    FieldFontCache.maskAtlasPath(fontId),
+    FieldFontCache.focusIndicatorsPath(fontId),
+  }) do
+    cache:write(path, assert(source:read(path), "font fixtures carry generated image assets"))
+  end
+end
+
 FieldUiFixture.PROMPT_YES_NORMAL_PATH = "assets/generated/field/ui/yes-no-prompt-yes-normal.png"
 FieldUiFixture.PROMPT_YES_SELECTED_PATH = "assets/generated/field/ui/yes-no-prompt-yes-selected.png"
 FieldUiFixture.PROMPT_NO_NORMAL_PATH = "assets/generated/field/ui/yes-no-prompt-no-normal.png"
@@ -701,6 +716,7 @@ end
 ---@return CacheFs
 function FieldUiFixture.cacheWithFontAndFrames()
   local cache = FieldDialogueFixture.cacheWithFont()
+  FieldUiFixture.writeFont(cache, 4)
   cache:writeLua(FieldUiAssetCache.manifestPath(), FieldUiFixture.manifest())
   cache:write(FieldUiFixture.STRIP_PATH, FieldUiFixture.stripBytes())
   cache:write(FieldUiFixture.CONTINUE_CURSOR_PATH, FieldUiFixture.continueCursorBytes())

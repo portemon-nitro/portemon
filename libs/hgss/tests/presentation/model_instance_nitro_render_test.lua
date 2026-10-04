@@ -333,7 +333,7 @@ function T.nitro_animated_model_renders_and_scrubs_without_recompiling()
   -- its tile-space placement.
   instance:evaluatePose()
   local items = drawInstance(renderer, rt, instance, 1)
-  Assert.isTrue(renderer.stats.drawCalls >= 1, "the nitro mesh draws")
+  Assert.isTrue(renderer.stats.geometrySubmissions >= 1, "the nitro mesh draws")
 
   -- The draw item carries the shader-consumed polygon state: the compiled
   -- light mask and the four DS material color registers survive to the item
@@ -350,11 +350,11 @@ function T.nitro_animated_model_renders_and_scrubs_without_recompiling()
   -- The "draw happened but black" class: a NORMAL-lit vertex under the lit
   -- profile must render non-black -- the polygon's mask admits lights 0 and 2
   -- and both are enabled. A dropped light mask (all bits gated off) renders
-  -- the frame black while drawCalls still counts. The quad spans world x,y in
+  -- the frame black while geometrySubmissions still counts. The quad spans world x,y in
   -- [0,2], so world (0.5, 0.5) is interior (canonical pixel 480,360); canvas
   -- readbacks come back Y-inverted on some drivers, so sample the pixel and
   -- its Y-mirror and require the lit half.
-  local img = renderer.sceneColor:newImageData()
+  local img = renderer.gxRenderer.sceneColor:newImageData()
   local function bright(pixel)
     return pixel[1] > 0.5 or pixel[2] > 0.5 or pixel[3] > 0.5
   end

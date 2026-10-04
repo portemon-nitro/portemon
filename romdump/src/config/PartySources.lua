@@ -71,10 +71,11 @@ PartySources.panelTemplates = {
 
 -- The main palette's Party panel data begins at NCLR byte offset 0x60. The
 -- ordinary browse loader selects four of its 16-color states at two-bank
--- strides; empty panels use absolute bank 1.
+-- strides, and the switch-selection state resolves bank 7; empty panels use
+-- absolute bank 1.
 PartySources.panelPalette = {
   firstColor = 0x60 / 2,
-  stateBanks = { normal = 0, fainted = 2, selected = 4, selectedFainted = 6 },
+  stateBanks = { normal = 0, fainted = 2, selected = 4, selectedFainted = 6, switchSelection = 7 },
   emptyBank = 1,
   hpBars = {
     green = { bank = 0, edge = 10, body = 9 },
@@ -174,6 +175,7 @@ PartySources.status = {
   cellMember = 63,
   charMember = 64,
   paletteMember = 65,
+  paletteBank = 0,
   -- PartyMonStatusIconId maps PRZ/FRZ/SLP/PSN/BRN/FNT to sequences 1..6.
   semanticSequences = {
     { key = "paralysis", sequence = 1 },
@@ -184,6 +186,9 @@ PartySources.status = {
     { key = "faint", sequence = 6 },
   },
 }
+-- The palette resource is local to this marker. Source OBJ allocator slots
+-- are not bank indices within the decoded member 21 palette.
+PartySources.heldItemPaletteBank = 0
 PartySources.feedback =
   { animationMember = 27, cellMember = 28, charMember = 29, paletteMember = 23, sequence = 0, durations = { 3, 2, 1 } }
 
@@ -257,6 +262,8 @@ PartySources.windows = {
 -- (PartyMenu_PrintMonNicknameOnWindow). Each triple is
 -- { foreground, shadow, background } slots in the palette bank below; the
 -- bank-0 resolution is what carries the white/blue/red ink seen in-game.
+-- The background slot keeps its source RGB, but the compiler lowers it to
+-- transparent runtime ink because panel text prints over existing chrome.
 PartySources.textRoles = {
   bank = 0,
   ordinary = { 15, 14, 0 },
@@ -264,15 +271,26 @@ PartySources.textRoles = {
   female = { 5, 6, 0 },
 }
 
+-- Lower-message palette selection: party message windows print through
+-- font 1 over fill color 15, so their ink comes from the loaded font
+-- palette member 8 (LoadFontPal1 in src/font.c loads NARC_graphic_font
+-- member 8; PartyMenu_PrintMessageOnWindowEx in src/party_context_menu.c
+-- fills with color index 15). Entries name { foreground, shadow,
+-- background } slots in that font palette member.
+PartySources.messageRole = { paletteMember = 8, foreground = 1, shadow = 2, background = 15 }
+
 -- Context-button presentation roles transcribed from
 -- PartyMenu_PrintContextMenuItemText/getButtonColorRaised/getButtonColorDepressed:
--- button windows carry palette selector 2; text ink spans slots 14/15 (both
--- text states share foreground 14, the fill pair below carries the state
--- change); window fills are FillWindowPixelBuffer 4 raised, 11 depressed.
+-- button windows carry palette selector 2. Command entries, later field
+-- entries, and the fixed cancel entry each resolve a raised/depressed
+-- foreground/shadow/background triple; command and cancel share the bright
+-- ink pair while field entries keep their own ink. Each triple names source
+-- palette slots in the bank below.
 PartySources.contextRoles = {
   bank = 2,
-  text = { raised = 14, depressed = 15 },
-  fill = { raised = 4, depressed = 11 },
+  command = { raised = { 14, 15, 4 }, depressed = { 14, 15, 11 } },
+  field = { raised = { 9, 10, 4 }, depressed = { 9, 10, 11 } },
+  cancel = { raised = { 14, 15, 4 }, depressed = { 14, 15, 11 } },
 }
 
 -- Context-button frame source transcribed from sub_0207E3A8 and the member-26
@@ -442,6 +460,11 @@ PartySources.messages = {
     didNotLearn = { bank = 300, index = 59 },
     forgetMove = { bank = 300, index = 60 },
     noEffect = { bank = 300, index = 102 },
+    takeNoItem = { bank = 300, index = 82 },
+    bagFull = { bank = 300, index = 84 },
+    switchHeldPrompt = { bank = 300, index = 79 },
+    switchHeldResult = { bank = 300, index = 85 },
+    giveHeldItem = { bank = 300, index = 107 },
     fieldMoveConfirm = { bank = 300, index = 139 },
     levelTotal = { bank = 300, index = 167 },
     eggSelect = { bank = 300, index = 184 },
@@ -501,7 +524,7 @@ PartySources.geometry = {
     cancel = {
       templateAnchor = { x = 232, y = 184 },
       normalSetupOffset = { x = 0, y = -8 },
-      textRect = { x = 200, y = 168, width = 48, height = 16 },
+      textRect = { x = 208, y = 168, width = 40, height = 16 },
       align = "center",
     },
   },

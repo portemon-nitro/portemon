@@ -320,6 +320,7 @@ local function matrixPartyManifest()
         selected = { image = "test/panel-selected.png", width = 128, height = 48 },
         fainted = { image = "test/panel-fainted.png", width = 128, height = 48 },
         selectedFainted = { image = "test/panel-selected-fainted.png", width = 128, height = 48 },
+        switchSelection = { image = "test/panel-switch-selection.png", width = 128, height = 48 },
       },
       text = {
         name = { x = ox + 48, y = oy + 8, width = 72, height = 16 },
@@ -621,6 +622,7 @@ end
 -- graphics smoke.
 local function partyAssetCache()
   local cache = CacheFs.forVersion("heartgold", FakeCache.new())
+  FieldUiFixture.writeFont(cache, 4)
   local function stub(path, width, height, r, g, b, a)
     local pixels = {}
     for _ = 1, width * height do
@@ -632,6 +634,7 @@ local function partyAssetCache()
   stub("test/panel-selected.png", 128, 48, 56, 40, 40)
   stub("test/panel-fainted.png", 128, 48, 32, 32, 48)
   stub("test/panel-selected-fainted.png", 128, 48, 48, 32, 32)
+  stub("test/panel-switch-selection.png", 128, 48, 32, 48, 64)
   stub("test/aux.png", 128, 48, 32, 48, 48)
   stub("test/backdrop-main.png", 256, 256, 24, 64, 72)
   stub("test/backdrop-sub.png", 256, 256, 64, 72, 24)

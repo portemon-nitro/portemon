@@ -55,7 +55,7 @@ end
 local function manifestFor(versionId)
   local cacheFs = CacheFs.forVersion(versionId)
   local manifest = BagCache.loadManifest(cacheFs)
-  Assert.equal(manifest.schema, "g4-bag-assets-v15", versionId .. " renders the current bag manifest")
+  Assert.equal(manifest.schema, "g4-bag-assets-v17", versionId .. " renders the current bag manifest")
   return cacheFs, manifest
 end
 
@@ -244,6 +244,16 @@ local function render(scope, owned, presentationRecord, layout)
   owned.renderer:draw(presentationRecord, layout, { icons = owned.icons })
   love.graphics.setCanvas()
   return scope:own(canvas:newImageData())
+end
+
+local function saveMartCapture(data, name)
+  local directory = os.getenv("PORTEMON_MART_CAPTURE_DIR")
+  if directory == nil then
+    return
+  end
+  local file = assert(io.open(directory .. "/" .. name .. ".png", "wb"))
+  file:write(data:encode("png"):getString())
+  file:close()
 end
 
 local function imageDataDigest(data)
@@ -653,6 +663,151 @@ function T.action_quantity_and_confirmation_render_distinct_states(scope, contex
     Assert.isTrue(
       regionDistance(menu, confirm, interactiveFrame, 2) > 100,
       versionId .. " the action menu and the confirmation are distinct surfaces"
+    )
+  end
+end
+
+-- The sale amount picker uses the separately compiled member-53 surface and
+-- two digit cells. Compare the real 1:1 capture with its source image, then
+-- render Toss from member 52 to guard against crossing those presentation
+-- contracts.
+function T.sale_quantity_capture_uses_member_53_and_two_digits(scope, context)
+  local versions = readyVersions()
+  if #versions == 0 then
+    context:skip("the bag smoke needs a ready user-owned ROM with a derived cache")
+  end
+  for _, versionId in ipairs(versions) do
+    local cacheFs, manifest = manifestFor(versionId)
+    local layout = twoPaneLayout(manifest)
+    local firstIcon, secondIcon = iconKeys(cacheFs, versionId)
+    local owned = owners(cacheFs, manifest, scope, versionId)
+    local pocket = twoPockets(manifest, versionId)
+    local heroStatus = heroStatusAt(manifest, pocket, 6)
+    local sale = assert(manifest.interactive.sale, versionId .. " carries the member-53 sale surface")
+    local saleSource = decodeImage(scope, cacheFs, sale.quantityBackground.image, versionId .. " sale quantity source")
+    local tossSource = decodeImage(
+      scope,
+      cacheFs,
+      assert(manifest.interactive.backgrounds.quantity[pocket][2]).image,
+      versionId .. " Toss quantity source"
+    )
+    Assert.isTrue(
+      regionDistance(saleSource, tossSource, { x = 0, y = 0, width = 256, height = 192 }, 2) > 100,
+      versionId .. " the compiled sale quantity surface is distinct from Toss member 52"
+    )
+
+    local saleCaptures = {}
+    for _, quantity in ipairs({ 1, 9, 10, 99 }) do
+      saleCaptures[quantity] = render(
+        scope,
+        owned,
+        presentation(firstIcon, secondIcon, heroStatus, {
+          state = "sale_quantity",
+          quantity = quantity,
+          quantityMax = 99,
+          saleBalance = 12345,
+          saleTotal = quantity * 2,
+        }),
+        layout
+      )
+    end
+    local toss = render(
+      scope,
+      owned,
+      presentation(firstIcon, secondIcon, heroStatus, {
+        state = "toss_quantity",
+        quantity = 99,
+        quantityMax = 99,
+        quantityPressedControl = 0,
+      }),
+      layout
+    )
+    local limitedSale = render(
+      scope,
+      owned,
+      presentation(firstIcon, secondIcon, heroStatus, {
+        state = "sale_quantity",
+        quantity = 1,
+        quantityMax = 5,
+        saleBalance = 12345,
+        saleTotal = 2,
+      }),
+      layout
+    )
+    local offer = render(
+      scope,
+      owned,
+      presentation(firstIcon, secondIcon, heroStatus, {
+        state = "sale_offer",
+        saleQuantity = 10,
+        saleBalance = 12345,
+        saleTotal = 1500,
+        lowerMessage = { visibleText = "Sell this item?" },
+        yesNoPrompt = {
+          active = true,
+          selected = "yes",
+          selectionHighlighted = true,
+          buttons = {
+            yes = { x = 200, y = 48, width = 48, height = 32 },
+            no = { x = 200, y = 80, width = 48, height = 32 },
+          },
+        },
+      }),
+      layout
+    )
+    local result = render(
+      scope,
+      owned,
+      presentation(firstIcon, secondIcon, heroStatus, {
+        state = "sale_result",
+        saleQuantity = 10,
+        saleBalance = 12345,
+        saleTotal = 1500,
+        lowerMessage = { visibleText = "Sold ten." },
+      }),
+      layout
+    )
+    saveMartCapture(saleCaptures[10], versionId .. "-bag-sale-quantity")
+    saveMartCapture(offer, versionId .. "-bag-sale-offer")
+    saveMartCapture(result, versionId .. "-bag-sale-result")
+    local interactive = interactiveFrameOf(layout, versionId)
+    Assert.isTrue(
+      regionDistance(saleCaptures[99], toss, interactive, 2) > 100,
+      versionId .. " the two digit sale rendering remains distinct from Toss controls"
+    )
+    Assert.isTrue(
+      regionDistance(saleCaptures[1], saleCaptures[9], interactive, 2) > 0
+        and regionDistance(saleCaptures[10], saleCaptures[99], interactive, 2) > 0,
+      versionId .. " one and two digit quantities occupy their source digit cells"
+    )
+    Assert.isTrue(
+      regionDistance(limitedSale, saleCaptures[1], interactive, 2) > 0,
+      versionId .. " a stack below ten hides the tens controls"
+    )
+    Assert.isTrue(
+      regionDistance(saleCaptures[10], offer, interactive, 2) > 100
+        and regionDistance(offer, result, interactive, 2) > 100,
+      versionId .. " the sale offer/prompt and result print have distinct source captures"
+    )
+
+    local sourceMatches = 0
+    for y = 0, 191, 4 do
+      for x = 0, 255, 4 do
+        local expected = { saleSource:getPixel(x, y) }
+        local actual = { saleCaptures[99]:getPixel(interactive.x + x, interactive.y + y) }
+        if
+          quantize(expected[1]) == quantize(actual[1])
+          and quantize(expected[2]) == quantize(actual[2])
+          and quantize(expected[3]) == quantize(actual[3])
+          and quantize(expected[4]) == quantize(actual[4])
+        then
+          sourceMatches = sourceMatches + 1
+        end
+      end
+    end
+    Assert.isTrue(
+      sourceMatches > 500,
+      versionId .. " the member-53 source-resolution pixels remain visible in the sale capture"
     )
   end
 end
@@ -1228,6 +1383,117 @@ function T.cancel_label_paints_centered_on_its_source_label_area(scope, context)
       assert(bottom, versionId .. " finds the label ink") < labelRect.y + labelRect.height,
       versionId .. " keeps the label ink inside the source label area"
     )
+  end
+end
+
+-- Modal toss text starts at the generated content-window origin and keeps
+-- the established line cadence. The draw spy forwards every call to the real
+-- text renderer, so the production BagRenderer remains the exercised owner.
+function T.toss_confirmation_text_starts_at_its_content_window_origin(scope, context)
+  local versions = readyVersions()
+  if #versions == 0 then
+    context:skip("the bag smoke needs a ready user-owned ROM with a derived cache")
+  end
+  for _, versionId in ipairs(versions) do
+    local cacheFs, manifest = manifestFor(versionId)
+    local layout = twoPaneLayout(manifest)
+    local firstIcon, secondIcon = iconKeys(cacheFs, versionId)
+    local owned = owners(cacheFs, manifest, scope, versionId)
+    local pocket = twoPockets(manifest, versionId)
+    local heroStatus = heroStatusAt(manifest, pocket, 6)
+    local modalRect = assert(
+      manifest.interactive.overlays.messages.modal.contentRect,
+      versionId .. " carries its modal message content window"
+    )
+    local calls = {}
+    local drawText = owned.text.drawTextWithPalette
+    owned.text.drawTextWithPalette = function(text, value, x, y, palette)
+      if value == "First line" or value == "Second line" then
+        calls[value] = { x = x, y = y }
+      end
+      return drawText(text, value, x, y, palette)
+    end
+
+    render(
+      scope,
+      owned,
+      presentation(firstIcon, secondIcon, heroStatus, {
+        state = "toss_confirm",
+        quantity = 2,
+        tossBase = "action",
+        lowerMessage = { visibleText = "First line\nSecond line", fullText = "First line\nSecond line" },
+        yesNoPrompt = {
+          active = true,
+          selected = "yes",
+          selectionHighlighted = true,
+          buttons = {
+            yes = { x = 200, y = 48, width = 48, height = 32 },
+            no = { x = 200, y = 80, width = 48, height = 32 },
+          },
+        },
+      }),
+      layout
+    )
+
+    Assert.equal(assert(calls["First line"]).x, modalRect.x, versionId .. " starts the first modal line at its content origin")
+    Assert.equal(assert(calls["First line"]).y, modalRect.y, versionId .. " starts the first modal line at its content origin")
+    Assert.equal(assert(calls["Second line"]).x, modalRect.x, versionId .. " keeps the second modal line left aligned")
+    Assert.equal(assert(calls["Second line"]).y, modalRect.y + 16, versionId .. " keeps the source line cadence")
+  end
+end
+
+-- Browse and action-menu Cancel share one generated label placement. A
+-- controlled odd remainder makes source integer truncation observable while
+-- every draw still passes through the production renderer and real font.
+function T.cancel_label_uses_integer_center_in_browse_and_action_menu(scope, context)
+  local versions = readyVersions()
+  if #versions == 0 then
+    context:skip("the bag smoke needs a ready user-owned ROM with a derived cache")
+  end
+  for _, versionId in ipairs(versions) do
+    local cacheFs, manifest = manifestFor(versionId)
+    local layout = twoPaneLayout(manifest)
+    local firstIcon, secondIcon = iconKeys(cacheFs, versionId)
+    local owned = owners(cacheFs, manifest, scope, versionId)
+    local interactive = assert(manifest.interactive, versionId .. " carries the interactive pane")
+    local labelRect = assert(interactive.cancel.labelRect, versionId .. " carries its Cancel label area")
+    local label = assert(interactive.text.actions.cancel, versionId .. " carries its Cancel label")
+    local plainLabel = label:gsub("{[^}]*}", "")
+    local remainingWidth = 7
+    local originalWidth = owned.text.textWidth
+    owned.text.textWidth = function(text, value)
+      if value == plainLabel then
+        return labelRect.width - remainingWidth
+      end
+      return originalWidth(text, value)
+    end
+    local calls = {}
+    local drawText = owned.text.drawTextWithPalette
+    owned.text.drawTextWithPalette = function(text, value, x, y, palette)
+      if value == plainLabel then
+        calls[#calls + 1] = { x = x, y = y }
+      end
+      return drawText(text, value, x, y, palette)
+    end
+    local pocket = twoPockets(manifest, versionId)
+    local heroStatus = heroStatusAt(manifest, pocket, 6)
+    local states = {
+      presentation(firstIcon, secondIcon, heroStatus),
+      presentation(firstIcon, secondIcon, heroStatus, {
+        state = "action_menu",
+        actions = { { id = "toss", slot = 1 } },
+        actionNode = 1,
+      }),
+    }
+    local expectedX = labelRect.x + math.floor(remainingWidth / 2)
+    for index, record in ipairs(states) do
+      calls = {}
+      render(scope, owned, record, layout)
+      Assert.equal(#calls, 1, versionId .. " draws one shared Cancel label in state " .. index)
+      Assert.equal(calls[1].x, expectedX, versionId .. " integer-centers Cancel in state " .. index)
+      Assert.equal(calls[1].y, labelRect.y, versionId .. " preserves Cancel's generated y in state " .. index)
+      Assert.equal(calls[1].x, math.floor(calls[1].x), versionId .. " keeps Cancel on an integer logical pixel")
+    end
   end
 end
 
@@ -2213,6 +2479,56 @@ function T.offered_action_slot_carries_its_action_face(scope, context)
       end
     end
     Assert.isTrue(matched > 50, versionId .. " the offered action slot carries action-face pixels")
+  end
+end
+
+-- The selected-item message keeps the source field-window fill across its
+-- generated short window: pixels past the end of a short message match the
+-- shared text renderer's window background exactly, never an invented dark
+-- fill. The smoke renderer draws without the shared frame owner, so the
+-- sampled pixels prove the flat fill color itself.
+function T.selected_message_fills_its_window_with_the_source_slot(scope, context)
+  local versions = readyVersions()
+  if #versions == 0 then
+    context:skip("the bag smoke needs a ready user-owned ROM with a derived cache")
+  end
+  for _, versionId in ipairs(versions) do
+    local cacheFs, manifest = manifestFor(versionId)
+    local layout = twoPaneLayout(manifest)
+    local firstIcon, secondIcon = iconKeys(cacheFs, versionId)
+    local owned = owners(cacheFs, manifest, scope, versionId)
+    local pocket = twoPockets(manifest, versionId)
+    local heroStatus = heroStatusAt(manifest, pocket, 6)
+    local interactiveFrame = interactiveFrameOf(layout, versionId)
+    local messages = assert(manifest.interactive.overlays.messages, versionId .. " carries its message windows")
+    local contentRect =
+      assert(messages.selected.contentRect, versionId .. " carries its selected-message rect")
+    local composed = render(scope, owned, presentation(firstIcon, secondIcon, heroStatus, {
+      state = "action_menu",
+      actions = { { id = "toss", slot = 1 } },
+      actionNode = 1,
+      lowerMessage = { visibleText = "Smoke A.", fullText = "Smoke A." },
+    }), layout)
+    local fill = owned.text:windowBackgroundColor()
+    local expected = { quantize(fill[1]), quantize(fill[2]), quantize(fill[3]) }
+    local matched, sampled = 0, 0
+    for y = contentRect.y, contentRect.y + contentRect.height - 1 do
+      for x = contentRect.x + contentRect.width - 4, contentRect.x + contentRect.width - 1 do
+        local red, green, blue, alpha =
+          composed:getPixel(interactiveFrame.x + x, interactiveFrame.y + y)
+        sampled = sampled + 1
+        if
+          alpha > 0.5
+          and quantize(red) == expected[1]
+          and quantize(green) == expected[2]
+          and quantize(blue) == expected[3]
+        then
+          matched = matched + 1
+        end
+      end
+    end
+    Assert.isTrue(sampled > 0, versionId .. " samples trailing message-window pixels")
+    Assert.equal(matched, sampled, versionId .. " the selected message keeps the source fill past its text")
   end
 end
 

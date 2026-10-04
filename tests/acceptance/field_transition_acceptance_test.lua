@@ -8,7 +8,7 @@ local OpeningLifecycle = require("tests.acceptance.support.OpeningLifecycle")
 local T = {
   metadata = {
     capabilities = { "rom_dump" },
-    derivedAssets = { "field-runtime", "map:60", "map:61", "map:63", "map:64" },
+    derivedAssets = { "field-runtime", "map:60", "map:61", "map:63", "map:64", "map-data:67", "map-data:68", "map:67", "map:68" },
     tags = { "field", "transition", "door", "profile" },
   },
   tests = {},
@@ -25,6 +25,12 @@ local FACTS = {
   house2fArrival = { fieldX = 3, fieldZ = 4 },
   labFloor = { fieldX = 4, fieldZ = 13 },
   labDoorAnchor = { fieldX = 4, fieldZ = 14 },
+  -- The shop entrance stands one tile north of its approach: the approach
+  -- is the logical-local tile (43, 8), the door warp the global tile
+  -- (555, 391), and the destination the indoor shop map.
+  shopApproachLocal = { fieldX = 43, fieldZ = 8 },
+  shopApproachGlobal = { fieldX = 555, fieldZ = 392 },
+  shopMapId = 68,
 }
 
 local function withDefaultGame(map, fn, fieldOptions)
@@ -91,6 +97,48 @@ function T.tests.door_fade_waits_for_source_ingress_and_preserves_anchor()
       { FACTS.labFloor.fieldX, FACTS.labFloor.fieldZ }
     )
   end, { recordingScriptHosts = true })
+end
+
+-- An outdoor shop door resolves in the physical cell that owns its
+-- building: walking north onto the entrance completes the shop ingress in
+-- the indoor shop map instead of rejecting the door as uncovered. The
+-- boot spawns directly south of the door warp so the journey is one step.
+function T.tests.outdoor_shop_door_enters_through_its_owning_cell()
+  local harness = AcceptanceHarness.new()
+  local defaultFactory = harness.gameFactory
+  harness.gameFactory = function(vId, map)
+    local game = defaultFactory(vId, map)
+    if map == "MAP_CHERRYGROVE" then
+      game.location.mapSymbol = "MAP_CHERRYGROVE"
+      game.location.fieldX = FACTS.shopApproachLocal.fieldX
+      game.location.fieldZ = FACTS.shopApproachLocal.fieldZ
+      game.location.facing = "north"
+    end
+    return game
+  end
+  local versionId = AcceptanceHarness.defaultVersion()
+  local game = harness:boot({ versionId = versionId, map = "MAP_CHERRYGROVE", save = "fresh" })
+  local ok, err = xpcall(function()
+    game:waitForFieldReady()
+    local snapshot = game:snapshot()
+    Assert.equal(snapshot.mapSymbol, "MAP_CHERRYGROVE")
+    Assert.equal(snapshot.player.fieldX, FACTS.shopApproachGlobal.fieldX)
+    Assert.equal(snapshot.player.fieldZ, FACTS.shopApproachGlobal.fieldZ)
+    game:move("north")
+    Assert.notNil(
+      game.runtime.transition.sourceDoor,
+      "the production transition must resolve the outdoor shop source door"
+    )
+    local completed = game:waitForTransition()
+    Assert.equal(completed.destination.mapSymbol, "MAP_CHERRYGROVE_POKEMART")
+    Assert.equal(completed.destination.mapId, FACTS.shopMapId)
+    Assert.equal(game.runtime.transition.phase, "idle")
+    Assert.equal(game:renderAttempts(), 0, "transition acceptance must stop before GPU rendering")
+  end, debug.traceback)
+  game:close()
+  if not ok then
+    error(err, 0)
+  end
 end
 
 function T.tests.player_house_stairs_remain_fixed_profile_three_indoors()

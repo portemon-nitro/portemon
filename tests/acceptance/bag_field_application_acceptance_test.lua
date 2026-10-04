@@ -221,6 +221,9 @@ local function openBag(game, state)
   game:advanceUntil("bag application opens over the retained menu", function()
     return hostPhase(game) == FieldApplicationHost.PHASES.application
   end, 120)
+  game:advanceUntil("the Bag opening settles", function()
+    return bagView(game).phase == "interactive"
+  end, 120)
   return bagView(game)
 end
 

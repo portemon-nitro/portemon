@@ -29,7 +29,7 @@ local ModelAsset = require("libs.assets.src.model.ModelAsset")
 ---@class BagAssetSchema
 local BagAssetSchema = {}
 
-BagAssetSchema.SCHEMA = "g4-bag-assets-v15"
+BagAssetSchema.SCHEMA = "g4-bag-assets-v17"
 BagAssetSchema.PANE_WIDTH = 256
 BagAssetSchema.PANE_HEIGHT = 192
 BagAssetSchema.TAB_COUNT = 8
@@ -167,6 +167,7 @@ end
 ---| { kind: "text", value: string }
 ---| { kind: "item" }
 ---| { kind: "quantity" }
+---| { kind: "total" }
 
 -- Semantic action text and prompt templates. Labels are non-empty localized
 -- strings keyed by runtime action; templates are non-empty contiguous
@@ -208,13 +209,15 @@ local function checkTemplate(template, context, what, allowedKinds)
   if not Validate.isArray(template.segments) or #template.segments == 0 then
     fail(what .. ".segments must be a non-empty contiguous array", context)
   end
-  local sawItem, sawQuantity = false, false
+  local sawItem, sawQuantity, sawTotal = false, false, false
   for index, segment in ipairs(template.segments) do
     checkSegment(segment, context, what .. ".segments[" .. index .. "]", allowedKinds)
     if segment.kind == "item" then
       sawItem = true
     elseif segment.kind == "quantity" then
       sawQuantity = true
+    elseif segment.kind == "total" then
+      sawTotal = true
     end
     if
       index > 1
@@ -225,7 +228,7 @@ local function checkTemplate(template, context, what, allowedKinds)
       fail(what .. " carries adjacent text segments that must be coalesced", context)
     end
   end
-  return sawItem, sawQuantity
+  return sawItem, sawQuantity, sawTotal
 end
 
 -- The post-choice acknowledgement names the removed copies, so its template
@@ -937,6 +940,7 @@ local function checkQuantityOverlay(quantity, context)
     visuals = true,
     pressTicks = true,
     confirm = true,
+    cancel = true,
     cancelHitRect = true,
   }, context, "interactive.overlays.quantity")
   checkFixedArray(
@@ -981,14 +985,148 @@ local function checkQuantityOverlay(quantity, context)
   local confirm = quantity.confirm
   checkRecord(
     confirm,
-    { visual = true, center = true, hitRect = true },
+    { visual = true, center = true, hitRect = true, labelAt = true },
     context,
     "interactive.overlays.quantity.confirm"
   )
   checkVisual(confirm.visual, context, "interactive.overlays.quantity.confirm.visual")
   checkPoint(confirm.center, context, "interactive.overlays.quantity.confirm.center")
   checkRect(confirm.hitRect, context, "interactive.overlays.quantity.confirm.hitRect")
+  checkPoint(confirm.labelAt, context, "interactive.overlays.quantity.confirm.labelAt")
+  local cancel = quantity.cancel
+  checkRecord(cancel, { visual = true, center = true, labelAt = true }, context, "interactive.overlays.quantity.cancel")
+  checkVisual(cancel.visual, context, "interactive.overlays.quantity.cancel.visual")
+  checkPoint(cancel.center, context, "interactive.overlays.quantity.cancel.center")
+  checkPoint(cancel.labelAt, context, "interactive.overlays.quantity.cancel.labelAt")
   checkRect(quantity.cancelHitRect, context, "interactive.overlays.quantity.cancelHitRect")
+end
+
+local function checkSale(sale, context)
+  checkRecord(sale, {
+    pressTicks = true,
+    quantityBackground = true,
+    digits = true,
+    controls = true,
+    confirm = true,
+    cancel = true,
+    selectedItem = true,
+    money = true,
+    total = true,
+    compactPrompt = true,
+    messages = true,
+  }, context, "interactive.sale")
+  checkInteger(sale.pressTicks, context, "interactive.sale.pressTicks", 1, nil, "a positive integer")
+  checkImage(sale.quantityBackground, context, "interactive.sale.quantityBackground")
+  if
+    sale.quantityBackground.width ~= BagAssetSchema.PANE_WIDTH
+    or sale.quantityBackground.height ~= BagAssetSchema.PANE_HEIGHT
+  then
+    fail("interactive.sale.quantityBackground must cover the lower pane", context)
+  end
+  checkFixedArray(sale.digits, 2, context, "interactive.sale.digits must carry exactly two digit rectangles")
+  for index, digit in ipairs(sale.digits) do
+    checkRect(digit, context, "interactive.sale.digits[" .. index .. "]")
+  end
+  local expected = {
+    { delta = 10, role = "increment" },
+    { delta = 1, role = "increment" },
+    { delta = -10, role = "decrement" },
+    { delta = -1, role = "decrement" },
+  }
+  checkFixedArray(sale.controls, #expected, context, "interactive.sale.controls must carry four controls")
+  for index, control in ipairs(sale.controls) do
+    local what = "interactive.sale.controls[" .. index .. "]"
+    checkRecord(control, { delta = true, role = true, center = true, hitRect = true }, context, what)
+    if control.delta ~= expected[index].delta or control.role ~= expected[index].role then
+      fail(what .. " has the wrong sale adjustment", context)
+    end
+    checkPoint(control.center, context, what .. ".center")
+    checkRect(control.hitRect, context, what .. ".hitRect")
+  end
+  for _, key in ipairs({ "confirm", "cancel" }) do
+    local control = sale[key]
+    local what = "interactive.sale." .. key
+    checkRecord(control, { visual = true, center = true, hitRect = true, labelAt = true }, context, what)
+    checkVisual(control.visual, context, what .. ".visual")
+    checkPoint(control.center, context, what .. ".center")
+    checkRect(control.hitRect, context, what .. ".hitRect")
+    checkPoint(control.labelAt, context, what .. ".labelAt")
+  end
+  checkRecord(sale.selectedItem, {
+    iconCenter = true,
+    textRect = true,
+    nameAt = true,
+    quantityAt = true,
+  }, context, "interactive.sale.selectedItem")
+  checkPoint(sale.selectedItem.iconCenter, context, "interactive.sale.selectedItem.iconCenter")
+  checkRect(sale.selectedItem.textRect, context, "interactive.sale.selectedItem.textRect")
+  checkLocalPoint(sale.selectedItem.nameAt, sale.selectedItem.textRect, context, "interactive.sale.selectedItem.nameAt")
+  checkLocalPoint(
+    sale.selectedItem.quantityAt,
+    sale.selectedItem.textRect,
+    context,
+    "interactive.sale.selectedItem.quantityAt"
+  )
+  for _, key in ipairs({ "money", "total" }) do
+    local box = sale[key]
+    local what = "interactive.sale." .. key
+    checkRecord(box, {
+      x = true,
+      y = true,
+      width = true,
+      height = true,
+      fontId = true,
+      textX = true,
+      textY = true,
+      alignment = true,
+      paletteRole = true,
+    }, context, what)
+    checkRect({ x = box.x, y = box.y, width = box.width, height = box.height }, context, what)
+    checkInteger(box.fontId, context, what .. ".fontId", 0, nil, "a non-negative integer")
+    checkPoint({ x = box.textX, y = box.textY }, context, what .. " text origin")
+    if box.alignment ~= "left" and box.alignment ~= "center" and box.alignment ~= "right" then
+      fail(what .. ".alignment must be left, center, or right", context)
+    end
+    if type(box.paletteRole) ~= "string" or box.paletteRole == "" then
+      fail(what .. ".paletteRole must be a semantic role", context)
+    end
+  end
+  checkRecord(
+    sale.compactPrompt,
+    { x = true, y = true, shape = true, initialSelection = true },
+    context,
+    "interactive.sale.compactPrompt"
+  )
+  checkPoint({ x = sale.compactPrompt.x, y = sale.compactPrompt.y }, context, "interactive.sale.compactPrompt")
+  if sale.compactPrompt.shape ~= "compact" or sale.compactPrompt.initialSelection ~= "yes" then
+    fail("interactive.sale.compactPrompt must be the compact YES prompt", context)
+  end
+  local messages = sale.messages
+  checkRecord(
+    messages,
+    { notSellable = true, quantity = true, offer = true, result = true },
+    context,
+    "interactive.sale.messages"
+  )
+  local saleKinds = { text = true, item = true, quantity = true, total = true }
+  local requirements = {
+    notSellable = { item = true },
+    quantity = { item = true },
+    offer = { total = true },
+    result = { item = true, total = true },
+  }
+  for _, key in ipairs({ "notSellable", "quantity", "offer", "result" }) do
+    local hasItem, hasQuantity, hasTotal =
+      checkTemplate(messages[key], context, "interactive.sale.messages." .. key, saleKinds)
+    local required = requirements[key]
+    if
+      (required.item and not hasItem)
+      or (required.quantity and not hasQuantity)
+      or (required.total and not hasTotal)
+    then
+      fail("interactive.sale.messages." .. key .. " omits a required sale value", context)
+    end
+  end
 end
 
 -- The retained selected-item panel: the selected icon center plus the
@@ -1052,11 +1190,13 @@ local function checkFeedback(feedback, context)
     actionFace = true,
     cancelFace = true,
     quantityConfirm = true,
+    quantityCancel = true,
   }, context, "interactive.feedback")
   checkInteger(feedback.totalTicks, context, "interactive.feedback.totalTicks", 1, nil, "a positive integer")
   checkFeedbackVisuals(feedback.actionFace, context, "interactive.feedback.actionFace")
   checkFeedbackVisuals(feedback.cancelFace, context, "interactive.feedback.cancelFace")
   checkFeedbackVisuals(feedback.quantityConfirm, context, "interactive.feedback.quantityConfirm")
+  checkFeedbackVisuals(feedback.quantityCancel, context, "interactive.feedback.quantityCancel")
 end
 
 -- Move commit clips: one one-shot sequence per reorder kind reusing the
@@ -1088,6 +1228,7 @@ local function checkInteractive(interactive, context)
     feedback = true,
     moveTransition = true,
     moveCursor = true,
+    sale = true,
   }, context, "interactive")
   checkPaneBackgrounds(interactive.backgrounds, context)
   local pocketTabs = interactive.pocketTabs
@@ -1116,6 +1257,7 @@ local function checkInteractive(interactive, context)
   checkMoveCursor(interactive.moveCursor, context)
   checkRegistration(itemSlots.registration, itemSlots.slots, context)
   checkOverlays(interactive.overlays, context)
+  checkSale(interactive.sale, context)
 end
 
 -- Full manifest validation: shapes, canonical pane bounds, exact tab/slot/

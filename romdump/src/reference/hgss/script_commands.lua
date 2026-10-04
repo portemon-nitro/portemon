@@ -1911,36 +1911,36 @@ return {
     },
     [275] = {
       name = "ScrCmd_MartBuy",
-      disposition = "deferred",
-      deferredReason = "shop",
-      deferredNote = "shop buying needs the shop application",
+      feature = "mart",
+      disposition = "supported",
+      classification = "native_wait",
       widths = {
         [1] = 2,
       },
     },
     [276] = {
       name = "ScrCmd_SpecialMartBuy",
-      disposition = "deferred",
-      deferredReason = "shop",
-      deferredNote = "shop buying needs the shop application",
+      feature = "mart",
+      disposition = "supported",
+      classification = "native_wait",
       widths = {
         [1] = 2,
       },
     },
     [277] = {
       name = "ScrCmd_DecorationMart",
-      disposition = "deferred",
-      deferredReason = "shop",
-      deferredNote = "shop buying needs the shop application",
+      feature = "mart",
+      disposition = "supported",
+      classification = "native_wait",
       widths = {
         [1] = 2,
       },
     },
     [278] = {
       name = "ScrCmd_SealMart",
-      disposition = "deferred",
-      deferredReason = "shop",
-      deferredNote = "shop buying needs the shop application",
+      feature = "mart",
+      disposition = "supported",
+      classification = "native_wait",
       widths = {
         [1] = 2,
       },
@@ -5542,10 +5542,16 @@ return {
     },
     [771] = {
       name = "ScrCmd_771",
+      feature = "mart",
+      disposition = "supported",
+      classification = "native_wait",
       widths = {},
     },
     [772] = {
       name = "ScrCmd_772",
+      feature = "mart",
+      disposition = "supported",
+      classification = "native_wait",
       widths = {},
     },
     [773] = {
@@ -5616,9 +5622,9 @@ return {
     },
     [782] = {
       name = "ScrCmd_MartSell",
-      disposition = "deferred",
-      deferredReason = "shop",
-      deferredNote = "shop selling needs the shop application",
+      feature = "mart",
+      disposition = "supported",
+      classification = "native_wait",
       widths = {},
     },
     [783] = {
@@ -5841,6 +5847,9 @@ return {
     },
     [815] = {
       name = "ScrCmd_815",
+      feature = "mart",
+      disposition = "supported",
+      classification = "continue_same_tick",
       widths = {
         [1] = 2,
       },
@@ -5964,12 +5973,18 @@ return {
     },
     [834] = {
       name = "ScrCmd_834",
+      feature = "mart",
+      disposition = "supported",
+      classification = "continue_same_tick",
       widths = {
         [1] = 2,
       },
     },
     [835] = {
       name = "ScrCmd_835",
+      feature = "mart",
+      disposition = "supported",
+      classification = "continue_same_tick",
       widths = {
         [1] = 2,
       },

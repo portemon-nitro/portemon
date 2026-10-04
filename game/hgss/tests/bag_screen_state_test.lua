@@ -9,6 +9,7 @@
 local Assert = require("tests.support.Assert")
 local BagCursor = require("libs.hgss.src.items.BagCursor")
 local BagScreenState = require("game.hgss.src.field.BagScreenState")
+local BagPresentationFixture = require("tests.support.BagPresentationFixture")
 local FieldUiFixture = require("tests.support.FieldUiFixture")
 local HgssBagService = require("libs.hgss.src.items.HgssBagService")
 local ItemFixture = require("libs.items.tests.item_fixture")
@@ -200,6 +201,16 @@ local function composition(overrides)
   return options, box, bag
 end
 
+local function interactiveBagState(options)
+  local state = BagScreenState.new(options)
+  state._openingPhase = "interactive"
+  state._openingInitialTick = false
+  state._openingSubStep = 6
+  state._openingMainStep = 6
+  state._settleTicks = 0
+  return state
+end
+
 local function settleFeedback(state)
   for _ = 1, 64 do
     if state:status().feedback == nil then
@@ -252,7 +263,7 @@ end
 
 function T.status_carries_browse_state_layout_and_hero_facts()
   local options = composition()
-  local state = BagScreenState.new(options)
+  local state = interactiveBagState(options)
   state:updateFixed({})
   local status = state:status()
   Assert.isTrue(status.open)
@@ -271,7 +282,7 @@ end
 function T.browse_and_pocket_switch_flow_through_the_host_contract()
   local options, _, bag = composition()
   options.cursor:setPocket("balls")
-  local state = BagScreenState.new(options)
+  local state = interactiveBagState(options)
   state:updateFixed({})
   Assert.equal(selectedKey(state:status()), "POKE_BALL")
   Assert.equal(bag:quantity("POKE_BALL"), 3)
@@ -284,7 +295,7 @@ function T.action_menu_registers_through_the_live_service()
   local options, _, bag = composition()
   Assert.isTrue(bag:add("BICYCLE", 1), "setup stocks a registerable key item through the live service")
   options.cursor:setPocket("key_items")
-  local state = BagScreenState.new(options)
+  local state = interactiveBagState(options)
   state:updateFixed({})
   local revision = bag:revision()
   state:updateFixed({ { type = "confirm" } })
@@ -306,7 +317,7 @@ end
 function T.toss_flow_mutates_once_through_the_live_service()
   local options, _, bag = composition()
   options.cursor:setPocket("medicine")
-  local state = BagScreenState.new(options)
+  local state = interactiveBagState(options)
   state:updateFixed({})
   local revision = bag:revision()
   state:updateFixed({ { type = "confirm" } })
@@ -339,11 +350,39 @@ function T.toss_flow_mutates_once_through_the_live_service()
   state:dispose()
 end
 
+function T.opening_reveal_discards_input_and_clears_sub_then_main()
+  local options = composition()
+  local state = BagScreenState.new(options)
+  state:updateFixed({ { type = "confirm" } })
+  local opening = state:status()
+  Assert.equal(opening.phase, "opening", "the first ready tick holds the opening gate")
+  Assert.deepEqual(opening.opening, { subStep = 0, mainStep = 0 }, "both panes start covered")
+  Assert.equal(opening.state, "browsing", "the opening confirm batch is discarded")
+  for step = 1, 6 do
+    state:updateFixed({})
+    opening = state:status()
+    Assert.equal(opening.opening.subStep, step, "the hero pane reveals first")
+    Assert.equal(opening.opening.mainStep, 0, "the interaction pane remains covered during sub reveal")
+  end
+  for step = 1, 6 do
+    state:updateFixed({})
+    opening = state:status()
+    Assert.equal(opening.opening.subStep, 6, "the hero reveal stays complete")
+    Assert.equal(opening.opening.mainStep, step, "the interaction pane reveals second")
+  end
+  state:updateFixed({})
+  state:updateFixed({})
+  state:updateFixed({})
+  Assert.equal(state:status().phase, "interactive", "input begins after the opening handoff settles")
+  Assert.equal(state:status().state, "browsing", "opening input was not replayed")
+  state:dispose()
+end
+
 function T.bag_screen_without_prompt_resources_is_a_composition_error()
   local options = composition()
   options.uiManifest = nil
   Assert.throws(function()
-    BagScreenState.new(options)
+    interactiveBagState(options)
   end)
 end
 
@@ -353,7 +392,7 @@ function T.pointer_only_register_flows_through_the_live_service()
   local withButtons = manifest()
   options.manifest = withButtons
   options.cursor:setPocket("key_items")
-  local state = BagScreenState.new(options)
+  local state = interactiveBagState(options)
   state:updateFixed({})
   local revision = bag:revision()
   local function tapLogical(logicalX, logicalY)
@@ -399,7 +438,7 @@ end
 function T.fresh_equivalent_measurement_keeps_item_capture_across_ticks()
   local options, box = composition()
   options.cursor:setPocket("balls")
-  local state = BagScreenState.new(options)
+  local state = interactiveBagState(options)
   state:updateFixed({})
   local revision = state:status().revision
   local function tapLogical(logicalX, logicalY)
@@ -434,7 +473,7 @@ function T.wide_cancel_tap_closes_exactly_once()
   local options, box = composition()
   box.width, box.height = 960, 540
   box.topologyObject = topology(960, 540)
-  local state = BagScreenState.new(options)
+  local state = interactiveBagState(options)
   state:updateFixed({})
   local widePlan = assert(state:status().presentation, "the wide composition publishes its plan")
   Assert.equal(#widePlan.panes, 2, "the wide composition pairs both panes")
@@ -450,7 +489,7 @@ end
 function T.viewport_change_between_press_and_release_cancels_capture()
   local options, box = composition()
   options.cursor:setPocket("balls")
-  local state = BagScreenState.new(options)
+  local state = interactiveBagState(options)
   state:updateFixed({})
   local x, y = cancelCenter(state)
   state:updateFixed({ { type = "pointer_down", pointerId = "touch:0", x = x, y = y } })
@@ -497,7 +536,7 @@ function T.cancel_center_closes_in_every_responsive_mode()
     local options, box = composition()
     box.width, box.height = case.width, case.height
     box.topologyObject = case.topologyObject
-    local state = BagScreenState.new(options)
+    local state = interactiveBagState(options)
     state:updateFixed({})
     local casePlan = assert(state:status().presentation, "the " .. case.name .. " composition publishes its plan")
     Assert.equal(#casePlan.panes, case.panes, "the " .. case.name .. " composition keeps its arrangement")
@@ -517,7 +556,7 @@ end
 function T.safe_area_change_at_the_same_viewport_cancels_capture()
   local options, box = composition()
   options.cursor:setPocket("balls")
-  local state = BagScreenState.new(options)
+  local state = interactiveBagState(options)
   state:updateFixed({})
   local placement = interactivePlacement(state)
   local x = placement.frame.x + 76 * placement.scale
@@ -541,7 +580,7 @@ end
 function T.resize_cancels_capture_but_preserves_semantic_selection()
   local options, box = composition()
   options.cursor:setPocket("balls")
-  local state = BagScreenState.new(options)
+  local state = interactiveBagState(options)
   state:updateFixed({})
   local placement = interactivePlacement(state)
   local frame = placement.frame
@@ -564,7 +603,7 @@ end
 
 function T.close_maps_to_the_host_result_once()
   local options = composition()
-  local state = BagScreenState.new(options)
+  local state = interactiveBagState(options)
   state:updateFixed({ { type = "cancel" } })
   Assert.deepEqual(state:takeResult(), { kind = "close" }, "the host only accepts close results")
   Assert.isNil(state:takeResult(), "the host result reports exactly once")
@@ -574,7 +613,7 @@ end
 
 function T.dispose_discards_the_pending_close()
   local options = composition()
-  local state = BagScreenState.new(options)
+  local state = interactiveBagState(options)
   state:updateFixed({ { type = "cancel" } })
   state:dispose()
   state:dispose()
@@ -660,6 +699,7 @@ local function composedManifest()
     backgrounds.browse = browse
   end
   manifested.interactive.backgrounds = backgrounds
+  manifested.interactive.sale = BagPresentationFixture.manifest().interactive.sale
   local actionSlots = manifested.interactive.overlays.actionMenu.slots
   for index, slot in ipairs(actionSlots) do
     local x = index % 2 == 1 and 48 or 144
@@ -715,7 +755,13 @@ local function composedManifest()
     confirm = {
       center = { x = 144, y = 176 },
       hitRect = { x = 112, y = 160, width = 64, height = 32 },
+      labelAt = { x = 117, y = 168 },
       visual = { image = "test/bag/quantity-confirm.png", width = 64, height = 24 },
+    },
+    cancel = {
+      center = { x = 224, y = 176 },
+      labelAt = { x = 197, y = 168 },
+      visual = { image = "test/bag/quantity-cancel.png", width = 64, height = 24 },
     },
     cancelHitRect = { x = 178, y = 168, width = 78, height = 24 },
     visuals = {
@@ -729,6 +775,10 @@ local function composedManifest()
       },
     },
   }
+  manifested.interactive.sale.confirm.visual =
+    manifested.interactive.overlays.quantity.confirm.visual
+  manifested.interactive.sale.cancel.visual =
+    manifested.interactive.overlays.quantity.cancel.visual
   local tabs = {}
   local strips = {}
   for index = 0, 7 do
@@ -812,6 +862,10 @@ local function composedManifest()
     quantityConfirm = {
       normal = { image = "test/bag/quantity-confirm.png", width = 64, height = 24 },
       selected = { image = "test/bag/quantity-confirm-selected.png", width = 64, height = 24 },
+    },
+    quantityCancel = {
+      normal = { image = "test/bag/quantity-cancel.png", width = 64, height = 24 },
+      selected = { image = "test/bag/quantity-cancel-selected.png", width = 64, height = 24 },
     },
   }
   manifested.interactive.moveCursor = {
@@ -900,6 +954,8 @@ local function seedComposedCache()
   put("test/bag/cancel-face-selected-base.png")
   put("test/bag/cancel-face-selected.png")
   put("test/bag/quantity-confirm-selected.png")
+  put("test/bag/quantity-cancel.png")
+  put("test/bag/quantity-cancel-selected.png")
   put("test/bag/move-cursor-original.png")
   put("test/bag/move-cursor-candidate.png")
   for _, pocket in ipairs(POCKETS) do
@@ -922,6 +978,9 @@ local function seedComposedCache()
   put("test/bag/quantity-decrement.png")
   put("test/bag/quantity-decrement-pressed.png")
   put("test/bag/quantity-confirm.png")
+  put("assets/generated/bag/background-sale-quantity.png")
+  put("assets/generated/bag/quantity-confirm.png")
+  put("assets/generated/bag/quantity-cancel.png")
   put("test/bag/registration-slot-1.png")
   put("test/bag/registration-slot-2.png")
   cache:write(FieldUiFixture.PROMPT_YES_NORMAL_PATH, FieldUiFixture.promptButtonBytes("yes_normal"))
@@ -946,6 +1005,16 @@ local function composedText()
   end
   function fake:textWidth(content)
     return #content * 8
+  end
+  function fake:windowBackgroundColor()
+    local slot = palette[16]
+    local function unit(component)
+      if component > 1 then
+        return component / 255
+      end
+      return component
+    end
+    return { unit(slot.r), unit(slot.g), unit(slot.b), 1 }
   end
   return fake
 end
@@ -999,7 +1068,7 @@ function T.production_bag_draws_pocket_specific_presentation()
   box.width, box.height = 1280, 720
   box.topologyObject = topology(1280, 720)
   options.cursor:setPocket("balls")
-  local state = BagScreenState.new(options)
+  local state = interactiveBagState(options)
   state:updateFixed({})
   local view = state:status()
   Assert.equal(view.pocket, "balls", "the composed status browses the selected pocket")
@@ -1114,7 +1183,7 @@ end
 function T.hero_framing_settles_to_the_profile_gender_record()
   for _, gender in ipairs({ "male", "female" }) do
     local options = composition({ heroGender = gender })
-    local state = BagScreenState.new(options)
+    local state = interactiveBagState(options)
     for _ = 1, 7 do
       state:updateFixed({})
     end
@@ -1139,7 +1208,7 @@ end
 function T.status_publishes_a_shared_presentation_plan_beside_semantics()
   local options = composition()
   options.cursor:setPocket("balls")
-  local state = BagScreenState.new(options)
+  local state = interactiveBagState(options)
   state:updateFixed({})
   local status = state:status()
   Assert.equal(selectedKey(status), "POKE_BALL", "setup selects the stocked ball")
@@ -1174,7 +1243,7 @@ function T.wide_pairs_share_one_integer_scale_with_no_gap()
   box.width, box.height = 1280, 720
   box.topologyObject = topology(1280, 720)
   options.cursor:setPocket("balls")
-  local state = BagScreenState.new(options)
+  local state = interactiveBagState(options)
   state:updateFixed({})
   local plan = state:status().presentation
   Assert.isTrue(type(plan) == "table", "the wide composition resolves through the shared plan")
@@ -1218,7 +1287,7 @@ function T.tall_stacks_the_hero_above_the_interaction_pane()
   box.width, box.height = 600, 1000
   box.topologyObject = topology(600, 1000)
   options.cursor:setPocket("balls")
-  local state = BagScreenState.new(options)
+  local state = interactiveBagState(options)
   state:updateFixed({})
   local plan = state:status().presentation
   Assert.isTrue(type(plan) == "table", "the tall composition resolves through the shared plan")
@@ -1257,7 +1326,7 @@ function T.hero_tap_stays_inert_while_outside_tap_dismisses()
   box.width, box.height = 1280, 720
   box.topologyObject = topology(1280, 720)
   options.cursor:setPocket("balls")
-  local state = BagScreenState.new(options)
+  local state = interactiveBagState(options)
   state:updateFixed({})
   local revision = state:status().revision
   local plan = state:status().presentation
@@ -1310,7 +1379,7 @@ end
 function T.held_press_across_a_measurement_change_cancels_through_the_session()
   local options, box = composition()
   options.cursor:setPocket("balls")
-  local state = BagScreenState.new(options)
+  local state = interactiveBagState(options)
   state:updateFixed({})
   local revision = state:status().revision
   local plan = state:status().presentation
@@ -1356,7 +1425,7 @@ end
 function T.capture_cancellation_forwards_to_the_presentation_session()
   local options = composition()
   options.cursor:setPocket("balls")
-  local state = BagScreenState.new(options)
+  local state = interactiveBagState(options)
   state:updateFixed({})
   local revision = state:status().revision
   local plan = state:status().presentation
@@ -1384,7 +1453,7 @@ end
 function T.ordered_pointer_cancellation_reaches_the_controller_without_activation()
   local options = composition()
   options.cursor:setPocket("balls")
-  local state = BagScreenState.new(options)
+  local state = interactiveBagState(options)
   state:updateFixed({})
   local revision = state:status().revision
   local plan = state:status().presentation
@@ -1411,7 +1480,7 @@ function T.field_context_forwards_use_intents_with_item_identity()
   options.cursor:setPocket("medicine")
   local bag = options.service
   Assert.isTrue(bag:add("POTION", 3))
-  local state = BagScreenState.new(options)
+  local state = interactiveBagState(options)
   state:updateFixed({})
   state:updateFixed({ { type = "confirm" } })
   local status = state:status()
@@ -1445,7 +1514,7 @@ function T.pick_held_context_selects_directly_and_reports_no_close()
   options.cursor:setPocket("medicine")
   local bag = options.service
   Assert.isTrue(bag:add("POTION", 3))
-  local state = BagScreenState.new(options)
+  local state = interactiveBagState(options)
   state:updateFixed({})
   state:updateFixed({ { type = "confirm" } })
   local intent = assert(state:takeIntent(), "confirming a pickable item must forward a pick")

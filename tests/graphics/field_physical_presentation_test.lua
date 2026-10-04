@@ -40,7 +40,7 @@ local function freshGame(versionId)
       facing = "south",
     },
     playerData = {
-      profile = { name = "GOLD", gender = 0, trainerId = 1, money = 3000, badges = 0 },
+      profile = { name = "GOLD", gender = 0, trainerId = 1, money = 3000, badges = 0, nationalDex = false },
       options = { textSpeed = "fastest", textFrame = 0 },
     },
     fieldTravel = { lastHealSpawn = "SPAWN_NEW_BARK" },
@@ -49,6 +49,7 @@ local function freshGame(versionId)
     worldState = FieldEventState.new(),
     mons = require("tests.support.MonBucket").emptyForVersion(versionId),
     bag = BagSave.empty(),
+    mart = require("libs.hgss.src.save.MartSave").empty(),
   }
 end
 
@@ -88,6 +89,15 @@ function T.fresh_outdoor_boot_exposes_adjacent_physical_parts(_)
       for _, expectedKey in ipairs(status.residentCellKeys) do
         Assert.isTrue(partKeys[expectedKey] == true, "every resident physical cell must be drawable before entry")
       end
+
+      local environment = runtime.runtimeMap.renderEnvironment
+      Assert.notNil(environment, "the booted runtime map exposes its render environment before drawing")
+      environment = assert(environment)
+      Assert.notNil(environment.lighting, "the runtime environment carries lighting")
+      Assert.notNil(environment.edgeColors, "the runtime environment carries edge colors")
+      Assert.notNil(environment.baseWeatherId, "the runtime environment keeps its base weather")
+      Assert.notNil(environment.baseFog, "the runtime environment keeps its base fog")
+      Assert.notNil(environment.fog, "the runtime environment carries live fog")
 
       state:draw()
     end, debug.traceback)
@@ -214,5 +224,5 @@ end
 
 local suite = GraphicsSmoke.suite(T)
 suite.metadata.capabilities = { "graphics", "rom_dump" }
-suite.metadata.derivedAssets = { "field-runtime", "map:60" }
+suite.metadata.derivedAssets = { "field-runtime", "map-data:31", "map-data:33", "map-data:47", "map-data:60", "map:60" }
 return suite

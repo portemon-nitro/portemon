@@ -8,6 +8,11 @@ local Errors = require("libs.errors.src.Errors")
 local ZoneEvents = require("romdump.src.digest.map.ZoneEvents")
 local FieldMapDataCache = require("libs.assets.src.field.FieldMapDataCache")
 local MapCatalog = require("romdump.src.digest.map.MapCatalog")
+local AreaData = require("romdump.src.digest.map.AreaData")
+local HgssFieldLighting = require("romdump.src.digest.field.HgssFieldLighting")
+local HgssFieldLightProfile = require("romdump.src.digest.field.HgssFieldLightProfile")
+local HgssFieldEdgeColors = require("romdump.src.digest.field.HgssFieldEdgeColors")
+local HgssFieldFog = require("romdump.src.digest.field.HgssFieldFog")
 local MapAnalysis = require("romdump.src.digest.map.MapAnalysis")
 local MapMatrix = require("romdump.src.digest.map.MapMatrix")
 local LandData = require("romdump.src.digest.map.LandData")
@@ -357,6 +362,37 @@ local function compileSoundplates(romFs, map, sha1hex)
     }
 end
 
+-- The normalized renderer environment for one map, resolved through the
+-- same area/light/fog helpers as visual scene compilation: the map's area
+-- record selects the field-light profile, whose parsed records become the
+-- lighting, while edge colors and the base fog derive from the area light
+-- pattern and the catalog weather. Returns the environment plus its source
+-- provenance. Emits no geometry.
+---@param romFs RomFs
+---@param map table<string, unknown>
+---@param sha1hex fun(data: string): string
+---@return table<string, unknown> environment, table<string, unknown> provenance
+local function compileRenderEnvironment(romFs, map, sha1hex)
+  local areaNarc = must(romFs:openNarc("area_data"))
+  local areaBytes = must(areaNarc:readMember(map.areaDataMemberId))
+  local area = must(AreaData.decode(areaBytes, { alias = "area_data", memberId = map.areaDataMemberId }))
+  local selectedLight = HgssFieldLighting.resolve(area.lightTypeRaw, false)
+  local lightBytes =
+    assert(romFs:readSourcePath(selectedLight.sourcePath), "missing field-light profile: " .. selectedLight.sourcePath)
+  local lightProfile = assert(HgssFieldLightProfile.parse(lightBytes, { sourcePath = selectedLight.sourcePath }))
+  return {
+    lighting = { records = lightProfile.records },
+    edgeColors = HgssFieldEdgeColors.tableForAreaLightPattern(area.lightTypeRaw),
+    weatherId = map.weather,
+    fog = HgssFieldFog.runtimePreset(HgssFieldFog.resolve(map.weather)),
+  }, {
+    areaDataMemberId = map.areaDataMemberId,
+    areaDataMemberSha1 = sha1hex(areaBytes),
+    fieldLightSourcePath = selectedLight.sourcePath,
+    fieldLightSourceSha1 = sha1hex(lightBytes),
+  }
+end
+
 local function compileMap(romFs, map, source, headerSource, sha1hex, hashLua)
   local memberBytes = must(source.archive:readMember(map.eventMemberId))
   local decoded = must(ZoneEvents.decode(memberBytes, {
@@ -368,6 +404,7 @@ local function compileMap(romFs, map, source, headerSource, sha1hex, hashLua)
 
   local memberSha1 = sha1hex(memberBytes)
   local soundplates, audioSource = compileSoundplates(romFs, map, sha1hex)
+  local renderEnvironment, environmentSource = compileRenderEnvironment(romFs, map, sha1hex)
   local headerBytes = must(headerSource.archive:readMember(map.scriptHeaderMemberId)) --[[@as string]]
   local initScripts = must(ScriptHeader.parse(headerBytes, {
     mapId = map.id,
@@ -404,6 +441,13 @@ local function compileMap(romFs, map, source, headerSource, sha1hex, hashLua)
     matrixMemberSha1 = audioSource.matrixMemberSha1,
     landDataMemberId = audioSource.landDataMemberId,
     landDataMemberSha1 = audioSource.landDataMemberSha1,
+    -- The area and field-light sources the render environment derives
+    -- from: a source change must invalidate the map record. Normalized
+    -- results live on the field payload; raw source facts live only here.
+    areaDataMemberId = environmentSource.areaDataMemberId,
+    areaDataMemberSha1 = environmentSource.areaDataMemberSha1,
+    fieldLightSourcePath = environmentSource.fieldLightSourcePath,
+    fieldLightSourceSha1 = environmentSource.fieldLightSourceSha1,
   }
   local environment = transitionEnvironment(map)
   local field = {
@@ -442,6 +486,10 @@ local function compileMap(romFs, map, source, headerSource, sha1hex, hashLua)
       coordinates = decoded.coordinateEvents,
     },
     soundplates = soundplates,
+    -- The normalized renderer environment (lighting, edge colors, base
+    -- weather, base fog) so logical maps stay drawable without a visual
+    -- scene. Runtime weather owns a mutable copy; this record is immutable.
+    renderEnvironment = renderEnvironment,
   }
   local marker = FieldMapDataCache.marker(romFs:metadata().sha1, map.id, hashLua(dependencies))
   return { mapId = map.id, field = field, dependencies = dependencies, marker = marker }

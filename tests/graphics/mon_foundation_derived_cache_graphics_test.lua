@@ -147,7 +147,7 @@ function T.party_application_frame_cycle_leaves_no_stale_modal(scope)
         versionId = versionId,
         location = { mapSymbol = "MAP_NEW_BARK", fieldX = 10, fieldZ = 10, facing = "south" },
         playerData = {
-          profile = { name = "GOLD", gender = 0, trainerId = 1, money = 3000, badges = 0 },
+          profile = { name = "GOLD", gender = 0, trainerId = 1, money = 3000, badges = 0, nationalDex = false },
           options = { textSpeed = "fastest", textFrame = 0 },
         },
         fieldTravel = { lastHealSpawn = "SPAWN_NEW_BARK" },
@@ -156,6 +156,7 @@ function T.party_application_frame_cycle_leaves_no_stale_modal(scope)
         worldState = FieldEventState.new(),
         mons = service:capture(),
         bag = BagSave.empty(),
+        mart = require("libs.hgss.src.save.MartSave").empty(),
       }
       -- Presented composition demands the semantic icon host: the
       -- warmed cache already carries the compiled pages, so readiness
@@ -269,11 +270,15 @@ function T.party_application_frame_cycle_leaves_no_stale_modal(scope)
         Assert.notNil(shown.menu.presentation, "the retained menu stays drawable while the party owns input")
         -- Icon pages prepare on demand after launch: capture only once
         -- the party reports its own pages ready.
-        waitFor("party icons", function()
+        waitFor("party icons and reveal", function()
           local application = hostStatus().application
           local child = application ~= nil and application.child or nil
-          return child ~= nil and child.preparationState == "ready"
+          return child ~= nil and child.preparationState == "ready" and child.phase == "interactive"
         end, 300)
+        -- The handover and its settling tick carry no cover; draw only
+        -- once the screen forwards so the sample reads party chrome.
+        step()
+        step()
         local width, height = love.graphics.getDimensions()
         local canvas = scope:own(love.graphics.newCanvas(width, height))
         love.graphics.setCanvas(canvas)

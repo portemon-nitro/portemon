@@ -9,8 +9,8 @@ application reproduction and composition.
 - `game/src/Game.lua` owns state replacement, update/draw and input forwarding, explicit resize
   forwarding from the process shell, exit notification, and exactly-once state disposal for one
   running game. Host display observation belongs to `app`.
-- `game/src/WindowConfig.lua`, `LocalClock.lua`, `RepoFs.lua`, and
-  `audio/LoveAudioSink.lua` own reusable host concerns that are not HGSS product policy.
+- `game/src/WindowConfig.lua`, `LocalClock.lua`, and `audio/LoveAudioSink.lua` own reusable host
+  concerns that are not HGSS product policy. Repository-root reads belong to `libs/storage`.
 - `game/src` must not import `app`, `game/hgss`, `libs/hgss`, `libs/nds`, or `romdump`.
   Concrete HGSS retail composition belongs in `game/hgss`; reusable HGSS mechanisms belong
   in `libs/hgss`.

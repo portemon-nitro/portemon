@@ -25,6 +25,8 @@ local ItemCatalog = require("libs.items.src.ItemCatalog")
 local BagSave = require("libs.hgss.src.save.BagSave")
 local MonsErrors = require("libs.mons.src.errors")
 local MonsSave = require("libs.mons.src.MonsSave")
+local MartCache = require("libs.assets.src.MartCache")
+local MartSave = require("libs.hgss.src.save.MartSave")
 
 ---@class GameSaveValidation
 ---@field contexts table<string, table<string, unknown>>
@@ -65,6 +67,7 @@ local function contextForCache(cacheFs, overrideFs, versionId)
   -- and later Bag validation reuses the same version context.
   local monRoot = MonCache.loadCatalog(cacheFs)
   local itemCatalog = ItemCatalog.new(ItemCache.loadCatalog(cacheFs))
+  local martCatalog = MartCache.loadCatalog(cacheFs)
   local monCatalog = MonCatalog.new(monRoot, itemCatalog)
   local monLanguage = monRoot.version.language
   assert(
@@ -77,27 +80,14 @@ local function contextForCache(cacheFs, overrideFs, versionId)
   )
   return {
     charmap = fontDef.charmap,
+    language = monLanguage,
     frameIndexes = frameIndexes,
     audioSequenceIds = audioSequenceIds,
     scriptCompatibility = FieldScriptCompatibility.new({ cacheFs = cacheFs, overrideFs = overrideFs }),
     monCatalog = monCatalog,
     itemCatalog = itemCatalog,
+    martCatalog = martCatalog,
   }
-end
-
--- Only a validated empty old script bucket rebinds to the current
--- fingerprints: no environments, instances, or tasks may be live. Counters
--- and every other bucket field survive untouched.
----@param bucket unknown
----@return boolean
-local function isQuiescentScripts(bucket)
-  return type(bucket) == "table"
-    and type(bucket.environments) == "table"
-    and #bucket.environments == 0
-    and type(bucket.instances) == "table"
-    and #bucket.instances == 0
-    and type(bucket.tasks) == "table"
-    and #bucket.tasks == 0
 end
 
 ---@param bucket table<string, unknown>
@@ -126,7 +116,9 @@ function GameSaveValidation.new(options)
   }, GameSaveValidation)
 end
 
-function GameSaveValidation:_context(versionId)
+---@param versionId string
+---@return table<string, unknown> context borrowed from this validator, read-only
+function GameSaveValidation:contextForVersion(versionId)
   local context = self.contexts[versionId]
   if context then
     return context
@@ -152,23 +144,32 @@ function GameSaveValidation:validate(record, context)
     if context == nil and (type(record) ~= "table" or type(record.versionId) ~= "string") then
       return GameSave.validate(record)
     end
-    local selected = context or self:_context(record.versionId)
+    local selected = context or self:contextForVersion(record.versionId)
     -- Explicit v3 -> v4 -> v5 migration before canonical validation. Quiescent
     -- old script buckets rebind to the current fingerprints (counters and
     -- world/RNG data preserved); an incompatible active graph is rejected
     -- with the save bytes untouched, never cleared or rewritten.
     local effective = record
-    if type(record) == "table" and record.schema == "g4-game-save-v3" then
+    if type(record) == "table" and (record.schema == "g4-game-save-v3" or record.schema == "g4-game-save-v4") then
+      local schema = record.schema
       local options = selected.scriptCompatibility:validationOptions()
-      if not isQuiescentScripts(record.scripts) then
+      if not ScriptSave.isQuiescent(record.scripts) then
         return nil,
           Errors.new(
             GameSaveErrors.GAME_SAVE_SCHEMA_UNSUPPORTED,
-            "v3 save carries an active script graph that cannot migrate to v4",
-            { schema = record.schema }
+            "historical save carries an active script graph that cannot migrate",
+            { schema = schema }
           )
       end
-      effective = GameSave.migrateV3(record)
+      local oldRecord = schema == "g4-game-save-v3" and GameSave.migrateV3(record) or record
+      if schema == "g4-game-save-v3" then
+        -- Preserve the existing v3 -> v4 script compatibility boundary.
+        oldRecord.scripts = rebindScripts(record.scripts, options)
+        oldRecord = GameSave.migrateV4(oldRecord)
+      else
+        oldRecord = GameSave.migrateV4(oldRecord)
+      end
+      effective = oldRecord
       effective.scripts = rebindScripts(record.scripts, options)
     end
     if type(effective) == "table" and effective.schema == "g4-game-save-v4" then
@@ -235,6 +236,15 @@ function GameSaveValidation:validate(record, context)
       assert(itemCatalog ~= nil, "bag validation requires an item catalog")
       return BagSave.validate(value, itemCatalog)
     end
+    local function martValidate(value)
+      local martCatalog = selected.martCatalog
+      if martCatalog == nil then
+        Errors.raise(GameSaveErrors.GAME_SAVE_BUCKET_INVALID, "mart validation requires a generated mart catalog", {
+          bucket = "mart",
+        })
+      end
+      return MartSave.validate(value, martCatalog)
+    end
     -- The single application owner of travel validation: the runtime
     -- travel state canonicalizes the record into a copied value record.
     -- Malformed current data fails closed here and is never repaired as
@@ -272,6 +282,7 @@ function GameSaveValidation:validate(record, context)
       audioValidate = audioValidate,
       monsValidate = monsValidate,
       bagValidate = bagValidate,
+      martValidate = martValidate,
       fieldTravelValidate = fieldTravelValidate,
       fashionCaseValidate = fashionCaseValidate,
     })

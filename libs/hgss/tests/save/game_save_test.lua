@@ -6,6 +6,7 @@ local Errors = require("libs.errors.src.Errors")
 local GameSave = require("libs.hgss.src.save.GameSave")
 local BagSave = require("libs.hgss.src.save.BagSave")
 local FashionCaseState = require("libs.hgss.src.save.FashionCaseState")
+local MartSave = require("libs.hgss.src.save.MartSave")
 
 local T = {}
 
@@ -31,6 +32,7 @@ local function record(overrides)
     audio = {},
     mons = {},
     bag = BagSave.empty(),
+    mart = MartSave.empty(),
   }
   for key, replacement in pairs(overrides or {}) do
     rawset(value, key, replacement)
@@ -170,6 +172,11 @@ function T.rejects_non_table_and_missing_required_buckets()
       return GameSave.validate(value)
     end)
   end
+  returnsCode("GAME_SAVE_BUCKET_INVALID", function()
+    local value = record()
+    value.mart = nil
+    return GameSave.validate(value)
+  end)
   returnsCode("GAME_SAVE_BUCKET_INVALID", function()
     local value = record()
     value.bag = nil

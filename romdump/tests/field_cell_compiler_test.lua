@@ -8,6 +8,7 @@ local Assert = require("tests.support.Assert")
 local FieldCellCache = require("libs.assets.src.field.FieldCellCache")
 local FieldCellCompiler = require("romdump.src.digest.field.FieldCellCompiler")
 local MapRomFixture = require("tests.support.MapRomFixture")
+local MapUnits = require("romdump.src.digest.map.MapUnits")
 
 local T = {}
 
@@ -88,6 +89,28 @@ function T.a_selected_area_clip_reaches_the_cell_without_source_provenance()
   Assert.equal(clip.name, "en_sp1", "the runtime clip keeps the selected animation identity")
   Assert.equal(clip.id, "en_sp1", "the runtime clip id matches the selected animation")
   Assert.equal(clip.kind, "texsrt", "the runtime clip keeps its texture-SRT kind")
+end
+
+-- A physical cell at nonzero matrix altitude serializes its absolute Y origin
+-- through the canonical matrix-altitude conversion shared with neighbor
+-- planning: altitude 8 is half a tile per unit, so the origin sits at 4
+-- runtime tiles with X/Z unchanged.
+function T.nonzero_matrix_altitude_compiles_at_half_a_tile_per_unit()
+  local matrix = MapRomFixture.gridMatrix({ width = 1, height = 1, altitudes = { 8 } })
+  local romFs = MapRomFixture.build({
+    extraMembers = { map_matrices = { [MapRomFixture.MATRIX_MEMBER_ID] = matrix } },
+  })
+  local raised = descriptor()
+  raised.altitude = 8
+  local compiled = FieldCellCompiler.compileCell(romFs, raised, {})
+  Assert.equal(
+    compiled.cell.origin.y,
+    MapUnits.altitudeDeltaToTiles(8),
+    "cell Y origin uses the canonical matrix-altitude conversion"
+  )
+  Assert.equal(compiled.cell.origin.y, 4, "matrix altitude 8 compiles to 4 runtime tiles")
+  Assert.equal(compiled.cell.origin.x, 0, "nonzero altitude leaves cell X unchanged")
+  Assert.equal(compiled.cell.origin.z, 0, "nonzero altitude leaves cell Z unchanged")
 end
 
 return { tests = T }

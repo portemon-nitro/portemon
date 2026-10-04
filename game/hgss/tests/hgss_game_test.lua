@@ -634,6 +634,7 @@ function T.field_receives_the_shared_display_context_and_copied_overrides()
     local wideFn = function(_, _)
       return {}
     end
+    local stockResolver = function() end
     local overrides = { start_menu = { wide = wideFn } }
     local game = modules.hgssGame.new({
       versionId = READY_VERSION,
@@ -642,10 +643,12 @@ function T.field_receives_the_shared_display_context_and_copied_overrides()
       derivedAssets = readyHost(),
       fieldMapLoader = planningLoader(),
       presentationOverrides = overrides,
+      martStockResolver = stockResolver,
     })
     settle(game)
     Assert.equal(#context.fieldCalls, 1, "the continue route must reach the field")
     local fieldOptions = context.fieldCalls[1].options
+    Assert.equal(fieldOptions.martStockResolver, stockResolver, "the custom stock provider reaches field composition")
     Assert.notNil(fieldOptions.displayContext, "the field owns its retail display context")
     local copied = assert(
       fieldOptions.presentationOverrides and fieldOptions.presentationOverrides.start_menu,

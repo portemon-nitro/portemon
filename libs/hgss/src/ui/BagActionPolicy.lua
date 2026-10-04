@@ -55,7 +55,7 @@ function BagActionPolicy.actionsFor(facts)
     elseif not facts.preventToss then
       actions[#actions + 1] = { id = "toss", enabled = true, slot = 1 }
     end
-    if facts.pocketOrdering == "manual" and facts.pocketCount >= 2 then
+    if facts.pocketOrdering == "manual" then
       actions[#actions + 1] = { id = "move", enabled = true, slot = 3 }
     end
   end
