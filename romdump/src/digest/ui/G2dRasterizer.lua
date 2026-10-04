@@ -167,6 +167,59 @@ function G2dRasterizer.renderScreen(charData, paletteData, screenData, source, o
   return { width = width, height = height, pixels = concatChars(rgba) }
 end
 
+-- Render a contiguous NCGR tile run through the shared pixel/palette path.
+---@param charData G2dRasterizer.CharData
+---@param paletteData G2dRasterizer.PaletteData
+---@param firstTile integer zero-based first source tile
+---@param tileCount integer number of contiguous source tiles
+---@param paletteBank integer zero-based palette bank
+---@param source G2dRasterizer.SourceContext|nil
+---@return { width: integer, height: integer, pixels: string }
+function G2dRasterizer.renderTileStrip(charData, paletteData, firstTile, tileCount, paletteBank, source)
+  assert(charData ~= nil and paletteData ~= nil, "tile-strip rasterization requires decoded records")
+  local tileBytes = charData.depth == 3 and 32 or 64
+  local availableTiles = math.floor(#charData.tiles / tileBytes)
+  if
+    type(firstTile) ~= "number"
+    or firstTile % 1 ~= 0
+    or firstTile < 0
+    or type(tileCount) ~= "number"
+    or tileCount % 1 ~= 0
+    or tileCount <= 0
+    or firstTile + tileCount > availableTiles
+    or type(paletteBank) ~= "number"
+    or paletteBank % 1 ~= 0
+    or paletteBank < 0
+  then
+    Errors.raise(G2dRasterizer.ERROR.SOURCE_INVALID, "tile-strip selection is invalid", {
+      firstTile = firstTile,
+      tileCount = tileCount,
+      paletteBank = paletteBank,
+      availableTiles = availableTiles,
+      source = source,
+    })
+  end
+  local width = tileCount * 8
+  local pixels = newRgba(width, 8)
+  for stripIndex = 0, tileCount - 1 do
+    blitTile(
+      pixels,
+      width,
+      stripIndex * 8,
+      0,
+      charData,
+      firstTile + stripIndex,
+      paletteBank,
+      paletteData.colors,
+      false,
+      false,
+      source,
+      true
+    )
+  end
+  return { width = width, height = 8, pixels = concatChars(pixels) }
+end
+
 -- Render one decoded sprite cell (OBJ list with flips) into raw RGBA pixels.
 -- The canvas is the minimal bounding box of the cell's objects, so negative
 -- object origins shift the pixels rather than clipping them. Tiles lay out
