@@ -42,6 +42,38 @@ local function copyValue(value)
   return out
 end
 
+local function sameValue(left, right)
+  if left == right then
+    return true
+  end
+  if type(left) ~= "table" or type(right) ~= "table" then
+    return false
+  end
+  for key, value in pairs(left) do
+    if not sameValue(value, right[key]) then
+      return false
+    end
+  end
+  for key in pairs(right) do
+    if left[key] == nil then
+      return false
+    end
+  end
+  return true
+end
+
+local function sameRoster(left, right)
+  if #left ~= #right then
+    return false
+  end
+  for index, mon in ipairs(left) do
+    if not sameValue(mon, right[index]) then
+      return false
+    end
+  end
+  return true
+end
+
 ---@param slot integer
 ---@param count integer
 ---@param what string
@@ -141,6 +173,33 @@ function Party:withUpdates(updates)
     revision = revision + 1
   end
   return build(mons, revision)
+end
+
+-- Stages a complete compact roster while preserving this Party's ownership
+-- and revision rules for deposit and withdrawal operations.
+---@param mons table[]
+---@return Party
+function Party:withRoster(mons)
+  assert(type(mons) == "table", "party roster staging requires an array")
+  local count = 0
+  for key in pairs(mons) do
+    if type(key) ~= "number" or key % 1 ~= 0 or key < 1 then
+      MonsErrors.raise(MonsErrors.SAVE_INVALID, "party roster keys must be dense from one", {})
+    end
+    count = math.max(count, key)
+  end
+  if count > Party.MAX then
+    MonsErrors.raise(MonsErrors.SAVE_INVALID, "party roster exceeds six mons", {})
+  end
+  local candidate = {}
+  for index = 1, count do
+    if mons[index] == nil or type(mons[index]) ~= "table" then
+      MonsErrors.raise(MonsErrors.SAVE_INVALID, "party roster must be dense", {})
+    end
+    candidate[index] = copyValue(mons[index])
+  end
+  local changed = not sameRoster(self._mons, candidate)
+  return build(candidate, self._revision + (changed and 1 or 0))
 end
 
 ---@param predicate fun(mon: table<string, unknown>): boolean

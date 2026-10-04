@@ -272,6 +272,8 @@ function T.lottery_persists_through_world_capture_and_game_save()
     mons = MonsSave.empty("test-catalog-fingerprint", 7),
     bag = BagSave.empty(),
     mart = MartSave.empty(),
+    mailbox = require("libs.hgss.src.save.Mailbox").new():capture(),
+    photoAlbum = require("libs.hgss.src.save.PhotoAlbum").new():capture(),
   }
   local validated = assert(GameSave.validate(record))
   Assert.equal(validated.world.variables[vars.VAR_LOTO_NUMBER_LO], 0x5678)

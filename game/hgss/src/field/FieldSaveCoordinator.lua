@@ -102,6 +102,8 @@ function FieldSaveCoordinator:capture(allowMenu)
     mons = runtime.monService:capture(),
     bag = runtime.bagService:capture(),
     mart = assert(runtime.martService, "field runtime has no mart service"):capture(),
+    mailbox = assert(runtime.mailbox, "field runtime has no mailbox"):capture(),
+    photoAlbum = assert(runtime.photoAlbum, "field runtime has no photo album"):capture(),
   }
   if runtime.playerAvatar then
     snapshot.avatar = runtime.playerAvatar:capture()

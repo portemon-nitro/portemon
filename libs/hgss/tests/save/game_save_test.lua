@@ -6,6 +6,8 @@ local Errors = require("libs.errors.src.Errors")
 local GameSave = require("libs.hgss.src.save.GameSave")
 local BagSave = require("libs.hgss.src.save.BagSave")
 local MartSave = require("libs.hgss.src.save.MartSave")
+local Mailbox = require("libs.hgss.src.save.Mailbox")
+local PhotoAlbum = require("libs.hgss.src.save.PhotoAlbum")
 
 local T = {}
 
@@ -31,6 +33,8 @@ local function record(overrides)
     mons = {},
     bag = BagSave.empty(),
     mart = MartSave.empty(),
+    mailbox = Mailbox.new():capture(),
+    photoAlbum = PhotoAlbum.new():capture(),
   }
   for key, replacement in pairs(overrides or {}) do
     rawset(value, key, replacement)

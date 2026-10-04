@@ -597,7 +597,7 @@ function T.tests.busy_save_is_denied_then_recovers_without_data_loss(context)
     Assert.isTrue(type(reason) == "string" and reason ~= "", "the denial explains itself")
     composition.fieldMoves:discardPending()
     local record = assert(runtime:captureGameSave(), "capture recovers after the queue clears")
-    Assert.equal(record.schema, "g4-game-save-v5", "recovered capture writes the current schema")
+    Assert.equal(record.schema, "g4-game-save-v6", "recovered capture writes the current schema")
   end)
 end
 
