@@ -322,7 +322,7 @@ end
 function T.last_resort_demands_every_other_known_move_used()
   local probe = runStrike("LAST_RESORT", {
     userMoves = { "TACKLE", "GROWL", "LAST_RESORT" },
-    usedMoves = { TACKLE = true, GROWL = true },
+    usedMoves = { "TACKLE", "GROWL" },
   })
   local outcome = probe.outcome --[[@as table<string, unknown>]]
   Assert.equal(outcome.result, "hit", "the earned last resort connects")
@@ -332,7 +332,7 @@ end
 function T.last_resort_fails_with_an_unused_move()
   local probe = runStrike("LAST_RESORT", {
     userMoves = { "TACKLE", "GROWL", "LAST_RESORT" },
-    usedMoves = { TACKLE = true },
+    usedMoves = { "TACKLE" },
   })
   local outcome = probe.outcome --[[@as table<string, unknown>]]
   Assert.equal(outcome.result, "failed", "the unearned last resort fails")

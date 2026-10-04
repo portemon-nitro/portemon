@@ -109,6 +109,7 @@ function BattleSnapshot.capture(state)
     turnStrikes = copyValue(state.turnStrikes or {}),
     turnActed = copyValue(state.turnActed or {}),
     usedMoves = copyValue(state.usedMoves or {}),
+    lastHits = copyValue(state.lastHits or {}),
     status = state.status,
     outcome = copyValue(state.outcome),
   }

@@ -1663,6 +1663,15 @@ local function settleEntry(state, outgoing, incoming, activation)
   -- incoming entry's own carried state. Persistent conditions otherwise
   -- survive untouched and stages already reset at entry.
   TrainerAi.noteArrival(state, incoming)
+  -- Arrivals clear their own received-hit record, matching the native
+  -- switch-in reset: later decisions read only strikes received since
+  -- this entry.
+  local arrivals = state.lastHits --[[@as table<integer, unknown>?]]
+  if type(arrivals) == "table" then
+    arrivals[
+      incoming --[[@as integer]]
+    ] = nil
+  end
   local bag = liveEffectBag(state)
   local departed = BattleState.combatant(state, outgoing).mon --[[@as table<string, unknown>]]
   Status.switchReset(departed, bag, outgoing, activation)
@@ -2653,13 +2662,28 @@ local function bindTurnHandlers(executor, moveFacts, speciesFacts, itemFacts, ch
           actor.combatant --[[@as integer]]
         ] =
           node.requestedMove --[[@as string]]
-        -- Distinct-move history behind Last Resort keys on the entry
-        -- token, so withdrawing resets the count like the native
-        -- lastResortMoves. Struggle records harmlessly beside real moves.
+        -- Received-hit history behind the trainer switch tails keys on
+        -- the struck combatant: the striking move and its user record
+        -- exactly once per executed strike, mirroring the native
+        -- moveNoHit pair, whether or not the strike later lands.
+        if type(state.lastHits) ~= "table" then
+          state.lastHits = {}
+        end
+        (state.lastHits --[[@as table<integer, table<string, unknown>>]])[
+          defenderId --[[@as integer]]
+        ] =
+          {
+            move = node.requestedMove --[[@as string]],
+            user = actor.combatant --[[@as integer]],
+          }
+        -- Distinct-move history behind Last Resort and the trainer
+        -- history reads keys on the entry token in first-use order, so
+        -- withdrawing resets the count like the native lastResortMoves.
+        -- Struggle records harmlessly beside real moves.
         if type(state.usedMoves) ~= "table" then
           state.usedMoves = {}
         end
-        local ledger = state.usedMoves --[[@as table<integer, table<string, boolean>>]]
+        local ledger = state.usedMoves --[[@as table<integer, table<integer, string>>]]
         local entry = ledger[
           actor.activation --[[@as integer]]
         ]
@@ -2669,9 +2693,18 @@ local function bindTurnHandlers(executor, moveFacts, speciesFacts, itemFacts, ch
             actor.activation --[[@as integer]]
           ] = entry
         end
-        entry[
-          node.requestedMove --[[@as string]]
-        ] = true
+        local seen = false
+        for _, key in ipairs(entry) do
+          if
+            key == node.requestedMove --[[@as string]]
+          then
+            seen = true
+            break
+          end
+        end
+        if not seen then
+          entry[#entry + 1] = node.requestedMove --[[@as string]]
+        end
       end
     end
     local emittedThrough = #state.outbox --[[@as table<integer, table<string, unknown>>]]
@@ -2978,6 +3011,9 @@ local function bindTurnHandlers(executor, moveFacts, speciesFacts, itemFacts, ch
     -- Consumed actions mark their actor: later strikes in the same turn
     -- read payback order from this ledger, matching the native
     -- already-acted command. Stale actors never reach this mark.
+    -- Acting also clears the actor's own received-hit record, matching
+    -- the native end-of-action cleanup: later decisions read only
+    -- strikes received since this action.
     if type(state.turnActed) ~= "table" then
       state.turnActed = {}
     end
@@ -2985,6 +3021,12 @@ local function bindTurnHandlers(executor, moveFacts, speciesFacts, itemFacts, ch
     acted[
       staged.combatant --[[@as integer]]
     ] = true
+    local received = state.lastHits --[[@as table<integer, unknown>?]]
+    if type(received) == "table" then
+      received[
+        staged.combatant --[[@as integer]]
+      ] = nil
+    end
     if action.progress ~= "complete" then
       local queue = state.queue --[[@as table<integer, table<string, unknown>>]]
       ActionQueue.complete(queue, action.id --[[@as integer]])
@@ -3581,6 +3623,12 @@ local function wrap(
   end
   if live.usedMoves == nil then
     live.usedMoves = {}
+  end
+  -- Received-hit history opens empty beside the turn ledgers: an empty
+  -- table means never-struck, while only a state predating the record
+  -- fails the trainer read closed.
+  if live.lastHits == nil then
+    live.lastHits = {}
   end
   ensureEntryHealth(live, speciesFacts)
   if live.prizeMoneyValue == nil then
