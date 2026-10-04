@@ -203,7 +203,12 @@ function T.pass_names_outside_the_supported_set_fail_before_any_draw()
     { 0, 2, 9 },
     "passes dispatch in ascending bit order without repeats"
   )
-  for _, pass in ipairs({ "ai_pass_4", "ai_pass_7", "ai_pass_8", "ai_pass_10", "bogus", "", "ai_pass_" }) do
+  Assert.deepEqual(
+    TrainerAi.parsePasses({ "ai_pass_7", "ai_pass_0" }),
+    { 0, 7 },
+    "the doubles pass parses alongside the stored passes"
+  )
+  for _, pass in ipairs({ "ai_pass_4", "ai_pass_8", "ai_pass_10", "bogus", "", "ai_pass_" }) do
     local failure = Assert.throws(function()
       TrainerAi.parsePasses({ pass })
     end, "pass " .. tostring(pass) .. " fails instead of falling back")
@@ -2430,7 +2435,586 @@ function T.doubles_bids_pick_the_highest_target()
   replayed:dispose()
 end
 
+-- Doubles vector move facts with source move identities and real effects:
+-- TACKLE carries effect 0, SWORDS_DANCE effect 50, HELPING_HAND effect 176,
+-- and RAZOR_LEAF effect 43. Ranges ride along for target validation.
+---@return table<string, table<string, unknown>> move facts with real effects and ranges
+local function doublesMoveFacts()
+  return {
+    TACKLE = {
+      nativeId = 33,
+      effect = 0,
+      power = 35,
+      moveType = "normal",
+      category = "physical",
+      accuracy = 95,
+      range = 0,
+    },
+    SWORDS_DANCE = {
+      nativeId = 14,
+      effect = 50,
+      power = 0,
+      moveType = "normal",
+      category = "status",
+      accuracy = 0,
+      range = 16,
+    },
+    HELPING_HAND = {
+      nativeId = 270,
+      effect = 176,
+      power = 0,
+      moveType = "normal",
+      category = "status",
+      accuracy = 0,
+      range = 256,
+    },
+    RAZOR_LEAF = {
+      nativeId = 75,
+      effect = 43,
+      power = 55,
+      moveType = "grass",
+      category = "physical",
+      accuracy = 95,
+      range = 4,
+    },
+    STRUGGLE = { power = 50, accuracy = 100, category = "physical", moveType = "normal", priority = 0 },
+  }
+end
 
+---@param combatant table combatant seed under ability assignment
+local function runAway(combatant)
+  (combatant.mon --[[@as table<string, unknown>]]).ability = "RUN_AWAY"
+end
+
+---@param lead table answering trainer lead seed under scenario construction
+---@param mate table? passive ally seed on its own controller, absent for lone-lead lines
+---@param foeA table first opposing seed
+---@param foeB table second opposing seed
+---@param seed integer stream seed for the scenario
+---@return table detached double battle setup for the vector
+local function doublesVectorScenario(lead, mate, foeA, foeB, seed)
+  local Executor = sessionOwner()
+  local first = SessionFixture.participant(2, 2, "trainer:1", { lead })
+  first.context = { aiPasses = {} }
+  local participants = {
+    SessionFixture.participant(1, 1, "player", { foeA, foeB }),
+    first,
+  }
+  local positions = {
+    SessionFixture.position(1, 1, { 1 }, foeA.id),
+    SessionFixture.position(2, 1, { 1 }, foeB.id),
+    SessionFixture.position(3, 2, { 2 }, lead.id),
+  }
+  local sides = { SessionFixture.side(1, { 1 }), SessionFixture.side(2, { 2 }) }
+  local seeds = { lead, foeA, foeB }
+  if mate ~= nil then
+    local second = SessionFixture.participant(3, 2, "trainer:2", { mate })
+    second.context = { aiPasses = {} }
+    participants[#participants + 1] = second
+    positions[#positions + 1] = SessionFixture.position(4, 2, { 3 }, mate.id --[[@as integer]])
+    sides = { SessionFixture.side(1, { 1 }), SessionFixture.side(2, { 2, 3 }) }
+    seeds[#seeds + 1] = mate
+  end
+  return {
+    ruleset = Executor.RULESET,
+    format = "double",
+    sides = sides,
+    participants = participants,
+    positions = positions,
+    inventories = {},
+    environment = { weather = "none" },
+    random = { seed = seed },
+    formatState = {},
+    moveFacts = doublesMoveFacts(),
+    speciesFacts = scenarioSpeciesFacts(seeds),
+    itemFacts = {},
+  }
+end
+
+---@param held table pre-answer capture carrying the stream snapshot
+---@param count integer answer draws to replay in stream order
+---@return integer[] first draw values of the trainer answer
+local function answerDraws(held, count)
+  local stream = BattleRng.restore(held.rng --[[@as table<string, integer>]])
+  local values = {}
+  for _ = 1, count do
+    values[#values + 1] = stream:nextU16("answer_probe", {})
+  end
+  return values
+end
+
+local VECTOR_SEEDS = {}
+for offset = 0, 7 do
+  VECTOR_SEEDS[#VECTOR_SEEDS + 1] = NATIVE_SEED + offset
+end
+
+---@param contracts table session owners under test driving
+---@param seeds integer[] candidate stream seeds in trial order
+---@param build fun(seed: integer): table detached battle setup under test driving
+---@param total integer answer draws replayed per trial
+---@param accept fun(values: integer[]): boolean true when the trace branches as designed
+---@return table live native session waiting on the designed branch
+---@return table pre-answer capture behind the branch
+---@return integer[] answer draw values behind the branch
+local function sessionWithDoublesBranch(contracts, seeds, build, total, accept)
+  for _, seed in ipairs(seeds) do
+    local session = waitingSession(contracts, build(seed))
+    local held = session:capture()
+    local values = answerDraws(held, total)
+    if accept(values) then
+      return session, held, values
+    end
+    session:dispose()
+  end
+  error("no candidate seed takes the designed doubles branch")
+end
+
+-- Doubles forces the doubles pass without a stored mark: with no stored
+-- passes at all, the setup slot still draws its attacker-side and
+-- target-side effect gates and loses outright to the plain strike, so the
+-- answer costs two initializations, four pass draws, two picks, and one
+-- selection while the tied top bids break over the final draw.
+function T.doubles_forces_the_doubles_pass_without_a_stored_mark()
+  local contracts = SessionFixture.sessionContracts()
+  local function build(seed)
+    local lead = leveledCombatant(31, 23, "CHIKORITA", 20)
+    lead.mon.moves = {
+      { move = "TACKLE", pp = 35, ppUps = 0 },
+      { move = "SWORDS_DANCE", pp = 30, ppUps = 0 },
+    }
+    runAway(lead)
+    local foeA = leveledCombatant(32, 41, "TOTODILE", 10)
+    runAway(foeA)
+    local foeB = leveledCombatant(33, 42, "EEVEE", 10)
+    runAway(foeB)
+    return doublesVectorScenario(lead, nil, foeA, foeB, seed)
+  end
+  local session, held, values = sessionWithDoublesBranch(contracts, VECTOR_SEEDS, build, 15, function(draws)
+    return draws[5] % 256 >= 50
+      and draws[6] % 256 >= 50
+      and draws[12] % 256 >= 50
+      and draws[13] % 256 >= 50
+  end)
+  local reply = session:answerTrainer(openRequest(session, "trainer:1"))
+  Assert.equal(reply.choices[1].kind, "attack", "the doubles evaluation strikes")
+  Assert.equal(reply.choices[1].payload.moveSlot, 0, "the forced pass demotes the setup slot")
+  Assert.equal(
+    reply.choices[1].payload.target.position,
+    ({ 1, 2 })[(values[15] % 2) + 1],
+    "tied bids break over the final draw"
+  )
+  Assert.equal(
+    session:capture().rng.calls - held.rng.calls,
+    15,
+    "two candidates cost two initializations, four pass draws, two picks, and one selection"
+  )
+  session:dispose()
+  local replayed = sessionOwner().restore(held, trainerContent())
+  Assert.deepEqual(
+    replayed:answerTrainer(openRequest(replayed, "trainer:1")),
+    reply,
+    "a fixed seed replays the doubles answer"
+  )
+  replayed:dispose()
+end
+
+-- Doubles scratch initializes once per candidate: with an ally on the
+-- field the evaluation pays a fresh four-draw initialization for each of
+-- the three candidates plus only the pass draws the source reaches, and
+-- the losing ally bid leaves the foe tie to the final draw.
+function T.doubles_scratch_initializes_once_per_candidate()
+  local contracts = SessionFixture.sessionContracts()
+  local function build(seed)
+    local lead = leveledCombatant(31, 23, "CHIKORITA", 20)
+    lead.mon.moves = {
+      { move = "TACKLE", pp = 35, ppUps = 0 },
+      { move = "SWORDS_DANCE", pp = 30, ppUps = 0 },
+    }
+    runAway(lead)
+    local mate = leveledCombatant(34, 24, "EEVEE", 20)
+    runAway(mate)
+    local foeA = leveledCombatant(32, 41, "TOTODILE", 10)
+    runAway(foeA)
+    local foeB = leveledCombatant(33, 42, "EEVEE", 10)
+    runAway(foeB)
+    return doublesVectorScenario(lead, mate, foeA, foeB, seed)
+  end
+  local session = waitingSession(contracts, build(NATIVE_SEED))
+  local held = session:capture()
+  local values = answerDraws(held, 20)
+  local reply = session:answerTrainer(openRequest(session, "trainer:1"))
+  Assert.equal(reply.choices[1].kind, "attack", "the doubles evaluation strikes")
+  local target = ({ 1, 2 })[(values[20] % 2) + 1]
+  local pick = values[7]
+  if target == 2 then
+    pick = values[14]
+  end
+  Assert.equal(
+    reply.choices[1].payload.target.position,
+    target,
+    "the foe tie breaks over the final draw"
+  )
+  Assert.equal(
+    reply.choices[1].payload.moveSlot,
+    ({ 0, 1 })[(pick % 2) + 1],
+    "each foe pick breaks its own slot tie"
+  )
+  Assert.equal(
+    session:capture().rng.calls - held.rng.calls,
+    20,
+    "three candidates cost three initializations, four pass draws, three picks, and one selection"
+  )
+  session:dispose()
+  local replayed = sessionOwner().restore(held, trainerContent())
+  Assert.deepEqual(
+    replayed:answerTrainer(openRequest(replayed, "trainer:1")),
+    reply,
+    "a fixed seed replays the doubles answer"
+  )
+  replayed:dispose()
+end
+
+-- Ally support targeting can win the bidding: the helping slot scores
+-- above both foe lines against the wounded ally while the plain strike
+-- answers the foe lines, so the ally bid takes the decision outright.
+function T.doubles_ally_support_targeting_can_win_the_bidding()
+  local contracts = SessionFixture.sessionContracts()
+  local function build(seed)
+    local lead = leveledCombatant(31, 23, "CHIKORITA", 20)
+    lead.mon.moves = {
+      { move = "HELPING_HAND", pp = 20, ppUps = 0 },
+      { move = "TACKLE", pp = 35, ppUps = 0 },
+    }
+    runAway(lead)
+    local mate = leveledCombatant(34, 24, "EEVEE", 20);
+    (mate.mon --[[@as table<string, unknown>]]).condition.currentHp = 4
+    runAway(mate)
+    local foeA = leveledCombatant(32, 41, "TOTODILE", 10)
+    runAway(foeA)
+    local foeB = leveledCombatant(33, 42, "EEVEE", 10)
+    runAway(foeB)
+    return doublesVectorScenario(lead, mate, foeA, foeB, seed)
+  end
+  local session, held, _ = sessionWithDoublesBranch(contracts, VECTOR_SEEDS, build, 17, function(draws)
+    return draws[15] % 256 >= 64
+  end)
+  local reply = session:answerTrainer(openRequest(session, "trainer:1"))
+  Assert.equal(reply.choices[1].kind, "attack", "the doubles evaluation strikes")
+  Assert.equal(reply.choices[1].payload.target.position, 4, "the ally bid answers the ally position")
+  Assert.equal(reply.choices[1].payload.moveSlot, 0, "the helping slot answers the ally")
+  Assert.equal(
+    session:capture().rng.calls - held.rng.calls,
+    17,
+    "three candidates cost three initializations, one pass draw, three picks, and one selection"
+  )
+  session:dispose()
+  local replayed = sessionOwner().restore(held, trainerContent())
+  Assert.deepEqual(
+    replayed:answerTrainer(openRequest(replayed, "trainer:1")),
+    reply,
+    "a fixed seed replays the doubles answer"
+  )
+  replayed:dispose()
+end
+
+-- Tied top bids consume the final selection draw in source order: quiet
+-- lines tie on every candidate, the ally bid loses, and the foe tie breaks
+-- over the draw after three initializations and three picks.
+function T.doubles_tied_bids_consume_the_final_selection_draw()
+  local contracts = SessionFixture.sessionContracts()
+  local function build(seed)
+    local lead = leveledCombatant(31, 23, "CHIKORITA", 20)
+    lead.mon.moves = {
+      { move = "TACKLE", pp = 35, ppUps = 0 },
+      { move = "RAZOR_LEAF", pp = 25, ppUps = 0 },
+    }
+    runAway(lead)
+    local mate = leveledCombatant(34, 24, "EEVEE", 20)
+    runAway(mate)
+    local foeA = leveledCombatant(32, 41, "TOTODILE", 10)
+    runAway(foeA)
+    local foeB = leveledCombatant(33, 42, "EEVEE", 10)
+    runAway(foeB)
+    return doublesVectorScenario(lead, mate, foeA, foeB, seed)
+  end
+  local session = waitingSession(contracts, build(NATIVE_SEED))
+  local held = session:capture()
+  local values = answerDraws(held, 16)
+  local reply = session:answerTrainer(openRequest(session, "trainer:1"))
+  Assert.equal(reply.choices[1].kind, "attack", "the doubles evaluation strikes")
+  local target = ({ 1, 2 })[(values[16] % 2) + 1]
+  local pick = values[5]
+  if target == 2 then
+    pick = values[10]
+  end
+  Assert.equal(
+    reply.choices[1].payload.target.position,
+    target,
+    "the foe tie breaks over the final draw"
+  )
+  Assert.equal(
+    reply.choices[1].payload.moveSlot,
+    ({ 0, 1 })[(pick % 2) + 1],
+    "the winning pick breaks its own slot tie"
+  )
+  Assert.equal(
+    session:capture().rng.calls - held.rng.calls,
+    16,
+    "three quiet candidates cost three initializations, three picks, and one selection"
+  )
+  session:dispose()
+  local replayed = sessionOwner().restore(held, trainerContent())
+  Assert.deepEqual(
+    replayed:answerTrainer(openRequest(replayed, "trainer:1")),
+    reply,
+    "a fixed seed replays the doubles answer"
+  )
+  replayed:dispose()
+end
+
+
+
+-- The doubles pass draws in source order per slot: initialization precedes
+-- flag evaluation, the setup slot spends its attacker-side and target-side
+-- effect gates, and scores follow the rolls exactly.
+function T.doubles_pass_draws_follow_the_source_order_per_slot()
+  local TrainerAi = trainerPolicy()
+  local chart = nativeChart()
+  local slots = {
+    slotWith({ key = "TACKLE" }),
+    slotWith({
+      key = "SWORDS_DANCE",
+      id = 14,
+      moveType = "normal",
+      power = 0,
+      category = "status",
+      accuracy = 0,
+      effect = 50,
+    }),
+    slotWith({ key = "TACKLE", id = 33, pp = 0, usable = false }),
+    slotWith({ key = "TACKLE", id = 33, pp = 0, usable = false }),
+  }
+  local extra = {
+    doublesBattlers = {
+      atk = 1,
+      tgt = 0,
+      records = {
+        [0] = { hp = 100, maxHp = 100 },
+        [1] = { hp = 100, maxHp = 100 },
+      },
+    },
+    liveBattlers = { [0] = true, [1] = true },
+  }
+  local stream = spyStream(FIXED_SEED)
+  local scored =
+    TrainerAi.scoreSlots(chart, slots, fighterWith({}), fighterWith({}), 100, { 7 }, false, stream, extra)
+  Assert.deepEqual(
+    stream:drawLabels(),
+    { "score_init_0", "score_init_1", "score_init_2", "score_init_3", "program_chance", "program_chance" },
+    "initialization precedes the two effect gates"
+  )
+  local probe = BattleRng.new(FIXED_SEED)
+  local rolls = {}
+  for _ = 1, 6 do
+    rolls[#rolls + 1] = probe:nextU16("order_probe", {})
+  end
+  local setup = 100
+  if rolls[5] % 256 >= 50 then
+    setup = setup - 2
+  end
+  if rolls[6] % 256 >= 50 then
+    setup = setup - 2
+  end
+  Assert.equal(scored[1].score, 100, "the plain strike survives the foe line")
+  Assert.equal(scored[2].score, setup, "the setup slot pays each reached gate")
+  Assert.equal(scored[3].score, 0, "spent slots stay excluded")
+end
+
+-- The ally branch scores helping hands above the baseline: against a
+-- wounded ally the helping slot spends its single gate for a bonus while
+-- the setup slot falls through to the ally penalty.
+function T.doubles_ally_branch_scores_helping_hands_above_the_baseline()
+  local TrainerAi = trainerPolicy()
+  local chart = nativeChart()
+  local slots = {
+    slotWith({
+      key = "HELPING_HAND",
+      id = 270,
+      moveType = "normal",
+      power = 0,
+      category = "status",
+      accuracy = 0,
+      effect = 176,
+    }),
+    slotWith({
+      key = "SWORDS_DANCE",
+      id = 14,
+      moveType = "normal",
+      power = 0,
+      category = "status",
+      accuracy = 0,
+      effect = 50,
+    }),
+    slotWith({ key = "TACKLE", id = 33, pp = 0, usable = false }),
+    slotWith({ key = "TACKLE", id = 33, pp = 0, usable = false }),
+  }
+  local extra = {
+    doublesBattlers = {
+      atk = 1,
+      tgt = 3,
+      records = {
+        [1] = { hp = 100, maxHp = 100 },
+        [3] = { hp = 4, maxHp = 50 },
+      },
+    },
+    liveBattlers = { [1] = true, [3] = true },
+    switchIn = { [1] = false, [3] = false },
+  }
+  local stream = spyStream(FIXED_SEED)
+  local scored = TrainerAi.scoreSlots(chart, slots, fighterWith({}), fighterWith({}), 4, { 7 }, false, stream, extra)
+  Assert.deepEqual(
+    stream:drawLabels(),
+    { "score_init_0", "score_init_1", "score_init_2", "score_init_3", "program_chance" },
+    "initialization precedes the single helping gate"
+  )
+  local probe = BattleRng.new(FIXED_SEED)
+  local rolls = {}
+  for _ = 1, 5 do
+    rolls[#rolls + 1] = probe:nextU16("order_probe", {})
+  end
+  local helping = 100
+  if rolls[5] % 256 >= 64 then
+    helping = helping + 2
+  else
+    helping = helping - 1
+  end
+  Assert.equal(scored[1].score, helping, "the helping slot takes the ally bonus")
+  Assert.equal(scored[2].score, 70, "other slots pay the ally penalty")
+end
+
+-- Fainted candidates never bid: with one foe down the evaluation pays for
+-- the standing foe and the ally only, and the answer never names the
+-- fainted position.
+function T.doubles_fainted_candidates_never_bid()
+  local contracts = SessionFixture.sessionContracts()
+  local lead = leveledCombatant(31, 23, "CHIKORITA", 20)
+  lead.mon.moves = {
+    { move = "TACKLE", pp = 35, ppUps = 0 },
+    { move = "RAZOR_LEAF", pp = 25, ppUps = 0 },
+  }
+  runAway(lead)
+  local mate = leveledCombatant(34, 24, "EEVEE", 20)
+  runAway(mate)
+  local foeA = leveledCombatant(32, 41, "TOTODILE", 10)
+  runAway(foeA)
+  local foeB = leveledCombatant(33, 42, "EEVEE", 10);
+  (foeB.mon --[[@as table<string, unknown>]]).condition.currentHp = 0
+  runAway(foeB)
+  local session = waitingSession(contracts, doublesVectorScenario(lead, mate, foeA, foeB, NATIVE_SEED))
+  local held = session:capture()
+  local values = answerDraws(held, 11)
+  local reply = session:answerTrainer(openRequest(session, "trainer:1"))
+  Assert.equal(reply.choices[1].kind, "attack", "the doubles evaluation strikes")
+  Assert.equal(reply.choices[1].payload.target.position, 1, "the standing foe answers alone")
+  Assert.equal(
+    reply.choices[1].payload.moveSlot,
+    ({ 0, 1 })[(values[5] % 2) + 1],
+    "the standing pick breaks its own slot tie"
+  )
+  Assert.equal(
+    session:capture().rng.calls - held.rng.calls,
+    11,
+    "two live candidates cost two initializations, two picks, and one selection"
+  )
+  session:dispose()
+  local replayed = sessionOwner().restore(held, trainerContent())
+  Assert.deepEqual(
+    replayed:answerTrainer(openRequest(replayed, "trainer:1")),
+    reply,
+    "a fixed seed replays the doubles answer"
+  )
+  replayed:dispose()
+end
+
+-- User-side winners aimed across the field retarget to the holder: the
+-- single-target user-side line wins every bid and answers the own position.
+function T.doubles_user_side_winners_retarget_to_the_holder()
+  local contracts = SessionFixture.sessionContracts()
+  local lead = leveledCombatant(31, 23, "CHIKORITA", 20)
+  lead.mon.moves = {
+    { move = "ACUPRESSURE", pp = 30, ppUps = 0 },
+    { move = "TACKLE", pp = 0, ppUps = 0 },
+  }
+  runAway(lead)
+  local foeA = leveledCombatant(32, 41, "TOTODILE", 10)
+  runAway(foeA)
+  local foeB = leveledCombatant(33, 42, "EEVEE", 10)
+  runAway(foeB)
+  local facts = doublesMoveFacts()
+  facts.ACUPRESSURE =
+    { nativeId = 367, effect = 226, power = 0, moveType = "normal", category = "status", accuracy = 0, range = 512 }
+  local scenario = doublesVectorScenario(lead, nil, foeA, foeB, NATIVE_SEED)
+  scenario.moveFacts = facts
+  local session = waitingSession(contracts, scenario)
+  local held = session:capture()
+  local reply = session:answerTrainer(openRequest(session, "trainer:1"))
+  Assert.equal(reply.choices[1].kind, "attack", "the doubles evaluation strikes")
+  Assert.equal(reply.choices[1].payload.target.position, 3, "the user-side winner answers the holder")
+  Assert.equal(reply.choices[1].payload.moveSlot, 0, "the user-side slot answers")
+  Assert.equal(
+    session:capture().rng.calls - held.rng.calls,
+    15,
+    "two candidates cost two initializations, four pass draws, two picks, and one selection"
+  )
+  session:dispose()
+  local replayed = sessionOwner().restore(held, trainerContent())
+  Assert.deepEqual(
+    replayed:answerTrainer(openRequest(replayed, "trainer:1")),
+    reply,
+    "a fixed seed replays the doubles answer"
+  )
+  replayed:dispose()
+end
+
+-- Non-ghost Curse winners retarget to the holder: the quiet curse lines tie
+-- on every candidate and the tied winner answers the own position.
+function T.doubles_non_ghost_curse_winners_retarget_to_the_holder()
+  local contracts = SessionFixture.sessionContracts()
+  local lead = leveledCombatant(31, 23, "CHIKORITA", 20)
+  lead.mon.moves = {
+    { move = "CURSE", pp = 10, ppUps = 0 },
+    { move = "TACKLE", pp = 0, ppUps = 0 },
+  }
+  runAway(lead)
+  local foeA = leveledCombatant(32, 41, "TOTODILE", 10)
+  runAway(foeA)
+  local foeB = leveledCombatant(33, 42, "EEVEE", 10)
+  runAway(foeB)
+  local facts = doublesMoveFacts()
+  facts.CURSE =
+    { nativeId = 174, effect = 109, power = 0, moveType = "mystery", category = "status", accuracy = 0, range = 0 }
+  local scenario = doublesVectorScenario(lead, nil, foeA, foeB, NATIVE_SEED)
+  scenario.moveFacts = facts
+  local session = waitingSession(contracts, scenario)
+  local held = session:capture()
+  local reply = session:answerTrainer(openRequest(session, "trainer:1"))
+  Assert.equal(reply.choices[1].kind, "attack", "the doubles evaluation strikes")
+  Assert.equal(reply.choices[1].payload.target.position, 3, "the curse winner answers the holder")
+  Assert.equal(reply.choices[1].payload.moveSlot, 0, "the curse slot answers")
+  Assert.equal(
+    session:capture().rng.calls - held.rng.calls,
+    11,
+    "two quiet candidates cost two initializations, two picks, and one selection"
+  )
+  session:dispose()
+  local replayed = sessionOwner().restore(held, trainerContent())
+  Assert.deepEqual(
+    replayed:answerTrainer(openRequest(replayed, "trainer:1")),
+    reply,
+    "a fixed seed replays the doubles answer"
+  )
+  replayed:dispose()
+end
 
 -- Membership draws fire per listed effect: same-type preference and
 -- unpredictability each draw once for a listed slot and never otherwise.
@@ -3159,7 +3743,7 @@ end
 function T.rejected_flags_consume_no_draws()
   local TrainerAi = trainerPolicy()
   local chart = nativeChart()
-  for _, bit in ipairs({ 4, 7, 8 }) do
+  for _, bit in ipairs({ 4, 8 }) do
     local stream = spyStream(FIXED_SEED)
     local failure = Assert.throws(function()
       TrainerAi.scoreSlots(
