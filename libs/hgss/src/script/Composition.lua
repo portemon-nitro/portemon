@@ -32,6 +32,7 @@ local TASK_MODULES = {
   "libs.hgss.src.script.tasks.ChooseStarterTask",
   "libs.hgss.src.script.tasks.PokemonNicknameTask",
   "libs.hgss.src.script.tasks.PartySelectTask",
+  "libs.hgss.src.script.tasks.MartTask",
   "libs.hgss.src.script.tasks.FieldMoveTask",
   "libs.hgss.src.script.tasks.ActorOscillationTask",
   "libs.hgss.src.script.tasks.FollowerWaitTask",

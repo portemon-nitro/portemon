@@ -227,7 +227,13 @@ function MartController:_messageTokens(role, bindings)
         { kind = "scroll_continuation", control = FieldMessageText.SCROLL_CONTINUATION, args = {}, raw = {} }
     elseif part.kind == "callback" then
       assert(part.name == "transaction_received", "mart callback has the source transaction meaning")
-      tokens[#tokens + 1] = { kind = "printer_callback", name = part.name, args = {}, raw = {} }
+      tokens[#tokens + 1] = {
+        kind = "printer_callback",
+        control = FieldMessageText.CALLBACK_SIGNAL,
+        name = part.name,
+        args = {},
+        raw = { FieldMessageText.EXT_CTRL_CODE_BEGIN, FieldMessageText.CALLBACK_SIGNAL, 0 },
+      }
     else
       error("unknown mart message part " .. tostring(part.kind), 0)
     end
@@ -266,14 +272,22 @@ function MartController:_openMessage(role, bindings, target)
   end)
 end
 
+local function itemMessageBindings(bindings)
+  local result = copyTerms(bindings or {})
+  if result.item == nil then
+    result.item = assert(result.itemName, "mart item messages use the service item name")
+  end
+  if result.pocket == nil and result.pocketName ~= nil then
+    result.pocket = result.pocketName
+  end
+  return result
+end
+
 function MartController:_beginError(reason)
   self._failureReason = reason
   self._state = "error_print"
-  local bindings = self._terms and self._terms.bindings or {}
   local entry = self:_entry()
-  if entry then
-    bindings = copyTerms(entry.bindings)
-  end
+  local bindings = itemMessageBindings(entry and entry.bindings or (self._terms and self._terms.bindings))
   self:_openMessage(
     assert(ERROR_ROLES[reason], "mart business reason has a source message family"),
     bindings,
@@ -282,7 +296,7 @@ function MartController:_beginError(reason)
 end
 
 function MartController:_itemBindings(entry)
-  return copyTerms(entry.bindings or {})
+  return itemMessageBindings(entry.bindings)
 end
 
 function MartController:_formatRole(role, bindings)
@@ -308,7 +322,7 @@ function MartController:_quote(quantity)
   self._terms = termsOrReason
   local view = self:_view()
   local role = view.currency == "athlete_points" and "pointsConfirm" or "moneyConfirm"
-  local bindings = copyTerms(termsOrReason.bindings or {})
+  local bindings = itemMessageBindings(termsOrReason.bindings)
   bindings.quantity = tostring(quantity)
   bindings.price = tostring(termsOrReason.total)
   self._state = "confirm_prompt"
@@ -584,7 +598,7 @@ function MartController:_startSuccess()
   local role = view.presentationKind == "seals" and "sealReceived"
     or view.currency == "athlete_points" and "pointsReceived"
     or "itemReceived"
-  local bindings = copyTerms(assert(self._terms).bindings or {})
+  local bindings = itemMessageBindings(assert(self._terms).bindings)
   bindings.quantity = tostring(self._terms.quantity)
   self._state = "success_print"
   self:_openMessage(role, bindings, "commit")

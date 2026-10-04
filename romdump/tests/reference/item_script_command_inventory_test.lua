@@ -146,6 +146,14 @@ function T.every_inventory_member_has_explicit_disposition()
       if entry.classification ~= "continue_same_tick" then
         problems[#problems + 1] = tostring(inventory.opcode) .. ":owned command lacks same-tick timing"
       end
+    elseif inventory.category == "shop" then
+      if
+        entry.disposition ~= "supported"
+        or entry.feature ~= "mart"
+        or entry.classification ~= "native_wait"
+      then
+        problems[#problems + 1] = tostring(inventory.opcode) .. ":mart command is not marked as a blocking mart launch"
+      end
     elseif entry.disposition ~= "deferred" then
       problems[#problems + 1] = tostring(inventory.opcode) .. ":neighbor is not deferred"
     elseif ALLOWED_DEFERRALS[entry.deferredReason] ~= true then

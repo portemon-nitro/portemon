@@ -113,6 +113,7 @@ local function drawState(topologyProvider, pollTopology)
     topologyProvider = topologyProvider,
     _pollPresentationTopology = pollTopology == true,
     presentationResources = {
+      drawMart = function() end,
       renderer = {
         draw = function(_, _, _, _, _, viewport)
           rendererObservations[#rendererObservations + 1] = {
@@ -387,7 +388,10 @@ local function fieldStateWithCapturedUi(worldViewport, cameraZoom, viewportWidth
         role = "world",
       })
     end,
-    presentationResources = { renderer = { draw = function() end } },
+    presentationResources = {
+      drawMart = function() end,
+      renderer = { draw = function() end },
+    },
     actorPresentation = {
       drawItems = function()
         return {}

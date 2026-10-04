@@ -528,11 +528,17 @@ function ScriptDialogueHost:close(erase)
   self._controller:close()
 end
 
--- Message-hold and waiting-icon controls are part of the script dialogue
--- contract the controller does not implement; reaching them is an
--- attributed fault, never a silent no-op.
+-- The controller keeps a completed printer handoff modal until explicit
+-- script closure. Hold validates that state without changing its owner.
 function ScriptDialogueHost:hold()
-  Errors.raise(ScriptErrors.SCRIPT_SERVICE_MISSING, "the dialogue controller cannot hold a message")
+  local state = self._controller:status().state
+  if state ~= "WAITING_CLOSE" and state ~= "CLOSING" then
+    Errors.raise(
+      ScriptErrors.SCRIPT_SERVICE_MISSING,
+      "the dialogue controller has no completed message to hold",
+      { state = state }
+    )
+  end
 end
 
 function ScriptDialogueHost:showWaitingIcon()

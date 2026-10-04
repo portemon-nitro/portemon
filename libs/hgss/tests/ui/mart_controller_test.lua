@@ -16,9 +16,12 @@ local T = {}
 local MartFixture = require("tests.support.MartFixture")
 local manifest = MartFixture.manifest
 
-local function resources(balance)
+local function resources(balance, potionName)
   local root = ItemFixture.buildAssetRoot()
   root.items.POTION.price = 100
+  if potionName ~= nil then
+    root.items.POTION.name = potionName
+  end
   local items = ItemCatalog.new(root)
   local bag = HgssBagService.new({ catalog = items, bag = BagSave.empty() })
   local service = MartService.new({
@@ -47,10 +50,10 @@ local function stock(_, entries)
   return { key = "controller-test", currency = "money", presentationKind = "items", quantityMode = "multiple", bonusPolicy = "none", entries = result }
 end
 
-local function newController(session)
+local function newController(session, martManifest)
   return MartController.new({
     session = session,
-    manifest = manifest(),
+    manifest = martManifest or manifest(),
     promptShape = {
       width = 48,
       height = 32,
@@ -100,6 +103,64 @@ function T.populated_cell_keeps_the_source_selection_clip_gate()
   controller:step({})
   Assert.equal(controller:status().state, "quantity_prompt", "the 24-tick selection clip unlocks the quantity prompt")
   Assert.equal(service:capture().statistics.currencySpent, 0, "selection animation never commits a purchase")
+  controller:dispose()
+  session:close()
+end
+
+function T.quantity_prompt_maps_the_service_item_name_to_the_rom_item_binding()
+  local service = resources(nil, "A")
+  local session = service:openBuy(stock(10, 1))
+  local martManifest = manifest()
+  martManifest.text.templates.quantityPrompt.parts = { { kind = "binding", name = "item" } }
+  local controller = newController(session, martManifest)
+
+  controller:step({ { type = "confirm" } })
+  for _ = 1, 24 do
+    controller:step({})
+  end
+
+  Assert.equal(controller:status().state, "quantity_prompt", "the ROM prompt receives the service item's name")
+  controller:dispose()
+  session:close()
+end
+
+function T.purchase_result_preserves_the_source_printer_callback()
+  local service = resources(nil, "A")
+  local session = service:openBuy(stock(10, 1))
+  local martManifest = manifest()
+  martManifest.text.templates.itemReceived.parts = {
+    { kind = "callback", name = "transaction_received" },
+    { kind = "binding", name = "item" },
+  }
+  local controller = newController(session, martManifest)
+
+  controller:step({ { type = "confirm" } })
+  for _ = 1, 24 do
+    controller:step({})
+  end
+  for _ = 1, 20 do
+    if controller:status().state == "quantity" then
+      break
+    end
+    controller:step({ { type = "confirm" } })
+  end
+  Assert.equal(controller:status().state, "quantity")
+  controller:step({ { type = "confirm" } })
+  for _ = 1, 20 do
+    if controller:status().state == "confirm" then
+      break
+    end
+    controller:step({ { type = "confirm" } })
+  end
+  Assert.equal(controller:status().state, "confirm")
+  for _ = 1, 12 do
+    controller:step({ { type = "confirm" } })
+    if controller:status().state == "success_print" then
+      break
+    end
+  end
+
+  Assert.equal(controller:status().state, "success_print", "the transaction message opens with its source callback")
   controller:dispose()
   session:close()
 end

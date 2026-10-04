@@ -122,6 +122,7 @@ local function drawableState(environment, worldViewport, windowWidth, windowHeig
     worldActorItems = {},
     spriteItems = {},
     presentationResources = {
+      drawMart = function() end,
       renderer = {
         draw = function(_, _, _, _, _, drawViewport)
           local world = drawViewport.worldViewport

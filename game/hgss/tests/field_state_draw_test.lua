@@ -108,6 +108,7 @@ end
 local function presentationResourcesStub(renderer)
   return {
     renderer = renderer,
+    drawMart = function() end,
     fieldEntranceIndicatorRenderer = {
       drawItems = function()
         return {}
@@ -373,6 +374,7 @@ local function drawOrderState(starterActive)
       textRenderer = {},
       windowRenderer = {},
       renderer = { draw = function() end },
+      drawMart = function() end,
     },
   }, FieldState)
   state._worldParts = function()

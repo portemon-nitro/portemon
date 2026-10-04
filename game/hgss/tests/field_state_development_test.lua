@@ -125,6 +125,7 @@ local function drawableState(development)
     worldActorItems = {},
     spriteItems = {},
     presentationResources = {
+      drawMart = function() end,
       renderer = { draw = function() end },
       fieldEntranceIndicatorRenderer = {
         drawItems = function()

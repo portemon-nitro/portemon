@@ -1,7 +1,7 @@
 -- Complete presentation cache for real FieldState construction tests: the
 -- base field-UI font/frames plus the Trainer Card front, one minimal mon
--- icon class, the minimal item icon manifest/atlas and bag manifest/images
--- the eager bag presentation resources require, the minimal party manifest
+-- icon class, the minimal item icon/atlas and Bag/Mart manifests/images
+-- the eager child presentation resources require, the minimal party manifest
 -- and images the eager party presentation resources require, and the
 -- minimal field-actor
 -- index/visual/atlas FieldState presentation loaders currently require.
@@ -11,10 +11,12 @@ local MeshWriter = require("libs.assets.src.model.MeshWriter")
 local PngWriter = require("libs.assets.src.PngWriter")
 local PartyCache = require("libs.assets.src.PartyCache")
 local BagCache = require("libs.assets.src.BagCache")
+local MartCache = require("libs.assets.src.MartCache")
 local ItemCache = require("libs.assets.src.ItemCache")
 local MonCache = require("libs.assets.src.MonCache")
 local FieldActorCache = require("libs.assets.src.field.FieldActorCache")
 local BagPresentationFixture = require("tests.support.BagPresentationFixture")
+local MartFixture = require("tests.support.MartFixture")
 local FieldActorFixture = require("tests.support.FieldActorFixture")
 local FieldDialogueFixture = require("tests.support.FieldDialogueFixture")
 local FieldUiFixture = require("tests.support.FieldUiFixture")
@@ -353,6 +355,11 @@ function FieldStatePresentationFixture.cache()
   -- Every image the validated manifest references, so the eager bag
   -- presentation resources resolve during FieldState construction.
   for _, path in ipairs(BagCache.referencedPaths(bagManifest)) do
+    cache:write(path, solidPng(32, 32))
+  end
+  local martManifest = MartFixture.manifest()
+  cache:writeLua(MartCache.manifestPath(), martManifest)
+  for _, path in ipairs(MartCache.referencedPaths(martManifest)) do
     cache:write(path, solidPng(32, 32))
   end
   -- Minimal party manifest and every image it references so the eager

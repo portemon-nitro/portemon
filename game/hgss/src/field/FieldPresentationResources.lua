@@ -2,8 +2,10 @@
 
 local Errors = require("libs.errors.src.Errors")
 local BagCache = require("libs.assets.src.BagCache")
+local MartCache = require("libs.assets.src.MartCache")
 local BagHeroRenderer = require("libs.hgss.src.presentation.BagHeroRenderer")
 local BagRenderer = require("libs.hgss.src.ui.BagRenderer")
+local MartRenderer = require("libs.hgss.src.ui.MartRenderer")
 local FieldApplicationIds = require("libs.hgss.src.field.FieldApplicationIds")
 local FieldErrors = require("libs.hgss.src.field.FieldErrors")
 local AssetPreparationQueue = require("libs.hgss.src.presentation.AssetPreparationQueue")
@@ -70,6 +72,7 @@ local NamingScreenRenderer = require("libs.hgss.src.ui.NamingScreenRenderer")
 ---@field itemIconProvider ItemIconAssetProvider the one shared bag item-icon atlas
 ---@field heroRenderer BagHeroRenderer the one bag hero model renderer borrowed by the bag renderer
 ---@field bagRenderer BagRenderer the one field-bag pane renderer
+---@field martRenderer MartRenderer? owned source-layered mart background and prompt images
 ---@field followingMonTransitionRenderer FollowingMonTransitionRenderer? transient follower-transition presentation (nil without the generated definition)
 ---@field textRenderer FieldTextRenderer?
 ---@field fieldEntranceIndicatorPool GpuAssetPool?
@@ -406,6 +409,14 @@ function FieldPresentationResources.new(runtime)
       window = self.windowRenderer,
       frameIndex = self.applicationFrameIndex,
     })
+    self.martRenderer = MartRenderer.new({
+      cacheFs = runtime.cacheFs,
+      manifest = MartCache.loadManifest(runtime.cacheFs),
+      uiManifest = runtime.uiManifest,
+      text = textRenderer,
+      window = self.windowRenderer,
+      frameIndex = self.applicationFrameIndex,
+    })
     local entrancePool = GpuAssetPool.new(runtime.cacheFs)
     self.fieldEntranceIndicatorPool = entrancePool
     self.fieldEntranceIndicatorRenderer =
@@ -597,6 +608,27 @@ function FieldPresentationResources:drawScriptParty(host)
   self:drawApplication(FieldApplicationIds.POKEMON, status)
 end
 
+-- Draws the active script mart over the retained field. Buy uses its
+-- source-layered renderer; sale borrows the ordinary Bag presenter and its
+-- already-owned hero and item resources.
+---@param host table<string, unknown> the script-owned mart host
+function FieldPresentationResources:drawMart(host)
+  local status = host:status()
+  if status == nil then
+    return
+  end
+  if status.martKind == "sell" then
+    self:drawApplication(FieldApplicationIds.BAG, status)
+    return
+  end
+  assert(status.presentation, "active purchase child exposes a resolved mart plan")
+  assert(self.martRenderer, "field presentation owns no mart renderer"):draw(
+    status,
+    status.presentation,
+    { icons = assert(self.itemIconProvider, "mart rendering requires the shared item icons") }
+  )
+end
+
 function FieldPresentationResources:dispose()
   self.presenters = nil
   if self.dialogueRenderer then
@@ -610,6 +642,10 @@ function FieldPresentationResources:dispose()
   if self.bagRenderer then
     self.bagRenderer:release()
     self.bagRenderer = nil
+  end
+  if self.martRenderer then
+    self.martRenderer:release()
+    self.martRenderer = nil
   end
   if self.windowRenderer then
     self.windowRenderer:release()

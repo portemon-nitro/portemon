@@ -131,12 +131,15 @@ function T.only_documented_runtime_options_reach_the_runtime()
   })
   options.saveValidation = saveValidation
   options.fieldScaleConfig = { mode = "test" }
+  local stockResolver = function() end
+  options.martStockResolver = stockResolver
   options.development = true
   local state, captured, game = bootWithCapturedRuntimeOptions(options)
   Assert.deepEqual(captured.options, {
     fieldScaleConfig = { mode = "test" },
     presentation = true,
     saveValidation = saveValidation,
+    martStockResolver = stockResolver,
     displayContext = state.displayContext,
   })
   Assert.equal(captured.game, game)

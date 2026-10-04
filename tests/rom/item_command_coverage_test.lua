@@ -86,11 +86,18 @@ function T.supported_entries_carry_widths_timing_and_lowering(romFs)
   local keys = loweringKeys()
   local reached = reachedOpcodes(romFs)
   local problems = {}
-  local supported = 0
+  local supportedItems = 0
+  local supportedShops = 0
   for _, item in ipairs(familyEntries()) do
     if item.entry ~= nil and item.entry.disposition == "supported" then
-      supported = supported + 1
-      if item.inventory.category ~= "items" then
+      if item.inventory.category == "items" then
+        supportedItems = supportedItems + 1
+      elseif item.inventory.category == "shop" then
+        supportedShops = supportedShops + 1
+        if item.entry.feature ~= "mart" then
+          problems[#problems + 1] = item.opcode .. ":supported shop command is not owned by mart"
+        end
+      else
         problems[#problems + 1] = item.opcode .. ":supported outside the owned category"
       end
       local widths = item.entry.widths
@@ -113,7 +120,8 @@ function T.supported_entries_carry_widths_timing_and_lowering(romFs)
       end
     end
   end
-  Assert.equal(supported, 13, "the supported set is exactly the generic protocol")
+  Assert.equal(supportedItems, 13, "the supported item set is exactly the generic protocol")
+  Assert.equal(supportedShops, 5, "the mart owns the five audited shop commands")
   table.sort(problems)
   Assert.equal(#problems, 0, "every supported entry is decodable, timed, and lowered: " .. table.concat(problems, ", "))
 end

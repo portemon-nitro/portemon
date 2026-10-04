@@ -33,6 +33,7 @@ local ItemCatalog = require("libs.items.src.ItemCatalog")
 ---@field fieldMapLoader table<string, unknown>? borrowed metadata-only loader for entry planning
 ---@field topologyProvider (fun(width: number, height: number): ScreenTopology)? actual host surfaces for every entry route
 ---@field presentationOverrides table<string, table<string, unknown>>? per-case function overrides by application
+---@field martStockResolver (fun(descriptor: table<string, unknown>, context: table<string, unknown>, catalog: table<string, unknown>): table<string, unknown>)? optional game-root mart stock provider
 
 ---@class HgssGameNewGameEntry
 ---@field kind "new_game"
@@ -51,6 +52,7 @@ local function fieldStateOptions(options, saveStore, saveValidation, extra, shar
     saveStore = saveStore,
     saveValidation = saveValidation,
     derivedAssets = options.derivedAssets,
+    martStockResolver = options.martStockResolver,
   }
   if extra then
     for key, value in pairs(extra) do

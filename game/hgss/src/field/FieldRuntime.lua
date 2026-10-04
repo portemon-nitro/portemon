@@ -136,6 +136,7 @@ end
 ---@field displayContext DisplayContext? shared actual-display measurement owner (defaults to a runtime-owned context)
 ---@field displayGraphics table<string, unknown>? graphics namespace for the default display context
 ---@field presentationOverrides table<string, table<string, unknown>>? product-root per-case function overrides by application
+---@field martStockResolver (fun(descriptor: table<string, unknown>, context: table<string, unknown>, catalog: table<string, unknown>): table<string, unknown>)? game-root mart stock policy
 ---@field overrideFs table<string, unknown>? read-shaped repository filesystem override
 ---@field presentation boolean?
 ---@field preparedEntry table<string, unknown>? one-shot staged New Game transfer; the runtime claims its loader and queue
@@ -184,6 +185,8 @@ end
 ---@field monService HgssMonService the live party/creation/script mon service
 ---@field bagService HgssBagService the live bag/inventory service
 ---@field martService MartService the live mart inventory/session service
+---@field martHost table<string, unknown> the one script-owned mart child host
+---@field martStockResolver function the selected mart stock provider
 ---@field bagCursor BagCursor the runtime-only field bag cursor
 ---@field pokemonMenu table<string, unknown>? the owned menu composition (nil before composition / after teardown)
 ---@field menuLaneWarps table<string, unknown>? the long-lived menu-origin warp service (nil before composition / after teardown)
@@ -1101,7 +1104,7 @@ function FieldRuntime:_composeFieldServices(boot)
     catalog = self.martCatalog,
     bucket = martBucket,
   })
-  self.martStockResolver = VanillaMartStock.resolve
+  self:_composeMart(boot)
   -- The one following-mon controller: derived follower presentation over
   -- the live party, driven once per fixed tick after the session update.
   -- The player accessor tracks warp rebinds, so the controller never holds
@@ -1148,6 +1151,7 @@ function FieldRuntime:_composeFieldServices(boot)
     starterProvider = self.starterProvider,
     starterChoice = self.starterChoice,
     partySelection = self.partySelection,
+    mart = self.martHost,
     travel = self.fieldTravel,
     fieldMoves = self.pokemonMenu.fieldMoves,
     pokemonNaming = self.pokemonNaming,
@@ -1157,6 +1161,87 @@ function FieldRuntime:_composeFieldServices(boot)
   })
   self.scripts = scriptComposition.scripts
   scriptComposition.restore()
+end
+
+-- Composes the one script-owned mart child host over the real inventory and
+-- presentation owners. Children borrow the shared field display and complete
+-- Bag contracts; the scheduler remains their only fixed-tick driver.
+---@param boot table<string, unknown>
+function FieldRuntime:_composeMart(boot)
+  local MartHost = require("game.hgss.src.mart.MartHost")
+  local MartScreenState = require("game.hgss.src.mart.MartScreenState")
+  local BagScreenState = require("game.hgss.src.field.BagScreenState")
+  local BagCache = require("libs.assets.src.BagCache")
+  local BagOverrides = self.presentationOverrides ~= nil and self.presentationOverrides.bag or nil
+  local MartOverrides = self.presentationOverrides ~= nil and self.presentationOverrides.mart or nil
+  local function measureDisplay()
+    return assert(self.presentationDisplay, "mart children require measured field display")
+  end
+  local function playSequence(sequence)
+    local audio = self.audio or boot.audioService
+    if audio ~= nil then
+      audio:play(sequence)
+    end
+  end
+  local textPolicy = TextSpeedPolicy.forSpeed(self.playerData.options.textSpeed)
+  local function createBuy(session)
+    return MartScreenState.new({
+      session = session,
+      manifest = MartCache.loadManifest(boot.cacheFs),
+      uiManifest = self.uiManifest,
+      fontDef = boot.fontDef,
+      textPolicy = textPolicy,
+      effect = playSequence,
+      measureDisplay = measureDisplay,
+      frameIndex = self.playerData.options.textFrame,
+      overrides = MartOverrides,
+    })
+  end
+  local function createSell(session)
+    return BagScreenState.new({
+      effect = playSequence,
+      textPolicy = textPolicy,
+      service = self.bagService,
+      cursor = self.bagCursor,
+      manifest = BagCache.loadManifest(boot.cacheFs),
+      uiManifest = self.uiManifest,
+      monCatalog = self.monCatalog,
+      heroGender = self.playerData.profile.gender == 0 and "male" or "female",
+      context = "sell",
+      saleSession = session,
+      partyEmpty = self.monService:partyCount() == 0,
+      measureDisplay = measureDisplay,
+      overrides = BagOverrides,
+    })
+  end
+  local function readFlag(flagId)
+    return self.eventState:isFlagSet(flagId)
+  end
+  local function readVariable(varId)
+    return self.eventState:getVar(varId)
+  end
+  local function currentMartDate()
+    return self.localClock:nowLocal()
+  end
+  local function clearMartUi()
+    self.input:clearUi()
+  end
+  local resolver = self.martStockResolver
+  if resolver == nil then
+    resolver = VanillaMartStock.resolve
+  end
+  self.martHost = MartHost.new({
+    service = self.martService,
+    catalog = { mart = self.martCatalog, items = self.itemCatalog },
+    profile = self.playerData.profile,
+    localDate = currentMartDate,
+    stockResolver = resolver,
+    getFlag = readFlag,
+    getVar = readVariable,
+    createBuy = createBuy,
+    createSell = createSell,
+    clearUi = clearMartUi,
+  })
 end
 
 -- Publish residency and the live session only after its collaborators are ready.
@@ -1252,6 +1337,7 @@ function FieldRuntime:_startFieldSession(boot)
     contextChoicePresentation = sessionContextChoicePresentation,
     starterChoice = self.starterChoice,
     partySelection = self.partySelection,
+    martHost = self.martHost,
     fieldMoves = self.pokemonMenu.fieldMoves,
     pokemonNaming = self.pokemonNaming,
     signpost = self.signpost,
@@ -1294,6 +1380,10 @@ function FieldRuntime.new(game, options)
   assert(type(game) == "table", "field runtime requires a finalized or loaded game")
   assert(type(game.versionId) == "string" and game.versionId ~= "", "field runtime game version is required")
   options = options or {}
+  assert(
+    options.martStockResolver == nil or type(options.martStockResolver) == "function",
+    "martStockResolver must be a function"
+  )
   local effectiveOverrideFs = options.overrideFs or RepoFs.new(love.filesystem.getSourceBaseDirectory())
   local self = setmetatable({
     game = game,
@@ -1314,6 +1404,7 @@ function FieldRuntime.new(game, options)
     localClock = options.localClock or LocalClock.system(),
     weatherClock = options.weatherClock,
     presentationOverrides = options.presentationOverrides,
+    martStockResolver = options.martStockResolver,
     errorText = nil,
     fieldPixelScale = FieldPixelScale.new(options.fieldScaleConfig or FieldPresentation.fieldScale),
   }, FieldRuntime)
@@ -1863,6 +1954,9 @@ function FieldRuntime:resizePresentation(width, height, screenTopology)
   self:_updateCameraProjection()
   self._displayTopology = screenTopology
   self.presentationDisplay = self.displayContext:measure(width, height)
+  if self.martHost then
+    self.martHost:refreshPresentation()
+  end
 end
 
 -- The one teardown path shared by reset and dispose: release every owned
@@ -1889,6 +1983,10 @@ function FieldRuntime:_releaseAll()
   if self.applicationHost then
     self.applicationHost:dispose()
   end
+  if self.martHost then
+    self.martHost:dispose()
+  end
+  self.martHost = nil
   self.applicationHost, self.applications = nil, nil
   self.displayContext, self.presentationDisplay, self.presentationOverrides = nil, nil, nil
   self._displayTopology = nil
@@ -1950,6 +2048,8 @@ function FieldRuntime:_releaseAll()
   self.windowStyles, self.uiManifest, self.weatherCatalog = nil, nil, nil
   self.monCatalog, self.monLanguage, self.monService = nil, nil, nil
   self.bagService, self.bagCursor = nil, nil
+  self.martService = nil
+  self.martStockResolver = nil
   self.itemCatalog = nil
   self.starterProvider, self.starterChoice, self.pokemonNaming = nil, nil, nil
   self.partySelection = nil

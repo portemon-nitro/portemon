@@ -228,6 +228,37 @@ function T.idle_lane_sends_no_snapshot()
   Assert.isNil(scheduler.seen[#scheduler.seen].uiEvents, "an idle lane contributes no UI batch")
 end
 
+function T.active_mart_routes_ui_without_replaying_field_edges()
+  local active = false
+  local mart = {
+    isActive = function()
+      return active
+    end,
+  }
+  local input = recordingInput()
+  local scheduler = recordingScheduler()
+  scheduler.step = function(_, _, schedulerInput)
+    if #scheduler.seen == 0 then
+      active = true
+    elseif #scheduler.seen == 2 then
+      active = false
+    end
+    scheduler.seen[#scheduler.seen + 1] = schedulerInput
+  end
+  local options = optionsWith({ martHost = mart, input = input, scriptScheduler = scheduler })
+  local session = FieldSession.new(options)
+  session:updateFixed({ pressedDirection = "south", actionPressed = true, cancelPressed = true })
+  Assert.equal(input.begins, 1, "opening a mart begins UI capture")
+  session:updateFixed({ pressedDirection = "north", actionPressed = true, cancelPressed = true })
+  local routed = scheduler.seen[2]
+  Assert.equal(routed.uiEvents, input.batch, "the active mart receives the normalized UI batch")
+  Assert.isNil(routed.pressedDirection, "field direction is suppressed while the mart is active")
+  Assert.isNil(routed.pressedAction, "field action is suppressed while the mart is active")
+  Assert.isNil(routed.pressedCancel, "field cancel is suppressed while the mart is active")
+  session:updateFixed({})
+  Assert.equal(input.clears, 1, "closing a mart clears the captured UI edges")
+end
+
 function T.modal_edges_balance_on_acquire_and_release()
   -- Two isActive reads per tick (pre/post scheduler step): active from
   -- the post read of tick 2, idle again from the post read of tick 4.

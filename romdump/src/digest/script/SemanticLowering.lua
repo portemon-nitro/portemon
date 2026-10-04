@@ -370,9 +370,12 @@ function SemanticLowering.lowerScript(script, memberIr, opts)
     local step = handler(ins, memberIr, { offsets = { ins.offset }, opcodes = { ins.opcode } }, ctx)
     if step == nil then
       -- An explicitly erased implementation-detail instruction (Nop and
-      -- Dummy, rows 0-1): record the omission for the
-      -- verifier's no-disappearing-command check.
-      return {}, {}, { omission = { offset = ins.offset, opcode = ins.opcode } }
+      -- Dummy, rows 0-1): record the omission for the verifier's
+      -- no-disappearing-command check while retaining its source label for
+      -- branches that target this instruction.
+      return {}, { ins }, {
+        omission = { offset = ins.offset, opcode = ins.opcode, operand = ins.operands[1] and ins.operands[1].raw },
+      }
     end
     if step == "unfolded" then
       return lowerUnfolded(ins)

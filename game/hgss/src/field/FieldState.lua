@@ -25,6 +25,7 @@ local GAMEPAD_DIRECTIONS = { dpup = "north", dpdown = "south", dpleft = "west", 
 ---@field saveValidation GameSaveValidation? shared version-aware GameSave validator
 ---@field audioOutput table<string, unknown>? audio-output host namespace for deterministic runtime audio
 ---@field derivedAssets table<string, function>? semantic derived-asset host
+---@field martStockResolver (fun(descriptor: table<string, unknown>, context: table<string, unknown>, catalog: table<string, unknown>): table<string, unknown>)? game-root provider for live script mart stock
 ---@field preparedEntry table<string, unknown>? one-shot staged New Game entry; the runtime claims its loader and queue
 
 ---@class FieldState
@@ -86,6 +87,7 @@ function FieldState.new(game, options)
     saveValidation = options.saveValidation,
     audioOutput = options.audioOutput,
     derivedAssets = options.derivedAssets,
+    martStockResolver = options.martStockResolver,
     displayContext = displayContext,
     presentationOverrides = options.presentationOverrides,
   }
@@ -602,6 +604,7 @@ function FieldState:draw()
   if presentation then
     resources.menuRenderer:draw(presentation)
   end
+  resources:drawMart(self.runtime.martHost)
   self:_drawEntryCoverIfNeeded(width, height)
   self:_drawScriptScreenFadeIfNeeded()
   -- The script-owned starter modal draws over the restored field while the
@@ -877,6 +880,10 @@ function FieldState:focus(focused)
     local host = self.runtime.applicationHost
     if host ~= nil and type(host.cancelPointerCapture) == "function" then
       host:cancelPointerCapture()
+    end
+    local martHost = self.runtime.martHost
+    if martHost ~= nil and martHost:isActive() then
+      martHost:cancelPointerCapture()
     end
     local starter = self.runtime.starterChoice
     if

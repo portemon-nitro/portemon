@@ -15,9 +15,11 @@ local TARGET_MODULE = "game.hgss.src.field.FieldPresentationResources"
 
 local CONSTRUCTOR_MODULES = {
   "libs.assets.src.BagCache",
+  "libs.assets.src.MartCache",
   "libs.assets.src.PartyCache",
   "libs.hgss.src.presentation.BagHeroRenderer",
   "libs.hgss.src.ui.BagRenderer",
+  "libs.hgss.src.ui.MartRenderer",
   "libs.hgss.src.ui.FieldDialogueRenderer",
   "libs.hgss.src.ui.FieldMenuRenderer",
   "libs.hgss.src.ui.FieldSignpostRenderer",
@@ -70,6 +72,11 @@ local function buildDoubles(sink, calls)
   local card = drawReleaser("card", sink, calls, "card")
   local bag = drawReleaser("bag", sink, calls, "bag")
   return {
+    ["libs.assets.src.MartCache"] = {
+      loadManifest = function(_)
+        return { compiled = true }
+      end,
+    },
     ["libs.assets.src.BagCache"] = {
       loadManifest = function(_)
         return { compiled = true }
@@ -88,6 +95,11 @@ local function buildDoubles(sink, calls)
     ["libs.hgss.src.ui.BagRenderer"] = {
       new = function(_)
         return bag
+      end,
+    },
+    ["libs.hgss.src.ui.MartRenderer"] = {
+      new = function(_)
+        return drawReleaser("mart", sink, calls, "mart")
       end,
     },
     ["libs.hgss.src.ui.FieldDialogueRenderer"] = {
