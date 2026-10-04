@@ -5,14 +5,14 @@ local Utf8Glyphs = require("libs.assets.src.Utf8Glyphs")
 local NamingScreenController = {}
 
 ---@class NamingScreenOptions
----@field kind "player"|"pokemon"
+---@field kind "player"|"pokemon"|"box"
 ---@field maxLength integer
 ---@field initialText string
 ---@field charmap table<string, integer>
 ---@field subject table<string, unknown>
 
 ---@class NamingScreenSnapshot
----@field kind "player"|"pokemon"
+---@field kind "player"|"pokemon"|"box"
 ---@field page "upper"|"lower"|"symbols"
 ---@field cursor table<string, unknown>
 ---@field text string
@@ -105,7 +105,7 @@ local function validateSubject(kind, subject)
   assert(type(subject) == "table" and subject.kind == kind, "naming subject kind must match controller kind")
   if kind == "player" then
     assert(subject.gender == 0 or subject.gender == 1, "player naming subject requires gender")
-  else
+  elseif kind == "pokemon" then
     assert(
       type(subject.species) == "number" and subject.species % 1 == 0 and subject.species > 0,
       "pokemon naming subject requires species"
@@ -116,6 +116,8 @@ local function validateSubject(kind, subject)
         "pokemon naming subject form is invalid"
       )
     end
+  else
+    assert(kind == "box" and subject.kind == "box", "box naming subject is neutral text")
   end
 end
 
@@ -146,11 +148,11 @@ local function sameCell(first, second)
   return first.kind == second.kind and first.glyph == second.glyph and first.controlId == second.controlId
 end
 
----@param options { kind: "player"|"pokemon", maxLength: integer, initialText: string, charmap: table<string, integer>, subject: table<string, unknown> }
+---@param options { kind: "player"|"pokemon"|"box", maxLength: integer, initialText: string, charmap: table<string, integer>, subject: table<string, unknown> }
 ---@return NamingScreenController
 function NamingScreenController.new(options)
   assert(type(options) == "table", "naming screen options are required")
-  assert(options.kind == "player" or options.kind == "pokemon", "naming kind is invalid")
+  assert(options.kind == "player" or options.kind == "pokemon" or options.kind == "box", "naming kind is invalid")
   assert(
     type(options.maxLength) == "number" and options.maxLength % 1 == 0 and options.maxLength > 0,
     "naming maxLength must be a positive integer"

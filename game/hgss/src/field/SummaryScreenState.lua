@@ -20,6 +20,7 @@ local SummaryRenderer = require("libs.hgss.src.ui.SummaryRenderer")
 
 ---@class SummaryScreenState
 ---@field _service HgssMonService the live mon service
+---@field _subjectPort SummarySubjectPort?
 ---@field _manifest table<string, unknown> the borrowed party manifest for badges
 ---@field _measureDisplay fun(): DisplayMeasurement the live display facts
 ---@field _controller SummaryController
@@ -176,6 +177,12 @@ local function resolvers()
   }
 end
 
+---@class SummarySubjectPort
+---@field count fun(): integer
+---@field revision fun(): integer
+---@field read fun(index: integer): table<string, unknown>
+---@field publish fun(index: integer, mon: table<string, unknown>, expectedRevision: integer): { kind: "changed"|"stale" }
+
 ---@class SummaryScreenState.Options
 ---@field mons HgssMonService the live mon service
 ---@field manifest table<string, unknown> the borrowed party manifest for badges
@@ -183,6 +190,7 @@ end
 ---@field measureDisplay fun(): DisplayMeasurement the current display facts
 ---@field mode "summary"|"move_pick"
 ---@field request table<string, unknown>? the picker request for move_pick mode
+---@field subjectPort SummarySubjectPort? optional concrete ordered subject adapter
 
 -- Validates request shapes per mode: summary carries no request and
 -- reorders through the owned command; move_pick carries an explicit
@@ -214,25 +222,54 @@ end
 function SummaryScreenState.new(opts)
   assert(type(opts) == "table", "the summary requires options")
   local service = assert(opts.mons, "the summary requires the live mon service")
-  assert(type(service.partyCount) == "function" and service:partyCount() > 0, "the summary requires a non-empty party")
+  local subjectPort = opts.subjectPort
+  assert(
+    type(service.partyCount) == "function" and (subjectPort ~= nil or service:partyCount() > 0),
+    "the summary requires a non-empty subject list"
+  )
+  if subjectPort ~= nil then
+    assert(type(subjectPort.count) == "function", "summary subjects expose a count")
+    assert(type(subjectPort.revision) == "function", "summary subjects expose a revision")
+    assert(type(subjectPort.read) == "function", "summary subjects expose copied reads")
+    assert(type(subjectPort.publish) == "function", "summary subjects expose guarded publication")
+    assert(subjectPort.count() > 0, "the summary requires a non-empty subject list")
+  end
   local manifest = assert(opts.manifest, "the summary requires the party manifest")
   assert(type(manifest) == "table", "the party manifest arrives as a record")
   assert(type(opts.measureDisplay) == "function", "the summary requires the display facts")
   assert(opts.mode == "summary" or opts.mode == "move_pick", "the summary requires its mode")
   checkRequest(opts.mode, opts.request)
   local initialSlot = opts.initialSlot or 0
+  local subjectCount = service:partyCount()
+  if subjectPort ~= nil then
+    subjectCount = subjectPort.count()
+  end
   assert(
-    type(initialSlot) == "number" and initialSlot % 1 == 0 and initialSlot >= 0 and initialSlot < service:partyCount(),
-    "the initial slot must be an occupied party position"
+    type(initialSlot) == "number" and initialSlot % 1 == 0 and initialSlot >= 0 and initialSlot < subjectCount,
+    "the initial slot must be an occupied subject position"
   )
   local self = setmetatable({
     _service = service,
+    _subjectPort = subjectPort,
     _manifest = manifest,
     _measureDisplay = opts.measureDisplay,
     _disposed = false,
   }, SummaryScreenState)
+  local function derive(value)
+    return service:derive(value)
+  end
   local function refreshModel(slot)
-    return SummaryModel.build(service, slot)
+    if subjectPort == nil then
+      return SummaryModel.build(service, slot)
+    end
+    local mon = assert(subjectPort.read(slot), "summary subject indexes stay occupied")
+    return SummaryModel.buildMon(mon, {
+      revision = subjectPort.revision(),
+      index = slot,
+      count = subjectPort.count(),
+      catalog = service:catalog(),
+      derive = derive,
+    })
   end
   local wrapper = self
   local function resolveLayout()
@@ -295,10 +332,18 @@ function SummaryScreenState:reorderMoves(slot, a, b, revision)
   assert(type(a) == "number" and a % 1 == 0, "reorder needs its source row")
   assert(type(b) == "number" and b % 1 == 0, "reorder needs its target row")
   assert(a ~= b, "same-slot gestures never reach publication")
-  if revision ~= self._service:partyRevision() then
+  local port = self._subjectPort
+  local currentRevision = self._service:partyRevision()
+  if port ~= nil then
+    currentRevision = port.revision()
+  end
+  if revision ~= currentRevision then
     return { kind = "stale" }
   end
   local mon = self._service:partyMon(slot)
+  if port ~= nil then
+    mon = assert(port.read(slot), "summary subject indexes stay occupied")
+  end
   local moves = assert(mon.moves, "stored mons carry their moves")
   assert(a >= 0 and a < #moves and b >= 0 and b < #moves, "reorder rows stay inside the learned set")
   local swapped = {}
@@ -307,6 +352,9 @@ function SummaryScreenState:reorderMoves(slot, a, b, revision)
   end
   swapped[a + 1], swapped[b + 1] = swapped[b + 1], swapped[a + 1]
   mon.moves = swapped
+  if port ~= nil then
+    return port.publish(slot, mon, revision)
+  end
   local preparation, reason = self._service:preparePartyChanges(revision, { { slot = slot, mon = mon } })
   if preparation == nil then
     assert(reason == "stale", "preparation refuses stale revisions loudly")

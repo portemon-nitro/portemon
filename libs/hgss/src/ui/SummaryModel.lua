@@ -112,11 +112,9 @@ local function projectMoves(catalog, moves)
   return projected
 end
 
----@param service HgssMonService the live mon service
----@param slot0 integer
+---@param mon table<string, unknown>
 ---@return table<string, unknown>?
-local function eggFacts(service, slot0)
-  local mon = service:partyMon(slot0)
+local function eggFacts(mon)
   if not mon.isEgg then
     return nil
   end
@@ -148,8 +146,38 @@ function SummaryModel.build(service, slot0)
     type(slot0) == "number" and slot0 % 1 == 0 and slot0 >= 0 and slot0 < service:partyCount(),
     "the summary needs an occupied party slot"
   )
-  local catalog = service:catalog()
   local mon = service:partyMon(slot0)
+  local function derive(value)
+    return service:derive(value)
+  end
+  return SummaryModel.buildMon(mon, {
+    revision = service:partyRevision(),
+    index = slot0,
+    count = service:partyCount(),
+    catalog = service:catalog(),
+    derive = derive,
+  })
+end
+
+-- Projects one detached occupied subject through the same catalog and
+-- derivation used for party summaries. The caller owns address selection.
+---@param mon table<string, unknown>
+---@param options { revision: integer, index: integer, count: integer, catalog: MonCatalog, derive: fun(mon: table<string, unknown>): table<string, unknown> }
+---@return table<string, unknown>
+function SummaryModel.buildMon(mon, options)
+  assert(type(mon) == "table", "the summary subject is a copied mon")
+  assert(type(options) == "table", "the summary projection needs subject facts")
+  assert(type(options.revision) == "number" and options.revision % 1 == 0, "summary revisions are integers")
+  assert(
+    type(options.index) == "number" and options.index % 1 == 0 and options.index >= 0,
+    "subject indexes are zero-based"
+  )
+  assert(
+    type(options.count) == "number" and options.count % 1 == 0 and options.count > options.index,
+    "summary subjects are occupied"
+  )
+  assert(type(options.derive) == "function", "the summary projection needs service derivation")
+  local catalog = assert(options.catalog, "the summary projection needs the mon catalog")
   local mask = assert(mon.shinyLeaves, "stored mons carry their leaf mask")
   assert(type(mask) == "number", "leaf masks are numeric")
   local species = catalog:species(assert(mon.species, "stored mons carry their species"))
@@ -174,9 +202,9 @@ function SummaryModel.build(service, slot0)
     types[#types + 1] = typeKey
   end
   local facts = {
-    revision = service:partyRevision(),
-    slot = slot0,
-    slotCount = service:partyCount(),
+    revision = options.revision,
+    slot = options.index,
+    slotCount = options.count,
     isEgg = mon.isEgg == true,
     displayName = Mon.displayName(mon, catalog),
     speciesName = assert(species.name, "catalog species carry a display name"),
@@ -209,10 +237,10 @@ function SummaryModel.build(service, slot0)
     bodyLineEstimate = 0,
   }
   if facts.isEgg then
-    facts.egg = eggFacts(service, slot0)
+    facts.egg = eggFacts(mon)
     return facts
   end
-  local derived = service:derive(mon)
+  local derived = options.derive(mon)
   facts.level = assert(derived.level, "derivation carries the level")
   facts.maxHp = assert(derived.maxHp, "derivation carries maximum health")
   facts.stats = {
