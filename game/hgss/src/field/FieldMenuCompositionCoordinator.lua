@@ -10,6 +10,7 @@ local FieldMapDataCache = require("libs.assets.src.field.FieldMapDataCache")
 local FieldScriptSymbols = require("libs.assets.src.field.FieldScriptSymbols")
 local FollowingMonTransitionController = require("libs.hgss.src.field.FollowingMonTransitionController")
 local MapAssetCache = require("libs.assets.src.MapAssetCache")
+local PcCache = require("libs.assets.src.PcCache")
 local MenuProtocol = require("libs.assets.src.MenuProtocol")
 local MetatileBehavior = require("libs.hgss.src.world.MetatileBehavior")
 local StartMenuPolicy = require("libs.hgss.src.ui.StartMenuPolicy")
@@ -395,6 +396,8 @@ function FieldMenuCompositionCoordinator:composePokemonMenu(cacheFs)
     textPolicy = bagTextPolicy,
     mons = assert(runtime.monService, "the menu composition requires the live mon service"),
     bag = assert(runtime.bagService, "the menu composition requires the live bag service"),
+    mailbox = assert(runtime.mailbox, "the menu composition requires the live Mailbox"),
+    pcManifest = PcCache.loadManifest(cacheFs),
     bagCursor = assert(runtime.bagCursor, "the menu composition requires the runtime bag cursor"),
     itemCatalog = assert(runtime.itemCatalog, "the menu composition requires the shared item catalog"),
     monCatalog = assert(runtime.monCatalog, "the menu composition requires the shared mon catalog"),

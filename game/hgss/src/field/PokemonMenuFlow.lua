@@ -12,9 +12,12 @@ local Mon = require("libs.mons.src.Mon")
 local BagScreenState = require("game.hgss.src.field.BagScreenState")
 local PartyScreenState = require("game.hgss.src.field.PartyScreenState")
 local SummaryScreenState = require("game.hgss.src.field.SummaryScreenState")
+local MailboxScreenState = require("game.hgss.src.pc.MailboxScreenState")
 local StandardFade = require("libs.hgss.src.presentation.StandardFade")
 
 local TERMINAL_FIELD_ACTION = "pokemon.field_move"
+
+local function silentAudio() end
 
 -- The complete set of pages the flow's single live child can occupy.
 local PAGE = {
@@ -25,6 +28,9 @@ local PAGE = {
   PARTY_GIVE_TARGET = "party_give_target",
   SUMMARY = "summary",
   MOVE_PICK = "move_pick",
+  MAIL_READ = "mail_read",
+  MAIL_CONFIRM = "mail_confirm",
+  MAIL_ERASE_CONFIRM = "mail_erase_confirm",
 }
 
 ---@class PokemonMenuFlow
@@ -35,11 +41,15 @@ local PAGE = {
 ---@field private _bag table<string, unknown>
 ---@field private _bagCursor table<string, unknown>
 ---@field private _partyActions table<string, unknown>
+---@field private _mailActions table<string, unknown>
+---@field private _mailbox table<string, unknown>
+---@field private _pcManifest table<string, unknown>
 ---@field private _fieldMoves table<string, unknown>
 ---@field private _assets table<string, unknown>
 ---@field private _measureDisplay fun(): table<string, unknown>
 ---@field private _prepareIcons fun(iconKeys: string[]): boolean, string? presented icon preparation (borrowed binding)
 ---@field private _cancelIconPreparation fun() presented preparation release (borrowed binding)
+---@field private _mailOutcome table<string, unknown>? latest Party Mail result for the composed child
 ---@field private _overrides table<string, unknown>?
 ---@field private _page string
 ---@field private _child table<string, unknown>?
@@ -180,7 +190,7 @@ local function flowPartyPolicy(manifest)
       { kind = PAGE.SUMMARY, label = text(PAGE.SUMMARY, "SUMMARY") },
       { kind = "switch", label = text("switch", "SWITCH") },
     }
-    if facts.mail == true then
+    if facts.heldMarkerKind == "mail" then
       entries[#entries + 1] = { kind = "mail", label = text("mail", "MAIL") }
     else
       entries[#entries + 1] = { kind = "item", label = text("item", "ITEM") }
@@ -266,6 +276,9 @@ function PokemonMenuFlow.new(opts)
     _bag = bag,
     _bagCursor = cursor,
     _partyActions = actions,
+    _mailActions = assert(opts.mailActions, "the menu flow borrows Mail actions"),
+    _mailbox = assert(opts.mailbox, "the menu flow borrows the Mailbox"),
+    _pcManifest = assert(opts.pcManifest, "the menu flow borrows the PC manifest"),
     _fieldMoves = fieldMoves,
     _assets = assets,
     _measureDisplay = opts.measureDisplay,
@@ -281,6 +294,7 @@ function PokemonMenuFlow.new(opts)
     _terminalResultPending = nil,
     _lastChildStatus = nil,
     _transition = nil,
+    _mailOutcome = nil,
     _terminalChildStatus = nil,
     _disposed = false,
   }, PokemonMenuFlow)
@@ -409,6 +423,28 @@ function PokemonMenuFlow:_openPage(page, continuation)
       measureDisplay = measureDisplay,
       mode = PAGE.MOVE_PICK,
       request = assert(cont.pickerRequest, "the picker carries its closed request"),
+    })
+  end
+  if page == PAGE.MAIL_READ then
+    local cont = assert(continuation, "the read view carries an authored letter copy")
+    return MailboxScreenState.new({
+      mode = "read",
+      letter = assert(cont.letter),
+      manifest = self._pcManifest,
+      monCatalog = self._assets.monCatalog,
+      measureDisplay = measureDisplay,
+      audio = { play = silentAudio },
+    })
+  end
+  if page == PAGE.MAIL_CONFIRM or page == PAGE.MAIL_ERASE_CONFIRM then
+    assert(continuation, "the Mail confirmation retains its operation intent")
+    return MailboxScreenState.new({
+      mode = "confirm",
+      prompt = page == PAGE.MAIL_CONFIRM and "Send this letter to the PC?"
+        or "Erase this letter and return its stationery?",
+      manifest = self._pcManifest,
+      measureDisplay = measureDisplay,
+      audio = { play = silentAudio },
     })
   end
   error("unknown menu flow page " .. tostring(page), 0)
@@ -923,6 +959,36 @@ function PokemonMenuFlow:_routeBrowseIntent(intent)
     self:_routeFieldMove(intent)
     return
   end
+  if intent.kind == "read_mail" then
+    local slot = assert(intent.slot, "Mail reads name their party slot")
+    local decision = self._mailActions:preview({
+      kind = "readParty",
+      slot = slot,
+      partyRevision = self._mons:partyRevision(),
+    })
+    if decision.kind ~= "ready" then
+      self:_completeParty({ kind = "mail_refused", reason = decision.reason })
+      return
+    end
+    self:_replace(PAGE.MAIL_READ, { letter = decision.letter, focusSlot = slot })
+    return
+  end
+  if intent.kind == "take_mail" then
+    local slot = assert(intent.slot, "Mail sends name their party slot")
+    local operation = {
+      kind = "sendPartyToMailbox",
+      slot = slot,
+      partyRevision = self._mons:partyRevision(),
+      mailboxRevision = self._mailbox:revision(),
+    }
+    local decision = self._mailActions:preview(operation)
+    if decision.kind ~= "confirm" then
+      self:_completeParty({ kind = "mail_refused", reason = decision.reason })
+      return
+    end
+    self:_replace(PAGE.MAIL_CONFIRM, { intent = decision, focusSlot = slot })
+    return
+  end
   error("unknown party browse intent " .. tostring(intent.kind), 0)
 end
 
@@ -1032,6 +1098,45 @@ end
 ---@param result table<string, unknown>
 function PokemonMenuFlow:_routeResult(result)
   assert(type(result) == "table" and type(result.kind) == "string", "results carry their kind")
+  if self._page == PAGE.MAIL_READ then
+    assert(result.kind == "closed", "the read-only letter view closes without mutation")
+    local continuation = assert(self._continuation, "the Mail read view retains its party context")
+    self:_replace(PAGE.PARTY_BROWSE, { focusSlot = continuation.focusSlot })
+    return
+  end
+  if self._page == PAGE.MAIL_CONFIRM then
+    local continuation = assert(self._continuation, "the send confirmation retains the pending request")
+    if result.kind == "confirmed" then
+      self._mailOutcome = self._mailActions:commit(continuation.intent, true)
+    else
+      assert(result.kind == "declined", "the Mail send offer is confirmed or declined")
+      self._mailActions:commit(continuation.intent, false)
+      local erase = self._mailActions:preview({
+        kind = "erasePartyMessage",
+        slot = continuation.focusSlot,
+        partyRevision = self._mons:partyRevision(),
+        bagRevision = self._bag:revision(),
+      })
+      if erase.kind == "confirm" then
+        self:_replace(PAGE.MAIL_ERASE_CONFIRM, { intent = erase, focusSlot = continuation.focusSlot })
+        return
+      end
+      self._mailOutcome = erase
+    end
+    self:_replace(PAGE.PARTY_BROWSE, { focusSlot = continuation.focusSlot })
+    return
+  end
+  if self._page == PAGE.MAIL_ERASE_CONFIRM then
+    local continuation = assert(self._continuation, "the Mail erase confirmation retains its pending request")
+    if result.kind == "confirmed" then
+      self._mailOutcome = self._mailActions:commit(continuation.intent, true)
+    else
+      assert(result.kind == "declined", "the Mail erase offer is confirmed or declined")
+      self._mailOutcome = self._mailActions:commit(continuation.intent, false)
+    end
+    self:_replace(PAGE.PARTY_BROWSE, { focusSlot = continuation.focusSlot })
+    return
+  end
   if self._page == PAGE.PARTY_BROWSE and result.kind == "give_complete" then
     local continuation = assert(self._continuation, "Party completion clears its held-item continuation")
     assert(continuation.operation == "give_from_party", "Party completion belongs to the held-item operation")
@@ -1251,6 +1356,9 @@ function PokemonMenuFlow:status()
     childStatus = self._child:status()
   end
   local status = { open = true, root = self._root, page = self._page, child = childStatus }
+  if self._mailOutcome ~= nil then
+    status.mailOutcome = copyPresentationFacts(self._mailOutcome)
+  end
   if transition ~= nil then
     local fade = assert(transition.fade, "app exit owns its brightness-out fade")
     status.transition = {
