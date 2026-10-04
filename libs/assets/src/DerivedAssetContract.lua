@@ -336,7 +336,7 @@ DerivedAssetContract.items = {
 
 DerivedAssetContract.followerInteractions = {
   cacheFormat = "follower-interaction-cache-v1",
-  schema = "g4-follower-interactions-v1",
+  schema = "g4-follower-interactions-v2",
 }
 
 -- The bag class carries the source-independent field-bag presentation: the

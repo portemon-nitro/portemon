@@ -122,17 +122,18 @@ function T.source_catalog_compiles_with_retail_order_and_semantic_references(rom
   Assert.isTrue(sectionCount > 0, "the source corpus publishes map-section rules")
   Assert.isTrue(exactMapIdRuleCount > 0, "the source corpus includes exact map-ID criteria")
 
-  local speciesClasses = catalog.speciesClassBySpeciesId
-  Assert.equal(#speciesClasses, 496)
-  local classesArchive = assert(romFs:openNarc(Sources.ARCHIVES.speciesClasses))
+  local mapClasses = catalog.mapClassByMapId
+  Assert.isNil(catalog.speciesClassBySpeciesId)
+  Assert.equal(#mapClasses, 496)
+  local classesArchive = assert(romFs:openNarc(Sources.ARCHIVES.mapClasses))
   local classesBytes = assert(classesArchive:readMember(0))
-  for _, speciesId in ipairs({ 1, 2, 493, 496 }) do
-    Assert.equal(speciesClasses[speciesId], classesBytes:byte(speciesId))
+  for _, mapId in ipairs({ 1, 60, 493, 496 }) do
+    Assert.equal(mapClasses[mapId], classesBytes:byte(mapId))
   end
 
   local packedRow = string.rep("\0", 9) .. string.char(0xB3) .. string.rep("\0", Sources.RULE_SIZE - 10)
   local packedCriteria = Compiler.decodeRuleMember(packedRow)
-  Assert.equal(packedCriteria.criteria.reservedReject, 0x13)
+  Assert.isNil(packedCriteria.criteria.reservedReject)
   Assert.equal(packedCriteria.criteria.facingClass, 5)
 
   for motionId, motion in pairs(catalog.motions) do

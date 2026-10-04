@@ -23,14 +23,13 @@ local function catalog()
         genderClass = 0,
         natureClass = 0,
         leafClass = 0,
-        speciesClass = 0,
+        mapClass = 0,
         specialSpriteClass = 0,
         nearbyObjectClass = 0,
         hiddenItemClass = 0,
         weatherClass = 0,
         timeClass = 0,
         facingClass = 0,
-        reservedReject = 0,
         typeClass = 0,
         pokeathlonClass = 0,
         levelClass = 0,
@@ -42,7 +41,7 @@ local function catalog()
   }
   local fashionNames = {}
   local reactions = {}
-  local speciesClassBySpeciesId = {}
+  local mapClassByMapId = {}
   for accessoryId = 0, 99 do
     fashionNames[accessoryId] = { name = "Accessory", nameWithArticle = "an Accessory" }
   end
@@ -52,8 +51,8 @@ local function catalog()
       resourceKey = "data/generated/field/effects/follower_reaction_" .. selector .. ".lua",
     }
   end
-  for speciesId = 1, 496 do
-    speciesClassBySpeciesId[speciesId] = 0
+  for mapId = 1, 496 do
+    mapClassByMapId[mapId] = 0
   end
   return {
     schema = Contract.followerInteractions.schema,
@@ -61,7 +60,7 @@ local function catalog()
     rulesByMapSection = rulesByMapSection,
     programs = {
       [1] = {
-        steps = { { motionId = 1, messageId = 1, soundId = 0, reactionId = 1, delayTicks = 1 } },
+        steps = { { reactionId = 1, delayTicks = 1 } },
         friendshipDelta = 0,
         moodDelta = 0,
         continuation = { choice0InteractionId = 2, choice1InteractionId = 3 },
@@ -73,7 +72,7 @@ local function catalog()
       [1] = { { facing = 0, x = 0, y = 0, z = 0, ticks = 1, sound = false } },
     },
     reactions = reactions,
-    speciesClassBySpeciesId = speciesClassBySpeciesId,
+    mapClassByMapId = mapClassByMapId,
     locationNames = { [1] = "New Bark Town" },
     fashionNames = fashionNames,
   }
@@ -143,27 +142,69 @@ function T.requires_all_retail_reaction_selectors()
   Assert.isFalse(Cache.validateCatalog(incomplete))
 end
 
-function T.validates_species_class_ids_reserved_reject_and_special_sprite_classes()
-  local invalidSpecies = catalog()
-  invalidSpecies.speciesClassBySpeciesId[0] = 0
-  Assert.isFalse(Cache.validateCatalog(invalidSpecies))
+function T.validates_map_class_domain_and_rejects_species_owned_shape()
+  local validMapClasses = catalog()
+  Assert.isTrue(Cache.validateCatalog(validMapClasses))
 
-  local missingSpecies = catalog()
-  missingSpecies.speciesClassBySpeciesId[496] = nil
-  Assert.isFalse(Cache.validateCatalog(missingSpecies))
+  local invalidMapClass = catalog()
+  invalidMapClass.mapClassByMapId[0] = 0
+  Assert.isFalse(Cache.validateCatalog(invalidMapClass))
 
-  local missingReservedReject = catalog()
-  missingReservedReject.rulesByMapSection[1][1].criteria.reservedReject = nil
-  Assert.isFalse(Cache.validateCatalog(missingReservedReject))
+  local missingMapClass = catalog()
+  missingMapClass.mapClassByMapId[496] = nil
+  Assert.isFalse(Cache.validateCatalog(missingMapClass))
 
-  local invalidReservedReject = catalog()
-  invalidReservedReject.rulesByMapSection[1][1].criteria.reservedReject = 32
-  Assert.isFalse(Cache.validateCatalog(invalidReservedReject))
+  local speciesShape = catalog()
+  speciesShape.speciesClassBySpeciesId = speciesShape.mapClassByMapId
+  speciesShape.mapClassByMapId = nil
+  speciesShape.rulesByMapSection[1][1].criteria.speciesClass = 0
+  speciesShape.rulesByMapSection[1][1].criteria.mapClass = nil
+  Assert.isFalse(Cache.validateCatalog(speciesShape))
+
+  local reservedReject = catalog()
+  reservedReject.rulesByMapSection[1][1].criteria.reservedReject = 1
+  Assert.isFalse(Cache.validateCatalog(reservedReject))
 
   local invalidSpecialSprite = catalog()
   invalidSpecialSprite.rulesByMapSection[1][1].criteria.specialSpriteClass = 4
   Assert.isFalse(Cache.validateCatalog(invalidSpecialSprite))
+end
 
+function T.validates_optional_program_step_semantics_and_rejects_raw_source_fields()
+  local validOptionalStep = catalog()
+  validOptionalStep.programs[1].steps[1].messageId = 0
+  validOptionalStep.programs[1].steps[1].sound = { kind = "cry", pattern = 11 }
+  Assert.isTrue(Cache.validateCatalog(validOptionalStep))
+
+  local invalids = {
+    function(step) step.sound = { kind = "unknown", id = 1 } end,
+    function(step) step.sound = { kind = "effect", id = 0 } end,
+    function(step) step.sound = { kind = "effect", id = 2379 } end,
+    function(step) step.sound = { kind = "cry", pattern = 1 } end,
+    function(step) step.sound = { kind = "cry", pattern = 0, id = 1 } end,
+    function(step) step.soundId = 1 end,
+    function(step) step.messageId = 0xFFFF end,
+    function(step) step.motionId = 0 end,
+  }
+  for _, invalidate in ipairs(invalids) do
+    local malformed = catalog()
+    invalidate(malformed.programs[1].steps[1])
+    Assert.isFalse(Cache.validateCatalog(malformed))
+  end
+end
+
+function T.validates_fractional_motion_deltas_in_source_byte_range()
+  local fractional = catalog()
+  fractional.motions[1][1].x = -0.125
+  fractional.motions[1][1].y = 0.0625
+  fractional.motions[1][1].z = 127 / 16
+  Assert.isTrue(Cache.validateCatalog(fractional))
+
+  for _, invalidDelta in ipairs({ -8.0625, 127 / 16 + 1 / 16, 1 / 32, math.huge, 0 / 0 }) do
+    local malformed = catalog()
+    malformed.motions[1][1].x = invalidDelta
+    Assert.isFalse(Cache.validateCatalog(malformed))
+  end
 end
 
 function T.rejects_reaction_definitions_or_resources_for_another_selector()

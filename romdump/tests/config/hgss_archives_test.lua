@@ -120,7 +120,7 @@ function T.alias_list_is_complete_and_deterministic()
     "follower_interaction_rules",
     "follower_interaction_programs",
     "follower_interaction_motions",
-    "follower_interaction_species_classes",
+    "follower_interaction_map_classes",
   }) do
     Assert.isTrue(seenAliases[alias], "required alias missing: " .. alias)
   end

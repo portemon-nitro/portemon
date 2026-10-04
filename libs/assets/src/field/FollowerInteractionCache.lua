@@ -46,21 +46,32 @@ local function onlyKnownKeys(value, fields)
   return true
 end
 
+local function validateSound(sound)
+  if type(sound) ~= "table" then
+    return false
+  end
+  if sound.kind == "effect" then
+    return exactKeys(sound, { kind = true, id = true }) and integer(sound.id, 1, 2378)
+  end
+  return sound.kind == "cry"
+    and exactKeys(sound, { kind = true, pattern = true })
+    and (sound.pattern == 0 or sound.pattern == 11)
+end
+
 local CRITERIA = {
   heldItemClass = 31,
   hpClass = 0xFF,
   moodClass = 15,
   friendshipClass = 15,
   statusClass = 7,
-  genderClass = 7,
+  genderClass = 3,
   natureClass = 7,
   leafClass = 5,
-  speciesClass = 254,
+  mapClass = 0xFF,
   specialSpriteClass = 3,
   nearbyObjectClass = 7,
   hiddenItemClass = 7,
   weatherClass = 7,
-  reservedReject = 31,
   timeClass = 7,
   facingClass = 7,
   typeClass = 31,
@@ -120,16 +131,16 @@ local function validateProgram(program)
   end
   for _, step in ipairs(program.steps) do
     if
-      not exactKeys(step, {
+      not onlyKnownKeys(step, {
         motionId = true,
         messageId = true,
-        soundId = true,
+        sound = true,
         reactionId = true,
         delayTicks = true,
       })
-      or not integer(step.motionId, 1, 108)
-      or not integer(step.messageId, 0, 0xFFFF)
-      or not integer(step.soundId, 0, 0xFFFF)
+      or (step.motionId ~= nil and not integer(step.motionId, 1, 108))
+      or (step.messageId ~= nil and not integer(step.messageId, 0, 0xFFFE))
+      or (step.sound ~= nil and not validateSound(step.sound))
       or not integer(step.reactionId, 0, 14)
       or not integer(step.delayTicks, 0, 0xFF)
     then
@@ -170,6 +181,13 @@ local function validateProgram(program)
   return true
 end
 
+local function validMotionDelta(value)
+  if type(value) ~= "number" or value ~= value or value < -8 or value > 127 / 16 then
+    return false
+  end
+  return value * 16 % 1 == 0
+end
+
 local function validateMotion(motion)
   if not Validate.isArray(motion) or #motion > 10 then
     return false
@@ -178,18 +196,9 @@ local function validateMotion(motion)
     if
       not exactKeys(record, { x = true, y = true, z = true, facing = true, ticks = true, sound = true })
       or not integer(record.facing, 0, 4)
-      or type(record.x) ~= "number"
-      or record.x % 1 ~= 0
-      or record.x < -128
-      or record.x > 127
-      or type(record.y) ~= "number"
-      or record.y % 1 ~= 0
-      or record.y < -128
-      or record.y > 127
-      or type(record.z) ~= "number"
-      or record.z % 1 ~= 0
-      or record.z < -128
-      or record.z > 127
+      or not validMotionDelta(record.x)
+      or not validMotionDelta(record.y)
+      or not validMotionDelta(record.z)
       or not integer(record.ticks, 0, 0xFF)
       or type(record.sound) ~= "boolean"
     then
@@ -221,7 +230,7 @@ function FollowerInteractionCache.validateCatalog(catalog)
     programs = true,
     motions = true,
     reactions = true,
-    speciesClassBySpeciesId = true,
+    mapClassByMapId = true,
     locationNames = true,
     fashionNames = true,
   }
@@ -283,7 +292,7 @@ function FollowerInteractionCache.validateCatalog(catalog)
   for _, program in pairs(catalog.programs) do
     for _, step in ipairs(program.steps) do
       if
-        catalog.motions[step.motionId] == nil
+        (step.motionId ~= nil and catalog.motions[step.motionId] == nil)
         or (step.reactionId ~= 0 and catalog.reactions[step.reactionId] == nil)
       then
         return invalid("has an unresolved program reference")
@@ -301,15 +310,15 @@ function FollowerInteractionCache.validateCatalog(catalog)
     end
   end
   if
-    not validKeyedRecords(catalog.speciesClassBySpeciesId, function(class)
+    not validKeyedRecords(catalog.mapClassByMapId, function(class)
       return integer(class, 0, 0xFF)
     end, 1, 496)
   then
-    return invalid("has invalid species classes")
+    return invalid("has invalid map classes")
   end
-  for speciesId = 1, 496 do
-    if catalog.speciesClassBySpeciesId[speciesId] == nil then
-      return invalid("is missing a species class")
+  for mapId = 1, 496 do
+    if catalog.mapClassByMapId[mapId] == nil then
+      return invalid("is missing a map class")
     end
   end
   if type(catalog.locationNames) ~= "table" then

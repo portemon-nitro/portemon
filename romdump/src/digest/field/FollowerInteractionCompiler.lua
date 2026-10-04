@@ -17,6 +17,7 @@ local MapCatalog = require("romdump.src.digest.map.MapCatalog")
 local charmap = require("romdump.src.reference.hgss.charmap")
 
 local Compiler = {}
+local SOUND_EFFECT_END = 2378
 
 local function signed(value, modulus)
   return value >= modulus / 2 and value - modulus or value
@@ -60,16 +61,15 @@ local function decodeRule(bytes)
       moodClass = reader:u8(1) % 16,
       friendshipClass = math.floor(reader:u8(1) / 16),
       natureClass = reader:u8(2) % 8,
-      genderClass = math.floor(reader:u8(2) / 8) % 8,
+      genderClass = math.floor(reader:u8(2) / 8) % 4,
       statusClass = math.floor(reader:u8(2) / 32),
       heldItemClass = reader:u8(3) % 32,
       typeClass = reader:u8(4) % 32,
       pokeathlonClass = math.floor(reader:u8(4) / 32),
       encounterClass = reader:u8(5),
-      speciesClass = reader:u8(6),
+      mapClass = reader:u8(6),
       leafClass = reader:u8(7),
       weatherClass = reader:u8(8) % 8,
-      reservedReject = reader:u8(9) % 32,
       facingClass = math.floor(reader:u8(9) / 32),
       nearbyObjectClass = selector % 8,
       timeClass = math.floor(selector / 8) % 8,
@@ -98,11 +98,6 @@ local function decodeProgramMember(bytes)
     if motionId == 0xFFFF then
       break
     end
-    if motionId == 0 then
-      Errors.raise("FOLLOWER_INTERACTION_MOTION_INVALID", "active program step selects motion zero", {
-        step = index,
-      })
-    end
     local reactionId = reader:u8(offset + 6)
     if reactionId > 14 then
       Errors.raise("FOLLOWER_INTERACTION_SELECTOR_INVALID", "program reaction selector is out of range", {
@@ -110,10 +105,20 @@ local function decodeProgramMember(bytes)
         step = index,
       })
     end
+    local rawMessageId = reader:u16le(offset + 2)
+    local rawSound = reader:u16le(offset + 4)
+    local sound
+    if rawSound > 0 and rawSound <= SOUND_EFFECT_END then
+      sound = { kind = "effect", id = rawSound }
+    elseif rawSound == SOUND_EFFECT_END + 1 then
+      sound = { kind = "cry", pattern = 0 }
+    elseif rawSound > SOUND_EFFECT_END + 1 then
+      sound = { kind = "cry", pattern = 11 }
+    end
     steps[#steps + 1] = {
-      motionId = motionId,
-      messageId = reader:u16le(offset + 2),
-      soundId = reader:u16le(offset + 4),
+      motionId = motionId ~= 0 and motionId or nil,
+      messageId = rawMessageId ~= 0 and rawMessageId - 1 or nil,
+      sound = sound,
       reactionId = reactionId,
       delayTicks = reader:u8(offset + 7),
     }
@@ -166,9 +171,9 @@ local function decodeMotionMember(bytes)
     records[#records + 1] = {
       facing = facing,
       ticks = reader:u8(offset + 1),
-      x = signed(reader:u8(offset + 2), 256),
-      y = signed(reader:u8(offset + 3), 256),
-      z = signed(reader:u8(offset + 4), 256),
+      x = signed(reader:u8(offset + 2), 256) / 16,
+      y = signed(reader:u8(offset + 3), 256) / 16,
+      z = signed(reader:u8(offset + 4), 256) / 16,
       sound = reader:u8(offset + 5) ~= 0,
     }
   end
@@ -298,7 +303,7 @@ local function decodePrograms(ruleNarc, programNarc, motionNarc)
     local program = decodeProgramMember(bytes)
     programs[interactionId] = program
     for _, step in ipairs(program.steps) do
-      if step.motionId ~= 0 then
+      if step.motionId ~= nil then
         motionIds[step.motionId] = true
       end
       if step.reactionId ~= 0 then
@@ -329,14 +334,14 @@ local function decodePrograms(ruleNarc, programNarc, motionNarc)
   return programs, motions, reactionIds
 end
 
-local function decodeSpeciesClasses(speciesClassNarc)
-  local bytes = readMember(speciesClassNarc, 0, Sources.ARCHIVES.speciesClasses)
-  requireSize(bytes, Sources.SPECIES_CLASS_TABLE_SIZE, "species classes", 0)
-  local speciesClassBySpeciesId = {}
-  for speciesId = 1, #bytes do
-    speciesClassBySpeciesId[speciesId] = bytes:byte(speciesId)
+local function decodeMapClasses(mapClassNarc)
+  local bytes = readMember(mapClassNarc, 0, Sources.ARCHIVES.mapClasses)
+  requireSize(bytes, Sources.MAP_CLASS_TABLE_SIZE, "map classes", 0)
+  local mapClassByMapId = {}
+  for mapId = 1, #bytes do
+    mapClassByMapId[mapId] = bytes:byte(mapId)
   end
-  return speciesClassBySpeciesId
+  return mapClassByMapId
 end
 
 local function decodeNames(romFs)
@@ -399,7 +404,7 @@ function Compiler.compile(romFs)
   local rulesArchive = checkedArchive(romFs, Sources.ARCHIVES.rules, 236)
   local programArchive = checkedArchive(romFs, Sources.ARCHIVES.programs, 1023)
   local motionArchive = checkedArchive(romFs, Sources.ARCHIVES.motions, 108)
-  local speciesClassArchive = checkedArchive(romFs, Sources.ARCHIVES.speciesClasses, 1)
+  local mapClassArchive = checkedArchive(romFs, Sources.ARCHIVES.mapClasses, 1)
   local mapSections = decodeRules(rulesArchive)
   local programs, motions, usedReactions = decodePrograms(mapSections, programArchive, motionArchive)
   local reactions = {}
@@ -417,7 +422,7 @@ function Compiler.compile(romFs)
       })
     end
   end
-  local speciesClassBySpeciesId = decodeSpeciesClasses(speciesClassArchive)
+  local mapClassByMapId = decodeMapClasses(mapClassArchive)
   local locationNames, fashionNames, nameBanks = decodeNames(romFs)
   local catalog = {
     schema = Contract.followerInteractions.schema,
@@ -426,7 +431,7 @@ function Compiler.compile(romFs)
     programs = programs,
     motions = motions,
     reactions = reactions,
-    speciesClassBySpeciesId = speciesClassBySpeciesId,
+    mapClassByMapId = mapClassByMapId,
     locationNames = locationNames,
     fashionNames = fashionNames,
   }
@@ -446,7 +451,7 @@ function Compiler.compile(romFs)
       rules = Sources.ARCHIVES.rules,
       programs = Sources.ARCHIVES.programs,
       motions = Sources.ARCHIVES.motions,
-      speciesClasses = Sources.ARCHIVES.speciesClasses,
+      mapClasses = Sources.ARCHIVES.mapClasses,
     },
   }
   local dependencies = {
@@ -456,7 +461,7 @@ function Compiler.compile(romFs)
       rules = rulesArchive:memberCount(),
       programs = programArchive:memberCount(),
       motions = motionArchive:memberCount(),
-      speciesClasses = speciesClassArchive:memberCount(),
+      mapClasses = mapClassArchive:memberCount(),
     },
     nameBanks = nameBanks,
     catalog = catalog,
