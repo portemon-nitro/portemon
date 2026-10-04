@@ -46,6 +46,8 @@ local ItemCache = require("libs.assets.src.ItemCache")
 local ItemCatalog = require("libs.items.src.ItemCatalog")
 local MartCache = require("libs.assets.src.MartCache")
 local MartService = require("libs.hgss.src.items.MartService")
+local Mailbox = require("libs.hgss.src.save.Mailbox")
+local PhotoAlbum = require("libs.hgss.src.save.PhotoAlbum")
 local VanillaMartStock = require("game.hgss.src.mart.VanillaMartStock")
 local FieldScriptSymbols = require("libs.assets.src.field.FieldScriptSymbols")
 local FieldSession = require("libs.hgss.src.field.FieldSession")
@@ -1116,6 +1118,8 @@ function FieldRuntime:_composeFieldServices(boot)
     mapSection = monMetMapSection,
     date = monMetDate,
   })
+  self.mailbox = Mailbox.new(boot.loadedGame and boot.loadedGame.mailbox or nil)
+  self.photoAlbum = PhotoAlbum.new(boot.loadedGame and boot.loadedGame.photoAlbum or nil)
   self:_composeBag(boot.activeGame, boot.loadedGame)
   local martBucket = boot.loadedGame and boot.loadedGame.mart
     or assert(self.game.mart, "finalized game mart bucket is required")
@@ -2073,6 +2077,7 @@ function FieldRuntime:_releaseAll()
   self.monCatalog, self.monLanguage, self.monService = nil, nil, nil
   self.bagService, self.bagCursor = nil, nil
   self.martService = nil
+  self.mailbox, self.photoAlbum = nil, nil
   self.martStockResolver = nil
   self.itemCatalog = nil
   self.followerInteractionCatalog = nil

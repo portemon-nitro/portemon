@@ -33,7 +33,12 @@ local function v3record(overrides)
     scripts = {},
     auxiliaryUi = {},
     audio = {},
-    mons = {},
+    mons = {
+      schema = "g4-mons-save-v1",
+      catalogFingerprint = "legacy-catalog",
+      rng = { state = 7, calls = 0 },
+      party = { max = 6, mons = {} },
+    },
     bag = BagSave.empty(),
   }
   for key, replacement in pairs(overrides or {}) do
@@ -59,7 +64,7 @@ end
 -- no fashion-case state. Historical fixtures use this exact shape.
 local function v5record(overrides)
   local value = v4record(overrides)
-  value.schema = "g4-game-save-v5"
+  value.schema = GameSave.LEGACY_V5_SCHEMA
   value.playerData.profile.nationalDex = false
   value.mart = MartSave.empty()
   return value
@@ -98,11 +103,12 @@ function T.migration_preserves_party_bag_leaves_world_and_rng()
 end
 
 function T.current_validation_requires_travel_and_rejects_old_schemas()
-  Assert.notNil(GameSave.validate(currentRecord()))
+  local current = GameSave.migrateV5(v5record())
+  Assert.notNil(GameSave.validate(current))
   returnsCode("GAME_SAVE_BUCKET_INVALID", function()
     local value = currentRecord()
     value.fieldTravel = nil
-    return GameSave.validate(value)
+    return GameSave.validateV5(value)
   end)
   returnsCode("GAME_SAVE_SCHEMA_UNSUPPORTED", function()
     return GameSave.validate(v3record())
@@ -193,8 +199,10 @@ end
 function T.v3_migrates_through_literal_v4_before_v5_defaults_are_added()
   local first = GameSave.migrateV3(v3record())
   Assert.equal(first.schema, "g4-game-save-v4", "v3 migration remains an explicit intermediate step")
-  local current = GameSave.migrateV4(first)
-  Assert.equal(current.schema, "g4-game-save-v5", "master migration keeps its explicit historical step")
+  local v5 = GameSave.migrateV4(first)
+  Assert.equal(v5.schema, GameSave.LEGACY_V5_SCHEMA)
+  local current = GameSave.migrateV5(v5)
+  Assert.equal(current.schema, GameSave.SCHEMA)
   Assert.equal(current.playerData.profile.nationalDex, false)
   Assert.deepEqual(current.mart, MartSave.empty())
 end

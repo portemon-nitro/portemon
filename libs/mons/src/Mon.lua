@@ -1,5 +1,5 @@
 -- Semantic mon records. The authoritative runtime representation is the
--- readable g4-mon-v1 record; derivable values (level, nature, gender,
+-- readable g4-mon-v2 record; derivable values (level, nature, gender,
 -- shininess, maximum stats) are never stored and unknown fields fail, so a
 -- persisted record cannot contradict its own personality, identity, or
 -- experience. Validation returns an owned canonical copy and never repairs
@@ -11,13 +11,15 @@ local Validate = require("libs.assets.src.Validate")
 local Experience = require("libs.mons.src.gen4.Experience")
 local MonsErrors = require("libs.mons.src.errors")
 local Moves = require("libs.mons.src.gen4.Moves")
+local Mail = require("libs.mons.src.gen4.Mail")
 local Personality = require("libs.mons.src.gen4.Personality")
 local Stats = require("libs.mons.src.gen4.Stats")
 
 ---@class Mon
 local Mon = {}
 
-Mon.SCHEMA = "g4-mon-v1"
+Mon.SCHEMA = "g4-mon-v2"
+Mon.LEGACY_SCHEMA = "g4-mon-v1"
 Mon.NICKNAME_CAPACITY = 11
 Mon.OT_NAME_CAPACITY = 8
 Mon.SHINY_LEAVES_MAX = 63
@@ -356,9 +358,19 @@ function Mon.validate(record, context)
     checkU8(seal.graphic, "capsule seal graphic")
   end
 
-  checkRecord(record.mail, {}, "mail record")
+  local canonical = copyValue(record)
+  canonical.mail = Mail.validate(record.mail, context)
+  return canonical
+end
 
-  return copyValue(record)
+---@param record table<string, unknown>
+---@return table<string, unknown>
+function Mon.migrateV1(record)
+  assert(type(record) == "table" and record.schema == Mon.LEGACY_SCHEMA, "Mon.migrateV1 requires a v1 record")
+  local migrated = copyValue(record)
+  migrated.schema = Mon.SCHEMA
+  migrated.mail = Mail.validate(migrated.mail)
+  return migrated
 end
 
 ---@param record table<string, unknown>

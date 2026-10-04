@@ -151,7 +151,7 @@ function T.save_bucket_round_trips_under_catalog_fingerprint()
   Assert.deepEqual(rngCapture, { state = 0x05856380, calls = 8 })
 
   local bucket = MonsSave.capture(party:capture(), rngCapture, fingerprint)
-  Assert.equal(bucket.schema, "g4-mons-save-v1")
+  Assert.equal(bucket.schema, "g4-mons-save-v2")
   Assert.equal(bucket.catalogFingerprint, fingerprint)
   Assert.deepEqual(bucket.rng, rngCapture)
   Assert.deepEqual(bucket.party, party:capture())

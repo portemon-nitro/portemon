@@ -142,6 +142,14 @@ function T.unrepresentable_records_fail_with_structured_errors()
   local valid = factory:createNormal(CatalogFixture.normalRequest())
   Assert.notNil(NativeLegality.project(valid, context))
 
+  local leveled = factory:createNormal(CatalogFixture.normalRequest({ level = 5 }))
+  leveled.experience = catalog:growthCurve(catalog:species(leveled.species).growthCurve)[20]
+  Assert.equal(leveled.met.level, 5)
+  leveled = Mon.validate(leveled, context)
+  Assert.notNil(NativeLegality.project(leveled, context))
+  local BoxCodec = require("libs.mons.src.gen4.BoxCodec")
+  Assert.equal(BoxCodec.decode(BoxCodec.encode(leveled, context), context).met.level, 5)
+
   local function invalid(mutator)
     local altered = copy(valid)
     mutator(altered)
@@ -263,15 +271,11 @@ function T.unrepresentable_records_fail_with_structured_errors()
     )
   end)
 
-  -- Met level must track the experience-derived level.
-  throwsCode("MON_LEGALITY_INVALID", function()
-    BoxCodec.encode(
-      invalid(function(mon)
-        mon.met.level = 6
-      end),
-      context
-    )
+  -- Met level is historical source data, independent of current experience.
+  local historical = invalid(function(mon)
+    mon.met.level = 6
   end)
+  Assert.equal(BoxCodec.decode(BoxCodec.encode(historical, context), context).met.level, 6)
 end
 
 function T.numeric_boundaries_and_domain_relationships_hold_at_the_validation_boundary()

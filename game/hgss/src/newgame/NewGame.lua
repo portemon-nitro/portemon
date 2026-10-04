@@ -5,6 +5,8 @@
 local GameSave = require("libs.hgss.src.save.GameSave")
 local BagSave = require("libs.hgss.src.save.BagSave")
 local MartSave = require("libs.hgss.src.save.MartSave")
+local Mailbox = require("libs.hgss.src.save.Mailbox")
+local PhotoAlbum = require("libs.hgss.src.save.PhotoAlbum")
 local PlayTime = require("libs.hgss.src.save.PlayTime")
 local PlayerData = require("libs.hgss.src.save.PlayerData")
 local FieldTravelState = require("libs.hgss.src.field.FieldTravelState")
@@ -130,6 +132,8 @@ function NewGame.createCandidate(options)
     bag = BagSave.empty(),
     fashionCase = FashionCaseState.empty(),
     mart = MartSave.empty(),
+    mailbox = Mailbox.new():capture(),
+    photoAlbum = PhotoAlbum.new():capture(),
     -- New games start badge-less at the mother's house respawn (the source
     -- default lastSpawn); the candidate carries the travel value record so
     -- save assembly persists it without inventing history.

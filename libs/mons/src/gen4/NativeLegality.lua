@@ -97,12 +97,13 @@ function NativeLegality.project(mon, context)
     MonsErrors.raise(MonsErrors.RECORD_INVALID, "experience exceeds the level-" .. Stats.MAX_LEVEL .. " entry", {})
   end
   local level = Experience.level(curve, mon.experience)
-  if mon.met.level ~= level then
-    MonsErrors.raise(
-      MonsErrors.LEGALITY_INVALID,
-      "met level must track the experience-derived level",
-      { metLevel = mon.met.level, level = level }
-    )
+  if
+    type(mon.met.level) ~= "number"
+    or mon.met.level % 1 ~= 0
+    or mon.met.level < 1
+    or mon.met.level > Stats.MAX_LEVEL
+  then
+    MonsErrors.raise(MonsErrors.LEGALITY_INVALID, "met level is outside its native range", { metLevel = mon.met.level })
   end
 
   local moves = {}

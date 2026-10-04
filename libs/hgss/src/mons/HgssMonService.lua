@@ -16,11 +16,13 @@ local NativeLegality = require("libs.mons.src.gen4.NativeLegality")
 local Personality = require("libs.mons.src.gen4.Personality")
 local Stats = require("libs.mons.src.gen4.Stats")
 local Errors = require("libs.errors.src.Errors")
+local Utf8Glyphs = require("libs.assets.src.Utf8Glyphs")
 
 ---@class HgssMonService
 ---@field private _catalog MonCatalog
 ---@field private _context MonsSave.Context
 ---@field private _party Party
+---@field private _boxes Boxes
 ---@field private _rng Gen4Lcrng
 ---@field private _factory MonFactory
 ---@field private _profile { name: string, gender: integer, trainerId: integer }
@@ -191,6 +193,7 @@ function HgssMonService.new(opts)
     _catalog = opts.catalog,
     _context = context,
     _party = restored.party,
+    _boxes = restored.boxes,
     _rng = restored.rng,
     _factory = factory,
     _profile = profile,
@@ -208,7 +211,31 @@ end
 
 ---@return table<string, unknown>
 function HgssMonService:capture()
-  return MonsSave.capture(self._party:capture(), self._rng:capture(), self._catalog:fingerprint())
+  return MonsSave.capture(
+    self._party:capture(),
+    self._rng:capture(),
+    self._catalog:fingerprint(),
+    self._boxes:capture()
+  )
+end
+
+function HgssMonService:boxCount()
+  return self._boxes:count()
+end
+function HgssMonService:boxRevision()
+  return self._boxes:revision()
+end
+function HgssMonService:boxMon(box, slot)
+  return self._boxes:mon(box, slot)
+end
+function HgssMonService:boxMetadata(box)
+  return self._boxes:metadata(box)
+end
+function HgssMonService:activeBox()
+  return self._boxes:activeBox()
+end
+function HgssMonService:boxSnapshot()
+  return self._boxes:capture()
 end
 
 ---@return integer
@@ -503,6 +530,83 @@ function HgssMonService:preparePartyChanges(expectedRevision, updates)
     assert(not consumed, "party preparation publishes exactly once")
     consumed = true
     self._party = candidate
+  end
+  return { changed = changed, isCurrent = isCurrent, publish = publish }
+end
+
+---@param expected { partyRevision: integer, boxRevision: integer }
+---@param changes table<string, unknown>
+---@return PartyPreparation|nil, string|nil
+function HgssMonService:preparePcChanges(expected, changes)
+  assert(type(expected) == "table", "PC preparation requires both expected revisions")
+  assert(type(changes) == "table", "PC preparation requires a change record")
+  if expected.partyRevision ~= self._party:revision() or expected.boxRevision ~= self._boxes:revision() then
+    return nil, "stale"
+  end
+  local partyCandidate = self._party
+  if changes.party ~= nil then
+    if type(changes.party) ~= "table" then
+      MonsErrors.raise(MonsErrors.SAVE_INVALID, "PC party replacement must be an array", {})
+    end
+    local checked = {}
+    for index, mon in ipairs(changes.party) do
+      checked[index] = self:_checked(mon)
+    end
+    partyCandidate = self._party:withRoster(checked)
+  end
+  local boxUpdates = {}
+  for _, update in ipairs(changes.boxUpdates or {}) do
+    assert(type(update) == "table", "PC box updates must be records")
+    boxUpdates[#boxUpdates + 1] = {
+      box = update.box,
+      slot = update.slot,
+      mon = update.mon == false and false or self:_checked(update.mon),
+    }
+  end
+  for _, update in ipairs(changes.metadata or {}) do
+    if update.name ~= nil then
+      if type(update.name) ~= "string" then
+        MonsErrors.raise(MonsErrors.SAVE_INVALID, "box name must be text", {})
+      end
+      local glyphs = 0
+      for glyph in Utf8Glyphs.iter(update.name) do
+        if self._context.charmap[glyph] == nil then
+          MonsErrors.raise(MonsErrors.SAVE_INVALID, "box name contains an unencodable glyph", {})
+        end
+        glyphs = glyphs + 1
+      end
+      if glyphs > 19 then
+        MonsErrors.raise(MonsErrors.SAVE_INVALID, "box name exceeds nineteen glyphs", {})
+      end
+    end
+  end
+  local boxCandidate, stale = self._boxes:prepareChanges(expected.boxRevision, {
+    updates = boxUpdates,
+    metadata = changes.metadata,
+    activeBox = changes.activeBox,
+    bonusUnlocks = changes.bonusUnlocks,
+  })
+  if boxCandidate == nil then
+    return nil, stale
+  end
+  local capturedParty, capturedBoxes = self._party, self._boxes
+  local partyChanged = partyCandidate:revision() ~= capturedParty:revision()
+  local changed = partyChanged or boxCandidate.changed
+  local consumed = false
+  local function isCurrent()
+    return self._party == capturedParty
+      and self._boxes == capturedBoxes
+      and self._party:revision() == expected.partyRevision
+      and self._boxes:revision() == expected.boxRevision
+  end
+  local function publish()
+    assert(not consumed, "PC preparation publishes exactly once")
+    assert(isCurrent(), "PC preparation must be current before publication")
+    consumed = true
+    if partyChanged then
+      self._party = partyCandidate
+    end
+    boxCandidate.publish()
   end
   return { changed = changed, isCurrent = isCurrent, publish = publish }
 end
