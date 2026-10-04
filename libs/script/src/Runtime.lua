@@ -1952,6 +1952,46 @@ HANDLERS.wait_cry = handleWaitCry
 HANDLERS.wait_fanfare = handleWaitFanfare
 HANDLERS.wait_fade = handleWaitFade
 HANDLERS.warp = handleWarp
+function HANDLERS.overworld_leave(node, run)
+  requireForeground(run, node.op)
+  return blockOnTask(run, "overworld_lifecycle", { action = "leave" })
+end
+function HANDLERS.overworld_restore(node, run)
+  requireForeground(run, node.op)
+  return blockOnTask(run, "overworld_lifecycle", { action = "restore" })
+end
+function HANDLERS.current_map_id(node, run)
+  semanticsFor(run).writeRef(node.result, requireService(run, "maps"):currentId(), run)
+  return Runtime.OUTCOME_CONTINUE
+end
+function HANDLERS.prop_animation_load(node, run)
+  local semantics = semanticsFor(run)
+  requireService(run, "propAnimations"):load(
+    node.slot,
+    semantics.evaluateValue(node.fieldX, run),
+    semantics.evaluateValue(node.fieldZ, run)
+  )
+  return Runtime.OUTCOME_CONTINUE
+end
+function HANDLERS.prop_animation_play(node, run)
+  local slot = semanticsFor(run).evaluateValue(node.slot, run)
+  local propAnimations = requireService(run, "propAnimations")
+  assert(propAnimations ~= nil, "prop animation service is required")
+  propAnimations:play(slot, node.direction)
+  local sound = propAnimations:takeSound(slot)
+  if sound ~= nil then
+    requireService(run, "audio"):play(sound)
+  end
+  return Runtime.OUTCOME_CONTINUE
+end
+function HANDLERS.prop_animation_wait(node, run)
+  local slot = semanticsFor(run).evaluateValue(node.slot, run)
+  return blockOnTask(run, "prop_animation_wait", { slot = slot })
+end
+function HANDLERS.prop_animation_unload(node, run)
+  requireService(run, "propAnimations"):unload(semanticsFor(run).evaluateValue(node.slot, run))
+  return Runtime.OUTCOME_CONTINUE
+end
 -- Defined as a field statement without a chunk local: this translation unit
 -- is at Lua's local budget, and the handler needs no upvalue beyond the
 -- shared helpers.

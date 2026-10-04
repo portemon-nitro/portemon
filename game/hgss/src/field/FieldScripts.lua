@@ -227,6 +227,8 @@ end
 ---@field pcApplications table<string, unknown> the script-owned PC application host
 ---@field pcTerminal table<string, unknown> source PC terminal effects
 ---@field battle table<string, unknown>|nil the battle host for script battle tasks (absent -> SCRIPT_SERVICE_MISSING on use)
+---@field overworld table<string, unknown>|nil the shared field lifecycle owner
+---@field propAnimations table<string, unknown>|nil the map-scoped one-shot prop slot owner
 
 ---@class FieldScripts
 ---@field registry table<string, unknown>
@@ -246,6 +248,7 @@ end
 ---@field taskRegistry TaskRegistry the live registered-task registry
 ---@field initController MapInitScriptController
 ---@field mapSource RuntimeFieldMap the active runtime map map-scoped script state is bound to
+---@field propAnimations table<string, unknown>|nil
 local FieldScripts = {}
 FieldScripts.__index = FieldScripts
 
@@ -376,7 +379,11 @@ function FieldScripts.new(opts)
     followerInteractionEngine = followerInteractionEngine,
     player = player,
     mapSource = opts.sourceMap,
+    propAnimations = opts.propAnimations,
   }, FieldScripts)
+  if opts.propAnimations ~= nil then
+    opts.propAnimations:bindMap(opts.sourceMap)
+  end
 
   -- The live badge progression borrows the supplied profile: badge reads
   -- observe the persisted mask and awards mutate it in place. Without a
@@ -415,6 +422,8 @@ function FieldScripts.new(opts)
       player = player,
       dialogue = dialogueHost,
       maps = mapsService,
+      overworld = opts.overworld,
+      propAnimations = opts.propAnimations,
       -- Optional backends: an absent service faults the operation that
       -- needs it (SCRIPT_SERVICE_MISSING) instead of silently succeeding.
       -- The production game wires real audio/camera/screen/events here when
@@ -489,6 +498,9 @@ local function rebindMapContext(self, sourceMap)
   self.mapSource = sourceMap
   if self.followerInteractionEngine ~= nil then
     self.followerInteractionEngine.runtimeMap = sourceMap
+  end
+  if self.propAnimations ~= nil then
+    self.propAnimations:bindMap(sourceMap)
   end
 end
 

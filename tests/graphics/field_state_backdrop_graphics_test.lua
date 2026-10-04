@@ -58,6 +58,11 @@ local function drawableState(environment, worldViewport, windowWidth, windowHeig
         return 0.5
       end,
     },
+    overworld = {
+      isPresent = function()
+        return true
+      end,
+    },
     destinationWorldPresentable = function()
       return true
     end,

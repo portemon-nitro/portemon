@@ -102,6 +102,8 @@ function FieldScriptComposition.compose(runtime, options)
     pcApplications = runtime.pcApplicationHost,
     pcTerminal = runtime.pcTerminal,
     battle = options.battle,
+    overworld = runtime.overworld,
+    propAnimations = runtime.propAnimations,
   })
   local function restore()
     if options.loadedGame then

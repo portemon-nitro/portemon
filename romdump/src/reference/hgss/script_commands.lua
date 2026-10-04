@@ -2196,6 +2196,7 @@ return {
       widths = {},
     },
     [307] = {
+      classification = "continue_same_tick",
       name = "ScrCmd_307",
       widths = {
         [1] = 2,
@@ -2224,12 +2225,14 @@ return {
       },
     },
     [310] = {
+      classification = "continue_same_tick",
       name = "ScrCmd_310",
       widths = {
         [1] = 1,
       },
     },
     [311] = {
+      classification = "continue_same_tick",
       name = "ScrCmd_311",
       widths = {
         [1] = 1,
@@ -3226,6 +3229,7 @@ return {
       },
     },
     [436] = {
+      classification = "native_wait",
       name = "ScrCmd_436",
       widths = {},
     },
@@ -3299,6 +3303,7 @@ return {
       },
     },
     [446] = {
+      classification = "continue_same_tick",
       name = "ScrCmd_446",
       widths = {
         [1] = 2,

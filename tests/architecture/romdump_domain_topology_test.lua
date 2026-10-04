@@ -168,6 +168,7 @@ local EXISTING_DOMAINS = {
     "VanillaBindingIdentity",
     "Verifier",
     "lowering/AudioHandlers",
+    "lowering/BattleHandlers",
     "lowering/ControlHandlers",
     "lowering/FieldHandlers",
     "lowering/Operands",

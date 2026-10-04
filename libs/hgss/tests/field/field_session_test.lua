@@ -10,6 +10,7 @@ local FieldInput = require("libs.hgss.src.field.FieldInput")
 local FieldPlayerModule = require("libs.hgss.src.actors.FieldPlayer")
 local FieldPlayerVisual = require("libs.hgss.src.actors.FieldPlayerVisual")
 local FieldSessionModule = require("libs.hgss.src.field.FieldSession")
+local FieldOverworldLifecycle = require("libs.hgss.src.field.FieldOverworldLifecycle")
 local ScriptInteractionClient = require("libs.hgss.src.script.ScriptInteractionClient")
 local TerrainSurface = require("libs.hgss.src.world.TerrainSurface")
 local TilePermissions = require("tests.support.TilePermissions")
@@ -824,6 +825,31 @@ function T.camera_follows_the_player_xyz_each_fixed_tick()
   local s, targets = fixedSession()
   s:update(1 / 30)
   Assert.deepEqual(targets[1], { x = 1.25, y = 2.5, z = 3.75 })
+end
+
+function T.absent_overworld_keeps_scripts_running_and_suspends_actor_activity()
+  local lifecycle = FieldOverworldLifecycle.new()
+  lifecycle:requestLeave()
+  local scriptTicks, actorSteps = 0, 0
+  local options = baseOptions({
+    overworld = lifecycle,
+    scriptScheduler = {
+      step = function() scriptTicks = scriptTicks + 1 end,
+      playerInputLocked = function() return false end,
+      playerInputOwned = function() return false end,
+      foregroundEnvironmentId = function() return nil end,
+    },
+    actors = {
+      beginFixedStep = function() end,
+      step = function() actorSteps = actorSteps + 1 end,
+      finishFixedStep = function() end,
+    },
+  })
+  local session = FieldSession.new(options)
+  session:updateFixed({})
+  Assert.equal(lifecycle:phase(), "absent")
+  Assert.equal(scriptTicks, 1, "script scheduler continues while overworld is absent")
+  Assert.equal(actorSteps, 0, "autonomous actors stay suspended")
 end
 
 function T.map_init_claims_the_tick_before_scheduler_and_player_input()

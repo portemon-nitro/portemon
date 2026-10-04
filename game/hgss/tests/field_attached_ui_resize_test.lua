@@ -49,6 +49,11 @@ local function drawState(topologyProvider, pollTopology)
         return 0
       end,
     },
+    overworld = {
+      isPresent = function()
+        return true
+      end,
+    },
     destinationWorldPresentable = function()
       return true
     end,
@@ -367,6 +372,11 @@ local function fieldStateWithCapturedUi(worldViewport, cameraZoom, viewportWidth
       session = {
         renderAlpha = function()
           return 0
+        end,
+      },
+      overworld = {
+        isPresent = function()
+          return true
         end,
       },
       destinationWorldPresentable = function()

@@ -71,6 +71,7 @@ Schema.ENUMS = {
   -- Battle result read contexts: the ordinary won check and the static
   -- wild won-or-caught check.
   battle_result_context = { "battle_won", "static_wild_won_or_caught" },
+  prop_animation_direction = { "forward", "reverse" },
 }
 
 Schema.ACTOR_SPECIALS = { "player", "self", "last_talked", "partner", "camera_target" }
@@ -102,6 +103,12 @@ Schema.VALUES = {
   object_id = { fields = { ref = { type = "actor", required = true } } },
   trigger_background_id = { fields = {} },
   trigger_direction = { fields = {} },
+  scaled_coordinate = {
+    fields = {
+      coordinate = { type = "scalar_or_value", required = true },
+      chunkOffset = { type = "integer", required = true },
+    },
+  },
 }
 
 -- Text-value descriptors. Descriptors are never
@@ -731,6 +738,24 @@ Schema.OPERATIONS = {
       facing = { type = "scalar_or_value", required = true },
     },
   },
+  overworld_leave = { fields = {} },
+  overworld_restore = { fields = {} },
+  current_map_id = { fields = { result = { type = "id_or_var", required = true } } },
+  prop_animation_load = {
+    fields = {
+      fieldX = { type = "scalar_or_value", required = true },
+      fieldZ = { type = "scalar_or_value", required = true },
+      slot = { type = "integer", required = true },
+    },
+  },
+  prop_animation_play = {
+    fields = {
+      slot = { type = "scalar_or_value", required = true },
+      direction = { type = "enum:prop_animation_direction", required = true },
+    },
+  },
+  prop_animation_wait = { fields = { slot = { type = "scalar_or_value", required = true } } },
+  prop_animation_unload = { fields = { slot = { type = "scalar_or_value", required = true } } },
   set_spawn = { fields = { spawn = { type = "string", required = true } } },
   -- The source special-spawn setter (opcode 582): records a pending spawn
   -- location distinct from `set_spawn`'s named spawn-point concept. warpId

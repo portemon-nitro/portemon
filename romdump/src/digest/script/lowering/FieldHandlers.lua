@@ -1,5 +1,6 @@
 -- Script lowering handlers for field interactions and actor/UI operations.
 local Operands = require("romdump.src.digest.script.lowering.Operands")
+local BattleHandlers = require("romdump.src.digest.script.lowering.BattleHandlers")
 local MovementDecoder = require("romdump.src.digest.script.MovementDecoder")
 local SignpostCommands = require("romdump.src.reference.hgss.signpost_commands")
 local PlayerAvatar = require("romdump.src.reference.hgss.player_avatar")
@@ -701,6 +702,40 @@ end
 -- script continues with its own story flags.
 local function chooseStarter(_)
   return { op = "choose_starter" }
+end
+
+local function overworldLeave(_)
+  return { op = "overworld_leave" }
+end
+
+local function currentMapId(ins)
+  return { op = "current_map_id", result = Operands.varRef(ins.operands[1]) }
+end
+
+local function propAnimationLoad(ins)
+  local chunkX = Operands.operandValue(ins.operands[1])
+  local chunkZ = Operands.operandValue(ins.operands[2])
+  local localX = Operands.varRef(ins.operands[3])
+  local localZ = Operands.varRef(ins.operands[4])
+  assert(type(chunkX) == "number" and type(chunkZ) == "number", "prop animation chunks must be numeric")
+  return {
+    op = "prop_animation_load",
+    fieldX = { value = "scaled_coordinate", coordinate = localX, chunkOffset = chunkX },
+    fieldZ = { value = "scaled_coordinate", coordinate = localZ, chunkOffset = chunkZ },
+    slot = Operands.operandValue(ins.operands[5]),
+  }
+end
+
+local function propAnimationPlay(ins, direction)
+  return { op = "prop_animation_play", slot = Operands.varRef(ins.operands[1]), direction = direction }
+end
+
+local function propAnimationPlayForward(ins)
+  return propAnimationPlay(ins, "forward")
+end
+
+local function propAnimationPlayReverse(ins)
+  return propAnimationPlay(ins, "reverse")
 end
 
 local function nicknameInput(ins)
@@ -1431,43 +1466,6 @@ local function setDefaultFieldReturn(ins)
   }
 end
 
--- Battle launch and result lowering. TrainerBattle and WildBattle become
--- blocking battle_launch operations carrying their pinned operand layout:
--- the leading identity operands ride value-or-variable references (the
--- source reads them through ScriptGetVar) while trailing operands are
--- preserved opaquely for the battle host, whose meanings stay unpinned.
--- CheckBattleWon becomes the same-tick battle_result read into its
--- result variable. No unknown battle opcode maps to an ordinary launch:
--- anything else stays an explicit unsupported node with its owning
--- application named in the command catalog.
-local function trainerBattle(ins)
-  return {
-    op = "battle_launch",
-    kind = "trainer",
-    details = {
-      trainer = Operands.varRef(ins.operands[1]),
-      encounter = Operands.varRef(ins.operands[2]),
-      args = { Operands.operandValue(ins.operands[3]), Operands.operandValue(ins.operands[4]) },
-    },
-  }
-end
-
-local function wildBattle(ins)
-  return {
-    op = "battle_launch",
-    kind = "wild",
-    details = {
-      species = Operands.varRef(ins.operands[1]),
-      level = Operands.varRef(ins.operands[2]),
-      args = { Operands.operandValue(ins.operands[3]) },
-    },
-  }
-end
-
-local function checkBattleWon(ins)
-  return { op = "battle_result", result = Operands.varRef(ins.operands[1]) }
-end
-
 local function actorOscillate(ins)
   local sourceAmplitudeX = Operands.varRef(ins.operands[4])
   local sourceAmplitudeZ = Operands.varRef(ins.operands[5])
@@ -1661,9 +1659,9 @@ return {
   [294] = checkBadge,
   [295] = awardBadge,
   [296] = countBadges,
-  [213] = trainerBattle,
-  [220] = checkBattleWon,
-  [589] = wildBattle,
+  [213] = BattleHandlers.trainerBattle,
+  [220] = BattleHandlers.checkBattleWon,
+  [589] = BattleHandlers.wildBattle,
   [746] = hideAuxiliaryUi,
   [747] = showAuxiliaryUi,
   [748] = contextChoice,
@@ -1676,4 +1674,9 @@ return {
   [178] = explicitFieldMove("surf"),
   [179] = explicitFieldMove("waterfall"),
   [182] = explicitFieldMove("whirlpool"),
+  [307] = propAnimationLoad,
+  [310] = propAnimationPlayForward,
+  [311] = propAnimationPlayReverse,
+  [436] = overworldLeave,
+  [446] = currentMapId,
 }

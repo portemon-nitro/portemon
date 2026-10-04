@@ -67,6 +67,7 @@ local MetatileBehavior = require("libs.hgss.src.world.MetatileBehavior")
 ---@field audio { updateField: fun(self: table<string, unknown>), play: fun(self: table<string, unknown>, idOrSymbol: string) }?
 ---@field navigationBoundary table<string, unknown>?
 ---@field fieldMoves FieldSession.FieldMoves? validated push/disembark port; absent sessions bump boulders
+---@field overworld table<string, unknown>? lifecycle owner; absent sessions keep script scheduling but suspend ordinary field work
 ---@field initController table<string, unknown>|nil
 ---@field enterMapActors fun()?
 ---@field autoAcknowledgePresentation boolean?
@@ -113,6 +114,7 @@ local MetatileBehavior = require("libs.hgss.src.world.MetatileBehavior")
 ---@field mapEntryStage FieldMapEntryStage? read-only view of mapEntryController state
 ---@field mapEntryController FieldMapEntryController
 ---@field private fieldMoves FieldSession.FieldMoves? validated push/disembark port; absent sessions bump boulders
+---@field private overworld table<string, unknown>|nil
 ---@field childResumePending boolean
 ---@field battleActive boolean whether an application battle owns player input
 ---@field tick integer
@@ -394,6 +396,7 @@ function FieldSession.new(options)
     battleActive = false,
     navigationBoundary = options.navigationBoundary,
     fieldMoves = options.fieldMoves,
+    overworld = options.overworld,
     tick = 0,
     accumulator = 0,
     _boundaryMovementDirection = nil,
@@ -846,6 +849,9 @@ function FieldSession:updateFixed(inputSnapshot)
   -- and changed-zone audio are owned by FieldAudioController:enterMap and
   -- FieldAudioController:enterZone respectively.
   inputSnapshot = inputSnapshot or self.input:snapshot()
+  if self.overworld ~= nil then
+    self.overworld:updateFixed()
+  end
   -- The avatar presentation phase advances once per fixed tick before any
   -- modal branch can return, so the surf bob runs on the field cadence even
   -- while ordinary world simulation is frozen.
@@ -951,6 +957,15 @@ function FieldSession:updateFixed(inputSnapshot)
   self.actors:beginFixedStep()
   local playerInputOwnedAtTickStart = runScriptPhase(self, inputSnapshot)
   if advancePostSchedulerBoundary(self) == TICK_CONSUMED then
+    return
+  end
+
+  if self.overworld ~= nil and not self.overworld:isPresent() then
+    self.currentMap:updateAnimated()
+    if self.audio then
+      self.audio:updateField()
+    end
+    self:_advanceTick()
     return
   end
 

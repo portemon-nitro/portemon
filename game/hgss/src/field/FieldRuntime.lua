@@ -52,6 +52,8 @@ local VanillaMartStock = require("game.hgss.src.mart.VanillaMartStock")
 local BattleDataCache = require("libs.assets.src.battle.BattleDataCache")
 local FieldScriptSymbols = require("libs.assets.src.field.FieldScriptSymbols")
 local FieldSession = require("libs.hgss.src.field.FieldSession")
+local FieldOverworldLifecycle = require("libs.hgss.src.field.FieldOverworldLifecycle")
+local FieldScriptPropAnimations = require("libs.hgss.src.field.FieldScriptPropAnimations")
 local FieldSignpostController = require("libs.hgss.src.interaction.FieldSignpostController")
 local TextSpeedPolicy = require("libs.hgss.src.ui.TextSpeedPolicy")
 local FieldUiAssetCache = require("libs.assets.src.field.FieldUiAssetCache")
@@ -211,6 +213,8 @@ end
 ---@field followerTransitionDefinition table<string, unknown>? the compiled follower-transition definition behind the transient owner
 ---@field starterBalls table<string, unknown>? the Elm starter-ball runtime-prop controller (nil after teardown)
 ---@field session FieldSession
+---@field overworld FieldOverworldLifecycle
+---@field propAnimations FieldScriptPropAnimations
 ---@field actors FieldActorManager
 ---@field actorAssets FieldActorAssets
 ---@field dialogue FieldDialogueController?
@@ -1561,6 +1565,8 @@ function FieldRuntime.new(game, options)
     martStockResolver = options.martStockResolver,
     errorText = nil,
     fieldPixelScale = FieldPixelScale.new(options.fieldScaleConfig or FieldPresentation.fieldScale),
+    overworld = FieldOverworldLifecycle.new(),
+    propAnimations = FieldScriptPropAnimations.new(),
   }, FieldRuntime)
   -- The actual-display measurement owner: shared when the product root
   -- supplies one, otherwise a runtime-owned context whose provider tracks
@@ -2647,6 +2653,12 @@ end
 -- dialogue -- and the field clearing means reset never leaves a hand-picked
 -- subset behind for its re-boot.
 function FieldRuntime:_releaseAll()
+  if self.propAnimations then
+    self.propAnimations:clear()
+  end
+  if self.overworld then
+    self.overworld:dispose()
+  end
   if self.battleRuntime then
     self.battleRuntime:dispose()
   end
