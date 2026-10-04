@@ -10,13 +10,15 @@ local AcceptanceHarness = require("tests.acceptance.support.AcceptanceHarness")
 local BagCache = require("libs.assets.src.BagCache")
 local PartyActions = require("libs.hgss.src.field.PartyActions")
 local PartyCache = require("libs.assets.src.PartyCache")
+local MailActions = require("libs.hgss.src.field.MailActions")
+local PcCache = require("libs.assets.src.PcCache")
 
 local FLOW_MODULE = "game.hgss.src.field.PokemonMenuFlow"
 
 local T = {
   metadata = {
-    capabilities = { "rom_dump" },
-    derivedAssets = { "field-runtime", "audio-bank:730", "map-data:7", "map:7" },
+    capabilities = { "rom_dump", "derived_assets" },
+    derivedAssets = { "field-runtime", "audio-bank:730", "map-data:7", "map:7", "pc:global" },
     tags = { "party", "bag", "flow" },
   },
   tests = {},
@@ -83,12 +85,17 @@ local function openFlow(game, root)
   local bag = assert(runtime.bagService, "field runtime owns the live bag service")
   local actions = PartyActions.new({ mons = mons, bag = bag })
   local cacheFs = assert(runtime.cacheFs, "field runtime owns its asset filesystem")
+  local mailbox = assert(runtime.mailbox, "field runtime owns the live Mailbox")
+  local pcManifest = PcCache.loadManifest(cacheFs)
   return Flow.new({
     root = root,
     mons = mons,
     bag = bag,
     bagCursor = assert(runtime.bagCursor, "field runtime owns the live bag cursor"),
     partyActions = actions,
+    mailActions = MailActions.new({ mons = mons, mailbox = mailbox, bag = bag, manifest = pcManifest }),
+    mailbox = mailbox,
+    pcManifest = pcManifest,
     fieldMoves = {
       check = function(_)
         return { kind = "ok" }
@@ -171,8 +178,12 @@ local function driveUntil(flow, label, maxSteps, predicate)
   end
   local status = flow:status()
   error(
-    "the flow never reaches " .. label .. "; page=" .. tostring(status.page)
-      .. "; child state=" .. tostring(status.child and status.child.state),
+    "the flow never reaches "
+      .. label
+      .. "; page="
+      .. tostring(status.page)
+      .. "; child state="
+      .. tostring(status.child and status.child.state),
     0
   )
 end
@@ -446,10 +457,8 @@ function T.tests.party_give_round_trip_preserves_target_identity()
       return current.child ~= nil and current.child.state == "message"
     end)
     Assert.equal(status.child.message.templateKey, "switchHeldPrompt", "the generated replacement text precedes Yes/No")
-    local heldItemName = assert(
-      game.runtime.itemCatalog:item("GREAT_BALL").name,
-      "the item catalog publishes its display name"
-    )
+    local heldItemName =
+      assert(game.runtime.itemCatalog:item("GREAT_BALL").name, "the item catalog publishes its display name")
     Assert.equal(#status.child.message.itemNames, 1, "the replacement question names exactly the held item")
     Assert.deepEqual(
       status.child.message.itemNames,
@@ -511,14 +520,10 @@ function T.tests.party_give_round_trip_preserves_target_identity()
       "switchHeldResult",
       "the exchange result uses its generated template"
     )
-    local oldItemName = assert(
-      game.runtime.itemCatalog:item("GREAT_BALL").name,
-      "the item catalog publishes its display name"
-    )
-    local newItemName = assert(
-      game.runtime.itemCatalog:item("POTION").name,
-      "the item catalog publishes its display name"
-    )
+    local oldItemName =
+      assert(game.runtime.itemCatalog:item("GREAT_BALL").name, "the item catalog publishes its display name")
+    local newItemName =
+      assert(game.runtime.itemCatalog:item("POTION").name, "the item catalog publishes its display name")
     Assert.equal(#status.child.message.itemNames, 2, "the exchange result names exactly the old and new items")
     Assert.deepEqual(
       status.child.message.itemNames,
@@ -584,16 +589,10 @@ function T.tests.party_give_from_an_empty_holder_resumes_its_result()
       "giveHeldItem",
       "the empty-holder result uses its generated template"
     )
-    local givenItemName = assert(
-      game.runtime.itemCatalog:item("GREAT_BALL").name,
-      "the item catalog publishes its display name"
-    )
+    local givenItemName =
+      assert(game.runtime.itemCatalog:item("GREAT_BALL").name, "the item catalog publishes its display name")
     Assert.equal(#status.child.message.itemNames, 1, "the give result names exactly the given item")
-    Assert.deepEqual(
-      status.child.message.itemNames,
-      { givenItemName },
-      "the give result names the given item in order"
-    )
+    Assert.deepEqual(status.child.message.itemNames, { givenItemName }, "the give result names the given item in order")
 
     local continuationChild = flow._child
     Assert.equal(mons:partyMon(0).heldItem, "GREAT_BALL", "the selected item applies to the originating slot")

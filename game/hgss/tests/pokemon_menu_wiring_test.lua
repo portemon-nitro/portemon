@@ -22,6 +22,10 @@ local HgssMonService = require("libs.hgss.src.mons.HgssMonService")
 local ItemCatalog = require("libs.items.src.ItemCatalog")
 local ItemFixture = require("libs.items.tests.item_fixture")
 local Lcrng = require("libs.mons.src.gen4.Lcrng")
+local Mailbox = require("libs.hgss.src.save.Mailbox")
+local PcCache = require("libs.assets.src.PcCache")
+local BagCache = require("libs.assets.src.BagCache")
+local PartyCache = require("libs.assets.src.PartyCache")
 local MonsSave = require("libs.mons.src.MonsSave")
 local Party = require("libs.mons.src.Party")
 local PartyActions = require("libs.hgss.src.field.PartyActions")
@@ -212,6 +216,18 @@ local function worldPorts(overrides)
   return ports
 end
 
+local function pcManifest()
+  local stationery = {}
+  for stationeryType = 0, 11 do
+    stationery[stationeryType] = { itemKey = "MAIL_" .. stationeryType }
+  end
+  return {
+    schema = "g4-pc-v1",
+    mailbox = { background = {}, geometry = { visibleLetters = 10 }, pageSize = 10 },
+    mail = { stationery = stationery, geometry = { iconSlots = 3 }, text = { templates = {} }, wordDictionary = {} },
+  }
+end
+
 local function compositionDeps(overrides)
   local mons = openMons(90210)
   local bag = openBag()
@@ -221,6 +237,8 @@ local function compositionDeps(overrides)
     bagCursor = BagCursor.new(),
     itemCatalog = bag:catalog(),
     monCatalog = CatalogFixture.makeCatalog(),
+    mailbox = Mailbox.new(),
+    pcManifest = pcManifest(),
     bagManifest = {},
     partyManifest = {},
     uiManifest = FieldUiFixture.manifest(),
@@ -647,6 +665,70 @@ function T.tests.context_free_cancel_marks_state_and_disposal_releases_once()
   composition.dispose()
   composition.dispose()
   Assert.isFalse(composition.fieldMoves:isBusy(), "repeated disposal never repolls work")
+end
+
+function T.tests.field_menu_coordinator_passes_its_runtime_mailbox_and_loaded_pc_manifest()
+  local deps = compositionDeps()
+  local mailbox = Mailbox.new()
+  local pcManifest = pcManifest()
+  local cacheFs = {}
+  local originalPcLoad, originalBagLoad, originalPartyLoad =
+    PcCache.loadManifest, BagCache.loadManifest, PartyCache.loadManifest
+  local seenPcFs
+  PcCache.loadManifest = function(fs)
+    seenPcFs = fs
+    return pcManifest
+  end
+  BagCache.loadManifest = function(fs)
+    Assert.equal(fs, cacheFs, "Bag assets use the requested version cache")
+    return deps.bagManifest
+  end
+  PartyCache.loadManifest = function(fs)
+    Assert.equal(fs, cacheFs, "Party assets use the requested version cache")
+    return deps.partyManifest
+  end
+  local runtime = {
+    avatar = { gender = 0 },
+    transition = {},
+    mapLoader = {},
+    runtimeMap = { mapSymbol = "MAP_ROUTE_29", mapId = 200, fieldData = { fieldUse = {} } },
+    actors = deps.worldPorts.actors,
+    eventState = deps.worldPorts.events,
+    playerData = { profile = deps.worldPorts.profile, options = { textSpeed = "mid" } },
+    player = {},
+    playerAvatar = {},
+    presentationDisplay = stubMeasurement(),
+    monService = deps.mons,
+    bagService = deps.bag,
+    mailbox = mailbox,
+    bagCursor = deps.bagCursor,
+    itemCatalog = deps.itemCatalog,
+    monCatalog = deps.monCatalog,
+    uiManifest = deps.uiManifest,
+    _partyIconPreparation = { prepare = deps.prepareIcons, cancel = deps.cancelIconPreparation },
+    applyAvatarTransitions = function() end,
+  }
+  local coordinator = FieldMenuCompositionCoordinator.new(runtime)
+  coordinator.menuFieldSources = function()
+    return deps.contextSources
+  end
+  coordinator.menuPlayerPort = function()
+    return deps.worldPorts.player
+  end
+  local ok, message = pcall(function()
+    coordinator:composePokemonMenu(cacheFs)
+    Assert.equal(seenPcFs, cacheFs, "the production composition validates PC assets through its version cache")
+    local child = runtime.pokemonMenu.makeMailboxChild()
+    Assert.equal(child.mailbox, mailbox, "the child borrows the runtime Mailbox owner")
+    Assert.equal(child.manifest, pcManifest, "the child receives PcCache's validated manifest")
+    child:dispose()
+    runtime.pokemonMenu.dispose()
+  end)
+  PcCache.loadManifest, BagCache.loadManifest, PartyCache.loadManifest =
+    originalPcLoad, originalBagLoad, originalPartyLoad
+  if not ok then
+    error(message, 0)
+  end
 end
 
 return T

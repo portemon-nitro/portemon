@@ -13,13 +13,19 @@ local FieldMoveContext = require("game.hgss.src.field.FieldMoveContext")
 local FieldMapDataCache = require("libs.assets.src.field.FieldMapDataCache")
 local FieldMoveWorld = require("game.hgss.src.field.FieldMoveWorld")
 local PokemonMenuFlow = require("game.hgss.src.field.PokemonMenuFlow")
+local MailActions = require("libs.hgss.src.field.MailActions")
+local MailboxScreenState = require("game.hgss.src.pc.MailboxScreenState")
+local PartyScreenState = require("game.hgss.src.field.PartyScreenState")
 
 ---@class PokemonMenuComposition
 ---@field partyActions table<string, unknown> borrowed action coordinator
+---@field mailActions table<string, unknown> borrowed action coordinator
 ---@field fieldMoves table<string, unknown> owned field-move runtime
 ---@field fieldTravel table<string, unknown>? borrowed travel owner
 ---@field makeBagFlow fun(): table<string, unknown>
 ---@field makePartyFlow fun(): table<string, unknown>
+---@field makeMailboxChild fun(): table<string, unknown>
+---@field mailboxCount fun(): integer
 ---@field dispose fun()
 local PokemonMenuComposition = {}
 
@@ -32,6 +38,8 @@ local PokemonMenuComposition = {}
 ---@field bagManifest table<string, unknown> generated Bag manifest (borrowed)
 ---@field partyManifest table<string, unknown> generated Party manifest (borrowed)
 ---@field uiManifest table<string, unknown> validated field-UI manifest (borrowed)
+---@field mailbox table<string, unknown> persistent Mailbox (borrowed)
+---@field pcManifest table<string, unknown> validated PC manifest (borrowed)
 ---@field heroGender string "male" or "female"
 ---@field measureDisplay fun(): table<string, unknown> current display facts
 ---@field prepareIcons fun(iconKeys: string[]): boolean, string? presented icon preparation (borrowed binding)
@@ -79,6 +87,8 @@ function PokemonMenuComposition.create(deps)
   local bagManifest = assert(deps.bagManifest, "the menu composition borrows the generated bag manifest")
   local partyManifest = assert(deps.partyManifest, "the menu composition borrows the generated party manifest")
   local uiManifest = assert(deps.uiManifest, "the menu composition borrows the validated field-UI manifest")
+  local mailbox = assert(deps.mailbox, "the menu composition borrows the persistent Mailbox")
+  local pcManifest = assert(deps.pcManifest, "the menu composition borrows the compiled PC manifest")
   assert(deps.heroGender == "male" or deps.heroGender == "female", "the menu composition needs the hero gender")
   local measureDisplay = assert(deps.measureDisplay, "the menu composition needs the display facts")
   assert(type(measureDisplay) == "function", "the menu composition needs the display facts")
@@ -95,6 +105,7 @@ function PokemonMenuComposition.create(deps)
   assert(deps.textPolicy == nil or type(deps.textPolicy) == "table", "the menu composition carries a text policy")
 
   local partyActions = PartyActions.new({ mons = mons, bag = bag })
+  local mailActions = MailActions.new({ mons = mons, mailbox = mailbox, bag = bag, manifest = pcManifest })
   local ports = {}
   for key, port in pairs(worldPorts) do
     ports[key] = port
@@ -128,6 +139,9 @@ function PokemonMenuComposition.create(deps)
       bag = bag,
       bagCursor = bagCursor,
       partyActions = partyActions,
+      mailActions = mailActions,
+      mailbox = mailbox,
+      pcManifest = pcManifest,
       fieldMoves = { check = checkPort },
       assets = assets,
       measureDisplay = measureDisplay,
@@ -155,13 +169,50 @@ function PokemonMenuComposition.create(deps)
   local function makePartyFlow()
     return makeFlow("party")
   end
+  local function makeMailboxChild()
+    local function makePartyPicker()
+      return PartyScreenState.new({
+        service = mons,
+        manifest = partyManifest,
+        uiManifest = uiManifest,
+        context = "pick",
+        measureDisplay = measureDisplay,
+        prepareIcons = prepareIcons,
+        cancelIconPreparation = cancelIconPreparation,
+        effect = deps.effect,
+      })
+    end
+    return MailboxScreenState.new({
+      mode = "mailbox",
+      mailbox = mailbox,
+      mailActions = mailActions,
+      manifest = pcManifest,
+      itemCatalog = itemCatalog,
+      monCatalog = monCatalog,
+      measureDisplay = measureDisplay,
+      audio = { play = deps.effect },
+      createPartyPicker = makePartyPicker,
+    })
+  end
+  local function mailboxCount()
+    local count = 0
+    for slot = 0, mailbox:count() - 1 do
+      if mailbox:get(slot) ~= nil then
+        count = count + 1
+      end
+    end
+    return count
+  end
 
   return {
     partyActions = partyActions,
+    mailActions = mailActions,
     fieldMoves = fieldMoves,
     fieldTravel = deps.fieldTravel,
     makeBagFlow = makeBagFlow,
     makePartyFlow = makePartyFlow,
+    makeMailboxChild = makeMailboxChild,
+    mailboxCount = mailboxCount,
     dispose = dispose,
   }
 end
