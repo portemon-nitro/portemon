@@ -512,4 +512,207 @@ function T.revival_servings_fail_as_unmodeled()
   Assert.deepEqual(view.inventories.party.quantities, { REMEDY = 1 }, "revival failures consume no stock")
 end
 
+-- Battle-only servings plan from their generated battle use: X-items
+-- raise stages, dire hits focus, guard specs screen the side, and
+-- battle cures clear volatiles. Servings without any applicable effect
+-- refuse, and execution consumes exactly once into the ledger.
+
+---@return table<string, integer> flat battle-local stages under test preparation
+local function flatStages()
+  return {
+    attack = 0,
+    defense = 0,
+    speed = 0,
+    specialAttack = 0,
+    specialDefense = 0,
+    accuracy = 0,
+    evasion = 0,
+  }
+end
+
+---@param stages table<string, integer>? battle-local stages, flat when absent
+---@return table holder combatant with health, stages, and an entry token
+local function battleHolder(stages)
+  return {
+    hp = 10,
+    maxHp = 30,
+    mon = { condition = { currentHp = 10, effects = {} } },
+    stages = stages or flatStages(),
+    active = { position = 1, activation = 7 },
+    participant = 1,
+  }
+end
+
+---@param key string item key stocked under test preparation
+---@param holder table holder combatant under test preparation
+---@return table declared battle state carrying one battle item and the holder
+local function battleView(key, holder)
+  return {
+    inventories = { pack = { quantities = { [key] = 1 }, revision = 0 } },
+    outstanding = {},
+    combatants = { [1] = holder },
+  }
+end
+
+---@param key string item key stocked under test preparation
+---@param holder table holder combatant under test preparation
+---@return table battle-owned execution state carrying one battle item and the holder
+local function battleState(key, holder)
+  local EffectBag = SessionFixture.requirePresent(
+    "libs.battle.src.EffectBag",
+    "the live effect owner holds battle-local instances"
+  )
+  return {
+    inventories = { pack = { quantities = { [key] = 1 }, revision = 0 } },
+    ledger = {},
+    combatants = { [1] = holder },
+    participants = { [1] = { side = 1 } },
+    effectBag = EffectBag.new(),
+    sequence = 0,
+    outbox = {},
+  }
+end
+
+---@param key string item key choosing under test preparation
+---@return table item choice serving the shared battle item to the holder
+local function battleChoice(key)
+  return { inventoryId = "pack", item = key, target = { kind = "combatant", combatant = 1 } }
+end
+
+---@param stages table<string, integer> decoded native stage flags under test preparation
+---@param cures table<string, boolean>? battle cure flags, none when absent
+---@param guardSpec boolean? guard screen flag, unset when absent
+---@return table<string, table<string, unknown>> semantic facts for one battle serving
+local function battleFacts(stages, cures, guardSpec)
+  return {
+    X_ITEM = {
+      partyUse = { kind = "deferred", reason = "battle_only" },
+      battleUse = {
+        cures = cures or { confusion = false, infatuation = false },
+        guardSpec = guardSpec or false,
+        stages = stages,
+      },
+    },
+  }
+end
+
+local function attackStage()
+  return {
+    attack = 1,
+    defense = 0,
+    specialAttack = 0,
+    specialDefense = 0,
+    speed = 0,
+    accuracy = 0,
+    critical = 0,
+  }
+end
+
+function T.x_items_plan_a_stage_serving_from_battle_use()
+  local ItemUse = itemUse("battle servings read their generated battle use")
+  local holder = battleHolder()
+  local plan = ItemUse.plan(battleChoice("X_ITEM"), battleView("X_ITEM", holder), battleFacts(attackStage()))
+  Assert.isNil(plan.failureReason, "the stage serving plans")
+  Assert.equal(#plan.effectOperations, 1, "the stage serving carries one operation")
+  local operation = plan.effectOperations[1] --[[@as table<string, unknown>]]
+  Assert.equal(operation.kind, "stage", "the operation raises a stage")
+  Assert.equal(operation.stat, "attack", "the operation names its stat")
+end
+
+function T.capped_stages_refuse_without_effect()
+  local ItemUse = itemUse("battle servings refuse without an applicable effect")
+  local stages = flatStages()
+  stages.attack = 6
+  local plan =
+    ItemUse.plan(battleChoice("X_ITEM"), battleView("X_ITEM", battleHolder(stages)), battleFacts(attackStage()))
+  Assert.equal(plan.failureReason, "no_effect", "the capped serving refuses")
+  Assert.deepEqual(plan.effectOperations, {}, "a refused plan lists no effects")
+end
+
+function T.x_attack_execution_raises_the_stage_exactly_once()
+  local ItemUse = itemUse("battle servings execute their generated battle use")
+  local holder = battleHolder()
+  local battle = battleState("X_ITEM", holder)
+  local plan = ItemUse.plan(battleChoice("X_ITEM"), battleView("X_ITEM", holder), battleFacts(attackStage()))
+  Assert.isNil(plan.failureReason, "the stage serving plans")
+  local outcome = ItemUse.execute(plan, battle)
+  Assert.isTrue(outcome.consumed, "the serving consumes")
+  Assert.equal(battle.inventories.pack.quantities.X_ITEM, 0, "execution spends exactly one unit")
+  Assert.equal(#battle.ledger, 1, "execution writes exactly one ledger delta")
+  Assert.equal(battle.ledger[1].delta, -1, "the ledger delta consumes one unit")
+  Assert.equal(holder.stages.attack, 1, "execution raises attack by one stage")
+  local ok, failure = pcall(ItemUse.execute, plan, battle)
+  Assert.isFalse(ok, "the plan never executes twice")
+  Assert.equal((failure --[[@as table]]).code, "already_executed", "reruns report their stamp")
+end
+
+function T.dire_hits_focus_through_battle_use()
+  local ItemUse = itemUse("battle servings focus through their generated battle use")
+  local stages = {
+    attack = 0,
+    defense = 0,
+    specialAttack = 0,
+    specialDefense = 0,
+    speed = 0,
+    accuracy = 0,
+    critical = 1,
+  }
+  local holder = battleHolder()
+  local battle = battleState("X_ITEM", holder)
+  local plan = ItemUse.plan(battleChoice("X_ITEM"), battleView("X_ITEM", holder), battleFacts(stages))
+  Assert.isNil(plan.failureReason, "the focus serving plans")
+  ItemUse.execute(plan, battle)
+  local BattleContext = SessionFixture.requirePresent(
+    "libs.battle.src.BattleContext",
+    "the validated mutation surface owns mechanics reads"
+  )
+  local context = BattleContext.wrap(battle)
+  Assert.isTrue(context:hasBattleEffect(1, "focusenergy"), "execution focuses its holder")
+  Assert.equal(holder.stages.attack, 0, "focus moves no stage")
+end
+
+function T.guard_specs_screen_the_side_through_battle_use()
+  local ItemUse = itemUse("battle servings screen through their generated battle use")
+  local holder = battleHolder()
+  local battle = battleState("X_ITEM", holder)
+  local plan =
+    ItemUse.plan(battleChoice("X_ITEM"), battleView("X_ITEM", holder), battleFacts(attackStage(), nil, true))
+  Assert.isNil(plan.failureReason, "the guard serving plans")
+  ItemUse.execute(plan, battle)
+  local BattleContext = SessionFixture.requirePresent(
+    "libs.battle.src.BattleContext",
+    "the validated mutation surface owns mechanics reads"
+  )
+  local context = BattleContext.wrap(battle)
+  Assert.isTrue(context:sideEffect(1, "mist") ~= nil, "execution screens the holder side")
+end
+
+function T.battle_cures_clear_volatiles_through_battle_use()
+  local ItemUse = itemUse("battle servings clear volatiles through their generated battle use")
+  local NativeEffects = SessionFixture.requirePresent(
+    "libs.battle.src.gen4.behaviors.effects.NativeEffectHandlers",
+    "typed battle-local writes own volatile definitions"
+  )
+  local holder = battleHolder()
+  local battle = battleState("X_ITEM", holder)
+  local BattleContext = SessionFixture.requirePresent(
+    "libs.battle.src.BattleContext",
+    "the validated mutation surface owns mechanics writes"
+  )
+  local context = BattleContext.wrap(battle)
+  context:addBattleEffect(
+    NativeEffects.definitionFor("confusion"),
+    { kind = "active", combatant = 1, activation = 7 },
+    { kind = "item", combatant = 1 },
+    { version = 1, turns = 3 }
+  )
+  Assert.isTrue(context:hasBattleEffect(1, "confusion"), "setup confuses the holder")
+  local cures = { confusion = true, infatuation = false }
+  local plan =
+    ItemUse.plan(battleChoice("X_ITEM"), battleView("X_ITEM", holder), battleFacts(attackStage(), cures, false))
+  Assert.isNil(plan.failureReason, "the cure serving plans")
+  ItemUse.execute(plan, battle)
+  Assert.isFalse(context:hasBattleEffect(1, "confusion"), "execution clears the volatile")
+end
+
 return { tests = T }

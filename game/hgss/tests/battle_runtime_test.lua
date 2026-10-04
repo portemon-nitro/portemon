@@ -623,6 +623,67 @@ function T.session_item_facts_project_exactly_the_referenced_party_use()
   battle:dispose()
 end
 
+-- Battle-use riders project beside party use through the same
+-- projector: a stub catalog carrying battle-use, throw, and missing
+-- records proves each family lands detached without leaking across.
+function T.session_item_facts_project_battle_use_and_throw_facts()
+  local BattleRuntime = requirePresent(RUNTIME_MODULE, "application battle lifetime with readiness waits")
+  local stubCatalog = {
+    item = function(_, key)
+      if key == "X_ITEM" then
+        return {
+          partyUse = { kind = "deferred", reason = "battle_only" },
+          battleUse = {
+            cures = { confusion = false, infatuation = false },
+            guardSpec = false,
+            stages = {
+              attack = 1,
+              defense = 0,
+              specialAttack = 0,
+              specialDefense = 0,
+              speed = 0,
+              accuracy = 0,
+              critical = 0,
+            },
+          },
+        }
+      end
+      if key == "BERRY" then
+        return {
+          partyUse = { kind = "medicine", cures = {}, revive = "none", mood = 0 },
+          naturalGift = { power = 60, typeId = 14, type = "psychic" },
+          fling = { effect = 10, power = 10 },
+        }
+      end
+      error("unknown item " .. tostring(key))
+    end,
+  }
+  local projector = setmetatable({
+    _party = {
+      catalog = function()
+        return stubCatalog
+      end,
+    },
+  }, { __index = BattleRuntime })
+  local record = {
+    inventories = {
+      { id = "pack", owners = { 1 }, quantities = { X_ITEM = 2 } },
+    },
+    participants = {
+      { roster = { { mon = { heldItem = "BERRY" } } } },
+    },
+  }
+  local facts = BattleRuntime._sessionItemFacts(projector, record)
+  Assert.deepEqual(facts.X_ITEM.partyUse, { kind = "deferred", reason = "battle_only" }, "party use projects")
+  Assert.equal(facts.X_ITEM.battleUse.stages.attack, 1, "battle-use stages project beside party use")
+  Assert.equal(facts.BERRY.naturalGift.power, 60, "held throw power projects")
+  Assert.equal(facts.BERRY.fling.power, 10, "held fling power projects")
+  Assert.isNil(facts.BERRY.partyUse, "held-only entries carry no party use")
+  facts.X_ITEM.battleUse.stages.attack = 9
+  local again = BattleRuntime._sessionItemFacts(projector, record)
+  Assert.equal(again.X_ITEM.battleUse.stages.attack, 1, "projector edits never reach the catalog")
+end
+
 function T.thrown_balls_consume_stock_whether_the_capture_lands_or_not()
   local SessionFixture = require("libs.battle.tests.session_fixture")
   local battle, _party, bag, _port = healingBattle("TOTODILE", 4, 0x5EED0007)

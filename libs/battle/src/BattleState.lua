@@ -500,6 +500,14 @@ function BattleState.validateSnapshot(snapshot)
     error(BattleErrors.incompatibleSnapshot("battle snapshots must carry their consumption ledger", {}))
   end
   checkSnapshotSequence(snapshot.ledger --[[@as table<integer, unknown>]], "snapshot consumption")
+  -- Turn interaction ledgers travel with the capture: revenge damage and
+  -- acted marks reset every turn while distinct-move history accumulates
+  -- per entry, so replayed and restored sessions keep the same strike law.
+  for _, field in ipairs({ "turnStrikes", "turnActed", "usedMoves" }) do
+    if type(snapshot[field]) ~= "table" then
+      error(BattleErrors.incompatibleSnapshot("battle snapshots must carry their turn ledgers", { field = field }))
+    end
+  end
   if type(snapshot.effects) ~= "table" then
     error(BattleErrors.incompatibleSnapshot("battle snapshots must carry their live effect records", {}))
   end

@@ -296,6 +296,16 @@ function MoveExecution.start(inputs)
     "recentMoves",
     "genders",
     "userAsleep",
+    "duel",
+    "speeds",
+    "foeLevel",
+    "abilities",
+    "heldItem",
+    "userIvs",
+    "itemFacts",
+    "usedMoves",
+    "foeWeightHg",
+    "beatup",
   }) do
     if plan[key] ~= nil then
       locals[key] = plan[key]

@@ -806,6 +806,163 @@ local function combatPair(attacker, defender, category, moveName)
   return { level = attacker.level, attack = attacker.attack, defense = defender.defense }
 end
 
+-- Per-strike source-law facts behind one owner so the turn closure
+-- spends a single upvalue: turn interaction for revenge law and the
+-- beat-up party. Revenge answers damage from its own target through the
+-- recorded damager; counter answers only a live opposing damager.
+-- Source references: BtlCmd_CalcPaybackPower,
+-- BtlCmd_CalcRevengeDamageMul, BtlCmd_Counter, BtlCmd_MirrorCoat, and
+-- BtlCmd_BeatUp in src/battle/battle_command.c.
+local StrikeFacts = {}
+
+---@param state table<string, unknown> live battle state under inspection
+---@param userId integer striking combatant under the facts
+---@param foeId integer targeted combatant under the facts
+---@return table<string, unknown> duel facts for the strike frame
+function StrikeFacts.duel(state, userId, foeId)
+  local acted = state.turnActed
+  if type(acted) ~= "table" then
+    acted = {}
+  end
+  local strikes = state.turnStrikes
+  if type(strikes) ~= "table" then
+    strikes = {}
+  end
+  local marked = acted --[[@as table<integer, boolean>]]
+  local ledger = strikes --[[@as table<integer, table<string, unknown>>]]
+  local userSide =
+    BattleState.participant(state, BattleState.combatant(state, userId).participant --[[@as integer]]).side
+  local function hurt(combatantId)
+    local record = ledger[combatantId]
+    if type(record) ~= "table" then
+      return false
+    end
+    local amounts = (record --[[@as table<string, unknown>]]).amounts
+    if type(amounts) ~= "table" then
+      return false
+    end
+    for _, entry in
+      pairs(amounts --[[@as table<integer, unknown>]])
+    do
+      if type(entry) == "table" then
+        local taken = entry --[[@as table<string, integer>]]
+        if (taken.physical or 0) > 0 or (taken.special or 0) > 0 then
+          return true
+        end
+      end
+    end
+    return false
+  end
+  local function revenge(lastKey, category)
+    local record = ledger[userId]
+    if type(record) ~= "table" then
+      return nil
+    end
+    local attackerId = (record --[[@as table<string, unknown>]])[lastKey]
+    if type(attackerId) ~= "number" then
+      return nil
+    end
+    local amounts = (record --[[@as table<string, unknown>]]).amounts
+    if type(amounts) ~= "table" then
+      return nil
+    end
+    local entry = (amounts --[[@as table<integer, unknown>]])[
+      attackerId --[[@as integer]]
+    ]
+    if type(entry) ~= "table" then
+      return nil
+    end
+    local amount = (entry --[[@as table<string, integer>]])[category]
+    if type(amount) ~= "number" or amount < 1 then
+      return nil
+    end
+    local attacker = BattleState.combatant(state, attackerId --[[@as integer]])
+    if
+      attacker.active == nil
+      or attacker.hp --[[@as integer]]
+        <= 0
+    then
+      return nil
+    end
+    local side = BattleState.participant(state, attacker.participant --[[@as integer]]).side
+    if side == userSide then
+      return nil
+    end
+    return { attacker = attackerId, amount = amount }
+  end
+  return {
+    foeActed = marked[foeId] == true,
+    foeHurt = hurt(foeId),
+    userHurt = hurt(userId),
+    revengePhysical = revenge("lastPhysical", "physical"),
+    revengeSpecial = revenge("lastSpecial", "special"),
+  }
+end
+
+-- Beat Up party facts: the defender base defense plus the eligible
+-- strikers in roster order, each with its base attack and battle level.
+-- The user always answers, even while statused; benched mates answer only
+-- conscious, healthy, and unhatched. Source reference: BtlCmd_BeatUp in
+-- src/battle/battle_command.c.
+---@param state table<string, unknown> live battle state under inspection
+---@param combatant table<string, unknown> striking combatant under the facts
+---@param defender table<string, unknown> targeted combatant under the facts
+---@param speciesFacts table<string, unknown> static species facts carried by the session
+---@return table<string, unknown> beat-up facts for the strike frame
+function StrikeFacts.beatup(state, combatant, defender, speciesFacts)
+  local defenderFacts = staticFacts(defender.mon, speciesFacts)
+  local defenderBase = (defenderFacts --[[@as table<string, unknown>]]).baseStats
+  if
+    type(defenderBase) ~= "table" or type((defenderBase --[[@as table<string, integer>]]).defense) ~= "number"
+  then
+    error(BattleErrors.missingBehavior("beat-up reads its defender base defense", { fact = "defense" }))
+  end
+  local participant = BattleState.participant(state, combatant.participant --[[@as integer]])
+  local members = {} ---@type table<integer, table<string, integer>>
+  for _, combatantId in
+    ipairs(participant.roster --[[@as table<integer, integer>]])
+  do
+    local mate = BattleState.combatant(state, combatantId --[[@as integer]])
+    local mon = mate.mon
+    local eligible = combatantId == combatant.id
+    if not eligible and type(mon) == "table" then
+      local record = mon --[[@as table<string, unknown>]]
+      if
+        mate.hp --[[@as integer]]
+          > 0
+        and persistentCondition(mon) == nil
+        and record.isEgg ~= true
+      then
+        eligible = true
+      end
+    end
+    if eligible then
+      local facts = staticFacts(mon, speciesFacts)
+      local owned = facts --[[@as table<string, unknown>]]
+      local base = owned.baseStats
+      if
+        type(base) ~= "table" or type((base --[[@as table<string, integer>]]).attack) ~= "number"
+      then
+        error(BattleErrors.missingBehavior("beat-up reads its striker base attack", { fact = "attack" }))
+      end
+      local record = mon --[[@as table<string, unknown>]]
+      local experience = record.experience
+      if type(experience) ~= "number" then
+        error(BattleErrors.missingBehavior("beat-up reads its striker experience", { fact = "experience" }))
+      end
+      local level = Experience.level(owned.growthCurve --[[@as integer[] ]], experience --[[@as integer]])
+      members[#members + 1] = {
+        attack = (base --[[@as table<string, integer>]]).attack --[[@as integer]],
+        level = level,
+      }
+    end
+  end
+  return {
+    defense = (defenderBase --[[@as table<string, integer>]]).defense --[[@as integer]],
+    members = members,
+  }
+end
+
 ---@param kind string committed choice class under ordering
 ---@return integer sampled priority bracket for non-strike actions
 local function bracketFor(kind)
@@ -975,6 +1132,11 @@ local function projectCombatant(combatant, speciesFacts)
     nature
   )
   stats.level = level
+  -- Species weight rides the projection for weight-law strikes: the
+  -- zukan table carries hectograms per species, and Low Kick and Grass
+  -- Knot read kilograms. Absent weights stay absent and fail loudly in
+  -- their handler instead of guessing.
+  stats.weightHg = facts.weightHg
   -- Battle maximum health travels with the projection so recovery
   -- handlers heal fractions of the true ceiling instead of guessing;
   -- it sits above the entry value whenever the entry arrived wounded.
@@ -2058,6 +2220,11 @@ local function bindTurnHandlers(executor, moveFacts, speciesFacts, itemFacts, ch
   local function openTurn(choices)
     local state = executor:_live()
     pendingFaintObligations = {}
+    -- Revenge ledgers reset with the turn: damage taken and actions
+    -- consumed belong to the turn being ordered, while the distinct-move
+    -- history behind Last Resort accumulates until entries turn over.
+    state.turnStrikes = {}
+    state.turnActed = {}
     local stream = state.rng --[[@as table<string, unknown>]]
     assert(type(stream.nextU16) == "function", "native turns draw ties from the battle stream")
     local candidates = {} ---@type table<integer, table<string, unknown>>
@@ -2382,7 +2549,8 @@ local function bindTurnHandlers(executor, moveFacts, speciesFacts, itemFacts, ch
     -- Burn reshapes physical attack at this checkpoint: the penalty
     -- applies unless the attacker's passive answers instead.
     statusAdjustedAttack(attackerStats, combatant.mon, category)
-    local facts = combatPair(attackerStats, projectCombatant(defender, speciesFacts), category, moveName)
+    local defenderStats = projectCombatant(defender, speciesFacts)
+    local facts = combatPair(attackerStats, defenderStats, category, moveName)
     local defenderTypes = {} ---@type table<integer, string[]>
     defenderTypes[defenderId] = combatantTypes(defender, speciesFacts)
     local moves = combatant
@@ -2396,6 +2564,30 @@ local function bindTurnHandlers(executor, moveFacts, speciesFacts, itemFacts, ch
     local recentMoves = state.lastMoves
     if type(recentMoves) ~= "table" then
       recentMoves = {}
+    end
+    -- Source-law facts the strike frame carries beside the staged pair:
+    -- turn interaction for revenge-law handlers, stage-effective speeds
+    -- for weightless power, defender level and weight for knockout and
+    -- falloff law, abilities for sturdy and skill-link gates, the holder
+    -- item with its immutable throw facts, user individual values for
+    -- hidden power, the distinct-move history for last resort, and the
+    -- beat-up party. Absent facts fail in their handler, never default.
+    local heldItem = nil
+    if type(userMon.heldItem) == "string" and userMon.heldItem ~= "" and userMon.heldItem ~= "NONE" then
+      heldItem = userMon.heldItem
+    end
+    local userIvs = nil
+    if type(userMon.ivs) == "table" then
+      userIvs = copyValue(userMon.ivs)
+    end
+    local usedMoves = {}
+    if type(state.usedMoves) == "table" then
+      local recorded = (state.usedMoves --[[@as table<integer, unknown>]])[
+        actor.activation --[[@as integer]]
+      ]
+      if type(recorded) == "table" then
+        usedMoves = copyValue(recorded)
+      end
     end
     local genders = {}
     local userGender = genderOf(userMon, speciesFacts)
@@ -2432,6 +2624,16 @@ local function bindTurnHandlers(executor, moveFacts, speciesFacts, itemFacts, ch
       recentMoves = copyValue(recentMoves),
       genders = genders,
       userAsleep = asleepOf(userMon),
+      duel = StrikeFacts.duel(state, actor.combatant --[[@as integer]], defenderId),
+      speeds = { user = attackerStats.speed, foe = defenderStats.speed },
+      foeLevel = defenderStats.level,
+      abilities = { user = userMon.ability, foe = foeMon.ability },
+      heldItem = heldItem,
+      userIvs = userIvs,
+      itemFacts = itemFacts,
+      usedMoves = usedMoves,
+      foeWeightHg = defenderStats.weightHg,
+      beatup = StrikeFacts.beatup(state, combatant, defender, speciesFacts),
     }
     local node = MoveExecution.start(inputs)
     if type(node) == "table" and node.locals ~= nil then
@@ -2444,6 +2646,25 @@ local function bindTurnHandlers(executor, moveFacts, speciesFacts, itemFacts, ch
           actor.combatant --[[@as integer]]
         ] =
           node.requestedMove --[[@as string]]
+        -- Distinct-move history behind Last Resort keys on the entry
+        -- token, so withdrawing resets the count like the native
+        -- lastResortMoves. Struggle records harmlessly beside real moves.
+        if type(state.usedMoves) ~= "table" then
+          state.usedMoves = {}
+        end
+        local ledger = state.usedMoves --[[@as table<integer, table<string, boolean>>]]
+        local entry = ledger[
+          actor.activation --[[@as integer]]
+        ]
+        if type(entry) ~= "table" then
+          entry = {}
+          ledger[
+            actor.activation --[[@as integer]]
+          ] = entry
+        end
+        entry[
+          node.requestedMove --[[@as string]]
+        ] = true
       end
     end
     local emittedThrough = #state.outbox --[[@as table<integer, table<string, unknown>>]]
@@ -2749,6 +2970,16 @@ local function bindTurnHandlers(executor, moveFacts, speciesFacts, itemFacts, ch
       return
     end
     executeChoice(state, action, action.selectedOrdinal --[[@as integer]])
+    -- Consumed actions mark their actor: later strikes in the same turn
+    -- read payback order from this ledger, matching the native
+    -- already-acted command. Stale actors never reach this mark.
+    if type(state.turnActed) ~= "table" then
+      state.turnActed = {}
+    end
+    local acted = state.turnActed --[[@as table<integer, boolean>]]
+    acted[
+      staged.combatant --[[@as integer]]
+    ] = true
     if action.progress ~= "complete" then
       local queue = state.queue --[[@as table<integer, table<string, unknown>>]]
       ActionQueue.complete(queue, action.id --[[@as integer]])
@@ -3204,12 +3435,15 @@ local function checkItemEntries(facts, raise)
       error(raise("session item facts carry their party use", { item = tostring(key) }))
     end
     local record = entry --[[@as table<string, unknown>]]
-    if type(record.partyUse) ~= "table" then
-      error(raise("session item facts carry their party use", { item = tostring(key) }))
+    -- Served items plan from their party use; held-only entries carry
+    -- throw facts without one and never plan. Either shape carries at
+    -- least one generated fact family.
+    if type(record.partyUse) ~= "table" and type(record.naturalGift) ~= "table" and type(record.fling) ~= "table" then
+      error(raise("session item facts carry their generated facts", { item = tostring(key) }))
     end
     for field in pairs(record) do
-      if field ~= "partyUse" then
-        error(raise("session item facts carry only their party use", { item = tostring(key) }))
+      if field ~= "partyUse" and field ~= "battleUse" and field ~= "naturalGift" and field ~= "fling" then
+        error(raise("session item facts carry only their generated facts", { item = tostring(key) }))
       end
     end
   end
@@ -3320,6 +3554,15 @@ local function wrap(
     live.ledger = {}
   end
   assert(type(live.ledger) == "table", "bag and throw consumption stays ledgered")
+  if live.turnStrikes == nil then
+    live.turnStrikes = {}
+  end
+  if live.turnActed == nil then
+    live.turnActed = {}
+  end
+  if live.usedMoves == nil then
+    live.usedMoves = {}
+  end
   ensureEntryHealth(live, speciesFacts)
   if live.prizeMoneyValue == nil then
     live.prizeMoneyValue = 1

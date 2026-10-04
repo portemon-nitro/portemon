@@ -301,4 +301,106 @@ function T.catalogs_require_party_use_metadata()
   Assert.isFalse(ItemAssetSchema.isValidCatalog(badReason), "an unknown deferral reason must be rejected")
 end
 
+function T.catalogs_accept_enriched_battle_use()
+  local ItemAssetSchema = schema()
+  local enriched = validRoot()
+  enriched.items["POTION"].battleUse = {
+    cures = { confusion = false, infatuation = false },
+    guardSpec = false,
+    stages = {
+      attack = 1,
+      defense = 0,
+      specialAttack = 0,
+      specialDefense = 0,
+      speed = 0,
+      accuracy = 0,
+      critical = 0,
+    },
+  }
+  enriched.items["SITRUS_BERRY"].battleUse = {
+    cures = { confusion = true, infatuation = true },
+    guardSpec = false,
+    stages = {
+      attack = 0,
+      defense = 0,
+      specialAttack = 0,
+      specialDefense = 0,
+      speed = 0,
+      accuracy = 0,
+      critical = 0,
+    },
+  }
+  Assert.isTrue(ItemAssetSchema.isValidCatalog(enriched))
+  Assert.isTrue(ItemAssetSchema.assertCatalog(enriched))
+  Assert.isTrue(ItemAssetSchema.isValidCatalog(validRoot()), "records without battle use stay valid")
+end
+
+function T.catalogs_reject_malformed_battle_use()
+  local ItemAssetSchema = schema()
+  local function battleUseWith(patch)
+    local record = {
+      cures = { confusion = false, infatuation = false },
+      guardSpec = false,
+      stages = {
+        attack = 1,
+        defense = 0,
+        specialAttack = 0,
+        specialDefense = 0,
+        speed = 0,
+        accuracy = 0,
+        critical = 0,
+      },
+    }
+    for key, value in pairs(patch) do
+      record[key] = value
+    end
+    return record
+  end
+  local cases = {
+    unknown_field = battleUseWith({ spin = 1 }),
+    non_boolean_cure = battleUseWith({ cures = { confusion = "yes", infatuation = false } }),
+    unknown_cure = battleUseWith({ cures = { confusion = false, infatuation = false, sleep = true } }),
+    non_boolean_guard = battleUseWith({ guardSpec = 1 }),
+    missing_stage = (function()
+      local record = battleUseWith({})
+      record.stages.critical = nil
+      return record
+    end)(),
+    unknown_stage = (function()
+      local record = battleUseWith({})
+      record.stages.evasion = 1
+      return record
+    end)(),
+    negative_stage = (function()
+      local record = battleUseWith({})
+      record.stages.attack = -1
+      return record
+    end)(),
+    past_nibble_stage = (function()
+      local record = battleUseWith({})
+      record.stages.attack = 16
+      return record
+    end)(),
+    past_crit_bits = (function()
+      local record = battleUseWith({})
+      record.stages.critical = 4
+      return record
+    end)(),
+  }
+  local missingCures = battleUseWith({})
+  missingCures.cures = nil
+  cases.missing_cures = missingCures
+  local missingStages = battleUseWith({})
+  missingStages.stages = nil
+  cases.missing_stages = missingStages
+  local missingGuard = battleUseWith({ guardSpec = true })
+  missingGuard.guardSpec = nil
+  cases.missing_guard = missingGuard
+  for name, battleUse in pairs(cases) do
+    local root = validRoot()
+    root.items["POTION"].battleUse = battleUse
+    Assert.isFalse(ItemAssetSchema.isValidCatalog(root), "malformed battle use must be rejected: " .. name)
+  end
+end
+
 return { tests = T }

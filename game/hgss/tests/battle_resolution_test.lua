@@ -261,6 +261,7 @@ function T.trainer_win_doubles_the_prize_while_a_money_up_holder_stands()
     player = facts,
   })
   driveToSettlement(battle, scenario)
+
   Assert.equal(battle:status().phase, "complete", "answered decisions finish the trainer battle")
   Assert.equal(battle:status().result, "win", "a fainted enemy side reports the win")
   local receipt = assert(battle:status().outcomeReceipt, "completion carries its commit receipt")

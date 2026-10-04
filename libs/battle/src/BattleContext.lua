@@ -80,6 +80,54 @@ function BattleContext:damage(combatantId, amount, cause)
   return { before = before, after = after }
 end
 
+-- Turn-scoped revenge ledger: every staged strike records the damage its
+-- taker received from each attacker by category, plus the last damager
+-- per category. Revenge, counter, and assurance handlers read it through
+-- the per-strike duel facts; the native session resets it when a turn
+-- opens. Source references: the turnData physical/special damage arrays
+-- and battler-bit masks in src/battle/battle_command.c
+-- (CalcRevengeDamageMul, Counter, MirrorCoat) and the defender assurance
+-- mask in files/battledata/script/effect_script/effect_script_0231.s.
+---@param takerId integer combatant receiving the strike damage
+---@param attackerId integer combatant ordering the strike
+---@param category string staged damage category selecting the revenge ledger
+---@param amount integer damage actually dealt after application
+---@return boolean true when the strike entered the turn ledger
+function BattleContext:noteDamageTaken(takerId, attackerId, category, amount)
+  assert(type(takerId) == "number", "taken damage names its taker")
+  assert(type(attackerId) == "number", "taken damage names its attacker")
+  assert(category == "physical" or category == "special", "taken damage names its staged category")
+  assert(type(amount) == "number" and amount % 1 == 0 and amount >= 0, "taken damage stays integral")
+  if amount < 1 then
+    return false
+  end
+  local state = self._state
+  if type(state.turnStrikes) ~= "table" then
+    state.turnStrikes = {}
+  end
+  local ledger = state.turnStrikes --[[@as table<integer, table<string, unknown>>]]
+  local record = ledger[takerId]
+  if type(record) ~= "table" then
+    record = { lastPhysical = nil, lastSpecial = nil, amounts = {} }
+    ledger[takerId] = record
+  end
+  local taken = record --[[@as table<string, unknown>]]
+  local amounts = taken.amounts --[[@as table<integer, table<string, integer>>]]
+  local entry = amounts[attackerId]
+  if type(entry) ~= "table" then
+    entry = { physical = 0, special = 0 }
+    amounts[attackerId] = entry
+  end
+  local stored = entry --[[@as table<string, integer>]]
+  stored[category] = stored[category] --[[@as integer]] + amount
+  if category == "physical" then
+    taken.lastPhysical = attackerId
+  else
+    taken.lastSpecial = attackerId
+  end
+  return true
+end
+
 ---@param combatantId integer
 ---@param amount integer
 ---@param cause table<string, unknown>
@@ -419,6 +467,21 @@ function BattleContext:statusOf(combatantId)
     return nil
   end
   return current.key --[[@as string]]
+end
+
+---@param combatantId integer combatant spending its held item
+---@return string? item key spent, nil when the holder carried nothing
+function BattleContext:consumeHeldItem(combatantId)
+  assert(type(combatantId) == "number", "held consumption names its combatant")
+  local combatant = BattleState.combatant(self._state, combatantId)
+  local mon = combatant.mon --[[@as table<string, unknown>]]
+  assert(type(mon) == "table", "held consumption reads the battle mon")
+  local held = mon.heldItem
+  if type(held) ~= "string" or held == "" or held == "NONE" then
+    return nil
+  end
+  mon.heldItem = "NONE"
+  return held --[[@as string]]
 end
 
 ---@param combatantId integer combatant identity owning the power-point store

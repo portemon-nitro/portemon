@@ -191,9 +191,9 @@ local STRIKERS = {
   WRAP = { secondaries = { { volatile = "trap", chance = 100 } } },
   FIRE_SPIN = { secondaries = { { volatile = "trap", chance = 100 } } },
   WHIRLPOOL = { secondaries = { { volatile = "trap", chance = 100 } } },
-  -- Fixed two-hit strikes.
-  BONEMERANG = { hits = 2 },
-  DOUBLE_KICK = { hits = 2 },
+  -- Fixed two-hit strikes share their critical roll across both hits.
+  BONEMERANG = { hits = 2, shareCritical = true },
+  DOUBLE_KICK = { hits = 2, shareCritical = true },
   -- Foe-hindering stage secondaries.
   ACID = { secondaries = { { foeStages = { { "specialDefense", -1 } } } } },
   BUG_BUZZ = { secondaries = { { foeStages = { { "specialDefense", -1 } } } } },
@@ -265,6 +265,19 @@ local STRIKERS = {
   -- Self-hindering strikes land their drop unconditionally on a hit:
   -- the native script applies it without a chance roll.
   HAMMER_ARM = { secondaries = { { selfStages = { { "speed", -1 } }, chance = 100 } } },
+  -- Close combat drops both defenses on a connecting strike.
+  CLOSE_COMBAT = {
+    secondaries = { { selfStages = { { "defense", -1 }, { "specialDefense", -1 } }, chance = 100 } },
+  },
+  -- Superpower drops the attacking pair on a connecting strike.
+  SUPERPOWER = {
+    secondaries = { { selfStages = { { "attack", -1 }, { "defense", -1 } }, chance = 100 } },
+  },
+  -- Draco meteor, leaf storm, and overheat drop special attack twice on
+  -- a connecting strike.
+  DRACO_METEOR = { secondaries = { { selfStages = { { "specialAttack", -2 } }, chance = 100 } } },
+  LEAF_STORM = { secondaries = { { selfStages = { { "specialAttack", -2 } }, chance = 100 } } },
+  OVERHEAT = { secondaries = { { selfStages = { { "specialAttack", -2 } }, chance = 100 } } },
   -- Tri Attack draws one of burn, freeze, or paralysis on its chance.
   TRI_ATTACK = { secondaries = { { randomStatus = { "burn", "freeze", "paralysis" } } } },
   -- Secret Power has no terrain facts in this engine, so its secondary
@@ -302,52 +315,28 @@ local WEIGHT = {
   GRASS_KNOT = true,
 }
 
--- Members gated on facts the frame protocol does not thread yet: counter
--- history, hit records, weight or health fractions, and berry or plate
--- identities. They settle as failures rather than dealing guessed damage.
+-- Members with no modeled native semantics yet: the gated handler raises
+-- structured missing behavior naming the move instead of dealing guessed
+-- damage, so coverage can never mistake presence for semantics.
 local GATED = {
-  COUNTER = true,
-  MIRROR_COAT = true,
   METAL_BURST = true,
   BIDE = true,
-  REVERSAL = true,
-  FLAIL = true,
   CRUSH_GRIP = true,
-  WRING_OUT = true,
   PSYWAVE = true,
   TRUMP_CARD = true,
-  FLING = true,
-  NATURAL_GIFT = true,
-  PRESENT = true,
-  HIDDEN_POWER = true,
   JUDGMENT = true,
-  WEATHER_BALL = true,
-  GYRO_BALL = true,
   PUNISHMENT = true,
-  ASSURANCE = true,
-  PAYBACK = true,
-  LAST_RESORT = true,
-  BRINE = true,
-  FACADE = true,
-  AVALANCHE = true,
-  REVENGE = true,
   SMELLING_SALT = true,
-  WAKE_UP_SLAP = true,
-  SNORE = true,
-  STOMP = true,
-  SUPERPOWER = true,
-  CLOSE_COMBAT = true,
-  LEAF_STORM = true,
-  DRACO_METEOR = true,
-  OVERHEAT = true,
   PSYCHO_BOOST = true,
-  ERUPTION = true,
-  WATER_SPOUT = true,
 }
 
--- Two-to-five-hit members running genuine hit-count sampling with the
--- canonical per-hit sequence.
-local MULTI_25 = {
+-- Two-to-five-hit members sample a genuine hit count, then land every
+-- hit through the shared striker with one accuracy check: the first draw
+-- picks two or three directly, while higher rolls draw again for two to
+-- five, and skill link always strikes five times. Source references:
+-- BtlCmd_SetMultiHit in src/battle/battle_command.c and the multi-hit
+-- effect scripts in files/battledata/script/effect_script.
+local SAMPLED_25 = {
   DOUBLE_SLAP = true,
   COMET_PUNCH = true,
   FURY_ATTACK = true,
@@ -358,11 +347,8 @@ local MULTI_25 = {
   BULLET_SEED = true,
   ICICLE_SPEAR = true,
   ROCK_BLAST = true,
-  DOUBLE_HIT = true,
-  TWINEEDLE = true,
   FURY_SWIPES = true,
   BARRAGE = true,
-  TRIPLE_KICK = true,
 }
 
 DamageMoves.MEMBERS = {
@@ -827,6 +813,236 @@ local function checkSecondaryStream(stream)
   return stream --[[@as BattleRng]]
 end
 
+-- Source-law facts the session threads per strike beside the staged
+-- pair: turn interaction for revenge law, stage-effective speeds, defender
+-- level and abilities, holder item with throw facts, user individual
+-- values, distinct-move history, defender weight, and the beat-up party.
+-- Every reader fails loudly on absent facts instead of defaulting.
+---@param frame table<string, unknown> move frame under execution
+---@return table<string, unknown> validated turn-interaction facts for the strike
+local function duelOf(frame)
+  local record = frame --[[@as table<string, unknown>]]
+  local key = record.executingMove --[[@as string]]
+  local locals = record.locals --[[@as table<string, unknown>]]
+  local duel = locals.duel
+  if type(duel) ~= "table" then
+    error(BattleErrors.missingBehavior("revenge law reads its turn-interaction facts", { key = key }))
+  end
+  local facts = duel --[[@as table<string, unknown>]]
+  for _, flag in ipairs({ "foeActed", "foeHurt", "userHurt" }) do
+    if type(facts[flag]) ~= "boolean" then
+      error(BattleErrors.missingBehavior("revenge law reads its turn-interaction facts", { key = key, fact = flag }))
+    end
+  end
+  for _, answer in ipairs({ "revengePhysical", "revengeSpecial" }) do
+    local entry = facts[answer]
+    if entry ~= nil then
+      if type(entry) ~= "table" then
+        error(BattleErrors.missingBehavior("revenge law reads its recorded damager", { key = key, fact = answer }))
+      end
+      local noted = entry --[[@as table<string, unknown>]]
+      if
+        type(noted.attacker) ~= "number"
+        or type(noted.amount) ~= "number"
+        or noted.amount % 1 ~= 0
+        or noted.amount < 1
+      then
+        error(BattleErrors.missingBehavior("revenge law reads its recorded damager", { key = key, fact = answer }))
+      end
+    end
+  end
+  return facts
+end
+
+---@param frame table<string, unknown> move frame under execution
+---@return integer user stage-effective speed under the strike
+---@return integer defender stage-effective speed under the strike
+local function speedsOf(frame)
+  local record = frame --[[@as table<string, unknown>]]
+  local key = record.executingMove --[[@as string]]
+  local locals = record.locals --[[@as table<string, unknown>]]
+  local speeds = locals.speeds
+  if type(speeds) ~= "table" then
+    error(BattleErrors.missingBehavior("weightless power reads its effective speeds", { key = key }))
+  end
+  local pair = speeds --[[@as table<string, unknown>]]
+  for _, side in ipairs({ "user", "foe" }) do
+    local value = pair[side]
+    if type(value) ~= "number" or value % 1 ~= 0 or value < 0 then
+      error(BattleErrors.missingBehavior("weightless power reads its effective speeds", { key = key, fact = side }))
+    end
+  end
+  return pair.user, --[[@as integer]]
+    pair.foe --[[@as integer]]
+end
+
+---@param frame table<string, unknown> move frame under execution
+---@return integer defender battle level under the strike
+local function foeLevelOf(frame)
+  local record = frame --[[@as table<string, unknown>]]
+  local key = record.executingMove --[[@as string]]
+  local locals = record.locals --[[@as table<string, unknown>]]
+  local level = locals.foeLevel
+  if type(level) ~= "number" or level % 1 ~= 0 or level < 1 then
+    error(BattleErrors.missingBehavior("knockout law reads its defender level", { key = key }))
+  end
+  return level --[[@as integer]]
+end
+
+---@param frame table<string, unknown> move frame under execution
+---@return table<string, unknown> user and defender ability identities under the strike
+local function abilitiesOf(frame)
+  local record = frame --[[@as table<string, unknown>]]
+  local key = record.executingMove --[[@as string]]
+  local locals = record.locals --[[@as table<string, unknown>]]
+  local abilities = locals.abilities
+  if type(abilities) ~= "table" then
+    error(BattleErrors.missingBehavior("ability gates read their battle abilities", { key = key }))
+  end
+  return abilities --[[@as table<string, unknown>]]
+end
+
+---@param frame table<string, unknown> move frame under execution
+---@return string? holder item key under the strike, nil when empty-handed
+local function heldItemOf(frame)
+  local record = frame --[[@as table<string, unknown>]]
+  local locals = record.locals --[[@as table<string, unknown>]]
+  local held = locals.heldItem
+  if held == nil then
+    return nil
+  end
+  if type(held) ~= "string" or held == "" then
+    error(BattleErrors.missingBehavior("throw law reads its holder item", {
+      key = record.executingMove --[[@as string]],
+    }))
+  end
+  return held --[[@as string]]
+end
+
+---@param frame table<string, unknown> move frame under execution
+---@return table<string, table<string, unknown>> immutable item facts by item key under the strike
+local function itemFactsOf(frame)
+  local record = frame --[[@as table<string, unknown>]]
+  local key = record.executingMove --[[@as string]]
+  local locals = record.locals --[[@as table<string, unknown>]]
+  local facts = locals.itemFacts
+  if type(facts) ~= "table" then
+    error(BattleErrors.missingBehavior("throw law reads its immutable item facts", { key = key }))
+  end
+  return facts --[[@as table<string, table<string, unknown>>]]
+end
+
+---@param frame table<string, unknown> move frame under execution
+---@return table<string, integer> user individual values under the strike
+local function userIvsOf(frame)
+  local record = frame --[[@as table<string, unknown>]]
+  local key = record.executingMove --[[@as string]]
+  local locals = record.locals --[[@as table<string, unknown>]]
+  local ivs = locals.userIvs
+  if type(ivs) ~= "table" then
+    error(BattleErrors.missingBehavior("hidden power reads its user individual values", { key = key }))
+  end
+  local values = ivs --[[@as table<string, unknown>]]
+  for _, stat in ipairs({ "hp", "attack", "defense", "speed", "specialAttack", "specialDefense" }) do
+    local value = values[stat]
+    if type(value) ~= "number" or value % 1 ~= 0 or value < 0 or value > 31 then
+      error(BattleErrors.missingBehavior("hidden power reads its user individual values", { key = key, fact = stat }))
+    end
+  end
+  return values --[[@as table<string, integer>]]
+end
+
+---@param frame table<string, unknown> move frame under execution
+---@return table<string, boolean> distinct moves used by this entry under the strike
+local function usedMovesOf(frame)
+  local record = frame --[[@as table<string, unknown>]]
+  local key = record.executingMove --[[@as string]]
+  local locals = record.locals --[[@as table<string, unknown>]]
+  local used = locals.usedMoves
+  if type(used) ~= "table" then
+    error(BattleErrors.missingBehavior("last resort reads its distinct-move history", { key = key }))
+  end
+  return used --[[@as table<string, boolean>]]
+end
+
+---@param frame table<string, unknown> move frame under execution
+---@return number defender weight in hectograms under the strike
+local function foeWeightHgOf(frame)
+  local record = frame --[[@as table<string, unknown>]]
+  local key = record.executingMove --[[@as string]]
+  local locals = record.locals --[[@as table<string, unknown>]]
+  local weight = locals.foeWeightHg
+  if type(weight) ~= "number" or weight < 0 then
+    error(BattleErrors.missingBehavior("weight law reads its defender weight", { key = key }))
+  end
+  return weight --[[@as number]]
+end
+
+---@param frame table<string, unknown> move frame under execution
+---@return table<string, unknown> beat-up party facts under the strike
+local function beatupOf(frame)
+  local record = frame --[[@as table<string, unknown>]]
+  local key = record.executingMove --[[@as string]]
+  local locals = record.locals --[[@as table<string, unknown>]]
+  local beatup = locals.beatup
+  if type(beatup) ~= "table" then
+    error(BattleErrors.missingBehavior("beat-up reads its party facts", { key = key }))
+  end
+  local facts = beatup --[[@as table<string, unknown>]]
+  if
+    type(facts.defense) ~= "number"
+    or facts.defense --[[@as number]]
+      < 1
+  then
+    error(BattleErrors.missingBehavior("beat-up reads its defender base defense", { key = key }))
+  end
+  if type(facts.members) ~= "table" then
+    error(BattleErrors.missingBehavior("beat-up reads its striker party", { key = key }))
+  end
+  for _, member in
+    ipairs(facts.members --[[@as table<integer, unknown>]])
+  do
+    if type(member) ~= "table" then
+      error(BattleErrors.missingBehavior("beat-up reads its striker party", { key = key }))
+    end
+    local striker = member --[[@as table<string, unknown>]]
+    if
+      type(striker.attack) ~= "number"
+      or striker.attack --[[@as number]]
+        < 1
+      or type(striker.level) ~= "number"
+      or striker.level --[[@as number]]
+        % 1 ~= 0
+      or striker.level --[[@as number]]
+        < 1
+    then
+      error(BattleErrors.missingBehavior("beat-up reads its striker party", { key = key }))
+    end
+  end
+  return facts
+end
+
+-- Records staged strike damage in the turn revenge ledger so later
+-- revenge-law handlers answer from the same turn. Skips zero damage and
+-- non-staged categories, which never arm revenge, counter, or assurance.
+---@param ctx BattleContext mechanics context under execution
+---@param frame table<string, unknown> move frame under execution
+---@param defender integer defender combatant under the hit
+---@param dealt integer damage actually dealt after application
+local function noteStrikeDamage(ctx, frame, defender, dealt)
+  if dealt < 1 then
+    return
+  end
+  local record = frame --[[@as table<string, unknown>]]
+  local locals = record.locals --[[@as table<string, unknown>]]
+  local move = locals.move --[[@as table<string, unknown>]]
+  local category = move.category
+  if category ~= "physical" and category ~= "special" then
+    return
+  end
+  ctx:noteDamageTaken(defender, userOf(frame), category --[[@as string]], dealt)
+end
+
 -- Safeguard and mist gates for secondaries: safeguard absorbs
 -- conditions and confusion on the defender side, while mist absorbs
 -- foe-targeted stage drops. Source references: the condition
@@ -1068,14 +1284,26 @@ local function stagedHit(ctx, frame, defender, power, hitIndex, targetCount, par
   local controls = params or {}
   local combat = combatOf(frame)
   local stream = checkStream(frame.stream)
-  local critical = strikeCritical(ctx, frame, userOf(frame), defender, params, stream)
+  -- Multi-hit sequences share one critical roll across every hit: the
+  -- native scripts roll CalcCrit once per move, then loop CalcDamage.
+  -- The shared table memoizes the first roll, which still lands after
+  -- the accuracy gate in source order.
+  local critical
+  if controls.shareCritical == true then
+    if controls.critical == nil then
+      controls.critical = strikeCritical(ctx, frame, userOf(frame), defender, params, stream)
+    end
+    critical = controls.critical
+  else
+    critical = strikeCritical(ctx, frame, userOf(frame), defender, params, stream)
+  end
   local record = frame --[[@as table<string, unknown>]]
   local locals = record.locals --[[@as table<string, unknown>]]
   local stab, effectiveness = StagedTypeModifiers.forStrike(frame, defender, {
     airborne = ctx:hasBattleEffect(defender, "magnetrise"),
     foresight = ctx:hasBattleEffect(defender, "foresight"),
     gravity = locals.gravity == true,
-  })
+  }, controls.moveType)
   local result = Damage.calculate({
     level = combat.level,
     power = power,
@@ -1098,6 +1326,7 @@ local function stagedHit(ctx, frame, defender, power, hitIndex, targetCount, par
   end
   local dealt = applyHit(ctx, frame, defender, amount)
   emitStruck(ctx, frame, defender, hitIndex, dealt)
+  noteStrikeDamage(ctx, frame, defender, dealt)
   return dealt
 end
 
@@ -1199,12 +1428,16 @@ end
 ---@param ctx BattleContext mechanics context under execution
 ---@param frame table<string, unknown> move frame under execution
 ---@param power integer curated strike power under the weakening
+---@param moveTypeOverride string|nil source-computed move type replacing the compiled one
 ---@return integer weakened strike power for the staged arithmetic
-local function sportWeakenedPower(ctx, frame, power)
+local function sportWeakenedPower(ctx, frame, power, moveTypeOverride)
   local record = frame --[[@as table<string, unknown>]]
   local locals = record.locals --[[@as table<string, unknown>]]
-  local move = locals.move --[[@as table<string, unknown>]]
-  local moveType = move.moveType --[[@as string]]
+  local moveType = moveTypeOverride
+  if moveType == nil then
+    local move = locals.move --[[@as table<string, unknown>]]
+    moveType = move.moveType --[[@as string]]
+  end
   if moveType ~= "electric" and moveType ~= "fire" then
     return power
   end
@@ -1225,21 +1458,29 @@ end
 --- in the frame move facts unless a move-specific source rule overrides it
 ---@return table<string, unknown> terminal execution step for the strike
 local function runStriker(ctx, frame, params)
+  -- Per-strike controls copy the curated entry: shared-critical
+  -- memoization writes back into the controls, which must never leak
+  -- across strikes sharing one curated entry.
+  local controls = {}
+  for key, value in pairs(params or {}) do
+    controls[key] = value
+  end
+  local owned = controls --[[@as table<string, unknown>]]
   local targets = frame.targets --[[@as table<integer, unknown>]]
   local strike = strikeFactsOf(frame)
   local power = strike.power
-  if params.power ~= nil then
-    power = params.power --[[@as integer]]
+  if owned.power ~= nil then
+    power = owned.power --[[@as integer]]
   end
-  power = sportWeakenedPower(ctx, frame, power)
+  power = sportWeakenedPower(ctx, frame, power, owned.moveType --[[@as string?]])
   local accuracy = strike.accuracy
-  if params.accuracyOverride ~= nil then
-    accuracy = params.accuracyOverride --[[@as integer]]
+  if owned.accuracyOverride ~= nil then
+    accuracy = owned.accuracyOverride --[[@as integer]]
   end
-  if params.skipAccuracy == true then
+  if owned.skipAccuracy == true then
     accuracy = 0
   end
-  local hits = params.hits or 1
+  local hits = owned.hits or 1
   assert(type(hits) == "number" and hits % 1 == 0 and hits >= 1, "fixed hit counts stay positive integers")
   local connected, dealtTotal = false, 0
   for hitIndex = 1, #targets do
@@ -1249,18 +1490,18 @@ local function runStriker(ctx, frame, params)
       connected = true
     elseif accuracyGate(ctx, frame, defender, accuracy) then
       for _ = 1, hits --[[@as integer]] do
-        dealtTotal = dealtTotal + stagedHit(ctx, frame, defender, power, hitIndex, #targets, params)
-        applySecondaries(ctx, frame, defender, params.secondaries --[[@as table<integer, table<string, unknown>>?]])
+        dealtTotal = dealtTotal + stagedHit(ctx, frame, defender, power, hitIndex, #targets, owned)
+        applySecondaries(ctx, frame, defender, owned.secondaries --[[@as table<integer, table<string, unknown>>?]])
         local health = ctx:damage(defender, 0, causeFor(frame))
         if health.after == 0 then
           break
         end
       end
       connected = true
-      if params.drain == true then
+      if owned.drain == true then
         applyDrain(ctx, frame, dealtTotal)
       end
-    elseif params.crash == true then
+    elseif owned.crash == true then
       ctx:damage(userOf(frame), 1, causeFor(frame))
     end
     local health = ctx:damage(defender, 0, causeFor(frame))
@@ -1268,10 +1509,10 @@ local function runStriker(ctx, frame, params)
       break
     end
   end
-  if params.recoil ~= nil and dealtTotal > 0 then
-    applyRecoil(ctx, frame, dealtTotal, params.recoil --[[@as string]])
+  if owned.recoil ~= nil and dealtTotal > 0 then
+    applyRecoil(ctx, frame, dealtTotal, owned.recoil --[[@as string]])
   end
-  if params.selfKo == true then
+  if owned.selfKo == true then
     ctx:damage(userOf(frame), 999999, causeFor(frame))
     ctx:emit("fainted", causeFor(frame), { target = userOf(frame) })
   end
@@ -1313,7 +1554,10 @@ end
 local function stepGated(ctx, frame)
   assert(type(ctx) == "table", "damage steps through the battle context")
   assert(type(frame) == "table", "damage steps from its move frame")
-  return { kind = "complete", result = "failed" }
+  local record = frame --[[@as table<string, unknown>]]
+  error(BattleErrors.missingBehavior("no native damage semantics are modeled for the source identity", {
+    key = record.executingMove --[[@as string]],
+  }))
 end
 
 ---@param ctx BattleContext mechanics context under execution
@@ -1330,6 +1574,7 @@ local function runFixed(ctx, frame, amount)
     if not substituteAbsorbs(ctx, defender) then
       local dealt = applyHit(ctx, record, defender, result.amount)
       emitStruck(ctx, record, defender, hitIndex, dealt)
+      noteStrikeDamage(ctx, record, defender, dealt)
     end
   end
   return { kind = "complete", result = "hit" }
@@ -1361,6 +1606,7 @@ local function stepSuperFang(ctx, frame)
       end
       local dealt = applyHit(ctx, record, defender, amount)
       emitStruck(ctx, record, defender, hitIndex, dealt)
+      noteStrikeDamage(ctx, record, defender, dealt)
     end
   end
   return { kind = "complete", result = "hit" }
@@ -1380,6 +1626,7 @@ local function stepEndeavor(ctx, frame)
   end
   local dealt = applyHit(ctx, record, defender, foeHealth.before - userHealth.before)
   emitStruck(ctx, record, defender, 1, dealt)
+  noteStrikeDamage(ctx, record, defender, dealt)
   return { kind = "complete", result = "hit" }
 end
 
@@ -1457,63 +1704,117 @@ local function stepMagnitude(ctx, frame)
   return runStriker(ctx, record, { power = power })
 end
 
+-- Beat Up sends every eligible party member to strike once in roster
+-- order: the user always answers while benched mates answer conscious,
+-- healthy, and unhatched. One accuracy check gates the sequence, one
+-- critical roll serves every hit, immunity is ignored, and each hit
+-- scales base attack, compiled power, and level against the defender
+-- base defense with the staged 85-100 percent range. Source reference:
+-- BtlCmd_BeatUp in src/battle/battle_command.c.
 local function stepBeatUp(ctx, frame)
   assert(type(ctx) == "table", "damage steps through the battle context")
   assert(type(frame) == "table", "damage steps from its move frame")
   local record = frame --[[@as table<string, unknown>]]
   local stream = checkStream(record.stream)
-  local hits = 2 + (stream:nextU16("multi-hit-count", causeFor(record)) % 3)
+  local strike = strikeFactsOf(record)
+  local party = beatupOf(record)
+  local defender = targetOf((record.targets --[[@as table<integer, unknown>]])[1])
+  if not accuracyGate(ctx, record, defender, strike.accuracy) then
+    return { kind = "complete", result = "missed" }
+  end
+  local critical = strikeCritical(ctx, record, userOf(record), defender, {}, stream)
   local targets = record.targets --[[@as table<integer, unknown>]]
-  for hitIndex = 1, hits do
-    local defender = targetOf(targets[((hitIndex - 1) % #targets) + 1])
-    if substituteAbsorbs(ctx, defender) then
-      ctx:emit("substitute-broke", causeFor(record), { target = defender, hitIndex = hitIndex })
+  for hitIndex, member in
+    ipairs(party.members --[[@as table<integer, unknown>]])
+  do
+    local striker = member --[[@as table<string, unknown>]]
+    local target = targetOf(targets[((hitIndex - 1) % #targets) + 1])
+    if substituteAbsorbs(ctx, target) then
+      ctx:emit("substitute-broke", causeFor(record), { target = target, hitIndex = hitIndex })
     else
-      local query = {
-        accuracy = 100,
-        target = { kind = "combatant" },
-        cause = causeFor(record),
-        protected = false,
-      }
-      local resolution = Accuracy.resolve(query, stream)
-      if resolution.kind == "hit" then
-        stagedHit(ctx, record, defender, 10, hitIndex, #targets)
-      else
-        emitMissed(ctx, record, defender)
+      local level = striker.level --[[@as integer]]
+      local amount = math.floor(
+        (
+          striker.attack --[[@as integer]]
+          * strike.power
+          * math.floor(level * 2 / 5 + 2)
+        ) / party.defense --[[@as integer]]
+      )
+      amount = math.floor(amount / 50) + 2
+      if critical.critical then
+        amount = amount * 2
       end
+      local percent = Damage.ROLL_MIN
+        + math.floor((stream:nextU16("damage_roll", causeFor(record)) * Damage.ROLL_SPAN) / Damage.ROLL_MODULUS)
+      amount = math.floor((amount * percent) / 100)
+      if amount < 1 then
+        amount = 1
+      end
+      local dealt = applyHit(ctx, record, target, amount)
+      emitStruck(ctx, record, target, hitIndex, dealt)
+      noteStrikeDamage(ctx, record, target, dealt)
     end
-    if (ctx:damage(defender, 0, causeFor(record))).after == 0 then
+    if (ctx:damage(target, 0, causeFor(record))).after == 0 then
       break
     end
   end
   return { kind = "complete", result = "hit" }
 end
 
----@param ctx BattleContext mechanics context under execution
----@param frame table<string, unknown> move frame under execution
----@param hits integer sampled hit count under the sequence
----@return table<string, unknown> terminal execution step for the sampled sequence
-local function runSampledHits(ctx, frame, hits)
+local function sampleMultiHitCount(frame)
   local record = frame --[[@as table<string, unknown>]]
-  local targets = record.targets --[[@as table<integer, unknown>]]
-  for hitIndex = 1, hits do
-    local defender = targetOf(targets[((hitIndex - 1) % #targets) + 1])
-    ctx:emit("hit", causeFor(record), { target = defender, hitIndex = hitIndex, hits = hits })
+  local abilities = abilitiesOf(record)
+  if abilities.user == "SKILL_LINK" then
+    return 5
   end
-  return { kind = "complete", result = "hit" }
+  local stream = checkStream(record.stream)
+  local first = stream:nextU16("multi-hit-count", causeFor(record)) % 4
+  if first < 2 then
+    return first + 2
+  end
+  return (stream:nextU16("multi-hit-count", causeFor(record)) % 4) + 2
 end
 
+---@param secondaries table<integer, table<string, unknown>>|nil secondary specifications rolling per hit
 ---@return fun(ctx: BattleContext, frame: table<string, unknown>): table<string, unknown> step handler sampling a two-to-five-hit sequence
-local function makeSampledHits()
+local function makeSampledHits(secondaries)
   local function stepSampled(ctx, frame)
     assert(type(ctx) == "table", "damage steps through the battle context")
     assert(type(frame) == "table", "damage steps from its move frame")
     local record = frame --[[@as table<string, unknown>]]
-    local stream = checkStream(record.stream)
-    local hits = 2 + (stream:nextU16("multi-hit-count", causeFor(record)) % 4)
-    return runSampledHits(ctx, record, hits)
+    return runStriker(ctx, record, { hits = sampleMultiHitCount(record), secondaries = secondaries })
   end
   return stepSampled
+end
+
+-- Triple Kick lands three accuracy-checked kicks with rising power:
+-- ten times the kick ordinal, sharing one critical roll. Source
+-- reference: files/battledata/script/effect_script/effect_script_0104.s.
+local function stepTripleKick(ctx, frame)
+  assert(type(ctx) == "table", "damage steps through the battle context")
+  assert(type(frame) == "table", "damage steps from its move frame")
+  local record = frame --[[@as table<string, unknown>]]
+  local strike = strikeFactsOf(record)
+  local defender = targetOf((record.targets --[[@as table<integer, unknown>]])[1])
+  local connected = false
+  local controls = { shareCritical = true }
+  for kick = 1, 3 do
+    if substituteAbsorbs(ctx, defender) then
+      ctx:emit("substitute-broke", causeFor(record), { target = defender, hitIndex = kick })
+      connected = true
+    elseif accuracyGate(ctx, record, defender, strike.accuracy) then
+      stagedHit(ctx, record, defender, 10 * kick, kick, 1, controls)
+      connected = true
+    end
+    local health = ctx:damage(defender, 0, causeFor(record))
+    if health.after == 0 then
+      break
+    end
+  end
+  if not connected then
+    return { kind = "complete", result = "missed" }
+  end
+  return { kind = "complete", result = "hit" }
 end
 
 local function stepLevelFixed(ctx, frame)
@@ -1525,7 +1826,10 @@ local function stepLevelFixed(ctx, frame)
   if
     type(combat) ~= "table" or type((combat --[[@as table<string, unknown>]]).level) ~= "number"
   then
-    return { kind = "complete", result = "failed" }
+    error(BattleErrors.missingBehavior("damage reads its real combat facts", {
+      key = record.executingMove --[[@as string]],
+      fact = "level",
+    }))
   end
   return runFixed(ctx, record, (combat --[[@as table<string, unknown>]]).level --[[@as integer]])
 end
@@ -1534,24 +1838,17 @@ local function stepWeight(ctx, frame)
   assert(type(ctx) == "table", "damage steps through the battle context")
   assert(type(frame) == "table", "damage steps from its move frame")
   local record = frame --[[@as table<string, unknown>]]
-  local locals = record.locals --[[@as table<string, unknown>]]
-  local combat = locals.combat
-  if
-    type(combat) ~= "table" or type((combat --[[@as table<string, unknown>]]).weightKg) ~= "number"
-  then
-    return { kind = "complete", result = "failed" }
-  end
-  local weight = (combat --[[@as table<string, unknown>]]).weightKg --[[@as number]]
+  local weightKg = foeWeightHgOf(record) / 10
   local power = 120
-  if weight <= 10 then
+  if weightKg <= 10 then
     power = 20
-  elseif weight <= 25 then
+  elseif weightKg <= 25 then
     power = 40
-  elseif weight <= 50 then
+  elseif weightKg <= 50 then
     power = 60
-  elseif weight <= 100 then
+  elseif weightKg <= 100 then
     power = 80
-  elseif weight <= 200 then
+  elseif weightKg <= 200 then
     power = 100
   end
   return runStriker(ctx, record, { power = power })
@@ -1655,11 +1952,617 @@ local function makeWeatherStrike(params, rainy, sunny)
   return stepWeatherStrike
 end
 
+---@param frame table<string, unknown> move frame under execution
+---@param answered boolean true when the source doubling condition holds
+---@return integer staged power for the strike, doubled when answered
+local function revengePower(frame, answered)
+  local strike = strikeFactsOf(frame)
+  if answered then
+    return strike.power * 2
+  end
+  return strike.power
+end
+
+-- Revenge and avalanche double their power when the user was struck by
+-- its target earlier in the turn, through either staged category.
+-- Source references: BtlCmd_CalcRevengeDamageMul in
+-- src/battle/battle_command.c and files/battledata/script/effect_script/
+-- effect_script_0185.s.
+local function stepRevenge(ctx, frame)
+  assert(type(ctx) == "table", "damage steps through the battle context")
+  assert(type(frame) == "table", "damage steps from its move frame")
+  local record = frame --[[@as table<string, unknown>]]
+  local defender = targetOf((record.targets --[[@as table<integer, unknown>]])[1])
+  local duel = duelOf(record)
+  local physical = duel.revengePhysical --[[@as table<string, unknown>?]]
+  local special = duel.revengeSpecial --[[@as table<string, unknown>?]]
+  local answered = (
+    physical ~= nil and (physical --[[@as table<string, unknown>]]).attacker == defender
+  ) or (
+      special ~= nil and (special --[[@as table<string, unknown>]]).attacker == defender
+    )
+  return runStriker(ctx, record, { power = revengePower(record, answered) })
+end
+
+-- Payback doubles its power when its target already consumed its action
+-- this turn, regardless of damage. Source references:
+-- BtlCmd_CalcPaybackPower in src/battle/battle_command.c and
+-- files/battledata/script/effect_script/effect_script_0230.s.
+local function stepPayback(ctx, frame)
+  assert(type(ctx) == "table", "damage steps through the battle context")
+  assert(type(frame) == "table", "damage steps from its move frame")
+  local record = frame --[[@as table<string, unknown>]]
+  local duel = duelOf(record)
+  return runStriker(ctx, record, {
+    power = revengePower(record, duel.foeActed --[[@as boolean]]),
+  })
+end
+
+-- Assurance doubles its power when its target already took damage this
+-- turn, from any recorded staged strike. Source reference:
+-- files/battledata/script/effect_script/effect_script_0231.s.
+local function stepAssurance(ctx, frame)
+  assert(type(ctx) == "table", "damage steps through the battle context")
+  assert(type(frame) == "table", "damage steps from its move frame")
+  local record = frame --[[@as table<string, unknown>]]
+  local duel = duelOf(record)
+  return runStriker(ctx, record, {
+    power = revengePower(record, duel.foeHurt --[[@as boolean]]),
+  })
+end
+
+-- Brine doubles its power when the target sits at half health or below:
+-- doubling holds exactly when twice the health fits inside the ceiling.
+-- Source reference: files/battledata/script/effect_script/
+-- effect_script_0221.s.
+local function stepBrine(ctx, frame)
+  assert(type(ctx) == "table", "damage steps through the battle context")
+  assert(type(frame) == "table", "damage steps from its move frame")
+  local record = frame --[[@as table<string, unknown>]]
+  local defender = targetOf((record.targets --[[@as table<integer, unknown>]])[1])
+  local probe = ctx:damage(defender, 0, causeFor(record))
+  local ceiling = ctx:entryOf(defender).maxHp --[[@as integer]]
+  local answered = probe.before * 2 <= ceiling
+  return runStriker(ctx, record, { power = revengePower(record, answered) })
+end
+
+-- Facade doubles its power while the user carries burn, poison, or
+-- paralysis, matching the native facade-boost status mask. Source
+-- references: STATUS_FACADE_BOOST in include/constants/battle.h and
+-- files/battledata/script/effect_script/effect_script_0169.s.
+local function stepFacade(ctx, frame)
+  assert(type(ctx) == "table", "damage steps through the battle context")
+  assert(type(frame) == "table", "damage steps from its move frame")
+  local record = frame --[[@as table<string, unknown>]]
+  local condition = ctx:statusOf(userOf(record))
+  local answered = condition == "burn" or condition == "poison" or condition == "toxic" or condition == "paralysis"
+  return runStriker(ctx, record, { power = revengePower(record, answered) })
+end
+
+-- Counter-style reactions return twice the recorded damage of their
+-- staged category from the last live opposing damager, with neutral
+-- effectiveness and no accuracy roll or critical: the native scripts set
+-- the ignore-effectiveness flag and invoke the reaction directly.
+-- Missing or fainted damagers fail. Source references: BtlCmd_Counter
+-- and BtlCmd_MirrorCoat in src/battle/battle_command.c with
+-- files/battledata/script/effect_script/effect_script_0089.s and
+-- effect_script_0144.s.
+---@param category string staged category selecting the recorded damage
+---@return fun(ctx: BattleContext, frame: table<string, unknown>): table<string, unknown> step handler returning the doubled damage
+local function makeReaction(category)
+  local function stepReaction(ctx, frame)
+    assert(type(ctx) == "table", "damage steps through the battle context")
+    assert(type(frame) == "table", "damage steps from its move frame")
+    local record = frame --[[@as table<string, unknown>]]
+    local duel = duelOf(record)
+    local answer = nil
+    if category == "physical" then
+      answer = duel.revengePhysical
+    else
+      answer = duel.revengeSpecial
+    end
+    if type(answer) ~= "table" then
+      return { kind = "complete", result = "failed" }
+    end
+    local noted = answer --[[@as table<string, unknown>]]
+    local defender = noted.attacker --[[@as integer]]
+    if substituteAbsorbs(ctx, defender) then
+      ctx:emit("substitute-broke", causeFor(record), { target = defender, hitIndex = 1 })
+      return { kind = "complete", result = "hit" }
+    end
+    local dealt = applyHit(ctx, record, defender, noted.amount --[[@as integer]] * 2)
+    emitStruck(ctx, record, defender, 1, dealt)
+    noteStrikeDamage(ctx, record, defender, dealt)
+    return { kind = "complete", result = "hit" }
+  end
+  return stepReaction
+end
+
+-- One-hit knockouts resolve outside the staged arithmetic: sturdy
+-- answers first, lower-level users fail, locked-on targets fall without
+-- a roll, and every other attempt rolls flat percent under the
+-- level-plus-accuracy chance with no stage scaling. Damage equals the
+-- defender remaining health. Source reference: BtlCmd_TryOHKOMove in
+-- src/battle/battle_command.c.
+local function stepOhko(ctx, frame)
+  assert(type(ctx) == "table", "damage steps through the battle context")
+  assert(type(frame) == "table", "damage steps from its move frame")
+  local record = frame --[[@as table<string, unknown>]]
+  local defender = targetOf((record.targets --[[@as table<integer, unknown>]])[1])
+  local combat = combatOf(record)
+  local foeLevel = foeLevelOf(record)
+  local abilities = abilitiesOf(record)
+  local foeAbility = abilities.foe
+  if foeAbility == nil or foeAbility == "" then
+    error(BattleErrors.missingBehavior("knockout law reads its defender ability", {
+      key = record.executingMove --[[@as string]],
+    }))
+  end
+  if foeAbility == "STURDY" then
+    return { kind = "complete", result = "failed" }
+  end
+  if combat.level < foeLevel then
+    return { kind = "complete", result = "failed" }
+  end
+  local strike = strikeFactsOf(record)
+  local hitChance = combat.level - foeLevel + strike.accuracy
+  if not ctx:hasBattleEffect(defender, "lockon") then
+    local stream = checkStream(record.stream)
+    if stream:nextU16("ohko_hit", causeFor(record)) % 100 >= hitChance then
+      emitMissed(ctx, record, defender)
+      return { kind = "complete", result = "missed" }
+    end
+  end
+  if substituteAbsorbs(ctx, defender) then
+    ctx:emit("substitute-broke", causeFor(record), { target = defender, hitIndex = 1 })
+    return { kind = "complete", result = "hit" }
+  end
+  local remaining = ctx:damage(defender, 0, causeFor(record)).before
+  local dealt = applyHit(ctx, record, defender, remaining)
+  emitStruck(ctx, record, defender, 1, dealt)
+  noteStrikeDamage(ctx, record, defender, dealt)
+  return { kind = "complete", result = "hit" }
+end
+
+-- Eruption and water spout scale base power with user health: one
+-- hundred fifty times health over ceiling, minimum one. Source
+-- reference: BtlCmd_CalcHPFalloffPower in src/battle/battle_command.c.
+local function stepEruption(ctx, frame)
+  assert(type(ctx) == "table", "damage steps through the battle context")
+  assert(type(frame) == "table", "damage steps from its move frame")
+  local record = frame --[[@as table<string, unknown>]]
+  local user = userOf(record)
+  local strike = strikeFactsOf(record)
+  local probe = ctx:damage(user, 0, causeFor(record))
+  local ceiling = ctx:entryOf(user).maxHp --[[@as integer]]
+  local power = math.floor((strike.power * probe.before) / ceiling)
+  if power < 1 then
+    power = 1
+  end
+  return runStriker(ctx, record, { power = power })
+end
+
+-- Flail and reversal climb the native 64th ladder: at most one
+-- sixty-fourth deals two hundred, five deals one-fifty, twelve deals
+-- one hundred, twenty-one deals eighty, forty-two deals forty, and
+-- anything healthier deals twenty. Source references:
+-- BtlCmd_CalcFlailPower in src/battle/battle_command.c with
+-- sFlailDamageTable.
+local FLAIL_LADDER = {
+  { 1, 200 },
+  { 5, 150 },
+  { 12, 100 },
+  { 21, 80 },
+  { 42, 40 },
+}
+
+local function stepFlail(ctx, frame)
+  assert(type(ctx) == "table", "damage steps through the battle context")
+  assert(type(frame) == "table", "damage steps from its move frame")
+  local record = frame --[[@as table<string, unknown>]]
+  local user = userOf(record)
+  local probe = ctx:damage(user, 0, causeFor(record))
+  local ceiling = ctx:entryOf(user).maxHp --[[@as integer]]
+  local pixels = math.floor((probe.before * 64) / ceiling)
+  if probe.before > 0 and pixels < 1 then
+    pixels = 1
+  end
+  local power = 20
+  for _, rung in ipairs(FLAIL_LADDER) do
+    if pixels <= rung[1] then
+      power = rung[2]
+      break
+    end
+  end
+  return runStriker(ctx, record, { power = power })
+end
+
+-- Wring out scales with defender health: one plus one-twenty times
+-- health over ceiling. Source reference: BtlCmd_CalcWringOutPower in
+-- src/battle/battle_command.c.
+local function stepWringOut(ctx, frame)
+  assert(type(ctx) == "table", "damage steps through the battle context")
+  assert(type(frame) == "table", "damage steps from its move frame")
+  local record = frame --[[@as table<string, unknown>]]
+  local defender = targetOf((record.targets --[[@as table<integer, unknown>]])[1])
+  local probe = ctx:damage(defender, 0, causeFor(record))
+  local ceiling = ctx:entryOf(defender).maxHp --[[@as integer]]
+  local power = 1 + math.floor((120 * probe.before) / ceiling)
+  return runStriker(ctx, record, { power = power })
+end
+
+-- Gyro Ball scales with the speed ratio: one plus twenty-five times
+-- defender speed over user speed, capped at one-fifty. Source reference:
+-- BtlCmd_CalcGyroBallPower in src/battle/battle_command.c.
+local function stepGyroBall(ctx, frame)
+  assert(type(ctx) == "table", "damage steps through the battle context")
+  assert(type(frame) == "table", "damage steps from its move frame")
+  local record = frame --[[@as table<string, unknown>]]
+  local userSpeed, foeSpeed = speedsOf(record)
+  if userSpeed < 1 then
+    error(BattleErrors.missingBehavior("weightless power reads its effective speeds", {
+      key = record.executingMove --[[@as string]],
+      fact = "user",
+    }))
+  end
+  local power = 1 + math.floor((25 * foeSpeed) / userSpeed)
+  if power > 150 then
+    power = 150
+  end
+  return runStriker(ctx, record, { power = power })
+end
+
+-- Hidden Power derives type and power from the user individual
+-- values: the low bits index sixteen types past mystery, the second
+-- bits scale power from thirty to seventy. Source reference:
+-- BtlCmd_CalcHiddenPowerParams in src/battle/battle_command.c.
+local HIDDEN_POWER_TYPES = {
+  "fighting",
+  "flying",
+  "poison",
+  "ground",
+  "rock",
+  "bug",
+  "ghost",
+  "steel",
+  "fire",
+  "water",
+  "grass",
+  "electric",
+  "psychic",
+  "ice",
+  "dragon",
+  "dark",
+}
+
+local function stepHiddenPower(ctx, frame)
+  assert(type(ctx) == "table", "damage steps through the battle context")
+  assert(type(frame) == "table", "damage steps from its move frame")
+  local record = frame --[[@as table<string, unknown>]]
+  local ivs = userIvsOf(record)
+  local function bit(value, position)
+    return math.floor(value / (2 ^ position)) % 2
+  end
+  local order = { "hp", "attack", "defense", "speed", "specialAttack", "specialDefense" }
+  local typeIndex, powerIndex = 0, 0
+  for position, stat in ipairs(order) do
+    local value = ivs[stat] --[[@as integer]]
+    typeIndex = typeIndex + bit(value, 0) * (2 ^ (position - 1))
+    powerIndex = powerIndex + bit(value, 1) * (2 ^ (position - 1))
+  end
+  local power = math.floor((powerIndex * 40) / 63) + 30
+  local raw = math.floor((typeIndex * 15) / 63) + 1
+  if raw >= 9 then
+    raw = raw + 1
+  end
+  local moveType = nil
+  if raw <= 8 then
+    moveType = HIDDEN_POWER_TYPES[raw]
+  else
+    moveType = HIDDEN_POWER_TYPES[raw - 1]
+  end
+  return runStriker(ctx, record, { power = power, moveType = moveType })
+end
+
+-- Present checks accuracy once, then rolls its branch on one byte
+-- draw: forty, eighty, or one-twenty power, else healing the target for
+-- a quarter of its ceiling with a minimum of one. The damage branches
+-- reuse the staged striker without a second accuracy roll. Source
+-- references: BtlCmd_Present in src/battle/battle_command.c and
+-- files/battledata/script/effect_script/effect_script_0122.s.
+local function stepPresent(ctx, frame)
+  assert(type(ctx) == "table", "damage steps through the battle context")
+  assert(type(frame) == "table", "damage steps from its move frame")
+  local record = frame --[[@as table<string, unknown>]]
+  local defender = targetOf((record.targets --[[@as table<integer, unknown>]])[1])
+  local strike = strikeFactsOf(record)
+  if not accuracyGate(ctx, record, defender, strike.accuracy) then
+    return { kind = "complete", result = "missed" }
+  end
+  local stream = checkStream(record.stream)
+  local roll = stream:nextU16("present_power", causeFor(record)) % 256
+  if roll >= 204 then
+    local ceiling = ctx:entryOf(defender).maxHp --[[@as integer]]
+    local amount = math.floor(ceiling / 4)
+    if amount < 1 then
+      amount = 1
+    end
+    local outcome = ctx:heal(defender, amount, causeFor(record))
+    ctx:emit("healed", causeFor(record), { target = defender, restored = outcome.after - outcome.before })
+    return { kind = "complete", result = "hit" }
+  end
+  local power = 40
+  if roll >= 178 then
+    power = 120
+  elseif roll >= 102 then
+    power = 80
+  end
+  return runStriker(ctx, record, { power = power, skipAccuracy = true })
+end
+
+-- Snore strikes only while the user sleeps, flinching on its compiled
+-- chance otherwise. Source reference:
+-- files/battledata/script/effect_script/effect_script_0092.s.
+local function stepSnore(ctx, frame)
+  assert(type(ctx) == "table", "damage steps through the battle context")
+  assert(type(frame) == "table", "damage steps from its move frame")
+  local record = frame --[[@as table<string, unknown>]]
+  local locals = record.locals --[[@as table<string, unknown>]]
+  if locals.userAsleep ~= true then
+    return { kind = "complete", result = "failed" }
+  end
+  return runStriker(ctx, record, { secondaries = { { volatile = "flinch" } } })
+end
+
+-- Stomp doubles its power against minimizing targets and flinches on
+-- its compiled chance either way. Source reference:
+-- files/battledata/script/effect_script/effect_script_0150.s.
+local function stepStomp(ctx, frame)
+  assert(type(ctx) == "table", "damage steps through the battle context")
+  assert(type(frame) == "table", "damage steps from its move frame")
+  local record = frame --[[@as table<string, unknown>]]
+  local defender = targetOf((record.targets --[[@as table<integer, unknown>]])[1])
+  local strike = strikeFactsOf(record)
+  local power = strike.power
+  if ctx:hasBattleEffect(defender, "minimize") then
+    power = power * 2
+  end
+  return runStriker(ctx, record, { power = power, secondaries = { { volatile = "flinch" } } })
+end
+
+-- Wake-up slap doubles against sleeping targets and wakes them on a
+-- connecting strike; substitutes take the plain strike without waking.
+-- Source reference: files/battledata/script/effect_script/
+-- effect_script_0217.s.
+local function stepWakeUpSlap(ctx, frame)
+  assert(type(ctx) == "table", "damage steps through the battle context")
+  assert(type(frame) == "table", "damage steps from its move frame")
+  local record = frame --[[@as table<string, unknown>]]
+  local defender = targetOf((record.targets --[[@as table<integer, unknown>]])[1])
+  local strike = strikeFactsOf(record)
+  if substituteAbsorbs(ctx, defender) then
+    ctx:emit("substitute-broke", causeFor(record), { target = defender, hitIndex = 1 })
+    return { kind = "complete", result = "hit" }
+  end
+  local sleeping = ctx:statusOf(defender) == "sleep"
+  local power = strike.power
+  if sleeping then
+    power = power * 2
+  end
+  local outcome = runStriker(ctx, record, { power = power })
+  if outcome.result == "hit" and sleeping then
+    ctx:cureStatus(defender, "sleep", causeFor(record))
+  end
+  return outcome
+end
+-- Last Resort connects only when every other known move was used by
+-- this entry: single-move holders fail, and any unused known move
+-- fails. The distinct-move history keys on the entry token, so
+-- withdrawing resets the count. Source reference: BtlCmd_TryLastResort
+-- in src/battle/battle_command.c.
+local function stepLastResort(ctx, frame)
+  assert(type(ctx) == "table", "damage steps through the battle context")
+  assert(type(frame) == "table", "damage steps from its move frame")
+  local record = frame --[[@as table<string, unknown>]]
+  local locals = record.locals --[[@as table<string, unknown>]]
+  local known = locals.userMoves
+  if type(known) ~= "table" or #known < 2 then
+    return { kind = "complete", result = "failed" }
+  end
+  local used = usedMovesOf(record)
+  for _, move in
+    ipairs(known --[[@as table<integer, unknown>]])
+  do
+    if type(move) ~= "string" or move == "" then
+      error(BattleErrors.missingBehavior("last resort reads its known moves", {
+        key = record.executingMove --[[@as string]],
+      }))
+    end
+    if
+      move ~= "LAST_RESORT" and used[
+        move --[[@as string]]
+      ] ~= true
+    then
+      return { kind = "complete", result = "failed" }
+    end
+  end
+  return runStriker(ctx, record, {})
+end
+
+-- Weather Ball doubles its power under field weather and strikes with
+-- the weather type: rain water, sand rock, sun fire, hail ice. Calm
+-- skies keep the compiled normal typing and base power. Source
+-- reference: BtlCmd_CalcWeatherBallParams in src/battle/battle_command.c.
+local WEATHER_BALL_TYPES = {
+  raindance = "water",
+  sandstorm = "rock",
+  sunnyday = "fire",
+  hail = "ice",
+}
+
+local function stepWeatherBall(ctx, frame)
+  assert(type(ctx) == "table", "damage steps through the battle context")
+  assert(type(frame) == "table", "damage steps from its move frame")
+  local record = frame --[[@as table<string, unknown>]]
+  local strike = strikeFactsOf(record)
+  local power, moveType = strike.power, nil
+  for _, weather in ipairs({ "raindance", "sandstorm", "sunnyday", "hail" }) do
+    if ctx:fieldEffect(weather) ~= nil then
+      power = strike.power * 2
+      moveType = WEATHER_BALL_TYPES[weather]
+    end
+  end
+  return runStriker(ctx, record, { power = power, moveType = moveType })
+end
+
+-- Natural Gift throws the held berry for its generated throw facts and
+-- spends the holder even on a miss; empty or powerless holders fail.
+-- Source references: BtlCmd_CalcNaturalGiftParams in
+-- src/battle/battle_command.c and files/battledata/script/effect_script/
+-- effect_script_0222.s.
+local function stepNaturalGift(ctx, frame)
+  assert(type(ctx) == "table", "damage steps through the battle context")
+  assert(type(frame) == "table", "damage steps from its move frame")
+  local record = frame --[[@as table<string, unknown>]]
+  local key = record.executingMove --[[@as string]]
+  local held = heldItemOf(record)
+  if held == nil then
+    return { kind = "complete", result = "failed" }
+  end
+  local facts = itemFactsOf(record)
+  local entry = facts[held]
+  if type(entry) ~= "table" then
+    error(BattleErrors.missingBehavior("throw law reads its holder throw facts", { key = key, item = held }))
+  end
+  local gift = (entry --[[@as table<string, unknown>]]).naturalGift
+  if type(gift) ~= "table" then
+    error(BattleErrors.missingBehavior("throw law reads its holder throw facts", { key = key, item = held }))
+  end
+  local throw = gift --[[@as table<string, unknown>]]
+  if
+    type(throw.power) ~= "number"
+    or throw.power --[[@as number]]
+      % 1 ~= 0
+    or throw.power --[[@as number]]
+      < 1
+    or type(throw.type) ~= "string"
+    or throw.type --[[@as string]]
+      == ""
+  then
+    return { kind = "complete", result = "failed" }
+  end
+  local outcome = runStriker(ctx, record, {
+    power = throw.power --[[@as integer]],
+    moveType = throw.type --[[@as string]],
+  })
+  ctx:consumeHeldItem(userOf(record))
+  return outcome
+end
+
+-- Fling throws the held item for its generated fling power and spends
+-- the holder even on a miss; powerless holders fail. Badly-poisoning
+-- throw effects apply on a connecting hit through the usual substitute,
+-- safeguard, and type gates; unmapped throw effects fail loudly.
+-- Source references: TryFling in
+-- src/battle/overlay_12_0224E4FC.c and files/battledata/script/
+-- effect_script/effect_script_0233.s with
+-- files/battledata/script/subscript/subscript_0220_Fling.s.
+local FLING_EFFECTS = {
+  [29] = "toxic",
+}
+
+local function stepFling(ctx, frame)
+  assert(type(ctx) == "table", "damage steps through the battle context")
+  assert(type(frame) == "table", "damage steps from its move frame")
+  local record = frame --[[@as table<string, unknown>]]
+  local key = record.executingMove --[[@as string]]
+  local held = heldItemOf(record)
+  if held == nil then
+    return { kind = "complete", result = "failed" }
+  end
+  local facts = itemFactsOf(record)
+  local entry = facts[held]
+  if type(entry) ~= "table" then
+    error(BattleErrors.missingBehavior("throw law reads its holder throw facts", { key = key, item = held }))
+  end
+  local throw = (entry --[[@as table<string, unknown>]]).fling
+  if type(throw) ~= "table" then
+    error(BattleErrors.missingBehavior("throw law reads its holder throw facts", { key = key, item = held }))
+  end
+  local flung = throw --[[@as table<string, unknown>]]
+  if
+    type(flung.power) ~= "number"
+    or flung.power --[[@as number]]
+      % 1 ~= 0
+    or flung.power --[[@as number]]
+      < 1
+  then
+    return { kind = "complete", result = "failed" }
+  end
+  if type(flung.effect) ~= "number" then
+    error(BattleErrors.missingBehavior("throw law reads its holder fling effect", { key = key, item = held }))
+  end
+  local effect = FLING_EFFECTS[
+    flung.effect --[[@as integer]]
+  ]
+  if effect == nil then
+    error(BattleErrors.missingBehavior("throw law names a modeled fling effect", { key = key, item = held }))
+  end
+  local outcome = runStriker(ctx, record, {
+    power = flung.power --[[@as integer]],
+  })
+  ctx:consumeHeldItem(userOf(record))
+  if outcome.result == "hit" and effect == "toxic" then
+    local defender = targetOf((record.targets --[[@as table<integer, unknown>]])[1])
+    if not secondariesAllowed(ctx, record, defender) then
+      return outcome
+    end
+    if safeguarded(ctx, defender) then
+      return outcome
+    end
+    local locals = record.locals --[[@as table<string, unknown>]]
+    local defenders = locals.defenderTypes --[[@as table<integer, unknown>]]
+    if
+      not statusTypeImmune(defenders[defender] --[[@as string[] ]], "toxic")
+    then
+      applySecondaryStatus(ctx, record, defender, "toxic")
+    end
+  end
+  return outcome
+end
+
 ---@param key string damage move identity under binding
 ---@return fun(ctx: BattleContext, frame: table<string, unknown>): table<string, unknown> distinct per-move handler for the registry
 local function bodyFor(key)
   if key == "BEAT_UP" then
     return bind(stepBeatUp)
+  end
+  if key == "LAST_RESORT" then
+    return bind(stepLastResort)
+  end
+  if key == "WEATHER_BALL" then
+    return bind(stepWeatherBall)
+  end
+  if key == "NATURAL_GIFT" then
+    return bind(stepNaturalGift)
+  end
+  if key == "FLING" then
+    return bind(stepFling)
+  end
+  if key == "HIDDEN_POWER" then
+    return bind(stepHiddenPower)
+  end
+  if key == "PRESENT" then
+    return bind(stepPresent)
+  end
+  if key == "SNORE" then
+    return bind(stepSnore)
+  end
+  if key == "STOMP" then
+    return bind(stepStomp)
+  end
+  if key == "WAKE_UP_SLAP" then
+    return bind(stepWakeUpSlap)
   end
   if key == "FRUSTRATION" then
     return bind(makeFriendship("frustration"))
@@ -1712,11 +2615,56 @@ local function bodyFor(key)
   if key == "BLIZZARD" then
     return bind(makeWeatherStrike({ secondaries = { { status = "freeze" } } }, "hail", nil))
   end
-  if OHKO[key] == true or GATED[key] == true then
+  if key == "REVENGE" or key == "AVALANCHE" then
+    return bind(stepRevenge)
+  end
+  if key == "PAYBACK" then
+    return bind(stepPayback)
+  end
+  if key == "ASSURANCE" then
+    return bind(stepAssurance)
+  end
+  if key == "BRINE" then
+    return bind(stepBrine)
+  end
+  if key == "FACADE" then
+    return bind(stepFacade)
+  end
+  if key == "COUNTER" then
+    return bind(makeReaction("physical"))
+  end
+  if key == "MIRROR_COAT" then
+    return bind(makeReaction("special"))
+  end
+  if key == "ERUPTION" or key == "WATER_SPOUT" then
+    return bind(stepEruption)
+  end
+  if key == "FLAIL" or key == "REVERSAL" then
+    return bind(stepFlail)
+  end
+  if key == "WRING_OUT" then
+    return bind(stepWringOut)
+  end
+  if key == "GYRO_BALL" then
+    return bind(stepGyroBall)
+  end
+  if OHKO[key] == true then
+    return bind(stepOhko)
+  end
+  if GATED[key] == true then
     return bind(stepGated)
   end
-  if MULTI_25[key] == true then
-    return bind(makeSampledHits())
+  if key == "TRIPLE_KICK" then
+    return bind(stepTripleKick)
+  end
+  if key == "DOUBLE_HIT" then
+    return bind(makeStriker({ hits = 2, shareCritical = true }))
+  end
+  if key == "TWINEEDLE" then
+    return bind(makeStriker({ hits = 2, shareCritical = true, secondaries = { { status = "poison" } } }))
+  end
+  if SAMPLED_25[key] == true then
+    return bind(makeSampledHits(nil))
   end
   if STRIKERS[key] ~= nil then
     return bind(makeStriker(STRIKERS[key]))

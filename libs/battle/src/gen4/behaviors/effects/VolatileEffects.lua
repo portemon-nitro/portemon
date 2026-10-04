@@ -350,6 +350,15 @@ local DEFINITIONS = {
     timings = { binding("leave", "focusenergy", "affliction") },
     lifecycle = lifecycle("replace", "clear"),
   },
+  -- Minimizing marks the entry for stomping doubles until it leaves;
+  -- the marker rides beside the evasion stage, never through it.
+  {
+    key = "minimize",
+    stateVersion = 1,
+    validateState = emptyState(1),
+    timings = { binding("leave", "minimize", "affliction") },
+    lifecycle = lifecycle("replace", "clear"),
+  },
 }
 
 --- Publishes every native volatile definition through the shared behavior

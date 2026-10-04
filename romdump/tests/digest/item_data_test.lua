@@ -360,4 +360,48 @@ function T.pins_the_machine_berry_and_mail_ranges()
   Assert.equal(ItemSources.messageBanks.berry, 251)
 end
 
+function T.battle_only_items_carry_their_decoded_battle_use()
+  -- X-attack shape: party-use byte set with only the attack-stage
+  -- nibble, so party normalization defers to battle-only riders.
+  local xAttack = catalogBytes(0, true, { 0, 0x10, 0, 0, 0, 0, 0 }, nil)
+  local catalog = assert(compiler().compileCatalog(stubCatalogRom({ [57] = xAttack }), { versionId = "heartgold" }))
+  local attack = assert(catalog.items.X_ATTACK, "X_ATTACK must compile")
+  Assert.equal(attack.partyUse.kind, "deferred")
+  Assert.equal(attack.partyUse.reason, "battle_only")
+  local battleUse = assert(attack.battleUse, "battle-only items carry their battle use")
+  Assert.deepEqual(battleUse.cures, { confusion = false, infatuation = false })
+  Assert.isFalse(battleUse.guardSpec)
+  Assert.deepEqual(battleUse.stages, {
+    attack = 1,
+    defense = 0,
+    specialAttack = 0,
+    specialDefense = 0,
+    speed = 0,
+    accuracy = 0,
+    critical = 0,
+  })
+  -- Dire-hit shape: only the critical-rate bits set.
+  local direHit = catalogBytes(0, true, { 0, 0, 0, 0, 0x10, 0, 0 }, nil)
+  local catalogHit =
+    assert(compiler().compileCatalog(stubCatalogRom({ [56] = direHit }), { versionId = "heartgold" }))
+  local hit = assert(catalogHit.items.DIRE_HIT, "DIRE_HIT must compile")
+  Assert.equal(hit.partyUse.kind, "deferred")
+  local hitUse = assert(hit.battleUse, "dire hit carries its battle use")
+  Assert.equal(hitUse.stages.critical, 1)
+  Assert.equal(hitUse.stages.attack, 0)
+  -- Guard-spec shape: only the guard flag set.
+  local guardSpec = catalogBytes(0, true, { 0x80, 0, 0, 0, 0, 0, 0 }, nil)
+  local catalogGuard =
+    assert(compiler().compileCatalog(stubCatalogRom({ [55] = guardSpec }), { versionId = "heartgold" }))
+  local guard = assert(catalogGuard.items.GUARD_SPEC_, "GUARD_SPEC_ must compile")
+  Assert.equal(guard.partyUse.kind, "deferred")
+  Assert.isTrue(assert(guard.battleUse, "guard spec carries its battle use").guardSpec)
+  -- Ordinary medicine carries no battle use: the potion shape maps to
+  -- its party family without riders.
+  local potion = catalogBytes(0, true, { 0, 0, 0, 0, 0, 0x04, 0 }, { 0, 0, 0, 0, 0, 0, 20 })
+  local catalogPotion =
+    assert(compiler().compileCatalog(stubCatalogRom({ [17] = potion }), { versionId = "heartgold" }))
+  Assert.isNil(catalogPotion.items.POTION.battleUse, "ordinary medicine carries no battle use")
+end
+
 return { tests = T }

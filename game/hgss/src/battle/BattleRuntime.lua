@@ -577,6 +577,14 @@ function BattleRuntime:_sessionSpeciesFacts(record)
     -- Gender ratios travel for attract and captivate law; the executor
     -- resolves battle genders without reaching back into the catalog.
     assert(type(speciesRecord.genderRatio) == "number", "species records carry their gender ratio")
+    -- Species weights travel for weight-law strikes; the executor
+    -- resolves kilograms without reaching back into the catalog.
+    -- Records without a weight stay absent and fail loudly in their
+    -- handler instead of guessing.
+    local weightHg = nil
+    if type(speciesRecord.weight) == "number" then
+      weightHg = speciesRecord.weight
+    end
     local bucket = facts[entry.species]
     if bucket == nil then
       bucket = {}
@@ -590,6 +598,7 @@ function BattleRuntime:_sessionSpeciesFacts(record)
       baseExpYield = speciesRecord.baseExpYield,
       evYield = copyValue(speciesRecord.evYield),
       genderRatio = speciesRecord.genderRatio,
+      weightHg = weightHg,
     }
   end
   return facts
@@ -652,11 +661,13 @@ end
 
 -- Resolves the detached semantic item facts the detached scenario
 -- references through the live party catalog: every distinct non-ball
--- inventory key contributes exactly its generated party-use record, and
--- nothing else crosses into the session. Balls serve through the capture
--- owner and need no facts; unknown keys stay absent so their selection
--- fails explicitly at the battle boundary. Battles without a fact source
--- carry no facts and fail the same way on their first serving.
+-- inventory key contributes exactly its generated party-use record plus
+-- its battle-use riders when present, and every held item contributes
+-- its throw facts for fling and natural gift. Balls serve through the
+-- capture owner and need no facts; unknown keys stay absent so their
+-- selection fails explicitly at the battle boundary. Battles without a
+-- fact source carry no facts and fail the same way on their first
+-- serving.
 ---@param record table<string, unknown> detached scenario under session construction
 ---@return table<string, table<string, unknown>> immutable item facts for the referenced items
 function BattleRuntime:_sessionItemFacts(record)
@@ -669,22 +680,70 @@ function BattleRuntime:_sessionItemFacts(record)
   local itemByKey = source.item --[[@as fun(self: table<string, unknown>, key: string): table<string, unknown>]]
   assert(type(itemByKey) == "function", "item facts resolve through the mon catalog")
   local inventories = record.inventories
-  if type(inventories) ~= "table" then
-    return facts
+  if type(inventories) == "table" then
+    for _, entry in
+      ipairs(inventories --[[@as table<integer, unknown>]])
+    do
+      if type(entry) == "table" then
+        local quantities = (entry --[[@as table<string, unknown>]]).quantities
+        if type(quantities) == "table" then
+          for key in
+            pairs(quantities --[[@as table<string, unknown>]])
+          do
+            if type(key) == "string" and key ~= "" and facts[key] == nil and not CaptureContext.isBall(key) then
+              local ok, definition = pcall(itemByKey, source, key)
+              if ok and type(definition) == "table" and type(definition.partyUse) == "table" then
+                local projected = { partyUse = copyValue(definition.partyUse) } --[[@as table<string, unknown>]]
+                if type(definition.battleUse) == "table" then
+                  projected.battleUse = copyValue(definition.battleUse)
+                end
+                facts[key] = projected
+              end
+            end
+          end
+        end
+      end
+    end
   end
-  for _, entry in
-    ipairs(inventories --[[@as table<integer, unknown>]])
-  do
-    if type(entry) == "table" then
-      local quantities = (entry --[[@as table<string, unknown>]]).quantities
-      if type(quantities) == "table" then
-        for key in
-          pairs(quantities --[[@as table<string, unknown>]])
-        do
-          if type(key) == "string" and key ~= "" and facts[key] == nil and not CaptureContext.isBall(key) then
-            local ok, definition = pcall(itemByKey, source, key)
-            if ok and type(definition) == "table" and type(definition.partyUse) == "table" then
-              facts[key] = { partyUse = copyValue(definition.partyUse) }
+  local participants = record.participants
+  if type(participants) == "table" then
+    for _, entry in
+      ipairs(participants --[[@as table<integer, unknown>]])
+    do
+      if type(entry) == "table" then
+        local roster = (entry --[[@as table<string, unknown>]]).roster
+        if type(roster) == "table" then
+          for _, seed in
+            ipairs(roster --[[@as table<integer, unknown>]])
+          do
+            if type(seed) == "table" then
+              local mon = (seed --[[@as table<string, unknown>]]).mon
+              if type(mon) == "table" then
+                local held = (mon --[[@as table<string, unknown>]]).heldItem
+                if type(held) == "string" and held ~= "" and held ~= "NONE" then
+                  local ok, definition = pcall(itemByKey, source, held)
+                  if ok and type(definition) == "table" then
+                    local resolved = definition --[[@as table<string, unknown>]]
+                    -- Held-only entries exist for throw facts alone: keys
+                    -- without generated throw facts project nothing, so
+                    -- synthetic catalogs stay valid while ROM records keep
+                    -- their fling and natural-gift facts.
+                    if type(resolved.naturalGift) == "table" or type(resolved.fling) == "table" then
+                      local projected = facts[held]
+                      if projected == nil then
+                        projected = {}
+                        facts[held] = projected
+                      end
+                      if type(resolved.naturalGift) == "table" and projected.naturalGift == nil then
+                        projected.naturalGift = copyValue(resolved.naturalGift)
+                      end
+                      if type(resolved.fling) == "table" and projected.fling == nil then
+                        projected.fling = copyValue(resolved.fling)
+                      end
+                    end
+                  end
+                end
+              end
             end
           end
         end

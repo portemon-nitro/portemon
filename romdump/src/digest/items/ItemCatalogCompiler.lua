@@ -311,6 +311,30 @@ end
 -- but effectless records stay medicinal and never apply. Mixed primary
 -- families fail the build instead of guessing a combination the source
 -- menu never offers.
+-- Battle-use riders for battle-only items: confusion/infatuation cure
+-- flags, the guard-spec screen, and the already-decoded stage flags
+-- per stat. The native battle item law interprets nonzero stage flags
+-- as one stage (critical as focus energy), so values ride through
+-- unchanged. Source reference: BattleSystem_RecoverStatus in
+-- src/battle/battle_system.c.
+---@param party table<string, unknown>
+---@return table<string, unknown>
+local function battleUseRecord(party)
+  return {
+    cures = { confusion = party.cfsHeal == true, infatuation = party.infHeal == true },
+    guardSpec = party.guardSpec == true,
+    stages = {
+      attack = party.atkStages,
+      defense = party.defStages,
+      specialAttack = party.spatkStages,
+      specialDefense = party.spdefStages,
+      speed = party.speedStages,
+      accuracy = party.accuracyStages,
+      critical = party.critrateStages,
+    },
+  }
+end
+
 ---@param nativeId integer
 ---@param key string
 ---@param pocketKey string
@@ -705,6 +729,17 @@ function ItemCatalogCompiler.compileCatalog(romFs, opts)
         record.berryNamePlural = berryName
       end
       record.heldBehavior = resolveHeldBehavior(nativeId, key, pocketKey, isHm, decoded)
+      -- Battle-only riders ride beside party use on the item record when
+      -- party normalization deferred to them: X-item stages, guard-spec
+      -- screens, and confusion/infatuation cures the party record drops.
+      local partyUse = record.partyUse --[[@as table<string, unknown>]]
+      if partyUse.kind == "deferred" and partyUse.reason == "battle_only" then
+        local party = decoded.party
+        if type(party) ~= "table" then
+          error(Errors.new("ITEM_PARTY_EFFECT_INVALID", "item " .. key .. " carries no party flags", context), 0)
+        end
+        record.battleUse = battleUseRecord(party --[[@as table<string, unknown>]])
+      end
       local throwFacts = resolveThrowFacts(decoded)
       record.fling = throwFacts.fling
       record.naturalGift = throwFacts.naturalGift

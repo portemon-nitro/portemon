@@ -172,6 +172,23 @@ local function targetOf(entry)
   return record.combatant --[[@as integer]]
 end
 
+---@param user integer combatant owning the move
+---@return table<string, unknown> causal source attributed to the instance
+local function moveSource(user)
+  return { kind = "move", combatant = user }
+end
+
+---@param ctx BattleContext mechanics context under execution
+---@param combatant integer combatant owning the entry under the scope
+---@return table<string, unknown> active owner scope pinned to the live entry
+local function activeScope(ctx, combatant)
+  local entry = ctx:entryOf(combatant)
+  if entry.activation == nil then
+    error(BattleErrors.invalidState("battle-local effects scope to a live entry", { combatant = combatant }))
+  end
+  return { kind = "active", combatant = combatant, activation = entry.activation }
+end
+
 ---@param ctx BattleContext mechanics context under execution
 ---@param frame table<string, unknown> move frame under execution
 local function emitUsed(ctx, frame)
@@ -226,6 +243,7 @@ end
 ---@class StageSpec
 ---@field target "user"|"foe"
 ---@field changes table<integer, table<integer, unknown>> stat/delta pairs under the move
+---@field mark string? native volatile marker rooted beside the stages
 
 -- Common native stage families: self-raised boosts skip the accuracy
 -- roll while foe-targeted drops roll compiled accuracy through staged
@@ -270,7 +288,7 @@ local STAGE_MOVES = {
   FLASH = { target = "foe", changes = { { "accuracy", -1 } } },
   KINESIS = { target = "foe", changes = { { "accuracy", -1 } } },
   DOUBLE_TEAM = { target = "user", changes = { { "evasion", 1 } } },
-  MINIMIZE = { target = "user", changes = { { "evasion", 1 } } },
+  MINIMIZE = { target = "user", changes = { { "evasion", 1 } }, mark = "minimize" },
   SWEET_SCENT = { target = "foe", changes = { { "evasion", -1 } } },
   GROWTH = { target = "user", changes = { { "specialAttack", 1 } } },
 }
@@ -303,6 +321,16 @@ local function makeStage(spec)
     end
     if not moved then
       return { kind = "complete", result = "failed" }
+    end
+    -- Marked stage moves root their native marker beside the stages:
+    -- minimizing flags the entry for stomping doubles until it leaves.
+    if spec.mark ~= nil then
+      ctx:addBattleEffect(
+        NativeEffectHandlers.definitionFor(spec.mark --[[@as string]]),
+        activeScope(ctx, target),
+        moveSource(user),
+        { version = 1 }
+      )
     end
     emitUsed(ctx, record)
     return { kind = "complete", result = "hit" }
@@ -514,23 +542,6 @@ local function stepMemento(ctx, frame)
   emitUsed(ctx, record)
   ctx:damage(userOf(record), 999999, causeFor(record))
   return { kind = "complete", result = "hit" }
-end
-
----@param user integer combatant owning the move
----@return table<string, unknown> causal source attributed to the instance
-local function moveSource(user)
-  return { kind = "move", combatant = user }
-end
-
----@param ctx BattleContext mechanics context under execution
----@param combatant integer combatant owning the entry under the scope
----@return table<string, unknown> active owner scope pinned to the live entry
-local function activeScope(ctx, combatant)
-  local entry = ctx:entryOf(combatant)
-  if entry.activation == nil then
-    error(BattleErrors.invalidState("battle-local effects scope to a live entry", { combatant = combatant }))
-  end
-  return { kind = "active", combatant = combatant, activation = entry.activation }
 end
 
 -- Leech Seed roots the defender: one eighth of maximum health drains

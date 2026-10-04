@@ -360,4 +360,70 @@ function T.ineffective_and_unsupported_semantics_never_heal()
   Assert.equal(rng:capture().calls, callsBefore, "failed executions draw nothing")
 end
 
+-- A generated battle-use serving raises its stage through the native
+-- item path: one X-item unit leaves the stock with one ledger delta,
+-- the holder gains exactly one attack stage, and the emitted event
+-- names the serving.
+function T.generated_battle_use_raises_its_stage_through_the_session()
+  local contracts = SessionFixture.sessionContracts()
+  local content = actionContent()
+  local lead = leveledCombatant(1, 23, "EEVEE", 20)
+  local pack = SessionFixture.inventory("party", { 1 }, { X_ATTACK = 1 })
+  local facts = {
+    X_ATTACK = {
+      partyUse = { kind = "deferred", reason = "battle_only" },
+      battleUse = {
+        cures = { confusion = false, infatuation = false },
+        guardSpec = false,
+        stages = {
+          attack = 1,
+          defense = 0,
+          specialAttack = 0,
+          specialDefense = 0,
+          speed = 0,
+          accuracy = 0,
+          critical = 0,
+        },
+      },
+    },
+  }
+  local session = contracts.Battle.newSession(
+    itemScenario(
+      { lead },
+      { leveledCombatant(2, 41, "EEVEE", 5), leveledCombatant(4, 43, "EEVEE", 5) },
+      pack,
+      facts
+    ),
+    content
+  )
+  local opening = SessionFixture.driveUntilSettled(session)
+  Assert.equal(opening.status, "waiting", "the opening turn asks for decisions")
+  local alpha = requestFor(opening, "alpha")
+  local beta = requestFor(opening, "beta")
+  local actor = assert(alpha.actors[1], "the owning request addresses its lead")
+  local foe = assert(beta.actors[1], "the opposing request addresses its lead")
+  local ok, replyErr = session:submit(SessionFixture.replyFor(alpha, { bagChoice(actor, "X_ATTACK", 1) }))
+  Assert.isTrue(ok, "the battle-use choice is accepted")
+  Assert.isNil(replyErr, "accepted bag use carries no input error")
+  local answered, answerErr =
+    session:submit(SessionFixture.replyFor(beta, { SessionFixture.switchChoice(foe, 4) }))
+  Assert.isTrue(answered, "the opposing exchange is accepted")
+  Assert.isNil(answerErr, "accepted exchanges carry no input error")
+  local turn = session:advance(64)
+  local served = nil
+  for _, event in ipairs(turn.events or {}) do
+    if event.kind == "item" then
+      served = event
+    end
+  end
+  Assert.notNil(served, "the bag use announces itself")
+  local payload = served.payload --[[@as table<string, unknown>]]
+  Assert.equal(payload.item, "X_ATTACK", "the event names the served item")
+  local settled = session:capture()
+  Assert.equal(settled.combatants[1].stages.attack, 1, "the holder gains one attack stage")
+  Assert.equal(settled.inventories.party.quantities.X_ATTACK, 0, "exactly one unit leaves the stock")
+  Assert.equal(#settled.ledger, 1, "the serving writes exactly one ledger delta")
+  session:dispose()
+end
+
 return { tests = T }
