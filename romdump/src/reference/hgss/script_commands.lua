@@ -5163,9 +5163,8 @@ return {
     [711] = {
       name = "ScrCmd_FollowMonInteract",
       feature = "following_mon",
-      disposition = "deferred",
-      deferredReason = "special_follower_event",
-      deferredNote = "follower interaction needs the following-mon controller",
+      disposition = "supported",
+      classification = "native_wait",
       widths = {},
     },
     [712] = {
@@ -5895,6 +5894,9 @@ return {
     },
     [825] = {
       name = "ScrCmd_GetShinyLeafCount",
+      feature = "mons",
+      disposition = "supported",
+      classification = "continue_same_tick",
       widths = {
         [1] = 2,
         [2] = 2,
@@ -5902,6 +5904,9 @@ return {
     },
     [826] = {
       name = "ScrCmd_TryGiveShinyLeafCrown",
+      feature = "mons",
+      disposition = "supported",
+      classification = "continue_same_tick",
       widths = {
         [1] = 2,
       },

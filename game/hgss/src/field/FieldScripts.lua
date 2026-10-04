@@ -421,6 +421,7 @@ function FieldScripts.new(opts)
       windowStyles = opts.windowStyles,
       startMenuReopen = opts.startMenuReopen,
       effects = opts.effects,
+      terrainEffects = opts.effects,
       mons = opts.mons,
       items = opts.items,
       starterProvider = opts.starterProvider,

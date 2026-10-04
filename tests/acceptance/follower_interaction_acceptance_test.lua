@@ -1,10 +1,9 @@
--- Complete one generated follower interaction through the production field runtime.
+-- Complete the real following-mon script through the production field runtime.
 
 local Assert = require("tests.support.Assert")
 local CacheFs = require("libs.storage.src.CacheFs")
 local FollowerInteractionCache = require("libs.assets.src.field.FollowerInteractionCache")
 local AcceptanceHarness = require("tests.acceptance.support.AcceptanceHarness")
-local FashionCaseState = require("libs.hgss.src.save.FashionCaseState")
 
 local T = {
   metadata = {
@@ -34,16 +33,10 @@ local T = {
 }
 
 local MAP = "MAP_NEW_BARK"
+local SCRIPT_ID = "common.following_mon"
 
 local function boot(versionId)
-  local harness = AcceptanceHarness.new()
-  local gameFactory = harness.gameFactory
-  harness.gameFactory = function(factoryVersion, map)
-    local game = gameFactory(factoryVersion, map)
-    game.fashionCase = FashionCaseState.empty()
-    return game
-  end
-  local game = harness:boot({
+  local game = AcceptanceHarness.new():boot({
     versionId = versionId,
     map = MAP,
     save = "fresh",
@@ -60,47 +53,33 @@ local function boot(versionId)
   return game
 end
 
-local function taskContext(game, engine)
-  local runtime = game.runtime
-  local scripts = assert(runtime.scripts, "production field scripts are required")
-  return {
-    services = {
-      followerInteraction = engine,
-      followingMon = assert(runtime.followingMon),
-      actors = assert(runtime.actors),
-      terrainEffects = assert(runtime.fieldTerrainEffectController),
-      audio = assert(runtime.scriptHosts and runtime.scriptHosts.audio, "recorded audio output is required"),
-      dialogue = assert(scripts.dialogueHost),
-      contextChoice = assert(runtime.contextChoiceProvider),
-      world = assert(scripts.worldState),
-      mons = assert(runtime.monService),
-      player = assert(scripts.player),
-    },
-    instance = { instanceId = "acceptance-follower-interaction", scriptId = "acceptance", textArgs = {} },
-    input = {},
-  }
-end
-
-local function advanceTask(game, task, state, ctx)
-  for _ = 1, 2400 do
-    local result = task.poll(state, ctx)
-    state = result.state
-    if result.complete then
-      return state
-    end
-
-    game:step()
-    ctx.input = {}
-    if state.dialogueState and state.dialogueState.phase == "input_armed" then
-      ctx.input.pressedAction = true
-    elseif state.choiceState and state.choiceState.phase == "waiting" then
-      ctx.input.uiEvents = { { type = "confirm" } }
+local function taskRecordsFor(game, instanceId)
+  local records = {}
+  for _, record in ipairs(game:recordsNamed("script.task_started")) do
+    if record.payload.instanceId == instanceId and record.payload.taskType == "follower_interaction" then
+      records[#records + 1] = record
     end
   end
-  error("generated follower interaction did not complete within the bounded fixed-tick window")
+  return records
 end
 
-function T.tests.generated_rule_completes_with_live_field_owners()
+local function driveScriptToEnd(game)
+  for _ = 1, 3600 do
+    if #game:recordsForScript(SCRIPT_ID, "script.ended") == 1 then
+      return
+    end
+    if game:snapshot().dialogue.modal or game:contextChoiceStatus() ~= nil then
+      game.runtime:pressAction()
+      game:step()
+      game.runtime:releaseAction()
+    else
+      game:step()
+    end
+  end
+  error("the compiled following-mon script did not finish within the bounded field-tick window")
+end
+
+function T.tests.compiled_following_mon_script_blocks_on_live_interaction_and_resumes()
   local versionId = AcceptanceHarness.defaultVersion()
   local game = boot(versionId)
   local ok, err = xpcall(function()
@@ -124,45 +103,64 @@ function T.tests.generated_rule_completes_with_live_field_owners()
       return game.runtime.followingMon:partnerActorId() ~= nil
     end, 120)
 
-    local engine = assert(
-      game.runtime.scripts.followerInteractionEngine,
-      "the field runtime must compose the generated interaction engine"
+    game:startScript(SCRIPT_ID)
+    game:advanceUntil("the compiled script reaches its interaction command", function()
+      local starts = game:recordsForScript(SCRIPT_ID)
+      if #starts ~= 1 then
+        return false
+      end
+      return #taskRecordsFor(game, starts[1].payload.instanceId) == 1
+        or #game:recordsForScript(SCRIPT_ID, "script.ended") == 1
+    end, 120)
+    local starts = game:recordsForScript(SCRIPT_ID)
+    Assert.equal(#starts, 1, "the ROM-derived script must start exactly once")
+    local instanceId = assert(starts[1].payload.instanceId)
+    local interactionTasks = taskRecordsFor(game, instanceId)
+    local errors = game:recordsForScript(SCRIPT_ID, "script.error")
+    Assert.equal(
+      #interactionTasks,
+      1,
+      "the compiled opcode 711 must create its registered blocking task; script fault: "
+        .. tostring(errors[1] and errors[1].payload.code)
     )
-    local actorId = assert(game.runtime.followingMon:partnerActorId())
-    local actor = assert(game.runtime.actors:getById(actorId))
-    local start = actor:getFieldPosition()
-    local facing = game.runtime.actors:getFacing(actorId)
-    local task = require("libs.hgss.src.script.tasks.FollowerInteractionTask")
-    local ctx = taskContext(game, engine)
-    local state = task.create({}, ctx)
-    Assert.isTrue(
-      catalog.programs[state.programId] ~= nil,
-      "selection must resolve to a program from the supplied ROM catalog"
-    )
+    Assert.equal(interactionTasks[1].payload.taskVersion, 1, "the interaction task must use its registered version")
+    local task = assert(game.runtime.scripts.scheduler:taskById(interactionTasks[1].payload.taskId))
+    Assert.equal(task.taskType, "follower_interaction", "the registered task must own opcode 711")
+    Assert.equal(task.status, "active", "the script must block while the interaction task is active")
+    Assert.isNil(game:recordsForScript(SCRIPT_ID, "script.ended")[1], "the script must not resume before the task completes")
+    Assert.isTrue(catalog.programs[task.state.programId] ~= nil, "selection must use a program from the supplied ROM catalog")
     local selectedFromMap = false
     for _, rule in ipairs(sectionRules) do
-      selectedFromMap = selectedFromMap or rule.interactionId == state.programId
+      selectedFromMap = selectedFromMap or rule.interactionId == task.state.programId
     end
     Assert.isTrue(selectedFromMap, "selection must come from the live map section's generated rule list")
 
-    local completed, outcome = pcall(advanceTask, game, task, state, ctx)
-    if not completed then
-      task.cancel(state, "acceptance failure cleanup", ctx)
+    driveScriptToEnd(game)
+    Assert.equal(#taskRecordsFor(game, instanceId), 1, "script execution must not create a duplicate interaction task")
+    local taskEnds = {}
+    for _, record in ipairs(game:recordsNamed("script.task_ended")) do
+      if record.payload.instanceId == instanceId and record.payload.taskType == "follower_interaction" then
+        taskEnds[#taskEnds + 1] = record
+      end
     end
-    Assert.isTrue(
-      completed,
-      "the production task must resolve the generated dialogue bindings and complete: " .. tostring(outcome)
-    )
-    state = outcome
-    Assert.equal(state.phase, "done", "the selected retail interaction must complete")
-    local ending = actor:getFieldPosition()
-    Assert.equal(ending.fieldX, start.fieldX, "interaction motion must preserve the partner's logical X")
-    Assert.equal(ending.fieldZ, start.fieldZ, "interaction motion must preserve the partner's logical Z")
     Assert.equal(
-      game.runtime.actors:getFacing(actorId),
-      facing,
-      "interaction cleanup must restore the original partner facing"
+      #taskEnds,
+      1,
+      "the registered interaction task must complete once; status="
+        .. tostring(task.status)
+        .. ", phase="
+        .. tostring(task.state and task.state.phase)
+        .. ", scriptEnd="
+        .. tostring(game:recordsForScript(SCRIPT_ID, "script.ended")[1] ~= nil)
+        .. ", endReason="
+        .. tostring(game:recordsForScript(SCRIPT_ID, "script.ended")[1] and game:recordsForScript(SCRIPT_ID, "script.ended")[1].payload.reason)
+        .. ", error="
+        .. tostring(game:recordsForScript(SCRIPT_ID, "script.error")[1] and game:recordsForScript(SCRIPT_ID, "script.error")[1].payload.code)
     )
+    local scriptEnds = game:recordsForScript(SCRIPT_ID, "script.ended")
+    Assert.equal(#scriptEnds, 1, "the compiled script must resume and finish once")
+    Assert.isTrue(scriptEnds[1].payload.completed, "the compiled script must complete after its interaction")
+    Assert.equal(scriptEnds[1].payload.reason, "completed", "the script must reach its normal source end")
     Assert.isFalse(game.runtime.scripts.dialogueHost:isOpen(), "interaction completion must close task-owned dialogue")
     Assert.isNil(game.runtime.contextChoiceProvider:status(), "interaction completion must close task-owned choices")
     Assert.equal(game:renderAttempts(), 0, "follower interaction acceptance must stop before GPU rendering")

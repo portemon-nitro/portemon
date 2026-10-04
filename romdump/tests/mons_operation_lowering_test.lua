@@ -91,6 +91,25 @@ function T.direct_mon_commands_keep_their_source_operand_order()
   Assert.deepEqual(item.result, { value = "var", id = 0x8001 })
 end
 
+function T.shiny_leaf_commands_lower_slot_and_result_in_source_order()
+  for _, opcode in ipairs({ 825, 826 }) do
+    local entry = assert(ScriptCommands.byOpcode[opcode])
+    Assert.equal(entry.feature, "mons")
+    Assert.equal(entry.disposition, "supported")
+    Assert.equal(entry.classification, "continue_same_tick")
+  end
+
+  local count = lowerSingle(825, { 0x8000, 0x8001 })
+  Assert.equal(count.op, "party_mon_shiny_leaf_count")
+  Assert.deepEqual(count.slot, { value = "var", id = 0x8000 })
+  Assert.deepEqual(count.result, { value = "var", id = 0x8001 })
+
+  local crown = lowerSingle(826, { 0x8002 })
+  Assert.equal(crown.op, "try_give_shiny_leaf_crown")
+  Assert.deepEqual(crown.slot, { value = "var", id = 0x8002 })
+  Assert.isNil(crown.result, "the source command has no result operand")
+end
+
 function T.amount_first_friendship_keeps_the_source_order()
   local add = lowerSingle(383, { 10, 0x8004 })
   Assert.equal(add.op, "mon_add_friendship")

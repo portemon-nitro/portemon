@@ -1041,8 +1041,8 @@ end
 
 local function handleFollowerIsEventTrigger(node, run)
   local kind = semanticsFor(run).evaluateValue(node.kind, run)
-  local param = node.param ~= nil and semanticsFor(run).evaluateValue(node.param, run) or nil
-  writeMonsBool(node, run, followingMonFor(run):isEventTrigger(kind, param))
+  local slot = semanticsFor(run).evaluateValue(node.param, run)
+  writeMonsBool(node, run, monsFor(run):followerEventTrigger(kind, slot))
   return Runtime.OUTCOME_CONTINUE
 end
 
@@ -1659,6 +1659,22 @@ local function handleShowWaitingIcon(_, run)
 end
 local function handleHideWaitingIcon(_, run)
   requireService(run, "dialogue"):hideWaitingIcon()
+  return Runtime.OUTCOME_CONTINUE
+end
+
+function HANDLERS.follower_interact(node, run)
+  requireForeground(run, "follower_interact")
+  requireService(run, "followerInteraction")
+  return blockOnTask(run, "follower_interaction", { node = node })
+end
+
+function HANDLERS.party_mon_shiny_leaf_count(node, run)
+  writeMonsResult(node, run, monsFor(run):shinyLeafCount(evalField(node, run, "slot")))
+  return Runtime.OUTCOME_CONTINUE
+end
+
+function HANDLERS.try_give_shiny_leaf_crown(node, run)
+  monsFor(run):tryGiveShinyLeafCrown(evalField(node, run, "slot"))
   return Runtime.OUTCOME_CONTINUE
 end
 

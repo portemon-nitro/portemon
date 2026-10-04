@@ -923,6 +923,17 @@ Schema.OPERATIONS = {
       result = { type = "value", required = true },
     },
   },
+  party_mon_shiny_leaf_count = {
+    fields = {
+      slot = { type = "scalar_or_value", required = true },
+      result = { type = "value", required = true },
+    },
+  },
+  try_give_shiny_leaf_crown = {
+    fields = {
+      slot = { type = "scalar_or_value", required = true },
+    },
+  },
   party_ribbon_count = {
     fields = {
       result = { type = "value", required = true },
@@ -1079,6 +1090,7 @@ Schema.OPERATIONS = {
     },
   },
   follower_wait = { fields = {} },
+  follower_interact = { fields = {} },
   follower_set_movement_type = {
     fields = {
       movementType = { type = "enum:follower_movement_type", required = true },
@@ -1093,7 +1105,7 @@ Schema.OPERATIONS = {
   follower_is_event_trigger = {
     fields = {
       kind = { type = "scalar_or_value", required = true },
-      param = { type = "scalar_or_value" },
+      param = { type = "scalar_or_value", required = true },
       result = { type = "value", required = true },
     },
   },
@@ -1759,6 +1771,16 @@ Schema.CONSTRUCTORS = {
         notes = "spec={slot,result}.",
       },
       {
+        signature = "S.partyMonShinyLeafCount(spec)",
+        canonical = "op=party_mon_shiny_leaf_count",
+        notes = "spec={slot,result}; count includes the crown.",
+      },
+      {
+        signature = "S.tryGiveShinyLeafCrown(spec)",
+        canonical = "op=try_give_shiny_leaf_crown",
+        notes = "spec={slot}.",
+      },
+      {
         signature = "S.partyRibbonCount(spec)",
         canonical = "op=party_ribbon_count",
         notes = "spec={result}.",
@@ -1828,6 +1850,17 @@ Schema.CONSTRUCTORS = {
         signature = "S.pokemonNicknameInput(spec)",
         canonical = "op=pokemon_nickname_input",
         notes = "spec={slot,result}; blocks on the field Pokemon Naming Screen.",
+      },
+    },
+  },
+  {
+    section = "Follower constructors",
+    notes = "Ordinary follower interactions block on the live HGSS field task.",
+    rows = {
+      {
+        signature = "S.followerInteract()",
+        canonical = "op=follower_interact",
+        notes = "Starts one blocking follower interaction.",
       },
     },
   },

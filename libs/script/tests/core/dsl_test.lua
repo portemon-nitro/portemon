@@ -1391,4 +1391,21 @@ function T.pokemon_nickname_input_has_a_validated_slot_and_result_shape()
   Assert.equal(S.validate(script), true, "the nickname command carries its source result ref")
 end
 
+function T.follower_interaction_and_shiny_leaf_constructors_match_the_schema()
+  local interaction = S.followerInteract()
+  local count = S.partyMonShinyLeafCount({ slot = 2, result = S.var("VAR_LEAVES") })
+  local crown = S.tryGiveShinyLeafCrown({ slot = 2 })
+  Assert.deepEqual(interaction, { op = "follower_interact" })
+  Assert.deepEqual(count, {
+    op = "party_mon_shiny_leaf_count",
+    slot = 2,
+    result = { value = "var", id = "VAR_LEAVES" },
+  })
+  Assert.deepEqual(crown, { op = "try_give_shiny_leaf_crown", slot = 2 })
+  Assert.equal(
+    S.validate(S.script({ api = 1, id = "test.interaction", steps = { interaction, count, crown } })),
+    true
+  )
+end
+
 return { tests = T }

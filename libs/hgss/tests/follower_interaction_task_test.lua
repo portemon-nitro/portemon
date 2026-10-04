@@ -2,6 +2,13 @@
 
 local Assert = require("tests.support.Assert")
 local Errors = require("libs.errors.src.Errors")
+local HgssComposition = require("libs.hgss.src.script.Composition")
+local ScriptComposition = require("libs.script.src.Composition")
+local Registry = require("libs.script.src.Registry")
+local Scheduler = require("libs.script.src.Scheduler")
+local ScriptSave = require("libs.script.src.ScriptSave")
+local TaskRegistry = require("libs.script.src.TaskRegistry")
+local S = require("gen4.script")
 
 local TASK_MODULE = "libs.hgss.src.script.tasks.FollowerInteractionTask"
 local loaded, FollowerInteractionTask = pcall(require, TASK_MODULE)
@@ -579,6 +586,80 @@ T["reaction dialogue restore recreates presentation without serializing its hand
   Assert.equal(saved.phase, "dialogue", "restored dialogue remains active")
   Assert.equal(resumedSeen.terrainEffects.active[1].kind, "test-follower-reaction")
   Assert.equal(saved.effectSelector, 3, "the semantic selector survives restore")
+end
+
+T["mid-motion task restore rebuilds the derived partner action without replaying effects"] = function()
+  local resource = S.script({
+    api = 1,
+    id = "test.follower_interaction_save",
+    steps = { S.followerInteract(), S.setFlag({ flag = "FLAG_RESUMED" }), S.stop() },
+  })
+  local function harness()
+    local ctx, seen = fixture({
+      motions = { [4] = { { x = 2, y = 3, z = -1, facing = "north", ticks = 4, sound = "motion-start" } } },
+      [10] = { steps = { { motionId = 4 } }, friendshipDelta = 0, moodDelta = 0 },
+    })
+    local registry = Registry.new()
+    local composition = ScriptComposition.new(registry)
+    registry:installBase(resource.id, resource, "generated")
+    local taskRegistry = HgssComposition.registerTasks(TaskRegistry.new())
+    local scheduler = Scheduler.new({
+      semantics = HgssComposition.semantics(),
+      services = ctx.services,
+      taskRegistry = taskRegistry,
+      resolveComposition = function(id)
+        return composition:effective(id)
+      end,
+    })
+    return { ctx = ctx, seen = seen, registry = registry, composition = composition, scheduler = scheduler }
+  end
+
+  local original = harness()
+  local instanceId = original.scheduler:createForeground(assert(original.composition:effective(resource.id)), nil, 100)
+  original.scheduler:step(100, {})
+  original.scheduler:step(101, {})
+  original.scheduler:step(102, {})
+  local runningTask = assert(original.scheduler:tasks()[1], "the interaction task is running")
+  Assert.equal(runningTask.state.phase, "motion")
+  Assert.isTrue(runningTask.state.motionStarted, "the task has begun the render-only motion")
+  Assert.equal(runningTask.state.motionTick, 1, "one motion tick has elapsed before capture")
+  Assert.deepEqual(original.seen.actor.offset, { x = 2, y = 3, z = -1 })
+  Assert.deepEqual(original.seen.audio.played, { "motion-start" }, "motion sound has played once")
+  local bucket = ScriptSave.capture(original.scheduler, 102, { registryFingerprint = original.registry:fingerprint() })
+  Assert.equal(#bucket.tasks, 1, "the blocked interaction task is captured")
+  Assert.equal(bucket.tasks[1].taskType, "follower_interaction")
+  Assert.equal(bucket.tasks[1].taskVersion, 1)
+  Assert.equal(bucket.tasks[1].state.phase, "motion")
+
+  local resumed = harness()
+  ScriptSave.restore(bucket, resumed.scheduler, 102, {})
+  local task = assert(resumed.scheduler:tasks()[1], "the active interaction task restores")
+  Assert.equal(task.taskType, bucket.tasks[1].taskType)
+  Assert.equal(task.taskVersion, bucket.tasks[1].taskVersion)
+  Assert.deepEqual(task.state, bucket.tasks[1].state, "the active interaction state survives the save round trip")
+  Assert.isFalse(resumed.seen.actor.motionActive, "the derived partner action is absent after reconstruction")
+  Assert.deepEqual(
+    resumed.seen.actor.offset,
+    { x = 0, y = 0, z = 0 },
+    "actor persistence omits transient partner presentation"
+  )
+
+  resumed.scheduler:step(103, {})
+  Assert.isTrue(resumed.seen.actor.motionActive, "the restored task rebuilds its missing actor action")
+  Assert.deepEqual(resumed.seen.actor.offset, { x = 2, y = 3, z = -1 }, "resume restores the current cumulative offset")
+  Assert.equal(resumed.seen.actor.begins, 1, "resume begins the presentation action exactly once")
+  Assert.deepEqual(resumed.seen.audio.played, {}, "resume does not replay the motion sound")
+  Assert.equal(task.state.motionTick, 2, "resume continues from the saved elapsed tick")
+  for tick = 104, 110 do
+    if task.status == "completed" then
+      break
+    end
+    resumed.scheduler:step(tick, {})
+  end
+  Assert.equal(task.status, "completed", "the restored interaction finishes at its original duration")
+  Assert.deepEqual(resumed.seen.actor.offset, { x = 0, y = 0, z = 0 }, "completion clears the transient offset")
+  resumed.scheduler:step(111, {})
+  Assert.isTrue(resumed.seen.world.flags.FLAG_RESUMED, "the script resumes after the restored task completes")
 end
 
 return { tests = T }

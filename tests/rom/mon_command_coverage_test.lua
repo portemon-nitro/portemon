@@ -134,6 +134,16 @@ local CONFORMANCE = {
     test = "fake_manager_reveals_hidden_captured_partner_at_the_boundary",
   },
   {
+    opcode = 698,
+    fixture = "libs.script.tests.core.follower_ops_runtime_test",
+    test = "event_trigger_check_writes_the_source_boolean",
+  },
+  {
+    opcode = 711,
+    fixture = "tests.acceptance.follower_interaction_acceptance_test",
+    test = "compiled_following_mon_script_blocks_on_live_interaction_and_resumes",
+  },
+  {
     opcode = 632,
     fixture = "libs.script.tests.core.mons_retail_aggregation_test",
     test = "species_zero_enters_duplicate_detection_among_non_eggs",
@@ -162,6 +172,16 @@ local CONFORMANCE = {
     opcode = 828,
     fixture = "libs.script.tests.core.mons_retail_aggregation_test",
     test = "contest_updates_saturate_and_honor_source_no_ops",
+  },
+  {
+    opcode = 825,
+    fixture = "libs.script.tests.core.follower_ops_runtime_test",
+    test = "shiny_leaf_nodes_route_once_to_mons_and_keep_same_tick_outcome",
+  },
+  {
+    opcode = 826,
+    fixture = "libs.script.tests.core.follower_ops_runtime_test",
+    test = "shiny_leaf_nodes_route_once_to_mons_and_keep_same_tick_outcome",
   },
 }
 

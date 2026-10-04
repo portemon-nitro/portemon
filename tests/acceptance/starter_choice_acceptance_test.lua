@@ -904,10 +904,6 @@ function T.tests.elm_choreography_trails_releases_and_idles_the_stable_follower(
       Assert.equal(actor:getFieldPosition().fieldX, homeTile.fieldX, "native idle never changes the logical tile")
       Assert.equal(actor:getFieldPosition().fieldZ, homeTile.fieldZ, "native idle never changes the logical tile")
       Assert.isTrue(game.runtime.followingMon:isMovementSettled(), "native idle stays settled")
-      Assert.isTrue(
-        game.runtime.followingMon:isEventTrigger(1, 0),
-        "the idling follower stays available for interaction"
-      )
     end
     Assert.isTrue(home.player.fieldX ~= nil, "the home snapshot is well formed")
 
