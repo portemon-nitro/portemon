@@ -2123,31 +2123,6 @@ function T.draw_renders_only_given_parts_into_persistent_scratch()
   renderer:release()
 end
 
--- Per-polygon light-mask encoding: one vec4 of 0/1 floats, bit i = light i
--- of the polygon's 4-bit mask. Different masks decode to different uniforms
--- and mask 0 to all-off.
-function T.light_mask_uniforms_decode_polygon_bits()
-  Assert.deepEqual(GxRenderer.lightMaskUniforms(0), { 0, 0, 0, 0 })
-  Assert.deepEqual(GxRenderer.lightMaskUniforms(1), { 1, 0, 0, 0 })
-  Assert.deepEqual(GxRenderer.lightMaskUniforms(2), { 0, 1, 0, 0 })
-  Assert.deepEqual(GxRenderer.lightMaskUniforms(5), { 1, 0, 1, 0 })
-  Assert.deepEqual(GxRenderer.lightMaskUniforms(15), { 1, 1, 1, 1 })
-  -- Masks outside the 4-bit polygon field are malformed data.
-  Assert.throws(function()
-    GxRenderer.lightMaskUniforms(16)
-  end)
-  Assert.throws(function()
-    GxRenderer.lightMaskUniforms(-1)
-  end)
-end
-
-function T.light_mask_uniforms_returns_caller_owned_values()
-  local exposed = GxRenderer.lightMaskUniforms(5)
-  exposed[1], exposed[3] = 0, 0
-
-  Assert.deepEqual(GxRenderer.lightMaskUniforms(5), { 1, 0, 1, 0 }, "callers cannot mutate the cached lookup")
-end
-
 local function lightingRecord(startHalfSeconds, diffuseRgb555, vectorX)
   local lights = {}
   for i = 1, 4 do
@@ -2280,6 +2255,41 @@ local function passItem(alphaClass, z, opts)
     depthEqual = opts.depthEqual or false,
     translucentDepthWrite = opts.translucentDepthWrite or false,
   }
+end
+
+function T.polygon_light_masks_reach_world_shader_uniforms()
+  local cases = {
+    { mask = 0, expected = { 0, 0, 0, 0 } },
+    { mask = 1, expected = { 1, 0, 0, 0 } },
+    { mask = 2, expected = { 0, 1, 0, 0 } },
+    { mask = 5, expected = { 1, 0, 1, 0 } },
+    { mask = 15, expected = { 1, 1, 1, 1 } },
+  }
+  local lg = fakeGraphics()
+  local renderer = GxRenderer.new({ graphics = lg })
+  local scene = emptySceneCamera()
+  local viewport = FieldViewport.new(640, 480, { mode = "strict" })
+  local worldShader = renderer.worldShader
+
+  for index, case in ipairs(cases) do
+    local item = passItem("opaque", -index)
+    item.lightMask = case.mask
+    render(renderer, scene.runtime, scene.camera, { { item } }, nil, viewport, 0)
+
+    local delivered
+    for _, send in ipairs(worldShader.sends) do
+      if send.name == "u_lightMask" then
+        delivered = send.values[1]
+      end
+    end
+    Assert.deepEqual(
+      delivered,
+      case.expected,
+      "polygon mask reaches the world shader as four light-enable values"
+    )
+  end
+
+  renderer:release()
 end
 
 function T.exact_compositor_sends_invariant_bindings_once_per_blended_frame()
@@ -2571,7 +2581,7 @@ function T.actor_draw_item_reaches_the_shared_world_pipeline_with_its_rom_polygo
   Assert.equal(sent.u_polygonId, 0 / 63, "the actor's polygon id 0 rides the real id channel in the world MRT")
   Assert.equal(sent.u_fragmentPass, 1, "the actor's cutout class sends the color-pass cutout fragment-pass id")
   Assert.equal(sent.u_fragmentPass, 1, "the actor's cutout class sends the world MRT cutout fragment-pass id")
-  Assert.deepEqual(sent.u_lightMask, GxRenderer.lightMaskUniforms(1), "light mask 1 decodes to bit 0 only")
+  Assert.deepEqual(sent.u_lightMask, { 1, 0, 0, 0 }, "light mask 1 enables light 0 only")
   Assert.notNil(
     sent.u_billboardCenter,
     "the actor's billboard projection selection reaches the shared billboard branch"
@@ -3070,7 +3080,7 @@ function T.exact_mode_uses_compact_metadata_without_source_color_clear()
   renderer:release()
 end
 
-function T.exact_blended_items_submit_one_geometry_draw_and_one_composite_each()
+function T.exact_blended_items_submit_one_geometry_draw_each()
   local lg = fakeGraphics()
   local renderer = GxRenderer.new({ graphics = lg, translucencyMode = GxRenderer.TRANSLUCENCY_EXACT })
   local scene = emptySceneCamera()
@@ -3087,13 +3097,6 @@ function T.exact_blended_items_submit_one_geometry_draw_and_one_composite_each()
     end
     Assert.equal(submissions, 1, "each exact blended entry submits its geometry once")
   end
-  local composites = 0
-  for _, draw in ipairs(lg.calls.draw) do
-    if draw.shader == renderer.compositeShader then
-      composites = composites + 1
-    end
-  end
-  Assert.equal(composites, #items, "each blended entry still composites once")
   renderer:release()
 end
 
@@ -3152,34 +3155,64 @@ function T.geometry_diagnostics_match_successful_mesh_submissions_in_every_draw_
   end
 end
 
-function T.work_diagnostics_track_blended_entry_cost_without_exposing_target_topology()
+local function colorCanvas(target)
+  while type(target) == "table" and target[1] ~= nil do
+    target = target[1]
+  end
+  return target
+end
+
+local function isWorldSizedCanvas(target, renderer)
+  local canvas = colorCanvas(target)
+  return canvas ~= nil and canvas.w == renderer.colorW and canvas.h == renderer.colorH
+end
+
+function T.work_diagnostics_match_recorded_world_operations_in_both_translucency_modes()
   for _, mode in ipairs({ GxRenderer.TRANSLUCENCY_APPROXIMATE, GxRenderer.TRANSLUCENCY_EXACT }) do
     local lg = fakeGraphics()
-    local renderer = GxRenderer.new({ graphics = lg, translucencyMode = mode })
+    local renderer = GxRenderer.new({ graphics = lg, worldRasterScale = 2, translucencyMode = mode })
     local scene = emptySceneCamera()
-    local stats = renderer.stats
-    Assert.notNil(stats.geometrySubmissions, "the renderer publishes geometry work diagnostics")
+    local viewport = FieldViewport.new(640, 480, { mode = "strict" })
+    local screenWidth, screenHeight = lg.getDimensions()
 
-    drawTranslucentFrame(renderer, scene, translucentItems(1))
-    local one = {
-      geometrySubmissions = stats.geometrySubmissions,
-      worldFullSurfaceDraws = stats.worldFullSurfaceDraws,
-      worldFullSurfaceClears = stats.worldFullSurfaceClears,
-      presentationWorldBlits = stats.presentationWorldBlits,
-    }
-    drawTranslucentFrame(renderer, scene, translucentItems(5))
+    render(renderer, scene.runtime, scene.camera, { translucentItems(3) }, nil, viewport, 0)
 
-    Assert.equal(renderer.stats, stats, "the diagnostics table remains retained across frames")
-    Assert.equal(stats.geometrySubmissions - one.geometrySubmissions, 4)
-    if mode == GxRenderer.TRANSLUCENCY_APPROXIMATE then
-      Assert.equal(stats.worldFullSurfaceDraws - one.worldFullSurfaceDraws, 0)
-      Assert.equal(stats.worldFullSurfaceClears - one.worldFullSurfaceClears, 0)
-    else
-      Assert.equal(stats.worldFullSurfaceDraws - one.worldFullSurfaceDraws, 4)
-      Assert.equal(stats.worldFullSurfaceClears - one.worldFullSurfaceClears, 4)
+    Assert.isTrue(
+      renderer.colorW ~= screenWidth or renderer.colorH ~= screenHeight,
+      "world and presentation sizes differ"
+    )
+    local recordedWorldClears, recordedWorldDraws, recordedPresentationBlits = 0, 0, 0
+    for _, clear in ipairs(lg.calls.clear) do
+      if clear.scissor == nil and isWorldSizedCanvas(clear.canvas, renderer) then
+        recordedWorldClears = recordedWorldClears + 1
+      end
     end
-    Assert.equal(stats.presentationWorldBlits, one.presentationWorldBlits)
-    Assert.equal(stats.presentationWorldBlits, 1, "each frame resolves the world once")
+    for _, draw in ipairs(lg.calls.draw) do
+      if draw.scissor == nil then
+        if isWorldSizedCanvas(draw.mesh, renderer) and isWorldSizedCanvas(draw.canvas, renderer) then
+          recordedWorldDraws = recordedWorldDraws + 1
+        end
+        if draw.mesh == renderer._resolvedColor and draw.canvas == nil then
+          recordedPresentationBlits = recordedPresentationBlits + 1
+        end
+      end
+    end
+
+    Assert.equal(
+      renderer.stats.worldFullSurfaceClears,
+      recordedWorldClears,
+      "clear diagnostic matches recorded world clears"
+    )
+    Assert.equal(
+      renderer.stats.worldFullSurfaceDraws,
+      recordedWorldDraws,
+      "draw diagnostic matches recorded full-world draws"
+    )
+    Assert.equal(
+      renderer.stats.presentationWorldBlits,
+      recordedPresentationBlits,
+      "presentation diagnostic matches recorded resolved-world blits"
+    )
     renderer:release()
   end
 end

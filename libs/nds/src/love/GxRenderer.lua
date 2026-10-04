@@ -718,17 +718,6 @@ for mask = 0, 15 do
   }
 end
 
--- Public validation helper for test-facing/item-construction code. Draw paths
--- index the immutable precomputed mask directly and allocate nothing; callers
--- receive their own copy and cannot mutate that render-path cache.
----@param m integer
----@return number[]
-function GxRenderer.lightMaskUniforms(m)
-  local uniform = type(m) == "number" and LIGHT_MASK_UNIFORMS[m]
-  assert(uniform, "light mask must be a 4-bit integer, got " .. tostring(m))
-  return { uniform[1], uniform[2], uniform[3], uniform[4] }
-end
-
 local function decodeRgb555(target, packed)
   target[1] = (packed % 32) / FixedPoint.RGB5_MAX
   target[2] = (math.floor(packed / 32) % 32) / FixedPoint.RGB5_MAX
