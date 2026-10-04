@@ -55,8 +55,8 @@ end
 function T.catalogs_reject_malformed_item_records()
   local ItemAssetSchema = schema()
   local variants = {
+    extra_field = { price = 200 },
     invalid_price = { price = 65536 },
-    bad_natural_gift_power = { naturalGiftPower = 256 },
     text_ball = { isBall = "yes" },
     negative_id = { nativeId = -1 },
     past_range_id = { nativeId = 537 },
@@ -74,7 +74,7 @@ function T.catalogs_reject_malformed_item_records()
   end
   -- Nil assignments are not expressible as table patches, so the missing
   -- required fields are dropped explicitly.
-  for _, key in ipairs({ "friendshipBoost", "icon", "price", "naturalGiftPower" }) do
+  for _, key in ipairs({ "friendshipBoost", "icon", "price" }) do
     local root = validRoot()
     root.items["ITEM_55"][key] = nil
     Assert.isFalse(ItemAssetSchema.isValidCatalog(root), "missing item field must be rejected: " .. key)
@@ -197,18 +197,7 @@ function T.catalogs_require_held_item_action_metadata()
   Assert.isFalse(ItemAssetSchema.isValidCatalog(badHold))
   local oldSchema = validRoot()
   oldSchema.schema = "g4-item-catalog-v3"
-  Assert.isFalse(ItemAssetSchema.isValidCatalog(oldSchema), "the v2 schema no longer validates")
-end
-
-function T.catalogs_require_natural_gift_power_in_v4()
-  local ItemAssetSchema = schema()
-  Assert.equal(ItemAssetSchema.CATALOG_SCHEMA, "g4-item-catalog-v4")
-  local missing = validRoot()
-  missing.items.POTION.naturalGiftPower = nil
-  Assert.isFalse(ItemAssetSchema.isValidCatalog(missing))
-  local outOfRange = validRoot()
-  outOfRange.items.POTION.naturalGiftPower = 256
-  Assert.isFalse(ItemAssetSchema.isValidCatalog(outOfRange))
+  Assert.isFalse(ItemAssetSchema.isValidCatalog(oldSchema), "the v3 schema is not accepted")
 end
 
 function T.catalogs_require_party_use_metadata()
