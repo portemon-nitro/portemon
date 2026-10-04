@@ -24,12 +24,11 @@ local CRITERIA = {
   "genderClass",
   "natureClass",
   "leafClass",
-  "speciesClass",
+  "mapClass",
   "specialSpriteClass",
   "nearbyObjectClass",
   "hiddenItemClass",
   "weatherClass",
-  "reservedReject",
   "timeClass",
   "facingClass",
   "typeClass",
@@ -50,7 +49,7 @@ local function criteria(value)
   return result
 end
 
-local function catalog(ruleSpecs, speciesClassBySpeciesId)
+local function catalog(ruleSpecs, mapClassByMapId)
   local rulesByMapSection = {}
   for sectionId = 0, 235 do
     rulesByMapSection[sectionId] = {}
@@ -85,12 +84,12 @@ local function catalog(ruleSpecs, speciesClassBySpeciesId)
   for id = 0, 99 do
     fashionNames[id] = { name = "Accessory", nameWithArticle = "an Accessory" }
   end
-  local speciesClasses = {}
-  for speciesId = 1, 496 do
-    speciesClasses[speciesId] = 0
+  local mapClasses = {}
+  for mapId = 1, 496 do
+    mapClasses[mapId] = 0
   end
-  for speciesId, class in pairs(speciesClassBySpeciesId or {}) do
-    speciesClasses[speciesId] = class
+  for mapId, class in pairs(mapClassByMapId or {}) do
+    mapClasses[mapId] = class
   end
   return {
     schema = Contract.followerInteractions.schema,
@@ -99,7 +98,7 @@ local function catalog(ruleSpecs, speciesClassBySpeciesId)
     programs = programs,
     motions = {},
     reactions = reactions,
-    speciesClassBySpeciesId = speciesClasses,
+    mapClassByMapId = mapClasses,
     locationNames = { [1] = "New Bark Town" },
     fashionNames = fashionNames,
   }
@@ -154,7 +153,7 @@ local function engine(ruleSpecs, formPerformance, options)
   }
   local monCatalog = {
     species = function(_, species)
-      Assert.equal(species, "EEVEE", "classifier fixture resolves its lead species")
+      Assert.equal(species, mon.species, "classifier fixture resolves its lead species")
       return { nativeId = options.speciesId or 133 }
     end,
     form = function()
@@ -220,7 +219,7 @@ local function engine(ruleSpecs, formPerformance, options)
       return "field:partner"
     end,
   }
-  local data = catalog(ruleSpecs, options.speciesClassBySpeciesId)
+  local data = catalog(ruleSpecs, options.mapClassByMapId)
   local testPlayer = options.player or { facing = "south", fieldX = 0, fieldZ = 0 }
   testPlayer.position = function(self)
     return { fieldX = self.fieldX, fieldZ = self.fieldZ }
@@ -282,33 +281,15 @@ local function selectOne(mon, expectedCriteria, options)
   return subject:select()
 end
 
-T["synthetic interaction catalog fixture satisfies the provider contract"] = function()
+T["synthetic normalized interaction catalog satisfies the provider contract"] = function()
   local valid, validationError = FollowerInteractionCache.validateCatalog(catalog({
     {
       programId = 1,
       percentage = 100,
-      criteria = { speciesClass = 1, specialSpriteClass = 1, mapId = 1, metatileBehaviorId = 2 },
+      criteria = { mapClass = 1, specialSpriteClass = 1, mapId = 1, metatileBehaviorId = 2 },
     },
-  }, { [133] = 1 }))
+  }, { [1] = 1 }))
   Assert.isTrue(valid, validationError and validationError.message)
-end
-
-T["reserved packed criterion rejects the row while zero remains selectable"] = function()
-  local allowed = engine({
-    { programId = 1, percentage = 100, criteria = { reservedReject = 0 } },
-  })
-  Assert.deepEqual(allowed:select(), { leadSlot = 0, programId = 1 })
-
-  local rejected = engine({
-    { programId = 1, percentage = 100, criteria = { reservedReject = 1 } },
-  })
-  local getContext = rejected._context
-  rejected._context = function(self, leadSlot)
-    local context = getContext(self, leadSlot)
-    context.reservedReject = 1
-    return context
-  end
-  Assert.equal(rejected:select(), nil)
 end
 
 T["earliest passing flattened row wins and stops later RNG draws"] = function()
@@ -541,37 +522,44 @@ T["mon context classifiers preserve retail boundary buckets"] = function()
     "unsupported type index does not match a supported type selector"
   )
 
-  local speciesVectors = {
-    { 7, 7, true },
-    { 15, 250, true },
-    { 19, 250, true },
-    { 20, 250, false },
-    { 130, 251, true },
-    { 131, 251, false },
-    { 140, 252, true },
-    { 149, 252, true },
-    { 139, 252, false },
-    { 155, 155, true },
-    { 160, 253, true },
-    { 159, 253, false },
-    { 220, 254, true },
-    { 219, 254, false },
+  local mapClassCatalog = {
+    { programId = 1, percentage = 100, criteria = { mapClass = 250 } },
+    { programId = 2, percentage = 100, criteria = { mapClass = 7 } },
   }
-  for _, vector in ipairs(speciesVectors) do
-    local actual = selectOne({}, { speciesClass = vector[2] }, {
-      speciesId = 133,
-      speciesClassBySpeciesId = { [133] = vector[1] },
-    })
-    if vector[3] then
-      Assert.deepEqual(
-        actual,
-        { leadSlot = 0, programId = 1 },
-        "species class " .. vector[1] .. " matches selector " .. vector[2]
-      )
-    else
-      Assert.equal(actual, nil, "species class " .. vector[1] .. " rejects selector " .. vector[2])
-    end
-  end
+  local sameMapEevee = engine(mapClassCatalog, nil, {
+    mapId = 60,
+    mapClassByMapId = { [60] = 18 },
+    mon = { species = "EEVEE" },
+  })
+  local sameMapPikachu = engine(mapClassCatalog, nil, {
+    mapId = 60,
+    mapClassByMapId = { [60] = 18 },
+    mon = { species = "PIKACHU" },
+    speciesId = 25,
+  })
+  Assert.deepEqual(sameMapEevee:select(), { leadSlot = 0, programId = 1 })
+  Assert.deepEqual(
+    sameMapPikachu:select(),
+    { leadSlot = 0, programId = 1 },
+    "changing only follower species must preserve the map-owned class match"
+  )
+  local anotherMapClass = engine(mapClassCatalog, nil, {
+    mapId = 61,
+    mapClassByMapId = { [61] = 20 },
+    mon = { species = "PIKACHU" },
+    speciesId = 25,
+  })
+  Assert.equal(anotherMapClass:select(), nil, "changing map class must reject the 250 selector")
+  local exactMapClass = engine({ {
+    programId = 3,
+    percentage = 100,
+    criteria = { mapClass = 7 },
+  } }, nil, {
+    mapId = 62,
+    mapClassByMapId = { [62] = 7 },
+    mon = { species = "EEVEE" },
+  })
+  Assert.deepEqual(exactMapClass:select(), { leadSlot = 0, programId = 3 }, "exact map class remains supported")
 
   for _, vector in ipairs({
     { "items", 4 },
@@ -622,15 +610,41 @@ T["mon context classifiers preserve retail boundary buckets"] = function()
   )
   Assert.equal(selectOne({}, { mapId = 2 }, { mapId = 1 }), nil, "different exact map ID does not match")
   Assert.deepEqual(
-    selectOne({}, { mapId = 0 }, { mapId = 0 }),
+    selectOne({}, { mapId = 1 }, { mapId = 1 }),
     { leadSlot = 0, programId = 1 },
-    "map ID zero is an exact selector"
+    "map ID is an exact selector"
   )
-  Assert.equal(selectOne({}, { mapId = 0 }, { mapId = 1 }), nil, "map ID zero does not match another map")
+  Assert.equal(selectOne({}, { mapId = 1 }, { mapId = 2 }), nil, "map ID does not match another map")
 
   for _, vector in ipairs({ { 0, 4 }, { 1, 4 }, { 47, 4 }, { 48, 6 }, { 52, 6 }, { 53, 5 } }) do
     local subject = engine({}, nil, { mon = { level = vector[1] } })
     Assert.equal(subject:_context(0).levelClass, vector[2], "level class at " .. vector[1])
+  end
+end
+
+T["all retail walking-encounter behaviors classify the live follower tile"] = function()
+  local encounterBehaviors = { 2, 3, 5, 8, 11, 16, 18, 21, 37, 42, 114, 119, 123, 166, 167 }
+  local encounterSet = {}
+  for _, behavior in ipairs(encounterBehaviors) do
+    encounterSet[behavior] = true
+    local queries = {}
+    local subject = engine({}, nil, {
+      metatileBehaviorId = behavior,
+      followerPosition = { fieldX = 3, fieldZ = 5 },
+      collisionQueries = queries,
+    })
+    local context = subject:_context(0)
+    Assert.equal(context.metatileBehaviorId, behavior, "follower tile behavior " .. behavior)
+    Assert.equal(context.encounterClass, 1, "walking encounter class for behavior " .. behavior)
+    Assert.deepEqual(queries, { { x = 3, z = 5 } }, "classifier probes the live follower tile")
+  end
+  for _, behavior in ipairs({ 1, 4, 6, 9, 12, 17, 22, 36, 38, 41, 43, 113, 115, 118, 120, 122, 124, 165, 168 }) do
+    Assert.isFalse(encounterSet[behavior] == true, "adjacent behavior " .. behavior .. " is not encounter flagged")
+    Assert.equal(
+      engine({}, nil, { metatileBehaviorId = behavior }):_context(0).encounterClass,
+      2,
+      "non-encounter behavior " .. behavior
+    )
   end
 end
 
@@ -662,18 +676,6 @@ T["time, weather, and hidden-item classifiers use live field values"] = function
     Assert.equal(subject:_context(0).weatherClass, vector[2], "interaction weather class " .. vector[1])
   end
 
-  for _, vector in ipairs({ { 2, 1 }, { 4, 2 }, { 16, 1 }, { 17, 2 }, { 21, 1 } }) do
-    local queries = {}
-    local subject = engine({}, nil, {
-      metatileBehaviorId = vector[1],
-      followerPosition = { fieldX = 3, fieldZ = 5 },
-      collisionQueries = queries,
-    })
-    local context = subject:_context(0)
-    Assert.equal(context.metatileBehaviorId, vector[1], "follower tile behavior " .. vector[1])
-    Assert.equal(context.encounterClass, vector[2], "walking encounter class for behavior " .. vector[1])
-    Assert.deepEqual(queries, { { x = 3, z = 5 } }, "classifier probes the live follower tile")
-  end
   Assert.deepEqual(
     selectOne({}, { encounterClass = 1 }, { metatileBehaviorId = 2 }),
     { leadSlot = 0, programId = 1 },

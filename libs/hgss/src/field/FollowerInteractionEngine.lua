@@ -2,6 +2,7 @@
 
 local Errors = require("libs.errors.src.Errors")
 local ScriptErrors = require("libs.script.src.errors")
+local MetatileBehavior = require("libs.hgss.src.world.MetatileBehavior")
 
 ---@class FollowerInteractionEngine
 ---@field catalog table<string, unknown>
@@ -110,7 +111,7 @@ local function selectorMatches(kind, expected, actual, context)
     return actual ~= 1
   elseif kind == "heldItemClass" and expected == 9 then
     return actual ~= 8
-  elseif kind == "speciesClass" then
+  elseif kind == "mapClass" then
     if expected == 250 then
       return actual <= 19
     end
@@ -199,8 +200,6 @@ end
 function FollowerInteractionEngine:_context(leadSlot)
   local mon = assert(self.mons:partyMon(leadSlot), "living lead mon is missing")
   local derived = self.mons:partyMonDerived(leadSlot)
-  local catalog = self.mons:catalog()
-  local species = catalog:species(mon.species)
   local item = mon.heldItem ~= nil and mon.heldItem ~= "NONE" and self.items:item(mon.heldItem) or nil
   local time = self.clock:nowLocal()
   local partnerId = assert(self.followingMon:partnerActorId(), "partner actor is unavailable")
@@ -243,7 +242,7 @@ function FollowerInteractionEngine:_context(leadSlot)
   local type1, type2 = self.mons:monTypes(leadSlot)
   local hpPercent = math.floor((mon.condition.currentHp * 100) / derived.maxHp)
   local heldClass = item and POCK_CLASS[item.pocket] or 8
-  local class = assert(self.catalog.speciesClassBySpeciesId[species.nativeId], "species class is missing")
+  local mapClass = assert(self.catalog.mapClassByMapId[self.runtimeMap.mapId], "map class is missing")
   local criteria = {
     heldItemClass = heldClass,
     hpClass = hpPercent == 100 and 1 or hpPercent >= 75 and 2 or hpPercent >= 50 and 3 or hpPercent >= 25 and 4 or 5,
@@ -263,7 +262,7 @@ function FollowerInteractionEngine:_context(leadSlot)
     natureClass = assert(NATURE_CLASS[nature + 1]),
     leafClass = mon.shinyLeaves or 0,
     shinyLeaves = mon.shinyLeaves or 0,
-    speciesClass = class,
+    mapClass = mapClass,
     specialSpriteClass = rock and 1 or breakrock and 3 or 0,
     rock = rock,
     breakrock = breakrock,
@@ -287,8 +286,7 @@ function FollowerInteractionEngine:_context(leadSlot)
   criteria.type1Class = TYPE_CLASS[type1 + 1] or 0
   criteria.type2Class = TYPE_CLASS[type2 + 1] or 0
   criteria.typeClass = criteria.type1Class
-  criteria.encounterClass = ({ [2] = 1, [3] = 1, [5] = 1, [8] = 1, [11] = 1, [16] = 1, [18] = 1, [21] = 1 })[cell.behavior]
-    or 2
+  criteria.encounterClass = MetatileBehavior.canGenerateWalkingEncounters(cell.behavior) and 1 or 2
   return criteria
 end
 
@@ -311,7 +309,7 @@ function FollowerInteractionEngine:select()
   for _, rule in ipairs(rules) do
     if self.world.rng:chance(rule.percentage, 100) then
       if rule.requiredFlagId == nil or self.world:isFlagSet(rule.requiredFlagId) then
-        local matches = rule.criteria.reservedReject == 0
+        local matches = true
         for kind, expected in pairs(rule.criteria) do
           if not matches then
             break

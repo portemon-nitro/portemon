@@ -68,6 +68,7 @@ function T.tests.boot_builds_and_teardown_releases_the_host(context)
   for _, versionId in ipairs(versions) do
     local runtime = FieldRuntime.new(validEntry(versionId), { presentation = false })
     local host = assert(runtime.partySelection, "boot constructs the script party host")
+    Assert.equal(runtime.fashionCase:quantity(0), 0, "boot keeps the live Fashion Case state")
     Assert.isNil(host:status(), "a fresh boot owns no open selection")
     runtime:dispose()
     Assert.isNil(runtime.partySelection, "teardown releases the host field")

@@ -1,5 +1,6 @@
 -- Compiles the HGSS follower interaction tables in overlay_02_02248728.s and
--- the reaction selector table in overlay_01_02203A18.s at the pinned source.
+-- the reaction selector table in overlay_01_02203A18.s from
+-- pret/pokeheartgold@9d8b7591f09b65804da2fb2dfd56f320633e0d36.
 
 local BinaryReader = require("libs.codec.src.BinaryReader")
 local Errors = require("libs.errors.src.Errors")

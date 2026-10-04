@@ -425,6 +425,34 @@ function T.preempting_autonomy_applies_deferred_movement_type_before_scripted_ac
   mgr:dispose()
 end
 
+function T.follower_presentation_offset_is_visible_for_one_fixed_tick_without_moving_actor()
+  local actorId = "map:61:object:0"
+  local mgr = manager({ object({ x = 2, z = 3 }) })
+  local actor = assert(mgr:getById(actorId))
+  local committedPosition = actor:getFieldPosition()
+  local committedWorld = actor:getWorldPosition()
+
+  mgr:beginScriptedAction(actorId, {
+    action = "presentation_offset",
+    x = 1 / 16,
+    y = 0,
+    z = 0,
+    ticks = 1,
+  })
+  Assert.equal(actor:getPresentationOffset().x, 0, "beginning the action does not apply presentation eagerly")
+  mgr:advanceScriptedAction(actorId, 0, 1)
+  Assert.equal(actor:getPresentationOffset().x, 0.0625, "progress zero exposes the first fixed-tick interval")
+  Assert.deepEqual(actor:getFieldPosition(), committedPosition, "presentation does not change committed field tiles")
+  Assert.deepEqual(actor:getWorldPosition(), committedWorld, "presentation does not change committed world position")
+
+  mgr:advanceScriptedAction(actorId, 1, 1)
+  mgr:commitScriptedAction(actorId)
+  Assert.deepEqual(actor:getPresentationOffset(), { x = 0, y = 0, z = 0 }, "completion clears the render offset")
+  Assert.deepEqual(actor:getFieldPosition(), committedPosition, "completion leaves committed field tiles unchanged")
+  Assert.deepEqual(actor:getWorldPosition(), committedWorld, "completion leaves committed world position unchanged")
+  mgr:dispose()
+end
+
 function T.failed_autonomy_attachment_rolls_back_actor_indexes_and_occupancy()
   local assets = fakeAssets({ [99] = true })
   local mgr = FieldActorManager.new({ assets = assets, policy = POLICY })

@@ -22,7 +22,7 @@ local STATE_KEYS = {
   choiceState = true,
   effectSelector = true,
   rewardStarted = true,
-  soundId = true,
+  rewardWaitForEffect = true,
   delayRemaining = true,
   choiceTargets = true,
   motionStarted = true,
@@ -36,6 +36,7 @@ local PHASES = {
   deltas = true,
   choice = true,
   reward = true,
+  reward_finalize = true,
   done = true,
 }
 local FACING = { [1] = "north", [2] = "south", [3] = "west", [4] = "east" }
@@ -80,6 +81,7 @@ function FollowerInteractionTask.create(_, ctx)
     cumulativeY = 0,
     cumulativeZ = 0,
     rewardStarted = false,
+    rewardWaitForEffect = false,
     motionStarted = false,
   }
 end
@@ -149,9 +151,8 @@ local function beginStep(state, ctx)
     state.phase = "deltas"
     return false
   end
-  state.soundId = step.soundId
-  state.phase = step.motionId and step.motionId ~= 0 and "motion" or "reaction"
-  if step.motionId and step.motionId ~= 0 then
+  state.phase = step.motionId ~= nil and "motion" or "reaction"
+  if step.motionId ~= nil then
     state.motionId, state.motionIndex, state.motionTick = step.motionId, 1, 0
   end
   return true
@@ -167,6 +168,7 @@ function FollowerInteractionTask.poll(state, ctx)
     local actorId = partnerId(svc.followingMon)
     assert(svc.actors:getFacing(actorId) ~= nil, "partner actor disappeared during interaction")
     local motion = engine:motion(state.motionId)
+    local step = assert(engine:program(state.programId).steps[state.stepIndex])
     while state.phase == "motion" do
       local record = motion[state.motionIndex]
       if
@@ -201,9 +203,16 @@ function FollowerInteractionTask.poll(state, ctx)
           z = state.cumulativeZ,
           ticks = record.ticks,
         })
-        local sound = type(record.sound) == "string" and record.sound or state.soundId
-        if record.sound and sound and sound ~= 0 then
-          svc.audio:play(sound)
+        svc.actors:advanceScriptedAction(actorId, 0, record.ticks)
+        if record.sound and step.sound ~= nil then
+          local sound = step.sound
+          if sound.kind == "effect" then
+            svc.audio:play(sound.id)
+          elseif sound.kind == "cry" then
+            svc.audio:playCry(svc.mons:partyMonSpecies(state.leadSlot), sound.pattern)
+          else
+            error("validated follower interaction sound kind is invalid")
+          end
         end
         state.motionStarted = true
         if record.ticks > 0 then
@@ -220,6 +229,7 @@ function FollowerInteractionTask.poll(state, ctx)
           z = state.cumulativeZ,
           ticks = record.ticks,
         })
+        svc.actors:advanceScriptedAction(actorId, state.motionTick, record.ticks)
       end
       if record.ticks == 0 then
         svc.actors:commitScriptedAction(actorId)
@@ -241,7 +251,6 @@ function FollowerInteractionTask.poll(state, ctx)
     local step = program.steps[state.stepIndex]
     local selector = step.reactionId or step.reactionSelector or 0
     startReaction(state, svc, selector)
-    state.soundId = step.soundId
     if step.messageId ~= nil then
       local bindings = engine:bindings(state.leadSlot)
       state.dialogueState = message(ctx, 265, step.messageId, bindings)
@@ -334,6 +343,7 @@ function FollowerInteractionTask.poll(state, ctx)
         bindings = { svc.player and svc.player:name() or "Red", name }
         if outcome == "added" then
           svc.audio:play("SEQ_ME_ACCE")
+          state.rewardWaitForEffect = true
         end
       else
         bank, id = 40, outcome == "new" and 97 or 98
@@ -341,6 +351,7 @@ function FollowerInteractionTask.poll(state, ctx)
         if outcome == "new" then
           svc.world:setFlag(0x99C)
           svc.audio:play("SEQ_ME_ACCE")
+          state.rewardWaitForEffect = true
         end
       end
       state.dialogueState = message(ctx, bank, id, bindings)
@@ -350,7 +361,19 @@ function FollowerInteractionTask.poll(state, ctx)
     if not result.complete then
       return { complete = false, state = state }
     end
-    state.dialogueState, state.phase = nil, "done"
+    state.dialogueState = nil
+    if state.rewardWaitForEffect then
+      state.phase = "reward_finalize"
+    else
+      state.phase = "done"
+      return { complete = true, state = state }
+    end
+  end
+  if state.phase == "reward_finalize" then
+    if not svc.audio:isEffectWaitComplete("SEQ_ME_ACCE") then
+      return { complete = false, state = state }
+    end
+    state.phase = "done"
     return { complete = true, state = state }
   end
   if state.phase == "done" then
@@ -408,22 +431,20 @@ function FollowerInteractionTask.validate(state)
     or not finite(state.cumulativeX)
     or not finite(state.cumulativeY)
     or not finite(state.cumulativeZ)
-    or state.cumulativeX % 1 ~= 0
-    or state.cumulativeY % 1 ~= 0
-    or state.cumulativeZ % 1 ~= 0
-    or state.cumulativeX < -1280
-    or state.cumulativeY < -1280
-    or state.cumulativeZ < -1280
-    or state.cumulativeX > 1270
-    or state.cumulativeY > 1270
-    or state.cumulativeZ > 1270
+    or state.cumulativeX < -80
+    or state.cumulativeY < -80
+    or state.cumulativeZ < -80
+    or state.cumulativeX > 79.375
+    or state.cumulativeY > 79.375
+    or state.cumulativeZ > 79.375
+    or state.cumulativeX * 16 % 1 ~= 0
+    or state.cumulativeY * 16 % 1 ~= 0
+    or state.cumulativeZ * 16 % 1 ~= 0
     or not FACING_VALUES[state.savedFacing]
     or type(state.motionStarted) ~= "boolean"
     or type(state.rewardStarted) ~= "boolean"
+    or type(state.rewardWaitForEffect) ~= "boolean"
   then
-    return invalid()
-  end
-  if state.soundId ~= nil and not integer(state.soundId, 0, 0xFFFF) then
     return invalid()
   end
   if state.delayRemaining ~= nil and not integer(state.delayRemaining, 1, 0xFF) then
@@ -519,9 +540,11 @@ function FollowerInteractionTask.validate(state)
     or (state.phase == "dialogue" and state.dialogueState == nil)
     or (state.dialogueState ~= nil and state.phase ~= "dialogue" and state.phase ~= "reward")
     or (state.phase == "reward" and (not state.rewardStarted or state.dialogueState == nil))
+    or (state.phase == "reward_finalize" and (not state.rewardStarted or state.dialogueState ~= nil or not state.rewardWaitForEffect))
+    or (not state.rewardStarted and state.rewardWaitForEffect)
     or (state.delayRemaining ~= nil and state.phase ~= "delay")
     or (state.effectSelector ~= nil and state.phase ~= "dialogue" and state.phase ~= "delay")
-    or (state.rewardStarted and state.phase ~= "reward")
+    or (state.rewardStarted and state.phase ~= "reward" and state.phase ~= "reward_finalize" and state.phase ~= "done")
     or (state.motionStarted and state.phase ~= "motion")
   then
     return invalid()

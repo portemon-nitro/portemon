@@ -83,12 +83,18 @@ local function fixture(programs)
     Assert.equal(actorId, "partner")
     actor.motionActive = true
     actor.begins = (actor.begins or 0) + 1
-    actor.offset = { x = action.x, y = action.y, z = action.z }
+    actor.actionX, actor.actionY, actor.actionZ = action.x, action.y, action.z
+    actor.offset = { x = 0, y = 0, z = 0 }
     events[#events + 1] = { "begin", action.x, action.y, action.z, action.ticks }
   end
   function actors:advanceScriptedAction(actorId, elapsed, duration)
     Assert.equal(actorId, "partner")
     events[#events + 1] = { "advance", elapsed, duration }
+    if elapsed < duration and actor.motionActive then
+      actor.offset = { x = actor.actionX, y = actor.actionY, z = actor.actionZ }
+    else
+      actor.offset = { x = 0, y = 0, z = 0 }
+    end
   end
   function actors:commitScriptedAction(actorId)
     Assert.equal(actorId, "partner")
@@ -142,9 +148,16 @@ local function fixture(programs)
     self.closes = self.closes + 1
   end
 
-  local audio = { played = {} }
+  local audio = { played = {}, cries = {}, effectWaitComplete = true }
   function audio:play(sound)
     self.played[#self.played + 1] = sound
+  end
+  function audio:playCry(species, pattern)
+    self.cries[#self.cries + 1] = { species, pattern }
+  end
+  function audio:isEffectWaitComplete(effect)
+    Assert.equal(effect, "SEQ_ME_ACCE")
+    return self.effectWaitComplete
   end
   local terrainEffects = { active = {}, removed = {} }
   function terrainEffects:emit(response)
@@ -161,7 +174,16 @@ local function fixture(programs)
       self.flags[flag] = true
     end,
   }
-  local mons = { friendship = 254, mood = 126, leaves = 0 }
+  local mons = {
+    friendship = 254,
+    mood = 126,
+    leaves = 0,
+    speciesBySlot = { [0] = 133, [1] = 25 },
+    partyMonSpecies = function(self, slot)
+      self.lastSpeciesSlot = slot
+      return self.speciesBySlot[slot]
+    end,
+  }
   local ctx = {
     services = {
       followerInteraction = engine,
@@ -184,9 +206,9 @@ local function fixture(programs)
       dialogue = dialogue,
       choice = choice,
       audio = audio,
+      mons = mons,
       terrainEffects = terrainEffects,
       world = world,
-      mons = mons,
     }
 end
 
@@ -222,12 +244,12 @@ T["motion and dialogue preserve actor identity, offsets, facing, and substitutio
   local programs = {
     motions = {
       [4] = {
-        { x = 1, y = 2, z = -1, facing = "north", ticks = 2, sound = "step" },
+        { x = 1, y = 2, z = -1, facing = "north", ticks = 2, sound = true },
         { x = -2, y = 3, z = 1, facing = "east", ticks = 1 },
       },
     },
     [10] = {
-      steps = { { motionId = 4, messageId = 7, delayTicks = 1 } },
+      steps = { { motionId = 4, messageId = 7, delayTicks = 1, sound = { kind = "effect", id = 42 } } },
       friendshipDelta = 0,
       moodDelta = 0,
       continuation = { choice0InteractionId = 11, choice1InteractionId = 11 },
@@ -250,7 +272,7 @@ T["motion and dialogue preserve actor identity, offsets, facing, and substitutio
     "the first record applies its render offset immediately"
   )
   Assert.equal(seen.actor.facing, "north", "the record applies its facing immediately")
-  Assert.equal(seen.audio.played[1], "step", "record sound plays once at record start")
+  Assert.equal(seen.audio.played[1], 42, "record sound plays once at record start")
 
   state = copy(state)
   task.poll(state, ctx)
@@ -275,6 +297,104 @@ T["motion and dialogue preserve actor identity, offsets, facing, and substitutio
   Assert.equal(seen.actor.z, 8, "finished motion preserves logical Z")
   Assert.equal(seen.actor.facing, "west", "finished motion restores original facing")
   Assert.deepEqual(seen.actor.offset, { x = 0, y = 0, z = 0 }, "finished motion clears presentation offset")
+end
+
+T["one-tick motion advances presentation before yielding"] = function()
+  local programs = {
+    motions = { [4] = { { x = 0.0625, y = 0, z = 0, ticks = 1 } } },
+    [10] = { steps = { { motionId = 4 } }, friendshipDelta = 0, moodDelta = 0 },
+  }
+  local ctx, seen = fixture(programs)
+  local state = FollowerInteractionTask.create({}, ctx)
+  local result = FollowerInteractionTask.poll(state, ctx)
+  Assert.isFalse(result.complete, "the one-tick action yields after its visible interval begins")
+  Assert.deepEqual(seen.actor.offset, { x = 0.0625, y = 0, z = 0 })
+  Assert.isTrue(
+    seen.events[3][1] == "advance" and seen.events[3][2] == 0,
+    "the task advances progress zero immediately after beginning the action"
+  )
+end
+
+T["motionless normalized step opens its already-normalized message"] = function()
+  local programs = {
+    motions = {},
+    [10] = { steps = { { messageId = 0 } }, friendshipDelta = 0, moodDelta = 0 },
+  }
+  local ctx, seen = fixture(programs)
+  local state = FollowerInteractionTask.create({}, ctx)
+  FollowerInteractionTask.poll(state, ctx)
+  Assert.equal(seen.dialogue.messages[1].message.id, 0, "the semantic message ID is used directly")
+  Assert.equal(seen.actor.begins or 0, 0, "an absent motion stays absent")
+end
+
+T["tagged motion sounds dispatch effects and cries through their existing services"] = function()
+  local function dispatch(sound, leadSlot)
+    local programs = {
+      motions = { [4] = { { x = 0, y = 0, z = 0, ticks = 1, sound = true } } },
+      [10] = { steps = { { motionId = 4, sound = sound } }, friendshipDelta = 0, moodDelta = 0 },
+    }
+    local ctx, seen = fixture(programs)
+    ctx.services.followerInteraction.select = function()
+      return { leadSlot = leadSlot or 0, programId = 10 }
+    end
+    local state = FollowerInteractionTask.create({}, ctx)
+    seen.mons.speciesBySlot[0] = 151
+    FollowerInteractionTask.poll(state, ctx)
+    return seen
+  end
+
+  local effect = dispatch({ kind = "effect", id = 42 }, 1)
+  Assert.deepEqual(effect.audio.played, { 42 }, "tagged effects use play(id)")
+  Assert.deepEqual(effect.audio.cries, {}, "effect dispatch does not call the cry service")
+
+  local ordinaryCry = dispatch({ kind = "cry", pattern = 0 }, 1)
+  Assert.deepEqual(ordinaryCry.audio.cries, { { 25, 0 } }, "the captured lead slot supplies the native cry species")
+  Assert.equal(ordinaryCry.mons.lastSpeciesSlot, 1, "cry dispatch keeps the selected lead slot")
+  Assert.deepEqual(ordinaryCry.audio.played, {}, "cry dispatch does not treat its tag as an effect ID")
+
+  local patternCry = dispatch({ kind = "cry", pattern = 11 }, 1)
+  Assert.deepEqual(patternCry.audio.cries, { { 25, 11 } }, "the alternate cry pattern is preserved")
+end
+
+T["reward task waits for the acquisition effect after dialogue completes"] = function()
+  local programs = {
+    motions = {},
+    [10] = {
+      steps = {},
+      friendshipDelta = 0,
+      moodDelta = 0,
+      reward = { kind = "fashion", selector = 4, outcome = "added" },
+    },
+  }
+  local ctx, seen = fixture(programs)
+  seen.audio.effectWaitComplete = false
+  local state = FollowerInteractionTask.create({}, ctx)
+  for _ = 1, 8 do
+    FollowerInteractionTask.poll(state, ctx)
+    if state.dialogueState ~= nil then
+      break
+    end
+  end
+  Assert.deepEqual(seen.audio.played, { "SEQ_ME_ACCE" }, "the reward effect starts once")
+  Assert.notNil(state.dialogueState, "the reward dialogue is active before completion")
+  seen.dialogue.finished = true
+  local result
+  for _ = 1, 8 do
+    ctx.input.pressedAction = true
+    result = FollowerInteractionTask.poll(state, ctx)
+    ctx.input.pressedAction = false
+    if state.dialogueState == nil then
+      break
+    end
+  end
+  Assert.isNil(state.dialogueState, "dialogue and fresh input have completed")
+  Assert.equal(state.phase, "reward_finalize", "the effect barrier is serialized as its own phase")
+  Assert.isNil(FollowerInteractionTask.validate(state), "the pending effect barrier is valid task state")
+  state = copy(state)
+  Assert.isFalse(result.complete, "the active acquisition effect keeps the interaction blocked")
+  seen.audio.effectWaitComplete = true
+  Assert.isTrue(FollowerInteractionTask.poll(state, ctx).complete, "the interaction completes after effect completion")
+  Assert.deepEqual(seen.audio.played, { "SEQ_ME_ACCE" }, "repeated polls do not replay the reward effect")
 end
 
 T["continuation uses the selected target without selecting or rolling again"] = function()
@@ -479,8 +599,10 @@ T["task state is plain serialized data and rejects invalid fields or phases"] = 
   local restored = copy(state)
   Assert.isNil(task.validate(restored), "serialized task state validates after restore")
   local maximumOffset = copy(restored)
-  maximumOffset.cumulativeX = -1280
-  Assert.isNil(task.validate(maximumOffset), "the full source motion range remains serializable")
+  maximumOffset.cumulativeX = -80
+  Assert.isNil(task.validate(maximumOffset), "the normalized motion range remains serializable")
+  maximumOffset.cumulativeX = -80.0625
+  Assert.isTrue(Errors.is(task.validate(maximumOffset)), "offsets outside the normalized motion range are rejected")
   Assert.isNil(restored.engine, "task state contains no engine pointer")
   Assert.isNil(restored.actor, "task state contains no actor/controller pointer")
 
@@ -504,6 +626,7 @@ T["task state is plain serialized data and rejects invalid fields or phases"] = 
     { field = "motionIndex", value = 11 },
     { field = "motionTick", value = math.huge },
     { field = "cumulativeX", value = 0 / 0 },
+    { field = "cumulativeX", value = 0.01 },
     { field = "cumulativeY", value = math.huge },
     { field = "cumulativeZ", value = -math.huge },
     { field = "cumulativeX", value = 1281 },
@@ -596,8 +719,8 @@ T["mid-motion task restore rebuilds the derived partner action without replaying
   })
   local function harness()
     local ctx, seen = fixture({
-      motions = { [4] = { { x = 2, y = 3, z = -1, facing = "north", ticks = 4, sound = "motion-start" } } },
-      [10] = { steps = { { motionId = 4 } }, friendshipDelta = 0, moodDelta = 0 },
+      motions = { [4] = { { x = 2, y = 3, z = -1, facing = "north", ticks = 4, sound = true } } },
+      [10] = { steps = { { motionId = 4, sound = { kind = "effect", id = 43 } } }, friendshipDelta = 0, moodDelta = 0 },
     })
     local registry = Registry.new()
     local composition = ScriptComposition.new(registry)
@@ -624,7 +747,7 @@ T["mid-motion task restore rebuilds the derived partner action without replaying
   Assert.isTrue(runningTask.state.motionStarted, "the task has begun the render-only motion")
   Assert.equal(runningTask.state.motionTick, 1, "one motion tick has elapsed before capture")
   Assert.deepEqual(original.seen.actor.offset, { x = 2, y = 3, z = -1 })
-  Assert.deepEqual(original.seen.audio.played, { "motion-start" }, "motion sound has played once")
+  Assert.deepEqual(original.seen.audio.played, { 43 }, "motion sound has played once")
   local bucket = ScriptSave.capture(original.scheduler, 102, { registryFingerprint = original.registry:fingerprint() })
   Assert.equal(#bucket.tasks, 1, "the blocked interaction task is captured")
   Assert.equal(bucket.tasks[1].taskType, "follower_interaction")

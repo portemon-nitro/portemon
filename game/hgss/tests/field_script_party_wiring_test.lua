@@ -46,7 +46,7 @@ local function stubOptions(partySelection)
   local InteractionCache = require("libs.assets.src.field.FollowerInteractionCache")
   local FieldEffectAssetCache = require("libs.assets.src.field.FieldEffectAssetCache")
   local reactions = {}
-  local speciesClassBySpeciesId = {}
+  local mapClassByMapId = {}
   local fashionNames = {}
   for selector = 1, 14 do
     local definition = "follower_reaction_" .. selector
@@ -55,8 +55,8 @@ local function stubOptions(partySelection)
       resourceKey = FieldEffectAssetCache.definitionPath(definition),
     }
   end
-  for speciesId = 1, 496 do
-    speciesClassBySpeciesId[speciesId] = 0
+  for mapId = 1, 496 do
+    mapClassByMapId[mapId] = 0
   end
   for accessoryId = 0, 99 do
     fashionNames[accessoryId] = { name = "Accessory", nameWithArticle = "an Accessory" }
@@ -72,7 +72,7 @@ local function stubOptions(partySelection)
     programs = {},
     motions = {},
     reactions = reactions,
-    speciesClassBySpeciesId = speciesClassBySpeciesId,
+    mapClassByMapId = mapClassByMapId,
     locationNames = {},
     fashionNames = fashionNames,
   }
