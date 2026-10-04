@@ -58,6 +58,7 @@ local ITEM_FIELDS = {
   canHold = true,
   heldFormEffect = true,
   partyUse = true,
+  battleUse = true,
   heldBehavior = true,
   fling = true,
   naturalGift = true,
@@ -219,6 +220,42 @@ local function assertEv(key, value, context)
   assertMood(key, value.mood, context)
 end
 
+-- Battle-use facts: the in-battle rider record for battle-only items.
+-- Cures name the confusion and infatuation volatiles the serving
+-- clears, guardSpec raises the mist side screen, and stages carry the
+-- already-decoded native stage flags per stat with the critical flag in
+-- its two-bit domain. Consumers interpret nonzero stages through the
+-- pinned battle item-use law.
+local function assertBattleUse(key, value, context)
+  if type(value) ~= "table" then
+    fail("ITEM_CATALOG_INVALID", "item " .. key .. " battleUse must be a record", context)
+  end
+  checkKeys(value, { cures = true, guardSpec = true, stages = true }, context, "ITEM_CATALOG_INVALID")
+  if type(value.cures) ~= "table" then
+    fail("ITEM_CATALOG_INVALID", "item " .. key .. " battleUse cures must be a record", context)
+  end
+  checkKeys(value.cures, { confusion = true, infatuation = true }, context, "ITEM_CATALOG_INVALID")
+  checkBoolean(value.cures.confusion, context, "ITEM_CATALOG_INVALID", "item " .. key .. " cure confusion")
+  checkBoolean(value.cures.infatuation, context, "ITEM_CATALOG_INVALID", "item " .. key .. " cure infatuation")
+  checkBoolean(value.guardSpec, context, "ITEM_CATALOG_INVALID", "item " .. key .. " guardSpec")
+  if type(value.stages) ~= "table" then
+    fail("ITEM_CATALOG_INVALID", "item " .. key .. " battleUse stages must be a record", context)
+  end
+  checkKeys(value.stages, {
+    attack = true,
+    defense = true,
+    specialAttack = true,
+    specialDefense = true,
+    speed = true,
+    accuracy = true,
+    critical = true,
+  }, context, "ITEM_CATALOG_INVALID")
+  for _, stat in ipairs({ "attack", "defense", "specialAttack", "specialDefense", "speed", "accuracy" }) do
+    checkInteger(value.stages[stat], context, "ITEM_CATALOG_INVALID", "item " .. key .. " stage " .. stat, 0, 15)
+  end
+  checkInteger(value.stages.critical, context, "ITEM_CATALOG_INVALID", "item " .. key .. " stage critical", 0, 3)
+end
+
 local function assertPartyUse(key, value, context)
   if type(value) ~= "table" then
     fail("ITEM_CATALOG_INVALID", "item " .. key .. " partyUse must be a record", context)
@@ -321,6 +358,12 @@ local function assertItem(key, record, context)
     )
   end
   assertPartyUse(key, record.partyUse, context)
+  -- Battle-use riders are optional: catalogs produced before the
+  -- battle-only enrichment stay valid, while enriched records validate
+  -- their closed in-battle shape above.
+  if record.battleUse ~= nil then
+    assertBattleUse(key, record.battleUse, context)
+  end
   -- Semantic held behavior is optional: catalogs produced before the
   -- battle import pipeline stay valid, while enriched records validate
   -- their behavior reference through the shared check.

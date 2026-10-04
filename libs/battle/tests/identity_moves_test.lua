@@ -112,6 +112,13 @@ local function frameInputs(move, slot)
     defenderTypes = typeFacts().defenderTypes,
     typeChart = typeFacts().typeChart,
     stream = BattleRng.new(FIXED_SEED),
+    beatup = move == "BEAT_UP" and {
+      defense = 50,
+      members = {
+        { attack = 50, level = 10 },
+        { attack = 50, level = 10 },
+      },
+    } or nil,
   }
 end
 
@@ -230,8 +237,8 @@ function T.delayed_damage_survives_attacker_exit()
   )
 end
 
--- Multi-hit sequences consume one accuracy, critical, and damage draw per
--- hit in order, stop the moment a hit faints the target without rolling
+-- Multi-hit sequences gate on one accuracy check and one critical
+-- roll, stop the moment a hit faints the target without rolling
 -- further hits, and break a substitute mid-sequence so later hits reach
 -- health; suspending and resuming at hit boundaries matches one
 -- uninterrupted run exactly.

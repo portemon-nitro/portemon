@@ -106,6 +106,9 @@ function BattleSnapshot.capture(state)
     effects = effectRecords,
     pending = copyValue(state.pending),
     outbox = copyValue(state.outbox),
+    turnStrikes = copyValue(state.turnStrikes or {}),
+    turnActed = copyValue(state.turnActed or {}),
+    usedMoves = copyValue(state.usedMoves or {}),
     status = state.status,
     outcome = copyValue(state.outcome),
   }

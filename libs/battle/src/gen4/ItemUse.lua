@@ -12,8 +12,11 @@
 
 local Errors = require("libs.errors.src.Errors")
 local BattleErrors = require("libs.battle.src.errors")
+local BattleContext = require("libs.battle.src.BattleContext")
 local CaptureContext = require("libs.battle.src.gen4.CaptureContext")
+local NativeEffectHandlers = require("libs.battle.src.gen4.behaviors.effects.NativeEffectHandlers")
 local PartyUse = require("libs.items.src.PartyUse")
+local StatStages = require("libs.battle.src.gen4.StatStages")
 local Status = require("libs.battle.src.gen4.Status")
 
 local ItemUse = {}
@@ -168,13 +171,15 @@ function ItemUse.validateChoice(choice, view)
   return true
 end
 
---- Resolves the generated semantic record for a serving: absent fact
---- maps, absent entries, and malformed records raise missing behavior
---- before anything is consumed.
+--- Resolves the generated semantic entry for a serving: absent fact
+--- maps and absent entries raise missing behavior before anything is
+--- consumed. Entries may carry the serving party use beside battle-use
+--- riders and held-throw facts; each consumer reads its own facts while
+--- genuinely foreign fields still fail.
 ---@param item string non-ball item key under classification
 ---@param itemFacts unknown immutable semantic facts by item key under inspection
----@return table<string, unknown> generated party-use record for the serving
-local function semanticPartyUse(item, itemFacts)
+---@return table<string, unknown> generated fact entry for the serving
+local function semanticEntry(item, itemFacts)
   if type(itemFacts) ~= "table" then
     error(BattleErrors.missingBehavior("battle servings read their immutable item facts", { item = item }))
   end
@@ -182,18 +187,14 @@ local function semanticPartyUse(item, itemFacts)
   if type(entry) ~= "table" then
     error(BattleErrors.missingBehavior("battle servings read their immutable item facts", { item = item }))
   end
-  local partyUse = (entry --[[@as table<string, unknown>]]).partyUse
-  if type(partyUse) ~= "table" then
-    error(BattleErrors.missingBehavior("battle servings carry their generated party use", { item = item }))
-  end
   for key in
     pairs(entry --[[@as table<string, unknown>]])
   do
-    if key ~= "partyUse" then
-      error(BattleErrors.missingBehavior("battle item facts carry only their party use", { item = item }))
+    if key ~= "partyUse" and key ~= "battleUse" and key ~= "naturalGift" and key ~= "fling" then
+      error(BattleErrors.missingBehavior("battle item facts carry only their generated facts", { item = item }))
     end
   end
-  return partyUse --[[@as table<string, unknown>]]
+  return entry --[[@as table<string, unknown>]]
 end
 
 ---@param restore unknown generated restore record under validation
@@ -305,18 +306,114 @@ local function holderHealth(holder)
     record.maxHp --[[@as integer]]
 end
 
+-- Battle stage identities the generated battle use may raise, in stable
+-- planning order.
+local BATTLE_STAGE_ORDER = {
+  "attack",
+  "defense",
+  "specialAttack",
+  "specialDefense",
+  "speed",
+  "accuracy",
+  "critical",
+}
+
+---@param holder unknown holder combatant under inspection
+---@return table<string, integer> battle-local stages, flat when unreadable
+local function holderStages(holder)
+  if type(holder) ~= "table" then
+    return {}
+  end
+  local stages = (holder --[[@as table<string, unknown>]]).stages
+  if type(stages) ~= "table" then
+    return {}
+  end
+  return stages --[[@as table<string, integer>]]
+end
+
+--- Plans one battle-only serving from its generated battle use without
+--- mutating: nonzero stage flags plan one stage each while headroom
+--- lasts, the critical flag plans focus, the guard flag plans the side
+--- screen, and true cure flags plan volatile clearing. Battle volatiles
+--- and screens stay invisible to planning, so focus, guard, and cures
+--- plan optimistically while stages gate on visible headroom. Servings
+--- whose party use is not deferred battle-only, or that carry no battle
+--- use, raise missing behavior instead of guessing.
+---@param item string non-ball item key under planning
+---@param target BattleItemTarget detached holder target under planning
+---@param view table<string, unknown> declared battle state under planning
+---@param entry table<string, unknown> generated fact entry for the serving
+---@return BattleItemEffectOperation[] planned battle operations, empty without effect
+local function planBattleServing(item, target, view, entry)
+  local partyUse = entry.partyUse --[[@as table<string, unknown>]]
+  if partyUse.kind ~= "deferred" then
+    error(BattleErrors.missingBehavior("the battle models only ordinary living medicine", { item = item }))
+  end
+  local battleUse = entry.battleUse
+  if type(battleUse) ~= "table" then
+    error(BattleErrors.missingBehavior("the battle models only ordinary living medicine", { item = item }))
+  end
+  local riders = battleUse --[[@as table<string, unknown>]]
+  local operations = {} ---@type BattleItemEffectOperation[]
+  local combatants = (view --[[@as table<string, unknown>]]).combatants --[[@as table<integer, unknown>]]
+  local holder = type(combatants) == "table" and combatants[
+    target.combatant --[[@as integer]]
+  ] or nil
+  local active = type(holder) == "table" and (holder --[[@as table<string, unknown>]]).active ~= nil
+  local stages = holderStages(holder)
+  local flags = riders.stages
+  if type(flags) == "table" then
+    local decoded = flags --[[@as table<string, integer>]]
+    for _, stat in ipairs(BATTLE_STAGE_ORDER) do
+      if stat ~= "critical" and type(decoded[stat]) == "number" and decoded[stat] ~= 0 and active then
+        local current = stages[stat]
+        if type(current) ~= "number" or current < StatStages.MAX then
+          operations[#operations + 1] = { kind = "stage", stat = stat, target = copyTarget(target) }
+        end
+      end
+    end
+    if type(decoded.critical) == "number" and decoded.critical ~= 0 and active then
+      operations[#operations + 1] = { kind = "focus", target = copyTarget(target) }
+    end
+  end
+  if riders.guardSpec == true and active then
+    operations[#operations + 1] = { kind = "guard", target = copyTarget(target) }
+  end
+  local cures = riders.cures
+  if type(cures) == "table" and active then
+    for _, flag in ipairs({ "confusion", "infatuation" }) do
+      if
+        (cures --[[@as table<string, unknown>]])[flag] == true
+      then
+        operations[#operations + 1] = { kind = "cure", key = flag, target = copyTarget(target) }
+      end
+    end
+  end
+  return operations
+end
+
 --- Plans one serving from its generated semantics without mutating: cure
 --- operations name the concrete holder record each true cure flag
 --- clears, and restoration carries the exact generated amount. Empty
---- operations report a serving with no effect.
+--- operations report a serving with no effect. Battle-only servings
+--- plan their stages, focus, guard, and volatile cures from the
+--- generated battle use instead of medicine.
 ---@param item string non-ball item key under planning
 ---@param target BattleItemTarget detached holder target under planning
 ---@param view table<string, unknown> declared battle state under planning
 ---@param itemFacts table<string, unknown>? immutable semantic facts by item key under planning
 ---@return BattleItemEffectOperation[] planned serving operations, empty without effect
 local function planServing(item, target, view, itemFacts)
-  local partyUse = semanticPartyUse(item, itemFacts)
-  checkMedicineShape(partyUse, item)
+  local entry = semanticEntry(item, itemFacts)
+  local partyUse = entry.partyUse
+  if type(partyUse) ~= "table" then
+    error(BattleErrors.missingBehavior("battle servings carry their generated party use", { item = item }))
+  end
+  local record = partyUse --[[@as table<string, unknown>]]
+  if record.kind ~= "medicine" then
+    return planBattleServing(item, target, view, entry)
+  end
+  checkMedicineShape(record, item)
   local operations = {} ---@type BattleItemEffectOperation[]
   local combatants = (view --[[@as table<string, unknown>]]).combatants --[[@as table<integer, unknown>]]
   local holder = type(combatants) == "table" and combatants[
@@ -436,9 +533,10 @@ local function checkStock(plan, battle)
 end
 
 --- Applies one serving plan to its live holder: restoration heals toward
---- the ceiling while cures remove their named persistent condition
---- through the status owner. Both live health mirrors agree afterwards.
---- Unknown operation kinds never execute.
+--- the ceiling while persistent cures remove their named condition
+--- through the status owner. Battle operations (stages, focus, guard,
+--- volatile cures) apply through their own owner beside this one; unknown
+--- operation kinds never execute. Both live health mirrors agree afterwards.
 ---@param executable ItemUsePlan executable serving plan under execution
 ---@param holder table<string, unknown> live holder combatant under mutation
 ---@return integer actual health gained after ceiling capping
@@ -459,13 +557,13 @@ local function applyServing(executable, holder)
           capped - hp --[[@as integer]]
         )
       hp = capped
-    elseif effect.kind == "cure" then
+    elseif effect.kind == "cure" and effect.key ~= "confusion" and effect.key ~= "infatuation" then
       local mon = holder.mon
       if type(mon) ~= "table" then
         error(BattleErrors.invalidState("battle servings cure their holder record", {}))
       end
       Status.cure(mon --[[@as table<string, unknown>]], effect.key --[[@as string]])
-    else
+    elseif effect.kind ~= "stage" and effect.kind ~= "focus" and effect.kind ~= "guard" and effect.kind ~= "cure" then
       error(refusal("invalid_plan"))
     end
   end
@@ -480,9 +578,84 @@ local function applyServing(executable, holder)
   return gained
 end
 
+--- Applies the battle operations of one serving plan through the
+--- battle-local owners: stages climb one step through the stage owner,
+--- focus roots the focus-energy volatile, guard screens the holder side
+--- with mist, and volatile cures lift confusion and infatuation.
+--- Already-focused holders and screened sides stay untouched; missing
+--- volatiles clear to nothing. Only plans carrying battle operations
+--- reach this owner.
+---@param executable ItemUsePlan executable serving plan under execution
+---@param battle table<string, unknown> battle-owned execution state under mutation
+---@param holder table<string, unknown> live holder combatant under mutation
+local function applyBattleUse(executable, battle, holder)
+  local target = executable.target --[[@as BattleItemTarget]]
+  local holderId = target.combatant --[[@as integer]]
+  local cause = { kind = "item", item = executable.item, combatant = holderId }
+  local context = BattleContext.wrap(battle)
+  for _, operation in
+    ipairs(executable.effectOperations --[[@as BattleItemEffectOperation[] ]])
+  do
+    local effect = operation --[[@as BattleItemEffectOperation]]
+    if effect.kind == "stage" then
+      local stages = holder.stages --[[@as table<string, integer>]]
+      local stat = effect.stat --[[@as string]]
+      local next = StatStages.change(stages[stat] --[[@as integer]], 1)
+      if next ~= stages[stat] then
+        context:changeStage(holderId, stat, next, cause)
+      end
+    elseif effect.kind == "focus" then
+      if not context:hasBattleEffect(holderId, "focusenergy") then
+        local entry = context:entryOf(holderId)
+        if entry.activation == nil then
+          error(BattleErrors.invalidState("battle servings focus a live entry", { combatant = holderId }))
+        end
+        context:addBattleEffect(
+          NativeEffectHandlers.definitionFor("focusenergy"),
+          { kind = "active", combatant = holderId, activation = entry.activation },
+          cause,
+          { version = 1 }
+        )
+      end
+    elseif effect.kind == "guard" then
+      local side = context:entryOf(holderId).side
+      if
+        context:sideEffect(side --[[@as integer]], "mist") == nil
+      then
+        context:addBattleEffect(
+          NativeEffectHandlers.definitionFor("mist"),
+          { kind = "side", side = side },
+          cause,
+          { version = 1, turns = 5 }
+        )
+      end
+    elseif effect.kind == "cure" and (effect.key == "confusion" or effect.key == "infatuation") then
+      context:removeBattleEffect(holderId, effect.key --[[@as string]])
+    end
+  end
+end
+
+---@param operations table<integer, table<string, unknown>> planned effect operations under inspection
+---@return boolean true when at least one operation needs the battle-local owners
+local function hasBattleOperations(operations)
+  for _, operation in ipairs(operations) do
+    local effect = operation --[[@as BattleItemEffectOperation]]
+    if
+      effect.kind == "stage"
+      or effect.kind == "focus"
+      or effect.kind == "guard"
+      or (effect.kind == "cure" and (effect.key == "confusion" or effect.key == "infatuation"))
+    then
+      return true
+    end
+  end
+  return false
+end
+
 --- Executes a plan exactly once at its checkpoint: one unit leaves battle
 --- stock, one delta enters the battle ledger, servings apply their planned
---- restoration and cures to the holder, and the plan is stamped. Ball plans spend the same owned unit
+--- restoration and persistent cures to the holder while battle operations
+--- apply through the battle-local owners, and the plan is stamped. Ball plans spend the same owned unit
 --- and return the capture outcome shape for the capture owner to settle:
 --- the session routes ball plans to the capture path with full battle and
 --- stream context, which this planner never fabricates. Refused, stale,
@@ -558,6 +731,11 @@ function ItemUse.execute(plan, battle, rng)
     return { consumed = true, result = { ball = executable.item, target = target.combatant } }
   end
   local restored = applyServing(executable, holder)
+  if
+    hasBattleOperations(executable.effectOperations --[[@as table<integer, table<string, unknown>>]])
+  then
+    applyBattleUse(executable, battle, holder)
+  end
   executable.executed = true
   return { consumed = true, restored = restored, target = copyTarget(target) }
 end

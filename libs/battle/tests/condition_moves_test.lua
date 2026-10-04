@@ -904,4 +904,15 @@ function T.captivate_drops_special_attack_for_opposite_genders()
   Assert.equal(sameOutcome.result, "failed", "captivate refuses same genders")
 end
 
+-- Minimize raises evasion and roots its native marker beside the
+-- stages, so stomping doubles read the marker rather than the stage.
+function T.minimize_marks_its_entry_beside_evasion()
+  conditionOwner("minimizing moves own their marker")
+  local probe = runCondition("MINIMIZE", moveFacts("MINIMIZE", { accuracy = 0 }), FIXED_SEED)
+  local outcome = probe.outcome --[[@as table<string, unknown>]]
+  Assert.equal(outcome.result, "hit", "minimize connects")
+  Assert.equal(probe.ctx:entryOf(1).stages.evasion, 1, "minimize raises evasion")
+  Assert.isTrue(probe.ctx:hasBattleEffect(1, "minimize"), "minimize marks its entry")
+end
+
 return { tests = T }

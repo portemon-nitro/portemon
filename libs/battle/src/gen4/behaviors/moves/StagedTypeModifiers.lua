@@ -162,10 +162,20 @@ end
 ---@param frame table<string, unknown> move frame under execution
 ---@param defender integer defender combatant under the strike
 ---@param immunities table<string, unknown>|nil airborne, foresight, and gravity facts for the strike
+---@param moveTypeOverride string|nil source-computed move type replacing the compiled one
 ---@return table<string, integer> exact STAB rational for the staged arithmetic
 ---@return table<string, integer> exact effectiveness rational for the staged arithmetic
-function StagedTypeModifiers.forStrike(frame, defender, immunities)
+function StagedTypeModifiers.forStrike(frame, defender, immunities, moveTypeOverride)
   local moveType = moveTypeOf(frame)
+  if moveTypeOverride ~= nil then
+    if type(moveTypeOverride) ~= "string" or moveTypeOverride == "" then
+      local record = frame --[[@as table<string, unknown>]]
+      error(BattleErrors.missingBehavior("strikes name their computed move type", {
+        key = record.executingMove --[[@as string]],
+      }))
+    end
+    moveType = moveTypeOverride --[[@as string]]
+  end
   local attackerTypes, defenderTypes, chart = battleFactsOf(frame, defender)
   local types, context = immunityFor(moveType, defenderTypes, immunities)
   return stabOf(moveType, attackerTypes), effectivenessOf(chart, moveType, types, context)

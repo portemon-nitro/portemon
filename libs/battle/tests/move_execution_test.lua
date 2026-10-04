@@ -540,8 +540,8 @@ function T.frames_without_move_facts_fail_validation()
 end
 
 -- Specialized gates keep their explicit failure policy without modeled
--- facts: level-fixed damage and one-hit knockouts settle as failures
--- instead of dealing guessed damage.
+-- facts: level-fixed damage and one-hit knockouts report missing
+-- behavior instead of dealing guessed damage.
 function T.specialized_gates_fail_without_required_facts()
   local Execution = executionOwner("the shared move continuation owns hit progression")
 
@@ -576,8 +576,20 @@ function T.specialized_gates_fail_without_required_facts()
     return outcome
   end
 
-  Assert.equal(settle("SEISMIC_TOSS").result, "failed", "level-fixed damage fails without its level fact")
-  Assert.equal(settle("GUILLOTINE").result, "failed", "one-hit knockouts fail without their level gate")
+  local okToss, tossErr = pcall(settle, "SEISMIC_TOSS")
+  Assert.isFalse(okToss, "level-fixed damage never settles without its level fact")
+  Assert.equal(
+    (tossErr --[[@as table]]).code,
+    "BATTLE_MISSING_BEHAVIOR",
+    "level-fixed damage reports its missing facts"
+  )
+  local okOhko, ohkoErr = pcall(settle, "GUILLOTINE")
+  Assert.isFalse(okOhko, "one-hit knockouts never settle without their level gate")
+  Assert.equal(
+    (ohkoErr --[[@as table]]).code,
+    "BATTLE_MISSING_BEHAVIOR",
+    "one-hit knockouts report their missing facts"
+  )
 end
 
 -- Sequence strikes read power from the compiled move facts: the same
