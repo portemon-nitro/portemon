@@ -59,10 +59,10 @@ local function record(saveId, versionId, playerData)
       schema = "g4-script-save-v1",
       registryFingerprint = "registry",
       taskFingerprint = "tasks",
-      capturedAtSimulationTick = 0,
-      nextEnvironmentId = 0,
-      nextInstanceId = 0,
-      nextTaskId = 0,
+      capturedAtSimulationTick = 41,
+      nextEnvironmentId = 3,
+      nextInstanceId = 5,
+      nextTaskId = 7,
       environments = {},
       instances = {},
       tasks = {},
@@ -72,6 +72,22 @@ local function record(saveId, versionId, playerData)
     mons = monsBucket(),
     bag = BagSave.empty(),
   }
+end
+
+local function copy(value)
+  if type(value) ~= "table" then
+    return value
+  end
+  local result = {}
+  for key, child in pairs(value) do
+    result[key] = copy(child)
+  end
+  return result
+end
+
+local function markPreUpdateFingerprints(candidate)
+  candidate.scripts.registryFingerprint = "pre-update-registry"
+  candidate.scripts.taskFingerprint = "pre-update-tasks"
 end
 
 local function fieldObjectActor(overrides)
@@ -196,11 +212,80 @@ function T.complete_validation_rejects_stale_task_identity()
       return selected
     end,
   })
-  local invalid, err = service:validate(record("save-00000004", "heartgold", validPlayerData))
+  local current = assert(
+    GameSaveValidation.new({
+      contextLoader = function()
+        return context()
+      end,
+    }):validate(record("save-00000004", "heartgold", validPlayerData))
+  )
+  current.scripts.taskFingerprint = "pre-update-tasks"
+  local invalid, err = service:validate(current)
   Assert.isNil(invalid)
   Assert.isTrue(Errors.is(err))
   local validationError = assert(err)
   Assert.equal(validationError.code, "GAME_SAVE_BUCKET_INVALID")
+end
+
+function T.quiescent_v4_saves_rebind_stale_fingerprints_and_preserve_state()
+  local service = GameSaveValidation.new({
+    contextLoader = function()
+      return context()
+    end,
+  })
+  local candidate = record("save-00000018", "heartgold", validPlayerData)
+  markPreUpdateFingerprints(candidate)
+  candidate.world.flags = { [12] = true }
+  candidate.world.rng = { state = 91, calls = 37 }
+  candidate.mons = monsBucket()
+  local sourceWorld = copy(candidate.world)
+  local sourcePlayerData = copy(candidate.playerData)
+  local sourceFieldTravel = copy(candidate.fieldTravel)
+  local sourceMons = copy(candidate.mons)
+  local sourceBag = copy(candidate.bag)
+  local sourceScripts = copy(candidate.scripts)
+
+  local valid = assert(service:validate(candidate))
+  Assert.equal(valid.schema, "g4-game-save-v5")
+  Assert.equal(valid.fashionCase.schema, "hgss-fashion-case-v1")
+  Assert.equal(valid.scripts.registryFingerprint, "registry")
+  Assert.equal(valid.scripts.taskFingerprint, "tasks")
+  Assert.equal(valid.scripts.capturedAtSimulationTick, sourceScripts.capturedAtSimulationTick)
+  Assert.equal(valid.scripts.nextEnvironmentId, sourceScripts.nextEnvironmentId)
+  Assert.equal(valid.scripts.nextInstanceId, sourceScripts.nextInstanceId)
+  Assert.equal(valid.scripts.nextTaskId, sourceScripts.nextTaskId)
+  Assert.deepEqual(valid.world, sourceWorld)
+  Assert.deepEqual(valid.playerData, sourcePlayerData)
+  Assert.deepEqual(valid.fieldTravel, sourceFieldTravel)
+  Assert.deepEqual(valid.mons, sourceMons)
+  Assert.deepEqual(valid.bag, sourceBag)
+  Assert.equal(candidate.schema, "g4-game-save-v4")
+  Assert.equal(candidate.scripts.registryFingerprint, "pre-update-registry")
+  Assert.equal(candidate.scripts.taskFingerprint, "pre-update-tasks")
+  Assert.deepEqual(candidate.scripts, sourceScripts)
+  Assert.isNil(candidate.fashionCase)
+end
+
+function T.active_v4_graphs_reject_without_mutating_the_source()
+  local service = GameSaveValidation.new({
+    contextLoader = function()
+      return context()
+    end,
+  })
+  local candidate = record("save-00000019", "heartgold", validPlayerData)
+  markPreUpdateFingerprints(candidate)
+  candidate.scripts.environments = { { environmentId = 1 } }
+  candidate.scripts.instances = { { instanceId = 1 } }
+  candidate.scripts.tasks = { { taskId = 1, taskType = "old_task", taskVersion = 1 } }
+  local before = copy(candidate)
+
+  local invalid, err = service:validate(candidate)
+  Assert.isNil(invalid)
+  local rejection = assert(err)
+  Assert.equal(rejection.code, "GAME_SAVE_SCHEMA_UNSUPPORTED")
+  Assert.equal(rejection.context.schema, "g4-game-save-v4")
+  Assert.isTrue(rejection.message:find("active", 1, true) ~= nil)
+  Assert.deepEqual(candidate, before)
 end
 
 function T.complete_validation_composes_field_object_validation()

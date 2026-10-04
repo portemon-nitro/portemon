@@ -360,6 +360,42 @@ function T.metadata_listing_never_deep_validates_and_keeps_ordering_and_errors()
   Assert.equal(listed[2].saveId, firstId)
 end
 
+function T.metadata_listing_exposes_v4_envelopes_without_deep_validation()
+  local backend = FakeCache.new()
+  local validations = 0
+  local store = newStore(backend, {
+    recordValidate = function(candidate)
+      validations = validations + 1
+      return candidate
+    end,
+  })
+  local v4Id = store:reserve()
+  local v5Id = store:reserve()
+  local unknownId = store:reserve()
+  local v4 = record(v4Id, "heartgold")
+  v4.schema = "g4-game-save-v4"
+  v4.fashionCase = nil
+  store:publishFirst(v4)
+  store:publishFirst(record(v5Id, "soulsilver"))
+  local unknown = record(unknownId, "heartgold")
+  unknown.schema = "g4-game-save-v6"
+  store:publishFirst(unknown)
+  Assert.equal(validations, 3)
+
+  local metadata = assert(store:listMetadata())
+  Assert.equal(validations, 3, "metadata listing performs no deep validation")
+  Assert.equal(#metadata, 3)
+  Assert.equal(metadata[1].saveId, unknownId)
+  Assert.equal(assert(metadata[1].error).code, "GAME_SAVE_SCHEMA_UNSUPPORTED")
+  Assert.equal(metadata[2].saveId, v5Id)
+  Assert.equal(metadata[2].versionId, "soulsilver")
+  Assert.isNil(metadata[2].error)
+  Assert.equal(metadata[3].saveId, v4Id)
+  Assert.isNil(metadata[3].error, "a known v4 envelope remains visible")
+  Assert.equal(metadata[3].versionId, "heartgold")
+  Assert.equal(assert(metadata[3].playerData and metadata[3].playerData.profile).name, "GOLD")
+end
+
 function T.deleted_ids_are_not_reusable_and_published_order_follows_creation()
   local backend = FakeCache.new()
   local store = newStore(backend)

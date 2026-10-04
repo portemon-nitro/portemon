@@ -172,7 +172,17 @@ function GameSaveValidation:validate(record, context)
       effective.scripts = rebindScripts(record.scripts, options)
     end
     if type(effective) == "table" and effective.schema == "g4-game-save-v4" then
+      if not isQuiescentScripts(effective.scripts) then
+        return nil,
+          Errors.new(
+            GameSaveErrors.GAME_SAVE_SCHEMA_UNSUPPORTED,
+            "v4 save carries an active script graph that cannot migrate to v5",
+            { schema = "g4-game-save-v4" }
+          )
+      end
+      local options = selected.scriptCompatibility:validationOptions()
       effective = GameSave.migrateV4(effective)
+      effective.scripts = rebindScripts(effective.scripts, options)
     end
     local function playerDataValidate(value)
       return PlayerData.validate(value, selected)

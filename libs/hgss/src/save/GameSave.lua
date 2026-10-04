@@ -311,7 +311,7 @@ function GameSave.metadata(record)
       Errors.raise(GameSaveErrors.GAME_SAVE_INVALID, "game save must be a table", {})
     end
     assert(type(record) == "table")
-    if record.schema ~= GameSave.SCHEMA then
+    if record.schema ~= "g4-game-save-v4" and record.schema ~= GameSave.SCHEMA then
       Errors.raise(
         GameSaveErrors.GAME_SAVE_SCHEMA_UNSUPPORTED,
         "unsupported game save schema",

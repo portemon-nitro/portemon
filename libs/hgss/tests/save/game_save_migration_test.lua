@@ -101,6 +101,18 @@ end
 function T.v4_migration_adds_only_an_empty_fashion_case_copy()
   local source = v4record()
   source.schema = "g4-game-save-v4"
+  source.scripts = {
+    registryFingerprint = "pre-update-registry",
+    taskFingerprint = "pre-update-tasks",
+    nextTaskId = 7,
+    environments = {},
+    instances = {},
+    tasks = {},
+  }
+  local sourceScripts = {}
+  for key, value in pairs(source.scripts) do
+    sourceScripts[key] = value
+  end
   local migrated = GameSave.migrateV4(source)
   Assert.equal(migrated.schema, "g4-game-save-v5")
   Assert.deepEqual(migrated.fashionCase.counts, (function()
@@ -114,6 +126,10 @@ function T.v4_migration_adds_only_an_empty_fashion_case_copy()
   Assert.equal(source.schema, "g4-game-save-v4")
   Assert.deepEqual(migrated.world, source.world)
   Assert.deepEqual(migrated.bag, source.bag)
+  Assert.deepEqual(migrated.scripts, sourceScripts)
+  Assert.equal(source.scripts.registryFingerprint, "pre-update-registry")
+  Assert.equal(source.scripts.taskFingerprint, "pre-update-tasks")
+  Assert.equal(source.schema, "g4-game-save-v4")
 end
 
 function T.v4_migration_rejects_a_bucket_that_did_not_exist_in_v4()
