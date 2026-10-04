@@ -4,12 +4,11 @@
 
 local Assert = require("tests.support.Assert")
 local CatalogFixture = require("libs.mons.tests.catalog_fixture")
-local Experience = require("libs.mons.src.gen4.Experience")
 local Lcrng = require("libs.mons.src.gen4.Lcrng")
 local MonsSave = require("libs.mons.src.MonsSave")
 local Party = require("libs.mons.src.Party")
-local Personality = require("libs.mons.src.gen4.Personality")
 local SummaryModel = require("libs.hgss.src.ui.SummaryModel")
+local SummaryPresentationFixture = require("tests.support.SummaryPresentationFixture")
 
 local T = {}
 
@@ -54,172 +53,697 @@ local function setMon(service, slot, edit)
   preparation.publish()
 end
 
-local function leafBits(leaves)
-  local bits = {}
-  for index = 1, 5 do
-    bits[index] = leaves[index] == true
-  end
-  return bits
+-- Native read-only projection over the generated presentation family.
+-- Every build below supplies the explicit display context and the
+-- synthetic presentation manifest; the projection must return owned
+-- snapshot values without touching saves, the catalog, or the RNG.
+
+local SNAPSHOT_KEYS =
+  "contextKey,iconKey,identity,indicators,info,isEgg,memo,moves,performance,pictureKey,revision,ribbons,roster,skills,slot,slotCount"
+local MOVE_ROW_KEYS = "accuracyText,category,description,key,kind,moveSlot,name,powerText,pp,ppMax,ppUps,type"
+local DISPLAY_ORDER = { "speed", "power", "skill", "stamina", "jump" }
+local SOURCE_INDEX = { power = 0, stamina = 1, skill = 2, jump = 3, speed = 4 }
+local BOUNDARY_SCORES = {
+  -121,
+  -120,
+  -119,
+  -81,
+  -80,
+  -79,
+  -41,
+  -40,
+  -39,
+  -16,
+  -15,
+  -14,
+  -1,
+  0,
+  14,
+  15,
+  38,
+  39,
+  40,
+  78,
+  79,
+  80,
+  118,
+  119,
+  120,
+  121,
+}
+
+local function buildFacts(service, slot, context, manifest)
+  local facts = SummaryModel.build(
+    service,
+    slot,
+    context or SummaryPresentationFixture.context(service:partyCount()),
+    manifest or SummaryPresentationFixture.manifest()
+  )
+  Assert.notNil(facts.identity, "the snapshot carries mon identity")
+  Assert.notNil(facts.info, "the snapshot carries native info")
+  Assert.notNil(facts.skills, "the snapshot carries native skills")
+  Assert.notNil(facts.memo, "the snapshot carries the source memo")
+  Assert.notNil(facts.ribbons, "the snapshot carries earned ribbons")
+  Assert.notNil(facts.performance, "the snapshot carries performance rows")
+  Assert.notNil(facts.roster, "the snapshot carries the navigation roster")
+  Assert.notNil(facts.indicators, "the snapshot carries read-only indicators")
+  Assert.notNil(facts.contextKey, "the snapshot carries its context signature")
+  Assert.notNil(facts.pictureKey, "the snapshot carries its picture selection")
+  return facts
 end
 
-function T.leaf_visibility_covers_all_64_masks_with_explicit_crown()
-  local catalog = CatalogFixture.makeCatalog()
-  local service = openService(catalog, 0x11111111)
-  gift(service, "CHIKORITA")
-  for mask = 0, 63 do
-    setMon(service, 0, function(mon)
-      mon.shinyLeaves = mask
-    end)
-    local facts = SummaryModel.build(service, 0)
-    local crown = mask >= 32
-    Assert.equal(facts.leaves.crown, crown, "mask " .. mask .. " crowns explicitly")
-    for index = 0, 4 do
-      local bit = math.floor(mask / (2 ^ index)) % 2 == 1
-      Assert.equal(
-        facts.leaves.leaves[index + 1],
-        (not crown) and bit,
-        "mask " .. mask .. " leaf " .. (index + 1) .. " stays independent"
-      )
+local function digit(value, position)
+  return math.floor(value / (10 ^ position)) % 10
+end
+
+-- Source daily modifier: nature row plus twice the pid/day residue,
+-- centered by nine. Calculation order is power, stamina, skill, jump,
+-- speed; presentation order differs and is asserted separately.
+local function dailyScore(modifier, pid, day, sourceIndex)
+  local residue = (digit(pid, sourceIndex) + (day + 7 - sourceIndex) * (day + sourceIndex + 3)) % 10
+  return modifier + 2 * residue - 9
+end
+
+local function starAdjustment(score)
+  if score <= -120 then
+    return -4
+  elseif score <= -80 then
+    return -3
+  elseif score <= -40 then
+    return -2
+  elseif score <= -15 then
+    return -1
+  elseif score <= 14 then
+    return 0
+  elseif score <= 39 then
+    return 1
+  elseif score <= 79 then
+    return 2
+  elseif score <= 119 then
+    return 3
+  else
+    return 4
+  end
+end
+
+local function clampStars(stars, lo, hi)
+  return math.min(hi, math.max(lo, stars))
+end
+
+local function expectedRow(manifest, formKey, stat, pid, day, aprijuice)
+  local form = manifest.performance.forms[formKey]
+  Assert.notNil(form, "the synthetic performance covers " .. formKey)
+  local nature = pid % 25
+  local modifier = manifest.performance.natureModifiers[nature + 1][stat]
+  local score = dailyScore(modifier, pid, day, SOURCE_INDEX[stat]) + aprijuice
+  local stars = clampStars(form[stat].base + starAdjustment(score), form[stat].lo, form[stat].hi)
+  local tone = "base"
+  if stars < form[stat].base then
+    tone = "below"
+  elseif stars > form[stat].base then
+    tone = "above"
+  end
+  return { stat = stat, base = form[stat].base, min = form[stat].lo, max = form[stat].hi, stars = stars, tone = tone }
+end
+
+local function performanceRow(facts, stat)
+  for _, row in ipairs(facts.performance) do
+    if row.stat == stat then
+      return row
     end
   end
-  setMon(service, 0, function(mon)
-    mon.shinyLeaves = 31
-  end)
-  local leaves31 = leafBits(SummaryModel.build(service, 0).leaves.leaves)
-  Assert.deepEqual(leaves31, { true, true, true, true, true }, "mask 31 shows five leaves, never a crown")
+  error("performance carries no " .. stat .. " row", 0)
 end
 
-function T.mask_32_crowns_with_no_lower_bits_and_mask_0_shows_nothing()
-  local catalog = CatalogFixture.makeCatalog()
-  local service = openService(catalog, 0x22222222)
-  gift(service, "TOTODILE")
-  setMon(service, 0, function(mon)
-    mon.shinyLeaves = 32
-  end)
-  local crowned = SummaryModel.build(service, 0)
-  Assert.isTrue(crowned.leaves.crown, "mask 32 crowns with no lower bits")
-  Assert.deepEqual(
-    leafBits(crowned.leaves.leaves),
-    { false, false, false, false, false },
-    "the crown suppresses every leaf visual"
-  )
-  setMon(service, 0, function(mon)
-    mon.shinyLeaves = 0
-  end)
-  local bare = SummaryModel.build(service, 0)
-  Assert.isFalse(bare.leaves.crown, "mask 0 crowns nothing")
-  Assert.deepEqual(leafBits(bare.leaves.leaves), { false, false, false, false, false }, "mask 0 displays no badges")
+local function earnedKeys(facts)
+  local keys = {}
+  for _, entry in ipairs(facts.ribbons) do
+    keys[#keys + 1] = entry.key
+  end
+  return keys
 end
 
-function T.viewing_never_mutates_stored_masks_or_revisions()
-  local catalog = CatalogFixture.makeCatalog()
-  local service = openService(catalog, 0x33333333)
-  gift(service, "CHIKORITA")
-  setMon(service, 0, function(mon)
-    mon.shinyLeaves = 47
-  end)
-  local before = service:partyRevision()
-  SummaryModel.build(service, 0)
-  SummaryModel.build(service, 0)
-  Assert.equal(service:partyRevision(), before, "viewing advances no revision")
-  Assert.equal(service:partyMon(0).shinyLeaves, 47, "viewing preserves the stored mask")
+local function ribbonBit(mon, group, bit)
+  return math.floor(mon.ribbons[group] / (2 ^ bit)) % 2 == 1
 end
 
-function T.overview_carries_real_domain_and_catalog_facts()
+function T.native_identity_and_skills_project_through_the_manifest_context()
   local catalog = CatalogFixture.makeCatalog()
-  local service = openService(catalog, 0x44444444)
+  local service = openService(catalog, 0x10101010)
   gift(service, "CHIKORITA", 5)
   setMon(service, 0, function(mon)
     mon.nickname = "LEAFY"
+    mon.personality = 200
   end)
+  local manifest = SummaryPresentationFixture.manifest()
+  local context = SummaryPresentationFixture.context(1)
+  local facts = buildFacts(service, 0, context, manifest)
+  Assert.keySet(facts, SNAPSHOT_KEYS, "the snapshot carries exactly the native sections")
+  Assert.equal(facts.revision, service:partyRevision(), "the snapshot pins its service revision")
+  Assert.equal(facts.slot, 0, "the snapshot pins its slot")
+  Assert.equal(facts.slotCount, 1, "the snapshot pins its roster size")
+  local rebuilt = buildFacts(service, 0, SummaryPresentationFixture.context(1), manifest)
+  Assert.equal(rebuilt.contextKey, facts.contextKey, "equal contexts share one signature")
+  Assert.deepEqual(rebuilt, facts, "equal contexts rebuild equal facts")
+  Assert.equal(facts.identity.species, "CHIKORITA", "identity keeps the semantic species")
+  Assert.equal(facts.identity.nickname, "LEAFY", "identity keeps the nickname apart from species")
+  Assert.equal(facts.identity.gender, "male", "identity keeps the derived gender")
   local mon = service:partyMon(0)
   local derived = service:derive(mon)
-  local facts = SummaryModel.build(service, 0)
-  Assert.isFalse(facts.isEgg, "a gifted mon is not an egg")
-  Assert.equal(facts.displayName, "LEAFY", "the nickname leads the header")
-  Assert.equal(facts.speciesName, "CHIKORITA", "the species name stays available")
-  Assert.equal(facts.level, derived.level, "the level comes from derivation")
-  local species = catalog:species("CHIKORITA")
   Assert.equal(
-    facts.gender,
-    Personality.gender(species.genderRatio, mon.personality),
-    "gender follows the personality ratio"
+    facts.info.otIdText,
+    string.format("%05d", mon.origin.trainerId % 65536),
+    "the visible trainer id keeps five digits"
   )
-  Assert.equal(
-    facts.shiny,
-    Personality.shiny(mon.origin.trainerId, mon.personality),
-    "shininess follows the trainer/personality check"
-  )
-  Assert.deepEqual(facts.types, { "grass" }, "CHIKORITA carries its single catalog type")
-  Assert.equal(facts.otName, "RED", "the original-trainer name is observed")
-  Assert.equal(facts.otVisibleId, mon.origin.trainerId % 65536, "the visible ID is the public trainer identity")
-  Assert.equal(facts.nature, Personality.nature(mon.personality), "nature follows personality")
-  local ability = catalog:ability(mon.ability)
-  Assert.equal(facts.abilityName, ability.name, "the ability name is observed")
-  Assert.equal(facts.abilityDescription, ability.description, "the description explains the ability")
-  Assert.equal(facts.heldItem, "NONE", "no held item is observed")
-  Assert.isNil(facts.heldItemName, "no held item carries no name")
-  Assert.equal(facts.status, "ok", "a fresh mon carries no status")
-  Assert.equal(facts.currentHp, derived.maxHp, "a fresh mon is at full health")
-  Assert.equal(facts.maxHp, derived.maxHp, "max HP comes from derivation")
-  Assert.equal(facts.stats.attack, derived.attack, "battle stats come from derivation")
-  Assert.equal(facts.experience, mon.experience, "experience is observed")
-  Assert.notNil(facts.expToNext, "level 5 leaves progress to the next level")
-  local curve = catalog:growthCurve(species.growthCurve)
-  Assert.equal(
-    facts.expToNext,
-    Experience.expFor(curve, derived.level + 1) - mon.experience,
-    "progress counts down to the next level"
-  )
-  Assert.isTrue(#facts.moves >= 1, "learned moves are observed")
+  Assert.equal(facts.info.dexNumber, 1, "the regional map selects the regional dex number")
+  Assert.isTrue(facts.info.dexText:find("1", 1, true) ~= nil, "the dex text shows the selected number")
+  local national = buildFacts(service, 0, SummaryPresentationFixture.context(1, { dexMode = "national" }), manifest)
+  Assert.equal(national.info.dexNumber, 152, "the national mode selects the national dex number")
+  Assert.equal(facts.skills.level, derived.level, "skills keep the derived level")
+  Assert.equal(facts.skills.currentHp, derived.maxHp, "a fresh mon is at full health")
+  Assert.equal(facts.skills.maxHp, derived.maxHp, "skills keep maximum health")
+  Assert.equal(facts.skills.attack, derived.attack, "battle stats come from derivation")
+  Assert.equal(facts.skills.abilityName, "Overgrow", "skills name the localized ability")
+  Assert.isTrue(#facts.skills.abilityDescription > 0, "skills explain the ability")
+  Assert.equal(facts.skills.nature.up, "none", "a neutral nature raises no stat")
+  Assert.equal(facts.skills.nature.down, "none", "a neutral nature lowers no stat")
+  Assert.equal(facts.skills.hpBar.length, 48, "the health bar spans the source pixel width")
+  Assert.equal(facts.skills.hpBar.color, "high", "full health reads the high color")
+  Assert.isTrue(facts.info.expBar.length >= 0 and facts.info.expBar.length <= 56, "the exp bar fits its width")
+  Assert.isTrue(facts.info.expToNext > 0, "level 5 leaves progress to the next level")
+  Assert.equal(facts.pictureKey, "CHIKORITA", "the picture selects the species closure")
+  Assert.notNil(manifest.pictures[facts.pictureKey], "the picture selection exists in the family")
+  Assert.equal(facts.iconKey, "CHIKORITA/f0", "the roster icon keeps the semantic selector")
+  Assert.equal(#facts.roster, 1, "the roster covers the party")
+  Assert.equal(facts.roster[1].slot, 0, "roster entries keep domain slots")
+  Assert.isFalse(facts.roster[1].isEgg, "roster entries flag eggs")
+  Assert.equal(facts.indicators.status, "ok", "a fresh mon carries no status")
+  Assert.equal(facts.indicators.pokerus, "none", "a fresh mon carries no pokerus")
+  Assert.isFalse(facts.indicators.crown, "no crown without the crown bit")
 end
 
-function T.move_entries_carry_max_pp_and_raw_zero_power()
+function T.trainer_id_formatting_uses_five_digits_while_ownership_uses_the_full_id()
   local catalog = CatalogFixture.makeCatalog()
-  local service = openService(catalog, 0x55555555)
+  local service = openService(catalog, 0x20202020)
   gift(service, "CHIKORITA", 5)
-  service:setMove(0, 1, "RAZOR_LEAF")
+  gift(service, "TOTODILE", 5)
+  local profile = CatalogFixture.profile()
+  setMon(service, 0, function(mon)
+    mon.origin.trainerId = 7
+  end)
+  setMon(service, 1, function(mon)
+    mon.origin.trainerId = profile.trainerId % 65536
+  end)
+  local low = buildFacts(service, 0)
+  Assert.equal(low.info.otIdText, "00007", "a small id keeps leading zeroes")
+  Assert.equal(low.memo.condition, "wildEncounterTraded", "a bare matching visible id is not ownership")
+  local shared = buildFacts(service, 1)
+  Assert.equal(
+    shared.info.otIdText,
+    string.format("%05d", profile.trainerId % 65536),
+    "the shared visible id formats identically"
+  )
+  Assert.equal(shared.memo.condition, "wildEncounterTraded", "a shared visible id without the full id is traded")
+end
+
+function T.refresh_is_read_only_and_snapshots_are_isolated_values()
+  local catalog = CatalogFixture.makeCatalog()
+  local service = openService(catalog, 0x30303030)
+  gift(service, "CHIKORITA", 5)
+  gift(service, "TOTODILE", 5)
+  local manifest = SummaryPresentationFixture.manifest()
+  local before = service:capture()
+  local facts = buildFacts(service, 0, SummaryPresentationFixture.context(2), manifest)
+  buildFacts(service, 1, SummaryPresentationFixture.context(2, { dexMode = "national", dayOfMonth = 20 }), manifest)
+  local disabledFacts =
+    SummaryModel.build(service, 0, SummaryPresentationFixture.context(2, { performanceEnabled = false }), manifest)
+  Assert.isNil(disabledFacts.performance, "disabled performance exposes no rows here either")
+  Assert.deepEqual(service:capture(), before, "display work leaves the save and rng byte-equivalent")
+  facts.info.extra = "MUTATED"
+  facts.moves[1].pp = -1
+  facts.ribbons.extra = true
+  Assert.deepEqual(service:capture(), before, "mutating the snapshot reaches no service state")
+  local clean = buildFacts(service, 0, SummaryPresentationFixture.context(2), manifest)
+  Assert.isNil(clean.info.extra, "local mutation never leaks into later refreshes")
+  Assert.isTrue(clean.moves[1].pp >= 0, "move points stay authoritative after local mutation")
+  Assert.throws(function()
+    SummaryModel.build(service, 2, SummaryPresentationFixture.context(2), manifest)
+  end, "an unoccupied slot fails before returning facts")
+  Assert.throws(function()
+    SummaryModel.build(service, 0, SummaryPresentationFixture.context(2, { dexMode = "kantonian" }), manifest)
+  end, "an unknown dex mode fails before returning facts")
+  Assert.throws(function()
+    SummaryModel.build(service, 0, SummaryPresentationFixture.context(2, { dayOfMonth = 32 }), manifest)
+  end, "an impossible day fails before returning facts")
+  local missing = {}
+  for key, value in pairs(manifest) do
+    missing[key] = value
+  end
+  missing.dexNumbers = nil
+  Assert.throws(function()
+    SummaryModel.build(service, 0, SummaryPresentationFixture.context(2), missing)
+  end, "a missing generated role fails before returning facts")
+  local unmapped = {}
+  for key, value in pairs(manifest) do
+    unmapped[key] = value
+  end
+  unmapped.dexNumbers = { CHIKORITA = { national = 152, regional = 1 } }
+  Assert.throws(function()
+    SummaryModel.build(service, 1, SummaryPresentationFixture.context(2), unmapped)
+  end, "an unmapped species fails instead of guessing a dex number")
+end
+
+function T.level_100_reports_zero_to_next_and_genderless_resolves_a_declared_alias()
+  local catalog = CatalogFixture.makeCatalog()
+  local service = openService(catalog, 0x40404040)
+  gift(service, "CHIKORITA", 100)
+  gift(service, "SHEDINJA", 5)
+  local capped = buildFacts(service, 0)
+  Assert.equal(capped.info.expToNext, 0, "level 100 keeps the source zero-to-next value")
+  local genderless = buildFacts(service, 1)
+  Assert.equal(genderless.identity.gender, "genderless", "the genderless ratio is observed")
+  Assert.equal(genderless.pictureKey, "SHEDINJA", "genderless mons resolve the species picture")
+  local manifest = SummaryPresentationFixture.manifest()
+  Assert.equal(
+    manifest.pictures[genderless.pictureKey].portrait,
+    "SHEDINJA/f0/male/plain",
+    "the alias is declared before preparation, never caught at draw"
+  )
+end
+
+function T.move_rows_keep_four_logical_slots_with_display_text_policy()
+  local catalog = CatalogFixture.makeCatalog()
+  local service = openService(catalog, 0x50505050)
+  gift(service, "CHIKORITA", 5)
+  while #service:partyMon(0).moves > 1 do
+    service:deleteMove(0, 0)
+  end
   service:setMove(0, 0, "GROWL")
-  local facts = SummaryModel.build(service, 0)
-  local growl = facts.moves[1]
-  Assert.equal(growl.key, "GROWL", "move order follows the stored slots")
-  Assert.equal(growl.power, 0, "zero power is carried raw, never invented")
-  Assert.equal(growl.pp, growl.maxPp, "a fresh move starts at full power points")
-  local razor = facts.moves[2]
-  Assert.equal(razor.maxPp, 25, "max power points follow the catalog base value")
+  service:setMove(0, 1, "CUT")
+  local facts = buildFacts(service, 0)
+  Assert.equal(#facts.moves, 4, "hatched mons always expose four logical rows")
+  Assert.keySet(facts.moves[1], MOVE_ROW_KEYS, "occupied rows carry the full move contract")
+  Assert.equal(facts.moves[1].kind, "move", "occupied rows are marked")
+  Assert.equal(facts.moves[1].moveSlot, 0, "rows keep zero-based domain slots")
+  Assert.equal(facts.moves[1].key, "GROWL", "rows keep the semantic move key")
+  Assert.isTrue(type(facts.moves[1].powerText) == "string", "power renders as display text")
+  Assert.isTrue(facts.moves[1].powerText ~= "0", "zero power uses authored text, never an invented zero")
+  Assert.equal(facts.moves[2].key, "CUT", "the second row keeps its move")
+  Assert.isTrue(facts.moves[2].powerText:find("50", 1, true) ~= nil, "real power shows its value")
+  Assert.isTrue(facts.moves[2].accuracyText:find("95", 1, true) ~= nil, "real accuracy shows its value")
+  Assert.equal(facts.moves[2].pp, facts.moves[2].ppMax, "a fresh move starts at full points")
+  Assert.keySet(facts.moves[3], "kind,moveSlot", "empty rows carry no invented move")
+  Assert.equal(facts.moves[3].kind, "empty", "absent rows are explicit")
+  Assert.equal(facts.moves[3].moveSlot, 2, "empty rows keep their domain slot")
+  Assert.equal(facts.moves[4].moveSlot, 3, "the fourth row keeps its domain slot")
   local copy = service:partyMon(0)
   copy.moves[2].ppUps = 3
   copy.moves[2].pp = 1
   local preparation = assert(service:preparePartyChanges(service:partyRevision(), { { slot = 0, mon = copy } }))
   preparation.publish()
-  local boosted = SummaryModel.build(service, 0)
-  Assert.equal(boosted.moves[2].pp, 1, "current power points stay with the entry")
-  Assert.equal(boosted.moves[2].maxPp, 25 + math.floor(25 * 3 / 5), "power-point ups widen the maximum")
+  local boosted = buildFacts(service, 0)
+  Assert.equal(boosted.moves[2].pp, 1, "current points stay with the entry")
+  Assert.equal(boosted.moves[2].ppMax, 30 + math.floor(30 * 3 / 5), "point ups widen the maximum")
+  Assert.equal(boosted.moves[2].ppUps, 3, "point ups stay with the entry")
 end
 
-function T.egg_view_suppresses_battle_detail_and_shows_met_facts()
+function T.status_pokerus_markings_and_leaves_stay_independent()
   local catalog = CatalogFixture.makeCatalog()
-  local service = openService(catalog, 0x66666666)
+  local service = openService(catalog, 0x60606060)
+  gift(service, "CHIKORITA", 5)
+  local function indicators(edit)
+    setMon(service, 0, edit)
+    return buildFacts(service, 0).indicators
+  end
+  Assert.equal(indicators(function() end).status, "ok", "a fresh mon carries no status")
+  Assert.equal(
+    indicators(function(mon)
+      mon.condition.status = 3
+    end).status,
+    "sleep",
+    "sleep bits read sleep"
+  )
+  Assert.equal(
+    indicators(function(mon)
+      mon.condition.status = 0x8
+    end).status,
+    "poison",
+    "poison reads poison"
+  )
+  Assert.equal(
+    indicators(function(mon)
+      mon.condition.status = 0x10
+    end).status,
+    "burn",
+    "burn reads burn"
+  )
+  Assert.equal(
+    indicators(function(mon)
+      mon.condition.status = 0x20
+    end).status,
+    "freeze",
+    "freeze reads freeze"
+  )
+  Assert.equal(
+    indicators(function(mon)
+      mon.condition.status = 0x40
+    end).status,
+    "paralysis",
+    "paralysis reads paralysis"
+  )
+  Assert.equal(
+    indicators(function(mon)
+      mon.condition.status = 0
+      mon.condition.currentHp = 0
+    end).status,
+    "faint",
+    "zero health reads faint"
+  )
+  setMon(service, 0, function(mon)
+    mon.condition.status = 0
+    mon.condition.currentHp = service:derive(mon).maxHp
+    mon.pokerus = 0
+  end)
+  Assert.equal(buildFacts(service, 0).indicators.pokerus, "none", "a clear byte reads no pokerus")
+  setMon(service, 0, function(mon)
+    mon.pokerus = 0x13
+  end)
+  Assert.equal(buildFacts(service, 0).indicators.pokerus, "active", "remaining days read active infection")
+  local cured = indicators(function(mon)
+    mon.condition.status = 0x8
+    mon.pokerus = 0x10
+  end)
+  Assert.equal(cured.pokerus, "cured", "a strain without days reads cured")
+  Assert.equal(cured.status, "poison", "a cured marker coexists with status")
+  local marked = indicators(function(mon)
+    mon.condition.status = 0
+    mon.condition.currentHp = service:derive(mon).maxHp
+    mon.pokerus = 0
+    mon.markings = 21
+    mon.shinyLeaves = 31
+  end)
+  Assert.deepEqual(marked.markings, { true, false, true, false, true, false }, "markings keep their bit order")
+  Assert.deepEqual(marked.leaves, { true, true, true, true, true }, "five leaves stay independent")
+  Assert.isFalse(marked.crown, "leaves never crown")
+  local crowned = indicators(function(mon)
+    mon.shinyLeaves = 32
+  end)
+  Assert.isTrue(crowned.crown, "the crown bit crowns explicitly")
+  Assert.deepEqual(crowned.leaves, { false, false, false, false, false }, "the crown suppresses every leaf")
+end
+
+function T.earned_ribbons_follow_source_order_without_a_nine_item_cap()
+  local catalog = CatalogFixture.makeCatalog()
+  local service = openService(catalog, 0x70707070)
+  gift(service, "CHIKORITA", 5)
+  gift(service, "TOTODILE", 5)
+  gift(service, "EEVEE", 5)
+  gift(service, "CHIKORITA", 5)
+  gift(service, "TOTODILE", 5)
+  local manifest = SummaryPresentationFixture.manifest()
+  local function select(slot, ribbons)
+    setMon(service, slot, function(mon)
+      mon.ribbons = ribbons
+    end)
+    return buildFacts(service, slot, SummaryPresentationFixture.context(5), manifest).ribbons
+  end
+  Assert.deepEqual(select(0, { ds1 = 0, gba = 0, ds2 = 0 }), {}, "no bits earns no ribbons")
+  local function expectedKeys(ribbons)
+    local mon = { ribbons = ribbons }
+    local keys = {}
+    for _, entry in ipairs(manifest.ribbons.entries) do
+      if ribbonBit(mon, entry.bitGroup, entry.bit) then
+        keys[#keys + 1] = entry.key
+      end
+    end
+    return keys
+  end
+  local one = select(1, { ds1 = 1, gba = 0, ds2 = 0 })
+  Assert.deepEqual(earnedKeys({ ribbons = one }), { "syn_ds1_00" }, "one bit earns one ribbon")
+  local nine = select(2, { ds1 = 511, gba = 0, ds2 = 0 })
+  Assert.equal(#nine, 9, "nine bits earn nine ribbons")
+  local ten = select(3, { ds1 = 511, gba = 1, ds2 = 0 })
+  Assert.equal(#ten, 10, "ten bits earn ten ribbons across groups, never capped at nine")
+  Assert.deepEqual(
+    earnedKeys({ ribbons = ten }),
+    expectedKeys({ ds1 = 511, gba = 1, ds2 = 0 }),
+    "order follows the source definitions"
+  )
+  local full = select(4, { ds1 = 4294967295, gba = 33554431, ds2 = 8388607 })
+  Assert.equal(#full, 80, "every bit earns its ribbon exactly once")
+  Assert.deepEqual(
+    earnedKeys({ ribbons = full }),
+    expectedKeys({ ds1 = 4294967295, gba = 33554431, ds2 = 8388607 }),
+    "all eighty keep source order"
+  )
+  local before = service:capture()
+  buildFacts(service, 4, SummaryPresentationFixture.context(5), manifest)
+  Assert.deepEqual(service:capture(), before, "ribbon reads never award or mutate")
+  for _, entry in ipairs(full) do
+    Assert.isTrue(type(entry.name) == "string" and #entry.name > 0, "earned ribbons carry names")
+    Assert.isTrue(type(entry.description) == "string" and #entry.description > 0, "earned ribbons carry text")
+    Assert.notNil(entry.art, "earned ribbons carry their visuals")
+  end
+end
+
+function T.only_the_context_selected_special_description_changes()
+  local catalog = CatalogFixture.makeCatalog()
+  local service = openService(catalog, 0x80808080)
+  gift(service, "CHIKORITA", 5)
+  setMon(service, 0, function(mon)
+    mon.ribbons = { ds1 = 2147483649, gba = 16777216, ds2 = 0 }
+  end)
+  local manifest = SummaryPresentationFixture.manifest()
+  local plain = SummaryPresentationFixture.context(1)
+  local changed = SummaryPresentationFixture.context(1)
+  changed.specialRibbonDescriptions[2] = "SYN CHANGED SLOT TWO"
+  local before = service:capture()
+  local first = buildFacts(service, 0, plain, manifest).ribbons
+  local second = buildFacts(service, 0, changed, manifest).ribbons
+  Assert.equal(#first, #second, "the description context changes no membership")
+  local function byKey(ribbons, key)
+    for _, entry in ipairs(ribbons) do
+      if entry.key == key then
+        return entry
+      end
+    end
+    error("earned ribbons carry " .. key, 0)
+  end
+  Assert.equal(
+    byKey(second, "syn_ds1_00").description,
+    byKey(first, "syn_ds1_00").description,
+    "ordinary descriptions ignore the special slots"
+  )
+  Assert.equal(
+    byKey(second, "syn_ds1_special").description,
+    byKey(first, "syn_ds1_special").description,
+    "unselected special slots stay stable"
+  )
+  Assert.isTrue(
+    byKey(second, "syn_gba_special").description:find("SYN CHANGED SLOT TWO", 1, true) ~= nil,
+    "the selected slot resolves its new description"
+  )
+  Assert.deepEqual(service:capture(), before, "description reads never touch the save")
+end
+
+function T.performance_applies_source_order_thresholds_and_display_order()
+  local catalog = CatalogFixture.makeCatalog()
+  local service = openService(catalog, 0x90909090)
+  gift(service, "CHIKORITA", 5)
+  gift(service, "EEVEE", 5)
+  setMon(service, 0, function(mon)
+    mon.personality = 12345
+  end)
+  setMon(service, 1, function(mon)
+    mon.personality = 12345
+    mon.form = 1
+    mon.ability = "ADAPTABILITY"
+  end)
+  local manifest = SummaryPresentationFixture.manifest()
+  local day13 = SummaryPresentationFixture.context(2, { dayOfMonth = 13 })
+  local facts = buildFacts(service, 0, day13, manifest)
+  Assert.equal(#facts.performance, 5, "performance exposes five named rows")
+  local order = {}
+  for _, row in ipairs(facts.performance) do
+    order[#order + 1] = row.stat
+  end
+  Assert.deepEqual(order, DISPLAY_ORDER, "display order differs from the source calculation order")
+  for _, stat in ipairs(DISPLAY_ORDER) do
+    local expected = expectedRow(manifest, "CHIKORITA/f0", stat, 12345, 13, 0)
+    local row = performanceRow(facts, stat)
+    Assert.equal(row.base, expected.base, stat .. " keeps its source base")
+    Assert.equal(row.min, expected.min, stat .. " keeps its source minimum")
+    Assert.equal(row.max, expected.max, stat .. " keeps its source maximum")
+    Assert.equal(row.stars, expected.stars, stat .. " converts its score exactly")
+    Assert.equal(row.tone, expected.tone, stat .. " colors against its own base")
+  end
+  local day1 = buildFacts(service, 0, SummaryPresentationFixture.context(2, { dayOfMonth = 1 }), manifest)
+  for _, stat in ipairs(DISPLAY_ORDER) do
+    local expected = expectedRow(manifest, "CHIKORITA/f0", stat, 12345, 1, 0)
+    Assert.equal(performanceRow(day1, stat).stars, expected.stars, stat .. " follows the explicit day")
+  end
+  local alternate = buildFacts(service, 1, day13, manifest)
+  Assert.equal(performanceRow(alternate, "power").base, 6, "alternate forms read their own base")
+  Assert.equal(performanceRow(facts, "power").base, 5, "the base form keeps its own base")
+end
+
+function T.star_thresholds_use_inclusive_bounds_and_clamp_before_coloring()
+  local catalog = CatalogFixture.makeCatalog()
+  local service = openService(catalog, 0xA1A1A1A1)
   gift(service, "TOTODILE", 5)
   setMon(service, 0, function(mon)
-    mon.isEgg = true
-    mon.moves = {}
+    mon.personality = 6
   end)
-  local facts = SummaryModel.build(service, 0)
-  Assert.isTrue(facts.isEgg, "the egg flag is observed")
-  Assert.isNil(facts.stats, "eggs carry no battle stats")
-  Assert.isNil(facts.expToNext, "eggs carry no experience progress")
-  Assert.deepEqual(facts.moves, {}, "eggs carry no move detail")
-  Assert.equal(facts.egg.location, 0, "the egg location is observed")
-  Assert.equal(facts.egg.metLocation, 7, "the met location is observed")
-  Assert.equal(facts.egg.metLevel, 5, "the met level is observed")
+  local manifest = SummaryPresentationFixture.manifest()
+  local pid = 6
+  local day = 13
+  local modifier = manifest.performance.natureModifiers[(pid % 25) + 1].power
+  local center = dailyScore(modifier, pid, day, SOURCE_INDEX.power)
+  for _, target in ipairs(BOUNDARY_SCORES) do
+    local aprijuice = target - center
+    Assert.isTrue(aprijuice >= -128 and aprijuice <= 127, "target " .. target .. " stays in the signed range")
+    local apri = { power = aprijuice, stamina = 0, skill = 0, jump = 0, speed = 0 }
+    local context = SummaryPresentationFixture.context(1, { dayOfMonth = day })
+    context.aprijuiceBySlot[1] = apri
+    local row = performanceRow(buildFacts(service, 0, context, manifest), "power")
+    local stars = clampStars(5 + starAdjustment(target), 3, 7)
+    local tone = "base"
+    if stars < 5 then
+      tone = "below"
+    elseif stars > 5 then
+      tone = "above"
+    end
+    Assert.equal(row.stars, stars, "score " .. target .. " converts through its inclusive bound")
+    Assert.equal(row.tone, tone, "score " .. target .. " colors after clamping")
+  end
+  local function swept(aprijuice)
+    local context = SummaryPresentationFixture.context(1, { dayOfMonth = day })
+    context.aprijuiceBySlot[1] = { power = aprijuice, stamina = 0, skill = 0, jump = 0, speed = 0 }
+    return performanceRow(buildFacts(service, 0, context, manifest), "power")
+  end
+  local top = swept(127)
+  Assert.equal(top.stars, 7, "extreme modifiers clamp to the source maximum")
+  Assert.equal(top.tone, "above", "clamped highs color above base")
+  local bottom = swept(-128)
+  Assert.equal(bottom.stars, 3, "extreme modifiers clamp to the source minimum")
+  Assert.equal(bottom.tone, "below", "clamped lows color below base")
 end
 
-function T.wrap_estimate_splits_words_without_silent_loss()
-  local lines = SummaryModel.wrapLines("Cuts with sharp leaves.", 10)
-  Assert.deepEqual(lines, { "Cuts with", "sharp", "leaves." }, "words wrap without loss")
-  local long = SummaryModel.wrapLines("Raises defense.", 30)
-  Assert.deepEqual(long, { "Raises defense." }, "fitting text stays whole")
+function T.disabled_performance_hides_rows_but_keeps_ribbons_without_clock_or_rng()
+  local catalog = CatalogFixture.makeCatalog()
+  local service = openService(catalog, 0xB1B1B1B1)
+  gift(service, "CHIKORITA", 5)
+  setMon(service, 0, function(mon)
+    mon.ribbons = { ds1 = 1, gba = 0, ds2 = 0 }
+  end)
+  local manifest = SummaryPresentationFixture.manifest()
+  local enabled = SummaryPresentationFixture.context(1, { performanceEnabled = true })
+  local disabled = SummaryPresentationFixture.context(1, { performanceEnabled = false })
+  local shown = buildFacts(service, 0, enabled, manifest)
+  Assert.equal(#shown.performance, 5, "enabled performance exposes five rows")
+  local hidden = SummaryModel.build(service, 0, disabled, manifest)
+  Assert.isNil(hidden.performance, "disabled performance exposes no rows")
+  Assert.notNil(hidden.ribbons, "disabled performance keeps the ribbon list")
+  Assert.equal(#hidden.ribbons, 1, "disabled performance keeps ribbons available")
+  Assert.equal(hidden.ribbons[1].key, "syn_ds1_00", "the ribbon survives the flag")
+  local before = service:capture()
+  local again = SummaryModel.build(service, 0, enabled, manifest)
+  Assert.deepEqual(again, shown, "one context rebuilds one stable snapshot")
+  Assert.deepEqual(service:capture(), before, "performance reads touch no clock, save, or rng")
+  local later = SummaryModel.build(service, 0, SummaryPresentationFixture.context(1, { dayOfMonth = 14 }), manifest)
+  Assert.isTrue(later.contextKey ~= shown.contextKey, "a changed day changes the signature")
+  Assert.isTrue(later.performance ~= nil, "a changed day keeps performance")
+  local same = true
+  for index, row in ipairs(shown.performance) do
+    if row.stars ~= later.performance[index].stars then
+      same = false
+    end
+  end
+  Assert.isFalse(same, "the explicit day drives the daily values")
+end
+
+function T.performance_covers_all_twenty_five_natures_and_pid_extremes()
+  local catalog = CatalogFixture.makeCatalog()
+  local service = openService(catalog, 0xC2C2C2C2)
+  gift(service, "CHIKORITA", 5)
+  local manifest = SummaryPresentationFixture.manifest()
+  for nature = 0, 24 do
+    setMon(service, 0, function(mon)
+      mon.personality = nature
+    end)
+    local facts = buildFacts(service, 0, SummaryPresentationFixture.context(1, { dayOfMonth = 13 }), manifest)
+    for _, stat in ipairs(DISPLAY_ORDER) do
+      local expected = expectedRow(manifest, "CHIKORITA/f0", stat, nature, 13, 0)
+      local row = performanceRow(facts, stat)
+      Assert.equal(row.stars, expected.stars, "nature " .. nature .. " " .. stat .. " converts its score exactly")
+      Assert.equal(row.tone, expected.tone, "nature " .. nature .. " " .. stat .. " colors against its own base")
+    end
+  end
+  for _, pid in ipairs({ 0, 4294967295 }) do
+    setMon(service, 0, function(mon)
+      mon.personality = pid
+    end)
+    local facts = buildFacts(service, 0, SummaryPresentationFixture.context(1, { dayOfMonth = 13 }), manifest)
+    for _, stat in ipairs(DISPLAY_ORDER) do
+      local expected = expectedRow(manifest, "CHIKORITA/f0", stat, pid, 13, 0)
+      local row = performanceRow(facts, stat)
+      Assert.equal(row.stars, expected.stars, "personality " .. pid .. " " .. stat .. " converts its score exactly")
+      Assert.equal(row.tone, expected.tone, "personality " .. pid .. " " .. stat .. " colors against its own base")
+    end
+  end
+end
+
+function T.nature_labels_split_raise_and_lower_with_neutral_none()
+  local catalog = CatalogFixture.makeCatalog()
+  local service = openService(catalog, 0xC3C3C3C3)
+  gift(service, "CHIKORITA", 5)
+  local manifest = SummaryPresentationFixture.manifest()
+  local battleKeys = { attack = true, defense = true, speed = true, specialAttack = true, specialDefense = true }
+  for nature = 0, 24 do
+    setMon(service, 0, function(mon)
+      mon.personality = nature
+    end)
+    local shift = buildFacts(service, 0).skills.nature
+    if nature == 0 or nature == 6 or nature == 12 or nature == 18 or nature == 24 then
+      Assert.equal(shift.up, "none", "neutral nature " .. nature .. " raises no stat")
+      Assert.equal(shift.down, "none", "neutral nature " .. nature .. " lowers no stat")
+    else
+      Assert.isTrue(battleKeys[shift.up] == true, "nature " .. nature .. " raises a battle stat")
+      Assert.isTrue(battleKeys[shift.down] == true, "nature " .. nature .. " lowers a battle stat")
+      Assert.isTrue(shift.up ~= shift.down, "nature " .. nature .. " raises and lowers distinct stats")
+    end
+  end
+  setMon(service, 0, function(mon)
+    mon.personality = 1
+  end)
+  local lonely = buildFacts(service, 0).skills.nature
+  Assert.equal(lonely.up, "attack", "the lonely nature raises attack")
+  Assert.equal(lonely.down, "defense", "the lonely nature lowers defense")
+end
+
+function T.bars_keep_source_floor_minimum_positive_and_level_100_edges()
+  local catalog = CatalogFixture.makeCatalog()
+  local service = openService(catalog, 0xD3D3D3D3)
+  gift(service, "CHIKORITA", 5)
+  gift(service, "CHIKORITA", 100)
+  local full = buildFacts(service, 0)
+  Assert.equal(full.skills.hpBar.length, 48, "full health spans the source pixel width")
+  Assert.equal(full.skills.hpBar.color, "high", "full health reads the high color")
+  setMon(service, 1, function(mon)
+    mon.condition.currentHp = 1
+  end)
+  local hanging = buildFacts(service, 1)
+  Assert.equal(hanging.skills.hpBar.length, 1, "one remaining health keeps one pixel past the floor")
+  Assert.equal(hanging.indicators.status, "ok", "one health with no ailment reads ok")
+  setMon(service, 0, function(mon)
+    mon.condition.currentHp = 0
+  end)
+  local fainted = buildFacts(service, 0)
+  Assert.equal(fainted.skills.hpBar.length, 0, "no health fills no pixels")
+  Assert.equal(fainted.indicators.status, "faint", "no health reads faint")
+  local capped = buildFacts(service, 1)
+  Assert.equal(capped.info.expToNext, 0, "level 100 keeps the source zero-to-next value")
+  Assert.equal(capped.info.expBar.length, 0, "level 100 fills no experience pixels")
 end
 
 return { tests = T }
