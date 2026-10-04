@@ -249,6 +249,34 @@ function T.quantity_faces_and_label_origins_name_the_picker_sources()
   )
 end
 
+function T.sale_sources_keep_member_and_two_digit_controls_distinct_from_toss()
+  local BagSources = sources()
+  Assert.equal(BagSources.screens.quantityOverlay, 52, "Toss keeps its existing quantity member")
+  Assert.equal(BagSources.screens.saleQuantity, 53, "sale selects the source-specific quantity member")
+  Assert.equal(BagSources.lowerLayers.quantity.variant, 3, "Toss keeps variant three")
+  Assert.equal(BagSources.lowerLayers.saleQuantity.variant, 4, "sale uses the source variant four")
+  local sale = assert(BagSources.saleQuantity, "sale carries its own source presentation record")
+  Assert.equal(#sale.digits, 2, "sale selects exactly two amount digits")
+  local deltas = {}
+  for index, control in ipairs(sale.controls) do
+    deltas[index] = control.delta
+  end
+  Assert.deepEqual(deltas, { 10, 1, -10, -1 }, "sale controls use its source step table")
+  local expectedMessages = {
+    saleNotSellable = 76,
+    saleQuantity = 77,
+    saleOffer = 78,
+    saleResult = 79,
+  }
+  for name, messageId in pairs(expectedMessages) do
+    Assert.deepEqual(
+      BagSources.messages.templates[name],
+      { bank = 10, index = messageId },
+      name .. " uses its retail bank-10 message"
+    )
+  end
+end
+
 function T.message_selection_names_the_audited_banks_and_indexes()
   local BagSources = sources()
   Assert.deepEqual(BagSources.messages.actionLabels, {
@@ -266,6 +294,10 @@ function T.message_selection_names_the_audited_banks_and_indexes()
     tossConfirm = { bank = 10, index = 55 },
     tossResult = { bank = 10, index = 54 },
     selectedItem = { bank = 10, index = 43 },
+    saleNotSellable = { bank = 10, index = 76 },
+    saleQuantity = { bank = 10, index = 77 },
+    saleOffer = { bank = 10, index = 78 },
+    saleResult = { bank = 10, index = 79 },
   })
 end
 

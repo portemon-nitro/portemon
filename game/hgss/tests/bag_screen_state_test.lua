@@ -9,6 +9,7 @@
 local Assert = require("tests.support.Assert")
 local BagCursor = require("libs.hgss.src.items.BagCursor")
 local BagScreenState = require("game.hgss.src.field.BagScreenState")
+local BagPresentationFixture = require("tests.support.BagPresentationFixture")
 local FieldUiFixture = require("tests.support.FieldUiFixture")
 local HgssBagService = require("libs.hgss.src.items.HgssBagService")
 local ItemFixture = require("libs.items.tests.item_fixture")
@@ -698,6 +699,7 @@ local function composedManifest()
     backgrounds.browse = browse
   end
   manifested.interactive.backgrounds = backgrounds
+  manifested.interactive.sale = BagPresentationFixture.manifest().interactive.sale
   local actionSlots = manifested.interactive.overlays.actionMenu.slots
   for index, slot in ipairs(actionSlots) do
     local x = index % 2 == 1 and 48 or 144
@@ -773,6 +775,10 @@ local function composedManifest()
       },
     },
   }
+  manifested.interactive.sale.confirm.visual =
+    manifested.interactive.overlays.quantity.confirm.visual
+  manifested.interactive.sale.cancel.visual =
+    manifested.interactive.overlays.quantity.cancel.visual
   local tabs = {}
   local strips = {}
   for index = 0, 7 do
@@ -972,6 +978,9 @@ local function seedComposedCache()
   put("test/bag/quantity-decrement.png")
   put("test/bag/quantity-decrement-pressed.png")
   put("test/bag/quantity-confirm.png")
+  put("assets/generated/bag/background-sale-quantity.png")
+  put("assets/generated/bag/quantity-confirm.png")
+  put("assets/generated/bag/quantity-cancel.png")
   put("test/bag/registration-slot-1.png")
   put("test/bag/registration-slot-2.png")
   cache:write(FieldUiFixture.PROMPT_YES_NORMAL_PATH, FieldUiFixture.promptButtonBytes("yes_normal"))

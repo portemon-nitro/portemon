@@ -55,7 +55,7 @@ end
 local function manifestFor(versionId)
   local cacheFs = CacheFs.forVersion(versionId)
   local manifest = BagCache.loadManifest(cacheFs)
-  Assert.equal(manifest.schema, "g4-bag-assets-v16", versionId .. " renders the current bag manifest")
+  Assert.equal(manifest.schema, "g4-bag-assets-v17", versionId .. " renders the current bag manifest")
   return cacheFs, manifest
 end
 
@@ -244,6 +244,16 @@ local function render(scope, owned, presentationRecord, layout)
   owned.renderer:draw(presentationRecord, layout, { icons = owned.icons })
   love.graphics.setCanvas()
   return scope:own(canvas:newImageData())
+end
+
+local function saveMartCapture(data, name)
+  local directory = os.getenv("PORTEMON_MART_CAPTURE_DIR")
+  if directory == nil then
+    return
+  end
+  local file = assert(io.open(directory .. "/" .. name .. ".png", "wb"))
+  file:write(data:encode("png"):getString())
+  file:close()
 end
 
 local function imageDataDigest(data)
@@ -653,6 +663,151 @@ function T.action_quantity_and_confirmation_render_distinct_states(scope, contex
     Assert.isTrue(
       regionDistance(menu, confirm, interactiveFrame, 2) > 100,
       versionId .. " the action menu and the confirmation are distinct surfaces"
+    )
+  end
+end
+
+-- The sale amount picker uses the separately compiled member-53 surface and
+-- two digit cells. Compare the real 1:1 capture with its source image, then
+-- render Toss from member 52 to guard against crossing those presentation
+-- contracts.
+function T.sale_quantity_capture_uses_member_53_and_two_digits(scope, context)
+  local versions = readyVersions()
+  if #versions == 0 then
+    context:skip("the bag smoke needs a ready user-owned ROM with a derived cache")
+  end
+  for _, versionId in ipairs(versions) do
+    local cacheFs, manifest = manifestFor(versionId)
+    local layout = twoPaneLayout(manifest)
+    local firstIcon, secondIcon = iconKeys(cacheFs, versionId)
+    local owned = owners(cacheFs, manifest, scope, versionId)
+    local pocket = twoPockets(manifest, versionId)
+    local heroStatus = heroStatusAt(manifest, pocket, 6)
+    local sale = assert(manifest.interactive.sale, versionId .. " carries the member-53 sale surface")
+    local saleSource = decodeImage(scope, cacheFs, sale.quantityBackground.image, versionId .. " sale quantity source")
+    local tossSource = decodeImage(
+      scope,
+      cacheFs,
+      assert(manifest.interactive.backgrounds.quantity[pocket][2]).image,
+      versionId .. " Toss quantity source"
+    )
+    Assert.isTrue(
+      regionDistance(saleSource, tossSource, { x = 0, y = 0, width = 256, height = 192 }, 2) > 100,
+      versionId .. " the compiled sale quantity surface is distinct from Toss member 52"
+    )
+
+    local saleCaptures = {}
+    for _, quantity in ipairs({ 1, 9, 10, 99 }) do
+      saleCaptures[quantity] = render(
+        scope,
+        owned,
+        presentation(firstIcon, secondIcon, heroStatus, {
+          state = "sale_quantity",
+          quantity = quantity,
+          quantityMax = 99,
+          saleBalance = 12345,
+          saleTotal = quantity * 2,
+        }),
+        layout
+      )
+    end
+    local toss = render(
+      scope,
+      owned,
+      presentation(firstIcon, secondIcon, heroStatus, {
+        state = "toss_quantity",
+        quantity = 99,
+        quantityMax = 99,
+        quantityPressedControl = 0,
+      }),
+      layout
+    )
+    local limitedSale = render(
+      scope,
+      owned,
+      presentation(firstIcon, secondIcon, heroStatus, {
+        state = "sale_quantity",
+        quantity = 1,
+        quantityMax = 5,
+        saleBalance = 12345,
+        saleTotal = 2,
+      }),
+      layout
+    )
+    local offer = render(
+      scope,
+      owned,
+      presentation(firstIcon, secondIcon, heroStatus, {
+        state = "sale_offer",
+        saleQuantity = 10,
+        saleBalance = 12345,
+        saleTotal = 1500,
+        lowerMessage = { visibleText = "Sell this item?" },
+        yesNoPrompt = {
+          active = true,
+          selected = "yes",
+          selectionHighlighted = true,
+          buttons = {
+            yes = { x = 200, y = 48, width = 48, height = 32 },
+            no = { x = 200, y = 80, width = 48, height = 32 },
+          },
+        },
+      }),
+      layout
+    )
+    local result = render(
+      scope,
+      owned,
+      presentation(firstIcon, secondIcon, heroStatus, {
+        state = "sale_result",
+        saleQuantity = 10,
+        saleBalance = 12345,
+        saleTotal = 1500,
+        lowerMessage = { visibleText = "Sold ten." },
+      }),
+      layout
+    )
+    saveMartCapture(saleCaptures[10], versionId .. "-bag-sale-quantity")
+    saveMartCapture(offer, versionId .. "-bag-sale-offer")
+    saveMartCapture(result, versionId .. "-bag-sale-result")
+    local interactive = interactiveFrameOf(layout, versionId)
+    Assert.isTrue(
+      regionDistance(saleCaptures[99], toss, interactive, 2) > 100,
+      versionId .. " the two digit sale rendering remains distinct from Toss controls"
+    )
+    Assert.isTrue(
+      regionDistance(saleCaptures[1], saleCaptures[9], interactive, 2) > 0
+        and regionDistance(saleCaptures[10], saleCaptures[99], interactive, 2) > 0,
+      versionId .. " one and two digit quantities occupy their source digit cells"
+    )
+    Assert.isTrue(
+      regionDistance(limitedSale, saleCaptures[1], interactive, 2) > 0,
+      versionId .. " a stack below ten hides the tens controls"
+    )
+    Assert.isTrue(
+      regionDistance(saleCaptures[10], offer, interactive, 2) > 100
+        and regionDistance(offer, result, interactive, 2) > 100,
+      versionId .. " the sale offer/prompt and result print have distinct source captures"
+    )
+
+    local sourceMatches = 0
+    for y = 0, 191, 4 do
+      for x = 0, 255, 4 do
+        local expected = { saleSource:getPixel(x, y) }
+        local actual = { saleCaptures[99]:getPixel(interactive.x + x, interactive.y + y) }
+        if
+          quantize(expected[1]) == quantize(actual[1])
+          and quantize(expected[2]) == quantize(actual[2])
+          and quantize(expected[3]) == quantize(actual[3])
+          and quantize(expected[4]) == quantize(actual[4])
+        then
+          sourceMatches = sourceMatches + 1
+        end
+      end
+    end
+    Assert.isTrue(
+      sourceMatches > 500,
+      versionId .. " the member-53 source-resolution pixels remain visible in the sale capture"
     )
   end
 end

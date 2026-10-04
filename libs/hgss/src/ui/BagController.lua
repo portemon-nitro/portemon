@@ -36,7 +36,11 @@ local EFFECT = {
   quantity = "SEQ_SE_DP_BAG_004",
   invalid = "SEQ_SE_DP_BOX03",
   promptDecision = "SEQ_SE_DP_BUTTON9",
+  saleComplete = "SEQ_SE_DP_SELECT",
 }
+
+local validateBagEvent
+local pressInsidePane
 
 ---@class BagControllerCommands semantic mutations bound to the live inventory service
 ---@field toss fun(itemKey: string, quantity: integer): boolean remove owned copies
@@ -55,8 +59,15 @@ local EFFECT = {
 ---@field _focusNode string the private semantic browse focus node
 ---@field _lastSlot integer the most recent grid-cell focus, for tab/cancel return
 ---@field _overlay boolean
----@field _state "browsing"|"item_select"|"action_menu"|"toss_quantity"|"toss_confirm"|"toss_ack"|"move_select"
----@field _context "inventory"|"field"|"pick_held" the selection context for intent emission
+---@field _state "browsing"|"item_select"|"action_menu"|"toss_quantity"|"toss_confirm"|"toss_ack"|"move_select"|"sale_quantity"|"sale_offer"|"sale_result"|"sale_refusal"|"sale_ack"
+---@field _context "inventory"|"field"|"pick_held"|"sell" the selection context for intent emission
+---@field _saleSession table<string, unknown>?
+---@field _salePrompt { x: integer, y: integer, shape: string, initialSelection: string }?
+---@field _saleQuote table<string, unknown>?
+---@field _saleToken unknown?
+---@field _saleItem table<string, unknown>?
+---@field _saleBalance integer
+---@field _saleDisplayedTotal integer
 ---@field _isPickable (fun(itemKey: string): boolean)? the held-item eligibility probe for picker contexts
 ---@field _intent table<string, unknown>? the one-shot selection intent for the owning flow
 ---@field _prompt YesNoPromptController the owned modal prompt for toss confirmation
@@ -105,7 +116,9 @@ BagController.__index = BagController
 ---@field messages table<string, unknown>? the generated lower-message templates; direct unit construction falls back to the equivalent semantic defaults
 ---@field feedbackTicks integer? the generated activation-feedback total; direct unit construction falls back to a small positive total
 ---@field moveTransition table<string, unknown>? the generated move commit-clip totals; direct unit construction falls back to small positive totals
----@field context "inventory"|"field"|"pick_held"? the selection context (defaults to inventory)
+---@field context "inventory"|"field"|"pick_held"|"sell"? the selection context (defaults to inventory)
+---@field saleSession table<string, unknown>? required for sell context
+---@field salePrompt { x: integer, y: integer, shape: string, initialSelection: string }? required for sell context
 ---@field isPickable (fun(itemKey: string): boolean)? the held-item eligibility probe, required for pick_held
 
 ---@param value unknown
@@ -253,12 +266,19 @@ function BagController.new(opts)
   assert(type(opts.resolveActions) == "function", "the bag controller needs its action policy")
   local context = opts.context or "inventory"
   assert(
-    context == "inventory" or context == "field" or context == "pick_held",
+    context == "inventory" or context == "field" or context == "pick_held" or context == "sell",
     "the bag controller needs a named inventory, field, or pick_held context"
   )
   local isPickable = opts.isPickable
   if context == "pick_held" then
     assert(type(isPickable) == "function", "the held-item picker needs its eligibility probe")
+  end
+  if context == "sell" then
+    assert(type(opts.saleSession) == "table", "the selling bag needs its sale session")
+    assert(type(opts.saleSession.view) == "function", "the selling bag needs sale balance reads")
+    assert(type(opts.saleSession.quoteSell) == "function", "the selling bag needs sale quotes")
+    assert(type(opts.saleSession.commit) == "function", "the selling bag needs sale commits")
+    assert(type(opts.salePrompt) == "table", "the selling bag needs its compact prompt placement")
   end
   assert(type(opts.promptShape) == "table", "the bag controller needs its modal prompt shape")
   assert(type(opts.tossPrompt) == "table", "the bag controller needs its toss prompt template")
@@ -288,6 +308,12 @@ function BagController.new(opts)
   for _, key in ipairs({ "selectedItem", "movePrompt", "tossConfirm", "tossResult" }) do
     assert(type(templates[key]) == "table", "the bag controller needs its " .. key .. " template")
   end
+  if context == "sell" then
+    assert(type(templates.sale) == "table", "the selling bag needs its sale message templates")
+    for _, key in ipairs({ "notSellable", "quantity", "offer", "result" }) do
+      assert(type(templates.sale[key]) == "table", "the selling bag needs its " .. key .. " template")
+    end
+  end
   local feedbackTicks = opts.feedbackTicks or 4
   checkPositiveTicks(feedbackTicks, "the activation-feedback total")
   local moveTransition = opts.moveTransition or { unchanged = { totalTicks = 3 }, changed = { totalTicks = 5 } }
@@ -314,6 +340,16 @@ function BagController.new(opts)
     _commands = opts.commands,
     _resolveActions = opts.resolveActions,
     _context = context,
+    _saleSession = opts.saleSession,
+    _salePrompt = opts.salePrompt,
+    _saleQuote = nil,
+    _saleToken = nil,
+    _saleItem = nil,
+    _saleBalance = 0,
+    _saleDisplayedTotal = 0,
+    _saleCommitted = false,
+    _saleSoundAttempted = false,
+    _salePostCommitBusy = false,
     _isPickable = isPickable,
     _intent = nil,
     _focusNode = slotNode(0),
@@ -642,6 +678,15 @@ function BagController:_toBrowsing()
   self._message = nil
   self._tossBase = nil
   self._tossStage = nil
+  self._saleQuote = nil
+  self._saleToken = nil
+  self._saleItem = nil
+  self._saleBalance = 0
+  self._saleDisplayedTotal = 0
+  self._saleCommitted = false
+  self._saleSoundAttempted = false
+  self._salePostCommitBusy = false
+  self._saleFailed = false
   self._moveClip = nil
   self._moveFromKey = nil
   self._moveFromPos = 0
@@ -672,7 +717,8 @@ end
 ---@param quantity integer
 ---@return string
 function BagController:_displayName(quantity)
-  local selected = assert(self._view.selected, "lower messages need their selected item")
+  local selected =
+    assert(self._context == "sell" and self._saleItem or self._view.selected, "lower messages need their selected item")
   local name = assert(selected.name, "lower messages need the selected display name")
   assert(type(name) == "string" and name ~= "", "lower messages need the selected display name")
   if quantity == 1 then
@@ -693,6 +739,9 @@ function BagController:_formatMessage(template, itemName, quantity)
   local bindings = { item = itemName }
   if quantity ~= nil then
     bindings.quantity = quantity
+  end
+  if self._saleQuote ~= nil then
+    bindings.total = assert(self._saleQuote.total, "a sale quote carries its total")
   end
   return MenuTextTemplate.format(template, bindings, "bag message")
 end
@@ -810,6 +859,8 @@ function BagController:_runContinuation(continuation)
     self:_enterMoveSelect()
   elseif kind == "enterToss" then
     self:_enterTossConfirm()
+  elseif kind == "enterSaleOffer" then
+    self:_prepareSaleOffer()
   elseif kind == "register" then
     self:_commitRegistration(continuation.register == true)
   elseif kind == "intent" then
@@ -1016,6 +1067,29 @@ function BagController:_adjustQuantityByTouch(delta)
   end
 end
 
+---@param delta integer
+---@param touch boolean
+function BagController:_adjustSaleQuantity(delta, touch)
+  assert(delta == -10 or delta == -1 or delta == 1 or delta == 10, "sale quantity uses two-digit controls")
+  local before = self._quantity
+  if touch then
+    if delta > 0 then
+      self._quantity = self._quantity == self._quantityMax and 1 or math.min(self._quantityMax, self._quantity + delta)
+    else
+      self._quantity = self._quantity == 1 and self._quantityMax or math.max(1, self._quantity + delta)
+    end
+  elseif delta == 1 then
+    self._quantity = self._quantity == self._quantityMax and 1 or self._quantity + 1
+  elseif delta == -1 then
+    self._quantity = self._quantity == 1 and self._quantityMax or self._quantity - 1
+  else
+    self._quantity = math.min(self._quantityMax, math.max(1, self._quantity + delta))
+  end
+  if before ~= self._quantity then
+    self:_play(EFFECT.quantity)
+  end
+end
+
 function BagController:_clearQuantityPress()
   self._quantityPressedControl = nil
   self._quantityPressedTicks = 0
@@ -1027,6 +1101,15 @@ function BagController:_pressQuantityControl(controlIndex)
   local layout = self._resolveLayout()
   local ticks = assert(layout.quantityPressTicks, "the quantity layout carries press ticks")
   assert(ticks > 0 and ticks % 1 == 0, "quantity press ticks are positive")
+  self._quantityPressedControl = controlIndex
+  self._quantityPressedTicks = ticks
+end
+
+function BagController:_pressSaleControl(controlIndex)
+  assert(controlIndex >= 0 and controlIndex <= 3 and controlIndex % 1 == 0, "sale control index is physical")
+  local layout = self._resolveLayout()
+  local ticks = assert(layout.salePressTicks, "the sale layout carries press ticks")
+  assert(ticks > 0 and ticks % 1 == 0, "sale press ticks are positive")
   self._quantityPressedControl = controlIndex
   self._quantityPressedTicks = ticks
 end
@@ -1099,6 +1182,271 @@ function BagController:_commitToss()
   self:_reconcile()
   self:_normalizeFocus()
   self:_toBrowsing()
+end
+
+-- Sale begins only after the shared selected-item entry has finished. The
+-- sale session owns eligibility and price rules; the controller only chooses
+-- whether a quantity picker is needed and presents the returned terms.
+function BagController:_beginSaleSelection()
+  self:_refresh()
+  if not self:_selectionMatchesAction() then
+    self:_toBrowsing()
+    return
+  end
+  local selected = assert(self._view.selected, "sale selection carries its item")
+  self._saleItem = selected
+  local owned = checkQuantity(selected.quantity, "selected slots carry a quantity")
+  self._quantityMax = math.min(owned, 99)
+  self._quantity = 1
+  self._saleQuote = nil
+  self._saleToken = nil
+  self._saleDisplayedTotal = 0
+  self._saleCommitted = false
+  self._saleSoundAttempted = false
+  self._salePostCommitBusy = false
+  self._saleBalance = assert(self._saleSession:view().balance, "sale session exposes the current balance")
+  if owned == 1 then
+    self:_prepareSaleOffer()
+  else
+    self:_startMessage(self:_formatMessage(self._templates.sale.quantity, self:_displayName(1)), false)
+    self._state = "sale_quantity"
+  end
+end
+
+-- A quote captures the item identity and current revisions in the sale session. A
+-- failed quote never enters the confirmation prompt and is shown as a
+-- refusal; a valid quote owns the displayed total until replaced or cleared.
+function BagController:_prepareSaleOffer()
+  local itemKey = assert(self._actionItemKey, "a sale snapshots its item key")
+  local token, termsOrReason = self._saleSession:quoteSell(itemKey, self._quantity)
+  if token == nil then
+    self._saleQuote = nil
+    self._saleToken = nil
+    self:_startMessage(self:_formatMessage(self._templates.sale.notSellable, self:_displayName(self._quantity)), false)
+    self._state = "sale_refusal"
+    self._saleFailed = true
+    return
+  end
+  local terms = assert(termsOrReason, "a successful sale quote carries terms")
+  self._saleToken = token
+  self._saleQuote = terms
+  self._saleDisplayedTotal = assert(terms.total, "sale quote terms carry their total")
+  self._saleBalance = assert(self._saleSession:view().balance, "sale session exposes the current balance")
+  self:_startMessage(self:_formatMessage(self._templates.sale.offer, self:_displayName(self._quantity)), true)
+  self._prompt:open(assert(self._salePrompt, "sale offers carry their compact prompt placement"))
+  self._state = "sale_offer"
+end
+
+function BagController:_enterSaleResult()
+  assert(self._saleQuote ~= nil, "a confirmed offer carries its quote")
+  self:_startMessage(self:_formatMessage(self._templates.sale.result, self:_displayName(self._quantity)), false)
+  self._state = "sale_result"
+end
+
+function BagController:_commitSale()
+  local token = assert(self._saleToken, "a printed sale result carries its quote token")
+  local _, reason = self._saleSession:commit(token)
+  if reason ~= nil then
+    self._saleToken = nil
+    self._saleQuote = nil
+    self:_startMessage(self:_formatMessage(self._templates.sale.notSellable, self:_displayName(self._quantity)), false)
+    self._saleFailed = true
+    self._state = "sale_refusal"
+    return
+  end
+  self._saleToken = nil
+  self._saleQuote = nil
+  self._saleCommitted = true
+  self:_finishCommittedSale()
+end
+
+-- The sale is already committed before its cue and view refresh run. Keep
+-- that fact published across collaborator failures so a later tick can
+-- resume presentation without replaying the transaction or sound.
+function BagController:_finishCommittedSale()
+  assert(self._saleCommitted, "postcommit presentation follows a committed sale")
+  if self._salePostCommitBusy then
+    return
+  end
+  self._salePostCommitBusy = true
+  local ok, err = pcall(function()
+    if not self._saleSoundAttempted then
+      self._saleSoundAttempted = true
+      self:_play(EFFECT.saleComplete)
+    end
+    self:_refresh()
+    self:_reconcile()
+    self:_normalizeFocus()
+    self._saleBalance = assert(self._saleSession:view().balance, "sale session exposes the current balance")
+    self._saleCommitted = false
+    self._saleSoundAttempted = false
+    self._state = "sale_ack"
+    self._saleFailed = false
+  end)
+  self._salePostCommitBusy = false
+  if not ok then
+    error(err, 0)
+  end
+end
+
+function BagController:_stepSaleQuantity(uiInput)
+  if self._message ~= nil then
+    if not self:_messageComplete() then
+      local accelerate = false
+      for _, event in ipairs(uiInput) do
+        validateBagEvent(event)
+        if event.type == "dismiss" then
+          self._result = { kind = "closed" }
+          self._closed = true
+          return
+        elseif event.type == "confirm" or event.type == "cancel" or event.type == "pointer_down" then
+          accelerate = true
+        elseif event.type == "pointer_cancel" then
+          self:cancelPointerCapture()
+        end
+      end
+      self:_stepMessage(accelerate)
+      return
+    end
+    self._message = nil
+    return
+  end
+  for _, event in ipairs(uiInput) do
+    validateBagEvent(event)
+    if event.type == "navigate" then
+      assert(
+        event.direction == "up" or event.direction == "down" or event.direction == "left" or event.direction == "right",
+        "sale quantity navigation has a cardinal direction"
+      )
+      self:_adjustSaleQuantity(
+        event.direction == "up" and 1 or event.direction == "down" and -1 or event.direction == "left" and -10 or 10,
+        false
+      )
+    elseif event.type == "confirm" then
+      self:_confirm()
+    elseif event.type == "cancel" then
+      self:_cancel()
+    elseif event.type == "dismiss" then
+      self._result = { kind = "closed" }
+      self._closed = true
+      return
+    elseif event.type == "pointer_down" then
+      self:_pointerDown(event)
+    elseif event.type == "pointer_up" then
+      self:_pointerUp(event)
+    elseif event.type == "pointer_move" then
+      self:_pointerMove(event)
+    elseif event.type == "pointer_cancel" then
+      self:cancelPointerCapture()
+    end
+  end
+end
+
+function BagController:_stepSaleOffer(uiInput)
+  for _, event in ipairs(uiInput) do
+    validateBagEvent(event)
+    if event.type == "dismiss" then
+      self._result = { kind = "closed" }
+      self._closed = true
+      return
+    end
+  end
+  if not self:_messageComplete() then
+    local accelerate = false
+    for _, event in ipairs(uiInput) do
+      if event.type == "confirm" or event.type == "cancel" or event.type == "pointer_down" then
+        accelerate = true
+        break
+      end
+    end
+    self:_stepMessage(accelerate)
+    return
+  end
+  local promptStatus = self._prompt:status()
+  if not promptStatus.active then
+    self._prompt:open(assert(self._salePrompt, "sale offers carry their compact prompt placement"))
+    self:cancelPointerCapture()
+    return
+  end
+  self._prompt:updateFixed(uiInput)
+  local result = self._prompt:takeResult()
+  if result == "yes" then
+    self._prompt:dispose()
+    self:cancelPointerCapture()
+    self:_enterSaleResult()
+  elseif result == "no" then
+    self:_toBrowsing()
+  end
+end
+
+function BagController:_stepSaleResult(uiInput)
+  for _, event in ipairs(uiInput) do
+    validateBagEvent(event)
+    if event.type == "dismiss" then
+      self._result = { kind = "closed" }
+      self._closed = true
+      return
+    end
+  end
+  if not self:_messageComplete() then
+    local accelerate = false
+    for _, event in ipairs(uiInput) do
+      if event.type == "confirm" or event.type == "cancel" or event.type == "pointer_down" then
+        accelerate = true
+        break
+      end
+    end
+    self:_stepMessage(accelerate)
+    if not self:_messageComplete() then
+      return
+    end
+  end
+  if self._saleFailed then
+    self._state = "sale_refusal"
+    return
+  end
+  if self._saleCommitted then
+    self:_finishCommittedSale()
+  else
+    self:_commitSale()
+  end
+end
+
+function BagController:_stepSaleRefusal(uiInput)
+  for _, event in ipairs(uiInput) do
+    validateBagEvent(event)
+    if event.type == "dismiss" then
+      self._result = { kind = "closed" }
+      self._closed = true
+      return
+    end
+  end
+  if not self:_messageComplete() then
+    self:_stepMessage(false)
+    return
+  end
+  self._message = nil
+  self._state = "sale_ack"
+end
+
+function BagController:_stepSaleAck(uiInput)
+  local acknowledge, dismiss = false, false
+  for _, event in ipairs(uiInput) do
+    validateBagEvent(event)
+    if event.type == "dismiss" then
+      dismiss = true
+    elseif event.type == "confirm" or event.type == "cancel" then
+      acknowledge = true
+    elseif event.type == "pointer_down" and pressInsidePane(event) then
+      acknowledge = true
+    end
+  end
+  if dismiss then
+    self._result = { kind = "closed" }
+    self._closed = true
+  elseif acknowledge then
+    self:_toBrowsing()
+  end
 end
 
 -- Enters manual move-target selection, capturing the moved item by semantic
@@ -1297,6 +1645,18 @@ function BagController:_syncNested()
     end
     return true
   end
+  if self._context == "sell" then
+    if self._state == "sale_quantity" then
+      if not self:_selectionMatchesAction() then
+        self:_toBrowsing()
+        return false
+      end
+      local selected = assert(self._view.selected, "sale quantity selection carries its item")
+      self._quantityMax = math.min(checkQuantity(selected.quantity, "selected slots carry a quantity"), 99)
+      self._quantity = math.min(self._quantity, self._quantityMax)
+    end
+    return true
+  end
   if not self:_selectionMatchesAction() then
     self:_toBrowsing()
     return false
@@ -1330,6 +1690,18 @@ function BagController:_confirm()
   end
   if self._state == "action_menu" then
     self:_chooseActionNode(self._actionNode)
+  elseif self._state == "sale_quantity" then
+    if self._feedback ~= nil then
+      return
+    end
+    self:_play(EFFECT.select)
+    self:_startFeedback("quantityConfirm", { kind = "enterSaleOffer" })
+  elseif self._state == "sale_offer" then
+    return
+  elseif self._state == "sale_ack" then
+    self:_toBrowsing()
+  elseif self._state == "sale_refusal" then
+    return
   elseif self._state == "toss_quantity" then
     if self._feedback ~= nil then
       return
@@ -1377,6 +1749,18 @@ function BagController:_cancel()
     end
     self:_play(EFFECT.cancel)
     self:_startFeedback("cancel", { kind = "toBrowsing" })
+  elseif self._state == "sale_quantity" then
+    if self._feedback ~= nil then
+      return
+    end
+    self:_play(EFFECT.cancel)
+    self:_toBrowsing()
+  elseif self._state == "sale_offer" then
+    return
+  elseif self._state == "sale_ack" then
+    self:_toBrowsing()
+  elseif self._state == "sale_refusal" then
+    return
   elseif self._state == "toss_quantity" then
     if self._feedback ~= nil then
       return
@@ -1506,6 +1890,18 @@ function BagController:_activate(target)
     end
     return
   end
+  if state == "sale_quantity" then
+    if target.kind == "quantity_delta" then
+      local delta = assert(target.delta, "sale quantity targets carry their step")
+      self:_adjustSaleQuantity(delta, true)
+      self:_pressSaleControl(assert(target.quantityControlIndex, "sale targets name their physical control"))
+    elseif target.kind == "confirm" then
+      self:_confirm()
+    elseif target.kind == "cancel" then
+      self:_cancel()
+    end
+    return
+  end
   if state == "move_select" then
     if target.kind == "item" then
       assert(type(target.visibleIndex) == "number", "item targets name their cell")
@@ -1577,18 +1973,19 @@ local BAG_EVENT_TYPES = {
 }
 
 ---@param event table<string, unknown>
-local function validateBagEvent(event)
+local function validateBagEventImpl(event)
   assert(type(event) == "table" and type(event.type) == "string", "bag events need a type")
   if not BAG_EVENT_TYPES[event.type] then
     error("unknown bag event type " .. tostring(event.type), 2)
   end
 end
+validateBagEvent = validateBagEventImpl
 
 -- A fresh press inside the interaction pane acknowledges the post-choice
 -- state; anything outside it is not an acknowledgement.
 ---@param event table<string, unknown>
 ---@return boolean
-local function pressInsidePane(event)
+local function pressInsidePaneImpl(event)
   return type(event.x) == "number"
     and type(event.y) == "number"
     and event.x >= 0
@@ -1596,6 +1993,7 @@ local function pressInsidePane(event)
     and event.y >= 0
     and event.y < BagLayout.PANE_HEIGHT
 end
+pressInsidePane = pressInsidePaneImpl
 
 ---@param event table<string, unknown>
 function BagController:_pointerDown(event)
@@ -1714,10 +2112,14 @@ function BagController:_stepItemSelect(uiInput)
     return
   end
   if self._itemSelectElapsed >= self._itemSelectTicks then
-    self._state = "action_menu"
-    local selected = assert(self._view.selected, "the action menu needs its selected item")
-    local name = assert(selected.name, "lower messages need the selected display name")
-    self:_startMessage(self:_formatMessage(self._templates.selectedItem, name), true)
+    if self._context == "sell" then
+      self:_beginSaleSelection()
+    else
+      self._state = "action_menu"
+      local selected = assert(self._view.selected, "the action menu needs its selected item")
+      local name = assert(selected.name, "lower messages need the selected display name")
+      self:_startMessage(self:_formatMessage(self._templates.selectedItem, name), true)
+    end
   end
 end
 
@@ -1871,6 +2273,26 @@ function BagController:updateFixed(uiInput)
     self:_stepItemSelect(uiInput)
     return
   end
+  if self._state == "sale_quantity" then
+    self:_stepSaleQuantity(uiInput)
+    return
+  end
+  if self._state == "sale_offer" then
+    self:_stepSaleOffer(uiInput)
+    return
+  end
+  if self._state == "sale_result" then
+    self:_stepSaleResult(uiInput)
+    return
+  end
+  if self._state == "sale_refusal" then
+    self:_stepSaleRefusal(uiInput)
+    return
+  end
+  if self._state == "sale_ack" then
+    self:_stepSaleAck(uiInput)
+    return
+  end
   if self._state == "toss_confirm" then
     self:_stepTossConfirm(uiInput)
     return
@@ -1958,6 +2380,14 @@ function BagController:status()
       selectedAbsoluteIndex = nil
     end
   end
+  if
+    self._context == "sell"
+    and self._saleItem ~= nil
+    and self._state ~= "browsing"
+    and self._state ~= "item_select"
+  then
+    selected = self._saleItem
+  end
   local record = {
     open = true,
     state = self:_visibleState(),
@@ -2002,6 +2432,29 @@ function BagController:status()
     end
     if self._state == "toss_confirm" or self._state == "toss_ack" then
       record.tossBase = self._tossBase
+      local promptStatus = self._prompt:status()
+      if promptStatus.active then
+        record.yesNoPrompt = promptStatus
+      end
+    end
+  elseif self._state == "sale_quantity" and not self._overlay then
+    record.quantity = self._quantity
+    record.quantityMax = self._quantityMax
+    record.saleBalance = self._saleBalance
+    record.saleTotal = self._saleDisplayedTotal
+    if self._quantityPressedTicks > 0 then
+      record.quantityPressedControl = self._quantityPressedControl
+    end
+  elseif
+    self._state == "sale_offer"
+    or self._state == "sale_result"
+    or self._state == "sale_refusal"
+    or self._state == "sale_ack"
+  then
+    record.saleQuantity = self._quantity
+    record.saleBalance = self._saleBalance
+    record.saleTotal = self._saleDisplayedTotal
+    if self._state == "sale_offer" then
       local promptStatus = self._prompt:status()
       if promptStatus.active then
         record.yesNoPrompt = promptStatus

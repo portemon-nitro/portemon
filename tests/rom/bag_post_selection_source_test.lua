@@ -31,7 +31,7 @@ end
 function T.compiled_action_and_move_follow_their_retail_state_variants(romFs)
   local bundle = compile(romFs)
   local manifest = assert(bundle.manifest)
-  Assert.equal(manifest.schema, "g4-bag-assets-v16", "the compiled bundle carries the current contract")
+  Assert.equal(manifest.schema, "g4-bag-assets-v17", "the compiled bundle carries the current contract")
   local backgrounds = assert(manifest.interactive.backgrounds, "the bundle publishes backgrounds")
   local action = assert(backgrounds.action, "the bundle publishes the action background")
   local move = assert(backgrounds.move, "the bundle publishes the move background")

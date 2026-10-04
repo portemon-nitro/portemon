@@ -15,8 +15,8 @@ local function manifest()
 end
 
 function T.schema_identity_is_strictly_v16()
-  Assert.equal(BagAssetSchema.SCHEMA, "g4-bag-assets-v16", "the generated contract carries the current identity")
-  Assert.equal(manifest().schema, "g4-bag-assets-v16", "the published manifest carries the current identity")
+  Assert.equal(BagAssetSchema.SCHEMA, "g4-bag-assets-v17", "the generated contract carries the current identity")
+  Assert.equal(manifest().schema, "g4-bag-assets-v17", "the published manifest carries the current identity")
 end
 
 function T.action_and_quantity_backgrounds_vary_by_visible_count()

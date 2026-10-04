@@ -13,6 +13,7 @@ local BagLayout = require("libs.hgss.src.ui.BagLayout")
 local BagRenderer = require("libs.hgss.src.ui.BagRenderer")
 local CacheFs = require("libs.storage.src.CacheFs")
 local FakeCache = require("tests.support.FakeCache")
+local BagPresentationFixture = require("tests.support.BagPresentationFixture")
 local FieldUiFixture = require("tests.support.FieldUiFixture")
 local PromptController = require("libs.hgss.src.ui.YesNoPromptController")
 
@@ -118,6 +119,9 @@ local function manifest()
       quantityAt = { x = 48, y = 16 },
     }
   end
+  local sale = BagPresentationFixture.manifest().interactive.sale
+  sale.confirm.visual.image = "bag/quantity-confirm.png"
+  sale.cancel.visual.image = "bag/quantity-cancel.png"
   return {
     hero = {
       background = {
@@ -131,6 +135,7 @@ local function manifest()
     },
     interactive = {
       backgrounds = backgrounds,
+      sale = sale,
       pocketTabs = {
         rects = tabs,
         strips = normals,
@@ -441,6 +446,13 @@ local function seedCache()
     "bag/quantity-decrement.png",
     "bag/quantity-decrement-pressed.png",
     "bag/quantity-confirm.png",
+  }) do
+    paths[#paths + 1] = path
+  end
+  for _, path in ipairs({
+    "assets/generated/bag/background-sale-quantity.png",
+    "assets/generated/bag/quantity-confirm.png",
+    "assets/generated/bag/quantity-cancel.png",
   }) do
     paths[#paths + 1] = path
   end
@@ -1901,7 +1913,7 @@ end
 function T.release_frees_images_exactly_once()
   local graphics = FakeGraphics({ imageSizes = IMAGE_SIZES })
   local draw = renderer(graphics)
-  Assert.equal(#graphics.images, 601, "the renderer acquires bag and prompt button images")
+  Assert.equal(#graphics.images, 602, "the renderer acquires bag and prompt button images")
   draw:release()
   for _, image in ipairs(graphics.images) do
     Assert.equal(image.releaseCount, 1, "every image releases exactly once")
@@ -2022,7 +2034,7 @@ function T.acquisition_failure_releases_every_image_acquired_before_it()
   local bound = renderer(probe)
   local total = #probe.images
   bound:release()
-  Assert.equal(total, 601, "setup binds every generated state, tab, focus, control, and prompt image")
+  Assert.equal(total, 602, "setup binds every generated state, tab, focus, control, and prompt image")
   for _, failCall in ipairs({ 1, total }) do
     local graphics = FakeGraphics({ imageSizes = IMAGE_SIZES, failOnImageCall = failCall })
     Assert.throws(function()

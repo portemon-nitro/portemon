@@ -66,9 +66,11 @@ function T.quantity_background_uses_only_the_supported_source_screen(romFs, vers
     { variant = 3, base = "action", overlay = "quantityOverlay" },
     "the Toss quantity state retains the action surface under its overlay"
   )
+  local hasSaleScreen = false
   for _, dependency in ipairs(bundle.dependencies.dependencies) do
-    Assert.isFalse(dependency.name == "bag_ui:member:53", "the alternate quantity screen is not a current dependency")
+    hasSaleScreen = hasSaleScreen or dependency.name == "bag_ui:member:53"
   end
+  Assert.isTrue(hasSaleScreen, "the sale state consumes its distinct screen member 53")
   local quantity = assert(
     bundle.manifest.interactive.backgrounds.quantity.items,
     "the quantity background varies with the visible count"
@@ -811,7 +813,7 @@ end
 function T.pocket_strips_replay_the_retained_palette_state(romFs, versionId)
   local bundle = bundleFor(romFs, versionId)
   local manifest = bundle.manifest
-  Assert.equal(manifest.schema, "g4-bag-assets-v16", "the rebuilt bag cache must publish the current contract")
+  Assert.equal(manifest.schema, "g4-bag-assets-v17", "the rebuilt bag cache must publish the current contract")
   local strips =
     assert(manifest.interactive.pocketTabs.strips, "the rebuilt manifest must publish one strip per active pocket")
   local keys = {}

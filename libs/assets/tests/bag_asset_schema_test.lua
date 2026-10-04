@@ -448,9 +448,62 @@ local function retailEdgeColors()
   }
 end
 
+local function salePresentation()
+  local function image(path)
+    return { image = path, width = 256, height = 192 }
+  end
+  return {
+    pressTicks = 2,
+    quantityBackground = image("assets/generated/bag/background-sale-quantity.png"),
+    digits = { rect(160, 112, 16, 24), rect(192, 112, 16, 24) },
+    controls = {
+      { delta = 10, role = "increment", center = { x = 136, y = 104 }, hitRect = rect(120, 88, 32, 24) },
+      { delta = 1, role = "increment", center = { x = 168, y = 104 }, hitRect = rect(152, 88, 32, 24) },
+      { delta = -10, role = "decrement", center = { x = 136, y = 152 }, hitRect = rect(120, 136, 32, 24) },
+      { delta = -1, role = "decrement", center = { x = 168, y = 152 }, hitRect = rect(152, 136, 32, 24) },
+    },
+    confirm = {
+      visual = visualRef("assets/generated/bag/quantity-confirm.png"),
+      center = { x = 136, y = 176 },
+      hitRect = rect(96, 168, 78, 24),
+      labelAt = { x = 117, y = 168 },
+    },
+    cancel = {
+      visual = visualRef("assets/generated/bag/quantity-cancel.png"),
+      center = { x = 224, y = 176 },
+      hitRect = rect(178, 168, 78, 24),
+      labelAt = { x = 197, y = 168 },
+    },
+    selectedItem = {
+      iconCenter = { x = 86, y = 76 },
+      textRect = rect(96, 56, 88, 32),
+      nameAt = { x = 0, y = 0 },
+      quantityAt = { x = 48, y = 16 },
+    },
+    money = { x = 168, y = 8, width = 80, height = 16, fontId = 0, textX = 0, textY = 0, alignment = "right", paletteRole = "foreground" },
+    total = { x = 168, y = 24, width = 80, height = 16, fontId = 0, textX = 0, textY = 0, alignment = "right", paletteRole = "foreground" },
+    compactPrompt = { x = 200, y = 48, shape = "compact", initialSelection = "yes" },
+    messages = {
+      notSellable = { segments = { { kind = "item" }, { kind = "text", value = " cannot be sold." } } },
+      quantity = { segments = { { kind = "item" }, { kind = "text", value = "? Quantity?" } } },
+      offer = { segments = { { kind = "item" }, { kind = "text", value = " offer." }, { kind = "total" } } },
+      result = {
+        segments = {
+          { kind = "quantity" },
+          { kind = "text", value = " " },
+          { kind = "item" },
+          { kind = "text", value = " sold for " },
+          { kind = "total" },
+        },
+      },
+    },
+  }
+end
+
 local function validFocusManifest()
   local manifest = validManifest()
-  manifest.schema = "g4-bag-assets-v16"
+  manifest.schema = "g4-bag-assets-v17"
+  manifest.interactive.sale = salePresentation()
   manifest.interactive.overlays.tossPrompt = { x = 200, y = 48, shape = "compact", initialSelection = "yes" }
   manifest.interactive.overlays.selectedItem = {
     iconCenter = { x = 86, y = 76 },
@@ -620,7 +673,7 @@ end
 -- scenario keeps the versioned focus fixture above.
 local function validTossManifest()
   local manifest = validFocusManifest()
-  manifest.schema = "g4-bag-assets-v16"
+  manifest.schema = "g4-bag-assets-v17"
   manifest.interactive.overlays.tossPrompt = { x = 200, y = 48, shape = "compact", initialSelection = "yes" }
   manifest.interactive.text.tossResult = {
     segments = {
@@ -808,10 +861,14 @@ function T.control_visuals_are_current_and_each_is_referenced_once()
   -- move-clip visual appears once.
   for _, path in ipairs({
     "assets/generated/bag/action-face.png",
+  }) do
+    Assert.equal(counts[path], 2, path .. " backs its control and the feedback latch")
+  end
+  for _, path in ipairs({
     "assets/generated/bag/quantity-confirm.png",
     "assets/generated/bag/quantity-cancel.png",
   }) do
-    Assert.equal(counts[path], 2, path .. " backs its control and the feedback latch")
+    Assert.equal(counts[path], 3, path .. " backs both quantity-mode controls and the feedback latch")
   end
   for _, path in ipairs({
     "assets/generated/bag/quantity-increment-normal.png",
@@ -929,9 +986,9 @@ end
 -- The strip contract is the current focus-manifest shape above.
 
 function T.pocket_strips_and_edge_colors_validate_as_the_current_contract()
-  Assert.equal(BagAssetSchema.SCHEMA, "g4-bag-assets-v16")
-  Assert.equal(DerivedAssetContract.bag.schema, "g4-bag-assets-v16")
-  Assert.equal(BagCache.SCHEMA, "g4-bag-assets-v16")
+  Assert.equal(BagAssetSchema.SCHEMA, "g4-bag-assets-v17")
+  Assert.equal(DerivedAssetContract.bag.schema, "g4-bag-assets-v17")
+  Assert.equal(BagCache.SCHEMA, "g4-bag-assets-v17")
   Assert.equal(BagCache.FORMAT, "bag-cache-v2")
   local manifest = validStripManifest()
   Assert.isTrue(BagAssetSchema.isValidManifest(manifest), "the pocket-strip manifest must pass the schema")

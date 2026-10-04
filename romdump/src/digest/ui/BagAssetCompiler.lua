@@ -128,6 +128,7 @@ local SCREEN_ROLES = {
   { role = "move-wash", member = BagSources.screens.moveWash, upper = false },
   { role = "action-overlay", member = BagSources.screens.actionOverlay, upper = false },
   { role = "quantity-overlay", member = BagSources.screens.quantityOverlay, upper = false },
+  { role = "sale-quantity", member = BagSources.screens.saleQuantity, upper = false },
 }
 
 local function compileScreens(archive, dependencies, assets)
@@ -1091,11 +1092,20 @@ local function compileLowerBackgrounds(lower, cancelFace, assets)
     quantityOverlay = "quantity-overlay",
   }
   local backgrounds = {}
+  local saleScreen = rasterizeScreen(
+    lower.charData,
+    effectiveLowerPalette(lower.colors, 0).colors,
+    assert(lower.screens["sale-quantity"]),
+    "sale-quantity"
+  )
+  saleScreen = RgbaImage.crop(saleScreen, { x = 0, y = 0, width = 256, height = 192 }, "interactive sale quantity")
+  local salePath = BagCache.assetDir() .. "/background-sale-quantity.png"
+  assets[salePath] = PngWriter.encode(saleScreen.width, saleScreen.height, saleScreen.pixels)
   backgrounds.action = compileActionBackgrounds(lower, screenRoles, cancelFace, assets)
   backgrounds.quantity = compileQuantityBackgrounds(lower, screenRoles, assets)
   backgrounds.move = compileMoveBackgrounds(lower, screenRoles, cancelFace, assets)
   backgrounds.browse = compileBrowseBackgrounds(lower, screenRoles, cancelFace, assets)
-  return backgrounds
+  return backgrounds, { image = salePath, width = saleScreen.width, height = saleScreen.height }
 end
 
 -- Semantic message lowering. The pinned Bag messages carry two STRVAR
@@ -1113,6 +1123,7 @@ local QUANTITY_SUBSTITUTION = FieldMessageText.STRVAR_1 + 52
 -- the item name to field 0 and the amount to field 1, so field 51 carries
 -- the same buffered quantity as field 52 in the confirmation message.
 local QUANTITY_SUBSTITUTION_ALIAS = FieldMessageText.STRVAR_1 + 51
+local SALE_TOTAL_SUBSTITUTION = FieldMessageText.STRVAR_1 + 55
 
 local function readMessageBank(archive, bankId, role, dependencies)
   local bytes, err = archive:readMember(bankId)
@@ -1201,6 +1212,9 @@ local function lowerTemplate(bank, bankId, index, role)
     then
       flush()
       segments[#segments + 1] = { kind = "quantity" }
+    elseif token.kind == "substitution" and token.control == SALE_TOTAL_SUBSTITUTION then
+      flush()
+      segments[#segments + 1] = { kind = "total" }
     else
       sourceError("bag template carries an unsupported token " .. tostring(token.kind), {
         role = role,
@@ -1236,13 +1250,19 @@ local function compileText(messageArchive, dependencies)
     local selector = BagSources.messages.templates[name]
     templates[name] = lowerTemplate(bankOf(selector.bank), selector.bank, selector.index, "template:" .. name)
   end
+  local saleMessages = {}
+  for _, name in ipairs({ "saleNotSellable", "saleQuantity", "saleOffer", "saleResult" }) do
+    local selector = BagSources.messages.templates[name]
+    saleMessages[name] = lowerTemplate(bankOf(selector.bank), selector.bank, selector.index, "template:" .. name)
+  end
   return {
     actions = labels,
     movePrompt = templates.movePrompt,
     tossConfirm = templates.tossConfirm,
     tossResult = templates.tossResult,
     selectedItem = templates.selectedItem,
-  }
+  },
+    saleMessages
 end
 
 -- Normalizes the audited toss-confirmation prompt template to the runtime
@@ -1648,7 +1668,7 @@ local function _compile(romFs)
     )
   end
   assert(messageArchive ~= nil, "unavailable message archives fail above")
-  local text = compileText(messageArchive, dependencies)
+  local text, saleMessages = compileText(messageArchive, dependencies)
   local moveArchive, moveArchiveErr = romFs:openNarc(BagSources.moveSummary.archive.symbol)
   if moveArchive == nil then
     error(
@@ -1669,7 +1689,7 @@ local function _compile(romFs)
   local moveSummary = compileMoveSummary(moveArchive, messageArchive, dependencies, assets)
   moveSummary.background = screenReferences["upper-alternate"]
   local sprites = compileSprites(archive, dependencies, assets)
-  local backgrounds = compileLowerBackgrounds(lower, sprites.cancelFace, assets)
+  local backgrounds, saleQuantityBackground = compileLowerBackgrounds(lower, sprites.cancelFace, assets)
   local markers = compileRegistrationMarkers(archive, lower.colors, dependencies, assets)
   local textures, meshes = {}, {}
   local male = compileHero(archive, "male", dependencies, textures, meshes)
@@ -1811,6 +1831,34 @@ local function _compile(romFs)
       pageIndicator = geometry.pageIndicator,
       cancel = geometry.cancel,
       text = text,
+      sale = {
+        pressTicks = geometry.sale.pressTicks,
+        quantityBackground = saleQuantityBackground,
+        digits = geometry.sale.digits,
+        controls = geometry.sale.controls,
+        confirm = {
+          visual = sprites.quantity.confirm,
+          center = geometry.sale.confirm.center,
+          hitRect = geometry.sale.confirm.hitRect,
+          labelAt = geometry.sale.confirm.labelAt,
+        },
+        cancel = {
+          visual = sprites.quantity.cancel,
+          center = geometry.sale.cancel.center,
+          hitRect = geometry.sale.cancel.hitRect,
+          labelAt = geometry.sale.cancel.labelAt,
+        },
+        selectedItem = geometry.sale.selectedItem,
+        money = geometry.sale.money,
+        total = geometry.sale.total,
+        compactPrompt = geometry.sale.compactPrompt,
+        messages = {
+          notSellable = saleMessages.saleNotSellable,
+          quantity = saleMessages.saleQuantity,
+          offer = saleMessages.saleOffer,
+          result = saleMessages.saleResult,
+        },
+      },
       selectionEntry = sprites.selectionEntry,
       feedback = sprites.feedback,
       moveTransition = sprites.moveTransition,
