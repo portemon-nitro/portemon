@@ -2819,13 +2819,11 @@ local function bindTurnHandlers(executor, moveFacts, speciesFacts, itemFacts, ch
       target = { kind = "combatant", combatant = holder.combatant },
     }
     -- Reservations were accounted when the reply was sealed, so planning
-    -- here classifies without double-counting the sealed promise. Servings
-    -- read the immutable session item facts; balls never reach them.
-    local plan = ItemUse.plan(choice, {
-      inventories = state.inventories,
-      combatants = state.combatants,
-      outstanding = {},
-    }, itemFacts)
+    -- here classifies against the live battle state without double-counting
+    -- the sealed promise. Servings read the immutable session item facts;
+    -- balls never reach them. The live state carries the battle-local
+    -- effects battle-only servings gate on, so no reduced view travels here.
+    local plan = ItemUse.plan(choice, state, itemFacts)
     if plan.failureReason ~= nil then
       -- The holder left the field after the reply was sealed: the
       -- serving is refused with no stock, ledger, draw, or health
