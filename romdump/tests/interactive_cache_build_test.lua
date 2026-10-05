@@ -326,7 +326,6 @@ function T.construction_performs_no_pool_census()
   Assert.isNil(againFailure, "settlement reports no failure")
 end
 
-
 -- A ready pool reply is worker proof, not a request for controller
 -- validation: the entry succeeds with zero family-validator calls on
 -- the session thread.
