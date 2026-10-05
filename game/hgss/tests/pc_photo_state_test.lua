@@ -4,6 +4,7 @@
 local Assert = require("tests.support.Assert")
 local ScreenTopology = require("libs.ui.src.ScreenTopology")
 local PhotoAlbum = require("libs.hgss.src.save.PhotoAlbum")
+local PcApplicationHost = require("game.hgss.src.pc.PcApplicationHost")
 
 local T = {}
 
@@ -246,6 +247,75 @@ function T.move_swaps_exact_sparse_slots_in_one_album_revision()
   Assert.equal(state:status().selectedSlot, 8, "selection follows the moved photo to its destination")
   Assert.equal(state:status().sourceMessageId, 8, "the source move-result message is shown")
   state:dispose()
+end
+
+function T.host_fixed_steps_prepare_viewer_and_stop_after_cancel()
+  local PhotoAlbumScreenState = implementation()
+  local album = PhotoAlbum.new()
+  local prepared = assert(album:prepareChanges(0, {
+    { slot = 0, value = photo("MAP_FIRST", 4) },
+    { slot = 8, value = photo("MAP_SECOND", 8) },
+  }))
+  prepared.publish()
+  local scenes = {}
+  local owner = PcApplicationHost.new({
+    createStorage = function() error("Storage is not opened") end,
+    createMailbox = function() error("Mailbox is not opened") end,
+    createPhotoAlbum = function()
+      return PhotoAlbumScreenState.new({
+        album = album,
+        manifest = manifest(),
+        measureDisplay = measurement,
+        profile = { name = "GOLD", gender = 0 },
+        createScene = function(record, slot)
+          local scene = { record = record, slot = slot, work = 0, takeCount = 0, disposed = false }
+          function scene:request() end
+          function scene:advance(units)
+            assert(not self.disposed, "a disposed saved-photo scene cannot progress")
+            self.work = self.work + units
+          end
+          function scene:status()
+            if self.work < 2 then
+              return { phase = "pending" }
+            end
+            return { phase = "ready" }
+          end
+          function scene:takeReady()
+            self.takeCount = self.takeCount + 1
+            return { mapSymbol = self.record.mapSymbol, mapSectionNativeId = 7 }
+          end
+          function scene:cancel() end
+          function scene:dispose()
+            self.disposed = true
+          end
+          scenes[#scenes + 1] = scene
+          return scene
+        end,
+      })
+    end,
+  })
+  local handle = owner:open({ app = "photoAlbum" })
+  owner:setPresentationReady(handle, true)
+
+  owner:step(handle, { { type = "confirm" } })
+  owner:step(handle, { { type = "confirm" } })
+  Assert.equal(owner:status().viewer.phase, "pending", "opening View starts saved-map preparation")
+  Assert.equal(scenes[1].work, 1, "the host fixed tick gives the active scene one work unit")
+  owner:step(handle, {})
+  Assert.equal(owner:status().viewer.phase, "ready", "an empty host tick completes the delayed view")
+  Assert.equal(owner:status().viewer.view.mapSymbol, "MAP_FIRST", "the screen adopts the immutable saved view")
+  Assert.equal(scenes[1].work, 2, "each fixed tick contributes exactly one work unit")
+  Assert.equal(scenes[1].takeCount, 1, "the ready view is adopted once")
+
+  owner:step(handle, { { type = "navigate", direction = "right" } })
+  Assert.equal(#scenes, 2, "next opens a private scene for the adjacent saved photo")
+  Assert.equal(scenes[2].work, 1, "the new scene receives the navigation tick's work unit")
+  owner:step(handle, { { type = "cancel" } })
+  Assert.equal(owner:status().phase, "list", "cancel closes the pending viewer")
+  owner:step(handle, {})
+  Assert.equal(scenes[2].work, 1, "closed viewer scenes receive no later fixed-tick work")
+  Assert.isTrue(scenes[2].disposed, "closing the viewer disposes its private scene")
+  owner:cancel("test complete")
 end
 
 function T.cancel_from_the_root_list_returns_to_the_parent_exactly_once()
