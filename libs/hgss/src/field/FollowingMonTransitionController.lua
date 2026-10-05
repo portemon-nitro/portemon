@@ -202,8 +202,6 @@ function FollowingMonTransitionController:start()
   local partnerId = self.actors:partnerId()
   if partnerId == nil or self.actors:getById(partnerId) == nil then
     self._pendingStart = true
-    self._pendingTailTicks = 0
-    self._pendingCompletion = nil
     return true
   end
   return tryStartOnCurrentPartner(self, 0, nil)
@@ -221,7 +219,6 @@ function FollowingMonTransitionController:startAppearance(follower)
   end
   local partnerId = self.actors:partnerId()
   if partnerId == nil or self.actors:getById(partnerId) == nil then
-    self._pendingStart = true
     self._pendingTailTicks = 20
     self._pendingCompletion = onComplete
     return true
@@ -231,13 +228,23 @@ end
 
 function FollowingMonTransitionController:updateFixed()
   if self._pendingStart and self.actors:partnerId() ~= nil then
-    local ok, bound = pcall(tryStartOnCurrentPartner, self, self._pendingTailTicks, self._pendingCompletion)
+    local ok, bound = pcall(tryStartOnCurrentPartner, self, 0, nil)
     if not ok then
       self._pendingStart = false
       error(bound, 0)
     end
     if bound then
       self._pendingStart = false
+    end
+  end
+  if self._pendingCompletion ~= nil and self.actors:partnerId() ~= nil then
+    local ok, bound = pcall(tryStartOnCurrentPartner, self, self._pendingTailTicks, self._pendingCompletion)
+    if not ok then
+      self._pendingTailTicks = 0
+      self._pendingCompletion = nil
+      error(bound, 0)
+    end
+    if bound then
       self._pendingTailTicks = 0
       self._pendingCompletion = nil
     end
@@ -313,7 +320,7 @@ end
 
 ---@return boolean
 function FollowingMonTransitionController:isAppearanceSettled()
-  if self._pendingStart and self._pendingCompletion ~= nil then
+  if self._pendingCompletion ~= nil then
     return false
   end
   for _, instance in ipairs(self.instances) do
@@ -322,6 +329,18 @@ function FollowingMonTransitionController:isAppearanceSettled()
     end
   end
   return true
+end
+
+function FollowingMonTransitionController:cancelAppearance()
+  self._pendingTailTicks = 0
+  self._pendingCompletion = nil
+  for index = #self.instances, 1, -1 do
+    local instance = self.instances[index]
+    if instance.onComplete ~= nil then
+      release(instance)
+      table.remove(self.instances, index)
+    end
+  end
 end
 
 function FollowingMonTransitionController:clear()

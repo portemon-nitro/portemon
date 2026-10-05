@@ -8,7 +8,7 @@ local FollowerAppearanceTask = require("libs.hgss.src.script.tasks.FollowerAppea
 
 local T = {}
 
-local function context(sourceActive, settled, starts)
+local function context(sourceActive, settled, starts, cancellations)
   local follower = {
     isSourceActive = function()
       return sourceActive
@@ -26,6 +26,9 @@ local function context(sourceActive, settled, starts)
         end,
         isAppearanceSettled = function()
           return settled.value
+        end,
+        cancelAppearance = function()
+          cancellations.count = cancellations.count + 1
         end,
       },
     },
@@ -47,11 +50,27 @@ end
 
 function T.inactive_appearance_completes_without_visual_work()
   local starts = { count = 0 }
-  local ctx = context(false, { value = false }, starts)
+  local cancellations = { count = 0 }
+  local ctx = context(false, { value = false }, starts, cancellations)
   local state = FollowerAppearanceTask.create({}, ctx)
   Assert.equal(starts.count, 0, "inactive source follower starts no choreography")
   Assert.isNil(FollowerAppearanceTask.validate(state), "inactive task state is serializable")
   Assert.isTrue(FollowerAppearanceTask.poll(state, ctx).complete, "inactive source task completes immediately")
+  FollowerAppearanceTask.cancel(state, "environment", ctx)
+  Assert.equal(cancellations.count, 0, "cancelling an unstarted task does not touch transition state")
+end
+
+function T.cancelling_started_appearance_delegates_cleanup_and_keeps_serializable_state()
+  local starts = { count = 0 }
+  local cancellations = { count = 0 }
+  local ctx = context(true, { value = false }, starts, cancellations)
+  local state = FollowerAppearanceTask.create({}, ctx)
+
+  FollowerAppearanceTask.cancel(state, "environment", ctx)
+
+  Assert.equal(cancellations.count, 1, "a started task delegates appearance cleanup once")
+  Assert.equal(state.cancelled, "environment", "the cancellation reason remains recorded")
+  Assert.isNil(FollowerAppearanceTask.validate(state), "cancelled task state remains serializable")
 end
 
 function T.validation_accepts_both_task_paths_and_rejects_malformed_state()
