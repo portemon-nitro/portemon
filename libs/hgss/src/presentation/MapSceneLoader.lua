@@ -484,7 +484,9 @@ local function buildScene(pool, cacheFs, scene, opts, checkpoint, task)
     -- generated-data failure, not a silent empty model.
     if desc.descriptor.kind == "static" then
       for _, batch in ipairs(desc.descriptor.batches) do
-        staticBuildingDraws[#staticBuildingDraws + 1] = drawItem(batch, desc.materials, inst.transform)
+        local item = drawItem(batch, desc.materials, inst.transform)
+        item.modelKey = inst.modelKey
+        staticBuildingDraws[#staticBuildingDraws + 1] = item
       end
     elseif desc.descriptor.kind ~= "nitro-dynamic" then
       Errors.raise(
@@ -513,6 +515,7 @@ local function buildScene(pool, cacheFs, scene, opts, checkpoint, task)
   -- policy records (door pairs, interaction props) stay scripted through
   -- the instance handles (MapDoor/SceneProp).
   local animatedInstances = {}
+  local animatedModelKeys = {}
   local instanceByPlacement = {}
   local animatedModelCount = 0
   local animatedResourceCache = {}
@@ -554,6 +557,7 @@ local function buildScene(pool, cacheFs, scene, opts, checkpoint, task)
       instance.renderMeshesById = modelResource.renderMeshesById
       growBoundsAabb(desc.bounds, inst.transform)
       animatedInstances[#animatedInstances + 1] = instance
+      animatedModelKeys[#animatedInstances] = inst.modelKey
       instanceByPlacement[inst.placementIndex] = instance
       local timeBandClips = TimeOfDayProps.plan(modelResource.definition)
       instance.timeOfDayPlan = timeBandClips
@@ -595,6 +599,9 @@ local function buildScene(pool, cacheFs, scene, opts, checkpoint, task)
     for index, instance in ipairs(animatedInstances) do
       instance:evaluatePose()
       pendingDraws[index] = instance:drawItems(instance.renderMeshesById)
+      for _, item in ipairs(pendingDraws[index]) do
+        item.modelKey = animatedModelKeys[index]
+      end
       if constructionCheckpoint ~= nil then
         constructionCheckpoint()
       end

@@ -1106,6 +1106,16 @@ function T.fixed_tick_does_not_copy_the_static_building_list()
 
   Assert.equal(#runtime.staticBuildingDraws, 1, "the static building loads once")
   Assert.equal(#runtime.animatedBuildingDraws, 1, "the animated building's frame-0 item loads once")
+  Assert.equal(
+    runtime.staticBuildingDraws[1].modelKey,
+    staticDesc.key,
+    "static draws retain their semantic model identity"
+  )
+  Assert.equal(
+    runtime.animatedBuildingDraws[1].modelKey,
+    animatedDesc.key,
+    "animated draws retain their semantic model identity"
+  )
   local staticList = runtime.staticBuildingDraws
   local staticItem = staticList[1]
 
