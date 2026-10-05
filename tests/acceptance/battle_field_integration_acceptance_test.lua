@@ -645,14 +645,11 @@ function T.tests.production_boot_runs_wild_trainer_and_capture_legs_to_commit()
     local template = assert(compiled.trainers[TRAINER_KEY], "the generated catalog carries the trainer")
     Assert.equal(#template.party, 3, "the trainer fields a lead with two reserves")
     Assert.isTrue(template.doubleBattle ~= true, "the journey stays a singles battle")
-    Assert.equal(#(template.items or {}), 4, "the trainer carries four source-ordered slots")
-    local carried = {}
-    for _, key in ipairs(template.items) do
-      if key ~= "NONE" then
-        carried[#carried + 1] = key
-      end
-    end
-    Assert.deepEqual(carried, { "SUPER_POTION" }, "the carried stock is exactly one healing serving")
+    Assert.deepEqual(
+      template.items,
+      { "SUPER_POTION" },
+      "the trainer carries its compact healing serving"
+    )
     Assert.isTrue(
       type(template.prizeMoney) == "table" and type(template.prizeMoney.classRate) == "number",
       "the trainer carries its prize rate"

@@ -11,8 +11,9 @@
 -- 100-(draw%16) thresholds later commands may read, enabled flag
 -- programs run in ascending bit order, doubles evaluates candidate
 -- targets through its own selector, the switch gate answers before the
--- item path, items scan ordered source slots, and persistent knowledge
--- plus slot order ride the native session record. Effectiveness resolves
+-- item path, items scan ordered working slots under the initial-count
+-- gate, and persistent knowledge plus slot order ride the native session
+-- record. Effectiveness resolves
 -- through the passed session chart, damage previews reuse the shared
 -- staged arithmetic with an explicit roll, and every random branch draws
 -- from the caller-owned battle stream in a stable order. Per-evaluation
@@ -45,7 +46,7 @@ local executePrograms
 local buildEvaluationFacts
 
 -- Schema mark for the persisted native record.
-TrainerAi.MEMORY_VERSION = 1
+TrainerAi.MEMORY_VERSION = 2
 
 -- Native flag bits with program data, in dispatch order. The doubles bit
 -- is forced by the live battle format in doubles rather than stored passes,
@@ -635,10 +636,14 @@ function TrainerAi.selectTarget(opponents, stream)
   return opponents[(draw % #opponents) + 1]
 end
 
----@param slots unknown candidate ordered item slots under validation
-local function checkMemorySlots(slots)
+---@param slots unknown candidate ordered working slots under validation
+---@param itemCount unknown candidate initial carried count under validation
+local function checkItemMemory(slots, itemCount)
   if type(slots) ~= "table" then
     error(BattleErrors.incompatibleSnapshot("trainer memory carries its ordered item slots", {}))
+  end
+  if type(itemCount) ~= "number" or itemCount % 1 ~= 0 or itemCount < 0 or itemCount > 4 then
+    error(BattleErrors.incompatibleSnapshot("trainer memory carries its initial carried count", { count = itemCount }))
   end
   local count = 0
   for index, item in
@@ -649,9 +654,13 @@ local function checkMemorySlots(slots)
     if type(item) ~= "string" or item == "" then
       error(BattleErrors.incompatibleSnapshot("trainer item slots name their item", { slot = index }))
     end
+    -- Working slots stay fixed at four: positions past the initial
+    -- carried count are always gaps, while positions inside the count
+    -- may hold a serving or a consumed gap.
+    if index > itemCount and item ~= "NONE" then
+      error(BattleErrors.incompatibleSnapshot("trainer item slots pad past their carried count", { slot = index }))
+    end
   end
-  -- Slot positions drive selection, so memory always carries all four:
-  -- compact survivor lists from older snapshots are incompatible.
   if count ~= 4 then
     error(BattleErrors.incompatibleSnapshot("trainer memory carries four ordered item slots", { slots = count }))
   end
@@ -706,10 +715,10 @@ function TrainerAi.validateMemory(memory)
       error(BattleErrors.incompatibleSnapshot("trainer memory names its controller", {}))
     end
     local owned = entry --[[@as table<string, unknown>]]
-    checkMemorySlots(owned.slots)
+    checkItemMemory(owned.slots, owned.itemCount)
     checkKnownMoves(owned.knownMoves)
     for key, value in pairs(owned) do
-      if key ~= "slots" and key ~= "knownMoves" then
+      if key ~= "slots" and key ~= "itemCount" and key ~= "knownMoves" then
         error(BattleErrors.incompatibleSnapshot("trainer memory carries only its slots and knowledge", {
           field = tostring(key),
         }))
@@ -727,25 +736,37 @@ end
 
 ---@param participant table<string, unknown> acting participant owning the roster and stock
 ---@param state table<string, unknown> live battle state under inspection
----@return string[] ordered trainer item identities for the controller
+---@return string[] padded working slots in compact-list order
+---@return integer initial carried count beside the working slots
 local function orderedItemSlots(participant, state)
   local context = participant.context
   if type(context) == "table" and type(context.trainerItems) == "table" then
     local ordered = context.trainerItems --[[@as table<integer, unknown>]]
-    if #ordered ~= 4 then
-      error(BattleErrors.missingBehavior("trainer item order arrives as four source-ordered slots", {
+    -- The semantic list is compact: zero to four real carried items in
+    -- source order. Gap sentinels never ride the list; working-slot
+    -- padding is battle memory, not scenario data.
+    local count = 0
+    for index, item in ipairs(ordered) do
+      count = count + 1
+      assert(index == count, "trainer item slots stay ordered")
+      if type(item) ~= "string" or item == "" or item == "NONE" then
+        error(BattleErrors.missingBehavior("trainer item slots name their item", { slot = index }))
+      end
+    end
+    local total = 0
+    for _ in pairs(ordered) do
+      total = total + 1
+    end
+    if total ~= count or count > 4 then
+      error(BattleErrors.missingBehavior("trainer item order arrives as compact source-ordered items", {
         controller = tostring(participant.controller),
       }))
     end
     local slots = {}
     for index = 1, 4 do
-      local item = ordered[index]
-      if type(item) ~= "string" or item == "" then
-        error(BattleErrors.missingBehavior("trainer item slots name their item", { slot = index }))
-      end
-      slots[index] = item --[[@as string]]
+      slots[index] = ordered[index] or "NONE"
     end
-    return slots
+    return slots, count
   end
   -- Without source-ordered slots the scan order is unrecoverable:
   -- quantity maps carry no order, so a stocked trainer without
@@ -753,15 +774,15 @@ local function orderedItemSlots(participant, state)
   -- Trainers with no live stock carry four gaps and stay quiet.
   local inventoryId = participant.inventoryId
   if type(inventoryId) ~= "string" then
-    return emptySlots()
+    return emptySlots(), 0
   end
   local inventories = state.inventories
   if type(inventories) ~= "table" then
-    return emptySlots()
+    return emptySlots(), 0
   end
   local stock = inventories[inventoryId]
   if type(stock) ~= "table" or type(stock.quantities) ~= "table" then
-    return emptySlots()
+    return emptySlots(), 0
   end
   for key, units in
     pairs(stock.quantities --[[@as table<string, unknown>]])
@@ -772,7 +793,7 @@ local function orderedItemSlots(participant, state)
       }))
     end
   end
-  return emptySlots()
+  return emptySlots(), 0
 end
 
 --- Creates the fresh native trainer record once per native session after
@@ -792,7 +813,8 @@ function TrainerAi.initializeMemory(state)
     local participant = BattleState.participant(state, participantId --[[@as integer]])
     local controller = participant.controller
     if type(controller) == "string" and controller:sub(1, 8) == "trainer:" and owned[controller] == nil then
-      owned[controller] = { slots = orderedItemSlots(participant, state), knownMoves = {} }
+      local slots, itemCount = orderedItemSlots(participant, state)
+      owned[controller] = { slots = slots, itemCount = itemCount, knownMoves = {} }
     end
   end
   state.trainerAi = memory
@@ -1992,7 +2014,27 @@ local function trainerStock(state, participant)
   return stock.quantities --[[@as table<string, integer>]]
 end
 
--- Scans the ordered trainer item slots exactly as the source item
+---@param state table<string, unknown> live battle state under inspection
+---@param participant table<string, unknown> acting participant owning the roster
+---@return integer conscious non-egg roster members including active battlers
+local function livingPartyCount(state, participant)
+  local count = 0
+  for _, combatantId in
+    ipairs(participant.roster --[[@as integer[] ]])
+  do
+    local combatant = BattleState.combatant(state, combatantId --[[@as integer]])
+    local species = nil
+    if type(combatant.mon) == "table" then
+      species = (combatant.mon --[[@as table<string, unknown>]]).species
+    end
+    if combatant.hp > 0 and species ~= "EGG" then
+      count = count + 1
+    end
+  end
+  return count
+end
+
+-- Scans the ordered trainer working slots exactly as the source item
 -- policy does (ov10_022206B0): consumed and empty slots never answer,
 -- each slot is considered in order against the source conditions, and
 -- the first source-selected item is asserted through the effectful
@@ -2018,6 +2060,10 @@ local function selectItemSlot(state, authorities, participant, holderId, taken, 
   if type(slots) ~= "table" then
     return nil
   end
+  local itemCount = memory.itemCount
+  if type(itemCount) ~= "number" or itemCount % 1 ~= 0 or itemCount < 0 or itemCount > 4 then
+    return nil
+  end
   local inventoryId = participant.inventoryId
   if type(inventoryId) ~= "string" then
     return nil
@@ -2027,15 +2073,19 @@ local function selectItemSlot(state, authorities, participant, holderId, taken, 
   local hp, ceiling = holderHealth(combatant)
   local conditions = holderConditions(combatant.mon)
   local stages = holderStages(combatant.stages)
-  -- Scans the four source positions in order: gap positions never
-  -- answer. The source policy clears the selected source slot at
-  -- selection (ov10_022206B0): the position becomes the gap sentinel in
-  -- persistent memory so later answers never reselect it while later
-  -- positions keep their source indices; the taken count keeps reserving
-  -- against stock that only moves when the serving executes.
+  -- Scans the four working positions in order: gap positions never
+  -- answer, and later positions stay gated by the living party count
+  -- against the initial carried count. The source policy clears the
+  -- selected working slot at selection (ov10_022206B0): the position
+  -- becomes the gap sentinel in persistent memory so later answers
+  -- never reselect it while later positions keep their indices and the
+  -- initial count stays fixed; the taken count keeps reserving against
+  -- stock that only moves when the serving executes.
+  local living = livingPartyCount(state, participant)
   for index = 1, 4 do
+    local eligibleByCount = index == 1 or living <= itemCount - (index - 1)
     local item = slots[index]
-    if type(item) == "string" and item ~= "NONE" and not CaptureContext.isBall(item) then
+    if eligibleByCount and type(item) == "string" and item ~= "NONE" and not CaptureContext.isBall(item) then
       local units = stock[item] or 0
       if (taken[item] or 0) < units then
         local facts = authorities.itemFacts[item]

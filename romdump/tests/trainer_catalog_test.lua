@@ -206,11 +206,18 @@ function T.ai_flags_project_to_named_passes_without_inventing_policy()
   Assert.isTrue(quiet.doubleBattle == false, "a singles trainer must not gain doubles play")
 end
 
-function T.trainer_item_slots_keep_all_four_source_positions()
+-- Carried trainer items compact at the semantic boundary: empty source
+-- positions never reach the catalog while nonzero identities keep their
+-- source order and multiplicity.
+function T.trainer_header_gaps_compact_before_catalog_publication()
   local TrainerCatalogCompiler = require("romdump.src.digest.battle.TrainerCatalogCompiler")
   local records = {
     [8] = {
       data = trdata(TRTYPE_MON, CLASS_YOUNGSTER, 1, { 17, 0, 26, 0 }, 0, 0),
+      members = plainMember(30, 5, 19),
+    },
+    [9] = {
+      data = trdata(TRTYPE_MON, CLASS_YOUNGSTER, 1, { 17, 17, 0, 26 }, 0, 0),
       members = plainMember(30, 5, 19),
     },
   }
@@ -218,12 +225,21 @@ function T.trainer_item_slots_keep_all_four_source_positions()
   local trainer = assert(compiled.trainers[8], "trainer 8 must survive projection")
   Assert.deepEqual(
     trainer.items,
-    { "POTION", "NONE", "SUPER_POTION", "NONE" },
-    "empty source positions stay as explicit gaps in source order"
+    { "POTION", "SUPER_POTION" },
+    "empty source positions compact away in source order"
+  )
+  local repeated = assert(compiled.trainers[9], "trainer 9 must survive projection")
+  Assert.deepEqual(
+    repeated.items,
+    { "POTION", "POTION", "SUPER_POTION" },
+    "duplicate carried items keep their multiplicity"
   )
 end
 
-function T.trainer_catalogs_require_exactly_four_item_slots()
+-- The semantic item contract is a compact list of real carried items:
+-- zero to four keys pass, while gap sentinels, empty keys, and overlong
+-- lists fail the schema.
+function T.trainer_catalogs_carry_only_compact_real_item_lists()
   local BattleDataSchema = require("libs.assets.src.battle.BattleDataSchema")
   local TrainerCatalogCompiler = require("romdump.src.digest.battle.TrainerCatalogCompiler")
   local function catalogWith(items)
@@ -244,10 +260,17 @@ function T.trainer_catalogs_require_exactly_four_item_slots()
       },
     }
   end
-  Assert.isTrue(
-    BattleDataSchema.assertTrainerCatalog(catalogWith({ "POTION", "NONE", "SUPER_POTION", "NONE" })),
-    "four source-ordered slots pass the semantic schema"
-  )
+  for _, items in ipairs({
+    {},
+    { "POTION" },
+    { "POTION", "SUPER_POTION" },
+    { "POTION", "POTION", "SUPER_POTION", "FULL_RESTORE" },
+  }) do
+    Assert.isTrue(
+      BattleDataSchema.assertTrainerCatalog(catalogWith(items)),
+      "a compact list of " .. #items .. " real items passes the semantic schema"
+    )
+  end
   local compiled = assert(TrainerCatalogCompiler.compile(nativeInput({
     [8] = {
       data = trdata(TRTYPE_MON, CLASS_YOUNGSTER, 1, {}, 0, 0),
@@ -256,16 +279,18 @@ function T.trainer_catalogs_require_exactly_four_item_slots()
   })))
   Assert.deepEqual(
     assert(compiled.trainers[8], "trainer 8 must survive projection").items,
-    { "NONE", "NONE", "NONE", "NONE" },
-    "an itemless trainer still carries four explicit gaps"
+    {},
+    "an itemless trainer carries no items"
   )
   for _, items in ipairs({
     { "POTION", "NONE", "SUPER_POTION" },
-    { "POTION", "NONE", "SUPER_POTION", "NONE", "POTION" },
+    { "NONE" },
+    { "POTION", "SUPER_POTION", "FULL_RESTORE", "MAX_POTION", "POTION" },
+    { "POTION", "" },
   }) do
     local failure = Assert.throws(function()
       BattleDataSchema.assertTrainerCatalog(catalogWith(items))
-    end, "a trainer item list with " .. #items .. " slots must fail")
+    end, "a trainer item list with " .. #items .. " entries must fail")
     Assert.equal(failure.code, "BATTLE_DATA_INVALID", "the failure names the data contract")
   end
 end
@@ -287,8 +312,8 @@ function T.trainer_prize_and_message_selectors_survive_projection()
   Assert.isTrue(type(trainer.messageSelectors) == "table", "message selectors survive projection")
   Assert.deepEqual(
     trainer.items,
-    { "POTION", "NONE", "NONE", "NONE" },
-    "held trainer items resolve to item keys in source order with explicit gaps"
+    { "POTION" },
+    "held trainer items resolve to item keys in source order without gaps"
   )
 end
 
@@ -581,6 +606,59 @@ function T.successful_trainer_job_stages_publishes_and_reads_ready()
   })))
   assert(BattleDataSchema.assertTrainerCatalog(expected) ~= false, "the expected catalog passes the schema")
   Assert.deepEqual(BattleDataCache.loadTrainers(cacheFs), expected, "the published catalog loads exactly")
+end
+
+-- A superseded trainer family marker never reads ready: the previous
+-- cache/schema family differs from the current contract, while a fresh
+-- emission carries the current schema and loads exactly.
+function T.stale_trainer_family_markers_never_read_ready()
+  local DerivedAssetContract = require("libs.assets.src.DerivedAssetContract")
+  local TrainerCatalogCompiler = require("romdump.src.digest.battle.TrainerCatalogCompiler")
+  local BattleDataCache = require("libs.assets.src.battle.BattleDataCache")
+  local BattleDataSchema = require("libs.assets.src.battle.BattleDataSchema")
+  local CacheFs = require("libs.storage.src.CacheFs")
+  local FakeCache = require("tests.support.FakeCache")
+  Assert.equal(
+    DerivedAssetContract.trainerCatalog.cacheFormat,
+    "trainer-catalog-cache-v2",
+    "the trainer cache family carries its current marker"
+  )
+  Assert.equal(
+    DerivedAssetContract.trainerCatalog.schema,
+    "g4-trainer-catalog-v2",
+    "the trainer schema family carries its current marker"
+  )
+  local sha = string.rep("b", 40)
+  local dep = "trainer-family-fixture"
+  local expected = BattleDataCache.trainersMarker(sha, dep)
+  Assert.isTrue(
+    ("trainer-catalog-cache-v1:" .. sha .. ":" .. dep) ~= expected,
+    "the previous family marker no longer reads ready"
+  )
+  local fresh = assert(TrainerCatalogCompiler.compile(nativeInput({
+    [8] = {
+      data = trdata(TRTYPE_MON, CLASS_YOUNGSTER, 1, { 17, 0, 26, 0 }, 0, 0),
+      members = plainMember(30, 5, 19),
+    },
+  })))
+  Assert.equal(
+    fresh.schema,
+    DerivedAssetContract.trainerCatalog.schema,
+    "fresh emissions carry the current family schema"
+  )
+  assert(BattleDataSchema.assertTrainerCatalog(fresh) ~= false, "the fresh catalog passes the semantic schema")
+  local cacheFs = CacheFs.forVersion("heartgold", FakeCache.new())
+  local paths = BattleDataCache.paths()
+  cacheFs:writeLua(assert(paths.trainers, "the cache must publish a trainer-catalog path"), fresh)
+  cacheFs:write(
+    BattleDataCache.trainersMarkerPath(),
+    "trainer-catalog-cache-v1:" .. sha .. ":" .. dep
+  )
+  Assert.isFalse(
+    BattleDataCache.isTrainersReady(cacheFs, expected),
+    "the previous family marker never reads ready"
+  )
+  Assert.deepEqual(BattleDataCache.loadTrainers(cacheFs), fresh, "the fresh catalog loads exactly")
 end
 
 return { tests = T }

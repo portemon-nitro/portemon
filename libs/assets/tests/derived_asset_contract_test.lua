@@ -124,8 +124,8 @@ function T.contract_pins_the_current_asset_identities()
       schema = "g4-battle-data-v1",
     },
     trainerCatalog = {
-      cacheFormat = "trainer-catalog-cache-v1",
-      schema = "g4-trainer-catalog-v1",
+      cacheFormat = "trainer-catalog-cache-v2",
+      schema = "g4-trainer-catalog-v2",
     },
     encounterCatalog = {
       cacheFormat = "encounter-catalog-cache-v1",
