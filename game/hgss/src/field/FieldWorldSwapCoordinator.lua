@@ -48,7 +48,12 @@ end
 ---@return table<string, unknown>
 function FieldWorldSwapCoordinator:prepare(resolution, facing)
   local runtime = self.runtime
-  assert(runtime.transition.fadeAlpha == 1 or runtime.screenFade:isOpaque(), "field map swap must be hidden by fade")
+  local lifecyclePhase = runtime.overworld:phase()
+  local externallyCovered = runtime.transition.coveredSwap and lifecyclePhase == "absent"
+  assert(
+    runtime.transition.fadeAlpha == 1 or runtime.screenFade:isOpaque() or externallyCovered,
+    "field map swap must be hidden by fade"
+  )
   local runtimeMap = resolution.destinationMap
   runtime:_applyEffectiveWeather(runtimeMap)
   local fieldX, fieldZ = resolution.fieldX, resolution.fieldZ

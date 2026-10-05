@@ -12,7 +12,6 @@ local ScriptErrors = require("libs.script.src.errors")
 local ScriptLoader = require("libs.script.src.ScriptLoader")
 local TaskRegistry = require("libs.script.src.TaskRegistry")
 local HgssScript = require("libs.hgss.src.script.Composition")
-local BattleTask = require("libs.hgss.src.script.tasks.BattleTask")
 local Validate = require("libs.assets.src.Validate")
 
 ---@class FieldScriptCompatibility
@@ -51,17 +50,7 @@ function FieldScriptCompatibility.new(opts)
       })
     end
   end
-  -- The battle task registers beside the composed tasks so persisted
-  -- battle continuations validate through the same registry. Registering
-  -- one more type never invalidates unrelated saved tasks: resolution is
-  -- per type and version, so every previously registered task resolves
-  -- exactly as before.
   local tasks = HgssScript.registerTasks(TaskRegistry.new())
-  -- The task implementations narrow the registry's unknown state and spec
-  -- shapes, so registration carries the same implementation cast the
-  -- composition root uses.
-  local battle = BattleTask --[[@as TaskImplementation]]
-  tasks:register(battle.type, battle.version, battle)
   local self = setmetatable({
     registry = registry,
     fingerprint = registry:fingerprint(),

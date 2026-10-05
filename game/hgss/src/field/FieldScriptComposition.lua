@@ -67,6 +67,9 @@ function FieldScriptComposition.compose(runtime, options)
   local function changeWeather(_, weatherId)
     runtime:_setLiveWeather(assert(runtime.runtimeMap), weatherId)
   end
+  local function blackoutSourceMap()
+    return assert(runtime.runtimeMap, "blackout swaps require the live source map")
+  end
   local scripts = FieldScripts.new({
     cacheFs = options.cacheFs,
     overrideFs = runtime.overrideFs,
@@ -114,9 +117,14 @@ function FieldScriptComposition.compose(runtime, options)
     overworld = runtime.overworld,
     propAnimations = runtime.propAnimations,
     pokemonCenterHeal = runtime.pokemonCenterHeal,
+    blackout = {
+      loader = runtime.mapLoader,
+      sourceMap = blackoutSourceMap,
+    },
     timeOfDay = timeOfDayService(runtime),
     trainerCardStars = trainerCardStarsService(runtime),
   })
+  runtime.blackoutFlow = assert(scripts.blackoutFlow)
   local function restore()
     if options.loadedGame then
       ScriptSave.restore(options.loadedGame.scripts, scripts.scheduler, 0, {

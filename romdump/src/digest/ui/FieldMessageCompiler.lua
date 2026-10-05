@@ -27,6 +27,7 @@ local OAK_INTRO_MESSAGE_BANK = 219
 -- (`BufferFriendsName`), so no map header or script bank entry references
 -- it either; it must be listed explicitly.
 local OPPOSITE_PROTAGONIST_NAME_BANK = 445
+local BLACKOUT_MESSAGE_BANK = 203
 
 ---@class FieldMessageCompiler.BankMessage
 ---@field id integer
@@ -192,6 +193,7 @@ function FieldMessageCompiler.requiredBankIds()
   set[MenuProtocol.START_MENU_MESSAGE_BANK] = true
   set[OAK_INTRO_MESSAGE_BANK] = true
   set[OPPOSITE_PROTAGONIST_NAME_BANK] = true
+  set[BLACKOUT_MESSAGE_BANK] = true
   local out = {}
   for bankId in pairs(set) do
     out[#out + 1] = bankId

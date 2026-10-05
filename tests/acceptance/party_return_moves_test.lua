@@ -27,8 +27,30 @@ local PartyCache = require("libs.assets.src.PartyCache")
 local FieldUiFixture = require("tests.support.FieldUiFixture")
 
 local T = {
-  metadata = { capabilities = { "rom_dump" },
-    derivedAssets = { "field-runtime", "audio-bank:702", "audio-bank:709", "audio-bank:728", "map-data:31", "map-data:33", "map-data:34", "map-data:35", "map-data:47", "map-data:48", "map-data:60", "map-data:67", "map-data:134", "map-data:176", "map:33", "map:48", "map:60", "map:134", "map:176" }, tags = { "field", "return" } },
+  metadata = {
+    capabilities = { "rom_dump" },
+    derivedAssets = {
+      "field-runtime",
+      "audio-bank:702",
+      "audio-bank:709",
+      "audio-bank:728",
+      "map-data:31",
+      "map-data:33",
+      "map-data:34",
+      "map-data:35",
+      "map-data:47",
+      "map-data:48",
+      "map-data:60",
+      "map-data:134",
+      "map-data:176",
+      "map:33",
+      "map:48",
+      "map:60",
+      "map:134",
+      "map:176",
+    },
+    tags = { "field", "return" },
+  },
   tests = {},
 }
 
@@ -365,7 +387,7 @@ function T.tests.teleport_uses_explicit_heal_spawn_history()
     Assert.deepEqual(travel:capture(), before, "medicine use must not rewrite respawn history")
     local mover = liveRuntime(liveWorld(game))
     local result = runReturnPlan(game, mover, "teleport", geodude, travel)
-    Assert.equal(result.kind, "field_move_done", "teleport to the mother spawn must run to done")
+    Assert.equal(result.kind, "field_move_done", "teleport to the recorded mother spawn must run to done")
     local settled = game:snapshot()
     Assert.equal(settled.mapSymbol, "MAP_NEW_BARK", "mother-spawn teleport must land in New Bark")
   end)

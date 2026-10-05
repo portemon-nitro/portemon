@@ -37,6 +37,9 @@ local function sourceReferenceBankIds()
   -- from this bank through the player gender; see FieldMessageCompiler's
   -- opposite-protagonist name bank.
   ids[445] = true
+  -- Retail blackout.c reads this global recovery message bank outside script
+  -- bytecode; see FieldMessageCompiler's runtime-protocol bank set.
+  ids[203] = true
   local out = {}
   for bankId in pairs(ids) do
     out[#out + 1] = bankId
@@ -186,6 +189,9 @@ function T.source_references_form_one_sorted_bank_set()
   -- from this bank through the player gender; see FieldMessageCompiler's
   -- opposite-protagonist name bank.
   expected[445] = true
+  -- Retail blackout.c reads this global recovery message bank outside script
+  -- bytecode; see FieldMessageCompiler's runtime-protocol bank set.
+  expected[203] = true
 
   Assert.deepEqual(required, sourceReferenceBankIds())
 

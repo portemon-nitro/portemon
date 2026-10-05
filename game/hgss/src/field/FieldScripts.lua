@@ -253,6 +253,8 @@ end
 ---@field trainerCardStars table<string, unknown> source-derived Trainer Card star query
 ---@field overworld table<string, unknown>|nil the shared field lifecycle owner
 ---@field propAnimations table<string, unknown>|nil the map-scoped one-shot prop slot owner
+---@field blackout { loader: table<string, unknown>, sourceMap: fun(): table<string, unknown> }? blackout flow construction inputs
+---@field blackoutFlow FieldBlackoutFlow? runtime-owned whiteout presentation and recovery flow
 
 ---@class FieldScripts
 ---@field registry table<string, unknown>
@@ -270,6 +272,7 @@ end
 ---@field overrideFs table<string, unknown> read-shaped filesystem for data/scripts/overrides
 ---@field taskRegistry TaskRegistry the live registered-task registry
 ---@field initController MapInitScriptController
+---@field blackoutFlow FieldBlackoutFlow?
 ---@field compatibility FieldScriptCompatibility
 ---@field mapSource RuntimeFieldMap the active runtime map map-scoped script state is bound to
 ---@field propAnimations table<string, unknown>|nil
@@ -372,6 +375,7 @@ function FieldScripts.new(opts)
 
   ---@class FieldScriptsPlatform: FieldScripts
   ---@field initController MapInitScriptController
+  ---@field blackoutFlow FieldBlackoutFlow?
   local platform = setmetatable({
     compatibility = compatibility,
     registry = registry,
@@ -404,10 +408,34 @@ function FieldScripts.new(opts)
   -- The live task registry: the scheduler routes through it.
   local liveTaskRegistry = compatibility.taskRegistry
 
+  local blackoutFlow
+  if opts.blackout ~= nil then
+    local FieldBlackoutFlow = require("game.hgss.src.field.FieldBlackoutFlow")
+    blackoutFlow = FieldBlackoutFlow.new({
+      cacheFs = opts.cacheFs,
+      loader = opts.blackout.loader,
+      transition = opts.transition,
+      sourceMap = opts.blackout.sourceMap,
+      world = worldState,
+      mons = opts.mons,
+      audio = opts.audio,
+      overworld = opts.overworld,
+      dialogue = dialogueHost,
+    })
+    platform.blackoutFlow = blackoutFlow
+  end
+
   local scheduler
   local function advanceAsync()
     opts.auxiliaryUi:advance()
-    dialogueHost:advance(scheduler:currentInput())
+    local input = scheduler:currentInput()
+    if blackoutFlow ~= nil then
+      local blackoutPhase = blackoutFlow:status().phase
+      if blackoutPhase == "message_in" or blackoutPhase == "message_out" then
+        input = nil
+      end
+    end
+    dialogueHost:advance(input)
     -- The signpost controller is pure and fixed-tick: exactly one step per
     -- scheduler tick, commands and printer together.
     signpostHost:advance(scheduler:currentInput())
@@ -453,6 +481,7 @@ function FieldScripts.new(opts)
       followingMon = opts.followingMon,
       followerTransition = opts.followerTransition,
       pokemonCenterHeal = opts.pokemonCenterHeal,
+      blackout = blackoutFlow,
       timeOfDay = opts.timeOfDay,
       trainerCardStars = opts.trainerCardStars,
       starterBalls = opts.starterBalls,

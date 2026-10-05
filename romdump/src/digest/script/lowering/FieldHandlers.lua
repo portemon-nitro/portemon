@@ -1409,6 +1409,10 @@ local function wildBattle(ins)
   }
 end
 
+local function whiteout(_)
+  return { op = "whiteout" }
+end
+
 local function checkBattleWon(ins)
   return { op = "battle_result", result = Operands.varRef(ins.operands[1]) }
 end
@@ -1583,6 +1587,8 @@ return {
   [213] = trainerBattle,
   [220] = checkBattleWon,
   [589] = wildBattle,
+  [219] = whiteout,
+  [279] = whiteout,
   [746] = hideAuxiliaryUi,
   [747] = showAuxiliaryUi,
   [748] = contextChoice,

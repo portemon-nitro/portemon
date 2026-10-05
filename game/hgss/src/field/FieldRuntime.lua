@@ -252,6 +252,7 @@ end
 ---@field fieldEntranceIndicatorAsset table<string, unknown>
 ---@field fieldEffectAssets table<string, unknown>
 ---@field pokemonCenterHeal PokemonCenterHealFlow? source-owned Pokémon Center choreography
+---@field blackoutFlow FieldBlackoutFlow? runtime-owned whiteout presentation and recovery flow
 ---@field pokemonCenterHealDefinition table<string, unknown>? generated healing-ball asset definition
 ---@field physicalCoverage FieldCoverage?
 ---@field residency FieldResidencyCoordinator?
@@ -1494,6 +1495,9 @@ function FieldRuntime:update(dt)
     end
     self.transition:updateSourceFrame()
     self.screenFade:updateSourceFrame()
+    if self.blackoutFlow then
+      self.blackoutFlow:updateSourceFrame()
+    end
     if self.audio then
       self.audio:updateSoundFrame()
     end
@@ -1517,7 +1521,7 @@ function FieldRuntime:update(dt)
   -- field settles: simulation and presentation acknowledgements advance
   -- together while entry/return readiness still gates phase transitions.
   -- Step encounters attempt at the committed-step boundary right after.
-  if self.battleRuntime ~= nil then
+  if self.battleRuntime ~= nil or self._battleLaunch ~= nil then
     self:updateBattle()
   end
   self:pollStepEncounters()
@@ -2349,6 +2353,8 @@ function FieldRuntime:_composeBattleState(loadedGame, monRoot, world)
     self.battleFrontierRecords = BattleFrontierRecords.new()
   end
   self.battleRuntime = nil
+  self._battleLaunch = nil
+  self._battleReceipt = nil
   self.battlePresentation = nil
   self.pendingEncounterId = nil
   self.pendingEncounter = nil
@@ -2564,6 +2570,42 @@ end
 -- words for script result reads; a failed battle faults the runtime
 -- loudly instead of resuming the story as a success.
 function FieldRuntime:updateBattle()
+  local launch = self._battleLaunch
+  if launch ~= nil and launch.phase == "leaving" then
+    local phase, failure = self.overworld:phase()
+    if failure ~= nil or phase == "failed" then
+      launch.phase = "failed"
+      launch.error = failure
+      self.errorText = tostring(failure or "overworld leave failed")
+      return
+    end
+    if phase ~= "absent" then
+      return
+    end
+    local request = launch.request
+    self:startBattle({ request = request, scenario = launch.scenario })
+    launch.phase = "active"
+  end
+
+  if launch ~= nil and launch.phase == "restoring" then
+    local phase, failure = self.overworld:phase()
+    if failure ~= nil or phase == "failed" then
+      launch.phase = "failed"
+      launch.error = failure
+      self.errorText = tostring(failure or "overworld restore failed")
+      return
+    end
+    if phase ~= "present" then
+      return
+    end
+    launch.phase = "complete"
+    launch.committed = true
+    self._lastBattleResult = { result = launch.result, sourceResult = launch.sourceResult }
+    self._battleReceipt = launch
+    self._battleLaunch = nil
+    return
+  end
+
   local battle = self.battleRuntime
   if battle == nil then
     return
@@ -2573,9 +2615,6 @@ function FieldRuntime:updateBattle()
   if status.phase ~= "complete" and status.phase ~= "failed" then
     return
   end
-  if status.phase == "complete" and status.outcomeReceipt ~= nil and status.outcomeReceipt.committed == true then
-    self._lastBattleResult = { result = status.result, sourceResult = status.sourceResult }
-  end
   if self.session ~= nil then
     self.session:setBattleActive(false)
   end
@@ -2583,6 +2622,29 @@ function FieldRuntime:updateBattle()
   self.battleRuntime = nil
   if status.phase == "failed" then
     self.errorText = tostring(status.error or "the battle reported a failure")
+    if launch ~= nil then
+      launch.phase = "failed"
+      launch.error = status.error or self.errorText
+      self._battleReceipt = launch
+      self._battleLaunch = nil
+    end
+    return
+  end
+  if launch ~= nil and status.outcomeReceipt ~= nil and status.outcomeReceipt.committed == true then
+    launch.result = status.result
+    launch.sourceResult = status.sourceResult
+    if status.result == "loss" or status.result == "draw" then
+      launch.phase = "complete"
+      launch.committed = true
+      self._lastBattleResult = { result = status.result, sourceResult = status.sourceResult }
+      self._battleReceipt = launch
+      self._battleLaunch = nil
+    else
+      launch.phase = "restoring"
+      self.overworld:requestRestore()
+    end
+  elseif status.phase == "complete" and status.outcomeReceipt ~= nil and status.outcomeReceipt.committed == true then
+    self._lastBattleResult = { result = status.result, sourceResult = status.sourceResult }
   end
 end
 
@@ -2599,6 +2661,26 @@ end
 ---@param launchId string
 ---@return table<string, unknown>?
 function FieldRuntime:battleStatus(launchId)
+  local receipt = self._battleReceipt
+  if receipt ~= nil and receipt.launchId == launchId then
+    return {
+      phase = receipt.phase,
+      committed = receipt.committed == true,
+      result = receipt.result,
+      sourceResult = receipt.sourceResult,
+      error = receipt.error,
+    }
+  end
+  local launch = self._battleLaunch
+  if launch ~= nil and launch.launchId == launchId then
+    return {
+      phase = launch.phase,
+      committed = launch.committed == true,
+      result = launch.result,
+      sourceResult = launch.sourceResult,
+      error = launch.error,
+    }
+  end
   local battle = self.battleRuntime
   if battle == nil then
     return nil
@@ -2613,12 +2695,16 @@ end
 ---@return string the issued launch identity
 function FieldRuntime:launchBattle(spec)
   assert(type(spec) == "table", "battle host launches require a spec record")
+  assert(self._battleLaunch == nil and self.battleRuntime == nil, "a field-owned battle is already active")
+  self._battleReceipt = nil
   self._launchCounter = (self._launchCounter or 0) + 1
   local tag = spec.launchId or spec.kind or "battle"
   local launchId = tostring(tag) .. "#" .. tostring(self._launchCounter)
   local payload = spec.details or {}
   assert(type(payload) == "table", "battle host launches carry their payload record")
-  self:startBattle({ request = { id = launchId, kind = spec.kind or "wild", payload = payload } })
+  self.overworld:requestLeave()
+  local request = { id = launchId, kind = spec.kind or "wild", payload = payload }
+  self._battleLaunch = { launchId = launchId, phase = "leaving", request = request }
   return launchId
 end
 
@@ -3076,6 +3162,9 @@ function FieldRuntime:_releaseAll()
   end
   if self.overworld then
     self.overworld:dispose()
+  end
+  if self.blackoutFlow then
+    self.blackoutFlow:dispose()
   end
   if self.battleRuntime then
     self.battleRuntime:dispose()

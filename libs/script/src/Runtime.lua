@@ -1916,6 +1916,10 @@ function HANDLERS.overworld_restore(node, run)
   requireForeground(run, node.op)
   return blockOnTask(run, "overworld_lifecycle", { action = "restore" })
 end
+function HANDLERS.whiteout(node, run)
+  requireForeground(run, node.op)
+  return blockOnTask(run, "whiteout", {})
+end
 function HANDLERS.current_map_id(node, run)
   semanticsFor(run).writeRef(node.result, requireService(run, "maps"):currentId(), run)
   return Runtime.OUTCOME_CONTINUE

@@ -61,4 +61,12 @@ function T.lifecycle_map_query_and_prop_commands_have_source_dispositions()
   end
 end
 
+function T.whiteout_commands_share_one_blocking_semantic_operation()
+  for _, opcode in ipairs({ 219, 279 }) do
+    Assert.equal(ScriptCommands.byOpcode[opcode].classification, "native_wait")
+    local node = assert(FieldHandlers[opcode])(instruction(opcode))
+    Assert.deepEqual(node, { op = "whiteout" })
+  end
+end
+
 return { tests = T }

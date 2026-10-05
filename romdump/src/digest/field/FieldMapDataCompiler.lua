@@ -564,11 +564,30 @@ function FieldMapDataCompiler.compileSpawnDestinations(romFs, hashLua)
     )
     spawns[key] = { map = entry.map, fieldX = entry.fieldX, fieldZ = entry.fieldZ }
   end
-  local index = { schema = FieldMapDataCache.SPAWN_INDEX_SCHEMA, spawns = spawns }
+  local blackoutSpawns = {}
+  for key, entry in pairs(FieldMoveSources.BLACKOUT_DESTINATIONS) do
+    assert(type(key) == "string" and key ~= "", "blackout destinations key on spawn names")
+    assert(type(entry) == "table", "blackout destinations carry records")
+    assert(type(entry.map) == "string" and entry.map ~= "", "blackout destinations name a map")
+    assert(type(entry.fieldX) == "number" and entry.fieldX % 1 == 0 and entry.fieldX >= 0, "blackout x is a tile")
+    assert(type(entry.fieldZ) == "number" and entry.fieldZ % 1 == 0 and entry.fieldZ >= 0, "blackout z is a tile")
+    assert(entry.facing == "north", "retail death destinations face north")
+    blackoutSpawns[key] = { map = entry.map, fieldX = entry.fieldX, fieldZ = entry.fieldZ, facing = entry.facing }
+  end
+  local index = {
+    schema = FieldMapDataCache.SPAWN_INDEX_SCHEMA,
+    spawns = spawns,
+    blackoutSpawns = blackoutSpawns,
+  }
   assert(FieldMapDataCache.hasSpawnDestinations(index.spawns), "compiled spawn destinations satisfy the family record")
+  assert(
+    FieldMapDataCache.hasBlackoutDestinations(index.blackoutSpawns),
+    "compiled blackout destinations satisfy the family record"
+  )
   local metadata = romFs:metadata()
   assert(type(metadata) == "table" and type(metadata.sha1) == "string", "spawn marker needs the ROM sha")
-  local marker = FieldMapDataCache.spawnIndexMarker(metadata.sha1, hashLua(index.spawns))
+  local marker =
+    FieldMapDataCache.spawnIndexMarker(metadata.sha1, hashLua({ spawns = spawns, blackoutSpawns = blackoutSpawns }))
   return { index = index, marker = marker }
 end
 

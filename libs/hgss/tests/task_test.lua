@@ -679,6 +679,34 @@ T["consecutive blocking messages replace the open box"] = function()
   Assert.equal(h.host.calls[5].args[1], "msg.second")
 end
 
+T["say closes a preceding print-only message"] = function()
+  local h = harness({ printTicks = 1 })
+  local instanceId = startForeground(
+    h,
+    script("test.print_then_say", {
+      S.message({ message = "msg.first", waitForPrint = true }),
+      S.say({ message = "msg.second" }),
+      S.stop(),
+    }),
+    100
+  )
+  h.scheduler:step(100, {})
+  h.scheduler:step(101, {})
+  h.scheduler:step(102, {})
+  Assert.isNil(h.services.events:eventFor("script.error", instanceId), "say replaces the prior printed message")
+  local closeIndex, secondOpenIndex
+  for i, call in ipairs(h.host.calls) do
+    if call.name == "close" then
+      closeIndex = i
+    elseif call.name == "openMessage" and call.args[1].message == "msg.second" then
+      secondOpenIndex = i
+    end
+  end
+  Assert.notNil(closeIndex, "say closes the prior print-only message")
+  Assert.notNil(secondOpenIndex, "say opens its own message")
+  Assert.isTrue(closeIndex < secondOpenIndex, "the previous modal closes before the new say opens")
+end
+
 -- 13. Cancelling an environment invokes the dialogue task's implementation
 -- cancel: the engine-owned box is closed even though the task never reached
 -- its close delay.
