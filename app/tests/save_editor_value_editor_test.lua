@@ -339,6 +339,41 @@ function T.repeated_adjustment_preserves_decimal_and_hexadecimal_display()
   Assert.equal(hexadecimal:snapshot().buffer, "1B6", "ten-step adjustments preserve hexadecimal display")
 end
 
+function T.cleared_choice_filter_restores_the_opening_selection_without_publishing()
+  Assert.isTrue(loaded)
+  local options = {}
+  for index = 1, 24 do
+    options[index] = { key = string.format("K%02d", index), label = "Choice " .. index }
+  end
+  local editor = SaveEditorValueEditor.new({ kind = "choice", value = "K18", options = options })
+  Assert.isTrue(editor:textinput("no matching choice"), "typing filters the choice rows")
+  Assert.deepEqual(editor:snapshot().options, {}, "a query without matches leaves zero rows")
+  Assert.isNil(editor:result(), "filtering publishes no result")
+  Assert.isTrue(editor:press("clear_search"), "Delete clears the choice query")
+  local recovered = editor:snapshot()
+  Assert.equal(recovered.query, "")
+  Assert.equal(#recovered.options, 24, "clearing restores every row")
+  Assert.equal(recovered.selectedKey, "K18", "the opening cursor identity survives a filter-clear round trip")
+  Assert.isNil(editor:result(), "clearing publishes no result")
+  Assert.isTrue(editor:submit(), "the restored selection still submits")
+  Assert.deepEqual(editor:result(), { kind = "confirm", value = "K18" })
+end
+
+function T.multibyte_choice_query_backspace_removes_one_glyph_without_publishing()
+  Assert.isTrue(loaded)
+  local options = {}
+  for index = 1, 8 do
+    options[index] = { key = string.format("K%02d", index), label = "Choice " .. index }
+  end
+  local editor = SaveEditorValueEditor.new({ kind = "choice", value = "K01", options = options })
+  Assert.isTrue(editor:textinput("é"), "typing accepts a multibyte glyph")
+  Assert.equal(editor:snapshot().query, "é")
+  Assert.isTrue(editor:press("backspace"), "Backspace removes the complete multibyte glyph")
+  Assert.equal(editor:snapshot().query, "", "the query is empty after removing its only glyph")
+  Assert.equal(#editor:snapshot().options, 8, "the cleared query restores every row")
+  Assert.isNil(editor:result(), "query edits publish no result")
+end
+
 function T.name_variant_uses_naming_snapshot_and_submits_real_text()
   Assert.isTrue(loaded)
   local editor = SaveEditorValueEditor.new({

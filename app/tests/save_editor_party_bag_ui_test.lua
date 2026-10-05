@@ -873,7 +873,13 @@ function T.progress_focus_keeps_offscreen_flag_rows_reachable_with_sparse_neighb
 
   Assert.deepEqual(middleNode.up, { previous }, "a flag row links to its immediate semantic predecessor")
   Assert.deepEqual(middleNode.down, { following }, "a flag row links to its immediate semantic successor")
-  Assert.isNil(layout.targets[middle], "the middle synthetic row starts offscreen")
+  local middleTarget = assert(layout.targets[middle], "every semantic flag row keeps its activation target")
+  local middleClip = assert(middleTarget.clip, "flag rows carry their viewport intersection")
+  Assert.isTrue(
+    middleTarget.rect.y + middleTarget.rect.height <= middleClip.y
+      or middleTarget.rect.y >= middleClip.y + middleClip.height,
+    "the middle synthetic row starts outside its visible viewport intersection"
+  )
   Assert.isTrue(table.concat(layout.viewports.flags.rowTargets, "\n"):find(middle, 1, true) ~= nil)
 
   local scrolledView = {

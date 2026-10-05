@@ -275,6 +275,316 @@ function T.tests.party_subpage_controls_remain_reachable_without_truncating_thei
   end
 end
 
+local function filterMetrics()
+  return {
+    lineHeight = 14,
+    measure = function(text)
+      return #text * 7
+    end,
+  }
+end
+
+local function progressFilterFlags()
+  return {
+    { name = "GOT_POKEDEX", displayName = "Got Pokedex", value = true },
+    { name = "BEAT_FALKNER", displayName = "Beat Falkner", value = true },
+    { name = "MET_PROF_OAK", displayName = "Met Prof Oak", value = false },
+    { name = "HAS_RUNNING_SHOES", displayName = "Has Running Shoes", value = false },
+    { name = "VISITED_ECRUTEAK", displayName = "Visited Ecruteak", value = false },
+    { name = "UNLOCKED_SAFARI", displayName = "Unlocked Safari", value = false },
+  }
+end
+
+local function progressFilterView(flagRows, query)
+  return {
+    section = "Progress",
+    status = "ready",
+    ready = true,
+    dirty = true,
+    scope = { id = "section:Progress", epoch = 0, kind = "section", focusId = "money" },
+    flagRows = flagRows,
+    scrollOffsets = {},
+    query = query or "",
+  }
+end
+
+local function focusOrderContains(list, targetId)
+  for _, focusId in ipairs(list) do
+    if focusId == targetId then
+      return true
+    end
+  end
+  return false
+end
+
+local function focusOrderHasSearchControl(focusOrder, targets)
+  for _, focusId in ipairs(focusOrder) do
+    if focusId:find("search", 1, true) ~= nil then
+      return true
+    end
+  end
+  for targetId in pairs(targets) do
+    if targetId:find("search", 1, true) ~= nil then
+      return true
+    end
+  end
+  return false
+end
+
+function T.tests.progress_list_publishes_one_container_with_ordered_filterable_rows()
+  local flags = progressFilterFlags()
+  local layout = computeLayout(progressFilterView(flags, ""), 256, 192)
+
+  Assert.notNil(layout.lists, "the plan must publish one record per interactive list")
+  local list = assert(layout.lists.flags, "the Progress flag list must publish its interaction record")
+  Assert.equal(list.id, "flags")
+  Assert.equal(list.targetId, "list:flags")
+  Assert.equal(list.viewportId, "flags")
+  Assert.isTrue(list.filterable, "the flag list accepts direct typing while focused")
+  Assert.equal(list.query, "")
+  Assert.isFalse(list.empty, "a populated flag list is not empty")
+  local expectedRows = {}
+  for _, flag in ipairs(flags) do
+    expectedRows[#expectedRows + 1] = "flag:" .. flag.name
+  end
+  Assert.deepEqual(list.rowTargets, expectedRows)
+
+  local container = assert(layout.targets["list:flags"], "the flag list owns one screen-level container target")
+  Assert.isTrue(container.focusable, "the container remains focusable while rows scroll")
+  Assert.isTrue(
+    focusOrderContains(layout.focusOrder, "list:flags"),
+    "the container belongs to the screen-level focus order"
+  )
+  for _, rowTarget in ipairs(expectedRows) do
+    local row = assert(layout.targets[rowTarget], "row activation keeps its existing target: " .. rowTarget)
+    Assert.isTrue(row.activationEnabled, "rows remain activatable: " .. rowTarget)
+  end
+  Assert.isFalse(
+    focusOrderHasSearchControl(layout.focusOrder, layout.targets),
+    "filtering needs no standalone search target"
+  )
+
+  local controller = Controller.new()
+  controller:setSection("Progress")
+  controller:setFocus("list:flags")
+  local rowSet = {}
+  for _, rowTarget in ipairs(expectedRows) do
+    rowSet[rowTarget] = true
+  end
+  for _, direction in ipairs({ "up", "down", "left", "right" }) do
+    controller:setFocus("list:flags")
+    controller:moveFocus(layout.focusGraph, direction)
+    Assert.isFalse(
+      rowSet[controller.focus] == true,
+      "directional input from the container never lands on a list row: " .. direction
+    )
+  end
+  controller:setFocus("list:flags")
+  controller:moveFocus(layout.focusGraph, "down")
+  Assert.isTrue(
+    controller.focus == "save" or controller.focus == "discard" or controller.focus == "back",
+    "down from the flag container reaches a neighboring screen-level control, got " .. controller.focus
+  )
+end
+
+local function mapListView()
+  return {
+    section = "Location",
+    status = "ready",
+    ready = true,
+    dirty = false,
+    scope = { id = "section:Location:map-list", epoch = 0, kind = "section", focusId = "location:grid" },
+    query = "",
+    session = {
+      saveId = "layout-save",
+      versionId = "heartgold",
+      playerName = "PLAYER",
+      money = 3000,
+      frameIndex = 0,
+      location = {
+        mapId = 12,
+        fieldX = 32,
+        fieldZ = 48,
+        surfaceId = 3,
+        worldY = 0,
+        terrainDependencyHash = "location-layout",
+      },
+    },
+    location = {
+      mapId = 12,
+      symbol = "MAP_TEST_ROUTE",
+      section = "TEST_SECTION",
+      maps = {
+        { mapId = 12, symbol = "MAP_TEST_ROUTE", displayName = "TEST_ROUTE", section = "TEST_SECTION" },
+        { mapId = 34, symbol = "MAP_TEST_TOWN", displayName = "TEST_TOWN", section = "TEST_SECTION" },
+        { mapId = 47, symbol = "MAP_TEST_CAVE", displayName = "TEST_CAVE", section = "TEST_OTHER" },
+        { mapId = 7, symbol = "MAP_TEST_LAKE", displayName = "TEST_LAKE", section = "TEST_OTHER" },
+      },
+      generation = 1,
+      status = { state = "ready" },
+      tiles = {
+        { fieldX = 32, fieldZ = 48, selectable = true },
+      },
+      cursor = { fieldX = 32, fieldZ = 48 },
+    },
+    locationNavigation = {
+      page = "map-list",
+      contentFocus = "map-list",
+      mapId = 12,
+      cursor = { fieldX = 32, fieldZ = 48 },
+      center = { fieldX = 32, fieldZ = 48 },
+      mapOffset = 0,
+    },
+  }
+end
+
+function T.tests.location_map_list_publishes_one_container_with_ordered_rows()
+  local expectedRows = { "location:map:12", "location:map:34", "location:map:47", "location:map:7" }
+  for _, size in ipairs({ { 800, 600 }, { 256, 192 } }) do
+    local layout = computeLayout(mapListView(), size[1], size[2])
+    local label = size[1] .. "x" .. size[2]
+    Assert.notNil(layout.lists, "the plan must publish one record per interactive list (" .. label .. ")")
+    local list = assert(
+      layout.lists["location:map-list"],
+      "the Location map list must publish its interaction record (" .. label .. ")"
+    )
+    Assert.equal(list.id, "location:map-list")
+    Assert.equal(list.targetId, "list:location:map-list")
+    Assert.equal(list.viewportId, "location:map-list")
+    Assert.isTrue(list.filterable, "the map list accepts direct typing while focused (" .. label .. ")")
+    Assert.deepEqual(list.rowTargets, expectedRows)
+    Assert.isFalse(list.empty, "a populated map list is not empty (" .. label .. ")")
+    Assert.notNil(
+      layout.targets["list:location:map-list"],
+      "the map list owns one screen-level container target (" .. label .. ")"
+    )
+    Assert.isTrue(
+      focusOrderContains(layout.focusOrder, "list:location:map-list"),
+      "the container belongs to the screen-level focus order (" .. label .. ")"
+    )
+    Assert.isFalse(
+      focusOrderHasSearchControl(layout.focusOrder, layout.targets),
+      "map filtering needs no standalone search target (" .. label .. ")"
+    )
+  end
+end
+
+function T.tests.offscreen_location_map_rows_remain_in_focus_order()
+  local maps = {}
+  for index = 1, 30 do
+    maps[index] = {
+      mapId = index,
+      symbol = "MAP_TEST_" .. index,
+      displayName = "TEST_" .. index,
+      section = "TEST_SECTION",
+    }
+  end
+  for _, size in ipairs({ { 800, 600 }, { 256, 192 } }) do
+    local view = mapListView()
+    view.location.maps = maps
+    local layout = computeLayout(view, size[1], size[2])
+    local label = size[1] .. "x" .. size[2]
+    local list = assert(
+      layout.lists["location:map-list"],
+      "the Location map list must publish its interaction record (" .. label .. ")"
+    )
+    Assert.equal(#list.rowTargets, 30, "every map stays addressable (" .. label .. ")")
+    local viewport = assert(layout.viewports["location:map-list"])
+    Assert.isTrue(viewport.lastIndex < 30, "the map list must overflow its viewport (" .. label .. ")")
+    for _, rowTarget in ipairs(list.rowTargets) do
+      Assert.isTrue(
+        focusOrderContains(layout.focusOrder, rowTarget),
+        "offscreen map rows stay in focus order (" .. label .. ": " .. rowTarget .. ")"
+      )
+      Assert.notNil(
+        layout.focusGraph[rowTarget],
+        "offscreen map rows stay in the focus graph (" .. label .. ": " .. rowTarget .. ")"
+      )
+    end
+  end
+end
+
+function T.tests.choice_list_publishes_one_container_with_ordered_rows()
+  local options = {}
+  for index = 1, 6 do
+    options[index] = { key = string.format("K%02d", index), label = "Choice " .. index }
+  end
+  local view = {
+    section = "Bag",
+    status = "ready",
+    ready = true,
+    dirty = false,
+    bagRows = {},
+    valueEditor = { kind = "choice", options = options, selectedKey = "K01" },
+    scope = { id = "value:choice", epoch = 1, kind = "value", focusId = "choice:K01" },
+    scrollOffsets = {},
+  }
+  local layout = computeLayout(view, 256, 192)
+
+  Assert.notNil(layout.lists, "the plan must publish one record per interactive list")
+  local list = assert(layout.lists["value:choice"], "the choice editor must publish its interaction record")
+  Assert.equal(list.id, "value:choice")
+  Assert.equal(list.targetId, "list:value:choice")
+  Assert.equal(list.viewportId, "value:choice")
+  Assert.isTrue(list.filterable, "the choice list accepts direct typing while focused")
+  Assert.isFalse(list.empty, "a populated choice list is not empty")
+  local expectedRows = {}
+  for _, option in ipairs(options) do
+    expectedRows[#expectedRows + 1] = "choice:" .. option.key
+  end
+  Assert.deepEqual(list.rowTargets, expectedRows)
+  Assert.notNil(layout.targets["list:value:choice"], "the choice list owns one screen-level container target")
+  Assert.isTrue(
+    focusOrderContains(layout.focusOrder, "list:value:choice"),
+    "the container belongs to the screen-level focus order"
+  )
+  Assert.isNil(layout.targets["clear-search"], "choice filtering needs no visible Clear control")
+  Assert.isFalse(
+    focusOrderHasSearchControl(layout.focusOrder, layout.targets),
+    "choice filtering needs no standalone search target"
+  )
+
+  local controller = Controller.new()
+  controller:setFocus("list:value:choice")
+  for _, direction in ipairs({ "up", "down", "left", "right" }) do
+    controller:setFocus("list:value:choice")
+    controller:moveFocus(layout.focusGraph, direction)
+    Assert.isFalse(
+      controller.focus:match("^choice:") ~= nil,
+      "directional input from the container never lands on a choice row: " .. direction
+    )
+  end
+end
+
+function T.tests.modal_scope_omits_background_list_rows_and_containers()
+  local view = progressFilterView(progressFilterFlags(), "")
+  view.modal = "leave"
+  view.scope = { id = "leave", epoch = 1, kind = "decision", focusId = "cancel" }
+  local layout = computeLayout(view, 256, 192)
+  for _, focusId in ipairs(layout.focusOrder) do
+    Assert.isFalse(focusId:match("^flag:") ~= nil, "a modal scope never exposes a background flag row")
+    Assert.isFalse(focusId:match("^list:") ~= nil, "a modal scope never exposes a background list container")
+  end
+  for targetId in pairs(layout.targets) do
+    Assert.isFalse(targetId:match("^flag:") ~= nil, "a modal scope never targets a background flag row")
+    Assert.isFalse(targetId:match("^list:") ~= nil, "a modal scope never targets a background list container")
+  end
+end
+
+function T.tests.empty_filter_keeps_the_container_in_focus_order()
+  local layout = computeLayout(progressFilterView({}, "zzz-no-such-flag"), 256, 192)
+  Assert.notNil(layout.lists, "the plan must publish one record per interactive list")
+  local list = assert(layout.lists.flags, "an empty flag list still publishes its interaction record")
+  Assert.isTrue(list.empty, "zero filtered rows mark the list empty")
+  Assert.equal(list.query, "zzz-no-such-flag")
+  Assert.deepEqual(list.rowTargets, {})
+  Assert.notNil(layout.targets["list:flags"], "the empty list keeps a focusable container")
+  Assert.isTrue(
+    focusOrderContains(layout.focusOrder, "list:flags"),
+    "the empty container stays in the screen-level focus order"
+  )
+end
+
 function T.tests.save_editor_list_and_card_geometry_is_bounded_and_row_major()
   local loadedList, List = pcall(require, "app.src.saveeditor.SaveEditorList")
   Assert.isTrue(loadedList, "the editor owns pure framed-list geometry")

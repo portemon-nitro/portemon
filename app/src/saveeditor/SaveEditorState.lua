@@ -981,6 +981,201 @@ function State:_resolve(view)
   return self.presentation:resolve(self.displayContext:measure(self.width, self.height), view)
 end
 
+---@param layout table<string, unknown>
+---@return table<string, unknown>? list
+---@return integer? rowIndex
+function State:_activeList(layout)
+  local available = type(layout) == "table" and layout.lists or nil
+  if type(available) ~= "table" then
+    return nil
+  end
+  local focus = self.controller.focus
+  for _, list in pairs(available) do
+    if focus == list.targetId then
+      return list, nil
+    end
+    for index, targetId in ipairs(list.rowTargets) do
+      if focus == targetId then
+        return list, index
+      end
+    end
+  end
+  return nil
+end
+
+---@param list table<string, unknown>
+---@return string? cursor
+function State:_reconcileListCursor(list)
+  local cursor = self.controller:listCursor(list.id)
+  for _, targetId in ipairs(list.rowTargets) do
+    if targetId == cursor then
+      return cursor
+    end
+  end
+  cursor = list.rowTargets[1]
+  self.controller:setListCursor(list.id, cursor)
+  return cursor
+end
+
+function State:_syncChoiceSelection(list, targetId)
+  if list.id ~= "value:choice" then
+    return
+  end
+  local editor = assert(self.valueEditor, "choice rows need their value editor")
+  local key = assert(targetId:match("^choice:(.+)$"), "choice cursor must identify a choice row")
+  local guard = 0
+  while editor:snapshot().selectedKey ~= key and guard < 64 do
+    guard = guard + 1
+    local snapshot = editor:snapshot()
+    local current, wanted
+    for index, option in ipairs(snapshot.options) do
+      if option.key == snapshot.selectedKey then
+        current = index
+      end
+      if option.key == key then
+        wanted = index
+      end
+    end
+    if wanted == nil then
+      return
+    end
+    local delta = wanted - (current or 1)
+    if delta == 0 then
+      editor:moveChoice(1)
+      editor:moveChoice(-1)
+    else
+      editor:moveChoice(delta)
+    end
+  end
+end
+
+function State:_moveListRow(list, rowIndex, direction, layout)
+  local viewport = assert(layout.viewports[list.viewportId], "list movement needs its scroll viewport")
+  local visibleCount = math.max(1, viewport.lastIndex - viewport.firstIndex + 1)
+  local delta = direction == "up" and -1
+    or direction == "down" and 1
+    or direction == "left" and -visibleCount
+    or direction == "right" and visibleCount
+    or error("list movement needs a cardinal direction", 2)
+  local nextIndex = math.max(1, math.min(#list.rowTargets, rowIndex + delta))
+  if list.id == "value:choice" then
+    local editor = assert(self.valueEditor, "choice rows need their value editor")
+    self.preserveChoiceScroll = false
+    self:_syncChoiceSelection(list, list.rowTargets[rowIndex])
+    if nextIndex ~= rowIndex then
+      editor:moveChoice(nextIndex - rowIndex)
+    end
+    local selected = assert(editor:snapshot().selectedKey, "choice movement keeps a selected row")
+    local target = "choice:" .. selected
+    self.controller:setListCursor(list.id, target)
+    self.controller:setFocus(target)
+    return
+  end
+  local target = assert(list.rowTargets[nextIndex], "list movement stays within its rows")
+  self.controller:setListCursor(list.id, target)
+  self.controller:setFocus(target)
+  local offset = ScrollViewport.reveal(
+    viewport.offset,
+    viewport.clip.height,
+    (nextIndex - 1) * viewport.rowExtent,
+    viewport.rowExtent
+  )
+  offset = ScrollViewport.clamp(offset, viewport.contentExtent, viewport.clip.height)
+  if list.id == "flags" then
+    self.controller.scrollOffsets.flags = offset
+  elseif list.id == "location:map-list" then
+    self.controller.locationMapOffset = offset
+  else
+    error("unknown filterable list " .. list.id, 2)
+  end
+end
+
+function State:_filterFocusedList(list, rowIndex, operation, text)
+  assert(list.filterable, "filtering needs a filterable list")
+  local previousFocus = self.controller.focus
+  local hadRowFocus = rowIndex ~= nil
+  if list.id == "value:choice" then
+    local editor = assert(self.valueEditor, "choice filtering needs its value editor")
+    self.preserveChoiceScroll = false
+    if operation == "append" then
+      editor:textinput(assert(text, "filter append needs its input text"))
+    elseif operation == "backspace" then
+      editor:press("backspace")
+    elseif operation == "clear" then
+      editor:press("clear_search")
+    else
+      error("unknown list filter operation", 2)
+    end
+  else
+    if operation == "append" then
+      self.controller.query = self.controller.query .. assert(text, "filter append needs its input text")
+    elseif operation == "backspace" then
+      local glyphs = {}
+      for glyph in Utf8Glyphs.iter(self.controller.query) do
+        glyphs[#glyphs + 1] = glyph
+      end
+      table.remove(glyphs)
+      self.controller.query = table.concat(glyphs)
+    elseif operation == "clear" then
+      self.controller.query = ""
+    else
+      error("unknown list filter operation", 2)
+    end
+    if list.id == "flags" then
+      self.controller.scrollOffsets.flags = 0
+    elseif list.id == "location:map-list" then
+      self.controller.locationMapOffset = 0
+    else
+      error("unknown filterable list " .. list.id, 2)
+    end
+  end
+  local layout = self:_resolve(self:_snapshot()).content.layout
+  local fresh = assert(layout.lists and layout.lists[list.id], "filtering keeps its focused list")
+  if #fresh.rowTargets == 0 then
+    self.controller:setListCursor(fresh.id, nil)
+    self.controller:setFocus(fresh.targetId)
+    return
+  end
+  local focusLive = false
+  for _, targetId in ipairs(fresh.rowTargets) do
+    if targetId == previousFocus then
+      focusLive = true
+      break
+    end
+  end
+  if hadRowFocus then
+    if focusLive then
+      self.controller:setListCursor(fresh.id, previousFocus)
+    else
+      self.controller:setListCursor(fresh.id, fresh.rowTargets[1])
+      self.controller:setFocus(fresh.rowTargets[1])
+    end
+  else
+    self:_reconcileListCursor(fresh)
+  end
+end
+
+function State:_handleListConfirm(list, rowIndex)
+  if rowIndex ~= nil then
+    self:_dispatchIntent(self.controller:press("confirm"))
+    return
+  end
+  local cursor = self:_reconcileListCursor(list)
+  if cursor == nil then
+    return
+  end
+  if list.id == "value:choice" then
+    self:_syncChoiceSelection(list, cursor)
+    local editor = assert(self.valueEditor, "choice rows need their value editor")
+    local selected = editor:snapshot().selectedKey
+    if selected ~= nil then
+      cursor = "choice:" .. selected
+    end
+  end
+  self.controller:setListCursor(list.id, cursor)
+  self.controller:setFocus(cursor)
+end
+
 ---@param preferred string?
 function State:_reconcileFocus(preferred)
   local layout = self:_resolve(self:_snapshot()).content.layout
@@ -1005,13 +1200,12 @@ function State:_reconcileFocus(preferred)
   end
   self.controller:setFocus(assert(focus))
   self.pendingFocusReturn = nil
-end
-
-function State:_resetProgressSearch()
-  self.controller.scrollOffsets.flags = 0
-  local layout = assert(self:_resolve(self:_snapshot()).content.layout)
-  self.controller.focus = layout.defaultFocus
-  self:_reconcileFocus()
+  local reconciled = self:_resolve(self:_snapshot()).content.layout
+  if reconciled.lists ~= nil then
+    for _, list in pairs(reconciled.lists) do
+      self:_reconcileListCursor(list)
+    end
+  end
 end
 
 ---@param editor SaveEditorValueEditor
@@ -1291,7 +1485,7 @@ function State:_performDeferred(action)
     self.controller:setSection(action.section)
     if action.section == "Progress" then
       self.controller.query = ""
-      self.controller.focus = "flag:" .. self:_firstFlagName()
+      self.controller.focus = "list:flags"
     elseif action.section == "Location" and self.locationService then
       self:_updateLocationService()
     end
@@ -1347,6 +1541,7 @@ function State:_performDeferred(action)
         currentIndex = delta > 0 and 0 or (#maps + 1)
       end
       currentIndex = math.max(1, math.min(#maps, currentIndex + delta))
+      self.controller:setListCursor("location:map-list", "location:map:" .. maps[currentIndex].mapId)
       self.controller:setFocus("location:map:" .. maps[currentIndex].mapId)
       local viewport = assert(layout.viewports["location:map-list"])
       self.controller.locationMapOffset = ScrollViewport.clamp(
@@ -1871,10 +2066,6 @@ function State:_activate(targetId)
   end
 end
 
-function State:_firstFlagName()
-  return assert(self:_flagRows({})[1], "field flags catalog is empty").name
-end
-
 function State:_dispatchIntent(intent)
   if intent == nil then
     return
@@ -2100,22 +2291,38 @@ function State:_consumeUiInput(events)
       elseif self.valueEditor then
         local snapshot = self.valueEditor:snapshot()
         if snapshot.kind == "choice" then
-          self.preserveChoiceScroll = false
-          if event.direction == "up" or event.direction == "down" then
-            self.valueEditor:moveChoice(event.direction == "up" and -1 or 1)
+          local layout = assert(self:_resolve(self:_snapshot()).content.layout)
+          local list, rowIndex = self:_activeList(layout)
+          if list ~= nil and list.id == "value:choice" and rowIndex ~= nil then
+            self:_moveListRow(list, rowIndex, event.direction, layout)
+            self.controller:cancelInteraction()
+          elseif list ~= nil and list.id == "value:choice" then
+            self.controller:moveFocus(layout.focusGraph, event.direction)
+            self.controller:cancelInteraction()
           else
-            local layout = assert(self:_resolve(self:_snapshot()).content.layout)
-            local viewport = assert(layout.viewports["value:choice"])
-            local visibleCount = math.max(1, viewport.lastIndex - viewport.firstIndex + 1)
-            self.valueEditor:moveChoice((event.direction == "left" and -1 or 1) * visibleCount)
+            self.preserveChoiceScroll = false
+            if event.direction == "up" or event.direction == "down" then
+              self.valueEditor:moveChoice(event.direction == "up" and -1 or 1)
+            else
+              local viewport = assert(layout.viewports["value:choice"])
+              local visibleCount = math.max(1, viewport.lastIndex - viewport.firstIndex + 1)
+              self.valueEditor:moveChoice((event.direction == "left" and -1 or 1) * visibleCount)
+            end
+            local selected = self.valueEditor:snapshot().selectedKey
+            self.controller.focus = selected and ("choice:" .. selected) or "cancel"
           end
-          local selected = self.valueEditor:snapshot().selectedKey
-          self.controller.focus = selected and ("choice:" .. selected) or "cancel"
         elseif snapshot.kind == "name" or snapshot.kind == "number" then
           self.valueEditor:press(event.direction)
         end
       else
-        self:_dispatchIntent(self.controller:press(event.direction))
+        local layout = self:_resolve(self:_snapshot()).content.layout
+        local list, rowIndex = self:_activeList(layout)
+        if list ~= nil and rowIndex ~= nil then
+          self:_moveListRow(list, rowIndex, event.direction, layout)
+          self.controller:cancelInteraction()
+        else
+          self:_dispatchIntent(self.controller:press(event.direction))
+        end
       end
     elseif event.type == "confirm" then
       self:_reconcileFocus()
@@ -2125,6 +2332,9 @@ function State:_consumeUiInput(events)
         if target and target.activationEnabled and currentLayout.focusGraph[self.controller.focus] then
           self:_dispatchIntent(self.controller:press("confirm"))
         end
+      elseif self:_activeList(currentLayout) ~= nil then
+        local list, rowIndex = self:_activeList(currentLayout)
+        self:_handleListConfirm(assert(list), rowIndex)
       elseif self.valueEditor then
         local confirmTarget = currentLayout.targets.confirm
         if self.valueEditor:snapshot().kind == "choice" and confirmTarget and not confirmTarget.activationEnabled then
@@ -2143,11 +2353,17 @@ function State:_consumeUiInput(events)
     elseif event.type == "cancel" then
       if self.controller.modal then
         self:_dispatchIntent(self.controller:press("cancel"))
-      elseif self.valueEditor then
-        self.valueEditor:cancel()
-        self:_finishValueEditor()
       else
-        self:_dispatchIntent(self.controller:press("cancel"))
+        local layout = self:_resolve(self:_snapshot()).content.layout
+        local list, rowIndex = self:_activeList(layout)
+        if list ~= nil and rowIndex ~= nil then
+          self.controller:setFocus(list.targetId)
+        elseif self.valueEditor then
+          self.valueEditor:cancel()
+          self:_finishValueEditor()
+        else
+          self:_dispatchIntent(self.controller:press("cancel"))
+        end
       end
     end
   end
@@ -2174,21 +2390,43 @@ function State:keypressed(key, _, isrepeat)
   end
   if self.valueEditor then
     self.preserveChoiceScroll = false
+    local editorLayout = self:_resolve(self:_snapshot()).content.layout
+    local editorList, editorRow = self:_activeList(editorLayout)
+    local choiceList = editorList ~= nil and editorList.id == "value:choice" and editorList or nil
     if key == "return" or key == "kpenter" then
-      local submitted, reason = self.valueEditor:submit()
-      self.editorFeedback = submitted and nil or reason
-      self:_finishValueEditor()
+      if choiceList ~= nil then
+        self:_handleListConfirm(choiceList, editorRow)
+      else
+        local submitted, reason = self.valueEditor:submit()
+        self.editorFeedback = submitted and nil or reason
+        self:_finishValueEditor()
+      end
     elseif key == "escape" then
-      self.valueEditor:cancel()
-      self:_finishValueEditor()
+      if choiceList ~= nil and editorRow ~= nil then
+        self.controller:setFocus(choiceList.targetId)
+      else
+        self.valueEditor:cancel()
+        self:_finishValueEditor()
+      end
     elseif key == "backspace" then
-      self.valueEditor:press("backspace")
+      if choiceList ~= nil then
+        self:_filterFocusedList(choiceList, editorRow, "backspace")
+      else
+        self.valueEditor:press("backspace")
+      end
     elseif key == "delete" then
-      self.valueEditor:press("clear_search")
+      if choiceList ~= nil then
+        self:_filterFocusedList(choiceList, editorRow, "clear")
+      else
+        self.valueEditor:press("clear_search")
+      end
     elseif key == "left" or key == "right" or key == "up" or key == "down" then
-      if self.valueEditor:snapshot().kind == "choice" and (key == "left" or key == "right") then
-        local layout = assert(self:_resolve(self:_snapshot()).content.layout)
-        local viewport = assert(layout.viewports["value:choice"])
+      if choiceList ~= nil and editorRow ~= nil then
+        self:_moveListRow(choiceList, editorRow, key, editorLayout)
+      elseif choiceList ~= nil then
+        self.controller:moveFocus(editorLayout.focusGraph, key)
+      elseif self.valueEditor:snapshot().kind == "choice" and (key == "left" or key == "right") then
+        local viewport = assert(editorLayout.viewports["value:choice"])
         local visibleCount = math.max(1, viewport.lastIndex - viewport.firstIndex + 1)
         self.valueEditor:moveChoice((key == "left" and -1 or 1) * visibleCount)
       else
@@ -2198,42 +2436,14 @@ function State:keypressed(key, _, isrepeat)
     self:_reconcileFocus()
     return
   end
-  if self.controller.section == "Progress" and key == "backspace" then
-    local glyphs = {}
-    for glyph in Utf8Glyphs.iter(self.controller.query) do
-      glyphs[#glyphs + 1] = glyph
-    end
-    if #glyphs > 0 then
-      table.remove(glyphs)
-      self.controller.query = table.concat(glyphs)
-      self:_resetProgressSearch()
-    end
-    return
-  end
-  if self.controller.section == "Progress" and key == "delete" then
-    self.controller.query = ""
-    self:_resetProgressSearch()
-    return
-  end
-  if self.controller.section == "Location" and self.controller.locationPage == "map-list" then
-    if key == "delete" then
-      self.controller.query = ""
-      self.controller.locationMapOffset = 0
+  if key == "backspace" or key == "delete" then
+    local layout = self:_resolve(self:_snapshot()).content.layout
+    local list, rowIndex = self:_activeList(layout)
+    if list ~= nil and list.filterable then
+      self:_filterFocusedList(list, rowIndex, key == "delete" and "clear" or "backspace")
       self:_reconcileFocus()
-      return
-    elseif key == "backspace" then
-      local glyphs = {}
-      for glyph in Utf8Glyphs.iter(self.controller.query) do
-        glyphs[#glyphs + 1] = glyph
-      end
-      if #glyphs > 0 then
-        table.remove(glyphs)
-        self.controller.query = table.concat(glyphs)
-        self.controller.locationMapOffset = 0
-        self:_reconcileFocus()
-      end
-      return
     end
+    return
   end
   if self.controller.section == "Progress" and isPrintableKeyName(key) then
     return
@@ -2254,24 +2464,26 @@ end
 function State:textinput(text)
   if self.valueEditor then
     if self.valueEditor:snapshot().kind == "choice" then
-      self.preserveChoiceScroll = false
-    end
-    self.valueEditor:textinput(text)
-    self.editorFeedback = nil
-  elseif
-    self.controller.section == "Progress"
-    or (self.controller.section == "Location" and self.controller.locationPage == "map-list")
-  then
-    self.controller.query = self.controller.query .. text
-    if self.controller.section == "Progress" then
-      self:_resetProgressSearch()
-    else
-      self.controller.locationMapOffset = 0
-      if self.controller.locationPage == "map-list" then
-        self:_reconcileFocus()
+      local layout = self:_resolve(self:_snapshot()).content.layout
+      local list, rowIndex = self:_activeList(layout)
+      if list ~= nil and list.id == "value:choice" then
+        self:_filterFocusedList(list, rowIndex, "append", text)
+      else
+        self.preserveChoiceScroll = false
+        self.valueEditor:textinput(text)
       end
+    else
+      self.valueEditor:textinput(text)
     end
+    self.editorFeedback = nil
+    return
   end
+  local layout = self:_resolve(self:_snapshot()).content.layout
+  local list, rowIndex = self:_activeList(layout)
+  if list == nil or not list.filterable then
+    return
+  end
+  self:_filterFocusedList(list, rowIndex, "append", text)
 end
 
 function State:keyreleased(key)
@@ -2361,6 +2573,7 @@ function State:_setScrollOffset(view, layout, viewportId, offset)
       )
       local targetId = viewport.rowTargets[firstIndex]
       if targetId ~= nil then
+        self.controller:setListCursor("location:map-list", targetId)
         self.controller:setFocus(targetId)
       end
     end

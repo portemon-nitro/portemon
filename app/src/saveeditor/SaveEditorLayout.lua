@@ -131,6 +131,29 @@ function Layout.compute(view, width, height, metrics)
     end
   end
   local viewports = {}
+  local lists = {}
+  local listRowRoles = {}
+  local containerClips = {}
+  local function registerList(id, viewportId, surface, clip, rowTargets, query)
+    local targetId = "list:" .. id
+    local ordered = {}
+    for index, rowTarget in ipairs(rowTargets) do
+      ordered[index] = rowTarget
+    end
+    lists[id] = {
+      id = id,
+      targetId = targetId,
+      viewportId = viewportId,
+      rowTargets = ordered,
+      filterable = true,
+      query = query or "",
+      empty = #ordered == 0,
+    }
+    targets[targetId] = rect(surface.x, surface.y, surface.width, surface.height)
+    focusPositions[targetId] = targets[targetId]
+    containerClips[targetId] = clip
+    addFocusable(targetId)
+  end
   local partyGrid
   local layoutPartySummary
   local layoutPartyHelp
@@ -245,21 +268,23 @@ function Layout.compute(view, width, height, metrics)
       for index, map in ipairs(maps) do
         local id = "location:map:" .. map.mapId
         rowTargets[index] = id
+        listRowRoles[id] = "list"
         local row = mapList.rows[index].rect
         local y = row.y - mapOffset
+        targets[id] = rect(row.x, y, row.width, rowHeight - 2)
         focusPositions[id] = rect(row.x, y, row.width, row.height)
+        addFocusable(id)
         if y >= mapViewport.y and y + rowHeight <= mapViewport.y + mapViewport.height then
-          targets[id] = rect(row.x, y, row.width, rowHeight - 2)
           navigation[#navigation + 1] = {
             role = "list",
             targetId = id,
             label = map.displayName,
           }
-          addFocusable(id)
         end
       end
       viewports["location:map-list"] =
         makeViewport(mapViewport, mapOffset, mapList.contentHeight, rowHeight, 0, #maps, rowTargets)
+      registerList("location:map-list", "location:map-list", mapList.surface, mapViewport, rowTargets, view.query)
     elseif page == "map-list" then
       local rowTop = contentTop + rowHeight
       local mapBounds = rect(contentX, rowTop, innerWidth, math.max(1, contentBottom - rowTop - rowHeight))
@@ -284,10 +309,12 @@ function Layout.compute(view, width, height, metrics)
       for index, map in ipairs(maps) do
         local id = "location:map:" .. map.mapId
         rowTargets[index] = id
+        listRowRoles[id] = "list"
         local row = mapList.rows[index].rect
         local y = row.y - mapOffset
-        if y + rowHeight <= mapViewport.y + mapViewport.height then
-          targets[id] = rect(row.x, y, row.width, rowHeight - 2)
+        targets[id] = rect(row.x, y, row.width, rowHeight - 2)
+        addFocusable(id)
+        if y >= mapViewport.y and y + rowHeight <= mapViewport.y + mapViewport.height then
           rows[#rows + 1] = {
             role = "list",
             listSurface = true,
@@ -297,11 +324,11 @@ function Layout.compute(view, width, height, metrics)
             labelRect = rect(row.x + 6, y + 3, row.width * 0.58, rowHeight - 6),
             valueRect = rect(row.x + row.width * 0.62, y + 3, row.width * 0.34, rowHeight - 6),
           }
-          addFocusable(id)
         end
       end
       viewports["location:map-list"] =
         makeViewport(mapViewport, mapOffset, mapList.contentHeight, rowHeight, 0, #maps, rowTargets)
+      registerList("location:map-list", "location:map-list", mapList.surface, mapViewport, rowTargets, view.query)
       targets["location:map-back"] = rect(contentX, contentBottom - rowHeight, innerWidth, rowHeight - 2)
       navigation[#navigation + 1] = { role = "action", targetId = "location:map-back", label = "Back" }
       addFocusable("location:map-back")
@@ -378,9 +405,6 @@ function Layout.compute(view, width, height, metrics)
     addRow("integer value", "money", "Money", snapshot.money)
     addRow("named choice", "dialogue-frame", "Dialogue frame", "Frame " .. tostring(snapshot.frameIndex + 1))
   elseif section == "Progress" then
-    addRow("read-only value", "flags:search", "Type to filter flags", nil)
-    addFocusable("flags:search")
-    focusPositions["flags:search"] = targets["flags:search"]
     local flags = view.flagRows or {}
     local flagOffset = view.scrollOffsets and view.scrollOffsets.flags or 0
     local bodyTop = contentTop + #rows * rowHeight
@@ -399,14 +423,17 @@ function Layout.compute(view, width, height, metrics)
     local rowTargets = {}
     for index, flag in ipairs(flags) do
       rowTargets[index] = "flag:" .. flag.name
+      listRowRoles[rowTargets[index]] = "toggle"
     end
     viewports.flags = makeViewport(flagViewport, flagOffset, contentExtent, rowHeight, 0, #flags, rowTargets)
+    registerList("flags", "flags", flagList.surface, flagViewport, rowTargets, view.query)
     local first, last = ScrollViewport.visibleRange(flagOffset, flagViewport.height, rowHeight, 0, #flags)
     for index, flag in ipairs(flags) do
       local id = "flag:" .. flag.name
       addFocusable(id)
       local flagRow = flagList.rows[index].rect
       local y = flagRow.y - flagOffset
+      targets[id] = rect(flagRow.x, y, flagRow.width, rowHeight - 2)
       focusPositions[id] = rect(flagRow.x, y, flagRow.width, rowHeight - 2)
       if index >= first and index <= last then
         if y >= flagViewport.y and y + rowHeight <= flagViewport.y + flagViewport.height then
@@ -807,17 +834,18 @@ function Layout.compute(view, width, height, metrics)
       for index, option in ipairs(dialog.options) do
         rowTargets[index] = "choice:" .. option.key
       end
+      for _, targetId in ipairs(rowTargets) do
+        listRowRoles[targetId] = "choice"
+      end
       viewports["value:choice"] =
         makeViewport(viewport, offset, contentExtent, rowHeight, 0, #dialog.options, rowTargets)
-      local first, last = ScrollViewport.visibleRange(offset, viewport.height, rowHeight, 0, #dialog.options)
+      registerList("value:choice", "value:choice", choiceList.surface, viewport, rowTargets, dialog.query)
       for index, option in ipairs(dialog.options) do
         local id = "choice:" .. option.key
         addFocusable(id)
         local row = choiceList.rows[index].rect
         focusPositions[id] = rect(row.x, row.y - offset, row.width, row.height - 1)
-        if index >= first and index <= last then
-          targets[id] = rect(row.x, row.y - offset, row.width, row.height - 1)
-        end
+        targets[id] = rect(row.x, row.y - offset, row.width, row.height - 1)
       end
       local footerWidth = math.max(1, math.floor(innerWidth / 2))
       targets.confirm = rect(contentX, contentBottom - rowHeight, footerWidth - 2, rowHeight - 1)
@@ -949,6 +977,7 @@ function Layout.compute(view, width, height, metrics)
     local editor = assert(view.valueEditor, "value scope needs its active editor")
     scopeAllowed = { confirm = true, cancel = true }
     if editor.kind == "choice" then
+      scopeAllowed["list:value:choice"] = true
       for _, option in ipairs(editor.options) do
         scopeAllowed["choice:" .. option.key] = true
       end
@@ -997,6 +1026,20 @@ function Layout.compute(view, width, height, metrics)
       end
     end
     rows = activeRows
+    for listId, list in pairs(lists) do
+      if not scopeAllowed[list.targetId] then
+        lists[listId] = nil
+      else
+        local kept = {}
+        for _, targetId in ipairs(list.rowTargets) do
+          if scopeAllowed[targetId] then
+            kept[#kept + 1] = targetId
+          end
+        end
+        list.rowTargets = kept
+        list.empty = #kept == 0
+      end
+    end
   end
 
   local enabledFocusable = {}
@@ -1010,6 +1053,9 @@ function Layout.compute(view, width, height, metrics)
   focusable = enabledFocusable
 
   local roleById = {}
+  for targetId, role in pairs(listRowRoles) do
+    roleById[targetId] = role
+  end
   local focusedValueHelp
   for _, row in ipairs(rows) do
     roleById[row.targetId] = row.role
@@ -1118,7 +1164,7 @@ function Layout.compute(view, width, height, metrics)
     end
     local sectionTarget = "section:" .. section
     for _, targetId in ipairs(focusable) do
-      if targetId:sub(1, 8) ~= "section:" then
+      if targetId:sub(1, 8) ~= "section:" and not listTargets[targetId] then
         local position = focusPositions[targetId] or targets[targetId]
         if position and position.x >= contentX then
           local node = focusGraph[targetId]
@@ -1199,7 +1245,9 @@ function Layout.compute(view, width, height, metrics)
     defaultFocus = "cancel"
   elseif scope.kind == "value" then
     local editor = assert(view.valueEditor)
-    if editor.kind == "choice" and editor.selectedKey ~= nil then
+    if editor.kind == "choice" and viewports["value:choice"] ~= nil then
+      defaultFocus = "list:value:choice"
+    elseif editor.kind == "choice" and editor.selectedKey ~= nil then
       defaultFocus = "choice:" .. editor.selectedKey
     elseif editor.kind == "name" then
       local cursor = assert(editor.naming.cursor)
@@ -1212,8 +1260,16 @@ function Layout.compute(view, width, height, metrics)
   elseif section == "Player" then
     defaultFocus = "money"
   elseif section == "Location" then
-    defaultFocus = "location:"
-      .. ((view.locationNavigation and view.locationNavigation.page == "map-list") and "map-picker" or "grid")
+    if
+      view.locationNavigation
+      and view.locationNavigation.page == "map-list"
+      and viewports["location:map-list"] ~= nil
+    then
+      defaultFocus = "list:location:map-list"
+    else
+      defaultFocus = "location:"
+        .. ((view.locationNavigation and view.locationNavigation.page == "map-list") and "map-picker" or "grid")
+    end
   elseif section == "Party" and view.partyPage == "list" then
     for _, targetId in ipairs(focusOrder) do
       if targetId:match("^party:slot:") then
@@ -1238,9 +1294,7 @@ function Layout.compute(view, width, height, metrics)
       end
     end
   elseif section == "Progress" then
-    local flagsViewport = viewports.flags
-    local firstVisibleFlag = flagsViewport and flagsViewport.rowTargets[flagsViewport.firstIndex]
-    defaultFocus = firstVisibleFlag or "flags:search"
+    defaultFocus = "list:flags"
   elseif section == "Bag" then
     defaultFocus = "bag:pocket:" .. tostring(view.bagPocket)
   end
@@ -1270,6 +1324,7 @@ function Layout.compute(view, width, height, metrics)
   for targetId, targetRect in pairs(targets) do
     local viewportId = viewportByTarget[targetId]
     local list = viewportId and viewports[viewportId]
+    local containerClip = containerClips[targetId]
     local role = roleById[targetId]
       or targetId:match("^choice:") and "choice"
       or targetId:match("^location:tile:") and "location"
@@ -1280,7 +1335,7 @@ function Layout.compute(view, width, height, metrics)
       or "action"
     targetRecords[targetId] = {
       rect = targetRect,
-      clip = list and list.clip or nil,
+      clip = list and list.clip or containerClip,
       focusable = focusableSet[targetId] == true,
       activationEnabled = not disabledTargets[targetId],
       role = role,
@@ -1346,6 +1401,7 @@ function Layout.compute(view, width, height, metrics)
     bagPage = { index = (view.bagPage0 or 0) + 1, count = view.bagPageCount or 1 },
     scrollOffset = view.scrollOffset or 0,
     viewports = viewports,
+    lists = lists,
     scrollOwner = scrollOwner,
     scopeId = scope.id,
     scopeEpoch = scope.epoch,
@@ -1401,6 +1457,7 @@ function Layout.hitTest(layout, view, x, y)
       allowed = {
         cancel = true,
         confirm = true,
+        ["list:value:choice"] = true,
       }
       for _, option in ipairs(view.valueEditor.options) do
         allowed["choice:" .. option.key] = true
@@ -1427,6 +1484,7 @@ function Layout.hitTest(layout, view, x, y)
       end
     end
   end
+  local deferred
   for targetId, target in pairs(layout.targets) do
     if allowed == nil or allowed[targetId] then
       local targetRect = target.rect
@@ -1448,11 +1506,15 @@ function Layout.hitTest(layout, view, x, y)
             end
           end
         end
-        return targetId
+        if targetId:match("^list:") then
+          deferred = targetId
+        else
+          return targetId
+        end
       end
     end
   end
-  return nil
+  return deferred
 end
 
 return Layout
