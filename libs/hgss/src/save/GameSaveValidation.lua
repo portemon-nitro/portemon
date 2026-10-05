@@ -79,6 +79,7 @@ local function contextForCache(cacheFs, overrideFs, versionId)
     "GameSave validation requires a native language identity for " .. tostring(monLanguage)
   )
   return {
+    language = monLanguage,
     charmap = fontDef.charmap,
     frameIndexes = frameIndexes,
     audioSequenceIds = audioSequenceIds,
@@ -130,7 +131,9 @@ function GameSaveValidation.new(options)
   }, GameSaveValidation)
 end
 
-function GameSaveValidation:_context(versionId)
+---@param versionId string
+---@return table<string, unknown> context borrowed from this validator, read-only
+function GameSaveValidation:contextForVersion(versionId)
   local context = self.contexts[versionId]
   if context then
     return context
@@ -156,7 +159,7 @@ function GameSaveValidation:validate(record, context)
     if context == nil and (type(record) ~= "table" or type(record.versionId) ~= "string") then
       return GameSave.validate(record)
     end
-    local selected = context or self:_context(record.versionId)
+    local selected = context or self:contextForVersion(record.versionId)
     -- Explicit v3 -> v4 -> v5 -> v6 migration before canonical validation.
     -- Quiescent old script buckets rebind once to the current fingerprints
     -- (counters and world/RNG data preserved); an incompatible active graph
