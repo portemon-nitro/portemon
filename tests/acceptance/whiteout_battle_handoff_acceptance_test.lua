@@ -42,7 +42,7 @@ local SPAWN_CHERRYGROVE = "SPAWN_CHERRYGROVE"
 local FLAG_HAVE_FOLLOWER = FieldScriptSymbols.flagsByName.FLAG_HAVE_FOLLOWER
 local VAR_FOLLOWER_TRAINER_NUM = FieldScriptSymbols.variablesByName.VAR_FOLLOWER_TRAINER_NUM
 
-local function harness(spawnKey, map)
+local function harness(spawnKey, map, textSpeed)
   return AcceptanceHarness.new({
     gameFactory = function(versionId)
       local worldState = FieldEventState.new()
@@ -57,7 +57,7 @@ local function harness(spawnKey, map)
         location = { mapSymbol = map, fieldX = 4, fieldZ = 13, facing = "north" },
         playerData = {
           profile = { name = "GOLD", gender = 0, trainerId = 1, money = 3000, badges = 0, nationalDex = false },
-          options = { textSpeed = "fastest", textFrame = 0 },
+          options = { textSpeed = textSpeed or "fastest", textFrame = 0 },
         },
         fieldTravel = { lastHealSpawn = spawnKey },
         fashionCase = require("libs.hgss.src.save.FashionCaseState").empty(),
@@ -82,12 +82,33 @@ local function prepareCertainLoss(game)
   Assert.isTrue(mons:addMon(mon), "the one-HP lead returns through the party owner")
 end
 
-local function advanceRetailLoss(game)
+local function advanceRetailLoss(game, observeStaticBlackout)
   local SessionFixture = require("libs.battle.tests.session_fixture")
   local ticks = 0
   local battleResult = nil
   local scriptCompletion = nil
-  while ticks < 1600 and scriptCompletion == nil and game.runtime.errorText == nil do
+  local messageFadeBoundaryPending = false
+  local tickLimit = observeStaticBlackout and 8000 or 1600
+  while ticks < tickLimit and scriptCompletion == nil and game.runtime.errorText == nil do
+    local blackout = game.runtime.blackoutFlow:status()
+    if observeStaticBlackout and messageFadeBoundaryPending then
+      Assert.equal(
+        blackout.phase,
+        "message_wait",
+        "blackout reaches its input gate on the tick after the white fade completes"
+      )
+      messageFadeBoundaryPending = false
+    end
+    if
+      observeStaticBlackout
+      and (blackout.phase == "message_in" or blackout.phase == "message_wait" or blackout.phase == "message_out")
+    then
+      Assert.notNil(blackout.message, "blackout retains the complete formatted recovery message")
+      Assert.isFalse(game:snapshot().dialogue.modal, "blackout presentation does not open the normal dialogue modal")
+    end
+    local messageFadeCompletesThisTick = observeStaticBlackout
+      and blackout.phase == "message_in"
+      and blackout.coverAlpha == 0
     local battle = game.runtime.battleRuntime
     if battle ~= nil then
       local status = battle:status()
@@ -101,6 +122,8 @@ local function advanceRetailLoss(game)
         Assert.isTrue(accepted, "the production battle accepts a legal move: " .. tostring(replyErr))
       end
       battleResult = battleResult or status.result
+    elseif observeStaticBlackout and blackout.phase == "message_in" then
+      -- Let the source fade advance without accelerating a normal printer.
     elseif game:snapshot().dialogue.modal then
       game:pressAction()
     else
@@ -110,6 +133,11 @@ local function advanceRetailLoss(game)
     end
     game:step()
     ticks = ticks + 1
+    if messageFadeCompletesThisTick then
+      local nextBlackout = game.runtime.blackoutFlow:status()
+      Assert.equal(nextBlackout.phase, "message_wait", "the completed fade alone advances blackout to its input gate")
+      messageFadeBoundaryPending = true
+    end
     for _, record in ipairs(game:recordsNamed("script.ended")) do
       if record.payload.scriptId == LOSS_SCRIPT then
         scriptCompletion = record.payload
@@ -128,8 +156,8 @@ local function advanceRetailLoss(game)
   }
 end
 
-local function beginLossRecovery(spawnKey, map)
-  local game = harness(spawnKey, map):boot({
+local function beginLossRecovery(spawnKey, map, textSpeed)
+  local game = harness(spawnKey, map, textSpeed):boot({
     versionId = AcceptanceHarness.defaultVersion(),
     map = map,
     save = "fresh",
@@ -167,10 +195,17 @@ local function scriptErrorSummary(records)
 end
 
 function T.tests.retail_static_battle_loss_recovers_at_mother_spawn_and_runs_std_2012()
-  local game = beginLossRecovery(SPAWN_NEW_BARK, MOTHER_MAP)
+  local game = beginLossRecovery(SPAWN_NEW_BARK, MOTHER_MAP, "slow")
   local ok, err = xpcall(function()
-    local result = advanceRetailLoss(game)
-    Assert.equal(result.battleResult, "loss", "the retail trainer battle reaches its loss path")
+    local result = advanceRetailLoss(game, true)
+    Assert.equal(
+      result.battleResult,
+      "loss",
+      "the retail trainer battle reaches its loss path after "
+        .. result.ticks
+        .. " ticks; runtimeError="
+        .. tostring(result.runtimeError)
+    )
     Assert.isTrue(
       type(result.scriptCompletion) == "table" and result.scriptCompletion.completed == true,
       "the retail loss script completes only after blocking whiteout and std 2012; reason="
