@@ -1,44 +1,19 @@
 -- Source encounter-memo projection for the summary display. Selects the
--- authored condition branch from origin, met, egg, and fateful values plus
--- full-identity ownership, then emits the authored line positions with
--- named display text. The characteristic names the highest individual
--- value with a personality-ordered tie break and remainder; flavor follows
--- the nature relationship; egg watch follows friendship bands. Pure
--- module: no love, no I/O.
+-- authored condition branch by ordered first-match over the generated
+-- memo rules plus full-identity ownership, then expands the authored
+-- line positions with generated display text. Location classes, month
+-- and landmark wording, nature wording, characteristic, flavor, and egg
+-- watch text all come from the generated family; this module owns only
+-- the predicate matching and the segment expansion. The characteristic
+-- names the highest individual value with a personality-ordered tie
+-- break and remainder; flavor follows the nature relationship; egg
+-- watch follows friendship bands. Pure module: no love, no I/O.
 
+local HgssMonService = require("libs.hgss.src.mons.HgssMonService")
 local Personality = require("libs.mons.src.gen4.Personality")
 
 ---@class SummaryMemo
 local SummaryMemo = {}
-
--- Nature display names in native 0..24 order.
-local NATURE_NAMES = {
-  "Hardy",
-  "Lonely",
-  "Brave",
-  "Adamant",
-  "Naughty",
-  "Bold",
-  "Docile",
-  "Relaxed",
-  "Impish",
-  "Lax",
-  "Timid",
-  "Hasty",
-  "Serious",
-  "Jolly",
-  "Naive",
-  "Modest",
-  "Mild",
-  "Quiet",
-  "Bashful",
-  "Rash",
-  "Calm",
-  "Gentle",
-  "Sassy",
-  "Careful",
-  "Quirky",
-}
 
 -- Nature stat shifts in battle-stat order attack, defense, speed, special
 -- attack, special defense: +1 raises the stat to 110%, -1 lowers it to 90%.
@@ -83,8 +58,24 @@ local FLAVOR_BY_STAT = {
   defense = 5,
 }
 
-local GIFT_LOCATION_LO = 4000
-local GIFT_LOCATION_HI = 4099
+-- Closed rule-predicate vocabulary published by the generated family.
+-- Absent predicates constrain nothing; order decides the branch.
+local PREDICATES = { isEgg = true, fateful = true, mine = true, eggLocation = true, metLocation = true }
+
+-- Closed egg-location classes published by the generated family. The
+-- stored egg location resolves through the generated location sets: an
+-- unset location reads "none" for met mons and "egg" for current eggs,
+-- exact ranger and second-trade origins read their own class, generated
+-- gift-egg origins read the gift class, and any other set location reads
+-- the ordinary hatched class.
+local EGG_LOCATION_CLASSES =
+  { none = true, linkTrade2 = true, ranger = true, hatched = true, giftSet = true, egg = true }
+
+-- Closed met-location classes published by the generated family. Exact
+-- park and trade meetings read their own class, everything else reads
+-- the ordinary wild class, and "notPalPark" constrains only the negative
+-- side for fateful branches.
+local MET_LOCATION_CLASSES = { palPark = true, notPalPark = true, linkTrade = true, wild = true }
 
 -- Names the raised and lowered battle stats for a native 0..24 nature;
 -- either side is "none" when the nature is neutral on that side.
@@ -108,61 +99,12 @@ function SummaryMemo.natureShift(nature)
   return up, down
 end
 
----@param location unknown
----@return boolean
-local function isGiftLocation(location)
-  return type(location) == "number" and location >= GIFT_LOCATION_LO and location <= GIFT_LOCATION_HI
-end
-
--- Selects the authored condition branch. Eggs read the egg branch, the
--- fateful flag reads its branch, the pal-park location reads migration, a
--- level-one meeting reads hatching, gift locations read the gift branch,
--- and everything else reads the ordinary wild branch. Every branch but
--- migration distinguishes ownership through its traded variant.
----@param mon table<string, unknown>
----@param isMine boolean
----@return string
-local function selectCondition(mon, isMine)
-  if mon.isEgg == true then
-    if isMine then
-      return "egg"
-    end
-    return "eggTraded"
-  end
-  if mon.fatefulEncounter == true then
-    if isMine then
-      return "fatefulEncounter"
-    end
-    return "fatefulEncounterTraded"
-  end
-  local met = assert(mon.met, "memo records carry their met record")
-  assert(type(met) == "table", "memo met records are records")
-  local location = assert(met.location, "memo met records carry a location")
-  assert(type(location) == "number", "memo met locations are numeric")
-  if location == 0 then
-    return "migrated"
-  end
-  local metLevel = assert(met.level, "memo met records carry a level")
-  assert(type(metLevel) == "number", "memo met levels are numeric")
-  if metLevel == 1 then
-    if isGiftLocation(location) and isMine then
-      return "eggHatchedGift"
-    end
-    if isMine then
-      return "eggHatched"
-    end
-    return "eggHatchedTraded"
-  end
-  if isGiftLocation(location) then
-    if isMine then
-      return "wildGift"
-    end
-    return "wildGiftTraded"
-  end
-  if isMine then
-    return "wildEncounter"
-  end
-  return "wildEncounterTraded"
+---@param manifest table<string, unknown>
+---@return table<string, unknown>
+local function memoSection(manifest)
+  local section = assert(manifest.memo, "the summary family carries memo records")
+  assert(type(section) == "table", "memo records are a record")
+  return section
 end
 
 ---@param manifest table<string, unknown>
@@ -185,31 +127,366 @@ local function labelText(labels, key, what)
   return text
 end
 
+---@param locations table<string, unknown>
+---@param key string
+---@return integer
+local function locationId(locations, key)
+  local value = assert(locations[key], "memo locations carry " .. key)
+  assert(type(value) == "number" and value % 1 == 0, "memo location " .. key .. " is an integer")
+  ---@cast value integer
+  return value
+end
+
+-- Resolves the stored egg location to its generated class. The location
+-- sets come from the generated family; only the class names are local.
+---@param mon table<string, unknown>
+---@param locations table<string, unknown>
+---@return string
+local function eggLocationClass(mon, locations)
+  local egg = assert(mon.egg, "memo records carry their egg record")
+  assert(type(egg) == "table", "memo egg records are records")
+  local location = assert(egg.location, "memo egg records carry a location")
+  assert(type(location) == "number", "memo egg locations are numeric")
+  if location == 0 then
+    if mon.isEgg == true then
+      return "egg"
+    end
+    return "none"
+  end
+  if location == locationId(locations, "linkTrade2") then
+    return "linkTrade2"
+  end
+  if location == locationId(locations, "ranger") then
+    return "ranger"
+  end
+  local origins = assert(locations.giftEggOrigins, "memo locations carry gift egg origins")
+  assert(type(origins) == "table", "gift egg origins are an array")
+  for _, origin in ipairs(origins) do
+    if location == origin then
+      return "giftSet"
+    end
+  end
+  return "hatched"
+end
+
+-- Resolves the stored met location to its generated class: exact park
+-- and trade meetings read their own class, everything else reads wild.
+---@param mon table<string, unknown>
+---@param locations table<string, unknown>
+---@return string
+local function metLocationClass(mon, locations)
+  local met = assert(mon.met, "memo records carry their met record")
+  assert(type(met) == "table", "memo met records are records")
+  local location = assert(met.location, "memo met records carry a location")
+  assert(type(location) == "number", "memo met locations are numeric")
+  if location == locationId(locations, "palPark") then
+    return "palPark"
+  end
+  if location == locationId(locations, "linkTrade") then
+    return "linkTrade"
+  end
+  return "wild"
+end
+
+-- Validates one generated rule against the closed predicate vocabulary.
+-- Unknown predicate keys or location classes are a malformed family,
+-- never a skipped rule.
+---@param rule table<string, unknown>
+---@param position integer
+local function checkRule(rule, position)
+  local what = "memo rule " .. position
+  local key = rule.key
+  assert(type(key) == "string" and key ~= "", what .. " names its branch")
+  assert(type(rule.selectable) == "boolean", what .. " marks its selectability")
+  local match = assert(rule.match, what .. " carries its predicates")
+  assert(type(match) == "table", what .. " predicates are a record")
+  for name in pairs(match) do
+    assert(PREDICATES[name] == true, what .. " carries unknown predicate " .. tostring(name))
+  end
+  if match.eggLocation ~= nil then
+    assert(
+      EGG_LOCATION_CLASSES[match.eggLocation] == true,
+      what .. " carries unknown egg class " .. tostring(match.eggLocation)
+    )
+  end
+  if match.metLocation ~= nil then
+    assert(
+      MET_LOCATION_CLASSES[match.metLocation] == true,
+      what .. " carries unknown met class " .. tostring(match.metLocation)
+    )
+  end
+  local lines = assert(rule.lines, what .. " carries its line placement")
+  assert(type(lines) == "table", what .. " line placement is a record")
+  for _, line in ipairs({ "nature", "date", "characteristic", "flavor", "eggWatch" }) do
+    local placement = lines[line]
+    assert(type(placement) == "number" and placement % 1 == 0 and placement >= 0, what .. " places " .. line)
+  end
+end
+
+---@param rule table<string, unknown>
+---@param mon table<string, unknown>
+---@param isMine boolean
+---@param eggClass string
+---@param metClass string
+---@return boolean
+local function ruleMatches(rule, mon, isMine, eggClass, metClass)
+  local match = assert(rule.match, "memo rules carry predicates")
+  assert(type(match) == "table", "memo predicates are a record")
+  if match.isEgg ~= nil and match.isEgg ~= (mon.isEgg == true) then
+    return false
+  end
+  if match.fateful ~= nil and match.fateful ~= (mon.fatefulEncounter == true) then
+    return false
+  end
+  if match.mine ~= nil and match.mine ~= isMine then
+    return false
+  end
+  if match.eggLocation ~= nil and match.eggLocation ~= eggClass then
+    return false
+  end
+  if match.metLocation ~= nil then
+    if match.metLocation == "notPalPark" then
+      if metClass == "palPark" then
+        return false
+      end
+    elseif match.metLocation ~= metClass then
+      return false
+    end
+  end
+  return true
+end
+
+-- Selects the authored condition branch: ordered first-match over the
+-- selectable generated rules. Closure entries never select on their own.
+-- No match is a generated-contract mismatch and fails instead of
+-- guessing a branch.
+---@param mon table<string, unknown>
+---@param isMine boolean
+---@param locations table<string, unknown>
+---@param conditions table[]
+---@return table<string, unknown>
+local function selectRule(mon, isMine, locations, conditions)
+  local eggClass = eggLocationClass(mon, locations)
+  local metClass = metLocationClass(mon, locations)
+  for position, rule in ipairs(conditions) do
+    assert(type(rule) == "table", "memo rules are records")
+    checkRule(rule, position)
+    if rule.selectable ~= false and ruleMatches(rule, mon, isMine, eggClass, metClass) then
+      return rule
+    end
+  end
+  error("the summary family matches no memo rule for this mon", 0)
+end
+
 ---@param manifest table<string, unknown>
 ---@param location integer
 ---@return string
 local function landmarkKey(manifest, location)
-  local memoSection = assert(manifest.memo, "the summary family carries memo records")
-  assert(type(memoSection) == "table", "memo records are a record")
-  local landmarks = assert(memoSection.landmarks, "memo records carry landmarks")
+  local landmarks = assert(memoSection(manifest).landmarks, "memo records carry landmarks")
   assert(type(landmarks) == "table", "memo landmarks are a record")
-  if location == 0 then
-    return assert(landmarks.fallback, "memo landmarks carry a fallback")
+  local giftByLocation = landmarks.giftByLocation
+  if type(giftByLocation) == "table" and type(giftByLocation[location]) == "string" then
+    return giftByLocation[location]
   end
-  if isGiftLocation(location) then
-    local giftByLocation = assert(landmarks.giftByLocation, "memo landmarks carry gift locations")
-    assert(type(giftByLocation) == "table", "gift locations are a record")
-    if type(giftByLocation[location]) == "string" then
-      return giftByLocation[location]
-    end
-    return assert(landmarks.fallback, "memo landmarks carry a fallback")
-  end
-  local wildByLocation = assert(landmarks.wildByLocation, "memo landmarks carry wild locations")
-  assert(type(wildByLocation) == "table", "wild locations are a record")
-  if type(wildByLocation[location]) == "string" then
+  local wildByLocation = landmarks.wildByLocation
+  if type(wildByLocation) == "table" and type(wildByLocation[location]) == "string" then
     return wildByLocation[location]
   end
-  return assert(landmarks.fallback, "memo landmarks carry a fallback")
+  local fallback = assert(landmarks.fallback, "memo landmarks carry a fallback")
+  assert(type(fallback) == "string" and fallback ~= "", "the memo fallback names its text")
+  return fallback
+end
+
+-- Names the generated month label for a 1..12 month number.
+---@param section table<string, unknown>
+---@param month integer
+---@return string
+local function monthKey(section, month)
+  assert(type(month) == "number" and month % 1 == 0 and month >= 1 and month <= 12, "memo months stay in 1..12")
+  local months = assert(section.months, "memo records carry months")
+  assert(type(months) == "table", "memo months are a record")
+  local key = months[month]
+  assert(type(key) == "string" and key ~= "", "memo months cover month " .. month)
+  return key
+end
+
+-- The migrated branch shows the arrival region for the mon's origin game
+-- instead of a met landmark. The producer binds each supported game to
+-- its generated region wording; any other game fails instead of widening
+-- the supported set.
+---@param mon table<string, unknown>
+---@param manifest table<string, unknown>
+---@return string
+local function migrationRegionText(mon, manifest)
+  local origin = assert(mon.origin, "stored mons carry their origin")
+  assert(type(origin) == "table", "origins are records")
+  local game = assert(origin.game, "origins carry their game")
+  assert(game == "heartgold" or game == "soulsilver", "migration covers the supported games, not " .. tostring(game))
+  local regions = assert(memoSection(manifest).migrationRegions, "memo records carry migration regions")
+  assert(type(regions) == "table", "migration regions are a record")
+  local regionKey = regions[game]
+  assert(type(regionKey) == "string" and regionKey ~= "", "the migration region names its text")
+  return labelText(memoLabels(manifest), regionKey, "the migration region")
+end
+
+-- Maps one generated color selection to its semantic ink name. The
+-- generated text roles publish both the ink names and their slot
+-- bindings; a selection resolving to a known ink returns that name,
+-- anything else keeps its slot-derived role name. Raw palette indices
+-- never reach display facts.
+---@param manifest table<string, unknown>
+---@param color integer
+---@return string
+local function inkForColor(manifest, color)
+  assert(type(color) == "number" and color % 1 == 0, "memo color selections are integers")
+  local text = assert(manifest.text, "the summary family carries lowered text")
+  assert(type(text) == "table", "lowered text is a record")
+  local roles = assert(text.roles, "the summary family carries text roles")
+  assert(type(roles) == "table", "text roles are a record")
+  local slotName = "slot" .. color
+  local slotRole = roles[slotName]
+  if type(slotRole) ~= "table" then
+    return slotName
+  end
+  local function channels(role)
+    local parts = {}
+    for _, layer in ipairs({ "foreground", "shadow", "background" }) do
+      local entry = assert(role[layer], "text roles carry their layers")
+      assert(type(entry) == "table", "text role layers are records")
+      for _, channel in ipairs({ "r", "g", "b", "a" }) do
+        parts[#parts + 1] = tostring(assert(entry[channel], "text role layers carry channels"))
+      end
+    end
+    return table.concat(parts, ",")
+  end
+  local wanted = channels(slotRole)
+  for name, role in pairs(roles) do
+    if type(name) == "string" and name:sub(1, 4) ~= "slot" and type(role) == "table" then
+      if channels(role) == wanted then
+        return name
+      end
+    end
+  end
+  return slotName
+end
+
+---@param value unknown
+---@param what string
+---@return integer
+local function dateNumber(value, what)
+  assert(type(value) == "number" and value % 1 == 0, what .. " is an integer")
+  ---@cast value integer
+  return value
+end
+
+-- Expands one generated template (a branch date template or a nature
+-- template) into display-ready runs. Literal text transfers verbatim,
+-- line breaks stay inside the run text, color selections change the run
+-- ink, and every other segment binds a live mon field, a generated
+-- month/landmark label, or the migration region. Adjacent equal-ink
+-- text stays coalesced; unknown segment kinds fail.
+---@param mon table<string, unknown>
+---@param manifest table<string, unknown>
+---@param segments table[]
+---@return { text: string, ink: string }[]
+local function expandSegments(mon, manifest, segments)
+  local section = memoSection(manifest)
+  local labels = memoLabels(manifest)
+  local met = assert(mon.met, "memo records carry their met record")
+  assert(type(met) == "table", "memo met records are records")
+  local metDate = assert(met.date, "memo met records carry a date")
+  assert(type(metDate) == "table", "memo met dates are records")
+  local metLocation = assert(met.location, "memo met records carry a location")
+  assert(type(metLocation) == "number" and metLocation % 1 == 0, "memo met locations are integers")
+  ---@cast metLocation integer
+  local metLevel = assert(met.level, "memo met records carry a level")
+  assert(type(metLevel) == "number", "memo met levels are numeric")
+  local egg = assert(mon.egg, "memo records carry their egg record")
+  assert(type(egg) == "table", "memo egg records are records")
+  -- Stored mons never carry a separate egg date, so hatched and egg
+  -- templates read the meeting date for the egg bindings.
+  local eggDate = metDate
+  if type(egg.date) == "table" then
+    eggDate = egg.date
+  end
+  local eggLocation = assert(egg.location, "memo egg records carry a location")
+  assert(type(eggLocation) == "number" and eggLocation % 1 == 0, "memo egg locations are integers")
+  ---@cast eggLocation integer
+  local runs = {}
+  local pieces = {}
+  local ink = "ordinary"
+  local function flush()
+    if #pieces > 0 then
+      runs[#runs + 1] = { text = table.concat(pieces), ink = ink }
+      pieces = {}
+    end
+  end
+  local function push(text)
+    assert(type(text) == "string" and text ~= "", "memo substitutions resolve display text")
+    pieces[#pieces + 1] = text
+  end
+  for position, segment in ipairs(segments) do
+    assert(type(segment) == "table", "memo segments are records")
+    local kind = segment.kind
+    if kind == "text" then
+      local value = segment.value
+      assert(type(value) == "string", "memo text carries its wording")
+      push(value)
+    elseif kind == "lineBreak" then
+      push("\n")
+    elseif kind == "color" then
+      flush()
+      ink = inkForColor(manifest, segment.color)
+    elseif kind == "metYear" then
+      push(tostring(dateNumber(metDate.year, "memo years")))
+    elseif kind == "metMonth" then
+      push(labelText(labels, monthKey(section, metDate.month), "the memo month"))
+    elseif kind == "metDay" then
+      push(tostring(dateNumber(metDate.day, "memo days")))
+    elseif kind == "metLevel" then
+      push(tostring(dateNumber(metLevel, "memo levels")))
+    elseif kind == "metLocation" then
+      push(labelText(labels, landmarkKey(manifest, metLocation), "the memo landmark"))
+    elseif kind == "eggYear" then
+      push(tostring(dateNumber(eggDate.year, "memo years")))
+    elseif kind == "eggMonth" then
+      push(labelText(labels, monthKey(section, eggDate.month), "the memo month"))
+    elseif kind == "eggDay" then
+      push(tostring(dateNumber(eggDate.day, "memo days")))
+    elseif kind == "eggLocation" then
+      push(labelText(labels, landmarkKey(manifest, eggLocation), "the memo landmark"))
+    elseif kind == "migrationRegion" then
+      push(migrationRegionText(mon, manifest))
+    else
+      error("memo segment " .. position .. " carries unknown kind " .. tostring(kind), 0)
+    end
+  end
+  flush()
+  assert(#runs >= 1, "memo templates expand to text")
+  return runs
+end
+
+-- Resolves one generated wording reference to display-ready runs. The
+-- generated family carries wording as either a plain label or a
+-- template with color and break segments; templates expand through the
+-- same segment interpreter as date templates, labels transfer as one
+-- ordinary run. A reference carried by neither fails immediately.
+---@param manifest table<string, unknown>
+---@param mon table<string, unknown>
+---@param key string
+---@param what string
+---@return { text: string, ink: string }[]
+local function textRuns(manifest, mon, key, what)
+  local textSection = assert(manifest.text, "the summary family carries lowered text")
+  assert(type(textSection) == "table", "lowered text is a record")
+  local templates = textSection.templates
+  if type(templates) == "table" and type(templates[key]) == "table" then
+    local record = templates[key]
+    local segments = assert(record.segments, what .. " carries segments")
+    assert(type(segments) == "table" and #segments >= 1, what .. " carries segments")
+    return expandSegments(mon, manifest, segments)
+  end
+  return { { text = labelText(memoLabels(manifest), key, what), ink = "ordinary" } }
 end
 
 -- Names the characteristic individual-value position: the highest value
@@ -267,75 +544,57 @@ end
 ---@param isMine boolean full-identity ownership
 ---@param context table<string, unknown> explicit display context
 ---@param manifest table<string, unknown> validated summary family
----@return { condition: string, blocks: { line: integer, runs: { text: string }[] }[] }
+---@return { condition: string, blocks: { line: integer, runs: { text: string, ink: string }[] }[] }
 function SummaryMemo.build(mon, isMine, context, manifest)
   assert(type(mon) == "table", "the memo needs a mon record")
   assert(type(isMine) == "boolean", "the memo needs full-identity ownership")
   assert(type(context) == "table", "the memo needs the display context")
   assert(type(manifest) == "table", "the memo needs the summary family")
-  local memoSection = assert(manifest.memo, "the summary family carries memo records")
-  assert(type(memoSection) == "table", "memo records are a record")
-  local conditions = assert(memoSection.conditions, "memo records carry conditions")
-  assert(type(conditions) == "table", "memo conditions are a record")
-  local condition = selectCondition(mon, isMine)
-  local rule = conditions[condition]
-  assert(type(rule) == "table", "the summary family covers memo condition " .. condition)
-  local labels = memoLabels(manifest)
-  local templateText = labelText(labels, assert(rule.template, "memo rules carry a template"), "the memo template")
+  local section = memoSection(manifest)
+  local conditions = assert(section.conditions, "memo records carry conditions")
+  assert(type(conditions) == "table" and #conditions >= 1, "memo conditions arrive in order")
+  local locations = assert(section.locations, "memo records carry locations")
+  assert(type(locations) == "table", "memo locations are a record")
+  local rule = selectRule(mon, isMine, locations, conditions)
+  local condition = assert(rule.key, "memo rules name their branch")
+  assert(type(condition) == "string", "memo branch keys are strings")
+  local lines = assert(rule.lines, "memo rules carry line placement")
+  assert(type(lines) == "table", "memo line placement is a record")
   local blocks = {}
 
   local nature = nil
-  if rule.nature > 0 or rule.flavor > 0 then
+  if lines.nature > 0 or lines.flavor > 0 then
     local pid = assert(mon.personality, "memo records carry their personality")
     assert(type(pid) == "number", "personalities are numeric")
     nature = Personality.nature(pid)
   end
-  if rule.nature > 0 then
+  if lines.nature > 0 then
     assert(nature ~= nil, "the nature line needs the nature")
-    blocks[#blocks + 1] = {
-      line = rule.nature,
-      runs = { { text = templateText .. " " .. NATURE_NAMES[nature + 1] } },
-    }
+    -- The English name only derives the generated wording key; the
+    -- displayed wording always comes from the generated family.
+    local natureKey = "nature" .. HgssMonService.natureName(nature)
+    blocks[#blocks + 1] = { line = lines.nature, runs = textRuns(manifest, mon, natureKey, "the memo nature") }
   end
-  if rule.date > 0 then
-    local met = assert(mon.met, "memo records carry their met record")
-    assert(type(met) == "table", "memo met records are records")
-    local location = assert(met.location, "memo met records carry a location")
-    assert(type(location) == "number" and location % 1 == 0, "memo met locations are integers")
-    ---@cast location integer
-    local date = assert(met.date, "memo met records carry a date")
-    assert(type(date) == "table", "memo met dates are records")
-    assert(
-      type(date.month) == "number" and date.month % 1 == 0 and date.month >= 1 and date.month <= 12,
-      "memo months stay in 1..12"
-    )
-    assert(
-      type(date.day) == "number" and date.day % 1 == 0 and date.day >= 1 and date.day <= 31,
-      "memo days stay in 1..31"
-    )
-    local months = assert(memoSection.months, "memo records carry months")
-    assert(type(months) == "table", "memo months are a record")
-    local monthKey = assert(months[date.month], "memo months cover month " .. date.month)
-    local text = labelText(labels, landmarkKey(manifest, location), "the memo landmark")
-      .. " "
-      .. labelText(labels, monthKey, "the memo month")
-      .. " "
-      .. tostring(date.day)
-    blocks[#blocks + 1] = { line = rule.date, runs = { { text = text } } }
+  if lines.date > 0 then
+    local template = assert(rule.dateTemplate, "memo rules carry their date template")
+    assert(type(template) == "table", "memo date templates are records")
+    local segments = assert(template.segments, "memo date templates carry segments")
+    assert(type(segments) == "table" and #segments >= 1, "memo date templates carry segments")
+    blocks[#blocks + 1] = { line = lines.date, runs = expandSegments(mon, manifest, segments) }
   end
-  if rule.characteristic > 0 then
-    local characteristics = assert(memoSection.characteristics, "memo records carry characteristics")
+  if lines.characteristic > 0 then
+    local characteristics = assert(section.characteristics, "memo records carry characteristics")
     assert(type(characteristics) == "table", "memo characteristics are a record")
     local position, remainder = characteristicPick(mon)
     local row = assert(characteristics[position], "memo characteristics cover position " .. position)
     assert(type(row) == "table", "characteristic rows are arrays")
     local key = assert(row[remainder + 1], "memo characteristics cover remainder " .. remainder)
     blocks[#blocks + 1] =
-      { line = rule.characteristic, runs = { { text = labelText(labels, key, "the memo characteristic") } } }
+      { line = lines.characteristic, runs = textRuns(manifest, mon, key, "the memo characteristic") }
   end
-  if rule.flavor > 0 then
+  if lines.flavor > 0 then
     assert(nature ~= nil, "the flavor line needs the nature")
-    local flavors = assert(memoSection.flavors, "memo records carry flavors")
+    local flavors = assert(section.flavors, "memo records carry flavors")
     assert(type(flavors) == "table", "memo flavors are a record")
     local up, _ = SummaryMemo.natureShift(nature)
     local key = nil
@@ -347,20 +606,16 @@ function SummaryMemo.build(mon, isMine, context, manifest)
       local index = assert(FLAVOR_BY_STAT[up], "flavors cover raised stat " .. up)
       key = assert(byFlavor[index], "memo flavors cover flavor " .. index)
     end
-    blocks[#blocks + 1] = { line = rule.flavor, runs = { { text = labelText(labels, key, "the memo flavor") } } }
+    blocks[#blocks + 1] = { line = lines.flavor, runs = textRuns(manifest, mon, key, "the memo flavor") }
   end
-  if rule.eggWatch > 0 then
-    local eggWatch = assert(memoSection.eggWatch, "memo records carry egg watch")
+  if lines.eggWatch > 0 then
+    local eggWatch = assert(section.eggWatch, "memo records carry egg watch")
     assert(type(eggWatch) == "table", "egg watch is a record")
     local templates = assert(eggWatch.templates, "egg watch carries templates")
     assert(type(templates) == "table", "egg-watch templates are an array")
     local index = eggWatchIndex(mon.friendship, eggWatch)
     local key = assert(templates[index], "egg watch covers band " .. index)
-    local text = labelText(labels, key, "the egg-watch text")
-    if rule.nature == 0 then
-      text = templateText .. " " .. text
-    end
-    blocks[#blocks + 1] = { line = rule.eggWatch, runs = { { text = text } } }
+    blocks[#blocks + 1] = { line = lines.eggWatch, runs = textRuns(manifest, mon, key, "the egg-watch text") }
   end
 
   table.sort(blocks, function(a, b)

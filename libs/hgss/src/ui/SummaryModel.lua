@@ -140,6 +140,55 @@ local function projectExpBar(experience, level, curve, length)
   return pixels
 end
 
+---@param catalog MonCatalog
+---@param mon table<string, unknown>
+---@return string
+local function portraitSelectorFor(catalog, mon)
+  local speciesKey = assert(mon.species, "stored mons carry their species")
+  assert(type(speciesKey) == "string", "species keys are strings")
+  local form = assert(mon.form, "stored mons carry their form")
+  assert(type(form) == "number", "form indices are numeric")
+  local personality = assert(mon.personality, "stored mons carry their personality")
+  assert(type(personality) == "number", "personalities are numeric")
+  local origin = assert(mon.origin, "stored mons carry their origin")
+  assert(type(origin) == "table", "origins are records")
+  local trainerId = assert(origin.trainerId, "origins carry the trainer identity")
+  assert(
+    type(trainerId) == "number" and trainerId % 1 == 0 and trainerId >= 0 and trainerId <= 4294967295,
+    "trainer identities are unsigned integers"
+  )
+  ---@cast trainerId integer
+  local shiny = Personality.shiny(trainerId, personality)
+  local species = catalog:species(speciesKey)
+  local gender = Personality.gender(assert(species.genderRatio, "catalog species carry a gender ratio"), personality)
+  if gender == "male" or gender == "female" then
+    return MonCache.portraitSelector(speciesKey, form, gender, shiny)
+  end
+  assert(gender == "genderless", "portrait genders stay binary or genderless")
+  -- Genderless species reuse the generated form's available portrait
+  -- variant, recomposed with the actual shininess; nothing is guessed.
+  local formRecord = catalog:form(speciesKey, form)
+  local declared = assert(formRecord.portrait, "generated forms declare their portrait variant")
+  assert(type(declared) == "string", "portrait variants are selectors")
+  local variant = declared:match("^[^/]+/[^/]+/([^/]+)/[^/]+$")
+  assert(variant == "male" or variant == "female", "generated portrait variants stay binary")
+  return MonCache.portraitSelector(speciesKey, form, variant --[[@as string]], shiny)
+end
+
+---@param catalog MonCatalog
+---@param heldItem unknown
+---@return string?
+local function heldItemName(catalog, heldItem)
+  assert(type(heldItem) == "string", "stored held items are keys")
+  if heldItem == "NONE" then
+    return nil
+  end
+  local item = catalog:item(heldItem)
+  local name = assert(item.name, "catalog items carry a display name")
+  assert(type(name) == "string" and name ~= "", "catalog items carry a display name")
+  return name
+end
+
 ---@param pokerus unknown
 ---@return string
 local function pokerusKey(pokerus)
@@ -544,6 +593,7 @@ function SummaryModel.build(service, slot0, context, manifest)
     local member = service:partyMon(slot)
     local memberIsEgg = member.isEgg == true
     local iconKey = nil
+    local portraitSelector = nil
     if memberIsEgg then
       iconKey = MonCache.iconSelector("EGG", 0, true)
     else
@@ -552,8 +602,9 @@ function SummaryModel.build(service, slot0, context, manifest)
         assert(member.form, "stored mons carry their form"),
         false
       )
+      portraitSelector = portraitSelectorFor(catalog, member)
     end
-    roster[#roster + 1] = { slot = slot, isEgg = memberIsEgg, iconKey = iconKey }
+    roster[#roster + 1] = { slot = slot, isEgg = memberIsEgg, iconKey = iconKey, portraitSelector = portraitSelector }
   end
 
   local snapshot = nil
@@ -562,6 +613,11 @@ function SummaryModel.build(service, slot0, context, manifest)
     assert(type(origin) == "table", "origins are records")
     local eggOtId = assert(origin.trainerId, "origins carry the trainer identity")
     assert(type(eggOtId) == "number", "trainer identities are numeric")
+    local eggOtName = assert(origin.trainerName, "origins carry the trainer name")
+    assert(type(eggOtName) == "string", "trainer names are strings")
+    local eggHeldItem = assert(mon.heldItem, "stored mons carry their held item")
+    local eggExperience = assert(mon.experience, "stored mons carry experience")
+    assert(type(eggExperience) == "number", "experience is numeric")
     local unknownText = labels["synUnknownDex"]
     if type(unknownText) ~= "string" or unknownText == "" then
       unknownText = UNKNOWN_DEX_TEXT
@@ -579,19 +635,23 @@ function SummaryModel.build(service, slot0, context, manifest)
         personality = assert(mon.personality, "stored mons carry their personality"),
         nickname = nil,
         displayName = "EGG",
+        otName = eggOtName,
         gender = "genderless",
         shiny = false,
       },
       pictureKey = "EGG",
+      portraitSelector = nil,
       iconKey = MonCache.iconSelector("EGG", 0, true),
       memo = memo,
       info = {
         dexNumber = 0,
         dexText = unknownText,
         otIdText = string.format("%05d", eggOtId % 65536),
+        experience = eggExperience,
         expToNext = 0,
         expBar = { length = 0 },
-        heldItem = assert(mon.heldItem, "stored mons carry their held item"),
+        heldItem = eggHeldItem,
+        heldItemName = heldItemName(catalog, eggHeldItem),
         ball = assert(origin.ball, "origins carry the ball"),
       },
       skills = nil,
@@ -619,9 +679,20 @@ function SummaryModel.build(service, slot0, context, manifest)
     local speciesKey = assert(mon.species, "stored mons carry their species")
     assert(type(speciesKey) == "string", "species keys are strings")
     local species = catalog:species(speciesKey)
-    catalog:form(speciesKey, assert(mon.form, "stored mons carry their form"))
+    local speciesName = assert(species.name, "catalog species carry a display name")
+    assert(type(speciesName) == "string" and speciesName ~= "", "catalog species carry a display name")
+    local formRecord = catalog:form(speciesKey, assert(mon.form, "stored mons carry their form"))
+    local formTypes = assert(formRecord.types, "catalog forms carry types")
+    assert(type(formTypes) == "table", "form types are an array")
+    local types = {}
+    for index, typeName in ipairs(formTypes) do
+      assert(type(typeName) == "string", "form types are strings")
+      types[index] = typeName
+    end
     local origin = assert(mon.origin, "stored mons carry their origin")
     assert(type(origin) == "table", "origins are records")
+    local otName = assert(origin.trainerName, "origins carry the trainer name")
+    assert(type(otName) == "string", "trainer names are strings")
     local trainerId = assert(origin.trainerId, "origins carry the trainer identity")
     assert(
       type(trainerId) == "number" and trainerId % 1 == 0 and trainerId >= 0 and trainerId <= 4294967295,
@@ -689,16 +760,21 @@ function SummaryModel.build(service, slot0, context, manifest)
         personality = personality,
         nickname = mon.nickname,
         displayName = Mon.displayName(mon, catalog),
+        speciesName = speciesName,
+        types = types,
+        otName = otName,
         gender = gender,
         shiny = shiny,
       },
       pictureKey = pictureKey,
+      portraitSelector = roster[slot0 + 1].portraitSelector,
       iconKey = MonCache.iconSelector(speciesKey, assert(mon.form, "stored mons carry their form"), false),
       memo = memo,
       info = {
         dexNumber = dexNumber,
         dexText = dexText,
         otIdText = string.format("%05d", trainerId % 65536),
+        experience = experience,
         expToNext = expToNext,
         expBar = {
           length = projectExpBar(
@@ -709,6 +785,7 @@ function SummaryModel.build(service, slot0, context, manifest)
           ),
         },
         heldItem = assert(mon.heldItem, "stored mons carry their held item"),
+        heldItemName = heldItemName(catalog, assert(mon.heldItem, "stored mons carry their held item")),
         ball = assert(origin.ball, "origins carry the ball"),
       },
       skills = {

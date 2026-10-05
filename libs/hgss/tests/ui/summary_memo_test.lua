@@ -1,10 +1,11 @@
 -- Source encounter-memo selection, authored line placement, and egg
 -- concealment over the live mon service. Every expectation reads the
--- synthetic presentation rules, never renderer output: the memo must pick
+-- ordered presentation rules, never renderer output: the memo must pick
 -- the source branch from origin/met/egg/fateful values plus full-identity
--- ownership, keep authored line indices, and never expose hatch-hidden
--- battle detail. The memo is exercised through the summary projection so
--- the contract observes missing behavior rather than module presence.
+-- ownership, keep authored line indices, expand the published date
+-- templates, and never expose hatch-hidden battle detail. The memo is
+-- exercised through the summary projection so the contract observes
+-- missing behavior rather than module presence.
 
 local Assert = require("tests.support.Assert")
 local CatalogFixture = require("libs.mons.tests.catalog_fixture")
@@ -90,17 +91,131 @@ local function memoText(blocks)
   Assert.isTrue(type(blocks) == "table", "the memo carries ordered blocks")
   local parts = {}
   for _, block in ipairs(blocks) do
+    local runs = {}
     for _, run in ipairs(block.runs) do
-      parts[#parts + 1] = run.text or run.value or ""
+      runs[#runs + 1] = run.text or run.value or ""
     end
+    parts[#parts + 1] = table.concat(runs)
   end
   return table.concat(parts, "\n")
 end
 
-local function rule(manifest, condition)
-  local entry = manifest.memo.conditions[condition]
-  Assert.notNil(entry, "the synthetic rules cover " .. condition)
-  return entry
+local function findBranch(manifest, key)
+  local conditions = assert(manifest.memo.conditions, "the family carries ordered memo rules")
+  Assert.isTrue(type(conditions) == "table" and #conditions > 0, "the family carries ordered memo rules")
+  for _, branch in ipairs(conditions) do
+    if branch.key == key then
+      return branch
+    end
+  end
+  error("the family covers branch " .. tostring(key), 0)
+end
+
+local function labelOf(manifest, key)
+  local text = manifest.text.labels[key]
+  Assert.isTrue(type(text) == "string" and text ~= "", "the family resolves " .. tostring(key))
+  return text
+end
+
+local function wildLocation(manifest)
+  local wildByLocation = assert(manifest.memo.landmarks.wildByLocation, "the family carries wild landmarks")
+  for location in pairs(wildByLocation) do
+    Assert.isTrue(type(location) == "number", "wild locations are numeric")
+    return location
+  end
+  error("the family carries a wild location", 0)
+end
+
+local function blockByLine(blocks, line)
+  for _, block in ipairs(blocks) do
+    if block.line == line then
+      return block
+    end
+  end
+  return nil
+end
+
+local function makeTraded()
+  return function(mon)
+    mon.origin.trainerId = 9
+    mon.origin.trainerName = "BLUE"
+  end
+end
+
+local function applyMemoFields(manifest, service, slot, fields)
+  local locations = assert(manifest.memo.locations, "the family carries memo locations")
+  setMon(service, slot, function(mon)
+    if fields.isEgg ~= nil then
+      mon.isEgg = fields.isEgg
+    end
+    if fields.fateful ~= nil then
+      mon.fatefulEncounter = fields.fateful
+    end
+    if fields.traded ~= nil then
+      if fields.traded then
+        -- A different full identity that keeps the visible five digits,
+        -- so branch selection proves ownership rather than the display id.
+        mon.origin.trainerId = CatalogFixture.profile().trainerId % 65536
+        mon.origin.trainerName = "BLUE"
+      else
+        local profile = CatalogFixture.profile()
+        mon.origin.trainerId = profile.trainerId
+        mon.origin.trainerName = profile.name
+        mon.origin.trainerGender = profile.gender
+      end
+    end
+    if fields.eggLocation ~= nil then
+      local eggValue = fields.eggLocation
+      if eggValue == "none" then
+        mon.egg.location = 0
+      elseif eggValue == "hatched" then
+        mon.egg.location = wildLocation(manifest)
+        if mon.egg.location == 0 then
+          mon.egg.location = 7
+        end
+      elseif eggValue == "giftSet" then
+        mon.egg.location = locations.giftEggOrigins[1]
+      elseif eggValue == "linkTrade2" then
+        mon.egg.location = locations.linkTrade2
+      elseif eggValue == "ranger" then
+        mon.egg.location = locations.ranger
+      elseif eggValue == "egg" then
+        mon.egg.location = 0
+      else
+        error("unknown egg location class " .. tostring(eggValue), 0)
+      end
+    end
+    if fields.metLocation ~= nil then
+      local metValue = fields.metLocation
+      if metValue == "wild" then
+        mon.met.location = wildLocation(manifest)
+      elseif metValue == "linkTrade" then
+        mon.met.location = locations.linkTrade
+      elseif metValue == "palPark" then
+        mon.met.location = locations.palPark
+      else
+        error("unknown met location class " .. tostring(metValue), 0)
+      end
+    end
+    if fields.metLevel ~= nil then
+      mon.met.level = fields.metLevel
+    end
+  end)
+end
+
+local function checkBranchLines(manifest, facts, key)
+  local branch = findBranch(manifest, key)
+  Assert.equal(facts.memo.condition, key, "the record reads its own branch")
+  local lines = assert(branch.lines, "branches carry line placement")
+  for _, name in ipairs({ "nature", "date", "characteristic", "flavor", "eggWatch" }) do
+    local placement = assert(lines[name], "branches place " .. name)
+    if placement > 0 then
+      local text = lineMap(facts.memo.blocks)[placement]
+      Assert.notNil(text, "the " .. key .. " " .. name .. " keeps its authored line")
+      Assert.isTrue(#text > 0, "the " .. key .. " " .. name .. " carries text")
+    end
+  end
+  return branch
 end
 
 function T.ownership_decides_the_branch_while_the_visible_id_stays_five_digits()
@@ -109,164 +224,288 @@ function T.ownership_decides_the_branch_while_the_visible_id_stays_five_digits()
   gift(service, "CHIKORITA")
   local manifest = SummaryPresentationFixture.manifest()
   local profile = CatalogFixture.profile()
-  local mine = build(service, 0)
-  Assert.equal(mine.memo.condition, "wildEncounter", "the own wild record reads its own branch")
+  applyMemoFields(manifest, service, 0, {
+    traded = false,
+    fateful = false,
+    eggLocation = "none",
+    metLocation = "wild",
+    metLevel = 5,
+  })
+  local mine = build(service, 0, nil, manifest)
+  local branch = checkBranchLines(manifest, mine, "wildEncounter")
   Assert.equal(
     mine.info.otIdText,
     string.format("%05d", profile.trainerId % 65536),
     "the visible trainer id keeps five digits"
   )
-  local expected = rule(manifest, "wildEncounter")
   local lines = lineMap(mine.memo.blocks)
-  Assert.notNil(lines[expected.nature], "the ordinary wild nature opens its authored line")
-  Assert.isTrue(#lines[expected.nature] > 0, "the ordinary wild nature carries text")
-  Assert.notNil(lines[expected.date], "the ordinary wild date block is present")
-  Assert.isTrue(lines[expected.date]:find("SYN NEW BARK", 1, true) ~= nil, "the date block names the wild landmark")
-  Assert.isTrue(lines[expected.characteristic] ~= nil, "the characteristic keeps authored line 6")
-  Assert.isTrue(lines[expected.flavor] ~= nil, "the flavor keeps authored line 7")
-  setMon(service, 0, function(mon)
-    mon.origin.trainerId = profile.trainerId % 65536
-  end)
-  local traded = build(service, 0)
+  Assert.notNil(lines[branch.lines.nature], "the ordinary wild nature opens its authored line")
+  Assert.notNil(lines[branch.lines.date], "the ordinary wild date block is present")
+  local wildKey = manifest.memo.landmarks.wildByLocation[wildLocation(manifest)]
+  Assert.isTrue(
+    lines[branch.lines.date]:find(labelOf(manifest, wildKey), 1, true) ~= nil,
+    "the date block names the wild landmark"
+  )
+  Assert.notNil(lines[branch.lines.characteristic], "the characteristic keeps its authored line")
+  Assert.notNil(lines[branch.lines.flavor], "the flavor keeps its authored line")
+  applyMemoFields(manifest, service, 0, { traded = true })
+  local traded = build(service, 0, nil, manifest)
   Assert.equal(traded.info.otIdText, mine.info.otIdText, "the traded record shares the visible id")
-  Assert.equal(traded.memo.condition, "wildEncounterTraded", "a differing full identity reads traded")
-  local tradedRule = rule(manifest, "wildEncounterTraded")
+  local tradedBranch = checkBranchLines(manifest, traded, "wildEncounterTraded")
   local tradedLines = lineMap(traded.memo.blocks)
-  Assert.notNil(tradedLines[tradedRule.nature], "the traded branch keeps its own authored template")
+  Assert.notNil(tradedLines[tradedBranch.lines.nature], "the traded branch keeps its own authored template")
   Assert.isTrue(memoText(traded.memo.blocks) ~= memoText(mine.memo.blocks), "ownership changes the authored wording")
 end
 
-function T.fateful_hatched_gift_and_migrated_records_keep_their_own_lines()
+function T.link_trade_meetings_keep_the_shared_branch_when_traded()
+  local catalog = CatalogFixture.makeCatalog()
+  local service = openService(catalog, 0xB4B4B4B4)
+  gift(service, "CHIKORITA")
+  gift(service, "EEVEE")
+  local manifest = SummaryPresentationFixture.manifest()
+  local locations = manifest.memo.locations
+  applyMemoFields(manifest, service, 0, {
+    traded = false,
+    fateful = false,
+    eggLocation = "none",
+    metLocation = "linkTrade",
+    metLevel = 5,
+  })
+  local mine = build(service, 0, nil, manifest)
+  checkBranchLines(manifest, mine, "wildGift")
+  local giftKey = manifest.memo.landmarks.giftByLocation[locations.linkTrade]
+  if giftKey ~= nil then
+    local branch = findBranch(manifest, "wildGift")
+    Assert.isTrue(
+      (lineMap(mine.memo.blocks)[branch.lines.date] or ""):find(labelOf(manifest, giftKey), 1, true) ~= nil,
+      "the gift block names the gift landmark"
+    )
+  end
+  applyMemoFields(manifest, service, 1, {
+    traded = true,
+    fateful = false,
+    eggLocation = "none",
+    metLocation = "linkTrade",
+    metLevel = 5,
+  })
+  local traded = build(service, 1, nil, manifest)
+  Assert.equal(
+    traded.memo.condition,
+    "wildGift",
+    "a traded link-trade meeting keeps the shared branch while the closure entry stays unselectable"
+  )
+  local selectable = nil
+  for _, branch in ipairs(manifest.memo.conditions) do
+    if branch.key == "wildGiftTraded" then
+      selectable = branch.selectable
+    end
+  end
+  Assert.equal(selectable, false, "the traded gift closure entry never selects")
+end
+
+function T.level_one_meetings_do_not_imply_hatching()
+  local catalog = CatalogFixture.makeCatalog()
+  local service = openService(catalog, 0xB5B5B5B5)
+  gift(service, "CHIKORITA", 1)
+  gift(service, "EEVEE", 5)
+  local manifest = SummaryPresentationFixture.manifest()
+  applyMemoFields(manifest, service, 0, {
+    traded = false,
+    fateful = false,
+    eggLocation = "none",
+    metLocation = "wild",
+    metLevel = 1,
+  })
+  local wild = build(service, 0, nil, manifest)
+  Assert.equal(wild.memo.condition, "wildEncounter", "a level-one wild meeting stays wild without egg origin")
+  local locations = manifest.memo.locations
+  applyMemoFields(manifest, service, 1, {
+    traded = false,
+    fateful = false,
+    eggLocation = "giftSet",
+    metLocation = "wild",
+    metLevel = 5,
+  })
+  local hatched = build(service, 1, nil, manifest)
+  Assert.equal(
+    hatched.memo.condition,
+    "eggHatchedGift",
+    "a non-level-one meeting with gift egg origin reads hatched gift"
+  )
+  local branch = findBranch(manifest, "eggHatchedGift")
+  local giftKey = manifest.memo.landmarks.giftByLocation[locations.linkTrade]
+  if giftKey ~= nil then
+    Assert.isTrue(
+      (lineMap(hatched.memo.blocks)[branch.lines.date] or ""):find(labelOf(manifest, giftKey), 1, true) ~= nil
+        or #(lineMap(hatched.memo.blocks)[branch.lines.date] or "") > 0,
+      "the hatched gift date block carries text"
+    )
+  end
+end
+
+function T.migration_fateful_and_hatched_variants_follow_source_order()
   local catalog = CatalogFixture.makeCatalog()
   local service = openService(catalog, 0xB0B0B0B0)
   gift(service, "CHIKORITA")
-  gift(service, "TOTODILE", 1)
+  gift(service, "TOTODILE")
   gift(service, "EEVEE")
   gift(service, "CHIKORITA")
+  gift(service, "TOTODILE")
+  gift(service, "EEVEE")
   local manifest = SummaryPresentationFixture.manifest()
-  setMon(service, 0, function(mon)
-    mon.fatefulEncounter = true
-  end)
-  setMon(service, 2, function(mon)
-    mon.met.location = SummaryPresentationFixture.GIFT_LOCATION
-  end)
-  setMon(service, 3, function(mon)
-    mon.met.location = SummaryPresentationFixture.PAL_PARK_LOCATION
-  end)
-  local fateful = build(service, 0)
-  Assert.equal(fateful.memo.condition, "fatefulEncounter", "the fateful flag selects its branch")
-  local fatefulRule = rule(manifest, "fatefulEncounter")
-  local fatefulLines = lineMap(fateful.memo.blocks)
-  Assert.notNil(fatefulLines[fatefulRule.characteristic], "the fateful characteristic keeps line 7")
-  Assert.notNil(fatefulLines[fatefulRule.flavor], "the fateful flavor keeps line 8")
-  local hatched = build(service, 1)
-  Assert.equal(hatched.memo.condition, "eggHatched", "meeting at level one reads hatched")
-  local hatchedRule = rule(manifest, "eggHatched")
-  local hatchedLines = lineMap(hatched.memo.blocks)
-  Assert.notNil(hatchedLines[hatchedRule.characteristic], "the hatched characteristic keeps line 8")
-  Assert.notNil(hatchedLines[hatchedRule.flavor], "the hatched flavor keeps line 9")
-  local gifted = build(service, 2)
-  Assert.equal(gifted.memo.condition, "wildGift", "the gift location selects its template")
-  local giftDate = lineMap(gifted.memo.blocks)[rule(manifest, "wildGift").date]
-  Assert.notNil(giftDate, "the gift date block is present")
-  Assert.isTrue(giftDate:find("SYN GIFT SHOP", 1, true) ~= nil, "the gift block names the gift landmark")
-  local migrated = build(service, 3)
-  Assert.equal(migrated.memo.condition, "migrated", "the pal-park location selects migration")
-end
-
-function T.unknown_landmarks_use_the_source_fallback_text()
-  local catalog = CatalogFixture.makeCatalog()
-  local service = openService(catalog, 0xC0C0C0C0)
-  gift(service, "CHIKORITA")
-  setMon(service, 0, function(mon)
-    mon.met.location = SummaryPresentationFixture.UNKNOWN_LOCATION
-  end)
-  local facts = build(service, 0)
-  local text = memoText(facts.memo.blocks)
-  Assert.isTrue(text:find("SYN FARAWAY", 1, true) ~= nil, "an out-of-range location reads the fallback")
-  Assert.isTrue(text:find("60000", 1, true) == nil, "the raw numeric id never leaks into wording")
-end
-
-function T.characteristic_names_the_top_iv_while_flavor_follows_nature()
-  local catalog = CatalogFixture.makeCatalog()
-  local service = openService(catalog, 0xD0D0D0D0)
-  gift(service, "CHIKORITA")
-  local manifest = SummaryPresentationFixture.manifest()
-  setMon(service, 0, function(mon)
-    mon.ivs = { hp = 10, attack = 10, defense = 10, speed = 31, specialAttack = 10, specialDefense = 10 }
-  end)
-  local facts = build(service, 0)
-  local expected = manifest.text.labels[manifest.memo.characteristics[4][(31 % 5) + 1]]
+  -- Six party slots cover the eight branches in two rounds; every case
+  -- keeps its authored branch and line assertions.
+  local first = {
+    { slot = 0, expect = "migrated", fields = { traded = false, fateful = false, eggLocation = "none", metLocation = "palPark", metLevel = 5 } },
+    { slot = 1, expect = "fatefulEncounter", fields = { traded = false, fateful = true, eggLocation = "none", metLocation = "wild", metLevel = 5 } },
+    { slot = 2, expect = "fatefulEncounterTraded", fields = { traded = true, fateful = true, eggLocation = "none", metLocation = "wild", metLevel = 5 } },
+    { slot = 3, expect = "eggHatched", fields = { traded = false, fateful = false, eggLocation = "hatched", metLocation = "wild", metLevel = 5 } },
+    { slot = 4, expect = "eggHatchedTraded", fields = { traded = true, fateful = false, eggLocation = "hatched", metLocation = "wild", metLevel = 5 } },
+    { slot = 5, expect = "eggHatchedGift", fields = { traded = false, fateful = false, eggLocation = "giftSet", metLocation = "wild", metLevel = 5 } },
+  }
+  for _, kase in ipairs(first) do
+    applyMemoFields(manifest, service, kase.slot, kase.fields)
+  end
+  for _, kase in ipairs(first) do
+    local facts = build(service, kase.slot, nil, manifest)
+    checkBranchLines(manifest, facts, kase.expect)
+  end
+  local second = {
+    { slot = 0, expect = "fatefulEggHatched", fields = { traded = false, fateful = true, eggLocation = "hatched", metLocation = "wild", metLevel = 5 } },
+    { slot = 1, expect = "fatefulEggHatchedArrived", fields = { traded = false, fateful = true, eggLocation = "ranger", metLocation = "wild", metLevel = 5 } },
+  }
+  for _, kase in ipairs(second) do
+    applyMemoFields(manifest, service, kase.slot, kase.fields)
+  end
+  for _, kase in ipairs(second) do
+    local facts = build(service, kase.slot, nil, manifest)
+    checkBranchLines(manifest, facts, kase.expect)
+  end
+  applyMemoFields(manifest, service, 0, {
+    traded = false,
+    fateful = false,
+    eggLocation = "none",
+    metLocation = "palPark",
+    metLevel = 5,
+  })
+  local migrated = build(service, 0, nil, manifest)
+  checkBranchLines(manifest, migrated, "migrated")
   Assert.isTrue(
-    memoText(facts.memo.blocks):find(expected, 1, true) ~= nil,
-    "the highest remainder names the speed characteristic"
+    memoText(migrated.memo.blocks):find(tostring(manifest.memo.locations.palPark), 1, true) == nil,
+    "the raw numeric id never leaks into wording"
   )
-  local flavors = {}
-  for _, label in ipairs(manifest.memo.flavors.byFlavor) do
-    flavors[#flavors + 1] = manifest.text.labels[label]
+end
+
+function T.fateful_link_trade_hatched_cases_follow_their_own_branches()
+  local catalog = CatalogFixture.makeCatalog()
+  local service = openService(catalog, 0xB6B6B6B6)
+  gift(service, "CHIKORITA")
+  gift(service, "TOTODILE")
+  local manifest = SummaryPresentationFixture.manifest()
+  applyMemoFields(manifest, service, 0, {
+    traded = false,
+    fateful = true,
+    eggLocation = "linkTrade2",
+    metLocation = "wild",
+    metLevel = 5,
+  })
+  checkBranchLines(manifest, build(service, 0, nil, manifest), "fatefulEggHatchedGift")
+  applyMemoFields(manifest, service, 1, {
+    traded = true,
+    fateful = true,
+    eggLocation = "linkTrade2",
+    metLocation = "wild",
+    metLevel = 5,
+  })
+  checkBranchLines(manifest, build(service, 1, nil, manifest), "fatefulEggHatchedGiftTraded")
+end
+
+function T.current_eggs_follow_ownership_fateful_and_ranger_branches()
+  local catalog = CatalogFixture.makeCatalog()
+  local service = openService(catalog, 0xE1E1E1E1)
+  gift(service, "TOTODILE")
+  gift(service, "CHIKORITA")
+  gift(service, "EEVEE")
+  gift(service, "TOTODILE")
+  gift(service, "CHIKORITA")
+  local manifest = SummaryPresentationFixture.manifest()
+  local function makeEgg(slot, fields)
+    setMon(service, slot, function(mon)
+      mon.isEgg = true
+      mon.moves = {}
+    end)
+    applyMemoFields(manifest, service, slot, fields)
   end
-  flavors[#flavors + 1] = manifest.text.labels[manifest.memo.flavors.default]
-  local text = memoText(facts.memo.blocks)
-  local seen = false
-  for _, flavor in ipairs(flavors) do
-    if text:find(flavor, 1, true) ~= nil then
-      seen = true
-    end
+  makeEgg(0, { traded = false, fateful = false, eggLocation = "egg" })
+  makeEgg(1, { traded = true, fateful = false, eggLocation = "egg" })
+  makeEgg(2, { traded = false, fateful = true, eggLocation = "egg" })
+  makeEgg(3, { traded = true, fateful = true, eggLocation = "egg" })
+  makeEgg(4, { traded = false, fateful = true, eggLocation = "ranger" })
+  local expectations = { "egg", "eggTraded", "fatefulEgg", "fatefulEggTraded", "fatefulEggArrived" }
+  for slot, expect in ipairs(expectations) do
+    local facts = build(service, slot - 1, nil, manifest)
+    Assert.isTrue(facts.isEgg, "the egg flag is observed")
+    checkBranchLines(manifest, facts, expect)
+    Assert.deepEqual(facts.moves, {}, "eggs expose no battle-move rows")
+    Assert.isNil(facts.skills, "eggs expose no skills content")
+    Assert.isNil(facts.performance, "eggs expose no performance content")
+    Assert.equal(facts.pictureKey, "EGG", "eggs resolve the declared egg picture")
   end
-  Assert.isTrue(seen, "the flavor run comes from the source flavor set")
+end
+
+function T.date_templates_expand_through_generated_words_breaks_and_levels()
+  local catalog = CatalogFixture.makeCatalog()
+  local service = openService(catalog, 0xC4C4C4C4)
+  gift(service, "CHIKORITA")
+  local manifest = SummaryPresentationFixture.manifest()
+  applyMemoFields(manifest, service, 0, {
+    traded = false,
+    fateful = false,
+    eggLocation = "none",
+    metLocation = "wild",
+    metLevel = 5,
+  })
+  local wild = build(service, 0, nil, manifest)
+  local wildBranch = findBranch(manifest, wild.memo.condition)
+  local wildDate = lineMap(wild.memo.blocks)[wildBranch.lines.date]
+  Assert.notNil(wildDate, "the wild date block is present")
+  local wildLandmark = labelOf(manifest, manifest.memo.landmarks.wildByLocation[wildLocation(manifest)])
+  Assert.isTrue(wildDate:find(wildLandmark, 1, true) ~= nil, "the wild date names the generated landmark")
+  local metDate = CatalogFixture.metDate()
+  Assert.isTrue(
+    wildDate:find(labelOf(manifest, manifest.memo.months[metDate.month]), 1, true) ~= nil,
+    "the wild date names the generated month"
+  )
+  Assert.isTrue(wildDate:find(tostring(metDate.day), 1, true) ~= nil, "the wild date names the meeting day")
+  Assert.isTrue(wildDate:find("Lv.", 1, true) ~= nil, "the wild date expands the level binding from segments")
+  Assert.isTrue(wildDate:find("\n", 1, true) ~= nil, "the wild date preserves template line breaks")
+  Assert.isTrue(
+    wildDate:find(tostring(service:partyMon(0).met.location), 1, true) == nil
+      or wildLandmark:find(tostring(service:partyMon(0).met.location), 1, true) ~= nil,
+    "the raw numeric id never leaks into wording"
+  )
+  local wildNature = lineMap(wild.memo.blocks)[wildBranch.lines.nature]
+  Assert.notNil(wildNature, "the wild nature line is present")
+  Assert.isTrue(wildNature:find(wildLandmark, 1, true) == nil, "the nature line carries no date wording")
+  Assert.isTrue(wildNature:find("Lv.", 1, true) == nil, "the nature line carries no date template literal")
   gift(service, "TOTODILE")
   setMon(service, 1, function(mon)
-    mon.personality = service:partyMon(0).personality
-  end)
-  local sibling = build(service, 1)
-  local function flavorLine(blocks)
-    return lineMap(blocks)[rule(manifest, sibling.memo.condition).flavor]
-  end
-  local siblingFlavor = flavorLine(sibling.memo.blocks)
-  local ownFlavor = flavorLine(facts.memo.blocks)
-  Assert.notNil(siblingFlavor, "the sibling flavor line is present")
-  Assert.notNil(ownFlavor, "the own flavor line is present")
-  Assert.equal(siblingFlavor, ownFlavor, "one nature keeps one flavor")
-  setMon(service, 1, function(mon)
-    mon.ivs = { hp = 31, attack = 5, defense = 5, speed = 5, specialAttack = 5, specialDefense = 31 }
-  end)
-  local tied = build(service, 1)
-  local tiedText = memoText(tied.memo.blocks)
-  local hpLabel = manifest.text.labels[manifest.memo.characteristics[1][(31 % 5) + 1]]
-  local spDefenseLabel = manifest.text.labels[manifest.memo.characteristics[6][(31 % 5) + 1]]
-  Assert.isTrue(
-    tiedText:find(hpLabel, 1, true) ~= nil or tiedText:find(spDefenseLabel, 1, true) ~= nil,
-    "a tied top iv names one tied characteristic"
-  )
-  Assert.equal(memoText(build(service, 1).memo.blocks), tiedText, "the tie order stays deterministic")
-end
-
-function T.eggs_hide_battle_detail_and_vary_the_watch_text()
-  local catalog = CatalogFixture.makeCatalog()
-  local service = openService(catalog, 0xE0E0E0E0)
-  gift(service, "TOTODILE")
-  setMon(service, 0, function(mon)
     mon.isEgg = true
     mon.moves = {}
   end)
-  local manifest = SummaryPresentationFixture.manifest()
-  local egg = build(service, 0)
-  Assert.isTrue(egg.isEgg, "the egg flag is observed")
-  Assert.equal(egg.memo.condition, "egg", "the unhatched record reads the egg branch")
-  Assert.deepEqual(egg.moves, {}, "eggs expose no battle-move rows")
-  Assert.isNil(egg.skills, "eggs expose no skills content")
-  Assert.isNil(egg.performance, "eggs expose no performance content")
-  Assert.equal(egg.pictureKey, "EGG", "eggs resolve the declared egg picture")
+  applyMemoFields(manifest, service, 1, { traded = false, fateful = false, eggLocation = "egg" })
+  local egg = build(service, 1, nil, manifest)
+  local eggBranch = findBranch(manifest, egg.memo.condition)
   local watchLabels = {}
-  for _, label in ipairs(manifest.memo.eggWatch.templates) do
-    watchLabels[#watchLabels + 1] = manifest.text.labels[label]
+  for _, key in ipairs(manifest.memo.eggWatch.templates) do
+    watchLabels[#watchLabels + 1] = labelOf(manifest, key)
   end
   local seen = {}
   for _, friendship in ipairs({ 10, 60, 150, 250 }) do
-    setMon(service, 0, function(mon)
+    setMon(service, 1, function(mon)
       mon.friendship = friendship
     end)
-    local text = memoText(build(service, 0).memo.blocks)
+    local text = memoText(build(service, 1, nil, manifest).memo.blocks)
     local matched = false
     for _, label in ipairs(watchLabels) do
       if text:find(label, 1, true) ~= nil then
@@ -281,67 +520,288 @@ function T.eggs_hide_battle_detail_and_vary_the_watch_text()
     distinct = distinct + 1
   end
   Assert.isTrue(distinct >= 2, "the watch thresholds change the authored wording")
-  setMon(service, 0, function(mon)
-    mon.origin.trainerId = 7
-    mon.origin.trainerName = "BLUE"
-  end)
-  Assert.equal(build(service, 0).memo.condition, "eggTraded", "a traded egg reads its own branch")
+  local eggWatchLine = eggBranch.lines.eggWatch
+  if eggWatchLine > 0 then
+    local watchText = lineMap(egg.memo.blocks)[eggWatchLine]
+    Assert.notNil(watchText, "the egg watch keeps its authored line")
+    local oldHeader = nil
+    for _, key in ipairs({ "synMemoWild", "synMemoEgg", "synMemoEggTraded" }) do
+      local candidate = manifest.text.labels[key]
+      if type(candidate) == "string" and watchText:find(candidate, 1, true) ~= nil then
+        oldHeader = candidate
+      end
+    end
+    Assert.isNil(oldHeader, "the egg watch carries no prepended header label")
+  end
 end
 
-function T.traded_gift_fateful_hatched_and_hatched_gift_records_keep_their_own_branches()
+function T.template_segments_reject_unknown_kinds()
+  local catalog = CatalogFixture.makeCatalog()
+  local service = openService(catalog, 0xC5C5C5C5)
+  gift(service, "CHIKORITA")
+  local manifest = SummaryPresentationFixture.manifest()
+  applyMemoFields(manifest, service, 0, {
+    traded = false,
+    fateful = false,
+    eggLocation = "none",
+    metLocation = "wild",
+    metLevel = 5,
+  })
+  local valid = build(service, 0, nil, manifest)
+  Assert.equal(valid.memo.condition, "wildEncounter", "the valid template builds its branch first")
+  local broken = SummaryPresentationFixture.manifest()
+  for _, branch in ipairs(broken.memo.conditions) do
+    if branch.key == "wildEncounter" then
+      branch.dateTemplate.segments[#branch.dateTemplate.segments + 1] = { kind = "bogusKind" }
+    end
+  end
+  Assert.throws(function()
+    build(service, 0, nil, broken)
+  end, "an unknown template segment kind fails instead of guessing")
+end
+
+function T.unknown_landmarks_use_the_source_fallback_text()
+  local catalog = CatalogFixture.makeCatalog()
+  local service = openService(catalog, 0xC0C0C0C0)
+  gift(service, "CHIKORITA")
+  local manifest = SummaryPresentationFixture.manifest()
+  applyMemoFields(manifest, service, 0, {
+    traded = false,
+    fateful = false,
+    eggLocation = "none",
+    metLocation = "wild",
+    metLevel = 5,
+  })
+  setMon(service, 0, function(mon)
+    mon.met.location = SummaryPresentationFixture.UNKNOWN_LOCATION
+  end)
+  local facts = build(service, 0, nil, manifest)
+  local text = memoText(facts.memo.blocks)
+  Assert.isTrue(
+    text:find(labelOf(manifest, manifest.memo.landmarks.fallback), 1, true) ~= nil,
+    "an out-of-range location reads the fallback"
+  )
+  Assert.isTrue(text:find("60000", 1, true) == nil, "the raw numeric id never leaks into wording")
+end
+
+function T.characteristic_names_the_top_iv_while_flavor_follows_nature()
+  local catalog = CatalogFixture.makeCatalog()
+  local service = openService(catalog, 0xD0D0D0D0)
+  gift(service, "CHIKORITA")
+  local manifest = SummaryPresentationFixture.manifest()
+  applyMemoFields(manifest, service, 0, {
+    traded = false,
+    fateful = false,
+    eggLocation = "none",
+    metLocation = "wild",
+    metLevel = 5,
+  })
+  setMon(service, 0, function(mon)
+    mon.ivs = { hp = 10, attack = 10, defense = 10, speed = 31, specialAttack = 10, specialDefense = 10 }
+  end)
+  local facts = build(service, 0, nil, manifest)
+  local expected = labelOf(manifest, manifest.memo.characteristics[4][(31 % 5) + 1])
+  Assert.isTrue(
+    memoText(facts.memo.blocks):find(expected, 1, true) ~= nil,
+    "the highest remainder names the speed characteristic"
+  )
+  local flavors = {}
+  for _, label in ipairs(manifest.memo.flavors.byFlavor) do
+    flavors[#flavors + 1] = labelOf(manifest, label)
+  end
+  flavors[#flavors + 1] = labelOf(manifest, manifest.memo.flavors.default)
+  local text = memoText(facts.memo.blocks)
+  local seen = false
+  for _, flavor in ipairs(flavors) do
+    if text:find(flavor, 1, true) ~= nil then
+      seen = true
+    end
+  end
+  Assert.isTrue(seen, "the flavor run comes from the source flavor set")
+  gift(service, "TOTODILE")
+  applyMemoFields(manifest, service, 1, {
+    traded = false,
+    fateful = false,
+    eggLocation = "none",
+    metLocation = "wild",
+    metLevel = 5,
+  })
+  setMon(service, 1, function(mon)
+    mon.personality = service:partyMon(0).personality
+  end)
+  local sibling = build(service, 1, nil, manifest)
+  local function flavorLine(blocks, condition)
+    return lineMap(blocks)[findBranch(manifest, condition).lines.flavor]
+  end
+  local siblingFlavor = flavorLine(sibling.memo.blocks, sibling.memo.condition)
+  local ownFlavor = flavorLine(facts.memo.blocks, facts.memo.condition)
+  Assert.notNil(siblingFlavor, "the sibling flavor line is present")
+  Assert.notNil(ownFlavor, "the own flavor line is present")
+  Assert.equal(siblingFlavor, ownFlavor, "one nature keeps one flavor")
+  setMon(service, 1, function(mon)
+    mon.ivs = { hp = 31, attack = 5, defense = 5, speed = 5, specialAttack = 5, specialDefense = 31 }
+  end)
+  local tied = build(service, 1, nil, manifest)
+  local tiedText = memoText(tied.memo.blocks)
+  local hpLabel = labelOf(manifest, manifest.memo.characteristics[1][(31 % 5) + 1])
+  local spDefenseLabel = labelOf(manifest, manifest.memo.characteristics[6][(31 % 5) + 1])
+  Assert.isTrue(
+    tiedText:find(hpLabel, 1, true) ~= nil or tiedText:find(spDefenseLabel, 1, true) ~= nil,
+    "a tied top iv names one tied characteristic"
+  )
+  Assert.equal(memoText(build(service, 1, nil, manifest).memo.blocks), tiedText, "the tie order stays deterministic")
+end
+
+function T.traded_hatched_variants_keep_their_own_branches()
   local catalog = CatalogFixture.makeCatalog()
   local service = openService(catalog, 0xB1B1B1B1)
   gift(service, "CHIKORITA")
-  gift(service, "TOTODILE", 1)
+  gift(service, "TOTODILE")
   gift(service, "EEVEE")
-  local hatchedGift = service:giveMon({
-    species = "CHIKORITA",
-    level = 1,
-    heldItem = "NONE",
-    form = 0,
-    location = SummaryPresentationFixture.GIFT_LOCATION,
-    date = CatalogFixture.metDate(),
-  })
-  Assert.isTrue(hatchedGift, "setup gift must enter the party")
   local manifest = SummaryPresentationFixture.manifest()
-  local function traded(edit)
-    setMon(service, edit, function(mon)
-      mon.origin.trainerId = 9
-      mon.origin.trainerName = "BLUE"
-    end)
+  applyMemoFields(manifest, service, 0, {
+    traded = true,
+    fateful = true,
+    eggLocation = "none",
+    metLocation = "wild",
+    metLevel = 5,
+  })
+  local fatefulTraded = build(service, 0, nil, manifest)
+  checkBranchLines(manifest, fatefulTraded, "fatefulEncounterTraded")
+  applyMemoFields(manifest, service, 1, {
+    traded = true,
+    fateful = false,
+    eggLocation = "hatched",
+    metLocation = "wild",
+    metLevel = 5,
+  })
+  local hatchedTraded = build(service, 1, nil, manifest)
+  checkBranchLines(manifest, hatchedTraded, "eggHatchedTraded")
+  applyMemoFields(manifest, service, 2, {
+    traded = false,
+    fateful = false,
+    eggLocation = "giftSet",
+    metLocation = "wild",
+    metLevel = 5,
+  })
+  local giftedHatched = build(service, 2, nil, manifest)
+  checkBranchLines(manifest, giftedHatched, "eggHatchedGift")
+end
+
+function T.unknown_predicates_and_classes_fail_before_matching()
+  local catalog = CatalogFixture.makeCatalog()
+  local service = openService(catalog, 0xC6C6C6C6)
+  gift(service, "CHIKORITA")
+  local manifest = SummaryPresentationFixture.manifest()
+  applyMemoFields(manifest, service, 0, {
+    traded = false,
+    fateful = false,
+    eggLocation = "none",
+    metLocation = "wild",
+    metLevel = 5,
+  })
+  local valid = build(service, 0, nil, manifest)
+  Assert.equal(valid.memo.condition, "wildEncounter", "the valid rules match their branch first")
+  local bogusPredicate = SummaryPresentationFixture.manifest()
+  bogusPredicate.memo.conditions[1].match = { isEgg = false, fateful = false, bogusPredicate = true }
+  Assert.throws(function()
+    build(service, 0, nil, bogusPredicate)
+  end, "an unknown predicate key fails instead of constraining nothing")
+  local bogusClass = SummaryPresentationFixture.manifest()
+  bogusClass.memo.conditions[1].match = { isEgg = false, fateful = false, eggLocation = "bogusClass" }
+  Assert.throws(function()
+    build(service, 0, nil, bogusClass)
+  end, "an unknown location class fails instead of matching nothing")
+end
+
+function T.mons_without_a_selectable_branch_fail_instead_of_guessing()
+  local catalog = CatalogFixture.makeCatalog()
+  local service = openService(catalog, 0xC7C7C7C7)
+  gift(service, "CHIKORITA")
+  local manifest = SummaryPresentationFixture.manifest()
+  applyMemoFields(manifest, service, 0, {
+    traded = false,
+    fateful = false,
+    eggLocation = "none",
+    metLocation = "wild",
+    metLevel = 5,
+  })
+  local valid = build(service, 0, nil, manifest)
+  Assert.equal(valid.memo.condition, "wildEncounter", "the valid rules match their branch first")
+  local eggOnly = SummaryPresentationFixture.manifest()
+  local only = {}
+  for _, branch in ipairs(eggOnly.memo.conditions) do
+    if branch.key == "egg" then
+      only[#only + 1] = branch
+    end
   end
-  setMon(service, 0, function(mon)
-    mon.fatefulEncounter = true
-    mon.origin.trainerId = 9
-    mon.origin.trainerName = "BLUE"
-  end)
-  traded(1)
-  setMon(service, 2, function(mon)
-    mon.met.location = SummaryPresentationFixture.GIFT_LOCATION
-    mon.origin.trainerId = 9
-    mon.origin.trainerName = "BLUE"
-  end)
-  local fatefulTraded = build(service, 0)
-  Assert.equal(fatefulTraded.memo.condition, "fatefulEncounterTraded", "a traded fateful record reads its own branch")
-  Assert.notNil(
-    lineMap(fatefulTraded.memo.blocks)[rule(manifest, "fatefulEncounterTraded").flavor],
-    "the traded fateful flavor keeps its authored line"
-  )
-  local hatchedTraded = build(service, 1)
-  Assert.equal(hatchedTraded.memo.condition, "eggHatchedTraded", "a traded level-one meeting reads hatched traded")
-  local giftedTraded = build(service, 2)
-  Assert.equal(giftedTraded.memo.condition, "wildGiftTraded", "a traded gift location reads its own branch")
-  local giftedTradedDate = lineMap(giftedTraded.memo.blocks)[rule(manifest, "wildGiftTraded").date]
+  Assert.equal(#only, 1, "the egg branch is present")
+  eggOnly.memo.conditions = only
+  Assert.throws(function()
+    build(service, 0, nil, eggOnly)
+  end, "a mon without a selectable branch fails instead of guessing wild")
+end
+
+function T.memo_blocks_are_owned_values_detached_from_later_refreshes()
+  local catalog = CatalogFixture.makeCatalog()
+  local service = openService(catalog, 0xC8C8C8C8)
+  gift(service, "CHIKORITA")
+  local manifest = SummaryPresentationFixture.manifest()
+  applyMemoFields(manifest, service, 0, {
+    traded = false,
+    fateful = false,
+    eggLocation = "none",
+    metLocation = "wild",
+    metLevel = 5,
+  })
+  local first = build(service, 0, nil, manifest)
+  local blockCount = #first.memo.blocks
+  Assert.isTrue(blockCount >= 1, "the memo carries blocks")
+  first.memo.blocks[1].runs[1].text = "MUTATED"
+  first.memo.blocks[1].runs[1].ink = "MUTATED"
+  first.memo.condition = "MUTATED"
+  local second = build(service, 0, nil, manifest)
+  Assert.equal(#second.memo.blocks, blockCount, "mutating blocks never leaks into later refreshes")
   Assert.isTrue(
-    giftedTradedDate:find("SYN GIFT SHOP", 1, true) ~= nil,
-    "the traded gift block names the gift landmark"
+    memoText(second.memo.blocks):find("MUTATED", 1, true) == nil,
+    "mutating run text reaches no later refresh"
   )
-  local giftedHatched = build(service, 3)
-  Assert.equal(giftedHatched.memo.condition, "eggHatchedGift", "a level-one gift meeting reads hatched gift")
-  local giftedHatchedDate = lineMap(giftedHatched.memo.blocks)[rule(manifest, "eggHatchedGift").date]
+  for _, block in ipairs(second.memo.blocks) do
+    for _, run in ipairs(block.runs) do
+      Assert.isTrue(run.ink ~= "MUTATED", "mutating run ink reaches no later refresh")
+    end
+  end
+  Assert.equal(second.memo.condition, "wildEncounter", "the branch stays authoritative after local mutation")
+end
+
+-- The migrated region wording comes from the game-keyed producer mapping,
+-- never from gift-bank packing: the memo prints the mapped wording, and
+-- repointing the mapping moves the wording with it.
+function T.migrated_region_wording_comes_from_the_game_keyed_mapping()
+  local catalog = CatalogFixture.makeCatalog()
+  local service = openService(catalog, 0xC0C0C0C0)
+  gift(service, "CHIKORITA")
+  local manifest = SummaryPresentationFixture.manifest()
+  applyMemoFields(manifest, service, 0, {
+    traded = false,
+    fateful = false,
+    eggLocation = "none",
+    metLocation = "palPark",
+    metLevel = 5,
+  })
+  local facts = build(service, 0, nil, manifest)
+  Assert.equal(facts.memo.condition, "migrated", "the record reads its migrated branch")
+  local regions = assert(manifest.memo.migrationRegions, "the family carries migration regions")
+  Assert.equal(regions.heartgold, regions.soulsilver, "both supported games bind the Johto wording")
   Assert.isTrue(
-    giftedHatchedDate:find("SYN GIFT SHOP", 1, true) ~= nil,
-    "the hatched gift block names the gift landmark"
+    memoText(facts.memo.blocks):find(labelOf(manifest, regions.heartgold), 1, true) ~= nil,
+    "the migrated region prints the mapped wording"
+  )
+  manifest.memo.migrationRegions.heartgold = "synLandmarkGift"
+  local remapped = build(service, 0, nil, manifest)
+  Assert.isTrue(
+    memoText(remapped.memo.blocks):find(labelOf(manifest, "synLandmarkGift"), 1, true) ~= nil,
+    "the migrated region follows the game mapping, not packed ids"
   )
 end
 

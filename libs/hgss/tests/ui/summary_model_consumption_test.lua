@@ -92,9 +92,11 @@ end
 local function memoText(blocks)
   local parts = {}
   for _, block in ipairs(blocks) do
+    local runs = {}
     for _, run in ipairs(block.runs) do
-      parts[#parts + 1] = run.text or run.value or ""
+      runs[#runs + 1] = run.text or run.value or ""
     end
+    parts[#parts + 1] = table.concat(runs)
   end
   return table.concat(parts, "\n")
 end
@@ -126,6 +128,42 @@ local function labelOf(manifest, key)
   return text
 end
 
+-- Flattens one generated wording reference to plain text for assertions.
+-- Labels transfer directly while templates concatenate their literal
+-- text runs with breaks preserved; color operations carry no wording.
+local function wordingOf(manifest, key)
+  local labels = manifest.text.labels or {}
+  if type(labels[key]) == "string" and labels[key] ~= "" then
+    return labels[key]
+  end
+  local templates = manifest.text.templates or {}
+  local record = templates[key]
+  Assert.notNil(record, "the prepared family resolves " .. tostring(key))
+  local segments = assert(record.segments, "wording templates carry segments")
+  local parts = {}
+  for _, segment in ipairs(segments) do
+    if segment.kind == "text" then
+      parts[#parts + 1] = segment.value
+    elseif segment.kind == "lineBreak" then
+      parts[#parts + 1] = "\n"
+    end
+  end
+  local text = table.concat(parts)
+  Assert.isTrue(text ~= "", "the prepared family resolves " .. tostring(key))
+  return text
+end
+
+local function findBranch(manifest, key)
+  local conditions = assert(manifest.memo.conditions, "the prepared family carries ordered memo rules")
+  Assert.isTrue(type(conditions) == "table" and #conditions > 0, "the prepared family carries ordered rules")
+  for _, branch in ipairs(conditions) do
+    if branch.key == key then
+      return branch
+    end
+  end
+  error("the prepared family covers branch " .. tostring(key), 0)
+end
+
 function T.tests.prepared_native_family_drives_facts(context)
   local versions = readyVersions()
   if #versions == 0 then
@@ -144,19 +182,23 @@ function T.tests.prepared_native_family_drives_facts(context)
 
     local mine = build(service, 0, manifest)
     Assert.equal(mine.memo.condition, "wildEncounter", "the own wild record reads its own branch")
-    local wildRule = assert(manifest.memo.conditions.wildEncounter, "the prepared family covers wildEncounter")
+    local wildRule = findBranch(manifest, "wildEncounter")
     local wildLines = lineMap(mine.memo.blocks)
-    Assert.isTrue(#(wildLines[wildRule.nature] or "") > 0, "the wild nature line carries text")
+    Assert.isTrue(#(wildLines[wildRule.lines.nature] or "") > 0, "the wild nature line carries text")
     local wildLandmark = labelOf(manifest, manifest.memo.landmarks.wildByLocation[7])
     Assert.isTrue(
-      (wildLines[wildRule.date] or ""):find(wildLandmark, 1, true) ~= nil,
+      (wildLines[wildRule.lines.date] or ""):find(wildLandmark, 1, true) ~= nil,
       "the wild date block names the prepared landmark"
     )
     local metDate = CatalogFixture.metDate()
     local monthLabel = labelOf(manifest, manifest.memo.months[metDate.month])
     Assert.isTrue(
-      (wildLines[wildRule.date] or ""):find(monthLabel, 1, true) ~= nil,
+      (wildLines[wildRule.lines.date] or ""):find(monthLabel, 1, true) ~= nil,
       "the wild date block names the prepared month"
+    )
+    Assert.isTrue(
+      (wildLines[wildRule.lines.date] or ""):find("Lv.", 1, true) ~= nil,
+      "the wild date expands its level binding from segments"
     )
     local characteristics = {}
     for _, row in pairs(manifest.memo.characteristics) do
@@ -168,9 +210,9 @@ function T.tests.prepared_native_family_drives_facts(context)
       containsAny(memoText(mine.memo.blocks), characteristics),
       "the wild memo resolves a prepared characteristic"
     )
-    local flavors = { labelOf(manifest, manifest.memo.flavors.default) }
+    local flavors = { wordingOf(manifest, manifest.memo.flavors.default) }
     for _, key in ipairs(manifest.memo.flavors.byFlavor) do
-      flavors[#flavors + 1] = labelOf(manifest, key)
+      flavors[#flavors + 1] = wordingOf(manifest, key)
     end
     Assert.equal(mine.skills.hpBar.length, 48, "full health spans the native health width")
     Assert.equal(mine.skills.hpBar.color, "high", "full health reads the high color")
@@ -200,23 +242,31 @@ function T.tests.prepared_native_family_drives_facts(context)
       "ownership changes the prepared wording"
     )
 
+    setMon(service, 2, function(mon)
+      mon.egg.location = 7
+    end)
     local hatched = build(service, 2, manifest)
-    Assert.equal(hatched.memo.condition, "eggHatched", "meeting at level one reads hatched")
-    local hatchedRule = assert(manifest.memo.conditions.eggHatched, "the prepared family covers eggHatched")
+    Assert.equal(hatched.memo.condition, "eggHatched", "egg origin reads hatched independent of meeting level")
+    local hatchedRule = findBranch(manifest, "eggHatched")
     Assert.notNil(
-      lineMap(hatched.memo.blocks)[hatchedRule.characteristic],
+      lineMap(hatched.memo.blocks)[hatchedRule.lines.characteristic],
       "the hatched characteristic keeps its prepared line"
     )
-    Assert.notNil(lineMap(hatched.memo.blocks)[hatchedRule.flavor], "the hatched flavor keeps its prepared line")
+    Assert.notNil(
+      lineMap(hatched.memo.blocks)[hatchedRule.lines.flavor],
+      "the hatched flavor keeps its prepared line"
+    )
 
+    local linkTrade = assert(manifest.memo.locations.linkTrade, "the prepared family carries its trade location")
     setMon(service, 0, function(mon)
       mon.origin.trainerId = CatalogFixture.profile().trainerId
       mon.origin.trainerName = CatalogFixture.profile().name
-      mon.met.location = 4001
+      mon.egg.location = 0
+      mon.met.location = linkTrade
     end)
     local gifted = build(service, 0, manifest)
-    Assert.equal(gifted.memo.condition, "wildGift", "the gift range selects its template")
-    local giftLandmark = labelOf(manifest, manifest.memo.landmarks.giftByLocation[4001])
+    Assert.equal(gifted.memo.condition, "wildGift", "the trade location selects its template")
+    local giftLandmark = labelOf(manifest, manifest.memo.landmarks.giftByLocation[linkTrade])
     Assert.isTrue(
       memoText(gifted.memo.blocks):find(giftLandmark, 1, true) ~= nil,
       "the gift block names the prepared gift landmark"
@@ -226,30 +276,32 @@ function T.tests.prepared_native_family_drives_facts(context)
       mon.origin.trainerName = "BLUE"
     end)
     local giftedTraded = build(service, 0, manifest)
-    Assert.equal(giftedTraded.memo.condition, "wildGiftTraded", "a traded gift keeps a resolvable branch")
+    Assert.equal(
+      giftedTraded.memo.condition,
+      "wildGift",
+      "a traded trade meeting keeps the shared branch while the closure entry stays unselectable"
+    )
 
     setMon(service, 0, function(mon)
       mon.origin.trainerId = CatalogFixture.profile().trainerId
       mon.origin.trainerName = CatalogFixture.profile().name
-      mon.met.location = 2001
+      mon.egg.location = 0
+      mon.met.location = 7
     end)
-    local linked = build(service, 0, manifest)
-    Assert.isTrue(
-      memoText(linked.memo.blocks):find(labelOf(manifest, manifest.memo.landmarks.wildByLocation[2001]), 1, true)
-        ~= nil,
-      "the source gift range resolves its prepared landmark"
-    )
-    setMon(service, 0, function(mon)
-      mon.met.location = 3001
-    end)
-    Assert.isTrue(
-      memoText(build(service, 0, manifest).memo.blocks):find(
-        labelOf(manifest, manifest.memo.landmarks.wildByLocation[3001]),
-        1,
-        true
-      ) ~= nil,
-      "the source external range resolves its prepared landmark"
-    )
+    -- The park location selects migration rather than its own landmark;
+    -- the migration assertion below owns that location.
+    local parkLocation = manifest.memo.locations.palPark
+    for location, landmarkKey in pairs(manifest.memo.landmarks.wildByLocation) do
+      if location ~= parkLocation then
+        setMon(service, 0, function(mon)
+          mon.met.location = location
+        end)
+        Assert.isTrue(
+          memoText(build(service, 0, manifest).memo.blocks):find(labelOf(manifest, landmarkKey), 1, true) ~= nil,
+          "the prepared wild landmark resolves for location " .. tostring(location)
+        )
+      end
+    end
     setMon(service, 0, function(mon)
       mon.met.location = 60000
     end)
@@ -260,10 +312,13 @@ function T.tests.prepared_native_family_drives_facts(context)
     )
     Assert.isTrue(faraway:find("60000", 1, true) == nil, "the raw numeric id never leaks into wording")
 
+    local palPark = assert(manifest.memo.locations.palPark, "the prepared family carries its park location")
     setMon(service, 0, function(mon)
-      mon.met.location = 0
+      mon.fatefulEncounter = false
+      mon.egg.location = 0
+      mon.met.location = palPark
     end)
-    Assert.equal(build(service, 0, manifest).memo.condition, "migrated", "the pal-park location selects migration")
+    Assert.equal(build(service, 0, manifest).memo.condition, "migrated", "the park location selects migration")
     local plain = build(service, 0, manifest)
     setMon(service, 0, function(mon)
       mon.met.location = 7
@@ -341,9 +396,34 @@ function T.tests.prepared_native_family_drives_facts(context)
     Assert.deepEqual(egg.moves, {}, "eggs expose no battle-move rows over the prepared family")
     local watch = {}
     for _, key in ipairs(manifest.memo.eggWatch.templates) do
-      watch[#watch + 1] = labelOf(manifest, key)
+      watch[#watch + 1] = wordingOf(manifest, key)
     end
     Assert.isTrue(containsAny(memoText(egg.memo.blocks), watch), "the egg reads prepared watch text")
+    Assert.isNil(egg.portraitSelector, "eggs demand no portrait page over the prepared family")
+    Assert.isNil(egg.roster[1].portraitSelector, "egg roster rows stay page-free over the prepared family")
+    setMon(service, 0, function(mon)
+      mon.isEgg = false
+      mon.moves = { { move = "TACKLE", pp = 35, ppUps = 0 } }
+    end)
+    local restored = build(service, 0, manifest)
+    Assert.isTrue(
+      type(restored.portraitSelector) == "string" and restored.portraitSelector ~= "",
+      "non-eggs carry their exact portrait selector over the prepared family"
+    )
+    Assert.equal(
+      restored.roster[1].portraitSelector,
+      restored.portraitSelector,
+      "the roster reuses the selected portrait selector"
+    )
+    Assert.isTrue(
+      restored.pictureKey ~= restored.portraitSelector,
+      "the timeline key stays distinct from portrait pixels"
+    )
+    Assert.notNil(restored.identity.speciesName, "identity names the catalog species")
+    Assert.notNil(restored.identity.types, "identity lists the generated form types")
+    Assert.notNil(restored.identity.otName, "identity names the original trainer")
+    Assert.notNil(restored.info.experience, "info keeps current experience")
+    Assert.notNil(restored.info.heldItem, "info keeps the held-item key")
   end
 end
 

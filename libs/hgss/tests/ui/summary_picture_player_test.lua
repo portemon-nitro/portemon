@@ -13,8 +13,8 @@ local function playerOf(definition, epoch)
   return PicturePlayer.new(definition, epoch)
 end
 
-local function sample(frameIndex, durationTicks)
-  return {
+local function sample(frameIndex, durationTicks, blend)
+  local record = {
     durationTicks = durationTicks,
     frameIndex = frameIndex,
     offsetX = 0,
@@ -24,6 +24,14 @@ local function sample(frameIndex, durationTicks)
     rotationTurns = 0,
     visible = true,
   }
+  if blend ~= nil then
+    record.paletteBlend = blend
+  end
+  return record
+end
+
+local function blend(coefficient, r, g, b)
+  return { coefficient = coefficient, target = { r = r, g = g, b = b } }
 end
 
 local function definition(samples, extra)
@@ -149,6 +157,36 @@ function T.rejects_malformed_definitions_before_playback()
   Assert.throws(function()
     PicturePlayer.new(definition({ sample(3, 1) }), nil)
   end, "a missing epoch fails")
+end
+
+function T.blend_samples_reach_status_by_value_detached_by_identity()
+  local first = blend(8, 31, 0, 17)
+  local second = blend(14, 5, 29, 11)
+  local player = playerOf(definition({ sample(3, 2, first), sample(7, 3, second) }), 0)
+  player:start()
+  local status = player:status()
+  Assert.deepEqual(status.paletteBlend, first, "the first blend reaches status by value")
+  Assert.isTrue(status.paletteBlend ~= first, "the returned blend never aliases the compiled sample")
+  Assert.isTrue(status.paletteBlend.target ~= first.target, "the nested target never aliases the sample")
+  status.paletteBlend.coefficient = -1
+  status.paletteBlend.target.r = -1
+  status.paletteBlend.target.g = -1
+  status.paletteBlend.target.b = -1
+  local reread = player:status()
+  Assert.deepEqual(reread.paletteBlend, first, "external mutation cannot reach later status")
+  player:updateFixed()
+  player:updateFixed()
+  local moved = player:status()
+  Assert.deepEqual(moved.paletteBlend, second, "the next sample carries its own blend")
+  Assert.isTrue(moved.paletteBlend ~= second, "later blends stay detached as well")
+end
+
+function T.samples_without_blend_keep_a_nil_blend()
+  local player = playerOf(definition({ sample(3, 1), sample(7, 1) }), 0)
+  player:start()
+  Assert.isNil(player:status().paletteBlend, "a plain sample carries no blend")
+  player:updateFixed()
+  Assert.isNil(player:status().paletteBlend, "advancing to a plain sample keeps nil")
 end
 
 return { tests = T }

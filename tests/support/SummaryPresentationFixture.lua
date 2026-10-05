@@ -170,13 +170,63 @@ local function memoLabels(labels)
   return labels
 end
 
+-- Generated nature wording in native 0..24 order, mirroring the named
+-- nature templates of the real family: a colored name run followed by a
+-- plain kind run. The memo expands its nature line through these
+-- templates, never through a handwritten list.
+local NATURE_ORDER = {
+  "Hardy",
+  "Lonely",
+  "Brave",
+  "Adamant",
+  "Naughty",
+  "Bold",
+  "Docile",
+  "Relaxed",
+  "Impish",
+  "Lax",
+  "Timid",
+  "Hasty",
+  "Serious",
+  "Jolly",
+  "Naive",
+  "Modest",
+  "Mild",
+  "Quiet",
+  "Bashful",
+  "Rash",
+  "Calm",
+  "Gentle",
+  "Sassy",
+  "Careful",
+  "Quirky",
+}
+
+local function natureTemplates()
+  local templates = {}
+  for _, nature in ipairs(NATURE_ORDER) do
+    templates["nature" .. nature] = {
+      segments = {
+        { kind = "color", color = 2 },
+        { kind = "text", value = "SYN " .. string.upper(nature) },
+        { kind = "color", color = 0 },
+        { kind = "text", value = " SYN nature." },
+      },
+    }
+  end
+  return templates
+end
+
 -- Structured synthetic date templates mirroring the generated
 -- substitution shapes: literal text, line breaks, and semantic bindings
 -- with no raw placeholder fields. Wording is invented; the segment
--- vocabulary and the branch coverage mirror the generated contract.
-local function metSegments()
+-- vocabulary and the branch coverage mirror the generated contract. Every
+-- branch owns its own message in the real family, so traded variants carry
+-- their own opening wording here as well; the bindings stay identical.
+---@param opening string|nil
+local function metSegments(opening)
   return {
-    { kind = "text", value = "SYN " },
+    { kind = "text", value = opening or "SYN " },
     { kind = "metMonth" },
     { kind = "text", value = " SYN " },
     { kind = "metDay" },
@@ -252,7 +302,9 @@ local MEMO_BRANCHES = {
   { key = "wildGift", match = { isEgg = false, fateful = false, eggLocation = "none", metLocation = "linkTrade" }, lines = { 1, 2, 6, 7, 0 }, template = metSegments },
   { key = "wildGiftTraded", selectable = false, match = { isEgg = false, fateful = false, mine = false, eggLocation = "none", metLocation = "linkTrade" }, lines = { 1, 2, 6, 7, 0 }, template = metSegments },
   { key = "wildEncounter", match = { isEgg = false, fateful = false, mine = true, eggLocation = "none", metLocation = "wild" }, lines = { 1, 2, 6, 7, 0 }, template = metSegments },
-  { key = "wildEncounterTraded", match = { isEgg = false, fateful = false, mine = false, eggLocation = "none", metLocation = "wild" }, lines = { 1, 2, 6, 7, 0 }, template = metSegments },
+  { key = "wildEncounterTraded", match = { isEgg = false, fateful = false, mine = false, eggLocation = "none", metLocation = "wild" }, lines = { 1, 2, 6, 7, 0 }, template = function()
+    return metSegments("SYN traded ")
+  end },
   { key = "fatefulEggHatchedGift", match = { isEgg = false, fateful = true, mine = true, eggLocation = "linkTrade2" }, lines = { 1, 2, 9, 0, 0 }, template = hatchedSegments },
   { key = "fatefulEggHatchedGiftTraded", match = { isEgg = false, fateful = true, mine = false, eggLocation = "linkTrade2" }, lines = { 1, 2, 9, 0, 0 }, template = hatchedSegments },
   { key = "fatefulEggHatchedArrived", match = { isEgg = false, fateful = true, mine = true, eggLocation = "ranger" }, lines = { 1, 2, 9, 0, 0 }, template = hatchedSegments },
@@ -474,7 +526,7 @@ function SummaryPresentationFixture.manifest()
     },
     text = {
       labels = labels,
-      templates = {},
+      templates = natureTemplates(),
       roles = {
         slot13 = {
           foreground = { r = 255, g = 255, b = 255, a = 255 },

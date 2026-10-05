@@ -1132,6 +1132,19 @@ function SummaryController:status()
   if player ~= nil then
     local snapshot = player:status()
     assert(type(snapshot) == "table", "picture playback carries its snapshot")
+    -- The blend crosses one more boundary by nested copy, so mutating
+    -- the returned status can never reach the player sample.
+    local blend = nil
+    if snapshot.paletteBlend ~= nil then
+      local source = assert(snapshot.paletteBlend, "picture blends are records")
+      assert(type(source) == "table", "picture blends are records")
+      local target = assert(source.target, "picture blends carry a target")
+      assert(type(target) == "table", "picture blend targets are records")
+      blend = {
+        coefficient = source.coefficient,
+        target = { r = target.r, g = target.g, b = target.b },
+      }
+    end
     picture = {
       sampleIndex = snapshot.sampleIndex,
       frameIndex = snapshot.frameIndex,
@@ -1141,6 +1154,7 @@ function SummaryController:status()
       scaleY = snapshot.scaleY,
       rotationTurns = snapshot.rotationTurns,
       visible = snapshot.visible,
+      paletteBlend = blend,
     }
   end
   local transition = nil

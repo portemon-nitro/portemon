@@ -5,8 +5,10 @@
 local Assert = require("tests.support.Assert")
 local CatalogFixture = require("libs.mons.tests.catalog_fixture")
 local Lcrng = require("libs.mons.src.gen4.Lcrng")
+local MonCache = require("libs.assets.src.MonCache")
 local MonsSave = require("libs.mons.src.MonsSave")
 local Party = require("libs.mons.src.Party")
+local Personality = require("libs.mons.src.gen4.Personality")
 local SummaryModel = require("libs.hgss.src.ui.SummaryModel")
 local SummaryPresentationFixture = require("tests.support.SummaryPresentationFixture")
 
@@ -59,7 +61,7 @@ end
 -- snapshot values without touching saves, the catalog, or the RNG.
 
 local SNAPSHOT_KEYS =
-  "contextKey,iconKey,identity,indicators,info,isEgg,memo,moves,performance,pictureKey,revision,ribbons,roster,skills,slot,slotCount"
+  "contextKey,iconKey,identity,indicators,info,isEgg,memo,moves,performance,pictureKey,portraitSelector,revision,ribbons,roster,skills,slot,slotCount"
 local MOVE_ROW_KEYS = "accuracyText,category,description,key,kind,moveSlot,name,powerText,pp,ppMax,ppUps,type"
 local DISPLAY_ORDER = { "speed", "power", "skill", "stamina", "jump" }
 local SOURCE_INDEX = { power = 0, stamina = 1, skill = 2, jump = 3, speed = 4 }
@@ -744,6 +746,159 @@ function T.bars_keep_source_floor_minimum_positive_and_level_100_edges()
   local capped = buildFacts(service, 1)
   Assert.equal(capped.info.expToNext, 0, "level 100 keeps the source zero-to-next value")
   Assert.equal(capped.info.expBar.length, 0, "level 100 fills no experience pixels")
+end
+
+local function expectedSelector(catalog, mon)
+  local species = assert(mon.species, "stored mons carry their species")
+  local form = assert(mon.form, "stored mons carry their form")
+  local personality = assert(mon.personality, "stored mons carry their personality")
+  local origin = assert(mon.origin, "stored mons carry their origin")
+  local shiny = Personality.shiny(assert(origin.trainerId, "origins carry the trainer identity"), personality)
+  local speciesRecord = catalog:species(species)
+  local gender = Personality.gender(assert(speciesRecord.genderRatio, "species carry a ratio"), personality)
+  if gender ~= "genderless" then
+    return MonCache.portraitSelector(species, form, gender, shiny)
+  end
+  local formRecord = catalog:form(species, form)
+  local declared = assert(formRecord.portrait, "generated forms declare their portrait variant")
+  local variant = declared:match("^[^/]+/[^/]+/([^/]+)/[^/]+$")
+  Assert.notNil(variant, "the declared portrait names its gender variant")
+  Assert.isTrue(variant == "male" or variant == "female", "the generated variant stays binary")
+  return MonCache.portraitSelector(species, form, variant, shiny)
+end
+
+function T.roster_and_selected_facts_carry_exact_portrait_selectors()
+  local catalog = CatalogFixture.makeCatalog()
+  local service = openService(catalog, 0xE4E4E4E4)
+  gift(service, "CHIKORITA", 5)
+  gift(service, "TOTODILE", 5)
+  gift(service, "SHEDINJA", 5)
+  gift(service, "EEVEE", 5)
+  gift(service, "CHIKORITA", 5)
+  setMon(service, 1, function(mon)
+    mon.personality = 0
+  end)
+  setMon(service, 3, function(mon)
+    mon.form = 1
+    mon.ability = "ADAPTABILITY"
+  end)
+  setMon(service, 4, function(mon)
+    mon.isEgg = true
+    mon.moves = {}
+  end)
+  local manifest = SummaryPresentationFixture.manifest()
+  local context = SummaryPresentationFixture.context(service:partyCount())
+  local selected = nil
+  for slot = 0, 3 do
+    local facts = SummaryModel.build(service, slot, context, manifest)
+    local mon = service:partyMon(slot)
+    local expected = expectedSelector(catalog, mon)
+    Assert.equal(facts.portraitSelector, expected, "slot " .. slot .. " keeps its exact portrait identity")
+    Assert.isTrue(type(facts.portraitSelector) == "string", "slot " .. slot .. " names its selector")
+    Assert.isTrue(facts.pictureKey ~= facts.portraitSelector, "the timeline key stays distinct from pixels")
+    Assert.notNil(manifest.pictures[facts.pictureKey], "the timeline key resolves its picture")
+    if slot == 0 then
+      selected = facts
+    end
+  end
+  Assert.equal(selected.roster[1].portraitSelector, selected.portraitSelector, "the roster reuses the selected row")
+  for slot = 0, 3 do
+    local facts = SummaryModel.build(service, slot, context, manifest)
+    Assert.equal(
+      facts.roster[slot + 1].portraitSelector,
+      facts.portraitSelector,
+      "roster row " .. slot .. " matches its selected facts"
+    )
+  end
+  local egg = SummaryModel.build(service, 4, context, manifest)
+  Assert.isNil(egg.portraitSelector, "eggs demand no portrait page")
+  Assert.isNil(egg.roster[5].portraitSelector, "egg roster rows stay page-free")
+  Assert.equal(egg.pictureKey, "EGG", "eggs keep their picture key")
+  local genderless = SummaryModel.build(service, 2, context, manifest)
+  Assert.equal(genderless.identity.gender, "genderless", "the genderless ratio is observed")
+  Assert.equal(
+    genderless.portraitSelector,
+    expectedSelector(catalog, service:partyMon(2)),
+    "genderless selectors use the generated form variant"
+  )
+  local alternate = SummaryModel.build(service, 3, context, manifest)
+  Assert.isTrue(
+    alternate.portraitSelector:find("EEVEE/f1/", 1, true) ~= nil,
+    "alternate forms keep their form identity"
+  )
+end
+
+function T.shiny_variants_change_only_the_finish_suffix()
+  local catalog = CatalogFixture.makeCatalog()
+  local service = openService(catalog, 0xE5E5E5E5)
+  gift(service, "CHIKORITA", 5)
+  local profile = CatalogFixture.profile()
+  local shinyPid = nil
+  for pid = 0, 300000 do
+    if Personality.shiny(profile.trainerId, pid) then
+      shinyPid = pid
+      break
+    end
+  end
+  Assert.notNil(shinyPid, "the search finds a shiny personality")
+  local shinyGender = Personality.gender(31, shinyPid)
+  local plainPid = nil
+  for pid = 0, 300000 do
+    if not Personality.shiny(profile.trainerId, pid) and Personality.gender(31, pid) == shinyGender then
+      plainPid = pid
+      break
+    end
+  end
+  Assert.notNil(plainPid, "the search finds a plain personality of the same gender")
+  local manifest = SummaryPresentationFixture.manifest()
+  local context = SummaryPresentationFixture.context(1)
+  setMon(service, 0, function(mon)
+    mon.personality = plainPid
+  end)
+  local plain = SummaryModel.build(service, 0, context, manifest)
+  Assert.isFalse(plain.identity.shiny, "the plain personality reads plain")
+  Assert.isTrue(plain.portraitSelector:find("/plain", 1, true) ~= nil, "plain selectors keep the plain finish")
+  setMon(service, 0, function(mon)
+    mon.personality = shinyPid
+  end)
+  local shiny = SummaryModel.build(service, 0, context, manifest)
+  Assert.isTrue(shiny.identity.shiny, "the shiny personality reads shiny")
+  Assert.isTrue(shiny.portraitSelector:find("/shiny", 1, true) ~= nil, "shiny selectors keep the shiny finish")
+  Assert.equal(
+    shiny.portraitSelector:gsub("/shiny$", "/plain"),
+    plain.portraitSelector:gsub("/shiny$", "/plain"),
+    "only the finish suffix changes with shininess"
+  )
+end
+
+function T.selected_facts_carry_source_display_values()
+  local catalog = CatalogFixture.makeCatalog()
+  local service = openService(catalog, 0xE6E6E6E6)
+  gift(service, "CHIKORITA", 5)
+  setMon(service, 0, function(mon)
+    mon.nickname = "LEAFY"
+    mon.heldItem = "SITRUS_BERRY"
+  end)
+  local manifest = SummaryPresentationFixture.manifest()
+  local facts = SummaryModel.build(service, 0, SummaryPresentationFixture.context(1), manifest)
+  local mon = service:partyMon(0)
+  local speciesRecord = catalog:species(assert(mon.species, "stored mons carry their species"))
+  local formRecord = catalog:form(mon.species, assert(mon.form, "stored mons carry their form"))
+  Assert.equal(facts.identity.speciesName, speciesRecord.name, "identity names the catalog species")
+  Assert.deepEqual(facts.identity.types, formRecord.types, "identity lists the generated form types")
+  Assert.equal(
+    facts.identity.otName,
+    assert(mon.origin, "stored mons carry their origin").trainerName,
+    "identity names the original trainer"
+  )
+  local itemRecord = catalog:item(assert(mon.heldItem, "stored mons carry their held item"))
+  Assert.equal(facts.info.heldItem, mon.heldItem, "info keeps the held-item key")
+  Assert.equal(facts.info.heldItemName, itemRecord.name, "info names the held item from the catalog")
+  Assert.equal(
+    facts.info.experience,
+    assert(mon.experience, "stored mons carry experience"),
+    "info keeps current experience"
+  )
 end
 
 return { tests = T }

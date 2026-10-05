@@ -108,8 +108,32 @@ function SummaryPicturePlayer:updateFixed()
   self._remaining = assert(sample.durationTicks, "picture samples carry a positive duration")
 end
 
+---@param blend unknown
+---@return table<string, unknown>?
+local function copyPaletteBlend(blend)
+  if blend == nil then
+    return nil
+  end
+  assert(type(blend) == "table", "picture blends are records")
+  local coefficient = assert(blend.coefficient, "picture blends carry a coefficient")
+  assert(type(coefficient) == "number" and coefficient % 1 == 0, "picture blend coefficients are integers")
+  local target = assert(blend.target, "picture blends carry a target")
+  assert(type(target) == "table", "picture blend targets are records")
+  local channels = {}
+  for _, channel in ipairs({ "r", "g", "b" }) do
+    local value = assert(target[channel], "picture blend targets carry " .. channel)
+    assert(
+      type(value) == "number" and value % 1 == 0 and value >= 0 and value <= 31,
+      "picture blend targets stay 5-bit"
+    )
+    channels[channel] = value
+  end
+  return { coefficient = coefficient, target = { r = channels.r, g = channels.g, b = channels.b } }
+end
+
 -- The playback snapshot: one-based sample position, authored transformed
--- picture values, and the owning picture epoch.
+-- picture values with a detached palette-blend copy, and the owning
+-- picture epoch.
 ---@return table<string, unknown>
 function SummaryPicturePlayer:status()
   if self._disposed then
@@ -125,6 +149,7 @@ function SummaryPicturePlayer:status()
     scaleY = sample.scaleY,
     rotationTurns = sample.rotationTurns,
     visible = sample.visible,
+    paletteBlend = copyPaletteBlend(sample.paletteBlend),
     epoch = self._epoch,
   }
 end

@@ -1267,4 +1267,42 @@ function T.return_touches_follow_the_cancel_path()
   Assert.isNil(held:takeResult(), "forbidden exit touches report nothing")
 end
 
+function T.picture_blend_reaches_status_by_value_detached_by_identity()
+  local manifest = SummaryPresentationFixture.manifest()
+  local compiled = assert(manifest.pictures.CHIKORITA, "the family carries the selected picture")
+  local firstSample = assert(compiled.samples[1], "the picture carries its samples")
+  firstSample.paletteBlend = { coefficient = 9, target = { r = 31, g = 4, b = 19 } }
+  local controller = nativeOpen({ manifest = manifest })
+  nativeStep(controller, {})
+  local status = controller:status()
+  Assert.notNil(status.picture, "the entry frame selects its picture")
+  Assert.deepEqual(
+    status.picture.paletteBlend,
+    firstSample.paletteBlend,
+    "the compiled blend reaches controller status by value"
+  )
+  Assert.isTrue(
+    status.picture.paletteBlend ~= firstSample.paletteBlend,
+    "the returned blend never aliases the compiled sample"
+  )
+  Assert.isTrue(
+    status.picture.paletteBlend.target ~= firstSample.paletteBlend.target,
+    "the nested target never aliases the compiled sample"
+  )
+  status.picture.paletteBlend.coefficient = -1
+  status.picture.paletteBlend.target.r = -1
+  local reread = controller:status()
+  Assert.deepEqual(
+    reread.picture.paletteBlend,
+    firstSample.paletteBlend,
+    "external mutation cannot reach later status"
+  )
+  nativeStep(controller, {})
+  Assert.deepEqual(
+    controller:status().picture.paletteBlend,
+    firstSample.paletteBlend,
+    "idle ticks keep the blend"
+  )
+end
+
 return { tests = T }
