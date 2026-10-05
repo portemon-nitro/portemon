@@ -238,6 +238,7 @@ local function baseOptions(overrides)
       end,
     },
     applicationHost = applicationHostFake(),
+    pcApplications = { isActive = function() return false end, cancelPointerCapture = function() end },
     interactions = {
       resolve = function()
         return nil

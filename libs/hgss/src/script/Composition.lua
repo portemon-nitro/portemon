@@ -36,6 +36,7 @@ local TASK_MODULES = {
   "libs.hgss.src.script.tasks.FieldMoveTask",
   "libs.hgss.src.script.tasks.ActorOscillationTask",
   "libs.hgss.src.script.tasks.FollowerWaitTask",
+  "libs.hgss.src.script.tasks.PcApplicationTask",
 }
 
 ---@param registry TaskRegistry

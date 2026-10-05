@@ -397,7 +397,19 @@ function FieldMenuCompositionCoordinator:composePokemonMenu(cacheFs)
     mons = assert(runtime.monService, "the menu composition requires the live mon service"),
     bag = assert(runtime.bagService, "the menu composition requires the live bag service"),
     mailbox = assert(runtime.mailbox, "the menu composition requires the live Mailbox"),
+    photoAlbum = assert(runtime.photoAlbum, "the menu composition requires the live Photo Album"),
     pcManifest = PcCache.loadManifest(cacheFs),
+    profile = assert(
+      runtime.playerData and runtime.playerData.profile,
+      "the menu composition requires the player profile"
+    ),
+    versionId = runtime.versionId,
+    cacheFs = cacheFs,
+    derivedAssets = assert(runtime.derivedAssets, "the menu composition requires semantic asset access"),
+    charmap = assert(
+      runtime.fontDef and runtime.fontDef.charmap,
+      "the menu composition requires the generated charmap"
+    ),
     bagCursor = assert(runtime.bagCursor, "the menu composition requires the runtime bag cursor"),
     itemCatalog = assert(runtime.itemCatalog, "the menu composition requires the shared item catalog"),
     monCatalog = assert(runtime.monCatalog, "the menu composition requires the shared mon catalog"),
@@ -409,7 +421,6 @@ function FieldMenuCompositionCoordinator:composePokemonMenu(cacheFs)
     contextSources = self:menuFieldSources(),
     worldPorts = worldPorts,
     fieldTravel = runtime.fieldTravel,
-    cacheFs = cacheFs,
     overrides = runtime.presentationOverrides,
     prepareIcons = prepareMenuIcons,
     cancelIconPreparation = cancelMenuIconPreparation,

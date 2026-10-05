@@ -2,6 +2,7 @@
 
 local Errors = require("libs.errors.src.Errors")
 local BagCache = require("libs.assets.src.BagCache")
+local PcCache = require("libs.assets.src.PcCache")
 local MartCache = require("libs.assets.src.MartCache")
 local BagHeroRenderer = require("libs.hgss.src.presentation.BagHeroRenderer")
 local BagRenderer = require("libs.hgss.src.ui.BagRenderer")
@@ -31,6 +32,9 @@ local MonIconAssetProvider = require("libs.hgss.src.presentation.MonIconAssetPro
 local ItemIconAssetProvider = require("libs.hgss.src.presentation.ItemIconAssetProvider")
 local FollowingMonTransitionRenderer = require("libs.hgss.src.presentation.FollowingMonTransitionRenderer")
 local NamingScreenRenderer = require("libs.hgss.src.ui.NamingScreenRenderer")
+local PcStorageRenderer = require("libs.hgss.src.ui.PcStorageRenderer")
+local MailboxRenderer = require("libs.hgss.src.ui.MailboxRenderer")
+local PhotoAlbumRenderer = require("libs.hgss.src.ui.PhotoAlbumRenderer")
 
 ---@alias PartyIconPrepare fun(iconKeys: string[]): boolean, string?
 ---@alias PartyIconCancel fun()
@@ -72,6 +76,10 @@ local NamingScreenRenderer = require("libs.hgss.src.ui.NamingScreenRenderer")
 ---@field itemIconProvider ItemIconAssetProvider the one shared bag item-icon atlas
 ---@field heroRenderer BagHeroRenderer the one bag hero model renderer borrowed by the bag renderer
 ---@field bagRenderer BagRenderer the one field-bag pane renderer
+---@field pcManifest table<string, unknown> validated PC manifest borrowed by its application renderers
+---@field storageRenderer PcStorageRenderer PC Storage renderer
+---@field mailboxRenderer MailboxRenderer Mailbox renderer
+---@field photoAlbumRenderer PhotoAlbumRenderer Photo Album renderer
 ---@field martRenderer MartRenderer? owned source-layered mart background and prompt images
 ---@field followingMonTransitionRenderer FollowingMonTransitionRenderer? transient follower-transition presentation (nil without the generated definition)
 ---@field textRenderer FieldTextRenderer?
@@ -417,6 +425,24 @@ function FieldPresentationResources.new(runtime)
       window = self.windowRenderer,
       frameIndex = self.applicationFrameIndex,
     })
+    self.pcManifest = PcCache.loadManifest(runtime.cacheFs)
+    local graphics = assert(love and love.graphics, "PC application rendering requires LÖVE graphics")
+    self.storageRenderer = PcStorageRenderer.new({
+      graphics = graphics,
+      cacheFs = runtime.cacheFs,
+      manifest = self.pcManifest,
+      text = textRenderer,
+    })
+    self.mailboxRenderer = MailboxRenderer.new({
+      graphics = graphics,
+      cacheFs = runtime.cacheFs,
+      manifest = self.pcManifest,
+    })
+    self.photoAlbumRenderer = PhotoAlbumRenderer.new({
+      graphics = graphics,
+      cacheFs = runtime.cacheFs,
+      manifest = self.pcManifest,
+    })
     local entrancePool = GpuAssetPool.new(runtime.cacheFs)
     self.fieldEntranceIndicatorPool = entrancePool
     self.fieldEntranceIndicatorRenderer =
@@ -577,6 +603,62 @@ function FieldPresentationResources:drawApplication(applicationId, presentation,
   draw(presentation, runtime)
 end
 
+---@param status table<string, unknown> active PC status published by the host
+---@param runtime FieldRuntime live mon catalog owner
+---@return boolean ready
+---@return string? failure
+function FieldPresentationResources:preparePcApplication(status, runtime)
+  local resources = self:pcApplicationResources(runtime)
+  local iconKeys = {}
+  if status.app == "photoAlbum" then
+    return self.photoAlbumRenderer:advance(status, resources)
+  elseif status.app == "storage" then
+    for _, mon in ipairs(assert(status.boxSlots, "Storage status publishes box icon snapshots")) do
+      if mon ~= nil then
+        iconKeys[#iconKeys + 1] = mon.iconKey
+      end
+    end
+    for _, mon in ipairs(assert(status.party, "Storage status publishes party icon snapshots")) do
+      iconKeys[#iconKeys + 1] = mon.iconKey
+    end
+    local carry = status.carry
+    if type(carry) == "table" and type(carry.mon) == "table" then
+      iconKeys[#iconKeys + 1] = carry.mon.iconKey
+    end
+  elseif status.app == "mailbox" then
+    for _, icon in ipairs(assert(status.icons, "Mailbox status publishes message icon snapshots")) do
+      iconKeys[#iconKeys + 1] = icon.iconKey
+    end
+  else
+    error("PC application kind has no presentation preparation", 0)
+  end
+  return assert(self.monIconProvider, "PC applications borrow the shared mon icon provider"):prepareKeys(iconKeys)
+end
+
+---@param runtime FieldRuntime runtime owners borrowed by the app renderers
+---@return table<string, unknown>
+function FieldPresentationResources:pcApplicationResources(runtime)
+  return {
+    icons = assert(self.monIconProvider, "PC applications borrow the shared mon icon provider"),
+    itemIcons = assert(self.itemIconProvider, "Storage borrows the shared item icon provider"),
+    storageRenderer = assert(self.storageRenderer, "Storage borrows its owned renderer"),
+    mailboxRenderer = assert(self.mailboxRenderer, "Mailbox borrows its owned renderer"),
+    photoAlbumRenderer = assert(self.photoAlbumRenderer, "Photo Album borrows its owned renderer"),
+    monCatalog = assert(runtime.monCatalog, "Photo Album borrows the shared mon catalog"),
+    monIconProvider = assert(self.monIconProvider, "Mailbox borrows the shared mon icon provider"),
+    itemIconProvider = assert(self.itemIconProvider, "Mailbox borrows the shared item icon provider"),
+    textRenderer = assert(self.textRenderer, "PC applications borrow the shared text renderer"),
+    windowRenderer = assert(self.windowRenderer, "PC applications borrow the shared window renderer"),
+    applicationFrameIndex = assert(self.applicationFrameIndex, "PC applications borrow the selected frame"),
+  }
+end
+
+---@param host PcApplicationHost active retained PC host
+---@param runtime FieldRuntime runtime owners borrowed by the app renderers
+function FieldPresentationResources:drawPcApplication(host, runtime)
+  host:draw(self:pcApplicationResources(runtime))
+end
+
 -- Draws the Start Menu through its resolved plan: one borrowed resource
 -- record (the owned renderer plus the host graphics namespace) executes
 -- the interface's chosen render callback. Ownership stays here; the
@@ -647,6 +729,19 @@ function FieldPresentationResources:dispose()
     self.martRenderer:release()
     self.martRenderer = nil
   end
+  if self.storageRenderer then
+    self.storageRenderer:release()
+    self.storageRenderer = nil
+  end
+  if self.mailboxRenderer then
+    self.mailboxRenderer:release()
+    self.mailboxRenderer = nil
+  end
+  if self.photoAlbumRenderer then
+    self.photoAlbumRenderer:release()
+    self.photoAlbumRenderer = nil
+  end
+  self.pcManifest = nil
   if self.windowRenderer then
     self.windowRenderer:release()
     self.windowRenderer = nil

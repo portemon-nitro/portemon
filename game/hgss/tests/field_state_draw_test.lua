@@ -123,6 +123,10 @@ local function presentationResourcesStub(renderer)
   }
 end
 
+local function idlePcApplicationHost()
+  return { isActive = function() return false end }
+end
+
 local function presentationState(assets, actorIds)
   local actors = { revision = 0, spriteIds = actorIds }
   function actors:visualRevision()
@@ -270,6 +274,7 @@ end
 -- A bare FieldState over a fake runtime that carries only the canonical
 -- fields: no `runtime` sceneRuntime alias and no `actor` player alias.
 local function stateWith(runtime)
+  runtime.pcApplicationHost = runtime.pcApplicationHost or idlePcApplicationHost()
   runtime.fieldEntranceIndicator = {
     status = function()
       return { visible = false }
@@ -320,6 +325,7 @@ local function drawOrderState(starterActive)
       destinationWorldPresentable = function()
         return true
       end,
+      pcApplicationHost = idlePcApplicationHost(),
       acknowledgeDestinationPresentation = function() end,
       viewport = FieldViewport.new(640, 480, { mode = "expanded" }),
       transition = { fadeAlpha = 0 },
@@ -351,6 +357,7 @@ local function drawOrderState(starterActive)
           return false
         end,
       },
+      pcApplicationHost = idlePcApplicationHost(),
       applicationHost = {
         status = function()
           return { phase = "closed", fadeAlpha = 0 }
@@ -456,6 +463,7 @@ function T.draw_passes_the_render_environment_and_queries_the_menu_host()
   local received
   local state = setmetatable({
     runtime = {
+      pcApplicationHost = idlePcApplicationHost(),
       runtimeMap = { mapId = 61, mapSymbol = "MAP_NEW_BARK", sceneRuntime = sceneRuntime, renderEnvironment = renderEnvironment },
       player = { fieldX = 3, fieldZ = 7, worldY = 1.5, surfaceId = 0, facing = "east", motion = "idle" },
       playerVisual = {
@@ -578,6 +586,7 @@ function T.physical_coverage_draws_without_a_realized_scene()
   local received
   local state = setmetatable({
     runtime = {
+      pcApplicationHost = idlePcApplicationHost(),
       runtimeMap = {
         mapId = 60,
         mapSymbol = "MAP_NEW_BARK",
@@ -717,6 +726,7 @@ function T.draw_sends_static_actor_models_to_world_and_billboards_to_presentatio
   end
   local state = setmetatable({
     runtime = {
+      pcApplicationHost = idlePcApplicationHost(),
       runtimeMap = { sceneRuntime = sceneRuntime },
       playerVisual = {
         drawRecord = function()
@@ -778,6 +788,7 @@ function T.draw_sends_static_actor_models_to_world_and_billboards_to_presentatio
           return { phase = "closed", fadeAlpha = 0 }
         end,
       },
+      pcApplications = { isActive = function() return false end, cancelPointerCapture = function() end },
       menuHost = {
         presentation = function()
           return nil
@@ -1360,6 +1371,7 @@ function T.destination_frames_draw_and_acknowledge_only_after_successful_present
           return false
         end,
       },
+      pcApplications = { isActive = function() return false end, cancelPointerCapture = function() end },
       interactions = {
         resolve = function()
           return nil
@@ -1384,6 +1396,7 @@ function T.destination_frames_draw_and_acknowledge_only_after_successful_present
     session:beginMapEntry()
     local runtime = {
       runtimeMap = { sceneRuntime = { mapDraws = {}, staticBuildingDraws = {}, animatedBuildingDraws = {} } },
+      pcApplicationHost = idlePcApplicationHost(),
       fieldEntranceIndicator = {
         status = function()
           return { visible = false }

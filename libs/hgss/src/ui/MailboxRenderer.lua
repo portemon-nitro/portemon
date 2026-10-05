@@ -1,4 +1,10 @@
 -- Draws the value snapshot published by the Mailbox child.
+---@class MailboxRenderer
+---@field graphics table<string, unknown>
+---@field cacheFs table<string, unknown>
+---@field images table<string, unknown>
+---@field manifest table<string, unknown>
+---@field released boolean
 local MailboxRenderer = {}
 MailboxRenderer.__index = MailboxRenderer
 local FieldMenuTheme = require("libs.hgss.src.ui.FieldMenuTheme")

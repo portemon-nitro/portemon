@@ -4,9 +4,13 @@ local LogicalSurface = require("libs.ui.src.LogicalSurface")
 local PhotoSceneRenderer = require("libs.hgss.src.presentation.PhotoSceneRenderer")
 local FieldMessageText = require("libs.assets.src.field.FieldMessageText")
 
+---@class PhotoAlbumRenderer
+---@field graphics table<string, unknown>
+---@field manifest table<string, unknown>
+---@field images table<string, unknown>
+---@field released boolean
 local PhotoAlbumRenderer = {}
 PhotoAlbumRenderer.__index = PhotoAlbumRenderer
----@class PhotoAlbumRenderer
 
 local SOURCE_SPRITES = {
   -- The five native templates are from pokeheartgold asm/overlay_109.s

@@ -1391,4 +1391,33 @@ function T.pokemon_nickname_input_has_a_validated_slot_and_result_shape()
   Assert.equal(S.validate(script), true, "the nickname command carries its source result ref")
 end
 
+function T.pc_operations_are_closed_typed_script_nodes()
+  local nodes = {
+    S.pcOpen({ app = "storage", mode = 4 }),
+    S.pcCount({ kind = "photos", result = S.var("VAR_PHOTOS") }),
+    S.pcCapsules(),
+    S.pcTerminalEffect({ action = "wait", prop = "pc_terminal" }),
+    S.pcHallOfFameStatus({ result = S.var("VAR_HOF_STATUS") }),
+    S.pcHallOfFameOpen(),
+  }
+  Assert.deepEqual(nodes, {
+    { op = "pc_open", app = "storage", mode = 4 },
+    { op = "pc_count", kind = "photos", result = { value = "var", id = "VAR_PHOTOS" } },
+    { op = "pc_capsules" },
+    { op = "pc_terminal_effect", action = "wait", prop = "pc_terminal" },
+    { op = "pc_hof_status", result = { value = "var", id = "VAR_HOF_STATUS" } },
+    { op = "pc_hof_open" },
+  })
+  Assert.equal(
+    S.validate(S.script({ api = 1, id = "test.pc_ops", steps = nodes })),
+    true,
+    "source storage mode 4 remains representable at the semantic boundary"
+  )
+  Assert.isNil(S.pcInvoke, "PC operations must not expose arbitrary string dispatch")
+  Assert.isNil(
+    S.validate(S.script({ api = 1, id = "test.bad_pc_op", steps = { S.pcTerminalEffect({ action = "invoke" }) } })),
+    "invalid action names are rejected"
+  )
+end
+
 return { tests = T }

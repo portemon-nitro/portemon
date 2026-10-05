@@ -158,6 +158,11 @@ local function drawableState(options)
         return options.signpostModal == true
       end,
     },
+    pcApplicationHost = {
+      isActive = function()
+        return false
+      end,
+    },
     applicationHost = {
       status = function()
         return options.hostStatus

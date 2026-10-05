@@ -171,6 +171,18 @@ function T.player_house_header_618_resolves_scripts_in_body_bank_845()
   })
 end
 
+function T.map_init_standard_scripts_keep_their_cataloged_common_identity()
+  local header = string.char(3, 0x28, 0x23, 0, 0, 0)
+  local romFs = FieldMapDataFixture.build({ scriptHeaderMember = header })
+  local bundle = assert(FieldMapDataCompiler.compile(romFs, 63, function()
+    return "archive-sha"
+  end, function()
+    return "dependency-sha"
+  end))
+  Assert.equal(bundle.field.scriptBankId, 845)
+  Assert.equal(bundle.field.initScripts[1].scriptId, "common.wireless_reset_state")
+end
+
 function T.normalizes_retail_unbound_script_markers()
   local member = Builder.build({
     objectEvents = {

@@ -10,6 +10,7 @@ local ItemFixture = require("libs.items.tests.item_fixture")
 local ItemCatalog = require("libs.items.src.ItemCatalog")
 local Lcrng = require("libs.mons.src.gen4.Lcrng")
 local Mailbox = require("libs.hgss.src.save.Mailbox")
+local PhotoAlbum = require("libs.hgss.src.save.PhotoAlbum")
 local MonCatalog = require("libs.mons.src.MonCatalog")
 local MonsSave = require("libs.mons.src.MonsSave")
 local Party = require("libs.mons.src.Party")
@@ -208,6 +209,7 @@ local function makeComposition(attachMail)
     mons = mons,
     bag = bag,
     mailbox = mailbox,
+    photoAlbum = PhotoAlbum.new(),
     pcManifest = pcManifest(),
     cacheFs = {
       read = function()
@@ -217,6 +219,10 @@ local function makeComposition(attachMail)
     bagCursor = BagCursor.new(),
     itemCatalog = items,
     monCatalog = catalog,
+    profile = CatalogFixture.profile(),
+    versionId = "heartgold",
+    derivedAssets = require("tests.support.FieldStatePresentationFixture").iconHost().derivedAssets,
+    charmap = CatalogFixture.CHARMAP,
     bagManifest = {},
     partyManifest = PartyPresentationFixture.manifest(),
     uiManifest = FieldUiFixture.manifest(),

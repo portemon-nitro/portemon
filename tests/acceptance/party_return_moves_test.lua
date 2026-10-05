@@ -21,9 +21,11 @@ local FieldMoveRuntime = require("libs.hgss.src.field.FieldMoveRuntime")
 local FieldMoveWorld = require("game.hgss.src.field.FieldMoveWorld")
 local FieldMoveTask = require("libs.hgss.src.script.tasks.FieldMoveTask")
 local PartyActions = require("libs.hgss.src.field.PartyActions")
+local MailActions = require("libs.hgss.src.field.MailActions")
 local PlayerProgression = require("libs.hgss.src.save.PlayerProgression")
 local PokemonMenuFlow = require("game.hgss.src.field.PokemonMenuFlow")
 local PartyCache = require("libs.assets.src.PartyCache")
+local PcCache = require("libs.assets.src.PcCache")
 local FieldUiFixture = require("tests.support.FieldUiFixture")
 
 local T = {
@@ -443,13 +445,19 @@ local function openPartyFlow(game, checkDouble)
   local mons = assert(runtime.monService, "live mon service required")
   local bag = assert(runtime.bagService, "live bag service required")
   local profile = assert(runtime.playerData and runtime.playerData.profile, "live profile required")
+  local mailbox = assert(runtime.mailbox, "live Mailbox required")
+  local pcManifest = PcCache.loadManifest(CacheFs.forVersion(AcceptanceHarness.defaultVersion()))
   local actions = PartyActions.new({ mons = mons, bag = bag })
+  local mailActions = MailActions.new({ mons = mons, mailbox = mailbox, bag = bag, manifest = pcManifest })
   return PokemonMenuFlow.new({
     root = "party",
     mons = mons,
     bag = bag,
     bagCursor = assert(runtime.bagCursor, "live bag cursor required"),
     partyActions = actions,
+    mailActions = mailActions,
+    mailbox = mailbox,
+    pcManifest = pcManifest,
     fieldMoves = checkDouble,
     assets = {
       bagManifest = {},

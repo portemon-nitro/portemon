@@ -25,6 +25,8 @@ local ScriptSave = require("libs.script.src.ScriptSave")
 ---@field pokemonNaming table<string, unknown> the script-owned Pokemon Naming Screen host
 ---@field followerTransition table<string, unknown>? the transient follower-transition owner the nonblocking transition command starts
 ---@field starterBalls table<string, unknown>? the Elm starter-ball runtime-prop controller
+---@field pcApplications table<string, unknown> script-owned PC application host
+---@field pcTerminal table<string, unknown> PC terminal effect service
 local FieldScriptComposition = {}
 
 ---@param runtime FieldRuntime
@@ -85,6 +87,8 @@ function FieldScriptComposition.compose(runtime, options)
     pokemonNaming = options.pokemonNaming,
     followerTransition = options.followerTransition,
     starterBalls = options.starterBalls,
+    pcApplications = runtime.pcApplicationHost,
+    pcTerminal = runtime.pcTerminal,
   })
   local function restore()
     if options.loadedGame then

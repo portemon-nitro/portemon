@@ -105,6 +105,11 @@ local function drawableState(development)
           return { phase = "closed", fadeAlpha = 0 }
         end,
       },
+      pcApplicationHost = {
+        isActive = function()
+          return false
+        end,
+      },
       menuHost = {
         presentation = function()
           return nil

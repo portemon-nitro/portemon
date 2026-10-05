@@ -48,6 +48,10 @@ end
 ---@return table<string, unknown>?, string|table<string, unknown>?
 function FieldSaveCoordinator:capture(allowMenu)
   local runtime = self.runtime
+  local pcHost = runtime.pcApplicationHost
+  if pcHost ~= nil and pcHost:isActive() then
+    return nil, "Save deferred: a PC application is active"
+  end
   -- A pending or active field operation denies capture before any
   -- publication starts: the world is mid-mutation and the record would
   -- describe neither the before nor the after state. Runtimes without

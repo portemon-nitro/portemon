@@ -131,6 +131,26 @@ T["client starts script in trigger tick"] = function()
   Assert.equal(instance.trigger.selfActor, "obj_T20_gswoman1")
 end
 
+T["client starts the closed PC standard interaction without field bindings"] = function()
+  local p = platform()
+  local resource = script("common.pokecenter_pc", { S.waitTicks({ ticks = 1 }), S.stop() })
+  p.registry:installBase(resource.id, resource, "generated")
+  local client = ScriptInteractionClient.new({
+    bindings = Bindings.new(),
+    compose = function(id)
+      return p.composition:effective(id)
+    end,
+    scheduler = p.scheduler,
+  })
+  Assert.equal(
+    client:consume({ kind = "standard", scriptId = "common.pokecenter_pc", playerFacing = "north" }, 100),
+    ScriptInteractionClient.RESULTS.started
+  )
+  local instance = assert(p.scheduler:instances()[1])
+  Assert.equal(instance.trigger.type, "standard")
+  Assert.equal(instance.trigger.scriptId, "common.pokecenter_pc")
+end
+
 -- 11. A second interaction while a foreground root owns the field is blocked.
 T["interaction while locked"] = function()
   local p = platform()
@@ -634,6 +654,7 @@ T["session script phase"] = function()
         return false
       end,
     },
+    pcApplications = { isActive = function() return false end, cancelPointerCapture = function() end },
     bagUnlocked = function()
       return true
     end,

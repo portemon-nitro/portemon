@@ -195,6 +195,16 @@ end
 function PhotoAlbum:count()
   return PhotoAlbum.CAPACITY
 end
+function PhotoAlbum:usedCount()
+  local count = 0
+  for _, photo in ipairs(self._slots) do
+    if photo ~= false then
+      count = count + 1
+    end
+  end
+  return count
+end
+
 function PhotoAlbum:get(slot)
   if not integer(slot, 0, PhotoAlbum.CAPACITY - 1) then
     invalid("photo slot is out of range")
