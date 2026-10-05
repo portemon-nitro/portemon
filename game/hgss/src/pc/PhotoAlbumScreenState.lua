@@ -273,6 +273,9 @@ function PhotoAlbumScreenState:updateFixed(events)
       end
     end
   end
+  if not self.closed and self.phase == "viewer" then
+    self:advance(1)
+  end
 end
 
 function PhotoAlbumScreenState:takeResult()

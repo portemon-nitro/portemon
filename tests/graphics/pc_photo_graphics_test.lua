@@ -679,6 +679,26 @@ function T.photo_owner_prepares_source_view_and_private_coverage_before_render(s
         viewer = { phase = "ready", view = view },
         animationTick = 5,
       },
+      {
+        phase = "viewer",
+        occupiedSlots = { 0, 8 },
+        selectedSlot = 0,
+        selectedIndex = 1,
+        selectedPhoto = photoRecord(),
+        visiblePhotos = {},
+        viewer = { phase = "pending" },
+        animationTick = 6,
+      },
+      {
+        phase = "viewer",
+        occupiedSlots = { 0, 8 },
+        selectedSlot = 0,
+        selectedIndex = 1,
+        selectedPhoto = photoRecord(),
+        visiblePhotos = {},
+        viewer = { phase = "failed", failure = { code = "fixture-failure" } },
+        animationTick = 7,
+      },
     }
     local layouts = displayLayouts()
     local roleByPhase = { "photo", "action", "delete-choice", "photo", "viewer" }
@@ -710,6 +730,7 @@ function T.photo_owner_prepares_source_view_and_private_coverage_before_render(s
             configuration .. " exposes the state-specific rendered control role"
           )
         end
+        local fieldCallsBeforeDraw = #calls
         love.graphics.setCanvas(canvas)
         love.graphics.clear(0.04, 0.05, 0.06, 1)
         plan.render(albumResources, screen, plan)
@@ -748,11 +769,13 @@ function T.photo_owner_prepares_source_view_and_private_coverage_before_render(s
             "delete confirmation does not use invented English text"
           )
         elseif screen.phase == "viewer" then
-          local renderedFlavor
           local renderedExit = false
+          local renderedFlavorCount = 0
+          local renderedFlavor
           for _, message in ipairs(albumResources.textRenderer.messages) do
             local text = FieldMessageText.tokensToText(message)
             if text:find("GOLD", 1, true) then
+              renderedFlavorCount = renderedFlavorCount + 1
               renderedFlavor = text
             end
             if message == sourceExit then
@@ -764,23 +787,31 @@ function T.photo_owner_prepares_source_view_and_private_coverage_before_render(s
             "viewer flavor text comes from the source message templates"
           )
           Assert.isTrue(
-            renderedFlavor ~= nil and renderedExit,
-            "viewer exit and substituted flavor text use source message bank zero"
+            renderedExit,
+            "viewer exit label uses source message bank zero"
           )
-          Assert.isTrue(
-            renderedFlavor:find("LEAF", 1, true) ~= nil,
-            "lead nickname is substituted into source flavor text"
-          )
-          Assert.isTrue(
-            renderedFlavor:find("2010", 1, true) ~= nil,
-            "four-digit year is substituted into source flavor text"
-          )
-          Assert.isTrue(renderedFlavor:find("01", 1, true) ~= nil, "month is substituted into source flavor text")
-          Assert.isTrue(renderedFlavor:find("02", 1, true) ~= nil, "day is substituted into source flavor text")
-          Assert.isTrue(
-            renderedFlavor:find(FieldMessageText.tokensToText(sourceLandmark), 1, true) ~= nil,
-            "source bank 279 landmark is substituted using the saved map-section id"
-          )
+          if screen.viewer.phase == "ready" then
+            local readyFlavor = assert(renderedFlavor, "a ready viewer draws its source flavor message")
+            Assert.equal(#calls, fieldCallsBeforeDraw + 1, "a ready viewer renders its saved field once")
+            Assert.equal(renderedFlavorCount, 1, "ready viewer flavor text is formatted once")
+            Assert.isTrue(
+              readyFlavor:find("LEAF", 1, true) ~= nil,
+              "lead nickname is substituted into source flavor text"
+            )
+            Assert.isTrue(
+              readyFlavor:find("2010", 1, true) ~= nil,
+              "four-digit year is substituted into source flavor text"
+            )
+            Assert.isTrue(readyFlavor:find("01", 1, true) ~= nil, "month is substituted into source flavor text")
+            Assert.isTrue(readyFlavor:find("02", 1, true) ~= nil, "day is substituted into source flavor text")
+            Assert.isTrue(
+              readyFlavor:find(FieldMessageText.tokensToText(sourceLandmark), 1, true) ~= nil,
+              "source bank 279 landmark is substituted using the saved map-section id"
+            )
+          else
+            Assert.equal(#calls, fieldCallsBeforeDraw, "a non-ready viewer does not render saved field content")
+            Assert.equal(renderedFlavorCount, 0, "a non-ready viewer does not format map-dependent flavor text")
+          end
         elseif screen.phase == "list" then
           local sourceListPrompt = false
           for _, message in ipairs(albumResources.textRenderer.messages) do
