@@ -360,10 +360,11 @@ function PcStorageActions:preview(request)
 end
 
 function PcStorageActions:commit(intent, confirmation)
-  assert(type(intent) == "table" and type(intent.request) == "table", "Storage commits use a preview intent")
+  assert(type(intent) == "table", "Storage commits use a preview intent")
   if intent.kind == "refused" then
     return intent
   end
+  assert(type(intent.request) == "table", "Storage commit-capable intents carry a preview request")
   local expected = intent.expected
   if
     expected.partyRevision ~= self._mons:partyRevision()
