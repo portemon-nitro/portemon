@@ -338,23 +338,25 @@ function T.trainer_item_lists_become_finite_per_trainer_stock()
   Assert.isNil(second.context.items, "carried items never enter the decision context")
 end
 
-function T.trainer_gap_positions_carry_no_stock()
+-- Gap sentinels are not carried items: a trainer list holding one fails
+-- the build instead of riding the decision context or counting stock.
+function T.trainer_gap_entries_fail_instead_of_riding_through()
   local party = mixedParty()
-  local scenario = ScenarioFactory.fromTrainer({
-    trainers = {
-      { id = "a", party = { fullRecord() }, items = { "POTION", "NONE", "NONE", "NONE" } },
-    },
-  }, { party = party, bag = stockedBag() })
-  local foe = scenario.participants[2]
-  Assert.deepEqual(
-    foe.context.trainerItems,
-    { "POTION", "NONE", "NONE", "NONE" },
-    "gap positions ride the decision context unchanged"
+  Assert.isTrue(
+    not pcall(ScenarioFactory.fromTrainer, {
+      trainers = {
+        { id = "a", party = { fullRecord() }, items = { "POTION", "NONE", "NONE", "NONE" } },
+      },
+    }, { party = party, bag = stockedBag() }),
+    "a gap entry fails the trainer build"
   )
-  Assert.deepEqual(
-    inventoryOf(scenario, assert(foe.inventoryId, "the trainer keeps its stock identity")).quantities,
-    { POTION = 1 },
-    "gap positions count no stock"
+  Assert.isTrue(
+    not pcall(ScenarioFactory.fromTrainer, {
+      trainers = {
+        { id = "a", party = { fullRecord() }, items = { "NONE" } },
+      },
+    }, { party = party, bag = stockedBag() }),
+    "a lone gap entry fails the trainer build"
   )
 end
 
@@ -403,6 +405,58 @@ function T.trainer_item_lists_keep_source_order_beside_finite_stock()
     foe.context.trainerItems,
     { "POTION", "POKE_BALL", "POTION" },
     "later caller mutations never reach the ordered context"
+  )
+end
+
+-- Simultaneous trainers keep compact, detached, isolated stock: ordered
+-- lists with multiplicity reach each decision context unchanged, each
+-- stock counts only its own trainer, and later caller mutations leak
+-- into neither record.
+function T.simultaneous_trainer_lists_stay_compact_detached_and_isolated()
+  local party = mixedParty()
+  local firstItems = { "POTION", "POKE_BALL", "POTION" }
+  local secondItems = { "POTION" }
+  local scenario = ScenarioFactory.fromTrainer({
+    trainers = {
+      { id = "a", party = { fullRecord() }, items = firstItems },
+      { id = "b", party = { fullRecord() }, items = secondItems },
+    },
+  }, { party = party, bag = stockedBag() })
+  local first = scenario.participants[2]
+  local second = scenario.participants[3]
+  Assert.deepEqual(
+    first.context.trainerItems,
+    { "POTION", "POKE_BALL", "POTION" },
+    "the first context preserves compact order and multiplicity"
+  )
+  Assert.deepEqual(
+    second.context.trainerItems,
+    { "POTION" },
+    "the second context preserves its compact list"
+  )
+  Assert.deepEqual(
+    inventoryOf(scenario, assert(first.inventoryId, "the first trainer keeps its stock identity")).quantities,
+    { POTION = 2, POKE_BALL = 1 },
+    "the first stock counts multiplicity separately"
+  )
+  Assert.deepEqual(
+    inventoryOf(scenario, assert(second.inventoryId, "the second trainer keeps its stock identity")).quantities,
+    { POTION = 1 },
+    "the second stock counts only its own list"
+  )
+  Assert.isTrue(first.inventoryId ~= second.inventoryId, "simultaneous trainers never share stock")
+  firstItems[1] = "FULL_RESTORE"
+  firstItems[3] = "FULL_RESTORE"
+  secondItems[1] = "FULL_RESTORE"
+  Assert.deepEqual(
+    first.context.trainerItems,
+    { "POTION", "POKE_BALL", "POTION" },
+    "later caller mutations never reach the first context"
+  )
+  Assert.deepEqual(
+    second.context.trainerItems,
+    { "POTION" },
+    "later caller mutations never reach the second context"
   )
 end
 

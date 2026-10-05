@@ -331,8 +331,8 @@ DerivedAssetContract.battleData = {
 }
 
 DerivedAssetContract.trainerCatalog = {
-  cacheFormat = "trainer-catalog-cache-v1",
-  schema = "g4-trainer-catalog-v1",
+  cacheFormat = "trainer-catalog-cache-v2",
+  schema = "g4-trainer-catalog-v2",
 }
 
 DerivedAssetContract.encounterCatalog = {

@@ -246,8 +246,8 @@ local function assertNameReference(reference, context)
 end
 
 --- Projected trainer record: one trainer class, its ordered party, its
---- named passes, and exactly four source-ordered item slots where
---- "NONE" marks empty and consumed positions.
+--- named passes, and the compact ordered list of carried items with
+--- zero to four real item keys in source order.
 local function assertTrainerRecord(trainerIndex, record)
   local context = { trainer = trainerIndex }
   checkRecord(record, {
@@ -277,14 +277,17 @@ local function assertTrainerRecord(trainerIndex, record)
   if type(record.doubleBattle) ~= "boolean" then
     fail("BATTLE_DATA_INVALID", "trainer doubleBattle must be a boolean", context)
   end
-  -- Slot position drives native item selection, so the four slots travel
-  -- intact: "NONE" marks empty and consumed positions, never a nil hole
-  -- or a compacted list.
-  if not Validate.isArray(record.items) or #record.items ~= 4 then
-    fail("BATTLE_DATA_INVALID", "trainer items must carry exactly four ordered slots", context)
+  -- Carried items compact at the semantic boundary: an ordered list
+  -- of zero to four real item keys in source order. "NONE" is never
+  -- a carried item here; working-slot padding lives in battle memory.
+  if not Validate.isArray(record.items) or #record.items > 4 then
+    fail("BATTLE_DATA_INVALID", "trainer items must carry at most four ordered items", context)
   end
   for _, itemKey in ipairs(record.items) do
     checkNonEmptyString(itemKey, context, "BATTLE_DATA_INVALID", "trainer item")
+    if itemKey == "NONE" then
+      fail("BATTLE_DATA_INVALID", "trainer items carry only real carried items", context)
+    end
   end
   checkRecord(record.prizeMoney, nil, context, "BATTLE_DATA_INVALID", "trainer prizeMoney")
   checkRecord(record.messageSelectors, nil, context, "BATTLE_DATA_INVALID", "trainer messageSelectors")
