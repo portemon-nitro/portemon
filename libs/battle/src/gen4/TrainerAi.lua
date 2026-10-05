@@ -337,6 +337,19 @@ function buildEvaluationFacts(chart, slots, user, foe, foeHp, firstTurn, extra)
       moveIdByKey[key] = id
     end
   end
+  -- Native moveData[0] is addressable zeros (16 zero bytes in the move
+  -- NARC); the evaluation carries its semantic decode so absent moves
+  -- preview zero exactly like any compiled move. Generated move facts
+  -- never carry id 0 (the compiler rejects moveId < 1), so this merge
+  -- last cannot shadow compiled data.
+  moveById[0] = {
+    effect = 0,
+    power = 0,
+    moveType = "normal",
+    category = "physical",
+    accuracy = 0,
+    basePp = 0,
+  }
   local function battlerStats(stats, hp, maxHp, extraBattler)
     extraBattler = extraBattler or {}
     local stages = extraBattler.stages or { 6, 6, 6, 6, 6, 6, 6, 6 }

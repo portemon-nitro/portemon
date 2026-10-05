@@ -9915,9 +9915,6 @@ local function loadPrevCategory(state)
   local tgt = facts.tgt --[[@as integer]]
   local lasts = facts.lastMove --[[@as table<integer, integer>]]
   local moveId = lasts[tgt] or 0
-  if moveId == 0 then
-    error(BattleErrors.missingBehavior("trainer evaluation reads its previous move", {}))
-  end
   local byId = facts.moveById --[[@as table<integer, table<string, unknown>>]]
   local record = byId[moveId]
   if type(record) ~= "table" then
