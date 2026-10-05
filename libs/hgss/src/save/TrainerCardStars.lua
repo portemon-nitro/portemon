@@ -5,10 +5,10 @@ local TrainerCardStars = {}
 ---@field isFlagSet fun(self: TrainerCardStarsWorld, name: string): boolean
 
 ---@class TrainerCardStarsDex
----@field nationalCaughtCount fun(self: TrainerCardStarsDex): integer
+---@field isNationalDexComplete fun(self: TrainerCardStarsDex): boolean
 
 ---@class TrainerCardStarsFrontier
----@field allAtLeast fun(self: TrainerCardStarsFrontier, threshold: integer): boolean
+---@field qualifiesForTrainerCardStar fun(self: TrainerCardStarsFrontier): boolean
 
 ---@param world TrainerCardStarsWorld
 ---@param dex TrainerCardStarsDex
@@ -19,10 +19,10 @@ function TrainerCardStars.count(world, dex, frontier)
   if world:isFlagSet("FLAG_GAME_CLEAR") then
     stars = stars + 1
   end
-  if dex:nationalCaughtCount() >= 484 then
+  if dex:isNationalDexComplete() then
     stars = stars + 1
   end
-  if frontier:allAtLeast(100) then
+  if frontier:qualifiesForTrainerCardStar() then
     stars = stars + 1
   end
   if world:isFlagSet("FLAG_UNK_0F1") then

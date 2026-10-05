@@ -17,6 +17,18 @@ local Errors = require("libs.errors.src.Errors")
 local PokedexKnowledge = {}
 PokedexKnowledge.__index = PokedexKnowledge
 
+local NATIONAL_MYTHICALS = {
+  MEW = true,
+  CELEBI = true,
+  JIRACHI = true,
+  DEOXYS = true,
+  PHIONE = true,
+  MANAPHY = true,
+  DARKRAI = true,
+  SHAYMIN = true,
+  ARCEUS = true,
+}
+
 ---@param species unknown
 ---@return table<string, boolean>
 local function checkSpeciesSet(species)
@@ -123,27 +135,16 @@ function PokedexKnowledge:isCaught(key)
   return self._caught[key] == true
 end
 
--- Retail national dex stars exclude species 151, 385, 386, and 489..493,
--- while retaining Celebi (251) in the caught count.
----@return integer
-function PokedexKnowledge:nationalCaughtCount()
-  local excluded = {
-    MEW = true,
-    JIRACHI = true,
-    DEOXYS = true,
-    PHIONE = true,
-    MANAPHY = true,
-    DARKRAI = true,
-    SHAYMIN = true,
-    ARCEUS = true,
-  }
+-- Retail National Dex completion excludes all nine mythicals.
+---@return boolean
+function PokedexKnowledge:isNationalDexComplete()
   local count = 0
   for species in pairs(self._caught) do
-    if not excluded[species] then
+    if not NATIONAL_MYTHICALS[species] then
       count = count + 1
     end
   end
-  return count
+  return count >= 484
 end
 
 ---@return integer
