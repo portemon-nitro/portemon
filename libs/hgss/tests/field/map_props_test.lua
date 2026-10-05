@@ -792,6 +792,16 @@ function T.prop_returns_nil_for_unknown_placement()
   Assert.isNil(props:prop(5))
 end
 
+function T.prop_at_rejects_a_placement_outside_the_requested_tile_neighborhood()
+  local wx, wz = tileCenterWorld(4, 14)
+  local props = MapProps.new({
+    placements = { placement(1, "fixture:door", wx + 8, wz, 1) },
+    instances = { [1] = ModelInstance.new(NitroModelFixture.doorDefinition()) },
+    doorTiles = {},
+  })
+  Assert.isNil(props:scriptPropAt(runtimeMap(0, 0, {}, {}), 4, 14))
+end
+
 function T.prop_raises_for_an_unknown_animation()
   local props = doorScene()
   local prop = assert(props:prop(1))
