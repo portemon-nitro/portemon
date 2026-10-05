@@ -222,6 +222,8 @@ end
 ---@field followerInteractionCatalog table<string, unknown> validated generated follower-interaction catalog
 ---@field clock table<string, unknown> live local clock
 ---@field fashionCase table<string, unknown> live fashion accessory inventory
+---@field pcApplications table<string, unknown> the script-owned PC application host
+---@field pcTerminal table<string, unknown> source PC terminal effects
 
 ---@class FieldScripts
 ---@field registry table<string, unknown>
@@ -436,6 +438,8 @@ function FieldScripts.new(opts)
       followerInteraction = followerInteractionEngine,
       followerTransition = opts.followerTransition,
       starterBalls = opts.starterBalls,
+      pcApplications = opts.pcApplications,
+      pcTerminal = opts.pcTerminal,
       advanceAsync = advanceAsync,
     },
     taskRegistry = liveTaskRegistry,

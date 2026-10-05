@@ -119,6 +119,8 @@ local DOMAINS = {
     "G2dRasterizer",
     "PartyAssetCompiler",
     "PartyCacheWriter",
+    "PcAssetCompiler",
+    "PcCacheWriter",
     "RgbaImage",
   },
   newgame = {

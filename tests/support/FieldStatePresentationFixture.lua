@@ -15,11 +15,13 @@ local MartCache = require("libs.assets.src.MartCache")
 local ItemCache = require("libs.assets.src.ItemCache")
 local MonCache = require("libs.assets.src.MonCache")
 local FieldActorCache = require("libs.assets.src.field.FieldActorCache")
+local PcCache = require("libs.assets.src.PcCache")
 local BagPresentationFixture = require("tests.support.BagPresentationFixture")
 local MartFixture = require("tests.support.MartFixture")
 local FieldActorFixture = require("tests.support.FieldActorFixture")
 local FieldDialogueFixture = require("tests.support.FieldDialogueFixture")
 local FieldUiFixture = require("tests.support.FieldUiFixture")
+local PcPresentationFixture = require("tests.support.PcPresentationFixture")
 
 local FieldStatePresentationFixture = {}
 
@@ -313,6 +315,11 @@ end
 ---@return CacheFs
 function FieldStatePresentationFixture.cache()
   local cache = FieldUiFixture.cacheWithFontAndFrames()
+  local pcManifest = PcPresentationFixture.manifest()
+  cache:writeLua(PcCache.manifestPath(), pcManifest)
+  for _, path in ipairs(PcCache.referencedPaths(pcManifest)) do
+    cache:write(path, solidPng(256, 192))
+  end
   FieldUiFixture.writeStartMenuSelectorPngs(cache)
   cache:write(FieldUiFixture.TRAINER_CARD_PATH, FieldUiFixture.cardBytes())
   cache:writeLua(MonCache.iconManifestPath(), {

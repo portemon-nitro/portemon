@@ -22,7 +22,7 @@ end
 
 -- A flat synthetic map centered at field origin (0,0) covering local
 -- (0..31, 0..31). Optional background events with raw direction codes.
-local function map(backgrounds)
+local function map(backgrounds, facingBehavior)
   local value = {
     mapId = 61,
     mapSymbol = "test-map",
@@ -43,6 +43,9 @@ local function map(backgrounds)
       end,
       isBlockedLocal = function()
         return false
+      end,
+      getLocal = function()
+        return { behavior = facingBehavior or 0 }
       end,
     },
     terrain = TerrainSurface.new({
@@ -177,6 +180,30 @@ local function baseSnapshot(overrides)
     snapshot[key] = value
   end
   return snapshot --[[@as InteractionResolverSnapshot]]
+end
+
+function T.north_facing_pc_metatile_resolves_to_its_closed_standard_script()
+  local result = resolver():resolve(baseSnapshot({ runtimeMap = map(nil, 131) }))
+  Assert.deepEqual(result, {
+    kind = "standard",
+    mapId = 61,
+    sourceFieldX = 4,
+    sourceFieldZ = 14,
+    sourceSurfaceId = 0,
+    targetFieldX = 4,
+    targetFieldZ = 13,
+    playerFacing = "north",
+    scriptBankId = 843,
+    scriptId = "common.pokecenter_pc",
+    object = nil,
+    background = nil,
+    tick = 100,
+  })
+end
+
+function T.pc_metatile_requires_north_facing_and_does_not_match_neighbors()
+  Assert.isNil(resolver():resolve(baseSnapshot({ runtimeMap = map(nil, 131), facing = "south" })))
+  Assert.isNil(resolver():resolve(baseSnapshot({ runtimeMap = map(nil, 130) })))
 end
 
 function T.background_direction_compatibility_matches_the_source_table()

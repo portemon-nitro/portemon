@@ -218,10 +218,13 @@ end
 ---@field menuKeys table<string, boolean>?
 ---@field presentation boolean
 ---@field windowStyles FieldWindowStyles the immutable per-runtime window style catalogue
+---@field fontDef table<string, unknown> the generated field font and charmap
 ---@field scriptHosts FieldRuntimeScriptHosts?
 ---@field transitionPanel "exit"|"enter"|nil
 ---@field applications FieldApplicationRegistry the immutable per-runtime destination application catalogue
 ---@field applicationHost FieldApplicationHost the one application modal owner the session steps
+---@field pcApplicationHost PcApplicationHost the one script-owned PC child host
+---@field pcTerminal table<string, unknown> source PC query and prop-effect owner
 ---@field displayContext DisplayContext the actual-display measurement owner (shared or runtime-owned)
 ---@field presentationDisplay DisplayMeasurement? the complete measured display rendering and menu input share
 ---@field _displayTopology ScreenTopology? the latest resize topology tracked by the default display context
@@ -560,6 +563,7 @@ function FieldRuntime:_loadRuntimeAssets(boot, loadOptions)
   -- as the compiled avatar set). The field-UI class is a required runtime
   -- asset: its manifest is the authority for which frame indexes resolve.
   boot.fontDef = FieldFontLoader.load(boot.cacheFs)
+  self.fontDef = boot.fontDef
   boot.uiManifest = assert(
     boot.cacheFs:loadLua(FieldUiAssetCache.manifestPath()),
     "field UI cache is cold -- run `scripts/buildcache.sh` first"
@@ -1158,6 +1162,31 @@ function FieldRuntime:_composeFieldServices(boot)
   self.starterBalls = composeStarterBalls(self)
   self.partySelection = buildPartySelectionHost(self, boot.cacheFs)
   self:_composePokemonMenu(boot.cacheFs)
+  local PcApplicationHost = require("game.hgss.src.pc.PcApplicationHost")
+  local function createStorage(request)
+    return self.pokemonMenu.makeStorageChild(assert(request.mode, "Storage mode required"))
+  end
+  local function createMailbox()
+    return self.pokemonMenu.makeMailboxChild()
+  end
+  local function createPhotoAlbum()
+    return self.pokemonMenu.makePhotoAlbumChild()
+  end
+  self.pcApplicationHost = PcApplicationHost.new({
+    createStorage = createStorage,
+    createMailbox = createMailbox,
+    createPhotoAlbum = createPhotoAlbum,
+  })
+  local PcTerminal = require("game.hgss.src.pc.PcTerminal")
+  local function resolveTerminalProp(propRef)
+    return self:_resolvePcTerminalProp(propRef)
+  end
+  self.pcTerminal = PcTerminal.new({
+    mailbox = self.mailbox,
+    photoAlbum = self.photoAlbum,
+    sourcePolicy = self.pokemonMenu.pcManifest.terminal,
+    resolveTerminalProp = resolveTerminalProp,
+  })
   -- The one follower-transition owner: the transient visual the
   -- nonblocking transition command starts, advanced once per fixed tick
   -- after the follower reconciles. A missing or malformed generated
@@ -1186,9 +1215,92 @@ function FieldRuntime:_composeFieldServices(boot)
     clock = self.localClock,
     followerTransition = self.followingMonTransition,
     starterBalls = self.starterBalls,
+    pcApplications = self.pcApplicationHost,
+    pcTerminal = self.pcTerminal,
   })
   self.scripts = scriptComposition.scripts
   scriptComposition.restore()
+end
+
+-- Resolve the retail tag's placed model through canonical map props and the
+-- source-generated candidate order. The returned adapter keeps each model's
+-- compiled clip duration alongside its live instance handle.
+---@param propRef string
+---@return table<string, unknown>
+function FieldRuntime:_resolvePcTerminalProp(propRef)
+  assert(propRef == "pc_terminal", "PC terminal prop reference is closed")
+  local pcManifest = assert(self.pokemonMenu, "PC terminal needs the menu composition").pcManifest
+  local terminal = assert(pcManifest.terminal, "PC terminal source policy is compiled")
+  local candidates = {}
+  for _, memberId in ipairs(terminal.candidateBuildModelMembers) do
+    candidates[memberId] = true
+  end
+  local mapProps = assert(self.runtimeMap.mapProps, "the active map owns canonical scene props")
+  local selected
+  for _, placement in ipairs(mapProps.placements) do
+    local descriptor =
+      assert(self.cacheFs:loadLua(MapAssetCache.modelPath(placement.modelKey)), "placed model descriptor is compiled")
+    if candidates[descriptor.memberId] then
+      selected = { prop = assert(mapProps:prop(placement.placementIndex)), descriptor = descriptor }
+      break
+    end
+  end
+  local selectedProp = assert(selected, "source PC terminal model is present on the active map")
+  local clips = assert(selectedProp.descriptor.animations, "terminal model carries compiled animations")
+  local instance = selectedProp.prop.instance
+  local activeHandle = nil
+  local activeFrameCount = nil
+  local headlessFrame = nil
+  local function slotForRole(role)
+    for slot = 0, 1 do
+      if terminal.slots[slot].role == role then
+        return slot
+      end
+    end
+    error("unknown terminal role: " .. tostring(role), 0)
+  end
+  local function clipForRole(role)
+    local slot = slotForRole(role)
+    local clip = assert(clips[slot + 1], "terminal role slot has a compiled model clip")
+    assert(type(clip.frameCount) == "number" and clip.frameCount > 0, "terminal clip has its source frame count")
+    activeFrameCount = clip.frameCount
+    return clip
+  end
+  local function play(_, role, mode)
+    assert(mode == "once", "terminal roles play once")
+    assert(activeHandle == nil, "terminal model has one active one-shot clip")
+    local clip = clipForRole(role)
+    if instance ~= nil then
+      local liveClip = assert(instance.definition.animations[slotForRole(role) + 1])
+      assert(liveClip.name == clip.name, "live terminal clip order matches its compiled descriptor")
+      activeHandle = instance:play(liveClip.name, { loopMode = "once" })
+    else
+      headlessFrame = 0
+      activeHandle = clip
+    end
+  end
+  local function isFinished(_, role)
+    assert(activeHandle ~= nil and activeFrameCount ~= nil, "terminal role is playing")
+    assert(terminal.slots[slotForRole(role)].role == role, "terminal wait names its active source role")
+    if instance ~= nil then
+      return activeHandle.player:isComplete()
+    end
+    headlessFrame = math.min(headlessFrame + 1, activeFrameCount)
+    return headlessFrame == activeFrameCount
+  end
+  local function stop(_, role)
+    if activeHandle == nil then
+      return
+    end
+    assert(terminal.slots[slotForRole(role)].role == role, "terminal release names its active source role")
+    if instance ~= nil then
+      instance:stop(activeHandle)
+    end
+    activeHandle = nil
+    activeFrameCount = nil
+    headlessFrame = nil
+  end
+  return { play = play, isFinished = isFinished, stop = stop }
 end
 
 -- Composes the one script-owned mart child host over the real inventory and
@@ -1370,6 +1482,7 @@ function FieldRuntime:_startFieldSession(boot)
     pokemonNaming = self.pokemonNaming,
     signpost = self.signpost,
     applicationHost = self.applicationHost,
+    pcApplications = self.pcApplicationHost,
     -- The session's fixed-tick audio collaborator is the production
     -- GameSound only; a recording script adapter is a script service, not
     -- a session collaborator.
@@ -1729,6 +1842,22 @@ function FieldRuntime:captureGameSave()
   return self:_captureGameSave(false)
 end
 
+-- A PC presentation failure freezes the field, so release the foreground
+-- script environment that owns its task before publishing the terminal error.
+---@param reason string
+function FieldRuntime:failPcApplicationPresentation(reason)
+  assert(type(reason) == "string" and reason ~= "", "PC presentation failure needs a diagnostic")
+  local scheduler = assert(self.session.scriptScheduler, "field session owns its script scheduler")
+  local environmentId = scheduler:foregroundEnvironmentId()
+  if environmentId ~= nil then
+    scheduler:cancelEnvironment(environmentId, reason)
+  elseif self.pcApplicationHost ~= nil then
+    local host = self.pcApplicationHost
+    host:cancel(reason)
+  end
+  self.errorText = reason
+end
+
 function FieldRuntime:_captureManualSaveFromMenu()
   return assert(self.saveCoordinator, "field runtime has no save coordinator"):captureManual()
 end
@@ -2014,6 +2143,13 @@ function FieldRuntime:_releaseAll()
   if self.martHost then
     self.martHost:dispose()
   end
+  if self.pcApplicationHost then
+    self.pcApplicationHost:dispose()
+  end
+  if self.pcTerminal then
+    self.pcTerminal:releaseEffect()
+  end
+  self.pcApplicationHost, self.pcTerminal = nil, nil
   self.martHost = nil
   self.applicationHost, self.applications = nil, nil
   self.displayContext, self.presentationDisplay, self.presentationOverrides = nil, nil, nil
@@ -2073,7 +2209,7 @@ function FieldRuntime:_releaseAll()
   self.auxiliaryFieldUi, self.contextChoiceProvider, self.interactionResolver = nil, nil, nil
   self.eventState, self.avatar, self.actorConfig, self.playerData = nil, nil, nil, nil
   self.playerAvatar = nil
-  self.windowStyles, self.uiManifest, self.weatherCatalog = nil, nil, nil
+  self.windowStyles, self.uiManifest, self.fontDef, self.weatherCatalog = nil, nil, nil, nil
   self.monCatalog, self.monLanguage, self.monService = nil, nil, nil
   self.bagService, self.bagCursor = nil, nil
   self.martService = nil
@@ -2108,6 +2244,12 @@ function FieldRuntime:dispose()
   -- application fade, or a child application).
   if self.applicationHost then
     self.applicationHost:dispose()
+  end
+  if self.pcApplicationHost then
+    self.pcApplicationHost:dispose()
+  end
+  if self.pcTerminal then
+    self.pcTerminal:releaseEffect()
   end
   -- The starter choice is the script-owned transient modal: an open choice
   -- releases its controller and portrait resources, never the candidates

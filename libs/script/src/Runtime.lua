@@ -1694,6 +1694,52 @@ function HANDLERS.mart_query(node, run)
   semantics.writeRef(node.result, semantics.martQuery(node.kind, run), run)
   return Runtime.OUTCOME_CONTINUE
 end
+function HANDLERS.pc_open(node, run)
+  requireForeground(run, "pc_open")
+  requireService(run, "pcApplications")
+  local mode = nil
+  if node.mode ~= nil then
+    mode = semanticsFor(run).evaluateValue(node.mode, run)
+  end
+  return blockOnTask(run, "pc_application", { kind = "application", app = node.app, mode = mode })
+end
+function HANDLERS.pc_count(node, run)
+  local count = requireService(run, "pcTerminal"):count(node.kind)
+  semanticsFor(run).writeRef(node.result, count, run)
+  return Runtime.OUTCOME_CONTINUE
+end
+function HANDLERS.pc_capsules(_, run)
+  requireForeground(run, "pc_capsules")
+  requireService(run, "pcTerminal"):openCapsules()
+  return Runtime.OUTCOME_CONTINUE
+end
+function HANDLERS.pc_terminal_effect(node, run)
+  requireForeground(run, "pc_terminal_effect")
+  local terminal = assert(requireService(run, "pcTerminal"))
+  if node.action == "wait" then
+    return blockOnTask(run, "pc_application", { kind = "terminal_wait" })
+  elseif node.action == "release" then
+    terminal:releaseEffect()
+  else
+    terminal:effect(node.action, node.prop)
+  end
+  return Runtime.OUTCOME_CONTINUE
+end
+function HANDLERS.pc_hof_status(node, run)
+  local status = requireService(run, "pcTerminal"):hallOfFameStatus()
+  semanticsFor(run).writeRef(node.result, status, run)
+  return Runtime.OUTCOME_CONTINUE
+end
+function HANDLERS.pc_hof_open(_, run)
+  requireForeground(run, "pc_hof_open")
+  requireService(run, "pcTerminal"):openHallOfFame()
+  return Runtime.OUTCOME_CONTINUE
+end
+
+function HANDLERS.restore_overworld(_, run)
+  requireForeground(run, "restore_overworld")
+  return Runtime.OUTCOME_CONTINUE
+end
 HANDLERS["if"] = handleIf
 HANDLERS.switch = handleSwitch
 HANDLERS["goto"] = handleGoto

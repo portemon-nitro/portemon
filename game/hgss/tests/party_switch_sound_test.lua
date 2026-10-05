@@ -11,6 +11,8 @@ local BagCursor = require("libs.hgss.src.items.BagCursor")
 local CatalogFixture = require("libs.mons.tests.catalog_fixture")
 local FieldUiFixture = require("tests.support.FieldUiFixture")
 local HgssBagService = require("libs.hgss.src.items.HgssBagService")
+local MailActions = require("libs.hgss.src.field.MailActions")
+local Mailbox = require("libs.hgss.src.save.Mailbox")
 local ItemFixture = require("libs.items.tests.item_fixture")
 local PartyPresentationFixture = require("tests.support.PartyPresentationFixture")
 local ScreenTopology = require("libs.ui.src.ScreenTopology")
@@ -88,6 +90,8 @@ end
 local function openPartyFlow(service, effect)
   local Flow = require("game.hgss.src.field.PokemonMenuFlow")
   local bag = HgssBagService.new({ catalog = ItemFixture.makeCatalog() })
+  local mailbox = Mailbox.new()
+  local pcManifest = require("tests.support.PcPresentationFixture").manifest()
   local flow = Flow.new({
     root = "party",
     mons = service,
@@ -101,6 +105,9 @@ local function openPartyFlow(service, effect)
         return { kind = "no_op" }
       end,
     },
+    mailActions = MailActions.new({ mons = service, mailbox = mailbox, bag = bag, manifest = pcManifest }),
+    mailbox = mailbox,
+    pcManifest = pcManifest,
     fieldMoves = {
       check = function(_)
         return { kind = "ok" }

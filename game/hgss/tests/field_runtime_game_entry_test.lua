@@ -192,6 +192,8 @@ local function captureRuntime(overrides)
         return require("libs.mons.src.MonsSave").empty("test-catalog-fingerprint", 7)
       end,
     },
+    mailbox = require("libs.hgss.src.save.Mailbox").new(),
+    photoAlbum = require("libs.hgss.src.save.PhotoAlbum").new(),
     bagService = {
       capture = function()
         return require("libs.hgss.src.save.BagSave").empty()

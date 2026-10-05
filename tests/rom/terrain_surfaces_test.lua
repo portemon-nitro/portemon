@@ -240,6 +240,12 @@ function T.field_player_traverses_new_bark_east_staircase(romFs)
         return false
       end,
     },
+    pcApplications = {
+      isActive = function()
+        return false
+      end,
+      cancelPointerCapture = function() end,
+    },
     interactions = interactions,
     bagUnlocked = function()
       return true

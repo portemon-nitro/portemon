@@ -19,6 +19,8 @@ local MonCatalog = require("libs.mons.src.MonCatalog")
 local MonsSave = require("libs.mons.src.MonsSave")
 local Party = require("libs.mons.src.Party")
 local PartyActions = require("libs.hgss.src.field.PartyActions")
+local MailActions = require("libs.hgss.src.field.MailActions")
+local Mailbox = require("libs.hgss.src.save.Mailbox")
 local PartyCache = require("libs.assets.src.PartyCache")
 local RomImporter = require("romdump.src.source.RomImporter")
 local ScreenTopology = require("libs.ui.src.ScreenTopology")
@@ -124,12 +126,17 @@ local function stubMeasurement()
 end
 
 local function openFlow(Flow, opts)
+  local mailbox = Mailbox.new()
+  local pcManifest = require("tests.support.PcPresentationFixture").manifest()
   return Flow.new({
     root = "party",
     mons = assert(opts.mons, "the flow borrows the mon service"),
     bag = assert(opts.bag, "the flow borrows the bag service"),
     bagCursor = assert(opts.bagCursor, "the flow borrows the bag cursor"),
     partyActions = assert(opts.partyActions, "the flow borrows the action coordinator"),
+    mailActions = MailActions.new({ mons = opts.mons, mailbox = mailbox, bag = opts.bag, manifest = pcManifest }),
+    mailbox = mailbox,
+    pcManifest = pcManifest,
     fieldMoves = {
       check = function(_)
         return { kind = "ok" }

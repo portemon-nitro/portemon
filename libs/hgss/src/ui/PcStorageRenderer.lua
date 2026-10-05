@@ -82,6 +82,47 @@ local function drawMon(self, resources, mon, x, y, party)
   end
 end
 
+local function drawEditor(self, view)
+  local editor = view.editor
+  if editor == nil then
+    return
+  end
+  local graphics = self._graphics
+  graphics.setColor(1, 1, 1, 1)
+  if editor.kind == "markings" then
+    local markings = assert(self._manifest.storage.ui.markings, "Storage marking visuals are compiled")
+    for bit = 0, 5 do
+      local marked = math.floor(editor.mask / (2 ^ bit)) % 2 == 1
+      drawVisual(self, markings[bit][marked and "set" or "clear"], 120 + bit * 8, 8)
+      if editor.selected == bit then
+        graphics.rectangle("line", 120 + bit * 8, 8, 8, 8)
+      end
+    end
+  elseif editor.kind == "wallpaper" then
+    self._text:drawText("Wallpaper", 37, 6)
+    local unlocks = assert(view.wallpaperUnlocks, "Storage snapshots carry wallpaper unlocks")
+    for logicalId = 0, 23 do
+      local storedId = logicalId < 16 and logicalId or logicalId + 16
+      local visual = assert(self._manifest.storage.wallpapers[storedId], "wallpaper preview is compiled")
+      local column, row = logicalId % 4, math.floor(logicalId / 4)
+      local x, y = 37 + column * 46, 20 + row * 24
+      local unlocked = logicalId < 16 or unlocks[logicalId - 15] == true
+      local image = imageFor(self, visual)
+      local scaleX, scaleY = 44 / visual.width, 20 / visual.height
+      local offset = visual.offset or { x = 0, y = 0 }
+      graphics.setColor(1, 1, 1, unlocked and 1 or 0.35)
+      graphics.draw(image, x + offset.x * scaleX, y + offset.y * scaleY, 0, scaleX, scaleY)
+      graphics.setColor(1, 1, 1, 1)
+      if editor.selected == logicalId then
+        graphics.rectangle("line", x, y, 44, 20)
+      end
+    end
+  else
+    error("unknown Storage editor " .. tostring(editor.kind), 0)
+  end
+  graphics.setColor(1, 1, 1, 1)
+end
+
 function PcStorageRenderer:drawPane(view, resources, paneId, placement, singlePane)
   assert(not self._disposed, "disposed Storage renderer draws nothing")
   local graphics = self._graphics
@@ -116,6 +157,9 @@ function PcStorageRenderer:drawPane(view, resources, paneId, placement, singlePa
       if showParty and not (source ~= nil and source.kind == "party" and source.slot == index) then
         drawMon(self, resources or {}, mon, 8, 24 + index * 24, true)
       end
+    end
+    if paneId == "lower" or singlePane then
+      drawEditor(self, view)
     end
     if view.carry ~= nil and view.carry.mon ~= nil then
       local target = view.carry.destination or view.focus

@@ -14,6 +14,7 @@ local Lcrng = require("libs.mons.src.gen4.Lcrng")
 local MonsSave = require("libs.mons.src.MonsSave")
 local Party = require("libs.mons.src.Party")
 local PartyCache = require("libs.assets.src.PartyCache")
+local PcPresentationFixture = require("tests.support.PcPresentationFixture")
 local RomImporter = require("romdump.src.source.RomImporter")
 local ScreenTopology = require("libs.ui.src.ScreenTopology")
 
@@ -26,6 +27,7 @@ local CONSTRUCTOR_MODULES = {
   "libs.assets.src.BagCache",
   "libs.assets.src.MartCache",
   "libs.assets.src.PartyCache",
+  "libs.assets.src.PcCache",
   "libs.hgss.src.presentation.BagHeroRenderer",
   "libs.hgss.src.ui.BagRenderer",
   "libs.hgss.src.ui.MartRenderer",
@@ -42,6 +44,9 @@ local CONSTRUCTOR_MODULES = {
   "libs.hgss.src.ui.StartMenuRenderer",
   "libs.hgss.src.ui.TrainerCardRenderer",
   "libs.hgss.src.ui.PartyScreenRenderer",
+  "libs.hgss.src.ui.PcStorageRenderer",
+  "libs.hgss.src.ui.MailboxRenderer",
+  "libs.hgss.src.ui.PhotoAlbumRenderer",
   "libs.hgss.src.presentation.MonIconAssetProvider",
   "libs.hgss.src.presentation.AssetPreparationQueue",
   "libs.hgss.src.presentation.ItemIconAssetProvider",
@@ -83,6 +88,11 @@ local function buildDoubles(sink, calls)
     ["libs.assets.src.PartyCache"] = {
       loadManifest = function(_)
         return { compiled = true }
+      end,
+    },
+    ["libs.assets.src.PcCache"] = {
+      loadManifest = function(_)
+        return PcPresentationFixture.manifest()
       end,
     },
     ["libs.hgss.src.presentation.BagHeroRenderer"] = {
@@ -196,6 +206,21 @@ local function buildDoubles(sink, calls)
     ["libs.hgss.src.ui.PartyScreenRenderer"] = {
       new = function(_)
         return party
+      end,
+    },
+    ["libs.hgss.src.ui.PcStorageRenderer"] = {
+      new = function(_)
+        return releasable(calls, "storageRenderer")
+      end,
+    },
+    ["libs.hgss.src.ui.MailboxRenderer"] = {
+      new = function(_)
+        return releasable(calls, "mailboxRenderer")
+      end,
+    },
+    ["libs.hgss.src.ui.PhotoAlbumRenderer"] = {
+      new = function(_)
+        return releasable(calls, "photoAlbumRenderer")
       end,
     },
     ["libs.hgss.src.presentation.MonIconAssetProvider"] = {

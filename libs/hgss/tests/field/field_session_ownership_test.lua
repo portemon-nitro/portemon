@@ -170,6 +170,7 @@ local function makeSession(opts)
     },
     signpost = signpost,
     applicationHost = applicationHost,
+    pcApplications = { isActive = function() return false end, cancelPointerCapture = function() end },
     interactions = opts.interactions or {
       resolve = function()
         return nil

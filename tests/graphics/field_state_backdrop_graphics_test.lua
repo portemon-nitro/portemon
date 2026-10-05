@@ -97,6 +97,11 @@ local function drawableState(environment, worldViewport, windowWidth, windowHeig
         return { fadeAlpha = 0 }
       end,
     },
+    pcApplicationHost = {
+      isActive = function()
+        return false
+      end,
+    },
     menuHost = {
       presentation = function()
         return nil

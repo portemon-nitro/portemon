@@ -23,6 +23,7 @@
 local Cfg = require("romdump.src.digest.script.Cfg")
 local CommandCatalog = require("romdump.src.digest.script.CommandCatalog")
 local SemanticLowering = require("romdump.src.digest.script.SemanticLowering")
+local Operands = require("romdump.src.digest.script.lowering.Operands")
 local SignpostCommands = require("romdump.src.reference.hgss.signpost_commands")
 
 local Verifier = {}
@@ -68,6 +69,8 @@ local BLOCKING_OPS = {
   mart_open = true,
   follower_wait = true,
   follower_interact = true,
+  pc_open = true,
+  pc_hof_open = true,
 }
 
 -- Operations that end the run phase: yield boundaries and stops.
@@ -108,6 +111,9 @@ local function nodeBlocks(node)
   end
   if node.op == "lock_actor" then
     return node.waitUntilPausable == true
+  end
+  if node.op == "pc_terminal_effect" then
+    return node.action == "wait"
   end
   return BLOCKING_OPS[node.op] == true
 end
@@ -164,6 +170,43 @@ local function checkMartQuery(ins, step)
   local kind = ins.opcode == 834 and "athlete_available" or "card_prefix"
   if step.op ~= "mart_query" or step.kind ~= kind or not operandMatches(ins.operands[1].raw, step.result) then
     return "mart query output variable changed by translation"
+  end
+end
+
+local function checkPcOpen(ins, step)
+  local appByOpcode = { [158] = "storage", [376] = "mailbox", [617] = "photoAlbum" }
+  local app = appByOpcode[ins.opcode]
+  if step.op ~= "pc_open" or step.app ~= app then
+    return "PC application changed by translation"
+  end
+  if ins.opcode == 158 and not operandMatches(ins.operands[1].raw, step.mode) then
+    return "PC storage mode changed by translation"
+  end
+  if ins.opcode ~= 158 and step.mode ~= nil then
+    return "non-storage PC application acquired a storage mode"
+  end
+end
+
+local function checkPcCount(ins, step)
+  local kindByOpcode = { [377] = "mailbox", [616] = "photos", [706] = "hall_of_fame" }
+  local kind = kindByOpcode[ins.opcode]
+  if ins.opcode == 706 then
+    if step.op ~= "pc_hof_status" or not operandMatches(ins.operands[1].raw, step.result) then
+      return "Hall of Fame status output variable changed by translation"
+    end
+  elseif step.op ~= "pc_count" or step.kind ~= kind or not operandMatches(ins.operands[1].raw, step.result) then
+    return "PC count output variable changed by translation"
+  end
+end
+
+local function checkPcTerminalEffect(ins, step)
+  local actionByOpcode = { [500] = "start", [501] = "on", [502] = "off", [308] = "wait", [309] = "release" }
+  local action = actionByOpcode[ins.opcode]
+  if step.op ~= "pc_terminal_effect" or step.action ~= action then
+    return "terminal effect changed by translation"
+  end
+  if Operands.operandValue(ins.operands[1]) ~= 90 or step.prop ~= "pc_terminal" then
+    return "terminal prop selector changed by translation"
   end
 end
 
@@ -376,6 +419,17 @@ local CHECKERS = {
   [278] = checkMartLaunch,
   [834] = checkMartQuery,
   [835] = checkMartQuery,
+  [158] = checkPcOpen,
+  [376] = checkPcOpen,
+  [617] = checkPcOpen,
+  [377] = checkPcCount,
+  [616] = checkPcCount,
+  [706] = checkPcCount,
+  [500] = checkPcTerminalEffect,
+  [501] = checkPcTerminalEffect,
+  [502] = checkPcTerminalEffect,
+  [308] = checkPcTerminalEffect,
+  [309] = checkPcTerminalEffect,
 }
 
 -- Walk the lowered items collecting the covering node per source offset.

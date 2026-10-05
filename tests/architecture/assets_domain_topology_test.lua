@@ -68,6 +68,8 @@ local SHARED = {
   "MonCache",
   "PartyAssetSchema",
   "PartyCache",
+  "PcAssetSchema",
+  "PcCache",
   "PngWriter",
   "SchemaCheck",
   "ScriptCache",

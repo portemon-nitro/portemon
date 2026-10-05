@@ -18,6 +18,9 @@ local FieldMovement = require("tests.acceptance.support.FieldMovement")
 local BagSave = require("libs.hgss.src.save.BagSave")
 local FashionCaseState = require("libs.hgss.src.save.FashionCaseState")
 local MartSave = require("libs.hgss.src.save.MartSave")
+local Mailbox = require("libs.hgss.src.save.Mailbox")
+local PhotoAlbum = require("libs.hgss.src.save.PhotoAlbum")
+local FieldStatePresentationFixture = require("tests.support.FieldStatePresentationFixture")
 
 ---@class AcceptanceHarness
 ---@field versions string[]
@@ -229,6 +232,7 @@ function AcceptanceHarness:_newRuntime(game, namespace, faults, lifecycle, field
     or LocalClock.new(function()
       return { year = 2000, month = 1, day = 1, hour = 12, minute = 0, second = 0 }
     end)
+  runtimeOptions.derivedAssets = runtimeOptions.derivedAssets or FieldStatePresentationFixture.iconHost().derivedAssets
   runtimeOptions.saveFs = SaveFs.forVersion(versionId, saveBackend(faults, lifecycle, namespace, versionId))
   if fieldOptions and fieldOptions.acceptanceScripts ~= nil then
     runtimeOptions.overrideFs =
@@ -1077,6 +1081,8 @@ function AcceptanceHarness.new(options)
         mons = mons,
         bag = BagSave.empty(),
         mart = MartSave.empty(),
+        mailbox = Mailbox.new():capture(),
+        photoAlbum = PhotoAlbum.new():capture(),
       }
     end,
     saveNamespace = options.saveNamespace or defaultNamespace,

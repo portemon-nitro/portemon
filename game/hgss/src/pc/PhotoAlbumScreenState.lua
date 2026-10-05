@@ -2,6 +2,8 @@
 
 local PhotoAlbum = require("libs.hgss.src.save.PhotoAlbum")
 local PhotoScene = require("game.hgss.src.pc.PhotoScene")
+local ApplicationPresentation = require("libs.ui.src.ApplicationPresentation")
+local PhotoAlbumInterface = require("game.hgss.src.pc.PhotoAlbumInterface")
 
 local PhotoAlbumScreenState = {}
 PhotoAlbumScreenState.__index = PhotoAlbumScreenState
@@ -50,7 +52,7 @@ function PhotoAlbumScreenState.new(options)
   assert(type(options.album) == "table", "Photo Album screen requires its persisted album owner")
   assert(type(options.manifest) == "table", "Photo Album screen requires C02 visual assets")
   assert(type(options.measureDisplay) == "function", "Photo Album screen requires display measurement")
-  return setmetatable({
+  local self = setmetatable({
     album = options.album,
     manifest = options.manifest,
     measureDisplay = options.measureDisplay,
@@ -74,8 +76,12 @@ function PhotoAlbumScreenState.new(options)
     deleteChoice = "yes",
     moveSourceSlot = nil,
     resultMessageId = nil,
+    closed = false,
+    resultTaken = false,
     disposed = false,
   }, PhotoAlbumScreenState)
+  self.presentation = ApplicationPresentation.new(PhotoAlbumInterface.defaults(options.manifest), options.overrides)
+  return self
 end
 
 local function indexOf(slots, selected)
@@ -180,13 +186,22 @@ end
 
 function PhotoAlbumScreenState:updateFixed(events)
   assert(not self.disposed, "disposed Photo Album cannot update")
+  if self.closed then
+    return
+  end
   self.animationTick = self.animationTick + 1
   if #events > 0 then
     self.resultMessageId = nil
   end
+  local view = self:_view()
+  view.presentation = self.presentation:resolve(self.measureDisplay(), view)
+  events = self.presentation:mapInput(events, view)
   for _, event in ipairs(events) do
     if self.phase == "list" then
-      if event.type == "navigate" then
+      if event.type == "cancel" then
+        self.closed = true
+        return
+      elseif event.type == "navigate" then
         self:_moveSlot(event.direction)
       elseif event.type == "confirm" and self.selectedSlot ~= nil then
         self.actionIndex, self.phase = 1, "actions"
@@ -260,6 +275,14 @@ function PhotoAlbumScreenState:updateFixed(events)
   end
 end
 
+function PhotoAlbumScreenState:takeResult()
+  if not self.closed or self.resultTaken then
+    return nil
+  end
+  self.resultTaken = true
+  return { kind = "closed" }
+end
+
 function PhotoAlbumScreenState:advance(ticks)
   if self.disposed or self.phase ~= "viewer" then
     return
@@ -277,7 +300,7 @@ function PhotoAlbumScreenState:_adoptReady()
   end
 end
 
-function PhotoAlbumScreenState:status()
+function PhotoAlbumScreenState:_view()
   assert(not self.disposed, "disposed Photo Album has no status")
   local slots = occupied(self.album)
   local viewer
@@ -319,6 +342,18 @@ function PhotoAlbumScreenState:status()
   }
 end
 
+function PhotoAlbumScreenState:status()
+  local view = self:_view()
+  view.presentation = self.presentation:resolve(self.measureDisplay(), view)
+  return view
+end
+
+function PhotoAlbumScreenState:draw(resources, status)
+  assert(not self.disposed, "disposed Photo Album cannot draw")
+  local snapshot = status or self:status()
+  ApplicationPresentation.draw(assert(love.graphics), resources, snapshot, snapshot.presentation)
+end
+
 function PhotoAlbumScreenState:dispose()
   if self.disposed then
     return
@@ -329,6 +364,7 @@ function PhotoAlbumScreenState:dispose()
     self.viewer:dispose()
     self.viewer = nil
   end
+  self.presentation:dispose()
 end
 
 return PhotoAlbumScreenState

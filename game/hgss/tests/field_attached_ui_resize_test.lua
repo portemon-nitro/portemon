@@ -68,6 +68,12 @@ local function drawState(topologyProvider, pollTopology)
         return { fadeAlpha = 0 }
       end,
     },
+    pcApplicationHost = {
+      isActive = function()
+        return false
+      end,
+      cancelPointerCapture = function() end,
+    },
     transition = { fadeAlpha = 0 },
     dialogue = {
       isModal = function()
@@ -371,6 +377,12 @@ local function fieldStateWithCapturedUi(worldViewport, cameraZoom, viewportWidth
         status = function()
           return { fadeAlpha = 0 }
         end,
+      },
+      pcApplicationHost = {
+        isActive = function()
+          return false
+        end,
+        cancelPointerCapture = function() end,
       },
       transition = { fadeAlpha = 0 },
       menuHost = {
