@@ -4410,7 +4410,7 @@ return {
       },
     },
     [599] = {
-      classification = "continue_same_tick",
+      classification = "native_wait",
       name = "ScrCmd_599",
       feature = "following_mon",
       disposition = "supported",

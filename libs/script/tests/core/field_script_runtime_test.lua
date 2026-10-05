@@ -99,30 +99,6 @@ function T.trainer_card_stars_writes_the_live_save_result()
   Assert.equal(written.STARS, 4)
 end
 
-function T.follower_appearance_starts_transient_owner_without_blocking()
-  local starts = 0
-  local follower = { active = false }
-  function follower:isSourceActive()
-    return self.active
-  end
-  function follower:repositionRelativeToPlayer() end
-  local run = runState({
-    followingMon = follower,
-    followerTransition = {
-      startAppearance = function(_, sourceFollower)
-        Assert.equal(sourceFollower, follower)
-        starts = starts + 1
-      end,
-    },
-  }, {})
-  Assert.equal(Runtime.executeNode({ op = "follower_appearance" }, run), Runtime.OUTCOME_CONTINUE)
-  Assert.equal(starts, 0, "inactive source follower skips the retail callback")
-  follower.active = true
-  Assert.equal(Runtime.executeNode({ op = "follower_appearance" }, run), Runtime.OUTCOME_CONTINUE)
-  Assert.equal(starts, 1)
-  Assert.isNil(run.blockTaskId)
-end
-
 function T.nonblocking_message_evaluates_variable_bank_reference_before_host_dispatch()
   local resolved = nil
   local printed = nil

@@ -7,6 +7,8 @@ local Assert = require("tests.support.Assert")
 local CommandCatalog = require("romdump.src.digest.script.CommandCatalog")
 local SemanticLowering = require("romdump.src.digest.script.SemanticLowering")
 local SourceCatalog = require("romdump.src.digest.script.SourceCatalog")
+local Structurer = require("romdump.src.digest.script.Structurer")
+local Verifier = require("romdump.src.digest.script.Verifier")
 
 local T = {}
 
@@ -23,6 +25,20 @@ local function lowerSingle(opcode, operands)
   )
   Assert.equal(#lowered.items, 1, "opcode " .. opcode .. " lowers to one step")
   return lowered.items[1]
+end
+
+local function verifiesFollowerCommand(opcode)
+  local script = {
+    label = "_ENTRY",
+    instructions = {
+      { opcode = opcode, operands = {}, offset = 0x20 },
+      { opcode = 2, operands = {}, offset = 0x21 },
+    },
+  }
+  local memberIr = { member = 12, scripts = { [0] = script }, movements = {} }
+  local lowered = SemanticLowering.lowerScript(script, memberIr, { stdCatalog = SourceCatalog.catalog() })
+  local report = Verifier.verifyScript(Structurer.structure(lowered, 0), script, memberIr, lowered.omissions)
+  return report.ok, report.problems[1] and report.problems[1].message
 end
 
 function T.follower_movement_commands_lower_to_real_semantics()
@@ -59,11 +75,17 @@ function T.follower_transition_command_lowers_to_a_no_operand_same_tick_node()
   Assert.isNil(node.command, "transition semantics dispatch no source opcode number")
 end
 
-function T.opcode_599_lowers_to_the_same_nonblocking_follower_transition()
+function T.opcode_599_is_a_blocking_appearance_distinct_from_opcode_608()
   Assert.equal(CommandCatalog.disposition(599), "supported")
-  Assert.equal(CommandCatalog.classification(599), CommandCatalog.CONTINUE)
+  Assert.equal(CommandCatalog.classification(599), CommandCatalog.NATIVE_WAIT)
   Assert.deepEqual(CommandCatalog.widths(599), {})
   Assert.equal(lowerSingle(599, {}).op, "follower_appearance")
+  Assert.equal(CommandCatalog.classification(608), CommandCatalog.CONTINUE)
+  Assert.equal(lowerSingle(608, {}).op, "follower_transition")
+  local appearanceVerified, appearanceProblem = verifiesFollowerCommand(599)
+  Assert.isTrue(appearanceVerified, appearanceProblem or "blocking appearance must verify")
+  local transitionVerified, transitionProblem = verifiesFollowerCommand(608)
+  Assert.isTrue(transitionVerified, transitionProblem or "same-tick transition must verify")
 end
 
 -- Opcode 604 carries a persistent map-object movement selector, not a

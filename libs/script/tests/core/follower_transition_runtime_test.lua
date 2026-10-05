@@ -99,4 +99,33 @@ function T.missing_follower_collaborator_faults_loudly()
   Assert.isTrue(Errors.is(err), "a missing follower collaborator is an attributed fault, never inactive")
 end
 
+function T.appearance_blocks_on_one_task_without_starting_in_the_runtime()
+  local appearanceStarts = {}
+  local transition = {
+    startAppearance = function(_, follower)
+      appearanceStarts[#appearanceStarts + 1] = follower
+    end,
+  }
+  local tasks = {}
+  local run = runWith(transition, tasks)
+  Assert.equal(Runtime.executeNode({ op = "follower_appearance" }, run), Runtime.OUTCOME_BLOCK)
+  Assert.deepEqual(tasks, { "follower_appearance" }, "appearance enters its HGSS task once")
+  Assert.equal(#appearanceStarts, 0, "generic runtime leaves HGSS choreography to the task")
+  Assert.equal(run.blockTaskId, "task:follower_appearance", "the script parks on the task")
+end
+
+function T.appearance_uses_its_task_even_when_the_source_follower_is_inactive()
+  local appearanceStarts = {}
+  local transition = {
+    startAppearance = function()
+      appearanceStarts[#appearanceStarts + 1] = true
+    end,
+  }
+  local tasks = {}
+  local run = runWith(transition, tasks, false)
+  Assert.equal(Runtime.executeNode({ op = "follower_appearance" }, run), Runtime.OUTCOME_BLOCK)
+  Assert.deepEqual(tasks, { "follower_appearance" }, "inactive appearance still crosses the task boundary")
+  Assert.equal(#appearanceStarts, 0, "inactive source follower starts no visual work in runtime")
+end
+
 return { tests = T }
