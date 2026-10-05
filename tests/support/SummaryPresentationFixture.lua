@@ -1,19 +1,23 @@
 -- Synthetic native summary presentation data for summary-fact tests. The
 -- manifest mirrors the real generated envelope shapes (closed top-level
--- field set, species-keyed pictures, ribbon entries with bit bindings and
--- special-description slots, form-keyed performance rows, dex maps, and
--- memo condition/template/label records) with invented display text, so
--- unit tests never need a dump. Display strings carry a SYN prefix to keep
--- synthetic expectations distinct from ROM-derived text. Location ids are
--- synthetic selection inputs: 1..500 reads wild, 4000..4099 reads gift,
--- 0 reads pal-park, anything else reads wild with the fallback landmark.
--- Condition keys, line indices, and the egg-watch threshold set follow the
--- source-authored positions the memo contract pins for the ordinary wild
--- branch (nature 1, date 2, characteristic 6, flavor 7).
+-- field set, semantic fixed/group window roles, species-keyed pictures,
+-- ribbon entries with bit bindings and special-description slots,
+-- form-keyed performance rows, dex maps, and ordered memo branches with
+-- structured substitution templates) with invented display text, so unit
+-- tests never need a dump. Display strings carry a SYN prefix to keep
+-- synthetic expectations distinct from ROM-derived text. Window geometry
+-- is synthetic but pane-correct; only the role vocabulary and the memo
+-- branch order mirror the generated contract. Memo branches carry their
+-- own structured date templates, never label-only strings: a branch that
+-- references its wording through a label name instead of segments
+-- misrepresents the generated contract. Condition keys, line indices,
+-- and the egg-watch threshold set follow the source-authored positions
+-- the memo contract pins for the ordinary wild branch
+-- (nature 1, date 2, characteristic 6, flavor 7).
 
 local SummaryPresentationFixture = {}
 
-SummaryPresentationFixture.SCHEMA = "g4-summary-manifest-v1"
+SummaryPresentationFixture.SCHEMA = "g4-summary-manifest-v2"
 
 SummaryPresentationFixture.WILD_LOCATION = 7
 SummaryPresentationFixture.GIFT_LOCATION = 4001
@@ -146,6 +150,7 @@ local function memoLabels(labels)
   end
   labels["synLandmarkHome"] = "SYN NEW BARK"
   labels["synLandmarkGift"] = "SYN GIFT SHOP"
+  labels["synLandmarkJohto"] = "SYN JOHTO"
   labels["synLandmarkFar"] = "SYN FARAWAY"
   for stat = 1, 6 do
     for mod = 0, 4 do
@@ -165,63 +170,123 @@ local function memoLabels(labels)
   return labels
 end
 
-local function memoSection()
-  local conditions = {
-    wildEncounter = { template = "synMemoWild", nature = 1, date = 2, characteristic = 6, flavor = 7, eggWatch = 0 },
-    wildEncounterTraded = {
-      template = "synMemoWildTraded",
-      nature = 1,
-      date = 2,
-      characteristic = 6,
-      flavor = 7,
-      eggWatch = 0,
-    },
-    wildGift = { template = "synMemoWildGift", nature = 1, date = 2, characteristic = 6, flavor = 7, eggWatch = 0 },
-    wildGiftTraded = {
-      template = "synMemoWildGiftTraded",
-      nature = 1,
-      date = 2,
-      characteristic = 6,
-      flavor = 7,
-      eggWatch = 0,
-    },
-    fatefulEncounter = {
-      template = "synMemoFateful",
-      nature = 1,
-      date = 2,
-      characteristic = 7,
-      flavor = 8,
-      eggWatch = 0,
-    },
-    fatefulEncounterTraded = {
-      template = "synMemoFatefulTraded",
-      nature = 1,
-      date = 2,
-      characteristic = 7,
-      flavor = 8,
-      eggWatch = 0,
-    },
-    migrated = { template = "synMemoMigrated", nature = 1, date = 2, characteristic = 6, flavor = 7, eggWatch = 0 },
-    eggHatched = { template = "synMemoHatched", nature = 1, date = 2, characteristic = 8, flavor = 9, eggWatch = 0 },
-    eggHatchedTraded = {
-      template = "synMemoHatchedTraded",
-      nature = 1,
-      date = 2,
-      characteristic = 8,
-      flavor = 9,
-      eggWatch = 0,
-    },
-    eggHatchedGift = {
-      template = "synMemoHatchedGift",
-      nature = 1,
-      date = 2,
-      characteristic = 8,
-      flavor = 9,
-      eggWatch = 0,
-    },
-    egg = { template = "synMemoEgg", nature = 0, date = 0, characteristic = 0, flavor = 0, eggWatch = 3 },
-    eggTraded = { template = "synMemoEggTraded", nature = 0, date = 0, characteristic = 0, flavor = 0, eggWatch = 3 },
+-- Structured synthetic date templates mirroring the generated
+-- substitution shapes: literal text, line breaks, and semantic bindings
+-- with no raw placeholder fields. Wording is invented; the segment
+-- vocabulary and the branch coverage mirror the generated contract.
+local function metSegments()
+  return {
+    { kind = "text", value = "SYN " },
+    { kind = "metMonth" },
+    { kind = "text", value = " SYN " },
+    { kind = "metDay" },
+    { kind = "text", value = ", 20" },
+    { kind = "metYear" },
+    { kind = "lineBreak" },
+    { kind = "metLocation" },
+    { kind = "lineBreak" },
+    { kind = "text", value = "SYN met at Lv. " },
+    { kind = "metLevel" },
+    { kind = "text", value = "." },
   }
+end
+
+local function hatchedSegments()
+  return {
+    { kind = "text", value = "SYN " },
+    { kind = "eggMonth" },
+    { kind = "text", value = " SYN " },
+    { kind = "eggDay" },
+    { kind = "text", value = ", 20" },
+    { kind = "eggYear" },
+    { kind = "lineBreak" },
+    { kind = "eggLocation" },
+    { kind = "lineBreak" },
+    { kind = "text", value = "SYN hatched. " },
+    { kind = "metMonth" },
+    { kind = "text", value = " SYN " },
+    { kind = "metDay" },
+    { kind = "lineBreak" },
+    { kind = "metLocation" },
+  }
+end
+
+local function eggSegments()
+  return {
+    { kind = "text", value = "SYN " },
+    { kind = "eggMonth" },
+    { kind = "text", value = " SYN " },
+    { kind = "eggDay" },
+    { kind = "text", value = ", 20" },
+    { kind = "eggYear" },
+    { kind = "lineBreak" },
+    { kind = "text", value = "SYN egg from " },
+    { kind = "eggLocation" },
+    { kind = "text", value = "." },
+  }
+end
+
+local function migratedSegments()
+  return {
+    { kind = "text", value = "SYN " },
+    { kind = "metMonth" },
+    { kind = "text", value = " SYN " },
+    { kind = "metDay" },
+    { kind = "lineBreak" },
+    { kind = "migrationRegion" },
+    { kind = "lineBreak" },
+    { kind = "text", value = "SYN arrived at Lv. " },
+    { kind = "metLevel" },
+    { kind = "text", value = "." },
+  }
+end
+
+-- Ordered synthetic memo branches mirroring the generated selection
+-- order, selectability, predicates, and line placement. The traded
+-- gift-location closure entry travels with the rules but never
+-- selects, exactly like its generated counterpart.
+local MEMO_BRANCHES = {
+  { key = "migrated", match = { isEgg = false, fateful = false, eggLocation = "none", metLocation = "palPark" }, lines = { 1, 2, 6, 7, 0 }, template = migratedSegments },
+  { key = "fatefulEncounter", match = { isEgg = false, fateful = true, mine = true, eggLocation = "none", metLocation = "notPalPark" }, lines = { 1, 2, 7, 8, 0 }, template = metSegments },
+  { key = "fatefulEncounterTraded", match = { isEgg = false, fateful = true, mine = false, eggLocation = "none", metLocation = "notPalPark" }, lines = { 1, 2, 7, 8, 0 }, template = metSegments },
+  { key = "wildGift", match = { isEgg = false, fateful = false, eggLocation = "none", metLocation = "linkTrade" }, lines = { 1, 2, 6, 7, 0 }, template = metSegments },
+  { key = "wildGiftTraded", selectable = false, match = { isEgg = false, fateful = false, mine = false, eggLocation = "none", metLocation = "linkTrade" }, lines = { 1, 2, 6, 7, 0 }, template = metSegments },
+  { key = "wildEncounter", match = { isEgg = false, fateful = false, mine = true, eggLocation = "none", metLocation = "wild" }, lines = { 1, 2, 6, 7, 0 }, template = metSegments },
+  { key = "wildEncounterTraded", match = { isEgg = false, fateful = false, mine = false, eggLocation = "none", metLocation = "wild" }, lines = { 1, 2, 6, 7, 0 }, template = metSegments },
+  { key = "fatefulEggHatchedGift", match = { isEgg = false, fateful = true, mine = true, eggLocation = "linkTrade2" }, lines = { 1, 2, 9, 0, 0 }, template = hatchedSegments },
+  { key = "fatefulEggHatchedGiftTraded", match = { isEgg = false, fateful = true, mine = false, eggLocation = "linkTrade2" }, lines = { 1, 2, 9, 0, 0 }, template = hatchedSegments },
+  { key = "fatefulEggHatchedArrived", match = { isEgg = false, fateful = true, mine = true, eggLocation = "ranger" }, lines = { 1, 2, 9, 0, 0 }, template = hatchedSegments },
+  { key = "fatefulEggHatchedArrivedTraded", match = { isEgg = false, fateful = true, mine = false, eggLocation = "ranger" }, lines = { 1, 2, 9, 0, 0 }, template = hatchedSegments },
+  { key = "fatefulEggHatched", match = { isEgg = false, fateful = true, mine = true, eggLocation = "hatched" }, lines = { 1, 2, 9, 0, 0 }, template = hatchedSegments },
+  { key = "fatefulEggHatchedTraded", match = { isEgg = false, fateful = true, mine = false, eggLocation = "hatched" }, lines = { 1, 2, 9, 0, 0 }, template = hatchedSegments },
+  { key = "eggHatchedGift", match = { isEgg = false, fateful = false, mine = true, eggLocation = "giftSet" }, lines = { 1, 2, 8, 9, 0 }, template = hatchedSegments },
+  { key = "eggHatchedGiftTraded", match = { isEgg = false, fateful = false, mine = false, eggLocation = "giftSet" }, lines = { 1, 2, 8, 9, 0 }, template = hatchedSegments },
+  { key = "eggHatched", match = { isEgg = false, fateful = false, mine = true, eggLocation = "hatched" }, lines = { 1, 2, 8, 9, 0 }, template = hatchedSegments },
+  { key = "eggHatchedTraded", match = { isEgg = false, fateful = false, mine = false, eggLocation = "hatched" }, lines = { 1, 2, 8, 9, 0 }, template = hatchedSegments },
+  { key = "fatefulEggArrived", match = { isEgg = true, fateful = true, mine = true, eggLocation = "ranger" }, lines = { 0, 1, 0, 0, 6 }, template = eggSegments },
+  { key = "fatefulEgg", match = { isEgg = true, fateful = true, mine = true, eggLocation = "egg" }, lines = { 0, 1, 0, 0, 6 }, template = eggSegments },
+  { key = "fatefulEggTraded", match = { isEgg = true, fateful = true, mine = false, eggLocation = "egg" }, lines = { 0, 1, 0, 0, 6 }, template = eggSegments },
+  { key = "egg", match = { isEgg = true, fateful = false, mine = true, eggLocation = "egg" }, lines = { 0, 1, 0, 0, 6 }, template = eggSegments },
+  { key = "eggTraded", match = { isEgg = true, fateful = false, mine = false, eggLocation = "egg" }, lines = { 0, 1, 0, 0, 6 }, template = eggSegments },
+}
+
+local function memoSection()
+  local conditions = {}
+  for _, branch in ipairs(MEMO_BRANCHES) do
+    conditions[#conditions + 1] = {
+      key = branch.key,
+      selectable = branch.selectable ~= false,
+      match = branch.match,
+      lines = {
+        nature = branch.lines[1],
+        date = branch.lines[2],
+        characteristic = branch.lines[3],
+        flavor = branch.lines[4],
+        eggWatch = branch.lines[5],
+      },
+      dateTemplate = { segments = branch.template() },
+    }
+  end
   local months = {}
   for month = 1, 12 do
     months[month] = "synMonth" .. string.format("%02d", month)
@@ -235,12 +300,20 @@ local function memoSection()
   end
   return {
     conditions = conditions,
+    locations = {
+      palPark = 55,
+      linkTrade = 4001,
+      linkTrade2 = 4002,
+      ranger = 6001,
+      giftEggOrigins = { 4009, 4010, 4011, 4012, 4013, 4014 },
+    },
     months = months,
     landmarks = {
       wildByLocation = { [7] = "synLandmarkHome" },
-      giftByLocation = { [4001] = "synLandmarkGift" },
+      giftByLocation = { [4001] = "synLandmarkGift", [4004] = "synLandmarkJohto" },
       fallback = "synLandmarkFar",
     },
+    migrationRegions = { heartgold = "synLandmarkJohto", soulsilver = "synLandmarkJohto" },
     characteristics = characteristics,
     flavors = {
       default = "synFlavorBase",
@@ -251,6 +324,111 @@ local function memoSection()
       templates = { "synEggWatchSoon", "synEggWatchClose", "synEggWatchDistant", "synEggWatchFar" },
     },
   }
+end
+
+-- Synthetic semantic window roles mirroring the generated role
+-- vocabulary: the persistent fixed labels plus the per-group main/sub
+-- compositions with the source-pinned per-pane census. Geometry is
+-- synthetic but pane-correct; only the role names mirror the generated
+-- contract.
+local FIXED_ROLE_NAMES = {
+  "infoTab",
+  "infoTitle",
+  "skillsTitle",
+  "trainerMemo",
+  "skillsTab",
+  "performanceTitle",
+  "cancelButton",
+  "dexNoLabel",
+  "nameLabel",
+  "typeLabel",
+  "otLabel",
+  "idNoLabel",
+  "expPointsLabel",
+  "toNextLabel",
+  "shinyLeaf",
+  "hpLabel",
+  "attackLabel",
+  "defenseLabel",
+  "spAttackLabel",
+  "spDefenseLabel",
+  "speedLabel",
+  "abilityLabel",
+  "switchButton",
+  "exitLabel",
+  "movePpHeader",
+  "movePpCurrent",
+  "movePpMax",
+  "moveDetailHeader",
+  "moveDetailNote",
+  "battleMoves",
+  "performanceTab",
+  "ribbonsCountLabel",
+  "performanceStarLabel",
+  "hmWarning",
+}
+
+local GROUP_ROLE_NAMES = {
+  info = {
+    main = { "memoBody", "memoAuxLine" },
+    sub = { "dexNumber", "speciesName", "otName", "idNumber", "expPoints", "expToNext" },
+  },
+  skills = {
+    main = {
+      "hpValue",
+      "attackValue",
+      "defenseValue",
+      "spAttackValue",
+      "spDefenseValue",
+      "speedValue",
+      "abilityName",
+      "abilityDescription",
+    },
+    sub = {
+      "moveRow0",
+      "moveRow1",
+      "moveRow2",
+      "moveRow3",
+      "prospectiveRow",
+      "detailPower",
+      "detailAccuracy",
+      "detailDescription",
+      "moveFooter",
+      "detailCategory",
+    },
+  },
+  performance = {
+    main = { "speed", "power", "skill", "stamina", "jump" },
+    sub = { "ribbonCount", "ribbonName", "ribbonDescription" },
+  },
+}
+
+local function syntheticRole(pane, seed)
+  return {
+    pane = pane,
+    rect = { x = 8, y = 8 + (seed * 12) % 176, width = 48, height = 8 },
+    palette = 13,
+    ink = "ordinary",
+  }
+end
+
+local function syntheticWindows()
+  local fixed = {}
+  for index, name in ipairs(FIXED_ROLE_NAMES) do
+    fixed[name] = syntheticRole(index % 2 == 0 and "main" or "sub", index)
+  end
+  local groups = {}
+  local seed = 0
+  for _, name in ipairs({ "info", "skills", "performance" }) do
+    groups[name] = { main = {}, sub = {} }
+    for _, pane in ipairs({ "main", "sub" }) do
+      for _, role in ipairs(GROUP_ROLE_NAMES[name][pane]) do
+        seed = seed + 1
+        groups[name][pane][role] = syntheticRole(pane, seed)
+      end
+    end
+  end
+  return { fixed = fixed, groups = groups }
 end
 
 function SummaryPresentationFixture.manifest()
@@ -272,13 +450,7 @@ function SummaryPresentationFixture.manifest()
       skills = { main = { map = 4 }, sub = { normal = 5, restricted = 6 } },
       performance = { main = { map = 7, locked = 8 }, sub = { normal = 9, noPerformance = 10 } },
     },
-    windows = {
-      synMainA = { pane = "main", rect = { x = 8, y = 8, width = 240, height = 32 }, palette = 13 },
-      synMainB = { pane = "main", rect = { x = 8, y = 48, width = 240, height = 64 }, palette = 13 },
-      synSubA = { pane = "sub", rect = { x = 8, y = 8, width = 240, height = 32 }, palette = 13 },
-      synSubB = { pane = "sub", rect = { x = 8, y = 48, width = 240, height = 64 }, palette = 13 },
-      synSubC = { pane = "sub", rect = { x = 8, y = 120, width = 240, height = 64 }, palette = 13 },
-    },
+    windows = syntheticWindows(),
     visuals = {},
     sprites = {},
     hitboxes = {

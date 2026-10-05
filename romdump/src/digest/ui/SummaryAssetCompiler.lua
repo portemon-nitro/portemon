@@ -587,28 +587,103 @@ local function compileGroups()
   return groups
 end
 
-local function compileWindows()
-  local windows = {}
-  local subCount, mainCount = 0, 0
-  for _, row in ipairs(SummarySources.windows) do
-    local name = nil
-    if row.bg == "bg4" then
-      subCount = subCount + 1
-      name = string.format("sub%02d", subCount)
-    elseif row.bg == "bg1" then
-      mainCount = mainCount + 1
-      name = string.format("main%02d", mainCount)
-    else
-      sourceError("the window template names no background engine", { bg = row.bg })
-    end
-    assert(name ~= nil, "unnamed window engines fail above")
-    windows[name] = {
-      pane = row.bg == "bg4" and "sub" or "main",
-      rect = { x = row.x * 8, y = row.y * 8, width = row.width * 8, height = row.height * 8 },
-      palette = row.palette,
-    }
+-- Lowers one source window row to its runtime semantic record: the
+-- native pane, the pixel rectangle, the window palette slot, and the
+-- default text ink. Tile units become pixels; the background engine
+-- becomes the pane; the source base-tile allocator never reaches
+-- runtime.
+local function lowerWindowRow(row, name)
+  local pane = nil
+  if row.bg == "bg4" then
+    pane = "sub"
+  elseif row.bg == "bg1" then
+    pane = "main"
+  else
+    sourceError("the window template names no background engine", { bg = row.bg, role = name })
   end
-  return windows
+  assert(pane ~= nil, "unnamed window engines fail above")
+  if type(row.palette) ~= "number" then
+    sourceError("the window template carries no palette slot", { role = name })
+  end
+  return {
+    pane = pane,
+    rect = { x = row.x * 8, y = row.y * 8, width = row.width * 8, height = row.height * 8 },
+    palette = row.palette,
+    ink = "ordinary",
+  }
+end
+
+-- Compiles the persistent fixed windows to semantic role records. Role
+-- names align positionally with the fixed source inventory; a drift
+-- between the role table and the source rows fails instead of
+-- publishing misbound geometry.
+local function compileFixedWindows()
+  local roles = SummarySources.fixedRoles
+  local rows = SummarySources.fixedWindows
+  if #roles ~= #rows then
+    sourceError("the fixed role inventory drifts from its source rows", { roles = #roles, rows = #rows })
+  end
+  local fixed = {}
+  for index, row in ipairs(rows) do
+    local name = roles[index]
+    if type(name) ~= "string" or name == "" then
+      sourceError("the fixed role inventory carries an unnamed role", { position = index })
+    end
+    if fixed[name] ~= nil then
+      sourceError("the fixed role inventory carries a duplicate role", { role = name })
+    end
+    fixed[name] = lowerWindowRow(row, name)
+  end
+  return fixed
+end
+
+-- Compiles the normal-group windows to per-group semantic pane roles.
+-- Each pane role list aligns positionally with that pane's rows of the
+-- matching source inventory; a drift between roles and rows fails
+-- instead of publishing misbound geometry. Runtime never sees source
+-- table positions, only these names.
+local function compileGroupWindows()
+  local groups = {}
+  for _, name in ipairs({ "info", "skills", "performance" }) do
+    local rows = SummarySources.groupWindows[name]
+    local roles = SummarySources.groupRoles[name]
+    if rows == nil or roles == nil then
+      sourceError("the group window inventory covers no group", { group = name })
+    end
+    assert(rows ~= nil and roles ~= nil, "missing group inventories fail above")
+    local main, sub = {}, {}
+    local mainPosition, subPosition = 1, 1
+    for _, row in ipairs(rows) do
+      if row.bg == "bg4" then
+        local role = roles.sub[subPosition]
+        if role == nil then
+          sourceError("the group role inventory drifts from its source rows", { group = name, pane = "sub" })
+        end
+        assert(role ~= nil, "drifting group roles fail above")
+        sub[role] = lowerWindowRow(row, name .. ".sub." .. role)
+        subPosition = subPosition + 1
+      elseif row.bg == "bg1" then
+        local role = roles.main[mainPosition]
+        if role == nil then
+          sourceError("the group role inventory drifts from its source rows", { group = name, pane = "main" })
+        end
+        assert(role ~= nil, "drifting group roles fail above")
+        main[role] = lowerWindowRow(row, name .. ".main." .. role)
+        mainPosition = mainPosition + 1
+      else
+        sourceError("the window template names no background engine", { bg = row.bg, group = name })
+      end
+    end
+    if mainPosition ~= #roles.main + 1 or subPosition ~= #roles.sub + 1 then
+      sourceError("the group role inventory drifts from its source rows", { group = name })
+    end
+    groups[name] = { main = main, sub = sub }
+  end
+  return groups
+end
+
+local function compileWindows()
+  return { fixed = compileFixedWindows(), groups = compileGroupWindows() }
 end
 
 -- Resolves the producer window-text role slots to RGBA role tables while
@@ -649,11 +724,25 @@ local function compileTextRoles(palette, windows)
     end
     roles["slot" .. slot] = roles[ink]
   end
-  for _, window in pairs(windows) do
+  local function checkWindow(window, what)
     if roles["slot" .. window.palette] == nil then
       sourceError("the summary window palette slot resolves through no text role", {
+        role = what,
         palette = window.palette,
       })
+    end
+    if roles[window.ink] == nil then
+      sourceError("the summary window ink resolves through no text role", { role = what, ink = window.ink })
+    end
+  end
+  for name, window in pairs(assert(windows.fixed, "the semantic layout carries its fixed roles")) do
+    checkWindow(window, "fixed." .. tostring(name))
+  end
+  for group, panes in pairs(assert(windows.groups, "the semantic layout carries its group roles")) do
+    for pane, roleset in pairs(panes) do
+      for name, window in pairs(roleset) do
+        checkWindow(window, group .. "." .. pane .. "." .. tostring(name))
+      end
     end
   end
   return roles
@@ -1167,99 +1256,85 @@ local function templateNameByMsgId(count)
   return names
 end
 
--- Substitution segment kinds the branch headers skip: the consumer binds
--- slot values through its own date block, so a header label carries only
--- the template's static text runs verbatim. Color controls are skipped for
--- the same reason; the full runs stay available under text.templates.
-local HEADER_SKIPPED_SEGMENTS = {
-  species = true,
-  nickname = true,
-  otName = true,
-  landmark = true,
-  ability = true,
-  move = true,
-  item = true,
-  month = true,
-  number = true,
-  idNumber = true,
-  expToNext = true,
-  expPoints = true,
-  color = true,
+-- Lowered substitution kinds each memo semantic binding arrives through:
+-- month controls bind month bindings, number controls bind year, day,
+-- and level bindings, and landmark controls bind location bindings. A
+-- lowered kind that disagrees with its semantic is malformed producer
+-- input, never a skipped operation.
+local MEMO_BINDING_KINDS = {
+  metYear = "number",
+  metMonth = "month",
+  metDay = "number",
+  metLevel = "number",
+  metLocation = "landmark",
+  eggYear = "number",
+  eggMonth = "month",
+  eggDay = "number",
+  eggLocation = "landmark",
+  migrationRegion = "landmark",
 }
 
--- Renders one compiled template as its branch-header label: static text
--- preserved exactly, plain line breaks kept, bound slots and colors left
--- to the template and the consumer. Anything else is malformed input,
--- never a silently dropped operation.
----@param name string
+-- Normalizes one lowered memo template into runtime semantic segments:
+-- literal text, line breaks, and color operations transfer verbatim
+-- while every placeholder field becomes its semantic binding through the
+-- producer field table. No numeric message-format field survives for
+-- runtime to decode. Templates selected by a migration condition bind
+-- their location slot to the origin-game region instead of a landmark.
+---@param key string
+---@param msgId integer
 ---@param template table<string, unknown>
----@return string
-local function headerText(name, template)
-  local segments = assert(template.segments, "memo headers carry segments")
-  assert(type(segments) == "table", "memo header segments are an array")
-  local parts = {}
+---@return table<string, unknown>[]
+local function normalizeMemoTemplate(key, msgId, template)
+  local segments = assert(template.segments, "memo templates carry segments")
+  assert(type(segments) == "table", "memo template segments are an array")
+  local normalized = {}
   for _, segment in ipairs(segments) do
-    assert(type(segment) == "table", "memo header segments are records")
+    assert(type(segment) == "table", "memo template segments are records")
     if segment.kind == "text" then
-      assert(type(segment.value) == "string", "memo header text carries its wording")
-      parts[#parts + 1] = segment.value
+      if type(segment.value) ~= "string" then
+        sourceError("the memo template carries text without wording", { key = key })
+      end
+      normalized[#normalized + 1] = { kind = "text", value = segment.value }
     elseif segment.kind == "lineBreak" then
-      if segment.flow ~= nil then
-        sourceError("the memo header carries a paged break", { name = name, flow = segment.flow })
+      if segment.flow == nil then
+        normalized[#normalized + 1] = { kind = "lineBreak" }
+      elseif segment.flow == "prompt" or segment.flow == "page" then
+        normalized[#normalized + 1] = { kind = "lineBreak", flow = segment.flow }
+      else
+        sourceError("the memo template carries a malformed break", { key = key, flow = segment.flow })
       end
-      parts[#parts + 1] = "\n"
-    elseif HEADER_SKIPPED_SEGMENTS[segment.kind] == true then
-      -- Bound through the template or the consumer date block; no label text.
+    elseif segment.kind == "color" then
+      if type(segment.color) ~= "number" then
+        sourceError("the memo template carries a color without its slot", { key = key })
+      end
+      normalized[#normalized + 1] = { kind = "color", color = segment.color }
     else
-      sourceError("the memo header carries an unsupported segment", { name = name, kind = segment.kind })
-    end
-  end
-  local joined = table.concat(parts)
-  if joined == "" then
-    sourceError("the memo header carries no display text", { name = name })
-  end
-  return joined
-end
-
--- Publishes a plain header label for every memo condition template plus
--- the flavor and egg-watch templates, which likewise carry color or break
--- controls the label shape cannot hold. Messages that already lower to
--- plain labels need no header. Labels are exact static runs, never
--- paraphrases; slot values resolve through the templates.
----@param summaryText { labels: table<string, string>, templates: table<string, unknown>, count: integer }
----@return table<string, string>
-local function compileHeaderLabels(summaryText)
-  local namesByMsg = templateNameByMsgId(summaryText.count)
-  local wanted = {}
-  local function want(msgId)
-    local name = namesByMsg[msgId]
-    if name == nil then
-      sourceError("the memo header selects no named template", { index = msgId })
-    end
-    assert(name ~= nil, "missing header templates fail above")
-    wanted[#wanted + 1] = name
-  end
-  for _, source in ipairs(SummarySources.memoConditions) do
-    want(source.template)
-  end
-  for _, msgId in ipairs(SummarySources.memoFlavors.byFlavor) do
-    want(msgId)
-  end
-  for _, msgId in ipairs(SummarySources.memoEggWatch.templates) do
-    want(msgId)
-  end
-  local headers = {}
-  for _, name in ipairs(wanted) do
-    if summaryText.labels[name] == nil and headers[name] == nil then
-      local template = summaryText.templates[name]
-      if template == nil then
-        sourceError("the memo header has no compiled template", { name = name })
+      local semantic = SummarySources.memoFieldSemantics[segment.field]
+      if semantic == nil then
+        sourceError("the memo template carries an unmapped placeholder field", {
+          key = key,
+          kind = segment.kind,
+          field = segment.field,
+        })
       end
-      assert(template ~= nil, "missing header templates fail above")
-      headers[name] = headerText(name, template)
+      assert(semantic ~= nil, "unmapped memo placeholders fail above")
+      if semantic == "metLocation" and SummarySources.memoMigrationTemplates[msgId] == true then
+        semantic = "migrationRegion"
+      end
+      if segment.kind ~= MEMO_BINDING_KINDS[semantic] then
+        sourceError("the memo placeholder disagrees with its semantic binding", {
+          key = key,
+          kind = segment.kind,
+          field = segment.field,
+        })
+      end
+      normalized[#normalized + 1] = { kind = semantic }
     end
   end
-  return headers
+  if #normalized == 0 then
+    sourceError("the memo template carries no segments", { key = key })
+  end
+  return normalized
 end
 
 -- Resolves packed locations to their landmark labels the way the source
@@ -1294,6 +1369,30 @@ local function compileLandmarkMaps(landmarks)
   return { wildByLocation = wildByLocation, giftByLocation = giftByLocation, fallback = fallback }
 end
 
+-- Resolves the migrated-region wording per supported origin game through
+-- the generated gift landmark bank: both supported games are Johto-native,
+-- so both bind the source Johto region entry. The numeric gift packing
+-- stops here; runtime reads the game-keyed mapping only.
+---@param landmarkMaps table<string, unknown>
+---@return table<string, string>
+local function compileMigrationRegions(landmarkMaps)
+  local giftByLocation = assert(landmarkMaps.giftByLocation, "the landmark closure carries gift locations")
+  assert(type(giftByLocation) == "table", "gift locations are a record")
+  local johto = SummarySources.memoLocations.johto
+  local key = giftByLocation[johto]
+  if type(key) ~= "string" or key == "" then
+    sourceError("the gift bank carries no Johto migration region", { location = johto })
+  end
+  assert(type(key) == "string" and key ~= "", "missing migration regions fail above")
+  return { heartgold = key, soulsilver = key }
+end
+
+-- Compiles the ordered memo selection rules: one entry per source
+-- condition in source evaluation order, each carrying its semantic
+-- key, its selectability, its normalized match predicates, its line
+-- placement, and its normalized date template. Closure-only entries
+-- travel with the rules for template inheritance but never select.
+-- Location classes arrive normalized instead of as packed source ids.
 local function compileMemo(summaryText, months, landmarks)
   local namesByMsg = templateNameByMsgId(summaryText.count)
   local compiled = {}
@@ -1303,13 +1402,33 @@ local function compileMemo(summaryText, months, landmarks)
       sourceError("the memo condition selects no named template", { key = source.key, index = source.template })
     end
     assert(name ~= nil, "missing memo templates fail above")
-    compiled[source.key] = {
-      template = name,
-      nature = source.nature,
-      date = source.date,
-      characteristic = source.characteristic,
-      flavor = source.flavor,
-      eggWatch = source.eggWatch,
+    local lowered = summaryText.templates[name]
+    if lowered == nil then
+      sourceError("the memo condition template lowers to no template record", { key = source.key, name = name })
+    end
+    assert(lowered ~= nil, "missing memo template records fail above")
+    local match = { isEgg = source.egg, fateful = source.fateful }
+    if source.mine ~= nil then
+      match.mine = source.mine
+    end
+    if source.eggLocation ~= nil then
+      match.eggLocation = source.eggLocation
+    end
+    if source.metLocation ~= nil then
+      match.metLocation = source.metLocation
+    end
+    compiled[#compiled + 1] = {
+      key = source.key,
+      selectable = source.closure ~= true,
+      match = match,
+      lines = {
+        nature = source.nature,
+        date = source.date,
+        characteristic = source.characteristic,
+        flavor = source.flavor,
+        eggWatch = source.eggWatch,
+      },
+      dateTemplate = { segments = normalizeMemoTemplate(source.key, source.template, lowered) },
     }
   end
   local statNames = { "Hp", "Attack", "Defense", "Speed", "SpAttack", "SpDefense" }
@@ -1328,10 +1447,23 @@ local function compileMemo(summaryText, months, landmarks)
   for index in ipairs(months) do
     monthNames[index] = "month" .. string.format("%02d", index)
   end
+  local giftEggOrigins = {}
+  for _, origin in ipairs(SummarySources.memoGiftEggOrigins) do
+    giftEggOrigins[#giftEggOrigins + 1] = origin
+  end
+  local landmarkMaps = compileLandmarkMaps(landmarks)
   return {
     conditions = compiled,
+    locations = {
+      palPark = SummarySources.memoLocations.palPark,
+      linkTrade = SummarySources.memoLocations.linkTrade,
+      linkTrade2 = SummarySources.memoLocations.linkTrade2,
+      ranger = SummarySources.memoLocations.ranger,
+      giftEggOrigins = giftEggOrigins,
+    },
     months = monthNames,
-    landmarks = compileLandmarkMaps(landmarks),
+    landmarks = landmarkMaps,
+    migrationRegions = compileMigrationRegions(landmarkMaps),
     characteristics = characteristics,
     flavors = flavors,
     eggWatch = eggWatch,
@@ -1404,9 +1536,6 @@ local function _compile(romFs, catalog, portraitManifest)
     for position, value in ipairs(records.list) do
       labels[records.names[position]] = value
     end
-  end
-  for name, value in pairs(compileHeaderLabels(summaryText)) do
-    labels[name] = value
   end
   local text = { labels = labels, templates = summaryText.templates, roles = compileTextRoles(palette, windows) }
   local palettes = { banks = {} }

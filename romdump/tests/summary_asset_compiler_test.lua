@@ -5,12 +5,13 @@
 -- commercial payloads appear.
 
 local Assert = require("tests.support.Assert")
+local Errors = require("libs.errors.src.Errors")
 local DerivedAssetContract = require("libs.assets.src.DerivedAssetContract")
 
 local T = {}
 
 local SUMMARY_FORMAT = "g4-summary-cache-v1"
-local SUMMARY_SCHEMA = "g4-summary-manifest-v1"
+local SUMMARY_SCHEMA = "g4-summary-manifest-v2"
 
 local function requireSources()
   local ok, sources = pcall(require, "romdump.src.config.SummarySources")
@@ -249,12 +250,68 @@ local function finitePicture()
     terminal = {},
   }
 end
+
+-- Source-pinned per-pane role census for the synthetic semantic layout:
+-- info carries 2 main and 6 sub roles, skills 8 and 10, performance 5
+-- and 3. Role geometry is synthetic but pane-correct; structural detail
+-- beyond the closed record shapes belongs to the compiled-output
+-- conformance coverage.
+local GROUP_ROLE_CENSUS = { info = { main = 2, sub = 6 }, skills = { main = 8, sub = 10 }, performance = { main = 5, sub = 3 } }
+
+local function semanticRole(pane, seed)
+  return {
+    pane = pane,
+    rect = { x = 8, y = 8 + (seed * 16) % 176, width = 64, height = 8 },
+    palette = 13,
+    ink = "ordinary",
+  }
+end
+
+local function semanticWindows()
+  local fixed = { synHeader = semanticRole("sub", 0) }
+  local groups = {}
+  for group, census in pairs(GROUP_ROLE_CENSUS) do
+    groups[group] = { main = {}, sub = {} }
+    for pane, count in pairs(census) do
+      for index = 1, count do
+        groups[group][pane]["syn" .. group .. pane .. index] = semanticRole(pane, index)
+      end
+    end
+  end
+  return { fixed = fixed, groups = groups }
+end
+
+local function semanticMemoBranch()
+  return {
+    key = "synBranch",
+    selectable = true,
+    match = { isEgg = false, fateful = false, mine = true, metLocation = "wild" },
+    lines = { nature = 1, date = 2, characteristic = 6, flavor = 7, eggWatch = 0 },
+    dateTemplate = {
+      segments = {
+        { kind = "text", value = "SYN" },
+        { kind = "metMonth" },
+        { kind = "lineBreak" },
+        { kind = "metLocation" },
+      },
+    },
+  }
+end
+
+local function semanticMemo()
+  return {
+    conditions = { semanticMemoBranch() },
+    locations = { palPark = 55, linkTrade = 4001, linkTrade2 = 4002, ranger = 6001, giftEggOrigins = { 4009 } },
+    migrationRegions = { heartgold = "synRegion", soulsilver = "synRegion" },
+  }
+end
+
 local function skeletonManifest()
   return {
     schema = SUMMARY_SCHEMA,
     paneSize = { width = 256, height = 192 },
     groups = { info = groupShell(), skills = groupShell(), performance = groupShell() },
-    windows = {},
+    windows = semanticWindows(),
     visuals = {},
     sprites = {},
     hitboxes = {},
@@ -265,7 +322,7 @@ local function skeletonManifest()
     ribbons = {},
     performance = {},
     dexNumbers = {},
-    memo = {},
+    memo = semanticMemo(),
     sounds = {},
     transitions = {},
   }
@@ -376,6 +433,194 @@ function T.schema_accepts_the_calibrated_absent_sections()
   manifest.bars = { hp = validBar(48), exp = validBar(56) }
   manifest.pictures = { exemplar = finitePicture() }
   Assert.isTrue(pcall(schema.assertManifest, manifest), "the calibrated empty sections must validate")
+end
+
+-- Minimal otherwise-valid envelope for layout/memo rejection tests.
+-- Mirrors the calibrated-absence recipe so each rejection attributes to
+-- the field under test rather than to a missing required section.
+local function contractReadyManifest()
+  local manifest = skeletonManifest()
+  manifest.hitboxes = { touch = { exitChrome = { top = 165, bottom = 191, left = 189, right = 250 } } }
+  manifest.bars = { hp = validBar(48), exp = validBar(56) }
+  manifest.pictures = { exemplar = finitePicture() }
+  return manifest
+end
+
+local function ordinalWindow(pane, x, y, width, height)
+  return { pane = pane, rect = { x = x, y = y, width = width, height = height }, palette = 13 }
+end
+
+-- Semantic window roles replace ordinal slots: a manifest that still
+-- addresses windows as numbered main/sub positions must not validate,
+-- since no consumer may infer a window's purpose from its array position.
+function T.schema_rejects_ordinal_window_slots()
+  local schema = requireSchema()
+  local manifest = contractReadyManifest()
+  manifest.windows = {
+    sub01 = ordinalWindow("sub", 160, 8, 88, 16),
+    main01 = ordinalWindow("main", 160, 8, 88, 16),
+  }
+  local ok = pcall(schema.assertManifest, manifest)
+  Assert.isTrue(ok == false, "numbered window slots must not validate once semantic roles own the layout")
+end
+
+-- Memo selection is first-match over an ordered rule list, so an
+-- unordered map of branches without selectability must not validate.
+function T.schema_rejects_unordered_memo_branches()
+  local schema = requireSchema()
+  local manifest = contractReadyManifest()
+  manifest.memo = {
+    conditions = {
+      wildEncounter = {
+        template = "synMemoWild",
+        nature = 1,
+        date = 2,
+        characteristic = 6,
+        flavor = 7,
+        eggWatch = 0,
+      },
+    },
+  }
+  local ok = pcall(schema.assertManifest, manifest)
+  Assert.isTrue(ok == false, "unordered memo branches must not validate once selection is first-match")
+end
+
+-- Memo templates carry normalized semantic bindings: a segment that
+-- still holds a raw message-format placeholder field must not
+-- validate, since source buffer layout never reaches runtime.
+function T.schema_rejects_raw_placeholder_fields_in_memo_templates()
+  local schema = requireSchema()
+  local manifest = contractReadyManifest()
+  manifest.memo.conditions[1].dateTemplate.segments = {
+    { kind = "landmark", field = 4 },
+  }
+  local ok, err = pcall(schema.assertManifest, manifest)
+  Assert.isTrue(ok == false, "a raw placeholder field must not validate inside a memo template")
+  Assert.isTrue(
+    Errors.format(err):find("raw placeholder field", 1, true) ~= nil,
+    "the rejection names the raw placeholder field: " .. tostring(Errors.format(err))
+  )
+end
+
+-- Substitution segments outside the memo vocabulary must not validate,
+-- even when the kind exists elsewhere: bank lowering roles such as
+-- species or nickname never appear inside memo date templates.
+function T.schema_rejects_unknown_memo_segment_kinds()
+  local schema = requireSchema()
+  local manifest = contractReadyManifest()
+  manifest.memo.conditions[1].dateTemplate.segments = {
+    { kind = "nickname" },
+  }
+  local ok, err = pcall(schema.assertManifest, manifest)
+  Assert.isTrue(ok == false, "a foreign substitution kind must not validate inside a memo template")
+  Assert.isTrue(
+    Errors.format(err):find("memo substitution vocabulary", 1, true) ~= nil,
+    "the rejection names the memo substitution vocabulary: " .. tostring(err)
+  )
+end
+
+-- Group roles live under their native pane: a role filed under the main
+-- composition that claims the sub pane must not validate.
+function T.schema_rejects_group_roles_on_the_wrong_pane()
+  local schema = requireSchema()
+  local manifest = contractReadyManifest()
+  manifest.windows.groups.skills.main.synskillsmain1.pane = "sub"
+  local ok, err = pcall(schema.assertManifest, manifest)
+  Assert.isTrue(ok == false, "a group role on the wrong pane must not validate")
+  Assert.isTrue(
+    Errors.format(err):find("must match its group pane", 1, true) ~= nil,
+    "the rejection names the pane mismatch: " .. tostring(err)
+  )
+end
+
+-- Role geometry stays inside the canonical pane: a role rectangle that
+-- escapes the 256x192 surface must not validate.
+function T.schema_rejects_roles_escaping_the_native_pane()
+  local schema = requireSchema()
+  local manifest = contractReadyManifest()
+  manifest.windows.fixed.synHeader.rect = { x = 200, y = 8, width = 64, height = 8 }
+  local ok, err = pcall(schema.assertManifest, manifest)
+  Assert.isTrue(ok == false, "a role escaping the native pane must not validate")
+  Assert.isTrue(
+    Errors.format(err):find("escapes the canonical pane", 1, true) ~= nil,
+    "the rejection names the pane escape: " .. tostring(err)
+  )
+end
+
+-- The migrated-region wording is bound per supported origin game by the
+-- producer: a manifest without the game-keyed mapping, or with an empty
+-- game entry, must not validate, so runtime can never resolve gift-bank
+-- packing itself.
+function T.schema_rejects_a_missing_migration_region_mapping()
+  local schema = requireSchema()
+  local manifest = contractReadyManifest()
+  manifest.memo.migrationRegions = nil
+  local ok = pcall(schema.assertManifest, manifest)
+  Assert.isTrue(ok == false, "a manifest without migration regions must not validate")
+  local empty = contractReadyManifest()
+  empty.memo.migrationRegions.heartgold = ""
+  local emptyOk = pcall(schema.assertManifest, empty)
+  Assert.isTrue(emptyOk == false, "an empty migration region entry must not validate")
+end
+
+-- The synthetic presentation data mirrors the generated envelope: it
+-- tracks the current schema identity and carries structured memo
+-- templates, so unit tests cannot pass with label-only strings where
+-- template records belong.
+function T.synthetic_presentation_data_mirrors_the_generated_envelope()
+  local Fixture = require("tests.support.SummaryPresentationFixture")
+  Assert.equal(Fixture.SCHEMA, "g4-summary-manifest-v2", "the synthetic data tracks the generated schema")
+  local manifest = Fixture.manifest()
+  Assert.notNil(manifest, "the synthetic data builds a manifest")
+  Assert.equal(manifest.schema, Fixture.SCHEMA, "the synthetic manifest carries the tracked schema")
+  local conditions = assert(
+    manifest.memo and manifest.memo.conditions,
+    "the synthetic memo carries its ordered branches"
+  )
+  Assert.isTrue(conditions[1] ~= nil, "the synthetic memo branches keep first-match order")
+  local firstTemplate = assert(conditions[1].dateTemplate, "the first synthetic branch carries its date template")
+  Assert.isTrue(
+    type(firstTemplate.segments) == "table" and #firstTemplate.segments > 0,
+    "the synthetic memo template keeps structured segments"
+  )
+  local schema = requireSchema()
+  local ok, err = pcall(schema.assertManifest, manifest)
+  Assert.isTrue(ok, "the synthetic manifest passes the consumer schema: " .. tostring(err))
+end
+
+-- Memo branches bind structured date templates, never plain label
+-- strings: a branch that references its wording through a label-only
+-- `template` name instead of carrying its own substitution segments
+-- must not validate, so the header-label workaround cannot return.
+function T.synthetic_memo_branches_carry_no_label_only_template_references()
+  local Fixture = require("tests.support.SummaryPresentationFixture")
+  local manifest = Fixture.manifest()
+  local conditions = assert(
+    manifest.memo and manifest.memo.conditions,
+    "the synthetic memo carries its ordered branches"
+  )
+  Assert.isTrue(conditions[1] ~= nil, "the synthetic memo branches keep first-match order")
+  for index, branch in ipairs(conditions) do
+    Assert.isNil(
+      branch.template,
+      "synthetic branch " .. index .. " carries no label-only template reference"
+    )
+    local template = assert(branch.dateTemplate, "synthetic branch " .. index .. " carries its date template")
+    Assert.isTrue(
+      type(template.segments) == "table" and #template.segments > 0,
+      "synthetic branch " .. index .. " keeps structured substitution segments"
+    )
+  end
+end
+
+-- The semantic envelope itself validates: named fixed and group roles
+-- with pane-correct geometry plus ordered memo branches with
+-- substitution segments pass the consumer schema.
+function T.schema_accepts_a_semantic_window_and_memo_envelope()
+  local schema = requireSchema()
+  local manifest = contractReadyManifest()
+  local ok, err = pcall(schema.assertManifest, manifest)
+  Assert.isTrue(ok, "the semantic window and memo envelope passes the consumer schema: " .. tostring(err))
 end
 
 return { tests = T }

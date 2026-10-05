@@ -16,7 +16,7 @@ local RomSuite = require("tests.rom.support.RomSuite")
 
 local T = {}
 
-local SUMMARY_SCHEMA = "g4-summary-manifest-v1"
+local SUMMARY_SCHEMA = "g4-summary-manifest-v2"
 local SUMMARY_ASSET_DIR = "assets/generated/summary/"
 local MOTION_ARCHIVE_PATH = "a/0/9/0"
 
@@ -137,7 +137,8 @@ end
 
 -- The three native groups keep their physical assignment: every group
 -- carries both a main-pane and a sub-pane variant, info keeps its sub
--- variant, and every source window resolves to a named native pane.
+-- variant, and every semantic role resolves to a named native pane
+-- through the fixed and group role records.
 function T.groups_keep_the_native_main_sub_assignment(romFs, versionId)
   local bundle = bundleFor(romFs, versionId)
   local groups = assert(bundle.manifest.groups, "the compiled manifest carries its groups")
@@ -150,14 +151,27 @@ function T.groups_keep_the_native_main_sub_assignment(romFs, versionId)
   local windows = assert(bundle.manifest.windows, "the compiled manifest carries its windows")
   local panes = {}
   local count = 0
-  for key, window in pairs(windows) do
-    Assert.isTrue(window.pane == "main" or window.pane == "sub", "window " .. tostring(key) .. " names a native pane")
-    panes[window.pane] = true
+  local function checkRole(role, key)
+    Assert.isTrue(role.pane == "main" or role.pane == "sub", "role " .. tostring(key) .. " names a native pane")
+    panes[role.pane] = true
     count = count + 1
   end
-  Assert.isTrue(count > 0, "the compiled manifest carries source windows")
-  Assert.isTrue(panes.main == true, "main-pane windows resolve")
-  Assert.isTrue(panes.sub == true, "sub-pane windows resolve")
+  for key, role in pairs(assert(windows.fixed, "the fixed roles compile")) do
+    checkRole(role, "fixed." .. tostring(key))
+  end
+  for _, name in ipairs({ "info", "skills", "performance" }) do
+    local roles = assert(windows.groups, "the group roles compile")[name]
+    Assert.notNil(roles, "the " .. name .. " roles resolve")
+    for key, role in pairs(assert(roles.main, "the " .. name .. " main roles resolve")) do
+      checkRole(role, name .. ".main." .. tostring(key))
+    end
+    for key, role in pairs(assert(roles.sub, "the " .. name .. " sub roles resolve")) do
+      checkRole(role, name .. ".sub." .. tostring(key))
+    end
+  end
+  Assert.isTrue(count > 0, "the compiled manifest carries semantic window roles")
+  Assert.isTrue(panes.main == true, "main-pane roles resolve")
+  Assert.isTrue(panes.sub == true, "sub-pane roles resolve")
 end
 
 -- Source identities stop at the compiler boundary: text templates and the
@@ -391,12 +405,24 @@ function T.window_palette_slots_resolve_through_text_roles(romFs, versionId)
   local manifest = assert(bundle.manifest, "compilation publishes a manifest")
   local windows = assert(manifest.windows, "the compiled manifest carries its windows")
   local slots = {}
-  for name, window in pairs(windows) do
+  local function checkRole(name, window)
     Assert.isTrue(
       type(window.palette) == "number",
-      "window " .. tostring(name) .. " carries its numeric palette slot"
+      "role " .. tostring(name) .. " carries its numeric palette slot"
     )
     slots[window.palette] = true
+  end
+  for name, window in pairs(assert(windows.fixed, "the fixed roles compile")) do
+    checkRole("fixed." .. tostring(name), window)
+  end
+  for _, group in ipairs({ "info", "skills", "performance" }) do
+    local roles = assert(windows.groups, "the group roles compile")[group]
+    for name, window in pairs(assert(roles.main, "the " .. group .. " main roles resolve")) do
+      checkRole(group .. ".main." .. tostring(name), window)
+    end
+    for name, window in pairs(assert(roles.sub, "the " .. group .. " sub roles resolve")) do
+      checkRole(group .. ".sub." .. tostring(name), window)
+    end
   end
   local text = assert(manifest.text, "the compiled manifest carries its lowered text")
   local roles = assert(text.roles, "the compiled text carries its palette roles")
@@ -586,6 +612,271 @@ function T.absent_sections_carry_the_documented_closed_excuse(romFs, versionId)
   Assert.isTrue(next(sounds) == nil, "no sound role compiles without a resolving consumer")
   local transitions = assert(bundle.manifest.transitions, "the manifest keeps its closed transitions key")
   Assert.isTrue(next(transitions) == nil, "no transition track compiles without a resolving consumer")
+end
+
+-- The compiled windows keep source geometry under semantic ownership:
+-- persistent fixed roles plus per-group main/sub roles whose pixel
+-- rects are the pinned tile rows scaled by 8. No ordinal top-level
+-- contract survives: consumers never infer a role from a position.
+local EXPECTED_GROUP_RECTS = {
+  { pane = "sub", x = 96, y = 8, width = 24, height = 16 },
+  { pane = "sub", x = 72, y = 24, width = 72, height = 16 },
+  { pane = "sub", x = 72, y = 56, width = 72, height = 16 },
+  { pane = "sub", x = 88, y = 72, width = 40, height = 16 },
+  { pane = "sub", x = 80, y = 104, width = 56, height = 16 },
+  { pane = "sub", x = 88, y = 136, width = 48, height = 16 },
+  { pane = "main", x = 0, y = 24, width = 144, height = 144 },
+  { pane = "main", x = 8, y = 176, width = 88, height = 16 },
+  { pane = "main", x = 88, y = 24, width = 56, height = 16 },
+  { pane = "main", x = 104, y = 48, width = 24, height = 16 },
+  { pane = "main", x = 104, y = 64, width = 24, height = 16 },
+  { pane = "main", x = 104, y = 80, width = 24, height = 16 },
+  { pane = "main", x = 104, y = 96, width = 24, height = 16 },
+  { pane = "main", x = 104, y = 112, width = 24, height = 16 },
+  { pane = "main", x = 72, y = 136, width = 72, height = 16 },
+  { pane = "main", x = 0, y = 152, width = 152, height = 32 },
+  { pane = "sub", x = 40, y = 8, width = 88, height = 32 },
+  { pane = "sub", x = 40, y = 40, width = 88, height = 32 },
+  { pane = "sub", x = 40, y = 72, width = 88, height = 32 },
+  { pane = "sub", x = 40, y = 104, width = 88, height = 32 },
+  { pane = "sub", x = 40, y = 152, width = 88, height = 32 },
+  { pane = "sub", x = 216, y = 48, width = 24, height = 16 },
+  { pane = "sub", x = 216, y = 64, width = 24, height = 16 },
+  { pane = "sub", x = 136, y = 80, width = 120, height = 80 },
+  { pane = "sub", x = 8, y = 160, width = 120, height = 16 },
+  { pane = "sub", x = 8, y = 136, width = 80, height = 16 },
+  { pane = "sub", x = 104, y = 136, width = 40, height = 16 },
+  { pane = "sub", x = 8, y = 128, width = 168, height = 16 },
+  { pane = "sub", x = 8, y = 144, width = 240, height = 32 },
+  { pane = "main", x = 8, y = 24, width = 80, height = 16 },
+  { pane = "main", x = 8, y = 56, width = 80, height = 16 },
+  { pane = "main", x = 8, y = 88, width = 80, height = 16 },
+  { pane = "main", x = 8, y = 120, width = 80, height = 16 },
+  { pane = "main", x = 8, y = 152, width = 80, height = 16 },
+}
+
+local function rectKey(pane, rect)
+  return pane .. ":" .. rect.x .. "," .. rect.y .. "," .. rect.width .. "x" .. rect.height
+end
+
+local function collectRoleRects(roles, out, what)
+  for name, role in pairs(roles) do
+    local label = what .. "." .. tostring(name)
+    Assert.isTrue(type(role) == "table", label .. " is a semantic role record")
+    Assert.isTrue(role.pane == "main" or role.pane == "sub", label .. " names a native pane")
+    Assert.isTrue(type(role.rect) == "table", label .. " carries its geometry")
+    for _, axis in ipairs({ "x", "y", "width", "height" }) do
+      Assert.isTrue(
+        type(role.rect[axis]) == "number" and role.rect[axis] % 1 == 0 and role.rect[axis] >= 0,
+        label .. " keeps integral geometry"
+      )
+    end
+    Assert.isTrue(
+      role.rect.x + role.rect.width <= 256 and role.rect.y + role.rect.height <= 192,
+      label .. " fits the native pane"
+    )
+    Assert.isTrue(type(role.palette) == "number", label .. " carries its palette slot")
+    out[#out + 1] = rectKey(role.pane, role.rect)
+  end
+end
+
+function T.compiled_windows_carry_semantic_fixed_and_group_roles(romFs, versionId)
+  local bundle = bundleFor(romFs, versionId)
+  local windows = assert(bundle.manifest.windows, "the compiled manifest carries its windows")
+  Assert.keySet(windows, "fixed,groups", "windows expose fixed roles and group roles only")
+  local fixedCount = 0
+  local fixedRects = {}
+  collectRoleRects(assert(windows.fixed, "the fixed roles compile"), fixedRects, "fixed")
+  for _ in pairs(windows.fixed) do
+    fixedCount = fixedCount + 1
+  end
+  Assert.isTrue(fixedCount >= 10, "the fixed roles cover the persistent header and label windows")
+  local groups = assert(windows.groups, "the group roles compile")
+  Assert.keySet(groups, "info,performance,skills", "exactly the three native groups compile roles")
+  local actual = {}
+  for _, name in ipairs({ "info", "skills", "performance" }) do
+    local group = assert(groups[name], "the " .. name .. " roles resolve")
+    Assert.isTrue(type(group.main) == "table", "the " .. name .. " main roles resolve")
+    Assert.isTrue(type(group.sub) == "table", "the " .. name .. " sub roles resolve")
+    collectRoleRects(group.main, actual, name .. ".main")
+    collectRoleRects(group.sub, actual, name .. ".sub")
+  end
+  Assert.equal(#actual, #EXPECTED_GROUP_RECTS, "the groups keep 8/18/8 source windows")
+  local expected = {}
+  for _, rect in ipairs(EXPECTED_GROUP_RECTS) do
+    expected[#expected + 1] = rectKey(rect.pane, rect)
+  end
+  table.sort(actual)
+  table.sort(expected)
+  Assert.deepEqual(actual, expected, "group geometry matches the pinned source rows")
+end
+
+-- Memo branches evaluate first-match in source condition order. The
+-- traded gift-location closure entry never selects on its own, and
+-- location classes arrive normalized instead of as packed source ids.
+local EXPECTED_MEMO_ORDER = {
+  "migrated",
+  "fatefulEncounter",
+  "fatefulEncounterTraded",
+  "wildGift",
+  "wildEncounter",
+  "wildEncounterTraded",
+  "fatefulEggHatchedGift",
+  "fatefulEggHatchedGiftTraded",
+  "fatefulEggHatchedArrived",
+  "fatefulEggHatchedArrivedTraded",
+  "fatefulEggHatched",
+  "fatefulEggHatchedTraded",
+  "eggHatchedGift",
+  "eggHatchedGiftTraded",
+  "eggHatched",
+  "eggHatchedTraded",
+  "fatefulEggArrived",
+  "fatefulEgg",
+  "fatefulEggTraded",
+  "egg",
+  "eggTraded",
+}
+
+function T.compiled_memo_branches_keep_the_source_evaluation_order(romFs, versionId)
+  local bundle = bundleFor(romFs, versionId)
+  local memo = assert(bundle.manifest.memo, "the compiled manifest carries its memo records")
+  local conditions = assert(memo.conditions, "the memo branches compile")
+  Assert.isTrue(conditions[1] ~= nil, "the memo branches keep first-match order")
+  local keys = {}
+  for index, entry in ipairs(conditions) do
+    local key = assert(entry.key, "branch " .. index .. " names its semantic key")
+    keys[#keys + 1] = key
+    if key == "wildGiftTraded" then
+      Assert.equal(entry.selectable, false, "the traded gift closure never selects on its own")
+    else
+      Assert.equal(entry.selectable, true, "branch " .. key .. " participates in selection")
+    end
+    Assert.isTrue(type(entry.match) == "table", "branch " .. key .. " carries its match predicates")
+    Assert.isTrue(type(entry.lines) == "table", "branch " .. key .. " carries its line placement")
+    Assert.isTrue(
+      type(entry.dateTemplate) == "table", "branch " .. key .. " carries its date template"
+    )
+  end
+  local selectable = {}
+  for _, key in ipairs(keys) do
+    if key ~= "wildGiftTraded" then
+      selectable[#selectable + 1] = key
+    end
+  end
+  Assert.deepEqual(selectable, EXPECTED_MEMO_ORDER, "selectable branches mirror the source condition order")
+  local locations = assert(memo.locations, "the memo location classes compile")
+  for _, field in ipairs({ "palPark", "linkTrade", "linkTrade2", "ranger", "giftEggOrigins" }) do
+    Assert.notNil(locations[field], "the location classes carry " .. field)
+  end
+  Assert.isTrue(
+    type(locations.giftEggOrigins) == "table" and #locations.giftEggOrigins > 0,
+    "the gift-egg origins keep their source set"
+  )
+  -- The migrated-region wording is bound per supported origin game by the
+  -- producer: both games resolve the source Johto region entry, and the
+  -- bound keys name real generated wording.
+  local regions = assert(memo.migrationRegions, "the memo binds migration regions per game")
+  Assert.equal(regions.heartgold, regions.soulsilver, "both supported games bind the Johto wording")
+  local landmarks = assert(memo.landmarks, "the memo carries landmark records")
+  local giftByLocation = assert(landmarks.giftByLocation, "the memo carries gift locations")
+  local SummarySources = require("romdump.src.config.SummarySources")
+  Assert.equal(
+    regions.heartgold,
+    giftByLocation[SummarySources.memoLocations.johto],
+    "the migration mapping normalizes the source Johto region entry"
+  )
+  local labels = assert(bundle.manifest.text, "the manifest carries lowered text").labels
+  Assert.isTrue(
+    type(labels[regions.heartgold]) == "string" and labels[regions.heartgold] ~= "",
+    "the migration region names generated wording"
+  )
+end
+
+-- Memo date templates bind semantic substitutions: met/egg date,
+-- location, level, and migration bindings by name, with literal text,
+-- line breaks, and color operations retained. No raw message-format
+-- field number survives for runtime to decode.
+local MEMO_SEGMENT_VOCABULARY = {
+  text = true,
+  lineBreak = true,
+  color = true,
+  metYear = true,
+  metMonth = true,
+  metDay = true,
+  metLevel = true,
+  metLocation = true,
+  eggYear = true,
+  eggMonth = true,
+  eggDay = true,
+  eggLocation = true,
+  migrationRegion = true,
+}
+
+local function conditionByKey(conditions, key)
+  for _, entry in ipairs(conditions) do
+    if entry.key == key then
+      return entry
+    end
+  end
+  error("the compiled memo carries no ordered branch " .. key, 0)
+end
+
+local function checkSemanticTemplate(entry, requiredKinds, what)
+  local template = assert(entry.dateTemplate, "branch " .. entry.key .. " carries its " .. what .. " template")
+  local segments = assert(template.segments, "the " .. what .. " template carries segments")
+  Assert.isTrue(#segments > 0, "the " .. what .. " template is nonempty")
+  local kinds = {}
+  for _, segment in ipairs(segments) do
+    Assert.isTrue(
+      MEMO_SEGMENT_VOCABULARY[segment.kind] == true,
+      "the " .. what .. " template uses semantic kinds, not " .. tostring(segment.kind)
+    )
+    Assert.isNil(segment.field, "the " .. what .. " template carries no raw placeholder field")
+    kinds[segment.kind] = true
+  end
+  local found = false
+  for _, kind in ipairs(requiredKinds) do
+    if kinds[kind] == true then
+      found = true
+    end
+  end
+  Assert.isTrue(found, "the " .. what .. " template binds its semantic substitution")
+  return kinds
+end
+
+function T.compiled_memo_templates_bind_semantic_substitutions(romFs, versionId)
+  local bundle = bundleFor(romFs, versionId)
+  local memo = assert(bundle.manifest.memo, "the compiled manifest carries its memo records")
+  local conditions = assert(memo.conditions, "the memo branches compile")
+  local metKinds = checkSemanticTemplate(
+    conditionByKey(conditions, "wildEncounter"),
+    { "metYear", "metMonth", "metDay", "metLevel", "metLocation" },
+    "ordinary met"
+  )
+  checkSemanticTemplate(
+    conditionByKey(conditions, "eggHatched"),
+    { "eggYear", "eggMonth", "eggDay", "eggLocation", "metYear", "metMonth", "metDay", "metLocation" },
+    "hatched"
+  )
+  checkSemanticTemplate(
+    conditionByKey(conditions, "egg"),
+    { "eggYear", "eggMonth", "eggDay", "eggLocation" },
+    "egg"
+  )
+  checkSemanticTemplate(conditionByKey(conditions, "migrated"), { "migrationRegion" }, "migrated")
+  local textSeen, breakSeen = false, false
+  for _, entry in ipairs(conditions) do
+    for _, segment in ipairs(assert(entry.dateTemplate, "branch carries its template").segments) do
+      if segment.kind == "text" then
+        textSeen = true
+      elseif segment.kind == "lineBreak" then
+        breakSeen = true
+      end
+    end
+  end
+  Assert.isTrue(metKinds.text == true or textSeen, "memo templates retain their literal text")
+  Assert.isTrue(breakSeen, "memo templates retain their line breaks")
 end
 
 local suite = RomSuite.fromFacts(T)

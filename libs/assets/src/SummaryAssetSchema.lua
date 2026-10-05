@@ -15,7 +15,7 @@ local Validate = require("libs.assets.src.Validate")
 ---@class SummaryAssetSchema
 local SummaryAssetSchema = {}
 
-SummaryAssetSchema.SCHEMA = "g4-summary-manifest-v1"
+SummaryAssetSchema.SCHEMA = "g4-summary-manifest-v2"
 SummaryAssetSchema.PANE_WIDTH = 256
 SummaryAssetSchema.PANE_HEIGHT = 192
 
@@ -50,6 +50,50 @@ local SEGMENT_KINDS = {
   expPoints = true,
   color = true,
   lineBreak = true,
+}
+
+-- Closed substitution vocabulary for memo date templates. Every
+-- placeholder field arrives normalized to one of these semantic
+-- bindings; raw message-format field numbers never reach runtime.
+local MEMO_SEGMENT_KINDS = {
+  text = true,
+  lineBreak = true,
+  color = true,
+  metYear = true,
+  metMonth = true,
+  metDay = true,
+  metLevel = true,
+  metLocation = true,
+  eggYear = true,
+  eggMonth = true,
+  eggDay = true,
+  eggLocation = true,
+  migrationRegion = true,
+}
+
+local MEMO_EGG_LOCATION_CLASSES = {
+  none = true,
+  linkTrade2 = true,
+  ranger = true,
+  hatched = true,
+  giftSet = true,
+  egg = true,
+}
+
+local MEMO_MET_LOCATION_CLASSES = {
+  palPark = true,
+  notPalPark = true,
+  linkTrade = true,
+  wild = true,
+}
+
+-- Source-pinned per-pane role census for the three normal groups: the
+-- producer lowers every source window row, so a group missing roles or
+-- carrying extras fails instead of publishing partial geometry.
+local GROUP_ROLE_CENSUS = {
+  info = { main = 2, sub = 6 },
+  skills = { main = 8, sub = 10 },
+  performance = { main = 5, sub = 3 },
 }
 
 local function fail(message, context)
@@ -278,6 +322,147 @@ local function checkTemplate(value, context, what)
   end
 end
 
+-- One semantic window role: a producer-named record binding a source
+-- window to its rendering purpose. Pane and rectangle are required;
+-- palette resolves through the window text roles and ink names its
+-- default ink. Source table positions never appear here.
+local function checkWindowRole(value, context, what, pane)
+  if type(value) ~= "table" then
+    fail(what .. " must be a record", context)
+  end
+  checkKeys(value, { pane = true, rect = true, palette = true, ink = true, align = true }, context, what)
+  if value.pane ~= "main" and value.pane ~= "sub" then
+    fail(what .. ".pane must name a native pane", context)
+  end
+  if pane ~= nil and value.pane ~= pane then
+    fail(what .. ".pane must match its group pane", context)
+  end
+  checkPaneRect(value.rect, context, what .. ".rect")
+  checkInt(value.palette, context, what .. ".palette")
+  if value.palette < 0 then
+    fail(what .. ".palette must be non-negative", context)
+  end
+  if type(value.ink) ~= "string" or value.ink == "" then
+    fail(what .. ".ink must name its text role", context)
+  end
+  if value.align ~= nil and value.align ~= "center" and value.align ~= "right" then
+    fail(what .. ".align must be center or right", context)
+  end
+end
+
+local function checkMemoSegment(value, context, what)
+  if type(value) ~= "table" then
+    fail(what .. " must be a record", context)
+  end
+  checkKeys(value, { kind = true, value = true, color = true, flow = true, field = true }, context, what)
+  if value.field ~= nil then
+    fail(what .. " carries a raw placeholder field instead of a memo substitution", context)
+  end
+  if MEMO_SEGMENT_KINDS[value.kind] == nil then
+    fail(what .. ".kind is outside the memo substitution vocabulary", context)
+  end
+  if value.kind == "lineBreak" then
+    if value.flow ~= nil and value.flow ~= "prompt" and value.flow ~= "page" then
+      fail(what .. ".flow must be prompt or page", context)
+    end
+  elseif value.flow ~= nil then
+    fail(what .. ".flow belongs to line breaks only", context)
+  end
+  if value.kind == "text" then
+    if type(value.value) ~= "string" then
+      fail(what .. ".value must be text", context)
+    end
+  elseif value.value ~= nil then
+    fail(what .. ".value belongs to literal text only", context)
+  end
+  if value.kind == "color" then
+    checkInt(value.color, context, what .. ".color")
+  elseif value.color ~= nil then
+    fail(what .. ".color belongs to color operations only", context)
+  end
+end
+
+local function checkDateTemplate(value, context, what)
+  if type(value) ~= "table" then
+    fail(what .. " must be a record", context)
+  end
+  checkKeys(value, { segments = true }, context, what)
+  if type(value.segments) ~= "table" or #value.segments == 0 then
+    fail(what .. " carries no segments", context)
+  end
+  if not Validate.isArray(value.segments) then
+    fail(what .. ".segments must be an array", context)
+  end
+  for index, segment in ipairs(value.segments) do
+    checkMemoSegment(segment, context, what .. ".segments[" .. index .. "]")
+  end
+end
+
+-- One ordered memo selection rule: its key names the semantic branch,
+-- selectability marks first-match participation, match carries the
+-- normalized predicates, lines carry the run placement, and the date
+-- template carries the semantic substitution segments.
+local function checkMemoBranch(value, context, what)
+  if type(value) ~= "table" then
+    fail(what .. " must be a record", context)
+  end
+  checkKeys(value, { key = true, selectable = true, match = true, lines = true, dateTemplate = true }, context, what)
+  if type(value.key) ~= "string" or value.key == "" then
+    fail(what .. ".key must name the semantic branch", context)
+  end
+  if type(value.selectable) ~= "boolean" then
+    fail(what .. ".selectable must be a boolean", context)
+  end
+  if type(value.match) ~= "table" then
+    fail(what .. ".match must be a record", context)
+  end
+  local match = value.match --[[@as table<string, unknown>]]
+  checkKeys(
+    match,
+    { isEgg = true, fateful = true, mine = true, eggLocation = true, metLocation = true },
+    context,
+    what .. ".match"
+  )
+  for _, flag in ipairs({ "isEgg", "fateful", "mine" }) do
+    if match[flag] ~= nil and type(match[flag]) ~= "boolean" then
+      fail(what .. ".match." .. flag .. " must be a boolean", context)
+    end
+  end
+  local eggLocation = match.eggLocation
+  if eggLocation ~= nil then
+    if type(eggLocation) ~= "string" or MEMO_EGG_LOCATION_CLASSES[eggLocation] == nil then
+      fail(what .. ".match.eggLocation is outside the location vocabulary", context)
+    end
+  end
+  local metLocation = match.metLocation
+  if metLocation ~= nil then
+    if type(metLocation) ~= "string" or MEMO_MET_LOCATION_CLASSES[metLocation] == nil then
+      fail(what .. ".match.metLocation is outside the location vocabulary", context)
+    end
+  end
+  if type(value.lines) ~= "table" then
+    fail(what .. ".lines must be a record", context)
+  end
+  local lines = value.lines --[[@as table<string, unknown>]]
+  checkKeys(
+    lines,
+    { nature = true, date = true, characteristic = true, flavor = true, eggWatch = true },
+    context,
+    what .. ".lines"
+  )
+  for _, line in ipairs({ "nature", "date", "characteristic", "flavor", "eggWatch" }) do
+    local placement = lines[line]
+    checkInt(placement, context, what .. ".lines." .. line)
+    if
+      placement --[[@as integer]]
+      < 0
+    then
+      fail(what .. ".lines." .. line .. " must be non-negative", context)
+    end
+  end
+  checkDateTemplate(value.dateTemplate, context, what .. ".dateTemplate")
+end
+
 local function checkColor(value, context, what)
   if type(value) ~= "table" then
     fail(what .. " must be a record", context)
@@ -413,25 +598,55 @@ function SummaryAssetSchema.assertManifest(manifest)
   if type(root.windows) ~= "table" then
     fail("manifest.windows must be a record", {})
   end
-  for name, window in
-    pairs(root.windows --[[@as table<string, unknown>]])
-  do
-    local what = "manifest.windows." .. tostring(name)
-    if type(window) ~= "table" then
-      fail(what .. " must be a record", {})
+  local windows = root.windows --[[@as table<string, unknown>]]
+  checkKeys(windows, { fixed = true, groups = true }, {}, "manifest.windows")
+  if type(windows.fixed) ~= "table" then
+    fail("manifest.windows.fixed must be a record", {})
+  end
+  local fixed = windows.fixed --[[@as table<string, unknown>]]
+  if next(fixed) == nil then
+    fail("manifest.windows.fixed carries no role", {})
+  end
+  for name, role in pairs(fixed) do
+    checkWindowRole(role, {}, "manifest.windows.fixed." .. tostring(name))
+  end
+  if type(windows.groups) ~= "table" then
+    fail("manifest.windows.groups must be a record", {})
+  end
+  local groupsSection = windows.groups --[[@as table<string, unknown>]]
+  checkKeys(groupsSection, { info = true, skills = true, performance = true }, {}, "manifest.windows.groups")
+  for name, census in pairs(GROUP_ROLE_CENSUS) do
+    local group = groupsSection[name]
+    if type(group) ~= "table" then
+      fail("manifest.windows.groups." .. name .. " must be a record", {})
     end
-    local typed = window --[[@as table<string, unknown>]]
-    checkKeys(typed, { pane = true, rect = true, palette = true }, {}, what)
-    if typed.pane ~= "main" and typed.pane ~= "sub" then
-      fail(what .. ".pane must name a native pane", {})
-    end
-    checkPaneRect(typed.rect, {}, what .. ".rect")
-    checkInt(typed.palette, {}, what .. ".palette")
-    if
-      typed.palette --[[@as integer]]
-      < 0
-    then
-      fail(what .. ".palette must be non-negative", {})
+    local typed = group --[[@as table<string, unknown>]]
+    checkKeys(typed, { main = true, sub = true }, {}, "manifest.windows.groups." .. name)
+    for _, pane in ipairs({ "main", "sub" }) do
+      local roles = typed[pane]
+      if type(roles) ~= "table" then
+        fail("manifest.windows.groups." .. name .. "." .. pane .. " must be a record", {})
+      end
+      local count = 0
+      for roleName, role in
+        pairs(roles --[[@as table<string, unknown>]])
+      do
+        checkWindowRole(role, {}, "manifest.windows.groups." .. name .. "." .. pane .. "." .. tostring(roleName), pane)
+        count = count + 1
+      end
+      if count ~= census[pane] then
+        fail(
+          "manifest.windows.groups."
+            .. name
+            .. "."
+            .. pane
+            .. " carries "
+            .. count
+            .. " roles instead of "
+            .. census[pane],
+          {}
+        )
+      end
     end
   end
   if type(root.visuals) ~= "table" then
@@ -767,50 +982,92 @@ function SummaryAssetSchema.assertManifest(manifest)
   local memo = root.memo --[[@as table<string, unknown>]]
   checkKeys(memo, {
     conditions = true,
+    locations = true,
     months = true,
     landmarks = true,
+    migrationRegions = true,
     characteristics = true,
     flavors = true,
     eggWatch = true,
   }, {}, "manifest.memo")
-  if memo.conditions ~= nil then
-    if type(memo.conditions) ~= "table" then
-      fail("manifest.memo.conditions must be a record", {})
+  if type(memo.conditions) ~= "table" then
+    fail("manifest.memo.conditions must be an array", {})
+  end
+  local conditions = memo.conditions --[[@as table[] ]]
+  if not Validate.isArray(conditions) or #conditions == 0 then
+    fail("manifest.memo.conditions carries no ordered branch", {})
+  end
+  local seenBranches = {}
+  for index, condition in ipairs(conditions) do
+    checkMemoBranch(condition, {}, "manifest.memo.conditions[" .. index .. "]")
+    local key = condition --[[@as table<string, unknown>]].key
+    if
+      seenBranches[
+        key --[[@as string]]
+      ] == true
+    then
+      fail("manifest.memo.conditions carries a duplicate branch " .. tostring(key), {})
     end
-    for name, condition in
-      pairs(memo.conditions --[[@as table<string, unknown>]])
-    do
-      local what = "manifest.memo.conditions." .. tostring(name)
-      if type(condition) ~= "table" then
-        fail(what .. " must be a record", {})
-      end
-      local typed = condition --[[@as table<string, unknown>]]
-      checkKeys(typed, {
-        template = true,
-        nature = true,
-        date = true,
-        characteristic = true,
-        flavor = true,
-        eggWatch = true,
-      }, {}, what)
-      if type(typed.template) ~= "string" or typed.template == "" then
-        fail(what .. ".template must reference its template", {})
-      end
-      for _, line in ipairs({ "nature", "date", "characteristic", "flavor", "eggWatch" }) do
-        checkInt(typed[line], {}, what .. "." .. line)
-        if
-          typed[line] --[[@as integer]]
-          < 0
-        then
-          fail(what .. "." .. line .. " must be non-negative", {})
-        end
-      end
+    seenBranches[
+      key --[[@as string]]
+    ] = true
+  end
+  if type(memo.locations) ~= "table" then
+    fail("manifest.memo.locations must be a record", {})
+  end
+  local locations = memo.locations --[[@as table<string, unknown>]]
+  checkKeys(
+    locations,
+    { palPark = true, linkTrade = true, linkTrade2 = true, ranger = true, giftEggOrigins = true },
+    {},
+    "manifest.memo.locations"
+  )
+  for _, field in ipairs({ "palPark", "linkTrade", "linkTrade2", "ranger" }) do
+    local site = locations[field]
+    checkInt(site, {}, "manifest.memo.locations." .. field)
+    if
+      site --[[@as integer]]
+      < 0
+    then
+      fail("manifest.memo.locations." .. field .. " must be non-negative", {})
+    end
+  end
+  local origins = locations.giftEggOrigins
+  if
+    type(origins) ~= "table"
+    or not Validate.isArray(origins --[[@as table[] ]])
+    or #origins == 0
+  then
+    fail("manifest.memo.locations.giftEggOrigins carries no origin", {})
+  end
+  for index, origin in
+    ipairs(origins --[[@as table[] ]])
+  do
+    checkInt(origin, {}, "manifest.memo.locations.giftEggOrigins[" .. index .. "]")
+    if
+      origin --[[@as integer]]
+      < 0
+    then
+      fail("manifest.memo.locations.giftEggOrigins[" .. index .. "] must be non-negative", {})
     end
   end
   for _, section in ipairs({ "months", "landmarks", "flavors", "eggWatch" }) do
     local list = memo[section]
     if list ~= nil and type(list) ~= "table" then
       fail("manifest.memo." .. section .. " must be a record", {})
+    end
+  end
+  -- The migrated-region wording is bound per supported origin game by
+  -- the producer; runtime never resolves gift-bank packing itself.
+  if type(memo.migrationRegions) ~= "table" then
+    fail("manifest.memo.migrationRegions must be a record", {})
+  end
+  local regions = memo.migrationRegions --[[@as table<string, unknown>]]
+  checkKeys(regions, { heartgold = true, soulsilver = true }, {}, "manifest.memo.migrationRegions")
+  for _, game in ipairs({ "heartgold", "soulsilver" }) do
+    local key = regions[game]
+    if type(key) ~= "string" or key == "" then
+      fail("manifest.memo.migrationRegions." .. game .. " names its wording", {})
     end
   end
   if memo.characteristics ~= nil and type(memo.characteristics) ~= "table" then

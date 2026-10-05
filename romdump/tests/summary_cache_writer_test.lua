@@ -12,7 +12,59 @@ local PartyCache = require("libs.assets.src.PartyCache")
 
 local T = {}
 
-local SUMMARY_SCHEMA = "g4-summary-manifest-v1"
+local SUMMARY_SCHEMA = "g4-summary-manifest-v2"
+
+-- Synthetic semantic layout with the source-pinned per-pane role census
+-- (info 2/6, skills 8/10, performance 5/3) plus one ordered memo branch:
+-- publication-mechanics tests need a schema-valid envelope so staging
+-- behavior, not shape validity, is under test.
+local GROUP_ROLE_CENSUS = { info = { main = 2, sub = 6 }, skills = { main = 8, sub = 10 }, performance = { main = 5, sub = 3 } }
+
+local function semanticRole(pane, seed)
+  return {
+    pane = pane,
+    rect = { x = 8, y = 8 + (seed * 16) % 176, width = 64, height = 8 },
+    palette = 13,
+    ink = "ordinary",
+  }
+end
+
+local function semanticWindows()
+  local fixed = { synHeader = semanticRole("sub", 0) }
+  local groups = {}
+  for group, census in pairs(GROUP_ROLE_CENSUS) do
+    groups[group] = { main = {}, sub = {} }
+    for pane, count in pairs(census) do
+      for index = 1, count do
+        groups[group][pane]["syn" .. group .. pane .. index] = semanticRole(pane, index)
+      end
+    end
+  end
+  return { fixed = fixed, groups = groups }
+end
+
+local function semanticMemo()
+  return {
+    conditions = {
+      {
+        key = "synBranch",
+        selectable = true,
+        match = { isEgg = false, fateful = false, mine = true, metLocation = "wild" },
+        lines = { nature = 1, date = 2, characteristic = 6, flavor = 7, eggWatch = 0 },
+        dateTemplate = {
+          segments = {
+            { kind = "text", value = "SYN" },
+            { kind = "metMonth" },
+            { kind = "lineBreak" },
+            { kind = "metLocation" },
+          },
+        },
+      },
+    },
+    locations = { palPark = 55, linkTrade = 4001, linkTrade2 = 4002, ranger = 6001, giftEggOrigins = { 4009 } },
+    migrationRegions = { heartgold = "synRegion", soulsilver = "synRegion" },
+  }
+end
 
 local function requireCache()
   local ok, cache = pcall(require, "libs.assets.src.SummaryCache")
@@ -62,7 +114,7 @@ local function validManifest()
       skills = { main = {}, sub = {} },
       performance = { main = {}, sub = {} },
     },
-    windows = {},
+    windows = semanticWindows(),
     visuals = {},
     sprites = {},
     hitboxes = {
@@ -95,7 +147,7 @@ local function validManifest()
     ribbons = {},
     performance = {},
     dexNumbers = {},
-    memo = {},
+    memo = semanticMemo(),
     sounds = {},
     transitions = {},
   }

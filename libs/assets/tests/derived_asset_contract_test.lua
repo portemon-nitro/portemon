@@ -144,7 +144,7 @@ function T.contract_pins_the_current_asset_identities()
     },
     summary = {
       cacheFormat = "g4-summary-cache-v1",
-      schema = "g4-summary-manifest-v1",
+      schema = "g4-summary-manifest-v2",
     },
     audio = {
       cacheFormat = "g4-audio-cache-v1",
@@ -216,6 +216,34 @@ function T.cache_modules_consume_the_contract_constants()
   Assert.equal(SummaryCache.SCHEMA, DerivedAssetContract.summary.schema)
   Assert.equal(StarterChoiceAssetCache.FORMAT, DerivedAssetContract.starterChoice.cacheFormat)
   Assert.equal(StarterChoiceAssetCache.SCHEMA, DerivedAssetContract.starterChoice.schema)
+end
+
+function T.summary_family_carries_the_v2_manifest_schema()
+  Assert.equal(
+    DerivedAssetContract.summary.cacheFormat,
+    "g4-summary-cache-v1",
+    "the summary publication roots stay on their cache format"
+  )
+  Assert.equal(
+    DerivedAssetContract.summary.schema,
+    "g4-summary-manifest-v2",
+    "the summary manifest carries its source-authored schema"
+  )
+  Assert.equal(
+    DerivedAssetContract.mons.catalogSchema,
+    "g4-mon-catalog-v3",
+    "the mon sibling identity survives the summary schema change"
+  )
+  Assert.equal(
+    DerivedAssetContract.party.schema,
+    "g4-party-presentation-v6",
+    "the party sibling identity survives the summary schema change"
+  )
+  Assert.equal(
+    DerivedAssetContract.bag.schema,
+    "g4-bag-assets-v17",
+    "the bag sibling identity survives the summary schema change"
+  )
 end
 
 function T.party_contract_advertises_the_v6_presentation_schema()

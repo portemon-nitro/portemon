@@ -58,12 +58,14 @@ SummarySources.groupMaps = {
 }
 
 -- The 34 fixed window templates in tile units, transcribed from the
--- summary window tables. Each row names its background engine (bg4 is the
--- sub/touch engine, bg1 the main engine), tile origin and size, source
--- palette slot, and character base. The compiler lowers tile units to
--- pixels and the engine to its native pane; the source base-tile
--- allocator never reaches runtime.
-SummarySources.windows = {
+-- persistent summary window table. Each row names its background engine
+-- (bg4 is the sub/touch engine, bg1 the main engine), tile origin and
+-- size, source palette slot, and character base. The compiler lowers
+-- tile units to pixels and the engine to its native pane; the source
+-- base-tile allocator never reaches runtime. Semantic role names for
+-- these rows live in SummarySources.fixedRoles below, aligned
+-- positionally with this inventory.
+SummarySources.fixedWindows = {
   { bg = "bg4", x = 20, y = 1, width = 11, height = 2, palette = 13, charBase = 0x001 },
   { bg = "bg1", x = 20, y = 1, width = 11, height = 2, palette = 13, charBase = 0x017 },
   { bg = "bg1", x = 20, y = 1, width = 11, height = 2, palette = 13, charBase = 0x02D },
@@ -98,6 +100,147 @@ SummarySources.windows = {
   { bg = "bg1", x = 20, y = 22, width = 12, height = 2, palette = 13, charBase = 0x1DD },
   { bg = "bg1", x = 20, y = 6, width = 6, height = 2, palette = 13, charBase = 0x1F5 },
   { bg = "bg1", x = 22, y = 4, width = 9, height = 2, palette = 13, charBase = 0x201 },
+}
+
+-- The normal-group window rows in tile units, transcribed from the three
+-- group window tables in source order (info, skills, performance). The
+-- compiler splits each inventory by background engine into its native
+-- pane roles; tile units become pixels exactly like the fixed rows.
+-- Semantic role names for these rows live in SummarySources.groupRoles
+-- below: each pane list aligns positionally with that pane's rows of the
+-- matching inventory.
+SummarySources.groupWindows = {
+  info = {
+    { bg = "bg4", x = 12, y = 1, width = 3, height = 2, palette = 13 },
+    { bg = "bg4", x = 9, y = 3, width = 9, height = 2, palette = 13 },
+    { bg = "bg4", x = 9, y = 7, width = 9, height = 2, palette = 13 },
+    { bg = "bg4", x = 11, y = 9, width = 5, height = 2, palette = 13 },
+    { bg = "bg4", x = 10, y = 13, width = 7, height = 2, palette = 13 },
+    { bg = "bg4", x = 11, y = 17, width = 6, height = 2, palette = 13 },
+    { bg = "bg1", x = 0, y = 3, width = 18, height = 18, palette = 13 },
+    { bg = "bg1", x = 1, y = 22, width = 11, height = 2, palette = 13 },
+  },
+  skills = {
+    { bg = "bg1", x = 11, y = 3, width = 7, height = 2, palette = 13 },
+    { bg = "bg1", x = 13, y = 6, width = 3, height = 2, palette = 13 },
+    { bg = "bg1", x = 13, y = 8, width = 3, height = 2, palette = 13 },
+    { bg = "bg1", x = 13, y = 10, width = 3, height = 2, palette = 13 },
+    { bg = "bg1", x = 13, y = 12, width = 3, height = 2, palette = 13 },
+    { bg = "bg1", x = 13, y = 14, width = 3, height = 2, palette = 13 },
+    { bg = "bg1", x = 9, y = 17, width = 9, height = 2, palette = 13 },
+    { bg = "bg1", x = 0, y = 19, width = 19, height = 4, palette = 13 },
+    { bg = "bg4", x = 5, y = 1, width = 11, height = 4, palette = 13 },
+    { bg = "bg4", x = 5, y = 5, width = 11, height = 4, palette = 13 },
+    { bg = "bg4", x = 5, y = 9, width = 11, height = 4, palette = 13 },
+    { bg = "bg4", x = 5, y = 13, width = 11, height = 4, palette = 13 },
+    { bg = "bg4", x = 5, y = 19, width = 11, height = 4, palette = 13 },
+    { bg = "bg4", x = 27, y = 6, width = 3, height = 2, palette = 13 },
+    { bg = "bg4", x = 27, y = 8, width = 3, height = 2, palette = 13 },
+    { bg = "bg4", x = 17, y = 10, width = 15, height = 10, palette = 13 },
+    { bg = "bg4", x = 1, y = 20, width = 15, height = 2, palette = 13 },
+    { bg = "bg4", x = 1, y = 17, width = 10, height = 2, palette = 13 },
+  },
+  performance = {
+    { bg = "bg4", x = 13, y = 17, width = 5, height = 2, palette = 13 },
+    { bg = "bg4", x = 1, y = 16, width = 21, height = 2, palette = 13 },
+    { bg = "bg4", x = 1, y = 18, width = 30, height = 4, palette = 13 },
+    { bg = "bg1", x = 1, y = 3, width = 10, height = 2, palette = 13 },
+    { bg = "bg1", x = 1, y = 7, width = 10, height = 2, palette = 13 },
+    { bg = "bg1", x = 1, y = 11, width = 10, height = 2, palette = 13 },
+    { bg = "bg1", x = 1, y = 15, width = 10, height = 2, palette = 13 },
+    { bg = "bg1", x = 1, y = 19, width = 10, height = 2, palette = 13 },
+  },
+}
+
+-- Producer-only semantic role bindings for the fixed window inventory,
+-- aligned positionally with SummarySources.fixedWindows. Names follow
+-- the static label/header setup: group tabs and titles, the trainer-memo
+-- header, the move-panel footer, the persistent info stat labels, the
+-- skills stat and ability labels, the move-detail and power-point labels,
+-- and the exit, ribbon-count, contest-mark, and move-warning labels.
+-- These names never reach runtime directly; the compiler resolves them
+-- to pane geometry records.
+SummarySources.fixedRoles = {
+  "infoTab",
+  "infoTitle",
+  "skillsTitle",
+  "trainerMemo",
+  "skillsTab",
+  "performanceTitle",
+  "cancelButton",
+  "dexNoLabel",
+  "nameLabel",
+  "typeLabel",
+  "otLabel",
+  "idNoLabel",
+  "expPointsLabel",
+  "toNextLabel",
+  "shinyLeaf",
+  "hpLabel",
+  "attackLabel",
+  "defenseLabel",
+  "spAttackLabel",
+  "spDefenseLabel",
+  "speedLabel",
+  "abilityLabel",
+  "switchButton",
+  "exitLabel",
+  "movePpHeader",
+  "movePpCurrent",
+  "movePpMax",
+  "moveDetailHeader",
+  "moveDetailNote",
+  "battleMoves",
+  "performanceTab",
+  "ribbonsCountLabel",
+  "performanceStarLabel",
+  "hmWarning",
+}
+
+-- Producer-only semantic role bindings for the normal-group window
+-- inventories. Each pane list aligns positionally with that pane's rows
+-- of the matching SummarySources.groupWindows inventory, following the
+-- group population routines: info carries its memo composition on the
+-- main pane and its dex, species, ownership, and experience values on
+-- the sub pane; skills carries its health, stat, and ability values on
+-- the main pane and its move rows, prospective row, move-detail blocks,
+-- and footer text on the sub pane; performance carries its five contest
+-- rows on the main pane and its ribbon count, name, and description on
+-- the sub pane. The compiler resolves these names to pane geometry
+-- records; runtime never sees source table positions.
+SummarySources.groupRoles = {
+  info = {
+    main = { "memoBody", "memoAuxLine" },
+    sub = { "dexNumber", "speciesName", "otName", "idNumber", "expPoints", "expToNext" },
+  },
+  skills = {
+    main = {
+      "hpValue",
+      "attackValue",
+      "defenseValue",
+      "spAttackValue",
+      "spDefenseValue",
+      "speedValue",
+      "abilityName",
+      "abilityDescription",
+    },
+    sub = {
+      "moveRow0",
+      "moveRow1",
+      "moveRow2",
+      "moveRow3",
+      "prospectiveRow",
+      "detailPower",
+      "detailAccuracy",
+      "detailDescription",
+      "moveFooter",
+      "detailCategory",
+    },
+  },
+  performance = {
+    main = { "speed", "power", "skill", "stamina", "jump" },
+    sub = { "ribbonCount", "ribbonName", "ribbonDescription" },
+  },
 }
 
 -- NSCR stamp fragments: archive members with their native pixel
@@ -1594,7 +1737,15 @@ SummarySources.performanceNatureMods = {
 -- first condition whose predicate holds selects the template; line
 -- numbers place each formatted run, with 0 meaning the run is absent.
 -- Location predicates use packed map-section ids (normal mapsec,
--- 4000 + gift offset, 6000 + external offset).
+-- 4000 + gift offset, 6000 + external offset). Every entry participates
+-- in first-match runtime selection except entries flagged as closure
+-- helpers, which only document template inheritance for the compiler.
+-- Predicate classes are producer-side semantics: `egg`/`fateful`/`mine`
+-- are mon facts, while `eggLocation`/`metLocation` name the normalized
+-- location classes the compiler publishes (see memoGiftEggOrigins and
+-- memoFieldSemantics below). Absent fields constrain nothing; order
+-- makes the negative classes (`notPalPark`) and the ordinary classes
+-- (`wild`, `hatched`, `egg`) well-defined fallbacks.
 SummarySources.memoConditions = {
   {
     key = "migrated",
@@ -1893,6 +2044,42 @@ SummarySources.memoConditions = {
     eggLocation = "egg",
   },
 }
+
+-- Memo placeholder fields by trainer-memo buffer position, transcribing
+-- the message-format buffer order: 0 met year, 1 met month, 2 met day,
+-- 3 met level, 4 met location, 5 egg year, 6 egg month, 7 egg day,
+-- 8 egg location. The compiler maps each lowered substitution to its
+-- semantic segment kind through this table; a lowered kind that does not
+-- match its semantic (month kinds to month bindings, number kinds to
+-- year/day/level bindings, landmark kinds to location bindings) fails
+-- compilation instead of publishing a misbound template.
+SummarySources.memoFieldSemantics = {
+  [0] = "metYear",
+  [1] = "metMonth",
+  [2] = "metDay",
+  [3] = "metLevel",
+  [4] = "metLocation",
+  [5] = "eggYear",
+  [6] = "eggMonth",
+  [7] = "eggDay",
+  [8] = "eggLocation",
+}
+
+-- Memo templates whose location slot carries the origin-game region
+-- instead of a landmark, keyed by summary message id. Migrated mons show
+-- their arrival region where ordinary mons show a met landmark, so the
+-- compiler binds field 4 of these templates to the migration binding
+-- rather than the landmark binding.
+SummarySources.memoMigrationTemplates = { [64] = true }
+
+-- Exact gift-egg origin set in display-consumer spelling, transcribing
+-- the non-player egg sources of the gift landmark bank in bank order:
+-- the traveling giver, the island, route, and city gifters, the mystery
+-- zone, the egg researcher, and the lottery presenter. Day-care breeding
+-- stays outside this set: bred eggs read the ordinary hatched branch.
+-- Link-trade eggs and ranger-arrived eggs keep their own singleton
+-- classes and never enter this set.
+SummarySources.memoGiftEggOrigins = { 4009, 4010, 4011, 4012, 4013, 4014 }
 
 -- Packed map-section bases for the location predicates above, transcribing
 -- the sub_02017FE4 pack table: normal mapsec ids pass through, gift ids
