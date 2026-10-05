@@ -24,11 +24,24 @@ local function exactKeys(value, allowed, label)
   end
 end
 
+local function checkAssetPath(path, label)
+  local prefix = "assets/generated/pc/"
+  if type(path) ~= "string" or path:sub(1, #prefix) ~= prefix then
+    fail(label .. " must reference a PC-owned asset")
+  end
+  if path:find("\\", 1, true) then
+    fail(label .. " must use canonical asset path separators")
+  end
+  for component in (path:sub(#prefix + 1) .. "/"):gmatch("(.-)/") do
+    if component == "" or component == "." or component == ".." or component:find("\0", 1, true) then
+      fail(label .. " must stay within the PC asset family")
+    end
+  end
+end
+
 local function checkVisual(visual, label)
   exactKeys(visual, { image = true, width = true, height = true, anchorX = true, anchorY = true }, label)
-  if type(visual.image) ~= "string" or visual.image:sub(1, #"assets/generated/pc/") ~= "assets/generated/pc/" then
-    fail(label .. ".image must reference a PC-owned asset")
-  end
+  checkAssetPath(visual.image, label .. ".image")
   for _, key in ipairs({ "width", "height" }) do
     if type(visual[key]) ~= "number" or visual[key] % 1 ~= 0 or visual[key] <= 0 then
       fail(label .. "." .. key .. " must be a positive integer")
@@ -171,15 +184,7 @@ local function checkTextBanks(value)
 end
 
 local function checkTerminal(value)
-  exactKeys(value, { animationTag = true, candidateBuildModelMembers = true, slots = true }, "terminal")
-  if value.animationTag ~= 90 then
-    fail("terminal.animationTag must be the source PC animation tag")
-  end
-  local members = value.candidateBuildModelMembers
-  exactKeys(members, { [1] = true, [2] = true }, "terminal.candidateBuildModelMembers")
-  if members[1] ~= 33 or members[2] ~= 138 then
-    fail("terminal.candidateBuildModelMembers must preserve source prop order")
-  end
+  exactKeys(value, { slots = true }, "terminal")
   exactKeys(value.slots, { [0] = true, [1] = true }, "terminal.slots")
   for _, expected in ipairs({
     { slot = 0, role = "terminal.on" },

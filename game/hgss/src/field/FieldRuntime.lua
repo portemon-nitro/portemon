@@ -1198,8 +1198,8 @@ function FieldRuntime:_composeFieldServices(boot)
   scriptComposition.restore()
 end
 
--- Resolve the retail tag's placed model through canonical map props and the
--- source-generated candidate order. The returned adapter keeps each model's
+-- Resolve the retail tag's placed model through its generated semantic role.
+-- The returned adapter keeps each model's
 -- compiled clip duration alongside its live instance handle.
 ---@param propRef string
 ---@return table<string, unknown>
@@ -1207,16 +1207,12 @@ function FieldRuntime:_resolvePcTerminalProp(propRef)
   assert(propRef == "pc_terminal", "PC terminal prop reference is closed")
   local pcManifest = assert(self.pokemonMenu, "PC terminal needs the menu composition").pcManifest
   local terminal = assert(pcManifest.terminal, "PC terminal source policy is compiled")
-  local candidates = {}
-  for _, memberId in ipairs(terminal.candidateBuildModelMembers) do
-    candidates[memberId] = true
-  end
   local mapProps = assert(self.runtimeMap.mapProps, "the active map owns canonical scene props")
   local selected
   for _, placement in ipairs(mapProps.placements) do
-    local descriptor =
-      assert(self.cacheFs:loadLua(MapAssetCache.modelPath(placement.modelKey)), "placed model descriptor is compiled")
-    if candidates[descriptor.memberId] then
+    if placement.semanticRole == "pc_terminal" then
+      local descriptor =
+        assert(self.cacheFs:loadLua(MapAssetCache.modelPath(placement.modelKey)), "placed model descriptor is compiled")
       selected = { prop = assert(mapProps:prop(placement.placementIndex)), descriptor = descriptor }
       break
     end

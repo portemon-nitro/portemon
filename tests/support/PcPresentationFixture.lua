@@ -102,7 +102,7 @@ function PcPresentationFixture.manifest()
         markings = markings,
       },
       boxNames = boxNames,
-      expansionNameFormat = { prefix = "BOX ", suffix = "", firstNumber = 19 },
+      expansionNameFormat = { prefix = "BOX ", suffix = "", firstNumber = 1 },
       geometry = {
         wallpaperMap = { width = 168, height = 160, columns = 21, rows = 20, tileIdWrap = 64 },
       },
@@ -129,8 +129,6 @@ function PcPresentationFixture.manifest()
     text = { banks = textBanks },
     sequences = {},
     terminal = {
-      animationTag = 90,
-      candidateBuildModelMembers = { 33, 138 },
       slots = { [0] = { role = "terminal.on", playMode = "forward" }, [1] = { role = "terminal.off", playMode = "forward" } },
     },
   }

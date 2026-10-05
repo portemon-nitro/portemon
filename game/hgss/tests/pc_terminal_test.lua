@@ -5,8 +5,6 @@ local T = { tests = {} }
 
 local function sourcePolicy()
   return {
-    animationTag = 90,
-    candidateBuildModelMembers = { 33, 138 },
     slots = {
       [0] = { role = "terminal.on", playMode = "forward" },
       [1] = { role = "terminal.off", playMode = "forward" },

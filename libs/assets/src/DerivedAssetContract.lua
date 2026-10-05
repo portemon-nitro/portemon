@@ -131,8 +131,11 @@
 -- intro OBJ geometry: animated widgets retain one OAM-origin pivot across
 -- frames and publish source-reference centers for responsive placement.
 -- field map schema 9: generated object events publish semantic movement types
--- map scene schema 10: Elm's Lab publishes the generated starter-ball model
--- reference and its normalized runtime placement transforms.
+-- instead of raw HGSS movement selectors.
+-- map scene schema 10: Elm's Lab publishes its generated starter-ball model
+-- reference and normalized runtime placement transforms.
+-- map scene schema 11: building placements publish semantic runtime roles
+-- instead of exposing physical model member IDs to game behavior.
 -- instead of raw HGSS movement selectors.
 --
 -- revision 11: prepared stages carry their generation, epoch, and canonical
@@ -163,7 +166,7 @@ DerivedAssetContract.map = {
   -- the per-polygon fog gate (fogEnabled, PolygonState.FIELDS), and scenes
   -- carry the map's base weather ID plus its resolved global HGSS fog preset
   -- (scene.weatherId, scene.fog).
-  sceneSchema = "g4-map-scene-v10",
+  sceneSchema = "g4-map-scene-v11",
   terrainSchema = "g4-terrain-surfaces-v1",
   collisionVersion = 1,
 }
@@ -387,7 +390,7 @@ DerivedAssetContract.party = {
 -- Photo Album presentation records as one independently published family.
 DerivedAssetContract.pc = {
   cacheFormat = "pc-cache-v1",
-  schema = "g4-pc-v1",
+  schema = "g4-pc-v2",
 }
 
 DerivedAssetContract.audio = {

@@ -229,7 +229,7 @@ function T.referenced_paths_includes_neighbor_batches_and_materials()
   local neighborCollision = "data/generated/maps/0060/neighbors/3/collision.g4collision"
   local neighborTerrain = "data/generated/maps/0060/neighbors/3/terrain.lua"
   local scene = {
-    schema = "g4-map-scene-v9",
+    schema = "g4-map-scene-v11",
     mapId = 61,
     mapBatches = {},
     materials = {},
@@ -315,6 +315,16 @@ local function baseScene()
   }
   ---@cast scene MapAssetCache.Scene
   return scene
+end
+
+function T.current_scene_rejects_unknown_building_semantic_roles()
+  local scene = baseScene()
+  scene.buildingInstances = { { modelKey = "indoor:1:abc", semanticRole = "physical-member-33" } }
+  local err = Assert.throws(function()
+    MapAssetCache.referencedPaths(scene, nil)
+  end)
+  Assert.equal(err.code, "MAP_CACHE_SCENE_INVALID")
+  Assert.isTrue(tostring(err.message):find("semanticRole", 1, true) ~= nil)
 end
 
 -- Build a scene and apply one mutation, so every malformed-shape case shares

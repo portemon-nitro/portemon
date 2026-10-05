@@ -23,6 +23,7 @@ local Matrix4 = require("libs.math.src.Matrix4")
 local Hashing = require("romdump.src.digest.Hashing")
 local VertexFormat = require("libs.assets.src.model.VertexFormat")
 local MapAssetCache = require("libs.assets.src.MapAssetCache")
+local PcSources = require("romdump.src.config.PcSources")
 local MapCatalog = require("romdump.src.digest.map.MapCatalog")
 local NeighborPlan = require("romdump.src.digest.map.NeighborPlan")
 local ModelAssetCompiler = require("romdump.src.digest.model.ModelAssetCompiler")
@@ -420,6 +421,10 @@ local function _compile(romFs, idOrSymbol, opts)
     geometryArena = opts.geometryArena,
     gxScratch = opts.gxScratch,
     requiredModelMembers = resolved.map.symbol == StarterLab.mapSymbol and { StarterLab.modelMemberId } or nil,
+    semanticRolesByMember = {
+      [PcSources.terminal.candidateBuildModelMembers[1]] = "pc_terminal",
+      [PcSources.terminal.candidateBuildModelMembers[2]] = "pc_terminal",
+    },
   })
   appendUnresolved(unresolvedMaterials, { unresolved = buildingCompiled.unresolvedMaterials })
   local archiveAlias = buildingCompiled.archiveAlias

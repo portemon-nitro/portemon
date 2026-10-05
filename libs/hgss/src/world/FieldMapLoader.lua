@@ -387,6 +387,7 @@ local function buildMapProps(cacheFs, buildingInstances, fieldData, collision, o
     placements[#placements + 1] = {
       placementIndex = inst.placementIndex,
       modelKey = inst.modelKey,
+      semanticRole = inst.semanticRole,
       transform = inst.transform,
       doorSoundType = meta and meta.doorSoundType or nil,
       doorRoles = meta and meta.roles or nil,

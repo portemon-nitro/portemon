@@ -541,7 +541,7 @@ local function _compile(romFs)
     },
     text = text,
     sequences = sequences,
-    terminal = PcSources.terminal,
+    terminal = { slots = PcSources.terminal.slots },
   }
   assert(defaultStationery, "stationery zero has a source image")
   PcAssetSchema.assertManifest(manifest)

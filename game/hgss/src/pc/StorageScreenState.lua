@@ -329,6 +329,14 @@ function StorageScreenState:_openChild(kind, request)
   self._childKind, self._childRequest = kind, copy(request)
 end
 
+function StorageScreenState:_disposeChild()
+  local child = self._child
+  self._child, self._childKind, self._childRequest = nil, nil, nil
+  if child ~= nil then
+    child:dispose()
+  end
+end
+
 function StorageScreenState:_updateChild(events)
   local child = assert(self._child)
   child:updateFixed(events)
@@ -350,8 +358,7 @@ function StorageScreenState:_updateChild(events)
       else
         self._lastAction = decision
       end
-      child:dispose()
-      self._child, self._childKind, self._childRequest = nil, nil, nil
+      self:_disposeChild()
       return
     end
   end
@@ -368,8 +375,7 @@ function StorageScreenState:_updateChild(events)
     if action ~= nil then
       self._lastAction = self._actions:commit(self._actions:preview(action))
     end
-    child:dispose()
-    self._child, self._childKind, self._childRequest = nil, nil, nil
+    self:_disposeChild()
   end
 end
 
@@ -420,13 +426,16 @@ function StorageScreenState:updateFixed(events)
   if self._closed then
     return
   end
-  if self._editor ~= nil then
-    self:_updateEditor(events)
+  if self._child ~= nil then
+    self:_updateChild(events)
     self:_resolve()
     return
   end
-  if self._child ~= nil then
-    self:_updateChild(events)
+  local view = self:_view()
+  self._session:resolve(self._measureDisplay(), view)
+  events = self._session:mapInput(events, view)
+  if self._editor ~= nil then
+    self:_updateEditor(events)
     self:_resolve()
     return
   end
@@ -605,15 +614,20 @@ function StorageScreenState:isActive()
   return not self._closed and not self._disposed
 end
 
+function StorageScreenState:cancelPointerCapture()
+  self._session:cancelPointers()
+  local child = self._child
+  if child ~= nil and type(child.cancelPointerCapture) == "function" then
+    child:cancelPointerCapture()
+  end
+end
+
 function StorageScreenState:cancel(_)
   if self._closed then
     return
   end
   self._closed = true
-  if self._child ~= nil then
-    self._child:dispose()
-    self._child, self._childKind, self._childRequest = nil, nil, nil
-  end
+  self:_disposeChild()
   self._editor = nil
   if self._releaseCheck ~= nil and self._releaseCheck.outcome == "pending" then
     self._releaseCheck.outcome = "cancelled"
@@ -627,6 +641,7 @@ function StorageScreenState:dispose()
     return
   end
   self._disposed = true
+  self:_disposeChild()
   self._session:dispose()
 end
 

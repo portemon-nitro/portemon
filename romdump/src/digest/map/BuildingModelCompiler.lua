@@ -184,6 +184,7 @@ function BuildingModelCompiler.compile(romFs, area, land, opts)
     buildingInstances[#buildingInstances + 1] = {
       placementIndex = placement.index,
       modelKey = modelKeyOf[placement.modelMemberId],
+      semanticRole = opts.semanticRolesByMember and opts.semanticRolesByMember[placement.modelMemberId] or nil,
       transform = BuildingTransform.build(placement),
     }
   end

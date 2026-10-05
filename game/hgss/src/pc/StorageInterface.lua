@@ -68,6 +68,9 @@ local function noRender() end
 local function noMap() end
 
 local function mapInput(event, _, plan)
+  if event.type == "pointer_move" or event.type == "pointer_up" or event.type == "pointer_scroll" then
+    return nil
+  end
   if event.type ~= "pointer_down" then
     return event
   end
@@ -92,7 +95,7 @@ local function mapInput(event, _, plan)
   if event.outside == true then
     return { type = "cancel" }
   end
-  return event
+  return nil
 end
 
 local function renderPlan(resources, snapshot, resolved)
