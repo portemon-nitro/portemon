@@ -91,6 +91,7 @@ MapProps.__index = MapProps
 -- clears that with headroom. Distances are measured from the transform
 -- translation to the tile centre, matching the pivot predicate below.
 MapProps.MAX_DOOR_PIVOT_DISTANCE_TILES = 5.0
+MapProps.MAX_SCRIPT_PROP_PIVOT_DISTANCE_TILES = 1.0
 
 -- The ambiguity tie window, in SQUARED tile units (the units the tie
 -- comparison works in): transform translations are dyadic products, so real
@@ -585,10 +586,19 @@ function MapProps:prop(placementIndex)
   }, SceneProp)
 end
 
--- Resolve the prop nearest a semantic field tile. Transition choreography uses
--- this only for map behaviors whose source animation is owned by a placed
--- model; the returned handle still validates the requested clip on play.
-function MapProps:propAt(runtimeMap, fieldX, fieldZ)
+-- Resolve the prop nearest a semantic field tile. A caller may bound the
+-- pivot distance when the source operation addresses a tile-local prop; an
+-- unrelated placement elsewhere in a sparse map is not a coordinate match.
+---@param runtimeMap RuntimeFieldMap
+---@param fieldX integer
+---@param fieldZ integer
+---@param maxDistanceTiles number?
+---@return SceneProp?
+function MapProps:propAt(runtimeMap, fieldX, fieldZ, maxDistanceTiles)
+  assert(
+    maxDistanceTiles == nil or (type(maxDistanceTiles) == "number" and maxDistanceTiles >= 0),
+    "prop distance bound must be non-negative"
+  )
   local localX, localZ = fieldX - runtimeMap.coordinateOrigin.x, fieldZ - runtimeMap.coordinateOrigin.z
   local worldX, worldZ = FieldGrid.tileCenterToWorld(localX, localZ)
   local nearest
@@ -600,7 +610,18 @@ function MapProps:propAt(runtimeMap, fieldX, fieldZ)
       nearest = { placement = placement, distance = distance }
     end
   end
-  return nearest and self:prop(nearest.placement.placementIndex) or nil
+  if nearest == nil or (maxDistanceTiles ~= nil and nearest.distance > maxDistanceTiles * maxDistanceTiles) then
+    return nil
+  end
+  return self:prop(nearest.placement.placementIndex)
+end
+
+---@param runtimeMap RuntimeFieldMap
+---@param fieldX integer
+---@param fieldZ integer
+---@return SceneProp?
+function MapProps:scriptPropAt(runtimeMap, fieldX, fieldZ)
+  return self:propAt(runtimeMap, fieldX, fieldZ, MapProps.MAX_SCRIPT_PROP_PIVOT_DISTANCE_TILES)
 end
 
 return MapProps

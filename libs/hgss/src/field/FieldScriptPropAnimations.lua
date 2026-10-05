@@ -40,7 +40,7 @@ function FieldScriptPropAnimations:load(slot, fieldX, fieldZ)
     self.slots[slot] = { runtimeMap = self.runtimeMap, door = door, playback = nil, direction = nil }
     return
   end
-  local prop = mapProps:propAt(self.runtimeMap, fieldX, fieldZ)
+  local prop = mapProps:scriptPropAt(self.runtimeMap, fieldX, fieldZ)
   assert(prop ~= nil and prop.instance ~= nil, "no animatable prop at field coordinate")
   self.slots[slot] = { runtimeMap = self.runtimeMap, prop = prop, playback = nil, direction = nil }
 end
