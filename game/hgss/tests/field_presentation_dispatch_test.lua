@@ -260,8 +260,9 @@ local function buildDoubles(sink, calls)
           calls.iconImage = (calls.iconImage or 0) + 1
           return "borrowed-icon-image"
         end
-        function provider:prepareKeys(_)
+        function provider:prepareKeys(iconKeys)
           calls.iconPrepareCalls = (calls.iconPrepareCalls or 0) + 1
+          calls.iconKeys = iconKeys
           local ready = calls.iconPageReady ~= false
           if ready then
             return true, nil
@@ -1282,6 +1283,28 @@ function T.pc_renderers_are_owned_prepared_and_drawn_through_field_resources()
     Assert.equal(calls.pcStorage, 1, "PC Storage renderer releases once")
     Assert.equal(calls.mailbox, 1, "Mailbox renderer releases once")
     Assert.equal(calls.photoAlbum, 1, "Photo Album renderer releases once")
+  end)
+end
+
+function T.storage_icon_preparation_skips_empty_box_sentinels()
+  local sink, calls = {}, {}
+  withProductionComposition(sink, calls, compositionRuntime(), function(resources)
+    local boxSlots = {}
+    for slot = 1, 29 do
+      boxSlots[slot] = false
+    end
+    boxSlots[30] = { iconKey = "species:1:form:0" }
+    local prepared, ready = pcall(function()
+      return resources:preparePcApplication({
+        app = "storage",
+        boxSlots = boxSlots,
+        party = {},
+      }, { monCatalog = {} })
+    end)
+    Assert.isTrue(prepared, "Storage icon preparation skips explicit empty slots: " .. tostring(ready))
+    Assert.isTrue(ready, "Storage preparation completes when occupied mons follow empty sentinels")
+    Assert.deepEqual(calls.iconKeys, { "species:1:form:0" }, "the final box mon's icon is prepared")
+    resources:dispose()
   end)
 end
 

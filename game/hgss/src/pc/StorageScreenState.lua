@@ -33,6 +33,8 @@ local StorageInterface = require("game.hgss.src.pc.StorageInterface")
 local StorageScreenState = {}
 StorageScreenState.__index = StorageScreenState
 
+local COMPILED_BOX_NAME_COUNT = 18
+
 local function copy(value)
   if type(value) ~= "table" then
     return value
@@ -95,7 +97,7 @@ function StorageScreenState:_view()
       mon.iconKey = self._mons:catalog():iconSelection(mon)
       mon.itemIconKey = self._bag:catalog():item(mon.heldItem).icon
     end
-    boxSlots[slot + 1] = mon
+    boxSlots[slot + 1] = mon or false
   end
   for slot = 0, self._mons:partyCount() - 1 do
     local mon = self._mons:partyMon(slot)
@@ -108,7 +110,7 @@ function StorageScreenState:_view()
     state = self._state,
     activeBox = self._activeBox,
     wallpaperId = metadata.wallpaperId,
-    boxName = metadata.name,
+    boxName = metadata.name or self:_defaultBoxName(),
     boxSlots = boxSlots,
     party = party,
     focus = copy(self._focus),
@@ -117,6 +119,16 @@ function StorageScreenState:_view()
     editor = copy(self._editor),
     wallpaperUnlocks = self._mons:boxSnapshot().bonusUnlocks,
   }
+end
+
+function StorageScreenState:_defaultBoxName()
+  local storage = assert(self._manifest.storage, "Storage borrows its compiled storage manifest")
+  local boxNames = assert(storage.boxNames, "Storage manifest carries source box names")
+  if self._activeBox < COMPILED_BOX_NAME_COUNT then
+    return assert(boxNames[self._activeBox + 1], "Storage manifest carries every compiled box name")
+  end
+  local format = assert(storage.expansionNameFormat, "Storage manifest carries its expansion name format")
+  return format.prefix .. tostring(format.firstNumber + self._activeBox) .. format.suffix
 end
 
 function StorageScreenState:_address(target)
@@ -173,12 +185,12 @@ function StorageScreenState:_beginAction(action, data)
   local source = assert(self._menu and self._menu.address, "Storage actions start at a selected address")
   self._menu = nil
   if action == "deposit" then
+    self._focus = { domain = "box", slot = self._focus.slot }
     self._carry = {
       kind = "mon",
       action = action,
       source = source,
       mon = self:_monVisual(source),
-      destination = { kind = "box", box = self._activeBox, slot = self._focus.slot },
     }
   elseif action == "withdraw" then
     self._carry = {
@@ -192,7 +204,9 @@ function StorageScreenState:_beginAction(action, data)
     self._carry = { kind = "mon", action = action, source = source, mon = self:_monVisual(source) }
   elseif action == "swapItems" then
     self._carry = { kind = "items", action = action, source = source, mon = self:_monVisual(source) }
-  elseif action == "takeItem" or action == "giveItem" then
+  elseif action == "giveItem" then
+    self:_openChild("heldItemPicker", { source = source })
+  elseif action == "takeItem" then
     local intent = self._actions:preview({ kind = action, source = source, item = data and data.item })
     self._lastAction = intent.kind == "allowed" and self._actions:commit(intent) or intent
     if intent.kind == "confirm" then
@@ -352,7 +366,6 @@ function StorageScreenState:_updateChild(events)
   end
   local result = child.result and child:result() or child.takeResult and child:takeResult()
   if result ~= nil then
-    local kind, request = assert(self._childKind), assert(self._childRequest)
     local action
     if result.kind == "submit" and kind == "boxName" then
       action = { kind = "boxName", box = self._activeBox, name = result.text }
@@ -478,10 +491,6 @@ function StorageScreenState:updateFixed(events)
       if target.box ~= nil then
         self._activeBox = target.box
       end
-      local carry = self._carry
-      if carry ~= nil and carry.destination == nil then
-        carry.destination = self:_address(self._focus)
-      end
     elseif event.type == "navigate" then
       local direction = assert(event.direction)
       if self._menu ~= nil and (direction == "up" or direction == "down") then
@@ -569,6 +578,7 @@ function StorageScreenState:status()
     transitionTick = self._transitionTick,
     childKind = self._childKind,
     releaseCheck = copy(self._releaseCheck),
+    boxName = view.boxName,
     boxSlots = view.boxSlots,
     party = view.party,
     carry = view.carry,
@@ -578,6 +588,19 @@ end
 function StorageScreenState:draw(resources)
   assert(not self._disposed, "disposed Storage draws nothing")
   assert(type(resources) == "table", "Storage draw borrows its renderer resources")
+  if self._child ~= nil and self._childKind == "heldItemPicker" then
+    local status = self._child:status()
+    if status.presentation ~= nil then
+      ApplicationPresentation.draw(assert(love.graphics), {
+        graphics = love.graphics,
+        bagRenderer = assert(resources.bagRenderer, "Storage borrows the Bag renderer"),
+        heroRenderer = assert(resources.heroRenderer, "Storage borrows the Bag hero renderer"),
+        icons = assert(resources.itemIcons, "Storage borrows the Bag item icon provider"),
+        text = assert(resources.textRenderer, "Storage borrows the text renderer"),
+      }, status, status.presentation)
+    end
+    return
+  end
   ApplicationPresentation.draw(assert(love.graphics), resources, self:_view(), self._session:plan())
 end
 

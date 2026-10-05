@@ -614,7 +614,7 @@ function FieldPresentationResources:preparePcApplication(status, runtime)
     return self.photoAlbumRenderer:advance(status, resources)
   elseif status.app == "storage" then
     for _, mon in ipairs(assert(status.boxSlots, "Storage status publishes box icon snapshots")) do
-      if mon ~= nil then
+      if mon ~= false then
         iconKeys[#iconKeys + 1] = mon.iconKey
       end
     end
@@ -649,6 +649,8 @@ function FieldPresentationResources:pcApplicationResources(runtime)
     itemIconProvider = assert(self.itemIconProvider, "Mailbox borrows the shared item icon provider"),
     textRenderer = assert(self.textRenderer, "PC applications borrow the shared text renderer"),
     windowRenderer = assert(self.windowRenderer, "PC applications borrow the shared window renderer"),
+    bagRenderer = assert(self.bagRenderer, "Storage borrows the shared Bag renderer"),
+    heroRenderer = assert(self.heroRenderer, "Storage borrows the shared Bag hero renderer"),
     applicationFrameIndex = assert(self.applicationFrameIndex, "PC applications borrow the selected frame"),
   }
 end

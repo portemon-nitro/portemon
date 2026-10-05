@@ -31,6 +31,7 @@ end
 
 local function rendererFixture()
   local manifest = PcPresentationFixture.manifest()
+  manifest.text = { banks = { [24] = { [26] = { { kind = "text", value = "wallpaper" } } } } }
   local cache = CacheFs.forVersion("heartgold", FakeCache.new())
   local image = PngWriter.encode(1, 1, string.char(255, 255, 255, 255))
   for _, visual in ipairs(visuals(manifest)) do
@@ -108,6 +109,72 @@ function T.marking_editor_draws_six_compiled_clear_set_tiles_on_the_source_row()
     { 136, 8, 8, 8 }
   )
   Assert.isTrue(manifest.storage.ui.markings[2].set ~= nil)
+end
+
+function T.storage_menu_and_wallpaper_heading_draw_compiled_source_messages()
+  local renderer, _, manifest = rendererFixture()
+  local bank = {}
+  for _, messageId in ipairs({ 26, 80, 81, 64 }) do
+    bank[messageId] = { { kind = "text", value = "message:" .. messageId } }
+  end
+  manifest.text.banks[24] = bank
+  local drawn = {}
+  renderer._text = {
+    drawText = function(_, tokens)
+      if type(tokens) == "table" then
+        drawn[#drawn + 1] = tokens
+      end
+    end,
+  }
+  renderer:drawPane({
+    mode = 3,
+    activeBox = 0,
+    wallpaperId = 0,
+    wallpaperUnlocks = { false, false, false, false, false, false, false, false },
+    boxSlots = {},
+    party = {},
+    menu = { actions = { "giveItem", "swapItems" }, selected = 1 },
+    editor = { kind = "wallpaper", selected = 0 },
+  }, {}, "lower", placement(), true)
+  Assert.equal(#drawn, 3, "Storage draws the heading and both menu labels")
+  Assert.equal(drawn[1], bank[26], "wallpaper heading uses source message 26")
+  Assert.equal(drawn[2], bank[81], "Give Item uses source message 81")
+  Assert.equal(drawn[3], bank[64], "Sort Items uses source message 64")
+  renderer:release()
+end
+
+function T.box_renderer_skips_empty_sentinels_and_draws_the_final_slot()
+  local renderer, _, manifest = rendererFixture()
+  local drawn = {}
+  renderer._text = {
+    drawText = function(_, value, x, y)
+      drawn[#drawn + 1] = { value = value, x = x, y = y }
+    end,
+  }
+  local slots = {}
+  for slot = 1, 29 do
+    slots[slot] = false
+  end
+  slots[30] = { heldItem = "NONE", markings = 0, nickname = "last-slot" }
+  local rendered, failure = pcall(function()
+    renderer:drawPane({
+      activeBox = 0,
+      wallpaperId = 0,
+      wallpaperUnlocks = { false, false, false, false, false, false, false, false },
+      boxSlots = slots,
+      party = {},
+    }, {}, "lower", placement(), true)
+  end)
+  Assert.isTrue(rendered, "Storage rendering skips explicit empty slots: " .. tostring(failure))
+  local label
+  for _, record in ipairs(drawn) do
+    if record.value == "last-slot" then
+      label = record
+    end
+  end
+  Assert.deepEqual(label, { value = "last-slot", x = 242, y = 140 }, "slot 29 renders at its fixed box geometry")
+  Assert.isTrue(manifest.storage.wallpapers[0] ~= nil, "the active box keeps its compiled wallpaper")
+  renderer:release()
 end
 
 return { tests = T }

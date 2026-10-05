@@ -129,6 +129,32 @@ local function releaseService()
   return mons
 end
 
+local function setPartyHeldItem(mons, item)
+  local mon = mons:partyMon(0)
+  mon.heldItem = item
+  local change = assert(mons:preparePartyChanges(mons:partyRevision(), { { slot = 0, mon = mon } }))
+  change.publish()
+end
+
+local function heldItemPicker(item)
+  return function()
+    local pending = true
+    return {
+      updateFixed = function() end,
+      takeIntent = function()
+        if pending then
+          pending = false
+          return { kind = "pick", item = item }
+        end
+      end,
+      takeResult = function()
+        return nil
+      end,
+      dispose = function() end,
+    }
+  end
+end
+
 local function finishReleaseScan(state)
   state:updateFixed({ { type = "release", address = { kind = "party", slot = 0 } } })
   Assert.equal(state:status().releaseCheck.outcome, "confirm")
@@ -293,20 +319,29 @@ function T.move_swap_cancel_and_held_item_routes_keep_domain_owners_authoritativ
 
   local bag = HgssBagService.new({ catalog = ItemFixture.makeCatalog() })
   Assert.isTrue(bag:add("POTION", 1))
-  local items = PcStorageState.new({
-    mode = 3,
-    mons = mons,
-    bag = bag,
-    manifest = PcPresentationFixture.manifest(),
-    measureDisplay = function()
-      return measurement("wide")
-    end,
-    audio = { play = function() end },
-    icons = {},
-    portraits = {},
-    childFactories = {},
-  })
-  items:updateFixed({ { type = "action", action = "giveItem", item = "POTION" } })
+  local pickerSelected = true
+  local options = openOptions(mons, 3, "wide")
+  options.bag = bag
+  options.childFactories.heldItemPicker = function()
+    return {
+      updateFixed = function() end,
+      takeIntent = function()
+        if pickerSelected then
+          pickerSelected = false
+          return { kind = "pick", item = "POTION" }
+        end
+      end,
+      takeResult = function()
+        return nil
+      end,
+      dispose = function() end,
+    }
+  end
+  local items = PcStorageState.new(options)
+  items:updateFixed({ { type = "action", action = "giveItem" } })
+  Assert.equal(items:status().childKind, "heldItemPicker", "Give Item opens a child picker")
+  Assert.equal(mons:partyMon(0).heldItem, "NONE", "opening the picker leaves the Pokemon unchanged")
+  items:updateFixed({})
   Assert.equal(mons:partyMon(0).heldItem, "POTION")
   Assert.equal(bag:quantity("POTION"), 0)
   items:dispose()
@@ -483,7 +518,6 @@ function T.raw_pointer_selects_a_storage_target_through_the_state_owner()
   Assert.deepEqual(state:status().focus, { domain = "box", slot = 4 })
   state:dispose()
 end
-
 function T.missing_compiled_box_name_fails_instead_of_using_expansion_copy()
   local options = openOptions(monService(), 0, "wide")
   options.manifest.storage.boxNames[1] = nil

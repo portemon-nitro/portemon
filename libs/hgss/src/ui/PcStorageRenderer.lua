@@ -12,6 +12,27 @@ local LogicalSurface = require("libs.ui.src.LogicalSurface")
 local PcStorageRenderer = {}
 PcStorageRenderer.__index = PcStorageRenderer
 
+local ACTION_MESSAGES = {
+  deposit = 70,
+  withdraw = 69,
+  move = 61,
+  summary = 65,
+  markings = 67,
+  release = 68,
+  wallpaper = 78,
+  boxName = 27,
+  takeItem = 80,
+  giveItem = 81,
+  swapItems = 64,
+  cancel = 73,
+}
+
+local function sourceLabel(self, action)
+  local messageId = assert(ACTION_MESSAGES[action], "Storage menu action has a source message")
+  local bank = assert(self._manifest.text.banks[24], "Storage borrows source text bank 24")
+  return assert(bank[messageId], "Storage source message is compiled: " .. tostring(messageId))
+end
+
 local function imageFor(self, visual)
   assert(type(visual) == "table" and type(visual.image) == "string", "Storage visuals carry image paths")
   local image = self._images[visual.image]
@@ -61,7 +82,7 @@ local function drawIcon(graphics, provider, iconKey, x, y, scale)
 end
 
 local function drawMon(self, resources, mon, x, y, party)
-  if mon == nil then
+  if type(mon) ~= "table" then
     return
   end
   local graphics = self._graphics
@@ -99,7 +120,8 @@ local function drawEditor(self, view)
       end
     end
   elseif editor.kind == "wallpaper" then
-    self._text:drawText("Wallpaper", 37, 6)
+    local bank = assert(self._manifest.text.banks[24], "Storage borrows source text bank 24")
+    self._text:drawText(assert(bank[26], "Storage wallpaper heading is compiled"), 37, 6)
     local unlocks = assert(view.wallpaperUnlocks, "Storage snapshots carry wallpaper unlocks")
     for logicalId = 0, 23 do
       local storedId = logicalId < 16 and logicalId or logicalId + 16
@@ -141,7 +163,7 @@ function PcStorageRenderer:drawPane(view, resources, paneId, placement, singlePa
     end
     local showParty = paneId == "upper" or singlePane
     local showBox = paneId == "lower" or singlePane
-    for slot, mon in ipairs(view.boxSlots or {}) do
+    for slot, mon in ipairs(assert(view.boxSlots, "Storage snapshots carry all box slots")) do
       local index = slot - 1
       local source = view.carry and view.carry.source
       if
@@ -198,7 +220,11 @@ function PcStorageRenderer:drawPane(view, resources, paneId, placement, singlePa
       end
       if view.menu ~= nil then
         for index, action in ipairs(view.menu.actions) do
-          self._text:drawText((index == view.menu.selected and "> " or "  ") .. action, 8, 150 + index * 10)
+          local y = 150 + index * 10
+          if index == view.menu.selected then
+            graphics.rectangle("line", 4, y - 1, 248, 10)
+          end
+          self._text:drawText(sourceLabel(self, action), 8, y)
         end
       end
     end
