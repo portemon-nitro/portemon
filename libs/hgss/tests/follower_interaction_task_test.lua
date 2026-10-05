@@ -432,7 +432,7 @@ T["reaction effect startup is suppressed only on retail reaction-blocking tiles"
   for _, behavior in ipairs({ 46, 113, 114, 0, 2, 3 }) do
     local programs = {
       motions = {},
-      [10] = { steps = { { messageId = 1, reactionSelector = 3 } }, friendshipDelta = 0, moodDelta = 0 },
+      [10] = { steps = { { messageId = 1, reactionId = 3 } }, friendshipDelta = 0, moodDelta = 0 },
     }
     local ctx, seen = fixture(programs, { metatileBehavior = behavior })
     local state = FollowerInteractionTask.create({}, ctx)
@@ -643,7 +643,7 @@ T["cancellation during dialogue closes dialogue and removes reaction effect"] = 
   local programs = {
     motions = {},
     [10] = {
-      steps = { { messageId = 1, reactionSelector = 3 } },
+      steps = { { messageId = 1, reactionId = 3 } },
       friendshipDelta = 0,
       moodDelta = 0,
     },
@@ -791,7 +791,7 @@ T["reaction dialogue restore recreates presentation without serializing its hand
   local programs = {
     motions = {},
     [10] = {
-      steps = { { messageId = 1, reactionSelector = 3 } },
+      steps = { { messageId = 1, reactionId = 3 } },
       friendshipDelta = 0,
       moodDelta = 0,
     },

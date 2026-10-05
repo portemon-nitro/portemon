@@ -269,7 +269,7 @@ function FollowerInteractionTask.poll(state, ctx)
   if state.phase == "reaction" then
     local program = engine:program(state.programId)
     local step = program.steps[state.stepIndex]
-    local selector = step.reactionId or step.reactionSelector or 0
+    local selector = step.reactionId
     startReaction(state, svc, selector)
     if step.messageId ~= nil then
       local bindings = engine:bindings(state.leadSlot)
