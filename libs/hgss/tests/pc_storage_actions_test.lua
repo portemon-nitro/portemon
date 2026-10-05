@@ -142,6 +142,7 @@ function T.party_move_cannot_remove_the_last_usable_mon()
   local mons, bag = services()
   local actions = PcStorageActions.new({ mons = mons, bag = bag })
   local before = mons:partyMon(0)
+  local partyRevision, boxRevision = mons:partyRevision(), mons:boxRevision()
   local preview = actions:preview({
     kind = "move",
     source = { kind = "party", slot = 0 },
@@ -149,7 +150,13 @@ function T.party_move_cannot_remove_the_last_usable_mon()
   })
   Assert.equal(preview.kind, "refused")
   Assert.equal(preview.reason, "last_usable")
+  local committed = actions:commit(preview)
+  Assert.equal(committed.kind, "refused")
+  Assert.equal(committed.reason, "last_usable")
+  Assert.equal(mons:partyRevision(), partyRevision)
+  Assert.equal(mons:boxRevision(), boxRevision)
   Assert.deepEqual(mons:partyMon(0), before, "refused move leaves party custody intact")
+  Assert.isNil(mons:boxMon(0, 0), "refused move leaves destination empty")
 end
 
 local function assertPartyMoveAttachmentRefused(attachment, expectedReason)
@@ -174,6 +181,9 @@ local function assertPartyMoveAttachmentRefused(attachment, expectedReason)
 
   Assert.equal(preview.kind, "refused")
   Assert.equal(preview.reason, expectedReason)
+  local committed = actions:commit(preview)
+  Assert.equal(committed.kind, "refused")
+  Assert.equal(committed.reason, expectedReason)
   Assert.equal(mons:partyRevision(), partyRevision)
   Assert.equal(mons:boxRevision(), boxRevision)
   Assert.isNil(mons:boxMon(0, 0))
