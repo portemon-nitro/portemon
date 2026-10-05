@@ -36,14 +36,6 @@ function T.decodes_the_catalog_consumed_fields()
   Assert.equal(decoded.fieldPocket, 0)
 end
 
-function T.does_not_publish_the_natural_gift_source_byte()
-  local decoded = assert(compiler().decodeItemData(memberWith(0, 0, 120), {
-    archive = "item_data",
-    memberId = 234,
-  }))
-  Assert.isNil(decoded.naturalGiftPower)
-end
-
 function T.decodes_pocket_toss_and_selectable_bits()
   -- fieldPocket 1 (medicine), prevent_toss set, selectable clear.
   local word = 1 * 32 + 1 * 128
@@ -367,12 +359,6 @@ function T.shared_pp_operation_prefers_the_strongest_boost()
   local ether = assert(catalog.items.ETHER, "ETHER must compile")
   Assert.equal(ether.partyUse.kind, "pp")
   Assert.equal(ether.partyUse.boost, 1)
-end
-
-function T.compiled_catalog_omits_unused_gift_power_data()
-  local bytes = catalogBytes(0, false, nil, nil, 120)
-  local catalog = assert(compiler().compileCatalog(stubCatalogRom({ [17] = bytes }), { versionId = "heartgold" }))
-  Assert.isNil(catalog.items.POTION.naturalGiftPower)
 end
 
 function T.pins_the_machine_berry_and_mail_ranges()

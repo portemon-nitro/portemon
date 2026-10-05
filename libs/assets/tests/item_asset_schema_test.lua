@@ -55,7 +55,7 @@ end
 function T.catalogs_reject_malformed_item_records()
   local ItemAssetSchema = schema()
   local variants = {
-    extra_field = { price = 200 },
+    obsolete_gift_scalar = { naturalGiftPower = 120 },
     invalid_price = { price = 65536 },
     text_ball = { isBall = "yes" },
     negative_id = { nativeId = -1 },

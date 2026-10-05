@@ -4,6 +4,8 @@
 -- only the domain-known keys carry meaningful metadata. Shared by the item
 -- package tests and the mon package tests that construct catalogs.
 
+local ItemAssetSchema = require("libs.assets.src.ItemAssetSchema")
+
 local ItemFixture = {}
 
 ItemFixture.POCKET_KEYS = {
@@ -205,7 +207,7 @@ function ItemFixture.buildAssetRoot()
     key_items = { nativeId = 7, capacity = 50, maxQuantity = 999, ordering = "manual" },
   }
   return {
-    schema = "g4-item-catalog-v3",
+    schema = ItemAssetSchema.CATALOG_SCHEMA,
     version = { id = "heartgold", language = "en" },
     items = items,
     pockets = pockets,
