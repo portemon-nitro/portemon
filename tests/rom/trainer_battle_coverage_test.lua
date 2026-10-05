@@ -15,6 +15,7 @@
 local Assert = require("tests.support.Assert")
 local RomSuite = require("tests.rom.support.RomSuite")
 local SessionFixture = require("libs.battle.tests.session_fixture")
+local TrainerAi = require("libs.battle.src.gen4.TrainerAi")
 
 local T = {}
 
@@ -106,6 +107,21 @@ local function describePasses(passes)
     names[#names + 1] = tostring(pass)
   end
   return table.concat(names, ",")
+end
+
+---@param failures table<integer, table<string, string>> accepted-configuration missing-behavior diagnostics in traversal order
+---@return string one deterministic line per trainer carrying trainer, passes, and reason
+local function formatSupportedFailures(failures)
+  local lines = {}
+  for _, failure in ipairs(failures) do
+    lines[#lines + 1] = "trainer "
+      .. failure.trainer
+      .. " passes ["
+      .. failure.passes
+      .. "] missing behavior: "
+      .. failure.reason
+  end
+  return table.concat(lines, "\n")
 end
 
 ---@param entries table<string, unknown> distinct semantic keys under ordering
@@ -641,7 +657,8 @@ function T.generated_trainer_passes_answer_through_the_native_session(romFs, ver
   local seenDouble = false
   local seenPasses = 0
   local executedByTrainer = {} ---@type table<integer, boolean>
-  local failClosed = {} ---@type table<integer, table<string, string>>
+  local supportedFailures = {} ---@type table<integer, table<string, string>>
+  local unsupportedPasses = {} ---@type table<integer, table<string, string>>
   local doublesByTrainer = {} ---@type table<integer, boolean>
   local passesByTrainer = {} ---@type table<integer, table<integer, unknown>>
   local doubleIds = {} ---@type integer[]
@@ -663,64 +680,103 @@ function T.generated_trainer_passes_answer_through_the_native_session(romFs, ver
     end
     doublesByTrainer[trainerIndex] = doubles
     passesByTrainer[trainerIndex] = passes
-    local session = trainerSession(bundle, versionId, trainerIndex, passes, doubles)
-    local opening = SessionFixture.driveUntilSettled(session)
-    Assert.equal(opening.status, "waiting", "trainer " .. trainerIndex .. " reaches its opening decision")
-    local wanted = requestFor(opening, "trainer:" .. trainerIndex)
-    local ok, reply = pcall(function()
-      return session:answerTrainer(wanted)
+    -- The trainer policy owns the supported pass surface: only pass lists
+    -- it accepts reach the session below. Lists it rejects stay recorded
+    -- as explicitly unsupported and never execute here.
+    local parseOk, parseErr = pcall(function()
+      return TrainerAi.parsePasses(passes --[[@as string[] ]])
     end)
-    if not ok then
-      if isMissingBehavior(reply) then
-        failClosed[#failClosed + 1] = {
+    if not parseOk then
+      if isMissingBehavior(parseErr) then
+        unsupportedPasses[#unsupportedPasses + 1] = {
           trainer = tostring(trainerIndex),
           passes = describePasses(passes),
-          reason = tostring(reply),
+          reason = tostring(parseErr),
         }
-        session:dispose()
       else
-        session:dispose()
         error(
           "trainer "
             .. trainerIndex
             .. " passes ["
             .. describePasses(passes)
-            .. "] raw decision failure: "
-            .. tostring(reply),
+            .. "] malformed pass metadata: "
+            .. tostring(parseErr),
           0
         )
       end
     else
-      local answered = reply --[[@as table<string, unknown>]]
-      Assert.equal(
-        answered.requestId,
-        wanted.requestId,
-        "trainer " .. trainerIndex .. " answers its open request identity"
-      )
-      Assert.equal(answered.epoch, wanted.epoch, "trainer " .. trainerIndex .. " answers its open request epoch")
-      Assert.equal(
-        answered.controller,
-        wanted.controller,
-        "trainer " .. trainerIndex .. " answers under its own controller"
-      )
-      Assert.equal(
-        #(answered.choices --[[@as table<integer, unknown>]]),
-        #wanted.actors,
-        "trainer " .. trainerIndex .. " answers every addressed actor"
-      )
-      local stored, submitErr = session:submit(answered)
-      Assert.isTrue(stored, "trainer " .. trainerIndex .. " reply binds: " .. tostring(submitErr))
-      session:dispose()
-      executedByTrainer[trainerIndex] = true
+      local session = trainerSession(bundle, versionId, trainerIndex, passes, doubles)
+      local opening = SessionFixture.driveUntilSettled(session)
+      Assert.equal(opening.status, "waiting", "trainer " .. trainerIndex .. " reaches its opening decision")
+      local wanted = requestFor(opening, "trainer:" .. trainerIndex)
+      local ok, reply = pcall(function()
+        return session:answerTrainer(wanted)
+      end)
+      if not ok then
+        if isMissingBehavior(reply) then
+          supportedFailures[#supportedFailures + 1] = {
+            trainer = tostring(trainerIndex),
+            passes = describePasses(passes),
+            reason = tostring(reply),
+          }
+          session:dispose()
+        else
+          session:dispose()
+          error(
+            "trainer "
+              .. trainerIndex
+              .. " passes ["
+              .. describePasses(passes)
+              .. "] raw decision failure: "
+              .. tostring(reply),
+            0
+          )
+        end
+      else
+        local answered = reply --[[@as table<string, unknown>]]
+        Assert.equal(
+          answered.requestId,
+          wanted.requestId,
+          "trainer " .. trainerIndex .. " answers its open request identity"
+        )
+        Assert.equal(answered.epoch, wanted.epoch, "trainer " .. trainerIndex .. " answers its open request epoch")
+        Assert.equal(
+          answered.controller,
+          wanted.controller,
+          "trainer " .. trainerIndex .. " answers under its own controller"
+        )
+        Assert.equal(
+          #(answered.choices --[[@as table<integer, unknown>]]),
+          #wanted.actors,
+          "trainer " .. trainerIndex .. " answers every addressed actor"
+        )
+        local stored, submitErr = session:submit(answered)
+        Assert.isTrue(stored, "trainer " .. trainerIndex .. " reply binds: " .. tostring(submitErr))
+        session:dispose()
+        executedByTrainer[trainerIndex] = true
+      end
     end
   end
   Assert.isTrue(seenDouble, "the corpus holds at least one native double trainer for the topology gate")
   Assert.isTrue(seenPasses > 0, "the corpus must yield at least one generated pass for the coverage gate")
+  -- An accepted pass list that still misses behavior is a gap in claimed
+  -- support, never a waived skip: fail once after the full sweep with one
+  -- deterministic line per trainer so a single passing trainer cannot mask
+  -- other trainers. Trainers with explicitly unsupported pass lists stay
+  -- out of this gate and out of the executed counts below.
+  if #supportedFailures > 0 then
+    error(
+      "accepted trainer pass lists miss executable behavior:\n"
+        .. formatSupportedFailures(supportedFailures)
+        .. "\n(unsupported pass lists: "
+        .. #unsupportedPasses
+        .. ")",
+      0
+    )
+  end
   -- Every executed configuration replays its opening decision
   -- deterministically: the same passes answer with the same choices at
-  -- the same shared-stream cost on a fresh session. Trainers reporting
-  -- explicit structured missing behavior stay listed above instead of
-  -- failing: only raw decision failures are regressions. This is coverage
+  -- the same shared-stream cost on a fresh session. This is coverage
   -- plus determinism: it proves each executable pass list dispatches and
   -- replays, never that the answer matches native intent (only the
   -- owner-level program cases prove that, and they run without a dump).
@@ -749,13 +805,15 @@ function T.generated_trainer_passes_answer_through_the_native_session(romFs, ver
   end
   Assert.isTrue(
     executed > 0,
-    "at least one generated trainer executes its coverage decision (fail-closed: " .. #failClosed .. ")"
+    "at least one generated trainer executes its coverage decision (unsupported pass lists: "
+      .. #unsupportedPasses
+      .. ")"
   )
   -- At least one executed double trainer exercises the doubles selector:
   -- both positions answer attacks at live opposing slots with a recorded
   -- deterministic draw count, not two independent singles answers.
-  -- Fail-closed doubles trainers stay reported above; only executed ones
-  -- can cover the topology.
+  -- Trainers with unsupported pass lists never execute, so only executed
+  -- trainers can cover the topology.
   local doublesCovered = false
   for _, trainerIndex in ipairs(doubleIds) do
     if executedByTrainer[trainerIndex] then
@@ -784,7 +842,9 @@ function T.generated_trainer_passes_answer_through_the_native_session(romFs, ver
   end
   Assert.isTrue(
     doublesCovered,
-    "an executed doubles trainer answers attacks on both slots (fail-closed: " .. #failClosed .. ")"
+    "an executed doubles trainer answers attacks on both slots (unsupported pass lists: "
+      .. #unsupportedPasses
+      .. ")"
   )
 end
 
