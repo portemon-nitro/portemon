@@ -443,6 +443,52 @@ function T.tests.player_room_mailbox_event_shows_empty_mailbox_warning_and_retur
   end)
 end
 
+function T.tests.mailbox_actions_follow_party_presence_at_open()
+  withPlayerRoom(function(game)
+    local runtime = game.runtime
+    local mons = assert(runtime.monService, "field runtime owns the live Party service")
+    Assert.equal(mons:partyCount(), 0, "fresh player-room Party starts empty")
+    seedMailbox(game, 1)
+
+    local host = assert(runtime.pcApplicationHost, "field runtime owns the PC application host")
+    local emptyHandle = host:open({ app = "mailbox" })
+    host:setPresentationReady(emptyHandle, true)
+    host:step(emptyHandle, { { type = "confirm" } })
+    local emptyActions = host:status()
+    Assert.equal(emptyActions.phase, "action", "selecting the seeded letter opens its action menu")
+    Assert.deepEqual(emptyActions.menuActions, { "read", "cancel" }, "empty Party exposes only the source READ and CANCEL actions")
+    host:step(emptyHandle, { { type = "navigate", direction = "down" } })
+    Assert.equal(host:status().action, "cancel", "empty Party navigation reaches CANCEL as its last action")
+    host:step(emptyHandle, { { type = "navigate", direction = "down" } })
+    Assert.equal(host:status().action, "cancel", "empty Party navigation cannot move beyond CANCEL")
+    host:step(emptyHandle, { { type = "navigate", direction = "up" } })
+    Assert.equal(host:status().action, "read", "empty Party navigation returns to READ")
+    host:step(emptyHandle, { { type = "confirm" } })
+    Assert.equal(host:status().viewMode, "read", "READ opens the selected letter")
+    host:step(emptyHandle, { { type = "cancel" } })
+    Assert.equal(host:status().phase, "list", "cancelling the letter returns to the Mailbox list")
+    host:step(emptyHandle, { { type = "cancel" } })
+    Assert.deepEqual(host:result(emptyHandle), { kind = "closed" }, "cancelling the Mailbox reports its closed child")
+    host:close(emptyHandle)
+    Assert.isFalse(host:isActive(), "the field host closes the completed child")
+
+    Assert.isTrue(mons:giveMon({ species = "CHIKORITA", level = 5 }), "a live Party member is added for the second open")
+    Assert.equal(mons:partyCount(), 1, "the next Mailbox open sees the nonempty Party")
+    local fullHandle = host:open({ app = "mailbox" })
+    host:setPresentationReady(fullHandle, true)
+    host:step(fullHandle, { { type = "confirm" } })
+    local fullActions = host:status()
+    Assert.deepEqual(
+      fullActions.menuActions,
+      { "read", "erase", "give", "cancel" },
+      "nonempty Party retains the four source actions in order"
+    )
+    host:cancel("acceptance")
+    Assert.equal(assert(runtime.mailbox):usedCount(), 1, "opening and cancelling preserves the Mailbox record")
+    Assert.equal(game:renderAttempts(), 0, "Mailbox acceptance stops before GPU rendering")
+  end)
+end
+
 function T.tests.pokecenter_pc_metatile_routes_only_when_faced_north()
   withPokecenter(function(game)
     local terminalPlacement

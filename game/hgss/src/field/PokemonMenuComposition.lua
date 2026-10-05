@@ -204,6 +204,7 @@ function PokemonMenuComposition.create(deps)
     end
     return MailboxScreenState.new({
       mode = "mailbox",
+      partyHasMembers = mons:partyCount() > 0,
       mailbox = mailbox,
       mailActions = mailActions,
       manifest = pcManifest,
