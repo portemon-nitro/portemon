@@ -268,11 +268,17 @@ function SummaryPresentationFixture.manifest()
     schema = SummaryPresentationFixture.SCHEMA,
     paneSize = { width = 256, height = 192 },
     groups = {
-      info = { main = {}, sub = {} },
-      skills = { main = {}, sub = {} },
-      performance = { main = {}, sub = {} },
+      info = { main = { map = 1 }, sub = { normal = 2, restricted = 3 } },
+      skills = { main = { map = 4 }, sub = { normal = 5, restricted = 6 } },
+      performance = { main = { map = 7, locked = 8 }, sub = { normal = 9, noPerformance = 10 } },
     },
-    windows = {},
+    windows = {
+      synMainA = { pane = "main", rect = { x = 8, y = 8, width = 240, height = 32 }, palette = 13 },
+      synMainB = { pane = "main", rect = { x = 8, y = 48, width = 240, height = 64 }, palette = 13 },
+      synSubA = { pane = "sub", rect = { x = 8, y = 8, width = 240, height = 32 }, palette = 13 },
+      synSubB = { pane = "sub", rect = { x = 8, y = 48, width = 240, height = 64 }, palette = 13 },
+      synSubC = { pane = "sub", rect = { x = 8, y = 120, width = 240, height = 64 }, palette = 13 },
+    },
     visuals = {},
     sprites = {},
     hitboxes = {
@@ -294,7 +300,17 @@ function SummaryPresentationFixture.manifest()
         synRibbonCell1 = { top = 8, bottom = 39, left = 48, right = 79 },
       },
     },
-    text = { labels = labels, templates = {}, roles = {} },
+    text = {
+      labels = labels,
+      templates = {},
+      roles = {
+        slot13 = {
+          foreground = { r = 255, g = 255, b = 255, a = 255 },
+          shadow = { r = 107, g = 107, b = 107, a = 255 },
+          background = { r = 0, g = 0, b = 0, a = 0 },
+        },
+      },
+    },
     palettes = {},
     bars = {
       hp = {

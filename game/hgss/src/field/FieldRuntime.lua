@@ -1765,6 +1765,31 @@ function FieldRuntime:unbindPartyIconPreparation(binding)
   end
 end
 
+-- Installs the field summary preparation factory for the presented
+-- lifetime: the logical composition resolves it per summary open because
+-- presentation resources postdate the menu factories. The runtime owns
+-- no graphics here, only the acquire callback plus its binding identity.
+---@param acquire fun(): table<string, unknown> per-open summary lease factory
+---@return integer binding identity for the presented lifetime
+function FieldRuntime:bindSummaryPreparation(acquire)
+  assert(type(acquire) == "function", "summary preparation binding requires its acquire function")
+  assert(self._summaryPreparation == nil, "one summary preparation binding owns the presented lifetime")
+  self._summaryBindingId = (self._summaryBindingId or 0) + 1
+  self._summaryPreparation = { id = self._summaryBindingId, acquire = acquire }
+  return self._summaryBindingId
+end
+
+-- Removes only the matching binding: a stale unbind never drops a
+-- replacement owner, and summary factories created after disposal fail
+-- at launch instead of presenting without preparation.
+---@param binding integer binding identity from bindSummaryPreparation
+function FieldRuntime:unbindSummaryPreparation(binding)
+  local current = self._summaryPreparation
+  if current ~= nil and current.id == binding then
+    self._summaryPreparation = nil
+  end
+end
+
 ---@param rememberedActionId string?
 ---@return StartMenuState? nil when the source has no present actions
 function FieldRuntime:_composeStartMenu(rememberedActionId)

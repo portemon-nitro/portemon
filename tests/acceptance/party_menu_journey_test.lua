@@ -16,7 +16,7 @@ local FieldScriptSymbols = require("libs.assets.src.field.FieldScriptSymbols")
 local FieldState = require("game.hgss.src.field.FieldState")
 
 local T = {
-  metadata = { capabilities = { "rom_dump" }, derivedAssets = { "field-runtime", "audio-bank:700", "audio-bank:730", "audio-bank:759", "map-data:7", "map:7" }, tags = { "party", "bag", "journey" } },
+  metadata = { capabilities = { "rom_dump" }, derivedAssets = { "field-runtime", "audio-bank:700", "audio-bank:730", "audio-bank:759", "map-data:7", "map:7", "summary:global" }, tags = { "party", "bag", "journey" } },
   tests = {},
 }
 
@@ -39,6 +39,23 @@ local function requireVersions(context)
   return versions
 end
 
+-- Headless summary leases resolve instantly with the validated family:
+-- nothing draws (render attempts stay zero), so no portrait realizes.
+---@param game table<string, unknown> booted acceptance game
+local function bindSummaryLease(game)
+  local SummaryCache = require("libs.assets.src.SummaryCache")
+  local manifest = SummaryCache.loadManifest(assert(game.runtime.cacheFs, "the runtime owns its cache"))
+  game.runtime:bindSummaryPreparation(function()
+    local lease = {}
+    function lease:prepare(demand)
+      return { kind = "ready", key = demand.key, assets = { manifest = manifest } }
+    end
+    function lease:release()
+    end
+    return lease
+  end)
+end
+
 local function withGame(fn)
   local game = AcceptanceHarness.new():boot({
     versionId = AcceptanceHarness.defaultVersion(),
@@ -52,6 +69,7 @@ local function withGame(fn)
     game.runtime:bindPartyIconPreparation(function(_)
       return true
     end, function() end)
+    bindSummaryLease(game)
     fn(game)
     Assert.equal(game:renderAttempts(), 0, "menu journeys must stop before GPU rendering")
   end, debug.traceback)
@@ -153,7 +171,10 @@ end
 
 local function drive(flow, events)
   flow:updateFixed(events)
-  for _ = 1, 6 do
+  -- Summary-involved exits publish one extra full-black frame past the
+  -- six-update shutter cadence; the loop still breaks early for shorter
+  -- sibling transitions.
+  for _ = 1, 10 do
     if flow:status().transition == nil then
       break
     end
@@ -546,6 +567,7 @@ function T.tests.production_swap_summary_save_reload_persists(context)
     game.runtime:bindPartyIconPreparation(function(_)
       return true
     end, function() end)
+    bindSummaryLease(game)
     local fresh = game.runtime
     Assert.equal(fresh.monService:partyMon(0).species, "TOTODILE", "reload preserves the switched order")
     Assert.equal(fresh.monService:partyMon(1).species, "CHIKORITA", "reload preserves the full order")

@@ -1055,19 +1055,20 @@ function SummaryController:updateFixed(uiInput, gates)
   local hasCancel = false
   local hasConfirm = false
   local touches = {}
-  local useSample = self._readNavigation ~= nil
   for _, event in ipairs(uiInput) do
     assert(type(event) == "table" and type(event.type) == "string", "summary events need a type")
     if event.type == "navigate" then
-      if not useSample then
-        local direction = event.direction
-        assert(type(direction) == "string", "navigation needs a cardinal direction")
-        assert(
-          direction == "up" or direction == "down" or direction == "left" or direction == "right",
-          "navigation needs a cardinal direction"
-        )
-        navs[#navs + 1] = direction
-      end
+      -- Edges stay eligible behind a live sample: a non-nil sample
+      -- still wins below, while a nil sample falls back to the batch
+      -- edges instead of dropping them. Production behavior is
+      -- unchanged: an active sample always outranks the batch.
+      local direction = event.direction
+      assert(type(direction) == "string", "navigation needs a cardinal direction")
+      assert(
+        direction == "up" or direction == "down" or direction == "left" or direction == "right",
+        "navigation needs a cardinal direction"
+      )
+      navs[#navs + 1] = direction
     elseif event.type == "confirm" then
       hasConfirm = true
     elseif event.type == "cancel" or event.type == "dismiss" then
