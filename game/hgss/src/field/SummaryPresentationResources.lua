@@ -5,15 +5,18 @@
 -- while borrowed icon, queue, and text collaborators stay alive. Demand
 -- per lease is the Summary-owned referenced visuals plus the shader, the
 -- current roster icon keys, and at most the six unique portrait pages
--- behind the current party picture selectors; eggs resolve to small
+-- behind the current party portrait identities; eggs resolve to small
 -- Summary-owned visuals and demand no portrait page. Shared pages are
 -- coalesced across leases; releasing one lease never cancels a
 -- replacement lease's work. Portrait pages realize at most one new page
 -- per prepare call while the borrowed icon provider keeps its own
--- independent bound. Realized art stays cached at the owner while a live
--- lease watches it; the last release of shared demand frees each owned
--- object exactly once. A stale demand key can never be adopted as the
--- selected picture.
+-- independent bound. Every realized image is owned once under its
+-- canonical cache-relative path; semantic names and page ids resolve to
+-- that path instead of storing a second image. Realized art stays cached
+-- at the owner while a live lease watches it; the last release of shared
+-- demand frees each owned object exactly once, including quads and the
+-- picture shader, so a later lease re-decodes with fresh identities.
+-- A stale demand key can never be adopted as the selected picture.
 
 local MonCache = require("libs.assets.src.MonCache")
 local SummaryAssetSchema = require("libs.assets.src.SummaryAssetSchema")
@@ -52,17 +55,16 @@ end
 ---@field _manifest table<string, unknown>
 ---@field _portraitEntries table<string, table<string, unknown>>
 ---@field _visualPaths string[]
----@field _barPieces { rule: string, kind: string, path: string }[]
----@field _eggPath string?
----@field _images table<string, table<string, unknown>> realized visuals by visual key
----@field _tokens table<string, unknown> decode tokens by visual key
----@field _payloads table<string, table<string, unknown>> decoded payloads awaiting realization
----@field _pageImages table<integer, table<string, unknown>> realized portrait page images
----@field _quads table<string, unknown> realized quads by selector key
+---@field _imagesByPath table<string, table<string, unknown>> realized images by canonical path
+---@field _tokensByPath table<string, unknown> decode tokens by canonical path
+---@field _payloadsByPath table<string, table<string, unknown>> decoded payloads awaiting realization by path
+---@field _quads table<string, unknown> realized quads by selector and frame
+---@field _quadPaths table<string, string> owning page path per cached quad
 ---@field _shader table<string, unknown>? the one owned picture-palette shader
 ---@field _shaderFailed string? visible shader failure
 ---@field _shaderSource string?
 ---@field _released boolean
+---@field _leases table<string, unknown>[] per-open leases in acquisition order
 local SummaryPresentationResources = {}
 SummaryPresentationResources.__index = SummaryPresentationResources
 
@@ -74,28 +76,6 @@ SummaryPresentationResources.__index = SummaryPresentationResources
 ---@field preparationQueue table<string, unknown>
 ---@field derivedAssets table<string, unknown>
 ---@field manifest table<string, unknown>
-
----@param manifest table<string, unknown>
----@return { rule: string, kind: string, path: string }[] bar piece records
-local function barPieces(manifest)
-  local pieces = {}
-  local bars = manifest.bars
-  if type(bars) ~= "table" then
-    return pieces
-  end
-  for _, rule in ipairs({ "hp", "exp" }) do
-    local entry = bars[rule]
-    if type(entry) == "table" then
-      for _, kind in ipairs({ "empty", "full" }) do
-        local visual = entry[kind]
-        if type(visual) == "table" and type(visual.image) == "string" then
-          pieces[#pieces + 1] = { rule = rule, kind = kind, path = visual.image }
-        end
-      end
-    end
-  end
-  return pieces
-end
 
 ---@param opts SummaryPresentationResources.Options
 ---@return SummaryPresentationResources
@@ -125,14 +105,6 @@ function SummaryPresentationResources.new(opts)
   local portraitManifest =
     assert(cacheFs:loadLua(MonCache.portraitManifestPath()), "summary preparation needs the portrait manifest")
   assert(type(portraitManifest.entries) == "table", "the portrait manifest carries entries")
-  local eggPath = nil
-  local pictures = manifest.pictures
-  if type(pictures) == "table" and type(pictures.EGG) == "table" then
-    local visual = pictures.EGG.visual
-    if type(visual) == "string" then
-      eggPath = visual
-    end
-  end
   return setmetatable({
     _cacheFs = cacheFs,
     _graphics = graphics,
@@ -143,13 +115,11 @@ function SummaryPresentationResources.new(opts)
     _manifest = manifest,
     _portraitEntries = portraitManifest.entries,
     _visualPaths = SummaryCache.referencedPaths(manifest),
-    _barPieces = barPieces(manifest),
-    _eggPath = eggPath,
-    _images = {},
-    _tokens = {},
-    _payloads = {},
-    _pageImages = {},
+    _imagesByPath = {},
+    _tokensByPath = {},
+    _payloadsByPath = {},
     _quads = {},
+    _quadPaths = {},
     _shader = nil,
     _shaderFailed = nil,
     _shaderSource = nil,
@@ -158,40 +128,19 @@ function SummaryPresentationResources.new(opts)
 end
 
 ---@param self SummaryPresentationResources
----@param key string roster picture key (species or full portrait selector)
----@return integer? portrait page, or nil for egg art
-local function pageForKey(self, key)
-  assert(type(key) == "string" and key ~= "", "roster picture keys arrive as strings")
-  if key == "EGG" then
-    return nil
-  end
+---@param selector string full roster portrait identity
+---@return integer? portrait page behind the exact identity
+---@return string? absence cause when the generated manifest carries no page
+local function pageForSelector(self, selector)
   local entries = assert(self._portraitEntries, "summary preparation keeps its portrait entries")
-  if key:find("/", 1, true) ~= nil then
-    local entry = entries[key]
-    if entry == nil and key:find("/male/", 1, true) ~= nil then
-      entry = entries[key:gsub("/male/", "/female/")]
-    end
-    assert(type(entry) == "table", "the portrait manifest carries selector " .. key)
-    local pageId = assert(entry.pageId, "portrait entries carry their page")
-    assert(type(pageId) == "number", "portrait pages are numeric")
-    return pageId
+  local entry = entries[selector]
+  if type(entry) ~= "table" then
+    return nil, "the portrait manifest carries no page for " .. tostring(selector)
   end
-  local direct = entries[key .. "/f0/male/plain"]
-  if type(direct) == "table" and type(direct.pageId) == "number" then
-    return direct.pageId
+  local pageId = entry.pageId
+  if type(pageId) ~= "number" then
+    return nil, "the portrait entry for " .. tostring(selector) .. " carries no page"
   end
-  local prefix = key .. "/"
-  local match = nil
-  for selector in pairs(entries) do
-    if type(selector) == "string" and selector:sub(1, #prefix) == prefix then
-      if match == nil or selector < match then
-        match = selector
-      end
-    end
-  end
-  assert(type(match) == "string", "the portrait manifest carries species " .. key)
-  local pageId = assert(entries[match].pageId, "portrait entries carry their page")
-  assert(type(pageId) == "number", "portrait pages are numeric")
   return pageId
 end
 
@@ -201,10 +150,13 @@ local function checkDemand(demand)
   assert(type(demand.key) == "string" and demand.key ~= "", "demands carry their key")
   assert(type(demand.revision) == "number", "demands carry the roster revision")
   assert(type(demand.pictureEpoch) == "number", "demands carry the picture epoch")
-  assert(type(demand.rosterPictureKeys) == "table", "demands carry roster picture keys")
-  assert(#demand.rosterPictureKeys <= MAX_PORTRAIT_PAGES, "portrait demand stays within the current party")
-  for _, key in ipairs(demand.rosterPictureKeys) do
-    assert(type(key) == "string" and key ~= "", "roster picture keys arrive as strings")
+  assert(type(demand.portraitSelectors) == "table", "demands carry roster portrait selectors")
+  assert(#demand.portraitSelectors <= MAX_PORTRAIT_PAGES, "portrait demand stays within the current party")
+  for _, selector in ipairs(demand.portraitSelectors) do
+    assert(
+      type(selector) == "string" and selector:find("/", 1, true) ~= nil,
+      "roster portrait selectors arrive as full identities"
+    )
   end
   assert(type(demand.iconKeys) == "table", "demands carry roster icon keys")
   for _, key in ipairs(demand.iconKeys) do
@@ -214,13 +166,17 @@ end
 
 ---@param self SummaryPresentationResources
 ---@param demand table<string, unknown>
----@return integer[] sorted unique portrait pages behind the roster keys
+---@return integer[]? sorted unique portrait pages behind the exact selectors
+---@return string? absence cause naming the first selector without a page
 local function demandPages(self, demand)
   local seen = {}
   local pages = {}
-  for _, key in ipairs(demand.rosterPictureKeys) do
-    local pageId = pageForKey(self, key)
-    if pageId ~= nil and not seen[pageId] then
+  for _, selector in ipairs(demand.portraitSelectors) do
+    local pageId, cause = pageForSelector(self, selector)
+    if pageId == nil then
+      return nil, cause
+    end
+    if not seen[pageId] then
       seen[pageId] = true
       pages[#pages + 1] = pageId
     end
@@ -252,28 +208,27 @@ end
 -- and take exactly one ready payload. Failures cancel the token and name
 -- their cause; a second lease sharing the path reuses the same record.
 ---@param self SummaryPresentationResources
----@param key string visual key
 ---@param path string cache-relative image path
 ---@return "ready"|"pending"|"failed", string?
-local function advanceDecode(self, key, path)
-  if self._images[key] ~= nil then
+local function advanceDecode(self, path)
+  if self._imagesByPath[path] ~= nil then
     return "ready"
   end
-  if self._payloads[key] ~= nil then
+  if self._payloadsByPath[path] ~= nil then
     return "ready"
   end
-  local token = self._tokens[key]
+  local token = self._tokensByPath[path]
   if token == nil then
     local ok, requested = pcall(self._queue.request, self._queue, "image", path, "demand")
     if not ok then
       return "failed", tostring(requested)
     end
-    self._tokens[key] = requested
+    self._tokensByPath[path] = requested
     token = requested
   end
   local ok, pollState, pollCause = pcall(self._queue.poll, self._queue, token)
   if not ok then
-    self._tokens[key] = nil
+    self._tokensByPath[path] = nil
     return "failed", tostring(pollState)
   end
   -- The preparation harness reports table outcomes while the production
@@ -286,130 +241,133 @@ local function advanceDecode(self, key, path)
   end
   if state == "failed" then
     pcall(self._queue.cancel, self._queue, token)
-    self._tokens[key] = nil
+    self._tokensByPath[path] = nil
     return "failed", tostring(cause)
   end
   if state == "ready" then
     local takeOk, payload = pcall(self._queue.take, self._queue, token)
-    self._tokens[key] = nil
+    self._tokensByPath[path] = nil
     if not takeOk then
       return "failed", tostring(payload)
     end
     assert(type(payload) == "table", "decoded payloads arrive as records")
     payload.path = payload.path or path
-    self._payloads[key] = payload
+    self._payloadsByPath[path] = payload
     return "ready"
   end
   return "pending"
 end
 
--- Releases demand interest the lease no longer owns: tokens no other live
--- lease watches cancel through the borrowed queue; realized images stay
--- cached at the owner for their lifetime.
+---@param image table<string, unknown>? owned GPU object
+local function releaseOwned(image)
+  if image == nil then
+    return
+  end
+  if type(image) == "table" or type(image) == "userdata" then
+    if type(image.release) == "function" then
+      image:release()
+    end
+  end
+end
+
+-- Union of canonical paths still watched by live leases. Leases that
+-- never prepared watch nothing; released leases watch nothing.
 ---@param self SummaryPresentationResources
----@param lease table<string, unknown>
----@return table<string, boolean> demand keys still watched by another live lease
-local function liveWatchedKeys(self, lease)
+---@return table<string, boolean> canonical paths with live interest
+local function liveWatchedPaths(self)
   local watched = {}
   for _, other in pairs(self._leases or {}) do
-    if other ~= lease and other._released ~= true and type(other._watched) == "table" then
-      for _, key in ipairs(other._watched) do
-        watched[key] = true
+    if other._released ~= true and type(other._watched) == "table" then
+      for _, path in ipairs(other._watched) do
+        watched[path] = true
       end
     end
   end
   return watched
 end
 
--- Disposes owned art no live lease watches anymore: the last release of
--- shared demand frees each realized object exactly once, while a
--- surviving replacement lease keeps its coalesced demand usable without
--- re-decoding. Alias keys ride the same object guard as the release path.
+-- Drops owned state no live lease watches anymore: outstanding decode
+-- tokens cancel through the borrowed queue, decoded payloads clear, and
+-- each realized image releases exactly once. Quads resolve through their
+-- owning page path, so quads behind a dropped page clear with it. When
+-- no live lease watches anything, the owned quads and picture shader
+-- release as well and the shader failure clears so a later lease can
+-- retry; the shader source bytes stay cached because they own no GPU
+-- state. A surviving replacement lease keeps its coalesced demand
+-- usable without re-decoding.
 ---@param self SummaryPresentationResources
----@param watched table<string, boolean> demand keys kept by other live leases
+---@param watched table<string, boolean> canonical paths kept by live leases
 local function dropUnwatchedArt(self, watched)
-  local keepObject = {}
-  for key, image in pairs(self._images) do
-    if watched[key] == true then
-      keepObject[image] = true
+  for path, token in pairs(self._tokensByPath) do
+    if watched[path] ~= true then
+      pcall(self._queue.cancel, self._queue, token)
+      self._tokensByPath[path] = nil
     end
   end
-  for pageId, image in pairs(self._pageImages) do
-    if watched["page:" .. pageId] == true then
-      keepObject[image] = true
+  for path, _ in pairs(self._payloadsByPath) do
+    if watched[path] ~= true then
+      self._payloadsByPath[path] = nil
     end
   end
-  local dropped = false
-  for key, image in pairs(self._images) do
-    if keepObject[image] ~= true then
-      if type(image) == "table" or type(image) == "userdata" then
-        if type(image.release) == "function" then
-          pcall(image.release, image)
-        end
+  local dropped = {}
+  for path, image in pairs(self._imagesByPath) do
+    if watched[path] ~= true then
+      releaseOwned(image)
+      self._imagesByPath[path] = nil
+      dropped[path] = true
+    end
+  end
+  local keepQuads = next(dropped) == nil
+  if not keepQuads and next(watched) ~= nil then
+    for cacheKey, path in pairs(self._quadPaths) do
+      if dropped[path] == true then
+        releaseOwned(self._quads[cacheKey])
+        self._quads[cacheKey] = nil
+        self._quadPaths[cacheKey] = nil
       end
-      keepObject[image] = true
-      self._images[key] = nil
-      dropped = true
     end
   end
-  for pageId, image in pairs(self._pageImages) do
-    if keepObject[image] ~= true then
-      if type(image) == "table" or type(image) == "userdata" then
-        if type(image.release) == "function" then
-          pcall(image.release, image)
-        end
-      end
-      keepObject[image] = true
-      self._pageImages[pageId] = nil
-      dropped = true
+  if next(watched) == nil then
+    for cacheKey, quad in pairs(self._quads) do
+      releaseOwned(quad)
+      self._quads[cacheKey] = nil
+      self._quadPaths[cacheKey] = nil
     end
-  end
-  for key, _ in pairs(self._payloads) do
-    if watched[key] ~= true then
-      self._payloads[key] = nil
-      dropped = true
-    end
-  end
-  if dropped then
-    self._quads = {}
+    local shader = self._shader
+    self._shader = nil
+    releaseOwned(shader)
+    self._shaderFailed = nil
   end
 end
--- Releases demand interest the lease no longer owns: tokens no other live
--- lease watches cancel through the borrowed queue, and realized art no
+-- Releases the demand interest the lease no longer owns: paths no other
+-- live lease watches cancel through the borrowed queue, and owned art no
 -- live lease watches disposes so the last release frees every owned
 -- object exactly once. A surviving replacement lease keeps its coalesced
 -- demand without re-decoding.
 ---@param self SummaryPresentationResources
 ---@param lease table<string, unknown>
 local function dropLeaseInterest(self, lease)
-  local watched = liveWatchedKeys(self, lease)
-  for _, key in ipairs(lease._watched or {}) do
-    if not watched[key] and self._images[key] == nil and self._payloads[key] == nil then
-      local token = self._tokens[key]
-      if token ~= nil then
-        pcall(self._queue.cancel, self._queue, token)
-        self._tokens[key] = nil
-      end
-    end
-  end
-  dropUnwatchedArt(self, watched)
   lease._watched = {}
+  dropUnwatchedArt(self, liveWatchedPaths(self))
 end
 
 ---@param self SummaryPresentationResources
----@return table<string, unknown> ready bundle accessors over realized art
+---@return table<string, unknown> ready bundle accessors over canonical path-owned art
 local function readyBundle(self)
   local owner = self
+  local manifest = assert(owner._manifest, "summary preparation keeps its family")
   local portraits = {}
   function portraits:image(selector)
     assert(type(selector) == "string", "portrait reads name their selector")
-    local entry = assert(owner._portraitEntries[selector], "the portrait manifest carries " .. selector)
-    local image = assert(owner._pageImages[entry.pageId], "the portrait page is not prepared for " .. selector)
+    local entry = assert(owner._portraitEntries[selector], "the portrait manifest carries no page for " .. selector)
+    local pageId = assert(entry.pageId, "the portrait entry for " .. selector .. " carries its page")
+    local image = owner._imagesByPath[MonCache.portraitPagePath(pageId)]
+    assert(image ~= nil, "the portrait page is not prepared for " .. selector)
     return image
   end
   function portraits:quadFor(selector, frameIndex)
     assert(type(selector) == "string", "portrait reads name their selector")
-    local entry = assert(owner._portraitEntries[selector], "the portrait manifest carries " .. selector)
+    local entry = assert(owner._portraitEntries[selector], "the portrait manifest carries no page for " .. selector)
     local frames = assert(entry.frames, "portrait entries carry frames")
     local frame = frames[frameIndex or 1] or assert(frames[1], "portrait entries carry frames")
     local cacheKey = selector .. "#" .. tostring(frameIndex or 1)
@@ -418,28 +376,38 @@ local function readyBundle(self)
       local image = portraits:image(selector)
       quad = owner._graphics.newQuad(frame.x, frame.y, frame.width, frame.height, image:getWidth(), image:getHeight())
       owner._quads[cacheKey] = quad
+      owner._quadPaths[cacheKey] =
+        MonCache.portraitPagePath(assert(entry.pageId, "the portrait entry for " .. selector .. " carries its page"))
     end
     return quad
   end
   function portraits:dimensions(selector)
     assert(type(selector) == "string", "portrait reads name their selector")
-    local entry = assert(owner._portraitEntries[selector], "the portrait manifest carries " .. selector)
+    local entry = assert(owner._portraitEntries[selector], "the portrait manifest carries no page for " .. selector)
     return { width = entry.width, height = entry.height }
   end
   local bundle = {
-    manifest = owner._manifest,
+    manifest = manifest,
     portraits = portraits,
     icons = owner._icons,
     text = owner._text,
-    shader = owner._shader,
+    shader = assert(owner._shader, "ready preparation carries its picture shader"),
   }
   function bundle.visualImage(name)
-    return owner._images[name]
+    assert(type(name) == "string" and name ~= "", "visual reads name their record")
+    local visuals = assert(manifest.visuals, "the summary family carries its visuals")
+    local record = assert(visuals[name], "the summary family carries visual " .. name)
+    local path = assert(record.image, "visual " .. name .. " carries its image")
+    local image = owner._imagesByPath[path]
+    assert(image ~= nil, "visual " .. name .. " is not prepared at " .. path)
+    return image
   end
-  local function visualByName(_, name)
-    return owner._images[name]
+  function bundle.imageForPath(path)
+    assert(type(path) == "string" and path ~= "", "path reads name their cache-relative path")
+    local image = owner._imagesByPath[path]
+    assert(image ~= nil, "no prepared image for path " .. path)
+    return image
   end
-  bundle.visuals = setmetatable({}, { __index = visualByName })
   return bundle
 end
 
@@ -452,21 +420,25 @@ local function prepareLease(self, lease, demand)
   assert(lease._released ~= true, "the preparation lease is released")
   assert(lease._owner == self, "leases prepare through their owner")
   checkDemand(demand)
-  local pages = demandPages(self, demand)
+  local pages, pageCause = demandPages(self, demand)
+  if pages == nil then
+    return { kind = "failed", error = tostring(pageCause) }
+  end
   local watched = {}
   for _, path in ipairs(self._visualPaths) do
-    watched[#watched + 1] = "visual:" .. path
+    watched[#watched + 1] = path
   end
-  for _, piece in ipairs(self._barPieces) do
-    watched[#watched + 1] = "bar:" .. piece.rule .. "-" .. piece.kind
-  end
-  if self._eggPath ~= nil then
-    watched[#watched + 1] = "egg"
-  end
+  local pagePaths = {}
   for _, pageId in ipairs(pages) do
-    watched[#watched + 1] = "page:" .. pageId
+    local path = MonCache.portraitPagePath(pageId)
+    pagePaths[#pagePaths + 1] = path
+    watched[#watched + 1] = path
   end
   lease._watched = watched
+  -- A changed demand drops interest the union no longer owns before new
+  -- work starts, so cancelled tokens and their late completions can
+  -- never populate a path the live leases stopped watching.
+  dropUnwatchedArt(self, liveWatchedPaths(self))
   -- Roster icons ride the borrowed provider with its own lifetime: never
   -- cancelled or released here, only observed ready or failed.
   do
@@ -490,7 +462,8 @@ local function prepareLease(self, lease, demand)
     return { kind = "failed", error = "portrait compilation is unavailable" }
   end
   for _, pageId in ipairs(pages) do
-    if self._pageImages[pageId] == nil and self._payloads["page:" .. pageId] == nil then
+    local path = MonCache.portraitPagePath(pageId)
+    if self._imagesByPath[path] == nil and self._payloadsByPath[path] == nil then
       local ok, ready, failure = pcall(requestPage, self._derivedAssets, pageId, "required")
       if not ok then
         return { kind = "failed", error = tostring(ready) }
@@ -504,8 +477,8 @@ local function prepareLease(self, lease, demand)
     end
   end
   local pending = false
-  local function decodeVisual(key, path)
-    local state, cause = advanceDecode(self, key, path)
+  local function decodePath(path)
+    local state, cause = advanceDecode(self, path)
     if state == "failed" then
       return cause
     end
@@ -515,65 +488,51 @@ local function prepareLease(self, lease, demand)
     return nil
   end
   for _, path in ipairs(self._visualPaths) do
-    local failure = decodeVisual("visual:" .. path, path)
+    local failure = decodePath(path)
     if failure ~= nil then
       return { kind = "failed", error = failure }
     end
   end
-  for _, pageId in ipairs(pages) do
-    local failure = decodeVisual("page:" .. pageId, MonCache.portraitPagePath(pageId))
+  for _, path in ipairs(pagePaths) do
+    local failure = decodePath(path)
     if failure ~= nil then
       return { kind = "failed", error = failure }
     end
   end
   -- Realize decoded visuals as they arrive; portrait pages realize at
   -- most one new page per call so a cold open never uploads the party at
-  -- once. Realization failures name their page.
-  for key, payload in pairs(self._payloads) do
-    if self._images[key] == nil then
-      local isPage = key:sub(1, 5) == "page:"
-      if not isPage then
-        local ok, image = pcall(realizeImage, self, payload)
-        if not ok then
-          return { kind = "failed", error = tostring(image) }
-        end
-        self._images[key] = image
-        self._payloads[key] = nil
-      end
-    end
-  end
-  local realizedPage = false
-  for _, pageId in ipairs(pages) do
-    local key = "page:" .. pageId
-    if self._pageImages[pageId] == nil and self._payloads[key] ~= nil and not realizedPage then
-      local ok, image = pcall(realizeImage, self, self._payloads[key])
+  -- once. Realization failures name their path.
+  for _, path in ipairs(self._visualPaths) do
+    local payload = self._payloadsByPath[path]
+    if payload ~= nil and self._imagesByPath[path] == nil then
+      local ok, image = pcall(realizeImage, self, payload)
       if not ok then
         return { kind = "failed", error = tostring(image) }
       end
-      self._pageImages[pageId] = image
-      self._payloads[key] = nil
+      self._imagesByPath[path] = image
+      self._payloadsByPath[path] = nil
+    end
+    if self._imagesByPath[path] == nil then
+      pending = true
+    end
+  end
+  local realizedPage = false
+  for _, path in ipairs(pagePaths) do
+    if self._imagesByPath[path] == nil and self._payloadsByPath[path] ~= nil and not realizedPage then
+      local ok, image = pcall(realizeImage, self, self._payloadsByPath[path])
+      if not ok then
+        return { kind = "failed", error = tostring(image) }
+      end
+      self._imagesByPath[path] = image
+      self._payloadsByPath[path] = nil
       realizedPage = true
     end
-    if self._pageImages[pageId] == nil then
+    if self._imagesByPath[path] == nil then
       pending = true
     end
   end
   if pending then
     return { kind = "pending" }
-  end
-  -- Bar pieces and the egg visual register under their bundle keys once
-  -- their referenced image realizes.
-  for _, piece in ipairs(self._barPieces) do
-    local image = self._images["visual:" .. piece.path]
-    if image ~= nil then
-      self._images[piece.rule .. "-" .. piece.kind] = image
-    end
-  end
-  if self._eggPath ~= nil then
-    local egg = self._images["visual:" .. self._eggPath]
-    if egg ~= nil then
-      self._images.egg = egg
-    end
   end
   if self._shader == nil and self._shaderFailed == nil then
     if self._shaderSource == nil then
@@ -616,6 +575,14 @@ function SummaryPresentationResources:acquire()
     self._released = true
     if not owner._released then
       dropLeaseInterest(owner, self)
+      -- Released leases watch nothing, so drop them from the owner set:
+      -- the field lifetime outlives many per-open leases.
+      for index, other in ipairs(owner._leases or {}) do
+        if other == self then
+          table.remove(owner._leases, index)
+          break
+        end
+      end
     end
     self._watched = {}
   end
@@ -637,40 +604,26 @@ function SummaryPresentationResources:release()
     lease._watched = {}
   end
   self._leases = {}
-  for key, token in pairs(self._tokens) do
+  for path, token in pairs(self._tokensByPath) do
     pcall(self._queue.cancel, self._queue, token)
-    self._tokens[key] = nil
+    self._tokensByPath[path] = nil
   end
-  self._payloads = {}
-  -- Bundle keys alias shared art (bar pieces and the egg visual ride
-  -- their realized image under two keys): release each owned GPU object
-  -- once by identity so aliases never double-release.
-  local released = {}
-  local function releaseOwned(image)
-    if image == nil or released[image] == true then
-      return
-    end
-    released[image] = true
-    if type(image) == "table" or type(image) == "userdata" then
-      if type(image.release) == "function" then
-        pcall(image.release, image)
-      end
-    end
-  end
-  for key, image in pairs(self._images) do
+  self._payloadsByPath = {}
+  -- Each canonical path owns exactly one image, so releasing per path
+  -- releases each owned GPU object once with no alias bookkeeping.
+  for path, image in pairs(self._imagesByPath) do
     releaseOwned(image)
-    self._images[key] = nil
+    self._imagesByPath[path] = nil
   end
-  for pageId, image in pairs(self._pageImages) do
-    releaseOwned(image)
-    self._pageImages[pageId] = nil
+  for cacheKey, quad in pairs(self._quads) do
+    releaseOwned(quad)
+    self._quads[cacheKey] = nil
+    self._quadPaths[cacheKey] = nil
   end
-  self._quads = {}
   local shader = self._shader
   self._shader = nil
-  if type(shader) == "table" and type(shader.release) == "function" then
-    pcall(shader.release, shader)
-  end
+  self._shaderFailed = nil
+  releaseOwned(shader)
 end
 
 return SummaryPresentationResources

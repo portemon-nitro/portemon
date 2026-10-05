@@ -12,7 +12,9 @@ local MonsSave = require("libs.mons.src.MonsSave")
 local Party = require("libs.mons.src.Party")
 local ScreenTopology = require("libs.ui.src.ScreenTopology")
 local SummaryAcceptanceFixture = require("tests.support.SummaryAcceptanceFixture")
+local SummaryModel = require("libs.hgss.src.ui.SummaryModel")
 local SummaryPresentationFixture = require("tests.support.SummaryPresentationFixture")
+local MonCache = require("libs.assets.src.MonCache")
 local SummaryScreenState = require("game.hgss.src.field.SummaryScreenState")
 
 local T = {}
@@ -267,6 +269,94 @@ end
 -- family with an explicit display context and a counting preparation
 -- lease, so every plan below proves native main/sub geometry and the
 -- production dispatch path rather than a renderer-only substitute.
+
+-- Bounded preparation demand below: the wrapper derives one full portrait
+-- identity per non-egg roster member from the live facts and hands the
+-- lease exactly those identities with the roster icon keys, qualified by
+-- the demand key. Egg members contribute icons only and demand no page.
+
+---@param service table<string, unknown> live mon service
+---@param captured table<string, unknown>[] demand records by prepare call
+---@return table<string, unknown> wrapper constructor options with a capturing lease
+local function capturingComposition(service, captured)
+  local composed = composition(service)
+  local pending = 2
+  local lease = {}
+  function lease:prepare(demand)
+    captured[#captured + 1] = demand
+    if pending > 0 then
+      pending = pending - 1
+      return { kind = "pending" }
+    end
+    return { kind = "ready", key = demand.key, assets = { manifest = composed.manifest } }
+  end
+  function lease:release()
+  end
+  composed.acquirePreparation = function()
+    return lease
+  end
+  return composed
+end
+
+function T.preparation_demand_carries_exact_roster_portrait_selectors()
+  local catalog = CatalogFixture.makeCatalog()
+  local service = openService(catalog, 0x500A0001)
+  gift(service, "CHIKORITA")
+  gift(service, "TOTODILE")
+  local captured = {}
+  local state = SummaryScreenState.new(capturingComposition(service, captured))
+  settle(state, 24)
+  Assert.isTrue(#captured >= 1, "the wrapper prepares bounded portrait demand")
+  local demand = assert(captured[#captured], "the wrapper records its demand")
+  local manifest = SummaryPresentationFixture.manifest()
+  local context = SummaryPresentationFixture.context(service:partyCount())
+  local expected = {}
+  local icons = {}
+  do
+    local facts = SummaryModel.build(service, 0, context, manifest)
+    for _, row in ipairs(assert(facts.roster, "facts carry the party roster")) do
+      icons[#icons + 1] = assert(row.iconKey, "roster rows carry their icon key")
+      if row.isEgg ~= true then
+        expected[#expected + 1] = assert(row.portraitSelector, "non-egg rows carry their portrait identity")
+      end
+    end
+  end
+  Assert.deepEqual(demand.portraitSelectors, expected, "demand carries the exact roster portrait identities")
+  Assert.deepEqual(demand.iconKeys, icons, "demand keeps its roster icon keys")
+  Assert.isNil(demand.rosterPictureKeys, "demand no longer keys portraits by picture")
+  state:dispose()
+end
+
+function T.egg_only_demand_carries_no_portrait_selector()
+  local catalog = CatalogFixture.makeCatalog()
+  local service = openService(catalog, 0xE6600001)
+  local factory = CatalogFixture.makeFactory(0xE6600002, catalog)
+  local egg = factory:createNormal({
+    species = "EEVEE",
+    level = 5,
+    form = 0,
+    profile = CatalogFixture.profile(),
+    ball = "POKE_BALL",
+    location = 7,
+    terrain = 4,
+    date = CatalogFixture.metDate(),
+  })
+  egg.isEgg = true
+  egg.moves = {}
+  Assert.isTrue(service:addMon(egg), "the egg enters the party")
+  local captured = {}
+  local state = SummaryScreenState.new(capturingComposition(service, captured))
+  settle(state, 24)
+  Assert.isTrue(#captured >= 1, "the wrapper prepares its egg-only demand")
+  local demand = assert(captured[#captured], "the wrapper records its demand")
+  Assert.deepEqual(demand.portraitSelectors, {}, "eggs request zero portrait pages")
+  Assert.deepEqual(
+    demand.iconKeys,
+    { MonCache.iconSelector("EGG", 0, true) },
+    "egg demand keeps its icon key"
+  )
+  state:dispose()
+end
 
 ---@param class string one of dualDisplay, nativeLike, wide, tall
 ---@return table<string, unknown> measured display facts for the class

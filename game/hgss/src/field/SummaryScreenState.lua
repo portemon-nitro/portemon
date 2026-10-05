@@ -444,10 +444,10 @@ function SummaryScreenState:refreshPresentation(view)
   return self._session:resolve(self:_measured(), view or self:_view())
 end
 
--- Builds the bounded demand behind the current roster: all roster
--- picture selectors with their icon keys, qualified by revision and
--- picture epoch so a stale worker result can never satisfy a newer
--- selection.
+-- Builds the bounded demand behind the current roster: one full portrait
+-- identity per non-egg member in slot order with the roster icon keys,
+-- qualified by revision and picture epoch so a stale worker result can
+-- never satisfy a newer selection.
 ---@return table<string, unknown>? demand when facts build
 ---@return string? build failure when facts do not build
 local function currentDemand(self)
@@ -457,23 +457,17 @@ local function currentDemand(self)
   end
   local source = modelService(self)
   local manifest = self._manifest
-  local count = source:partyCount()
+  local buildOk, facts = pcall(SummaryModel.build, source, 0, context, manifest)
+  if not buildOk then
+    return nil, tostring(facts)
+  end
   local selectors = {}
   local iconKeys = {}
-  local facts0 = nil
-  for slot = 0, count - 1 do
-    local buildOk, facts = pcall(SummaryModel.build, source, slot, context, manifest)
-    if not buildOk then
-      return nil, tostring(facts)
-    end
-    selectors[#selectors + 1] = assert(facts.pictureKey, "facts carry the picture selector")
-    if slot == 0 then
-      facts0 = facts
-    end
-  end
-  assert(facts0 ~= nil, "a non-empty roster builds its first facts")
-  for _, row in ipairs(assert(facts0.roster, "facts carry the party roster")) do
+  for _, row in ipairs(assert(facts.roster, "facts carry the party roster")) do
     iconKeys[#iconKeys + 1] = assert(row.iconKey, "roster rows carry their icon key")
+    if row.isEgg ~= true then
+      selectors[#selectors + 1] = assert(row.portraitSelector, "non-egg roster rows carry their portrait identity")
+    end
   end
   local status = self._controller:status()
   local key = string.format("%d:%d", source:partyRevision(), status.pictureEpoch or 0)
@@ -481,7 +475,7 @@ local function currentDemand(self)
     key = key,
     revision = source:partyRevision(),
     pictureEpoch = status.pictureEpoch or 0,
-    rosterPictureKeys = selectors,
+    portraitSelectors = selectors,
     iconKeys = iconKeys,
   }
 end
