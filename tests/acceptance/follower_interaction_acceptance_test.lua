@@ -171,4 +171,36 @@ function T.tests.compiled_following_mon_script_blocks_on_live_interaction_and_re
   end
 end
 
+function T.tests.production_terrain_controller_emits_the_generated_follower_reaction()
+  local versionId = AcceptanceHarness.defaultVersion()
+  local game = boot(versionId)
+  local ok, err = xpcall(function()
+    game:waitForFieldReady()
+    local controller = assert(
+      game.runtime.fieldTerrainEffectController,
+      "the production runtime must compose its live terrain-effect controller"
+    )
+    local player = game:snapshot().player
+    local handle = controller:emit({
+      kind = "follower_reaction_1",
+      fieldX = player.fieldX,
+      fieldZ = player.fieldZ,
+      worldY = player.worldY,
+      direction = player.facing,
+    })
+    Assert.notNil(handle, "reaction emission must return a live instance handle")
+    local instances = controller:status().instances
+    Assert.equal(#instances, 1, "exactly one reaction instance must be live after emission")
+    Assert.equal(instances[1].id, handle, "the live instance must carry the emission handle")
+    Assert.equal(instances[1].kind, "follower_reaction_1", "the live instance must name the emitted reaction kind")
+    controller:remove(handle)
+    Assert.equal(#controller:status().instances, 0, "removing the probe must leave no live test instances behind")
+    Assert.equal(game:renderAttempts(), 0, "reaction composition acceptance must stop before GPU rendering")
+  end, debug.traceback)
+  game:close()
+  if not ok then
+    error(err, 0)
+  end
+end
+
 return T

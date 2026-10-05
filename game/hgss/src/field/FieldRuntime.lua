@@ -624,7 +624,8 @@ function FieldRuntime:_loadRuntimeAssets(boot, loadOptions)
   }
   for selector = 1, 14 do
     local kind = "follower_reaction_" .. selector
-    terrainEffects[kind] = self.fieldEntranceIndicatorAsset.effects[kind]
+    terrainEffects[kind] =
+      assert(self.fieldEntranceIndicatorAsset.effects[kind], "follower reaction definition is missing: " .. kind)
   end
   self.fieldTerrainEffectController = require("libs.hgss.src.world.FieldTerrainEffectController").new({
     effects = terrainEffects,

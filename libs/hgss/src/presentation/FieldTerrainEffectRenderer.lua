@@ -70,11 +70,13 @@ function FieldTerrainEffectRenderer:drawItems(status, runtimeMap)
     if effect.kind == "trainer_reveal" then
       local point = FieldCoordinates.fieldToWorld(runtimeMap, effect.fieldX, effect.fieldZ, effect.worldY)
       anchorX, anchorY, anchorZ = point.x, point.y, point.z
-    else
-      assert(runtimeMap and runtimeMap.projectPhysicalPoint, "terrain effect runtime map projection is required")
+    elseif runtimeMap.projectPhysicalPoint ~= nil and effect.cellKey ~= nil and effect.sourceSurfaceId ~= nil then
       local point =
         runtimeMap:projectPhysicalPoint(effect.fieldX, effect.fieldZ, effect.cellKey, effect.sourceSurfaceId)
       anchorX, anchorY, anchorZ = point.worldX, point.worldY, point.worldZ
+    else
+      local point = FieldCoordinates.fieldToWorld(runtimeMap, effect.fieldX, effect.fieldZ, effect.worldY)
+      anchorX, anchorY, anchorZ = point.x, point.y, point.z
     end
     local instance = assert(effect.modelInstance, "terrain effect model instance is missing")
     local resource = assert(self.resources[effect.kind], "terrain renderer is missing " .. effect.kind)

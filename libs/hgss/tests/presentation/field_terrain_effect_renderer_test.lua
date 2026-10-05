@@ -173,7 +173,7 @@ T.tests["empty status does not require physical projection"] = function()
   Assert.isTrue(ok, tostring(err))
 end
 
-T.tests["active status requires physical projection"] = function()
+T.tests["complete identity without projector falls back to committed coordinates"] = function()
   local renderer, cleanup = newRenderer()
   local ok, err = pcall(function()
     renderer:drawItems({
@@ -191,7 +191,42 @@ T.tests["active status requires physical projection"] = function()
   end)
   cleanup()
   Assert.isFalse(ok)
-  Assert.isTrue(tostring(err):find("terrain effect runtime map projection is required", 1, true) ~= nil)
+  Assert.isTrue(tostring(err):find("world Y must be a number", 1, true) ~= nil)
+  Assert.isTrue(tostring(err):find("terrain effect runtime map projection is required", 1, true) == nil)
+end
+
+T.tests["complete identity without projector renders from committed coordinates"] = function()
+  local renderer, cleanup = newRenderer()
+  local ok, result = pcall(function()
+    local runtimeMap = {
+      coordinateOrigin = { x = 0, z = 0 },
+      collision = {
+        containsLocal = function()
+          return true
+        end,
+      },
+    }
+    return renderer:drawItems({
+      instances = {
+        {
+          kind = "tall_grass",
+          fieldX = 2,
+          fieldZ = 5,
+          worldY = 3,
+          cellKey = "0:0",
+          sourceSurfaceId = 7,
+          modelInstance = renderer:newInstance("tall_grass"),
+        },
+      },
+    }, runtimeMap)
+  end)
+  cleanup()
+  Assert.isTrue(ok, tostring(result))
+  Assert.equal(#result, 1)
+  Assert.equal(result[1].transform[13], -13.5)
+  Assert.equal(result[1].transform[14], 3)
+  Assert.equal(result[1].transform[15], -9.875)
+  Assert.equal(result[1].fieldEffect, "tall_grass")
 end
 
 T.tests["coverage projection places grass on the centered tile"] = function()

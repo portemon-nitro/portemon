@@ -22,8 +22,8 @@ FollowerInteractionEngine.__index = FollowerInteractionEngine
 ---@field fieldX integer
 ---@field fieldZ integer
 ---@field worldY number
----@field cellKey string
----@field sourceSurfaceId integer
+---@field cellKey string?
+---@field sourceSurfaceId integer?
 
 ---@class FollowerInteractionRng
 ---@field chance fun(self: FollowerInteractionRng, numerator: integer, denominator: integer): boolean
@@ -366,13 +366,18 @@ function FollowerInteractionEngine:partnerEffectAnchor()
   local partner = assert(self.actors:getById(actorId), "partner actor is unavailable")
   local state = assert(partner:numericState(), "partner actor state is unavailable")
   assert(state.hasWorldPosition == 1, "partner actor world position is unavailable")
-  return {
+  local anchor = {
     fieldX = state.fieldX,
     fieldZ = state.fieldZ,
     worldY = state.worldY,
-    cellKey = assert(partner.cellKey, "partner actor cell identity is unavailable"),
-    sourceSurfaceId = assert(partner:getSourceSurfaceId(), "partner actor surface identity is unavailable"),
   }
+  local cellKey = partner.cellKey
+  local sourceSurfaceId = partner:getSourceSurfaceId()
+  if cellKey ~= nil and sourceSurfaceId ~= nil then
+    anchor.cellKey = cellKey
+    anchor.sourceSurfaceId = sourceSurfaceId
+  end
+  return anchor
 end
 
 function FollowerInteractionEngine:program(programId)

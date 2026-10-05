@@ -878,4 +878,24 @@ T["nearby-object selection counts local actors and recognizes special sprites"] 
   end
 end
 
+T["partner effect anchor omits absent source-surface identity"] = function()
+  local subject = engine({}, nil, {
+    followerPosition = { fieldX = 12, fieldZ = 8, worldY = 2.5 },
+  })
+  Assert.deepEqual(subject:partnerEffectAnchor(), {
+    fieldX = 12,
+    fieldZ = 8,
+    worldY = 2.5,
+  })
+
+  local halfStable = engine({}, nil, {
+    followerPosition = { fieldX = 12, fieldZ = 8, worldY = 2.5, cellKey = "upper" },
+  })
+  Assert.deepEqual(halfStable:partnerEffectAnchor(), {
+    fieldX = 12,
+    fieldZ = 8,
+    worldY = 2.5,
+  })
+end
+
 return { tests = T }
