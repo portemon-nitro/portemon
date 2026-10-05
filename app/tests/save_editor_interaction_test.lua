@@ -1233,4 +1233,81 @@ function T.tests.resize_republishes_the_location_viewport_on_the_next_refresh()
   Assert.equal(harness.service.updateCalls, 1, "the refresh still advances loading after a resize")
 end
 
+function T.tests.read_only_party_detail_scrolls_by_keyboard_without_activation()
+  local controller = Controller.new()
+  controller:setSection("Party")
+  local partyRows = {}
+  for index = 1, 30 do
+    partyRows[index] = {
+      role = "read-only value",
+      targetId = "party:readonly:field-" .. index,
+      id = "field-" .. index,
+      label = "Field " .. index,
+      value = index,
+    }
+  end
+  local metrics = {
+    lineHeight = 14,
+    measure = function(text)
+      return #text * 7
+    end,
+  }
+  local view = {
+    section = "Party",
+    status = "ready",
+    ready = true,
+    dirty = false,
+    partyPage = "detail",
+    partySlot0 = 0,
+    partySubpage = "Identity",
+    partySubpages = { "Identity", "Training", "Stats", "Moves", "Origin" },
+    partyRows = partyRows,
+    scrollOffsets = controller.scrollOffsets,
+  }
+  local function buildLayout()
+    return Layout.compute(view, 256, 192, metrics)
+  end
+  local layout = buildLayout()
+  local viewport = assert(layout.viewports.party, "the detail page publishes its scroll viewport")
+  Assert.isTrue(
+    viewport.contentExtent > viewport.clip.height,
+    "the long read-only detail overflows its viewport"
+  )
+  local region = assert(
+    layout.targets["party:detail-scroll"],
+    "an overflowing read-only detail publishes its keyboard scroll region"
+  )
+  Assert.isTrue(region.focusable, "the scroll region accepts keyboard and controller focus")
+
+  local activations = {}
+  local state = setmetatable({
+    status = "ready",
+    controller = controller,
+    _snapshot = function()
+      return view
+    end,
+    _resolve = function()
+      return { content = { layout = buildLayout() } }
+    end,
+    _activate = function(_, targetId)
+      activations[#activations + 1] = targetId
+    end,
+  }, State)
+  controller:setFocus("party:detail-scroll")
+  state:_dispatchIntent(controller:press("down"))
+  local downOffset = controller.scrollOffsets["party:detail:Identity"]
+  Assert.notNil(downOffset, "scrolling the detail region moves its viewport offset")
+  Assert.isTrue(downOffset > 0, "Down reveals later detail lines")
+  Assert.equal(controller.focus, "party:detail-scroll", "scrolling keeps the scroll region focused")
+  Assert.deepEqual(activations, {}, "scrolling never activates a detail row")
+
+  state:_dispatchIntent(controller:press("right"))
+  Assert.isTrue(
+    controller.scrollOffsets["party:detail:Identity"] >= downOffset,
+    "Right pages the detail viewport without editing"
+  )
+  Assert.equal(controller.focus, "party:detail-scroll", "paging keeps the scroll region focused")
+  Assert.deepEqual(activations, {}, "paging never activates a detail row")
+end
+
 return T

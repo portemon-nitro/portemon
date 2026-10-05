@@ -408,4 +408,60 @@ function T.name_variant_uses_naming_snapshot_and_submits_real_text()
   Assert.deepEqual(cancelEditor:result(), { kind = "cancel" })
 end
 
+function T.number_modal_uses_native_source_control_geometry_in_a_compact_frame()
+  local metrics = {
+    lineHeight = 14,
+    measure = function(text)
+      return #text * 7
+    end,
+  }
+  local sourceControls = {
+    { delta = 100, role = "increment", hitRect = { x = 120, y = 88, width = 32, height = 24 } },
+    { delta = 10, role = "increment", hitRect = { x = 152, y = 88, width = 32, height = 24 } },
+    { delta = 1, role = "increment", hitRect = { x = 184, y = 88, width = 32, height = 24 } },
+    { delta = -100, role = "decrement", hitRect = { x = 120, y = 136, width = 32, height = 24 } },
+    { delta = -10, role = "decrement", hitRect = { x = 152, y = 136, width = 32, height = 24 } },
+    { delta = -1, role = "decrement", hitRect = { x = 184, y = 136, width = 32, height = 24 } },
+  }
+  local view = {
+    section = "Player",
+    status = "ready",
+    ready = true,
+    session = { playerName = "PLAYER", money = 3000, frameIndex = 0 },
+    valueEditor = { kind = "number", buffer = "123", parsedValue = 123, minimum = 0, maximum = 999 },
+    scope = { id = "value:integer:money", epoch = 2, kind = "value", focusId = "confirm" },
+    numberControls = sourceControls,
+  }
+  local layout = SaveEditorLayout.compute(view, 640, 480, metrics)
+  local modal = assert(layout.valueModal, "the number editor owns a framed modal")
+  Assert.isTrue(
+    modal.width < 384 and modal.height < 192,
+    "the modal stays close to its source cluster instead of scaling a 256x192 system"
+  )
+  for _, control in ipairs(sourceControls) do
+    local target = assert(layout.targets["number:delta:" .. tostring(control.delta)]).rect
+    Assert.equal(target.width, control.hitRect.width, "delta controls keep native width")
+    Assert.equal(target.height, control.hitRect.height, "delta controls keep native height")
+    Assert.isTrue(
+      target.x >= modal.x and target.x + target.width <= modal.x + modal.width,
+      "delta controls stay inside the modal"
+    )
+    Assert.isTrue(
+      target.y >= modal.y and target.y + target.height <= modal.y + modal.height,
+      "delta controls stay inside the modal"
+    )
+  end
+  for _, id in ipairs({ "confirm", "cancel" }) do
+    local button = assert(layout.targets[id]).rect
+    Assert.isTrue(
+      button.x >= modal.x and button.x + button.width <= modal.x + modal.width,
+      id .. " stays inside the modal"
+    )
+    Assert.isTrue(
+      button.y >= modal.y and button.y + button.height <= modal.y + modal.height,
+      id .. " stays inside the modal"
+    )
+  end
+end
+
 return { tests = T }

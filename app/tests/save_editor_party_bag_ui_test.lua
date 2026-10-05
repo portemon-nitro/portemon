@@ -357,12 +357,26 @@ function T.party_grid_places_members_and_add_in_occupied_six_cell_positions()
       end
     end
     if #occupied >= 2 then
-      Assert.equal(occupied[1].y, occupied[2].y, "the first two occupied cells share the first row")
-      Assert.isTrue(occupied[2].x > occupied[1].x, "the second cell is in the second column")
+      local firstBand = { top = occupied[1].y, bottom = occupied[1].y + occupied[1].height }
+      local secondCenterY = occupied[2].y + occupied[2].height / 2
+      Assert.isTrue(
+        secondCenterY >= firstBand.top and secondCenterY <= firstBand.bottom,
+        "the second cell shares the first row band"
+      )
+      Assert.isTrue(
+        occupied[2].x + occupied[2].width / 2 > occupied[1].x + occupied[1].width / 2,
+        "the second cell is in the second column"
+      )
     end
     if #occupied >= 3 then
       Assert.isTrue(occupied[3].y > occupied[1].y, "the third cell starts the second row")
-      Assert.equal(occupied[3].x, occupied[1].x, "the third cell returns to the first column")
+      local firstCenterX = occupied[1].x + occupied[1].width / 2
+      local thirdCenterX = occupied[3].x + occupied[3].width / 2
+      local firstHalf = occupied[1].width / 2
+      Assert.isTrue(
+        math.abs(thirdCenterX - firstCenterX) <= firstHalf,
+        "the third cell returns to the first column band"
+      )
     end
   end
 end
@@ -404,8 +418,17 @@ function T.party_cards_use_bounded_icon_left_geometry_and_keep_grid_edges()
       local last = assert(layout.partyGrid[6])
       local gridWidth = last.rect.x + last.rect.width - first.rect.x
       Assert.isTrue(gridWidth <= 400, "wide cards do not grow across the window")
+      local cellWidth = first.rect.width
+      local gridSpan = cellWidth * 2 + 8
       Assert.isTrue(
-        math.abs((first.rect.x + last.rect.x + last.rect.width) / 2 - (layout.content.x + layout.content.width / 2)) < 1
+        math.abs((first.rect.x - layout.content.x) - (layout.content.x + layout.content.width - (first.rect.x + gridSpan))) < 1,
+        "the bounded member grid stays centered instead of stretching"
+      )
+      local addCenterX = last.rect.x + last.rect.width / 2
+      local secondColumnCenterX = first.rect.x + cellWidth + 8 + cellWidth / 2
+      Assert.isTrue(
+        math.abs(addCenterX - secondColumnCenterX) < cellWidth / 2,
+        "Add stays in the next slot column of the centered grid"
       )
     end
     Assert.deepEqual(layout.focusGraph["party:slot:0"].left, { "party:slot:0" }, "Left stays inside the Party grid")
@@ -946,6 +969,143 @@ function T.disabled_bag_and_footer_actions_are_not_focusable_or_pointer_targets(
   Assert.isNil(detailLayout.targets["party:move-up"], "reorder controls are removed")
   Assert.isNil(detailLayout.targets["party:move-down"], "reorder controls are removed")
   Assert.notNil(detailLayout.targets["party:back"], "the normal Back affordance remains available")
+end
+
+function T.large_party_and_bag_cards_stay_at_source_cell_size()
+  local cards = {}
+  for slot0 = 0, 4 do
+    cards[#cards + 1] = {
+      kind = "member",
+      slot0 = slot0,
+      label = "Member " .. (slot0 + 1),
+      species = "Species " .. (slot0 + 1),
+      level = 5,
+    }
+  end
+  cards[#cards + 1] = { kind = "add", slot0 = 5, label = "Add Pokemon" }
+  local view = {
+    section = "Party",
+    status = "ready",
+    ready = true,
+    dirty = false,
+    partyPage = "list",
+    partyCanAdd = true,
+    partyMemberCount = 5,
+    partyCards = cards,
+    partyRows = {},
+  }
+  local layout = computeLayout(view, 1280, 720)
+  local first = assert(layout.partyGrid[1]).rect
+  Assert.isTrue(first.width <= 128, "member cells never exceed the source panel width")
+  Assert.isTrue(first.height <= 48, "member cells never exceed the source panel height")
+  local left, right = first.x, first.x + first.width
+  for _, cell in ipairs(layout.partyGrid) do
+    left = math.min(left, cell.rect.x)
+    right = math.max(right, cell.rect.x + cell.rect.width)
+  end
+  Assert.isTrue(right - left <= 280, "the two-column member grid stays bounded on large screens")
+
+  local bagRows = {}
+  for index = 1, 3 do
+    bagRows[index] = { item = "ITEM_" .. index, label = "Item " .. index, quantity = index }
+  end
+  local bagLayout = computeLayout(bagView(bagRows, 0), 1280, 720)
+  local bagCard = assert(bagLayout.bagGrid[1]).rect
+  Assert.isTrue(bagCard.width <= 128, "Bag cards never exceed the source cell width")
+  local bagLeft, bagRight = bagCard.x, bagCard.x + bagCard.width
+  for _, cell in ipairs(bagLayout.bagGrid) do
+    bagLeft = math.min(bagLeft, cell.rect.x)
+    bagRight = math.max(bagRight, cell.rect.x + cell.rect.width)
+  end
+  Assert.isTrue(
+    math.abs((bagLeft - bagLayout.content.x) - (bagLayout.content.x + bagLayout.content.width - bagRight)) < 2,
+    "the bounded Bag grid stays centered on large screens"
+  )
+end
+
+function T.party_add_is_a_small_bounded_button_in_the_next_slot()
+  for _, count in ipairs({ 1, 4, 5 }) do
+    local cards = {}
+    for slot0 = 0, count - 1 do
+      cards[#cards + 1] = {
+        kind = "member",
+        slot0 = slot0,
+        label = "Member " .. (slot0 + 1),
+        species = "Species " .. (slot0 + 1),
+        level = 5,
+      }
+    end
+    cards[#cards + 1] = { kind = "add", slot0 = count, label = "+ Add" }
+    local view = {
+      section = "Party",
+      status = "ready",
+      ready = true,
+      dirty = false,
+      partyPage = "list",
+      partyCanAdd = true,
+      partyMemberCount = count,
+      partyCards = cards,
+      partyRows = {},
+    }
+    for _, size in ipairs({ { 256, 192 }, { 1280, 720 } }) do
+      local layout = computeLayout(view, size[1], size[2])
+      local add = assert(layout.targets["party:add"], count .. " members keep Add visible").rect
+      Assert.isTrue(add.width <= 72, "Add never grows into a full member card")
+      Assert.isTrue(add.height <= 28, "Add stays a compact control")
+      Assert.equal(Layout.hitTest(layout, view, add.x + add.width / 2, add.y + add.height / 2), "party:add")
+    end
+  end
+end
+
+function T.wide_bag_pocket_tabs_keep_left_and_right_on_pockets()
+  local rows = { { item = "POKE_BALL", label = "Poke Ball", quantity = 3 } }
+  local layout = computeLayout(bagView(rows, 0), 800, 600)
+  local keys = { "items", "medicine", "balls", "battle_items", "berries", "mail", "key_items", "machines" }
+  for index, key in ipairs(keys) do
+    local targetId = "bag:pocket:" .. key
+    local node = assert(layout.focusGraph[targetId], targetId .. " stays in the focus graph")
+    local previous = keys[(index - 2) % #keys + 1]
+    local following = keys[index % #keys + 1]
+    Assert.deepEqual(node.left, { "bag:pocket:" .. previous }, targetId .. " Left stays on pockets")
+    Assert.deepEqual(node.right, { "bag:pocket:" .. following }, targetId .. " Right stays on pockets")
+  end
+
+  local controller = Controller.new()
+  controller:setSection("Bag")
+  controller:setFocus("bag:pocket:balls")
+  controller:moveFocus(layout.focusGraph, "left")
+  Assert.equal(controller.focus, "bag:pocket:medicine", "Left from a middle pocket selects the previous pocket")
+  controller:setFocus("bag:pocket:items")
+  controller:moveFocus(layout.focusGraph, "left")
+  Assert.equal(controller.focus, "bag:pocket:machines", "Left from the first pocket wraps to the last")
+end
+
+function T.nested_party_actions_carry_their_own_semantics()
+  local catalog = CatalogFixture.makeCatalog()
+  local factory = CatalogFixture.makeFactory(0x12345678, catalog)
+  local mon = factory:createNormal(CatalogFixture.normalRequest())
+  local context = { monCatalog = catalog, itemCatalog = CatalogFixture.makeItemCatalog() }
+  local partyView = PartyView.new(context)
+  local projection = { nature = require("libs.mons.src.gen4.Personality").nature(mon.personality) }
+
+  local removeRows = {}
+  for _, row in ipairs(PartyView.rows(partyView, mon, projection, "Moves", true)) do
+    if row.targetId ~= nil and row.targetId:match("^party:move:remove:") ~= nil then
+      removeRows[#removeRows + 1] = row
+    end
+  end
+  Assert.isTrue(#removeRows > 0, "the Moves page exposes per-move removal actions")
+  for _, row in ipairs(removeRows) do
+    Assert.equal(row.semantic, "destructive", "removing a move is a destructive action")
+  end
+
+  local clearSemantic = nil
+  for _, row in ipairs(PartyView.rows(partyView, mon, projection, "Identity", true)) do
+    if row.targetId == "party:clear-nickname" then
+      clearSemantic = row.semantic
+    end
+  end
+  Assert.equal(clearSemantic, "destructive", "clearing a nickname is a destructive action")
 end
 
 return { tests = T }

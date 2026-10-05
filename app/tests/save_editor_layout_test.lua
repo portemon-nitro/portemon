@@ -690,4 +690,128 @@ function T.tests.save_editor_list_and_card_geometry_is_bounded_and_row_major()
   end, "card count cannot exceed the six visible cells")
 end
 
+function T.tests.filterable_lists_reserve_a_hint_line_above_their_rows()
+  local metrics = filterMetrics()
+  local flags = progressFilterFlags()
+  for _, query in ipairs({ "", "beat" }) do
+    local layout = Layout.compute(progressFilterView(flags, query), 256, 192, metrics)
+    local surface = assert(layout.listSurfaces[1], "the flag list owns one framed surface")
+    local firstRow = assert(layout.targets["flag:" .. flags[1].name]).rect
+    Assert.isTrue(
+      firstRow.y - surface.y >= metrics.lineHeight,
+      "flag rows begin below one hint line inside the surface (query=" .. query .. ")"
+    )
+    Assert.isTrue(
+      layout.targets["list:flags"].rect.y <= surface.y + 2,
+      "the list container still spans the complete surface"
+    )
+  end
+
+  local options = {}
+  for index = 1, 6 do
+    options[index] = { key = string.format("K%02d", index), label = "Choice " .. index }
+  end
+  local choiceView = {
+    section = "Bag",
+    status = "ready",
+    ready = true,
+    dirty = false,
+    bagRows = {},
+    valueEditor = { kind = "choice", options = options, selectedKey = "K01" },
+    scope = { id = "value:choice", epoch = 1, kind = "value", focusId = "choice:K01" },
+    scrollOffsets = {},
+  }
+  local choiceLayout = Layout.compute(choiceView, 256, 192, metrics)
+  local choiceSurface = assert(choiceLayout.listSurfaces[1], "the choice list owns one framed surface")
+  local firstChoice = assert(choiceLayout.targets["choice:K01"]).rect
+  Assert.isTrue(
+    firstChoice.y - choiceSurface.y >= metrics.lineHeight,
+    "choice rows begin below one hint line inside the surface"
+  )
+
+  for _, scoped in ipairs({
+    computeLayout(progressFilterView(flags, ""), 256, 192),
+    choiceLayout,
+  }) do
+    for targetId in pairs(scoped.targets) do
+      Assert.isFalse(
+        targetId:find("search", 1, true) ~= nil or targetId == "clear-search",
+        "filtering needs no standalone search target: " .. targetId
+      )
+    end
+    for _, focusId in ipairs(scoped.focusOrder) do
+      Assert.isFalse(focusId:find("search", 1, true) ~= nil, "no search control enters focus order")
+    end
+  end
+end
+
+function T.tests.adjacent_action_controls_keep_a_minimum_gap_without_overlap()
+  local metrics = filterMetrics()
+  local draft = {
+    section = "Party",
+    status = "ready",
+    ready = true,
+    dirty = true,
+    partyPage = "draft",
+    partyDirty = true,
+    partyValid = true,
+    partySubpage = "Identity",
+    partySubpages = { "Identity", "Training", "Stats", "Moves", "Origin" },
+    partyRows = {},
+  }
+  for _, size in ipairs({ { 256, 192 }, { 800, 600 } }) do
+    local layout = Layout.compute(draft, size[1], size[2], metrics)
+    local apply = assert(layout.targets["party:apply"]).rect
+    local discard = assert(layout.targets["party:discard"]).rect
+    Assert.isTrue(
+      discard.x - (apply.x + apply.width) >= 4,
+      size[1] .. "px draft actions keep at least 4px between neighbors"
+    )
+    local rects = {}
+    for _, target in pairs(layout.targets) do
+      if target.rect ~= nil then
+        rects[#rects + 1] = target.rect
+      end
+    end
+    for left = 1, #rects do
+      for right = left + 1, #rects do
+        local a, b = rects[left], rects[right]
+        local overlap = a.x < b.x + b.width
+          and b.x < a.x + a.width
+          and a.y < b.y + b.height
+          and b.y < a.y + a.height
+        Assert.isFalse(overlap, size[1] .. "px draft controls never overlap")
+      end
+    end
+  end
+end
+
+function T.tests.wide_buttons_stay_bounded_and_action_groups_stay_centered()
+  local metrics = filterMetrics()
+  local draft = {
+    section = "Party",
+    status = "ready",
+    ready = true,
+    dirty = true,
+    partyPage = "draft",
+    partyDirty = true,
+    partyValid = true,
+    partySubpage = "Identity",
+    partySubpages = { "Identity", "Training", "Stats", "Moves", "Origin" },
+    partyRows = {},
+  }
+  local layout = Layout.compute(draft, 1280, 720, metrics)
+  local left, right = nil, nil
+  for _, id in ipairs({ "party:apply", "party:discard", "party:cancel" }) do
+    local rect = assert(layout.targets[id]).rect
+    Assert.isTrue(rect.width <= 128, id .. " never stretches with a large viewport")
+    left = left == nil and rect.x or math.min(left, rect.x)
+    right = right == nil and rect.x + rect.width or math.max(right, rect.x + rect.width)
+  end
+  Assert.isTrue(
+    math.abs((left - layout.content.x) - (layout.content.x + layout.content.width - right)) < 2,
+    "the bounded action group stays centered instead of stretching"
+  )
+end
+
 return T

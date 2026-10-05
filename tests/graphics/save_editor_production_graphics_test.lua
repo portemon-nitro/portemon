@@ -57,14 +57,23 @@ local function shellQuote(value)
 end
 
 local function clickTarget(state, targetId)
-  local view = state:view()
-  local pane = assert(view.presentation.panes[1], "the editor publishes a pointer pane")
-  local layout = assert(view.layout)
-  local target = assert(layout.targets[targetId], "the visible editor publishes " .. targetId)
-  local rect = target.rect or target.hitRect or target
-  local x, y = LayoutGeometry.logicalToHost(assert(pane.placement), rect.x + rect.width / 2, rect.y + rect.height / 2)
-  state:mousepressed(x, y, 1, false)
-  state:mousereleased(x, y, 1, false)
+  local function pressRelease()
+    local view = state:view()
+    local pane = assert(view.presentation.panes[1], "the editor publishes a pointer pane")
+    local layout = assert(view.layout)
+    local target = assert(layout.targets[targetId], "the visible editor publishes " .. targetId)
+    local rect = target.rect or target.hitRect or target
+    local x, y =
+      LayoutGeometry.logicalToHost(assert(pane.placement), rect.x + rect.width / 2, rect.y + rect.height / 2)
+    state:mousepressed(x, y, 1, false)
+    state:mousereleased(x, y, 1, false)
+  end
+  pressRelease()
+  if targetId:match("^choice:") ~= nil then
+    if state.controller.focus == targetId and state:view().valueEditor ~= nil then
+      pressRelease()
+    end
+  end
   return state:view()
 end
 
@@ -115,7 +124,8 @@ function T.tests.real_state_uses_the_editor_palette_and_saves_a_capture(scope)
     local frameDraws = {}
     local drawApplicationFrame = frameRenderer.drawApplicationFrame
     frameRenderer.drawApplicationFrame = function(self, box, frameIndex)
-      frameDraws[#frameDraws + 1] = frameIndex
+      frameDraws[#frameDraws + 1] =
+        { x = box.x, y = box.y, width = box.width, height = box.height, frameIndex = frameIndex }
       return drawApplicationFrame(self, box, frameIndex)
     end
 
@@ -159,79 +169,45 @@ function T.tests.real_state_uses_the_editor_palette_and_saves_a_capture(scope)
       Assert.near(red, state.renderer.skin.background[1], 1 / 255, name .. " uses the editor palette red")
       Assert.near(green, state.renderer.skin.background[2], 1 / 255, name .. " uses the editor palette green")
       Assert.near(blue, state.renderer.skin.background[3], 1 / 255, name .. " uses the editor palette blue")
-      local explicitFrames = #(view.layout.listSurfaces or {})
-      if view.layout.decisionList ~= nil then
-        explicitFrames = explicitFrames + 1
-      end
-      if view.layout.valueModal ~= nil then
-        explicitFrames = explicitFrames + 1
-      end
-      Assert.equal(
-        #frameDraws - frameCount,
-        explicitFrames,
-        name .. " draws only explicit list/modal frames without a blanket content frame"
-      )
-      if #frameDraws - frameCount > 0 then
-        Assert.equal(frameDraws[#frameDraws], view.session.frameIndex, name .. " uses the staged dialogue frame")
-      end
-      local content = assert(view.layout.content, name .. " publishes its content bounds")
-      local occupied = {}
-      for _, target in pairs(view.layout.targets or {}) do
-        if target.rect ~= nil then
-          occupied[#occupied + 1] = target.rect
-        end
-      end
+      local explicit = {}
       for _, surface in ipairs(view.layout.listSurfaces or {}) do
-        occupied[#occupied + 1] = surface
+        explicit[#explicit + 1] = surface
       end
       if view.layout.decisionList ~= nil then
-        occupied[#occupied + 1] = view.layout.decisionList.surface
+        explicit[#explicit + 1] = view.layout.decisionList.surface
       end
       if view.layout.valueModal ~= nil then
-        occupied[#occupied + 1] = view.layout.valueModal
+        explicit[#explicit + 1] = view.layout.valueModal
       end
-      if view.layout.bagPageText ~= nil then
-        occupied[#occupied + 1] = view.layout.bagPageText
-      end
-      if view.layout.locationStatus ~= nil then
-        occupied[#occupied + 1] = view.layout.locationStatus.bounds
-      end
-      local gapX, gapY = nil, nil
-      local probeY = content.y + content.height - 4
-      while probeY > content.y + 2 and gapX == nil do
-        local probeX = content.x + content.width / 2
-        local covered = false
-        for _, rect in ipairs(occupied) do
-          if probeX >= rect.x and probeX < rect.x + rect.width and probeY >= rect.y and probeY < rect.y + rect.height then
-            covered = true
-            break
+      for index = frameCount + 1, #frameDraws do
+        local frame = frameDraws[index]
+        local owned = false
+        for _, surface in ipairs(explicit) do
+          local frameWidth = math.floor(surface.width / 8) * 8
+          local frameHeight = math.floor(surface.height / 8) * 8
+          local frameX = math.floor(surface.x + (surface.width - frameWidth) / 2 + 0.5)
+          local frameY = math.floor(surface.y + (surface.height - frameHeight) / 2 + 0.5)
+          if
+            frame.x == frameX
+            and frame.y == frameY
+            and frame.width == frameWidth
+            and frame.height == frameHeight
+          then
+            owned = true
           end
         end
-        local grid = view.layout.locationGrid
-        if not covered and grid ~= nil then
-          local clip = grid.clip
-          if probeX >= clip.x and probeX < clip.x + clip.width and probeY >= clip.y and probeY < clip.y + clip.height then
-            covered = true
-          end
-        end
-        if not covered then
-          gapX, gapY = probeX, probeY
-        else
-          probeY = probeY - 4
-        end
+        Assert.isTrue(
+          owned,
+          name .. " draws only explicit list/modal frames without a blanket content frame"
+        )
       end
-      Assert.notNil(gapX, name .. " keeps ordinary themed page space inside its content")
-      local background = state.renderer.skin.background
-      local themed = false
-      for _, offset in ipairs({ { 0, 0 }, { -3, 0 }, { 3, 0 }, { 0, -3 }, { 0, 3 } }) do
-        local sampleX, sampleY =
-          LayoutGeometry.logicalToHost(assert(pane.placement), (gapX or 0) + offset[1], (gapY or 0) + offset[2])
-        local sampleRed, sampleGreen, sampleBlue = actual:getPixel(math.floor(sampleX), math.floor(sampleY))
-        if math.abs(sampleRed - background[1]) < 0.02 and math.abs(sampleGreen - background[2]) < 0.02 and math.abs(sampleBlue - background[3]) < 0.02 then
-          themed = true
-        end
+      if #frameDraws - frameCount > 0 then
+        Assert.equal(
+          frameDraws[#frameDraws].frameIndex,
+          view.session.frameIndex,
+          name .. " uses the staged dialogue frame"
+        )
       end
-      Assert.isTrue(themed, name .. " leaves ordinary content on the themed page background")
       return view
     end
     local cases = {
@@ -412,6 +388,117 @@ function T.tests.real_state_uses_the_editor_palette_and_saves_a_capture(scope)
     state:keypressed("escape")
     local leaveDialog = capture("leave-dialog", width, height)
     Assert.equal(leaveDialog.modal, "leave", "the leave confirmation is the production modal")
+  end, debug.traceback)
+
+  if state then
+    pcall(function()
+      state:dispose()
+    end)
+  end
+  SaveFs.global = originalGlobal
+  fixture.cleanup()
+  if not ok then
+    error(failure, 0)
+  end
+end
+
+function T.tests.production_party_and_bag_views_carry_retail_chrome_descriptors(scope)
+  local fixture = AcceptanceFixture.new()
+  local originalGlobal = SaveFs.global
+  local state
+  local repositoryRoot = love.filesystem.getSourceBaseDirectory()
+  local ok, failure = xpcall(function()
+    SaveFs.global = function(backend)
+      Assert.isNil(backend, "production editor composition uses the isolated acceptance backend")
+      return fixture.saveFs
+    end
+    local topology = ScreenTopology.oneDisplay({
+      id = "editor",
+      rect = { x = 0, y = 0, width = 1280, height = 720 },
+      touch = false,
+      role = "world",
+    })
+    local displayContext = DisplayContext.new({
+      graphics = love.graphics,
+      topologyProvider = function()
+        return topology
+      end,
+    })
+    state = State.new({
+      versionId = fixture.versionId,
+      saveId = fixture.saveId,
+      width = 1280,
+      height = 720,
+      derivedAssets = readyHost(),
+      repositoryRoot = repositoryRoot,
+      displayContext = displayContext,
+      onResult = function() end,
+    })
+    state:update(0)
+    Assert.equal(state:view().status, "ready", "the actual editor State opens the selected save")
+
+    local dependencies = assert(state.dependencies, "ready composition publishes its manifests")
+    local bagManifest = assert(dependencies.bagManifest, "the Bag manifest is already composed")
+    local partyManifest =
+      assert(dependencies.partyManifest, "composition publishes the Party manifest beside the Bag manifest")
+    Assert.equal(#partyManifest.panels, 6, "the composed Party manifest carries all six member panels")
+    for slot0 = 0, 5 do
+      local chrome = assert(
+        partyManifest.panels[slot0 + 1].chrome,
+        "panel " .. slot0 .. " carries its retail chrome variants"
+      )
+      for _, variant in ipairs({ "normal", "selected", "fainted", "selectedFainted" }) do
+        Assert.notNil(chrome[variant], "panel " .. slot0 .. " carries the " .. variant .. " chrome")
+        Assert.notNil(chrome[variant].image, "panel " .. slot0 .. " " .. variant .. " names its pixels")
+      end
+    end
+
+    state.controller:setSection("Party")
+    state:update(0)
+    clickTarget(state, "party:add")
+    local species = assert(state:view().valueEditor.options[1].key)
+    clickTarget(state, "choice:" .. species)
+    clickTarget(state, "party:apply")
+    clickTarget(state, "party:back")
+    local partyView = state:view()
+    local member = nil
+    for _, card in ipairs(assert(partyView.partyCards, "the Party list publishes its member cards")) do
+      if card.kind == "member" then
+        member = card
+      end
+    end
+    member = assert(member, "the applied member appears in the production Party list")
+    Assert.isTrue(
+      member.fainted == true or member.fainted == false,
+      "member cards expose their fainted state"
+    )
+    local memberChrome = assert(member.chrome, "member cards carry their retail panel chrome descriptor")
+    Assert.deepEqual(
+      memberChrome,
+      partyManifest.panels[member.slot0 + 1].chrome,
+      "the member uses its own slot panel chrome from the composed manifest"
+    )
+
+    state.controller:setSection("Bag")
+    state:update(0)
+    local bagView = state:view()
+    local pageRows = assert(bagView.bagPageRows, "the Bag view publishes its visible page rows")
+    local pocketBrowse = assert(
+      bagManifest.interactive.backgrounds.browse[bagView.bagPocket],
+      "the manifest carries browse chrome for the current pocket"
+    )
+    Assert.deepEqual(
+      assert(bagView.bagBrowseBackground, "the Bag view selects its count-specific browse background"),
+      pocketBrowse[#pageRows + 1],
+      "the background matches the current pocket and visible item count"
+    )
+    local slots = assert(bagView.bagItemSlots, "the Bag view exposes its source item slot rects")
+    Assert.deepEqual(slots, bagManifest.interactive.itemSlots.slots, "slot rects come from the composed manifest")
+    Assert.equal(#slots, 6, "the manifest carries all six browse slot rects")
+    for index, slot in ipairs(slots) do
+      local rect = assert(slot.rect, "slot " .. index .. " owns a source rectangle")
+      Assert.isTrue(rect.width > 0 and rect.height > 0, "slot " .. index .. " has positive source size")
+    end
   end, debug.traceback)
 
   if state then

@@ -10,6 +10,7 @@ local FieldScriptSymbols = require("libs.assets.src.field.FieldScriptSymbols")
 local MapAssetCache = require("libs.assets.src.MapAssetCache")
 local FieldUiAssetCache = require("libs.assets.src.field.FieldUiAssetCache")
 local BagCache = require("libs.assets.src.BagCache")
+local PartyCache = require("libs.assets.src.PartyCache")
 local ScriptSave = require("libs.script.src.ScriptSave")
 local SaveEditorSession = require("app.src.saveeditor.SaveEditorSession")
 
@@ -84,6 +85,7 @@ function SaveEditorComposition.open(options)
     cacheFs = cacheFs,
     fieldUiManifest = fieldUiManifest,
     bagManifest = BagCache.loadManifest(cacheFs),
+    partyManifest = PartyCache.loadManifest(cacheFs),
     saveFs = saveFs,
     world = world,
     derivedAssets = options.derivedAssets,

@@ -31,6 +31,7 @@ PartyView.__index = PartyView
 ---@field editor SaveEditorPartyEditorDescriptor?
 ---@field enabled boolean?
 ---@field help string?
+---@field semantic string?
 ---@class SaveEditorPartyStatsFact
 ---@field id string
 ---@field label string
@@ -190,6 +191,7 @@ function PartyView:rows(mon, projection, subpage, editable)
         id = "clear-nickname",
         label = "Clear nickname",
         enabled = true,
+        semantic = "destructive",
       }
     end
   end
@@ -351,11 +353,15 @@ function PartyView:rows(mon, projection, subpage, editable)
       )
       integer(prefix .. "pp", "PP", move.pp, 0, 255, nil, "move")
       integer(prefix .. "ppUps", "PP Ups", move.ppUps, 0, 3, nil, "move")
-      rows[#rows + 1] =
-        { role = "action", targetId = "party:move:remove:" .. index0, label = "Remove move " .. (index0 + 1) }
+      rows[#rows + 1] = {
+        role = "action",
+        targetId = "party:move:remove:" .. index0,
+        label = "Remove move " .. (index0 + 1),
+        semantic = "destructive",
+      }
     end
     if #mon.moves < 4 then
-      rows[#rows + 1] = { role = "action", targetId = "party:move:add", label = "Add move" }
+      rows[#rows + 1] = { role = "action", targetId = "party:move:add", label = "Add move", semantic = "primary" }
     end
   else
     local origin, met = mon.origin, mon.met

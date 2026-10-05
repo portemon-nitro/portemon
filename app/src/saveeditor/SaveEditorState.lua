@@ -554,10 +554,12 @@ function State:_partyView()
   local rows, cards = {}, {}
   local selectedProjection
   if controller.partyPage == "list" then
+    local partyManifest = assert(dependencies.partyManifest, "ready Party list requires its retail panel manifest")
     for _, member in ipairs(members) do
       local mon = member.mon
       local species = catalog:species(mon.species)
       local projection = Draft.projectRecord(mon, { catalog = catalog })
+      local panel = assert(partyManifest.panels[member.slot0 + 1], "Party panel chrome follows the member slot")
       cards[#cards + 1] = {
         kind = "member",
         slot0 = member.slot0,
@@ -565,10 +567,12 @@ function State:_partyView()
         species = species.name or mon.species,
         level = projection.level or "Unavailable",
         iconKey = catalog:iconSelection(mon),
+        fainted = mon.condition.currentHp <= 0,
+        chrome = assert(panel.chrome, "Party panels carry their retail chrome variants"),
       }
     end
     if #members < 6 then
-      cards[#cards + 1] = { kind = "add", slot0 = #members, label = "Add Pokemon" }
+      cards[#cards + 1] = { kind = "add", slot0 = #members, label = "+ Add" }
     end
   end
   if controller.partyPage ~= "list" and (controller.partySlot0 ~= nil or self.monDraft ~= nil) then
@@ -723,6 +727,11 @@ function State:_bagView()
     bagPage0 = self.controller.bagPage0,
     bagPageCount = pageCount,
     bagAddEnabled = canAdd,
+    bagBrowseBackground = assert(
+      manifest.interactive.backgrounds.browse[self.controller.bagPocket][#pageRows + 1],
+      "Bag browse chrome follows the pocket and visible item count"
+    ),
+    bagItemSlots = assert(manifest.interactive.itemSlots.slots, "Bag item cards reuse the manifest slot geometry"),
     bagPocketTabRects = manifest.interactive.pocketTabs.rects,
     bagPocketStrip = manifest.interactive.pocketTabs.strips[self.controller.bagPocket],
     bagFocusVisuals = manifest.interactive.focus,
@@ -2122,7 +2131,19 @@ function State:_dispatchIntent(intent)
   elseif intent.kind == "move" then
     local plan = self:_resolve(self:_snapshot())
     local layout = assert(plan.content.layout)
-    if
+    if self.controller.focus == "party:detail-scroll" then
+      local viewport = layout.viewports.party
+      if viewport ~= nil then
+        local view = self:_snapshot()
+        local purpose = "party:" .. tostring(view.partyPage) .. ":" .. tostring(view.partySubpage or "list")
+        local step = (intent.direction == "up" or intent.direction == "down") and viewport.rowExtent
+          or viewport.clip.height
+        local delta = (intent.direction == "down" or intent.direction == "right") and step or -step
+        self.controller.scrollOffsets[purpose] =
+          ScrollViewport.clamp(viewport.offset + delta, viewport.contentExtent, viewport.clip.height)
+      end
+      self.controller:cancelInteraction()
+    elseif
       layout.targets.section ~= nil
       and self.controller.focus == "section"
       and (intent.direction == "left" or intent.direction == "right")
