@@ -28,6 +28,8 @@ function T.message_uses_source_window_palette_and_shared_centered_line_anchor()
   local window = {
     drawWindow = function(_, box, framePalette, background)
       calls.window = { box = box, palette = framePalette, background = background }
+      calls.order = calls.order or {}
+      calls.order[#calls.order + 1] = "window"
     end,
   }
   local text = {
@@ -41,6 +43,14 @@ function T.message_uses_source_window_palette_and_shared_centered_line_anchor()
     translate = function() end,
     scale = function() end,
     pop = function() end,
+    setColor = function(red, green, blue, alpha)
+      calls.backingColor = { red, green, blue, alpha }
+    end,
+    rectangle = function(mode, x, y, width, height)
+      calls.backing = { mode = mode, x = x, y = y, width = width, height = height }
+      calls.order = calls.order or {}
+      calls.order[#calls.order + 1] = "backing"
+    end,
   }
   local priorLove = love
   local priorProtectedDraw = FieldDrawState.protectedDraw
@@ -61,6 +71,10 @@ function T.message_uses_source_window_palette_and_shared_centered_line_anchor()
   Assert.equal(calls.window.box.height, 120)
   Assert.equal(calls.window.palette, 13)
   Assert.deepEqual(calls.window.background, { 8 / 255, 16 / 255, 24 / 255, 1 })
+  Assert.notNil(calls.backing, "opaque white backing draw is missing")
+  Assert.deepEqual(calls.backingColor, { 1, 1, 1, 1 })
+  Assert.deepEqual(calls.backing, { mode = "fill", x = 0, y = 0, width = 256, height = 192 })
+  Assert.deepEqual(calls.order, { "backing", "window" })
   Assert.equal(#calls, 2)
   Assert.equal(calls[1].x, 118)
   Assert.equal(calls[2].x, 118)

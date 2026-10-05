@@ -54,6 +54,8 @@ function FieldBlackoutRenderer.draw(status, window, text, bounds)
     lg.push()
     lg.translate(originX, originY)
     lg.scale(scale, scale)
+    lg.setColor(1, 1, 1, 1)
+    lg.rectangle("fill", 0, 0, 256, 192)
     local background = sourceColor(text, TEXT_COLORS.background)
     window:drawWindow(BOX, FRAME_PALETTE, sourceWindowColor(background))
     local palette = {
