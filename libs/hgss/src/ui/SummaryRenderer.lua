@@ -1,9 +1,10 @@
 -- Source-native Summary pane drawing over the generated Summary family:
 -- two independent 256x192 surfaces with main content (trainer memo,
 -- skills, performance) and sub content (info, battle moves, ribbons).
--- Group variants select their compiled backdrop; windows place and clip
--- role text through source palette roles; bars use their compiled lengths,
--- inks, and visual states; the
+-- Group variants select their compiled backdrop; each group names the
+-- group window roles it owns and draws generated labels and
+-- display-ready facts through source palette roles; bars use their
+-- compiled lengths, inks, and visual states; the
 -- large picture draws centered on its anchor with
 -- the current playback transform and palette operation. Static art stays
 -- baked in its backings: tabs, titles, and decorative chrome are never
@@ -11,8 +12,8 @@
 -- the stable status and the ready bundle only, advancing no clock,
 -- requesting no resource, and realizing no image or shader from draw.
 -- Quad lookups ride the bundle providers; image, shader, and decode work
--- stays in preparation. Test bundles may carry a subset of visual layers;
--- absent realized art skips its layer while manifest roles stay strict.
+-- stays in preparation. A visual role the family leaves unmapped skips
+-- its layer while mapped roles stay strict.
 
 local Utf8Glyphs = require("libs.assets.src.Utf8Glyphs")
 
@@ -123,30 +124,29 @@ local function backdropIndex(variants, pane, facts)
 end
 
 ---@param manifest table<string, unknown>
----@param pane string
----@return { name: string, rect: table<string, integer>, palette: integer }[] ordered pane windows
-local function paneWindows(manifest, pane)
+---@param group string native group owning the role
+---@param pane string native pane owning the role
+---@param role string group window role naming its rendering purpose
+---@return { rect: table<string, integer>, palette: integer, ink: string } the compiled window role
+local function groupWindow(manifest, group, pane, role)
   local windows = assert(manifest.windows, "the summary family carries its windows")
-  assert(type(windows) == "table", "summary windows are a record")
-  local names = {}
-  for name, window in pairs(windows) do
-    assert(type(window) == "table", "summary windows are records")
-    if window.pane == pane then
-      names[#names + 1] = name
-    end
-  end
-  table.sort(names, function(a, b)
-    return tostring(a) < tostring(b)
-  end)
-  local ordered = {}
-  for _, name in ipairs(names) do
-    local window = windows[name]
-    local rect = assert(window.rect, "summary windows carry their rect")
-    local palette = assert(window.palette, "summary windows carry their palette role")
-    assert(type(palette) == "number", "window palette roles are numeric")
-    ordered[#ordered + 1] = { name = name, rect = rect, palette = palette }
-  end
-  return ordered
+  assert(type(windows) == "table", "summary windows arrive as a record")
+  local groups = assert(windows.groups, "the summary family carries its group roles")
+  assert(type(groups) == "table", "summary group roles arrive as a record")
+  local one = assert(groups[group], "the summary family covers group " .. tostring(group))
+  assert(type(one) == "table", "summary group roles arrive as records")
+  local panes = assert(one[pane], "group " .. tostring(group) .. " carries its " .. tostring(pane) .. " roles")
+  assert(type(panes) == "table", "group pane roles arrive as records")
+  local window = assert(
+    panes[role],
+    "group " .. tostring(group) .. " " .. tostring(pane) .. " carries its " .. tostring(role) .. " role"
+  )
+  assert(type(window) == "table", "summary window roles are records")
+  local rect = assert(window.rect, "summary window roles carry their rect")
+  assert(type(rect) == "table", "window rects are records")
+  local palette = assert(window.palette, "summary window roles carry their palette role")
+  assert(type(palette) == "number", "window palette roles are numeric")
+  return window
 end
 
 ---@param text table<string, unknown>
@@ -205,15 +205,83 @@ local function drawScope(self, assets)
   }
 end
 
+-- Resolves one generated label key to its wording. Generated labels
+-- carry static native copy; a missing label is a programming fault and
+-- fails loudly instead of substituting handwritten text.
+---@param manifest table<string, unknown>
+---@param name string generated label key
+---@return string the generated wording
+local function labelText(manifest, name)
+  local text = assert(manifest.text, "the summary family carries its text")
+  assert(type(text) == "table", "summary text arrives as a record")
+  local labels = assert(text.labels, "the summary family carries its labels")
+  assert(type(labels) == "table", "summary labels arrive as a record")
+  local value = labels[name]
+  assert(type(value) == "string" and value ~= "", "the summary text carries label " .. tostring(name))
+  return value
+end
+
+---@param color table<string, number> byte-denominated source color
+---@param what string color owner for failure diagnostics
+---@return table<string, number> the normalized triple channel
+local function band(color, what)
+  assert(type(color) == "table", what .. " is a color")
+  local out = {
+    r = assert(color.r, what .. " carries r"),
+    g = assert(color.g, what .. " carries g"),
+    b = assert(color.b, what .. " carries b"),
+  }
+  local alpha = color.a
+  if alpha ~= nil then
+    assert(type(alpha) == "number", what .. " alpha stays numeric")
+    if alpha > 1 then
+      alpha = alpha / 255
+    end
+    out.a = alpha
+  end
+  return out
+end
+
+-- Normalizes one compiled ink triple for the font collaborator:
+-- compiled channels stay byte-denominated while byte alpha normalizes
+-- to the collaborator's unit range, returning a fresh triple so the
+-- shared compiled family is never mutated per consumer.
+---@param role table<string, table<string, number>> compiled ink triple
+---@return table<string, unknown> the normalized fg/shadow/bg triple
+local function normalizeTriple(role)
+  assert(type(role) == "table", "summary text inks are records")
+  assert(type(role.foreground) == "table", "text inks carry foreground")
+  assert(type(role.shadow) == "table", "text inks carry shadow")
+  assert(type(role.background) == "table", "text inks carry background")
+  return {
+    foreground = band(role.foreground, "summary text foreground"),
+    shadow = band(role.shadow, "summary text shadow"),
+    background = band(role.background, "summary text background"),
+  }
+end
+
+-- Resolves one named text ink (a nature ink or a window default ink)
+-- through the compiled text roles. The compiler publishes every ink the
+-- renderer names, so a missing ink is a programming fault and fails
+-- loudly instead of guessing.
+---@param manifest table<string, unknown>
+---@param name string compiled ink role
+---@return table<string, unknown> the normalized fg/shadow/bg triple
+local function inkRole(manifest, name)
+  local text = assert(manifest.text, "the summary family carries its text")
+  assert(type(text) == "table", "summary text arrives as a record")
+  local roles = assert(text.roles, "the summary family carries its text roles")
+  assert(type(roles) == "table", "summary text roles arrive as a record")
+  local role = assert(roles[name], "the summary text carries its " .. tostring(name) .. " ink")
+  ---@cast role table<string, table<string, number>>
+  return normalizeTriple(role)
+end
+
 -- Resolves one numeric source window palette slot through the compiled
 -- text roles to its foreground/shadow/background triple, immediately
 -- before palette text drawing. The compiler binds every used window
 -- slot, so an unbound slot is a programming fault and fails loudly
--- instead of guessing ink. Compiled channels stay byte-denominated for
--- the font collaborator; byte alpha normalizes to the collaborator's
--- unit range at this consumer boundary (the Party renderer's band rule),
--- returning a fresh triple so the shared compiled family is never
--- mutated per consumer.
+-- instead of guessing ink.
 ---@param scope SummaryRenderer.DrawScope
 ---@param palette integer numeric source window palette slot
 ---@return table<string, unknown> the normalized fg/shadow/bg triple
@@ -225,23 +293,6 @@ local function resolveTextRole(scope, palette)
   local role = roles["slot" .. palette]
   assert(type(role) == "table", "the summary window palette slot resolves through its text role: " .. tostring(palette))
   ---@cast role table<string, table<string, number>>
-  local function band(color, what)
-    assert(type(color) == "table", what .. " is a color")
-    local out = {
-      r = assert(color.r, what .. " carries r"),
-      g = assert(color.g, what .. " carries g"),
-      b = assert(color.b, what .. " carries b"),
-    }
-    local alpha = color.a
-    if alpha ~= nil then
-      assert(type(alpha) == "number", what .. " alpha stays numeric")
-      if alpha > 1 then
-        alpha = alpha / 255
-      end
-      out.a = alpha
-    end
-    return out
-  end
   assert(type(role.foreground) == "table", "text roles carry foreground")
   assert(type(role.shadow) == "table", "text roles carry shadow")
   assert(type(role.background) == "table", "text roles carry background")
@@ -252,6 +303,27 @@ local function resolveTextRole(scope, palette)
   }
 end
 
+-- Resolves one memo run ink to its triple. Runs name compiled inks; a
+-- color selection the compiled roles leave unbound keeps its run and
+-- prints through the window triple instead of dropping content or
+-- failing the pane.
+---@param scope SummaryRenderer.DrawScope
+---@param window { rect: table<string, integer>, palette: integer }
+---@param name string memo run ink
+---@return table<string, unknown> the normalized fg/shadow/bg triple
+local function memoInk(scope, window, name)
+  local text = assert(scope.manifest.text, "the summary family carries its text")
+  assert(type(text) == "table", "summary text arrives as a record")
+  local roles = assert(text.roles, "the summary family carries its text roles")
+  assert(type(roles) == "table", "summary text roles arrive as a record")
+  local role = roles[name]
+  if type(role) == "table" then
+    ---@cast role table<string, table<string, number>>
+    return normalizeTriple(role)
+  end
+  return resolveTextRole(scope, window.palette)
+end
+
 -- Draws one role line through its window role: width-based alignment
 -- inside the window rect with source palette selection, clipped to the
 -- window so longer mod text can never rewrite native layout. Overlong
@@ -260,7 +332,8 @@ end
 ---@param window { rect: table<string, integer>, palette: integer }
 ---@param value string
 ---@param align "left"|"center"|"right"
-local function drawWindowLine(scope, window, value, align)
+---@param triple table<string, unknown>? caller ink triple; the window palette triple when absent
+local function drawWindowLine(scope, window, value, align, triple)
   local graphics = scope.graphics
   local text = scope.text
   local rect = window.rect
@@ -279,55 +352,86 @@ local function drawWindowLine(scope, window, value, align)
   -- layout and the aligned edge stays source-true.
   local y = rect.y + SummaryRenderer.TEXT_PAD_Y
   graphics.setScissor(rect.x, rect.y, rect.width, rect.height)
-  text:drawLineWithPalette(encodeLine(value, scope.charmap), x, y, resolveTextRole(scope, window.palette))
+  text:drawLineWithPalette(encodeLine(value, scope.charmap), x, y, triple or resolveTextRole(scope, window.palette))
   graphics.setScissor()
 end
 
--- Draws one authored memo line at its source line position within its
--- window: y follows (line-1)*16 with source x padding, never a measured
--- reflow. Control-token breaks stay the caller's line splits.
+-- Draws the authored memo blocks at their source line positions within
+-- the memo body: y follows (line-1)*16 with source x padding, never a
+-- measured reflow. Every run draws once, in order, through its own ink
+-- role; runs advance by their measured width so later runs never move
+-- before earlier runs. Control-token breaks stay the caller's line splits.
 ---@param scope SummaryRenderer.DrawScope
 ---@param window { rect: table<string, integer>, palette: integer }
----@param line integer one-based source line
----@param value string
-local function drawMemoLine(scope, window, line, value)
+---@param blocks table<number, table<string, unknown>> ordered memo line blocks
+local function drawMemoRuns(scope, window, blocks)
   local graphics = scope.graphics
   local text = scope.text
+  assert(type(blocks) == "table", "memos carry their line blocks")
   local rect = window.rect
-  local x = rect.x + SummaryRenderer.TEXT_PAD_X
-  local y = rect.y + (line - 1) * SummaryRenderer.LINE_STEP
-  graphics.setScissor(rect.x, rect.y, rect.width, rect.height)
-  text:drawLineWithPalette(encodeLine(value, scope.charmap), x, y, resolveTextRole(scope, window.palette))
-  graphics.setScissor()
-end
-
----@param windows { name: string, rect: table<string, integer>, palette: integer }[]
----@param what string pane role drawing the lines
----@return { name: string, rect: table<string, integer>, palette: integer }[] ordered pane windows
-local function requireWindows(windows, what)
-  assert(type(windows) == "table" and #windows >= 1, what .. " needs its pane windows")
-  return windows
+  for _, block in ipairs(blocks) do
+    assert(type(block) == "table", "memo blocks are records")
+    local line = assert(block.line, "memo blocks carry their line")
+    assert(type(line) == "number" and line % 1 == 0 and line >= 1, "memo lines stay positive")
+    local y = rect.y + (line - 1) * SummaryRenderer.LINE_STEP
+    local x = rect.x + SummaryRenderer.TEXT_PAD_X
+    for _, run in ipairs(assert(block.runs, "memo blocks carry text runs")) do
+      assert(type(run) == "table", "memo runs are records")
+      local value = assert(run.text, "memo runs carry text")
+      assert(type(value) == "string", "memo runs carry text")
+      local width = 0
+      if type(text.textWidth) == "function" then
+        width = text:textWidth(value) or 0
+      end
+      graphics.setScissor(rect.x, rect.y, rect.width, rect.height)
+      text:drawLineWithPalette(
+        encodeLine(value, scope.charmap),
+        x,
+        y,
+        memoInk(scope, window, assert(run.ink, "memo runs carry their ink"))
+      )
+      graphics.setScissor()
+      local gap = 0
+      if type(text.textWidth) == "function" then
+        gap = text:textWidth(" ") or 0
+      end
+      x = x + width + gap
+    end
+  end
 end
 
 ---@param scope SummaryRenderer.DrawScope
 ---@param name string compiled visual name
----@return table<string, unknown>? realized image, or nil when the bundle carries selected layers only
+---@return table<string, unknown>? realized image; nil skips the layer
 local function visualImage(scope, name)
-  local visuals = scope.assets.visuals
-  if type(visuals) == "table" and visuals[name] ~= nil then
-    return visuals[name]
+  local visuals = assert(scope.manifest.visuals, "the summary family carries its visuals")
+  assert(type(visuals) == "table", "summary visuals arrive as a record")
+  if visuals[name] == nil then
+    return nil
   end
   local imageFor = scope.assets.visualImage
-  if type(imageFor) == "function" then
-    return imageFor(name)
-  end
-  return nil
+  assert(type(imageFor) == "function", "the ready bundle resolves named visuals")
+  return imageFor(name)
+end
+
+-- Borrows one canonical path-owned image through the ready bundle. Paths
+-- arrive from compiled visual records; a missing prepared image is a
+-- generated-contract failure and fails loudly.
+---@param scope SummaryRenderer.DrawScope
+---@param path string cache-relative image path
+---@return table<string, unknown> realized image
+local function imageForPath(scope, path)
+  assert(type(path) == "string" and path ~= "", "path reads name their cache-relative path")
+  local imageFor = scope.assets.imageForPath
+  assert(type(imageFor) == "function", "the ready bundle resolves canonical paths")
+  local image = imageFor(path)
+  assert(image ~= nil, "no prepared image for path " .. tostring(path))
+  return image
 end
 
 -- Draws the pane backing: the condition-selected backdrop over the whole
--- native surface. Test bundles may carry selected layers only; a missing
--- realized backdrop skips its layer while the manifest selection itself
--- stays strict.
+-- native surface. A backdrop role the family leaves unmapped skips its
+-- layer while the manifest selection itself stays strict.
 ---@param scope SummaryRenderer.DrawScope
 ---@param index number backdrop index
 local function drawBackdrop(scope, index)
@@ -419,35 +523,14 @@ local function drawBar(scope, ruleName, pixels, originX, originY)
   end
 end
 
--- Resolves the drawn portrait selector: genderless records use the known
--- female-side generated alias before any draw, never an exception probe.
----@param facts table<string, unknown>
----@return string portrait selector
-local function portraitSelector(facts)
-  local identity = assert(facts.identity, "facts carry their identity")
-  local species = assert(facts.pictureKey, "facts carry the picture selection")
-  if species == "EGG" then
-    return "EGG"
-  end
-  local form = assert(identity.form, "identities carry their form")
-  local gender = assert(identity.gender, "identities carry their gender")
-  local shiny = identity.shiny == true
-  if gender == "genderless" then
-    gender = "female"
-  end
-  assert(gender == "male" or gender == "female", "portrait genders stay binary")
-  local selector = species .. "/f" .. tostring(form) .. "/" .. gender
-  if shiny then
-    return selector .. "/shiny"
-  end
-  return selector .. "/plain"
-end
-
 -- Draws the large main-pane picture: the 80x80 frame centered on anchor
 -- (208,104) plus the single compiled offset and the current playback
 -- transform (offsets, scale, rotation, visibility). Frame, flip, scale,
 -- rotation, visibility, and the palette operation apply together; a
--- no-op palette state draws unshaded so identity stays pixel-exact.
+-- no-op palette state draws unshaded so identity stays pixel-exact. The
+-- portrait selector arrives exact from display facts and is never
+-- reconstructed here; the palette target keeps its compiled integer
+-- units and reaches the shader unchanged.
 ---@param scope SummaryRenderer.DrawScope
 ---@param status table<string, unknown>
 local function drawPicture(scope, status)
@@ -455,16 +538,11 @@ local function drawPicture(scope, status)
   local facts = assert(status.facts, "open summaries carry their facts")
   local manifest = scope.manifest
   local pictures = assert(manifest.pictures, "the summary family carries pictures")
+  local picture = pictures[assert(facts.pictureKey, "facts carry the picture selection")]
+  assert(type(picture) == "table", "the picture selection exists in the summary family")
   local anchor = SummaryRenderer.PICTURE_ANCHOR
   if facts.isEgg == true then
-    local egg = pictures.EGG
-    if egg == nil then
-      return
-    end
-    local image = visualImage(scope, "egg")
-    if image == nil then
-      return
-    end
+    local image = imageForPath(scope, assert(picture.visual, "egg pictures carry their visual"))
     local width, height = 80, 80
     if type(image.getWidth) == "function" then
       width, height = image:getWidth(), image:getHeight()
@@ -472,13 +550,9 @@ local function drawPicture(scope, status)
     graphics.draw(image, anchor.x - math.floor(width / 2), anchor.y - math.floor(height / 2))
     return
   end
-  local selector = portraitSelector(facts)
-  local portraits = scope.assets.portraits
-  if portraits == nil then
-    return
-  end
-  local picture = pictures[facts.pictureKey]
-  assert(type(picture) == "table", "the picture selection exists in the summary family")
+  local selector = assert(facts.portraitSelector, "facts carry the portrait selection")
+  assert(type(selector) == "string" and selector ~= "", "portrait selections name their variant")
+  local portraits = assert(scope.assets.portraits, "the ready bundle carries its portrait provider")
   local sample = assert(status.picture, "open pictures carry their playback sample")
   if sample.visible == false then
     return
@@ -523,302 +597,349 @@ local function drawPicture(scope, status)
   end
 end
 
----@param facts table<string, unknown>
----@return string display name line
-local function nameLine(facts)
-  local identity = assert(facts.identity, "facts carry their identity")
-  if facts.isEgg == true then
-    return "EGG"
-  end
-  local skills = facts.skills
-  local level = skills and skills.level or "?"
-  return tostring(assert(identity.displayName, "identities carry a display name")) .. " Lv" .. tostring(level)
-end
-
--- The INFO sub pane: identity, dex, trainer, item, status, and health
--- lines with the dynamic health/experience bars.
+-- The INFO sub pane: display-ready identity and experience values in
+-- their named roles, with the dynamic health/experience bars below the
+-- experience roles. Health bars need hatched skills; eggs carry no
+-- skills record, so their health bar stays undrawn while the experience
+-- track still fills from its projection.
 ---@param scope SummaryRenderer.DrawScope
----@param windows { name: string, rect: table<string, integer>, palette: integer }[]
 ---@param facts table<string, unknown>
-local function drawInfo(scope, windows, facts)
-  requireWindows(windows, "info")
-  local lines = {}
-  lines[#lines + 1] = { text = nameLine(facts), align = "left" }
+local function drawInfo(scope, facts)
+  local manifest = scope.manifest
   local info = assert(facts.info, "facts carry their info section")
-  lines[#lines + 1] = { text = "DEX " .. tostring(assert(info.dexText, "info carries dex text")), align = "left" }
-  lines[#lines + 1] = { text = "ID " .. tostring(assert(info.otIdText, "info carries its id")), align = "right" }
-  lines[#lines + 1] = { text = "ITEM " .. tostring(assert(info.heldItem, "info carries its item")), align = "left" }
-  lines[#lines + 1] = { text = "BALL " .. tostring(assert(info.ball, "info carries its ball")), align = "left" }
-  local indicators = assert(facts.indicators, "facts carry their indicators")
-  lines[#lines + 1] =
-    { text = "STATUS " .. tostring(assert(indicators.status, "indicators carry status")), align = "left" }
-  if facts.isEgg ~= true then
-    local skills = assert(facts.skills, "hatched mons carry skills")
-    lines[#lines + 1] = {
-      text = "HP " .. tostring(skills.currentHp) .. "/" .. tostring(skills.maxHp),
-      align = "right",
-      bar = { rule = "hp", pixels = skills.hpBar.length },
-    }
-    lines[#lines + 1] = {
-      text = "EXP " .. tostring(assert(info.expToNext, "info carries exp to next")),
-      align = "right",
-      bar = { rule = "exp", pixels = info.expBar.length },
-    }
+  local identity = assert(facts.identity, "facts carry their identity")
+  drawWindowLine(
+    scope,
+    groupWindow(manifest, "info", "sub", "dexNumber"),
+    tostring(assert(info.dexText, "info carries dex text")),
+    "left"
+  )
+  drawWindowLine(
+    scope,
+    groupWindow(manifest, "info", "sub", "speciesName"),
+    tostring(assert(identity.speciesName, "identities carry a species name")),
+    "left"
+  )
+  drawWindowLine(
+    scope,
+    groupWindow(manifest, "info", "sub", "otName"),
+    tostring(assert(identity.otName, "identities carry an ot name")),
+    "left"
+  )
+  drawWindowLine(
+    scope,
+    groupWindow(manifest, "info", "sub", "idNumber"),
+    tostring(assert(info.otIdText, "info carries its id")),
+    "left"
+  )
+  local expPoints = groupWindow(manifest, "info", "sub", "expPoints")
+  drawWindowLine(scope, expPoints, tostring(assert(info.experience, "info carries experience")), "left")
+  local expToNext = groupWindow(manifest, "info", "sub", "expToNext")
+  drawWindowLine(scope, expToNext, tostring(assert(info.expToNext, "info carries exp to next")), "left")
+  local skills = facts.skills
+  if type(skills) == "table" then
+    local hpBar = assert(skills.hpBar, "skills carry their health projection")
+    local filled = assert(hpBar.length, "health projections carry their fill")
+    assert(type(filled) == "number" and filled % 1 == 0, "health fills count integral pixels")
+    ---@cast filled integer
+    drawBar(scope, "hp", filled, expPoints.rect.x, expPoints.rect.y + expPoints.rect.height)
   end
-  for index, line in ipairs(lines) do
-    local window = windows[((index - 1) % #windows) + 1]
-    drawWindowLine(scope, window, line.text, line.align)
-    if line.bar ~= nil then
-      local rect = window.rect
-      drawBar(scope, line.bar.rule, line.bar.pixels, rect.x + SummaryRenderer.TEXT_PAD_X, rect.y + rect.height - 10)
-    end
-  end
+  local expBar = assert(info.expBar, "info carries its experience projection")
+  local expFilled = assert(expBar.length, "experience projections carry their fill")
+  assert(type(expFilled) == "number" and expFilled % 1 == 0, "experience fills count integral pixels")
+  ---@cast expFilled integer
+  drawBar(scope, "exp", expFilled, expToNext.rect.x, expToNext.rect.y + expToNext.rect.height)
 end
 
 -- The TRAINER MEMO main pane: authored memo blocks at their source line
--- positions within the memo window.
+-- positions within the memo body role.
 ---@param scope SummaryRenderer.DrawScope
----@param windows { name: string, rect: table<string, integer>, palette: integer }[]
 ---@param facts table<string, unknown>
-local function drawMemo(scope, windows, facts)
-  requireWindows(windows, "memo")
+local function drawMemo(scope, facts)
+  local window = groupWindow(scope.manifest, "info", "main", "memoBody")
   local memo = assert(facts.memo, "facts carry their memo")
-  local blocks = assert(memo.blocks, "memos carry their line blocks")
-  local window = assert(windows[1], "the memo pane carries its window")
-  for _, block in ipairs(blocks) do
-    local parts = {}
-    for _, run in ipairs(assert(block.runs, "memo blocks carry text runs")) do
-      parts[#parts + 1] = assert(run.text, "memo runs carry text")
-    end
-    drawMemoLine(scope, window, assert(block.line, "memo blocks carry their line"), table.concat(parts, " "))
-  end
+  drawMemoRuns(scope, window, assert(memo.blocks, "memos carry their line blocks"))
 end
 
--- The SKILLS main pane: level, health, battle stats, ability, and nature
--- shift lines.
+-- The SKILLS main pane: health, battle stat, and ability values in
+-- their named roles. Nature-raised values print through the raised ink
+-- role and nature-lowered values through the lowered ink role; neutral
+-- values print through the window default ink.
 ---@param scope SummaryRenderer.DrawScope
----@param windows { name: string, rect: table<string, integer>, palette: integer }[]
 ---@param facts table<string, unknown>
-local function drawSkills(scope, windows, facts)
-  requireWindows(windows, "skills")
+local function drawSkills(scope, facts)
+  local manifest = scope.manifest
   local skills = assert(facts.skills, "hatched mons carry skills")
-  local lines = {
-    "LV " .. tostring(assert(skills.level, "skills carry level")),
-    "HP " .. tostring(skills.currentHp) .. "/" .. tostring(skills.maxHp),
-    "ATK " .. tostring(skills.attack),
-    "DEF " .. tostring(skills.defense),
-    "SPD " .. tostring(skills.speed),
-    "SPATK " .. tostring(skills.specialAttack),
-    "SPDEF " .. tostring(skills.specialDefense),
-    "ABILITY " .. tostring(skills.abilityName),
-  }
   local nature = skills.nature or {}
-  lines[#lines + 1] = "NATURE " .. tostring(nature.up or "none") .. "/" .. tostring(nature.down or "none")
-  for index, text in ipairs(lines) do
-    local window = windows[((index - 1) % #windows) + 1]
-    drawWindowLine(scope, window, text, "left")
+  local up, down = nature.up, nature.down
+  local values = {
+    hpValue = assert(skills.currentHp, "skills carry current health"),
+    attackValue = assert(skills.attack, "skills carry attack"),
+    defenseValue = assert(skills.defense, "skills carry defense"),
+    spAttackValue = assert(skills.specialAttack, "skills carry special attack"),
+    spDefenseValue = assert(skills.specialDefense, "skills carry special defense"),
+    speedValue = assert(skills.speed, "skills carry speed"),
+  }
+  local shifted = {
+    attackValue = "attack",
+    defenseValue = "defense",
+    spAttackValue = "specialAttack",
+    spDefenseValue = "specialDefense",
+    speedValue = "speed",
+  }
+  local order = { "hpValue", "attackValue", "defenseValue", "spAttackValue", "spDefenseValue", "speedValue" }
+  for _, roleName in ipairs(order) do
+    local window = groupWindow(manifest, "skills", "main", roleName)
+    local key = shifted[roleName]
+    local triple = nil
+    if key ~= nil and up == key then
+      triple = inkRole(manifest, "statRaised")
+    elseif key ~= nil and down == key then
+      triple = inkRole(manifest, "statLowered")
+    else
+      triple = inkRole(manifest, assert(window.ink, "window roles carry their default ink"))
+    end
+    drawWindowLine(scope, window, tostring(values[roleName]), "left", triple)
   end
+  drawWindowLine(
+    scope,
+    groupWindow(manifest, "skills", "main", "abilityName"),
+    tostring(assert(skills.abilityName, "skills carry an ability name")),
+    "left"
+  )
+  drawWindowLine(
+    scope,
+    groupWindow(manifest, "skills", "main", "abilityDescription"),
+    tostring(assert(skills.abilityDescription, "skills carry an ability description")),
+    "left"
+  )
 end
 
----@param move table<string, unknown>
+-- Formats one learned move row from its generated name and power
+-- points: the generated points label separates the current and maximum
+-- counts with spacing, never punctuation the generated family does not
+-- own.
+---@param manifest table<string, unknown>
+---@param move table<string, unknown> learned move row
 ---@return string move row text
-local function moveRowText(move)
-  if move.kind == "empty" then
-    return "-"
-  end
+local function moveSummaryText(manifest, move)
   return tostring(assert(move.name, "moves carry a name"))
-    .. " PP "
+    .. " "
+    .. labelText(manifest, "ppLabel")
+    .. " "
     .. tostring(assert(move.pp, "moves carry pp"))
-    .. "/"
+    .. " "
     .. tostring(assert(move.ppMax, "moves carry max pp"))
 end
 
--- The BATTLE MOVES sub pane: four logical move rows keep their positions
--- even when empty, the selected row opens its detail backing with
--- type/category/power/accuracy and clipped description, and the picker
--- preview holds the source preview location without becoming a fifth
--- owned move.
+-- The BATTLE MOVES sub pane: four named move rows keep their positions;
+-- empty rows stay blank. The selected row opens its detail backing with
+-- generated power, accuracy, category, and description text, and the
+-- picker preview holds the pointed move name without becoming a fifth
+-- owned move. The footer names the held move while reordering and the
+-- pointed move otherwise; the generated warning preempts it.
 ---@param scope SummaryRenderer.DrawScope
 ---@param status table<string, unknown>
----@param windows { name: string, rect: table<string, integer>, palette: integer }[]
 ---@param facts table<string, unknown>
-local function drawMoves(scope, status, windows, facts)
-  requireWindows(windows, "moves")
+local function drawMoves(scope, status, facts)
+  local manifest = scope.manifest
   local moves = assert(facts.moves, "facts carry their move rows")
   assert(#moves == SummaryRenderer.MOVE_ROWS, "move facts carry four logical rows")
-  for row = 1, SummaryRenderer.MOVE_ROWS do
-    local window = windows[((row - 1) % #windows) + 1]
-    drawWindowLine(scope, window, moveRowText(assert(moves[row], "move rows stay addressable")), "left")
-  end
-  if status.mode == "move_pick" and status.moveSlot == SummaryRenderer.MOVE_ROWS then
-    local window = windows[(SummaryRenderer.MOVE_ROWS % #windows) + 1]
-    drawWindowLine(scope, window, "-", "left")
-  end
-  if status.phase ~= "move_detail" and status.phase ~= "move_reorder" and status.phase ~= "move_opening" then
-    return
-  end
-  -- The move-detail backing scrolls under the detail rows: one full
-  -- native-scale copy per frame, wrapping across the transition ticks
-  -- so repeated draws cycle instead of stretching.
-  local backing = visualImage(scope, "moveBacking")
-  if backing ~= nil then
-    local shift = 0
-    if type(status.transition) == "table" and type(status.transition.ticksLeft) == "number" then
-      shift = (status.transition.ticksLeft * 32) % SummaryRenderer.PANE_WIDTH
+  for row = 0, SummaryRenderer.MOVE_ROWS - 1 do
+    local move = assert(moves[row + 1], "move rows stay addressable")
+    if move.kind == "move" then
+      drawWindowLine(
+        scope,
+        groupWindow(manifest, "skills", "sub", "moveRow" .. row),
+        moveSummaryText(manifest, move),
+        "left"
+      )
     end
-    scope.graphics.draw(backing, -shift, 0)
   end
-  local selected = moves[(status.moveSlot or 0) + 1]
-  if selected == nil or selected.kind == "empty" then
-    return
+  if status.mode == "move_pick" then
+    local pointed = moves[(status.moveSlot or 0) + 1]
+    if pointed ~= nil and pointed.kind == "move" then
+      drawWindowLine(
+        scope,
+        groupWindow(manifest, "skills", "sub", "prospectiveRow"),
+        tostring(assert(pointed.name, "moves carry a name")),
+        "left"
+      )
+    end
   end
-  local detail = {
-    tostring(selected.type) .. "/" .. tostring(selected.category),
-    "PWR " .. tostring(selected.powerText) .. " ACC " .. tostring(selected.accuracyText),
-    tostring(selected.description),
-  }
-  for index, text in ipairs(detail) do
-    local window = windows[((SummaryRenderer.MOVE_ROWS + index - 1) % #windows) + 1]
-    drawWindowLine(scope, window, text, "left")
+  if status.phase == "move_detail" or status.phase == "move_reorder" or status.phase == "move_opening" then
+    -- The move-detail backing scrolls under the detail rows: one full
+    -- native-scale copy per frame, wrapping across the transition ticks
+    -- so repeated draws cycle instead of stretching.
+    local backing = visualImage(scope, "moveBacking")
+    if backing ~= nil then
+      local shift = 0
+      if type(status.transition) == "table" and type(status.transition.ticksLeft) == "number" then
+        shift = (status.transition.ticksLeft * 32) % SummaryRenderer.PANE_WIDTH
+      end
+      scope.graphics.draw(backing, -shift, 0)
+    end
+    local selected = moves[(status.moveSlot or 0) + 1]
+    if selected ~= nil and selected.kind == "move" then
+      drawWindowLine(
+        scope,
+        groupWindow(manifest, "skills", "sub", "detailPower"),
+        labelText(manifest, "powerLabel") .. " " .. tostring(assert(selected.powerText, "moves carry power")),
+        "left"
+      )
+      drawWindowLine(
+        scope,
+        groupWindow(manifest, "skills", "sub", "detailAccuracy"),
+        labelText(manifest, "accuracyLabel") .. " " .. tostring(assert(selected.accuracyText, "moves carry accuracy")),
+        "left"
+      )
+      drawWindowLine(
+        scope,
+        groupWindow(manifest, "skills", "sub", "detailCategory"),
+        labelText(manifest, "categoryLabel") .. " " .. tostring(assert(selected.category, "moves carry a category")),
+        "left"
+      )
+      drawWindowLine(
+        scope,
+        groupWindow(manifest, "skills", "sub", "detailDescription"),
+        tostring(assert(selected.description, "moves carry a description")),
+        "left"
+      )
+    end
+  end
+  local footer = groupWindow(manifest, "skills", "sub", "moveFooter")
+  local notice = status.notice
+  if type(notice) == "table" and notice.reason == "hm" then
+    drawWindowLine(scope, footer, labelText(manifest, "hmWarning"), "left")
+  else
+    local held = nil
+    if status.phase == "move_reorder" and status.reorderSource ~= nil then
+      held = moves[status.reorderSource + 1]
+    elseif status.moveSlot ~= nil then
+      held = moves[status.moveSlot + 1]
+    end
+    if held ~= nil and held.kind == "move" then
+      drawWindowLine(scope, footer, moveSummaryText(manifest, held), "left")
+    end
   end
 end
 
--- The PERFORMANCE main pane: one line per computed performance row. A
--- locked screen (no computed rows) keeps its locked backing and draws no
+-- The PERFORMANCE main pane: one generated name per contest row in
+-- presentation order. Star and state visuals have no mapped image role,
+-- so rows print names only and never numeric debug text. A locked
+-- screen (no computed rows) keeps its locked backing and draws no
 -- invented values.
 ---@param scope SummaryRenderer.DrawScope
----@param windows { name: string, rect: table<string, integer>, palette: integer }[]
 ---@param facts table<string, unknown>
-local function drawPerformance(scope, windows, facts)
-  requireWindows(windows, "performance")
+local function drawPerformance(scope, facts)
   local rows = facts.performance
   if rows == nil then
     return
   end
   assert(type(rows) == "table", "performance rows arrive as records")
-  for index, row in ipairs(rows) do
-    local window = windows[((index - 1) % #windows) + 1]
+  local manifest = scope.manifest
+  for _, stat in ipairs({ "speed", "power", "skill", "stamina", "jump" }) do
     drawWindowLine(
       scope,
-      window,
-      tostring(assert(row.stat, "performance rows carry their stat"))
-        .. " "
-        .. tostring(assert(row.stars, "performance rows carry stars")),
+      groupWindow(manifest, "performance", "main", stat),
+      labelText(manifest, stat .. "Name"),
       "left"
     )
   end
 end
 
--- The RIBBONS sub pane: earned ribbon names with their compiled art when
--- the bundle realizes it. No earned ribbon draws no invented row.
----@param scope SummaryRenderer.DrawScope
----@param windows { name: string, rect: table<string, integer>, palette: integer }[]
----@param facts table<string, unknown>
-local function drawRibbons(scope, windows, facts)
-  requireWindows(windows, "ribbons")
-  local ribbons = facts.ribbons or {}
-  assert(type(ribbons) == "table", "ribbon records arrive as an array")
-  for index, ribbon in ipairs(ribbons) do
-    local window = windows[((index - 1) % #windows) + 1]
-    local art = ribbon.art
-    if type(art) == "table" and type(art.image) == "string" then
-      local image = visualImage(scope, art.image)
-      if image ~= nil then
-        scope.graphics.draw(image, window.rect.x + SummaryRenderer.TEXT_PAD_X, window.rect.y)
-      end
-    end
-    drawWindowLine(scope, window, tostring(assert(ribbon.name, "ribbons carry a name")), "left")
-  end
-end
-
--- Draws the five anchored leaf frames or the explicit crown frame: source
--- anchors plus one frame offset, applied once, first animation frame, so
--- repeated draws stay identical. Absent badge art skips its layer.
----@param scope SummaryRenderer.DrawScope
----@param facts table<string, unknown>
-local function drawBadges(scope, facts)
-  local partyManifest = scope.assets.partyManifest
-  local imageFor = scope.assets.badgeImage
-  if type(partyManifest) ~= "table" or type(imageFor) ~= "function" then
-    return
-  end
-  local leavesRecord = partyManifest.shinyLeaves
-  if type(leavesRecord) ~= "table" then
-    return
-  end
-  local graphics = scope.graphics
-  local indicators = assert(facts.indicators, "facts carry their indicators")
-  local leaves = assert(indicators.leaves, "indicators carry leaf visibility")
-  if indicators.crown == true then
-    local crown = assert(leavesRecord.crown, "the party manifest carries the crown visual")
-    local frame = assert(crown.frames[1], "crown visuals carry frames")
-    local anchor = assert(leavesRecord.crownAnchor, "the party manifest carries the crown anchor")
-    local offset = frame.offset or { x = 0, y = 0 }
-    local image = imageFor(frame)
-    if image ~= nil then
-      graphics.draw(image, anchor.x + offset.x, anchor.y + offset.y)
-    end
-    return
-  end
-  local visual = assert(leavesRecord.leaves, "the party manifest carries the leaf visual")
-  local frame = assert(visual.frames[1], "leaf visuals carry frames")
-  local offset = frame.offset or { x = 0, y = 0 }
-  local anchors = assert(leavesRecord.anchors, "the party manifest carries five anchors")
-  local image = imageFor(frame)
-  if image == nil then
-    return
-  end
-  for index = 1, 5 do
-    if leaves[index] == true then
-      local anchor = assert(anchors[index], "the party manifest carries five anchors")
-      graphics.draw(image, anchor.x + offset.x, anchor.y + offset.y)
-    end
-  end
-end
-
--- Draws the current party icon strip through the borrowed provider when
--- it rides the bundle. Icon positions follow roster order in one row.
----@param scope SummaryRenderer.DrawScope
----@param facts table<string, unknown>
-local function drawRosterIcons(scope, facts)
-  local icons = scope.assets.icons
-  if type(icons) ~= "table" or type(icons.image) ~= "function" or type(icons.quadFor) ~= "function" then
-    return
-  end
-  local roster = assert(facts.roster, "facts carry the party roster")
-  local graphics = scope.graphics
-  for index, row in ipairs(roster) do
-    local key = assert(row.iconKey, "roster rows carry their icon key")
-    graphics.draw(icons:image(key), icons:quadFor(key), (index - 1) * 32, 160)
-  end
-end
-
----@param reason string
----@return string notice copy in the closed vocabulary
-local function noticeText(reason)
-  if reason == "hm" then
-    return "An HM move can't be forgotten here."
-  end
-  if reason == "stale" then
-    return "The party changed; choose again."
-  end
-  if reason == "empty" then
-    return "No move in that row."
-  end
-  error("notices stay in the closed vocabulary: " .. tostring(reason), 0)
-end
-
+-- The RIBBONS sub pane: one 3x3 page of earned ribbon art above the
+-- count and selected-ribbon roles. Cells render around the
+-- controller-owned selection: without a selection there is no proved
+-- page, so only the count shows. Cell indices address page-local
+-- positions bounded by the earned count; art resolves by its compiled
+-- path and draws in rows above the selected name. The count, name, and
+-- description roles carry display-ready facts text only.
 ---@param scope SummaryRenderer.DrawScope
 ---@param status table<string, unknown>
----@param windows { name: string, rect: table<string, integer>, palette: integer }[]
-local function drawNotice(scope, status, windows)
-  local notice = status.notice
-  if type(notice) ~= "table" then
+---@param facts table<string, unknown>
+local function drawRibbons(scope, status, facts)
+  local manifest = scope.manifest
+  local ribbons = facts.ribbons or {}
+  assert(type(ribbons) == "table", "ribbon records arrive as an array")
+  local nameWindow = groupWindow(manifest, "performance", "sub", "ribbonName")
+  drawWindowLine(scope, groupWindow(manifest, "performance", "sub", "ribbonCount"), tostring(#ribbons), "left")
+  local selected = nil
+  if status.ribbonIndex ~= nil then
+    assert(
+      type(status.ribbonIndex) == "number" and status.ribbonIndex % 1 == 0 and status.ribbonIndex >= 0,
+      "ribbon selections stay non-negative"
+    )
+    selected = ribbons[status.ribbonIndex + 1]
+  end
+  if selected == nil then
     return
   end
-  requireWindows(windows, "notice")
-  local window = assert(windows[#windows], "notices draw through the last pane window")
-  drawWindowLine(scope, window, noticeText(assert(notice.reason, "notices carry their reason")), "left")
+  assert(type(selected) == "table", "earned ribbons are records")
+  local page = status.ribbonPage or 0
+  assert(type(page) == "number" and page % 1 == 0 and page >= 0, "ribbon pages stay non-negative")
+  local nameRect = nameWindow.rect
+  for cell = 0, 8 do
+    local earned = ribbons[page * 9 + cell + 1]
+    if earned ~= nil then
+      assert(type(earned) == "table", "earned ribbons are records")
+      local art = assert(earned.art, "ribbons carry art")
+      assert(type(art) == "table", "ribbon art arrives as a record")
+      local path = assert(art.image, "ribbon art carries its image")
+      assert(type(path) == "string", "ribbon art images are paths")
+      local width = assert(art.width, "ribbon art carries a width")
+      local height = assert(art.height, "ribbon art carries a height")
+      assert(type(width) == "number" and type(height) == "number", "ribbon art carries dimensions")
+      local column = cell % 3
+      local row = math.floor(cell / 3)
+      scope.graphics.draw(imageForPath(scope, path), nameRect.x + column * width, nameRect.y - (3 - row) * height)
+    end
+  end
+  drawWindowLine(scope, nameWindow, tostring(assert(selected.name, "ribbons carry a name")), "left")
+  drawWindowLine(
+    scope,
+    groupWindow(manifest, "performance", "sub", "ribbonDescription"),
+    tostring(assert(selected.description, "ribbons carry a description")),
+    "left"
+  )
+end
+
+-- Draws the producer-authored sprite roles at their anchors, in role
+-- order. A sprite role whose visual the family leaves unmapped skips
+-- its layer; mapped roles resolve through the ready bundle. Member and
+-- focus chrome comes from these roles alone, never from touch boxes or
+-- party-family presentation.
+---@param scope SummaryRenderer.DrawScope
+local function drawChrome(scope)
+  local sprites = assert(scope.manifest.sprites, "the summary family carries its sprite roles")
+  assert(type(sprites) == "table", "sprite roles arrive as a record")
+  local ordered = {}
+  for name, sprite in pairs(sprites) do
+    assert(type(sprite) == "table", "sprite roles are records")
+    local order = assert(sprite.order, "sprite roles carry their order")
+    assert(type(order) == "number", "sprite orders stay numeric")
+    ordered[#ordered + 1] = { name = name, sprite = sprite, order = order }
+  end
+  table.sort(ordered, function(a, b)
+    if a.order ~= b.order then
+      return a.order < b.order
+    end
+    return tostring(a.name) < tostring(b.name)
+  end)
+  for _, entry in ipairs(ordered) do
+    local sprite = entry.sprite
+    local visual = assert(sprite.visual, "sprite roles name their visual")
+    assert(type(visual) == "string", "sprite visuals are names")
+    local image = visualImage(scope, visual)
+    if image ~= nil then
+      local anchor = assert(sprite.anchor, "sprite roles carry their anchor")
+      assert(type(anchor) == "table", "sprite anchors are records")
+      local x = assert(anchor.x, "sprite anchors carry x")
+      local y = assert(anchor.y, "sprite anchors carry y")
+      assert(type(x) == "number" and type(y) == "number", "sprite anchors stay numeric")
+      scope.graphics.draw(image, x, y)
+    end
+  end
 end
 
 -- Draws one native pane: the condition-selected backdrop, the pane role
@@ -856,27 +977,24 @@ function SummaryRenderer:drawPane(status, pane, assets)
     graphics.rectangle("fill", 0, 0, SummaryRenderer.PANE_WIDTH, SummaryRenderer.PANE_HEIGHT)
     graphics.setColor(red, green, blue, alpha)
     drawBackdrop(scope, backdropIndex(variants, pane, facts))
-    local windows = paneWindows(scope.manifest, pane)
     if pane == "main" then
       drawPicture(scope, status)
       if group == "info" then
-        drawMemo(scope, windows, facts)
+        drawMemo(scope, facts)
       elseif group == "skills" then
-        drawSkills(scope, windows, facts)
+        drawSkills(scope, facts)
       else
-        drawPerformance(scope, windows, facts)
+        drawPerformance(scope, facts)
       end
     else
       if group == "info" then
-        drawInfo(scope, windows, facts)
-        drawBadges(scope, facts)
-        drawRosterIcons(scope, facts)
+        drawInfo(scope, facts)
+        drawChrome(scope)
       elseif group == "skills" then
-        drawMoves(scope, status, windows, facts)
+        drawMoves(scope, status, facts)
       else
-        drawRibbons(scope, windows, facts)
+        drawRibbons(scope, status, facts)
       end
-      drawNotice(scope, status, windows)
     end
   end)
   graphics.setColor(red, green, blue, alpha)

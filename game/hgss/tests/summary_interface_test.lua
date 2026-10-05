@@ -115,9 +115,22 @@ end
 ---@return table<string, unknown> open wrapper
 local function openSummary(service, class)
   local family = SummaryPresentationFixture.manifest()
+  -- The ready bundle carries the required portrait provider: production
+  -- preparation always binds one, so the fake must too.
+  local portraitImage = { id = "portrait-image" }
+  local portraits = {}
+  function portraits:image(_)
+    return portraitImage
+  end
+  function portraits:quadFor(selector, frameIndex)
+    return { selector = selector, frameIndex = frameIndex }
+  end
+  function portraits:dimensions(_)
+    return { width = 80, height = 80 }
+  end
   local lease = {}
   function lease:prepare(demand)
-    return { kind = "ready", key = demand.key, assets = { manifest = family } }
+    return { kind = "ready", key = demand.key, assets = { manifest = family, portraits = portraits } }
   end
   function lease:release()
   end

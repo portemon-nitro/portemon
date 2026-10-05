@@ -135,10 +135,7 @@ end
 ---@return table<string, unknown> field-owned Summary resource owner
 local function requireOwner(versionId, helper)
   local ok, Owner = pcall(require, OWNER_MODULE)
-  Assert.isTrue(
-    ok,
-    "production parent flows prepare Summary through the field resource owner: " .. tostring(Owner)
-  )
+  Assert.isTrue(ok, "production parent flows prepare Summary through the field resource owner: " .. tostring(Owner))
   return Owner.new(SummaryAcceptanceFixture.ownerOptions(versionId, helper))
 end
 
@@ -199,8 +196,7 @@ local function openProductionPartyFlow(versionId, summaryManifest, class)
     prepareIcons = function(_)
       return true, nil
     end,
-    cancelIconPreparation = function()
-    end,
+    cancelIconPreparation = function() end,
     textPolicy = { interGlyphDelay = 0, glyphBudget = 512, abAcceleration = true },
     summaryContext = function()
       return context
@@ -284,10 +280,8 @@ local function openNestedSummary(rig)
     if status.transition == nil then
       break
     end
-    exitCoefficients[#exitCoefficients + 1] = assert(
-      status.transition.brightnessCoefficient,
-      "the Summary exit carries its brightness coefficient"
-    )
+    exitCoefficients[#exitCoefficients + 1] =
+      assert(status.transition.brightnessCoefficient, "the Summary exit carries its brightness coefficient")
   end
   Assert.equal(flow:status().page, "summary", "the nested Summary owns the replacement")
   local entryCoefficients = {}
@@ -355,19 +349,6 @@ local function portraitProvider(scope, cacheFs)
   return atlasProvider(love.graphics, realizedImage(scope, cacheFs, portraitPage.image), portraitEntries)
 end
 
-local function badgeImages(scope, cacheFs)
-  local images = {}
-  return function(frame)
-    local path = assert(frame.image, "badge frames carry their image path")
-    local image = images[path]
-    if image == nil then
-      image = realizedImage(scope, cacheFs, path)
-      images[path] = image
-    end
-    return image
-  end
-end
-
 ---@param scope table<string, unknown> graphics ownership scope
 ---@param renderer table<string, unknown> Summary renderer under test
 ---@param status table<string, unknown> stable native status
@@ -418,7 +399,11 @@ local function assertCoefficients(actual, expected, label)
   for index, value in ipairs(actual) do
     parts[#parts + 1] = tostring(value)
   end
-  Assert.equal(#actual, #expected, label .. " fades exactly " .. #expected .. " frames; got {" .. table.concat(parts, ",") .. "}")
+  Assert.equal(
+    #actual,
+    #expected,
+    label .. " fades exactly " .. #expected .. " frames; got {" .. table.concat(parts, ",") .. "}"
+  )
   for index, value in ipairs(expected) do
     Assert.equal(
       actual[index],
@@ -426,6 +411,61 @@ local function assertCoefficients(actual, expected, label)
       label .. " frame " .. index .. " carries its source coefficient; got {" .. table.concat(parts, ",") .. "}"
     )
   end
+end
+
+---@param scope table<string, unknown> graphics ownership scope
+---@return table<string, unknown> compiled production picture shader
+local function pictureShader(scope)
+  local shaderPath = "libs/hgss/src/ui/shaders/summary_picture.glsl"
+  local source = love.filesystem.read(shaderPath)
+  if source == nil then
+    local handle = io.open(love.filesystem.getSourceBaseDirectory() .. "/" .. shaderPath, "rb")
+    Assert.notNil(handle, "the picture shader source loads")
+    source = handle:read("*a")
+    handle:close()
+  end
+  Assert.notNil(source, "the picture shader source loads")
+  return scope:own(love.graphics.newShader(source))
+end
+
+-- Ready-bundle-shaped test assembly over realized cache art: named
+-- visuals resolve through the manifest to canonical path-owned images
+-- while unmapped source roles stay absent instead of gaining invented
+-- substitutes. The bundle never carries party-family presentation.
+---@param scope table<string, unknown> graphics ownership scope
+---@param cacheFs table<string, unknown> version cache reader
+---@param manifest table<string, unknown> validated Summary family
+---@param text table<string, unknown> field text collaborator
+---@param portraits table<string, unknown> portrait provider
+---@param shader table<string, unknown> compiled picture shader
+---@return table<string, unknown> ready-bundle-shaped test bundle
+local function readyLikeBundle(scope, cacheFs, manifest, text, portraits, shader)
+  local images = {}
+  local bundle = { manifest = manifest, portraits = portraits, text = text, shader = shader }
+  function bundle.visualImage(name)
+    local visuals = assert(manifest.visuals, "the compiled family carries its visuals")
+    local record = visuals[name]
+    if record == nil then
+      return nil
+    end
+    local key = "visual:" .. name
+    local image = images[key]
+    if image == nil then
+      image = realizedImage(scope, cacheFs, assert(record.image, name .. " carries its image path"))
+      images[key] = image
+    end
+    return image
+  end
+  function bundle.imageForPath(path)
+    local key = "path:" .. tostring(path)
+    local image = images[key]
+    if image == nil then
+      image = realizedImage(scope, cacheFs, path)
+      images[key] = image
+    end
+    return image
+  end
+  return bundle
 end
 
 -- Production presenter dispatch through the real field presentation
@@ -451,6 +491,7 @@ local FPR_CONSTRUCTOR_MODULES = {
   "libs.hgss.src.ui.TrainerCardRenderer",
   "libs.hgss.src.ui.PartyScreenRenderer",
   "libs.hgss.src.ui.NamingScreenRenderer",
+  "libs.hgss.src.ui.MartRenderer",
   "libs.hgss.src.presentation.MonIconAssetProvider",
   "libs.hgss.src.presentation.AssetPreparationQueue",
   "libs.hgss.src.presentation.ItemIconAssetProvider",
@@ -463,8 +504,7 @@ local function genericInstance()
   setmetatable(instance, {
     __index = function(self, key)
       if key == "release" or key == "dispose" then
-        local function forget(_)
-        end
+        local function forget(_) end
         self[key] = forget
         return forget
       end
@@ -521,16 +561,14 @@ local function fprRuntime(versionId)
     fieldEmoteModels = {},
     fieldEffectAssets = {},
     fieldTerrainEffectController = {
-      setModelFactory = function(_, _)
-      end,
+      setModelFactory = function(_, _) end,
     },
   }
   runtime.derivedAssets = {}
   runtime.bindPartyIconPreparation = function(_, _, _)
     return 1
   end
-  runtime.unbindPartyIconPreparation = function(_, _)
-  end
+  runtime.unbindPartyIconPreparation = function(_, _) end
   return runtime
 end
 
@@ -550,10 +588,14 @@ local function withRealPresenters(versionId, graphics, callback)
   end
   package.loaded[FPR_MODULE] = nil
   local savedLove = rawget(_G, "love")
-  rawset(_G, "love", { graphics = graphics })
+  local runtime = fprRuntime(versionId)
+  -- The fake swaps the graphics device only: cache/filesystem reads
+  -- stay real so presenter construction can acquire its artifacts
+  -- while every draw records through the fake.
+  rawset(_G, "love", { graphics = graphics, filesystem = savedLove.filesystem })
   local ok, err = pcall(function()
     local FieldPresentationResources = require(FPR_MODULE)
-    local resources = FieldPresentationResources.new(fprRuntime(versionId))
+    local resources = FieldPresentationResources.new(runtime)
     callback(resources)
     resources:dispose()
   end)
@@ -584,13 +626,8 @@ function T.production_presenters_draw_the_live_summary_without_a_stand_in(scope)
   -- identically, so no draw-time state hides behind the first frame.
   local text = FieldTextRenderer.new({ cacheFs = cacheFs })
   local renderer = SummaryRenderer.new({ text = text })
-  local assets = {
-    manifest = summaryManifest,
-    partyManifest = PartyCache.loadManifest(cacheFs),
-    portraits = portraitProvider(scope, cacheFs),
-    badgeImage = badgeImages(scope, cacheFs),
-    text = text,
-  }
+  local assets =
+    readyLikeBundle(scope, cacheFs, summaryManifest, text, portraitProvider(scope, cacheFs), pictureShader(scope))
   local main = drawNativePane(scope, renderer, active, "main", assets)
   local sub = drawNativePane(scope, renderer, active, "sub", assets)
   Assert.isTrue(
@@ -613,10 +650,7 @@ function T.production_presenters_draw_the_live_summary_without_a_stand_in(scope)
   withRealPresenters(versionId, graphics, function(resources)
     local ok, err = pcall(resources.drawApplication, resources, FieldApplicationIds.POKEMON, rig.flow:status(), {})
     Assert.isTrue(ok, "production presenters draw the native Summary: " .. tostring(err))
-    Assert.isTrue(
-      #graphics.rectangles + #graphics.draws > 0,
-      "the real presenter leaves drawn Summary output behind"
-    )
+    Assert.isTrue(#graphics.rectangles + #graphics.draws > 0, "the real presenter leaves drawn Summary output behind")
   end)
 
   -- The sibling Party still dispatches through the same map after the
@@ -631,8 +665,7 @@ function T.production_presenters_draw_the_live_summary_without_a_stand_in(scope)
   Assert.equal(rig.flow:status().page, "party_browse", "closing the Summary returns to the party")
   waitPartyInteractive(rig)
   withRealPresenters(versionId, graphics, function(resources)
-    local ok, err =
-      pcall(resources.drawApplication, resources, FieldApplicationIds.POKEMON, rig.flow:status(), {})
+    local ok, err = pcall(resources.drawApplication, resources, FieldApplicationIds.POKEMON, rig.flow:status(), {})
     -- Sibling Party detail pixels stay owned by the dedicated Party
     -- suites; here the contract is dispatch: the same map that drew
     -- the Summary still routes its Party branch without error.
@@ -994,6 +1027,50 @@ function T.input_preparation_and_disposal_cannot_leak_across_children()
   Assert.equal(overlayState:status().slot, 0, "resizing keeps the displayed member")
   overlayState:dispose()
   overlayOwner:release()
+end
+
+-- The live production Summary child draws through the ready bundle
+-- shape without party-family presentation: no party manifest, badge
+-- images, or icon strip rides the bundle, member chrome comes from
+-- Summary roles alone, and both native panes draw distinctly and
+-- repeat identically.
+function T.production_summary_draws_through_the_ready_bundle_without_party_graft(scope)
+  local versionId = readyVersion()
+  local cacheFs = CacheFs.forVersion(versionId)
+  local _, summaryManifest = SummaryAcceptanceFixture.loadSummaryManifest(versionId)
+  local rig = openProductionPartyFlow(versionId, summaryManifest, "nativeLike")
+  local active = openNestedSummary(rig)
+  for _ = 1, 30 do
+    if active.facts ~= nil and active.group ~= nil then
+      break
+    end
+    rig.flow:updateFixed({})
+    active = flowChild(rig)
+  end
+  Assert.notNil(active.facts, "the nested Summary publishes its display facts")
+  Assert.equal(active.group, "info", "the nested Summary opens on its first native group")
+  local text = FieldTextRenderer.new({ cacheFs = cacheFs })
+  local renderer = SummaryRenderer.new({ text = text })
+  local bundle =
+    readyLikeBundle(scope, cacheFs, summaryManifest, text, portraitProvider(scope, cacheFs), pictureShader(scope))
+  Assert.isNil(bundle.partyManifest, "the ready bundle carries no party manifest")
+  Assert.isNil(bundle.badgeImage, "the ready bundle carries no party badge images")
+  Assert.isNil(bundle.icons, "the ready bundle carries no party icon strip")
+  local main = drawNativePane(scope, renderer, active, "main", bundle)
+  local sub = drawNativePane(scope, renderer, active, "sub", bundle)
+  Assert.isTrue(
+    paneDifference(main, sub) > 1000,
+    "the production child draws distinct main and sub surfaces through the ready bundle"
+  )
+  Assert.isTrue(
+    countLit(main, 168, 64, 248, 144) > 200,
+    "the production child centers the large picture through the ready bundle"
+  )
+  local again = drawNativePane(scope, renderer, active, "sub", bundle)
+  Assert.equal(paneDifference(sub, again), 0, "the production child repeats its sub pane identically")
+  text:release()
+  rig.flow:dispose()
+  rig.owner:release()
 end
 
 local suite = GraphicsSmoke.suite(T)
