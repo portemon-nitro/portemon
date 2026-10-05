@@ -11,6 +11,7 @@ local Mailbox = require("libs.hgss.src.save.Mailbox")
 local PhotoAlbum = require("libs.hgss.src.save.PhotoAlbum")
 local EncounterSave = require("libs.hgss.src.save.EncounterSave")
 local PokedexSave = require("libs.hgss.src.save.PokedexSave")
+local BattleFrontierRecords = require("libs.hgss.src.save.BattleFrontierRecords")
 
 local T = {}
 
@@ -41,6 +42,7 @@ local function record(overrides)
     photoAlbum = PhotoAlbum.new():capture(),
     encounters = EncounterSave.initial(),
     pokedex = PokedexSave.initial(),
+    battleFrontier = BattleFrontierRecords.new():bucket(),
   }
   for key, replacement in pairs(overrides or {}) do
     rawset(value, key, replacement)

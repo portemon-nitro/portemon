@@ -123,6 +123,29 @@ function PokedexKnowledge:isCaught(key)
   return self._caught[key] == true
 end
 
+-- Retail national dex stars exclude species 151, 385, 386, and 489..493,
+-- while retaining Celebi (251) in the caught count.
+---@return integer
+function PokedexKnowledge:nationalCaughtCount()
+  local excluded = {
+    MEW = true,
+    JIRACHI = true,
+    DEOXYS = true,
+    PHIONE = true,
+    MANAPHY = true,
+    DARKRAI = true,
+    SHAYMIN = true,
+    ARCEUS = true,
+  }
+  local count = 0
+  for species in pairs(self._caught) do
+    if not excluded[species] then
+      count = count + 1
+    end
+  end
+  return count
+end
+
 ---@return integer
 function PokedexKnowledge:revision()
   return self._revision

@@ -171,6 +171,7 @@ local EXISTING_DOMAINS = {
     "lowering/BattleHandlers",
     "lowering/ControlHandlers",
     "lowering/FieldHandlers",
+    "lowering/FieldServiceHandlers",
     "lowering/Operands",
   },
 }

@@ -375,12 +375,23 @@ function RuntimeValues.resolveActor(ref, run)
     -- through the actor adapter (the pinned
     -- MapObjectManager_GetFirstActiveObjectByID path). The actor world
     -- contract requires actorIdForMapIndex.
-    local actorId = run.services.actors:actorIdForMapIndex(ref.mapIndex)
+    local mapIndex = ref.mapIndex
+    if type(mapIndex) == "table" then
+      mapIndex = RuntimeValues.evaluateValue(mapIndex, run)
+    end
+    if type(mapIndex) ~= "number" or mapIndex < 0 or mapIndex ~= math.floor(mapIndex) then
+      Errors.raise(
+        ScriptErrors.SCRIPT_INVALID_REFERENCE,
+        "map object index must evaluate to a nonnegative integer",
+        { scriptId = run.instance.scriptId, mapIndex = tostring(mapIndex) }
+      )
+    end
+    local actorId = run.services.actors:actorIdForMapIndex(mapIndex)
     if actorId == nil then
       Errors.raise(
         ScriptErrors.SCRIPT_ACTOR_NOT_FOUND,
-        "map object index " .. tostring(ref.mapIndex) .. " does not resolve in the current map",
-        { scriptId = run.instance.scriptId, mapIndex = ref.mapIndex }
+        "map object index " .. tostring(mapIndex) .. " does not resolve in the current map",
+        { scriptId = run.instance.scriptId, mapIndex = mapIndex }
       )
     end
     return actorId --[[@as string]]

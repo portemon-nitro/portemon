@@ -266,6 +266,10 @@ local function checkActor(context, v, path, field)
   if type(v.mapIndex) == "number" and v.mapIndex >= 0 and v.mapIndex == math.floor(v.mapIndex) then
     return
   end
+  if type(v.mapIndex) == "table" then
+    checkVarRef(context, v.mapIndex, path .. "/mapIndex", field)
+    return
+  end
   fail(
     context,
     ScriptErrors.SCRIPT_SCHEMA_INVALID,

@@ -31,6 +31,7 @@ local PartyCache = require("libs.assets.src.PartyCache")
 local MonIconAssetProvider = require("libs.hgss.src.presentation.MonIconAssetProvider")
 local ItemIconAssetProvider = require("libs.hgss.src.presentation.ItemIconAssetProvider")
 local FollowingMonTransitionRenderer = require("libs.hgss.src.presentation.FollowingMonTransitionRenderer")
+local PokemonCenterHealRenderer = require("libs.hgss.src.presentation.PokemonCenterHealRenderer")
 local NamingScreenRenderer = require("libs.hgss.src.ui.NamingScreenRenderer")
 local PcStorageRenderer = require("libs.hgss.src.ui.PcStorageRenderer")
 local MailboxRenderer = require("libs.hgss.src.ui.MailboxRenderer")
@@ -53,6 +54,8 @@ local PhotoAlbumRenderer = require("libs.hgss.src.ui.PhotoAlbumRenderer")
 ---@field fieldTerrainEffectController FieldTerrainEffectController
 ---@field followerTransitionDefinition table<string, unknown>?
 ---@field followingMonTransition FollowingMonTransitionController?
+---@field pokemonCenterHeal PokemonCenterHealFlow? active healing choreography
+---@field pokemonCenterHealDefinition table<string, unknown>? generated healing-ball asset definition
 
 ---@class FieldPresentationResources
 ---@field cacheFs CacheFs generated asset filesystem
@@ -82,6 +85,7 @@ local PhotoAlbumRenderer = require("libs.hgss.src.ui.PhotoAlbumRenderer")
 ---@field photoAlbumRenderer PhotoAlbumRenderer Photo Album renderer
 ---@field martRenderer MartRenderer? owned source-layered mart background and prompt images
 ---@field followingMonTransitionRenderer FollowingMonTransitionRenderer? transient follower-transition presentation (nil without the generated definition)
+---@field pokemonCenterHealRenderer PokemonCenterHealRenderer? transient healing-ball presentation
 ---@field textRenderer FieldTextRenderer?
 ---@field fieldEntranceIndicatorPool GpuAssetPool?
 ---@field fieldEntranceIndicatorRenderer FieldStaticEffectRenderer?
@@ -464,6 +468,16 @@ function FieldPresentationResources.new(runtime)
     else
       self.followingMonTransitionRenderer = nil
     end
+    if runtime.pokemonCenterHealDefinition ~= nil and runtime.pokemonCenterHeal ~= nil then
+      local healRenderer =
+        PokemonCenterHealRenderer.new({ definition = runtime.pokemonCenterHealDefinition }, entrancePool)
+      self.pokemonCenterHealRenderer = healRenderer
+      runtime.pokemonCenterHeal:setBallFactory(function(position, record, index)
+        return healRenderer:newBall(position, record, index)
+      end)
+    else
+      self.pokemonCenterHealRenderer = nil
+    end
     local surfEffects = runtime.fieldEntranceIndicatorAsset.effects
     local surfAttachment =
       assert(surfEffects and surfEffects.surf_attachment, "field-effect cache is missing surf_attachment")
@@ -800,6 +814,10 @@ function FieldPresentationResources:dispose()
   if self.followingMonTransitionRenderer then
     self.followingMonTransitionRenderer:dispose()
     self.followingMonTransitionRenderer = nil
+  end
+  if self.pokemonCenterHealRenderer then
+    self.pokemonCenterHealRenderer:dispose()
+    self.pokemonCenterHealRenderer = nil
   end
   if self.textRenderer then
     self.textRenderer:release()

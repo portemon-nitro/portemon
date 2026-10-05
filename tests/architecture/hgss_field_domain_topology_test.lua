@@ -102,6 +102,7 @@ local FIELD_COORDINATION = {
   "FollowingMonTransitionController",
   "MapInitScriptController",
   "MailActions",
+  "PokemonCenterHealFlow",
   "PartyActions",
   "PcStorageActions",
 }

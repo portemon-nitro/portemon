@@ -70,6 +70,27 @@ function TimeOfDayProps.bandForHour(hour)
   return BAND_BY_HOUR[hour + 1]
 end
 
+-- The GF_RTC TIMEOFDAY enum returned by Field_GetTimeOfDay follows the
+-- boundaries in include/gf_rtc.h and gf_rtc.c.
+---@param hour integer
+---@return integer
+function TimeOfDayProps.rtcCodeForHour(hour)
+  assert(type(hour) == "number" and hour >= 0 and hour < 24 and math.floor(hour) == hour, "hour must be in 0..23")
+  if hour < 4 then
+    return 4
+  end
+  if hour < 10 then
+    return 0
+  end
+  if hour < 17 then
+    return 1
+  end
+  if hour < 20 then
+    return 2
+  end
+  return 3
+end
+
 -- The band for seconds-since-midnight (the engine's field time unit).
 ---@param seconds integer
 ---@return string

@@ -36,6 +36,27 @@ local FollowerInteractionEngine = require("libs.hgss.src.field.FollowerInteracti
 local ScriptPlayerFacade = {}
 ScriptPlayerFacade.__index = ScriptPlayerFacade
 
+-- Script-visible PLAYER_STATE_* values from pret/pokeheartgold's
+-- include/constants/global_fieldmap.h. The value follows the live avatar's
+-- visual state, including temporary field-action poses.
+local PLAYER_STATE_CODE = {
+  walking = 0,
+  cycling = 1,
+  surfing = 2,
+  rocket = 3,
+  use_hm = 4,
+  watering = 5,
+  pokeathlon = 6,
+  fishing = 7,
+  poketch = 8,
+  saving = 9,
+  heal = 10,
+  ladder = 11,
+  rocket_heal = 12,
+  apricorn_shake = 13,
+  rocket_saving = 14,
+}
+
 ---@param player FieldPlayer
 ---@return ScriptPlayerFacade
 local function playerFacade(player)
@@ -135,6 +156,15 @@ function ScriptPlayerFacade:name()
   return profile --[[@as { gender: integer, name: string }]].name
 end
 
+function ScriptPlayerFacade:stateCode()
+  local avatar = self._avatarState
+  assert(avatar and type(avatar.status) == "function", "field scripts require a player avatar state owner")
+  local stateName = avatar:status().visualState
+  local code = PLAYER_STATE_CODE[stateName]
+  assert(code ~= nil, "unknown player avatar state " .. tostring(stateName))
+  return code
+end
+
 function ScriptPlayerFacade:turn(direction)
   local player = assert(self._player, "player facade has no live player")
   assert(player.turn, "player facade requires turn")
@@ -220,6 +250,7 @@ end
 ---@field pokemonNaming table<string, unknown>|nil the script-owned Pokemon Naming Screen host
 ---@field followingMon table<string, unknown>|nil the live following-mon controller for follower script operations (absent -> SCRIPT_SERVICE_MISSING on use)
 ---@field followerTransition table<string, unknown>|nil the transient follower-transition owner the nonblocking transition command starts (absent -> SCRIPT_SERVICE_MISSING on use)
+---@field pokemonCenterHeal table<string, unknown>|nil runtime-owned Pokémon Center choreography
 ---@field starterBalls table<string, unknown>|nil the Elm starter-ball runtime-prop controller (absent -> SCRIPT_SERVICE_MISSING on use)
 ---@field followerInteractionCatalog table<string, unknown> validated generated follower-interaction catalog
 ---@field clock table<string, unknown> live local clock
@@ -227,6 +258,8 @@ end
 ---@field pcApplications table<string, unknown> the script-owned PC application host
 ---@field pcTerminal table<string, unknown> source PC terminal effects
 ---@field battle table<string, unknown>|nil the battle host for script battle tasks (absent -> SCRIPT_SERVICE_MISSING on use)
+---@field timeOfDay table<string, unknown> RTC-derived time-of-day service
+---@field trainerCardStars table<string, unknown> source-derived Trainer Card star query
 ---@field overworld table<string, unknown>|nil the shared field lifecycle owner
 ---@field propAnimations table<string, unknown>|nil the map-scoped one-shot prop slot owner
 
@@ -455,6 +488,9 @@ function FieldScripts.new(opts)
       followingMon = opts.followingMon,
       followerInteraction = followerInteractionEngine,
       followerTransition = opts.followerTransition,
+      pokemonCenterHeal = opts.pokemonCenterHeal,
+      timeOfDay = opts.timeOfDay,
+      trainerCardStars = opts.trainerCardStars,
       starterBalls = opts.starterBalls,
       pcApplications = opts.pcApplications,
       pcTerminal = opts.pcTerminal,

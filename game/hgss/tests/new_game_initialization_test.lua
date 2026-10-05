@@ -279,6 +279,7 @@ function T.lottery_persists_through_world_capture_and_game_save()
     photoAlbum = require("libs.hgss.src.save.PhotoAlbum").new():capture(),
     encounters = EncounterSave.initial(),
     pokedex = PokedexSave.initial(),
+    battleFrontier = require("libs.hgss.src.save.BattleFrontierRecords").new():bucket(),
   }
   local validated = assert(GameSave.normalize(record))
   Assert.equal(validated.world.variables[vars.VAR_LOTO_NUMBER_LO], 0x5678)

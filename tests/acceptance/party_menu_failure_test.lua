@@ -21,6 +21,7 @@ local BagSave = require("libs.hgss.src.save.BagSave")
 local Mailbox = require("libs.hgss.src.save.Mailbox")
 local MartSave = require("libs.hgss.src.save.MartSave")
 local PhotoAlbum = require("libs.hgss.src.save.PhotoAlbum")
+local BattleFrontierRecords = require("libs.hgss.src.save.BattleFrontierRecords")
 local CatalogFixture = require("libs.mons.tests.catalog_fixture")
 local Errors = require("libs.errors.src.Errors")
 local FakeCache = require("tests.support.FakeCache")
@@ -473,6 +474,7 @@ local function validRecord(saveId)
     photoAlbum = PhotoAlbum.new():capture(),
     encounters = EncounterSave.initial(),
     pokedex = PokedexSave.initial(),
+    battleFrontier = BattleFrontierRecords.new():bucket(),
   }
 end
 
@@ -502,6 +504,7 @@ local function v3record(saveId)
   value.mart = nil
   value.mailbox = nil
   value.photoAlbum = nil
+  value.battleFrontier = nil
   value.playerData = {
     profile = { name = "GOLD", gender = 0, trainerId = 1, money = 3000 },
     options = { textFrame = 0, textSpeed = "mid" },
@@ -580,6 +583,7 @@ function T.tests.v3_record_migrates_through_store_load()
   backend.files[gamePath(saveId)] = LuaWriter.encode(v3record(saveId))
   local loaded = assert(store:load(saveId), "the migrated record must load")
   Assert.equal(loaded.schema, GameSave.SCHEMA, "load exposes the current migrated schema")
+  Assert.isTrue(type(loaded.battleFrontier) == "table", "v3 migration initializes the current Frontier bucket")
   Assert.equal(loaded.playerData.profile.badges, 0, "migration starts with zero badges")
   Assert.deepEqual(loaded.fieldTravel, { lastHealSpawn = "SPAWN_NEW_BARK" }, "migration seeds the mother spawn")
   Assert.equal(loaded.playerData.profile.name, "GOLD", "migration preserves the profile")

@@ -10,7 +10,7 @@ local ModelAsset = require("libs.assets.src.model.ModelAsset")
 
 local T = { tests = {} }
 
-local KINDS = { "warp_entrance", "tall_grass", "very_tall_grass", "trainer_reveal", "surf_attachment" }
+local KINDS = { "warp_entrance", "tall_grass", "very_tall_grass", "trainer_reveal", "surf_attachment", "pokemon_center_heal" }
 for selector = 1, 14 do
   KINDS[#KINDS + 1] = "follower_reaction_" .. selector
 end
@@ -52,6 +52,11 @@ local function cacheWithIndexSchema(schema)
   for _, kind in ipairs(KINDS) do
     index.effects[kind] = { definition = kind, path = FieldEffectAssetCache.definitionPath(kind) }
   end
+  index.effects.pokemon_center_heal = {
+    kind = "healing",
+    definition = "pokemon_center_heal",
+    path = FieldEffectAssetCache.definitionPath("pokemon_center_heal"),
+  }
   return {
     loadLua = function(_, path)
       if path == FieldEffectAssetCache.indexPath() then
@@ -76,6 +81,9 @@ local function cacheWithIndexSchema(schema)
       if kind:match("^follower_reaction_%d+$") then
         return { definition = kind, model = staticModel("field-effect:follower-reaction-" .. kind:match("(%d+)$")) }
       end
+      if kind == "pokemon_center_heal" then
+        return { models = { staticModel("field-effect:pokemon-center-heal-ball") } }
+      end
       return { model = staticModel("field-effect:" .. kind) }
     end,
   }
@@ -96,6 +104,14 @@ T.tests["loads current field effects including all follower reactions"] = functi
   Assert.equal(surf.presentation.yawDegrees.west, 270)
   Assert.equal(surf.presentation.yawDegrees.east, 90)
   Assert.notNil(bundle.model)
+end
+
+T.tests["loads healing models as their own generated effect definition"] = function()
+  local bundle = FieldEntranceIndicatorRuntime.load(cacheWithIndexSchema(Contract.fieldEffects.indexSchema))
+  local healing = assert(bundle.effects.pokemon_center_heal)
+  Assert.equal(#healing.models, 1)
+  Assert.equal(healing.models[1].key, "field-effect:pokemon-center-heal-ball")
+  Assert.isNil(healing.model, "the healing definition does not pretend to be a static entrance effect")
 end
 
 T.tests["rejects a stale field-effect index schema"] = function()

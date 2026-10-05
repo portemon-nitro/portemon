@@ -20,6 +20,69 @@ local function distinctMembers(observations, section)
   return ids
 end
 
+local function installCenterHealingMocks()
+  package.loaded["romdump.src.digest.map.MapResolver"] = {
+    resolve = function(_, mapSymbol)
+      assert(mapSymbol == "MAP_CHERRYGROVE_POKECENTER_1F")
+      return { map = { id = 69, symbol = mapSymbol }, areaDataMemberId = 8, landDataMemberId = 61 }
+    end,
+  }
+  package.loaded["romdump.src.digest.map.AreaData"] = {
+    decode = function()
+      return { buildingTexturePackId = 4 }
+    end,
+  }
+  package.loaded["romdump.src.digest.map.LandData"] = {
+    decode = function()
+      return {
+        buildings = {
+          { index = 4, modelMemberId = 36 },
+          { index = 5, modelMemberId = 37 },
+          { index = 6, modelMemberId = 999 },
+        },
+      }
+    end,
+  }
+  package.loaded["romdump.src.digest.map.BuildingModelCompiler"] = {
+    compile = function(_, area, land, opts)
+      assert(area.buildingTexturePackId == 4)
+      assert(#land.buildings == 2, "only center props are compiled as placements")
+      Assert.equal(opts.requiredModelMembers[1], 107, "the ball model is compiled without a map placement")
+      local function descriptor(key, name, memberId)
+        return {
+          schema = "g4-model-v5",
+          key = key,
+          memberId = memberId,
+          kind = "nitro-dynamic",
+          dynamic = {
+            nodes = {},
+            transformProgram = {},
+            batches = { { geometry = "assets/generated/maps/geometry/mesh.g4mesh" } },
+          },
+          materials = { { id = 0, name = "effect", texture = "assets/generated/maps/textures/texture.png" } },
+          animations = { { name = name, frameCount = name == "moniter_mb" and 32 or 16 } },
+        }
+      end
+      opts.meshes.mesh = {}
+      opts.textures.texture = { width = 1, height = 1, pixels = "pixel" }
+      local models = {
+        anchor = descriptor("anchor", "anchor", 36),
+        machine = descriptor("machine", "moniter_mb", 37),
+        ball = descriptor("ball", "pc_mb", 107),
+      }
+      return {
+        modelKeyOf = { [36] = "anchor", [37] = "machine", [107] = "ball" },
+        models = models,
+        buildingModelShas = { { memberId = 36, sha1 = "anchor-hash" }, { memberId = 37, sha1 = "machine-hash" } },
+        animationListMemberSha1s = {
+          { memberId = 37, sha1 = "machine-list-hash" },
+          { resourceId = 8, sha1 = "machine-animation-hash" },
+        },
+      }
+    end,
+  }
+end
+
 T.tests["compiles source-derived renderer 8 and 12 resources"] = function()
   local names = {
     "romdump.src.digest.field.FieldEntranceIndicatorCompiler",
@@ -33,6 +96,10 @@ T.tests["compiles source-derived renderer 8 and 12 resources"] = function()
     "libs.assets.src.model.ModelAsset",
     "romdump.src.digest.Hashing",
     "romdump.src.config.FieldEffects",
+    "romdump.src.digest.map.MapResolver",
+    "romdump.src.digest.map.AreaData",
+    "romdump.src.digest.map.LandData",
+    "romdump.src.digest.map.BuildingModelCompiler",
   }
   local saved = {}
   for _, name in ipairs(names) do
@@ -85,10 +152,28 @@ T.tests["compiles source-derived renderer 8 and 12 resources"] = function()
         lifecycle = { mode = "once", preludeTicks = 2 },
         placementOffset = { x = 0, y = 6, z = 0 },
       },
+      pokemon_center_heal = {
+        mapSymbol = "MAP_CHERRYGROVE_POKECENTER_1F",
+        anchorModelMemberId = 36,
+        machineModelMemberId = 37,
+        ballModelMemberId = 107,
+        spawnIntervalSourceFrames = 12,
+        placementSound = "SEQ_SE_DP_BOWA",
+        fanfare = "SEQ_ME_ASA",
+        ballPositionsFx32 = {
+          { role = "northwest", x = -0x4800, y = 0xC000, z = -0x4800 },
+          { role = "northeast", x = 0x4800, y = 0xC000, z = -0x4800 },
+          { role = "west", x = -0x4800, y = 0xC000, z = 0 },
+          { role = "east", x = 0x4800, y = 0xC000, z = 0 },
+          { role = "southwest", x = -0x4800, y = 0xC000, z = 0x4800 },
+          { role = "southeast", x = 0x4800, y = 0xC000, z = 0x4800 },
+        },
+      },
     },
     followerReactions = SourceFieldEffects.followerReactions,
     followerReactionBase = SourceFieldEffects.followerReactionBase,
   }
+  installCenterHealingMocks()
   package.loaded["libs.nds.src.nitro.g3d.Nsbmd"] = {
     decode = function(_, context)
       assert(context and context.section, "Nsbmd.decode context.section is required")
@@ -326,6 +411,33 @@ T.tests["compiles source-derived renderer 8 and 12 resources"] = function()
   Assert.equal(transition.placementOffset.x, 0)
   Assert.equal(transition.placementOffset.y, 0.375)
   Assert.equal(transition.placementOffset.z, 0)
+  local centerHeal = result.effects.pokemon_center_heal
+  Assert.equal(#centerHeal.models, 1)
+  Assert.equal(centerHeal.models[1].key, "ball")
+  Assert.equal(result.index.effects.pokemon_center_heal.kind, "healing")
+  Assert.equal(result.index.effects.pokemon_center_heal.definition, "pokemon_center_heal")
+  Assert.equal(centerHeal.anchorModelKey, "anchor")
+  Assert.equal(centerHeal.machineModelKey, "machine")
+  Assert.equal(centerHeal.machineAnimation, "moniter_mb")
+  Assert.equal(centerHeal.machineAnimationFrameCount, 32)
+  Assert.equal(centerHeal.ballAnimation, "pc_mb")
+  Assert.equal(centerHeal.spawnIntervalSourceFrames, 12)
+  Assert.equal(centerHeal.placementSound, "SEQ_SE_DP_BOWA")
+  Assert.equal(centerHeal.fanfare, "SEQ_ME_ASA")
+  Assert.equal(#centerHeal.ballPositions, 6)
+  Assert.equal(centerHeal.ballPositions[1].role, "northwest")
+  Assert.deepEqual(centerHeal.ballPositions[1].offset, { x = -4.5, y = 12, z = -4.5 })
+  Assert.equal(centerHeal.ballPositions[2].role, "northeast")
+  Assert.deepEqual(centerHeal.ballPositions[2].offset, { x = 4.5, y = 12, z = -4.5 })
+  Assert.equal(centerHeal.ballPositions[3].role, "west")
+  Assert.deepEqual(centerHeal.ballPositions[3].offset, { x = -4.5, y = 12, z = 0 })
+  Assert.equal(centerHeal.ballPositions[4].role, "east")
+  Assert.deepEqual(centerHeal.ballPositions[4].offset, { x = 4.5, y = 12, z = 0 })
+  Assert.equal(centerHeal.ballPositions[5].role, "southwest")
+  Assert.deepEqual(centerHeal.ballPositions[5].offset, { x = -4.5, y = 12, z = 4.5 })
+  Assert.equal(centerHeal.ballPositions[6].role, "southeast")
+  Assert.deepEqual(centerHeal.ballPositions[6].offset, { x = 4.5, y = 12, z = 4.5 })
+  Assert.equal(centerHeal.models[1].dynamic.batches[1].geometry, FieldEffectAssetCache.geometryPath("mesh"))
 
   invalidSelector = true
   local invalidOk, invalidErr = pcall(compiler.compile, romFs)
@@ -346,6 +458,10 @@ T.tests["rewrites compiled geometry and texture references into the effect root"
     "romdump.src.digest.model.MapPropAnimCompiler",
     "libs.assets.src.model.ModelAsset",
     "romdump.src.digest.Hashing",
+    "romdump.src.digest.map.MapResolver",
+    "romdump.src.digest.map.AreaData",
+    "romdump.src.digest.map.LandData",
+    "romdump.src.digest.map.BuildingModelCompiler",
   }
   local saved = {}
   for _, name in ipairs(names) do
@@ -444,6 +560,7 @@ T.tests["rewrites compiled geometry and texture references into the effect root"
       return "dependency-hash"
     end,
   }
+  installCenterHealingMocks()
   package.loaded["romdump.src.digest.field.FieldEntranceIndicatorCompiler"] = nil
 
   local ok, result = pcall(function()

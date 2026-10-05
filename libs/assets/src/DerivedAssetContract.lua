@@ -282,7 +282,10 @@ DerivedAssetContract.newGameInit = {
 
 DerivedAssetContract.fieldEffects = {
   -- v9 adds the source-selected follower reaction clips to the field-effect
-  -- index and publishes their shared-model dynamic descriptors.
+  -- index (indexSchema v3) and publishes their shared-model dynamic
+  -- descriptors, plus the source-selected Pokémon Center healing
+  -- choreography model. Caches predating either payload fail readiness
+  -- through the required-kind inventory.
   cacheFormat = "field-effect-cache-v9",
   indexSchema = "g4-field-effect-index-v3",
 }

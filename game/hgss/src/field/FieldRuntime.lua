@@ -203,6 +203,7 @@ end
 ---@field _battleHost table<string, unknown>? narrow battle host for script battle tasks
 ---@field roamerState table<string, unknown>? the owned roamer and encounter persistence
 ---@field dexKnowledge table<string, unknown>? the owned dex knowledge
+---@field battleFrontierRecords BattleFrontierRecords the source-owned five-record Trainer Card counters
 ---@field playerDataContext table<string, unknown>? the generated charmap and frame-index context behind player validation
 ---@field _lastBattleResult table<string, unknown>? latest committed battle outcome words
 ---@field bagCursor BagCursor the runtime-only field bag cursor
@@ -255,6 +256,8 @@ end
 ---@field fieldEntranceIndicator FieldEntranceIndicator
 ---@field fieldEntranceIndicatorAsset table<string, unknown>
 ---@field fieldEffectAssets table<string, unknown>
+---@field pokemonCenterHeal PokemonCenterHealFlow? source-owned Pokémon Center choreography
+---@field pokemonCenterHealDefinition table<string, unknown>? generated healing-ball asset definition
 ---@field physicalCoverage FieldCoverage?
 ---@field residency FieldResidencyCoordinator?
 ---@field assetPreparation AssetPreparationQueue? presentation-only preparation worker owner (nil when headless)
@@ -1634,6 +1637,9 @@ function FieldRuntime:update(dt)
   local fieldExecuted = 0
   while self.session.accumulator + EPSILON >= FIXED_DT and fieldExecuted < MAX_CATCH_UP do
     self.session.accumulator = self.session.accumulator - FIXED_DT
+    if self.pokemonCenterHeal then
+      self.pokemonCenterHeal:updateFixed()
+    end
     self.session:updateFixed()
     fieldExecuted = fieldExecuted + 1
     -- The follower reconciles once per fixed tick, after player and
@@ -1838,6 +1844,116 @@ function FieldRuntime:_composeFollowerTransition(cacheFs)
   self.menuComposer:composeFollowerTransition(cacheFs)
 end
 
+---@param audio table<string, unknown>
+function FieldRuntime:_composePokemonCenterHeal(audio)
+  local definition = assert(
+    self.fieldEntranceIndicatorAsset.effects.pokemon_center_heal,
+    "field-effect cache is missing pokemon_center_heal"
+  )
+  local ballModel = assert(definition.models[1], "healing ball model is missing")
+  local ballFrameCount
+  for _, clip in ipairs(ballModel.animations) do
+    if clip.name == definition.ballAnimation or clip.id == definition.ballAnimation then
+      ballFrameCount = clip.frameCount
+      break
+    end
+  end
+  assert(type(ballFrameCount) == "number" and ballFrameCount > 0, "healing ball animation is missing")
+  local function currentMap()
+    return self.session and self.session.currentMap or self.runtimeMap
+  end
+  local function exactPlacement(mapProps, modelKey)
+    local match
+    for _, placement in ipairs(mapProps.placements) do
+      if placement.modelKey == modelKey then
+        assert(match == nil, "healing model key resolves to multiple map placements")
+        match = placement
+      end
+    end
+    return assert(match, "healing model key has no placement on the active map")
+  end
+  local function timer(frameCount)
+    local remaining = frameCount
+    local function updateFixed()
+      remaining = math.max(0, remaining - 1)
+    end
+    local function isFinished()
+      return remaining == 0
+    end
+    local function release() end
+    return {
+      updateFixed = updateFixed,
+      isFinished = isFinished,
+      release = release,
+    }
+  end
+  local function headlessBallFactory(_, _, _)
+    local remaining = ballFrameCount
+    local started = false
+    local function startAnimation()
+      started = true
+    end
+    local function updateFixed()
+      if started then
+        remaining = math.max(0, remaining - 1)
+      end
+    end
+    local function isFinished()
+      return started and remaining == 0
+    end
+    local function dispose() end
+    return {
+      startAnimation = startAnimation,
+      updateFixed = updateFixed,
+      isFinished = isFinished,
+      dispose = dispose,
+    }
+  end
+  local Flow = require("libs.hgss.src.field.PokemonCenterHealFlow")
+  self.pokemonCenterHealDefinition = definition
+  local function mapId()
+    local map = currentMap()
+    return map and map.mapId
+  end
+  local function resolveAnchor()
+    local map = assert(currentMap(), "healing requires an active map")
+    local mapProps = assert(map.mapProps, "healing requires map props")
+    local anchorPlacement = exactPlacement(mapProps, definition.anchorModelKey)
+    local machinePlacement = exactPlacement(mapProps, definition.machineModelKey)
+    local machine = assert(mapProps:prop(machinePlacement.placementIndex), "healing machine prop is missing")
+    local transform = assert(anchorPlacement.transform, "healing anchor transform is missing")
+    local function startAnimation(_, animation)
+      local playback = machine:play(animation, { loopMode = "once" })
+      if playback == nil then
+        return timer(definition.machineAnimationFrameCount)
+      end
+      local function updateFixed() end
+      local function isFinished()
+        return machine:isFinished(animation) == true
+      end
+      local function release()
+        machine:stop(animation)
+      end
+      return {
+        updateFixed = updateFixed,
+        isFinished = isFinished,
+        release = release,
+      }
+    end
+    return {
+      position = { x = transform[13], y = transform[14], z = transform[15] },
+      startAnimation = startAnimation,
+    }
+  end
+  self.pokemonCenterHeal = Flow.new({
+    definition = definition,
+    mapId = mapId,
+    resolveAnchor = resolveAnchor,
+    spawnBall = headlessBallFactory,
+    audio = audio,
+  })
+end
+
 ---@param cacheFs unknown
 ---@param restoredAudio table<string, unknown>? the restored save's audio bucket, when resuming
 ---@return table<string, unknown> audioService the GameSound instance, or the injected recording adapter
@@ -1927,6 +2043,12 @@ function FieldRuntime:_composeBattleState(loadedGame, monRoot, world)
     self.dexKnowledge = PokedexKnowledge.restore(loadedGame.pokedex, { species = speciesRefs })
   else
     self.dexKnowledge = PokedexKnowledge.new({ species = speciesRefs })
+  end
+  local BattleFrontierRecords = require("libs.hgss.src.save.BattleFrontierRecords")
+  if loadedGame ~= nil then
+    self.battleFrontierRecords = BattleFrontierRecords.restore(assert(loadedGame.battleFrontier))
+  else
+    self.battleFrontierRecords = BattleFrontierRecords.new()
   end
   self.battleRuntime = nil
   self.battlePresentation = nil
@@ -2710,6 +2832,10 @@ function FieldRuntime:_releaseAll()
     self.followingMonTransition:dispose()
   end
   self.followingMonTransition = nil
+  if self.pokemonCenterHeal then
+    self.pokemonCenterHeal:dispose()
+  end
+  self.pokemonCenterHeal, self.pokemonCenterHealDefinition = nil, nil
   self.starterBalls = nil
   self.followerTransitionDefinition = nil
   if self.actors then

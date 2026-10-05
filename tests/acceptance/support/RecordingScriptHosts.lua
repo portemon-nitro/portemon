@@ -9,13 +9,14 @@
 -- observation seam.
 
 local RecordingScriptHosts = {}
+local FANFARE_ACTIVE_POLLS = 24
 
 ---@param options { audio: boolean? }|nil
 ---@return table { effects: string[], audio: table|nil, events: table }
 function RecordingScriptHosts.new(options)
   options = options or {}
   local effects = {}
-  local audio = { current = nil, fadeActive = false }
+  local audio = { current = nil, fadeActive = false, fanfarePollsRemaining = 0 }
   local events = { records = {} }
 
   function audio:play(sound)
@@ -42,7 +43,11 @@ function RecordingScriptHosts.new(options)
   end
 
   function audio:isFanfarePlaying()
-    return false
+    if self.fanfarePollsRemaining == 0 then
+      return false
+    end
+    self.fanfarePollsRemaining = self.fanfarePollsRemaining - 1
+    return true
   end
 
   function audio:playMusic(music)
@@ -54,6 +59,7 @@ function RecordingScriptHosts.new(options)
   function audio:temporaryMusic() end
   function audio:playCry() end
   function audio:playFanfare(fanfare)
+    self.fanfarePollsRemaining = FANFARE_ACTIVE_POLLS
     effects[#effects + 1] = "fanfare:" .. tostring(fanfare)
   end
   function audio:fadeMusicOut() end

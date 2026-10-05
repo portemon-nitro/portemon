@@ -6,10 +6,12 @@
 local Errors = require("libs.errors.src.Errors")
 local GameSaveErrors = require("libs.hgss.src.save.GameSaveErrors")
 local FieldTravelState = require("libs.hgss.src.field.FieldTravelState")
+
 local FashionCaseState = require("libs.hgss.src.save.FashionCaseState")
 local MartSave = require("libs.hgss.src.save.MartSave")
 local Mailbox = require("libs.hgss.src.save.Mailbox")
 local PhotoAlbum = require("libs.hgss.src.save.PhotoAlbum")
+local BattleFrontierRecords = require("libs.hgss.src.save.BattleFrontierRecords")
 
 local GameSave = {}
 
@@ -17,6 +19,7 @@ GameSave.SCHEMA = "g4-game-save-v8"
 GameSave.LEGACY_V7_SCHEMA = "g4-game-save-v7"
 GameSave.LEGACY_V5_SCHEMA = "g4-game-save-v5"
 GameSave.LEGACY_V6_SCHEMA = "g4-game-save-v6"
+
 GameSave.MAX_PLAY_TIME_SECONDS = 999 * 60 * 60 + 59 * 60 + 59
 
 local FACING = { north = true, south = true, west = true, east = true }
@@ -25,6 +28,7 @@ local TOP_LEVEL_FIELDS = {
   audio = true,
   auxiliaryUi = true,
   bag = true,
+  battleFrontier = true,
   encounters = true,
   facing = true,
   fashionCase = true,
@@ -234,11 +238,14 @@ local function canonicalizeCurrent(record)
       { playTimeSeconds = record.playTimeSeconds }
     )
   end
+
   local canonical = {}
   for key, value in pairs(record) do
     canonical[key] = value
   end
+
   canonical.avatar = validateAvatar(record)
+
   return canonical
 end
 
@@ -271,6 +278,7 @@ function GameSave.migrateV3(record)
   migrated.playerData = playerData
   migrated.schema = "g4-game-save-v4"
   migrated.fieldTravel = { lastHealSpawn = FieldTravelState.DEFAULT_LAST_HEAL_SPAWN }
+  migrated.battleFrontier = BattleFrontierRecords.new():bucket()
   return migrated
 end
 
@@ -409,7 +417,9 @@ end
 -- Read-only display envelope for menu listing: save schema/id/version, the
 -- display profile name and the integral bounded play time. It performs no
 -- generated-cache lookup and implies no semantic validity; a listed record
+
 -- is not thereby loadable. Never throws a validation failure: malformed
+
 -- input returns a structured error instead.
 ---@param record unknown
 ---@return table<string, unknown>|nil, Errors.Error?
@@ -492,6 +502,7 @@ end
 -- This boundary performs no generated-cache lookup and implies no semantic
 -- validity beyond the envelope. Never throws a validation failure:
 -- malformed input returns a structured error instead.
+
 ---@param record table<string, unknown>
 ---@return table<string, unknown>|nil, Errors.Error?
 function GameSave.normalize(record)

@@ -70,6 +70,15 @@ function T.band_for_hour_matches_the_hgss_table()
   Assert.equal(TimeOfDayProps.bandForHour(23), "nite")
 end
 
+function T.rtc_code_for_hour_preserves_the_late_time_enum()
+  Assert.equal(TimeOfDayProps.rtcCodeForHour(0), 4)
+  Assert.equal(TimeOfDayProps.rtcCodeForHour(3), 4)
+  Assert.equal(TimeOfDayProps.rtcCodeForHour(4), 0)
+  Assert.equal(TimeOfDayProps.rtcCodeForHour(10), 1)
+  Assert.equal(TimeOfDayProps.rtcCodeForHour(17), 2)
+  Assert.equal(TimeOfDayProps.rtcCodeForHour(20), 3)
+end
+
 function T.band_for_seconds_derives_the_hour()
   Assert.equal(TimeOfDayProps.bandForSeconds(6 * 3600), "morn")
   Assert.equal(TimeOfDayProps.bandForSeconds(43200), "day")
