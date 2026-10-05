@@ -1065,7 +1065,7 @@ function T.tests.production_boot_runs_wild_trainer_and_capture_legs_to_commit()
       end
       return true
     end
-    local firstDoubleActors, firstDoubleTargets = nil, nil
+    local firstDoubleActors, firstDoubleTargets, doubleField = nil, nil, {}
     runLeg(game, function(request, turn)
       if request.kind == "learn_move" then
         local actor = assert(request.actors[1], "learning prompts address their recipient")
@@ -1073,7 +1073,13 @@ function T.tests.production_boot_runs_wild_trainer_and_capture_legs_to_commit()
       end
       local actors = assert(request.actors, "every double decision addresses its combatants")
       if not admits(request, "attack") then
+        -- A faint replacement names only its vacant slot, so the surviving
+        -- ally is absent from the request and would look like a benched
+        -- reserve. Seed the occupied set from the tracked double field.
         local fielded = {}
+        for occupant in pairs(doubleField) do
+          fielded[occupant] = true
+        end
         for _, actor in ipairs(actors) do
           fielded[actor.combatant] = true
         end
@@ -1088,9 +1094,19 @@ function T.tests.production_boot_runs_wild_trainer_and_capture_legs_to_commit()
           end
           assert(reserve ~= nil, "a replaceable double faint keeps a conscious reserve")
           fielded[reserve] = true
+          doubleField[actor.combatant] = nil
+          doubleField[reserve] = true
           answers[#answers + 1] = SessionFixture.switchChoice(actor, reserve)
         end
         return answers
+      end
+      -- Attack turns address the whole active field, so they resync the
+      -- tracked occupants that faint replacements consult.
+      for occupant in pairs(doubleField) do
+        doubleField[occupant] = nil
+      end
+      for _, actor in ipairs(actors) do
+        doubleField[actor.combatant] = true
       end
       local spots = {
         { foe = foeDoubleA, position = 3 },

@@ -2360,6 +2360,18 @@ end
 -- Doubles bids pick the highest target: the top bid answers even
 -- alone, equal bids break uniformly through one draw, and a
 -- target-dependent session answers the weaker line with its strike.
+---@param held table pre-answer capture carrying the stream snapshot
+---@param count integer answer draws to replay in stream order
+---@return integer[] first draw values of the trainer answer
+local function answerDraws(held, count)
+  local stream = BattleRng.restore(held.rng --[[@as table<string, integer>]])
+  local values = {}
+  for _ = 1, count do
+    values[#values + 1] = stream:nextU16("answer_probe", {})
+  end
+  return values
+end
+
 function T.doubles_bids_pick_the_highest_target()
   local TrainerAi = trainerPolicy()
   local stream = spyStream(FIXED_SEED)
@@ -2415,15 +2427,25 @@ function T.doubles_bids_pick_the_highest_target()
   }
   local session = waitingSession(contracts, scenario)
   local held = session:capture()
+  local values = answerDraws(held, 16)
   local reply = session:answerTrainer(openRequest(session, "trainer:1"))
   Assert.equal(#reply.choices, 1, "the lone trainer actor answers")
   Assert.equal(reply.choices[1].kind, "attack", "the doubles evaluation strikes")
-  Assert.equal(reply.choices[1].payload.target.position, 1, "the tied bid answers the drawn target")
-  Assert.equal(reply.choices[1].payload.moveSlot, 1, "the tied slots answer the drawn move")
+  local target = ({ 1, 2 })[(values[16] % 2) + 1]
+  local pick = values[10]
+  if target == 2 then
+    pick = values[15]
+  end
+  Assert.equal(reply.choices[1].payload.target.position, target, "the tied bid answers the drawn target")
+  Assert.equal(
+    reply.choices[1].payload.moveSlot,
+    ({ 0, 1 })[(pick % 2) + 1],
+    "the tied slots answer the drawn move"
+  )
   Assert.equal(
     session:capture().rng.calls - held.rng.calls,
-    11,
-    "per-target initialization feeds two picks and one selection"
+    16,
+    "per-target initialization feeds two picks and one selection behind the leading draws"
   )
   session:dispose()
   local replayed = Executor.restore(held, trainerContent())
@@ -2531,18 +2553,6 @@ local function doublesVectorScenario(lead, mate, foeA, foeB, seed)
   }
 end
 
----@param held table pre-answer capture carrying the stream snapshot
----@param count integer answer draws to replay in stream order
----@return integer[] first draw values of the trainer answer
-local function answerDraws(held, count)
-  local stream = BattleRng.restore(held.rng --[[@as table<string, integer>]])
-  local values = {}
-  for _ = 1, count do
-    values[#values + 1] = stream:nextU16("answer_probe", {})
-  end
-  return values
-end
-
 local VECTOR_SEEDS = {}
 for offset = 0, 7 do
   VECTOR_SEEDS[#VECTOR_SEEDS + 1] = NATIVE_SEED + offset
@@ -2589,24 +2599,24 @@ function T.doubles_forces_the_doubles_pass_without_a_stored_mark()
     runAway(foeB)
     return doublesVectorScenario(lead, nil, foeA, foeB, seed)
   end
-  local session, held, values = sessionWithDoublesBranch(contracts, VECTOR_SEEDS, build, 15, function(draws)
-    return draws[5] % 256 >= 50
-      and draws[6] % 256 >= 50
-      and draws[12] % 256 >= 50
-      and draws[13] % 256 >= 50
+  local session, held, values = sessionWithDoublesBranch(contracts, VECTOR_SEEDS, build, 20, function(draws)
+    return draws[10] % 256 >= 50
+      and draws[11] % 256 >= 50
+      and draws[17] % 256 >= 50
+      and draws[18] % 256 >= 50
   end)
   local reply = session:answerTrainer(openRequest(session, "trainer:1"))
   Assert.equal(reply.choices[1].kind, "attack", "the doubles evaluation strikes")
   Assert.equal(reply.choices[1].payload.moveSlot, 0, "the forced pass demotes the setup slot")
   Assert.equal(
     reply.choices[1].payload.target.position,
-    ({ 1, 2 })[(values[15] % 2) + 1],
+    ({ 1, 2 })[(values[20] % 2) + 1],
     "tied bids break over the final draw"
   )
   Assert.equal(
     session:capture().rng.calls - held.rng.calls,
-    15,
-    "two candidates cost two initializations, four pass draws, two picks, and one selection"
+    20,
+    "two candidates cost five leading draws, two initializations, four pass draws, two picks, and one selection"
   )
   session:dispose()
   local replayed = sessionOwner().restore(held, trainerContent())
@@ -2641,13 +2651,13 @@ function T.doubles_scratch_initializes_once_per_candidate()
   end
   local session = waitingSession(contracts, build(NATIVE_SEED))
   local held = session:capture()
-  local values = answerDraws(held, 20)
+  local values = answerDraws(held, 25)
   local reply = session:answerTrainer(openRequest(session, "trainer:1"))
   Assert.equal(reply.choices[1].kind, "attack", "the doubles evaluation strikes")
-  local target = ({ 1, 2 })[(values[20] % 2) + 1]
-  local pick = values[7]
+  local target = ({ 1, 2 })[(values[25] % 2) + 1]
+  local pick = values[12]
   if target == 2 then
-    pick = values[14]
+    pick = values[19]
   end
   Assert.equal(
     reply.choices[1].payload.target.position,
@@ -2661,8 +2671,8 @@ function T.doubles_scratch_initializes_once_per_candidate()
   )
   Assert.equal(
     session:capture().rng.calls - held.rng.calls,
-    20,
-    "three candidates cost three initializations, four pass draws, three picks, and one selection"
+    25,
+    "three candidates cost five leading draws, three initializations, four pass draws, three picks, and one selection"
   )
   session:dispose()
   local replayed = sessionOwner().restore(held, trainerContent())
@@ -2695,8 +2705,8 @@ function T.doubles_ally_support_targeting_can_win_the_bidding()
     runAway(foeB)
     return doublesVectorScenario(lead, mate, foeA, foeB, seed)
   end
-  local session, held, _ = sessionWithDoublesBranch(contracts, VECTOR_SEEDS, build, 17, function(draws)
-    return draws[15] % 256 >= 64
+  local session, held, _ = sessionWithDoublesBranch(contracts, VECTOR_SEEDS, build, 22, function(draws)
+    return draws[20] % 256 >= 64
   end)
   local reply = session:answerTrainer(openRequest(session, "trainer:1"))
   Assert.equal(reply.choices[1].kind, "attack", "the doubles evaluation strikes")
@@ -2704,8 +2714,8 @@ function T.doubles_ally_support_targeting_can_win_the_bidding()
   Assert.equal(reply.choices[1].payload.moveSlot, 0, "the helping slot answers the ally")
   Assert.equal(
     session:capture().rng.calls - held.rng.calls,
-    17,
-    "three candidates cost three initializations, one pass draw, three picks, and one selection"
+    22,
+    "three candidates cost five leading draws, three initializations, one pass draw, three picks, and one selection"
   )
   session:dispose()
   local replayed = sessionOwner().restore(held, trainerContent())
@@ -2739,13 +2749,13 @@ function T.doubles_tied_bids_consume_the_final_selection_draw()
   end
   local session = waitingSession(contracts, build(NATIVE_SEED))
   local held = session:capture()
-  local values = answerDraws(held, 16)
+  local values = answerDraws(held, 21)
   local reply = session:answerTrainer(openRequest(session, "trainer:1"))
   Assert.equal(reply.choices[1].kind, "attack", "the doubles evaluation strikes")
-  local target = ({ 1, 2 })[(values[16] % 2) + 1]
-  local pick = values[5]
+  local target = ({ 1, 2 })[(values[21] % 2) + 1]
+  local pick = values[10]
   if target == 2 then
-    pick = values[10]
+    pick = values[15]
   end
   Assert.equal(
     reply.choices[1].payload.target.position,
@@ -2759,8 +2769,8 @@ function T.doubles_tied_bids_consume_the_final_selection_draw()
   )
   Assert.equal(
     session:capture().rng.calls - held.rng.calls,
-    16,
-    "three quiet candidates cost three initializations, three picks, and one selection"
+    21,
+    "three quiet candidates cost five leading draws, three initializations, three picks, and one selection"
   )
   session:dispose()
   local replayed = sessionOwner().restore(held, trainerContent())
@@ -2912,19 +2922,19 @@ function T.doubles_fainted_candidates_never_bid()
   runAway(foeB)
   local session = waitingSession(contracts, doublesVectorScenario(lead, mate, foeA, foeB, NATIVE_SEED))
   local held = session:capture()
-  local values = answerDraws(held, 11)
+  local values = answerDraws(held, 16)
   local reply = session:answerTrainer(openRequest(session, "trainer:1"))
   Assert.equal(reply.choices[1].kind, "attack", "the doubles evaluation strikes")
   Assert.equal(reply.choices[1].payload.target.position, 1, "the standing foe answers alone")
   Assert.equal(
     reply.choices[1].payload.moveSlot,
-    ({ 0, 1 })[(values[5] % 2) + 1],
+    ({ 0, 1 })[(values[10] % 2) + 1],
     "the standing pick breaks its own slot tie"
   )
   Assert.equal(
     session:capture().rng.calls - held.rng.calls,
-    11,
-    "two live candidates cost two initializations, two picks, and one selection"
+    16,
+    "two live candidates cost five leading draws, two initializations, two picks, and one selection"
   )
   session:dispose()
   local replayed = sessionOwner().restore(held, trainerContent())
@@ -2963,8 +2973,8 @@ function T.doubles_user_side_winners_retarget_to_the_holder()
   Assert.equal(reply.choices[1].payload.moveSlot, 0, "the user-side slot answers")
   Assert.equal(
     session:capture().rng.calls - held.rng.calls,
-    15,
-    "two candidates cost two initializations, four pass draws, two picks, and one selection"
+    20,
+    "two candidates cost five leading draws, two initializations, four pass draws, two picks, and one selection"
   )
   session:dispose()
   local replayed = sessionOwner().restore(held, trainerContent())
@@ -3003,8 +3013,8 @@ function T.doubles_non_ghost_curse_winners_retarget_to_the_holder()
   Assert.equal(reply.choices[1].payload.moveSlot, 0, "the curse slot answers")
   Assert.equal(
     session:capture().rng.calls - held.rng.calls,
-    11,
-    "two quiet candidates cost two initializations, two picks, and one selection"
+    16,
+    "two quiet candidates cost five leading draws, two initializations, two picks, and one selection"
   )
   session:dispose()
   local replayed = sessionOwner().restore(held, trainerContent())
@@ -4379,6 +4389,411 @@ function T.each_supported_flag_bit_maps_to_a_program_case()
       Assert.isTrue(type(T[name]) == "function", "flag bit " .. bit .. " keeps its program case " .. name)
     end
   end
+end
+
+-- The normal doubles entry consumes its own selection state before any
+-- candidate bids: one opposing-slot draw followed by four initialization
+-- draws, then each candidate pays its own initialization and pick with
+-- the final selection closing the decision.
+---@param session table live native session under test driving
+---@param request table open internal trainer request under verification
+---@return table reply in the shared decision shape
+---@return string[] labels in stream order
+local function answerWithLabels(session, request)
+  local labels = {} ---@type string[]
+  local original = BattleRng.nextU16
+  BattleRng.nextU16 = function(self, label, cause)
+    labels[#labels + 1] = label
+    return original(self, label, cause)
+  end
+  local ok, reply = pcall(session.answerTrainer, session, request)
+  BattleRng.nextU16 = original
+  Assert.isTrue(ok, "the trainer answer completes: " .. tostring(reply))
+  assert(type(reply) == "table", "the trainer answer replies")
+  return reply --[[@as table]], labels
+end
+
+function T.doubles_normal_entry_draws_before_candidate_scoring()
+  local contracts = SessionFixture.sessionContracts()
+  local lead = leveledCombatant(31, 23, "CHIKORITA", 20)
+  lead.mon.moves = {
+    { move = "TACKLE", pp = 35, ppUps = 0 },
+    { move = "RAZOR_LEAF", pp = 25, ppUps = 0 },
+  }
+  runAway(lead)
+  local mate = leveledCombatant(34, 24, "EEVEE", 20)
+  runAway(mate)
+  local foeA = leveledCombatant(32, 41, "TOTODILE", 10)
+  runAway(foeA)
+  local foeB = leveledCombatant(33, 42, "EEVEE", 10)
+  runAway(foeB)
+  local session = waitingSession(contracts, doublesVectorScenario(lead, mate, foeA, foeB, NATIVE_SEED))
+  local held = session:capture()
+  local request = openRequest(session, "trainer:1")
+  local reply, labels = answerWithLabels(session, request)
+  Assert.equal(reply.choices[1].kind, "attack", "the doubles evaluation strikes")
+  Assert.deepEqual(labels, {
+    "target_foe",
+    "score_init_0",
+    "score_init_1",
+    "score_init_2",
+    "score_init_3",
+    "score_init_0",
+    "score_init_1",
+    "score_init_2",
+    "score_init_3",
+    "selection_roll",
+    "score_init_0",
+    "score_init_1",
+    "score_init_2",
+    "score_init_3",
+    "selection_roll",
+    "score_init_0",
+    "score_init_1",
+    "score_init_2",
+    "score_init_3",
+    "selection_roll",
+    "doubles_selection",
+  }, "the normal entry draws before candidate scoring")
+  Assert.equal(
+    session:capture().rng.calls - held.rng.calls,
+    21,
+    "three quiet candidates cost five leading draws plus their own lines"
+  )
+  session:dispose()
+  local replayed = sessionOwner().restore(held, trainerContent())
+  Assert.deepEqual(
+    replayed:answerTrainer(openRequest(replayed, "trainer:1")),
+    reply,
+    "a fixed seed replays the doubles answer"
+  )
+  replayed:dispose()
+end
+
+-- A fainted opposing slot never removes the leading selection draw: the
+-- entry still chooses between the two opposing slots first and only then
+-- falls back to the standing foe, so the answer costs the same leading
+-- five draws with two live candidates bidding.
+function T.doubles_leading_draw_survives_a_fainted_opposing_slot()
+  local contracts = SessionFixture.sessionContracts()
+  local lead = leveledCombatant(31, 23, "CHIKORITA", 20)
+  lead.mon.moves = {
+    { move = "TACKLE", pp = 35, ppUps = 0 },
+    { move = "RAZOR_LEAF", pp = 25, ppUps = 0 },
+  }
+  runAway(lead)
+  local mate = leveledCombatant(34, 24, "EEVEE", 20)
+  runAway(mate)
+  local foeA = leveledCombatant(32, 41, "TOTODILE", 10)
+  runAway(foeA)
+  local foeB = leveledCombatant(33, 42, "EEVEE", 10);
+  (foeB.mon --[[@as table<string, unknown>]]).condition.currentHp = 0
+  runAway(foeB)
+  local session = waitingSession(contracts, doublesVectorScenario(lead, mate, foeA, foeB, NATIVE_SEED))
+  local held = session:capture()
+  local request = openRequest(session, "trainer:1")
+  local reply, labels = answerWithLabels(session, request)
+  Assert.equal(reply.choices[1].kind, "attack", "the doubles evaluation strikes")
+  Assert.equal(reply.choices[1].payload.target.position, 1, "the standing foe answers alone")
+  Assert.deepEqual(labels, {
+    "target_foe",
+    "score_init_0",
+    "score_init_1",
+    "score_init_2",
+    "score_init_3",
+    "score_init_0",
+    "score_init_1",
+    "score_init_2",
+    "score_init_3",
+    "selection_roll",
+    "score_init_0",
+    "score_init_1",
+    "score_init_2",
+    "score_init_3",
+    "selection_roll",
+    "doubles_selection",
+  }, "the leading draw survives the fainted slot")
+  Assert.equal(
+    session:capture().rng.calls - held.rng.calls,
+    16,
+    "two live candidates cost five leading draws plus their own lines"
+  )
+  session:dispose()
+  local replayed = sessionOwner().restore(held, trainerContent())
+  Assert.deepEqual(
+    replayed:answerTrainer(openRequest(replayed, "trainer:1")),
+    reply,
+    "a fixed seed replays the doubles answer"
+  )
+  replayed:dispose()
+end
+
+-- A reached compare command decides on the previous move: a stored
+-- previous strike stronger than every current slot takes its jump and
+-- spends the gate draw, while a level or weaker previous strike falls
+-- through with identical results. Both transcribed compare sites are
+-- exercised through the existing scoring path.
+function T.previous_move_preview_decides_the_compare_jump()
+  local TrainerAi = trainerPolicy()
+  local chart = nativeChart()
+  local user = fighterWith({ types = { "fire" } })
+  local foe = fighterWith({ types = { "fire" } })
+  local speeds = {
+    attacker = {
+      ability = "RUN_AWAY",
+      base = { attack = 12, defense = 10, specialAttack = 12, specialDefense = 10, speed = 20 },
+    },
+    defender = {
+      ability = "RUN_AWAY",
+      base = { attack = 12, defense = 10, specialAttack = 12, specialDefense = 10, speed = 10 },
+    },
+  }
+  local function scoreWith(effect, id, lastMoveId)
+    local probe = slotWith({
+      key = "PROBE",
+      id = id,
+      moveType = "water",
+      power = 60,
+      category = "special",
+      accuracy = 100,
+      effect = effect,
+    })
+    local spent = slotWith({ key = "TACKLE", id = 33, usable = false })
+    local slots = { probe, spent, spent, spent }
+    local extra = {
+      attacker = speeds.attacker,
+      defender = speeds.defender,
+      fullMoveById = {
+        [501] = { effect = 0, power = 120, moveType = "water", category = "special", accuracy = 80, basePp = 5 },
+      },
+      fullMoveIdByKey = { HYDRO = 501 },
+      lastMove = { [0] = lastMoveId, [1] = 0 },
+    }
+    local stream = spyStream(FIXED_SEED)
+    local scored = TrainerAi.scoreSlots(chart, slots, user, foe, 14, { 1 }, false, stream, extra)
+    return scored, stream
+  end
+  local strong, strongStream = scoreWith(241, 500, 501)
+  local level, levelStream = scoreWith(241, 500, 500)
+  local weak, weakStream = scoreWith(241, 500, 33)
+  local takenLabels = { "score_init_0", "score_init_1", "score_init_2", "score_init_3", "program_chance", "program_chance" }
+  local quietLabels = { "score_init_0", "score_init_1", "score_init_2", "score_init_3", "program_chance" }
+  Assert.deepEqual(strongStream:drawLabels(), takenLabels, "the taken jump spends its gate draw")
+  Assert.deepEqual(levelStream:drawLabels(), quietLabels, "the level preview falls through")
+  Assert.deepEqual(weak, level, "a weaker preview falls through exactly like a level one")
+  Assert.deepEqual(weakStream:drawLabels(), levelStream:drawLabels(), "both fall-through runs draw identically")
+  Assert.isTrue(strong[1].score ~= level[1].score, "the stronger preview takes the jump")
+  local far, farStream = scoreWith(242, 600, 501)
+  local even, evenStream = scoreWith(242, 600, 600)
+  local low, lowStream = scoreWith(242, 600, 33)
+  local absent, absentStream = scoreWith(242, 600, 0)
+  Assert.deepEqual(farStream:drawLabels(), evenStream:drawLabels(), "both reached paths spend one gate draw")
+  Assert.isTrue(far[1].score ~= even[1].score, "the stronger preview takes the later jump")
+  Assert.deepEqual(low, even, "a weaker preview falls through exactly like a level one")
+  Assert.deepEqual(absent, even, "an absent previous move previews zero and falls through")
+  Assert.deepEqual(lowStream:drawLabels(), evenStream:drawLabels(), "both fall-through runs draw identically")
+  Assert.deepEqual(absentStream:drawLabels(), evenStream:drawLabels(), "the absent run draws like the fall-through")
+end
+
+---@return table the literal program owner under test
+local function programOwner()
+  return requirePresent("libs.battle.src.gen4.TrainerAiProgram", "the literal program owns command dispatch")
+end
+
+---@param overrides table<string, unknown> battler preview overrides under test construction
+---@return table<string, unknown> complete matchup preview record
+local function previewBattler(overrides)
+  local record = {
+    hp = 100,
+    maxHp = 100,
+    level = 5,
+    t1 = 0,
+    t2 = 0,
+    ability = 0,
+    item = 0,
+    status = 0,
+    status2 = 0,
+    moveFlags = 0,
+    atk = 12,
+    def = 10,
+    spa = 12,
+    spd = 10,
+    spe = 10,
+    stages = { 6, 6, 6, 6, 6, 6, 6, 6 },
+    moves = { 0, 0, 0, 0 },
+    pp = { 0, 0, 0, 0 },
+    gender = 2,
+    weightHg = 100,
+    friendship = 0,
+    ivs = { hp = 10, attack = 10, defense = 10, speed = 10, specialAttack = 10, specialDefense = 10 },
+    lastMove = 0,
+    entryMoves = { 0, 0, 0, 0 },
+    entryAbility = 0,
+    speciesAbilities = { 0, 0 },
+    suppressed = false,
+    magnetRise = false,
+    roosted = false,
+    miracleEye = false,
+    foresight = false,
+    flingPower = 0,
+    w88b1 = 0,
+    w88neg = false,
+    w94 = 0,
+  }
+  for key, value in pairs(overrides) do
+    record[key] = value
+  end
+  return record
+end
+
+-- Ally-aware ranking needs the current slot on top against both the
+-- target and its partner: when another slot beats it against the partner
+-- the rank drops even though the ordinary single-target rank holds, an
+-- ineligible slot never draws, and the partner preview leaves shared
+-- facts alone.
+function T.ally_aware_rank_needs_both_targets_to_hold_the_slot()
+  local TrainerAi = trainerPolicy()
+  local chart = nativeChart()
+  local program = programOwner()
+  local water = program.TYPE_IDS["water"] --[[@as integer]]
+  local fire = program.TYPE_IDS["fire"] --[[@as integer]]
+  local slots = {
+    slotWith({ key = "PROBE", id = 600, moveType = "water", power = 40, category = "special", accuracy = 100, effect = 41 }),
+    slotWith({ key = "VINE", id = 601, moveType = "grass", power = 55, category = "physical", accuracy = 100, effect = 0 }),
+    slotWith({ key = "GROWL", id = 45, moveType = "normal", power = 0, category = "status", accuracy = 100, effect = 7 }),
+    slotWith({ key = "TACKLE", id = 33, usable = false }),
+  }
+  local function scoreAgainst(partnerType)
+    local attacker = previewBattler({ t1 = water, t2 = water, moves = { 600, 601, 45, 33 } })
+    local target = previewBattler({ t1 = fire, t2 = fire })
+    local partner = previewBattler({ t1 = partnerType, t2 = partnerType })
+    local extra = {
+      doublesBattlers = { atk = 1, tgt = 0, records = { [0] = target, [1] = attacker, [2] = partner } },
+      usedIds = { [1] = { 0, 0, 16 } },
+    }
+    local stream = spyStream(FIXED_SEED)
+    local scored = TrainerAi.scoreSlots(
+      chart,
+      slots,
+      fighterWith({ types = { "grass" } }),
+      fighterWith({ types = { "rock", "ground" } }),
+      100,
+      { 6 },
+      false,
+      stream,
+      extra
+    )
+    return scored, stream, extra
+  end
+  local matched, matchedStream, matchedExtra = scoreAgainst(fire)
+  local split, splitStream = scoreAgainst(water)
+  Assert.isTrue(#matchedStream:drawLabels() > 4, "the matching partner reaches the rank region")
+  Assert.isTrue(#splitStream:drawLabels() > 4, "the splitting partner reaches the rank region")
+  local observed = (matchedExtra.doublesBattlers --[[@as table<string, unknown>]])
+  Assert.equal(observed.tgt, 0, "the partner preview leaves the shared target alone")
+  local records = (observed.records --[[@as table<integer, table<string, unknown>>]])
+  Assert.equal(records[2].t1, fire, "the partner preview leaves the partner record alone")
+  local quietSlots = {
+    slotWith({ key = "GROWL", id = 45, moveType = "normal", power = 0, category = "status", accuracy = 100, effect = 7 }),
+    slotWith({ key = "TACKLE", id = 33, usable = false }),
+    slotWith({ key = "TACKLE", id = 34, usable = false }),
+    slotWith({ key = "TACKLE", id = 35, usable = false }),
+  }
+  local quietStream = spyStream(FIXED_SEED)
+  local quiet = TrainerAi.scoreSlots(
+    chart,
+    quietSlots,
+    fighterWith({ types = { "grass" } }),
+    fighterWith({ types = { "rock", "ground" } }),
+    100,
+    { 6 },
+    false,
+    quietStream
+  )
+  Assert.deepEqual(
+    quietStream:drawLabels(),
+    { "score_init_0", "score_init_1", "score_init_2", "score_init_3" },
+    "an ineligible slot spends no routine draw"
+  )
+  Assert.equal(quiet[1].score, 100, "an ineligible slot holds the baseline")
+  -- The rank split takes different branches at the rank gate: the
+  -- leading rank-2 path spends its gate draw while the rank-1 path skips
+  -- it, and the shifted downstream draw diverges the following slot.
+  -- Neither rank branch adjusts the leading slot itself, so it holds its
+  -- score on both runs while the partner matchup still changes the run.
+  Assert.deepEqual(
+    matchedStream:drawLabels(),
+    { "score_init_0", "score_init_1", "score_init_2", "score_init_3", "program_chance", "program_chance" },
+    "the matched run spends the rank-2 gate draw"
+  )
+  Assert.deepEqual(
+    splitStream:drawLabels(),
+    { "score_init_0", "score_init_1", "score_init_2", "score_init_3", "program_chance" },
+    "the split run skips the rank-2 gate draw"
+  )
+  Assert.equal(matched[1].score, 99, "the leading slot holds its score on the matched run")
+  Assert.equal(split[1].score, 99, "the leading slot holds its score on the split run")
+  Assert.equal(matched[2].score, 100, "the following slot holds baseline past the matched gate")
+  Assert.equal(split[2].score, 99, "the following slot pays past the shifted split gate")
+end
+
+-- The supported surface stays bounded while decisions stay replayable:
+-- unknown passes fail before drawing, the singles baseline never moves,
+-- and a restored doubles snapshot answers identically.
+function T.unsupported_passes_singles_and_replay_stay_bounded()
+  local TrainerAi = trainerPolicy()
+  local chart = nativeChart()
+  for _, pass in ipairs({ "ai_pass_4", "ai_pass_8" }) do
+    local failure = Assert.throws(function()
+      TrainerAi.parsePasses({ pass })
+    end, "pass " .. pass .. " fails instead of falling back")
+    Assert.isTrue(string.find(tostring(failure), pass, 1, true) ~= nil, "the failure names the offending pass")
+  end
+  local quietStream = spyStream(FIXED_SEED)
+  local quiet = TrainerAi.scoreSlots(
+    chart,
+    fourSlots(),
+    fighterWith({ types = { "grass" } }),
+    fighterWith({ types = { "rock", "ground" } }),
+    14,
+    {},
+    false,
+    quietStream
+  )
+  Assert.deepEqual(
+    quietStream:drawLabels(),
+    { "score_init_0", "score_init_1", "score_init_2", "score_init_3" },
+    "the singles line draws only its initialization"
+  )
+  Assert.deepEqual(
+    { quiet[1].score, quiet[2].score, quiet[3].score, quiet[4].score },
+    { 100, 100, 100, 0 },
+    "the singles baseline stays put"
+  )
+  local contracts = SessionFixture.sessionContracts()
+  local lead = leveledCombatant(31, 23, "CHIKORITA", 20)
+  lead.mon.moves = {
+    { move = "TACKLE", pp = 35, ppUps = 0 },
+    { move = "RAZOR_LEAF", pp = 25, ppUps = 0 },
+  }
+  runAway(lead)
+  local mate = leveledCombatant(34, 24, "EEVEE", 20)
+  runAway(mate)
+  local foeA = leveledCombatant(32, 41, "TOTODILE", 10)
+  runAway(foeA)
+  local foeB = leveledCombatant(33, 42, "EEVEE", 10)
+  runAway(foeB)
+  local session = waitingSession(contracts, doublesVectorScenario(lead, mate, foeA, foeB, NATIVE_SEED))
+  local held = session:capture()
+  local first = session:answerTrainer(openRequest(session, "trainer:1"))
+  session:dispose()
+  local replayed = sessionOwner().restore(held, trainerContent())
+  Assert.deepEqual(
+    replayed:answerTrainer(openRequest(replayed, "trainer:1")),
+    first,
+    "the restored snapshot answers identically"
+  )
+  replayed:dispose()
 end
 
 return { tests = T }

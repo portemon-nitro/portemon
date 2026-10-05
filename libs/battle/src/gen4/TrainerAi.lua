@@ -3053,6 +3053,14 @@ local function evaluateDoubles(authorities, facts, state, bits, stream)
     forced[#forced + 1] = 7
   end
   table.sort(forced)
+  -- The normal doubles entry draws its scratch opposing slot and runs
+  -- its scratch initialization before candidate traversal: each
+  -- candidate overwrites that target and reinitializes, but the leading
+  -- draws still advance the shared stream in source order. The draw
+  -- always chooses between the two opposing slots even when only one
+  -- foe stands, so it never goes through the lone-foe shortcut.
+  stream:nextU16("target_foe", { opponents = 2 })
+  initThresholds(stream)
   local bids = {}
   for candidate = 0, 3 do
     local target = byId[candidate]
