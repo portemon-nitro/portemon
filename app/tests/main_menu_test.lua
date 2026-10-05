@@ -385,6 +385,28 @@ function T.state_translates_catalog_failures_to_recoverable_state_and_emits_cont
   Assert.isTrue(intentMenu:view().saves[1].canContinue)
 end
 
+function T.saves_for_an_unselected_version_cannot_enter_the_editor()
+  local menu = state({
+    saveStore = {
+      listMetadata = function()
+        return {
+          {
+            saveId = "save-00000002",
+            versionId = "soulsilver",
+            playerData = { profile = { name = "PLAYER" } },
+            playTimeSeconds = 0,
+          },
+        }
+      end,
+    },
+    readyVersions = { "heartgold" },
+  })
+
+  local item = assert(menu:view().saves[1])
+  Assert.isFalse(item.canContinue)
+  Assert.isFalse(item.canEdit, "the editor cannot load a save with another version's cache context")
+end
+
 function T.state_deletes_unavailable_save_only_after_confirmation()
   local entries = {
     { saveId = "save-00000001", playerData = {}, versionId = "heartgold", playTimeSeconds = 0 },
@@ -579,6 +601,7 @@ function T.pointer_confirmation_click_activates_the_clicked_action()
   })
   menu:keypressed("right")
   menu:keypressed("return")
+  menu:keypressed("down")
   menu:keypressed("return")
   menu:keypressed("right")
   Assert.equal(menu.controller.confirmation.focusedAction, "delete")
@@ -612,6 +635,7 @@ function T.pointer_confirmation_click_activates_the_clicked_action()
   })
   cancelMenu:keypressed("right")
   cancelMenu:keypressed("return")
+  cancelMenu:keypressed("down")
   cancelMenu:keypressed("return")
   cancelMenu:keypressed("right")
   Assert.equal(cancelMenu.controller.confirmation.focusedAction, "delete")
@@ -775,6 +799,7 @@ function T.pointer_click_on_focused_delete_action_confirms_deletion()
   })
   menu:keypressed("right")
   menu:keypressed("return")
+  menu:keypressed("down")
   menu:keypressed("return")
   Assert.equal(menu:view().confirmation.focusedAction, "cancel")
   menu:keypressed("right")
@@ -873,6 +898,62 @@ function T.scroll_state_pins_new_game_and_reports_edge_availability()
   )
   Assert.isNil(visible.saves.scrollIndicators.up)
   Assert.isNil(visible.saves.scrollIndicators.down)
+end
+
+function T.layout_resize_retains_overscroll_until_navigation_reveals_focus()
+  local ids = {}
+  for index = 1, 12 do
+    ids[#ids + 1] = string.format("save-%d", index)
+  end
+  local list = saves(ids)
+  local controller = MainMenuController.new(globalActions(), list)
+  controller:focusSave("save-12", "body")
+  local compact = MainMenuLayout.compute(
+    globalActions(),
+    list,
+    controller:snapshot().focus,
+    320,
+    180,
+    0,
+    nil,
+    nil,
+    false
+  )
+  local large = MainMenuLayout.compute(
+    globalActions(),
+    list,
+    controller:snapshot().focus,
+    640,
+    480,
+    compact.saves.offset,
+    nil,
+    nil,
+    false
+  )
+  local focused = assert(large.saves.cards["save-12"])
+  Assert.isTrue(large.saves.offset > large.saves.totalContentHeight - large.saves.viewport.height)
+  Assert.equal(large.saves.offset, compact.saves.offset, "resize retains the prior logical offset")
+  Assert.isTrue(focused.frame.y >= large.saves.viewport.y)
+  Assert.isTrue(focused.frame.y + focused.frame.height <= large.saves.viewport.y + large.saves.viewport.height)
+
+  controller:move("up")
+  local moved = MainMenuLayout.compute(
+    globalActions(),
+    list,
+    controller:snapshot().focus,
+    640,
+    480,
+    large.saves.offset,
+    nil,
+    nil,
+    false
+  )
+  Assert.isTrue(moved.saves.offset < large.saves.offset, "navigation reveals the newly focused preceding card")
+  local movedFocus = assert(moved.saves.cards["save-11"])
+  Assert.equal(movedFocus.frame.y, moved.saves.viewport.y, "the preceding card aligns to the viewport start")
+  Assert.isTrue(
+    movedFocus.frame.y + movedFocus.frame.height <= moved.saves.viewport.y + moved.saves.viewport.height
+  )
 end
 
 local SELECTED_RIM = { 1, 58 / 255, 58 / 255 }
@@ -1026,6 +1107,7 @@ function T.confirmation_focus_marks_only_the_active_action()
   local drawn = drawnMenu({ catalogEntry("save-00000001", "PLAYER", 60) }, 640, 480, function(menu)
     menu:keypressed("right")
     menu:keypressed("return")
+    menu:keypressed("down")
     menu:keypressed("return")
     menu:keypressed("right")
   end)
@@ -2119,6 +2201,7 @@ function T.hit_test_resolves_confirmation_modal_precedence()
   menu:keypressed("right")
   menu:keypressed("return")
   Assert.notNil(menu:view().popup, "overflow activation must open the save popup")
+  menu:keypressed("down")
   menu:keypressed("return")
   Assert.notNil(menu:view().confirmation, "popup activation must open the delete confirmation")
   local published = menu:view()

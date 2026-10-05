@@ -1,4 +1,4 @@
--- Repo-filesystem adapter for the script override system: reads checked-in
+-- Neutral repository-root reader for the script override system: reads checked-in
 -- content under the repository root (e.g. `data/scripts/overrides`) that
 -- lives outside the LÖVE source and save directories. The LÖVE build's
 -- love.filesystem.mount cannot attach host directories, so this adapter uses

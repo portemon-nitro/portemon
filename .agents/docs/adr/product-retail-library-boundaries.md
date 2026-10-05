@@ -36,6 +36,8 @@ upward dependencies. A caller's current directory is not evidence of ownership.
   one game where their semantics are game-specific: complete HGSS save compatibility and
   HGSS input/script semantics belong in `libs/hgss`, while shared widgets and presentation
   mechanisms belong in `libs/ui`.
+- Repository-root reads belong in `libs/storage`, allowing product tooling to use the
+  confined reader without depending on the game host.
 - `romdump` owns ROM/decomp interpretation and generated-artifact production.
 
 DPP should receive its own retail package if implemented. Extract shared mechanisms only

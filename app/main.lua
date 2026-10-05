@@ -147,6 +147,6 @@ end
 
 function love.quit()
   if App then
-    App.quit()
+    return App.quit()
   end
 end

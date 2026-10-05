@@ -236,6 +236,11 @@ local function assertDeletionSequence(menu, useGamepad)
     end
   end
 
+  if useGamepad then
+    pressGamepad(menu, "dpdown")
+  else
+    menu:keypressed("down")
+  end
   pressConfirm()
   Assert.notNil(view(menu).confirmation, "Delete must open a confirmation modal")
   pressCancel()
@@ -392,6 +397,7 @@ function T.tests.keyboard_focused_delete_action_activates_by_pointer_click()
   withMenu(1, 640, 480, nil, function(menu, saveIds, results)
     menu:keypressed("right")
     menu:keypressed("return")
+    menu:keypressed("down")
     menu:keypressed("return")
     Assert.equal(view(menu).confirmation.focusedAction, "cancel")
     menu:keypressed("right")
@@ -480,6 +486,7 @@ function T.tests.scroll_offset_stays_logical_across_a_host_scale_change()
     menu:keypressed("right")
     menu:keypressed("return")
     Assert.notNil(view(menu).popup, "overflow must own the focused save at the new scale")
+    menu:keypressed("down")
     menu:keypressed("return")
     Assert.notNil(view(menu).confirmation, "popup activation must open the delete confirmation")
     local deleteRect = assert(view(menu).layout.confirmation).delete

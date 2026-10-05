@@ -22,6 +22,20 @@ local ScriptSave = {}
 
 ScriptSave.SCHEMA_NAME = "g4-script-save-v1"
 
+-- True only when every saved continuation collection exists and is empty.
+-- This is a shape query, not validation of the rest of the bucket.
+---@param bucket unknown
+---@return boolean
+function ScriptSave.isQuiescent(bucket)
+  return type(bucket) == "table"
+    and type(bucket.environments) == "table"
+    and next(bucket.environments) == nil
+    and type(bucket.instances) == "table"
+    and next(bucket.instances) == nil
+    and type(bucket.tasks) == "table"
+    and next(bucket.tasks) == nil
+end
+
 ---@param scheduler Scheduler
 ---@param tick integer
 ---@param opts table<string, unknown>

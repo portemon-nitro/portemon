@@ -42,7 +42,7 @@ and storage libraries currently admitted by the architecture gate.
 | Area | Owner | Contract |
 | --- | --- | --- |
 | Product process and UX | `app/` | LÖVE callbacks, launcher, startup Main Menu, version selection, file drops, cache routing, product tooling, and process exit |
-| Generic game host | `game/src/` | state lifecycle, host adapters, resize, input forwarding, and exit notification |
+| Generic game host | `game/src/` | state lifecycle, game host adapters, resize, input forwarding, and exit notification |
 | HGSS retail application | `game/hgss/` | explicit New Game/Continue entry, Oak, field composition, retail UI, and application audio |
 | HGSS mechanisms | `libs/hgss/` | reusable field, script compatibility, audio, input, and save behavior |
 | Shared widgets and presentation | `libs/ui/` | game-independent widgets, display facts, and shared presentation mechanisms |
@@ -60,7 +60,7 @@ contract; it does not parse NARC members, ROM bytes, overlays, or decompilation
 references.
 
 Generic binary, storage, error, and mathematical primitives stay in their
-focused libraries. New shared APIs and extension points need a current
+focused libraries; repository-root reads belong to `libs/storage`. New shared APIs and extension points need a current
 consumer; hypothetical future mods do not establish ownership.
 
 ## Repository shape

@@ -70,6 +70,20 @@ function ItemCatalog:item(key)
   return definition
 end
 
+---@return string[] caller-owned item keys in native identity order
+function ItemCatalog:itemKeys()
+  local keys = {}
+  for key in pairs(self._root.items) do
+    keys[#keys + 1] = key
+  end
+  table.sort(keys, function(a, b)
+    local aId = self._root.items[a].nativeId
+    local bId = self._root.items[b].nativeId
+    return aId == bId and a < b or aId < bId
+  end)
+  return keys
+end
+
 ---@param nativeId integer
 ---@return string
 function ItemCatalog:itemKeyByNativeId(nativeId)

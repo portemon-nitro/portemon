@@ -126,6 +126,20 @@ function MonCatalog:fingerprint()
   return self._fingerprint
 end
 
+---@return string[] caller-owned species keys in native identity order
+function MonCatalog:speciesKeys()
+  local keys = {}
+  for key in pairs(self._root.species) do
+    keys[#keys + 1] = key
+  end
+  table.sort(keys, function(a, b)
+    local aId = self._root.species[a].nativeId
+    local bId = self._root.species[b].nativeId
+    return aId == bId and a < b or aId < bId
+  end)
+  return keys
+end
+
 ---@param key string
 ---@return table<string, unknown>
 function MonCatalog:species(key)
@@ -201,6 +215,20 @@ function MonCatalog:moveKeyByNativeId(nativeId)
   end
   assert(key ~= nil, "catalog index carries the validated entry")
   return key
+end
+
+---@return string[] caller-owned move keys in native identity order
+function MonCatalog:moveKeys()
+  local keys = {}
+  for key in pairs(self._root.moves) do
+    keys[#keys + 1] = key
+  end
+  table.sort(keys, function(a, b)
+    local aId = self._root.moves[a].nativeId
+    local bId = self._root.moves[b].nativeId
+    return aId == bId and a < b or aId < bId
+  end)
+  return keys
 end
 
 ---@param nativeId integer

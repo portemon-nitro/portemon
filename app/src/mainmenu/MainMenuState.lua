@@ -80,6 +80,7 @@ local function validSaveItem(entry, ready, ordinal)
       errorSummary = "Save data unavailable",
       canContinue = false,
       canDelete = false,
+      canEdit = false,
     }
   end
   if entry.error then
@@ -89,6 +90,7 @@ local function validSaveItem(entry, ready, ordinal)
       errorSummary = errorSummary(entry.error),
       canContinue = false,
       canDelete = true,
+      canEdit = false,
     }
   end
 
@@ -102,6 +104,7 @@ local function validSaveItem(entry, ready, ordinal)
       errorSummary = "Save data unavailable",
       canContinue = false,
       canDelete = true,
+      canEdit = false,
     }
   end
   if type(entry.versionId) ~= "string" or entry.versionId == "" or type(entry.playTimeSeconds) ~= "number" then
@@ -111,6 +114,7 @@ local function validSaveItem(entry, ready, ordinal)
       errorSummary = "Save data unavailable",
       canContinue = false,
       canDelete = true,
+      canEdit = false,
     }
   end
   if not ready[entry.versionId] then
@@ -121,6 +125,7 @@ local function validSaveItem(entry, ready, ordinal)
       errorSummary = "Content unavailable",
       canContinue = false,
       canDelete = true,
+      canEdit = false,
     }
   end
   return {
@@ -131,6 +136,7 @@ local function validSaveItem(entry, ready, ordinal)
     badgeCount = badgeCount(type(profile) == "table" and profile or nil),
     canContinue = true,
     canDelete = true,
+    canEdit = true,
   }
 end
 
@@ -307,6 +313,15 @@ function MainMenuState:_delete(saveId)
   self:refresh()
 end
 
+function MainMenuState:_edit(saveId)
+  for _, save in ipairs(self.saves) do
+    if save.saveId == saveId and save.canEdit then
+      self:_emit({ kind = "edit", saveId = saveId })
+      return
+    end
+  end
+end
+
 function MainMenuState:_activate()
   local intent = self.controller:activate()
   if not intent then
@@ -316,6 +331,8 @@ function MainMenuState:_activate()
     self:_emit({ kind = "new_game" })
   elseif intent.kind == "continue" then
     self:_continue(intent.saveId)
+  elseif intent.kind == "edit" then
+    self:_edit(intent.saveId)
   elseif intent.kind == "delete" then
     self:_delete(intent.saveId)
   else
@@ -345,7 +362,7 @@ function MainMenuState:_dispatchHit(hit)
     return
   end
   if hit.region == "popup" then
-    if hit.lane == "delete" then
+    if (hit.lane == "edit" or hit.lane == "delete") and self.controller:focusPopupAction(hit.lane) then
       self:_activate()
     else
       self.controller:back()

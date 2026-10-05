@@ -4,68 +4,25 @@
 -- inner helper multiplies by a presentation scale. Launcher colors live
 -- here; the Oak selector owns its own tone recipe separately.
 
-local ImageButton = require("libs.ui.src.ImageButton")
 local LogicalSurface = require("libs.ui.src.LogicalSurface")
+local ProductMenuSkin = require("app.src.ui.ProductMenuSkin")
 
 ---@class MainMenuRenderer
 ---@field text table<string, function>
 ---@field graphics love.graphics
 ---@field versionId string
 ---@field background number[]
+---@field skin ProductMenuSkin
 local MainMenuRenderer = {}
 MainMenuRenderer.__index = MainMenuRenderer
-local INK = { 0.12, 0.18, 0.25, 1 }
-local ERROR_INK = { 0.65, 0.22, 0.22, 1 }
 local MARK = { 0.85, 0.88, 0.9, 1 }
 local MARK_EDGE = { 0.35, 0.4, 0.45, 1 }
 
-local CARD_FACE = { 0xFB / 255, 0xFB / 255, 0xFB / 255, 1 }
-local CARD_INNER_BORDER = { 0xA2 / 255, 0xE3 / 255, 0xDB / 255, 1 }
-local CARD_BORDER = { 0x30 / 255, 0x49 / 255, 0x61 / 255, 1 }
-local CARD_RIM = CARD_BORDER
-local CARD_SELECTED_RIM = { 255 / 255, 58 / 255, 58 / 255, 1 }
-
-local MAIN_MENU_BACKGROUNDS = {
-  heartgold = { 0xFF / 255, 0xD6 / 255, 0x94 / 255 },
-  soulsilver = { 0x61 / 255, 0x61 / 255, 0xFB / 255 },
-}
-
-local CARD_RADIUS = 6
-local CARD_INNER_WIDTH = 2
 local CARD_INSET = 10
 
 local function setColor(graphics, color)
   graphics.setColor(color[1], color[2], color[3], color[4] or 1)
 end
-
-local function byteRole(color)
-  return { r = color[1] * 255, g = color[2] * 255, b = color[3] * 255 }
-end
-
--- Role palettes for generated-font copy: the current foreground role colors
--- plus an explicit light shadow and a transparent background so the card
--- face stays visible beneath the glyph masks. All text draws at identity
--- tint through the palette path, never through modulated plain draws.
-local function rolePalette(foreground)
-  return {
-    foreground = byteRole(foreground),
-    shadow = { r = 140, g = 140, b = 140 },
-    background = { r = 0, g = 0, b = 0, a = 0 },
-  }
-end
-
-local TEXT_PALETTE = rolePalette(INK)
-local ERROR_PALETTE = rolePalette(ERROR_INK)
-
--- Retail profile-information palette sampled from the reference card: bright
--- blue copy with a dark blue shadow over a transparent background so the
--- card face stays visible beneath the glyph masks. Only the three profile
--- rows use it; headings, errors, and popups keep their existing palettes.
-local PROFILE_INFO_PALETTE = {
-  foreground = { r = 0, g = 113, b = 251 },
-  shadow = { r = 0, g = 81, b = 251 },
-  background = { r = 0, g = 0, b = 0, a = 0 },
-}
 
 -- Centered profile-block share of the Continue body width.
 local PROFILE_BLOCK_WIDTH_FRACTION = 0.62
@@ -74,67 +31,6 @@ local PROFILE_BLOCK_WIDTH_FRACTION = 0.62
 -- text doubles carry no fontDef, so fall back to that same advance rather
 -- than inventing per-scale offsets; every use below is logical units.
 local FALLBACK_LINE_HEIGHT = 16
-
-local function drawNoContent() end
-
-local function drawColoredCard(graphics, rect, selected, colors)
-  local resolved =
-    ImageButton.resolve({ rect = rect, scale = 1, cornerRadius = CARD_RADIUS, innerBorderWidth = CARD_INNER_WIDTH })
-  local content = assert(resolved.contentRect)
-  ImageButton.draw(graphics, resolved, {
-    selected = selected,
-    colors = colors,
-    imageRect = { x = content.x, y = content.y, width = content.width, height = content.height },
-    drawImage = drawNoContent,
-  })
-end
-
-local function drawCard(graphics, rect, selected)
-  drawColoredCard(graphics, rect, selected, {
-    face = CARD_FACE,
-    border = CARD_BORDER,
-    rim = CARD_RIM,
-    selectedRim = CARD_SELECTED_RIM,
-    innerBorder = CARD_INNER_BORDER,
-  })
-end
-
--- Inset actions nested inside another card keep the card chrome but paint
--- the inner border in the face color so no contrasting ring separates the
--- nested control from its parent card.
-local function drawInset(graphics, rect, selected)
-  drawColoredCard(graphics, rect, selected, {
-    face = CARD_FACE,
-    border = CARD_BORDER,
-    rim = CARD_RIM,
-    selectedRim = CARD_SELECTED_RIM,
-    innerBorder = CARD_FACE,
-  })
-end
-
--- The overflow control nested in a save card stays invisible until focused:
--- every chrome layer matches the card face so only its "..." copy shows,
--- while selection keeps the shared red rim. Popup and confirmation inlays
--- sit over dimmed content rather than the card face, so they keep the
--- neutral inset chrome above.
-local function drawOverflowInlay(graphics, rect, selected)
-  drawColoredCard(graphics, rect, selected, {
-    face = CARD_FACE,
-    border = CARD_FACE,
-    rim = CARD_FACE,
-    selectedRim = CARD_SELECTED_RIM,
-    innerBorder = CARD_FACE,
-  })
-end
-
-local function drawPaletteText(graphics, text, value, x, y, palette)
-  graphics.setColor(1, 1, 1, 1)
-  local ok, err = pcall(text.drawTextWithPalette, text, value, x, y, palette)
-  graphics.setColor(1, 1, 1, 1)
-  if not ok then
-    error(err, 0)
-  end
-end
 
 local function cardTitle(item)
   if item.canContinue then
@@ -151,13 +47,14 @@ end
 -- is the durable progression count supplied in the saved-game view.
 ---@param graphics love.graphics
 ---@param text table<string, function>
+---@param skin ProductMenuSkin
 ---@param body { x: number, y: number, width: number, height: number }
 ---@param regionTop number
 ---@param lineHeight number
 ---@param playerName string
 ---@param playTimeLabel string
 ---@param badgeCount integer
-local function drawProfileRows(graphics, text, body, regionTop, lineHeight, playerName, playTimeLabel, badgeCount)
+local function drawProfileRows(graphics, text, skin, body, regionTop, lineHeight, playerName, playTimeLabel, badgeCount)
   local blockWidth = body.width * PROFILE_BLOCK_WIDTH_FRACTION
   local blockLeft = body.x + (body.width - blockWidth) / 2
   local blockRight = blockLeft + blockWidth
@@ -171,8 +68,8 @@ local function drawProfileRows(graphics, text, body, regionTop, lineHeight, play
   for index, row in ipairs(rows) do
     local y = regionTop + (index - 1) * bandHeight + (bandHeight - lineHeight) / 2
     local valueWidth = text:textWidth(row.value)
-    drawPaletteText(graphics, text, row.label, blockLeft, y, PROFILE_INFO_PALETTE)
-    drawPaletteText(graphics, text, row.value, blockRight - valueWidth, y, PROFILE_INFO_PALETTE)
+    ProductMenuSkin.drawText(graphics, text, skin, "information", row.label, blockLeft, y)
+    ProductMenuSkin.drawText(graphics, text, skin, "information", row.value, blockRight - valueWidth, y)
   end
 end
 
@@ -193,17 +90,16 @@ function MainMenuRenderer.new(options)
   ---@cast graphics love.graphics
   assert(graphics, "Main Menu renderer requires graphics")
   assert(type(options.text.drawTextWithPalette) == "function", "Main Menu renderer requires palette text drawing")
-  local versionId =
-    assert(type(options.versionId) == "string" and options.versionId, "Main Menu renderer requires a game version")
-  local background = assert(
-    MAIN_MENU_BACKGROUNDS[versionId],
-    "Main Menu renderer does not support game version: " .. tostring(versionId)
-  )
+  local versionId = options.versionId
+  assert(type(versionId) == "string" and versionId ~= "", "Main Menu renderer requires a game version")
+  ---@cast versionId string
+  local skin = ProductMenuSkin.forVersion(versionId)
   return setmetatable({
     text = options.text,
     graphics = graphics,
     versionId = versionId,
-    background = { background[1], background[2], background[3] },
+    background = skin.background,
+    skin = skin,
   }, MainMenuRenderer)
 end
 
@@ -217,6 +113,20 @@ function MainMenuRenderer:draw(view, plan)
   local pane = assert(panes[1], "Main Menu draws its content pane")
   local placement = assert(pane.placement, "the menu pane carries its placement")
   local text = self.text
+  local skin = self.skin
+  ---@param rect { x:number, y:number, width:number, height:number }
+  ---@param variant ProductMenuSkin.CardVariant
+  ---@param focused boolean
+  local function drawSkinCard(rect, variant, focused)
+    ProductMenuSkin.drawCard(graphics, skin, rect, variant, focused, false)
+  end
+  ---@param role ProductMenuSkin.TextRole
+  ---@param value string
+  ---@param x number
+  ---@param y number
+  local function drawSkinText(role, value, x, y)
+    ProductMenuSkin.drawText(graphics, text, skin, role, value, x, y)
+  end
   local shapedText = text --[[@as { fontDef: FieldFontDef|nil }]]
   local fontDef = shapedText.fontDef
   local lineHeight = (fontDef and fontDef.lineHeight) or FALLBACK_LINE_HEIGHT
@@ -248,13 +158,11 @@ function MainMenuRenderer:draw(view, plan)
         if view.catalogError and view.catalogError ~= "" then
           local errorRect = assert(layout.catalogErrorRect)
           local shapedError = errorRect --[[@as table<string, number>]]
-          drawPaletteText(
-            graphics,
-            text,
+          drawSkinText(
+            "error",
             displayUpper("Save catalog unavailable"),
             shapedError.x + CARD_INSET,
-            shapedError.y + CARD_INSET,
-            ERROR_PALETTE
+            shapedError.y + CARD_INSET
           )
         end
         for _, item in ipairs(assert(view.saves)) do
@@ -269,16 +177,9 @@ function MainMenuRenderer:draw(view, plan)
               and focus.lane == "overflow"
             -- Body focus selects the outer card through the shared rounded rim;
             -- overflow focus leaves the parent neutral for its own inset chrome.
-            drawCard(graphics, shapedCard.frame, bodyFocused)
+            drawSkinCard(shapedCard.frame, "normal", bodyFocused)
             local headingY = shapedCard.frame.y + CARD_INSET
-            drawPaletteText(
-              graphics,
-              text,
-              displayUpper("CONTINUE"),
-              shapedCard.frame.x + CARD_INSET,
-              headingY,
-              TEXT_PALETTE
-            )
+            drawSkinText("normal", displayUpper("CONTINUE"), shapedCard.frame.x + CARD_INSET, headingY)
             if item.canContinue then
               -- Stored values keep their exact form; only headings and labels
               -- are uppercased presentation copy. The badge count is the
@@ -287,6 +188,7 @@ function MainMenuRenderer:draw(view, plan)
               drawProfileRows(
                 graphics,
                 text,
+                skin,
                 shapedCard.body,
                 headingY + lineHeight,
                 lineHeight,
@@ -295,18 +197,11 @@ function MainMenuRenderer:draw(view, plan)
                 item.badgeCount
               )
             else
-              drawPaletteText(
-                graphics,
-                text,
-                displayUpper(cardTitle(item)),
-                shapedCard.frame.x + CARD_INSET,
-                headingY + 20,
-                ERROR_PALETTE
-              )
+              drawSkinText("error", displayUpper(cardTitle(item)), shapedCard.frame.x + CARD_INSET, headingY + 20)
             end
             if shapedCard.overflow then
-              drawOverflowInlay(graphics, shapedCard.overflow, overflowFocused)
-              drawPaletteText(graphics, text, "...", shapedCard.overflow.x + 3, shapedCard.overflow.y + 4, TEXT_PALETTE)
+              drawSkinCard(shapedCard.overflow, "overflow", overflowFocused)
+              drawSkinText("normal", "...", shapedCard.overflow.x + 3, shapedCard.overflow.y + 4)
             end
           end
         end
@@ -318,59 +213,49 @@ function MainMenuRenderer:draw(view, plan)
       local global = assert(shaped.global)
       local shapedGlobal = global --[[@as { actions: table<string, table<string, number>> }]]
       local newGame = assert(shapedGlobal.actions["new-game"])
-      drawCard(graphics, newGame, globalFocus)
-      drawPaletteText(graphics, text, displayUpper("NEW GAME"), newGame.x + CARD_INSET, newGame.y + 10, TEXT_PALETTE)
+      drawSkinCard(newGame, "normal", globalFocus)
+      drawSkinText("normal", displayUpper("NEW GAME"), newGame.x + CARD_INSET, newGame.y + 10)
 
       if view.popup then
         local popup = assert(layout.popup)
-        local shapedPopup = popup --[[@as { box: table<string, number>, actions: { delete: table<string, number> } }]]
+        local shapedPopup = popup --[[@as { box: table<string, number>, actions: { edit: table<string, number>|nil, delete: table<string, number>|nil } }]]
         graphics.setColor(0, 0, 0, 0.45)
         graphics.rectangle("fill", 0, 0, viewport.width, viewport.height)
-        drawCard(graphics, shapedPopup.box, false)
-        drawInset(graphics, shapedPopup.actions.delete, true)
-        drawPaletteText(
-          graphics,
-          text,
-          displayUpper("Delete"),
-          shapedPopup.actions.delete.x + 4,
-          shapedPopup.actions.delete.y + 4,
-          TEXT_PALETTE
-        )
+        drawSkinCard(shapedPopup.box, "normal", false)
+        if shapedPopup.actions.edit then
+          local selected = view.popup.focusedAction == "edit"
+          drawSkinCard(shapedPopup.actions.edit, "inset", selected)
+          drawSkinText("normal", displayUpper("Edit"), shapedPopup.actions.edit.x + 4, shapedPopup.actions.edit.y + 4)
+        end
+        if shapedPopup.actions.delete then
+          local selected = view.popup.focusedAction == "delete"
+          drawSkinCard(shapedPopup.actions.delete, "inset", selected)
+          drawSkinText(
+            "normal",
+            displayUpper("Delete"),
+            shapedPopup.actions.delete.x + 4,
+            shapedPopup.actions.delete.y + 4
+          )
+        end
       end
       if view.confirmation then
         local confirmation = assert(layout.confirmation)
         local shapedConfirm = confirmation --[[@as { box: table<string, number>, cancel: table<string, number>, delete: table<string, number> }]]
         graphics.setColor(0, 0, 0, 0.62)
         graphics.rectangle("fill", 0, 0, viewport.width, viewport.height)
-        drawCard(graphics, shapedConfirm.box, false)
-        drawPaletteText(
-          graphics,
-          text,
+        drawSkinCard(shapedConfirm.box, "normal", false)
+        drawSkinText(
+          "normal",
           displayUpper("Delete this save?"),
           shapedConfirm.box.x + CARD_INSET,
-          shapedConfirm.box.y + CARD_INSET,
-          TEXT_PALETTE
+          shapedConfirm.box.y + CARD_INSET
         )
         local cancelFocus = view.confirmation.focusedAction == "cancel"
         local deleteFocus = view.confirmation.focusedAction == "delete"
-        drawInset(graphics, shapedConfirm.cancel, cancelFocus)
-        drawInset(graphics, shapedConfirm.delete, deleteFocus)
-        drawPaletteText(
-          graphics,
-          text,
-          displayUpper("Cancel"),
-          shapedConfirm.cancel.x + 4,
-          shapedConfirm.cancel.y + 4,
-          TEXT_PALETTE
-        )
-        drawPaletteText(
-          graphics,
-          text,
-          displayUpper("Delete"),
-          shapedConfirm.delete.x + 4,
-          shapedConfirm.delete.y + 4,
-          TEXT_PALETTE
-        )
+        drawSkinCard(shapedConfirm.cancel, "inset", cancelFocus)
+        drawSkinCard(shapedConfirm.delete, "inset", deleteFocus)
+        drawSkinText("normal", displayUpper("Cancel"), shapedConfirm.cancel.x + 4, shapedConfirm.cancel.y + 4)
+        drawSkinText("normal", displayUpper("Delete"), shapedConfirm.delete.x + 4, shapedConfirm.delete.y + 4)
       end
     end, debug.traceback)
     graphics.setColor(red, green, blue, alpha)

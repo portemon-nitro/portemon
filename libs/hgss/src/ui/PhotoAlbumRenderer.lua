@@ -273,11 +273,11 @@ function PhotoAlbumRenderer:draw(view, plan, resources)
       local viewer = view.viewer
       if viewer and viewer.phase == "ready" and viewer.view then
         PhotoSceneRenderer.draw(viewer.view, plan, resources)
+        local selected = assert(view.selectedPhoto)
+        local flavorMessage = validMonCount(selected) > 1 and 11 or 10
+        local mapSectionNativeId = assert(viewer.view.mapSectionNativeId)
+        textRenderer:drawLine(viewerFlavor(self, textRenderer, flavorMessage, selected, mapSectionNativeId), 8, 66)
       end
-      local selected = assert(view.selectedPhoto)
-      local flavorMessage = validMonCount(selected) > 1 and 11 or 10
-      local mapSectionNativeId = assert(viewer.view and viewer.view.mapSectionNativeId)
-      textRenderer:drawLine(viewerFlavor(self, textRenderer, flavorMessage, selected, mapSectionNativeId), 8, 66)
     elseif view.phase == "actions" then
       drawSourceMessage(self, textRenderer, 6, 52, 70)
     elseif view.phase == "delete_confirm" then

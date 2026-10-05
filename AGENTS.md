@@ -111,7 +111,8 @@ package.
   admitted by the architecture gate and may reach `romdump` only for provisioning. Retail
   behavior enters through the concrete game seam.
 - `game/src/` owns the game-agnostic running-game lifecycle and host adapters (`Game`,
-  `WindowConfig`, `LocalClock`, `RepoFs`, and audio output). It must not import `app`,
+  `WindowConfig`, `LocalClock`, and audio output). Repository-root reads belong to
+  `libs/storage`. It must not import `app`,
   `game/hgss`, `libs/hgss`, `libs/nds`, or `romdump`.
 - `game/<family>/` owns reproduction of a concrete retail game's observable application
   flow and composition. `game/hgss/` owns HGSS New Game/Continue/Oak/field flows and retail
