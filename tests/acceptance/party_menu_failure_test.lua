@@ -21,8 +21,8 @@ local FakeCache = require("tests.support.FakeCache")
 local GameSave = require("libs.hgss.src.save.GameSave")
 local GameSaveValidation = require("libs.hgss.src.save.GameSaveValidation")
 local FashionCaseState = require("libs.hgss.src.save.FashionCaseState")
-local MartSave = require("libs.hgss.src.save.MartSave")
 local ItemFixture = require("libs.items.tests.item_fixture")
+local MartSave = require("libs.hgss.src.save.MartSave")
 local MonsSave = require("libs.mons.src.MonsSave")
 local PartyActions = require("libs.hgss.src.field.PartyActions")
 local PartyCache = require("libs.assets.src.PartyCache")
@@ -457,7 +457,7 @@ end
 
 local function validRecord(saveId)
   return {
-    schema = "g4-game-save-v5",
+    schema = "g4-game-save-v6",
     saveId = saveId,
     versionId = "heartgold",
     playTimeSeconds = 0,
@@ -597,7 +597,8 @@ function T.tests.v3_record_migrates_through_store_load()
   local saveId = assert(store:reserve(), "reservation must succeed")
   Assert.isTrue(store:publishFirst(v3record(saveId)), "a quiescent v3 record must publish as migrated")
   local loaded = assert(store:load(saveId), "the migrated record must load")
-  Assert.equal(loaded.schema, GameSave.SCHEMA, "load exposes the migrated schema")
+  Assert.equal(loaded.schema, "g4-game-save-v6", "load exposes the migrated schema")
+  Assert.equal(loaded.schema, GameSave.SCHEMA, "load exposes the current migrated schema")
   Assert.equal(loaded.playerData.profile.badges, 0, "migration starts with zero badges")
   Assert.deepEqual(loaded.fieldTravel, { lastHealSpawn = "SPAWN_NEW_BARK" }, "migration seeds the mother spawn")
   Assert.equal(loaded.playerData.profile.name, "GOLD", "migration preserves the profile")

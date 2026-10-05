@@ -36,7 +36,16 @@ local function candidate(catalog, seed)
 end
 
 function T.new_game_schema_requires_the_mons_bucket()
-  Assert.equal(GameSave.SCHEMA, "g4-game-save-v5", "the global save schema carries the mons and mart buckets")
+  Assert.equal(GameSave.SCHEMA, "g4-game-save-v6", "the global save schema carries the mons bucket")
+  Assert.equal(GameSave.SCHEMA, "g4-game-save-v6", "the global save schema carries the mart bucket")
+end
+
+function T.fresh_captures_carry_the_current_fashion_case_schema()
+  Assert.equal(
+    GameSave.SCHEMA,
+    "g4-game-save-v6",
+    "fresh captures carry the fashion-case-bearing current schema"
+  )
 end
 
 function T.unpublished_candidate_carries_empty_validated_mons_state()

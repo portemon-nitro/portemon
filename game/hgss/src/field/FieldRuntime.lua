@@ -717,6 +717,7 @@ function FieldRuntime:_loadInitialWorld(boot)
     self.game.schema == GameSave.SCHEMA
     or self.game.schema == "g4-game-save-v3"
     or self.game.schema == "g4-game-save-v4"
+    or self.game.schema == "g4-game-save-v5"
   then
     entryGame = assert(boot.saveValidation:validate(self.game))
     assert(entryGame.versionId == self.versionId, "loaded game belongs to another version")

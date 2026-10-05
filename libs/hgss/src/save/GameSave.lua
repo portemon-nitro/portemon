@@ -10,7 +10,7 @@ local MartSave = require("libs.hgss.src.save.MartSave")
 
 local GameSave = {}
 
-GameSave.SCHEMA = "g4-game-save-v5"
+GameSave.SCHEMA = "g4-game-save-v6"
 GameSave.MAX_PLAY_TIME_SECONDS = 999 * 60 * 60 + 59 * 60 + 59
 
 local FACING = { north = true, south = true, west = true, east = true }
@@ -282,31 +282,41 @@ function GameSave.migrateV3(record)
   return migrated
 end
 
--- Pure v4 -> v5 migration adds the new durable buckets without rewriting any
--- of the existing save values.
+-- v4 saves predate the national Dex flag and the durable mart bucket.
+-- Preserve the existing state and initialize only that master-era delta;
+-- Fashion Case arrives through a later dedicated step.
 ---@param record table<string, unknown> a v4 save record
----@return table<string, unknown> the migrated v5 record
+---@return table<string, unknown> the migrated master-era v5 record
 function GameSave.migrateV4(record)
-  assert(type(record) == "table" and record.schema == "g4-game-save-v4", "GameSave.migrateV4 requires a v4 record")
+  assert(type(record) == "table" and record.schema == "g4-game-save-v4", "GameSave.migrateV4 requires v4")
   assert(
     type(record.playerData) == "table" and type(record.playerData.profile) == "table",
     "v4 player data is required"
   )
-  if record.fashionCase ~= nil then
-    Errors.raise(GameSaveErrors.GAME_SAVE_INVALID, "v4 save cannot already contain Fashion Case state", {})
-  end
-  if record.mart ~= nil then
-    Errors.raise(GameSaveErrors.GAME_SAVE_INVALID, "v4 save cannot already contain mart state", {})
+  if record.fashionCase ~= nil or record.mart ~= nil then
+    Errors.raise(GameSaveErrors.GAME_SAVE_INVALID, "v4 save cannot contain v5 buckets", {})
   end
   local migrated = deepCopy(record)
-  local playerData = migrated.playerData
-  local profile = playerData.profile
+  local profile = migrated.playerData.profile
   profile.nationalDex = false
-  playerData.profile = profile
-  migrated.playerData = playerData
+  migrated.schema = "g4-game-save-v5"
+  migrated.mart = MartSave.empty()
+  return migrated
+end
+
+-- Master-era v5 saves predate only the durable Fashion Case bucket.
+-- Preserve every master-era value and initialize that single bucket; a v5
+-- record already carrying Fashion Case state is inconsistent and rejected.
+---@param record table<string, unknown> a master-era v5 save record
+---@return table<string, unknown> the migrated current v6 record
+function GameSave.migrateV5(record)
+  assert(type(record) == "table" and record.schema == "g4-game-save-v5", "GameSave.migrateV5 requires v5")
+  if record.fashionCase ~= nil then
+    Errors.raise(GameSaveErrors.GAME_SAVE_INVALID, "v5 save cannot contain fashion-case state", {})
+  end
+  local migrated = deepCopy(record)
   migrated.schema = GameSave.SCHEMA
   migrated.fashionCase = FashionCaseState.empty()
-  migrated.mart = MartSave.empty()
   return migrated
 end
 
@@ -338,6 +348,7 @@ function GameSave.metadata(record)
     assert(type(record) == "table")
     if
       record.schema ~= GameSave.SCHEMA
+      and record.schema ~= "g4-game-save-v5"
       and record.schema ~= "g4-game-save-v4"
       and record.schema ~= "g4-game-save-v3"
     then
