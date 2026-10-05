@@ -271,6 +271,7 @@ FieldRuntime.__index = FieldRuntime
 ---@field previous FieldCoverage?
 ---@field state "prepared"|"committed"|"released"
 
+local NEXT_BATTLE_LAUNCH_ID = 0
 local CAMERA_PROFILES_PATH = FieldCameraCache.profilesPath()
 
 ---@param avatars table[]
@@ -2401,9 +2402,9 @@ function FieldRuntime:launchBattle(spec)
   assert(type(spec) == "table", "battle host launches require a spec record")
   assert(self._battleLaunch == nil and self.battleRuntime == nil, "a field-owned battle is already active")
   self._battleReceipt = nil
-  self._launchCounter = (self._launchCounter or 0) + 1
+  NEXT_BATTLE_LAUNCH_ID = NEXT_BATTLE_LAUNCH_ID + 1
   local tag = spec.launchId or spec.kind or "battle"
-  local launchId = tostring(tag) .. "#" .. tostring(self._launchCounter)
+  local launchId = tostring(tag) .. "#" .. tostring(NEXT_BATTLE_LAUNCH_ID)
   local payload = spec.details or {}
   assert(type(payload) == "table", "battle host launches carry their payload record")
   self.overworld:requestLeave()

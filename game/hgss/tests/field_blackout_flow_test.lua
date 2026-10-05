@@ -199,4 +199,12 @@ T["center recovery selects the Pokémon Center message and rejects transitions i
   end
 end
 
+T["invalid blackout destination leaves a present overworld untouched"] = function()
+  local h = harness("present")
+  local ok = pcall(h.flow.start, h.flow, "SPAWN_MISSING")
+  Assert.isFalse(ok)
+  Assert.equal(h.events[1], nil, "destination validation precedes lifecycle mutation")
+  Assert.equal(h.flow:status().phase, "idle")
+end
+
 return { tests = T }

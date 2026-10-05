@@ -27,6 +27,11 @@ local function stubRuntime()
     playerData = { profile = {}, options = { textFrame = 0 } },
     versionId = "heartgold",
     runtimeMap = { mapId = 61 },
+    overworld = {
+      phase = function()
+        return "present"
+      end,
+    },
     fieldTerrainEffectController = {},
     scriptHosts = nil,
     screenFade = nil,
