@@ -11,6 +11,7 @@ local ScriptErrors = require("libs.script.src.errors")
 ---@class FollowerAppearanceController
 ---@field startAppearance fun(self: FollowerAppearanceController, follower: FollowerAppearanceFollowingMon): boolean
 ---@field isAppearanceSettled fun(self: FollowerAppearanceController): boolean
+---@field cancelAppearance fun(self: FollowerAppearanceController)
 
 ---@class FollowerAppearanceServices
 ---@field followingMon FollowerAppearanceFollowingMon
@@ -56,7 +57,12 @@ end
 
 ---@param state table<string, unknown>
 ---@param reason string
-function FollowerAppearanceTask.cancel(state, reason)
+---@param ctx FollowerAppearanceContext
+function FollowerAppearanceTask.cancel(state, reason, ctx)
+  if state.started then
+    local transition = assert(ctx.services.followerTransition, "follower appearance requires the transition controller")
+    transition:cancelAppearance()
+  end
   state.cancelled = reason
 end
 
