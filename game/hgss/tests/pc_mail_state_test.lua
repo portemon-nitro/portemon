@@ -60,7 +60,7 @@ local function measurement()
   }
 end
 
-local function openMailbox(slots)
+local function openMailbox(slots, partyHasMembers)
   local values = {}
   for slot = 0, Mailbox.CAPACITY - 1 do
     values[slot + 1] = slots[slot] or false
@@ -68,6 +68,7 @@ local function openMailbox(slots)
   local mailbox = Mailbox.new({ schema = Mailbox.SCHEMA, slots = values })
   return MailboxScreenState.new({
     mode = "mailbox",
+    partyHasMembers = partyHasMembers,
     mailbox = mailbox,
     mailActions = { preview = function() end, commit = function() end },
     manifest = manifest(),
@@ -82,8 +83,38 @@ local function openMailbox(slots)
     mailbox
 end
 
+function T.mailbox_actions_follow_party_presence()
+  local empty = openMailbox({ [0] = letter("MISTY") }, false)
+  empty:updateFixed({ { type = "confirm" } })
+  Assert.deepEqual(empty:status().menuActions, { "read", "cancel" })
+  empty:updateFixed({ { type = "navigate", direction = "down" } })
+  Assert.equal(empty:status().action, "cancel", "empty Party action navigation ends at CANCEL")
+  empty:updateFixed({ { type = "navigate", direction = "down" } })
+  Assert.equal(empty:status().action, "cancel", "empty Party action navigation stays within the source list")
+  empty:updateFixed({ { type = "navigate", direction = "up" } })
+  empty:updateFixed({ { type = "confirm" } })
+  Assert.equal(empty:status().viewMode, "read", "READ remains available with an empty Party")
+  empty:updateFixed({ { type = "cancel" } })
+  Assert.equal(empty:status().phase, "list", "the letter viewer returns to the list")
+  empty:dispose()
+
+  local nonempty = openMailbox({ [0] = letter("BROCK") }, true)
+  nonempty:updateFixed({ { type = "confirm" } })
+  Assert.deepEqual(nonempty:status().menuActions, { "read", "erase", "give", "cancel" })
+  nonempty:dispose()
+end
+
+function T.mailbox_mode_requires_party_presence_snapshot()
+  local slots = { [0] = letter("MISTY") }
+  local ok, err = pcall(function()
+    openMailbox(slots)
+  end)
+  Assert.isFalse(ok, "mailbox mode requires Party presence at construction")
+  Assert.isTrue(tostring(err):find("partyHasMembers", 1, true) ~= nil)
+end
+
 function T.sparse_list_rows_retain_their_source_slots_and_read_view_is_copy_only()
-  local state, mailbox = openMailbox({ [0] = letter("MISTY"), [4] = letter("BROCK"), [19] = letter("DAWN") })
+  local state, mailbox = openMailbox({ [0] = letter("MISTY"), [4] = letter("BROCK"), [19] = letter("DAWN") }, true)
   local status = state:status()
   Assert.equal(status.page, 0)
   Assert.deepEqual(status.visibleSlots, { 0, 4 }, "page zero maps rows to exact persisted slots")
@@ -117,7 +148,7 @@ function T.source_page_hitboxes_route_mouse_and_touch_to_the_same_page_events()
   for slot = 0, Mailbox.CAPACITY - 1 do
     slots[slot] = letter("SENDER" .. slot)
   end
-  local state = openMailbox(slots)
+  local state = openMailbox(slots, true)
   state:updateFixed({ { type = "pointer_down", x = 48, y = 170 } })
   Assert.equal(state:status().page, 1, "the source right-page hitbox changes page")
   Assert.equal(state:status().selectedSlot, 10)
@@ -133,7 +164,7 @@ function T.second_page_tracks_its_persisted_slot_and_clamps_after_its_last_row_i
     slots[slot] = letter("SENDER" .. slot)
   end
   slots[19] = letter("LAST")
-  local state, mailbox = openMailbox(slots)
+  local state, mailbox = openMailbox(slots, true)
   state:updateFixed({ { type = "page", direction = "next" } })
   Assert.equal(state:status().page, 1)
   Assert.deepEqual(state:status().visibleSlots, { 19 }, "the second page keeps the sparse persisted slot")
@@ -154,7 +185,7 @@ function T.page_controls_switch_a_full_mailbox_without_rekeying_its_rows()
   for slot = 0, Mailbox.CAPACITY - 1 do
     slots[slot] = letter("SENDER" .. slot)
   end
-  local state = openMailbox(slots)
+  local state = openMailbox(slots, true)
   Assert.deepEqual(state:status().visibleSlots, { 0, 1, 2, 3, 4, 5, 6, 7, 8, 9 })
 
   state:updateFixed({ { type = "page", direction = "next" } })

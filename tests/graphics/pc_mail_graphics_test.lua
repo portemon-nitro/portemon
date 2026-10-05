@@ -258,6 +258,7 @@ function T.twelve_compiled_stationery_backgrounds_render_distinct_source_pixels(
     local mailbox = Mailbox.new({ schema = Mailbox.SCHEMA, slots = mailboxSlots })
     local mailboxState = MailboxScreenState.new({
       mode = "mailbox",
+      partyHasMembers = true,
       mailbox = mailbox,
       mailActions = {
         revisionSnapshot = function()
@@ -331,6 +332,48 @@ function T.twelve_compiled_stationery_backgrounds_render_distinct_source_pixels(
       movedActionImage:getString() ~= actionPixels,
       "action navigation moves the rendered focus through the compiled menu labels"
     )
+
+    local emptyPartyState = MailboxScreenState.new({
+      mode = "mailbox",
+      partyHasMembers = false,
+      mailbox = mailbox,
+      mailActions = {
+        revisionSnapshot = function()
+          return {}
+        end,
+      },
+      itemCatalog = itemCatalog,
+      manifest = version.manifest,
+      measureDisplay = function()
+        return {
+          width = 256,
+          height = 192,
+          topology = ScreenTopology.oneDisplay({
+            id = "main",
+            rect = { x = 0, y = 0, width = 256, height = 192 },
+            role = "world",
+            touch = true,
+          }),
+          pixelRatio = 1,
+          signature = "pc-mail-graphics:256x192",
+        }
+      end,
+      audio = { play = function() end },
+    })
+    emptyPartyState:updateFixed({ { type = "confirm" } })
+    Assert.deepEqual(emptyPartyState:status().menuActions, { "read", "cancel" })
+    local emptyPartyMenu = scope:own(love.graphics.newCanvas(256, 192))
+    love.graphics.setCanvas(emptyPartyMenu)
+    love.graphics.clear(0, 0, 0, 0)
+    emptyPartyState:draw(resources)
+    love.graphics.setCanvas()
+    Assert.isTrue(
+      scope:own(emptyPartyMenu:newImageData()):getString() ~= actionPixels,
+      "empty Party renders the compiled two-action source menu"
+    )
+    emptyPartyState:updateFixed({ { type = "navigate", direction = "down" } })
+    Assert.equal(emptyPartyState:status().action, "cancel", "empty Party focus reaches the final source action")
+    emptyPartyState:dispose()
     mailboxState:dispose()
   end
   love.graphics.setCanvas()

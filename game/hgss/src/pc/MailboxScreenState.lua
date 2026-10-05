@@ -19,12 +19,17 @@ end
 function MailboxScreenState.new(opts)
   assert(type(opts) == "table", "mailbox state requires options")
   assert(opts.mode == "mailbox" or opts.mode == "read" or opts.mode == "confirm", "mailbox mode is explicit")
+  local menuActions
+  if opts.mode == "mailbox" then
+    assert(type(opts.partyHasMembers) == "boolean", "mailbox mode requires partyHasMembers")
+    menuActions = opts.partyHasMembers and { "read", "erase", "give", "cancel" } or { "read", "cancel" }
+  end
   local mailbox = opts.mode == "mailbox" and assert(opts.mailbox) or nil
   local state = setmetatable({
     mode = opts.mode,
     mailbox = mailbox,
     mailActions = opts.mailActions,
-    menuActions = { "read", "erase", "give", "cancel" },
+    menuActions = menuActions,
     letter = opts.mode == "read" and Mail.validate(assert(opts.letter)) or nil,
     manifest = assert(opts.manifest),
     itemCatalog = opts.mode == "mailbox" and assert(opts.itemCatalog) or nil,
