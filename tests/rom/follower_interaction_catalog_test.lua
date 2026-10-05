@@ -122,15 +122,18 @@ function T.source_catalog_compiles_with_retail_order_and_semantic_references(rom
   Assert.isTrue(sectionCount > 0, "the source corpus publishes map-section rules")
   Assert.isTrue(exactMapIdRuleCount > 0, "the source corpus includes exact map-ID criteria")
 
-  local speciesClasses = catalog.speciesClassBySpeciesId
-  Assert.isNil(catalog.mapClassByMapId)
+  local speciesClasses = assert(catalog.speciesClassBySpeciesId, "the catalog publishes species-owned classes")
+  Assert.isNil(catalog.mapClassByMapId, "the catalog carries no map-owned class table")
   local classesArchive = assert(romFs:openNarc(Sources.ARCHIVES.speciesClasses))
   local classesBytes = assert(classesArchive:readMember(0))
-  Assert.equal(#classesBytes, 496)
+  Assert.equal(#classesBytes, 496, "the raw source member keeps its 496-byte shape")
   for _, speciesId in ipairs({ 1, 60, 493 }) do
-    Assert.equal(speciesClasses[speciesId], classesBytes:byte(speciesId))
+    Assert.equal(speciesClasses[speciesId], classesBytes:byte(speciesId), "species entry " .. speciesId)
   end
-  Assert.isNil(speciesClasses[494])
+  for speciesId = 1, 493 do
+    Assert.notNil(speciesClasses[speciesId], "every native species keeps its class entry")
+  end
+  Assert.isNil(speciesClasses[494], "no class entry exists beyond the native species domain")
 
   local packedRow = string.rep("\0", 9) .. string.char(0xB3) .. string.rep("\0", Sources.RULE_SIZE - 10)
   local packedCriteria = Compiler.decodeRuleMember(packedRow)
@@ -151,25 +154,6 @@ function T.source_catalog_compiles_with_retail_order_and_semantic_references(rom
     Assert.isTrue(type(names.name) == "string" and names.name ~= "", "plain accessory name is decoded")
     Assert.isTrue(type(names.nameWithArticle) == "string" and names.nameWithArticle ~= "", "article name is decoded")
   end
-end
-
-function T.source_member_projects_exactly_to_species_entries(romFs, versionId)
-  local catalog = catalogFor(romFs, versionId)
-  Assert.isTrue(Cache.validateCatalog(catalog), "compiled interaction catalog must satisfy its strict schema")
-
-  local classesArchive = assert(romFs:openNarc(Sources.ARCHIVES.speciesClasses))
-  local classesBytes = assert(classesArchive:readMember(0))
-  Assert.equal(#classesBytes, 496, "the raw source member keeps its 496-byte shape")
-
-  local speciesClasses = assert(catalog.speciesClassBySpeciesId, "the catalog publishes species-owned classes")
-  for _, speciesId in ipairs({ 1, 60, 493 }) do
-    Assert.equal(speciesClasses[speciesId], classesBytes:byte(speciesId), "species entry " .. speciesId)
-  end
-  for speciesId = 1, 493 do
-    Assert.notNil(speciesClasses[speciesId], "every native species keeps its class entry")
-  end
-  Assert.isNil(speciesClasses[494], "no class entry exists beyond the native species domain")
-  Assert.isNil(catalog.mapClassByMapId, "the catalog carries no map-owned class table")
 end
 
 local suite = RomSuite.fromFacts(T)
