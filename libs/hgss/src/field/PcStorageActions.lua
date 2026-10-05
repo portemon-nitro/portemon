@@ -186,39 +186,45 @@ function PcStorageActions:preview(request)
         return refusal("empty_destination")
       end
     end
+    local partyExitAddress, partyExitMon, incomingPartyMon
     if request.kind == "deposit" then
       assert(
         request.source.kind == "party" and request.destination.kind == "box",
         "deposit moves party custody into a box"
       )
-      if hasMail(source) then
-        return refusal("mail_attached")
-      end
-      if hasCapsule(source) then
-        return refusal("capsule_attached")
-      end
-      if not self:_lastUsableAfterRemoving(request.source) then
-        return refusal("last_usable")
-      end
+      partyExitAddress, partyExitMon = request.source, source
     elseif request.kind == "move" and request.source.kind == "party" and request.destination.kind == "box" then
-      if not self:_lastUsableAfterRemoving(request.source) then
-        return refusal("last_usable")
+      partyExitAddress, partyExitMon = request.source, source
+    elseif request.kind == "swap" and request.source.kind ~= request.destination.kind then
+      if request.source.kind == "party" then
+        partyExitAddress, partyExitMon, incomingPartyMon = request.source, source, destination
+      else
+        partyExitAddress, partyExitMon, incomingPartyMon = request.destination, destination, source
       end
-    elseif request.kind == "swap" and request.source.kind == "party" and request.destination.kind == "box" then
-      local displaced = assert(destination, "swaps require the occupied destination captured above")
-      if
-        not self:_lastUsableAfterRemoving(request.source)
-        and (displaced.isEgg or displaced.condition.currentHp == 0)
-      then
-        return refusal("last_usable")
-      end
-    elseif request.kind == "withdraw" then
+    end
+
+    if request.kind == "withdraw" then
       assert(
         request.source.kind == "box" and request.destination.kind == "party",
         "withdraw moves box custody into the party"
       )
       if self._mons:partyCount() >= 6 then
         return refusal("party_full")
+      end
+    end
+    if partyExitAddress ~= nil then
+      if hasMail(partyExitMon) then
+        return refusal("mail_attached")
+      end
+      if hasCapsule(partyExitMon) then
+        return refusal("capsule_attached")
+      end
+      local partyRemainsUsable = self:_lastUsableAfterRemoving(partyExitAddress)
+      if incomingPartyMon ~= nil and not incomingPartyMon.isEgg and incomingPartyMon.condition.currentHp > 0 then
+        partyRemainsUsable = true
+      end
+      if not partyRemainsUsable then
+        return refusal("last_usable")
       end
     end
   elseif request.kind == "release" then
@@ -419,19 +425,35 @@ function PcStorageActions:commit(intent, confirmation)
         boxUpdates[#boxUpdates + 1] = { box = request.destination.box, slot = request.destination.slot, mon = mon }
       end
     else
+      local sourceMon, destinationMon = source, destination
+      if request.source.kind == "party" and request.destination.kind == "box" then
+        sourceMon = self:_normalizeBox(sourceMon)
+        destinationMon = self:_normalizeParty(destinationMon)
+      elseif request.source.kind == "box" and request.destination.kind == "party" then
+        sourceMon = self:_normalizeParty(sourceMon)
+        destinationMon = self:_normalizeBox(destinationMon)
+      end
       if request.source.kind == "party" or request.destination.kind == "party" then
         party = partyRoster()
         if request.source.kind == "party" then
-          setParty(party, request.source.slot, destination)
+          setParty(party, request.source.slot, destinationMon)
         else
-          setParty(party, request.destination.slot, source)
+          setParty(party, request.destination.slot, sourceMon)
         end
       end
       if request.source.kind == "box" then
-        boxUpdates[#boxUpdates + 1] = { box = request.source.box, slot = request.source.slot, mon = destination }
+        boxUpdates[#boxUpdates + 1] = {
+          box = request.source.box,
+          slot = request.source.slot,
+          mon = destinationMon,
+        }
       end
       if request.destination.kind == "box" then
-        boxUpdates[#boxUpdates + 1] = { box = request.destination.box, slot = request.destination.slot, mon = source }
+        boxUpdates[#boxUpdates + 1] = {
+          box = request.destination.box,
+          slot = request.destination.slot,
+          mon = sourceMon,
+        }
       end
     end
   elseif request.kind == "release" then
