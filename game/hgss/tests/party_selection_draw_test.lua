@@ -28,6 +28,7 @@ local CONSTRUCTOR_MODULES = {
   "libs.assets.src.MartCache",
   "libs.assets.src.PartyCache",
   "libs.assets.src.PcCache",
+  "libs.assets.src.SummaryCache",
   "libs.hgss.src.presentation.BagHeroRenderer",
   "libs.hgss.src.ui.BagRenderer",
   "libs.hgss.src.ui.MartRenderer",
@@ -51,6 +52,7 @@ local CONSTRUCTOR_MODULES = {
   "libs.hgss.src.presentation.AssetPreparationQueue",
   "libs.hgss.src.presentation.ItemIconAssetProvider",
   "libs.hgss.src.presentation.FollowingMonTransitionRenderer",
+  "game.hgss.src.field.SummaryPresentationResources",
 }
 
 local function releasable(calls, name)
@@ -93,6 +95,31 @@ local function buildDoubles(sink, calls)
     ["libs.assets.src.PcCache"] = {
       loadManifest = function(_)
         return PcPresentationFixture.manifest()
+      end,
+    },
+    ["libs.assets.src.SummaryCache"] = {
+      loadManifest = function(_)
+        return { summaryDrawManifest = true }
+      end,
+    },
+    -- The summary preparation owner stays a recording stub: draw routing
+    -- owns presenter dispatch, while the required owner itself is proven
+    -- with real collaborators in the summary composition suite. The stub
+    -- still installs exactly one owner plus one runtime binding, so
+    -- construction never runs without the capability.
+    ["game.hgss.src.field.SummaryPresentationResources"] = {
+      new = function(_)
+        calls.summaryOwnerConstructed = (calls.summaryOwnerConstructed or 0) + 1
+        local owner = {}
+        function owner:acquire()
+          return {
+            release = function(_) end,
+          }
+        end
+        function owner:release()
+          calls.summaryOwner = (calls.summaryOwner or 0) + 1
+        end
+        return owner
       end,
     },
     ["libs.hgss.src.presentation.BagHeroRenderer"] = {
@@ -282,6 +309,21 @@ local function compositionRuntime()
   end
   runtime.unbindPartyIconPreparation = function(_, binding)
     runtime.unbindCalls[#runtime.unbindCalls + 1] = binding
+  end
+  -- The recording summary seam mirrors the production runtime binding:
+  -- one live acquire callback with an identity, removed only by its own
+  -- identity so a stale unbind can never drop a replacement owner.
+  runtime.bindSummaryPreparation = function(_, acquire)
+    assert(type(acquire) == "function", "summary preparation binding requires its acquire function")
+    assert(runtime.summaryPreparation == nil, "one summary preparation binding owns the presented lifetime")
+    runtime.summaryPreparation = { id = 1, acquire = acquire }
+    return runtime.summaryPreparation.id
+  end
+  runtime.unbindSummaryPreparation = function(_, binding)
+    local current = runtime.summaryPreparation
+    if current ~= nil and current.id == binding then
+      runtime.summaryPreparation = nil
+    end
   end
   return runtime
 end

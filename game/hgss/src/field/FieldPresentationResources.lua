@@ -48,8 +48,8 @@ local PhotoAlbumRenderer = require("libs.hgss.src.ui.PhotoAlbumRenderer")
 ---@field derivedAssets table<string, function>? semantic derived-asset host in presented composition
 ---@field bindPartyIconPreparation fun(runtime: FieldPresentationResourcesRuntime, prepare: PartyIconPrepare, cancel: PartyIconCancel): integer? runtime party preparation binding in presented composition
 ---@field unbindPartyIconPreparation fun(runtime: FieldPresentationResourcesRuntime, binding: integer)? runtime preparation unbinding in presented composition
----@field bindSummaryPreparation (fun(runtime: FieldPresentationResourcesRuntime, acquire: SummaryPreparationAcquire): integer)? runtime summary preparation binding in presented composition
----@field unbindSummaryPreparation (fun(runtime: FieldPresentationResourcesRuntime, binding: integer))? runtime summary preparation unbinding in presented composition
+---@field bindSummaryPreparation fun(runtime: FieldPresentationResourcesRuntime, acquire: SummaryPreparationAcquire): integer runtime summary preparation binding in presented composition
+---@field unbindSummaryPreparation fun(runtime: FieldPresentationResourcesRuntime, binding: integer) runtime summary preparation unbinding in presented composition
 ---@field uiManifest table<string, unknown>
 ---@field playerData table<string, unknown> the validated profile/options authority
 ---@field windowStyles FieldWindowStyles
@@ -82,8 +82,6 @@ local PhotoAlbumRenderer = require("libs.hgss.src.ui.PhotoAlbumRenderer")
 ---@field _summaryBinding integer? installed summary preparation binding identity
 ---@field summaryResources SummaryPresentationResources? the one field-owned summary preparation leaf
 ---@field summaryRenderer SummaryRenderer? the one real summary pane renderer
----@field summaryBadgeImages table<string, table<string, unknown>>? realized leaf/crown art by frame image path
----@field _summaryPartyManifest table<string, unknown>? the borrowed party badge geometry for summary leaves
 ---@field itemIconProvider ItemIconAssetProvider the one shared bag item-icon atlas
 ---@field heroRenderer BagHeroRenderer the one bag hero model renderer borrowed by the bag renderer
 ---@field bagRenderer BagRenderer the one field-bag pane renderer
@@ -209,22 +207,7 @@ local function buildPresenters(owner)
       summaryRenderer = assert(owner.summaryRenderer, "summary renderer is unavailable"),
     }
     if plan.inputKey == "summary" then
-      -- The draw bundle joins the wrapper's ready lease bundle (never
-      -- copied GPU objects, only the record) with the field-owned party
-      -- badge art the lease bundle does not own.
-      local bundle = {}
-      local ready = assert(status.resources, "the summary plan carries its ready bundle")
-      assert(type(ready) == "table", "the summary plan carries its ready bundle")
-      for key, value in pairs(ready) do
-        bundle[key] = value
-      end
-      local badges = owner.summaryBadgeImages or {}
-      bundle.partyManifest = bundle.partyManifest or owner._summaryPartyManifest
-      bundle.badgeImage = bundle.badgeImage
-        or function(frame)
-          return badges[assert(frame.image, "badge frames carry their image path")]
-        end
-      resources.summaryBundle = bundle
+      resources.summaryBundle = assert(status.resources, "the summary plan carries its ready bundle")
     end
     ApplicationPresentation.draw(hostGraphics, resources, status, plan)
   end
@@ -480,35 +463,26 @@ function FieldPresentationResources.new(runtime)
     local bindPreparation =
       assert(runtime.bindPartyIconPreparation, "presented party icons require the runtime preparation binding")
     self._partyIconBinding = bindPreparation(runtime, preparePartyIcons, cancelPartyIconPreparation)
-    -- The summary preparation leaf is metadata-only at construction:
-    -- no image realizes before a wrapper lease demands it. The leaf and
-    -- its binding install only when the runtime offers the seam and the
-    -- generated family reads; drawing always rides wrapper-supplied
-    -- ready bundles either way, so a cache-unreadable harness still
-    -- draws through the real renderer.
+    -- The summary preparation owner is required for the field lifetime:
+    -- construction fails when the generated family cannot be read, so a
+    -- field never starts without its preparation capability. No image
+    -- realizes here; a wrapper lease demands visuals later.
     self.summaryRenderer = SummaryRenderer.new({ text = textRenderer })
-    self.summaryBadgeImages = self:_realizeSummaryBadges()
-    local summaryOwnerOk, summaryOwner = pcall(function()
-      return SummaryPresentationResources.new({
-        cacheFs = runtime.cacheFs,
-        graphics = assert(love and love.graphics, "summary preparation needs its graphics namespace"),
-        text = textRenderer,
-        icons = provider,
-        preparationQueue = self.imageQueue,
-        derivedAssets = runtime.derivedAssets or {},
-        manifest = SummaryCache.loadManifest(runtime.cacheFs),
-      })
+    self.summaryResources = SummaryPresentationResources.new({
+      cacheFs = runtime.cacheFs,
+      graphics = assert(love and love.graphics, "summary preparation needs its graphics namespace"),
+      text = textRenderer,
+      icons = provider,
+      preparationQueue = self.imageQueue,
+      derivedAssets = runtime.derivedAssets or {},
+      manifest = SummaryCache.loadManifest(runtime.cacheFs),
+    })
+    local bindSummaryPreparation =
+      assert(runtime.bindSummaryPreparation, "presented summary preparation requires the runtime preparation binding")
+    local summaryOwner = assert(self.summaryResources, "summary preparation is unavailable")
+    self._summaryBinding = bindSummaryPreparation(runtime, function()
+      return summaryOwner:acquire()
     end)
-    if summaryOwnerOk then
-      self.summaryResources = summaryOwner
-      if type(runtime.bindSummaryPreparation) == "function" then
-        local owner = assert(self.summaryResources, "summary preparation is unavailable")
-        local function acquireSummary()
-          return owner:acquire()
-        end
-        self._summaryBinding = runtime.bindSummaryPreparation(runtime, acquireSummary)
-      end
-    end
     -- Bag presentation resolves eagerly beside the party icons: field entry
     -- boots only when the compiled item/bag caches are present, and the
     -- launch-time capability gate in the FieldRuntime bag factory still
@@ -598,56 +572,6 @@ function FieldPresentationResources.new(runtime)
     error(err, 0)
   end
   return self
-end
-
--- Realizes the two first-frame leaf/crown badge images from the party
--- family once for the field lifetime: the summary renderer draws them
--- through stable anchors without owning party art. A host without love
--- filesystem support (headless doubles) feeds raw bytes; production
--- wraps FileData. Missing badge records skip the layer instead of
--- failing the whole presentation owner.
----@return table<string, table<string, unknown>> realized badge images by frame image path
-function FieldPresentationResources:_realizeSummaryBadges()
-  local realized = {}
-  local ok, partyManifest = pcall(PartyCache.loadManifest, self.cacheFs)
-  if not ok then
-    return realized
-  end
-  if type(partyManifest) ~= "table" then
-    return realized
-  end
-  self._summaryPartyManifest = partyManifest
-  if type(partyManifest.shinyLeaves) ~= "table" then
-    return realized
-  end
-  local leavesRecord = partyManifest.shinyLeaves
-  local frames = {}
-  if type(leavesRecord.leaves) == "table" and type(leavesRecord.leaves.frames) == "table" then
-    frames[#frames + 1] = leavesRecord.leaves.frames[1]
-  end
-  if type(leavesRecord.crown) == "table" and type(leavesRecord.crown.frames) == "table" then
-    frames[#frames + 1] = leavesRecord.crown.frames[1]
-  end
-  local graphics = assert(love and love.graphics, "summary badges need their graphics namespace")
-  for _, frame in ipairs(frames) do
-    if type(frame) == "table" and type(frame.image) == "string" and realized[frame.image] == nil then
-      local readOk, bytes = pcall(self.cacheFs.read, self.cacheFs, frame.image)
-      if readOk then
-        assert(bytes ~= nil, "summary badge missing at " .. frame.image)
-        local image = nil
-        if love.filesystem and love.filesystem.newFileData then
-          image = graphics.newImage(love.filesystem.newFileData(bytes, frame.image))
-        else
-          image = graphics.newImage(bytes)
-        end
-        if type(image.setFilter) == "function" then
-          image:setFilter("nearest", "nearest")
-        end
-        realized[frame.image] = image
-      end
-    end
-  end
-  return realized
 end
 
 -- Creates naming chrome only after the shared icon provider reports readiness.
@@ -955,15 +879,6 @@ function FieldPresentationResources:dispose()
     self.summaryResources = nil
   end
   self.summaryRenderer = nil
-  self._summaryPartyManifest = nil
-  if self.summaryBadgeImages then
-    for _, image in pairs(self.summaryBadgeImages) do
-      if type(image.release) == "function" then
-        image:release()
-      end
-    end
-    self.summaryBadgeImages = nil
-  end
   if self.imageQueue then
     self.imageQueue:release()
     self.imageQueue = nil

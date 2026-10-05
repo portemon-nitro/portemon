@@ -233,6 +233,128 @@ function T.machine_prospective_row_stays_unowned_and_declines_explicitly()
   state:dispose()
 end
 
+-- Machine picking through the production preparation owner: leases come
+-- from the real field resource owner instead of an instant hand lease,
+-- so HM refusal, ordinary selection, and explicit cancellation keep
+-- their result semantics while each child releases exactly its own
+-- lease and the owner stays live for the next open.
+local OWNER_MODULE = "game.hgss.src.field.SummaryPresentationResources"
+
+---@param versionId string
+---@param helper table<string, unknown> preparation doubles
+---@return table<string, unknown> field-owned Summary resource owner
+local function requireOwner(versionId, helper)
+  local ok, Owner = pcall(require, OWNER_MODULE)
+  Assert.isTrue(ok, "machine picking prepares through the field resource owner: " .. tostring(Owner))
+  return Owner.new(SummaryAcceptanceFixture.ownerOptions(versionId, helper))
+end
+
+---@param owner table<string, unknown> field-owned Summary resource owner
+---@param counters table<string, integer> lease counters
+---@return table<string, unknown> lease acquired through the production owner
+local function ownerLease(owner, counters)
+  local lease = assert(owner:acquire(), "the field owner hands out per-open leases")
+  counters.leases = counters.leases + 1
+  local original = assert(lease.release, "leases release idempotently")
+  local counted = false
+  lease.release = function(self)
+    if not counted then
+      counted = true
+      counters.releases = counters.releases + 1
+    end
+    return original(self)
+  end
+  return lease
+end
+
+---@param state table<string, unknown> open picker wrapper
+local function settleOwnerPicker(state)
+  for _ = 1, 40 do
+    state:updateFixed({})
+    if state:status().wrapperPhase == "active" then
+      return
+    end
+  end
+  error("the production-backed picker never turns interactive", 0)
+end
+
+function T.machine_picker_through_the_production_owner_preserves_result_semantics()
+  local versions = SummaryAcceptanceFixture.readySummaryVersions()
+  Assert.isTrue(#versions >= 1, "the prepared cache publishes the Summary family")
+  local versionId = versions[1]
+  local _, summaryManifest = SummaryAcceptanceFixture.loadSummaryManifest(versionId)
+  local catalog = CatalogFixture.makeCatalog()
+  local service = openService(catalog, 0x77770020)
+  gift(service, "TOTODILE", 5)
+  service:setMove(0, 0, "SCRATCH")
+  service:setMove(0, 1, "CUT")
+  local revision = service:partyRevision()
+  local context = SummaryAcceptanceFixture.displayContext(summaryManifest, service:partyCount())
+  local helper = SummaryAcceptanceFixture.preparationDoubles({})
+  local owner = requireOwner(versionId, helper)
+  local counters = { leases = 0, releases = 0 }
+  local function openOwnedPicker(request)
+    local box = { width = 512, height = 384, topologyObject = topology(512, 384) }
+    return SummaryScreenState.new({
+      mons = service,
+      manifest = summaryManifest,
+      initialSlot = 0,
+      measureDisplay = function()
+        return {
+          width = box.width,
+          height = box.height,
+          topology = box.topologyObject,
+          pixelRatio = 1,
+          signature = "machine-picker-owned:512x384",
+        }
+      end,
+      mode = "move_pick",
+      request = request,
+      context = function()
+        return context
+      end,
+      readNavigation = function()
+        return nil
+      end,
+      acquirePreparation = function()
+        return ownerLease(owner, counters)
+      end,
+    })
+  end
+  local refusing = openOwnedPicker({ context = "replace_machine", protected = { [2] = "hm" } })
+  settleOwnerPicker(refusing)
+  Assert.equal(refusing:status().group, "skills", "the owned picker opens on its move rows")
+  refusing:updateFixed({ { type = "navigate", direction = "down" } })
+  refusing:updateFixed({ { type = "confirm" } })
+  local notice = refusing:status().notice
+  Assert.equal(notice and notice.reason, "hm", "confirming the protected row raises its notice")
+  Assert.isNil(refusing:takeResult(), "a protected HM row reports no terminal result")
+  Assert.equal(service:partyRevision(), revision, "the notice publishes no revision")
+  refusing:updateFixed({ { type = "cancel" } })
+  Assert.isNil(refusing:status().notice, "acknowledging clears the notice")
+  refusing:updateFixed({ { type = "navigate", direction = "up" } })
+  refusing:updateFixed({ { type = "confirm" } })
+  local picked = assert(refusing:takeResult(), "an ordinary row completes the pick")
+  Assert.equal(picked.kind, "move_selected", "the pick selects")
+  Assert.equal(picked.slot, 0, "the pick carries its member")
+  Assert.equal(picked.moveSlot, 0, "the pick carries the chosen row")
+  Assert.equal(picked.partyRevision, revision, "the pick carries the live revision")
+  refusing:dispose()
+  local cancelling = openOwnedPicker({ context = "replace_machine" })
+  settleOwnerPicker(cancelling)
+  cancelling:updateFixed({ { type = "dismiss" } })
+  local cancelled = assert(cancelling:takeResult(), "dismissal reports its result")
+  Assert.equal(cancelled.kind, "cancelled", "cancellation stays explicit")
+  Assert.equal(service:partyRevision(), revision, "cancellation publishes nothing")
+  cancelling:dispose()
+  Assert.equal(counters.leases, 2, "each picker holds its own lease")
+  Assert.equal(counters.releases, 2, "each picker releases exactly its own lease")
+  local probe = assert(owner:acquire(), "the owner stays live after both picks")
+  Assert.isTrue(type(probe.prepare) == "function", "the replacement lease prepares bounded demand")
+  probe:release()
+  owner:release()
+end
+
 return {
   metadata = {
     capabilities = { "rom_dump", "derived_assets" },

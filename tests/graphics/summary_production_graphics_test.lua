@@ -569,6 +569,25 @@ local function fprRuntime(versionId)
     return 1
   end
   runtime.unbindPartyIconPreparation = function(_, _) end
+  -- The recording summary seam mirrors the production runtime binding:
+  -- one live acquire callback with an identity, removed only by its own
+  -- identity so a stale unbind can never drop a replacement owner.
+  runtime.bindSummaryCalls = 0
+  runtime.unbindSummaryCalls = {}
+  runtime.bindSummaryPreparation = function(_, acquire)
+    assert(type(acquire) == "function", "summary preparation binding requires its acquire function")
+    assert(runtime._summaryPreparation == nil, "one summary preparation binding owns the presented lifetime")
+    runtime.bindSummaryCalls = runtime.bindSummaryCalls + 1
+    runtime._summaryPreparation = { id = runtime.bindSummaryCalls, acquire = acquire }
+    return runtime._summaryPreparation.id
+  end
+  runtime.unbindSummaryPreparation = function(_, binding)
+    runtime.unbindSummaryCalls[#runtime.unbindSummaryCalls + 1] = binding
+    local current = runtime._summaryPreparation
+    if current ~= nil and current.id == binding then
+      runtime._summaryPreparation = nil
+    end
+  end
   return runtime
 end
 

@@ -262,6 +262,21 @@ local function bootCoveredField(scope)
         return 1
       end,
       unbindPartyIconPreparation = function(_, _) end,
+      -- The recording summary seam mirrors the production runtime binding:
+      -- one live acquire callback with an identity, removed only by its own
+      -- identity so a stale unbind can never drop a replacement owner.
+      bindSummaryPreparation = function(self, acquire)
+        assert(type(acquire) == "function", "summary preparation binding requires its acquire function")
+        assert(self.summaryPreparation == nil, "one summary preparation binding owns the presented lifetime")
+        self.summaryPreparation = { id = 1, acquire = acquire }
+        return self.summaryPreparation.id
+      end,
+      unbindSummaryPreparation = function(self, binding)
+        local current = self.summaryPreparation
+        if current ~= nil and current.id == binding then
+          self.summaryPreparation = nil
+        end
+      end,
       contextChoiceProvider = {
         status = function()
           return nil
