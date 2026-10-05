@@ -12,6 +12,7 @@ local BattleDataCache = require("libs.assets.src.battle.BattleDataCache")
 local CacheFs = require("libs.storage.src.CacheFs")
 local CatalogFixture = require("libs.mons.tests.catalog_fixture")
 local FieldEventState = require("libs.hgss.src.field.FieldEventState")
+local FieldOverworldLifecycle = require("libs.hgss.src.field.FieldOverworldLifecycle")
 local FieldRuntime = require("game.hgss.src.field.FieldRuntime")
 local GameVersion = require("romdump.src.source.GameVersion")
 local PlayTime = require("libs.hgss.src.save.PlayTime")
@@ -47,6 +48,9 @@ local function fakeRuntime(overrides)
   local battleFlags = {}
   local runtime = setmetatable({
     battleRuntime = nil,
+    _battleLaunch = nil,
+    _battleReceipts = {},
+    overworld = FieldOverworldLifecycle.new(),
     battlePresentation = nil,
     pendingEncounterId = nil,
     pendingEncounter = nil,
@@ -199,13 +203,92 @@ function T.host_launch_issues_unique_identities_and_reports_status()
   Assert.isTrue(type(first) == "string" and first ~= "")
   local status = runtime:battleStatus(first)
   Assert.notNil(status)
-  Assert.equal(status.phase, "preparing")
+  Assert.equal(status.phase, "leaving")
   Assert.isNil(runtime:battleStatus("no-such-launch"))
   for _ = 1, 10 do
+    runtime.overworld:updateFixed()
     runtime:updateBattle()
   end
   local running = runtime:battleStatus(first)
   Assert.isTrue(running.phase == "entering" or running.phase == "running")
+end
+
+function T.host_status_waits_for_the_native_lifecycle_boundary_by_outcome()
+  local successful = { "win", "capture", "flee" }
+  local absentOutcomes = { "loss", "draw" }
+
+  local function runtimeFor(result)
+    local phase = "absent"
+    local overworld = {
+      phase = function()
+        return phase
+      end,
+      requestRestore = function()
+        phase = "restoring"
+      end,
+      updateFixed = function()
+        if phase == "restoring" then
+          phase = "present"
+        end
+      end,
+    }
+    local runtime = fakeRuntime({ overworld = overworld })
+    runtime._battleLaunch = { launchId = "matrix-" .. result, phase = "active" }
+    runtime.battleRuntime = {
+      update = function() end,
+      dispose = function() end,
+      status = function()
+        return {
+          phase = "complete",
+          result = result,
+          sourceResult = 1,
+          outcomeReceipt = { committed = true },
+        }
+      end,
+    }
+    return runtime, overworld
+  end
+
+  for _, result in ipairs(absentOutcomes) do
+    local runtime = runtimeFor(result)
+    runtime:updateBattle()
+    local status = runtime:battleStatus("matrix-" .. result)
+    Assert.isTrue(status.committed, result .. " publishes after disposal while absent")
+    Assert.equal(status.result, result)
+  end
+
+  for _, result in ipairs(successful) do
+    local runtime, overworld = runtimeFor(result)
+    runtime:updateBattle()
+    local pending = runtime:battleStatus("matrix-" .. result)
+    Assert.isFalse(pending.committed, result .. " remains pending while restore is in progress")
+    overworld:updateFixed()
+    runtime:updateBattle()
+    local complete = runtime:battleStatus("matrix-" .. result)
+    Assert.isTrue(complete.committed, result .. " publishes only after restore")
+    Assert.equal(complete.result, result)
+  end
+end
+
+function T.host_application_failure_never_publishes_a_battle_result()
+  local runtime = fakeRuntime({ overworld = {
+    phase = function()
+      return "absent"
+    end,
+  } })
+  runtime._battleLaunch = { launchId = "matrix-failure", phase = "active" }
+  runtime.battleRuntime = {
+    update = function() end,
+    dispose = function() end,
+    status = function()
+      return { phase = "failed", error = "battle application failed" }
+    end,
+  }
+  runtime:updateBattle()
+  local status = runtime:battleStatus("matrix-failure")
+  Assert.isFalse(status.committed, "a failure has no committed battle result")
+  Assert.notNil(status.error, "the task host retains the application failure")
+  Assert.notNil(runtime.errorText, "the existing application error remains visible")
 end
 
 function T.prepared_encounters_are_consumed_exactly_once()
@@ -308,10 +391,7 @@ end
 -- witness resolves whatever the prepared cache actually carries instead
 -- of freezing one numeric identity into the suite.
 local function firstTrainerKey(compiled)
-  assert(
-    type(compiled) == "table" and type(compiled.trainers) == "table",
-    "generated trainers carry their records"
-  )
+  assert(type(compiled) == "table" and type(compiled.trainers) == "table", "generated trainers carry their records")
   local keys = {}
   for key in pairs(compiled.trainers) do
     keys[#keys + 1] = key
@@ -414,10 +494,7 @@ function T.boot_resolves_a_generated_trainer_identity(context)
         launched.phase == "preparing" or launched.phase == "entering" or launched.phase == "running",
         "the generated identity reaches a valid battle lifecycle"
       )
-      Assert.notNil(
-        runtime:battleStatus("launch-boot-trainer"),
-        "the owned battle reports its launch identity"
-      )
+      Assert.notNil(runtime:battleStatus("launch-boot-trainer"), "the owned battle reports its launch identity")
     end, debug.traceback)
     local closeOk, closeErr = pcall(function()
       runtime:dispose()

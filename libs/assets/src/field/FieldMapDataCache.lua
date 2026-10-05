@@ -299,6 +299,18 @@ function FieldMapDataCache.hasSpawnDestinations(spawns)
   return count > 0
 end
 
+function FieldMapDataCache.hasBlackoutDestinations(spawns)
+  if type(spawns) ~= "table" or not FieldMapDataCache.hasSpawnDestinations(spawns) then
+    return false
+  end
+  for _, destination in pairs(spawns) do
+    if destination.facing ~= "north" then
+      return false
+    end
+  end
+  return true
+end
+
 -- True only if the marker is exact and the index loads with the current
 -- schema and a valid destination table.
 function FieldMapDataCache.isSpawnIndexReady(cacheFs, expectedMarker)
@@ -309,7 +321,35 @@ function FieldMapDataCache.isSpawnIndexReady(cacheFs, expectedMarker)
   if type(index) ~= "table" then
     return false
   end
-  return index.schema == FieldMapDataCache.SPAWN_INDEX_SCHEMA and FieldMapDataCache.hasSpawnDestinations(index.spawns)
+  return index.schema == FieldMapDataCache.SPAWN_INDEX_SCHEMA
+    and FieldMapDataCache.hasSpawnDestinations(index.spawns)
+    and FieldMapDataCache.hasBlackoutDestinations(index.blackoutSpawns)
+end
+
+function FieldMapDataCache.blackoutDestination(cacheFs, spawnKey)
+  assert(type(spawnKey) == "string" and spawnKey ~= "", "blackout resolution needs a spawn key")
+  local index = cacheFs:loadLua(FieldMapDataCache.spawnIndexPath()) ---@type table?
+  if
+    type(index) ~= "table"
+    or index.schema ~= FieldMapDataCache.SPAWN_INDEX_SCHEMA
+    or not FieldMapDataCache.hasBlackoutDestinations(index.blackoutSpawns)
+  then
+    Errors.raise(SPAWN_INDEX_INVALID, "blackout destination index is missing or malformed; rebuild the derived cache", {
+      spawn = spawnKey,
+    })
+  end
+  local spawnIndex = index --[[@as table<string, unknown>]]
+  local blackoutSpawns = spawnIndex.blackoutSpawns --[[@as table<string, table<string, unknown>>]]
+  local destination = blackoutSpawns[spawnKey]
+  if destination == nil then
+    return nil
+  end
+  return {
+    map = destination.map,
+    fieldX = destination.fieldX,
+    fieldZ = destination.fieldZ,
+    facing = destination.facing,
+  }
 end
 
 -- Resolve one cited landing destination: a fresh record on success, nil
@@ -328,9 +368,18 @@ function FieldMapDataCache.spawnDestination(cacheFs, spawnKey)
       { spawn = spawnKey }
     )
   end
-  assert(type(index) == "table", "spawn index validated above")
-  local destinations = index.spawns
-  assert(type(destinations) == "table", "spawn index validated above")
+  local spawnIndex = index --[[@as table<string, unknown>]]
+  local destinations = spawnIndex.spawns --[[@as table<string, table<string, unknown>>]]
+  if
+    not FieldMapDataCache.hasSpawnDestinations(destinations)
+    or not FieldMapDataCache.hasBlackoutDestinations(spawnIndex.blackoutSpawns)
+  then
+    Errors.raise(
+      SPAWN_INDEX_INVALID,
+      "teleport landing index is missing or malformed; rebuild the derived cache",
+      { spawn = spawnKey }
+    )
+  end
   local destination = destinations[spawnKey]
   if destination == nil then
     return nil

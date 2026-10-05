@@ -9,6 +9,7 @@ local DialoguePresentationLayout = require("libs.hgss.src.ui.DialoguePresentatio
 local NativeDisplay = require("libs.ui.src.NativeDisplay")
 local PixelScale = require("libs.ui.src.PixelScale")
 local StandardFade = require("libs.hgss.src.presentation.StandardFade")
+local FieldBlackoutRenderer = require("game.hgss.src.field.FieldBlackoutRenderer")
 
 local KEY_DIRECTIONS =
   { w = "north", up = "north", s = "south", down = "south", a = "west", left = "west", d = "east", right = "east" }
@@ -493,7 +494,21 @@ function FieldState:_drawFieldAttachedUi(resources, hostStatus, alpha)
       height = assert(self.runtime.viewport.height),
     }
   end
-  if dialogueModal then
+  local blackoutStatus = self.runtime.blackoutFlow and self.runtime.blackoutFlow:status() or nil
+  local blackoutMessage = blackoutStatus ~= nil
+    and (
+      blackoutStatus.phase == "message_in"
+      or blackoutStatus.phase == "message_wait"
+      or blackoutStatus.phase == "message_out"
+    )
+  if dialogueModal and blackoutMessage then
+    FieldBlackoutRenderer.draw(
+      self.runtime.dialogue,
+      assert(resources.windowRenderer),
+      assert(resources.textRenderer),
+      bounds
+    )
+  elseif dialogueModal then
     local manifestPlacement = assert(self.runtime.uiManifest).dialogueFrames.continueCursor.placement
     local dialogueScale = PixelScale.fitPreferred(bounds, NativeDisplay.WIDTH, 48, assert(fieldScale))
     local presentation = DialoguePresentationLayout.compute(bounds, {
@@ -598,7 +613,14 @@ function FieldState:draw()
   end
   -- Attached dialogue and signposts share the field scale and yield to modal
   -- application surfaces.
-  if overworldPresent then
+  local blackoutStatus = self.runtime.blackoutFlow and self.runtime.blackoutFlow:status() or nil
+  local blackoutMessageActive = blackoutStatus ~= nil
+    and (
+      blackoutStatus.phase == "message_in"
+      or blackoutStatus.phase == "message_wait"
+      or blackoutStatus.phase == "message_out"
+    )
+  if overworldPresent or blackoutMessageActive then
     self:_drawFieldAttachedUi(resources, hostStatus, alpha)
   end
   -- Each present application surface draws in order: the retained Start
@@ -654,6 +676,11 @@ function FieldState:draw()
   )
   if pokemonNaming ~= nil and pokemonNaming:isActive() and self._namingPresentationReady then
     pokemonNaming:drawPresentation(resources:pokemonNamingRenderer())
+  end
+  if blackoutStatus ~= nil and blackoutStatus.coverAlpha ~= nil and blackoutStatus.coverAlpha > 0 then
+    local color = blackoutStatus.coverColor == "white" and 1 or 0
+    lg.setColor(color, color, color, blackoutStatus.coverAlpha)
+    lg.rectangle("fill", 0, 0, width, height)
   end
   if self.development and self._developmentOverlayVisible then
     self._fpsFrames = self._fpsFrames + 1

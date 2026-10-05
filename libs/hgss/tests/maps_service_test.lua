@@ -12,7 +12,7 @@ local T = {}
 local function fakeLoader()
   return {
     load = function(_, ref)
-      return { mapId = ref, coordinateOrigin = { x = 0, z = 0 } }
+      return { mapId = ref, coordinateOrigin = { x = 600, z = 300 } }
     end,
   }
 end
@@ -31,11 +31,16 @@ end
 function T.a_covered_scripted_swap_never_starts_the_ordinary_transition_fade()
   local calls = {}
   local fakeTransition = {
-    start = function(_)
+    start = function()
       calls[#calls + 1] = "start"
     end,
-    startCoveredSwap = function(_)
-      calls[#calls + 1] = "startCoveredSwap"
+    startCoveredSwap = function(_, sourceMap, trigger, facing)
+      calls[#calls + 1] = {
+        method = "startCoveredSwap",
+        sourceMap = sourceMap,
+        trigger = trigger,
+        facing = facing,
+      }
     end,
   }
   local screen = {
@@ -43,26 +48,42 @@ function T.a_covered_scripted_swap_never_starts_the_ordinary_transition_fade()
       return true
     end,
   }
+  local sourceMap = fakeSourceMap()
   local service = ScriptMapsService.new({
     transition = fakeTransition,
     loader = fakeLoader(),
-    sourceMap = fakeSourceMap(),
+    sourceMap = sourceMap,
     screen = screen,
   })
   service:startWarp(target())
-  Assert.deepEqual(
-    calls,
-    { "startCoveredSwap" },
-    "a scripted warp under opaque script cover must use the covered-swap entry point, not the ordinary transition fade lifecycle"
-  )
+  Assert.equal(#calls, 1, "a covered scripted warp starts exactly one transition")
+  Assert.equal(calls[1].method, "startCoveredSwap", "the opaque source screen stays owned by its caller")
+  Assert.equal(calls[1].sourceMap, sourceMap, "the current source map is retained")
+  Assert.deepEqual(calls[1].trigger, {
+    warp = {
+      index = 0,
+      x = 612,
+      z = 306,
+      destinationMapId = "MAP_NEW_BARK_ELMS_LAB_2F",
+      destinationWarpId = 0,
+      direct = true,
+    },
+  }, "script coordinates remain destination-local until the covered swap rebases them")
+  Assert.equal(calls[1].facing, "west")
 end
 
 -- A covered swap without opaque cover is an explicit failure, never a
 -- silently inserted ordinary fade.
 function T.a_covered_scripted_swap_without_opaque_cover_fails_explicitly()
+  local loaderCalls = 0
+  local transitionCalls = 0
   local fakeTransition = {
-    start = function() end,
-    startCoveredSwap = function() end,
+    start = function()
+      transitionCalls = transitionCalls + 1
+    end,
+    startCoveredSwap = function()
+      transitionCalls = transitionCalls + 1
+    end,
   }
   local screen = {
     isOpaque = function()
@@ -71,7 +92,12 @@ function T.a_covered_scripted_swap_without_opaque_cover_fails_explicitly()
   }
   local service = ScriptMapsService.new({
     transition = fakeTransition,
-    loader = fakeLoader(),
+    loader = {
+      load = function(_, ref)
+        loaderCalls = loaderCalls + 1
+        return { mapId = ref, coordinateOrigin = { x = 600, z = 300 } }
+      end,
+    },
     sourceMap = fakeSourceMap(),
     screen = screen,
   })
@@ -79,6 +105,8 @@ function T.a_covered_scripted_swap_without_opaque_cover_fails_explicitly()
     service:startWarp(target())
   end)
   Assert.isFalse(ok, "a covered swap must require opaque screen cover before committing, not silently proceed")
+  Assert.equal(loaderCalls, 0, "the opaque-cover precondition is checked before acquiring a destination")
+  Assert.equal(transitionCalls, 0, "the transition remains untouched without opaque cover")
 end
 
 -- Opcode 582's special-spawn setter must leave named, observable semantic

@@ -1618,9 +1618,8 @@ return {
     [219] = {
       name = "ScrCmd_WhiteOut",
       feature = "battle",
-      disposition = "deferred",
-      deferredReason = "battle",
-      deferredNote = "blackout sequencing needs the field loss application",
+      disposition = "supported",
+      classification = "native_wait",
       widths = {},
     },
     [220] = {
@@ -2035,9 +2034,8 @@ return {
     [279] = {
       name = "ScrCmd_OverworldWhiteOut",
       feature = "battle",
-      disposition = "deferred",
-      deferredReason = "battle",
-      deferredNote = "blackout sequencing needs the field loss application",
+      disposition = "supported",
+      classification = "native_wait",
       widths = {},
     },
     [280] = {

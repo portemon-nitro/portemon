@@ -740,6 +740,7 @@ Schema.OPERATIONS = {
   },
   overworld_leave = { fields = {} },
   overworld_restore = { fields = {} },
+  whiteout = { fields = {} },
   current_map_id = { fields = { result = { type = "id_or_var", required = true } } },
   player_state = { fields = { result = { type = "id_or_var", required = true } } },
   time_of_day = { fields = { result = { type = "id_or_var", required = true } } },

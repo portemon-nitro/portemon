@@ -201,6 +201,12 @@ function BattleTask.poll(state, ctx)
     })
   end
   assert(type(status) == "table", "the host answers with a status record")
+  if status.error ~= nil then
+    Errors.raise(ScriptErrors.SCRIPT_TASK_CALLBACK_FAULT, "the battle application failed", {
+      launchId = state.launchId,
+      cause = status.error,
+    })
+  end
   if status.committed ~= true then
     return { complete = false, state = state }
   end

@@ -1404,6 +1404,10 @@ local function setDefaultFieldReturn(ins)
   }
 end
 
+local function whiteout(_)
+  return { op = "whiteout" }
+end
+
 local function actorOscillate(ins)
   local sourceAmplitudeX = Operands.varRef(ins.operands[4])
   local sourceAmplitudeZ = Operands.varRef(ins.operands[5])
@@ -1592,6 +1596,8 @@ local FieldHandlers = {
   [213] = BattleHandlers.trainerBattle,
   [220] = BattleHandlers.checkBattleWon,
   [589] = BattleHandlers.wildBattle,
+  [219] = whiteout,
+  [279] = whiteout,
   [746] = hideAuxiliaryUi,
   [747] = showAuxiliaryUi,
   [748] = contextChoice,

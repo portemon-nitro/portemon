@@ -262,6 +262,8 @@ end
 ---@field trainerCardStars table<string, unknown> source-derived Trainer Card star query
 ---@field overworld table<string, unknown>|nil the shared field lifecycle owner
 ---@field propAnimations table<string, unknown>|nil the map-scoped one-shot prop slot owner
+---@field blackout { loader: table<string, unknown>, sourceMap: fun(): table<string, unknown> }? blackout flow construction inputs
+---@field blackoutFlow FieldBlackoutFlow? runtime-owned whiteout presentation and recovery flow
 
 ---@class FieldScripts
 ---@field registry table<string, unknown>
@@ -280,6 +282,7 @@ end
 ---@field overrideFs table<string, unknown> read-shaped filesystem for data/scripts/overrides
 ---@field taskRegistry TaskRegistry the live registered-task registry
 ---@field initController MapInitScriptController
+---@field blackoutFlow FieldBlackoutFlow?
 ---@field mapSource RuntimeFieldMap the active runtime map map-scoped script state is bound to
 ---@field propAnimations table<string, unknown>|nil
 local FieldScripts = {}
@@ -398,6 +401,7 @@ function FieldScripts.new(opts)
 
   ---@class FieldScriptsPlatform: FieldScripts
   ---@field initController MapInitScriptController
+  ---@field blackoutFlow FieldBlackoutFlow?
   local platform = setmetatable({
     registry = registry,
     cacheFs = opts.cacheFs,
@@ -429,18 +433,35 @@ function FieldScripts.new(opts)
 
   -- The live task registry: the scheduler routes through it.
   local liveTaskRegistry = HgssScript.registerTasks(TaskRegistry.new())
-  -- The battle task registers beside the composed tasks so persisted
-  -- battle continuations validate through the same registry. Registering
-  -- one more type never invalidates unrelated saved tasks: resolution is
-  -- per type and version, so every previously registered task resolves
-  -- exactly as before.
-  local BattleTask = require("libs.hgss.src.script.tasks.BattleTask") --[[@as TaskImplementation]]
-  liveTaskRegistry:register(BattleTask.type, BattleTask.version, BattleTask)
+
+  local blackoutFlow
+  if opts.blackout ~= nil then
+    local FieldBlackoutFlow = require("game.hgss.src.field.FieldBlackoutFlow")
+    blackoutFlow = FieldBlackoutFlow.new({
+      cacheFs = opts.cacheFs,
+      loader = opts.blackout.loader,
+      transition = opts.transition,
+      sourceMap = opts.blackout.sourceMap,
+      world = worldState,
+      mons = opts.mons,
+      audio = opts.audio,
+      overworld = opts.overworld,
+      dialogue = dialogueHost,
+    })
+    platform.blackoutFlow = blackoutFlow
+  end
 
   local scheduler
   local function advanceAsync()
     opts.auxiliaryUi:advance()
-    dialogueHost:advance(scheduler:currentInput())
+    local input = scheduler:currentInput()
+    if blackoutFlow ~= nil then
+      local blackoutPhase = blackoutFlow:status().phase
+      if blackoutPhase == "message_in" or blackoutPhase == "message_out" then
+        input = nil
+      end
+    end
+    dialogueHost:advance(input)
     -- The signpost controller is pure and fixed-tick: exactly one step per
     -- scheduler tick, commands and printer together.
     signpostHost:advance(scheduler:currentInput())
@@ -489,6 +510,7 @@ function FieldScripts.new(opts)
       followerInteraction = followerInteractionEngine,
       followerTransition = opts.followerTransition,
       pokemonCenterHeal = opts.pokemonCenterHeal,
+      blackout = blackoutFlow,
       timeOfDay = opts.timeOfDay,
       trainerCardStars = opts.trainerCardStars,
       starterBalls = opts.starterBalls,

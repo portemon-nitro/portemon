@@ -223,7 +223,7 @@ DerivedAssetContract.fieldMapData = {
   -- The teleport landing index is a separate family-level record carrying
   -- cited spawn-keyed outdoor arrival destinations (never source numeric
   -- identities); the runtime return planner reads it, never producer data.
-  spawnIndexSchema = "g4-field-spawn-index-v1",
+  spawnIndexSchema = "g4-field-spawn-index-v2",
 }
 
 DerivedAssetContract.messages = {

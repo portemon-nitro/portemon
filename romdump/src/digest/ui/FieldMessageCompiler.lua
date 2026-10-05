@@ -27,6 +27,7 @@ local OAK_INTRO_MESSAGE_BANK = 219
 -- (`BufferFriendsName`), so no map header or script bank entry references
 -- it either; it must be listed explicitly.
 local OPPOSITE_PROTAGONIST_NAME_BANK = 445
+local BLACKOUT_MESSAGE_BANK = 203
 
 ---@class FieldMessageCompiler.BankMessage
 ---@field id integer
@@ -195,6 +196,7 @@ function FieldMessageCompiler.requiredBankIds()
   -- Follower reaction text is addressed directly by the retail overlay.
   set[40] = true
   set[265] = true
+  set[BLACKOUT_MESSAGE_BANK] = true
   local out = {}
   for bankId in pairs(set) do
     out[#out + 1] = bankId

@@ -65,11 +65,10 @@ function DialogueTask.create(spec, ctx)
   local message = resolveMessage(node.message, node, ctx)
   local host = assert(ctx.services.dialogue, "dialogue task requires the dialogue host")
   local mode = op == "message" and "print" or "say"
-  if mode == "print" and host:isOpen() then
-    -- Consecutive NPCMsg prints share one window: the new print replaces the
-    -- still-open content in the same tick, so no empty-box tick is ever
-    -- observable. `say` keeps the strict open-only creation (its fold
-    -- guarantees the previous box was closed).
+  if host:isOpen() then
+    -- Print-only messages can leave a box open while later source work runs;
+    -- the next message operation replaces that content before acquiring the
+    -- same modal owner again.
     host:close(true)
   end
   host:openMessage(node)
