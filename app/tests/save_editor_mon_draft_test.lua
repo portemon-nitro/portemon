@@ -110,8 +110,8 @@ function T.raw_edits_project_independently_and_never_repair_or_drop_other_fields
   Assert.equal(draft:projection().level, Experience.level(catalog:growthCurve("medium_fast"), 130))
 
   -- A permitted ability remains independent from PID parity. The form change
-  -- and invalid HP/met level then remain visible as validation conflicts,
-  -- while valid PID/EXP/species dependencies still refresh their previews.
+  -- and invalid HP remain visible as validation conflicts, while valid
+  -- PID/EXP/species dependencies still refresh their previews.
   Assert.isFalse(draft:projection().shiny)
   Assert.isTrue(draft:setOrigin("trainerId", 0xFFFFFFFF))
   Assert.isTrue(draft:projection().shiny)
@@ -135,21 +135,19 @@ function T.raw_edits_project_independently_and_never_repair_or_drop_other_fields
   Assert.isNil(invalidHp)
   Assert.notNil(invalidHpError, "excess current HP must continue to block application")
   Assert.isTrue(draft:setScalar("currentHp", 1))
-  local invalidMet, invalidMetError = draft:validate()
-  Assert.isNil(invalidMet)
-  Assert.notNil(invalidMetError, "met level must continue to track experience-derived level")
-
-  -- Correct only the conflicting raw values. No stale preview may survive,
-  -- and validation must return the canonical record without adding derived
-  -- properties or changing opaque subrecords.
-  local level = Experience.level(catalog:growthCurve("medium_fast"), 130)
-  Assert.isTrue(draft:setMet("level", level))
+  -- Correct only the actual conflicts. Historical met level remains raw while
+  -- projection continues to derive the current level from experience.
+  local historicalMetLevel = draft:record().met.level
   local corrected = draft:record()
   assertProjectionMatches(corrected, context, draft:projection())
   local valid, validError = draft:validate()
   Assert.isNil(validError)
   Assert.deepEqual(valid, Mon.validate(corrected, context))
   Assert.notNil(NativeLegality.project(valid, context))
+  Assert.equal(valid.met.level, historicalMetLevel)
+  Assert.equal(valid.met.level, 99)
+  Assert.equal(draft:projection().level, Experience.level(catalog:growthCurve("medium_fast"), 130))
+  Assert.isTrue(valid.met.level ~= draft:projection().level)
   Assert.equal(valid.personality, 0xFFFFFFFF)
   Assert.equal(valid.experience, 130)
   Assert.equal(valid.species, "EEVEE")
@@ -252,6 +250,7 @@ function T.primitive_date_limits_and_move_validation_remain_owned_by_the_catalog
   local catalog, context, original = fixtureMon()
   local draft = draftFor(original, context)
 
+  local priorRecord = copy(draft:record())
   for _, field in ipairs({
     { "year", 1999 },
     { "year", 2256 },
@@ -262,6 +261,7 @@ function T.primitive_date_limits_and_move_validation_remain_owned_by_the_catalog
     { "location", 65536 },
     { "terrain", 256 },
     { "level", 0 },
+    { "level", 101 },
   }) do
     Assert.isFalse(draft:setMet(field[1], field[2]), "out-of-range met value should not enter the raw draft")
   end
@@ -272,8 +272,7 @@ function T.primitive_date_limits_and_move_validation_remain_owned_by_the_catalog
   Assert.isFalse(draft:setScalar("level", 10), "derived level has no setter")
   Assert.isFalse(draft:setScalar("nature", 1), "derived nature has no setter")
 
-  local priorMetDate = copy(draft:record().met.date)
-  Assert.deepEqual(draft:record().met.date, priorMetDate, "rejected primitive values leave the candidate unchanged")
+  Assert.deepEqual(draft:record(), priorRecord, "rejected primitive values leave the candidate unchanged")
 
   local initial = draft:record()
   local first = initial.moves[1]
