@@ -4981,4 +4981,379 @@ function T.unsupported_passes_singles_and_replay_stay_bounded()
   replayed:dispose()
 end
 
+-- Vacant move slots still run their program lines: every lookup for the
+-- absent move resolves to all-zero facts, so each pass scores its
+-- zero-valued previews and continues instead of faulting. Vacant slots
+-- are forced through execution here to mirror the native read of the
+-- all-zero move entry.
+function T.vacant_slots_score_through_the_absent_move_record()
+  local TrainerAi = trainerPolicy()
+  local chart = nativeChart()
+  local user = fighterWith({ types = { "normal" } })
+  local foe = fighterWith({ types = { "normal" } })
+  local function vacantSlot()
+    return {
+      key = "",
+      id = 0,
+      moveType = "typeless",
+      power = 0,
+      category = "status",
+      accuracy = 0,
+      effect = 0,
+      pp = 0,
+      usable = true,
+    }
+  end
+  local members = {
+    { hp = 10, maxHp = 10, species = "EEVEE", status = 0, moves = {} },
+    { hp = 12, maxHp = 12, species = "EEVEE", status = 0, moves = {} },
+  }
+  local extra = {
+    parties = { [0] = members, [1] = members },
+    partyIndex = { [0] = 0, [1] = 0 },
+    partyPartner = { [0] = 0, [1] = 0 },
+    attacker = { ability = "RUN_AWAY" },
+    defender = { ability = "RUN_AWAY" },
+    fullMoveById = {
+      [33] = { effect = 0, power = 35, moveType = "normal", category = "physical", accuracy = 95, basePp = 35 },
+    },
+    lastMove = { [0] = 33, [1] = 0 },
+  }
+  local opening = { "score_init_0", "score_init_1", "score_init_2", "score_init_3" }
+  local baseline = { 100, 100, 100, 100 }
+  for _, bit in ipairs({ 0, 1, 3, 6, 7, 9 }) do
+    local stream = spyStream(FIXED_SEED)
+    local ok, scored = pcall(function()
+      return TrainerAi.scoreSlots(
+        chart,
+        { vacantSlot(), vacantSlot(), vacantSlot(), vacantSlot() },
+        user,
+        foe,
+        14,
+        { bit },
+        false,
+        stream,
+        extra
+      )
+    end)
+    Assert.isTrue(ok, "pass " .. bit .. " scores vacant slots instead of faulting: " .. tostring(scored))
+    assert(ok, "vacant slots resolve on pass " .. bit)
+    local points = {}
+    for index, entry in ipairs(scored) do
+      points[index] = entry.score
+    end
+    Assert.deepEqual(points, baseline, "pass " .. bit .. " holds every vacant slot at the baseline")
+    Assert.deepEqual(stream:drawLabels(), opening, "pass " .. bit .. " draws only its initialization")
+  end
+  local knockoutStream = spyStream(FIXED_SEED)
+  local knockoutOk, knockout = pcall(function()
+    return TrainerAi.scoreSlots(
+      chart,
+      { vacantSlot(), vacantSlot(), vacantSlot(), vacantSlot() },
+      user,
+      foe,
+      14,
+      { 5 },
+      false,
+      knockoutStream,
+      extra
+    )
+  end)
+  Assert.isTrue(knockoutOk, "pass 5 scores vacant slots instead of faulting: " .. tostring(knockout))
+  assert(knockoutOk, "vacant slots resolve on pass 5")
+  local knockoutPoints = {}
+  for index, entry in ipairs(knockout) do
+    knockoutPoints[index] = entry.score
+  end
+  Assert.deepEqual(
+    knockoutPoints,
+    { 100, 93, 93, 100 },
+    "the knockout pass prices the zero previews on its status lines"
+  )
+  local expectedLabels = { "score_init_0", "score_init_1", "score_init_2", "score_init_3" }
+  for _ = 1, 8 do
+    expectedLabels[#expectedLabels + 1] = "program_chance"
+  end
+  Assert.deepEqual(
+    knockoutStream:drawLabels(),
+    expectedLabels,
+    "the knockout pass spends its reached gates past initialization"
+  )
+end
+
+-- Detail loads after an absent previous-move load resolve through the
+-- same all-zero facts: the scratch-held absent identity reads power 0
+-- and effect 0, and the program continues past the load.
+function T.absent_previous_moves_resolve_in_scratch_detail_loads()
+  local TrainerAi = trainerPolicy()
+  local chart = nativeChart()
+  local user = fighterWith({ types = { "normal" } })
+  local foe = fighterWith({ types = { "normal" } })
+  local members = {
+    { hp = 10, maxHp = 10, species = "EEVEE", status = 0, moves = {} },
+    { hp = 12, maxHp = 12, species = "EEVEE", status = 0, moves = {} },
+  }
+  local vectors = {
+    { effect = 79, score = 98, draws = 8 },
+    { effect = 86, score = 100, draws = 6 },
+    { effect = 89, score = 99, draws = 6 },
+    { effect = 90, score = 98, draws = 5 },
+    { effect = 144, score = 103, draws = 8 },
+    { effect = 272, score = 100, draws = 6 },
+  }
+  for _, vector in ipairs(vectors) do
+    local slots = {
+      slotWith({
+        key = "PROBE",
+        id = 500,
+        moveType = "water",
+        power = 60,
+        category = "special",
+        accuracy = 100,
+        effect = vector.effect,
+      }),
+      slotWith({ key = "TACKLE", id = 34 }),
+      slotWith({ key = "GROWL", id = 45, moveType = "normal", power = 0, category = "status", accuracy = 100 }),
+      slotWith({ key = "TACKLE", id = 33, pp = 0, usable = false }),
+    }
+    local extra = {
+      parties = { [0] = members, [1] = members },
+      partyIndex = { [0] = 0, [1] = 0 },
+      partyPartner = { [0] = 0, [1] = 0 },
+      attacker = { ability = "RUN_AWAY" },
+      defender = { ability = "RUN_AWAY" },
+      fullMoveById = {
+        [500] = {
+          effect = vector.effect,
+          power = 60,
+          moveType = "water",
+          category = "special",
+          accuracy = 100,
+          basePp = 5,
+        },
+      },
+      fullMoveIdByKey = { PROBE = 500 },
+      lastMove = { [0] = 0, [1] = 0 },
+    }
+    local stream = spyStream(FIXED_SEED)
+    local ok, scored = pcall(function()
+      return TrainerAi.scoreSlots(chart, slots, user, foe, 14, { 1 }, false, stream, extra)
+    end)
+    Assert.isTrue(
+      ok,
+      "effect " .. vector.effect .. " loads absent previous-move details instead of faulting: " .. tostring(scored)
+    )
+    assert(ok, "absent previous-move details resolve for effect " .. vector.effect)
+    local points = {}
+    for index, entry in ipairs(scored) do
+      points[index] = entry.score
+    end
+    Assert.deepEqual(
+      points,
+      { vector.score, 100, 100, 0 },
+      "effect " .. vector.effect .. " continues past the absent detail load"
+    )
+    local expectedLabels = { "score_init_0", "score_init_1", "score_init_2", "score_init_3" }
+    for _ = 5, vector.draws do
+      expectedLabels[#expectedLabels + 1] = "program_chance"
+    end
+    Assert.deepEqual(
+      stream:drawLabels(),
+      expectedLabels,
+      "effect " .. vector.effect .. " draws exactly its reached gates"
+    )
+  end
+end
+
+-- An absent previous move loads the physical category: the zero run
+-- scores exactly like a physical previous strike, proving downstream
+-- category checks treat the absent move as physical.
+function T.absent_previous_moves_load_the_physical_category()
+  local TrainerAi = trainerPolicy()
+  local chart = nativeChart()
+  local user = fighterWith({ types = { "normal" } })
+  local foe = fighterWith({ types = { "normal" } })
+  local members = {
+    { hp = 10, maxHp = 10, species = "EEVEE", status = 0, moves = {} },
+    { hp = 12, maxHp = 12, species = "EEVEE", status = 0, moves = {} },
+  }
+  local function scoreWith(effect, lastMoveId, withPreviousFacts)
+    local slots = {
+      slotWith({
+        key = "PROBE",
+        id = 500,
+        moveType = "water",
+        power = 60,
+        category = "special",
+        accuracy = 100,
+        effect = effect,
+      }),
+      slotWith({ key = "TACKLE", id = 34 }),
+      slotWith({ key = "GROWL", id = 45, moveType = "normal", power = 0, category = "status", accuracy = 100 }),
+      slotWith({ key = "TACKLE", id = 33, pp = 0, usable = false }),
+    }
+    local compiled = {
+      [500] = { effect = effect, power = 60, moveType = "water", category = "special", accuracy = 100, basePp = 5 },
+    }
+    if withPreviousFacts then
+      compiled[33] = { effect = 0, power = 35, moveType = "normal", category = "physical", accuracy = 95, basePp = 35 }
+    end
+    local extra = {
+      parties = { [0] = members, [1] = members },
+      partyIndex = { [0] = 0, [1] = 0 },
+      partyPartner = { [0] = 0, [1] = 0 },
+      attacker = { ability = "RUN_AWAY" },
+      defender = { ability = "RUN_AWAY" },
+      fullMoveById = compiled,
+      fullMoveIdByKey = { PROBE = 500 },
+      lastMove = { [0] = lastMoveId, [1] = 0 },
+    }
+    local stream = spyStream(FIXED_SEED)
+    local scored = TrainerAi.scoreSlots(chart, slots, user, foe, 14, { 1 }, false, stream, extra)
+    local points = {}
+    for index, entry in ipairs(scored) do
+      points[index] = entry.score
+    end
+    return points, stream:drawLabels()
+  end
+  local opening = { "score_init_0", "score_init_1", "score_init_2", "score_init_3" }
+  local physicalPoints, physicalLabels = scoreWith(18, 33, true)
+  Assert.deepEqual(physicalPoints, { 98, 100, 100, 0 }, "the physical previous strike sets the category baseline")
+  Assert.deepEqual(physicalLabels, opening, "the physical baseline draws only its initialization")
+  local drawnPoints, drawnLabels = scoreWith(21, 33, true)
+  local gated = { "score_init_0", "score_init_1", "score_init_2", "score_init_3", "program_chance" }
+  Assert.deepEqual(drawnPoints, { 98, 100, 100, 0 }, "the gated line matches its physical previous strike")
+  Assert.deepEqual(drawnLabels, gated, "the gated line spends its single reached draw")
+  for _, effect in ipairs({ 18, 21 }) do
+    local slots = {
+      slotWith({
+        key = "PROBE",
+        id = 500,
+        moveType = "water",
+        power = 60,
+        category = "special",
+        accuracy = 100,
+        effect = effect,
+      }),
+      slotWith({ key = "TACKLE", id = 34 }),
+      slotWith({ key = "GROWL", id = 45, moveType = "normal", power = 0, category = "status", accuracy = 100 }),
+      slotWith({ key = "TACKLE", id = 33, pp = 0, usable = false }),
+    }
+    local extra = {
+      parties = { [0] = members, [1] = members },
+      partyIndex = { [0] = 0, [1] = 0 },
+      partyPartner = { [0] = 0, [1] = 0 },
+      attacker = { ability = "RUN_AWAY" },
+      defender = { ability = "RUN_AWAY" },
+      fullMoveById = {
+        [500] = { effect = effect, power = 60, moveType = "water", category = "special", accuracy = 100, basePp = 5 },
+      },
+      fullMoveIdByKey = { PROBE = 500 },
+      lastMove = { [0] = 0, [1] = 0 },
+    }
+    local stream = spyStream(FIXED_SEED)
+    local ok, scored = pcall(function()
+      return TrainerAi.scoreSlots(chart, slots, user, foe, 14, { 1 }, false, stream, extra)
+    end)
+    Assert.isTrue(
+      ok,
+      "effect " .. effect .. " loads the absent previous category instead of faulting: " .. tostring(scored)
+    )
+    assert(ok, "the absent previous category resolves for effect " .. effect)
+    local points = {}
+    for index, entry in ipairs(scored) do
+      points[index] = entry.score
+    end
+    if effect == 18 then
+      Assert.deepEqual(points, physicalPoints, "the absent move matches its physical previous strike")
+      Assert.deepEqual(stream:drawLabels(), physicalLabels, "the absent run draws like its physical twin")
+    else
+      Assert.deepEqual(points, drawnPoints, "the absent move matches its gated physical strike")
+      Assert.deepEqual(stream:drawLabels(), drawnLabels, "the absent gated run draws like its physical twin")
+    end
+  end
+end
+
+-- Vacant slots change nothing they never faulted on: passes that never
+-- read the absent move keep their scores, and a doubles snapshot taken
+-- with vacant slots present restores and answers identically.
+function T.vacant_slots_leave_stored_answers_unchanged()
+  local TrainerAi = trainerPolicy()
+  local chart = nativeChart()
+  local user = fighterWith({ types = { "normal" } })
+  local foe = fighterWith({ types = { "normal" } })
+  local function vacantSlot()
+    return {
+      key = "",
+      id = 0,
+      moveType = "typeless",
+      power = 0,
+      category = "status",
+      accuracy = 0,
+      effect = 0,
+      pp = 0,
+      usable = true,
+    }
+  end
+  local members = {
+    { hp = 10, maxHp = 10, species = "EEVEE", status = 0, moves = {} },
+    { hp = 12, maxHp = 12, species = "EEVEE", status = 0, moves = {} },
+  }
+  local extra = {
+    parties = { [0] = members, [1] = members },
+    partyIndex = { [0] = 0, [1] = 0 },
+    partyPartner = { [0] = 0, [1] = 0 },
+    attacker = { ability = "RUN_AWAY" },
+    defender = { ability = "RUN_AWAY" },
+    fullMoveById = {
+      [33] = { effect = 0, power = 35, moveType = "normal", category = "physical", accuracy = 95, basePp = 35 },
+    },
+    lastMove = { [0] = 33, [1] = 0 },
+  }
+  local stream = spyStream(FIXED_SEED)
+  local scored = TrainerAi.scoreSlots(
+    chart,
+    { vacantSlot(), vacantSlot(), vacantSlot(), vacantSlot() },
+    user,
+    foe,
+    14,
+    { 2 },
+    false,
+    stream,
+    extra
+  )
+  local points = {}
+  for index, entry in ipairs(scored) do
+    points[index] = entry.score
+  end
+  Assert.deepEqual(points, { 100, 100, 100, 100 }, "the unread pass holds every vacant slot at the baseline")
+  Assert.deepEqual(
+    stream:drawLabels(),
+    { "score_init_0", "score_init_1", "score_init_2", "score_init_3" },
+    "the unread pass draws only its initialization"
+  )
+  local contracts = SessionFixture.sessionContracts()
+  local lead = leveledCombatant(31, 23, "CHIKORITA", 20)
+  runAway(lead)
+  local mate = leveledCombatant(34, 24, "EEVEE", 20)
+  runAway(mate)
+  local foeA = leveledCombatant(32, 41, "TOTODILE", 10)
+  runAway(foeA)
+  local foeB = leveledCombatant(33, 42, "EEVEE", 10)
+  runAway(foeB)
+  -- Every lead above carries a single strike, so three vacant slots ride
+  -- each evaluation through the answer and the restore.
+  local session = waitingSession(contracts, doublesVectorScenario(lead, mate, foeA, foeB, NATIVE_SEED))
+  local held = session:capture()
+  local first = session:answerTrainer(openRequest(session, "trainer:1"))
+  session:dispose()
+  local replayed = sessionOwner().restore(held, trainerContent())
+  Assert.deepEqual(
+    replayed:answerTrainer(openRequest(replayed, "trainer:1")),
+    first,
+    "the restored snapshot answers identically with vacant slots present"
+  )
+  replayed:dispose()
+end
+
 return { tests = T }
