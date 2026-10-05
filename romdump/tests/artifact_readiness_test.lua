@@ -1217,7 +1217,7 @@ function T.audit_covers_inventory_map_data_missing_from_the_world()
     programs = {},
     motions = {},
     reactions = {},
-    mapClassByMapId = {},
+    speciesClassBySpeciesId = {},
     locationNames = {},
     fashionNames = {},
   }
@@ -1228,8 +1228,8 @@ function T.audit_covers_inventory_map_data_missing_from_the_world()
       resourceKey = require("libs.assets.src.field.FieldEffectAssetCache").definitionPath(definition),
     }
   end
-  for mapId = 1, 496 do
-    interactionCatalog.mapClassByMapId[mapId] = 0
+  for speciesId = 1, 493 do
+    interactionCatalog.speciesClassBySpeciesId[speciesId] = 0
   end
   for accessoryId = 0, 99 do
     interactionCatalog.fashionNames[accessoryId] = { name = "Accessory", nameWithArticle = "an Accessory" }

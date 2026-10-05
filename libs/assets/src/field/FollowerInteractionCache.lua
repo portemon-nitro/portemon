@@ -13,6 +13,10 @@ local ROOT = "data/generated/field/follower-interactions"
 local CATALOG = ROOT .. "/catalog.lua"
 local MARKER = ROOT .. "/complete"
 
+-- The generated contract is fixed to the native retail species domain; this
+-- producer-independent bound mirrors the retail lookup assertion.
+local MAX_SPECIES_ID = 493
+
 local function exactKeys(value, fields)
   if type(value) ~= "table" then
     return false
@@ -67,7 +71,7 @@ local CRITERIA = {
   genderClass = 3,
   natureClass = 7,
   leafClass = 5,
-  mapClass = 0xFF,
+  speciesClass = 0xFF,
   specialSpriteClass = 3,
   nearbyObjectClass = 7,
   hiddenItemClass = 7,
@@ -230,7 +234,7 @@ function FollowerInteractionCache.validateCatalog(catalog)
     programs = true,
     motions = true,
     reactions = true,
-    mapClassByMapId = true,
+    speciesClassBySpeciesId = true,
     locationNames = true,
     fashionNames = true,
   }
@@ -313,15 +317,15 @@ function FollowerInteractionCache.validateCatalog(catalog)
     end
   end
   if
-    not validKeyedRecords(catalog.mapClassByMapId, function(class)
+    not validKeyedRecords(catalog.speciesClassBySpeciesId, function(class)
       return integer(class, 0, 0xFF)
-    end, 1, 496)
+    end, 1, MAX_SPECIES_ID)
   then
-    return invalid("has invalid map classes")
+    return invalid("has invalid species classes")
   end
-  for mapId = 1, 496 do
-    if catalog.mapClassByMapId[mapId] == nil then
-      return invalid("is missing a map class")
+  for speciesId = 1, MAX_SPECIES_ID do
+    if catalog.speciesClassBySpeciesId[speciesId] == nil then
+      return invalid("is missing a species class")
     end
   end
   if type(catalog.locationNames) ~= "table" then

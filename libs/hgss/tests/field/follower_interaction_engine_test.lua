@@ -24,7 +24,7 @@ local CRITERIA = {
   "genderClass",
   "natureClass",
   "leafClass",
-  "mapClass",
+  "speciesClass",
   "specialSpriteClass",
   "nearbyObjectClass",
   "hiddenItemClass",
@@ -49,7 +49,7 @@ local function criteria(value)
   return result
 end
 
-local function catalog(ruleSpecs, mapClassByMapId)
+local function catalog(ruleSpecs, speciesClassBySpeciesId)
   local rulesByMapSection = {}
   for sectionId = 0, 235 do
     rulesByMapSection[sectionId] = {}
@@ -84,12 +84,12 @@ local function catalog(ruleSpecs, mapClassByMapId)
   for id = 0, 99 do
     fashionNames[id] = { name = "Accessory", nameWithArticle = "an Accessory" }
   end
-  local mapClasses = {}
-  for mapId = 1, 496 do
-    mapClasses[mapId] = 0
+  local speciesClasses = {}
+  for speciesId = 1, 493 do
+    speciesClasses[speciesId] = 0
   end
-  for mapId, class in pairs(mapClassByMapId or {}) do
-    mapClasses[mapId] = class
+  for speciesId, class in pairs(speciesClassBySpeciesId or {}) do
+    speciesClasses[speciesId] = class
   end
   return {
     schema = Contract.followerInteractions.schema,
@@ -98,7 +98,7 @@ local function catalog(ruleSpecs, mapClassByMapId)
     programs = programs,
     motions = {},
     reactions = reactions,
-    mapClassByMapId = mapClasses,
+    speciesClassBySpeciesId = speciesClasses,
     locationNames = { [1] = "New Bark Town" },
     fashionNames = fashionNames,
   }
@@ -233,7 +233,7 @@ local function engine(ruleSpecs, formPerformance, options)
       return "field:partner"
     end,
   }
-  local data = catalog(ruleSpecs, options.mapClassByMapId)
+  local data = catalog(ruleSpecs, options.speciesClassBySpeciesId)
   local testPlayer = options.player or { facing = "south", fieldX = 0, fieldZ = 0 }
   testPlayer.position = function(self)
     return { fieldX = self.fieldX, fieldZ = self.fieldZ }
@@ -300,7 +300,7 @@ T["synthetic normalized interaction catalog satisfies the provider contract"] = 
     {
       programId = 1,
       percentage = 100,
-      criteria = { mapClass = 1, specialSpriteClass = 1, mapId = 1, metatileBehaviorId = 2 },
+      criteria = { speciesClass = 1, specialSpriteClass = 1, mapId = 1, metatileBehaviorId = 2 },
     },
   }, { [1] = 1 }))
   Assert.isTrue(valid, validationError and validationError.message)
@@ -387,9 +387,11 @@ T["Pokéathlon scoring preserves reachable threshold transitions and tie order"]
   Assert.equal(type(classify), "function", "Pokéathlon rules need their owned classifier")
   local runtimeOrderRecords = performance(1, 1, 1)
   runtimeOrderRecords.skill = { base = 3, min = 1, max = 5 }
+  -- Day 4 ties every stat at one star under the retail date arithmetic,
+  -- so the follower scan order still selects Power first.
   local runtimeOrderClass = engine({}, runtimeOrderRecords):_pokeathlonClass(
     { species = "EEVEE", form = 0, personality = 1 },
-    { year = 2024, month = 1, day = 1 }
+    { year = 2024, month = 1, day = 4 }
   )
   Assert.equal(
     runtimeOrderClass,
@@ -603,44 +605,58 @@ T["mon context classifiers preserve retail boundary buckets"] = function()
     "unsupported type index does not match a supported type selector"
   )
 
-  local mapClassCatalog = {
-    { programId = 1, percentage = 100, criteria = { mapClass = 250 } },
-    { programId = 2, percentage = 100, criteria = { mapClass = 7 } },
+  local speciesClassCatalog = {
+    { programId = 1, percentage = 100, criteria = { speciesClass = 18 } },
+    { programId = 2, percentage = 100, criteria = { speciesClass = 7 } },
   }
-  local sameMapEevee = engine(mapClassCatalog, nil, {
+  local sameMapEevee = engine(speciesClassCatalog, nil, {
     mapId = 60,
-    mapClassByMapId = { [60] = 18 },
+    speciesClassBySpeciesId = { [133] = 18, [25] = 7 },
     mon = { species = "EEVEE" },
   })
-  local sameMapPikachu = engine(mapClassCatalog, nil, {
+  local sameMapPikachu = engine(speciesClassCatalog, nil, {
     mapId = 60,
-    mapClassByMapId = { [60] = 18 },
+    speciesClassBySpeciesId = { [133] = 18, [25] = 7 },
     mon = { species = "PIKACHU" },
     speciesId = 25,
   })
   Assert.deepEqual(sameMapEevee:select(), { leadSlot = 0, programId = 1 })
   Assert.deepEqual(
     sameMapPikachu:select(),
-    { leadSlot = 0, programId = 1 },
-    "changing only follower species must preserve the map-owned class match"
+    { leadSlot = 0, programId = 2 },
+    "changing only the lead species selects the other species-owned class on the same map"
   )
-  local anotherMapClass = engine(mapClassCatalog, nil, {
+  local movedEevee = engine(speciesClassCatalog, nil, {
     mapId = 61,
-    mapClassByMapId = { [61] = 20 },
+    speciesClassBySpeciesId = { [133] = 18, [25] = 7 },
+    mon = { species = "EEVEE" },
+  })
+  Assert.deepEqual(
+    movedEevee:select(),
+    { leadSlot = 0, programId = 1 },
+    "changing only the map preserves the species-owned class match"
+  )
+  local rangedSpeciesClass = engine({ {
+    programId = 1,
+    percentage = 100,
+    criteria = { speciesClass = 250 },
+  } }, nil, {
+    mapId = 61,
+    speciesClassBySpeciesId = { [25] = 20 },
     mon = { species = "PIKACHU" },
     speciesId = 25,
   })
-  Assert.equal(anotherMapClass:select(), nil, "changing map class must reject the 250 selector")
-  local exactMapClass = engine({ {
+  Assert.equal(rangedSpeciesClass:select(), nil, "changing species class must reject the 250 selector")
+  local exactSpeciesClass = engine({ {
     programId = 3,
     percentage = 100,
-    criteria = { mapClass = 7 },
+    criteria = { speciesClass = 7 },
   } }, nil, {
     mapId = 62,
-    mapClassByMapId = { [62] = 7 },
+    speciesClassBySpeciesId = { [133] = 7 },
     mon = { species = "EEVEE" },
   })
-  Assert.deepEqual(exactMapClass:select(), { leadSlot = 0, programId = 3 }, "exact map class remains supported")
+  Assert.deepEqual(exactSpeciesClass:select(), { leadSlot = 0, programId = 3 }, "exact species class remains supported")
 
   for _, vector in ipairs({
     { "items", 4 },
@@ -896,6 +912,23 @@ T["partner effect anchor omits absent source-surface identity"] = function()
     fieldZ = 8,
     worldY = 2.5,
   })
+end
+
+T["daily performance modifiers keep the retail winner on the boundary vector"] = function()
+  Assert.notNil(FollowerInteractionEngine, "Pokéathlon context classification must exist")
+  local formPerformance = {
+    power = { base = 2, min = 1, max = 5 },
+    stamina = { base = 3, min = 3, max = 3 },
+    skill = { base = 1, min = 1, max = 1 },
+    speed = { base = 1, min = 1, max = 1 },
+    jump = { base = 1, min = 1, max = 1 },
+  }
+  local subject = engine({}, formPerformance)
+  local actual = subject:_pokeathlonClass(
+    { species = "EEVEE", form = 0, personality = 0 },
+    { year = 2024, month = 1, day = 1 }
+  )
+  Assert.equal(actual, 2, "the boundary vector keeps Stamina (class 2), got " .. tostring(actual))
 end
 
 return { tests = T }

@@ -23,7 +23,7 @@ local function catalog()
         genderClass = 0,
         natureClass = 0,
         leafClass = 0,
-        mapClass = 0,
+        speciesClass = 0,
         specialSpriteClass = 0,
         nearbyObjectClass = 0,
         hiddenItemClass = 0,
@@ -41,7 +41,7 @@ local function catalog()
   }
   local fashionNames = {}
   local reactions = {}
-  local mapClassByMapId = {}
+  local speciesClassBySpeciesId = {}
   for accessoryId = 0, 99 do
     fashionNames[accessoryId] = { name = "Accessory", nameWithArticle = "an Accessory" }
   end
@@ -51,8 +51,8 @@ local function catalog()
       resourceKey = "data/generated/field/effects/follower_reaction_" .. selector .. ".lua",
     }
   end
-  for mapId = 1, 496 do
-    mapClassByMapId[mapId] = 0
+  for speciesId = 1, 493 do
+    speciesClassBySpeciesId[speciesId] = 0
   end
   return {
     schema = Contract.followerInteractions.schema,
@@ -72,7 +72,7 @@ local function catalog()
       [1] = { { facing = 0, x = 0, y = 0, z = 0, ticks = 1, sound = false } },
     },
     reactions = reactions,
-    mapClassByMapId = mapClassByMapId,
+    speciesClassBySpeciesId = speciesClassBySpeciesId,
     locationNames = { [1] = "New Bark Town" },
     fashionNames = fashionNames,
   }
@@ -150,24 +150,31 @@ function T.requires_all_retail_reaction_selectors()
   Assert.isFalse(Cache.validateCatalog(incomplete))
 end
 
-function T.validates_map_class_domain_and_rejects_species_owned_shape()
-  local validMapClasses = catalog()
-  Assert.isTrue(Cache.validateCatalog(validMapClasses))
+function T.validates_species_class_domain_and_rejects_map_owned_shape()
+  local validSpeciesClasses = catalog()
+  Assert.isTrue(Cache.validateCatalog(validSpeciesClasses))
 
-  local invalidMapClass = catalog()
-  invalidMapClass.mapClassByMapId[0] = 0
-  Assert.isFalse(Cache.validateCatalog(invalidMapClass))
+  local invalidSpeciesClass = catalog()
+  invalidSpeciesClass.speciesClassBySpeciesId[0] = 0
+  Assert.isFalse(Cache.validateCatalog(invalidSpeciesClass))
 
-  local missingMapClass = catalog()
-  missingMapClass.mapClassByMapId[496] = nil
-  Assert.isFalse(Cache.validateCatalog(missingMapClass))
+  local missingSpeciesClass = catalog()
+  missingSpeciesClass.speciesClassBySpeciesId[493] = nil
+  Assert.isFalse(Cache.validateCatalog(missingSpeciesClass))
 
-  local speciesShape = catalog()
-  speciesShape.speciesClassBySpeciesId = speciesShape.mapClassByMapId
-  speciesShape.mapClassByMapId = nil
-  speciesShape.rulesByMapSection[1][1].criteria.speciesClass = 0
-  speciesShape.rulesByMapSection[1][1].criteria.mapClass = nil
-  Assert.isFalse(Cache.validateCatalog(speciesShape))
+  local beyondDomain = catalog()
+  beyondDomain.speciesClassBySpeciesId[494] = 0
+  Assert.isFalse(Cache.validateCatalog(beyondDomain))
+
+  local mapShape = catalog()
+  mapShape.mapClassByMapId = {}
+  for mapId = 1, 496 do
+    mapShape.mapClassByMapId[mapId] = 0
+  end
+  mapShape.speciesClassBySpeciesId = nil
+  mapShape.rulesByMapSection[1][1].criteria.mapClass = 0
+  mapShape.rulesByMapSection[1][1].criteria.speciesClass = nil
+  Assert.isFalse(Cache.validateCatalog(mapShape))
 
   local reservedReject = catalog()
   reservedReject.rulesByMapSection[1][1].criteria.reservedReject = 1

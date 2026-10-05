@@ -342,7 +342,7 @@ DerivedAssetContract.items = {
 
 DerivedAssetContract.followerInteractions = {
   cacheFormat = "follower-interaction-cache-v1",
-  schema = "g4-follower-interactions-v2",
+  schema = "g4-follower-interactions-v3",
 }
 
 DerivedAssetContract.mart = {

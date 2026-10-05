@@ -119,7 +119,7 @@ local function selectorMatches(kind, expected, actual, context)
     return actual ~= 1
   elseif kind == "heldItemClass" and expected == 9 then
     return actual ~= 8
-  elseif kind == "mapClass" then
+  elseif kind == "speciesClass" then
     if expected == 250 then
       return actual <= 19
     end
@@ -187,7 +187,10 @@ function FollowerInteractionEngine:_pokeathlonClass(mon, civilDate)
     local performanceIndex = arrayIndex - 1
     local data = assert(performance[stat], "Pokéathlon performance stat is missing")
     local digit = math.floor((mon.personality or 0) / (10 ^ performanceIndex)) % 10
-    local dateDigit = (digit + (civilDate.day + (8 - performanceIndex)) * (civilDate.day + (performanceIndex + 2))) % 10
+    local dateDigit = (digit + (civilDate.day + (7 - performanceIndex)) * (civilDate.day + (performanceIndex + 3))) % 10
+    -- Retail adds the party-slot Aprijuice modifier to the daily score before
+    -- star conversion; Portemon does not model that party-extra state, so this
+    -- path uses modifier zero.
     local dailyMod = modifiers[arrayIndex] + 2 * dateDigit - 9
     local deltaStars = dailyMod <= -120 and -4
       or dailyMod <= -80 and -3
@@ -250,7 +253,9 @@ function FollowerInteractionEngine:_context(leadSlot)
   local type1, type2 = self.mons:monTypes(leadSlot)
   local hpPercent = math.floor((mon.condition.currentHp * 100) / derived.maxHp)
   local heldClass = item and POCK_CLASS[item.pocket] or 8
-  local mapClass = assert(self.catalog.mapClassByMapId[self.runtimeMap.mapId], "map class is missing")
+  local species = self.mons:catalog():species(mon.species)
+  local speciesClass =
+    assert(self.catalog.speciesClassBySpeciesId[species.nativeId], "follower species class is missing")
   local criteria = {
     heldItemClass = heldClass,
     hpClass = hpPercent == 100 and 1 or hpPercent >= 75 and 2 or hpPercent >= 50 and 3 or hpPercent >= 25 and 4 or 5,
@@ -270,7 +275,7 @@ function FollowerInteractionEngine:_context(leadSlot)
     natureClass = assert(NATURE_CLASS[nature + 1]),
     leafClass = mon.shinyLeaves or 0,
     shinyLeaves = mon.shinyLeaves or 0,
-    mapClass = mapClass,
+    speciesClass = speciesClass,
     specialSpriteClass = 0,
     nearbyObjectClass = nearby,
     hiddenItemClass = hidden,

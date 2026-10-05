@@ -8,7 +8,7 @@ FollowerInteractionSources.ARCHIVES = {
   rules = "follower_interaction_rules",
   programs = "follower_interaction_programs",
   motions = "follower_interaction_motions",
-  mapClasses = "follower_interaction_map_classes",
+  speciesClasses = "follower_interaction_species_classes",
 }
 
 FollowerInteractionSources.RULE_SIZE = 20
@@ -16,7 +16,7 @@ FollowerInteractionSources.COMMON_RULE_COUNT = 70
 FollowerInteractionSources.SECTION_RULE_COUNT = 30
 FollowerInteractionSources.PROGRAM_SIZE = 52
 FollowerInteractionSources.MOTION_SIZE = 80
-FollowerInteractionSources.MAP_CLASS_TABLE_SIZE = 496
+FollowerInteractionSources.SPECIES_CLASS_SOURCE_SIZE = 496
 FollowerInteractionSources.ACCESSORY_COUNT = 100
 FollowerInteractionSources.PLAIN_ACCESSORY_BANK = 216
 FollowerInteractionSources.ARTICLE_ACCESSORY_BANK = 217

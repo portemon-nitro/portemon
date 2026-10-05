@@ -12,6 +12,7 @@ local FieldMessageTokenizer = require("romdump.src.digest.ui.FieldMessageTokeniz
 local FieldMessageText = require("libs.assets.src.field.FieldMessageText")
 local Hashing = require("romdump.src.digest.Hashing")
 local Sources = require("romdump.src.config.FollowerInteractionSources")
+local MonSources = require("romdump.src.config.MonSources")
 local FieldEffects = require("romdump.src.config.FieldEffects")
 local FieldEffectPatternAnimation = require("romdump.src.digest.field.FieldEffectPatternAnimation")
 local MapCatalog = require("romdump.src.digest.map.MapCatalog")
@@ -68,7 +69,7 @@ local function decodeRule(bytes)
       typeClass = reader:u8(4) % 32,
       pokeathlonClass = math.floor(reader:u8(4) / 32),
       encounterClass = reader:u8(5),
-      mapClass = reader:u8(6),
+      speciesClass = reader:u8(6),
       leafClass = reader:u8(7),
       weatherClass = reader:u8(8) % 8,
       facingClass = math.floor(reader:u8(9) / 32),
@@ -335,14 +336,14 @@ local function decodePrograms(ruleNarc, programNarc, motionNarc)
   return programs, motions, reactionIds
 end
 
-local function decodeMapClasses(mapClassNarc)
-  local bytes = readMember(mapClassNarc, 0, Sources.ARCHIVES.mapClasses)
-  requireSize(bytes, Sources.MAP_CLASS_TABLE_SIZE, "map classes", 0)
-  local mapClassByMapId = {}
-  for mapId = 1, #bytes do
-    mapClassByMapId[mapId] = bytes:byte(mapId)
+local function decodeSpeciesClasses(speciesClassNarc)
+  local bytes = readMember(speciesClassNarc, 0, Sources.ARCHIVES.speciesClasses)
+  requireSize(bytes, Sources.SPECIES_CLASS_SOURCE_SIZE, "species classes", 0)
+  local speciesClassBySpeciesId = {}
+  for speciesId = 1, MonSources.MAX_SPECIES do
+    speciesClassBySpeciesId[speciesId] = bytes:byte(speciesId)
   end
-  return mapClassByMapId
+  return speciesClassBySpeciesId
 end
 
 local function decodeNames(romFs)
@@ -405,7 +406,7 @@ function Compiler.compile(romFs)
   local rulesArchive = checkedArchive(romFs, Sources.ARCHIVES.rules, 236)
   local programArchive = checkedArchive(romFs, Sources.ARCHIVES.programs, 1023)
   local motionArchive = checkedArchive(romFs, Sources.ARCHIVES.motions, 108)
-  local mapClassArchive = checkedArchive(romFs, Sources.ARCHIVES.mapClasses, 1)
+  local speciesClassArchive = checkedArchive(romFs, Sources.ARCHIVES.speciesClasses, 1)
   local mapSections = decodeRules(rulesArchive)
   local programs, motions, usedReactions = decodePrograms(mapSections, programArchive, motionArchive)
   local reactions = {}
@@ -423,7 +424,7 @@ function Compiler.compile(romFs)
       })
     end
   end
-  local mapClassByMapId = decodeMapClasses(mapClassArchive)
+  local speciesClassBySpeciesId = decodeSpeciesClasses(speciesClassArchive)
   local locationNames, fashionNames, nameBanks = decodeNames(romFs)
   local catalog = {
     schema = Contract.followerInteractions.schema,
@@ -432,7 +433,7 @@ function Compiler.compile(romFs)
     programs = programs,
     motions = motions,
     reactions = reactions,
-    mapClassByMapId = mapClassByMapId,
+    speciesClassBySpeciesId = speciesClassBySpeciesId,
     locationNames = locationNames,
     fashionNames = fashionNames,
   }
@@ -452,7 +453,7 @@ function Compiler.compile(romFs)
       rules = Sources.ARCHIVES.rules,
       programs = Sources.ARCHIVES.programs,
       motions = Sources.ARCHIVES.motions,
-      mapClasses = Sources.ARCHIVES.mapClasses,
+      speciesClasses = Sources.ARCHIVES.speciesClasses,
     },
   }
   local dependencies = {
@@ -462,7 +463,7 @@ function Compiler.compile(romFs)
       rules = rulesArchive:memberCount(),
       programs = programArchive:memberCount(),
       motions = motionArchive:memberCount(),
-      mapClasses = mapClassArchive:memberCount(),
+      speciesClasses = speciesClassArchive:memberCount(),
     },
     nameBanks = nameBanks,
     catalog = catalog,

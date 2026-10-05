@@ -92,7 +92,7 @@ function T.contract_pins_the_current_asset_identities()
     },
     followerInteractions = {
       cacheFormat = "follower-interaction-cache-v1",
-      schema = "g4-follower-interactions-v2",
+      schema = "g4-follower-interactions-v3",
     },
     fieldEmotes = {
       cacheFormat = "field-emotes-cache-v2",
