@@ -254,6 +254,27 @@ function T.source_appearance_waits_two_plus_clip_plus_twenty_ticks_before_snap()
   Assert.equal(#transitions:status().instances, 0, "the visual is retired after the source tail")
 end
 
+function T.appearance_settlement_tracks_only_appearance_owned_lifecycle()
+  local actors = fakeActors()
+  local transitions = controller(actors, 2)
+  Assert.isTrue(transitions:isAppearanceSettled(), "idle controller has no appearance in flight")
+
+  Assert.isTrue(transitions:startAppearance({ repositionRelativeToPlayer = function() end }))
+  Assert.isFalse(transitions:isAppearanceSettled(), "a pending appearance remains unsettled")
+  actors:install(partnerRecord())
+  for _ = 1, 2 + 2 + 20 - 1 do
+    transitions:updateFixed()
+    Assert.isFalse(transitions:isAppearanceSettled(), "appearance remains unsettled through its tail")
+  end
+  transitions:updateFixed()
+  Assert.isTrue(transitions:isAppearanceSettled(), "the appearance settles after its tail callback")
+
+  Assert.isTrue(transitions:start(), "a generic transition starts normally")
+  Assert.isTrue(transitions:isAppearanceSettled(), "generic transitions are not appearance waits")
+  transitions:clear()
+  Assert.isTrue(transitions:isAppearanceSettled(), "clear leaves no appearance lifecycle")
+end
+
 function T.pending_request_binds_the_first_hidden_partner_through_the_reveal_boundary()
   local actors = fakeActors()
   local transitions, made = controller(actors)

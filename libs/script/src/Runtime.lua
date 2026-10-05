@@ -1089,79 +1089,92 @@ end
 ---@field repositionRelativeToPlayer fun(self: RuntimeFollowingMon, offsetSelector: integer, directionRaw: integer)
 ---@field isEventTrigger fun(self: RuntimeFollowingMon, kind: string, param: unknown): boolean
 
----@class RuntimeFollowerTransition
----@field start fun(self: RuntimeFollowerTransition)
----@field startAppearance fun(self: RuntimeFollowerTransition, follower: RuntimeFollowingMon)
+do
+  ---@class RuntimeFollowerTransition
+  ---@field start fun(self: RuntimeFollowerTransition)
+  ---@field startAppearance fun(self: RuntimeFollowerTransition, follower: RuntimeFollowingMon)
 
----@param run table<string, unknown>
----@return RuntimeFollowingMon
-local function followingMonFor(run)
-  return requireService(run, "followingMon") --[[@as RuntimeFollowingMon]]
-end
+  ---@param run table<string, unknown>
+  ---@return RuntimeFollowingMon
+  local function followingMonFor(run)
+    return requireService(run, "followingMon") --[[@as RuntimeFollowingMon]]
+  end
 
-local function handleFollowerIsActive(node, run)
-  writeMonsBool(node, run, followingMonFor(run):isActive())
-  return Runtime.OUTCOME_CONTINUE
-end
-
-local function handleFollowerPartnerState(node, run)
-  writeMonsResult(node, run, followingMonFor(run):partnerSourceState())
-  return Runtime.OUTCOME_CONTINUE
-end
-
-local function handleFollowerFacePlayer(_, run)
-  followingMonFor(run):facePlayer()
-  return Runtime.OUTCOME_CONTINUE
-end
-
-local function handleFollowerSetPaused(node, run)
-  if not followingMonFor(run):isSourceActive() then
+  local function handleFollowerIsActive(node, run)
+    writeMonsBool(node, run, followingMonFor(run):isActive())
     return Runtime.OUTCOME_CONTINUE
   end
-  assert(node.paused ~= nil, "follower pause requires its source operand")
-  local paused = semanticsFor(run).evaluateValue(node.paused, run)
-  followingMonFor(run):setMovementPaused(paused ~= 0 and paused ~= false)
-  return Runtime.OUTCOME_CONTINUE
-end
 
-local function handleFollowerWait(node, run)
-  return blockOnTask(run, "follower_wait", { node = node })
-end
-
-local function handleFollowerSetMovementType(node, run)
-  if not followingMonFor(run):isSourceActive() then
+  local function handleFollowerPartnerState(node, run)
+    writeMonsResult(node, run, followingMonFor(run):partnerSourceState())
     return Runtime.OUTCOME_CONTINUE
   end
-  followingMonFor(run):setMovementType(node.movementType)
-  return Runtime.OUTCOME_CONTINUE
-end
 
-local function handleFollowerReposition(node, run)
-  local offset = semanticsFor(run).evaluateValue(node.a, run)
-  local direction = semanticsFor(run).evaluateValue(node.b, run)
-  followingMonFor(run):repositionRelativeToPlayer(offset, direction)
-  return Runtime.OUTCOME_CONTINUE
-end
-
-local function handleFollowerIsEventTrigger(node, run)
-  local kind = semanticsFor(run).evaluateValue(node.kind, run)
-  local slot = semanticsFor(run).evaluateValue(node.param, run)
-  writeMonsBool(node, run, monsFor(run):followerEventTrigger(kind, slot))
-  return Runtime.OUTCOME_CONTINUE
-end
-
-local function handleFollowerTransition(_, run)
-  local follower = followingMonFor(run)
-  if not follower:isSourceActive() then
+  local function handleFollowerFacePlayer(_, run)
+    followingMonFor(run):facePlayer()
     return Runtime.OUTCOME_CONTINUE
   end
-  local owner = requireService(run, "followerTransition") --[[@as RuntimeFollowerTransition]]
-  if run.node.op == "follower_appearance" then
-    owner:startAppearance(follower)
-  else
+
+  local function handleFollowerSetPaused(node, run)
+    if not followingMonFor(run):isSourceActive() then
+      return Runtime.OUTCOME_CONTINUE
+    end
+    assert(node.paused ~= nil, "follower pause requires its source operand")
+    local paused = semanticsFor(run).evaluateValue(node.paused, run)
+    followingMonFor(run):setMovementPaused(paused ~= 0 and paused ~= false)
+    return Runtime.OUTCOME_CONTINUE
+  end
+
+  local function handleFollowerWait(node, run)
+    return blockOnTask(run, "follower_wait", { node = node })
+  end
+
+  local function handleFollowerSetMovementType(node, run)
+    if not followingMonFor(run):isSourceActive() then
+      return Runtime.OUTCOME_CONTINUE
+    end
+    followingMonFor(run):setMovementType(node.movementType)
+    return Runtime.OUTCOME_CONTINUE
+  end
+
+  local function handleFollowerReposition(node, run)
+    local offset = semanticsFor(run).evaluateValue(node.a, run)
+    local direction = semanticsFor(run).evaluateValue(node.b, run)
+    followingMonFor(run):repositionRelativeToPlayer(offset, direction)
+    return Runtime.OUTCOME_CONTINUE
+  end
+
+  local function handleFollowerIsEventTrigger(node, run)
+    local kind = semanticsFor(run).evaluateValue(node.kind, run)
+    local slot = semanticsFor(run).evaluateValue(node.param, run)
+    writeMonsBool(node, run, monsFor(run):followerEventTrigger(kind, slot))
+    return Runtime.OUTCOME_CONTINUE
+  end
+
+  local function handleFollowerTransition(_, run)
+    local follower = followingMonFor(run)
+    if not follower:isSourceActive() then
+      return Runtime.OUTCOME_CONTINUE
+    end
+    local owner = requireService(run, "followerTransition") --[[@as RuntimeFollowerTransition]]
     owner:start()
+    return Runtime.OUTCOME_CONTINUE
   end
-  return Runtime.OUTCOME_CONTINUE
+
+  local function handleFollowerAppearance(_, run)
+    return blockOnTask(run, "follower_appearance", {})
+  end
+
+  HANDLERS.follower_is_active = handleFollowerIsActive
+  HANDLERS.follower_partner_state = handleFollowerPartnerState
+  HANDLERS.follower_face_player = handleFollowerFacePlayer
+  HANDLERS.follower_set_paused = handleFollowerSetPaused
+  HANDLERS.follower_wait = handleFollowerWait
+  HANDLERS.follower_set_movement_type = handleFollowerSetMovementType
+  HANDLERS.follower_reposition = handleFollowerReposition
+  HANDLERS.follower_is_event_trigger = handleFollowerIsEventTrigger
+  HANDLERS.follower_transition = handleFollowerTransition
+  HANDLERS.follower_appearance = handleFollowerAppearance
 end
 
 local function handlePlaceStarterBalls(_, run)
@@ -1931,16 +1944,6 @@ HANDLERS.item_get_pocket = handleItemGetPocket
 HANDLERS.bag_get_quantity = handleBagGetQuantity
 HANDLERS.party_select = handlePartySelect
 HANDLERS.party_select_result = handlePartySelectResult
-HANDLERS.follower_is_active = handleFollowerIsActive
-HANDLERS.follower_partner_state = handleFollowerPartnerState
-HANDLERS.follower_face_player = handleFollowerFacePlayer
-HANDLERS.follower_set_paused = handleFollowerSetPaused
-HANDLERS.follower_wait = handleFollowerWait
-HANDLERS.follower_set_movement_type = handleFollowerSetMovementType
-HANDLERS.follower_reposition = handleFollowerReposition
-HANDLERS.follower_is_event_trigger = handleFollowerIsEventTrigger
-HANDLERS.follower_transition = handleFollowerTransition
-HANDLERS.follower_appearance = handleFollowerTransition
 HANDLERS.place_starter_balls = handlePlaceStarterBalls
 HANDLERS.lock_player = handleLockPlayer
 HANDLERS.release_player = handleReleasePlayer

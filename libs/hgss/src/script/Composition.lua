@@ -38,6 +38,7 @@ local TASK_MODULES = {
   "libs.hgss.src.script.tasks.FollowerWaitTask",
   "libs.hgss.src.script.tasks.FollowerInteractionTask",
   "libs.hgss.src.script.tasks.PcApplicationTask",
+  "libs.hgss.src.script.tasks.FollowerAppearanceTask",
   "libs.hgss.src.script.tasks.OverworldLifecycleTask",
   "libs.hgss.src.script.tasks.PropAnimationWaitTask",
   "libs.hgss.src.script.tasks.PokemonCenterHealTask",

@@ -311,6 +311,19 @@ function FollowingMonTransitionController:status()
   return { instances = instances }
 end
 
+---@return boolean
+function FollowingMonTransitionController:isAppearanceSettled()
+  if self._pendingStart and self._pendingCompletion ~= nil then
+    return false
+  end
+  for _, instance in ipairs(self.instances) do
+    if instance.onComplete ~= nil then
+      return false
+    end
+  end
+  return true
+end
+
 function FollowingMonTransitionController:clear()
   self._pendingStart = false
   self._pendingTailTicks = 0

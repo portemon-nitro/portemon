@@ -445,7 +445,7 @@ local function followerTransition()
 end
 
 local function followerAppearance()
-  -- Retail opcode 599 starts the nonblocking partner appearance task.
+  -- Retail opcode 599 starts a TaskManager child and blocks until it settles.
   return { op = "follower_appearance" }
 end
 
