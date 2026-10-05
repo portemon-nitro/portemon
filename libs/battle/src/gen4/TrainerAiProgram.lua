@@ -9629,9 +9629,10 @@ local SPEED_HALVING =
 
 -- Effective speed under the native staged formula: unstaged battle speed
 -- scaled by the signed stage ratio with truncation, then weather
--- abilities, paralysis, and tailwind adjust exactly. Priority clocks,
--- Slow Start, Unburden, and speed-relevant hold effects fail closed when
--- present; other hold effects leave speed untouched.
+-- abilities, paralysis, and tailwind adjust exactly. Unburden doubles
+-- only the emptied holder, while priority clocks, Slow Start, and
+-- speed-relevant hold effects fail closed when present; other hold
+-- effects leave speed untouched.
 ---@param state TrainerAiProgramState command state under execution
 ---@param battler integer battler identity under evaluation
 ---@return integer effective speed under the native formula
@@ -9667,8 +9668,16 @@ local function effectiveSpeed(state, battler)
   elseif status % 128 >= 64 then
     speed = math.floor(speed / 4)
   end
-  if ability == 112 or ability == 84 then
+  if ability == 112 then
     error(BattleErrors.missingBehavior("trainer evaluation reads its speed clock", { ability = ability }))
+  elseif ability == 84 then
+    -- Unburden doubles speed only once the holder lost its item: the
+    -- entry flag tells the holder arrived with one while the current
+    -- item tells it is gone. Laden and never-laden holders preview
+    -- untouched.
+    if record.item == 0 and record.enteredWithItem == true then
+      speed = speed * 2
+    end
   end
   local item = record.item --[[@as integer]]
   if item ~= 0 then
@@ -10117,6 +10126,7 @@ local function calcPreview(state, moveId, power, moveType, category)
   local held = facts.heldEffects --[[@as table<integer, integer>]]
   local modA = facts.heldMods --[[@as table<integer, integer>]]
   local effA = 0
+  local effT = 0
   if itemA ~= 0 then
     local resolved = held[itemA]
     if resolved == nil then
@@ -10129,7 +10139,10 @@ local function calcPreview(state, moveId, power, moveType, category)
     if resolved == nil then
       error(BattleErrors.missingBehavior("trainer evaluation reads its held item facts", { item = itemT }))
     end
+    effT = resolved
   end
+  local attackerSpecies = attacker.species --[[@as string?]]
+  local targetSpecies = target.species --[[@as string?]]
   if effA ~= 0 then
     local boosted = TYPE_BOOSTS[effA]
     if boosted ~= nil then
@@ -10144,8 +10157,33 @@ local function calcPreview(state, moveId, power, moveType, category)
       monAtk = math.floor((monAtk * 150) / 100)
     elseif effA == 125 then
       monSpa = math.floor((monSpa * 150) / 100)
-    elseif effA == 60 or effA == 61 or effA == 62 or effA == 71 or effA == 90 or effA == 91 then
-      error(BattleErrors.missingBehavior("trainer evaluation reads its species item", { item = itemA }))
+    elseif effA == 60 then
+      -- Soul Dew raises the special attack of its own Latios/Latias
+      -- bearers. Evaluation battles never carry the frontier bit
+      -- (battleType is 1 or 3), so the frontier exclusion never
+      -- triggers and the rule applies unconditionally.
+      if attackerSpecies == "LATIOS" or attackerSpecies == "LATIAS" then
+        monSpa = math.floor((monSpa * 150) / 100)
+      end
+    elseif effA == 61 then
+      -- DeepSeaTooth doubles the special attack of its Clamperl bearer.
+      if attackerSpecies == "CLAMPERL" then
+        monSpa = monSpa * 2
+      end
+    elseif effA == 71 then
+      -- Light Ball doubles the move power of its Pikachu bearer.
+      if attackerSpecies == "PIKACHU" then
+        movePower = movePower * 2
+      end
+    elseif effA == 91 then
+      -- Thick Club doubles the attack of its Cubone/Marowak bearers.
+      if attackerSpecies == "CUBONE" or attackerSpecies == "MAROWAK" then
+        monAtk = monAtk * 2
+      end
+    elseif effA == 62 or effA == 90 then
+      -- Defender-side items held by the attacker read no adjustment
+      -- here; the defender arms below apply them from the defender
+      -- record.
     elseif effA == 3 or effA == 4 or effA == 2 then
       error(BattleErrors.missingBehavior("trainer evaluation reads its orb item", { item = itemA }))
     elseif effA == 94 or effA == 95 then
@@ -10160,8 +10198,30 @@ local function calcPreview(state, moveId, power, moveType, category)
       -- Health-restore berries never adjust staged damage: the source
       -- damage calculation reads no berry hold effects, so the preview
       -- leaves power untouched.
+    elseif effA == 1 or effA == 6 or effA == 12 or effA == 21 or effA == 33 or effA == 49 or effA == 109 then
+      -- Exactly these seven effects read no adjustment in the damage
+      -- estimate: neither the damage calculation nor the type pipeline
+      -- branches on them, so the preview leaves power and stats
+      -- untouched. Every other unmapped effect stays fail-closed below.
     elseif effA ~= 0 then
       error(BattleErrors.missingBehavior("trainer evaluation reads its held item facts", { item = itemA }))
+    end
+  end
+  if effT == 60 then
+    -- Soul Dew raises the special defense of its own Latios/Latias
+    -- targets; the frontier exclusion never triggers here either.
+    if targetSpecies == "LATIOS" or targetSpecies == "LATIAS" then
+      monSpd = math.floor((monSpd * 150) / 100)
+    end
+  elseif effT == 62 then
+    -- DeepSeaScale doubles the special defense of its Clamperl target.
+    if targetSpecies == "CLAMPERL" then
+      monSpd = monSpd * 2
+    end
+  elseif effT == 90 then
+    -- Metal Powder doubles the defense of its Ditto target.
+    if targetSpecies == "DITTO" then
+      monDef = monDef * 2
     end
   end
   if abilityA == 55 then
@@ -10180,7 +10240,22 @@ local function calcPreview(state, moveId, power, moveType, category)
       presence.hp --[[@as integer]]
       > 0
     then
-      error(BattleErrors.missingBehavior("trainer evaluation reads its partner ability", {}))
+      -- Each aura needs its living counterpart beside it: Plus reads
+      -- Minus and Minus reads Plus. The partner read moves through the
+      -- shared suppression model, so a suppressed partner carries no
+      -- aura; the Mold Breaker arm cannot coincide with an aura holder
+      -- here but keeps the read inside that model.
+      local counterpart = 58
+      if abilityA == 58 then
+        counterpart = 57
+      end
+      local partnerAbility = presence.ability --[[@as integer]]
+      if presence.suppressed == true then
+        partnerAbility = 0
+      end
+      if partnerAbility == counterpart and not ignoredByMold(state) then
+        monSpa = math.floor((monSpa * 150) / 100)
+      end
     end
   end
   if moveType == 13 and facts.mudSport == true then
@@ -11114,7 +11189,8 @@ end
 
 -- Power-override arms: Return and Frustration scale friendship,
 -- Low Kick and Grass Knot consult the target weight ladder, Gyro Ball
--- the speed ratio capped at 150, and Hidden Power its IV power.
+-- the speed ratio capped at 150, Hidden Power its IV power, Natural Gift
+-- the held berry power, and Judgment the compiled power.
 -- Anything else keeps the compiled power.
 ---@param state TrainerAiProgramState command state under execution
 ---@param moveId integer numeric move identity under evaluation
@@ -11178,8 +11254,26 @@ function armedPower(state, moveId, basePower)
       + 16 * second("specialAttack")
       + 32 * second("specialDefense")
     return 30 + math.floor((combo * 40) / 63)
-  elseif moveId == 363 or moveId == 449 then
-    error(BattleErrors.missingBehavior("trainer programs evaluate their item moves", { move = moveId }))
+  elseif moveId == 363 then
+    -- Natural Gift stages the held berry power from the projected map.
+    -- Without a held gift the estimate stages no power: the held-item
+    -- arm leaves the working power cleared, so the preview reads zero
+    -- instead of guessing.
+    local record = battlerFacts(state, atk)
+    local item = record.item --[[@as integer]]
+    if item == 0 then
+      return 0
+    end
+    local gifts = facts.naturalGifts --[[@as table<integer, table<string, integer>>]]
+    local gift = gifts[item]
+    if gift == nil then
+      return 0
+    end
+    return gift.power --[[@as integer]]
+  elseif moveId == 449 then
+    -- Judgment stages the compiled power at the plate type resolved by
+    -- the effective-type arm above.
+    return basePower
   end
   return basePower
 end
@@ -11619,6 +11713,10 @@ function memberPreview(state, member, attacker, moveIdByKey, abilityIds)
   record.ability = ability
   record.item = member.item or 0
   record.ivs = member.ivs
+  -- The member preview substitutes the member's species alongside its
+  -- moves, ability, item, and values; otherwise species-gated previews
+  -- would read the attacker's species for the member's moves.
+  record.species = member.species
   local facts = state.facts --[[@as table<string, unknown>]]
   local atk = facts.atk --[[@as integer]]
   local battlers = {}

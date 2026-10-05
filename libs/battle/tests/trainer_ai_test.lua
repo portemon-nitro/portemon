@@ -4346,23 +4346,16 @@ function T.health_restore_berry_leaves_the_damage_preview_untouched()
   )
   Assert.deepEqual(heldStream:drawLabels(), plainStream:drawLabels(), "the berry path draws identically")
   Assert.deepEqual(heldStream:drawValues(), plainStream:drawValues(), "the berry path spends identical draws")
-  local failure = Assert.throws(function()
-    TrainerAi.scoreSlots(
-      chart,
-      slots,
-      user,
-      foe,
-      1,
-      { 5 },
-      false,
-      spyStream(NATIVE_SEED),
-      extraWith(158, { [158] = 1 })
-    )
-  end, "an unlisted hold effect fails instead of guessing")
-  Assert.isTrue(
-    string.find(tostring(failure), "held item facts", 1, true) ~= nil,
-    "the failure names the held item facts"
+  local ignoredStream = spyStream(NATIVE_SEED)
+  local ignored =
+    TrainerAi.scoreSlots(chart, slots, user, foe, 1, { 5 }, false, ignoredStream, extraWith(158, { [158] = 1 }))
+  Assert.deepEqual(
+    { ignored[1].score, ignored[2].score, ignored[3].score, ignored[4].score },
+    { plain[1].score, plain[2].score, plain[3].score, plain[4].score },
+    "the estimate-neutral effect scores exactly like the bare holder"
   )
+  Assert.deepEqual(ignoredStream:drawLabels(), plainStream:drawLabels(), "the estimate-neutral path draws identically")
+  Assert.deepEqual(ignoredStream:drawValues(), plainStream:drawValues(), "the estimate-neutral path spends identical draws")
 end
 
 ---@return table four explicit move slots routing the wish block to the party scan
@@ -5792,6 +5785,736 @@ function T.doubles_records_share_the_same_arrival_counter_semantics()
       "the arrival counter " .. vector.word .. " draws its reached gates"
     )
   end
+end
+
+-- Damage-preview probes shared by the vectors below. The routing
+-- probe selects the staged preview path, so each vector scores through
+-- the same program bit with only its facts varied; the previous-move
+-- compare then brackets the staged value absolutely, which the
+-- relative ranks alone can never do for attacker-wide multipliers.
+
+---@return table four scoring slots with one special striker and fillers
+local function damageProbeSlots()
+  return {
+    slotWith({ key = "WATER_GUN", id = 55, moveType = "water", power = 40, category = "special", accuracy = 100 }),
+    slotWith({ key = "TACKLE" }),
+    slotWith({ key = "GROWL", id = 45, moveType = "normal", power = 0, category = "status", accuracy = 100 }),
+    slotWith({ key = "TACKLE", id = 33, pp = 0, usable = false }),
+  }
+end
+
+---@param id integer numeric move identity under the probe
+---@param moveType string compiled move type under the probe
+---@param power integer compiled move power under the probe
+---@param category string compiled move category under the probe
+---@return table routing probe slot selecting the staged preview path
+local function probeStrike(id, moveType, power, category)
+  return slotWith({
+    key = "PROBE",
+    id = id,
+    moveType = moveType,
+    power = power,
+    category = category,
+    accuracy = 100,
+    effect = 241,
+  })
+end
+
+---@return table zero-valued filler skipping execution while previewing zero
+local function quietFiller()
+  return slotWith({
+    key = "GROWL",
+    id = 45,
+    moveType = "normal",
+    power = 0,
+    category = "status",
+    accuracy = 100,
+    effect = 7,
+    usable = false,
+  })
+end
+
+---@param chart table session chart resolving directed pairs
+---@param strike table routing probe slot under evaluation
+---@param user table attacker stats under evaluation
+---@param foe table defender stats under evaluation
+---@param extra table explicit evaluation context under test control
+---@param cal table calibrated previous-move facts under the compare
+---@param lasts table last-move facts by battler under the compare
+---@param prev table? optional fixed previous-move override under the compare
+---@return string scored points joined for exact comparison
+local function compareScores(chart, strike, user, foe, extra, cal, lasts, prev)
+  local TrainerAi = trainerPolicy()
+  local prevId = 600
+  local prevFacts = {
+    effect = 0,
+    power = cal.power,
+    moveType = cal.type,
+    category = cal.cat,
+    accuracy = 100,
+    basePp = 5,
+  }
+  local prevLasts = lasts
+  if prev ~= nil then
+    prevId = prev.id
+    prevFacts = {
+      effect = 0,
+      power = prev.power,
+      moveType = prev.moveType,
+      category = prev.category,
+      accuracy = 100,
+      basePp = 5,
+    }
+    prevLasts = prev.lasts
+  end
+  extra.fullMoveById = {
+    [prevId] = prevFacts,
+  }
+  extra.lastMove = prevLasts
+  local scored = TrainerAi.scoreSlots(
+    chart,
+    { strike, quietFiller(), quietFiller(), quietFiller() },
+    user,
+    foe,
+    14,
+    { 1 },
+    false,
+    spyStream(FIXED_SEED),
+    extra
+  )
+  local points = {}
+  for index, entry in ipairs(scored) do
+    points[index] = entry.score
+  end
+  return table.concat(points, ",")
+end
+---@return table fresh party tables for the knockout line's party reads
+local function probePartyContext()
+  local members = {
+    { hp = 10, maxHp = 10, species = "EEVEE", status = 0, moves = {} },
+    { hp = 12, maxHp = 12, species = "EEVEE", status = 0, moves = {} },
+  }
+  return {
+    parties = { [0] = members, [1] = members },
+    partyIndex = { [0] = 0, [1] = 0 },
+    partyPartner = { [0] = 0, [1] = 0 },
+  }
+end
+
+---@param key string species key under the form check
+local function checkSpeciesKey(key)
+  Assert.isTrue(type(key) == "string" and key ~= "", "species travels as a key")
+  Assert.isTrue(string.find(key, "^[A-Z_]+$") ~= nil, "the species key keeps catalog form")
+end
+
+-- Hold effects the damage estimate never reads stay preview-neutral:
+-- each of exactly these seven holders scores and draws exactly like
+-- the bare holder, including a weakening berry carried by the target.
+function T.ignored_hold_effects_leave_the_damage_preview_untouched()
+  local TrainerAi = trainerPolicy()
+  local chart = nativeChart()
+  local user = fighterWith({ types = { "water" } })
+  local foe = fighterWith({ types = { "fire" } })
+  local ignored = {
+    { item = 155, effect = 1 },
+    { item = 150, effect = 6 },
+    { item = 157, effect = 12 },
+    { item = 186, effect = 21 },
+    { item = 198, effect = 33 },
+    { item = 214, effect = 49 },
+    { item = 281, effect = 109 },
+  }
+  Assert.equal(#ignored, 7, "exactly the seven estimate-neutral effects route here")
+  local function scoreWith(attackerItem, defenderItem, heldEffects)
+    local extra = probePartyContext()
+    extra.attacker = { ability = "RUN_AWAY" }
+    extra.defender = { ability = "RUN_AWAY" }
+    if attackerItem ~= 0 then
+      extra.attacker.item = attackerItem
+    end
+    if defenderItem ~= 0 then
+      extra.defender.item = defenderItem
+    end
+    if heldEffects ~= nil then
+      extra.heldEffects = heldEffects
+    end
+    local stream = spyStream(FIXED_SEED)
+    local scored = TrainerAi.scoreSlots(chart, damageProbeSlots(), user, foe, 1, { 5 }, false, stream, extra)
+    local points = {}
+    for index, entry in ipairs(scored) do
+      points[index] = entry.score
+    end
+    return points, stream
+  end
+  local bare, bareStream = scoreWith(0, 0, nil)
+  for _, vector in ipairs(ignored) do
+    local held, heldStream = scoreWith(vector.item, 0, { [vector.item] = vector.effect })
+    Assert.deepEqual(held, bare, "the held effect " .. vector.effect .. " scores like the bare holder")
+    Assert.deepEqual(
+      heldStream:drawLabels(),
+      bareStream:drawLabels(),
+      "the held effect " .. vector.effect .. " draws like the bare holder"
+    )
+    Assert.deepEqual(
+      heldStream:drawValues(),
+      bareStream:drawValues(),
+      "the held effect " .. vector.effect .. " spends identical draws"
+    )
+  end
+  local weakened, weakenedStream = scoreWith(0, 186, { [186] = 21 })
+  Assert.deepEqual(weakened, bare, "a weakening berry on the target scores like the bare holder")
+  Assert.deepEqual(
+    weakenedStream:drawLabels(),
+    bareStream:drawLabels(),
+    "a weakening berry on the target draws like the bare holder"
+  )
+end
+
+-- Species-gated items double only their own bearers: at the calibrated
+-- previous-move power the twin strikers straddle the compare, and each
+-- matching bearer lands exactly on its doubled twin while the
+-- mismatched bearer lands exactly on the plain twin. Species travel as
+-- catalog-form keys and never as numeric identities.
+function T.species_gated_items_double_only_their_own_bearers()
+  local chart = nativeChart()
+  local program = programOwner()
+  local water = program.TYPE_IDS["water"] --[[@as integer]]
+  local fire = program.TYPE_IDS["fire"] --[[@as integer]]
+  local catalog = CatalogFixture.makeCatalog()
+  Assert.notNil(catalog:species("EEVEE"), "the catalog carries species keys in key form")
+  checkSpeciesKey("EEVEE")
+  local user = fighterWith({ types = { "water" } })
+  local foe = fighterWith({ types = { "fire" } })
+  local lasts = { [0] = 600, [1] = 0 }
+  local function attackerScores(species, item, heldEffects, statsOverride, strike, cal)
+    local extra = probePartyContext()
+    local record = { t1 = water, t2 = water, item = item, species = species }
+    if statsOverride ~= nil then
+      for key, value in pairs(statsOverride) do
+        record[key] = value
+      end
+    end
+    extra.liveAttacker = previewBattler(record)
+    extra.liveTarget = previewBattler({ t1 = fire, t2 = fire })
+    if heldEffects ~= nil then
+      extra.heldEffects = heldEffects
+    end
+    return compareScores(chart, strike, user, foe, extra, cal, lasts)
+  end
+  local function targetScores(species, item, heldEffects, statsOverride, strike, cal, prev)
+    local extra = probePartyContext()
+    extra.liveAttacker = previewBattler({ t1 = water, t2 = water })
+    local target = { t1 = fire, t2 = fire, item = item, species = species }
+    if statsOverride ~= nil then
+      for key, value in pairs(statsOverride) do
+        target[key] = value
+      end
+    end
+    extra.liveTarget = previewBattler(target)
+    if heldEffects ~= nil then
+      extra.heldEffects = heldEffects
+    end
+    return compareScores(chart, strike, user, foe, extra, cal, lasts, prev)
+  end
+  -- Each attacker arm names the strike, the held item and effect, the
+  -- matching species, the calibrated previous-move facts straddling
+  -- the value gap, and the twin stat facts bracketing the same gap.
+  local attackerArms = {
+    {
+      strike = { id = 510, moveType = "water", power = 40, category = "special" },
+      twinPower = 80,
+      item = 236,
+      effect = 71,
+      matches = { "PIKACHU" },
+      cal = { power = 80, type = "water", cat = "special" },
+      rule = {},
+      base = {},
+    },
+    {
+      strike = { id = 510, moveType = "water", power = 40, category = "special" },
+      item = 901,
+      effect = 61,
+      matches = { "CLAMPERL" },
+      cal = { power = 80, type = "water", cat = "special" },
+      rule = { spa = 24 },
+      base = { spa = 12 },
+    },
+    {
+      strike = { id = 512, moveType = "normal", power = 40, category = "physical" },
+      item = 902,
+      effect = 91,
+      matches = { "CUBONE", "MAROWAK" },
+      cal = { power = 60, type = "normal", cat = "physical" },
+      rule = { atk = 24 },
+      base = { atk = 12 },
+    },
+    {
+      strike = { id = 510, moveType = "water", power = 40, category = "special" },
+      item = 903,
+      effect = 60,
+      matches = { "LATIOS", "LATIAS" },
+      cal = { power = 80, type = "water", cat = "special" },
+      rule = { spa = 18 },
+      base = { spa = 12 },
+    },
+  }
+  for _, arm in ipairs(attackerArms) do
+    local held = { [arm.item] = arm.effect }
+    local strike = probeStrike(arm.strike.id, arm.strike.moveType, arm.strike.power, arm.strike.category)
+    local ruleStrike = strike
+    if arm.twinPower ~= nil then
+      ruleStrike = probeStrike(arm.strike.id, arm.strike.moveType, arm.twinPower, arm.strike.category)
+    end
+    local ruleTwin = attackerScores("EEVEE", 0, nil, arm.rule, ruleStrike, arm.cal)
+    local baseTwin = attackerScores("EEVEE", 0, nil, arm.base, strike, arm.cal)
+    Assert.isTrue(ruleTwin ~= baseTwin, "the effect " .. arm.effect .. " twins straddle the compare")
+    for _, species in ipairs(arm.matches) do
+      checkSpeciesKey(species)
+      Assert.equal(
+        attackerScores(species, arm.item, held, {}, strike, arm.cal),
+        ruleTwin,
+        "the effect " .. arm.effect .. " doubles its " .. species .. " bearer"
+      )
+    end
+    Assert.equal(
+      attackerScores("EEVEE", arm.item, held, {}, strike, arm.cal),
+      baseTwin,
+      "the effect " .. arm.effect .. " leaves the mismatched bearer untouched"
+    )
+  end
+  local targetArms = {
+    {
+      -- Soul Dew reads on both sides of the estimate, and the
+      -- previous-move compare previews the previous owner as its own
+      -- attacker: a damage previous move would read the holder's
+      -- attacker-side rule and move the compare even when the
+      -- defender-side rule lands exactly. The fixed previous move keeps
+      -- the previous value holder-invariant, so the twin straddle and
+      -- the equalities below isolate the defender-side rule.
+      strike = { id = 510, moveType = "water", power = 28, category = "special" },
+      item = 903,
+      effect = 60,
+      matches = { "LATIOS", "LATIAS" },
+      cal = { power = 60, type = "water", cat = "special" },
+      prev = {
+        id = 69,
+        moveType = "fighting",
+        category = "physical",
+        power = 60,
+        lasts = { [0] = 69, [1] = 0 },
+      },
+      rule = { spd = 15 },
+      base = { spd = 10 },
+    },
+    {
+      strike = { id = 510, moveType = "water", power = 40, category = "special" },
+      item = 904,
+      effect = 62,
+      matches = { "CLAMPERL" },
+      cal = { power = 90, type = "fire", cat = "special" },
+      rule = { spd = 20 },
+      base = { spd = 10 },
+    },
+    {
+      strike = { id = 512, moveType = "normal", power = 40, category = "physical" },
+      item = 905,
+      effect = 90,
+      matches = { "DITTO" },
+      cal = { power = 50, type = "fire", cat = "special" },
+      rule = { def = 20 },
+      base = { def = 10 },
+    },
+  }
+  for _, arm in ipairs(targetArms) do
+    local held = { [arm.item] = arm.effect }
+    local strike = probeStrike(arm.strike.id, arm.strike.moveType, arm.strike.power, arm.strike.category)
+    local ruleTwin = targetScores("EEVEE", 0, nil, arm.rule, strike, arm.cal, arm.prev)
+    local baseTwin = targetScores("EEVEE", 0, nil, arm.base, strike, arm.cal, arm.prev)
+    Assert.isTrue(ruleTwin ~= baseTwin, "the effect " .. arm.effect .. " twins straddle the compare")
+    for _, species in ipairs(arm.matches) do
+      checkSpeciesKey(species)
+      Assert.equal(
+        targetScores(species, arm.item, held, {}, strike, arm.cal, arm.prev),
+        ruleTwin,
+        "the effect " .. arm.effect .. " doubles against its " .. species .. " target"
+      )
+    end
+    Assert.equal(
+      targetScores("EEVEE", arm.item, held, {}, strike, arm.cal, arm.prev),
+      baseTwin,
+      "the effect " .. arm.effect .. " leaves the mismatched target untouched"
+    )
+  end
+end
+
+-- Partner auras need their living counterpart: at the calibrated
+-- previous-move power the boosted twin straddles the plain twin, and
+-- the attacker lands exactly on the boosted twin only while the
+-- counterpart stands beside it unsuppressed; fainted, mismatched,
+-- suppressed, and absent partners all land exactly on the plain twin
+-- carrying the same partner shape.
+function T.partner_auras_need_their_living_counterpart()
+  local chart = nativeChart()
+  local program = programOwner()
+  local water = program.TYPE_IDS["water"] --[[@as integer]]
+  local fire = program.TYPE_IDS["fire"] --[[@as integer]]
+  local abilities = program.ABILITY_IDS --[[@as table<string, integer>]]
+  local user = fighterWith({ types = { "water" } })
+  local foe = fighterWith({ types = { "fire" } })
+  local strike = probeStrike(510, "water", 40, "special")
+  local cal = { power = 60, type = "water", cat = "special" }
+  local lastsAll = { [0] = 600, [1] = 600, [2] = 600, [3] = 600 }
+  local auras = {
+    { attacker = "PLUS", partner = "MINUS" },
+    { attacker = "MINUS", partner = "PLUS" },
+  }
+  for _, aura in ipairs(auras) do
+    -- Doubles records carry their own move roster, so the attacker
+    -- record mirrors the scoring slots' identities above.
+    local function runWith(attackerAbility, attackerSpa, partner)
+      local extra = probePartyContext()
+      local records = {
+        [0] = previewBattler({ t1 = fire, t2 = fire }),
+        [1] = previewBattler({
+          t1 = water,
+          t2 = water,
+          ability = attackerAbility,
+          spa = attackerSpa,
+          moves = { 510, 45, 45, 45 },
+        }),
+      }
+      if partner ~= nil then
+        records[3] = partner
+      end
+      extra.doublesBattlers = { atk = 1, tgt = 0, records = records }
+      return compareScores(chart, strike, user, foe, extra, cal, lastsAll)
+    end
+    local function livingCounterpart()
+      return previewBattler({ ability = abilities[aura.partner] })
+    end
+    local twinHi = runWith(abilities.RUN_AWAY, 18, livingCounterpart())
+    local twinLo = runWith(abilities.RUN_AWAY, 12, livingCounterpart())
+    Assert.isTrue(twinHi ~= twinLo, aura.attacker .. " twins straddle the compare")
+    Assert.equal(
+      runWith(abilities[aura.attacker], 12, livingCounterpart()),
+      twinHi,
+      aura.attacker .. " matches its boosted twin with its living counterpart"
+    )
+    local quietLegs = {
+      {
+        name = "fainted",
+        partner = function()
+          return previewBattler({ ability = abilities[aura.partner], hp = 0 })
+        end,
+      },
+      {
+        name = "mismatched",
+        partner = function()
+          return previewBattler({ ability = abilities.RUN_AWAY })
+        end,
+      },
+      {
+        name = "suppressed",
+        partner = function()
+          return previewBattler({ ability = abilities[aura.partner], suppressed = true })
+        end,
+      },
+      {
+        name = "absent",
+        partner = function()
+          return nil
+        end,
+      },
+    }
+    for _, leg in ipairs(quietLegs) do
+      Assert.equal(
+        runWith(abilities[aura.attacker], 12, leg.partner()),
+        runWith(abilities.RUN_AWAY, 12, leg.partner()),
+        aura.attacker .. " gains nothing from a " .. leg.name .. " partner"
+      )
+    end
+  end
+end
+
+-- Unburden doubles only the emptied holder: at the calibrated
+-- previous-move power the speed twins straddle the compare, and the
+-- itemless holder that entered with its item lands exactly on its
+-- doubled twin while the still-laden holder lands exactly on the
+-- plain twin. The compiled power only selects the staged path for
+-- the speed-ratio arm, which derives working power from the two
+-- effective speeds.
+function T.unburden_doubles_only_the_emptied_holder()
+  local chart = nativeChart()
+  local user = fighterWith({ types = { "steel" }, level = 20 })
+  local foe = fighterWith({ types = { "rock" } })
+  local strike = probeStrike(360, "steel", 60, "physical")
+  local cal = { power = 40, type = "water", cat = "special" }
+  local lasts = { [0] = 600, [1] = 0 }
+  local defenderBase = { attack = 12, defense = 10, specialAttack = 12, specialDefense = 10, speed = 10 }
+  local function baseWith(speed)
+    return { attack = 12, defense = 10, specialAttack = 12, specialDefense = 10, speed = speed }
+  end
+  local function runWith(ability, item, entered, speed)
+    local extra = probePartyContext()
+    local attacker = { ability = ability, enteredWithItem = entered, base = baseWith(speed) }
+    if item ~= 0 then
+      attacker.item = item
+      extra.heldEffects = { [item] = 13 }
+    end
+    extra.attacker = attacker
+    extra.defender = { ability = "RUN_AWAY", base = defenderBase }
+    return compareScores(chart, strike, user, foe, extra, cal, lasts)
+  end
+  local twinHi = runWith("RUN_AWAY", 0, false, 40)
+  local twinLo = runWith("RUN_AWAY", 0, false, 20)
+  Assert.isTrue(twinHi ~= twinLo, "the speed twins straddle the compare")
+  Assert.equal(
+    runWith("UNBURDEN", 0, true, 20),
+    twinHi,
+    "the emptied holder matches its doubled twin"
+  )
+  Assert.equal(
+    runWith("UNBURDEN", 158, true, 20),
+    twinLo,
+    "the laden holder matches its plain twin"
+  )
+end
+
+-- Unmapped clocks and orbs stay fail-closed: orb effects, an unmapped
+-- hold effect, the slowing clock, and the priority clock all raise
+-- naming their facts, while an estimate-neutral effect carried past
+-- the preview line changes nothing.
+function T.unmapped_clocks_and_orbs_stay_fail_closed()
+  local TrainerAi = trainerPolicy()
+  local chart = nativeChart()
+  local user = fighterWith({ types = { "water" } })
+  local foe = fighterWith({ types = { "fire" } })
+  local function scoreHolding(item, effect)
+    local extra = probePartyContext()
+    extra.attacker = { ability = "RUN_AWAY", item = item }
+    extra.defender = { ability = "RUN_AWAY" }
+    extra.heldEffects = { [item] = effect }
+    return TrainerAi.scoreSlots(chart, damageProbeSlots(), user, foe, 1, { 5 }, false, spyStream(FIXED_SEED), extra)
+  end
+  local orb = Assert.throws(function()
+    scoreHolding(901, 2)
+  end, "an orb effect fails instead of guessing")
+  Assert.equal(orb.code, "BATTLE_MISSING_BEHAVIOR", "the orb failure stays a structured missing behavior")
+  Assert.isTrue(string.find(tostring(orb), "orb item", 1, true) ~= nil, "the failure names the orb item")
+  local unmapped = Assert.throws(function()
+    scoreHolding(901, 200)
+  end, "an unmapped effect fails instead of guessing")
+  Assert.equal(unmapped.code, "BATTLE_MISSING_BEHAVIOR", "the unmapped failure stays a structured missing behavior")
+  Assert.isTrue(
+    string.find(tostring(unmapped), "held item facts", 1, true) ~= nil,
+    "the failure names the held item facts"
+  )
+  local defenderBase = { attack = 12, defense = 10, specialAttack = 12, specialDefense = 10, speed = 10 }
+  local attackerBase = { attack = 12, defense = 10, specialAttack = 12, specialDefense = 10, speed = 20 }
+  local function scoreGyro(attacker, heldEffects)
+    local extra = probePartyContext()
+    extra.attacker = attacker
+    extra.defender = { ability = "RUN_AWAY", base = defenderBase }
+    if heldEffects ~= nil then
+      extra.heldEffects = heldEffects
+    end
+    return TrainerAi.scoreSlots(
+      chart,
+      { probeStrike(360, "steel", 60, "physical"), quietFiller(), quietFiller(), quietFiller() },
+      fighterWith({ types = { "steel" } }),
+      foe,
+      1,
+      { 5 },
+      false,
+      spyStream(FIXED_SEED),
+      extra
+    )
+  end
+  local slow = Assert.throws(function()
+    scoreGyro({ ability = "SLOW_START", base = attackerBase })
+  end, "the slowing clock fails instead of guessing")
+  Assert.equal(slow.code, "BATTLE_MISSING_BEHAVIOR", "the slowing failure stays a structured missing behavior")
+  Assert.isTrue(string.find(tostring(slow), "speed clock", 1, true) ~= nil, "the failure names the speed clock")
+  local lagging = Assert.throws(function()
+    scoreGyro({ ability = "RUN_AWAY", item = 902, base = attackerBase }, { [902] = 107 })
+  end, "a priority clock fails instead of guessing")
+  Assert.equal(lagging.code, "BATTLE_MISSING_BEHAVIOR", "the priority failure stays a structured missing behavior")
+  Assert.isTrue(
+    string.find(tostring(lagging), "priority clock", 1, true) ~= nil,
+    "the failure names the priority clock"
+  )
+  local function scoreLine(item, heldEffects)
+    local extra = probePartyContext()
+    extra.attacker = { ability = "RUN_AWAY" }
+    extra.defender = { ability = "RUN_AWAY" }
+    if item ~= 0 then
+      extra.attacker.item = item
+    end
+    if heldEffects ~= nil then
+      extra.heldEffects = heldEffects
+    end
+    local stream = spyStream(FIXED_SEED)
+    local scored = TrainerAi.scoreSlots(chart, damageProbeSlots(), user, foe, 1, { 1 }, false, stream, extra)
+    local points = {}
+    for index, entry in ipairs(scored) do
+      points[index] = entry.score
+    end
+    return points, stream
+  end
+  local bare, bareStream = scoreLine(0, nil)
+  local carried, carriedStream = scoreLine(900, { [900] = 1 })
+  Assert.deepEqual(carried, bare, "the carried effect changes nothing past the preview line")
+  Assert.deepEqual(
+    carriedStream:drawLabels(),
+    bareStream:drawLabels(),
+    "the carried effect draws nothing past the preview line"
+  )
+end
+
+-- Item moves preview their projected power: at the calibrated
+-- previous-move power the compiled twins straddle the compare, and
+-- each projected value lands apart from its counterfactual while
+-- sharing one move identity and one held item, so only the projected
+-- values vary.
+function T.item_moves_preview_their_projected_power()
+  local chart = nativeChart()
+  local program = programOwner()
+  local normal = program.TYPE_IDS["normal"] --[[@as integer]]
+  local ground = program.TYPE_IDS["ground"] --[[@as integer]]
+  local psychic = program.TYPE_IDS["psychic"] --[[@as integer]]
+  local lasts = { [0] = 600, [1] = 0 }
+  -- Natural Gift reads power and type from the projected berry map:
+  -- type 3 selects poison and type 12 selects grass through the
+  -- shared type table.
+  local ngUser = fighterWith({ types = { "normal" } })
+  local ngFoe = fighterWith({ types = { "ground" } })
+  local ngStrike = probeStrike(363, "normal", 60, "physical")
+  local berry = 155
+  local function giftRun(gift, item, calPower)
+    local extra = probePartyContext()
+    local attacker = { t1 = normal, t2 = normal, species = "EEVEE" }
+    if item ~= 0 then
+      attacker.item = item
+      extra.heldEffects = { [item] = 1 }
+      extra.naturalGifts = { [item] = gift }
+    end
+    extra.liveAttacker = previewBattler(attacker)
+    extra.liveTarget = previewBattler({ t1 = ground, t2 = ground })
+    return compareScores(chart, ngStrike, ngUser, ngFoe, extra, { power = calPower, type = "water", cat = "special" }, lasts)
+  end
+  local function giftTwin(id, moveType, power, calPower)
+    local extra = probePartyContext()
+    extra.liveAttacker = previewBattler({ t1 = normal, t2 = normal, species = "EEVEE" })
+    extra.liveTarget = previewBattler({ t1 = ground, t2 = ground })
+    return compareScores(
+      chart,
+      probeStrike(id, moveType, power, "physical"),
+      ngUser,
+      ngFoe,
+      extra,
+      { power = calPower, type = "water", cat = "special" },
+      lasts
+    )
+  end
+  -- Power flows from the map: the 100 berry lands apart from the 60
+  -- berry exactly where the 100 twin lands apart from the 60 twin.
+  local powTripHi = giftTwin(521, "poison", 100, 30)
+  local powTripLo = giftTwin(522, "poison", 60, 30)
+  Assert.isTrue(powTripHi ~= powTripLo, "the power twins straddle the compare")
+  Assert.isTrue(
+    giftRun({ typeId = 3, power = 100 }, berry, 30) ~= giftRun({ typeId = 3, power = 60 }, berry, 30),
+    "the berry power selects the staged power"
+  )
+  -- Type flows from the map: grass doubles into ground while poison
+  -- resists, exactly where the grass twin lands apart from the
+  -- poison twin.
+  local typeTripHi = giftTwin(523, "grass", 60, 40)
+  local typeTripLo = giftTwin(522, "poison", 60, 40)
+  Assert.isTrue(typeTripHi ~= typeTripLo, "the type twins straddle the compare")
+  Assert.isTrue(
+    giftRun({ typeId = 12, power = 60 }, berry, 40) ~= giftRun({ typeId = 3, power = 60 }, berry, 40),
+    "the berry type selects the staged type"
+  )
+  -- The itemless guard previews nothing: the bare striker lands
+  -- apart from the berry striker exactly where the powerless twin
+  -- lands apart from the berry twin.
+  local guardTripHi = giftTwin(522, "poison", 60, 20)
+  local guardTripLo = giftTwin(524, "poison", 1, 20)
+  Assert.isTrue(guardTripHi ~= guardTripLo, "the guard twins straddle the compare")
+  Assert.isTrue(
+    giftRun({ typeId = 3, power = 60 }, berry, 20) ~= giftRun(nil, 0, 20),
+    "the itemless striker previews nothing"
+  )
+  -- Effect 140 selects the dark plate and effect 141 the steel
+  -- plate through the shared boost table; the striker previews
+  -- compiled power at the plate type.
+  local judgeUser = fighterWith({ types = { "normal" } })
+  local judgeFoe = fighterWith({ types = { "psychic" } })
+  local function plateRun(item, effect, strikePower, calPower)
+    local extra = probePartyContext()
+    local attacker = { t1 = normal, t2 = normal, species = "EEVEE" }
+    if item ~= 0 then
+      attacker.item = item
+      extra.heldEffects = { [item] = effect }
+      extra.heldMods = { [item] = 20 }
+    end
+    extra.liveAttacker = previewBattler(attacker)
+    extra.liveTarget = previewBattler({ t1 = psychic, t2 = psychic })
+    return compareScores(
+      chart,
+      probeStrike(449, "normal", strikePower, "special"),
+      judgeUser,
+      judgeFoe,
+      extra,
+      { power = calPower, type = "water", cat = "special" },
+      lasts
+    )
+  end
+  local function plateTwin(id, moveType, power, item, effect, calPower)
+    local extra = probePartyContext()
+    local attacker = { t1 = normal, t2 = normal, species = "EEVEE" }
+    if item ~= 0 then
+      attacker.item = item
+      extra.heldEffects = { [item] = effect }
+      extra.heldMods = { [item] = 20 }
+    end
+    extra.liveAttacker = previewBattler(attacker)
+    extra.liveTarget = previewBattler({ t1 = psychic, t2 = psychic })
+    return compareScores(
+      chart,
+      probeStrike(id, moveType, power, "special"),
+      judgeUser,
+      judgeFoe,
+      extra,
+      { power = calPower, type = "water", cat = "special" },
+      lasts
+    )
+  end
+  -- Plate type: dark doubles into psychic while steel stays neutral.
+  local darkTrip = plateTwin(525, "dark", 100, 700, 140, 160)
+  local steelTrip = plateTwin(526, "steel", 100, 701, 141, 160)
+  Assert.isTrue(darkTrip ~= steelTrip, "the plate twins straddle the compare")
+  Assert.isTrue(
+    plateRun(700, 140, 100, 160) ~= plateRun(701, 141, 100, 160),
+    "the plate selects the staged type"
+  )
+  -- Compiled power: the 100 striker lands apart from the 40 striker.
+  local powerTripHi = plateTwin(525, "dark", 100, 700, 140, 130)
+  local powerTripLo = plateTwin(527, "dark", 40, 700, 140, 130)
+  Assert.isTrue(powerTripHi ~= powerTripLo, "the power twins straddle the compare")
+  Assert.isTrue(
+    plateRun(700, 140, 100, 130) ~= plateRun(700, 140, 40, 130),
+    "the plate striker previews compiled power"
+  )
+  -- Plate presence: the plated striker lands apart from the bare
+  -- striker, which keeps the compiled type.
+  local heldTrip = plateTwin(525, "dark", 100, 700, 140, 160)
+  local bareTrip = plateTwin(528, "normal", 100, 0, 0, 160)
+  Assert.isTrue(heldTrip ~= bareTrip, "the presence twins straddle the compare")
+  Assert.isTrue(
+    plateRun(700, 140, 100, 160) ~= plateRun(0, 0, 100, 160),
+    "the plateless striker keeps the compiled type"
+  )
 end
 
 return { tests = T }

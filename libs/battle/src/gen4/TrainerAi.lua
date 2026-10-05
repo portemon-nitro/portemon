@@ -2362,6 +2362,46 @@ local function heldIdentity(authorities, heldKey)
   return nativeId, holdEffect --[[@as integer]]
 end
 
+--- Projects held-berry power by native item identity from the session
+--- item facts for the damage preview. Entries without a complete
+--- gift triple (native identity, power, type identity) stay out of the
+--- map; entries that are not records fail closed here instead of
+--- staging a guessed power later.
+---@param authorities TrainerAiAuthorities session-owned read authorities
+---@return table<integer, table<string, integer>> gift power by native item identity under preview
+local function projectNaturalGifts(authorities)
+  local items = authorities.itemFacts
+  if type(items) ~= "table" then
+    error(BattleErrors.missingBehavior("trainer evaluation reads its compiled item facts", {}))
+  end
+  local gifts = {}
+  for key, record in
+    pairs(items --[[@as table<string, unknown>]])
+  do
+    if type(record) ~= "table" then
+      error(BattleErrors.missingBehavior("trainer evaluation reads its compiled item facts", { item = key }))
+    end
+    local entry = record --[[@as table<string, unknown>]]
+    local gift = entry.naturalGift
+    if gift ~= nil then
+      if type(gift) ~= "table" then
+        error(BattleErrors.missingBehavior("trainer evaluation reads its compiled item facts", { item = key }))
+      end
+      local thrown = gift --[[@as table<string, unknown>]]
+      local held = entry.heldBehavior
+      local params = type(held) == "table" and (held --[[@as table<string, unknown>]]).params or nil
+      local nativeId = type(params) == "table" and (params --[[@as table<string, unknown>]]).nativeId or nil
+      if type(nativeId) == "number" and type(thrown.power) == "number" and type(thrown.typeId) == "number" then
+        gifts[nativeId] = {
+          typeId = thrown.typeId --[[@as integer]],
+          power = thrown.power --[[@as integer]],
+        }
+      end
+    end
+  end
+  return gifts
+end
+
 --- Builds live program facts for one attack evaluation from battle
 --- state: battler health, abilities, items, statuses, stages, parties,
 --- history, and field state resolve through the session authorities.
@@ -2499,6 +2539,7 @@ local function battlerProgramFacts(state, authorities, combatant, moveIdByKey, h
     level = level,
     t1 = t1,
     t2 = t2,
+    species = mon.species,
     ability = ability,
     item = item,
     status = status,
@@ -2711,6 +2752,7 @@ local function buildLiveExtra(state, authorities, combatant, foeCombatant)
   extra.fullMoveById = fullMoveMap(authorities)
   extra.fullMoveIdByKey = extra.moveIdByKey
   extra.heldEffects = {}
+  extra.naturalGifts = projectNaturalGifts(authorities)
   local atkId = combatant.id --[[@as integer]]
   local foeId = foeCombatant.id --[[@as integer]]
   local atkRecord = battlerProgramFacts(state, authorities, combatant, extra.moveIdByKey, extra.heldEffects)
@@ -2945,6 +2987,7 @@ local function buildDoublesExtra(state, authorities, attacker, byId, attackerId,
   extra.fullMoveById = fullMoveMap(authorities)
   extra.fullMoveIdByKey = extra.moveIdByKey
   extra.heldEffects = {}
+  extra.naturalGifts = projectNaturalGifts(authorities)
   local records = {}
   local live = {}
   local switchIn = {}
