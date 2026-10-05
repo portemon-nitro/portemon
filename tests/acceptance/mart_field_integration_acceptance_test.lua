@@ -14,7 +14,7 @@ local MartSave = require("libs.hgss.src.save.MartSave")
 local T = {
   metadata = {
     capabilities = { "rom_dump" },
-    derivedAssets = { "field-runtime", "map:7", "mart:global" },
+    derivedAssets = { "field-runtime", "map:7", "map:60", "mart:global" },
     tags = { "field", "mart", "acceptance" },
   },
   tests = {},
@@ -71,6 +71,7 @@ local function withGame(fn)
           options = { textSpeed = "fastest", textFrame = 0 },
         },
         fieldTravel = { lastHealSpawn = "SPAWN_NEW_BARK" },
+        fashionCase = require("libs.hgss.src.save.FashionCaseState").empty(),
         playTime = PlayTime.new(),
         worldState = FieldEventState.new(),
         mons = require("tests.support.MonBucket").emptyForVersion(versionId),
