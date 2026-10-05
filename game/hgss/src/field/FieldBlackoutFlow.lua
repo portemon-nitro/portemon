@@ -60,6 +60,14 @@ function FieldBlackoutFlow:start(spawnKey)
   if failure ~= nil or phase == "failed" then
     error(failure or Errors.new(FieldErrors.FIELD_OVERWORLD_LIFECYCLE_INVALID, "blackout lifecycle has failed", {}), 0)
   end
+  local destination = FieldMapDataCache.blackoutDestination(self.cacheFs, spawnKey)
+  if destination == nil then
+    Errors.raise(
+      FieldErrors.FIELD_MAP_UNKNOWN,
+      "blackout spawn has no generated death destination",
+      { spawn = spawnKey }
+    )
+  end
   if phase == "present" then
     self.overworld:requestLeave()
     phase = "leaving"
@@ -68,14 +76,6 @@ function FieldBlackoutFlow:start(spawnKey)
       FieldErrors.FIELD_OVERWORLD_LIFECYCLE_INVALID,
       "blackout cannot start during an overworld transition",
       { phase = phase }
-    )
-  end
-  local destination = FieldMapDataCache.blackoutDestination(self.cacheFs, spawnKey)
-  if destination == nil then
-    Errors.raise(
-      FieldErrors.FIELD_MAP_UNKNOWN,
-      "blackout spawn has no generated death destination",
-      { spawn = spawnKey }
     )
   end
   self.nextId = self.nextId + 1

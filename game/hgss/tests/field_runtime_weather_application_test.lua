@@ -5,6 +5,7 @@ local Assert = require("tests.support.Assert")
 local FieldEventState = require("libs.hgss.src.field.FieldEventState")
 local FieldRuntime = require("game.hgss.src.field.FieldRuntime")
 local FieldWorldSwapCoordinator = require("game.hgss.src.field.FieldWorldSwapCoordinator")
+local FieldOverworldLifecycle = require("libs.hgss.src.field.FieldOverworldLifecycle")
 local FieldWeatherCache = require("libs.assets.src.field.FieldWeatherCache")
 
 local T = {}
@@ -111,6 +112,7 @@ local function runtimeWithClock(catalog, calls, currentMap)
     weatherClock = clock,
     eventState = FieldEventState.new(),
     runtimeMap = currentMap,
+    overworld = FieldOverworldLifecycle.new(),
     cameraProfiles = { field = cameraProfile() },
     viewport = {
       worldAspect = function()

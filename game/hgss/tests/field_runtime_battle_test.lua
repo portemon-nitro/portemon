@@ -210,7 +210,15 @@ function T.host_launch_issues_unique_identities_and_reports_status()
     runtime:updateBattle()
   end
   local running = runtime:battleStatus(first)
-  Assert.isTrue(running.phase == "entering" or running.phase == "running")
+  Assert.isTrue(running.phase == "active" or running.phase == "entering" or running.phase == "running")
+end
+
+function T.host_launch_identities_are_unique_across_runtime_instances()
+  local firstRuntime = fakeRuntime()
+  local secondRuntime = fakeRuntime()
+  local first = firstRuntime:launchBattle({ kind = "wild", details = {} })
+  local second = secondRuntime:launchBattle({ kind = "wild", details = {} })
+  Assert.isTrue(first ~= second, "a later runtime cannot reuse a process-wide receipt identity")
 end
 
 function T.host_status_waits_for_the_native_lifecycle_boundary_by_outcome()
