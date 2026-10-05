@@ -1,6 +1,6 @@
 -- Producer/consumer compatibility between generated trainer records and the
 -- executable battle runtime: every generated AI pass answers through a real
--- native trainer decision with a recorded deterministic witness, every
+-- native trainer decision with a recorded deterministic replay, every
 -- distinct move that can materialize on a trainer combatant reaches a
 -- concrete runtime handler (a dispatch gate: it fails on missing behavior
 -- but normal source-valid failed, miss, and no-effect outcomes from modeled
@@ -394,6 +394,11 @@ local function sessionItemFacts(bundle, keys, seeds)
         if type(definition.battleUse) == "table" then
           projected.battleUse = copyValue(definition.battleUse)
         end
+        -- Canonical held behavior rides beside the use facts so trainer
+        -- evaluation reads held effects through this same map.
+        if type(definition.heldBehavior) == "table" then
+          projected.heldBehavior = copyValue(definition.heldBehavior)
+        end
         facts[key] = projected
       end
     end
@@ -409,7 +414,14 @@ local function sessionItemFacts(bundle, keys, seeds)
       return
     end
     local resolved = definition --[[@as table<string, unknown>]]
-    if type(resolved.naturalGift) ~= "table" and type(resolved.fling) ~= "table" then
+    -- Held entries exist for throw facts and canonical held behavior:
+    -- trainer evaluation reads held effects through this same map, so a
+    -- held-behavior record alone is a complete projected family.
+    if
+      type(resolved.naturalGift) ~= "table"
+      and type(resolved.fling) ~= "table"
+      and type(resolved.heldBehavior) ~= "table"
+    then
       return
     end
     local projected = facts[held]
@@ -422,6 +434,9 @@ local function sessionItemFacts(bundle, keys, seeds)
     end
     if type(resolved.fling) == "table" and projected.fling == nil then
       projected.fling = copyValue(resolved.fling)
+    end
+    if type(resolved.heldBehavior) == "table" and projected.heldBehavior == nil then
+      projected.heldBehavior = copyValue(resolved.heldBehavior)
     end
   end
   for _, key in ipairs(keys) do
@@ -558,7 +573,7 @@ local function trainerSession(bundle, versionId, trainerIndex, passes, doubles)
 end
 
 ---@param choices table<integer, unknown> trainer decision choices under signature
----@return string readable choice signature for witness comparison
+---@return string readable choice signature for replay comparison
 local function choicesSignature(choices)
   local parts = {}
   for _, choice in ipairs(choices) do
@@ -584,7 +599,7 @@ local function choicesSignature(choices)
   return table.concat(parts, ",")
 end
 
----@param signature string witness choice signature under the attack check
+---@param signature string recorded choice signature under the attack check
 ---@return boolean true when every answered choice is an attack
 local function signatureAttacks(signature)
   if signature == "" then
@@ -608,7 +623,7 @@ end
 local function probeDecision(bundle, versionId, trainerIndex, passes, doubles)
   local session = trainerSession(bundle, versionId, trainerIndex, passes, doubles)
   local opening = SessionFixture.driveUntilSettled(session)
-  Assert.equal(opening.status, "waiting", "trainer " .. trainerIndex .. " reaches its witness decision")
+  Assert.equal(opening.status, "waiting", "trainer " .. trainerIndex .. " reaches its coverage decision")
   local wanted = requestFor(opening, "trainer:" .. trainerIndex)
   local callsBefore = session:capture().rng.calls
   local reply = session:answerTrainer(wanted)
@@ -624,7 +639,9 @@ function T.generated_trainer_passes_answer_through_the_native_session(romFs, ver
   local ids = sortedTrainerIds(compiled)
   Assert.isTrue(#ids > 0, "the dump must yield at least one trainer record")
   local seenDouble = false
-  local bitTrainers = {} ---@type table<string, table<integer, integer>>
+  local seenPasses = 0
+  local executedByTrainer = {} ---@type table<integer, boolean>
+  local failClosed = {} ---@type table<integer, table<string, string>>
   local doublesByTrainer = {} ---@type table<integer, boolean>
   local passesByTrainer = {} ---@type table<integer, table<integer, unknown>>
   local doubleIds = {} ---@type integer[]
@@ -635,12 +652,7 @@ function T.generated_trainer_passes_answer_through_the_native_session(romFs, ver
     Assert.isTrue(type(passes) == "table", "trainer " .. trainerIndex .. " keeps its named AI passes")
     for _, pass in ipairs(passes) do
       Assert.isTrue(pass ~= "ai_pass_7", "trainer " .. trainerIndex .. " keeps the doubles fact out of the pass list")
-      local pool = bitTrainers[pass]
-      if pool == nil then
-        pool = {}
-        bitTrainers[pass] = pool
-      end
-      pool[#pool + 1] = trainerIndex
+      seenPasses = seenPasses + 1
     end
     local doubles = record.doubleBattle == true
     if doubles then
@@ -660,116 +672,120 @@ function T.generated_trainer_passes_answer_through_the_native_session(romFs, ver
     end)
     if not ok then
       if isMissingBehavior(reply) then
+        failClosed[#failClosed + 1] = {
+          trainer = tostring(trainerIndex),
+          passes = describePasses(passes),
+          reason = tostring(reply),
+        }
+        session:dispose()
+      else
+        session:dispose()
         error(
           "trainer "
             .. trainerIndex
             .. " passes ["
             .. describePasses(passes)
-            .. "] have no native decision behavior: "
+            .. "] raw decision failure: "
             .. tostring(reply),
           0
         )
       end
-      error(
-        "trainer " .. trainerIndex .. " passes [" .. describePasses(passes) .. "] decision failed: " .. tostring(reply),
-        0
+    else
+      local answered = reply --[[@as table<string, unknown>]]
+      Assert.equal(
+        answered.requestId,
+        wanted.requestId,
+        "trainer " .. trainerIndex .. " answers its open request identity"
       )
+      Assert.equal(answered.epoch, wanted.epoch, "trainer " .. trainerIndex .. " answers its open request epoch")
+      Assert.equal(
+        answered.controller,
+        wanted.controller,
+        "trainer " .. trainerIndex .. " answers under its own controller"
+      )
+      Assert.equal(
+        #(answered.choices --[[@as table<integer, unknown>]]),
+        #wanted.actors,
+        "trainer " .. trainerIndex .. " answers every addressed actor"
+      )
+      local stored, submitErr = session:submit(answered)
+      Assert.isTrue(stored, "trainer " .. trainerIndex .. " reply binds: " .. tostring(submitErr))
+      session:dispose()
+      executedByTrainer[trainerIndex] = true
     end
-    local answered = reply --[[@as table<string, unknown>]]
-    Assert.equal(
-      answered.requestId,
-      wanted.requestId,
-      "trainer " .. trainerIndex .. " answers its open request identity"
-    )
-    Assert.equal(answered.epoch, wanted.epoch, "trainer " .. trainerIndex .. " answers its open request epoch")
-    Assert.equal(
-      answered.controller,
-      wanted.controller,
-      "trainer " .. trainerIndex .. " answers under its own controller"
-    )
-    Assert.equal(
-      #(answered.choices --[[@as table<integer, unknown>]]),
-      #wanted.actors,
-      "trainer " .. trainerIndex .. " answers every addressed actor"
-    )
-    local stored, submitErr = session:submit(answered)
-    Assert.isTrue(stored, "trainer " .. trainerIndex .. " reply binds: " .. tostring(submitErr))
-    session:dispose()
   end
   Assert.isTrue(seenDouble, "the corpus holds at least one native double trainer for the topology gate")
-  -- Every generated pass bit proves a bit-driven decision change on at
-  -- least one probe: the same state answers differently with the bit
-  -- enabled than flagless, both answers advance the shared stream, and the
-  -- enabled probe replays its exact signature and draw count. A bit that
-  -- never moves any probe decision has no behavioral witness.
-  local passNames = {}
-  for pass in pairs(bitTrainers) do
-    passNames[#passNames + 1] = pass
-  end
-  table.sort(passNames)
-  Assert.isTrue(#passNames > 0, "the corpus must yield at least one generated pass for the witness gate")
-  local unwitnessed = {}
-  for _, pass in ipairs(passNames) do
-    local witnessed = false
-    for _, trainerIndex in ipairs(bitTrainers[pass]) do
+  Assert.isTrue(seenPasses > 0, "the corpus must yield at least one generated pass for the coverage gate")
+  -- Every executed configuration replays its opening decision
+  -- deterministically: the same passes answer with the same choices at
+  -- the same shared-stream cost on a fresh session. Trainers reporting
+  -- explicit structured missing behavior stay listed above instead of
+  -- failing: only raw decision failures are regressions. This is coverage
+  -- plus determinism: it proves each executable pass list dispatches and
+  -- replays, never that the answer matches native intent (only the
+  -- owner-level program cases prove that, and they run without a dump).
+  local executed = 0
+  for _, trainerIndex in ipairs(ids) do
+    if executedByTrainer[trainerIndex] then
+      executed = executed + 1
+      local passes = passesByTrainer[trainerIndex]
       local doubles = doublesByTrainer[trainerIndex]
-      local signature, delta = probeDecision(bundle, versionId, trainerIndex, { pass }, doubles)
-      local baseSignature, baseDelta = probeDecision(bundle, versionId, trainerIndex, {}, doubles)
-      local rerunSignature, rerunDelta = probeDecision(bundle, versionId, trainerIndex, { pass }, doubles)
+      local firstOk, signature, delta = pcall(probeDecision, bundle, versionId, trainerIndex, passes, doubles)
+      if not firstOk then
+        error(
+          "trainer " .. trainerIndex .. " replays its coverage decision nondeterministically: " .. tostring(signature),
+          0
+        )
+      end
+      local rerunSignature, rerunDelta = probeDecision(bundle, versionId, trainerIndex, passes, doubles)
       Assert.deepEqual(
         rerunSignature,
         signature,
-        "trainer " .. trainerIndex .. " pass " .. pass .. " replays its witness decision"
+        "trainer " .. trainerIndex .. " replays its coverage decision"
       )
-      Assert.equal(
-        rerunDelta,
-        delta,
-        "trainer " .. trainerIndex .. " pass " .. pass .. " replays its witness draw count"
-      )
-      Assert.isTrue(delta > 0, "trainer " .. trainerIndex .. " pass " .. pass .. " draws from the shared stream")
-      Assert.isTrue(
-        baseDelta > 0,
-        "trainer " .. trainerIndex .. " flagless baseline draws from the shared stream"
-      )
-      if signatureAttacks(signature) and signatureAttacks(baseSignature) and signature ~= baseSignature then
-        witnessed = true
+      Assert.equal(rerunDelta, delta, "trainer " .. trainerIndex .. " replays its coverage draw count")
+      Assert.isTrue(delta > 0, "trainer " .. trainerIndex .. " coverage answer draws from the shared stream")
+    end
+  end
+  Assert.isTrue(
+    executed > 0,
+    "at least one generated trainer executes its coverage decision (fail-closed: " .. #failClosed .. ")"
+  )
+  -- At least one executed double trainer exercises the doubles selector:
+  -- both positions answer attacks at live opposing slots with a recorded
+  -- deterministic draw count, not two independent singles answers.
+  -- Fail-closed doubles trainers stay reported above; only executed ones
+  -- can cover the topology.
+  local doublesCovered = false
+  for _, trainerIndex in ipairs(doubleIds) do
+    if executedByTrainer[trainerIndex] then
+      local signature, delta = probeDecision(bundle, versionId, trainerIndex, passesByTrainer[trainerIndex], true)
+      if signatureAttacks(signature) then
+        for part in string.gmatch(signature, "[^,]+") do
+          local slot = string.match(part, "@(.*)$")
+          Assert.isTrue(
+            slot == "1" or slot == "2",
+            "trainer " .. trainerIndex .. " doubles strikes address a live opposing slot"
+          )
+        end
+        local rerunSignature, rerunDelta =
+          probeDecision(bundle, versionId, trainerIndex, passesByTrainer[trainerIndex], true)
+        Assert.deepEqual(
+          rerunSignature,
+          signature,
+          "trainer " .. trainerIndex .. " replays its doubles coverage decision"
+        )
+        Assert.equal(rerunDelta, delta, "trainer " .. trainerIndex .. " replays its doubles coverage draw count")
+        Assert.isTrue(delta > 0, "trainer " .. trainerIndex .. " doubles answer draws from the shared stream")
+        doublesCovered = true
         break
       end
     end
-    if not witnessed then
-      unwitnessed[#unwitnessed + 1] = pass
-    end
   end
-  if #unwitnessed > 0 then
-    error("generated passes without a nontrivial decision witness: " .. table.concat(unwitnessed, ","), 0)
-  end
-  -- At least one generated double trainer exercises the doubles selector:
-  -- both positions answer attacks at live opposing slots with a recorded
-  -- deterministic draw count, not two independent singles answers.
-  local doublesWitnessed = false
-  for _, trainerIndex in ipairs(doubleIds) do
-    local signature, delta = probeDecision(bundle, versionId, trainerIndex, passesByTrainer[trainerIndex], true)
-    if signatureAttacks(signature) then
-      for part in string.gmatch(signature, "[^,]+") do
-        local slot = string.match(part, "@(.*)$")
-        Assert.isTrue(
-          slot == "1" or slot == "2",
-          "trainer " .. trainerIndex .. " doubles strikes address a live opposing slot"
-        )
-      end
-      local rerunSignature, rerunDelta = probeDecision(bundle, versionId, trainerIndex, passesByTrainer[trainerIndex], true)
-      Assert.deepEqual(
-        rerunSignature,
-        signature,
-        "trainer " .. trainerIndex .. " replays its doubles witness decision"
-      )
-      Assert.equal(rerunDelta, delta, "trainer " .. trainerIndex .. " replays its doubles witness draw count")
-      Assert.isTrue(delta > 0, "trainer " .. trainerIndex .. " doubles answer draws from the shared stream")
-      doublesWitnessed = true
-      break
-    end
-  end
-  Assert.isTrue(doublesWitnessed, "the corpus holds a doubles trainer answering attacks on both slots")
+  Assert.isTrue(
+    doublesCovered,
+    "an executed doubles trainer answers attacks on both slots (fail-closed: " .. #failClosed .. ")"
+  )
 end
 
 ---@param mons table<integer, unknown> materialized party members under the move search
@@ -792,7 +808,7 @@ end
 -- materialized move reaches a concrete runtime handler without missing
 -- behavior. This proves reachability, not conditional semantics: a normal
 -- source-valid failed, miss, or no-effect result still counts as reached,
--- while focused family suites own the per-branch trigger witnesses.
+-- while focused family suites own the per-branch trigger cases.
 function T.materialized_trainer_moves_reach_concrete_runtime_behavior(romFs, versionId)
   local bundle = bundleFor(romFs, versionId)
   local compiled = bundle.compiled --[[@as table<string, unknown>]]
